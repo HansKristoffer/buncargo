@@ -136,6 +136,7 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
+    "fast-glob": "^3.3.3",
     "picocolors": "^1.1.1"
   }
 }

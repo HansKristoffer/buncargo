@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { createDevEnvironment } from "./environment";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "./types";
 
@@ -46,7 +47,7 @@ export async function loadDevEnv(options?: {
 
 	for (const file of CONFIG_FILES) {
 		const path = `${cwd}/${file}`;
-		const exists = await Bun.file(path).exists();
+		const exists = existsSync(path);
 
 		if (exists) {
 			const mod = await import(path);

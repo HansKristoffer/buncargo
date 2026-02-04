@@ -11,6 +11,7 @@
  *   bunx buncargo help          # Show help
  */
 
+import { existsSync } from "node:fs";
 import { runCli } from "./cli";
 import { createDevEnvironment } from "./environment";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "./types";
@@ -37,7 +38,7 @@ async function loadEnv(): Promise<
 
 	for (const file of CONFIG_FILES) {
 		const path = `${cwd}/${file}`;
-		const exists = await Bun.file(path).exists();
+		const exists = existsSync(path);
 
 		if (exists) {
 			try {

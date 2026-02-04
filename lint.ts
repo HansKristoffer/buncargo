@@ -1,4 +1,7 @@
-import { $, Glob } from "bun";
+import { execSync } from "node:child_process";
+import { readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+import fg from "fast-glob";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -76,24 +79,42 @@ async function clearTsBuildInfo(
 		console.log(`🧹 Clearing corrupted tsbuildinfo cache for ${workspace}...`);
 	}
 	// Clear both old tsbuildinfo and new tsgo cache
-	await $`find ${workspace} -name '*.tsbuildinfo' -type f -delete`
-		.nothrow()
-		.quiet();
-	await $`find ${workspace} -path '*/.cache/tsbuildinfo.json' -type f -delete`
-		.nothrow()
-		.quiet();
+	try {
+		const tsbuildInfoFiles = await fg(`${workspace}/**/*.tsbuildinfo`, {
+			absolute: true,
+		});
+		for (const file of tsbuildInfoFiles) {
+			try {
+				unlinkSync(file);
+			} catch {
+				// Ignore errors
+			}
+		}
+
+		const cacheFiles = await fg(`${workspace}/**/.cache/tsbuildinfo.json`, {
+			absolute: true,
+		});
+		for (const file of cacheFiles) {
+			try {
+				unlinkSync(file);
+			} catch {
+				// Ignore errors
+			}
+		}
+	} catch {
+		// Ignore errors
+	}
 }
 
 async function countTypeScriptFiles(
 	pkgPath: string,
 	root: string,
 ): Promise<number> {
-	let count = 0;
-	const tsGlob = new Glob(`${pkgPath}/**/*.{ts,tsx}`);
-	for await (const _ of tsGlob.scan(root)) {
-		count++;
-	}
-	return count;
+	const files = await fg(`${pkgPath}/**/*.{ts,tsx}`, {
+		cwd: root,
+		ignore: ["**/node_modules/**"],
+	});
+	return files.length;
 }
 
 function formatErrorOutput(output: string): string {
@@ -122,18 +143,36 @@ async function runSingleTypecheck(
 		);
 	}
 
-	const workspacePath = `${root}/${workspace}`;
-	const result = await $`cd ${workspacePath} && bun run typecheck`
-		.nothrow()
-		.quiet();
+	const workspacePath = join(root, workspace);
+
+	let success = false;
+	let stdout = "";
+	let stderr = "";
+
+	try {
+		const output = execSync("bun run typecheck", {
+			cwd: workspacePath,
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+		stdout = output ?? "";
+		success = true;
+	} catch (error) {
+		const execError = error as {
+			status?: number;
+			stdout?: string;
+			stderr?: string;
+		};
+		stdout = execError.stdout ?? "";
+		stderr = execError.stderr ?? "";
+		success = false;
+	}
+
 	const duration = Number(((performance.now() - startTime) / 1000).toFixed(2));
-	const success = result.exitCode === 0;
 
 	let errorOutput: string | undefined;
 	if (!success) {
-		const stdout = result.stdout.toString().trim();
-		const stderr = result.stderr.toString().trim();
-		const parts = [stdout, stderr].filter(Boolean);
+		const parts = [stdout.trim(), stderr.trim()].filter(Boolean);
 		errorOutput = parts.length > 0 ? parts.join("\n") : undefined;
 
 		// Check for corrupted cache and retry once
@@ -153,13 +192,18 @@ async function discoverWorkspaces(
 	const workspaces: Workspace[] = [];
 
 	for (const pattern of patterns) {
-		const glob = new Glob(`${pattern}/package.json`);
-		for await (const match of glob.scan(root)) {
+		const matches = await fg(`${pattern}/package.json`, { cwd: root });
+		for (const match of matches) {
 			const pkgPath = match.replace("/package.json", "");
-			const pkgJson = await Bun.file(`${root}/${match}`).json();
-			if (pkgJson.scripts?.typecheck) {
-				const fileCount = await countTypeScriptFiles(pkgPath, root);
-				workspaces.push({ path: pkgPath, fileCount });
+			try {
+				const pkgJsonContent = readFileSync(join(root, match), "utf-8");
+				const pkgJson = JSON.parse(pkgJsonContent);
+				if (pkgJson.scripts?.typecheck) {
+					const fileCount = await countTypeScriptFiles(pkgPath, root);
+					workspaces.push({ path: pkgPath, fileCount });
+				}
+			} catch {
+				// Skip invalid package.json files
 			}
 		}
 	}

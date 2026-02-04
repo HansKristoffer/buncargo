@@ -22,7 +22,8 @@
  * @internal This module is used internally by createDevEnvironment.
  */
 
-import { $ } from "bun";
+import { spawn } from "node:child_process";
+import { join } from "node:path";
 import {
 	isContainerRunning,
 	startService,
@@ -124,14 +125,30 @@ Examples:
 		await ensureDatabase();
 
 		const envVars = env.buildEnvVars();
-
-		$.env({ ...process.env, ...envVars, [urlEnvVar]: getDatabaseUrl() });
-		$.cwd(`${env.root}/${cwd}`);
+		const workingDir = join(env.root, cwd);
+		const fullEnv = {
+			...process.env,
+			...envVars,
+			[urlEnvVar]: getDatabaseUrl(),
+		};
 
 		console.log(`🔄 Running: prisma ${args.join(" ")}\n`);
 
-		const result = await $`bunx prisma ${args}`.nothrow();
-		return result.exitCode;
+		return new Promise((resolve) => {
+			const proc = spawn("bunx", ["prisma", ...args], {
+				cwd: workingDir,
+				env: fullEnv,
+				stdio: "inherit",
+			});
+
+			proc.on("close", (code) => {
+				resolve(code ?? 0);
+			});
+
+			proc.on("error", () => {
+				resolve(1);
+			});
+		});
 	}
 
 	return { run, getDatabaseUrl, ensureDatabase };
