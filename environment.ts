@@ -200,6 +200,7 @@ export function createDevEnvironment<
 			wait = true,
 			startServers: shouldStartServers = true,
 			productionBuild = isCI,
+			skipSeed = false,
 		} = startOptions;
 
 		const envVars = buildEnvVars(productionBuild);
@@ -287,8 +288,8 @@ export function createDevEnvironment<
 			await config.hooks.afterContainersReady(getHookContext());
 		}
 
-		// Run seed if configured
-		if (config.seed) {
+		// Run seed if configured (skip if skipSeed is true, e.g., when CLI handles seeding)
+		if (config.seed && !skipSeed) {
 			let shouldSeed = true;
 
 			// Check if seeding is needed using check function

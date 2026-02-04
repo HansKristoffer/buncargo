@@ -108,15 +108,9 @@ COMMANDS:
   help                Show this help message
   version             Show version
 
-DEV OPTIONS:
-  --up-only           Start containers only (no dev servers)
-  --down              Stop containers
-  --reset             Stop containers and remove volumes
-  --migrate           Run migrations only
-  --seed              Run seeders
-
 EXAMPLES:
   bunx buncargo dev              # Start everything
+  bunx buncargo dev --help       # Show dev command options
   bunx buncargo dev --down       # Stop containers
   bunx buncargo typecheck        # Run typecheck
   bunx buncargo prisma studio    # Open Prisma Studio
@@ -132,6 +126,8 @@ CONFIG:
     services: { ... },
     apps: { ... }
   })
+
+Run "bunx buncargo dev --help" for dev command options.
 `);
 }
 

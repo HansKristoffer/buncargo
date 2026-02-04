@@ -378,6 +378,8 @@ export interface StartOptions {
 	productionBuild?: boolean;
 	/** Environment suffix for isolation (e.g., 'test'). Default: undefined */
 	suffix?: string;
+	/** Skip automatic seeding (useful when CLI handles seeding separately). Default: false */
+	skipSeed?: boolean;
 }
 
 /**

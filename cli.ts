@@ -12,9 +12,51 @@ import type {
 // CLI Runner
 // ═══════════════════════════════════════════════════════════════════════════
 
+/** Accepted CLI flags */
+const ACCEPTED_FLAGS = [
+	"--help",
+	"--down",
+	"--reset",
+	"--migrate",
+	"--seed",
+	"--up-only",
+] as const;
+
+/**
+ * Print help message and exit.
+ */
+function printHelp(): void {
+	console.log(`
+Usage: buncargo dev [options]
+
+Options:
+  --help      Show this help message
+  --down      Stop all containers
+  --reset     Stop containers and remove volumes (fresh start)
+  --migrate   Run migrations and exit
+  --seed      Run migrations and seeders, then exit
+  --up-only   Start containers and run migrations, then exit (no dev servers)
+
+Examples:
+  bun dev              Start dev environment with all services
+  bun dev --seed       Run migrations and seed the database
+  bun dev --down       Stop all containers
+  bun dev --reset      Stop containers and remove all data
+`);
+}
+
+/**
+ * Validate CLI arguments and return unknown flags.
+ */
+function getUnknownFlags(args: string[]): string[] {
+	return args.filter(
+		(arg) => arg.startsWith("--") && !ACCEPTED_FLAGS.includes(arg as typeof ACCEPTED_FLAGS[number]),
+	);
+}
+
 /**
  * Run the CLI for a dev environment.
- * Handles common flags like --down, --reset, --up-only, --migrate, --seed, --lint.
+ * Handles common flags like --down, --reset, --up-only, --migrate, --seed.
  *
  * @example
  * ```typescript
@@ -38,23 +80,39 @@ export async function runCli<
 		devServersCommand,
 	} = options;
 
-	// Log environment info
-	env.logInfo();
+	// Handle --help
+	if (args.includes("--help")) {
+		printHelp();
+		process.exit(0);
+	}
 
-	// Handle --down
+	// Validate flags
+	const unknownFlags = getUnknownFlags(args);
+	if (unknownFlags.length > 0) {
+		console.error(`❌ Unknown flag${unknownFlags.length > 1 ? "s" : ""}: ${unknownFlags.join(", ")}`);
+		console.error("");
+		printHelp();
+		process.exit(1);
+	}
+
+	// Handle --down (no need to start anything)
 	if (args.includes("--down")) {
+		env.logInfo();
 		await env.stop();
 		process.exit(0);
 	}
 
-	// Handle --reset
+	// Handle --reset (no need to start anything)
 	if (args.includes("--reset")) {
+		env.logInfo();
 		await env.stop({ removeVolumes: true });
 		process.exit(0);
 	}
 
-	// All other paths need containers + migrations + seeding
-	await env.start({ startServers: false, wait: true });
+	// All other paths need containers + migrations
+	// Skip automatic seeding when --seed flag is used (CLI handles it explicitly)
+	const skipSeed = args.includes("--seed");
+	await env.start({ startServers: false, wait: true, skipSeed });
 
 	// Handle --migrate (exit after migrations)
 	if (args.includes("--migrate")) {
