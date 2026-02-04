@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { createDevEnvironment } from "./environment";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "./types";
 
@@ -6,12 +7,40 @@ import type { AppConfig, DevEnvironment, ServiceConfig } from "./types";
 // Config Loader
 // ═══════════════════════════════════════════════════════════════════════════
 
-const CONFIG_FILES = [
+export const CONFIG_FILES = [
 	"dev.config.ts",
 	"dev.config.js",
 	"dev-tools.config.ts",
 	"dev-tools.config.js",
 ];
+
+/**
+ * Find a config file by traversing up from the starting directory.
+ * Returns the full path to the config file, or null if not found.
+ */
+export function findConfigFile(startDir: string): string | null {
+	let currentDir = startDir;
+
+	while (true) {
+		// Check for any config file in the current directory
+		for (const file of CONFIG_FILES) {
+			const configPath = join(currentDir, file);
+			if (existsSync(configPath)) {
+				return configPath;
+			}
+		}
+
+		// Move to parent directory
+		const parentDir = dirname(currentDir);
+
+		// Stop if we've reached the root (parent equals current)
+		if (parentDir === currentDir) {
+			return null;
+		}
+
+		currentDir = parentDir;
+	}
+}
 
 let cachedEnv: DevEnvironment<
 	Record<string, ServiceConfig>,
@@ -44,24 +73,20 @@ export async function loadDevEnv(options?: {
 	}
 
 	const cwd = options?.cwd ?? process.cwd();
+	const configPath = findConfigFile(cwd);
 
-	for (const file of CONFIG_FILES) {
-		const path = `${cwd}/${file}`;
-		const exists = existsSync(path);
+	if (configPath) {
+		const mod = await import(configPath);
+		const config = mod.default;
 
-		if (exists) {
-			const mod = await import(path);
-			const config = mod.default;
-
-			if (!config?.projectPrefix || !config?.services) {
-				throw new Error(
-					`Invalid config in "${file}". Use defineDevConfig() and export as default.`,
-				);
-			}
-
-			cachedEnv = createDevEnvironment(config);
-			return cachedEnv;
+		if (!config?.projectPrefix || !config?.services) {
+			throw new Error(
+				`Invalid config in "${configPath}". Use defineDevConfig() and export as default.`,
+			);
 		}
+
+		cachedEnv = createDevEnvironment(config);
+		return cachedEnv;
 	}
 
 	throw new Error(

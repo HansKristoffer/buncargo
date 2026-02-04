@@ -11,94 +11,19 @@
  *   bunx buncargo help          # Show help
  */
 
-import { existsSync } from "node:fs";
 import { runCli } from "./cli";
-import { createDevEnvironment } from "./environment";
-import type { AppConfig, DevEnvironment, ServiceConfig } from "./types";
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Config Discovery
-// ═══════════════════════════════════════════════════════════════════════════
-
-const CONFIG_FILES = [
-	"dev.config.ts",
-	"dev.config.js",
-	"dev-tools.config.ts",
-	"dev-tools.config.js",
-];
+import { loadDevEnv } from "./loader";
 
 /**
- * Find and load the dev config file from the current directory.
- * Returns the DevEnvironment created from the config.
+ * Load the dev environment with CLI-friendly error output.
  */
-async function loadEnv(): Promise<
-	DevEnvironment<Record<string, ServiceConfig>, Record<string, AppConfig>>
-> {
-	const cwd = process.cwd();
-
-	for (const file of CONFIG_FILES) {
-		const path = `${cwd}/${file}`;
-		const exists = existsSync(path);
-
-		if (exists) {
-			try {
-				const mod = await import(path);
-				const config = mod.default;
-
-				if (!config) {
-					console.error(
-						`❌ Config file "${file}" found but no default export.`,
-					);
-					console.error("");
-					console.error("   Export your config as default:");
-					console.error("");
-					console.error("   import { defineDevConfig } from 'buncargo'");
-					console.error("");
-					console.error("   export default defineDevConfig({ ... })");
-					process.exit(1);
-				}
-
-				// Validate it looks like a config
-				if (!config.projectPrefix || !config.services) {
-					console.error(`❌ Config file "${file}" is not a valid dev config.`);
-					console.error("");
-					console.error("   Make sure to use defineDevConfig:");
-					console.error("");
-					console.error("   export default defineDevConfig({");
-					console.error("     projectPrefix: 'myapp',");
-					console.error("     services: { ... }");
-					console.error("   })");
-					process.exit(1);
-				}
-
-				// Create environment from config
-				return createDevEnvironment(config);
-			} catch (error) {
-				console.error(`❌ Failed to load config file "${file}":`);
-				console.error(error);
-				process.exit(1);
-			}
-		}
+async function loadEnv() {
+	try {
+		return await loadDevEnv();
+	} catch (error) {
+		console.error(`❌ ${error instanceof Error ? error.message : error}`);
+		process.exit(1);
 	}
-
-	console.error("❌ No config file found.");
-	console.error("");
-	console.error("   Create a dev.config.ts file in your project root:");
-	console.error("");
-	console.error("   import { defineDevConfig } from 'buncargo'");
-	console.error("");
-	console.error("   export default defineDevConfig({");
-	console.error("     projectPrefix: 'myapp',");
-	console.error("     services: {");
-	console.error('       postgres: { port: 5432, healthCheck: "pg_isready" }');
-	console.error("     }");
-	console.error("   })");
-	console.error("");
-	console.error("   Supported config files:");
-	for (const file of CONFIG_FILES) {
-		console.error(`     - ${file}`);
-	}
-	process.exit(1);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
