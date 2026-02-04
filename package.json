@@ -1,83 +1,113 @@
 {
 	"name": "devbunestra",
 	"version": "1.0.0",
-	"private": true,
+	"description": "A Bun-powered development environment CLI for managing Docker Compose services, dev servers, and environment variables",
 	"type": "module",
 	"module": "index.ts",
 	"main": "index.ts",
-	"types": "index.ts",
+	"types": "dist/index.d.ts",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kristofferhansen/devbunestra.git"
+	},
+	"author": "Kristoffer Hansen",
+	"keywords": [
+		"bun",
+		"dev-tools",
+		"docker",
+		"docker-compose",
+		"development",
+		"cli",
+		"monorepo",
+		"dev-server",
+		"environment"
+	],
+	"engines": {
+		"bun": ">=1.0.0"
+	},
+	"files": [
+		"*.ts",
+		"core/*.ts",
+		"dist",
+		"!*.test.ts",
+		"!core/*.test.ts"
+	],
 	"bin": {
-		"dev-tools": "./bin.ts",
-		"devbunestra": "./bin.ts"
+		"dev-tools": "bin.ts",
+		"devbunestra": "bin.ts"
 	},
 	"exports": {
 		".": {
-			"types": "./index.ts",
+			"types": "./dist/index.d.ts",
 			"bun": "./index.ts",
 			"default": "./index.ts"
 		},
 		"./types": {
-			"types": "./types.ts",
+			"types": "./dist/types.d.ts",
 			"bun": "./types.ts",
 			"default": "./types.ts"
 		},
 		"./config": {
-			"types": "./config.ts",
+			"types": "./dist/config.d.ts",
 			"bun": "./config.ts",
 			"default": "./config.ts"
 		},
 		"./environment": {
-			"types": "./environment.ts",
+			"types": "./dist/environment.d.ts",
 			"bun": "./environment.ts",
 			"default": "./environment.ts"
 		},
 		"./core/ports": {
-			"types": "./core/ports.ts",
+			"types": "./dist/core/ports.d.ts",
 			"bun": "./core/ports.ts",
 			"default": "./core/ports.ts"
 		},
 		"./core/docker": {
-			"types": "./core/docker.ts",
+			"types": "./dist/core/docker.d.ts",
 			"bun": "./core/docker.ts",
 			"default": "./core/docker.ts"
 		},
 		"./core/network": {
-			"types": "./core/network.ts",
+			"types": "./dist/core/network.d.ts",
 			"bun": "./core/network.ts",
 			"default": "./core/network.ts"
 		},
 		"./core/process": {
-			"types": "./core/process.ts",
+			"types": "./dist/core/process.d.ts",
 			"bun": "./core/process.ts",
 			"default": "./core/process.ts"
 		},
 		"./core/watchdog": {
-			"types": "./core/watchdog.ts",
+			"types": "./dist/core/watchdog.d.ts",
 			"bun": "./core/watchdog.ts",
 			"default": "./core/watchdog.ts"
 		},
 		"./core/utils": {
-			"types": "./core/utils.ts",
+			"types": "./dist/core/utils.d.ts",
 			"bun": "./core/utils.ts",
 			"default": "./core/utils.ts"
 		},
 		"./cli": {
-			"types": "./cli.ts",
+			"types": "./dist/cli.d.ts",
 			"bun": "./cli.ts",
 			"default": "./cli.ts"
 		},
 		"./lint": {
-			"types": "./lint.ts",
+			"types": "./dist/lint.d.ts",
 			"bun": "./lint.ts",
 			"default": "./lint.ts"
 		},
 		"./loader": {
-			"types": "./loader.ts",
+			"types": "./dist/loader.d.ts",
 			"bun": "./loader.ts",
 			"default": "./loader.ts"
 		}
 	},
 	"scripts": {
+		"build": "bun run build:types",
+		"build:types": "tsc -p tsconfig.build.json",
+		"prepublishOnly": "bun run build",
 		"lint": "bun run typecheck && biome check",
 		"lint:write": "bun run typecheck && biome check --fix && biome format",
 		"typecheck": "tsgo --incremental"
@@ -85,7 +115,8 @@
 	"devDependencies": {
 		"@types/bun": "1.3.2",
 		"@biomejs/biome": "2.3.4",
-		"@typescript/native-preview": "7.0.0-dev.20260127.1"
+		"@typescript/native-preview": "7.0.0-dev.20260127.1",
+		"typescript": "^5.7.0"
 	},
 	"dependencies": {
 		"picocolors": "^1.1.1"

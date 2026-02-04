@@ -1,0 +1,26 @@
+# Test files
+*.test.ts
+core/*.test.ts
+
+# Build artifacts
+tsconfig.tsbuildinfo
+tsconfig.build.json
+
+# IDE and OS files
+.DS_Store
+.vscode
+.idea
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# GitHub
+.github
+
+# Lock files (users will use their own)
+bun.lock
+
+# Development config
+biome.json
