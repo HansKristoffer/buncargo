@@ -1,6 +1,6 @@
 {
   "name": "buncargo",
-  "version": "1.0.27",
+  "version": "1.0.28",
   "description": "A Bun-powered development environment CLI for managing Docker Compose services, dev servers, and environment variables",
   "type": "module",
   "module": "./dist/index.js",
