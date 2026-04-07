@@ -1,9 +1,8 @@
+# Automatic publishing is disabled. Re-enable by restoring the push trigger on main.
 name: Publish to npm
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
   publish:
