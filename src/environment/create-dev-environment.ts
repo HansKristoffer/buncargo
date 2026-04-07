@@ -12,6 +12,12 @@ import {
 	startDevServers,
 	stopProcess as stopProcessFn,
 } from "../core/process";
+import {
+	type PublicTunnel,
+	resolveExposeTargets,
+	startPublicTunnels,
+	stopPublicTunnels,
+} from "../core/tunnel";
 import { isCI as isCIEnv, logExpoApiUrl, logFrontendPort } from "../core/utils";
 import {
 	spawnWatchdog as spawnWatchdogFn,
@@ -36,15 +42,19 @@ import type {
 	ComputedUrls,
 	DevConfig,
 	DevEnvironment,
+	DevEnvironmentTunnelLog,
 	DevServerPids,
 	ExecOptions,
 	HookContext,
+	OpenPublicTunnelsOptions,
+	OpenPublicTunnelsResult,
 	PrismaRunner,
 	ServiceConfig,
 	StartOptions,
 	StopOptions,
 } from "../types";
 import { logEnvironmentInfo } from "./logging";
+import { assertOnlyAppNames, pickApps } from "./only-apps";
 import { createCheckTableHelper, createSeedCheckContext } from "./seeding";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -213,13 +223,18 @@ export function createDevEnvironment<
 			startServers: shouldStartServers = true,
 			productionBuild = isCI,
 			skipSeed = false,
+			skipEnvironmentLog = false,
+			onlyApps,
 		} = startOptions;
+
+		assertOnlyAppNames(Object.keys(apps), onlyApps);
+		const appsToStart = pickApps(apps, onlyApps);
 
 		const envVars = buildEnvVars(productionBuild);
 		ensureComposeFile();
 
 		// Log environment info
-		if (verbose) {
+		if (verbose && !skipEnvironmentLog) {
 			logInfo(productionBuild ? "Production Environment" : "Dev Environment");
 		}
 
@@ -330,7 +345,7 @@ export function createDevEnvironment<
 		}
 
 		// Start servers if requested
-		if (shouldStartServers && Object.keys(apps).length > 0) {
+		if (shouldStartServers && Object.keys(appsToStart).length > 0) {
 			// Run beforeServers hook
 			if (config.hooks?.beforeServers) {
 				await config.hooks.beforeServers(getHookContext());
@@ -338,11 +353,11 @@ export function createDevEnvironment<
 
 			// Build if production
 			if (productionBuild) {
-				buildApps(apps, root, envVars, { verbose });
+				buildApps(appsToStart, root, envVars, { verbose });
 			}
 
 			// Start servers
-			const pids = await startDevServers(apps, root, envVars, ports, {
+			const pids = await startDevServers(appsToStart, root, envVars, ports, {
 				verbose,
 				productionBuild,
 				isCI,
@@ -350,7 +365,7 @@ export function createDevEnvironment<
 
 			// Wait for servers to be ready
 			if (verbose) console.log("⏳ Waiting for servers to be ready...");
-			await waitForDevServers(apps, ports, {
+			await waitForDevServers(appsToStart, ports, {
 				timeout: isCI ? 120000 : 60000,
 				verbose,
 				productionBuild,
@@ -400,36 +415,129 @@ export function createDevEnvironment<
 	// ─────────────────────────────────────────────────────────────────────────
 
 	async function startServersOnly(
-		options: { productionBuild?: boolean; verbose?: boolean } = {},
+		options: {
+			productionBuild?: boolean;
+			verbose?: boolean;
+			onlyApps?: string[];
+		} = {},
 	): Promise<DevServerPids> {
-		const { productionBuild = false, verbose = true } = options;
+		const { productionBuild = false, verbose = true, onlyApps } = options;
+		assertOnlyAppNames(Object.keys(apps), onlyApps);
+		const appsToStart = pickApps(apps, onlyApps);
 		const envVars = buildEnvVars(productionBuild);
 		const isCI = process.env.CI === "true";
 
-		// Build if production
-		if (productionBuild) {
-			buildApps(apps, root, envVars, { verbose });
+		if (Object.keys(appsToStart).length === 0) {
+			return {};
 		}
 
-		return startDevServers(apps, root, envVars, ports, {
+		// Build if production
+		if (productionBuild) {
+			buildApps(appsToStart, root, envVars, { verbose });
+		}
+
+		const pids = await startDevServers(appsToStart, root, envVars, ports, {
 			verbose,
 			productionBuild,
 			isCI,
 		});
+
+		if (verbose) console.log("⏳ Waiting for servers to be ready...");
+		await waitForDevServers(appsToStart, ports, {
+			timeout: isCI ? 120000 : 60000,
+			verbose,
+			productionBuild,
+		});
+
+		return pids;
 	}
 
 	async function waitForServersReady(
-		options: { timeout?: number; productionBuild?: boolean } = {},
+		options: {
+			timeout?: number;
+			productionBuild?: boolean;
+			onlyApps?: string[];
+		} = {},
 	): Promise<void> {
-		const { timeout = 60000, productionBuild = false } = options;
-		await waitForDevServers(apps, ports, { timeout, productionBuild });
+		const { timeout = 60000, productionBuild = false, onlyApps } = options;
+		assertOnlyAppNames(Object.keys(apps), onlyApps);
+		const appsToWait = pickApps(apps, onlyApps);
+		await waitForDevServers(appsToWait, ports, { timeout, productionBuild });
+	}
+
+	async function openPublicTunnels(
+		options: OpenPublicTunnelsOptions = {},
+	): Promise<OpenPublicTunnelsResult<TServices, TApps>> {
+		const { names, waitForHealthy } = options;
+		const exposeList = names?.length ? names.join(",") : undefined;
+
+		if (waitForHealthy?.length) {
+			assertOnlyAppNames(Object.keys(apps), waitForHealthy);
+			const appsWait = pickApps(apps, waitForHealthy);
+			const isCI = process.env.CI === "true";
+			await waitForDevServers(appsWait, ports, {
+				timeout: isCI ? 120000 : 60000,
+				verbose: config.options?.verbose ?? true,
+				productionBuild: false,
+			});
+		}
+
+		const { targets, unknownNames, notEnabledNames } = resolveExposeTargets(
+			{
+				services,
+				apps,
+				ports,
+			} as DevEnvironment<TServices, TApps>,
+			exposeList,
+		);
+
+		if (unknownNames.length > 0) {
+			throw new Error(`Unknown expose target(s): ${unknownNames.join(", ")}`);
+		}
+		if (notEnabledNames.length > 0) {
+			throw new Error(
+				`Target(s) missing expose: true: ${notEnabledNames.join(", ")}`,
+			);
+		}
+		if (targets.length === 0) {
+			throw new Error(
+				"No expose targets selected. Add expose: true to services/apps or pass names that have expose: true.",
+			);
+		}
+
+		const tunnels = await startPublicTunnels(targets);
+		setPublicUrls(
+			Object.fromEntries(tunnels.map((t) => [t.name, t.publicUrl])),
+		);
+
+		let closed = false;
+		async function close(): Promise<void> {
+			if (closed) return;
+			closed = true;
+			await stopPublicTunnels(tunnels);
+			clearPublicUrls();
+		}
+
+		return {
+			publicUrls: { ...publicUrls } as ComputedPublicUrls<TServices, TApps>,
+			tunnels,
+			close,
+		};
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Utilities
 	// ─────────────────────────────────────────────────────────────────────────
 
-	function logInfo(label = "Docker Dev"): void {
+	function logInfo(label = "Docker Dev", tunnels?: PublicTunnel[]): void {
+		const tunnelRows: DevEnvironmentTunnelLog[] | undefined = tunnels?.map(
+			({ kind, name, localUrl, publicUrl }) => ({
+				kind,
+				name,
+				localUrl,
+				publicUrl,
+			}),
+		);
 		logEnvironmentInfo({
 			label,
 			projectName,
@@ -440,6 +548,7 @@ export function createDevEnvironment<
 			worktree,
 			portOffset,
 			projectSuffix,
+			tunnels: tunnelRows,
 		});
 	}
 
@@ -539,6 +648,7 @@ export function createDevEnvironment<
 		exec,
 		waitForServer: waitForServerUrl,
 		logInfo,
+		openPublicTunnels,
 
 		// Vibe Kanban Integration
 		getExpoApiUrl,

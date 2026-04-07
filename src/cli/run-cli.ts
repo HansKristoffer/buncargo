@@ -7,7 +7,6 @@ import {
 	stopPublicTunnels,
 } from "../core/tunnel";
 import { spawnWatchdog, startHeartbeat, stopHeartbeat } from "../core/watchdog";
-import { logPublicUrls } from "../environment/logging";
 import type {
 	AppConfig,
 	CliOptions,
@@ -88,14 +87,27 @@ export async function runCli<
 	TApps extends Record<string, AppConfig>,
 >(
 	env: DevEnvironment<TServices, TApps>,
-	options: CliOptions = {},
+	options: CliOptions & {
+		/** Substitute tunnel helpers (used by CLI integration tests). */
+		cliTestTunnel?: {
+			resolveExposeTargets: typeof resolveExposeTargets;
+			startPublicTunnels: typeof startPublicTunnels;
+			stopPublicTunnels: typeof stopPublicTunnels;
+		};
+	} = {},
 ): Promise<void> {
 	const {
 		args = process.argv.slice(2),
 		watchdog = true,
 		watchdogTimeout = 10,
 		devServersCommand,
+		cliTestTunnel,
 	} = options;
+	const tunnelApi = cliTestTunnel ?? {
+		resolveExposeTargets,
+		startPublicTunnels,
+		stopPublicTunnels,
+	};
 	const exposeRequested = hasFlag(args, "--expose");
 	const exposeValue = getFlagValue(args, "--expose");
 	let tunnels: PublicTunnel[] = [];
@@ -103,7 +115,7 @@ export async function runCli<
 	async function cleanupTunnels(): Promise<void> {
 		env.clearPublicUrls();
 		if (tunnels.length === 0) return;
-		await stopPublicTunnels(tunnels);
+		await tunnelApi.stopPublicTunnels(tunnels);
 		tunnels = [];
 	}
 
@@ -143,13 +155,16 @@ export async function runCli<
 	// All other paths need containers + migrations
 	// Skip automatic seeding when --seed flag is used (CLI handles it explicitly)
 	const skipSeed = args.includes("--seed");
-	await env.start({ startServers: false, wait: true, skipSeed });
+	await env.start({
+		startServers: false,
+		wait: true,
+		skipSeed,
+		skipEnvironmentLog: exposeRequested,
+	});
 
 	if (exposeRequested) {
-		const { targets, unknownNames, notEnabledNames } = resolveExposeTargets(
-			env,
-			exposeValue,
-		);
+		const { targets, unknownNames, notEnabledNames } =
+			tunnelApi.resolveExposeTargets(env, exposeValue);
 		if (unknownNames.length > 0) {
 			console.error(
 				`❌ Unknown expose target${unknownNames.length > 1 ? "s" : ""}: ${unknownNames.join(", ")}`,
@@ -175,13 +190,13 @@ export async function runCli<
 			process.exit(1);
 		}
 
-		tunnels = await startPublicTunnels(targets);
+		tunnels = await tunnelApi.startPublicTunnels(targets);
 		env.setPublicUrls(
 			Object.fromEntries(
 				tunnels.map((tunnel) => [tunnel.name, tunnel.publicUrl]),
 			) as typeof env.publicUrls,
 		);
-		logPublicUrls(tunnels);
+		env.logInfo("Dev Environment", tunnels);
 	}
 
 	// Handle --migrate (exit after migrations)
@@ -351,10 +366,10 @@ function runCommand(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Check if a CLI flag is present.
+ * Check if a CLI flag is present (including `--flag=value` form).
  */
 export function hasFlag(args: string[], flag: string): boolean {
-	return args.includes(flag);
+	return args.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
 }
 
 /**

@@ -499,6 +499,10 @@ export interface StartOptions {
 	suffix?: string;
 	/** Skip automatic seeding (useful when CLI handles seeding separately). Default: false */
 	skipSeed?: boolean;
+	/** Skip the initial `logInfo` banner (CLI uses this with `--expose`, then logs once with tunnel URLs). Default: false */
+	skipEnvironmentLog?: boolean;
+	/** If set, start and wait for only these app names (must exist in `apps`). */
+	onlyApps?: string[];
 }
 
 /**
@@ -520,6 +524,40 @@ export interface StopOptions {
  */
 export interface DevServerPids {
 	[appName: string]: number;
+}
+
+/** Tunnel rows passed to `logInfo` for public URL lines (matches `PublicTunnel` without `close`) */
+export interface DevEnvironmentTunnelLog {
+	kind: "service" | "app";
+	name: string;
+	localUrl: string;
+	publicUrl: string;
+}
+
+/** Active tunnel with teardown — same shape as core `PublicTunnel`. */
+export type PublicTunnelHandle = DevEnvironmentTunnelLog & {
+	close: () => Promise<void>;
+};
+
+/** Options for {@link DevEnvironment.openPublicTunnels}. */
+export interface OpenPublicTunnelsOptions {
+	/** Subset of expose targets by name; omit for all `expose: true` services/apps. */
+	names?: string[];
+	/**
+	 * Wait for these apps' HTTP health endpoints before opening tunnels.
+	 * Servers must already be listening on their ports.
+	 */
+	waitForHealthy?: string[];
+}
+
+/** Result of {@link DevEnvironment.openPublicTunnels}. */
+export interface OpenPublicTunnelsResult<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+> {
+	publicUrls: ComputedPublicUrls<TServices, TApps>;
+	tunnels: PublicTunnelHandle[];
+	close: () => Promise<void>;
 }
 
 /**
@@ -577,6 +615,8 @@ export interface DevEnvironment<
 	startServers(options?: {
 		productionBuild?: boolean;
 		verbose?: boolean;
+		/** If set, start and wait for only these app names (must exist in `apps`). */
+		onlyApps?: string[];
 	}): Promise<DevServerPids>;
 	/** Stop a process by PID */
 	stopProcess(pid: number): void;
@@ -584,13 +624,18 @@ export interface DevEnvironment<
 	waitForServers(options?: {
 		timeout?: number;
 		productionBuild?: boolean;
+		/** If set, wait only for these app names (must exist in `apps`). */
+		onlyApps?: string[];
 	}): Promise<void>;
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Utilities
 	// ─────────────────────────────────────────────────────────────────────────
 
-	/** Build environment variables for shell commands */
+	/**
+	 * Build environment variables for shell commands.
+	 * Call **after** {@link setPublicUrls} or {@link openPublicTunnels} so `envVars` and `*_PUBLIC_URL` reflect tunnel URLs.
+	 */
 	buildEnvVars(production?: boolean): Record<string, string>;
 	/** Set public tunnel URLs used by envVars and *_PUBLIC_URL injection */
 	setPublicUrls(urls: ComputedPublicUrls<TServices, TApps>): void;
@@ -605,8 +650,16 @@ export interface DevEnvironment<
 	): Promise<{ exitCode: number; stdout: string; stderr: string }>;
 	/** Wait for an HTTP server to respond */
 	waitForServer(url: string, timeout?: number): Promise<void>;
-	/** Log environment info to console */
-	logInfo(label?: string): void;
+	/** Log environment info to console; pass `tunnels` to show public URLs next to services/apps */
+	logInfo(label?: string, tunnels?: DevEnvironmentTunnelLog[]): void;
+
+	/**
+	 * Resolve expose targets, start public quick tunnels, and apply {@link setPublicUrls}.
+	 * Call {@link buildEnvVars} after this resolves when spawning processes that need `EXPO_PUBLIC_*` / `*_PUBLIC_URL`.
+	 */
+	openPublicTunnels(
+		options?: OpenPublicTunnelsOptions,
+	): Promise<OpenPublicTunnelsResult<TServices, TApps>>;
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Vibe Kanban Integration

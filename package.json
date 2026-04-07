@@ -131,7 +131,10 @@
     "publish:major": "npm version major && npm publish",
     "lint": "bun run typecheck && biome check src example",
     "lint:write": "bun run typecheck && biome check --fix src example && biome format src example",
-    "typecheck": "tsgo --incremental"
+    "typecheck": "tsgo --incremental",
+    "test": "bun test",
+    "test:integration-cloudflared": "bun test src/core/quick-tunnel/quick-tunnel.test.ts",
+    "test:integration-cloudflared-e2e": "BUNCARGO_TEST_CLOUDFLARED_E2E=1 bun test src/core/quick-tunnel/quick-tunnel.test.ts"
   },
   "devDependencies": {
     "@types/bun": "1.3.2",
@@ -141,7 +144,6 @@
   },
   "dependencies": {
     "fast-glob": "^3.3.3",
-    "picocolors": "^1.1.1",
-    "untun": "^0.1.3"
+    "picocolors": "^1.1.1"
   }
 }

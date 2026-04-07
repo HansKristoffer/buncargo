@@ -14,6 +14,21 @@ function formatDimLabel(label: string, value: string): string {
 	return `  ${pc.dim("•")}  ${pc.dim(label.padEnd(10))} ${pc.dim(value)}`;
 }
 
+function tunnelFor(
+	tunnels:
+		| Array<{
+				kind: "service" | "app";
+				name: string;
+				publicUrl: string;
+				localUrl: string;
+		  }>
+		| undefined,
+	name: string,
+	kind: "service" | "app",
+) {
+	return tunnels?.find((t) => t.name === name && t.kind === kind);
+}
+
 export function logEnvironmentInfo(input: {
 	label: string;
 	projectName: string;
@@ -24,6 +39,12 @@ export function logEnvironmentInfo(input: {
 	worktree: boolean;
 	portOffset: number;
 	projectSuffix?: string;
+	tunnels?: Array<{
+		kind: "service" | "app";
+		name: string;
+		publicUrl: string;
+		localUrl: string;
+	}>;
 }): void {
 	const {
 		label,
@@ -35,6 +56,7 @@ export function logEnvironmentInfo(input: {
 		worktree,
 		portOffset,
 		projectSuffix,
+		tunnels,
 	} = input;
 	const serviceNames = Object.keys(services);
 	const appNames = Object.keys(apps);
@@ -50,6 +72,12 @@ export function logEnvironmentInfo(input: {
 			const port = ports[name];
 			const url = `localhost:${port}`;
 			console.log(formatLabel(`${name}:`, formatUrl(`http://${url}`)));
+			const t = tunnelFor(tunnels, name, "service");
+			if (t) {
+				console.log(
+					`       ${pc.dim("Public:")}  ${formatUrl(t.publicUrl)} ${pc.dim("(tunnel)")}`,
+				);
+			}
 		}
 	}
 
@@ -64,6 +92,12 @@ export function logEnvironmentInfo(input: {
 			console.log(`  ${pc.green("➜")}  ${pc.bold(pc.cyan(name))}`);
 			console.log(`       ${pc.dim("Local:")}   ${formatUrl(localUrl)}`);
 			console.log(`       ${pc.dim("Network:")} ${formatUrl(networkUrl)}`);
+			const t = tunnelFor(tunnels, name, "app");
+			if (t) {
+				console.log(
+					`       ${pc.dim("Public:")}  ${formatUrl(t.publicUrl)} ${pc.dim("(tunnel)")}`,
+				);
+			}
 		}
 	}
 
@@ -77,25 +111,5 @@ export function logEnvironmentInfo(input: {
 		console.log(formatDimLabel("Suffix:", projectSuffix));
 	}
 	console.log(formatDimLabel("Local IP:", localIp));
-	console.log("");
-}
-
-export function logPublicUrls(
-	tunnels: Array<{
-		kind: "service" | "app";
-		name: string;
-		publicUrl: string;
-		localUrl: string;
-	}>,
-): void {
-	if (tunnels.length === 0) return;
-
-	console.log("");
-	console.log(`  ${pc.dim("─── Public URLs (Quick Tunnel) ───")}`);
-	for (const tunnel of tunnels) {
-		const label = `${tunnel.name} (${tunnel.kind})`;
-		console.log(formatLabel(`${label}:`, formatUrl(tunnel.publicUrl), "🌐"));
-		console.log(formatDimLabel("Local target:", tunnel.localUrl));
-	}
 	console.log("");
 }

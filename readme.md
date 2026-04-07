@@ -179,6 +179,8 @@ apps: {
 }
 ```
 
+Use `onlyApps` on `start()` or `startServers()` to launch and wait for only those named apps (same env injection and health checks as when all apps run).
+
 ## Environment Variables
 
 The `envVars` function builds all env vars from computed ports and URLs:
@@ -192,6 +194,14 @@ envVars: (ports, urls, { localIp, publicUrls }) => ({
   WEBHOOK_URL: publicUrls.api ?? urls.api,
 })
 ```
+
+`buildEnvVars()` always includes, for each service/app name `foo`:
+
+- `FOO_PORT` — assigned port
+- `FOO_URL` — local URL (LAN)
+- `FOO_PUBLIC_URL` — only while a public tunnel is active for that name
+
+Your `envVars` callback receives `publicUrls` and typically maps client bundles, e.g. `EXPO_PUBLIC_API_URL: publicUrls.api ?? urls.api`.
 
 These are injected into:
 - Docker Compose services
@@ -245,6 +255,12 @@ envVars: (_ports, urls, { publicUrls }) => ({
   WEBHOOK_URL: publicUrls.api ?? urls.api,
 })
 ```
+
+**CLI vs programmatic ordering:** `bunx buncargo dev --expose` starts Cloudflare quick tunnels after containers and migrations but **before** the interactive dev-server command (e.g. `concurrently`) runs. Until those servers are listening on their ports, tunnel traffic can briefly error. For “servers first, then public URLs,” use the API: e.g. `await dev.startServers({ onlyApps: ['api', 'platform'] })`, then `await dev.openPublicTunnels({ waitForHealthy: ['api', 'platform'] })` (optional; waits HTTP health first), then read `dev.buildEnvVars()` for spawned children.
+
+**Expo hybrid:** buncargo is suited to exposing **API** and **platform** (Vite, etc.) for devices on cellular. **Metro** often uses Expo’s own tunnel (`expo start --tunnel`); you usually do **not** add Metro as a buncargo `app` unless you want buncargo to start it. Wire `EXPO_PUBLIC_*` from `publicUrls.* ?? urls.*` in `envVars`.
+
+**Programmatic helper:** `openPublicTunnels({ names?, waitForHealthy? })` applies tunnel URLs via `setPublicUrls` and returns `close()` to stop tunnels and clear public URLs. Call `buildEnvVars()` after `openPublicTunnels` resolves so `envVars` and `*_PUBLIC_URL` see the tunnel origins.
 
 ## Lifecycle Hooks
 

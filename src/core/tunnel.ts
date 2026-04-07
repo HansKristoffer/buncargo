@@ -1,5 +1,5 @@
-import { startTunnel } from "untun";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
+import { startQuickTunnel } from "./quick-tunnel";
 
 export interface PublicExposeTarget {
 	kind: "service" | "app";
@@ -15,7 +15,8 @@ export interface PublicTunnel {
 	close: () => Promise<void>;
 }
 
-interface UntunTunnelLike {
+interface TunnelBackendResult {
+	getURL?: () => Promise<string>;
 	url?: string;
 	publicUrl?: string;
 	tunnelUrl?: string;
@@ -33,11 +34,17 @@ function parseExposeNames(exposeValue?: string): Set<string> | null {
 	return new Set(names);
 }
 
-function asPublicUrl(tunnel: UntunTunnelLike): string | null {
+/** Resolves public origin from tunnel backends (sync fields or untun-style async getURL). */
+async function resolvePublicUrl(
+	tunnel: TunnelBackendResult,
+): Promise<string | null> {
+	if (typeof tunnel.getURL === "function") {
+		return await tunnel.getURL();
+	}
 	return tunnel.url ?? tunnel.publicUrl ?? tunnel.tunnelUrl ?? null;
 }
 
-function toCloseFn(tunnel: UntunTunnelLike): () => Promise<void> {
+function toCloseFn(tunnel: TunnelBackendResult): () => Promise<void> {
 	const close = tunnel.close ?? tunnel.stop ?? tunnel.destroy;
 	if (!close) return async () => {};
 	return async () => {
@@ -111,10 +118,12 @@ export function resolveExposeTargets<
 export async function startPublicTunnels(
 	targets: PublicExposeTarget[],
 	options: {
-		start?: (input: { url: string }) => Promise<UntunTunnelLike>;
+		start?: (input: {
+			url: string;
+		}) => Promise<TunnelBackendResult | undefined>;
 	} = {},
 ): Promise<PublicTunnel[]> {
-	const start = options.start ?? ((input) => startTunnel(input));
+	const start = options.start ?? ((input) => startQuickTunnel(input));
 	const tunnels: PublicTunnel[] = [];
 
 	try {
@@ -122,8 +131,13 @@ export async function startPublicTunnels(
 			const localUrl = `http://localhost:${target.port}`;
 			const tunnel = (await start({
 				url: localUrl,
-			})) as UntunTunnelLike;
-			const publicUrl = asPublicUrl(tunnel);
+			})) as TunnelBackendResult | undefined;
+			if (tunnel === undefined) {
+				throw new Error(
+					`Tunnel for "${target.name}" could not be started (cloudflared missing or install declined)`,
+				);
+			}
+			const publicUrl = await resolvePublicUrl(tunnel);
 			if (!publicUrl) {
 				throw new Error(
 					`Tunnel for "${target.name}" did not provide a public URL`,

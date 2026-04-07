@@ -98,3 +98,18 @@ If relevant, also run:
 4. `bun run lint`
 
 Do not leave the repo in a state where build/tests fail.
+
+## Cloudflared tests (co-located)
+
+- **[`src/cli/run-cli.test.ts`](src/cli/run-cli.test.ts)** — `runCli expose routing`: stub `DevEnvironment` and `cliTestTunnel` assert `startPublicTunnels` runs only when `--expose` is present (no cloudflared).
+- **[`src/core/quick-tunnel/quick-tunnel.test.ts`](src/core/quick-tunnel/quick-tunnel.test.ts)** — **Smoke** (public HTTPS URL from `getURL()`) runs with default `bun test`: needs **network**; first run may download `cloudflared` (tests pass `acceptCloudflareNotice`). **E2E** (curl through `*.trycloudflare.com`) is **skipped** unless `BUNCARGO_TEST_CLOUDFLARED_E2E=1` — routing/DNS are unreliable on some networks and in sandboxes.
+
+Convenience scripts (only that file):
+
+```bash
+bun test src/core/quick-tunnel/quick-tunnel.test.ts
+# include E2E:
+bun run test:integration-cloudflared-e2e
+```
+
+GitHub Actions: [`.github/workflows/integration-cloudflared.yml`](.github/workflows/integration-cloudflared.yml) is **workflow_dispatch** only (manual run from the Actions tab); sets `BUNCARGO_TEST_CLOUDFLARED_E2E=1` for the full suite.

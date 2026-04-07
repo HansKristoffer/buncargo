@@ -73,6 +73,36 @@ describe("public tunnel lifecycle", () => {
 		expect(tunnels[0]?.publicUrl).toContain("https://public.example.com");
 	});
 
+	it("resolves public URL from getURL when present", async () => {
+		const tunnels = await startPublicTunnels(
+			[{ kind: "app", name: "api", port: 3000 }],
+			{
+				start: async ({ url }) => ({
+					getURL: async () =>
+						`https://geturl.example.com?t=${encodeURIComponent(url)}`,
+					close: async () => {},
+				}),
+			},
+		);
+
+		expect(tunnels).toHaveLength(1);
+		expect(tunnels[0]?.publicUrl).toContain("https://geturl.example.com");
+		expect(tunnels[0]?.publicUrl).toContain(
+			encodeURIComponent("http://localhost:3000"),
+		);
+	});
+
+	it("rejects empty getURL result", async () => {
+		await expect(
+			startPublicTunnels([{ kind: "app", name: "api", port: 3000 }], {
+				start: async () => ({
+					getURL: async () => "",
+					close: async () => {},
+				}),
+			}),
+		).rejects.toThrow("did not provide a public URL");
+	});
+
 	it("closes already-started tunnels when a later start fails", async () => {
 		let closeCalls = 0;
 		await expect(

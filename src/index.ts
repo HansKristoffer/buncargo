@@ -65,9 +65,12 @@ export type {
 	HookContext,
 	// Migrations & Seed
 	MigrationConfig,
+	OpenPublicTunnelsOptions,
+	OpenPublicTunnelsResult,
 	// Prisma
 	PrismaConfig,
 	PrismaRunner,
+	PublicTunnelHandle,
 	SeedCheckContext,
 	SeedCheckHelpers,
 	SeedConfig,

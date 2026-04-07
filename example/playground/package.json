@@ -1,0 +1,17 @@
+{
+	"name": "buncargo-playground",
+	"private": true,
+	"type": "module",
+	"workspaces": [
+		"apps/*"
+	],
+	"scripts": {
+		"dev": "bunx buncargo dev",
+		"dev:up": "bunx buncargo dev --up-only",
+		"dev:down": "bunx buncargo dev --down"
+	},
+	"devDependencies": {
+		"buncargo": "file:../..",
+		"concurrently": "^9.1.0"
+	}
+}
