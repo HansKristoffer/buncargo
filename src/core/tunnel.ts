@@ -124,10 +124,9 @@ export async function startPublicTunnels(
 	} = {},
 ): Promise<PublicTunnel[]> {
 	const start = options.start ?? ((input) => startQuickTunnel(input));
-	const tunnels: PublicTunnel[] = [];
 
-	try {
-		for (const target of targets) {
+	const settled = await Promise.allSettled(
+		targets.map(async (target) => {
 			const localUrl = `http://localhost:${target.port}`;
 			const tunnel = (await start({
 				url: localUrl,
@@ -143,19 +142,32 @@ export async function startPublicTunnels(
 					`Tunnel for "${target.name}" did not provide a public URL`,
 				);
 			}
-			tunnels.push({
+			return {
 				kind: target.kind,
 				name: target.name,
 				localUrl,
 				publicUrl,
 				close: toCloseFn(tunnel),
-			});
+			};
+		}),
+	);
+
+	const tunnels: PublicTunnel[] = [];
+	const errors: unknown[] = [];
+	for (const result of settled) {
+		if (result.status === "fulfilled") {
+			tunnels.push(result.value);
+		} else {
+			errors.push(result.reason);
 		}
-		return tunnels;
-	} catch (error) {
-		await stopPublicTunnels(tunnels);
-		throw error;
 	}
+
+	if (errors.length > 0) {
+		await stopPublicTunnels(tunnels);
+		throw errors[0];
+	}
+
+	return tunnels;
 }
 
 export async function stopPublicTunnels(
