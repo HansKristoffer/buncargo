@@ -1,6 +1,6 @@
 /**
  * Real cloudflared quick tunnel (same file as this module). Requires network; may download
- * cloudflared on first run when `acceptCloudflareNotice` is true.
+ * cloudflared on first run if missing.
  *
  * Smoke and E2E are **opt-in** (Cloudflare may rate-limit `api.trycloudflare.com`; default
  * `bun test` stays offline-friendly). Run `bun run test:integration-cloudflared` or set
@@ -53,7 +53,7 @@ async function curlPublicUrlWhenReady(publicUrl: string): Promise<string> {
 async function startLocalServerAndTunnel(): Promise<{
 	server: ReturnType<typeof Bun.serve>;
 	localUrl: string;
-	tunnel: NonNullable<Awaited<ReturnType<typeof startQuickTunnel>>>;
+	tunnel: Awaited<ReturnType<typeof startQuickTunnel>>;
 	publicUrl: string;
 }> {
 	const server = Bun.serve({
@@ -68,16 +68,7 @@ async function startLocalServerAndTunnel(): Promise<{
 	const localCheck = await fetch(localUrl);
 	expect(localCheck.ok).toBe(true);
 
-	const tunnel = await startQuickTunnel({
-		url: localUrl,
-		acceptCloudflareNotice: true,
-	});
-
-	if (tunnel === undefined) {
-		throw new Error(
-			"startQuickTunnel returned undefined (cloudflared missing or install declined)",
-		);
-	}
+	const tunnel = await startQuickTunnel({ url: localUrl });
 
 	const publicUrl = await tunnel.getURL();
 	expect(publicUrl).toMatch(/^https:\/\//);

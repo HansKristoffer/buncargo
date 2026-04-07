@@ -83,11 +83,7 @@ bun run dev -- --expose       # tunnel all expose:true targets (here: api)
 bun run dev -- --expose=api   # tunnel only api
 ```
 
-On first run, `cloudflared` may be downloaded; non-interactive installs:
-
-```bash
-BUNCARGO_ACCEPT_CLOUDFLARE_NOTICE=1 bun run dev -- --expose=api
-```
+On first run, `cloudflared` may be downloaded if it is not already cached.
 
 See `example/AGENTS.md` in the parent folder for details.
 

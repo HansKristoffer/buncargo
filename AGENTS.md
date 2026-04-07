@@ -102,7 +102,7 @@ Do not leave the repo in a state where build/tests fail.
 ## Cloudflared tests (co-located)
 
 - **[`src/cli/run-cli.test.ts`](src/cli/run-cli.test.ts)** — `runCli expose routing`: stub `DevEnvironment` and `cliTestTunnel` assert `startPublicTunnels` runs only when `--expose` is present (no cloudflared).
-- **[`src/core/quick-tunnel/quick-tunnel.test.ts`](src/core/quick-tunnel/quick-tunnel.test.ts)** — **Smoke** (public HTTPS URL from `getURL()`) and **E2E** (curl through `*.trycloudflare.com`) are **opt-in**: Cloudflare quick-tunnel may **429** rate-limit; default `bun test` skips them. Set `BUNCARGO_TEST_CLOUDFLARED_SMOKE=1` for smoke; add `BUNCARGO_TEST_CLOUDFLARED_E2E=1` for E2E. First run may download `cloudflared` (tests pass `acceptCloudflareNotice`).
+- **[`src/core/quick-tunnel/quick-tunnel.test.ts`](src/core/quick-tunnel/quick-tunnel.test.ts)** — **Smoke** (public HTTPS URL from `getURL()`) and **E2E** (curl through `*.trycloudflare.com`) are **opt-in**: Cloudflare quick-tunnel may **429** rate-limit; default `bun test` skips them. Set `BUNCARGO_TEST_CLOUDFLARED_SMOKE=1` for smoke; add `BUNCARGO_TEST_CLOUDFLARED_E2E=1` for E2E. First run may download `cloudflared` if missing.
 
 Convenience scripts (only that file):
 
@@ -113,3 +113,14 @@ bun run test:integration-cloudflared-e2e
 ```
 
 GitHub Actions: [`.github/workflows/integration-cloudflared.yml`](.github/workflows/integration-cloudflared.yml) is **workflow_dispatch** only (manual run from the Actions tab); sets `BUNCARGO_TEST_CLOUDFLARED_SMOKE=1` and `BUNCARGO_TEST_CLOUDFLARED_E2E=1`.
+
+### Expose / cloudflared (optional env)
+
+When using `bunx buncargo dev --expose` (Cloudflare quick tunnels), you can tune behavior:
+
+- **`BUNCARGO_EXPOSE_TUNNEL_STAGGER_MS`** — Milliseconds to wait between starting each exposed target (default `900`). Increase if you expose many targets and hit rate limits.
+- **`BUNCARGO_QUICK_TUNNEL_MAX_ATTEMPTS`** — Retries after transient tunnel errors (default `5`).
+- **`BUNCARGO_QUICK_TUNNEL_RETRY_BASE_MS`** — Backoff base in ms; delay is `base × attempt` between retries (default `2000`).
+- **`BUNCARGO_QUICK_TUNNEL_TIMEOUT_MS`** — Max wait for a public `*.trycloudflare.com` URL from `cloudflared` (default `30000`; set `0` to disable the timeout).
+- **`BUNCARGO_CLOUDFLARED_PATH`** — Absolute path to a `cloudflared` binary; when set, buncargo uses it and does not download into the temp cache.
+- **`CLOUDFLARED_VERSION`** — GitHub release tag for the bundled download when not using `BUNCARGO_CLOUDFLARED_PATH` (default is pinned in [`src/core/quick-tunnel/constants.ts`](src/core/quick-tunnel/constants.ts); `latest` is also supported).

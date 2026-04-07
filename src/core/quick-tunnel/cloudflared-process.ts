@@ -3,7 +3,7 @@
  * Derived from unjs/untun (MIT), originally forked from node-cloudflared.
  */
 import { type ChildProcess, spawn } from "node:child_process";
-import { cloudflaredBinPath } from "./constants";
+import { resolvedCloudflaredBinPath } from "./constants";
 
 /** Primary: ASCII box line from cloudflared (`|  https://…  |`). */
 const urlRegexPipe = /\|\s+(https?:\/\/\S+)/;
@@ -12,6 +12,16 @@ const urlRegexTryCloudflare =
 	/(https:\/\/[a-zA-Z0-9][-a-zA-Z0-9.]*\.trycloudflare\.com)\b/;
 
 const MAX_CAPTURED_LOG = 24_000;
+
+/** Default 30s; set `BUNCARGO_QUICK_TUNNEL_TIMEOUT_MS=0` to disable. */
+export function resolveQuickTunnelUrlTimeoutMs(): number {
+	const raw = process.env.BUNCARGO_QUICK_TUNNEL_TIMEOUT_MS;
+	if (raw === undefined || raw === "") {
+		return 30_000;
+	}
+	const n = Number.parseInt(raw, 10);
+	return Number.isFinite(n) && n >= 0 ? n : 30_000;
+}
 
 export function parseQuickTunnelUrlFromOutput(log: string): string | null {
 	const pipe = log.match(urlRegexPipe);
@@ -43,7 +53,8 @@ export function startCloudflaredTunnel(
 		args.push("--url", "localhost:8080");
 	}
 
-	const child = spawn(cloudflaredBinPath, args, {
+	const binPath = resolvedCloudflaredBinPath();
+	const child = spawn(binPath, args, {
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 
@@ -55,19 +66,46 @@ export function startCloudflaredTunnel(
 	let settled = false;
 	let urlResolver!: (value: string | PromiseLike<string>) => void;
 	let urlRejector!: (reason: unknown) => void;
+	let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+	const clearUrlTimeout = () => {
+		if (timeoutId !== undefined) {
+			clearTimeout(timeoutId);
+			timeoutId = undefined;
+		}
+	};
+
 	const url = new Promise<string>((resolve, reject) => {
 		urlResolver = (v) => {
 			if (!settled) {
 				settled = true;
+				clearUrlTimeout();
 				resolve(v);
 			}
 		};
 		urlRejector = (e) => {
 			if (!settled) {
 				settled = true;
+				clearUrlTimeout();
 				reject(e);
 			}
 		};
+
+		const timeoutMs = resolveQuickTunnelUrlTimeoutMs();
+		if (timeoutMs > 0) {
+			timeoutId = setTimeout(() => {
+				try {
+					child.kill("SIGINT");
+				} catch {
+					/* ignore */
+				}
+				urlRejector(
+					new Error(
+						`quick tunnel URL timed out after ${timeoutMs}ms (no public URL from cloudflared)`,
+					),
+				);
+			}, timeoutMs);
+		}
 	});
 
 	const log: { buf: string } = { buf: "" };

@@ -150,7 +150,7 @@ export async function startPublicTunnels(
 			})) as TunnelBackendResult | undefined;
 			if (tunnel === undefined) {
 				throw new Error(
-					`Tunnel for "${target.name}" could not be started (cloudflared missing or install declined)`,
+					`Tunnel for "${target.name}" could not be started (tunnel backend returned no instance)`,
 				);
 			}
 			const publicUrl = await resolvePublicUrl(tunnel);

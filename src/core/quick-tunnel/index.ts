@@ -3,39 +3,74 @@
  * License / download flow adapted from unjs/untun (MIT).
  */
 import { existsSync } from "node:fs";
-import { createInterface } from "node:readline";
 import { sleep } from "../utils";
 import { startCloudflaredTunnel } from "./cloudflared-process";
-import { cloudflaredBinPath, cloudflaredNotice } from "./constants";
+import {
+	cloudflaredBinPath,
+	cloudflaredNotice,
+	resolvedCloudflaredBinPath,
+} from "./constants";
 import { installCloudflared } from "./install";
 
-const MAX_QUICK_TUNNEL_ATTEMPTS = 5;
+function resolveMaxQuickTunnelAttempts(): number {
+	const raw = process.env.BUNCARGO_QUICK_TUNNEL_MAX_ATTEMPTS;
+	if (raw === undefined || raw === "") {
+		return 5;
+	}
+	const n = Number.parseInt(raw, 10);
+	return Number.isFinite(n) && n >= 1 ? n : 5;
+}
 
-function isQuickTunnelRateLimitedError(message: string): boolean {
+function resolveQuickTunnelRetryBaseMs(): number {
+	const raw = process.env.BUNCARGO_QUICK_TUNNEL_RETRY_BASE_MS;
+	if (raw === undefined || raw === "") {
+		return 2000;
+	}
+	const n = Number.parseInt(raw, 10);
+	return Number.isFinite(n) && n >= 0 ? n : 2000;
+}
+
+function usesBundledCloudflaredCache(): boolean {
+	return !process.env.BUNCARGO_CLOUDFLARED_PATH?.trim();
+}
+
+/** True when trycloudflare.com is overloaded / rate-limited or returns non-JSON (cloudflared then errors on unmarshal). */
+export function isRetryableQuickTunnelError(message: string): boolean {
 	return (
 		message.includes("429") ||
 		message.includes("Too Many Requests") ||
-		message.includes('status_code="429')
+		message.includes('status_code="429') ||
+		// Plain-text "error" or HTML error pages — see cloudflare/cloudflared#972
+		message.includes("failed to unmarshal quick Tunnel") ||
+		message.includes("failed to unmarshall quick Tunnel") ||
+		message.includes("Error unmarshaling QuickTunnel") ||
+		message.includes("invalid character '<'") ||
+		message.includes("quick tunnel URL timed out")
 	);
 }
 
 async function startCloudflaredTunnelWithRetry(
 	cfArgs: Record<string, string | number | null>,
 ): Promise<ReturnType<typeof startCloudflaredTunnel>> {
-	for (let attempt = 1; attempt <= MAX_QUICK_TUNNEL_ATTEMPTS; attempt++) {
+	const maxAttempts = resolveMaxQuickTunnelAttempts();
+	const baseMs = resolveQuickTunnelRetryBaseMs();
+
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		const tunnel = startCloudflaredTunnel(cfArgs);
 		try {
 			await tunnel.url;
 			return tunnel;
 		} catch (e) {
+			try {
+				tunnel.stop();
+			} catch {
+				/* ignore */
+			}
 			const msg = String(e);
-			if (
-				attempt < MAX_QUICK_TUNNEL_ATTEMPTS &&
-				isQuickTunnelRateLimitedError(msg)
-			) {
-				const delayMs = 2000 * attempt;
+			if (attempt < maxAttempts && isRetryableQuickTunnelError(msg)) {
+				const delayMs = baseMs * attempt;
 				console.log(
-					`Cloudflare quick tunnel rate-limited (${attempt}/${MAX_QUICK_TUNNEL_ATTEMPTS}), retrying in ${delayMs}ms…`,
+					`Cloudflare quick tunnel temporarily unavailable (${attempt}/${maxAttempts}), retrying in ${delayMs}ms…`,
 				);
 				await sleep(delayMs);
 				continue;
@@ -52,7 +87,6 @@ export interface QuickTunnelOptions {
 	hostname?: string;
 	protocol?: "http" | "https";
 	verifyTLS?: boolean;
-	acceptCloudflareNotice?: boolean;
 }
 
 export interface QuickTunnel {
@@ -67,52 +101,22 @@ function resolvedLocalUrl(opts: QuickTunnelOptions): string {
 	);
 }
 
-function envAcceptsCloudflareNotice(): boolean {
-	const v = process.env.BUNCARGO_ACCEPT_CLOUDFLARE_NOTICE;
-	const u = process.env.UNTUN_ACCEPT_CLOUDFLARE_NOTICE;
-	return v === "1" || v === "true" || u === "1" || u === "true";
-}
-
-async function promptInstallCloudflared(): Promise<boolean> {
-	if (!process.stdin.isTTY || !process.stdout.isTTY) {
-		return false;
-	}
-	return new Promise((resolve) => {
-		const rl = createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		});
-		rl.question(
-			"Do you agree with the above terms and wish to install the binary from GitHub? (y/N) ",
-			(answer) => {
-				rl.close();
-				resolve(/^y(es)?$/i.test(answer.trim()));
-			},
-		);
-	});
-}
-
 /**
  * Start a Cloudflare quick tunnel to a local HTTP(S) URL.
- * Returns undefined if the user declines the cloudflared install (when binary is missing).
+ * If the cloudflared binary is missing, prints the license notice and installs it from GitHub.
  */
 export async function startQuickTunnel(
 	opts: QuickTunnelOptions,
-): Promise<QuickTunnel | undefined> {
+): Promise<QuickTunnel> {
 	const url = resolvedLocalUrl(opts);
 
 	console.log(`Starting cloudflared tunnel to ${url}`);
 
-	if (!existsSync(cloudflaredBinPath)) {
+	// Resolve path first (throws if BUNCARGO_CLOUDFLARED_PATH is invalid).
+	resolvedCloudflaredBinPath();
+
+	if (usesBundledCloudflaredCache() && !existsSync(cloudflaredBinPath)) {
 		console.log(cloudflaredNotice);
-		const canInstall =
-			opts.acceptCloudflareNotice ||
-			envAcceptsCloudflareNotice() ||
-			(await promptInstallCloudflared());
-		if (!canInstall) {
-			console.error("Skipping tunnel setup.");
-			return;
-		}
 		await installCloudflared();
 	}
 

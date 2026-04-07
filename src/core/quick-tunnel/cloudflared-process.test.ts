@@ -1,5 +1,41 @@
-import { describe, expect, it } from "bun:test";
-import { parseQuickTunnelUrlFromOutput } from "./cloudflared-process";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import {
+	parseQuickTunnelUrlFromOutput,
+	resolveQuickTunnelUrlTimeoutMs,
+} from "./cloudflared-process";
+
+const TIMEOUT_ENV = "BUNCARGO_QUICK_TUNNEL_TIMEOUT_MS";
+
+describe("resolveQuickTunnelUrlTimeoutMs", () => {
+	let prev: string | undefined;
+
+	beforeEach(() => {
+		prev = process.env[TIMEOUT_ENV];
+	});
+
+	afterEach(() => {
+		if (prev === undefined) {
+			delete process.env[TIMEOUT_ENV];
+		} else {
+			process.env[TIMEOUT_ENV] = prev;
+		}
+	});
+
+	it("defaults to 30000 when unset", () => {
+		delete process.env[TIMEOUT_ENV];
+		expect(resolveQuickTunnelUrlTimeoutMs()).toBe(30_000);
+	});
+
+	it("parses a positive integer", () => {
+		process.env[TIMEOUT_ENV] = "5000";
+		expect(resolveQuickTunnelUrlTimeoutMs()).toBe(5000);
+	});
+
+	it("allows 0 to disable timeout", () => {
+		process.env[TIMEOUT_ENV] = "0";
+		expect(resolveQuickTunnelUrlTimeoutMs()).toBe(0);
+	});
+});
 
 describe("parseQuickTunnelUrlFromOutput", () => {
 	it("parses URL from ASCII box pipe line", () => {
