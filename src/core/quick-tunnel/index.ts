@@ -4,9 +4,47 @@
  */
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { sleep } from "../utils";
 import { startCloudflaredTunnel } from "./cloudflared-process";
 import { cloudflaredBinPath, cloudflaredNotice } from "./constants";
 import { installCloudflared } from "./install";
+
+const MAX_QUICK_TUNNEL_ATTEMPTS = 5;
+
+function isQuickTunnelRateLimitedError(message: string): boolean {
+	return (
+		message.includes("429") ||
+		message.includes("Too Many Requests") ||
+		message.includes('status_code="429')
+	);
+}
+
+async function startCloudflaredTunnelWithRetry(
+	cfArgs: Record<string, string | number | null>,
+): Promise<ReturnType<typeof startCloudflaredTunnel>> {
+	for (let attempt = 1; attempt <= MAX_QUICK_TUNNEL_ATTEMPTS; attempt++) {
+		const tunnel = startCloudflaredTunnel(cfArgs);
+		try {
+			await tunnel.url;
+			return tunnel;
+		} catch (e) {
+			const msg = String(e);
+			if (
+				attempt < MAX_QUICK_TUNNEL_ATTEMPTS &&
+				isQuickTunnelRateLimitedError(msg)
+			) {
+				const delayMs = 2000 * attempt;
+				console.log(
+					`Cloudflare quick tunnel rate-limited (${attempt}/${MAX_QUICK_TUNNEL_ATTEMPTS}), retrying in ${delayMs}ms…`,
+				);
+				await sleep(delayMs);
+				continue;
+			}
+			throw e;
+		}
+	}
+	throw new Error("startCloudflaredTunnelWithRetry: exhausted attempts");
+}
 
 export interface QuickTunnelOptions {
 	url?: string;
@@ -83,7 +121,7 @@ export async function startQuickTunnel(
 	if (!opts.verifyTLS) {
 		cfArgs["--no-tls-verify"] = null;
 	}
-	const tunnel = startCloudflaredTunnel(cfArgs);
+	const tunnel = await startCloudflaredTunnelWithRetry(cfArgs);
 
 	const cleanup = async () => {
 		tunnel.stop();

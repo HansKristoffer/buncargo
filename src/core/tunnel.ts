@@ -1,5 +1,6 @@
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import { startQuickTunnel } from "./quick-tunnel";
+import { sleep } from "./utils";
 
 export interface PublicExposeTarget {
 	kind: "service" | "app";
@@ -115,6 +116,15 @@ export function resolveExposeTargets<
 	return { targets, unknownNames, notEnabledNames };
 }
 
+function resolveExposeTunnelStaggerMs(): number {
+	const raw = process.env.BUNCARGO_EXPOSE_TUNNEL_STAGGER_MS;
+	if (raw === undefined || raw === "") {
+		return 900;
+	}
+	const n = Number.parseInt(raw, 10);
+	return Number.isFinite(n) && n >= 0 ? n : 900;
+}
+
 export async function startPublicTunnels(
 	targets: PublicExposeTarget[],
 	options: {
@@ -124,9 +134,16 @@ export async function startPublicTunnels(
 	} = {},
 ): Promise<PublicTunnel[]> {
 	const start = options.start ?? ((input) => startQuickTunnel(input));
+	const staggerMs = resolveExposeTunnelStaggerMs();
 
-	const settled = await Promise.allSettled(
-		targets.map(async (target) => {
+	const tunnels: PublicTunnel[] = [];
+	try {
+		let index = 0;
+		for (const target of targets) {
+			if (index > 0 && staggerMs > 0) {
+				await sleep(staggerMs);
+			}
+			index += 1;
 			const localUrl = `http://localhost:${target.port}`;
 			const tunnel = (await start({
 				url: localUrl,
@@ -142,32 +159,19 @@ export async function startPublicTunnels(
 					`Tunnel for "${target.name}" did not provide a public URL`,
 				);
 			}
-			return {
+			tunnels.push({
 				kind: target.kind,
 				name: target.name,
 				localUrl,
 				publicUrl,
 				close: toCloseFn(tunnel),
-			};
-		}),
-	);
-
-	const tunnels: PublicTunnel[] = [];
-	const errors: unknown[] = [];
-	for (const result of settled) {
-		if (result.status === "fulfilled") {
-			tunnels.push(result.value);
-		} else {
-			errors.push(result.reason);
+			});
 		}
-	}
-
-	if (errors.length > 0) {
+		return tunnels;
+	} catch (e) {
 		await stopPublicTunnels(tunnels);
-		throw errors[0];
+		throw e;
 	}
-
-	return tunnels;
 }
 
 export async function stopPublicTunnels(

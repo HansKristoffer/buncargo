@@ -2,9 +2,9 @@
  * Real cloudflared quick tunnel (same file as this module). Requires network; may download
  * cloudflared on first run when `acceptCloudflareNotice` is true.
  *
- * Smoke runs with every `bun test`. E2E (curl through the public URL) is opt-in — set
- * `BUNCARGO_TEST_CLOUDFLARED_E2E=1` — because `*.trycloudflare.com` resolution and routing are
- * flaky on some networks and in sandboxes (Bun `fetch` is unreliable there too, hence curl).
+ * Smoke and E2E are **opt-in** (Cloudflare may rate-limit `api.trycloudflare.com`; default
+ * `bun test` stays offline-friendly). Run `bun run test:integration-cloudflared` or set
+ * `BUNCARGO_TEST_CLOUDFLARED_SMOKE=1`. E2E also needs `BUNCARGO_TEST_CLOUDFLARED_E2E=1`.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -14,6 +14,10 @@ import { sleep } from "../utils";
 import { startQuickTunnel } from "./index";
 
 const execFileAsync = promisify(execFile);
+
+const runCloudflaredSmoke =
+	process.env.BUNCARGO_TEST_CLOUDFLARED_SMOKE === "1" ||
+	process.env.BUNCARGO_TEST_CLOUDFLARED_SMOKE === "true";
 
 const runE2eThroughTunnel =
 	process.env.BUNCARGO_TEST_CLOUDFLARED_E2E === "1" ||
@@ -83,7 +87,7 @@ async function startLocalServerAndTunnel(): Promise<{
 }
 
 describe("startQuickTunnel (real cloudflared)", () => {
-	it(
+	it.skipIf(!runCloudflaredSmoke)(
 		"returns a public https URL (smoke — no request through tunnel)",
 		async () => {
 			let server: ReturnType<typeof Bun.serve> | undefined;
@@ -98,7 +102,7 @@ describe("startQuickTunnel (real cloudflared)", () => {
 		{ timeout: 180_000 },
 	);
 
-	it.skipIf(!runE2eThroughTunnel)(
+	it.skipIf(!runE2eThroughTunnel || !runCloudflaredSmoke)(
 		"routes HTTPS traffic to Bun.serve (e2e)",
 		async () => {
 			let server: ReturnType<typeof Bun.serve> | undefined;

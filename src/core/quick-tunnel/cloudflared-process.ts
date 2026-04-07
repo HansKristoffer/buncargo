@@ -5,7 +5,22 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { cloudflaredBinPath } from "./constants";
 
-const urlRegex = /\|\s+(https?:\/\/\S+)/;
+/** Primary: ASCII box line from cloudflared (`|  https://…  |`). */
+const urlRegexPipe = /\|\s+(https?:\/\/\S+)/;
+/** Fallback: URL may appear without the leading pipe if logs wrap or format changes. */
+const urlRegexTryCloudflare =
+	/(https:\/\/[a-zA-Z0-9][-a-zA-Z0-9.]*\.trycloudflare\.com)\b/;
+
+const MAX_CAPTURED_LOG = 24_000;
+
+export function parseQuickTunnelUrlFromOutput(log: string): string | null {
+	const pipe = log.match(urlRegexPipe);
+	if (pipe?.[1]) {
+		return pipe[1];
+	}
+	const direct = log.match(urlRegexTryCloudflare);
+	return direct?.[1] ?? null;
+}
 
 export function startCloudflaredTunnel(
 	options: Record<string, string | number | null>,
@@ -55,22 +70,30 @@ export function startCloudflaredTunnel(
 		};
 	});
 
-	const parser = (data: Buffer) => {
-		const str = data.toString();
-
-		const urlMatch = str.match(urlRegex);
-		if (urlMatch) {
-			urlResolver(urlMatch[1] ?? "");
+	const log: { buf: string } = { buf: "" };
+	const append = (data: Buffer) => {
+		log.buf += data.toString();
+		if (log.buf.length > MAX_CAPTURED_LOG) {
+			log.buf = log.buf.slice(-MAX_CAPTURED_LOG);
+		}
+		const url = parseQuickTunnelUrlFromOutput(log.buf);
+		if (url) {
+			urlResolver(url);
 		}
 	};
-	child.stdout?.on("data", parser).on("error", urlRejector);
-	child.stderr?.on("data", parser).on("error", urlRejector);
+	child.stdout?.on("data", append).on("error", urlRejector);
+	child.stderr?.on("data", append).on("error", urlRejector);
 
 	child.on("exit", (code, signal) => {
 		if (!settled) {
+			const tail = log.buf.trimEnd();
+			const excerpt = tail.length > 1200 ? `…${tail.slice(-1200)}` : tail;
+			const detail = excerpt ? `\ncloudflared output (tail):\n${excerpt}` : "";
 			urlRejector(
 				new Error(
-					`cloudflared exited before a tunnel URL was parsed (code=${code}, signal=${signal ?? "none"})`,
+					`cloudflared exited before a tunnel URL was parsed (code=${code}, signal=${signal ?? "none"}). ` +
+						`Parallel quick-tunnel requests are often rate-limited; buncargo starts tunnels sequentially with a short pause. ` +
+						`If this persists, try fewer expose targets or increase BUNCARGO_EXPOSE_TUNNEL_STAGGER_MS.${detail}`,
 				),
 			);
 		}

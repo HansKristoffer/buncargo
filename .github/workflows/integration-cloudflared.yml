@@ -24,5 +24,6 @@ jobs:
 
       - name: Run quick tunnel tests (smoke + E2E)
         env:
+          BUNCARGO_TEST_CLOUDFLARED_SMOKE: "1"
           BUNCARGO_TEST_CLOUDFLARED_E2E: "1"
         run: bun test src/core/quick-tunnel/quick-tunnel.test.ts
