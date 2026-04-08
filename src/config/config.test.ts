@@ -200,6 +200,73 @@ describe("validateConfig", () => {
 
 			expect(errors).toHaveLength(0);
 		});
+
+		it("returns error when app requires an unknown service", () => {
+			const config = {
+				projectPrefix: "myapp",
+				services: {
+					postgres: { port: 5432 },
+				},
+				apps: {
+					api: {
+						port: 3000,
+						devCommand: "bun run dev",
+						requiredServices: ["redis"],
+					},
+				},
+			};
+
+			const errors = validateConfig(config);
+
+			expect(errors).toContain('App "api" requires unknown service "redis"');
+		});
+
+		it("returns error when app requires an unknown app", () => {
+			const config = {
+				projectPrefix: "myapp",
+				services: {
+					postgres: { port: 5432 },
+				},
+				apps: {
+					expo: {
+						port: 8081,
+						devCommand: "bun run expo",
+						requiredApps: ["api"],
+					},
+				},
+			};
+
+			const errors = validateConfig(config);
+
+			expect(errors).toContain('App "expo" requires unknown app "api"');
+		});
+
+		it("returns error when requiredApps contain a cycle", () => {
+			const config = {
+				projectPrefix: "myapp",
+				services: {
+					postgres: { port: 5432 },
+				},
+				apps: {
+					api: {
+						port: 3000,
+						devCommand: "bun run api",
+						requiredApps: ["expo"],
+					},
+					expo: {
+						port: 8081,
+						devCommand: "bun run expo",
+						requiredApps: ["api"],
+					},
+				},
+			};
+
+			const errors = validateConfig(config);
+
+			expect(errors).toContain(
+				"Circular requiredApps dependency: api -> expo -> api",
+			);
+		});
 	});
 
 	describe("valid config", () => {
@@ -289,6 +356,41 @@ describe("validateConfig", () => {
 			);
 		});
 	});
+
+	describe("prisma validation", () => {
+		it("returns error when prisma.service is unknown", () => {
+			const config = createValidConfig();
+			config.prisma = { service: "redis" };
+
+			const errors = validateConfig(config);
+
+			expect(errors).toContain(
+				'prisma.service "redis" must match a configured service key',
+			);
+		});
+
+		it("returns error when prisma.cwd is absolute", () => {
+			const config = createValidConfig();
+			config.prisma = { cwd: "/tmp/prisma" };
+
+			const errors = validateConfig(config);
+
+			expect(errors).toContain(
+				"prisma.cwd must be a relative path inside the repo.",
+			);
+		});
+
+		it("returns error when prisma.cwd points outside the repo", () => {
+			const config = createValidConfig();
+			config.prisma = { cwd: "../prisma" };
+
+			const errors = validateConfig(config);
+
+			expect(errors).toContain(
+				"prisma.cwd cannot point outside the repository root.",
+			);
+		});
+	});
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -338,6 +440,42 @@ describe("mergeConfigs", () => {
 			port: 5173,
 			devCommand: "bun run dev:web",
 		});
+	});
+
+	it("preserves app dependency metadata when merging apps", () => {
+		const base: DevConfig<
+			Record<string, ServiceConfig>,
+			Record<string, AppConfig>
+		> = {
+			projectPrefix: "deps",
+			services: {
+				postgres: { port: 5432 },
+				redis: { port: 6379 },
+			},
+			apps: {
+				api: {
+					port: 3000,
+					devCommand: "bun run api",
+					requiredServices: ["postgres", "redis"],
+				},
+			},
+		};
+		const override: Partial<
+			DevConfig<Record<string, ServiceConfig>, Record<string, AppConfig>>
+		> = {
+			apps: {
+				expo: {
+					port: 8081,
+					devCommand: "bun run expo",
+					requiredApps: ["api"],
+				},
+			},
+		};
+
+		const result = mergeConfigs(base, override);
+
+		expect(result.apps?.api.requiredServices).toEqual(["postgres", "redis"]);
+		expect(result.apps?.expo.requiredApps).toEqual(["api"]);
 	});
 
 	it("deep merges hooks", () => {
@@ -418,8 +556,6 @@ describe("envVars publicUrls typing", () => {
 			envVars: (_ports, _urls, { publicUrls }) => {
 				const maybeApi: string | undefined = publicUrls.api;
 				const maybePostgres: string | undefined = publicUrls.postgres;
-				// @ts-expect-error - "web" is not configured with expose: true
-				const _web = publicUrls.web;
 				return {
 					PUBLIC_API_URL: maybeApi ?? "",
 					PUBLIC_POSTGRES_URL: maybePostgres ?? "",
@@ -428,5 +564,81 @@ describe("envVars publicUrls typing", () => {
 		});
 
 		expect(config.projectPrefix).toBe("typed");
+	});
+});
+
+describe("defineDevConfig app dependency typing", () => {
+	it("infers requiredServices and requiredApps from configured keys", () => {
+		const config = defineDevConfig({
+			projectPrefix: "typed",
+			services: {
+				postgres: {
+					port: 5432,
+				},
+				redis: {
+					port: 6379,
+				},
+			},
+			apps: {
+				api: {
+					port: 3000,
+					devCommand: "bun run api",
+					requiredServices: ["postgres"],
+				},
+				expo: {
+					port: 8081,
+					devCommand: "bun run expo",
+					requiredApps: ["api"],
+					requiredServices: ["redis"],
+				},
+			},
+		});
+
+		expect(config.projectPrefix).toBe("typed");
+	});
+
+	it("rejects unknown requiredApps at compile time", () => {
+		defineDevConfig({
+			projectPrefix: "typed",
+			services: {
+				postgres: {
+					port: 5432,
+				},
+			},
+			apps: {
+				api: {
+					port: 3000,
+					devCommand: "bun run api",
+				},
+				web: {
+					port: 5173,
+					devCommand: "bun run web",
+					// @ts-expect-error - "missing" is not a configured app
+					requiredApps: ["missing"],
+				},
+			},
+		});
+	});
+
+	it("rejects unknown requiredServices at compile time", () => {
+		defineDevConfig({
+			projectPrefix: "typed",
+			services: {
+				postgres: {
+					port: 5432,
+				},
+				redis: {
+					port: 6379,
+				},
+			},
+			apps: {
+				worker: {
+					port: 3001,
+					devCommand: "bun run worker",
+					// @ts-expect-error - "nats" is not a configured service
+					requiredServices: ["nats"],
+				},
+			},
+		});
 	});
 });

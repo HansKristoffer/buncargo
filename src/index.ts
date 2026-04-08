@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 // CLI runner
-export { getFlagValue, hasFlag, runCli } from "./cli/run-cli";
+export { runCli } from "./cli/run-cli";
 // Config factory
 export {
 	assertValidConfig,
@@ -79,6 +79,8 @@ export type {
 	// Start/Stop options
 	StartOptions,
 	StopOptions,
+	TypedAppConfig,
+	TypedAppDefinitions,
 	UrlBuilderContext,
 	UrlBuilderFn,
 } from "./types/index";
@@ -132,11 +134,8 @@ export {
 export {
 	areContainersRunning,
 	assertDockerRunning,
-	DOCKER_NOT_RUNNING_MESSAGE,
 	isContainerRunning,
 	isDockerRunning,
-	MAX_ATTEMPTS,
-	POLL_INTERVAL,
 } from "./docker/index";
 export {
 	buildComposeModel,

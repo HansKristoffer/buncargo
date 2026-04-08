@@ -84,6 +84,12 @@
       "import": "./dist/core/watchdog.js",
       "default": "./dist/core/watchdog.js"
     },
+    "./core/tunnel": {
+      "types": "./dist/core/tunnel.d.ts",
+      "bun": "./src/core/tunnel.ts",
+      "import": "./dist/core/tunnel.js",
+      "default": "./dist/core/tunnel.js"
+    },
     "./core/utils": {
       "types": "./dist/core/utils.d.ts",
       "bun": "./src/core/utils.ts",
@@ -123,7 +129,7 @@
   },
   "scripts": {
     "build": "bun run build:js && bun run build:types",
-    "build:js": "bun build ./src/index.ts ./src/cli/bin.ts ./src/cli/index.ts ./src/config/index.ts ./src/environment/index.ts ./src/loader/index.ts ./src/typecheck/index.ts ./src/types/index.ts ./src/core/network.ts ./src/core/ports.ts ./src/core/process.ts ./src/core/utils.ts ./src/core/watchdog.ts ./src/docker/index.ts ./src/docker-compose/index.ts --outdir ./dist --root ./src --target node --packages external --splitting",
+    "build:js": "bun build ./src/index.ts ./src/cli/bin.ts ./src/cli/index.ts ./src/config/index.ts ./src/environment/index.ts ./src/loader/index.ts ./src/typecheck/index.ts ./src/types/index.ts ./src/core/network.ts ./src/core/ports.ts ./src/core/process.ts ./src/core/tunnel.ts ./src/core/utils.ts ./src/core/watchdog.ts ./src/docker/index.ts ./src/docker-compose/index.ts --outdir ./dist --root ./src --target node --packages external --splitting",
     "build:types": "tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build",
     "publish:patch": "npm version patch && npm publish",

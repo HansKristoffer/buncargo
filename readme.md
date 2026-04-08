@@ -48,11 +48,13 @@ export default defineDevConfig({
       port: 3000,
       devCommand: 'bun run dev',
       cwd: 'apps/backend',
+      requiredServices: ['postgres', 'redis'],
     },
     web: {
       port: 5173,
       devCommand: 'bun run dev',
       cwd: 'apps/frontend',
+      requiredApps: ['api'],
     },
   },
 
@@ -87,7 +89,7 @@ bun run dev
 
 Buncargo will:
 1. Generate a Docker Compose file from your config
-2. Start all containers and wait for health checks
+2. Start the containers required by the selected apps and wait for health checks
 3. Run any configured migrations
 4. Start your dev servers
 5. Print all ports and URLs
@@ -169,17 +171,23 @@ apps: {
     devCommand: 'bun run dev',
     cwd: 'apps/backend',
     healthEndpoint: '/health',
+    requiredServices: ['postgres', 'redis'],
   },
   web: {
     port: 5173,
     devCommand: 'bun run dev',
     cwd: 'apps/frontend',
     healthEndpoint: '/',
+    requiredApps: ['api'],
   },
 }
 ```
 
-Use `onlyApps` on `start()` or `startServers()` to launch and wait for only those named apps (same env injection and health checks as when all apps run).
+Use `requiredServices` to declare which Docker services an app needs, and `requiredApps` to declare app-to-app dependencies. Both are typed from the configured keys in `defineDevConfig()`.
+
+`onlyApps` on `start()` or `startServers()` launches the named apps plus any transitive `requiredApps`.
+
+`requiredServices` is strict: if the selected app closure resolves to no services, startup fails with an actionable error instead of falling back to all services.
 
 ## Environment Variables
 
@@ -239,6 +247,7 @@ apps: {
     port: 3000,
     devCommand: 'bun run dev',
     expose: true,  // Mark as exposable
+    requiredServices: ['postgres'],
   },
 }
 ```
@@ -330,7 +339,7 @@ Configure Prisma to use the correct database URL:
 ```typescript
 prisma: {
   cwd: 'packages/prisma',
-  service: 'postgres',        // Default: 'postgres'
+  service: 'postgres',        // Service key from `services` (default: 'postgres')
   urlEnvVar: 'DATABASE_URL',  // Default: 'DATABASE_URL'
 }
 ```
@@ -425,11 +434,13 @@ export default defineDevConfig({
       devCommand: 'bun run dev',
       cwd: 'apps/backend',
       healthEndpoint: '/health',
+      requiredServices: ['postgres', 'redis', 'clickhouse'],
     },
     web: {
       port: 5173,
       devCommand: 'bun run dev',
       cwd: 'apps/frontend',
+      requiredApps: ['api'],
     },
   },
 

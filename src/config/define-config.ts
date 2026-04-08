@@ -9,22 +9,23 @@ import type {
 	PrismaConfig,
 	SeedConfig,
 	ServiceConfig,
+	TypedAppDefinitions,
 } from "../types";
 
 export function defineDevConfig<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig> = Record<string, never>,
+	const TServices extends Record<string, ServiceConfig>,
+	const TApps extends Record<string, AppConfig> = Record<string, never>,
 >(config: {
 	projectPrefix: string;
 	services: TServices;
-	apps?: TApps;
-	envVars?: EnvVarsBuilder<TServices, TApps>;
-	hooks?: DevHooks<TServices, TApps>;
+	apps?: TApps & TypedAppDefinitions<TServices, TApps>;
+	envVars?: EnvVarsBuilder<TServices, TypedAppDefinitions<TServices, TApps>>;
+	hooks?: DevHooks<TServices, TypedAppDefinitions<TServices, TApps>>;
 	migrations?: MigrationConfig[];
-	seed?: SeedConfig<TServices, TApps>;
+	seed?: SeedConfig<TServices, TypedAppDefinitions<TServices, TApps>>;
 	prisma?: PrismaConfig;
 	options?: DevOptions;
 	docker?: DockerComposeGenerationOptions;
-}): DevConfig<TServices, TApps> {
-	return config as DevConfig<TServices, TApps>;
+}): DevConfig<TServices, TypedAppDefinitions<TServices, TApps>> {
+	return config as DevConfig<TServices, TypedAppDefinitions<TServices, TApps>>;
 }

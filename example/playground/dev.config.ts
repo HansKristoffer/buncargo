@@ -17,12 +17,14 @@ export default defineDevConfig({
 			devCommand: "bun run dev",
 			cwd: "apps/api",
 			healthEndpoint: "/health",
+			requiredServices: ["postgres"],
 		},
 		web: {
 			port: 5199,
 			devCommand: "bun run dev",
 			cwd: "apps/web",
 			healthEndpoint: "/",
+			requiredApps: ["api"],
 		},
 	},
 

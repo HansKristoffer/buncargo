@@ -1,4 +1,5 @@
 import { isAbsolute, normalize } from "node:path";
+import { resolveSelectedApps } from "../planning";
 import type { AppConfig, DevConfig, ServiceConfig } from "../types";
 
 const BUILTIN_DOCKER_PRESETS = new Set(["postgres", "redis", "clickhouse"]);
@@ -107,6 +108,24 @@ export function validateConfig<
 		if (!app.devCommand) {
 			errors.push(`App "${name}" must have a devCommand`);
 		}
+		for (const serviceName of app.requiredServices ?? []) {
+			if (!config.services?.[serviceName]) {
+				errors.push(`App "${name}" requires unknown service "${serviceName}"`);
+			}
+		}
+		for (const dependencyName of app.requiredApps ?? []) {
+			if (!config.apps?.[dependencyName]) {
+				errors.push(`App "${name}" requires unknown app "${dependencyName}"`);
+			}
+		}
+	}
+
+	if (config.apps) {
+		try {
+			resolveSelectedApps(config.apps, undefined);
+		} catch (error) {
+			errors.push(error instanceof Error ? error.message : String(error));
+		}
 	}
 
 	for (const migration of config.migrations ?? []) {
@@ -120,6 +139,22 @@ export function validateConfig<
 
 	if (config.seed && !config.seed.command) {
 		errors.push("Seed must have a command");
+	}
+
+	if (config.prisma?.service && !config.services?.[config.prisma.service]) {
+		errors.push(
+			`prisma.service "${config.prisma.service}" must match a configured service key`,
+		);
+	}
+
+	if (config.prisma?.cwd) {
+		if (isAbsolute(config.prisma.cwd)) {
+			errors.push("prisma.cwd must be a relative path inside the repo.");
+		}
+		const normalized = normalize(config.prisma.cwd).replace(/\\/g, "/");
+		if (normalized === ".." || normalized.startsWith("../")) {
+			errors.push("prisma.cwd cannot point outside the repository root.");
+		}
 	}
 
 	return errors;

@@ -15,6 +15,7 @@ COMMANDS:
 
 EXAMPLES:
   bunx buncargo dev              # Start everything
+  bunx buncargo dev --apps=api,platform # Start only selected apps
   bunx buncargo dev --expose     # Public quick tunnel for expose:true targets
   bunx buncargo dev --expose=api # Public quick tunnel for selected target
   bunx buncargo dev --help       # Show dev command options

@@ -19,13 +19,12 @@ export async function loadDevEnv(options?: {
 
 	if (configPath) {
 		const mod = await import(configPath);
-		const config = mod.default;
-
-		if (!config?.projectPrefix || !config?.services) {
+		if (!("default" in mod) || mod.default === undefined) {
 			throw new Error(
 				`Invalid config in "${configPath}". Use defineDevConfig() and export as default.`,
 			);
 		}
+		const config = mod.default;
 
 		const env = createDevEnvironment(config);
 		setCachedDevEnv(env);

@@ -1,6 +1,6 @@
 # Buncargo Config Guide (Docker + Seed + Maintenance)
 
-This guide explains how to create and maintain `dev.config.ts` for `buncargo` in a simple, typed, and repeatable way.
+Use the root `readme.md` as the canonical product guide. This file only keeps example-focused conventions and reminders that matter while working inside this repo's `example/` workspace.
 
 ## Standalone Setup (from scratch)
 
@@ -18,8 +18,8 @@ Create one of these files in the project root:
 
 - `dev.config.ts` (recommended)
 - `dev.config.js`
-- `dev-tools.config.ts`
-- `dev-tools.config.js`
+- `dev-tools.config.ts` (legacy alias)
+- `dev-tools.config.js` (legacy alias)
 
 Use `dev.config.ts` unless you have a reason to choose another name.
 
@@ -230,7 +230,7 @@ export default defineDevConfig({
 	}),
 	prisma: {
 		cwd: "packages/prisma",       // Path to your Prisma schema directory
-		service: "postgres",          // Which service to start (default: "postgres")
+		service: "postgres",          // Which service key to start (default: "postgres")
 		urlEnvVar: "DATABASE_URL",    // Env var for connection URL (default: "DATABASE_URL")
 	},
 });

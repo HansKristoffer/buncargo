@@ -175,7 +175,29 @@ export interface AppConfig {
 	healthEndpoint?: string;
 	/** Timeout for health check in milliseconds */
 	healthTimeout?: number;
+	/** Service keys that must be running when this app starts */
+	requiredServices?: readonly string[];
+	/** App keys that must also start when this app starts */
+	requiredApps?: readonly string[];
 }
+
+export type TypedAppConfig<
+	TServices extends Record<string, ServiceConfig>,
+	TAppNames extends string,
+> = Omit<AppConfig, "requiredServices" | "requiredApps"> & {
+	requiredServices?: readonly Extract<keyof TServices, string>[];
+	requiredApps?: readonly TAppNames[];
+};
+
+export type TypedAppDefinitions<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+> = {
+	[K in keyof TApps]: Omit<TApps[K], "requiredServices" | "requiredApps"> & {
+		requiredServices?: readonly Extract<keyof TServices, string>[];
+		requiredApps?: readonly Extract<keyof TApps, string>[];
+	};
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Hooks
@@ -252,7 +274,7 @@ export interface DevHooks<
 export interface PrismaConfig {
 	/** Working directory where prisma schema lives (relative to monorepo root). Default: 'packages/prisma' */
 	cwd?: string;
-	/** Docker Compose service name for the database. Default: 'postgres' */
+	/** Configured service key for the database. Default: 'postgres' */
 	service?: string;
 	/** Environment variable name for the database URL. Default: 'DATABASE_URL' */
 	urlEnvVar?: string;
@@ -501,7 +523,7 @@ export interface StartOptions {
 	skipSeed?: boolean;
 	/** Skip the initial `logInfo` banner (CLI uses this with `--expose`, then logs once with tunnel URLs). Default: false */
 	skipEnvironmentLog?: boolean;
-	/** If set, start and wait for only these app names (must exist in `apps`). */
+	/** If set, start and wait for only these app names plus any transitive `requiredApps`. */
 	onlyApps?: string[];
 }
 
@@ -615,7 +637,7 @@ export interface DevEnvironment<
 	startServers(options?: {
 		productionBuild?: boolean;
 		verbose?: boolean;
-		/** If set, start and wait for only these app names (must exist in `apps`). */
+		/** If set, start and wait for only these app names plus any transitive `requiredApps`. */
 		onlyApps?: string[];
 	}): Promise<DevServerPids>;
 	/** Stop a process by PID */
@@ -624,7 +646,7 @@ export interface DevEnvironment<
 	waitForServers(options?: {
 		timeout?: number;
 		productionBuild?: boolean;
-		/** If set, wait only for these app names (must exist in `apps`). */
+		/** If set, wait only for these app names plus any transitive `requiredApps`. */
 		onlyApps?: string[];
 	}): Promise<void>;
 

@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolveExposeTargets, stopPublicTunnels } from "../core/tunnel";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import { getFlagValue, hasFlag, runCli } from "./run-cli";
+import { upsertTunnelRegistryEntries } from "./tunnel-registry";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // hasFlag Tests
@@ -180,32 +185,59 @@ async function withProcessExitTrap(fn: () => Promise<void>): Promise<number> {
 	}
 }
 
-function createStubEnv(): DevEnvironment<
-	Record<string, ServiceConfig>,
-	Record<string, AppConfig>
-> {
-	return {
-		services: {},
-		apps: {
-			api: {
-				port: 3000,
-				devCommand: "bun run dev",
-				expose: true,
-			},
+function createStubEnv(
+	options: {
+		apps?: Record<string, AppConfig>;
+		services?: Record<string, ServiceConfig>;
+		ports?: Record<string, number>;
+		root?: string;
+		start?: (options?: unknown) => Promise<null>;
+		waitForServer?: (url: string, timeout?: number) => Promise<void>;
+		setPublicUrls?: (urls: Record<string, string>) => void;
+	} = {},
+): DevEnvironment<Record<string, ServiceConfig>, Record<string, AppConfig>> {
+	const apps = options.apps ?? {
+		api: {
+			port: 3000,
+			devCommand: "bun run dev",
+			expose: true,
 		},
-		ports: { api: 3000 },
-		urls: { api: "http://localhost:3000" } as DevEnvironment<
+	};
+	const services = options.services ?? {};
+	const ports =
+		options.ports ??
+		Object.fromEntries(
+			Object.entries(apps).map(([name, config]) => [name, config.port]),
+		);
+	return {
+		services,
+		apps,
+		ports: ports as DevEnvironment<
+			Record<string, ServiceConfig>,
+			Record<string, AppConfig>
+		>["ports"],
+		urls: Object.fromEntries(
+			Object.entries(ports).map(([name, port]) => [
+				name,
+				`http://localhost:${port}`,
+			]),
+		) as DevEnvironment<
 			Record<string, ServiceConfig>,
 			Record<string, AppConfig>
 		>["urls"],
 		publicUrls: {},
 		projectName: "stub-cli",
-		root: "/tmp/buncargo-cli-stub",
+		root: options.root ?? "/tmp/buncargo-cli-stub",
 		composeFile: ".buncargo/docker-compose.generated.yml",
 		portOffset: 0,
 		isWorktree: false,
 		localIp: "127.0.0.1",
-		start: async () => null,
+		start: async (startOptions?: unknown) => {
+			if (options.start) {
+				return options.start(startOptions);
+			}
+			return null;
+		},
 		stop: async () => {},
 		restart: async () => {},
 		isRunning: async () => true,
@@ -213,11 +245,15 @@ function createStubEnv(): DevEnvironment<
 		stopProcess: () => {},
 		waitForServers: async () => {},
 		buildEnvVars: () => ({}),
-		setPublicUrls: () => {},
+		setPublicUrls: (urls: Record<string, string>) => {
+			options.setPublicUrls?.(urls as Record<string, string>);
+		},
 		clearPublicUrls: () => {},
 		ensureComposeFile: () => ".buncargo/docker-compose.generated.yml",
 		exec: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
-		waitForServer: async () => {},
+		waitForServer: async (url: string, timeout?: number) => {
+			await options.waitForServer?.(url, timeout);
+		},
 		logInfo: () => {},
 		getExpoApiUrl: () => "http://127.0.0.1:3000",
 		getFrontendPort: () => 5173,
@@ -237,6 +273,21 @@ function createStubEnv(): DevEnvironment<
 		Record<string, ServiceConfig>,
 		Record<string, AppConfig>
 	>;
+}
+
+async function listenServer(port: number): Promise<Server> {
+	const server = createServer((_req, res) => {
+		res.statusCode = 200;
+		res.end("ok");
+	});
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(port, "127.0.0.1", () => {
+			server.off("error", reject);
+			resolve();
+		});
+	});
+	return server;
 }
 
 describe("runCli expose routing", () => {
@@ -285,5 +336,216 @@ describe("runCli expose routing", () => {
 		);
 		expect(code).toBe(0);
 		expect(startCalls).toBe(1);
+	});
+
+	it("accepts --apps during migrate flow", async () => {
+		const code = await withProcessExitTrap(() =>
+			runCli(createStubEnv(), {
+				args: ["--migrate", "--apps=api"],
+				watchdog: false,
+			}),
+		);
+		expect(code).toBe(0);
+	});
+
+	it("passes direct --apps selection into env.start", async () => {
+		const startCalls: unknown[] = [];
+		const code = await withProcessExitTrap(() =>
+			runCli(
+				createStubEnv({
+					apps: {
+						api: {
+							port: 3000,
+							devCommand: "bun run api",
+							requiredServices: ["postgres"],
+						},
+						expo: {
+							port: 8081,
+							devCommand: "bun run expo",
+							requiredApps: ["api"],
+							requiredServices: ["postgres"],
+						},
+					},
+					services: {
+						postgres: { port: 5432 },
+					},
+					start: async (startOptions) => {
+						startCalls.push(startOptions);
+						return null;
+					},
+				}),
+				{
+					args: ["--migrate", "--apps=expo"],
+					watchdog: false,
+				},
+			),
+		);
+
+		expect(code).toBe(0);
+		expect(startCalls).toEqual([
+			{
+				startServers: false,
+				wait: true,
+				skipSeed: false,
+				skipEnvironmentLog: false,
+				onlyApps: ["expo"],
+			},
+		]);
+	});
+
+	it("rejects unknown app names from --apps", async () => {
+		const code = await withProcessExitTrap(() =>
+			runCli(createStubEnv(), {
+				args: ["--migrate", "--apps=missing"],
+				watchdog: false,
+			}),
+		);
+		expect(code).toBe(1);
+	});
+
+	it("rejects empty --apps value", async () => {
+		const code = await withProcessExitTrap(() =>
+			runCli(createStubEnv(), {
+				args: ["--migrate", "--apps="],
+				watchdog: false,
+			}),
+		);
+		expect(code).toBe(1);
+	});
+
+	it("errors when --expose selects an app outside --apps", async () => {
+		const env = createStubEnv({
+			apps: {
+				api: { port: 43010, devCommand: "bun run api", expose: true },
+				web: { port: 43011, devCommand: "bun run web", expose: true },
+			},
+		});
+		const code = await withProcessExitTrap(() =>
+			runCli(env, {
+				args: ["--migrate", "--apps=api", "--expose=web"],
+				watchdog: false,
+				cliTestTunnel: {
+					resolveExposeTargets,
+					startPublicTunnels: async () => [],
+					stopPublicTunnels,
+				},
+			}),
+		);
+		expect(code).toBe(1);
+	});
+
+	it("allows --expose to target apps included via requiredApps", async () => {
+		const env = createStubEnv({
+			services: {
+				postgres: { port: 5432 },
+			},
+			apps: {
+				api: {
+					port: 43010,
+					devCommand: "bun run api",
+					expose: true,
+					requiredServices: ["postgres"],
+				},
+				expo: {
+					port: 43011,
+					devCommand: "bun run expo",
+					expose: true,
+					requiredApps: ["api"],
+					requiredServices: ["postgres"],
+				},
+			},
+		});
+		const code = await withProcessExitTrap(() =>
+			runCli(env, {
+				args: ["--migrate", "--apps=expo", "--expose=api"],
+				watchdog: false,
+				cliTestTunnel: {
+					resolveExposeTargets,
+					startPublicTunnels: async () => [],
+					stopPublicTunnels,
+				},
+			}),
+		);
+
+		expect(code).toBe(0);
+	});
+
+	it("reuses a busy exposed app and inherits its public URL", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-cli-"));
+		const apiPort = 43020;
+		const webPort = 43021;
+		const server = await listenServer(apiPort);
+		const setPublicUrlsCalls: Record<string, string>[] = [];
+		const startTargets: string[][] = [];
+
+		try {
+			await upsertTunnelRegistryEntries(root, [
+				{
+					kind: "app",
+					name: "api",
+					publicUrl: "https://api.example.com",
+					localUrl: `http://localhost:${apiPort}`,
+					port: apiPort,
+					pid: process.pid,
+					updatedAt: new Date().toISOString(),
+				},
+			]);
+
+			const env = createStubEnv({
+				root,
+				apps: {
+					api: {
+						port: apiPort,
+						devCommand: "bun run api",
+						expose: true,
+						healthEndpoint: "/",
+					},
+					web: {
+						port: webPort,
+						devCommand: "bun run web",
+						expose: true,
+					},
+				},
+				ports: { api: apiPort, web: webPort },
+				waitForServer: async (url) => {
+					expect(url).toBe(`http://localhost:${apiPort}/`);
+				},
+				setPublicUrls: (urls) => {
+					setPublicUrlsCalls.push({ ...urls });
+				},
+			});
+
+			const code = await withProcessExitTrap(() =>
+				runCli(env, {
+					args: ["--migrate", "--apps=api,web", "--expose"],
+					watchdog: false,
+					cliTestTunnel: {
+						resolveExposeTargets,
+						startPublicTunnels: async (targets) => {
+							startTargets.push(targets.map((target) => target.name));
+							return targets.map((target) => ({
+								kind: target.kind,
+								name: target.name,
+								localUrl: `http://localhost:${target.port}`,
+								publicUrl: `https://${target.name}.example.com`,
+								close: async () => {},
+							}));
+						},
+						stopPublicTunnels,
+					},
+				}),
+			);
+
+			expect(code).toBe(0);
+			expect(startTargets).toEqual([["web"]]);
+			expect(setPublicUrlsCalls.at(0)).toEqual({
+				api: "https://api.example.com",
+				web: "https://web.example.com",
+			});
+		} finally {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 });

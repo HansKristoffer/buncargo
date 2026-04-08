@@ -18,12 +18,14 @@ export default defineDevConfig({
 			devCommand: "bun run dev",
 			cwd: "apps/backend",
 			healthEndpoint: "/api/webhooks/health",
+			requiredServices: ["postgres", "redis", "clickhouse"],
 		},
 		platform: {
 			port: 5173,
 			devCommand: "bun run dev",
 			cwd: "apps/platform",
 			healthEndpoint: "/",
+			requiredApps: ["api"],
 		},
 	},
 

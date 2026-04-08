@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { killProcessesOnAppPorts } from "../core/process";
+import { isPortInUse, killProcessesOnAppPorts } from "../core/process";
 import {
 	type PublicTunnel,
 	resolveExposeTargets,
@@ -7,12 +7,24 @@ import {
 	stopPublicTunnels,
 } from "../core/tunnel";
 import { spawnWatchdog, startHeartbeat, stopHeartbeat } from "../core/watchdog";
+import { resolveSelectedApps } from "../planning";
 import type {
 	AppConfig,
 	CliOptions,
 	DevEnvironment,
+	DevEnvironmentTunnelLog,
 	ServiceConfig,
 } from "../types";
+import {
+	classifyCliApps,
+	parseRequiredCommaSeparatedFlag,
+} from "./app-selection";
+import {
+	loadReusableTunnelApps,
+	removeTunnelRegistryEntries,
+	type TunnelRegistryEntry,
+	upsertTunnelRegistryEntries,
+} from "./tunnel-registry";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CLI Runner
@@ -27,6 +39,7 @@ const ACCEPTED_FLAGS = [
 	"--seed",
 	"--up-only",
 	"--expose",
+	"--apps",
 ] as const;
 
 /**
@@ -44,12 +57,14 @@ Options:
   --seed      Run migrations and seeders, then exit
   --up-only   Start containers and run migrations, then exit (no dev servers)
   --expose    Expose configured targets via public quick tunnels
+  --apps      Run selected apps plus requiredApps
 
 Examples:
   bun dev              Start dev environment with all services
   bun dev --seed       Run migrations and seed the database
   bun dev --down       Stop all containers
   bun dev --reset      Stop containers and remove all data
+  bun dev --apps=api,platform  Run only selected apps
   bun dev --expose     Expose all targets with expose: true
   bun dev --expose=api,web  Expose specific targets
 `);
@@ -68,6 +83,28 @@ function getUnknownFlags(args: string[]): string[] {
 					: arg) as (typeof ACCEPTED_FLAGS)[number],
 			),
 	);
+}
+
+function logSelectedAppsSummary(input: {
+	startNames: string[];
+	reusedNames: string[];
+	inferredReuseNames: string[];
+}): void {
+	const { startNames, reusedNames, inferredReuseNames } = input;
+
+	console.log("");
+	if (startNames.length > 0) {
+		console.log(`🔧 Starting: ${startNames.join(", ")}`);
+	}
+	if (reusedNames.length > 0) {
+		console.log(`♻️  Reusing: ${reusedNames.join(", ")}`);
+	}
+	if (inferredReuseNames.length > 0) {
+		console.log(
+			`   ℹ Inferred reuse from busy port: ${inferredReuseNames.join(", ")}`,
+		);
+	}
+	console.log("");
 }
 
 /**
@@ -108,15 +145,32 @@ export async function runCli<
 		startPublicTunnels,
 		stopPublicTunnels,
 	};
+	const appsRequested = hasFlag(args, "--apps");
+	const appsValue = getFlagValue(args, "--apps");
 	const exposeRequested = hasFlag(args, "--expose");
 	const exposeValue = getFlagValue(args, "--expose");
 	let tunnels: PublicTunnel[] = [];
+	let ownedTunnelRegistryEntries: TunnelRegistryEntry[] = [];
 
 	async function cleanupTunnels(): Promise<void> {
 		env.clearPublicUrls();
-		if (tunnels.length === 0) return;
-		await tunnelApi.stopPublicTunnels(tunnels);
+		const tunnelsToStop = tunnels;
+		const registryEntriesToRemove = ownedTunnelRegistryEntries.map((entry) => ({
+			kind: entry.kind,
+			name: entry.name,
+			pid: entry.pid,
+		}));
 		tunnels = [];
+		ownedTunnelRegistryEntries = [];
+		try {
+			if (tunnelsToStop.length > 0) {
+				await tunnelApi.stopPublicTunnels(tunnelsToStop);
+			}
+		} finally {
+			if (registryEntriesToRemove.length > 0) {
+				await removeTunnelRegistryEntries(env.root, registryEntriesToRemove);
+			}
+		}
 	}
 
 	// Handle --help
@@ -152,15 +206,76 @@ export async function runCli<
 		process.exit(0);
 	}
 
+	let selectedAppNames: string[] | undefined;
+	const selectedAppsPlan = resolveSelectedApps(env.apps, undefined);
+	let appsForDev: Record<string, AppConfig> = selectedAppsPlan.apps;
+	if (appsRequested) {
+		try {
+			selectedAppNames = parseRequiredCommaSeparatedFlag("--apps", appsValue);
+			appsForDev = resolveSelectedApps(env.apps, selectedAppNames).apps;
+		} catch (error) {
+			console.error(
+				`❌ ${error instanceof Error ? error.message : String(error)}`,
+			);
+			process.exit(1);
+		}
+	}
+	if (appsRequested && Object.keys(appsForDev).length === 0) {
+		console.error("❌ Flag --apps requires at least one valid app name.");
+		process.exit(1);
+	}
+
 	// All other paths need containers + migrations
 	// Skip automatic seeding when --seed flag is used (CLI handles it explicitly)
 	const skipSeed = args.includes("--seed");
-	await env.start({
-		startServers: false,
-		wait: true,
-		skipSeed,
-		skipEnvironmentLog: exposeRequested,
-	});
+	try {
+		await env.start({
+			startServers: false,
+			wait: true,
+			skipSeed,
+			skipEnvironmentLog: exposeRequested,
+			onlyApps: selectedAppNames,
+		});
+	} catch (error) {
+		console.error(
+			`❌ ${error instanceof Error ? error.message : String(error)}`,
+		);
+		process.exit(1);
+	}
+
+	let classifiedApps:
+		| Awaited<ReturnType<typeof classifyCliApps>>
+		| {
+				startApps: Record<string, AppConfig>;
+				reusedApps: Record<string, AppConfig>;
+				startNames: string[];
+				reusedNames: string[];
+				inferredReuseNames: string[];
+		  };
+	try {
+		classifiedApps = appsRequested
+			? await classifyCliApps(appsForDev, env.ports, {
+					isPortBusy: isPortInUse,
+					waitForServer: env.waitForServer.bind(env),
+				})
+			: {
+					startApps: appsForDev,
+					reusedApps: {} as Record<string, AppConfig>,
+					startNames: Object.keys(appsForDev),
+					reusedNames: [] as string[],
+					inferredReuseNames: [] as string[],
+				};
+	} catch (error) {
+		console.error(
+			`❌ ${error instanceof Error ? error.message : String(error)}`,
+		);
+		process.exit(1);
+	}
+	const startAppNames = new Set(Object.keys(classifiedApps.startApps));
+	const reusedAppNames = new Set(Object.keys(classifiedApps.reusedApps));
+	const selectedAppNamesSet = new Set(Object.keys(appsForDev));
+	const combinedTunnelLogs: DevEnvironmentTunnelLog[] = [];
+	const inheritedPublicUrls: Record<string, string> = {};
 
 	if (exposeRequested) {
 		const { targets, unknownNames, notEnabledNames } =
@@ -182,21 +297,96 @@ export async function runCli<
 			await cleanupTunnels();
 			process.exit(1);
 		}
-		if (targets.length === 0) {
+		const explicitExposeNames =
+			exposeValue === undefined
+				? undefined
+				: exposeValue
+						.split(",")
+						.map((name) => name.trim())
+						.filter(Boolean);
+		if (appsRequested && explicitExposeNames) {
+			const excludedAppTargets = explicitExposeNames.filter(
+				(name) =>
+					env.apps[name] !== undefined && !selectedAppNamesSet.has(name),
+			);
+			if (excludedAppTargets.length > 0) {
+				console.error(
+					`❌ Expose target${excludedAppTargets.length > 1 ? "s" : ""} not included in --apps: ${excludedAppTargets.join(", ")}`,
+				);
+				console.error(
+					"   Add these apps to --apps or remove them from --expose.",
+				);
+				await cleanupTunnels();
+				process.exit(1);
+			}
+		}
+		const filteredTargets = appsRequested
+			? targets.filter(
+					(target) =>
+						target.kind === "service" || selectedAppNamesSet.has(target.name),
+				)
+			: targets;
+		const reusedExposeAppNames = filteredTargets
+			.filter(
+				(target) => target.kind === "app" && reusedAppNames.has(target.name),
+			)
+			.map((target) => target.name);
+		if (reusedExposeAppNames.length > 0) {
+			const reusedTunnelData = await loadReusableTunnelApps(env.root, {
+				appNames: reusedExposeAppNames,
+				ports: env.ports,
+			});
+			Object.assign(inheritedPublicUrls, reusedTunnelData.publicUrls);
+			combinedTunnelLogs.push(...reusedTunnelData.tunnels);
+			if (reusedTunnelData.tunnels.length > 0) {
+				console.log(
+					`ℹ Reusing public URL${reusedTunnelData.tunnels.length > 1 ? "s" : ""} for: ${reusedTunnelData.tunnels.map((tunnel) => tunnel.name).join(", ")}`,
+				);
+			}
+			if (reusedTunnelData.missingAppNames.length > 0) {
+				console.warn(
+					`⚠️  No reusable public URL found for: ${reusedTunnelData.missingAppNames.join(", ")}`,
+				);
+			}
+		}
+		const startExposeTargets = filteredTargets.filter(
+			(target) => target.kind === "service" || startAppNames.has(target.name),
+		);
+		if (startExposeTargets.length === 0 && combinedTunnelLogs.length === 0) {
 			console.error(
 				"❌ No expose targets selected. Add expose: true to services/apps or pass names with --expose=<name>.",
 			);
 			await cleanupTunnels();
 			process.exit(1);
 		}
-
-		tunnels = await tunnelApi.startPublicTunnels(targets);
-		env.setPublicUrls(
-			Object.fromEntries(
+		if (startExposeTargets.length > 0) {
+			tunnels = await tunnelApi.startPublicTunnels(startExposeTargets);
+			const ownedPublicUrls = Object.fromEntries(
 				tunnels.map((tunnel) => [tunnel.name, tunnel.publicUrl]),
-			) as typeof env.publicUrls,
-		);
-		env.logInfo("Dev Environment", tunnels);
+			);
+			env.setPublicUrls({
+				...inheritedPublicUrls,
+				...ownedPublicUrls,
+			} as typeof env.publicUrls);
+			ownedTunnelRegistryEntries = tunnels
+				.filter((tunnel) => tunnel.kind === "app")
+				.map((tunnel) => ({
+					kind: "app" as const,
+					name: tunnel.name,
+					publicUrl: tunnel.publicUrl,
+					localUrl: tunnel.localUrl,
+					port: env.ports[tunnel.name] ?? 0,
+					pid: process.pid,
+					updatedAt: new Date().toISOString(),
+				}));
+			if (ownedTunnelRegistryEntries.length > 0) {
+				await upsertTunnelRegistryEntries(env.root, ownedTunnelRegistryEntries);
+			}
+			combinedTunnelLogs.push(...tunnels);
+		} else {
+			env.setPublicUrls(inheritedPublicUrls as typeof env.publicUrls);
+		}
+		env.logInfo("Dev Environment", combinedTunnelLogs);
 	}
 
 	// Handle --migrate (exit after migrations)
@@ -239,6 +429,28 @@ export async function runCli<
 		process.exit(0);
 	}
 
+	if (appsRequested) {
+		logSelectedAppsSummary(classifiedApps);
+	}
+
+	if (appsRequested && classifiedApps.startNames.length === 0) {
+		console.log("✅ Selected apps are already running. Nothing to start.");
+		await cleanupTunnels();
+		return;
+	}
+
+	// Build command: use provided command or auto-build from apps config
+	const command =
+		devServersCommand ?? buildDevServersCommand(classifiedApps.startApps);
+
+	if (!command) {
+		console.log("✅ Containers ready. No apps configured.");
+		// Keep process alive if no apps
+		await new Promise(() => {});
+		await cleanupTunnels();
+		return;
+	}
+
 	// Start watchdog and heartbeat for interactive mode
 	if (watchdog) {
 		await spawnWatchdog(env.projectName, env.root, {
@@ -249,19 +461,8 @@ export async function runCli<
 		startHeartbeat(env.projectName);
 	}
 
-	// Build command: use provided command or auto-build from apps config
-	const command = devServersCommand ?? buildDevServersCommand(env.apps);
-
-	if (!command) {
-		console.log("✅ Containers ready. No apps configured.");
-		// Keep process alive if no apps
-		await new Promise(() => {});
-		await cleanupTunnels();
-		return;
-	}
-
 	// Kill any existing processes on app ports before starting
-	await killProcessesOnAppPorts(env.apps, env.ports);
+	await killProcessesOnAppPorts(classifiedApps.startApps, env.ports);
 
 	// Start dev servers interactively
 	console.log("");

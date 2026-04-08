@@ -26,14 +26,21 @@ import {
 	stopWatchdog as stopWatchdogFn,
 } from "../core/watchdog";
 import {
-	areContainersRunning,
-	startContainers,
+	areServicesRunning,
+	ensureServicesRunning,
 	stopContainers,
 } from "../docker/runtime";
 import {
 	getGeneratedComposePath,
 	writeGeneratedComposeFile,
 } from "../docker-compose";
+import {
+	assertOnlyAppNames,
+	buildStartPlan,
+	pickApps,
+	resolveComposeServiceNames,
+	resolveSelectedApps,
+} from "../planning";
 import { createPrismaRunner } from "../prisma";
 import type {
 	AppConfig,
@@ -54,7 +61,7 @@ import type {
 	StopOptions,
 } from "../types";
 import { logEnvironmentInfo } from "./logging";
-import { assertOnlyAppNames, pickApps } from "./only-apps";
+import { runMigrationsSequentially } from "./migrations";
 import { createCheckTableHelper, createSeedCheckContext } from "./seeding";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -227,8 +234,21 @@ export function createDevEnvironment<
 			onlyApps,
 		} = startOptions;
 
-		assertOnlyAppNames(Object.keys(apps), onlyApps);
-		const appsToStart = pickApps(apps, onlyApps);
+		const startPlan = buildStartPlan(apps, services, onlyApps);
+		const appsToStart = startPlan.apps;
+		const targetServices = Object.fromEntries(
+			startPlan.requiredServiceKeys.map((serviceKey) => [
+				serviceKey,
+				services[serviceKey],
+			]),
+		) as Record<string, ServiceConfig>;
+		const targetPorts = Object.fromEntries(
+			startPlan.requiredServiceKeys.map((serviceKey) => [
+				serviceKey,
+				(ports as Record<string, number>)[serviceKey],
+			]),
+		);
+		let containersReady = false;
 
 		const envVars = buildEnvVars(productionBuild);
 		ensureComposeFile();
@@ -239,149 +259,133 @@ export function createDevEnvironment<
 		}
 
 		// Start containers
-		const serviceCount = Object.keys(services).length;
-		const alreadyRunning = await areContainersRunning(
+		await ensureServicesRunning(
+			root,
 			projectName,
-			serviceCount,
-		);
-
-		if (alreadyRunning) {
-			if (verbose) console.log("✓ Containers already running");
-		} else {
-			startContainers(root, projectName, envVars, {
+			envVars,
+			targetServices,
+			targetPorts,
+			{
 				verbose,
 				wait,
 				composeFile,
-			});
-		}
+			},
+		);
+		containersReady = true;
 
-		// Build migrations list (auto-add prisma if configured)
-		const allMigrations = [
-			// Auto-add prisma migration if prisma is configured
-			...(config.prisma
-				? [
-						{
-							name: "prisma",
-							command: "bunx prisma migrate deploy",
-							cwd: config.prisma.cwd ?? "packages/prisma",
-						},
-					]
-				: []),
-			// Add user-defined migrations
-			...(config.migrations ?? []),
-		];
+		try {
+			// Build migrations list (auto-add prisma if configured)
+			const allMigrations = [
+				// Auto-add prisma migration if prisma is configured
+				...(config.prisma
+					? [
+							{
+								name: "prisma",
+								command: "bunx prisma migrate deploy",
+								cwd: config.prisma.cwd ?? "packages/prisma",
+							},
+						]
+					: []),
+				// Add user-defined migrations
+				...(config.migrations ?? []),
+			];
 
-		// Run migrations if any
-		if (allMigrations.length > 0) {
-			if (verbose) console.log("📦 Running migrations...");
+			// Run migrations if any
+			if (allMigrations.length > 0) {
+				if (verbose) console.log("📦 Running migrations...");
+				await runMigrationsSequentially(allMigrations, exec);
 
-			const migrationResults = await Promise.all(
-				allMigrations.map(async (migration) => {
-					const result = await exec(migration.command, {
-						cwd: migration.cwd,
+				if (verbose) console.log("✓ Migrations complete");
+			}
+
+			// Run afterContainersReady hook
+			if (config.hooks?.afterContainersReady) {
+				await config.hooks.afterContainersReady(getHookContext());
+			}
+
+			// Run seed if configured (skip if skipSeed is true, e.g., when CLI handles seeding)
+			if (config.seed && !skipSeed) {
+				let shouldSeed = true;
+
+				// Check if seeding is needed using check function
+				if (config.seed.check) {
+					const checkTable = createCheckTableHelper<TServices, TApps>(
+						urls as Record<string, string>,
+						exec,
+					);
+					const seedCheckContext = createSeedCheckContext(
+						getHookContext(),
+						checkTable,
+					);
+					shouldSeed = await config.seed.check(seedCheckContext);
+				}
+
+				if (shouldSeed) {
+					if (verbose) console.log("🌱 Running seeders...");
+					const seedResult = await exec(config.seed.command, {
+						cwd: config.seed.cwd,
+						verbose,
 						throwOnError: false,
 					});
-					return { name: migration.name, result };
-				}),
-			);
-
-			// Check for failures
-			for (const { name, result } of migrationResults) {
-				if (result.exitCode !== 0) {
-					console.error(`❌ Migration "${name}" failed`);
-					if (result.stdout) {
-						console.error(result.stdout);
+					if (seedResult.exitCode !== 0) {
+						console.error("❌ Seeding failed");
+						console.error(seedResult.stderr);
+						// Don't throw - seeding failure shouldn't stop the environment
+					} else {
+						if (verbose) console.log("✓ Seeding complete");
 					}
-					if (result.stderr) {
-						console.error(result.stderr);
-					}
-					throw new Error(`Migration "${name}" failed`);
-				}
-			}
-
-			if (verbose) console.log("✓ Migrations complete");
-		}
-
-		// Run afterContainersReady hook
-		if (config.hooks?.afterContainersReady) {
-			await config.hooks.afterContainersReady(getHookContext());
-		}
-
-		// Run seed if configured (skip if skipSeed is true, e.g., when CLI handles seeding)
-		if (config.seed && !skipSeed) {
-			let shouldSeed = true;
-
-			// Check if seeding is needed using check function
-			if (config.seed.check) {
-				const checkTable = createCheckTableHelper<TServices, TApps>(
-					urls as Record<string, string>,
-					exec,
-				);
-				const seedCheckContext = createSeedCheckContext(
-					getHookContext(),
-					checkTable,
-				);
-				shouldSeed = await config.seed.check(seedCheckContext);
-			}
-
-			if (shouldSeed) {
-				if (verbose) console.log("🌱 Running seeders...");
-				const seedResult = await exec(config.seed.command, {
-					cwd: config.seed.cwd,
-					verbose,
-					throwOnError: false,
-				});
-				if (seedResult.exitCode !== 0) {
-					console.error("❌ Seeding failed");
-					console.error(seedResult.stderr);
-					// Don't throw - seeding failure shouldn't stop the environment
 				} else {
-					if (verbose) console.log("✓ Seeding complete");
+					if (verbose)
+						console.log("✓ Database already has data, skipping seeders");
 				}
-			} else {
-				if (verbose)
-					console.log("✓ Database already has data, skipping seeders");
 			}
+
+			// Start servers if requested
+			if (shouldStartServers && Object.keys(appsToStart).length > 0) {
+				// Run beforeServers hook
+				if (config.hooks?.beforeServers) {
+					await config.hooks.beforeServers(getHookContext());
+				}
+
+				// Build if production
+				if (productionBuild) {
+					buildApps(appsToStart, root, envVars, { verbose });
+				}
+
+				// Start servers
+				const pids = await startDevServers(appsToStart, root, envVars, ports, {
+					verbose,
+					productionBuild,
+					isCI,
+				});
+
+				// Wait for servers to be ready
+				if (verbose) console.log("⏳ Waiting for servers to be ready...");
+				await waitForDevServers(appsToStart, ports, {
+					timeout: isCI ? 120000 : 60000,
+					verbose,
+					productionBuild,
+				});
+
+				// Run afterServers hook
+				if (config.hooks?.afterServers) {
+					await config.hooks.afterServers(getHookContext());
+				}
+
+				if (verbose) console.log("✅ Environment ready\n");
+				return pids;
+			}
+
+			if (verbose) console.log("✅ Containers ready\n");
+			return null;
+		} catch (error) {
+			if (containersReady) {
+				console.error(
+					"ℹ Containers are still running. Use `bunx buncargo dev --down` to stop them.",
+				);
+			}
+			throw error;
 		}
-
-		// Start servers if requested
-		if (shouldStartServers && Object.keys(appsToStart).length > 0) {
-			// Run beforeServers hook
-			if (config.hooks?.beforeServers) {
-				await config.hooks.beforeServers(getHookContext());
-			}
-
-			// Build if production
-			if (productionBuild) {
-				buildApps(appsToStart, root, envVars, { verbose });
-			}
-
-			// Start servers
-			const pids = await startDevServers(appsToStart, root, envVars, ports, {
-				verbose,
-				productionBuild,
-				isCI,
-			});
-
-			// Wait for servers to be ready
-			if (verbose) console.log("⏳ Waiting for servers to be ready...");
-			await waitForDevServers(appsToStart, ports, {
-				timeout: isCI ? 120000 : 60000,
-				verbose,
-				productionBuild,
-			});
-
-			// Run afterServers hook
-			if (config.hooks?.afterServers) {
-				await config.hooks.afterServers(getHookContext());
-			}
-
-			if (verbose) console.log("✅ Environment ready\n");
-			return pids;
-		}
-
-		if (verbose) console.log("✅ Containers ready\n");
-		return null;
 	}
 
 	async function stop(stopOptions: StopOptions = {}): Promise<void> {
@@ -406,8 +410,10 @@ export function createDevEnvironment<
 	}
 
 	async function isRunning(): Promise<boolean> {
-		const serviceCount = Object.keys(services).length;
-		return areContainersRunning(projectName, serviceCount);
+		return areServicesRunning(
+			projectName,
+			resolveComposeServiceNames(services, Object.keys(services)),
+		);
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -422,8 +428,8 @@ export function createDevEnvironment<
 		} = {},
 	): Promise<DevServerPids> {
 		const { productionBuild = false, verbose = true, onlyApps } = options;
-		assertOnlyAppNames(Object.keys(apps), onlyApps);
-		const appsToStart = pickApps(apps, onlyApps);
+		const selection = resolveSelectedApps(apps, onlyApps);
+		const appsToStart = selection.apps;
 		const envVars = buildEnvVars(productionBuild);
 		const isCI = process.env.CI === "true";
 
@@ -460,8 +466,8 @@ export function createDevEnvironment<
 		} = {},
 	): Promise<void> {
 		const { timeout = 60000, productionBuild = false, onlyApps } = options;
-		assertOnlyAppNames(Object.keys(apps), onlyApps);
-		const appsToWait = pickApps(apps, onlyApps);
+		const selection = resolveSelectedApps(apps, onlyApps);
+		const appsToWait = selection.apps;
 		await waitForDevServers(appsToWait, ports, { timeout, productionBuild });
 	}
 

@@ -81,6 +81,20 @@ export async function areContainersRunning(
 	}
 }
 
+/**
+ * Check if the requested compose services are all running.
+ */
+export async function areServicesRunning(
+	project: string,
+	serviceNames: string[],
+): Promise<boolean> {
+	if (serviceNames.length === 0) return false;
+	const runningStates = await Promise.all(
+		serviceNames.map((serviceName) => isContainerRunning(project, serviceName)),
+	);
+	return runningStates.every(Boolean);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Container Lifecycle
 // ═══════════════════════════════════════════════════════════════════════════
@@ -88,6 +102,12 @@ export async function areContainersRunning(
 export interface StartContainersOptions {
 	verbose?: boolean;
 	wait?: boolean;
+	composeFile?: string;
+	services?: string[];
+}
+
+export interface ComposeCommandContext {
+	projectName?: string;
 	composeFile?: string;
 }
 
@@ -99,6 +119,18 @@ export function getComposeArg(composeFile?: string): string {
 }
 
 /**
+ * Build `docker compose` prefix with optional project and compose file args.
+ */
+export function getComposeCommandPrefix(
+	context: ComposeCommandContext = {},
+): string {
+	const { projectName, composeFile } = context;
+	const composeArg = getComposeArg(composeFile);
+	const projectArg = projectName ? `-p ${projectName}` : "";
+	return `docker compose ${composeArg} ${projectArg}`.trim();
+}
+
+/**
  * Start Docker Compose containers.
  */
 export function startContainers(
@@ -107,14 +139,16 @@ export function startContainers(
 	envVars: Record<string, string>,
 	options: StartContainersOptions = {},
 ): void {
-	const { verbose = true, wait = true, composeFile } = options;
+	const { verbose = true, wait = true, composeFile, services = [] } = options;
 	assertDockerRunning();
 
 	if (verbose) console.log("🐳 Starting Docker containers...");
 
 	const composeArg = getComposeArg(composeFile);
 	const waitFlag = wait ? "--wait" : "";
-	const cmd = `docker compose ${composeArg} up -d ${waitFlag}`.trim();
+	const servicesArg = services.join(" ");
+	const cmd =
+		`docker compose ${composeArg} up -d ${waitFlag} ${servicesArg}`.trim();
 
 	execSync(cmd, {
 		cwd: root,
@@ -195,6 +229,7 @@ export function startService(
 export interface HealthCheckContext {
 	projectName?: string;
 	root?: string;
+	composeFile?: string;
 }
 
 /**
@@ -205,15 +240,18 @@ export function createBuiltInHealthCheck(
 	serviceName: string,
 	context: HealthCheckContext = {},
 ): HealthCheckFn {
-	const { projectName, root } = context;
+	const { projectName, root, composeFile } = context;
+	const composeCommandPrefix = getComposeCommandPrefix({
+		projectName,
+		composeFile,
+	});
 
 	switch (type) {
 		case "pg_isready":
 			return async () => {
 				try {
-					const projectArg = projectName ? `-p ${projectName}` : "";
 					execSync(
-						`docker compose ${projectArg} exec -T ${serviceName} pg_isready -U postgres`,
+						`${composeCommandPrefix} exec -T ${serviceName} pg_isready -U postgres`,
 						{
 							cwd: root,
 							stdio: ["pipe", "pipe", "pipe"],
@@ -228,9 +266,8 @@ export function createBuiltInHealthCheck(
 		case "redis-cli":
 			return async () => {
 				try {
-					const projectArg = projectName ? `-p ${projectName}` : "";
 					execSync(
-						`docker compose ${projectArg} exec -T ${serviceName} redis-cli ping`,
+						`${composeCommandPrefix} exec -T ${serviceName} redis-cli ping`,
 						{
 							cwd: root,
 							stdio: ["pipe", "pipe", "pipe"],
@@ -312,6 +349,7 @@ export async function waitForService(
 		pollInterval?: number;
 		projectName?: string;
 		root?: string;
+		composeFile?: string;
 	} = {},
 ): Promise<void> {
 	const {
@@ -319,6 +357,7 @@ export async function waitForService(
 		pollInterval = POLL_INTERVAL,
 		projectName,
 		root,
+		composeFile,
 	} = options;
 
 	// No health check configured - just return
@@ -333,7 +372,7 @@ export async function waitForService(
 			: createBuiltInHealthCheck(
 					config.healthCheck,
 					config.serviceName ?? serviceName,
-					{ projectName, root },
+					{ projectName, root, composeFile },
 				);
 
 	for (let i = 0; i < maxAttempts; i++) {
@@ -357,6 +396,7 @@ export async function waitForAllServices(
 		verbose?: boolean;
 		projectName?: string;
 		root?: string;
+		composeFile?: string;
 	} = {},
 ): Promise<void> {
 	const { verbose = true, ...waitOptions } = options;
@@ -393,6 +433,7 @@ export async function waitForServiceByType(
 		verbose?: boolean;
 		projectName?: string;
 		root?: string;
+		composeFile?: string;
 	} = {},
 ): Promise<void> {
 	const {
@@ -401,10 +442,12 @@ export async function waitForServiceByType(
 		verbose = false,
 		projectName,
 		root,
+		composeFile,
 	} = options;
 	const healthCheckFn = createBuiltInHealthCheck(healthCheckType, serviceName, {
 		projectName,
 		root,
+		composeFile,
 	});
 
 	for (let i = 0; i < maxAttempts; i++) {
@@ -417,4 +460,56 @@ export async function waitForServiceByType(
 	}
 
 	throw new Error(`Service ${serviceName} did not become ready in time`);
+}
+
+export interface EnsureServicesRunningOptions {
+	verbose?: boolean;
+	wait?: boolean;
+	composeFile?: string;
+}
+
+/**
+ * Ensure the requested service subset is running and healthy.
+ */
+export async function ensureServicesRunning(
+	root: string,
+	projectName: string,
+	envVars: Record<string, string>,
+	services: Record<string, ServiceConfig>,
+	ports: Record<string, number>,
+	options: EnsureServicesRunningOptions = {},
+): Promise<{ started: boolean; composeServiceNames: string[] }> {
+	const { verbose = true, wait = true, composeFile } = options;
+	const composeServiceNames = Object.entries(services).map(
+		([serviceKey, config]) => config.serviceName ?? serviceKey,
+	);
+	const alreadyRunning = await areServicesRunning(
+		projectName,
+		composeServiceNames,
+	);
+
+	if (alreadyRunning) {
+		if (verbose) console.log("✓ Containers already running");
+	} else {
+		startContainers(root, projectName, envVars, {
+			verbose,
+			wait: false,
+			composeFile,
+			services: composeServiceNames,
+		});
+	}
+
+	if (wait) {
+		await waitForAllServices(services, ports, {
+			verbose,
+			projectName,
+			root,
+			composeFile,
+		});
+	}
+
+	return {
+		started: !alreadyRunning,
+		composeServiceNames,
+	};
 }

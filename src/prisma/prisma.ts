@@ -1,5 +1,5 @@
 /**
- * Prisma integration for dev-tools-v2.
+ * Prisma integration for buncargo.
  *
  * When `prisma` is configured in defineDevConfig, `dev.prisma` becomes available
  * with methods to run prisma commands against the Docker development database.
@@ -24,11 +24,8 @@
 
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import {
-	isContainerRunning,
-	startService,
-	waitForServiceByType,
-} from "../docker/runtime";
+import { ensureServicesRunning } from "../docker/runtime";
+import { getComposeServiceName } from "../planning";
 import type {
 	AppConfig,
 	BuiltInHealthCheck,
@@ -71,33 +68,42 @@ export function createPrismaRunner<
 	}
 
 	async function ensureDatabase(): Promise<void> {
-		const alreadyRunning = await isContainerRunning(env.projectName, service);
-
-		if (alreadyRunning) {
-			console.log(`✓ ${service} already running`);
-			return;
-		}
-
-		console.log(`🐳 Starting ${service}...`);
-
 		const composeFile = env.ensureComposeFile();
 		const envVars = env.buildEnvVars();
-		startService(env.root, env.projectName, service, envVars, {
-			verbose: false,
-			composeFile,
-		});
+		const serviceConfig = (env.services as Record<string, ServiceConfig>)[
+			service
+		];
+		if (!serviceConfig) {
+			throw new Error(`Prisma service "${service}" is not configured`);
+		}
 
 		const port = (env.ports as Record<string, number>)[service];
 		if (!port) {
 			throw new Error(`Service ${service} not found in dev environment ports`);
 		}
 
-		// Use the appropriate health check for the service
 		const healthCheckType = healthCheckTypes[service] ?? "tcp";
-		console.log(`⏳ Waiting for ${service} to be healthy...`);
-		await waitForServiceByType(service, healthCheckType, port, {
-			verbose: true,
-		});
+		const healthCheckedServiceConfig: ServiceConfig = {
+			...serviceConfig,
+			healthCheck: serviceConfig.healthCheck ?? healthCheckType,
+			serviceName: getComposeServiceName(
+				env.services as Record<string, ServiceConfig>,
+				service,
+			),
+		};
+
+		await ensureServicesRunning(
+			env.root,
+			env.projectName,
+			envVars,
+			{ [service]: healthCheckedServiceConfig },
+			{ [service]: port },
+			{
+				verbose: true,
+				wait: true,
+				composeFile,
+			},
+		);
 	}
 
 	async function run(args: string[]): Promise<number> {
@@ -147,7 +153,8 @@ Examples:
 				resolve(code ?? 0);
 			});
 
-			proc.on("error", () => {
+			proc.on("error", (error) => {
+				console.error(`❌ Failed to start Prisma CLI: ${error.message}`);
 				resolve(1);
 			});
 		});

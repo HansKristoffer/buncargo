@@ -32,12 +32,6 @@ export async function handlePrisma(args: string[]): Promise<void> {
 		process.exit(1);
 	}
 
-	const running = await env.isRunning();
-	if (!running) {
-		console.log("🐳 Starting database container...");
-		await env.start({ startServers: false, wait: true });
-	}
-
 	const exitCode = await env.prisma.run(args);
 	process.exit(exitCode);
 }
