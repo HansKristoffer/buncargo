@@ -6,6 +6,7 @@ import type { AppConfig, ServiceConfig } from "../types";
 import { applyHostPlanToUrls } from "./hosts/plan";
 import {
 	computeDevIdentity,
+	computeLoopbackUrls,
 	computeUrls,
 	getProjectName,
 	getWorktreeProjectSuffix,
@@ -195,6 +196,58 @@ describe("computeUrls", () => {
 		expect(result.mailpit).toBe("https://mailpit.serpier.localhost");
 		expect(result.apiLocal).toBe("http://192.168.1.100:3000");
 		expect(result.postgres).toMatch(/^postgresql:\/\//);
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// computeLoopbackUrls Tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("computeLoopbackUrls", () => {
+	const services: Record<string, ServiceConfig> = {
+		postgres: { port: 5432 },
+		mailpit: { port: 8025 },
+	};
+	const apps: Record<string, AppConfig> = {
+		api: { port: 3000, devCommand: "bun run dev" },
+	};
+	const ports = { postgres: 5432, mailpit: 8025, api: 3000 };
+
+	it("addresses every service and app through localhost", () => {
+		const result = computeLoopbackUrls(services, apps, ports);
+
+		expect(result.api).toBe("http://localhost:3000");
+		expect(result.mailpit).toBe("http://localhost:8025");
+		expect(result.postgres).toBe(
+			"postgresql://postgres:postgres@localhost:5432/postgres",
+		);
+	});
+
+	// The LAN IP is a different address for a different purpose (mobile
+	// devices), so folding it in here would conflate the two.
+	it("omits the <app>Local LAN aliases", () => {
+		expect(computeLoopbackUrls(services, apps, ports)).not.toHaveProperty(
+			"apiLocal",
+		);
+	});
+
+	// The whole point: `applyHostPlanToUrls` rewrites the main map in place, and
+	// consumers that do not trust the local CA need what it overwrote.
+	it("survives a named-host rewrite of the main URL map", () => {
+		const urls = computeUrls(services, apps, ports, "192.168.1.100");
+		const loopback = computeLoopbackUrls(services, apps, ports);
+
+		applyHostPlanToUrls(urls, [
+			{
+				kind: "app",
+				name: "api",
+				hostname: "api.serpier.localhost",
+				targetPort: 3000,
+			},
+		]);
+
+		expect(urls.api).toBe("https://api.serpier.localhost");
+		expect(loopback.api).toBe("http://localhost:3000");
 	});
 });
 

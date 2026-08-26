@@ -151,6 +151,8 @@ expoApp: {
 
 All of `service.postgres()`, `redis()`, `clickhouse()`, `mailpit()`, `typesense()` accept `port`, `expose`, `healthCheck`, `serviceName`, and `docker`. Beyond that each takes only what it honors: `database` / `user` / `password` on `postgres` and `clickhouse` (their URLs carry credentials), `secondaryPort` on `clickhouse` and `mailpit`, `apiKey` on `typesense`. Anything else is a type error — use `service.custom({ ... })` for a service that needs more.
 
+Health check defaults follow what each image can actually run: `pg_isready` on postgres, `redis-cli` on redis, in-container HTTP on clickhouse, and `tcp` on mailpit and typesense, whose images ship no `wget` or `curl` to probe with. A `tcp` check emits no Compose healthcheck and is polled from the host instead.
+
 ### Custom service
 
 ```typescript
@@ -209,13 +211,15 @@ bunx buncargo version
 ## Startup order
 
 ```
-containers + migrations + seed
+containers + migrations + seed + envFile sync
         → start apps without needsPublicUrls
         → wait for their healthEndpoints (skipped when healthEndpoint: false)
         → open public tunnels when --expose is set
         → setPublicUrls / inject *_PUBLIC_URL
         → start apps with needsPublicUrls
 ```
+
+`needsPublicUrls` only splits the waves when `--expose` is actually passed. On a plain `bunx buncargo dev` there is no tunnel URL to wait for, so those apps start in the first wave and get health-checked like everything else — one static config is correct either way, with no need to inspect `process.argv`.
 
 `classifyCliApps` always runs: a healthy app already listening on its port is reused instead of restarted.
 
@@ -266,11 +270,56 @@ The first `buncargo dev` in a repo with `hosts` on prompts for one-time machine 
 
 Both steps need your password: the CA goes into the system trust store, and only root may bind `:443` or write the launchd/systemd unit. Setup is all-or-nothing — if the service fails to load, buncargo removes the unit file rather than leave a half-installed machine that skips setup on the next run. Setup is skipped without a TTY, since the password prompt would hang.
 
-`buncargo hosts install` records what it installed in `~/.buncargo/hosts-service.json`. The daemon runs whichever buncargo started it, usually the one in a project's `node_modules`, so reinstalling dependencies there can leave the machine-wide service pointing at a path that no longer exists. `buncargo hosts status` and `buncargo doctor` report that as stale, and `buncargo hosts install` (or `doctor --fix`) repairs it. The daemon logs to `/var/log/buncargo-hosts.log` (on Linux, also `journalctl -u buncargo-hosts.service`).
+`buncargo hosts install` records what it installed in `~/.buncargo/hosts-service.json`. The daemon runs whichever buncargo started it, usually the one in a project's `node_modules`, so reinstalling dependencies there can leave the machine-wide service pointing at a path that no longer exists — and upgrading buncargo leaves it running the previous version's daemon bundle. Either way it keeps answering on `:443`, so `buncargo dev` prompts to update it (Enter updates, `s` skips this run) rather than waiting for you to notice; without a TTY it warns and continues on the old daemon. `buncargo hosts status` and `buncargo doctor` report the same thing, and `buncargo hosts install` or `doctor --fix` repairs it outright.
+
+The daemon logs to `/var/log/buncargo-hosts.log` (on Linux, also `journalctl -u buncargo-hosts.service`). A failure that persists is logged at most once a minute, with a count of what was suppressed, so a stale daemon retrying a certificate it cannot serve cannot fill the disk.
 
 `buncargo hosts daemon` runs that same proxy in the foreground instead of under launchd/systemd, which is how you watch its output while debugging. It re-reads `~/.buncargo/routes.json` every second, so apps starting and stopping need no restart, and it exits on its own once no routes have been registered for a while. `--service` is what the installed unit passes: it keeps the daemon alive through idle periods and is not meant to be typed by hand. Binding `:443` still needs root, so run it under `sudo` or set `BUNCARGO_HOSTS_PORT` to an unprivileged port.
 
 Failure degrades to `http://localhost:<port>` and never blocks the dev run. Named hosts stay off on Windows, in CI (`CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL`), when `BUNCARGO_HOSTS=0`, or with `--no-hosts`.
+
+### Loopback URLs
+
+Some clients cannot follow a named HTTPS URL: Playwright does not trust the local CA, the Stripe CLI fails the HTTP→HTTPS redirect, and GUI database clients want a plain connection string. Enabling `hosts` rewrites `urls.<name>` in place, so those consumers get `loopbackUrls` instead — the same set of services and apps, always addressed as `http://localhost:<port>`.
+
+It is available everywhere the URLs are: `env.loopbackUrls`, the `env()` and `envVars()` context, `HookContext`, the `<NAME>_LOOPBACK_URL` env var, and `buncargo env --get loopbackUrls.api` for shell scripts. There is no `<app>Local` member — that key is the LAN IP, a different address for a different purpose (mobile devices on the network).
+
+```typescript
+// playwright.config.ts
+const env = JSON.parse(execSync("bunx buncargo env").toString());
+export default defineConfig({ use: { baseURL: env.loopbackUrls.web } });
+```
+
+## Dotenv sync
+
+buncargo injects the right environment into processes it spawns, but `bun test`, an ad-hoc `bun run` and Playwright read `.env` off disk. Because the port offset is a hash of the project name and shifts again per worktree, a hand-written `localhost:5432` is stale by construction.
+
+```typescript
+options: {
+  envFile: true,                              // .env
+  // envFile: { path: ".env", createFrom: ".env.example" }
+}
+```
+
+It runs once containers are ready and before migrations, since Prisma reads `.env` itself. The rules are deliberately conservative, so the file stays the repo's contract rather than buncargo's dump:
+
+- Only keys **already in the file** are touched; an absent key is never added, and a missing file is only created when you set `createFrom`.
+- A value is only replaced when it is empty, a bare port number, or already on `localhost` / `127.0.0.1`. A deliberate override — a cloned remote database, a shared staging service — survives untouched.
+- Comments, ordering, quoting, `export` prefixes and spacing are preserved byte for byte.
+- Values come from the **loopback** URLs, never the named `https://` hosts.
+- Keys buncargo cannot derive — a second connection string for the same database, a URL with a path suffix — come from `values`, which is handed the ports and the loopback URLs and nothing else:
+
+```typescript
+envFile: {
+  path: ".env",
+  createFrom: ".env.example",
+  values: (ports, loopbackUrls) => ({
+    DATABASE_URL_PGBOUNCER: loopbackUrls.postgres,
+    API_URL: `${loopbackUrls.api}/api`,
+  }),
+}
+```
+- The write lands through a temp file and a rename, so a test runner loading `.env` concurrently never sees it truncated.
 
 ## Environment variables
 
@@ -282,6 +331,7 @@ Failure degrades to `http://localhost:<port>` and never blocks the dev run. Name
 | `NODE_ENV` | Shared env | `development` unless production build |
 | `<NAME>_PORT` | Shared env | Assigned port for each service/app |
 | `<NAME>_URL` | Shared env | Local URL. Named HTTPS when hosts are active (`https://api.myapp.localhost`) |
+| `<NAME>_LOOPBACK_URL` | Shared env | Always `http://localhost:<port>`, never rewritten by named hosts |
 | `<NAME>_PUBLIC_URL` | Shared env | Tunnel URL while a tunnel is active |
 | `NODE_EXTRA_CA_CERTS` | Shared env | Path to the mkcert CA when named hosts are active |
 | `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` | Shared env | `.localhost` (or `.<tld>`) so Vite accepts the named Host |
@@ -291,8 +341,28 @@ Failure degrades to `http://localhost:<port>` and never blocks the dev run. Name
 | `CLICKHOUSE_NATIVE_PORT` | Shared env | ClickHouse `secondaryPort` |
 | `PORT` | Per-app process | That app's assigned port |
 | `HOST` | Per-app process | `0.0.0.0` |
+| `BUNCARGO_APP_NAME` | Per-app process | The app's key in `apps`, so a framework plugin knows which app it is |
+| `BUNCARGO_APP_HOSTNAME` | Per-app process | That app's named host (only when named hosts are active) |
 
 Service `env` maps (`url` / `port` / `secondaryPort`) add more shared names. App `staticEnv` and `envVars` are injected only into that app.
+
+### Vite plugin
+
+`buncargoVite()` configures the Vite dev server from the variables above, which removes the three things a Vite app in a buncargo repo otherwise hand-writes:
+
+```ts
+// apps/web/vite.config.ts
+import { buncargoVite } from "buncargo/vite";
+import react from "@vitejs/plugin-react";
+
+export default defineConfig({
+  plugins: [buncargoVite(), react()],
+});
+```
+
+It sets `server.port` from `PORT`, binds `server.host` to `127.0.0.1` (Vite's default `localhost` resolves to `[::1]` on many systems, so anything dialing IPv4 gets a refused connection), passes the named-hosts suffix through to `server.allowedHosts`, and — only when `BUNCARGO_APP_HOSTNAME` is set — points `server.hmr` at `wss://<hostname>:<hosts port>` so the HMR socket follows the HTTPS page rather than the raw Vite port.
+
+Vite is not a dependency of buncargo: the plugin's return type is declared structurally, so importing it costs nothing in a repo without Vite. Override the app or the bind address when you need to: `buncargoVite({ app: "web", host: "0.0.0.0" })`.
 
 ### Read by buncargo
 
@@ -373,9 +443,9 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | `staticEnv` | `Record<string, string \| number>` | `{}` | Constant env for this app only |
 | `envVars` | `(ports, urls, ctx) => Record<string, string \| number>` | `undefined` | Computed env for this app only |
 | `interactive` | `boolean` | `false` | Own the TTY. Only one app may set this |
-| `needsPublicUrls` | `boolean` | `false` | Start after tunnels so env sees `*_PUBLIC_URL` |
+| `needsPublicUrls` | `boolean` | `false` | Start after tunnels so env sees `*_PUBLIC_URL`. Ignored without `--expose` |
 
-`envVars` context: `{ projectName, localIp, portOffset, publicUrls }`.
+`envVars` context: `{ projectName, localIp, portOffset, publicUrls, loopbackUrls }`.
 
 ### `DevOptions`
 
@@ -383,6 +453,7 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | --- | --- | --- | --- |
 | `worktreeIsolation` | `boolean` | `true` | Unique ports and compose project per worktree |
 | `autoShutdown` | `number \| false` | `180000` via CLI | Idle watchdog timeout in **ms**. `false` disables (same as `--keep-containers`) |
+| `envFile` | `boolean \| { path?, createFrom? }` | `false` | Sync a dotenv to the allocated ports. `true` means `.env` |
 | `verbose` | `boolean` | `true` | Default verbosity |
 | `expoApiApp` | `string` | `"api"` | App key used by `getExpoApiUrl()`. Must match a configured app |
 | `frontendApp` | `string` | `"platform"`, then `"web"` | App key used by `getFrontendPort()`. Must match a configured app |
@@ -472,7 +543,7 @@ Health checks always probe `http://localhost:<port>`, never the named HTTPS URL.
 
 Mark targets with `expose: true`, then `bunx buncargo dev --expose` or `--expose=api,web`.
 
-Tunnels open **after** wave-1 apps are healthy and **before** `needsPublicUrls` apps spawn, so Expo can read `EXPO_PACKAGER_PROXY_URL` at start. Public URLs are normalized (trailing slash stripped).
+Tunnels open **after** wave-1 apps are healthy and **before** `needsPublicUrls` apps spawn, so Expo can read `EXPO_PACKAGER_PROXY_URL` at start. Public URLs are normalized (trailing slash stripped). Without `--expose` there is no second wave at all.
 
 Reuse: if an exposed app is already healthy and `.buncargo/public-tunnels.json` still has a live URL, that URL is inherited.
 
@@ -484,7 +555,8 @@ Programmatic: `openPublicTunnels({ names?, waitForHealthy? })` then `buildAppEnv
 
 The published runner lives at `dist/core/watchdog-runner.js`. Heartbeat files are `/tmp/<project>-<rootHash>-heartbeat` so two worktrees do not collide. Logs: `/tmp/<project>-<rootHash>-watchdog.log`.
 
-- **Primary trigger:** owning CLI PID is dead (or the heartbeat file is gone) → ~15s grace → `docker compose down`
+- **Crashed owner:** the CLI PID is dead, or the heartbeat file is gone → ~15s grace → `docker compose down`
+- **Clean exit:** Ctrl-C leaves a `released` marker instead, and containers are held for the full idle backstop so the next `dev` reuses them rather than recreating them
 - **Idle backstop:** 3 minutes, only if the owner PID is also gone
 - **Sleep safety:** a wall-clock jump > 30s resets the idle clock; the watchdog never tears down while the owner is alive
 - Heartbeat every 10s, poll every 10s

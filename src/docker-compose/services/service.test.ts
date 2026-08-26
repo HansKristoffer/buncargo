@@ -53,7 +53,8 @@ describe("service helpers", () => {
 	it("builds typesense with a default API key", () => {
 		const cfg = service.typesense();
 		expect(cfg.port).toBe(8108);
-		expect(cfg.healthCheck).toBe("http");
+		// The image has no wget/curl, so an in-container probe can never pass.
+		expect(cfg.healthCheck).toBe("tcp");
 		expect(cfg.staticEnv).toEqual({ TYPESENSE_API_KEY: "xyz" });
 		expect(service.typesense({ apiKey: "secret" }).staticEnv).toEqual({
 			TYPESENSE_API_KEY: "secret",

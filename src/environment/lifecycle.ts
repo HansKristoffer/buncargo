@@ -1,6 +1,7 @@
-import { toPortMap } from "../core/ports";
+import { relative } from "node:path";
+import { toPortMap, toUrlMap } from "../core/ports";
 import { isCI } from "../core/runtime-flags";
-import { formatDone, formatStep } from "../core/style";
+import { formatDone, formatStep, formatWarn } from "../core/style";
 import {
 	areServicesRunning,
 	ensureServicesRunning,
@@ -19,6 +20,7 @@ import type {
 	StopOptions,
 } from "../types";
 import type { DevEnvContext } from "./context";
+import { syncEnvFile } from "./env-file";
 import type { DevEnvVarsApi } from "./env-vars";
 import { runMigrationsSequentially } from "./migrations";
 import { runSeedIfNeeded } from "./seeding";
@@ -81,6 +83,34 @@ export function createLifecycleApi<
 		return runSeedIfNeeded(ctx, envVars, options);
 	}
 
+	/**
+	 * Wired here rather than offered as a hook: `beforeServers` never fires on
+	 * the CLI path, which calls `start({ startServers: false })`.
+	 */
+	async function syncConfiguredEnvFile(verbose: boolean): Promise<void> {
+		const result = await syncEnvFile({
+			root: ctx.root,
+			envFile: config.options?.envFile,
+			projectName: ctx.projectName,
+			services,
+			ports: toPortMap(ports),
+			loopbackUrls: toUrlMap(ctx.loopbackUrls),
+		});
+		if (!verbose || !result) return;
+		if (result.absent) {
+			console.log(
+				formatWarn(`No ${relative(ctx.root, result.path)} to sync; skipped`),
+			);
+			return;
+		}
+		if (result.created || result.changed.length > 0) {
+			const what = result.created
+				? "Created"
+				: `Synced ${result.changed.length} value${result.changed.length === 1 ? "" : "s"} in`;
+			console.log(formatDone(`${what} ${relative(ctx.root, result.path)}`));
+		}
+	}
+
 	async function start(
 		startOptions: StartOptions<TApps> = {},
 	): Promise<DevServerPids | null> {
@@ -128,6 +158,10 @@ export function createLifecycleApi<
 			{ verbose, wait, composeFile: ctx.composeFile, autoStartDocker },
 		);
 		containersReady = true;
+
+		// Before migrations, not just before servers: Prisma and friends read
+		// `.env` off disk themselves, so a stale port fails the migrate step.
+		await syncConfiguredEnvFile(verbose);
 
 		try {
 			await runPrepareSteps(verbose);

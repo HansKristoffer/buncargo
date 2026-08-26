@@ -246,8 +246,24 @@ describe("createDevEnvironment env builders", () => {
 			expect(env.buildEnvVars().__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS).toBe(
 				".localhost",
 			);
+			// A framework plugin in the app derives its dev-server config from
+			// these, so they have to name the app and its own host, not the primary.
+			const webEnv = env.buildAppEnvVars("web");
+			expect(webEnv.BUNCARGO_APP_NAME).toBe("web");
+			expect(webEnv.BUNCARGO_APP_HOSTNAME).toBe(
+				"feature-hosts.serpier.localhost",
+			);
+			expect(env.buildAppEnvVars("api").BUNCARGO_APP_HOSTNAME).toBe(
+				"feature-hosts.api.serpier.localhost",
+			);
 			env.setNamedHostsActive(false);
 			expect(env.urls.api).toBe(`http://localhost:${env.ports.api}`);
+			// No named host means the browser reaches the dev server directly, so
+			// advertising a hostname would send HMR to a proxy that is not serving.
+			const plainEnv: Record<string, string | undefined> =
+				env.buildAppEnvVars("web");
+			expect(plainEnv.BUNCARGO_APP_NAME).toBe("web");
+			expect(plainEnv.BUNCARGO_APP_HOSTNAME).toBeUndefined();
 		} finally {
 			if (previousCi === undefined) delete process.env.CI;
 			else process.env.CI = previousCi;

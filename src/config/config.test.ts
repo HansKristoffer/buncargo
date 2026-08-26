@@ -746,6 +746,7 @@ describe("mergeConfigs", () => {
 			localIp: "127.0.0.1",
 			portOffset: 0,
 			publicUrls: {},
+			loopbackUrls: { postgres: "http://localhost:5432" },
 		};
 
 		expect(result.env?.({ postgres: 5432 }, { postgres: "" }, ctx)).toEqual({

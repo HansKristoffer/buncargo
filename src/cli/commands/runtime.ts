@@ -84,6 +84,7 @@ export async function handleEnv(args: string[] = []): Promise<void> {
 		projectName: env.projectName,
 		ports: env.ports,
 		urls: env.urls,
+		loopbackUrls: env.loopbackUrls,
 		portOffset: env.portOffset,
 		portOffsetProvenance: env.portOffsetProvenance,
 		isWorktree: env.isWorktree,

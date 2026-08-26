@@ -33,6 +33,10 @@ export async function activateNamedHosts<
 		}
 		return;
 	}
+	// Named hosts still work, but something about the setup will bite later.
+	for (const note of result.notes ?? []) {
+		log.warn(note);
+	}
 
 	try {
 		// Widen the certificate before publishing, not after. The daemon polls

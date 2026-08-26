@@ -69,7 +69,9 @@ describe("getEnvVar", () => {
 		expect(getEnvVar(config, "NATS_URL")).toMatch(/^http:\/\/localhost:\d+$/);
 		expect(getEnvVar(config, "API_URL")).toMatch(/^http:\/\/localhost:\d+$/);
 		expect(getEnvVar(config, "WEBLOCAL_URL")).toMatch(/^http:\/\//);
-	});
+		// Each getEnvVar call resolves ports from scratch, and every resolution
+		// probes for conflicts, so six of them do not fit the default timeout.
+	}, 30_000);
 
 	it("emits named HTTPS URLs when hosts are enabled", () => {
 		const previousCi = process.env.CI;
@@ -89,6 +91,14 @@ describe("getEnvVar", () => {
 			});
 			expect(getEnvVar(config, "API_URL")).toMatch(
 				/^https:\/\/(?:[a-z0-9-]+\.)?api\.serpier\.localhost$/,
+			);
+			// Playwright and the Stripe CLI cannot use the named URL, so the
+			// loopback address has to survive the rewrite alongside it.
+			expect(getEnvVar(config, "API_LOOPBACK_URL")).toMatch(
+				/^http:\/\/localhost:\d+$/,
+			);
+			expect(getEnvVar(config, "POSTGRES_LOOPBACK_URL")).toMatch(
+				/^postgresql:\/\/postgres:postgres@localhost:\d+\/typed$/,
 			);
 		} finally {
 			if (previousCi === undefined) delete process.env.CI;

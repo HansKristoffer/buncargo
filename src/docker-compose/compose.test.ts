@@ -121,6 +121,10 @@ describe("buildComposeModel", () => {
 			"$" + "{MAILPITSECONDARY_PORT:-1025}:1025",
 		]);
 		expect(compose.services.typesense?.image).toBe("typesense/typesense:29.0");
+		// Neither preset may emit an in-container probe by default: mailpit opts
+		// out, and the typesense image ships no wget/curl to run one with.
+		expect(compose.services.mailpit?.healthcheck).toBeUndefined();
+		expect(compose.services.typesense?.healthcheck).toBeUndefined();
 		expect(compose.volumes).toEqual({
 			mailpit_data: {},
 			typesense_data: {},

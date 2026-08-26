@@ -12,9 +12,11 @@ import { applyHostPlanToUrls, planNamedHosts } from "./hosts/plan";
 import { getLocalIp } from "./network";
 import { resolvePortPlan } from "./port-allocation";
 import {
+	asComputedLoopbackUrls,
 	asComputedPorts,
 	asComputedUrls,
 	computeDevIdentity,
+	computeLoopbackUrls,
 	computeUrls,
 	findMonorepoRoot,
 } from "./ports";
@@ -138,12 +140,17 @@ export function getEnvVar<
 	type Apps = NonNullable<typeof apps>;
 	const ports = asComputedPorts<typeof services, Apps>(portMap);
 	const urls = asComputedUrls<typeof services, Apps>(urlMap);
+	// Computed from the same ports, so this survives the host-plan rewrite above.
+	const loopbackUrls = asComputedLoopbackUrls<typeof services, Apps>(
+		computeLoopbackUrls(services, apps, portMap),
+	);
 
 	const shared = buildSharedEnvValues({
 		projectName: identity.projectName,
 		services,
 		ports,
 		urls,
+		loopbackUrls,
 		publicUrls: {},
 	});
 	const envVars = mergeSharedEnvWithOverlay(
@@ -158,6 +165,7 @@ export function getEnvVar<
 			localIp,
 			portOffset: portPlan.offset,
 			publicUrls: {},
+			loopbackUrls,
 		},
 	);
 

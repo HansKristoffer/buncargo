@@ -14,6 +14,14 @@ import {
 export interface HeartbeatPayload {
 	ts: number;
 	pid: number;
+	/**
+	 * The owner exited on purpose and may come straight back.
+	 *
+	 * Deleting the file instead made a deliberate Ctrl-C indistinguishable from
+	 * a crash, so the watchdog tore the stack down inside the short crash grace
+	 * and every restart paid for a container recreate.
+	 */
+	released?: boolean;
 }
 
 function namespaceId(projectName: string, root?: string): string {
@@ -57,13 +65,27 @@ export function startHeartbeat(
 	}, intervalMs);
 }
 
+/**
+ * Hand the stack back without condemning it.
+ *
+ * The marker keeps the watchdog's idle backstop in charge, so containers
+ * survive long enough for the developer to start the next run.
+ */
 export function stopHeartbeat(): void {
 	if (heartbeatInterval) {
 		clearInterval(heartbeatInterval);
 		heartbeatInterval = null;
 	}
 	if (heartbeatProject) {
-		removeHeartbeatFile(heartbeatProject.projectName, heartbeatProject.root);
+		try {
+			writeHeartbeatPayload(
+				heartbeatProject.projectName,
+				heartbeatProject.root,
+				{ ts: Date.now(), pid: 0, released: true },
+			);
+		} catch {
+			// A missing file is read as owner-death, which is the safe direction.
+		}
 		heartbeatProject = null;
 	}
 }
@@ -85,7 +107,11 @@ export function parseHeartbeatPayload(
 			Number.isFinite(parsed.ts) &&
 			typeof parsed.pid === "number"
 		) {
-			return { ts: parsed.ts, pid: parsed.pid };
+			return {
+				ts: parsed.ts,
+				pid: parsed.pid,
+				...(parsed.released === true ? { released: true } : {}),
+			};
 		}
 	} catch {
 		const timestamp = Number.parseInt(trimmed, 10);

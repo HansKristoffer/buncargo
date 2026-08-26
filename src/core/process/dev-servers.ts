@@ -99,6 +99,15 @@ export interface StartDevServersOptions {
 	extraArgs?: string[];
 	/** Called after wave-1 apps are healthy (CLI opens tunnels here). */
 	onAfterWave1?: () => Promise<void>;
+	/**
+	 * Hold `needsPublicUrls` apps back for wave 2. Default: true.
+	 *
+	 * The whole point of wave 2 is to spawn after `onAfterWave1` has published
+	 * tunnel URLs, so when no tunnel is opening there is nothing to wait for and
+	 * deferring only costs those apps their health check. Pass the expose flag
+	 * here and a single static config behaves correctly with and without it.
+	 */
+	deferPublicUrlApps?: boolean;
 	/** Supervise children until they exit. Default: false */
 	waitForExit?: boolean;
 	/** Called once when SIGINT/SIGTERM/SIGHUP arrives (waitForExit only). */
@@ -175,11 +184,14 @@ function installSignalHandlers(handler: () => void): () => void {
 function pickWave(
 	apps: Record<string, AppConfig>,
 	needsPublicUrls: boolean,
+	defer: boolean,
 ): Record<string, AppConfig> {
 	return Object.fromEntries(
-		Object.entries(apps).filter(
-			([, app]) => Boolean(app.needsPublicUrls) === needsPublicUrls,
-		),
+		Object.entries(apps).filter(([, app]) => {
+			// Without deferral there is no wave 2, so wave 1 is everything.
+			const wave = defer ? Boolean(app.needsPublicUrls) : false;
+			return wave === needsPublicUrls;
+		}),
 	);
 }
 
@@ -349,7 +361,8 @@ function superviseChildren(
 }
 
 /**
- * Start configured dev servers in two waves (`needsPublicUrls` last).
+ * Start configured dev servers, holding `needsPublicUrls` apps for a second
+ * wave when tunnels are opening (see `deferPublicUrlApps`).
  */
 export async function startDevServers(
 	apps: Record<string, AppConfig>,
@@ -370,6 +383,7 @@ export async function startDevServers(
 		waitForExit = false,
 		onSignal,
 		waitForHealth,
+		deferPublicUrlApps = true,
 	} = options;
 
 	const startable = Object.fromEntries(
@@ -377,8 +391,8 @@ export async function startDevServers(
 			([, app]) => resolveStartCommand(app, productionBuild) !== undefined,
 		),
 	);
-	const wave1 = pickWave(startable, false);
-	const wave2 = pickWave(startable, true);
+	const wave1 = pickWave(startable, false, deferPublicUrlApps);
+	const wave2 = pickWave(startable, true, deferPublicUrlApps);
 	const configuredInteractive = Object.entries(startable).find(
 		([, app]) => app.interactive,
 	)?.[0];

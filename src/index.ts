@@ -35,6 +35,14 @@ export {
 	type WorkspaceTypecheckOptions,
 	type WorkspaceTypecheckResult,
 } from "./typecheck/index";
+// Vite plugin. Also available as the `buncargo/vite` subpath, which is where a
+// vite.config.ts should import it from; it pulls in no Vite code either way.
+export {
+	type BuncargoViteConfig,
+	type BuncargoViteOptions,
+	type BuncargoVitePlugin,
+	buncargoVite,
+} from "./vite/index";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -45,12 +53,14 @@ export type {
 	AnyDevEnvironment,
 	AppConfig,
 	AppEnvVars,
+	AppHostOnlyEnvVarNames,
 	BuiltInHealthCheck,
 	BuiltInServiceEnvVarMap,
 	// CLI
 	CliOptions,
 	// Computed types
 	ComputedEnvVars,
+	ComputedLoopbackUrls,
 	ComputedPorts,
 	ComputedPublicUrls,
 	ComputedUrls,
@@ -76,6 +86,7 @@ export type {
 	DockerPresetName,
 	DockerPresetServiceDefinition,
 	DockerServiceDefinition,
+	EnvFileOptions,
 	EnvValues,
 	EnvVarsBuilder,
 	EnvVarsContext,

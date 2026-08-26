@@ -78,6 +78,7 @@ export function createDevEnvironment<
 		projectName: ctx.projectName,
 		ports: ctx.ports,
 		urls: ctx.urls,
+		loopbackUrls: ctx.loopbackUrls,
 		publicUrls: ctx.publicUrls as ComputedPublicUrls<TServices, TApps>,
 		services: ctx.services,
 		apps: ctx.apps,

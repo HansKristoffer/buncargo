@@ -1,4 +1,4 @@
-import type { DockerComposeHealthcheckRaw, ServiceConfig } from "../../types";
+import type { ServiceConfig } from "../../types";
 import {
 	defineDockerService,
 	type PresetServiceSharedOptions,
@@ -22,7 +22,10 @@ export const typesenseDockerService = defineDockerService<
 	preset: "typesense",
 	defaults: {
 		port: 8108,
-		healthCheck: "http",
+		// The image ships neither wget nor curl, so any in-container HTTP probe
+		// is permanently unhealthy. "tcp" emits no compose healthcheck and lets
+		// buncargo's host-side port poll gate readiness instead.
+		healthCheck: "tcp",
 	},
 	env: {
 		TYPESENSE_URL: "url",
@@ -35,12 +38,6 @@ export const typesenseDockerService = defineDockerService<
 	}),
 	build: ({ serviceKey, config }) => {
 		const apiKey = config.staticEnv?.TYPESENSE_API_KEY ?? "xyz";
-		const defaultHealthcheck: DockerComposeHealthcheckRaw = {
-			test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8108/health || exit 1"],
-			interval: "250ms",
-			timeout: "5s",
-			retries: 20,
-		};
 
 		return {
 			service: {
@@ -52,13 +49,9 @@ export const typesenseDockerService = defineDockerService<
 					TYPESENSE_API_KEY: apiKey,
 				},
 				command: `--data-dir /data --api-key=\${TYPESENSE_API_KEY:-${apiKey}} --enable-cors`,
-				healthcheck: resolveHealthcheck(
-					config.healthCheck,
-					defaultHealthcheck,
-					{
-						internalPort: 8108,
-					},
-				),
+				healthcheck: resolveHealthcheck(config.healthCheck, undefined, {
+					internalPort: 8108,
+				}),
 			},
 			volume: `${serviceKey}_data`,
 		};

@@ -21,6 +21,11 @@ import {
 	WATCHDOG_POLL_INTERVAL_MS,
 	WATCHDOG_SLEEP_JUMP_MS,
 } from "./watchdog-constants";
+import {
+	evaluateWatchdogTick,
+	type HeartbeatReading,
+	type WatchdogMemory,
+} from "./watchdog-decision";
 
 const PROJECT_NAME = process.env.WATCHDOG_PROJECT_NAME ?? "";
 const HEARTBEAT_FILE = process.env.WATCHDOG_HEARTBEAT_FILE ?? "";
@@ -91,9 +96,22 @@ process.on("SIGINT", () => {
 log(`Started for ${PROJECT_NAME} (PID: ${process.pid})`);
 log(`Idle backstop: ${IDLE_TIMEOUT / 60000} minutes`);
 
+/** Read the heartbeat, distinguishing "gone" from "cannot be parsed". */
+function readHeartbeat(): HeartbeatReading {
+	if (!existsSync(heartbeatFile)) {
+		return { status: "missing" };
+	}
+	try {
+		const payload = parseHeartbeatPayload(readFileSync(heartbeatFile, "utf-8"));
+		return payload ? { status: "ok", payload } : { status: "unreadable" };
+	} catch {
+		return { status: "unreadable" };
+	}
+}
+
 async function watchdog(): Promise<void> {
 	let lastPoll = Date.now();
-	let ownerDeadSince: number | null = null;
+	let memory: WatchdogMemory = { ownerDeadSince: null };
 
 	while (true) {
 		await new Promise((resolve) =>
@@ -101,52 +119,29 @@ async function watchdog(): Promise<void> {
 		);
 		const now = Date.now();
 		if (now - lastPoll > WATCHDOG_SLEEP_JUMP_MS) {
-			ownerDeadSince = null;
+			memory = { ownerDeadSince: null };
 			log("Detected clock jump (likely sleep); resetting idle clock");
 		}
 		lastPoll = now;
 
-		if (!existsSync(heartbeatFile)) {
-			if (ownerDeadSince === null) ownerDeadSince = now;
-			if (now - ownerDeadSince >= WATCHDOG_OWNER_DEAD_GRACE_MS) {
-				log(
-					"Heartbeat file missing and owner-dead grace elapsed, shutting down...",
-				);
-				shutdownContainers();
-				cleanup();
-				process.exit(0);
-			}
-			continue;
-		}
+		const reading = readHeartbeat();
+		const ownerAlive =
+			reading.status === "ok" &&
+			reading.payload.pid > 0 &&
+			isProcessAlive(reading.payload.pid);
 
-		let payload: ReturnType<typeof parseHeartbeatPayload> = null;
-		try {
-			payload = parseHeartbeatPayload(readFileSync(heartbeatFile, "utf-8"));
-		} catch {
-			payload = null;
-		}
+		const { verdict, memory: nextMemory } = evaluateWatchdogTick(
+			{ now, reading, ownerAlive },
+			memory,
+			{
+				idleTimeoutMs: IDLE_TIMEOUT,
+				ownerDeadGraceMs: WATCHDOG_OWNER_DEAD_GRACE_MS,
+			},
+		);
+		memory = nextMemory;
 
-		if (!payload) {
-			if (ownerDeadSince === null) ownerDeadSince = now;
-			continue;
-		}
-
-		const ownerAlive = payload.pid > 0 && isProcessAlive(payload.pid);
-		if (ownerAlive) {
-			ownerDeadSince = null;
-			continue;
-		}
-
-		if (ownerDeadSince === null) ownerDeadSince = now;
-		const ownerDeadFor = now - ownerDeadSince;
-		const idleFor = now - payload.ts;
-		if (
-			ownerDeadFor >= WATCHDOG_OWNER_DEAD_GRACE_MS ||
-			idleFor > IDLE_TIMEOUT
-		) {
-			log(
-				`Owner gone (dead ${Math.ceil(ownerDeadFor / 1000)}s, idle ${Math.ceil(idleFor / 1000)}s), shutting down...`,
-			);
+		if (verdict.kind === "shutdown") {
+			log(`${verdict.reason}, shutting down...`);
 			shutdownContainers();
 			log("Containers stopped");
 			cleanup();

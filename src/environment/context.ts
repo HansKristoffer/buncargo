@@ -2,9 +2,11 @@ import { applyHostPlanToUrls, planNamedHosts } from "../core/hosts/plan";
 import { getLocalIp } from "../core/network";
 import { resolvePortPlan } from "../core/port-allocation";
 import {
+	asComputedLoopbackUrls,
 	asComputedPorts,
 	asComputedUrls,
 	computeDevIdentity,
+	computeLoopbackUrls,
 	computeUrls,
 	findMonorepoRoot,
 	toUrlMap,
@@ -17,6 +19,7 @@ import {
 } from "../docker-compose";
 import type {
 	AppConfig,
+	ComputedLoopbackUrls,
 	ComputedPorts,
 	ComputedUrls,
 	DevConfig,
@@ -51,6 +54,11 @@ export interface DevEnvContext<
 	readonly apps: TApps;
 	readonly ports: ComputedPorts<TServices, TApps>;
 	readonly urls: ComputedUrls<TServices, TApps>;
+	/**
+	 * The `http://localhost:<port>` form, immune to the named-host rewrite that
+	 * `setNamedHostsActive` applies to `urls` in place.
+	 */
+	readonly loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
 	/** Mutated in place so consumers holding the object see tunnel updates. */
 	readonly publicUrls: UrlMap;
 	readonly portOffset: number;
@@ -128,6 +136,9 @@ export function createDevEnvContext<
 
 	const plainUrls: UrlMap = computeUrls(services, apps, portMap, localIp);
 	const urls = asComputedUrls<TServices, TApps>({ ...plainUrls });
+	const loopbackUrls = asComputedLoopbackUrls<TServices, TApps>(
+		computeLoopbackUrls(services, apps, portMap),
+	);
 	const publicUrls: UrlMap = {};
 
 	return {
@@ -141,6 +152,7 @@ export function createDevEnvContext<
 		apps,
 		ports,
 		urls,
+		loopbackUrls,
 		publicUrls,
 		portOffset: portPlan.offset,
 		portOffsetProvenance: portPlan.provenance,

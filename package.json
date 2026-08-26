@@ -1,6 +1,6 @@
 {
   "name": "buncargo",
-  "version": "7.0.0",
+  "version": "7.1.0",
   "description": "A Bun-powered development environment CLI for managing Docker Compose services, dev servers, and environment variables",
   "type": "module",
   "module": "./dist/index.js",
@@ -125,12 +125,18 @@
       "bun": "./src/docker-compose/index.ts",
       "import": "./dist/docker-compose/index.js",
       "default": "./dist/docker-compose/index.js"
+    },
+    "./vite": {
+      "types": "./dist/vite/index.d.ts",
+      "bun": "./src/vite/index.ts",
+      "import": "./dist/vite/index.js",
+      "default": "./dist/vite/index.js"
     }
   },
   "scripts": {
     "build": "rm -rf dist && bun run build:js && bun run build:daemon && bun run build:types",
     "build:daemon": "bun build ./src/cli/hostsd.ts --outfile ./dist/hostsd.js --target bun",
-    "build:js": "bun build ./src/index.ts ./src/cli/bin.ts ./src/cli/index.ts ./src/config/index.ts ./src/environment/index.ts ./src/loader/index.ts ./src/typecheck/index.ts ./src/types/index.ts ./src/core/network.ts ./src/core/ports.ts ./src/core/process/index.ts ./src/core/tunnel.ts ./src/core/utils.ts ./src/core/watchdog.ts ./src/core/watchdog-runner.ts ./src/docker/index.ts ./src/docker-compose/index.ts --outdir ./dist --root ./src --target node --packages external --splitting",
+    "build:js": "bun build ./src/index.ts ./src/cli/bin.ts ./src/cli/index.ts ./src/config/index.ts ./src/environment/index.ts ./src/loader/index.ts ./src/typecheck/index.ts ./src/types/index.ts ./src/core/network.ts ./src/core/ports.ts ./src/core/process/index.ts ./src/core/tunnel.ts ./src/core/utils.ts ./src/core/watchdog.ts ./src/core/watchdog-runner.ts ./src/docker/index.ts ./src/docker-compose/index.ts ./src/vite/index.ts --outdir ./dist --root ./src --target node --packages external --splitting",
     "build:types": "tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build",
     "publish:patch": "npm version patch && npm publish",

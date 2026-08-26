@@ -364,6 +364,9 @@ async function runDevFlow<
 					});
 				},
 				onAfterWave1: tunnels.openOwnedTunnels,
+				// Nothing to wait for without --expose, so needsPublicUrls apps
+				// join wave 1 and get health-checked like everything else.
+				deferPublicUrlApps: args.exposeRequested,
 			},
 		);
 		return undefined;

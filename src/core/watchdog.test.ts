@@ -5,9 +5,13 @@ import {
 	getHeartbeatFile,
 	getWatchdogComposeArg,
 	getWatchdogPidFile,
+	parseHeartbeatPayload,
 	readHeartbeat,
+	readHeartbeatPayload,
 	removeHeartbeatFile,
 	resolveWatchdogRunnerPath,
+	startHeartbeat,
+	stopHeartbeat,
 } from "./watchdog";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -156,6 +160,42 @@ describe("removeHeartbeatFile", () => {
 	it("does not throw when file does not exist", () => {
 		// Should not throw
 		expect(() => removeHeartbeatFile("nonexistent-project-xyz")).not.toThrow();
+	});
+});
+
+describe("stopHeartbeat", () => {
+	const testProject = "test-stop-heartbeat-project";
+
+	afterEach(() => {
+		removeHeartbeatFile(testProject);
+	});
+
+	// Unlinking made a clean Ctrl-C look like a crash, so the watchdog tore the
+	// stack down inside the crash grace and restarts recreated containers.
+	it("leaves a released marker instead of removing the file", () => {
+		startHeartbeat(testProject, 60_000);
+		stopHeartbeat();
+
+		const payload = readHeartbeatPayload(testProject);
+		expect(existsSync(getHeartbeatFile(testProject))).toBe(true);
+		expect(payload?.released).toBe(true);
+		// pid 0 never matches a live process, so the owner reads as gone.
+		expect(payload?.pid).toBe(0);
+	});
+});
+
+describe("parseHeartbeatPayload", () => {
+	it("preserves the released marker", () => {
+		expect(
+			parseHeartbeatPayload(JSON.stringify({ ts: 5, pid: 0, released: true })),
+		).toEqual({ ts: 5, pid: 0, released: true });
+	});
+
+	it("omits the marker for a normal heartbeat", () => {
+		expect(parseHeartbeatPayload(JSON.stringify({ ts: 5, pid: 42 }))).toEqual({
+			ts: 5,
+			pid: 42,
+		});
 	});
 });
 

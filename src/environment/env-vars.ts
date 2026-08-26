@@ -5,7 +5,7 @@ import {
 } from "../core/env";
 import { toPortMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
-import { isCI } from "../core/runtime-flags";
+import { hostsDaemonPort, isCI } from "../core/runtime-flags";
 import type {
 	AppConfig,
 	AppEnvVars,
@@ -44,7 +44,7 @@ export function createEnvVarsApi<
 >(
 	ctx: DevEnvContext<TServices, TApps, TEnv>,
 ): DevEnvVarsApi<TServices, TApps, TEnv> {
-	const { config, services, apps, ports, urls, publicUrls } = ctx;
+	const { config, services, apps, ports, urls, loopbackUrls, publicUrls } = ctx;
 
 	function overlayContext() {
 		return {
@@ -52,6 +52,7 @@ export function createEnvVarsApi<
 			localIp: ctx.localIp,
 			portOffset: ctx.portOffset,
 			publicUrls: publicUrls as ComputedPublicUrls<TServices, TApps>,
+			loopbackUrls,
 		};
 	}
 
@@ -64,6 +65,7 @@ export function createEnvVarsApi<
 			services,
 			ports,
 			urls,
+			loopbackUrls,
 			publicUrls: publicUrls as ComputedPublicUrls<TServices, TApps>,
 		});
 		if (ctx.hosts?.active) {
@@ -100,9 +102,21 @@ export function createEnvVarsApi<
 			...sharedEnv,
 			...(appConfig?.staticEnv ? stringifyEnvValues(appConfig.staticEnv) : {}),
 			HOST: "0.0.0.0",
+			// So a framework plugin can configure itself without the consumer
+			// repeating which app it is. Nothing else tells the child process.
+			BUNCARGO_APP_NAME: appName,
 		};
 		if (appPort !== undefined) {
 			processEnv.PORT = String(appPort);
+		}
+		const namedHost = ctx.hosts?.active
+			? ctx.hosts.plan.find(
+					(host) => host.kind === "app" && host.name === appName,
+				)
+			: undefined;
+		if (namedHost) {
+			processEnv.BUNCARGO_APP_HOSTNAME = namedHost.hostname;
+			processEnv.BUNCARGO_HOSTS_PORT = String(hostsDaemonPort());
 		}
 		// Last writer wins: an app's own `envVars` may override PORT/HOST.
 		Object.assign(
@@ -142,6 +156,7 @@ export function createEnvVarsApi<
 				projectName: ctx.projectName,
 				ports,
 				urls,
+				loopbackUrls,
 				publicUrls: publicUrls as ComputedPublicUrls<TServices, TApps>,
 				root: ctx.root,
 				isCI: isCI(),

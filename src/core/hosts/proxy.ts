@@ -1,4 +1,9 @@
 import type { Server } from "bun";
+import {
+	createUpstreamResolver,
+	describeUpstreamFamilies,
+	type UpstreamResolver,
+} from "./upstream";
 
 export const HOPS_HEADER = "x-buncargo-hops";
 export const MAX_PROXY_HOPS = 5;
@@ -80,11 +85,13 @@ export function createProxyFetch(input: {
 	lookup: ProxyRouteLookup;
 	listHostnames: () => string[];
 	https: boolean;
+	upstream?: UpstreamResolver;
 }): (
 	request: Request,
 	server: Server<unknown>,
 ) => Response | Promise<Response> {
 	const { lookup, listHostnames, https } = input;
+	const upstream = input.upstream ?? createUpstreamResolver();
 
 	return async (request, server) => {
 		const url = new URL(request.url);
@@ -150,7 +157,18 @@ export function createProxyFetch(input: {
 		);
 		headers.delete("host");
 
-		const target = `http://127.0.0.1:${port}${url.pathname}${url.search}`;
+		const family = await upstream.resolve(port);
+		if (!family) {
+			return new Response(
+				`Upstream ${hostname} (${port}) is not reachable on ${describeUpstreamFamilies()}\n`,
+				{
+					status: 502,
+					headers: { "content-type": "text/plain; charset=utf-8" },
+				},
+			);
+		}
+
+		const target = `http://${family.authority}:${port}${url.pathname}${url.search}`;
 		try {
 			return await fetch(target, {
 				method: request.method,
@@ -164,6 +182,8 @@ export function createProxyFetch(input: {
 				duplex: "half",
 			});
 		} catch (error) {
+			// Re-probe next time: the family we remembered just stopped serving.
+			upstream.forget(port);
 			const message = error instanceof Error ? error.message : String(error);
 			return new Response(
 				`Upstream ${hostname} (${port}) is not reachable: ${message}\n`,
@@ -183,6 +203,8 @@ interface ProxyWsData {
 	socket?: WebSocket;
 	/** Frames the client sent before the upstream handshake completed. */
 	pending: (string | Buffer)[];
+	/** Set by `close` so an in-flight upstream dial does not outlive the client. */
+	closed?: boolean;
 }
 
 interface ProxyWs {
@@ -208,37 +230,51 @@ const GOING_AWAY = 1001;
  */
 const MAX_PENDING_FRAMES = 32;
 
-export function createWebsocketHandlers(): ProxyWebsocketHandlers {
+export function createWebsocketHandlers(
+	upstream: UpstreamResolver = createUpstreamResolver(),
+): ProxyWebsocketHandlers {
 	const upstreams = new Set<WebSocket>();
+
+	function bridge(ws: ProxyWs, authority: string): void {
+		const socket = new WebSocket(
+			`ws://${authority}:${ws.data.targetPort}${ws.data.path}`,
+			ws.data.protocol ? [ws.data.protocol] : undefined,
+		);
+		ws.data.socket = socket;
+		upstreams.add(socket);
+		socket.addEventListener("open", () => {
+			// The client is upgraded before this handshake finishes, so
+			// anything it sent in between is only queued, never dropped.
+			for (const frame of ws.data.pending) socket.send(frame);
+			ws.data.pending.length = 0;
+		});
+		socket.addEventListener("message", (event) => {
+			ws.send(
+				typeof event.data === "string"
+					? event.data
+					: Buffer.from(event.data as ArrayBuffer),
+			);
+		});
+		socket.addEventListener("close", () => {
+			upstreams.delete(socket);
+			ws.close();
+		});
+		socket.addEventListener("error", () => {
+			upstreams.delete(socket);
+			ws.close();
+		});
+	}
 
 	return {
 		open(ws) {
-			const socket = new WebSocket(
-				`ws://127.0.0.1:${ws.data.targetPort}${ws.data.path}`,
-				ws.data.protocol ? [ws.data.protocol] : undefined,
-			);
-			ws.data.socket = socket;
-			upstreams.add(socket);
-			socket.addEventListener("open", () => {
-				// The client is upgraded before this handshake finishes, so
-				// anything it sent in between is only queued, never dropped.
-				for (const frame of ws.data.pending) socket.send(frame);
-				ws.data.pending.length = 0;
-			});
-			socket.addEventListener("message", (event) => {
-				ws.send(
-					typeof event.data === "string"
-						? event.data
-						: Buffer.from(event.data as ArrayBuffer),
-				);
-			});
-			socket.addEventListener("close", () => {
-				upstreams.delete(socket);
-				ws.close();
-			});
-			socket.addEventListener("error", () => {
-				upstreams.delete(socket);
-				ws.close();
+			void upstream.resolve(ws.data.targetPort).then((family) => {
+				// The client can go away while the probe is still running.
+				if (ws.data.closed) return;
+				if (!family) {
+					ws.close();
+					return;
+				}
+				bridge(ws, family.authority);
 			});
 		},
 		message(ws, message) {
@@ -257,6 +293,7 @@ export function createWebsocketHandlers(): ProxyWebsocketHandlers {
 			socket.send(message);
 		},
 		close(ws) {
+			ws.data.closed = true;
 			ws.data.pending.length = 0;
 			const socket = ws.data.socket;
 			if (!socket) return;
@@ -293,12 +330,16 @@ export async function startLocalProxy(options: {
 }): Promise<LocalProxy> {
 	const hostname = options.hostname ?? "127.0.0.1";
 	const https = Boolean(options.cert && options.key);
+	// One resolver for both paths so an HMR upgrade reuses the family the first
+	// HTTP request already probed.
+	const upstream = createUpstreamResolver();
 	const fetchHandler = createProxyFetch({
 		lookup: options.lookup,
 		listHostnames: options.listHostnames,
 		https,
+		upstream,
 	});
-	const websocket = createWebsocketHandlers();
+	const websocket = createWebsocketHandlers(upstream);
 
 	const httpsServer = Bun.serve({
 		hostname,

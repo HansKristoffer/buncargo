@@ -44,6 +44,7 @@ function createStubEnv(
 		root?: string;
 		start?: (options?: unknown) => Promise<null>;
 		waitForServer?: (url: string, timeout?: number) => Promise<void>;
+		waitForServers?: (options?: { onlyApps?: string[] }) => void;
 		setPublicUrls?: (urls: Record<string, string>) => void;
 	} = {},
 ): DevEnvironment<Record<string, ServiceConfig>, Record<string, AppConfig>> {
@@ -96,7 +97,9 @@ function createStubEnv(
 		isRunning: async () => true,
 		startServers: async () => ({}),
 		stopProcess: () => {},
-		waitForServers: async () => {},
+		waitForServers: async (waitOptions?: { onlyApps?: string[] }) => {
+			options.waitForServers?.(waitOptions);
+		},
 		buildEnvVars: () => ({}),
 		buildAppEnvVars: () => {
 			const vars: Record<string, string> = {};
@@ -457,6 +460,42 @@ describe("runCli phased tunnels and attach", () => {
 		});
 
 		expect(tunnelOrder).toEqual(["tunnels"]);
+	});
+
+	// Without --expose there is no tunnel to wait for, so holding the app back
+	// only robs it of its health check. A repo should not have to sniff argv to
+	// get this right from one static config.
+	it("health-checks needsPublicUrls apps when --expose is absent", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-waves-"));
+		const apiPort = 43610 + Math.floor(Math.random() * 200);
+		const expoPort = apiPort + 1;
+		const healthChecked: string[][] = [];
+		const env = createStubEnv({
+			root,
+			apps: {
+				api: {
+					port: apiPort,
+					devCommand: "bun -e 'process.exit(0)'",
+					healthEndpoint: false,
+				},
+				expoApp: {
+					port: expoPort,
+					devCommand: "bun -e 'process.exit(0)'",
+					healthEndpoint: false,
+					needsPublicUrls: true,
+				},
+			},
+			waitForServers: (waitOptions) => {
+				healthChecked.push([...(waitOptions?.onlyApps ?? [])].sort());
+			},
+		});
+
+		try {
+			await runCli(env, { args: [], watchdog: false });
+			expect(healthChecked).toEqual([["api", "expoApp"]]);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 
 	it("kills sibling apps when the attached app exits", async () => {

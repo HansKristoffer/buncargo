@@ -31,7 +31,12 @@ import {
 import { describePortSquatter } from "./squatter";
 
 export type HostsEnableResult =
-	| { ok: true; caPath?: string }
+	| {
+			ok: true;
+			caPath?: string;
+			/** Non-fatal conditions worth telling the user about. */
+			notes?: string[];
+	  }
 	| {
 			ok: false;
 			reason: "declined" | "skipped" | "unsupported" | "disabled" | "failed";
@@ -83,6 +88,65 @@ async function promptFirstRun(): Promise<"setup" | "skip" | "decline"> {
 	if (normalized === "s") return "skip";
 	if (normalized === "n") return "decline";
 	return "setup";
+}
+
+async function promptStaleService(reason: string): Promise<"update" | "skip"> {
+	const rl = createInterface({ input: process.stdin, output: process.stdout });
+	const answer = await new Promise<string>((resolve) => {
+		rl.question(
+			[
+				"",
+				`  ${reason}`,
+				"",
+				"  Updating it asks for your password (~10s). Until then the daemon keeps",
+				"  running the older code, which can serve stale routes or certificates.",
+				"",
+				"  Enter to update  ·  s to skip this once",
+				"  > ",
+			].join("\n"),
+			resolve,
+		);
+	});
+	rl.close();
+	return answer.trim().toLowerCase() === "s" ? "skip" : "update";
+}
+
+export interface StaleServiceRepairDeps {
+	/** Undefined when there is no TTY to prompt on. */
+	prompt?: (reason: string) => Promise<"update" | "skip">;
+	reinstall: () => Promise<void>;
+	caPath: () => string | undefined;
+}
+
+/**
+ * Repair a service that answers on :443 but runs the wrong code.
+ *
+ * A stale service is not a failure — it is serving — so this cannot abort the
+ * run. But it also cannot be silent: reinstalling needs `sudo`, so the daemon
+ * has no way to update itself, and left as a passive warning it just fills
+ * `/var/log/buncargo-hosts.log` with reload failures for whatever the old bundle
+ * cannot handle. Every edge is injected so the branching is testable without a
+ * password prompt.
+ */
+export async function repairStaleService(
+	staleService: string,
+	deps: StaleServiceRepairDeps,
+): Promise<HostsEnableResult> {
+	const asIs: HostsEnableResult = {
+		ok: true,
+		caPath: deps.caPath(),
+		notes: [staleService],
+	};
+	if (!deps.prompt) return asIs;
+	if ((await deps.prompt(staleService)) === "skip") return asIs;
+	try {
+		await deps.reinstall();
+		return { ok: true, caPath: deps.caPath() };
+	} catch (error) {
+		// The old daemon is still up, so the run continues on named hosts either
+		// way; only the reason it is stale changes.
+		return { ...asIs, notes: [toHostsUserMessage(error)] };
+	}
 }
 
 export async function runHostsInstall(
@@ -168,11 +232,22 @@ export async function ensureHostsReady(input: {
 		};
 	}
 
+	const interactive = input.interactive ?? isInteractive();
+
 	if (await isHostsDaemonHealthy(readDaemonConfig().httpsPort)) {
-		return { ok: true, caPath: getCaPath(resolvedMkcertPath()) };
+		// Healthy is not the same as current: a daemon loaded from a previous
+		// version's bundle answers health checks while running that version's
+		// code, and only an explicit reinstall can move it.
+		const stale = describeStaleHostsService();
+		return stale
+			? await repairStaleService(stale, {
+					prompt: interactive ? promptStaleService : undefined,
+					reinstall: () => runHostsInstall({ reinstallService: true }),
+					caPath: () => getCaPath(resolvedMkcertPath()),
+				})
+			: { ok: true, caPath: getCaPath(resolvedMkcertPath()) };
 	}
 
-	const interactive = input.interactive ?? isInteractive();
 	const staleService = describeStaleHostsService();
 	const firstRun = !isHostsServiceInstalled() && !isCaPresent();
 	const needsMachineSetup =

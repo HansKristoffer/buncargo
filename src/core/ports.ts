@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import type {
 	AppConfig,
+	ComputedLoopbackUrls,
 	ComputedPorts,
 	ComputedUrls,
 	ServiceConfig,
@@ -63,6 +64,14 @@ export function asComputedUrls<
 	TApps extends Record<string, AppConfig>,
 >(urls: UrlMap): ComputedUrls<TServices, TApps> {
 	return urls as ComputedUrls<TServices, TApps>;
+}
+
+/** Key a loopback {@link UrlMap}. See {@link asComputedPorts}. */
+export function asComputedLoopbackUrls<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+>(urls: UrlMap): ComputedLoopbackUrls<TServices, TApps> {
+	return urls as ComputedLoopbackUrls<TServices, TApps>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -316,4 +325,28 @@ export function computeUrls<
 	}
 
 	return urls;
+}
+
+/**
+ * The loopback subset of {@link computeUrls}, kept for consumers that cannot
+ * follow a named-host rewrite.
+ *
+ * `applyHostPlanToUrls` overwrites the main URL map in place, so a caller that
+ * needs the reachable-without-a-CA address has nothing left to read otherwise.
+ * The `<app>Local` LAN aliases are dropped: they are a different address.
+ */
+export function computeLoopbackUrls<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+>(services: TServices, apps: TApps | undefined, ports: PortMap): UrlMap {
+	// The LAN IP only feeds the aliases this then drops.
+	const all = computeUrls(services, apps, ports, "127.0.0.1");
+	const lanAliases = new Set(
+		Object.keys(apps ?? {}).map((name) => `${name}Local`),
+	);
+	const loopback: UrlMap = {};
+	for (const [key, value] of Object.entries(all)) {
+		if (!lanAliases.has(key)) loopback[key] = value;
+	}
+	return loopback;
 }

@@ -41,6 +41,8 @@ export function buildSharedEnvValues<
 	ports: ComputedPorts<TServices, TApps>;
 	urls: ComputedUrls<TServices, TApps>;
 	/** Only iterated, so the widest read-only shape a caller can hold is enough. */
+	loopbackUrls?: Readonly<Record<string, string>>;
+	/** Only iterated, so the widest read-only shape a caller can hold is enough. */
 	publicUrls: Readonly<Record<string, string | undefined>>;
 }): SharedEnvValues {
 	const {
@@ -49,6 +51,7 @@ export function buildSharedEnvValues<
 		services,
 		ports,
 		urls,
+		loopbackUrls,
 		publicUrls,
 	} = input;
 
@@ -63,6 +66,12 @@ export function buildSharedEnvValues<
 
 	for (const [name, url] of Object.entries(urls)) {
 		sharedEnv[`${name.toUpperCase()}_URL`] = url;
+	}
+
+	// Emitted alongside `<NAME>_URL` so a process handed a named HTTPS URL it
+	// cannot verify still has the loopback address to fall back to.
+	for (const [name, url] of Object.entries(loopbackUrls ?? {})) {
+		sharedEnv[`${name.toUpperCase()}_LOOPBACK_URL`] = url;
 	}
 
 	for (const [name, url] of Object.entries(publicUrls)) {

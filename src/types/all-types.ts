@@ -347,6 +347,8 @@ export interface HookContext<
 	ports: ComputedPorts<TServices, TApps>;
 	/** Computed URLs for all services and apps */
 	urls: ComputedUrls<TServices, TApps>;
+	/** `http://localhost:<port>` URLs, never rewritten by named hosts */
+	loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
 	/** Public tunnel URLs for exposed services/apps (when active) */
 	publicUrls: ComputedPublicUrls<TServices, TApps>;
 	/** Execute a shell command with environment variables set */
@@ -566,7 +568,13 @@ export interface DevOptions<
 	 * Set to false to intentionally share Docker state across worktrees.
 	 */
 	worktreeIsolation?: boolean;
-	/** Auto-shutdown after idle time in ms. Set to false to disable. Default: 180000 (3 minutes) when running via CLI */
+	/**
+	 * Auto-shutdown after idle time in ms. Set to false to disable.
+	 * Default: 180000 (3 minutes) when running via CLI.
+	 *
+	 * Also how long containers are held after a clean exit, so raise it if you
+	 * routinely stop and restart `dev` with a longer gap than this.
+	 */
 	autoShutdown?: number | false;
 	/** Default verbose setting for all operations. Default: true */
 	verbose?: boolean;
@@ -579,6 +587,35 @@ export interface DevOptions<
 	 * `true` uses defaults. Off on Windows, in CI, or when `BUNCARGO_HOSTS=0`.
 	 */
 	hosts?: boolean | HostsOptions<TServices, TApps>;
+	/**
+	 * Keep a dotenv on disk in step with the allocated ports, for tooling that
+	 * reads `.env` instead of inheriting buncargo's environment.
+	 * `true` uses `.env`. Off by default.
+	 */
+	envFile?: boolean | EnvFileOptions;
+}
+
+/**
+ * Options for {@link DevOptions.envFile}.
+ */
+export interface EnvFileOptions {
+	/** Dotenv to sync, relative to the repo root. Default: `.env` */
+	path?: string;
+	/** Template copied in when `path` does not exist yet, e.g. `.env.example`. */
+	createFrom?: string;
+	/**
+	 * Extra keys to sync, merged over the computed ones.
+	 *
+	 * For a name buncargo cannot derive — a second connection string for the same
+	 * database, a URL with a path suffix. Only `loopbackUrls` is offered, not
+	 * `urls`: a named `https://` host in a dotenv breaks exactly the tooling this
+	 * file exists for. As everywhere else, a key absent from the file is not
+	 * added and a value that is not buncargo's to own is not touched.
+	 */
+	values?: (
+		ports: Readonly<Record<string, number>>,
+		loopbackUrls: Readonly<Record<string, string>>,
+	) => Record<string, string | number | undefined>;
 }
 
 /**
@@ -655,6 +692,8 @@ export type EnvVarsContext<
 	localIp: string;
 	portOffset: number;
 	publicUrls: ComputedPublicUrls<TServices, TApps>;
+	/** `http://localhost:<port>` URLs, never rewritten by named hosts */
+	loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
 };
 
 /**
@@ -868,6 +907,26 @@ export type ComputedUrls<
 };
 
 /**
+ * Loopback URLs for every service and app, unaffected by named hosts.
+ *
+ * When `options.hosts` is active, {@link ComputedUrls} entries are rewritten to
+ * `https://<name>.<project>.localhost`, which only a client that trusts the
+ * local CA can reach. Playwright, the Stripe CLI and GUI database clients
+ * cannot, so they need the `http://localhost:<port>` form that these preserve.
+ *
+ * There is deliberately no `<app>Local` member: that key is the LAN IP, which
+ * is a different address for a different purpose.
+ */
+export type ComputedLoopbackUrls<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+> = {
+	[K in keyof TServices]: string;
+} & {
+	[K in keyof TApps]: string;
+};
+
+/**
  * Whether a service/app config opted into public tunnels.
  *
  * Resolved config literals narrow exactly: `expose: true` matches, `expose:
@@ -948,6 +1007,9 @@ export type SharedEnvVarNames<
 	| "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS"
 	| `${Uppercase<Extract<keyof ComputedPorts<TServices, TApps>, string>>}_PORT`
 	| `${Uppercase<Extract<keyof ComputedUrls<TServices, TApps>, string>>}_URL`
+	| `${Uppercase<
+			Extract<keyof ComputedLoopbackUrls<TServices, TApps>, string>
+	  >}_LOOPBACK_URL`
 	| `${Uppercase<Extract<ExposedKeys<TServices, TApps>, string>>}_PUBLIC_URL`;
 
 export type ConfigEnvVarNames<
@@ -999,9 +1061,17 @@ export type ComputedEnvVars<
 	Partial<Record<HostOnlyEnvVarNames, string>>;
 
 /**
+ * Env names the spawner injects into an app process only while named hosts are
+ * active, so they cannot be guaranteed present.
+ */
+export type AppHostOnlyEnvVarNames =
+	| "BUNCARGO_APP_HOSTNAME"
+	| "BUNCARGO_HOSTS_PORT";
+
+/**
  * The environment one app's own process receives: the shared surface plus that
- * app's `staticEnv` and `envVars` keys, plus the `PORT`/`HOST` pair the spawner
- * always injects.
+ * app's `staticEnv` and `envVars` keys, plus the `PORT`/`HOST`/`BUNCARGO_APP_NAME`
+ * trio the spawner always injects.
  */
 export type AppEnvVars<
 	TServices extends Record<string, ServiceConfig>,
@@ -1013,9 +1083,11 @@ export type AppEnvVars<
 		| OverlayEnvVarNames<DeclaredStaticEnv<TApps[TName]>>
 		| OverlayEnvVarNames<DeclaredAppEnvVars<TApps[TName]>>
 		| "PORT"
-		| "HOST",
+		| "HOST"
+		| "BUNCARGO_APP_NAME",
 		string
-	>;
+	> &
+	Partial<Record<AppHostOnlyEnvVarNames, string>>;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Start/Stop Options
@@ -1124,6 +1196,13 @@ export interface DevEnvironment<
 	readonly ports: ComputedPorts<TServices, TApps>;
 	/** Computed URLs for all services and apps */
 	readonly urls: ComputedUrls<TServices, TApps>;
+	/**
+	 * `http://localhost:<port>` URLs, never rewritten by named hosts.
+	 *
+	 * For tooling that cannot use the named HTTPS host because it does not
+	 * trust the local CA: Playwright, the Stripe CLI, GUI database clients.
+	 */
+	readonly loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
 	/** Public tunnel URLs for exposed services/apps (when active) */
 	readonly publicUrls: ComputedPublicUrls<TServices, TApps>;
 	/** Services configuration */

@@ -9,6 +9,36 @@ import {
 	startLocalProxy,
 } from "./proxy";
 
+/** Containers and CI images without IPv6 cannot exercise the ::1 fallback. */
+const ipv6LoopbackAvailable = (() => {
+	try {
+		const server = Bun.serve({
+			hostname: "::1",
+			port: 0,
+			fetch: () => new Response(),
+		});
+		server.stop(true);
+		return true;
+	} catch {
+		return false;
+	}
+})();
+
+/** A port nothing listens on, so both loopback families refuse. */
+async function findClosedPort(): Promise<number> {
+	const server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		fetch: () => new Response(),
+	});
+	const port = server.port;
+	server.stop(true);
+	if (port === undefined) {
+		throw new Error("Failed to bind a throwaway port");
+	}
+	return port;
+}
+
 describe("hostnameFromHostHeader", () => {
 	it("strips a port", () => {
 		expect(hostnameFromHostHeader("api.serpier.localhost:443")).toBe(
@@ -267,6 +297,106 @@ describe("proxy fetch", () => {
 			keepAlive: string | null;
 		};
 		expect(body.keepAlive).toBeNull();
+	});
+
+	// Vite's default `localhost` bind listens on IPv6 loopback only, so a proxy
+	// that dials 127.0.0.1 unconditionally 502s every named URL for a Vite app.
+	it.skipIf(!ipv6LoopbackAvailable)(
+		"reaches an upstream bound to IPv6 loopback only",
+		async () => {
+			const upstream = Bun.serve({
+				hostname: "::1",
+				port: 0,
+				fetch() {
+					return new Response("from ipv6");
+				},
+			});
+			servers.push(upstream);
+
+			const routes = new Map([["web.serpier.localhost", upstream.port]]);
+			const proxy = await startLocalProxy({
+				lookup: (hostname) => routes.get(hostname),
+				listHostnames: () => [...routes.keys()],
+				httpsPort: 0,
+				hostname: "127.0.0.1",
+			});
+			servers.push(proxy);
+
+			const response = await fetch(`http://127.0.0.1:${proxy.httpsPort}/`, {
+				headers: { host: "web.serpier.localhost" },
+			});
+			expect(response.status).toBe(200);
+			expect(await response.text()).toBe("from ipv6");
+		},
+	);
+
+	it.skipIf(!ipv6LoopbackAvailable)(
+		"bridges a WebSocket to an upstream bound to IPv6 loopback only",
+		async () => {
+			const upstream = Bun.serve({
+				hostname: "::1",
+				port: 0,
+				fetch(request, server) {
+					if (server.upgrade(request)) {
+						return undefined as unknown as Response;
+					}
+					return new Response("expected websocket", { status: 400 });
+				},
+				websocket: {
+					open(ws) {
+						ws.send("hello from ipv6");
+					},
+					message() {},
+				},
+			});
+			servers.push(upstream);
+
+			const routes = new Map([["web.serpier.localhost", upstream.port]]);
+			const proxy = await startLocalProxy({
+				lookup: (hostname) => routes.get(hostname),
+				listHostnames: () => [...routes.keys()],
+				httpsPort: 0,
+				hostname: "127.0.0.1",
+			});
+			servers.push(proxy);
+
+			const socket = new WebSocket(`ws://127.0.0.1:${proxy.httpsPort}/ws`, {
+				headers: { host: "web.serpier.localhost" },
+			} as never);
+			const first = await new Promise<string>((resolve, reject) => {
+				const timer = setTimeout(
+					() => reject(new Error("timed out waiting for websocket")),
+					2000,
+				);
+				socket.addEventListener("message", (event) => {
+					clearTimeout(timer);
+					resolve(String(event.data));
+				});
+				socket.addEventListener("error", () => {
+					clearTimeout(timer);
+					reject(new Error("websocket error"));
+				});
+			});
+			expect(first).toBe("hello from ipv6");
+			socket.close();
+		},
+	);
+
+	it("names both loopback families when neither answers", async () => {
+		const deadPort = await findClosedPort();
+		const fetchHandler = createProxyFetch({
+			lookup: () => deadPort,
+			listHostnames: () => ["web.serpier.localhost"],
+			https: true,
+		});
+		const request = new Request("https://web.serpier.localhost/", {
+			headers: { host: "web.serpier.localhost" },
+		});
+		const response = await fetchHandler(request, {} as never);
+		expect(response.status).toBe(502);
+		const body = await response.text();
+		expect(body).toContain("127.0.0.1");
+		expect(body).toContain("[::1]");
 	});
 
 	// A rebind force-stops the listener, which resets whatever it still holds.
