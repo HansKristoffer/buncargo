@@ -10,6 +10,10 @@ export default defineDevConfig({
 		postgres: service.postgres({ database: "playground", port: 5433 }),
 	},
 
+	options: {
+		hosts: { primaryApp: "web" },
+	},
+
 	apps: {
 		api: {
 			port: 3010,
@@ -18,6 +22,9 @@ export default defineDevConfig({
 			cwd: "apps/api",
 			healthEndpoint: "/health",
 			requiredServices: ["postgres"],
+			envVars: (_ports, urls, { publicUrls }) => ({
+				WEBHOOK_URL: publicUrls.api ?? urls.api,
+			}),
 		},
 		web: {
 			port: 5199,
@@ -25,11 +32,9 @@ export default defineDevConfig({
 			cwd: "apps/web",
 			healthEndpoint: "/",
 			requiredApps: ["api"],
+			envVars: (_ports, urls) => ({
+				VITE_API_URL: urls.api,
+			}),
 		},
 	},
-
-	envVars: (_ports, urls) => ({
-		DATABASE_URL: urls.postgres,
-		VITE_API_URL: urls.api,
-	}),
 });

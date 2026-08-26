@@ -1,31 +1,17 @@
-import type {
-	AppConfig,
-	DevConfig,
-	DevHooks,
-	DevOptions,
-	DockerComposeGenerationOptions,
-	EnvVarsBuilder,
-	MigrationConfig,
-	PrismaConfig,
-	SeedConfig,
-	ServiceConfig,
-	TypedAppDefinitions,
-} from "../types";
+import type { AppConfig, DevConfigInput, ServiceConfig } from "../types";
 
+/**
+ * Define a typed dev config.
+ *
+ * `apps` is intersected with `TApps` only so app keys are inferred from the
+ * object literal; the accepted type is otherwise exactly the returned
+ * {@link DevConfigInput}, so no cast is needed.
+ */
 export function defineDevConfig<
 	const TServices extends Record<string, ServiceConfig>,
 	const TApps extends Record<string, AppConfig> = Record<string, never>,
->(config: {
-	projectPrefix: string;
-	services: TServices;
-	apps?: TApps & TypedAppDefinitions<TServices, TApps>;
-	envVars?: EnvVarsBuilder<TServices, TypedAppDefinitions<TServices, TApps>>;
-	hooks?: DevHooks<TServices, TypedAppDefinitions<TServices, TApps>>;
-	migrations?: MigrationConfig[];
-	seed?: SeedConfig<TServices, TypedAppDefinitions<TServices, TApps>>;
-	prisma?: PrismaConfig;
-	options?: DevOptions;
-	docker?: DockerComposeGenerationOptions;
-}): DevConfig<TServices, TypedAppDefinitions<TServices, TApps>> {
-	return config as DevConfig<TServices, TypedAppDefinitions<TServices, TApps>>;
+>(
+	config: DevConfigInput<TServices, TApps> & { apps?: TApps },
+): DevConfigInput<TServices, TApps> {
+	return config;
 }

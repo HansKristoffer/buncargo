@@ -20,13 +20,19 @@ All library source code lives under `src/`.
   - CLI runtime and command handlers.
   - `bin.ts` is the CLI executable entrypoint.
   - `index.ts` is the canonical CLI module entry.
-  - `run-cli.ts` contains core CLI flow.
-  - `commands/` contains command-specific behavior (`dev`, `env`, `prisma`, etc.).
+  - `run-cli.ts` contains core CLI flow; `flags.ts` (argv primitives), `dev-flags.ts` (the dev command's typed args + help), `dev-hosts.ts` and `dev-tunnels.ts` hold the pieces it orchestrates.
+  - `command-spec.ts` is the flag-spec primitive: one `CommandSpec` per command drives parsing, unknown-flag detection, value validation and generated help, so those four cannot drift. Add a flag to the spec, not to a parallel list.
+  - `commands/registry.ts` is the single source for top-level command names (`CliCommandName`, used by the `bin.ts` switch and by `help.ts`) and for the `hosts` subcommands. Both switches end in a `never` default.
+  - Failures inside a command flow throw `CliError` (`errors.ts`) so the flow can release tunnels, host routes and the terminal before exiting 1. Argv problems, which happen before anything starts, exit through `log.fail`.
+  - `log.ts` is the CLI status/error facade (`info`/`success`/`done`/`warn`/`error`/`hint`/`fail`); `src/environment/logging.ts` stays responsible for the rich environment banner.
+  - `commands/` contains command-specific behavior (`dev`, `env`, `prisma`, etc.); `commands/inspect/` splits `ls`, `status`, `doctor` and `stop-all` over a shared `containers.ts`.
 - `src/config/`
   - Dev config API and validation.
   - Keep definition, validation, and merge logic split by responsibility.
 - `src/environment/`
   - `createDevEnvironment()` and related orchestration helpers.
+  - `context.ts` resolves identity/ports/URLs once into a `DevEnvContext`; `env-vars.ts`, `lifecycle.ts`, `servers.ts` and `watchdog.ts` are built on it and `create-dev-environment.ts` only composes them.
+  - `seeding.ts` owns the only seed path: `runSeedIfNeeded` backs both `start()` and `env.runSeed()` (which `buncargo dev --seed` calls with `force: true`). A failed seed fails `start()`; it does not log and continue.
   - Prefer extracting complex concerns into focused modules (e.g. logging/seeding).
 - `src/loader/`
   - Config discovery/loading and cache handling.
@@ -38,9 +44,16 @@ All library source code lives under `src/`.
   - Compose generation only (model building, YAML serialization, generated-file logic).
   - `services/` contains built-in service presets/helpers.
 - `src/docker/`
-  - Docker runtime operations only (up/down/health/container checks).
+  - Docker runtime operations only, split by concern: `status.ts` (container/daemon checks), `lifecycle.ts` (up/down/start), `health-checks.ts`, `readiness.ts` (waits + `ensureServicesRunning`), `compose-command.ts` (`docker compose` argument building). Import through `src/docker/index.ts`.
+  - `preflight.ts` detects the local Docker runtime and auto-starts it when possible.
 - `src/core/`
-  - Shared runtime utilities (network, ports, process, utils, watchdog).
+ - Shared runtime utilities (network, ports, process, utils, watchdog).
+ - `runtime-flags.ts` is the only place `BUNCARGO_*` / `CI` are read; getters take the environment as an argument.
+ - `registry-file.ts` reads/writes the persisted state files (`routes.json`, `hosts-daemon.json`, `ports.json`, `public-tunnels.json`) through typed validators.
+ - `tool-binary.ts` resolves external binaries: env override, then `PATH`, then the download cache.
+ - `port-allocation.ts` hashes a project offset, probes conflicts, and persists `.buncargo/ports.json`.
+ - `process/` is command execution (`exec.ts`), the two-wave dev-server spawner (`dev-servers.ts`), port ownership/kill classification (`port-owner.ts`), PID lifecycle (`lifecycle.ts`) and production builds (`build.ts`), re-exported from `process/index.ts`.
+  - `hosts/` is named `.localhost` HTTPS: hostname planning, user-level `~/.buncargo/routes.json`, mkcert, loopback proxy daemon, `/etc/hosts` sync, and first-run onboarding.
 - `src/types/`
   - Type surface canonical source (via `all-types.ts` + `index.ts`).
 
@@ -123,4 +136,29 @@ When using `bunx buncargo dev --expose` (Cloudflare quick tunnels), you can tune
 - **`BUNCARGO_QUICK_TUNNEL_RETRY_BASE_MS`** — Backoff base in ms; delay is `base × attempt` between retries (default `2000`).
 - **`BUNCARGO_QUICK_TUNNEL_TIMEOUT_MS`** — Max wait for a public `*.trycloudflare.com` URL from `cloudflared` (default `30000`; set `0` to disable the timeout).
 - **`BUNCARGO_CLOUDFLARED_PATH`** — Absolute path to a `cloudflared` binary; when set, buncargo uses it and does not download into the temp cache.
-- **`CLOUDFLARED_VERSION`** — GitHub release tag for the bundled download when not using `BUNCARGO_CLOUDFLARED_PATH` (default is pinned in [`src/core/quick-tunnel/constants.ts`](src/core/quick-tunnel/constants.ts); `latest` is also supported).
+- **`CLOUDFLARED_VERSION`** — GitHub release tag for the bundled download when not using `BUNCARGO_CLOUDFLARED_PATH` (default is pinned in [`src/core/runtime-flags.ts`](src/core/runtime-flags.ts); `latest` is also supported).
+
+### Named hosts / mkcert (optional env)
+
+When `options.hosts` is on (`bunx buncargo dev`):
+
+- **`BUNCARGO_HOSTS`** — `0` forces `http://localhost:port` and skips the daemon (same as `--no-hosts`). CI also disables named hosts.
+- **`BUNCARGO_HOSTS_PORT`** — HTTPS port the loopback proxy daemon binds (default `443`). The plain-HTTP `:80` redirect listener is only started when the default port is used.
+- **`BUNCARGO_MKCERT_PATH`** — Absolute path to a `mkcert` binary; when set, buncargo uses it and does not download into the temp cache.
+- **`BUNCARGO_MKCERT_VERSION`** — GitHub release tag for the bundled `mkcert` download (default `v1.4.4`).
+- **`BUNCARGO_SYNC_HOSTS`** — `0` skips writing the `# buncargo-start` / `# buncargo-end` block in `/etc/hosts`.
+
+### Reading environment flags
+
+All `BUNCARGO_*` (plus `CI` / `CLOUDFLARED_VERSION`) reads live in [`src/core/runtime-flags.ts`](src/core/runtime-flags.ts). Add new flags there instead of reading `process.env` inline: every getter takes the environment as its last argument (defaulting to `process.env`), so tests inject a plain object and nothing is captured at import time. CI detection is `isCI()` — `CI=1|true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL` — and is the same check for named hosts, Docker auto-start, and readiness timeouts.
+
+## Hosts tests (co-located)
+
+- **[`src/core/hosts/plan.test.ts`](src/core/hosts/plan.test.ts)**, **[`registry.test.ts`](src/core/hosts/registry.test.ts)**, **[`proxy.test.ts`](src/core/hosts/proxy.test.ts)**, **[`hosts-file.test.ts`](src/core/hosts/hosts-file.test.ts)** — hermetic: hostname planning, route registry, Host/WS/x-forwarded/508 proxy, `/etc/hosts` block rewrite.
+- **[`src/core/hosts/hosts.integration.test.ts`](src/core/hosts/hosts.integration.test.ts)** — **opt-in** mkcert mint (may download `mkcert` if missing). Default `bun test` skips it. Set `BUNCARGO_TEST_HOSTS=1`. Does **not** require sudo, system trust, or a bind on `:443`.
+
+Convenience script:
+
+```bash
+bun run test:integration-hosts
+```

@@ -1,25 +1,18 @@
-import type {
-	BuiltInHealthCheck,
-	DockerComposeHealthcheckRaw,
-	DockerComposeServiceRaw,
-	ServiceConfig,
-} from "../../types";
-import { defineDockerService } from "./define-docker-service";
+import type { DockerComposeHealthcheckRaw, ServiceConfig } from "../../types";
+import {
+	defineDockerService,
+	type PresetServiceCredentialOptions,
+	type PresetServiceSecondaryPortOptions,
+} from "./define-docker-service";
 import { getDefaultPortBindings, resolveHealthcheck } from "./shared";
 
-export type ClickhouseServiceOptions = {
-	port?: number;
-	secondaryPort?: number;
-	expose?: boolean;
-	healthCheck?: BuiltInHealthCheck | false;
-	serviceName?: string;
-	database?: string;
-	user?: string;
-	password?: string;
-	docker?: DockerComposeServiceRaw;
-};
+export type ClickhouseServiceOptions = PresetServiceCredentialOptions &
+	PresetServiceSecondaryPortOptions;
 
-export type ClickhouseServiceConfig = ServiceConfig & {
+export type ClickhouseServiceConfig = ServiceConfig<{
+	CLICKHOUSE_URL: "url";
+	CLICKHOUSE_NATIVE_PORT: "secondaryPort";
+}> & {
 	secondaryPort: number;
 };
 
@@ -33,9 +26,16 @@ export const clickhouseDockerService = defineDockerService<
 		secondaryPort: 9000,
 		healthCheck: "http",
 	},
+	env: {
+		CLICKHOUSE_URL: "url",
+		CLICKHOUSE_NATIVE_PORT: "secondaryPort",
+	},
 	enhanceServiceConfig: (base, options): ClickhouseServiceConfig => ({
 		...base,
-		secondaryPort: options.secondaryPort ?? 9000,
+		secondaryPort: options?.secondaryPort ?? 9000,
+		database: options?.database,
+		user: options?.user,
+		password: options?.password,
 	}),
 	build: ({ serviceKey, config }) => {
 		const user = config.user ?? "default";

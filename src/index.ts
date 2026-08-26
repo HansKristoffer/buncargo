@@ -14,8 +14,13 @@ export {
 export type {
 	ClickhouseServiceOptions,
 	CustomServiceOptions,
+	MailpitServiceOptions,
 	PostgresServiceOptions,
+	PresetServiceCredentialOptions,
+	PresetServiceSecondaryPortOptions,
+	PresetServiceSharedOptions,
 	RedisServiceOptions,
+	TypesenseServiceOptions,
 } from "./docker-compose/services";
 // Service helpers
 export { service } from "./docker-compose/services";
@@ -36,18 +41,24 @@ export {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export type {
+	AnyDevConfig,
+	AnyDevEnvironment,
 	AppConfig,
 	BuiltInHealthCheck,
 	// CLI
 	CliOptions,
 	// Computed types
+	ComputedEnvVars,
 	ComputedPorts,
 	ComputedPublicUrls,
 	ComputedUrls,
 	// Main config
 	DevConfig,
+	DevConfigInput,
+	DevConfigLike,
 	// Environment interface
 	DevEnvironment,
+	DevEnvironmentFor,
 	DevHooks,
 	DevOptions,
 	DevServerPids,
@@ -63,10 +74,14 @@ export type {
 	ExecOptions,
 	HealthCheckFn,
 	HookContext,
+	HostsOptions,
+	HostsRuntime,
 	// Migrations & Seed
 	MigrationConfig,
+	NamedHost,
 	OpenPublicTunnelsOptions,
 	OpenPublicTunnelsResult,
+	PortOffsetProvenance,
 	// Prisma
 	PrismaConfig,
 	PrismaRunner,
@@ -79,7 +94,6 @@ export type {
 	// Start/Stop options
 	StartOptions,
 	StopOptions,
-	TypedAppConfig,
 	TypedAppDefinitions,
 	UrlBuilderContext,
 	UrlBuilderFn,
@@ -91,7 +105,6 @@ export type {
 
 export { getLocalIp, isPortAvailable, waitForServer } from "./core/network";
 export {
-	calculatePortOffset,
 	computeDevIdentity,
 	findMonorepoRoot,
 	getProjectName,
@@ -103,10 +116,9 @@ export {
 	getProcessOnPort,
 	isPortInUse,
 	isProcessAlive,
-	killProcessesOnAppPorts,
-	killProcessOnPort,
-	killProcessOnPortAndWait,
+	killPortOwner,
 } from "./core/process";
+export { isCI } from "./core/runtime-flags";
 export {
 	type PublicExposeTarget,
 	type PublicTunnel,
@@ -116,7 +128,6 @@ export {
 } from "./core/tunnel";
 export {
 	getEnvVar,
-	isCI,
 	logApiUrl,
 	logExpoApiUrl,
 	logFrontendPort,

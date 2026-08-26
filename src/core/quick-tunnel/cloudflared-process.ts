@@ -3,6 +3,7 @@
  * Derived from unjs/untun (MIT), originally forked from node-cloudflared.
  */
 import { type ChildProcess, spawn } from "node:child_process";
+import { quickTunnelUrlTimeoutMs } from "../runtime-flags";
 import { resolvedCloudflaredBinPath } from "./constants";
 
 /** Primary: ASCII box line from cloudflared (`|  https://…  |`). */
@@ -12,16 +13,6 @@ const urlRegexTryCloudflare =
 	/(https:\/\/[a-zA-Z0-9][-a-zA-Z0-9.]*\.trycloudflare\.com)\b/;
 
 const MAX_CAPTURED_LOG = 24_000;
-
-/** Default 30s; set `BUNCARGO_QUICK_TUNNEL_TIMEOUT_MS=0` to disable. */
-export function resolveQuickTunnelUrlTimeoutMs(): number {
-	const raw = process.env.BUNCARGO_QUICK_TUNNEL_TIMEOUT_MS;
-	if (raw === undefined || raw === "") {
-		return 30_000;
-	}
-	const n = Number.parseInt(raw, 10);
-	return Number.isFinite(n) && n >= 0 ? n : 30_000;
-}
 
 export function parseQuickTunnelUrlFromOutput(log: string): string | null {
 	const pipe = log.match(urlRegexPipe);
@@ -91,7 +82,7 @@ export function startCloudflaredTunnel(
 			}
 		};
 
-		const timeoutMs = resolveQuickTunnelUrlTimeoutMs();
+		const timeoutMs = quickTunnelUrlTimeoutMs();
 		if (timeoutMs > 0) {
 			timeoutId = setTimeout(() => {
 				try {

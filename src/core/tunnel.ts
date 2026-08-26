@@ -1,5 +1,6 @@
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import { startQuickTunnel } from "./quick-tunnel";
+import { exposeTunnelStaggerMs } from "./runtime-flags";
 import { sleep } from "./utils";
 
 export interface PublicExposeTarget {
@@ -116,15 +117,6 @@ export function resolveExposeTargets<
 	return { targets, unknownNames, notEnabledNames };
 }
 
-function resolveExposeTunnelStaggerMs(): number {
-	const raw = process.env.BUNCARGO_EXPOSE_TUNNEL_STAGGER_MS;
-	if (raw === undefined || raw === "") {
-		return 900;
-	}
-	const n = Number.parseInt(raw, 10);
-	return Number.isFinite(n) && n >= 0 ? n : 900;
-}
-
 export async function startPublicTunnels(
 	targets: PublicExposeTarget[],
 	options: {
@@ -134,7 +126,7 @@ export async function startPublicTunnels(
 	} = {},
 ): Promise<PublicTunnel[]> {
 	const start = options.start ?? ((input) => startQuickTunnel(input));
-	const staggerMs = resolveExposeTunnelStaggerMs();
+	const staggerMs = exposeTunnelStaggerMs();
 
 	const tunnels: PublicTunnel[] = [];
 	try {
@@ -153,12 +145,13 @@ export async function startPublicTunnels(
 					`Tunnel for "${target.name}" could not be started (tunnel backend returned no instance)`,
 				);
 			}
-			const publicUrl = await resolvePublicUrl(tunnel);
-			if (!publicUrl) {
+			const rawPublicUrl = await resolvePublicUrl(tunnel);
+			if (!rawPublicUrl) {
 				throw new Error(
 					`Tunnel for "${target.name}" did not provide a public URL`,
 				);
 			}
+			const publicUrl = rawPublicUrl.replace(/\/$/, "");
 			tunnels.push({
 				kind: target.kind,
 				name: target.name,

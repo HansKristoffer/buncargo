@@ -1,27 +1,28 @@
-import type {
-	BuiltInHealthCheck,
-	DockerComposeHealthcheckRaw,
-	DockerComposeServiceRaw,
-} from "../../types";
-import { defineDockerService } from "./define-docker-service";
+import type { DockerComposeHealthcheckRaw, ServiceConfig } from "../../types";
+import {
+	defineDockerService,
+	type PresetServiceSharedOptions,
+} from "./define-docker-service";
 import { getDefaultPortBindings, resolveHealthcheck } from "./shared";
 
-export type RedisServiceOptions = {
-	port?: number;
-	expose?: boolean;
-	healthCheck?: BuiltInHealthCheck | false;
-	serviceName?: string;
-	database?: string;
-	user?: string;
-	password?: string;
-	docker?: DockerComposeServiceRaw;
-};
+/** `redis://host:port` carries no credentials, so the preset takes none. */
+export type RedisServiceOptions = PresetServiceSharedOptions;
 
-export const redisDockerService = defineDockerService<RedisServiceOptions>({
+export type RedisServiceConfig = ServiceConfig<{
+	REDIS_URL: "url";
+}>;
+
+export const redisDockerService = defineDockerService<
+	RedisServiceOptions,
+	RedisServiceConfig
+>({
 	preset: "redis",
 	defaults: {
 		port: 6379,
 		healthCheck: "redis-cli",
+	},
+	env: {
+		REDIS_URL: "url",
 	},
 	build: ({ serviceKey, config }) => {
 		const defaultHealthcheck: DockerComposeHealthcheckRaw = {

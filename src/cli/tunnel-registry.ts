@@ -1,14 +1,9 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { defineListRegistry, isRouteOwnerAlive } from "../core/registry-file";
 import type { DevEnvironmentTunnelLog } from "../types";
 
 const REGISTRY_VERSION = 1;
 const REGISTRY_TTL_MS = 1000 * 60 * 60 * 24;
-
-interface TunnelRegistryFile {
-	version: number;
-	entries: TunnelRegistryEntry[];
-}
 
 export interface TunnelRegistryEntry {
 	kind: "service" | "app";
@@ -24,15 +19,25 @@ export function getTunnelRegistryPath(root: string): string {
 	return join(root, ".buncargo", "public-tunnels.json");
 }
 
-function isPidAlive(pid: number | undefined): boolean {
-	if (pid === undefined) return true;
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
+function isTunnelRegistryEntry(value: unknown): value is TunnelRegistryEntry {
+	if (typeof value !== "object" || value === null) return false;
+	const entry = value as Partial<TunnelRegistryEntry>;
+	return (
+		(entry.kind === "app" || entry.kind === "service") &&
+		typeof entry.name === "string" &&
+		typeof entry.publicUrl === "string" &&
+		typeof entry.localUrl === "string" &&
+		typeof entry.port === "number" &&
+		typeof entry.updatedAt === "string" &&
+		(entry.pid === undefined || typeof entry.pid === "number")
+	);
 }
+
+const registry = defineListRegistry<TunnelRegistryEntry>({
+	version: REGISTRY_VERSION,
+	key: "entries",
+	isEntry: isTunnelRegistryEntry,
+});
 
 function keyFor(entry: Pick<TunnelRegistryEntry, "kind" | "name">): string {
 	return `${entry.kind}:${entry.name}`;
@@ -42,39 +47,7 @@ async function readRegistry(
 	root: string,
 ): Promise<{ path: string; entries: TunnelRegistryEntry[] }> {
 	const path = getTunnelRegistryPath(root);
-	try {
-		const raw = await readFile(path, "utf-8");
-		const parsed = JSON.parse(raw) as Partial<TunnelRegistryFile>;
-		if (parsed.version !== REGISTRY_VERSION || !Array.isArray(parsed.entries)) {
-			return { path, entries: [] };
-		}
-		return { path, entries: parsed.entries as TunnelRegistryEntry[] };
-	} catch {
-		return { path, entries: [] };
-	}
-}
-
-async function writeRegistry(
-	path: string,
-	entries: TunnelRegistryEntry[],
-): Promise<void> {
-	if (entries.length === 0) {
-		await rm(path, { force: true });
-		return;
-	}
-
-	await mkdir(dirname(path), { recursive: true });
-	await writeFile(
-		path,
-		JSON.stringify(
-			{
-				version: REGISTRY_VERSION,
-				entries,
-			} satisfies TunnelRegistryFile,
-			null,
-			2,
-		),
-	);
+	return { path, entries: await registry.read(path) };
 }
 
 export async function pruneTunnelRegistry(
@@ -87,11 +60,11 @@ export async function pruneTunnelRegistry(
 		const updatedAt = Date.parse(entry.updatedAt);
 		if (!Number.isFinite(updatedAt)) return false;
 		if (now - updatedAt > REGISTRY_TTL_MS) return false;
-		return isPidAlive(entry.pid);
+		return isRouteOwnerAlive(entry.pid);
 	});
 
 	if (activeEntries.length !== entries.length) {
-		await writeRegistry(path, activeEntries);
+		await registry.write(path, activeEntries);
 	}
 
 	return activeEntries;
@@ -106,7 +79,7 @@ export async function upsertTunnelRegistryEntries(
 	for (const entry of entriesToSave) {
 		byKey.set(keyFor(entry), entry);
 	}
-	await writeRegistry(path, Array.from(byKey.values()));
+	await registry.write(path, Array.from(byKey.values()));
 }
 
 export async function removeTunnelRegistryEntries(
@@ -122,7 +95,7 @@ export async function removeTunnelRegistryEntries(
 		if (expectedPid === undefined) return true;
 		return entry.pid !== expectedPid;
 	});
-	await writeRegistry(path, nextEntries);
+	await registry.write(path, nextEntries);
 }
 
 export async function loadReusableTunnelApps(

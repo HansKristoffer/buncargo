@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import { assertOnlyAppNames, pickApps } from "../planning";
 import type { AppConfig } from "../types";
-import { assertOnlyAppNames, pickApps } from "./only-apps";
 
 describe("assertOnlyAppNames", () => {
 	it("allows undefined onlyApps", () => {

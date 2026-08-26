@@ -1,4 +1,39 @@
-import type { AppConfig, DevConfig, ServiceConfig } from "../types";
+import type {
+	AppConfig,
+	DevConfig,
+	EnvVarsBuilder,
+	ServiceConfig,
+} from "../types";
+
+/**
+ * Compose two shared env builders into one: both run, and the override's keys
+ * win. Replacing instead of composing would silently drop the base config's
+ * whole shared env surface.
+ */
+function mergeEnvBuilders<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+>(
+	base: EnvVarsBuilder<TServices, TApps> | undefined,
+	override: EnvVarsBuilder<TServices, TApps> | undefined,
+): EnvVarsBuilder<TServices, TApps> | undefined {
+	if (!base) return override;
+	if (!override) return base;
+	return (ports, urls, ctx) => ({
+		...base(ports, urls, ctx),
+		...override(ports, urls, ctx),
+	});
+}
+
+/** Merge two optional groups, staying `undefined` when neither side sets one. */
+function mergeGroup<T extends object>(
+	base: T | undefined,
+	override: T | undefined,
+): T | undefined {
+	if (!base) return override;
+	if (!override) return base;
+	return { ...base, ...override };
+}
 
 export function mergeConfigs<
 	TServices extends Record<string, ServiceConfig>,
@@ -10,24 +45,13 @@ export function mergeConfigs<
 	return {
 		...base,
 		...overrides,
-		services: { ...base.services, ...overrides.services } as TServices,
-		apps: { ...base.apps, ...overrides.apps } as TApps,
-		hooks: { ...base.hooks, ...overrides.hooks },
+		services: { ...base.services, ...overrides.services },
+		apps: mergeGroup(base.apps, overrides.apps),
+		env: mergeEnvBuilders(base.env, overrides.env),
+		hooks: mergeGroup(base.hooks, overrides.hooks),
 		migrations: overrides.migrations ?? base.migrations,
 		seed: overrides.seed ?? base.seed,
-		options: { ...base.options, ...overrides.options },
-		docker: { ...base.docker, ...overrides.docker },
+		options: mergeGroup(base.options, overrides.options),
+		docker: mergeGroup(base.docker, overrides.docker),
 	};
-}
-
-export function definePartialConfig<
-	TServices extends Record<string, ServiceConfig> = Record<
-		string,
-		ServiceConfig
-	>,
-	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
->(
-	config: Partial<DevConfig<TServices, TApps>>,
-): Partial<DevConfig<TServices, TApps>> {
-	return config;
 }

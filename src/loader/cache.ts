@@ -1,20 +1,12 @@
-import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
+import type { AnyDevEnvironment } from "../types";
 
-let cachedEnv: DevEnvironment<
-	Record<string, ServiceConfig>,
-	Record<string, AppConfig>
-> | null = null;
+let cachedEnv: AnyDevEnvironment | null = null;
 
-export function setCachedDevEnv(
-	env: DevEnvironment<Record<string, ServiceConfig>, Record<string, AppConfig>>,
-): void {
+export function setCachedDevEnv(env: AnyDevEnvironment): void {
 	cachedEnv = env;
 }
 
-export function getCachedDevEnv(): DevEnvironment<
-	Record<string, ServiceConfig>,
-	Record<string, AppConfig>
-> | null {
+export function getCachedDevEnv(): AnyDevEnvironment | null {
 	return cachedEnv;
 }
 

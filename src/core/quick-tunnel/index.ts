@@ -2,37 +2,14 @@
  * Cloudflare Quick Tunnel via the cloudflared CLI (same approach as unjs/untun).
  * License / download flow adapted from unjs/untun (MIT).
  */
-import { existsSync } from "node:fs";
+import {
+	quickTunnelMaxAttempts,
+	quickTunnelRetryBaseMs,
+} from "../runtime-flags";
 import { sleep } from "../utils";
 import { startCloudflaredTunnel } from "./cloudflared-process";
-import {
-	cloudflaredBinPath,
-	cloudflaredNotice,
-	resolvedCloudflaredBinPath,
-} from "./constants";
+import { cloudflaredNotice, resolveCloudflared } from "./constants";
 import { installCloudflared } from "./install";
-
-function resolveMaxQuickTunnelAttempts(): number {
-	const raw = process.env.BUNCARGO_QUICK_TUNNEL_MAX_ATTEMPTS;
-	if (raw === undefined || raw === "") {
-		return 5;
-	}
-	const n = Number.parseInt(raw, 10);
-	return Number.isFinite(n) && n >= 1 ? n : 5;
-}
-
-function resolveQuickTunnelRetryBaseMs(): number {
-	const raw = process.env.BUNCARGO_QUICK_TUNNEL_RETRY_BASE_MS;
-	if (raw === undefined || raw === "") {
-		return 2000;
-	}
-	const n = Number.parseInt(raw, 10);
-	return Number.isFinite(n) && n >= 0 ? n : 2000;
-}
-
-function usesBundledCloudflaredCache(): boolean {
-	return !process.env.BUNCARGO_CLOUDFLARED_PATH?.trim();
-}
 
 /** True when trycloudflare.com is overloaded / rate-limited or returns non-JSON (cloudflared then errors on unmarshal). */
 export function isRetryableQuickTunnelError(message: string): boolean {
@@ -52,8 +29,8 @@ export function isRetryableQuickTunnelError(message: string): boolean {
 async function startCloudflaredTunnelWithRetry(
 	cfArgs: Record<string, string | number | null>,
 ): Promise<ReturnType<typeof startCloudflaredTunnel>> {
-	const maxAttempts = resolveMaxQuickTunnelAttempts();
-	const baseMs = resolveQuickTunnelRetryBaseMs();
+	const maxAttempts = quickTunnelMaxAttempts();
+	const baseMs = quickTunnelRetryBaseMs();
 
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		const tunnel = startCloudflaredTunnel(cfArgs);
@@ -112,10 +89,9 @@ export async function startQuickTunnel(
 
 	console.log(`Starting cloudflared tunnel to ${url}`);
 
-	// Resolve path first (throws if BUNCARGO_CLOUDFLARED_PATH is invalid).
-	resolvedCloudflaredBinPath();
-
-	if (usesBundledCloudflaredCache() && !existsSync(cloudflaredBinPath)) {
+	// Throws if BUNCARGO_CLOUDFLARED_PATH is invalid, before anything is spawned.
+	const cloudflared = resolveCloudflared();
+	if (cloudflared.source === "cache" && !cloudflared.exists) {
 		console.log(cloudflaredNotice);
 		await installCloudflared();
 	}

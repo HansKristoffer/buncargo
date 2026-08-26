@@ -73,10 +73,10 @@
       "default": "./dist/core/network.js"
     },
     "./core/process": {
-      "types": "./dist/core/process.d.ts",
-      "bun": "./src/core/process.ts",
-      "import": "./dist/core/process.js",
-      "default": "./dist/core/process.js"
+      "types": "./dist/core/process/index.d.ts",
+      "bun": "./src/core/process/index.ts",
+      "import": "./dist/core/process/index.js",
+      "default": "./dist/core/process/index.js"
     },
     "./core/watchdog": {
       "types": "./dist/core/watchdog.d.ts",
@@ -128,8 +128,8 @@
     }
   },
   "scripts": {
-    "build": "bun run build:js && bun run build:types",
-    "build:js": "bun build ./src/index.ts ./src/cli/bin.ts ./src/cli/index.ts ./src/config/index.ts ./src/environment/index.ts ./src/loader/index.ts ./src/typecheck/index.ts ./src/types/index.ts ./src/core/network.ts ./src/core/ports.ts ./src/core/process.ts ./src/core/tunnel.ts ./src/core/utils.ts ./src/core/watchdog.ts ./src/docker/index.ts ./src/docker-compose/index.ts --outdir ./dist --root ./src --target node --packages external --splitting",
+    "build": "rm -rf dist && bun run build:js && bun run build:types",
+    "build:js": "bun build ./src/index.ts ./src/cli/bin.ts ./src/cli/index.ts ./src/config/index.ts ./src/environment/index.ts ./src/loader/index.ts ./src/typecheck/index.ts ./src/types/index.ts ./src/core/network.ts ./src/core/ports.ts ./src/core/process/index.ts ./src/core/tunnel.ts ./src/core/utils.ts ./src/core/watchdog.ts ./src/core/watchdog-runner.ts ./src/docker/index.ts ./src/docker-compose/index.ts --outdir ./dist --root ./src --target node --packages external --splitting",
     "build:types": "tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build",
     "publish:patch": "npm version patch && npm publish",
@@ -140,7 +140,8 @@
     "typecheck": "tsgo --incremental",
     "test": "bun test",
     "test:integration-cloudflared": "BUNCARGO_TEST_CLOUDFLARED_SMOKE=1 bun test src/core/quick-tunnel/quick-tunnel.test.ts",
-    "test:integration-cloudflared-e2e": "BUNCARGO_TEST_CLOUDFLARED_SMOKE=1 BUNCARGO_TEST_CLOUDFLARED_E2E=1 bun test src/core/quick-tunnel/quick-tunnel.test.ts"
+    "test:integration-cloudflared-e2e": "BUNCARGO_TEST_CLOUDFLARED_SMOKE=1 BUNCARGO_TEST_CLOUDFLARED_E2E=1 bun test src/core/quick-tunnel/quick-tunnel.test.ts",
+    "test:integration-hosts": "BUNCARGO_TEST_HOSTS=1 bun test src/core/hosts/hosts.integration.test.ts"
   },
   "devDependencies": {
     "@types/bun": "1.3.2",

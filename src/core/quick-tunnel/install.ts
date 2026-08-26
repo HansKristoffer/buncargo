@@ -6,11 +6,8 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import https from "node:https";
 import path from "node:path";
-import {
-	CLOUDFLARED_VERSION,
-	cloudflaredBinPath,
-	RELEASE_BASE,
-} from "./constants";
+import { cloudflaredVersion } from "../runtime-flags";
+import { cloudflaredBinPath, RELEASE_BASE } from "./constants";
 
 const LINUX_URL: Partial<Record<NodeJS.Architecture, string>> = {
 	arm64: "cloudflared-linux-arm64",
@@ -37,8 +34,8 @@ function resolveBase(version: string): string {
 }
 
 export function installCloudflared(
-	to: string = cloudflaredBinPath,
-	version = CLOUDFLARED_VERSION,
+	to: string = cloudflaredBinPath(),
+	version = cloudflaredVersion(),
 ): Promise<string> {
 	switch (process.platform) {
 		case "linux": {
@@ -58,7 +55,7 @@ export function installCloudflared(
 
 async function installLinux(
 	to: string,
-	version = CLOUDFLARED_VERSION,
+	version = cloudflaredVersion(),
 ): Promise<string> {
 	const file = LINUX_URL[process.arch];
 
@@ -73,7 +70,7 @@ async function installLinux(
 
 async function installMacos(
 	to: string,
-	version = CLOUDFLARED_VERSION,
+	version = cloudflaredVersion(),
 ): Promise<string> {
 	const file = MACOS_URL[process.arch];
 
@@ -95,7 +92,7 @@ async function installMacos(
 
 async function installWindows(
 	to: string,
-	version = CLOUDFLARED_VERSION,
+	version = cloudflaredVersion(),
 ): Promise<string> {
 	const file = WINDOWS_URL[process.arch];
 

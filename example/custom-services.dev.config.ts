@@ -16,6 +16,9 @@ export default defineDevConfig({
 			port: 5672,
 			expose: true,
 			healthCheck: false,
+			env: {
+				RABBITMQ_URL: "url",
+			},
 			docker: {
 				image: "rabbitmq:3-management-alpine",
 				ports: ["$" + "{RABBITMQ_PORT:-5672}:5672", "15672:15672"],
@@ -27,16 +30,15 @@ export default defineDevConfig({
 		}),
 		nats: service.custom({
 			port: 4222,
+			env: {
+				NATS_URL: "url",
+			},
 			docker: {
 				image: "nats:2-alpine",
 				ports: ["$" + "{NATS_PORT:-4222}:4222"],
 			},
 		}),
 	},
-
-	envVars: (_ports, urls) => ({
-		DATABASE_URL: urls.postgres,
-	}),
 
 	docker: { volumes: { shared_cache: {} } },
 });

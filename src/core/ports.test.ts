@@ -3,77 +3,13 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppConfig, ServiceConfig } from "../types";
+import { applyHostPlanToUrls } from "./hosts/plan";
 import {
 	computeDevIdentity,
-	computePorts,
 	computeUrls,
 	getProjectName,
 	getWorktreeProjectSuffix,
 } from "./ports";
-
-// ═══════════════════════════════════════════════════════════════════════════
-// computePorts Tests
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("computePorts", () => {
-	it("adds offset to all service ports", () => {
-		const services: Record<string, ServiceConfig> = {
-			postgres: { port: 5432 },
-			redis: { port: 6379 },
-		};
-		const offset = 10;
-
-		const result = computePorts(services, undefined, offset);
-
-		expect(result.postgres).toBe(5442);
-		expect(result.redis).toBe(6389);
-	});
-
-	it("adds offset to all app ports", () => {
-		const services: Record<string, ServiceConfig> = {
-			postgres: { port: 5432 },
-		};
-		const apps: Record<string, AppConfig> = {
-			api: { port: 3000, devCommand: "bun run dev" },
-			web: { port: 5173, devCommand: "bun run dev:web" },
-		};
-		const offset = 20;
-
-		const result = computePorts(services, apps, offset);
-
-		expect(result.api).toBe(3020);
-		expect(result.web).toBe(5193);
-	});
-
-	it("handles secondary ports", () => {
-		const services: Record<string, ServiceConfig> = {
-			clickhouse: { port: 8123, secondaryPort: 9000 },
-		};
-		const offset = 15;
-
-		const result = computePorts(services, undefined, offset);
-
-		expect(result.clickhouse).toBe(8138);
-		expect(result.clickhouseSecondary).toBe(9015);
-	});
-
-	it("returns empty object when no services or apps", () => {
-		const result = computePorts({}, undefined, 0);
-
-		expect(result).toEqual({});
-	});
-
-	it("handles zero offset", () => {
-		const services: Record<string, ServiceConfig> = {
-			postgres: { port: 5432 },
-		};
-		const offset = 0;
-
-		const result = computePorts(services, undefined, offset);
-
-		expect(result.postgres).toBe(5432);
-	});
-});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // computeUrls Tests
@@ -225,6 +161,40 @@ describe("computeUrls", () => {
 
 		expect(result.apiLocal).toBe("http://192.168.1.100:3000");
 		expect(result.webLocal).toBe("http://192.168.1.100:5173");
+	});
+
+	it("leaves named-host rewriting to applyHostPlanToUrls", () => {
+		const services: Record<string, ServiceConfig> = {
+			postgres: { port: 5432 },
+			mailpit: { port: 8025 },
+		};
+		const apps: Record<string, AppConfig> = {
+			api: { port: 3000, devCommand: "bun run dev" },
+		};
+		const ports = { postgres: 5432, mailpit: 8025, api: 3000 };
+
+		const result = computeUrls(services, apps, ports, localIp);
+		expect(result.api).toBe("http://localhost:3000");
+
+		applyHostPlanToUrls(result, [
+			{
+				kind: "app",
+				name: "api",
+				hostname: "api.serpier.localhost",
+				targetPort: 3000,
+			},
+			{
+				kind: "service",
+				name: "mailpit",
+				hostname: "mailpit.serpier.localhost",
+				targetPort: 8025,
+			},
+		]);
+
+		expect(result.api).toBe("https://api.serpier.localhost");
+		expect(result.mailpit).toBe("https://mailpit.serpier.localhost");
+		expect(result.apiLocal).toBe("http://192.168.1.100:3000");
+		expect(result.postgres).toMatch(/^postgresql:\/\//);
 	});
 });
 

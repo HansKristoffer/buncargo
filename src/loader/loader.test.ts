@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONFIG_FILES, clearDevEnvCache, findConfigFile, getDevEnv } from ".";
+import { defineDevConfig } from "../config";
+import { service } from "../docker-compose/services";
+import {
+	CONFIG_FILES,
+	clearDevEnvCache,
+	findConfigFile,
+	getDevEnv,
+	loadDevEnv,
+} from ".";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // findConfigFile Tests
@@ -147,5 +155,79 @@ describe("clearDevEnvCache", () => {
 		clearDevEnvCache();
 
 		expect(() => getDevEnv()).toThrow();
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// loadDevEnv Tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+const typedConfig = defineDevConfig({
+	projectPrefix: "loader-typing",
+	services: {
+		db: service.postgres({ port: 5432 }),
+	},
+	apps: {
+		api: { port: 3000, devCommand: "bun run dev" },
+	},
+});
+
+describe("loadDevEnv", () => {
+	let testDir: string;
+
+	beforeEach(() => {
+		testDir = join(tmpdir(), `buncargo-loader-${Date.now()}-${Math.random()}`);
+		mkdirSync(testDir, { recursive: true });
+		clearDevEnvCache();
+	});
+
+	afterEach(() => {
+		clearDevEnvCache();
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	it("keeps config inference when the config type is passed", async () => {
+		writeFileSync(
+			join(testDir, "dev.config.ts"),
+			`export default ${JSON.stringify(typedConfig)}`,
+		);
+
+		const env = await loadDevEnv<typeof typedConfig>({ cwd: testDir });
+
+		// Type-level: these read as typed keys, not index lookups.
+		const apiUrl: string = env.urls.api;
+		const apiPort: number = env.ports.api;
+		expect(apiUrl).toBe(`http://localhost:${apiPort}`);
+
+		// @ts-expect-error - "missing" is not a configured app or service
+		expect(env.urls.missing).toBeUndefined();
+	});
+
+	it("returns the same typed environment from getDevEnv", async () => {
+		writeFileSync(
+			join(testDir, "dev.config.ts"),
+			`export default ${JSON.stringify(typedConfig)}`,
+		);
+
+		const loaded = await loadDevEnv<typeof typedConfig>({ cwd: testDir });
+		const fetched = getDevEnv<typeof typedConfig>();
+
+		expect(fetched).toBe(loaded);
+		const apiUrl: string = fetched.urls.api;
+		expect(apiUrl).toBe(loaded.urls.api);
+	});
+
+	it("throws when no config file exists", async () => {
+		await expect(loadDevEnv({ cwd: testDir })).rejects.toThrow(
+			"No config file found",
+		);
+	});
+
+	it("throws when the config has no default export", async () => {
+		writeFileSync(join(testDir, "dev.config.ts"), "export const nope = {};");
+
+		await expect(loadDevEnv({ cwd: testDir })).rejects.toThrow(
+			"Use defineDevConfig() and export as default",
+		);
 	});
 });

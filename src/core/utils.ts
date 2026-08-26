@@ -1,6 +1,17 @@
-import type { AppConfig, DevConfig, ServiceConfig } from "../types";
+import type {
+	AppConfig,
+	ComputedPorts,
+	ComputedUrls,
+	ConfigEnvVarNames,
+	DevConfig,
+	ServiceConfig,
+} from "../types";
+import { buildSharedEnvValues, mergeSharedEnvWithOverlay } from "./env";
+import { applyHostPlanToUrls, planNamedHosts } from "./hosts/plan";
 import { getLocalIp } from "./network";
-import { calculatePortOffset, computePorts, computeUrls } from "./ports";
+import { resolvePortPlan } from "./port-allocation";
+import { computeDevIdentity, computeUrls, findMonorepoRoot } from "./ports";
+import { isHostsForcedOff } from "./runtime-flags";
 
 /**
  * Core utility functions shared across modules.
@@ -11,20 +22,6 @@ import { calculatePortOffset, computePorts, computeUrls } from "./ports";
  */
 export function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Detect if running in a CI environment.
- */
-export function isCI(): boolean {
-	return (
-		process.env.CI === "true" ||
-		process.env.CI === "1" ||
-		process.env.GITHUB_ACTIONS === "true" ||
-		process.env.GITLAB_CI === "true" ||
-		process.env.CIRCLECI === "true" ||
-		process.env.JENKINS_URL !== undefined
-	);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -47,7 +44,7 @@ export function logFrontendPort(port: number | undefined): void {
 
 /**
  * Get an environment variable value from the config.
- * Computes ports/urls and runs envVars to get the value.
+ * Computes the shared env surface from services/apps.
  *
  * @param config - The dev config object (from defineDevConfig)
  * @param name - The environment variable name
@@ -61,10 +58,10 @@ export function logFrontendPort(port: number | undefined): void {
  *
  * export default defineConfig(async ({ command }) => {
  *   const isDev = command === 'serve'
- *   const vitePort = isDev ? getEnvVar(config, 'VITE_PORT') : undefined
- *   const apiUrl = getEnvVar(config, 'VITE_API_URL')
+ *   const webPort = isDev ? getEnvVar(config, 'WEB_PORT') : undefined
+ *   const apiUrl = getEnvVar(config, 'API_URL')
  *   return {
- *     server: { port: vitePort, strictPort: true }
+ *     server: { port: webPort, strictPort: true }
  *   }
  * })
  * ```
@@ -72,32 +69,68 @@ export function logFrontendPort(port: number | undefined): void {
 export function getEnvVar<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TName extends ConfigEnvVarNames<TServices, TApps>,
 >(
 	config: DevConfig<TServices, TApps>,
-	name: string,
+	name: TName,
 	options: { log?: boolean } = {},
 ): string | number | undefined {
 	const { log = true } = options;
-	const offset = calculatePortOffset();
+	const root = findMonorepoRoot();
+	const identity = computeDevIdentity({
+		projectPrefix: config.projectPrefix,
+		root,
+		worktreeIsolation: config.options?.worktreeIsolation,
+	});
+	const portPlan = resolvePortPlan({
+		projectPrefix: config.projectPrefix,
+		projectName: identity.projectName,
+		root,
+		services: config.services,
+		apps: config.apps,
+		worktreeName: identity.worktreeSuffix,
+		worktreeIsolation: config.options?.worktreeIsolation,
+		persist: false,
+	});
 	const localIp = getLocalIp();
 
-	// Compute ports and urls
-	const ports = computePorts(config.services, config.apps, offset);
-	const urls = computeUrls(config.services, config.apps, ports, localIp);
+	const ports = portPlan.ports as ComputedPorts<TServices, TApps>;
+	const hostPlan =
+		!isHostsForcedOff() && config.options?.hosts
+			? planNamedHosts({
+					projectPrefix: config.projectPrefix,
+					worktreeSuffix: identity.worktreeSuffix,
+					apps: config.apps,
+					services: config.services,
+					ports,
+					hosts: config.options.hosts,
+				})
+			: undefined;
+	const urls = computeUrls(
+		config.services,
+		config.apps,
+		ports,
+		localIp,
+	) as ComputedUrls<TServices, TApps>;
+	if (hostPlan && hostPlan.length > 0) {
+		applyHostPlanToUrls(urls as Record<string, string>, hostPlan);
+	}
 
-	// Build env vars from the function
-	const envVars = config.envVars?.(
-		ports as Parameters<NonNullable<typeof config.envVars>>[0],
-		urls as Parameters<NonNullable<typeof config.envVars>>[1],
-		{
-			projectName: config.projectPrefix,
-			localIp,
-			portOffset: offset,
-			publicUrls: {},
-		},
-	);
+	const shared = buildSharedEnvValues({
+		projectName: identity.projectName,
+		services: config.services,
+		ports,
+		urls,
+		publicUrls: {},
+	});
+	const envVars = mergeSharedEnvWithOverlay(shared, config.env, ports, urls, {
+		projectName: identity.projectName,
+		localIp,
+		portOffset: portPlan.offset,
+		publicUrls: {},
+	});
 
-	const value = envVars?.[name];
+	const value = envVars[name];
 
 	// Log frontend port for Vibe Kanban detection
 	if (log && name === "VITE_PORT" && typeof value === "number") {

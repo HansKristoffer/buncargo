@@ -8,8 +8,4 @@ export default defineDevConfig({
 	services: {
 		postgres: service.postgres({ database: "myapp", expose: true }),
 	},
-
-	envVars: (_ports, urls) => ({
-		DATABASE_URL: urls.postgres,
-	}),
 });

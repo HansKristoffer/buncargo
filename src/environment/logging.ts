@@ -35,6 +35,7 @@ export function logEnvironmentInfo(input: {
 	services: Record<string, unknown>;
 	apps: Record<string, unknown>;
 	ports: Record<string, number>;
+	urls?: Record<string, string>;
 	localIp: string;
 	worktree: boolean;
 	portOffset: number;
@@ -52,6 +53,7 @@ export function logEnvironmentInfo(input: {
 		services,
 		apps,
 		ports,
+		urls,
 		localIp,
 		worktree,
 		portOffset,
@@ -70,13 +72,36 @@ export function logEnvironmentInfo(input: {
 		console.log(`  ${pc.dim("─── Services ───")}`);
 		for (const name of serviceNames) {
 			const port = ports[name];
-			const url = `localhost:${port}`;
-			console.log(formatLabel(`${name}:`, formatUrl(`http://${url}`)));
+			const named = urls?.[name];
+			const url = named ?? `http://localhost:${port}`;
+			console.log(formatLabel(`${name}:`, formatUrl(url)));
+			if (named && port !== undefined && !named.includes(`:${port}`)) {
+				console.log(formatDimLabel("port:", String(port)));
+			}
 			const t = tunnelFor(tunnels, name, "service");
 			if (t) {
 				console.log(
 					`       ${pc.dim("Public:")}  ${formatUrl(t.publicUrl)} ${pc.dim("(tunnel)")}`,
 				);
+			}
+			const service = services[name] as
+				| { database?: string; user?: string; password?: string }
+				| undefined;
+			if (name.toLowerCase().includes("postgres") || service?.database) {
+				const user = service?.user ?? "postgres";
+				const password = service?.password ?? "postgres";
+				const database = service?.database ?? "postgres";
+				if (name.toLowerCase().includes("postgres")) {
+					const tablePlus = new URL(
+						`postgresql://${user}:${password}@localhost:${port}/${database}`,
+					);
+					tablePlus.searchParams.set("env", "development");
+					tablePlus.searchParams.set("name", `${projectName}-${name}`);
+					tablePlus.searchParams.set("schema", "public");
+					console.log(
+						`       ${pc.dim("TablePlus:")} ${pc.cyan(tablePlus.toString())}`,
+					);
+				}
 			}
 		}
 	}
@@ -86,11 +111,15 @@ export function logEnvironmentInfo(input: {
 		console.log(`  ${pc.dim("─── Applications ───")}`);
 		for (const name of appNames) {
 			const port = ports[name];
-			const localUrl = `http://localhost:${port}`;
+			const named = urls?.[name];
+			const localUrl = named ?? `http://localhost:${port}`;
 			const networkUrl = `http://${localIp}:${port}`;
 
 			console.log(`  ${pc.green("➜")}  ${pc.bold(pc.cyan(name))}`);
 			console.log(`       ${pc.dim("Local:")}   ${formatUrl(localUrl)}`);
+			if (named && port !== undefined) {
+				console.log(`       ${pc.dim("Port:")}    ${pc.dim(String(port))}`);
+			}
 			console.log(`       ${pc.dim("Network:")} ${formatUrl(networkUrl)}`);
 			const t = tunnelFor(tunnels, name, "app");
 			if (t) {

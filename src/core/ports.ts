@@ -80,35 +80,6 @@ export function getWorktreeProjectSuffix(root?: string): string | null {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Port Offset Calculation
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Simple hash function for consistent port offsets.
- */
-function simpleHash(str: string): number {
-	let hash = 0;
-	for (let i = 0; i < str.length; i++) {
-		const char = str.charCodeAt(i);
-		hash = (hash << 5) - hash + char;
-		hash = hash & hash;
-	}
-	return Math.abs(hash);
-}
-
-/**
- * Calculate port offset based on worktree name and optional suffix.
- * Returns 0 for main branch, 10-99 for worktrees.
- */
-export function calculatePortOffset(suffix?: string, root?: string): number {
-	const worktreeName = getWorktreeName(root);
-	if (!worktreeName) return 0;
-	const hashInput = suffix ? `${worktreeName}-${suffix}` : worktreeName;
-	// Range 10-99 to avoid conflicts with main (0) and leave room
-	return 10 + (simpleHash(hashInput) % 90);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Project Naming
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -138,7 +109,6 @@ export interface DevIdentity {
 	worktreeSuffix: string | null;
 	projectSuffix?: string;
 	projectName: string;
-	portOffset: number;
 }
 
 /**
@@ -158,51 +128,13 @@ export function computeDevIdentity(options: DevIdentityOptions): DevIdentity {
 	const projectSuffix =
 		[suffix, worktreeSuffix].filter(Boolean).join("-") || undefined;
 	const projectName = getProjectName(projectPrefix, projectSuffix, root);
-	const portOffset = calculatePortOffset(suffix, root);
 
 	return {
 		worktree,
 		worktreeSuffix,
 		projectSuffix,
 		projectName,
-		portOffset,
 	};
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Port Computation
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Compute all ports for services and apps with offset applied.
- */
-export function computePorts<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
->(
-	services: TServices,
-	apps: TApps | undefined,
-	offset: number,
-): Record<string, number> {
-	const ports: Record<string, number> = {};
-
-	// Add service ports
-	for (const [name, config] of Object.entries(services)) {
-		ports[name] = config.port + offset;
-		// Handle secondary ports (e.g., clickhouseNative)
-		if (config.secondaryPort) {
-			ports[`${name}Secondary`] = config.secondaryPort + offset;
-		}
-	}
-
-	// Add app ports
-	if (apps) {
-		for (const [name, config] of Object.entries(apps)) {
-			ports[name] = config.port + offset;
-		}
-	}
-
-	return ports;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -259,7 +191,11 @@ function buildServiceUrl(
 }
 
 /**
- * Compute URLs for all services and apps.
+ * Compute the localhost/local-IP URLs for all services and apps.
+ *
+ * Named-host (`https://<name>.<project>.localhost`) rewriting is layered on top
+ * by callers via `applyHostPlanToUrls`, so this module stays independent of the
+ * hosts subsystem.
  */
 export function computeUrls<
 	TServices extends Record<string, ServiceConfig>,

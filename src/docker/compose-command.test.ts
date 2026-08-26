@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { getComposeArg, getComposeCommandPrefix } from "./runtime";
+import { getComposeArg, getComposeCommandPrefix } from "./compose-command";
 
 describe("getComposeArg", () => {
 	it("returns empty string when compose file is not provided", () => {

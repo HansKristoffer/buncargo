@@ -1,82 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { isCI, sleep } from "./utils";
-
-// ═══════════════════════════════════════════════════════════════════════════
-// isCI Tests
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("isCI", () => {
-	// Store original env vars to restore after each test
-	let originalEnv: NodeJS.ProcessEnv;
-
-	beforeEach(() => {
-		// Save original env
-		originalEnv = { ...process.env };
-		// Clear all CI-related vars
-		delete process.env.CI;
-		delete process.env.GITHUB_ACTIONS;
-		delete process.env.GITLAB_CI;
-		delete process.env.CIRCLECI;
-		delete process.env.JENKINS_URL;
-	});
-
-	afterEach(() => {
-		// Restore original env
-		process.env = originalEnv;
-	});
-
-	it("returns true when CI=true", () => {
-		process.env.CI = "true";
-
-		expect(isCI()).toBe(true);
-	});
-
-	it("returns true when CI=1", () => {
-		process.env.CI = "1";
-
-		expect(isCI()).toBe(true);
-	});
-
-	it("returns true when GITHUB_ACTIONS=true", () => {
-		process.env.GITHUB_ACTIONS = "true";
-
-		expect(isCI()).toBe(true);
-	});
-
-	it("returns true when GITLAB_CI=true", () => {
-		process.env.GITLAB_CI = "true";
-
-		expect(isCI()).toBe(true);
-	});
-
-	it("returns true when CIRCLECI=true", () => {
-		process.env.CIRCLECI = "true";
-
-		expect(isCI()).toBe(true);
-	});
-
-	it("returns true when JENKINS_URL is set", () => {
-		process.env.JENKINS_URL = "http://jenkins.example.com";
-
-		expect(isCI()).toBe(true);
-	});
-
-	it("returns false when no CI env vars are set", () => {
-		expect(isCI()).toBe(false);
-	});
-
-	it("returns false when CI=false", () => {
-		process.env.CI = "false";
-
-		expect(isCI()).toBe(false);
-	});
-
-	it("returns false when CI is empty string", () => {
-		process.env.CI = "";
-
-		expect(isCI()).toBe(false);
-	});
-});
+import { describe, expect, it } from "bun:test";
+import { defineDevConfig } from "../config";
+import { service } from "../docker-compose/services";
+import { getEnvVar, sleep } from "./utils";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // sleep Tests
@@ -101,5 +26,100 @@ describe("sleep", () => {
 
 		const elapsed = Date.now() - start;
 		expect(elapsed).toBeLessThan(50);
+	});
+});
+
+describe("getEnvVar", () => {
+	it("returns shared computed env values and service-derived aliases", () => {
+		const config = defineDevConfig({
+			projectPrefix: "typed",
+			services: {
+				postgres: service.postgres({ database: "typed" }),
+				nats: service.custom({
+					port: 4222,
+					env: {
+						NATS_URL: "url",
+					},
+					docker: {
+						image: "nats:2-alpine",
+					},
+				}),
+			},
+			apps: {
+				api: {
+					port: 3000,
+					devCommand: "bun run api",
+				},
+				web: {
+					port: 5173,
+					devCommand: "bun run web",
+					envVars: (_ports, urls) => ({
+						VITE_API_URL: urls.api,
+					}),
+				},
+			},
+		});
+
+		const webPort = getEnvVar(config, "WEB_PORT");
+		expect(typeof webPort).toBe("number");
+		expect(webPort).toBeGreaterThanOrEqual(5173);
+		expect(getEnvVar(config, "DATABASE_URL")).toMatch(
+			/^postgresql:\/\/postgres:postgres@localhost:\d+\/typed$/,
+		);
+		expect(getEnvVar(config, "NATS_URL")).toMatch(/^http:\/\/localhost:\d+$/);
+		expect(getEnvVar(config, "API_URL")).toMatch(/^http:\/\/localhost:\d+$/);
+		expect(getEnvVar(config, "WEBLOCAL_URL")).toMatch(/^http:\/\//);
+	});
+
+	it("emits named HTTPS URLs when hosts are enabled", () => {
+		const previousCi = process.env.CI;
+		const previousHosts = process.env.BUNCARGO_HOSTS;
+		delete process.env.CI;
+		delete process.env.BUNCARGO_HOSTS;
+		try {
+			const config = defineDevConfig({
+				projectPrefix: "serpier",
+				services: {
+					postgres: service.postgres({ database: "typed" }),
+				},
+				apps: {
+					api: { port: 3000, devCommand: "bun run api" },
+				},
+				options: { hosts: true },
+			});
+			expect(getEnvVar(config, "API_URL")).toMatch(
+				/^https:\/\/(?:[a-z0-9-]+\.)?api\.serpier\.localhost$/,
+			);
+		} finally {
+			if (previousCi === undefined) delete process.env.CI;
+			else process.env.CI = previousCi;
+			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
+			else process.env.BUNCARGO_HOSTS = previousHosts;
+		}
+	});
+
+	it("keeps localhost URLs when BUNCARGO_HOSTS=0", () => {
+		const previousCi = process.env.CI;
+		const previousHosts = process.env.BUNCARGO_HOSTS;
+		delete process.env.CI;
+		process.env.BUNCARGO_HOSTS = "0";
+		try {
+			const config = defineDevConfig({
+				projectPrefix: "serpier",
+				services: {
+					postgres: service.postgres({ database: "typed" }),
+				},
+				apps: {
+					api: { port: 3000, devCommand: "bun run api" },
+				},
+				options: { hosts: true },
+			});
+			expect(getEnvVar(config, "API_URL")).toMatch(/^http:\/\/localhost:\d+$/);
+		} finally {
+			if (previousCi === undefined) delete process.env.CI;
+			else process.env.CI = previousCi;
+			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
+			else process.env.BUNCARGO_HOSTS = previousHosts;
+		}
 	});
 });

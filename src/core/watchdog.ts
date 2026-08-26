@@ -1,113 +1,140 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { getComposeArg } from "../docker/compose-command";
+import { simpleHash } from "./hash";
 import { isProcessAlive } from "./process";
+import {
+	WATCHDOG_DEFAULT_TIMEOUT_MINUTES,
+	WATCHDOG_HEARTBEAT_INTERVAL_MS,
+} from "./watchdog-constants";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// File Paths
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Get the heartbeat file path for a project.
- */
-export function getHeartbeatFile(projectName: string): string {
-	return `/tmp/${projectName}-heartbeat`;
+export interface HeartbeatPayload {
+	ts: number;
+	pid: number;
 }
 
-/**
- * Get the watchdog PID file path for a project.
- */
-export function getWatchdogPidFile(projectName: string): string {
-	return `/tmp/${projectName}-watchdog.pid`;
+function namespaceId(projectName: string, root?: string): string {
+	if (!root) return projectName;
+	const hash = simpleHash(root).toString(16).slice(0, 8);
+	return `${projectName}-${hash}`;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Heartbeat
-// ═══════════════════════════════════════════════════════════════════════════
+export function getHeartbeatFile(projectName: string, root?: string): string {
+	return `/tmp/${namespaceId(projectName, root)}-heartbeat`;
+}
+
+export function getWatchdogPidFile(projectName: string, root?: string): string {
+	return `/tmp/${namespaceId(projectName, root)}-watchdog.pid`;
+}
+
+export function getWatchdogLogFile(projectName: string, root?: string): string {
+	return `/tmp/${namespaceId(projectName, root)}-watchdog.log`;
+}
 
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+let heartbeatProject: { projectName: string; root?: string } | null = null;
 
-/**
- * Start writing heartbeat to file.
- * The heartbeat is used by the watchdog to detect idle state.
- */
-export function startHeartbeat(projectName: string, intervalMs = 30_000): void {
-	const heartbeatFile = getHeartbeatFile(projectName);
+export function writeHeartbeatPayload(
+	projectName: string,
+	root?: string,
+	payload: HeartbeatPayload = { ts: Date.now(), pid: process.pid },
+): void {
+	writeFileSync(getHeartbeatFile(projectName, root), JSON.stringify(payload));
+}
 
-	// Write initial heartbeat
-	writeFileSync(heartbeatFile, Date.now().toString());
-
-	// Update heartbeat at interval
+export function startHeartbeat(
+	projectName: string,
+	intervalMs = WATCHDOG_HEARTBEAT_INTERVAL_MS,
+	root?: string,
+): void {
+	heartbeatProject = { projectName, root };
+	writeHeartbeatPayload(projectName, root);
 	heartbeatInterval = setInterval(() => {
-		writeFileSync(heartbeatFile, Date.now().toString());
+		writeHeartbeatPayload(projectName, root);
 	}, intervalMs);
 }
 
-/**
- * Stop writing heartbeat.
- */
 export function stopHeartbeat(): void {
 	if (heartbeatInterval) {
 		clearInterval(heartbeatInterval);
 		heartbeatInterval = null;
 	}
+	if (heartbeatProject) {
+		removeHeartbeatFile(heartbeatProject.projectName, heartbeatProject.root);
+		heartbeatProject = null;
+	}
 }
 
-/**
- * Read the last heartbeat timestamp.
- */
-export function readHeartbeat(projectName: string): number | null {
-	const heartbeatFile = getHeartbeatFile(projectName);
+export function parseHeartbeatPayload(
+	content: string,
+): HeartbeatPayload | null {
+	const trimmed = content.trim();
+	if (!trimmed) return null;
+	try {
+		const parsed = JSON.parse(trimmed) as Partial<HeartbeatPayload> | number;
+		if (typeof parsed === "number" && Number.isFinite(parsed)) {
+			return { ts: parsed, pid: 0 };
+		}
+		if (
+			typeof parsed === "object" &&
+			parsed !== null &&
+			typeof parsed.ts === "number" &&
+			Number.isFinite(parsed.ts) &&
+			typeof parsed.pid === "number"
+		) {
+			return { ts: parsed.ts, pid: parsed.pid };
+		}
+	} catch {
+		const timestamp = Number.parseInt(trimmed, 10);
+		if (!Number.isNaN(timestamp)) {
+			return { ts: timestamp, pid: 0 };
+		}
+	}
+	return null;
+}
+
+export function readHeartbeatPayload(
+	projectName: string,
+	root?: string,
+): HeartbeatPayload | null {
+	const heartbeatFile = getHeartbeatFile(projectName, root);
 	try {
 		if (!existsSync(heartbeatFile)) return null;
-		const content = readFileSync(heartbeatFile, "utf-8");
-		const timestamp = parseInt(content, 10);
-		return Number.isNaN(timestamp) ? null : timestamp;
+		return parseHeartbeatPayload(readFileSync(heartbeatFile, "utf-8"));
 	} catch {
 		return null;
 	}
 }
 
-/**
- * Remove the heartbeat file.
- */
-export function removeHeartbeatFile(projectName: string): void {
-	const heartbeatFile = getHeartbeatFile(projectName);
+export function readHeartbeat(
+	projectName: string,
+	root?: string,
+): number | null {
+	return readHeartbeatPayload(projectName, root)?.ts ?? null;
+}
+
+export function removeHeartbeatFile(projectName: string, root?: string): void {
 	try {
-		unlinkSync(heartbeatFile);
+		unlinkSync(getHeartbeatFile(projectName, root));
 	} catch {
 		// File may not exist
 	}
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Watchdog
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Check if watchdog is already running.
- */
-export function isWatchdogRunning(projectName: string): boolean {
-	const pidFile = getWatchdogPidFile(projectName);
-	try {
-		if (!existsSync(pidFile)) return false;
-		const content = readFileSync(pidFile, "utf-8");
-		const pid = parseInt(content, 10);
-		if (Number.isNaN(pid)) return false;
-		return isProcessAlive(pid);
-	} catch {
-		return false;
-	}
+export function isWatchdogRunning(projectName: string, root?: string): boolean {
+	return getWatchdogPid(projectName, root) !== null;
 }
 
-/**
- * Get the watchdog PID if running.
- */
-export function getWatchdogPid(projectName: string): number | null {
-	const pidFile = getWatchdogPidFile(projectName);
+export function getWatchdogPid(
+	projectName: string,
+	root?: string,
+): number | null {
+	const pidFile = getWatchdogPidFile(projectName, root);
 	try {
 		if (!existsSync(pidFile)) return null;
-		const content = readFileSync(pidFile, "utf-8");
-		const pid = parseInt(content, 10);
+		const pid = Number.parseInt(readFileSync(pidFile, "utf-8"), 10);
 		if (Number.isNaN(pid)) return null;
 		if (!isProcessAlive(pid)) return null;
 		return pid;
@@ -116,12 +143,32 @@ export function getWatchdogPid(projectName: string): number | null {
 	}
 }
 
-/**
- * Spawn watchdog as a detached process.
- * The watchdog monitors the heartbeat file and shuts down containers after idle timeout.
- */
 export function getWatchdogComposeArg(composeFile?: string): string {
-	return composeFile ? `-f "${composeFile}"` : "";
+	return getComposeArg(composeFile);
+}
+
+export function resolveWatchdogRunnerPath(): string {
+	const moduleDir = dirname(fileURLToPath(import.meta.url));
+	const candidates = [
+		join(moduleDir, "watchdog-runner.js"),
+		join(moduleDir, "watchdog-runner.ts"),
+		join(moduleDir, "core", "watchdog-runner.js"),
+		join(moduleDir, "core", "watchdog-runner.ts"),
+	];
+	let dir = moduleDir;
+	for (let i = 0; i < 6; i++) {
+		candidates.push(join(dir, "dist/core/watchdog-runner.js"));
+		candidates.push(join(dir, "src/core/watchdog-runner.ts"));
+		const parent = dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	for (const candidate of candidates) {
+		if (existsSync(candidate)) return candidate;
+	}
+	throw new Error(
+		"Watchdog runner not found. Rebuild buncargo so dist/core/watchdog-runner.js is emitted.",
+	);
 }
 
 export async function spawnWatchdog(
@@ -133,38 +180,41 @@ export async function spawnWatchdog(
 		composeFile?: string;
 	} = {},
 ): Promise<void> {
-	const { timeoutMinutes = 10, verbose = true, composeFile } = options;
+	const {
+		timeoutMinutes = WATCHDOG_DEFAULT_TIMEOUT_MINUTES,
+		verbose = true,
+		composeFile,
+	} = options;
 
-	// Check if watchdog is already running
-	const existingPid = getWatchdogPid(projectName);
+	const existingPid = getWatchdogPid(projectName, root);
 	if (existingPid) {
 		if (verbose)
 			console.log(`✓ Watchdog already running (PID: ${existingPid})`);
 		return;
 	}
 
-	// Remove stale PID file if exists
-	const pidFile = getWatchdogPidFile(projectName);
+	const pidFile = getWatchdogPidFile(projectName, root);
 	try {
 		unlinkSync(pidFile);
 	} catch {
 		// File may not exist
 	}
 
-	// Get the path to the watchdog runner script
-	const watchdogScript = new URL("./watchdog-runner.ts", import.meta.url)
-		.pathname;
+	const watchdogScript = resolveWatchdogRunnerPath();
+	const logFile = getWatchdogLogFile(projectName, root);
+	writeFileSync(logFile, "");
 
-	// Spawn watchdog as a separate process
 	const proc = spawn("bun", ["run", watchdogScript], {
 		cwd: root,
 		detached: true,
-		stdio: "ignore",
+		stdio: ["ignore", "ignore", "ignore"],
 		env: {
 			...process.env,
 			WATCHDOG_PROJECT_NAME: projectName,
-			WATCHDOG_HEARTBEAT_FILE: getHeartbeatFile(projectName),
+			WATCHDOG_ROOT: root,
+			WATCHDOG_HEARTBEAT_FILE: getHeartbeatFile(projectName, root),
 			WATCHDOG_PID_FILE: pidFile,
+			WATCHDOG_LOG_FILE: logFile,
 			WATCHDOG_TIMEOUT_MS: String(timeoutMinutes * 60 * 1000),
 			WATCHDOG_COMPOSE_ARG: getWatchdogComposeArg(composeFile),
 		},
@@ -172,16 +222,26 @@ export async function spawnWatchdog(
 
 	proc.unref();
 
-	if (verbose && proc.pid) {
-		console.log(`✓ Watchdog started (PID: ${proc.pid})`);
+	const startedAt = Date.now();
+	while (Date.now() - startedAt < 2000) {
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		if (existsSync(pidFile) && getWatchdogPid(projectName, root)) {
+			if (verbose && proc.pid) {
+				console.log(`✓ Watchdog started (PID: ${proc.pid})`);
+			}
+			return;
+		}
+	}
+
+	if (verbose) {
+		console.warn(
+			`⚠️  Watchdog did not start. Check ${logFile} and rebuild buncargo if dist/core/watchdog-runner.js is missing.`,
+		);
 	}
 }
 
-/**
- * Stop the watchdog process.
- */
-export function stopWatchdog(projectName: string): void {
-	const pid = getWatchdogPid(projectName);
+export function stopWatchdog(projectName: string, root?: string): void {
+	const pid = getWatchdogPid(projectName, root);
 	if (pid) {
 		try {
 			process.kill(pid, "SIGTERM");
@@ -190,10 +250,8 @@ export function stopWatchdog(projectName: string): void {
 		}
 	}
 
-	// Clean up files
-	const pidFile = getWatchdogPidFile(projectName);
 	try {
-		unlinkSync(pidFile);
+		unlinkSync(getWatchdogPidFile(projectName, root));
 	} catch {
 		// File may not exist
 	}

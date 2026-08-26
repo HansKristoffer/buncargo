@@ -1,5 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import type { AppConfig, DevConfig, ServiceConfig } from "../types";
+import { getEnvVar } from "../core/utils";
+import { service } from "../docker-compose/services";
+import type {
+	AppConfig,
+	ComputedPublicUrls,
+	DevConfig,
+	ServiceConfig,
+} from "../types";
 import { defineDevConfig, mergeConfigs, validateConfig } from ".";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -152,6 +159,61 @@ describe("validateConfig", () => {
 
 			expect(errors).toHaveLength(0);
 		});
+
+		it("returns error for duplicate derived env aliases", () => {
+			const config = {
+				projectPrefix: "myapp",
+				services: {
+					primary: service.custom({
+						port: 5432,
+						env: {
+							DATABASE_URL: "url",
+						},
+						docker: {
+							image: "postgres:16-alpine",
+						},
+					}),
+					replica: service.custom({
+						port: 5433,
+						env: {
+							DATABASE_URL: "url",
+						},
+						docker: {
+							image: "postgres:16-alpine",
+						},
+					}),
+				},
+			};
+
+			const errors = validateConfig(config);
+
+			expect(errors).toContain(
+				'Derived env var "DATABASE_URL" is declared by multiple services (primary, replica). Rename one of them or use explicit service.env mappings.',
+			);
+		});
+
+		it("returns error when service env uses secondaryPort without configuring it", () => {
+			const config = {
+				projectPrefix: "myapp",
+				services: {
+					clickhouse: service.custom({
+						port: 8123,
+						env: {
+							CLICKHOUSE_TCP_PORT: "secondaryPort",
+						},
+						docker: {
+							image: "clickhouse/clickhouse-server:24-alpine",
+						},
+					}),
+				},
+			};
+
+			const errors = validateConfig(config);
+
+			expect(errors).toContain(
+				'Service "clickhouse" declares env "CLICKHOUSE_TCP_PORT" from secondaryPort but no secondaryPort is configured.',
+			);
+		});
 	});
 
 	describe("apps validation", () => {
@@ -241,6 +303,51 @@ describe("validateConfig", () => {
 			expect(errors).toContain('App "expo" requires unknown app "api"');
 		});
 
+		it("accepts devCommand: false and healthEndpoint: false", () => {
+			const config = {
+				projectPrefix: "myapp",
+				services: {
+					postgres: { port: 5432 },
+				},
+				apps: {
+					metro: {
+						port: 8081,
+						devCommand: false as const,
+						healthEndpoint: false as const,
+					},
+				},
+			};
+
+			expect(validateConfig(config)).toHaveLength(0);
+		});
+
+		it("returns error when more than one app is interactive", () => {
+			const config = {
+				projectPrefix: "myapp",
+				services: {
+					postgres: { port: 5432 },
+				},
+				apps: {
+					api: {
+						port: 3000,
+						devCommand: "bun run api",
+						interactive: true,
+					},
+					expo: {
+						port: 8081,
+						devCommand: "bun run expo",
+						interactive: true,
+					},
+				},
+			};
+
+			const errors = validateConfig(config);
+
+			expect(errors).toContain(
+				"Only one app may set interactive: true. Found: api, expo",
+			);
+		});
+
 		it("returns error when requiredApps contain a cycle", () => {
 			const config = {
 				projectPrefix: "myapp",
@@ -289,6 +396,90 @@ describe("validateConfig", () => {
 			const errors = validateConfig(config);
 
 			expect(errors).toHaveLength(0);
+		});
+
+		it("accepts a top-level env overlay", () => {
+			const config = defineDevConfig({
+				projectPrefix: "myapp",
+				services: {
+					postgres: { port: 5432 },
+				},
+				apps: {
+					web: { port: 5173, devCommand: "bun run dev" },
+				},
+				env: (_ports, urls) => ({
+					VITE_API_URL: urls.postgres,
+				}),
+			});
+
+			expect(validateConfig(config)).toEqual([]);
+		});
+
+		it("returns an upgrade error for removed top-level envVars", () => {
+			const config = {
+				projectPrefix: "myapp",
+				services: {
+					postgres: { port: 5432 },
+				},
+				envVars: () => ({
+					DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/myapp",
+				}),
+			} as unknown as DevConfig<
+				Record<string, ServiceConfig>,
+				Record<string, AppConfig>
+			>;
+
+			const errors = validateConfig(config);
+
+			expect(errors).toContain(
+				"Top-level envVars has been removed. Use the top-level env overlay for shared values, or apps.<name>.envVars for app-only values.",
+			);
+		});
+
+		it("returns an upgrade error for the renamed per-app env key", () => {
+			const config = {
+				projectPrefix: "myapp",
+				services: {
+					postgres: { port: 5432 },
+				},
+				apps: {
+					api: {
+						port: 3000,
+						devCommand: "bun run dev",
+						env: { SECRETS_ENV: "dev" },
+					},
+				},
+			} as unknown as DevConfig<
+				Record<string, ServiceConfig>,
+				Record<string, AppConfig>
+			>;
+
+			const errors = validateConfig(config);
+
+			expect(errors).toContain(
+				'App "api" uses "env", which was renamed to "staticEnv" to avoid colliding with the top-level env overlay. Use apps.api.staticEnv for constants, or apps.api.envVars for computed values.',
+			);
+		});
+
+		it("accepts the renamed staticEnv key", () => {
+			const config = {
+				projectPrefix: "myapp",
+				services: {
+					postgres: { port: 5432 },
+				},
+				apps: {
+					api: {
+						port: 3000,
+						devCommand: "bun run dev",
+						staticEnv: { SECRETS_ENV: "dev" },
+					},
+				},
+			} as unknown as DevConfig<
+				Record<string, ServiceConfig>,
+				Record<string, AppConfig>
+			>;
+
+			expect(validateConfig(config)).toEqual([]);
 		});
 	});
 
@@ -531,9 +722,55 @@ describe("mergeConfigs", () => {
 
 		expect(result.services.postgres.port).toBe(5433);
 	});
+
+	it("composes the shared env builders instead of replacing", () => {
+		const base: DevConfig<
+			{ postgres: ServiceConfig },
+			Record<string, never>
+		> = {
+			projectPrefix: "myapp",
+			services: { postgres: { port: 5432 } },
+			env: () => ({ FROM_BASE: "1", SHARED: "base" }),
+		};
+		const override = {
+			env: () => ({ FROM_OVERRIDE: "1", SHARED: "override" }),
+		};
+
+		const result = mergeConfigs(base, override);
+		const ctx = {
+			projectName: "myapp",
+			localIp: "127.0.0.1",
+			portOffset: 0,
+			publicUrls: {},
+		};
+
+		expect(result.env?.({ postgres: 5432 }, { postgres: "" }, ctx)).toEqual({
+			FROM_BASE: "1",
+			FROM_OVERRIDE: "1",
+			SHARED: "override",
+		});
+	});
+
+	it("keeps optional groups undefined when neither side sets them", () => {
+		const base: DevConfig<
+			{ postgres: ServiceConfig },
+			Record<string, never>
+		> = {
+			projectPrefix: "myapp",
+			services: { postgres: { port: 5432 } },
+		};
+
+		const result = mergeConfigs(base, {});
+
+		expect(result.apps).toBeUndefined();
+		expect(result.env).toBeUndefined();
+		expect(result.hooks).toBeUndefined();
+		expect(result.options).toBeUndefined();
+		expect(result.docker).toBeUndefined();
+	});
 });
 
-describe("envVars publicUrls typing", () => {
+describe("app envVars publicUrls typing", () => {
 	it("infers publicUrls keys from expose:true services/apps", () => {
 		const config = defineDevConfig({
 			projectPrefix: "typed",
@@ -551,19 +788,141 @@ describe("envVars publicUrls typing", () => {
 					port: 3000,
 					devCommand: "bun run dev",
 					expose: true,
+					envVars: (_ports, _urls, { publicUrls }) => {
+						const maybeApi: string | undefined = publicUrls.api;
+						const maybePostgres: string | undefined = publicUrls.postgres;
+						return {
+							PUBLIC_API_URL: maybeApi ?? "",
+							PUBLIC_POSTGRES_URL: maybePostgres ?? "",
+						};
+					},
 				},
-			},
-			envVars: (_ports, _urls, { publicUrls }) => {
-				const maybeApi: string | undefined = publicUrls.api;
-				const maybePostgres: string | undefined = publicUrls.postgres;
-				return {
-					PUBLIC_API_URL: maybeApi ?? "",
-					PUBLIC_POSTGRES_URL: maybePostgres ?? "",
-				};
 			},
 		});
 
 		expect(config.projectPrefix).toBe("typed");
+	});
+
+	it("omits services/apps that did not opt into expose", () => {
+		const config = defineDevConfig({
+			projectPrefix: "typed",
+			services: {
+				postgres: {
+					port: 5432,
+					docker: {
+						image: "postgres:16-alpine",
+					},
+				},
+			},
+			apps: {
+				api: {
+					port: 3000,
+					devCommand: "bun run dev",
+					expose: true,
+				},
+				web: {
+					port: 5173,
+					devCommand: "bun run dev",
+				},
+			},
+		});
+
+		type PublicUrls = ComputedPublicUrls<
+			typeof config.services,
+			NonNullable<typeof config.apps>
+		>;
+
+		const exposedApi: string | undefined = ({} as PublicUrls).api;
+		expect(exposedApi).toBeUndefined();
+
+		// @ts-expect-error - postgres did not opt into expose
+		void ({} as PublicUrls).postgres;
+		// @ts-expect-error - web did not opt into expose
+		void ({} as PublicUrls).web;
+	});
+
+	it("rejects *_PUBLIC_URL env names for non-exposed keys", () => {
+		const config = defineDevConfig({
+			projectPrefix: "typed",
+			services: {
+				postgres: service.postgres({ database: "typed" }),
+			},
+			apps: {
+				api: {
+					port: 3000,
+					devCommand: "bun run dev",
+					expose: true,
+				},
+				web: {
+					port: 5173,
+					devCommand: "bun run dev",
+				},
+			},
+		});
+
+		const apiPublicUrl: string | number | undefined = getEnvVar(
+			config,
+			"API_PUBLIC_URL",
+		);
+		expect(apiPublicUrl).toBeUndefined();
+
+		// @ts-expect-error - web is not exposed, so WEB_PUBLIC_URL never exists
+		getEnvVar(config, "WEB_PUBLIC_URL");
+	});
+});
+
+describe("getEnvVar typing", () => {
+	it("accepts shared computed env names and declared service env outputs", () => {
+		const config = defineDevConfig({
+			projectPrefix: "typed",
+			services: {
+				postgres: service.postgres({ database: "typed" }),
+				nats: service.custom({
+					port: 4222,
+					env: {
+						NATS_URL: "url",
+					},
+					docker: {
+						image: "nats:2-alpine",
+					},
+				}),
+			},
+			apps: {
+				api: {
+					port: 3000,
+					devCommand: "bun run api",
+				},
+				web: {
+					port: 5173,
+					devCommand: "bun run web",
+				},
+			},
+		});
+
+		const databaseUrl: string | number | undefined = getEnvVar(
+			config,
+			"DATABASE_URL",
+		);
+		const natsUrl: string | number | undefined = getEnvVar(config, "NATS_URL");
+		const apiUrl: string | number | undefined = getEnvVar(config, "API_URL");
+		const webPort: string | number | undefined = getEnvVar(config, "WEB_PORT");
+
+		expect(databaseUrl).toBeDefined();
+		expect(natsUrl).toBeDefined();
+		expect(apiUrl).toBeDefined();
+		expect(webPort).toBeDefined();
+	});
+
+	it("rejects unknown shared env names at compile time", () => {
+		const config = defineDevConfig({
+			projectPrefix: "typed",
+			services: {
+				postgres: service.postgres({ database: "typed" }),
+			},
+		});
+
+		// @ts-expect-error - unknown shared env name
+		getEnvVar(config, "MISSING_URL");
 	});
 });
 
@@ -640,5 +999,46 @@ describe("defineDevConfig app dependency typing", () => {
 				},
 			},
 		});
+	});
+});
+
+describe("validateConfig hosts", () => {
+	it("accepts hosts: true", () => {
+		const config = createValidConfig();
+		config.options = { hosts: true };
+		expect(validateConfig(config)).toEqual([]);
+	});
+
+	it("rejects an unknown primaryApp", () => {
+		const config = createValidConfig();
+		config.options = { hosts: { primaryApp: "web" } };
+		expect(validateConfig(config)).toContain(
+			'options.hosts.primaryApp "web" must match a configured app key',
+		);
+	});
+
+	it("rejects an invalid tld", () => {
+		const config = createValidConfig();
+		config.options = { hosts: { tld: "-bad" } };
+		expect(
+			validateConfig(config).some((error) => error.includes("hosts.tld")),
+		).toBe(true);
+	});
+});
+
+describe("validateConfig helper app options", () => {
+	it("accepts helper app keys that exist", () => {
+		const config = createValidConfig();
+		config.options = { expoApiApp: "api", frontendApp: "api" };
+		expect(validateConfig(config)).toEqual([]);
+	});
+
+	it("rejects unknown expoApiApp and frontendApp keys", () => {
+		const config = createValidConfig();
+		config.options = { expoApiApp: "mobile", frontendApp: "web" };
+		expect(validateConfig(config)).toEqual([
+			'options.expoApiApp "mobile" must match a configured app key',
+			'options.frontendApp "web" must match a configured app key',
+		]);
 	});
 });

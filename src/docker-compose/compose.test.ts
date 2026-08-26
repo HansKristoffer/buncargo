@@ -54,6 +54,21 @@ describe("buildComposeModel", () => {
 			postgres_data: {},
 			clickhouse_data: {},
 		});
+		expect(compose.name).toBe("$" + "{COMPOSE_PROJECT_NAME}");
+	});
+
+	it("stamps identity labels when provided", () => {
+		const compose = buildComposeModel({ postgres: { port: 5432 } }, undefined, {
+			projectName: "gey-main",
+			root: "/repo",
+			worktree: "feature",
+		});
+		expect(compose.services.postgres?.labels).toEqual({
+			"buncargo.project": "gey-main",
+			"buncargo.root": "/repo",
+			"buncargo.worktree": "feature",
+			"buncargo.service": "postgres",
+		});
 	});
 
 	it("supports helper and raw custom service definitions", () => {
@@ -92,6 +107,34 @@ describe("buildComposeModel", () => {
 		expect(compose.services.nats?.ports).toEqual([
 			"$" + "{NATS_PORT:-4222}:4222",
 		]);
+	});
+
+	it("builds mailpit and typesense presets", () => {
+		const compose = buildComposeModel({
+			mailpit: service.mailpit(),
+			typesense: service.typesense({ apiKey: "xyz" }),
+		});
+
+		expect(compose.services.mailpit?.image).toBe("axllent/mailpit");
+		expect(compose.services.mailpit?.ports).toEqual([
+			"$" + "{MAILPIT_PORT:-8025}:8025",
+			"$" + "{MAILPITSECONDARY_PORT:-1025}:1025",
+		]);
+		expect(compose.services.typesense?.image).toBe("typesense/typesense:29.0");
+		expect(compose.volumes).toEqual({
+			mailpit_data: {},
+			typesense_data: {},
+		});
+	});
+
+	it("emits no container healthcheck for healthCheck: tcp", () => {
+		const compose = buildComposeModel({
+			postgres: service.postgres({ healthCheck: "tcp" }),
+			redis: service.redis({ healthCheck: "tcp" }),
+		});
+
+		expect(compose.services.postgres?.healthcheck).toBeUndefined();
+		expect(compose.services.redis?.healthcheck).toBeUndefined();
 	});
 
 	it("normalizes raw built-in service as inferred preset override", () => {

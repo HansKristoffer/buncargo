@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "projectName": "loader-typing-buncargo",
+  "root": "/Users/kristofferhansen/Documents/GitHub/buncargo",
+  "offset": 2200,
+  "ports": {
+    "db": 7632,
+    "api": 5200
+  },
+  "provenance": "hash"
+}

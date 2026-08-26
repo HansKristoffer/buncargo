@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
+import { simpleHash } from "./hash";
 import {
 	getHeartbeatFile,
 	getWatchdogComposeArg,
 	getWatchdogPidFile,
 	readHeartbeat,
 	removeHeartbeatFile,
+	resolveWatchdogRunnerPath,
 } from "./watchdog";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -29,6 +31,14 @@ describe("getHeartbeatFile", () => {
 		const result = getHeartbeatFile("myapp123");
 
 		expect(result).toBe("/tmp/myapp123-heartbeat");
+	});
+
+	it("namespaces by root hash so worktrees do not collide", () => {
+		const root = "/Users/me/worktrees/feature";
+		const hash = simpleHash(root).toString(16).slice(0, 8);
+		expect(getHeartbeatFile("myapp", root)).toBe(
+			`/tmp/myapp-${hash}-heartbeat`,
+		);
 	});
 });
 
@@ -96,6 +106,17 @@ describe("readHeartbeat", () => {
 		expect(result).toBe(timestamp);
 	});
 
+	it("reads JSON heartbeat payloads", () => {
+		const heartbeatFile = getHeartbeatFile(testProject);
+		const timestamp = Date.now();
+		writeFileSync(
+			heartbeatFile,
+			JSON.stringify({ ts: timestamp, pid: process.pid }),
+		);
+
+		expect(readHeartbeat(testProject)).toBe(timestamp);
+	});
+
 	it("returns null when file contains invalid content", () => {
 		const heartbeatFile = getHeartbeatFile(testProject);
 		writeFileSync(heartbeatFile, "not-a-number");
@@ -135,5 +156,16 @@ describe("removeHeartbeatFile", () => {
 	it("does not throw when file does not exist", () => {
 		// Should not throw
 		expect(() => removeHeartbeatFile("nonexistent-project-xyz")).not.toThrow();
+	});
+});
+
+describe("resolveWatchdogRunnerPath", () => {
+	it("resolves a real runner file next to source or dist", () => {
+		const path = resolveWatchdogRunnerPath();
+		expect(existsSync(path)).toBe(true);
+		expect(
+			path.endsWith("watchdog-runner.ts") ||
+				path.endsWith("watchdog-runner.js"),
+		).toBe(true);
 	});
 });

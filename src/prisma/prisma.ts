@@ -24,7 +24,7 @@
 
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { ensureServicesRunning } from "../docker/runtime";
+import { ensureServicesRunning } from "../docker";
 import { getComposeServiceName } from "../planning";
 import type {
 	AppConfig,
@@ -61,7 +61,7 @@ export function createPrismaRunner<
 		const url = envVars[urlEnvVar];
 		if (!url) {
 			throw new Error(
-				`Environment variable ${urlEnvVar} not found. Make sure your dev config defines it in envVars.`,
+				`Environment variable ${urlEnvVar} not found. Declare it via the matching service env output (for example service.postgres() -> DATABASE_URL) or set prisma.urlEnvVar to a configured shared env name.`,
 			);
 		}
 		return url;

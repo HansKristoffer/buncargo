@@ -1,3 +1,4 @@
+import net from "node:net";
 import { networkInterfaces } from "node:os";
 import type { AppConfig } from "../types";
 import { sleep } from "./utils";
@@ -105,6 +106,9 @@ export async function waitForDevServers(
 	const promises: Promise<void>[] = [];
 
 	for (const [name, config] of Object.entries(apps)) {
+		if (config.healthEndpoint === false || config.devCommand === false) {
+			continue;
+		}
 		const port = ports[name];
 		const healthPath = config.healthEndpoint ?? "/";
 		const url = `http://localhost:${port}${healthPath}`;
@@ -123,30 +127,38 @@ export async function waitForDevServers(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Check if a port is available (not in use).
+ * Probe whether something is accepting TCP connections on `port`.
+ *
+ * This answers "is it reachable", not "who owns it". For ownership decisions
+ * (reuse/kill/fail) use `getPortOwner` from `core/process`, which inspects
+ * listening PIDs and Docker labels instead.
+ */
+export function isTcpPortOpen(
+	port: number,
+	host = "127.0.0.1",
+	timeoutMs = 1000,
+): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = net.connect({ port, host });
+		const finish = (open: boolean) => {
+			socket.removeAllListeners();
+			socket.destroy();
+			resolve(open);
+		};
+		socket.setTimeout(timeoutMs);
+		socket.once("connect", () => finish(true));
+		socket.once("timeout", () => finish(false));
+		socket.once("error", () => finish(false));
+	});
+}
+
+/**
+ * Inverse of {@link isTcpPortOpen}: nothing is accepting connections on `port`.
+ *
+ * Note this is a reachability check. A port can look "available" here while
+ * still being held by a process that is not yet listening, so prefer
+ * `isPortInUse`/`getPortOwner` when deciding whether to bind or kill.
  */
 export async function isPortAvailable(port: number): Promise<boolean> {
-	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), 500);
-	try {
-		const _response = await fetch(`http://localhost:${port}/`, {
-			signal: controller.signal as RequestInit["signal"],
-		});
-		clearTimeout(timeoutId);
-		// If we get any response, port is in use
-		return false;
-	} catch (error) {
-		clearTimeout(timeoutId);
-		if (error instanceof Error) {
-			// Connection refused means port is free
-			if (
-				error.message.includes("ECONNREFUSED") ||
-				error.message.includes("fetch failed")
-			) {
-				return true;
-			}
-		}
-		// Timeout or other error - assume port is free
-		return true;
-	}
+	return !(await isTcpPortOpen(port));
 }

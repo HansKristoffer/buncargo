@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { DockerComposeGenerationOptions, ServiceConfig } from "../types";
-import { buildComposeModel } from "./model";
+import { buildComposeModel, type ComposeIdentity } from "./model";
 import { composeToYaml } from "./yaml";
 
 export const DEFAULT_GENERATED_COMPOSE_FILE =
@@ -27,6 +27,7 @@ export function writeGeneratedComposeFile(
 	root: string,
 	services: Record<string, ServiceConfig>,
 	docker?: DockerComposeGenerationOptions,
+	identity?: ComposeIdentity,
 ): string {
 	const { absolutePath, composeFileArg } = getGeneratedComposePath(
 		root,
@@ -35,7 +36,7 @@ export function writeGeneratedComposeFile(
 	const writeStrategy = docker?.writeStrategy ?? "always";
 	const shouldWrite = writeStrategy === "always" || !existsSync(absolutePath);
 	if (shouldWrite) {
-		const composeModel = buildComposeModel(services, docker);
+		const composeModel = buildComposeModel(services, docker, identity);
 		const yaml = composeToYaml(composeModel);
 		mkdirSync(dirname(absolutePath), { recursive: true });
 		writeFileSync(absolutePath, yaml, "utf-8");

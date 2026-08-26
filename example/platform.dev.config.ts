@@ -19,6 +19,11 @@ export default defineDevConfig({
 			cwd: "apps/backend",
 			healthEndpoint: "/api/webhooks/health",
 			requiredServices: ["postgres", "redis", "clickhouse"],
+			staticEnv: { SECRETS_ENV: "dev" },
+			envVars: (ports, urls, { localIp }) => ({
+				BASE_URL: urls.api,
+				EXPO_PUBLIC_API_URL: `http://${localIp}:${ports.api}`,
+			}),
 		},
 		platform: {
 			port: 5173,
@@ -26,18 +31,26 @@ export default defineDevConfig({
 			cwd: "apps/platform",
 			healthEndpoint: "/",
 			requiredApps: ["api"],
+			envVars: (_ports, urls) => ({
+				VITE_API_URL: urls.api,
+			}),
+		},
+		expoApp: {
+			port: 8081,
+			cwd: "apps/expo",
+			devCommand: "bunx expo start",
+			interactive: true,
+			needsPublicUrls: true,
+			healthEndpoint: false,
+			expose: true,
+			requiredApps: ["api"],
+			envVars: (_ports, _urls, { publicUrls }) => ({
+				...(publicUrls.expoApp
+					? { EXPO_PACKAGER_PROXY_URL: publicUrls.expoApp }
+					: {}),
+			}),
 		},
 	},
-
-	envVars: (ports, urls, { localIp }) => ({
-		DATABASE_URL: urls.postgres,
-		BASE_URL: urls.api,
-		VITE_API_URL: urls.api,
-		VITE_PORT: ports.platform,
-		CLICKHOUSE_NATIVE_PORT: ports.clickhouseSecondary,
-		EXPO_PUBLIC_API_URL: `http://${localIp}:${ports.api}`,
-		SECRETS_ENV: "dev",
-	}),
 
 	migrations: [
 		{
@@ -48,7 +61,7 @@ export default defineDevConfig({
 
 	seed: {
 		command: "bun run run:seeder",
-		check: ({ checkTable }) => checkTable("User", "postgres"),
+		check: ({ checkTable }) => checkTable("User"),
 	},
 
 	prisma: {

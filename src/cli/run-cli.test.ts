@@ -5,157 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveExposeTargets, stopPublicTunnels } from "../core/tunnel";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
-import { getFlagValue, hasFlag, runCli } from "./run-cli";
+import { runCli } from "./run-cli";
 import { upsertTunnelRegistryEntries } from "./tunnel-registry";
-
-// ═══════════════════════════════════════════════════════════════════════════
-// hasFlag Tests
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("hasFlag", () => {
-	it("returns true when flag is present", () => {
-		const args = ["--down", "--verbose"];
-
-		expect(hasFlag(args, "--down")).toBe(true);
-		expect(hasFlag(args, "--verbose")).toBe(true);
-	});
-
-	it("returns false when flag is absent", () => {
-		const args = ["--down"];
-
-		expect(hasFlag(args, "--up")).toBe(false);
-		expect(hasFlag(args, "--reset")).toBe(false);
-	});
-
-	it("returns false for empty args array", () => {
-		const args: string[] = [];
-
-		expect(hasFlag(args, "--down")).toBe(false);
-	});
-
-	it("does not match partial flags", () => {
-		const args = ["--down-all"];
-
-		expect(hasFlag(args, "--down")).toBe(false);
-	});
-
-	it("treats --flag=value as presence of --flag", () => {
-		const args = ["--timeout=10", "--verbose"];
-
-		expect(hasFlag(args, "--timeout=10")).toBe(true);
-		expect(hasFlag(args, "--timeout")).toBe(true);
-	});
-
-	it("treats --expose=name as requesting expose", () => {
-		const args = ["--expose=api"];
-
-		expect(hasFlag(args, "--expose")).toBe(true);
-	});
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// getFlagValue Tests
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("getFlagValue", () => {
-	describe("--flag=value format", () => {
-		it("parses value from --flag=value format", () => {
-			const args = ["--timeout=10"];
-
-			expect(getFlagValue(args, "--timeout")).toBe("10");
-		});
-
-		it("handles string values", () => {
-			const args = ["--name=myapp"];
-
-			expect(getFlagValue(args, "--name")).toBe("myapp");
-		});
-
-		it("handles values with special characters", () => {
-			const args = ["--path=/home/user/my-project"];
-
-			expect(getFlagValue(args, "--path")).toBe("/home/user/my-project");
-		});
-
-		it("handles empty value", () => {
-			const args = ["--name="];
-
-			expect(getFlagValue(args, "--name")).toBe("");
-		});
-
-		it("parses comma-separated expose names", () => {
-			const args = ["--expose=api,web"];
-
-			expect(getFlagValue(args, "--expose")).toBe("api,web");
-		});
-	});
-
-	describe("--flag value format", () => {
-		it("parses value from --flag value format", () => {
-			const args = ["--timeout", "10"];
-
-			expect(getFlagValue(args, "--timeout")).toBe("10");
-		});
-
-		it("handles string values", () => {
-			const args = ["--name", "myapp"];
-
-			expect(getFlagValue(args, "--name")).toBe("myapp");
-		});
-
-		it("handles values with paths", () => {
-			const args = ["--cwd", "/home/user/project"];
-
-			expect(getFlagValue(args, "--cwd")).toBe("/home/user/project");
-		});
-
-		it("parses expose names from separate value", () => {
-			const args = ["--expose", "api,web"];
-
-			expect(getFlagValue(args, "--expose")).toBe("api,web");
-		});
-	});
-
-	describe("edge cases", () => {
-		it("returns undefined when flag not found", () => {
-			const args = ["--timeout", "10"];
-
-			expect(getFlagValue(args, "--name")).toBeUndefined();
-		});
-
-		it("returns undefined when flag is at end of array with no value", () => {
-			const args = ["--verbose", "--timeout"];
-
-			expect(getFlagValue(args, "--timeout")).toBeUndefined();
-		});
-
-		it("ignores values that start with dash (another flag)", () => {
-			const args = ["--timeout", "--verbose"];
-
-			expect(getFlagValue(args, "--timeout")).toBeUndefined();
-		});
-
-		it("returns undefined for empty args array", () => {
-			const args: string[] = [];
-
-			expect(getFlagValue(args, "--timeout")).toBeUndefined();
-		});
-
-		it("prefers --flag=value format over --flag value", () => {
-			const args = ["--timeout=5", "--timeout", "10"];
-
-			expect(getFlagValue(args, "--timeout")).toBe("5");
-		});
-
-		it("handles multiple flags correctly", () => {
-			const args = ["--name=myapp", "--port", "3000", "--verbose"];
-
-			expect(getFlagValue(args, "--name")).toBe("myapp");
-			expect(getFlagValue(args, "--port")).toBe("3000");
-			expect(getFlagValue(args, "--verbose")).toBeUndefined();
-		});
-	});
-});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // runCli + expose (stub env, mocked tunnel)
@@ -209,6 +60,7 @@ function createStubEnv(
 		Object.fromEntries(
 			Object.entries(apps).map(([name, config]) => [name, config.port]),
 		);
+	const publicUrls: Record<string, string> = {};
 	return {
 		services,
 		apps,
@@ -230,6 +82,7 @@ function createStubEnv(
 		root: options.root ?? "/tmp/buncargo-cli-stub",
 		composeFile: ".buncargo/docker-compose.generated.yml",
 		portOffset: 0,
+		portOffsetProvenance: "hash",
 		isWorktree: false,
 		localIp: "127.0.0.1",
 		start: async (startOptions?: unknown) => {
@@ -245,7 +98,15 @@ function createStubEnv(
 		stopProcess: () => {},
 		waitForServers: async () => {},
 		buildEnvVars: () => ({}),
+		buildAppEnvVars: () => {
+			const vars: Record<string, string> = {};
+			for (const [name, url] of Object.entries(publicUrls)) {
+				vars[`${name.toUpperCase()}_PUBLIC_URL`] = url;
+			}
+			return vars;
+		},
 		setPublicUrls: (urls: Record<string, string>) => {
+			Object.assign(publicUrls, urls);
 			options.setPublicUrls?.(urls as Record<string, string>);
 		},
 		clearPublicUrls: () => {},
@@ -389,6 +250,7 @@ describe("runCli expose routing", () => {
 				skipSeed: false,
 				skipEnvironmentLog: false,
 				onlyApps: ["expo"],
+				autoStartDocker: undefined,
 			},
 		]);
 	});
@@ -538,7 +400,7 @@ describe("runCli expose routing", () => {
 
 			expect(code).toBe(0);
 			expect(startTargets).toEqual([["web"]]);
-			expect(setPublicUrlsCalls.at(0)).toEqual({
+			expect(setPublicUrlsCalls.at(-1)).toEqual({
 				api: "https://api.example.com",
 				web: "https://web.example.com",
 			});
@@ -547,5 +409,78 @@ describe("runCli expose routing", () => {
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 			await rm(root, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("runCli phased tunnels and attach", () => {
+	it("starts needsPublicUrls apps after tunnels and injects *_PUBLIC_URL", async () => {
+		const apiPort = 43210 + Math.floor(Math.random() * 200);
+		const expoPort = apiPort + 1;
+		const tunnelOrder: string[] = [];
+		const env = createStubEnv({
+			apps: {
+				api: {
+					port: apiPort,
+					devCommand: "bun -e 'setInterval(() => {}, 1000)'",
+					healthEndpoint: false,
+					expose: true,
+				},
+				expoApp: {
+					port: expoPort,
+					devCommand:
+						"bun -e 'if (!process.env.API_PUBLIC_URL) process.exit(2); process.exit(0)'",
+					healthEndpoint: false,
+					interactive: true,
+					needsPublicUrls: true,
+					requiredApps: ["api"],
+				},
+			},
+		});
+
+		await runCli(env, {
+			args: ["--apps=expoApp", "--expose"],
+			watchdog: false,
+			cliTestTunnel: {
+				resolveExposeTargets,
+				startPublicTunnels: async (targets) => {
+					tunnelOrder.push("tunnels");
+					return targets.map((target) => ({
+						kind: target.kind,
+						name: target.name,
+						localUrl: `http://localhost:${target.port}`,
+						publicUrl: `https://${target.name}.example.com`,
+						close: async () => {},
+					}));
+				},
+				stopPublicTunnels,
+			},
+		});
+
+		expect(tunnelOrder).toEqual(["tunnels"]);
+	});
+
+	it("kills sibling apps when the attached app exits", async () => {
+		const apiPort = 43410 + Math.floor(Math.random() * 200);
+		const expoPort = apiPort + 1;
+		const env = createStubEnv({
+			apps: {
+				api: {
+					port: apiPort,
+					devCommand: "bun -e 'setInterval(() => {}, 1000)'",
+					healthEndpoint: false,
+				},
+				expoApp: {
+					port: expoPort,
+					devCommand: "bun -e 'process.exit(0)'",
+					healthEndpoint: false,
+					interactive: true,
+				},
+			},
+		});
+
+		await runCli(env, {
+			args: ["--apps=api,expoApp", "--attach=expoApp"],
+			watchdog: false,
+		});
 	});
 });

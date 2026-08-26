@@ -1,8 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-	classifyCliApps,
-	parseRequiredCommaSeparatedFlag,
-} from "./app-selection";
+import { classifyCliApps, parseRequiredCommaSeparatedFlag } from "./port-reuse";
 
 describe("parseRequiredCommaSeparatedFlag", () => {
 	it("parses comma-separated names", () => {
@@ -74,6 +71,29 @@ describe("classifyCliApps", () => {
 			),
 		).rejects.toThrow(
 			'App "api" is already listening on port 3000, but failed health check at http://localhost:3000/health. Stop the existing process or free the port before reusing it.',
+		);
+	});
+
+	it("refuses to reuse a port owned by another compose project", async () => {
+		await expect(
+			classifyCliApps(
+				{
+					api: {
+						port: 3000,
+						devCommand: "bun run api",
+						healthEndpoint: "/health",
+					},
+				},
+				{ api: 3000 },
+				{
+					isPortBusy: () => true,
+					waitForServer: async () => {},
+					describePortConflict: () =>
+						"port 3000 held by container other-api-1 (project other)",
+				},
+			),
+		).rejects.toThrow(
+			'App "api" cannot use port 3000: port 3000 held by container other-api-1 (project other).',
 		);
 	});
 

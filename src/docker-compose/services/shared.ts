@@ -14,6 +14,50 @@ export function getPortEnvName(portKey: string): string {
 	return `${portKey.toUpperCase()}_PORT`;
 }
 
+function resolveInternalPort(
+	preset: DockerPresetName | undefined,
+	fallback: number,
+): number {
+	if (!preset) return fallback;
+	switch (preset) {
+		case "postgres":
+			return 5432;
+		case "redis":
+			return 6379;
+		case "clickhouse":
+			return 8123;
+		case "mailpit":
+			return 8025;
+		case "typesense":
+			return 8108;
+		default: {
+			const _exhaustive: never = preset;
+			return _exhaustive;
+		}
+	}
+}
+
+function resolveSecondaryInternalPort(
+	preset: DockerPresetName | undefined,
+	fallback: number,
+): number {
+	if (!preset) return fallback;
+	switch (preset) {
+		case "clickhouse":
+			return 9000;
+		case "mailpit":
+			return 1025;
+		case "postgres":
+		case "redis":
+		case "typesense":
+			return fallback;
+		default: {
+			const _exhaustive: never = preset;
+			return _exhaustive;
+		}
+	}
+}
+
 export function getDefaultPortBindings(
 	serviceKey: string,
 	config: ServiceConfig,
@@ -22,21 +66,16 @@ export function getDefaultPortBindings(
 	const envName = getPortEnvName(serviceKey);
 	const bindings: string[] = [];
 
-	const defaultInternalPort =
-		preset === "postgres"
-			? 5432
-			: preset === "redis"
-				? 6379
-				: preset === "clickhouse"
-					? 8123
-					: config.port;
+	const defaultInternalPort = resolveInternalPort(preset, config.port);
 
 	bindings.push(`\${${envName}:-${config.port}}:${defaultInternalPort}`);
 
 	if (config.secondaryPort !== undefined) {
 		const secondaryEnv = getPortEnvName(`${serviceKey}Secondary`);
-		const secondaryInternal =
-			preset === "clickhouse" ? 9000 : config.secondaryPort;
+		const secondaryInternal = resolveSecondaryInternalPort(
+			preset,
+			config.secondaryPort,
+		);
 		bindings.push(
 			`\${${secondaryEnv}:-${config.secondaryPort}}:${secondaryInternal}`,
 		);
@@ -73,7 +112,16 @@ export function resolveHealthcheck(
 				],
 				...DEFAULT_HEALTHCHECK_SETTINGS,
 			};
-		default:
+		case "tcp":
+			// A TCP connect is what buncargo's own readiness poll does from the host
+			// (`isTcpPortOpen`). There is no portable in-container equivalent - `nc`
+			// and `/dev/tcp` are both missing from common base images - so emit no
+			// compose healthcheck rather than the preset's, which the caller opted out of.
+			return undefined;
+		default: {
+			const _exhaustive: never = healthCheck;
+			void _exhaustive;
 			return fallback;
+		}
 	}
 }

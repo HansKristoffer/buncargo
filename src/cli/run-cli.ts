@@ -1,88 +1,70 @@
-import { spawn } from "node:child_process";
-import { isPortInUse, killProcessesOnAppPorts } from "../core/process";
+import { execSync } from "node:child_process";
+import { removeHostRoutes } from "../core/hosts";
+import { isPortInUse, startDevServers } from "../core/process";
 import {
-	type PublicTunnel,
 	resolveExposeTargets,
 	startPublicTunnels,
 	stopPublicTunnels,
 } from "../core/tunnel";
 import { spawnWatchdog, startHeartbeat, stopHeartbeat } from "../core/watchdog";
+import { WATCHDOG_IDLE_TIMEOUT_MS } from "../core/watchdog-constants";
 import { resolveSelectedApps } from "../planning";
 import type {
 	AppConfig,
 	CliOptions,
 	DevEnvironment,
-	DevEnvironmentTunnelLog,
 	ServiceConfig,
 } from "../types";
+import { type DevCliArgs, parseDevArgs, printDevHelp } from "./dev-flags";
+import { activateNamedHosts, releaseNamedHosts } from "./dev-hosts";
 import {
-	classifyCliApps,
-	parseRequiredCommaSeparatedFlag,
-} from "./app-selection";
-import {
-	loadReusableTunnelApps,
-	removeTunnelRegistryEntries,
-	type TunnelRegistryEntry,
-	upsertTunnelRegistryEntries,
-} from "./tunnel-registry";
+	createTunnelCoordinator,
+	type DevTunnelCoordinator,
+	type TunnelApi,
+} from "./dev-tunnels";
+import { CliError, toCliError } from "./errors";
+import * as log from "./log";
+import { classifyCliApps, parseRequiredCommaSeparatedFlag } from "./port-reuse";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CLI Runner
-// ═══════════════════════════════════════════════════════════════════════════
+export { getFlagValue, hasFlag, splitCliArgs } from "./flags";
 
-/** Accepted CLI flags */
-const ACCEPTED_FLAGS = [
-	"--help",
-	"--down",
-	"--reset",
-	"--migrate",
-	"--seed",
-	"--up-only",
-	"--expose",
-	"--apps",
-] as const;
+/** `undefined` keeps the process alive; a number is the exit code to use. */
+type DevFlowExit = number | undefined;
 
-/**
- * Print help message and exit.
- */
-function printHelp(): void {
-	console.log(`
-Usage: buncargo dev [options]
+function restoreTerminal(): void {
+	if (!process.stdin.isTTY && !process.stdout.isTTY) {
+		return;
+	}
+	try {
+		execSync("stty sane", { stdio: "ignore" });
+	} catch {
+		// Missing stty or not a real terminal.
+	}
+}
 
-Options:
-  --help      Show this help message
-  --down      Stop all containers
-  --reset     Stop containers and remove volumes (fresh start)
-  --migrate   Run migrations and exit
-  --seed      Run migrations and seeders, then exit
-  --up-only   Start containers and run migrations, then exit (no dev servers)
-  --expose    Expose configured targets via public quick tunnels
-  --apps      Run selected apps plus requiredApps
-
-Examples:
-  bun dev              Start dev environment with all services
-  bun dev --seed       Run migrations and seed the database
-  bun dev --down       Stop all containers
-  bun dev --reset      Stop containers and remove all data
-  bun dev --apps=api,platform  Run only selected apps
-  bun dev --expose     Expose all targets with expose: true
-  bun dev --expose=api,web  Expose specific targets
-`);
+function reportCliError(error: CliError): void {
+	log.error(error.message);
+	for (const item of error.hints) {
+		log.hint(item);
+	}
 }
 
 /**
- * Validate CLI arguments and return unknown flags.
+ * Report an argv problem and exit. Nothing has been started yet, so this is
+ * the one place that exits without tearing anything down.
  */
-function getUnknownFlags(args: string[]): string[] {
-	return args.filter(
-		(arg) =>
-			arg.startsWith("--") &&
-			!ACCEPTED_FLAGS.includes(
-				(arg.includes("=")
-					? arg.split("=")[0]
-					: arg) as (typeof ACCEPTED_FLAGS)[number],
-			),
-	);
+function exitWithArgError(
+	messages: string[],
+	options: { showHelp?: boolean } = {},
+): never {
+	for (const message of messages) {
+		log.error(message);
+	}
+	if (options.showHelp) {
+		log.line();
+		printDevHelp();
+	}
+	process.exit(1);
 }
 
 function logSelectedAppsSummary(input: {
@@ -92,32 +74,51 @@ function logSelectedAppsSummary(input: {
 }): void {
 	const { startNames, reusedNames, inferredReuseNames } = input;
 
-	console.log("");
+	log.line();
 	if (startNames.length > 0) {
-		console.log(`🔧 Starting: ${startNames.join(", ")}`);
+		log.info(`🔧 Starting: ${startNames.join(", ")}`);
 	}
 	if (reusedNames.length > 0) {
-		console.log(`♻️  Reusing: ${reusedNames.join(", ")}`);
+		log.info(`♻️  Reusing: ${reusedNames.join(", ")}`);
 	}
 	if (inferredReuseNames.length > 0) {
-		console.log(
+		log.line(
 			`   ℹ Inferred reuse from busy port: ${inferredReuseNames.join(", ")}`,
 		);
 	}
-	console.log("");
+	log.line();
+}
+
+function resolveWatchdogTimeoutMinutes(
+	minutes: number | undefined,
+	autoShutdown: number | boolean | undefined,
+): number {
+	if (minutes !== undefined) {
+		return minutes;
+	}
+	const timeoutMs =
+		typeof autoShutdown === "number" ? autoShutdown : WATCHDOG_IDLE_TIMEOUT_MS;
+	return Number.isFinite(timeoutMs)
+		? timeoutMs / 60_000
+		: WATCHDOG_IDLE_TIMEOUT_MS / 60_000;
+}
+
+function waitForShutdownSignal(): Promise<void> {
+	return new Promise<void>((resolve) => {
+		const done = () => {
+			process.off("SIGINT", done);
+			process.off("SIGTERM", done);
+			process.off("SIGHUP", done);
+			resolve();
+		};
+		process.on("SIGINT", done);
+		process.on("SIGTERM", done);
+		process.on("SIGHUP", done);
+	});
 }
 
 /**
  * Run the CLI for a dev environment.
- * Handles common flags like --down, --reset, --up-only, --migrate, --seed.
- *
- * @example
- * ```typescript
- * import { dev } from './dev.config'
- * import { runCli } from 'buncargo'
- *
- * await runCli(dev)
- * ```
  */
 export async function runCli<
 	TServices extends Record<string, ServiceConfig>,
@@ -125,472 +126,266 @@ export async function runCli<
 >(
 	env: DevEnvironment<TServices, TApps>,
 	options: CliOptions & {
-		/** Substitute tunnel helpers (used by CLI integration tests). */
-		cliTestTunnel?: {
-			resolveExposeTargets: typeof resolveExposeTargets;
-			startPublicTunnels: typeof startPublicTunnels;
-			stopPublicTunnels: typeof stopPublicTunnels;
-		};
+		/** Test-only tunnel substitutes. */
+		cliTestTunnel?: TunnelApi;
 	} = {},
 ): Promise<void> {
 	const {
-		args = process.argv.slice(2),
+		args: rawArgs = process.argv.slice(2),
 		watchdog = true,
-		watchdogTimeout = 10,
-		devServersCommand,
 		cliTestTunnel,
 	} = options;
-	const tunnelApi = cliTestTunnel ?? {
-		resolveExposeTargets,
-		startPublicTunnels,
-		stopPublicTunnels,
-	};
-	const appsRequested = hasFlag(args, "--apps");
-	const appsValue = getFlagValue(args, "--apps");
-	const exposeRequested = hasFlag(args, "--expose");
-	const exposeValue = getFlagValue(args, "--expose");
-	let tunnels: PublicTunnel[] = [];
-	let ownedTunnelRegistryEntries: TunnelRegistryEntry[] = [];
+	const args = parseDevArgs(rawArgs);
 
-	async function cleanupTunnels(): Promise<void> {
-		env.clearPublicUrls();
-		const tunnelsToStop = tunnels;
-		const registryEntriesToRemove = ownedTunnelRegistryEntries.map((entry) => ({
-			kind: entry.kind,
-			name: entry.name,
-			pid: entry.pid,
-		}));
-		tunnels = [];
-		ownedTunnelRegistryEntries = [];
-		try {
-			if (tunnelsToStop.length > 0) {
-				await tunnelApi.stopPublicTunnels(tunnelsToStop);
-			}
-		} finally {
-			if (registryEntriesToRemove.length > 0) {
-				await removeTunnelRegistryEntries(env.root, registryEntriesToRemove);
-			}
-		}
-	}
-
-	// Handle --help
-	if (args.includes("--help")) {
-		printHelp();
+	if (args.help) {
+		printDevHelp();
 		process.exit(0);
 	}
 
-	// Validate flags
-	const unknownFlags = getUnknownFlags(args);
-	if (unknownFlags.length > 0) {
-		console.error(
-			`❌ Unknown flag${unknownFlags.length > 1 ? "s" : ""}: ${unknownFlags.join(", ")}`,
+	if (args.unknownFlags.length > 0) {
+		exitWithArgError(
+			[
+				`Unknown flag${args.unknownFlags.length > 1 ? "s" : ""}: ${args.unknownFlags.join(", ")}`,
+			],
+			{ showHelp: true },
 		);
-		console.error("");
-		printHelp();
+	}
+
+	if (args.errors.length > 0) {
+		exitWithArgError(args.errors);
+	}
+
+	const tunnels = createTunnelCoordinator(
+		env,
+		cliTestTunnel ?? {
+			resolveExposeTargets,
+			startPublicTunnels,
+			stopPublicTunnels,
+		},
+		{ exposeRequested: args.exposeRequested },
+	);
+
+	let exitCode: DevFlowExit;
+	try {
+		exitCode = await runDevFlow(env, args, tunnels, { watchdog });
+	} catch (error) {
+		reportCliError(toCliError(error));
+		await teardown(env, tunnels);
 		process.exit(1);
 	}
 
-	// Handle --down (no need to start anything)
-	if (args.includes("--down")) {
-		env.logInfo();
-		await cleanupTunnels();
-		await env.stop();
-		process.exit(0);
+	if (exitCode !== undefined) {
+		process.exit(exitCode);
+	}
+}
+
+async function teardown<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+>(
+	env: DevEnvironment<TServices, TApps>,
+	tunnels: DevTunnelCoordinator<TServices, TApps>,
+): Promise<void> {
+	await tunnels.stop();
+	await releaseNamedHosts(env);
+	restoreTerminal();
+}
+
+/**
+ * The dev command flow. Returns an exit code for the one-shot modes and
+ * `undefined` when the caller should simply return.
+ *
+ * Every exit path tears down tunnels, host routes and the terminal first;
+ * failures throw `CliError` and are reported by `runCli`.
+ */
+async function runDevFlow<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+>(
+	env: DevEnvironment<TServices, TApps>,
+	args: DevCliArgs,
+	tunnels: DevTunnelCoordinator<TServices, TApps>,
+	options: { watchdog: boolean },
+): Promise<DevFlowExit> {
+	async function exitWith(code: number): Promise<number> {
+		await teardown(env, tunnels);
+		return code;
 	}
 
-	// Handle --reset (no need to start anything)
-	if (args.includes("--reset")) {
-		env.logInfo();
-		await cleanupTunnels();
-		await env.stop({ removeVolumes: true });
-		process.exit(0);
+	if (args.down && args.all) {
+		const { stopAllBuncargoEnvironments } = await import("./commands/inspect");
+		await stopAllBuncargoEnvironments();
+		return 0;
 	}
 
+	if (args.down || args.reset) {
+		env.logInfo();
+		await tunnels.stop();
+		await removeHostRoutes((route) => route.root === env.root);
+		await env.stop({ removeVolumes: args.reset });
+		restoreTerminal();
+		return 0;
+	}
+
+	// ── App selection ────────────────────────────────────────────────────────
 	let selectedAppNames: string[] | undefined;
-	const selectedAppsPlan = resolveSelectedApps(env.apps, undefined);
-	let appsForDev: Record<string, AppConfig> = selectedAppsPlan.apps;
-	if (appsRequested) {
-		try {
-			selectedAppNames = parseRequiredCommaSeparatedFlag("--apps", appsValue);
-			appsForDev = resolveSelectedApps(env.apps, selectedAppNames).apps;
-		} catch (error) {
-			console.error(
-				`❌ ${error instanceof Error ? error.message : String(error)}`,
-			);
-			process.exit(1);
+	let appsForDev: Record<string, AppConfig> = resolveSelectedApps(
+		env.apps,
+		undefined,
+	).apps;
+	if (args.appsRequested) {
+		selectedAppNames = parseRequiredCommaSeparatedFlag(
+			"--apps",
+			args.appsValue,
+		);
+		appsForDev = resolveSelectedApps(env.apps, selectedAppNames).apps;
+		if (Object.keys(appsForDev).length === 0) {
+			throw new CliError("Flag --apps requires at least one valid app name.");
 		}
 	}
-	if (appsRequested && Object.keys(appsForDev).length === 0) {
-		console.error("❌ Flag --apps requires at least one valid app name.");
-		process.exit(1);
-	}
 
-	// All other paths need containers + migrations
-	// Skip automatic seeding when --seed flag is used (CLI handles it explicitly)
-	const skipSeed = args.includes("--seed");
-	try {
-		await env.start({
-			startServers: false,
-			wait: true,
-			skipSeed,
-			skipEnvironmentLog: exposeRequested,
-			onlyApps: selectedAppNames,
+	// ── Containers ───────────────────────────────────────────────────────────
+	await activateNamedHosts(env, { enabled: args.hosts });
+	await env.start({
+		startServers: false,
+		wait: true,
+		skipSeed: args.seed,
+		skipEnvironmentLog: args.exposeRequested,
+		onlyApps: selectedAppNames,
+		autoStartDocker: args.dockerAutostart ? undefined : false,
+	});
+
+	let classifiedApps = await classifyCliApps(appsForDev, env.ports, {
+		isPortBusy: isPortInUse,
+		waitForServer: env.waitForServer.bind(env),
+		context: { root: env.root, projectName: env.projectName },
+	});
+
+	// ── Expose planning ──────────────────────────────────────────────────────
+	if (args.exposeRequested) {
+		await tunnels.planExpose({
+			exposeValue: args.exposeValue,
+			appsRequested: args.appsRequested,
+			selectedAppNames: new Set(Object.keys(appsForDev)),
+			startAppNames: new Set(Object.keys(classifiedApps.startApps)),
+			reusedAppNames: new Set(Object.keys(classifiedApps.reusedApps)),
 		});
-	} catch (error) {
-		console.error(
-			`❌ ${error instanceof Error ? error.message : String(error)}`,
-		);
-		process.exit(1);
-	}
-
-	let classifiedApps:
-		| Awaited<ReturnType<typeof classifyCliApps>>
-		| {
-				startApps: Record<string, AppConfig>;
-				reusedApps: Record<string, AppConfig>;
-				startNames: string[];
-				reusedNames: string[];
-				inferredReuseNames: string[];
-		  };
-	try {
-		classifiedApps = appsRequested
-			? await classifyCliApps(appsForDev, env.ports, {
-					isPortBusy: isPortInUse,
-					waitForServer: env.waitForServer.bind(env),
-				})
-			: {
-					startApps: appsForDev,
-					reusedApps: {} as Record<string, AppConfig>,
-					startNames: Object.keys(appsForDev),
-					reusedNames: [] as string[],
-					inferredReuseNames: [] as string[],
-				};
-	} catch (error) {
-		console.error(
-			`❌ ${error instanceof Error ? error.message : String(error)}`,
-		);
-		process.exit(1);
-	}
-	const startAppNames = new Set(Object.keys(classifiedApps.startApps));
-	const reusedAppNames = new Set(Object.keys(classifiedApps.reusedApps));
-	const selectedAppNamesSet = new Set(Object.keys(appsForDev));
-	const combinedTunnelLogs: DevEnvironmentTunnelLog[] = [];
-	const inheritedPublicUrls: Record<string, string> = {};
-
-	if (exposeRequested) {
-		const { targets, unknownNames, notEnabledNames } =
-			tunnelApi.resolveExposeTargets(env, exposeValue);
-		if (unknownNames.length > 0) {
-			console.error(
-				`❌ Unknown expose target${unknownNames.length > 1 ? "s" : ""}: ${unknownNames.join(", ")}`,
-			);
-			await cleanupTunnels();
-			process.exit(1);
+		if (args.oneShot) {
+			await tunnels.openOwnedTunnels();
 		}
-		if (notEnabledNames.length > 0) {
-			console.error(
-				`❌ Target${notEnabledNames.length > 1 ? "s" : ""} missing expose: true: ${notEnabledNames.join(", ")}`,
-			);
-			console.error(
-				"   Mark these in dev.config.ts with expose: true or remove them from --expose.",
-			);
-			await cleanupTunnels();
-			process.exit(1);
-		}
-		const explicitExposeNames =
-			exposeValue === undefined
-				? undefined
-				: exposeValue
-						.split(",")
-						.map((name) => name.trim())
-						.filter(Boolean);
-		if (appsRequested && explicitExposeNames) {
-			const excludedAppTargets = explicitExposeNames.filter(
-				(name) =>
-					env.apps[name] !== undefined && !selectedAppNamesSet.has(name),
-			);
-			if (excludedAppTargets.length > 0) {
-				console.error(
-					`❌ Expose target${excludedAppTargets.length > 1 ? "s" : ""} not included in --apps: ${excludedAppTargets.join(", ")}`,
-				);
-				console.error(
-					"   Add these apps to --apps or remove them from --expose.",
-				);
-				await cleanupTunnels();
-				process.exit(1);
-			}
-		}
-		const filteredTargets = appsRequested
-			? targets.filter(
-					(target) =>
-						target.kind === "service" || selectedAppNamesSet.has(target.name),
-				)
-			: targets;
-		const reusedExposeAppNames = filteredTargets
-			.filter(
-				(target) => target.kind === "app" && reusedAppNames.has(target.name),
-			)
-			.map((target) => target.name);
-		if (reusedExposeAppNames.length > 0) {
-			const reusedTunnelData = await loadReusableTunnelApps(env.root, {
-				appNames: reusedExposeAppNames,
-				ports: env.ports,
-			});
-			Object.assign(inheritedPublicUrls, reusedTunnelData.publicUrls);
-			combinedTunnelLogs.push(...reusedTunnelData.tunnels);
-			if (reusedTunnelData.tunnels.length > 0) {
-				console.log(
-					`ℹ Reusing public URL${reusedTunnelData.tunnels.length > 1 ? "s" : ""} for: ${reusedTunnelData.tunnels.map((tunnel) => tunnel.name).join(", ")}`,
-				);
-			}
-			if (reusedTunnelData.missingAppNames.length > 0) {
-				console.warn(
-					`⚠️  No reusable public URL found for: ${reusedTunnelData.missingAppNames.join(", ")}`,
-				);
-			}
-		}
-		const startExposeTargets = filteredTargets.filter(
-			(target) => target.kind === "service" || startAppNames.has(target.name),
-		);
-		if (startExposeTargets.length === 0 && combinedTunnelLogs.length === 0) {
-			console.error(
-				"❌ No expose targets selected. Add expose: true to services/apps or pass names with --expose=<name>.",
-			);
-			await cleanupTunnels();
-			process.exit(1);
-		}
-		if (startExposeTargets.length > 0) {
-			tunnels = await tunnelApi.startPublicTunnels(startExposeTargets);
-			const ownedPublicUrls = Object.fromEntries(
-				tunnels.map((tunnel) => [tunnel.name, tunnel.publicUrl]),
-			);
-			env.setPublicUrls({
-				...inheritedPublicUrls,
-				...ownedPublicUrls,
-			} as typeof env.publicUrls);
-			ownedTunnelRegistryEntries = tunnels
-				.filter((tunnel) => tunnel.kind === "app")
-				.map((tunnel) => ({
-					kind: "app" as const,
-					name: tunnel.name,
-					publicUrl: tunnel.publicUrl,
-					localUrl: tunnel.localUrl,
-					port: env.ports[tunnel.name] ?? 0,
-					pid: process.pid,
-					updatedAt: new Date().toISOString(),
-				}));
-			if (ownedTunnelRegistryEntries.length > 0) {
-				await upsertTunnelRegistryEntries(env.root, ownedTunnelRegistryEntries);
-			}
-			combinedTunnelLogs.push(...tunnels);
-		} else {
-			env.setPublicUrls(inheritedPublicUrls as typeof env.publicUrls);
-		}
-		env.logInfo("Dev Environment", combinedTunnelLogs);
 	}
 
-	// Handle --migrate (exit after migrations)
-	if (args.includes("--migrate")) {
-		console.log("");
-		console.log("✅ Migrations applied successfully");
-		await cleanupTunnels();
-		process.exit(0);
+	// ── One-shot modes ───────────────────────────────────────────────────────
+	if (args.migrate) {
+		log.line();
+		log.success("Migrations applied successfully");
+		return exitWith(0);
 	}
 
-	// Handle --seed (run seeders, then exit)
-	if (args.includes("--seed")) {
-		console.log("🌱 Running seeders...");
-		const result = await env.exec("bun run run:seeder", {
-			throwOnError: false,
-		});
-		if (result.exitCode !== 0) {
-			console.error("❌ Seeding failed");
-			if (result.stderr) {
-				console.error(result.stderr);
-			}
-			if (result.stdout) {
-				console.error(result.stdout);
-			}
-			await cleanupTunnels();
-			process.exit(1);
-		}
-		console.log("");
-		console.log("✅ Seeding complete");
-		await cleanupTunnels();
-		process.exit(0);
+	if (args.seed) {
+		return exitWith(await runCliSeed(env));
 	}
 
-	// Handle --up-only (exit after containers ready)
-	if (args.includes("--up-only")) {
-		console.log("");
-		console.log("✅ Containers started. Environment ready.");
-		console.log("");
-		await cleanupTunnels();
-		process.exit(0);
+	if (args.upOnly) {
+		log.line();
+		log.success("Containers started. Environment ready.");
+		log.line();
+		return exitWith(0);
 	}
 
-	if (appsRequested) {
-		logSelectedAppsSummary(classifiedApps);
+	// ── Dev servers ──────────────────────────────────────────────────────────
+	const startableApps = Object.fromEntries(
+		Object.entries(classifiedApps.startApps).filter(
+			([, app]) => app.devCommand !== false,
+		),
+	);
+	classifiedApps = {
+		...classifiedApps,
+		startApps: startableApps,
+		startNames: Object.keys(startableApps),
+	};
+
+	logSelectedAppsSummary(classifiedApps);
+
+	const nothingToSpawn = classifiedApps.startNames.length === 0;
+	if (nothingToSpawn && !tunnels.hasPendingTargets()) {
+		log.success("Selected apps are already running. Nothing to start.");
+		await teardown(env, tunnels);
+		return undefined;
 	}
 
-	if (appsRequested && classifiedApps.startNames.length === 0) {
-		console.log("✅ Selected apps are already running. Nothing to start.");
-		await cleanupTunnels();
-		return;
-	}
-
-	// Build command: use provided command or auto-build from apps config
-	const command =
-		devServersCommand ?? buildDevServersCommand(classifiedApps.startApps);
-
-	if (!command) {
-		console.log("✅ Containers ready. No apps configured.");
-		// Keep process alive if no apps
-		await new Promise(() => {});
-		await cleanupTunnels();
-		return;
-	}
-
-	// Start watchdog and heartbeat for interactive mode
-	if (watchdog) {
+	const keepContainers = args.keepContainers || env.autoShutdown === false;
+	if (options.watchdog && !keepContainers) {
 		await spawnWatchdog(env.projectName, env.root, {
-			timeoutMinutes: watchdogTimeout,
+			timeoutMinutes: resolveWatchdogTimeoutMinutes(
+				args.watchdogTimeoutMinutes,
+				env.autoShutdown,
+			),
 			verbose: true,
 			composeFile: env.composeFile,
 		});
-		startHeartbeat(env.projectName);
+		startHeartbeat(env.projectName, undefined, env.root);
 	}
 
-	// Kill any existing processes on app ports before starting
-	await killProcessesOnAppPorts(classifiedApps.startApps, env.ports);
-
-	// Start dev servers interactively
-	console.log("");
-	console.log("🔧 Starting dev servers...");
-	console.log("");
-
-	await runCommand(command, env.root, env.buildEnvVars(), {
-		onSignal: async () => {
-			await cleanupTunnels();
-			stopHeartbeat();
-		},
-	});
-
-	// Clean up heartbeat on exit
-	stopHeartbeat();
-	await cleanupTunnels();
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Command Building
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Build a concurrently command from the apps config.
- */
-function buildDevServersCommand(
-	apps: Record<string, AppConfig>,
-): string | null {
-	const appEntries = Object.entries(apps);
-	if (appEntries.length === 0) return null;
-
-	// Build commands for each app
-	const commands: string[] = [];
-	const names: string[] = [];
-	const colors = ["blue", "green", "yellow", "magenta", "cyan", "red"];
-
-	for (const [name, config] of appEntries) {
-		names.push(name);
-		const cwdPart = config.cwd ? `--cwd ${config.cwd}` : "";
-		commands.push(
-			`"bun run ${cwdPart} ${config.devCommand}"`.replace(/\s+/g, " ").trim(),
-		);
-	}
-
-	// Use concurrently to run all apps
-	const namesArg = `-n ${names.join(",")}`;
-	const colorsArg = `-c ${colors.slice(0, names.length).join(",")}`;
-	const commandsArg = commands.join(" ");
-
-	return `bun concurrently ${namesArg} ${colorsArg} ${commandsArg}`;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Interactive Command Runner
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Run a command interactively (inherits stdio).
- */
-function runCommand(
-	command: string,
-	cwd: string,
-	envVars: Record<string, string>,
-	options: {
-		onSignal?: () => void | Promise<void>;
-	} = {},
-): Promise<void> {
-	const { onSignal } = options;
-	return new Promise((resolve, reject) => {
-		const proc = spawn(command, [], {
-			cwd,
-			env: { ...process.env, ...envVars },
-			stdio: "inherit",
-			shell: true,
-		});
-
-		proc.on("close", (code) => {
-			if (code === 0 || code === null) {
-				resolve();
-			} else {
-				reject(new Error(`Command exited with code ${code}`));
-			}
-		});
-
-		proc.on("error", reject);
-
-		// Handle SIGINT/SIGTERM
-		const cleanup = () => {
-			if (onSignal) {
-				void onSignal();
-			}
-			proc.kill("SIGTERM");
-		};
-
-		process.on("SIGINT", cleanup);
-		process.on("SIGTERM", cleanup);
-	});
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Utility Functions
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Check if a CLI flag is present (including `--flag=value` form).
- */
-export function hasFlag(args: string[], flag: string): boolean {
-	return args.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
-}
-
-/**
- * Get a flag value (e.g., --timeout=10 or --timeout 10).
- */
-export function getFlagValue(args: string[], flag: string): string | undefined {
-	// Check --flag=value format
-	const prefixed = args.find((arg) => arg.startsWith(`${flag}=`));
-	if (prefixed) {
-		return prefixed.split("=")[1];
-	}
-
-	// Check --flag value format
-	const index = args.indexOf(flag);
-	if (index !== -1 && index + 1 < args.length) {
-		const nextArg = args[index + 1];
-		if (nextArg !== undefined && !nextArg.startsWith("-")) {
-			return nextArg;
+	try {
+		if (nothingToSpawn) {
+			await tunnels.openOwnedTunnels();
+			await waitForShutdownSignal();
+			return undefined;
 		}
+
+		await startDevServers(
+			classifiedApps.startApps,
+			env.root,
+			(name) => env.buildAppEnvVars(name as Extract<keyof TApps, string>),
+			env.ports,
+			{
+				projectName: env.projectName,
+				attach: args.attach,
+				extraArgs: args.passthrough,
+				waitForExit: true,
+				onSignal: () => {
+					stopHeartbeat();
+				},
+				waitForHealth: async (apps) => {
+					await env.waitForServers({
+						onlyApps: Object.keys(apps),
+						expandRequired: false,
+					});
+				},
+				onAfterWave1: tunnels.openOwnedTunnels,
+			},
+		);
+		return undefined;
+	} finally {
+		stopHeartbeat();
+		await teardown(env, tunnels);
+	}
+}
+
+/**
+ * `--seed` runs the environment's seed path with `force`, so an explicit seed
+ * request ignores `seed.check`. Exits 1 on failure, like every other flow.
+ */
+async function runCliSeed<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+>(env: DevEnvironment<TServices, TApps>): Promise<number> {
+	const outcome = await env.runSeed({ force: true });
+
+	if (outcome.status === "not-configured") {
+		throw new CliError("No seed command is configured.", [
+			"Add a seed block to your dev config:",
+			"  seed: { command: 'bun run run:seeder' }",
+		]);
 	}
 
-	return undefined;
+	if (outcome.status === "failed") {
+		if (outcome.result.stdout) log.hint(outcome.result.stdout);
+		return 1;
+	}
+
+	log.line();
+	log.success("Seeding complete");
+	return 0;
 }

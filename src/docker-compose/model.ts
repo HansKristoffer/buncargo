@@ -1,20 +1,26 @@
+import { inferDockerPreset } from "../core/service-presets";
 import type {
 	DockerComposeGenerationOptions,
 	DockerComposeNode,
 	DockerComposeServiceRaw,
 	DockerComposeVolumeRaw,
 	DockerPresetName,
-	DockerPresetServiceDefinition,
-	DockerServiceDefinition,
 	ServiceConfig,
 } from "../types";
-import { buildPresetDockerService, inferDockerPreset } from "./services";
+import { buildPresetDockerService } from "./services";
 import { getDefaultPortBindings } from "./services/shared";
 
 export type ComposeDocument = {
+	name?: string;
 	services: Record<string, DockerComposeServiceRaw>;
 	volumes?: Record<string, DockerComposeVolumeRaw>;
 };
+
+export interface ComposeIdentity {
+	projectName: string;
+	root: string;
+	worktree?: string | null;
+}
 
 function isObject(
 	value: DockerComposeNode,
@@ -44,17 +50,6 @@ function deepMergeNode(
 		}
 	}
 	return merged;
-}
-
-function isPresetDefinition(
-	value: DockerServiceDefinition | undefined,
-): value is DockerPresetServiceDefinition {
-	return Boolean(
-		value &&
-			typeof value === "object" &&
-			"kind" in value &&
-			(value as { kind?: string }).kind === "preset",
-	);
 }
 
 function normalizeRawService(
@@ -92,7 +87,7 @@ function normalizeServiceConfig(
 	const serviceName = config.serviceName ?? name;
 	const rawDefinition = config.docker;
 
-	if (isPresetDefinition(rawDefinition)) {
+	if (rawDefinition?.kind === "preset") {
 		return {
 			kind: "preset",
 			serviceName,
@@ -168,6 +163,7 @@ function resolveServiceDefinition(
 export function buildComposeModel(
 	services: Record<string, ServiceConfig>,
 	docker?: DockerComposeGenerationOptions,
+	identity?: ComposeIdentity,
 ): ComposeDocument {
 	const composeServices: Record<string, DockerComposeServiceRaw> = {};
 	const composeVolumes: Record<string, DockerComposeVolumeRaw> = {};
@@ -177,6 +173,17 @@ export function buildComposeModel(
 			name,
 			serviceConfig,
 		);
+		if (identity) {
+			service.labels = {
+				...(typeof service.labels === "object" && service.labels !== null
+					? (service.labels as Record<string, string>)
+					: {}),
+				"buncargo.project": identity.projectName,
+				"buncargo.root": identity.root,
+				"buncargo.worktree": identity.worktree ?? "",
+				"buncargo.service": serviceName,
+			};
+		}
 		composeServices[serviceName] = service;
 		if (volume) {
 			composeVolumes[volume] = {};
@@ -188,6 +195,7 @@ export function buildComposeModel(
 	}
 
 	const document: ComposeDocument = {
+		name: "$" + "{COMPOSE_PROJECT_NAME}",
 		services: composeServices,
 	};
 	if (Object.keys(composeVolumes).length > 0) {

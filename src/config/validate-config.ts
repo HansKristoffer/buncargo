@@ -1,13 +1,19 @@
 import { isAbsolute, normalize } from "node:path";
+import { sanitizeTld } from "../core/hosts/plan";
+import {
+	DOCKER_PRESET_NAMES,
+	inferDockerPreset,
+	isDockerPresetName,
+	resolveServiceEnvVarSources,
+} from "../core/service-presets";
 import { resolveSelectedApps } from "../planning";
-import type { AppConfig, DevConfig, ServiceConfig } from "../types";
-
-const BUILTIN_DOCKER_PRESETS = new Set(["postgres", "redis", "clickhouse"]);
-
-function inferBuiltInPreset(serviceName: string): string | null {
-	const normalized = serviceName.toLowerCase();
-	return BUILTIN_DOCKER_PRESETS.has(normalized) ? normalized : null;
-}
+import type {
+	AnyDevConfig,
+	AppConfig,
+	DevConfig,
+	DevConfigLike,
+	ServiceConfig,
+} from "../types";
 
 export function validateConfig<
 	TServices extends Record<string, ServiceConfig>,
@@ -15,6 +21,13 @@ export function validateConfig<
 >(config: DevConfig<TServices, TApps>): string[] {
 	const errors: string[] = [];
 	const composeServiceNames = new Set<string>();
+	const derivedEnvOwners = new Map<string, string>();
+
+	if ("envVars" in (config as object)) {
+		errors.push(
+			"Top-level envVars has been removed. Use the top-level env overlay for shared values, or apps.<name>.envVars for app-only values.",
+		);
+	}
 
 	if (!config.projectPrefix) {
 		errors.push("projectPrefix is required");
@@ -53,25 +66,34 @@ export function validateConfig<
 		composeServiceNames.add(composeServiceName);
 
 		const dockerConfig = service.docker;
-		const preset = inferBuiltInPreset(name);
-		if (!dockerConfig && !preset) {
+		if (!dockerConfig && !inferDockerPreset(name)) {
 			errors.push(
 				`Service "${name}" must define docker config (helper or raw) because it has no built-in preset.`,
 			);
 		}
 		if (
-			dockerConfig &&
-			typeof dockerConfig === "object" &&
-			"kind" in dockerConfig &&
-			dockerConfig.kind === "preset"
+			dockerConfig?.kind === "preset" &&
+			!isDockerPresetName(dockerConfig.preset)
 		) {
-			const presetName = dockerConfig.preset;
-			if (
-				typeof presetName !== "string" ||
-				!BUILTIN_DOCKER_PRESETS.has(presetName)
-			) {
+			errors.push(
+				`Service "${name}" has invalid docker preset "${String(dockerConfig.preset)}". Valid presets: ${DOCKER_PRESET_NAMES.join(", ")}.`,
+			);
+		}
+
+		const serviceEnvSources = resolveServiceEnvVarSources(name, service);
+		for (const [envName, source] of Object.entries(serviceEnvSources)) {
+			const existingOwner = derivedEnvOwners.get(envName);
+			if (existingOwner && existingOwner !== name) {
 				errors.push(
-					`Service "${name}" has invalid docker preset "${presetName}".`,
+					`Derived env var "${envName}" is declared by multiple services (${existingOwner}, ${name}). Rename one of them or use explicit service.env mappings.`,
+				);
+			} else {
+				derivedEnvOwners.set(envName, name);
+			}
+
+			if (source === "secondaryPort" && service.secondaryPort === undefined) {
+				errors.push(
+					`Service "${name}" declares env "${envName}" from secondaryPort but no secondaryPort is configured.`,
 				);
 			}
 		}
@@ -102,10 +124,15 @@ export function validateConfig<
 	}
 
 	for (const [name, app] of Object.entries(config.apps ?? {})) {
+		if ("env" in (app as object)) {
+			errors.push(
+				`App "${name}" uses "env", which was renamed to "staticEnv" to avoid colliding with the top-level env overlay. Use apps.${name}.staticEnv for constants, or apps.${name}.envVars for computed values.`,
+			);
+		}
 		if (!app.port || typeof app.port !== "number") {
 			errors.push(`App "${name}" must have a valid port number`);
 		}
-		if (!app.devCommand) {
+		if (app.devCommand !== false && !app.devCommand) {
 			errors.push(`App "${name}" must have a devCommand`);
 		}
 		for (const serviceName of app.requiredServices ?? []) {
@@ -125,6 +152,14 @@ export function validateConfig<
 			resolveSelectedApps(config.apps, undefined);
 		} catch (error) {
 			errors.push(error instanceof Error ? error.message : String(error));
+		}
+		const interactiveApps = Object.entries(config.apps)
+			.filter(([, app]) => app.interactive)
+			.map(([name]) => name);
+		if (interactiveApps.length > 1) {
+			errors.push(
+				`Only one app may set interactive: true. Found: ${interactiveApps.join(", ")}`,
+			);
 		}
 	}
 
@@ -147,6 +182,40 @@ export function validateConfig<
 		);
 	}
 
+	for (const optionKey of ["expoApiApp", "frontendApp"] as const) {
+		const appName = config.options?.[optionKey];
+		if (appName && config.apps && !config.apps[appName]) {
+			errors.push(
+				`options.${optionKey} "${appName}" must match a configured app key`,
+			);
+		}
+	}
+
+	const hosts = config.options?.hosts;
+	if (hosts && hosts !== true) {
+		if (hosts.tld) {
+			try {
+				sanitizeTld(hosts.tld);
+			} catch (error) {
+				errors.push(error instanceof Error ? error.message : String(error));
+			}
+		}
+		if (hosts.primaryApp && config.apps && !config.apps[hosts.primaryApp]) {
+			errors.push(
+				`options.hosts.primaryApp "${hosts.primaryApp}" must match a configured app key`,
+			);
+		}
+		if (Array.isArray(hosts.services)) {
+			for (const name of hosts.services) {
+				if (!config.services[name]) {
+					errors.push(
+						`options.hosts.services includes unknown service "${name}"`,
+					);
+				}
+			}
+		}
+	}
+
 	if (config.prisma?.cwd) {
 		if (isAbsolute(config.prisma.cwd)) {
 			errors.push("prisma.cwd must be a relative path inside the repo.");
@@ -160,11 +229,19 @@ export function validateConfig<
 	return errors;
 }
 
-export function assertValidConfig<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
->(config: DevConfig<TServices, TApps>): void {
-	const errors = validateConfig(config);
+/**
+ * Throw unless `config` is a valid dev config.
+ *
+ * Accepts `unknown` so a config imported at runtime can be validated before
+ * use; for an already-typed config the assertion is a no-op, since every
+ * {@link DevConfig} satisfies {@link DevConfigLike}.
+ */
+export function assertValidConfig(
+	config: unknown,
+): asserts config is DevConfigLike {
+	// validateConfig reads every field defensively, so the widened view is safe
+	// here even when the value turns out not to be a config at all.
+	const errors = validateConfig(config as AnyDevConfig);
 	if (errors.length > 0) {
 		throw new Error(`Invalid dev config:\n  - ${errors.join("\n  - ")}`);
 	}

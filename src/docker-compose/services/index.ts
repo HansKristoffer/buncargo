@@ -2,12 +2,15 @@ import type {
 	DockerComposeServiceRaw,
 	DockerPresetName,
 	ServiceConfig,
+	ServiceEnvVarMap,
 } from "../../types";
 import type { DockerServicePreset } from "./define-docker-service";
 
 export type {
 	DockerServicePreset,
 	DockerServicePresetDefaults,
+	PresetServiceCredentialOptions,
+	PresetServiceSecondaryPortOptions,
 	PresetServiceSharedOptions,
 } from "./define-docker-service";
 
@@ -15,23 +18,40 @@ import {
 	type ClickhouseServiceOptions,
 	clickhouseDockerService,
 } from "./clickhouse";
+import { type MailpitServiceOptions, mailpitDockerService } from "./mailpit";
 import { type PostgresServiceOptions, postgresDockerService } from "./postgres";
 import { type RedisServiceOptions, redisDockerService } from "./redis";
+import {
+	type TypesenseServiceOptions,
+	typesenseDockerService,
+} from "./typesense";
 
 const PRESET_SERVICES = {
 	postgres: postgresDockerService,
 	redis: redisDockerService,
 	clickhouse: clickhouseDockerService,
+	mailpit: mailpitDockerService,
+	typesense: typesenseDockerService,
 } satisfies Record<DockerPresetName, DockerServicePreset>;
 
-export { clickhouseDockerService, postgresDockerService, redisDockerService };
+export {
+	clickhouseDockerService,
+	mailpitDockerService,
+	postgresDockerService,
+	redisDockerService,
+	typesenseDockerService,
+};
 export type {
 	ClickhouseServiceOptions,
+	MailpitServiceOptions,
 	PostgresServiceOptions,
 	RedisServiceOptions,
+	TypesenseServiceOptions,
 };
 
-export type CustomServiceOptions = ServiceConfig & {
+export type CustomServiceOptions<
+	TEnv extends ServiceEnvVarMap = ServiceEnvVarMap,
+> = ServiceConfig<TEnv> & {
 	docker: DockerComposeServiceRaw;
 };
 
@@ -43,21 +63,15 @@ export const service = {
 	postgres: postgresDockerService.toServiceConfig,
 	redis: redisDockerService.toServiceConfig,
 	clickhouse: clickhouseDockerService.toServiceConfig,
+	mailpit: mailpitDockerService.toServiceConfig,
+	typesense: typesenseDockerService.toServiceConfig,
 
-	custom(options: CustomServiceOptions): ServiceConfig {
+	custom<TEnv extends ServiceEnvVarMap>(
+		options: CustomServiceOptions<TEnv>,
+	): ServiceConfig<TEnv> {
 		return options;
 	},
 };
-
-export function inferDockerPreset(
-	serviceKey: string,
-): DockerPresetName | undefined {
-	const normalized = serviceKey.toLowerCase();
-	if (Object.hasOwn(PRESET_SERVICES, normalized)) {
-		return normalized as DockerPresetName;
-	}
-	return undefined;
-}
 
 export function buildPresetDockerService(
 	preset: DockerPresetName,
