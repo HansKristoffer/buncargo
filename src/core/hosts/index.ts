@@ -1,8 +1,16 @@
 export {
+	certificateFingerprint,
+	describeCertificateGap,
+	hostnamesForCertificate,
+	syncCertificateForRoutes,
+} from "./certificates";
+export {
+	DAEMON_START_TIMEOUT_MS,
 	ensureHostsDaemonRunning,
 	isHostsDaemonHealthy,
 	readDaemonConfig,
 	runHostsDaemon,
+	SERVICE_START_TIMEOUT_MS,
 } from "./daemon";
 export { cleanHostsFile, syncHostsFile } from "./hosts-file";
 export { getCaPath, mintCert, resolvedMkcertPath } from "./mkcert";
@@ -34,5 +42,11 @@ export {
 	routesFromPlan,
 	upsertHostRoutes,
 } from "./registry";
-export { isHostsServiceInstalled } from "./service";
+export {
+	describeStaleHostsService,
+	type HostsServiceManifest,
+	isHostsServiceInstalled,
+	readHostsServiceManifest,
+	toHostsUserMessage,
+} from "./service";
 export { describePortSquatter } from "./squatter";

@@ -248,7 +248,7 @@ describe("runCli expose routing", () => {
 				startServers: false,
 				wait: true,
 				skipSeed: false,
-				skipEnvironmentLog: false,
+				skipEnvironmentLog: true,
 				onlyApps: ["expo"],
 				autoStartDocker: undefined,
 			},

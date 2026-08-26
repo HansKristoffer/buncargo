@@ -5,6 +5,7 @@ import {
 	readFileSync,
 	unlinkSync,
 	writeFileSync,
+	writeSync,
 } from "node:fs";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "../registry-file";
 import {
@@ -13,21 +14,61 @@ import {
 	shouldSyncHostsFile,
 } from "../runtime-flags";
 import { sleep } from "../utils";
+import {
+	certificateFingerprint,
+	describeCertificateGap,
+	readCertificatePair,
+} from "./certificates";
 import { cleanHostsFile, syncHostsFile } from "./hosts-file";
-import { mintCert, resolvedMkcertPath } from "./mkcert";
 import {
 	chownToInvokingUser,
 	getDaemonConfigPath,
 	getHostsStateDir,
 	getPidfilePath,
 } from "./paths";
-import { isProxyHealthy, type LocalProxy, startLocalProxy } from "./proxy";
+import {
+	isProxyHealthy,
+	type LocalProxy,
+	type ProxyRouteLookup,
+	startLocalProxy,
+} from "./proxy";
 import { pruneHostRoutes } from "./registry";
-import { isHostsServiceInstalled } from "./service";
+import { describeStaleHostsService, isHostsServiceInstalled } from "./service";
+import { hostsServiceLogHint } from "./service-files";
 import { describePortSquatter } from "./squatter";
 
 const DEFAULT_HTTP_PORT = 80;
 const IDLE_EXIT_MS = 30_000;
+const RELOAD_INTERVAL_MS = 1000;
+const MAX_RELOAD_BACKOFF_MS = 30_000;
+
+/**
+ * Write straight to fd 2, bypassing the buffering Bun applies when stderr is a
+ * file rather than a TTY.
+ *
+ * The service redirects stderr to `/var/log/buncargo-hosts.log` and then never
+ * exits, so a buffered `console.error` would sit in memory forever and the log
+ * would stay empty exactly when it is needed.
+ */
+function logDaemonError(message: string): void {
+	try {
+		writeSync(2, `${message}\n`);
+	} catch {
+		console.error(message);
+	}
+}
+
+/**
+ * Back off after a failed reload instead of retrying every second.
+ *
+ * launchd runs the service with `KeepAlive`, so an unhandled throw would be
+ * respawned forever. The daemon stays up and retries on a widening interval.
+ */
+export function nextReloadDelayMs(consecutiveFailures: number): number {
+	if (consecutiveFailures <= 0) return RELOAD_INTERVAL_MS;
+	const backoff = RELOAD_INTERVAL_MS * 2 ** (consecutiveFailures - 1);
+	return Math.min(backoff, MAX_RELOAD_BACKOFF_MS);
+}
 
 export interface HostsDaemonConfig {
 	httpsPort: number;
@@ -78,10 +119,143 @@ export function readDaemonPid(): number | undefined {
 	return Number.isFinite(pid) ? pid : undefined;
 }
 
-export async function isHostsDaemonHealthy(
-	port = readDaemonConfig().httpsPort,
-): Promise<boolean> {
-	return isProxyHealthy(port);
+export async function isHostsDaemonHealthy(port?: number): Promise<boolean> {
+	const config = readDaemonConfig();
+	return isProxyHealthy(port ?? config.httpsPort, "127.0.0.1", {
+		tls: config.tls,
+	});
+}
+
+export interface HostsReloaderDeps {
+	pruneRoutes: () => Promise<Array<{ hostname: string; port: number }>>;
+	certificateFingerprint: () => string;
+	describeCertificateGap: (hostnames: string[]) => string | undefined;
+	readCertificatePair: () => Promise<{ cert: string; key: string }>;
+	startProxy: (input: {
+		lookup: ProxyRouteLookup;
+		listHostnames: () => string[];
+		cert: string;
+		key: string;
+	}) => Promise<LocalProxy>;
+	/** Undefined when `/etc/hosts` syncing is turned off. */
+	syncHostsFile?: (hostnames: string[]) => void;
+	cleanHostsFile?: () => void;
+	log: (message: string) => void;
+	now: () => number;
+	/** Only reached by a user-level daemon that has gone idle. */
+	onIdleExit: () => void;
+	service: boolean;
+}
+
+export interface HostsReloader {
+	reload: () => Promise<void>;
+	stop: () => void;
+	/** Whether a listener is currently bound. */
+	isBound: () => boolean;
+}
+
+/**
+ * The daemon's one job, with every edge injected.
+ *
+ * Kept separate from {@link runHostsDaemon} so the rebind rule can be tested
+ * without binding a port, minting a certificate or waiting on real time.
+ */
+export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
+	const routeMap = new Map<string, number>();
+	let proxy: LocalProxy | undefined;
+	let lastHostKey = "";
+	let lastCertKey = "";
+	let idleSince: number | undefined;
+	let lastHostsFileFailure: string | undefined;
+
+	const lookup: ProxyRouteLookup = (hostname) => routeMap.get(hostname);
+
+	/**
+	 * An unwritable `/etc/hosts` stops named hostnames resolving, so it cannot
+	 * stay silent. It also must not fail the reload or spam once a second, so
+	 * it is reported once per distinct cause.
+	 */
+	function reportHostsFileFailure(action: string, error: unknown): void {
+		const message = error instanceof Error ? error.message : String(error);
+		if (message === lastHostsFileFailure) return;
+		lastHostsFileFailure = message;
+		deps.log(`[buncargo hosts] could not ${action} /etc/hosts: ${message}`);
+	}
+
+	async function reload(): Promise<void> {
+		const routes = await deps.pruneRoutes();
+		routeMap.clear();
+		for (const route of routes) {
+			routeMap.set(route.hostname, route.port);
+		}
+		const hostnames = [...routeMap.keys()].sort();
+		const hostKey = hostnames.join(",");
+		if (hostnames.length === 0) {
+			// Explicitly against undefined: a zero timestamp is a real reading,
+			// and treating it as "not idle yet" restarts the clock every tick.
+			if (idleSince === undefined) idleSince = deps.now();
+			if (!deps.service && deps.now() - idleSince > IDLE_EXIT_MS) {
+				proxy?.stop();
+				try {
+					deps.cleanHostsFile?.();
+				} catch (error) {
+					reportHostsFileFailure("clean", error);
+				}
+				deps.onIdleExit();
+				return;
+			}
+		} else {
+			idleSince = undefined;
+		}
+
+		try {
+			deps.syncHostsFile?.(hostnames);
+			lastHostsFileFailure = undefined;
+		} catch (error) {
+			reportHostsFileFailure("update", error);
+		}
+
+		// Only the TLS material is baked into the listener; `lookup` reads the
+		// live route map. Rebinding on a route change too would drop every
+		// proxied websocket each time an app registers or expires, and a dev
+		// server whose HMR socket is reset mid-session usually dies with it.
+		const certKey = deps.certificateFingerprint();
+		const mustBind = !proxy || certKey !== lastCertKey;
+		if (!mustBind && hostKey === lastHostKey) {
+			return;
+		}
+
+		// Minting belongs to the CLI, which runs as the user and can find
+		// mkcert. Report the gap and let the backoff retry once it is filled.
+		const gap = deps.describeCertificateGap(hostnames);
+		if (gap) throw new Error(gap);
+
+		lastHostKey = hostKey;
+		if (!mustBind) return;
+
+		// Read before stopping: an unreadable pair should leave the running
+		// listener alone rather than take every named URL down first.
+		const { cert, key } = await deps.readCertificatePair();
+
+		// Clear before rebinding: if startProxy throws, the retry must not find
+		// a stopped server sitting in `proxy` and skip the rebind.
+		const stopped = proxy;
+		proxy = undefined;
+		stopped?.stop();
+		proxy = await deps.startProxy({
+			lookup,
+			listHostnames: () => [...routeMap.keys()],
+			cert,
+			key,
+		});
+		lastCertKey = certKey;
+	}
+
+	return {
+		reload,
+		stop: () => proxy?.stop(),
+		isBound: () => proxy !== undefined,
+	};
 }
 
 export async function runHostsDaemon(
@@ -91,76 +265,31 @@ export async function runHostsDaemon(
 	writeDaemonConfig(config);
 	writePidfile(process.pid);
 
-	let proxy: LocalProxy | undefined;
-	let lastHostKey = "";
-	let idleSince: number | undefined;
-
-	const lookup = (hostname: string) => {
-		// refreshed via routes snapshot
-		return routeMap.get(hostname);
-	};
-	const routeMap = new Map<string, number>();
-
-	async function reload(): Promise<void> {
-		const routes = await pruneHostRoutes();
-		routeMap.clear();
-		for (const route of routes) {
-			routeMap.set(route.hostname, route.port);
-		}
-		const hostnames = [...routeMap.keys()].sort();
-		const hostKey = hostnames.join(",");
-		if (hostnames.length === 0) {
-			if (!idleSince) idleSince = Date.now();
-			if (
-				!options.service &&
-				idleSince &&
-				Date.now() - idleSince > IDLE_EXIT_MS
-			) {
-				proxy?.stop();
-				if (shouldSyncHostsFile()) {
-					try {
-						cleanHostsFile();
-					} catch {
-						// ignore
-					}
-				}
-				process.exit(0);
-			}
-			return;
-		}
-		idleSince = undefined;
-
-		if (shouldSyncHostsFile()) {
-			try {
-				syncHostsFile(hostnames);
-			} catch {
-				// /etc/hosts may be read-only in tests
-			}
-		}
-
-		if (hostKey === lastHostKey && proxy) {
-			return;
-		}
-
-		const mkcertPath = resolvedMkcertPath();
-		const minted = mintCert(hostnames, { mkcertPath });
-		proxy?.stop();
-		proxy = await startLocalProxy({
-			lookup,
-			listHostnames: () => [...routeMap.keys()],
-			cert: await Bun.file(minted.certPath).text(),
-			key: await Bun.file(minted.keyPath).text(),
-			httpsPort: config.httpsPort,
-			httpPort:
-				config.httpsPort === DEFAULT_HOSTS_DAEMON_PORT
-					? config.httpPort
-					: undefined,
-		});
-		lastHostKey = hostKey;
-	}
+	const syncHosts = shouldSyncHostsFile();
+	const reloader = createHostsReloader({
+		pruneRoutes: pruneHostRoutes,
+		certificateFingerprint,
+		describeCertificateGap,
+		readCertificatePair,
+		startProxy: (input) =>
+			startLocalProxy({
+				...input,
+				httpsPort: config.httpsPort,
+				httpPort:
+					config.httpsPort === DEFAULT_HOSTS_DAEMON_PORT
+						? config.httpPort
+						: undefined,
+			}),
+		syncHostsFile: syncHosts ? syncHostsFile : undefined,
+		cleanHostsFile: syncHosts ? cleanHostsFile : undefined,
+		log: logDaemonError,
+		now: Date.now,
+		onIdleExit: () => process.exit(0),
+		service: options.service ?? false,
+	});
 
 	const onStop = () => {
-		proxy?.stop();
+		reloader.stop();
 		const pid = readDaemonPid();
 		if (pid === process.pid) {
 			try {
@@ -174,28 +303,110 @@ export async function runHostsDaemon(
 	process.on("SIGINT", onStop);
 	process.on("SIGTERM", onStop);
 
-	await reload();
+	let consecutiveFailures = 0;
+	let lastFailure: string | undefined;
+
+	// A throw here (no mkcert, :443 taken, unreadable registry) must not end the
+	// process: stderr is the service log, and the next tick retries.
+	async function reloadOrReport(): Promise<void> {
+		try {
+			await reloader.reload();
+			if (consecutiveFailures > 0) {
+				logDaemonError(
+					`[buncargo hosts] reload recovered after ${consecutiveFailures} failed ${consecutiveFailures === 1 ? "attempt" : "attempts"}`,
+				);
+			}
+			consecutiveFailures = 0;
+			lastFailure = undefined;
+		} catch (error) {
+			consecutiveFailures += 1;
+			const message = error instanceof Error ? error.message : String(error);
+			// Repeats are expected while backing off; only log a changed cause.
+			if (message !== lastFailure) {
+				logDaemonError(`[buncargo hosts] reload failed: ${message}`);
+				lastFailure = message;
+			}
+		}
+	}
+
+	await reloadOrReport();
 	for (;;) {
-		await sleep(1000);
-		await reload();
+		await sleep(nextReloadDelayMs(consecutiveFailures));
+		await reloadOrReport();
+	}
+}
+
+const HEALTH_POLL_MS = 150;
+/** Budget for a user-level daemon, which only has to bind and mint. */
+export const DAEMON_START_TIMEOUT_MS = 3000;
+/** Budget after `hosts install` / doctor, while launchd/systemd cold-starts the unit. */
+export const SERVICE_START_TIMEOUT_MS = 15_000;
+
+/**
+ * How long to poll an already-installed launchd/systemd unit.
+ *
+ * KeepAlive means a loaded unit is either answering or down. A routine
+ * `buncargo dev` must not sit on {@link SERVICE_START_TIMEOUT_MS}; that budget
+ * is only for the caller that just loaded the unit.
+ */
+export function resolveInstalledServiceWaitMs(timeoutMs?: number): number {
+	return timeoutMs ?? 0;
+}
+
+export async function waitForDaemonHealthy(
+	port: number,
+	timeoutMs: number,
+): Promise<boolean> {
+	if (timeoutMs <= 0) {
+		return isHostsDaemonHealthy(port);
+	}
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		if (await isHostsDaemonHealthy(port)) return true;
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) return false;
+		await sleep(Math.min(HEALTH_POLL_MS, remaining));
 	}
 }
 
 export async function ensureHostsDaemonRunning(
-	options: { allowSpawn?: boolean } = {},
+	options: { allowSpawn?: boolean; timeoutMs?: number } = {},
 ): Promise<{ ok: boolean; message?: string }> {
 	const config = readDaemonConfig();
 	if (await isHostsDaemonHealthy(config.httpsPort)) {
 		return { ok: true };
 	}
 
-	const squatter = describePortSquatter(config.httpsPort);
-	if (squatter && !isHostsServiceInstalled()) {
-		return { ok: false, message: squatter };
+	const serviceInstalled = isHostsServiceInstalled();
+	if (!serviceInstalled) {
+		const squatter = describePortSquatter(config.httpsPort);
+		if (squatter) {
+			return { ok: false, message: squatter };
+		}
 	}
 
 	if (options.allowSpawn === false) {
 		return { ok: false, message: "Named-hosts daemon is not running." };
+	}
+
+	// The system service owns :443. Spawning a user-level daemon alongside it
+	// could never bind that port. KeepAlive means an already-loaded unit is
+	// either answering or down — do not sit on the cold-start budget on every
+	// `buncargo dev`. Callers that just loaded the unit pass timeoutMs.
+	if (serviceInstalled) {
+		const stale = describeStaleHostsService();
+		if (stale) {
+			return { ok: false, message: stale };
+		}
+		const waitMs = resolveInstalledServiceWaitMs(options.timeoutMs);
+		if (waitMs > 0) {
+			const healthy = await waitForDaemonHealthy(config.httpsPort, waitMs);
+			if (healthy) return { ok: true };
+		}
+		return {
+			ok: false,
+			message: `Named-hosts service is installed but did not answer on :${config.httpsPort}. Check ${hostsServiceLogHint()}, then run \`buncargo hosts install\`.`,
+		};
 	}
 
 	const bin = process.argv[1];
@@ -211,15 +422,15 @@ export async function ensureHostsDaemonRunning(
 	});
 	child.unref();
 
-	for (let attempt = 0; attempt < 20; attempt++) {
-		if (await isHostsDaemonHealthy(config.httpsPort)) {
-			return { ok: true };
-		}
-		await sleep(150);
-	}
-	return {
-		ok: false,
-		message:
-			"Named-hosts daemon did not become healthy. Run `buncargo hosts install` or use localhost:port.",
-	};
+	const healthy = await waitForDaemonHealthy(
+		config.httpsPort,
+		options.timeoutMs ?? DAEMON_START_TIMEOUT_MS,
+	);
+	return healthy
+		? { ok: true }
+		: {
+				ok: false,
+				message:
+					"Named-hosts daemon did not become healthy. Run `buncargo hosts install` or use localhost:port.",
+			};
 }

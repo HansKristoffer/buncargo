@@ -16,6 +16,7 @@ import {
 	quickTunnelRetryBaseMs,
 	quickTunnelUrlTimeoutMs,
 	shouldSyncHostsFile,
+	typecheckConcurrencyOverride,
 } from "./runtime-flags";
 
 describe("isCI", () => {
@@ -142,5 +143,23 @@ describe("tunnel timings", () => {
 		expect(
 			quickTunnelUrlTimeoutMs({ BUNCARGO_QUICK_TUNNEL_TIMEOUT_MS: "0" }),
 		).toBe(0);
+	});
+});
+
+describe("typecheckConcurrencyOverride", () => {
+	it("reads a positive integer", () => {
+		expect(typecheckConcurrencyOverride({})).toBeUndefined();
+		expect(
+			typecheckConcurrencyOverride({ BUNCARGO_TYPECHECK_CONCURRENCY: "3" }),
+		).toBe(3);
+	});
+
+	it("rejects invalid values", () => {
+		expect(() =>
+			typecheckConcurrencyOverride({ BUNCARGO_TYPECHECK_CONCURRENCY: "0" }),
+		).toThrow(/BUNCARGO_TYPECHECK_CONCURRENCY/);
+		expect(() =>
+			typecheckConcurrencyOverride({ BUNCARGO_TYPECHECK_CONCURRENCY: "nope" }),
+		).toThrow(/BUNCARGO_TYPECHECK_CONCURRENCY/);
 	});
 });

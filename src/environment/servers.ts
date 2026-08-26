@@ -67,7 +67,6 @@ export async function startAppServers<
 		},
 	);
 
-	if (verbose) console.log("⏳ Waiting for servers to be ready...");
 	await waitForDevServers(appsToStart, ctx.ports, {
 		timeout: readyTimeout(),
 		verbose,

@@ -1,10 +1,12 @@
 import { getCaPath, isHostsDaemonHealthy } from "../../core/hosts";
+import { findMonorepoRoot } from "../../core/ports";
 import { isHostsForcedOff } from "../../core/runtime-flags";
 import { loadDevEnv } from "../../loader";
 import { parseDevArgs, printDevHelp } from "../dev-flags";
 import { getFlagValue } from "../flags";
 import * as log from "../log";
 import { runCli } from "../run-cli";
+import { parseTypecheckArgs, printTypecheckHelp } from "../typecheck-flags";
 
 export function getEnvDotPath(
 	snapshot: Record<string, unknown>,
@@ -110,12 +112,28 @@ export async function handleEnv(args: string[] = []): Promise<void> {
 	log.line(JSON.stringify(snapshot, null, 2));
 }
 
-export async function handleTypecheck(): Promise<void> {
-	const env = await loadEnv();
+export async function handleTypecheck(args: string[] = []): Promise<void> {
+	const parsed = parseTypecheckArgs(args);
+	if (parsed.help) {
+		printTypecheckHelp();
+		return;
+	}
+	if (parsed.unknownFlags.length > 0) {
+		log.fail(
+			`Unknown flag${parsed.unknownFlags.length > 1 ? "s" : ""}: ${parsed.unknownFlags.join(", ")}`,
+			['Run "bunx buncargo typecheck --help" for typecheck options.'],
+		);
+	}
+	if (parsed.errors.length > 0) {
+		log.fail(parsed.errors[0] ?? "Invalid typecheck arguments.");
+	}
+
 	const { runWorkspaceTypecheck } = await import("../../typecheck");
 	const result = await runWorkspaceTypecheck({
-		root: env.root,
+		root: findMonorepoRoot(),
 		verbose: true,
+		concurrency: parsed.concurrency,
+		only: parsed.only,
 	});
 	process.exit(result.success ? 0 : 1);
 }

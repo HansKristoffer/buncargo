@@ -47,10 +47,17 @@ type DefineDevConfigArg<
  * `envVars`). `env`'s return is the inference source for overlay keys
  * (`getEnvVar(config, "VITE_PORT")`). Configs with no `apps` need the dedicated
  * overload, since `apps` has to be a required property to be inferred at all.
+ *
+ * Never pass explicit type arguments. Every parameter is inferred, and none has
+ * a default, so a partial list like
+ * `defineDevConfig<typeof services, typeof apps>(...)` is a compile error
+ * instead of quietly binding `typeof apps` to `TEnv` and erasing every overlay
+ * key from `getEnvVar`. To name the resulting type, use
+ * `ReturnType<typeof createMyDevConfig>` rather than re-supplying arguments.
  */
 export function defineDevConfig<
 	const TServices extends Record<string, ServiceConfig>,
-	const TEnv extends EnvValues = EnvValues,
+	const TEnv extends EnvValues,
 >(
 	config: Omit<DevConfigInput<TServices, AppsNever, TEnv>, "env"> & {
 		apps?: undefined;
@@ -64,7 +71,7 @@ export function defineDevConfig<
 export function defineDevConfig<
 	const TServices extends Record<string, ServiceConfig>,
 	const TApps extends Record<string, AppConfig>,
-	const TEnv extends EnvValues = EnvValues,
+	const TEnv extends EnvValues,
 >(
 	config: DefineDevConfigArg<TServices, TApps, TEnv>,
 ): DevConfigInput<TServices, TApps, TEnv>;

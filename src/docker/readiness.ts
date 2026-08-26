@@ -3,6 +3,13 @@ import {
 	formatPortOwner,
 	getPortOwner,
 } from "../core/process";
+import {
+	formatDone,
+	formatWait,
+	formatWarn,
+	SLOW_STEP_MS,
+	scheduleLog,
+} from "../core/style";
 import { sleep } from "../core/utils";
 import type { BuiltInHealthCheck, ServiceConfig } from "../types";
 import { createBuiltInHealthCheck } from "./health-checks";
@@ -89,22 +96,34 @@ export async function waitForAllServices(
 ): Promise<void> {
 	const { verbose = true, ...waitOptions } = options;
 
-	if (verbose) console.log("⏳ Waiting for services to be healthy...");
+	let showedWait = false;
+	const cancelWait = verbose
+		? scheduleLog(SLOW_STEP_MS, () => {
+				showedWait = true;
+				console.log(formatWait("Waiting for services to be healthy..."));
+			})
+		: () => {};
 
-	await Promise.all(
-		Object.entries(services).map(([name, config]) => {
-			const port = ports[name];
-			if (port === undefined) {
-				console.warn(
-					`⚠️  No port found for service ${name}, skipping health check`,
-				);
-				return Promise.resolve();
-			}
-			return waitForService(name, config, port, waitOptions);
-		}),
-	);
+	try {
+		await Promise.all(
+			Object.entries(services).map(([name, config]) => {
+				const port = ports[name];
+				if (port === undefined) {
+					console.warn(
+						formatWarn(
+							`No port found for service ${name}, skipping health check`,
+						),
+					);
+					return Promise.resolve();
+				}
+				return waitForService(name, config, port, waitOptions);
+			}),
+		);
+	} finally {
+		cancelWait();
+	}
 
-	if (verbose) console.log("✓ All services healthy");
+	if (showedWait) console.log(formatDone("All services healthy"));
 }
 
 /**
@@ -138,7 +157,7 @@ export async function waitForServiceByType(
 		maxAttempts,
 		pollInterval,
 		() => {
-			if (verbose) console.log(`✓ ${serviceName} is ready`);
+			if (verbose) console.log(formatDone(`${serviceName} is ready`));
 		},
 	);
 }
@@ -192,9 +211,7 @@ export async function ensureServicesRunning(
 		composeServiceNames,
 	);
 
-	if (alreadyRunning) {
-		if (verbose) console.log("✓ Containers already running");
-	} else {
+	if (!alreadyRunning) {
 		startContainers(root, projectName, envVars, {
 			verbose,
 			wait: false,

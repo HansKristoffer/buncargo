@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { toUrlMap, type UrlMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
+import { formatDone, formatFail, formatStep, formatWarn } from "../core/style";
 import type {
 	AppConfig,
 	EnvValues,
@@ -77,7 +78,9 @@ export function createCheckTableHelper<
 		const serviceName = (service ?? defaultService) as string;
 		const serviceUrl = urls[serviceName];
 		if (!serviceUrl) {
-			console.warn(`⚠️ Service "${serviceName}" not found for checkTable`);
+			console.warn(
+				formatWarn(`Service "${serviceName}" not found for checkTable`),
+			);
 			return true;
 		}
 		const checkResult = await exec(
@@ -88,7 +91,7 @@ export function createCheckTableHelper<
 		const shouldSeed =
 			checkResult.exitCode !== 0 || count === "0" || count === "";
 		if (!shouldSeed) {
-			console.log(`  📊 Table "${tableName}" has ${count} rows`);
+			console.log(formatStep(`📊 Table "${tableName}" has ${count} rows`));
 		}
 		return shouldSeed;
 	};
@@ -139,12 +142,13 @@ export async function runSeedIfNeeded<
 			createSeedCheckContext(envVars.getHookContext(), checkTable),
 		);
 		if (!shouldSeed) {
-			if (verbose) console.log("✓ Database already has data, skipping seeders");
+			if (verbose)
+				console.log(formatDone("Database already has data, skipping seeders"));
 			return { status: "not-needed" };
 		}
 	}
 
-	if (verbose) console.log("🌱 Running seeders...");
+	if (verbose) console.log(formatStep("🌱 Running seeders..."));
 	const result = await runSeedCommand({
 		command: seed.command,
 		root: ctx.root,
@@ -155,11 +159,11 @@ export async function runSeedIfNeeded<
 	});
 
 	if (result.exitCode !== 0) {
-		console.error("❌ Seeding failed");
+		console.error(formatFail("Seeding failed"));
 		console.error(result.stderr);
 		return { status: "failed", result };
 	}
 
-	if (verbose) console.log("✓ Seeding complete");
+	if (verbose) console.log(formatDone("Seeding complete"));
 	return { status: "succeeded", result };
 }

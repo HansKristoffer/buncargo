@@ -163,3 +163,25 @@ export function quickTunnelUrlTimeoutMs(
 ): number {
 	return readInt(env, "BUNCARGO_QUICK_TUNNEL_TIMEOUT_MS", 30_000);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Typecheck
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * `BUNCARGO_TYPECHECK_CONCURRENCY` - override the default typecheck pool size.
+ * Must be a positive integer when set.
+ */
+export function typecheckConcurrencyOverride(
+	env: NodeJS.ProcessEnv = process.env,
+): number | undefined {
+	const raw = readTrimmed(env, "BUNCARGO_TYPECHECK_CONCURRENCY");
+	if (raw === undefined) return undefined;
+	const parsed = Number.parseInt(raw, 10);
+	if (!Number.isInteger(parsed) || parsed < 1 || String(parsed) !== raw) {
+		throw new Error(
+			`BUNCARGO_TYPECHECK_CONCURRENCY must be a positive integer, received "${raw}"`,
+		);
+	}
+	return parsed;
+}

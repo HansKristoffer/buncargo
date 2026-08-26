@@ -8,7 +8,7 @@ export const CLI_COMMANDS = [
 	{ name: "dev", usage: "dev", summary: "Start the development environment" },
 	{
 		name: "typecheck",
-		usage: "typecheck",
+		usage: "typecheck [options]",
 		summary: "Run TypeScript typecheck across workspaces",
 	},
 	{
@@ -65,6 +65,10 @@ export const COMMAND_HELP_EXTRAS: readonly CommandExample[] = [
 	{
 		command: "doctor --fix",
 		description: "Repair named-hosts daemon, CA trust, and stale routes",
+	},
+	{
+		command: "typecheck --only=<workspaces>",
+		description: "Typecheck selected workspaces (path or basename)",
 	},
 ];
 

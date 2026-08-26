@@ -2,3 +2,8 @@ node_modules
 .DS_Store
 dist
 *.tsbuildinfo
+.buncargo/
+# Fixtures created by src/typecheck/*.test.ts, which need them inside the
+# repo to resolve the local TypeScript / Bun.
+.config-typecheck-test-*/
+.typecheck-pool-test-*/

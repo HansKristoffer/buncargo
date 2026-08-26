@@ -6,6 +6,7 @@ import {
 	readDaemonConfig,
 } from "../../../core/hosts";
 import { isCaPresent } from "../../../core/hosts/mkcert";
+import { describeStaleHostsService } from "../../../core/hosts/service";
 import {
 	getPortsLockfilePath,
 	readPortsLockfile,
@@ -134,6 +135,10 @@ async function checkNamedHosts(
 		report.issue(
 			"Named-hosts CA is not trusted. Run `buncargo hosts install`.",
 		);
+	}
+	const staleService = describeStaleHostsService();
+	if (staleService) {
+		report.issue(staleService);
 	}
 	const hostRoutes = await pruneHostRoutes();
 	report.note(

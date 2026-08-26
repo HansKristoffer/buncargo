@@ -13,7 +13,11 @@ import {
 	isCaPresent,
 	resolvedMkcertPath,
 } from "../../core/hosts/mkcert";
-import { isHostsServiceInstalled } from "../../core/hosts/service";
+import {
+	describeStaleHostsService,
+	isHostsServiceInstalled,
+	readHostsServiceManifest,
+} from "../../core/hosts/service";
 import { describePortSquatter } from "../../core/hosts/squatter";
 import * as log from "../log";
 import { hostsSubcommandList, resolveHostsSubcommand } from "./registry";
@@ -29,7 +33,9 @@ export async function handleHosts(args: string[]): Promise<void> {
 
 	switch (subcommand) {
 		case "install":
-			await runHostsInstall();
+			// Always reload the service: this is the command users are told to run
+			// when named hosts are broken, so it has to replace a stale daemon.
+			await runHostsInstall({ reinstallService: true });
 			log.done("Named hosts are ready");
 			return;
 		case "uninstall":
@@ -71,6 +77,15 @@ async function printHostsStatus(): Promise<void> {
 	log.line(`daemon: ${healthy ? "healthy" : "down"}`);
 	log.line(`httpsPort: ${config.httpsPort}`);
 	log.line(`service: ${isHostsServiceInstalled() ? "installed" : "missing"}`);
+	const manifest = readHostsServiceManifest();
+	if (manifest) {
+		log.line(`  exec: ${[manifest.program, ...manifest.args].join(" ")}`);
+	}
+	log.line(`mkcert: ${mkcertPath ?? "missing"}`);
+	const stale = describeStaleHostsService();
+	if (stale) {
+		log.line(`  stale: ${stale}`);
+	}
 	log.line(
 		`ca: ${isCaPresent(mkcertPath) ? getCaPath(mkcertPath) : "missing"}`,
 	);

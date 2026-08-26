@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { withFileLock } from "../core/file-lock";
 import { defineListRegistry, isRouteOwnerAlive } from "../core/registry-file";
 import type { DevEnvironmentTunnelLog } from "../types";
 
@@ -43,59 +44,66 @@ function keyFor(entry: Pick<TunnelRegistryEntry, "kind" | "name">): string {
 	return `${entry.kind}:${entry.name}`;
 }
 
-async function readRegistry(
-	root: string,
-): Promise<{ path: string; entries: TunnelRegistryEntry[] }> {
-	const path = getTunnelRegistryPath(root);
-	return { path, entries: await registry.read(path) };
-}
-
+/**
+ * Locked for the same reason as the hosts route registry: concurrent
+ * `--expose` runs in one repo would otherwise drop each other's entries and
+ * re-open tunnels that already exist.
+ */
 export async function pruneTunnelRegistry(
 	root: string,
 	options: { now?: number } = {},
 ): Promise<TunnelRegistryEntry[]> {
 	const { now = Date.now() } = options;
-	const { path, entries } = await readRegistry(root);
-	const activeEntries = entries.filter((entry) => {
-		const updatedAt = Date.parse(entry.updatedAt);
-		if (!Number.isFinite(updatedAt)) return false;
-		if (now - updatedAt > REGISTRY_TTL_MS) return false;
-		return isRouteOwnerAlive(entry.pid);
+	const path = getTunnelRegistryPath(root);
+	return withFileLock(path, async () => {
+		const entries = await registry.read(path);
+		const activeEntries = entries.filter((entry) => {
+			const updatedAt = Date.parse(entry.updatedAt);
+			if (!Number.isFinite(updatedAt)) return false;
+			if (now - updatedAt > REGISTRY_TTL_MS) return false;
+			return isRouteOwnerAlive(entry.pid);
+		});
+
+		if (activeEntries.length !== entries.length) {
+			await registry.write(path, activeEntries);
+		}
+
+		return activeEntries;
 	});
-
-	if (activeEntries.length !== entries.length) {
-		await registry.write(path, activeEntries);
-	}
-
-	return activeEntries;
 }
 
 export async function upsertTunnelRegistryEntries(
 	root: string,
 	entriesToSave: TunnelRegistryEntry[],
 ): Promise<void> {
-	const { path, entries } = await readRegistry(root);
-	const byKey = new Map(entries.map((entry) => [keyFor(entry), entry]));
-	for (const entry of entriesToSave) {
-		byKey.set(keyFor(entry), entry);
-	}
-	await registry.write(path, Array.from(byKey.values()));
+	const path = getTunnelRegistryPath(root);
+	await withFileLock(path, async () => {
+		const entries = await registry.read(path);
+		const byKey = new Map(entries.map((entry) => [keyFor(entry), entry]));
+		for (const entry of entriesToSave) {
+			byKey.set(keyFor(entry), entry);
+		}
+		await registry.write(path, Array.from(byKey.values()));
+	});
 }
 
 export async function removeTunnelRegistryEntries(
 	root: string,
 	entriesToRemove: Array<Pick<TunnelRegistryEntry, "kind" | "name" | "pid">>,
 ): Promise<void> {
-	const { path, entries } = await readRegistry(root);
-	const toRemove = new Map(
-		entriesToRemove.map((entry) => [keyFor(entry), entry.pid]),
-	);
-	const nextEntries = entries.filter((entry) => {
-		const expectedPid = toRemove.get(keyFor(entry));
-		if (expectedPid === undefined) return true;
-		return entry.pid !== expectedPid;
+	const path = getTunnelRegistryPath(root);
+	await withFileLock(path, async () => {
+		const entries = await registry.read(path);
+		const toRemove = new Map(
+			entriesToRemove.map((entry) => [keyFor(entry), entry.pid]),
+		);
+		const nextEntries = entries.filter((entry) => {
+			const expectedPid = toRemove.get(keyFor(entry));
+			if (expectedPid === undefined) return true;
+			return entry.pid !== expectedPid;
+		});
+		await registry.write(path, nextEntries);
 	});
-	await registry.write(path, nextEntries);
 }
 
 export async function loadReusableTunnelApps(

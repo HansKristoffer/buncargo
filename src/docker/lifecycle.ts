@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import { formatPortOwner, getPortOwner } from "../core/process";
+import { formatDone, formatStep } from "../core/style";
 import { getComposeArg } from "./compose-command";
 import { isDockerDaemonRunning } from "./preflight";
 import { assertDockerRunning } from "./status";
@@ -49,7 +50,7 @@ export function startContainers(
 	const { verbose = true, wait = true, composeFile, services = [] } = options;
 	assertDockerRunning();
 
-	if (verbose) console.log("🐳 Starting Docker containers...");
+	if (verbose) console.log(formatStep("🐳 Starting Docker containers..."));
 
 	const composeArg = getComposeArg(composeFile);
 	const waitFlag = wait ? "--wait" : "";
@@ -67,7 +68,7 @@ export function startContainers(
 		translateComposePortError(error);
 	}
 
-	if (verbose) console.log("✓ Containers started");
+	if (verbose) console.log(formatDone("Containers started"));
 }
 
 /**
@@ -81,16 +82,18 @@ export function stopContainers(
 	const { verbose = true, removeVolumes = false, composeFile } = options;
 	if (!isDockerDaemonRunning()) {
 		if (verbose) {
-			console.log("ℹ Docker is not running. Nothing to stop.");
+			console.log(formatStep("ℹ Docker is not running. Nothing to stop."));
 		}
 		return;
 	}
 
 	if (verbose) {
 		console.log(
-			removeVolumes
-				? "🗑️  Stopping containers and removing volumes..."
-				: "🛑 Stopping containers...",
+			formatStep(
+				removeVolumes
+					? "🗑️  Stopping containers and removing volumes..."
+					: "🛑 Stopping containers...",
+			),
 		);
 	}
 
@@ -104,7 +107,7 @@ export function stopContainers(
 		stdio: verbose ? "inherit" : "ignore",
 	});
 
-	if (verbose) console.log("✓ Containers stopped");
+	if (verbose) console.log(formatDone("Containers stopped"));
 }
 
 /**
@@ -120,7 +123,7 @@ export function startService(
 	const { verbose = true, composeFile } = options;
 	assertDockerRunning();
 
-	if (verbose) console.log(`🐳 Starting ${serviceName}...`);
+	if (verbose) console.log(formatStep(`🐳 Starting ${serviceName}...`));
 
 	const composeArg = getComposeArg(composeFile);
 	const cmd = `docker compose ${composeArg} up -d ${serviceName}`.trim();

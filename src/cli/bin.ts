@@ -50,7 +50,7 @@ async function runCommand(
 			return;
 
 		case "typecheck":
-			await handleTypecheck();
+			await handleTypecheck(commandArgs);
 			return;
 
 		case "prisma":

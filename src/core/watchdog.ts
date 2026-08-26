@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { getComposeArg } from "../docker/compose-command";
 import { simpleHash } from "./hash";
 import { isProcessAlive } from "./process";
+import { formatDone, formatWarn } from "./style";
 import {
 	WATCHDOG_DEFAULT_TIMEOUT_MINUTES,
 	WATCHDOG_HEARTBEAT_INTERVAL_MS,
@@ -188,8 +189,6 @@ export async function spawnWatchdog(
 
 	const existingPid = getWatchdogPid(projectName, root);
 	if (existingPid) {
-		if (verbose)
-			console.log(`✓ Watchdog already running (PID: ${existingPid})`);
 		return;
 	}
 
@@ -227,7 +226,7 @@ export async function spawnWatchdog(
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		if (existsSync(pidFile) && getWatchdogPid(projectName, root)) {
 			if (verbose && proc.pid) {
-				console.log(`✓ Watchdog started (PID: ${proc.pid})`);
+				console.log(formatDone(`Watchdog started (PID: ${proc.pid})`));
 			}
 			return;
 		}
@@ -235,7 +234,9 @@ export async function spawnWatchdog(
 
 	if (verbose) {
 		console.warn(
-			`⚠️  Watchdog did not start. Check ${logFile} and rebuild buncargo if dist/core/watchdog-runner.js is missing.`,
+			formatWarn(
+				`Watchdog did not start. Check ${logFile} and rebuild buncargo if dist/core/watchdog-runner.js is missing.`,
+			),
 		);
 	}
 }

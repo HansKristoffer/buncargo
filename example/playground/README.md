@@ -61,7 +61,7 @@ Stop with `Ctrl+C` (or use `bun run dev:down` from another terminal if documente
 
 1. Edit buncargo under the repo root.
 2. Rebuild when you change published artifacts: `bun run build` (from the root).
-3. Re-run `bun install` in `example/playground` if you change `buncargo`’s `package.json` (name, exports, bin).
+3. Re-run `bun install` in `example/playground` after a rebuild (or a `package.json` change). Bun snapshots the `file:../..` package; hashed `dist/` chunks go stale otherwise (`Cannot find module '../index-….js'`).
 4. Run `bun run dev` again from `example/playground`.
 
 To exercise the CLI entrypoint directly without `bunx`:

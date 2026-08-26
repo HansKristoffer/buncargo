@@ -14,6 +14,12 @@ export default defineDevConfig({
 		hosts: { primaryApp: "web" },
 	},
 
+	// Each app answers on its own hostname, so calls from web to api are
+	// cross-origin and the api has to know which origin to allow.
+	env: (_ports, urls) => ({
+		WEB_URL: urls.web,
+	}),
+
 	apps: {
 		api: {
 			port: 3010,

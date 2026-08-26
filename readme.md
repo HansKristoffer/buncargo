@@ -192,6 +192,7 @@ bunx buncargo hosts install
 bunx buncargo hosts status
 bunx buncargo hosts sync
 bunx buncargo hosts prune
+bunx buncargo hosts daemon      # Run the proxy in the foreground
 bunx buncargo hosts uninstall
 bunx buncargo env
 bunx buncargo env --get ports.api
@@ -202,6 +203,8 @@ bunx buncargo version
 ```
 
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`). `--get ports.api` prints one raw value for scripts.
+
+`buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own — that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and 2 in CI; override with `--concurrency=N` or `BUNCARGO_TYPECHECK_CONCURRENCY`. `--only=platform` (path or basename) checks one workspace. The config run generates `.buncargo/config-typecheck.tsconfig.json` and records durations in `.buncargo/typecheck-timings.json`; keep `.buncargo/` in `.gitignore`.
 
 ## Startup order
 
@@ -261,6 +264,12 @@ Enable with `options.hosts: true` (or `{ tld?, primaryApp?, services? }`). Postg
 
 The first `buncargo dev` in a repo with `hosts` on prompts for one-time machine setup (trust a local CA, bind `:443`). Enter accepts, `s` skips once, `n` persists a decline. `buncargo hosts install` is the non-interactive path. Setup is per machine: later repos and worktrees reuse it.
 
+Both steps need your password: the CA goes into the system trust store, and only root may bind `:443` or write the launchd/systemd unit. Setup is all-or-nothing — if the service fails to load, buncargo removes the unit file rather than leave a half-installed machine that skips setup on the next run. Setup is skipped without a TTY, since the password prompt would hang.
+
+`buncargo hosts install` records what it installed in `~/.buncargo/hosts-service.json`. The daemon runs whichever buncargo started it, usually the one in a project's `node_modules`, so reinstalling dependencies there can leave the machine-wide service pointing at a path that no longer exists. `buncargo hosts status` and `buncargo doctor` report that as stale, and `buncargo hosts install` (or `doctor --fix`) repairs it. The daemon logs to `/var/log/buncargo-hosts.log` (on Linux, also `journalctl -u buncargo-hosts.service`).
+
+`buncargo hosts daemon` runs that same proxy in the foreground instead of under launchd/systemd, which is how you watch its output while debugging. It re-reads `~/.buncargo/routes.json` every second, so apps starting and stopping need no restart, and it exits on its own once no routes have been registered for a while. `--service` is what the installed unit passes: it keeps the daemon alive through idle periods and is not meant to be typed by hand. Binding `:443` still needs root, so run it under `sudo` or set `BUNCARGO_HOSTS_PORT` to an unprivileged port.
+
 Failure degrades to `http://localhost:<port>` and never blocks the dev run. Named hosts stay off on Windows, in CI (`CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL`), when `BUNCARGO_HOSTS=0`, or with `--no-hosts`.
 
 ## Environment variables
@@ -300,6 +309,7 @@ Service `env` maps (`url` / `port` / `secondaryPort`) add more shared names. App
 | `BUNCARGO_MKCERT_PATH` | Absolute `mkcert` binary; skips PATH lookup and download |
 | `BUNCARGO_MKCERT_VERSION` | GitHub release tag for the bundled `mkcert` download (default `v1.4.4`) |
 | `BUNCARGO_SYNC_HOSTS` | `0` skips writing the `# buncargo-start` / `# buncargo-end` block in `/etc/hosts` |
+| `BUNCARGO_TYPECHECK_CONCURRENCY` | Max overlapping workspace typecheck processes (positive integer) |
 | `CLOUDFLARED_VERSION` | GitHub release tag for the bundled download |
 | `CI` | Skips Docker auto-start; also disables named hosts. Detected from `CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL` |
 
@@ -499,11 +509,15 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `Watchdog did not start` | Missing `dist/core/watchdog-runner.js` | `bun run build` / reinstall the package |
 | `Could not allocate a free port block` | 80 shifted blocks still conflict | Set `BUNCARGO_PORT_OFFSET` or free ports (`buncargo doctor`) |
 | Named URL does not resolve / TLS warning | Daemon down or CA not trusted | `buncargo hosts status`, then `buncargo hosts install` or `doctor --fix` |
+| `Named-hosts service points at … which no longer exists` | The install ran from a `node_modules` that was since removed | `buncargo hosts install` to re-point it at the current CLI |
+| `Named-hosts service is installed but did not answer on :443` | Daemon started and crashed | `tail /var/log/buncargo-hosts.log`, then `buncargo hosts install` |
+| `… is still owned by root` | A `sudo` run wrote a file under `~/.buncargo` and could not hand it back | `sudo chown -R "$USER" ~/.buncargo` |
+| `Named hosts need one-time setup` with no prompt | No TTY, so the password prompt was skipped | Run `buncargo hosts install` from a terminal |
 | Safari cannot open `.localhost` | `/etc/hosts` missing the names | `buncargo hosts sync` (or leave auto-sync on; `BUNCARGO_SYNC_HOSTS=0` opts out) |
 | `508 Loop Detected` | Vite (or similar) proxies `/api` without rewriting Host | Add `changeOrigin: true` to the dev-server proxy config |
 | `Portless is serving :443` (or Caddy / nginx / Docker) | Another proxy owns HTTPS | Stop that process, or set `hosts: false` / `--no-hosts` |
 
-`bunx buncargo doctor` checks Docker, named port owners, stale `ports.json`, orphaned labeled containers, the tunnel registry, and the named-hosts daemon. `doctor --fix` restarts a dead daemon, re-trusts the CA, remints an expired cert, drops stale routes, and resyncs `/etc/hosts`.
+`bunx buncargo doctor` checks Docker, named port owners, stale `ports.json`, orphaned labeled containers, the tunnel registry, and the named-hosts daemon and service install. `doctor --fix` restarts a dead daemon, re-trusts the CA, reinstalls a stale service, remints an expired cert, drops stale routes, and resyncs `/etc/hosts`. The fixes that need a password are skipped without a TTY.
 
 ## Programmatic API
 

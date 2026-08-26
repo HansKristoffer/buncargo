@@ -1,6 +1,7 @@
 import { execSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { isCI } from "../core/runtime-flags";
+import { formatDone, formatStep, formatWait } from "../core/style";
 
 export type DockerRuntime =
 	| "orbstack"
@@ -155,7 +156,7 @@ export async function ensureDockerRunning(
 	}
 
 	if (verbose) {
-		console.log(`🐳 Docker is not running. Starting ${runtime}...`);
+		console.log(formatStep(`🐳 Docker is not running. Starting ${runtime}...`));
 	}
 	startRuntime(runtime);
 
@@ -163,12 +164,12 @@ export async function ensureDockerRunning(
 	while (Date.now() - startedAt < timeoutMs) {
 		await new Promise((resolve) => setTimeout(resolve, 1000));
 		if (isDockerDaemonRunning()) {
-			if (verbose) console.log("✓ Docker is ready");
+			if (verbose) console.log(formatDone("Docker is ready"));
 			return;
 		}
 		if (verbose) {
 			const elapsed = Math.round((Date.now() - startedAt) / 1000);
-			console.log(`   ⏳ Waiting for Docker... (${elapsed}s)`);
+			console.log(formatWait(`Waiting for Docker... (${elapsed}s)`));
 		}
 	}
 

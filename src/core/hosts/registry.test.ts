@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	type HostsRoute,
 	HostsRouteConflictError,
 	loadHostRoutes,
 	pruneHostRoutes,
@@ -178,6 +179,88 @@ describe("hosts registry", () => {
 				path,
 			);
 			expect(await loadHostRoutes(path)).toEqual([]);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+/**
+ * One registry is shared by every `buncargo dev` on the machine. Before these
+ * paths were locked, eight simultaneous registrations left a single route on
+ * disk: each writer merged into a snapshot taken before its peers wrote.
+ */
+describe("concurrent registration", () => {
+	function routeFor(index: number): HostsRoute {
+		return {
+			hostname: `app.proj${index}.localhost`,
+			port: 3000 + index,
+			kind: "app",
+			name: "web",
+			root: `/repo${index}`,
+			pid: process.pid,
+			updatedAt: new Date().toISOString(),
+		};
+	}
+
+	it("keeps every route when registrations overlap", async () => {
+		const { dir, path } = await tempRegistry();
+		try {
+			const routes = Array.from({ length: 8 }, (_, i) => routeFor(i));
+			await Promise.all(
+				routes.map((route) => upsertHostRoutes([route], { path })),
+			);
+
+			const saved = await loadHostRoutes(path);
+			expect(saved.map((route) => route.hostname).sort()).toEqual(
+				routes.map((route) => route.hostname).sort(),
+			);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	// Static (pid-less) routes, so the assertion measures only the lock: a child
+	// that registered with its own pid would be pruned as soon as it exited.
+	it("keeps every route when separate processes register at once", async () => {
+		const { dir, path } = await tempRegistry();
+		try {
+			const modulePath = join(import.meta.dir, "registry.ts");
+			const script = `
+				const { upsertHostRoutes } = await import(${JSON.stringify(modulePath)});
+				const index = Number(process.env.ROUTE_INDEX);
+				await upsertHostRoutes(
+					[{
+						hostname: \`mailpit.proj\${index}.localhost\`,
+						port: 8025 + index,
+						kind: "service",
+						name: "mailpit",
+						root: \`/repo\${index}\`,
+						updatedAt: new Date().toISOString(),
+					}],
+					{ path: process.env.ROUTES_PATH },
+				);
+			`;
+
+			const exits = await Promise.all(
+				Array.from(
+					{ length: 6 },
+					(_, index) =>
+						Bun.spawn(["bun", "-e", script], {
+							env: {
+								...process.env,
+								ROUTE_INDEX: String(index),
+								ROUTES_PATH: path,
+							},
+							stdout: "ignore",
+							stderr: "pipe",
+						}).exited,
+				),
+			);
+			expect(exits).toEqual([0, 0, 0, 0, 0, 0]);
+
+			const saved = await loadHostRoutes(path);
+			expect(saved).toHaveLength(6);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}

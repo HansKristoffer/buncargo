@@ -183,7 +183,7 @@ export function createDevEnvContext<
 			}
 		},
 
-		logInfo(label = "Docker Dev", tunnels?: PublicTunnel[]) {
+		logInfo(label = "Dev Environment", tunnels?: PublicTunnel[]) {
 			const tunnelRows: DevEnvironmentTunnelLog[] | undefined = tunnels?.map(
 				({ kind, name, localUrl, publicUrl }) => ({
 					kind,
@@ -194,15 +194,15 @@ export function createDevEnvContext<
 			);
 			logEnvironmentInfo({
 				label,
+				projectPrefix: config.projectPrefix,
 				projectName,
+				worktreeSuffix,
 				services,
 				apps,
 				ports: portMap,
 				urls: toUrlMap(urls),
 				localIp,
-				worktree,
 				portOffset: portPlan.offset,
-				projectSuffix,
 				tunnels: tunnelRows,
 			});
 		},

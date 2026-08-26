@@ -2,10 +2,12 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { HostsOptions } from "../../types";
 import { isHostsForcedOff } from "../runtime-flags";
+import { syncCertificateForRoutes } from "./certificates";
 import {
 	ensureHostsDaemonRunning,
 	isHostsDaemonHealthy,
 	readDaemonConfig,
+	SERVICE_START_TIMEOUT_MS,
 } from "./daemon";
 import { cleanHostsFile } from "./hosts-file";
 import {
@@ -20,8 +22,10 @@ import { chownToInvokingUser, getDeclinePath, getHostsStateDir } from "./paths";
 import { isHostsPlatformSupported } from "./plan";
 import { removeHostRoutes } from "./registry";
 import {
+	describeStaleHostsService,
 	installHostsService,
 	isHostsServiceInstalled,
+	toHostsUserMessage,
 	uninstallHostsService,
 } from "./service";
 import { describePortSquatter } from "./squatter";
@@ -81,16 +85,38 @@ async function promptFirstRun(): Promise<"setup" | "skip" | "decline"> {
 	return "setup";
 }
 
-export async function runHostsInstall(): Promise<void> {
+export async function runHostsInstall(
+	options: {
+		/**
+		 * Rewrite and reload the service even when one is already installed.
+		 *
+		 * Set by the explicit `buncargo hosts install` command. Without it a
+		 * service that is installed but broken — wrong code, wedged daemon —
+		 * looks fine to `isHostsServiceInstalled()`, so the command that is meant
+		 * to repair it would skip the only step that could.
+		 */
+		reinstallService?: boolean;
+	} = {},
+): Promise<void> {
 	clearHostsDecline();
 	const mkcertPath = await ensureMkcert();
 	if (!isCaPresent(mkcertPath)) {
 		installTrust(mkcertPath);
 	}
-	if (!isHostsServiceInstalled()) {
+	// Mint before the service starts. The daemon cannot bind :443 without a
+	// leaf, and it will not mint one itself.
+	await syncCertificateForRoutes({ mkcertPath });
+	if (
+		options.reinstallService ||
+		!isHostsServiceInstalled() ||
+		describeStaleHostsService()
+	) {
 		installHostsService();
 	}
-	const ready = await ensureHostsDaemonRunning({ allowSpawn: true });
+	const ready = await ensureHostsDaemonRunning({
+		allowSpawn: true,
+		timeoutMs: SERVICE_START_TIMEOUT_MS,
+	});
 	if (!ready.ok) {
 		throw new Error(ready.message ?? "Named-hosts daemon failed to start");
 	}
@@ -146,35 +172,58 @@ export async function ensureHostsReady(input: {
 		return { ok: true, caPath: getCaPath(resolvedMkcertPath()) };
 	}
 
-	const squatter = describePortSquatter(readDaemonConfig().httpsPort);
 	const interactive = input.interactive ?? isInteractive();
-	if (!isHostsServiceInstalled() && !isCaPresent() && interactive) {
-		const choice = await promptFirstRun();
-		if (choice === "skip") {
+	const staleService = describeStaleHostsService();
+	const firstRun = !isHostsServiceInstalled() && !isCaPresent();
+	const needsMachineSetup =
+		firstRun ||
+		!isHostsServiceInstalled() ||
+		!isCaPresent() ||
+		staleService !== undefined;
+
+	if (needsMachineSetup) {
+		// Installing prompts for a password. Without a TTY that would hang, so
+		// report instead and let the run continue on localhost:port.
+		// Squatter lookup shells out to docker ps; only pay for it on this
+		// path, where the message needs to name whatever is holding :443.
+		const squatter = describePortSquatter(readDaemonConfig().httpsPort);
+		if (!interactive) {
 			return {
 				ok: false,
-				reason: "skipped",
-				message: "Skipped named-hosts setup for this run.",
+				reason: "failed",
+				message:
+					staleService ??
+					squatter ??
+					"Named hosts need one-time setup. Run `buncargo hosts install`.",
 			};
 		}
-		if (choice === "decline") {
-			persistHostsDecline();
-			return {
-				ok: false,
-				reason: "declined",
-				message:
-					"Using localhost:port. Run `buncargo hosts install` to enable named URLs later.",
-			};
+		if (firstRun) {
+			const choice = await promptFirstRun();
+			if (choice === "skip") {
+				return {
+					ok: false,
+					reason: "skipped",
+					message: "Skipped named-hosts setup for this run.",
+				};
+			}
+			if (choice === "decline") {
+				persistHostsDecline();
+				return {
+					ok: false,
+					reason: "declined",
+					message:
+						"Using localhost:port. Run `buncargo hosts install` to enable named URLs later.",
+				};
+			}
 		}
 		try {
 			await runHostsInstall();
 			return { ok: true, caPath: getCaPath(resolvedMkcertPath()) };
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
 			return {
 				ok: false,
 				reason: "failed",
-				message: squatter ?? message,
+				message: squatter ?? toHostsUserMessage(error),
 			};
 		}
 	}
@@ -184,33 +233,65 @@ export async function ensureHostsReady(input: {
 		return {
 			ok: false,
 			reason: "failed",
-			message:
-				squatter ?? ready.message ?? "Named-hosts daemon is not running.",
+			message: ready.message ?? "Named-hosts daemon is not running.",
 		};
 	}
 	return { ok: true, caPath: getCaPath(resolvedMkcertPath()) };
 }
 
-export async function doctorFixHosts(): Promise<string[]> {
+export async function doctorFixHosts(
+	options: { interactive?: boolean } = {},
+): Promise<string[]> {
 	const notes: string[] = [];
+	const interactive = options.interactive ?? isInteractive();
 	try {
-		await ensureMkcert();
-		if (!isCaPresent()) {
-			installTrust();
+		const mkcertPath = await ensureMkcert();
+		if (!isCaPresent(mkcertPath)) {
+			if (!interactive) {
+				notes.push(
+					"Named-hosts CA is not trusted, and trusting it needs a password. Run `buncargo hosts install` from a terminal.",
+				);
+				return notes;
+			}
+			installTrust(mkcertPath);
 			notes.push("Trusted the local mkcert CA");
 		}
-		if (!isHostsServiceInstalled()) {
+		// A certificate that no longer covers the registered hostnames stops the
+		// daemon binding, and the daemon cannot repair that itself.
+		await syncCertificateForRoutes({ mkcertPath });
+		const stale = describeStaleHostsService();
+		const installed = isHostsServiceInstalled();
+		// An installed service that is not answering is exactly the case doctor
+		// exists to repair, so reload it rather than reporting it as fine.
+		const wedged = installed && !stale && !(await isHostsDaemonHealthy());
+		if (!installed || stale || wedged) {
+			if (!interactive) {
+				notes.push(
+					stale ??
+						"Named-hosts service needs a password to install. Run `buncargo hosts install` from a terminal.",
+				);
+				return notes;
+			}
 			installHostsService();
-			notes.push("Installed the named-hosts service");
+			if (stale) {
+				notes.push("Reinstalled the named-hosts service after a stale install");
+			} else if (wedged) {
+				notes.push("Reloaded the named-hosts service, which was not answering");
+			} else {
+				notes.push("Installed the named-hosts service");
+			}
 		}
-		const ready = await ensureHostsDaemonRunning({ allowSpawn: true });
+		const ready = await ensureHostsDaemonRunning({
+			allowSpawn: true,
+			timeoutMs: SERVICE_START_TIMEOUT_MS,
+		});
 		if (ready.ok) {
 			notes.push("Named-hosts daemon is healthy");
 		} else if (ready.message) {
 			notes.push(ready.message);
 		}
 	} catch (error) {
-		notes.push(error instanceof Error ? error.message : String(error));
+		notes.push(toHostsUserMessage(error));
 	}
 	return notes;
 }

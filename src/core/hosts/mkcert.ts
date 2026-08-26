@@ -1,16 +1,18 @@
 import { execFileSync } from "node:child_process";
 import { X509Certificate } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { mkcertPathOverride, mkcertVersion } from "../runtime-flags";
 import { resolveToolBinary } from "../tool-binary";
-import {
-	chownToInvokingUser,
-	getCertPath,
-	getCertsDir,
-	getKeyPath,
-} from "./paths";
+import { chownToInvokingUser, getCertPath, getKeyPath } from "./paths";
 
 export const MKCERT_RELEASE_BASE =
 	"https://github.com/FiloSottile/mkcert/releases/";
@@ -131,14 +133,33 @@ export function mintCert(
 	if (!mkcertPath) {
 		throw new Error("mkcert is not available. Run buncargo hosts install.");
 	}
-	mkdirSync(getCertsDir(), { recursive: true });
-	execFileSync(
-		mkcertPath,
-		["-cert-file", certPath, "-key-file", keyPath, ...unique],
-		{
-			stdio: ["pipe", "pipe", "pipe"],
-		},
-	);
+	mkdirSync(dirname(certPath), { recursive: true });
+	mkdirSync(dirname(keyPath), { recursive: true });
+
+	// Mint beside the live files and rename in: the daemon polls these paths
+	// every second, and mkcert writing them in place lets it read a PEM that is
+	// still being written. Rename is atomic, so a reader sees old or new.
+	const stamp = `${process.pid}.${Date.now()}`;
+	const pendingCert = `${certPath}.${stamp}.tmp`;
+	const pendingKey = `${keyPath}.${stamp}.tmp`;
+	try {
+		execFileSync(
+			mkcertPath,
+			["-cert-file", pendingCert, "-key-file", pendingKey, ...unique],
+			{
+				stdio: ["pipe", "pipe", "pipe"],
+			},
+		);
+		// Key first. Two renames are two steps, and the certificate is what
+		// moves the fingerprint the daemon rebinds on, so landing it last means
+		// a rebind never pairs the new certificate with the previous key.
+		renameSync(pendingKey, keyPath);
+		renameSync(pendingCert, certPath);
+	} finally {
+		rmSync(pendingCert, { force: true });
+		rmSync(pendingKey, { force: true });
+	}
+
 	chownToInvokingUser(certPath);
 	chownToInvokingUser(keyPath);
 	return { certPath, keyPath, minted: true };

@@ -1,17 +1,38 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isProcessAlive } from "./process";
 
 /**
  * Reading and writing buncargo's persisted state files (`routes.json`,
- * `hosts-daemon.json`, `ports.json`, `public-tunnels.json`).
+ * `hosts-daemon.json`, `hosts-service.json`, `ports.json`,
+ * `public-tunnels.json`).
  *
  * Every read goes through a validator, so a hand-edited or half-written file
  * degrades to "no state" instead of surfacing as a nonsense value later. Every
  * write creates the parent directory, and list registries delete the file once
  * their last entry is gone rather than leaving an empty shell behind.
+ *
+ * Writes land through a temp file and a rename, which is atomic within a
+ * directory. These files have concurrent readers — the hosts daemon re-reads
+ * `routes.json` every second — and a plain `writeFile` truncates first, so a
+ * reader could otherwise catch the file empty and conclude there is no state.
+ * Serializing writers is a separate concern; see `withFileLock`.
  */
+
+function tempPathFor(path: string): string {
+	return `${path}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function serialize(document: unknown): string {
+	return `${JSON.stringify(document, null, 2)}\n`;
+}
 
 /** Narrow parsed JSON to `T`, or return `undefined` to treat the file as absent. */
 export type JsonValidator<T> = (value: unknown) => T | undefined;
@@ -52,7 +73,16 @@ export function writeJsonDocumentSync(
 	options: { afterWrite?: (path: string) => void } = {},
 ): void {
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(document, null, 2)}\n`, "utf-8");
+	const temp = tempPathFor(path);
+	try {
+		writeFileSync(temp, serialize(document), "utf-8");
+		renameSync(temp, path);
+	} catch (error) {
+		rmSync(temp, { force: true });
+		throw error;
+	}
+	// After the rename the file carries the temp file's ownership, so a
+	// root-run daemon has to hand it back to the invoking user here.
 	options.afterWrite?.(path);
 }
 
@@ -62,7 +92,14 @@ export async function writeJsonDocument(
 	options: { afterWrite?: (path: string) => void } = {},
 ): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
-	await writeFile(path, `${JSON.stringify(document, null, 2)}\n`, "utf-8");
+	const temp = tempPathFor(path);
+	try {
+		await writeFile(temp, serialize(document), "utf-8");
+		await rename(temp, path);
+	} catch (error) {
+		await rm(temp, { force: true }).catch(() => {});
+		throw error;
+	}
 	options.afterWrite?.(path);
 }
 

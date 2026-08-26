@@ -1,3 +1,4 @@
+import { formatFail } from "../core/style";
 import type { MigrationConfig } from "../types";
 
 export async function runMigrationsSequentially(
@@ -13,7 +14,7 @@ export async function runMigrationsSequentially(
 			throwOnError: false,
 		});
 		if (result.exitCode !== 0) {
-			console.error(`❌ Migration "${migration.name}" failed`);
+			console.error(formatFail(`Migration "${migration.name}" failed`));
 			if (result.stdout) {
 				console.error(result.stdout);
 			}

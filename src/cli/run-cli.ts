@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
 import { removeHostRoutes } from "../core/hosts";
 import { isPortInUse, startDevServers } from "../core/process";
+import { joinColoredNames } from "../core/style";
 import {
 	resolveExposeTargets,
 	startPublicTunnels,
@@ -76,17 +77,16 @@ function logSelectedAppsSummary(input: {
 
 	log.line();
 	if (startNames.length > 0) {
-		log.info(`🔧 Starting: ${startNames.join(", ")}`);
+		log.info(`🔧 Starting: ${joinColoredNames(startNames)}`);
 	}
 	if (reusedNames.length > 0) {
-		log.info(`♻️  Reusing: ${reusedNames.join(", ")}`);
+		log.info(`♻️  Reusing: ${joinColoredNames(reusedNames)}`);
 	}
 	if (inferredReuseNames.length > 0) {
-		log.line(
-			`   ℹ Inferred reuse from busy port: ${inferredReuseNames.join(", ")}`,
+		log.info(
+			`ℹ Inferred reuse from busy port: ${joinColoredNames(inferredReuseNames)}`,
 		);
 	}
-	log.line();
 }
 
 function resolveWatchdogTimeoutMinutes(
@@ -253,7 +253,7 @@ async function runDevFlow<
 		startServers: false,
 		wait: true,
 		skipSeed: args.seed,
-		skipEnvironmentLog: args.exposeRequested,
+		skipEnvironmentLog: true,
 		onlyApps: selectedAppNames,
 		autoStartDocker: args.dockerAutostart ? undefined : false,
 	});
@@ -280,6 +280,7 @@ async function runDevFlow<
 
 	// ── One-shot modes ───────────────────────────────────────────────────────
 	if (args.migrate) {
+		env.logInfo();
 		log.line();
 		log.success("Migrations applied successfully");
 		return exitWith(0);
@@ -290,6 +291,7 @@ async function runDevFlow<
 	}
 
 	if (args.upOnly) {
+		env.logInfo();
 		log.line();
 		log.success("Containers started. Environment ready.");
 		log.line();
@@ -309,6 +311,10 @@ async function runDevFlow<
 	};
 
 	logSelectedAppsSummary(classifiedApps);
+
+	if (!args.exposeRequested) {
+		env.logInfo();
+	}
 
 	const nothingToSpawn = classifiedApps.startNames.length === 0;
 	if (nothingToSpawn && !tunnels.hasPendingTargets()) {

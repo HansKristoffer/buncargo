@@ -1,5 +1,6 @@
 import { toPortMap } from "../core/ports";
 import { isCI } from "../core/runtime-flags";
+import { formatDone, formatStep } from "../core/style";
 import {
 	areServicesRunning,
 	ensureServicesRunning,
@@ -61,18 +62,18 @@ export function createLifecycleApi<
 	async function runPrepareSteps(verbose: boolean): Promise<void> {
 		const migrations = collectMigrations();
 		if (migrations.length > 0) {
-			if (verbose) console.log("📦 Running migrations...");
+			if (verbose) console.log(formatStep("📦 Running migrations..."));
 			await runMigrationsSequentially(migrations, envVars.exec);
-			if (verbose) console.log("✓ Migrations complete");
+			if (verbose) console.log(formatDone("Migrations complete"));
 		}
 
 		if (config.prisma?.generate) {
-			if (verbose) console.log("📦 Generating Prisma client...");
+			if (verbose) console.log(formatStep("📦 Generating Prisma client..."));
 			await envVars.exec(config.prisma.generate, {
 				cwd: config.prisma.cwd ?? "packages/prisma",
 				verbose,
 			});
-			if (verbose) console.log("✓ Prisma generate complete");
+			if (verbose) console.log(formatDone("Prisma generate complete"));
 		}
 	}
 
@@ -159,16 +160,17 @@ export function createLifecycleApi<
 					await config.hooks.afterServers(envVars.getHookContext());
 				}
 
-				if (verbose) console.log("✅ Environment ready\n");
+				if (verbose) console.log(formatDone("Environment ready"));
 				return pids;
 			}
 
-			if (verbose) console.log("✅ Containers ready\n");
 			return null;
 		} catch (error) {
 			if (containersReady) {
 				console.error(
-					"ℹ Containers are still running. Use `bunx buncargo dev --down` to stop them.",
+					formatStep(
+						"ℹ Containers are still running. Use `bunx buncargo dev --down` to stop them.",
+					),
 				);
 			}
 			throw error;

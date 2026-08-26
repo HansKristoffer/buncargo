@@ -45,6 +45,8 @@ EXAMPLES:
   bunx buncargo hosts status            # Named-hosts daemon and routes
   bunx buncargo hosts install           # One-time CA + :443 proxy (non-interactive)
   bunx buncargo typecheck               # Run typecheck
+  bunx buncargo typecheck --only=platform # One workspace
+  bunx buncargo typecheck --help        # Typecheck options
   bunx buncargo prisma studio           # Open Prisma Studio
   bunx buncargo env                     # Get ports/urls as JSON
   bunx buncargo env --get ports.api     # One raw value for scripts

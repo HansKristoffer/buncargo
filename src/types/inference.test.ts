@@ -239,4 +239,25 @@ describe("config inference guardrails", () => {
 	it("keeps the overlay value typed through getEnvVar", () => {
 		expect(getEnvVar(config, "VITE_PORT", { log: false })).toBeNumber();
 	});
+
+	it("rejects a partial type-argument list on defineDevConfig", () => {
+		const services = { postgres: service.postgres() };
+		const apps = { web: { port: 3000, devCommand: "bun run dev" } };
+
+		// No type parameter has a default, so supplying two of three cannot bind
+		// `typeof apps` to `TEnv` and erase the overlay keys. Passing explicit
+		// arguments at all is the mistake; this asserts it is a loud one.
+		const partial = defineDevConfig<
+			typeof services,
+			// @ts-expect-error - explicit type arguments suppress TEnv inference
+			typeof apps
+		>({
+			projectPrefix: "partial",
+			services,
+			apps,
+			env: (ports) => ({ VITE_PORT: ports.web }),
+		});
+
+		expect(partial.projectPrefix).toBe("partial");
+	});
 });

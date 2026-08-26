@@ -2,6 +2,8 @@ import {
 	ensureHostsReady,
 	removeHostRoutes,
 	routesFromPlan,
+	syncCertificateForRoutes,
+	toHostsUserMessage,
 	upsertHostRoutes,
 } from "../core/hosts";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
@@ -27,12 +29,18 @@ export async function activateNamedHosts<
 	const result = await ensureHostsReady({ hosts: true });
 	if (!result.ok) {
 		if (result.reason !== "disabled") {
-			log.info(`ℹ Named URLs unavailable: ${result.message}`);
+			log.warn(`Named URLs unavailable: ${result.message}`);
 		}
 		return;
 	}
 
 	try {
+		// Widen the certificate before publishing, not after. The daemon polls
+		// the registry every second, so a hostname that lands first is a
+		// hostname it tries to serve with a certificate that omits it.
+		await syncCertificateForRoutes({
+			include: env.hosts.plan.map((entry) => entry.hostname),
+		});
 		// App routes die with this process; service routes outlive it.
 		await upsertHostRoutes(
 			routesFromPlan(env.hosts.plan, {
@@ -49,9 +57,7 @@ export async function activateNamedHosts<
 		);
 		env.setNamedHostsActive(true, { caPath: result.caPath });
 	} catch (error) {
-		log.info(
-			`ℹ Named URLs unavailable: ${error instanceof Error ? error.message : String(error)}`,
-		);
+		log.warn(`Named URLs unavailable: ${toHostsUserMessage(error)}`);
 	}
 }
 

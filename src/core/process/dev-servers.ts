@@ -8,6 +8,15 @@ import { resolve } from "node:path";
 import type { AppConfig, DevServerPids } from "../../types";
 import { waitForDevServers } from "../network";
 import {
+	formatPidLine,
+	formatPrefixedLine,
+	formatSection,
+	formatStep,
+	formatWarn,
+	isBlankLogLine,
+	prefixWidth,
+} from "../style";
+import {
 	classifyPortOccupant,
 	formatPortOwner,
 	getPortOwner,
@@ -48,7 +57,7 @@ export async function spawnDevServer(
 		const owner = getPortOwner(port);
 		if (owner) {
 			if (verbose) {
-				console.log(`   ⚠️  Port ${port} is in use`);
+				console.log(formatWarn(`Port ${port} is in use`));
 			}
 			await killPortOwner(port, { verbose });
 		}
@@ -117,19 +126,25 @@ const SHELL = resolveShell();
 function prefixStream(
 	name: string,
 	stream: NodeJS.ReadableStream | null,
+	options: { width: number; onFirstWrite: () => void },
 ): void {
 	if (!stream) return;
 	let buffer = "";
+	const writeLine = (line: string) => {
+		if (isBlankLogLine(line)) return;
+		options.onFirstWrite();
+		process.stdout.write(formatPrefixedLine(name, line, options.width));
+	};
 	stream.on("data", (chunk: Buffer | string) => {
 		buffer += String(chunk);
 		const lines = buffer.split("\n");
 		buffer = lines.pop() ?? "";
 		for (const line of lines) {
-			process.stdout.write(`[${name}] ${line}\n`);
+			writeLine(line);
 		}
 	});
 	stream.on("end", () => {
-		if (buffer) process.stdout.write(`[${name}] ${buffer}\n`);
+		if (buffer) writeLine(buffer);
 	});
 }
 
@@ -200,6 +215,8 @@ function spawnManagedApp(
 		extraArgs: string[];
 		productionBuild: boolean;
 		waitForExit: boolean;
+		prefixWidth: number;
+		onFirstLog: () => void;
 	},
 ): ChildProcess {
 	const baseCommand = resolveStartCommand(config, options.productionBuild);
@@ -218,8 +235,12 @@ function spawnManagedApp(
 		detached: true,
 	});
 	if (!options.attached) {
-		prefixStream(name, child.stdout);
-		prefixStream(name, child.stderr);
+		const streamOptions = {
+			width: options.prefixWidth,
+			onFirstWrite: options.onFirstLog,
+		};
+		prefixStream(name, child.stdout, streamOptions);
+		prefixStream(name, child.stderr, streamOptions);
 	}
 	if (!options.waitForExit && child.unref) {
 		child.unref();
@@ -239,7 +260,9 @@ async function prepareAppPort(
 	const action = classifyPortOccupant(owner, { root, projectName });
 	if (action === "reuse") {
 		if (verbose) {
-			console.log(`   ♻️  Reusing existing process on port ${port} (${name})`);
+			console.log(
+				formatStep(`♻️  Reusing existing process on port ${port} (${name})`),
+			);
 		}
 		return "reuse";
 	}
@@ -364,16 +387,15 @@ export async function startDevServers(
 		throw new Error(`--attach=${attachOverride} is not in the start set`);
 	}
 
-	if (verbose) {
-		console.log(
-			productionBuild
-				? "🚀 Starting production servers..."
-				: "🔧 Starting dev servers...",
-		);
-	}
-
 	const children: Array<{ name: string; child: ChildProcess }> = [];
 	const pids: DevServerPids = {};
+	const nameWidth = prefixWidth(Object.keys(startable));
+	let logsHeaderPrinted = false;
+	const onFirstLog = () => {
+		if (logsHeaderPrinted) return;
+		logsHeaderPrinted = true;
+		process.stdout.write(`\n${formatSection("Logs")}\n`);
+	};
 
 	async function spawnWave(wave: Record<string, AppConfig>): Promise<void> {
 		for (const [name, config] of Object.entries(wave)) {
@@ -396,13 +418,15 @@ export async function startDevServers(
 					extraArgs: attached ? extraArgs : [],
 					productionBuild,
 					waitForExit,
+					prefixWidth: nameWidth,
+					onFirstLog,
 				},
 			);
 			children.push({ name, child });
 			if (child.pid) {
 				pids[name] = child.pid;
 				if (verbose) {
-					console.log(`   ${name} PID: ${child.pid}`);
+					console.log(formatPidLine(name, child.pid, nameWidth));
 				}
 			}
 		}

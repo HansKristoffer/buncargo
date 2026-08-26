@@ -4,6 +4,7 @@ import {
 	createProxyFetch,
 	HOPS_HEADER,
 	hostnameFromHostHeader,
+	isProxyHealthy,
 	MAX_PROXY_HOPS,
 	startLocalProxy,
 } from "./proxy";
@@ -159,5 +160,224 @@ describe("proxy fetch", () => {
 		});
 		expect(first).toBe("hello");
 		socket.close();
+	});
+
+	it("repeats the client subprotocol to the upstream and back", async () => {
+		const upstreamProtocols: Array<string | null> = [];
+		const upstream = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch(request, server) {
+				const protocol = request.headers.get("sec-websocket-protocol");
+				upstreamProtocols.push(protocol);
+				if (
+					server.upgrade(request, {
+						headers: protocol
+							? { "sec-websocket-protocol": protocol }
+							: undefined,
+					})
+				) {
+					return undefined as unknown as Response;
+				}
+				return new Response("expected websocket", { status: 400 });
+			},
+			websocket: {
+				open(ws) {
+					ws.send("hello");
+				},
+				message() {},
+			},
+		});
+		servers.push(upstream);
+
+		const routes = new Map([["api.serpier.localhost", upstream.port]]);
+		const proxy = await startLocalProxy({
+			lookup: (hostname) => routes.get(hostname),
+			listHostnames: () => [...routes.keys()],
+			httpsPort: 0,
+			hostname: "127.0.0.1",
+		});
+		servers.push(proxy);
+
+		const socket = new WebSocket(`ws://127.0.0.1:${proxy.httpsPort}/`, {
+			headers: { host: "api.serpier.localhost" },
+			protocols: ["vite-hmr"],
+		} as never);
+		await new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(
+				() => reject(new Error("timed out waiting for websocket")),
+				2000,
+			);
+			socket.addEventListener("message", () => {
+				clearTimeout(timer);
+				resolve();
+			});
+			socket.addEventListener("error", () => {
+				clearTimeout(timer);
+				reject(new Error("websocket error"));
+			});
+		});
+		expect(upstreamProtocols).toEqual(["vite-hmr"]);
+		expect(socket.protocol).toBe("vite-hmr");
+		socket.close();
+	});
+
+	it("rejects an upgrade it cannot bridge instead of forwarding it", async () => {
+		const fetchHandler = createProxyFetch({
+			lookup: () => 9,
+			listHostnames: () => ["api.serpier.localhost"],
+			https: true,
+		});
+		const request = new Request("https://api.serpier.localhost/", {
+			headers: { host: "api.serpier.localhost", upgrade: "websocket" },
+		});
+		const response = await fetchHandler(request, {
+			upgrade: () => false,
+		} as never);
+		expect(response.status).toBe(400);
+	});
+
+	it("drops hop-by-hop headers before forwarding", async () => {
+		const upstream = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch(request) {
+				return Response.json({
+					connection: request.headers.get("connection"),
+					keepAlive: request.headers.get("keep-alive"),
+				});
+			},
+		});
+		servers.push(upstream);
+
+		const routes = new Map([["api.serpier.localhost", upstream.port]]);
+		const proxy = await startLocalProxy({
+			lookup: (hostname) => routes.get(hostname),
+			listHostnames: () => [...routes.keys()],
+			httpsPort: 0,
+			hostname: "127.0.0.1",
+		});
+		servers.push(proxy);
+
+		const response = await fetch(`http://127.0.0.1:${proxy.httpsPort}/`, {
+			headers: { host: "api.serpier.localhost", "keep-alive": "timeout=5" },
+		});
+		const body = (await response.json()) as {
+			connection: string | null;
+			keepAlive: string | null;
+		};
+		expect(body.keepAlive).toBeNull();
+	});
+
+	// A rebind force-stops the listener, which resets whatever it still holds.
+	// A dev server whose upgraded socket is reset dies with an unhandled
+	// ECONNRESET, so the bridged upstream is owed a close frame first.
+	it("sends the upstream a close frame before stopping", async () => {
+		const closes: number[] = [];
+		const upstream = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch(request, server) {
+				if (server.upgrade(request)) {
+					return undefined as unknown as Response;
+				}
+				return new Response("expected websocket", { status: 400 });
+			},
+			websocket: {
+				open(ws) {
+					ws.send("hello");
+				},
+				message() {},
+				close(_ws, code) {
+					closes.push(code);
+				},
+			},
+		});
+		servers.push(upstream);
+
+		const routes = new Map([["api.serpier.localhost", upstream.port]]);
+		const proxy = await startLocalProxy({
+			lookup: (hostname) => routes.get(hostname),
+			listHostnames: () => [...routes.keys()],
+			httpsPort: 0,
+			hostname: "127.0.0.1",
+		});
+
+		const client = new WebSocket(`ws://127.0.0.1:${proxy.httpsPort}/`, {
+			headers: { host: "api.serpier.localhost" },
+		} as never);
+		await new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error("timed out")), 2000);
+			client.addEventListener("message", () => {
+				clearTimeout(timer);
+				resolve();
+			});
+			client.addEventListener("error", () => {
+				clearTimeout(timer);
+				reject(new Error("websocket error"));
+			});
+		});
+
+		proxy.stop();
+		await Bun.sleep(50);
+		expect(closes).toEqual([1001]);
+		client.close();
+	});
+});
+
+describe("isProxyHealthy", () => {
+	const servers: Array<{ stop: () => void }> = [];
+
+	afterEach(() => {
+		for (const server of servers.splice(0)) {
+			server.stop();
+		}
+	});
+
+	it("returns false quickly when nothing is listening", async () => {
+		const started = Date.now();
+		expect(await isProxyHealthy(59_998, "127.0.0.1")).toBe(false);
+		expect(Date.now() - started).toBeLessThan(1_000);
+	});
+
+	it("detects a bound proxy over HTTP", async () => {
+		const proxy = await startLocalProxy({
+			lookup: () => undefined,
+			listHostnames: () => [],
+			httpsPort: 0,
+			hostname: "127.0.0.1",
+		});
+		servers.push(proxy);
+		expect(
+			await isProxyHealthy(proxy.httpsPort, "127.0.0.1", { tls: false }),
+		).toBe(true);
+	});
+
+	it("rejects a foreign server answering 200 on the health path", async () => {
+		const squatter = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch() {
+				return new Response("OK");
+			},
+		});
+		servers.push(squatter);
+		expect(
+			await isProxyHealthy(squatter.port, "127.0.0.1", { tls: false }),
+		).toBe(false);
+	});
+
+	it("rejects a JSON responder that is not a buncargo proxy", async () => {
+		const squatter = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch() {
+				return Response.json({ ok: true });
+			},
+		});
+		servers.push(squatter);
+		expect(
+			await isProxyHealthy(squatter.port, "127.0.0.1", { tls: false }),
+		).toBe(false);
 	});
 });

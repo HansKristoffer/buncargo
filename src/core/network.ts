@@ -1,6 +1,13 @@
 import net from "node:net";
 import { networkInterfaces } from "node:os";
 import type { AppConfig } from "../types";
+import {
+	formatDone,
+	formatUrl,
+	formatWait,
+	SLOW_STEP_MS,
+	scheduleLog,
+} from "./style";
 import { sleep } from "./utils";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -65,8 +72,10 @@ export async function waitForServer(
 			clearTimeout(timeoutId);
 			// Accept 2xx, 3xx, or 404 (server is up, just no route)
 			if (response.ok || response.status === 404) {
-				if (verbose) {
-					console.log(`   ✓ ${url} ready after ${attempts} attempts`);
+				if (verbose && attempts >= 5) {
+					console.log(
+						formatDone(`${formatUrl(url)} ready after ${attempts} attempts`),
+					);
 				}
 				return;
 			}
@@ -75,7 +84,9 @@ export async function waitForServer(
 			// Server not ready yet
 			if (verbose && attempts % 5 === 0) {
 				console.log(
-					`   ⏳ Waiting for ${url}... (${Math.round((Date.now() - start) / 1000)}s)`,
+					formatWait(
+						`Waiting for ${formatUrl(url)}... (${Math.round((Date.now() - start) / 1000)}s)`,
+					),
 				);
 			}
 		}
@@ -101,7 +112,13 @@ export async function waitForDevServers(
 ): Promise<void> {
 	const { timeout = 60000, verbose = true } = options;
 
-	if (verbose) console.log("⏳ Waiting for servers to be ready...");
+	let showedWait = false;
+	const cancelWait = verbose
+		? scheduleLog(SLOW_STEP_MS, () => {
+				showedWait = true;
+				console.log(formatWait("Waiting for servers to be ready..."));
+			})
+		: () => {};
 
 	const promises: Promise<void>[] = [];
 
@@ -117,9 +134,13 @@ export async function waitForDevServers(
 		promises.push(waitForServer(url, { timeout: appTimeout, verbose }));
 	}
 
-	await Promise.all(promises);
+	try {
+		await Promise.all(promises);
+	} finally {
+		cancelWait();
+	}
 
-	if (verbose) console.log("✓ All servers ready");
+	if (showedWait) console.log(formatDone("All servers ready"));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
