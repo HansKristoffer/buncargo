@@ -44,7 +44,7 @@ export function createDevEnvironment<
 	TEnv extends EnvValues = EnvValues,
 >(
 	config: DevConfig<TServices, TApps, TEnv>,
-	options: { suffix?: string } = {},
+	options: { suffix?: string; containerRuntime?: string } = {},
 ): DevEnvironment<TServices, TApps, TEnv> {
 	assertValidConfig(config);
 
@@ -88,6 +88,8 @@ export function createDevEnvironment<
 		localIp: ctx.localIp,
 		root: ctx.root,
 		composeFile: ctx.composeFile,
+		containerRuntime: ctx.runtime.name,
+		containerRuntimeBinary: ctx.runtimeBinary,
 		hosts: ctx.hosts,
 		setNamedHostsActive: (active, extras) => {
 			ctx.setNamedHostsActive(active, extras);
@@ -115,6 +117,7 @@ export function createDevEnvironment<
 		setPublicUrls: ctx.setPublicUrls,
 		clearPublicUrls: ctx.clearPublicUrls,
 		ensureComposeFile: ctx.ensureComposeFile,
+		composeModel: ctx.composeModel,
 		exec: envVars.exec,
 		waitForServer: async (url, timeout) => {
 			await waitForServer(url, { timeout });
@@ -137,7 +140,10 @@ export function createDevEnvironment<
 
 		// Advanced
 		withSuffix: (newSuffix) =>
-			createDevEnvironment(config, { suffix: newSuffix }),
+			createDevEnvironment(config, {
+				...options,
+				suffix: newSuffix,
+			}),
 	};
 
 	if (config.prisma) {

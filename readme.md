@@ -181,10 +181,12 @@ bunx buncargo dev --seed
 bunx buncargo dev --down
 bunx buncargo dev --down --all    # Stop every buncargo env on this machine
 bunx buncargo dev --reset
+bunx buncargo dev --takeover        # Stop apps running elsewhere, run them here
 bunx buncargo dev --keep-containers
 bunx buncargo dev --watchdog-timeout=5
 bunx buncargo dev --no-docker-autostart
 bunx buncargo dev --no-hosts
+bunx buncargo dev --runtime=apple  # Run services on Apple container
 bunx buncargo dev --apps=expoApp -- --clear
 bunx buncargo ls
 bunx buncargo status
@@ -207,6 +209,34 @@ bunx buncargo version
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`). `--get ports.api` prints one raw value for scripts.
 
 `buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own — that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and 2 in CI; override with `--concurrency=N` or `BUNCARGO_TYPECHECK_CONCURRENCY`. `--only=platform` (path or basename) checks one workspace. The config run generates `.buncargo/config-typecheck.tsconfig.json` and records durations in `.buncargo/typecheck-timings.json`; keep `.buncargo/` in `.gitignore`.
+
+## Container runtime
+
+Services run on Docker by default. On macOS 26 or later on Apple silicon they can run on [Apple `container`](https://github.com/apple/container) instead, which boots each container in its own lightweight VM with no Docker Desktop.
+
+```ts
+export default defineDevConfig({
+  projectPrefix: "myapp",
+  docker: { runtime: "auto" },
+  services: { postgres: { port: 5432 } },
+});
+```
+
+The selection is read from `--runtime`, then `BUNCARGO_CONTAINER_RUNTIME`, then `docker.runtime`, then the `"docker"` default. `"auto"` uses Apple `container` when its system service answers and falls back to Docker otherwise; an explicit `"apple"` fails with instructions rather than silently switching, because the two runtimes keep their volumes in different places.
+
+Everything else is unchanged: the same `dev.config.ts`, the same generated compose file, the same `ls` / `status` / `doctor` / `--down --all` output, and the same named `.localhost` URLs. Apple's CLI has no compose support, so buncargo translates the generated service model into one `container run` per service, matching on the `buncargo.*` labels both backends write.
+
+**Requirements.** macOS 26+ on Apple silicon, with `container system start` having been run once (the first run installs a kernel and needs a terminal, so buncargo will not do it for you).
+
+**Known gaps** compared with the Docker backend:
+
+- `restart:` policies are dropped — Apple has no equivalent. This changes nothing in practice: buncargo starts containers per `dev` run and the watchdog stops them, so no restart policy is part of the contract either backend offers.
+- Compose `healthcheck:` blocks are dropped. This also changes nothing: readiness is buncargo's own poll against the published host port, not compose's `--wait`.
+- Any other compose key that cannot be translated is listed in a warning rather than silently ignored.
+- **No DNS between containers.** Every Apple container joins one builtin `default` network (`192.168.64.0/24`), so containers can already reach each other by IP. Resolving each other by *name* needs `container system dns create`, which must run as an administrator; buncargo keeps a single deliberate `sudo` seam for the hosts daemon and does not add a second one. Note also that a container's hostname is `<project>-<service>` (for example `myapp-main-postgres`), not the compose service name. Apps on the host are unaffected — they reach services on `localhost:<port>` either way, which is how buncargo wires them already.
+- Bind-mounting a host directory into an image that `chown`s it fails on virtiofs. The built-in presets all use named volumes, which are unaffected.
+
+`service.postgres()` needs no special handling: Apple's named volumes are formatted filesystems, so a fresh one already contains `lost+found` and `initdb` refuses to use it as a data directory, and on this runtime the preset points `PGDATA` at a subdirectory of the mount for you. Docker's named volumes start empty and keep the mount root, so an existing project's data stays where it is.
 
 ## Startup order
 
@@ -369,6 +399,8 @@ Vite is not a dependency of buncargo: the plugin's return type is declared struc
 | Variable | Meaning |
 | --- | --- |
 | `BUNCARGO_PORT_OFFSET` | Hard port offset; skips probing |
+| `BUNCARGO_CONTAINER_RUNTIME` | `docker` \| `apple` \| `auto`; overrides `docker.runtime` |
+| `BUNCARGO_CONTAINER_BINARY` | Absolute path to the selected runtime's binary; skips the PATH lookup. `docker.binary` wins over it |
 | `BUNCARGO_EXPOSE_TUNNEL_STAGGER_MS` | Delay between starting tunnels (default `900`) |
 | `BUNCARGO_QUICK_TUNNEL_MAX_ATTEMPTS` | Tunnel retries (default `5`) |
 | `BUNCARGO_QUICK_TUNNEL_RETRY_BASE_MS` | Backoff base (default `2000`) |
@@ -467,6 +499,8 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | `writeStrategy` | `"always" \| "if-missing"` | `"always"` | Whether to overwrite |
 | `volumes` | `Record<string, DockerComposeVolumeRaw>` | `{}` | Extra top-level named volumes |
 | `autoStart` | `boolean` | `true` (skipped in CI) | Try to start Docker if the daemon is down |
+| `runtime` | `"docker" \| "apple" \| "auto"` | `"docker"` | Which container runtime runs the services (see [Container runtime](#container-runtime)) |
+| `binary` | `string` | PATH lookup | Absolute path to the selected runtime's binary (`docker` or `container`) |
 
 Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.project`, `buncargo.root`, `buncargo.worktree`, `buncargo.service`.
 
@@ -589,7 +623,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `508 Loop Detected` | Vite (or similar) proxies `/api` without rewriting Host | Add `changeOrigin: true` to the dev-server proxy config |
 | `Portless is serving :443` (or Caddy / nginx / Docker) | Another proxy owns HTTPS | Stop that process, or set `hosts: false` / `--no-hosts` |
 
-`bunx buncargo doctor` checks Docker, named port owners, stale `ports.json`, orphaned labeled containers, the tunnel registry, and the named-hosts daemon and service install. `doctor --fix` restarts a dead daemon, re-trusts the CA, reinstalls a stale service, remints an expired cert, drops stale routes, and resyncs `/etc/hosts`. The fixes that need a password are skipped without a TTY.
+`bunx buncargo doctor` checks the container runtime, named port owners, stale `ports.json`, orphaned labeled containers, the tunnel registry, and the named-hosts daemon and service install. If the runtime this project selected is down, doctor starts it the same way `dev` would — Docker Desktop, OrbStack, Colima, or `container system start` — and only reports it when that fails or when running in CI. `doctor --fix` restarts a dead daemon, re-trusts the CA, reinstalls a stale service, remints an expired cert, drops stale routes, and resyncs `/etc/hosts`. The fixes that need a password are skipped without a TTY.
 
 ## Programmatic API
 

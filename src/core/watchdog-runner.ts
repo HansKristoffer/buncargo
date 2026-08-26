@@ -5,7 +5,6 @@
  * or after the idle backstop (only when the owner is also gone).
  */
 
-import { execSync } from "node:child_process";
 import {
 	appendFileSync,
 	existsSync,
@@ -13,6 +12,10 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
+import {
+	getContainerRuntimeAdapter,
+	isContainerRuntimeName,
+} from "../container-runtime";
 import { isProcessAlive } from "./process";
 import { parseHeartbeatPayload } from "./watchdog";
 import {
@@ -35,7 +38,10 @@ const IDLE_TIMEOUT = Number.parseInt(
 	process.env.WATCHDOG_TIMEOUT_MS ?? String(WATCHDOG_IDLE_TIMEOUT_MS),
 	10,
 );
-const COMPOSE_ARG = process.env.WATCHDOG_COMPOSE_ARG ?? "";
+const COMPOSE_FILE = process.env.WATCHDOG_COMPOSE_FILE ?? "";
+const RUNTIME_NAME = process.env.WATCHDOG_CONTAINER_RUNTIME ?? "docker";
+const RUNTIME_BINARY = process.env.WATCHDOG_CONTAINER_BINARY || undefined;
+const ROOT = process.env.WATCHDOG_ROOT ?? process.cwd();
 
 if (!PROJECT_NAME || !HEARTBEAT_FILE || !PID_FILE) {
 	console.error("[watchdog] Missing required environment variables");
@@ -74,9 +80,17 @@ function cleanup(): void {
 
 function shutdownContainers(): void {
 	try {
-		execSync(`docker compose ${COMPOSE_ARG} down`.trim(), {
-			env: { ...process.env, COMPOSE_PROJECT_NAME: PROJECT_NAME },
-			stdio: "ignore",
+		const runtime = getContainerRuntimeAdapter(
+			isContainerRuntimeName(RUNTIME_NAME) ? RUNTIME_NAME : "docker",
+			{ binary: RUNTIME_BINARY },
+		);
+		// No model: volumes are never removed here, and containers are found by
+		// label, so the runner does not need the project's config.
+		runtime.down({
+			root: ROOT,
+			projectName: PROJECT_NAME,
+			composeFile: COMPOSE_FILE || undefined,
+			verbose: false,
 		});
 	} catch {
 		// Ignore errors

@@ -1,23 +1,22 @@
 export interface ComposeCommandContext {
 	projectName?: string;
 	composeFile?: string;
+	/** Path to the `docker` binary; defaults to a PATH lookup. */
+	binary?: string;
 }
 
 /**
- * Build `-f` argument for docker compose.
+ * The `docker compose` prefix as argv.
+ *
+ * Excludes the binary itself, which the caller hands to `runDocker`. Argv
+ * rather than a command line because a compose path or project name is free to
+ * contain a space, and there is no shell here to split it.
  */
-export function getComposeArg(composeFile?: string): string {
-	return composeFile ? `-f "${composeFile}"` : "";
-}
-
-/**
- * Build `docker compose` prefix with optional project and compose file args.
- */
-export function getComposeCommandPrefix(
-	context: ComposeCommandContext = {},
-): string {
+export function getComposeArgs(context: ComposeCommandContext = {}): string[] {
 	const { projectName, composeFile } = context;
-	const composeArg = getComposeArg(composeFile);
-	const projectArg = projectName ? `-p ${projectName}` : "";
-	return `docker compose ${composeArg} ${projectArg}`.trim();
+	return [
+		"compose",
+		...(composeFile ? ["-f", composeFile] : []),
+		...(projectName ? ["-p", projectName] : []),
+	];
 }

@@ -2,7 +2,7 @@ import { getCaPath, isHostsDaemonHealthy } from "../../core/hosts";
 import { findMonorepoRoot } from "../../core/ports";
 import { isHostsForcedOff } from "../../core/runtime-flags";
 import { loadDevEnv } from "../../loader";
-import { parseDevArgs, printDevHelp } from "../dev-flags";
+import { exitOnDevArgErrors, parseDevArgs, printDevHelp } from "../dev-flags";
 import { getFlagValue } from "../flags";
 import * as log from "../log";
 import { runCli } from "../run-cli";
@@ -39,21 +39,25 @@ export function formatEnvDotValue(value: unknown): string {
 	return JSON.stringify(value);
 }
 
-export async function loadEnv() {
+export async function loadEnv(options: { containerRuntime?: string } = {}) {
 	try {
-		return await loadDevEnv();
+		return await loadDevEnv(options);
 	} catch (error) {
 		log.fail(error instanceof Error ? error.message : String(error));
 	}
 }
 
 export async function handleDev(args: string[]): Promise<void> {
+	const parsed = parseDevArgs(args);
 	// Help comes from the flag spec, so it must not require a config file.
-	if (parseDevArgs(args).help) {
+	if (parsed.help) {
 		printDevHelp();
 		return;
 	}
-	const env = await loadEnv();
+	exitOnDevArgErrors(parsed);
+	// The runtime has to be known before the environment is built, so it is read
+	// here rather than inside runCli, which is handed a finished env.
+	const env = await loadEnv({ containerRuntime: parsed.runtime });
 	await runCli(env, { args });
 }
 

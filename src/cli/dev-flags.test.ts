@@ -44,6 +44,21 @@ describe("parseDevArgs", () => {
 		expect(invalid.errors).toHaveLength(1);
 	});
 
+	it("accepts every container runtime selection for --runtime", () => {
+		expect(parseDevArgs(["--runtime=docker"]).runtime).toBe("docker");
+		expect(parseDevArgs(["--runtime=apple"]).runtime).toBe("apple");
+		expect(parseDevArgs(["--runtime=auto"]).runtime).toBe("auto");
+		expect(parseDevArgs([]).runtime).toBeUndefined();
+	});
+
+	it("rejects an unknown --runtime value", () => {
+		const invalid = parseDevArgs(["--runtime=podman"]);
+		expect(invalid.runtime).toBeUndefined();
+		expect(invalid.errors).toEqual([
+			'--runtime expects one of docker, apple, auto, got "podman".',
+		]);
+	});
+
 	it("keeps the help text in sync with the parsed flags", () => {
 		for (const flag of DEV_COMMAND_SPEC.flags) {
 			expect(parseDevArgs([flag.name]).unknownFlags).toEqual([]);

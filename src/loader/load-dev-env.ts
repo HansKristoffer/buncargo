@@ -9,7 +9,11 @@ import type {
 	DevEnvironmentFor,
 	ServiceConfig,
 } from "../types";
-import { getCachedDevEnv, setCachedDevEnv } from "./cache";
+import {
+	getCachedDevEnv,
+	getCachedRuntimeSelection,
+	setCachedDevEnv,
+} from "./cache";
 import { findConfigFile } from "./find-config-file";
 
 /**
@@ -32,10 +36,22 @@ export async function loadDevEnv<
 >(options?: {
 	cwd?: string;
 	reload?: boolean;
+	/** `--runtime`, taking precedence over env and config. */
+	containerRuntime?: string;
 }): Promise<DevEnvironmentFor<TConfig>> {
+	const requested = options?.containerRuntime;
+
 	if (!options?.reload) {
 		const cached = getCachedDevEnv();
-		if (cached) return cached as DevEnvironmentFor<TConfig>;
+		// A cached env is bound to the runtime it was built with, so an explicit
+		// request for a different one has to rebuild rather than be ignored. Both
+		// sides of this are selections, so `--runtime=auto` can hit the cache.
+		if (
+			cached &&
+			(requested === undefined || requested === getCachedRuntimeSelection())
+		) {
+			return cached as DevEnvironmentFor<TConfig>;
+		}
 	}
 
 	const cwd = options?.cwd ?? process.cwd();
@@ -68,7 +84,8 @@ export async function loadDevEnv<
 			Record<string, ServiceConfig>,
 			Record<string, AppConfig>
 		>,
+		{ containerRuntime: requested },
 	);
-	setCachedDevEnv(env);
+	setCachedDevEnv(env, requested);
 	return env as DevEnvironmentFor<TConfig>;
 }

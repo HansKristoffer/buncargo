@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getComposeArg } from "../docker/compose-command";
+import type { ContainerRuntimeName } from "../types";
 import { simpleHash } from "./hash";
 import { isProcessAlive } from "./process";
 import { formatDone, formatWarn } from "./style";
@@ -170,10 +170,6 @@ export function getWatchdogPid(
 	}
 }
 
-export function getWatchdogComposeArg(composeFile?: string): string {
-	return getComposeArg(composeFile);
-}
-
 export function resolveWatchdogRunnerPath(): string {
 	const moduleDir = dirname(fileURLToPath(import.meta.url));
 	const candidates = [
@@ -205,12 +201,17 @@ export async function spawnWatchdog(
 		timeoutMinutes?: number;
 		verbose?: boolean;
 		composeFile?: string;
+		containerRuntime?: ContainerRuntimeName;
+		/** Path the runtime is executed as, when the project pinned one. */
+		containerRuntimeBinary?: string;
 	} = {},
 ): Promise<void> {
 	const {
 		timeoutMinutes = WATCHDOG_DEFAULT_TIMEOUT_MINUTES,
 		verbose = true,
 		composeFile,
+		containerRuntime = "docker",
+		containerRuntimeBinary,
 	} = options;
 
 	const existingPid = getWatchdogPid(projectName, root);
@@ -241,7 +242,11 @@ export async function spawnWatchdog(
 			WATCHDOG_PID_FILE: pidFile,
 			WATCHDOG_LOG_FILE: logFile,
 			WATCHDOG_TIMEOUT_MS: String(timeoutMinutes * 60 * 1000),
-			WATCHDOG_COMPOSE_ARG: getWatchdogComposeArg(composeFile),
+			WATCHDOG_COMPOSE_FILE: composeFile ?? "",
+			WATCHDOG_CONTAINER_RUNTIME: containerRuntime,
+			// Without this a project pinning `docker.binary` would tear down
+			// through whatever happens to be on the detached process's PATH.
+			WATCHDOG_CONTAINER_BINARY: containerRuntimeBinary ?? "",
 		},
 	});
 

@@ -1,31 +1,29 @@
 import { describe, expect, it } from "bun:test";
-import { getComposeArg, getComposeCommandPrefix } from "./compose-command";
+import { getComposeArgs } from "./compose-command";
 
-describe("getComposeArg", () => {
-	it("returns empty string when compose file is not provided", () => {
-		expect(getComposeArg()).toBe("");
-	});
-
-	it("returns quoted -f arg when compose file is provided", () => {
-		expect(getComposeArg(".buncargo/docker-compose.generated.yml")).toBe(
-			'-f ".buncargo/docker-compose.generated.yml"',
-		);
-	});
-});
-
-describe("getComposeCommandPrefix", () => {
+describe("getComposeArgs", () => {
 	it("includes compose file and project name", () => {
 		expect(
-			getComposeCommandPrefix({
+			getComposeArgs({
 				composeFile: ".buncargo/docker-compose.generated.yml",
 				projectName: "myapp-test",
 			}),
-		).toBe(
-			'docker compose -f ".buncargo/docker-compose.generated.yml" -p myapp-test',
-		);
+		).toEqual([
+			"compose",
+			"-f",
+			".buncargo/docker-compose.generated.yml",
+			"-p",
+			"myapp-test",
+		]);
 	});
 
 	it("omits optional args when not provided", () => {
-		expect(getComposeCommandPrefix()).toBe("docker compose");
+		expect(getComposeArgs()).toEqual(["compose"]);
+	});
+
+	it("keeps a path with spaces as one argument", () => {
+		expect(
+			getComposeArgs({ composeFile: "/My Projects/app/compose.yml" }),
+		).toEqual(["compose", "-f", "/My Projects/app/compose.yml"]);
 	});
 });

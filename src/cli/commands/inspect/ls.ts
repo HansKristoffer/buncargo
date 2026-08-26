@@ -1,10 +1,10 @@
-import { isDockerDaemonRunning } from "../../../docker";
-import * as log from "../../log";
 import {
-	type BuncargoContainer,
+	availableContainerRuntimes,
 	isContainerUp,
 	listBuncargoContainers,
-} from "./containers";
+} from "../../../container-runtime";
+import type { BuncargoContainer } from "../../../types";
+import * as log from "../../log";
 
 function groupByProject(
 	containers: BuncargoContainer[],
@@ -20,14 +20,18 @@ function groupByProject(
 }
 
 export async function handleLs(): Promise<void> {
-	if (!isDockerDaemonRunning()) {
-		log.fail("Docker is not running. Start Docker and try again.");
+	const runtimes = availableContainerRuntimes();
+	if (runtimes.length === 0) {
+		log.fail(
+			"No container runtime is running. Start Docker or Apple container and try again.",
+		);
 	}
-	const containers = listBuncargoContainers();
+	const containers = listBuncargoContainers(runtimes);
 	if (containers.length === 0) {
 		log.info("No buncargo environments found.");
 		return;
 	}
+	const multipleRuntimes = runtimes.length > 1;
 	for (const group of groupByProject(containers).values()) {
 		const first = group[0];
 		if (!first) continue;
@@ -35,6 +39,7 @@ export async function handleLs(): Promise<void> {
 		log.line(first.project);
 		log.line(`  root: ${first.root || "(unknown)"}`);
 		if (first.worktree) log.line(`  worktree: ${first.worktree}`);
+		if (multipleRuntimes) log.line(`  runtime: ${first.runtime ?? "docker"}`);
 		log.line(`  containers: ${up.length}/${group.length} up`);
 		for (const item of group) {
 			log.line(

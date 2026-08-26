@@ -5,6 +5,10 @@ import { defineDevConfig, service } from "../../src";
 export default defineDevConfig({
 	projectPrefix: "buncargo-playground",
 
+	docker: {
+		runtime: "auto",
+	},
+
 	services: {
 		// Non-default host port so the playground can run alongside another Postgres on 5432.
 		postgres: service.postgres({ database: "playground", port: 5433 }),

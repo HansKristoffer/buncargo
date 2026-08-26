@@ -117,6 +117,11 @@ export function getEnvVar<
 		worktreeName: identity.worktreeSuffix,
 		worktreeIsolation: config.options?.worktreeIsolation,
 		persist: false,
+		// A read, not an allocation. There is no runtime in scope here either -
+		// resolving one would import the backends that import this module back -
+		// so a probe could not tell this project's own service container from a
+		// stranger, and would answer with a shifted port nothing is listening on.
+		probeConflicts: false,
 	});
 	const localIp = getLocalIp();
 

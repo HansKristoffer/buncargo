@@ -1,5 +1,8 @@
 import { inferDockerPreset } from "../core/service-presets";
 import type {
+	ComposeDocument,
+	ComposeIdentity,
+	ContainerRuntimeName,
 	DockerComposeGenerationOptions,
 	DockerComposeNode,
 	DockerComposeServiceRaw,
@@ -10,17 +13,7 @@ import type {
 import { buildPresetDockerService } from "./services";
 import { getDefaultPortBindings } from "./services/shared";
 
-export type ComposeDocument = {
-	name?: string;
-	services: Record<string, DockerComposeServiceRaw>;
-	volumes?: Record<string, DockerComposeVolumeRaw>;
-};
-
-export interface ComposeIdentity {
-	projectName: string;
-	root: string;
-	worktree?: string | null;
-}
+export type { ComposeDocument, ComposeIdentity };
 
 function isObject(
 	value: DockerComposeNode,
@@ -130,6 +123,7 @@ function normalizeServiceConfig(
 function resolveServiceDefinition(
 	name: string,
 	config: ServiceConfig,
+	runtime?: ContainerRuntimeName,
 ): {
 	serviceName: string;
 	service: DockerComposeServiceRaw;
@@ -146,6 +140,7 @@ function resolveServiceDefinition(
 	const { service, volume } = buildPresetDockerService(normalized.preset, {
 		serviceKey: name,
 		config,
+		runtime,
 	});
 	const mergedService = normalized.serviceOverride
 		? (deepMergeNode(
@@ -160,10 +155,16 @@ function resolveServiceDefinition(
 	};
 }
 
+/**
+ * @param runtime The *resolved* backend, not the configured selection. A preset
+ * needs to know which of the two will actually run it, and `docker.runtime` may
+ * still say `"auto"` at this point.
+ */
 export function buildComposeModel(
 	services: Record<string, ServiceConfig>,
 	docker?: DockerComposeGenerationOptions,
 	identity?: ComposeIdentity,
+	runtime?: ContainerRuntimeName,
 ): ComposeDocument {
 	const composeServices: Record<string, DockerComposeServiceRaw> = {};
 	const composeVolumes: Record<string, DockerComposeVolumeRaw> = {};
@@ -172,6 +173,7 @@ export function buildComposeModel(
 		const { serviceName, service, volume } = resolveServiceDefinition(
 			name,
 			serviceConfig,
+			runtime,
 		);
 		if (identity) {
 			service.labels = {

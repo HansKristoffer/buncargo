@@ -24,7 +24,10 @@
 
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { ensureServicesRunning } from "../docker";
+import {
+	containerRuntimeForEnv,
+	ensureServicesRunning,
+} from "../container-runtime";
 import { getComposeServiceName } from "../planning";
 import type {
 	AppConfig,
@@ -98,18 +101,18 @@ export function createPrismaRunner<
 			serviceName: getComposeServiceName(env.services, service),
 		};
 
-		await ensureServicesRunning(
-			env.root,
-			env.projectName,
+		await ensureServicesRunning({
+			runtime: containerRuntimeForEnv(env),
+			root: env.root,
+			projectName: env.projectName,
 			envVars,
-			{ [service]: healthCheckedServiceConfig },
-			{ [service]: port },
-			{
-				verbose: true,
-				wait: true,
-				composeFile,
-			},
-		);
+			services: { [service]: healthCheckedServiceConfig },
+			ports: { [service]: port },
+			model: env.composeModel(),
+			composeFile,
+			verbose: true,
+			wait: true,
+		});
 	}
 
 	async function run(args: string[]): Promise<number> {

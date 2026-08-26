@@ -1,12 +1,19 @@
+export { type DockerAdapterOptions, dockerRuntimeAdapter } from "./adapter";
+export {
+	DEFAULT_DOCKER_BINARY,
+	type DockerRunOptions,
+	type DockerRunResult,
+	runDocker,
+} from "./binary";
 export {
 	type ComposeCommandContext,
-	getComposeArg,
-	getComposeCommandPrefix,
+	getComposeArgs,
 } from "./compose-command";
 export {
-	createBuiltInHealthCheck,
-	type HealthCheckContext,
-} from "./health-checks";
+	listDockerBuncargoContainers,
+	parseDockerContainerLine,
+	stopDockerContainersByIds,
+} from "./inventory";
 export {
 	type StartContainersOptions,
 	type StopContainersOptions,
@@ -15,20 +22,14 @@ export {
 	stopContainers,
 } from "./lifecycle";
 export {
+	findDockerContainerOnPort,
+	parseDockerPublishedPort,
+} from "./port-lookup";
+export {
 	DockerUnavailableError,
 	ensureDockerRunning,
 	isDockerDaemonRunning,
 } from "./preflight";
-export {
-	type EnsureServicesRunningOptions,
-	ensureServicesRunning,
-	MAX_ATTEMPTS,
-	POLL_INTERVAL,
-	type WaitForServiceOptions,
-	waitForAllServices,
-	waitForService,
-	waitForServiceByType,
-} from "./readiness";
 export {
 	areContainersRunning,
 	areServicesRunning,

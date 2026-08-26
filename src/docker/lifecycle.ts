@@ -1,7 +1,7 @@
-import { execSync } from "node:child_process";
 import { formatPortOwner, getPortOwner } from "../core/process";
 import { formatDone, formatStep } from "../core/style";
-import { getComposeArg } from "./compose-command";
+import { type DockerRunResult, runDocker } from "./binary";
+import { getComposeArgs } from "./compose-command";
 import { isDockerDaemonRunning } from "./preflight";
 import { assertDockerRunning } from "./status";
 
@@ -10,19 +10,24 @@ export interface StartContainersOptions {
 	wait?: boolean;
 	composeFile?: string;
 	services?: string[];
+	binary?: string;
 }
 
 export interface StopContainersOptions {
 	verbose?: boolean;
 	removeVolumes?: boolean;
 	composeFile?: string;
+	binary?: string;
 }
 
 /**
  * Turn compose's "port is already allocated" into a message naming the owner.
+ *
+ * Only reachable with a captured stderr, which means the quiet path; a verbose
+ * run streamed compose's own output to the terminal already.
  */
-function translateComposePortError(error: unknown): never {
-	const message = error instanceof Error ? error.message : String(error);
+function translateComposeFailure(result: DockerRunResult): never {
+	const message = result.stderr.trim();
 	const allocated =
 		message.match(/Bind for .+:(\d+) failed: port is already allocated/i) ??
 		message.match(/address already in use/i);
@@ -32,10 +37,9 @@ function translateComposePortError(error: unknown): never {
 		const owner = getPortOwner(port);
 		throw new Error(formatPortOwner(port, owner ?? { pids: [] }));
 	}
-	if (error instanceof Error) {
-		throw error;
-	}
-	throw new Error(message);
+	throw new Error(
+		message || `docker compose exited with code ${result.exitCode}`,
+	);
 }
 
 /**
@@ -47,26 +51,33 @@ export function startContainers(
 	envVars: Record<string, string>,
 	options: StartContainersOptions = {},
 ): void {
-	const { verbose = true, wait = true, composeFile, services = [] } = options;
-	assertDockerRunning();
+	const {
+		verbose = true,
+		wait = true,
+		composeFile,
+		services = [],
+		binary,
+	} = options;
+	assertDockerRunning(binary);
 
 	if (verbose) console.log(formatStep("🐳 Starting Docker containers..."));
 
-	const composeArg = getComposeArg(composeFile);
-	const waitFlag = wait ? "--wait" : "";
-	const servicesArg = services.join(" ");
-	const cmd =
-		`docker compose ${composeArg} up -d ${waitFlag} ${servicesArg}`.trim();
-
-	try {
-		execSync(cmd, {
+	const result = runDocker(
+		binary,
+		[
+			...getComposeArgs({ projectName, composeFile }),
+			"up",
+			"-d",
+			...(wait ? ["--wait"] : []),
+			...services,
+		],
+		{
 			cwd: root,
-			env: { ...process.env, ...envVars, COMPOSE_PROJECT_NAME: projectName },
-			stdio: verbose ? "inherit" : "pipe",
-		});
-	} catch (error) {
-		translateComposePortError(error);
-	}
+			env: { ...envVars, COMPOSE_PROJECT_NAME: projectName },
+			inherit: verbose,
+		},
+	);
+	if (!result.ok) translateComposeFailure(result);
 
 	if (verbose) console.log(formatDone("Containers started"));
 }
@@ -79,8 +90,13 @@ export function stopContainers(
 	projectName: string,
 	options: StopContainersOptions = {},
 ): void {
-	const { verbose = true, removeVolumes = false, composeFile } = options;
-	if (!isDockerDaemonRunning()) {
+	const {
+		verbose = true,
+		removeVolumes = false,
+		composeFile,
+		binary,
+	} = options;
+	if (!isDockerDaemonRunning(binary)) {
 		if (verbose) {
 			console.log(formatStep("ℹ Docker is not running. Nothing to stop."));
 		}
@@ -97,15 +113,20 @@ export function stopContainers(
 		);
 	}
 
-	const composeArg = getComposeArg(composeFile);
-	const volumeFlag = removeVolumes ? "-v" : "";
-	const cmd = `docker compose ${composeArg} down ${volumeFlag}`.trim();
-
-	execSync(cmd, {
-		cwd: root,
-		env: { ...process.env, COMPOSE_PROJECT_NAME: projectName },
-		stdio: verbose ? "inherit" : "ignore",
-	});
+	const result = runDocker(
+		binary,
+		[
+			...getComposeArgs({ projectName, composeFile }),
+			"down",
+			...(removeVolumes ? ["-v"] : []),
+		],
+		{
+			cwd: root,
+			env: { COMPOSE_PROJECT_NAME: projectName },
+			inherit: verbose,
+		},
+	);
+	if (!result.ok) translateComposeFailure(result);
 
 	if (verbose) console.log(formatDone("Containers stopped"));
 }
@@ -118,19 +139,21 @@ export function startService(
 	projectName: string,
 	serviceName: string,
 	envVars: Record<string, string>,
-	options: { verbose?: boolean; composeFile?: string } = {},
+	options: { verbose?: boolean; composeFile?: string; binary?: string } = {},
 ): void {
-	const { verbose = true, composeFile } = options;
-	assertDockerRunning();
+	const { verbose = true, composeFile, binary } = options;
+	assertDockerRunning(binary);
 
 	if (verbose) console.log(formatStep(`🐳 Starting ${serviceName}...`));
 
-	const composeArg = getComposeArg(composeFile);
-	const cmd = `docker compose ${composeArg} up -d ${serviceName}`.trim();
-
-	execSync(cmd, {
-		cwd: root,
-		env: { ...process.env, ...envVars, COMPOSE_PROJECT_NAME: projectName },
-		stdio: verbose ? "inherit" : "ignore",
-	});
+	const result = runDocker(
+		binary,
+		[...getComposeArgs({ projectName, composeFile }), "up", "-d", serviceName],
+		{
+			cwd: root,
+			env: { ...envVars, COMPOSE_PROJECT_NAME: projectName },
+			inherit: verbose,
+		},
+	);
+	if (!result.ok) translateComposeFailure(result);
 }

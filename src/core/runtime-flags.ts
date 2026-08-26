@@ -79,6 +79,29 @@ export function portOffsetOverride(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Container runtime
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * `BUNCARGO_CONTAINER_RUNTIME` - pick the backend that runs the services.
+ *
+ * Returns the raw string: validating it against the known names here would
+ * duplicate the check the resolver already has to make for the config value.
+ */
+export function containerRuntimeOverride(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return readTrimmed(env, "BUNCARGO_CONTAINER_RUNTIME");
+}
+
+/** `BUNCARGO_CONTAINER_BINARY` - use this runtime binary instead of the PATH lookup. */
+export function containerBinaryOverride(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return readBinaryOverride(env, "BUNCARGO_CONTAINER_BINARY");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Named hosts
 // ═══════════════════════════════════════════════════════════════════════════
 

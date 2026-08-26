@@ -508,6 +508,34 @@ describe("validateConfig", () => {
 			);
 		});
 
+		it("accepts every valid docker.runtime", () => {
+			for (const runtime of ["docker", "apple", "auto"] as const) {
+				const config = createValidConfig();
+				config.docker = { runtime };
+				expect(validateConfig(config)).toEqual([]);
+			}
+		});
+
+		it("returns error for an unknown docker.runtime", () => {
+			const config = createValidConfig();
+			config.docker = {
+				runtime: "podman" as unknown as "docker",
+			};
+
+			expect(validateConfig(config)).toContain(
+				'docker.runtime "podman" is invalid. Use "docker", "apple", "auto".',
+			);
+		});
+
+		it("returns error when docker.binary is relative", () => {
+			const config = createValidConfig();
+			config.docker = { binary: "bin/container" };
+
+			expect(validateConfig(config)).toContain(
+				"docker.binary must be an absolute path to a runtime binary.",
+			);
+		});
+
 		it("returns error for non-built-in service without docker definition", () => {
 			const config: DevConfig<
 				{ nats: ServiceConfig },

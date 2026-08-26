@@ -20,6 +20,6 @@ export {
 	type PortContainerOwner,
 	type PortOccupantAction,
 	type PortOwner,
-	parseDockerPublishedPort,
+	type PortOwnerLookupOptions,
 	signalProcessTree,
 } from "./port-owner";

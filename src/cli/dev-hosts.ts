@@ -7,13 +7,17 @@ import {
 	upsertHostRoutes,
 } from "../core/hosts";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
-import * as log from "./log";
 
 /**
  * Claim this run's named `.localhost` routes and switch `env.urls` over to them.
  *
  * Never throws: when the daemon, certificate or registry is unavailable the run
  * continues on `http://localhost:port`.
+ *
+ * Returns the warnings to surface rather than printing them, because a run that
+ * is about to take over another one gets a second attempt: the hostnames are
+ * held by the other run until it is stopped, so a warning printed here would be
+ * contradicted by the named URLs in the banner a few lines later.
  */
 export async function activateNamedHosts<
 	TServices extends Record<string, ServiceConfig>,
@@ -21,22 +25,19 @@ export async function activateNamedHosts<
 >(
 	env: DevEnvironment<TServices, TApps>,
 	options: { enabled: boolean },
-): Promise<void> {
+): Promise<string[]> {
 	if (!env.hosts || !options.enabled) {
-		return;
+		return [];
 	}
 
 	const result = await ensureHostsReady({ hosts: true });
 	if (!result.ok) {
-		if (result.reason !== "disabled") {
-			log.warn(`Named URLs unavailable: ${result.message}`);
-		}
-		return;
+		return result.reason === "disabled"
+			? []
+			: [`Named URLs unavailable: ${result.message}`];
 	}
 	// Named hosts still work, but something about the setup will bite later.
-	for (const note of result.notes ?? []) {
-		log.warn(note);
-	}
+	const notes = [...(result.notes ?? [])];
 
 	try {
 		// Widen the certificate before publishing, not after. The daemon polls
@@ -61,8 +62,9 @@ export async function activateNamedHosts<
 		);
 		env.setNamedHostsActive(true, { caPath: result.caPath });
 	} catch (error) {
-		log.warn(`Named URLs unavailable: ${toHostsUserMessage(error)}`);
+		notes.push(`Named URLs unavailable: ${toHostsUserMessage(error)}`);
 	}
+	return notes;
 }
 
 /**

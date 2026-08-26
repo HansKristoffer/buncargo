@@ -1,12 +1,8 @@
 import { relative } from "node:path";
+import { ensureServicesRunning } from "../container-runtime";
 import { toPortMap, toUrlMap } from "../core/ports";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWarn } from "../core/style";
-import {
-	areServicesRunning,
-	ensureServicesRunning,
-	stopContainers,
-} from "../docker";
 import { buildStartPlan, resolveComposeServiceNames } from "../planning";
 import type {
 	AppConfig,
@@ -149,14 +145,19 @@ export function createLifecycleApi<
 			);
 		}
 
-		await ensureServicesRunning(
-			ctx.root,
-			ctx.projectName,
-			envVars.buildEnvVars(productionBuild),
-			targetServices,
-			targetPorts,
-			{ verbose, wait, composeFile: ctx.composeFile, autoStartDocker },
-		);
+		await ensureServicesRunning({
+			runtime: ctx.runtime,
+			root: ctx.root,
+			projectName: ctx.projectName,
+			envVars: envVars.buildEnvVars(productionBuild),
+			services: targetServices,
+			ports: targetPorts,
+			model: ctx.composeModel(),
+			composeFile: ctx.composeFile,
+			verbose,
+			wait,
+			autoStartRuntime: autoStartDocker,
+		});
 		containersReady = true;
 
 		// Before migrations, not just before servers: Prisma and friends read
@@ -219,10 +220,13 @@ export function createLifecycleApi<
 			await config.hooks.beforeStop(envVars.getHookContext());
 		}
 
-		stopContainers(ctx.root, ctx.projectName, {
+		ctx.runtime.down({
+			root: ctx.root,
+			projectName: ctx.projectName,
+			model: ctx.composeModel(),
+			composeFile: ctx.composeFile,
 			verbose,
 			removeVolumes,
-			composeFile: ctx.composeFile,
 		});
 	}
 
@@ -232,7 +236,7 @@ export function createLifecycleApi<
 	}
 
 	async function isRunning(): Promise<boolean> {
-		return areServicesRunning(
+		return ctx.runtime.areServicesRunning(
 			ctx.projectName,
 			resolveComposeServiceNames(services, Object.keys(services)),
 		);

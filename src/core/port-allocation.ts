@@ -1,5 +1,11 @@
 import { join } from "node:path";
-import type { AppConfig, PortOffsetProvenance, ServiceConfig } from "../types";
+import type { ContainerRuntimeAdapter } from "../container-runtime/types";
+import type {
+	AppConfig,
+	ContainerRuntimeName,
+	PortOffsetProvenance,
+	ServiceConfig,
+} from "../types";
 import { simpleHash } from "./hash";
 import type { PortMap } from "./ports";
 import {
@@ -162,11 +168,12 @@ function findForeignConflict(
 	options: {
 		root: string;
 		projectName: string;
-		getOwner?: (port: number) => PortOwner | null;
+		runtime?: ContainerRuntimeName;
+		getOwner: (port: number) => PortOwner | null;
 	},
 ): { name: string; port: number; owner: PortOwner } | null {
 	for (const [name, port] of Object.entries(ports)) {
-		const owner = (options.getOwner ?? getPortOwner)(port);
+		const owner = options.getOwner(port);
 		const action = classifyPortOccupant(owner, options);
 		if (action === "fail" && owner) {
 			return { name, port, owner };
@@ -185,6 +192,26 @@ export function resolvePortPlan(input: {
 	worktreeName?: string | null;
 	worktreeIsolation?: boolean;
 	persist?: boolean;
+	/**
+	 * Backend the caller resolved, so this project's own containers are not
+	 * mistaken for foreign occupants.
+	 *
+	 * Without it every lookup asks Docker, and under Apple the port looks like
+	 * it is held by the `container` forwarder process rather than by a container
+	 * of ours. That reads as a conflict, shifts the offset by
+	 * {@link PORT_OFFSET_STEP}, and changes the generated model - which changes
+	 * the config hash and recreates the container on every single run.
+	 */
+	runtime?: ContainerRuntimeAdapter;
+	/**
+	 * Whether a busy port may shift the block. Default: true.
+	 *
+	 * A read-only caller wants the ports this environment *uses*, which is
+	 * whatever the last real run persisted. Probing there reallocates around
+	 * the environment's own running services and answers with a port nothing
+	 * is listening on, so `getEnvVar` turns it off.
+	 */
+	probeConflicts?: boolean;
 	getOwner?: (port: number) => PortOwner | null;
 }): PortPlan {
 	const {
@@ -197,8 +224,14 @@ export function resolvePortPlan(input: {
 		worktreeName = null,
 		worktreeIsolation = true,
 		persist = true,
-		getOwner = getPortOwner,
+		runtime,
+		probeConflicts = true,
+		getOwner = (port) => getPortOwner(port, { runtime }),
 	} = input;
+	const runtimeName = runtime?.name;
+	// Reporting no owner is what makes every conflict check below pass, so the
+	// lockfile is returned as-is rather than reallocated around itself.
+	const lookupOwner = probeConflicts ? getOwner : () => null;
 	const basePorts = buildPortMap(services, apps);
 	const envOffset = portOffsetOverride();
 	if (envOffset !== undefined) {
@@ -214,7 +247,8 @@ export function resolvePortPlan(input: {
 		const conflict = findForeignConflict(lockfile.ports, {
 			root,
 			projectName,
-			getOwner,
+			runtime: runtimeName,
+			getOwner: lookupOwner,
 		});
 		if (!conflict) {
 			return {
@@ -240,7 +274,8 @@ export function resolvePortPlan(input: {
 			const conflict = findForeignConflict(ports, {
 				root,
 				projectName,
-				getOwner,
+				runtime: runtimeName,
+				getOwner: lookupOwner,
 			});
 			if (!conflict) {
 				if (persist) {
@@ -267,7 +302,8 @@ export function resolvePortPlan(input: {
 	const conflict = findForeignConflict(failedPorts, {
 		root,
 		projectName,
-		getOwner,
+		runtime: runtimeName,
+		getOwner: lookupOwner,
 	});
 	throw new Error(
 		conflict

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ContainerRuntimeAdapter } from "../container-runtime/types";
 import type { AppConfig, ServiceConfig } from "../types";
 import {
 	buildPortMap,
@@ -165,6 +166,47 @@ describe("resolvePortPlan", () => {
 		}
 	});
 
+	it("keeps the lockfile offset when conflict probing is off", () => {
+		// getEnvVar reads this to answer a vite.config.ts; shifting would hand
+		// it a port the running environment is not listening on.
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		const root = mkdtempSync(join(tmpdir(), "buncargo-readonly-"));
+		const foreign: PortOwner = {
+			pids: [999],
+			command: "some-other-tool",
+			cwd: "/tmp/elsewhere",
+		};
+		try {
+			writePortsLockfile(root, {
+				version: 1,
+				projectName: "geysier-main",
+				root,
+				offset: 300,
+				ports: buildPortMap(
+					{ postgres: { port: 5432 } },
+					{ api: { port: 3000, devCommand: "bun run dev" } },
+					300,
+				),
+				provenance: "hash",
+			});
+			const plan = resolvePortPlan({
+				projectPrefix: "geysier",
+				projectName: "geysier-main",
+				root,
+				services,
+				apps,
+				persist: false,
+				probeConflicts: false,
+				getOwner: () => foreign,
+			});
+			expect(plan.offset).toBe(300);
+			expect(plan.provenance).toBe("lockfile");
+			expect(plan.ports.postgres).toBe(5732);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("shifts the whole block when a hashed port is held by a foreign owner", () => {
 		delete process.env.BUNCARGO_PORT_OFFSET;
 		const root = mkdtempSync(join(tmpdir(), "buncargo-shift-"));
@@ -187,6 +229,74 @@ describe("resolvePortPlan", () => {
 			expect(plan.offset).toBe(hashed + PORT_OFFSET_STEP);
 			expect(plan.provenance).toBe("shifted");
 			expect(plan.ports.postgres).toBe(5432 + hashed + PORT_OFFSET_STEP);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps the offset when the port is held by this project's own container", () => {
+		// Shifting here is what made every Apple run recreate its containers:
+		// a moved port changes the model, which changes the config hash.
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		const root = mkdtempSync(join(tmpdir(), "buncargo-own-"));
+		const hashed = computeBaseOffset({ projectPrefix: "geysier" });
+		const ours: PortOwner = {
+			pids: [4242],
+			command: "container",
+			cwd: "/",
+			container: {
+				id: "abc",
+				name: "geysier-main-postgres",
+				composeProject: "geysier-main",
+				runtime: "apple",
+			},
+		};
+		try {
+			const plan = resolvePortPlan({
+				projectPrefix: "geysier",
+				projectName: "geysier-main",
+				root,
+				services,
+				apps,
+				runtime: { name: "apple" } as ContainerRuntimeAdapter,
+				getOwner: () => ours,
+			});
+			expect(plan.offset).toBe(hashed);
+			expect(plan.ports.postgres).toBe(5432 + hashed);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("still shifts when the holder is our container on the other runtime", () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		const root = mkdtempSync(join(tmpdir(), "buncargo-cross-"));
+		const hashed = computeBaseOffset({ projectPrefix: "geysier" });
+		const otherRuntime: PortOwner = {
+			pids: [4242],
+			command: "com.docker.backend",
+			cwd: "/",
+			container: {
+				id: "abc",
+				name: "geysier-main-postgres-1",
+				composeProject: "geysier-main",
+				runtime: "docker",
+			},
+		};
+		try {
+			const plan = resolvePortPlan({
+				projectPrefix: "geysier",
+				projectName: "geysier-main",
+				root,
+				services,
+				apps,
+				runtime: { name: "apple" } as ContainerRuntimeAdapter,
+				getOwner: (port) =>
+					port === 5432 + hashed || port === 3000 + hashed
+						? otherRuntime
+						: null,
+			});
+			expect(plan.offset).toBe(hashed + PORT_OFFSET_STEP);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

@@ -133,6 +133,25 @@ export interface DockerComposeVolumeRaw {
 }
 
 /**
+ * The generated compose model: every service resolved, before serialization.
+ *
+ * Both backends consume this - Docker via the YAML rendered from it, Apple by
+ * walking it directly - so it is the one description of a project's stack.
+ */
+export type ComposeDocument = {
+	name?: string;
+	services: Record<string, DockerComposeServiceRaw>;
+	volumes?: Record<string, DockerComposeVolumeRaw>;
+};
+
+/** Identity stamped onto every generated service as buncargo labels. */
+export interface ComposeIdentity {
+	projectName: string;
+	root: string;
+	worktree?: string | null;
+}
+
+/**
  * Helper-friendly preset service definition.
  */
 export interface DockerPresetServiceDefinition {
@@ -153,6 +172,56 @@ export type DockerServiceDefinition =
 	| DockerPresetServiceDefinition;
 
 /**
+ * One buncargo-labeled container, as reported by whichever runtime owns it.
+ *
+ * Both backends fill this from their own inventory command, so `ls`, `status`,
+ * `doctor` and `stop-all` render identically no matter which one is active.
+ */
+export interface BuncargoContainer {
+	id: string;
+	name: string;
+	status: string;
+	ports: string;
+	project: string;
+	root: string;
+	worktree: string;
+	service: string;
+	/** Which runtime reported it; set so `stop-all` can stop each with its own. */
+	runtime?: ContainerRuntimeName;
+}
+
+/** A container holding a host port, as far as a runtime can tell. */
+export interface PortContainerOwner {
+	id: string;
+	name: string;
+	composeProject?: string;
+	/**
+	 * Which backend reported it.
+	 *
+	 * Set when the owner was found outside the runtime this project selected,
+	 * so the message can say "a Docker container is holding it" rather than
+	 * naming the daemon process that happens to hold the socket.
+	 */
+	runtime?: ContainerRuntimeName;
+}
+
+/**
+ * Container runtime backend that runs the generated service model.
+ *
+ * `"docker"` drives `docker compose`; `"apple"` translates the same model into
+ * Apple `container` invocations (macOS on Apple silicon only).
+ */
+export type ContainerRuntimeName = "docker" | "apple";
+
+/**
+ * Runtime selection accepted from config, env and CLI.
+ *
+ * `"auto"` prefers Apple `container` when its system service answers, and
+ * falls back to Docker otherwise.
+ */
+export type ContainerRuntimeSelection = ContainerRuntimeName | "auto";
+
+/**
  * Docker Compose generation configuration.
  */
 export interface DockerComposeGenerationOptions {
@@ -164,6 +233,10 @@ export interface DockerComposeGenerationOptions {
 	volumes?: Record<string, DockerComposeVolumeRaw>;
 	/** Auto-start Docker if the daemon is down. Default: true (skipped in CI) */
 	autoStart?: boolean;
+	/** Container runtime backend. Default: 'docker' */
+	runtime?: ContainerRuntimeSelection;
+	/** Absolute path to the runtime binary, overriding the PATH lookup */
+	binary?: string;
 }
 
 /**
@@ -1221,6 +1294,10 @@ export interface DevEnvironment<
 	readonly root: string;
 	/** Path passed to docker compose -f */
 	readonly composeFile: string;
+	/** Which backend runs the containers: 'docker' or 'apple' */
+	readonly containerRuntime: ContainerRuntimeName;
+	/** Binary the runtime was resolved to, when overridden off `PATH` */
+	readonly containerRuntimeBinary?: string;
 	/** Named-hosts plan and whether the loopback proxy is serving it */
 	readonly hosts: HostsRuntime | null;
 	/** Seed command from config, when present */
@@ -1297,6 +1374,8 @@ export interface DevEnvironment<
 	setNamedHostsActive(active: boolean, extras?: { caPath?: string }): void;
 	/** Ensure generated docker compose file exists and return path used with -f */
 	ensureComposeFile(): string;
+	/** The service model the compose file is rendered from */
+	composeModel(): ComposeDocument;
 	/** Execute a command with environment variables set */
 	exec(
 		cmd: string,

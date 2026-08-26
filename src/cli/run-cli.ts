@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { containerRuntimeForEnv } from "../container-runtime";
 import { removeHostRoutes } from "../core/hosts";
 import { isPortInUse, startDevServers } from "../core/process";
 import { joinColoredNames } from "../core/style";
@@ -16,7 +17,12 @@ import type {
 	DevEnvironment,
 	ServiceConfig,
 } from "../types";
-import { type DevCliArgs, parseDevArgs, printDevHelp } from "./dev-flags";
+import {
+	type DevCliArgs,
+	exitOnDevArgErrors,
+	parseDevArgs,
+	printDevHelp,
+} from "./dev-flags";
 import { activateNamedHosts, releaseNamedHosts } from "./dev-hosts";
 import {
 	createTunnelCoordinator,
@@ -26,6 +32,12 @@ import {
 import { CliError, toCliError } from "./errors";
 import * as log from "./log";
 import { classifyCliApps, parseRequiredCommaSeparatedFlag } from "./port-reuse";
+import {
+	isInteractive,
+	promptTakeover,
+	stopRunningApps,
+	takeoverCandidates,
+} from "./takeover";
 
 export { getFlagValue, hasFlag, splitCliArgs } from "./flags";
 
@@ -48,24 +60,6 @@ function reportCliError(error: CliError): void {
 	for (const item of error.hints) {
 		log.hint(item);
 	}
-}
-
-/**
- * Report an argv problem and exit. Nothing has been started yet, so this is
- * the one place that exits without tearing anything down.
- */
-function exitWithArgError(
-	messages: string[],
-	options: { showHelp?: boolean } = {},
-): never {
-	for (const message of messages) {
-		log.error(message);
-	}
-	if (options.showHelp) {
-		log.line();
-		printDevHelp();
-	}
-	process.exit(1);
 }
 
 function logSelectedAppsSummary(input: {
@@ -142,18 +136,7 @@ export async function runCli<
 		process.exit(0);
 	}
 
-	if (args.unknownFlags.length > 0) {
-		exitWithArgError(
-			[
-				`Unknown flag${args.unknownFlags.length > 1 ? "s" : ""}: ${args.unknownFlags.join(", ")}`,
-			],
-			{ showHelp: true },
-		);
-	}
-
-	if (args.errors.length > 0) {
-		exitWithArgError(args.errors);
-	}
+	exitOnDevArgErrors(args);
 
 	const tunnels = createTunnelCoordinator(
 		env,
@@ -248,7 +231,14 @@ async function runDevFlow<
 	}
 
 	// ── Containers ───────────────────────────────────────────────────────────
-	await activateNamedHosts(env, { enabled: args.hosts });
+	// Held rather than printed: a run that takes over another one activates a
+	// second time, and the failure this first attempt reports - the other run
+	// still owning the hostnames - is exactly what the takeover undoes.
+	let hostsWarnings = await activateNamedHosts(env, { enabled: args.hosts });
+	const flushHostsWarnings = (): void => {
+		for (const warning of hostsWarnings) log.warn(warning);
+		hostsWarnings = [];
+	};
 	await env.start({
 		startServers: false,
 		wait: true,
@@ -277,6 +267,10 @@ async function runDevFlow<
 			await tunnels.openOwnedTunnels();
 		}
 	}
+
+	// The modes below exit before the takeover, so nothing is going to retry
+	// the activation for them and their warnings are already final.
+	if (args.oneShot) flushHostsWarnings();
 
 	// ── One-shot modes ───────────────────────────────────────────────────────
 	if (args.migrate) {
@@ -310,15 +304,51 @@ async function runDevFlow<
 		startNames: Object.keys(startableApps),
 	};
 
+	// Decided before the summary and the banner, so both describe what this run
+	// ends up doing rather than a reuse the takeover is about to undo.
+	let nothingToSpawn = classifiedApps.startNames.length === 0;
+	const takeover =
+		nothingToSpawn && !tunnels.hasPendingTargets()
+			? takeoverCandidates(classifiedApps.reusedApps, env.ports)
+			: undefined;
+
+	if (takeover && takeover.names.length > 0) {
+		const accepted =
+			args.takeover ||
+			(isInteractive() && (await promptTakeover(takeover.names)));
+		if (accepted) {
+			log.line();
+			await stopRunningApps(takeover.names, env.ports, {
+				runtime: containerRuntimeForEnv(env),
+			});
+			// The other run held this project's hostnames, so the activation
+			// before the containers started was refused and `env.urls` fell back
+			// to localhost. Its routes are claimable now that its pid is gone.
+			hostsWarnings = await activateNamedHosts(env, { enabled: args.hosts });
+			classifiedApps = {
+				startApps: takeover.apps,
+				startNames: takeover.names,
+				reusedApps: {},
+				reusedNames: [],
+				inferredReuseNames: [],
+			};
+			nothingToSpawn = false;
+		}
+	}
+
+	flushHostsWarnings();
+
 	logSelectedAppsSummary(classifiedApps);
 
 	if (!args.exposeRequested) {
 		env.logInfo();
 	}
 
-	const nothingToSpawn = classifiedApps.startNames.length === 0;
 	if (nothingToSpawn && !tunnels.hasPendingTargets()) {
 		log.success("Selected apps are already running. Nothing to start.");
+		if (takeover && takeover.names.length > 0 && !isInteractive()) {
+			log.hint("Pass --takeover to stop them and run here instead.");
+		}
 		await teardown(env, tunnels);
 		return undefined;
 	}
@@ -332,6 +362,7 @@ async function runDevFlow<
 			),
 			verbose: true,
 			composeFile: env.composeFile,
+			containerRuntime: env.containerRuntime,
 		});
 		startHeartbeat(env.projectName, undefined, env.root);
 	}

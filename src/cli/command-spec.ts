@@ -96,6 +96,16 @@ export function readStringFlag(
 	return value;
 }
 
+export function enumValidator(
+	label: string,
+	allowed: readonly string[],
+): (value: string) => string | undefined {
+	return (value) =>
+		allowed.includes(value)
+			? undefined
+			: `${label} expects one of ${allowed.join(", ")}, got "${value}".`;
+}
+
 export function positiveIntegerValidator(
 	label: string,
 ): (value: string) => string | undefined {

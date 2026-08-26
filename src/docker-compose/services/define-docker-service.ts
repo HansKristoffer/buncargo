@@ -1,5 +1,6 @@
 import type {
 	BuiltInHealthCheck,
+	ContainerRuntimeName,
 	DockerComposeServiceRaw,
 	DockerPresetName,
 	DockerPresetServiceDefinition,
@@ -9,6 +10,14 @@ import type {
 export interface DockerServiceFactoryInput {
 	serviceKey: string;
 	config: ServiceConfig;
+	/**
+	 * The resolved backend that will run this service.
+	 *
+	 * Only for the few places the two runtimes genuinely differ; a preset that
+	 * branches on this for anything cosmetic makes the generated model harder
+	 * to reason about than the difference is worth.
+	 */
+	runtime?: ContainerRuntimeName;
 }
 
 export interface DockerServiceFactoryOutput {

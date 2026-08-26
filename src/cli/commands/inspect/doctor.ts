@@ -1,5 +1,12 @@
 import { existsSync } from "node:fs";
 import {
+	availableContainerRuntimes,
+	type ContainerRuntimeAdapter,
+	containerRuntimeForEnv,
+	getContainerRuntimeAdapter,
+	listBuncargoContainers,
+} from "../../../container-runtime";
+import {
 	doctorFixHosts,
 	isHostsDaemonHealthy,
 	pruneHostRoutes,
@@ -16,7 +23,6 @@ import {
 	formatPortOwner,
 	getPortOwner,
 } from "../../../core/process";
-import { isDockerDaemonRunning } from "../../../docker";
 import { loadDevEnv } from "../../../loader";
 import { hasFlag } from "../../flags";
 import * as log from "../../log";
@@ -24,7 +30,6 @@ import {
 	getTunnelRegistryPath,
 	pruneTunnelRegistry,
 } from "../../tunnel-registry";
-import { listBuncargoContainers } from "./containers";
 
 type DevEnv = Awaited<ReturnType<typeof loadDevEnv>>;
 
@@ -61,16 +66,27 @@ class DoctorReport {
 	}
 }
 
-function checkPortOwnership(report: DoctorReport, env: DevEnv): void {
+function checkPortOwnership(
+	report: DoctorReport,
+	env: DevEnv,
+	runtime: ContainerRuntimeAdapter,
+): void {
+	// doctor is the command people run *because* something is wrong, so it pays
+	// the extra probe to spot a container the other backend is holding a port with.
+	const fallbackRuntimes = availableContainerRuntimes().filter(
+		(candidate) => candidate.name !== runtime.name,
+	);
+
 	for (const [name, port] of Object.entries(env.ports)) {
-		const owner = getPortOwner(port);
+		const owner = getPortOwner(port, { runtime, fallbackRuntimes });
 		if (!owner) continue;
 		const action = classifyPortOccupant(owner, {
 			root: env.root,
 			projectName: env.projectName,
+			runtime: runtime.name,
 		});
 		if (action === "fail") {
-			report.issue(formatPortOwner(port, owner));
+			report.issue(formatPortOwner(port, owner, { runtime: runtime.name }));
 		} else if (action === "kill") {
 			report.note(`Port ${port} (${name}) is held by an orphan from this repo`);
 		}
@@ -89,10 +105,14 @@ function checkPortsLockfile(report: DoctorReport, env: DevEnv): void {
 	report.note(`ports.json offset ${lockfile.offset} looks consistent`);
 }
 
-function checkForeignContainers(report: DoctorReport, env: DevEnv): void {
-	if (!isDockerDaemonRunning()) return;
+function checkForeignContainers(
+	report: DoctorReport,
+	env: DevEnv,
+	runtime: ContainerRuntimeAdapter,
+): void {
+	if (!runtime.isAvailable()) return;
 	try {
-		const orphans = listBuncargoContainers().filter(
+		const orphans = listBuncargoContainers([runtime]).filter(
 			(item) =>
 				item.project === env.projectName && item.root && item.root !== env.root,
 		);
@@ -148,17 +168,33 @@ async function checkNamedHosts(
 	);
 }
 
+/**
+ * Bring the project's runtime up rather than only reporting that it is down.
+ *
+ * This is the same preflight `dev` runs, so doctor starts Docker Desktop /
+ * OrbStack / Colima or `container system start` the way a real run would, and a
+ * failure carries that runtime's own remediation instead of a second copy of it
+ * that could drift. Auto-start is off in CI, where it degrades to the message.
+ */
+async function checkSelectedRuntime(
+	report: DoctorReport,
+	runtime: ContainerRuntimeAdapter,
+	available: ContainerRuntimeAdapter[],
+): Promise<void> {
+	if (available.some((item) => item.name === runtime.name)) return;
+	try {
+		await runtime.ensureRunning();
+		report.note(`${runtime.displayName} was down and has been started`);
+	} catch (error) {
+		report.fromError(error);
+	}
+}
+
 export async function handleDoctor(args: string[] = []): Promise<void> {
 	const report = new DoctorReport();
 
-	if (isDockerDaemonRunning()) {
-		report.note("Docker daemon is reachable");
-	} else {
-		report.issue(
-			"Docker is not running. Start Docker Desktop, OrbStack, or Colima.",
-		);
-	}
-
+	// The config is read first because it can point either runtime at a binary
+	// off `PATH`, which the probe below has to use or it reports a false "down".
 	let env: DevEnv | undefined;
 	try {
 		env = await loadDevEnv();
@@ -168,13 +204,28 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 		);
 	}
 
+	const available = availableContainerRuntimes({
+		runtime: env?.containerRuntime,
+		binary: env?.containerRuntimeBinary,
+	});
+	for (const runtime of available) {
+		report.note(`${runtime.displayName} is reachable`);
+	}
+
+	// Only the runtime this project selected has to be up; another one being
+	// down is not a problem for it, and starting it would be wrong.
+	const selected = env
+		? containerRuntimeForEnv(env)
+		: getContainerRuntimeAdapter("docker");
+	await checkSelectedRuntime(report, selected, available);
+
 	if (env) {
 		report.note(
 			`Port offset ${env.portOffset} from ${env.portOffsetProvenance}`,
 		);
-		checkPortOwnership(report, env);
+		checkPortOwnership(report, env, selected);
 		checkPortsLockfile(report, env);
-		checkForeignContainers(report, env);
+		checkForeignContainers(report, env, selected);
 		await checkTunnelRegistry(report, env);
 		await checkNamedHosts(report, env);
 	}

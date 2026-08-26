@@ -134,6 +134,20 @@ export type {
 // Core Utilities (for advanced use cases)
 // ═══════════════════════════════════════════════════════════════════════════
 
+export {
+	availableContainerRuntimes,
+	CONTAINER_RUNTIME_SELECTIONS,
+	type ContainerRuntimeAdapter,
+	ContainerRuntimeUnavailableError,
+	containerRuntimeDisplayName,
+	containerRuntimeForEnv,
+	ensureServicesRunning,
+	listBuncargoContainers,
+	resolveContainerRuntime,
+	stopBuncargoContainers,
+	waitForAllServices,
+	waitForService,
+} from "./container-runtime/index";
 export { getLocalIp, isPortAvailable, waitForServer } from "./core/network";
 export {
 	computeDevIdentity,

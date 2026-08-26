@@ -1,46 +1,45 @@
-import { execSync } from "node:child_process";
 import { isTcpPortOpen } from "../core/network";
 import type { BuiltInHealthCheck, HealthCheckFn } from "../types";
-import { getComposeCommandPrefix } from "./compose-command";
+import type { ContainerRuntimeAdapter } from "./types";
 
 export interface HealthCheckContext {
-	projectName?: string;
+	runtime: ContainerRuntimeAdapter;
+	projectName: string;
 	root?: string;
 	composeFile?: string;
 }
 
 /**
  * Create a health check function from a built-in type.
+ *
+ * The two in-container probes go through the adapter rather than a compose
+ * command string, so the same `pg_isready` / `redis-cli ping` contract holds on
+ * either backend. `http` and `tcp` probe the published host port and are
+ * runtime-independent by construction.
  */
 export function createBuiltInHealthCheck(
 	type: BuiltInHealthCheck,
 	serviceName: string,
-	context: HealthCheckContext = {},
+	context: HealthCheckContext,
 ): HealthCheckFn {
-	const { projectName, root, composeFile } = context;
-	const composeCommandPrefix = getComposeCommandPrefix({
-		projectName,
-		composeFile,
-	});
+	const { runtime, projectName, root, composeFile } = context;
 
-	function execInService(command: string): boolean {
-		try {
-			execSync(`${composeCommandPrefix} exec -T ${serviceName} ${command}`, {
-				cwd: root,
-				stdio: ["pipe", "pipe", "pipe"],
-			});
-			return true;
-		} catch {
-			return false;
-		}
+	function execInService(command: string[]): boolean {
+		return runtime.execInService({
+			projectName,
+			serviceName,
+			command,
+			root,
+			composeFile,
+		});
 	}
 
 	switch (type) {
 		case "pg_isready":
-			return async () => execInService("pg_isready -U postgres");
+			return async () => execInService(["pg_isready", "-U", "postgres"]);
 
 		case "redis-cli":
-			return async () => execInService("redis-cli ping");
+			return async () => execInService(["redis-cli", "ping"]);
 
 		case "http":
 			return async (port) => {

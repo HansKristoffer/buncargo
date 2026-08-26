@@ -1,16 +1,41 @@
 import { execSync } from "node:child_process";
 import { platform } from "node:os";
+import { containerRuntimeDisplayName } from "../../container-runtime/names";
+import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
+import { findDockerContainerOnPort } from "../../docker/port-lookup";
+import type { ContainerRuntimeName, PortContainerOwner } from "../../types";
 
 /**
- * Who is holding a TCP port: a local process tree, a Docker container, or
- * nobody. Everything here shells out to `lsof` / `netstat` / `docker ps`, so
- * every helper degrades to "unknown" rather than throwing.
+ * Who is holding a TCP port: a local process tree, a container, or nobody.
+ * Everything here shells out to `lsof` / `netstat` / a container CLI, so every
+ * helper degrades to "unknown" rather than throwing.
  */
 
-export interface PortContainerOwner {
-	id: string;
-	name: string;
-	composeProject?: string;
+export type { PortContainerOwner };
+
+export interface PortOwnerLookupOptions {
+	/**
+	 * Runtime to ask about container-held ports.
+	 *
+	 * Defaults to Docker, which is right for the callers that leave it out: the
+	 * `:443` squatter check and the dev-server ports, where the holder is a
+	 * local process and the container lookup only enriches the message. The
+	 * service ports, where the holder really can be a container on either
+	 * runtime, pass the resolved one.
+	 */
+	runtime?: ContainerRuntimeAdapter;
+	/**
+	 * Runtimes to ask when the selected one has no container on the port.
+	 *
+	 * A container left behind by the other backend still holds the port, but to
+	 * the selected runtime it is invisible, so the message degrades to the
+	 * daemon process that owns the socket - `com.docker.backend` rather than
+	 * "the Docker container from this same project". Passed in rather than
+	 * resolved here so `core/` stays below the runtime-resolution layer, and so
+	 * `killPortOwner`'s poll loop does not probe every runtime ten times a
+	 * second for an answer only the startup check reports.
+	 */
+	fallbackRuntimes?: ContainerRuntimeAdapter[];
 }
 
 export interface PortOwner {
@@ -91,45 +116,36 @@ function processCwd(pid: number): string | undefined {
 	}
 }
 
-export function parseDockerPublishedPort(
-	portsField: string,
-	port: number,
-): boolean {
-	const pattern = new RegExp(
-		`(?:^|,|\\s)(?:\\[::\\]|0\\.0\\.0\\.0|127\\.0\\.0\\.1|\\*):${port}->`,
-	);
-	return pattern.test(portsField) || new RegExp(`:${port}->`).test(portsField);
-}
-
 export function findContainerOnPort(
 	port: number,
+	options: PortOwnerLookupOptions = {},
 ): PortContainerOwner | undefined {
-	try {
-		const output = execSync(
-			'docker ps --format "{{.ID}}\\t{{.Names}}\\t{{.Ports}}\\t{{.Label \\"com.docker.compose.project\\"}}"',
-			{ encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-		);
-		for (const line of output.trim().split("\n")) {
-			if (!line) continue;
-			const [id, name, portsField, composeProject] = line.split("\t");
-			if (!id || !portsField || !parseDockerPublishedPort(portsField, port)) {
-				continue;
-			}
-			return {
-				id,
-				name: name ?? id,
-				composeProject: composeProject || undefined,
-			};
-		}
-		return undefined;
-	} catch {
-		return undefined;
+	const selected = options.runtime;
+	const found = selected
+		? selected.findContainerOnPort(port)
+		: findDockerContainerOnPort(port);
+	if (found) {
+		return { ...found, runtime: selected?.name ?? "docker" };
 	}
+
+	for (const other of options.fallbackRuntimes ?? []) {
+		if (other.name === (selected?.name ?? "docker")) continue;
+		try {
+			const foreign = other.findContainerOnPort(port);
+			if (foreign) return { ...foreign, runtime: other.name };
+		} catch {
+			// A runtime that cannot answer simply is not the owner.
+		}
+	}
+	return undefined;
 }
 
-export function getPortOwner(port: number): PortOwner | null {
+export function getPortOwner(
+	port: number,
+	options: PortOwnerLookupOptions = {},
+): PortOwner | null {
 	const pids = getListeningPids(port);
-	const container = findContainerOnPort(port);
+	const container = findContainerOnPort(port, options);
 	if (pids.length === 0 && !container) {
 		return null;
 	}
@@ -156,8 +172,11 @@ export function getProcessOnPort(port: number): number | null {
  * Ownership-based: reports a listening process or published container port.
  * Compare with `isPortAvailable` in `core/network.ts`, which connect-probes.
  */
-export function isPortInUse(port: number): boolean {
-	return getPortOwner(port) !== null;
+export function isPortInUse(
+	port: number,
+	options: PortOwnerLookupOptions = {},
+): boolean {
+	return getPortOwner(port, options) !== null;
 }
 
 export function collectProcessTree(pid: number): number[] {
@@ -217,10 +236,13 @@ export function signalProcessTree(pid: number, signal: NodeJS.Signals): void {
 
 export async function killPortOwner(
 	port: number,
-	options: { verbose?: boolean; timeout?: number } = {},
+	options: PortOwnerLookupOptions & {
+		verbose?: boolean;
+		timeout?: number;
+	} = {},
 ): Promise<boolean> {
-	const { verbose = false, timeout = 5000 } = options;
-	const owner = getPortOwner(port);
+	const { verbose = false, timeout = 5000, runtime } = options;
+	const owner = getPortOwner(port, { runtime });
 	if (!owner) {
 		return false;
 	}
@@ -248,7 +270,7 @@ export async function killPortOwner(
 	const startTime = Date.now();
 	while (Date.now() - startTime < timeout) {
 		await new Promise((resolve) => setTimeout(resolve, 100));
-		if (!isPortInUse(port)) {
+		if (!isPortInUse(port, { runtime })) {
 			if (verbose) console.log(`   ✓ Port ${port} released`);
 			return true;
 		}
@@ -261,7 +283,7 @@ export async function killPortOwner(
 		signalProcessTree(pid, "SIGKILL");
 	}
 	await new Promise((resolve) => setTimeout(resolve, 500));
-	const released = !isPortInUse(port);
+	const released = !isPortInUse(port, { runtime });
 	if (verbose) {
 		console.log(
 			released
@@ -276,16 +298,28 @@ export type PortOccupantAction = "reuse" | "kill" | "fail" | "free";
 
 export function classifyPortOccupant(
 	owner: PortOwner | null,
-	options: { root: string; projectName: string },
+	options: {
+		root: string;
+		projectName: string;
+		/** The backend this run will use; anything else cannot be reused. */
+		runtime?: ContainerRuntimeName;
+	},
 ): PortOccupantAction {
 	if (!owner) return "free";
-	if (
-		owner.container?.composeProject &&
-		owner.container.composeProject === options.projectName
-	) {
-		return "reuse";
-	}
 	if (owner.container) {
+		// A container of ours on the other backend still has to go: this run
+		// cannot start, exec into or tear it down through the runtime it chose.
+		const sameRuntime =
+			options.runtime === undefined ||
+			owner.container.runtime === undefined ||
+			owner.container.runtime === options.runtime;
+		if (
+			sameRuntime &&
+			owner.container.composeProject === options.projectName &&
+			owner.container.composeProject
+		) {
+			return "reuse";
+		}
 		return "fail";
 	}
 	if (owner.cwd?.startsWith(options.root)) {
@@ -294,12 +328,30 @@ export function classifyPortOccupant(
 	return "fail";
 }
 
-export function formatPortOwner(port: number, owner: PortOwner): string {
+export function formatPortOwner(
+	port: number,
+	owner: PortOwner,
+	options: { runtime?: ContainerRuntimeName } = {},
+): string {
 	if (owner.container) {
-		const project = owner.container.composeProject
-			? ` (project ${owner.container.composeProject})`
+		const { container } = owner;
+		const project = container.composeProject
+			? ` (project ${container.composeProject})`
 			: "";
-		return `port ${port} held by container ${owner.container.name}${project}`;
+
+		const base = `port ${port} held by container ${container.name}${project}`;
+
+		// Name the backend only when it is not the one this run selected.
+		// Saying "on Docker" to someone who only has Docker is noise; saying it
+		// to someone running Apple is the whole answer. The runtime is a product
+		// name rather than an adjective, so it goes after the noun: "Apple
+		// container" cannot qualify "container".
+		const selected = options.runtime;
+		const holder = container.runtime;
+		if (selected !== undefined && holder !== undefined && holder !== selected) {
+			return `${base}, running on ${containerRuntimeDisplayName(holder)} while this project is configured for ${containerRuntimeDisplayName(selected)}. Stop it with \`buncargo dev --down --runtime=${holder}\`, or set docker.runtime to "${holder}".`;
+		}
+		return base;
 	}
 	const command = owner.command ? ` (${owner.command})` : "";
 	const cwd = owner.cwd ? ` in ${owner.cwd}` : "";

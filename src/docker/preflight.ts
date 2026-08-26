@@ -2,6 +2,7 @@ import { execSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWait } from "../core/style";
+import { runDocker } from "./binary";
 
 export type DockerRuntime =
 	| "orbstack"
@@ -23,6 +24,7 @@ export class DockerUnavailableError extends Error {
 	}
 }
 
+/** The one shell here: `command -v` is a builtin, so there is nothing to exec. */
 function commandExists(command: string): boolean {
 	try {
 		execSync(`command -v ${command}`, {
@@ -35,19 +37,13 @@ function commandExists(command: string): boolean {
 	}
 }
 
-function dockerContextName(): string | null {
-	try {
-		return execSync("docker context show", {
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-		}).trim();
-	} catch {
-		return null;
-	}
+function dockerContextName(binary?: string): string | null {
+	const result = runDocker(binary, ["context", "show"]);
+	return result.ok ? result.stdout.trim() : null;
 }
 
-export function detectDockerRuntime(): DockerRuntime {
-	const context = dockerContextName()?.toLowerCase() ?? "";
+export function detectDockerRuntime(binary?: string): DockerRuntime {
+	const context = dockerContextName(binary)?.toLowerCase() ?? "";
 	if (
 		context.includes("orbstack") ||
 		existsSync("/Applications/OrbStack.app")
@@ -72,16 +68,8 @@ export function detectDockerRuntime(): DockerRuntime {
 	return "unknown";
 }
 
-export function isDockerDaemonRunning(): boolean {
-	try {
-		execSync('docker info --format "{{.ServerVersion}}"', {
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-		});
-		return true;
-	} catch {
-		return false;
-	}
+export function isDockerDaemonRunning(binary?: string): boolean {
+	return runDocker(binary, ["info", "--format", "{{.ServerVersion}}"]).ok;
 }
 
 function remediationFor(runtime: DockerRuntime): string {
@@ -139,18 +127,24 @@ export interface EnsureDockerRunningOptions {
 	autoStart?: boolean;
 	timeoutMs?: number;
 	verbose?: boolean;
+	binary?: string;
 }
 
 export async function ensureDockerRunning(
 	options: EnsureDockerRunningOptions = {},
 ): Promise<void> {
-	const { autoStart = !isCI(), timeoutMs = 90_000, verbose = true } = options;
+	const {
+		autoStart = !isCI(),
+		timeoutMs = 90_000,
+		verbose = true,
+		binary,
+	} = options;
 
-	if (isDockerDaemonRunning()) {
+	if (isDockerDaemonRunning(binary)) {
 		return;
 	}
 
-	const runtime = detectDockerRuntime();
+	const runtime = detectDockerRuntime(binary);
 	if (!autoStart) {
 		throw new DockerUnavailableError(runtime, remediationFor(runtime));
 	}
@@ -163,7 +157,7 @@ export async function ensureDockerRunning(
 	const startedAt = Date.now();
 	while (Date.now() - startedAt < timeoutMs) {
 		await new Promise((resolve) => setTimeout(resolve, 1000));
-		if (isDockerDaemonRunning()) {
+		if (isDockerDaemonRunning(binary)) {
 			if (verbose) console.log(formatDone("Docker is ready"));
 			return;
 		}

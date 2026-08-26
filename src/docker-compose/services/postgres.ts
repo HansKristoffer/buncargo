@@ -29,7 +29,7 @@ export const postgresDockerService = defineDockerService<
 		user: options?.user,
 		password: options?.password,
 	}),
-	build: ({ serviceKey, config }) => {
+	build: ({ serviceKey, config, runtime }) => {
 		const user = config.user ?? "postgres";
 		const password = config.password ?? "postgres";
 		const database = config.database ?? "postgres";
@@ -49,6 +49,14 @@ export const postgresDockerService = defineDockerService<
 					POSTGRES_USER: user,
 					POSTGRES_PASSWORD: password,
 					POSTGRES_DB: database,
+					// Apple's named volumes are formatted block devices, so the
+					// mount root already holds a `lost+found` and `initdb`
+					// refuses a non-empty data directory. Docker's are plain
+					// directories, and moving them to a subdirectory would hide
+					// every existing project's database behind an empty one.
+					...(runtime === "apple"
+						? { PGDATA: "/var/lib/postgresql/data/pgdata" }
+						: {}),
 				},
 				healthcheck: resolveHealthcheck(
 					config.healthCheck,

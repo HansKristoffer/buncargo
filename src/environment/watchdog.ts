@@ -30,6 +30,8 @@ export function createWatchdogApi<
 				timeoutMinutes,
 				verbose: true,
 				composeFile: ctx.composeFile,
+				containerRuntime: ctx.runtime.name,
+				containerRuntimeBinary: ctx.runtimeBinary,
 			});
 		},
 		stopWatchdog() {

@@ -41,7 +41,7 @@ export function resolveToolBinary(options: {
 	return { path: cachePath, source: "cache", exists: existsSync(cachePath) };
 }
 
-function lookupOnPath(command: string): string | undefined {
+export function lookupOnPath(command: string): string | undefined {
 	try {
 		const found = execSync(`command -v ${command}`, {
 			encoding: "utf-8",

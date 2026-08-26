@@ -1,4 +1,8 @@
 import { existsSync } from "node:fs";
+import {
+	containerRuntimeForEnv,
+	listBuncargoContainers,
+} from "../../../container-runtime";
 import { formatPortOwner, getPortOwner } from "../../../core/process";
 import { loadDevEnv } from "../../../loader";
 import * as log from "../../log";
@@ -6,18 +10,21 @@ import {
 	getTunnelRegistryPath,
 	pruneTunnelRegistry,
 } from "../../tunnel-registry";
-import { listBuncargoContainers } from "./containers";
 
 export async function handleStatus(): Promise<void> {
 	const env = await loadDevEnv();
+	const runtime = containerRuntimeForEnv(env);
 	log.line(`project: ${env.projectName}`);
 	log.line(`root: ${env.root}`);
 	log.line(`portOffset: ${env.portOffset} (${env.portOffsetProvenance})`);
 	log.line(`composeFile: ${env.composeFile}`);
+	log.line(
+		`runtime: ${runtime.name} (${runtime.isAvailable() ? "running" : "not running"})`,
+	);
 	log.line();
 	log.line("ports:");
 	for (const [name, port] of Object.entries(env.ports)) {
-		const owner = getPortOwner(port);
+		const owner = getPortOwner(port, { runtime });
 		log.line(
 			`  ${name}: ${port}  ${owner ? formatPortOwner(port, owner) : "free"}`,
 		);
@@ -25,7 +32,7 @@ export async function handleStatus(): Promise<void> {
 	log.line();
 	log.line("containers:");
 	try {
-		const containers = listBuncargoContainers().filter(
+		const containers = listBuncargoContainers([runtime]).filter(
 			(item) => item.project === env.projectName,
 		);
 		if (containers.length === 0) {

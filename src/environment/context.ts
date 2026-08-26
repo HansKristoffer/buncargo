@@ -1,3 +1,8 @@
+import type { ContainerRuntimeAdapter } from "../container-runtime";
+import {
+	resolveContainerRuntime,
+	resolveContainerRuntimeBinary,
+} from "../container-runtime";
 import { applyHostPlanToUrls, planNamedHosts } from "../core/hosts/plan";
 import { getLocalIp } from "../core/network";
 import { resolvePortPlan } from "../core/port-allocation";
@@ -14,6 +19,8 @@ import {
 } from "../core/ports";
 import type { PublicTunnel } from "../core/tunnel";
 import {
+	buildComposeModel,
+	type ComposeDocument,
 	getGeneratedComposePath,
 	writeGeneratedComposeFile,
 } from "../docker-compose";
@@ -64,8 +71,19 @@ export interface DevEnvContext<
 	readonly portOffset: number;
 	readonly portOffsetProvenance: PortOffsetProvenance;
 	readonly composeFile: string;
+	/** The backend that runs the services, resolved once from flag/env/config. */
+	readonly runtime: ContainerRuntimeAdapter;
+	/** The binary it was resolved to, for callers that rebuild the adapter. */
+	readonly runtimeBinary: string | undefined;
 	readonly hosts: HostsRuntime | null;
 	ensureComposeFile(): string;
+	/**
+	 * The same service model the compose file is rendered from.
+	 *
+	 * Backends that have no compose equivalent walk this instead of the file,
+	 * so both views of a stack come from one build.
+	 */
+	composeModel(): ComposeDocument;
 	setNamedHostsActive(active: boolean, extras?: { caPath?: string }): void;
 	/** Absent entries are skipped: only exposed targets that came up have a URL. */
 	setPublicUrls(urls: Readonly<Record<string, string | undefined>>): void;
@@ -83,7 +101,7 @@ export function createDevEnvContext<
 	TEnv extends EnvValues = EnvValues,
 >(
 	config: DevConfig<TServices, TApps, TEnv>,
-	options: { suffix?: string } = {},
+	options: { suffix?: string; containerRuntime?: string } = {},
 ): DevEnvContext<TServices, TApps, TEnv> {
 	const root = findMonorepoRoot();
 	const suffix = options.suffix;
@@ -102,6 +120,12 @@ export function createDevEnvContext<
 		root,
 		config.docker,
 	).composeFileArg;
+	const runtimeSelection = {
+		flag: options.containerRuntime,
+		docker: config.docker,
+	};
+	const runtime = resolveContainerRuntime(runtimeSelection);
+	const runtimeBinary = resolveContainerRuntimeBinary(runtimeSelection);
 
 	const portPlan = resolvePortPlan({
 		projectPrefix: config.projectPrefix,
@@ -112,6 +136,10 @@ export function createDevEnvContext<
 		suffix,
 		worktreeName: worktreeSuffix,
 		worktreeIsolation: config.options?.worktreeIsolation,
+		// Without the resolved backend the allocator asks Docker about every
+		// port, so this project's own Apple containers look foreign and shift
+		// the offset on every run.
+		runtime,
 	});
 	const portMap = portPlan.ports;
 	const ports = asComputedPorts<TServices, TApps>(portMap);
@@ -157,14 +185,27 @@ export function createDevEnvContext<
 		portOffset: portPlan.offset,
 		portOffsetProvenance: portPlan.provenance,
 		composeFile,
+		runtime,
+		runtimeBinary,
 		hosts,
 
 		ensureComposeFile() {
-			return writeGeneratedComposeFile(root, services, config.docker, {
-				projectName,
+			return writeGeneratedComposeFile(
 				root,
-				worktree: worktreeSuffix,
-			});
+				services,
+				config.docker,
+				{ projectName, root, worktree: worktreeSuffix },
+				runtime.name,
+			);
+		},
+
+		composeModel() {
+			return buildComposeModel(
+				services,
+				config.docker,
+				{ projectName, root, worktree: worktreeSuffix },
+				runtime.name,
+			);
 		},
 
 		setNamedHostsActive(active, extras = {}) {

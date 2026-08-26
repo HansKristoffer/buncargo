@@ -3,5 +3,9 @@ export {
 	getGeneratedComposePath,
 	writeGeneratedComposeFile,
 } from "./generated-file";
-export { buildComposeModel } from "./model";
+export {
+	buildComposeModel,
+	type ComposeDocument,
+	type ComposeIdentity,
+} from "./model";
 export { composeToYaml } from "./yaml";

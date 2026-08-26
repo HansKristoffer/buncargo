@@ -1,5 +1,7 @@
+import { CONTAINER_RUNTIME_SELECTIONS } from "../container-runtime";
 import {
 	type CommandSpec,
+	enumValidator,
 	type FlagSpec,
 	findUnknownFlags,
 	formatCommandHelp,
@@ -8,6 +10,7 @@ import {
 	readStringFlag,
 } from "./command-spec";
 import { splitCliArgs } from "./flags";
+import * as log from "./log";
 
 const FLAGS = {
 	help: {
@@ -65,6 +68,11 @@ const FLAGS = {
 		kind: "boolean",
 		description: "Do not start the idle watchdog",
 	},
+	takeover: {
+		name: "--takeover",
+		kind: "boolean",
+		description: "Stop apps already running elsewhere and run them here",
+	},
 	watchdogTimeout: {
 		name: "--watchdog-timeout",
 		kind: "string",
@@ -81,6 +89,13 @@ const FLAGS = {
 		name: "--no-hosts",
 		kind: "boolean",
 		description: "Use localhost:port instead of named .localhost URLs",
+	},
+	runtime: {
+		name: "--runtime",
+		kind: "string",
+		valueHint: "=<docker|apple|auto>",
+		description: "Container runtime backend (default: docker)",
+		validate: enumValidator("--runtime", CONTAINER_RUNTIME_SELECTIONS),
 	},
 } as const satisfies Record<string, FlagSpec>;
 
@@ -123,6 +138,14 @@ export const DEV_COMMAND_SPEC: CommandSpec = {
 			command: "bun dev --apps=expoApp -- --clear",
 			description: "Pass args to the attached app",
 		},
+		{
+			command: "bun dev --runtime=apple",
+			description: "Run services on Apple container instead of Docker",
+		},
+		{
+			command: "bun dev --takeover",
+			description: "Move apps running in another terminal into this one",
+		},
 	],
 };
 
@@ -148,9 +171,13 @@ export interface DevCliArgs {
 	appsValue: string | undefined;
 	attach: string | undefined;
 	keepContainers: boolean;
+	/** Skip the prompt and stop apps already running elsewhere. */
+	takeover: boolean;
 	watchdogTimeoutMinutes: number | undefined;
 	dockerAutostart: boolean;
 	hosts: boolean;
+	/** `--runtime`, already validated; undefined falls through to env/config. */
+	runtime: string | undefined;
 	/** `--migrate`, `--seed` and `--up-only` exit before dev servers start. */
 	oneShot: boolean;
 }
@@ -184,16 +211,45 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		appsValue: str(FLAGS.apps),
 		attach: str(FLAGS.attach),
 		keepContainers: bool(FLAGS.keepContainers),
+		takeover: bool(FLAGS.takeover),
 		watchdogTimeoutMinutes:
 			watchdogTimeout === undefined
 				? undefined
 				: Number.parseInt(watchdogTimeout, 10),
 		dockerAutostart: !bool(FLAGS.noDockerAutostart),
 		hosts: !bool(FLAGS.noHosts),
+		runtime: str(FLAGS.runtime),
 		oneShot: migrate || seed || upOnly,
 	};
 }
 
 export function printDevHelp(): void {
 	console.log(formatCommandHelp(DEV_COMMAND_SPEC));
+}
+
+/**
+ * Report an argv problem and exit, or return.
+ *
+ * Both entry points call this: `handleDev` before it loads a config, so a typo
+ * is not answered with a config error, and `runCli`, which programmatic callers
+ * reach directly with their own argv. Whichever runs first exits, so the two
+ * cannot report the same problem differently.
+ */
+export function exitOnDevArgErrors(args: DevCliArgs): void {
+	const messages =
+		args.unknownFlags.length > 0
+			? [
+					`Unknown flag${args.unknownFlags.length > 1 ? "s" : ""}: ${args.unknownFlags.join(", ")}`,
+				]
+			: args.errors;
+	if (messages.length === 0) return;
+
+	for (const message of messages) {
+		log.error(message);
+	}
+	if (args.unknownFlags.length > 0) {
+		log.line();
+		printDevHelp();
+	}
+	process.exit(1);
 }
