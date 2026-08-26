@@ -7,10 +7,13 @@ import { getDefaultPortBindings, resolveHealthcheck } from "./shared";
 
 export type MailpitServiceOptions = PresetServiceSecondaryPortOptions;
 
-export type MailpitServiceConfig = ServiceConfig<{
-	MAILPIT_URL: "url";
-	SMTP_PORT: "secondaryPort";
-}> & {
+export type MailpitServiceConfig = ServiceConfig<
+	{
+		MAILPIT_URL: "url";
+		SMTP_PORT: "secondaryPort";
+	},
+	{ SMTP_HOST: string }
+> & {
 	secondaryPort: number;
 };
 

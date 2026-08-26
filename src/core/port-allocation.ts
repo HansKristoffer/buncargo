@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { AppConfig, PortOffsetProvenance, ServiceConfig } from "../types";
 import { simpleHash } from "./hash";
+import type { PortMap } from "./ports";
 import {
 	classifyPortOccupant,
 	formatPortOwner,
@@ -27,7 +28,7 @@ export interface PortLockfile {
 
 export interface PortPlan {
 	offset: number;
-	ports: Record<string, number>;
+	ports: PortMap;
 	provenance: PortOffsetProvenance;
 }
 

@@ -1,5 +1,6 @@
 import { assertValidConfig } from "../config";
 import { waitForServer } from "../core/network";
+import { toPortMap } from "../core/ports";
 import { stopProcess } from "../core/process";
 import { logExpoApiUrl, logFrontendPort } from "../core/utils";
 import { createPrismaRunner } from "../prisma";
@@ -8,6 +9,7 @@ import type {
 	ComputedPublicUrls,
 	DevConfig,
 	DevEnvironment,
+	EnvValues,
 	PrismaRunner,
 	ServiceConfig,
 } from "../types";
@@ -39,10 +41,11 @@ import { createWatchdogApi } from "./watchdog";
 export function createDevEnvironment<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TEnv extends EnvValues = EnvValues,
 >(
-	config: DevConfig<TServices, TApps>,
+	config: DevConfig<TServices, TApps, TEnv>,
 	options: { suffix?: string } = {},
-): DevEnvironment<TServices, TApps> {
+): DevEnvironment<TServices, TApps, TEnv> {
 	assertValidConfig(config);
 
 	const ctx = createDevEnvContext(config, options);
@@ -53,7 +56,7 @@ export function createDevEnvironment<
 
 	function getExpoApiUrl(): string {
 		const appName = config.options?.expoApiApp ?? "api";
-		const apiPort = (ctx.ports as Record<string, number>)[appName];
+		const apiPort = toPortMap(ctx.ports)[appName];
 		const url = `http://${ctx.localIp}:${apiPort}`;
 		logExpoApiUrl(url);
 		return url;
@@ -61,7 +64,7 @@ export function createDevEnvironment<
 
 	function getFrontendPort(): number | undefined {
 		const configured = config.options?.frontendApp;
-		const portMap = ctx.ports as Record<string, number>;
+		const portMap = toPortMap(ctx.ports);
 		const port =
 			(configured ? portMap[configured] : undefined) ??
 			portMap.platform ??
@@ -70,7 +73,7 @@ export function createDevEnvironment<
 		return port;
 	}
 
-	const env: DevEnvironment<TServices, TApps> = {
+	const env: DevEnvironment<TServices, TApps, TEnv> = {
 		// Configuration access
 		projectName: ctx.projectName,
 		ports: ctx.ports,
@@ -108,9 +111,7 @@ export function createDevEnvironment<
 		// Utilities
 		buildEnvVars: envVars.buildEnvVars,
 		buildAppEnvVars: envVars.buildAppEnvVars,
-		setPublicUrls: (urlsInput) => {
-			ctx.setPublicUrls(urlsInput as Record<string, string>);
-		},
+		setPublicUrls: ctx.setPublicUrls,
 		clearPublicUrls: ctx.clearPublicUrls,
 		ensureComposeFile: ctx.ensureComposeFile,
 		exec: envVars.exec,

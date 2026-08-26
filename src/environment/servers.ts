@@ -12,6 +12,7 @@ import type {
 	ComputedPublicUrls,
 	DevEnvironment,
 	DevServerPids,
+	EnvValues,
 	OpenPublicTunnelsOptions,
 	OpenPublicTunnelsResult,
 	ServiceConfig,
@@ -32,9 +33,10 @@ function readyTimeout(): number {
 export async function startAppServers<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TEnv extends EnvValues = EnvValues,
 >(
-	ctx: DevEnvContext<TServices, TApps>,
-	envVars: DevEnvVarsApi<TServices, TApps>,
+	ctx: DevEnvContext<TServices, TApps, TEnv>,
+	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
 	options: {
 		apps: Record<string, AppConfig>;
 		productionBuild: boolean;
@@ -82,25 +84,26 @@ export interface DevServersApi<
 	startServersOnly(options?: {
 		productionBuild?: boolean;
 		verbose?: boolean;
-		onlyApps?: string[];
+		onlyApps?: Extract<keyof TApps, string>[];
 	}): Promise<DevServerPids>;
 	waitForServersReady(options?: {
 		timeout?: number;
 		productionBuild?: boolean;
-		onlyApps?: string[];
+		onlyApps?: Extract<keyof TApps, string>[];
 		expandRequired?: boolean;
 	}): Promise<void>;
 	openPublicTunnels(
-		options?: OpenPublicTunnelsOptions,
+		options?: OpenPublicTunnelsOptions<TServices, TApps>,
 	): Promise<OpenPublicTunnelsResult<TServices, TApps>>;
 }
 
 export function createServersApi<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TEnv extends EnvValues = EnvValues,
 >(
-	ctx: DevEnvContext<TServices, TApps>,
-	envVars: DevEnvVarsApi<TServices, TApps>,
+	ctx: DevEnvContext<TServices, TApps, TEnv>,
+	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
 ): DevServersApi<TServices, TApps> {
 	const { apps, services, ports, config } = ctx;
 
@@ -108,7 +111,7 @@ export function createServersApi<
 		options: {
 			productionBuild?: boolean;
 			verbose?: boolean;
-			onlyApps?: string[];
+			onlyApps?: Extract<keyof TApps, string>[];
 		} = {},
 	): Promise<DevServerPids> {
 		const { productionBuild = false, verbose = true, onlyApps } = options;
@@ -129,7 +132,7 @@ export function createServersApi<
 		options: {
 			timeout?: number;
 			productionBuild?: boolean;
-			onlyApps?: string[];
+			onlyApps?: Extract<keyof TApps, string>[];
 			expandRequired?: boolean;
 		} = {},
 	): Promise<void> {
@@ -152,7 +155,7 @@ export function createServersApi<
 	}
 
 	async function openPublicTunnels(
-		options: OpenPublicTunnelsOptions = {},
+		options: OpenPublicTunnelsOptions<TServices, TApps> = {},
 	): Promise<OpenPublicTunnelsResult<TServices, TApps>> {
 		const { names, waitForHealthy } = options;
 		const exposeList = names?.length ? names.join(",") : undefined;

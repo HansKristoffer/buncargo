@@ -1,21 +1,23 @@
 import type {
 	AppConfig,
 	ComputedPorts,
-	ComputedPublicUrls,
 	ComputedUrls,
+	EnvValues,
 	EnvVarsBuilder,
+	EnvVarsContext,
 	ServiceConfig,
 	ServiceEnvValueSource,
 } from "../types";
+import { type PortMap, toPortMap, toUrlMap, type UrlMap } from "./ports";
 import { resolveServiceEnvVarSources } from "./service-presets";
 
-export type SharedEnvValues = Record<string, string | number>;
+export type SharedEnvValues = EnvValues;
 
 function getServiceEnvValue(
 	serviceKey: string,
 	source: ServiceEnvValueSource,
-	ports: Record<string, number>,
-	urls: Record<string, string>,
+	ports: PortMap,
+	urls: UrlMap,
 ): string | number | undefined {
 	switch (source) {
 		case "url":
@@ -38,7 +40,8 @@ export function buildSharedEnvValues<
 	services: TServices;
 	ports: ComputedPorts<TServices, TApps>;
 	urls: ComputedUrls<TServices, TApps>;
-	publicUrls: ComputedPublicUrls<TServices, TApps>;
+	/** Only iterated, so the widest read-only shape a caller can hold is enough. */
+	publicUrls: Readonly<Record<string, string | undefined>>;
 }): SharedEnvValues {
 	const {
 		projectName,
@@ -62,9 +65,7 @@ export function buildSharedEnvValues<
 		sharedEnv[`${name.toUpperCase()}_URL`] = url;
 	}
 
-	for (const [name, url] of Object.entries(
-		publicUrls as Record<string, string | undefined>,
-	)) {
+	for (const [name, url] of Object.entries(publicUrls)) {
 		if (url !== undefined) {
 			sharedEnv[`${name.toUpperCase()}_PUBLIC_URL`] = url;
 		}
@@ -76,8 +77,8 @@ export function buildSharedEnvValues<
 			const value = getServiceEnvValue(
 				serviceKey,
 				source,
-				ports as Record<string, number>,
-				urls as Record<string, string>,
+				toPortMap(ports),
+				toUrlMap(urls),
 			);
 			if (value !== undefined) {
 				sharedEnv[envName] = value;
@@ -99,12 +100,7 @@ export function mergeSharedEnvWithOverlay<
 	overlay: EnvVarsBuilder<TServices, TApps> | undefined,
 	ports: ComputedPorts<TServices, TApps>,
 	urls: ComputedUrls<TServices, TApps>,
-	ctx: {
-		projectName: string;
-		localIp: string;
-		portOffset: number;
-		publicUrls: ComputedPublicUrls<TServices, TApps>;
-	},
+	ctx: EnvVarsContext<TServices, TApps>,
 ): SharedEnvValues {
 	if (!overlay) {
 		return shared;
@@ -115,10 +111,20 @@ export function mergeSharedEnvWithOverlay<
 	};
 }
 
+/**
+ * Stringify env values for a child process, dropping `undefined` entries.
+ *
+ * Configs may pass `process.env.X` or an optional public URL straight through;
+ * an absent value must stay absent instead of becoming `"undefined"`.
+ */
 export function stringifyEnvValues(
-	envValues: Record<string, string | number>,
+	envValues: EnvValues,
 ): Record<string, string> {
-	return Object.fromEntries(
-		Object.entries(envValues).map(([key, value]) => [key, String(value)]),
-	);
+	const result: Record<string, string> = {};
+	for (const [key, value] of Object.entries(envValues)) {
+		if (value !== undefined) {
+			result[key] = String(value);
+		}
+	}
+	return result;
 }

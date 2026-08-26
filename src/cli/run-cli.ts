@@ -228,7 +228,10 @@ async function runDevFlow<
 	}
 
 	// ── App selection ────────────────────────────────────────────────────────
-	let selectedAppNames: string[] | undefined;
+	// argv only ever yields plain strings. `resolveSelectedApps` drops names that
+	// are not configured apps and the check below fails when nothing is left, so
+	// this is the single place the CLI crosses into the config's app keys.
+	let selectedAppNames: Extract<keyof TApps, string>[] | undefined;
 	let appsForDev: Record<string, AppConfig> = resolveSelectedApps(
 		env.apps,
 		undefined,
@@ -237,7 +240,7 @@ async function runDevFlow<
 		selectedAppNames = parseRequiredCommaSeparatedFlag(
 			"--apps",
 			args.appsValue,
-		);
+		) as Extract<keyof TApps, string>[];
 		appsForDev = resolveSelectedApps(env.apps, selectedAppNames).apps;
 		if (Object.keys(appsForDev).length === 0) {
 			throw new CliError("Flag --apps requires at least one valid app name.");
@@ -349,7 +352,8 @@ async function runDevFlow<
 				},
 				waitForHealth: async (apps) => {
 					await env.waitForServers({
-						onlyApps: Object.keys(apps),
+						// These came out of `env.apps`, so they are app keys already.
+						onlyApps: Object.keys(apps) as Extract<keyof TApps, string>[],
 						expandRequired: false,
 					});
 				},

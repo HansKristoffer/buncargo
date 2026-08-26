@@ -1,8 +1,10 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { toUrlMap, type UrlMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
 import type {
 	AppConfig,
+	EnvValues,
 	HookContext,
 	SeedCheckContext,
 	SeedOutcome,
@@ -57,7 +59,7 @@ export function createCheckTableHelper<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 >(
-	urls: Record<string, string>,
+	urls: UrlMap,
 	exec: (
 		cmd: string,
 		options?: { throwOnError?: boolean },
@@ -115,9 +117,10 @@ export function createSeedCheckContext<
 export async function runSeedIfNeeded<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TEnv extends EnvValues = EnvValues,
 >(
-	ctx: DevEnvContext<TServices, TApps>,
-	envVars: DevEnvVarsApi<TServices, TApps>,
+	ctx: DevEnvContext<TServices, TApps, TEnv>,
+	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
 	options: SeedRunOptions = {},
 ): Promise<SeedOutcome> {
 	const seed = ctx.config.seed;
@@ -128,7 +131,7 @@ export async function runSeedIfNeeded<
 
 	if (seed.check && !force) {
 		const checkTable = createCheckTableHelper<TServices, TApps>(
-			ctx.urls as Record<string, string>,
+			toUrlMap(ctx.urls),
 			envVars.exec,
 			ctx.config.prisma?.service ?? "postgres",
 		);

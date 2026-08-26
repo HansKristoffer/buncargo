@@ -30,6 +30,7 @@ import type {
 	AppConfig,
 	BuiltInHealthCheck,
 	DevEnvironment,
+	EnvValues,
 	PrismaConfig,
 	PrismaRunner,
 	ServiceConfig,
@@ -42,12 +43,20 @@ import type {
 export function createPrismaRunner<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
->(env: DevEnvironment<TServices, TApps>, config: PrismaConfig): PrismaRunner {
-	const {
-		cwd = "packages/prisma",
-		service = "postgres",
-		urlEnvVar = "DATABASE_URL",
-	} = config;
+	TEnv extends EnvValues = EnvValues,
+>(
+	env: DevEnvironment<TServices, TApps, TEnv>,
+	config: PrismaConfig<TServices, TApps>,
+): PrismaRunner {
+	const { cwd = "packages/prisma" } = config;
+	// The defaults only exist on configs that actually declare a postgres
+	// service; `validateConfig` rejects the rest, including disk-loaded configs
+	// whose keys are only known as strings.
+	const service = (config.service ?? "postgres") as Extract<
+		keyof TServices,
+		string
+	>;
+	const urlEnvVar: string = config.urlEnvVar ?? "DATABASE_URL";
 
 	// Map service names to health check types
 	const healthCheckTypes: Record<string, BuiltInHealthCheck> = {
@@ -57,7 +66,9 @@ export function createPrismaRunner<
 	};
 
 	function getDatabaseUrl(): string {
-		const envVars = env.buildEnvVars();
+		// `urlEnvVar` defaults to a name the config need not declare, so the lookup
+		// is by dynamic name and the closed env record has to be widened for it.
+		const envVars: Record<string, string> = env.buildEnvVars();
 		const url = envVars[urlEnvVar];
 		if (!url) {
 			throw new Error(
@@ -70,14 +81,12 @@ export function createPrismaRunner<
 	async function ensureDatabase(): Promise<void> {
 		const composeFile = env.ensureComposeFile();
 		const envVars = env.buildEnvVars();
-		const serviceConfig = (env.services as Record<string, ServiceConfig>)[
-			service
-		];
+		const serviceConfig = env.services[service];
 		if (!serviceConfig) {
 			throw new Error(`Prisma service "${service}" is not configured`);
 		}
 
-		const port = (env.ports as Record<string, number>)[service];
+		const port = env.ports[service];
 		if (!port) {
 			throw new Error(`Service ${service} not found in dev environment ports`);
 		}
@@ -86,10 +95,7 @@ export function createPrismaRunner<
 		const healthCheckedServiceConfig: ServiceConfig = {
 			...serviceConfig,
 			healthCheck: serviceConfig.healthCheck ?? healthCheckType,
-			serviceName: getComposeServiceName(
-				env.services as Record<string, ServiceConfig>,
-				service,
-			),
+			serviceName: getComposeServiceName(env.services, service),
 		};
 
 		await ensureServicesRunning(
@@ -121,7 +127,7 @@ Examples:
 			return 0;
 		}
 
-		const port = (env.ports as Record<string, number>)[service];
+		const port = env.ports[service];
 
 		console.log(`
 🔧 Prisma CLI

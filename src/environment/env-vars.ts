@@ -3,12 +3,15 @@ import {
 	mergeSharedEnvWithOverlay,
 	stringifyEnvValues,
 } from "../core/env";
+import { toPortMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
 import { isCI } from "../core/runtime-flags";
 import type {
 	AppConfig,
+	AppEnvVars,
 	ComputedEnvVars,
 	ComputedPublicUrls,
+	EnvValues,
 	EnvVarsBuilder,
 	ExecOptions,
 	HookContext,
@@ -19,12 +22,13 @@ import type { DevEnvContext } from "./context";
 export interface DevEnvVarsApi<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TEnv extends EnvValues = EnvValues,
 > {
-	buildEnvVars(production?: boolean): ComputedEnvVars<TServices, TApps>;
-	buildAppEnvVars(
-		appName: Extract<keyof TApps, string>,
+	buildEnvVars(production?: boolean): ComputedEnvVars<TServices, TApps, TEnv>;
+	buildAppEnvVars<TName extends Extract<keyof TApps, string>>(
+		appName: TName,
 		production?: boolean,
-	): ComputedEnvVars<TServices, TApps>;
+	): AppEnvVars<TServices, TApps, TEnv, TName>;
 	buildAppEnvVarsMap(
 		targetApps: Record<string, AppConfig>,
 		production?: boolean,
@@ -36,7 +40,10 @@ export interface DevEnvVarsApi<
 export function createEnvVarsApi<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
->(ctx: DevEnvContext<TServices, TApps>): DevEnvVarsApi<TServices, TApps> {
+	TEnv extends EnvValues = EnvValues,
+>(
+	ctx: DevEnvContext<TServices, TApps, TEnv>,
+): DevEnvVarsApi<TServices, TApps, TEnv> {
 	const { config, services, apps, ports, urls, publicUrls } = ctx;
 
 	function overlayContext() {
@@ -48,7 +55,9 @@ export function createEnvVarsApi<
 		};
 	}
 
-	function buildEnvVars(production = false): ComputedEnvVars<TServices, TApps> {
+	function buildEnvVars(
+		production = false,
+	): ComputedEnvVars<TServices, TApps, TEnv> {
 		const shared = buildSharedEnvValues({
 			projectName: ctx.projectName,
 			production,
@@ -73,38 +82,39 @@ export function createEnvVarsApi<
 				urls,
 				overlayContext(),
 			),
-		) as ComputedEnvVars<TServices, TApps>;
+		) as ComputedEnvVars<TServices, TApps, TEnv>;
 	}
 
-	function buildAppEnvVars(
-		appName: Extract<keyof TApps, string>,
+	function buildAppEnvVars<TName extends Extract<keyof TApps, string>>(
+		appName: TName,
 		production = false,
-	): ComputedEnvVars<TServices, TApps> {
-		const sharedEnv = buildEnvVars(production);
+	): AppEnvVars<TServices, TApps, TEnv, TName> {
+		const sharedEnv: Record<string, string> = buildEnvVars(production);
 		const appConfig = apps[appName];
 		const appEnvBuilder = appConfig?.envVars as
 			| EnvVarsBuilder<TServices, TApps>
 			| undefined;
 
-		const staticEnv = appConfig?.staticEnv
-			? stringifyEnvValues(appConfig.staticEnv)
-			: {};
-		const appPort = (ports as Record<string, number>)[appName];
-		const processEnv = {
+		const appPort = toPortMap(ports)[appName];
+		const processEnv: Record<string, string> = {
 			...sharedEnv,
-			...staticEnv,
-			PORT: appPort !== undefined ? String(appPort) : sharedEnv.PORT,
+			...(appConfig?.staticEnv ? stringifyEnvValues(appConfig.staticEnv) : {}),
 			HOST: "0.0.0.0",
 		};
-
-		if (!appEnvBuilder) {
-			return processEnv;
+		if (appPort !== undefined) {
+			processEnv.PORT = String(appPort);
 		}
+		// Last writer wins: an app's own `envVars` may override PORT/HOST.
+		Object.assign(
+			processEnv,
+			appEnvBuilder
+				? stringifyEnvValues(appEnvBuilder(ports, urls, overlayContext()))
+				: {},
+		);
 
-		return {
-			...processEnv,
-			...stringifyEnvValues(appEnvBuilder(ports, urls, overlayContext())),
-		};
+		// The per-app keys come from `staticEnv`/`envVars`, which are opaque here
+		// because the builder is widened to run against unknown apps.
+		return processEnv as unknown as AppEnvVars<TServices, TApps, TEnv, TName>;
 	}
 
 	function buildAppEnvVarsMap(

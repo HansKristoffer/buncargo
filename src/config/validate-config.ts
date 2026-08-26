@@ -7,18 +7,16 @@ import {
 	resolveServiceEnvVarSources,
 } from "../core/service-presets";
 import { resolveSelectedApps } from "../planning";
-import type {
-	AnyDevConfig,
-	AppConfig,
-	DevConfig,
-	DevConfigLike,
-	ServiceConfig,
-} from "../types";
+import type { AnyDevConfig, DevConfig, DevConfigLike } from "../types";
 
-export function validateConfig<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
->(config: DevConfig<TServices, TApps>): string[] {
+/**
+ * Collect every problem with a dev config, in the order they were found.
+ *
+ * Takes the widened {@link AnyDevConfig} view rather than a generic
+ * `DevConfig`: every concrete config is assignable to it, and validation only
+ * ever reads fields, so it never needs the config's own callback signatures.
+ */
+export function validateConfig(config: AnyDevConfig): string[] {
 	const errors: string[] = [];
 	const composeServiceNames = new Set<string>();
 	const derivedEnvOwners = new Map<string, string>();

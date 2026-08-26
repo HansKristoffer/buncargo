@@ -1,6 +1,7 @@
 import type {
 	AppConfig,
 	DevConfig,
+	EnvValues,
 	EnvVarsBuilder,
 	ServiceConfig,
 } from "../types";
@@ -13,12 +14,20 @@ import type {
 function mergeEnvBuilders<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TEnvBase extends EnvValues,
+	TEnvOverride extends EnvValues,
 >(
-	base: EnvVarsBuilder<TServices, TApps> | undefined,
-	override: EnvVarsBuilder<TServices, TApps> | undefined,
-): EnvVarsBuilder<TServices, TApps> | undefined {
-	if (!base) return override;
-	if (!override) return base;
+	base: EnvVarsBuilder<TServices, TApps, TEnvBase> | undefined,
+	override: EnvVarsBuilder<TServices, TApps, TEnvOverride> | undefined,
+): EnvVarsBuilder<TServices, TApps, TEnvBase & TEnvOverride> | undefined {
+	if (!base) {
+		return override as
+			| EnvVarsBuilder<TServices, TApps, TEnvBase & TEnvOverride>
+			| undefined;
+	}
+	if (!override) {
+		return base as EnvVarsBuilder<TServices, TApps, TEnvBase & TEnvOverride>;
+	}
 	return (ports, urls, ctx) => ({
 		...base(ports, urls, ctx),
 		...override(ports, urls, ctx),
@@ -35,13 +44,21 @@ function mergeGroup<T extends object>(
 	return { ...base, ...override };
 }
 
+/**
+ * Merge an override config over a base one.
+ *
+ * The result's overlay type is the intersection of both, because
+ * `mergeEnvBuilders` runs both builders rather than replacing one.
+ */
 export function mergeConfigs<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TEnvBase extends EnvValues = EnvValues,
+	TEnvOverride extends EnvValues = EnvValues,
 >(
-	base: DevConfig<TServices, TApps>,
-	overrides: Partial<DevConfig<TServices, TApps>>,
-): DevConfig<TServices, TApps> {
+	base: DevConfig<TServices, TApps, TEnvBase>,
+	overrides: Partial<DevConfig<TServices, TApps, TEnvOverride>>,
+): DevConfig<TServices, TApps, TEnvBase & TEnvOverride> {
 	return {
 		...base,
 		...overrides,

@@ -1,6 +1,7 @@
 import type {
 	DockerComposeServiceRaw,
 	DockerPresetName,
+	EnvValues,
 	ServiceConfig,
 	ServiceEnvVarMap,
 } from "../../types";
@@ -51,7 +52,8 @@ export type {
 
 export type CustomServiceOptions<
 	TEnv extends ServiceEnvVarMap = ServiceEnvVarMap,
-> = ServiceConfig<TEnv> & {
+	TStatic extends EnvValues = EnvValues,
+> = ServiceConfig<TEnv, TStatic> & {
 	docker: DockerComposeServiceRaw;
 };
 
@@ -66,9 +68,12 @@ export const service = {
 	mailpit: mailpitDockerService.toServiceConfig,
 	typesense: typesenseDockerService.toServiceConfig,
 
-	custom<TEnv extends ServiceEnvVarMap>(
-		options: CustomServiceOptions<TEnv>,
-	): ServiceConfig<TEnv> {
+	custom<
+		const TEnv extends ServiceEnvVarMap,
+		const TStatic extends EnvValues = EnvValues,
+	>(
+		options: CustomServiceOptions<TEnv, TStatic>,
+	): ServiceConfig<TEnv, TStatic> {
 		return options;
 	},
 };

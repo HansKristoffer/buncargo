@@ -3,8 +3,11 @@ import { createDevEnvironment } from "../environment";
 import type {
 	AnyDevConfig,
 	AnyDevEnvironment,
+	AppConfig,
+	DevConfig,
 	DevConfigLike,
 	DevEnvironmentFor,
+	ServiceConfig,
 } from "../types";
 import { getCachedDevEnv, setCachedDevEnv } from "./cache";
 import { findConfigFile } from "./find-config-file";
@@ -56,7 +59,16 @@ export async function loadDevEnv<
 
 	// The dynamic import is untyped, so the caller's TConfig is the only source
 	// of shape information. This cast is the single trust boundary for it.
-	const env = createDevEnvironment(loaded as AnyDevConfig);
+	//
+	// `AnyDevConfig` is deliberately not the cast target: its callbacks carry
+	// placeholder signatures so every concrete config stays assignable to it,
+	// which also means it cannot be handed to something that calls them.
+	const env = createDevEnvironment(
+		loaded as DevConfig<
+			Record<string, ServiceConfig>,
+			Record<string, AppConfig>
+		>,
+	);
 	setCachedDevEnv(env);
 	return env as DevEnvironmentFor<TConfig>;
 }

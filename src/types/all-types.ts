@@ -171,6 +171,7 @@ export interface DockerComposeGenerationOptions {
  */
 export interface ServiceConfig<
 	TEnv extends ServiceEnvVarMap = ServiceEnvVarMap,
+	TStatic extends EnvValues = EnvValues,
 > {
 	/** Base port for the service (before offset is applied) */
 	port: number;
@@ -201,7 +202,7 @@ export interface ServiceConfig<
 	/** Explicit env vars this service contributes to the shared env surface */
 	env?: TEnv;
 	/** Constant values merged into the shared env (e.g. SMTP_HOST, API keys) */
-	staticEnv?: Record<string, string>;
+	staticEnv?: TStatic;
 	/** Docker Compose service definition (preset helper or raw escape hatch) */
 	docker?: DockerServiceDefinition;
 }
@@ -213,7 +214,7 @@ export interface ServiceConfig<
 /**
  * Configuration for an application (e.g., api, web).
  */
-export interface AppConfig {
+export interface AppConfig<TStatic extends EnvValues = EnvValues> {
 	/** Base port for the app (before offset is applied) */
 	port: number;
 	/** Whether this app can be exposed publicly via tunnel */
@@ -235,27 +236,75 @@ export interface AppConfig {
 	/** App keys that must also start when this app starts */
 	requiredApps?: readonly string[];
 	/** Constant env vars injected only into this app's own processes */
-	staticEnv?: Record<string, string | number>;
+	staticEnv?: TStatic;
 	/** Own the TTY (stdin). Only one app may be interactive. */
 	interactive?: boolean;
 	/** Start this app after public tunnels are open so env sees *_PUBLIC_URL. */
 	needsPublicUrls?: boolean;
 	/** Computed env vars injected only into this app's own processes */
-	envVars?: (...args: never[]) => Record<string, string | number>;
+	envVars?: (...args: never[]) => EnvValues;
 }
 
+/**
+ * The `staticEnv` object a service or app declared.
+ *
+ * Widens to {@link EnvValues} when nothing was declared, which
+ * {@link OverlayEnvVarNames} then reads as "no extra keys".
+ */
+export type DeclaredStaticEnv<T> = "staticEnv" extends keyof T
+	? NonNullable<T["staticEnv"]>
+	: EnvValues;
+
+/**
+ * The object an app's own `envVars` builder returns.
+ *
+ * Widens to {@link EnvValues} when the app declares no builder or the builder's
+ * return was already erased, so callers get "no extra keys" rather than an error.
+ */
+export type DeclaredAppEnvVars<TApp> = "envVars" extends keyof TApp
+	? NonNullable<TApp["envVars"]> extends (...args: never[]) => infer TReturn
+		? [TReturn] extends [EnvValues]
+			? TReturn
+			: EnvValues
+		: EnvValues
+	: EnvValues;
+
+/**
+ * `TApps` with every position that names a service or app key narrowed to this
+ * config's own keys.
+ *
+ * The `envVars` parameters are spelled out with `NoInfer` rather than reused
+ * from {@link EnvVarsBuilder}: a builder that reads `ports.web` would otherwise
+ * make `TApps` an inference target from inside the very object it is inferred
+ * from, and TypeScript resolves that circularity by falling back to the
+ * `Record<string, AppConfig>` constraint — losing every app key. The return type
+ * is carried over from the app's own declaration so `buildAppEnvVars` can see it.
+ *
+ * The `never` branch keeps the no-apps instantiation (`Record<string, never>`)
+ * assignable to `Record<string, AppConfig>`; rewriting `never` would otherwise
+ * drop the required `port` / `devCommand` members.
+ */
 export type TypedAppDefinitions<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 > = {
-	[K in keyof TApps]: Omit<
-		TApps[K],
-		"requiredServices" | "requiredApps" | "envVars"
-	> & {
-		requiredServices?: readonly Extract<keyof TServices, string>[];
-		requiredApps?: readonly Extract<keyof TApps, string>[];
-		envVars?: EnvVarsBuilder<TServices, TypedAppDefinitions<TServices, TApps>>;
-	};
+	[K in keyof TApps]: [TApps[K]] extends [never]
+		? TApps[K]
+		: Omit<TApps[K], "requiredServices" | "requiredApps" | "envVars"> & {
+				requiredServices?: readonly Extract<keyof TServices, string>[];
+				requiredApps?: readonly Extract<keyof TApps, string>[];
+				envVars?: (
+					ports: NoInfer<
+						ComputedPorts<TServices, TypedAppDefinitions<TServices, TApps>>
+					>,
+					urls: NoInfer<
+						ComputedUrls<TServices, TypedAppDefinitions<TServices, TApps>>
+					>,
+					ctx: NoInfer<
+						EnvVarsContext<TServices, TypedAppDefinitions<TServices, TApps>>
+					>,
+				) => DeclaredAppEnvVars<TApps[K]>;
+			};
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -339,13 +388,25 @@ export interface DevHooks<
 /**
  * Configuration for Prisma integration.
  */
-export interface PrismaConfig {
+export interface PrismaConfig<
+	TServices extends Record<string, ServiceConfig> = Record<
+		string,
+		ServiceConfig
+	>,
+	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
+> {
 	/** Working directory where prisma schema lives (relative to monorepo root). Default: 'packages/prisma' */
 	cwd?: string;
 	/** Configured service key for the database. Default: 'postgres' */
-	service?: string;
-	/** Environment variable name for the database URL. Default: 'DATABASE_URL' */
-	urlEnvVar?: string;
+	service?: Extract<keyof TServices, string>;
+	/**
+	 * Environment variable name for the database URL. Default: 'DATABASE_URL'
+	 *
+	 * Deliberately not keyed on the `env` overlay: that would make `DevConfig`
+	 * invariant in its overlay type, so a narrowly typed config could no longer
+	 * be handed to anything expecting the widened one.
+	 */
+	urlEnvVar?: ConfigEnvVarNames<TServices, TApps>;
 	/**
 	 * Command to run after migrations (e.g. Prisma 7 `prisma generate --sql`).
 	 * Skipped when unset.
@@ -406,10 +467,13 @@ export interface SeedCheckHelpers<
 	 * }
 	 * ```
 	 */
-	checkTable: (
-		tableName: string,
-		service?: keyof TServices,
-	) => Promise<boolean>;
+	// Method syntax, not a function-typed property: `service` is keyed on the
+	// config, so under `strictFunctionTypes` a property would make this helper
+	// invariant in `TServices` — and a `check` callback written inside a
+	// conditional spread is contextually typed against the widened default
+	// instantiation before `TServices` is inferred. Bivariant parameters keep
+	// the two mutually assignable.
+	checkTable(tableName: string, service?: keyof TServices): Promise<boolean>;
 }
 
 /**
@@ -482,8 +546,18 @@ export type SeedOutcome =
 
 /**
  * Options for the dev environment.
+ *
+ * App/service keys are checked against the config's own keys. The defaults keep
+ * the standalone type usable for configs loaded at runtime, where keys are only
+ * known as `string` and {@link validateConfig} does the checking instead.
  */
-export interface DevOptions {
+export interface DevOptions<
+	TServices extends Record<string, ServiceConfig> = Record<
+		string,
+		ServiceConfig
+	>,
+	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
+> {
 	/**
 	 * Enable worktree isolation. When true (default), each worktree gets:
 	 * - unique ports (offset)
@@ -497,30 +571,49 @@ export interface DevOptions {
 	/** Default verbose setting for all operations. Default: true */
 	verbose?: boolean;
 	/** App key used by getExpoApiUrl(). Default: 'api' */
-	expoApiApp?: string;
+	expoApiApp?: Extract<keyof TApps, string>;
 	/** App key used by getFrontendPort(). Default: 'platform', then 'web' */
-	frontendApp?: string;
+	frontendApp?: Extract<keyof TApps, string>;
 	/**
 	 * Named `.localhost` HTTPS URLs via the shared loopback proxy.
 	 * `true` uses defaults. Off on Windows, in CI, or when `BUNCARGO_HOSTS=0`.
 	 */
-	hosts?: boolean | HostsOptions;
+	hosts?: boolean | HostsOptions<TServices, TApps>;
 }
 
 /**
  * Options for named local HTTPS URLs.
  */
-export interface HostsOptions {
+export interface HostsOptions<
+	TServices extends Record<string, ServiceConfig> = Record<
+		string,
+		ServiceConfig
+	>,
+	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
+> {
 	/** DNS suffix. Default: `localhost`. Multi-label values like `dev.example.com` are allowed. */
 	tld?: string;
 	/** App key whose hostname omits the app label (`web` → `serpier.localhost`). */
-	primaryApp?: string;
+	primaryApp?: Extract<keyof TApps, string>;
 	/**
 	 * HTTP Docker UIs to name. Default: `mailpit` and `typesense`.
 	 * `true` names every HTTP-capable service.
 	 */
-	services?: string[] | true;
+	services?: readonly Extract<keyof TServices, string>[] | true;
 }
+
+/**
+ * {@link HostsOptions} with its keys widened to `string`.
+ *
+ * Runtime consumers take this: a `HostsOptions<TServices, TApps>` from a typed
+ * config is assignable to it, while a generic `HostsOptions<…>` is not
+ * assignable to another instantiation of itself.
+ */
+export type HostsOptionsLike = {
+	tld?: string;
+	primaryApp?: string;
+	services?: readonly string[] | true;
+};
 
 /**
  * One named hostname mapped to a local listen port.
@@ -543,21 +636,60 @@ export interface HostsRuntime {
 }
 
 /**
+ * Env values a config may declare or compute.
+ *
+ * `undefined` is allowed so `process.env.X` and optional public URLs can be
+ * passed straight through; those entries are dropped when the environment is
+ * built rather than stringified into the literal `"undefined"`.
+ */
+export type EnvValues = Record<string, string | number | undefined>;
+
+/**
+ * Third argument to {@link EnvVarsBuilder}: identity, LAN IP, and public URLs.
+ */
+export type EnvVarsContext<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+> = {
+	projectName: string;
+	localIp: string;
+	portOffset: number;
+	publicUrls: ComputedPublicUrls<TServices, TApps>;
+};
+
+/**
  * Environment variable builder function.
+ *
+ * `TEnv` is the overlay object the callback returns. Leave it at the
+ * {@link EnvValues} default for an open record; a narrowly inferred return
+ * (the usual `defineDevConfig({ env: () => ({ VITE_PORT }) })` case) is what
+ * {@link OverlayEnvVarNames} and `getEnvVar` read as extra keys.
  */
 export type EnvVarsBuilder<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TEnv extends EnvValues = EnvValues,
 > = (
 	ports: ComputedPorts<TServices, TApps>,
 	urls: ComputedUrls<TServices, TApps>,
-	ctx: {
-		projectName: string;
-		localIp: string;
-		portOffset: number;
-		publicUrls: ComputedPublicUrls<TServices, TApps>;
-	},
-) => Record<string, string | number>;
+	ctx: EnvVarsContext<TServices, TApps>,
+) => TEnv;
+
+/**
+ * Object keys that are not a wide `string` index (`Record<string, …>`).
+ * Used so empty-app configs and open records do not unlock every `*_URL`.
+ */
+type ConcreteStringKeys<T> = string extends keyof T
+	? never
+	: Extract<keyof T, string>;
+
+/**
+ * Keys declared by a narrowly inferred `env` overlay.
+ *
+ * A wide {@link EnvValues} (`Record<string, …>`) contributes nothing: otherwise
+ * every string would become a legal `getEnvVar` name.
+ */
+export type OverlayEnvVarNames<TEnv> = ConcreteStringKeys<TEnv>;
 
 /**
  * Main configuration for the dev environment.
@@ -568,6 +700,7 @@ export interface DevConfig<
 		ServiceConfig
 	>,
 	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
+	TEnv extends EnvValues = EnvValues,
 > {
 	/** Prefix for Docker project name (e.g., 'myapp' -> 'myapp-main') */
 	projectPrefix: string;
@@ -580,7 +713,7 @@ export interface DevConfig<
 	 * Use this for values that belong to the whole stack (rewritten WEB_URL,
 	 * VITE_* aliases, SMTP_HOST). App-only values stay on `apps.<name>.envVars`.
 	 */
-	env?: EnvVarsBuilder<TServices, TApps>;
+	env?: EnvVarsBuilder<TServices, TApps, TEnv>;
 	/** Lifecycle hooks (optional) */
 	hooks?: DevHooks<TServices, TApps>;
 	/** Migrations to run after containers are ready (optional). Runs sequentially. */
@@ -588,9 +721,9 @@ export interface DevConfig<
 	/** Seed configuration (optional). Runs after migrations, before servers. */
 	seed?: SeedConfig<TServices, TApps>;
 	/** Prisma configuration (optional). When set, dev.prisma is available. */
-	prisma?: PrismaConfig;
+	prisma?: PrismaConfig<TServices, TApps>;
 	/** Additional options (optional) */
-	options?: DevOptions;
+	options?: DevOptions<TServices, TApps>;
 	/** Docker Compose generation options (optional) */
 	docker?: DockerComposeGenerationOptions;
 }
@@ -603,18 +736,68 @@ export interface DevConfig<
 export type DevConfigInput<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
-> = DevConfig<TServices, TypedAppDefinitions<TServices, TApps>>;
+	TEnv extends EnvValues = EnvValues,
+> = DevConfig<TServices, TypedAppDefinitions<TServices, TApps>, TEnv>;
+
+/**
+ * {@link DevOptions} with its app/service key positions widened to `string`.
+ *
+ * `keyof T` inverts variance, so `DevOptions<{ api: … }>` is not assignable to
+ * `DevOptions<Record<string, …>>`. Widening the keys is what restores it.
+ */
+type AnyDevOptions = Omit<
+	DevOptions,
+	"expoApiApp" | "frontendApp" | "hosts"
+> & {
+	expoApiApp?: string;
+	frontendApp?: string;
+	hosts?: boolean | HostsOptionsLike;
+};
+
+/** {@link PrismaConfig} with its service/env-name positions widened to `string`. */
+type AnyPrismaConfig = Omit<PrismaConfig, "service" | "urlEnvVar"> & {
+	service?: string;
+	urlEnvVar?: string;
+};
+
+/** {@link DevHooks} with the hook names kept but their context erased. */
+type AnyDevHooks = {
+	[K in keyof DevHooks<
+		Record<string, ServiceConfig>,
+		Record<string, AppConfig>
+	>]?: (...args: never[]) => Promise<void>;
+};
+
+/** {@link SeedConfig} with `check`'s context erased. */
+type AnyDevSeedConfig = Omit<
+	SeedConfig<Record<string, ServiceConfig>, Record<string, AppConfig>>,
+	"check"
+> & {
+	check?: (...args: never[]) => Promise<boolean>;
+};
 
 /**
  * Any dev config, with service/app keys unknown.
  *
  * Use this where a config is loaded at runtime and its shape cannot be known
  * statically. Prefer a concrete `typeof myConfig` wherever it is available.
+ *
+ * `env`, `hooks` and `seed.check` receive the config's *own* computed ports and
+ * urls, so they are declared here with placeholder `never[]` parameters. That is
+ * what makes every concrete config assignable to this type, and it is why this
+ * is a read-only view: reading `config.seed?.command` is fine, calling
+ * `config.env(...)` through it is not.
  */
-export type AnyDevConfig = DevConfig<
-	Record<string, ServiceConfig>,
-	Record<string, AppConfig>
->;
+export type AnyDevConfig = Omit<
+	DevConfig,
+	"env" | "hooks" | "seed" | "options" | "prisma"
+> & {
+	env?: (...args: never[]) => EnvValues;
+	hooks?: AnyDevHooks;
+	seed?: AnyDevSeedConfig;
+	options?: AnyDevOptions;
+	prisma?: AnyPrismaConfig;
+};
 
 /**
  * Constraint for generics that accept "some concrete config type".
@@ -628,6 +811,12 @@ export type DevConfigLike = {
 	projectPrefix: string;
 	services: Record<string, ServiceConfig>;
 	apps?: Record<string, AppConfig>;
+	/**
+	 * Declared so {@link DevEnvironmentFor} can recover the overlay type. The
+	 * parameters are `never[]` because any concrete builder must stay assignable
+	 * to this shape, and function parameters are contravariant.
+	 */
+	env?: (...args: never[]) => EnvValues;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -646,6 +835,15 @@ type ServicesWithSecondaryPort<
 		: never]: number;
 };
 
+/**
+ * Ports for every service and app.
+ *
+ * The app mapping is deliberately not filtered through
+ * {@link ConcreteStringKeys}: while `TApps` is still being inferred, the
+ * `envVars` callbacks inside `apps` see it as its `Record<string, AppConfig>`
+ * constraint, and dropping an open record there would leave those callbacks
+ * with no `ports.<app>` at all.
+ */
 export type ComputedPorts<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
@@ -656,7 +854,7 @@ export type ComputedPorts<
 } & ServicesWithSecondaryPort<TServices>;
 
 /**
- * Computed URLs object - maps service/app names to their URLs.
+ * URLs for every service and app, plus a `<app>Local` LAN URL per app.
  */
 export type ComputedUrls<
 	TServices extends Record<string, ServiceConfig>,
@@ -690,10 +888,7 @@ type IsExposed<T> = "expose" extends keyof T
  * Only these can ever receive a `*.trycloudflare.com` URL, so the public-URL
  * surface is derived from this rather than from every configured key.
  */
-export type ExposedKeys<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-> =
+export type ExposedKeys<TServices extends object, TApps extends object> =
 	| {
 			[K in keyof TServices]: IsExposed<TServices[K]> extends true ? K : never;
 	  }[keyof TServices]
@@ -715,7 +910,7 @@ export type ComputedPublicUrls<
 
 type ExplicitServiceEnvVarNames<TService extends ServiceConfig> =
 	TService extends ServiceConfig
-		? Extract<keyof NonNullable<TService["env"]>, string>
+		? ConcreteStringKeys<NonNullable<TService["env"]>>
 		: never;
 
 type ServiceEnvVarNamesFromKey<TKey extends string> =
@@ -739,7 +934,8 @@ export type ServiceEnvVarNames<
 	[K in keyof TServices]:
 		| ExplicitServiceEnvVarNames<TServices[K]>
 		| ServiceEnvVarNamesFromKey<Extract<K, string>>
-		| ServiceEnvVarNamesFromPreset<TServices[K]>;
+		| ServiceEnvVarNamesFromPreset<TServices[K]>
+		| OverlayEnvVarNames<DeclaredStaticEnv<TServices[K]>>;
 }[keyof TServices];
 
 export type SharedEnvVarNames<
@@ -748,24 +944,78 @@ export type SharedEnvVarNames<
 > =
 	| "COMPOSE_PROJECT_NAME"
 	| "NODE_ENV"
+	| "NODE_EXTRA_CA_CERTS"
+	| "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS"
 	| `${Uppercase<Extract<keyof ComputedPorts<TServices, TApps>, string>>}_PORT`
 	| `${Uppercase<Extract<keyof ComputedUrls<TServices, TApps>, string>>}_URL`
 	| `${Uppercase<Extract<ExposedKeys<TServices, TApps>, string>>}_PUBLIC_URL`;
 
 export type ConfigEnvVarNames<
 	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-> = SharedEnvVarNames<TServices, TApps> | ServiceEnvVarNames<TServices>;
+	TApps extends object,
+	TEnv = EnvValues,
+> =
+	| SharedEnvVarNames<
+			TServices,
+			[TApps] extends [Record<string, AppConfig>]
+				? TApps
+				: Record<string, never>
+	  >
+	| ServiceEnvVarNames<TServices>
+	| OverlayEnvVarNames<TEnv>;
 
 /**
- * A built environment: every computed name is guaranteed present, plus whatever
- * `config.env` and `apps.<name>.envVars` add at runtime.
+ * Value `getEnvVar` returns for `name`. Overlay keys keep the type the `env`
+ * callback declared; computed / service names stay `string | number`.
+ */
+export type GetEnvVarValue<
+	TEnv,
+	TName extends string,
+> = TName extends keyof TEnv ? TEnv[TName] : string | number | undefined;
+
+/**
+ * Env names that only exist while named hosts are active, so they cannot be
+ * guaranteed present in a built environment.
+ */
+export type HostOnlyEnvVarNames =
+	| "NODE_EXTRA_CA_CERTS"
+	| "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS";
+
+/**
+ * A built shared environment.
+ *
+ * Every computed name is present, plus whatever `config.env` declared. Names
+ * that only appear under named hosts are optional. There is deliberately no
+ * open index signature: an unknown name is a typo, not a lookup.
  */
 export type ComputedEnvVars<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
-> = Record<ConfigEnvVarNames<TServices, TApps>, string> &
-	Record<string, string>;
+	TEnv = EnvValues,
+> = Record<
+	Exclude<ConfigEnvVarNames<TServices, TApps, TEnv>, HostOnlyEnvVarNames>,
+	string
+> &
+	Partial<Record<HostOnlyEnvVarNames, string>>;
+
+/**
+ * The environment one app's own process receives: the shared surface plus that
+ * app's `staticEnv` and `envVars` keys, plus the `PORT`/`HOST` pair the spawner
+ * always injects.
+ */
+export type AppEnvVars<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+	TEnv extends EnvValues,
+	TName extends keyof TApps,
+> = ComputedEnvVars<TServices, TApps, TEnv> &
+	Record<
+		| OverlayEnvVarNames<DeclaredStaticEnv<TApps[TName]>>
+		| OverlayEnvVarNames<DeclaredAppEnvVars<TApps[TName]>>
+		| "PORT"
+		| "HOST",
+		string
+	>;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Start/Stop Options
@@ -774,7 +1024,9 @@ export type ComputedEnvVars<
 /**
  * Options for starting the dev environment.
  */
-export interface StartOptions {
+export interface StartOptions<
+	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
+> {
 	/** Print output to console. Default: true */
 	verbose?: boolean;
 	/** Wait for containers to be healthy. Default: true */
@@ -788,7 +1040,7 @@ export interface StartOptions {
 	/** Skip the initial `logInfo` banner (CLI uses this with `--expose`, then logs once with tunnel URLs). Default: false */
 	skipEnvironmentLog?: boolean;
 	/** If set, start and wait for only these app names plus any transitive `requiredApps`. */
-	onlyApps?: string[];
+	onlyApps?: Extract<keyof TApps, string>[];
 	/** Override Docker auto-start. Default: config.docker.autoStart (true, skipped in CI). */
 	autoStartDocker?: boolean;
 }
@@ -828,14 +1080,20 @@ export type PublicTunnelHandle = DevEnvironmentTunnelLog & {
 };
 
 /** Options for {@link DevEnvironment.openPublicTunnels}. */
-export interface OpenPublicTunnelsOptions {
+export interface OpenPublicTunnelsOptions<
+	TServices extends Record<string, ServiceConfig> = Record<
+		string,
+		ServiceConfig
+	>,
+	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
+> {
 	/** Subset of expose targets by name; omit for all `expose: true` services/apps. */
-	names?: string[];
+	names?: Extract<ExposedKeys<TServices, TApps>, string>[];
 	/**
 	 * Wait for these apps' HTTP health endpoints before opening tunnels.
 	 * Servers must already be listening on their ports.
 	 */
-	waitForHealthy?: string[];
+	waitForHealthy?: Extract<keyof TApps, string>[];
 }
 
 /** Result of {@link DevEnvironment.openPublicTunnels}. */
@@ -854,6 +1112,7 @@ export interface OpenPublicTunnelsResult<
 export interface DevEnvironment<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TEnv extends EnvValues = EnvValues,
 > {
 	// ─────────────────────────────────────────────────────────────────────────
 	// Configuration Access
@@ -893,7 +1152,7 @@ export interface DevEnvironment<
 	// ─────────────────────────────────────────────────────────────────────────
 
 	/** Start the dev environment (containers + optional servers) */
-	start(options?: StartOptions): Promise<DevServerPids | null>;
+	start(options?: StartOptions<TApps>): Promise<DevServerPids | null>;
 	/** Stop the dev environment */
 	stop(options?: StopOptions): Promise<void>;
 	/** Restart containers only */
@@ -917,7 +1176,7 @@ export interface DevEnvironment<
 		productionBuild?: boolean;
 		verbose?: boolean;
 		/** If set, start and wait for only these app names plus any transitive `requiredApps`. */
-		onlyApps?: string[];
+		onlyApps?: Extract<keyof TApps, string>[];
 	}): Promise<DevServerPids>;
 	/** Stop a process by PID */
 	stopProcess(pid: number): void;
@@ -926,7 +1185,7 @@ export interface DevEnvironment<
 		timeout?: number;
 		productionBuild?: boolean;
 		/** If set, wait only for these app names plus any transitive `requiredApps`. */
-		onlyApps?: string[];
+		onlyApps?: Extract<keyof TApps, string>[];
 		/** When false, do not expand `onlyApps` via `requiredApps`. Default: true */
 		expandRequired?: boolean;
 	}): Promise<void>;
@@ -940,18 +1199,17 @@ export interface DevEnvironment<
 	/**
 	 * Build the shared environment variables for shell commands.
 	 *
-	 * The computed names ({@link ConfigEnvVarNames}) are typed like
-	 * `getEnvVar`; the open index signature covers `config.env` and
-	 * `apps.<name>.envVars` output, which is only known at runtime.
+	 * Keys are the computed names ({@link ConfigEnvVarNames}) plus whatever
+	 * `config.env` declared, so an unknown name is a compile error.
 	 *
 	 * Call **after** {@link setPublicUrls} or {@link openPublicTunnels} so `*_PUBLIC_URL` values reflect tunnel URLs.
 	 */
-	buildEnvVars(production?: boolean): ComputedEnvVars<TServices, TApps>;
+	buildEnvVars(production?: boolean): ComputedEnvVars<TServices, TApps, TEnv>;
 	/** Build the full environment for a specific app process (`shared env + apps[name].envVars`). */
-	buildAppEnvVars(
-		appName: Extract<keyof TApps, string>,
+	buildAppEnvVars<TName extends Extract<keyof TApps, string>>(
+		appName: TName,
 		production?: boolean,
-	): ComputedEnvVars<TServices, TApps>;
+	): AppEnvVars<TServices, TApps, TEnv, TName>;
 	/** Set public tunnel URLs used by envVars and *_PUBLIC_URL injection */
 	setPublicUrls(urls: ComputedPublicUrls<TServices, TApps>): void;
 	/** Clear all public tunnel URLs */
@@ -975,7 +1233,7 @@ export interface DevEnvironment<
 	 * Call {@link buildEnvVars} or {@link buildAppEnvVars} after this resolves when spawning processes that need `*_PUBLIC_URL`.
 	 */
 	openPublicTunnels(
-		options?: OpenPublicTunnelsOptions,
+		options?: OpenPublicTunnelsOptions<TServices, TApps>,
 	): Promise<OpenPublicTunnelsResult<TServices, TApps>>;
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -1019,14 +1277,37 @@ export interface DevEnvironment<
 	// ─────────────────────────────────────────────────────────────────────────
 
 	/** Create a new environment with a different suffix (for test isolation) */
-	withSuffix(suffix: string): DevEnvironment<TServices, TApps>;
+	withSuffix(suffix: string): DevEnvironment<TServices, TApps, TEnv>;
 }
 
-/** Any dev environment, with service/app keys unknown. */
-export type AnyDevEnvironment = DevEnvironment<
-	Record<string, ServiceConfig>,
-	Record<string, AppConfig>
->;
+/**
+ * Any dev environment, with service/app keys unknown.
+ *
+ * The name-keyed option types are widened back to `string` rather than left at
+ * the `Record<string, …>` instantiation: `names?: Extract<ExposedKeys<…>>[]`
+ * puts app keys in a parameter position, and a concrete environment would not
+ * be assignable to the widened one otherwise.
+ */
+export interface AnyDevEnvironment
+	extends Omit<
+		DevEnvironment<
+			Record<string, ServiceConfig>,
+			Record<string, AppConfig>,
+			EnvValues
+		>,
+		"openPublicTunnels" | "withSuffix"
+	> {
+	openPublicTunnels(options?: {
+		names?: string[];
+		waitForHealthy?: string[];
+	}): Promise<
+		OpenPublicTunnelsResult<
+			Record<string, ServiceConfig>,
+			Record<string, AppConfig>
+		>
+	>;
+	withSuffix(suffix: string): AnyDevEnvironment;
+}
 
 /**
  * The {@link DevEnvironment} produced by a given config type.
@@ -1041,8 +1322,8 @@ export type AnyDevEnvironment = DevEnvironment<
  * ```
  */
 export type DevEnvironmentFor<TConfig extends DevConfigLike> =
-	TConfig extends DevConfig<infer TServices, infer TApps>
-		? DevEnvironment<TServices, TApps>
+	TConfig extends DevConfig<infer TServices, infer TApps, infer TEnv>
+		? DevEnvironment<TServices, TApps, TEnv>
 		: AnyDevEnvironment;
 
 // ═══════════════════════════════════════════════════════════════════════════

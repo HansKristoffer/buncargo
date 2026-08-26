@@ -2,9 +2,13 @@ import { applyHostPlanToUrls, planNamedHosts } from "../core/hosts/plan";
 import { getLocalIp } from "../core/network";
 import { resolvePortPlan } from "../core/port-allocation";
 import {
+	asComputedPorts,
+	asComputedUrls,
 	computeDevIdentity,
 	computeUrls,
 	findMonorepoRoot,
+	toUrlMap,
+	type UrlMap,
 } from "../core/ports";
 import type { PublicTunnel } from "../core/tunnel";
 import {
@@ -17,7 +21,8 @@ import type {
 	ComputedUrls,
 	DevConfig,
 	DevEnvironmentTunnelLog,
-	HostsOptions,
+	EnvValues,
+	HostsOptionsLike,
 	HostsRuntime,
 	PortOffsetProvenance,
 	ServiceConfig,
@@ -34,8 +39,9 @@ import { logEnvironmentInfo } from "./logging";
 export interface DevEnvContext<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TEnv extends EnvValues = EnvValues,
 > {
-	readonly config: DevConfig<TServices, TApps>;
+	readonly config: DevConfig<TServices, TApps, TEnv>;
 	readonly root: string;
 	readonly projectName: string;
 	readonly projectSuffix: string | undefined;
@@ -46,29 +52,31 @@ export interface DevEnvContext<
 	readonly ports: ComputedPorts<TServices, TApps>;
 	readonly urls: ComputedUrls<TServices, TApps>;
 	/** Mutated in place so consumers holding the object see tunnel updates. */
-	readonly publicUrls: Record<string, string>;
+	readonly publicUrls: UrlMap;
 	readonly portOffset: number;
 	readonly portOffsetProvenance: PortOffsetProvenance;
 	readonly composeFile: string;
 	readonly hosts: HostsRuntime | null;
 	ensureComposeFile(): string;
 	setNamedHostsActive(active: boolean, extras?: { caPath?: string }): void;
-	setPublicUrls(urls: Record<string, string>): void;
+	/** Absent entries are skipped: only exposed targets that came up have a URL. */
+	setPublicUrls(urls: Readonly<Record<string, string | undefined>>): void;
 	clearPublicUrls(): void;
 	logInfo(label?: string, tunnels?: PublicTunnel[]): void;
 }
 
-function resolveHostsTld(hosts: boolean | HostsOptions): string {
+function resolveHostsTld(hosts: boolean | HostsOptionsLike): string {
 	return typeof hosts === "object" ? (hosts.tld ?? "localhost") : "localhost";
 }
 
 export function createDevEnvContext<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TEnv extends EnvValues = EnvValues,
 >(
-	config: DevConfig<TServices, TApps>,
+	config: DevConfig<TServices, TApps, TEnv>,
 	options: { suffix?: string } = {},
-): DevEnvContext<TServices, TApps> {
+): DevEnvContext<TServices, TApps, TEnv> {
 	const root = findMonorepoRoot();
 	const suffix = options.suffix;
 	const { worktree, worktreeSuffix, projectSuffix, projectName } =
@@ -97,7 +105,8 @@ export function createDevEnvContext<
 		worktreeName: worktreeSuffix,
 		worktreeIsolation: config.options?.worktreeIsolation,
 	});
-	const ports = portPlan.ports as ComputedPorts<TServices, TApps>;
+	const portMap = portPlan.ports;
+	const ports = asComputedPorts<TServices, TApps>(portMap);
 
 	const hostsPlan = config.options?.hosts
 		? planNamedHosts({
@@ -105,7 +114,7 @@ export function createDevEnvContext<
 				worktreeSuffix,
 				apps,
 				services,
-				ports: ports as Record<string, number>,
+				ports: portMap,
 				hosts: config.options.hosts,
 			})
 		: [];
@@ -117,12 +126,9 @@ export function createDevEnvContext<
 			}
 		: null;
 
-	const plainUrls = computeUrls(services, apps, ports, localIp) as ComputedUrls<
-		TServices,
-		TApps
-	>;
-	const urls = { ...plainUrls } as ComputedUrls<TServices, TApps>;
-	const publicUrls: Record<string, string> = {};
+	const plainUrls: UrlMap = computeUrls(services, apps, portMap, localIp);
+	const urls = asComputedUrls<TServices, TApps>({ ...plainUrls });
+	const publicUrls: UrlMap = {};
 
 	return {
 		config,
@@ -153,11 +159,12 @@ export function createDevEnvContext<
 			if (!hosts) return;
 			hosts.active = active;
 			hosts.caPath = extras.caPath;
+			const urlMap = toUrlMap(urls);
 			for (const [key, value] of Object.entries(plainUrls)) {
-				(urls as Record<string, string>)[key] = value;
+				urlMap[key] = value;
 			}
 			if (active && hosts.plan.length > 0) {
-				applyHostPlanToUrls(urls as Record<string, string>, hosts.plan);
+				applyHostPlanToUrls(urlMap, hosts.plan);
 			}
 		},
 
@@ -166,7 +173,7 @@ export function createDevEnvContext<
 				delete publicUrls[key];
 			}
 			for (const [key, value] of Object.entries(next)) {
-				publicUrls[key] = value;
+				if (value !== undefined) publicUrls[key] = value;
 			}
 		},
 
@@ -190,8 +197,8 @@ export function createDevEnvContext<
 				projectName,
 				services,
 				apps,
-				ports: ports as Record<string, number>,
-				urls: urls as Record<string, string>,
+				ports: portMap,
+				urls: toUrlMap(urls),
 				localIp,
 				worktree,
 				portOffset: portPlan.offset,

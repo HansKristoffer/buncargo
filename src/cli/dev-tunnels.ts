@@ -7,6 +7,7 @@ import type {
 } from "../core/tunnel";
 import type {
 	AppConfig,
+	ComputedPublicUrls,
 	DevEnvironment,
 	DevEnvironmentTunnelLog,
 	ServiceConfig,
@@ -66,6 +67,17 @@ export function createTunnelCoordinator<
 	let pendingTargets: PublicExposeTarget[] = [];
 	let tunnels: PublicTunnel[] = [];
 	let ownedRegistryEntries: TunnelRegistryEntry[] = [];
+
+	/**
+	 * Public URLs here come from `--expose` names and the tunnel registry, so
+	 * this module only ever knows them as strings. Converting once keeps
+	 * `setPublicUrls` typo-checked for programmatic callers.
+	 */
+	function asPublicUrls(
+		urls: Record<string, string>,
+	): ComputedPublicUrls<TServices, TApps> {
+		return urls as ComputedPublicUrls<TServices, TApps>;
+	}
 
 	function parseExposeNames(
 		exposeValue: string | undefined,
@@ -165,7 +177,7 @@ export function createTunnelCoordinator<
 			);
 		}
 
-		env.setPublicUrls(inheritedPublicUrls as typeof env.publicUrls);
+		env.setPublicUrls(asPublicUrls(inheritedPublicUrls));
 		pendingTargets = liveTargets.filter(
 			(target) =>
 				!(
@@ -184,12 +196,14 @@ export function createTunnelCoordinator<
 		}
 
 		tunnels = await tunnelApi.startPublicTunnels(pendingTargets);
-		env.setPublicUrls({
-			...inheritedPublicUrls,
-			...Object.fromEntries(
-				tunnels.map((tunnel) => [tunnel.name, tunnel.publicUrl]),
-			),
-		} as typeof env.publicUrls);
+		env.setPublicUrls(
+			asPublicUrls({
+				...inheritedPublicUrls,
+				...Object.fromEntries(
+					tunnels.map((tunnel) => [tunnel.name, tunnel.publicUrl] as const),
+				),
+			}),
+		);
 
 		ownedRegistryEntries = tunnels
 			.filter((tunnel) => tunnel.kind === "app")

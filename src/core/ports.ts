@@ -1,6 +1,69 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
-import type { AppConfig, ServiceConfig } from "../types";
+import type {
+	AppConfig,
+	ComputedPorts,
+	ComputedUrls,
+	ServiceConfig,
+} from "../types";
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Port / URL Map Boundary
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Ports keyed by an unknown set of names.
+ *
+ * `ComputedPorts` is an intersection of mapped types with no index signature —
+ * that is what makes `ports.typo` an error — so it cannot flow into helpers that
+ * legitimately work over unknown keys. `PortMap` is that untyped shape, and
+ * {@link toPortMap} / {@link asComputedPorts} are the only two places the
+ * conversion happens.
+ */
+export type PortMap = Record<string, number>;
+
+/** URLs keyed by an unknown set of names. See {@link PortMap}. */
+export type UrlMap = Record<string, string>;
+
+/**
+ * Widen a config-keyed port record so key-agnostic helpers can read it.
+ *
+ * The constraint accepts any record whose values are all numbers, which every
+ * `ComputedPorts` instantiation satisfies. The result aliases `ports`, so
+ * helpers that mutate the map mutate the caller's record.
+ */
+export function toPortMap<T extends Record<keyof T, number>>(
+	ports: T,
+): PortMap {
+	return ports as PortMap;
+}
+
+/** Widen a config-keyed URL record. See {@link toPortMap}. */
+export function toUrlMap<T extends Record<keyof T, string>>(urls: T): UrlMap {
+	return urls as UrlMap;
+}
+
+/**
+ * Key a {@link PortMap} on a config's services and apps.
+ *
+ * `resolvePortPlan` allocates ports by iterating the config at runtime, so the
+ * keys it produces are only known to the type system through the config that
+ * was passed in. This is the single place that correspondence is asserted.
+ */
+export function asComputedPorts<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+>(ports: PortMap): ComputedPorts<TServices, TApps> {
+	return ports as ComputedPorts<TServices, TApps>;
+}
+
+/** Key a {@link UrlMap} on a config's services and apps. See {@link asComputedPorts}. */
+export function asComputedUrls<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+>(urls: UrlMap): ComputedUrls<TServices, TApps> {
+	return urls as ComputedUrls<TServices, TApps>;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Monorepo Root Detection
@@ -203,10 +266,10 @@ export function computeUrls<
 >(
 	services: TServices,
 	apps: TApps | undefined,
-	ports: Record<string, number>,
+	ports: PortMap,
 	localIp: string,
-): Record<string, string> {
-	const urls: Record<string, string> = {};
+): UrlMap {
+	const urls: UrlMap = {};
 	const host = "localhost";
 
 	// Add service URLs

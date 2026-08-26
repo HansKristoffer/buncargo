@@ -1,16 +1,23 @@
 import type {
 	AppConfig,
-	ComputedPorts,
-	ComputedUrls,
 	ConfigEnvVarNames,
-	DevConfig,
+	EnvValues,
+	EnvVarsBuilder,
+	GetEnvVarValue,
+	HostsOptionsLike,
 	ServiceConfig,
 } from "../types";
 import { buildSharedEnvValues, mergeSharedEnvWithOverlay } from "./env";
 import { applyHostPlanToUrls, planNamedHosts } from "./hosts/plan";
 import { getLocalIp } from "./network";
 import { resolvePortPlan } from "./port-allocation";
-import { computeDevIdentity, computeUrls, findMonorepoRoot } from "./ports";
+import {
+	asComputedPorts,
+	asComputedUrls,
+	computeDevIdentity,
+	computeUrls,
+	findMonorepoRoot,
+} from "./ports";
 import { isHostsForcedOff } from "./runtime-flags";
 
 /**
@@ -46,6 +53,10 @@ export function logFrontendPort(port: number | undefined): void {
  * Get an environment variable value from the config.
  * Computes the shared env surface from services/apps.
  *
+ * Overlay keys returned by `config.env` are valid names and keep the type the
+ * callback declared (`getEnvVar(config, "VITE_PORT")` is `number` when the
+ * overlay sets `VITE_PORT: ports.platform`).
+ *
  * @param config - The dev config object (from defineDevConfig)
  * @param name - The environment variable name
  * @param options - Optional settings (log for Vibe Kanban detection)
@@ -60,21 +71,32 @@ export function logFrontendPort(port: number | undefined): void {
  *   const isDev = command === 'serve'
  *   const webPort = isDev ? getEnvVar(config, 'WEB_PORT') : undefined
  *   const apiUrl = getEnvVar(config, 'API_URL')
+ *   const vitePort = getEnvVar(config, 'VITE_PORT')
  *   return {
- *     server: { port: webPort, strictPort: true }
+ *     server: { port: webPort ?? vitePort, strictPort: true }
  *   }
  * })
  * ```
  */
 export function getEnvVar<
 	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TName extends ConfigEnvVarNames<TServices, TApps>,
+	TApps extends object,
+	TEnv extends EnvValues,
+	TName extends ConfigEnvVarNames<TServices, TApps, TEnv> & string,
 >(
-	config: DevConfig<TServices, TApps>,
+	config: {
+		projectPrefix: string;
+		services: TServices;
+		apps?: TApps;
+		env?: (...args: never[]) => TEnv;
+		options?: {
+			worktreeIsolation?: boolean;
+			hosts?: boolean | HostsOptionsLike;
+		};
+	},
 	name: TName,
 	options: { log?: boolean } = {},
-): string | number | undefined {
+): GetEnvVarValue<TEnv, TName> {
 	const { log = true } = options;
 	const root = findMonorepoRoot();
 	const identity = computeDevIdentity({
@@ -82,53 +104,62 @@ export function getEnvVar<
 		root,
 		worktreeIsolation: config.options?.worktreeIsolation,
 	});
+	const services = config.services;
+	const apps = config.apps as Record<string, AppConfig> | undefined;
 	const portPlan = resolvePortPlan({
 		projectPrefix: config.projectPrefix,
 		projectName: identity.projectName,
 		root,
-		services: config.services,
-		apps: config.apps,
+		services,
+		apps,
 		worktreeName: identity.worktreeSuffix,
 		worktreeIsolation: config.options?.worktreeIsolation,
 		persist: false,
 	});
 	const localIp = getLocalIp();
 
-	const ports = portPlan.ports as ComputedPorts<TServices, TApps>;
+	const portMap = portPlan.ports;
 	const hostPlan =
 		!isHostsForcedOff() && config.options?.hosts
 			? planNamedHosts({
 					projectPrefix: config.projectPrefix,
 					worktreeSuffix: identity.worktreeSuffix,
-					apps: config.apps,
-					services: config.services,
-					ports,
+					apps,
+					services,
+					ports: portMap,
 					hosts: config.options.hosts,
 				})
 			: undefined;
-	const urls = computeUrls(
-		config.services,
-		config.apps,
-		ports,
-		localIp,
-	) as ComputedUrls<TServices, TApps>;
+	const urlMap = computeUrls(services, apps, portMap, localIp);
 	if (hostPlan && hostPlan.length > 0) {
-		applyHostPlanToUrls(urls as Record<string, string>, hostPlan);
+		applyHostPlanToUrls(urlMap, hostPlan);
 	}
+
+	type Apps = NonNullable<typeof apps>;
+	const ports = asComputedPorts<typeof services, Apps>(portMap);
+	const urls = asComputedUrls<typeof services, Apps>(urlMap);
 
 	const shared = buildSharedEnvValues({
 		projectName: identity.projectName,
-		services: config.services,
+		services,
 		ports,
 		urls,
 		publicUrls: {},
 	});
-	const envVars = mergeSharedEnvWithOverlay(shared, config.env, ports, urls, {
-		projectName: identity.projectName,
-		localIp,
-		portOffset: portPlan.offset,
-		publicUrls: {},
-	});
+	const envVars = mergeSharedEnvWithOverlay(
+		shared,
+		config.env as
+			| EnvVarsBuilder<typeof services, NonNullable<typeof apps>>
+			| undefined,
+		ports,
+		urls,
+		{
+			projectName: identity.projectName,
+			localIp,
+			portOffset: portPlan.offset,
+			publicUrls: {},
+		},
+	);
 
 	const value = envVars[name];
 
@@ -137,7 +168,7 @@ export function getEnvVar<
 		logFrontendPort(value);
 	}
 
-	return value;
+	return value as GetEnvVarValue<TEnv, TName>;
 }
 
 /**

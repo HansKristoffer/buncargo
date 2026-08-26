@@ -1,6 +1,6 @@
 import type {
 	AppConfig,
-	HostsOptions,
+	HostsOptionsLike,
 	NamedHost,
 	ServiceConfig,
 } from "../../types";
@@ -36,7 +36,7 @@ const MAX_HOSTNAME = 253;
 export interface ResolvedHostsOptions {
 	tld: string;
 	primaryApp?: string;
-	services: string[] | true;
+	services: readonly string[] | true;
 }
 
 export function isHostsPlatformSupported(
@@ -86,7 +86,7 @@ export function sanitizeTld(tld: string): string {
 }
 
 export function resolveHostsOptions(
-	hosts: boolean | HostsOptions | undefined,
+	hosts: boolean | HostsOptionsLike | undefined,
 ): ResolvedHostsOptions | null {
 	if (!hosts) return null;
 	const options = hosts === true ? {} : hosts;
@@ -108,7 +108,7 @@ export function isHttpService(name: string, service: ServiceConfig): boolean {
 
 export function selectNamedServiceKeys(
 	services: Record<string, ServiceConfig>,
-	selection: string[] | true,
+	selection: readonly string[] | true,
 ): string[] {
 	if (selection === true) {
 		return Object.entries(services)
@@ -134,7 +134,7 @@ export function planNamedHosts(input: {
 	apps?: Record<string, AppConfig>;
 	services: Record<string, ServiceConfig>;
 	ports: Record<string, number>;
-	hosts: boolean | HostsOptions;
+	hosts: boolean | HostsOptionsLike;
 }): NamedHost[] {
 	const options = resolveHostsOptions(input.hosts);
 	if (!options) return [];

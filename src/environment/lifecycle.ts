@@ -1,3 +1,4 @@
+import { toPortMap } from "../core/ports";
 import { isCI } from "../core/runtime-flags";
 import {
 	areServicesRunning,
@@ -8,6 +9,7 @@ import { buildStartPlan, resolveComposeServiceNames } from "../planning";
 import type {
 	AppConfig,
 	DevServerPids,
+	EnvValues,
 	MigrationConfig,
 	SeedOutcome,
 	SeedRunOptions,
@@ -21,8 +23,10 @@ import { runMigrationsSequentially } from "./migrations";
 import { runSeedIfNeeded } from "./seeding";
 import { startAppServers } from "./servers";
 
-export interface DevLifecycleApi {
-	start(options?: StartOptions): Promise<DevServerPids | null>;
+export interface DevLifecycleApi<
+	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
+> {
+	start(options?: StartOptions<TApps>): Promise<DevServerPids | null>;
 	stop(options?: StopOptions): Promise<void>;
 	restart(): Promise<void>;
 	isRunning(): Promise<boolean>;
@@ -32,10 +36,11 @@ export interface DevLifecycleApi {
 export function createLifecycleApi<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TEnv extends EnvValues = EnvValues,
 >(
-	ctx: DevEnvContext<TServices, TApps>,
-	envVars: DevEnvVarsApi<TServices, TApps>,
-): DevLifecycleApi {
+	ctx: DevEnvContext<TServices, TApps, TEnv>,
+	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
+): DevLifecycleApi<TApps> {
 	const { config, services, apps, ports } = ctx;
 
 	function collectMigrations(): MigrationConfig[] {
@@ -76,7 +81,7 @@ export function createLifecycleApi<
 	}
 
 	async function start(
-		startOptions: StartOptions = {},
+		startOptions: StartOptions<TApps> = {},
 	): Promise<DevServerPids | null> {
 		const ci = isCI();
 		const {
@@ -92,17 +97,16 @@ export function createLifecycleApi<
 
 		const startPlan = buildStartPlan(apps, services, onlyApps);
 		const appsToStart = startPlan.apps;
-		const targetServices = Object.fromEntries(
-			startPlan.requiredServiceKeys.map((serviceKey) => [
-				serviceKey,
-				services[serviceKey],
-			]),
-		) as Record<string, ServiceConfig>;
+		const targetServices: Record<string, ServiceConfig> = Object.fromEntries(
+			startPlan.requiredServiceKeys.map(
+				(serviceKey) => [serviceKey, services[serviceKey]] as const,
+			),
+		);
+		const portMap = toPortMap(ports);
 		const targetPorts = Object.fromEntries(
-			startPlan.requiredServiceKeys.map((serviceKey) => [
-				serviceKey,
-				(ports as Record<string, number>)[serviceKey],
-			]),
+			startPlan.requiredServiceKeys.map(
+				(serviceKey) => [serviceKey, portMap[serviceKey]] as const,
+			),
 		);
 		let containersReady = false;
 

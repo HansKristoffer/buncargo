@@ -2,9 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { getEnvVar } from "../core/utils";
 import { service } from "../docker-compose/services";
 import type {
+	AnyDevConfig,
 	AppConfig,
 	ComputedPublicUrls,
 	DevConfig,
+	EnvValues,
 	ServiceConfig,
 } from "../types";
 import { defineDevConfig, mergeConfigs, validateConfig } from ".";
@@ -550,7 +552,9 @@ describe("validateConfig", () => {
 
 	describe("prisma validation", () => {
 		it("returns error when prisma.service is unknown", () => {
-			const config = createValidConfig();
+			// A typed config rejects this at compile time; the runtime guard covers
+			// configs loaded from disk, whose service keys are only known as strings.
+			const config = createValidConfig() as AnyDevConfig;
 			config.prisma = { service: "redis" };
 
 			const errors = validateConfig(config);
@@ -919,10 +923,86 @@ describe("getEnvVar typing", () => {
 			services: {
 				postgres: service.postgres({ database: "typed" }),
 			},
+			apps: {
+				api: {
+					port: 3000,
+					devCommand: "bun run api",
+				},
+			},
 		});
 
 		// @ts-expect-error - unknown shared env name
 		getEnvVar(config, "MISSING_URL");
+	});
+
+	it("accepts overlay keys inferred from env and rejects unknown ones", () => {
+		const config = defineDevConfig({
+			projectPrefix: "typed",
+			services: {
+				postgres: service.postgres({ database: "typed" }),
+			},
+			apps: {
+				api: {
+					port: 3000,
+					devCommand: "bun run api",
+				},
+				platform: {
+					port: 5173,
+					devCommand: "bun run web",
+				},
+			},
+			env: (ports, urls) => ({
+				VITE_PORT: ports.platform,
+				VITE_API_URL: urls.api,
+			}),
+		});
+
+		const vitePort: number = getEnvVar(config, "VITE_PORT");
+		const viteApiUrl: string = getEnvVar(config, "VITE_API_URL");
+		const caCerts: string | number | undefined = getEnvVar(
+			config,
+			"NODE_EXTRA_CA_CERTS",
+		);
+		const viteHosts: string | number | undefined = getEnvVar(
+			config,
+			"__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS",
+		);
+
+		expect(vitePort).toBeGreaterThan(0);
+		expect(viteApiUrl).toMatch(/^http:\/\//);
+		expect(caCerts).toBeUndefined();
+		expect(viteHosts).toBeUndefined();
+
+		// @ts-expect-error - overlay key was never declared
+		getEnvVar(config, "NOT_A_REAL_VAR");
+	});
+
+	it("does not treat a wide EnvValues overlay as every string", () => {
+		const config = defineDevConfig({
+			projectPrefix: "typed",
+			services: {
+				postgres: service.postgres({ database: "typed" }),
+			},
+			apps: {
+				api: {
+					port: 3000,
+					devCommand: "bun run api",
+				},
+			},
+			env: (ports) =>
+				({
+					VITE_PORT: ports.postgres,
+				}) as EnvValues,
+		});
+
+		const postgresPort: string | number | undefined = getEnvVar(
+			config,
+			"POSTGRES_PORT",
+		);
+		expect(postgresPort).toBeDefined();
+
+		// @ts-expect-error - wide EnvValues must not unlock arbitrary names
+		getEnvVar(config, "VITE_PORT");
 	});
 });
 
@@ -1002,6 +1082,77 @@ describe("defineDevConfig app dependency typing", () => {
 	});
 });
 
+describe("defineDevConfig factory inference", () => {
+	it("keeps app keys when defineDevConfig is returned from a factory", () => {
+		function createConfig(e2e = false) {
+			return defineDevConfig({
+				projectPrefix: "typed",
+				services: {
+					postgres: service.postgres({ database: "typed" }),
+					redis: service.redis(),
+				},
+				apps: {
+					api: {
+						port: 3000,
+						expose: true,
+						devCommand: "bun run api",
+						requiredServices: ["postgres", "redis"],
+					},
+					platform: {
+						port: 5173,
+						expose: true,
+						devCommand: "bun run web",
+						requiredApps: ["api"],
+					},
+					expoApp: {
+						port: 8081,
+						devCommand: "bunx expo start",
+						healthEndpoint: false,
+						expose: true,
+						requiredApps: ["api"],
+						envVars: (_ports, _urls, { publicUrls }) => ({
+							...(publicUrls.expoApp
+								? { EXPO_PACKAGER_PROXY_URL: publicUrls.expoApp }
+								: {}),
+						}),
+					},
+				},
+				env: (ports, urls, { publicUrls, localIp }) => ({
+					VITE_API_URL: publicUrls.api ?? urls.api,
+					VITE_PORT: ports.platform,
+					EXPO_PUBLIC_API_URL:
+						publicUrls.api ?? `http://${localIp}:${ports.api}`,
+					...(e2e ? { E2E_TEST: "true" } : {}),
+				}),
+				options: e2e ? undefined : { hosts: { primaryApp: "platform" } },
+			});
+		}
+
+		const config = createConfig();
+		const apps = config.apps;
+		expect(apps?.api.port).toBe(3000);
+		expect(apps?.expoApp.port).toBe(8081);
+
+		type Apps = NonNullable<typeof config.apps>;
+		type _HasApi = Apps["api"];
+		type _HasExpo = Apps["expoApp"];
+		const apiPort: Apps["api"]["port"] = 3000;
+		expect(apiPort).toBe(3000);
+
+		// @ts-expect-error - "missing" is not a configured app
+		const _missing: Apps["missing"] = apps?.api;
+		void _missing;
+
+		const vitePort: number = getEnvVar(config, "VITE_PORT");
+		const viteApiUrl: string = getEnvVar(config, "VITE_API_URL");
+		expect(vitePort).toBeGreaterThan(0);
+		expect(viteApiUrl).toMatch(/^https?:\/\//);
+
+		// @ts-expect-error - overlay key was never declared
+		getEnvVar(config, "NOT_A_REAL_VAR");
+	});
+});
+
 describe("validateConfig hosts", () => {
 	it("accepts hosts: true", () => {
 		const config = createValidConfig();
@@ -1010,11 +1161,20 @@ describe("validateConfig hosts", () => {
 	});
 
 	it("rejects an unknown primaryApp", () => {
-		const config = createValidConfig();
+		// A typed config rejects this at compile time; the runtime guard covers
+		// configs loaded from disk, whose app keys are only known as strings.
+		const config = createValidConfig() as AnyDevConfig;
 		config.options = { hosts: { primaryApp: "web" } };
 		expect(validateConfig(config)).toContain(
 			'options.hosts.primaryApp "web" must match a configured app key',
 		);
+	});
+
+	it("rejects a primaryApp that is not a configured app key at compile time", () => {
+		const config = createValidConfig();
+		// @ts-expect-error - "web" is not a configured app key
+		config.options = { hosts: { primaryApp: "web" } };
+		expect(config.options).toBeDefined();
 	});
 
 	it("rejects an invalid tld", () => {
@@ -1034,7 +1194,7 @@ describe("validateConfig helper app options", () => {
 	});
 
 	it("rejects unknown expoApiApp and frontendApp keys", () => {
-		const config = createValidConfig();
+		const config = createValidConfig() as AnyDevConfig;
 		config.options = { expoApiApp: "mobile", frontendApp: "web" };
 		expect(validateConfig(config)).toEqual([
 			'options.expoApiApp "mobile" must match a configured app key',

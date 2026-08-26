@@ -156,6 +156,11 @@ describe("createDevEnvironment env builders", () => {
 			);
 
 			expect(env.buildEnvVars().DATABASE_URL).toBe(env.urls.postgres);
+			// App-only names are not on the shared surface, so reading one needs a
+			// widened view; the compile-time rejection is asserted below.
+			const sharedEnv: Record<string, string | undefined> = env.buildEnvVars();
+			expect(sharedEnv.VITE_API_URL).toBeUndefined();
+			// @ts-expect-error - VITE_API_URL belongs to apps.web, not the shared env
 			expect(env.buildEnvVars().VITE_API_URL).toBeUndefined();
 			expect(env.buildAppEnvVars("web").VITE_API_URL).toBe(env.urls.api);
 			expect(env.buildAppEnvVars("api").WEBHOOK_URL).toBe(env.urls.api);

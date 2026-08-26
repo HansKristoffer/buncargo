@@ -39,9 +39,11 @@ describe("openPublicTunnels", () => {
 				}),
 			);
 
-			await expect(dev.openPublicTunnels({ names: ["nope"] })).rejects.toThrow(
-				/Unknown expose target/,
-			);
+			await expect(
+				// @ts-expect-error - typed configs reject this name; the runtime guard
+				// asserted below is what covers configs loaded from disk.
+				dev.openPublicTunnels({ names: ["nope"] }),
+			).rejects.toThrow(/Unknown expose target/);
 		} finally {
 			process.chdir(originalCwd);
 			rmSync(root, { recursive: true, force: true });
@@ -72,9 +74,10 @@ describe("openPublicTunnels", () => {
 				}),
 			);
 
-			await expect(dev.openPublicTunnels({ names: ["web"] })).rejects.toThrow(
-				/missing expose: true/,
-			);
+			await expect(
+				// @ts-expect-error - web did not opt into expose, so it is not a name
+				dev.openPublicTunnels({ names: ["web"] }),
+			).rejects.toThrow(/missing expose: true/);
 		} finally {
 			process.chdir(originalCwd);
 			rmSync(root, { recursive: true, force: true });
@@ -102,6 +105,7 @@ describe("openPublicTunnels", () => {
 			);
 
 			await expect(
+				// @ts-expect-error - "nope" is not a configured app key
 				dev.openPublicTunnels({ waitForHealthy: ["nope"] }),
 			).rejects.toThrow(/Unknown app name/);
 		} finally {

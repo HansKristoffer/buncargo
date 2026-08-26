@@ -44,7 +44,9 @@ export type {
 	AnyDevConfig,
 	AnyDevEnvironment,
 	AppConfig,
+	AppEnvVars,
 	BuiltInHealthCheck,
+	BuiltInServiceEnvVarMap,
 	// CLI
 	CliOptions,
 	// Computed types
@@ -52,6 +54,9 @@ export type {
 	ComputedPorts,
 	ComputedPublicUrls,
 	ComputedUrls,
+	ConfigEnvVarNames,
+	DeclaredAppEnvVars,
+	DeclaredStaticEnv,
 	// Main config
 	DevConfig,
 	DevConfigInput,
@@ -59,6 +64,7 @@ export type {
 	// Environment interface
 	DevEnvironment,
 	DevEnvironmentFor,
+	DevEnvironmentTunnelLog,
 	DevHooks,
 	DevOptions,
 	DevServerPids,
@@ -70,17 +76,25 @@ export type {
 	DockerPresetName,
 	DockerPresetServiceDefinition,
 	DockerServiceDefinition,
+	EnvValues,
 	EnvVarsBuilder,
+	EnvVarsContext,
 	ExecOptions,
+	ExecResult,
+	ExposedKeys,
+	GetEnvVarValue,
 	HealthCheckFn,
 	HookContext,
+	HostOnlyEnvVarNames,
 	HostsOptions,
+	HostsOptionsLike,
 	HostsRuntime,
 	// Migrations & Seed
 	MigrationConfig,
 	NamedHost,
 	OpenPublicTunnelsOptions,
 	OpenPublicTunnelsResult,
+	OverlayEnvVarNames,
 	PortOffsetProvenance,
 	// Prisma
 	PrismaConfig,
@@ -89,8 +103,14 @@ export type {
 	SeedCheckContext,
 	SeedCheckHelpers,
 	SeedConfig,
+	SeedOutcome,
+	SeedRunOptions,
 	// Service & App configs
 	ServiceConfig,
+	ServiceEnvValueSource,
+	ServiceEnvVarMap,
+	ServiceEnvVarNames,
+	SharedEnvVarNames,
 	// Start/Stop options
 	StartOptions,
 	StopOptions,

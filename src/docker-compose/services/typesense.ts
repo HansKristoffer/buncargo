@@ -10,9 +10,10 @@ export type TypesenseServiceOptions = PresetServiceSharedOptions & {
 	apiKey?: string;
 };
 
-export type TypesenseServiceConfig = ServiceConfig<{
-	TYPESENSE_URL: "url";
-}>;
+export type TypesenseServiceConfig = ServiceConfig<
+	{ TYPESENSE_URL: "url" },
+	{ TYPESENSE_API_KEY: string }
+>;
 
 export const typesenseDockerService = defineDockerService<
 	TypesenseServiceOptions,
