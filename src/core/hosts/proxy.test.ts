@@ -26,6 +26,9 @@ const ipv6LoopbackAvailable = (() => {
 	}
 })();
 
+/** Comfortably past Bun's 10s default so a regression cannot pass on timing. */
+const QUIET_STREAM_MS = 13_000;
+
 /** A port nothing listens on, so both loopback families refuse. */
 async function findClosedPort(): Promise<number> {
 	const server = Bun.serve({
@@ -519,6 +522,58 @@ describe("proxy fetch", () => {
 		expect(closes).toEqual([1001]);
 		client.close();
 	});
+
+	// Bun.serve counts a streamed response with nothing to send as idle and
+	// resets it mid-body at 10s. A proxy has no say in how talkative its
+	// upstream is, so that default silently killed every SSE and oRPC Event
+	// Iterator stream (15s keep-alive) behind a named HTTPS URL. Only elapsed
+	// time can prove the opt-out, hence the deliberately slow case.
+	it(
+		"keeps a quiet streamed response open past the 10s idle default",
+		async () => {
+			const encoder = new TextEncoder();
+			const upstream = Bun.serve({
+				hostname: "127.0.0.1",
+				port: 0,
+				// The real upstream (a dev API) opts out for the same reason;
+				// leaving it on would fail the test from the far end.
+				idleTimeout: 0,
+				fetch() {
+					return new Response(
+						new ReadableStream({
+							async start(controller) {
+								controller.enqueue(encoder.encode(": open\n\n"));
+								await Bun.sleep(QUIET_STREAM_MS);
+								controller.enqueue(encoder.encode("data: late\n\n"));
+								controller.close();
+							},
+						}),
+						{ headers: { "content-type": "text/event-stream" } },
+					);
+				},
+			});
+			servers.push(upstream);
+
+			const routes = new Map([["api.serpier.localhost", upstream.port]]);
+			const proxy = await startLocalProxy({
+				lookup: (hostname) => routes.get(hostname),
+				routes: () => ({ hostnames: [...routes.keys()] }),
+				httpsPort: 0,
+				hostname: "127.0.0.1",
+			});
+			servers.push(proxy);
+
+			const response = await fetch(`http://127.0.0.1:${proxy.httpsPort}/sse`, {
+				headers: { host: "api.serpier.localhost" },
+			});
+			expect(response.status).toBe(200);
+
+			// A reset surfaces as a read rejection, not a short body, so let it
+			// throw: the failure message is more useful than an empty string.
+			expect(await response.text()).toContain("data: late");
+		},
+		QUIET_STREAM_MS + 20_000,
+	);
 });
 
 describe("isProxyHealthy", () => {

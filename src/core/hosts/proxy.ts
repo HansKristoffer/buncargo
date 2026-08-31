@@ -396,6 +396,11 @@ export async function startLocalProxy(options: {
 	const httpsServer = Bun.serve({
 		hostname,
 		port: options.httpsPort,
+		// A proxied stream is idle from Bun's point of view whenever the
+		// upstream has nothing to send. Bun's 10s default would reset SSE,
+		// oRPC Event Iterators and quiet HMR sockets mid-body, which the
+		// browser reports as ERR_INCOMPLETE_CHUNKED_ENCODING on a 200.
+		idleTimeout: 0,
 		fetch: fetchHandler,
 		websocket: websocket as never,
 		...(https
@@ -413,6 +418,7 @@ export async function startLocalProxy(options: {
 		httpServer = Bun.serve({
 			hostname,
 			port: options.httpPort,
+			idleTimeout: 0,
 			fetch(request) {
 				const url = new URL(request.url);
 				if (url.pathname === HEALTH_PATH) {
