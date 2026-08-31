@@ -6,6 +6,7 @@ import { syncCertificateForRoutes } from "./certificates";
 import {
 	ensureHostsDaemonRunning,
 	isHostsDaemonHealthy,
+	isHostsDaemonWedged,
 	readDaemonConfig,
 	SERVICE_START_TIMEOUT_MS,
 } from "./daemon";
@@ -337,8 +338,10 @@ export async function doctorFixHosts(
 		const stale = describeStaleHostsService();
 		const installed = isHostsServiceInstalled();
 		// An installed service that is not answering is exactly the case doctor
-		// exists to repair, so reload it rather than reporting it as fine.
-		const wedged = installed && !stale && !(await isHostsDaemonHealthy());
+		// exists to repair, so reload it rather than reporting it as fine. So is
+		// one that answers with a route map it has stopped refreshing: it looks
+		// healthy from the outside while every named URL 404s.
+		const wedged = installed && !stale && (await isHostsDaemonWedged());
 		if (!installed || stale || wedged) {
 			if (!interactive) {
 				notes.push(
@@ -351,7 +354,9 @@ export async function doctorFixHosts(
 			if (stale) {
 				notes.push("Reinstalled the named-hosts service after a stale install");
 			} else if (wedged) {
-				notes.push("Reloaded the named-hosts service, which was not answering");
+				notes.push(
+					"Reloaded the named-hosts service, which was not serving its routes",
+				);
 			} else {
 				notes.push("Installed the named-hosts service");
 			}

@@ -1,6 +1,8 @@
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { chmodSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { chownToInvokingUser, getToolsDir } from "./hosts/paths";
 
 /**
  * Locating the external binaries buncargo shells out to (`mkcert`,
@@ -16,15 +18,38 @@ export interface ToolBinaryResolution {
 	exists: boolean;
 }
 
+/** Download target for a tool, under `~/.buncargo/bin`. */
+export function toolCachePath(fileName: string): string {
+	return join(getToolsDir(), fileName);
+}
+
+/**
+ * Where releases were cached before `~/.buncargo/bin`.
+ *
+ * Still read, never written: a machine that already downloaded the binary
+ * should not fetch it again just because the cache moved.
+ */
+export function legacyToolCachePath(dirName: string, fileName: string): string {
+	return join(tmpdir(), dirName, fileName);
+}
+
+/** Make a freshly downloaded binary executable and owned by the invoking user. */
+export function finalizeToolBinary(path: string): void {
+	chmodSync(path, 0o755);
+	chownToInvokingUser(path);
+}
+
 export function resolveToolBinary(options: {
 	/** Env override, already validated (see `runtime-flags`). */
 	override?: string;
 	/** Version-pinned download cache path. */
 	cachePath: string;
+	/** Previous cache location, adopted when it still holds the binary. */
+	legacyCachePath?: string;
 	/** Binary name to look up on `PATH`; omit to skip the lookup. */
 	pathCommand?: string;
 }): ToolBinaryResolution {
-	const { override, cachePath, pathCommand } = options;
+	const { override, cachePath, legacyCachePath, pathCommand } = options;
 
 	if (override) {
 		const path = resolve(override);
@@ -38,7 +63,15 @@ export function resolveToolBinary(options: {
 		}
 	}
 
-	return { path: cachePath, source: "cache", exists: existsSync(cachePath) };
+	if (existsSync(cachePath)) {
+		return { path: cachePath, source: "cache", exists: true };
+	}
+
+	if (legacyCachePath && existsSync(legacyCachePath)) {
+		return { path: legacyCachePath, source: "cache", exists: true };
+	}
+
+	return { path: cachePath, source: "cache", exists: false };
 }
 
 export function lookupOnPath(command: string): string | undefined {

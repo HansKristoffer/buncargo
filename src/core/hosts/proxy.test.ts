@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it } from "bun:test";
 import {
 	closestHostname,
 	createProxyFetch,
+	HEALTH_PATH,
 	HOPS_HEADER,
 	hostnameFromHostHeader,
 	isProxyHealthy,
 	MAX_PROXY_HOPS,
+	readProxyHealth,
 	startLocalProxy,
 } from "./proxy";
 
@@ -90,7 +92,7 @@ describe("proxy fetch", () => {
 		const routes = new Map([["api.serpier.localhost", upstream.port]]);
 		const proxy = await startLocalProxy({
 			lookup: (hostname) => routes.get(hostname),
-			listHostnames: () => [...routes.keys()],
+			routes: () => ({ hostnames: [...routes.keys()] }),
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
@@ -113,7 +115,7 @@ describe("proxy fetch", () => {
 	it("returns 508 when hop limit is exceeded", async () => {
 		const fetchHandler = createProxyFetch({
 			lookup: () => 9,
-			listHostnames: () => ["api.serpier.localhost"],
+			routes: () => ({ hostnames: ["api.serpier.localhost"] }),
 			https: true,
 		});
 		const request = new Request("https://api.serpier.localhost/", {
@@ -130,7 +132,7 @@ describe("proxy fetch", () => {
 	it("returns 404 with the closest hostname", async () => {
 		const fetchHandler = createProxyFetch({
 			lookup: () => undefined,
-			listHostnames: () => ["api.serpier.localhost"],
+			routes: () => ({ hostnames: ["api.serpier.localhost"] }),
 			https: true,
 		});
 		const request = new Request("https://tenant.api.serpier.localhost/", {
@@ -139,6 +141,70 @@ describe("proxy fetch", () => {
 		const response = await fetchHandler(request, {} as never);
 		expect(response.status).toBe(404);
 		expect(await response.text()).toContain("api.serpier.localhost");
+	});
+
+	it("reports the served hostnames and the last refresh in the health body", async () => {
+		const fetchHandler = createProxyFetch({
+			lookup: () => undefined,
+			routes: () => ({
+				hostnames: ["api.serpier.localhost"],
+				lastReloadAt: 1000,
+			}),
+			https: true,
+		});
+		const response = await fetchHandler(
+			new Request(`https://127.0.0.1${HEALTH_PATH}`),
+			{} as never,
+		);
+		expect(await response.json()).toEqual({
+			ok: true,
+			routes: 1,
+			hostnames: ["api.serpier.localhost"],
+			lastReloadAt: 1000,
+		});
+	});
+
+	it("notices a frozen route map from the request path", async () => {
+		const stalls: number[] = [];
+		const fetchHandler = createProxyFetch({
+			lookup: () => undefined,
+			routes: () => ({ hostnames: [], lastReloadAt: 0 }),
+			https: true,
+			staleAfterMs: 45_000,
+			onStale: (ageMs) => stalls.push(ageMs),
+			now: () => 60_000,
+		});
+
+		const response = await fetchHandler(
+			new Request("https://api.serpier.localhost/", {
+				headers: { host: "api.serpier.localhost" },
+			}),
+			{} as never,
+		);
+		expect(response.status).toBe(404);
+		expect(await response.text()).toContain("has not refreshed in 60s");
+		expect(stalls).toEqual([60_000]);
+	});
+
+	it("stays quiet while the route map is fresh", async () => {
+		const stalls: number[] = [];
+		const fetchHandler = createProxyFetch({
+			lookup: () => undefined,
+			routes: () => ({ hostnames: [], lastReloadAt: 59_000 }),
+			https: true,
+			staleAfterMs: 45_000,
+			onStale: (ageMs) => stalls.push(ageMs),
+			now: () => 60_000,
+		});
+
+		const response = await fetchHandler(
+			new Request("https://api.serpier.localhost/", {
+				headers: { host: "api.serpier.localhost" },
+			}),
+			{} as never,
+		);
+		expect(await response.text()).not.toContain("has not refreshed");
+		expect(stalls).toEqual([]);
 	});
 
 	it("bridges WebSocket upgrades", async () => {
@@ -165,7 +231,7 @@ describe("proxy fetch", () => {
 		const routes = new Map([["api.serpier.localhost", upstream.port]]);
 		const proxy = await startLocalProxy({
 			lookup: (hostname) => routes.get(hostname),
-			listHostnames: () => [...routes.keys()],
+			routes: () => ({ hostnames: [...routes.keys()] }),
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
@@ -223,7 +289,7 @@ describe("proxy fetch", () => {
 		const routes = new Map([["api.serpier.localhost", upstream.port]]);
 		const proxy = await startLocalProxy({
 			lookup: (hostname) => routes.get(hostname),
-			listHostnames: () => [...routes.keys()],
+			routes: () => ({ hostnames: [...routes.keys()] }),
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
@@ -255,7 +321,7 @@ describe("proxy fetch", () => {
 	it("rejects an upgrade it cannot bridge instead of forwarding it", async () => {
 		const fetchHandler = createProxyFetch({
 			lookup: () => 9,
-			listHostnames: () => ["api.serpier.localhost"],
+			routes: () => ({ hostnames: ["api.serpier.localhost"] }),
 			https: true,
 		});
 		const request = new Request("https://api.serpier.localhost/", {
@@ -283,7 +349,7 @@ describe("proxy fetch", () => {
 		const routes = new Map([["api.serpier.localhost", upstream.port]]);
 		const proxy = await startLocalProxy({
 			lookup: (hostname) => routes.get(hostname),
-			listHostnames: () => [...routes.keys()],
+			routes: () => ({ hostnames: [...routes.keys()] }),
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
@@ -316,7 +382,7 @@ describe("proxy fetch", () => {
 			const routes = new Map([["web.serpier.localhost", upstream.port]]);
 			const proxy = await startLocalProxy({
 				lookup: (hostname) => routes.get(hostname),
-				listHostnames: () => [...routes.keys()],
+				routes: () => ({ hostnames: [...routes.keys()] }),
 				httpsPort: 0,
 				hostname: "127.0.0.1",
 			});
@@ -354,7 +420,7 @@ describe("proxy fetch", () => {
 			const routes = new Map([["web.serpier.localhost", upstream.port]]);
 			const proxy = await startLocalProxy({
 				lookup: (hostname) => routes.get(hostname),
-				listHostnames: () => [...routes.keys()],
+				routes: () => ({ hostnames: [...routes.keys()] }),
 				httpsPort: 0,
 				hostname: "127.0.0.1",
 			});
@@ -386,7 +452,7 @@ describe("proxy fetch", () => {
 		const deadPort = await findClosedPort();
 		const fetchHandler = createProxyFetch({
 			lookup: () => deadPort,
-			listHostnames: () => ["web.serpier.localhost"],
+			routes: () => ({ hostnames: ["web.serpier.localhost"] }),
 			https: true,
 		});
 		const request = new Request("https://web.serpier.localhost/", {
@@ -428,7 +494,7 @@ describe("proxy fetch", () => {
 		const routes = new Map([["api.serpier.localhost", upstream.port]]);
 		const proxy = await startLocalProxy({
 			lookup: (hostname) => routes.get(hostname),
-			listHostnames: () => [...routes.keys()],
+			routes: () => ({ hostnames: [...routes.keys()] }),
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
@@ -473,7 +539,7 @@ describe("isProxyHealthy", () => {
 	it("detects a bound proxy over HTTP", async () => {
 		const proxy = await startLocalProxy({
 			lookup: () => undefined,
-			listHostnames: () => [],
+			routes: () => ({ hostnames: [] }),
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
@@ -481,6 +547,26 @@ describe("isProxyHealthy", () => {
 		expect(
 			await isProxyHealthy(proxy.httpsPort, "127.0.0.1", { tls: false }),
 		).toBe(true);
+	});
+
+	it("reads back what the proxy is serving", async () => {
+		const proxy = await startLocalProxy({
+			lookup: () => undefined,
+			routes: () => ({
+				hostnames: ["api.serpier.localhost"],
+				lastReloadAt: 1234,
+			}),
+			httpsPort: 0,
+			hostname: "127.0.0.1",
+		});
+		servers.push(proxy);
+		expect(
+			await readProxyHealth(proxy.httpsPort, "127.0.0.1", { tls: false }),
+		).toEqual({
+			routeCount: 1,
+			hostnames: ["api.serpier.localhost"],
+			lastReloadAt: 1234,
+		});
 	});
 
 	it("rejects a foreign server answering 200 on the health path", async () => {

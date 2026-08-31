@@ -1,17 +1,20 @@
 import { execFileSync } from "node:child_process";
 import { X509Certificate } from "node:crypto";
 import {
-	chmodSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { mkcertPathOverride, mkcertVersion } from "../runtime-flags";
-import { resolveToolBinary } from "../tool-binary";
+import {
+	finalizeToolBinary,
+	legacyToolCachePath,
+	resolveToolBinary,
+	toolCachePath,
+} from "../tool-binary";
 import { chownToInvokingUser, getCertPath, getKeyPath } from "./paths";
 
 export const MKCERT_RELEASE_BASE =
@@ -19,18 +22,31 @@ export const MKCERT_RELEASE_BASE =
 
 const RENEW_BEFORE_MS = 1000 * 60 * 60 * 24 * 30;
 
+const LEGACY_MKCERT_CACHE_DIRNAME = "buncargo-mkcert";
+
+function mkcertFileName(version: string): string {
+	return process.platform === "win32"
+		? `mkcert.${version}.exe`
+		: `mkcert.${version}`;
+}
+
 export function cachedMkcertBinPath(version = mkcertVersion()): string {
-	const name =
-		process.platform === "win32"
-			? `mkcert.${version}.exe`
-			: `mkcert.${version}`;
-	return join(tmpdir(), "buncargo-mkcert", name);
+	return toolCachePath(mkcertFileName(version));
+}
+
+/** The `tmpdir()` cache earlier versions downloaded into. */
+export function legacyMkcertBinPath(version = mkcertVersion()): string {
+	return legacyToolCachePath(
+		LEGACY_MKCERT_CACHE_DIRNAME,
+		mkcertFileName(version),
+	);
 }
 
 export function resolvedMkcertPath(): string | undefined {
 	const resolution = resolveToolBinary({
 		override: mkcertPathOverride(),
 		cachePath: cachedMkcertBinPath(),
+		legacyCachePath: legacyMkcertBinPath(),
 		pathCommand: "mkcert",
 	});
 	return resolution.exists ? resolution.path : undefined;
@@ -56,14 +72,14 @@ export async function ensureMkcert(): Promise<string> {
 
 	const version = mkcertVersion();
 	const dest = cachedMkcertBinPath(version);
-	mkdirSync(join(dest, ".."), { recursive: true });
+	mkdirSync(dirname(dest), { recursive: true });
 	const url = `${MKCERT_RELEASE_BASE}download/${version}/${mkcertAssetName(version)}`;
 	const response = await fetch(url);
 	if (!response.ok) {
 		throw new Error(`Failed to download mkcert (${response.status}): ${url}`);
 	}
 	await Bun.write(dest, await response.arrayBuffer());
-	chmodSync(dest, 0o755);
+	finalizeToolBinary(dest);
 	return dest;
 }
 

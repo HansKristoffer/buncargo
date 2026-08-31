@@ -3,22 +3,37 @@
  * Derived from unjs/untun (MIT), originally forked from node-cloudflared.
  */
 
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { cloudflaredPathOverride, cloudflaredVersion } from "../runtime-flags";
-import { resolveToolBinary, type ToolBinaryResolution } from "../tool-binary";
+import {
+	legacyToolCachePath,
+	resolveToolBinary,
+	type ToolBinaryResolution,
+	toolCachePath,
+} from "../tool-binary";
 
 export const RELEASE_BASE =
 	"https://github.com/cloudflare/cloudflared/releases/";
 
+const LEGACY_CLOUDFLARED_CACHE_DIRNAME = "buncargo-cloudflared";
+
+function cloudflaredFileName(version: string): string {
+	return process.platform === "win32"
+		? `cloudflared.${version}.exe`
+		: `cloudflared.${version}`;
+}
+
 /** Cache path for buncargo-managed cloudflared (avoid clashing with untun's node-untun). */
 export function cloudflaredBinPath(version = cloudflaredVersion()): string {
-	return path.join(
-		tmpdir(),
-		"buncargo-cloudflared",
-		process.platform === "win32"
-			? `cloudflared.${version}.exe`
-			: `cloudflared.${version}`,
+	return toolCachePath(cloudflaredFileName(version));
+}
+
+/** The `tmpdir()` cache earlier versions downloaded into. */
+export function legacyCloudflaredBinPath(
+	version = cloudflaredVersion(),
+): string {
+	return legacyToolCachePath(
+		LEGACY_CLOUDFLARED_CACHE_DIRNAME,
+		cloudflaredFileName(version),
 	);
 }
 
@@ -30,6 +45,7 @@ export function resolveCloudflared(): ToolBinaryResolution {
 	return resolveToolBinary({
 		override: cloudflaredPathOverride(),
 		cachePath: cloudflaredBinPath(),
+		legacyCachePath: legacyCloudflaredBinPath(),
 	});
 }
 

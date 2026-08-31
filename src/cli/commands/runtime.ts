@@ -1,4 +1,4 @@
-import { getCaPath, isHostsDaemonHealthy } from "../../core/hosts";
+import { getCaPath, waitForDaemonRoutes } from "../../core/hosts";
 import { findMonorepoRoot } from "../../core/ports";
 import { isHostsForcedOff } from "../../core/runtime-flags";
 import { loadDevEnv } from "../../loader";
@@ -81,8 +81,18 @@ export async function handlePrisma(args: string[]): Promise<void> {
 
 export async function handleEnv(args: string[] = []): Promise<void> {
 	const env = await loadEnv();
-	if (env.hosts && !isHostsForcedOff() && (await isHostsDaemonHealthy())) {
-		env.setNamedHostsActive(true, { caPath: getCaPath() });
+	// A healthy daemon is not the same as a daemon serving this project: a
+	// `vite.config.ts` reading `urls.web` from here must not be handed an https
+	// hostname the proxy would 404. Zero wait — this only reports state, so an
+	// unpicked-up route reads as localhost rather than blocking the command.
+	if (env.hosts && env.hosts.plan.length > 0 && !isHostsForcedOff()) {
+		const serving = await waitForDaemonRoutes(
+			env.hosts.plan.map((entry) => entry.hostname),
+			{ timeoutMs: 0 },
+		);
+		if (serving.ok) {
+			env.setNamedHostsActive(true, { caPath: getCaPath() });
+		}
 	}
 	const snapshot = {
 		projectName: env.projectName,

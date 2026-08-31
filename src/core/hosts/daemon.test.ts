@@ -1,4 +1,7 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	createHostsReloader,
 	createThrottledFailureLog,
@@ -8,8 +11,10 @@ import {
 	resolveInstalledServiceWaitMs,
 	SERVICE_START_TIMEOUT_MS,
 	waitForDaemonHealthy,
+	waitForDaemonRoutes,
+	writeDaemonConfig,
 } from "./daemon";
-import type { LocalProxy } from "./proxy";
+import { type LocalProxy, startLocalProxy } from "./proxy";
 
 describe("nextReloadDelayMs", () => {
 	it("polls every second while reloads succeed", () => {
@@ -213,19 +218,63 @@ describe("createHostsReloader", () => {
 		expect(state.stops).toBe(1);
 	});
 
-	it("throws the certificate gap and keeps the listener unbound", async () => {
+	it("serves what the certificate covers and only logs the gap", async () => {
 		const { state, reloader } = reloaderHarness();
-		state.routes = [route("web.demo.localhost", 5173)];
+		state.routes = [
+			route("web.demo.localhost", 5173),
+			route("api.demo.localhost", 3000),
+		];
 		state.gap = "Named-hosts certificate does not cover web.demo.localhost.";
 
-		await expect(reloader.reload()).rejects.toThrow("does not cover");
-		expect(state.binds).toBe(0);
-		expect(reloader.isBound()).toBe(false);
-
-		// Self-heals once the CLI has minted, with no restart.
-		state.gap = undefined;
+		// Refusing the whole reload here used to back the daemon off for up to
+		// 30s, delaying every other project's routes over one uncovered worktree.
 		await reloader.reload();
 		expect(state.binds).toBe(1);
+		expect(reloader.isBound()).toBe(true);
+		expect(state.logs.join("\n")).toContain("does not cover");
+
+		// Reported once, not on every route change while it persists.
+		state.logs.length = 0;
+		state.routes = [...state.routes, route("admin.demo.localhost", 4000)];
+		await reloader.reload();
+		expect(state.logs).toEqual([]);
+
+		// Clearing a gap means the CLI reminted, which the fingerprint reflects.
+		state.gap = undefined;
+		state.fingerprint = "cert-v2";
+		await reloader.reload();
+		expect(state.logs.join("\n")).toContain("covers every registered hostname");
+	});
+
+	it("keeps serving the previous routes when the registry cannot be read", async () => {
+		let unreadable = false;
+		const { state, reloader } = reloaderHarness({
+			pruneRoutes: async () => {
+				if (unreadable) throw new Error("EACCES");
+				return state.routes;
+			},
+		});
+		state.routes = [route("web.demo.localhost", 5173)];
+		await reloader.reload();
+
+		// An unreadable registry is not an empty one: clearing here would 404
+		// every named URL on the machine until the file came back.
+		unreadable = true;
+		await expect(reloader.reload()).rejects.toThrow("EACCES");
+		expect(reloader.routes().hostnames).toEqual(["web.demo.localhost"]);
+		expect(state.stops).toBe(0);
+	});
+
+	it("advances the reload timestamp only on a successful load", async () => {
+		const { state, reloader } = reloaderHarness();
+		state.clock = 1_000;
+		state.routes = [route("web.demo.localhost", 5173)];
+		await reloader.reload();
+		expect(reloader.routes().lastReloadAt).toBe(1_000);
+
+		state.clock = 2_000;
+		await reloader.reload();
+		expect(reloader.routes().lastReloadAt).toBe(2_000);
 	});
 
 	it("retries the rebind after startProxy fails", async () => {
@@ -302,6 +351,93 @@ describe("createHostsReloader", () => {
 
 		expect(state.syncedHostnames).toEqual([]);
 		expect(state.binds).toBe(1);
+	});
+});
+
+describe("waitForDaemonRoutes", () => {
+	const servers: LocalProxy[] = [];
+	const dirs: string[] = [];
+	const originalHome = process.env.HOME;
+
+	afterEach(() => {
+		for (const server of servers.splice(0)) server.stop();
+		process.env.HOME = originalHome;
+		for (const dir of dirs.splice(0)) {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	/** A plain-HTTP proxy the config points at, so no certificate is needed. */
+	async function daemonServing(hostnames: string[]): Promise<number> {
+		const home = mkdtempSync(join(tmpdir(), "buncargo-daemon-test-"));
+		dirs.push(home);
+		process.env.HOME = home;
+
+		const proxy = await startLocalProxy({
+			lookup: () => undefined,
+			routes: () => ({ hostnames, lastReloadAt: Date.now() }),
+			httpsPort: 0,
+			hostname: "127.0.0.1",
+		});
+		servers.push(proxy);
+		writeDaemonConfig({
+			httpsPort: proxy.httpsPort,
+			httpPort: 0,
+			tls: false,
+		});
+		return proxy.httpsPort;
+	}
+
+	it("passes once the daemon reports the hostnames", async () => {
+		await daemonServing(["web.demo.localhost"]);
+		expect(await waitForDaemonRoutes(["web.demo.localhost"])).toEqual({
+			ok: true,
+		});
+	});
+
+	// The failure this exists to prevent: the registry has the route, the
+	// daemon does not, and the banner advertises an https URL that 404s.
+	it("fails a hostname the daemon never picks up", async () => {
+		await daemonServing(["other.demo.localhost"]);
+		const result = await waitForDaemonRoutes(["web.demo.localhost"], {
+			timeoutMs: 150,
+		});
+		expect(result).toEqual({
+			ok: false,
+			reason: "the daemon is not serving web.demo.localhost",
+		});
+	});
+
+	it("reports a daemon that is not answering at all", async () => {
+		await daemonServing([]);
+		for (const server of servers.splice(0)) server.stop();
+		const result = await waitForDaemonRoutes(["web.demo.localhost"], {
+			timeoutMs: 0,
+		});
+		expect(result.ok).toBe(false);
+	});
+
+	// A daemon predating the field cannot be checked, and reporting that as a
+	// failure would downgrade every URL on a machine whose service is merely
+	// due an upgrade — which `describeStaleHostsService` already reports.
+	it("proceeds against a daemon that does not report hostnames", async () => {
+		const home = mkdtempSync(join(tmpdir(), "buncargo-daemon-test-"));
+		dirs.push(home);
+		process.env.HOME = home;
+
+		const legacy = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: () => Response.json({ ok: true, routes: 0 }),
+		});
+		const port = legacy.port ?? 0;
+		servers.push({ httpsPort: port, stop: () => legacy.stop(true) });
+		writeDaemonConfig({ httpsPort: port, httpPort: 0, tls: false });
+
+		expect(await waitForDaemonRoutes(["web.demo.localhost"])).toEqual({
+			ok: true,
+			unverifiable: true,
+		});
 	});
 });
 

@@ -5,6 +5,7 @@ import {
 	syncCertificateForRoutes,
 	toHostsUserMessage,
 	upsertHostRoutes,
+	waitForDaemonRoutes,
 } from "../core/hosts";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 
@@ -60,6 +61,21 @@ export async function activateNamedHosts<
 				kinds: ["service"],
 			}),
 		);
+
+		// Registering a route only writes a file. Advertising the hostname before
+		// the daemon has picked it up is how a banner full of https URLs ends up
+		// pointing at our own 404 page, so the switch waits for the proxy to
+		// confirm it is serving them.
+		const serving = await waitForDaemonRoutes(
+			env.hosts.plan.map((entry) => entry.hostname),
+		);
+		if (!serving.ok) {
+			notes.push(
+				`Named URLs unavailable: ${serving.reason}. Run \`buncargo hosts install\`.`,
+			);
+			return notes;
+		}
+
 		env.setNamedHostsActive(true, { caPath: result.caPath });
 	} catch (error) {
 		notes.push(`Named URLs unavailable: ${toHostsUserMessage(error)}`);

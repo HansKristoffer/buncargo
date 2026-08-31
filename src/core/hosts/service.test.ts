@@ -105,6 +105,15 @@ describe("service manifest", () => {
 		expect(manifest?.installedAt).not.toBe("");
 	});
 
+	it("records the bundle contents when the installer supplies them", () => {
+		writeHostsServiceManifest({
+			program: "/opt/homebrew/bin/bun",
+			args: ["/usr/local/libexec/buncargo/hostsd-6.0.0.js"],
+			bundleHash: "abc123",
+		});
+		expect(readHostsServiceManifest()?.bundleHash).toBe("abc123");
+	});
+
 	it("reads as absent when the file is missing", () => {
 		expect(readHostsServiceManifest()).toBeUndefined();
 	});
@@ -241,6 +250,54 @@ describe("describeStaleService", () => {
 			describeStaleService({
 				installed: true,
 				manifest,
+				expectedBundle: manifest.args[0],
+				fileExists: () => true,
+			}),
+		).toBeUndefined();
+	});
+
+	// The path stops at the version, so a rebuild at the same version passed
+	// every other check here — which is how a machine ran days-old daemon code
+	// while `doctor` reported the service current.
+	it("flags a bundle rebuilt at the same version", () => {
+		const message = describeStaleService({
+			installed: true,
+			manifest: { ...manifest, bundleHash: "aaaaaaaaaaaaaaaa" },
+			expectedBundle: manifest.args[0],
+			expectedBundleHash: "bbbbbbbbbbbbbbbb",
+			fileExists: () => true,
+		});
+		expect(message).toContain("buncargo hosts install");
+	});
+
+	it("says nothing when the bundle contents match", () => {
+		expect(
+			describeStaleService({
+				installed: true,
+				manifest: { ...manifest, bundleHash: "aaaaaaaaaaaaaaaa" },
+				expectedBundle: manifest.args[0],
+				expectedBundleHash: "aaaaaaaaaaaaaaaa",
+				fileExists: () => true,
+			}),
+		).toBeUndefined();
+	});
+
+	// A manifest written before the field, or a CLI installed without `dist/`,
+	// must not report every command as stale.
+	it("says nothing when either side cannot be hashed", () => {
+		expect(
+			describeStaleService({
+				installed: true,
+				manifest,
+				expectedBundle: manifest.args[0],
+				expectedBundleHash: "bbbbbbbbbbbbbbbb",
+				fileExists: () => true,
+			}),
+		).toBeUndefined();
+		expect(
+			describeStaleService({
+				installed: true,
+				manifest: { ...manifest, bundleHash: "aaaaaaaaaaaaaaaa" },
 				expectedBundle: manifest.args[0],
 				fileExists: () => true,
 			}),

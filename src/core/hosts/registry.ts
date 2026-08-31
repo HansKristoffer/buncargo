@@ -1,6 +1,10 @@
 import type { NamedHost } from "../../types";
 import { withFileLock } from "../file-lock";
-import { defineListRegistry, isRouteOwnerAlive } from "../registry-file";
+import {
+	defineListRegistry,
+	isRouteOwnerAlive,
+	type ListRegistryReadOptions,
+} from "../registry-file";
 import { chownToInvokingUser, getRoutesPath } from "./paths";
 
 const REGISTRY_VERSION = 1;
@@ -53,8 +57,9 @@ const registry = defineListRegistry<HostsRoute>({
 
 export async function loadHostRoutes(
 	path = getRoutesPath(),
+	options: ListRegistryReadOptions = {},
 ): Promise<HostsRoute[]> {
-	return registry.read(path);
+	return registry.read(path, options);
 }
 
 /**
@@ -66,8 +71,11 @@ export async function loadHostRoutes(
  * `prune` is the unlocked core so `upsertHostRoutes` can reuse it inside a lock
  * it already holds.
  */
-async function prune(path: string): Promise<HostsRoute[]> {
-	const routes = await registry.read(path);
+async function prune(
+	path: string,
+	options: ListRegistryReadOptions = {},
+): Promise<HostsRoute[]> {
+	const routes = await registry.read(path, options);
 	const next = routes.filter((route) => isRouteOwnerAlive(route.pid));
 	if (next.length !== routes.length) {
 		await registry.write(path, next);
@@ -77,8 +85,9 @@ async function prune(path: string): Promise<HostsRoute[]> {
 
 export async function pruneHostRoutes(
 	path = getRoutesPath(),
+	options: ListRegistryReadOptions = {},
 ): Promise<HostsRoute[]> {
-	return withFileLock(path, () => prune(path));
+	return withFileLock(path, () => prune(path, options));
 }
 
 export async function upsertHostRoutes(

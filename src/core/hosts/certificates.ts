@@ -1,6 +1,11 @@
 import { existsSync, statSync } from "node:fs";
 import { withFileLock } from "../file-lock";
-import { certNeedsRenewal, mintCert, resolvedMkcertPath } from "./mkcert";
+import {
+	certNeedsRenewal,
+	ensureMkcert,
+	mintCert,
+	resolvedMkcertPath,
+} from "./mkcert";
 import { getCertPath, getKeyPath } from "./paths";
 import { loadHostRoutes } from "./registry";
 
@@ -37,6 +42,41 @@ export interface CertificateFiles {
 }
 
 /**
+ * The binary to mint with, downloading it when a mint is actually due.
+ *
+ * `deps` exists so the three branches can be tested without a network call.
+ *
+ * A cache that has been cleared must not cost a developer their named URLs.
+ * The download is a user-owned file and the CA is already trusted, so this
+ * asks for no password — only installing the service does. Returning
+ * `undefined` when nothing needs minting keeps the no-op path free of a
+ * network call: `mintCert` never looks at the binary in that case.
+ */
+export async function resolveMkcertForMint(
+	certPath: string,
+	wanted: string[],
+	deps: {
+		resolve?: () => string | undefined;
+		needsRenewal?: () => boolean;
+		download?: () => Promise<string>;
+	} = {},
+): Promise<string | undefined> {
+	const existing = (deps.resolve ?? resolvedMkcertPath)();
+	if (existing) return existing;
+	const needsRenewal =
+		deps.needsRenewal ?? (() => certNeedsRenewal(certPath, wanted));
+	if (!needsRenewal()) return undefined;
+	try {
+		return await (deps.download ?? ensureMkcert)();
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(
+			`mkcert is not available and could not be downloaded (${message}). Run \`buncargo hosts install\`.`,
+		);
+	}
+}
+
+/**
  * Ensure the proxy certificate covers every hostname in the registry, plus any
  * in `include` that this run is about to register.
  *
@@ -45,9 +85,10 @@ export interface CertificateFiles {
  * polls them. The renewal check runs inside the lock, so the run that waits
  * finds the winner's certificate already sufficient and mints nothing.
  *
- * Returns the cert paths, or throws with an actionable message when `mkcert` is
- * unavailable. Callers on the `buncargo dev` path treat a failure as "fall back
- * to localhost:port", not as a fatal error.
+ * Returns the cert paths, downloading `mkcert` first when a mint is due and
+ * none is installed, or throwing with an actionable message when even that
+ * fails. Callers on the `buncargo dev` path treat a failure as "fall back to
+ * localhost:port", not as a fatal error.
  */
 export async function syncCertificateForRoutes(
 	options: { mkcertPath?: string; include?: string[] } = {},
@@ -61,10 +102,10 @@ export async function syncCertificateForRoutes(
 				...(options.include ?? []),
 			]),
 		].sort();
-		const mkcertPath = options.mkcertPath ?? resolvedMkcertPath();
-		const minted = mintCert(hostnamesForCertificate(hostnames), {
-			mkcertPath,
-		});
+		const wanted = hostnamesForCertificate(hostnames);
+		const mkcertPath =
+			options.mkcertPath ?? (await resolveMkcertForMint(certPath, wanted));
+		const minted = mintCert(wanted, { mkcertPath });
 		return { certPath: minted.certPath, keyPath: minted.keyPath };
 	});
 }

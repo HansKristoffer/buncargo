@@ -9,6 +9,19 @@ export const HOPS_HEADER = "x-buncargo-hops";
 export const MAX_PROXY_HOPS = 5;
 export const HEALTH_PATH = "/_buncargo/health";
 
+/**
+ * What the proxy can say about the routes it is serving.
+ *
+ * `lastReloadAt` is what separates "no project has registered a hostname" from
+ * "the owner stopped refreshing and we are serving a frozen map". Both look
+ * identical from a 404, which is how a stalled daemon went unnoticed for days.
+ */
+export interface ProxyRoutesView {
+	hostnames: string[];
+	/** Epoch ms of the last successful refresh, if the owner tracks one. */
+	lastReloadAt?: number;
+}
+
 const LOOP_MESSAGE =
 	"Loop Detected: request has passed through buncargo too many times.\nAdd changeOrigin: true to your dev server proxy config.\n";
 
@@ -83,20 +96,49 @@ export function closestHostname(
 
 export function createProxyFetch(input: {
 	lookup: ProxyRouteLookup;
-	listHostnames: () => string[];
+	routes: () => ProxyRoutesView;
 	https: boolean;
 	upstream?: UpstreamResolver;
+	/** Age of `lastReloadAt` past which the map is reported as stale. */
+	staleAfterMs?: number;
+	/** Called from the request path when the map is stale, before answering. */
+	onStale?: (ageMs: number) => void;
+	now?: () => number;
 }): (
 	request: Request,
 	server: Server<unknown>,
 ) => Response | Promise<Response> {
-	const { lookup, listHostnames, https } = input;
+	const { lookup, routes, https, staleAfterMs, onStale } = input;
 	const upstream = input.upstream ?? createUpstreamResolver();
+	const now = input.now ?? Date.now;
+
+	/**
+	 * Notice a frozen route map from the request path.
+	 *
+	 * Deliberately not a timer: the failure this exists to catch is an owner
+	 * whose scheduling stopped, and a watchdog on the same timers would stop
+	 * with it. Serving a request is the one thing still known to work.
+	 */
+	function reloadAgeMs(view: ProxyRoutesView): number | undefined {
+		if (view.lastReloadAt === undefined) return undefined;
+		const age = now() - view.lastReloadAt;
+		if (staleAfterMs !== undefined && age > staleAfterMs) {
+			onStale?.(age);
+		}
+		return age;
+	}
 
 	return async (request, server) => {
 		const url = new URL(request.url);
+		const view = routes();
+		const ageMs = reloadAgeMs(view);
 		if (url.pathname === HEALTH_PATH) {
-			return Response.json({ ok: true, routes: listHostnames().length });
+			return Response.json({
+				ok: true,
+				routes: view.hostnames.length,
+				hostnames: view.hostnames,
+				lastReloadAt: view.lastReloadAt,
+			});
 		}
 
 		const hostname = hostnameFromHostHeader(request.headers.get("host"));
@@ -111,10 +153,16 @@ export function createProxyFetch(input: {
 
 		const port = lookup(hostname);
 		if (port === undefined) {
-			const hint = closestHostname(hostname, listHostnames());
+			const hint = closestHostname(hostname, view.hostnames);
+			const stale =
+				staleAfterMs !== undefined &&
+				ageMs !== undefined &&
+				ageMs > staleAfterMs
+					? `The route map has not refreshed in ${Math.round(ageMs / 1000)}s, so this may be stale. Run \`buncargo hosts install\`.\n`
+					: "";
 			const message = hint
-				? `No route for ${hostname}. Closest registered hostname: ${hint}\n`
-				: `No route for ${hostname || "(missing Host)"}\n`;
+				? `No route for ${hostname}. Closest registered hostname: ${hint}\n${stale}`
+				: `No route for ${hostname || "(missing Host)"}\n${stale}`;
 			return new Response(message, {
 				status: 404,
 				headers: { "content-type": "text/plain; charset=utf-8" },
@@ -321,12 +369,14 @@ export interface LocalProxy {
 
 export async function startLocalProxy(options: {
 	lookup: ProxyRouteLookup;
-	listHostnames: () => string[];
+	routes: () => ProxyRoutesView;
 	cert?: string;
 	key?: string;
 	httpsPort: number;
 	httpPort?: number;
 	hostname?: string;
+	staleAfterMs?: number;
+	onStale?: (ageMs: number) => void;
 }): Promise<LocalProxy> {
 	const hostname = options.hostname ?? "127.0.0.1";
 	const https = Boolean(options.cert && options.key);
@@ -335,9 +385,11 @@ export async function startLocalProxy(options: {
 	const upstream = createUpstreamResolver();
 	const fetchHandler = createProxyFetch({
 		lookup: options.lookup,
-		listHostnames: options.listHostnames,
+		routes: options.routes,
 		https,
 		upstream,
+		staleAfterMs: options.staleAfterMs,
+		onStale: options.onStale,
 	});
 	const websocket = createWebsocketHandlers(upstream);
 
@@ -412,6 +464,61 @@ function isProxyHealthBody(value: unknown): boolean {
 	const body = value as { ok?: unknown; routes?: unknown; redirect?: unknown };
 	if (body.ok !== true) return false;
 	return typeof body.routes === "number" || body.redirect === true;
+}
+
+export interface ProxyHealth {
+	routeCount: number;
+	/**
+	 * Hostnames the proxy is serving, or `undefined` from a daemon predating
+	 * the field. Absent is "cannot tell", never "serves nothing".
+	 */
+	hostnames?: string[];
+	lastReloadAt?: number;
+}
+
+function parseProxyHealth(value: unknown): ProxyHealth | undefined {
+	if (!isProxyHealthBody(value)) return undefined;
+	const body = value as {
+		routes?: unknown;
+		hostnames?: unknown;
+		lastReloadAt?: unknown;
+	};
+	return {
+		routeCount: typeof body.routes === "number" ? body.routes : 0,
+		hostnames:
+			Array.isArray(body.hostnames) &&
+			body.hostnames.every((entry) => typeof entry === "string")
+				? (body.hostnames as string[])
+				: undefined,
+		lastReloadAt:
+			typeof body.lastReloadAt === "number" ? body.lastReloadAt : undefined,
+	};
+}
+
+/**
+ * What the proxy says it is serving, or `undefined` when nothing answered.
+ *
+ * The counterpart to {@link isProxyHealthy}: callers that are about to
+ * advertise a hostname need to know the daemon actually has it, not merely
+ * that something is listening.
+ */
+export async function readProxyHealth(
+	port = 443,
+	hostname = "127.0.0.1",
+	options: { tls?: boolean; timeoutMs?: number } = {},
+): Promise<ProxyHealth | undefined> {
+	const tls = options.tls ?? true;
+	const url = `${tls ? "https" : "http"}://${hostname}:${port}${HEALTH_PATH}`;
+	try {
+		const response = await fetch(url, {
+			signal: AbortSignal.timeout(options.timeoutMs ?? HEALTH_TIMEOUT_MS),
+			...(tls ? { tls: { rejectUnauthorized: false } } : {}),
+		});
+		if (!response.ok) return undefined;
+		return parseProxyHealth(await response.json());
+	} catch {
+		return undefined;
+	}
 }
 
 /**

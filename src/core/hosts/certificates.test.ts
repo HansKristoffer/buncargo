@@ -16,6 +16,7 @@ import {
 	describeCertificateGap,
 	hostnamesForCertificate,
 	readCertificatePair,
+	resolveMkcertForMint,
 	syncCertificateForRoutes,
 } from "./certificates";
 import { getCertPath, getKeyPath } from "./paths";
@@ -119,6 +120,79 @@ describe("syncCertificateForRoutes", () => {
 		const { cert, key } = await readCertificatePair();
 		expect(cert).toBe(key);
 		expect(cert).toContain("b.demo.localhost");
+	});
+});
+
+describe("resolveMkcertForMint", () => {
+	const originalHome = process.env.HOME;
+	const dirs: string[] = [];
+
+	afterEach(() => {
+		process.env.HOME = originalHome;
+		for (const dir of dirs.splice(0)) {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	function sandboxHome(): string {
+		const home = tempDir();
+		dirs.push(home);
+		process.env.HOME = home;
+		return home;
+	}
+
+	it("uses an installed mkcert without downloading anything", async () => {
+		sandboxHome();
+		let downloads = 0;
+		const path = await resolveMkcertForMint(getCertPath(), ["a.localhost"], {
+			resolve: () => "/usr/local/bin/mkcert",
+			download: async () => {
+				downloads += 1;
+				return "/downloaded";
+			},
+		});
+		expect(path).toBe("/usr/local/bin/mkcert");
+		expect(downloads).toBe(0);
+	});
+
+	// The cache lives in the user's home now, but a home can still be wiped.
+	// Dead-ending here is what downgraded a whole worktree to localhost:port.
+	it("downloads mkcert when a mint is due and none is installed", async () => {
+		sandboxHome();
+		const path = await resolveMkcertForMint(getCertPath(), ["a.localhost"], {
+			resolve: () => undefined,
+			download: async () => "/downloaded/mkcert",
+		});
+		expect(path).toBe("/downloaded/mkcert");
+	});
+
+	// Most runs need no mint at all: paying for a download there would put a
+	// network call on the path of every `buncargo dev`.
+	it("does not download when the certificate already covers everything", async () => {
+		sandboxHome();
+		let downloads = 0;
+		const path = await resolveMkcertForMint(getCertPath(), ["a.localhost"], {
+			resolve: () => undefined,
+			needsRenewal: () => false,
+			download: async () => {
+				downloads += 1;
+				return "/downloaded";
+			},
+		});
+		expect(path).toBeUndefined();
+		expect(downloads).toBe(0);
+	});
+
+	it("keeps the install hint when the download itself fails", async () => {
+		sandboxHome();
+		await expect(
+			resolveMkcertForMint(getCertPath(), ["a.localhost"], {
+				resolve: () => undefined,
+				download: async () => {
+					throw new Error("offline");
+				},
+			}),
+		).rejects.toThrow("buncargo hosts install");
 	});
 });
 

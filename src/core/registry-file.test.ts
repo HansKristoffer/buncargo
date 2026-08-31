@@ -6,6 +6,7 @@ import {
 	defineListRegistry,
 	isRouteOwnerAlive,
 	readJsonDocumentSync,
+	StateFileUnreadableError,
 	writeJsonDocumentSync,
 } from "./registry-file";
 
@@ -101,6 +102,40 @@ describe("defineListRegistry", () => {
 		const path = tempFile();
 		writeFileSync(path, "]]not json[[");
 		expect(await registry.read(path)).toEqual([]);
+	});
+
+	describe("strict", () => {
+		it("still reads a missing file as empty", async () => {
+			expect(await registry.read(tempFile(), { strict: true })).toEqual([]);
+		});
+
+		it("refuses to call a corrupt file empty", async () => {
+			const path = tempFile();
+			writeFileSync(path, "]]not json[[");
+			await expect(registry.read(path, { strict: true })).rejects.toThrow(
+				"could not be read",
+			);
+		});
+
+		it("refuses to call a wrong-version file empty", async () => {
+			const path = tempFile();
+			writeJsonDocumentSync(path, {
+				version: 1,
+				entries: [{ name: "api", port: 3000 }],
+			});
+			await expect(registry.read(path, { strict: true })).rejects.toThrow(
+				StateFileUnreadableError,
+			);
+		});
+
+		it("surfaces an unreadable directory rather than an empty list", async () => {
+			const dir = mkdtempSync(join(tmpdir(), "buncargo-registry-"));
+			// A directory in place of the file: readFile fails with EISDIR, the
+			// stand-in here for the EACCES a root-written state file produces.
+			await expect(registry.read(dir, { strict: true })).rejects.toThrow(
+				StateFileUnreadableError,
+			);
+		});
 	});
 });
 

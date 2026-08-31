@@ -2,7 +2,9 @@ import { existsSync, rmSync } from "node:fs";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "../registry-file";
 import {
 	buncargoVersion,
+	currentDaemonBundleHash,
 	HOSTS_DAEMON_DIR,
+	hashDaemonBundle,
 	hostsDaemonBundlePath,
 	isManagedBundlePath,
 	readDaemonBundleSource,
@@ -47,6 +49,11 @@ export interface HostsServiceManifest {
 	program: string;
 	/** Arguments, the first of which is the installed daemon bundle. */
 	args: string[];
+	/**
+	 * Contents of the bundle that was installed. Absent in manifests written
+	 * before the field existed, which read as "cannot compare".
+	 */
+	bundleHash?: string;
 	installedAt: string;
 }
 
@@ -115,6 +122,9 @@ function validateManifest(value: unknown): HostsServiceManifest | undefined {
 		version: manifest.version,
 		program: manifest.program,
 		args: manifest.args,
+		...(typeof manifest.bundleHash === "string"
+			? { bundleHash: manifest.bundleHash }
+			: {}),
 		installedAt:
 			typeof manifest.installedAt === "string" ? manifest.installedAt : "",
 	};
@@ -127,11 +137,13 @@ export function readHostsServiceManifest(): HostsServiceManifest | undefined {
 export function writeHostsServiceManifest(input: {
 	program: string;
 	args: string[];
+	bundleHash?: string;
 }): void {
 	const manifest: HostsServiceManifest = {
 		version: HOSTS_SERVICE_MANIFEST_VERSION,
 		program: input.program,
 		args: input.args,
+		...(input.bundleHash ? { bundleHash: input.bundleHash } : {}),
 		installedAt: new Date().toISOString(),
 	};
 	writeJsonDocumentSync(getServiceManifestPath(), manifest, {
@@ -167,9 +179,11 @@ export function describeStaleService(input: {
 	manifest: HostsServiceManifest | undefined;
 	/** Bundle path the running CLI would install; a mismatch means an upgrade. */
 	expectedBundle?: string;
+	/** Contents of that bundle; a mismatch means a rebuild at the same version. */
+	expectedBundleHash?: string;
 	fileExists?: (path: string) => boolean;
 }): string | undefined {
-	const { installed, manifest, expectedBundle } = input;
+	const { installed, manifest, expectedBundle, expectedBundleHash } = input;
 	const fileExists = input.fileExists ?? existsSync;
 	if (!installed) return undefined;
 	if (!manifest) {
@@ -186,6 +200,17 @@ export function describeStaleService(input: {
 	if (expectedBundle && manifest.args[0] !== expectedBundle) {
 		return `Named-hosts service runs ${manifest.args[0]}, but this buncargo installs ${expectedBundle}. Run \`buncargo hosts install\` to update it.`;
 	}
+
+	// The path stops at the version, so a daemon rebuilt during development —
+	// or shipped in a patch that reuses the version — passes every check above
+	// while running code that no longer matches this CLI.
+	if (
+		expectedBundleHash &&
+		manifest.bundleHash &&
+		manifest.bundleHash !== expectedBundleHash
+	) {
+		return "Named-hosts service runs a daemon built from different code than this buncargo. Run `buncargo hosts install` to update it.";
+	}
 	return undefined;
 }
 
@@ -194,6 +219,7 @@ export function describeStaleHostsService(): string | undefined {
 		installed: isHostsServiceInstalled(),
 		manifest: readHostsServiceManifest(),
 		expectedBundle: hostsDaemonBundlePath(buncargoVersion()),
+		expectedBundleHash: currentDaemonBundleHash(),
 	});
 }
 
@@ -316,7 +342,11 @@ export function installHostsService(
 		throw new Error(toHostsUserMessage(error));
 	}
 
-	writeHostsServiceManifest({ program, args });
+	writeHostsServiceManifest({
+		program,
+		args,
+		bundleHash: hashDaemonBundle(bundle.contents),
+	});
 	removeSupersededBundles(runner, bundlePath);
 }
 

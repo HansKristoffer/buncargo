@@ -29,7 +29,10 @@ import {
 import {
 	isProxyHealthy,
 	type LocalProxy,
+	type ProxyHealth,
 	type ProxyRouteLookup,
+	type ProxyRoutesView,
+	readProxyHealth,
 	startLocalProxy,
 } from "./proxy";
 import { pruneHostRoutes } from "./registry";
@@ -41,6 +44,20 @@ const DEFAULT_HTTP_PORT = 80;
 const IDLE_EXIT_MS = 30_000;
 const RELOAD_INTERVAL_MS = 1000;
 const MAX_RELOAD_BACKOFF_MS = 30_000;
+
+/**
+ * How long without a successful refresh before the route map is presumed frozen.
+ *
+ * Comfortably above {@link MAX_RELOAD_BACKOFF_MS} so a daemon that is merely
+ * backing off through a run of failures is not mistaken for a dead one.
+ */
+export const RELOAD_STALL_MS = 45_000;
+
+/**
+ * Failed in-band recoveries before the daemon gives up and lets the supervisor
+ * restart it. Two is enough to tell a transient read error from a wedge.
+ */
+const MAX_STALL_RECOVERIES = 2;
 
 /**
  * Write straight to fd 2, bypassing the buffering Bun applies when stderr is a
@@ -178,6 +195,85 @@ export async function isHostsDaemonHealthy(port?: number): Promise<boolean> {
 	});
 }
 
+/** What the running daemon reports it is serving, if it answers at all. */
+export async function readHostsDaemonHealth(
+	port?: number,
+): Promise<ProxyHealth | undefined> {
+	const config = readDaemonConfig();
+	return readProxyHealth(port ?? config.httpsPort, "127.0.0.1", {
+		tls: config.tls,
+	});
+}
+
+/**
+ * A daemon that cannot serve, whether or not it answers.
+ *
+ * Health alone is not enough: the listener and the reload loop are independent,
+ * so a daemon whose loop stopped keeps returning 200 while every named URL
+ * 404s against a frozen map. Both cases want the same repair — reload it.
+ */
+export async function isHostsDaemonWedged(): Promise<boolean> {
+	const health = await readHostsDaemonHealth();
+	if (!health) return true;
+	if (health.lastReloadAt === undefined) return false;
+	return Date.now() - health.lastReloadAt > RELOAD_STALL_MS;
+}
+
+/** How long the CLI waits for the daemon's one-second poll to pick a route up. */
+export const ROUTE_PICKUP_TIMEOUT_MS = 3000;
+const ROUTE_POLL_MS = 100;
+
+export type DaemonRouteCheck =
+	| { ok: true }
+	/** The daemon answers but does not report hostnames, so nothing can be proven. */
+	| { ok: true; unverifiable: true }
+	| { ok: false; reason: string };
+
+/**
+ * Wait until the daemon is actually serving `hostnames`.
+ *
+ * Registering a route only writes a file; the daemon picks it up on its own
+ * poll, and a daemon whose poll has stopped keeps answering health checks with
+ * a map that will never contain it. Without this the CLI advertises
+ * `https://app.project.localhost` and the browser gets a 404 from our own
+ * proxy — the failure this whole check exists to prevent.
+ */
+export async function waitForDaemonRoutes(
+	hostnames: string[],
+	options: { timeoutMs?: number; port?: number } = {},
+): Promise<DaemonRouteCheck> {
+	if (hostnames.length === 0) return { ok: true };
+	const deadline = Date.now() + (options.timeoutMs ?? ROUTE_PICKUP_TIMEOUT_MS);
+	let missing: string[] = [...hostnames];
+
+	for (;;) {
+		const health = await readHostsDaemonHealth(options.port);
+		if (health === undefined) {
+			return {
+				ok: false,
+				reason: `the daemon on :${readDaemonConfig().httpsPort} stopped answering`,
+			};
+		}
+		// A daemon from before this field cannot be checked. Reporting that as a
+		// failure would downgrade every URL on a machine whose service is simply
+		// due an upgrade, which `describeStaleHostsService` already reports.
+		if (health.hostnames === undefined) return { ok: true, unverifiable: true };
+
+		const served = new Set(health.hostnames);
+		missing = hostnames.filter((hostname) => !served.has(hostname));
+		if (missing.length === 0) return { ok: true };
+
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) break;
+		await sleep(Math.min(ROUTE_POLL_MS, remaining));
+	}
+
+	return {
+		ok: false,
+		reason: `the daemon is not serving ${missing.join(", ")}`,
+	};
+}
+
 export interface HostsReloaderDeps {
 	pruneRoutes: () => Promise<Array<{ hostname: string; port: number }>>;
 	certificateFingerprint: () => string;
@@ -185,7 +281,7 @@ export interface HostsReloaderDeps {
 	readCertificatePair: () => Promise<{ cert: string; key: string }>;
 	startProxy: (input: {
 		lookup: ProxyRouteLookup;
-		listHostnames: () => string[];
+		routes: () => ProxyRoutesView;
 		cert: string;
 		key: string;
 	}) => Promise<LocalProxy>;
@@ -204,6 +300,8 @@ export interface HostsReloader {
 	stop: () => void;
 	/** Whether a listener is currently bound. */
 	isBound: () => boolean;
+	/** What the proxy reports: served hostnames and the last refresh time. */
+	routes: () => ProxyRoutesView;
 }
 
 /**
@@ -219,8 +317,16 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	let lastCertKey = "";
 	let idleSince: number | undefined;
 	let lastHostsFileFailure: string | undefined;
+	let lastCertificateGap: string | undefined;
+	// Seeded rather than left undefined: a daemon that has not finished its
+	// first reload is starting up, not frozen.
+	let lastReloadAt = deps.now();
 
 	const lookup: ProxyRouteLookup = (hostname) => routeMap.get(hostname);
+	const routes = (): ProxyRoutesView => ({
+		hostnames: [...routeMap.keys()],
+		lastReloadAt,
+	});
 
 	/**
 	 * An unwritable `/etc/hosts` stops named hostnames resolving, so it cannot
@@ -234,12 +340,31 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		deps.log(`[buncargo hosts] could not ${action} /etc/hosts: ${message}`);
 	}
 
+	/**
+	 * Announce a certificate that no longer covers everything registered, and
+	 * announce it again once it does. Only on a change: the gap survives until
+	 * a CLI run remints, which can be hours.
+	 */
+	function reportCertificateGap(gap: string | undefined): void {
+		if (gap === lastCertificateGap) return;
+		lastCertificateGap = gap;
+		deps.log(
+			gap
+				? `[buncargo hosts] ${gap}`
+				: "[buncargo hosts] certificate now covers every registered hostname",
+		);
+	}
+
 	async function reload(): Promise<void> {
-		const routes = await deps.pruneRoutes();
+		// Load before clearing, so a registry that could not be read leaves the
+		// previous map serving. An unreadable file is not a file with no routes,
+		// and clearing first would 404 every named URL on the machine.
+		const loaded = await deps.pruneRoutes();
 		routeMap.clear();
-		for (const route of routes) {
+		for (const route of loaded) {
 			routeMap.set(route.hostname, route.port);
 		}
+		lastReloadAt = deps.now();
 		const hostnames = [...routeMap.keys()].sort();
 		const hostKey = hostnames.join(",");
 		if (hostnames.length === 0) {
@@ -278,9 +403,11 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		}
 
 		// Minting belongs to the CLI, which runs as the user and can find
-		// mkcert. Report the gap and let the backoff retry once it is filled.
-		const gap = deps.describeCertificateGap(hostnames);
-		if (gap) throw new Error(gap);
+		// mkcert. A hostname the leaf does not cover fails TLS for that
+		// hostname alone, so report it and serve the rest: failing the whole
+		// reload put the daemon into a widening backoff, which delayed picking
+		// up every *other* project's routes because one worktree was uncovered.
+		reportCertificateGap(deps.describeCertificateGap(hostnames));
 
 		lastHostKey = hostKey;
 		if (!mustBind) return;
@@ -296,7 +423,7 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		stopped?.stop();
 		proxy = await deps.startProxy({
 			lookup,
-			listHostnames: () => [...routeMap.keys()],
+			routes,
 			cert,
 			key,
 		});
@@ -307,6 +434,7 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		reload,
 		stop: () => proxy?.stop(),
 		isBound: () => proxy !== undefined,
+		routes,
 	};
 }
 
@@ -318,8 +446,13 @@ export async function runHostsDaemon(
 	writePidfile(process.pid);
 
 	const syncHosts = shouldSyncHostsFile();
+	// Assigned by the reloader's own startProxy callback, which runs before any
+	// request can arrive.
+	let recoverFromStall: (ageMs: number) => void = () => {};
 	const reloader = createHostsReloader({
-		pruneRoutes: pruneHostRoutes,
+		// Strict: an unreadable registry must reach the reloader as a failure,
+		// not as an empty list it would serve as "no routes".
+		pruneRoutes: () => pruneHostRoutes(undefined, { strict: true }),
 		certificateFingerprint,
 		describeCertificateGap,
 		readCertificatePair,
@@ -331,6 +464,8 @@ export async function runHostsDaemon(
 					config.httpsPort === DEFAULT_HOSTS_DAEMON_PORT
 						? config.httpPort
 						: undefined,
+				staleAfterMs: RELOAD_STALL_MS,
+				onStale: (ageMs) => recoverFromStall(ageMs),
 			}),
 		syncHostsFile: syncHosts ? syncHostsFile : undefined,
 		cleanHostsFile: syncHosts ? cleanHostsFile : undefined,
@@ -379,6 +514,40 @@ export async function runHostsDaemon(
 			failureLog.report(`[buncargo hosts] reload failed: ${message}`);
 		}
 	}
+
+	/**
+	 * Recover a route map that has stopped refreshing, from the request path.
+	 *
+	 * The loop below is the only thing that reads the registry, and a loop that
+	 * stops advancing is invisible: `Bun.serve` keeps answering, so the daemon
+	 * looks healthy while every named URL 404s against a frozen map. Serving a
+	 * request is the one signal still known to work, so it drives the repair.
+	 *
+	 * Reloading in-band is tried first because it fixes the common case without
+	 * dropping a single connection. Only when that does not move the timestamp
+	 * does the daemon exit and let launchd/systemd `KeepAlive` restart it — a
+	 * rebind costs milliseconds, and a wedged daemon costs everything.
+	 */
+	let recoveries = 0;
+	let recovering: Promise<void> | undefined;
+	recoverFromStall = (ageMs) => {
+		if (recovering) return;
+		logDaemonError(
+			`[buncargo hosts] route map has not refreshed in ${Math.round(ageMs / 1000)}s; reloading`,
+		);
+		recovering = reloadOrReport()
+			.then(() => {
+				recoveries += 1;
+				if (recoveries <= MAX_STALL_RECOVERIES) return;
+				logDaemonError(
+					"[buncargo hosts] route map is still stale after in-band reloads; exiting so the service restarts",
+				);
+				process.exit(1);
+			})
+			.finally(() => {
+				recovering = undefined;
+			});
+	};
 
 	await reloadOrReport();
 	for (;;) {

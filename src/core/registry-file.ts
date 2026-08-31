@@ -37,6 +37,10 @@ function serialize(document: unknown): string {
 /** Narrow parsed JSON to `T`, or return `undefined` to treat the file as absent. */
 export type JsonValidator<T> = (value: unknown) => T | undefined;
 
+function describeError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 function parse<T>(raw: string, validate: JsonValidator<T>): T | undefined {
 	try {
 		return validate(JSON.parse(raw));
@@ -113,9 +117,38 @@ export function isRouteOwnerAlive(pid: number | undefined): boolean {
 	return pid === undefined || isProcessAlive(pid);
 }
 
+/**
+ * A state file that exists but could not be turned into state.
+ *
+ * Worth its own type because the alternative — a missing file — means the
+ * opposite to a reader. Collapsing the two is what let the hosts daemon serve
+ * an empty world from a registry full of routes it simply could not read.
+ */
+export class StateFileUnreadableError extends Error {
+	readonly path: string;
+
+	constructor(path: string, reason: string) {
+		super(`${path} could not be read: ${reason}`);
+		this.name = "StateFileUnreadableError";
+		this.path = path;
+	}
+}
+
+export interface ListRegistryReadOptions {
+	/**
+	 * Throw {@link StateFileUnreadableError} instead of degrading an existing
+	 * but unreadable file to `[]`.
+	 *
+	 * For consumers that only read. A writer wants the lenient behavior: it can
+	 * repair the file by writing over it, while throwing would leave it stuck
+	 * behind a file only a human could delete.
+	 */
+	strict?: boolean;
+}
+
 export interface ListRegistry<T> {
-	/** Entries on disk, or `[]` when the file is missing, stale, or invalid. */
-	read(path: string): Promise<T[]>;
+	/** Entries on disk, or `[]` when the file is missing (see `strict`). */
+	read(path: string, options?: ListRegistryReadOptions): Promise<T[]>;
 	/** Persist entries, removing the file when none are left. */
 	write(path: string, entries: T[]): Promise<void>;
 }
@@ -144,8 +177,22 @@ export function defineListRegistry<T>(options: {
 	};
 
 	return {
-		async read(path) {
-			return (await readJsonDocument(path, validate)) ?? [];
+		async read(path, readOptions = {}) {
+			let raw: string;
+			try {
+				raw = await readFile(path, "utf-8");
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+				if (!readOptions.strict) return [];
+				throw new StateFileUnreadableError(path, describeError(error));
+			}
+			const entries = parse(raw, validate);
+			if (entries) return entries;
+			if (!readOptions.strict) return [];
+			throw new StateFileUnreadableError(
+				path,
+				`not a valid version ${version} ${key} document`,
+			);
 		},
 		async write(path, entries) {
 			if (entries.length === 0) {

@@ -6,11 +6,16 @@ export {
 } from "./certificates";
 export {
 	DAEMON_START_TIMEOUT_MS,
+	type DaemonRouteCheck,
 	ensureHostsDaemonRunning,
 	isHostsDaemonHealthy,
+	RELOAD_STALL_MS,
+	ROUTE_PICKUP_TIMEOUT_MS,
 	readDaemonConfig,
+	readHostsDaemonHealth,
 	runHostsDaemon,
 	SERVICE_START_TIMEOUT_MS,
+	waitForDaemonRoutes,
 } from "./daemon";
 export { cleanHostsFile, syncHostsFile } from "./hosts-file";
 export { getCaPath, mintCert, resolvedMkcertPath } from "./mkcert";
@@ -32,7 +37,12 @@ export {
 	sanitizeDnsLabel,
 	sanitizeTld,
 } from "./plan";
-export { HEALTH_PATH, HOPS_HEADER, startLocalProxy } from "./proxy";
+export {
+	HEALTH_PATH,
+	HOPS_HEADER,
+	type ProxyHealth,
+	startLocalProxy,
+} from "./proxy";
 export {
 	type HostsRoute,
 	HostsRouteConflictError,

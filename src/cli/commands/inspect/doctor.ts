@@ -8,9 +8,11 @@ import {
 } from "../../../container-runtime";
 import {
 	doctorFixHosts,
-	isHostsDaemonHealthy,
+	type ProxyHealth,
 	pruneHostRoutes,
+	RELOAD_STALL_MS,
 	readDaemonConfig,
+	readHostsDaemonHealth,
 } from "../../../core/hosts";
 import { isCaPresent } from "../../../core/hosts/mkcert";
 import { describeStaleHostsService } from "../../../core/hosts/service";
@@ -144,7 +146,8 @@ async function checkNamedHosts(
 	env: DevEnv,
 ): Promise<void> {
 	if (!env.hosts) return;
-	if (await isHostsDaemonHealthy(readDaemonConfig().httpsPort)) {
+	const health = await readHostsDaemonHealth(readDaemonConfig().httpsPort);
+	if (health) {
 		report.note("Named-hosts daemon is healthy");
 	} else {
 		report.issue(
@@ -166,6 +169,39 @@ async function checkNamedHosts(
 			? "Named-hosts route registry is empty after prune"
 			: `Named-hosts registry has ${hostRoutes.length} live ${hostRoutes.length === 1 ? "route" : "routes"}`,
 	);
+	reportDaemonRouteGap(report, health, hostRoutes);
+}
+
+/**
+ * The registry and the daemon disagreeing is the failure that has no symptom
+ * of its own: both halves look fine on their own, and only the browser sees
+ * the 404. Naming it here is the difference between a five-minute look and a
+ * three-day one.
+ */
+function reportDaemonRouteGap(
+	report: DoctorReport,
+	health: ProxyHealth | undefined,
+	registered: Array<{ hostname: string }>,
+): void {
+	if (!health?.hostnames) return;
+
+	const served = new Set(health.hostnames);
+	const missing = registered
+		.map((route) => route.hostname)
+		.filter((hostname) => !served.has(hostname));
+	if (missing.length > 0) {
+		report.issue(
+			`Named-hosts daemon is not serving ${missing.join(", ")}, which the registry lists. Run \`buncargo doctor --fix\`.`,
+		);
+	}
+
+	if (health.lastReloadAt === undefined) return;
+	const ageMs = Date.now() - health.lastReloadAt;
+	if (ageMs > RELOAD_STALL_MS) {
+		report.issue(
+			`Named-hosts daemon has not refreshed its routes in ${Math.round(ageMs / 1000)}s. Run \`buncargo hosts install\` to restart it.`,
+		);
+	}
 }
 
 /**

@@ -1,8 +1,9 @@
 import {
-	isHostsDaemonHealthy,
 	loadHostRoutes,
 	pruneHostRoutes,
+	RELOAD_STALL_MS,
 	readDaemonConfig,
+	readHostsDaemonHealth,
 	runHostsDaemon,
 	runHostsInstall,
 	runHostsUninstall,
@@ -72,9 +73,15 @@ export async function handleHosts(args: string[]): Promise<void> {
 
 async function printHostsStatus(): Promise<void> {
 	const config = readDaemonConfig();
-	const healthy = await isHostsDaemonHealthy(config.httpsPort);
+	const health = await readHostsDaemonHealth(config.httpsPort);
+	const healthy = health !== undefined;
 	const mkcertPath = resolvedMkcertPath();
 	log.line(`daemon: ${healthy ? "healthy" : "down"}`);
+	if (health?.lastReloadAt !== undefined) {
+		const ageMs = Date.now() - health.lastReloadAt;
+		const stale = ageMs > RELOAD_STALL_MS ? "  (stale)" : "";
+		log.line(`  refreshed: ${Math.round(ageMs / 1000)}s ago${stale}`);
+	}
 	log.line(`httpsPort: ${config.httpsPort}`);
 	log.line(`service: ${isHostsServiceInstalled() ? "installed" : "missing"}`);
 	const manifest = readHostsServiceManifest();
@@ -102,10 +109,18 @@ async function printHostsStatus(): Promise<void> {
 		log.line("  (none)");
 		return;
 	}
+	// Marked per route rather than summarized: the registry and the daemon
+	// disagreeing is invisible from either side alone, and it is the difference
+	// between a working named URL and a 404 from our own proxy.
+	const served = health?.hostnames ? new Set(health.hostnames) : undefined;
 	for (const route of routes) {
 		const owner = route.pid === undefined ? "static" : `pid ${route.pid}`;
+		const unserved =
+			served && !served.has(route.hostname)
+				? "  ← not served by the daemon"
+				: "";
 		log.line(
-			`  ${route.hostname} → :${route.port}  (${route.kind}:${route.name}, ${owner})`,
+			`  ${route.hostname} → :${route.port}  (${route.kind}:${route.name}, ${owner})${unserved}`,
 		);
 	}
 }

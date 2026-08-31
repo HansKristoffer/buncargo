@@ -12,6 +12,7 @@ export const DECLINE_FILENAME = "hosts-declined";
 export const CERTS_DIRNAME = "certs";
 export const CERT_FILENAME = "hosts.pem";
 export const KEY_FILENAME = "hosts-key.pem";
+export const TOOLS_DIRNAME = "bin";
 
 export interface InvokingUser {
 	user: string;
@@ -155,6 +156,18 @@ export function getCertPath(home = resolveUserHome()): string {
 
 export function getKeyPath(home = resolveUserHome()): string {
 	return join(getCertsDir(home), KEY_FILENAME);
+}
+
+/**
+ * Where downloaded tools (`mkcert`, `cloudflared`) live.
+ *
+ * Beside the certificates and the registry rather than in `tmpdir()`: macOS
+ * clears `$TMPDIR`, and a cache that disappears takes named hosts down with it
+ * — a run that has to widen the certificate for a new worktree hostname finds
+ * no `mkcert` and falls back to `localhost:port`.
+ */
+export function getToolsDir(home = resolveUserHome()): string {
+	return join(getHostsStateDir(home), TOOLS_DIRNAME);
 }
 
 /** Causes already reported, so a per-second daemon write logs once. */

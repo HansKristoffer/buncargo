@@ -7,6 +7,7 @@ import fs from "node:fs";
 import https from "node:https";
 import path from "node:path";
 import { cloudflaredVersion } from "../runtime-flags";
+import { finalizeToolBinary } from "../tool-binary";
 import { cloudflaredBinPath, RELEASE_BASE } from "./constants";
 
 const LINUX_URL: Partial<Record<NodeJS.Architecture, string>> = {
@@ -33,10 +34,18 @@ function resolveBase(version: string): string {
 	return `${RELEASE_BASE}download/${version}/`;
 }
 
-export function installCloudflared(
+export async function installCloudflared(
 	to: string = cloudflaredBinPath(),
 	version = cloudflaredVersion(),
 ): Promise<string> {
+	const installed = await downloadForPlatform(to, version);
+	// The cache now lives in the user's home, so a run under sudo must not
+	// leave a root-owned binary the next unelevated run cannot replace.
+	finalizeToolBinary(installed);
+	return installed;
+}
+
+function downloadForPlatform(to: string, version: string): Promise<string> {
 	switch (process.platform) {
 		case "linux": {
 			return installLinux(to, version);
@@ -64,7 +73,6 @@ async function installLinux(
 	}
 
 	await download(resolveBase(version) + file, to);
-	fs.chmodSync(to, 0o755);
 	return to;
 }
 
