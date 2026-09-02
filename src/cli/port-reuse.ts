@@ -1,8 +1,8 @@
 import {
 	classifyPortOccupant,
+	createPortOwnerSnapshot,
 	formatPortOwner,
-	getPortOwner,
-	isPortInUse,
+	type PortOwnerSnapshot,
 } from "../core/process";
 import type { AppConfig } from "../types";
 
@@ -65,6 +65,7 @@ export function parseRequiredCommaSeparatedFlag(
 
 function conflictDescriber(
 	options: ClassifyCliAppsOptions,
+	snapshot: PortOwnerSnapshot,
 ): (port: number) => string | undefined {
 	if (options.describePortConflict) {
 		return options.describePortConflict;
@@ -74,7 +75,7 @@ function conflictDescriber(
 		return () => undefined;
 	}
 	return (port) => {
-		const owner = getPortOwner(port);
+		const owner = snapshot.owner(port);
 		if (!owner?.container) return undefined;
 		return classifyPortOccupant(owner, context) === "fail"
 			? formatPortOwner(port, owner)
@@ -87,8 +88,15 @@ export async function classifyCliApps(
 	ports: Record<string, number>,
 	options: ClassifyCliAppsOptions = {},
 ): Promise<ClassifiedCliApps> {
-	const { isPortBusy = isPortInUse, waitForServer } = options;
-	const describeConflict = conflictDescriber(options);
+	// One reading for both questions this asks of every app port — is it busy,
+	// and is a foreign container holding it — instead of an `lsof` and a
+	// container listing per app, twice over.
+	const snapshot = createPortOwnerSnapshot({ ports: Object.values(ports) });
+	const {
+		isPortBusy = (port: number) => snapshot.isBusy(port),
+		waitForServer,
+	} = options;
+	const describeConflict = conflictDescriber(options, snapshot);
 	const startApps: Record<string, AppConfig> = {};
 	const reusedApps: Record<string, AppConfig> = {};
 	const startNames: string[] = [];

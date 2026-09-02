@@ -105,6 +105,32 @@ export function isTerminalContainerState(state: string): boolean {
 }
 
 /**
+ * What a runtime knows about one of a project's service containers.
+ *
+ * Read in a single call for the whole project, because the questions a startup
+ * asks — is everything up, and was it created from this config — used to cost
+ * one runtime invocation per service each.
+ */
+export interface ServiceRuntimeState {
+	/** Compose service name, from the `buncargo.service` label. */
+	service: string;
+	running: boolean;
+	/**
+	 * The `buncargo.stack-hash` label, absent on a container created before
+	 * the label existed. Absent means "cannot compare", never "does not match".
+	 */
+	stackHash?: string;
+	/**
+	 * Whether the runtime's own healthcheck currently passes.
+	 *
+	 * `undefined` where the runtime does not run one — a service with no
+	 * healthcheck, or a backend with no concept of it. Absent means "cannot
+	 * tell", never "unhealthy".
+	 */
+	healthy?: boolean;
+}
+
+/**
  * The single seam between buncargo and a container backend.
  *
  * Everything above this line (readiness polling, health checks, the CLI
@@ -137,6 +163,22 @@ export interface ContainerRuntimeAdapter {
 	list(): BuncargoContainer[];
 	stopByIds(ids: string[]): void;
 	findContainerOnPort(port: number): PortContainerOwner | undefined;
+	/**
+	 * Every published host port this runtime is holding, in one call.
+	 *
+	 * The batch form of {@link ContainerRuntimeAdapter.findContainerOnPort}. A
+	 * dev run asks about every service and app port, and answering each with
+	 * its own listing was most of the runtime calls a startup made.
+	 */
+	containerPortOwners(): Map<number, PortContainerOwner>;
+	/**
+	 * State of every container this runtime has for the project, in one call.
+	 *
+	 * Never throws: a runtime that cannot answer returns nothing, which reads
+	 * as "reconcile", so a failure here costs a redundant `up` rather than a
+	 * skipped one.
+	 */
+	projectServiceStates(projectName: string): ServiceRuntimeState[];
 }
 
 /** Thrown when the selected runtime cannot be used, with a fix in the message. */

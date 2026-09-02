@@ -1,7 +1,8 @@
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWait } from "../core/style";
+import { lookupOnPath } from "../core/tool-binary";
 import { runDocker } from "./binary";
 
 export type DockerRuntime =
@@ -24,17 +25,9 @@ export class DockerUnavailableError extends Error {
 	}
 }
 
-/** The one shell here: `command -v` is a builtin, so there is nothing to exec. */
+/** A `PATH` scan, not a spawn: this runs while deciding how to report a failure. */
 function commandExists(command: string): boolean {
-	try {
-		execSync(`command -v ${command}`, {
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-		});
-		return true;
-	} catch {
-		return false;
-	}
+	return lookupOnPath(command) !== undefined;
 }
 
 function dockerContextName(binary?: string): string | null {

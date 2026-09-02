@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import type { ComposeDocument } from "../docker-compose";
@@ -15,6 +14,19 @@ import type { DockerComposeNode, DockerComposeServiceRaw } from "../types";
 
 /** Label carrying the immutable part of a service's config. */
 export const CONFIG_HASH_LABEL = "buncargo.config-hash";
+
+// Compose's substitution rules and the service fingerprint live with the
+// compose model, not with one backend: `docker compose` interpolates the file
+// itself and this backend has to reproduce it, so a second copy here is a
+// second thing to keep in step.
+export {
+	configHashFor,
+	interpolate,
+	interpolateNode,
+	stableStringify,
+} from "../docker-compose/interpolate";
+
+import { configHashFor, interpolateNode } from "../docker-compose/interpolate";
 export const PROJECT_LABEL = "buncargo.project";
 export const SERVICE_LABEL = "buncargo.service";
 
@@ -105,84 +117,6 @@ export function volumeNameFor(projectName: string, volume: string): string {
  * consumed here, so the `$` it produces can never be re-read as the start of a
  * reference by a later pass.
  */
-const INTERPOLATION_PATTERN =
-	/\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?])([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
-
-/**
- * Apply compose's `${VAR}` substitution forms.
- *
- * `docker compose` interpolates the file before running it, and the generated
- * model relies on that: port bindings are written as `${POSTGRES_PORT:-5432}`.
- * Apple's CLI does no substitution, so leaving it out would publish a literal
- * `${POSTGRES_PORT:-5432}` and fail on every preset.
- *
- * The colon is the difference between "unset or empty" and "unset only", and
- * compose treats the two apart: `${VAR:-d}` replaces an empty value, `${VAR-d}`
- * keeps it. Collapsing them would silently substitute a default over a variable
- * the user deliberately set to empty.
- */
-export function interpolate(
-	value: string,
-	env: Record<string, string>,
-): string {
-	return value.replace(
-		INTERPOLATION_PATTERN,
-		(
-			match,
-			braced: string | undefined,
-			operator: string | undefined,
-			argument: string | undefined,
-			bare: string | undefined,
-		) => {
-			if (match === "$$") return "$";
-			// Compose substitutes an unset bare `$VAR` with the empty string.
-			if (bare !== undefined) return env[bare] ?? "";
-
-			const name = braced as string;
-			const found = env[name];
-			if (operator === undefined) return found ?? "";
-
-			const colon = operator.startsWith(":");
-			const missing = colon
-				? found === undefined || found === ""
-				: found === undefined;
-
-			if (operator.endsWith("?")) {
-				if (missing) {
-					throw new Error(
-						`Required variable ${name} is ${found === undefined ? "not set" : "empty"}${
-							argument ? `: ${argument}` : ""
-						}`,
-					);
-				}
-				return found as string;
-			}
-
-			return missing ? (argument ?? "") : (found as string);
-		},
-	);
-}
-
-/** Interpolate every string in a compose node, the way the YAML path does. */
-function interpolateNode(
-	node: DockerComposeNode,
-	env: Record<string, string>,
-): DockerComposeNode {
-	if (typeof node === "string") return interpolate(node, env);
-	if (Array.isArray(node)) {
-		return node.map((entry) => interpolateNode(entry, env));
-	}
-	if (typeof node === "object" && node !== null) {
-		const result: Record<string, DockerComposeNode> = {};
-		for (const [key, value] of Object.entries(node)) {
-			if (value === undefined) continue;
-			result[key] = interpolateNode(value, env);
-		}
-		return result;
-	}
-	return node;
-}
-
 function isPathSource(source: string): boolean {
 	return (
 		source.startsWith("/") ||
@@ -369,35 +303,6 @@ export function orderServices(
 
 	for (const name of names) visit(name);
 	return ordered;
-}
-
-function stableStringify(value: unknown): string {
-	if (Array.isArray(value)) {
-		return `[${value.map(stableStringify).join(",")}]`;
-	}
-	if (typeof value === "object" && value !== null) {
-		const record = value as Record<string, unknown>;
-		return `{${Object.keys(record)
-			.sort()
-			.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
-			.join(",")}}`;
-	}
-	return JSON.stringify(value) ?? "null";
-}
-
-/**
- * Fingerprint the parts of a service that cannot change on a running container.
- *
- * Recorded as a label so a later run can tell "this container is mine and
- * still matches" from "the config changed underneath it", and recreate only in
- * the second case. Labels themselves are excluded: the hash is one of them.
- */
-export function configHashFor(service: DockerComposeServiceRaw): string {
-	const { labels: _labels, ...rest } = service;
-	return createHash("sha256")
-		.update(stableStringify(rest))
-		.digest("hex")
-		.slice(0, 16);
 }
 
 function buildServicePlan(

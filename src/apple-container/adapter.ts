@@ -16,6 +16,8 @@ import {
 } from "./preflight";
 import { containerNameFor } from "./run-plan";
 import {
+	appleContainerPortOwners,
+	appleProjectServiceStates,
 	areAppleServicesRunning,
 	diagnoseAppleService,
 	findAppleContainerOnPort,
@@ -82,6 +84,14 @@ export function appleContainerRuntimeAdapter(
 
 		findContainerOnPort(port: number) {
 			return findAppleContainerOnPort(cli, port);
+		},
+
+		containerPortOwners() {
+			return appleContainerPortOwners(cli);
+		},
+
+		projectServiceStates(projectName: string) {
+			return appleProjectServiceStates(cli, projectName);
 		},
 	};
 }

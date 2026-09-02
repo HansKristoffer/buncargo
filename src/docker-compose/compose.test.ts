@@ -68,6 +68,10 @@ describe("buildComposeModel", () => {
 			"buncargo.root": "/repo",
 			"buncargo.worktree": "feature",
 			"buncargo.service": "postgres",
+			// Substituted by whichever backend runs it: the hash covers the
+			// interpolated file, so it is not known when this is written.
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: the literal `${...}` is what compose interpolates, and what this asserts.
+			"buncargo.stack-hash": "${BUNCARGO_STACK_HASH:-}",
 		});
 	});
 

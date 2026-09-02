@@ -1,6 +1,6 @@
 import { mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
-import { isProcessAlive } from "./process";
+import { isProcessAlive } from "./process/lifecycle";
 
 /**
  * A cross-process advisory lock for the state files several buncargo runs

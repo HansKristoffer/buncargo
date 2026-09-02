@@ -10,6 +10,7 @@ import type {
 	DockerPresetName,
 	ServiceConfig,
 } from "../types";
+import { STACK_HASH_ENV, STACK_HASH_LABEL } from "./interpolate";
 import { buildPresetDockerService } from "./services";
 import { getDefaultPortBindings } from "./services/shared";
 
@@ -184,6 +185,11 @@ export function buildComposeModel(
 				"buncargo.root": identity.root,
 				"buncargo.worktree": identity.worktree ?? "",
 				"buncargo.service": serviceName,
+				// A reference rather than a value: the hash covers the file after
+				// interpolation, so it is only known once ports are allocated,
+				// which is after this file is written. Both backends substitute
+				// it from the environment they are handed.
+				[STACK_HASH_LABEL]: `\${${STACK_HASH_ENV}:-}`,
 			};
 		}
 		composeServices[serviceName] = service;

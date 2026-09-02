@@ -1,3 +1,4 @@
+import type { ServiceRuntimeState } from "../container-runtime/types";
 import { runDocker } from "./binary";
 import { DockerUnavailableError, isDockerDaemonRunning } from "./preflight";
 
@@ -76,4 +77,67 @@ export async function areServicesRunning(
 		),
 	);
 	return runningStates.every(Boolean);
+}
+
+const SERVICE_STATE_FORMAT =
+	'{{.Label "buncargo.service"}}\t{{.State}}\t{{.Label "buncargo.stack-hash"}}\t{{.Status}}';
+
+/**
+ * Docker reports its healthcheck inside the human-readable status, as
+ * `Up 3 minutes (healthy)`.
+ *
+ * Absent for a container with no healthcheck, which has to read as "cannot
+ * tell" rather than "unhealthy": the caller uses this to skip a probe, and
+ * skipping one on a false positive would advertise a service that is not up.
+ */
+export function parseDockerHealth(status: string): boolean | undefined {
+	if (status.includes("(healthy)")) return true;
+	if (status.includes("(unhealthy)")) return false;
+	return undefined;
+}
+
+export function parseDockerServiceStates(
+	stdout: string,
+): ServiceRuntimeState[] {
+	const states: ServiceRuntimeState[] = [];
+	// Split before trimming: a container with no `buncargo.service` label emits
+	// an empty leading field, and trimming the whole output would shift every
+	// column of that line by one.
+	for (const raw of stdout.split("\n")) {
+		const line = raw.replace(/\r$/, "");
+		if (!line.trim()) continue;
+		const [service, state, stackHash, status] = line.split("\t");
+		if (!service) continue;
+		const healthy = parseDockerHealth(status ?? "");
+		states.push({
+			service,
+			running: state === "running",
+			...(stackHash ? { stackHash } : {}),
+			...(healthy === undefined ? {} : { healthy }),
+		});
+	}
+	return states;
+}
+
+/**
+ * Every container this project has, in one `docker ps`.
+ *
+ * Replaces a `docker ps` per service: `areServicesRunning` asked separately
+ * about each one, so a four-service stack paid four listings before anything
+ * started.
+ */
+export function dockerProjectServiceStates(
+	project: string,
+	binary?: string,
+): ServiceRuntimeState[] {
+	const result = runDocker(binary, [
+		"ps",
+		"--all",
+		"--filter",
+		`label=buncargo.project=${project}`,
+		"--format",
+		SERVICE_STATE_FORMAT,
+	]);
+	if (!result.ok) return [];
+	return parseDockerServiceStates(result.stdout);
 }

@@ -1,8 +1,9 @@
 import {
 	classifyPortOccupant,
+	createPortOwnerSnapshot,
 	formatPortOwner,
-	getPortOwner,
 } from "../core/process";
+import { sleep } from "../core/sleep";
 import {
 	formatDone,
 	formatWait,
@@ -10,12 +11,19 @@ import {
 	SLOW_STEP_MS,
 	scheduleLog,
 } from "../core/style";
-import { sleep } from "../core/utils";
 import type { ComposeDocument } from "../docker-compose";
+import {
+	projectStackHash,
+	STACK_HASH_ENV,
+} from "../docker-compose/interpolate";
 import type { BuiltInHealthCheck, ServiceConfig } from "../types";
 import { createBuiltInHealthCheck } from "./health-checks";
 import { availableContainerRuntimes } from "./resolve";
-import type { ContainerRuntimeAdapter, ServiceDiagnosis } from "./types";
+import type {
+	ContainerRuntimeAdapter,
+	ServiceDiagnosis,
+	ServiceRuntimeState,
+} from "./types";
 import { isTerminalContainerState } from "./types";
 
 export const POLL_INTERVAL = 250; // Fast polling for quicker startup
@@ -178,12 +186,44 @@ export async function waitForService(
 /**
  * Wait for all services to be healthy.
  */
+/**
+ * Built-in probes that run *inside* the container, through the runtime's CLI.
+ *
+ * These are the expensive ones — a `docker compose exec pg_isready` costs
+ * seconds — and they are also the ones the generated compose healthcheck
+ * already runs, so a runtime reporting the container healthy has just answered
+ * the same question. The host-side probes (`http`, `tcp`) cost nothing and
+ * additionally prove the port is published, so they always run.
+ */
+const IN_CONTAINER_PROBES = new Set(["pg_isready", "redis-cli"]);
+
+/**
+ * Whether the runtime has already answered this service's readiness.
+ *
+ * Only a positive report counts: `undefined` means the runtime runs no
+ * healthcheck for it, which is not the same as unhealthy.
+ */
+export function runtimeAnsweredReadiness(
+	config: ServiceConfig,
+	healthy: boolean | undefined,
+): boolean {
+	if (healthy !== true) return false;
+	return (
+		typeof config.healthCheck === "string" &&
+		IN_CONTAINER_PROBES.has(config.healthCheck)
+	);
+}
+
 export async function waitForAllServices(
 	services: Record<string, ServiceConfig>,
 	ports: Record<string, number>,
-	options: WaitForServiceOptions & { verbose?: boolean },
+	options: WaitForServiceOptions & {
+		verbose?: boolean;
+		/** Compose service names the runtime already reports healthy. */
+		healthyServices?: Set<string>;
+	},
 ): Promise<void> {
-	const { verbose = true, ...waitOptions } = options;
+	const { verbose = true, healthyServices, ...waitOptions } = options;
 
 	let showedWait = false;
 	const cancelWait = verbose
@@ -203,6 +243,12 @@ export async function waitForAllServices(
 							`No port found for service ${name}, skipping health check`,
 						),
 					);
+					return Promise.resolve();
+				}
+				if (
+					healthyServices?.has(config.serviceName ?? name) &&
+					runtimeAnsweredReadiness(config, true)
+				) {
 					return Promise.resolve();
 				}
 				return waitForService(name, config, port, waitOptions);
@@ -261,6 +307,49 @@ export async function waitForServiceByType(
 	);
 }
 
+/** Never throws: a runtime that cannot answer reads as "reconcile". */
+function readProjectServiceStates(
+	runtime: ContainerRuntimeAdapter,
+	projectName: string,
+): ServiceRuntimeState[] {
+	try {
+		return runtime.projectServiceStates(projectName);
+	} catch {
+		return [];
+	}
+}
+
+function servicesAllRunning(
+	states: ServiceRuntimeState[],
+	serviceNames: string[],
+): boolean {
+	if (serviceNames.length === 0) return false;
+	const running = new Set(
+		states.filter((state) => state.running).map((state) => state.service),
+	);
+	return serviceNames.every((name) => running.has(name));
+}
+
+/**
+ * Whether every selected service is running from exactly this stack.
+ *
+ * A container with no hash — created before the label existed — is not a
+ * match: "cannot compare" has to mean reconcile, or an upgrade would leave a
+ * project running yesterday's config forever.
+ */
+function stackMatches(
+	states: ServiceRuntimeState[],
+	serviceNames: string[],
+	stackHash: string,
+): boolean {
+	if (serviceNames.length === 0) return false;
+	const byService = new Map(states.map((state) => [state.service, state]));
+	return serviceNames.every((name) => {
+		const state = byService.get(name);
+		return state?.running === true && state.stackHash === stackHash;
+	});
+}
+
 export interface EnsureServicesRunningRequest {
 	runtime: ContainerRuntimeAdapter;
 	root: string;
@@ -297,8 +386,16 @@ function assertServicePortsClaimable(
 		(candidate) => candidate.name !== runtime.name,
 	);
 
+	// One reading of the machine for every service port, rather than an `lsof`
+	// and a listing per port.
+	const snapshot = createPortOwnerSnapshot({
+		runtime,
+		fallbackRuntimes,
+		ports: targetPorts,
+	});
+
 	for (const port of targetPorts) {
-		const owner = getPortOwner(port, { runtime, fallbackRuntimes });
+		const owner = snapshot.owner(port);
 		const classification = classifyPortOccupant(owner, {
 			...context,
 			runtime: runtime.name,
@@ -336,38 +433,66 @@ export async function ensureServicesRunning(
 	const composeServiceNames = Object.entries(services).map(
 		([serviceKey, config]) => config.serviceName ?? serviceKey,
 	);
-	const alreadyRunning = await runtime.areServicesRunning(
-		projectName,
-		composeServiceNames,
-	);
 
-	// `up` runs even when the services are already up, because that is the only
-	// place either backend compares the running container against the config it
-	// was started from. Skipping it made an edited image, port or env var take
-	// effect only after a manual `--down`. Both backends are idempotent here:
-	// compose no-ops when nothing changed, and Apple's config-hash label turns
-	// an unchanged service into a `start`.
-	runtime.up({
-		root,
-		projectName,
-		envVars,
+	// The fingerprint of the stack this run would create, and the one the
+	// running containers were created from. Handed to the backend through the
+	// environment, because the generated file references it rather than
+	// carrying it — see `projectStackHash`.
+	const stackHash = projectStackHash({
 		model,
+		envVars,
 		serviceNames: composeServiceNames,
-		composeFile,
-		verbose: verbose && !alreadyRunning,
-		// Readiness is polled below against the published ports, which works
-		// the same on both backends; a runtime-side wait would only be a
-		// second, weaker copy of it.
-		wait: false,
 	});
+	const runtimeEnv = { ...envVars, [STACK_HASH_ENV]: stackHash };
+
+	const states = readProjectServiceStates(runtime, projectName);
+	const alreadyRunning = servicesAllRunning(states, composeServiceNames);
+	const upToDate = stackMatches(states, composeServiceNames, stackHash);
+
+	// `up` is the only place either backend compares a running container
+	// against the config it was started from, so skipping it unconditionally
+	// made an edited image, port or env var take effect only after a manual
+	// `--down`. The stack hash is that comparison, made explicit and cheap: it
+	// covers the interpolated definition of every selected service, so anything
+	// that would change a container changes it, and only an exact match skips.
+	//
+	// Worth doing because `docker compose up` on an unchanged stack still costs
+	// most of a second, on a command a developer or an agent runs constantly.
+	// A container from before the label carries no hash, which reads as "cannot
+	// compare" and reconciles.
+	if (!upToDate) {
+		runtime.up({
+			root,
+			projectName,
+			envVars: runtimeEnv,
+			model,
+			serviceNames: composeServiceNames,
+			composeFile,
+			verbose: verbose && !alreadyRunning,
+			// Readiness is polled below against the published ports, which works
+			// the same on both backends; a runtime-side wait would only be a
+			// second, weaker copy of it.
+			wait: false,
+		});
+	}
 
 	if (wait) {
+		// Re-read only when the reconcile ran: `up` is what changes state, and
+		// the states from before it describe the previous containers.
+		const readyStates = upToDate
+			? states
+			: readProjectServiceStates(runtime, projectName);
 		await waitForAllServices(services, ports, {
 			runtime,
 			projectName,
 			verbose,
 			root,
 			composeFile,
+			healthyServices: new Set(
+				readyStates
+					.filter((state) => state.running && state.healthy === true)
+					.map((state) => state.service),
+			),
 		});
 	}
 

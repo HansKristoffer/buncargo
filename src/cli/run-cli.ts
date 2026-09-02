@@ -1,8 +1,13 @@
 import { execSync } from "node:child_process";
 import { containerRuntimeForEnv } from "../container-runtime";
 import { removeHostRoutes } from "../core/hosts";
-import { isPortInUse, startDevServers } from "../core/process";
+import { startDevServers } from "../core/process";
 import { joinColoredNames } from "../core/style";
+import {
+	createNoopPhaseTimer,
+	createPhaseTimer,
+	type PhaseTimer,
+} from "../core/timing";
 import {
 	resolveExposeTargets,
 	startPublicTunnels,
@@ -148,9 +153,11 @@ export async function runCli<
 		{ exposeRequested: args.exposeRequested },
 	);
 
+	const timer = args.timing ? createPhaseTimer() : createNoopPhaseTimer();
+
 	let exitCode: DevFlowExit;
 	try {
-		exitCode = await runDevFlow(env, args, tunnels, { watchdog });
+		exitCode = await runDevFlow(env, args, tunnels, { watchdog, timer });
 	} catch (error) {
 		reportCliError(toCliError(error));
 		await teardown(env, tunnels);
@@ -188,9 +195,13 @@ async function runDevFlow<
 	env: DevEnvironment<TServices, TApps>,
 	args: DevCliArgs,
 	tunnels: DevTunnelCoordinator<TServices, TApps>,
-	options: { watchdog: boolean },
+	options: { watchdog: boolean; timer: PhaseTimer },
 ): Promise<DevFlowExit> {
+	const { timer } = options;
 	async function exitWith(code: number): Promise<number> {
+		// The one-shot modes end here, and `--up-only` is exactly the kind of
+		// run someone times.
+		timer.report();
 		await teardown(env, tunnels);
 		return code;
 	}
@@ -234,25 +245,32 @@ async function runDevFlow<
 	// Held rather than printed: a run that takes over another one activates a
 	// second time, and the failure this first attempt reports - the other run
 	// still owning the hostnames - is exactly what the takeover undoes.
-	let hostsWarnings = await activateNamedHosts(env, { enabled: args.hosts });
+	let hostsWarnings = await timer.measure("hosts", () =>
+		activateNamedHosts(env, { enabled: args.hosts }),
+	);
 	const flushHostsWarnings = (): void => {
 		for (const warning of hostsWarnings) log.warn(warning);
 		hostsWarnings = [];
 	};
-	await env.start({
-		startServers: false,
-		wait: true,
-		skipSeed: args.seed,
-		skipEnvironmentLog: true,
-		onlyApps: selectedAppNames,
-		autoStartDocker: args.dockerAutostart ? undefined : false,
-	});
+	await timer.measure("containers", () =>
+		env.start({
+			startServers: false,
+			wait: true,
+			skipSeed: args.seed,
+			skipEnvironmentLog: true,
+			onlyApps: selectedAppNames,
+			autoStartDocker: args.dockerAutostart ? undefined : false,
+		}),
+	);
 
-	let classifiedApps = await classifyCliApps(appsForDev, env.ports, {
-		isPortBusy: isPortInUse,
-		waitForServer: env.waitForServer.bind(env),
-		context: { root: env.root, projectName: env.projectName },
-	});
+	let classifiedApps = await timer.measure("app ports", () =>
+		classifyCliApps(appsForDev, env.ports, {
+			// No `isPortBusy` override: the default reads every app port from
+			// one snapshot rather than probing each of them separately.
+			waitForServer: env.waitForServer.bind(env),
+			context: { root: env.root, projectName: env.projectName },
+		}),
+	);
 
 	// ── Expose planning ──────────────────────────────────────────────────────
 	if (args.exposeRequested) {
@@ -345,6 +363,7 @@ async function runDevFlow<
 	}
 
 	if (nothingToSpawn && !tunnels.hasPendingTargets()) {
+		timer.report();
 		log.success("Selected apps are already running. Nothing to start.");
 		if (takeover && takeover.names.length > 0 && !isInteractive()) {
 			log.hint("Pass --takeover to stop them and run here instead.");
@@ -355,7 +374,15 @@ async function runDevFlow<
 
 	const keepContainers = args.keepContainers || env.autoShutdown === false;
 	if (options.watchdog && !keepContainers) {
-		await spawnWatchdog(env.projectName, env.root, {
+		// Heartbeat first, then the watchdog: the runner's first poll reads this
+		// file, and a missing one is owner-death to it. Writing it up front means
+		// the ordering cannot matter however slowly the runner starts.
+		startHeartbeat(env.projectName, undefined, env.root);
+		// Deliberately not awaited. Confirming the runner came up costs up to two
+		// seconds of polling a pid file, and nothing about starting dev servers
+		// depends on the answer — the watchdog only matters once this run is
+		// gone. It still reports a failure to start, just not before the servers.
+		void spawnWatchdog(env.projectName, env.root, {
 			timeoutMinutes: resolveWatchdogTimeoutMinutes(
 				args.watchdogTimeoutMinutes,
 				env.autoShutdown,
@@ -363,9 +390,15 @@ async function runDevFlow<
 			verbose: true,
 			composeFile: env.composeFile,
 			containerRuntime: env.containerRuntime,
+		}).catch(() => {
+			// spawnWatchdog reports its own failures; an idle backstop that did
+			// not start must never take the dev run down with it.
 		});
-		startHeartbeat(env.projectName, undefined, env.root);
 	}
+
+	// Printed before the servers take over the terminal: after that the output
+	// is theirs, and a summary landing in the middle of it is noise.
+	timer.report();
 
 	try {
 		if (nothingToSpawn) {

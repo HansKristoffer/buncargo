@@ -1,7 +1,9 @@
 import type {
 	ServiceDiagnosis,
 	ServiceDiagnosisRequest,
+	ServiceRuntimeState,
 } from "../container-runtime/types";
+import { STACK_HASH_LABEL } from "../docker-compose/interpolate";
 import type { BuncargoContainer, PortContainerOwner } from "../types";
 import type { AppleContainerCli } from "./cli";
 import { containerNameFor, PROJECT_LABEL, SERVICE_LABEL } from "./run-plan";
@@ -245,20 +247,58 @@ export function diagnoseAppleService(
 	};
 }
 
-export function findAppleContainerOnPort(
+/**
+ * Which container is publishing each host port, from one `container ls`.
+ *
+ * A map rather than a per-port scan for the same reason as the Docker backend:
+ * a dev run asks about every service and app port, and one listing answers all
+ * of them.
+ */
+export function appleContainerPortOwners(
 	cli: AppleContainerCli,
-	port: number,
-): PortContainerOwner | undefined {
+): Map<number, PortContainerOwner> {
+	const owners = new Map<number, PortContainerOwner>();
 	for (const record of listContainerRecords(cli)) {
 		if (!isRunningState(record.state)) continue;
-		if (!record.ports.some((published) => published.hostPort === port)) {
-			continue;
-		}
-		return {
+		const owner: PortContainerOwner = {
 			id: record.id,
 			name: record.id,
 			composeProject: record.labels[PROJECT_LABEL] || undefined,
 		};
+		for (const published of record.ports) {
+			if (!owners.has(published.hostPort)) {
+				owners.set(published.hostPort, owner);
+			}
+		}
 	}
-	return undefined;
+	return owners;
+}
+
+export function findAppleContainerOnPort(
+	cli: AppleContainerCli,
+	port: number,
+): PortContainerOwner | undefined {
+	return appleContainerPortOwners(cli).get(port);
+}
+
+/**
+ * Every container this project has, from the same single `container ls` the
+ * rest of this module reads.
+ */
+export function appleProjectServiceStates(
+	cli: AppleContainerCli,
+	projectName: string,
+): ServiceRuntimeState[] {
+	return projectRecords(cli, projectName).flatMap((record) => {
+		const service = record.labels[SERVICE_LABEL];
+		if (!service) return [];
+		const stackHash = record.labels[STACK_HASH_LABEL];
+		return [
+			{
+				service,
+				running: isRunningState(record.state),
+				...(stackHash ? { stackHash } : {}),
+			},
+		];
+	});
 }

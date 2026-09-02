@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { isProcessAlive } from "./process";
+import { isProcessAlive } from "./process/lifecycle";
 
 /**
  * Reading and writing buncargo's persisted state files (`routes.json`,

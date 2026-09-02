@@ -401,6 +401,10 @@ export async function startLocalProxy(options: {
 		// oRPC Event Iterators and quiet HMR sockets mid-body, which the
 		// browser reports as ERR_INCOMPLETE_CHUNKED_ENCODING on a 200.
 		idleTimeout: 0,
+		// So a reload can bind the replacement before stopping this one. Without
+		// it the daemon has to drop the listener first, and every certificate
+		// remint opens a window where :443 refuses connections.
+		reusePort: true,
 		fetch: fetchHandler,
 		websocket: websocket as never,
 		...(https
@@ -419,6 +423,10 @@ export async function startLocalProxy(options: {
 			hostname,
 			port: options.httpPort,
 			idleTimeout: 0,
+			// So a reload can bind the replacement before stopping this one. Without
+			// it the daemon has to drop the listener first, and every certificate
+			// remint opens a window where :443 refuses connections.
+			reusePort: true,
 			fetch(request) {
 				const url = new URL(request.url);
 				if (url.pathname === HEALTH_PATH) {

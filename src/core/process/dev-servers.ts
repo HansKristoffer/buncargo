@@ -18,9 +18,11 @@ import {
 } from "../style";
 import {
 	classifyPortOccupant,
+	createPortOwnerSnapshot,
 	formatPortOwner,
 	getPortOwner,
 	killPortOwner,
+	type PortOwnerSnapshot,
 	signalProcessTree,
 } from "./port-owner";
 
@@ -266,9 +268,10 @@ async function prepareAppPort(
 	root: string,
 	projectName: string,
 	verbose: boolean,
+	ports: PortOwnerSnapshot,
 ): Promise<"reuse" | "start"> {
 	if (port === undefined) return "start";
-	const owner = getPortOwner(port);
+	const owner = ports.owner(port);
 	const action = classifyPortOccupant(owner, { root, projectName });
 	if (action === "reuse") {
 		if (verbose) {
@@ -412,6 +415,15 @@ export async function startDevServers(
 	};
 
 	async function spawnWave(wave: Record<string, AppConfig>): Promise<void> {
+		// Per wave, not per run: wave 2 spawns after tunnels have opened and
+		// wave-1 servers have bound their ports, so a snapshot taken before
+		// wave 1 would be describing a machine that has since changed.
+		const portOwners = createPortOwnerSnapshot({
+			ports: Object.keys(wave).flatMap((name) => {
+				const port = ports[name];
+				return port === undefined ? [] : [port];
+			}),
+		});
 		for (const [name, config] of Object.entries(wave)) {
 			const prepared = await prepareAppPort(
 				name,
@@ -419,6 +431,7 @@ export async function startDevServers(
 				root,
 				projectName,
 				verbose,
+				portOwners,
 			);
 			if (prepared === "reuse") continue;
 			const attached = name === attachedName;

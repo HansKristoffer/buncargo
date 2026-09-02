@@ -4,19 +4,17 @@ export {
 	hostnamesForCertificate,
 	syncCertificateForRoutes,
 } from "./certificates";
+export { RELOAD_STALL_MS, runHostsDaemon } from "./daemon";
 export {
-	DAEMON_START_TIMEOUT_MS,
 	type DaemonRouteCheck,
 	ensureHostsDaemonRunning,
 	isHostsDaemonHealthy,
-	RELOAD_STALL_MS,
 	ROUTE_PICKUP_TIMEOUT_MS,
-	readDaemonConfig,
 	readHostsDaemonHealth,
-	runHostsDaemon,
 	SERVICE_START_TIMEOUT_MS,
 	waitForDaemonRoutes,
-} from "./daemon";
+} from "./daemon-client";
+export { readDaemonConfig } from "./daemon-config";
 export { cleanHostsFile, syncHostsFile } from "./hosts-file";
 export { getCaPath, mintCert, resolvedMkcertPath } from "./mkcert";
 export {

@@ -26,12 +26,10 @@ import { isHostsForcedOff } from "./runtime-flags";
  * Core utility functions shared across modules.
  */
 
-/**
- * Sleep for a given number of milliseconds.
- */
-export function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
+// Defined in its own leaf so the hosts daemon can wait without importing this
+// module's config machinery. Re-exported because `buncargo/core/utils` is a
+// published entry point.
+export { sleep } from "./sleep";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Vibe Kanban Integration

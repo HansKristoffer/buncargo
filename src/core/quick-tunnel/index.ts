@@ -6,7 +6,7 @@ import {
 	quickTunnelMaxAttempts,
 	quickTunnelRetryBaseMs,
 } from "../runtime-flags";
-import { sleep } from "../utils";
+import { sleep } from "../sleep";
 import { startCloudflaredTunnel } from "./cloudflared-process";
 import { cloudflaredNotice, resolveCloudflared } from "./constants";
 import { installCloudflared } from "./install";

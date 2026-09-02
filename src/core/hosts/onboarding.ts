@@ -1,15 +1,22 @@
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	rmSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { createInterface } from "node:readline";
 import type { HostsOptions } from "../../types";
 import { isHostsForcedOff } from "../runtime-flags";
+import { getCertNamesPath } from "./cert-names";
 import { syncCertificateForRoutes } from "./certificates";
 import {
 	ensureHostsDaemonRunning,
 	isHostsDaemonHealthy,
 	isHostsDaemonWedged,
-	readDaemonConfig,
 	SERVICE_START_TIMEOUT_MS,
-} from "./daemon";
+} from "./daemon-client";
+import { readDaemonConfig } from "./daemon-config";
 import { cleanHostsFile } from "./hosts-file";
 import {
 	ensureMkcert,
@@ -179,7 +186,6 @@ export async function runHostsInstall(
 		installHostsService();
 	}
 	const ready = await ensureHostsDaemonRunning({
-		allowSpawn: true,
 		timeoutMs: SERVICE_START_TIMEOUT_MS,
 	});
 	if (!ready.ok) {
@@ -196,6 +202,11 @@ export async function runHostsUninstall(): Promise<void> {
 		// may need sudo; best-effort
 	}
 	await removeHostRoutes(() => true);
+	try {
+		rmSync(getCertNamesPath(), { force: true });
+	} catch {
+		// best-effort: an orphaned name list only widens a certificate
+	}
 	persistHostsDecline();
 }
 
@@ -250,18 +261,20 @@ export async function ensureHostsReady(input: {
 	}
 
 	const staleService = describeStaleHostsService();
-	const firstRun = !isHostsServiceInstalled() && !isCaPresent();
-	const needsMachineSetup =
-		firstRun ||
-		!isHostsServiceInstalled() ||
-		!isCaPresent() ||
-		staleService !== undefined;
+	const serviceInstalled = isHostsServiceInstalled();
+	const caPresent = isCaPresent();
+	// Nothing installed at all is the one case that asks first: it is a
+	// password prompt on a machine that has never seen buncargo. Repairing a
+	// half-installed or stale setup does not, because the developer already
+	// agreed to it and is now looking at named URLs that do not work.
+	const firstRun = !serviceInstalled && !caPresent;
 
-	if (needsMachineSetup) {
+	if (!serviceInstalled || !caPresent || staleService) {
 		// Installing prompts for a password. Without a TTY that would hang, so
 		// report instead and let the run continue on localhost:port.
-		// Squatter lookup shells out to docker ps; only pay for it on this
-		// path, where the message needs to name whatever is holding :443.
+		//
+		// The squatter lookup lists containers; only pay for it here, where the
+		// message has to name whatever else is holding :443.
 		const squatter = describePortSquatter(readDaemonConfig().httpsPort);
 		if (!interactive) {
 			return {
@@ -273,6 +286,7 @@ export async function ensureHostsReady(input: {
 					"Named hosts need one-time setup. Run `buncargo hosts install`.",
 			};
 		}
+
 		if (firstRun) {
 			const choice = await promptFirstRun();
 			if (choice === "skip") {
@@ -292,6 +306,7 @@ export async function ensureHostsReady(input: {
 				};
 			}
 		}
+
 		try {
 			await runHostsInstall();
 			return { ok: true, caPath: getCaPath(resolvedMkcertPath()) };
@@ -304,7 +319,7 @@ export async function ensureHostsReady(input: {
 		}
 	}
 
-	const ready = await ensureHostsDaemonRunning({ allowSpawn: true });
+	const ready = await ensureHostsDaemonRunning();
 	if (!ready.ok) {
 		return {
 			ok: false,
@@ -362,7 +377,6 @@ export async function doctorFixHosts(
 			}
 		}
 		const ready = await ensureHostsDaemonRunning({
-			allowSpawn: true,
 			timeoutMs: SERVICE_START_TIMEOUT_MS,
 		});
 		if (ready.ok) {

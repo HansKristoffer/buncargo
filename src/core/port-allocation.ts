@@ -10,8 +10,8 @@ import { simpleHash } from "./hash";
 import type { PortMap } from "./ports";
 import {
 	classifyPortOccupant,
+	createPortOwnerSnapshot,
 	formatPortOwner,
-	getPortOwner,
 	type PortOwner,
 } from "./process";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
@@ -182,6 +182,24 @@ function findForeignConflict(
 	return null;
 }
 
+/**
+ * A port-ownership lookup backed by one reading of the system.
+ *
+ * The shifted blocks this allocator may fall through to are not known up
+ * front, so only the base ports are pre-batched for the working-directory
+ * lookup; a shifted block that turns out to be occupied costs one extra call.
+ */
+function snapshotOwnerLookup(
+	basePorts: Record<string, number>,
+	runtime: ContainerRuntimeAdapter | undefined,
+): (port: number) => PortOwner | null {
+	const snapshot = createPortOwnerSnapshot({
+		runtime,
+		ports: Object.values(basePorts),
+	});
+	return (port) => snapshot.owner(port);
+}
+
 export function resolvePortPlan(input: {
 	projectPrefix: string;
 	projectName: string;
@@ -226,13 +244,21 @@ export function resolvePortPlan(input: {
 		persist = true,
 		runtime,
 		probeConflicts = true,
-		getOwner = (port) => getPortOwner(port, { runtime }),
 	} = input;
 	const runtimeName = runtime?.name;
-	// Reporting no owner is what makes every conflict check below pass, so the
-	// lockfile is returned as-is rather than reallocated around itself.
-	const lookupOwner = probeConflicts ? getOwner : () => null;
 	const basePorts = buildPortMap(services, apps);
+	// One reading of the machine for every port this allocator may look at,
+	// including the shifted blocks it can fall through to. Probing per port cost
+	// an `lsof` and a `docker ps` each, and the allocator is the first thing a
+	// dev run does.
+	//
+	// Reporting no owner is what makes every conflict check below pass, so a
+	// read-only caller gets the lockfile back rather than a block reallocated
+	// around its own running services.
+	const lookupOwner = probeConflicts
+		? (input.getOwner ?? snapshotOwnerLookup(basePorts, runtime))
+		: () => null;
+
 	const envOffset = portOffsetOverride();
 	if (envOffset !== undefined) {
 		return {

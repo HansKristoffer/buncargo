@@ -1,7 +1,6 @@
-import { execSync } from "node:child_process";
-import { chmodSync, existsSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { chownToInvokingUser, getToolsDir } from "./hosts/paths";
 
 /**
@@ -74,14 +73,51 @@ export function resolveToolBinary(options: {
 	return { path: cachePath, source: "cache", exists: false };
 }
 
-export function lookupOnPath(command: string): string | undefined {
+function isExecutableFile(path: string): boolean {
 	try {
-		const found = execSync(`command -v ${command}`, {
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-		}).trim();
-		return found || undefined;
+		accessSync(path, constants.X_OK);
+		return true;
 	} catch {
-		return undefined;
+		return false;
 	}
+}
+
+/**
+ * Extensions to try on Windows, where executability is a suffix rather than a
+ * mode bit.
+ */
+function executableSuffixes(env: NodeJS.ProcessEnv): string[] {
+	if (process.platform !== "win32") return [""];
+	const pathext = env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
+	return ["", ...pathext.split(";").filter(Boolean)];
+}
+
+/**
+ * Find `command` on `PATH`, without spawning anything.
+ *
+ * This used to shell out to `command -v`. That is a builtin, so it looked
+ * free, but it is still a fork and an exec of a shell, and a `buncargo dev`
+ * reaches this for `docker`, `container` and `mkcert` before it has started
+ * anything. Reading `PATH` directly answers the same question with a handful
+ * of `access` calls.
+ */
+export function lookupOnPath(
+	command: string,
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	// A path rather than a bare name is not a PATH lookup at all.
+	if (command.includes("/") || command.includes("\\")) {
+		const path = isAbsolute(command) ? command : resolve(command);
+		return isExecutableFile(path) ? path : undefined;
+	}
+
+	const suffixes = executableSuffixes(env);
+	for (const directory of (env.PATH ?? "").split(delimiter)) {
+		if (!directory) continue;
+		for (const suffix of suffixes) {
+			const candidate = join(directory, `${command}${suffix}`);
+			if (isExecutableFile(candidate)) return candidate;
+		}
+	}
+	return undefined;
 }

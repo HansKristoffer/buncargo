@@ -2,8 +2,16 @@ import { execSync } from "node:child_process";
 import { platform } from "node:os";
 import { containerRuntimeDisplayName } from "../../container-runtime/names";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
-import { findDockerContainerOnPort } from "../../docker/port-lookup";
+import {
+	dockerContainerPortOwners,
+	findDockerContainerOnPort,
+} from "../../docker/port-lookup";
 import type { ContainerRuntimeName, PortContainerOwner } from "../../types";
+import {
+	type ListenerSnapshot,
+	readListenerSnapshot,
+	readProcessCwds,
+} from "./port-snapshot";
 
 /**
  * Who is holding a TCP port: a local process tree, a container, or nobody.
@@ -116,6 +124,44 @@ function processCwd(pid: number): string | undefined {
 	}
 }
 
+/**
+ * Container-held ports across the selected runtime and any fallbacks, in one
+ * reading per runtime.
+ *
+ * The selected runtime wins a port both claim: it is the one this run can
+ * actually start, exec into and tear down.
+ */
+export function containerPortOwnerMap(
+	options: PortOwnerLookupOptions = {},
+): Map<number, PortContainerOwner> {
+	const selected = options.runtime;
+	const selectedName = selected?.name ?? "docker";
+	const owners = new Map<number, PortContainerOwner>();
+
+	const read = (
+		runtime: ContainerRuntimeName,
+		list: () => Map<number, PortContainerOwner>,
+	): void => {
+		try {
+			for (const [port, owner] of list()) {
+				if (!owners.has(port)) owners.set(port, { ...owner, runtime });
+			}
+		} catch {
+			// A runtime that cannot answer simply is not the owner.
+		}
+	};
+
+	read(selectedName, () =>
+		selected ? selected.containerPortOwners() : dockerContainerPortOwners(),
+	);
+	for (const other of options.fallbackRuntimes ?? []) {
+		if (other.name === selectedName) continue;
+		read(other.name, () => other.containerPortOwners());
+	}
+
+	return owners;
+}
+
 export function findContainerOnPort(
 	port: number,
 	options: PortOwnerLookupOptions = {},
@@ -138,6 +184,84 @@ export function findContainerOnPort(
 		}
 	}
 	return undefined;
+}
+
+/**
+ * Answers "who holds this port" for many ports from one reading of the system.
+ *
+ * A dev run asks the same question in four places — the port allocator, the
+ * service preflight, the CLI's app classifier and the spawner — for every
+ * service and app port. Each answer used to cost an `lsof`, a `docker ps`, a
+ * `ps` and a second `lsof`, so a small config forked about thirty times before
+ * the first dev server started.
+ *
+ * Deliberately a snapshot, not a cache with invalidation: it is created for a
+ * phase, used, and thrown away. Anything that changes ownership on purpose —
+ * `killPortOwner`, the takeover — takes a fresh reading instead.
+ */
+export interface PortOwnerSnapshot {
+	owner(port: number): PortOwner | null;
+	isBusy(port: number): boolean;
+}
+
+export function createPortOwnerSnapshot(
+	options: PortOwnerLookupOptions & {
+		/**
+		 * Ports this snapshot will be asked about.
+		 *
+		 * Only used to batch the working-directory lookup, which is the one
+		 * question that still needs a call per group of processes. Leaving it
+		 * out is correct, just one extra `lsof` per distinct owner.
+		 */
+		ports?: number[];
+		listeners?: ListenerSnapshot;
+		containers?: Map<number, PortContainerOwner>;
+	} = {},
+): PortOwnerSnapshot {
+	const listeners = options.listeners ?? readListenerSnapshot();
+	const containers = options.containers ?? containerPortOwnerMap(options);
+	const cwds = new Map<number, string | undefined>();
+	let pendingBatch: number[] | undefined = options.ports
+		? [
+				...new Set(
+					options.ports.flatMap((port) => listeners.pidsByPort.get(port) ?? []),
+				),
+			]
+		: undefined;
+
+	function cwdFor(pid: number): string | undefined {
+		if (cwds.has(pid)) return cwds.get(pid);
+		// The first request resolves every pid this snapshot could be asked
+		// about, so a run pays one call rather than one per app.
+		const batch = pendingBatch?.includes(pid) ? pendingBatch : [pid];
+		pendingBatch = undefined;
+		const resolved = readProcessCwds(batch);
+		for (const candidate of batch) {
+			cwds.set(candidate, resolved.get(candidate));
+		}
+		return cwds.get(pid);
+	}
+
+	function owner(port: number): PortOwner | null {
+		const pids = listeners.pidsByPort.get(port) ?? [];
+		const container = containers.get(port);
+		if (pids.length === 0 && !container) return null;
+		const primaryPid = pids[0];
+		return {
+			pids,
+			command:
+				primaryPid !== undefined
+					? listeners.commandByPid.get(primaryPid)
+					: undefined,
+			cwd: primaryPid !== undefined ? cwdFor(primaryPid) : undefined,
+			container,
+		};
+	}
+
+	return {
+		owner,
+		isBusy: (port) => owner(port) !== null,
+	};
 }
 
 export function getPortOwner(

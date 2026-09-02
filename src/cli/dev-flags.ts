@@ -1,4 +1,5 @@
 import { CONTAINER_RUNTIME_SELECTIONS } from "../container-runtime";
+import { isTimingEnabled } from "../core/runtime-flags";
 import {
 	type CommandSpec,
 	enumValidator,
@@ -97,6 +98,11 @@ const FLAGS = {
 		description: "Container runtime backend (default: docker)",
 		validate: enumValidator("--runtime", CONTAINER_RUNTIME_SELECTIONS),
 	},
+	timing: {
+		name: "--timing",
+		kind: "boolean",
+		description: "Print how long each startup phase took",
+	},
 } as const satisfies Record<string, FlagSpec>;
 
 export const DEV_COMMAND_SPEC: CommandSpec = {
@@ -178,6 +184,8 @@ export interface DevCliArgs {
 	hosts: boolean;
 	/** `--runtime`, already validated; undefined falls through to env/config. */
 	runtime: string | undefined;
+	/** `--timing` or `BUNCARGO_TIMING`: print the startup breakdown. */
+	timing: boolean;
 	/** `--migrate`, `--seed` and `--up-only` exit before dev servers start. */
 	oneShot: boolean;
 }
@@ -219,6 +227,9 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		dockerAutostart: !bool(FLAGS.noDockerAutostart),
 		hosts: !bool(FLAGS.noHosts),
 		runtime: str(FLAGS.runtime),
+		// Either way in: the flag for a one-off look, the environment variable
+		// for a shell or an agent that wants it on every run.
+		timing: bool(FLAGS.timing) || isTimingEnabled(),
 		oneShot: migrate || seed || upOnly,
 	};
 }

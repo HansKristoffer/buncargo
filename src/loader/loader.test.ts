@@ -174,15 +174,26 @@ const typedConfig = defineDevConfig({
 
 describe("loadDevEnv", () => {
 	let testDir: string;
+	const originalOffset = process.env.BUNCARGO_PORT_OFFSET;
 
 	beforeEach(() => {
 		testDir = join(tmpdir(), `buncargo-loader-${Date.now()}-${Math.random()}`);
 		mkdirSync(testDir, { recursive: true });
+		// A fixed offset, because the allocator resolves its root from the
+		// process cwd rather than the config path: without this these tests
+		// probe every port on the machine and persist a `.buncargo/ports.json`
+		// into the buncargo checkout itself.
+		process.env.BUNCARGO_PORT_OFFSET = "0";
 		clearDevEnvCache();
 	});
 
 	afterEach(() => {
 		clearDevEnvCache();
+		if (originalOffset === undefined) {
+			delete process.env.BUNCARGO_PORT_OFFSET;
+		} else {
+			process.env.BUNCARGO_PORT_OFFSET = originalOffset;
+		}
 		rmSync(testDir, { recursive: true, force: true });
 	});
 

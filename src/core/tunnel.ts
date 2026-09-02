@@ -1,7 +1,7 @@
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import { startQuickTunnel } from "./quick-tunnel";
 import { exposeTunnelStaggerMs } from "./runtime-flags";
-import { sleep } from "./utils";
+import { sleep } from "./sleep";
 
 export interface PublicExposeTarget {
 	kind: "service" | "app";

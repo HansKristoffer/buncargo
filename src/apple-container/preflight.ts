@@ -1,8 +1,8 @@
 import { arch, platform } from "node:os";
 import { ContainerRuntimeUnavailableError } from "../container-runtime/types";
 import { isCI } from "../core/runtime-flags";
+import { sleep } from "../core/sleep";
 import { formatDone, formatStep, formatWait } from "../core/style";
-import { sleep } from "../core/utils";
 import type { AppleContainerCli } from "./cli";
 import { APPLE_CONTAINER_COMMAND } from "./cli";
 

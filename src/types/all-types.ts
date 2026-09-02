@@ -732,6 +732,16 @@ export interface NamedHost {
 	kind: "app" | "service";
 	name: string;
 	hostname: string;
+	/**
+	 * The same hostname without the worktree label, so every checkout of a
+	 * project agrees on one name.
+	 *
+	 * Equal to `hostname` outside a worktree. Certificate coverage is derived
+	 * from this rather than from `hostname`: a wildcard built per worktree
+	 * would be a new name on every checkout, which is the remint this exists
+	 * to avoid.
+	 */
+	baseHostname: string;
 	targetPort: number;
 }
 

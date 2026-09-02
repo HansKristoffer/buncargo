@@ -161,6 +161,7 @@
     "test:integration-cloudflared": "BUNCARGO_TEST_CLOUDFLARED_SMOKE=1 bun test src/core/quick-tunnel/quick-tunnel.test.ts",
     "test:integration-cloudflared-e2e": "BUNCARGO_TEST_CLOUDFLARED_SMOKE=1 BUNCARGO_TEST_CLOUDFLARED_E2E=1 bun test src/core/quick-tunnel/quick-tunnel.test.ts",
     "test:integration-hosts": "BUNCARGO_TEST_HOSTS=1 bun test src/core/hosts/hosts.integration.test.ts",
+    "test:integration-hosts-soak": "BUNCARGO_TEST_HOSTS_SOAK=1 bun test src/core/hosts/worktree-soak.test.ts",
     "test:integration-apple": "BUNCARGO_TEST_APPLE_CONTAINER=1 bun test src/apple-container/apple-container.integration.test.ts"
   },
   "devDependencies": {

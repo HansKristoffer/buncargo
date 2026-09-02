@@ -1,5 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { withFileLock } from "../file-lock";
+import { rememberCertNames } from "./cert-names";
 import {
 	certNeedsRenewal,
 	ensureMkcert,
@@ -91,15 +92,32 @@ export async function resolveMkcertForMint(
  * localhost:port", not as a fatal error.
  */
 export async function syncCertificateForRoutes(
-	options: { mkcertPath?: string; include?: string[] } = {},
+	options: {
+		mkcertPath?: string;
+		include?: string[];
+		/**
+		 * Repo root `include` belongs to. Given, the names are remembered for
+		 * it, so this project keeps its coverage while it is not running.
+		 */
+		root?: string;
+	} = {},
 ): Promise<CertificateFiles> {
 	const certPath = getCertPath();
 	return withFileLock(certPath, async () => {
 		const routes = await loadHostRoutes();
+		// Remembered names as well as live routes: a certificate minted from
+		// the registry alone loses a project's names the moment it stops, and
+		// reminting on its next run rebinds the daemon and drops every other
+		// project's websockets.
+		const remembered = await rememberCertNames({
+			root: options.root,
+			names: options.include ?? [],
+		});
 		const hostnames = [
 			...new Set([
 				...routes.map((route) => route.hostname),
 				...(options.include ?? []),
+				...remembered,
 			]),
 		].sort();
 		const wanted = hostnamesForCertificate(hostnames);

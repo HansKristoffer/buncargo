@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { resolveUserHome } from "./hosts/paths";
 import {
 	legacyToolCachePath,
+	lookupOnPath,
 	resolveToolBinary,
 	toolCachePath,
 } from "./tool-binary";
@@ -13,6 +14,13 @@ function tempBinary(name = "tool"): string {
 	const path = join(mkdtempSync(join(tmpdir(), "buncargo-tool-")), name);
 	writeFileSync(path, "");
 	return path;
+}
+
+function tempExecutable(name = "tool"): { dir: string; path: string } {
+	const dir = mkdtempSync(join(tmpdir(), "buncargo-bin-"));
+	const path = join(dir, name);
+	writeFileSync(path, "#!/bin/sh\n", { mode: 0o755 });
+	return { dir, path };
 }
 
 describe("resolveToolBinary", () => {
@@ -104,5 +112,57 @@ describe("toolCachePath", () => {
 		expect(legacyToolCachePath("buncargo-mkcert", "mkcert.v1.4.4")).toBe(
 			join(tmpdir(), "buncargo-mkcert", "mkcert.v1.4.4"),
 		);
+	});
+});
+
+/**
+ * A `PATH` scan rather than a `command -v` fork: this runs for `docker`,
+ * `container` and `mkcert` before a dev run has started anything.
+ */
+describe("lookupOnPath", () => {
+	it("finds an executable on PATH", () => {
+		const { dir, path } = tempExecutable("buncargo-fake-tool");
+		expect(
+			lookupOnPath("buncargo-fake-tool", { PATH: dir } as NodeJS.ProcessEnv),
+		).toBe(path);
+	});
+
+	it("returns nothing for a command that is not there", () => {
+		const { dir } = tempExecutable();
+		expect(
+			lookupOnPath("buncargo-absent", { PATH: dir } as NodeJS.ProcessEnv),
+		).toBeUndefined();
+	});
+
+	// A file that happens to share the name but cannot be run is not the tool.
+	it("skips a non-executable file with the right name", () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-bin-"));
+		writeFileSync(join(dir, "buncargo-not-exec"), "", { mode: 0o644 });
+		expect(
+			lookupOnPath("buncargo-not-exec", { PATH: dir } as NodeJS.ProcessEnv),
+		).toBeUndefined();
+	});
+
+	it("takes the first match in PATH order", () => {
+		const first = tempExecutable("buncargo-dup");
+		const second = tempExecutable("buncargo-dup");
+		expect(
+			lookupOnPath("buncargo-dup", {
+				PATH: `${first.dir}:${second.dir}`,
+			} as NodeJS.ProcessEnv),
+		).toBe(first.path);
+	});
+
+	it("treats a path as a path rather than a PATH lookup", () => {
+		const { path } = tempExecutable();
+		expect(lookupOnPath(path, { PATH: "" } as NodeJS.ProcessEnv)).toBe(path);
+	});
+
+	it("survives an empty or absent PATH", () => {
+		expect(lookupOnPath("sh", {} as NodeJS.ProcessEnv)).toBeUndefined();
+	});
+
+	it("still finds a real system binary", () => {
+		expect(lookupOnPath("sh")).toContain("sh");
 	});
 });

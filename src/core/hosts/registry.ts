@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { NamedHost } from "../../types";
 import { withFileLock } from "../file-lock";
 import {
@@ -63,20 +64,40 @@ export async function loadHostRoutes(
 }
 
 /**
+ * Is this route still attached to something real?
+ *
+ * Two different deaths. A route with a pid belongs to one run and goes when
+ * that run does. A static one — a service URL — has no owner, so nothing would
+ * ever retire it; a deleted worktree would keep its hostnames in the registry,
+ * and in `/etc/hosts`, forever. The checkout being gone from disk is the only
+ * signal that distinguishes "not running" from "no longer exists".
+ */
+function isRouteLive(
+	route: HostsRoute,
+	directoryExists: (path: string) => boolean,
+): boolean {
+	if (route.pid !== undefined) return isRouteOwnerAlive(route.pid);
+	return route.root === "" || directoryExists(route.root);
+}
+
+/**
  * The registry is shared by every concurrent `buncargo dev` on the machine, so
  * each read-modify-write below runs under `withFileLock`. Without it two runs
  * starting together both read the same snapshot and the second write drops the
  * first one's routes, leaving that project's named URL 404ing with no error.
  *
- * `prune` is the unlocked core so `upsertHostRoutes` can reuse it inside a lock
- * it already holds.
+ * This is the unlocked core so `upsertHostRoutes` can reuse it inside a lock it
+ * already holds.
  */
 async function prune(
 	path: string,
-	options: ListRegistryReadOptions = {},
+	options: ListRegistryReadOptions & {
+		directoryExists?: (path: string) => boolean;
+	} = {},
 ): Promise<HostsRoute[]> {
+	const directoryExists = options.directoryExists ?? existsSync;
 	const routes = await registry.read(path, options);
-	const next = routes.filter((route) => isRouteOwnerAlive(route.pid));
+	const next = routes.filter((route) => isRouteLive(route, directoryExists));
 	if (next.length !== routes.length) {
 		await registry.write(path, next);
 	}
@@ -85,9 +106,51 @@ async function prune(
 
 export async function pruneHostRoutes(
 	path = getRoutesPath(),
-	options: ListRegistryReadOptions = {},
+	options: ListRegistryReadOptions & {
+		directoryExists?: (path: string) => boolean;
+	} = {},
 ): Promise<HostsRoute[]> {
 	return withFileLock(path, () => prune(path, options));
+}
+
+/**
+ * What a registration may do to the live route already holding its hostname.
+ *
+ * `take` overwrites it, `keep` leaves the existing owner in place, `conflict`
+ * refuses.
+ */
+export type RouteClaim = "take" | "keep" | "conflict";
+
+/**
+ * Whether `incoming` may claim a hostname a *live* owner already holds.
+ *
+ * A different root is always a conflict: two projects cannot share a hostname.
+ * Within one root the question is whether this is the same run registering
+ * again, or a second `buncargo dev` in the same checkout — the common case
+ * when a developer (or an agent) opens a second terminal, where the second run
+ * reuses the servers the first one started rather than spawning its own.
+ *
+ * That second run pointing at the same port is not a competitor, so it is
+ * answered with `keep` rather than a throw: the route is already correct, and
+ * the live owner must stay the owner. `releaseNamedHosts` drops only routes
+ * carrying its own pid, so leaving the first run as owner is what makes the
+ * route survive the second run exiting and disappear when the first one does —
+ * which is also when the servers it points at go away.
+ *
+ * Refusing here instead is what left a second run printing `localhost:port`
+ * URLs while the named ones were working the whole time.
+ */
+export function classifyRouteClaim(
+	existing: HostsRoute,
+	incoming: HostsRoute,
+): RouteClaim {
+	if (existing.root !== incoming.root) return "conflict";
+	// The same run re-registering: refresh it.
+	if (existing.pid === incoming.pid) return "take";
+	if (existing.port === incoming.port && existing.kind === incoming.kind) {
+		return "keep";
+	}
+	return "conflict";
 }
 
 export async function upsertHostRoutes(
@@ -102,16 +165,11 @@ export async function upsertHostRoutes(
 		for (const route of routesToSave) {
 			const existing = byHost.get(route.hostname);
 			if (existing && isRouteOwnerAlive(existing.pid) && !options.force) {
-				const sameOwner =
-					existing.pid === route.pid && existing.root === route.root;
-				const existingStatic = existing.pid === undefined;
-				const incomingStatic = route.pid === undefined;
-				if (
-					!sameOwner &&
-					!(existingStatic && incomingStatic && existing.root === route.root)
-				) {
+				const claim = classifyRouteClaim(existing, route);
+				if (claim === "conflict") {
 					throw new HostsRouteConflictError(route.hostname, existing.pid);
 				}
+				if (claim === "keep") continue;
 			}
 			byHost.set(route.hostname, route);
 		}

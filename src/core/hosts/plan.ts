@@ -152,8 +152,7 @@ export function planNamedHosts(input: {
 			if (port === undefined) continue;
 			const appLabel =
 				options.primaryApp === name ? undefined : sanitizeDnsLabel(name);
-			const labels = [
-				...(worktreeLabel ? [worktreeLabel] : []),
+			const baseLabels = [
 				...(appLabel ? [appLabel] : []),
 				projectLabel,
 				...tldLabels,
@@ -161,7 +160,11 @@ export function planNamedHosts(input: {
 			plan.push({
 				kind: "app",
 				name,
-				hostname: joinHostname(labels),
+				hostname: joinHostname([
+					...(worktreeLabel ? [worktreeLabel] : []),
+					...baseLabels,
+				]),
+				baseHostname: joinHostname(baseLabels),
 				targetPort: port,
 			});
 		}
@@ -173,16 +176,15 @@ export function planNamedHosts(input: {
 		if (!isHttpService(name, input.services[name] as ServiceConfig)) {
 			continue;
 		}
-		const labels = [
-			...(worktreeLabel ? [worktreeLabel] : []),
-			sanitizeDnsLabel(name),
-			projectLabel,
-			...tldLabels,
-		];
+		const baseLabels = [sanitizeDnsLabel(name), projectLabel, ...tldLabels];
 		plan.push({
 			kind: "service",
 			name,
-			hostname: joinHostname(labels),
+			hostname: joinHostname([
+				...(worktreeLabel ? [worktreeLabel] : []),
+				...baseLabels,
+			]),
+			baseHostname: joinHostname(baseLabels),
 			targetPort: port,
 		});
 	}
@@ -197,4 +199,63 @@ export function applyHostPlanToUrls(
 	for (const entry of plan) {
 		urls[entry.name] = `https://${entry.hostname}`;
 	}
+}
+
+/**
+ * The names a certificate should carry to serve `plan` and every sibling
+ * worktree of the same project.
+ *
+ * A worktree adds a label in front (`fix-ui.api.myapp.localhost`), so each new
+ * checkout produced a hostname no existing certificate covered, forcing a
+ * remint. That is the expensive event: minting rebinds the daemon's listener,
+ * which drops every proxied websocket on the machine — including HMR sockets
+ * belonging to projects that had nothing to do with the new worktree. With
+ * agents creating worktrees routinely, that was happening several times a day.
+ *
+ * A wildcard covers exactly one label, so both directions are needed: `*.<h>`
+ * for a worktree of this hostname, and one per ancestor for a worktree of a
+ * sibling. The chain stops above the TLD — `*.localhost` is both far too broad
+ * and rejected by browsers, and it would let any project serve any other
+ * project's name.
+ */
+export function certificateHostnames(plan: NamedHost[], tld: string): string[] {
+	const tldLabels = sanitizeTld(tld).split(".").length;
+	const names = new Set<string>();
+
+	for (const entry of plan) {
+		// Everything here comes from the *base* name, never the worktree's own
+		// hostname, so every checkout of a project asks for exactly the same
+		// set. Asking for `t3code-a.api.myapp.localhost` and its wildcards
+		// would put a name on the request that no leaf has yet — and a missing
+		// name is a remint, which is the churn this exists to remove. The
+		// worktree's hostname needs no entry of its own: `*.<base>` covers it.
+		const base = entry.baseHostname || entry.hostname;
+		names.add(base);
+
+		// `*.<base>` covers a worktree of this name; each ancestor down to one
+		// label above the TLD covers a worktree of a sibling.
+		const labels = base.split(".");
+		for (let start = 0; labels.length - start >= tldLabels + 1; start++) {
+			names.add(`*.${labels.slice(start).join(".")}`);
+		}
+	}
+
+	return [...names].sort();
+}
+
+/**
+ * Whether a certificate's SAN list covers `hostname`.
+ *
+ * A wildcard matches exactly one label, and only at the front — the rule
+ * browsers apply — so this cannot be a substring check.
+ */
+export function certificateCovers(
+	covered: Iterable<string>,
+	hostname: string,
+): boolean {
+	const names = covered instanceof Set ? covered : new Set(covered);
+	if (names.has(hostname)) return true;
+	const dot = hostname.indexOf(".");
+	if (dot === -1) return false;
+	return names.has(`*.${hostname.slice(dot + 1)}`);
 }

@@ -15,9 +15,12 @@ import {
 	stopDockerContainersByIds,
 } from "./inventory";
 import { startContainers, stopContainers } from "./lifecycle";
-import { findDockerContainerOnPort } from "./port-lookup";
+import {
+	dockerContainerPortOwners,
+	findDockerContainerOnPort,
+} from "./port-lookup";
 import { ensureDockerRunning, isDockerDaemonRunning } from "./preflight";
-import { areServicesRunning } from "./status";
+import { areServicesRunning, dockerProjectServiceStates } from "./status";
 
 /**
  * Run a probe inside a service container.
@@ -116,6 +119,14 @@ export function dockerRuntimeAdapter(
 
 		findContainerOnPort(port: number) {
 			return findDockerContainerOnPort(port, binary);
+		},
+
+		containerPortOwners() {
+			return dockerContainerPortOwners(binary);
+		},
+
+		projectServiceStates(projectName: string) {
+			return dockerProjectServiceStates(projectName, binary);
 		},
 	};
 }

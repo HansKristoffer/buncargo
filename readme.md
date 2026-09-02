@@ -187,6 +187,7 @@ bunx buncargo dev --watchdog-timeout=5
 bunx buncargo dev --no-docker-autostart
 bunx buncargo dev --no-hosts
 bunx buncargo dev --runtime=apple  # Run services on Apple container
+bunx buncargo dev --timing         # Print how long each startup phase took
 bunx buncargo dev --apps=expoApp -- --clear
 bunx buncargo ls
 bunx buncargo status
@@ -237,6 +238,25 @@ Everything else is unchanged: the same `dev.config.ts`, the same generated compo
 - Bind-mounting a host directory into an image that `chown`s it fails on virtiofs. The built-in presets all use named volumes, which are unaffected.
 
 `service.postgres()` needs no special handling: Apple's named volumes are formatted filesystems, so a fresh one already contains `lost+found` and `initdb` refuses to use it as a data directory, and on this runtime the preset points `PGDATA` at a subdirectory of the mount for you. Docker's named volumes start empty and keep the mount root, so an existing project's data stays where it is.
+
+## Startup speed
+
+`bun dev` is run constantly, in many worktrees, so the work before the first dev server starts is kept small:
+
+- **One reading of the machine's ports per phase.** Port ownership is asked in four places (allocation, service preflight, app classification, spawning); a single `lsof` and one container listing answer all of them, instead of a fork per port per question.
+- **The container reconcile is skipped when nothing changed.** Every generated service carries a `buncargo.stack-hash` label covering its interpolated definition. If all the selected services are already running with this run's hash, `docker compose up` is not called at all; anything that would change a container changes the hash, so an edited image or port still takes effect without `--down`.
+- **Nothing blocks on the idle watchdog.** It is spawned alongside the dev servers rather than waited on.
+- **No shelling out to find a binary.** `PATH` and mkcert's CA root are read directly.
+
+`bunx buncargo dev --timing` (or `BUNCARGO_TIMING=1`) prints where the time actually went:
+
+```
+Startup
+  hosts           124ms
+  containers      412ms
+  app ports        38ms
+  total           581ms
+```
 
 ## Startup order
 
@@ -299,6 +319,10 @@ Enable with `options.hosts: true` (or `{ tld?, primaryApp?, services? }`). Postg
 The first `buncargo dev` in a repo with `hosts` on prompts for one-time machine setup (trust a local CA, bind `:443`). Enter accepts, `s` skips once, `n` persists a decline. `buncargo hosts install` is the non-interactive path. Setup is per machine: later repos and worktrees reuse it.
 
 Both steps need your password: the CA goes into the system trust store, and only root may bind `:443` or write the launchd/systemd unit. Setup is all-or-nothing — if the service fails to load, buncargo removes the unit file rather than leave a half-installed machine that skips setup on the next run. Setup is skipped without a TTY, since the password prompt would hang.
+
+Certificates cover wildcards, not just the exact hostnames: a project serving `api.myapp.localhost` also gets `*.api.myapp.localhost` and `*.myapp.localhost`, so the *next* worktree of that project needs no new certificate. That matters because minting one makes the daemon rebind, which drops every proxied websocket on the machine — including HMR sockets belonging to projects that had nothing to do with the new worktree. The names each checkout wants are remembered in `~/.buncargo/cert-names.json` so a project stopping does not drop its coverage; an entry is retired once its checkout is gone from disk.
+
+The daemon picks up a new route as soon as the registry file changes rather than on its next poll, and hands over between listeners without closing the port, so starting a run in a fresh worktree does not race it.
 
 `buncargo hosts install` records what it installed in `~/.buncargo/hosts-service.json`. The daemon runs whichever buncargo started it, usually the one in a project's `node_modules`, so reinstalling dependencies there can leave the machine-wide service pointing at a path that no longer exists — and upgrading buncargo leaves it running the previous version's daemon bundle. Either way it keeps answering on `:443`, so `buncargo dev` prompts to update it (Enter updates, `s` skips this run) rather than waiting for you to notice; without a TTY it warns and continues on the old daemon. `buncargo hosts status` and `buncargo doctor` report the same thing, and `buncargo hosts install` or `doctor --fix` repairs it outright.
 
@@ -412,6 +436,7 @@ Vite is not a dependency of buncargo: the plugin's return type is declared struc
 | `BUNCARGO_MKCERT_VERSION` | GitHub release tag for the bundled `mkcert` download (default `v1.4.4`) |
 | `BUNCARGO_SYNC_HOSTS` | `0` skips writing the `# buncargo-start` / `# buncargo-end` block in `/etc/hosts` |
 | `BUNCARGO_TYPECHECK_CONCURRENCY` | Max overlapping workspace typecheck processes (positive integer) |
+| `BUNCARGO_TIMING` | `1` prints a per-phase breakdown of `dev` startup (same as `--timing`) |
 | `CLOUDFLARED_VERSION` | GitHub release tag for the bundled download |
 | `CI` | Skips Docker auto-start; also disables named hosts. Detected from `CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL` |
 

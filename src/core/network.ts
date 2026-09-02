@@ -1,6 +1,7 @@
 import net from "node:net";
 import { networkInterfaces } from "node:os";
 import type { AppConfig } from "../types";
+import { sleep } from "./sleep";
 import {
 	formatDone,
 	formatUrl,
@@ -8,7 +9,6 @@ import {
 	SLOW_STEP_MS,
 	scheduleLog,
 } from "./style";
-import { sleep } from "./utils";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Local IP Detection

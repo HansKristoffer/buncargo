@@ -7,6 +7,7 @@ import {
 	upsertHostRoutes,
 	waitForDaemonRoutes,
 } from "../core/hosts";
+import { certificateHostnames } from "../core/hosts/plan";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 
 /**
@@ -45,7 +46,12 @@ export async function activateNamedHosts<
 		// the registry every second, so a hostname that lands first is a
 		// hostname it tries to serve with a certificate that omits it.
 		await syncCertificateForRoutes({
-			include: env.hosts.plan.map((entry) => entry.hostname),
+			// Wildcards as well as this run's exact hostnames, so the next
+			// worktree of this project is already covered and needs no remint —
+			// and remembered under this root, so the coverage survives the
+			// project not running.
+			include: certificateHostnames(env.hosts.plan, env.hosts.tld),
+			root: env.root,
 		});
 		// App routes die with this process; service routes outlive it.
 		await upsertHostRoutes(
@@ -61,6 +67,20 @@ export async function activateNamedHosts<
 				kinds: ["service"],
 			}),
 		);
+
+		// Mint again now that this run's routes are on disk.
+		//
+		// The first sync read the registry before publishing, so a run that
+		// minted in that gap produced a certificate covering itself and not us
+		// — its mint is the one the daemon ends up serving, and our hostnames
+		// fail TLS until something else remints. This second pass runs under
+		// the same lock and sees every concurrent run's routes, so whichever
+		// run finishes last leaves a certificate covering all of them. It
+		// re-parses the certificate and mints nothing when it is already
+		// sufficient, which is the normal case.
+		// No `root` here: this pass exists to pick up what other runs published,
+		// and this project's names were already recorded above.
+		await syncCertificateForRoutes();
 
 		// Registering a route only writes a file. Advertising the hostname before
 		// the daemon has picked it up is how a banner full of https URLs ends up

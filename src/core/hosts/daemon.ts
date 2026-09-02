@@ -1,49 +1,60 @@
-import { spawn } from "node:child_process";
 import {
-	existsSync,
+	type FSWatcher,
 	mkdirSync,
-	readFileSync,
+	statSync,
+	truncateSync,
 	unlinkSync,
+	watch,
 	writeFileSync,
 	writeSync,
 } from "node:fs";
-import { readJsonDocumentSync, writeJsonDocumentSync } from "../registry-file";
+// The leaf module, not `../process`: its index re-exports the port-ownership
+// helpers, which reach into the container backends. The root daemon spawns
+// nothing and should not carry them.
+import { isProcessAlive } from "../process/lifecycle";
 import {
 	DEFAULT_HOSTS_DAEMON_PORT,
-	hostsDaemonPort,
 	shouldSyncHostsFile,
 } from "../runtime-flags";
-import { sleep } from "../utils";
 import {
 	certificateFingerprint,
 	describeCertificateGap,
 	readCertificatePair,
 } from "./certificates";
+import {
+	readDaemonConfig,
+	readDaemonPid,
+	writeDaemonConfig,
+} from "./daemon-config";
 import { cleanHostsFile, syncHostsFile } from "./hosts-file";
 import {
 	chownToInvokingUser,
-	getDaemonConfigPath,
+	getCertsDir,
 	getHostsStateDir,
 	getPidfilePath,
 } from "./paths";
 import {
-	isProxyHealthy,
 	type LocalProxy,
-	type ProxyHealth,
 	type ProxyRouteLookup,
 	type ProxyRoutesView,
 	readProxyHealth,
 	startLocalProxy,
 } from "./proxy";
 import { pruneHostRoutes } from "./registry";
-import { describeStaleHostsService, isHostsServiceInstalled } from "./service";
-import { hostsServiceLogHint } from "./service-files";
-import { describePortSquatter } from "./squatter";
+import { HOSTS_SERVICE_LOG } from "./service-files";
 
-const DEFAULT_HTTP_PORT = 80;
+const _DEFAULT_HTTP_PORT = 80;
 const IDLE_EXIT_MS = 30_000;
 const RELOAD_INTERVAL_MS = 1000;
-const MAX_RELOAD_BACKOFF_MS = 30_000;
+/**
+ * Ceiling on the retry interval after repeated reload failures.
+ *
+ * Deliberately short: a reload is a file read, the failure log is throttled
+ * separately, and {@link watchHostsState} means the loop is a backstop rather
+ * than the primary trigger. A longer ceiling meant one project's problem
+ * delayed picking up every other project's routes by up to that long.
+ */
+const MAX_RELOAD_BACKOFF_MS = 5_000;
 
 /**
  * How long without a successful refresh before the route map is presumed frozen.
@@ -139,39 +150,165 @@ export function createThrottledFailureLog(deps: {
 	};
 }
 
-export interface HostsDaemonConfig {
-	httpsPort: number;
-	httpPort: number;
-	tls: boolean;
+/**
+ * Keep the service log from growing without bound.
+ *
+ * It is append-only and the daemon runs for weeks; a version that crash-looped
+ * left 800KB of one repeated line on this machine, which is both useless and
+ * the first thing anyone opens when named hosts break. Truncating at startup
+ * bounds it without a rotation scheme, and the interesting lines are the ones
+ * after the most recent start anyway.
+ */
+export function truncateOversizedLog(
+	path: string,
+	maxBytes = MAX_SERVICE_LOG_BYTES,
+): void {
+	try {
+		if (statSync(path).size <= maxBytes) return;
+		// Truncate rather than unlink: launchd and systemd hold this file open,
+		// and replacing it would leave them writing to an unlinked inode.
+		truncateSync(path, 0);
+		writeFileSync(
+			path,
+			`[buncargo hosts] earlier log truncated at ${new Date().toISOString()}\n`,
+			{ flag: "a" },
+		);
+	} catch {
+		// Not our log to manage (no such file, not permitted): leave it.
+	}
 }
 
-function validateDaemonConfig(
-	value: unknown,
-): Partial<HostsDaemonConfig> | undefined {
-	if (typeof value !== "object" || value === null) return undefined;
-	const config = value as Partial<HostsDaemonConfig>;
+/** Above this, the log is more noise than history. */
+const MAX_SERVICE_LOG_BYTES = 5_000_000;
+
+export interface ReloadWakeup {
+	/** Ask the next {@link ReloadWakeup.wait} to return immediately. */
+	signal(): void;
+	/** Resolve on the next signal, or after `ms`, whichever comes first. */
+	wait(ms: number): Promise<void>;
+}
+
+/**
+ * The reload loop's sleep, interruptible by a filesystem event.
+ *
+ * A signal that arrives while nothing is waiting is remembered, so a change
+ * landing mid-reload still causes the following pass rather than being lost
+ * between the two.
+ */
+export function createReloadWakeup(): ReloadWakeup {
+	let wake: (() => void) | undefined;
+	let pending = false;
+
 	return {
-		httpsPort:
-			typeof config.httpsPort === "number" ? config.httpsPort : undefined,
-		httpPort: typeof config.httpPort === "number" ? config.httpPort : undefined,
-		tls: typeof config.tls === "boolean" ? config.tls : undefined,
+		signal() {
+			pending = true;
+			const resume = wake;
+			wake = undefined;
+			resume?.();
+		},
+		async wait(ms: number): Promise<void> {
+			if (pending) {
+				pending = false;
+				return;
+			}
+			await new Promise<void>((resolve) => {
+				const timer = setTimeout(() => {
+					wake = undefined;
+					resolve();
+				}, ms);
+				wake = () => {
+					clearTimeout(timer);
+					resolve();
+				};
+			});
+			pending = false;
+		},
 	};
 }
 
-export function readDaemonConfig(): HostsDaemonConfig {
-	const stored =
-		readJsonDocumentSync(getDaemonConfigPath(), validateDaemonConfig) ?? {};
+/**
+ * Collapse a burst of filesystem events into one callback.
+ *
+ * An atomic write is a create plus a rename, and a mint lands two files, so a
+ * single logical change arrives as several events. Without the debounce the
+ * daemon would reload once per event.
+ */
+export function createDebouncedTrigger(deps: {
+	onTrigger: () => void;
+	debounceMs: number;
+}): { fire: () => void; cancel: () => void } {
+	let timer: ReturnType<typeof setTimeout> | undefined;
 	return {
-		httpsPort: stored.httpsPort ?? hostsDaemonPort(),
-		httpPort: stored.httpPort ?? DEFAULT_HTTP_PORT,
-		tls: stored.tls ?? true,
+		fire() {
+			if (timer) clearTimeout(timer);
+			timer = setTimeout(() => {
+				timer = undefined;
+				deps.onTrigger();
+			}, deps.debounceMs);
+		},
+		cancel() {
+			if (timer) clearTimeout(timer);
+			timer = undefined;
+		},
 	};
 }
 
-export function writeDaemonConfig(config: HostsDaemonConfig): void {
-	writeJsonDocumentSync(getDaemonConfigPath(), config, {
-		afterWrite: chownToInvokingUser,
+/** How long to coalesce filesystem events before reloading. */
+export const WATCH_DEBOUNCE_MS = 20;
+
+/**
+ * Reload as soon as the registry or the certificate changes, instead of on the
+ * next poll.
+ *
+ * Polling alone put 0-1000ms of pure waiting into every `buncargo dev` before
+ * its hostnames could be advertised, which is paid on every run in every
+ * worktree. Watching the directories rather than the files is deliberate:
+ * writes land through a temp file and a rename, so the inode a file watch was
+ * holding is not the one that ends up in place.
+ *
+ * Best-effort by construction — a platform or filesystem where this does not
+ * work simply falls back to the poll, which is still running.
+ */
+export function watchHostsState(deps: {
+	directories: string[];
+	onChange: () => void;
+	log: (message: string) => void;
+	debounceMs?: number;
+}): () => void {
+	const trigger = createDebouncedTrigger({
+		onTrigger: deps.onChange,
+		debounceMs: deps.debounceMs ?? WATCH_DEBOUNCE_MS,
 	});
+	const watchers: FSWatcher[] = [];
+
+	for (const directory of deps.directories) {
+		try {
+			mkdirSync(directory, { recursive: true });
+			chownToInvokingUser(directory);
+			const watcher = watch(directory, () => trigger.fire());
+			// A watcher that errors later must not take the daemon down; the
+			// poll covers it.
+			watcher.on("error", () => {});
+			watchers.push(watcher);
+		} catch (error) {
+			deps.log(
+				`[buncargo hosts] could not watch ${directory}, falling back to polling: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+		}
+	}
+
+	return () => {
+		trigger.cancel();
+		for (const watcher of watchers) {
+			try {
+				watcher.close();
+			} catch {
+				// already closed
+			}
+		}
+	};
 }
 
 function writePidfile(pid: number): void {
@@ -179,99 +316,6 @@ function writePidfile(pid: number): void {
 	const path = getPidfilePath();
 	writeFileSync(path, `${pid}\n`);
 	chownToInvokingUser(path);
-}
-
-export function readDaemonPid(): number | undefined {
-	const path = getPidfilePath();
-	if (!existsSync(path)) return undefined;
-	const pid = Number.parseInt(readFileSync(path, "utf-8").trim(), 10);
-	return Number.isFinite(pid) ? pid : undefined;
-}
-
-export async function isHostsDaemonHealthy(port?: number): Promise<boolean> {
-	const config = readDaemonConfig();
-	return isProxyHealthy(port ?? config.httpsPort, "127.0.0.1", {
-		tls: config.tls,
-	});
-}
-
-/** What the running daemon reports it is serving, if it answers at all. */
-export async function readHostsDaemonHealth(
-	port?: number,
-): Promise<ProxyHealth | undefined> {
-	const config = readDaemonConfig();
-	return readProxyHealth(port ?? config.httpsPort, "127.0.0.1", {
-		tls: config.tls,
-	});
-}
-
-/**
- * A daemon that cannot serve, whether or not it answers.
- *
- * Health alone is not enough: the listener and the reload loop are independent,
- * so a daemon whose loop stopped keeps returning 200 while every named URL
- * 404s against a frozen map. Both cases want the same repair — reload it.
- */
-export async function isHostsDaemonWedged(): Promise<boolean> {
-	const health = await readHostsDaemonHealth();
-	if (!health) return true;
-	if (health.lastReloadAt === undefined) return false;
-	return Date.now() - health.lastReloadAt > RELOAD_STALL_MS;
-}
-
-/** How long the CLI waits for the daemon's one-second poll to pick a route up. */
-export const ROUTE_PICKUP_TIMEOUT_MS = 3000;
-const ROUTE_POLL_MS = 100;
-
-export type DaemonRouteCheck =
-	| { ok: true }
-	/** The daemon answers but does not report hostnames, so nothing can be proven. */
-	| { ok: true; unverifiable: true }
-	| { ok: false; reason: string };
-
-/**
- * Wait until the daemon is actually serving `hostnames`.
- *
- * Registering a route only writes a file; the daemon picks it up on its own
- * poll, and a daemon whose poll has stopped keeps answering health checks with
- * a map that will never contain it. Without this the CLI advertises
- * `https://app.project.localhost` and the browser gets a 404 from our own
- * proxy — the failure this whole check exists to prevent.
- */
-export async function waitForDaemonRoutes(
-	hostnames: string[],
-	options: { timeoutMs?: number; port?: number } = {},
-): Promise<DaemonRouteCheck> {
-	if (hostnames.length === 0) return { ok: true };
-	const deadline = Date.now() + (options.timeoutMs ?? ROUTE_PICKUP_TIMEOUT_MS);
-	let missing: string[] = [...hostnames];
-
-	for (;;) {
-		const health = await readHostsDaemonHealth(options.port);
-		if (health === undefined) {
-			return {
-				ok: false,
-				reason: `the daemon on :${readDaemonConfig().httpsPort} stopped answering`,
-			};
-		}
-		// A daemon from before this field cannot be checked. Reporting that as a
-		// failure would downgrade every URL on a machine whose service is simply
-		// due an upgrade, which `describeStaleHostsService` already reports.
-		if (health.hostnames === undefined) return { ok: true, unverifiable: true };
-
-		const served = new Set(health.hostnames);
-		missing = hostnames.filter((hostname) => !served.has(hostname));
-		if (missing.length === 0) return { ok: true };
-
-		const remaining = deadline - Date.now();
-		if (remaining <= 0) break;
-		await sleep(Math.min(ROUTE_POLL_MS, remaining));
-	}
-
-	return {
-		ok: false,
-		reason: `the daemon is not serving ${missing.join(", ")}`,
-	};
 }
 
 export interface HostsReloaderDeps {
@@ -416,17 +460,24 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		// listener alone rather than take every named URL down first.
 		const { cert, key } = await deps.readCertificatePair();
 
-		// Clear before rebinding: if startProxy throws, the retry must not find
-		// a stopped server sitting in `proxy` and skip the rebind.
-		const stopped = proxy;
-		proxy = undefined;
-		stopped?.stop();
-		proxy = await deps.startProxy({
+		// Bind the replacement *before* dropping the old listener. Both hold
+		// the port at once under SO_REUSEPORT and the kernel hands new
+		// connections to the new one, so there is no instant where nothing
+		// answers on :443. Stopping first left exactly that window, and a CLI
+		// health probe landing in it — which the remint for a new worktree's
+		// hostnames makes likely — reported the daemon as down.
+		//
+		// A throw here therefore leaves the previous listener serving, and
+		// `lastCertKey` unadvanced so the next reload retries.
+		const next = await deps.startProxy({
 			lookup,
 			routes,
 			cert,
 			key,
 		});
+		const previous = proxy;
+		proxy = next;
+		previous?.stop();
 		lastCertKey = certKey;
 	}
 
@@ -442,6 +493,35 @@ export async function runHostsDaemon(
 	options: { service?: boolean } = {},
 ): Promise<void> {
 	const config = readDaemonConfig();
+	const service = options.service ?? false;
+
+	// The listener sets SO_REUSEPORT so a reload can bind its replacement before
+	// dropping the old one. That also means a second daemon would bind happily
+	// alongside the first rather than failing, and the two would answer from
+	// separate route maps at random. Refuse instead.
+	//
+	// Only on the foreground path: under launchd/systemd `KeepAlive` an exit
+	// here would be respawned immediately, and the supervisor already
+	// guarantees a single instance.
+	if (!service) {
+		const other = readDaemonPid();
+		if (
+			other !== undefined &&
+			other !== process.pid &&
+			isProcessAlive(other) &&
+			(await readProxyHealth(config.httpsPort, "127.0.0.1", {
+				tls: config.tls,
+			})) !== undefined
+		) {
+			logDaemonError(
+				`[buncargo hosts] a daemon is already serving :${config.httpsPort} (pid ${other}); nothing to do`,
+			);
+			return;
+		}
+	}
+
+	if (service) truncateOversizedLog(HOSTS_SERVICE_LOG);
+
 	writeDaemonConfig(config);
 	writePidfile(process.pid);
 
@@ -472,10 +552,19 @@ export async function runHostsDaemon(
 		log: logDaemonError,
 		now: Date.now,
 		onIdleExit: () => process.exit(0),
-		service: options.service ?? false,
+		service,
+	});
+
+	const wakeup = createReloadWakeup();
+	const stopWatching = watchHostsState({
+		// The registry and the certificate: the two inputs a reload reads.
+		directories: [getHostsStateDir(), getCertsDir()],
+		onChange: () => wakeup.signal(),
+		log: logDaemonError,
 	});
 
 	const onStop = () => {
+		stopWatching();
 		reloader.stop();
 		const pid = readDaemonPid();
 		if (pid === process.pid) {
@@ -551,106 +640,10 @@ export async function runHostsDaemon(
 
 	await reloadOrReport();
 	for (;;) {
-		await sleep(nextReloadDelayMs(consecutiveFailures));
+		// Whichever comes first: a change on disk, or the poll. The poll is the
+		// backstop — it is also what prunes routes whose owner died, which no
+		// filesystem event announces.
+		await wakeup.wait(nextReloadDelayMs(consecutiveFailures));
 		await reloadOrReport();
 	}
-}
-
-const HEALTH_POLL_MS = 150;
-/** Budget for a user-level daemon, which only has to bind and mint. */
-export const DAEMON_START_TIMEOUT_MS = 3000;
-/** Budget after `hosts install` / doctor, while launchd/systemd cold-starts the unit. */
-export const SERVICE_START_TIMEOUT_MS = 15_000;
-
-/**
- * How long to poll an already-installed launchd/systemd unit.
- *
- * KeepAlive means a loaded unit is either answering or down. A routine
- * `buncargo dev` must not sit on {@link SERVICE_START_TIMEOUT_MS}; that budget
- * is only for the caller that just loaded the unit.
- */
-export function resolveInstalledServiceWaitMs(timeoutMs?: number): number {
-	return timeoutMs ?? 0;
-}
-
-export async function waitForDaemonHealthy(
-	port: number,
-	timeoutMs: number,
-): Promise<boolean> {
-	if (timeoutMs <= 0) {
-		return isHostsDaemonHealthy(port);
-	}
-	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		if (await isHostsDaemonHealthy(port)) return true;
-		const remaining = deadline - Date.now();
-		if (remaining <= 0) return false;
-		await sleep(Math.min(HEALTH_POLL_MS, remaining));
-	}
-}
-
-export async function ensureHostsDaemonRunning(
-	options: { allowSpawn?: boolean; timeoutMs?: number } = {},
-): Promise<{ ok: boolean; message?: string }> {
-	const config = readDaemonConfig();
-	if (await isHostsDaemonHealthy(config.httpsPort)) {
-		return { ok: true };
-	}
-
-	const serviceInstalled = isHostsServiceInstalled();
-	if (!serviceInstalled) {
-		const squatter = describePortSquatter(config.httpsPort);
-		if (squatter) {
-			return { ok: false, message: squatter };
-		}
-	}
-
-	if (options.allowSpawn === false) {
-		return { ok: false, message: "Named-hosts daemon is not running." };
-	}
-
-	// The system service owns :443. Spawning a user-level daemon alongside it
-	// could never bind that port. KeepAlive means an already-loaded unit is
-	// either answering or down — do not sit on the cold-start budget on every
-	// `buncargo dev`. Callers that just loaded the unit pass timeoutMs.
-	if (serviceInstalled) {
-		const stale = describeStaleHostsService();
-		if (stale) {
-			return { ok: false, message: stale };
-		}
-		const waitMs = resolveInstalledServiceWaitMs(options.timeoutMs);
-		if (waitMs > 0) {
-			const healthy = await waitForDaemonHealthy(config.httpsPort, waitMs);
-			if (healthy) return { ok: true };
-		}
-		return {
-			ok: false,
-			message: `Named-hosts service is installed but did not answer on :${config.httpsPort}. Check ${hostsServiceLogHint()}, then run \`buncargo hosts install\`.`,
-		};
-	}
-
-	const bin = process.argv[1];
-	if (!bin) {
-		return {
-			ok: false,
-			message: "Could not locate the buncargo CLI to start the hosts daemon.",
-		};
-	}
-	const child = spawn(process.execPath, [bin, "hosts", "daemon"], {
-		detached: true,
-		stdio: "ignore",
-	});
-	child.unref();
-
-	const healthy = await waitForDaemonHealthy(
-		config.httpsPort,
-		options.timeoutMs ?? DAEMON_START_TIMEOUT_MS,
-	);
-	return healthy
-		? { ok: true }
-		: {
-				ok: false,
-				message:
-					"Named-hosts daemon did not become healthy. Run `buncargo hosts install` or use localhost:port.",
-			};
 }

@@ -79,6 +79,15 @@ export function portOffsetOverride(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Diagnostics
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** `BUNCARGO_TIMING=1` - print a per-phase breakdown of `dev` startup. */
+export function isTimingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	return env.BUNCARGO_TIMING === "1" || env.BUNCARGO_TIMING === "true";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Container runtime
 // ═══════════════════════════════════════════════════════════════════════════
 

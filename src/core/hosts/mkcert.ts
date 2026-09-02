@@ -15,7 +15,13 @@ import {
 	resolveToolBinary,
 	toolCachePath,
 } from "../tool-binary";
-import { chownToInvokingUser, getCertPath, getKeyPath } from "./paths";
+import {
+	chownToInvokingUser,
+	getCertPath,
+	getKeyPath,
+	resolveUserHome,
+} from "./paths";
+import { certificateCovers } from "./plan";
 
 export const MKCERT_RELEASE_BASE =
 	"https://github.com/FiloSottile/mkcert/releases/";
@@ -83,7 +89,39 @@ export async function ensureMkcert(): Promise<string> {
 	return dest;
 }
 
-export function getCaRoot(mkcertPath?: string): string | undefined {
+export const CA_FILENAME = "rootCA.pem";
+
+/**
+ * Where mkcert keeps its CA, by its own documented rules, without asking it.
+ *
+ * `$CAROOT` wins, then the per-platform data directory. Every `buncargo dev`
+ * with named hosts on needs this path, and `mkcert -CAROOT` is a fork that
+ * answers the same question — one this can answer from the environment for
+ * every machine that has not moved it.
+ */
+export function caRootCandidates(
+	env: NodeJS.ProcessEnv = process.env,
+	home = resolveUserHome(env),
+): string[] {
+	const explicit = env.CAROOT?.trim();
+	if (explicit) return [explicit];
+
+	if (process.platform === "darwin") {
+		return [join(home, "Library", "Application Support", "mkcert")];
+	}
+	if (process.platform === "win32") {
+		const localAppData = env.LOCALAPPDATA?.trim();
+		return localAppData ? [join(localAppData, "mkcert")] : [];
+	}
+	const xdg = env.XDG_DATA_HOME?.trim();
+	return [
+		...(xdg ? [join(xdg, "mkcert")] : []),
+		join(home, ".local", "share", "mkcert"),
+	];
+}
+
+/** Ask mkcert itself. Only reached when the CA is not where it should be. */
+function caRootFromBinary(mkcertPath?: string): string | undefined {
 	const bin = mkcertPath ?? resolvedMkcertPath();
 	if (!bin) return undefined;
 	try {
@@ -96,10 +134,19 @@ export function getCaRoot(mkcertPath?: string): string | undefined {
 	}
 }
 
+export function getCaRoot(mkcertPath?: string): string | undefined {
+	for (const candidate of caRootCandidates()) {
+		if (existsSync(join(candidate, CA_FILENAME))) return candidate;
+	}
+	// Nothing where it should be: either the CA has never been installed, or
+	// this machine moved it. Only now is the fork worth it.
+	return caRootFromBinary(mkcertPath);
+}
+
 export function getCaPath(mkcertPath?: string): string | undefined {
 	const root = getCaRoot(mkcertPath);
 	if (!root) return undefined;
-	const pem = join(root, "rootCA.pem");
+	const pem = join(root, CA_FILENAME);
 	return existsSync(pem) ? pem : undefined;
 }
 
@@ -122,7 +169,10 @@ export function certNeedsRenewal(
 				.map((part) => part.trim().replace(/^DNS:/i, ""))
 				.filter(Boolean),
 		);
-		if (hostnames.some((hostname) => !covered.has(hostname))) {
+		// Wildcard-aware: a leaf carrying `*.myapp.localhost` already serves a
+		// new worktree's hostname, and treating that as a gap would remint on
+		// every fresh checkout — the churn wildcards exist to avoid.
+		if (hostnames.some((hostname) => !certificateCovers(covered, hostname))) {
 			return true;
 		}
 		const expires = Date.parse(cert.validTo);

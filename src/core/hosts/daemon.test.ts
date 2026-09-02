@@ -1,19 +1,31 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+	mkdtempSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	createDebouncedTrigger,
 	createHostsReloader,
+	createReloadWakeup,
 	createThrottledFailureLog,
-	DAEMON_START_TIMEOUT_MS,
 	type HostsReloaderDeps,
 	nextReloadDelayMs,
+	truncateOversizedLog,
+	watchHostsState,
+} from "./daemon";
+import {
 	resolveInstalledServiceWaitMs,
 	SERVICE_START_TIMEOUT_MS,
 	waitForDaemonHealthy,
 	waitForDaemonRoutes,
-	writeDaemonConfig,
-} from "./daemon";
+} from "./daemon-client";
+import { writeDaemonConfig } from "./daemon-config";
 import { type LocalProxy, startLocalProxy } from "./proxy";
 
 describe("nextReloadDelayMs", () => {
@@ -28,8 +40,11 @@ describe("nextReloadDelayMs", () => {
 		expect(nextReloadDelayMs(3)).toBe(4000);
 	});
 
+	// Short, because `watchHostsState` is the primary trigger and this is only
+	// the backstop. A long ceiling meant one project's failure delayed picking
+	// up every other project's routes for that long.
 	it("caps the backoff so recovery is still noticed", () => {
-		expect(nextReloadDelayMs(50)).toBe(30_000);
+		expect(nextReloadDelayMs(50)).toBe(5_000);
 	});
 });
 
@@ -107,9 +122,131 @@ describe("createThrottledFailureLog", () => {
 	});
 });
 
+describe("createReloadWakeup", () => {
+	it("returns early when a change is signalled", async () => {
+		const wakeup = createReloadWakeup();
+		const started = Date.now();
+		setTimeout(() => wakeup.signal(), 20);
+		await wakeup.wait(5_000);
+		expect(Date.now() - started).toBeLessThan(1_000);
+	});
+
+	it("falls back to the poll interval when nothing happens", async () => {
+		const wakeup = createReloadWakeup();
+		const started = Date.now();
+		await wakeup.wait(60);
+		expect(Date.now() - started).toBeGreaterThanOrEqual(40);
+	});
+
+	// A change landing while a reload is in flight must cause the next pass
+	// rather than being dropped in the gap between two waits.
+	it("remembers a signal that arrives while nothing is waiting", async () => {
+		const wakeup = createReloadWakeup();
+		wakeup.signal();
+		const started = Date.now();
+		await wakeup.wait(5_000);
+		expect(Date.now() - started).toBeLessThan(1_000);
+	});
+
+	it("consumes the remembered signal only once", async () => {
+		const wakeup = createReloadWakeup();
+		wakeup.signal();
+		await wakeup.wait(5_000);
+		const started = Date.now();
+		await wakeup.wait(60);
+		expect(Date.now() - started).toBeGreaterThanOrEqual(40);
+	});
+});
+
+describe("createDebouncedTrigger", () => {
+	// An atomic write is a create plus a rename, and a mint lands two files, so
+	// one logical change arrives as several events.
+	it("collapses a burst into one call", async () => {
+		let calls = 0;
+		const trigger = createDebouncedTrigger({
+			onTrigger: () => {
+				calls += 1;
+			},
+			debounceMs: 10,
+		});
+		trigger.fire();
+		trigger.fire();
+		trigger.fire();
+		await Bun.sleep(60);
+		expect(calls).toBe(1);
+	});
+
+	it("does not fire after it is cancelled", async () => {
+		let calls = 0;
+		const trigger = createDebouncedTrigger({
+			onTrigger: () => {
+				calls += 1;
+			},
+			debounceMs: 10,
+		});
+		trigger.fire();
+		trigger.cancel();
+		await Bun.sleep(60);
+		expect(calls).toBe(0);
+	});
+});
+
+describe("watchHostsState", () => {
+	const cleanups: Array<() => void> = [];
+	const watchDirs: string[] = [];
+
+	afterEach(() => {
+		for (const stop of cleanups.splice(0)) stop();
+		for (const dir of watchDirs.splice(0)) {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	// Directories, not files: writes land through a temp file and a rename, so
+	// a file watch would be holding an inode that never comes back.
+	it("fires when a registry write lands through a rename", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-watch-"));
+		watchDirs.push(dir);
+		let changes = 0;
+		cleanups.push(
+			watchHostsState({
+				directories: [dir],
+				onChange: () => {
+					changes += 1;
+				},
+				log: () => {},
+				debounceMs: 10,
+			}),
+		);
+
+		await Bun.sleep(50);
+		writeFileSync(join(dir, "routes.json.tmp"), "{}");
+		renameSync(join(dir, "routes.json.tmp"), join(dir, "routes.json"));
+
+		for (let i = 0; i < 100 && changes === 0; i++) await Bun.sleep(10);
+		expect(changes).toBeGreaterThan(0);
+	});
+
+	// Best-effort: the poll is still running, so an unwatchable directory is a
+	// note rather than a failure.
+	it("reports an unwatchable directory instead of throwing", () => {
+		const logs: string[] = [];
+		expect(() => {
+			cleanups.push(
+				watchHostsState({
+					directories: ["/proc/nonexistent/buncargo-should-not-exist"],
+					onChange: () => {},
+					log: (message) => logs.push(message),
+				}),
+			);
+		}).not.toThrow();
+	});
+});
+
 describe("start timeouts", () => {
-	it("gives launchd/systemd longer than a self-spawned daemon", () => {
-		expect(SERVICE_START_TIMEOUT_MS).toBeGreaterThan(DAEMON_START_TIMEOUT_MS);
+	// launchd cold-starting a unit is the only thing worth waiting seconds for.
+	it("allows enough time for the supervisor to load the unit", () => {
+		expect(SERVICE_START_TIMEOUT_MS).toBeGreaterThanOrEqual(10_000);
 	});
 
 	it("does not inherit the launchd cold-start budget on a routine probe", () => {
@@ -214,6 +351,61 @@ describe("createHostsReloader", () => {
 		state.fingerprint = "cert-v2";
 		await reloader.reload();
 
+		expect(state.binds).toBe(2);
+		expect(state.stops).toBe(1);
+	});
+
+	// The window this closes: with the old listener stopped first, nothing
+	// answered :443 until the new one bound, and a CLI health probe landing
+	// there downgraded that run to localhost:port. The remint for a new
+	// worktree's hostnames is exactly what triggers a rebind.
+	it("binds the replacement before stopping the old listener", async () => {
+		const order: string[] = [];
+		const { state, reloader } = reloaderHarness({
+			startProxy: async () => {
+				order.push("bind");
+				return {
+					httpsPort: 443,
+					stop: () => order.push("stop"),
+				} satisfies LocalProxy;
+			},
+		});
+		state.routes = [route("web.demo.localhost", 5173)];
+		await reloader.reload();
+
+		state.fingerprint = "cert-v2";
+		await reloader.reload();
+
+		expect(order).toEqual(["bind", "bind", "stop"]);
+	});
+
+	// A failed rebind must not take the working listener down with it: the old
+	// certificate still serves every hostname it covered a moment ago.
+	it("keeps the previous listener serving when the rebind fails", async () => {
+		let attempts = 0;
+		const { state, reloader } = reloaderHarness({
+			startProxy: async () => {
+				attempts += 1;
+				if (attempts === 2) throw new Error("EADDRINUSE");
+				state.binds += 1;
+				return {
+					httpsPort: 443,
+					stop: () => {
+						state.stops += 1;
+					},
+				} satisfies LocalProxy;
+			},
+		});
+		state.routes = [route("web.demo.localhost", 5173)];
+		await reloader.reload();
+
+		state.fingerprint = "cert-v2";
+		await expect(reloader.reload()).rejects.toThrow("EADDRINUSE");
+		expect(reloader.isBound()).toBe(true);
+		expect(state.stops).toBe(0);
+
+		// And the retry still rebinds: the failure left the fingerprint unadvanced.
+		await reloader.reload();
 		expect(state.binds).toBe(2);
 		expect(state.stops).toBe(1);
 	});
@@ -414,7 +606,62 @@ describe("waitForDaemonRoutes", () => {
 		const result = await waitForDaemonRoutes(["web.demo.localhost"], {
 			timeoutMs: 0,
 		});
-		expect(result.ok).toBe(false);
+		expect(result).toEqual({
+			ok: false,
+			reason: expect.stringContaining("stopped answering"),
+		});
+	});
+
+	// The daemon rebinds whenever the CLI remints, so a probe that goes
+	// unanswered is the normal shape of a first run in a new worktree. Failing
+	// on it downgraded that run to localhost:port while everything was fine.
+	it("retries a probe that does not answer instead of giving up", async () => {
+		const home = mkdtempSync(join(tmpdir(), "buncargo-daemon-test-"));
+		dirs.push(home);
+		process.env.HOME = home;
+
+		// Bind, take the port, and only start answering on a later probe.
+		const placeholder = await startLocalProxy({
+			lookup: () => undefined,
+			routes: () => ({ hostnames: [], lastReloadAt: Date.now() }),
+			httpsPort: 0,
+			hostname: "127.0.0.1",
+		});
+		const port = placeholder.httpsPort;
+		placeholder.stop();
+		writeDaemonConfig({ httpsPort: port, httpPort: 0, tls: false });
+
+		const check = waitForDaemonRoutes(["web.demo.localhost"], {
+			timeoutMs: 3000,
+			port,
+		});
+
+		await Bun.sleep(250);
+		const proxy = await startLocalProxy({
+			lookup: () => undefined,
+			routes: () => ({
+				hostnames: ["web.demo.localhost"],
+				lastReloadAt: Date.now(),
+			}),
+			httpsPort: port,
+			hostname: "127.0.0.1",
+		});
+		servers.push(proxy);
+
+		expect(await check).toEqual({ ok: true });
+	});
+
+	// Still distinguishable: a daemon that answers without the hostname has a
+	// registry it is not picking up, which is a different repair.
+	it("names the hostnames a live daemon is not serving", async () => {
+		await daemonServing(["other.demo.localhost"]);
+		const result = await waitForDaemonRoutes(["web.demo.localhost"], {
+			timeoutMs: 150,
+		});
+		expect(result).toEqual({
+			ok: false,
+			reason: "the daemon is not serving web.demo.localhost",
+		});
 	});
 
 	// A daemon predating the field cannot be checked, and reporting that as a
@@ -454,5 +701,48 @@ describe("waitForDaemonHealthy", () => {
 		const elapsed = Date.now() - started;
 		expect(elapsed).toBeGreaterThanOrEqual(200);
 		expect(elapsed).toBeLessThan(1_500);
+	});
+});
+
+/**
+ * The service log is append-only and the daemon runs for weeks. A version that
+ * crash-looped left 800KB of one repeated line on a real machine — useless, and
+ * the first file anyone opens when named hosts break.
+ */
+describe("truncateOversizedLog", () => {
+	const dirs: string[] = [];
+
+	afterEach(() => {
+		for (const dir of dirs.splice(0)) {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	function logFile(contents: string): string {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-log-"));
+		dirs.push(dir);
+		const path = join(dir, "buncargo-hosts.log");
+		writeFileSync(path, contents);
+		return path;
+	}
+
+	it("leaves a log that is still a reasonable size", () => {
+		const path = logFile("one line\n");
+		truncateOversizedLog(path, 1000);
+		expect(readFileSync(path, "utf-8")).toBe("one line\n");
+	});
+
+	it("truncates an oversized log and says so", () => {
+		const path = logFile("x".repeat(5000));
+		truncateOversizedLog(path, 1000);
+		const contents = readFileSync(path, "utf-8");
+		expect(statSync(path).size).toBeLessThan(1000);
+		expect(contents).toContain("earlier log truncated");
+	});
+
+	it("does nothing when there is no log to manage", () => {
+		expect(() =>
+			truncateOversizedLog("/nonexistent/buncargo-hosts.log", 1),
+		).not.toThrow();
 	});
 });

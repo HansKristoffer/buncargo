@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	classifyRouteClaim,
 	type HostsRoute,
 	HostsRouteConflictError,
 	loadHostRoutes,
@@ -148,10 +149,88 @@ describe("hosts registry", () => {
 				],
 				{ path },
 			);
-			const pruned = await pruneHostRoutes(path);
+			const pruned = await pruneHostRoutes(path, {
+				// The checkout is fictional here; its existence is a separate rule.
+				directoryExists: () => true,
+			});
 			expect(pruned.map((route) => route.hostname)).toEqual([
 				"mailpit.serpier.localhost",
 			]);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	// The second run must not become the owner: `releaseNamedHosts` filters by
+	// pid, so the route has to disappear when the run that owns the servers
+	// exits, not when the reusing run does.
+	it("keeps the first run as owner when a second run registers the same route", async () => {
+		const { dir, path } = await tempRegistry();
+		try {
+			const route: HostsRoute = {
+				hostname: "api.serpier.localhost",
+				port: 3000,
+				kind: "app",
+				name: "api",
+				root: "/repo",
+				pid: process.pid,
+				updatedAt: new Date().toISOString(),
+			};
+			await upsertHostRoutes([route], { path });
+			await upsertHostRoutes([{ ...route, pid: process.pid + 1 }], { path });
+
+			const saved = await loadHostRoutes(path);
+			expect(saved).toHaveLength(1);
+			expect(saved[0]?.pid).toBe(process.pid);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	// Nothing retires a static route on its own, so a deleted worktree would
+	// keep its hostnames in the registry — and in /etc/hosts — forever.
+	it("drops a static route whose checkout has been deleted", async () => {
+		const { dir, path } = await tempRegistry();
+		try {
+			await upsertHostRoutes(
+				[
+					{
+						hostname: "mailpit.serpier.localhost",
+						port: 8025,
+						kind: "service",
+						name: "mailpit",
+						root: "/repo/worktrees/gone",
+						updatedAt: new Date().toISOString(),
+					},
+				],
+				{ path },
+			);
+			const pruned = await pruneHostRoutes(path, {
+				directoryExists: () => false,
+			});
+			expect(pruned).toEqual([]);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps a static route whose checkout is still there", async () => {
+		const { dir, path } = await tempRegistry();
+		try {
+			await upsertHostRoutes(
+				[
+					{
+						hostname: "mailpit.serpier.localhost",
+						port: 8025,
+						kind: "service",
+						name: "mailpit",
+						root: dir,
+						updatedAt: new Date().toISOString(),
+					},
+				],
+				{ path },
+			);
+			expect(await pruneHostRoutes(path)).toHaveLength(1);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
@@ -182,6 +261,53 @@ describe("hosts registry", () => {
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("classifyRouteClaim", () => {
+	const base: HostsRoute = {
+		hostname: "api.serpier.localhost",
+		port: 3000,
+		kind: "app",
+		name: "api",
+		root: "/repo",
+		pid: 100,
+		updatedAt: "2026-01-01T00:00:00.000Z",
+	};
+
+	it("refuses a different project", () => {
+		expect(
+			classifyRouteClaim(base, { ...base, root: "/other", pid: 200 }),
+		).toBe("conflict");
+	});
+
+	it("refreshes the same run's own route", () => {
+		expect(classifyRouteClaim(base, { ...base, port: 3001 })).toBe("take");
+	});
+
+	// A second `buncargo dev` in the same checkout reuses the servers the first
+	// one started, so it is not competing for the hostname. Throwing here left
+	// that run printing localhost:port URLs while the named ones worked.
+	it("leaves the live owner in place for a second run of the same checkout", () => {
+		expect(classifyRouteClaim(base, { ...base, pid: 200 })).toBe("keep");
+	});
+
+	// Same checkout but a different port is a real disagreement: one of the two
+	// would be advertising a hostname pointing at the other's server.
+	it("refuses the same checkout pointing the hostname elsewhere", () => {
+		expect(classifyRouteClaim(base, { ...base, pid: 200, port: 3999 })).toBe(
+			"conflict",
+		);
+	});
+
+	it("keeps a static service route registered twice", () => {
+		const staticRoute: HostsRoute = {
+			...base,
+			kind: "service",
+			name: "mailpit",
+			pid: undefined,
+		};
+		expect(classifyRouteClaim(staticRoute, { ...staticRoute })).toBe("take");
 	});
 });
 
@@ -235,7 +361,7 @@ describe("concurrent registration", () => {
 						port: 8025 + index,
 						kind: "service",
 						name: "mailpit",
-						root: \`/repo\${index}\`,
+						root: process.env.ROUTES_ROOT,
 						updatedAt: new Date().toISOString(),
 					}],
 					{ path: process.env.ROUTES_PATH },
@@ -251,6 +377,10 @@ describe("concurrent registration", () => {
 								...process.env,
 								ROUTE_INDEX: String(index),
 								ROUTES_PATH: path,
+								// A real directory: a static route whose checkout is
+								// gone is pruned, which would hide the lock this
+								// test is measuring.
+								ROUTES_ROOT: dir,
 							},
 							stdout: "ignore",
 							stderr: "pipe",

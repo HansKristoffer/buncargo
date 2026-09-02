@@ -182,12 +182,14 @@ describe("computeUrls", () => {
 				kind: "app",
 				name: "api",
 				hostname: "api.serpier.localhost",
+				baseHostname: "api.serpier.localhost",
 				targetPort: 3000,
 			},
 			{
 				kind: "service",
 				name: "mailpit",
 				hostname: "mailpit.serpier.localhost",
+				baseHostname: "mailpit.serpier.localhost",
 				targetPort: 8025,
 			},
 		]);
@@ -242,6 +244,7 @@ describe("computeLoopbackUrls", () => {
 				kind: "app",
 				name: "api",
 				hostname: "api.serpier.localhost",
+				baseHostname: "api.serpier.localhost",
 				targetPort: 3000,
 			},
 		]);
