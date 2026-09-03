@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { defineDevConfig } from "../config";
 import { service } from "../docker-compose/services";
+import { withoutCiEnv } from "./test-env";
 import { getEnvVar, sleep } from "./utils";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -74,60 +75,58 @@ describe("getEnvVar", () => {
 	}, 30_000);
 
 	it("emits named HTTPS URLs when hosts are enabled", () => {
-		const previousCi = process.env.CI;
 		const previousHosts = process.env.BUNCARGO_HOSTS;
-		delete process.env.CI;
 		delete process.env.BUNCARGO_HOSTS;
 		try {
-			const config = defineDevConfig({
-				projectPrefix: "serpier",
-				services: {
-					postgres: service.postgres({ database: "typed" }),
-				},
-				apps: {
-					api: { port: 3000, devCommand: "bun run api" },
-				},
-				options: { hosts: true },
+			withoutCiEnv(() => {
+				const config = defineDevConfig({
+					projectPrefix: "serpier",
+					services: {
+						postgres: service.postgres({ database: "typed" }),
+					},
+					apps: {
+						api: { port: 3000, devCommand: "bun run api" },
+					},
+					options: { hosts: true },
+				});
+				expect(getEnvVar(config, "API_URL")).toMatch(
+					/^https:\/\/(?:[a-z0-9-]+\.)?api\.serpier\.localhost$/,
+				);
+				// Playwright and the Stripe CLI cannot use the named URL, so the
+				// loopback address has to survive the rewrite alongside it.
+				expect(getEnvVar(config, "API_LOOPBACK_URL")).toMatch(
+					/^http:\/\/localhost:\d+$/,
+				);
+				expect(getEnvVar(config, "POSTGRES_LOOPBACK_URL")).toMatch(
+					/^postgresql:\/\/postgres:postgres@localhost:\d+\/typed$/,
+				);
 			});
-			expect(getEnvVar(config, "API_URL")).toMatch(
-				/^https:\/\/(?:[a-z0-9-]+\.)?api\.serpier\.localhost$/,
-			);
-			// Playwright and the Stripe CLI cannot use the named URL, so the
-			// loopback address has to survive the rewrite alongside it.
-			expect(getEnvVar(config, "API_LOOPBACK_URL")).toMatch(
-				/^http:\/\/localhost:\d+$/,
-			);
-			expect(getEnvVar(config, "POSTGRES_LOOPBACK_URL")).toMatch(
-				/^postgresql:\/\/postgres:postgres@localhost:\d+\/typed$/,
-			);
 		} finally {
-			if (previousCi === undefined) delete process.env.CI;
-			else process.env.CI = previousCi;
 			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
 			else process.env.BUNCARGO_HOSTS = previousHosts;
 		}
 	});
 
 	it("keeps localhost URLs when BUNCARGO_HOSTS=0", () => {
-		const previousCi = process.env.CI;
 		const previousHosts = process.env.BUNCARGO_HOSTS;
-		delete process.env.CI;
 		process.env.BUNCARGO_HOSTS = "0";
 		try {
-			const config = defineDevConfig({
-				projectPrefix: "serpier",
-				services: {
-					postgres: service.postgres({ database: "typed" }),
-				},
-				apps: {
-					api: { port: 3000, devCommand: "bun run api" },
-				},
-				options: { hosts: true },
+			withoutCiEnv(() => {
+				const config = defineDevConfig({
+					projectPrefix: "serpier",
+					services: {
+						postgres: service.postgres({ database: "typed" }),
+					},
+					apps: {
+						api: { port: 3000, devCommand: "bun run api" },
+					},
+					options: { hosts: true },
+				});
+				expect(getEnvVar(config, "API_URL")).toMatch(
+					/^http:\/\/localhost:\d+$/,
+				);
 			});
-			expect(getEnvVar(config, "API_URL")).toMatch(/^http:\/\/localhost:\d+$/);
 		} finally {
-			if (previousCi === undefined) delete process.env.CI;
-			else process.env.CI = previousCi;
 			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
 			else process.env.BUNCARGO_HOSTS = previousHosts;
 		}

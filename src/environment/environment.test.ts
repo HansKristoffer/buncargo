@@ -213,10 +213,11 @@ describe("createDevEnvironment env builders", () => {
 
 	it("rewrites app URLs when named hosts are activated", () => {
 		const root = createWorktreeRoot("Feature_Hosts");
-		const previousCi = process.env.CI;
 		const previousHosts = process.env.BUNCARGO_HOSTS;
-		delete process.env.CI;
 		delete process.env.BUNCARGO_HOSTS;
+		// This one does not depend on the CI gate today — the plan is built from
+		// config and activated explicitly — but clearing `CI` alone reads as if
+		// it did, which is the half-measure that broke the sibling test.
 		try {
 			process.chdir(root);
 			const env = createDevEnvironment(
@@ -265,8 +266,6 @@ describe("createDevEnvironment env builders", () => {
 			expect(plainEnv.BUNCARGO_APP_NAME).toBe("web");
 			expect(plainEnv.BUNCARGO_APP_HOSTNAME).toBeUndefined();
 		} finally {
-			if (previousCi === undefined) delete process.env.CI;
-			else process.env.CI = previousCi;
 			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
 			else process.env.BUNCARGO_HOSTS = previousHosts;
 			process.chdir(originalCwd);

@@ -43,6 +43,22 @@ function readBinaryOverride(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
+ * Every environment variable that can mean "this is CI".
+ *
+ * Exported so a test that needs to look like a developer's machine can clear
+ * all of them. Clearing `CI` alone is not enough — GitHub Actions also sets
+ * `GITHUB_ACTIONS`, so a test that only deleted `CI` passed locally and failed
+ * on the very provider it was running on.
+ */
+export const CI_ENV_VARS = [
+	"CI",
+	"GITHUB_ACTIONS",
+	"GITLAB_CI",
+	"CIRCLECI",
+	"JENKINS_URL",
+] as const;
+
+/**
  * Detect a CI environment.
  *
  * This is the single definition; named hosts, Docker auto-start, and server

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import pc from "picocolors";
 import {
 	formatHyperlink,
 	formatPrefixedLine,
@@ -45,8 +46,16 @@ describe("formatPrefixedLine", () => {
 		const line = highlightLogLine(
 			"[INFO ] listening on http://localhost:11700/",
 		);
+		// Asserted on the stripped text, not the raw string. Highlighting puts
+		// the port in its own colour, so with colour on the URL is literally
+		// `…localhost:<esc>11700<esc>/` and never appears as one substring —
+		// which is why asserting `line.toContain(url)` passed through a pipe and
+		// failed on a runner that advertises colour support.
 		expect(visible(line)).toBe("[INFO ] listening on http://localhost:11700/");
-		expect(line).toContain("http://localhost:11700/");
+		expect(visible(line)).toContain("http://localhost:11700/");
+		if (pc.isColorSupported) {
+			expect(line).not.toBe(visible(line));
+		}
 	});
 });
 
