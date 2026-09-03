@@ -16,11 +16,12 @@ import {
 } from "./process";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
 import { portOffsetOverride } from "./runtime-flags";
+import { STATE_DIRNAME } from "./state-paths";
 
 export const PORT_OFFSET_STEP = 100;
 export const PORT_OFFSET_MIN = 100;
 export const PORT_OFFSET_MAX = 9000;
-export const PORTS_LOCKFILE = ".buncargo/ports.json";
+export const PORTS_LOCKFILE = `${STATE_DIRNAME}/ports.json`;
 const LOCKFILE_VERSION = 1;
 
 export interface PortLockfile {

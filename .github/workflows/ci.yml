@@ -1,0 +1,36 @@
+# Runs on every push and pull request. The hosts, Apple container and
+# cloudflared suites stay manual: they need root, a VM backend or the network.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Lint
+        run: bunx biome check src example
+
+      - name: Test
+        run: bun test
+
+      - name: Build
+        run: bun run build

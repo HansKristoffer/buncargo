@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "runs": [
+    {
+      "projectPrefix": "lullu",
+      "projectName": "lullu-t3code-f003056f",
+      "root": "/tmp/buncargo-fixture/lullu",
+      "worktree": "t3code-f003056f",
+      "branch": "fix-login",
+      "pid": 1,
+      "startedAt": "2026-09-03T10:47:56.971Z",
+      "updatedAt": "2026-09-03T10:48:12.101Z",
+      "primaryApp": "platform",
+      "hosts": { "active": true, "tld": "localhost" },
+      "cli": { "program": "/bin/echo", "script": "buncargo" },
+      "apps": [
+        {
+          "name": "platform",
+          "port": 9273,
+          "pid": 1,
+          "url": "https://t3code-f003056f.lullu.localhost",
+          "loopbackUrl": "http://localhost:9273",
+          "hostname": "t3code-f003056f.lullu.localhost",
+          "status": "ready"
+        },
+        {
+          "name": "api",
+          "port": 7100,
+          "pid": 1,
+          "attached": true,
+          "url": "https://t3code-f003056f.api.lullu.localhost",
+          "loopbackUrl": "http://localhost:7100",
+          "publicUrl": "https://example.trycloudflare.com",
+          "hostname": "t3code-f003056f.api.lullu.localhost",
+          "status": "starting"
+        },
+        {
+          "name": "worker",
+          "port": 7200,
+          "url": "http://localhost:7200",
+          "loopbackUrl": "http://localhost:7200",
+          "status": "reused"
+        }
+      ],
+      "services": [
+        {
+          "name": "postgres",
+          "preset": "postgres",
+          "port": 7432,
+          "url": "postgresql://postgres:postgres@localhost:7432/lullu",
+          "loopbackUrl": "postgresql://postgres:postgres@localhost:7432/lullu",
+          "tablePlusUrl": "postgresql://postgres:postgres@127.0.0.1:7432/lullu?env=development&name=lullu-postgres&tLSMode=0",
+          "container": { "runtime": "docker", "name": "lullu-postgres-1" },
+          "status": "ready"
+        },
+        {
+          "name": "mailpit",
+          "port": 8025,
+          "url": "http://localhost:8025",
+          "loopbackUrl": "http://localhost:8025",
+          "status": "stopped"
+        }
+      ]
+    }
+  ]
+}

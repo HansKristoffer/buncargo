@@ -12,16 +12,19 @@
  *   bunx buncargo help          # Show help
  */
 
+import { handleBar } from "./commands/bar";
 import { showHelp } from "./commands/help";
 import { handleHosts } from "./commands/hosts";
 import { handleDoctor, handleLs, handleStatus } from "./commands/inspect";
 import { type CliCommandName, resolveCommandName } from "./commands/registry";
+import { handleRuns } from "./commands/runs";
 import {
 	handleDev,
 	handleEnv,
 	handlePrisma,
 	handleTypecheck,
 } from "./commands/runtime";
+import { handleStop } from "./commands/stop";
 import { showVersion } from "./commands/version";
 import * as log from "./log";
 
@@ -65,6 +68,19 @@ async function runCommand(
 			await handleLs();
 			return;
 
+		case "runs":
+			await handleRuns(commandArgs);
+			return;
+
+		case "stop": {
+			// The only command whose exit code carries meaning to a caller:
+			// 2 is "no such target", 3 is "refused", and the menu bar app
+			// distinguishes them.
+			const code = await handleStop(commandArgs);
+			if (code !== 0) process.exit(code);
+			return;
+		}
+
 		case "status":
 			await handleStatus();
 			return;
@@ -75,6 +91,10 @@ async function runCommand(
 
 		case "hosts":
 			await handleHosts(commandArgs);
+			return;
+
+		case "bar":
+			await handleBar(commandArgs);
 			return;
 
 		default: {

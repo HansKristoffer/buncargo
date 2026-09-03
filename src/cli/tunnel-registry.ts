@@ -1,6 +1,6 @@
-import { join } from "node:path";
 import { withFileLock } from "../core/file-lock";
 import { defineListRegistry, isRouteOwnerAlive } from "../core/registry-file";
+import { projectStateFilePath } from "../core/state-paths";
 import type { DevEnvironmentTunnelLog } from "../types";
 
 const REGISTRY_VERSION = 1;
@@ -17,7 +17,7 @@ export interface TunnelRegistryEntry {
 }
 
 export function getTunnelRegistryPath(root: string): string {
-	return join(root, ".buncargo", "public-tunnels.json");
+	return projectStateFilePath(root, "public-tunnels.json");
 }
 
 function isTunnelRegistryEntry(value: unknown): value is TunnelRegistryEntry {

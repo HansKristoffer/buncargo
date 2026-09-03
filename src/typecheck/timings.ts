@@ -4,10 +4,11 @@ import {
 	readJsonDocument,
 	writeJsonDocument,
 } from "../core/registry-file";
+import { STATE_DIRNAME } from "../core/state-paths";
 
 export const TYPECHECK_TIMINGS_VERSION = 1;
 export const TYPECHECK_TIMINGS_FILE = join(
-	".buncargo",
+	STATE_DIRNAME,
 	"typecheck-timings.json",
 );
 

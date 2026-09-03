@@ -26,6 +26,19 @@ import {
 	signalProcessTree,
 } from "./port-owner";
 
+/**
+ * Did this app stop because something asked it to?
+ *
+ * `null` is a process killed by a signal outright. The two codes are
+ * `128 + SIGINT` and `128 + SIGTERM`, which is what a shell wrapper reports
+ * when the signal reached it rather than the server it spawned — `bun run dev`
+ * does exactly that. Without them a Ctrl-C, or a `buncargo stop`, ends a clean
+ * shutdown with "App exited with code 143" and a failed run.
+ */
+export function isDeliberateExit(code: number | null): boolean {
+	return code === null || code === 0 || code === 130 || code === 143;
+}
+
 export interface SpawnDevServerOptions {
 	verbose?: boolean;
 	detached?: boolean;
@@ -116,6 +129,18 @@ export interface StartDevServersOptions {
 	onSignal?: () => void | Promise<void>;
 	/** Override wave-1 health wait. */
 	waitForHealth?: (apps: Record<string, AppConfig>) => Promise<void>;
+	/**
+	 * A dev server was spawned, with the pid of the process group leader.
+	 *
+	 * The return value is awaited nowhere: this reports state to the run
+	 * registry, and nothing about starting servers may wait on that.
+	 */
+	onAppSpawned?: (name: string, pid: number, attached: boolean) => void;
+	/**
+	 * A dev server exited. `code` is `null` when it was signalled, which is what
+	 * a `buncargo stop <app>` or a Ctrl-C looks like from here.
+	 */
+	onAppExit?: (name: string, code: number | null) => void;
 }
 
 function resolveShell(): string {
@@ -297,9 +322,13 @@ async function prepareAppPort(
  */
 function superviseChildren(
 	children: Array<{ name: string; child: ChildProcess }>,
-	options: { attachedName?: string; onSignal?: () => void | Promise<void> },
+	options: {
+		attachedName?: string;
+		onSignal?: () => void | Promise<void>;
+		onAppExit?: (name: string, code: number | null) => void;
+	},
 ): Promise<void> {
-	const { attachedName, onSignal } = options;
+	const { attachedName, onSignal, onAppExit } = options;
 
 	return new Promise<void>((resolvePromise, rejectPromise) => {
 		let settled = false;
@@ -331,6 +360,35 @@ function superviseChildren(
 			rejectPromise(error);
 		};
 
+		// One child can be reported twice: `close` fires, and the sweep below
+		// also finds a non-null `exitCode` on the same object.
+		const closed = new Set<string>();
+
+		const handleClose = (name: string, code: number | null) => {
+			if (closed.has(name)) return;
+			closed.add(name);
+			remaining -= 1;
+			onAppExit?.(name, code);
+			if (name === attachedName) {
+				for (const other of children) {
+					if (other.name !== name) killChildTree(other.child);
+				}
+				if (!isDeliberateExit(code)) {
+					rejectOnce(new Error(`App "${name}" exited with code ${code}`));
+					return;
+				}
+				resolveOnce();
+				return;
+			}
+			if (!isDeliberateExit(code)) {
+				rejectOnce(new Error(`App "${name}" exited with code ${code}`));
+				return;
+			}
+			if (remaining === 0) {
+				resolveOnce();
+			}
+		};
+
 		for (const { name, child } of children) {
 			child.on("error", (error) => {
 				rejectOnce(
@@ -338,27 +396,20 @@ function superviseChildren(
 				);
 			});
 
-			child.on("close", (code) => {
-				remaining -= 1;
-				if (name === attachedName) {
-					for (const other of children) {
-						if (other.name !== name) killChildTree(other.child);
-					}
-					if (code !== 0 && code !== null) {
-						rejectOnce(new Error(`App "${name}" exited with code ${code}`));
-						return;
-					}
-					resolveOnce();
-					return;
-				}
-				if (code !== 0 && code !== null) {
-					rejectOnce(new Error(`App "${name}" exited with code ${code}`));
-					return;
-				}
-				if (remaining === 0) {
-					resolveOnce();
-				}
-			});
+			child.on("close", (code) => handleClose(name, code));
+		}
+
+		// Apps are spawned in a loop and supervised only once the whole wave is
+		// up, so an app that dies in between — a bad command, a config error, a
+		// crash on the first line — emits its `close` before anything is
+		// listening, and the event is gone. The run then waited forever for a
+		// process that was never coming back, with no output to say so. Node
+		// still records the result on the object, so the state is recoverable
+		// even though the event is not.
+		for (const { name, child } of children) {
+			if (child.exitCode !== null || child.signalCode !== null) {
+				handleClose(name, child.exitCode);
+			}
 		}
 	});
 }
@@ -387,6 +438,8 @@ export async function startDevServers(
 		onSignal,
 		waitForHealth,
 		deferPublicUrlApps = true,
+		onAppSpawned,
+		onAppExit,
 	} = options;
 
 	const startable = Object.fromEntries(
@@ -452,6 +505,7 @@ export async function startDevServers(
 			children.push({ name, child });
 			if (child.pid) {
 				pids[name] = child.pid;
+				onAppSpawned?.(name, child.pid, attached);
 				if (verbose) {
 					console.log(formatPidLine(name, child.pid, nameWidth));
 				}
@@ -480,7 +534,7 @@ export async function startDevServers(
 		return pids;
 	}
 
-	await superviseChildren(children, { attachedName, onSignal });
+	await superviseChildren(children, { attachedName, onSignal, onAppExit });
 
 	return pids;
 }

@@ -1,17 +1,23 @@
 import {
+	barSubcommandList,
 	CLI_COMMANDS,
 	COMMAND_HELP_EXTRAS,
 	hostsSubcommandList,
 } from "./registry";
 
+/** Commands whose subcommands are worth naming in the one-line listing. */
+const SUBCOMMAND_LISTS: Record<string, () => string> = {
+	hosts: hostsSubcommandList,
+	bar: barSubcommandList,
+};
+
 function commandRows(): string[] {
 	const rows = [
 		...CLI_COMMANDS.map((entry) => ({
 			command: entry.usage,
-			description:
-				entry.name === "hosts"
-					? `${entry.summary} (${hostsSubcommandList()})`
-					: entry.summary,
+			description: SUBCOMMAND_LISTS[entry.name]
+				? `${entry.summary} (${SUBCOMMAND_LISTS[entry.name]?.()})`
+				: entry.summary,
 		})),
 		...COMMAND_HELP_EXTRAS,
 	];

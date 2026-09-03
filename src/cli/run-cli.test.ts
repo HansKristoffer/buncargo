@@ -1,4 +1,5 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -11,6 +12,23 @@ import { upsertTunnelRegistryEntries } from "./tunnel-registry";
 // ═══════════════════════════════════════════════════════════════════════════
 // runCli + expose (stub env, mocked tunnel)
 // ═══════════════════════════════════════════════════════════════════════════
+
+// `runCli` publishes every run into `~/.buncargo/runs.json`. Point HOME at a
+// temp dir so tests never write the developer's real registry, and restore it
+// afterwards: the whole suite shares one process.
+let stateHome: string;
+const realHome = process.env.HOME;
+
+beforeAll(() => {
+	stateHome = mkdtempSync(join(tmpdir(), "buncargo-cli-state-"));
+	process.env.HOME = stateHome;
+});
+
+afterAll(() => {
+	if (realHome === undefined) delete process.env.HOME;
+	else process.env.HOME = realHome;
+	rmSync(stateHome, { recursive: true, force: true });
+});
 
 class ProcessExit extends Error {
 	constructor(readonly exitCode: number) {
@@ -79,7 +97,19 @@ function createStubEnv(
 			Record<string, AppConfig>
 		>["urls"],
 		publicUrls: {},
+		loopbackUrls: Object.fromEntries(
+			Object.entries(ports).map(([name, port]) => [
+				name,
+				`http://localhost:${port}`,
+			]),
+		) as DevEnvironment<
+			Record<string, ServiceConfig>,
+			Record<string, AppConfig>
+		>["loopbackUrls"],
 		projectName: "stub-cli",
+		projectPrefix: "stub",
+		resolvePrimaryApp: (selected?: readonly string[]) =>
+			(selected ?? Object.keys(apps))[0],
 		root: options.root ?? "/tmp/buncargo-cli-stub",
 		composeFile: ".buncargo/docker-compose.generated.yml",
 		portOffset: 0,

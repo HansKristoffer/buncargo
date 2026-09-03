@@ -23,6 +23,16 @@ export const CLI_COMMANDS = [
 		summary: "List every buncargo environment on this machine",
 	},
 	{
+		name: "runs",
+		usage: "runs [--json]",
+		summary: "Show the dev runs active on this machine",
+	},
+	{
+		name: "stop",
+		usage: "stop [<name>...] [--all]",
+		summary: "Stop one app or service, or a whole run",
+	},
+	{
 		name: "status",
 		usage: "status",
 		summary: "Show this project's containers, ports, and tunnels",
@@ -36,6 +46,11 @@ export const CLI_COMMANDS = [
 		name: "hosts",
 		usage: "hosts <subcommand>",
 		summary: "Named .localhost URLs",
+	},
+	{
+		name: "bar",
+		usage: "bar <subcommand>",
+		summary: "The BuncargoBar menu bar app",
 	},
 	{ name: "help", usage: "help", summary: "Show this help message" },
 	{ name: "version", usage: "version", summary: "Show version" },
@@ -70,6 +85,10 @@ export const COMMAND_HELP_EXTRAS: readonly CommandExample[] = [
 		command: "typecheck --only=<workspaces>",
 		description: "Typecheck selected workspaces (path or basename)",
 	},
+	{
+		command: "runs --json",
+		description: "Machine-readable view of every active run",
+	},
 ];
 
 export const HOSTS_SUBCOMMANDS = [
@@ -97,4 +116,26 @@ export function resolveHostsSubcommand(
 
 export function hostsSubcommandList(): string {
 	return HOSTS_SUBCOMMANDS.map((entry) => entry.name).join(" | ");
+}
+
+export const BAR_SUBCOMMANDS = [
+	{ name: "install", summary: "Download and install the menu bar app" },
+	{ name: "status", summary: "Installed version, and whether it is running" },
+	{ name: "open", summary: "Open the app, installing it first if needed" },
+	{ name: "uninstall", summary: "Quit and remove the app" },
+	{ name: "reset", summary: "Offer the app again after declining it" },
+] as const satisfies readonly { name: string; summary: string }[];
+
+export type BarSubcommand = (typeof BAR_SUBCOMMANDS)[number]["name"];
+
+const BAR_SUBCOMMAND_NAMES = new Set<string>(
+	BAR_SUBCOMMANDS.map((entry) => entry.name),
+);
+
+export function resolveBarSubcommand(value: string): BarSubcommand | undefined {
+	return BAR_SUBCOMMAND_NAMES.has(value) ? (value as BarSubcommand) : undefined;
+}
+
+export function barSubcommandList(): string {
+	return BAR_SUBCOMMANDS.map((entry) => entry.name).join(" | ");
 }

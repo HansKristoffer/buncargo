@@ -1,6 +1,11 @@
 import { assertValidConfig } from "../config";
 import { waitForServer } from "../core/network";
 import { toPortMap } from "../core/ports";
+import {
+	configuredPrimaryApp,
+	type PrimaryAppInput,
+	resolvePrimaryApp,
+} from "../core/primary-app";
 import { stopProcess } from "../core/process";
 import { logExpoApiUrl, logFrontendPort } from "../core/utils";
 import { createPrismaRunner } from "../prisma";
@@ -63,7 +68,11 @@ export function createDevEnvironment<
 	}
 
 	function getFrontendPort(): number | undefined {
-		const configured = config.options?.frontendApp;
+		// `frontendApp` first: it is the narrower knob, and a project that set
+		// both means the frontend is not the primary app.
+		const configured =
+			config.options?.frontendApp ??
+			configuredPrimaryApp(config.options as PrimaryAppInput["options"]);
 		const portMap = toPortMap(ctx.ports);
 		const port =
 			(configured ? portMap[configured] : undefined) ??
@@ -76,6 +85,7 @@ export function createDevEnvironment<
 	const env: DevEnvironment<TServices, TApps, TEnv> = {
 		// Configuration access
 		projectName: ctx.projectName,
+		projectPrefix: config.projectPrefix,
 		ports: ctx.ports,
 		urls: ctx.urls,
 		loopbackUrls: ctx.loopbackUrls,
@@ -105,6 +115,13 @@ export function createDevEnvironment<
 		restart: lifecycle.restart,
 		isRunning: lifecycle.isRunning,
 		runSeed: lifecycle.runSeed,
+
+		resolvePrimaryApp: (selected) =>
+			resolvePrimaryApp({
+				apps: ctx.apps,
+				options: config.options as PrimaryAppInput["options"],
+				selected,
+			}) as Extract<keyof TApps, string> | undefined,
 
 		// Server management
 		startServers: servers.startServersOnly,

@@ -1,0 +1,159 @@
+# BuncargoBar releases, tagged `bar-v*` so they never mix with the CLI's `v*`.
+#
+# `buncargo bar install` and the app's own update checker both read the assets
+# this publishes, so the names here are a contract: `BuncargoBar-<version>.zip`
+# and a matching `.sha256`.
+name: Release menubar
+
+on:
+  push:
+    tags:
+      - "bar-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the bar-v prefix (e.g. 0.1.0)"
+        required: true
+  pull_request:
+    paths:
+      - "menubar/**"
+      - ".github/workflows/release-menubar.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  # A schema change to runs.json that breaks the Swift decoder fails the PR
+  # that makes it, rather than the next release.
+  verify:
+    if: github.event_name == 'pull_request'
+    # macos-15 ships Xcode 16 (Swift 6); macos-14 only has Swift 5.10.
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Printed, not pinned: hard-coding an Xcode path breaks whenever the
+      # runner image renames one, and these three lines are what you actually
+      # need when a build starts failing after an image rotation.
+      - name: Show toolchain
+        run: |
+          xcode-select --print-path
+          swift --version
+
+      - name: Build
+        working-directory: menubar
+        run: swift build -c release --arch arm64
+
+      - name: Smoke test against a fixture registry
+        run: bash menubar/scripts/smoke-test.sh
+
+  release:
+    if: github.event_name != 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcode-select --print-path
+          swift --version
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#bar-v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=bar-v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build app bundle
+        working-directory: menubar
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: bash scripts/package.sh
+
+      # Skipped entirely until the Apple secrets exist; the ad-hoc signed bundle
+      # ships in the meantime, which is why `buncargo bar install` clears the
+      # quarantine attribute.
+      - name: Sign and notarize
+        if: >-
+          env.APPLE_CERTIFICATE_P12 != '' &&
+          env.APPLE_ID != '' &&
+          env.APPLE_TEAM_ID != ''
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        working-directory: menubar
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain"
+          security create-keychain -p actions "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p actions "$KEYCHAIN"
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k actions "$KEYCHAIN"
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | awk '/Developer ID Application/ {print $2; exit}')"
+          codesign --force --deep --options runtime --timestamp \
+            --sign "$IDENTITY" BuncargoBar.app
+          ditto -c -k --sequesterRsrc --keepParent BuncargoBar.app notarize.zip
+          xcrun notarytool submit notarize.zip --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple BuncargoBar.app
+          rm -f notarize.zip
+
+      # A release that cannot decode the current runs.json fails here rather
+      # than on someone's Mac.
+      - name: Smoke test the built bundle
+        run: BUNDLE=menubar/BuncargoBar.app bash menubar/scripts/smoke-test.sh
+
+      - name: Package
+        working-directory: menubar
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # ditto, not zip: it is the only extractor that preserves a bundle's
+          # code signature, and --sequesterRsrc keeps resource forks out of the
+          # payload instead of interleaved with it.
+          ditto -c -k --sequesterRsrc --keepParent \
+            BuncargoBar.app "BuncargoBar-${VERSION}.zip"
+          shasum -a 256 "BuncargoBar-${VERSION}.zip" > "BuncargoBar-${VERSION}.zip.sha256"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        working-directory: menubar
+        run: |
+          ASSETS=("BuncargoBar-${VERSION}.zip" "BuncargoBar-${VERSION}.zip.sha256")
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+            exit 0
+          fi
+
+          # Notes start at the previous *app* tag: the previous tag of any kind
+          # is usually a CLI release, whose commits have nothing to do with the
+          # app.
+          PREVIOUS="$(gh release list --limit 50 --json tagName \
+            --jq '[.[] | select(.tagName | startswith("bar-v"))] | .[0].tagName // ""')"
+
+          if [[ -n "$PREVIOUS" ]]; then
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --title "BuncargoBar $VERSION" \
+              --generate-notes --notes-start-tag "$PREVIOUS"
+          else
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --title "BuncargoBar $VERSION" --generate-notes
+          fi

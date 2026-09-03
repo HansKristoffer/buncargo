@@ -1,5 +1,6 @@
 export { buildApps } from "./build";
 export {
+	isDeliberateExit,
 	type SpawnDevServerOptions,
 	type StartDevServersOptions,
 	spawnDevServer,

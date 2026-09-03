@@ -2,22 +2,27 @@
 
 A Bun-first development environment toolkit. Define Docker services, app servers, ports, env, migrations, and tunnels in one typed `dev.config.ts`.
 
+![BuncargoBar showing a running project, its apps and services](https://raw.githubusercontent.com/HansKristoffer/buncargo/main/buncargo-topbar.png)
+
+*[BuncargoBar](#buncargobar), the optional menu bar app: every running project, worktree, app and service - open a URL, copy a connection string, or stop one of them.*
+
 ## Why Buncargo?
 
 Local development environments are fragile: hand-written compose files, scattered ports, and conflicts when two checkouts run at once. Buncargo is the single source of truth. It generates Compose, allocates a unique port block per project (and per worktree), starts only the services the selected apps need, and tears containers down when the CLI is gone.
 
 ## Key Features
 
-- **Single config file** — services, apps, ports, URLs, migrations, hooks
-- **Auto-generated Docker Compose** — stamped with `buncargo.*` labels
-- **Port allocation** — hash of `projectPrefix` + worktree, then probe and persist `.buncargo/ports.json`
-- **Built-in presets** — Postgres, Redis, ClickHouse
-- **Dev server orchestration** — reuse healthy apps, kill own orphans, fail on foreign port owners
-- **Attached apps** — one process owns the TTY (Expo menus)
-- **Phased public tunnels** — start backend, wait for health, open tunnels, then start apps that need `*_PUBLIC_URL`
-- **Prisma integration** — `bunx buncargo prisma` with the right `DATABASE_URL`
-- **Named HTTPS URLs** — opt-in `https://api.myapp.localhost` via a shared loopback proxy (mkcert + `:443`)
-- **Watchdog** — owner-PID liveness plus a 3 minute idle backstop
+- **Single config file** - services, apps, ports, URLs, migrations, hooks
+- **Auto-generated Docker Compose** - stamped with `buncargo.*` labels
+- **Port allocation** - hash of `projectPrefix` + worktree, then probe and persist `.buncargo/ports.json`
+- **Built-in presets** - Postgres, Redis, ClickHouse
+- **Dev server orchestration** - reuse healthy apps, kill own orphans, fail on foreign port owners
+- **Attached apps** - one process owns the TTY (Expo menus)
+- **Phased public tunnels** - start backend, wait for health, open tunnels, then start apps that need `*_PUBLIC_URL`
+- **Prisma integration** - `bunx buncargo prisma` with the right `DATABASE_URL`
+- **Named HTTPS URLs** - opt-in `https://api.myapp.localhost` via a shared loopback proxy (mkcert + `:443`)
+- **Watchdog** - owner-PID liveness plus a 3 minute idle backstop
+- **Run registry + menu bar app** - every active run in `~/.buncargo/runs.json`, surfaced by `buncargo runs` and BuncargoBar
 
 ## Quick Start
 
@@ -149,7 +154,7 @@ expoApp: {
 
 ### Built-in service helpers
 
-All of `service.postgres()`, `redis()`, `clickhouse()`, `mailpit()`, `typesense()` accept `port`, `expose`, `healthCheck`, `serviceName`, and `docker`. Beyond that each takes only what it honors: `database` / `user` / `password` on `postgres` and `clickhouse` (their URLs carry credentials), `secondaryPort` on `clickhouse` and `mailpit`, `apiKey` on `typesense`. Anything else is a type error — use `service.custom({ ... })` for a service that needs more.
+All of `service.postgres()`, `redis()`, `clickhouse()`, `mailpit()`, `typesense()` accept `port`, `expose`, `healthCheck`, `serviceName`, and `docker`. Beyond that each takes only what it honors: `database` / `user` / `password` on `postgres` and `clickhouse` (their URLs carry credentials), `secondaryPort` on `clickhouse` and `mailpit`, `apiKey` on `typesense`. Anything else is a type error - use `service.custom({ ... })` for a service that needs more.
 
 Health check defaults follow what each image can actually run: `pg_isready` on postgres, `redis-cli` on redis, in-container HTTP on clickhouse, and `tcp` on mailpit and typesense, whose images ship no `wget` or `curl` to probe with. A `tcp` check emits no Compose healthcheck and is polled from the host instead.
 
@@ -190,6 +195,11 @@ bunx buncargo dev --runtime=apple  # Run services on Apple container
 bunx buncargo dev --timing         # Print how long each startup phase took
 bunx buncargo dev --apps=expoApp -- --clear
 bunx buncargo ls
+bunx buncargo runs                # What is running on this machine
+bunx buncargo runs --json         # Same, machine-readable
+bunx buncargo stop api            # Stop one dev server
+bunx buncargo stop postgres       # Stop one service's container
+bunx buncargo stop --all          # Stop this checkout's whole run
 bunx buncargo status
 bunx buncargo doctor
 bunx buncargo doctor --fix
@@ -199,6 +209,8 @@ bunx buncargo hosts sync
 bunx buncargo hosts prune
 bunx buncargo hosts daemon      # Run the proxy in the foreground
 bunx buncargo hosts uninstall
+bunx buncargo bar install         # Install the macOS menu bar app
+bunx buncargo bar status
 bunx buncargo env
 bunx buncargo env --get ports.api
 bunx buncargo prisma <args>
@@ -209,7 +221,7 @@ bunx buncargo version
 
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`). `--get ports.api` prints one raw value for scripts.
 
-`buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own — that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and 2 in CI; override with `--concurrency=N` or `BUNCARGO_TYPECHECK_CONCURRENCY`. `--only=platform` (path or basename) checks one workspace. The config run generates `.buncargo/config-typecheck.tsconfig.json` and records durations in `.buncargo/typecheck-timings.json`; keep `.buncargo/` in `.gitignore`.
+`buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own - that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and 2 in CI; override with `--concurrency=N` or `BUNCARGO_TYPECHECK_CONCURRENCY`. `--only=platform` (path or basename) checks one workspace. The config run generates `.buncargo/config-typecheck.tsconfig.json` and records durations in `.buncargo/typecheck-timings.json`; keep `.buncargo/` in `.gitignore`.
 
 ## Container runtime
 
@@ -231,10 +243,10 @@ Everything else is unchanged: the same `dev.config.ts`, the same generated compo
 
 **Known gaps** compared with the Docker backend:
 
-- `restart:` policies are dropped — Apple has no equivalent. This changes nothing in practice: buncargo starts containers per `dev` run and the watchdog stops them, so no restart policy is part of the contract either backend offers.
+- `restart:` policies are dropped - Apple has no equivalent. This changes nothing in practice: buncargo starts containers per `dev` run and the watchdog stops them, so no restart policy is part of the contract either backend offers.
 - Compose `healthcheck:` blocks are dropped. This also changes nothing: readiness is buncargo's own poll against the published host port, not compose's `--wait`.
 - Any other compose key that cannot be translated is listed in a warning rather than silently ignored.
-- **No DNS between containers.** Every Apple container joins one builtin `default` network (`192.168.64.0/24`), so containers can already reach each other by IP. Resolving each other by *name* needs `container system dns create`, which must run as an administrator; buncargo keeps a single deliberate `sudo` seam for the hosts daemon and does not add a second one. Note also that a container's hostname is `<project>-<service>` (for example `myapp-main-postgres`), not the compose service name. Apps on the host are unaffected — they reach services on `localhost:<port>` either way, which is how buncargo wires them already.
+- **No DNS between containers.** Every Apple container joins one builtin `default` network (`192.168.64.0/24`), so containers can already reach each other by IP. Resolving each other by *name* needs `container system dns create`, which must run as an administrator; buncargo keeps a single deliberate `sudo` seam for the hosts daemon and does not add a second one. Note also that a container's hostname is `<project>-<service>` (for example `myapp-main-postgres`), not the compose service name. Apps on the host are unaffected - they reach services on `localhost:<port>` either way, which is how buncargo wires them already.
 - Bind-mounting a host directory into an image that `chown`s it fails on virtiofs. The built-in presets all use named volumes, which are unaffected.
 
 `service.postgres()` needs no special handling: Apple's named volumes are formatted filesystems, so a fresh one already contains `lost+found` and `initdb` refuses to use it as a data directory, and on this runtime the preset points `PGDATA` at a subdirectory of the mount for you. Docker's named volumes start empty and keep the mount root, so an existing project's data stays where it is.
@@ -269,7 +281,7 @@ containers + migrations + seed + envFile sync
         → start apps with needsPublicUrls
 ```
 
-`needsPublicUrls` only splits the waves when `--expose` is actually passed. On a plain `bunx buncargo dev` there is no tunnel URL to wait for, so those apps start in the first wave and get health-checked like everything else — one static config is correct either way, with no need to inspect `process.argv`.
+`needsPublicUrls` only splits the waves when `--expose` is actually passed. On a plain `bunx buncargo dev` there is no tunnel URL to wait for, so those apps start in the first wave and get health-checked like everything else - one static config is correct either way, with no need to inspect `process.argv`.
 
 `classifyCliApps` always runs: a healthy app already listening on its port is reused instead of restarted.
 
@@ -318,13 +330,13 @@ Enable with `options.hosts: true` (or `{ tld?, primaryApp?, services? }`). Postg
 
 The first `buncargo dev` in a repo with `hosts` on prompts for one-time machine setup (trust a local CA, bind `:443`). Enter accepts, `s` skips once, `n` persists a decline. `buncargo hosts install` is the non-interactive path. Setup is per machine: later repos and worktrees reuse it.
 
-Both steps need your password: the CA goes into the system trust store, and only root may bind `:443` or write the launchd/systemd unit. Setup is all-or-nothing — if the service fails to load, buncargo removes the unit file rather than leave a half-installed machine that skips setup on the next run. Setup is skipped without a TTY, since the password prompt would hang.
+Both steps need your password: the CA goes into the system trust store, and only root may bind `:443` or write the launchd/systemd unit. Setup is all-or-nothing - if the service fails to load, buncargo removes the unit file rather than leave a half-installed machine that skips setup on the next run. Setup is skipped without a TTY, since the password prompt would hang.
 
-Certificates cover wildcards, not just the exact hostnames: a project serving `api.myapp.localhost` also gets `*.api.myapp.localhost` and `*.myapp.localhost`, so the *next* worktree of that project needs no new certificate. That matters because minting one makes the daemon rebind, which drops every proxied websocket on the machine — including HMR sockets belonging to projects that had nothing to do with the new worktree. The names each checkout wants are remembered in `~/.buncargo/cert-names.json` so a project stopping does not drop its coverage; an entry is retired once its checkout is gone from disk.
+Certificates cover wildcards, not just the exact hostnames: a project serving `api.myapp.localhost` also gets `*.api.myapp.localhost` and `*.myapp.localhost`, so the *next* worktree of that project needs no new certificate. That matters because minting one makes the daemon rebind, which drops every proxied websocket on the machine - including HMR sockets belonging to projects that had nothing to do with the new worktree. The names each checkout wants are remembered in `~/.buncargo/cert-names.json` so a project stopping does not drop its coverage; an entry is retired once its checkout is gone from disk.
 
 The daemon picks up a new route as soon as the registry file changes rather than on its next poll, and hands over between listeners without closing the port, so starting a run in a fresh worktree does not race it.
 
-`buncargo hosts install` records what it installed in `~/.buncargo/hosts-service.json`. The daemon runs whichever buncargo started it, usually the one in a project's `node_modules`, so reinstalling dependencies there can leave the machine-wide service pointing at a path that no longer exists — and upgrading buncargo leaves it running the previous version's daemon bundle. Either way it keeps answering on `:443`, so `buncargo dev` prompts to update it (Enter updates, `s` skips this run) rather than waiting for you to notice; without a TTY it warns and continues on the old daemon. `buncargo hosts status` and `buncargo doctor` report the same thing, and `buncargo hosts install` or `doctor --fix` repairs it outright.
+`buncargo hosts install` records what it installed in `~/.buncargo/hosts-service.json`. The daemon runs whichever buncargo started it, usually the one in a project's `node_modules`, so reinstalling dependencies there can leave the machine-wide service pointing at a path that no longer exists - and upgrading buncargo leaves it running the previous version's daemon bundle. Either way it keeps answering on `:443`, so `buncargo dev` prompts to update it (Enter updates, `s` skips this run) rather than waiting for you to notice; without a TTY it warns and continues on the old daemon. `buncargo hosts status` and `buncargo doctor` report the same thing, and `buncargo hosts install` or `doctor --fix` repairs it outright.
 
 The daemon logs to `/var/log/buncargo-hosts.log` (on Linux, also `journalctl -u buncargo-hosts.service`). A failure that persists is logged at most once a minute, with a count of what was suppressed, so a stale daemon retrying a certificate it cannot serve cannot fill the disk.
 
@@ -334,15 +346,75 @@ Failure degrades to `http://localhost:<port>` and never blocks the dev run. Name
 
 ### Loopback URLs
 
-Some clients cannot follow a named HTTPS URL: Playwright does not trust the local CA, the Stripe CLI fails the HTTP→HTTPS redirect, and GUI database clients want a plain connection string. Enabling `hosts` rewrites `urls.<name>` in place, so those consumers get `loopbackUrls` instead — the same set of services and apps, always addressed as `http://localhost:<port>`.
+Some clients cannot follow a named HTTPS URL: Playwright does not trust the local CA, the Stripe CLI fails the HTTP→HTTPS redirect, and GUI database clients want a plain connection string. Enabling `hosts` rewrites `urls.<name>` in place, so those consumers get `loopbackUrls` instead - the same set of services and apps, always addressed as `http://localhost:<port>`.
 
-It is available everywhere the URLs are: `env.loopbackUrls`, the `env()` and `envVars()` context, `HookContext`, the `<NAME>_LOOPBACK_URL` env var, and `buncargo env --get loopbackUrls.api` for shell scripts. There is no `<app>Local` member — that key is the LAN IP, a different address for a different purpose (mobile devices on the network).
+It is available everywhere the URLs are: `env.loopbackUrls`, the `env()` and `envVars()` context, `HookContext`, the `<NAME>_LOOPBACK_URL` env var, and `buncargo env --get loopbackUrls.api` for shell scripts. There is no `<app>Local` member - that key is the LAN IP, a different address for a different purpose (mobile devices on the network).
 
 ```typescript
 // playwright.config.ts
 const env = JSON.parse(execSync("bunx buncargo env").toString());
 export default defineConfig({ use: { baseURL: env.loopbackUrls.web } });
 ```
+
+## Run registry and the menu bar app
+
+Every `buncargo dev` publishes itself to `~/.buncargo/runs.json`: project,
+worktree, branch, pid, and each app and service with its URL, public tunnel and
+state. It is written when the run starts, patched as servers become ready, and
+removed on teardown; entries whose owner process is gone are pruned on read.
+
+```bash
+bunx buncargo runs          # grouped by project, main checkout first
+bunx buncargo runs --json   # the same data, for scripts and agents
+```
+
+Unlike `ls`, this needs no container runtime, so it answers instantly and works
+with Docker stopped.
+
+### Stopping one thing
+
+```bash
+bunx buncargo stop api        # SIGTERM that dev server's process group
+bunx buncargo stop postgres   # docker/container stop for that service
+bunx buncargo stop --all      # the whole run, containers included
+```
+
+Stopping one app does not end the run: a signalled exit is not a failure to the
+child supervisor, so the other apps and the containers keep going. Two targets
+are refused without `--force` (and prompt when there is a terminal): the
+attached app, because closing it tears the run down by design, and an app this
+run reused from another terminal, because that process is not ours. Exit codes
+are `0` stopped, `2` no such target, `3` refused.
+
+Services are stopped, never killed, so a `restart:` policy cannot undo it.
+Nothing in buncargo brings a stopped container back - the watchdog only ever
+tears down - so it stays down until the next `dev`.
+
+### BuncargoBar
+
+A macOS menu bar app over the same registry, for when the run you want is in a
+terminal window you closed three worktrees ago.
+
+Projects are headers and each checkout is a row - `Main`, or the worktree name
+with its branch beneath - so several worktrees of one project stack up under it.
+Only running checkouts appear. **Open** launches the primary app; the chevron
+opens a panel with every app and service, each with open, copy, a TablePlus
+button for databases, and a stop button. **Stop run** stops everything.
+
+It is a reader: it never signals a process or talks to Docker, it shells out to
+`buncargo stop` using the exact interpreter that started the run, so a worktree
+on a different buncargo version stops with its own build. See
+[`menubar/README.md`](menubar/README.md).
+
+```bash
+bunx buncargo bar install
+```
+
+`buncargo dev` offers it once, the first time it runs on a Mac without it:
+Enter installs, `s` skips this run, `n` never asks again. The offer is silent on
+Linux and Windows, in CI, without a TTY, under `BUNCARGO_BAR=0`, and whenever
+the named-hosts setup already asked something this run - one setup question per
+run, at most.
 
 ## Dotenv sync
 
@@ -358,10 +430,10 @@ options: {
 It runs once containers are ready and before migrations, since Prisma reads `.env` itself. The rules are deliberately conservative, so the file stays the repo's contract rather than buncargo's dump:
 
 - Only keys **already in the file** are touched; an absent key is never added, and a missing file is only created when you set `createFrom`.
-- A value is only replaced when it is empty, a bare port number, or already on `localhost` / `127.0.0.1`. A deliberate override — a cloned remote database, a shared staging service — survives untouched.
+- A value is only replaced when it is empty, a bare port number, or already on `localhost` / `127.0.0.1`. A deliberate override - a cloned remote database, a shared staging service - survives untouched.
 - Comments, ordering, quoting, `export` prefixes and spacing are preserved byte for byte.
 - Values come from the **loopback** URLs, never the named `https://` hosts.
-- Keys buncargo cannot derive — a second connection string for the same database, a URL with a path suffix — come from `values`, which is handed the ports and the loopback URLs and nothing else:
+- Keys buncargo cannot derive - a second connection string for the same database, a URL with a path suffix - come from `values`, which is handed the ports and the loopback URLs and nothing else:
 
 ```typescript
 envFile: {
@@ -414,7 +486,7 @@ export default defineConfig({
 });
 ```
 
-It sets `server.port` from `PORT`, binds `server.host` to `127.0.0.1` (Vite's default `localhost` resolves to `[::1]` on many systems, so anything dialing IPv4 gets a refused connection), passes the named-hosts suffix through to `server.allowedHosts`, and — only when `BUNCARGO_APP_HOSTNAME` is set — points `server.hmr` at `wss://<hostname>:<hosts port>` so the HMR socket follows the HTTPS page rather than the raw Vite port.
+It sets `server.port` from `PORT`, binds `server.host` to `127.0.0.1` (Vite's default `localhost` resolves to `[::1]` on many systems, so anything dialing IPv4 gets a refused connection), passes the named-hosts suffix through to `server.allowedHosts`, and - only when `BUNCARGO_APP_HOSTNAME` is set - points `server.hmr` at `wss://<hostname>:<hosts port>` so the HMR socket follows the HTTPS page rather than the raw Vite port.
 
 Vite is not a dependency of buncargo: the plugin's return type is declared structurally, so importing it costs nothing in a repo without Vite. Override the app or the bind address when you need to: `buncargoVite({ app: "web", host: "0.0.0.0" })`.
 
@@ -512,8 +584,9 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | `autoShutdown` | `number \| false` | `180000` via CLI | Idle watchdog timeout in **ms**. `false` disables (same as `--keep-containers`) |
 | `envFile` | `boolean \| { path?, createFrom? }` | `false` | Sync a dotenv to the allocated ports. `true` means `.env` |
 | `verbose` | `boolean` | `true` | Default verbosity |
+| `primaryApp` | `string` | inferred | The app this project is "about": the menu bar's Open button, and the default for `hosts.primaryApp` and `frontendApp`. Inferred from the dependency graph when unset |
 | `expoApiApp` | `string` | `"api"` | App key used by `getExpoApiUrl()`. Must match a configured app |
-| `frontendApp` | `string` | `"platform"`, then `"web"` | App key used by `getFrontendPort()`. Must match a configured app |
+| `frontendApp` | `string` | `primaryApp`, then `"platform"`, then `"web"` | App key used by `getFrontendPort()`. Must match a configured app |
 | `hosts` | `boolean \| HostsOptions` | `undefined` (off) | Named `.localhost` HTTPS URLs. `true` uses TLD `localhost` and names Mailpit/Typesense. `{ tld, primaryApp, services }` for a custom TLD, collapsed primary app, or extra HTTP service UIs |
 
 ### `DockerComposeGenerationOptions`
@@ -648,7 +721,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `508 Loop Detected` | Vite (or similar) proxies `/api` without rewriting Host | Add `changeOrigin: true` to the dev-server proxy config |
 | `Portless is serving :443` (or Caddy / nginx / Docker) | Another proxy owns HTTPS | Stop that process, or set `hosts: false` / `--no-hosts` |
 
-`bunx buncargo doctor` checks the container runtime, named port owners, stale `ports.json`, orphaned labeled containers, the tunnel registry, and the named-hosts daemon and service install. If the runtime this project selected is down, doctor starts it the same way `dev` would — Docker Desktop, OrbStack, Colima, or `container system start` — and only reports it when that fails or when running in CI. `doctor --fix` restarts a dead daemon, re-trusts the CA, reinstalls a stale service, remints an expired cert, drops stale routes, and resyncs `/etc/hosts`. The fixes that need a password are skipped without a TTY.
+`bunx buncargo doctor` checks the container runtime, named port owners, stale `ports.json`, orphaned labeled containers, the tunnel registry, and the named-hosts daemon and service install. If the runtime this project selected is down, doctor starts it the same way `dev` would - Docker Desktop, OrbStack, Colima, or `container system start` - and only reports it when that fails or when running in CI. `doctor --fix` restarts a dead daemon, re-trusts the CA, reinstalls a stale service, remints an expired cert, drops stale routes, and resyncs `/etc/hosts`. The fixes that need a password are skipped without a TTY.
 
 ## Programmatic API
 
@@ -663,7 +736,7 @@ const webEnv = env.buildAppEnvVars("web");
 await env.stop();
 ```
 
-`loadDevEnv()` imports the config at runtime, so pass your config type (`loadDevEnv<typeof devConfig>()`) to keep the `defineDevConfig` inference — `ports`, `urls`, `getEnvVar`, and `buildAppEnvVars` stay keyed to your actual services and apps. Without it you get the widened `AnyDevEnvironment` shape, where those keys are plain strings. `getDevEnv<typeof devConfig>()` takes the same parameter.
+`loadDevEnv()` imports the config at runtime, so pass your config type (`loadDevEnv<typeof devConfig>()`) to keep the `defineDevConfig` inference - `ports`, `urls`, `getEnvVar`, and `buildAppEnvVars` stay keyed to your actual services and apps. Without it you get the widened `AnyDevEnvironment` shape, where those keys are plain strings. `getDevEnv<typeof devConfig>()` takes the same parameter.
 
 `createDevEnvironment(config)` is the same object without going through the config loader, and infers everything from the config you pass.
 

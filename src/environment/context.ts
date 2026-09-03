@@ -152,6 +152,7 @@ export function createDevEnvContext<
 				services,
 				ports: portMap,
 				hosts: config.options.hosts,
+				primaryApp: config.options.primaryApp,
 			})
 		: [];
 	const hosts: HostsRuntime | null = config.options?.hosts

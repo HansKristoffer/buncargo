@@ -17,6 +17,11 @@ import {
 import { isCaPresent } from "../../../core/hosts/mkcert";
 import { describeStaleHostsService } from "../../../core/hosts/service";
 import {
+	barDecline,
+	findInstalledBar,
+	isBarSupported,
+} from "../../../core/menubar";
+import {
 	getPortsLockfilePath,
 	readPortsLockfile,
 } from "../../../core/port-allocation";
@@ -25,6 +30,7 @@ import {
 	formatPortOwner,
 	getPortOwner,
 } from "../../../core/process";
+import { loadRuns, pruneRuns } from "../../../core/run-registry";
 import { loadDevEnv } from "../../../loader";
 import { hasFlag } from "../../flags";
 import * as log from "../../log";
@@ -226,6 +232,50 @@ async function checkSelectedRuntime(
 	}
 }
 
+/**
+ * Prune runs whose owner is gone, and say how many.
+ *
+ * The registry prunes itself on every read, so this is really a report. It is
+ * here because "the menu bar shows a project that is not running" is a support
+ * question, and this is where someone looks.
+ */
+async function checkRunRegistry(report: DoctorReport): Promise<void> {
+	try {
+		const before = (await loadRuns()).length;
+		const after = (await pruneRuns()).length;
+		if (before !== after) {
+			report.note(
+				`Pruned ${before - after} stale run entr${before - after === 1 ? "y" : "ies"}`,
+			);
+		}
+		report.note(`${after} active run${after === 1 ? "" : "s"} registered`);
+	} catch (error) {
+		report.issue(
+			`Could not read the run registry: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
+
+/**
+ * Report the menu bar app, and never install it.
+ *
+ * It is optional, and a `--fix` pass must not start a download nobody asked
+ * for.
+ */
+function checkMenuBarApp(report: DoctorReport): void {
+	if (!isBarSupported()) return;
+	const installed = findInstalledBar();
+	if (installed) {
+		report.note(`BuncargoBar installed (${installed})`);
+		return;
+	}
+	report.note(
+		barDecline.has()
+			? "BuncargoBar declined — `buncargo bar install` adds it"
+			: "BuncargoBar not installed — `buncargo bar install` adds it",
+	);
+}
+
 export async function handleDoctor(args: string[] = []): Promise<void> {
 	const report = new DoctorReport();
 
@@ -265,6 +315,9 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 		await checkTunnelRegistry(report, env);
 		await checkNamedHosts(report, env);
 	}
+
+	await checkRunRegistry(report);
+	checkMenuBarApp(report);
 
 	if (hasFlag(args, "--fix")) {
 		for (const fixed of await doctorFixHosts()) {

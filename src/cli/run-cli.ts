@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
 import { containerRuntimeForEnv } from "../container-runtime";
 import { removeHostRoutes } from "../core/hosts";
-import { startDevServers } from "../core/process";
+import { isDeliberateExit, startDevServers } from "../core/process";
 import { joinColoredNames } from "../core/style";
 import {
 	createNoopPhaseTimer,
@@ -22,6 +22,7 @@ import type {
 	DevEnvironment,
 	ServiceConfig,
 } from "../types";
+import { offerMenuBarApp } from "./bar-offer";
 import {
 	type DevCliArgs,
 	exitOnDevArgErrors,
@@ -37,6 +38,12 @@ import {
 import { CliError, toCliError } from "./errors";
 import * as log from "./log";
 import { classifyCliApps, parseRequiredCommaSeparatedFlag } from "./port-reuse";
+import {
+	markApps,
+	patchCurrentRun,
+	publishCurrentRun,
+	withdrawCurrentRun,
+} from "./run-publish";
 import {
 	isInteractive,
 	promptTakeover,
@@ -178,6 +185,9 @@ async function teardown<
 ): Promise<void> {
 	await tunnels.stop();
 	await releaseNamedHosts(env);
+	// Withdrawn beside the host routes, and for the same reason: both advertise
+	// something this process is about to stop answering for.
+	await withdrawCurrentRun(env.root);
 	restoreTerminal();
 }
 
@@ -248,6 +258,10 @@ async function runDevFlow<
 	let hostsWarnings = await timer.measure("hosts", () =>
 		activateNamedHosts(env, { enabled: args.hosts }),
 	);
+	// After named hosts, which owns the first-run prompt slot on a fresh
+	// machine, and before the containers, so a question cannot land in the
+	// middle of startup output.
+	await offerMenuBarApp();
 	const flushHostsWarnings = (): void => {
 		for (const warning of hostsWarnings) log.warn(warning);
 		hostsWarnings = [];
@@ -356,6 +370,16 @@ async function runDevFlow<
 
 	flushHostsWarnings();
 
+	// Published here, after the takeover has been decided: before it, the app
+	// classification still describes a reuse the takeover is about to undo, and
+	// `env.urls` may still hold the localhost fallback from the refused first
+	// activation.
+	await publishCurrentRun(env, {
+		apps: { ...classifiedApps.startApps, ...classifiedApps.reusedApps },
+		reusedNames: classifiedApps.reusedNames,
+		attached: args.attach,
+	});
+
 	logSelectedAppsSummary(classifiedApps);
 
 	if (!args.exposeRequested) {
@@ -426,6 +450,25 @@ async function runDevFlow<
 						onlyApps: Object.keys(apps) as Extract<keyof TApps, string>[],
 						expandRequired: false,
 					});
+					await markApps(env.root, Object.keys(apps), "ready");
+				},
+				// Deliberately not awaited: the registry is a status file, and
+				// nothing about starting servers may wait on it.
+				onAppSpawned: (name, pid, attached) => {
+					void patchCurrentRun(env.root, {
+						apps: [{ name, pid, attached: attached || undefined }],
+					});
+				},
+				// A signalled exit (`code === null`) is a deliberate stop — Ctrl-C,
+				// or `buncargo stop <app>` — and reads as `stopped`. A non-zero code
+				// is the app falling over, which the supervisor also turns into a
+				// failed run.
+				onAppExit: (name, code) => {
+					void markApps(
+						env.root,
+						[name],
+						isDeliberateExit(code) ? "stopped" : "failed",
+					);
 				},
 				onAfterWave1: tunnels.openOwnedTunnels,
 				// Nothing to wait for without --expose, so needsPublicUrls apps

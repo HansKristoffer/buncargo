@@ -1,9 +1,11 @@
-import { createInterface } from "node:readline";
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
 import { getPortOwner, killPortOwner } from "../core/process";
+import { askConfirm, isInteractive } from "../core/prompt";
 import { joinColoredNames } from "../core/style";
 import type { AppConfig } from "../types";
 import * as log from "./log";
+
+export { isInteractive };
 
 /**
  * Taking over apps another `buncargo dev` is already serving.
@@ -39,31 +41,16 @@ export function takeoverCandidates(
 	return { apps, names: Object.keys(apps) };
 }
 
-export function isInteractive(): boolean {
-	return Boolean(process.stdin.isTTY && process.stdout.isTTY);
-}
-
 /**
  * Ask whether to stop the other run. Defaults to leaving it alone: a bare
  * Enter must never kill servers in a terminal the developer cannot see.
  */
 export async function promptTakeover(names: string[]): Promise<boolean> {
-	const rl = createInterface({ input: process.stdin, output: process.stdout });
-	const answer = await new Promise<string>((resolve) => {
-		rl.question(
-			[
-				"",
-				`  ${joinColoredNames(names)} ${names.length === 1 ? "is" : "are"} already running from another terminal.`,
-				"",
-				"  y to stop it and run here  ·  Enter to leave it running",
-				"  > ",
-			].join("\n"),
-			resolve,
-		);
-	});
-	rl.close();
-	const normalized = answer.trim().toLowerCase();
-	return normalized === "y" || normalized === "yes";
+	return askConfirm([
+		`  ${joinColoredNames(names)} ${names.length === 1 ? "is" : "are"} already running from another terminal.`,
+		"",
+		"  y to stop it and run here  ·  Enter to leave it running",
+	]);
 }
 
 /**

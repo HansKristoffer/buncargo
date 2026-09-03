@@ -651,6 +651,14 @@ export interface DevOptions<
 	autoShutdown?: number | false;
 	/** Default verbose setting for all operations. Default: true */
 	verbose?: boolean;
+	/**
+	 * The app this project is "about": the one a menu bar Open button, the bare
+	 * named hostname and any other "just show me the app" surface should pick.
+	 *
+	 * Defaults to `hosts.primaryApp`, then `frontendApp`, then the app no other
+	 * selected app depends on. Set it once here rather than per consumer.
+	 */
+	primaryApp?: Extract<keyof TApps, string>;
 	/** App key used by getExpoApiUrl(). Default: 'api' */
 	expoApiApp?: Extract<keyof TApps, string>;
 	/** App key used by getFrontendPort(). Default: 'platform', then 'web' */
@@ -869,8 +877,9 @@ export type DevConfigInput<
  */
 type AnyDevOptions = Omit<
 	DevOptions,
-	"expoApiApp" | "frontendApp" | "hosts"
+	"primaryApp" | "expoApiApp" | "frontendApp" | "hosts"
 > & {
+	primaryApp?: string;
 	expoApiApp?: string;
 	frontendApp?: string;
 	hosts?: boolean | HostsOptionsLike;
@@ -1275,6 +1284,8 @@ export interface DevEnvironment<
 
 	/** Docker project name (includes suffix if set) */
 	readonly projectName: string;
+	/** The configured `projectPrefix`, before the directory and worktree suffixes. */
+	readonly projectPrefix: string;
 	/** Computed ports for all services and apps */
 	readonly ports: ComputedPorts<TServices, TApps>;
 	/** Computed URLs for all services and apps */
@@ -1370,6 +1381,15 @@ export interface DevEnvironment<
 	 *
 	 * Call **after** {@link setPublicUrls} or {@link openPublicTunnels} so `*_PUBLIC_URL` values reflect tunnel URLs.
 	 */
+	/**
+	 * The app this project is "about", optionally narrowed to a running set.
+	 *
+	 * A method rather than a field because the answer depends on which apps a
+	 * run actually started: `--apps=api` makes `api` primary for that run.
+	 */
+	resolvePrimaryApp(
+		selected?: readonly string[],
+	): Extract<keyof TApps, string> | undefined;
 	buildEnvVars(production?: boolean): ComputedEnvVars<TServices, TApps, TEnv>;
 	/** Build the full environment for a specific app process (`shared env + apps[name].envVars`). */
 	buildAppEnvVars<TName extends Extract<keyof TApps, string>>(

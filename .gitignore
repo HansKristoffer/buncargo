@@ -7,3 +7,7 @@ dist
 # repo to resolve the local TypeScript / Bun.
 .config-typecheck-test-*/
 .typecheck-pool-test-*/
+
+# Swift build output and the locally built app bundle (menubar/)
+.build/
+menubar/BuncargoBar.app

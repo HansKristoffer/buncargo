@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import fg from "fast-glob";
 import { execAsync } from "../core/process";
+import { getProjectStateDir, STATE_DIRNAME } from "../core/state-paths";
 import { CONFIG_FILES } from "../loader";
 
 /**
@@ -20,7 +21,10 @@ export interface ConfigTypecheckResult {
  * `typeRoots` and any `extends` target resolve the way they would for a
  * hand-written config.
  */
-const GENERATED_TSCONFIG = join(".buncargo", "config-typecheck.tsconfig.json");
+const GENERATED_TSCONFIG = join(
+	STATE_DIRNAME,
+	"config-typecheck.tsconfig.json",
+);
 
 /**
  * Options the generated tsconfig uses when the repo has no root `tsconfig.json`
@@ -91,7 +95,7 @@ async function resolveProjectTsc(root: string): Promise<string> {
  */
 function writeGeneratedTsconfig(root: string, configFile: string): string {
 	const tsconfigPath = join(root, GENERATED_TSCONFIG);
-	mkdirSync(join(root, ".buncargo"), { recursive: true });
+	mkdirSync(getProjectStateDir(root), { recursive: true });
 
 	const hasRootTsconfig = existsSync(join(root, "tsconfig.json"));
 	const tsconfig = {

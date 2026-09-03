@@ -87,12 +87,14 @@ export function sanitizeTld(tld: string): string {
 
 export function resolveHostsOptions(
 	hosts: boolean | HostsOptionsLike | undefined,
+	/** `options.primaryApp`, which `hosts.primaryApp` still overrides. */
+	primaryApp?: string,
 ): ResolvedHostsOptions | null {
 	if (!hosts) return null;
 	const options = hosts === true ? {} : hosts;
 	return {
 		tld: sanitizeTld(options.tld ?? "localhost"),
-		primaryApp: options.primaryApp,
+		primaryApp: options.primaryApp ?? primaryApp,
 		services: options.services ?? [...DEFAULT_HTTP_SERVICE_NAMES],
 	};
 }
@@ -135,8 +137,9 @@ export function planNamedHosts(input: {
 	services: Record<string, ServiceConfig>;
 	ports: Record<string, number>;
 	hosts: boolean | HostsOptionsLike;
+	primaryApp?: string;
 }): NamedHost[] {
-	const options = resolveHostsOptions(input.hosts);
+	const options = resolveHostsOptions(input.hosts, input.primaryApp);
 	if (!options) return [];
 
 	const projectLabel = sanitizeDnsLabel(input.projectPrefix);

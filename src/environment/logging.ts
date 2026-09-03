@@ -1,4 +1,5 @@
 import pc from "picocolors";
+import { describeService } from "../core/service-identity";
 import {
 	colorizeName,
 	formatClickableUrl,
@@ -6,7 +7,7 @@ import {
 	formatSection,
 	prefixWidth,
 } from "../core/style";
-import { tablePlusUrl } from "./tableplus";
+import type { ServiceConfig } from "../types";
 
 function tunnelFor(
 	tunnels:
@@ -116,18 +117,18 @@ export function formatEnvironmentBanner(
 					`       ${pc.dim("public")}  ${formatClickableUrl(t.publicUrl)}`,
 				);
 			}
-			const service = services[name] as
-				| { database?: string; user?: string; password?: string }
-				| undefined;
-			if (name.toLowerCase().includes("postgres") && port !== undefined) {
-				const href = tablePlusUrl({
-					user: service?.user ?? "postgres",
-					password: service?.password ?? "postgres",
-					port,
-					database: service?.database ?? "postgres",
-					name: `${projectName}-${name}`,
-				});
-				lines.push(`       ${formatHyperlink(href, pc.cyan("TablePlus"))}`);
+			// Preset, not name: a service keyed `db` from `service.postgres()`
+			// is as much a database as one keyed `postgres`.
+			const identity = describeService({
+				name,
+				service: services[name] as ServiceConfig | undefined,
+				port,
+				projectName,
+			});
+			if (identity.tablePlusUrl) {
+				lines.push(
+					`       ${formatHyperlink(identity.tablePlusUrl, pc.cyan("TablePlus"))}`,
+				);
 			}
 		}
 	}

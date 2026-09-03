@@ -1,12 +1,6 @@
-import {
-	existsSync,
-	mkdirSync,
-	rmSync,
-	unlinkSync,
-	writeFileSync,
-} from "node:fs";
-import { createInterface } from "node:readline";
+import { rmSync } from "node:fs";
 import type { HostsOptions } from "../../types";
+import { askChoice, declineMarker, isInteractive } from "../prompt";
 import { isHostsForcedOff } from "../runtime-flags";
 import { getCertNamesPath } from "./cert-names";
 import { syncCertificateForRoutes } from "./certificates";
@@ -26,7 +20,7 @@ import {
 	resolvedMkcertPath,
 	uninstallTrust,
 } from "./mkcert";
-import { chownToInvokingUser, getDeclinePath, getHostsStateDir } from "./paths";
+import { DECLINE_FILENAME } from "./paths";
 import { isHostsPlatformSupported } from "./plan";
 import { removeHostRoutes } from "./registry";
 import {
@@ -51,72 +45,51 @@ export type HostsEnableResult =
 			message: string;
 	  };
 
+const hostsDecline = declineMarker(DECLINE_FILENAME);
+
 export function hasDeclinedHosts(): boolean {
-	return existsSync(getDeclinePath());
+	return hostsDecline.has();
 }
 
 export function persistHostsDecline(): void {
-	mkdirSync(getHostsStateDir(), { recursive: true });
-	const path = getDeclinePath();
-	writeFileSync(path, `${new Date().toISOString()}\n`);
-	chownToInvokingUser(path);
+	hostsDecline.persist();
 }
 
 export function clearHostsDecline(): void {
-	try {
-		unlinkSync(getDeclinePath());
-	} catch {
-		// none
-	}
-}
-
-function isInteractive(): boolean {
-	return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+	hostsDecline.clear();
 }
 
 async function promptFirstRun(): Promise<"setup" | "skip" | "decline"> {
-	const rl = createInterface({ input: process.stdin, output: process.stdout });
-	const answer = await new Promise<string>((resolve) => {
-		rl.question(
-			[
-				"",
-				"  buncargo needs one-time setup for named URLs (~10s, asks for your password)",
-				"",
-				"    • trust a local certificate authority (mkcert)",
-				"    • run a loopback proxy on :443 so https://app.project.localhost works",
-				"",
-				"  Enter to set up  ·  s to skip this once  ·  n to use localhost:port from now on",
-				"  > ",
-			].join("\n"),
-			resolve,
-		);
-	});
-	rl.close();
-	const normalized = answer.trim().toLowerCase();
-	if (normalized === "s") return "skip";
-	if (normalized === "n") return "decline";
-	return "setup";
+	return askChoice(
+		[
+			"  buncargo needs one-time setup for named URLs (~10s, asks for your password)",
+			"",
+			"    • trust a local certificate authority (mkcert)",
+			"    • run a loopback proxy on :443 so https://app.project.localhost works",
+			"",
+			"  Enter to set up  ·  s to skip this once  ·  n to use localhost:port from now on",
+		],
+		[
+			{ key: "s", value: "skip" as const },
+			{ key: "n", value: "decline" as const },
+		],
+		"setup",
+	);
 }
 
 async function promptStaleService(reason: string): Promise<"update" | "skip"> {
-	const rl = createInterface({ input: process.stdin, output: process.stdout });
-	const answer = await new Promise<string>((resolve) => {
-		rl.question(
-			[
-				"",
-				`  ${reason}`,
-				"",
-				"  Updating it asks for your password (~10s). Until then the daemon keeps",
-				"  running the older code, which can serve stale routes or certificates.",
-				"",
-				"  Enter to update  ·  s to skip this once",
-				"  > ",
-			].join("\n"),
-			resolve,
-		);
-	});
-	rl.close();
-	return answer.trim().toLowerCase() === "s" ? "skip" : "update";
+	return askChoice(
+		[
+			`  ${reason}`,
+			"",
+			"  Updating it asks for your password (~10s). Until then the daemon keeps",
+			"  running the older code, which can serve stale routes or certificates.",
+			"",
+			"  Enter to update  ·  s to skip this once",
+		],
+		[{ key: "s", value: "skip" as const }],
+		"update",
+	);
 }
 
 export interface StaleServiceRepairDeps {
