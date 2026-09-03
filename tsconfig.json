@@ -21,5 +21,13 @@
 		"noPropertyAccessFromIndexSignature": false,
 		"types": ["bun"]
 	},
-	"exclude": ["node_modules"]
+	// `example/playground/apps/*` are sample apps with their own package.json
+	// and their own dependencies (vite, react), installed by a separate
+	// `bun install` inside the playground. They are not part of this package's
+	// type surface, and including them made `bun run typecheck` pass or fail
+	// depending on whether someone had run that second install — which is
+	// exactly what it did on a fresh CI checkout. The playground's
+	// `dev.config.ts` stays checked: it imports `../../src` and nothing else,
+	// so it is the example that actually exercises our types.
+	"exclude": ["**/node_modules", "example/playground/apps"]
 }
