@@ -367,6 +367,47 @@ export interface LocalProxy {
 	httpPort?: number;
 }
 
+/**
+ * Both loopback families, IPv4 first.
+ *
+ * Browsers resolve `*.localhost` to `::1` as well as `127.0.0.1` and dial
+ * `::1` first. A proxy bound to `127.0.0.1` alone passes every CLI health
+ * check while leaving `[::1]:443` to whatever else is listening — a Node
+ * server on the dual-stack wildcard binds there without conflict — and the
+ * browser reports its plain-HTTP answer as ERR_SSL_PROTOCOL_ERROR.
+ */
+export const LOOPBACK_HOSTNAMES: readonly string[] = ["127.0.0.1", "::1"];
+
+/** `host:port` with IPv6 bracketed, for a URL. */
+export function loopbackAuthority(hostname: string, port: number): string {
+	return `${hostname.includes(":") ? `[${hostname}]` : hostname}:${port}`;
+}
+
+type BunServer = ReturnType<typeof Bun.serve>;
+
+/**
+ * Bind every hostname on one port. The first bind must succeed and picks the
+ * port when `0` was asked for; the rest are best-effort, so a machine without
+ * IPv6 loopback still gets its IPv4 listener.
+ */
+function serveOnEach(
+	hostnames: readonly string[],
+	options: Omit<Parameters<typeof Bun.serve>[0], "hostname">,
+): BunServer[] {
+	const first = Bun.serve({ ...options, hostname: hostnames[0] } as never);
+	const servers = [first];
+	for (const hostname of hostnames.slice(1)) {
+		try {
+			servers.push(
+				Bun.serve({ ...options, port: first.port, hostname } as never),
+			);
+		} catch {
+			// no such family on this machine, or something else holds it
+		}
+	}
+	return servers;
+}
+
 export async function startLocalProxy(options: {
 	lookup: ProxyRouteLookup;
 	routes: () => ProxyRoutesView;
@@ -378,7 +419,7 @@ export async function startLocalProxy(options: {
 	staleAfterMs?: number;
 	onStale?: (ageMs: number) => void;
 }): Promise<LocalProxy> {
-	const hostname = options.hostname ?? "127.0.0.1";
+	const hostnames = options.hostname ? [options.hostname] : LOOPBACK_HOSTNAMES;
 	const https = Boolean(options.cert && options.key);
 	// One resolver for both paths so an HMR upgrade reuses the family the first
 	// HTTP request already probed.
@@ -393,8 +434,7 @@ export async function startLocalProxy(options: {
 	});
 	const websocket = createWebsocketHandlers(upstream);
 
-	const httpsServer = Bun.serve({
-		hostname,
+	const httpsServers = serveOnEach(hostnames, {
 		port: options.httpsPort,
 		// A proxied stream is idle from Bun's point of view whenever the
 		// upstream has nothing to send. Bun's 10s default would reset SSE,
@@ -417,10 +457,15 @@ export async function startLocalProxy(options: {
 			: {}),
 	});
 
-	let httpServer: ReturnType<typeof Bun.serve> | undefined;
+	const httpsPort = httpsServers[0]?.port;
+	if (httpsPort === undefined) {
+		for (const server of httpsServers) server.stop(true);
+		throw new Error("Failed to bind the local hosts proxy");
+	}
+
+	let httpServers: BunServer[] = [];
 	if (options.httpPort !== undefined) {
-		httpServer = Bun.serve({
-			hostname,
+		httpServers = serveOnEach(hostnames, {
 			port: options.httpPort,
 			idleTimeout: 0,
 			// So a reload can bind the replacement before stopping this one. Without
@@ -443,23 +488,17 @@ export async function startLocalProxy(options: {
 		});
 	}
 
-	const httpsPort = httpsServer.port;
-	if (httpsPort === undefined) {
-		httpsServer.stop(true);
-		httpServer?.stop(true);
-		throw new Error("Failed to bind the local hosts proxy");
-	}
-
 	return {
 		httpsPort,
-		httpPort: httpServer?.port,
+		httpPort: httpServers[0]?.port,
 		stop() {
 			// Close the bridged upstreams first: a forced server stop resets
 			// them, and a reset is what kills dev servers that do not guard
 			// their upgraded sockets.
 			websocket.closeAll();
-			httpsServer.stop(true);
-			httpServer?.stop(true);
+			for (const server of [...httpsServers, ...httpServers]) {
+				server.stop(true);
+			}
 		},
 	};
 }
@@ -522,7 +561,7 @@ export async function readProxyHealth(
 	options: { tls?: boolean; timeoutMs?: number } = {},
 ): Promise<ProxyHealth | undefined> {
 	const tls = options.tls ?? true;
-	const url = `${tls ? "https" : "http"}://${hostname}:${port}${HEALTH_PATH}`;
+	const url = `${tls ? "https" : "http"}://${loopbackAuthority(hostname, port)}${HEALTH_PATH}`;
 	try {
 		const response = await fetch(url, {
 			signal: AbortSignal.timeout(options.timeoutMs ?? HEALTH_TIMEOUT_MS),
@@ -547,7 +586,7 @@ export async function isProxyHealthy(
 	options: { tls?: boolean } = {},
 ): Promise<boolean> {
 	const tls = options.tls ?? true;
-	const url = `${tls ? "https" : "http"}://${hostname}:${port}${HEALTH_PATH}`;
+	const url = `${tls ? "https" : "http"}://${loopbackAuthority(hostname, port)}${HEALTH_PATH}`;
 	try {
 		const response = await fetch(url, {
 			signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),

@@ -22,6 +22,8 @@ import {
 export type { PortContainerOwner };
 
 export interface PortOwnerLookupOptions {
+	/** Listeners to leave out, e.g. our own daemon sharing the port. */
+	ignorePids?: number[];
 	/**
 	 * Runtime to ask about container-held ports.
 	 *
@@ -268,7 +270,8 @@ export function getPortOwner(
 	port: number,
 	options: PortOwnerLookupOptions = {},
 ): PortOwner | null {
-	const pids = getListeningPids(port);
+	const ignore = new Set(options.ignorePids ?? []);
+	const pids = getListeningPids(port).filter((pid) => !ignore.has(pid));
 	const container = findContainerOnPort(port, options);
 	if (pids.length === 0 && !container) {
 		return null;

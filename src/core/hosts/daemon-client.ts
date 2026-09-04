@@ -1,7 +1,14 @@
+import { isTcpPortOpen } from "../network";
 import { sleep } from "../sleep";
 import { RELOAD_STALL_MS } from "./daemon";
-import { readDaemonConfig } from "./daemon-config";
-import { isProxyHealthy, type ProxyHealth, readProxyHealth } from "./proxy";
+import { readDaemonConfig, readDaemonPid } from "./daemon-config";
+import {
+	isProxyHealthy,
+	LOOPBACK_HOSTNAMES,
+	loopbackAuthority,
+	type ProxyHealth,
+	readProxyHealth,
+} from "./proxy";
 import { describeStaleHostsService, isHostsServiceInstalled } from "./service";
 import { hostsServiceLogHint } from "./service-files";
 import { describePortSquatter } from "./squatter";
@@ -44,6 +51,35 @@ export async function isHostsDaemonWedged(): Promise<boolean> {
 	if (!health) return true;
 	if (health.lastReloadAt === undefined) return false;
 	return Date.now() - health.lastReloadAt > RELOAD_STALL_MS;
+}
+
+/**
+ * A loopback address the browser will dial that is answered by something other
+ * than our proxy, or `undefined` when every family is ours or closed.
+ *
+ * Health over `127.0.0.1` proves nothing about `::1`, and browsers resolve
+ * `*.localhost` to both and try `::1` first. A dual-stack server on the same
+ * port — Node's default `listen(443)`, Portless, Caddy — binds beside a proxy
+ * that only holds one family, and its plain-HTTP answer surfaces in the
+ * browser as ERR_SSL_PROTOCOL_ERROR while every CLI check passes.
+ */
+export async function describeLoopbackHijack(
+	port?: number,
+): Promise<string | undefined> {
+	const config = readDaemonConfig();
+	const httpsPort = port ?? config.httpsPort;
+	for (const hostname of LOOPBACK_HOSTNAMES) {
+		if (!(await isTcpPortOpen(httpsPort, hostname, 500))) continue;
+		if (await readProxyHealth(httpsPort, hostname, { tls: config.tls })) {
+			continue;
+		}
+		const daemonPid = readDaemonPid();
+		const squatter = describePortSquatter(httpsPort, {
+			ignorePids: daemonPid === undefined ? [] : [daemonPid],
+		});
+		return `something other than buncargo is answering on ${loopbackAuthority(hostname, httpsPort)}, which browsers try first for .localhost names. ${squatter ?? `Stop it (\`sudo lsof -nP -iTCP:${httpsPort} -sTCP:LISTEN\`) or set hosts: false.`}`;
+	}
+	return undefined;
 }
 
 /** How long the CLI waits for the daemon's one-second poll to pick a route up. */
@@ -93,7 +129,10 @@ export async function waitForDaemonRoutes(
 			}
 			const served = new Set(health.hostnames);
 			missing = hostnames.filter((hostname) => !served.has(hostname));
-			if (missing.length === 0) return { ok: true };
+			if (missing.length === 0) {
+				const hijack = await describeLoopbackHijack(options.port);
+				return hijack ? { ok: false, reason: hijack } : { ok: true };
+			}
 		}
 
 		const remaining = deadline - Date.now();
@@ -107,8 +146,8 @@ export async function waitForDaemonRoutes(
 	return {
 		ok: false,
 		reason: everAnswered
-			? `the daemon is not serving ${missing.join(", ")}`
-			: `the daemon on :${readDaemonConfig().httpsPort} stopped answering`,
+			? `the daemon is not serving ${missing.join(", ")}. Run \`buncargo hosts install\`.`
+			: `the daemon on :${readDaemonConfig().httpsPort} stopped answering. Run \`buncargo hosts install\`.`,
 	};
 }
 

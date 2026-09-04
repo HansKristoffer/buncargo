@@ -7,6 +7,7 @@ export {
 export { RELOAD_STALL_MS, runHostsDaemon } from "./daemon";
 export {
 	type DaemonRouteCheck,
+	describeLoopbackHijack,
 	ensureHostsDaemonRunning,
 	isHostsDaemonHealthy,
 	ROUTE_PICKUP_TIMEOUT_MS,

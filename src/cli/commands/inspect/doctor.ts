@@ -7,6 +7,7 @@ import {
 	listBuncargoContainers,
 } from "../../../container-runtime";
 import {
+	describeLoopbackHijack,
 	doctorFixHosts,
 	type ProxyHealth,
 	pruneHostRoutes,
@@ -155,6 +156,8 @@ async function checkNamedHosts(
 	const health = await readHostsDaemonHealth(readDaemonConfig().httpsPort);
 	if (health) {
 		report.note("Named-hosts daemon is healthy");
+		const hijack = await describeLoopbackHijack();
+		if (hijack) report.issue(`Named-hosts: ${hijack}`);
 	} else {
 		report.issue(
 			"Named-hosts daemon is not running. Run `buncargo hosts install` or `buncargo doctor --fix`.",

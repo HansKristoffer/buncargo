@@ -1,7 +1,10 @@
 import { getPortOwner } from "../process";
 
-export function describePortSquatter(port: number): string | undefined {
-	const owner = getPortOwner(port);
+export function describePortSquatter(
+	port: number,
+	options: { ignorePids?: number[] } = {},
+): string | undefined {
+	const owner = getPortOwner(port, options);
 	if (!owner) return undefined;
 
 	const command = (owner.command ?? "").toLowerCase();
@@ -10,6 +13,9 @@ export function describePortSquatter(port: number): string | undefined {
 
 	if (haystack.includes("portless")) {
 		return `Portless is serving :${port} — run \`portless proxy stop\`, or keep using Portless and set hosts: false.`;
+	}
+	if (haystack.includes("tailsc")) {
+		return `Tailscale is serving :${port} (Tailscale Serve or Funnel). Run \`tailscale serve reset\`, or set hosts: false.`;
 	}
 	if (haystack.includes("caddy")) {
 		return `Caddy is serving :${port}. Stop it or set hosts: false.`;

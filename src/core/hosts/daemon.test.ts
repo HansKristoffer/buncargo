@@ -20,6 +20,7 @@ import {
 	watchHostsState,
 } from "./daemon";
 import {
+	describeLoopbackHijack,
 	resolveInstalledServiceWaitMs,
 	SERVICE_START_TIMEOUT_MS,
 	waitForDaemonHealthy,
@@ -596,7 +597,9 @@ describe("waitForDaemonRoutes", () => {
 		});
 		expect(result).toEqual({
 			ok: false,
-			reason: "the daemon is not serving web.demo.localhost",
+			reason: expect.stringContaining(
+				"the daemon is not serving web.demo.localhost",
+			),
 		});
 	});
 
@@ -660,7 +663,32 @@ describe("waitForDaemonRoutes", () => {
 		});
 		expect(result).toEqual({
 			ok: false,
-			reason: "the daemon is not serving web.demo.localhost",
+			reason: expect.stringContaining(
+				"the daemon is not serving web.demo.localhost",
+			),
+		});
+	});
+
+	// The friend-of-a-user failure: every CLI check passes over 127.0.0.1
+	// while the browser dials [::1]:443 and gets someone else's plain HTTP.
+	it("fails when another server answers on the other loopback family", async () => {
+		const port = await daemonServing(["web.demo.localhost"]);
+		let squatter: ReturnType<typeof Bun.serve> | undefined;
+		try {
+			squatter = Bun.serve({
+				hostname: "::1",
+				port,
+				reusePort: true,
+				fetch: () => new Response("not buncargo"),
+			});
+		} catch {
+			return; // no IPv6 loopback here
+		}
+		servers.push({ httpsPort: port, stop: () => squatter?.stop(true) });
+		expect(await describeLoopbackHijack(port)).toContain(`[::1]:${port}`);
+		expect(await waitForDaemonRoutes(["web.demo.localhost"])).toEqual({
+			ok: false,
+			reason: expect.stringContaining(`[::1]:${port}`),
 		});
 	});
 

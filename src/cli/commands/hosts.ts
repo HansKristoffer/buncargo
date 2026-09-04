@@ -1,4 +1,5 @@
 import {
+	describeLoopbackHijack,
 	loadHostRoutes,
 	pruneHostRoutes,
 	RELOAD_STALL_MS,
@@ -100,6 +101,11 @@ async function printHostsStatus(): Promise<void> {
 		const squatter = describePortSquatter(config.httpsPort);
 		if (squatter) {
 			log.line(`port: ${squatter}`);
+		}
+	} else {
+		const hijack = await describeLoopbackHijack(config.httpsPort);
+		if (hijack) {
+			log.line(`port: ${hijack}`);
 		}
 	}
 	const routes = await pruneHostRoutes();

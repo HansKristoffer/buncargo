@@ -115,6 +115,25 @@ describe("proxy fetch", () => {
 		expect(body.hops).toBe("1");
 	});
 
+	// Browsers resolve `*.localhost` to ::1 as well and dial it first, so a
+	// proxy that only holds 127.0.0.1 leaves them to whatever else is there.
+	it.skipIf(!ipv6LoopbackAvailable)(
+		"answers on both loopback families by default",
+		async () => {
+			const proxy = await startLocalProxy({
+				lookup: () => undefined,
+				routes: () => ({ hostnames: ["api.serpier.localhost"] }),
+				httpsPort: 0,
+			});
+			servers.push(proxy);
+			for (const hostname of ["127.0.0.1", "::1"]) {
+				expect(
+					await readProxyHealth(proxy.httpsPort, hostname, { tls: false }),
+				).toMatchObject({ hostnames: ["api.serpier.localhost"] });
+			}
+		},
+	);
+
 	it("returns 508 when hop limit is exceeded", async () => {
 		const fetchHandler = createProxyFetch({
 			lookup: () => 9,

@@ -90,9 +90,7 @@ export async function activateNamedHosts<
 			env.hosts.plan.map((entry) => entry.hostname),
 		);
 		if (!serving.ok) {
-			notes.push(
-				`Named URLs unavailable: ${serving.reason}. Run \`buncargo hosts install\`.`,
-			);
+			notes.push(`Named URLs unavailable: ${serving.reason}`);
 			return notes;
 		}
 
