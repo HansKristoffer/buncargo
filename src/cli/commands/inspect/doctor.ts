@@ -19,8 +19,8 @@ import { isCaPresent } from "../../../core/hosts/mkcert";
 import { describeStaleHostsService } from "../../../core/hosts/service";
 import {
 	barDecline,
-	findInstalledBar,
 	isBarSupported,
+	readInstalledBarInfo,
 } from "../../../core/menubar";
 import {
 	getPortsLockfilePath,
@@ -32,7 +32,11 @@ import {
 	getPortOwner,
 } from "../../../core/process";
 import { isRouteOwnerAlive } from "../../../core/registry-file";
-import { loadRuns, readLiveRuns } from "../../../core/run-registry";
+import {
+	loadRuns,
+	REGISTRY_VERSION,
+	readLiveRuns,
+} from "../../../core/run-registry";
 import { loadDevEnv } from "../../../loader";
 import { hasFlag } from "../../flags";
 import * as log from "../../log";
@@ -280,9 +284,19 @@ async function checkRunRegistry(report: DoctorReport): Promise<void> {
  */
 function checkMenuBarApp(report: DoctorReport): void {
 	if (!isBarSupported()) return;
-	const installed = findInstalledBar();
+	const installed = readInstalledBarInfo();
 	if (installed) {
-		report.note(`BuncargoBar installed (${installed})`);
+		// An app that cannot read the registry shows an empty menu, which reads
+		// as a broken `dev` — an issue, not a note.
+		if (installed.registryVersion < REGISTRY_VERSION) {
+			report.issue(
+				`BuncargoBar ${installed.version ?? ""} reads runs.json v${installed.registryVersion}, buncargo writes v${REGISTRY_VERSION} — run \`buncargo bar update\``,
+			);
+			return;
+		}
+		report.note(
+			`BuncargoBar installed (${installed.path}${installed.version ? `, ${installed.version}` : ""})`,
+		);
 		return;
 	}
 	report.note(

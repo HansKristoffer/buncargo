@@ -10,6 +10,16 @@ APP_NAME="BuncargoBar"
 APP_BUNDLE="$ROOT/$APP_NAME.app"
 VERSION="${VERSION:-0.1.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
+# Which runs.json schema this build can decode, taken from the fixture both
+# test suites already validate — so the number in the bundle and the number the
+# Swift decoder enforces cannot drift apart. `buncargo dev` reads it back out of
+# Info.plist to decide whether an installed app is too old for the CLI.
+REGISTRY_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' \
+  "$ROOT/fixtures/runs.v1.json" | head -1)"
+if [[ -z "$REGISTRY_VERSION" ]]; then
+  echo "Could not read the registry version from fixtures/runs.v1.json" >&2
+  exit 1
+fi
 # Universal by default: Intel Macs still exist and the target is small enough
 # that a second slice costs seconds. Override with ARCHS="--arch arm64".
 ARCHS="${ARCHS:---arch arm64 --arch x86_64}"
@@ -52,6 +62,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <string>${VERSION}</string>
     <key>CFBundleVersion</key>
     <string>${BUILD_NUMBER}</string>
+    <key>BuncargoRegistryVersion</key>
+    <integer>${REGISTRY_VERSION}</integer>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>

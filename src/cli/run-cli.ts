@@ -23,7 +23,7 @@ import type {
 	DevEnvironment,
 	ServiceConfig,
 } from "../types";
-import { offerMenuBarApp } from "./bar-offer";
+import { checkMenuBarAppUpdate, offerMenuBarApp } from "./bar-offer";
 import {
 	type DevCliArgs,
 	exitOnDevArgErrors,
@@ -437,6 +437,11 @@ async function runDevFlow<
 		serviceNames: plan.requiredServiceKeys,
 		attached: args.attach,
 	});
+
+	// Deliberately not awaited, and only after the run is on disk: an app that
+	// cannot read this registry has something to read the moment it updates,
+	// and a GitHub round trip never sits between the user and their servers.
+	void checkMenuBarAppUpdate();
 
 	logSelectedAppsSummary(classifiedApps);
 

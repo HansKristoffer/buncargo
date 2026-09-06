@@ -11,14 +11,63 @@ enum BuncargoBarMain {
             printStatus()
             return
         }
+        if CommandLine.arguments.contains("--selftest") {
+            selfTest()
+            return
+        }
         BuncargoBarApp.main()
+    }
+
+    /// Checks the notification diff against the registry it will see in
+    /// production. Runs in CI, where the fixture is the whole world.
+    static func selfTest() {
+        let runs = (try? RunRegistry.load()) ?? []
+        let startedRuns = runs.filter { $0.primary?.state.isUp == true }
+        var announced: Set<String> = []
+
+        var failures: [String] = []
+        let first = Notifier.newlyStarted(runs: runs, announced: &announced)
+        if first.count != startedRuns.count {
+            failures.append("first pass announced \(first.count), expected \(startedRuns.count)")
+        }
+        if !Notifier.newlyStarted(runs: runs, announced: &announced).isEmpty {
+            failures.append("second pass announced the same runs again")
+        }
+        // A run that goes away and comes back is news again.
+        if Notifier.newlyStarted(runs: [], announced: &announced).isEmpty,
+           Notifier.newlyStarted(runs: runs, announced: &announced).count != startedRuns.count {
+            failures.append("a restarted run did not announce")
+        }
+
+        // Sessions can start in the same checkout at the same timestamp.
+        // Each session announces once, independently of the other session.
+        if var firstSession = startedRuns.first {
+            var secondSession = firstSession
+            firstSession.sessionId = "notification-session-1"
+            secondSession.sessionId = "notification-session-2"
+            let sessions = [firstSession, secondSession]
+            var sessionAnnouncements: Set<String> = []
+            if Notifier.newlyStarted(runs: sessions, announced: &sessionAnnouncements).count != 2 {
+                failures.append("sessions in the same checkout did not each announce")
+            }
+            if !Notifier.newlyStarted(runs: sessions, announced: &sessionAnnouncements).isEmpty {
+                failures.append("sessions announced more than once")
+            }
+        }
+
+        for failure in failures {
+            FileHandle.standardError.write(Data("FAIL: \(failure)\n".utf8))
+        }
+        print(failures.isEmpty ? "OK selftest (\(startedRuns.count) started runs)" : "FAILED")
+        exit(failures.isEmpty ? 0 : 1)
     }
 
     static func printStatus() {
         do {
             let runs = try RunRegistry.load()
+            print("OK registry v\(RunRegistry.supportedVersion) (\(RunRegistry.url.path))")
             if runs.isEmpty {
-                print("OK no active runs (\(RunRegistry.url.path))")
+                print("OK no active runs")
                 exit(0)
             }
             for run in runs {
@@ -40,6 +89,7 @@ enum BuncargoBarMain {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        Notifier.configure()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -97,10 +147,19 @@ struct MenuContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if store.groups.isEmpty {
-                Text("No buncargo environments running")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .padding(14)
+                // A registry this build cannot read is not "nothing running":
+                // say so, and say what fixes it, or the user debugs `dev`.
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(store.errorMessage ?? "No buncargo environments running")
+                        .font(.system(size: 12))
+                        .foregroundStyle(store.errorMessage == nil ? .secondary : .primary)
+                    if store.isOutdated {
+                        Text("Run `buncargo bar update` to catch up.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(14)
             } else {
                 ForEach(store.groups) { group in
                     Text(group.name.uppercased())

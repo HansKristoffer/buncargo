@@ -1,6 +1,7 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { withFileLock } from "./file-lock";
 import { exec } from "./process/exec";
 import { declineMarker } from "./prompt";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
@@ -10,10 +11,11 @@ import { chownToInvokingUser, getStateDir, stateFilePath } from "./state-paths";
 /**
  * BuncargoBar — the macOS menu bar app that reads the run registry.
  *
- * The CLI's only jobs are to notice that it is missing, offer it once, and
- * install a prebuilt release. It never upgrades: once installed the app checks
- * for its own updates, and two updaters racing on the same bundle is how you
- * get a half-replaced app.
+ * The CLI notices that it is missing, offers it once, installs a prebuilt
+ * release, and keeps it current. It is the *only* updater: the app itself
+ * ships no update checker, and one updater is what keeps two of them from
+ * racing on the same bundle. `withFileLock` covers the remaining race, which
+ * is two `buncargo dev`s starting at the same moment.
  *
  * Everything here is best-effort. The app is optional; a failed download must
  * read as "not installed" and never as a broken `buncargo dev`.
@@ -24,6 +26,25 @@ export const BAR_BUNDLE_NAME = `${BAR_APP_NAME}.app`;
 export const BAR_DECLINE_FILENAME = "bar-declined";
 export const BAR_MANIFEST_FILENAME = "bar.json";
 const MANIFEST_VERSION = 1;
+
+/**
+ * `Info.plist` key holding the `runs.json` schema the bundle can decode.
+ *
+ * Stamped by `menubar/scripts/package.sh` from the shared fixture. Bundles
+ * built before this key existed decode v1, which is what the fallback says.
+ */
+const REGISTRY_VERSION_KEY = "BuncargoRegistryVersion";
+const ASSUMED_REGISTRY_VERSION = 1;
+
+/** A background check has no user waiting on it, and no right to hang. */
+const RELEASE_FETCH_TIMEOUT_MS = 5000;
+
+/** How long a polite quit gets before `pkill`. */
+const QUIT_TIMEOUT_MS = 3000;
+const QUIT_POLL_MS = 100;
+
+/** An install from `--source`, which has no release version to compare. */
+export const BAR_SOURCE_VERSION = "source";
 
 const RELEASES_ENDPOINT =
 	"https://api.github.com/repos/HansKristoffer/buncargo/releases?per_page=20";
@@ -91,6 +112,67 @@ export function findInstalledBar(home?: string): string | undefined {
 	return candidateBundlePaths(home).find((path) => existsSync(path));
 }
 
+export interface InstalledBarInfo {
+	path: string;
+	/** `CFBundleShortVersionString`, or `undefined` for an unreadable plist. */
+	version?: string;
+	/** The `runs.json` schema this bundle decodes. */
+	registryVersion: number;
+}
+
+/**
+ * What the installed bundle says about itself.
+ *
+ * A regex over our own `Info.plist` rather than a `plutil` spawn: this runs on
+ * the `buncargo dev` path, the file is written by `package.sh` two lines from
+ * the pattern below, and a process spawn costs more than reading it.
+ */
+export function readInstalledBarInfo(
+	home?: string,
+): InstalledBarInfo | undefined {
+	const path = findInstalledBar(home);
+	return path ? readBundleInfo(path) : undefined;
+}
+
+/** The same read, for a bundle that is not installed yet. */
+export function readBundleInfo(path: string): InstalledBarInfo {
+	let plist = "";
+	try {
+		plist = readFileSync(join(path, "Contents", "Info.plist"), "utf-8");
+	} catch {
+		// An unreadable plist still leaves an app we know the path of. Treat it
+		// as the oldest thing it could be rather than as not installed.
+		return { path, registryVersion: ASSUMED_REGISTRY_VERSION };
+	}
+	return {
+		path,
+		version: plistString(plist, "CFBundleShortVersionString"),
+		registryVersion:
+			plistInteger(plist, REGISTRY_VERSION_KEY) ?? ASSUMED_REGISTRY_VERSION,
+	};
+}
+
+function plistValue(
+	plist: string,
+	key: string,
+	type: "string" | "integer",
+): string | undefined {
+	const pattern = new RegExp(`<key>${key}</key>\\s*<${type}>([^<]*)</${type}>`);
+	return pattern.exec(plist)?.[1]?.trim();
+}
+
+function plistString(plist: string, key: string): string | undefined {
+	const value = plistValue(plist, key, "string");
+	return value ? value : undefined;
+}
+
+function plistInteger(plist: string, key: string): number | undefined {
+	const value = plistValue(plist, key, "integer");
+	if (value === undefined) return undefined;
+	const parsed = Number.parseInt(value, 10);
+	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 export function isBarSupported(
 	platform: NodeJS.Platform = process.platform,
 ): boolean {
@@ -133,6 +215,9 @@ interface GithubRelease {
 export async function fetchLatestBarRelease(): Promise<BarRelease | undefined> {
 	const response = await fetch(RELEASES_ENDPOINT, {
 		headers: { Accept: "application/vnd.github+json" },
+		// The background check must not keep a dev run's event loop alive on a
+		// hung connection.
+		signal: AbortSignal.timeout(RELEASE_FETCH_TIMEOUT_MS),
 	});
 	if (!response.ok) {
 		throw new Error(`GitHub returned ${response.status} listing releases`);
@@ -218,6 +303,8 @@ function installDirectory(home = homedir()): string {
 export interface BarInstallResult {
 	path: string;
 	version: string;
+	/** The app was running before the swap and was started again after it. */
+	relaunched?: boolean;
 }
 
 /**
@@ -227,7 +314,31 @@ export interface BarInstallResult {
  * only extractor that reliably preserves a bundle's code signature and
  * resource forks.
  */
-export async function installBar(): Promise<BarInstallResult> {
+export interface BarInstallOptions {
+	/**
+	 * Refuse a release whose bundle cannot decode this `runs.json` version.
+	 *
+	 * The guard for a CLI release that goes out before its matching `bar-v*`
+	 * one: better to keep the old app and say so than to install a second app
+	 * that also cannot read the registry.
+	 */
+	minRegistryVersion?: number;
+}
+
+/**
+ * Download and install the app, replacing any copy already there.
+ *
+ * `ditto` rather than `unzip`, matching how the release is packed: it is the
+ * only extractor that reliably preserves a bundle's code signature and
+ * resource forks.
+ *
+ * The lock is on the manifest, so two `buncargo dev`s starting together
+ * serialise here instead of racing on one bundle — the whole reason the CLI is
+ * the only updater.
+ */
+export async function installBar(
+	options: BarInstallOptions = {},
+): Promise<BarInstallResult> {
 	if (!isBarSupported()) {
 		throw new Error(`${BAR_APP_NAME} is macOS only.`);
 	}
@@ -239,6 +350,15 @@ export async function installBar(): Promise<BarInstallResult> {
 		);
 	}
 
+	return withFileLock(getBarManifestPath(), () =>
+		applyRelease(release, options),
+	);
+}
+
+async function applyRelease(
+	release: BarRelease,
+	options: BarInstallOptions,
+): Promise<BarInstallResult> {
 	const workspace = mkdtempSync(join(tmpdir(), "buncargo-bar-"));
 	try {
 		const zipPath = join(workspace, "bar.zip");
@@ -256,6 +376,22 @@ export async function installBar(): Promise<BarInstallResult> {
 			throw new Error(`The release archive has no ${BAR_BUNDLE_NAME} in it.`);
 		}
 
+		// Before touching the installed copy: a release that still cannot read
+		// this CLI's registry is not an upgrade, and swapping it in would only
+		// replace one unusable app with another.
+		const incoming = readBundleInfo(source);
+		const required = options.minRegistryVersion;
+		if (required !== undefined && incoming.registryVersion < required) {
+			throw new Error(
+				`${BAR_APP_NAME} ${release.version} reads runs.json v${incoming.registryVersion}, but this buncargo writes v${required}. No compatible release is published yet.`,
+			);
+		}
+
+		// Quit before replacing: a bundle swapped out from under a running app
+		// is how you get a half-updated one, and relaunching is only honest if
+		// it was running to begin with.
+		const wasRunning = await quitBar();
+
 		const target = join(installDirectory(), BAR_BUNDLE_NAME);
 		rmSync(target, { recursive: true, force: true });
 		const copy = run(`ditto ${quote(source)} ${quote(target)}`);
@@ -269,7 +405,8 @@ export async function installBar(): Promise<BarInstallResult> {
 
 		writeBarManifest(target, release.version);
 		barDecline.clear();
-		return { path: target, version: release.version };
+		if (wasRunning) openBar(target);
+		return { path: target, version: release.version, relaunched: wasRunning };
 	} finally {
 		rmSync(workspace, { recursive: true, force: true });
 	}
@@ -304,9 +441,32 @@ export function isBarRunning(): boolean {
 	return run(`pgrep -x ${BAR_APP_NAME}`).exitCode === 0;
 }
 
-export function uninstallBar(): boolean {
-	const path = findInstalledBar();
+/**
+ * Quit a running app and wait for it to actually go.
+ *
+ * `osascript` asks politely, which is what lets the app tear its status item
+ * down; `pkill` is the backstop for one that ignores the request. Both callers
+ * remove or replace the bundle next, so returning while the process still
+ * holds it is the bug this exists to prevent.
+ *
+ * Returns whether it was running, which is what decides a relaunch.
+ */
+export async function quitBar(): Promise<boolean> {
+	if (!isBarRunning()) return false;
 	run(`osascript -e 'quit app "${BAR_APP_NAME}"'`);
+
+	const deadline = Date.now() + QUIT_TIMEOUT_MS;
+	while (Date.now() < deadline) {
+		if (!isBarRunning()) return true;
+		await Bun.sleep(QUIT_POLL_MS);
+	}
+	run(`pkill -x ${BAR_APP_NAME}`);
+	return true;
+}
+
+export async function uninstallBar(): Promise<boolean> {
+	const path = findInstalledBar();
+	await quitBar();
 	if (path) rmSync(path, { recursive: true, force: true });
 	rmSync(getBarManifestPath(), { force: true });
 	return path !== undefined;

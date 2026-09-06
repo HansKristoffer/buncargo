@@ -31,7 +31,12 @@ import { chownToInvokingUser, stateFilePath } from "./state-paths";
  * second terminal.
  */
 
-const REGISTRY_VERSION = 1;
+/**
+ * The `runs.json` schema. Bumping it makes every older BuncargoBar unable to
+ * read the file, which is why `core/menubar.ts` compares it against the
+ * installed bundle's `BuncargoRegistryVersion` and updates the app.
+ */
+export const REGISTRY_VERSION = 1;
 export const RUNS_FILENAME = "runs.json";
 
 export type RunAppStatus =

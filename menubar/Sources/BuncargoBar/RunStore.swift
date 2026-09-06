@@ -13,11 +13,16 @@ final class RunStore: ObservableObject {
     @Published private(set) var groups: [ProjectGroup] = []
     @Published private(set) var runCount = 0
     @Published private(set) var errorMessage: String?
+    /// The registry moved past this build. Only the CLI can fix it.
+    @Published private(set) var isOutdated = false
 
     private var source: DispatchSourceFileSystemObject?
     private var descriptor: CInt = -1
     private var timer: Timer?
     private var reloadWorkItem: DispatchWorkItem?
+    private var announced: Set<String> = []
+    /// The runs already up at launch are not news; only later arrivals notify.
+    private var primed = false
 
     private let pollInterval: TimeInterval = 5
 
@@ -45,6 +50,18 @@ final class RunStore: ObservableObject {
             groups = groupByProject(runs)
             runCount = runs.count
             errorMessage = nil
+            isOutdated = false
+
+            let started = Notifier.newlyStarted(runs: runs, announced: &announced)
+            if primed { started.forEach(Notifier.runStarted) }
+            primed = true
+        } catch let error as UnsupportedRegistryVersion {
+            // Nothing this build shows can be trusted once the schema moved,
+            // so the stale rows go too.
+            groups = []
+            runCount = 0
+            errorMessage = error.localizedDescription
+            isOutdated = true
         } catch {
             // A half-written file is a transient state, not a reason to blank
             // the menu: keep showing the last good read and say what happened.

@@ -38,4 +38,28 @@ for expected in "lullu/t3code-f003056f" "platform=ready" "api=starting" "worker=
   fi
 done
 
+HOME="$FAKE_HOME" "$BINARY" --selftest
+
+# A registry from a newer CLI must fail loudly rather than read as "nothing
+# running" — that message is the only thing telling the user to update the app.
+sed 's/"version": 1/"version": 99/' "$FIXTURE" > "$FAKE_HOME/.buncargo/runs.json"
+if OUTPUT="$(HOME="$FAKE_HOME" "$BINARY" --status 2>&1)"; then
+  echo "Expected --status to fail on an unsupported registry version" >&2
+  exit 1
+fi
+if [[ "$OUTPUT" != *"buncargo now writes v99"* ]]; then
+  echo "Expected an unsupported-version message, got: $OUTPUT" >&2
+  exit 1
+fi
+
+# The number in Info.plist is what the CLI reads to decide the app is too old,
+# so a bundle whose plist disagrees with its decoder is worse than useless.
+if [[ -n "$BUNDLE" ]]; then
+  STAMPED="$(plutil -extract BuncargoRegistryVersion raw "$BUNDLE/Contents/Info.plist")"
+  if [[ "$STAMPED" != "1" ]]; then
+    echo "Info.plist claims registry v$STAMPED, the decoder supports v1" >&2
+    exit 1
+  fi
+fi
+
 echo "Smoke test passed"
