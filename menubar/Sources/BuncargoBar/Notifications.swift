@@ -31,7 +31,9 @@ enum Notifier {
                 intentIdentifiers: []
             )
         ])
-        center.requestAuthorization(options: [.alert]) { _, _ in }
+        // The completion-handler form would be inferred @MainActor here and
+        // trap when UserNotifications calls it on its own queue; async is safe.
+        Task { _ = try? await center.requestAuthorization(options: [.alert]) }
     }
 
     static func runStarted(_ run: Run) {
