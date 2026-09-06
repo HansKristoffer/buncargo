@@ -1,8 +1,8 @@
 # BuncargoBar releases, tagged `bar-v*` so they never mix with the CLI's `v*`.
 #
-# `buncargo bar install` and the app's own update checker both read the assets
-# this publishes, so the names here are a contract: `BuncargoBar-<version>.zip`
-# and a matching `.sha256`.
+# `buncargo bar install` and `buncargo bar update` read the assets this
+# publishes, so the names here are a contract: `BuncargoBar-<version>.zip` and a
+# matching `.sha256`. The CLI is the only updater; the app has no checker.
 name: Release menubar
 
 on:
