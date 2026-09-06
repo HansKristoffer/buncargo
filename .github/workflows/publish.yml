@@ -32,7 +32,8 @@ jobs:
           bun run verify:package
           bun scripts/verify-docker.ts
       - name: Record candidate commit and version
-        run: node -p 'JSON.stringify({ commit: process.env.GITHUB_SHA, version: require("./package.json").version })' > .buncargo/artifacts/candidate.json
+        run: |
+          node -p 'JSON.stringify({ commit: process.env.GITHUB_SHA, version: require("./package.json").version })' > .buncargo/artifacts/candidate.json
       - uses: actions/upload-artifact@v4
         with:
           name: npm-candidate-${{ github.sha }}
