@@ -8,8 +8,14 @@ import type {
 	ServiceDiagnosisRequest,
 } from "../container-runtime/types";
 import type { AppleContainerCli } from "./cli";
-import { createAppleContainerCli } from "./cli";
-import { appleDown, appleStopByIds, appleUp } from "./lifecycle";
+import { createAppleContainerCli, runAppleAsync } from "./cli";
+import {
+	appleDown,
+	appleDownAsync,
+	appleStopByIds,
+	appleUp,
+	appleUpAsync,
+} from "./lifecycle";
 import {
 	ensureAppleContainerRunning,
 	isAppleContainerSystemRunning,
@@ -18,8 +24,10 @@ import { containerNameFor } from "./run-plan";
 import {
 	appleContainerPortOwners,
 	appleProjectServiceStates,
+	appleProjectServiceStatesAsync,
 	areAppleServicesRunning,
 	diagnoseAppleService,
+	diagnoseAppleServiceAsync,
 	findAppleContainerOnPort,
 	listAppleBuncargoContainers,
 } from "./status";
@@ -53,6 +61,12 @@ export function appleContainerRuntimeAdapter(
 			appleUp(cli, request);
 		},
 
+		upAsync(request: ContainerUpRequest) {
+			return appleUpAsync(cli, request);
+		},
+		downAsync(request: ContainerDownRequest) {
+			return appleDownAsync(cli, request);
+		},
 		down(request: ContainerDownRequest) {
 			appleDown(cli, request);
 		},
@@ -69,6 +83,22 @@ export function appleContainerRuntimeAdapter(
 			return cli.run(["exec", containerName, ...request.command]).ok;
 		},
 
+		async execInServiceAsync(request: ExecInServiceRequest) {
+			return (
+				await runAppleAsync(
+					cli,
+					[
+						"exec",
+						containerNameFor(request.projectName, request.serviceName),
+						...request.command,
+					],
+					{ signal: request.signal, timeoutMs: request.timeoutMs ?? 2000 },
+				)
+			).ok;
+		},
+		diagnoseServiceAsync(request: ServiceDiagnosisRequest) {
+			return diagnoseAppleServiceAsync(cli, request);
+		},
 		diagnoseService(request: ServiceDiagnosisRequest) {
 			return diagnoseAppleService(cli, request);
 		},
@@ -90,6 +120,9 @@ export function appleContainerRuntimeAdapter(
 			return appleContainerPortOwners(cli);
 		},
 
+		projectServiceStatesAsync(projectName: string, signal?: AbortSignal) {
+			return appleProjectServiceStatesAsync(cli, projectName, signal);
+		},
 		projectServiceStates(projectName: string) {
 			return appleProjectServiceStates(cli, projectName);
 		},

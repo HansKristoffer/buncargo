@@ -12,16 +12,38 @@ import {
 } from "../core/service-presets";
 import { resolveSelectedApps } from "../planning";
 import type { AnyDevConfig, DevConfig, DevConfigLike } from "../types";
+import { validateConfigShape } from "./validate-shape";
 
 /**
  * Collect every problem with a dev config, in the order they were found.
  *
- * Takes the widened {@link AnyDevConfig} view rather than a generic
- * `DevConfig`: every concrete config is assignable to it, and validation only
- * ever reads fields, so it never needs the config's own callback signatures.
+ * Dynamic configs cross a shape boundary before semantic checks. Typed
+ * configs use the same boundary without losing their own callback signatures.
  */
-export function validateConfig(config: AnyDevConfig): string[] {
-	const errors: string[] = [];
+export function validateConfig(value: unknown): string[] {
+	const errors = validateConfigShape(value);
+	if (errors.length > 0) return errors;
+	const config = value as AnyDevConfig;
+	const portOwners = new Map<number, string>();
+	const namespaceOwners = new Map<string, string>();
+	const claimName = (name: string, path: string) => {
+		const previous = namespaceOwners.get(name);
+		if (previous)
+			errors.push(
+				`${path} conflicts with ${previous} in the computed ports/URLs namespace`,
+			);
+		else namespaceOwners.set(name, path);
+	};
+	const claimPort = (port: number | undefined, path: string) => {
+		if (!Number.isInteger(port) || (port ?? 0) < 1 || (port ?? 0) > 65535) {
+			errors.push(`${path} must be an integer between 1 and 65535`);
+			return;
+		}
+		const previous = portOwners.get(port as number);
+		if (previous)
+			errors.push(`${path} duplicates port ${port} used by ${previous}`);
+		else portOwners.set(port as number, path);
+	};
 	const composeServiceNames = new Set<string>();
 	const derivedEnvOwners = new Map<string, string>();
 
@@ -44,6 +66,12 @@ export function validateConfig(config: AnyDevConfig): string[] {
 	}
 
 	for (const [name, service] of Object.entries(config.services ?? {})) {
+		claimName(name, `services.${name}`);
+		claimPort(service.port, `services.${name}.port`);
+		if (service.secondaryPort !== undefined) {
+			claimName(`${name}Secondary`, `services.${name}.secondaryPort`);
+			claimPort(service.secondaryPort, `services.${name}.secondaryPort`);
+		}
 		if (!service.port || typeof service.port !== "number") {
 			errors.push(`Service "${name}" must have a valid port number`);
 		}
@@ -147,6 +175,8 @@ export function validateConfig(config: AnyDevConfig): string[] {
 	}
 
 	for (const [name, app] of Object.entries(config.apps ?? {})) {
+		claimName(name, `apps.${name}`);
+		claimPort(app.port, `apps.${name}.port`);
 		if ("env" in (app as object)) {
 			errors.push(
 				`App "${name}" uses "env", which was renamed to "staticEnv" to avoid colliding with the top-level env overlay. Use apps.${name}.staticEnv for constants, or apps.${name}.envVars for computed values.`,
@@ -205,9 +235,13 @@ export function validateConfig(config: AnyDevConfig): string[] {
 		);
 	}
 
-	for (const optionKey of ["expoApiApp", "frontendApp"] as const) {
+	for (const optionKey of [
+		"primaryApp",
+		"expoApiApp",
+		"frontendApp",
+	] as const) {
 		const appName = config.options?.[optionKey];
-		if (appName && config.apps && !config.apps[appName]) {
+		if (appName && !config.apps?.[appName]) {
 			errors.push(
 				`options.${optionKey} "${appName}" must match a configured app key`,
 			);
@@ -223,7 +257,7 @@ export function validateConfig(config: AnyDevConfig): string[] {
 				errors.push(error instanceof Error ? error.message : String(error));
 			}
 		}
-		if (hosts.primaryApp && config.apps && !config.apps[hosts.primaryApp]) {
+		if (hosts.primaryApp && !config.apps?.[hosts.primaryApp]) {
 			errors.push(
 				`options.hosts.primaryApp "${hosts.primaryApp}" must match a configured app key`,
 			);
@@ -262,9 +296,7 @@ export function validateConfig(config: AnyDevConfig): string[] {
 export function assertValidConfig(
 	config: unknown,
 ): asserts config is DevConfigLike {
-	// validateConfig reads every field defensively, so the widened view is safe
-	// here even when the value turns out not to be a config at all.
-	const errors = validateConfig(config as AnyDevConfig);
+	const errors = validateConfig(config);
 	if (errors.length > 0) {
 		throw new Error(`Invalid dev config:\n  - ${errors.join("\n  - ")}`);
 	}

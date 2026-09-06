@@ -142,3 +142,20 @@ export async function loadReusableTunnelApps(
 
 	return { publicUrls, tunnels, missingAppNames };
 }
+
+/** Read-only counterpart to pruning, for status/doctor. */
+export async function readLiveTunnelRegistry(
+	root: string,
+	now = Date.now(),
+): Promise<TunnelRegistryEntry[]> {
+	return (
+		await registry.read(getTunnelRegistryPath(root), { strict: true })
+	).filter((entry) => {
+		const updated = Date.parse(entry.updatedAt);
+		return (
+			Number.isFinite(updated) &&
+			now - updated <= REGISTRY_TTL_MS &&
+			isRouteOwnerAlive(entry.pid)
+		);
+	});
+}

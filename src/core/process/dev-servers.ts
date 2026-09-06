@@ -5,8 +5,10 @@ import {
 } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import type { AppConfig, DevServerPids } from "../../types";
 import { waitForDevServers } from "../network";
+import { recordStartupMetric } from "../startup-metrics";
 import {
 	formatPidLine,
 	formatPrefixedLine,
@@ -23,8 +25,8 @@ import {
 	getPortOwner,
 	killPortOwner,
 	type PortOwnerSnapshot,
-	signalProcessTree,
 } from "./port-owner";
+import { ProcessOwner, RunInterrupted } from "./process-owner";
 
 /**
  * Did this app stop because something asked it to?
@@ -35,8 +37,17 @@ import {
  * does exactly that. Without them a Ctrl-C, or a `buncargo stop`, ends a clean
  * shutdown with "App exited with code 143" and a failed run.
  */
-export function isDeliberateExit(code: number | null): boolean {
-	return code === null || code === 0 || code === 130 || code === 143;
+export function isDeliberateExit(
+	code: number | null,
+	signal?: NodeJS.Signals | null,
+): boolean {
+	return (
+		(code === null &&
+			(signal === undefined || signal === "SIGINT" || signal === "SIGTERM")) ||
+		code === 0 ||
+		code === 130 ||
+		code === 143
+	);
 }
 
 export interface SpawnDevServerOptions {
@@ -93,16 +104,27 @@ export async function spawnDevServer(
 		stdio: isCI || verbose ? "inherit" : "ignore",
 	};
 
+	recordStartupMetric("subprocesses");
 	const proc = spawn(cmd, args, spawnOptions);
 
 	if (detached && proc.unref) {
 		proc.unref();
 	}
 
+	await new Promise<void>((resolvePromise, rejectPromise) => {
+		proc.once("error", rejectPromise);
+		proc.once("spawn", resolvePromise);
+	});
 	return proc;
 }
 
 export interface StartDevServersOptions {
+	signal?: AbortSignal;
+	shutdownGraceMs?: number;
+	runtime?: ContainerRuntimeAdapter;
+	/** All selected app waves have completed readiness. */
+	onReady?: (signal?: AbortSignal) => void | Promise<void>;
+	onAppReady?: (name: string) => void;
 	verbose?: boolean;
 	productionBuild?: boolean;
 	isCI?: boolean;
@@ -113,7 +135,7 @@ export interface StartDevServersOptions {
 	/** Extra args appended to the attached app command. */
 	extraArgs?: string[];
 	/** Called after wave-1 apps are healthy (CLI opens tunnels here). */
-	onAfterWave1?: () => Promise<void>;
+	onAfterWave1?: (signal?: AbortSignal) => Promise<void>;
 	/**
 	 * Hold `needsPublicUrls` apps back for wave 2. Default: true.
 	 *
@@ -128,7 +150,10 @@ export interface StartDevServersOptions {
 	/** Called once when SIGINT/SIGTERM/SIGHUP arrives (waitForExit only). */
 	onSignal?: () => void | Promise<void>;
 	/** Override wave-1 health wait. */
-	waitForHealth?: (apps: Record<string, AppConfig>) => Promise<void>;
+	waitForHealth?: (
+		apps: Record<string, AppConfig>,
+		signal?: AbortSignal,
+	) => Promise<void>;
 	/**
 	 * A dev server was spawned, with the pid of the process group leader.
 	 *
@@ -140,7 +165,11 @@ export interface StartDevServersOptions {
 	 * A dev server exited. `code` is `null` when it was signalled, which is what
 	 * a `buncargo stop <app>` or a Ctrl-C looks like from here.
 	 */
-	onAppExit?: (name: string, code: number | null) => void;
+	onAppExit?: (
+		name: string,
+		code: number | null,
+		signal?: NodeJS.Signals | null,
+	) => void;
 }
 
 function resolveShell(): string {
@@ -182,30 +211,6 @@ function prefixStream(
 	stream.on("end", () => {
 		if (buffer) writeLine(buffer);
 	});
-}
-
-function killChildTree(child: ChildProcess): void {
-	if (!child.pid) return;
-	try {
-		signalProcessTree(child.pid, "SIGTERM");
-	} catch {
-		try {
-			child.kill("SIGTERM");
-		} catch {
-			// already dead
-		}
-	}
-}
-
-function installSignalHandlers(handler: () => void): () => void {
-	process.on("SIGINT", handler);
-	process.on("SIGTERM", handler);
-	process.on("SIGHUP", handler);
-	return () => {
-		process.off("SIGINT", handler);
-		process.off("SIGTERM", handler);
-		process.off("SIGHUP", handler);
-	};
 }
 
 function pickWave(
@@ -266,6 +271,7 @@ function spawnManagedApp(
 		options.attached && options.extraArgs.length > 0
 			? `${baseCommand} ${options.extraArgs.join(" ")}`
 			: baseCommand;
+	recordStartupMetric("subprocesses");
 	const child = spawn(command, [], {
 		cwd: config.cwd ? resolve(root, config.cwd) : root,
 		env: { ...process.env, ...envVars },
@@ -294,10 +300,15 @@ async function prepareAppPort(
 	projectName: string,
 	verbose: boolean,
 	ports: PortOwnerSnapshot,
+	runtime?: ContainerRuntimeAdapter,
 ): Promise<"reuse" | "start"> {
 	if (port === undefined) return "start";
 	const owner = ports.owner(port);
-	const action = classifyPortOccupant(owner, { root, projectName });
+	const action = classifyPortOccupant(owner, {
+		root,
+		projectName,
+		runtime: runtime?.name,
+	});
 	if (action === "reuse") {
 		if (verbose) {
 			console.log(
@@ -307,111 +318,12 @@ async function prepareAppPort(
 		return "reuse";
 	}
 	if (action === "fail" && owner) {
-		throw new Error(formatPortOwner(port, owner));
+		throw new Error(formatPortOwner(port, owner, { runtime: runtime?.name }));
 	}
 	if (action === "kill") {
-		await killPortOwner(port, { verbose });
+		await killPortOwner(port, { verbose, runtime });
 	}
 	return "start";
-}
-
-/**
- * Supervise spawned children until they exit, forwarding signals and failing
- * fast when any app dies with a non-zero code. Closing the attached app (the
- * one holding the TTY) tears down the rest.
- */
-function superviseChildren(
-	children: Array<{ name: string; child: ChildProcess }>,
-	options: {
-		attachedName?: string;
-		onSignal?: () => void | Promise<void>;
-		onAppExit?: (name: string, code: number | null) => void;
-	},
-): Promise<void> {
-	const { attachedName, onSignal, onAppExit } = options;
-
-	return new Promise<void>((resolvePromise, rejectPromise) => {
-		let settled = false;
-		let remaining = children.length;
-
-		const cleanupListeners = installSignalHandlers(() => {
-			void (async () => {
-				if (onSignal) await onSignal();
-				for (const { child } of children) {
-					killChildTree(child);
-				}
-			})();
-		});
-
-		const resolveOnce = () => {
-			if (settled) return;
-			settled = true;
-			cleanupListeners();
-			resolvePromise();
-		};
-
-		const rejectOnce = (error: Error) => {
-			if (settled) return;
-			settled = true;
-			cleanupListeners();
-			for (const { child } of children) {
-				killChildTree(child);
-			}
-			rejectPromise(error);
-		};
-
-		// One child can be reported twice: `close` fires, and the sweep below
-		// also finds a non-null `exitCode` on the same object.
-		const closed = new Set<string>();
-
-		const handleClose = (name: string, code: number | null) => {
-			if (closed.has(name)) return;
-			closed.add(name);
-			remaining -= 1;
-			onAppExit?.(name, code);
-			if (name === attachedName) {
-				for (const other of children) {
-					if (other.name !== name) killChildTree(other.child);
-				}
-				if (!isDeliberateExit(code)) {
-					rejectOnce(new Error(`App "${name}" exited with code ${code}`));
-					return;
-				}
-				resolveOnce();
-				return;
-			}
-			if (!isDeliberateExit(code)) {
-				rejectOnce(new Error(`App "${name}" exited with code ${code}`));
-				return;
-			}
-			if (remaining === 0) {
-				resolveOnce();
-			}
-		};
-
-		for (const { name, child } of children) {
-			child.on("error", (error) => {
-				rejectOnce(
-					new Error(`Failed to start app "${name}": ${error.message}`),
-				);
-			});
-
-			child.on("close", (code) => handleClose(name, code));
-		}
-
-		// Apps are spawned in a loop and supervised only once the whole wave is
-		// up, so an app that dies in between — a bad command, a config error, a
-		// crash on the first line — emits its `close` before anything is
-		// listening, and the event is gone. The run then waited forever for a
-		// process that was never coming back, with no output to say so. Node
-		// still records the result on the object, so the state is recoverable
-		// even though the event is not.
-		for (const { name, child } of children) {
-			if (child.exitCode !== null || child.signalCode !== null) {
-				handleClose(name, child.exitCode);
-			}
-		}
-	});
 }
 
 /**
@@ -457,7 +369,12 @@ export async function startDevServers(
 		throw new Error(`--attach=${attachOverride} is not in the start set`);
 	}
 
-	const children: Array<{ name: string; child: ChildProcess }> = [];
+	const owner = new ProcessOwner({
+		signal: options.signal,
+		shutdownGraceMs: options.shutdownGraceMs,
+		attachedName,
+		onAppExit,
+	});
 	const pids: DevServerPids = {};
 	const nameWidth = prefixWidth(Object.keys(startable));
 	let logsHeaderPrinted = false;
@@ -471,7 +388,9 @@ export async function startDevServers(
 		// Per wave, not per run: wave 2 spawns after tunnels have opened and
 		// wave-1 servers have bound their ports, so a snapshot taken before
 		// wave 1 would be describing a machine that has since changed.
+		owner.controller.signal.throwIfAborted();
 		const portOwners = createPortOwnerSnapshot({
+			runtime: options.runtime,
 			ports: Object.keys(wave).flatMap((name) => {
 				const port = ports[name];
 				return port === undefined ? [] : [port];
@@ -485,7 +404,9 @@ export async function startDevServers(
 				projectName,
 				verbose,
 				portOwners,
+				options.runtime,
 			);
+			owner.controller.signal.throwIfAborted();
 			if (prepared === "reuse") continue;
 			const attached = name === attachedName;
 			const child = spawnManagedApp(
@@ -502,7 +423,7 @@ export async function startDevServers(
 					onFirstLog,
 				},
 			);
-			children.push({ name, child });
+			owner.register(name, child, config.healthEndpoint !== false);
 			if (child.pid) {
 				pids[name] = child.pid;
 				onAppSpawned?.(name, child.pid, attached);
@@ -513,28 +434,60 @@ export async function startDevServers(
 		}
 	}
 
-	if (Object.keys(wave1).length > 0) {
-		await spawnWave(wave1);
+	async function startWave(wave: Record<string, AppConfig>): Promise<void> {
+		if (Object.keys(wave).length === 0) return;
+		await owner.race(spawnWave(wave));
 		if (waitForHealth) {
-			await waitForHealth(wave1);
+			await owner.race(waitForHealth(wave, owner.controller.signal));
+			for (const name of Object.keys(wave)) {
+				owner.ready(name);
+				options.onAppReady?.(name);
+			}
 		} else {
-			await waitForDevServers(wave1, ports, { verbose });
+			await owner.race(
+				waitForDevServers(wave, ports, {
+					verbose,
+					productionBuild,
+					signal: owner.controller.signal,
+					onAppReady: (name) => {
+						owner.ready(name);
+						options.onAppReady?.(name);
+					},
+				}),
+			);
 		}
 	}
-
-	if (onAfterWave1) {
-		await onAfterWave1();
-	}
-
-	if (Object.keys(wave2).length > 0) {
-		await spawnWave(wave2);
-	}
-
-	if (!waitForExit || children.length === 0) {
+	try {
+		await startWave(wave1);
+		if (onAfterWave1) await owner.race(onAfterWave1(owner.controller.signal));
+		await startWave(wave2);
+		owner.controller.signal.throwIfAborted();
+		if (options.onReady)
+			await owner.race(
+				Promise.resolve().then(() =>
+					options.onReady?.(owner.controller.signal),
+				),
+			);
+		if (waitForExit) {
+			await owner.wait();
+			await owner.stop();
+		}
 		return pids;
+	} catch (error) {
+		try {
+			await owner.stop();
+		} catch (cleanupError) {
+			throw new AggregateError(
+				[error, cleanupError],
+				"App startup or shutdown failed",
+			);
+		}
+		if (error instanceof RunInterrupted) {
+			await onSignal?.();
+			return pids;
+		}
+		throw error;
+	} finally {
+		owner.dispose();
 	}
-
-	await superviseChildren(children, { attachedName, onSignal, onAppExit });
-
-	return pids;
 }

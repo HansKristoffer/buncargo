@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { execAsync } from "../core/process/exec";
+import { recordStartupMetric } from "../core/startup-metrics";
 import { lookupOnPath } from "../core/tool-binary";
 
 /**
@@ -18,6 +20,8 @@ export interface AppleCliResult {
 }
 
 export interface AppleCliOptions {
+	signal?: AbortSignal;
+	timeoutMs?: number;
 	cwd?: string;
 	env?: Record<string, string>;
 	/** Stream to the terminal instead of capturing. */
@@ -30,6 +34,7 @@ export interface AppleContainerCli {
 	/** Whether the binary could be found at all. */
 	readonly found: boolean;
 	run(args: string[], options?: AppleCliOptions): AppleCliResult;
+	runAsync?(args: string[], options?: AppleCliOptions): Promise<AppleCliResult>;
 }
 
 export const APPLE_CONTAINER_COMMAND = "container";
@@ -49,9 +54,28 @@ export function createAppleContainerCli(
 	return {
 		binary: resolved,
 		found,
+		async runAsync(args, runOptions = {}) {
+			const result = await execAsync(
+				[resolved, ...args],
+				runOptions.cwd ?? process.cwd(),
+				runOptions.env ?? {},
+				{
+					verbose: runOptions.inherit,
+					throwOnError: false,
+					signal: runOptions.signal,
+					timeoutMs: runOptions.timeoutMs ?? 10000,
+					killGraceMs: 0,
+				},
+			);
+			runOptions.signal?.throwIfAborted();
+			return { ...result, ok: result.exitCode === 0 };
+		},
 		run(args, runOptions = {}) {
+			recordStartupMetric("subprocesses");
 			const result = spawnSync(resolved, args, {
 				cwd: runOptions.cwd,
+				timeout: runOptions.timeoutMs ?? 10000,
+				killSignal: "SIGKILL",
 				encoding: "utf-8",
 				env: runOptions.env
 					? { ...process.env, ...runOptions.env }
@@ -90,4 +114,14 @@ export function isMissingResourceMessage(message: string): boolean {
 
 export function isAlreadyExistsMessage(message: string): boolean {
 	return /already exists|already in use|exists/i.test(message);
+}
+
+/** Injected legacy CLIs remain compatible; real CLIs always execute asynchronously. */
+export async function runAppleAsync(
+	cli: AppleContainerCli,
+	args: string[],
+	options: AppleCliOptions = {},
+): Promise<AppleCliResult> {
+	options.signal?.throwIfAborted();
+	return cli.runAsync ? cli.runAsync(args, options) : cli.run(args, options);
 }

@@ -1,12 +1,21 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
 	defineListRegistry,
 	isRouteOwnerAlive,
 	readJsonDocumentSync,
 	StateFileUnreadableError,
+	StateFileVersionError,
+	writeJsonDocument,
 	writeJsonDocumentSync,
 } from "./registry-file";
 
@@ -66,6 +75,68 @@ describe("readJsonDocumentSync", () => {
 });
 
 describe("defineListRegistry", () => {
+	it("refuses newer schemas on both reads and mutations without changing their bytes", async () => {
+		const path = tempFile();
+		const raw = JSON.stringify({
+			version: 3,
+			entries: [{ name: "future", port: 1234 }],
+			newField: true,
+		});
+		writeFileSync(path, raw);
+		await expect(registry.read(path)).rejects.toBeInstanceOf(
+			StateFileVersionError,
+		);
+		await expect(registry.write(path, [])).rejects.toBeInstanceOf(
+			StateFileVersionError,
+		);
+		await expect(
+			registry.write(path, [{ name: "api", port: 3000 }]),
+		).rejects.toBeInstanceOf(StateFileVersionError);
+		expect(readFileSync(path, "utf8")).toBe(raw);
+	});
+
+	it("preserves corrupt bytes before repairing a registry", async () => {
+		const path = tempFile();
+		writeFileSync(path, "{broken secret state");
+		await registry.write(path, [{ name: "api", port: 3000 }]);
+		const backups = readdirSync(dirname(path)).filter((name) =>
+			name.includes(".recovery-"),
+		);
+		expect(backups).toHaveLength(1);
+		const backup = join(dirname(path), backups[0] ?? "missing-backup");
+		expect(readFileSync(backup, "utf8")).toBe("{broken secret state");
+		expect(statSync(backup).mode & 0o777).toBe(0o600);
+		expect(await registry.read(path)).toEqual([{ name: "api", port: 3000 }]);
+	});
+
+	it("preserves discarded invalid records before an empty-list deletion", async () => {
+		const path = tempFile();
+		const raw = JSON.stringify({
+			version: 2,
+			entries: [{ unexpected: "record" }],
+		});
+		writeFileSync(path, raw);
+		await registry.write(path, []);
+		const backup = readdirSync(dirname(path)).find((name) =>
+			name.includes(".recovery-"),
+		);
+		expect(backup).toBeDefined();
+		expect(
+			readFileSync(join(dirname(path), backup ?? "missing-backup"), "utf8"),
+		).toBe(raw);
+		expect(existsSync(path)).toBe(false);
+	});
+
+	it("does not replace unchanged state on repeated writes", async () => {
+		const path = tempFile();
+		const entries = [{ name: "api", port: 3000 }];
+		await registry.write(path, entries);
+		const before = statSync(path);
+		await registry.write(path, entries);
+		expect(statSync(path).ino).toBe(before.ino);
+		expect(statSync(path).mtimeMs).toBe(before.mtimeMs);
+	});
+
 	it("round-trips entries", async () => {
 		const path = tempFile();
 		await registry.write(path, [{ name: "api", port: 3000 }]);
@@ -147,5 +218,16 @@ describe("isRouteOwnerAlive", () => {
 	it("follows the owning process", () => {
 		expect(isRouteOwnerAlive(process.pid)).toBe(true);
 		expect(isRouteOwnerAlive(99_999_999)).toBe(false);
+	});
+});
+
+describe("private atomic publication", () => {
+	it("creates both async and sync state files privately before publication", async () => {
+		const asyncPath = tempFile();
+		const syncPath = tempFile();
+		await writeJsonDocument(asyncPath, { password: "private" });
+		writeJsonDocumentSync(syncPath, { password: "private" });
+		expect(statSync(asyncPath).mode & 0o777).toBe(0o600);
+		expect(statSync(syncPath).mode & 0o777).toBe(0o600);
 	});
 });

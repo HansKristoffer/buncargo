@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { serviceHashEnv } from "../docker-compose/interpolate";
 import type { ServiceConfig } from "../types";
 import {
 	ensureServicesRunning,
@@ -198,7 +199,7 @@ describe("ensureServicesRunning reconcile", () => {
 	async function hashFromRun(): Promise<string> {
 		const harness = reconcileHarness([]);
 		const ups = await harness.run();
-		return ups[0]?.envVars.BUNCARGO_STACK_HASH ?? "";
+		return ups[0]?.envVars[serviceHashEnv("postgres")] ?? "";
 	}
 
 	it("reconciles when nothing is running", async () => {
@@ -213,7 +214,7 @@ describe("ensureServicesRunning reconcile", () => {
 	it("skips the reconcile when the running stack already matches", async () => {
 		const hash = await hashFromRun();
 		const harness = reconcileHarness([
-			{ service: "postgres", running: true, stackHash: hash },
+			{ service: "postgres", running: true, serviceHash: hash },
 		]);
 		expect(await harness.run()).toHaveLength(0);
 	});
@@ -237,7 +238,7 @@ describe("ensureServicesRunning reconcile", () => {
 	it("reconciles a matching container that is not running", async () => {
 		const hash = await hashFromRun();
 		const harness = reconcileHarness([
-			{ service: "postgres", running: false, stackHash: hash },
+			{ service: "postgres", running: false, serviceHash: hash },
 		]);
 		expect(await harness.run()).toHaveLength(1);
 	});
@@ -306,5 +307,82 @@ describe("runtimeAnsweredReadiness", () => {
 		const config: ServiceConfig = { port: 5432, healthCheck: "pg_isready" };
 		expect(runtimeAnsweredReadiness(config, false)).toBe(false);
 		expect(runtimeAnsweredReadiness(config, undefined)).toBe(false);
+	});
+});
+
+describe("service readiness deadlines", () => {
+	it("bounds an uncooperative custom callback by elapsed time", async () => {
+		let probeSignal: AbortSignal | undefined;
+		const start = performance.now();
+		await expect(
+			waitForService(
+				"db",
+				{
+					port: 5432,
+					healthTimeout: 80,
+					healthCheck: async (_port, signal) => {
+						probeSignal = signal;
+						return new Promise<boolean>(() => {});
+					},
+				},
+				5432,
+				{ runtime: stubRuntime(undefined), projectName: "test" },
+			),
+		).rejects.toThrow("did not become ready");
+		expect(performance.now() - start).toBeLessThan(400);
+		expect(probeSignal?.aborted).toBe(true);
+	});
+
+	it("includes time spent in slow probes in the total budget", async () => {
+		const start = performance.now();
+		await expect(
+			waitForService(
+				"db",
+				{
+					port: 5432,
+					healthTimeout: 80,
+					healthCheck: async () => {
+						await new Promise((resolve) => setTimeout(resolve, 200));
+						return false;
+					},
+				},
+				5432,
+				{
+					runtime: stubRuntime(undefined),
+					projectName: "test",
+					pollInterval: 20,
+				},
+			),
+		).rejects.toThrow("did not become ready");
+		expect(performance.now() - start).toBeLessThan(350);
+	});
+});
+
+describe("runtime health overrides", () => {
+	it("runs the configured probe when raw Compose overrides container health", () => {
+		expect(
+			runtimeAnsweredReadiness(
+				{
+					port: 5432,
+					healthCheck: "pg_isready",
+					docker: { healthcheck: { test: ["CMD", "true"] } },
+				},
+				true,
+			),
+		).toBe(false);
+		expect(
+			runtimeAnsweredReadiness(
+				{
+					port: 5432,
+					healthCheck: "pg_isready",
+					docker: {
+						kind: "preset",
+						preset: "postgres",
+						service: { healthcheck: { test: ["CMD", "true"] } },
+					},
+				},
+				true,
+			),
+		).toBe(false);
 	});
 });

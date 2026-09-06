@@ -1,7 +1,6 @@
 import {
+	createHeartbeatOwner,
 	spawnWatchdog as spawnWatchdogFn,
-	startHeartbeat as startHeartbeatFn,
-	stopHeartbeat as stopHeartbeatFn,
 	stopWatchdog as stopWatchdogFn,
 } from "../core/watchdog";
 import type { AppConfig, ServiceConfig } from "../types";
@@ -18,12 +17,13 @@ export function createWatchdogApi<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 >(ctx: DevEnvContext<TServices, TApps>): DevWatchdogApi {
+	const heartbeat = createHeartbeatOwner(ctx.projectName, ctx.root);
 	return {
 		startHeartbeat(intervalMs) {
-			startHeartbeatFn(ctx.projectName, intervalMs, ctx.root);
+			heartbeat.start(intervalMs);
 		},
 		stopHeartbeat() {
-			stopHeartbeatFn();
+			heartbeat.stop();
 		},
 		async spawnWatchdog(timeoutMinutes) {
 			await spawnWatchdogFn(ctx.projectName, ctx.root, {

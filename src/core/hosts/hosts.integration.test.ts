@@ -21,8 +21,10 @@ const runHostsIntegration =
 describe.skipIf(!runHostsIntegration)("hosts mkcert integration", () => {
 	it("resolves mkcert and mints a leaf covering every hostname", async () => {
 		const previousCaroot = process.env.CAROOT;
+		const previousHome = process.env.HOME;
 		const caroot = mkdtempSync(join(tmpdir(), "buncargo-hosts-caroot-"));
 		process.env.CAROOT = caroot;
+		process.env.HOME = join(caroot, "home");
 		try {
 			const mkcert = await ensureMkcert();
 			expect(mkcert.length).toBeGreaterThan(0);
@@ -40,9 +42,11 @@ describe.skipIf(!runHostsIntegration)("hosts mkcert integration", () => {
 			expect(cert.checkHost("api.serpier.localhost")).toBeTruthy();
 			expect(cert.checkHost("web.serpier.localhost")).toBeTruthy();
 		} finally {
+			if (previousHome === undefined) delete process.env.HOME;
+			else process.env.HOME = previousHome;
 			if (previousCaroot === undefined) delete process.env.CAROOT;
 			else process.env.CAROOT = previousCaroot;
 			rmSync(caroot, { recursive: true, force: true });
 		}
-	});
+	}, 120_000);
 });

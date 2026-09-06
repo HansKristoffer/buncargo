@@ -1,9 +1,10 @@
-import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { abortableSleep, remainingTime } from "../core/deadline";
+import { execAsync } from "../core/process/exec";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWait } from "../core/style";
 import { lookupOnPath } from "../core/tool-binary";
-import { runDocker } from "./binary";
+import { runDocker, runDockerAsync } from "./binary";
 
 export type DockerRuntime =
 	| "orbstack"
@@ -36,7 +37,10 @@ function dockerContextName(binary?: string): string | null {
 }
 
 export function detectDockerRuntime(binary?: string): DockerRuntime {
-	const context = dockerContextName(binary)?.toLowerCase() ?? "";
+	return runtimeFromContext(dockerContextName(binary)?.toLowerCase() ?? "");
+}
+
+function runtimeFromContext(context: string): DockerRuntime {
 	if (
 		context.includes("orbstack") ||
 		existsSync("/Applications/OrbStack.app")
@@ -82,41 +86,25 @@ function remediationFor(runtime: DockerRuntime): string {
 	}
 }
 
-function startRuntime(runtime: DockerRuntime): void {
+function runtimeStartCommand(runtime: DockerRuntime): string[] | undefined {
 	switch (runtime) {
 		case "orbstack":
-			spawn("open", ["-a", "OrbStack"], {
-				detached: true,
-				stdio: "ignore",
-			}).unref();
-			return;
+			return ["open", "-a", "OrbStack"];
 		case "docker-desktop":
-			spawn("open", ["-a", "Docker"], {
-				detached: true,
-				stdio: "ignore",
-			}).unref();
-			return;
+			return ["open", "-a", "Docker"];
 		case "colima":
-			spawn("colima", ["start"], { detached: true, stdio: "ignore" }).unref();
-			return;
+			return ["colima", "start"];
 		case "rancher":
-			spawn("open", ["-a", "Rancher Desktop"], {
-				detached: true,
-				stdio: "ignore",
-			}).unref();
-			return;
+			return ["open", "-a", "Rancher Desktop"];
 		case "podman":
-			spawn("podman", ["machine", "start"], {
-				detached: true,
-				stdio: "ignore",
-			}).unref();
-			return;
+			return ["podman", "machine", "start"];
 		default:
-			return;
+			return undefined;
 	}
 }
 
 export interface EnsureDockerRunningOptions {
+	signal?: AbortSignal;
 	autoStart?: boolean;
 	timeoutMs?: number;
 	verbose?: boolean;
@@ -133,32 +121,54 @@ export async function ensureDockerRunning(
 		binary,
 	} = options;
 
-	if (isDockerDaemonRunning(binary)) {
-		return;
-	}
-
-	const runtime = detectDockerRuntime(binary);
-	if (!autoStart) {
+	const { signal } = options;
+	const deadline = performance.now() + timeoutMs;
+	const daemonRunning = async () =>
+		(
+			await runDockerAsync(binary, ["info", "--format", "{{.ServerVersion}}"], {
+				signal,
+				timeoutMs: Math.min(5000, remainingTime(deadline)),
+			})
+		).ok;
+	if (await daemonRunning()) return;
+	const context = await runDockerAsync(binary, ["context", "show"], {
+		signal,
+		timeoutMs: Math.min(5000, remainingTime(deadline)),
+	});
+	const runtime = runtimeFromContext(
+		context.ok ? context.stdout.trim().toLowerCase() : "",
+	);
+	if (!autoStart)
 		throw new DockerUnavailableError(runtime, remediationFor(runtime));
-	}
-
-	if (verbose) {
+	if (verbose)
 		console.log(formatStep(`🐳 Docker is not running. Starting ${runtime}...`));
-	}
-	startRuntime(runtime);
-
-	const startedAt = Date.now();
-	while (Date.now() - startedAt < timeoutMs) {
-		await new Promise((resolve) => setTimeout(resolve, 1000));
-		if (isDockerDaemonRunning(binary)) {
+	const command = runtimeStartCommand(runtime);
+	if (command && remainingTime(deadline) > 0)
+		await execAsync(
+			command,
+			process.cwd(),
+			{},
+			{
+				signal,
+				timeoutMs: remainingTime(deadline),
+				killGraceMs: 0,
+				throwOnError: false,
+			},
+		);
+	while (remainingTime(deadline) > 0) {
+		signal?.throwIfAborted();
+		if (await daemonRunning()) {
 			if (verbose) console.log(formatDone("Docker is ready"));
 			return;
 		}
-		if (verbose) {
-			const elapsed = Math.round((Date.now() - startedAt) / 1000);
-			console.log(formatWait(`Waiting for Docker... (${elapsed}s)`));
-		}
+		await abortableSleep(Math.min(1000, remainingTime(deadline)), signal);
+		if (verbose)
+			console.log(
+				formatWait(
+					`Waiting for Docker... (${Math.round((timeoutMs - remainingTime(deadline)) / 1000)}s)`,
+				),
+			);
 	}
-
+	signal?.throwIfAborted();
 	throw new DockerUnavailableError(runtime, remediationFor(runtime));
 }

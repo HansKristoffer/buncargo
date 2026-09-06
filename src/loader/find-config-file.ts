@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 export const CONFIG_FILES = [
 	"dev.config.ts",
@@ -9,7 +9,7 @@ export const CONFIG_FILES = [
 ];
 
 export function findConfigFile(startDir: string): string | null {
-	let currentDir = startDir;
+	let currentDir = resolve(startDir);
 
 	while (true) {
 		for (const file of CONFIG_FILES) {

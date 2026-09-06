@@ -1,7 +1,7 @@
 import {
 	groupRunsByProject,
-	pruneRuns,
 	type RunEntry,
+	readLiveRuns,
 } from "../../core/run-registry";
 import { hasFlag } from "../flags";
 import * as log from "../log";
@@ -17,7 +17,7 @@ import * as log from "../log";
  * still works with `--no-docker-autostart` or a stopped Docker.
  */
 export async function handleRuns(args: string[] = []): Promise<void> {
-	const runs = await pruneRuns();
+	const runs = await readLiveRuns();
 
 	if (hasFlag(args, "--json")) {
 		log.line(JSON.stringify({ version: 1, runs }, null, 2));
@@ -43,6 +43,7 @@ function printRun(run: RunEntry): void {
 	const branch = run.branch ? `  (${run.branch})` : "";
 	log.line(`  ${label}${branch}  pid ${run.pid}`);
 	log.line(`    root: ${run.root}`);
+	if (run.sessionId) log.line(`    run: ${run.sessionId}`);
 
 	for (const app of run.apps) {
 		const primary = app.name === run.primaryApp ? " ←" : "";

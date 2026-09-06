@@ -26,7 +26,11 @@ export {
 	stableStringify,
 } from "../docker-compose/interpolate";
 
-import { configHashFor, interpolateNode } from "../docker-compose/interpolate";
+import {
+	configHashFor,
+	interpolateNode,
+	SERVICE_HASH_LABEL,
+} from "../docker-compose/interpolate";
 export const PROJECT_LABEL = "buncargo.project";
 export const SERVICE_LABEL = "buncargo.service";
 
@@ -322,7 +326,8 @@ function buildServicePlan(
 	}
 
 	const containerName = containerNameFor(projectName, serviceName);
-	const configHash = configHashFor(service);
+	const configHash =
+		asRecord(service.labels)[SERVICE_HASH_LABEL] || configHashFor(service);
 	const namedVolumes: string[] = [];
 	const args = ["run", "--detach", "--name", containerName];
 

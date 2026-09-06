@@ -64,6 +64,7 @@ describeSoak("named hosts under worktree churn", () => {
 	let stopReloading: (() => void) | undefined;
 	const originalHome = process.env.HOME;
 	const originalMkcert = process.env.BUNCARGO_MKCERT_PATH;
+	const originalCaroot = process.env.CAROOT;
 
 	beforeAll(async () => {
 		// Resolve mkcert before HOME moves, then pin it: the temp home has no
@@ -75,6 +76,7 @@ describeSoak("named hosts under worktree churn", () => {
 
 		home = mkdtempSync(join(tmpdir(), "buncargo-soak-"));
 		process.env.HOME = home;
+		process.env.CAROOT = join(home, "ca");
 
 		// A stand-in for the installed service: the same reloader the daemon
 		// runs, over the same registry and certificate, on an unprivileged port.
@@ -118,6 +120,8 @@ describeSoak("named hosts under worktree churn", () => {
 		stopReloading?.();
 		proxy?.stop();
 		process.env.HOME = originalHome;
+		if (originalCaroot === undefined) delete process.env.CAROOT;
+		else process.env.CAROOT = originalCaroot;
 		if (originalMkcert === undefined) {
 			delete process.env.BUNCARGO_MKCERT_PATH;
 		} else {
@@ -137,15 +141,16 @@ describeSoak("named hosts under worktree churn", () => {
 		await syncCertificateForRoutes({
 			include: certificateHostnames(plan, "localhost"),
 			root,
-		}).catch(() => {
-			// A machine with no mkcert still exercises the registry and the
-			// route pickup, which is where the reported failure lived.
 		});
 
 		await upsertHostRoutes(
 			routesFromPlan(plan, { root, pid: process.pid, kinds: ["app"] }),
 		);
 
+		await syncCertificateForRoutes({
+			include: certificateHostnames(plan, "localhost"),
+			root,
+		});
 		const serving = await waitForDaemonRoutes(
 			plan.map((entry) => entry.hostname),
 		);

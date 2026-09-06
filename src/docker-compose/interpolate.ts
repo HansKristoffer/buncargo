@@ -111,12 +111,59 @@ export function stableStringify(value: unknown): string {
  *
  * Recorded as a label so a later run can tell "this container is mine and
  * still matches" from "the config changed underneath it", and recreate only in
- * the second case. Labels themselves are excluded: the hash is one of them.
+ * the second case. Only buncargo hash labels are excluded to avoid a self-reference. User labels remain part of the definition.
  */
+export function normalizeComposeLabels(
+	labels: DockerComposeServiceRaw["labels"],
+): Record<string, DockerComposeNode | undefined> {
+	if (Array.isArray(labels))
+		return Object.fromEntries(
+			labels.map((entry) => {
+				const text = String(entry);
+				const at = text.indexOf("=");
+				return at < 0 ? [text, ""] : [text.slice(0, at), text.slice(at + 1)];
+			}),
+		);
+	return typeof labels === "object" && labels !== null ? labels : {};
+}
+
+function withoutHashLabels(
+	service: DockerComposeServiceRaw,
+	preserveSyntax = false,
+): DockerComposeServiceRaw {
+	const { labels, ...rest } = service;
+	if (preserveSyntax && Array.isArray(labels)) {
+		return {
+			...rest,
+			labels: labels.filter(
+				(entry) =>
+					![
+						STACK_HASH_LABEL,
+						SERVICE_HASH_LABEL,
+						"buncargo.config-hash",
+					].includes(String(entry).split("=")[0] ?? ""),
+			),
+		};
+	}
+	const userLabels = Object.fromEntries(
+		Object.entries(normalizeComposeLabels(labels)).filter(
+			([key]) =>
+				![
+					STACK_HASH_LABEL,
+					SERVICE_HASH_LABEL,
+					"buncargo.config-hash",
+				].includes(key),
+		),
+	);
+	return {
+		...rest,
+		...(Object.keys(userLabels).length ? { labels: userLabels } : {}),
+	};
+}
+
 export function configHashFor(service: DockerComposeServiceRaw): string {
-	const { labels: _labels, ...rest } = service;
 	return createHash("sha256")
-		.update(stableStringify(rest))
+		.update(stableStringify(withoutHashLabels(service)))
 		.digest("hex")
 		.slice(0, 16);
 }
@@ -140,8 +187,7 @@ export const STACK_HASH_ENV = "BUNCARGO_STACK_HASH";
  * be created.
  *
  * Interpolated first, so a port block that moved changes the hash even though
- * the file text did not. Labels are excluded for the same reason as in
- * {@link configHashFor}: this hash is one of them.
+ * the file text did not. Only hash labels are excluded, as in {@link configHashFor}.
  *
  * The whole selected stack rather than one service, because the only question
  * it answers is whether this run needs to reconcile at all.
@@ -164,4 +210,114 @@ export function projectStackHash(input: {
 		.update(services.join("\n"))
 		.digest("hex")
 		.slice(0, 16);
+}
+
+/** Per-service identity is independent of the selected app/service subset. */
+export const SERVICE_HASH_LABEL = "buncargo.service-hash";
+export function serviceHashEnv(name: string): string {
+	return `BUNCARGO_SERVICE_HASH_${createHash("sha256").update(name).digest("hex").slice(0, 16).toUpperCase()}`;
+}
+
+export function serviceFingerprint(
+	model: ComposeDocument,
+	name: string,
+	env: Record<string, string>,
+): string {
+	const service = model.services?.[name];
+	if (!service)
+		throw new Error(`Service ${name} is missing from the Compose model`);
+	const interpolated = interpolateNode(
+		service as DockerComposeNode,
+		env,
+	) as DockerComposeServiceRaw;
+	const volumes: Record<string, unknown> = {};
+	for (const mount of interpolated.volumes ?? []) {
+		const source =
+			typeof mount === "string"
+				? mount.split(":")[0]
+				: (mount as Record<string, unknown>).source;
+		if (typeof source === "string" && model.volumes?.[source])
+			volumes[source] = interpolateNode(
+				model.volumes[source] as DockerComposeNode,
+				env,
+			);
+	}
+	return createHash("sha256")
+		.update(stableStringify({ service: configHashFor(interpolated), volumes }))
+		.digest("hex")
+		.slice(0, 16);
+}
+
+/** External build/config inputs are deliberately reconciled on every invocation. */
+export function canProveServiceUnchanged(
+	service: DockerComposeServiceRaw,
+): boolean {
+	if (
+		["build", "env_file", "extends", "configs", "secrets", "label_file"].some(
+			(key) => service[key] !== undefined,
+		)
+	)
+		return false;
+	// An explicit refresh policy is work the backend must perform even when
+	// the generated definition did not change. Latest/default tags also use it.
+	if (
+		service.pull_policy !== undefined &&
+		!["never", "missing", "if_not_present"].includes(
+			String(service.pull_policy),
+		)
+	)
+		return false;
+	const image = service.image;
+	if (image && !image.includes("@") && service.pull_policy !== "never") {
+		const basename = image.slice(image.lastIndexOf("/") + 1);
+		if (!basename.includes(":") || basename.endsWith(":latest")) return false;
+	}
+	return true;
+}
+
+/** A warm shortcut needs complete inputs and interpolation syntax we understand. */
+export function canProveServiceInputs(
+	model: ComposeDocument,
+	name: string,
+	env: Record<string, string>,
+): boolean {
+	const service = model.services[name];
+	if (!service || !canProveServiceUnchanged(service)) return false;
+	const nodes: unknown[] = [withoutHashLabels(service, true)];
+	// Top-level volume settings can themselves reference Compose's implicit .env.
+	for (const mount of service.volumes ?? []) {
+		const rawSource =
+			typeof mount === "string"
+				? mount.split(":")[0]
+				: (mount as Record<string, unknown>).source;
+		if (typeof rawSource !== "string") continue;
+		const source = interpolate(rawSource, env);
+		if (model.volumes?.[source]) nodes.push(model.volumes[source]);
+	}
+	function complete(node: unknown): boolean {
+		if (Array.isArray(node)) return node.every(complete);
+		if (typeof node === "object" && node !== null)
+			return Object.values(node).every(complete);
+		if (typeof node !== "string") return true;
+		let known = true;
+		const remainder = node.replace(
+			INTERPOLATION_PATTERN,
+			(
+				match,
+				braced: string | undefined,
+				_operator: string | undefined,
+				argument: string | undefined,
+				bare: string | undefined,
+			) => {
+				if (match === "$$") return "";
+				const variable = braced ?? bare;
+				if (!variable || env[variable] === undefined || argument?.includes("$"))
+					known = false;
+				return "";
+			},
+		);
+		// Unsupported operators and nested substitutions must go through Compose.
+		return known && !remainder.includes("$");
+	}
+	return nodes.every(complete);
 }

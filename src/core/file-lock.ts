@@ -1,128 +1,150 @@
-import { mkdir, open, readFile, stat, unlink } from "node:fs/promises";
+import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { abortableSleep } from "./deadline";
 import { isProcessAlive } from "./process/lifecycle";
-
-/**
- * A cross-process advisory lock for the state files several buncargo runs
- * share (`~/.buncargo/routes.json`, `.buncargo/public-tunnels.json`).
- *
- * Those registries are read-modify-write: without a lock, two `buncargo dev`
- * runs starting at the same moment both read the same snapshot and the second
- * write drops the first one's routes, so a project's named URL silently 404s.
- *
- * Deliberately advisory and self-healing rather than strict. A dev tool must
- * never deadlock because a previous run was killed with the lock held, so a
- * holder that has died or gone quiet is evicted, and acquisition always
- * resolves.
- */
+import { recordStartupMetric } from "./startup-metrics";
+import { chownToInvokingUser } from "./state-paths";
 
 const LOCK_POLL_MS = 20;
-/** A holder that stops making progress is treated as gone. */
+/** @deprecated Age never grants ownership of a live process's lock. */
 export const LOCK_STALE_MS = 10_000;
-/** Upper bound on waiting before the lock is broken and taken anyway. */
 export const LOCK_TIMEOUT_MS = 5000;
 
-interface LockHolder {
-	pid: number;
-	at: number;
-}
-
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function lockPathFor(target: string): string {
-	return `${target}.lock`;
-}
-
-async function tryAcquire(lockPath: string): Promise<boolean> {
-	try {
-		// O_CREAT | O_EXCL: creation is the atomic step that decides the winner.
-		const handle = await open(lockPath, "wx");
-		try {
-			const holder: LockHolder = { pid: process.pid, at: Date.now() };
-			await handle.writeFile(JSON.stringify(holder));
-		} finally {
-			await handle.close();
-		}
-		return true;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
-		throw error;
-	}
-}
-
-async function releaseQuietly(lockPath: string): Promise<void> {
-	try {
-		await unlink(lockPath);
-	} catch {
-		// already released, or broken by a waiter that timed out
-	}
-}
-
-/** Drop a lock whose owner died, or which has simply gone stale. */
-async function evictDeadHolder(lockPath: string): Promise<void> {
-	let raw: string;
-	try {
-		raw = await readFile(lockPath, "utf-8");
-	} catch {
-		return;
-	}
-
-	try {
-		const holder = JSON.parse(raw) as Partial<LockHolder>;
-		const ownerGone =
-			typeof holder.pid === "number" && !isProcessAlive(holder.pid);
-		const tooOld =
-			typeof holder.at === "number" && Date.now() - holder.at > LOCK_STALE_MS;
-		if (ownerGone || tooOld) {
-			await releaseQuietly(lockPath);
-		}
-	} catch {
-		// Unparseable: either a torn write from a holder mid-acquire, or junk.
-		// Age it out rather than break a lock that was created microseconds ago.
-		try {
-			const stats = await stat(lockPath);
-			if (Date.now() - stats.mtimeMs > LOCK_STALE_MS) {
-				await releaseQuietly(lockPath);
-			}
-		} catch {
-			// gone
-		}
+export class FileLockTimeoutError extends Error {
+	readonly code = "BUNCARGO_LOCK_TIMEOUT";
+	constructor(
+		readonly target: string,
+		readonly timeoutMs: number,
+	) {
+		super(
+			`Timed out after ${timeoutMs}ms waiting for exclusive access to ${target}. Another buncargo process is still using it; retry after it finishes.`,
+		);
+		this.name = "FileLockTimeoutError";
 	}
 }
 
 /**
- * Run `operation` with exclusive access to `target`.
+ * Kernel locks are tied to the open descriptor, including when a process dies.
+ * Never unlink the persistent .lock.v2 inode: another waiter may already have
+ * it open, and replacing it would split the lock into two independent owners.
  *
- * Always runs the operation: if the lock cannot be taken within
- * `LOCK_TIMEOUT_MS`, the holder is presumed wedged and the lock is broken.
- * Losing an update is strictly better than hanging a dev run forever.
+ * Lazy loading keeps bun:ffi out of CLI import/help and Node consumers which
+ * only use the pure library modules. Buncargo's runtime is Bun on macOS/Linux.
  */
+let loadFlock: Promise<(fd: number) => boolean> | undefined;
+function flockOperation(): Promise<(fd: number) => boolean> {
+	loadFlock ??= (async () => {
+		if (process.platform !== "darwin" && process.platform !== "linux") {
+			throw new Error(
+				"Exclusive buncargo state locking requires Bun on macOS or Linux. On Windows, run buncargo in WSL.",
+			);
+		}
+		const { dlopen, read } = await import("bun:ffi");
+		const errnoSymbol =
+			process.platform === "darwin" ? "__error" : "__errno_location";
+		const libraries =
+			process.platform === "darwin"
+				? ["/usr/lib/libSystem.B.dylib"]
+				: [
+						"libc.so.6",
+						`/lib/ld-musl-${process.arch === "arm64" ? "aarch64" : "x86_64"}.so.1`,
+					];
+		let lastError: unknown;
+		for (const path of libraries) {
+			try {
+				const library = dlopen(path, {
+					flock: { args: ["i32", "i32"], returns: "i32" },
+					[errnoSymbol]: { args: [], returns: "ptr" },
+				});
+				return (fd: number) => {
+					if (library.symbols.flock(fd, 2 | 4) === 0) return true; // LOCK_EX | LOCK_NB
+					const errnoPointer = library.symbols[errnoSymbol]?.();
+					if (!errnoPointer) throw new Error("Could not read flock errno");
+					const errno = read.i32(errnoPointer as import("bun:ffi").Pointer);
+					if (errno === 11 || errno === 35 || errno === 4) return false;
+					throw new Error(
+						`Could not acquire buncargo file lock (errno ${errno})`,
+					);
+				};
+			} catch (error) {
+				lastError = error;
+			}
+		}
+		throw new Error("Could not load the operating system file lock primitive", {
+			cause: lastError,
+		});
+	})();
+	return loadFlock;
+}
+
+/**
+ * Do not overlap an older CLI already holding its legacy lock during upgrade.
+ * No legacy file is removed here: check/unlink would race a replacement owner.
+ * Old versions cannot honor the v2 protocol, so stop old dev sessions and
+ * restart the hosts service when upgrading before mixing concurrent writers.
+ */
+async function legacyHolderActive(target: string): Promise<boolean> {
+	let raw: string;
+	try {
+		raw = await readFile(`${target}.lock`, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw error;
+	}
+	try {
+		const holder: unknown = JSON.parse(raw);
+		if (
+			typeof holder !== "object" ||
+			holder === null ||
+			!("pid" in holder) ||
+			typeof holder.pid !== "number" ||
+			!Number.isInteger(holder.pid) ||
+			holder.pid <= 0
+		)
+			return true;
+		return isProcessAlive(holder.pid);
+	} catch {
+		return true;
+	}
+}
+
+/** Run a mutation exclusively, or reject on bounded contention without running it. */
 export async function withFileLock<T>(
 	target: string,
 	operation: () => Promise<T>,
+	options: { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<T> {
-	const lockPath = lockPathFor(target);
+	options.signal?.throwIfAborted();
+	const timeoutMs = options.timeoutMs ?? LOCK_TIMEOUT_MS;
+	if (!Number.isFinite(timeoutMs) || timeoutMs < 0)
+		throw new Error("Lock timeout must be a non-negative finite duration");
+	const startedAt = performance.now();
+	const deadline = startedAt + timeoutMs;
+	const flock = await flockOperation();
+	const lockPath = `${target}.lock.v2`;
 	await mkdir(dirname(lockPath), { recursive: true });
-
-	const deadline = Date.now() + LOCK_TIMEOUT_MS;
-	let held = await tryAcquire(lockPath);
-	while (!held) {
-		if (Date.now() >= deadline) {
-			await releaseQuietly(lockPath);
-			held = await tryAcquire(lockPath);
-			break;
-		}
-		await evictDeadHolder(lockPath);
-		// Jitter so waiters released together do not collide on the next attempt.
-		await delay(LOCK_POLL_MS + Math.random() * LOCK_POLL_MS);
-		held = await tryAcquire(lockPath);
-	}
-
+	const handle = await open(lockPath, "a+", 0o600);
+	chownToInvokingUser(lockPath);
 	try {
+		for (;;) {
+			options.signal?.throwIfAborted();
+			if (flock(handle.fd) && !(await legacyHolderActive(target))) break;
+			const remaining = deadline - performance.now();
+			if (remaining <= 0) {
+				recordStartupMetric("lock timeouts");
+				throw new FileLockTimeoutError(target, timeoutMs);
+			}
+			await abortableSleep(
+				Math.min(remaining, LOCK_POLL_MS + Math.random() * LOCK_POLL_MS),
+				options.signal,
+			);
+		}
+		recordStartupMetric("lock wait ms", performance.now() - startedAt);
+		options.signal?.throwIfAborted();
 		return await operation();
 	} finally {
-		if (held) await releaseQuietly(lockPath);
+		// close also releases ownership after throws. Process death closes it in
+		// the kernel, so no stale timer, PID eviction or release unlink is needed.
+		await handle.close();
 	}
 }

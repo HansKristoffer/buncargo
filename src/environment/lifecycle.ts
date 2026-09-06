@@ -1,8 +1,13 @@
 import { relative } from "node:path";
 import { ensureServicesRunning } from "../container-runtime";
+import { withDeadline } from "../core/deadline";
 import { toPortMap, toUrlMap } from "../core/ports";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWarn } from "../core/style";
+import {
+	createHeartbeatOwner,
+	withWatchdogProjectLock,
+} from "../core/watchdog";
 import { buildStartPlan, resolveComposeServiceNames } from "../planning";
 import type {
 	AppConfig,
@@ -20,7 +25,7 @@ import { syncEnvFile } from "./env-file";
 import type { DevEnvVarsApi } from "./env-vars";
 import { runMigrationsSequentially } from "./migrations";
 import { runSeedIfNeeded } from "./seeding";
-import { startAppServers } from "./servers";
+import { assertAppWorkingDirectories, startAppServers } from "./servers";
 
 export interface DevLifecycleApi<
 	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
@@ -57,20 +62,52 @@ export function createLifecycleApi<
 		];
 	}
 
-	async function runPrepareSteps(verbose: boolean): Promise<void> {
+	async function runPrepareSteps(
+		verbose: boolean,
+		signal?: AbortSignal,
+		onPhase?: (name: string, ms: number) => void,
+		generate = true,
+	): Promise<void> {
+		const execute: typeof envVars.exec = (cmd, options) =>
+			envVars.exec(cmd, {
+				...options,
+				signal,
+				timeoutMs: options?.timeoutMs ?? 600000,
+			});
 		const migrations = collectMigrations();
 		if (migrations.length > 0) {
 			if (verbose) console.log(formatStep("📦 Running migrations..."));
-			await runMigrationsSequentially(migrations, envVars.exec);
+			const began = performance.now();
+			try {
+				await runMigrationsSequentially(migrations, execute);
+			} finally {
+				onPhase?.("migrations", performance.now() - began);
+			}
 			if (verbose) console.log(formatDone("Migrations complete"));
 		}
 
-		if (config.prisma?.generate) {
+		const generateCheck = config.prisma?.generateCheck;
+		if (
+			generate &&
+			config.prisma?.generate &&
+			(!generateCheck ||
+				(await withDeadline(
+					async (hookSignal) =>
+						generateCheck(envVars.getHookContext(hookSignal)),
+					600_000,
+					signal,
+				)))
+		) {
 			if (verbose) console.log(formatStep("📦 Generating Prisma client..."));
-			await envVars.exec(config.prisma.generate, {
-				cwd: config.prisma.cwd ?? "packages/prisma",
-				verbose,
-			});
+			const began = performance.now();
+			try {
+				await execute(config.prisma.generate, {
+					cwd: config.prisma.cwd ?? "packages/prisma",
+					verbose,
+				});
+			} finally {
+				onPhase?.("generation", performance.now() - began);
+			}
 			if (verbose) console.log(formatDone("Prisma generate complete"));
 		}
 	}
@@ -110,6 +147,17 @@ export function createLifecycleApi<
 	async function start(
 		startOptions: StartOptions<TApps> = {},
 	): Promise<DevServerPids | null> {
+		const { signal, onPhase, prepare = "all" } = startOptions;
+		signal?.throwIfAborted();
+		async function phase<T>(name: string, work: () => Promise<T>): Promise<T> {
+			const began = performance.now();
+			try {
+				signal?.throwIfAborted();
+				return await work();
+			} finally {
+				onPhase?.(name, performance.now() - began);
+			}
+		}
 		const ci = isCI();
 		const {
 			verbose = config.options?.verbose ?? true,
@@ -124,6 +172,8 @@ export function createLifecycleApi<
 
 		const startPlan = buildStartPlan(apps, services, onlyApps);
 		const appsToStart = startPlan.apps;
+		if (shouldStartServers && prepare === "all")
+			assertAppWorkingDirectories(appsToStart, ctx.root, productionBuild);
 		const targetServices: Record<string, ServiceConfig> = Object.fromEntries(
 			startPlan.requiredServiceKeys.map(
 				(serviceKey) => [serviceKey, services[serviceKey]] as const,
@@ -131,103 +181,141 @@ export function createLifecycleApi<
 		);
 		const portMap = toPortMap(ports);
 		const targetPorts = Object.fromEntries(
-			startPlan.requiredServiceKeys.map(
-				(serviceKey) => [serviceKey, portMap[serviceKey]] as const,
+			startPlan.requiredServiceKeys.flatMap((serviceKey) =>
+				[serviceKey, `${serviceKey}Secondary`].flatMap((name) =>
+					portMap[name] === undefined ? [] : [[name, portMap[name]] as const],
+				),
 			),
 		);
-		let containersReady = false;
-
-		ctx.ensureComposeFile();
-
-		if (verbose && !skipEnvironmentLog) {
-			ctx.logInfo(
-				productionBuild ? "Production Environment" : "Dev Environment",
-			);
-		}
-
-		await ensureServicesRunning({
-			runtime: ctx.runtime,
-			root: ctx.root,
-			projectName: ctx.projectName,
-			envVars: envVars.buildEnvVars(productionBuild),
-			services: targetServices,
-			ports: targetPorts,
-			model: ctx.composeModel(),
-			composeFile: ctx.composeFile,
-			verbose,
-			wait,
-			autoStartRuntime: autoStartDocker,
-		});
-		containersReady = true;
-
-		// Before migrations, not just before servers: Prisma and friends read
-		// `.env` off disk themselves, so a stale port fails the migrate step.
-		await syncConfiguredEnvFile(verbose);
-
+		const startupHeartbeat = createHeartbeatOwner(ctx.projectName, ctx.root);
+		startupHeartbeat.start();
 		try {
-			await runPrepareSteps(verbose);
+			let containersReady = false;
 
-			if (config.hooks?.afterContainersReady) {
-				await config.hooks.afterContainersReady(envVars.getHookContext());
-			}
-
-			if (!skipSeed) {
-				const seeded = await runSeed({ verbose, productionBuild });
-				if (seeded.status === "failed") {
-					throw new Error(
-						`Seeding failed with exit code ${seeded.result.exitCode}. Fix the seed command or start with \`--up-only\` to skip it.`,
-					);
-				}
-			}
-
-			if (shouldStartServers && Object.keys(appsToStart).length > 0) {
-				if (config.hooks?.beforeServers) {
-					await config.hooks.beforeServers(envVars.getHookContext());
-				}
-
-				const pids = await startAppServers(ctx, envVars, {
-					apps: appsToStart,
-					productionBuild,
-					verbose,
-				});
-
-				if (config.hooks?.afterServers) {
-					await config.hooks.afterServers(envVars.getHookContext());
-				}
-
-				if (verbose) console.log(formatDone("Environment ready"));
-				return pids;
-			}
-
-			return null;
-		} catch (error) {
-			if (containersReady) {
-				console.error(
-					formatStep(
-						"ℹ Containers are still running. Use `bunx buncargo dev --down` to stop them.",
-					),
+			if (verbose && !skipEnvironmentLog) {
+				ctx.logInfo(
+					productionBuild ? "Production Environment" : "Dev Environment",
 				);
 			}
-			throw error;
+
+			await phase("containers", () =>
+				withWatchdogProjectLock(
+					ctx.projectName,
+					ctx.root,
+					() => {
+						ctx.ensureComposeFile();
+						return ensureServicesRunning({
+							signal,
+							runtime: ctx.runtime,
+							root: ctx.root,
+							projectName: ctx.projectName,
+							envVars: envVars.buildEnvVars(productionBuild),
+							services: targetServices,
+							ports: targetPorts,
+							model: ctx.composeModel(),
+							composeFile: ctx.composeFile,
+							verbose,
+							wait,
+							autoStartRuntime: autoStartDocker,
+						});
+					},
+					signal,
+				),
+			);
+			containersReady = true;
+
+			// Before migrations, not just before servers: Prisma and friends read
+			// `.env` off disk themselves, so a stale port fails the migrate step.
+			await phase("dotenv", () => syncConfiguredEnvFile(verbose));
+			if (prepare === "containers") return null;
+
+			try {
+				await runPrepareSteps(verbose, signal, onPhase, prepare !== "migrate");
+				if (prepare === "migrate") return null;
+
+				const afterContainersReady = config.hooks?.afterContainersReady;
+				if (afterContainersReady) {
+					await phase("container hooks", () =>
+						withDeadline(
+							(hookSignal) =>
+								afterContainersReady(envVars.getHookContext(hookSignal)),
+							600_000,
+							signal,
+						),
+					);
+				}
+
+				if (!skipSeed) {
+					const seeded = await phase("seed", () =>
+						runSeed({ verbose, productionBuild, signal }),
+					);
+					if (seeded.status === "failed") {
+						throw new Error(
+							`Seeding failed with exit code ${seeded.result.exitCode}. Fix the seed command or start with \`--up-only\` to skip it.`,
+						);
+					}
+				}
+
+				if (shouldStartServers && Object.keys(appsToStart).length > 0) {
+					const pids = await startAppServers(ctx, envVars, {
+						signal,
+						apps: appsToStart,
+						productionBuild,
+						verbose,
+					});
+
+					if (verbose) console.log(formatDone("Environment ready"));
+					return pids;
+				}
+
+				return null;
+			} catch (error) {
+				if (containersReady) {
+					console.error(
+						formatStep(
+							"ℹ Containers are still running. Use `bunx buncargo dev --down` to stop them.",
+						),
+					);
+				}
+				throw error;
+			}
+		} finally {
+			startupHeartbeat.stop();
 		}
 	}
 
 	async function stop(stopOptions: StopOptions = {}): Promise<void> {
 		const { verbose = true, removeVolumes = false } = stopOptions;
-		ctx.ensureComposeFile();
-
-		if (config.hooks?.beforeStop) {
-			await config.hooks.beforeStop(envVars.getHookContext());
+		stopOptions.signal?.throwIfAborted();
+		const beforeStop = config.hooks?.beforeStop;
+		if (beforeStop) {
+			await withDeadline(
+				(hookSignal) => beforeStop(envVars.getHookContext(hookSignal)),
+				600000,
+				stopOptions.signal,
+			);
 		}
 
-		ctx.runtime.down({
-			root: ctx.root,
-			projectName: ctx.projectName,
-			model: ctx.composeModel(),
-			composeFile: ctx.composeFile,
-			verbose,
-			removeVolumes,
-		});
+		await withWatchdogProjectLock(
+			ctx.projectName,
+			ctx.root,
+			async () => {
+				ctx.ensureComposeFile();
+				await (
+					ctx.runtime.downAsync?.bind(ctx.runtime) ??
+					ctx.runtime.down.bind(ctx.runtime)
+				)({
+					root: ctx.root,
+					projectName: ctx.projectName,
+					model: ctx.composeModel(),
+					composeFile: ctx.composeFile,
+					verbose,
+					removeVolumes,
+					signal: stopOptions.signal,
+				});
+			},
+			stopOptions.signal,
+		);
 	}
 
 	async function restart(): Promise<void> {

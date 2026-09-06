@@ -10,7 +10,11 @@ import type {
 	DockerPresetName,
 	ServiceConfig,
 } from "../types";
-import { STACK_HASH_ENV, STACK_HASH_LABEL } from "./interpolate";
+import {
+	normalizeComposeLabels,
+	SERVICE_HASH_LABEL,
+	serviceHashEnv,
+} from "./interpolate";
 import { buildPresetDockerService } from "./services";
 import { getDefaultPortBindings } from "./services/shared";
 
@@ -177,20 +181,24 @@ export function buildComposeModel(
 			runtime,
 		);
 		if (identity) {
-			service.labels = {
-				...(typeof service.labels === "object" && service.labels !== null
-					? (service.labels as Record<string, string>)
-					: {}),
+			const identityLabels = {
 				"buncargo.project": identity.projectName,
 				"buncargo.root": identity.root,
 				"buncargo.worktree": identity.worktree ?? "",
 				"buncargo.service": serviceName,
-				// A reference rather than a value: the hash covers the file after
-				// interpolation, so it is only known once ports are allocated,
-				// which is after this file is written. Both backends substitute
-				// it from the environment they are handed.
-				[STACK_HASH_LABEL]: `\${${STACK_HASH_ENV}:-}`,
+				// Stable across selected subsets; the backend receives the interpolated hash.
+				[SERVICE_HASH_LABEL]: `\${${serviceHashEnv(serviceName)}:-}`,
 			};
+			// Preserve list syntax: Compose interpolates list-form label keys, but
+			// deliberately does not interpolate keys in mapping syntax.
+			service.labels = Array.isArray(service.labels)
+				? [
+						...service.labels,
+						...Object.entries(identityLabels).map(
+							([key, value]) => `${key}=${value}`,
+						),
+					]
+				: { ...normalizeComposeLabels(service.labels), ...identityLabels };
 		}
 		composeServices[serviceName] = service;
 		if (volume) {

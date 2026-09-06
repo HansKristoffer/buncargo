@@ -1,6 +1,6 @@
 import {
 	availableContainerRuntimes,
-	listBuncargoContainers,
+	getContainerRuntimeAdapter,
 	stopBuncargoContainers,
 } from "../../container-runtime";
 import { findMonorepoRoot } from "../../core/ports";
@@ -9,14 +9,21 @@ import {
 	killPortOwner,
 	signalProcessTree,
 } from "../../core/process";
+import { matchesProcessIdentity } from "../../core/process-identity";
 import { askConfirm, isInteractive } from "../../core/prompt";
 import {
-	findRunByRoot,
+	findRunsByRoot,
+	patchRun,
 	type RunAppEntry,
 	type RunEntry,
 	type RunServiceEntry,
 } from "../../core/run-registry";
 import { sleep } from "../../core/sleep";
+import {
+	isHeartbeatOwnerAlive,
+	readHeartbeatPayload,
+	withWatchdogProjectLock,
+} from "../../core/watchdog";
 import * as log from "../log";
 import { parseStopArgs, printStopHelp } from "../stop-flags";
 
@@ -55,19 +62,44 @@ export async function handleStop(args: string[] = []): Promise<number> {
 	if (parsed.errors.length > 0) return STOP_EXIT.refused;
 
 	const root = parsed.root ?? safeMonorepoRoot();
-	const run = root ? await findRunByRoot(root) : undefined;
-	if (!run) {
+	const runs = root
+		? (await findRunsByRoot(root)).filter(
+				(run) => !parsed.run || run.sessionId === parsed.run,
+			)
+		: [];
+	if (runs.length === 0) {
 		log.error(`No active buncargo run for ${root ?? "this directory"}.`);
 		log.hint("Run `buncargo runs` to see what is active.");
 		return STOP_EXIT.notFound;
 	}
 
 	if (parsed.all) {
-		return stopWholeRun(run, parsed.force);
+		let result: number = STOP_EXIT.ok;
+		for (const run of runs) {
+			const code = await stopWholeRun(run, parsed.force);
+			if (code !== STOP_EXIT.ok) result = code;
+		}
+		return result;
 	}
 
 	let exitCode: number = STOP_EXIT.ok;
 	for (const name of parsed.names) {
+		const run =
+			runs.find((entry) =>
+				entry.apps.some(
+					(app) =>
+						app.name === name &&
+						app.pid !== undefined &&
+						app.status !== "stopped",
+				),
+			) ??
+			runs.find((entry) =>
+				[...entry.apps, ...entry.services].some(
+					(target) => target.name === name,
+				),
+			) ??
+			runs[0];
+		if (!run) continue;
 		const code = await stopTarget(run, name, parsed.force);
 		if (code !== STOP_EXIT.ok) exitCode = code;
 	}
@@ -95,7 +127,17 @@ async function stopTarget(
 	force: boolean,
 ): Promise<number> {
 	const app = run.apps.find((entry) => entry.name === name);
-	if (app) return stopApp(app, force);
+	if (app) {
+		const result = await stopApp(run, app, force);
+		if (result === STOP_EXIT.ok)
+			await patchRun(
+				run.root,
+				run.pid,
+				{ apps: [{ name: app.name, status: "stopped" }] },
+				{ sessionId: run.sessionId },
+			);
+		return result;
+	}
 
 	const service = run.services.find((entry) => entry.name === name);
 	if (service) return stopService(run, service);
@@ -107,7 +149,11 @@ async function stopTarget(
 	return STOP_EXIT.notFound;
 }
 
-async function stopApp(app: RunAppEntry, force: boolean): Promise<number> {
+async function stopApp(
+	run: RunEntry,
+	app: RunAppEntry,
+	force: boolean,
+): Promise<number> {
 	if (app.status === "stopped") {
 		log.info(`${app.name} is already stopped.`);
 		return STOP_EXIT.ok;
@@ -136,6 +182,15 @@ async function stopApp(app: RunAppEntry, force: boolean): Promise<number> {
 		return stopReusedApp(app, force);
 	}
 
+	if (
+		!matchesProcessIdentity(app.pid, app.processIdentity) ||
+		(run.sessionId && !app.processIdentity)
+	) {
+		log.error(
+			`${app.name}'s recorded process identity no longer matches. Refresh the run before stopping it.`,
+		);
+		return STOP_EXIT.refused;
+	}
 	await terminate(app.pid);
 	log.done(`Stopped ${app.name}`);
 	return STOP_EXIT.ok;
@@ -191,9 +246,12 @@ async function terminate(pid: number): Promise<void> {
 		await sleep(TERM_POLL_MS);
 	}
 
-	if (isProcessAlive(pid)) {
-		signalProcessTree(pid, "SIGKILL");
-	}
+	if (isProcessAlive(pid)) signalProcessTree(pid, "SIGKILL");
+	const verifyDeadline = Date.now() + 1000;
+	while (isProcessAlive(pid) && Date.now() < verifyDeadline)
+		await sleep(TERM_POLL_MS);
+	if (isProcessAlive(pid))
+		throw new Error(`Process ${pid} did not exit after SIGKILL`);
 }
 
 /**
@@ -203,31 +261,71 @@ async function terminate(pid: number): Promise<void> {
  * second. Nothing in buncargo brings a stopped container back — the watchdog
  * only ever tears down — so the service stays down until the next `dev`.
  */
-function stopService(run: RunEntry, service: RunServiceEntry): number {
-	const runtimes = availableContainerRuntimes();
+export async function stopService(
+	run: RunEntry,
+	service: RunServiceEntry,
+): Promise<number> {
+	return withWatchdogProjectLock(run.projectName, run.root, () =>
+		stopServiceUnlocked(run, service),
+	);
+}
+
+async function stopServiceUnlocked(
+	run: RunEntry,
+	service: RunServiceEntry,
+): Promise<number> {
+	const runtimes = service.container
+		? [
+				getContainerRuntimeAdapter(service.container.runtime, {
+					binary: service.container.binary,
+				}),
+			]
+		: availableContainerRuntimes();
 	if (runtimes.length === 0) {
 		log.error("No container runtime is running.");
 		return STOP_EXIT.refused;
 	}
-
-	// Resolved by label rather than from the registry's recorded name: compose
-	// and the Apple backend name containers differently, and the labels are
-	// what both of them write.
-	const containers = listBuncargoContainers(runtimes).filter(
-		(container) =>
-			container.project === run.projectName &&
-			(container.service === service.name ||
-				container.name.includes(`-${service.name}-`)),
-	);
-
-	if (containers.length === 0) {
-		log.info(`No running container for ${service.name}.`);
+	const serviceName = service.container?.service ?? service.name;
+	try {
+		const containers = runtimes
+			.flatMap((runtime) => runtime.list())
+			.filter(
+				(container) =>
+					container.project === run.projectName &&
+					container.service === serviceName,
+			);
+		if (containers.length > 0) stopBuncargoContainers(containers, runtimes);
+		// The same shared service may be visible in several sessions.
+		for (const owner of await findRunsByRoot(run.root)) {
+			if (owner.projectName !== run.projectName) continue;
+			const matching = owner.services.filter(
+				(entry) =>
+					entry.name === service.name &&
+					(!entry.container ||
+						!service.container ||
+						entry.container.runtime === service.container.runtime),
+			);
+			if (matching.length > 0)
+				await patchRun(
+					owner.root,
+					owner.pid,
+					{
+						services: matching.map((entry) => ({
+							name: entry.name,
+							status: "stopped",
+						})),
+					},
+					{ sessionId: owner.sessionId },
+				);
+		}
+		log.done(`Stopped ${service.name}`);
 		return STOP_EXIT.ok;
+	} catch (error) {
+		log.error(
+			`Could not stop ${service.name}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return STOP_EXIT.refused;
 	}
-
-	stopBuncargoContainers(containers, runtimes);
-	log.done(`Stopped ${service.name}`);
-	return STOP_EXIT.ok;
 }
 
 /**
@@ -255,18 +353,42 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 		}
 	}
 
-	await terminate(run.pid);
-
-	const runtimes = availableContainerRuntimes();
-	if (runtimes.length > 0) {
-		const containers = listBuncargoContainers(runtimes).filter(
-			(container) => container.project === run.projectName,
+	if (
+		!matchesProcessIdentity(run.pid, run.processIdentity) ||
+		(run.sessionId && !run.processIdentity)
+	) {
+		log.error(
+			"The recorded run process identity no longer matches. Refresh the run before stopping it.",
 		);
-		if (containers.length > 0) {
-			stopBuncargoContainers(containers, runtimes);
-		}
+		return STOP_EXIT.refused;
 	}
-
-	log.done(`Stopped ${run.projectName}`);
-	return STOP_EXIT.ok;
+	await terminate(run.pid);
+	return withWatchdogProjectLock(run.projectName, run.root, async () => {
+		// Heartbeat registration precedes registry publication. A new run may
+		// already be starting services even though it has no menu-bar row yet.
+		const heartbeat = readHeartbeatPayload(run.projectName, run.root);
+		if (heartbeat && isHeartbeatOwnerAlive(heartbeat)) {
+			log.done(
+				`Stopped ${run.projectName}; services retained for another active run`,
+			);
+			return STOP_EXIT.ok;
+		}
+		const remaining = await findRunsByRoot(run.root);
+		for (const service of run.services) {
+			const shared = remaining.some(
+				(other) =>
+					other.pid !== run.pid &&
+					other.projectName === run.projectName &&
+					other.services.some(
+						(entry) =>
+							entry.name === service.name && entry.status !== "stopped",
+					),
+			);
+			if (shared) continue;
+			const result = await stopServiceUnlocked(run, service);
+			if (result !== STOP_EXIT.ok) return result;
+		}
+		log.done(`Stopped ${run.projectName}`);
+		return STOP_EXIT.ok;
+	});
 }

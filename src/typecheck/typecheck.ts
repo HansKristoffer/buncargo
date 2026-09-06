@@ -12,6 +12,7 @@ import {
 	sortWorkspacesByExpectedDuration,
 } from "./scheduling";
 import { readTypecheckTimings, writeTypecheckTimings } from "./timings";
+import { workspacePatterns } from "./workspaces";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -69,8 +70,6 @@ interface Workspace {
 // ═══════════════════════════════════════════════════════════════════════════
 // Constants
 // ═══════════════════════════════════════════════════════════════════════════
-
-const DEFAULT_PATTERNS = ["apps/*", "packages/*", "modules"];
 
 // Patterns that indicate a corrupted tsgo cache (deadlock/panic)
 const CORRUPTED_CACHE_PATTERNS = [
@@ -166,7 +165,7 @@ async function runSingleTypecheck(
 
 	const workspacePath = join(root, workspace);
 	const result = await execAsync(
-		"bun run typecheck",
+		[process.execPath, "run", "typecheck"],
 		workspacePath,
 		{},
 		{
@@ -196,9 +195,12 @@ async function discoverWorkspaces(
 	root: string,
 	timings: Readonly<Record<string, number>>,
 ): Promise<Workspace[]> {
-	const matchLists = await Promise.all(
-		patterns.map((pattern) => fg(`${pattern}/package.json`, { cwd: root })),
-	);
+	const matchLists = [
+		await fg(
+			patterns.map((pattern) => `${pattern.replace(/\/$/, "")}/package.json`),
+			{ cwd: root, ignore: ["**/node_modules/**"] },
+		),
+	];
 
 	const seen = new Set<string>();
 	const candidates: string[] = [];
@@ -222,10 +224,7 @@ async function discoverWorkspaces(
 
 	const workspaces = await Promise.all(
 		candidates.map(async (path) => {
-			const fileCount =
-				timings[path] === undefined
-					? await countTypeScriptFiles(path, root)
-					: 0;
+			const fileCount = await countTypeScriptFiles(path, root);
 			return { path, fileCount };
 		}),
 	);
@@ -284,7 +283,7 @@ export async function runWorkspaceTypecheck(
 ): Promise<TypecheckResult> {
 	const {
 		root = process.cwd(),
-		patterns = DEFAULT_PATTERNS,
+		patterns: overridePatterns,
 		verbose = true,
 		includeRootConfig = true,
 		only,
@@ -293,10 +292,11 @@ export async function runWorkspaceTypecheck(
 
 	const totalStartTime = performance.now();
 
-	// Kick the root config off immediately so it overlaps discovery + the pool.
-	const rootConfigPromise = includeRootConfig
-		? typecheckRootConfig({ root, verbose: false })
-		: undefined;
+	if (!Number.isInteger(concurrency) || concurrency < 1) {
+		throw new Error("typecheck concurrency must be a positive integer");
+	}
+	const patterns = workspacePatterns(root, overridePatterns);
+	let rootConfig: ConfigTypecheckResult | undefined;
 
 	const timings = await readTypecheckTimings(root);
 	let workspaces = await discoverWorkspaces(patterns, root, timings);
@@ -308,9 +308,6 @@ export async function runWorkspaceTypecheck(
 			const selectionError = `Unknown workspace${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}. Known: ${known.join(", ") || "(none)"}`;
 			if (verbose) {
 				console.error(selectionError);
-			}
-			if (rootConfigPromise) {
-				await rootConfigPromise;
 			}
 			return {
 				success: false,
@@ -327,7 +324,9 @@ export async function runWorkspaceTypecheck(
 	}
 
 	if (workspaces.length === 0) {
-		const rootConfig = await rootConfigPromise;
+		const rootConfig = includeRootConfig
+			? await typecheckRootConfig({ root, verbose: false })
+			: undefined;
 		if (verbose) {
 			if (rootConfig) logRootConfigResult(rootConfig, verbose);
 			console.log("No workspaces with typecheck script found.");
@@ -353,7 +352,19 @@ export async function runWorkspaceTypecheck(
 	const results: WorkspaceTypecheckResult[] = [];
 	const running = new Set<Promise<void>>();
 
+	if (includeRootConfig) {
+		const rootJob = typecheckRootConfig({ root, verbose: false }).then(
+			(result) => {
+				rootConfig = result;
+				running.delete(rootJob);
+				logRootConfigResult(result, verbose);
+			},
+		);
+		running.add(rootJob);
+	}
+
 	for (let i = 0; i < workspaces.length; i++) {
+		while (running.size >= concurrency) await Promise.race(running);
 		const workspace = workspaces[i];
 		if (!workspace) continue;
 		const { path, fileCount } = workspace;
@@ -372,14 +383,7 @@ export async function runWorkspaceTypecheck(
 		}
 	}
 
-	const [rootConfig] = await Promise.all([
-		rootConfigPromise,
-		Promise.all(running),
-	]);
-
-	if (rootConfig) {
-		logRootConfigResult(rootConfig, verbose);
-	}
+	await Promise.all(running);
 
 	await writeTypecheckTimings(root, timings, results);
 

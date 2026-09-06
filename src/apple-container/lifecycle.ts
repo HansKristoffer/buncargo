@@ -2,18 +2,26 @@ import type {
 	ContainerDownRequest,
 	ContainerUpRequest,
 } from "../container-runtime/types";
+import { remainingTime } from "../core/deadline";
 import { formatPortOwner, getPortOwner } from "../core/process";
 import { formatDone, formatStep, formatWarn } from "../core/style";
-import type { AppleCliResult, AppleContainerCli } from "./cli";
-import { isAlreadyExistsMessage, isMissingResourceMessage } from "./cli";
+import type { AppleCliOptions, AppleCliResult, AppleContainerCli } from "./cli";
+import {
+	isAlreadyExistsMessage,
+	isMissingResourceMessage,
+	runAppleAsync,
+} from "./cli";
 import {
 	buildAppleRunPlan,
 	CONFIG_HASH_LABEL,
 	type ContainerRunPlan,
+	PROJECT_LABEL,
 	projectVolumeNames,
 } from "./run-plan";
 import type { AppleContainerRecord } from "./status";
-import { isRunningState, listContainerRecords, projectRecords } from "./status";
+import { isRunningState, parseContainerRecords } from "./status";
+
+type AppleSteps = Generator<string[], void, AppleCliResult>;
 
 /**
  * Starting and stopping a project's containers on Apple's runtime.
@@ -50,27 +58,26 @@ function translatePortError(result: AppleCliResult, action: string): never {
 	failed(result, action);
 }
 
-function ensureVolume(cli: AppleContainerCli, name: string): void {
-	const result = cli.run(["volume", "create", name]);
+function* ensureVolume(name: string): AppleSteps {
+	const result = yield ["volume", "create", name];
 	if (result.ok || isAlreadyExistsMessage(result.stderr)) return;
 	failed(result, `create volume ${name}`);
 }
 
-function removeContainer(cli: AppleContainerCli, containerName: string): void {
-	const result = cli.run(["delete", "--force", containerName]);
+function* removeContainer(containerName: string): AppleSteps {
+	const result = yield ["delete", "--force", containerName];
 	if (result.ok || isMissingResourceMessage(result.stderr)) return;
 	failed(result, `delete container ${containerName}`);
 }
 
-function startService(
-	cli: AppleContainerCli,
+function* startService(
 	plan: ContainerRunPlan,
 	existing: AppleContainerRecord | undefined,
-): void {
+): AppleSteps {
 	if (existing) {
 		if (existing.labels[CONFIG_HASH_LABEL] === plan.configHash) {
 			if (isRunningState(existing.state)) return;
-			const started = cli.run(["start", plan.containerName]);
+			const started = yield ["start", plan.containerName];
 			if (started.ok) return;
 			if (!isMissingResourceMessage(started.stderr)) {
 				failed(started, `start container ${plan.containerName}`);
@@ -81,22 +88,19 @@ function startService(
 			console.log(
 				formatStep(`♻️  Recreating ${plan.serviceName} (config changed)`),
 			);
-			removeContainer(cli, plan.containerName);
+			yield* removeContainer(plan.containerName);
 		}
 	}
 
 	// The plan already carries interpolated values, so nothing depends on the
 	// child's own environment.
-	const result = cli.run(plan.runArgs);
+	const result = yield plan.runArgs;
 	if (!result.ok) {
 		translatePortError(result, `start container ${plan.containerName}`);
 	}
 }
 
-export function appleUp(
-	cli: AppleContainerCli,
-	request: ContainerUpRequest,
-): void {
+function* upSteps(request: ContainerUpRequest): AppleSteps {
 	const { verbose = true } = request;
 	const plan = buildAppleRunPlan({
 		projectName: request.projectName,
@@ -119,29 +123,35 @@ export function appleUp(
 	}
 
 	for (const volume of plan.volumes) {
-		ensureVolume(cli, volume);
+		yield* ensureVolume(volume);
 	}
 
 	// Read the inventory once so every service in this run decides reuse against
 	// the same snapshot rather than re-listing per service.
+	const inventory = yield ["ls", "--all", "--format", "json"];
+	if (!inventory.ok) failed(inventory, "read container inventory");
 	const existing = new Map(
-		listContainerRecords(cli).map((record) => [record.id, record]),
+		parseContainerRecords(inventory.stdout).map((record) => [
+			record.id,
+			record,
+		]),
 	);
 
 	for (const service of plan.services) {
-		startService(cli, service, existing.get(service.containerName));
+		yield* startService(service, existing.get(service.containerName));
 	}
 
 	if (verbose) console.log(formatDone("Containers started"));
 }
 
-export function appleDown(
-	cli: AppleContainerCli,
-	request: ContainerDownRequest,
-): void {
+function* downSteps(request: ContainerDownRequest): AppleSteps {
 	const { verbose = true, removeVolumes = false } = request;
 
-	const records = projectRecords(cli, request.projectName);
+	const inventory = yield ["ls", "--all", "--format", "json"];
+	if (!inventory.ok) failed(inventory, "read container inventory");
+	const records = parseContainerRecords(inventory.stdout).filter(
+		(record) => record.labels[PROJECT_LABEL] === request.projectName,
+	);
 	if (records.length === 0 && !removeVolumes) {
 		if (verbose) console.log(formatStep("ℹ No Apple containers to stop."));
 		return;
@@ -165,12 +175,12 @@ export function appleDown(
 		// Reporting "Containers stopped" over a failed stop would send the caller
 		// away believing the ports are free.
 		if (running.length > 0) {
-			const stopped = cli.run(["stop", ...running]);
+			const stopped = yield ["stop", ...running];
 			if (!stopped.ok && !isMissingResourceMessage(stopped.stderr)) {
 				failed(stopped, `stop containers ${running.join(", ")}`);
 			}
 		}
-		const removed = cli.run(["delete", "--force", ...ids]);
+		const removed = yield ["delete", "--force", ...ids];
 		if (!removed.ok && !isMissingResourceMessage(removed.stderr)) {
 			failed(removed, `delete containers ${ids.join(", ")}`);
 		}
@@ -186,7 +196,7 @@ export function appleDown(
 			request.projectName,
 			request.model,
 		)) {
-			const result = cli.run(["volume", "delete", volume]);
+			const result = yield ["volume", "delete", volume];
 			if (!result.ok && !isMissingResourceMessage(result.stderr)) {
 				console.warn(
 					formatWarn(
@@ -208,4 +218,69 @@ export function appleStopByIds(cli: AppleContainerCli, ids: string[]): void {
 	if (!result.ok && !isMissingResourceMessage(result.stderr)) {
 		failed(result, `stop containers ${ids.join(", ")}`);
 	}
+}
+
+function runSteps(
+	cli: AppleContainerCli,
+	steps: AppleSteps,
+	options: AppleCliOptions,
+): void {
+	let step = steps.next();
+	while (!step.done) step = steps.next(cli.run(step.value, options));
+}
+
+async function runStepsAsync(
+	cli: AppleContainerCli,
+	steps: AppleSteps,
+	options: AppleCliOptions,
+): Promise<void> {
+	const deadline = performance.now() + (options.timeoutMs ?? 600000);
+	let step = steps.next();
+	while (!step.done) {
+		options.signal?.throwIfAborted();
+		if (remainingTime(deadline) === 0)
+			throw new Error("Apple container operation timed out");
+		const result = await runAppleAsync(cli, step.value, {
+			...options,
+			timeoutMs: remainingTime(deadline),
+		});
+		step = steps.next(result);
+	}
+}
+
+export function appleUp(
+	cli: AppleContainerCli,
+	request: ContainerUpRequest,
+): void {
+	runSteps(cli, upSteps(request), {
+		signal: request.signal,
+		timeoutMs: request.timeoutMs ?? 600000,
+	});
+}
+export function appleUpAsync(
+	cli: AppleContainerCli,
+	request: ContainerUpRequest,
+): Promise<void> {
+	return runStepsAsync(cli, upSteps(request), {
+		signal: request.signal,
+		timeoutMs: request.timeoutMs ?? 600000,
+	});
+}
+export function appleDown(
+	cli: AppleContainerCli,
+	request: ContainerDownRequest,
+): void {
+	runSteps(cli, downSteps(request), {
+		signal: request.signal,
+		timeoutMs: request.timeoutMs ?? 120000,
+	});
+}
+export function appleDownAsync(
+	cli: AppleContainerCli,
+	request: ContainerDownRequest,
+): Promise<void> {
+	return runStepsAsync(cli, downSteps(request), {
+		signal: request.signal,
+		timeoutMs: request.timeoutMs ?? 120000,
+	});
 }

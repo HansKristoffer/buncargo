@@ -24,7 +24,9 @@ function cloudflaredFileName(version: string): string {
 
 /** Cache path for buncargo-managed cloudflared (avoid clashing with untun's node-untun). */
 export function cloudflaredBinPath(version = cloudflaredVersion()): string {
-	return toolCachePath(cloudflaredFileName(version));
+	return toolCachePath(
+		`${cloudflaredFileName(version)}.${process.platform}-${process.arch}`,
+	);
 }
 
 /** The `tmpdir()` cache earlier versions downloaded into. */
@@ -46,6 +48,9 @@ export function resolveCloudflared(): ToolBinaryResolution {
 		override: cloudflaredPathOverride(),
 		cachePath: cloudflaredBinPath(),
 		legacyCachePath: legacyCloudflaredBinPath(),
+		legacyCachePaths: [
+			toolCachePath(cloudflaredFileName(cloudflaredVersion())),
+		],
 	});
 }
 

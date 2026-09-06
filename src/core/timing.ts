@@ -1,8 +1,8 @@
+import { observeStartupMetrics } from "./startup-metrics";
 import { formatSection } from "./style";
 
 /**
- * Where a `buncargo dev` spent its time before the first dev server printed a
- * line.
+ * Where a `buncargo dev` spent its time through app readiness.
  *
  * Off unless asked for. The point is that startup cost is paid on every run, in
  * every worktree, many times a day, so a regression in it has to be visible
@@ -38,11 +38,21 @@ export function createNoopPhaseTimer(): PhaseTimer {
 }
 
 export function createPhaseTimer(
-	deps: { now?: () => number; log?: (message: string) => void } = {},
+	deps: {
+		now?: () => number;
+		log?: (message: string) => void;
+		startedAt?: number;
+		json?: boolean;
+	} = {},
 ): PhaseTimer {
 	const now = deps.now ?? (() => performance.now());
 	const log = deps.log ?? ((message: string) => console.log(message));
-	const startedAt = now();
+	const startedAt = deps.startedAt ?? now();
+	let reported = false;
+	const counters: Record<string, number> = {};
+	const stopObserving = observeStartupMetrics((name, amount) => {
+		counters[name] = (counters[name] ?? 0) + amount;
+	});
 	const recorded: Array<{ name: string; durationMs: number }> = [];
 
 	function record(name: string, durationMs: number): void {
@@ -72,7 +82,21 @@ export function createPhaseTimer(
 		phases: () => recorded,
 		elapsedMs: () => now() - startedAt,
 		report() {
+			if (reported) return;
+			reported = true;
+			stopObserving();
 			const total = now() - startedAt;
+			if (deps.json) {
+				log(
+					JSON.stringify({
+						type: "buncargo.startup",
+						totalMs: Math.round(total),
+						phases: recorded,
+						counters,
+					}),
+				);
+				return;
+			}
 			const width = recorded.reduce(
 				(widest, phase) => Math.max(widest, phase.name.length),
 				5,
@@ -87,6 +111,8 @@ export function createPhaseTimer(
 			log(
 				`  ${"total".padEnd(width)}  ${String(Math.round(total)).padStart(6)}ms`,
 			);
+			for (const [name, amount] of Object.entries(counters))
+				log(`  ${name}: ${Math.round(amount)}`);
 			log("");
 		},
 	};

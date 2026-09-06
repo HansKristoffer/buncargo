@@ -1,11 +1,13 @@
 import { formatPortOwner, getPortOwner } from "../core/process";
 import { formatDone, formatStep } from "../core/style";
-import { type DockerRunResult, runDocker } from "./binary";
+import { type DockerRunResult, runDocker, runDockerAsync } from "./binary";
 import { getComposeArgs } from "./compose-command";
 import { isDockerDaemonRunning } from "./preflight";
 import { assertDockerRunning } from "./status";
 
 export interface StartContainersOptions {
+	signal?: AbortSignal;
+	timeoutMs?: number;
 	verbose?: boolean;
 	wait?: boolean;
 	composeFile?: string;
@@ -14,6 +16,8 @@ export interface StartContainersOptions {
 }
 
 export interface StopContainersOptions {
+	signal?: AbortSignal;
+	timeoutMs?: number;
 	verbose?: boolean;
 	removeVolumes?: boolean;
 	composeFile?: string;
@@ -73,6 +77,7 @@ export function startContainers(
 		],
 		{
 			cwd: root,
+			timeoutMs: options.timeoutMs ?? 600000,
 			env: { ...envVars, COMPOSE_PROJECT_NAME: projectName },
 			inherit: verbose,
 		},
@@ -122,6 +127,7 @@ export function stopContainers(
 		],
 		{
 			cwd: root,
+			timeoutMs: options.timeoutMs ?? 600000,
 			env: { COMPOSE_PROJECT_NAME: projectName },
 			inherit: verbose,
 		},
@@ -153,7 +159,78 @@ export function startService(
 			cwd: root,
 			env: { ...envVars, COMPOSE_PROJECT_NAME: projectName },
 			inherit: verbose,
+			timeoutMs: 600000,
 		},
 	);
 	if (!result.ok) translateComposeFailure(result);
+}
+
+export async function startContainersAsync(
+	root: string,
+	projectName: string,
+	envVars: Record<string, string>,
+	options: StartContainersOptions = {},
+): Promise<void> {
+	const {
+		verbose = true,
+		wait = true,
+		composeFile,
+		services = [],
+		binary,
+		signal,
+		timeoutMs = 600000,
+	} = options;
+	if (verbose) console.log(formatStep("🐳 Starting Docker containers..."));
+	const result = await runDockerAsync(
+		binary,
+		[
+			...getComposeArgs({ projectName, composeFile }),
+			"up",
+			"-d",
+			...(wait ? ["--wait"] : []),
+			...services,
+		],
+		{
+			cwd: root,
+			env: { ...envVars, COMPOSE_PROJECT_NAME: projectName },
+			inherit: verbose,
+			signal,
+			timeoutMs,
+		},
+	);
+	if (!result.ok) translateComposeFailure(result);
+	if (verbose) console.log(formatDone("Containers started"));
+}
+
+export async function stopContainersAsync(
+	root: string,
+	projectName: string,
+	options: StopContainersOptions = {},
+): Promise<void> {
+	const {
+		verbose = true,
+		removeVolumes = false,
+		composeFile,
+		binary,
+		signal,
+		timeoutMs = 120000,
+	} = options;
+	if (verbose) console.log(formatStep("🛑 Stopping containers..."));
+	const result = await runDockerAsync(
+		binary,
+		[
+			...getComposeArgs({ projectName, composeFile }),
+			"down",
+			...(removeVolumes ? ["-v"] : []),
+		],
+		{
+			cwd: root,
+			env: { COMPOSE_PROJECT_NAME: projectName },
+			inherit: verbose,
+			signal,
+			timeoutMs,
+		},
+	);
+	if (!result.ok) translateComposeFailure(result);
+	if (verbose) console.log(formatDone("Containers stopped"));
 }

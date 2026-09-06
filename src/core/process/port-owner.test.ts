@@ -188,3 +188,18 @@ describe("signalProcessTree", () => {
 		expect(isProcessAlive(child.pid)).toBe(false);
 	});
 });
+
+it("does not classify a neighboring checkout sharing a prefix as ours", () => {
+	expect(
+		classifyPortOccupant(
+			{ pids: [123], cwd: "/repo-other/app" },
+			{ root: "/repo", projectName: "demo" },
+		),
+	).toBe("fail");
+	expect(
+		classifyPortOccupant(
+			{ pids: [123], cwd: "/repo/app" },
+			{ root: "/repo", projectName: "demo" },
+		),
+	).toBe("kill");
+});

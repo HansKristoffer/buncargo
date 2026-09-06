@@ -1,7 +1,7 @@
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
+import { abortableSleep, withSignal } from "./deadline";
 import { startQuickTunnel } from "./quick-tunnel";
 import { exposeTunnelStaggerMs } from "./runtime-flags";
-import { sleep } from "./sleep";
 
 export interface PublicExposeTarget {
 	kind: "service" | "app";
@@ -120,45 +120,63 @@ export function resolveExposeTargets<
 export async function startPublicTunnels(
 	targets: PublicExposeTarget[],
 	options: {
+		signal?: AbortSignal;
 		start?: (input: {
 			url: string;
+			signal?: AbortSignal;
 		}) => Promise<TunnelBackendResult | undefined>;
 	} = {},
 ): Promise<PublicTunnel[]> {
-	const start = options.start ?? ((input) => startQuickTunnel(input));
+	const start: NonNullable<typeof options.start> =
+		options.start ?? ((input) => startQuickTunnel(input));
 	const staggerMs = exposeTunnelStaggerMs();
 
 	const tunnels: PublicTunnel[] = [];
 	try {
 		let index = 0;
 		for (const target of targets) {
+			options.signal?.throwIfAborted();
 			if (index > 0 && staggerMs > 0) {
-				await sleep(staggerMs);
+				await abortableSleep(staggerMs, options.signal);
 			}
 			index += 1;
 			const localUrl = `http://localhost:${target.port}`;
-			const tunnel = (await start({
-				url: localUrl,
-			})) as TunnelBackendResult | undefined;
+			const starting = start({ url: localUrl, signal: options.signal });
+			// A custom callback may ignore cancellation. Stop any late result
+			// without letting it resurrect a cancelled startup.
+			void starting
+				.then((late) => {
+					if (late && options.signal?.aborted) return toCloseFn(late)();
+				})
+				.catch(() => {});
+			const tunnel = options.signal
+				? await withSignal(starting, options.signal)
+				: await starting;
 			if (tunnel === undefined) {
 				throw new Error(
 					`Tunnel for "${target.name}" could not be started (tunnel backend returned no instance)`,
 				);
 			}
-			const rawPublicUrl = await resolvePublicUrl(tunnel);
+			// Own the returned backend before awaiting its URL; a URL rejection
+			// otherwise skips this tunnel when the outer catch cleans up.
+			const owned: PublicTunnel = {
+				kind: target.kind,
+				name: target.name,
+				localUrl,
+				publicUrl: "",
+				close: toCloseFn(tunnel),
+			};
+			tunnels.push(owned);
+			const pendingUrl = resolvePublicUrl(tunnel);
+			const rawPublicUrl = options.signal
+				? await withSignal(pendingUrl, options.signal)
+				: await pendingUrl;
 			if (!rawPublicUrl) {
 				throw new Error(
 					`Tunnel for "${target.name}" did not provide a public URL`,
 				);
 			}
-			const publicUrl = rawPublicUrl.replace(/\/$/, "");
-			tunnels.push({
-				kind: target.kind,
-				name: target.name,
-				localUrl,
-				publicUrl,
-				close: toCloseFn(tunnel),
-			});
+			owned.publicUrl = rawPublicUrl.replace(/\/$/, "");
 		}
 		return tunnels;
 	} catch (e) {

@@ -1,14 +1,15 @@
 import { arch, platform } from "node:os";
 import { ContainerRuntimeUnavailableError } from "../container-runtime/types";
+import { abortableSleep, remainingTime } from "../core/deadline";
 import { isCI } from "../core/runtime-flags";
-import { sleep } from "../core/sleep";
 import { formatDone, formatStep, formatWait } from "../core/style";
 import type { AppleContainerCli } from "./cli";
-import { APPLE_CONTAINER_COMMAND } from "./cli";
+import { APPLE_CONTAINER_COMMAND, runAppleAsync } from "./cli";
 
 const DISPLAY_NAME = "Apple container";
 
 export interface EnsureAppleContainerOptions {
+	signal?: AbortSignal;
 	autoStart?: boolean;
 	timeoutMs?: number;
 	verbose?: boolean;
@@ -54,7 +55,16 @@ export async function ensureAppleContainerRunning(
 		);
 	}
 
-	if (isAppleContainerSystemRunning(cli)) return;
+	const { signal } = options;
+	const deadline = performance.now() + timeoutMs;
+	const running = async () =>
+		(
+			await runAppleAsync(cli, ["system", "status"], {
+				signal,
+				timeoutMs: Math.min(5000, remainingTime(deadline)),
+			})
+		).ok;
+	if (await running()) return;
 
 	if (!cli.found) {
 		throw new ContainerRuntimeUnavailableError(
@@ -78,17 +88,20 @@ export async function ensureAppleContainerRunning(
 			formatStep("📦 Apple container is not running. Starting services..."),
 		);
 	}
-	const started = cli.run(["system", "start", "--timeout", "30"]);
+	const started = await runAppleAsync(
+		cli,
+		["system", "start", "--timeout", "30"],
+		{ signal, timeoutMs: Math.min(30000, remainingTime(deadline)) },
+	);
 
-	const startedAt = Date.now();
-	while (Date.now() - startedAt < timeoutMs) {
-		if (isAppleContainerSystemRunning(cli)) {
+	while (remainingTime(deadline) > 0) {
+		if (await running()) {
 			if (verbose) console.log(formatDone("Apple container is ready"));
 			return;
 		}
-		await sleep(1000);
+		await abortableSleep(Math.min(1000, remainingTime(deadline)), signal);
 		if (verbose) {
-			const elapsed = Math.round((Date.now() - startedAt) / 1000);
+			const elapsed = Math.round((timeoutMs - remainingTime(deadline)) / 1000);
 			console.log(formatWait(`Waiting for Apple container... (${elapsed}s)`));
 		}
 	}

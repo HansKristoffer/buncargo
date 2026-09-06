@@ -7,6 +7,8 @@ import type {
 
 /** Options for bringing the runtime's own daemon/services up. */
 export interface EnsureRuntimeOptions {
+	signal?: AbortSignal;
+
 	autoStart?: boolean;
 	timeoutMs?: number;
 	verbose?: boolean;
@@ -21,6 +23,9 @@ export interface EnsureRuntimeOptions {
  * model separately per backend would let the two drift.
  */
 export interface ContainerUpRequest {
+	signal?: AbortSignal;
+	timeoutMs?: number;
+
 	root: string;
 	projectName: string;
 	envVars: Record<string, string>;
@@ -34,6 +39,9 @@ export interface ContainerUpRequest {
 }
 
 export interface ContainerDownRequest {
+	signal?: AbortSignal;
+	timeoutMs?: number;
+
 	root: string;
 	projectName: string;
 	/**
@@ -49,6 +57,9 @@ export interface ContainerDownRequest {
 }
 
 export interface ExecInServiceRequest {
+	signal?: AbortSignal;
+	timeoutMs?: number;
+
 	projectName: string;
 	serviceName: string;
 	/**
@@ -63,6 +74,8 @@ export interface ExecInServiceRequest {
 }
 
 export interface ServiceDiagnosisRequest {
+	signal?: AbortSignal;
+	timeoutMs?: number;
 	projectName: string;
 	serviceName: string;
 	root?: string;
@@ -120,6 +133,8 @@ export interface ServiceRuntimeState {
 	 * the label existed. Absent means "cannot compare", never "does not match".
 	 */
 	stackHash?: string;
+	/** Fingerprint of this service and its referenced top-level definitions. */
+	serviceHash?: string;
 	/**
 	 * Whether the runtime's own healthcheck currently passes.
 	 *
@@ -145,13 +160,16 @@ export interface ContainerRuntimeAdapter {
 	/** Start the runtime's daemon when allowed, or throw with remediation. */
 	ensureRunning(options?: EnsureRuntimeOptions): Promise<void>;
 	up(request: ContainerUpRequest): void;
+	upAsync?(request: ContainerUpRequest): Promise<void>;
 	down(request: ContainerDownRequest): void;
+	downAsync?(request: ContainerDownRequest): Promise<void>;
 	areServicesRunning(
 		projectName: string,
 		serviceNames: string[],
 	): Promise<boolean>;
 	/** Run a command in a service container; false for any failure. */
 	execInService(request: ExecInServiceRequest): boolean;
+	execInServiceAsync?(request: ExecInServiceRequest): Promise<boolean>;
 	/**
 	 * State and recent output for one service, or undefined when the runtime
 	 * has no container for it. Never throws: this only enriches diagnostics.
@@ -159,6 +177,9 @@ export interface ContainerRuntimeAdapter {
 	diagnoseService(
 		request: ServiceDiagnosisRequest,
 	): ServiceDiagnosis | undefined;
+	diagnoseServiceAsync?(
+		request: ServiceDiagnosisRequest,
+	): Promise<ServiceDiagnosis | undefined>;
 	/** Every buncargo-labeled container this runtime knows about. */
 	list(): BuncargoContainer[];
 	stopByIds(ids: string[]): void;
@@ -179,6 +200,10 @@ export interface ContainerRuntimeAdapter {
 	 * skipped one.
 	 */
 	projectServiceStates(projectName: string): ServiceRuntimeState[];
+	projectServiceStatesAsync?(
+		projectName: string,
+		signal?: AbortSignal,
+	): Promise<ServiceRuntimeState[]>;
 }
 
 /** Thrown when the selected runtime cannot be used, with a fix in the message. */

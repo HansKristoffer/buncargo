@@ -2,11 +2,13 @@
  * Cloudflare Quick Tunnel via the cloudflared CLI (same approach as unjs/untun).
  * License / download flow adapted from unjs/untun (MIT).
  */
+
+import { abortableSleep } from "../deadline";
 import {
 	quickTunnelMaxAttempts,
 	quickTunnelRetryBaseMs,
 } from "../runtime-flags";
-import { sleep } from "../sleep";
+import { isInstalledTool } from "../tool-binary";
 import { startCloudflaredTunnel } from "./cloudflared-process";
 import { cloudflaredNotice, resolveCloudflared } from "./constants";
 import { installCloudflared } from "./install";
@@ -28,28 +30,31 @@ export function isRetryableQuickTunnelError(message: string): boolean {
 
 async function startCloudflaredTunnelWithRetry(
 	cfArgs: Record<string, string | number | null>,
+	signal?: AbortSignal,
 ): Promise<ReturnType<typeof startCloudflaredTunnel>> {
 	const maxAttempts = quickTunnelMaxAttempts();
 	const baseMs = quickTunnelRetryBaseMs();
 
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-		const tunnel = startCloudflaredTunnel(cfArgs);
+		signal?.throwIfAborted();
+		const tunnel = startCloudflaredTunnel(cfArgs, { signal });
 		try {
 			await tunnel.url;
 			return tunnel;
 		} catch (e) {
 			try {
-				tunnel.stop();
+				await tunnel.close();
 			} catch {
 				/* ignore */
 			}
+			signal?.throwIfAborted();
 			const msg = String(e);
 			if (attempt < maxAttempts && isRetryableQuickTunnelError(msg)) {
 				const delayMs = baseMs * attempt;
 				console.log(
 					`Cloudflare quick tunnel temporarily unavailable (${attempt}/${maxAttempts}), retrying in ${delayMs}ms…`,
 				);
-				await sleep(delayMs);
+				await abortableSleep(delayMs, signal);
 				continue;
 			}
 			throw e;
@@ -64,6 +69,7 @@ export interface QuickTunnelOptions {
 	hostname?: string;
 	protocol?: "http" | "https";
 	verifyTLS?: boolean;
+	signal?: AbortSignal;
 }
 
 export interface QuickTunnel {
@@ -85,15 +91,18 @@ function resolvedLocalUrl(opts: QuickTunnelOptions): string {
 export async function startQuickTunnel(
 	opts: QuickTunnelOptions,
 ): Promise<QuickTunnel> {
+	opts.signal?.throwIfAborted();
 	const url = resolvedLocalUrl(opts);
 
 	console.log(`Starting cloudflared tunnel to ${url}`);
 
 	// Throws if BUNCARGO_CLOUDFLARED_PATH is invalid, before anything is spawned.
 	const cloudflared = resolveCloudflared();
-	if (cloudflared.source === "cache" && !cloudflared.exists) {
+	if (cloudflared.source === "cache" && !isInstalledTool(cloudflared.path)) {
 		console.log(cloudflaredNotice);
-		await installCloudflared();
+		await installCloudflared(cloudflared.path, undefined, {
+			signal: opts.signal,
+		});
 	}
 
 	const cfArgs: Record<string, string | number | null> = { "--url": url };
@@ -101,10 +110,10 @@ export async function startQuickTunnel(
 	if (!opts.verifyTLS) {
 		cfArgs["--no-tls-verify"] = null;
 	}
-	const tunnel = await startCloudflaredTunnelWithRetry(cfArgs);
+	const tunnel = await startCloudflaredTunnelWithRetry(cfArgs, opts.signal);
 
 	const cleanup = async () => {
-		tunnel.stop();
+		await tunnel.close();
 	};
 
 	return {

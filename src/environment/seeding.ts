@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { withDeadline } from "../core/deadline";
 import { toUrlMap, type UrlMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
 import { formatDone, formatFail, formatStep, formatWarn } from "../core/style";
@@ -24,6 +25,7 @@ export function resolveBunSeedSpecifier(command: string): string | undefined {
 
 export async function runSeedCommand(input: {
 	command: string;
+	signal?: AbortSignal;
 	root: string;
 	cwd?: string;
 	envVars: Record<string, string>;
@@ -38,13 +40,15 @@ export async function runSeedCommand(input: {
 		const href = pathToFileURL(resolve(workingDir, specifier)).href;
 		const wrapped = `await import(${JSON.stringify(href)}); process.exit(process.exitCode ?? 0)`;
 		return execAsync(
-			`bun --eval ${JSON.stringify(wrapped)}`,
+			[process.execPath, "--eval", wrapped],
 			input.root,
 			input.envVars,
 			{
 				cwd: input.cwd,
 				verbose: input.verbose,
 				throwOnError: false,
+				signal: input.signal,
+				timeoutMs: 600_000,
 			},
 		);
 	}
@@ -53,6 +57,8 @@ export async function runSeedCommand(input: {
 		cwd: input.cwd,
 		verbose: input.verbose,
 		throwOnError: false,
+		signal: input.signal,
+		timeoutMs: 600_000,
 	});
 }
 
@@ -132,14 +138,22 @@ export async function runSeedIfNeeded<
 	}
 	const { verbose = true, productionBuild = false, force = false } = options;
 
-	if (seed.check && !force) {
-		const checkTable = createCheckTableHelper<TServices, TApps>(
-			toUrlMap(ctx.urls),
-			envVars.exec,
-			ctx.config.prisma?.service ?? "postgres",
-		);
-		const shouldSeed = await seed.check(
-			createSeedCheckContext(envVars.getHookContext(), checkTable),
+	const seedCheck = seed.check;
+	if (seedCheck && !force) {
+		const shouldSeed = await withDeadline(
+			async (signal) => {
+				const checkTable = createCheckTableHelper<TServices, TApps>(
+					toUrlMap(ctx.urls),
+					(cmd, execOptions) =>
+						envVars.exec(cmd, { ...execOptions, signal, timeoutMs: 600_000 }),
+					ctx.config.prisma?.service ?? "postgres",
+				);
+				return seedCheck(
+					createSeedCheckContext(envVars.getHookContext(signal), checkTable),
+				);
+			},
+			600_000,
+			options.signal,
 		);
 		if (!shouldSeed) {
 			if (verbose)
@@ -151,6 +165,7 @@ export async function runSeedIfNeeded<
 	if (verbose) console.log(formatStep("🌱 Running seeders..."));
 	const result = await runSeedCommand({
 		command: seed.command,
+		signal: options.signal,
 		root: ctx.root,
 		cwd: seed.cwd,
 		envVars: envVars.buildEnvVars(productionBuild),

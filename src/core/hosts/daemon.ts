@@ -8,6 +8,7 @@ import {
 	writeFileSync,
 	writeSync,
 } from "node:fs";
+import { join, resolve } from "node:path";
 // The leaf module, not `../process`: its index re-exports the port-ownership
 // helpers, which reach into the container backends. The root daemon spawns
 // nothing and should not carry them.
@@ -28,10 +29,16 @@ import {
 } from "./daemon-config";
 import { cleanHostsFile, syncHostsFile } from "./hosts-file";
 import {
+	CERT_FILENAME,
 	chownToInvokingUser,
+	getCertPath,
 	getCertsDir,
 	getHostsStateDir,
+	getKeyPath,
 	getPidfilePath,
+	getRoutesPath,
+	KEY_FILENAME,
+	ROUTES_FILENAME,
 } from "./paths";
 import {
 	type LocalProxy,
@@ -271,12 +278,41 @@ export const WATCH_DEBOUNCE_MS = 20;
  */
 export function watchHostsState(deps: {
 	directories: string[];
+	/** Exact inputs; defaults to the hosts filenames in each watched directory. */
+	files?: string[];
 	onChange: () => void;
 	log: (message: string) => void;
 	debounceMs?: number;
 }): () => void {
+	const files =
+		deps.files ??
+		deps.directories.flatMap((directory) =>
+			[ROUTES_FILENAME, CERT_FILENAME, KEY_FILENAME].map((name) =>
+				join(directory, name),
+			),
+		);
+	const inputs = new Set(files.map((path) => resolve(path)));
+	const fingerprint = () =>
+		[...inputs]
+			.map((path) => {
+				try {
+					const stat = statSync(path);
+					return `${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+				} catch {
+					return "missing";
+				}
+			})
+			.join("|");
+	let previous = fingerprint();
 	const trigger = createDebouncedTrigger({
-		onTrigger: deps.onChange,
+		onTrigger: () => {
+			// Some filesystems omit the event filename. Fingerprints suppress
+			// their lock/temp-file events without losing atomic replacements.
+			const current = fingerprint();
+			if (current === previous) return;
+			previous = current;
+			deps.onChange();
+		},
 		debounceMs: deps.debounceMs ?? WATCH_DEBOUNCE_MS,
 	});
 	const watchers: FSWatcher[] = [];
@@ -285,7 +321,14 @@ export function watchHostsState(deps: {
 		try {
 			mkdirSync(directory, { recursive: true });
 			chownToInvokingUser(directory);
-			const watcher = watch(directory, () => trigger.fire());
+			const watcher = watch(directory, (_event, filename) => {
+				if (
+					filename !== null &&
+					!inputs.has(resolve(directory, filename.toString()))
+				)
+					return;
+				trigger.fire();
+			});
 			// A watcher that errors later must not take the daemon down; the
 			// poll covers it.
 			watcher.on("error", () => {});
@@ -318,7 +361,16 @@ function writePidfile(pid: number): void {
 	chownToInvokingUser(path);
 }
 
+export type HostsReloadReason =
+	| "startup"
+	| "poll"
+	| "filesystem"
+	| "recovery"
+	| "manual";
+
 export interface HostsReloaderDeps {
+	/** Optional diagnostics; never printed on the ordinary reload path. */
+	onReload?: (event: { reason: HostsReloadReason; count: number }) => void;
 	pruneRoutes: () => Promise<Array<{ hostname: string; port: number }>>;
 	certificateFingerprint: () => string;
 	describeCertificateGap: (hostnames: string[]) => string | undefined;
@@ -340,7 +392,7 @@ export interface HostsReloaderDeps {
 }
 
 export interface HostsReloader {
-	reload: () => Promise<void>;
+	reload: (reason?: HostsReloadReason) => Promise<void>;
 	stop: () => void;
 	/** Whether a listener is currently bound. */
 	isBound: () => boolean;
@@ -357,6 +409,9 @@ export interface HostsReloader {
 export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	const routeMap = new Map<string, number>();
 	let proxy: LocalProxy | undefined;
+	let inFlight: Promise<void> | undefined;
+	let stopped = false;
+	let reloadCount = 0;
 	let lastHostKey = "";
 	let lastCertKey = "";
 	let idleSince: number | undefined;
@@ -399,11 +454,15 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		);
 	}
 
-	async function reload(): Promise<void> {
+	async function performReload(reason: HostsReloadReason): Promise<void> {
+		if (stopped) return;
+		reloadCount += 1;
+		deps.onReload?.({ reason, count: reloadCount });
 		// Load before clearing, so a registry that could not be read leaves the
 		// previous map serving. An unreadable file is not a file with no routes,
 		// and clearing first would 404 every named URL on the machine.
 		const loaded = await deps.pruneRoutes();
+		if (stopped) return;
 		routeMap.clear();
 		for (const route of loaded) {
 			routeMap.set(route.hostname, route.port);
@@ -459,6 +518,7 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		// Read before stopping: an unreadable pair should leave the running
 		// listener alone rather than take every named URL down first.
 		const { cert, key } = await deps.readCertificatePair();
+		if (stopped) return;
 
 		// Bind the replacement *before* dropping the old listener. Both hold
 		// the port at once under SO_REUSEPORT and the kernel hands new
@@ -475,6 +535,10 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 			cert,
 			key,
 		});
+		if (stopped) {
+			next.stop();
+			return;
+		}
 		const previous = proxy;
 		proxy = next;
 		previous?.stop();
@@ -482,8 +546,18 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	}
 
 	return {
-		reload,
-		stop: () => proxy?.stop(),
+		reload: (reason = "manual") => {
+			// Timer, watcher, and in-request recovery share this operation.
+			inFlight ??= performReload(reason).finally(() => {
+				inFlight = undefined;
+			});
+			return inFlight;
+		},
+		stop: () => {
+			stopped = true;
+			proxy?.stop();
+			proxy = undefined;
+		},
 		isBound: () => proxy !== undefined,
 		routes,
 	};
@@ -556,10 +630,15 @@ export async function runHostsDaemon(
 	});
 
 	const wakeup = createReloadWakeup();
+	let filesystemChanged = false;
 	const stopWatching = watchHostsState({
 		// The registry and the certificate: the two inputs a reload reads.
 		directories: [getHostsStateDir(), getCertsDir()],
-		onChange: () => wakeup.signal(),
+		files: [getRoutesPath(), getCertPath(), getKeyPath()],
+		onChange: () => {
+			filesystemChanged = true;
+			wakeup.signal();
+		},
 		log: logDaemonError,
 	});
 
@@ -587,9 +666,9 @@ export async function runHostsDaemon(
 
 	// A throw here (no mkcert, :443 taken, unreadable registry) must not end the
 	// process: stderr is the service log, and the next tick retries.
-	async function reloadOrReport(): Promise<void> {
+	async function reloadOrReport(reason: HostsReloadReason): Promise<void> {
 		try {
-			await reloader.reload();
+			await reloader.reload(reason);
 			if (consecutiveFailures > 0) {
 				logDaemonError(
 					`[buncargo hosts] reload recovered after ${consecutiveFailures} failed ${consecutiveFailures === 1 ? "attempt" : "attempts"}`,
@@ -624,7 +703,7 @@ export async function runHostsDaemon(
 		logDaemonError(
 			`[buncargo hosts] route map has not refreshed in ${Math.round(ageMs / 1000)}s; reloading`,
 		);
-		recovering = reloadOrReport()
+		recovering = reloadOrReport("recovery")
 			.then(() => {
 				recoveries += 1;
 				if (recoveries <= MAX_STALL_RECOVERIES) return;
@@ -638,12 +717,14 @@ export async function runHostsDaemon(
 			});
 	};
 
-	await reloadOrReport();
+	await reloadOrReport("startup");
 	for (;;) {
 		// Whichever comes first: a change on disk, or the poll. The poll is the
 		// backstop — it is also what prunes routes whose owner died, which no
 		// filesystem event announces.
 		await wakeup.wait(nextReloadDelayMs(consecutiveFailures));
-		await reloadOrReport();
+		const reason = filesystemChanged ? "filesystem" : "poll";
+		filesystemChanged = false;
+		await reloadOrReport(reason);
 	}
 }

@@ -1,4 +1,5 @@
 import { assertValidConfig } from "../config";
+import { withDeadline } from "../core/deadline";
 import { waitForServer } from "../core/network";
 import { toPortMap } from "../core/ports";
 import {
@@ -49,7 +50,12 @@ export function createDevEnvironment<
 	TEnv extends EnvValues = EnvValues,
 >(
 	config: DevConfig<TServices, TApps, TEnv>,
-	options: { suffix?: string; containerRuntime?: string } = {},
+	options: {
+		suffix?: string;
+		containerRuntime?: string;
+		root?: string;
+		readOnly?: boolean;
+	} = {},
 ): DevEnvironment<TServices, TApps, TEnv> {
 	assertValidConfig(config);
 
@@ -125,6 +131,16 @@ export function createDevEnvironment<
 
 		// Server management
 		startServers: servers.startServersOnly,
+		runServerHook: async (phase, signal) => {
+			const hook =
+				config.hooks?.[phase === "before" ? "beforeServers" : "afterServers"];
+			if (hook)
+				await withDeadline(
+					(hookSignal) => hook(envVars.getHookContext(hookSignal)),
+					600000,
+					signal,
+				);
+		},
 		stopProcess,
 		waitForServers: servers.waitForServersReady,
 

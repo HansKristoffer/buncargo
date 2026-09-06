@@ -26,13 +26,15 @@ export async function activateNamedHosts<
 	TApps extends Record<string, AppConfig>,
 >(
 	env: DevEnvironment<TServices, TApps>,
-	options: { enabled: boolean },
+	options: { enabled: boolean; signal?: AbortSignal },
 ): Promise<string[]> {
 	if (!env.hosts || !options.enabled) {
 		return [];
 	}
 
+	options.signal?.throwIfAborted();
 	const result = await ensureHostsReady({ hosts: true });
+	options.signal?.throwIfAborted();
 	if (!result.ok) {
 		return result.reason === "disabled"
 			? []
@@ -53,7 +55,9 @@ export async function activateNamedHosts<
 			include: certificateHostnames(env.hosts.plan, env.hosts.tld),
 			root: env.root,
 		});
+		options.signal?.throwIfAborted();
 		// App routes die with this process; service routes outlive it.
+		options.signal?.throwIfAborted();
 		await upsertHostRoutes(
 			routesFromPlan(env.hosts.plan, {
 				root: env.root,
@@ -61,6 +65,7 @@ export async function activateNamedHosts<
 				kinds: ["app"],
 			}),
 		);
+		options.signal?.throwIfAborted();
 		await upsertHostRoutes(
 			routesFromPlan(env.hosts.plan, {
 				root: env.root,
@@ -80,7 +85,9 @@ export async function activateNamedHosts<
 		// sufficient, which is the normal case.
 		// No `root` here: this pass exists to pick up what other runs published,
 		// and this project's names were already recorded above.
+		options.signal?.throwIfAborted();
 		await syncCertificateForRoutes();
+		options.signal?.throwIfAborted();
 
 		// Registering a route only writes a file. Advertising the hostname before
 		// the daemon has picked it up is how a banner full of https URLs ends up
@@ -94,8 +101,10 @@ export async function activateNamedHosts<
 			return notes;
 		}
 
+		options.signal?.throwIfAborted();
 		env.setNamedHostsActive(true, { caPath: result.caPath });
 	} catch (error) {
+		options.signal?.throwIfAborted();
 		notes.push(`Named URLs unavailable: ${toHostsUserMessage(error)}`);
 	}
 	return notes;
@@ -108,7 +117,7 @@ export async function releaseNamedHosts<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 >(env: DevEnvironment<TServices, TApps>): Promise<void> {
-	if (!env.hosts?.active) return;
+	if (!env.hosts) return;
 	try {
 		await removeHostRoutes(
 			(route) =>

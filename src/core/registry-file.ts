@@ -74,12 +74,16 @@ export async function readJsonDocument<T>(
 export function writeJsonDocumentSync(
 	path: string,
 	document: unknown,
-	options: { afterWrite?: (path: string) => void } = {},
+	options: { afterWrite?: (path: string) => void; mode?: number } = {},
 ): void {
 	mkdirSync(dirname(path), { recursive: true });
 	const temp = tempPathFor(path);
 	try {
-		writeFileSync(temp, serialize(document), "utf-8");
+		writeFileSync(temp, serialize(document), {
+			encoding: "utf-8",
+			mode: options.mode ?? 0o600,
+			flag: "wx",
+		});
 		renameSync(temp, path);
 	} catch (error) {
 		rmSync(temp, { force: true });
@@ -93,12 +97,16 @@ export function writeJsonDocumentSync(
 export async function writeJsonDocument(
 	path: string,
 	document: unknown,
-	options: { afterWrite?: (path: string) => void } = {},
+	options: { afterWrite?: (path: string) => void; mode?: number } = {},
 ): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
 	const temp = tempPathFor(path);
 	try {
-		await writeFile(temp, serialize(document), "utf-8");
+		await writeFile(temp, serialize(document), {
+			encoding: "utf-8",
+			mode: options.mode ?? 0o600,
+			flag: "wx",
+		});
 		await rename(temp, path);
 	} catch (error) {
 		await rm(temp, { force: true }).catch(() => {});
@@ -134,14 +142,27 @@ export class StateFileUnreadableError extends Error {
 	}
 }
 
+export class StateFileVersionError extends StateFileUnreadableError {
+	constructor(
+		path: string,
+		readonly foundVersion: number,
+		readonly supportedVersion: number,
+	) {
+		super(
+			path,
+			`version ${foundVersion} is newer than supported version ${supportedVersion}; update buncargo before changing this state`,
+		);
+		this.name = "StateFileVersionError";
+	}
+}
+
 export interface ListRegistryReadOptions {
 	/**
 	 * Throw {@link StateFileUnreadableError} instead of degrading an existing
 	 * but unreadable file to `[]`.
 	 *
-	 * For consumers that only read. A writer wants the lenient behavior: it can
-	 * repair the file by writing over it, while throwing would leave it stuck
-	 * behind a file only a human could delete.
+	 * Writers may repair corrupt state; the original bytes are preserved before
+	 * replacement. Newer versions always throw, even for lenient readers.
 	 */
 	strict?: boolean;
 }
@@ -156,16 +177,18 @@ export interface ListRegistry<T> {
 /**
  * A `{ version, <key>: T[] }` state file.
  *
- * A version mismatch or a non-array payload reads as empty; individual entries
- * that fail `isEntry` are dropped so one bad record cannot discard the rest.
+ * Older versions and malformed payloads read as empty in lenient mode;
+ * individual invalid entries are dropped. Newer versions always fail closed.
+ * A repair preserves the original file before replacing or deleting it.
  */
 export function defineListRegistry<T>(options: {
 	version: number;
 	key: string;
 	isEntry: (value: unknown) => value is T;
 	afterWrite?: (path: string) => void;
+	mode?: number;
 }): ListRegistry<T> {
-	const { version, key, isEntry, afterWrite } = options;
+	const { version, key, isEntry, afterWrite, mode = 0o600 } = options;
 
 	const validate: JsonValidator<T[]> = (value) => {
 		if (typeof value !== "object" || value === null) return undefined;
@@ -175,6 +198,25 @@ export function defineListRegistry<T>(options: {
 		if (!Array.isArray(entries)) return undefined;
 		return entries.filter(isEntry);
 	};
+
+	function checkVersion(path: string, raw: string): unknown {
+		let value: unknown;
+		try {
+			value = JSON.parse(raw);
+		} catch {
+			return undefined;
+		}
+		if (
+			typeof value === "object" &&
+			value !== null &&
+			"version" in value &&
+			typeof value.version === "number" &&
+			value.version > version
+		) {
+			throw new StateFileVersionError(path, value.version, version);
+		}
+		return value;
+	}
 
 	return {
 		async read(path, readOptions = {}) {
@@ -186,6 +228,7 @@ export function defineListRegistry<T>(options: {
 				if (!readOptions.strict) return [];
 				throw new StateFileUnreadableError(path, describeError(error));
 			}
+			checkVersion(path, raw);
 			const entries = parse(raw, validate);
 			if (entries) return entries;
 			if (!readOptions.strict) return [];
@@ -195,6 +238,34 @@ export function defineListRegistry<T>(options: {
 			);
 		},
 		async write(path, entries) {
+			let raw: string | undefined;
+			try {
+				raw = await readFile(path, "utf-8");
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+			if (raw !== undefined) {
+				const value = checkVersion(path, raw);
+				const valid = validate(value);
+				const payload =
+					typeof value === "object" && value !== null
+						? (value as Record<string, unknown>)[key]
+						: undefined;
+				if (
+					!valid ||
+					!Array.isArray(payload) ||
+					valid.length !== payload.length
+				) {
+					// Preserve precisely the bytes being repaired, before destructive
+					// replacement (including an empty-list deletion). The caller's
+					// mutation lock covers this check and publication together.
+					const backup = `${path}.recovery-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`;
+					await writeFile(backup, raw, { encoding: "utf-8", mode, flag: "wx" });
+					afterWrite?.(backup);
+				}
+			}
+			if (entries.length > 0 && raw === serialize({ version, [key]: entries }))
+				return;
 			if (entries.length === 0) {
 				await rm(path, { force: true });
 				return;
@@ -202,7 +273,7 @@ export function defineListRegistry<T>(options: {
 			await writeJsonDocument(
 				path,
 				{ version, [key]: entries },
-				{ afterWrite },
+				{ afterWrite, mode },
 			);
 		},
 	};

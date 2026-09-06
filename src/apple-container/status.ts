@@ -3,9 +3,14 @@ import type {
 	ServiceDiagnosisRequest,
 	ServiceRuntimeState,
 } from "../container-runtime/types";
-import { STACK_HASH_LABEL } from "../docker-compose/interpolate";
+import { remainingTime } from "../core/deadline";
+import {
+	SERVICE_HASH_LABEL,
+	STACK_HASH_LABEL,
+} from "../docker-compose/interpolate";
 import type { BuncargoContainer, PortContainerOwner } from "../types";
 import type { AppleContainerCli } from "./cli";
+import { runAppleAsync } from "./cli";
 import { containerNameFor, PROJECT_LABEL, SERVICE_LABEL } from "./run-plan";
 
 /**
@@ -293,12 +298,78 @@ export function appleProjectServiceStates(
 		const service = record.labels[SERVICE_LABEL];
 		if (!service) return [];
 		const stackHash = record.labels[STACK_HASH_LABEL];
+		const serviceHash = record.labels[SERVICE_HASH_LABEL];
 		return [
 			{
 				service,
 				running: isRunningState(record.state),
 				...(stackHash ? { stackHash } : {}),
+				...(serviceHash ? { serviceHash } : {}),
 			},
 		];
 	});
+}
+
+export async function listContainerRecordsAsync(
+	cli: AppleContainerCli,
+	signal?: AbortSignal,
+	timeoutMs = 10000,
+): Promise<AppleContainerRecord[]> {
+	const result = await runAppleAsync(cli, ["ls", "--all", "--format", "json"], {
+		signal,
+		timeoutMs,
+	});
+	return result.ok ? parseContainerRecords(result.stdout) : [];
+}
+
+export async function appleProjectServiceStatesAsync(
+	cli: AppleContainerCli,
+	projectName: string,
+	signal?: AbortSignal,
+): Promise<ServiceRuntimeState[]> {
+	const records = await listContainerRecordsAsync(cli, signal);
+	return records
+		.filter((record) => record.labels[PROJECT_LABEL] === projectName)
+		.flatMap((record) => {
+			const service = record.labels[SERVICE_LABEL];
+			if (!service) return [];
+			const stackHash = record.labels[STACK_HASH_LABEL];
+			const serviceHash = record.labels[SERVICE_HASH_LABEL];
+			return [
+				{
+					service,
+					running: isRunningState(record.state),
+					...(stackHash ? { stackHash } : {}),
+					...(serviceHash ? { serviceHash } : {}),
+				},
+			];
+		});
+}
+
+export async function diagnoseAppleServiceAsync(
+	cli: AppleContainerCli,
+	request: ServiceDiagnosisRequest,
+): Promise<ServiceDiagnosis | undefined> {
+	const deadline = performance.now() + (request.timeoutMs ?? 2000);
+	try {
+		const name = containerNameFor(request.projectName, request.serviceName);
+		const record = (
+			await listContainerRecordsAsync(
+				cli,
+				request.signal,
+				remainingTime(deadline),
+			)
+		).find((candidate) => candidate.id === name);
+		if (!record) return undefined;
+		if (remainingTime(deadline) === 0)
+			return { state: record.state, logTail: "" };
+		const logs = await runAppleAsync(
+			cli,
+			["logs", "-n", String(request.tail ?? 20), name],
+			{ signal: request.signal, timeoutMs: remainingTime(deadline) },
+		);
+		return { state: record.state, logTail: logs.ok ? logs.stdout.trim() : "" };
+	} catch {
+		return undefined;
+	}
 }

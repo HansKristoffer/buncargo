@@ -64,6 +64,7 @@ struct RunCLI: Codable, Hashable {
 }
 
 struct Run: Codable, Identifiable, Hashable {
+    var sessionId: String?
     let projectPrefix: String
     let projectName: String
     let root: String
@@ -78,7 +79,7 @@ struct Run: Codable, Identifiable, Hashable {
     var apps: [RunApp]
     var services: [RunService]
 
-    var id: String { root }
+    var id: String { sessionId ?? root }
 
     /// The main checkout is labelled by role, not by branch: it is the one
     /// everybody means by "the project". Worktrees are only recognisable by

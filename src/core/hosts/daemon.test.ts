@@ -5,10 +5,12 @@ import {
 	renameSync,
 	rmSync,
 	statSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { withFileLock } from "../file-lock";
 import {
 	createDebouncedTrigger,
 	createHostsReloader,
@@ -244,6 +246,71 @@ describe("watchHostsState", () => {
 	});
 });
 
+describe("hosts reload isolation", () => {
+	it("stays at the polling cadence when reloads acquire registry locks", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "buncargo-idle-reload-"));
+		let filesystemWakeups = 0;
+		let reloads = 0;
+		const target = join(directory, "routes.json");
+		const reload = async () => {
+			await withFileLock(target, async () => {
+				reloads += 1;
+			});
+		};
+		const stop = watchHostsState({
+			directories: [directory],
+			onChange: () => {
+				filesystemWakeups += 1;
+				void reload();
+			},
+			log: () => {},
+		});
+		const timer = setInterval(() => {
+			void reload();
+		}, 1000);
+		try {
+			await reload();
+			await Bun.sleep(2150);
+			expect(filesystemWakeups).toBe(0);
+			expect(reloads).toBeGreaterThanOrEqual(2);
+			expect(reloads).toBeLessThanOrEqual(3);
+		} finally {
+			clearInterval(timer);
+			stop();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("ignores lock churn, temporary files, and run-status writes", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-watch-feedback-"));
+		let changes = 0;
+		const stop = watchHostsState({
+			directories: [dir],
+			debounceMs: 5,
+			log: () => {},
+			onChange: () => {
+				changes += 1;
+				writeFileSync(join(dir, "routes.json.lock"), "lock");
+				unlinkSync(join(dir, "routes.json.lock"));
+			},
+		});
+		try {
+			writeFileSync(join(dir, "routes.json.tmp"), "{}");
+			writeFileSync(join(dir, "runs.json"), "{}");
+			await Bun.sleep(100);
+			expect(changes).toBe(0);
+			renameSync(join(dir, "routes.json.tmp"), join(dir, "routes.json"));
+			for (let i = 0; i < 100 && changes === 0; i++) await Bun.sleep(10);
+			expect(changes).toBe(1);
+			await Bun.sleep(250);
+			expect(changes).toBe(1);
+		} finally {
+			stop();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("start timeouts", () => {
 	// launchd cold-starting a unit is the only thing worth waiting seconds for.
 	it("allows enough time for the supervisor to load the unit", () => {
@@ -312,6 +379,63 @@ function reloaderHarness(overrides: Partial<HostsReloaderDeps> = {}) {
 const route = (hostname: string, port: number) => ({ hostname, port });
 
 describe("createHostsReloader", () => {
+	it("coalesces overlapping recovery and normal reloads into one replacement", async () => {
+		let active = 0;
+		let maximum = 0;
+		let binds = 0;
+		const events: Array<{ reason: string; count: number }> = [];
+		const { reloader } = reloaderHarness({
+			onReload: (event) => events.push(event),
+			startProxy: async () => {
+				active += 1;
+				maximum = Math.max(maximum, active);
+				binds += 1;
+				await Bun.sleep(30);
+				active -= 1;
+				return { httpsPort: 443, stop: () => {} };
+			},
+		});
+		await Promise.all([
+			reloader.reload("poll"),
+			reloader.reload("recovery"),
+			reloader.reload("filesystem"),
+		]);
+		expect(binds).toBe(1);
+		expect(maximum).toBe(1);
+		expect(events).toEqual([{ reason: "poll", count: 1 }]);
+	});
+
+	it("stops a replacement that finishes binding after shutdown", async () => {
+		let begin!: () => void;
+		const started = new Promise<void>((resolve) => {
+			begin = resolve;
+		});
+		let finish!: () => void;
+		const release = new Promise<void>((resolve) => {
+			finish = resolve;
+		});
+		let stops = 0;
+		const { reloader } = reloaderHarness({
+			startProxy: async () => {
+				begin();
+				await release;
+				return {
+					httpsPort: 443,
+					stop: () => {
+						stops += 1;
+					},
+				};
+			},
+		});
+		const loading = reloader.reload();
+		await started;
+		reloader.stop();
+		finish();
+		await loading;
+		expect(stops).toBe(1);
+		expect(reloader.isBound()).toBe(false);
+	});
+
 	it("binds once and leaves the listener alone while nothing changes", async () => {
 		const { state, reloader } = reloaderHarness();
 		state.routes = [route("web.demo.localhost", 5173)];
