@@ -20,9 +20,8 @@ export default defineDevConfig({
 			healthEndpoint: "/api/webhooks/health",
 			requiredServices: ["postgres", "redis", "clickhouse"],
 			staticEnv: { SECRETS_ENV: "dev" },
-			envVars: (ports, urls, { localIp }) => ({
+			envVars: (_ports, urls) => ({
 				BASE_URL: urls.api,
-				EXPO_PUBLIC_API_URL: `http://${localIp}:${ports.api}`,
 			}),
 		},
 		platform: {
@@ -44,7 +43,11 @@ export default defineDevConfig({
 			healthEndpoint: false,
 			expose: true,
 			requiredApps: ["api"],
-			envVars: (_ports, _urls, { publicUrls }) => ({
+			// Metro inlines EXPO_PUBLIC_* from its own environment, so the API
+			// URL goes here, not on the api app. The LAN IP works in the
+			// simulator and on a phone on the same network.
+			envVars: (ports, _urls, { localIp, publicUrls }) => ({
+				EXPO_PUBLIC_API_URL: `http://${localIp}:${ports.api}`,
 				...(publicUrls.expoApp
 					? { EXPO_PACKAGER_PROXY_URL: publicUrls.expoApp }
 					: {}),

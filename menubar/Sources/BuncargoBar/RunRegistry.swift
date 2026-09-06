@@ -22,12 +22,22 @@ struct RunApp: Codable, Identifiable, Hashable {
     let loopbackUrl: String
     var publicUrl: String?
     var hostname: String?
+    /// Present on Expo apps. Its fields belong to the CLI; here it only means
+    /// "offer the simulator button".
+    var expo: RunExpo?
     var status: RunStatus?
 
     var id: String { name }
     var state: RunStatus { status ?? .starting }
     /// A dev server this run spawned, and can therefore stop on its own.
     var isOwned: Bool { pid != nil }
+    var hasSimulator: Bool { expo != nil && state != .stopped }
+}
+
+struct RunExpo: Codable, Hashable {
+    var scheme: String?
+    var bundleId: String?
+    var simulator: String?
 }
 
 struct RunContainer: Codable, Hashable {
@@ -92,6 +102,12 @@ struct Run: Codable, Identifiable, Hashable {
             return match
         }
         return apps.first
+    }
+
+    /// The Expo app a phone button on the run row opens, if there is exactly one live.
+    var simulatorApp: RunApp? {
+        let live = apps.filter(\.hasSimulator)
+        return live.count == 1 ? live.first : nil
     }
 
     /// Is the process that published this entry still alive?

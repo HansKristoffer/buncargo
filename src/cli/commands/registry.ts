@@ -33,6 +33,11 @@ export const CLI_COMMANDS = [
 		summary: "Stop one app or service, or a whole run",
 	},
 	{
+		name: "sim",
+		usage: "sim [<app>]",
+		summary: "Open this checkout's Expo app in its own iOS simulator",
+	},
+	{
 		name: "status",
 		usage: "status",
 		summary: "Show this project's containers, ports, and tunnels",

@@ -51,6 +51,8 @@ describe("runs.json v1 fixture", () => {
 				run?.apps.find((app) => app.name === "worker")?.pid,
 			).toBeUndefined();
 			expect(run?.apps[1]?.publicUrl).toContain("trycloudflare");
+			// The Expo app is the one the app offers a simulator button for.
+			expect(run?.apps[1]?.expo?.scheme).toBe("lullu");
 
 			const postgres = run?.services.find(
 				(service) => service.name === "postgres",

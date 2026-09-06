@@ -54,6 +54,9 @@ function printRun(run: RunEntry): void {
 		if (app.publicUrl) {
 			log.line(`      public: ${app.publicUrl}`);
 		}
+		if (app.expo) {
+			log.line(`      simulator: bunx buncargo sim ${app.name}`);
+		}
 	}
 
 	for (const service of run.services) {

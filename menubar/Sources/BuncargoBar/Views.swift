@@ -57,6 +57,7 @@ struct TargetRow: View {
     let tablePlusUrl: String?
     let canStop: Bool
     let onStop: () -> Void
+    var onSimulator: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -84,6 +85,11 @@ struct TargetRow: View {
                     if let tablePlusUrl, Actions.hasTablePlus {
                         IconButton(symbol: "tablecells", help: "Open in TablePlus") {
                             Actions.open(tablePlusUrl)
+                        }
+                    }
+                    if let onSimulator {
+                        IconButton(symbol: "iphone", help: "Open in this checkout's simulator") {
+                            onSimulator()
                         }
                     }
                     if canStop {
@@ -119,6 +125,7 @@ struct TargetRow: View {
 struct RunDetailView: View {
     let run: Run
     let onStop: (String?) -> Void
+    let onSimulator: (String) -> Void
 
     private var hostsActive: Bool { run.hosts?.active ?? false }
 
@@ -143,7 +150,8 @@ struct RunDetailView: View {
                         publicUrl: app.publicUrl,
                         tablePlusUrl: nil,
                         canStop: app.state != .stopped,
-                        onStop: { onStop(app.name) }
+                        onStop: { onStop(app.name) },
+                        onSimulator: app.hasSimulator ? { onSimulator(app.name) } : nil
                     )
                 }
             }
@@ -197,6 +205,7 @@ struct RunDetailView: View {
 struct RunRow: View {
     let run: Run
     let onStop: (String?) -> Void
+    let onSimulator: (String) -> Void
 
     @State private var showingDetail = false
     @State private var hovering = false
@@ -238,6 +247,12 @@ struct RunRow: View {
                 .help("Open \(primary.name)")
             }
 
+            if let expo = run.simulatorApp {
+                IconButton(symbol: "iphone", help: "Open \(expo.name) in this checkout's simulator") {
+                    onSimulator(expo.name)
+                }
+            }
+
             IconButton(
                 symbol: showingDetail ? "chevron.up" : "chevron.down",
                 help: "Apps and services"
@@ -255,7 +270,7 @@ struct RunRow: View {
         .background(hovering ? Color.primary.opacity(0.06) : .clear)
         .onHover { hovering = $0 }
         .popover(isPresented: $showingDetail, arrowEdge: .trailing) {
-            RunDetailView(run: run, onStop: onStop)
+            RunDetailView(run: run, onStop: onStop, onSimulator: onSimulator)
         }
     }
 }
