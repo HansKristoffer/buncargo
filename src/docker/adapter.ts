@@ -7,9 +7,8 @@ import type {
 	ExecInServiceRequest,
 	ServiceDiagnosisRequest,
 } from "../container-runtime/types";
-import { DEFAULT_DOCKER_BINARY, runDocker, runDockerAsync } from "./binary";
-import { getComposeArgs } from "./compose-command";
 import { diagnoseDockerService, diagnoseDockerServiceAsync } from "./diagnose";
+import { execInDockerService, execInDockerServiceAsync } from "./exec";
 import {
 	listDockerBuncargoContainers,
 	stopDockerContainersByIds,
@@ -30,32 +29,6 @@ import {
 	dockerProjectServiceStates,
 	dockerProjectServiceStatesAsync,
 } from "./status";
-
-/**
- * Run a probe inside a service container.
- *
- * Spawned as argv rather than through a shell so the command reaches the
- * container exactly as the caller wrote it, matching the Apple backend.
- */
-function execInService(
-	request: ExecInServiceRequest,
-	binary: string = DEFAULT_DOCKER_BINARY,
-): boolean {
-	return runDocker(
-		binary,
-		[
-			...getComposeArgs({
-				projectName: request.projectName,
-				composeFile: request.composeFile,
-			}),
-			"exec",
-			"-T",
-			request.serviceName,
-			...request.command,
-		],
-		{ cwd: request.root },
-	).ok;
-}
 
 export interface DockerAdapterOptions {
 	/** Path to the `docker` binary; falls back to a PATH lookup. */
@@ -123,30 +96,11 @@ export function dockerRuntimeAdapter(
 		},
 
 		execInService(request: ExecInServiceRequest) {
-			return execInService(request, binary);
+			return execInDockerService(request, binary);
 		},
 
-		async execInServiceAsync(request: ExecInServiceRequest) {
-			return (
-				await runDockerAsync(
-					binary,
-					[
-						...getComposeArgs({
-							projectName: request.projectName,
-							composeFile: request.composeFile,
-						}),
-						"exec",
-						"-T",
-						request.serviceName,
-						...request.command,
-					],
-					{
-						cwd: request.root,
-						signal: request.signal,
-						timeoutMs: request.timeoutMs ?? 2000,
-					},
-				)
-			).ok;
+		execInServiceAsync(request: ExecInServiceRequest) {
+			return execInDockerServiceAsync(request, binary);
 		},
 		diagnoseServiceAsync(request: ServiceDiagnosisRequest) {
 			return diagnoseDockerServiceAsync(request, binary);

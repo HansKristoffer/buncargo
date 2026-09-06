@@ -239,10 +239,10 @@ export async function waitForService(
 /**
  * Built-in probes that run *inside* the container, through the runtime's CLI.
  *
- * These are the expensive ones — a `docker compose exec pg_isready` costs
- * seconds — and they are also the ones the generated compose healthcheck
- * already runs, so a runtime reporting the container healthy has just answered
- * the same question. The host-side probes (`http`, `tcp`) cost nothing and
+ * These spawn runtime CLI processes, and they are also the probes the
+ * generated compose healthcheck already runs, so a runtime reporting the
+ * container healthy has just answered the same question. The host-side probes
+ * (`http`, `tcp`) need no subprocess and
  * additionally prove the port is published, so they always run.
  */
 const IN_CONTAINER_PROBES = new Set(["pg_isready", "redis-cli"]);

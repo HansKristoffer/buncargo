@@ -69,6 +69,7 @@ All library source code lives under `src/`.
 - `src/docker/`
  - Docker runtime operations only, split by concern: `status.ts` (container/daemon checks), `lifecycle.ts` (up/down/start), `compose-command.ts` (`docker compose` argument building), `inventory.ts` (`docker ps` listing), `port-lookup.ts` (published-port owner). `adapter.ts` is a factory binding them to the port, taking the same `{ binary }` as Apple's.
  - `binary.ts` is the one place the `docker` command name is spelled. Every command builder here goes through it, so `docker.binary` reaches all of them rather than only the ones somebody remembered.
+ - `exec.ts` resolves the running service by Compose project/service/replica labels and probes it with direct `docker exec`. Do not use `docker compose exec` for readiness: Compose startup can exceed the two-second probe budget even when Postgres is healthy, making a new worktree time out until the next invocation skips probing via container health. Lookup and exec share one deadline; never cache the container ID across polls or guess it from a name.
  - `preflight.ts` detects the local Docker runtime and auto-starts it when possible.
 - `src/apple-container/`
  - The Apple `container` backend, for macOS 26+ on Apple silicon. Apple has said Docker CLI/compose compatibility is not a project goal, so this translates the generated model into per-container commands instead of swapping a command prefix.
