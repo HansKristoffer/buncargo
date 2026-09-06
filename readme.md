@@ -137,11 +137,17 @@ expoApp: {
 	healthEndpoint: false,
 	expose: true,
 	requiredApps: ["api"],
-	envVars: (_ports, _urls, { publicUrls }) => ({
+	envVars: (ports, _urls, { localIp, publicUrls }) => ({
+		// Metro inlines EXPO_PUBLIC_* from its own environment, so this
+		// belongs on the Expo app. The LAN IP works in the simulator and on a
+		// phone on the same network.
+		EXPO_PUBLIC_API_URL: `http://${localIp}:${ports.api}`,
 		...(publicUrls.expoApp ? { EXPO_PACKAGER_PROXY_URL: publicUrls.expoApp } : {}),
 	}),
 }
 ```
+
+An app whose `devCommand` mentions `expo` (or sets `expo: true`) gets `RCT_METRO_PORT`, so each worktree's Metro listens on its own port instead of asking for 8081. See [Expo and the iOS simulator](#expo-and-the-ios-simulator).
 
 ```json
 {
@@ -203,6 +209,7 @@ bunx buncargo runs --json         # Same, machine-readable
 bunx buncargo stop api            # Stop one dev server
 bunx buncargo stop postgres       # Stop one service's container
 bunx buncargo stop --all          # Stop this checkout's whole run
+bunx buncargo sim                 # Open the Expo app in this checkout's own simulator
 bunx buncargo status
 bunx buncargo doctor
 bunx buncargo doctor --fix
@@ -296,6 +303,36 @@ Only one app may set `interactive: true`. `--attach=<app>` overrides it.
 - Other apps: piped stdout/stderr with a `[name]` prefix, stdin ignored
 - When the attached app exits, siblings are killed via process group
 - Args after `--` are appended only to the attached command
+
+## Expo and the iOS simulator
+
+Expo Go and a development build are shells: the JavaScript comes from whichever Metro a deep link names. So two worktrees of an Expo app are two Metro ports plus two simulator devices, one per checkout, each opened on its own port. One device cannot hold two installs of the same bundle ID, but two devices can run side by side.
+
+```bash
+bunx buncargo dev --apps=expoApp   # Expo attached, Metro on this worktree's port
+bunx buncargo sim                  # in another terminal, or the phone button in BuncargoBar
+```
+
+`buncargo sim` reads the run registry, so it needs no config and no Docker. It
+
+1. finds or creates this checkout's device, named `<projectPrefix>/<worktree> · iPhone 16 Pro`, by cloning the simulator you last used in Simulator.app (or `expo.simulator`), so the development build installed there comes along;
+2. boots it and brings Simulator.app to the front;
+3. waits for Metro to listen on the app's port;
+4. opens the development build when it is installed on that device, else Expo Go, on `127.0.0.1:<port>`.
+
+If neither is installed on the device it says so: press `shift+i` in the Expo terminal and pick the device, or run `npx expo run:ios --device "<name>"` once. Expo CLI's plain `i` opens on the first booted device, which with two worktrees up is not always yours.
+
+```typescript
+expoApp: {
+	devCommand: "bun run start",      // does not say "expo", so:
+	expo: {
+		scheme: "myapp",               // default: `scheme` in app.json, else exp+<slug>
+		simulator: "iPhone 17 Pro",    // default: the device Simulator.app last showed
+	},
+}
+```
+
+The deep-link scheme and `ios.bundleIdentifier` are read from `app.json` when the run is published. A project configured only through `app.config.ts` sets `expo.scheme`. Named HTTPS hosts are not trusted inside the simulator, so point `EXPO_PUBLIC_*` URLs at the LAN IP or `loopbackUrls`.
 
 ## Ports and isolation
 
@@ -401,14 +438,16 @@ terminal window you closed three worktrees ago.
 
 Projects are headers and each checkout is a row - `Main`, or the worktree name
 with its branch beneath - so several worktrees of one project stack up under it.
-Only running checkouts appear. **Open** launches the primary app; the chevron
-opens a panel with every app and service, each with open, copy, a TablePlus
-button for databases, and a stop button. **Stop run** stops everything.
+Only running checkouts appear. **Open** launches the primary app and the phone
+button opens an Expo app in that checkout's simulator; the chevron opens a panel
+with every app and service, each with open, copy, a TablePlus button for
+databases, a simulator button for Expo apps, and a stop button. **Stop run**
+stops everything.
 
-It is a reader: it never signals a process or talks to Docker, it shells out to
-`buncargo stop` using the exact interpreter that started the run, so a worktree
-on a different buncargo version stops with its own build. See
-[`menubar/README.md`](menubar/README.md).
+It is a reader: it never signals a process, talks to Docker or drives `simctl`;
+it shells out to `buncargo stop` and `buncargo sim` using the exact interpreter
+that started the run, so a worktree on a different buncargo version acts with
+its own build. See [`menubar/README.md`](menubar/README.md).
 
 ```bash
 bunx buncargo bar install
@@ -577,6 +616,7 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | `envVars` | `(ports, urls, ctx) => Record<string, string \| number>` | `undefined` | Computed env for this app only |
 | `interactive` | `boolean` | `false` | Own the TTY. Only one app may set this |
 | `needsPublicUrls` | `boolean` | `false` | Start after tunnels so env sees `*_PUBLIC_URL`. Ignored without `--expose` |
+| `expo` | `boolean \| { scheme?, simulator? }` | inferred | Expo dev server: gets `RCT_METRO_PORT` and a `buncargo sim` device. Inferred when `devCommand` mentions `expo` |
 
 `envVars` context: `{ projectName, localIp, portOffset, publicUrls, loopbackUrls }`.
 

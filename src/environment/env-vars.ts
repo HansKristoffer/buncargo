@@ -3,6 +3,7 @@ import {
 	mergeSharedEnvWithOverlay,
 	stringifyEnvValues,
 } from "../core/env";
+import { isExpoApp } from "../core/expo";
 import { toPortMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
 import { hostsDaemonPort, isCI } from "../core/runtime-flags";
@@ -108,6 +109,9 @@ export function createEnvVarsApi<
 		};
 		if (appPort !== undefined) {
 			processEnv.PORT = String(appPort);
+			// Expo CLI ignores PORT; without this every worktree's Metro asks
+			// for 8081 and the second one is offered 8082, not its own block.
+			if (isExpoApp(appConfig)) processEnv.RCT_METRO_PORT = String(appPort);
 		}
 		const namedHost = ctx.hosts?.active
 			? ctx.hosts.plan.find(

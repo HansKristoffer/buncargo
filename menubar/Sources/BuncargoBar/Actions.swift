@@ -35,31 +35,27 @@ enum Actions {
     }
 }
 
-/// Running `buncargo stop` for the run that owns a target.
+/// Re-invoking the buncargo that owns a run.
 ///
-/// The app never signals a process or talks to Docker itself: it re-invokes the
-/// exact buncargo that started the run, recorded in the registry entry, so a
-/// worktree on a different version stops with its own build.
-enum StopCommand {
-    enum Outcome {
-        case stopped
-        case notFound
-        case refused(String)
-        case failed(String)
+/// The app never signals a process, talks to Docker or drives `simctl` itself:
+/// it runs the exact buncargo that started the run, recorded in the registry
+/// entry, so a worktree on a different version acts with its own build.
+enum BuncargoCommand {
+    struct Result {
+        let status: Int32
+        let stderr: String
     }
 
-    static func run(_ run: Run, target: String?, force: Bool) async -> Outcome {
+    static func run(_ run: Run, _ command: [String]) async -> Swift.Result<Result, Error> {
         guard let cli = run.cli else {
-            return .failed("This run did not record how to invoke buncargo.")
+            return .failure(CommandError("This run did not record how to invoke buncargo."))
         }
 
         var arguments: [String] = []
         if let script = cli.script { arguments.append(script) }
-        arguments.append("stop")
-        if let target { arguments.append(target) } else { arguments.append("--all") }
+        arguments.append(contentsOf: command)
         arguments.append(contentsOf: ["--root", run.root])
         if let sessionId = run.sessionId { arguments.append(contentsOf: ["--run", sessionId]) }
-        if force { arguments.append("--force") }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cli.program)
@@ -75,19 +71,58 @@ enum StopCommand {
         do {
             try process.run()
         } catch {
-            return .failed(error.localizedDescription)
+            return .failure(error)
         }
 
         let stderr = errorPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         let message = String(data: stderr, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return .success(Result(status: process.terminationStatus, stderr: message))
+    }
 
-        switch process.terminationStatus {
-        case 0: return .stopped
-        case 2: return .notFound
-        case 3: return .refused(message.isEmpty ? "Refused" : message)
-        default: return .failed(message.isEmpty ? "buncargo stop failed" : message)
+    struct CommandError: LocalizedError {
+        let message: String
+        init(_ message: String) { self.message = message }
+        var errorDescription: String? { message }
+    }
+}
+
+/// `buncargo stop` for the run that owns a target.
+enum StopCommand {
+    enum Outcome {
+        case stopped
+        case notFound
+        case refused(String)
+        case failed(String)
+    }
+
+    static func run(_ run: Run, target: String?, force: Bool) async -> Outcome {
+        var command = ["stop", target ?? "--all"]
+        if force { command.append("--force") }
+        switch await BuncargoCommand.run(run, command) {
+        case .failure(let error):
+            return .failed(error.localizedDescription)
+        case .success(let result):
+            switch result.status {
+            case 0: return .stopped
+            case 2: return .notFound
+            case 3: return .refused(result.stderr.isEmpty ? "Refused" : result.stderr)
+            default: return .failed(result.stderr.isEmpty ? "buncargo stop failed" : result.stderr)
+            }
+        }
+    }
+}
+
+/// `buncargo sim <app>`: boot the checkout's own simulator and open the app in it.
+enum SimulatorCommand {
+    static func run(_ run: Run, app: String) async -> String? {
+        switch await BuncargoCommand.run(run, ["sim", app]) {
+        case .failure(let error):
+            return error.localizedDescription
+        case .success(let result):
+            if result.status == 0 { return nil }
+            return result.stderr.isEmpty ? "buncargo sim failed" : result.stderr
         }
     }
 }

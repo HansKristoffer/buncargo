@@ -108,11 +108,30 @@ final class StopCoordinator: ObservableObject {
         }
     }
 
+    /// Boot the checkout's simulator and open its Expo app. Booting takes
+    /// seconds, so the button is guarded like a stop is.
+    func openSimulator(run: Run, app: String) {
+        let token = key(run, "sim:\(app)")
+        guard !inFlight.contains(token) else { return }
+        inFlight.insert(token)
+        notice = nil
+
+        Task { [weak self] in
+            let failure = await SimulatorCommand.run(run, app: app)
+            guard let self else { return }
+            self.inFlight.remove(token)
+            if let failure {
+                self.notice = failure
+                self.report(failure, title: "buncargo sim failed")
+            }
+        }
+    }
+
     /// A failure has to survive the popover closing, which is where an inline
     /// message goes to die.
-    private func report(_ message: String) {
+    private func report(_ message: String, title: String = "buncargo stop failed") {
         let alert = NSAlert()
-        alert.messageText = "buncargo stop failed"
+        alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")

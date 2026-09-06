@@ -86,6 +86,12 @@ export function validateConfigShape(value: unknown): string[] {
 				);
 				fields(entry, `${path}.`, ["envVars"], "function");
 				check(
+					entry.expo,
+					`${path}.expo`,
+					typeof entry.expo === "boolean" || object(entry.expo),
+					"a boolean or an object",
+				);
+				check(
 					entry.devCommand,
 					`${path}.devCommand`,
 					typeof entry.devCommand === "string" || entry.devCommand === false,

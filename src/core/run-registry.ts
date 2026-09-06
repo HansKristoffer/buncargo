@@ -1,5 +1,6 @@
 import { chmodSync } from "node:fs";
 import type { ContainerRuntimeName } from "../types";
+import type { ExpoAppIdentity } from "./expo";
 import { withFileLock } from "./file-lock";
 import { matchesProcessIdentity } from "./process-identity";
 import {
@@ -61,6 +62,8 @@ export interface RunAppEntry {
 	loopbackUrl: string;
 	publicUrl?: string;
 	hostname?: string;
+	/** Present on Expo apps: what `buncargo sim` needs without loading the config. */
+	expo?: ExpoAppIdentity;
 	status: RunAppStatus;
 }
 
@@ -144,7 +147,8 @@ function isRunApp(value: unknown): value is RunAppEntry {
 		) &&
 		(value.pid === undefined || isPid(value.pid)) &&
 		(value.processIdentity === undefined ||
-			typeof value.processIdentity === "string")
+			typeof value.processIdentity === "string") &&
+		(value.expo === undefined || isRecord(value.expo))
 	);
 }
 

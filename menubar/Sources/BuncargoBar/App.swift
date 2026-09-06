@@ -170,9 +170,11 @@ struct MenuContentView: View {
                         .padding(.bottom, 2)
 
                     ForEach(group.runs) { run in
-                        RunRow(run: run) { target in
-                            stopper.request(run: run, target: target)
-                        }
+                        RunRow(
+                            run: run,
+                            onStop: { target in stopper.request(run: run, target: target) },
+                            onSimulator: { app in stopper.openSimulator(run: run, app: app) }
+                        )
                     }
                 }
             }

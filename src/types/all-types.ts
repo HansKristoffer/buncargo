@@ -319,6 +319,18 @@ export interface AppConfig<TStatic extends EnvValues = EnvValues> {
 	needsPublicUrls?: boolean;
 	/** Computed env vars injected only into this app's own processes */
 	envVars?: (...args: never[]) => EnvValues;
+	/**
+	 * An Expo dev server: gets `RCT_METRO_PORT`, and `buncargo sim` opens it in
+	 * a per-checkout iOS simulator. Inferred when `devCommand` mentions `expo`.
+	 */
+	expo?: boolean | ExpoAppOptions;
+}
+
+export interface ExpoAppOptions {
+	/** Deep-link scheme of the development build. Default: `scheme` in app.json, else `exp+<slug>`. */
+	scheme?: string;
+	/** Simulator each checkout's device is cloned from. Default: the one last used in Simulator.app. */
+	simulator?: string;
 }
 
 /**

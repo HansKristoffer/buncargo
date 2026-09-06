@@ -2,8 +2,8 @@
 
 A macOS menu bar app that lists the `buncargo dev` runs active on this machine:
 every project, every worktree, every app and service, with one click to open the
-main app, copy a connection string, open a database in TablePlus, or stop
-something.
+main app, copy a connection string, open a database in TablePlus, open an Expo
+app in that checkout's own iOS simulator, or stop something.
 
 ![BuncargoBar showing a running project, its apps and services](../buncargo-topbar.png)
 
@@ -76,7 +76,7 @@ Sources/BuncargoBar/
   RunRegistry.swift  # runs.json v1 model, supported version, liveness, grouping
   RunStore.swift     # directory watch + 5s poll, published state
   Views.swift        # rows, hover detail panel, status dots
-  Actions.swift      # open/copy/TablePlus, and `buncargo stop` invocation
+  Actions.swift      # open/copy/TablePlus, and `buncargo stop` / `buncargo sim` invocation
   Notifications.swift # "workspace started" notifications, Open/Copy actions
 fixtures/
   runs.v1.json       # schema contract, checked by Swift and TypeScript tests

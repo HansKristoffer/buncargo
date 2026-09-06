@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { describeExpoApp } from "../core/expo";
 import { getWorktreeName } from "../core/ports";
 import { readProcessIdentity } from "../core/process-identity";
 import {
@@ -135,6 +136,7 @@ function appEntries(
 				loopbackUrl,
 				publicUrl: publicUrls[name],
 				hostname: hostnameFor.get(name),
+				expo: describeExpoApp(env.root, input.apps[name]),
 				status: input.statusFor(name),
 			},
 		];

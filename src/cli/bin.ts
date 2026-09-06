@@ -24,6 +24,7 @@ import {
 	handlePrisma,
 	handleTypecheck,
 } from "./commands/runtime";
+import { handleSim } from "./commands/sim";
 import { handleStop } from "./commands/stop";
 import { showVersion } from "./commands/version";
 import * as log from "./log";
@@ -77,6 +78,12 @@ async function runCommand(
 			// 2 is "no such target", 3 is "refused", and the menu bar app
 			// distinguishes them.
 			const code = await handleStop(commandArgs);
+			if (code !== 0) process.exit(code);
+			return;
+		}
+
+		case "sim": {
+			const code = await handleSim(commandArgs);
 			if (code !== 0) process.exit(code);
 			return;
 		}
