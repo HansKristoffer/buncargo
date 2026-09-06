@@ -31,6 +31,7 @@ import {
 	printDevHelp,
 } from "./dev-flags";
 import { activateNamedHosts, releaseNamedHosts } from "./dev-hosts";
+import { prepareTailnet, releaseTailnet } from "./dev-tailnet";
 import {
 	createTunnelCoordinator,
 	type DevTunnelCoordinator,
@@ -213,6 +214,7 @@ async function teardown<
 		stopHeartbeat(env.projectName, env.root);
 		const results = await Promise.allSettled([
 			tunnels.stop(),
+			releaseTailnet(env.root),
 			releaseNamedHosts(env),
 			withdrawCurrentRun(env.root),
 		]);
@@ -426,6 +428,13 @@ async function runDevFlow<
 	}
 
 	flushHostsWarnings();
+	await prepareTailnet(env, {
+		requested: args.tailnet,
+		signal,
+		publicExpose: args.exposeRequested,
+		startApps: classifiedApps.startApps,
+		reusedApps: classifiedApps.reusedApps,
+	});
 
 	// Published here, after the takeover has been decided: before it, the app
 	// classification still describes a reuse the takeover is about to undo, and
@@ -551,6 +560,9 @@ async function runDevFlow<
 				// is the app falling over, which the supervisor also turns into a
 				// failed run.
 				onAppExit: (name, code, signal) => {
+					void releaseTailnet(env.root, name).catch((error) =>
+						log.warn(`Tailnet cleanup: ${String(error)}`),
+					);
 					void markApps(
 						env.root,
 						[name],

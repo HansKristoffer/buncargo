@@ -38,7 +38,7 @@ enum Notifier {
 
     static func runStarted(_ run: Run) {
         guard isAvailable, let primary = run.primary else { return }
-        let url = Actions.preferredURL(
+        let url = primary.tailnetUrl ?? Actions.preferredURL(
             named: primary.url,
             loopback: primary.loopbackUrl,
             hostsActive: run.hosts?.active ?? false

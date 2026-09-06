@@ -13,6 +13,13 @@ function readTrimmed(env: NodeJS.ProcessEnv, name: string): string | undefined {
 	return raw ? raw : undefined;
 }
 
+/** Workspace identity injected into app processes by the dev environment. */
+export function devWorkspaceId(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return readTrimmed(env, "BUNCARGO_WORKSPACE_ID");
+}
+
 /** Read a non-negative integer, falling back to `fallback` when unset or unusable. */
 function readInt(
 	env: NodeJS.ProcessEnv,
@@ -232,4 +239,11 @@ export function typecheckConcurrencyOverride(
 		);
 	}
 	return parsed;
+}
+
+/** Optional path for Tailscale installations outside PATH/the macOS app. */
+export function tailscaleBinaryOverride(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return env.BUNCARGO_TAILSCALE_PATH;
 }

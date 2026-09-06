@@ -39,6 +39,16 @@ Answers are cached in `~/.buncargo/bar-check.json` (24 h, 1 h when an update is
 required) so `dev` does not spend GitHub's anonymous rate limit. `BUNCARGO_BAR=0`
 and CI turn the whole thing off.
 
+## Other Tailscale devices
+
+Enable **Other Tailscale devices** in a build containing tailnet discovery. It finds connected peers with a Buncargo directory on HTTPS port 48443 and groups shared apps by machine and worktree. The hosting machine must run `buncargo tailnet install`; the viewing Mac needs connected Tailscale but no coordinator or admin API token.
+
+Remote rows support Open and Copy URL. Sleeping, blocked or disconnected machines retain their last-seen status with actions disabled. Local runs stay responsive while remote requests complete. Discovery refreshes when the menu opens and every 30 seconds, backing off failed peers to four minutes. The refresh button retries immediately.
+
+Enter a full `machine.tailnet.ts.net` name to add a machine manually, or `https://machine.tailnet.ts.net:49000` when the server uses a custom discovery port. Tailnet policy must allow both directory and app ports. Only shared HTTP apps appear; no remote stop commands, filesystem paths or database credentials are published.
+
+The new feature requires a source build until the updated CLI and menu bar releases are published. `package.sh` creates a reviewable bundle without installing it.
+
 ## Build from source
 
 Needs the Xcode command line tools (Swift 6, macOS 14+).
