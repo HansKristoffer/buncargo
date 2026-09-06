@@ -105,7 +105,29 @@ private struct RunsFile: Codable {
     let runs: [Run]
 }
 
+/// The app cannot read this registry, and no amount of retrying will change
+/// that: the CLI writing it is newer than this build.
+///
+/// Distinct from a decode failure, which is usually a half-written file and
+/// fixes itself on the next read. This one needs a new app.
+struct UnsupportedRegistryVersion: LocalizedError {
+    let found: Int
+    let supported: Int
+
+    var errorDescription: String? {
+        "This BuncargoBar reads runs.json v\(supported), but buncargo now writes v\(found)."
+    }
+}
+
 enum RunRegistry {
+    /// The `runs.json` schema this build decodes.
+    ///
+    /// `scripts/package.sh` stamps the same number into `Info.plist` as
+    /// `BuncargoRegistryVersion` — read from `fixtures/runs.v1.json`, which is
+    /// also what `--status` decodes in CI, so a bump that misses one of the
+    /// three fails the build rather than shipping.
+    static let supportedVersion = 1
+
     static var url: URL {
         stateDirectory.appendingPathComponent("runs.json")
     }
@@ -131,7 +153,14 @@ enum RunRegistry {
     static func load() throws -> [Run] {
         guard let data = try? Data(contentsOf: url) else { return [] }
         let file = try JSONDecoder().decode(RunsFile.self, from: data)
-        guard file.version == 1 else { return [] }
+        guard file.version == supportedVersion else {
+            // Not an empty list: an app that silently shows nothing reads as a
+            // broken `buncargo dev`, and the user would debug the wrong thing.
+            throw UnsupportedRegistryVersion(
+                found: file.version,
+                supported: supportedVersion
+            )
+        }
         return file.runs.filter { $0.isAlive }
     }
 }

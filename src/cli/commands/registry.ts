@@ -120,6 +120,7 @@ export function hostsSubcommandList(): string {
 
 export const BAR_SUBCOMMANDS = [
 	{ name: "install", summary: "Download and install the menu bar app" },
+	{ name: "update", summary: "Update the app to the latest release" },
 	{ name: "status", summary: "Installed version, and whether it is running" },
 	{ name: "open", summary: "Open the app, installing it first if needed" },
 	{ name: "uninstall", summary: "Quit and remove the app" },
