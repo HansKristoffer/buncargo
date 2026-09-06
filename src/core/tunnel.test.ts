@@ -157,3 +157,41 @@ describe("public tunnel lifecycle", () => {
 		expect(closeCalls).toBe(2);
 	});
 });
+
+describe("tunnel cancellation ownership", () => {
+	it("closes a returned backend whose URL rejects", async () => {
+		let closes = 0;
+		await expect(
+			startPublicTunnels([{ kind: "app", name: "web", port: 3000 }], {
+				start: async () => ({
+					getURL: async () => {
+						throw new Error("URL failed");
+					},
+					close: () => {
+						closes += 1;
+					},
+				}),
+			}),
+		).rejects.toThrow("URL failed");
+		expect(closes).toBe(1);
+	});
+	it("cancels a hung URL wait and closes the backend", async () => {
+		const controller = new AbortController();
+		let closes = 0;
+		const pending = startPublicTunnels(
+			[{ kind: "app", name: "web", port: 3000 }],
+			{
+				signal: controller.signal,
+				start: async () => ({
+					getURL: () => new Promise(() => {}),
+					close: () => {
+						closes += 1;
+					},
+				}),
+			},
+		);
+		setTimeout(() => controller.abort(new Error("cancelled")), 20);
+		await expect(pending).rejects.toThrow("cancelled");
+		expect(closes).toBe(1);
+	});
+});

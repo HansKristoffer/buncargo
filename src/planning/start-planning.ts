@@ -111,6 +111,42 @@ export function resolveRequiredServiceKeys(
 		}
 	}
 
+	// Compose dependencies are also selected resources, including aliases.
+	const byComposeName = new Map(
+		Object.entries(services).map(([key, service]) => [
+			service.serviceName ?? key,
+			key,
+		]),
+	);
+	const visiting = new Set<string>();
+	const visited = new Set<string>();
+	function visitDependency(key: string): void {
+		if (visited.has(key)) return;
+		if (visiting.has(key))
+			throw new Error(`Circular Compose dependency at service "${key}"`);
+		visiting.add(key);
+		const docker = services[key]?.docker;
+		const raw = docker?.kind === "preset" ? docker.service : docker;
+		const dependencies = raw?.depends_on;
+		const names = Array.isArray(dependencies)
+			? dependencies
+			: Object.keys(dependencies ?? {});
+		for (const name of names) {
+			const dependency = byComposeName.get(String(name));
+			if (!dependency)
+				throw new Error(
+					`Service "${key}" depends on unknown Compose service "${String(name)}"`,
+				);
+			if (!seenServiceKeys.has(dependency)) {
+				seenServiceKeys.add(dependency);
+				resolvedServiceKeys.push(dependency);
+			}
+			visitDependency(dependency);
+		}
+		visiting.delete(key);
+		visited.add(key);
+	}
+	for (const key of [...resolvedServiceKeys]) visitDependency(key);
 	return resolvedServiceKeys;
 }
 

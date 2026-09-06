@@ -39,6 +39,22 @@ enum BuncargoBarMain {
             failures.append("a restarted run did not announce")
         }
 
+        // Sessions can start in the same checkout at the same timestamp.
+        // Each session announces once, independently of the other session.
+        if var firstSession = startedRuns.first {
+            var secondSession = firstSession
+            firstSession.sessionId = "notification-session-1"
+            secondSession.sessionId = "notification-session-2"
+            let sessions = [firstSession, secondSession]
+            var sessionAnnouncements: Set<String> = []
+            if Notifier.newlyStarted(runs: sessions, announced: &sessionAnnouncements).count != 2 {
+                failures.append("sessions in the same checkout did not each announce")
+            }
+            if !Notifier.newlyStarted(runs: sessions, announced: &sessionAnnouncements).isEmpty {
+                failures.append("sessions announced more than once")
+            }
+        }
+
         for failure in failures {
             FileHandle.standardError.write(Data("FAIL: \(failure)\n".utf8))
         }

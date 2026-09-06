@@ -108,13 +108,18 @@ function validatePortLockfile(value: unknown): PortLockfile | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
 	const lockfile = value as Partial<PortLockfile>;
 	if (lockfile.version !== LOCKFILE_VERSION) return undefined;
-	if (typeof lockfile.offset !== "number") return undefined;
+	if (!Number.isInteger(lockfile.offset) || (lockfile.offset ?? -1) < 0)
+		return undefined;
 	if (typeof lockfile.projectName !== "string") return undefined;
 	if (typeof lockfile.root !== "string") return undefined;
 	if (typeof lockfile.ports !== "object" || lockfile.ports === null) {
 		return undefined;
 	}
-	if (Object.values(lockfile.ports).some((port) => typeof port !== "number")) {
+	if (
+		Object.values(lockfile.ports).some(
+			(port) => !Number.isInteger(port) || port < 1 || port > 65535,
+		)
+	) {
 		return undefined;
 	}
 	const provenance = lockfile.provenance;
@@ -248,6 +253,27 @@ export function resolvePortPlan(input: {
 	} = input;
 	const runtimeName = runtime?.name;
 	const basePorts = buildPortMap(services, apps);
+	for (const [name, port] of Object.entries(basePorts))
+		if (!Number.isInteger(port) || port < 1 || port > 65535)
+			throw new Error(
+				`Invalid base port for ${name}: ${port}. Expected an integer in 1..65535.`,
+			);
+
+	const envOffset = portOffsetOverride();
+	if (envOffset !== undefined) {
+		const ports = shiftPorts(basePorts, envOffset);
+		for (const [name, port] of Object.entries(ports))
+			if (!Number.isInteger(port) || port < 1 || port > 65535)
+				throw new Error(
+					`Effective port for ${name} is ${port}; BUNCARGO_PORT_OFFSET must keep every port in 1..65535.`,
+				);
+		return {
+			offset: envOffset,
+			ports,
+			provenance: "env",
+		};
+	}
+
 	// One reading of the machine for every port this allocator may look at,
 	// including the shifted blocks it can fall through to. Probing per port cost
 	// an `lsof` and a `docker ps` each, and the allocator is the first thing a
@@ -259,15 +285,6 @@ export function resolvePortPlan(input: {
 	const lookupOwner = probeConflicts
 		? (input.getOwner ?? snapshotOwnerLookup(basePorts, runtime))
 		: () => null;
-
-	const envOffset = portOffsetOverride();
-	if (envOffset !== undefined) {
-		return {
-			offset: envOffset,
-			ports: shiftPorts(basePorts, envOffset),
-			provenance: "env",
-		};
-	}
 
 	const lockfile = readPortsLockfile(root);
 	if (lockfile && lockfileMatches(lockfile, { projectName, root, basePorts })) {

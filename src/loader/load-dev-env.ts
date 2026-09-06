@@ -1,4 +1,7 @@
-import { assertValidConfig } from "../config";
+import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { findMonorepoRoot } from "../core/ports";
 import { createDevEnvironment } from "../environment";
 import type {
 	AnyDevConfig,
@@ -11,10 +14,12 @@ import type {
 } from "../types";
 import {
 	getCachedDevEnv,
-	getCachedRuntimeSelection,
+	invalidateConfigEnvironments,
 	setCachedDevEnv,
 } from "./cache";
 import { findConfigFile } from "./find-config-file";
+
+const moduleUrls = new Map<string, string>();
 
 /**
  * Load `dev.config.ts` from disk and build its dev environment.
@@ -35,27 +40,18 @@ export async function loadDevEnv<
 	TConfig extends DevConfigLike = AnyDevConfig,
 >(options?: {
 	cwd?: string;
+	/** Re-import the config entry and rebuild state. Imported dependencies remain cached. */
 	reload?: boolean;
+	/** Read persisted ports without probing conflicts or writing allocation state. */
+	readOnly?: boolean;
 	/** `--runtime`, taking precedence over env and config. */
 	containerRuntime?: string;
 }): Promise<DevEnvironmentFor<TConfig>> {
 	const requested = options?.containerRuntime;
 
-	if (!options?.reload) {
-		const cached = getCachedDevEnv();
-		// A cached env is bound to the runtime it was built with, so an explicit
-		// request for a different one has to rebuild rather than be ignored. Both
-		// sides of this are selections, so `--runtime=auto` can hit the cache.
-		if (
-			cached &&
-			(requested === undefined || requested === getCachedRuntimeSelection())
-		) {
-			return cached as DevEnvironmentFor<TConfig>;
-		}
-	}
-
-	const cwd = options?.cwd ?? process.cwd();
-	const configPath = findConfigFile(cwd);
+	const cwd = resolve(options?.cwd ?? process.cwd());
+	const foundPath = findConfigFile(cwd);
+	const configPath = foundPath ? realpathSync(foundPath) : null;
 
 	if (!configPath) {
 		throw new Error(
@@ -63,15 +59,56 @@ export async function loadDevEnv<
 		);
 	}
 
-	const mod = await import(configPath);
+	const root = realpathSync(findMonorepoRoot(dirname(configPath)));
+	// Config callbacks can read arbitrary environment variables. Store only a
+	// digest, and invalidate resolved state whenever those inputs change.
+	const environmentHash = createHash("sha256")
+		.update(
+			JSON.stringify(
+				Object.entries(process.env).sort(([a], [b]) => a.localeCompare(b)),
+			),
+		)
+		.digest("hex");
+	const identity = JSON.stringify([
+		configPath,
+		root,
+		requested ?? null,
+		options?.readOnly ?? false,
+		environmentHash,
+	]);
+	if (!options?.reload) {
+		const cached = getCachedDevEnv(identity);
+		if (cached) {
+			setCachedDevEnv(cached, requested);
+			return cached as DevEnvironmentFor<TConfig>;
+		}
+	}
+
+	// Bun canonicalizes file: URLs before considering their query string.
+	// An absolute path specifier preserves the revision and refreshes the entry.
+	const moduleUrl = options?.reload
+		? `${configPath}?buncargo-reload=${crypto.randomUUID()}`
+		: (moduleUrls.get(configPath) ?? configPath);
+	const mod = await import(moduleUrl);
+	moduleUrls.set(configPath, moduleUrl);
+	if (options?.reload) invalidateConfigEnvironments(configPath);
 	if (!("default" in mod) || mod.default === undefined) {
 		throw new Error(
 			`Invalid config in "${configPath}". Use defineDevConfig() and export as default.`,
 		);
 	}
 
+	// Concurrent consumers can finish the same import together. The first one
+	// resolves the environment; subsequent consumers reuse that exact object.
+	if (!options?.reload) {
+		const cached = getCachedDevEnv(identity);
+		if (cached) {
+			setCachedDevEnv(cached, requested);
+			return cached as DevEnvironmentFor<TConfig>;
+		}
+	}
+
 	const loaded: unknown = mod.default;
-	assertValidConfig(loaded);
 
 	// The dynamic import is untyped, so the caller's TConfig is the only source
 	// of shape information. This cast is the single trust boundary for it.
@@ -84,8 +121,8 @@ export async function loadDevEnv<
 			Record<string, ServiceConfig>,
 			Record<string, AppConfig>
 		>,
-		{ containerRuntime: requested },
+		{ containerRuntime: requested, root, readOnly: options?.readOnly },
 	);
-	setCachedDevEnv(env, requested);
+	setCachedDevEnv(env, requested, identity);
 	return env as DevEnvironmentFor<TConfig>;
 }

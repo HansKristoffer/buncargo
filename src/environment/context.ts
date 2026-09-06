@@ -101,9 +101,14 @@ export function createDevEnvContext<
 	TEnv extends EnvValues = EnvValues,
 >(
 	config: DevConfig<TServices, TApps, TEnv>,
-	options: { suffix?: string; containerRuntime?: string } = {},
+	options: {
+		suffix?: string;
+		containerRuntime?: string;
+		root?: string;
+		readOnly?: boolean;
+	} = {},
 ): DevEnvContext<TServices, TApps, TEnv> {
-	const root = findMonorepoRoot();
+	const root = options.root ?? findMonorepoRoot();
 	const suffix = options.suffix;
 	const { worktree, worktreeSuffix, projectSuffix, projectName } =
 		computeDevIdentity({
@@ -140,6 +145,8 @@ export function createDevEnvContext<
 		// port, so this project's own Apple containers look foreign and shift
 		// the offset on every run.
 		runtime,
+		persist: !options.readOnly,
+		probeConflicts: !options.readOnly,
 	});
 	const portMap = portPlan.ports;
 	const ports = asComputedPorts<TServices, TApps>(portMap);
@@ -169,6 +176,14 @@ export function createDevEnvContext<
 		computeLoopbackUrls(services, apps, portMap),
 	);
 	const publicUrls: UrlMap = {};
+	let model: ComposeDocument | undefined;
+	const buildModel = () =>
+		buildComposeModel(
+			services,
+			config.docker,
+			{ projectName, root, worktree: worktreeSuffix },
+			runtime.name,
+		);
 
 	return {
 		config,
@@ -191,22 +206,20 @@ export function createDevEnvContext<
 		hosts,
 
 		ensureComposeFile() {
+			model = buildModel();
 			return writeGeneratedComposeFile(
 				root,
 				services,
 				config.docker,
 				{ projectName, root, worktree: worktreeSuffix },
 				runtime.name,
+				model,
 			);
 		},
 
 		composeModel() {
-			return buildComposeModel(
-				services,
-				config.docker,
-				{ projectName, root, worktree: worktreeSuffix },
-				runtime.name,
-			);
+			model ??= buildModel();
+			return model;
 		},
 
 		setNamedHostsActive(active, extras = {}) {

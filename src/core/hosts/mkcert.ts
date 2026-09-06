@@ -10,7 +10,7 @@ import {
 import { dirname, join } from "node:path";
 import { mkcertPathOverride, mkcertVersion } from "../runtime-flags";
 import {
-	finalizeToolBinary,
+	isInstalledTool,
 	legacyToolCachePath,
 	resolveToolBinary,
 	toolCachePath,
@@ -37,7 +37,9 @@ function mkcertFileName(version: string): string {
 }
 
 export function cachedMkcertBinPath(version = mkcertVersion()): string {
-	return toolCachePath(mkcertFileName(version));
+	return toolCachePath(
+		`${mkcertFileName(version)}.${process.platform}-${process.arch}`,
+	);
 }
 
 /** The `tmpdir()` cache earlier versions downloaded into. */
@@ -48,17 +50,27 @@ export function legacyMkcertBinPath(version = mkcertVersion()): string {
 	);
 }
 
-export function resolvedMkcertPath(): string | undefined {
-	const resolution = resolveToolBinary({
+function mkcertResolution() {
+	return resolveToolBinary({
 		override: mkcertPathOverride(),
 		cachePath: cachedMkcertBinPath(),
 		legacyCachePath: legacyMkcertBinPath(),
+		legacyCachePaths: [toolCachePath(mkcertFileName(mkcertVersion()))],
 		pathCommand: "mkcert",
 	});
-	return resolution.exists ? resolution.path : undefined;
+}
+
+export function resolvedMkcertPath(): string | undefined {
+	const resolution = mkcertResolution();
+	return resolution.exists &&
+		(resolution.source !== "cache" || isInstalledTool(resolution.path))
+		? resolution.path
+		: undefined;
 }
 
 function mkcertAssetName(version: string): string {
+	if (process.arch !== "arm64" && process.arch !== "x64")
+		throw new Error(`mkcert download is not supported on ${process.arch}`);
 	if (process.platform === "darwin") {
 		return process.arch === "arm64"
 			? `mkcert-${version}-darwin-arm64`
@@ -77,16 +89,21 @@ export async function ensureMkcert(): Promise<string> {
 	if (existing) return existing;
 
 	const version = mkcertVersion();
-	const dest = cachedMkcertBinPath(version);
-	mkdirSync(dirname(dest), { recursive: true });
-	const url = `${MKCERT_RELEASE_BASE}download/${version}/${mkcertAssetName(version)}`;
-	const response = await fetch(url);
-	if (!response.ok) {
-		throw new Error(`Failed to download mkcert (${response.status}): ${url}`);
-	}
-	await Bun.write(dest, await response.arrayBuffer());
-	finalizeToolBinary(dest);
-	return dest;
+	const candidate = mkcertResolution();
+	const dest =
+		candidate.source === "cache" && candidate.exists
+			? candidate.path
+			: cachedMkcertBinPath(version);
+	const asset = mkcertAssetName(version);
+	const { installTool } = await import("../tool-install");
+	const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return installTool({
+		to: dest,
+		url: `${MKCERT_RELEASE_BASE}download/${version}/${asset}`,
+		versionArgs: ["-version"],
+		expectedVersion: new RegExp(`^${escaped}\\s*$`, "m"),
+		githubAsset: { repository: "FiloSottile/mkcert", version, name: asset },
+	});
 }
 
 export const CA_FILENAME = "rootCA.pem";

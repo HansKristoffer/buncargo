@@ -137,3 +137,196 @@ describe("startDevServers supervision", () => {
 		}
 	}, 10_000);
 });
+
+describe("startup process ownership", () => {
+	function alive(pid: number): boolean {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+	const idle = {
+		port: 1,
+		devCommand: "bun -e 'setInterval(() => {}, 1000)'",
+		healthEndpoint: false as const,
+	};
+
+	for (const phase of ["health", "tunnel", "second wave"] as const) {
+		it(`cleans up every owned child on ${phase} failure`, async () => {
+			const owned: number[] = [];
+			try {
+				await expect(
+					startDevServers(
+						{ first: idle, second: { ...idle, needsPublicUrls: true } },
+						process.cwd(),
+						{},
+						{},
+						{
+							verbose: false,
+							shutdownGraceMs: 100,
+							onAppSpawned: (_name, pid) => owned.push(pid),
+							waitForHealth: async (apps) => {
+								if (
+									phase === "health" ||
+									(phase === "second wave" && apps.second)
+								)
+									throw new Error("failed readiness");
+							},
+							onAfterWave1: async () => {
+								if (phase === "tunnel") throw new Error("failed tunnel");
+							},
+						},
+					),
+				).rejects.toThrow("failed");
+				expect(owned.length).toBe(phase === "second wave" ? 2 : 1);
+				for (const pid of owned) expect(alive(pid)).toBe(false);
+			} finally {
+				for (const pid of owned) {
+					if (alive(pid)) signalProcessTree(pid, "SIGKILL");
+				}
+			}
+		});
+	}
+
+	it("cancels a hung health callback and terminates its app", async () => {
+		const controller = new AbortController();
+		let pid: number | undefined;
+		const start = performance.now();
+		await expect(
+			startDevServers(
+				{ app: idle },
+				process.cwd(),
+				{},
+				{},
+				{
+					verbose: false,
+					signal: controller.signal,
+					shutdownGraceMs: 100,
+					onAppSpawned: (_name, spawnedPid) => {
+						pid = spawnedPid;
+					},
+					waitForHealth: async () => {
+						setTimeout(() => controller.abort(new Error("test cancelled")), 50);
+						return new Promise<void>(() => {});
+					},
+				},
+			),
+		).rejects.toThrow("test cancelled");
+		expect(performance.now() - start).toBeLessThan(2000);
+		expect(pid).toBeDefined();
+		expect(alive(Number(pid))).toBe(false);
+	});
+
+	it("observes spawn errors before starting the health wait", async () => {
+		await expect(
+			startDevServers(
+				{ app: { ...idle, cwd: "/missing/buncargo/startup" } },
+				process.cwd(),
+				{},
+				{},
+				{
+					verbose: false,
+					waitForHealth: async () => new Promise<void>(() => {}),
+				},
+			),
+		).rejects.toThrow('Failed to start app "app"');
+	});
+
+	it("reports readiness only after both app waves", async () => {
+		const events: string[] = [];
+		const owned: number[] = [];
+		try {
+			await startDevServers(
+				{ first: idle, second: { ...idle, needsPublicUrls: true } },
+				process.cwd(),
+				{},
+				{},
+				{
+					verbose: false,
+					onAppSpawned: (_name, pid) => owned.push(pid),
+					waitForHealth: async (apps) => {
+						events.push(...Object.keys(apps));
+					},
+					onAfterWave1: async () => {
+						events.push("tunnels");
+					},
+					onReady: () => {
+						events.push("ready");
+					},
+				},
+			);
+			expect(events).toEqual(["first", "tunnels", "second", "ready"]);
+		} finally {
+			for (const pid of owned) signalProcessTree(pid, "SIGTERM");
+		}
+	});
+});
+
+describe("startup signals", () => {
+	it("handles repeated SIGTERM during readiness and waits for owned descendants", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-signal-"));
+		const marker = join(root, "spawned.json");
+		const childMarker = join(root, "descendant.pid");
+		const importPath = new URL("./dev-servers.ts", import.meta.url).href;
+		const script = join(root, "driver.ts");
+		const descendant = join(root, "app.ts");
+		await Bun.write(
+			descendant,
+			`import { spawn } from "node:child_process";
+const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" });
+await Bun.write(${JSON.stringify(childMarker)}, String(child.pid));
+process.on("SIGTERM", () => {});
+setInterval(() => {}, 1000);`,
+		);
+		await Bun.write(
+			script,
+			`import { startDevServers } from ${JSON.stringify(importPath)};
+await startDevServers({ app: { port: 1, devCommand: "bun app.ts" } }, ${JSON.stringify(root)}, {}, {}, {
+verbose: false, waitForExit: true, shutdownGraceMs: 150,
+runtime: {name: "docker", containerPortOwners: () => new Map()},
+onAppSpawned: (_name, pid) => { void Bun.write(${JSON.stringify(marker)}, String(pid)); },
+waitForHealth: async () => new Promise(() => {}),
+});`,
+		);
+		const driver = Bun.spawn([process.execPath, script], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		let appPid: number | undefined;
+		let descendantPid: number | undefined;
+		try {
+			const deadline = performance.now() + 5000;
+			while (
+				!(await Bun.file(childMarker).exists()) &&
+				performance.now() < deadline
+			)
+				await Bun.sleep(20);
+			appPid = Number(await Bun.file(marker).text());
+			descendantPid = Number(await Bun.file(childMarker).text());
+			await Bun.sleep(60);
+			driver.kill("SIGTERM");
+			setTimeout(() => driver.kill("SIGTERM"), 20);
+			const exit = await driver.exited;
+			const stderr = await new Response(driver.stderr).text();
+			expect(stderr).toBe("");
+			expect(exit).toBe(0);
+			for (const pid of [appPid, descendantPid])
+				expect(() => process.kill(pid, 0)).toThrow();
+		} finally {
+			driver.kill("SIGKILL");
+			if (appPid) {
+				try {
+					signalProcessTree(appPid, "SIGKILL");
+				} catch {}
+			}
+			if (descendantPid) {
+				try {
+					process.kill(descendantPid, "SIGKILL");
+				} catch {}
+			}
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 10000);
+});

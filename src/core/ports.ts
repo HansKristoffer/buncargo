@@ -82,8 +82,9 @@ export function asComputedLoopbackUrls<
  * Find the monorepo root by looking for package.json with workspaces.
  */
 export function findMonorepoRoot(startDir?: string): string {
-	let dir = startDir ?? process.cwd();
-	while (dir !== "/") {
+	const initial = resolve(startDir ?? process.cwd());
+	let dir = initial;
+	for (;;) {
 		try {
 			const pkgPath = resolve(dir, "package.json");
 			if (existsSync(pkgPath)) {
@@ -96,9 +97,10 @@ export function findMonorepoRoot(startDir?: string): string {
 		} catch {
 			// Continue searching
 		}
-		dir = dirname(dir);
+		const parent = dirname(dir);
+		if (parent === dir) return initial;
+		dir = parent;
 	}
-	return process.cwd();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

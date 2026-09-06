@@ -1,16 +1,30 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
 import { simpleHash } from "./hash";
 import {
+	createHeartbeatOwner,
 	getHeartbeatFile,
+	getHeartbeatOwnersDir,
+	getWatchdogLogFile,
+	getWatchdogPid,
 	getWatchdogPidFile,
 	parseHeartbeatPayload,
 	readHeartbeat,
 	readHeartbeatPayload,
 	removeHeartbeatFile,
 	resolveWatchdogRunnerPath,
+	spawnWatchdog,
 	startHeartbeat,
 	stopHeartbeat,
+	stopWatchdog,
+	withWatchdogProjectLock,
 } from "./watchdog";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -194,5 +208,156 @@ describe("resolveWatchdogRunnerPath", () => {
 			path.endsWith("watchdog-runner.ts") ||
 				path.endsWith("watchdog-runner.js"),
 		).toBe(true);
+	});
+});
+
+describe("independent heartbeat owners", () => {
+	const projects: string[] = [];
+	const owners: ReturnType<typeof createHeartbeatOwner>[] = [];
+	afterEach(() => {
+		for (const owner of owners.splice(0)) owner.stop();
+		stopHeartbeat();
+		for (const project of projects.splice(0)) {
+			removeHeartbeatFile(project);
+			rmSync(getHeartbeatOwnersDir(project), { recursive: true, force: true });
+		}
+	});
+	function project() {
+		const name = `heartbeat-${process.pid}-${crypto.randomUUID()}`;
+		projects.push(name);
+		return name;
+	}
+	it("retains a live session when another session in the same root stops", () => {
+		const name = project();
+		const first = createHeartbeatOwner(name);
+		const second = createHeartbeatOwner(name);
+		owners.push(first, second);
+		first.start(60000);
+		second.start(60000);
+		second.stop();
+		expect(readHeartbeatPayload(name)?.pid).toBe(process.pid);
+		expect(readHeartbeatPayload(name)?.released).toBeUndefined();
+		first.stop();
+		expect(readHeartbeatPayload(name)?.released).toBe(true);
+	});
+	it("does not overwrite or release another project's timer", async () => {
+		const firstName = project();
+		const secondName = project();
+		startHeartbeat(firstName, 20);
+		startHeartbeat(secondName, 20);
+		stopHeartbeat(firstName);
+		const first = readHeartbeatPayload(firstName);
+		await Bun.sleep(60);
+		expect(readHeartbeatPayload(firstName)).toEqual(first);
+		expect(readHeartbeatPayload(secondName)?.pid).toBe(process.pid);
+	});
+	it("starting an owner twice is idempotent and stop clears its timer", async () => {
+		const name = project();
+		const owner = createHeartbeatOwner(name);
+		owners.push(owner);
+		owner.start(20);
+		owner.start(20);
+		expect(readdirSync(getHeartbeatOwnersDir(name))).toHaveLength(1);
+		owner.stop();
+		const before = readFileSync(getHeartbeatFile(name), "utf8");
+		await Bun.sleep(60);
+		expect(readFileSync(getHeartbeatFile(name), "utf8")).toBe(before);
+	});
+	it("a delayed teardown sees the owner that registered while it waited", async () => {
+		const name = project();
+		const owner = createHeartbeatOwner(name);
+		owners.push(owner);
+		let release!: () => void;
+		let entered!: () => void;
+		const ready = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const held = withWatchdogProjectLock(name, "/tmp", async () => {
+			entered();
+			await new Promise<void>((resolve) => {
+				release = resolve;
+			});
+		});
+		await ready;
+		const teardown = withWatchdogProjectLock(
+			name,
+			"/tmp",
+			async () => readHeartbeatPayload(name)?.pid,
+		);
+		owner.start(60000);
+		release();
+		await held;
+		expect(await teardown).toBe(process.pid);
+	});
+});
+
+describe("heartbeat owners across processes", () => {
+	it("keeps the remaining owner's stack alive when a peer process dies", async () => {
+		const project = `heartbeat-processes-${process.pid}-${crypto.randomUUID()}`;
+		const code = `import { createHeartbeatOwner } from ${JSON.stringify(join(import.meta.dir, "watchdog.ts"))}; const owner = createHeartbeatOwner(${JSON.stringify(project)}); owner.start(50); setInterval(() => {}, 1000);`;
+		const first = Bun.spawn([process.execPath, "--eval", code], {
+			stdout: "ignore",
+			stderr: "pipe",
+		});
+		const second = Bun.spawn([process.execPath, "--eval", code], {
+			stdout: "ignore",
+			stderr: "pipe",
+		});
+		try {
+			for (let i = 0; i < 100; i++) {
+				if (
+					existsSync(getHeartbeatOwnersDir(project)) &&
+					readdirSync(getHeartbeatOwnersDir(project)).filter((name) =>
+						name.endsWith(".json"),
+					).length === 2
+				)
+					break;
+				await Bun.sleep(10);
+			}
+			expect(
+				readdirSync(getHeartbeatOwnersDir(project)).filter((name) =>
+					name.endsWith(".json"),
+				),
+			).toHaveLength(2);
+			first.kill("SIGKILL");
+			await first.exited;
+			expect(readHeartbeatPayload(project)?.pid).toBe(second.pid);
+		} finally {
+			first.kill("SIGKILL");
+			second.kill("SIGKILL");
+			await Promise.all([first.exited, second.exited]);
+			removeHeartbeatFile(project);
+		}
+	});
+});
+
+describe("watchdog startup ownership", () => {
+	it("coalesces concurrent starts and uses the running interpreter", async () => {
+		const project = `watchdog-${process.pid}-${crypto.randomUUID()}`;
+		const root = "/tmp";
+		const owner = createHeartbeatOwner(project, root);
+		owner.start(60000);
+		try {
+			await Promise.all([
+				spawnWatchdog(project, root, { verbose: false }),
+				spawnWatchdog(project, root, { verbose: false }),
+			]);
+			const pid = getWatchdogPid(project, root);
+			expect(pid).not.toBeNull();
+			expect(
+				JSON.parse(readFileSync(getWatchdogPidFile(project, root), "utf8")).pid,
+			).toBe(pid);
+		} finally {
+			stopWatchdog(project, root);
+			for (let i = 0; i < 100 && getWatchdogPid(project, root); i++)
+				await Bun.sleep(10);
+			owner.stop();
+			removeHeartbeatFile(project, root);
+			for (const path of [
+				getWatchdogPidFile(project, root),
+				getWatchdogLogFile(project, root),
+			])
+				rmSync(path, { force: true });
+		}
 	});
 });

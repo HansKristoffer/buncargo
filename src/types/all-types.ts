@@ -5,7 +5,10 @@
 /**
  * Health check function signature for custom health checks.
  */
-export type HealthCheckFn = (port: number) => Promise<boolean>;
+export type HealthCheckFn = (
+	port: number,
+	signal?: AbortSignal,
+) => Promise<boolean>;
 
 /**
  * Built-in health check types that map to common patterns.
@@ -388,6 +391,12 @@ export type TypedAppDefinitions<
  * Execution options for the exec helper.
  */
 export interface ExecOptions {
+	/** Cancel the command and terminate its owned process group. */
+	signal?: AbortSignal;
+	/** Maximum execution time. Startup commands default to ten minutes; standalone exec has no default. */
+	timeoutMs?: number;
+	/** Grace before escalating termination. */
+	killGraceMs?: number;
 	/** Working directory relative to monorepo root */
 	cwd?: string;
 	/** Print output to console */
@@ -414,6 +423,8 @@ export interface HookContext<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 > {
+	/** Cancellation for this startup operation; pass it to custom I/O. */
+	signal?: AbortSignal;
 	/** Project name (with suffix if applicable) */
 	projectName: string;
 	/** Computed ports for all services and apps */
@@ -487,6 +498,10 @@ export interface PrismaConfig<
 	 * Skipped when unset.
 	 */
 	generate?: string;
+	/** Return true when generation is needed. Unset always runs generate. */
+	generateCheck?(
+		ctx: HookContext<TServices, TApps>,
+	): boolean | Promise<boolean>;
 }
 
 /**
@@ -597,6 +612,7 @@ export interface SeedConfig<
  * Options for {@link DevEnvironment.runSeed}.
  */
 export interface SeedRunOptions {
+	signal?: AbortSignal;
 	verbose?: boolean;
 	productionBuild?: boolean;
 	/** Skip `seed.check` — the caller asked for a seed explicitly. */
@@ -1199,6 +1215,12 @@ export interface StartOptions<
 	startServers?: boolean;
 	/** Use production build for servers. Default: false (true in CI) */
 	productionBuild?: boolean;
+	/** Cancel startup, including preparation commands and readiness. */
+	signal?: AbortSignal;
+	/** Preparation mode; containers skips migrations, generation and seeding. */
+	prepare?: "all" | "containers" | "migrate";
+	/** Report completed startup phases without coupling the library to CLI output. */
+	onPhase?: (name: string, durationMs: number) => void;
 	/** Skip automatic seeding (useful when CLI handles seeding separately). Default: false */
 	skipSeed?: boolean;
 	/** Skip the initial `logInfo` banner (CLI uses this with `--expose`, then logs once with tunnel URLs). Default: false */
@@ -1213,6 +1235,7 @@ export interface StartOptions<
  * Options for stopping the dev environment.
  */
 export interface StopOptions {
+	signal?: AbortSignal;
 	/** Print output to console. Default: true */
 	verbose?: boolean;
 	/** Remove Docker volumes (destroys data). Default: false */
@@ -1251,6 +1274,7 @@ export interface OpenPublicTunnelsOptions<
 	>,
 	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
 > {
+	signal?: AbortSignal;
 	/** Subset of expose targets by name; omit for all `expose: true` services/apps. */
 	names?: Extract<ExposedKeys<TServices, TApps>, string>[];
 	/**
@@ -1350,6 +1374,7 @@ export interface DevEnvironment<
 
 	/** Start dev servers only (assumes containers are running) */
 	startServers(options?: {
+		signal?: AbortSignal;
 		productionBuild?: boolean;
 		verbose?: boolean;
 		/** If set, start and wait for only these app names plus any transitive `requiredApps`. */
@@ -1358,7 +1383,13 @@ export interface DevEnvironment<
 	/** Stop a process by PID */
 	stopProcess(pid: number): void;
 	/** Wait for servers to be ready */
+	/** Run lifecycle hooks for callers that supervise servers themselves. */
+	runServerHook?(
+		phase: "before" | "after",
+		signal?: AbortSignal,
+	): Promise<void>;
 	waitForServers(options?: {
+		signal?: AbortSignal;
 		timeout?: number;
 		productionBuild?: boolean;
 		/** If set, wait only for these app names plus any transitive `requiredApps`. */

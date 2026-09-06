@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { platform } from "node:os";
+import { recordStartupMetric } from "../startup-metrics";
 
 /**
  * One reading of every TCP listener on the machine.
@@ -104,7 +105,9 @@ export function parseProcessCwds(output: string): Map<number, string> {
 
 function runQuietly(command: string, args: string[]): string | undefined {
 	try {
+		recordStartupMetric("subprocesses");
 		return execFileSync(command, args, {
+			timeout: 5000,
 			encoding: "utf-8",
 			stdio: ["pipe", "pipe", "pipe"],
 		});

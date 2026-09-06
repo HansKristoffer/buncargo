@@ -1,0 +1,174 @@
+import { describe, expect, it } from "bun:test";
+import { tmpdir } from "node:os";
+import type { ContainerRuntimeAdapter } from "../container-runtime";
+import type { AppConfig, ServiceConfig } from "../types";
+import type { DevEnvContext } from "./context";
+import type { DevEnvVarsApi } from "./env-vars";
+import { createLifecycleApi } from "./lifecycle";
+
+function fixture() {
+	const events: string[] = [];
+	const services = { db: { port: 5432, healthCheck: false } };
+	const apps = {
+		web: {
+			port: 3000,
+			requiredServices: ["db"],
+			devCommand: "exit 0",
+			healthEndpoint: false,
+		},
+	};
+	const runtime = {
+		name: "docker",
+		displayName: "Docker",
+		ensureRunning: async () => {
+			events.push("runtime");
+		},
+		up: () => {
+			events.push("up");
+		},
+		projectServiceStates: () => [],
+		containerPortOwners: () => new Map(),
+	} as unknown as ContainerRuntimeAdapter;
+	const config = {
+		services,
+		apps,
+		projectPrefix: "test",
+		options: { verbose: false },
+		migrations: [{ name: "schema", command: "migrate" }],
+		prisma: { generate: "generate" },
+		seed: {
+			command: "unused",
+			check: async () => {
+				events.push("seed check");
+				return false;
+			},
+		},
+		hooks: {
+			afterContainersReady: async () => {
+				events.push("container hook");
+			},
+			beforeServers: async () => {
+				events.push("before");
+			},
+			afterServers: async () => {
+				events.push("after");
+			},
+		},
+	};
+	const ctx = {
+		config,
+		services,
+		apps,
+		runtime,
+		root: tmpdir(),
+		projectName: "test",
+		ports: {},
+		urls: {},
+		loopbackUrls: {},
+		ensureComposeFile: () => {
+			events.push("artifact");
+		},
+		composeModel: () => ({ services: { db: { image: "postgres:16" } } }),
+	} as unknown as DevEnvContext<
+		Record<string, ServiceConfig>,
+		Record<string, AppConfig>
+	>;
+	const envVars = {
+		getHookContext: () => ({}),
+		buildEnvVars: () => ({}),
+		buildAppEnvVarsMap: () => ({ web: {} }),
+		exec: async (command: string) => {
+			events.push(command);
+			return { exitCode: 0, stdout: "", stderr: "" };
+		},
+	} as unknown as DevEnvVarsApi<
+		Record<string, ServiceConfig>,
+		Record<string, AppConfig>
+	>;
+	return { events, ctx, lifecycle: createLifecycleApi(ctx, envVars) };
+}
+
+describe("startup modes and hooks", () => {
+	it("containers-only skips migrations, generation, seed, and server hooks", async () => {
+		const { events, lifecycle } = fixture();
+		await lifecycle.start({
+			prepare: "containers",
+			startServers: false,
+			verbose: false,
+			wait: false,
+		});
+		expect(events).toEqual(["artifact", "runtime", "up"]);
+	});
+	it("migrate-only applies migrations without generation or seeds", async () => {
+		const { events, lifecycle } = fixture();
+		await lifecycle.start({
+			prepare: "migrate",
+			startServers: false,
+			verbose: false,
+			wait: false,
+		});
+		expect(events).toEqual([
+			"artifact",
+			"runtime",
+			"up",
+			"bunx prisma migrate deploy",
+			"migrate",
+		]);
+	});
+	it("library preparation does not fire server hooks without servers", async () => {
+		const { events, lifecycle } = fixture();
+		await lifecycle.start({ startServers: false, verbose: false, wait: false });
+		expect(events).toEqual([
+			"artifact",
+			"runtime",
+			"up",
+			"bunx prisma migrate deploy",
+			"migrate",
+			"generate",
+			"container hook",
+			"seed check",
+		]);
+	});
+	it("fires server hooks once around server readiness", async () => {
+		const { events, lifecycle } = fixture();
+		await lifecycle.start({ verbose: false, wait: false });
+		expect(events.slice(-2)).toEqual(["before", "after"]);
+		expect(events.filter((event) => event === "before")).toHaveLength(1);
+		expect(events.filter((event) => event === "after")).toHaveLength(1);
+	});
+	it("an explicit generation check can skip generation while retaining migrations", async () => {
+		const { ctx, events, lifecycle } = fixture();
+		if (!ctx.config.prisma) throw new Error("fixture needs prisma");
+		ctx.config.prisma.generateCheck = () => false;
+		await lifecycle.start({ startServers: false, verbose: false, wait: false });
+		expect(events).toContain("migrate");
+		expect(events).not.toContain("generate");
+	});
+	it("rejects an invalid selection before writing the artifact or starting runtime", async () => {
+		const { events, lifecycle } = fixture();
+		await expect(lifecycle.start({ onlyApps: ["missing"] })).rejects.toThrow(
+			"Unknown app",
+		);
+		expect(events).toEqual([]);
+	});
+	it("honors cancellation before startup mutations", async () => {
+		const { events, lifecycle } = fixture();
+		await expect(
+			lifecycle.start({ signal: AbortSignal.abort(new Error("cancelled")) }),
+		).rejects.toThrow("cancelled");
+		expect(events).toEqual([]);
+	});
+});
+
+it("rejects missing library app directories before starting containers", async () => {
+	const { ctx, events, lifecycle } = fixture();
+	ctx.apps.web = {
+		...ctx.apps.web,
+		port: 3000,
+		cwd: "missing-buncargo-directory",
+	};
+	await expect(lifecycle.start({ verbose: false })).rejects.toThrow(
+		"apps.web.cwd",
+	);
+	expect(events).toEqual([]);
+});

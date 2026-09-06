@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import { containerRuntimeForEnv } from "../container-runtime";
+import { withDeadline, withSignal } from "../core/deadline";
 import { removeHostRoutes } from "../core/hosts";
 import { isDeliberateExit, startDevServers } from "../core/process";
 import { joinColoredNames } from "../core/style";
@@ -15,7 +16,7 @@ import {
 } from "../core/tunnel";
 import { spawnWatchdog, startHeartbeat, stopHeartbeat } from "../core/watchdog";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../core/watchdog-constants";
-import { resolveSelectedApps } from "../planning";
+import { buildStartPlan, resolveSelectedApps } from "../planning";
 import type {
 	AppConfig,
 	CliOptions,
@@ -50,6 +51,7 @@ import {
 	stopRunningApps,
 	takeoverCandidates,
 } from "./takeover";
+import { validateDevStart } from "./validate-dev-start";
 
 export { getFlagValue, hasFlag, splitCliArgs } from "./flags";
 
@@ -134,6 +136,7 @@ export async function runCli<
 	options: CliOptions & {
 		/** Test-only tunnel substitutes. */
 		cliTestTunnel?: TunnelApi;
+		timer?: PhaseTimer;
 	} = {},
 ): Promise<void> {
 	const {
@@ -150,6 +153,17 @@ export async function runCli<
 
 	exitOnDevArgErrors(args);
 
+	const controller = new AbortController();
+	let interruptCode: number | undefined;
+	const signals = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
+	const listeners = Object.entries(signals).map(([signal, code]) => {
+		const listener = () => {
+			interruptCode = code;
+			controller.abort(new Error("Startup interrupted"));
+		};
+		process.on(signal, listener);
+		return { signal, listener };
+	});
 	const tunnels = createTunnelCoordinator(
 		env,
 		cliTestTunnel ?? {
@@ -157,18 +171,30 @@ export async function runCli<
 			startPublicTunnels,
 			stopPublicTunnels,
 		},
-		{ exposeRequested: args.exposeRequested },
+		{ exposeRequested: args.exposeRequested, signal: controller.signal },
 	);
 
-	const timer = args.timing ? createPhaseTimer() : createNoopPhaseTimer();
+	const timer =
+		options.timer ??
+		(args.timing
+			? createPhaseTimer({ json: args.timingJson })
+			: createNoopPhaseTimer());
 
 	let exitCode: DevFlowExit;
 	try {
-		exitCode = await runDevFlow(env, args, tunnels, { watchdog, timer });
+		exitCode = await runDevFlow(env, args, tunnels, {
+			watchdog,
+			timer,
+			signal: controller.signal,
+		});
 	} catch (error) {
-		reportCliError(toCliError(error));
+		controller.abort(error);
+		timer.report();
+		if (interruptCode === undefined) reportCliError(toCliError(error));
 		await teardown(env, tunnels);
-		process.exit(1);
+		process.exit(interruptCode ?? 1);
+	} finally {
+		for (const { signal, listener } of listeners) process.off(signal, listener);
 	}
 
 	if (exitCode !== undefined) {
@@ -183,12 +209,19 @@ async function teardown<
 	env: DevEnvironment<TServices, TApps>,
 	tunnels: DevTunnelCoordinator<TServices, TApps>,
 ): Promise<void> {
-	await tunnels.stop();
-	await releaseNamedHosts(env);
-	// Withdrawn beside the host routes, and for the same reason: both advertise
-	// something this process is about to stop answering for.
-	await withdrawCurrentRun(env.root);
-	restoreTerminal();
+	try {
+		stopHeartbeat(env.projectName, env.root);
+		const results = await Promise.allSettled([
+			tunnels.stop(),
+			releaseNamedHosts(env),
+			withdrawCurrentRun(env.root),
+		]);
+		for (const result of results)
+			if (result.status === "rejected")
+				log.warn(`Cleanup failed: ${String(result.reason)}`);
+	} finally {
+		restoreTerminal();
+	}
 }
 
 /**
@@ -205,9 +238,9 @@ async function runDevFlow<
 	env: DevEnvironment<TServices, TApps>,
 	args: DevCliArgs,
 	tunnels: DevTunnelCoordinator<TServices, TApps>,
-	options: { watchdog: boolean; timer: PhaseTimer },
+	options: { watchdog: boolean; timer: PhaseTimer; signal: AbortSignal },
 ): Promise<DevFlowExit> {
-	const { timer } = options;
+	const { timer, signal } = options;
 	async function exitWith(code: number): Promise<number> {
 		// The one-shot modes end here, and `--up-only` is exactly the kind of
 		// run someone times.
@@ -226,7 +259,7 @@ async function runDevFlow<
 		env.logInfo();
 		await tunnels.stop();
 		await removeHostRoutes((route) => route.root === env.root);
-		await env.stop({ removeVolumes: args.reset });
+		await env.stop({ removeVolumes: args.reset, signal });
 		restoreTerminal();
 		return 0;
 	}
@@ -251,40 +284,60 @@ async function runDevFlow<
 		}
 	}
 
+	const plan = buildStartPlan(env.apps, env.services, selectedAppNames);
+	validateDevStart(env, args, appsForDev, plan.requiredServiceKeys);
+
 	// ── Containers ───────────────────────────────────────────────────────────
 	// Held rather than printed: a run that takes over another one activates a
 	// second time, and the failure this first attempt reports - the other run
 	// still owning the hostnames - is exactly what the takeover undoes.
-	let hostsWarnings = await timer.measure("hosts", () =>
-		activateNamedHosts(env, { enabled: args.hosts }),
-	);
+	let hostsWarnings = args.oneShot
+		? []
+		: await timer.measure("hosts", () =>
+				activateNamedHosts(env, { enabled: args.hosts, signal }),
+			);
 	// After named hosts, which owns the first-run prompt slot on a fresh
 	// machine, and before the containers, so a question cannot land in the
 	// middle of startup output.
-	await offerMenuBarApp();
+	if (!args.oneShot) await offerMenuBarApp();
 	const flushHostsWarnings = (): void => {
 		for (const warning of hostsWarnings) log.warn(warning);
 		hostsWarnings = [];
 	};
-	await timer.measure("containers", () =>
-		env.start({
-			startServers: false,
-			wait: true,
-			skipSeed: args.seed,
-			skipEnvironmentLog: true,
-			onlyApps: selectedAppNames,
-			autoStartDocker: args.dockerAutostart ? undefined : false,
-		}),
-	);
+	const keepContainers = args.keepContainers || env.autoShutdown === false;
+	if (!args.oneShot && options.watchdog && !keepContainers)
+		startHeartbeat(env.projectName, undefined, env.root);
+	await env.start({
+		signal,
+		startServers: false,
+		wait: true,
+		skipSeed: args.seed || args.migrate || args.upOnly,
+		prepare: args.upOnly ? "containers" : args.migrate ? "migrate" : "all",
+		onPhase: timer.record,
+		skipEnvironmentLog: true,
+		onlyApps: selectedAppNames,
+		autoStartDocker: args.dockerAutostart ? undefined : false,
+	});
 
-	let classifiedApps = await timer.measure("app ports", () =>
-		classifyCliApps(appsForDev, env.ports, {
-			// No `isPortBusy` override: the default reads every app port from
-			// one snapshot rather than probing each of them separately.
-			waitForServer: env.waitForServer.bind(env),
-			context: { root: env.root, projectName: env.projectName },
-		}),
-	);
+	let classifiedApps =
+		args.oneShot && !args.exposeRequested
+			? {
+					startApps: {},
+					reusedApps: {},
+					startNames: [],
+					reusedNames: [],
+					inferredReuseNames: [],
+				}
+			: await timer.measure("app ports", () =>
+					classifyCliApps(appsForDev, env.ports, {
+						// No `isPortBusy` override: the default reads every app port from
+						// one snapshot rather than probing each of them separately.
+						waitForServer: (url, timeout) =>
+							withSignal(env.waitForServer(url, timeout), signal),
+						context: { root: env.root, projectName: env.projectName },
+						runtime: containerRuntimeForEnv(env),
+					}),
+				);
 
 	// ── Expose planning ──────────────────────────────────────────────────────
 	if (args.exposeRequested) {
@@ -292,6 +345,7 @@ async function runDevFlow<
 			exposeValue: args.exposeValue,
 			appsRequested: args.appsRequested,
 			selectedAppNames: new Set(Object.keys(appsForDev)),
+			selectedServiceNames: new Set(plan.requiredServiceKeys),
 			startAppNames: new Set(Object.keys(classifiedApps.startApps)),
 			reusedAppNames: new Set(Object.keys(classifiedApps.reusedApps)),
 		});
@@ -313,7 +367,7 @@ async function runDevFlow<
 	}
 
 	if (args.seed) {
-		return exitWith(await runCliSeed(env));
+		return exitWith(await runCliSeed(env, signal));
 	}
 
 	if (args.upOnly) {
@@ -356,7 +410,10 @@ async function runDevFlow<
 			// The other run held this project's hostnames, so the activation
 			// before the containers started was refused and `env.urls` fell back
 			// to localhost. Its routes are claimable now that its pid is gone.
-			hostsWarnings = await activateNamedHosts(env, { enabled: args.hosts });
+			hostsWarnings = await activateNamedHosts(env, {
+				enabled: args.hosts,
+				signal,
+			});
 			classifiedApps = {
 				startApps: takeover.apps,
 				startNames: takeover.names,
@@ -377,6 +434,7 @@ async function runDevFlow<
 	await publishCurrentRun(env, {
 		apps: { ...classifiedApps.startApps, ...classifiedApps.reusedApps },
 		reusedNames: classifiedApps.reusedNames,
+		serviceNames: plan.requiredServiceKeys,
 		attached: args.attach,
 	});
 
@@ -401,12 +459,10 @@ async function runDevFlow<
 		return undefined;
 	}
 
-	const keepContainers = args.keepContainers || env.autoShutdown === false;
 	if (options.watchdog && !keepContainers) {
 		// Heartbeat first, then the watchdog: the runner's first poll reads this
 		// file, and a missing one is owner-death to it. Writing it up front means
 		// the ordering cannot matter however slowly the runner starts.
-		startHeartbeat(env.projectName, undefined, env.root);
 		// Deliberately not awaited. Confirming the runner came up costs up to two
 		// seconds of polling a pid file, and nothing about starting dev servers
 		// depends on the answer — the watchdog only matters once this run is
@@ -419,47 +475,73 @@ async function runDevFlow<
 			verbose: true,
 			composeFile: env.composeFile,
 			containerRuntime: env.containerRuntime,
+			containerRuntimeBinary: env.containerRuntimeBinary,
 		}).catch(() => {
 			// spawnWatchdog reports its own failures; an idle backstop that did
 			// not start must never take the dev run down with it.
 		});
 	}
 
-	// Printed before the servers take over the terminal: after that the output
-	// is theirs, and a summary landing in the middle of it is noise.
-	timer.report();
+	const appsStartedAt = performance.now();
+	let firstSpawn = false;
 
 	try {
 		if (nothingToSpawn) {
 			await tunnels.openOwnedTunnels();
-			await waitForShutdownSignal();
+			timer.report();
+			await withSignal(waitForShutdownSignal(), signal);
 			return undefined;
 		}
 
+		await withDeadline(
+			async () => {
+				await env.runServerHook?.("before", signal);
+			},
+			600_000,
+			signal,
+		);
 		await startDevServers(
 			classifiedApps.startApps,
 			env.root,
 			(name) => env.buildAppEnvVars(name as Extract<keyof TApps, string>),
 			env.ports,
 			{
+				signal,
 				projectName: env.projectName,
+				runtime: containerRuntimeForEnv(env),
+				onReady: async (readySignal) => {
+					await withDeadline(
+						async () => {
+							await env.runServerHook?.("after", readySignal);
+						},
+						600_000,
+						signal,
+					);
+					timer.record("app readiness", performance.now() - appsStartedAt);
+					timer.report();
+				},
 				attach: args.attach,
 				extraArgs: args.passthrough,
 				waitForExit: true,
 				onSignal: () => {
-					stopHeartbeat();
+					stopHeartbeat(env.projectName, env.root);
 				},
-				waitForHealth: async (apps) => {
+				waitForHealth: async (apps, signal) => {
 					await env.waitForServers({
 						// These came out of `env.apps`, so they are app keys already.
 						onlyApps: Object.keys(apps) as Extract<keyof TApps, string>[],
 						expandRequired: false,
+						signal,
 					});
 					await markApps(env.root, Object.keys(apps), "ready");
 				},
 				// Deliberately not awaited: the registry is a status file, and
 				// nothing about starting servers may wait on it.
 				onAppSpawned: (name, pid, attached) => {
+					if (!firstSpawn) {
+						firstSpawn = true;
+						timer.record("entry to first app spawn", timer.elapsedMs());
+					}
 					void patchCurrentRun(env.root, {
 						apps: [{ name, pid, attached: attached || undefined }],
 					});
@@ -468,14 +550,15 @@ async function runDevFlow<
 				// or `buncargo stop <app>` — and reads as `stopped`. A non-zero code
 				// is the app falling over, which the supervisor also turns into a
 				// failed run.
-				onAppExit: (name, code) => {
+				onAppExit: (name, code, signal) => {
 					void markApps(
 						env.root,
 						[name],
-						isDeliberateExit(code) ? "stopped" : "failed",
+						isDeliberateExit(code, signal) ? "stopped" : "failed",
 					);
 				},
-				onAfterWave1: tunnels.openOwnedTunnels,
+				onAfterWave1: (signal) =>
+					timer.measure("tunnels", () => tunnels.openOwnedTunnels(signal)),
 				// Nothing to wait for without --expose, so needsPublicUrls apps
 				// join wave 1 and get health-checked like everything else.
 				deferPublicUrlApps: args.exposeRequested,
@@ -483,7 +566,7 @@ async function runDevFlow<
 		);
 		return undefined;
 	} finally {
-		stopHeartbeat();
+		stopHeartbeat(env.projectName, env.root);
 		await teardown(env, tunnels);
 	}
 }
@@ -495,8 +578,11 @@ async function runDevFlow<
 async function runCliSeed<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
->(env: DevEnvironment<TServices, TApps>): Promise<number> {
-	const outcome = await env.runSeed({ force: true });
+>(
+	env: DevEnvironment<TServices, TApps>,
+	signal?: AbortSignal,
+): Promise<number> {
+	const outcome = await env.runSeed({ force: true, signal });
 
 	if (outcome.status === "not-configured") {
 		throw new CliError("No seed command is configured.", [

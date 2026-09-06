@@ -1,64 +1,89 @@
-# Automatic publishing is disabled. Re-enable by restoring the push trigger on main.
+# Version is committed before dispatch. Publication consumes the exact tarball
+# verified on both platforms; no version mutation or rebuild happens afterward.
 name: Publish to npm
 
 on:
   workflow_dispatch:
 
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
 jobs:
-  publish:
+  candidate:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
-      contents: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: bun install --frozen-lockfile
+      - name: Validate and build candidate once
+        run: |
+          bun run lint
+          bun test
+          bun run build
+          bun run verify:package
+          bun scripts/verify-docker.ts
+      - name: Record candidate commit and version
+        run: node -p 'JSON.stringify({ commit: process.env.GITHUB_SHA, version: require("./package.json").version })' > .buncargo/artifacts/candidate.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-candidate-${{ github.sha }}
+          path: .buncargo/artifacts/
+          include-hidden-files: true
+
+  verify:
+    needs: candidate
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+        bun: ["1.4.2", latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ matrix.bun }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-candidate-${{ github.sha }}
+          path: .buncargo/artifacts/
+      - run: bun test
+      - name: Verify the release tarball without rebuilding
+        run: bun scripts/verify-package.ts .buncargo/artifacts/*.tgz
+
+  publish:
+    needs: [candidate, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
       id-token: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Build
-        run: bun run build
-
-      - name: Configure Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Bump version
-        id: version
-        run: |
-          # Get current version
-          CURRENT=$(jq -r .version package.json)
-          
-          # Bump patch version
-          NEW=$(echo $CURRENT | awk -F. '{$NF = $NF + 1;} 1' OFS=.)
-          
-          # Update package.json
-          jq ".version = \"$NEW\"" package.json > tmp.json && mv tmp.json package.json
-          
-          echo "version=$NEW" >> $GITHUB_OUTPUT
-          echo "Bumped version: $CURRENT -> $NEW"
-
-      - name: Commit version bump
-        run: |
-          git add package.json
-          git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
-          git push
-
-      - name: Publish to npm with provenance
-        run: npm publish --access public --provenance
+      - name: Setup npm trusted publishing support
+        run: npm install --global npm@11.5.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-candidate-${{ github.sha }}
+          path: candidate/
+      - name: Publish verified tarball with provenance
+        run: npm publish candidate/*.tgz --ignore-scripts --access public --provenance

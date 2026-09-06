@@ -128,6 +128,9 @@ describe("resolvePortPlan", () => {
 			services,
 			apps,
 			persist: false,
+			getOwner: () => {
+				throw new Error("hard override must not probe");
+			},
 		});
 		expect(plan.offset).toBe(250);
 		expect(plan.provenance).toBe("env");
@@ -301,4 +304,21 @@ describe("resolvePortPlan", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+});
+
+it("rejects an explicit offset that overflows a service port before any probe", () => {
+	process.env.BUNCARGO_PORT_OFFSET = "1000";
+	expect(() =>
+		resolvePortPlan({
+			projectPrefix: "overflow",
+			projectName: "overflow",
+			root: "/tmp/overflow",
+			services: { db: { port: 65000 } },
+			apps: {},
+			persist: false,
+			getOwner: () => {
+				throw new Error("unexpected probe");
+			},
+		}),
+	).toThrow("Effective port for db is 66000");
 });

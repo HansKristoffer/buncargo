@@ -1,5 +1,9 @@
+import { statSync } from "node:fs";
+import { resolve } from "node:path";
+import { withDeadline } from "../core/deadline";
 import { waitForDevServers } from "../core/network";
-import { buildApps, startDevServers } from "../core/process";
+import { startDevServers } from "../core/process";
+import { buildAppsAsync } from "../core/process/build";
 import { isCI } from "../core/runtime-flags";
 import {
 	resolveExposeTargets,
@@ -19,6 +23,33 @@ import type {
 } from "../types";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
+
+/** Validate all selected working directories before any startup mutation. */
+export function assertAppWorkingDirectories(
+	apps: Record<string, AppConfig>,
+	root: string,
+	production = false,
+): void {
+	for (const [name, app] of Object.entries(apps)) {
+		if (
+			typeof (production
+				? (app.prodCommand ?? app.devCommand)
+				: app.devCommand) !== "string"
+		)
+			continue;
+		const cwd = resolve(root, app.cwd ?? ".");
+		let directory = false;
+		try {
+			directory = statSync(cwd).isDirectory();
+		} catch {
+			/* Report the field below. */
+		}
+		if (!directory)
+			throw new Error(
+				`apps.${name}.cwd is not an accessible directory: ${cwd}`,
+			);
+	}
+}
 
 function readyTimeout(): number {
 	return isCI() ? 120000 : 60000;
@@ -41,19 +72,29 @@ export async function startAppServers<
 		apps: Record<string, AppConfig>;
 		productionBuild: boolean;
 		verbose: boolean;
+		signal?: AbortSignal;
 	},
 ): Promise<DevServerPids> {
 	const { apps: appsToStart, productionBuild, verbose } = options;
+	options.signal?.throwIfAborted();
+	assertAppWorkingDirectories(appsToStart, ctx.root, productionBuild);
 
 	if (productionBuild) {
-		buildApps(
+		await buildAppsAsync(
 			appsToStart,
 			ctx.root,
 			envVars.buildAppEnvVarsMap(appsToStart, true),
-			{ verbose },
+			{ verbose, signal: options.signal },
 		);
 	}
 
+	const beforeHook = ctx.config.hooks?.beforeServers;
+	if (beforeHook)
+		await withDeadline(
+			(signal) => beforeHook(envVars.getHookContext(signal)),
+			600000,
+			options.signal,
+		);
 	const pids = await startDevServers(
 		appsToStart,
 		ctx.root,
@@ -64,14 +105,27 @@ export async function startAppServers<
 			productionBuild,
 			isCI: isCI(),
 			projectName: ctx.projectName,
+			runtime: ctx.runtime,
+			signal: options.signal,
+			deferPublicUrlApps: false,
+			waitForHealth: (wave, signal) =>
+				waitForDevServers(wave, ctx.ports, {
+					timeout: readyTimeout(),
+					verbose,
+					productionBuild,
+					signal,
+				}),
+			onReady: async (readySignal) => {
+				const afterHook = ctx.config.hooks?.afterServers;
+				if (afterHook)
+					await withDeadline(
+						(signal) => afterHook(envVars.getHookContext(signal)),
+						600000,
+						readySignal,
+					);
+			},
 		},
 	);
-
-	await waitForDevServers(appsToStart, ctx.ports, {
-		timeout: readyTimeout(),
-		verbose,
-		productionBuild,
-	});
 
 	return pids;
 }
@@ -81,6 +135,7 @@ export interface DevServersApi<
 	TApps extends Record<string, AppConfig>,
 > {
 	startServersOnly(options?: {
+		signal?: AbortSignal;
 		productionBuild?: boolean;
 		verbose?: boolean;
 		onlyApps?: Extract<keyof TApps, string>[];
@@ -90,6 +145,7 @@ export interface DevServersApi<
 		productionBuild?: boolean;
 		onlyApps?: Extract<keyof TApps, string>[];
 		expandRequired?: boolean;
+		signal?: AbortSignal;
 	}): Promise<void>;
 	openPublicTunnels(
 		options?: OpenPublicTunnelsOptions<TServices, TApps>,
@@ -108,6 +164,7 @@ export function createServersApi<
 
 	async function startServersOnly(
 		options: {
+			signal?: AbortSignal;
 			productionBuild?: boolean;
 			verbose?: boolean;
 			onlyApps?: Extract<keyof TApps, string>[];
@@ -124,6 +181,7 @@ export function createServersApi<
 			apps: appsToStart,
 			productionBuild,
 			verbose,
+			signal: options.signal,
 		});
 	}
 
@@ -133,6 +191,7 @@ export function createServersApi<
 			productionBuild?: boolean;
 			onlyApps?: Extract<keyof TApps, string>[];
 			expandRequired?: boolean;
+			signal?: AbortSignal;
 		} = {},
 	): Promise<void> {
 		const {
@@ -150,7 +209,11 @@ export function createServersApi<
 						}),
 					)
 				: resolveSelectedApps(apps, onlyApps).apps;
-		await waitForDevServers(appsToWait, ports, { timeout, productionBuild });
+		await waitForDevServers(appsToWait, ports, {
+			timeout,
+			productionBuild,
+			signal: options.signal,
+		});
 	}
 
 	async function openPublicTunnels(
@@ -165,6 +228,7 @@ export function createServersApi<
 				timeout: readyTimeout(),
 				verbose: config.options?.verbose ?? true,
 				productionBuild: false,
+				signal: options.signal,
 			});
 		}
 
@@ -187,7 +251,9 @@ export function createServersApi<
 			);
 		}
 
-		const tunnels = await startPublicTunnels(targets);
+		const tunnels = await startPublicTunnels(targets, {
+			signal: options.signal,
+		});
 		ctx.setPublicUrls(
 			Object.fromEntries(tunnels.map((t) => [t.name, t.publicUrl])),
 		);

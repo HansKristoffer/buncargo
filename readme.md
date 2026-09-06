@@ -24,6 +24,8 @@ Local development environments are fragile: hand-written compose files, scattere
 - **Watchdog** - owner-PID liveness plus a 3 minute idle backstop
 - **Run registry + menu bar app** - every active run in `~/.buncargo/runs.json`, surfaced by `buncargo runs` and BuncargoBar
 
+Buncargo requires Bun 1.4.2 or newer on macOS or Linux (WSL on Windows). See [support and release checks](docs/support-and-release.md) and the [startup reliability upgrade notes](docs/startup-reliability-upgrade.md).
+
 ## Quick Start
 
 ### 1. Install
@@ -192,7 +194,8 @@ bunx buncargo dev --watchdog-timeout=5
 bunx buncargo dev --no-docker-autostart
 bunx buncargo dev --no-hosts
 bunx buncargo dev --runtime=apple  # Run services on Apple container
-bunx buncargo dev --timing         # Print how long each startup phase took
+bunx buncargo dev --timing         # Entry through app readiness, including preparation
+bunx buncargo dev --timing-json    # Same measurements and numeric counters as JSON
 bunx buncargo dev --apps=expoApp -- --clear
 bunx buncargo ls
 bunx buncargo runs                # What is running on this machine
@@ -253,37 +256,37 @@ Everything else is unchanged: the same `dev.config.ts`, the same generated compo
 
 ## Startup speed
 
-`bun dev` is run constantly, in many worktrees, so the work before the first dev server starts is kept small:
+`buncargo dev --timing` (or `BUNCARGO_TIMING=1`) measures startup from CLI entry through successful app readiness. `--timing-json` emits one JSON record with `totalMs`, `phases`, and numeric `counters`. Reports also appear on startup failure; credentials and command contents are not included. Phase durations can overlap; “entry to first app spawn” is a cumulative milestone.
 
-- **One reading of the machine's ports per phase.** Port ownership is asked in four places (allocation, service preflight, app classification, spawning); a single `lsof` and one container listing answer all of them, instead of a fork per port per question.
-- **The container reconcile is skipped when nothing changed.** Every generated service carries a `buncargo.stack-hash` label covering its interpolated definition. If all the selected services are already running with this run's hash, `docker compose up` is not called at all; anything that would change a container changes the hash, so an edited image or port still takes effect without `--down`.
-- **Nothing blocks on the idle watchdog.** It is spawned alongside the dev servers rather than waited on.
-- **No shelling out to find a binary.** `PATH` and mkcert's CA root are read directly.
+Warm startup skips container reconciliation only when every selected service is running with its matching `buncargo.service-hash`. Service fingerprints include effective environment values, user labels, and referenced volume definitions, and remain stable when an unrelated service joins or leaves the selection. External build/env-file inputs and unresolved Compose interpolation trigger reconciliation because equality cannot be proven.
 
-`bunx buncargo dev --timing` (or `BUNCARGO_TIMING=1`) prints where the time actually went:
+App readiness is polled every 200 ms. Container commands and probes are asynchronous and cancellable, and app health checks run concurrently. An explicit `healthEndpoint` requires a successful HTTP status; `healthEndpoint: false` explicitly disables that check. Port ownership uses one snapshot per phase, and unchanged generated files are not rewritten.
 
-```
-Startup
-  hosts           124ms
-  containers      412ms
-  app ports        38ms
-  total           581ms
-```
+For reproducible overhead measurements, run `bun run build` followed by `bun scripts/benchmark-startup.ts --samples=10 --parallel=1`. Use `--parallel=5` or `--parallel=20` for contention. The fixture uses real CLI/app processes and a fake runtime; it excludes image pulls, real database readiness, migrations, HTTPS, and external tunnel latency. See [implementation and validation](docs/startup-reliability-implementation.md) for measured results and limits.
 
 ## Startup order
 
 ```
-containers + migrations + seed + envFile sync
-        → start apps without needsPublicUrls
-        → wait for their healthEndpoints (skipped when healthEndpoint: false)
-        → open public tunnels when --expose is set
-        → setPublicUrls / inject *_PUBLIC_URL
-        → start apps with needsPublicUrls
+validate selected apps, dependencies, attachment, and expose targets
+  → activate named hosts for dev
+  → reconcile selected containers and wait for service health
+  → sync envFile → migrations → optional generation → container hook → seed
+  → beforeServers → spawn wave 1 → wait for wave 1 health
+  → open requested tunnels and inject public URLs
+  → spawn wave 2 → wait for wave 2 health → afterServers
 ```
 
-`needsPublicUrls` only splits the waves when `--expose` is actually passed. On a plain `bunx buncargo dev` there is no tunnel URL to wait for, so those apps start in the first wave and get health-checked like everything else - one static config is correct either way, with no need to inspect `process.argv`.
+`needsPublicUrls` splits waves only with `--expose`. `requiredApps` expands the selection; it does not promise readiness ordering between apps in the same wave. Healthy existing apps are reused. Both CLI and library server startup call server hooks once; `start({ startServers: false })` performs preparation without server hooks.
 
-`classifyCliApps` always runs: a healthy app already listening on its port is reused instead of restarted.
+| Command | Work |
+| --- | --- |
+| `dev` | Containers, migrations, generation, seed, apps, readiness |
+| `dev --up-only` | Containers and dotenv sync; no migrations, generation, seeds, or apps |
+| `dev --migrate` | Containers, dotenv sync, migrations; no generation, seeds, or apps |
+| `dev --seed` | Containers, dotenv sync, migrations, generation, forced seed; no apps |
+| `dev --down` / `--reset` | Stop; reset also removes volumes |
+
+Mutually exclusive modes cannot be combined. A selected app must resolve at least one required service, as before; frontend-only and services-only startup are not introduced by this change.
 
 ## Attached / interactive apps
 
@@ -361,7 +364,7 @@ export default defineConfig({ use: { baseURL: env.loopbackUrls.web } });
 Every `buncargo dev` publishes itself to `~/.buncargo/runs.json`: project,
 worktree, branch, pid, and each app and service with its URL, public tunnel and
 state. It is written when the run starts, patched as servers become ready, and
-removed on teardown; entries whose owner process is gone are pruned on read.
+removed on teardown. Readers filter dead owners without rewriting files; writers prune obsolete entries. Each new invocation has a session identity, so different app subsets in one checkout remain visible.
 
 ```bash
 bunx buncargo runs          # grouped by project, main checkout first
@@ -376,7 +379,8 @@ with Docker stopped.
 ```bash
 bunx buncargo stop api        # SIGTERM that dev server's process group
 bunx buncargo stop postgres   # docker/container stop for that service
-bunx buncargo stop --all      # the whole run, containers included
+bunx buncargo stop --all      # checkout sessions; retains containers another live session needs
+bunx buncargo stop api --run=<session-id>  # select an exact run
 ```
 
 Stopping one app does not end the run: a signalled exit is not a failure to the
@@ -594,7 +598,7 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `generatedFile` | `string` | `.buncargo/docker-compose.generated.yml` | Path relative to root |
-| `writeStrategy` | `"always" \| "if-missing"` | `"always"` | Whether to overwrite |
+| `writeStrategy` | `"always" \| "if-missing"` | `"always"` | Atomic write when content changes; `if-missing` rejects an existing file that differs from the model |
 | `volumes` | `Record<string, DockerComposeVolumeRaw>` | `{}` | Extra top-level named volumes |
 | `autoStart` | `boolean` | `true` (skipped in CI) | Try to start Docker if the daemon is down |
 | `runtime` | `"docker" \| "apple" \| "auto"` | `"docker"` | Which container runtime runs the services (see [Container runtime](#container-runtime)) |
@@ -610,6 +614,7 @@ Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.
 | `service` | `string` | `postgres` | Service key for `DATABASE_URL` |
 | `urlEnvVar` | `string` | `DATABASE_URL` | Env var name |
 | `generate` | `string` | skipped | Command after migrations (e.g. `bunx prisma generate --schema ./schema --sql`) |
+| `generateCheck` | `(ctx) => boolean \| Promise<boolean>` | always generate | Return `true` when generation is needed; your check must verify all inputs and outputs |
 
 ### `MigrationConfig`
 
@@ -632,20 +637,20 @@ Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.
 
 | Hook | When |
 | --- | --- |
-| `afterContainersReady` | After containers are healthy |
+| `afterContainersReady` | After containers, dotenv sync, migrations, and generation; before seeding |
 | `beforeServers` | Before app processes start |
 | `afterServers` | After health waits succeed |
 | `beforeStop` | Before `stop()` |
 
-`HookContext`: `{ projectName, ports, urls, publicUrls, exec, root, isCI, portOffset, localIp }`.
+`HookContext`: `{ projectName, ports, urls, publicUrls, exec, root, isCI, portOffset, localIp, signal }`.
 
-`exec(cmd, { cwd?, verbose?, env?, throwOnError? })` returns `{ exitCode, stdout, stderr }`.
+`exec(cmd, { cwd?, verbose?, env?, throwOnError?, signal?, timeoutMs?, killGraceMs? })` returns `{ exitCode, stdout, stderr }`.
 
 ### `StartOptions` / `StopOptions`
 
-`start({ verbose, wait, startServers, productionBuild, skipSeed, skipEnvironmentLog, onlyApps, autoStartDocker })`
+`start({ verbose, wait, startServers, productionBuild, skipSeed, skipEnvironmentLog, onlyApps, autoStartDocker, signal, prepare, onPhase })`
 
-`stop({ verbose, removeVolumes })`
+`stop({ verbose, removeVolumes, signal })`
 
 ### `CliOptions` (programmatic `runCli`)
 

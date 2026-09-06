@@ -4,6 +4,7 @@ import fg from "fast-glob";
 import { execAsync } from "../core/process";
 import { getProjectStateDir, STATE_DIRNAME } from "../core/state-paths";
 import { CONFIG_FILES } from "../loader";
+import { workspacePatterns } from "./workspaces";
 
 /**
  * Result of typechecking the root dev config.
@@ -69,11 +70,9 @@ async function resolveProjectTsc(root: string): Promise<string> {
 	}
 
 	const workspaceCopies = await fg(
-		[
-			"apps/*/node_modules/typescript/bin/tsc",
-			"packages/*/node_modules/typescript/bin/tsc",
-			"modules/node_modules/typescript/bin/tsc",
-		],
+		workspacePatterns(root).map(
+			(pattern) => `${pattern}/node_modules/typescript/bin/tsc`,
+		),
 		{
 			cwd: root,
 			absolute: true,
@@ -82,7 +81,9 @@ async function resolveProjectTsc(root: string): Promise<string> {
 	);
 	if (workspaceCopies[0]) return workspaceCopies[0];
 
-	return "bunx tsc";
+	throw new Error(
+		"No project TypeScript compiler found. Install typescript in the root or a declared workspace to check the dev config.",
+	);
 }
 
 /**
@@ -107,6 +108,8 @@ function writeGeneratedTsconfig(root: string, configFile: string): string {
 			incremental: false,
 		},
 		files: [join("..", configFile)],
+		include: [],
+		exclude: [],
 	};
 
 	writeFileSync(tsconfigPath, `${JSON.stringify(tsconfig, null, "\t")}\n`);
@@ -157,16 +160,23 @@ export async function typecheckRootConfig(options: {
 	let success = false;
 	let errorOutput: string | undefined;
 
-	const tsc = await resolveProjectTsc(root);
-	const command =
-		tsc === "bunx tsc"
-			? `bunx tsc -p ${JSON.stringify(tsconfigPath)}`
-			: `${JSON.stringify(tsc)} -p ${JSON.stringify(tsconfigPath)}`;
-	const result = await execAsync(command, root, {}, { throwOnError: false });
-	success = result.exitCode === 0;
-	if (!success) {
-		const parts = [result.stdout.trim(), result.stderr.trim()].filter(Boolean);
-		errorOutput = parts.length > 0 ? parts.join("\n") : undefined;
+	try {
+		const tsc = await resolveProjectTsc(root);
+		const result = await execAsync(
+			[process.execPath, tsc, "-p", tsconfigPath],
+			root,
+			{},
+			{ throwOnError: false },
+		);
+		success = result.exitCode === 0;
+		if (!success) {
+			const parts = [result.stdout.trim(), result.stderr.trim()].filter(
+				Boolean,
+			);
+			errorOutput = parts.length > 0 ? parts.join("\n") : undefined;
+		}
+	} catch (error) {
+		errorOutput = error instanceof Error ? error.message : String(error);
 	}
 
 	const duration = Number(((performance.now() - startTime) / 1000).toFixed(2));

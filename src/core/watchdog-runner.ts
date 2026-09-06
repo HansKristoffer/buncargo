@@ -5,19 +5,22 @@
  * or after the idle backstop (only when the owner is also gone).
  */
 
-import {
-	appendFileSync,
-	existsSync,
-	readFileSync,
-	unlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
 import {
 	getContainerRuntimeAdapter,
 	isContainerRuntimeName,
 } from "../container-runtime";
-import { isProcessAlive } from "./process";
-import { parseHeartbeatPayload } from "./watchdog";
+import { withFileLock } from "./file-lock";
+import { readProcessIdentity } from "./process-identity";
+import { writeJsonDocumentSync } from "./registry-file";
+import {
+	getHeartbeatOwnersDir,
+	getWatchdogPid,
+	isHeartbeatOwnerAlive,
+	readHeartbeatPayload,
+	withWatchdogProjectLock,
+} from "./watchdog";
 import {
 	WATCHDOG_IDLE_TIMEOUT_MS,
 	WATCHDOG_OWNER_DEAD_GRACE_MS,
@@ -63,38 +66,33 @@ function log(message: string): void {
 	}
 }
 
-writeFileSync(pidFile, process.pid.toString());
+const ownerId = randomUUID();
 
 function cleanup(): void {
 	try {
-		unlinkSync(pidFile);
+		const owner = JSON.parse(readFileSync(pidFile, "utf8"));
+		if (owner.ownerId === ownerId && owner.pid === process.pid)
+			unlinkSync(pidFile);
 	} catch {
-		// File may not exist
+		/* Missing or replaced: not ours to remove. */
 	}
-	try {
-		unlinkSync(heartbeatFile);
-	} catch {
-		// File may not exist
-	}
+	// Heartbeats belong to their runs. A replacement may have claimed one
+	// while this runner was stopping, so never remove them here.
 }
 
-function shutdownContainers(): void {
-	try {
-		const runtime = getContainerRuntimeAdapter(
-			isContainerRuntimeName(RUNTIME_NAME) ? RUNTIME_NAME : "docker",
-			{ binary: RUNTIME_BINARY },
-		);
-		// No model: volumes are never removed here, and containers are found by
-		// label, so the runner does not need the project's config.
-		runtime.down({
-			root: ROOT,
-			projectName: PROJECT_NAME,
-			composeFile: COMPOSE_FILE || undefined,
-			verbose: false,
-		});
-	} catch {
-		// Ignore errors
-	}
+async function shutdownContainers(): Promise<void> {
+	const runtime = getContainerRuntimeAdapter(
+		isContainerRuntimeName(RUNTIME_NAME) ? RUNTIME_NAME : "docker",
+		{ binary: RUNTIME_BINARY },
+	);
+	const request = {
+		root: ROOT,
+		projectName: PROJECT_NAME,
+		composeFile: COMPOSE_FILE || undefined,
+		verbose: false,
+	};
+	if (runtime.downAsync) await runtime.downAsync(request);
+	else runtime.down(request);
 }
 
 process.on("SIGTERM", () => {
@@ -107,16 +105,16 @@ process.on("SIGINT", () => {
 	process.exit(0);
 });
 
-log(`Started for ${PROJECT_NAME} (PID: ${process.pid})`);
-log(`Idle backstop: ${IDLE_TIMEOUT / 60000} minutes`);
-
 /** Read the heartbeat, distinguishing "gone" from "cannot be parsed". */
 function readHeartbeat(): HeartbeatReading {
-	if (!existsSync(heartbeatFile)) {
+	if (
+		!existsSync(heartbeatFile) &&
+		!existsSync(getHeartbeatOwnersDir(PROJECT_NAME, ROOT))
+	) {
 		return { status: "missing" };
 	}
 	try {
-		const payload = parseHeartbeatPayload(readFileSync(heartbeatFile, "utf-8"));
+		const payload = readHeartbeatPayload(PROJECT_NAME, ROOT);
 		return payload ? { status: "ok", payload } : { status: "unreadable" };
 	} catch {
 		return { status: "unreadable" };
@@ -140,9 +138,7 @@ async function watchdog(): Promise<void> {
 
 		const reading = readHeartbeat();
 		const ownerAlive =
-			reading.status === "ok" &&
-			reading.payload.pid > 0 &&
-			isProcessAlive(reading.payload.pid);
+			reading.status === "ok" && isHeartbeatOwnerAlive(reading.payload);
 
 		const { verdict, memory: nextMemory } = evaluateWatchdogTick(
 			{ now, reading, ownerAlive },
@@ -155,17 +151,61 @@ async function watchdog(): Promise<void> {
 		memory = nextMemory;
 
 		if (verdict.kind === "shutdown") {
-			log(`${verdict.reason}, shutting down...`);
-			shutdownContainers();
-			log("Containers stopped");
-			cleanup();
-			process.exit(0);
+			const stopped = await withWatchdogProjectLock(
+				PROJECT_NAME,
+				ROOT,
+				async () => {
+					// A new run can register while this watchdog is delayed on the gate.
+					// Re-evaluate its actual owner immediately before issuing down.
+					const latest = readHeartbeat();
+					const alive =
+						latest.status === "ok" && isHeartbeatOwnerAlive(latest.payload);
+					const checked = evaluateWatchdogTick(
+						{ now: Date.now(), reading: latest, ownerAlive: alive },
+						memory,
+						{
+							idleTimeoutMs: IDLE_TIMEOUT,
+							ownerDeadGraceMs: WATCHDOG_OWNER_DEAD_GRACE_MS,
+						},
+					);
+					memory = checked.memory;
+					if (checked.verdict.kind !== "shutdown") return false;
+					log(`${checked.verdict.reason}, shutting down...`);
+					await shutdownContainers();
+					log("Containers stopped");
+					return true;
+				},
+			);
+			if (stopped) return;
 		}
 	}
 }
 
-watchdog().catch((error: unknown) => {
-	log(`Fatal: ${error instanceof Error ? error.message : String(error)}`);
+// A descriptor held for the runner's lifetime is an atomic startup claim and
+// is automatically released after crashes; a PID file alone cannot provide it.
+withFileLock(
+	`${pidFile}.runner`,
+	async () => {
+		const previous = getWatchdogPid(PROJECT_NAME, ROOT);
+		if (previous && previous !== process.pid) return;
+		writeJsonDocumentSync(pidFile, {
+			pid: process.pid,
+			ownerId,
+			processIdentity: readProcessIdentity(process.pid),
+		});
+		log(`Started for ${PROJECT_NAME} (PID: ${process.pid})`);
+		log(`Idle backstop: ${IDLE_TIMEOUT / 60000} minutes`);
+		try {
+			await watchdog();
+		} finally {
+			cleanup();
+		}
+	},
+	{ timeoutMs: 0 },
+).catch((error: unknown) => {
+	log(
+		`Watchdog failed: ${error instanceof Error ? error.message : String(error)}`,
+	);
 	cleanup();
-	process.exit(1);
+	process.exitCode = 1;
 });

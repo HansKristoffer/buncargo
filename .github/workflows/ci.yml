@@ -1,5 +1,4 @@
-# Runs on every push and pull request. The hosts, Apple container and
-# cloudflared suites stay manual: they need root, a VM backend or the network.
+# Provider/privileged integration suites stay separate from ordinary PR checks.
 name: CI
 
 on:
@@ -9,28 +8,44 @@ on:
 
 jobs:
   test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+        bun: ["1.4.2", latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ matrix.bun }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Typecheck and lint
+        run: bun run lint
+      - name: Test
+        run: bun test
+      - name: Build
+        run: bun run build
+      - name: Verify the packed consumer artifact
+        run: bun run verify:package
+
+  docker:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Typecheck
-        run: bun run typecheck
-
-      - name: Lint
-        run: bunx biome check src example
-
-      - name: Test
-        run: bun test
-
-      - name: Build
-        run: bun run build
+          bun-version: "1.4.2"
+      - run: bun install --frozen-lockfile
+      - name: Show runtime versions
+        run: |
+          docker version
+          docker compose version
+      - name: Start, reuse, change and stop a disposable stack
+        run: bun scripts/verify-docker.ts

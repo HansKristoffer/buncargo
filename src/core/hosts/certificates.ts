@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { withFileLock } from "../file-lock";
-import { rememberCertNames } from "./cert-names";
+import { readCertNames, rememberCertNames } from "./cert-names";
 import {
 	certNeedsRenewal,
 	ensureMkcert,
@@ -101,31 +101,49 @@ export async function syncCertificateForRoutes(
 		 */
 		root?: string;
 	} = {},
+	deps: { resolveMkcert?: typeof resolveMkcertForMint } = {},
 ): Promise<CertificateFiles> {
+	const resolveMkcert = deps.resolveMkcert ?? resolveMkcertForMint;
 	const certPath = getCertPath();
-	return withFileLock(certPath, async () => {
-		const routes = await loadHostRoutes();
-		// Remembered names as well as live routes: a certificate minted from
-		// the registry alone loses a project's names the moment it stops, and
-		// reminting on its next run rebinds the daemon and drops every other
-		// project's websockets.
-		const remembered = await rememberCertNames({
-			root: options.root,
-			names: options.include ?? [],
+	// Resolving/downloading a tool can take minutes. Keep it outside the pair
+	// lock so the daemon can continue reading the last valid certificate.
+	const initialNames = hostnamesForCertificate([
+		...(await loadHostRoutes()).map((route) => route.hostname),
+		...(options.include ?? []),
+		...(await readCertNames()),
+	]);
+	let mkcertPath =
+		options.mkcertPath ?? (await resolveMkcert(certPath, initialNames));
+	for (;;) {
+		const result = await withFileLock(certPath, async () => {
+			const routes = await loadHostRoutes();
+			// Remembered names as well as live routes: a certificate minted from
+			// the registry alone loses a project's names the moment it stops, and
+			// reminting on its next run rebinds the daemon and drops every other
+			// project's websockets.
+			const remembered = await rememberCertNames({
+				root: options.root,
+				names: options.include ?? [],
+			});
+			const hostnames = [
+				...new Set([
+					...routes.map((route) => route.hostname),
+					...(options.include ?? []),
+					...remembered,
+				]),
+			].sort();
+			const wanted = hostnamesForCertificate(hostnames);
+			// A concurrent run may have registered more names since the initial
+			// check. Release before downloading, then recompute this union again.
+			if (!mkcertPath && certNeedsRenewal(certPath, wanted)) return undefined;
+			const minted = mintCert(wanted, { mkcertPath });
+			return { certPath: minted.certPath, keyPath: minted.keyPath };
 		});
-		const hostnames = [
-			...new Set([
-				...routes.map((route) => route.hostname),
-				...(options.include ?? []),
-				...remembered,
-			]),
-		].sort();
-		const wanted = hostnamesForCertificate(hostnames);
-		const mkcertPath =
-			options.mkcertPath ?? (await resolveMkcertForMint(certPath, wanted));
-		const minted = mintCert(wanted, { mkcertPath });
-		return { certPath: minted.certPath, keyPath: minted.keyPath };
-	});
+		if (result) return result;
+		mkcertPath = await resolveMkcert(certPath, initialNames, {
+			needsRenewal: () => true,
+		});
+	}
 }
 
 /**

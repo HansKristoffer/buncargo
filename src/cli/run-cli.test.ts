@@ -73,7 +73,12 @@ function createStubEnv(
 			expose: true,
 		},
 	};
-	const services = options.services ?? {};
+	const services = options.services ?? {
+		postgres: { port: 5432, healthCheck: false as const },
+	};
+	for (const app of Object.values(apps)) {
+		app.requiredServices ??= Object.keys(services);
+	}
 	const ports =
 		options.ports ??
 		Object.fromEntries(
@@ -276,11 +281,12 @@ describe("runCli expose routing", () => {
 		);
 
 		expect(code).toBe(0);
-		expect(startCalls).toEqual([
+		expect(startCalls).toMatchObject([
 			{
 				startServers: false,
 				wait: true,
-				skipSeed: false,
+				skipSeed: true,
+				prepare: "migrate",
 				skipEnvironmentLog: true,
 				onlyApps: ["expo"],
 				autoStartDocker: undefined,

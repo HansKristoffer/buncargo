@@ -2,7 +2,8 @@ import type {
 	ServiceDiagnosis,
 	ServiceDiagnosisRequest,
 } from "../container-runtime/types";
-import { runDocker } from "./binary";
+import { remainingTime } from "../core/deadline";
+import { runDocker, runDockerAsync } from "./binary";
 import { getComposeArgs } from "./compose-command";
 
 /**
@@ -100,4 +101,45 @@ export function diagnoseDockerService(
 		exitCode,
 		logTail: logs.ok ? logs.stdout.trim() : "",
 	};
+}
+
+export async function diagnoseDockerServiceAsync(
+	request: ServiceDiagnosisRequest,
+	binary?: string,
+): Promise<ServiceDiagnosis | undefined> {
+	const deadline = performance.now() + (request.timeoutMs ?? 2000);
+	const composeArgs = getComposeArgs({
+		projectName: request.projectName,
+		composeFile: request.composeFile,
+	});
+	const options = () => ({
+		cwd: request.root,
+		signal: request.signal,
+		timeoutMs: remainingTime(deadline),
+	});
+	try {
+		const ps = await runDockerAsync(
+			binary,
+			[...composeArgs, "ps", "--all", "--format", "json", request.serviceName],
+			options(),
+		);
+		const row = ps.ok ? parseComposePs(ps.stdout)[0] : undefined;
+		if (!row) return undefined;
+		const state = readComposeState(row);
+		if (remainingTime(deadline) === 0) return { ...state, logTail: "" };
+		const logs = await runDockerAsync(
+			binary,
+			[
+				...composeArgs,
+				"logs",
+				"--no-color",
+				`--tail=${request.tail ?? DEFAULT_TAIL}`,
+				request.serviceName,
+			],
+			options(),
+		);
+		return { ...state, logTail: logs.ok ? logs.stdout.trim() : "" };
+	} catch {
+		return undefined;
+	}
 }

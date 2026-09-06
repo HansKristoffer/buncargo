@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import { platform } from "node:os";
+import { isAbsolute, relative } from "node:path";
 import { containerRuntimeDisplayName } from "../../container-runtime/names";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import {
@@ -7,6 +8,10 @@ import {
 	findDockerContainerOnPort,
 } from "../../docker/port-lookup";
 import type { ContainerRuntimeName, PortContainerOwner } from "../../types";
+import {
+	matchesProcessIdentity,
+	readProcessIdentity,
+} from "../process-identity";
 import {
 	type ListenerSnapshot,
 	readListenerSnapshot,
@@ -216,10 +221,13 @@ export function createPortOwnerSnapshot(
 		 * out is correct, just one extra `lsof` per distinct owner.
 		 */
 		ports?: number[];
+		includeCwd?: boolean;
 		listeners?: ListenerSnapshot;
 		containers?: Map<number, PortContainerOwner>;
 	} = {},
 ): PortOwnerSnapshot {
+	if (options.ports?.length === 0 && !options.listeners && !options.containers)
+		return { owner: () => null, isBusy: () => false };
 	const listeners = options.listeners ?? readListenerSnapshot();
 	const containers = options.containers ?? containerPortOwnerMap(options);
 	const cwds = new Map<number, string | undefined>();
@@ -255,14 +263,18 @@ export function createPortOwnerSnapshot(
 				primaryPid !== undefined
 					? listeners.commandByPid.get(primaryPid)
 					: undefined,
-			cwd: primaryPid !== undefined ? cwdFor(primaryPid) : undefined,
+			cwd:
+				primaryPid !== undefined && !container && options.includeCwd !== false
+					? cwdFor(primaryPid)
+					: undefined,
 			container,
 		};
 	}
 
 	return {
 		owner,
-		isBusy: (port) => owner(port) !== null,
+		isBusy: (port) =>
+			(listeners.pidsByPort.get(port)?.length ?? 0) > 0 || containers.has(port),
 	};
 }
 
@@ -390,6 +402,9 @@ export async function killPortOwner(
 		);
 	}
 
+	const originalIdentities = new Map(
+		owner.pids.map((pid) => [pid, readProcessIdentity(pid)]),
+	);
 	for (const pid of owner.pids) {
 		signalProcessTree(pid, "SIGTERM");
 	}
@@ -407,7 +422,9 @@ export async function killPortOwner(
 		console.log(`   Process on port ${port} didn't exit, sending SIGKILL...`);
 	}
 	for (const pid of getListeningPids(port)) {
-		signalProcessTree(pid, "SIGKILL");
+		const identity = originalIdentities.get(pid);
+		if (identity && matchesProcessIdentity(pid, identity))
+			signalProcessTree(pid, "SIGKILL");
 	}
 	await new Promise((resolve) => setTimeout(resolve, 500));
 	const released = !isPortInUse(port, { runtime });
@@ -449,7 +466,15 @@ export function classifyPortOccupant(
 		}
 		return "fail";
 	}
-	if (owner.cwd?.startsWith(options.root)) {
+	const localPath =
+		owner.cwd === undefined ? undefined : relative(options.root, owner.cwd);
+	if (
+		localPath !== undefined &&
+		localPath !== ".." &&
+		!localPath.startsWith("../") &&
+		!localPath.startsWith("..\\") &&
+		!isAbsolute(localPath)
+	) {
 		return "kill";
 	}
 	return "fail";

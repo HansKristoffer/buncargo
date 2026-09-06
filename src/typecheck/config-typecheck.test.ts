@@ -86,4 +86,28 @@ describe("typecheckRootConfig", () => {
 		expect(result.configFile).toBe("dev-tools.config.ts");
 		expect(result.success).toBe(true);
 	});
+	it("ignores inherited root include while checking config imports", async () => {
+		const root = makeFixture();
+		writeFileSync(
+			join(root, "tsconfig.json"),
+			JSON.stringify({
+				compilerOptions: { strict: true, skipLibCheck: true },
+				include: ["./**/*.ts"],
+			}),
+		);
+		writeFileSync(join(root, "unrelated.ts"), 'const broken: number = "no";');
+		writeFileSync(join(root, "helper.ts"), "export const port: number = 123;");
+		writeFileSync(
+			join(root, "dev.config.ts"),
+			'import { port } from "./helper"; export default { port };',
+		);
+		expect((await typecheckRootConfig({ root, verbose: false })).success).toBe(
+			true,
+		);
+		writeFileSync(join(root, "helper.ts"), 'export const port: number = "no";');
+		const result = await typecheckRootConfig({ root, verbose: false });
+		expect(result.success).toBe(false);
+		expect(result.errorOutput).toContain("helper.ts");
+		expect(result.errorOutput).not.toContain("unrelated.ts");
+	});
 });

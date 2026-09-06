@@ -1,9 +1,15 @@
 import {
+	abortableSleep,
+	DeadlineExceededError,
+	remainingTime,
+	withDeadline,
+} from "../core/deadline";
+import {
 	classifyPortOccupant,
 	createPortOwnerSnapshot,
 	formatPortOwner,
 } from "../core/process";
-import { sleep } from "../core/sleep";
+import { recordStartupMetric } from "../core/startup-metrics";
 import {
 	formatDone,
 	formatWait,
@@ -13,8 +19,11 @@ import {
 } from "../core/style";
 import type { ComposeDocument } from "../docker-compose";
 import {
+	canProveServiceInputs,
 	projectStackHash,
 	STACK_HASH_ENV,
+	serviceFingerprint,
+	serviceHashEnv,
 } from "../docker-compose/interpolate";
 import type { BuiltInHealthCheck, ServiceConfig } from "../types";
 import { createBuiltInHealthCheck } from "./health-checks";
@@ -30,6 +39,7 @@ export const POLL_INTERVAL = 250; // Fast polling for quicker startup
 export const MAX_ATTEMPTS = 120; // 30 seconds total (120 * 250ms)
 
 export interface WaitForServiceOptions {
+	signal?: AbortSignal;
 	runtime: ContainerRuntimeAdapter;
 	projectName: string;
 	maxAttempts?: number;
@@ -59,14 +69,32 @@ interface HealthPollContext {
 }
 
 /** Never throws: a diagnosis that fails must not break the poll it decorates. */
-function diagnose(context: HealthPollContext): ServiceDiagnosis | undefined {
+async function diagnose(
+	context: HealthPollContext,
+	timeoutMs: number,
+	signal?: AbortSignal,
+): Promise<ServiceDiagnosis | undefined> {
 	try {
-		return context.runtime.diagnoseService({
+		const request = {
+			signal,
+			timeoutMs,
 			projectName: context.projectName,
 			serviceName: context.composeServiceName,
 			root: context.root,
 			composeFile: context.composeFile,
-		});
+		};
+		const diagnoseAsync = context.runtime.diagnoseServiceAsync;
+		return diagnoseAsync
+			? await withDeadline(
+					(probeSignal) =>
+						diagnoseAsync.call(context.runtime, {
+							...request,
+							signal: probeSignal,
+						}),
+					timeoutMs,
+					signal,
+				)
+			: context.runtime.diagnoseService(request);
 	} catch {
 		return undefined;
 	}
@@ -84,22 +112,38 @@ function withLogTail(message: string, diagnosis?: ServiceDiagnosis): string {
 
 async function pollUntilHealthy(
 	context: HealthPollContext,
-	check: (port: number) => Promise<boolean>,
-	attempts: number,
+	check: (port: number, signal?: AbortSignal) => Promise<boolean>,
+	timeoutMs: number,
 	pollInterval: number,
 	onReady?: () => void,
+	signal?: AbortSignal,
 ): Promise<void> {
 	const { serviceName, runtime, probe, port } = context;
 	let lastDiagnosis: ServiceDiagnosis | undefined;
 
-	for (let i = 0; i < attempts; i++) {
-		if (await check(port)) {
+	const deadline = performance.now() + timeoutMs;
+	for (let i = 0; remainingTime(deadline) > 0; i++) {
+		if (i > 0) recordStartupMetric("healthRetries");
+		signal?.throwIfAborted();
+		let healthy = false;
+		try {
+			healthy = await withDeadline(
+				(probeSignal) => check(port, probeSignal),
+				remainingTime(deadline),
+				signal,
+			);
+		} catch (error) {
+			signal?.throwIfAborted();
+			if (error instanceof DeadlineExceededError) break;
+			if (remainingTime(deadline) > 0) throw error;
+		}
+		if (healthy) {
 			onReady?.();
 			return;
 		}
 
 		if (i > 0 && i % DIAGNOSIS_EVERY_ATTEMPTS === 0) {
-			lastDiagnosis = diagnose(context);
+			lastDiagnosis = await diagnose(context, remainingTime(deadline), signal);
 			if (lastDiagnosis && isTerminalContainerState(lastDiagnosis.state)) {
 				const exit =
 					lastDiagnosis.exitCode !== undefined
@@ -114,11 +158,16 @@ async function pollUntilHealthy(
 			}
 		}
 
-		await sleep(pollInterval);
+		await abortableSleep(
+			Math.min(pollInterval, remainingTime(deadline)),
+			signal,
+		);
 	}
 
-	lastDiagnosis = diagnose(context) ?? lastDiagnosis;
-	const seconds = Math.round((attempts * pollInterval) / 1000);
+	signal?.throwIfAborted();
+	if (!runtime.diagnoseServiceAsync)
+		lastDiagnosis = (await diagnose(context, 0, signal)) ?? lastDiagnosis;
+	const seconds = timeoutMs / 1000;
 	const state = lastDiagnosis
 		? ` Container state: ${lastDiagnosis.state}.`
 		: " No container was found for it.";
@@ -146,7 +195,6 @@ export async function waitForService(
 		(options.maxAttempts !== undefined
 			? options.maxAttempts * pollInterval
 			: 30_000);
-	const maxAttempts = Math.max(1, Math.ceil(timeoutMs / pollInterval));
 
 	if (config.healthCheck === false || config.healthCheck === undefined) {
 		return;
@@ -178,8 +226,10 @@ export async function waitForService(
 			composeFile,
 		},
 		healthCheckFn,
-		maxAttempts,
+		timeoutMs,
 		pollInterval,
+		undefined,
+		options.signal,
 	);
 }
 
@@ -208,6 +258,10 @@ export function runtimeAnsweredReadiness(
 	healthy: boolean | undefined,
 ): boolean {
 	if (healthy !== true) return false;
+	const docker =
+		config.docker?.kind === "preset" ? config.docker.service : config.docker;
+	// A caller can replace Compose's probe with a different health criterion.
+	if (docker?.healthcheck !== undefined) return false;
 	return (
 		typeof config.healthCheck === "string" &&
 		IN_CONTAINER_PROBES.has(config.healthCheck)
@@ -224,6 +278,11 @@ export async function waitForAllServices(
 	},
 ): Promise<void> {
 	const { verbose = true, healthyServices, ...waitOptions } = options;
+	const controller = new AbortController();
+	const cancel = () => controller.abort(options.signal?.reason);
+	if (options.signal?.aborted) cancel();
+	else options.signal?.addEventListener("abort", cancel, { once: true });
+	waitOptions.signal = controller.signal;
 
 	let showedWait = false;
 	const cancelWait = verbose
@@ -255,6 +314,8 @@ export async function waitForAllServices(
 			}),
 		);
 	} finally {
+		controller.abort();
+		options.signal?.removeEventListener("abort", cancel);
 		cancelWait();
 	}
 
@@ -299,22 +360,27 @@ export async function waitForServiceByType(
 			composeFile,
 		},
 		healthCheckFn,
-		maxAttempts,
+		maxAttempts * pollInterval,
 		pollInterval,
 		() => {
 			if (verbose) console.log(formatDone(`${serviceName} is ready`));
 		},
+		options.signal,
 	);
 }
 
 /** Never throws: a runtime that cannot answer reads as "reconcile". */
-function readProjectServiceStates(
+async function readProjectServiceStates(
 	runtime: ContainerRuntimeAdapter,
 	projectName: string,
-): ServiceRuntimeState[] {
+	signal?: AbortSignal,
+): Promise<ServiceRuntimeState[]> {
 	try {
-		return runtime.projectServiceStates(projectName);
+		return runtime.projectServiceStatesAsync
+			? await runtime.projectServiceStatesAsync(projectName, signal)
+			: runtime.projectServiceStates(projectName);
 	} catch {
+		signal?.throwIfAborted();
 		return [];
 	}
 }
@@ -340,17 +406,23 @@ function servicesAllRunning(
 function stackMatches(
 	states: ServiceRuntimeState[],
 	serviceNames: string[],
-	stackHash: string,
+	hashes: Record<string, string>,
+	provable: Set<string>,
 ): boolean {
 	if (serviceNames.length === 0) return false;
 	const byService = new Map(states.map((state) => [state.service, state]));
 	return serviceNames.every((name) => {
 		const state = byService.get(name);
-		return state?.running === true && state.stackHash === stackHash;
+		return (
+			state?.running === true &&
+			provable.has(name) &&
+			state.serviceHash === hashes[name]
+		);
 	});
 }
 
 export interface EnsureServicesRunningRequest {
+	signal?: AbortSignal;
 	runtime: ContainerRuntimeAdapter;
 	root: string;
 	projectName: string;
@@ -375,24 +447,17 @@ function assertServicePortsClaimable(
 	context: { root: string; projectName: string },
 ): void {
 	const targetPorts = Object.keys(services)
-		.map((serviceKey) => ports[serviceKey])
+		.flatMap((serviceKey) => [
+			ports[serviceKey],
+			ports[`${serviceKey}Secondary`],
+		])
 		.filter((port): port is number => port !== undefined);
 	if (targetPorts.length === 0) return;
 
-	// Probed once for the whole check rather than per port: this is the one
-	// place a container on the other backend is worth the extra CLI calls, and
-	// the answer cannot change between two ports of the same run.
-	const fallbackRuntimes = availableContainerRuntimes().filter(
-		(candidate) => candidate.name !== runtime.name,
-	);
-
-	// One reading of the machine for every service port, rather than an `lsof`
-	// and a listing per port.
-	const snapshot = createPortOwnerSnapshot({
-		runtime,
-		fallbackRuntimes,
-		ports: targetPorts,
-	});
+	const snapshot = createPortOwnerSnapshot({ runtime, ports: targetPorts });
+	let diagnosticSnapshot:
+		| ReturnType<typeof createPortOwnerSnapshot>
+		| undefined;
 
 	for (const port of targetPorts) {
 		const owner = snapshot.owner(port);
@@ -401,7 +466,18 @@ function assertServicePortsClaimable(
 			runtime: runtime.name,
 		});
 		if (classification === "fail" && owner) {
-			throw new Error(formatPortOwner(port, owner, { runtime: runtime.name }));
+			diagnosticSnapshot ??= createPortOwnerSnapshot({
+				runtime,
+				ports: targetPorts,
+				fallbackRuntimes: availableContainerRuntimes().filter(
+					(candidate) => candidate.name !== runtime.name,
+				),
+			});
+			throw new Error(
+				formatPortOwner(port, diagnosticSnapshot.owner(port) ?? owner, {
+					runtime: runtime.name,
+				}),
+			);
 		}
 	}
 }
@@ -426,7 +502,12 @@ export async function ensureServicesRunning(
 		autoStartRuntime,
 	} = request;
 
-	await runtime.ensureRunning({ autoStart: autoStartRuntime, verbose });
+	request.signal?.throwIfAborted();
+	await runtime.ensureRunning({
+		autoStart: autoStartRuntime,
+		verbose,
+		signal: request.signal,
+	});
 
 	assertServicePortsClaimable(runtime, services, ports, { root, projectName });
 
@@ -434,25 +515,57 @@ export async function ensureServicesRunning(
 		([serviceKey, config]) => config.serviceName ?? serviceKey,
 	);
 
-	// The fingerprint of the stack this run would create, and the one the
-	// running containers were created from. Handed to the backend through the
-	// environment, because the generated file references it rather than
-	// carrying it — see `projectStackHash`.
+	// Per-service fingerprints use the same effective environment passed to
+	// the backend, and remain stable when a later run selects another subset.
+	const effectiveEnv: Record<string, string> = {
+		...Object.fromEntries(
+			Object.entries(process.env).filter(
+				(entry): entry is [string, string] => entry[1] !== undefined,
+			),
+		),
+		...envVars,
+		COMPOSE_PROJECT_NAME: projectName,
+	};
+	const hashes = Object.fromEntries(
+		Object.keys(model.services).map((name) => [
+			name,
+			serviceFingerprint(model, name, effectiveEnv),
+		]),
+	);
+	const provable = new Set(
+		composeServiceNames.filter((name) =>
+			canProveServiceInputs(model, name, effectiveEnv),
+		),
+	);
+
 	const stackHash = projectStackHash({
 		model,
-		envVars,
+		envVars: effectiveEnv,
 		serviceNames: composeServiceNames,
 	});
-	const runtimeEnv = { ...envVars, [STACK_HASH_ENV]: stackHash };
+	const runtimeEnv = {
+		...effectiveEnv,
+		[STACK_HASH_ENV]: stackHash,
+		...Object.fromEntries(
+			Object.entries(hashes).map(([name, hash]) => [
+				serviceHashEnv(name),
+				hash,
+			]),
+		),
+	};
 
-	const states = readProjectServiceStates(runtime, projectName);
+	const states = await readProjectServiceStates(
+		runtime,
+		projectName,
+		request.signal,
+	);
 	const alreadyRunning = servicesAllRunning(states, composeServiceNames);
-	const upToDate = stackMatches(states, composeServiceNames, stackHash);
+	const upToDate = stackMatches(states, composeServiceNames, hashes, provable);
 
 	// `up` is the only place either backend compares a running container
 	// against the config it was started from, so skipping it unconditionally
 	// made an edited image, port or env var take effect only after a manual
-	// `--down`. The stack hash is that comparison, made explicit and cheap: it
+	// `--down`. The service hashes make that comparison explicit and cheap: it
 	// covers the interpolated definition of every selected service, so anything
 	// that would change a container changes it, and only an exact match skips.
 	//
@@ -460,8 +573,10 @@ export async function ensureServicesRunning(
 	// most of a second, on a command a developer or an agent runs constantly.
 	// A container from before the label carries no hash, which reads as "cannot
 	// compare" and reconciles.
+	recordStartupMetric(upToDate ? "container reuse" : "container reconcile");
 	if (!upToDate) {
-		runtime.up({
+		const upRequest = {
+			signal: request.signal,
 			root,
 			projectName,
 			envVars: runtimeEnv,
@@ -473,7 +588,9 @@ export async function ensureServicesRunning(
 			// the same on both backends; a runtime-side wait would only be a
 			// second, weaker copy of it.
 			wait: false,
-		});
+		};
+		if (runtime.upAsync) await runtime.upAsync(upRequest);
+		else runtime.up(upRequest);
 	}
 
 	if (wait) {
@@ -481,8 +598,9 @@ export async function ensureServicesRunning(
 		// the states from before it describe the previous containers.
 		const readyStates = upToDate
 			? states
-			: readProjectServiceStates(runtime, projectName);
+			: await readProjectServiceStates(runtime, projectName, request.signal);
 		await waitForAllServices(services, ports, {
+			signal: request.signal,
 			runtime,
 			projectName,
 			verbose,

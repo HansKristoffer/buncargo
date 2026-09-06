@@ -9,8 +9,8 @@ import {
 import {
 	describeLoopbackHijack,
 	doctorFixHosts,
+	loadHostRoutes,
 	type ProxyHealth,
-	pruneHostRoutes,
 	RELOAD_STALL_MS,
 	readDaemonConfig,
 	readHostsDaemonHealth,
@@ -31,17 +31,18 @@ import {
 	formatPortOwner,
 	getPortOwner,
 } from "../../../core/process";
+import { isRouteOwnerAlive } from "../../../core/registry-file";
 import {
 	loadRuns,
-	pruneRuns,
 	REGISTRY_VERSION,
+	readLiveRuns,
 } from "../../../core/run-registry";
 import { loadDevEnv } from "../../../loader";
 import { hasFlag } from "../../flags";
 import * as log from "../../log";
 import {
 	getTunnelRegistryPath,
-	pruneTunnelRegistry,
+	readLiveTunnelRegistry,
 } from "../../tunnel-registry";
 
 type DevEnv = Awaited<ReturnType<typeof loadDevEnv>>;
@@ -144,10 +145,10 @@ async function checkTunnelRegistry(
 	env: DevEnv,
 ): Promise<void> {
 	if (!existsSync(getTunnelRegistryPath(env.root))) return;
-	const after = await pruneTunnelRegistry(env.root);
+	const after = await readLiveTunnelRegistry(env.root);
 	report.note(
 		after.length === 0
-			? "Tunnel registry is empty after prune"
+			? "Tunnel registry is empty"
 			: `Tunnel registry has ${after.length} live ${after.length === 1 ? "entry" : "entries"}`,
 	);
 }
@@ -176,10 +177,15 @@ async function checkNamedHosts(
 	if (staleService) {
 		report.issue(staleService);
 	}
-	const hostRoutes = await pruneHostRoutes();
+	const hostRoutes = (await loadHostRoutes(undefined, { strict: true })).filter(
+		(route) =>
+			route.pid !== undefined
+				? isRouteOwnerAlive(route.pid)
+				: !route.root || existsSync(route.root),
+	);
 	report.note(
 		hostRoutes.length === 0
-			? "Named-hosts route registry is empty after prune"
+			? "Named-hosts route registry is empty"
 			: `Named-hosts registry has ${hostRoutes.length} live ${hostRoutes.length === 1 ? "route" : "routes"}`,
 	);
 	reportDaemonRouteGap(report, health, hostRoutes);
@@ -229,8 +235,15 @@ async function checkSelectedRuntime(
 	report: DoctorReport,
 	runtime: ContainerRuntimeAdapter,
 	available: ContainerRuntimeAdapter[],
+	fix = false,
 ): Promise<void> {
 	if (available.some((item) => item.name === runtime.name)) return;
+	if (!fix) {
+		report.issue(
+			`${runtime.displayName} is not running. Run buncargo doctor --fix to start it.`,
+		);
+		return;
+	}
 	try {
 		await runtime.ensureRunning();
 		report.note(`${runtime.displayName} was down and has been started`);
@@ -249,10 +262,10 @@ async function checkSelectedRuntime(
 async function checkRunRegistry(report: DoctorReport): Promise<void> {
 	try {
 		const before = (await loadRuns()).length;
-		const after = (await pruneRuns()).length;
+		const after = (await readLiveRuns()).length;
 		if (before !== after) {
 			report.note(
-				`Pruned ${before - after} stale run entr${before - after === 1 ? "y" : "ies"}`,
+				`Found ${before - after} stale run entr${before - after === 1 ? "y" : "ies"}`,
 			);
 		}
 		report.note(`${after} active run${after === 1 ? "" : "s"} registered`);
@@ -300,7 +313,7 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 	// off `PATH`, which the probe below has to use or it reports a false "down".
 	let env: DevEnv | undefined;
 	try {
-		env = await loadDevEnv();
+		env = await loadDevEnv({ readOnly: true });
 	} catch (error) {
 		report.issue(
 			`Could not load dev config: ${error instanceof Error ? error.message : String(error)}`,
@@ -320,7 +333,12 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 	const selected = env
 		? containerRuntimeForEnv(env)
 		: getContainerRuntimeAdapter("docker");
-	await checkSelectedRuntime(report, selected, available);
+	await checkSelectedRuntime(
+		report,
+		selected,
+		available,
+		hasFlag(args, "--fix"),
+	);
 
 	if (env) {
 		report.note(

@@ -19,6 +19,13 @@ const FLAGS = {
 		valueHint: "=<path>",
 		description: "Checkout whose run to act on (default: this one)",
 	},
+	run: {
+		name: "--run",
+		kind: "string",
+		valueHint: "=<session>",
+		description:
+			"One run session from buncargo runs (default: matching checkout sessions)",
+	},
 	all: {
 		name: "--all",
 		kind: "boolean",
@@ -59,6 +66,7 @@ export interface StopCliArgs {
 	help: boolean;
 	names: string[];
 	root: string | undefined;
+	run: string | undefined;
 	all: boolean;
 	force: boolean;
 }
@@ -66,6 +74,7 @@ export interface StopCliArgs {
 export function parseStopArgs(rawArgs: string[]): StopCliArgs {
 	const errors: string[] = [];
 	const root = readStringFlag(rawArgs, FLAGS.root, errors);
+	const run = readStringFlag(rawArgs, FLAGS.run, errors);
 	const all = readBooleanFlag(rawArgs, FLAGS.all);
 
 	// Positionals are whatever is left once flags and their values are gone.
@@ -75,7 +84,7 @@ export function parseStopArgs(rawArgs: string[]): StopCliArgs {
 		if (arg === undefined) continue;
 		if (arg.startsWith("--")) {
 			// `--root <value>` consumes the next argument; `--root=<value>` does not.
-			if (arg === FLAGS.root.name) index += 1;
+			if (arg === FLAGS.root.name || arg === FLAGS.run.name) index += 1;
 			continue;
 		}
 		names.push(arg);
@@ -96,6 +105,7 @@ export function parseStopArgs(rawArgs: string[]): StopCliArgs {
 		help: readBooleanFlag(rawArgs, FLAGS.help),
 		names,
 		root,
+		run,
 		all,
 		force: readBooleanFlag(rawArgs, FLAGS.force),
 	};

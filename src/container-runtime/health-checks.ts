@@ -1,3 +1,4 @@
+import { withDeadline } from "../core/deadline";
 import { isTcpPortOpen } from "../core/network";
 import type { BuiltInHealthCheck, HealthCheckFn } from "../types";
 import type { ContainerRuntimeAdapter } from "./types";
@@ -24,41 +25,56 @@ export function createBuiltInHealthCheck(
 ): HealthCheckFn {
 	const { runtime, projectName, root, composeFile } = context;
 
-	function execInService(command: string[]): boolean {
-		return runtime.execInService({
+	async function execInService(
+		command: string[],
+		signal?: AbortSignal,
+	): Promise<boolean> {
+		const request = {
+			signal,
+			timeoutMs: 2000,
 			projectName,
 			serviceName,
 			command,
 			root,
 			composeFile,
-		});
+		};
+		return runtime.execInServiceAsync
+			? runtime.execInServiceAsync(request)
+			: runtime.execInService(request);
 	}
 
 	switch (type) {
 		case "pg_isready":
-			return async () => execInService(["pg_isready", "-U", "postgres"]);
+			return async (_port, signal) =>
+				execInService(["pg_isready", "-U", "postgres"], signal);
 
 		case "redis-cli":
-			return async () => execInService(["redis-cli", "ping"]);
+			return async (_port, signal) =>
+				execInService(["redis-cli", "ping"], signal);
 
 		case "http":
-			return async (port) => {
-				const controller = new AbortController();
-				const timeoutId = setTimeout(() => controller.abort(), 2000);
+			return async (port, signal) => {
 				try {
-					const response = await fetch(`http://localhost:${port}/`, {
-						signal: controller.signal as RequestInit["signal"],
-					});
-					return response.ok || response.status === 404;
+					return await withDeadline(
+						async (probeSignal) => {
+							const response = await fetch(`http://localhost:${port}/`, {
+								signal: probeSignal,
+							});
+							const ready = response.ok || response.status === 404;
+							await response.body?.cancel();
+							return ready;
+						},
+						2000,
+						signal,
+					);
 				} catch {
 					return false;
-				} finally {
-					clearTimeout(timeoutId);
 				}
 			};
 
 		case "tcp":
-			return async (port) => isTcpPortOpen(port);
+			return async (port, signal) =>
+				isTcpPortOpen(port, "127.0.0.1", 1000, signal);
 
 		default: {
 			const _exhaustive: never = type;

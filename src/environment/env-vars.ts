@@ -33,7 +33,7 @@ export interface DevEnvVarsApi<
 		targetApps: Record<string, AppConfig>,
 		production?: boolean,
 	): Record<string, Record<string, string>>;
-	getHookContext(): HookContext<TServices, TApps>;
+	getHookContext(signal?: AbortSignal): HookContext<TServices, TApps>;
 	exec(cmd: string, options?: ExecOptions): Promise<ExecResult>;
 }
 
@@ -150,7 +150,12 @@ export function createEnvVarsApi<
 	// Created once, then reused so hooks observe a stable identity.
 	let hookContext: HookContext<TServices, TApps> | null = null;
 
-	function getHookContext(): HookContext<TServices, TApps> {
+	const scopedContexts = new WeakMap<
+		AbortSignal,
+		HookContext<TServices, TApps>
+	>();
+
+	function getHookContext(signal?: AbortSignal): HookContext<TServices, TApps> {
 		if (!hookContext) {
 			hookContext = {
 				projectName: ctx.projectName,
@@ -165,7 +170,24 @@ export function createEnvVarsApi<
 				exec: async (cmd, opts) => exec(cmd, opts),
 			};
 		}
-		return hookContext;
+		if (!signal) return hookContext;
+		let scoped = scopedContexts.get(signal);
+		if (!scoped) {
+			scoped = {
+				...hookContext,
+				signal,
+				exec: (cmd, options) =>
+					exec(cmd, {
+						...options,
+						timeoutMs: options?.timeoutMs ?? 600000,
+						signal: options?.signal
+							? AbortSignal.any([signal, options.signal])
+							: signal,
+					}),
+			};
+			scopedContexts.set(signal, scoped);
+		}
+		return scoped;
 	}
 
 	return {

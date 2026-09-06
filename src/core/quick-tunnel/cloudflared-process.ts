@@ -3,6 +3,8 @@
  * Derived from unjs/untun (MIT), originally forked from node-cloudflared.
  */
 import { type ChildProcess, spawn } from "node:child_process";
+import { abortError } from "../deadline";
+import { terminateOwnedProcess } from "../process/terminate";
 import { quickTunnelUrlTimeoutMs } from "../runtime-flags";
 import { resolvedCloudflaredBinPath } from "./constants";
 
@@ -25,11 +27,19 @@ export function parseQuickTunnelUrlFromOutput(log: string): string | null {
 
 export function startCloudflaredTunnel(
 	options: Record<string, string | number | null>,
+	lifecycle: {
+		signal?: AbortSignal;
+		timeoutMs?: number;
+		binary?: string;
+		graceMs?: number;
+	} = {},
 ): {
 	url: Promise<string>;
 	child: ChildProcess;
 	stop: () => boolean;
+	close: () => Promise<void>;
 } {
+	lifecycle.signal?.throwIfAborted();
 	const args: string[] = ["tunnel"];
 	for (const [key, value] of Object.entries(options)) {
 		if (typeof value === "string") {
@@ -44,9 +54,10 @@ export function startCloudflaredTunnel(
 		args.push("--url", "localhost:8080");
 	}
 
-	const binPath = resolvedCloudflaredBinPath();
+	const binPath = lifecycle.binary ?? resolvedCloudflaredBinPath();
 	const child = spawn(binPath, args, {
 		stdio: ["ignore", "pipe", "pipe"],
+		detached: true,
 	});
 
 	if (process.env.DEBUG) {
@@ -66,7 +77,7 @@ export function startCloudflaredTunnel(
 		}
 	};
 
-	const url = new Promise<string>((resolve, reject) => {
+	const pendingUrl = new Promise<string>((resolve, reject) => {
 		urlResolver = (v) => {
 			if (!settled) {
 				settled = true;
@@ -82,14 +93,9 @@ export function startCloudflaredTunnel(
 			}
 		};
 
-		const timeoutMs = quickTunnelUrlTimeoutMs();
+		const timeoutMs = lifecycle.timeoutMs ?? quickTunnelUrlTimeoutMs();
 		if (timeoutMs > 0) {
 			timeoutId = setTimeout(() => {
-				try {
-					child.kill("SIGINT");
-				} catch {
-					/* ignore */
-				}
 				urlRejector(
 					new Error(
 						`quick tunnel URL timed out after ${timeoutMs}ms (no public URL from cloudflared)`,
@@ -114,6 +120,7 @@ export function startCloudflaredTunnel(
 	child.stderr?.on("data", append).on("error", urlRejector);
 
 	child.on("exit", (code, signal) => {
+		lifecycle.signal?.removeEventListener("abort", onAbort);
 		if (!settled) {
 			const tail = log.buf.trimEnd();
 			const excerpt = tail.length > 1200 ? `…${tail.slice(-1200)}` : tail;
@@ -129,7 +136,41 @@ export function startCloudflaredTunnel(
 	});
 	child.on("error", urlRejector);
 
-	const stop = () => child.kill("SIGINT");
-
-	return { url, child, stop };
+	let closing: Promise<void> | undefined;
+	const close = (): Promise<void> => {
+		closing ??= (async () => {
+			clearUrlTimeout();
+			lifecycle.signal?.removeEventListener("abort", onAbort);
+			urlRejector(
+				new Error("Quick tunnel was closed before its URL was ready"),
+			);
+			await terminateOwnedProcess(child, lifecycle.graceMs ?? 1000);
+		})();
+		return closing;
+	};
+	const onAbort = () => {
+		urlRejector(abortError(lifecycle.signal));
+		void close().catch(() => {});
+	};
+	lifecycle.signal?.addEventListener("abort", onAbort, { once: true });
+	if (lifecycle.signal?.aborted) onAbort();
+	const url = pendingUrl.catch(async (error: unknown) => {
+		try {
+			await close();
+		} catch (cleanupError) {
+			throw new AggregateError(
+				[error, cleanupError],
+				"Quick tunnel failed and could not be stopped",
+			);
+		}
+		throw error;
+	});
+	// Low-level callers may close before awaiting the URL. Keep that rejection
+	// handled while preserving the rejecting promise returned to callers.
+	void url.catch(() => {});
+	const stop = () => {
+		void close().catch(() => {});
+		return child.pid !== undefined;
+	};
+	return { url, child, stop, close };
 }

@@ -54,7 +54,7 @@ enum Notifier {
         )
     }
 
-    nonisolated static func key(_ run: Run) -> String { "\(run.root)@\(run.startedAt)" }
+    nonisolated static func key(_ run: Run) -> String { "\(run.id)@\(run.startedAt)" }
 
     /// Runs whose main app is up and has not been announced yet.
     ///

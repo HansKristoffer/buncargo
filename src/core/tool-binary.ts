@@ -1,4 +1,11 @@
-import { accessSync, chmodSync, constants, existsSync } from "node:fs";
+import {
+	accessSync,
+	chmodSync,
+	constants,
+	existsSync,
+	readFileSync,
+	statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { chownToInvokingUser, getToolsDir } from "./hosts/paths";
@@ -45,6 +52,7 @@ export function resolveToolBinary(options: {
 	cachePath: string;
 	/** Previous cache location, adopted when it still holds the binary. */
 	legacyCachePath?: string;
+	legacyCachePaths?: string[];
 	/** Binary name to look up on `PATH`; omit to skip the lookup. */
 	pathCommand?: string;
 }): ToolBinaryResolution {
@@ -66,8 +74,11 @@ export function resolveToolBinary(options: {
 		return { path: cachePath, source: "cache", exists: true };
 	}
 
-	if (legacyCachePath && existsSync(legacyCachePath)) {
-		return { path: legacyCachePath, source: "cache", exists: true };
+	for (const path of [
+		...(options.legacyCachePaths ?? []),
+		...(legacyCachePath ? [legacyCachePath] : []),
+	]) {
+		if (existsSync(path)) return { path, source: "cache", exists: true };
 	}
 
 	return { path: cachePath, source: "cache", exists: false };
@@ -120,4 +131,27 @@ export function lookupOnPath(
 		}
 	}
 	return undefined;
+}
+
+/** Stat-based receipt check keeps tool verification off ordinary warm startup. */
+export function toolBinaryFingerprint(path: string): string {
+	const stat = statSync(path);
+	if (!stat.isFile() || stat.size === 0 || (stat.mode & 0o111) === 0)
+		return "invalid";
+	return `${process.platform}:${process.arch}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+}
+
+export function isInstalledTool(path: string, identity?: string): boolean {
+	try {
+		const receipt = JSON.parse(readFileSync(`${path}.installed.json`, "utf8"));
+		const actual = toolBinaryFingerprint(path);
+		return (
+			actual !== "invalid" &&
+			receipt.version === 1 &&
+			(!identity || receipt.identity === identity) &&
+			receipt.fingerprint === actual
+		);
+	} catch {
+		return false;
+	}
 }

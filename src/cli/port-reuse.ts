@@ -1,3 +1,4 @@
+import type { ContainerRuntimeAdapter } from "../container-runtime/types";
 import {
 	classifyPortOccupant,
 	createPortOwnerSnapshot,
@@ -35,6 +36,7 @@ export interface ClassifiedCliApps {
 }
 
 export interface ClassifyCliAppsOptions {
+	runtime?: ContainerRuntimeAdapter;
 	isPortBusy?: (port: number) => boolean;
 	waitForServer?: (url: string, timeout?: number) => Promise<void>;
 	/** Enables the foreign-container check. */
@@ -77,8 +79,11 @@ function conflictDescriber(
 	return (port) => {
 		const owner = snapshot.owner(port);
 		if (!owner?.container) return undefined;
-		return classifyPortOccupant(owner, context) === "fail"
-			? formatPortOwner(port, owner)
+		return classifyPortOccupant(owner, {
+			...context,
+			runtime: options.runtime?.name,
+		}) === "fail"
+			? formatPortOwner(port, owner, { runtime: options.runtime?.name })
 			: undefined;
 	};
 }
@@ -91,7 +96,13 @@ export async function classifyCliApps(
 	// One reading for both questions this asks of every app port — is it busy,
 	// and is a foreign container holding it — instead of an `lsof` and a
 	// container listing per app, twice over.
-	const snapshot = createPortOwnerSnapshot({ ports: Object.values(ports) });
+	const snapshot = createPortOwnerSnapshot({
+		includeCwd: false,
+		runtime: options.runtime,
+		ports: Object.keys(apps).flatMap((name) =>
+			ports[name] === undefined ? [] : [ports[name]],
+		),
+	});
 	const {
 		isPortBusy = (port: number) => snapshot.isBusy(port),
 		waitForServer,
@@ -103,41 +114,47 @@ export async function classifyCliApps(
 	const reusedNames: string[] = [];
 	const inferredReuseNames: string[] = [];
 
-	for (const [name, config] of Object.entries(apps)) {
-		const port = ports[name];
-		if (port === undefined || !isPortBusy(port)) {
+	const decisions = await Promise.all(
+		Object.entries(apps).map(async ([name, config]) => {
+			const port = ports[name];
+			if (port === undefined || !isPortBusy(port)) {
+				return { name, config, reuse: false, inferred: false };
+			}
+
+			const conflict = describeConflict(port);
+			if (conflict) {
+				throw new Error(
+					`App "${name}" cannot use port ${port}: ${conflict}. Stop it or change the port before running this app.`,
+				);
+			}
+
+			if (config.healthEndpoint) {
+				if (!waitForServer) {
+					throw new Error(
+						`Cannot verify health for "${name}" without a waitForServer implementation.`,
+					);
+				}
+				const url = `http://localhost:${port}${config.healthEndpoint}`;
+				try {
+					await waitForServer(url, config.healthTimeout ?? 3000);
+				} catch {
+					throw new Error(
+						`App "${name}" is already listening on port ${port}, but failed health check at ${url}. Stop the existing process or free the port before reusing it.`,
+					);
+				}
+			}
+			return { name, config, reuse: true, inferred: !config.healthEndpoint };
+		}),
+	);
+	for (const { name, config, reuse, inferred } of decisions) {
+		if (reuse) {
+			reusedApps[name] = config;
+			reusedNames.push(name);
+			if (inferred) inferredReuseNames.push(name);
+		} else {
 			startApps[name] = config;
 			startNames.push(name);
-			continue;
 		}
-
-		const conflict = describeConflict(port);
-		if (conflict) {
-			throw new Error(
-				`App "${name}" cannot use port ${port}: ${conflict}. Stop it or change the port before running this app.`,
-			);
-		}
-
-		if (config.healthEndpoint) {
-			if (!waitForServer) {
-				throw new Error(
-					`Cannot verify health for "${name}" without a waitForServer implementation.`,
-				);
-			}
-			const url = `http://localhost:${port}${config.healthEndpoint}`;
-			try {
-				await waitForServer(url, config.healthTimeout ?? 3000);
-			} catch {
-				throw new Error(
-					`App "${name}" is already listening on port ${port}, but failed health check at ${url}. Stop the existing process or free the port before reusing it.`,
-				);
-			}
-		} else {
-			inferredReuseNames.push(name);
-		}
-
-		reusedApps[name] = config;
-		reusedNames.push(name);
 	}
 
 	return {

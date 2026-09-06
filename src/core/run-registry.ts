@@ -1,6 +1,7 @@
 import { chmodSync } from "node:fs";
 import type { ContainerRuntimeName } from "../types";
 import { withFileLock } from "./file-lock";
+import { matchesProcessIdentity } from "./process-identity";
 import {
 	defineListRegistry,
 	isRouteOwnerAlive,
@@ -53,6 +54,7 @@ export interface RunAppEntry {
 	port: number;
 	/** The spawned dev server. Absent when the app was reused from another run. */
 	pid?: number;
+	processIdentity?: string;
 	/** Holds the TTY; stopping it tears the whole run down. */
 	attached?: boolean;
 	url: string;
@@ -73,11 +75,19 @@ export interface RunServiceEntry {
 	hostname?: string;
 	tablePlusUrl?: string;
 	/** What `stop` needs to reach the container without loading the config. */
-	container?: { runtime: ContainerRuntimeName; name: string };
+	container?: {
+		runtime: ContainerRuntimeName;
+		name: string;
+		service?: string;
+		binary?: string;
+	};
 	status: RunServiceStatus;
 }
 
 export interface RunEntry {
+	/** Distinguishes simultaneous runs in one checkout; absent on legacy entries. */
+	sessionId?: string;
+	processIdentity?: string;
 	projectPrefix: string;
 	projectName: string;
 	root: string;
@@ -107,17 +117,54 @@ export function getRunsPath(home?: string): string {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isPort(value: unknown): boolean {
+	return (
+		typeof value === "number" &&
+		Number.isInteger(value) &&
+		value > 0 &&
+		value <= 65535
+	);
+}
+function isPid(value: unknown): boolean {
+	return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
 function isRunApp(value: unknown): value is RunAppEntry {
 	if (!isRecord(value)) return false;
-	return typeof value.name === "string" && typeof value.port === "number";
+	return (
+		typeof value.name === "string" &&
+		isPort(value.port) &&
+		typeof value.url === "string" &&
+		typeof value.loopbackUrl === "string" &&
+		["starting", "ready", "reused", "failed", "stopped"].includes(
+			String(value.status),
+		) &&
+		(value.pid === undefined || isPid(value.pid)) &&
+		(value.processIdentity === undefined ||
+			typeof value.processIdentity === "string")
+	);
 }
 
 function isRunService(value: unknown): value is RunServiceEntry {
 	if (!isRecord(value)) return false;
-	return typeof value.name === "string" && typeof value.port === "number";
+	return (
+		typeof value.name === "string" &&
+		isPort(value.port) &&
+		typeof value.url === "string" &&
+		typeof value.loopbackUrl === "string" &&
+		["starting", "ready", "stopped"].includes(String(value.status)) &&
+		(value.container === undefined ||
+			(isRecord(value.container) &&
+				["docker", "apple"].includes(String(value.container.runtime)) &&
+				typeof value.container.name === "string" &&
+				(value.container.binary === undefined ||
+					typeof value.container.binary === "string") &&
+				(value.container.service === undefined ||
+					typeof value.container.service === "string")))
+	);
 }
 
 function isRunEntry(value: unknown): value is RunEntry {
@@ -125,7 +172,15 @@ function isRunEntry(value: unknown): value is RunEntry {
 	return (
 		typeof value.projectName === "string" &&
 		typeof value.root === "string" &&
-		typeof value.pid === "number" &&
+		isPid(value.pid) &&
+		(typeof value.sessionId === "string" || value.sessionId === undefined) &&
+		(typeof value.processIdentity === "string" ||
+			value.processIdentity === undefined) &&
+		typeof value.projectPrefix === "string" &&
+		typeof value.startedAt === "string" &&
+		typeof value.updatedAt === "string" &&
+		isRecord(value.cli) &&
+		typeof value.cli.program === "string" &&
 		Array.isArray(value.apps) &&
 		value.apps.every(isRunApp) &&
 		Array.isArray(value.services) &&
@@ -164,7 +219,9 @@ export async function loadRuns(
 /** Unlocked core, so callers already holding the lock can reuse it. */
 async function prune(path: string): Promise<RunEntry[]> {
 	const runs = await registry.read(path);
-	const live = runs.filter((run) => isRouteOwnerAlive(run.pid));
+	const live = runs.filter((run) =>
+		matchesProcessIdentity(run.pid, run.processIdentity),
+	);
 	if (live.length !== runs.length) {
 		await registry.write(path, live);
 	}
@@ -204,9 +261,14 @@ export async function publishRun(
 	const path = options.path ?? getRunsPath();
 	await withFileLock(path, async () => {
 		const runs = await prune(path);
-		const index = runs.findIndex((entry) => entry.root === run.root);
+		const index = runs.findIndex(
+			(entry) =>
+				entry.root === run.root &&
+				(run.sessionId ? entry.sessionId === run.sessionId : !entry.sessionId),
+		);
 		const existing = index >= 0 ? runs[index] : undefined;
-		if (existing && claimRun(existing, run) === "keep") return;
+		if (existing && !run.sessionId && claimRun(existing, run) === "keep")
+			return;
 		const next = [...runs];
 		if (index >= 0) next[index] = run;
 		else next.push(run);
@@ -231,6 +293,14 @@ function mergeByName<T extends { name: string }>(
 		// An update for something not in the run is dropped rather than
 		// inserted: a half-populated entry would show in the UI as a real app.
 		if (!existing) continue;
+		// Delayed readiness/PID publication must never resurrect a stopped app.
+		const prior = existing as T & { status?: string };
+		const incoming = update as Partial<T> & { status?: string };
+		if (
+			(prior.status === "stopped" || prior.status === "failed") &&
+			(incoming.status === "ready" || incoming.status === "starting")
+		)
+			continue;
 		byName.set(update.name, { ...existing, ...update });
 	}
 	return current.map((entry) => byName.get(entry.name) ?? entry);
@@ -246,13 +316,17 @@ export async function patchRun(
 	root: string,
 	pid: number,
 	patch: RunPatch,
-	options: { path?: string } = {},
+	options: { path?: string; sessionId?: string } = {},
 ): Promise<void> {
 	const path = options.path ?? getRunsPath();
 	await withFileLock(path, async () => {
 		const runs = await registry.read(path);
 		const index = runs.findIndex(
-			(entry) => entry.root === root && entry.pid === pid,
+			(entry) =>
+				entry.root === root &&
+				entry.pid === pid &&
+				(options.sessionId === undefined ||
+					entry.sessionId === options.sessionId),
 		);
 		const current = index >= 0 ? runs[index] : undefined;
 		if (!current || index < 0) return;
@@ -279,13 +353,19 @@ export async function patchRun(
 export async function withdrawRun(
 	root: string,
 	pid: number,
-	options: { path?: string } = {},
+	options: { path?: string; sessionId?: string } = {},
 ): Promise<void> {
 	const path = options.path ?? getRunsPath();
 	await withFileLock(path, async () => {
 		const runs = await registry.read(path);
 		const next = runs.filter(
-			(entry) => !(entry.root === root && entry.pid === pid),
+			(entry) =>
+				!(
+					entry.root === root &&
+					entry.pid === pid &&
+					(options.sessionId === undefined ||
+						entry.sessionId === options.sessionId)
+				),
 		);
 		if (next.length !== runs.length) {
 			await registry.write(path, next);
@@ -298,7 +378,7 @@ export async function findRunByRoot(
 	root: string,
 	path = getRunsPath(),
 ): Promise<RunEntry | undefined> {
-	const runs = await pruneRuns(path);
+	const runs = await readLiveRuns(path);
 	return runs.find((run) => run.root === root);
 }
 
@@ -320,4 +400,19 @@ export function groupRunsByProject(runs: RunEntry[]): Map<string, RunEntry[]> {
 		);
 	}
 	return groups;
+}
+
+/** Every independent live session using this checkout. */
+export async function findRunsByRoot(
+	root: string,
+	path = getRunsPath(),
+): Promise<RunEntry[]> {
+	return (await readLiveRuns(path)).filter((run) => run.root === root);
+}
+
+/** Inspection filters stale owners in memory without mutating persisted state. */
+export async function readLiveRuns(path = getRunsPath()): Promise<RunEntry[]> {
+	return (await loadRuns(path, { strict: true })).filter((run) =>
+		matchesProcessIdentity(run.pid, run.processIdentity),
+	);
 }

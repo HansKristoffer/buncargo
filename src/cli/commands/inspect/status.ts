@@ -8,11 +8,11 @@ import { loadDevEnv } from "../../../loader";
 import * as log from "../../log";
 import {
 	getTunnelRegistryPath,
-	pruneTunnelRegistry,
+	readLiveTunnelRegistry,
 } from "../../tunnel-registry";
 
 export async function handleStatus(): Promise<void> {
-	const env = await loadDevEnv();
+	const env = await loadDevEnv({ readOnly: true });
 	const runtime = containerRuntimeForEnv(env);
 	log.line(`project: ${env.projectName}`);
 	log.line(`root: ${env.root}`);
@@ -55,7 +55,7 @@ export async function handleStatus(): Promise<void> {
 		}
 	}
 	if (existsSync(getTunnelRegistryPath(env.root))) {
-		const pruned = await pruneTunnelRegistry(env.root);
+		const pruned = await readLiveTunnelRegistry(env.root);
 		log.line();
 		log.line("tunnels:");
 		if (pruned.length === 0) {

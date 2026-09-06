@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineDevConfig } from "../config";
@@ -179,10 +186,7 @@ describe("loadDevEnv", () => {
 	beforeEach(() => {
 		testDir = join(tmpdir(), `buncargo-loader-${Date.now()}-${Math.random()}`);
 		mkdirSync(testDir, { recursive: true });
-		// A fixed offset, because the allocator resolves its root from the
-		// process cwd rather than the config path: without this these tests
-		// probe every port on the machine and persist a `.buncargo/ports.json`
-		// into the buncargo checkout itself.
+		// Keep basic typing fixtures independent of machine port allocation.
 		process.env.BUNCARGO_PORT_OFFSET = "0";
 		clearDevEnvCache();
 	});
@@ -240,5 +244,96 @@ describe("loadDevEnv", () => {
 		await expect(loadDevEnv({ cwd: testDir })).rejects.toThrow(
 			"Use defineDevConfig() and export as default",
 		);
+	});
+	it("caches each canonical project independently without changing cwd", async () => {
+		const previousCwd = process.cwd();
+		const second = join(testDir, "second");
+		mkdirSync(second);
+		writeFileSync(
+			join(testDir, "dev.config.ts"),
+			`export default ${JSON.stringify(typedConfig)}`,
+		);
+		writeFileSync(
+			join(second, "dev.config.ts"),
+			`export default ${JSON.stringify({ ...typedConfig, projectPrefix: "second" })}`,
+		);
+		const first = await loadDevEnv({ cwd: testDir, readOnly: true });
+		const other = await loadDevEnv({ cwd: second, readOnly: true });
+		expect(other).not.toBe(first);
+		expect(first.root).toBe(realpathSync(testDir));
+		expect(other.root).toBe(realpathSync(second));
+		expect(await loadDevEnv({ cwd: testDir, readOnly: true })).toBe(first);
+		expect(getDevEnv()).toBe(first);
+		expect(process.cwd()).toBe(previousCwd);
+	});
+
+	it("reloads entry edits and retains imported dependency cache", async () => {
+		writeFileSync(join(testDir, "helper.ts"), 'export default "one";');
+		const entry = join(testDir, "dev.config.ts");
+		writeFileSync(
+			entry,
+			`import prefix from "./helper"; export default { ...${JSON.stringify(typedConfig)}, projectPrefix: prefix };`,
+		);
+		const first = await loadDevEnv({ cwd: testDir, readOnly: true });
+		writeFileSync(join(testDir, "helper.ts"), 'export default "two";');
+		writeFileSync(
+			entry,
+			`import prefix from "./helper"; export default { ...${JSON.stringify(typedConfig)}, projectPrefix: prefix + "-edited" };`,
+		);
+		const reloaded = await loadDevEnv({
+			cwd: testDir,
+			readOnly: true,
+			reload: true,
+		});
+		expect(reloaded.projectPrefix).toBe("one-edited");
+		expect(first.projectPrefix).toBe("one");
+		clearDevEnvCache();
+		expect(
+			(await loadDevEnv({ cwd: testDir, readOnly: true })).projectPrefix,
+		).toBe("one-edited");
+	});
+
+	it("invalidates runtime and environment inputs and separates read-only resolutions", async () => {
+		writeFileSync(
+			join(testDir, "dev.config.ts"),
+			`export default ${JSON.stringify(typedConfig)}`,
+		);
+		const first = await loadDevEnv({
+			cwd: testDir,
+			containerRuntime: "docker",
+			readOnly: true,
+		});
+		const apple = await loadDevEnv({
+			cwd: testDir,
+			containerRuntime: "apple",
+			readOnly: true,
+		});
+		expect(apple.containerRuntime).toBe("apple");
+		expect(apple).not.toBe(first);
+		process.env.BUNCARGO_PORT_OFFSET = "100";
+		const moved = await loadDevEnv({
+			cwd: testDir,
+			containerRuntime: "docker",
+			readOnly: true,
+		});
+		expect(moved.ports.api).toBe(first.ports.api + 100);
+		expect(
+			await loadDevEnv({ cwd: testDir, containerRuntime: "docker" }),
+		).not.toBe(moved);
+	});
+
+	it("read-only resolution never creates or rewrites the port lockfile", async () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		writeFileSync(
+			join(testDir, "dev.config.ts"),
+			`export default ${JSON.stringify(typedConfig)}`,
+		);
+		await loadDevEnv({ cwd: testDir, readOnly: true });
+		const lock = join(testDir, ".buncargo", "ports.json");
+		expect(existsSync(lock)).toBe(false);
+		mkdirSync(join(testDir, ".buncargo"));
+		writeFileSync(lock, '{"fixture":"preserve"}');
+		await loadDevEnv({ cwd: testDir, readOnly: true, reload: true });
+		expect(readFileSync(lock, "utf8")).toBe('{"fixture":"preserve"}');
 	});
 });

@@ -94,8 +94,8 @@ describe("interpolate", () => {
 });
 
 describe("configHashFor", () => {
-	it("ignores labels so a hash label cannot feed back into itself", () => {
-		expect(configHashFor({ image: "redis:7", labels: { a: "1" } })).toBe(
+	it("includes user labels in the configuration hash", () => {
+		expect(configHashFor({ image: "redis:7", labels: { a: "1" } })).not.toBe(
 			configHashFor({ image: "redis:7", labels: { a: "2" } }),
 		);
 	});

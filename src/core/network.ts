@@ -1,7 +1,8 @@
 import net from "node:net";
 import { networkInterfaces } from "node:os";
 import type { AppConfig } from "../types";
-import { sleep } from "./sleep";
+import { abortableSleep, remainingTime, withDeadline } from "./deadline";
+import { recordStartupMetric } from "./startup-metrics";
 import {
 	formatDone,
 	formatUrl,
@@ -45,6 +46,10 @@ export interface WaitForServerOptions {
 	timeout?: number;
 	/** Polling interval in milliseconds */
 	interval?: number;
+	/** Cancel readiness and outstanding probes. */
+	signal?: AbortSignal;
+	/** Require a successful HTTP response (explicit app endpoints use this). */
+	strict?: boolean;
 	/** Log progress */
 	verbose?: boolean;
 }
@@ -56,43 +61,43 @@ export async function waitForServer(
 	url: string,
 	options: WaitForServerOptions = {},
 ): Promise<void> {
-	const { timeout = 30000, interval = 2000, verbose = false } = options;
-
-	const start = Date.now();
+	const {
+		timeout = 30000,
+		interval = 200,
+		verbose = false,
+		signal,
+		strict = false,
+	} = options;
+	const deadline = performance.now() + timeout;
 	let attempts = 0;
-
-	while (Date.now() - start < timeout) {
+	while (remainingTime(deadline) > 0) {
+		signal?.throwIfAborted();
+		if (attempts > 0) recordStartupMetric("healthRetries");
 		attempts++;
-		const controller = new AbortController();
-		const timeoutId = setTimeout(() => controller.abort(), 5000);
 		try {
-			const response = await fetch(url, {
-				signal: controller.signal as RequestInit["signal"],
-			});
-			clearTimeout(timeoutId);
-			// Accept 2xx, 3xx, or 404 (server is up, just no route)
-			if (response.ok || response.status === 404) {
-				if (verbose && attempts >= 5) {
+			const ready = await withDeadline(
+				async (probeSignal) => {
+					const response = await fetch(url, { signal: probeSignal });
+					const healthy = response.ok || (!strict && response.status === 404);
+					await response.body?.cancel();
+					return healthy;
+				},
+				Math.min(5000, remainingTime(deadline)),
+				signal,
+			);
+			if (ready) {
+				if (verbose && attempts >= 5)
 					console.log(
 						formatDone(`${formatUrl(url)} ready after ${attempts} attempts`),
 					);
-				}
 				return;
 			}
 		} catch {
-			clearTimeout(timeoutId);
-			// Server not ready yet
-			if (verbose && attempts % 5 === 0) {
-				console.log(
-					formatWait(
-						`Waiting for ${formatUrl(url)}... (${Math.round((Date.now() - start) / 1000)}s)`,
-					),
-				);
-			}
+			signal?.throwIfAborted();
 		}
-		await sleep(interval);
+		await abortableSleep(Math.min(interval, remainingTime(deadline)), signal);
 	}
-
+	signal?.throwIfAborted();
 	throw new Error(
 		`Server at ${url} did not respond within ${timeout}ms after ${attempts} attempts`,
 	);
@@ -108,9 +113,15 @@ export async function waitForDevServers(
 		timeout?: number;
 		verbose?: boolean;
 		productionBuild?: boolean;
+		signal?: AbortSignal;
+		onAppReady?: (name: string) => void;
 	} = {},
 ): Promise<void> {
 	const { timeout = 60000, verbose = true } = options;
+	const controller = new AbortController();
+	const cancel = () => controller.abort(options.signal?.reason);
+	if (options.signal?.aborted) cancel();
+	else options.signal?.addEventListener("abort", cancel, { once: true });
 
 	let showedWait = false;
 	const cancelWait = verbose
@@ -123,7 +134,11 @@ export async function waitForDevServers(
 	const promises: Promise<void>[] = [];
 
 	for (const [name, config] of Object.entries(apps)) {
-		if (config.healthEndpoint === false || config.devCommand === false) {
+		if (
+			config.healthEndpoint === false ||
+			(config.devCommand === false &&
+				!(options.productionBuild && config.prodCommand))
+		) {
 			continue;
 		}
 		const port = ports[name];
@@ -131,12 +146,23 @@ export async function waitForDevServers(
 		const url = `http://localhost:${port}${healthPath}`;
 		const appTimeout = config.healthTimeout ?? timeout;
 
-		promises.push(waitForServer(url, { timeout: appTimeout, verbose }));
+		promises.push(
+			waitForServer(url, {
+				timeout: appTimeout,
+				verbose,
+				signal: controller.signal,
+				strict: config.healthEndpoint !== undefined,
+			}).then(() => {
+				options.onAppReady?.(name);
+			}),
+		);
 	}
 
 	try {
 		await Promise.all(promises);
 	} finally {
+		controller.abort();
+		options.signal?.removeEventListener("abort", cancel);
 		cancelWait();
 	}
 
@@ -158,14 +184,19 @@ export function isTcpPortOpen(
 	port: number,
 	host = "127.0.0.1",
 	timeoutMs = 1000,
+	signal?: AbortSignal,
 ): Promise<boolean> {
 	return new Promise((resolve) => {
+		if (signal?.aborted) return resolve(false);
 		const socket = net.connect({ port, host });
 		const finish = (open: boolean) => {
+			signal?.removeEventListener("abort", onAbort);
 			socket.removeAllListeners();
 			socket.destroy();
 			resolve(open);
 		};
+		const onAbort = () => finish(false);
+		signal?.addEventListener("abort", onAbort, { once: true });
 		socket.setTimeout(timeoutMs);
 		socket.once("connect", () => finish(true));
 		socket.once("timeout", () => finish(false));

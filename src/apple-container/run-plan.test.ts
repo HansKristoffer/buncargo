@@ -433,8 +433,8 @@ describe("configHashFor", () => {
 		);
 	});
 
-	it("ignores labels, which carry the hash itself", () => {
-		expect(configHashFor({ image: "busybox", labels: { a: "1" } })).toBe(
+	it("includes user labels in the config fingerprint", () => {
+		expect(configHashFor({ image: "busybox", labels: { a: "1" } })).not.toBe(
 			configHashFor({ image: "busybox", labels: { a: "2" } }),
 		);
 	});

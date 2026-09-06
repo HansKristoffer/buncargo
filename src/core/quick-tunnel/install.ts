@@ -2,12 +2,8 @@
  * Download cloudflared from GitHub releases.
  * Derived from unjs/untun (MIT), originally forked from node-cloudflared.
  */
-import { execSync } from "node:child_process";
-import fs from "node:fs";
-import https from "node:https";
-import path from "node:path";
 import { cloudflaredVersion } from "../runtime-flags";
-import { finalizeToolBinary } from "../tool-binary";
+import { installTool } from "../tool-install";
 import { cloudflaredBinPath, RELEASE_BASE } from "./constants";
 
 const LINUX_URL: Partial<Record<NodeJS.Architecture, string>> = {
@@ -37,129 +33,31 @@ function resolveBase(version: string): string {
 export async function installCloudflared(
 	to: string = cloudflaredBinPath(),
 	version = cloudflaredVersion(),
+	options: { signal?: AbortSignal } = {},
 ): Promise<string> {
-	const installed = await downloadForPlatform(to, version);
-	// The cache now lives in the user's home, so a run under sudo must not
-	// leave a root-owned binary the next unelevated run cannot replace.
-	finalizeToolBinary(installed);
-	return installed;
-}
-
-function downloadForPlatform(to: string, version: string): Promise<string> {
-	switch (process.platform) {
-		case "linux": {
-			return installLinux(to, version);
-		}
-		case "darwin": {
-			return installMacos(to, version);
-		}
-		case "win32": {
-			return installWindows(to, version);
-		}
-		default: {
-			throw new Error(`Unsupported platform: ${process.platform}`);
-		}
-	}
-}
-
-async function installLinux(
-	to: string,
-	version = cloudflaredVersion(),
-): Promise<string> {
-	const file = LINUX_URL[process.arch];
-
-	if (file === undefined) {
-		throw new Error(`Unsupported architecture: ${process.arch}`);
-	}
-
-	await download(resolveBase(version) + file, to);
-	return to;
-}
-
-async function installMacos(
-	to: string,
-	version = cloudflaredVersion(),
-): Promise<string> {
-	const file = MACOS_URL[process.arch];
-
-	if (file === undefined) {
-		throw new Error(`Unsupported architecture: ${process.arch}`);
-	}
-
-	await download(resolveBase(version) + file, `${to}.tgz`);
-	if (process.env.DEBUG) {
-		console.log(`Extracting to ${to}`);
-	}
-	execSync(`tar -xzf ${path.basename(`${to}.tgz`)}`, {
-		cwd: path.dirname(to),
-	});
-	fs.unlinkSync(`${to}.tgz`);
-	fs.renameSync(`${path.dirname(to)}/cloudflared`, to);
-	return to;
-}
-
-async function installWindows(
-	to: string,
-	version = cloudflaredVersion(),
-): Promise<string> {
-	const file = WINDOWS_URL[process.arch];
-
-	if (file === undefined) {
-		throw new Error(`Unsupported architecture: ${process.arch}`);
-	}
-
-	await download(resolveBase(version) + file, to);
-	return to;
-}
-
-function download(url: string, to: string, redirect = 0): Promise<string> {
-	if (redirect === 0) {
-		if (process.env.DEBUG) {
-			console.log(`Downloading ${url} to ${to}`);
-		}
-	} else if (process.env.DEBUG) {
-		console.log(`Redirecting to ${url}`);
-	}
-
-	return new Promise((resolve, reject) => {
-		if (!fs.existsSync(path.dirname(to))) {
-			fs.mkdirSync(path.dirname(to), { recursive: true });
-		}
-
-		let done = true;
-		const file = fs.createWriteStream(to);
-		const request = https.get(url, (res) => {
-			if (res.statusCode === 302 && res.headers.location !== undefined) {
-				const redirection = res.headers.location;
-				done = false;
-				file.close(() => {
-					void download(redirection, to, redirect + 1).then(resolve, reject);
-				});
-				return;
-			}
-			res.pipe(file);
-		});
-
-		file.on("finish", () => {
-			if (done) {
-				file.close(() => {
-					resolve(to);
-				});
-			}
-		});
-
-		request.on("error", (err) => {
-			fs.unlink(to, () => {
-				reject(err);
-			});
-		});
-
-		file.on("error", (err) => {
-			fs.unlink(to, () => {
-				reject(err);
-			});
-		});
-
-		request.end();
+	const assets =
+		process.platform === "linux"
+			? LINUX_URL
+			: process.platform === "darwin"
+				? MACOS_URL
+				: process.platform === "win32"
+					? WINDOWS_URL
+					: undefined;
+	const file = assets?.[process.arch];
+	if (!file)
+		throw new Error(
+			`Unsupported cloudflared platform: ${process.platform}/${process.arch}`,
+		);
+	const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return installTool({
+		to,
+		signal: options.signal,
+		url: resolveBase(version) + file,
+		versionArgs: ["--version"],
+		expectedVersion: new RegExp(
+			`cloudflared version ${version === "latest" ? "[0-9]+\\.[0-9]+" : escaped}`,
+		),
+		archiveEntry: process.platform === "darwin" ? "cloudflared" : undefined,
+		githubAsset: { repository: "cloudflare/cloudflared", version, name: file },
 	});
 }

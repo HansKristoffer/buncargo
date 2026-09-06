@@ -30,7 +30,7 @@ final class StopCoordinator: ObservableObject {
     }
 
     private func key(_ run: Run, _ target: String?) -> String {
-        "\(run.root)#\(target ?? "--all")"
+        "\(run.id)#\(target ?? "--all")"
     }
 
     func isStopping(_ run: Run, _ target: String?) -> Bool {

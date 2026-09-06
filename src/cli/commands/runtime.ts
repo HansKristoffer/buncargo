@@ -1,6 +1,7 @@
 import { getCaPath, waitForDaemonRoutes } from "../../core/hosts";
 import { findMonorepoRoot } from "../../core/ports";
 import { isHostsForcedOff } from "../../core/runtime-flags";
+import { createNoopPhaseTimer, createPhaseTimer } from "../../core/timing";
 import { loadDevEnv } from "../../loader";
 import { exitOnDevArgErrors, parseDevArgs, printDevHelp } from "../dev-flags";
 import { getFlagValue } from "../flags";
@@ -39,7 +40,9 @@ export function formatEnvDotValue(value: unknown): string {
 	return JSON.stringify(value);
 }
 
-export async function loadEnv(options: { containerRuntime?: string } = {}) {
+export async function loadEnv(
+	options: { containerRuntime?: string; readOnly?: boolean } = {},
+) {
 	try {
 		return await loadDevEnv(options);
 	} catch (error) {
@@ -57,8 +60,18 @@ export async function handleDev(args: string[]): Promise<void> {
 	exitOnDevArgErrors(parsed);
 	// The runtime has to be known before the environment is built, so it is read
 	// here rather than inside runCli, which is handed a finished env.
-	const env = await loadEnv({ containerRuntime: parsed.runtime });
-	await runCli(env, { args });
+	const timer = parsed.timing
+		? createPhaseTimer({ startedAt: 0, json: parsed.timingJson })
+		: createNoopPhaseTimer();
+	try {
+		const env = await timer.measure("config and ports", () =>
+			loadDevEnv({ containerRuntime: parsed.runtime }),
+		);
+		await runCli(env, { args, timer });
+	} catch (error) {
+		timer.report();
+		throw error;
+	}
 }
 
 export async function handlePrisma(args: string[]): Promise<void> {
@@ -80,7 +93,7 @@ export async function handlePrisma(args: string[]): Promise<void> {
 }
 
 export async function handleEnv(args: string[] = []): Promise<void> {
-	const env = await loadEnv();
+	const env = await loadEnv({ readOnly: true });
 	// A healthy daemon is not the same as a daemon serving this project: a
 	// `vite.config.ts` reading `urls.web` from here must not be handed an https
 	// hostname the proxy would 404. Zero wait — this only reports state, so an

@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,6 +16,7 @@ import {
 	pruneRuns,
 	publishRun,
 	type RunEntry,
+	readLiveRuns,
 	withdrawRun,
 } from "./run-registry";
 
@@ -227,5 +234,82 @@ describe("groupRunsByProject", () => {
 describe("loadRuns", () => {
 	it("reads a missing file as no runs", async () => {
 		expect(await loadRuns(join(dir, "absent.json"))).toEqual([]);
+	});
+});
+
+describe("independent run sessions", () => {
+	it("keeps disjoint selections in the same checkout and withdraws only its session", async () => {
+		await publishRun(makeRun({ sessionId: "first" }), { path });
+		await publishRun(
+			makeRun({
+				sessionId: "second",
+				apps: [
+					{
+						name: "web",
+						port: 3000,
+						url: "http://localhost:3000",
+						loopbackUrl: "http://localhost:3000",
+						status: "starting",
+					},
+				],
+			}),
+			{ path },
+		);
+		expect(await loadRuns(path)).toHaveLength(2);
+		await patchRun(
+			"/repos/lullu",
+			process.pid,
+			{ apps: [{ name: "api", status: "ready" }] },
+			{ path, sessionId: "second" },
+		);
+		expect((await loadRuns(path))[0]?.apps[0]?.status).toBe("starting");
+		await withdrawRun("/repos/lullu", process.pid, {
+			path,
+			sessionId: "first",
+		});
+		expect((await loadRuns(path)).map((run) => run.sessionId)).toEqual([
+			"second",
+		]);
+	});
+
+	it("does not let late readiness resurrect a stopped app", async () => {
+		await publishRun(makeRun({ sessionId: "first" }), { path });
+		await patchRun(
+			"/repos/lullu",
+			process.pid,
+			{ apps: [{ name: "api", status: "stopped" }] },
+			{ path, sessionId: "first" },
+		);
+		await patchRun(
+			"/repos/lullu",
+			process.pid,
+			{ apps: [{ name: "api", status: "ready" }] },
+			{ path, sessionId: "first" },
+		);
+		expect((await loadRuns(path))[0]?.apps[0]?.status).toBe("stopped");
+	});
+
+	it("filters a reused pid without writing the registry during inspection", async () => {
+		await publishRun(makeRun({ processIdentity: "old-process-identity" }), {
+			path,
+		});
+		const before = readFileSync(path, "utf8");
+		expect(await readLiveRuns(path)).toEqual([]);
+		expect(readFileSync(path, "utf8")).toBe(before);
+	});
+
+	it("rejects invalid target pids and ports at the persisted boundary", async () => {
+		const run = makeRun();
+		writeFileSync(
+			path,
+			JSON.stringify({
+				version: 1,
+				runs: [
+					{ ...run, pid: -1 },
+					{ ...run, apps: [{ ...run.apps[0], port: 70000 }] },
+				],
+			}),
+		);
+		expect(await loadRuns(path)).toEqual([]);
 	});
 });

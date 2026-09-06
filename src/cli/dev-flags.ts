@@ -44,7 +44,7 @@ const FLAGS = {
 		name: "--up-only",
 		kind: "boolean",
 		description:
-			"Start containers and run migrations, then exit (no dev servers)",
+			"Start containers only, then exit (no migrations, seed, or dev servers)",
 	},
 	expose: {
 		name: "--expose",
@@ -97,6 +97,11 @@ const FLAGS = {
 		valueHint: "=<docker|apple|auto>",
 		description: "Container runtime backend (default: docker)",
 		validate: enumValidator("--runtime", CONTAINER_RUNTIME_SELECTIONS),
+	},
+	timingJson: {
+		name: "--timing-json",
+		kind: "boolean",
+		description: "Report startup through app readiness as JSON",
 	},
 	timing: {
 		name: "--timing",
@@ -186,6 +191,7 @@ export interface DevCliArgs {
 	runtime: string | undefined;
 	/** `--timing` or `BUNCARGO_TIMING`: print the startup breakdown. */
 	timing: boolean;
+	timingJson: boolean;
 	/** `--migrate`, `--seed` and `--up-only` exit before dev servers start. */
 	oneShot: boolean;
 }
@@ -200,6 +206,13 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 	const seed = bool(FLAGS.seed);
 	const upOnly = bool(FLAGS.upOnly);
 	const watchdogTimeout = str(FLAGS.watchdogTimeout);
+	const modes = [migrate, seed, upOnly, bool(FLAGS.down), bool(FLAGS.reset)];
+	if (modes.filter(Boolean).length > 1)
+		errors.push(
+			"Choose only one of --migrate, --seed, --up-only, --down, or --reset.",
+		);
+	if (bool(FLAGS.all) && !bool(FLAGS.down))
+		errors.push("--all requires --down.");
 
 	return {
 		flags,
@@ -229,7 +242,8 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		runtime: str(FLAGS.runtime),
 		// Either way in: the flag for a one-off look, the environment variable
 		// for a shell or an agent that wants it on every run.
-		timing: bool(FLAGS.timing) || isTimingEnabled(),
+		timing: bool(FLAGS.timing) || bool(FLAGS.timingJson) || isTimingEnabled(),
+		timingJson: bool(FLAGS.timingJson),
 		oneShot: migrate || seed || upOnly,
 	};
 }

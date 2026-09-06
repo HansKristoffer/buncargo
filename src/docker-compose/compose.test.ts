@@ -14,6 +14,7 @@ import {
 	composeToYaml,
 	writeGeneratedComposeFile,
 } from "./index";
+import { serviceHashEnv } from "./interpolate";
 import { service } from "./services";
 
 describe("buildComposeModel", () => {
@@ -70,8 +71,7 @@ describe("buildComposeModel", () => {
 			"buncargo.service": "postgres",
 			// Substituted by whichever backend runs it: the hash covers the
 			// interpolated file, so it is not known when this is written.
-			// biome-ignore lint/suspicious/noTemplateCurlyInString: the literal `${...}` is what compose interpolates, and what this asserts.
-			"buncargo.stack-hash": "${BUNCARGO_STACK_HASH:-}",
+			"buncargo.service-hash": `\${${serviceHashEnv("postgres")}:-}`,
 		});
 	});
 
@@ -207,7 +207,7 @@ describe("writeGeneratedComposeFile", () => {
 		}
 	});
 
-	it("respects if-missing write strategy", () => {
+	it("refuses a different if-missing artifact without overwriting it", () => {
 		const root = join(tmpdir(), `buncargo-compose-test-${Date.now()}-missing`);
 		mkdirSync(root, { recursive: true });
 		try {
@@ -215,16 +215,18 @@ describe("writeGeneratedComposeFile", () => {
 			mkdirSync(join(root, ".buncargo"), { recursive: true });
 			writeFileSync(filePath, "# custom\n", "utf-8");
 
-			writeGeneratedComposeFile(
-				root,
-				{
-					postgres: { port: 5432 },
-				},
-				{
-					generatedFile: ".buncargo/docker-compose.generated.yml",
-					writeStrategy: "if-missing",
-				},
-			);
+			expect(() =>
+				writeGeneratedComposeFile(
+					root,
+					{
+						postgres: { port: 5432 },
+					},
+					{
+						generatedFile: ".buncargo/docker-compose.generated.yml",
+						writeStrategy: "if-missing",
+					},
+				),
+			).toThrow("differs from the current config");
 
 			const content = readFileSync(filePath, "utf-8");
 			expect(content).toBe("# custom\n");

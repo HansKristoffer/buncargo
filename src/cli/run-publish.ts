@@ -1,6 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { getWorktreeName } from "../core/ports";
+import { readProcessIdentity } from "../core/process-identity";
 import {
 	patchRun,
 	publishRun,
@@ -13,7 +14,12 @@ import {
 	withdrawRun,
 } from "../core/run-registry";
 import { describeService } from "../core/service-identity";
-import type { AppConfig, NamedHost, ServiceConfig } from "../types";
+import type {
+	AppConfig,
+	ContainerRuntimeName,
+	NamedHost,
+	ServiceConfig,
+} from "../types";
 import * as log from "./log";
 
 /**
@@ -39,6 +45,8 @@ import * as log from "./log";
  * lists what is read and nothing else.
  */
 export interface RunSource {
+	readonly containerRuntime?: ContainerRuntimeName;
+	readonly containerRuntimeBinary?: string;
 	readonly projectPrefix: string;
 	readonly projectName: string;
 	readonly root: string;
@@ -73,7 +81,9 @@ export function readGitBranch(root: string): string | undefined {
 	try {
 		const gitPath = join(root, ".git");
 		if (!existsSync(gitPath)) return undefined;
-		const stat = readFileSync(gitPath, "utf-8");
+		const stat = statSync(gitPath).isFile()
+			? readFileSync(gitPath, "utf-8")
+			: "";
 		const gitDir = stat.startsWith("gitdir:")
 			? resolve(dirname(gitPath), stat.slice("gitdir:".length).trim())
 			: gitPath;
@@ -134,6 +144,7 @@ function appEntries(
 function serviceEntries(
 	env: RunSource,
 	status: RunServiceStatus,
+	serviceNames?: readonly string[],
 ): RunServiceEntry[] {
 	const ports = env.ports as Record<string, number>;
 	const urls = env.urls as Record<string, string>;
@@ -143,33 +154,44 @@ function serviceEntries(
 		(env.hosts?.plan ?? []).map((entry) => [entry.name, entry.hostname]),
 	);
 
-	return Object.entries(env.services).flatMap(([name, service]) => {
-		const port = ports[name];
-		if (port === undefined) return [];
-		const identity = describeService({
-			name,
-			service,
-			port,
-			projectName: env.projectName,
-		});
-		const loopbackUrl = loopbackUrls[name] ?? `http://localhost:${port}`;
-		return [
-			{
+	return Object.entries(env.services)
+		.filter(([name]) => !serviceNames || serviceNames.includes(name))
+		.flatMap(([name, service]) => {
+			const port = ports[name];
+			if (port === undefined) return [];
+			const identity = describeService({
 				name,
-				preset: identity.preset,
+				service,
 				port,
-				url: urls[name] ?? loopbackUrl,
-				loopbackUrl,
-				publicUrl: publicUrls[name],
-				hostname: hostnameFor.get(name),
-				tablePlusUrl: identity.tablePlusUrl,
-				status,
-			},
-		];
-	});
+				projectName: env.projectName,
+			});
+			const loopbackUrl = loopbackUrls[name] ?? `http://localhost:${port}`;
+			return [
+				{
+					name,
+					preset: identity.preset,
+					container: env.containerRuntime
+						? {
+								runtime: env.containerRuntime,
+								binary: env.containerRuntimeBinary,
+								service: service.serviceName ?? name,
+								name: `${env.projectName}-${service.serviceName ?? name}`,
+							}
+						: undefined,
+					port,
+					url: urls[name] ?? loopbackUrl,
+					loopbackUrl,
+					publicUrl: publicUrls[name],
+					hostname: hostnameFor.get(name),
+					tablePlusUrl: identity.tablePlusUrl,
+					status,
+				},
+			];
+		});
 }
 
 export interface PublishRunInput {
+	serviceNames?: readonly string[];
 	/** Apps this run is responsible for, spawned or reused. */
 	apps: Record<string, AppConfig>;
 	/** Apps served by someone else, so this run cannot stop them. */
@@ -209,6 +231,8 @@ async function writeRun(
 	const reused = new Set(input.reusedNames ?? []);
 	const now = new Date().toISOString();
 	const entry: RunEntry = {
+		sessionId: crypto.randomUUID(),
+		processIdentity: readProcessIdentity(process.pid),
 		projectPrefix: env.projectPrefix,
 		projectName: env.projectName,
 		root: env.root,
@@ -227,11 +251,31 @@ async function writeRun(
 			attached: input.attached,
 			statusFor: (name) => (reused.has(name) ? "reused" : "starting"),
 		}),
-		services: serviceEntries(env, input.serviceStatus ?? "ready"),
+		services: serviceEntries(
+			env,
+			input.serviceStatus ?? "ready",
+			input.serviceNames,
+		),
 	};
 
 	await publishRun(entry);
+	currentSessions.set(env.root, entry.sessionId as string);
 	return entry;
+}
+
+const currentSessions = new Map<string, string>();
+const pendingPatches = new Map<string, Promise<void>>();
+
+function enqueue(root: string, operation: () => Promise<void>): Promise<void> {
+	const previous = pendingPatches.get(root) ?? Promise.resolve();
+	const next = previous.catch(() => {}).then(operation);
+	pendingPatches.set(root, next);
+	void next
+		.finally(() => {
+			if (pendingPatches.get(root) === next) pendingPatches.delete(root);
+		})
+		.catch(() => {});
+	return next;
 }
 
 export async function patchCurrentRun(
@@ -239,7 +283,10 @@ export async function patchCurrentRun(
 	patch: RunPatch,
 ): Promise<void> {
 	try {
-		await patchRun(root, process.pid, patch);
+		const sessionId = currentSessions.get(root);
+		await enqueue(root, () =>
+			patchRun(root, process.pid, patch, { sessionId }),
+		);
 	} catch (error) {
 		reportFailure("update", error);
 	}
@@ -247,7 +294,9 @@ export async function patchCurrentRun(
 
 export async function withdrawCurrentRun(root: string): Promise<void> {
 	try {
-		await withdrawRun(root, process.pid);
+		const sessionId = currentSessions.get(root);
+		await enqueue(root, () => withdrawRun(root, process.pid, { sessionId }));
+		if (currentSessions.get(root) === sessionId) currentSessions.delete(root);
 	} catch (error) {
 		reportFailure("clear", error);
 	}
@@ -273,6 +322,10 @@ export async function recordAppPids(
 	const entries = Object.entries(pids);
 	if (entries.length === 0) return;
 	await patchCurrentRun(root, {
-		apps: entries.map(([name, pid]) => ({ name, pid })),
+		apps: entries.map(([name, pid]) => ({
+			name,
+			pid,
+			processIdentity: readProcessIdentity(pid),
+		})),
 	});
 }

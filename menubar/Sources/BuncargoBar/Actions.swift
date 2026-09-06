@@ -58,6 +58,7 @@ enum StopCommand {
         arguments.append("stop")
         if let target { arguments.append(target) } else { arguments.append("--all") }
         arguments.append(contentsOf: ["--root", run.root])
+        if let sessionId = run.sessionId { arguments.append(contentsOf: ["--run", sessionId]) }
         if force { arguments.append("--force") }
 
         let process = Process()

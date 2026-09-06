@@ -7,20 +7,29 @@ import type {
 	ExecInServiceRequest,
 	ServiceDiagnosisRequest,
 } from "../container-runtime/types";
-import { DEFAULT_DOCKER_BINARY, runDocker } from "./binary";
+import { DEFAULT_DOCKER_BINARY, runDocker, runDockerAsync } from "./binary";
 import { getComposeArgs } from "./compose-command";
-import { diagnoseDockerService } from "./diagnose";
+import { diagnoseDockerService, diagnoseDockerServiceAsync } from "./diagnose";
 import {
 	listDockerBuncargoContainers,
 	stopDockerContainersByIds,
 } from "./inventory";
-import { startContainers, stopContainers } from "./lifecycle";
+import {
+	startContainers,
+	startContainersAsync,
+	stopContainers,
+	stopContainersAsync,
+} from "./lifecycle";
 import {
 	dockerContainerPortOwners,
 	findDockerContainerOnPort,
 } from "./port-lookup";
 import { ensureDockerRunning, isDockerDaemonRunning } from "./preflight";
-import { areServicesRunning, dockerProjectServiceStates } from "./status";
+import {
+	areServicesRunning,
+	dockerProjectServiceStates,
+	dockerProjectServiceStatesAsync,
+} from "./status";
 
 /**
  * Run a probe inside a service container.
@@ -86,6 +95,20 @@ export function dockerRuntimeAdapter(
 			});
 		},
 
+		upAsync(request: ContainerUpRequest) {
+			return startContainersAsync(
+				request.root,
+				request.projectName,
+				request.envVars,
+				{ ...request, services: request.serviceNames, binary },
+			);
+		},
+		downAsync(request: ContainerDownRequest) {
+			return stopContainersAsync(request.root, request.projectName, {
+				...request,
+				binary,
+			});
+		},
 		down(request: ContainerDownRequest) {
 			stopContainers(request.root, request.projectName, {
 				verbose: request.verbose,
@@ -103,6 +126,31 @@ export function dockerRuntimeAdapter(
 			return execInService(request, binary);
 		},
 
+		async execInServiceAsync(request: ExecInServiceRequest) {
+			return (
+				await runDockerAsync(
+					binary,
+					[
+						...getComposeArgs({
+							projectName: request.projectName,
+							composeFile: request.composeFile,
+						}),
+						"exec",
+						"-T",
+						request.serviceName,
+						...request.command,
+					],
+					{
+						cwd: request.root,
+						signal: request.signal,
+						timeoutMs: request.timeoutMs ?? 2000,
+					},
+				)
+			).ok;
+		},
+		diagnoseServiceAsync(request: ServiceDiagnosisRequest) {
+			return diagnoseDockerServiceAsync(request, binary);
+		},
 		diagnoseService(request: ServiceDiagnosisRequest) {
 			return diagnoseDockerService(request, binary);
 		},
@@ -125,6 +173,9 @@ export function dockerRuntimeAdapter(
 			return dockerContainerPortOwners(binary);
 		},
 
+		projectServiceStatesAsync(projectName: string, signal?: AbortSignal) {
+			return dockerProjectServiceStatesAsync(projectName, binary, signal);
+		},
 		projectServiceStates(projectName: string) {
 			return dockerProjectServiceStates(projectName, binary);
 		},

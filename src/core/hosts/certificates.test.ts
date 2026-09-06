@@ -74,6 +74,39 @@ describe("syncCertificateForRoutes", () => {
 	// files while the root daemon polls them, so this has to queue behind it.
 	// Asserted through the lock rather than two in-process calls, which
 	// `execFileSync` would serialize on its own and prove nothing.
+	it("leaves the certificate lock available while downloading mkcert", async () => {
+		const { mkcertPath } = sandbox();
+		let started!: () => void;
+		const downloading = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		let release!: () => void;
+		const downloaded = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const syncing = syncCertificateForRoutes(
+			{ include: ["a.demo.localhost"] },
+			{
+				resolveMkcert: async () => {
+					started();
+					await downloaded;
+					return mkcertPath;
+				},
+			},
+		);
+		await downloading;
+		try {
+			expect(
+				await withFileLock(getCertPath(), async () => "available", {
+					timeoutMs: 100,
+				}),
+			).toBe("available");
+		} finally {
+			release();
+			await syncing;
+		}
+	});
+
 	it("waits for a mint another run is already doing", async () => {
 		const { mkcertPath } = sandbox();
 

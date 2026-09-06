@@ -33,6 +33,7 @@ export interface PlanExposeInput {
 	exposeValue: string | undefined;
 	appsRequested: boolean;
 	selectedAppNames: Set<string>;
+	selectedServiceNames?: Set<string>;
 	startAppNames: Set<string>;
 	reusedAppNames: Set<string>;
 }
@@ -47,7 +48,7 @@ export interface DevTunnelCoordinator<
 	 */
 	planExpose(input: PlanExposeInput): Promise<void>;
 	/** Open the planned tunnels, register them, and log the environment. */
-	openOwnedTunnels(): Promise<void>;
+	openOwnedTunnels(signal?: AbortSignal): Promise<void>;
 	hasPendingTargets(): boolean;
 	/** Stop owned tunnels and drop their registry entries. */
 	stop(): Promise<void>;
@@ -60,13 +61,15 @@ export function createTunnelCoordinator<
 >(
 	env: DevEnvironment<TServices, TApps>,
 	tunnelApi: TunnelApi,
-	options: { exposeRequested: boolean },
+	options: { exposeRequested: boolean; signal?: AbortSignal },
 ): DevTunnelCoordinator<TServices, TApps> {
 	const combinedTunnelLogs: DevEnvironmentTunnelLog[] = [];
 	const inheritedPublicUrls: Record<string, string> = {};
 	let pendingTargets: PublicExposeTarget[] = [];
 	let tunnels: PublicTunnel[] = [];
 	let ownedRegistryEntries: TunnelRegistryEntry[] = [];
+	const openingController = new AbortController();
+	let opening: Promise<void> | undefined;
 
 	/**
 	 * Public URLs here come from `--expose` names and the tunnel registry, so
@@ -116,6 +119,7 @@ export function createTunnelCoordinator<
 			exposeValue,
 			appsRequested,
 			selectedAppNames,
+			selectedServiceNames,
 			startAppNames,
 			reusedAppNames,
 		} = input;
@@ -150,12 +154,18 @@ export function createTunnelCoordinator<
 			}
 		}
 
-		const scopedTargets = appsRequested
+		const selectedTargets = selectedServiceNames
 			? targets.filter(
+					(target) =>
+						target.kind !== "service" || selectedServiceNames.has(target.name),
+				)
+			: targets;
+		const scopedTargets = appsRequested
+			? selectedTargets.filter(
 					(target) =>
 						target.kind === "service" || selectedAppNames.has(target.name),
 				)
-			: targets;
+			: selectedTargets;
 
 		await inheritReusedPublicUrls(
 			scopedTargets
@@ -187,7 +197,20 @@ export function createTunnelCoordinator<
 		);
 	}
 
-	async function openOwnedTunnels(): Promise<void> {
+	function openOwnedTunnels(signal?: AbortSignal): Promise<void> {
+		opening ??= performOpen(
+			AbortSignal.any([
+				openingController.signal,
+				...[signal, options.signal].filter(
+					(item): item is AbortSignal => item !== undefined,
+				),
+			]),
+		);
+		return opening;
+	}
+
+	async function performOpen(signal: AbortSignal): Promise<void> {
+		signal.throwIfAborted();
 		if (pendingTargets.length === 0) {
 			if (options.exposeRequested) {
 				env.logInfo("Dev Environment", combinedTunnelLogs);
@@ -195,7 +218,10 @@ export function createTunnelCoordinator<
 			return;
 		}
 
-		tunnels = await tunnelApi.startPublicTunnels(pendingTargets);
+		tunnels = await tunnelApi.startPublicTunnels(pendingTargets, {
+			signal,
+		});
+		signal.throwIfAborted();
 		env.setPublicUrls(
 			asPublicUrls({
 				...inheritedPublicUrls,
@@ -226,6 +252,8 @@ export function createTunnelCoordinator<
 	}
 
 	async function stop(): Promise<void> {
+		openingController.abort(new Error("Tunnel startup stopped"));
+		await opening?.catch(() => {});
 		env.clearPublicUrls();
 		const tunnelsToStop = tunnels;
 		const entriesToRemove = ownedRegistryEntries.map((entry) => ({

@@ -1,5 +1,5 @@
 import type { ServiceRuntimeState } from "../container-runtime/types";
-import { runDocker } from "./binary";
+import { runDocker, runDockerAsync } from "./binary";
 import { DockerUnavailableError, isDockerDaemonRunning } from "./preflight";
 
 export const DOCKER_NOT_RUNNING_MESSAGE =
@@ -80,7 +80,7 @@ export async function areServicesRunning(
 }
 
 const SERVICE_STATE_FORMAT =
-	'{{.Label "buncargo.service"}}\t{{.State}}\t{{.Label "buncargo.stack-hash"}}\t{{.Status}}';
+	'{{.Label "buncargo.service"}}\t{{.State}}\t{{.Label "buncargo.stack-hash"}}\t{{.Status}}\t{{.Label "buncargo.service-hash"}}';
 
 /**
  * Docker reports its healthcheck inside the human-readable status, as
@@ -106,13 +106,14 @@ export function parseDockerServiceStates(
 	for (const raw of stdout.split("\n")) {
 		const line = raw.replace(/\r$/, "");
 		if (!line.trim()) continue;
-		const [service, state, stackHash, status] = line.split("\t");
+		const [service, state, stackHash, status, serviceHash] = line.split("\t");
 		if (!service) continue;
 		const healthy = parseDockerHealth(status ?? "");
 		states.push({
 			service,
 			running: state === "running",
 			...(stackHash ? { stackHash } : {}),
+			...(serviceHash ? { serviceHash } : {}),
 			...(healthy === undefined ? {} : { healthy }),
 		});
 	}
@@ -140,4 +141,24 @@ export function dockerProjectServiceStates(
 	]);
 	if (!result.ok) return [];
 	return parseDockerServiceStates(result.stdout);
+}
+
+export async function dockerProjectServiceStatesAsync(
+	project: string,
+	binary?: string,
+	signal?: AbortSignal,
+): Promise<ServiceRuntimeState[]> {
+	const result = await runDockerAsync(
+		binary,
+		[
+			"ps",
+			"--all",
+			"--filter",
+			`label=buncargo.project=${project}`,
+			"--format",
+			SERVICE_STATE_FORMAT,
+		],
+		{ signal },
+	);
+	return result.ok ? parseDockerServiceStates(result.stdout) : [];
 }
