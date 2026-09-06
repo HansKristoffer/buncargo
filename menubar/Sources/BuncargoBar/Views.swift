@@ -124,7 +124,7 @@ struct RunDetailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(run.worktree ?? run.projectName)
+            Text(run.title)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
 
@@ -216,8 +216,8 @@ struct RunRow: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text(run.title)
                     .font(.system(size: 12, weight: .medium))
-                if let branch = run.branch {
-                    Text(branch)
+                if let subtitle = run.subtitle {
+                    Text(subtitle)
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }

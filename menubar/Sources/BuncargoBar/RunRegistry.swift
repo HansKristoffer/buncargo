@@ -81,10 +81,11 @@ struct Run: Codable, Identifiable, Hashable {
 
     var id: String { sessionId ?? root }
 
-    /// The main checkout is labelled by role, not by branch: it is the one
-    /// everybody means by "the project". Worktrees are only recognisable by
-    /// their directory name, which for agent worktrees is a hash.
-    var title: String { worktree ?? "Main" }
+    /// The branch is the readable name; agent worktree directories are hashes.
+    var title: String { branch ?? worktree ?? "Main" }
+
+    /// The worktree directory, shown under the branch so a hash is still findable.
+    var subtitle: String? { branch != nil ? worktree : nil }
 
     var primary: RunApp? {
         if let name = primaryApp, let match = apps.first(where: { $0.name == name }) {
