@@ -3,6 +3,17 @@ import SwiftUI
 
 /// Status colours, shared by every dot in the UI.
 extension RunStatus {
+    /// Stopped apps do not hide a failure or startup among the remaining apps.
+    static func rollup(_ states: [RunStatus]) -> RunStatus {
+        let active = states.filter { $0 != .stopped }
+
+        if active.isEmpty { return states.isEmpty ? .starting : .stopped }
+        if active.contains(.failed) { return .failed }
+        if active.contains(.starting) { return .starting }
+
+        return .ready
+    }
+
     var tint: Color {
         switch self {
         case .ready, .reused: return .green
@@ -55,8 +66,7 @@ struct TargetRow: View {
     let openable: Bool
     let publicUrl: String?
     let tablePlusUrl: String?
-    let canStop: Bool
-    let onStop: () -> Void
+    var onStop: (() -> Void)? = nil
     var onSimulator: (() -> Void)? = nil
 
     var body: some View {
@@ -92,7 +102,7 @@ struct TargetRow: View {
                             onSimulator()
                         }
                     }
-                    if canStop {
+                    if let onStop {
                         IconButton(symbol: "xmark", help: "Stop", tint: .secondary) {
                             onStop()
                         }
@@ -149,7 +159,6 @@ struct RunDetailView: View {
                         openable: true,
                         publicUrl: app.publicUrl,
                         tablePlusUrl: nil,
-                        canStop: app.state != .stopped,
                         onStop: { onStop(app.name) },
                         onSimulator: app.hasSimulator ? { onSimulator(app.name) } : nil
                     )
@@ -170,7 +179,6 @@ struct RunDetailView: View {
                         openable: service.isHTTP,
                         publicUrl: service.publicUrl,
                         tablePlusUrl: service.tablePlusUrl,
-                        canStop: service.state != .stopped,
                         onStop: { onStop(service.name) }
                     )
                 }
@@ -207,32 +215,12 @@ struct RunRow: View {
     let onStop: (String?) -> Void
     let onSimulator: (String) -> Void
 
-    @State private var showingDetail = false
-    @State private var hovering = false
-
-    private var rollup: RunStatus {
-        let states = run.apps.map(\.state).filter { $0 != .stopped }
-        if states.isEmpty { return run.apps.isEmpty ? .starting : .stopped }
-        if states.contains(.failed) { return .failed }
-        if states.contains(.starting) { return .starting }
-        return .ready
-    }
-
     var body: some View {
-        HStack(spacing: 8) {
-            StatusDot(status: rollup)
-
-            VStack(alignment: .leading, spacing: 0) {
-                Text(run.title)
-                    .font(.system(size: 12, weight: .medium))
-                if let subtitle = run.subtitle {
-                    Text(subtitle)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-
+        EnvironmentRow(
+            title: run.title,
+            subtitle: run.subtitle,
+            status: .rollup(run.apps.map(\.state))
+        ) {
             if let primary = run.primary, primary.state != .stopped {
                 Button("Open") {
                     Actions.open(
@@ -252,6 +240,53 @@ struct RunRow: View {
                     onSimulator(expo.name)
                 }
             }
+        } detail: {
+            RunDetailView(run: run, onStop: onStop, onSimulator: onSimulator)
+        }
+    }
+}
+
+struct ProjectHeading: View {
+    let name: String
+
+    var body: some View {
+        Text(name.uppercased())
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 2)
+    }
+}
+
+/// Local and remote runs share presentation, while keeping their available actions separate.
+struct EnvironmentRow<RowActions: View, Detail: View>: View {
+    let title: String
+    let subtitle: String?
+    let status: RunStatus
+    @ViewBuilder var actions: () -> RowActions
+    @ViewBuilder var detail: () -> Detail
+
+    @State private var showingDetail = false
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            StatusDot(status: status)
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+            actions()
 
             IconButton(
                 symbol: showingDetail ? "chevron.up" : "chevron.down",
@@ -259,8 +294,7 @@ struct RunRow: View {
             ) {
                 showingDetail.toggle()
             }
-            // Hover opens it, a click pins it: trackpads and tiling window
-            // managers do not always deliver a hover.
+            // Both hover and click work, including with tiling window managers.
             .onHover { inside in
                 if inside { showingDetail = true }
             }
@@ -270,7 +304,7 @@ struct RunRow: View {
         .background(hovering ? Color.primary.opacity(0.06) : .clear)
         .onHover { hovering = $0 }
         .popover(isPresented: $showingDetail, arrowEdge: .trailing) {
-            RunDetailView(run: run, onStop: onStop, onSimulator: onSimulator)
+            detail()
         }
     }
 }

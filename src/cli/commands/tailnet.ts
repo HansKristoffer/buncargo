@@ -82,11 +82,19 @@ export async function handleTailnet(args: string[]) {
 	if (flags.some((s) => !s.startsWith("--")))
 		throw new Error("Unexpected argument; use --port=N");
 	switch (subcommand) {
-		case "install":
+		case "install": {
+			const directory = await installTailnet(
+				discovery ? Number(discovery) : readTailnetState().directory?.port,
+			);
+
 			console.log(
-				`Tailnet enabled; HTTPS directory verified from this machine. Verify access from your other device. Directory: ${await installTailnet(discovery ? Number(discovery) : readTailnetState().directory?.port)}\nRun bun dev in a worktree to share its apps privately.`,
+				`Tailnet enabled; HTTPS directory verified from this machine. Verify access from your other device. Directory: ${directory}`,
+			);
+			console.log(
+				"Run buncargo dev in your main checkout or any worktree to share its apps privately. Use --tailnet to require sharing instead of falling back to local URLs.",
 			);
 			return;
+		}
 		case "uninstall":
 			await uninstallTailnet();
 			console.log(
