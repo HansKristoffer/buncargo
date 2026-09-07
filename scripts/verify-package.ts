@@ -91,6 +91,32 @@ try {
 	command([process.execPath, "imports.mjs"], consumer);
 	// Node selects the published import condition, Bun selects the source condition.
 	command(["node", "imports.mjs"], consumer);
+	// Exercise the published browser entry, including shared build chunks.
+	const clientBuild = await Bun.build({
+		entrypoints: [join(installed, packageJson.exports["./client"].browser)],
+		target: "browser",
+		format: "cjs",
+	});
+	assert(clientBuild.success, clientBuild.logs.join("\n"));
+	const clientOutput = clientBuild.outputs[0];
+	assert(clientOutput, "Missing client helper bundle");
+	const clientPrefix = new Function(
+		"module",
+		"__DEV__",
+		"process",
+		`${await clientOutput.text()}\nreturn module.exports.devCookiePrefix("platform", "0123456789abcdef");`,
+	);
+	assert.equal(
+		clientPrefix({ exports: {} }, true, undefined),
+		"platform-0123456789abcdef",
+	);
+	assert.equal(clientPrefix({ exports: {} }, false, undefined), "platform");
+	assert.equal(
+		clientPrefix({ exports: {} }, undefined, {
+			env: { NODE_ENV: "production" },
+		}),
+		"platform",
+	);
 	writeFileSync(
 		join(consumer, "consumer.ts"),
 		`
@@ -150,20 +176,27 @@ void web;
 			.toString()
 			.includes("Missing required environment variables"),
 	);
-	const detachedDaemon = join(consumer, "detached", "hostsd.js");
-	mkdirSync(dirname(detachedDaemon));
-	copyFileSync(join(installed, "dist/hostsd.js"), detachedDaemon);
-	const bundle = await Bun.build({
-		entrypoints: [detachedDaemon],
-		target: "bun",
-	});
 	assert(
-		bundle.success,
-		`Standalone daemon does not bundle: ${bundle.logs.join("\n")}`,
+		command([process.execPath, cli, "tailnet", "--help"], consumer).includes(
+			"discovery-port",
+		),
 	);
+	for (const daemon of ["hostsd.js", "tailnetd.js"]) {
+		const detachedDaemon = join(consumer, "detached", daemon);
+		mkdirSync(dirname(detachedDaemon), { recursive: true });
+		copyFileSync(join(installed, "dist", daemon), detachedDaemon);
+		const bundle = await Bun.build({
+			entrypoints: [detachedDaemon],
+			target: "bun",
+		});
+		assert(
+			bundle.success,
+			`Standalone ${daemon} does not bundle: ${bundle.logs.join("\n")}`,
+		);
+	}
 	writeFileSync(join(artifacts, "verified-package.txt"), `${packed}\n`);
 	console.log(
-		`Verified ${packageJson.name}@${packageJson.version}: ${specifiers.length} exports, declarations, CLI, watchdog and standalone daemon.\n${packed}`,
+		`Verified ${packageJson.name}@${packageJson.version}: ${specifiers.length} exports, declarations, CLI, watchdog and standalone daemons.\n${packed}`,
 	);
 } finally {
 	rmSync(consumer, { recursive: true, force: true });

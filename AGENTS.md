@@ -84,6 +84,7 @@ All library source code lives under `src/`.
  - `status.ts` reads `container ls --all --format json` once and filters client-side: Apple's `ls` has no `--filter`. Its JSON shape has moved between releases, so each field is read defensively rather than against a fixed schema.
  - `preflight.ts` auto-starts via `container system start` but never passes `--enable-kernel-install`: with it, a first run would install a kernel without asking; without it, the command prompts and would hang a non-interactive spawn.
 - `src/core/`
+ - `tailnet/` owns private Tailscale Serve mappings and the directory coordinator. `state.ts` reads ownership v1/v2 and writes v2 so old writers cannot discard pending-removal intent. `runtime.ts` compares actual Serve ownership before mutations, attempts independent cleanup, and reuses one snapshot for warm reconciliation and directory publication. `service.ts` serializes install/uninstall, `agent.ts` rolls back failed replacements, and `bundle.ts`/`health.ts`/`diagnostics.ts` distinguish an installed bundle, live coordinator and working mappings. Default dev startup can fall back only after safe rollback; explicit tailnet and ownership conflicts remain strict. Both TypeScript and Swift subprocesses must set `TAILSCALE_BE_CLI=1`: launchd has no terminal environment and the macOS bundle otherwise opens its GUI. See `docs/tailnet-acceptance.md` for the two-device results and remaining release gates.
  - Shared runtime utilities (network, ports, process, utils, watchdog).
  - `runtime-flags.ts` is the only place `BUNCARGO_*` / `CI` are read; getters take the environment as an argument.
  - `state-paths.ts` owns both state directories — `~/.buncargo` (machine-wide: routes, runs, certificates, downloaded tools) and `<root>/.buncargo` (per-checkout: port lockfile, tunnel registry, typecheck artifacts) — plus the `sudo`-aware home resolution and chown that make the first one correct when the root daemon writes it. Relocated for tests by pointing `HOME` elsewhere, deliberately *not* by a dedicated override: a second mechanism outranking `HOME` leaks between test files that already isolate this way.
@@ -169,7 +170,8 @@ All library source code lives under `src/`.
 - Use existing shared utilities before introducing new duplicates.
 - Avoid hidden side effects; keep I/O boundaries explicit.
 - Keep import paths aligned to the current folder architecture (no legacy root paths).
-- Add comments only when logic is non-obvious.
+- Separate logical steps with blank lines so setup, validation, side effects and cleanup are easy to scan.
+- Add short comments that explain intent, non-obvious constraints and transitions between phases. Keep closely related statements grouped; avoid narrating every line.
 
 ## API and Behavior Changes
 

@@ -409,6 +409,8 @@ export interface ExecOptions {
 	timeoutMs?: number;
 	/** Grace before escalating termination. */
 	killGraceMs?: number;
+	/** Maximum combined stdout/stderr bytes before cancelling the process. */
+	maxBufferBytes?: number;
 	/** Working directory relative to monorepo root */
 	cwd?: string;
 	/** Print output to console */
@@ -810,6 +812,8 @@ export type EnvVarsContext<
 	projectName: string;
 	localIp: string;
 	portOffset: number;
+	workspaceId?: string;
+	tailnetUrls?: Partial<Record<Extract<keyof TApps, string>, string>>;
 	publicUrls: ComputedPublicUrls<TServices, TApps>;
 	/** `http://localhost:<port>` URLs, never rewritten by named hosts */
 	loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
@@ -1178,7 +1182,7 @@ export type ComputedEnvVars<
 	Exclude<ConfigEnvVarNames<TServices, TApps, TEnv>, HostOnlyEnvVarNames>,
 	string
 > &
-	Partial<Record<HostOnlyEnvVarNames, string>>;
+	Partial<Record<HostOnlyEnvVarNames | "BUNCARGO_WORKSPACE_ID", string>>;
 
 /**
  * Env names the spawner injects into an app process only while named hosts are
@@ -1207,7 +1211,9 @@ export type AppEnvVars<
 		| "BUNCARGO_APP_NAME",
 		string
 	> &
-	Partial<Record<AppHostOnlyEnvVarNames, string>>;
+	Partial<
+		Record<AppHostOnlyEnvVarNames | "EXPO_PUBLIC_BUNCARGO_WORKSPACE_ID", string>
+	>;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Start/Stop Options
@@ -1335,6 +1341,10 @@ export interface DevEnvironment<
 	readonly loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
 	/** Public tunnel URLs for exposed services/apps (when active) */
 	readonly publicUrls: ComputedPublicUrls<TServices, TApps>;
+	/** Active private URLs, also reflected in `urls` for existing consumers. */
+	readonly tailnetUrls?: Partial<Record<Extract<keyof TApps, string>, string>>;
+	readonly workspaceId?: string;
+	setTailnetUrls?(urls: Readonly<Record<string, string | undefined>>): void;
 	/** Services configuration */
 	readonly services: TServices;
 	/** Apps configuration (for CLI to build commands) */

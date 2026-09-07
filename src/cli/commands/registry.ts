@@ -5,6 +5,11 @@ import type { CommandExample } from "../command-spec";
  * `CliCommandName` and `help.ts` renders its listing from `CLI_COMMANDS`.
  */
 export const CLI_COMMANDS = [
+	{
+		name: "tailnet",
+		usage: "tailnet <subcommand>",
+		summary: "Private Tailscale URLs and peer discovery",
+	},
 	{ name: "dev", usage: "dev", summary: "Start the development environment" },
 	{
 		name: "typecheck",
@@ -145,3 +150,18 @@ export function resolveBarSubcommand(value: string): BarSubcommand | undefined {
 export function barSubcommandList(): string {
 	return BAR_SUBCOMMANDS.map((entry) => entry.name).join(" | ");
 }
+
+export const TAILNET_SUBCOMMANDS = [
+	{
+		name: "install",
+		summary: "Enable automatic private URLs and install the coordinator",
+	},
+	{ name: "status", summary: "Show Tailscale and coordinator state" },
+	{
+		name: "doctor",
+		summary: "Diagnose access; use --repair to reconcile owned mappings",
+	},
+	{ name: "peers", summary: "Find reachable buncargo directories" },
+	{ name: "release", summary: "Release a stopped app port reservation" },
+	{ name: "uninstall", summary: "Disable sharing and remove owned mappings" },
+] as const;
