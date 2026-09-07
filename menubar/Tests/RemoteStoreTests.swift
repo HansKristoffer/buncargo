@@ -39,13 +39,19 @@ private func directory(_ endpoint: URL) -> RemoteDirectory {
 private let endpoint = URL(string: "https://devbox.tail123.ts.net:48443/v1/runs")!
 
 @MainActor
-
 private func setup(
   _ responses: Responses,
-  peers: @escaping @Sendable () async throws -> (String?, [TailnetPeer]) = { ("local", []) }
+  savedEndpoints: [String] = [],
+  peers: @escaping @Sendable () async throws -> (String?, [TailnetPeer]) = {
+    ("local", [TailnetPeer(id: "remote", endpoint: endpoint)])
+  }
 ) -> (RemoteStore, UserDefaults, String) {
   let suite = "buncargo-tests-\(UUID().uuidString)"
   let preferences = UserDefaults(suiteName: suite)!
+  // An old opt-out must not hide devices now that discovery is always visible.
+  preferences.set(false, forKey: "tailnetDiscovery")
+  preferences.set(savedEndpoints, forKey: "tailnetMachines")
+
   let store = RemoteStore(
     preferences: preferences,
     deps: RemoteDependencies(
@@ -55,16 +61,17 @@ private func setup(
 }
 
 @Test @MainActor
-func manualWorksWithoutCLIAndEmptyIsSuccessful() async {
+func savedEndpointWorksWithoutCLIAndEmptyIsSuccessful() async {
   let responses = Responses()
-  let (store, preferences, suite) = setup(responses, peers: { throw TailnetError("CLI absent") })
+  let (store, preferences, suite) = setup(
+    responses, savedEndpoints: [endpoint.absoluteString],
+    peers: { throw TailnetError("CLI absent") })
 
   defer {
-    store.enabled = false
+    store.stop()
     preferences.removePersistentDomain(forName: suite)
   }
 
-  store.add(endpoint.absoluteString)
   await store.waitForRefresh()
 
   #expect(store.machines.count == 1)
@@ -77,14 +84,15 @@ func manualWorksWithoutCLIAndEmptyIsSuccessful() async {
 func deduplicatesMachineAcrossManualAndAutomaticEndpoints() async {
   let responses = Responses()
   let automatic = TailnetPeer(id: "remote", endpoint: endpoint)
-  let (store, preferences, suite) = setup(responses, peers: { ("local", [automatic]) })
+  let (store, preferences, suite) = setup(
+    responses, savedEndpoints: ["https://devbox.tail123.ts.net:49000"],
+    peers: { ("local", [automatic]) })
 
   defer {
-    store.enabled = false
+    store.stop()
     preferences.removePersistentDomain(forName: suite)
   }
 
-  store.add("https://devbox.tail123.ts.net:49000")
   await store.waitForRefresh()
 
   #expect(store.machines.count == 1)
@@ -92,24 +100,35 @@ func deduplicatesMachineAcrossManualAndAutomaticEndpoints() async {
 }
 
 @Test @MainActor
-func discardsLateResponseAfterForget() async {
+func discoversAutomaticallyDespiteLegacyOptOut() async {
   let responses = Responses()
   let (store, preferences, suite) = setup(responses)
 
   defer {
-    store.enabled = false
+    store.stop()
     preferences.removePersistentDomain(forName: suite)
   }
 
-  store.add(endpoint.absoluteString)
   await store.waitForRefresh()
-  // Hold an old request open while the user forgets the machine.
-  await responses.setDelayed(true)
-  store.refresh(force: true)
-  while !(await responses.pending()) { await Task.yield() }
-  store.remove(endpoint)
 
-  // Deliver the old result after the user action; it must not restore stale UI state.
+  #expect(store.machines.count == 1)
+  #expect(store.machines.first?.id == "remote")
+  #expect(store.notice == nil)
+}
+
+@Test @MainActor
+func discardsLateResponseAfterStop() async {
+  let responses = Responses()
+  await responses.setDelayed(true)
+  let (store, preferences, suite) = setup(responses)
+
+  defer {
+    store.stop()
+    preferences.removePersistentDomain(forName: suite)
+  }
+
+  while !(await responses.pending()) { await Task.yield() }
+  store.stop()
   await responses.release()
 
   for _ in 0..<20 { await Task.yield() }
@@ -117,30 +136,31 @@ func discardsLateResponseAfterForget() async {
 }
 
 @Test @MainActor
-func disableAndReenableInvalidateOldWork() async {
+func explicitRefreshInvalidatesOlderResponse() async {
   let responses = Responses()
   let (store, preferences, suite) = setup(responses)
 
   defer {
-    store.enabled = false
+    store.stop()
     preferences.removePersistentDomain(forName: suite)
   }
 
-  await responses.setDelayed(true)
-  store.add(endpoint.absoluteString)
-  while !(await responses.pending()) { await Task.yield() }
-  store.enabled = false
-  await responses.setDelayed(false)
-  store.enabled = true
   await store.waitForRefresh()
+  await responses.setDelayed(true)
+  store.refresh(force: true)
+  while !(await responses.pending()) { await Task.yield() }
 
-  #expect(store.machines.count == 1)
+  // A newer failed refresh must not be overwritten by an older successful response.
+  await responses.setFailure(true)
+  store.refresh(force: true)
+  await store.waitForRefresh()
+  #expect(store.machines.first?.error == "Unreachable")
 
-  // Deliver the old result after the user action; it must not restore stale UI state.
   await responses.release()
-
   for _ in 0..<20 { await Task.yield() }
+
   #expect(store.machines.count == 1)
+  #expect(store.machines.first?.error == "Unreachable")
 }
 
 @Test @MainActor
@@ -149,11 +169,10 @@ func menuRefreshHonorsBackoffAndExplicitRefreshRetries() async {
   let (store, preferences, suite) = setup(responses)
 
   defer {
-    store.enabled = false
+    store.stop()
     preferences.removePersistentDomain(forName: suite)
   }
 
-  store.add(endpoint.absoluteString)
   await store.waitForRefresh()
   await responses.setFailure(true)
   store.refresh(force: true)

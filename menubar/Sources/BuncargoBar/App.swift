@@ -186,6 +186,8 @@ struct MenuContentView: View {
     @ObservedObject var stopper: StopCoordinator
     @ObservedObject var remote: RemoteStore
 
+    @State private var contentHeight: CGFloat = 320
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
@@ -205,12 +207,7 @@ struct MenuContentView: View {
                     .padding(14)
                 } else {
                     ForEach(store.groups) { group in
-                        Text(group.name.uppercased())
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 12)
-                            .padding(.top, 8)
-                            .padding(.bottom, 2)
+                        ProjectHeading(name: group.name)
 
                         ForEach(group.runs) { run in
                             RunRow(
@@ -250,8 +247,30 @@ struct MenuContentView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: MenuContentHeight.self,
+                        value: geometry.size.height
+                    )
+                }
+            }
         }
-        .frame(width: 320)
-        .frame(maxHeight: 620)
+        // A ScrollView has no intrinsic height for MenuBarExtra to size its window.
+        // Follow the content as local/remote rows change, then scroll above the cap.
+        .frame(width: 320, height: min(contentHeight, 620))
+        .onPreferenceChange(MenuContentHeight.self) { height in
+            if height > 0 {
+                contentHeight = height
+            }
+        }
+    }
+}
+
+private struct MenuContentHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
