@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "machineId": "fixture-machine",
+  "hostname": "devbox.tail123.ts.net",
+  "generatedAt": "2026-09-07T12:00:00.000Z",
+  "runs": [
+    {
+      "id": "fixture-session",
+      "project": "lullu",
+      "worktree": "tree-a",
+      "branch": "fix-login",
+      "apps": [
+        { "name": "platform", "status": "ready", "url": "https://devbox.tail123.ts.net:25173" },
+        { "name": "api", "status": "starting", "url": "https://devbox.tail123.ts.net:23000" }
+      ]
+    }
+  ]
+}

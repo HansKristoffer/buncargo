@@ -1,0 +1,72 @@
+import type { RunEntry } from "../run-registry";
+import { mappingState, type TailnetPeer } from "./client";
+import { allocationUrl, leaseMatchesRun, leaseTarget } from "./runtime";
+import type { TailnetState } from "./state";
+
+/**
+ * Build the JSON document the coordinator serves at `/v1/runs`.
+ *
+ * Only includes apps whose Serve mapping is live and matches the recorded
+ * lease — stale reservations and foreign mappings are omitted.
+ */
+export function directorySnapshot(
+	self: TailnetPeer,
+	state: TailnetState,
+	runs: RunEntry[],
+	actual: Record<string, unknown>,
+	now = Date.now(),
+) {
+	return {
+		version: 1,
+		machineId: self.id,
+		hostname: self.hostname,
+		generatedAt: new Date(now).toISOString(),
+		runs: runs.flatMap((run) => {
+			const apps = run.apps.flatMap((app) => {
+				const allocation = state.allocations.find(
+					(a) =>
+						a.lease &&
+						leaseMatchesRun(a.lease, run) &&
+						a.lease.app === app.name,
+				);
+
+				if (
+					!state.enabled ||
+					state.removing ||
+					!allocation?.lease ||
+					allocation.lease.pendingRemoval ||
+					mappingState(
+						actual,
+						allocation.lease.hostname,
+						allocation.port,
+						leaseTarget(allocation.lease),
+					) !== "owned"
+				) {
+					return [];
+				}
+
+				return [
+					{
+						name: app.name,
+						status: app.status,
+						url: allocationUrl(allocation),
+					},
+				];
+			});
+
+			if (!apps.length) return [];
+
+			return [
+				{
+					id: run.sessionId ?? `${run.projectName}:${run.startedAt}`,
+					project: run.projectPrefix,
+					worktree: run.worktree,
+					branch: run.branch,
+					apps,
+				},
+			];
+		}),
+	};
+}
+
+export type TailnetSnapshot = ReturnType<typeof directorySnapshot>;

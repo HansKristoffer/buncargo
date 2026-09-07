@@ -26,6 +26,7 @@ import {
 } from "./commands/runtime";
 import { handleSim } from "./commands/sim";
 import { handleStop } from "./commands/stop";
+import { handleTailnet } from "./commands/tailnet";
 import { showVersion } from "./commands/version";
 import * as log from "./log";
 
@@ -41,6 +42,9 @@ async function runCommand(
 	commandArgs: string[],
 ): Promise<void> {
 	switch (command) {
+		case "tailnet":
+			await handleTailnet(commandArgs);
+			return;
 		case "help":
 			showHelp();
 			return;

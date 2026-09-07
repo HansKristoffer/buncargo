@@ -141,7 +141,7 @@ struct RunDetailView: View {
                     TargetRow(
                         name: app.name,
                         status: app.state,
-                        url: Actions.preferredURL(
+                        url: app.tailnetUrl ?? Actions.preferredURL(
                             named: app.url,
                             loopback: app.loopbackUrl,
                             hostsActive: hostsActive
@@ -236,7 +236,7 @@ struct RunRow: View {
             if let primary = run.primary, primary.state != .stopped {
                 Button("Open") {
                     Actions.open(
-                        Actions.preferredURL(
+                        primary.tailnetUrl ?? Actions.preferredURL(
                             named: primary.url,
                             loopback: primary.loopbackUrl,
                             hostsActive: run.hosts?.active ?? false

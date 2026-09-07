@@ -11,6 +11,45 @@ enum BuncargoBarMain {
             printStatus()
             return
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--tailnet-selftest"),
+            CommandLine.arguments.count > index + 1
+        {
+            do {
+                let raw = try Data(
+                    contentsOf: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
+                let directory = try JSONDecoder().decode(RemoteDirectory.self, from: raw)
+                let now = ISO8601DateFormatter().date(from: "2026-09-07T12:00:00Z")!
+                try directory.validate(
+                    host: "devbox.tail123.ts.net", expectedID: "fixture-machine", now: now)
+                do {
+                    try directory.validate(host: "other.tail123.ts.net", now: now)
+                    throw TailnetError("Accepted wrong host")
+                } catch let error as TailnetError where error.message == "Accepted wrong host" {
+                    throw error
+                } catch {}
+                do {
+                    try directory.validate(
+                        host: directory.hostname, now: now.addingTimeInterval(300))
+                    throw TailnetError("Accepted stale data")
+                } catch let error as TailnetError where error.message == "Accepted stale data" {
+                    throw error
+                } catch {}
+                let bad = String(decoding: raw, as: UTF8.self).replacingOccurrences(
+                    of: "https://devbox.tail123.ts.net:25173", with: "file:///etc/passwd")
+                let invalid = try JSONDecoder().decode(RemoteDirectory.self, from: Data(bad.utf8))
+                do {
+                    try invalid.validate(host: directory.hostname, now: now)
+                    throw TailnetError("Accepted unsafe URL")
+                } catch let error as TailnetError where error.message == "Accepted unsafe URL" {
+                    throw error
+                } catch {}
+                print("OK tailnet contract and unsafe/stale response rejection")
+            } catch {
+                print("FAIL tailnet contract: \(error)")
+                exit(1)
+            }
+            return
+        }
         if CommandLine.arguments.contains("--selftest") {
             selfTest()
             return
@@ -35,7 +74,8 @@ enum BuncargoBarMain {
         }
         // A run that goes away and comes back is news again.
         if Notifier.newlyStarted(runs: [], announced: &announced).isEmpty,
-           Notifier.newlyStarted(runs: runs, announced: &announced).count != startedRuns.count {
+            Notifier.newlyStarted(runs: runs, announced: &announced).count != startedRuns.count
+        {
             failures.append("a restarted run did not announce")
         }
 
@@ -103,7 +143,7 @@ struct BuncargoBarApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContentView(store: model.store, stopper: model.stopper)
+            MenuContentView(store: model.store, stopper: model.stopper, remote: model.remote)
         } label: {
             MenuBarLabel(store: model.store)
         }
@@ -119,6 +159,7 @@ struct BuncargoBarApp: App {
 final class AppModel: ObservableObject {
     let store: RunStore
     let stopper: StopCoordinator
+    let remote = RemoteStore()
 
     init() {
         let store = RunStore()
@@ -143,64 +184,74 @@ private struct MenuBarLabel: View {
 struct MenuContentView: View {
     @ObservedObject var store: RunStore
     @ObservedObject var stopper: StopCoordinator
+    @ObservedObject var remote: RemoteStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if store.groups.isEmpty {
-                // A registry this build cannot read is not "nothing running":
-                // say so, and say what fixes it, or the user debugs `dev`.
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(store.errorMessage ?? "No buncargo environments running")
-                        .font(.system(size: 12))
-                        .foregroundStyle(store.errorMessage == nil ? .secondary : .primary)
-                    if store.isOutdated {
-                        Text("Run `buncargo bar update` to catch up.")
-                            .font(.system(size: 11))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if store.groups.isEmpty {
+                    // A registry this build cannot read is not "nothing running":
+                    // say so, and say what fixes it, or the user debugs `dev`.
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(store.errorMessage ?? "No buncargo environments running")
+                            .font(.system(size: 12))
+                            .foregroundStyle(store.errorMessage == nil ? .secondary : .primary)
+                        if store.isOutdated {
+                            Text("Run `buncargo bar update` to catch up.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(14)
+                } else {
+                    ForEach(store.groups) { group in
+                        Text(group.name.uppercased())
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.secondary)
+                            .padding(.horizontal, 12)
+                            .padding(.top, 8)
+                            .padding(.bottom, 2)
+
+                        ForEach(group.runs) { run in
+                            RunRow(
+                                run: run,
+                                onStop: { target in stopper.request(run: run, target: target) },
+                                onSimulator: { app in stopper.openSimulator(run: run, app: app) }
+                            )
+                        }
                     }
                 }
-                .padding(14)
-            } else {
-                ForEach(store.groups) { group in
-                    Text(group.name.uppercased())
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
+
+                Divider().padding(.top, 8)
+                RemoteMachinesView(store: remote)
+
+                if let notice = stopper.notice {
+                    Text(notice)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.red)
                         .padding(.horizontal, 12)
-                        .padding(.top, 8)
-                        .padding(.bottom, 2)
-
-                    ForEach(group.runs) { run in
-                        RunRow(
-                            run: run,
-                            onStop: { target in stopper.request(run: run, target: target) },
-                            onSimulator: { app in stopper.openSimulator(run: run, app: app) }
-                        )
-                    }
+                        .padding(.top, 6)
                 }
-            }
 
-            if let notice = stopper.notice {
-                Text(notice)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 6)
-            }
+                Divider().padding(.top, 8)
 
-            Divider().padding(.top, 8)
-
-            HStack {
-                Button("Refresh") { store.reload() }
+                HStack {
+                    Button("Refresh") {
+                        store.reload()
+                        remote.refresh(force: true)
+                    }
                     .buttonStyle(.link)
                     .font(.system(size: 11))
-                Spacer()
-                Button("Quit") { NSApp.terminate(nil) }
-                    .buttonStyle(.link)
-                    .font(.system(size: 11))
+                    Spacer()
+                    Button("Quit") { NSApp.terminate(nil) }
+                        .buttonStyle(.link)
+                        .font(.system(size: 11))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
         }
         .frame(width: 320)
+        .frame(maxHeight: 620)
     }
 }

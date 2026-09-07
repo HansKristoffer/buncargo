@@ -17,6 +17,7 @@ import {
 	toUrlMap,
 	type UrlMap,
 } from "../core/ports";
+import { workspaceId } from "../core/tailnet/state";
 import type { PublicTunnel } from "../core/tunnel";
 import {
 	buildComposeModel,
@@ -68,6 +69,9 @@ export interface DevEnvContext<
 	readonly loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
 	/** Mutated in place so consumers holding the object see tunnel updates. */
 	readonly publicUrls: UrlMap;
+	readonly tailnetUrls: UrlMap;
+	readonly workspaceId: string;
+	setTailnetUrls(urls: Readonly<Record<string, string | undefined>>): void;
 	readonly portOffset: number;
 	readonly portOffsetProvenance: PortOffsetProvenance;
 	readonly composeFile: string;
@@ -176,6 +180,21 @@ export function createDevEnvContext<
 		computeLoopbackUrls(services, apps, portMap),
 	);
 	const publicUrls: UrlMap = {};
+	const tailnetUrls: UrlMap = {};
+
+	function refreshUrls() {
+		const urlMap = toUrlMap(urls);
+		Object.assign(urlMap, plainUrls);
+
+		if (hosts?.active) {
+			applyHostPlanToUrls(urlMap, hosts.plan);
+		}
+
+		// Consumers already use `urls` for browser origins. Keep the selected
+		// transport here instead of requiring every app to repeat the fallback.
+		Object.assign(urlMap, tailnetUrls);
+	}
+
 	let model: ComposeDocument | undefined;
 	const buildModel = () =>
 		buildComposeModel(
@@ -198,6 +217,15 @@ export function createDevEnvContext<
 		urls,
 		loopbackUrls,
 		publicUrls,
+		tailnetUrls,
+		workspaceId: workspaceId(root),
+		setTailnetUrls(next) {
+			for (const key of Object.keys(tailnetUrls)) delete tailnetUrls[key];
+			for (const [key, value] of Object.entries(next))
+				if (key in apps && value !== undefined) tailnetUrls[key] = value;
+
+			refreshUrls();
+		},
 		portOffset: portPlan.offset,
 		portOffsetProvenance: portPlan.provenance,
 		composeFile,
@@ -226,13 +254,7 @@ export function createDevEnvContext<
 			if (!hosts) return;
 			hosts.active = active;
 			hosts.caPath = extras.caPath;
-			const urlMap = toUrlMap(urls);
-			for (const [key, value] of Object.entries(plainUrls)) {
-				urlMap[key] = value;
-			}
-			if (active && hosts.plan.length > 0) {
-				applyHostPlanToUrls(urlMap, hosts.plan);
-			}
+			refreshUrls();
 		},
 
 		setPublicUrls(next) {

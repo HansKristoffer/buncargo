@@ -32,6 +32,11 @@ import {
 } from "./dev-flags";
 import { activateNamedHosts, releaseNamedHosts } from "./dev-hosts";
 import {
+	prepareTailnet,
+	releaseTailnet,
+	waitForTailnetHandoff,
+} from "./dev-tailnet";
+import {
 	createTunnelCoordinator,
 	type DevTunnelCoordinator,
 	type TunnelApi,
@@ -49,6 +54,7 @@ import {
 	isInteractive,
 	promptTakeover,
 	stopRunningApps,
+	type TakeoverCandidates,
 	takeoverCandidates,
 } from "./takeover";
 import { validateDevStart } from "./validate-dev-start";
@@ -213,6 +219,7 @@ async function teardown<
 		stopHeartbeat(env.projectName, env.root);
 		const results = await Promise.allSettled([
 			tunnels.stop(),
+			releaseTailnet(env.root),
 			releaseNamedHosts(env),
 			withdrawCurrentRun(env.root),
 		]);
@@ -339,6 +346,38 @@ async function runDevFlow<
 					}),
 				);
 
+	async function takeOver(candidates: TakeoverCandidates) {
+		log.line();
+		await stopRunningApps(candidates.names, env.ports, {
+			runtime: containerRuntimeForEnv(env),
+		});
+		await waitForTailnetHandoff(env.root, candidates.names, signal);
+		hostsWarnings = await activateNamedHosts(env, {
+			enabled: args.hosts,
+			signal,
+		});
+		classifiedApps = {
+			startApps: { ...classifiedApps.startApps, ...candidates.apps },
+			startNames: [...classifiedApps.startNames, ...candidates.names],
+			reusedApps: Object.fromEntries(
+				Object.entries(classifiedApps.reusedApps).filter(
+					([name]) => !candidates.names.includes(name),
+				),
+			),
+			reusedNames: classifiedApps.reusedNames.filter(
+				(name) => !candidates.names.includes(name),
+			),
+			inferredReuseNames: classifiedApps.inferredReuseNames.filter(
+				(name) => !candidates.names.includes(name),
+			),
+		};
+	}
+	// Explicit takeover precedes public URL inheritance as well as private URL acquisition.
+	if (args.takeover && !args.oneShot) {
+		const candidates = takeoverCandidates(classifiedApps.reusedApps, env.ports);
+		if (candidates.names.length) await takeOver(candidates);
+	}
+
 	// ── Expose planning ──────────────────────────────────────────────────────
 	if (args.exposeRequested) {
 		await tunnels.planExpose({
@@ -394,44 +433,38 @@ async function runDevFlow<
 	// ends up doing rather than a reuse the takeover is about to undo.
 	let nothingToSpawn = classifiedApps.startNames.length === 0;
 	const takeover =
-		nothingToSpawn && !tunnels.hasPendingTargets()
+		!args.takeover && nothingToSpawn && !tunnels.hasPendingTargets()
 			? takeoverCandidates(classifiedApps.reusedApps, env.ports)
 			: undefined;
 
 	if (takeover && takeover.names.length > 0) {
-		const accepted =
-			args.takeover ||
-			(isInteractive() && (await promptTakeover(takeover.names)));
+		const accepted = isInteractive() && (await promptTakeover(takeover.names));
+
 		if (accepted) {
-			log.line();
-			await stopRunningApps(takeover.names, env.ports, {
-				runtime: containerRuntimeForEnv(env),
-			});
-			// The other run held this project's hostnames, so the activation
-			// before the containers started was refused and `env.urls` fell back
-			// to localhost. Its routes are claimable now that its pid is gone.
-			hostsWarnings = await activateNamedHosts(env, {
-				enabled: args.hosts,
-				signal,
-			});
-			classifiedApps = {
-				startApps: takeover.apps,
-				startNames: takeover.names,
-				reusedApps: {},
-				reusedNames: [],
-				inferredReuseNames: [],
-			};
+			await takeOver(takeover);
 			nothingToSpawn = false;
 		}
 	}
 
 	flushHostsWarnings();
+	const sessionId = crypto.randomUUID();
+	await timer.measure("tailnet", () =>
+		prepareTailnet(env, {
+			sessionId,
+			requested: args.tailnet,
+			signal,
+			publicExpose: args.exposeRequested,
+			startApps: classifiedApps.startApps,
+			reusedApps: classifiedApps.reusedApps,
+		}),
+	);
 
 	// Published here, after the takeover has been decided: before it, the app
 	// classification still describes a reuse the takeover is about to undo, and
 	// `env.urls` may still hold the localhost fallback from the refused first
 	// activation.
 	await publishCurrentRun(env, {
+		sessionId,
 		apps: { ...classifiedApps.startApps, ...classifiedApps.reusedApps },
 		reusedNames: classifiedApps.reusedNames,
 		serviceNames: plan.requiredServiceKeys,
@@ -551,6 +584,9 @@ async function runDevFlow<
 				// is the app falling over, which the supervisor also turns into a
 				// failed run.
 				onAppExit: (name, code, signal) => {
+					void releaseTailnet(env.root, name).catch((error) =>
+						log.warn(`Tailnet cleanup: ${String(error)}`),
+					);
 					void markApps(
 						env.root,
 						[name],
