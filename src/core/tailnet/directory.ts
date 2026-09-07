@@ -3,6 +3,12 @@ import { mappingState, type TailnetPeer } from "./client";
 import { allocationUrl, leaseTarget } from "./runtime";
 import type { TailnetState } from "./state";
 
+/**
+ * Build the JSON document the coordinator serves at `/v1/runs`.
+ *
+ * Only includes apps whose Serve mapping is live and matches the recorded
+ * lease — stale reservations and foreign mappings are omitted.
+ */
 export function directorySnapshot(
 	self: TailnetPeer,
 	state: TailnetState,
@@ -23,6 +29,7 @@ export function directorySnapshot(
 						a.lease.pid === run.pid &&
 						a.lease.app === app.name,
 				);
+
 				if (
 					!allocation?.lease ||
 					mappingState(
@@ -31,8 +38,10 @@ export function directorySnapshot(
 						allocation.port,
 						leaseTarget(allocation.lease),
 					) !== "owned"
-				)
+				) {
 					return [];
+				}
+
 				return [
 					{
 						name: app.name,
@@ -41,7 +50,9 @@ export function directorySnapshot(
 					},
 				];
 			});
+
 			if (!apps.length) return [];
+
 			return [
 				{
 					id: run.sessionId ?? `${run.projectName}:${run.startedAt}`,

@@ -17,12 +17,16 @@ import { DIRECTORY_LOCAL_PORT, DIRECTORY_PORT, mutateTailnet } from "./state";
 
 const exec = promisify(execFile);
 const LABEL = "dev.buncargo.tailnet";
+
+// ── Service manifest helpers ─────────────────────────────────────────────────
+
 const xml = (s: string) =>
 	s
 		.replaceAll("&", "&amp;")
 		.replaceAll("<", "&lt;")
 		.replaceAll(">", "&gt;")
 		.replaceAll('"', "&quot;");
+
 const unitQuote = (s: string) =>
 	`"${s.replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 
@@ -87,6 +91,8 @@ function servicePath() {
 		: join(homedir(), ".config/systemd/user", `${LABEL}.service`);
 }
 
+// ── Health ───────────────────────────────────────────────────────────────────
+
 export async function tailnetDaemonHealthy(): Promise<boolean> {
 	try {
 		const response = await fetch(
@@ -94,6 +100,7 @@ export async function tailnetDaemonHealthy(): Promise<boolean> {
 			{ signal: AbortSignal.timeout(1000) },
 		);
 		const value: unknown = await response.json();
+
 		return (
 			response.ok &&
 			typeof value === "object" &&
@@ -106,6 +113,8 @@ export async function tailnetDaemonHealthy(): Promise<boolean> {
 	}
 }
 
+// ── User service lifecycle ─────────────────────────────────────────────────
+
 async function command(program: string, args: string[]) {
 	await exec(program, args, { timeout: 15000 });
 }
@@ -113,6 +122,7 @@ async function command(program: string, args: string[]) {
 async function stopService() {
 	const path = servicePath();
 	if (!existsSync(path)) return;
+
 	if (process.platform === "darwin") {
 		try {
 			await command("launchctl", [
@@ -123,43 +133,56 @@ async function stopService() {
 		} catch {
 			/* May already be unloaded. */
 		}
-	} else
+	} else {
 		await command("systemctl", [
 			"--user",
 			"disable",
 			"--now",
 			`${LABEL}.service`,
 		]);
+	}
 }
 
 async function installAgent(binary: string) {
-	if (process.platform !== "darwin" && process.platform !== "linux")
+	if (process.platform !== "darwin" && process.platform !== "linux") {
 		throw new Error(
 			"Tailnet installation supports macOS and Linux (use WSL on Windows)",
 		);
+	}
+
+	// Walk up from this module to the buncargo package root.
 	let root = dirname(fileURLToPath(import.meta.url));
+
 	while (dirname(root) !== root) {
 		try {
 			const manifest = JSON.parse(
 				await readFile(join(root, "package.json"), "utf8"),
 			);
+
 			if (manifest.name === "buncargo") break;
 		} catch {
 			/* Look in the package ancestor. */
 		}
+
 		root = dirname(root);
 	}
+
 	const bundle = join(root, "dist/tailnetd.js");
-	if (!existsSync(bundle))
+
+	if (!existsSync(bundle)) {
 		throw new Error(
 			"Missing tailnet daemon bundle. Run bun run build in buncargo or reinstall the package.",
 		);
+	}
+
 	const script = stateFilePath("bin/tailnetd.js");
 	await mkdir(dirname(script), { recursive: true });
 	await stopService();
 	await copyFile(bundle, script);
+
 	const path = servicePath();
 	await mkdir(dirname(path), { recursive: true });
+
 	await writeFile(
 		path,
 		tailnetServiceDefinition({
@@ -172,14 +195,15 @@ async function installAgent(binary: string) {
 		}),
 		{ mode: 0o600 },
 	);
+
 	try {
-		if (process.platform === "darwin")
+		if (process.platform === "darwin") {
 			await command("launchctl", [
 				"bootstrap",
 				`gui/${process.getuid?.()}`,
 				path,
 			]);
-		else {
+		} else {
 			await command("systemctl", ["--user", "daemon-reload"]);
 			await command("systemctl", [
 				"--user",
@@ -188,10 +212,13 @@ async function installAgent(binary: string) {
 				`${LABEL}.service`,
 			]);
 		}
+
 		for (let i = 0; i < 20; i++) {
 			if (await tailnetDaemonHealthy()) return;
+
 			await new Promise((resolve) => setTimeout(resolve, 250));
 		}
+
 		throw new Error(
 			`Tailnet coordinator did not start; inspect ${stateFilePath("tailnet.log")} or the user service journal. Linux needs an active systemd user manager; enable lingering for operation after logout.`,
 		);
@@ -202,28 +229,38 @@ async function installAgent(binary: string) {
 	}
 }
 
+// ── Install / uninstall ──────────────────────────────────────────────────────
+
 export async function installTailnet(discoveryPort = DIRECTORY_PORT) {
 	if (
 		!Number.isInteger(discoveryPort) ||
 		discoveryPort < 40000 ||
 		discoveryPort > 49999 ||
 		discoveryPort === DIRECTORY_LOCAL_PORT
-	)
+	) {
 		throw new Error("Discovery port must be 40000–49999 excluding 48444");
+	}
+
 	const { tailscaleBinary } = await import("./client");
+
 	// Resolve PATH now; launchd/systemd do not inherit the interactive shell PATH.
 	const selected = tailscaleBinary();
 	const binary = selected.includes("/") ? selected : Bun.which(selected);
-	if (!binary)
+
+	if (!binary) {
 		throw new Error(
 			"Install and connect Tailscale, then rerun buncargo tailnet install",
 		);
+	}
+
 	const ts = createTailscaleClient(binary);
 	const { self } = await tailnetStatus(ts);
 	const target = `http://127.0.0.1:${DIRECTORY_LOCAL_PORT}`;
+
 	// Start the loopback endpoint before touching Serve. This proves CLI/bundle
 	// installation locally even if the tailnet still needs HTTPS authorization.
 	await installAgent(binary);
+
 	try {
 		await mutateTailnet(async (state, save) => {
 			const actual = await serveState(ts);
@@ -233,31 +270,40 @@ export async function installTailnet(discoveryPort = DIRECTORY_PORT) {
 				discoveryPort,
 				target,
 			);
+
 			if (
 				disposition === "conflict" ||
 				(disposition === "owned" && state.directory?.hostname !== self.hostname)
-			)
+			) {
 				throw new Error(
 					`Discovery port ${discoveryPort} is already owned by another Serve configuration`,
 				);
-			if (state.directory && state.directory.hostname !== self.hostname)
+			}
+
+			if (state.directory && state.directory.hostname !== self.hostname) {
 				throw new Error(
 					"The machine DNS name changed. Uninstall the old buncargo tailnet mappings before reinstalling.",
 				);
+			}
+
 			if (
 				state.directory &&
 				(state.directory.port ?? DIRECTORY_PORT) !== discoveryPort
-			)
+			) {
 				throw new Error(
 					"Uninstall the existing buncargo tailnet directory before changing its port",
 				);
+			}
+
 			state.directory = {
 				hostname: self.hostname,
 				target,
 				port: discoveryPort,
 			};
 			await save();
+
 			await ts(["serve", "--bg", "--yes", `--https=${discoveryPort}`, target]);
+
 			if (
 				mappingState(
 					await serveState(ts),
@@ -265,10 +311,12 @@ export async function installTailnet(discoveryPort = DIRECTORY_PORT) {
 					discoveryPort,
 					target,
 				) !== "owned"
-			)
+			) {
 				throw new Error(
 					"Enable HTTPS in the Tailscale admin console, then rerun buncargo tailnet install",
 				);
+			}
+
 			state.enabled = true;
 			await save();
 		});
@@ -285,10 +333,12 @@ export async function installTailnet(discoveryPort = DIRECTORY_PORT) {
 
 export async function uninstallTailnet() {
 	const runtime = createTailnetRuntime();
+
 	await mutateTailnet(async (state, save) => {
 		state.enabled = false;
 		await save();
 		await runtime.clear(state, save);
+
 		if (state.directory) {
 			const d = state.directory;
 			const disposition = mappingState(
@@ -297,23 +347,31 @@ export async function uninstallTailnet() {
 				d.port ?? DIRECTORY_PORT,
 				d.target,
 			);
-			if (disposition === "conflict")
+
+			if (disposition === "conflict") {
 				throw new Error(
 					`Discovery port ${d.port ?? DIRECTORY_PORT} was changed outside buncargo; refusing to remove it`,
 				);
-			if (disposition === "owned")
+			}
+
+			if (disposition === "owned") {
 				await runtime.command([
 					"serve",
 					"--bg",
 					`--https=${d.port ?? DIRECTORY_PORT}`,
 					"off",
 				]);
+			}
+
 			delete state.directory;
 			await save();
 		}
 	});
+
 	await stopService();
 	await rm(servicePath(), { force: true });
-	if (process.platform === "linux")
+
+	if (process.platform === "linux") {
 		await command("systemctl", ["--user", "daemon-reload"]);
+	}
 }
