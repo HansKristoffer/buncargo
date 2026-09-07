@@ -186,10 +186,8 @@ struct MenuContentView: View {
     @ObservedObject var stopper: StopCoordinator
     @ObservedObject var remote: RemoteStore
 
-    @State private var contentHeight: CGFloat = 320
-
     var body: some View {
-        ScrollView {
+        MenuContentLayout {
             VStack(alignment: .leading, spacing: 0) {
                 if store.groups.isEmpty {
                     // A registry this build cannot read is not "nothing running":
@@ -247,30 +245,23 @@ struct MenuContentView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
-            .background {
-                GeometryReader { geometry in
-                    Color.clear.preference(
-                        key: MenuContentHeight.self,
-                        value: geometry.size.height
-                    )
-                }
-            }
-        }
-        // A ScrollView has no intrinsic height for MenuBarExtra to size its window.
-        // Follow the content as local/remote rows change, then scroll above the cap.
-        .frame(width: 320, height: min(contentHeight, 620))
-        .onPreferenceChange(MenuContentHeight.self) { height in
-            if height > 0 {
-                contentHeight = height
-            }
         }
     }
 }
 
-private struct MenuContentHeight: PreferenceKey {
-    static let defaultValue: CGFloat = 0
+/// Report the menu's height during layout, before MenuBarExtra sizes its window.
+struct MenuContentLayout<Content: View>: View {
+    @ViewBuilder var content: () -> Content
 
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            content()
+            ScrollView { content() }
+        }
+        .frame(width: 320)
+        .frame(maxHeight: 620)
+        // A short menu uses its intrinsic height; only overflow needs a scroll view.
+        // Avoid measuring into @State after opening: the window can keep that old size.
+        .fixedSize(horizontal: false, vertical: true)
     }
 }

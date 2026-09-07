@@ -9,6 +9,7 @@
       "project": "lullu",
       "worktree": "tree-a",
       "branch": "fix-login",
+      "primaryApp": "platform",
       "apps": [
         { "name": "platform", "status": "ready", "url": "https://devbox.tail123.ts.net:25173" },
         { "name": "api", "status": "starting", "url": "https://devbox.tail123.ts.net:23000" }

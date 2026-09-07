@@ -37,6 +37,7 @@ it("emits the same v1 fixture decoded by the Swift smoke test", () => {
 		root,
 		worktree: "tree-a",
 		branch: "fix-login",
+		primaryApp: "platform",
 		pid: 123,
 		startedAt: "now",
 		updatedAt: "now",
@@ -73,6 +74,33 @@ it("emits the same v1 fixture decoded by the Swift smoke test", () => {
 		),
 	);
 	expect(fixture).toEqual(snapshot);
+
+	// App order must not decide the destination when the project names its primary app.
+	const reversed = directorySnapshot(
+		{ id: "fixture-machine", hostname, online: true },
+		state,
+		[{ ...run, apps: [...run.apps].reverse() }],
+		actual,
+	);
+	expect(reversed.runs[0]?.primaryApp).toBe("platform");
+
+	const implicitPrimary = directorySnapshot(
+		{ id: "fixture-machine", hostname, online: true },
+		state,
+		[{ ...run, primaryApp: undefined }],
+		actual,
+	);
+	expect(implicitPrimary.runs[0]?.primaryApp).toBe("platform");
+
+	// A primary whose mapping is not shared stays unavailable; do not promote the API.
+	const apiOnly = directorySnapshot(
+		{ id: "fixture-machine", hostname, online: true },
+		{ ...state, allocations: state.allocations.filter((a) => a.key === "api") },
+		[run],
+		actual,
+	);
+	expect(apiOnly.runs[0]?.apps.map((app) => app.name)).toEqual(["api"]);
+	expect(apiOnly.runs[0]?.primaryApp).toBeNull();
 });
 
 it("bounds streamed directory responses", async () => {
@@ -101,6 +129,16 @@ it("validates the shared directory and rejects malformed variations", () => {
 
 	expect(parse(fixture)).toMatchObject(fixture);
 
+	// The additive field keeps older v1 coordinators readable during upgrades.
+	const { primaryApp: _primaryApp, ...legacyRun } = fixture.runs[0];
+	expect(
+		parse({ ...fixture, runs: [legacyRun] }).runs[0]?.primaryApp,
+	).toBeUndefined();
+	expect(
+		parse({ ...fixture, runs: [{ ...legacyRun, primaryApp: null }] }).runs[0]
+			?.primaryApp,
+	).toBeNull();
+
 	// Change one field at a time so each rejection identifies a specific broken contract.
 	const metadata: [string, Record<string, unknown>][] = [
 		["unsupported version", { version: 2 }],
@@ -122,6 +160,10 @@ it("validates the shared directory and rejects malformed variations", () => {
 		["duplicate app", [{ ...run, apps: [...run.apps, app] }]],
 		["invalid branch", [{ ...run, branch: "a".repeat(257) }]],
 		["missing apps", [missingApps]],
+		["invalid primary type", [{ ...run, primaryApp: 123 }]],
+		["oversized primary", [{ ...run, primaryApp: "a".repeat(257) }]],
+		["empty primary", [{ ...run, primaryApp: "" }]],
+		["unlisted primary", [{ ...run, primaryApp: "private-app" }]],
 	];
 
 	for (const [name, runs] of invalidRuns) {
