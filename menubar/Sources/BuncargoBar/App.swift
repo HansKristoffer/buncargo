@@ -238,7 +238,7 @@ struct MenuContentView: View {
                 HStack {
                     Button("Refresh") {
                         store.reload()
-                        remote.refresh()
+                        remote.refresh(force: true)
                     }
                     .buttonStyle(.link)
                     .font(.system(size: 11))

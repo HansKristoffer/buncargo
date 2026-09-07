@@ -1,4 +1,4 @@
-import { isPortInUse } from "../process";
+import { createPortOwnerSnapshot } from "../process";
 import {
 	matchesProcessIdentity,
 	readProcessIdentity,
@@ -31,6 +31,16 @@ export interface TailnetRuntimeOptions {
 export const leaseTarget = (lease: TailnetLease) =>
 	`http://127.0.0.1:${lease.upstream}`;
 
+export function leaseMatchesRun(lease: TailnetLease, run: RunEntry): boolean {
+	return (
+		lease.root === run.root &&
+		lease.pid === run.pid &&
+		(lease.sessionId === undefined || lease.sessionId === run.sessionId) &&
+		(run.processIdentity === undefined ||
+			run.processIdentity === lease.identity)
+	);
+}
+
 export const allocationUrl = (a: TailnetAllocation) =>
 	a.lease ? `https://${a.lease.hostname}:${a.port}` : undefined;
 
@@ -43,15 +53,16 @@ export const allocationUrl = (a: TailnetAllocation) =>
 export function createTailnetRuntime(options: TailnetRuntimeOptions = {}) {
 	const command = options.command ?? createTailscaleClient();
 	const alive = options.alive ?? matchesProcessIdentity;
-	const busy = options.busy ?? isPortInUse;
+
 	const runs = options.runs ?? readLiveRuns;
 
 	// ── Serve helpers ────────────────────────────────────────────────────────
 
-	async function remove(allocation: TailnetAllocation) {
+	async function remove(allocation: TailnetAllocation, active = command) {
 		if (!allocation.lease) return;
 
-		const current = await serveState(command);
+		const current = await serveState(active);
+
 		const disposition = mappingState(
 			current,
 			allocation.lease.hostname,
@@ -66,7 +77,7 @@ export function createTailnetRuntime(options: TailnetRuntimeOptions = {}) {
 		}
 
 		if (disposition === "owned") {
-			await command(["serve", "--bg", `--https=${allocation.port}`, "off"]);
+			await active(["serve", "--bg", `--https=${allocation.port}`, "off"]);
 		}
 
 		delete allocation.lease;
@@ -79,6 +90,7 @@ export function createTailnetRuntime(options: TailnetRuntimeOptions = {}) {
 		apps: { name: string; port: number; reused: boolean }[];
 		pid?: number;
 		identity?: string;
+		sessionId?: string;
 		signal?: AbortSignal;
 	}) {
 		input.signal?.throwIfAborted();
@@ -94,6 +106,14 @@ export function createTailnetRuntime(options: TailnetRuntimeOptions = {}) {
 		const { self } = await tailnetStatus(active);
 
 		return mutateTailnet(async (state, save) => {
+			if (state.removing)
+				throw new Error(
+					"Tailnet uninstall is pending; finish cleanup before starting a new remote run",
+				);
+
+			const busy =
+				options.busy ?? createPortOwnerSnapshot({ includeCwd: false }).isBusy;
+
 			const urls: Record<string, string> = {};
 			const changed: TailnetAllocation[] = [];
 
@@ -107,9 +127,10 @@ export function createTailnetRuntime(options: TailnetRuntimeOptions = {}) {
 					// Drop stale leases whose owner process is gone.
 					if (
 						allocation?.lease &&
-						!alive(allocation.lease.pid, allocation.lease.identity)
+						(allocation.lease.pendingRemoval ||
+							!alive(allocation.lease.pid, allocation.lease.identity))
 					) {
-						await remove(allocation);
+						await remove(allocation, active);
 						await save();
 					}
 
@@ -141,6 +162,7 @@ export function createTailnetRuntime(options: TailnetRuntimeOptions = {}) {
 						}
 
 						urls[app.name] = `https://${l.hostname}:${allocation.port}`;
+
 						continue;
 					}
 
@@ -151,10 +173,12 @@ export function createTailnetRuntime(options: TailnetRuntimeOptions = {}) {
 					}
 
 					let actual = await serveState(active);
+					let checkedPort = false;
 
 					// Reserve a port on first use; hash determines probe order.
 					if (!allocation) {
 						const occupied = new Set(state.allocations.map((a) => a.port));
+
 						occupied.add(DIRECTORY_PORT);
 
 						for (;;) {
@@ -165,6 +189,8 @@ export function createTailnetRuntime(options: TailnetRuntimeOptions = {}) {
 								!busy(port)
 							) {
 								allocation = { key, port };
+								checkedPort = true;
+
 								break;
 							}
 
@@ -177,7 +203,7 @@ export function createTailnetRuntime(options: TailnetRuntimeOptions = {}) {
 					if (
 						mappingState(actual, self.hostname, allocation.port, "") !==
 							"free" ||
-						busy(allocation.port)
+						(!checkedPort && busy(allocation.port))
 					) {
 						throw new Error(
 							`Reserved tailnet port ${allocation.port} is occupied. Free it or use buncargo tailnet release --port=${allocation.port} while the app is stopped.`,
@@ -187,6 +213,7 @@ export function createTailnetRuntime(options: TailnetRuntimeOptions = {}) {
 					allocation.lease = {
 						pid,
 						identity,
+						sessionId: input.sessionId,
 						root: input.root,
 						app: app.name,
 						upstream: app.port,
@@ -228,10 +255,19 @@ export function createTailnetRuntime(options: TailnetRuntimeOptions = {}) {
 				return urls;
 			} catch (error) {
 				const cleanupErrors: string[] = [];
+				const cleanupSignal = AbortSignal.timeout(10000);
+
+				const cleanupCommand: TailscaleCommand = (args) =>
+					command(args, cleanupSignal);
+
+				for (const allocation of changed)
+					if (allocation.lease) allocation.lease.pendingRemoval = true;
+
+				await save();
 
 				for (const allocation of changed) {
 					try {
-						await remove(allocation);
+						await remove(allocation, cleanupCommand);
 					} catch (cleanup) {
 						cleanupErrors.push(String(cleanup));
 					}
@@ -252,74 +288,154 @@ export function createTailnetRuntime(options: TailnetRuntimeOptions = {}) {
 
 	// ── Release ──────────────────────────────────────────────────────────────
 
-	async function release(root: string, pid = process.pid, app?: string) {
-		return mutateTailnet(async (state, save) => {
-			for (const a of state.allocations) {
-				if (
-					a.lease?.root === root &&
-					a.lease.pid === pid &&
-					(!app || a.lease.app === app)
-				) {
-					await remove(a);
-					await save();
-				}
+	async function removeAll(
+		allocations: TailnetAllocation[],
+		save: () => Promise<void>,
+		active = command,
+	) {
+		for (const a of allocations) if (a.lease) a.lease.pendingRemoval = true;
+
+		await save();
+
+		const issues: unknown[] = [];
+
+		for (const a of allocations) {
+			try {
+				await remove(a, active);
+				await save();
+			} catch (error) {
+				issues.push(error);
 			}
-		});
+		}
+
+		if (issues.length)
+			throw new AggregateError(
+				issues,
+				`Pending tailnet cleanup: ${issues.map(String).join("; ")}`,
+			);
 	}
 
-	// ── Reconcile ────────────────────────────────────────────────────────────
+	async function release(root: string, pid = process.pid, app?: string) {
+		const signal = AbortSignal.timeout(15000);
+		const active: TailscaleCommand = (args) => command(args, signal);
 
-	async function reconcile() {
-		const live = await runs();
+		return mutateTailnet(
+			async (state, save) =>
+				removeAll(
+					state.allocations.filter(
+						(a) =>
+							a.lease?.root === root &&
+							a.lease.pid === pid &&
+							(!app || a.lease.app === app),
+					),
+					save,
+					active,
+				),
+			signal,
+		);
+	}
+
+	/** Remove the directory only after comparing its recorded target with Serve. */
+	async function removeDirectory(
+		state: TailnetState,
+		save: () => Promise<void>,
+		active = command,
+	) {
+		const d = state.directory;
+
+		if (!d) return;
+
+		const port = d.port ?? DIRECTORY_PORT;
+
+		const disposition = mappingState(
+			await serveState(active),
+			d.hostname,
+			port,
+			d.target,
+		);
+
+		if (disposition === "conflict")
+			throw new Error(
+				`Discovery port ${port} was changed outside buncargo; refusing to remove it`,
+			);
+
+		if (disposition === "owned")
+			await active(["serve", "--bg", `--https=${port}`, "off"]);
+
+		delete state.directory;
+		await save();
+	}
+
+	/** One verified read snapshot per phase; re-read before each external mutation. */
+	async function reconcile(signal?: AbortSignal) {
+		const active: TailscaleCommand = (args) => command(args, signal);
 
 		return mutateTailnet(async (state, save) => {
-			const { self } = await tailnetStatus(command);
+			signal?.throwIfAborted();
+
+			const live = await runs();
+			const { self } = await tailnetStatus(active);
+			let actual = await serveState(active);
 			const issues: string[] = [];
+			let mutated = false;
 
-			// Restore the machine directory mapping when enabled.
-			if (state.enabled && state.directory) {
-				const d = state.directory;
-				const port = d.port ?? DIRECTORY_PORT;
+			const restore = async (
+				hostname: string,
+				port: number,
+				target: string,
+			) => {
+				let disposition = mappingState(actual, hostname, port, target);
 
-				try {
-					if (d.hostname !== self.hostname) {
-						throw new Error(
-							"Machine DNS name changed; reinstall the tailnet directory",
-						);
-					}
-
-					const disposition = mappingState(
-						await serveState(command),
-						d.hostname,
-						port,
-						d.target,
-					);
-
-					if (disposition === "conflict") {
-						throw new Error(`Discovery port ${port} has a foreign mapping`);
-					}
+				if (disposition === "free") {
+					actual = await serveState(active);
+					disposition = mappingState(actual, hostname, port, target);
 
 					if (disposition === "free") {
-						await command([
-							"serve",
-							"--bg",
-							"--yes",
-							`--https=${port}`,
-							d.target,
-						]);
+						mutated = true;
+						await active(["serve", "--bg", "--yes", `--https=${port}`, target]);
+						actual = await serveState(active);
+
+						if (mappingState(actual, hostname, port, target) !== "owned")
+							throw new Error(`Tailnet port ${port} did not activate`);
 					}
+				}
+
+				if (disposition === "conflict")
+					throw new Error(`Tailnet port ${port} has a foreign mapping`);
+			};
+
+			if (state.directory) {
+				try {
+					if (!state.enabled || state.removing) {
+						mutated = true;
+						await removeDirectory(state, save, active);
+					} else if (state.directory.hostname !== self.hostname)
+						throw new Error(
+							"Machine DNS name changed; uninstall the old tailnet directory before reinstalling",
+						);
+					else
+						await restore(
+							state.directory.hostname,
+							state.directory.port ?? DIRECTORY_PORT,
+							state.directory.target,
+						);
 				} catch (error) {
 					issues.push(String(error));
 				}
 			}
 
 			for (const a of state.allocations) {
+				signal?.throwIfAborted();
+
 				try {
 					const l = a.lease;
+
 					if (!l) continue;
 
-					const run = live.find((r) => r.root === l.root && r.pid === l.pid);
-					const app = run?.apps.find((v) => v.name === l.app);
+					const app = live
+						.find((r) => leaseMatchesRun(l, r))
+						?.apps.find((v) => v.name === l.app);
+
 					const expired =
 						!alive(l.pid, l.identity) ||
 						(app &&
@@ -329,53 +445,56 @@ export function createTailnetRuntime(options: TailnetRuntimeOptions = {}) {
 									!alive(app.pid, app.processIdentity)))) ||
 						(!app && Date.now() - l.createdAt > 120000);
 
-					if (expired || l.hostname !== self.hostname) {
-						await remove(a);
+					if (
+						!state.enabled ||
+						state.removing ||
+						l.pendingRemoval ||
+						expired ||
+						l.hostname !== self.hostname
+					) {
+						l.pendingRemoval = true;
 						await save();
-						continue;
-					}
-
-					// Reconnect can clear Serve state. Restore only mappings with a live app,
-					// never a startup reservation pointing at a potentially recycled port.
-					if (app?.pid && alive(app.pid, app.processIdentity)) {
-						const disposition = mappingState(
-							await serveState(command),
-							l.hostname,
-							a.port,
-							leaseTarget(l),
-						);
-
-						if (disposition === "conflict") {
-							throw new Error(`Tailnet port ${a.port} has a foreign mapping`);
-						}
-
-						if (disposition === "free") {
-							await command([
-								"serve",
-								"--bg",
-								"--yes",
-								`--https=${a.port}`,
-								leaseTarget(l),
-							]);
-						}
+						mutated = true;
+						await remove(a, active);
+						await save();
+					} else if (app?.pid && alive(app.pid, app.processIdentity)) {
+						await restore(l.hostname, a.port, leaseTarget(l));
 					}
 				} catch (error) {
-					// An unrelated conflict must not prevent cleanup of other leases.
 					issues.push(String(error));
 				}
 			}
 
-			return { state, issues };
-		});
+			signal?.throwIfAborted();
+
+			if (mutated) actual = await serveState(active);
+
+			return { state, issues, self, runs: live, actual };
+		}, signal);
 	}
 
-	// ── Clear ────────────────────────────────────────────────────────────────
-
 	async function clear(state: TailnetState, save: () => Promise<void>) {
-		for (const a of state.allocations) {
-			await remove(a);
-			await save();
+		const issues: unknown[] = [];
+		const signal = AbortSignal.timeout(15000);
+		const active: TailscaleCommand = (args) => command(args, signal);
+
+		try {
+			await removeAll(state.allocations, save, active);
+		} catch (error) {
+			issues.push(error);
 		}
+
+		try {
+			await removeDirectory(state, save, active);
+		} catch (error) {
+			issues.push(error);
+		}
+
+		if (issues.length)
+			throw new AggregateError(
+				issues,
+				`Pending tailnet cleanup: ${issues.map(String).join("; ")}`,
+			);
 	}
 
 	return { acquire, release, reconcile, clear, command };

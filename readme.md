@@ -412,16 +412,21 @@ Then use `bun dev` as usual. The installer enables private URLs by default for s
 bun dev --tailnet                # Require private URLs; fail if setup is unavailable
 bun dev --no-tailnet             # Local URLs for this run
 bunx buncargo tailnet status
-bunx buncargo tailnet doctor     # Reconcile owned mappings and report conflicts
+bunx buncargo tailnet doctor     # Read-only diagnosis, including disconnected state
+bunx buncargo tailnet doctor --repair # Reconcile owned mappings explicitly
 bunx buncargo tailnet peers --json
 bunx buncargo tailnet uninstall  # Remove owned mappings and the coordinator
 ```
 
-Public `--expose` overrides the machine default; explicitly combining `--tailnet` and `--expose` is rejected. CI stays local unless `--tailnet` is explicit. A reused app cannot change URL mode without restarting its owning run. Upgrading the CLI requires rerunning `tailnet install` to update the copied coordinator bundle.
+Public `--expose` overrides the machine default; explicitly combining `--tailnet` and `--expose` is rejected. CI stays local unless `--tailnet` is explicit. A reused app cannot change URL mode without restarting its owning run. Upgrading the CLI requires rerunning `tailnet install` to update the copied coordinator bundle; startup detects a stale bundle. Explicit `--takeover` also handles a mix of new and reused apps before choosing their URL mode. Default-enabled startup may continue locally during an outage after safe rollback; explicit `--tailnet` fails, and an already-running app never silently changes mode. `--no-tailnet`, public exposure, and CI can start locally even if allocation state is unreadable.
 
-Reservations in `~/.buncargo/tailnet.json` persist across app restarts and upstream port changes. HTTPS app ports are **20000–29999**. Stop the owning run before `buncargo tailnet release --port=N` to abandon an allocation. Machine renaming, moving the checkout or deleting allocation state can change URLs. Crash cleanup runs every five seconds while the coordinator and Tailscale are available; it preserves foreign Serve/Funnel mappings. Serve owns traffic directly, so cleanup is not an instantaneous guard against another process reusing an upstream port.
+Reservations in `~/.buncargo/tailnet.json` persist across app restarts and upstream port changes. HTTPS app ports are **20000–29999**. Stop the owning run before `buncargo tailnet release --port=N` to abandon an allocation. Machine renaming, moving the checkout or deleting allocation state can change URLs. Crash cleanup normally runs every five seconds, with failed reconciliation backing off to at most thirty seconds; it preserves foreign Serve/Funnel mappings. Serve owns traffic directly, so cleanup is not an instantaneous guard against another process reusing an upstream port.
+
+Uninstall records removal intent before changing mappings, attempts every independent removal, and keeps the coordinator available to retry pending cleanup. If a foreign mapping prevents completion, restore or explicitly release the conflicting allocation and rerun `tailnet uninstall`. Ownership state migrates from v1 to v2 without renumbering ports; older coordinators refuse the new state rather than discarding removal intent. The network directory and menu bar run registry remain v1.
 
 The directory uses HTTPS **48443**, forwarding to loopback **48444**. If occupied, `tailnet install --discovery-port=49000` selects a custom port; enter its full HTTPS endpoint manually in BuncargoBar. Changing an existing directory port requires uninstalling first. Linux requires a systemd user manager; configure user lingering if it must run after logout. macOS uses a per-user LaunchAgent and requires a logged-in user session. `BUNCARGO_TAILSCALE_PATH` can select a nonstandard CLI binary.
+
+The installer verifies the HTTPS directory from the hosting machine. Access from another device still depends on tailnet policy; see [two-device acceptance](docs/tailnet-acceptance.md) for the recorded transport checks and release checklist. `--timing` / `--timing-json` include tailnet preparation and command/lock counters.
 
 Buncargo updates the existing `urls.app` and `<APP>_URL` to the active private URL, so environment callbacks can keep using `context.publicUrls.app ?? urls.app`. `tailnetUrls` remains available for inspection. The Vite plugin receives the exact HTTPS hostname/port for HMR. Server-side proxies should use the already-injected `<APP>_LOOPBACK_URL`.
 

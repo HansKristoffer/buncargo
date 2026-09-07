@@ -17,10 +17,14 @@ import {
 
 let home: string;
 let prior: string | undefined;
-beforeEach(() => {
+beforeEach(async () => {
 	prior = process.env.HOME;
 	home = mkdtempSync(join(tmpdir(), "buncargo-tailnet-"));
 	process.env.HOME = home;
+	await mutateTailnet(async (state, save) => {
+		state.enabled = true;
+		await save();
+	});
 });
 afterEach(() => {
 	if (prior === undefined) delete process.env.HOME;
@@ -379,4 +383,163 @@ it("publishes only explicit remote fields", async () => {
 	expect(serialized).not.toContain("private");
 	expect(serialized).not.toContain(input.root);
 	expect(serialized).not.toContain("executable");
+});
+
+it("continues release after a conflict and never restores pending removals", async () => {
+	const f = fake();
+	const urls = await f.runtime.acquire({
+		...input,
+		apps: [...input.apps, { name: "api", port: 3000, reused: false }],
+	});
+	const web = Number(new URL(urls.web as string).port),
+		api = Number(new URL(urls.api as string).port);
+	f.state.Web[`${hostname}:${web}`] = {
+		Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } },
+	};
+	await expect(f.runtime.release(input.root, 123)).rejects.toThrow(
+		"Pending tailnet cleanup",
+	);
+	expect(f.state.TCP[api]).toBeUndefined();
+	expect(
+		readTailnetState().allocations.find((a) => a.port === web)?.lease
+			?.pendingRemoval,
+	).toBe(true);
+	delete f.state.TCP[web];
+	delete f.state.Web[`${hostname}:${web}`];
+	await f.runtime.reconcile();
+	expect(f.state.TCP[web]).toBeUndefined();
+	expect(readTailnetState().allocations.every((a) => !a.lease)).toBe(true);
+});
+it("cleans disabled mappings even if their owner remains alive", async () => {
+	const f = fake();
+	await f.runtime.acquire(input);
+	await mutateTailnet(async (state, save) => {
+		state.enabled = false;
+		state.removing = true;
+		await save();
+	});
+	await f.runtime.reconcile();
+	expect(Object.keys(f.state.TCP)).toHaveLength(0);
+	expect(readTailnetState().allocations[0]?.lease).toBeUndefined();
+	await expect(f.runtime.acquire(input)).rejects.toThrow(
+		"uninstall is pending",
+	);
+});
+it("reads Serve once for a warm multi-app reconciliation", async () => {
+	const f = fake();
+	await f.runtime.acquire({
+		...input,
+		apps: [...input.apps, { name: "api", port: 3000, reused: false }],
+	});
+	f.runs.push({
+		root: input.root,
+		pid: 123,
+		worktree: null,
+		projectPrefix: "demo",
+		projectName: "demo",
+		startedAt: "now",
+		updatedAt: "now",
+		hosts: null,
+		cli: { program: "bun" },
+		services: [],
+		apps: ["web", "api"].map((name) => ({
+			name,
+			pid: 456,
+			status: "ready",
+			port: name === "web" ? 5173 : 3000,
+			url: "local",
+			loopbackUrl: "local",
+		})),
+	});
+	f.calls.length = 0;
+	await f.runtime.reconcile();
+	expect(f.calls).toEqual([
+		["status", "--json"],
+		["serve", "status", "--json"],
+	]);
+});
+it("does not associate a lease with a different session or process birth", async () => {
+	const f = fake();
+	await f.runtime.acquire({ ...input, sessionId: "owner" });
+	const allocation = readTailnetState().allocations[0];
+	expect(allocation?.lease?.sessionId).toBe("owner");
+	const run: RunEntry = {
+		root: input.root,
+		pid: 123,
+		sessionId: "other",
+		processIdentity: "birth-a",
+		worktree: null,
+		projectPrefix: "demo",
+		projectName: "demo",
+		startedAt: "now",
+		updatedAt: "now",
+		hosts: null,
+		cli: { program: "bun" },
+		services: [],
+		apps: [
+			{
+				name: "web",
+				port: 5173,
+				status: "ready",
+				url: "local",
+				loopbackUrl: "local",
+			},
+		],
+	};
+	expect(
+		directorySnapshot(
+			{ id: "machine", hostname, online: true },
+			readTailnetState(),
+			[run],
+			f.state,
+		).runs,
+	).toHaveLength(0);
+	run.sessionId = "owner";
+	run.processIdentity = "different-birth";
+	expect(
+		directorySnapshot(
+			{ id: "machine", hostname, online: true },
+			readTailnetState(),
+			[run],
+			f.state,
+		).runs,
+	).toHaveLength(0);
+});
+
+it("migrates v1 state without losing ports and persists cleanup intent in v2", async () => {
+	const f = fake();
+	await f.runtime.acquire(input);
+	const state = readTailnetState();
+	writeFileSync(tailnetStatePath(), JSON.stringify({ ...state, version: 1 }));
+	expect(readTailnetState().allocations[0]?.port).toBe(
+		state.allocations[0]?.port,
+	);
+	await f.runtime.release(input.root, 123);
+	expect(readTailnetState().version).toBe(2);
+});
+
+it("cancels a reconciliation waiting on the machine lock without mutating", async () => {
+	const f = fake();
+	let release!: () => void;
+	const hold = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	let locked!: () => void;
+	const entered = new Promise<void>((resolve) => {
+		locked = resolve;
+	});
+	const owner = mutateTailnet(async () => {
+		locked();
+		await hold;
+	});
+	await entered;
+	try {
+		await expect(
+			f.runtime.reconcile(AbortSignal.timeout(30)),
+		).rejects.toThrow();
+		expect(f.calls).toHaveLength(0);
+	} finally {
+		release();
+		await owner;
+	}
 });

@@ -1,6 +1,6 @@
 # Minimal Tailscale access and topbar discovery
 
-Status: implemented in source, pending installation and two-device acceptance. Updated September 7, 2026. The npm package and menu bar release have not been published.
+Status: implemented in source; macOS two-device transport checks passed, with platform and application release gates still open. Updated September 7, 2026. The npm package and menu bar release have not been published.
 
 ## Decision and user experience
 
@@ -127,6 +127,8 @@ Run buncargo's required build, formatting/lint and Bun tests, plus Swift smoke t
 
 ## Built artifacts and local review
 
+Subsequent hardening adds pending-removal ownership state v2, default-mode local fallback after safe rollback, transactional agent replacement, bundle-aware diagnostics, bounded reconciliation and generation-tracked remote refresh. See [the improvement plan](tailscale-review-plan.md) and [current acceptance record](tailnet-acceptance.md).
+
 The implementation uses application ports 20000–29999 and directory HTTPS port 48443 → loopback 48444. `tailnet install --discovery-port=N` supports 40000–49999 except 48444; clients enter custom endpoints manually. `--tailnet` and explicit `--expose` cannot be combined. A public exposure request takes precedence over the machine default. The topbar polls every 30 seconds, refreshes when opened, and backs off failed peers to four minutes.
 
 From the buncargo repository:
@@ -152,6 +154,8 @@ bun /path/to/buncargo/src/cli/bin.ts dev --tailnet
 Lullu's lockfile still names the existing published version; local verification uses the new exact tarball. The new helper imports require that tarball or a new release: a clean install of the older version will not resolve them. Its original dev config remains unchanged. Update that dependency as part of releasing the feature; ordinary `bun dev` cannot gain this feature from an older dependency merely by installing the coordinator. Build the new topbar from source during review; `bar install` otherwise downloads the existing release.
 
 ## Verification status
+
+The September 7 follow-up implementation and live two-device results are tracked in [tailnet-acceptance.md](tailnet-acceptance.md). The paragraphs below record the original implementation, before that follow-up.
 
 Passed locally: Buncargo build, lint and Bun tests; the native menu bar build and shared TypeScript/Swift directory fixture smoke test; Lullu full lint/types and real browser auth checks. Cookie selection lives in Buncargo helpers, covered by server/client parity, production/E2E defaults and browser bundle checks; Lullu imports them directly in its existing auth configuration. A real local browser completed login, preserved its workspace-prefixed HttpOnly session after reload, and cleared its auth cookies on logout using the updated source CLI. Package verification checks an exact tarball in a clean consumer, including detached host and tailnet daemon bundles.
 

@@ -197,6 +197,7 @@ function serviceEntries(
 }
 
 export interface PublishRunInput {
+	sessionId?: string;
 	serviceNames?: readonly string[];
 	/** Apps this run is responsible for, spawned or reused. */
 	apps: Record<string, AppConfig>;
@@ -237,7 +238,7 @@ async function writeRun(
 	const reused = new Set(input.reusedNames ?? []);
 	const now = new Date().toISOString();
 	const entry: RunEntry = {
-		sessionId: crypto.randomUUID(),
+		sessionId: input.sessionId ?? crypto.randomUUID(),
 		processIdentity: readProcessIdentity(process.pid),
 		projectPrefix: env.projectPrefix,
 		projectName: env.projectName,

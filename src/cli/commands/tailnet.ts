@@ -3,15 +3,11 @@ import {
 	createTailscaleClient,
 	mappingState,
 	serveState,
-	tailnetStatus,
 } from "../../core/tailnet/client";
+import { tailnetDiagnostics } from "../../core/tailnet/diagnostics";
 import { discoverTailnetPeers } from "../../core/tailnet/peers";
 import { createTailnetRuntime } from "../../core/tailnet/runtime";
-import {
-	installTailnet,
-	tailnetDaemonHealthy,
-	uninstallTailnet,
-} from "../../core/tailnet/service";
+import { installTailnet, uninstallTailnet } from "../../core/tailnet/service";
 import { mutateTailnet, readTailnetState } from "../../core/tailnet/state";
 import {
 	type CommandSpec,
@@ -49,6 +45,11 @@ const spec: CommandSpec = {
 	flags: [
 		portFlag,
 		discoveryFlag,
+		{
+			name: "--repair",
+			kind: "boolean",
+			description: "Reconcile owned mappings (doctor only)",
+		},
 		{ name: "--json", kind: "boolean", description: "Machine-readable output" },
 		{ name: "--help", kind: "boolean", description: "Show help" },
 	],
@@ -71,6 +72,8 @@ export async function handleTailnet(args: string[]) {
 		errors.push("--discovery-port is only valid with install");
 	if (port !== undefined && subcommand !== "release")
 		errors.push("--port is only valid with release");
+	if (flags.includes("--repair") && subcommand !== "doctor")
+		errors.push("--repair is only valid with doctor");
 	const unknown = findUnknownFlags(spec, flags);
 	if (unknown.length || errors.length)
 		throw new Error(
@@ -81,7 +84,7 @@ export async function handleTailnet(args: string[]) {
 	switch (subcommand) {
 		case "install":
 			console.log(
-				`Tailnet enabled. Directory: ${await installTailnet(discovery ? Number(discovery) : readTailnetState().directory?.port)}\nRun bun dev in a worktree to share its apps privately.`,
+				`Tailnet enabled; HTTPS directory verified from this machine. Verify access from your other device. Directory: ${await installTailnet(discovery ? Number(discovery) : readTailnetState().directory?.port)}\nRun bun dev in a worktree to share its apps privately.`,
 			);
 			return;
 		case "uninstall":
@@ -103,29 +106,33 @@ export async function handleTailnet(args: string[]) {
 		case "status":
 		case "doctor": {
 			const command = createTailscaleClient();
-			const status = await tailnetStatus(command);
-			let state = readTailnetState();
-			const coordinator = await tailnetDaemonHealthy();
-			let issues: string[] = [];
-			if (subcommand === "doctor")
-				({ state, issues } = await createTailnetRuntime({
-					command,
-				}).reconcile());
-			const result = {
-				enabled: state.enabled,
-				hostname: status.self.hostname,
-				coordinator,
-				issues,
-				allocations: state.allocations.map((a) => ({
-					port: a.port,
-					active: !!a.lease,
-				})),
-				serve: await serveState(command),
-			};
+			const repairs: string[] = [];
+			if (flags.includes("--repair")) {
+				try {
+					repairs.push(
+						...(
+							await createTailnetRuntime({ command }).reconcile(
+								AbortSignal.timeout(15000),
+							)
+						).issues,
+					);
+				} catch (error) {
+					repairs.push(String(error));
+				}
+			}
+			const result = await tailnetDiagnostics(command);
+			result.issues.push(...repairs);
 			console.log(
 				flags.includes("--json")
 					? JSON.stringify(result)
-					: `Tailnet: ${state.enabled ? "enabled" : "disabled"}\nMachine: ${status.self.hostname}\nCoordinator: ${coordinator ? "ready" : "not running; run buncargo tailnet install"}\nReserved app ports: ${state.allocations.length}${issues.length ? `\n${issues.join("\n")}` : ""}`,
+					: [
+							`Tailnet: ${result.enabled === null ? "state unreadable" : result.enabled ? "enabled" : "disabled"}`,
+							`Machine: ${result.hostname ?? "Tailscale unavailable"}`,
+							`Coordinator: ${!result.coordinator ? "not running" : result.coordinator.ready ? "ready" : "running, remote access unavailable"}`,
+							`Last successful reconciliation: ${result.coordinator?.lastSuccess ?? "unknown"}`,
+							`Active mappings: ${result.allocations.filter((a) => a.active).length}; reserved app ports: ${result.allocations.length}`,
+							...result.issues,
+						].join("\n"),
 			);
 			return;
 		}
