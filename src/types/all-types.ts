@@ -409,6 +409,8 @@ export interface ExecOptions {
 	timeoutMs?: number;
 	/** Grace before escalating termination. */
 	killGraceMs?: number;
+	/** Maximum combined stdout/stderr bytes before cancelling the process. */
+	maxBufferBytes?: number;
 	/** Working directory relative to monorepo root */
 	cwd?: string;
 	/** Print output to console */

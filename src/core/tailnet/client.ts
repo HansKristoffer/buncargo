@@ -1,9 +1,10 @@
-import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { promisify } from "node:util";
+import { execAsync } from "../process/exec";
 import { tailscaleBinaryOverride } from "../runtime-flags";
+import { recordStartupMetric } from "../startup-metrics";
 
-const execute = promisify(execFile);
+/** Availability failures may fall back locally after successful rollback. */
+export class TailnetUnavailableError extends Error {}
 
 // ── CLI wrapper ──────────────────────────────────────────────────────────────
 
@@ -27,15 +28,24 @@ export function createTailscaleClient(
 ): TailscaleCommand {
 	return async (args, signal) => {
 		try {
-			const result = await execute(binary, args, {
-				timeout: 20000,
-				maxBuffer: 2 * 1024 * 1024,
-				signal,
-			});
+			signal?.throwIfAborted();
+			recordStartupMetric("tailnetCommands");
+			const result = await execAsync(
+				[binary, ...args],
+				process.cwd(),
+				{ TAILSCALE_BE_CLI: "1" },
+				{
+					timeoutMs: 20000,
+					killGraceMs: 250,
+					maxBufferBytes: 2 * 1024 * 1024,
+					signal,
+				},
+			);
 
 			return result.stdout;
 		} catch (error) {
-			throw new Error(
+			signal?.throwIfAborted();
+			throw new TailnetUnavailableError(
 				`Tailscale ${args[0]} failed. Check that Tailscale is connected and this user can run its CLI. ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
@@ -84,7 +94,9 @@ export async function tailnetStatus(command: TailscaleCommand) {
 	const v = record(JSON.parse(await command(["status", "--json"])));
 
 	if (v.BackendState !== "Running") {
-		throw new Error("Connect Tailscale before enabling tailnet access");
+		throw new TailnetUnavailableError(
+			"Connect Tailscale before enabling tailnet access",
+		);
 	}
 
 	const self = parsePeer(v.Self);

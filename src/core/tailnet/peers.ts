@@ -1,4 +1,5 @@
-import { createTailscaleClient, record, tailnetStatus } from "./client";
+import { createTailscaleClient, tailnetStatus } from "./client";
+import { parseRemoteDirectory, type RemoteDirectory } from "./protocol";
 import { DIRECTORY_PORT } from "./state";
 
 /** Normalize a peer hostname or full URL into the directory HTTPS endpoint. */
@@ -30,7 +31,7 @@ export function directoryEndpoint(value: string): URL {
  */
 export async function discoverTailnetPeers() {
 	const { self, peers } = await tailnetStatus(createTailscaleClient());
-	const found: { hostname: string; directory: unknown }[] = [];
+	const found: { hostname: string; directory: RemoteDirectory }[] = [];
 	let next = 0;
 
 	await Promise.all(
@@ -50,17 +51,11 @@ export async function discoverTailnetPeers() {
 					if (!response.ok) continue;
 
 					const raw = await readLimitedBody(response, 1024 * 1024);
-					const directory = record(JSON.parse(raw));
-
-					if (
-						directory.version !== 1 ||
-						directory.machineId !== peer.id ||
-						directory.hostname !== peer.hostname ||
-						!Array.isArray(directory.runs)
-					) {
-						continue;
-					}
-
+					const directory = parseRemoteDirectory(
+						JSON.parse(raw),
+						peer.hostname,
+						peer.id,
+					);
 					found.push({ hostname: peer.hostname, directory });
 				} catch {
 					/* Most peers do not run buncargo. */

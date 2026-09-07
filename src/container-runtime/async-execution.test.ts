@@ -52,30 +52,32 @@ exec ${quote(process.execPath)} -e 'process.on("SIGTERM", () => {}); setInterval
 			const { root, runtime, pidFile } = await fixture();
 			const controller = new AbortController();
 			try {
-				const start = performance.now();
-				const timer = setTimeout(
-					() => controller.abort(new Error("cancel startup")),
-					500,
+				const operation = runtime.upAsync?.({
+					root,
+					projectName: "demo",
+					envVars: {},
+					serviceNames: ["db"],
+					model: { services: { db: { image: "postgres:16" } } },
+					verbose: false,
+					signal: controller.signal,
+				});
+				const outcome = operation?.then(
+					() => undefined,
+					(error: unknown) => error,
 				);
-				try {
-					await expect(
-						runtime.upAsync?.({
-							root,
-							projectName: "demo",
-							envVars: {},
-							serviceNames: ["db"],
-							model: { services: { db: { image: "postgres:16" } } },
-							verbose: false,
-							signal: controller.signal,
-						}),
-					).rejects.toThrow("cancel startup");
-				} finally {
-					clearTimeout(timer);
-				}
-				expect(performance.now() - start).toBeLessThan(1500);
+				// Wait for the disposable CLI to exist before testing cancellation.
+				// A fixed timer can abort during adapter preparation under suite load.
+				const deadline = Date.now() + 4000;
+				while (!(await Bun.file(pidFile).exists()) && Date.now() < deadline)
+					await Bun.sleep(20);
 				const pid = Number(await Bun.file(pidFile).text());
+				const start = performance.now();
+				controller.abort(new Error("cancel startup"));
+				expect(await outcome).toMatchObject({ message: "cancel startup" });
+				expect(performance.now() - start).toBeLessThan(1500);
 				expect(() => process.kill(pid, 0)).toThrow();
 			} finally {
+				controller.abort();
 				await rm(root, { recursive: true, force: true });
 			}
 		});

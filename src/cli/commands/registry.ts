@@ -157,7 +157,10 @@ export const TAILNET_SUBCOMMANDS = [
 		summary: "Enable automatic private URLs and install the coordinator",
 	},
 	{ name: "status", summary: "Show Tailscale and coordinator state" },
-	{ name: "doctor", summary: "Reconcile owned mappings and diagnose access" },
+	{
+		name: "doctor",
+		summary: "Diagnose access; use --repair to reconcile owned mappings",
+	},
 	{ name: "peers", summary: "Find reachable buncargo directories" },
 	{ name: "release", summary: "Release a stopped app port reservation" },
 	{ name: "uninstall", summary: "Disable sharing and remove owned mappings" },

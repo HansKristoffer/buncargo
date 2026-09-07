@@ -43,7 +43,7 @@ and CI turn the whole thing off.
 
 Enable **Other Tailscale devices** in a build containing tailnet discovery. It finds connected peers with a Buncargo directory on HTTPS port 48443 and groups shared apps by machine and worktree. The hosting machine must run `buncargo tailnet install`; the viewing Mac needs connected Tailscale but no coordinator or admin API token.
 
-Remote rows support Open and Copy URL. Sleeping, blocked or disconnected machines retain their last-seen status with actions disabled. Local runs stay responsive while remote requests complete. Discovery refreshes when the menu opens and every 30 seconds, backing off failed peers to four minutes. The refresh button retries immediately.
+Remote rows support Open and Copy URL. Sleeping, blocked or disconnected machines retain their last-seen status with actions disabled. Local runs stay responsive while remote requests complete. Discovery refreshes when the menu opens and every 30 seconds, respecting failure backoff of up to four minutes. Manual and known endpoints load before CLI discovery; multiple endpoints for one machine produce one row. Forgetting a machine or disabling discovery invalidates pending responses. The refresh button retries immediately.
 
 Enter a full `machine.tailnet.ts.net` name to add a machine manually, or `https://machine.tailnet.ts.net:49000` when the server uses a custom discovery port. Tailnet policy must allow both directory and app ports. Only shared HTTP apps appear; no remote stop commands, filesystem paths or database credentials are published.
 
@@ -56,6 +56,7 @@ Needs the Xcode command line tools (Swift 6, macOS 14+).
 ```bash
 bash menubar/scripts/install.sh     # build, install to /Applications, open
 bash menubar/scripts/package.sh     # build the .app bundle only
+swift test --package-path menubar   # remote store and shared directory contract tests (from repo root)
 bash menubar/scripts/launch.sh      # open an installed copy
 ```
 

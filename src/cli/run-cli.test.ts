@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
@@ -558,4 +559,57 @@ describe("runCli phased tunnels and attach", () => {
 			watchdog: false,
 		});
 	});
+});
+
+it("takes over a reused API while also starting a new web app", async () => {
+	const root = await mkdtemp(join(tmpdir(), "buncargo-mixed-takeover-"));
+	const child = spawn(
+		process.execPath,
+		[
+			"-e",
+			'const s = Bun.serve({port: 0, fetch: () => new Response("old")}); console.log(s.port)',
+		],
+		{ cwd: root, detached: true, stdio: ["ignore", "pipe", "ignore"] },
+	);
+	try {
+		const apiPort = await new Promise<number>((resolve, reject) => {
+			child.stdout.once("data", (data) => resolve(Number(String(data).trim())));
+			child.once("error", reject);
+		});
+		const probe = Bun.serve({ port: 0, fetch: () => new Response("probe") });
+		const webPort = probe.port as number;
+		probe.stop(true);
+		const command = (name: string) =>
+			`bun -e 'await Bun.write("${name}-started", "yes")'`;
+		const env = createStubEnv({
+			root,
+			apps: {
+				api: {
+					port: apiPort,
+					devCommand: command("api"),
+					healthEndpoint: false,
+				},
+				web: {
+					port: webPort,
+					devCommand: command("web"),
+					healthEndpoint: false,
+				},
+			},
+		});
+		await runCli(env, {
+			args: ["--takeover", "--no-hosts", "--no-tailnet"],
+			watchdog: false,
+		});
+		expect(await Bun.file(join(root, "api-started")).text()).toBe("yes");
+		expect(await Bun.file(join(root, "web-started")).text()).toBe("yes");
+	} finally {
+		if (child.pid) {
+			try {
+				process.kill(-child.pid, "SIGKILL");
+			} catch {
+				/* Already stopped by takeover. */
+			}
+		}
+		await rm(root, { recursive: true, force: true });
+	}
 });

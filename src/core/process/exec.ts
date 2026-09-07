@@ -84,6 +84,7 @@ export async function execAsync(
 		signal,
 		timeoutMs,
 		killGraceMs = 1000,
+		maxBufferBytes,
 	} = options;
 	signal?.throwIfAborted();
 	const executable = typeof cmd === "string" ? cmd : cmd[0];
@@ -130,12 +131,25 @@ export async function execAsync(
 			const cleanup = cancel(abortError(signal));
 			if (signal) registerAbortCleanup(signal, cleanup);
 		};
-		child.stdout?.on("data", (chunk: Buffer | string) => {
-			stdout += String(chunk);
-		});
-		child.stderr?.on("data", (chunk: Buffer | string) => {
-			stderr += String(chunk);
-		});
+		let outputBytes = 0;
+		const collect = (chunk: Buffer | string, stream: "stdout" | "stderr") => {
+			if (cancelling || settled) return;
+			outputBytes += Buffer.byteLength(chunk);
+			if (maxBufferBytes !== undefined && outputBytes > maxBufferBytes) {
+				void cancel(
+					new Error(`Command output exceeded ${maxBufferBytes} bytes`),
+				);
+				return;
+			}
+			if (stream === "stdout") stdout += String(chunk);
+			else stderr += String(chunk);
+		};
+		child.stdout?.on("data", (chunk: Buffer | string) =>
+			collect(chunk, "stdout"),
+		);
+		child.stderr?.on("data", (chunk: Buffer | string) =>
+			collect(chunk, "stderr"),
+		);
 		child.on("error", (error) => {
 			if (!cancelling)
 				finish({ exitCode: 1, stdout, stderr: error.message }, error);

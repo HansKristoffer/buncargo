@@ -1,7 +1,10 @@
+import { abortableSleep } from "../core/deadline";
+import { matchesProcessIdentity } from "../core/process-identity";
 import { readLiveRuns } from "../core/run-registry";
 import { isCI } from "../core/runtime-flags";
+import { TailnetUnavailableError } from "../core/tailnet/client";
+import { tailnetDaemonHealthy } from "../core/tailnet/health";
 import { createTailnetRuntime } from "../core/tailnet/runtime";
-import { tailnetDaemonHealthy } from "../core/tailnet/service";
 import { readTailnetState } from "../core/tailnet/state";
 import type { AppConfig } from "../types";
 import * as log from "./log";
@@ -12,86 +15,202 @@ interface TailnetEnv {
 	setTailnetUrls?: (urls: Readonly<Record<string, string | undefined>>) => void;
 }
 
-export async function prepareTailnet(
+interface TailnetInput {
+	requested: boolean | undefined;
+	publicExpose: boolean;
+	startApps: Record<string, AppConfig>;
+	reusedApps: Record<string, AppConfig>;
+	sessionId?: string;
+	signal?: AbortSignal;
+}
+
+const defaults = {
+	state: readTailnetState,
+	runs: readLiveRuns,
+	healthy: tailnetDaemonHealthy,
+	runtime: createTailnetRuntime,
+	ci: isCI,
+	warn: log.warn,
+};
+
+/** Decide eligibility without reading persisted state or probing the network. */
+export function tailnetSelection(
 	env: TailnetEnv,
-	input: {
-		requested: boolean | undefined;
-		publicExpose: boolean;
-		startApps: Record<string, AppConfig>;
-		reusedApps: Record<string, AppConfig>;
-		signal?: AbortSignal;
-	},
+	input: TailnetInput,
+	ci: boolean,
 ) {
-	const state = readTailnetState();
-	const disabled =
-		input.requested === false ||
-		(isCI() && input.requested !== true) ||
-		(input.requested !== true && !state.enabled) ||
-		input.publicExpose;
-	if (disabled && Object.keys(input.reusedApps).length) {
-		const runs = await readLiveRuns();
-		const remoteReused = runs.some(
-			(run) =>
-				run.root === env.root &&
-				run.apps.some((app) => app.name in input.reusedApps && app.tailnetUrl),
-		);
-		if (remoteReused)
-			throw new Error(
-				"A reused app still has tailnet URLs. Stop the owning run and restart in the selected URL mode.",
-			);
-	}
-	if (input.requested === false || (isCI() && input.requested !== true)) return;
-	if (input.requested !== true && !state.enabled) return;
-	if (input.publicExpose) {
-		if (input.requested === true)
-			throw new Error(
-				"Choose --tailnet or --expose for a coherent web/API URL mode",
-			);
-		return; // Explicit public exposure takes precedence over the machine default.
-	}
-	if (!state.enabled || !(await tailnetDaemonHealthy())) {
-		const message =
-			"Tailnet coordinator unavailable. Run buncargo tailnet install.";
-		if (input.requested === true || Object.keys(input.reusedApps).length)
-			throw new Error(message);
-		log.warn(`${message} Continuing with local URLs.`);
-		return;
-	}
-	if (!env.setTailnetUrls)
+	if (input.requested === true && input.publicExpose)
 		throw new Error(
-			"This DevEnvironment does not support tailnet URLs; update buncargo",
+			"Choose --tailnet or --expose for a coherent web/API URL mode",
 		);
+
+	const local =
+		input.requested === false ||
+		(ci && input.requested !== true) ||
+		input.publicExpose;
+
 	const ports = env.ports as Record<string, number>;
+
 	const apps = Object.entries({
 		...input.startApps,
 		...input.reusedApps,
 	}).flatMap(([name, app]) => {
-		if (!app.expose || app.interactive || app.needsPublicUrls) return []; // Metro needs independent transport verification.
-		const port = ports[name];
-		if (port === undefined) return [];
-		return [{ name, port, reused: name in input.reusedApps }];
+		if (
+			!app.expose ||
+			app.interactive ||
+			app.needsPublicUrls ||
+			ports[name] === undefined
+		)
+			return [];
+
+		return [
+			{ name, port: ports[name] as number, reused: name in input.reusedApps },
+		];
 	});
+
+	return { local, apps };
+}
+
+export async function prepareTailnet(
+	env: TailnetEnv,
+	input: TailnetInput,
+	overrides: Partial<typeof defaults> = {},
+) {
+	const deps = { ...defaults, ...overrides };
+
+	input.signal?.throwIfAborted();
+
+	const { local, apps } = tailnetSelection(env, input, deps.ci());
+	const reused = Object.keys(input.reusedApps).length > 0;
+
+	// Reused servers already have their URL environment; changing it requires a takeover.
+	const remoteReused =
+		reused &&
+		(await deps.runs()).some(
+			(run) =>
+				run.root === env.root &&
+				run.apps.some(
+					(app) =>
+						app.name in input.reusedApps &&
+						app.tailnetUrl &&
+						app.status !== "stopped" &&
+						app.status !== "failed",
+				),
+		);
+
+	const requireLocal = () => {
+		if (remoteReused)
+			throw new Error(
+				"A reused app still has tailnet URLs. Restart with --takeover to change its URL mode.",
+			);
+	};
+
+	if (local) {
+		requireLocal();
+
+		return;
+	}
+
 	if (!apps.length) {
 		if (input.requested === true)
 			throw new Error(
 				"No selected HTTP apps have expose: true (interactive/Metro apps are not yet supported)",
 			);
+
 		return;
 	}
-	const runtime = createTailnetRuntime();
-	const urls = await runtime.acquire({
-		root: env.root,
-		apps,
-		signal: input.signal,
-	});
-	env.setTailnetUrls(urls);
-	log.info("Private Tailscale URLs:");
-	for (const [name, url] of Object.entries(urls)) log.info(`  ${name}: ${url}`);
+
+	const state = deps.state();
+
+	if (!state.enabled && input.requested !== true) {
+		requireLocal();
+
+		return;
+	}
+
+	try {
+		if (!state.enabled || state.removing || !(await deps.healthy()))
+			throw new TailnetUnavailableError(
+				"Tailnet coordinator unavailable. Run buncargo tailnet install.",
+			);
+
+		if (!env.setTailnetUrls)
+			throw new Error(
+				"This DevEnvironment does not support tailnet URLs; update buncargo",
+			);
+
+		const runtime = deps.runtime();
+
+		const urls = await runtime.acquire({
+			root: env.root,
+			apps,
+			sessionId: input.sessionId,
+			signal: input.signal,
+		});
+
+		input.signal?.throwIfAborted();
+		env.setTailnetUrls(urls);
+		log.info("Private Tailscale URLs:");
+
+		for (const [name, url] of Object.entries(urls))
+			log.info(`  ${name}: ${url}`);
+	} catch (error) {
+		input.signal?.throwIfAborted();
+
+		// Acquisition classifies availability failures only after rolling back its partial mappings.
+		// Ownership conflicts and incomplete cleanup must still stop startup.
+		if (
+			!(error instanceof TailnetUnavailableError) ||
+			input.requested === true ||
+			remoteReused
+		)
+			throw error;
+
+		env.setTailnetUrls?.({});
+		deps.warn(`${error.message} Continuing with local URLs.`);
+	}
+}
+
+/** A freed app port can precede its old CLI's asynchronous lease release. */
+export async function waitForTailnetHandoff(
+	root: string,
+	names: string[],
+	signal?: AbortSignal,
+	deps = {
+		state: readTailnetState,
+		alive: matchesProcessIdentity,
+		sleep: abortableSleep,
+		now: Date.now,
+	},
+) {
+	const deadline = deps.now() + 10000;
+
+	for (;;) {
+		signal?.throwIfAborted();
+
+		const pending = deps
+			.state()
+			.allocations.some(
+				(a) =>
+					a.lease?.root === root &&
+					names.includes(a.lease.app) &&
+					deps.alive(a.lease.pid, a.lease.identity),
+			);
+
+		if (!pending) return;
+
+		if (deps.now() >= deadline)
+			throw new Error(
+				"Previous run has not released its tailnet mappings. Run buncargo tailnet doctor --repair, then retry.",
+			);
+
+		await deps.sleep(100, signal);
+	}
 }
 
 export async function releaseTailnet(root: string, app?: string) {
-	// The disabled path does not create a registry or require Tailscale.
 	const state = readTailnetState();
+
 	if (
 		!state.allocations.some(
 			(a) =>
@@ -101,5 +220,6 @@ export async function releaseTailnet(root: string, app?: string) {
 		)
 	)
 		return;
+
 	await createTailnetRuntime().release(root, process.pid, app);
 }

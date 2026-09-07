@@ -1,6 +1,6 @@
 import type { RunEntry } from "../run-registry";
 import { mappingState, type TailnetPeer } from "./client";
-import { allocationUrl, leaseTarget } from "./runtime";
+import { allocationUrl, leaseMatchesRun, leaseTarget } from "./runtime";
 import type { TailnetState } from "./state";
 
 /**
@@ -25,13 +25,16 @@ export function directorySnapshot(
 			const apps = run.apps.flatMap((app) => {
 				const allocation = state.allocations.find(
 					(a) =>
-						a.lease?.root === run.root &&
-						a.lease.pid === run.pid &&
+						a.lease &&
+						leaseMatchesRun(a.lease, run) &&
 						a.lease.app === app.name,
 				);
 
 				if (
+					!state.enabled ||
+					state.removing ||
 					!allocation?.lease ||
+					allocation.lease.pendingRemoval ||
 					mappingState(
 						actual,
 						allocation.lease.hostname,

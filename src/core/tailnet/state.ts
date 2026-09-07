@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { withFileLock } from "../file-lock";
 import { writeJsonDocument } from "../registry-file";
+import { recordStartupMetric } from "../startup-metrics";
 import { stateFilePath } from "../state-paths";
 import { record } from "./client";
 
@@ -21,6 +22,8 @@ export const LAST_APP_PORT = 29999;
 
 export interface TailnetLease {
 	pid: number;
+	sessionId?: string;
+	pendingRemoval?: boolean;
 	identity: string;
 	root: string;
 	app: string;
@@ -36,8 +39,10 @@ export interface TailnetAllocation {
 }
 
 export interface TailnetState {
-	version: 1;
+	version: 1 | 2;
 	enabled: boolean;
+	/** Persisted uninstall intent; the coordinator finishes cleanup on reconnect. */
+	removing?: boolean;
 	allocations: TailnetAllocation[];
 	directory?: { hostname: string; target: string; port?: number };
 }
@@ -81,13 +86,17 @@ function parseLease(value: unknown): TailnetLease {
 		l.upstream > 65535 ||
 		typeof l.hostname !== "string" ||
 		!TAILNET_HOSTNAME.test(l.hostname) ||
-		typeof l.createdAt !== "number"
+		typeof l.createdAt !== "number" ||
+		(l.sessionId !== undefined && typeof l.sessionId !== "string") ||
+		(l.pendingRemoval !== undefined && typeof l.pendingRemoval !== "boolean")
 	) {
 		throw new Error("Invalid tailnet lease");
 	}
 
 	return {
 		pid: l.pid,
+		sessionId: l.sessionId as string | undefined,
+		pendingRemoval: l.pendingRemoval as boolean | undefined,
 		identity: l.identity,
 		root: l.root,
 		app: l.app,
@@ -145,14 +154,15 @@ export function readTailnetState(): TailnetState {
 	const path = tailnetStatePath();
 
 	if (!existsSync(path)) {
-		return { version: 1, enabled: false, allocations: [] };
+		return { version: 2, enabled: false, allocations: [] };
 	}
 
 	const v = record(JSON.parse(readFileSync(path, "utf8")));
 
 	if (
-		v.version !== 1 ||
+		(v.version !== 1 && v.version !== 2) ||
 		typeof v.enabled !== "boolean" ||
+		(v.removing !== undefined && typeof v.removing !== "boolean") ||
 		!Array.isArray(v.allocations)
 	) {
 		throw new Error(
@@ -172,8 +182,9 @@ export function readTailnetState(): TailnetState {
 	const directory = parseDirectory(v.directory);
 
 	return {
-		version: 1,
+		version: 2,
 		enabled: v.enabled,
+		removing: v.removing as boolean | undefined,
 		allocations,
 		...(directory ? { directory } : {}),
 	};
@@ -184,11 +195,17 @@ export async function mutateTailnet<T>(
 	fn: (state: TailnetState, save: () => Promise<void>) => Promise<T>,
 	signal?: AbortSignal,
 ): Promise<T> {
+	const started = performance.now();
 	return withFileLock(
 		tailnetStatePath(),
 		async () => {
+			recordStartupMetric("tailnetLockWaitMs", performance.now() - started);
 			const state = readTailnetState();
-			const save = () => writeJsonDocument(tailnetStatePath(), state);
+			const save = () => {
+				// v1 writers discard cleanup intent; prevent an older coordinator from rewriting it.
+				state.version = 2;
+				return writeJsonDocument(tailnetStatePath(), state);
+			};
 
 			return fn(state, save);
 		},
