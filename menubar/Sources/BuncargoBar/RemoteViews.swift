@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RemoteMachinesView: View {
     @ObservedObject var store: RemoteStore
+    let stopper: StopCoordinator
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -12,7 +13,7 @@ struct RemoteMachinesView: View {
             }
 
             ForEach(store.machines) { machine in
-                RemoteMachineView(machine: machine)
+                RemoteMachineView(machine: machine, stopper: stopper)
             }
         }
         .onAppear { store.refresh() }
@@ -29,11 +30,7 @@ struct RemoteMachinesView: View {
 
 private struct RemoteMachineView: View {
     let machine: RemoteMachine
-
-    private var name: String {
-        let hostname = machine.directory?.hostname ?? machine.endpoint.host ?? "Machine"
-        return hostname.components(separatedBy: ".").first ?? hostname
-    }
+    let stopper: StopCoordinator
 
     private var projects: [String] {
         Array(Set((machine.directory?.runs ?? []).map(\.project))).sorted()
@@ -41,7 +38,7 @@ private struct RemoteMachineView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Label(name, systemImage: "desktopcomputer")
+            Label(machine.name, systemImage: "desktopcomputer")
                 .font(.system(size: 11, weight: .semibold))
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
@@ -71,7 +68,13 @@ private struct RemoteMachineView: View {
                 ProjectHeading(name: project)
 
                 ForEach((machine.directory?.runs ?? []).filter { $0.project == project }) { run in
-                    RemoteRunRow(run: run, available: machine.error == nil)
+                    RemoteRunRow(
+                        run: run,
+                        available: machine.error == nil,
+                        onStop: { app in
+                            stopper.requestRemote(machine: machine, run: run, app: app)
+                        }
+                    )
                 }
             }
         }
@@ -81,6 +84,7 @@ private struct RemoteMachineView: View {
 private struct RemoteRunRow: View {
     let run: RemoteRun
     let available: Bool
+    let onStop: (String?) -> Void
 
     private var title: String { run.branch ?? run.worktree ?? "Main" }
 
@@ -121,7 +125,7 @@ private struct RemoteRunRow: View {
                     .foregroundStyle(.tertiary)
                     .padding(.top, 2)
 
-                // Reuse app rows, but never offer local process or filesystem actions for a peer.
+                // Reuse app rows; stopping goes through the peer's daemon, never a local process.
                 ForEach(run.apps) { app in
                     TargetRow(
                         name: app.name,
@@ -129,9 +133,21 @@ private struct RemoteRunRow: View {
                         url: app.url,
                         openable: true,
                         publicUrl: nil,
-                        tablePlusUrl: nil
+                        tablePlusUrl: nil,
+                        onStop: { onStop(app.name) }
                     )
                     .disabled(!available || !app.canOpen)
+                }
+
+                Divider().padding(.vertical, 2)
+
+                HStack {
+                    Spacer()
+                    Button("Stop run") { onStop(nil) }
+                        .buttonStyle(.link)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.red)
+                        .disabled(!available)
                 }
             }
             .padding(10)

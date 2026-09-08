@@ -97,6 +97,8 @@ Expose a sanitized read-only projection of `~/.buncargo/runs.json` through the c
 
 Provide `/v1/info` and `/v1/runs` with protocol version, stable machine ID, timestamp, project/worktree labels, session IDs, app state and approved HTTPS URLs. Publish only opted-in runs. Omit credentials, environment variables, database/TablePlus URLs, filesystem paths and executable commands. Check process liveness on the host; remote clients never test remote PIDs locally.
 
+`POST /v1/stop` with `{ run, app? }` stops one advertised app, or the whole run when `app` is omitted, by invoking that run's own `buncargo stop --force` on the host; nothing outside the directory can be named. The response waits for the next reconcile pass, so a client refresh afterwards already shows the change. Older daemons answer a plain 404, which the Bar reports as an update prompt.
+
 Use a separate versioned network schema and shared TypeScript/Swift fixtures. Preserve local registry compatibility. Tailscale policy controls access to the directory and allocated app ports; discovery grants no additional access.
 
 ## 5. Discover peers in the topbar

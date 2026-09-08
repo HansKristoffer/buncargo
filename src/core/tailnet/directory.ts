@@ -4,6 +4,11 @@ import type { RemoteDirectory } from "./protocol";
 import { allocationUrl, leaseMatchesRun, leaseTarget } from "./runtime";
 import type { TailnetState } from "./state";
 
+/** The id a run carries in the directory; `POST /v1/stop` names it back. */
+export function directoryRunId(run: RunEntry): string {
+	return run.sessionId ?? `${run.projectName}:${run.startedAt}`;
+}
+
 /**
  * Build the JSON document the coordinator serves at `/v1/runs`.
  *
@@ -69,7 +74,7 @@ export function directorySnapshot(
 
 			return [
 				{
-					id: run.sessionId ?? `${run.projectName}:${run.startedAt}`,
+					id: directoryRunId(run),
 					project: run.projectPrefix,
 					worktree: run.worktree,
 					branch: run.branch,
