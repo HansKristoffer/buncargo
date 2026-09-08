@@ -111,7 +111,7 @@ describe("startup modes and hooks", () => {
 			"artifact",
 			"runtime",
 			"up",
-			"bunx prisma migrate deploy",
+			"bunx --no-install prisma migrate deploy",
 			"migrate",
 		]);
 	});
@@ -122,7 +122,7 @@ describe("startup modes and hooks", () => {
 			"artifact",
 			"runtime",
 			"up",
-			"bunx prisma migrate deploy",
+			"bunx --no-install prisma migrate deploy",
 			"migrate",
 			"generate",
 			"container hook",
@@ -184,7 +184,7 @@ it("runs bootstrap before Prisma and supplies expanded selection", async () => {
 	};
 	await lifecycle.start({ startServers: false, wait: false, verbose: false });
 	expect(events.indexOf("bootstrap")).toBeLessThan(
-		events.indexOf("bunx prisma migrate deploy"),
+		events.indexOf("bunx --no-install prisma migrate deploy"),
 	);
 });
 it("bootstrap failure prevents automatic and custom migrations", async () => {
@@ -197,7 +197,7 @@ it("bootstrap failure prevents automatic and custom migrations", async () => {
 	await expect(
 		lifecycle.start({ startServers: false, wait: false, verbose: false }),
 	).rejects.toThrow("bootstrap failed");
-	expect(events).not.toContain("bunx prisma migrate deploy");
+	expect(events).not.toContain("bunx --no-install prisma migrate deploy");
 	expect(events).not.toContain("migrate");
 });
 it("containers-only does not invoke bootstrap", async () => {
@@ -250,6 +250,6 @@ it("cancels a pending bootstrap before migrations can start", async () => {
 			signal: controller.signal,
 		}),
 	).rejects.toThrow("cancel bootstrap");
-	expect(events).not.toContain("bunx prisma migrate deploy");
+	expect(events).not.toContain("bunx --no-install prisma migrate deploy");
 	expect(events).not.toContain("migrate");
 });

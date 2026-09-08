@@ -85,7 +85,7 @@ export function createLifecycleApi<
 		if (config.prisma && prismaSelected()) {
 			migrations.push({
 				name: "prisma",
-				command: "bunx prisma migrate deploy",
+				command: "bunx --no-install prisma migrate deploy",
 				cwd: config.prisma.cwd ?? "packages/prisma",
 			});
 		}

@@ -90,12 +90,25 @@ private struct RemoteRunRow: View {
             subtitle: run.branch != nil ? run.worktree : nil,
             status: available ? .rollup(run.apps.map(\.state)) : .failed
         ) {
-            // The directory has no primary-app designation; use its first available app.
-            if let app = run.apps.first(where: { $0.state != .stopped && $0.state != .failed }) {
+            if let app = run.primary {
                 Button("Open") { Actions.open(app.url) }
                     .font(.system(size: 11))
                     .help("Open \(app.name)")
-                    .disabled(!available)
+                    .disabled(!available || !app.canOpen)
+            } else {
+                // Older hosts and unshared primary apps need an explicit choice, not a guess.
+                Menu("Open") {
+                    ForEach(run.apps) { app in
+                        Button(app.name) { Actions.open(app.url) }
+                            .disabled(!app.canOpen)
+                    }
+                }
+                .menuStyle(.button)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .font(.system(size: 11))
+                .help("Choose a shared app")
+                .disabled(!available || !run.apps.contains(where: \.canOpen))
             }
         } detail: {
             VStack(alignment: .leading, spacing: 6) {
@@ -118,7 +131,7 @@ private struct RemoteRunRow: View {
                         publicUrl: nil,
                         tablePlusUrl: nil
                     )
-                    .disabled(!available || app.state == .failed || app.state == .stopped)
+                    .disabled(!available || !app.canOpen)
                 }
             }
             .padding(10)
@@ -129,4 +142,5 @@ private struct RemoteRunRow: View {
 
 private extension RemoteApp {
     var state: RunStatus { RunStatus(rawValue: status) ?? .failed }
+    var canOpen: Bool { state != .failed && state != .stopped }
 }
