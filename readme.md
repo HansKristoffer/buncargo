@@ -610,39 +610,34 @@ const env = JSON.parse(execSync("bunx buncargo env").toString());
 export default defineConfig({ use: { baseURL: env.loopbackUrls.web } });
 ```
 
-## Private access over Tailscale
+## Private remote services
 
-Use a machine's existing MagicDNS name from another device on the same tailnet. Each worktree app gets a persistent HTTPS port, such as `https://devbox.tail123.ts.net:25173`. No custom domain or client certificate installation is needed. Tailscale must be connected with MagicDNS and HTTPS enabled; tailnet policy must allow the app ports.
-
-With a build containing this feature, run once on the machine hosting the apps:
+Copy a connection token from BuncargoBar's Remote environments menu, or run:
 
 ```sh
-bunx buncargo tailnet install
+bunx buncargo connect token
 ```
 
-Then use `bun dev` as usual. The installer enables private URLs by default for selected HTTP apps marked `expose: true`, installs a user launchd/systemd coordinator, and publishes a read-only directory. The laptop only needs Tailscale to open the printed URLs. Interactive/Metro apps are excluded from this first version.
+Save it as `BUNCARGO_CONNECT_TOKENS` in your cloud agent/server environment secrets. For several computers, use a JSON array of tokens. Then run `bunx buncargo dev` normally. Selected apps and services marked `expose: true` are shared automatically; there is no extra sharing flag. The menu bar shows project, branch/worktree, targets and readiness. Each computer receives its own identity and token.
+
+Browser targets open through an authenticated loopback proxy. Postgres/Redis targets create local TCP forwards; Connect copies the local address for your database client. Database credentials remain in your client and are never published to the directory. Built-in presets infer HTTP/TCP; custom services need `exposeProtocol: "http" | "tcp"` alongside `expose: true`.
 
 ```sh
-bun dev --tailnet                # Require private URLs; fail if setup is unavailable
-bun dev --no-tailnet             # Local URLs for this run
-bunx buncargo tailnet status
-bunx buncargo tailnet doctor     # Read-only diagnosis, including disconnected state
-bunx buncargo tailnet doctor --repair # Reconcile owned mappings explicitly
-bunx buncargo tailnet peers --json
-bunx buncargo tailnet uninstall  # Remove owned mappings and the coordinator
+bunx buncargo connect status
+bunx buncargo connect open --session=<id> --target=<id>
+bunx buncargo connect disconnect --session=<id> --target=<id>
+bunx buncargo connect revoke --session=<id>
+bunx buncargo connect rotate          # Existing sharing continues; new runs need the new token
+bunx buncargo connect rotate --all    # Revoke existing sharing too
 ```
 
-Public `--expose` overrides the machine default; explicitly combining `--tailnet` and `--expose` is rejected. CI stays local unless `--tailnet` is explicit. A reused app cannot change URL mode without restarting its owning run. Upgrading the CLI requires rerunning `tailnet install` to update the copied coordinator bundle; startup detects a stale bundle. Explicit `--takeover` also handles a mix of new and reused apps before choosing their URL mode. Default-enabled startup may continue locally during an outage after safe rollback; explicit `--tailnet` fails, and an already-running app never silently changes mode. `--no-tailnet`, public exposure, and CI can start locally even if allocation state is unreadable.
+A connection token only authorizes a server to share its selected services with that device. It cannot impersonate the receiving device or access other shared servers. The hosted directory at `https://connect.hanskristoffer.dk` issues short-lived access capabilities. Active streams renew authorization every 20 seconds and fail closed within 60 seconds when access cannot be renewed. Directory registrations expire after 90 seconds without a heartbeat. Interrupted database transactions are not replayed.
 
-Reservations in `~/.buncargo/tailnet.json` persist across app restarts and upstream port changes. HTTPS app ports are **20000–29999**. Stop the owning run before `buncargo tailnet release --port=N` to abandon an allocation. Machine renaming, moving the checkout or deleting allocation state can change URLs. Crash cleanup normally runs every five seconds, with failed reconciliation backing off to at most thirty seconds; it preserves foreign Serve/Funnel mappings. Serve owns traffic directly, so cleanup is not an instantaneous guard against another process reusing an upstream port.
+Explicit `--expose` remains the separate public-URL feature. Tokens never enable an unprotected public endpoint. Without tokens, normal dev runs stay local. One-shot commands ignore inherited connection tokens.
 
-Uninstall records removal intent before changing mappings, attempts every independent removal, and keeps the coordinator available to retry pending cleanup. If a foreign mapping prevents completion, restore or explicitly release the conflicting allocation and rerun `tailnet uninstall`. Ownership state migrates from v1 to v2 without renumbering ports; older coordinators refuse the new state rather than discarding removal intent. The network directory and menu bar run registry remain v1.
+Use relative/same-origin frontend API paths through the development server's proxy where possible. Absolute sandbox-local URLs embedded in application JavaScript do not automatically become recipient-local URLs: app-specific origin configuration may still be needed. The local helper permits cross-origin HTTP requests among a session's established browser proxies. Private connections use outbound WebSockets through the stable Cloudflare relay; no tunnel installation or per-worktree DNS is needed. The menu shows Connecting while a publisher is unavailable and enables Open/Connect when its relay is ready.
 
-The directory uses HTTPS **48443**, forwarding to loopback **48444**. If occupied, `tailnet install --discovery-port=49000` selects a custom port; configure its full HTTPS endpoint in [BuncargoBar’s saved endpoints](menubar/README.md#other-tailscale-devices). Changing an existing directory port requires uninstalling first. Linux requires a systemd user manager; configure user lingering if it must run after logout. macOS uses a per-user LaunchAgent and requires a logged-in user session. `BUNCARGO_TAILSCALE_PATH` can select a nonstandard CLI binary.
-
-The installer verifies the HTTPS directory from the hosting machine. Access from another device still depends on tailnet policy; see [two-device acceptance](docs/tailnet-acceptance.md) for the recorded transport checks and release checklist. `--timing` / `--timing-json` include tailnet preparation and command/lock counters.
-
-Buncargo updates the existing `urls.app` and `<APP>_URL` to the active private URL, so environment callbacks can keep using `context.publicUrls.app ?? urls.app`. `tailnetUrls` remains available for inspection. The Vite plugin receives the exact HTTPS hostname/port for HMR. Server-side proxies should use the already-injected `<APP>_LOOPBACK_URL`.
+The optional `BUNCARGO_CONNECT_DIRECTORY` override selects an operator-hosted directory; set the same origin on both server and recipient before copying tokens. See [directory operations](docs/connect-directory.md) and [the implementation plan](docs/cloud-connect-plan.md).
 
 **Cookies ignore ports:** apps sharing the machine hostname must namespace their development cookies. Buncargo supplies `BUNCARGO_WORKSPACE_ID` and, for Expo apps, `EXPO_PUBLIC_BUNCARGO_WORKSPACE_ID`. Use the cookie helper in your auth configuration; install Buncargo as a runtime dependency in apps that import it. The backend helper preserves production and E2E cookie names, while the client helper uses Expo’s `__DEV__` flag. Missing workspace IDs retain the original names. This prevents accidental session collisions between trusted dev apps, not cross-app security isolation.
 
@@ -669,7 +664,7 @@ const options = {
 
 Expo requires the literal public environment-variable read in application code: Metro does not inline those reads inside dependencies. Other browser clients pass their development flag explicitly as the third argument; the client helper otherwise leaves the prefix unchanged when `__DEV__` is unavailable. The client entry has no Node or Bun imports.
 
-This implementation is not yet published. For source-build commands and outstanding two-device acceptance, see [the implementation plan](docs/tailscale-plan.md).
+The CLI and menu bar require builds containing connection-token support.
 
 ## Run registry and the menu bar app
 

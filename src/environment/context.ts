@@ -20,8 +20,8 @@ import {
 	type UrlMap,
 } from "../core/ports";
 import { createPortOwnerSnapshot } from "../core/process";
-import { workspaceId } from "../core/tailnet/state";
 import type { PublicTunnel } from "../core/tunnel";
+import { workspaceId } from "../core/workspace-identity";
 import {
 	buildComposeModel,
 	type ComposeDocument,
@@ -77,9 +77,7 @@ export interface DevEnvContext<
 	readonly loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
 	/** Mutated in place so consumers holding the object see tunnel updates. */
 	readonly publicUrls: UrlMap;
-	readonly tailnetUrls: UrlMap;
 	readonly workspaceId: string;
-	setTailnetUrls(urls: Readonly<Record<string, string | undefined>>): void;
 	readonly portOffset: number;
 	readonly portOffsetProvenance: PortOffsetProvenance;
 	readonly composeFile: string;
@@ -193,7 +191,6 @@ export function createDevEnvContext<
 		computeLoopbackUrls(services, apps, portMap),
 	);
 	const publicUrls: UrlMap = {};
-	const tailnetUrls: UrlMap = {};
 
 	function refreshUrls() {
 		const urlMap = toUrlMap(urls);
@@ -202,10 +199,6 @@ export function createDevEnvContext<
 		if (hosts?.active) {
 			applyHostPlanToUrls(urlMap, hosts.plan);
 		}
-
-		// Consumers already use `urls` for browser origins. Keep the selected
-		// transport here instead of requiring every app to repeat the fallback.
-		Object.assign(urlMap, tailnetUrls);
 	}
 
 	let model: ComposeDocument | undefined;
@@ -282,20 +275,7 @@ export function createDevEnvContext<
 		urls,
 		loopbackUrls,
 		publicUrls,
-		tailnetUrls,
 		workspaceId: workspaceId(root),
-		setTailnetUrls(next) {
-			for (const key of Object.keys(tailnetUrls)) {
-				delete tailnetUrls[key];
-			}
-
-			for (const [key, value] of Object.entries(next))
-				if (key in apps && value !== undefined) {
-					tailnetUrls[key] = value;
-				}
-
-			refreshUrls();
-		},
 		get portOffset() {
 			return portPlan.offset;
 		},

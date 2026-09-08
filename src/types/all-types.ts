@@ -251,8 +251,10 @@ export interface ServiceConfigBase<
 > {
 	/** Base host port; omit for a container with no published endpoint. */
 	port?: number;
-	/** Whether this service can be exposed publicly via tunnel */
+	/** Opt into automatic recipient sharing and explicit public exposure. */
 	expose?: boolean;
+	/** Protocol for recipient sharing; apps default to HTTP, service presets infer it. */
+	exposeProtocol?: "http" | "tcp";
 	/** Optional secondary port (e.g., ClickHouse native protocol) */
 	secondaryPort?: number;
 	/** Health check: built-in name, custom function, or disabled (false) */
@@ -311,8 +313,10 @@ export type ServiceConfig<
  * Configuration for an application (e.g., api, web).
  */
 interface AppOptions<TStatic extends EnvValues = EnvValues> {
-	/** Whether this app can be exposed publicly via tunnel */
+	/** Opt into automatic recipient sharing and explicit public exposure. */
 	expose?: boolean;
+	/** Protocol for recipient sharing; apps default to HTTP, service presets infer it. */
+	exposeProtocol?: "http" | "tcp";
 	/** Command to start the dev server. Set to false to reserve/tunnel the port without starting a process. */
 	devCommand: string | false;
 	/** Command to start production server (optional) */
@@ -865,7 +869,6 @@ export type EnvVarsContext<
 	/** Root dotenv defaults overlaid by inherited environment, resolved after config evaluation. */
 	env?: Readonly<Record<string, string>>;
 	workspaceId?: string;
-	tailnetUrls?: Partial<Record<Extract<keyof TApps, string>, string>>;
 	publicUrls: ComputedPublicUrls<TServices, TApps>;
 	/** `http://localhost:<port>` URLs, never rewritten by named hosts */
 	loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
@@ -1409,10 +1412,7 @@ export interface DevEnvironment<
 	readonly loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
 	/** Public tunnel URLs for exposed services/apps (when active) */
 	readonly publicUrls: ComputedPublicUrls<TServices, TApps>;
-	/** Active private URLs, also reflected in `urls` for existing consumers. */
-	readonly tailnetUrls?: Partial<Record<Extract<keyof TApps, string>, string>>;
 	readonly workspaceId?: string;
-	setTailnetUrls?(urls: Readonly<Record<string, string | undefined>>): void;
 	/** Services configuration */
 	readonly services: TServices;
 	/** Apps configuration (for CLI to build commands) */

@@ -597,7 +597,7 @@ it("takes over a reused API while also starting a new web app", async () => {
 			},
 		});
 		await runCli(env, {
-			args: ["--takeover", "--no-hosts", "--no-tailnet"],
+			args: ["--takeover", "--no-hosts"],
 			watchdog: false,
 		});
 		expect(await Bun.file(join(root, "api-started")).text()).toBe("yes");

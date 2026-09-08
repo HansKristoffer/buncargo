@@ -24,11 +24,9 @@ final class StopCoordinator: ObservableObject {
     @Published private(set) var inFlight: Set<String> = []
 
     private unowned let store: RunStore
-    private unowned let remote: RemoteStore
 
-    init(store: RunStore, remote: RemoteStore) {
+    init(store: RunStore) {
         self.store = store
-        self.remote = remote
     }
 
     private func key(_ run: Run, _ target: String?) -> String {
@@ -106,34 +104,6 @@ final class StopCoordinator: ObservableObject {
             case .refused(let message), .failed(let message):
                 self.notice = message
                 self.report(message)
-            }
-        }
-    }
-
-    /// Stop a shared app, or the whole run, on a tailnet peer.
-    ///
-    /// Always asks: the directory does not say what is attached or reused, and
-    /// every remote stop kills something in a terminal nobody here can see.
-    func requestRemote(machine: RemoteMachine, run: RemoteRun, app: String?) {
-        let token = "\(machine.id)/\(run.id)#\(app ?? "--all")"
-        guard !inFlight.contains(token) else { return }
-        let what = app ?? run.branch ?? run.worktree ?? run.project
-        guard confirm("Stop \(what) on \(machine.name)?\n\nThis stops a dev server running on another machine.")
-        else { return }
-        inFlight.insert(token)
-        notice = nil
-
-        Task { [weak self] in
-            var failure: String?
-            do { try await TailnetDirectory.stop(machine.endpoint, run: run.id, app: app) } catch {
-                failure = error.localizedDescription
-            }
-            guard let self else { return }
-            self.inFlight.remove(token)
-            self.remote.refresh(force: true)
-            if let failure {
-                self.notice = failure
-                self.report(failure)
             }
         }
     }

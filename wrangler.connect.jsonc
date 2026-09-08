@@ -1,0 +1,13 @@
+{
+  "name": "buncargo-connect",
+  "account_id": "033e35f1867e7063e4d2e2e8c7121888",
+  "main": "src/connect-directory/worker.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": { "CONNECT_ORIGIN": "https://connect.hanskristoffer.dk" },
+  "routes": [{ "pattern": "connect.hanskristoffer.dk", "custom_domain": true }],
+  "durable_objects": { "bindings": [{ "name": "RECIPIENTS", "class_name": "RecipientDirectory" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RecipientDirectory"] }],
+  "ratelimits": [{ "name": "RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 600, "period": 60 } }],
+  "observability": { "enabled": true }
+}

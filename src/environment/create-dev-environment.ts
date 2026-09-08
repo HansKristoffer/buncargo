@@ -97,10 +97,6 @@ export function createDevEnvironment<
 		loopbackUrls: ctx.loopbackUrls,
 		publicUrls: ctx.publicUrls as ComputedPublicUrls<TServices, TApps>,
 		workspaceId: ctx.workspaceId,
-		tailnetUrls: ctx.tailnetUrls as Partial<
-			Record<Extract<keyof TApps, string>, string>
-		>,
-		setTailnetUrls: ctx.setTailnetUrls,
 		services: ctx.services,
 		apps: ctx.apps,
 		prepareStart: ctx.prepareStart,

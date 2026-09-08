@@ -62,7 +62,6 @@ export interface RunAppEntry {
 	url?: string;
 	loopbackUrl?: string;
 	publicUrl?: string;
-	tailnetUrl?: string;
 	hostname?: string;
 	/** Present on Expo apps: what `buncargo sim` needs without loading the config. */
 	expo?: ExpoAppIdentity;

@@ -241,9 +241,45 @@ export function typecheckConcurrencyOverride(
 	return parsed;
 }
 
-/** Optional path for Tailscale installations outside PATH/the macOS app. */
-export function tailscaleBinaryOverride(
+/** Copied recipient tokens enable sharing; they are never printed in diagnostics. */
+export function connectionTokens(
+	env: NodeJS.ProcessEnv = process.env,
+): string[] {
+	const raw = env.BUNCARGO_CONNECT_TOKENS?.trim();
+	if (!raw) return [];
+	try {
+		const value: unknown = raw.startsWith("[") ? JSON.parse(raw) : [raw];
+		if (
+			!Array.isArray(value) ||
+			value.length > 32 ||
+			!value.every(
+				(v) =>
+					typeof v === "string" &&
+					/^bc1\.[a-zA-Z0-9_-]{1,128}\.[a-zA-Z0-9_-]{43}$/.test(v),
+			)
+		)
+			throw new Error();
+		return [...new Set(value as string[])];
+	} catch {
+		throw new Error(
+			"Invalid BUNCARGO_CONNECT_TOKENS; use a copied token or JSON array of tokens",
+		);
+	}
+}
+
+/** Operator override until the hosted directory has been deployed. */
+export function connectionDirectory(
 	env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-	return env.BUNCARGO_TAILSCALE_PATH;
+	return (
+		env.BUNCARGO_CONNECT_DIRECTORY?.trim() ||
+		"https://connect.hanskristoffer.dk"
+	);
+}
+
+/** Opt-in test against the hosted directory and real Cloudflare transport. */
+export function connectE2EEnabled(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return env.BUNCARGO_TEST_CONNECT_E2E === "1";
 }

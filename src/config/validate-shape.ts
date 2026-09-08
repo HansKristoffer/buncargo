@@ -75,6 +75,12 @@ export function validateConfigShape(value: unknown): string[] {
 				["expose", "interactive", "needsPublicUrls", "afterPreparation"],
 				"boolean",
 			);
+			check(
+				entry.exposeProtocol,
+				`${path}.exposeProtocol`,
+				entry.exposeProtocol === "http" || entry.exposeProtocol === "tcp",
+				'"http" or "tcp"',
+			);
 			duration(entry.healthTimeout, `${path}.healthTimeout`);
 			envValues(entry.staticEnv, `${path}.staticEnv`);
 			if (kind === "apps") {
