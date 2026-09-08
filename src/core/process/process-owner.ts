@@ -40,7 +40,12 @@ export class ProcessOwner {
 			options.signal?.addEventListener("abort", this.onAbort, { once: true });
 	}
 
-	register(name: string, child: ChildProcess, needsReadiness = true): void {
+	register(
+		name: string,
+		child: ChildProcess,
+		needsReadiness = true,
+		worker = false,
+	): void {
 		if (needsReadiness) this.pendingReadiness.add(name);
 		this.children.push(child);
 		this.live.add(child);
@@ -58,7 +63,7 @@ export class ProcessOwner {
 				/* Observers cannot break process cleanup. */
 			}
 			const deliberate =
-				code === 0 ||
+				(code === 0 && !worker) ||
 				code === 130 ||
 				code === 143 ||
 				signal === "SIGINT" ||

@@ -5,8 +5,9 @@ export {
 	type StartDevServersOptions,
 	spawnDevServer,
 	startDevServers,
+	stopDevServers,
 } from "./dev-servers";
-export { type ExecResult, exec, execAsync } from "./exec";
+export { CommandSignalError, type ExecResult, exec, execAsync } from "./exec";
 export { isProcessAlive, stopAllProcesses, stopProcess } from "./lifecycle";
 export {
 	classifyPortOccupant,

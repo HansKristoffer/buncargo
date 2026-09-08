@@ -322,3 +322,61 @@ it("rejects an explicit offset that overflows a service port before any probe", 
 		}),
 	).toThrow("Effective port for db is 66000");
 });
+
+it("read-only commands keep persisted endpoints across configuration edits", () => {
+	delete process.env.BUNCARGO_PORT_OFFSET;
+	const root = mkdtempSync(join(tmpdir(), "buncargo-persisted-edit-"));
+	try {
+		writePortsLockfile(root, {
+			version: 1,
+			projectName: "fixture",
+			root,
+			offset: 100,
+			ports: { postgres: 5532 },
+			provenance: "hash",
+		});
+		const plan = resolvePortPlan({
+			root,
+			projectPrefix: "fixture",
+			projectName: "fixture",
+			services: { postgres: { port: 6543 }, redis: { port: 6379 } },
+			persist: false,
+			probeConflicts: false,
+			getOwner: () => {
+				throw new Error("must not probe");
+			},
+		});
+		expect(plan.ports).toEqual({ postgres: 5532, redis: 6479 });
+		expect(readPortsLockfile(root)?.ports).toEqual({ postgres: 5532 });
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+it("a partial start cannot relocate the unselected persisted infrastructure", () => {
+	delete process.env.BUNCARGO_PORT_OFFSET;
+	const root = mkdtempSync(join(tmpdir(), "buncargo-persisted-scope-"));
+	try {
+		writePortsLockfile(root, {
+			version: 1,
+			projectName: "fixture",
+			root,
+			offset: 100,
+			ports: { postgres: 5532, marketing: 3100 },
+			provenance: "hash",
+		});
+		expect(() =>
+			resolvePortPlan({
+				root,
+				projectPrefix: "fixture",
+				projectName: "fixture",
+				services: { postgres: { port: 5432 } },
+				apps: { marketing: { port: 3000, devCommand: false } },
+				probeNames: ["marketing"],
+				getOwner: () => ({ pids: [99999], command: "foreign", cwd: "/other" }),
+			}),
+		).toThrow("persisted allocation");
+		expect(readPortsLockfile(root)?.ports.postgres).toBe(5532);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});

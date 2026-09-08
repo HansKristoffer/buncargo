@@ -2,6 +2,7 @@ import { relative } from "node:path";
 import { ensureServicesRunning } from "../container-runtime";
 import { withDeadline } from "../core/deadline";
 import { toPortMap, toUrlMap } from "../core/ports";
+import { stopDevServers } from "../core/process/dev-servers";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWarn } from "../core/style";
 import {
@@ -47,19 +48,53 @@ export function createLifecycleApi<
 ): DevLifecycleApi<TApps> {
 	const { config, services, apps, ports } = ctx;
 
+	let selectedServices: string[] = [];
+	let selectedApps: string[] = [];
+	let started = false;
+
+	function preparationSelected(prerequisites?: readonly string[]): boolean {
+		// Omitted prerequisites preserve legacy container-backed preparation;
+		// an explicit empty list opts into preparation for app-only selections.
+		return prerequisites
+			? prerequisites.every((name) => selectedServices.includes(name))
+			: selectedServices.length > 0;
+	}
+
+	function appOnlyRun(): boolean {
+		return (
+			(started && selectedServices.length === 0) ||
+			Object.keys(services).length === 0
+		);
+	}
+
+	function currentSelection() {
+		return { appNames: selectedApps, requiredServiceKeys: selectedServices };
+	}
+
+	function hookContext(signal?: AbortSignal) {
+		return envVars.getHookContext(signal, currentSelection());
+	}
+
+	function prismaSelected(): boolean {
+		return selectedServices.includes(config.prisma?.service ?? "postgres");
+	}
+
 	function collectMigrations(): MigrationConfig[] {
-		return [
-			...(config.prisma
-				? [
-						{
-							name: "prisma",
-							command: "bunx prisma migrate deploy",
-							cwd: config.prisma.cwd ?? "packages/prisma",
-						},
-					]
-				: []),
-			...(config.migrations ?? []),
-		];
+		const migrations: MigrationConfig[] = [];
+
+		if (config.prisma && prismaSelected()) {
+			migrations.push({
+				name: "prisma",
+				command: "bunx prisma migrate deploy",
+				cwd: config.prisma.cwd ?? "packages/prisma",
+			});
+		}
+
+		return migrations.concat(
+			(config.migrations ?? []).filter((entry) =>
+				preparationSelected(entry.requiredServices),
+			),
+		);
 	}
 
 	async function runPrepareSteps(
@@ -75,30 +110,51 @@ export function createLifecycleApi<
 				timeoutMs: options?.timeoutMs ?? 600000,
 			});
 		const migrations = collectMigrations();
+		const beforeMigrations = config.hooks?.beforeMigrations;
+		if (
+			beforeMigrations &&
+			(config.prisma ? prismaSelected() : selectedServices.length > 0)
+		) {
+			await withDeadline(
+				(hookSignal) => beforeMigrations(hookContext(hookSignal)),
+				600000,
+				signal,
+			);
+		}
+
 		if (migrations.length > 0) {
-			if (verbose) console.log(formatStep("📦 Running migrations..."));
+			if (verbose) {
+				console.log(formatStep("📦 Running migrations..."));
+			}
+
 			const began = performance.now();
 			try {
 				await runMigrationsSequentially(migrations, execute);
 			} finally {
 				onPhase?.("migrations", performance.now() - began);
 			}
-			if (verbose) console.log(formatDone("Migrations complete"));
+
+			if (verbose) {
+				console.log(formatDone("Migrations complete"));
+			}
 		}
 
 		const generateCheck = config.prisma?.generateCheck;
 		if (
 			generate &&
+			prismaSelected() &&
 			config.prisma?.generate &&
 			(!generateCheck ||
 				(await withDeadline(
-					async (hookSignal) =>
-						generateCheck(envVars.getHookContext(hookSignal)),
+					async (hookSignal) => generateCheck(hookContext(hookSignal)),
 					600_000,
 					signal,
 				)))
 		) {
-			if (verbose) console.log(formatStep("📦 Generating Prisma client..."));
+			if (verbose) {
+				console.log(formatStep("📦 Generating Prisma client..."));
+			}
+
 			const began = performance.now();
 			try {
 				await execute(config.prisma.generate, {
@@ -108,12 +164,24 @@ export function createLifecycleApi<
 			} finally {
 				onPhase?.("generation", performance.now() - began);
 			}
-			if (verbose) console.log(formatDone("Prisma generate complete"));
+
+			if (verbose) {
+				console.log(formatDone("Prisma generate complete"));
+			}
 		}
 	}
 
 	function runSeed(options: SeedRunOptions = {}): Promise<SeedOutcome> {
-		return runSeedIfNeeded(ctx, envVars, options);
+		if (started && !preparationSelected(config.seed?.requiredServices)) {
+			return Promise.resolve({ status: "not-needed" });
+		}
+
+		return runSeedIfNeeded(
+			ctx,
+			envVars,
+			options,
+			started ? currentSelection() : undefined,
+		);
 	}
 
 	/**
@@ -129,13 +197,17 @@ export function createLifecycleApi<
 			ports: toPortMap(ports),
 			loopbackUrls: toUrlMap(ctx.loopbackUrls),
 		});
-		if (!verbose || !result) return;
+		if (!verbose || !result) {
+			return;
+		}
+
 		if (result.absent) {
 			console.log(
 				formatWarn(`No ${relative(ctx.root, result.path)} to sync; skipped`),
 			);
 			return;
 		}
+
 		if (result.created || result.changed.length > 0) {
 			const what = result.created
 				? "Created"
@@ -149,6 +221,7 @@ export function createLifecycleApi<
 	): Promise<DevServerPids | null> {
 		const { signal, onPhase, prepare = "all" } = startOptions;
 		signal?.throwIfAborted();
+
 		async function phase<T>(name: string, work: () => Promise<T>): Promise<T> {
 			const began = performance.now();
 			try {
@@ -158,6 +231,7 @@ export function createLifecycleApi<
 				onPhase?.(name, performance.now() - began);
 			}
 		}
+
 		const ci = isCI();
 		const {
 			verbose = config.options?.verbose ?? true,
@@ -172,80 +246,128 @@ export function createLifecycleApi<
 
 		const startPlan = buildStartPlan(apps, services, onlyApps);
 		const appsToStart = startPlan.apps;
-		if (shouldStartServers && prepare === "all")
+		if (shouldStartServers && prepare === "all") {
 			assertAppWorkingDirectories(appsToStart, ctx.root, productionBuild);
+		}
+
 		const targetServices: Record<string, ServiceConfig> = Object.fromEntries(
 			startPlan.requiredServiceKeys.map(
 				(serviceKey) => [serviceKey, services[serviceKey]] as const,
 			),
 		);
-		const portMap = toPortMap(ports);
-		const targetPorts = Object.fromEntries(
-			startPlan.requiredServiceKeys.flatMap((serviceKey) =>
-				[serviceKey, `${serviceKey}Secondary`].flatMap((name) =>
-					portMap[name] === undefined ? [] : [[name, portMap[name]] as const],
-				),
-			),
-		);
-		const startupHeartbeat = createHeartbeatOwner(ctx.projectName, ctx.root);
-		startupHeartbeat.start();
-		try {
-			let containersReady = false;
+		ctx.prepareStart?.(onlyApps);
+		selectedServices = startPlan.requiredServiceKeys;
+		selectedApps = startPlan.appNames;
+		started = true;
 
+		const hasServices = selectedServices.length > 0;
+		const portMap = toPortMap(ports);
+		const targetPorts: Record<string, number> = {};
+		for (const serviceKey of selectedServices) {
+			for (const name of [serviceKey, `${serviceKey}Secondary`]) {
+				const port = portMap[name];
+				if (port !== undefined) {
+					targetPorts[name] = port;
+				}
+			}
+		}
+
+		const startupHeartbeat = createHeartbeatOwner(ctx.projectName, ctx.root);
+		if (hasServices) {
+			startupHeartbeat.start();
+		}
+
+		try {
 			if (verbose && !skipEnvironmentLog) {
 				ctx.logInfo(
 					productionBuild ? "Production Environment" : "Dev Environment",
 				);
 			}
 
-			await phase("containers", () =>
-				withWatchdogProjectLock(
-					ctx.projectName,
-					ctx.root,
-					() => {
-						ctx.ensureComposeFile();
-						return ensureServicesRunning({
-							signal,
-							runtime: ctx.runtime,
-							root: ctx.root,
-							projectName: ctx.projectName,
-							envVars: envVars.buildEnvVars(productionBuild),
-							services: targetServices,
-							ports: targetPorts,
-							model: ctx.composeModel(),
-							composeFile: ctx.composeFile,
-							verbose,
-							wait,
-							autoStartRuntime: autoStartDocker,
-						});
-					},
-					signal,
+			// Containers-only mode bypasses preparation and starts every selected service.
+			const earlyServices = Object.fromEntries(
+				Object.entries(targetServices).filter(
+					([, service]) =>
+						prepare === "containers" || !service.afterPreparation,
 				),
 			);
-			containersReady = true;
+			const lateServices = Object.fromEntries(
+				Object.entries(targetServices).filter(
+					([, service]) => service.afterPreparation,
+				),
+			);
+
+			// Both subsets must fingerprint the same Compose artifact.
+			let artifactReady = false;
+
+			async function ensureSubset(
+				subset: Record<string, ServiceConfig>,
+				noDeps = false,
+			) {
+				if (Object.keys(subset).length === 0) {
+					return;
+				}
+
+				await phase("containers", () =>
+					withWatchdogProjectLock(
+						ctx.projectName,
+						ctx.root,
+						() => {
+							if (!artifactReady) {
+								ctx.ensureComposeFile();
+								artifactReady = true;
+							}
+
+							return ensureServicesRunning({
+								signal,
+								runtime: ctx.runtime,
+								root: ctx.root,
+								projectName: ctx.projectName,
+								envVars: envVars.buildEnvVars(productionBuild),
+								services: subset,
+								noDeps,
+								ports: targetPorts,
+								model: ctx.composeModel(),
+								composeFile: ctx.composeFile,
+								verbose,
+								wait,
+								autoStartRuntime: autoStartDocker,
+							});
+						},
+						signal,
+					),
+				);
+			}
+
+			if (hasServices) {
+				await ensureSubset(earlyServices);
+			}
 
 			// Before migrations, not just before servers: Prisma and friends read
 			// `.env` off disk themselves, so a stale port fails the migrate step.
 			await phase("dotenv", () => syncConfiguredEnvFile(verbose));
-			if (prepare === "containers") return null;
+			if (prepare === "containers") {
+				return null;
+			}
 
 			try {
 				await runPrepareSteps(verbose, signal, onPhase, prepare !== "migrate");
-				if (prepare === "migrate") return null;
+				if (prepare === "migrate") {
+					return null;
+				}
 
 				const afterContainersReady = config.hooks?.afterContainersReady;
-				if (afterContainersReady) {
+				if (afterContainersReady && hasServices) {
 					await phase("container hooks", () =>
 						withDeadline(
-							(hookSignal) =>
-								afterContainersReady(envVars.getHookContext(hookSignal)),
+							(hookSignal) => afterContainersReady(hookContext(hookSignal)),
 							600_000,
 							signal,
 						),
 					);
 				}
 
-				if (!skipSeed) {
+				if (!skipSeed && preparationSelected(config.seed?.requiredServices)) {
 					const seeded = await phase("seed", () =>
 						runSeed({ verbose, productionBuild, signal }),
 					);
@@ -256,6 +378,9 @@ export function createLifecycleApi<
 					}
 				}
 
+				// Early jobs already completed. --no-deps prevents Compose from rerunning them.
+				await ensureSubset(lateServices, true);
+
 				if (shouldStartServers && Object.keys(appsToStart).length > 0) {
 					const pids = await startAppServers(ctx, envVars, {
 						signal,
@@ -264,13 +389,16 @@ export function createLifecycleApi<
 						verbose,
 					});
 
-					if (verbose) console.log(formatDone("Environment ready"));
+					if (verbose) {
+						console.log(formatDone("Environment ready"));
+					}
+
 					return pids;
 				}
 
 				return null;
 			} catch (error) {
-				if (containersReady) {
+				if (hasServices) {
 					console.error(
 						formatStep(
 							"ℹ Containers are still running. Use `bunx buncargo dev --down` to stop them.",
@@ -290,10 +418,15 @@ export function createLifecycleApi<
 		const beforeStop = config.hooks?.beforeStop;
 		if (beforeStop) {
 			await withDeadline(
-				(hookSignal) => beforeStop(envVars.getHookContext(hookSignal)),
+				(hookSignal) => beforeStop(hookContext(hookSignal)),
 				600000,
 				stopOptions.signal,
 			);
+		}
+
+		await stopDevServers(ctx.ownedServerPids ?? {});
+		if (appOnlyRun()) {
+			return;
 		}
 
 		await withWatchdogProjectLock(
@@ -324,6 +457,10 @@ export function createLifecycleApi<
 	}
 
 	async function isRunning(): Promise<boolean> {
+		if (appOnlyRun()) {
+			return false;
+		}
+
 		return ctx.runtime.areServicesRunning(
 			ctx.projectName,
 			resolveComposeServiceNames(services, Object.keys(services)),

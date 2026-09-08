@@ -47,5 +47,5 @@ jobs:
         run: |
           docker version
           docker compose version
-      - name: Start, reuse, change and stop a disposable stack
+      - name: Verify container reuse, jobs, preparation and shutdown
         run: bun scripts/verify-docker.ts

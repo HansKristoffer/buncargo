@@ -1,3 +1,4 @@
+import { toPortMap } from "../core/ports";
 /**
  * Prisma integration for buncargo.
  *
@@ -85,11 +86,11 @@ export function createPrismaRunner<
 		const composeFile = env.ensureComposeFile();
 		const envVars = env.buildEnvVars();
 		const serviceConfig = env.services[service];
-		if (!serviceConfig) {
+		if (!serviceConfig || serviceConfig.kind === "job") {
 			throw new Error(`Prisma service "${service}" is not configured`);
 		}
 
-		const port = env.ports[service];
+		const port = toPortMap(env.ports)[service];
 		if (!port) {
 			throw new Error(`Service ${service} not found in dev environment ports`);
 		}
@@ -130,7 +131,7 @@ Examples:
 			return 0;
 		}
 
-		const port = env.ports[service];
+		const port = toPortMap(env.ports)[service];
 
 		console.log(`
 🔧 Prisma CLI

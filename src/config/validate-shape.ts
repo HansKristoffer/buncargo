@@ -72,7 +72,7 @@ export function validateConfigShape(value: unknown): string[] {
 			fields(
 				entry,
 				`${path}.`,
-				["expose", "interactive", "needsPublicUrls"],
+				["expose", "interactive", "needsPublicUrls", "afterPreparation"],
 				"boolean",
 			);
 			duration(entry.healthTimeout, `${path}.healthTimeout`);
@@ -205,6 +205,23 @@ export function validateConfigShape(value: unknown): string[] {
 	}
 	if (object(value.options)) {
 		const options = value.options;
+		if (options.envFiles !== undefined) {
+			if (!Array.isArray(options.envFiles))
+				errors.push("options.envFiles must be an array");
+			else
+				for (const [index, file] of options.envFiles.entries()) {
+					if (typeof file === "string" && file.length > 0) continue;
+					if (
+						!object(file) ||
+						typeof file.path !== "string" ||
+						!file.path ||
+						(file.optional !== undefined && typeof file.optional !== "boolean")
+					)
+						errors.push(
+							`options.envFiles.${index} must be a path or {path, optional}`,
+						);
+				}
+		}
 		fields(options, "options.", ["worktreeIsolation", "verbose"], "boolean");
 		fields(
 			options,

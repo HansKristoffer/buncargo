@@ -1,3 +1,4 @@
+import { toPortMap } from "../core/ports";
 import type {
 	PublicExposeTarget,
 	PublicTunnel,
@@ -238,7 +239,7 @@ export function createTunnelCoordinator<
 				name: tunnel.name,
 				publicUrl: tunnel.publicUrl,
 				localUrl: tunnel.localUrl,
-				port: env.ports[tunnel.name] ?? 0,
+				port: toPortMap(env.ports)[tunnel.name] ?? 0,
 				pid: process.pid,
 				updatedAt: new Date().toISOString(),
 			}));

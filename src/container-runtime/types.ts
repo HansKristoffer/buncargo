@@ -23,6 +23,8 @@ export interface EnsureRuntimeOptions {
  * model separately per backend would let the two drift.
  */
 export interface ContainerUpRequest {
+	/** Dependencies have already been prepared by an earlier startup phase. */
+	noDeps?: boolean;
 	signal?: AbortSignal;
 	timeoutMs?: number;
 

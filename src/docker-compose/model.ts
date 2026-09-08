@@ -59,7 +59,8 @@ function normalizeRawService(
 	if (!normalized.ports || normalized.ports.length === 0) {
 		normalized.ports = getDefaultPortBindings(name, config);
 	}
-	if (config.healthCheck === false) {
+	if (config.kind === "job") normalized.restart = "no";
+	if (config.healthCheck === false || config.kind === "job") {
 		delete normalized.healthcheck;
 	}
 	return normalized;

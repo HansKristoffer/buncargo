@@ -27,6 +27,7 @@ import {
 	type PortOwnerSnapshot,
 } from "./port-owner";
 import { ProcessOwner, RunInterrupted } from "./process-owner";
+import { spawnOwnedWorker } from "./worker-ownership";
 
 /**
  * Did this app stop because something asked it to?
@@ -85,6 +86,7 @@ export async function spawnDevServer(
 			if (verbose) {
 				console.log(formatWarn(`Port ${port} is in use`));
 			}
+
 			await killPortOwner(port, { verbose });
 		}
 	}
@@ -119,6 +121,9 @@ export async function spawnDevServer(
 }
 
 export interface StartDevServersOptions {
+	/** Reports a supervised failure after a library start returned its pids. */
+	onFailure?: (error: unknown) => void;
+	skipContainers?: boolean;
 	signal?: AbortSignal;
 	shutdownGraceMs?: number;
 	runtime?: ContainerRuntimeAdapter;
@@ -183,6 +188,7 @@ function resolveShell(): string {
 			return candidate;
 		}
 	}
+
 	return "/bin/sh";
 }
 
@@ -193,10 +199,15 @@ function prefixStream(
 	stream: NodeJS.ReadableStream | null,
 	options: { width: number; onFirstWrite: () => void },
 ): void {
-	if (!stream) return;
+	if (!stream) {
+		return;
+	}
+
 	let buffer = "";
 	const writeLine = (line: string) => {
-		if (isBlankLogLine(line)) return;
+		if (isBlankLogLine(line)) {
+			return;
+		}
 		options.onFirstWrite();
 		process.stdout.write(formatPrefixedLine(name, line, options.width));
 	};
@@ -209,7 +220,9 @@ function prefixStream(
 		}
 	});
 	stream.on("end", () => {
-		if (buffer) writeLine(buffer);
+		if (buffer) {
+			writeLine(buffer);
+		}
 	});
 }
 
@@ -267,6 +280,7 @@ function spawnManagedApp(
 	if (baseCommand === undefined) {
 		throw new Error(`App "${name}" has no startable devCommand`);
 	}
+
 	const command =
 		options.attached && options.extraArgs.length > 0
 			? `${baseCommand} ${options.extraArgs.join(" ")}`
@@ -287,9 +301,11 @@ function spawnManagedApp(
 		prefixStream(name, child.stdout, streamOptions);
 		prefixStream(name, child.stderr, streamOptions);
 	}
+
 	if (!options.waitForExit && child.unref) {
 		child.unref();
 	}
+
 	return child;
 }
 
@@ -301,8 +317,12 @@ async function prepareAppPort(
 	verbose: boolean,
 	ports: PortOwnerSnapshot,
 	runtime?: ContainerRuntimeAdapter,
+	skipContainers?: boolean,
 ): Promise<"reuse" | "start"> {
-	if (port === undefined) return "start";
+	if (port === undefined) {
+		return "start";
+	}
+
 	const owner = ports.owner(port);
 	const action = classifyPortOccupant(owner, {
 		root,
@@ -315,14 +335,18 @@ async function prepareAppPort(
 				formatStep(`♻️  Reusing existing process on port ${port} (${name})`),
 			);
 		}
+
 		return "reuse";
 	}
+
 	if (action === "fail" && owner) {
 		throw new Error(formatPortOwner(port, owner, { runtime: runtime?.name }));
 	}
+
 	if (action === "kill") {
-		await killPortOwner(port, { verbose, runtime });
+		await killPortOwner(port, { verbose, runtime, skipContainers });
 	}
+
 	return "start";
 }
 
@@ -330,6 +354,18 @@ async function prepareAppPort(
  * Start configured dev servers, holding `needsPublicUrls` apps for a second
  * wave when tunnels are opening (see `deferPublicUrlApps`).
  */
+const activeOwners = new Map<number, ProcessOwner>();
+
+export async function stopDevServers(pids: DevServerPids): Promise<void> {
+	await Promise.all(
+		[
+			...new Set(
+				Object.values(pids).flatMap((pid) => activeOwners.get(pid) ?? []),
+			),
+		].map((owner) => owner.stop()),
+	);
+}
+
 export async function startDevServers(
 	apps: Record<string, AppConfig>,
 	root: string,
@@ -376,10 +412,19 @@ export async function startDevServers(
 		onAppExit,
 	});
 	const pids: DevServerPids = {};
+	let handedOff = false;
+	const dispose = () => {
+		for (const pid of Object.values(pids)) {
+			activeOwners.delete(pid);
+		}
+		owner.dispose();
+	};
 	const nameWidth = prefixWidth(Object.keys(startable));
 	let logsHeaderPrinted = false;
 	const onFirstLog = () => {
-		if (logsHeaderPrinted) return;
+		if (logsHeaderPrinted) {
+			return;
+		}
 		logsHeaderPrinted = true;
 		process.stdout.write(`\n${formatSection("Logs")}\n`);
 	};
@@ -391,6 +436,7 @@ export async function startDevServers(
 		owner.controller.signal.throwIfAborted();
 		const portOwners = createPortOwnerSnapshot({
 			runtime: options.runtime,
+			skipContainers: options.skipContainers,
 			ports: Object.keys(wave).flatMap((name) => {
 				const port = ports[name];
 				return port === undefined ? [] : [port];
@@ -405,27 +451,36 @@ export async function startDevServers(
 				verbose,
 				portOwners,
 				options.runtime,
+				options.skipContainers,
 			);
 			owner.controller.signal.throwIfAborted();
-			if (prepared === "reuse") continue;
+			if (prepared === "reuse") {
+				continue;
+			}
+
 			const attached = name === attachedName;
-			const child = spawnManagedApp(
-				name,
-				config,
-				root,
-				resolveAppEnv(envVarsByApp, name),
-				{
+			const spawn = () =>
+				spawnManagedApp(name, config, root, resolveAppEnv(envVarsByApp, name), {
 					attached,
 					extraArgs: attached ? extraArgs : [],
 					productionBuild,
 					waitForExit,
 					prefixWidth: nameWidth,
 					onFirstLog,
-				},
+				});
+			const child =
+				config.kind === "worker"
+					? await spawnOwnedWorker(root, name, spawn, owner.controller.signal)
+					: spawn();
+			owner.register(
+				name,
+				child,
+				config.kind !== "worker" && config.healthEndpoint !== false,
+				config.kind === "worker",
 			);
-			owner.register(name, child, config.healthEndpoint !== false);
 			if (child.pid) {
 				pids[name] = child.pid;
+				activeOwners.set(child.pid, owner);
 				onAppSpawned?.(name, child.pid, attached);
 				if (verbose) {
 					console.log(formatPidLine(name, child.pid, nameWidth));
@@ -435,7 +490,10 @@ export async function startDevServers(
 	}
 
 	async function startWave(wave: Record<string, AppConfig>): Promise<void> {
-		if (Object.keys(wave).length === 0) return;
+		if (Object.keys(wave).length === 0) {
+			return;
+		}
+
 		await owner.race(spawnWave(wave));
 		if (waitForHealth) {
 			await owner.race(waitForHealth(wave, owner.controller.signal));
@@ -459,19 +517,46 @@ export async function startDevServers(
 	}
 	try {
 		await startWave(wave1);
-		if (onAfterWave1) await owner.race(onAfterWave1(owner.controller.signal));
+		if (onAfterWave1) {
+			await owner.race(onAfterWave1(owner.controller.signal));
+		}
+
 		await startWave(wave2);
 		owner.controller.signal.throwIfAborted();
-		if (options.onReady)
+		if (options.onReady) {
 			await owner.race(
 				Promise.resolve().then(() =>
 					options.onReady?.(owner.controller.signal),
 				),
 			);
+		}
+
 		if (waitForExit) {
 			await owner.wait();
 			await owner.stop();
+		} else {
+			handedOff = true;
+			void (async () => {
+				try {
+					await owner.wait();
+				} catch (error) {
+					if (!(error instanceof RunInterrupted) && !options.signal?.aborted) {
+						if (options.onFailure) {
+							options.onFailure(error);
+						} else {
+							console.error(error);
+						}
+					}
+				} finally {
+					try {
+						await owner.stop();
+					} finally {
+						dispose();
+					}
+				}
+			})().catch((error) => console.error(error));
 		}
+
 		return pids;
 	} catch (error) {
 		try {
@@ -482,12 +567,15 @@ export async function startDevServers(
 				"App startup or shutdown failed",
 			);
 		}
+
 		if (error instanceof RunInterrupted) {
 			await onSignal?.();
 			return pids;
 		}
 		throw error;
 	} finally {
-		owner.dispose();
+		if (!handedOff) {
+			dispose();
+		}
 	}
 }

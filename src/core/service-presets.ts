@@ -72,7 +72,9 @@ export function resolveServiceEnvVarSources(
 ): Record<string, ServiceEnvValueSource> {
 	const preset = inferDockerPreset(serviceKey, service);
 	return {
-		...(preset ? BUILT_IN_SERVICE_ENV_VARS[preset] : {}),
+		...(preset && service.port !== undefined
+			? BUILT_IN_SERVICE_ENV_VARS[preset]
+			: {}),
 		...(service.env ?? {}),
 	};
 }

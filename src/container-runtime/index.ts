@@ -1,3 +1,4 @@
+export { assertServiceCapabilities } from "./capabilities";
 export {
 	createBuiltInHealthCheck,
 	type HealthCheckContext,

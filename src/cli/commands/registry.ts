@@ -6,6 +6,11 @@ import type { CommandExample } from "../command-spec";
  */
 export const CLI_COMMANDS = [
 	{
+		name: "exec",
+		usage: "exec [options] -- <command>",
+		summary: "Run a command with the checkout environment",
+	},
+	{
 		name: "tailnet",
 		usage: "tailnet <subcommand>",
 		summary: "Private Tailscale URLs and peer discovery",

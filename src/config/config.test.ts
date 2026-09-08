@@ -91,17 +91,17 @@ describe("validateConfig", () => {
 	});
 
 	describe("services validation", () => {
-		it("returns error when services is empty", () => {
-			const config = createValidConfig();
-			// @ts-expect-error - testing invalid config
-			config.services = {};
-
-			const errors = validateConfig(config);
-
-			expect(errors).toContain("At least one service is required");
+		it("accepts empty services", () => {
+			expect(
+				validateConfig({
+					projectPrefix: "marketing",
+					services: {},
+					apps: { web: { port: 3000, devCommand: "bun run dev" } },
+				}),
+			).toEqual([]);
 		});
 
-		it("returns error when service has no port", () => {
+		it("accepts a service without a host port", () => {
 			const config = {
 				projectPrefix: "myapp",
 				services: {
@@ -114,9 +114,7 @@ describe("validateConfig", () => {
 
 			const errors = validateConfig(config);
 
-			expect(errors).toContain(
-				'Service "postgres" must have a valid port number',
-			);
+			expect(errors).toEqual([]);
 		});
 
 		it("returns error when service port is 0", () => {
@@ -130,7 +128,7 @@ describe("validateConfig", () => {
 			const errors = validateConfig(config);
 
 			expect(errors).toContain(
-				'Service "postgres" port must be between 1 and 65535',
+				"services.postgres.port must be an integer between 1 and 65535",
 			);
 		});
 
@@ -145,7 +143,7 @@ describe("validateConfig", () => {
 			const errors = validateConfig(config);
 
 			expect(errors).toContain(
-				'Service "postgres" port must be between 1 and 65535',
+				"services.postgres.port must be an integer between 1 and 65535",
 			);
 		});
 
