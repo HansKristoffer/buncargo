@@ -1,6 +1,10 @@
 # Releasing on merge
 
-> **Status (2026-09-08): built** except step 9 (GitHub settings), which is manual, and step 10 (first run), which happens when this merges.
+> **Status (2026-09-08): live.** First releases through the flow: `v7.10.0`
+> on npm and `bar-v1.1.0`. Two things surfaced on the first run: the manifest
+> had to be re-synced because 7.8.0 and 7.9.0 were published by hand while the
+> flow was being built, and `publish.yml` had never actually published; npm
+> read `candidate/*.tgz` as a GitHub shorthand, so the path is now `./candidate/*.tgz`.
 
 ## Today
 
