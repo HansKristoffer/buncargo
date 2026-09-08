@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "separate-pull-requests": false,
+  "packages": {
+    ".": {
+      "release-type": "node",
+      "package-name": "buncargo",
+      "include-component-in-tag": false
+    },
+    "menubar": {
+      "release-type": "simple",
+      "component": "bar",
+      "include-component-in-tag": true,
+      "tag-separator": "-"
+    }
+  }
+}
