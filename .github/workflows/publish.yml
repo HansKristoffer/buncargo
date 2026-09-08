@@ -64,4 +64,4 @@ jobs:
           name: npm-candidate-${{ github.sha }}
           path: candidate/
       - name: Publish verified tarball with provenance
-        run: npm publish candidate/*.tgz --ignore-scripts --access public --provenance
+        run: npm publish ./candidate/*.tgz --ignore-scripts --access public --provenance
