@@ -46,8 +46,9 @@ const QUIT_POLL_MS = 100;
 /** An install from `--source`, which has no release version to compare. */
 export const BAR_SOURCE_VERSION = "source";
 
+// 100, not 20: CLI releases share this list and only the `bar-v` ones count.
 const RELEASES_ENDPOINT =
-	"https://api.github.com/repos/HansKristoffer/buncargo/releases?per_page=20";
+	"https://api.github.com/repos/HansKristoffer/buncargo/releases?per_page=100";
 /** Tags for the app, kept apart from the CLI's own `v*` tags. */
 export const BAR_TAG_PREFIX = "bar-v";
 

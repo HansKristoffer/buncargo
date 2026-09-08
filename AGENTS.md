@@ -92,7 +92,7 @@ All library source code lives under `src/`.
  - `run-registry.ts` stores private `~/.buncargo/runs.json` with additive per-session identity, process birth identity, selected service/runtime/binary/alias metadata, and owned versus reused apps. Multiple new sessions in one root coexist. `run-publish.ts` serializes updates and terminal states cannot regress to ready. Read-only consumers filter live entries without writing; writers prune. `stop --run` selects an exact session.
  - `primary-app.ts` answers "which app is this project about" once. Three knobs used to answer it separately (`hosts.primaryApp`, `frontendApp`, `expoApiApp`), so a project could have a different main app depending on which surface you asked. `resolvePrimaryApp` infers from the dependency graph when nothing is configured; `configuredPrimaryApp` never infers and is what named hosts use, because inferring an owner for the bare `myapp.localhost` would silently move a name people have bookmarked.
  - `service-identity.ts` decides what a service *is* from its preset rather than its name. The banner used `name.includes("postgres")`, so a service keyed `db` from `service.postgres()` got no TablePlus link while the compose side knew the preset all along. Banner, run registry and menu bar app now share one answer, and `tablePlusUrl` lives here (re-exported from `environment/tableplus.ts`, the path people know).
- - `menubar.ts` is the BuncargoBar app from the CLI side: detection, GitHub release download with checksum verification, install, uninstall. It never upgrades — the app has its own update checker, and two updaters on one bundle leave it half-replaced. `fetchLatestBarRelease` filters the releases list by the `bar-v` tag prefix rather than using `releases/latest`, which would return whichever tag was published most recently, usually a CLI one.
+ - `menubar.ts` is the BuncargoBar app from the CLI side: detection, GitHub release download with checksum verification, install, update, uninstall. The CLI is the only updater (`docs/bar-update-plan.md`); the app has no checker, so two updaters never race on one bundle. `fetchLatestBarRelease` filters the releases list by the `bar-v` tag prefix rather than using `releases/latest`, which would return whichever tag was published most recently, usually a CLI one.
  - `sleep.ts` is a leaf on its own rather than part of `utils.ts`, which also holds `getEnvVar` and therefore imports port allocation, the host plan and the network helpers. The hosts daemon needs nothing but `sleep`, and taking it from `utils` pulled that whole graph into the single file a root launchd job executes. `utils.ts` re-exports it, because `buncargo/core/utils` is a published entry point.
  - `timing.ts` measures CLI entry through actual app readiness (or startup failure), including config/ports, preparation, tunnels and both waves. `--timing-json` includes numeric-only startup metrics. Keep diagnostics free of commands, secrets and environment values; counters are dormant when unobserved.
  - `process/port-snapshot.ts` is one reading of every TCP listener (`lsof -Fpcn`), and `createPortOwnerSnapshot` in `port-owner.ts` answers "who holds this port" for many ports from it. A dev run asks that question in four places — the allocator, the service preflight, `classifyCliApps` and the spawner — and each answer used to cost an `lsof`, a container listing, a `ps` and a second `lsof`, so a small config forked about thirty times before the first server started. The snapshot is created per phase and thrown away; anything that changes ownership on purpose (`killPortOwner`, the takeover) takes a fresh reading. The spawner takes one **per wave**, because wave 2 runs after wave-1 servers have bound their ports.
@@ -178,6 +178,14 @@ All library source code lives under `src/`.
 - Treat changes to `src/index.ts`, CLI command behavior, and exported types as high-impact.
 - If changing behavior, update/extend tests in the same change.
 - Keep error messages actionable and user-oriented.
+
+## Releasing
+
+Releases happen by merging (`docs/release-flow-plan.md`). Release Please reads squash-merged PR titles as conventional commits and keeps one release PR open on `main`; merging it tags, publishes the npm package and builds BuncargoBar.
+
+- PR titles are conventional commits. `fix:` releases a patch, `feat:` a minor, `feat!:` (or a `BREAKING CHANGE:` footer) a major. `chore:`, `docs:`, `refactor:`, `test:` release nothing.
+- A PR touching only `menubar/` bumps BuncargoBar; anything else bumps the CLI; both when it touches both.
+- Never edit `version` in `package.json`, `menubar/version.txt` or a `CHANGELOG.md` by hand; the release PR owns them.
 
 ## Validation Checklist (for every substantive change)
 

@@ -1,66 +1,41 @@
 # BuncargoBar releases, tagged `bar-v*` so they never mix with the CLI's `v*`.
 #
+# Called by release.yml with the version Release Please just tagged; the
+# dispatch is the escape hatch for rebuilding a release by hand. A pushed tag
+# does not trigger this on its own any more: Release Please creates the tag with
+# the workflow token, which never fires other workflows.
+#
 # `buncargo bar install` and `buncargo bar update` read the assets this
 # publishes, so the names here are a contract: `BuncargoBar-<version>.zip` and a
-# matching `.sha256`. The CLI is the only updater; the app has no checker.
+# matching `.sha256`. The CLI is the only updater; the app has no checker. Until
+# the zip lands, the CLI skips the asset-less release and keeps offering the
+# previous one.
 name: Release menubar
 
 on:
-  push:
-    tags:
-      - "bar-v*"
+  workflow_call:
+    inputs:
+      version:
+        description: "Version to release, without the bar-v prefix (e.g. 1.0.6)"
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release, without the bar-v prefix (e.g. 0.1.0)"
+        description: "Version to release, without the bar-v prefix (e.g. 1.0.6)"
         required: true
-  pull_request:
-    paths:
-      - "menubar/**"
-      - "src/core/run-registry*"
-      - "src/core/tailnet/**"
-      - "src/core/registry-file*"
-      - "src/cli/run-publish*"
-      - "src/cli/commands/stop*"
-      - "src/types/**"
-      - ".github/workflows/release-menubar.yml"
+        type: string
 
 permissions:
   contents: write
 
 jobs:
-  # A schema change to runs.json that breaks the Swift decoder fails the PR
-  # that makes it, rather than the next release.
-  verify:
-    if: github.event_name == 'pull_request'
-    # macos-15 ships Xcode 16 (Swift 6); macos-14 only has Swift 5.10.
-    runs-on: macos-15
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v5
-
-      # Printed, not pinned: hard-coding an Xcode path breaks whenever the
-      # runner image renames one, and these three lines are what you actually
-      # need when a build starts failing after an image rotation.
-      - name: Show toolchain
-        run: |
-          xcode-select --print-path
-          swift --version
-
-      - name: Build
-        working-directory: menubar
-        run: swift build -c release --arch arm64
-
-      - name: Remote discovery and shared schema tests
-        run: swift test --package-path menubar
-
-      - name: Smoke test against a fixture registry
-        run: bash menubar/scripts/smoke-test.sh
-
   release:
-    if: github.event_name != 'pull_request'
     runs-on: macos-15
     timeout-minutes: 40
+    env:
+      VERSION: ${{ inputs.version }}
+      TAG: bar-v${{ inputs.version }}
     steps:
       - uses: actions/checkout@v5
 
@@ -68,17 +43,6 @@ jobs:
         run: |
           xcode-select --print-path
           swift --version
-
-      - name: Resolve version
-        id: version
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            VERSION="${{ github.event.inputs.version }}"
-          else
-            VERSION="${GITHUB_REF_NAME#bar-v}"
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=bar-v$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Remote discovery and shared schema tests
         run: swift test --package-path menubar
@@ -86,7 +50,6 @@ jobs:
       - name: Build app bundle
         working-directory: menubar
         env:
-          VERSION: ${{ steps.version.outputs.version }}
           BUILD_NUMBER: ${{ github.run_number }}
         run: bash scripts/package.sh
 
@@ -131,8 +94,6 @@ jobs:
 
       - name: Package
         working-directory: menubar
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           # ditto, not zip: it is the only extractor that preserves a bundle's
           # code signature, and --sequesterRsrc keeps resource forks out of the
@@ -141,31 +102,16 @@ jobs:
             BuncargoBar.app "BuncargoBar-${VERSION}.zip"
           shasum -a 256 "BuncargoBar-${VERSION}.zip" > "BuncargoBar-${VERSION}.zip.sha256"
 
-      - name: Publish release
+      # Release Please already created the release with notes from the
+      # changelog; a manual dispatch for a tag without one still gets a release.
+      - name: Upload assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
         working-directory: menubar
         run: |
           ASSETS=("BuncargoBar-${VERSION}.zip" "BuncargoBar-${VERSION}.zip.sha256")
-
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${ASSETS[@]}" --clobber
-            exit 0
-          fi
-
-          # Notes start at the previous *app* tag: the previous tag of any kind
-          # is usually a CLI release, whose commits have nothing to do with the
-          # app.
-          PREVIOUS="$(gh release list --limit 50 --json tagName \
-            --jq '[.[] | select(.tagName | startswith("bar-v"))] | .[0].tagName // ""')"
-
-          if [[ -n "$PREVIOUS" ]]; then
-            gh release create "$TAG" "${ASSETS[@]}" \
-              --title "BuncargoBar $VERSION" \
-              --generate-notes --notes-start-tag "$PREVIOUS"
           else
-            gh release create "$TAG" "${ASSETS[@]}" \
-              --title "BuncargoBar $VERSION" --generate-notes
+            gh release create "$TAG" "${ASSETS[@]}" --title "BuncargoBar $VERSION" --generate-notes
           fi

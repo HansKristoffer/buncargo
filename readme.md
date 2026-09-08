@@ -24,7 +24,7 @@ Local development environments are fragile: hand-written compose files, scattere
 - **Watchdog** - owner-PID liveness plus a 3 minute idle backstop
 - **Run registry + menu bar app** - every active run in `~/.buncargo/runs.json`, surfaced by `buncargo runs` and BuncargoBar
 
-Buncargo requires Bun 1.4.2 or newer on macOS or Linux (WSL on Windows). See [support and release checks](docs/support-and-release.md) and the [startup reliability upgrade notes](docs/startup-reliability-upgrade.md).
+Buncargo requires Bun 1.4.2 or newer on macOS or Linux (WSL on Windows).
 
 ## Quick Start
 
