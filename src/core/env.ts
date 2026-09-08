@@ -60,11 +60,11 @@ export function buildSharedEnvValues<
 		NODE_ENV: production ? "production" : "development",
 	};
 
-	for (const [name, port] of Object.entries(ports)) {
+	for (const [name, port] of Object.entries(toPortMap(ports))) {
 		sharedEnv[`${name.toUpperCase()}_PORT`] = port;
 	}
 
-	for (const [name, url] of Object.entries(urls)) {
+	for (const [name, url] of Object.entries(toUrlMap(urls))) {
 		sharedEnv[`${name.toUpperCase()}_URL`] = url;
 	}
 

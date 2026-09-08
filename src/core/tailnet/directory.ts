@@ -1,7 +1,13 @@
 import type { RunEntry } from "../run-registry";
 import { mappingState, type TailnetPeer } from "./client";
+import type { RemoteDirectory } from "./protocol";
 import { allocationUrl, leaseMatchesRun, leaseTarget } from "./runtime";
 import type { TailnetState } from "./state";
+
+/** The id a run carries in the directory; `POST /v1/stop` names it back. */
+export function directoryRunId(run: RunEntry): string {
+	return run.sessionId ?? `${run.projectName}:${run.startedAt}`;
+}
 
 /**
  * Build the JSON document the coordinator serves at `/v1/runs`.
@@ -15,7 +21,7 @@ export function directorySnapshot(
 	runs: RunEntry[],
 	actual: Record<string, unknown>,
 	now = Date.now(),
-) {
+): RemoteDirectory {
 	return {
 		version: 1,
 		machineId: self.id,
@@ -45,23 +51,34 @@ export function directorySnapshot(
 					return [];
 				}
 
+				const url = allocationUrl(allocation);
+				if (!url) return [];
+
 				return [
 					{
 						name: app.name,
 						status: app.status,
-						url: allocationUrl(allocation),
+						url,
 					},
 				];
 			});
 
 			if (!apps.length) return [];
 
+			// Match the local menu's primary selection before filtering shared apps.
+			// An unshared primary must not silently promote another app, such as an API.
+			const primary =
+				run.apps.find((app) => app.name === run.primaryApp) ?? run.apps[0];
+			const primaryApp =
+				apps.find((app) => app.name === primary?.name)?.name ?? null;
+
 			return [
 				{
-					id: run.sessionId ?? `${run.projectName}:${run.startedAt}`,
+					id: directoryRunId(run),
 					project: run.projectPrefix,
 					worktree: run.worktree,
 					branch: run.branch,
+					primaryApp,
 					apps,
 				},
 			];

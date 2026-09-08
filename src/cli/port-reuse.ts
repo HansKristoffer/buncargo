@@ -5,6 +5,7 @@ import {
 	formatPortOwner,
 	type PortOwnerSnapshot,
 } from "../core/process";
+import { findWorker } from "../core/process/worker-ownership";
 import type { AppConfig } from "../types";
 
 /**
@@ -36,6 +37,7 @@ export interface ClassifiedCliApps {
 }
 
 export interface ClassifyCliAppsOptions {
+	skipContainers?: boolean;
 	runtime?: ContainerRuntimeAdapter;
 	isPortBusy?: (port: number) => boolean;
 	waitForServer?: (url: string, timeout?: number) => Promise<void>;
@@ -99,6 +101,7 @@ export async function classifyCliApps(
 	const snapshot = createPortOwnerSnapshot({
 		includeCwd: false,
 		runtime: options.runtime,
+		skipContainers: options.skipContainers,
 		ports: Object.keys(apps).flatMap((name) =>
 			ports[name] === undefined ? [] : [ports[name]],
 		),
@@ -116,6 +119,10 @@ export async function classifyCliApps(
 
 	const decisions = await Promise.all(
 		Object.entries(apps).map(async ([name, config]) => {
+			if (config.kind === "worker" && options.context) {
+				const live = await findWorker(options.context.root, name);
+				return { name, config, reuse: !!live, inferred: false };
+			}
 			const port = ports[name];
 			if (port === undefined || !isPortBusy(port)) {
 				return { name, config, reuse: false, inferred: false };

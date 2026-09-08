@@ -1,5 +1,6 @@
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import { abortableSleep, withSignal } from "./deadline";
+import { toPortMap } from "./ports";
 import { startQuickTunnel } from "./quick-tunnel";
 import { exposeTunnelStaggerMs } from "./runtime-flags";
 
@@ -70,7 +71,7 @@ export function resolveExposeTargets<
 	const enabledTargets = new Map<string, PublicExposeTarget>();
 
 	for (const [name, config] of Object.entries(env.services)) {
-		const port = env.ports[name];
+		const port = toPortMap(env.ports)[name];
 		if (port === undefined) continue;
 		const target: PublicExposeTarget = { kind: "service", name, port };
 		knownTargets.set(name, target);
@@ -80,7 +81,7 @@ export function resolveExposeTargets<
 	}
 
 	for (const [name, config] of Object.entries(env.apps)) {
-		const port = env.ports[name];
+		const port = toPortMap(env.ports)[name];
 		if (port === undefined) continue;
 		const target: PublicExposeTarget = { kind: "app", name, port };
 		knownTargets.set(name, target);

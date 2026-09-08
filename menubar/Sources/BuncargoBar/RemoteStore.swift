@@ -8,6 +8,12 @@ struct RemoteMachine: Identifiable {
   var error: String?
 
   var id: String { directory?.machineId ?? endpoint.absoluteString }
+
+  /// Short hostname, the way the menu labels the machine.
+  var name: String {
+    let hostname = directory?.hostname ?? endpoint.host ?? "Machine"
+    return hostname.components(separatedBy: ".").first ?? hostname
+  }
 }
 
 struct RemoteDependencies {
@@ -24,20 +30,6 @@ struct RemoteDependencies {
 
 @MainActor
 final class RemoteStore: ObservableObject {
-  @Published var enabled: Bool {
-    didSet {
-      preferences.set(enabled, forKey: "tailnetDiscovery")
-      invalidateRefresh()
-
-      if enabled {
-        refresh(force: true)
-      } else {
-        machines = []
-        notice = nil
-      }
-    }
-  }
-
   @Published private(set) var machines: [RemoteMachine] = []
   @Published private(set) var notice: String?
 
@@ -52,10 +44,7 @@ final class RemoteStore: ObservableObject {
   private var failures: [URL: Int] = [:]
   private var retryAfter: [URL: Date] = [:]
 
-  // Remember both endpoint and machine identity so another address cannot re-add a forgotten peer.
-  private var forgotten: Set<URL> = []
-  private var forgottenMachines: Set<String> = []
-
+  // Keep previously saved custom ports working without requiring a manual-add UI.
   private var manual: [String] { preferences.stringArray(forKey: "tailnetMachines") ?? [] }
 
   init(
@@ -64,8 +53,7 @@ final class RemoteStore: ObservableObject {
   ) {
     self.preferences = preferences
     self.deps = deps
-    enabled = preferences.bool(forKey: "tailnetDiscovery")
-    if enabled { refresh() }
+    refresh()
 
     if startTimer {
       timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
@@ -80,34 +68,15 @@ final class RemoteStore: ObservableObject {
     task = nil
   }
 
-  func add(_ input: String) {
-    do {
-      let url = try TailnetDirectory.endpoint(input)
-      forgotten.remove(url)
-      forgottenMachines.removeAll()
-      preferences.set(Array(Set(manual + [url.absoluteString])).sorted(), forKey: "tailnetMachines")
-      enabled = true
-    } catch { notice = error.localizedDescription }
-  }
-
-  func remove(_ endpoint: URL) {
+  /// End background work without letting an old response publish after cancellation.
+  func stop() {
+    timer?.invalidate()
+    timer = nil
     invalidateRefresh()
-
-    if let machine = machines.first(where: { $0.endpoint == endpoint }),
-      let id = machine.directory?.machineId
-    {
-      forgottenMachines.insert(id)
-    }
-
-    forgotten.insert(endpoint)
-    preferences.set(manual.filter { $0 != endpoint.absoluteString }, forKey: "tailnetMachines")
-    machines.removeAll { $0.endpoint == endpoint }
   }
 
   /// Menu opening respects backoff; the explicit Refresh button can override it.
   func refresh(force: Bool = false) {
-    guard enabled else { return }
-
     if task != nil {
       guard force else { return }
       invalidateRefresh()
@@ -126,21 +95,21 @@ final class RemoteStore: ObservableObject {
       // Known/manual endpoints begin loading immediately, even if CLI discovery stalls.
       let attemptedKnown = Set(candidates.map(\.endpoint))
       await probe(candidates, selfID: nil, generation: current, force: force)
-      guard current == generation, enabled, !Task.isCancelled else { return }
+      guard current == generation, !Task.isCancelled else { return }
 
       var selfID: String?
       do {
         let discovered = try await deps.peers()
-        guard current == generation, enabled, !Task.isCancelled else { return }
+        guard current == generation, !Task.isCancelled else { return }
         selfID = discovered.0
         candidates = discovered.1
         notice = nil
       } catch {
-        guard current == generation, enabled, !Task.isCancelled else { return }
+        guard current == generation, !Task.isCancelled else { return }
         notice = error.localizedDescription
         candidates = []
       }
-      guard current == generation, enabled, !Task.isCancelled else { return }
+      guard current == generation, !Task.isCancelled else { return }
       if let selfID { machines.removeAll { $0.directory?.machineId == selfID } }
 
       // Even failed known probes should only be attempted once per refresh.
@@ -157,12 +126,12 @@ final class RemoteStore: ObservableObject {
   ) async {
     var seen: Set<URL> = []
     let candidates = candidates.filter {
-      seen.insert($0.endpoint).inserted && !forgotten.contains($0.endpoint)
+      seen.insert($0.endpoint).inserted
         && (force || (retryAfter[$0.endpoint] ?? .distantPast) <= deps.now())
     }
 
     for start in stride(from: 0, to: candidates.count, by: 4) {
-      guard current == generation, enabled, !Task.isCancelled else { return }
+      guard current == generation, !Task.isCancelled else { return }
 
       let batch = Array(candidates[start..<min(start + 4, candidates.count)])
       let fetch = deps.fetch
@@ -178,12 +147,12 @@ final class RemoteStore: ObservableObject {
 
         // Publish each response promptly, without waiting for its slowest batch peer.
         for await (peer, directory, error) in group {
-          guard current == generation, enabled, !Task.isCancelled else {
+          guard current == generation, !Task.isCancelled else {
             group.cancelAll()
             return
           }
 
-          if let id = directory?.machineId, id == selfID || forgottenMachines.contains(id) {
+          if let id = directory?.machineId, id == selfID {
             continue
           }
 

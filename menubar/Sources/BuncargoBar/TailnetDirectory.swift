@@ -14,6 +14,12 @@ struct RemoteRun: Decodable, Identifiable, Sendable {
   let worktree: String?
   let branch: String?
   let apps: [RemoteApp]
+  var primaryApp: String? = nil
+
+  var primary: RemoteApp? {
+    guard let primaryApp else { return nil }
+    return apps.first { $0.name == primaryApp }
+  }
 }
 
 struct RemoteDirectory: Decodable, Sendable {
@@ -47,6 +53,8 @@ struct RemoteDirectory: Decodable, Sendable {
     for run in runs {
       guard !run.id.isEmpty, run.id.utf16.count <= 256, run.project.utf16.count <= 256,
         (run.branch?.utf16.count ?? 0) <= 256, (run.worktree?.utf16.count ?? 0) <= 256,
+        (run.primaryApp?.utf16.count ?? 0) <= 256,
+        run.primaryApp == nil || run.primary != nil,
         run.apps.count <= 100,
         Set(run.apps.map(\.name)).count == run.apps.count
       else {
@@ -187,14 +195,54 @@ enum TailnetDirectory {
     }.value
   }
 
-  static func fetch(_ peer: TailnetPeer) async throws -> RemoteDirectory {
+  private static func session(timeout: TimeInterval) -> URLSession {
     let config = URLSessionConfiguration.ephemeral
-    config.timeoutIntervalForRequest = 3
-    config.timeoutIntervalForResource = 5
+    config.timeoutIntervalForRequest = timeout
+    config.timeoutIntervalForResource = timeout + 2
     config.httpCookieStorage = nil
+    return URLSession(configuration: config, delegate: NoRemoteRedirects(), delegateQueue: nil)
+  }
 
-    let session = URLSession(
-      configuration: config, delegate: NoRemoteRedirects(), delegateQueue: nil)
+  /// `POST /v1/stop` on a peer: its own `buncargo stop` for a shared app, or
+  /// the whole run when `app` is nil. Returns once the peer's directory has
+  /// been rebuilt, so the refresh that follows already shows the result.
+  static func stop(_ endpoint: URL, run: String, app: String?) async throws {
+    guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
+      throw TailnetError("Invalid endpoint")
+    }
+    components.path = "/v1/stop"
+    guard let url = components.url else { throw TailnetError("Invalid endpoint") }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "content-type")
+    var body: [String: String] = ["run": run]
+    if let app { body["app"] = app }
+    request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+    // A stop waits out SIGTERM grace and then one reconcile pass on the peer.
+    let session = session(timeout: 45)
+    defer { session.invalidateAndCancel() }
+
+    let data: Data
+    let response: URLResponse
+    do { (data, response) = try await session.data(for: request) } catch {
+      throw TailnetError("Unreachable: check Tailscale and access to the directory port")
+    }
+    let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+    if status == 200 { return }
+
+    struct Failure: Decodable { let error: String? }
+    if let message = (try? JSONDecoder().decode(Failure.self, from: data))?.error {
+      throw TailnetError(message)
+    }
+    // An older daemon answers a plain 404 before it knows the route exists.
+    throw TailnetError(
+      status == 404 ? "Update buncargo on that machine to stop from here" : "Stop failed")
+  }
+
+  static func fetch(_ peer: TailnetPeer) async throws -> RemoteDirectory {
+    let session = session(timeout: 3)
     defer {
       session.invalidateAndCancel()
     }

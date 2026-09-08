@@ -13,7 +13,7 @@ export type TypesenseServiceOptions = PresetServiceSharedOptions & {
 export type TypesenseServiceConfig = ServiceConfig<
 	{ TYPESENSE_URL: "url" },
 	{ TYPESENSE_API_KEY: string }
->;
+> & { port: number };
 
 export const typesenseDockerService = defineDockerService<
 	TypesenseServiceOptions,

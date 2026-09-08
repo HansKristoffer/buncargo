@@ -9,7 +9,7 @@ export type PostgresServiceOptions = PresetServiceCredentialOptions;
 
 export type PostgresServiceConfig = ServiceConfig<{
 	DATABASE_URL: "url";
-}>;
+}> & { port: number };
 
 export const postgresDockerService = defineDockerService<
 	PostgresServiceOptions,

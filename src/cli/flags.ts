@@ -23,7 +23,7 @@ export function hasFlag(args: string[], flag: string): boolean {
 export function getFlagValue(args: string[], flag: string): string | undefined {
 	const prefixed = args.find((arg) => arg.startsWith(`${flag}=`));
 	if (prefixed) {
-		return prefixed.split("=")[1];
+		return prefixed.slice(flag.length + 1);
 	}
 
 	const index = args.indexOf(flag);

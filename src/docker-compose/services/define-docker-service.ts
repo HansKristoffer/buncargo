@@ -57,7 +57,9 @@ export type PresetServiceSecondaryPortOptions = PresetServiceSharedOptions & {
  * whatever else its preset understands.
  */
 export type PresetServiceConfigBase<TServiceConfig extends ServiceConfig> =
-	Omit<ServiceConfig, "env"> & Partial<Pick<TServiceConfig, "env">>;
+	Omit<Extract<ServiceConfig, { kind?: "service" }>, "env"> & {
+		port: number;
+	} & Partial<Pick<TServiceConfig, "env">>;
 
 export interface DockerServicePresetDefaults {
 	port: number;

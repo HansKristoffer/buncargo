@@ -27,6 +27,7 @@ import {
 export type { PortContainerOwner };
 
 export interface PortOwnerLookupOptions {
+	skipContainers?: boolean;
 	/** Listeners to leave out, e.g. our own daemon sharing the port. */
 	ignorePids?: number[];
 	/**
@@ -141,6 +142,7 @@ function processCwd(pid: number): string | undefined {
 export function containerPortOwnerMap(
 	options: PortOwnerLookupOptions = {},
 ): Map<number, PortContainerOwner> {
+	if (options.skipContainers) return new Map();
 	const selected = options.runtime;
 	const selectedName = selected?.name ?? "docker";
 	const owners = new Map<number, PortContainerOwner>();
@@ -173,6 +175,7 @@ export function findContainerOnPort(
 	port: number,
 	options: PortOwnerLookupOptions = {},
 ): PortContainerOwner | undefined {
+	if (options.skipContainers) return undefined;
 	const selected = options.runtime;
 	const found = selected
 		? selected.findContainerOnPort(port)
@@ -380,8 +383,8 @@ export async function killPortOwner(
 		timeout?: number;
 	} = {},
 ): Promise<boolean> {
-	const { verbose = false, timeout = 5000, runtime } = options;
-	const owner = getPortOwner(port, { runtime });
+	const { verbose = false, timeout = 5000, runtime, skipContainers } = options;
+	const owner = getPortOwner(port, { runtime, skipContainers });
 	if (!owner) {
 		return false;
 	}
@@ -412,7 +415,7 @@ export async function killPortOwner(
 	const startTime = Date.now();
 	while (Date.now() - startTime < timeout) {
 		await new Promise((resolve) => setTimeout(resolve, 100));
-		if (!isPortInUse(port, { runtime })) {
+		if (!isPortInUse(port, { runtime, skipContainers })) {
 			if (verbose) console.log(`   ✓ Port ${port} released`);
 			return true;
 		}
@@ -427,7 +430,7 @@ export async function killPortOwner(
 			signalProcessTree(pid, "SIGKILL");
 	}
 	await new Promise((resolve) => setTimeout(resolve, 500));
-	const released = !isPortInUse(port, { runtime });
+	const released = !isPortInUse(port, { runtime, skipContainers });
 	if (verbose) {
 		console.log(
 			released

@@ -49,7 +49,7 @@ function printRun(run: RunEntry): void {
 		const primary = app.name === run.primaryApp ? " ←" : "";
 		const owner = app.pid ? ` pid ${app.pid}` : "";
 		log.line(
-			`    app ${app.name}: ${app.status}${owner}  ${app.url}${primary}`,
+			`    app ${app.name}: ${app.status}${owner}  ${app.url ?? "worker"}${primary}`,
 		);
 		if (app.publicUrl) {
 			log.line(`      public: ${app.publicUrl}`);
@@ -60,6 +60,8 @@ function printRun(run: RunEntry): void {
 	}
 
 	for (const service of run.services) {
-		log.line(`    service ${service.name}: ${service.status}  ${service.url}`);
+		log.line(
+			`    service ${service.name}: ${service.status}  ${service.url ?? "container"}`,
+		);
 	}
 }

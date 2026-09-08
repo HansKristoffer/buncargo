@@ -164,7 +164,7 @@ final class AppModel: ObservableObject {
     init() {
         let store = RunStore()
         self.store = store
-        self.stopper = StopCoordinator(store: store)
+        self.stopper = StopCoordinator(store: store, remote: remote)
     }
 }
 
@@ -187,7 +187,7 @@ struct MenuContentView: View {
     @ObservedObject var remote: RemoteStore
 
     var body: some View {
-        ScrollView {
+        MenuContentLayout {
             VStack(alignment: .leading, spacing: 0) {
                 if store.groups.isEmpty {
                     // A registry this build cannot read is not "nothing running":
@@ -205,12 +205,7 @@ struct MenuContentView: View {
                     .padding(14)
                 } else {
                     ForEach(store.groups) { group in
-                        Text(group.name.uppercased())
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 12)
-                            .padding(.top, 8)
-                            .padding(.bottom, 2)
+                        ProjectHeading(name: group.name)
 
                         ForEach(group.runs) { run in
                             RunRow(
@@ -223,7 +218,7 @@ struct MenuContentView: View {
                 }
 
                 Divider().padding(.top, 8)
-                RemoteMachinesView(store: remote)
+                RemoteMachinesView(store: remote, stopper: stopper)
 
                 if let notice = stopper.notice {
                     Text(notice)
@@ -251,7 +246,22 @@ struct MenuContentView: View {
                 .padding(.vertical, 8)
             }
         }
+    }
+}
+
+/// Report the menu's height during layout, before MenuBarExtra sizes its window.
+struct MenuContentLayout<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            content()
+            ScrollView { content() }
+        }
         .frame(width: 320)
         .frame(maxHeight: 620)
+        // A short menu uses its intrinsic height; only overflow needs a scroll view.
+        // Avoid measuring into @State after opening: the window can keep that old size.
+        .fixedSize(horizontal: false, vertical: true)
     }
 }

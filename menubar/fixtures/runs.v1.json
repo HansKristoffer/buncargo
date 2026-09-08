@@ -11,8 +11,14 @@
       "startedAt": "2026-09-03T10:47:56.971Z",
       "updatedAt": "2026-09-03T10:48:12.101Z",
       "primaryApp": "platform",
-      "hosts": { "active": true, "tld": "localhost" },
-      "cli": { "program": "/bin/echo", "script": "buncargo" },
+      "hosts": {
+        "active": true,
+        "tld": "localhost"
+      },
+      "cli": {
+        "program": "/bin/echo",
+        "script": "buncargo"
+      },
       "apps": [
         {
           "name": "platform",
@@ -32,7 +38,10 @@
           "loopbackUrl": "http://localhost:7100",
           "publicUrl": "https://example.trycloudflare.com",
           "hostname": "t3code-f003056f.api.lullu.localhost",
-          "expo": { "scheme": "lullu", "bundleId": "com.lullu.app" },
+          "expo": {
+            "scheme": "lullu",
+            "bundleId": "com.lullu.app"
+          },
           "status": "starting"
         },
         {
@@ -41,6 +50,12 @@
           "url": "http://localhost:7200",
           "loopbackUrl": "http://localhost:7200",
           "status": "reused"
+        },
+        {
+          "name": "jobs",
+          "kind": "worker",
+          "pid": 1,
+          "status": "ready"
         }
       ],
       "services": [
@@ -51,7 +66,10 @@
           "url": "postgresql://postgres:postgres@localhost:7432/lullu",
           "loopbackUrl": "postgresql://postgres:postgres@localhost:7432/lullu",
           "tablePlusUrl": "postgresql://postgres:postgres@127.0.0.1:7432/lullu?env=development&name=lullu-postgres&tLSMode=0",
-          "container": { "runtime": "docker", "name": "lullu-postgres-1" },
+          "container": {
+            "runtime": "docker",
+            "name": "lullu-postgres-1"
+          },
           "status": "ready"
         },
         {
@@ -60,6 +78,14 @@
           "url": "http://localhost:8025",
           "loopbackUrl": "http://localhost:8025",
           "status": "stopped"
+        },
+        {
+          "name": "init",
+          "status": "ready",
+          "container": {
+            "runtime": "docker",
+            "name": "fixture-init"
+          }
         }
       ]
     }

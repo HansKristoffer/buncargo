@@ -1,4 +1,5 @@
 import { execSync, spawn } from "node:child_process";
+import { constants } from "node:os";
 import { resolve } from "node:path";
 import type { ExecOptions, ExecResult } from "../../types";
 import { abortError, registerAbortCleanup } from "../deadline";
@@ -6,6 +7,12 @@ import { recordStartupMetric } from "../startup-metrics";
 import { terminateOwnedProcess } from "./terminate";
 
 export type { ExecResult };
+
+export class CommandSignalError extends Error {
+	constructor(readonly signal: NodeJS.Signals) {
+		super(`Command interrupted by ${signal}`);
+	}
+}
 
 function resolveCommandEnv(
 	envVars: Record<string, string>,
@@ -121,7 +128,11 @@ export async function execAsync(
 			if (settled || cancelling) return;
 			cancelling = true;
 			try {
-				await terminateOwnedProcess(child, killGraceMs);
+				await terminateOwnedProcess(
+					child,
+					killGraceMs,
+					error instanceof CommandSignalError ? error.signal : "SIGTERM",
+				);
 			} catch (cleanupError) {
 				error = new AggregateError([error, cleanupError], error.message);
 			}
@@ -154,8 +165,13 @@ export async function execAsync(
 			if (!cancelling)
 				finish({ exitCode: 1, stdout, stderr: error.message }, error);
 		});
-		child.on("close", (code) => {
-			if (!cancelling) finish({ exitCode: code ?? 1, stdout, stderr });
+		child.on("close", (code, signal) => {
+			if (!cancelling)
+				finish({
+					exitCode: code ?? (signal ? 128 + constants.signals[signal] : 1),
+					stdout,
+					stderr,
+				});
 		});
 		signal?.addEventListener("abort", onAbort, { once: true });
 		if (signal?.aborted) onAbort();

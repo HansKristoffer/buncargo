@@ -78,14 +78,14 @@ export function buildPortMap(
 ): Record<string, number> {
 	const ports: Record<string, number> = {};
 	for (const [name, config] of Object.entries(services)) {
-		ports[name] = config.port + offset;
+		if (config.port !== undefined) ports[name] = config.port + offset;
 		if (config.secondaryPort) {
 			ports[`${name}Secondary`] = config.secondaryPort + offset;
 		}
 	}
 	if (apps) {
 		for (const [name, config] of Object.entries(apps)) {
-			ports[name] = config.port + offset;
+			if (config.port !== undefined) ports[name] = config.port + offset;
 		}
 	}
 	return ports;
@@ -237,6 +237,7 @@ export function resolvePortPlan(input: {
 	 */
 	probeConflicts?: boolean;
 	getOwner?: (port: number) => PortOwner | null;
+	probeNames?: readonly string[];
 }): PortPlan {
 	const {
 		projectPrefix,
@@ -286,9 +287,36 @@ export function resolvePortPlan(input: {
 		? (input.getOwner ?? snapshotOwnerLookup(basePorts, runtime))
 		: () => null;
 
+	const probed = (ports: Record<string, number>) =>
+		input.probeNames
+			? Object.fromEntries(
+					Object.entries(ports).filter(([name]) =>
+						input.probeNames?.includes(name),
+					),
+				)
+			: ports;
 	const lockfile = readPortsLockfile(root);
+	if (
+		!probeConflicts &&
+		lockfile?.projectName === projectName &&
+		lockfile.root === root
+	) {
+		// A config edit must not make a maintenance command switch away from
+		// the endpoints the last startup published. New keys use the same offset.
+		const ports = Object.fromEntries(
+			Object.entries(basePorts).map(([name, base]) => [
+				name,
+				lockfile.ports[name] ?? base + lockfile.offset,
+			]),
+		);
+		if (Object.values(ports).some((port) => port > 65535))
+			throw new Error(
+				"Persisted offset cannot accommodate this config; run dev to reconcile the allocation.",
+			);
+		return { offset: lockfile.offset, ports, provenance: "lockfile" };
+	}
 	if (lockfile && lockfileMatches(lockfile, { projectName, root, basePorts })) {
-		const conflict = findForeignConflict(lockfile.ports, {
+		const conflict = findForeignConflict(probed(lockfile.ports), {
 			root,
 			projectName,
 			runtime: runtimeName,
@@ -300,6 +328,14 @@ export function resolvePortPlan(input: {
 				ports: lockfile.ports,
 				provenance: "lockfile",
 			};
+		}
+		if (
+			input.probeNames &&
+			Object.keys(basePorts).some((name) => !input.probeNames?.includes(name))
+		) {
+			throw new Error(
+				"Selected app ports conflict with the persisted allocation. Stop the conflicting port owner, or start the full environment to reconcile its shared port block.",
+			);
 		}
 	}
 
@@ -315,7 +351,7 @@ export function resolvePortPlan(input: {
 		const ports = shiftPorts(basePorts, offset);
 		const overflow = Object.values(ports).some((port) => port > 65535);
 		if (!overflow) {
-			const conflict = findForeignConflict(ports, {
+			const conflict = findForeignConflict(probed(ports), {
 				root,
 				projectName,
 				runtime: runtimeName,
@@ -343,7 +379,7 @@ export function resolvePortPlan(input: {
 	}
 
 	const failedPorts = shiftPorts(basePorts, offset);
-	const conflict = findForeignConflict(failedPorts, {
+	const conflict = findForeignConflict(probed(failedPorts), {
 		root,
 		projectName,
 		runtime: runtimeName,

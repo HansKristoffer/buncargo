@@ -87,6 +87,7 @@ export type {
 	DockerPresetServiceDefinition,
 	DockerServiceDefinition,
 	EnvFileOptions,
+	EnvInputFile,
 	EnvValues,
 	EnvVarsBuilder,
 	EnvVarsContext,
@@ -128,6 +129,7 @@ export type {
 	TypedAppDefinitions,
 	UrlBuilderContext,
 	UrlBuilderFn,
+	WorkerAppConfig,
 } from "./types/index";
 
 // ═══════════════════════════════════════════════════════════════════════════

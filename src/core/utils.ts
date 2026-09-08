@@ -8,6 +8,7 @@ import type {
 	ServiceConfig,
 } from "../types";
 import { buildSharedEnvValues, mergeSharedEnvWithOverlay } from "./env";
+import { loadEnvInput } from "./env-input";
 import { applyHostPlanToUrls, planNamedHosts } from "./hosts/plan";
 import { getLocalIp } from "./network";
 import { resolvePortPlan } from "./port-allocation";
@@ -90,6 +91,7 @@ export function getEnvVar<
 		apps?: TApps;
 		env?: (...args: never[]) => TEnv;
 		options?: {
+			envFiles?: readonly import("../types").EnvInputFile[];
 			worktreeIsolation?: boolean;
 			hosts?: boolean | HostsOptionsLike;
 		};
@@ -156,14 +158,16 @@ export function getEnvVar<
 		loopbackUrls,
 		publicUrls: {},
 	});
+	const inputEnv = loadEnvInput(root, config.options?.envFiles);
 	const envVars = mergeSharedEnvWithOverlay(
-		shared,
+		{ ...(config.options?.envFiles ? inputEnv : {}), ...shared },
 		config.env as
 			| EnvVarsBuilder<typeof services, NonNullable<typeof apps>>
 			| undefined,
 		ports,
 		urls,
 		{
+			env: inputEnv,
 			projectName: identity.projectName,
 			localIp,
 			portOffset: portPlan.offset,

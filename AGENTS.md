@@ -264,3 +264,12 @@ bun run test:integration-hosts-soak
 - Startup plan validation precedes hosts/runtime mutations. `requiredApps` expands selection, not per-app readiness barriers. Both waves are health-checked once; server hooks wrap actual spawning/readiness on CLI and library paths.
 - `prisma.generateCheck` is opt-in: true means generate. Never automatically skip database migrations or seed checks from a configuration hash.
 - Package verification installs the exact release tarball into a clean consumer; publish that verified artifact with scripts disabled. CI covers macOS/Linux, tested minimum/current Bun, schema consumers and disposable Docker integration. Privileged hosts installation and Apple VM testing remain external runner checks.
+
+## Monorepo startup
+
+- `readme.md` documents app-only selection, workers, finite jobs, preparation ordering, checkout execution and dotenv precedence. Keep examples and option tables aligned with the public types.
+- Environment construction is a runtime-free allocation read. `context.prepareStart` validates selection and resolves/probes infrastructure only for selected services, before host mutations. App-only runs do not write Compose or own a container heartbeat.
+- `beforeMigrations` precedes Prisma and ordered custom migrations. Migration/seed `requiredServices` scope preparation; omitted prerequisites retain legacy container-backed behavior, while `[]` explicitly permits app-only work. `afterPreparation` uses a second container subset after preparation, with `noDeps` to avoid rerunning completed early jobs. Keep one Compose artifact per start.
+- Workers have no endpoint. `process/worker-ownership.ts` atomically claims per-checkout PID/birth identity before supervision; CLI reuse/takeover and library duplicate refusal must not permit duplicate consumers. Unexpected worker exit zero is a failure. Keep returned library processes supervised and cancellation connected.
+- Jobs require `kind: "job", rerun: "always"`; exited zero satisfies completion, running does not. Apple rejects jobs before mutation until it can report trustworthy exit codes. Compose completion references must target jobs.
+- `core/env-input.ts` is the only dotenv input loader. It returns an isolated root-relative snapshot after config evaluation. Shared generated values beat defaults; app overrides stay last. `exec` uses the existing argv execution primitive and persisted ports without startup or probes.

@@ -39,13 +39,19 @@ private func directory(_ endpoint: URL) -> RemoteDirectory {
 private let endpoint = URL(string: "https://devbox.tail123.ts.net:48443/v1/runs")!
 
 @MainActor
-
 private func setup(
   _ responses: Responses,
-  peers: @escaping @Sendable () async throws -> (String?, [TailnetPeer]) = { ("local", []) }
+  savedEndpoints: [String] = [],
+  peers: @escaping @Sendable () async throws -> (String?, [TailnetPeer]) = {
+    ("local", [TailnetPeer(id: "remote", endpoint: endpoint)])
+  }
 ) -> (RemoteStore, UserDefaults, String) {
   let suite = "buncargo-tests-\(UUID().uuidString)"
   let preferences = UserDefaults(suiteName: suite)!
+  // An old opt-out must not hide devices now that discovery is always visible.
+  preferences.set(false, forKey: "tailnetDiscovery")
+  preferences.set(savedEndpoints, forKey: "tailnetMachines")
+
   let store = RemoteStore(
     preferences: preferences,
     deps: RemoteDependencies(
@@ -55,16 +61,17 @@ private func setup(
 }
 
 @Test @MainActor
-func manualWorksWithoutCLIAndEmptyIsSuccessful() async {
+func savedEndpointWorksWithoutCLIAndEmptyIsSuccessful() async {
   let responses = Responses()
-  let (store, preferences, suite) = setup(responses, peers: { throw TailnetError("CLI absent") })
+  let (store, preferences, suite) = setup(
+    responses, savedEndpoints: [endpoint.absoluteString],
+    peers: { throw TailnetError("CLI absent") })
 
   defer {
-    store.enabled = false
+    store.stop()
     preferences.removePersistentDomain(forName: suite)
   }
 
-  store.add(endpoint.absoluteString)
   await store.waitForRefresh()
 
   #expect(store.machines.count == 1)
@@ -77,14 +84,15 @@ func manualWorksWithoutCLIAndEmptyIsSuccessful() async {
 func deduplicatesMachineAcrossManualAndAutomaticEndpoints() async {
   let responses = Responses()
   let automatic = TailnetPeer(id: "remote", endpoint: endpoint)
-  let (store, preferences, suite) = setup(responses, peers: { ("local", [automatic]) })
+  let (store, preferences, suite) = setup(
+    responses, savedEndpoints: ["https://devbox.tail123.ts.net:49000"],
+    peers: { ("local", [automatic]) })
 
   defer {
-    store.enabled = false
+    store.stop()
     preferences.removePersistentDomain(forName: suite)
   }
 
-  store.add("https://devbox.tail123.ts.net:49000")
   await store.waitForRefresh()
 
   #expect(store.machines.count == 1)
@@ -92,24 +100,35 @@ func deduplicatesMachineAcrossManualAndAutomaticEndpoints() async {
 }
 
 @Test @MainActor
-func discardsLateResponseAfterForget() async {
+func discoversAutomaticallyDespiteLegacyOptOut() async {
   let responses = Responses()
   let (store, preferences, suite) = setup(responses)
 
   defer {
-    store.enabled = false
+    store.stop()
     preferences.removePersistentDomain(forName: suite)
   }
 
-  store.add(endpoint.absoluteString)
   await store.waitForRefresh()
-  // Hold an old request open while the user forgets the machine.
-  await responses.setDelayed(true)
-  store.refresh(force: true)
-  while !(await responses.pending()) { await Task.yield() }
-  store.remove(endpoint)
 
-  // Deliver the old result after the user action; it must not restore stale UI state.
+  #expect(store.machines.count == 1)
+  #expect(store.machines.first?.id == "remote")
+  #expect(store.notice == nil)
+}
+
+@Test @MainActor
+func discardsLateResponseAfterStop() async {
+  let responses = Responses()
+  await responses.setDelayed(true)
+  let (store, preferences, suite) = setup(responses)
+
+  defer {
+    store.stop()
+    preferences.removePersistentDomain(forName: suite)
+  }
+
+  while !(await responses.pending()) { await Task.yield() }
+  store.stop()
   await responses.release()
 
   for _ in 0..<20 { await Task.yield() }
@@ -117,30 +136,31 @@ func discardsLateResponseAfterForget() async {
 }
 
 @Test @MainActor
-func disableAndReenableInvalidateOldWork() async {
+func explicitRefreshInvalidatesOlderResponse() async {
   let responses = Responses()
   let (store, preferences, suite) = setup(responses)
 
   defer {
-    store.enabled = false
+    store.stop()
     preferences.removePersistentDomain(forName: suite)
   }
 
-  await responses.setDelayed(true)
-  store.add(endpoint.absoluteString)
-  while !(await responses.pending()) { await Task.yield() }
-  store.enabled = false
-  await responses.setDelayed(false)
-  store.enabled = true
   await store.waitForRefresh()
+  await responses.setDelayed(true)
+  store.refresh(force: true)
+  while !(await responses.pending()) { await Task.yield() }
 
-  #expect(store.machines.count == 1)
+  // A newer failed refresh must not be overwritten by an older successful response.
+  await responses.setFailure(true)
+  store.refresh(force: true)
+  await store.waitForRefresh()
+  #expect(store.machines.first?.error == "Unreachable")
 
-  // Deliver the old result after the user action; it must not restore stale UI state.
   await responses.release()
-
   for _ in 0..<20 { await Task.yield() }
+
   #expect(store.machines.count == 1)
+  #expect(store.machines.first?.error == "Unreachable")
 }
 
 @Test @MainActor
@@ -149,11 +169,10 @@ func menuRefreshHonorsBackoffAndExplicitRefreshRetries() async {
   let (store, preferences, suite) = setup(responses)
 
   defer {
-    store.enabled = false
+    store.stop()
     preferences.removePersistentDomain(forName: suite)
   }
 
-  store.add(endpoint.absoluteString)
   await store.waitForRefresh()
   await responses.setFailure(true)
   store.refresh(force: true)
@@ -174,6 +193,24 @@ func menuRefreshHonorsBackoffAndExplicitRefreshRetries() async {
 }
 
 @Test
+func remoteOpenUsesTheNamedPrimaryInsteadOfAppOrder() throws {
+  let api = RemoteApp(name: "api", status: "ready", url: "https://devbox.tail123.ts.net:23000")
+
+  // An unavailable primary must not redirect Open to a different, healthy app.
+  for status in ["ready", "starting", "failed", "stopped"] {
+    let platform = RemoteApp(
+      name: "platform", status: status, url: "https://devbox.tail123.ts.net:25173")
+    let run = RemoteRun(
+      id: "run", project: "lullu", worktree: nil, branch: "main",
+      apps: [api, platform], primaryApp: "platform")
+
+    #expect(run.primary?.name == "platform")
+    #expect(run.primary?.url == platform.url)
+    #expect(run.primary?.status == status)
+  }
+}
+
+@Test
 func rejectsMalformedDirectoryVariations() throws {
   let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
   let raw = try Data(contentsOf: root.appendingPathComponent("fixtures/tailnet.v1.json"))
@@ -182,6 +219,7 @@ func rejectsMalformedDirectoryVariations() throws {
 
   let valid = try JSONDecoder().decode(RemoteDirectory.self, from: raw)
   try valid.validate(host: "devbox.tail123.ts.net", expectedID: "fixture-machine", now: now)
+  #expect(valid.runs.first?.primary?.name == "platform")
 
   // Keep malformed cases next to the assertions instead of copying entire directory documents.
   func reject(_ name: String, patch: [String: Any]) throws {
@@ -210,6 +248,20 @@ func rejectsMalformedDirectoryVariations() throws {
   let run = try #require(runs.first)
   let apps = try #require(run["apps"] as? [[String: Any]])
   let app = try #require(apps.first)
+  // Older hosts omit the field; a null value means the primary is not shared.
+  // Both stay readable and leave selection to the user instead of guessing an app.
+  var legacyRun = run
+  legacyRun.removeValue(forKey: "primaryApp")
+
+  for compatibleRun in [legacyRun, run.merging(["primaryApp": NSNull()]) { _, value in value }] {
+    let document = fixture.merging(["runs": [compatibleRun]]) { _, value in value }
+    let data = try JSONSerialization.data(withJSONObject: document)
+    let directory = try JSONDecoder().decode(RemoteDirectory.self, from: data)
+
+    try directory.validate(host: "devbox.tail123.ts.net", expectedID: "fixture-machine", now: now)
+    #expect(directory.runs.first?.primary == nil)
+  }
+
   var missingApps = run
   missingApps.removeValue(forKey: "apps")
 
@@ -219,6 +271,10 @@ func rejectsMalformedDirectoryVariations() throws {
   let invalidRuns: [(String, [String: Any])] = [
     ("duplicate app", ["apps": apps + [app]]),
     ("invalid branch", ["branch": String(repeating: "a", count: 257)]),
+    ("invalid primary type", ["primaryApp": 123]),
+    ("oversized primary", ["primaryApp": String(repeating: "a", count: 257)]),
+    ("empty primary", ["primaryApp": ""]),
+    ("unlisted primary", ["primaryApp": "private-app"]),
   ]
 
   for (name, patch) in invalidRuns {

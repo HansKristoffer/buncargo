@@ -1,4 +1,4 @@
-import type { AppConfig, ServiceConfig } from "../types";
+import type { AppConfig, DockerComposeNode, ServiceConfig } from "../types";
 import { assertOnlyAppNames, pickApps } from "./app-selection";
 
 export interface AppSelectionPlan {
@@ -19,6 +19,7 @@ export function getComposeServiceName(
 	if (!service) {
 		throw new Error(`Unknown service key "${serviceKey}"`);
 	}
+
 	return service.serviceName ?? serviceKey;
 }
 
@@ -44,7 +45,10 @@ export function resolveSelectedApps(
 
 	function visit(appName: string): void {
 		const state = visitState.get(appName);
-		if (state === "visited") return;
+		if (state === "visited") {
+			return;
+		}
+
 		if (state === "visiting") {
 			const cycleStartIndex = visitStack.indexOf(appName);
 			const cycle = visitStack.slice(cycleStartIndex).concat(appName);
@@ -105,11 +109,84 @@ export function resolveRequiredServiceKeys(
 					`App "${appName}" requires unknown service "${serviceKey}"`,
 				);
 			}
-			if (seenServiceKeys.has(serviceKey)) continue;
+
+			if (seenServiceKeys.has(serviceKey)) {
+				continue;
+			}
 			seenServiceKeys.add(serviceKey);
 			resolvedServiceKeys.push(serviceKey);
 		}
 	}
+
+	return resolveServiceDependencies(services, resolvedServiceKeys);
+}
+
+/** Normalize Compose's short and long forms before walking dependency edges. */
+function readServiceDependencies(
+	serviceName: string,
+	service: ServiceConfig | undefined,
+): [string, DockerComposeNode | undefined][] {
+	const docker = service?.docker;
+	const raw = docker?.kind === "preset" ? docker.service : docker;
+	const dependencies = raw?.depends_on;
+
+	if (dependencies === undefined) {
+		return [];
+	}
+
+	if (Array.isArray(dependencies)) {
+		if (dependencies.some((name) => typeof name !== "string")) {
+			throw new Error(
+				`Service "${serviceName}" has malformed Compose depends_on`,
+			);
+		}
+
+		return dependencies.map((name) => [name, undefined]);
+	}
+
+	if (dependencies === null || typeof dependencies !== "object") {
+		throw new Error(
+			`Service "${serviceName}" has malformed Compose depends_on`,
+		);
+	}
+
+	return Object.entries(dependencies).map(([name, definition]) => {
+		if (
+			definition !== undefined &&
+			(definition === null ||
+				typeof definition !== "object" ||
+				Array.isArray(definition))
+		) {
+			throw new Error(
+				`Service "${serviceName}" has malformed dependency on "${name}"`,
+			);
+		}
+
+		const condition = definition?.condition;
+		if (
+			condition !== undefined &&
+			![
+				"service_started",
+				"service_healthy",
+				"service_completed_successfully",
+			].includes(String(condition))
+		) {
+			throw new Error(
+				`Service "${serviceName}" has invalid dependency condition for "${name}"`,
+			);
+		}
+
+		return [name, condition];
+	});
+}
+
+/** Expand and validate Compose dependencies without resolving a runtime or model. */
+export function resolveServiceDependencies(
+	services: Record<string, ServiceConfig>,
+	keys: string[],
+): string[] {
+	const resolvedServiceKeys = [...keys];
+	const seenServiceKeys = new Set(keys);
 
 	// Compose dependencies are also selected resources, including aliases.
 	const byComposeName = new Map(
@@ -120,33 +197,73 @@ export function resolveRequiredServiceKeys(
 	);
 	const visiting = new Set<string>();
 	const visited = new Set<string>();
+
 	function visitDependency(key: string): void {
-		if (visited.has(key)) return;
-		if (visiting.has(key))
+		if (visited.has(key)) {
+			return;
+		}
+
+		if (visiting.has(key)) {
 			throw new Error(`Circular Compose dependency at service "${key}"`);
+		}
+
 		visiting.add(key);
-		const docker = services[key]?.docker;
-		const raw = docker?.kind === "preset" ? docker.service : docker;
-		const dependencies = raw?.depends_on;
-		const names = Array.isArray(dependencies)
-			? dependencies
-			: Object.keys(dependencies ?? {});
-		for (const name of names) {
-			const dependency = byComposeName.get(String(name));
-			if (!dependency)
+
+		for (const [name, condition] of readServiceDependencies(
+			key,
+			services[key],
+		)) {
+			const dependency = byComposeName.get(name);
+			if (!dependency) {
 				throw new Error(
-					`Service "${key}" depends on unknown Compose service "${String(name)}"`,
+					`Service "${key}" depends on unknown Compose service "${name}"`,
 				);
+			}
+
+			if (
+				condition === "service_completed_successfully" &&
+				services[dependency]?.kind !== "job"
+			) {
+				throw new Error(
+					`Service "${key}" requires completion of "${dependency}", which must declare kind: "job"`,
+				);
+			}
+
+			if (
+				condition === "service_healthy" &&
+				services[dependency]?.kind === "job"
+			) {
+				throw new Error(
+					`Service "${key}" requires health from job "${dependency}"; use service_completed_successfully`,
+				);
+			}
+
+			// An early service cannot wait for something intentionally started later.
+			if (
+				!services[key]?.afterPreparation &&
+				services[dependency]?.afterPreparation
+			) {
+				throw new Error(
+					`Service "${key}" depends on afterPreparation service "${dependency}" before preparation`,
+				);
+			}
+
 			if (!seenServiceKeys.has(dependency)) {
 				seenServiceKeys.add(dependency);
 				resolvedServiceKeys.push(dependency);
 			}
+
 			visitDependency(dependency);
 		}
+
 		visiting.delete(key);
 		visited.add(key);
 	}
-	for (const key of [...resolvedServiceKeys]) visitDependency(key);
+
+	for (const key of keys) {
+		visitDependency(key);
+	}
+
 	return resolvedServiceKeys;
 }
 
@@ -161,14 +278,6 @@ export function buildStartPlan(
 		services,
 		selection.appNames,
 	);
-
-	if (requiredServiceKeys.length === 0) {
-		const selectionLabel =
-			selection.appNames.length > 0 ? selection.appNames.join(", ") : "(none)";
-		throw new Error(
-			`No required services resolved for app selection: ${selectionLabel}. Add requiredServices to the selected apps or their requiredApps.`,
-		);
-	}
 
 	return {
 		...selection,

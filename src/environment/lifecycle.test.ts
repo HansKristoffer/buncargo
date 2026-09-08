@@ -35,7 +35,7 @@ function fixture() {
 		projectPrefix: "test",
 		options: { verbose: false },
 		migrations: [{ name: "schema", command: "migrate" }],
-		prisma: { generate: "generate" },
+		prisma: { service: "db", generate: "generate" },
 		seed: {
 			command: "unused",
 			check: async () => {
@@ -111,7 +111,7 @@ describe("startup modes and hooks", () => {
 			"artifact",
 			"runtime",
 			"up",
-			"bunx prisma migrate deploy",
+			"bunx --no-install prisma migrate deploy",
 			"migrate",
 		]);
 	});
@@ -122,7 +122,7 @@ describe("startup modes and hooks", () => {
 			"artifact",
 			"runtime",
 			"up",
-			"bunx prisma migrate deploy",
+			"bunx --no-install prisma migrate deploy",
 			"migrate",
 			"generate",
 			"container hook",
@@ -164,6 +164,7 @@ it("rejects missing library app directories before starting containers", async (
 	const { ctx, events, lifecycle } = fixture();
 	ctx.apps.web = {
 		...ctx.apps.web,
+		kind: "server",
 		port: 3000,
 		cwd: "missing-buncargo-directory",
 	};
@@ -171,4 +172,84 @@ it("rejects missing library app directories before starting containers", async (
 		"apps.web.cwd",
 	);
 	expect(events).toEqual([]);
+});
+
+it("runs bootstrap before Prisma and supplies expanded selection", async () => {
+	const { ctx, events, lifecycle } = fixture();
+	ctx.config.hooks = {
+		...ctx.config.hooks,
+		beforeMigrations: async () => {
+			events.push("bootstrap");
+		},
+	};
+	await lifecycle.start({ startServers: false, wait: false, verbose: false });
+	expect(events.indexOf("bootstrap")).toBeLessThan(
+		events.indexOf("bunx --no-install prisma migrate deploy"),
+	);
+});
+it("bootstrap failure prevents automatic and custom migrations", async () => {
+	const { ctx, events, lifecycle } = fixture();
+	ctx.config.hooks = {
+		beforeMigrations: async () => {
+			throw new Error("bootstrap failed");
+		},
+	};
+	await expect(
+		lifecycle.start({ startServers: false, wait: false, verbose: false }),
+	).rejects.toThrow("bootstrap failed");
+	expect(events).not.toContain("bunx --no-install prisma migrate deploy");
+	expect(events).not.toContain("migrate");
+});
+it("containers-only does not invoke bootstrap", async () => {
+	const { ctx, lifecycle } = fixture();
+	ctx.config.hooks = {
+		beforeMigrations: async () => {
+			throw new Error("bootstrap invoked");
+		},
+	};
+	await lifecycle.start({
+		prepare: "containers",
+		startServers: false,
+		wait: false,
+		verbose: false,
+	});
+});
+it("starts services requiring preparation after migrations and seeds using one artifact", async () => {
+	const { ctx, events, lifecycle } = fixture();
+	ctx.services.sync = { port: 8080, afterPreparation: true };
+	ctx.apps.web = {
+		port: 3000,
+		devCommand: false,
+		requiredServices: ["db", "sync"],
+	};
+	ctx.runtime.up = (request) => {
+		events.push(`up:${request.serviceNames.join(",")}:${!!request.noDeps}`);
+	};
+	await lifecycle.start({ startServers: false, wait: false, verbose: false });
+	expect(events.indexOf("up:db:false")).toBeLessThan(events.indexOf("migrate"));
+	expect(events.indexOf("up:sync:true")).toBeGreaterThan(
+		events.indexOf("seed check"),
+	);
+	expect(events.filter((event) => event === "artifact")).toHaveLength(1);
+});
+
+it("cancels a pending bootstrap before migrations can start", async () => {
+	const { ctx, events, lifecycle } = fixture();
+	const controller = new AbortController();
+	ctx.config.hooks = {
+		beforeMigrations: async () => {
+			controller.abort(new Error("cancel bootstrap"));
+			await new Promise(() => {});
+		},
+	};
+	await expect(
+		lifecycle.start({
+			startServers: false,
+			wait: false,
+			verbose: false,
+			signal: controller.signal,
+		}),
+	).rejects.toThrow("cancel bootstrap");
+	expect(events).not.toContain("bunx --no-install prisma migrate deploy");
+	expect(events).not.toContain("migrate");
 });
