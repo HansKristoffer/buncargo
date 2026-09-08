@@ -27,32 +27,77 @@ struct RemoteMachinesView: View {
                     EnvironmentRow(title: run.title, subtitle: run.connected ? run.worktree : "Connecting…", status: store.available ? (run.connected ? .rollup(run.targets.map(\.state)) : .starting) : .failed) {
                         if let primary = run.primary {
                             Button("Open") { store.connect(run, primary) }
+                                .font(.system(size: 11))
+                                .help("Open \(primary.name)")
                                 .disabled(!store.available || !run.connected || !primary.ready || store.busy)
                         }
                     } detail: {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("\(run.project) · \(run.title)").font(.headline)
-                            ForEach(run.targets) { target in
-                                HStack {
-                                    Text(target.name)
-                                    Text(target.status).foregroundStyle(.secondary)
-                                    Spacer()
-                                    Button(target.protocol == "http" ? "Open" : "Connect") { store.connect(run, target) }
-                                    Button("Copy") { store.connect(run, target, copy: true) }
-                                    if target.preset == "postgres" && Actions.hasTablePlus {
-                                        Button("TablePlus") { store.connect(run, target, tablePlus: true) }
-                                    }
-                                    if let port = store.connected["\(run.id):\(target.id)"] {
-                                        Text(":\(port)").foregroundStyle(.secondary)
-                                        Button("Disconnect") { store.disconnect(run, target) }
-                                    }
-                                }.disabled(!store.available || !run.connected || !target.ready || store.busy)
-                            }
-                            Button("Revoke this sharing") { store.revoke(run) }.disabled(store.busy)
-                        }.font(.system(size: 11)).padding(12).frame(minWidth: 460)
+                        RemoteRunDetailView(run: run, store: store)
                     }
                 }
             }
         }.onAppear { store.refresh() }
+    }
+}
+
+struct RemoteRunDetailView: View {
+    let run: RemoteRun
+    @ObservedObject var store: ConnectionStore
+
+    var body: some View {
+        TargetDetailPanel(title: run.title) {
+            ForEach(["app", "service"], id: \.self) { kind in
+                let targets = run.targets.filter { $0.kind == kind }
+                if !targets.isEmpty {
+                    TargetSectionHeading(title: kind == "app" ? "APPS" : "SERVICES")
+                    ForEach(targets) { target in
+                        RemoteTargetRow(run: run, target: target, store: store)
+                    }
+                }
+            }
+        } footer: {
+            HStack {
+                Spacer()
+                Button("Revoke this sharing") { store.revoke(run) }
+                    .foregroundStyle(.red)
+                    .disabled(store.busy)
+            }
+        }
+    }
+}
+
+/// Remote actions always go through the CLI, even when a local address is already known.
+/// In particular, opening a browser needs a fresh authorization URL, not the display address.
+struct RemoteTargetRow: View {
+    let run: RemoteRun
+    let target: RemoteTarget
+    @ObservedObject var store: ConnectionStore
+
+    private var port: Int? { store.localPort(run, target) }
+    private var isHTTP: Bool { target.protocol == "http" }
+    private var detail: String {
+        if let port {
+            return isHTTP ? "http://127.0.0.1:\(port)/" : "127.0.0.1:\(port)"
+        }
+        if !store.available { return "Unavailable" }
+        if !run.connected { return "Connecting…" }
+        return target.ready ? "Not connected" : target.status
+    }
+
+    var body: some View {
+        TargetRow(
+            name: target.name,
+            status: store.available ? (run.connected ? target.state : .starting) : .failed,
+            detail: detail,
+            onOpen: isHTTP || port == nil ? { store.connect(run, target) } : nil,
+            openSymbol: isHTTP ? "arrow.up.right" : "cable.connector",
+            openHelp: isHTTP ? "Open" : "Connect and copy address",
+            onCopy: { store.connect(run, target, copy: true) },
+            onTablePlus: target.preset == "postgres" ? { store.connect(run, target, tablePlus: true) } : nil,
+            onStop: port == nil ? nil : { store.disconnect(run, target) },
+            stopHelp: "Disconnect local connection",
+            actionsEnabled: store.available && run.connected && target.ready
+        )
+        .disabled(store.busy)
     }
 }

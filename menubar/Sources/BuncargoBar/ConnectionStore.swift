@@ -56,6 +56,10 @@ final class ConnectionStore: ObservableObject {
             }
         }
     }
+    func localPort(_ run: RemoteRun, _ target: RemoteTarget) -> Int? {
+        connected["\(run.id):\(target.id)"]
+    }
+
     func waitForRefresh() async { await task?.value }
     func stop() { timer?.invalidate(); generation += 1; task?.cancel(); task = nil }
 
