@@ -1,12 +1,7 @@
 import { expect, test } from "bun:test";
-import { verifyCapability } from "../core/connect/capability";
 import { DirectoryClient, DirectoryError } from "../core/connect/client";
-import {
-	makeSecret,
-	relayEndpoint,
-	type Snapshot,
-} from "../core/connect/protocol";
-import { startRelayPublisher } from "../core/connect/transport/publisher";
+import { makeSecret, type Snapshot } from "../core/connect/protocol";
+
 import { startLocalDirectory } from "./local";
 
 test("recipient isolation, publisher ownership, rotation, revisions and revocation", async () => {
@@ -22,7 +17,8 @@ test("recipient isolation, publisher ownership, rotation, revisions and revocati
 		sessionId: "session1",
 		project: "project",
 		branch: "feature/foo",
-		endpoint: relayEndpoint(server.url, "device1", "session1"),
+		endpoint: `tc${"a".repeat(60)}`,
+		transport: "ready",
 		revision: 1,
 		targets: [
 			{
@@ -31,6 +27,7 @@ test("recipient isolation, publisher ownership, rotation, revisions and revocati
 				name: "web",
 				protocol: "http",
 				status: "ready",
+				port: 8080,
 			},
 		],
 	};
@@ -44,6 +41,8 @@ test("recipient isolation, publisher ownership, rotation, revisions and revocati
 			client.publish("device2", token, publisher, snapshot),
 		).rejects.toBeInstanceOf(DirectoryError);
 		await client.publish("device1", token, publisher, snapshot);
+		await expect(client.list("device1", otherOwner)).rejects.toThrow();
+		await expect(client.list("device1", publisher)).rejects.toThrow();
 		await expect(
 			client.publish("device1", token, makeSecret(), snapshot),
 		).rejects.toBeInstanceOf(DirectoryError);
@@ -51,37 +50,9 @@ test("recipient isolation, publisher ownership, rotation, revisions and revocati
 			"feature/foo",
 		);
 		expect((await client.list("device1", owner)).runs[0].transport).toBe(
-			"connecting",
+			"ready",
 		);
-		await expect(
-			client.access("device1", owner, "session1", "app-web"),
-		).rejects.toThrow();
-		const relay = startRelayPublisher({
-			endpoint: snapshot.endpoint,
-			recipient: "device1",
-			session: "session1",
-			secret: publisher,
-			origin: server.url,
-			key: server.publicKey,
-			targets: [],
-			signal: new AbortController().signal,
-		});
-		await relay.ready;
-		const cap = await client.access("device1", owner, "session1", "app-web");
-		expect(
-			(
-				await verifyCapability(
-					cap,
-					server.publicKey,
-					server.url,
-					"session1",
-					"app-web",
-				)
-			).recipient,
-		).toBe("device1");
-		await expect(
-			verifyCapability(cap, server.publicKey, server.url, "session1", "other"),
-		).rejects.toThrow();
+
 		await expect(
 			client.publish("device1", publisher, publisher, {
 				...snapshot,
@@ -105,7 +76,7 @@ test("recipient isolation, publisher ownership, rotation, revisions and revocati
 		await client.withdraw("device1", "session1", owner);
 		expect((await client.list("device1", owner)).runs).toHaveLength(0);
 		await expect(
-			client.access("device1", owner, "session1", "app-web"),
+			client.publish("device1", publisher, publisher, snapshot),
 		).rejects.toBeInstanceOf(DirectoryError);
 		await expect(
 			client.publish("device1", rotated, publisher, {
@@ -120,8 +91,6 @@ test("recipient isolation, publisher ownership, rotation, revisions and revocati
 
 test("server time expires leases and terminal registrations cannot be revived", async () => {
 	const { directoryRequest } = await import("./service");
-	const { exportJWK, generateKeyPair } = await import("jose");
-	const keys = await generateKeyPair("EdDSA", { extractable: true });
 	let state: import("./service").DeviceState | undefined;
 	let now = Date.now();
 	const owner = makeSecret(),
@@ -142,7 +111,6 @@ test("server time expires leases and terminal registrations cannot be revived", 
 			{
 				recipientId: "device",
 				origin: "https://test.example",
-				key: priv,
 				now: () => now,
 				storage: {
 					load: async () => state,
@@ -152,14 +120,17 @@ test("server time expires leases and terminal registrations cannot be revived", 
 				},
 			},
 		);
-	const priv = await exportJWK(keys.privateKey);
-	await call("POST", "", undefined, { owner, token });
+	await call("POST", "", undefined, {
+		owner,
+		token,
+	});
 	const snapshot: Snapshot = {
 		version: 1,
 		sessionId: "session",
 		project: "p",
 		revision: 1,
-		endpoint: relayEndpoint("https://test.example", "device", "session"),
+		endpoint: `tc${"a".repeat(60)}`,
+		transport: "ready",
 		targets: [
 			{
 				id: "db",
@@ -167,6 +138,7 @@ test("server time expires leases and terminal registrations cannot be revived", 
 				name: "db",
 				protocol: "tcp",
 				status: "ready",
+				port: 8080,
 			},
 		],
 	};
@@ -178,7 +150,12 @@ test("server time expires leases and terminal registrations cannot be revived", 
 			})
 		).status,
 	).toBe(200);
-	now += 91_000;
+	now += 21_000;
+	const stale = (await (await call("GET", "/sessions", owner)).json()) as {
+		runs: { transport: string }[];
+	};
+	expect(stale.runs[0].transport).toBe("connecting");
+	now += 70_000;
 	expect(
 		(
 			(await (await call("GET", "/sessions", owner)).json()) as {
@@ -209,7 +186,7 @@ test("server time expires leases and terminal registrations cannot be revived", 
 	expect(
 		(await call("POST", "/sessions/session/access", owner, { target: "db" }))
 			.status,
-	).toBe(410);
+	).toBe(404);
 	expect(
 		(
 			await call("PUT", "/sessions/session", publisher, {

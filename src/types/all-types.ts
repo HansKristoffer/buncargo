@@ -251,9 +251,13 @@ export interface ServiceConfigBase<
 > {
 	/** Base host port; omit for a container with no published endpoint. */
 	port?: number;
-	/** Opt into automatic recipient sharing and explicit public exposure. */
+	/**
+	 * Opt into public URLs with --expose.
+	 * @deprecated Token-based sharing automatically includes all selected endpoints with a host port.
+	 * This option only controls public tunnels started with --expose.
+	 */
 	expose?: boolean;
-	/** Protocol for recipient sharing; apps default to HTTP, service presets infer it. */
+	/** Protocol for recipient sharing; apps default to HTTP, presets infer it, custom services default to TCP. */
 	exposeProtocol?: "http" | "tcp";
 	/** Optional secondary port (e.g., ClickHouse native protocol) */
 	secondaryPort?: number;
@@ -313,9 +317,13 @@ export type ServiceConfig<
  * Configuration for an application (e.g., api, web).
  */
 interface AppOptions<TStatic extends EnvValues = EnvValues> {
-	/** Opt into automatic recipient sharing and explicit public exposure. */
+	/**
+	 * Opt into public URLs with --expose.
+	 * @deprecated Token-based sharing automatically includes all selected endpoints with a host port.
+	 * This option only controls public tunnels started with --expose.
+	 */
 	expose?: boolean;
-	/** Protocol for recipient sharing; apps default to HTTP, service presets infer it. */
+	/** Protocol for recipient sharing; apps default to HTTP, presets infer it, custom services default to TCP. */
 	exposeProtocol?: "http" | "tcp";
 	/** Command to start the dev server. Set to false to reserve/tunnel the port without starting a process. */
 	devCommand: string | false;

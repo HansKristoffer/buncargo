@@ -1,17 +1,19 @@
 import { basename } from "node:path";
 import { DirectoryClient, DirectoryError } from "../core/connect/client";
 import {
+	AUTHORIZATION_MS,
+	HEARTBEAT_MS,
 	makeSecret,
 	parseConnectionToken,
-	relayEndpoint,
+	type RemoteTarget,
 	type Snapshot,
 	type TargetStatus,
 } from "../core/connect/protocol";
-import { type SharedTarget, sharedTargets } from "../core/connect/targets";
 import {
-	type RelayPublisher,
-	startRelayPublisher,
-} from "../core/connect/transport/publisher";
+	startTailcatPublisher,
+	type TailcatPublisher,
+} from "../core/connect/tailcat/publisher";
+import { sharedTargets } from "../core/connect/targets";
 import { abortableSleep, withSignal } from "../core/deadline";
 import { connectionDirectory } from "../core/runtime-flags";
 import type { AppConfig, ServiceConfig } from "../types";
@@ -32,13 +34,17 @@ interface Recipient {
 	terminal: boolean;
 	pending: Promise<void>;
 	task?: Promise<void>;
-	publisher?: RelayPublisher;
+	publisher?: TailcatPublisher;
+	leaseTimer?: ReturnType<typeof setTimeout>;
 }
+/** Own one independently renewable Tailcat publisher per recipient for this CLI run. */
 export function createDevConnect(
 	env: ConnectSource,
 	tokens: string[],
 	parentSignal: AbortSignal,
 	origin = connectionDirectory() as string,
+	startPublisher = startTailcatPublisher,
+	heartbeatMs = HEARTBEAT_MS,
 ) {
 	const controller = new AbortController(),
 		signal = AbortSignal.any([parentSignal, controller.signal]);
@@ -54,13 +60,15 @@ export function createDevConnect(
 			pending: Promise.resolve(),
 		});
 	}
-	let targets: SharedTarget[] = [],
+	let targets: RemoteTarget[] = [],
 		sessionId = "",
 		revision = 0,
 		primary: string | undefined,
 		stopped = false,
 		started = false;
-	function snapshot(recipient: string): Snapshot {
+	function snapshot(state: Recipient): Snapshot {
+		const publisher = state.publisher;
+		if (!publisher) throw new Error("Tailcat is not running");
 		return {
 			version: 1,
 			sessionId,
@@ -68,17 +76,22 @@ export function createDevConnect(
 			branch: readGitBranch(env.root),
 			worktree: env.isWorktree ? basename(env.root) : null,
 			primaryApp: primary ?? null,
-			endpoint: relayEndpoint(client.origin, recipient, sessionId),
+			endpoint: publisher.endpoint,
+			transport: "ready",
 			revision,
-			targets: targets.map(({ port: _, ...target }) => ({ ...target })),
+			targets: targets.map((target, i) => ({
+				...target,
+				port: publisher.targets[i].port,
+			})),
 		};
 	}
+	// Serialize status changes with renewals so older snapshots cannot overwrite newer ones.
 	function publish(id: string, state: Recipient) {
 		const work = state.pending
 			.catch(() => {})
 			.then(async () => {
 				if (stopped || state.terminal) return;
-				const run = snapshot(id);
+				const run = snapshot(state);
 				try {
 					await client.publish(
 						id,
@@ -97,6 +110,12 @@ export function createDevConnect(
 					else throw error;
 				}
 				state.registered = true;
+				clearTimeout(state.leaseTimer);
+				const publisher = state.publisher;
+				// This deadline is independent of the request queue and closes a stalled publisher.
+				state.leaseTimer = setTimeout(() => {
+					void publisher?.close().catch(() => {});
+				}, AUTHORIZATION_MS);
 			});
 		state.pending = work;
 		return work;
@@ -107,28 +126,17 @@ export function createDevConnect(
 			[400, 401, 403, 410].includes(error.status)
 		) {
 			state.terminal = true;
-			state.publisher?.close();
+			void state.publisher?.close().catch(() => {});
 		}
 	}
 	async function run(id: string, state: Recipient) {
 		let failures = 0;
 		while (!signal.aborted && !state.terminal) {
 			try {
-				await publish(id, state);
-				const key = await client.key();
-				signal.throwIfAborted();
-				const publisher = startRelayPublisher({
-					endpoint: relayEndpoint(client.origin, id, sessionId),
-					recipient: id,
-					session: sessionId,
-					origin: client.origin,
-					secret: state.secret,
-					key,
-					targets,
-					signal,
-				});
+				const publisher = await startPublisher({ targets, signal });
 				state.publisher = publisher;
-				await publisher.ready;
+				revision++;
+				await publish(id, state);
 				failures = 0;
 				log.info(`Shared ${targets.length} targets with recipient ${id}`);
 				while (!signal.aborted && !state.terminal) {
@@ -139,14 +147,14 @@ export function createDevConnect(
 						heartbeat = await withSignal(
 							Promise.race([
 								publisher.exited.then(() => false),
-								abortableSleep(30000, waitSignal).then(() => true),
+								abortableSleep(heartbeatMs, waitSignal).then(() => true),
 							]),
 							signal,
 						);
 					} finally {
 						waitController.abort();
 					}
-					if (!heartbeat) throw new Error("Relay disconnected");
+					if (!heartbeat) throw new Error("Tailcat disconnected");
 					await publish(id, state);
 				}
 			} catch (error) {
@@ -155,10 +163,11 @@ export function createDevConnect(
 				failures++;
 				if (failures === 1 || state.terminal)
 					log.warn(
-						`Could not share with recipient ${id}: ${state.terminal ? "token invalid or sharing revoked; copy a fresh token" : "relay unavailable; retrying"}`,
+						`Could not share with recipient ${id}: ${state.terminal ? "token invalid or sharing revoked; copy a fresh token" : "connection unavailable; retrying"}`,
 					);
 			} finally {
-				state.publisher?.close();
+				clearTimeout(state.leaseTimer);
+				await state.publisher?.close();
 				state.publisher = undefined;
 			}
 			if (!signal.aborted && !state.terminal)
@@ -216,7 +225,9 @@ export function createDevConnect(
 			if (stopped) return;
 			stopped = true;
 			controller.abort();
-			for (const s of recipients.values()) s.publisher?.close();
+			await Promise.allSettled(
+				[...recipients.values()].map((s) => s.publisher?.close()),
+			);
 			await Promise.allSettled(
 				[...recipients.values()].flatMap((s) => [s.task, s.pending]),
 			);

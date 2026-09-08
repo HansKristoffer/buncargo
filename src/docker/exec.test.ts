@@ -114,7 +114,15 @@ describe("Docker service probes", () => {
 				"--format",
 				"{{.ID}}",
 			],
-			["exec", "abcdef123456", "pg_isready", "-U", "postgres"],
+			[
+				"exec",
+				"abcdef123456",
+				"pg_isready",
+				"-h",
+				"127.0.0.1",
+				"-U",
+				"postgres",
+			],
 		]);
 	});
 

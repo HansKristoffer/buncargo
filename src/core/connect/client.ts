@@ -1,9 +1,7 @@
-import type { JWK } from "jose";
 import {
 	type DirectorySnapshot,
 	directoryOrigin,
-	isLoopback,
-	MAX_BODY,
+	jsonBody,
 	parseDirectory,
 	type Snapshot,
 } from "./protocol";
@@ -44,38 +42,21 @@ export class DirectoryClient {
 			await response.body?.cancel();
 			throw new DirectoryError(response.status);
 		}
-		if (Number(response.headers.get("content-length")) > MAX_BODY) {
-			await response.body?.cancel();
-			throw new Error("Directory response too large");
-		}
-		// Apply the same bounded streaming reader to responses as to requests.
-		const { jsonBody } = await import("./protocol");
-		return jsonBody(
-			new Request(this.origin, { method: "POST", body: response.body }),
-		);
-	}
-	async key(): Promise<JWK> {
-		const key = await this.call("/v1/key");
-		if (
-			key.kty !== "OKP" ||
-			key.crv !== "Ed25519" ||
-			typeof key.x !== "string" ||
-			key.d
-		)
-			throw new Error("Invalid directory signing key");
-		return key as JWK;
+		return jsonBody(response);
 	}
 	path(recipient: string, suffix = ""): string {
 		return `/v1/devices/${encodeURIComponent(recipient)}${suffix}`;
 	}
 	async create(recipient: string, owner: string, token: string) {
-		await this.call(this.path(recipient), undefined, "POST", { owner, token });
+		await this.call(this.path(recipient), undefined, "POST", {
+			owner,
+			token,
+		});
 	}
 	async list(recipient: string, owner: string): Promise<DirectorySnapshot> {
 		return parseDirectory(
 			await this.call(this.path(recipient, "/sessions"), owner),
 			recipient,
-			isLoopback(new URL(this.origin)),
 			Date.now(),
 			this.origin,
 		);
@@ -87,7 +68,7 @@ export class DirectoryClient {
 		snapshot: Snapshot,
 		signal?: AbortSignal,
 	) {
-		await this.call(
+		return this.call(
 			this.path(recipient, `/sessions/${snapshot.sessionId}`),
 			credential,
 			"PUT",
@@ -101,24 +82,5 @@ export class DirectoryClient {
 			credential,
 			"DELETE",
 		);
-	}
-	async access(
-		recipient: string,
-		owner: string,
-		session: string,
-		target: string,
-	): Promise<string> {
-		const result = await this.call(
-			this.path(recipient, `/sessions/${session}/access`),
-			owner,
-			"POST",
-			{ target },
-		);
-		if (
-			typeof result.capability !== "string" ||
-			result.capability.length > 8192
-		)
-			throw new Error("Invalid capability");
-		return result.capability;
 	}
 }

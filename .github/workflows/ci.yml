@@ -70,3 +70,19 @@ jobs:
           docker compose version
       - name: Verify container reuse, jobs, preparation and shutdown
         run: bun scripts/verify-docker.ts
+
+  tailcat:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - run: bun install --frozen-lockfile
+      - name: Verify Tailcat through a real local DERP relay
+        run: bun run test:integration-tailcat

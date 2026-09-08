@@ -283,3 +283,25 @@ export function connectE2EEnabled(
 ): boolean {
 	return env.BUNCARGO_TEST_CONNECT_E2E === "1";
 }
+
+/** Optional operator-supplied Tailcat binary and relay fleet. */
+export function tailcatPath(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return env.BUNCARGO_TAILCAT_PATH?.trim() || undefined;
+}
+export function tailcatDerpMap(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	const raw = env.BUNCARGO_TAILCAT_DERPMAP_URL?.trim();
+	if (!raw) return;
+	const url = new URL(raw);
+	if (url.protocol !== "https:" || url.username || url.password)
+		throw new Error("BUNCARGO_TAILCAT_DERPMAP_URL must be an HTTPS URL");
+	return url.href;
+}
+export function tailcatTestsEnabled(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return env.BUNCARGO_TEST_TAILCAT === "1";
+}

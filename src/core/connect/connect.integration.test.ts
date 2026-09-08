@@ -10,14 +10,14 @@ import { promisify } from "node:util";
 import { connectE2EEnabled, connectionDirectory } from "../runtime-flags";
 import { sleep } from "../sleep";
 import { DirectoryClient } from "./client";
-import { makeSecret, relayEndpoint, type Snapshot } from "./protocol";
+import { makeSecret, type Snapshot } from "./protocol";
+import { startTailcatPublisher } from "./tailcat/publisher";
 import { localForward } from "./transport/local-forward";
-import { startRelayPublisher } from "./transport/publisher";
 
 const exec = promisify(execFile);
 
 test.skipIf(!connectE2EEnabled())(
-	"live Worker relay, two recipients, private browser streaming and PostgreSQL",
+	"live Worker discovery and Tailcat, two recipients, private browser streaming and PostgreSQL",
 	async () => {
 		const client = new DirectoryClient(connectionDirectory() as string);
 		const sessionId = crypto.randomUUID();
@@ -59,6 +59,7 @@ test.skipIf(!connectE2EEnabled())(
 				name: "web",
 				protocol: "http",
 				status: "ready",
+				port: 1,
 			},
 			{
 				id: "db",
@@ -66,10 +67,11 @@ test.skipIf(!connectE2EEnabled())(
 				name: "db",
 				protocol: "tcp",
 				status: "ready",
+				port: 1,
 				preset: "postgres",
 			},
 		];
-		const publishers: ReturnType<typeof startRelayPublisher>[] = [];
+		const publishers: Awaited<ReturnType<typeof startTailcatPublisher>>[] = [];
 		const forwards: Awaited<ReturnType<typeof localForward>>[] = [];
 		let postgres = false;
 		try {
@@ -101,39 +103,33 @@ test.skipIf(!connectE2EEnabled())(
 				worktree: "isolated-test",
 				primaryApp: "web",
 				endpoint: "",
+				transport: "ready",
 				revision: 1,
 				targets,
 			};
 			for (const d of devices) {
 				await client.create(d.id, d.owner, d.token);
-				await client.publish(d.id, d.token, d.publisher, {
-					...snapshot,
-					endpoint: relayEndpoint(client.origin, d.id, sessionId),
-				});
-				const publisher = startRelayPublisher({
-					endpoint: relayEndpoint(client.origin, d.id, sessionId),
-					recipient: d.id,
-					session: sessionId,
-					secret: d.publisher,
-					origin: client.origin,
-					key: await client.key(),
+				const publisher = await startTailcatPublisher({
 					targets: [
-						{ id: "web", port: upstream.port as number, status: "ready" },
-						{ id: "db", port: pgPort, status: "ready" },
+						{ ...targets[0], port: upstream.port as number },
+						{ ...targets[1], port: pgPort },
 					],
 					signal: new AbortController().signal,
 				});
 				publishers.push(publisher);
-				await publisher.ready;
+				await client.publish(d.id, d.token, d.publisher, {
+					...snapshot,
+					endpoint: publisher.endpoint,
+					targets: publisher.targets,
+				});
 				expect((await client.list(d.id, d.owner)).runs[0].branch).toBe(
 					"feature/live-connect",
 				);
 			}
 			for (const d of devices) {
 				const f = await localForward(
-					relayEndpoint(client.origin, d.id, sessionId),
-					targets[0],
-					() => client.access(d.id, d.owner, sessionId, "web"),
+					publishers[devices.indexOf(d)].endpoint,
+					publishers[devices.indexOf(d)].targets[0],
 				);
 				forwards.push(f);
 				const bootstrap = await fetch(f.url, { redirect: "manual" });
@@ -165,9 +161,8 @@ test.skipIf(!connectE2EEnabled())(
 			}
 			const d = devices[0];
 			const db = await localForward(
-				relayEndpoint(client.origin, d.id, sessionId),
-				targets[1],
-				() => client.access(d.id, d.owner, sessionId, "db"),
+				publishers[0].endpoint,
+				publishers[0].targets[1],
 			);
 			forwards.push(db);
 			const result = await exec(
@@ -210,7 +205,11 @@ test.skipIf(!connectE2EEnabled())(
 			expect(copy.stdout.length).toBe(1010000);
 			await client.withdraw(d.id, sessionId, d.owner);
 			await expect(
-				client.access(d.id, d.owner, sessionId, "db"),
+				client.publish(d.id, d.publisher, d.publisher, {
+					...snapshot,
+					endpoint: publishers[0].endpoint,
+					targets: publishers[0].targets,
+				}),
 			).rejects.toThrow();
 			expect(
 				(await client.list(devices[1].id, devices[1].owner)).runs,
@@ -220,7 +219,7 @@ test.skipIf(!connectE2EEnabled())(
 			await Promise.allSettled(
 				devices.map((d) => client.withdraw(d.id, sessionId, d.publisher)),
 			);
-			for (const p of publishers) p.close();
+			for (const p of publishers) await p.close();
 			await upstream.stop(true);
 			if (postgres)
 				await exec("pg_ctl", ["-D", dir, "-m", "immediate", "-w", "stop"]);

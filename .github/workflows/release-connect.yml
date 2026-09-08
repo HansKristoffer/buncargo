@@ -40,11 +40,14 @@ jobs:
             exit 1
           fi
 
-      - name: Validate relay and Worker bundle
+      - name: Validate directory and Worker bundle
         run: |
           bun run typecheck
           bun test src/connect-directory src/core/connect src/cli/dev-connect.test.ts
           bun run connect:worker:check
+
+      - name: Verify Tailcat with forced DERP fallback
+        run: bun run test:integration-tailcat
 
       - name: Prepare disposable PostgreSQL acceptance test
         run: |
@@ -57,7 +60,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: bun run connect:worker:deploy
 
-      - name: Verify deployed relay, HTTP streaming and PostgreSQL
+      - name: Verify deployed directory, Tailcat streaming and PostgreSQL
         env:
           BUNCARGO_TEST_CONNECT_E2E: "1"
         run: bun test src/core/connect/connect.integration.test.ts

@@ -45,8 +45,12 @@ export function createBuiltInHealthCheck(
 
 	switch (type) {
 		case "pg_isready":
+			// Ignore the socket-only bootstrap server used while the image initializes.
 			return async (_port, signal) =>
-				execInService(["pg_isready", "-U", "postgres"], signal);
+				execInService(
+					["pg_isready", "-h", "127.0.0.1", "-U", "postgres"],
+					signal,
+				);
 
 		case "redis-cli":
 			return async (_port, signal) =>

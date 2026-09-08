@@ -16,7 +16,7 @@ private func fixture() throws -> Data {
 }
 @Test func connectionDirectoryRejectsUnsafeEndpoints() throws {
     let data = try fixture()
-    let text = String(decoding: data, as: UTF8.self).replacingOccurrences(of: "/v1/devices/fixture-device", with: "/v1/devices/other-device")
+    let text = String(decoding: data, as: UTF8.self).replacingOccurrences(of: "tcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", with: "https://untrusted.example")
     let directory = try JSONDecoder().decode(ConnectionDirectory.self, from: Data(text.utf8))
     #expect(throws: (any Error).self) { try directory.validate(now: Date(timeIntervalSince1970: 1788870000)) }
 }
@@ -30,7 +30,7 @@ private func fixture() throws -> Data {
     store.stop()
 }
 
-@Test func connectingRelayCannotBeOpened() throws {
+@Test func connectingTransportCannotBeOpened() throws {
     let text = String(decoding: try fixture(), as: UTF8.self).replacingOccurrences(of: "\"transport\": \"ready\"", with: "\"transport\": \"connecting\"")
     let directory = try JSONDecoder().decode(ConnectionDirectory.self, from: Data(text.utf8))
     try directory.validate(now: Date(timeIntervalSince1970: 1788870000))
