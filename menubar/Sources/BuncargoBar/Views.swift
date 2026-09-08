@@ -59,6 +59,32 @@ struct IconButton: View {
     }
 }
 
+/// Only local action wiring lives here; spacing and controls belong to TargetRow.
+struct LocalTargetRow: View {
+    let name: String
+    let status: RunStatus
+    let url: String
+    let openable: Bool
+    let publicUrl: String?
+    let tablePlusUrl: String?
+    var onStop: (() -> Void)? = nil
+    var onSimulator: (() -> Void)? = nil
+
+    var body: some View {
+        TargetRow(
+            name: name,
+            status: status,
+            detail: url.isEmpty ? "process" : url,
+            publicUrl: publicUrl,
+            onOpen: openable ? { Actions.open(url) } : nil,
+            onCopy: url.isEmpty ? nil : { Actions.copy(url) },
+            onTablePlus: tablePlusUrl.map { url in { Actions.open(url) } },
+            onSimulator: onSimulator,
+            onStop: status == .stopped ? nil : onStop
+        )
+    }
+}
+
 /// The hover panel: every app and service of one run.
 struct RunDetailView: View {
     let run: Run
