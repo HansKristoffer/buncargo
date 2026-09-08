@@ -101,6 +101,11 @@ async function verifyPreparation(): Promise<void> {
 	const prefix = `buncargo-monorepo-${process.pid}`;
 	let bootstraps = 0;
 
+	// Hold the image's socket-only bootstrap server open long enough for health
+	// polling to see it. Dependent jobs must wait for the final TCP listener.
+	const slowInit = join(root, "slow-init.sql");
+	writeFileSync(slowInit, "SELECT pg_sleep(5);\n");
+
 	// Owning the table requires the role supplied by beforeMigrations.
 	writeFileSync(
 		join(root, "migrate.ts"),
@@ -121,7 +126,12 @@ async function verifyPreparation(): Promise<void> {
 					docker: {
 						image: "postgres:16",
 						environment: { POSTGRES_PASSWORD: "postgres" },
-						volumes: ["dbdata:/var/lib/postgresql/data"],
+						// Give the deliberately slow initialization its own startup budget.
+						healthcheck: { start_period: "15s" },
+						volumes: [
+							"dbdata:/var/lib/postgresql/data",
+							`${slowInit}:/docker-entrypoint-initdb.d/slow-init.sql:ro`,
+						],
 					},
 				},
 				init: {

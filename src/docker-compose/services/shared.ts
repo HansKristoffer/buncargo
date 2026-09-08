@@ -96,8 +96,12 @@ export function resolveHealthcheck(
 
 	switch (healthCheck) {
 		case "pg_isready":
+			// The image's bootstrap server accepts Unix sockets before TCP is ready.
 			return {
-				test: ["CMD-SHELL", `pg_isready -U ${options.user ?? "postgres"}`],
+				test: [
+					"CMD-SHELL",
+					`pg_isready -h 127.0.0.1 -U ${options.user ?? "postgres"}`,
+				],
 				...DEFAULT_HEALTHCHECK_SETTINGS,
 			};
 		case "redis-cli":
