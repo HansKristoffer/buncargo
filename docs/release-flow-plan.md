@@ -39,8 +39,10 @@ of the last publish because nothing reminds anyone to release.
    workflow run deploys and live-tests the connection Worker for CLI releases,
    then calls npm publication and the bar build. Bar-only releases skip Worker
    deployment.
-4. If a publish job fails, rerun the failed job on that run. The tag and release
-   already exist; nothing on the Release Please side is repeated.
+4. If a publish job fails, rerun the failed job on that run. A full rerun also
+   works: release targets are recovered from published GitHub releases whose tags
+   resolve to the run commit, even when Release Please creates nothing new.
+   Existing npm versions and complete menu bar assets are skipped.
 
 Tags created by the workflow's own token do not trigger other workflows. That is
 GitHub's loop guard, and it is why step 3 calls the publish jobs instead of
@@ -101,7 +103,14 @@ publishing workflows. Keep the dependency conditions there: a bar-only release
 must tolerate a skipped Worker job, while a combined release must stop if the
 Worker fails.
 
-Root-path outputs are unprefixed; other paths are prefixed with `<path>--`.
+Release Please creates release records, but its `release_created` outputs are
+true only on the invocation that creates them. `scripts/release-targets.cjs`
+therefore reads the manifest versions, checks their published GitHub releases
+and resolves each tag to an exact commit SHA. Only releases matching this run
+are eligible. Ordinary pushes cannot deploy an older release just because its
+version is still in the manifest. npm metadata and the two expected bar assets
+make a full rerun safe after partial publication; API errors fail rather than
+guessing whether a release exists.
 
 ### 4. `publish.yml` becomes callable and loses the verify matrix
 
@@ -207,7 +216,7 @@ Wrangler, deploys to `connect.hanskristoffer.dk`, then exercises real relay
 connections with a disposable PostgreSQL cluster and two temporary recipients.
 The npm job waits for it. A combined menu bar release also waits; a bar-only
 release proceeds with the Worker job skipped. A deployment or live-test failure
-stops client publication. Rerun failed jobs to recover. A separate manual
+stops client publication. Rerun failed jobs or the full run to recover. A separate manual
 Worker dispatch at a release tag is available for deliberate retries.
 
 PR CI dry-runs the Worker build without credentials. Production requires the
@@ -225,3 +234,13 @@ regenerate it on releases. See [directory operations](connect-directory.md).
   first time a mislabeled title ships the wrong bump.
 - Signing and notarizing the bar. Unchanged by this plan; the step still
   activates itself when the Apple secrets exist.
+
+## Recovering runs created before the retry fix
+
+Old runs keep the workflow from their original commit. If Re-run all jobs has
+already replaced the first attempt with skipped jobs, GitHub will not rerun a
+job from that older attempt. Dispatch `release-connect.yml` at the affected CLI
+tag and wait for its live acceptance to pass. Then dispatch `publish.yml` at
+that same tag if the npm version is missing, and `release-menubar.yml` at the
+bar tag with the matching version if its assets are missing. Do not delete
+release tags or bump versions just to retry publication.

@@ -23,12 +23,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      cli_released: ${{ steps.rp.outputs.release_created }}
-      bar_released: ${{ steps.rp.outputs['menubar--release_created'] }}
-      bar_version: ${{ steps.rp.outputs['menubar--version'] }}
+      cli_released: ${{ steps.targets.outputs.cli_released }}
+      publish_npm: ${{ steps.targets.outputs.publish_npm }}
+      bar_released: ${{ steps.targets.outputs.bar_released }}
+      bar_version: ${{ steps.targets.outputs.bar_version }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: rp
+      - uses: actions/checkout@v5
+      - name: Resolve releases for this commit, including retries
+        id: targets
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { releaseTargets } = require('./scripts/release-targets.cjs');
+            const versions = require('./.release-please-manifest.json');
+            const targets = await releaseTargets({ github, context, versions });
+            for (const [name, value] of Object.entries(targets)) core.setOutput(name, value);
 
   deploy-connect:
     needs: release-please
@@ -41,7 +52,7 @@ jobs:
 
   publish-npm:
     needs: [release-please, deploy-connect]
-    if: needs.release-please.outputs.cli_released == 'true'
+    if: needs.release-please.outputs.publish_npm == 'true'
     uses: ./.github/workflows/publish.yml
     permissions:
       contents: read
