@@ -73,6 +73,8 @@ export interface QuickTunnelOptions {
 }
 
 export interface QuickTunnel {
+	/** Resolves when the owning cloudflared exits, including after URL discovery. */
+	exited?: Promise<void>;
 	getURL: () => Promise<string>;
 	close: () => Promise<void>;
 }
@@ -116,7 +118,13 @@ export async function startQuickTunnel(
 		await tunnel.close();
 	};
 
+	const exited = new Promise<void>((resolve) => {
+		if (tunnel.child.exitCode !== null || tunnel.child.signalCode !== null)
+			resolve();
+		else tunnel.child.once("exit", () => resolve());
+	});
 	return {
+		exited,
 		getURL: async () => await tunnel.url,
 		close: cleanup,
 	};

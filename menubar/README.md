@@ -39,15 +39,15 @@ Answers are cached in `~/.buncargo/bar-check.json` (24 h, 1 h when an update is
 required) so `dev` does not spend GitHub's anonymous rate limit. `BUNCARGO_BAR=0`
 and CI turn the whole thing off.
 
-## Other Tailscale devices
+## Remote environments
 
-BuncargoBar automatically finds connected peers with a Buncargo directory on HTTPS port 48443. Their environments appear below local environments, grouped by machine and project, using the same checkout rows and app detail panels as local environments. The hosting machine must run `buncargo tailnet install`; the viewing Mac needs connected Tailscale but no coordinator or admin API token.
+Choose **Copy connection token** in the Remote environments key menu. Store it as `BUNCARGO_CONNECT_TOKENS` on a server or cloud agent, mark the intended apps/services `expose: true`, and run `buncargo dev`. Multiple recipient tokens are a JSON array. No VPN setup or sharing flag is required.
 
-Remote rows support Open and Copy URL. The row’s Open button uses the hosting project’s primary app, matching the local menu. If an older coordinator omits that selection or the primary app is not shared, Open offers an app chooser. Update buncargo on the host and rerun `buncargo tailnet install` to refresh the installed coordinator. Sleeping, blocked or disconnected machines retain their last-seen status with actions disabled. Local runs stay responsive while remote requests complete. Discovery starts with the app, refreshes when the menu opens and every 30 seconds, and respects failure backoff of up to four minutes. Previously saved custom endpoints still load before CLI discovery; multiple endpoints for one machine produce one row. The Refresh button retries immediately and invalidates older pending responses.
+Remote environments appear by project and branch/worktree, with the same row presentation as local runs. Open creates an authenticated local browser proxy. Connect creates a loopback TCP listener and copies its address; use your own database credentials. PostgreSQL can also open in TablePlus. Disconnect closes the local listener; Revoke withdraws this recipient's access to the remote session without stopping the server.
 
-Automatic discovery uses port 48443. For a server using a custom discovery port, quit BuncargoBar and save its endpoint with `defaults write dev.buncargo.bar tailnetMachines -array-add 'https://machine.tailnet.ts.net:49000'`, then reopen the app. Tailnet policy must allow both directory and app ports. Only shared HTTP apps appear; no remote stop commands, filesystem paths or database credentials are published.
+The key menu provides token rotation and revoke-all-and-rotate. Rotation affects new registrations; existing sessions retain their grants unless revoked. Device credentials stay in a private local state file owned by the CLI. The app invokes the CLI for setup, discovery and connection actions; remote data never supplies executable paths.
 
-The new feature requires a source build until the updated CLI and menu bar releases are published. `package.sh` creates a reviewable bundle without installing it.
+Discovery refreshes every 15 seconds and when the menu opens, with failure backoff. Expired/disconnected entries disable actions. A separate CLI helper keeps streams alive when the menu closes and revalidates access. The CLI and app must both be updated to builds containing this feature.
 
 ## Build from source
 

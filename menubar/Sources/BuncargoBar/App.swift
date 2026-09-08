@@ -11,45 +11,6 @@ enum BuncargoBarMain {
             printStatus()
             return
         }
-        if let index = CommandLine.arguments.firstIndex(of: "--tailnet-selftest"),
-            CommandLine.arguments.count > index + 1
-        {
-            do {
-                let raw = try Data(
-                    contentsOf: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
-                let directory = try JSONDecoder().decode(RemoteDirectory.self, from: raw)
-                let now = ISO8601DateFormatter().date(from: "2026-09-07T12:00:00Z")!
-                try directory.validate(
-                    host: "devbox.tail123.ts.net", expectedID: "fixture-machine", now: now)
-                do {
-                    try directory.validate(host: "other.tail123.ts.net", now: now)
-                    throw TailnetError("Accepted wrong host")
-                } catch let error as TailnetError where error.message == "Accepted wrong host" {
-                    throw error
-                } catch {}
-                do {
-                    try directory.validate(
-                        host: directory.hostname, now: now.addingTimeInterval(300))
-                    throw TailnetError("Accepted stale data")
-                } catch let error as TailnetError where error.message == "Accepted stale data" {
-                    throw error
-                } catch {}
-                let bad = String(decoding: raw, as: UTF8.self).replacingOccurrences(
-                    of: "https://devbox.tail123.ts.net:25173", with: "file:///etc/passwd")
-                let invalid = try JSONDecoder().decode(RemoteDirectory.self, from: Data(bad.utf8))
-                do {
-                    try invalid.validate(host: directory.hostname, now: now)
-                    throw TailnetError("Accepted unsafe URL")
-                } catch let error as TailnetError where error.message == "Accepted unsafe URL" {
-                    throw error
-                } catch {}
-                print("OK tailnet contract and unsafe/stale response rejection")
-            } catch {
-                print("FAIL tailnet contract: \(error)")
-                exit(1)
-            }
-            return
-        }
         if CommandLine.arguments.contains("--selftest") {
             selfTest()
             return
@@ -159,7 +120,7 @@ struct BuncargoBarApp: App {
 final class AppModel: ObservableObject {
     let store: RunStore
     let stopper: StopCoordinator
-    let remote = RemoteStore()
+    let remote = ConnectionStore()
 
     init() {
         let store = RunStore()
@@ -184,7 +145,7 @@ private struct MenuBarLabel: View {
 struct MenuContentView: View {
     @ObservedObject var store: RunStore
     @ObservedObject var stopper: StopCoordinator
-    @ObservedObject var remote: RemoteStore
+    @ObservedObject var remote: ConnectionStore
 
     var body: some View {
         MenuContentLayout {

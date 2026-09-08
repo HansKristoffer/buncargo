@@ -176,12 +176,7 @@ void web;
 			.toString()
 			.includes("Missing required environment variables"),
 	);
-	assert(
-		command([process.execPath, cli, "tailnet", "--help"], consumer).includes(
-			"discovery-port",
-		),
-	);
-	for (const daemon of ["hostsd.js", "tailnetd.js"]) {
+	for (const daemon of ["hostsd.js"]) {
 		const detachedDaemon = join(consumer, "detached", daemon);
 		mkdirSync(dirname(detachedDaemon), { recursive: true });
 		copyFileSync(join(installed, "dist", daemon), detachedDaemon);

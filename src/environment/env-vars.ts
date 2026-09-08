@@ -51,9 +51,6 @@ export function createEnvVarsApi<
 		return {
 			projectName: ctx.projectName,
 			workspaceId: ctx.workspaceId,
-			tailnetUrls: ctx.tailnetUrls as Partial<
-				Record<Extract<keyof TApps, string>, string>
-			>,
 			localIp: ctx.localIp,
 			portOffset: ctx.portOffset,
 			publicUrls: publicUrls as ComputedPublicUrls<TServices, TApps>,
@@ -74,8 +71,6 @@ export function createEnvVarsApi<
 			publicUrls: publicUrls as ComputedPublicUrls<TServices, TApps>,
 		});
 		shared.BUNCARGO_WORKSPACE_ID = ctx.workspaceId;
-		for (const [name, url] of Object.entries(ctx.tailnetUrls))
-			shared[`${name.toUpperCase()}_TAILNET_URL`] = url;
 		if (ctx.hosts?.active) {
 			if (ctx.hosts.caPath) {
 				shared.NODE_EXTRA_CA_CERTS = ctx.hosts.caPath;
@@ -133,13 +128,6 @@ export function createEnvVarsApi<
 		if (namedHost) {
 			processEnv.BUNCARGO_APP_HOSTNAME = namedHost.hostname;
 			processEnv.BUNCARGO_HOSTS_PORT = String(hostsDaemonPort());
-		}
-		const tailnetUrl = ctx.tailnetUrls[appName];
-		if (tailnetUrl) {
-			const remote = new URL(tailnetUrl);
-			processEnv.BUNCARGO_APP_HOSTNAME = remote.hostname;
-			processEnv.BUNCARGO_HOSTS_PORT = remote.port || "443";
-			processEnv.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS = remote.hostname;
 		}
 		// Last writer wins: an app's own `envVars` may override PORT/HOST.
 		Object.assign(

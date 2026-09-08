@@ -39,7 +39,6 @@ for expected in "lullu/fix-login" "platform=ready" "api=starting" "worker=reused
 done
 
 HOME="$FAKE_HOME" "$BINARY" --selftest
-"$BINARY" --tailnet-selftest "$ROOT/fixtures/tailnet.v1.json"
 
 # A registry from a newer CLI must fail loudly rather than read as "nothing
 # running" — that message is the only thing telling the user to update the app.

@@ -13,6 +13,7 @@
  */
 
 import { handleBar } from "./commands/bar";
+import { handleConnect } from "./commands/connect";
 import { showHelp } from "./commands/help";
 import { handleHosts } from "./commands/hosts";
 import { handleDoctor, handleLs, handleStatus } from "./commands/inspect";
@@ -26,7 +27,6 @@ import {
 } from "./commands/runtime";
 import { handleSim } from "./commands/sim";
 import { handleStop } from "./commands/stop";
-import { handleTailnet } from "./commands/tailnet";
 import { showVersion } from "./commands/version";
 import * as log from "./log";
 
@@ -42,8 +42,8 @@ async function runCommand(
 	commandArgs: string[],
 ): Promise<void> {
 	switch (command) {
-		case "tailnet":
-			await handleTailnet(commandArgs);
+		case "connect":
+			await handleConnect(commandArgs);
 			return;
 		case "help":
 			showHelp();

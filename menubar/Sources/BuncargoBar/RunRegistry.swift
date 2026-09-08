@@ -21,7 +21,6 @@ struct RunApp: Codable, Identifiable, Hashable {
     let url: String
     let loopbackUrl: String
     var publicUrl: String?
-    var tailnetUrl: String?
     var hostname: String?
     /// Present on Expo apps. Its fields belong to the CLI; here it only means
     /// "offer the simulator button".

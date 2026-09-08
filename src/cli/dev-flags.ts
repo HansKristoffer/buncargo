@@ -14,16 +14,6 @@ import { splitCliArgs } from "./flags";
 import * as log from "./log";
 
 const FLAGS = {
-	tailnet: {
-		name: "--tailnet",
-		kind: "boolean",
-		description: "Require private Tailscale URLs (run tailnet install once)",
-	},
-	noTailnet: {
-		name: "--no-tailnet",
-		kind: "boolean",
-		description: "Disable private Tailscale URLs for this run",
-	},
 	help: {
 		name: "--help",
 		kind: "boolean",
@@ -171,7 +161,6 @@ export const DEV_COMMAND_SPEC: CommandSpec = {
 };
 
 export interface DevCliArgs {
-	tailnet: boolean | undefined;
 	/** Flags before `--`, kept for error messages. */
 	flags: string[];
 	/** Args after `--`, appended to the attached app command. */
@@ -213,10 +202,6 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 	const bool = (flag: FlagSpec) => readBooleanFlag(flags, flag);
 	const str = (flag: FlagSpec) => readStringFlag(flags, flag, errors);
 
-	if (bool(FLAGS.tailnet) && bool(FLAGS.noTailnet))
-		errors.push("Choose --tailnet or --no-tailnet, not both");
-	if (bool(FLAGS.tailnet) && bool(FLAGS.expose))
-		errors.push("Choose --tailnet or --expose for a coherent web/API URL mode");
 	const migrate = bool(FLAGS.migrate);
 	const seed = bool(FLAGS.seed);
 	const upOnly = bool(FLAGS.upOnly);
@@ -231,11 +216,6 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 
 	return {
 		flags,
-		tailnet: bool(FLAGS.noTailnet)
-			? false
-			: bool(FLAGS.tailnet)
-				? true
-				: undefined,
 		passthrough,
 		unknownFlags: findUnknownFlags(DEV_COMMAND_SPEC, flags),
 		errors,

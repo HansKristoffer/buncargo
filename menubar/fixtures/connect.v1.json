@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "configured": true,
+  "recipientId": "fixture-device",
+  "generatedAt": 1788870000000,
+  "runs": [
+    {
+      "version": 1,
+      "recipientId": "fixture-device",
+      "sessionId": "fixture-session",
+      "project": "example",
+      "branch": "feature/checkout",
+      "worktree": "agent-123",
+      "primaryApp": "web",
+      "endpoint": "https://connect.hanskristoffer.dk/v1/devices/fixture-device/sessions/fixture-session/relay",
+      "revision": 2,
+      "expiresAt": 1788870090000,
+      "targets": [
+        {
+          "id": "app-web",
+          "kind": "app",
+          "name": "web",
+          "protocol": "http",
+          "status": "ready"
+        },
+        {
+          "id": "service-db",
+          "kind": "service",
+          "name": "db",
+          "protocol": "tcp",
+          "status": "ready",
+          "preset": "postgres"
+        }
+      ],
+      "transport": "ready"
+    }
+  ],
+  "origin": "https://connect.hanskristoffer.dk"
+}
