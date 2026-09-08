@@ -27,3 +27,25 @@ func menuReportsItsHeightBeforeOpeningAndAfterContentChanges() {
     view.rootView = menu(height: 120)
     #expect(view.fittingSize == NSSize(width: 320, height: 120))
 }
+
+@Test @MainActor
+func windowFollowsContentHeightKeepingItsTopEdge() {
+    _ = NSApplication.shared
+    let window = NSWindow(
+        contentRect: NSRect(x: 100, y: 100, width: 320, height: 300),
+        styleMask: .borderless, backing: .buffered, defer: false
+    )
+    let fitter = WindowHeightFitter.FitterView()
+    window.contentView?.addSubview(fitter)
+    let top = window.frame.maxY
+
+    fitter.height = 180
+    fitter.fit()
+    #expect(window.frame.size == NSSize(width: 320, height: 180))
+    #expect(window.frame.maxY == top)
+
+    fitter.height = 400
+    fitter.fit()
+    #expect(window.frame.size == NSSize(width: 320, height: 400))
+    #expect(window.frame.maxY == top)
+}

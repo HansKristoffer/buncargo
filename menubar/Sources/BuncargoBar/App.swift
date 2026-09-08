@@ -224,5 +224,42 @@ struct MenuContentLayout<Content: View>: View {
         // A short menu uses its intrinsic height; only overflow needs a scroll view.
         // Avoid measuring into @State after opening: the window can keep that old size.
         .fixedSize(horizontal: false, vertical: true)
+        .background(GeometryReader { WindowHeightFitter(height: $0.size.height) })
+    }
+}
+
+/// MenuBarExtra sizes its window when the menu opens and does not shrink it
+/// when the content does (a notice clearing, a run stopping, discovery
+/// finishing). The content then sits at the bottom of a window that is too
+/// tall, under an empty band. Follow the content instead, keeping the top edge
+/// under the status item.
+struct WindowHeightFitter: NSViewRepresentable {
+    let height: CGFloat
+
+    func makeNSView(context: Context) -> FitterView { FitterView() }
+
+    func updateNSView(_ view: FitterView, context: Context) {
+        view.height = height
+        // Not during SwiftUI's layout pass: the window resize re-enters it.
+        DispatchQueue.main.async { view.fit() }
+    }
+
+    final class FitterView: NSView {
+        var height: CGFloat = 0
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            fit()
+        }
+
+        func fit() {
+            guard let window, height > 0 else { return }
+            let content = window.contentRect(forFrameRect: window.frame)
+            guard abs(content.height - height) > 0.5 else { return }
+            let resized = NSRect(
+                x: content.minX, y: content.maxY - height, width: content.width, height: height
+            )
+            window.setFrame(window.frameRect(forContentRect: resized), display: true)
+        }
     }
 }
