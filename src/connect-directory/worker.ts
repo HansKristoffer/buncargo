@@ -1,6 +1,27 @@
 import { directoryOrigin, identifier } from "../core/connect/protocol";
 import { type DeviceState, directoryRequest } from "./service";
 
+/** Public relay routing only; keep credentials and session metadata out of this map. */
+const DERP_MAP = {
+	Regions: {
+		900: {
+			RegionID: 900,
+			RegionCode: "nbg",
+			RegionName: "Buncargo (Nuremberg)",
+			Nodes: [
+				{
+					Name: "900a",
+					RegionID: 900,
+					HostName: "derp.hanskristoffer.dk",
+					IPv4: "178.104.193.175",
+					DERPPort: 443,
+					STUNPort: 3478,
+				},
+			],
+		},
+	},
+};
+
 interface State {
 	storage: {
 		get<T>(key: string): Promise<T | undefined>;
@@ -47,6 +68,17 @@ export class RecipientDirectory {
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		const url = new URL(request.url);
+		// Static routing metadata must not spend the recipient discovery quota.
+		if (url.pathname === "/derpmap.json") {
+			if (request.method !== "GET")
+				return new Response("Method not allowed", {
+					status: 405,
+					headers: { allow: "GET" },
+				});
+			return Response.json(DERP_MAP, {
+				headers: { "cache-control": "public, max-age=300" },
+			});
+		}
 		if (url.pathname === "/health")
 			return Response.json({
 				service: "buncargo-connect",

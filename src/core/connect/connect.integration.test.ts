@@ -11,6 +11,7 @@ import { connectE2EEnabled, connectionDirectory } from "../runtime-flags";
 import { sleep } from "../sleep";
 import { DirectoryClient } from "./client";
 import { makeSecret, type Snapshot } from "./protocol";
+import { ensureTailcat } from "./tailcat/binary";
 import { startTailcatPublisher } from "./tailcat/publisher";
 import { localForward } from "./transport/local-forward";
 
@@ -117,6 +118,15 @@ test.skipIf(!connectE2EEnabled())(
 					signal: new AbortController().signal,
 				});
 				publishers.push(publisher);
+				// Assert only public routing fields: the complete address contains a secret.
+				const parsed = Bun.spawn(
+					[await ensureTailcat(), "parse", publisher.endpoint],
+					{ stdout: "pipe", stderr: "ignore" },
+				);
+				const address = await new Response(parsed.stdout).json();
+				expect(await parsed.exited).toBe(0);
+				expect(Array.isArray(address.Region)).toBe(true);
+				expect(address.Region[0].Nodes.length).toBeGreaterThan(0);
 				await client.publish(d.id, d.token, d.publisher, {
 					...snapshot,
 					endpoint: publisher.endpoint,

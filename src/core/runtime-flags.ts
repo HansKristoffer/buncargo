@@ -290,11 +290,10 @@ export function tailcatPath(
 ): string | undefined {
 	return env.BUNCARGO_TAILCAT_PATH?.trim() || undefined;
 }
-export function tailcatDerpMap(
-	env: NodeJS.ProcessEnv = process.env,
-): string | undefined {
-	const raw = env.BUNCARGO_TAILCAT_DERPMAP_URL?.trim();
-	if (!raw) return;
+export function tailcatDerpMap(env: NodeJS.ProcessEnv = process.env): string {
+	const raw =
+		env.BUNCARGO_TAILCAT_DERPMAP_URL?.trim() ||
+		"https://connect.hanskristoffer.dk/derpmap.json";
 	const url = new URL(raw);
 	if (url.protocol !== "https:" || url.username || url.password)
 		throw new Error("BUNCARGO_TAILCAT_DERPMAP_URL must be an HTTPS URL");

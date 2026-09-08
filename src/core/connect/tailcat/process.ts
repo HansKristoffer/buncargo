@@ -20,14 +20,7 @@ export async function startTailcat<T>(
 	const map = tailcatDerpMap();
 	const child = spawn(
 		process.execPath,
-		[
-			"-e",
-			TAILCAT_GUARD,
-			"--",
-			binary,
-			...(map ? [`--derpmap-url=${map}`] : []),
-			...args,
-		],
+		["-e", TAILCAT_GUARD, "--", binary, `--derpmap-url=${map}`, ...args],
 		{ detached: true, stdio: ["pipe", "pipe", "pipe"] },
 	);
 	let closing: Promise<void> | undefined;

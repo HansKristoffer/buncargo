@@ -63,4 +63,5 @@ jobs:
       - name: Verify deployed directory, Tailcat streaming and PostgreSQL
         env:
           BUNCARGO_TEST_CONNECT_E2E: "1"
+          TS_DEBUG_ALWAYS_USE_DERP: "1"
         run: bun test src/core/connect/connect.integration.test.ts

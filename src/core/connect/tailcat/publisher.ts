@@ -73,6 +73,8 @@ export async function startTailcatPublisher(options: {
 				"--key=new",
 				"serve",
 				"--psk=true",
+				// Recipients learn the relay from discovery, without fetching the publisher's map.
+				"--full-address",
 				exposed.map((t) => t.port).join(","),
 			],
 			(line) => {

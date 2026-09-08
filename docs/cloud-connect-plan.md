@@ -22,6 +22,8 @@ flowchart LR
 
 The Worker stores credentials and expiring discovery metadata. Application bytes travel through Tailcat, which owns WireGuard, NAT traversal, TCP backpressure and DERP fallback. Buncargo owns process lifetimes, selected loopback ports and browser access. No custom Worker traffic relay or compatibility adapter remains.
 
+The default fallback is `derp.hanskristoffer.dk` on Hetzner. The same Worker serves the public `/derpmap.json` routing map. Publishers embed the selected relay's details in each private Tailcat address, so receivers discover the route without a matching map setting. Direct peer connections remain preferred. Worker map updates ship before the CLI in the existing release pipeline.
+
 ## Code ownership
 
 | Module | Responsibility |
