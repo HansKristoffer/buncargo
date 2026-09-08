@@ -19,6 +19,7 @@ import {
 } from "./cache";
 import { findConfigFile } from "./find-config-file";
 
+const inputFileConfigs = new Set<string>();
 const moduleUrls = new Map<string, string>();
 
 /**
@@ -76,7 +77,7 @@ export async function loadDevEnv<
 		options?.readOnly ?? false,
 		environmentHash,
 	]);
-	if (!options?.reload) {
+	if (!options?.reload && !inputFileConfigs.has(configPath)) {
 		const cached = getCachedDevEnv(identity);
 		if (cached) {
 			setCachedDevEnv(cached, requested);
@@ -100,7 +101,7 @@ export async function loadDevEnv<
 
 	// Concurrent consumers can finish the same import together. The first one
 	// resolves the environment; subsequent consumers reuse that exact object.
-	if (!options?.reload) {
+	if (!options?.reload && !inputFileConfigs.has(configPath)) {
 		const cached = getCachedDevEnv(identity);
 		if (cached) {
 			setCachedDevEnv(cached, requested);
@@ -109,6 +110,7 @@ export async function loadDevEnv<
 	}
 
 	const loaded: unknown = mod.default;
+	if (mod.default?.options?.envFiles) inputFileConfigs.add(configPath);
 
 	// The dynamic import is untyped, so the caller's TConfig is the only source
 	// of shape information. This cast is the single trust boundary for it.

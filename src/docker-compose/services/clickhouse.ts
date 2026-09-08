@@ -14,7 +14,7 @@ export type ClickhouseServiceConfig = ServiceConfig<{
 	CLICKHOUSE_NATIVE_PORT: "secondaryPort";
 }> & {
 	secondaryPort: number;
-};
+} & { port: number };
 
 export const clickhouseDockerService = defineDockerService<
 	ClickhouseServiceOptions,

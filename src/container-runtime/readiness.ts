@@ -13,7 +13,6 @@ import { recordStartupMetric } from "../core/startup-metrics";
 import {
 	formatDone,
 	formatWait,
-	formatWarn,
 	SLOW_STEP_MS,
 	scheduleLog,
 } from "../core/style";
@@ -26,6 +25,7 @@ import {
 	serviceHashEnv,
 } from "../docker-compose/interpolate";
 import type { BuiltInHealthCheck, ServiceConfig } from "../types";
+import { assertServiceCapabilities } from "./capabilities";
 import { createBuiltInHealthCheck } from "./health-checks";
 import { availableContainerRuntimes } from "./resolve";
 import type {
@@ -39,6 +39,7 @@ export const POLL_INTERVAL = 250; // Fast polling for quicker startup
 export const MAX_ATTEMPTS = 120; // 30 seconds total (120 * 250ms)
 
 export interface WaitForServiceOptions {
+	verbose?: boolean;
 	signal?: AbortSignal;
 	runtime: ContainerRuntimeAdapter;
 	projectName: string;
@@ -63,7 +64,7 @@ interface HealthPollContext {
 	runtime: ContainerRuntimeAdapter;
 	projectName: string;
 	probe: string;
-	port: number;
+	port?: number;
 	root?: string;
 	composeFile?: string;
 }
@@ -102,7 +103,10 @@ async function diagnose(
 
 function withLogTail(message: string, diagnosis?: ServiceDiagnosis): string {
 	const tail = diagnosis?.logTail?.trim();
-	if (!tail) return message;
+	if (!tail) {
+		return message;
+	}
+
 	const indented = tail
 		.split("\n")
 		.map((line) => `    ${line}`)
@@ -112,7 +116,7 @@ function withLogTail(message: string, diagnosis?: ServiceDiagnosis): string {
 
 async function pollUntilHealthy(
 	context: HealthPollContext,
-	check: (port: number, signal?: AbortSignal) => Promise<boolean>,
+	check: (signal?: AbortSignal) => Promise<boolean>,
 	timeoutMs: number,
 	pollInterval: number,
 	onReady?: () => void,
@@ -123,20 +127,28 @@ async function pollUntilHealthy(
 
 	const deadline = performance.now() + timeoutMs;
 	for (let i = 0; remainingTime(deadline) > 0; i++) {
-		if (i > 0) recordStartupMetric("healthRetries");
+		if (i > 0) {
+			recordStartupMetric("healthRetries");
+		}
 		signal?.throwIfAborted();
 		let healthy = false;
 		try {
 			healthy = await withDeadline(
-				(probeSignal) => check(port, probeSignal),
+				(probeSignal) => check(probeSignal),
 				remainingTime(deadline),
 				signal,
 			);
 		} catch (error) {
 			signal?.throwIfAborted();
-			if (error instanceof DeadlineExceededError) break;
-			if (remainingTime(deadline) > 0) throw error;
+			if (error instanceof DeadlineExceededError) {
+				break;
+			}
+
+			if (remainingTime(deadline) > 0) {
+				throw error;
+			}
 		}
+
 		if (healthy) {
 			onReady?.();
 			return;
@@ -165,15 +177,17 @@ async function pollUntilHealthy(
 	}
 
 	signal?.throwIfAborted();
-	if (!runtime.diagnoseServiceAsync)
+	if (!runtime.diagnoseServiceAsync) {
 		lastDiagnosis = (await diagnose(context, 0, signal)) ?? lastDiagnosis;
+	}
+
 	const seconds = timeoutMs / 1000;
 	const state = lastDiagnosis
 		? ` Container state: ${lastDiagnosis.state}.`
 		: " No container was found for it.";
 	throw new Error(
 		withLogTail(
-			`Service ${serviceName} did not become ready within ${seconds}s (${runtime.displayName}, ${probe} probe on port ${port}).${state}`,
+			`Service ${serviceName} did not become ready within ${seconds}s (${runtime.displayName}, ${probe} probe${port === undefined ? "" : ` on port ${port}`}).${state}`,
 			lastDiagnosis,
 		),
 	);
@@ -185,7 +199,7 @@ async function pollUntilHealthy(
 export async function waitForService(
 	serviceName: string,
 	config: ServiceConfig,
-	port: number,
+	port: number | undefined,
 	options: WaitForServiceOptions,
 ): Promise<void> {
 	const pollInterval = options.pollInterval ?? POLL_INTERVAL;
@@ -195,6 +209,58 @@ export async function waitForService(
 		(options.maxAttempts !== undefined
 			? options.maxAttempts * pollInterval
 			: 30_000);
+
+	if (config.kind === "job" || port === undefined) {
+		const context = {
+			serviceName,
+			composeServiceName: config.serviceName ?? serviceName,
+			runtime,
+			projectName,
+			probe: config.kind === "job" ? "completion" : "process",
+			root,
+			composeFile,
+		};
+		await pollUntilHealthy(
+			context,
+			async (signal) => {
+				const state = await diagnose(
+					context,
+					Math.min(timeoutMs, 2000),
+					signal,
+				);
+				if (state && isTerminalContainerState(state.state)) {
+					if (
+						config.kind === "job" &&
+						state.state.toLowerCase() === "exited" &&
+						state.exitCode === 0
+					) {
+						if (options.verbose) {
+							console.log(
+								withLogTail(formatDone(`Job ${serviceName} completed`), state),
+							);
+						}
+
+						return true;
+					}
+					throw new Error(
+						withLogTail(
+							`Service ${serviceName} stopped in state ${state.state} (exit code ${state.exitCode ?? "unknown"})`,
+							state,
+						),
+					);
+				}
+
+				return (
+					config.kind !== "job" && state?.state.toLowerCase() === "running"
+				);
+			},
+			timeoutMs,
+			pollInterval,
+			undefined,
+			options.signal,
+		);
+		return;
+	}
 
 	if (config.healthCheck === false || config.healthCheck === undefined) {
 		return;
@@ -225,7 +291,7 @@ export async function waitForService(
 			root,
 			composeFile,
 		},
-		healthCheckFn,
+		(signal) => healthCheckFn(port, signal),
 		timeoutMs,
 		pollInterval,
 		undefined,
@@ -233,9 +299,6 @@ export async function waitForService(
 	);
 }
 
-/**
- * Wait for all services to be healthy.
- */
 /**
  * Built-in probes that run *inside* the container, through the runtime's CLI.
  *
@@ -257,17 +320,24 @@ export function runtimeAnsweredReadiness(
 	config: ServiceConfig,
 	healthy: boolean | undefined,
 ): boolean {
-	if (healthy !== true) return false;
+	if (healthy !== true) {
+		return false;
+	}
+
 	const docker =
 		config.docker?.kind === "preset" ? config.docker.service : config.docker;
 	// A caller can replace Compose's probe with a different health criterion.
-	if (docker?.healthcheck !== undefined) return false;
+	if (docker?.healthcheck !== undefined) {
+		return false;
+	}
+
 	return (
 		typeof config.healthCheck === "string" &&
 		IN_CONTAINER_PROBES.has(config.healthCheck)
 	);
 }
 
+/** Wait concurrently, cancelling the remaining probes if any service fails. */
 export async function waitForAllServices(
 	services: Record<string, ServiceConfig>,
 	ports: Record<string, number>,
@@ -280,8 +350,11 @@ export async function waitForAllServices(
 	const { verbose = true, healthyServices, ...waitOptions } = options;
 	const controller = new AbortController();
 	const cancel = () => controller.abort(options.signal?.reason);
-	if (options.signal?.aborted) cancel();
-	else options.signal?.addEventListener("abort", cancel, { once: true });
+	if (options.signal?.aborted) {
+		cancel();
+	} else {
+		options.signal?.addEventListener("abort", cancel, { once: true });
+	}
 	waitOptions.signal = controller.signal;
 
 	let showedWait = false;
@@ -296,21 +369,15 @@ export async function waitForAllServices(
 		await Promise.all(
 			Object.entries(services).map(([name, config]) => {
 				const port = ports[name];
-				if (port === undefined) {
-					console.warn(
-						formatWarn(
-							`No port found for service ${name}, skipping health check`,
-						),
-					);
-					return Promise.resolve();
-				}
+
 				if (
 					healthyServices?.has(config.serviceName ?? name) &&
 					runtimeAnsweredReadiness(config, true)
 				) {
 					return Promise.resolve();
 				}
-				return waitForService(name, config, port, waitOptions);
+
+				return waitForService(name, config, port, { ...waitOptions, verbose });
 			}),
 		);
 	} finally {
@@ -319,7 +386,9 @@ export async function waitForAllServices(
 		cancelWait();
 	}
 
-	if (showedWait) console.log(formatDone("All services healthy"));
+	if (showedWait) {
+		console.log(formatDone("All services healthy"));
+	}
 }
 
 /**
@@ -359,11 +428,13 @@ export async function waitForServiceByType(
 			root,
 			composeFile,
 		},
-		healthCheckFn,
+		(signal) => healthCheckFn(port, signal),
 		maxAttempts * pollInterval,
 		pollInterval,
 		() => {
-			if (verbose) console.log(formatDone(`${serviceName} is ready`));
+			if (verbose) {
+				console.log(formatDone(`${serviceName} is ready`));
+			}
 		},
 		options.signal,
 	);
@@ -389,7 +460,10 @@ function servicesAllRunning(
 	states: ServiceRuntimeState[],
 	serviceNames: string[],
 ): boolean {
-	if (serviceNames.length === 0) return false;
+	if (serviceNames.length === 0) {
+		return false;
+	}
+
 	const running = new Set(
 		states.filter((state) => state.running).map((state) => state.service),
 	);
@@ -409,7 +483,10 @@ function stackMatches(
 	hashes: Record<string, string>,
 	provable: Set<string>,
 ): boolean {
-	if (serviceNames.length === 0) return false;
+	if (serviceNames.length === 0) {
+		return false;
+	}
+
 	const byService = new Map(states.map((state) => [state.service, state]));
 	return serviceNames.every((name) => {
 		const state = byService.get(name);
@@ -422,6 +499,7 @@ function stackMatches(
 }
 
 export interface EnsureServicesRunningRequest {
+	noDeps?: boolean;
 	signal?: AbortSignal;
 	runtime: ContainerRuntimeAdapter;
 	root: string;
@@ -452,7 +530,9 @@ function assertServicePortsClaimable(
 			ports[`${serviceKey}Secondary`],
 		])
 		.filter((port): port is number => port !== undefined);
-	if (targetPorts.length === 0) return;
+	if (targetPorts.length === 0) {
+		return;
+	}
 
 	const snapshot = createPortOwnerSnapshot({ runtime, ports: targetPorts });
 	let diagnosticSnapshot:
@@ -503,6 +583,12 @@ export async function ensureServicesRunning(
 	} = request;
 
 	request.signal?.throwIfAborted();
+	if (Object.keys(services).length === 0) {
+		return { started: false, composeServiceNames: [] };
+	}
+
+	assertServiceCapabilities(runtime.name, services);
+
 	await runtime.ensureRunning({
 		autoStart: autoStartRuntime,
 		verbose,
@@ -576,6 +662,7 @@ export async function ensureServicesRunning(
 	recordStartupMetric(upToDate ? "container reuse" : "container reconcile");
 	if (!upToDate) {
 		const upRequest = {
+			noDeps: request.noDeps,
 			signal: request.signal,
 			root,
 			projectName,
@@ -589,29 +676,45 @@ export async function ensureServicesRunning(
 			// second, weaker copy of it.
 			wait: false,
 		};
-		if (runtime.upAsync) await runtime.upAsync(upRequest);
-		else runtime.up(upRequest);
+		if (runtime.upAsync) {
+			await runtime.upAsync(upRequest);
+		} else {
+			runtime.up(upRequest);
+		}
 	}
 
-	if (wait) {
+	if (
+		wait ||
+		Object.values(services).some((service) => service.kind === "job")
+	) {
 		// Re-read only when the reconcile ran: `up` is what changes state, and
 		// the states from before it describe the previous containers.
 		const readyStates = upToDate
 			? states
 			: await readProjectServiceStates(runtime, projectName, request.signal);
-		await waitForAllServices(services, ports, {
-			signal: request.signal,
-			runtime,
-			projectName,
-			verbose,
-			root,
-			composeFile,
-			healthyServices: new Set(
-				readyStates
-					.filter((state) => state.running && state.healthy === true)
-					.map((state) => state.service),
-			),
-		});
+		await waitForAllServices(
+			wait
+				? services
+				: Object.fromEntries(
+						Object.entries(services).filter(
+							([, service]) => service.kind === "job",
+						),
+					),
+			ports,
+			{
+				signal: request.signal,
+				runtime,
+				projectName,
+				verbose,
+				root,
+				composeFile,
+				healthyServices: new Set(
+					readyStates
+						.filter((state) => state.running && state.healthy === true)
+						.map((state) => state.service),
+				),
+			},
+		);
 	}
 
 	return { started: !alreadyRunning, composeServiceNames };

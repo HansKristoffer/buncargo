@@ -6,6 +6,11 @@ import type { CommandExample } from "../command-spec";
  */
 export const CLI_COMMANDS = [
 	{
+		name: "exec",
+		usage: "exec [options] -- <command>",
+		summary: "Run a command with the checkout environment",
+	},
+	{
 		name: "connect",
 		usage: "connect <subcommand>",
 		summary: "Private remote services through connection tokens",

@@ -51,15 +51,16 @@ export type RunAppStatus =
 export type RunServiceStatus = "starting" | "ready" | "stopped";
 
 export interface RunAppEntry {
+	kind?: "server" | "worker";
 	name: string;
-	port: number;
+	port?: number;
 	/** The spawned dev server. Absent when the app was reused from another run. */
 	pid?: number;
 	processIdentity?: string;
 	/** Holds the TTY; stopping it tears the whole run down. */
 	attached?: boolean;
-	url: string;
-	loopbackUrl: string;
+	url?: string;
+	loopbackUrl?: string;
 	publicUrl?: string;
 	hostname?: string;
 	/** Present on Expo apps: what `buncargo sim` needs without loading the config. */
@@ -71,9 +72,9 @@ export interface RunServiceEntry {
 	name: string;
 	/** Built-in preset, or absent for `service.custom()`. */
 	preset?: string;
-	port: number;
-	url: string;
-	loopbackUrl: string;
+	port?: number;
+	url?: string;
+	loopbackUrl?: string;
 	publicUrl?: string;
 	hostname?: string;
 	tablePlusUrl?: string;
@@ -139,9 +140,13 @@ function isRunApp(value: unknown): value is RunAppEntry {
 	if (!isRecord(value)) return false;
 	return (
 		typeof value.name === "string" &&
-		isPort(value.port) &&
-		typeof value.url === "string" &&
-		typeof value.loopbackUrl === "string" &&
+		(value.port !== undefined || value.kind === "worker") &&
+		((value.port === undefined &&
+			value.url === undefined &&
+			value.loopbackUrl === undefined) ||
+			(isPort(value.port) &&
+				typeof value.url === "string" &&
+				typeof value.loopbackUrl === "string")) &&
 		["starting", "ready", "reused", "failed", "stopped"].includes(
 			String(value.status),
 		) &&
@@ -156,9 +161,12 @@ function isRunService(value: unknown): value is RunServiceEntry {
 	if (!isRecord(value)) return false;
 	return (
 		typeof value.name === "string" &&
-		isPort(value.port) &&
-		typeof value.url === "string" &&
-		typeof value.loopbackUrl === "string" &&
+		((value.port === undefined &&
+			value.url === undefined &&
+			value.loopbackUrl === undefined) ||
+			(isPort(value.port) &&
+				typeof value.url === "string" &&
+				typeof value.loopbackUrl === "string")) &&
 		["starting", "ready", "stopped"].includes(String(value.status)) &&
 		(value.container === undefined ||
 			(isRecord(value.container) &&

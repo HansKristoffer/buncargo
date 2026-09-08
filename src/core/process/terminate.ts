@@ -24,9 +24,10 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
 export async function terminateOwnedProcess(
 	child: ChildProcess,
 	graceMs = 5000,
+	initialSignal: NodeJS.Signals = "SIGTERM",
 ): Promise<void> {
 	if (!groupAlive(child)) return;
-	signalGroup(child, "SIGTERM");
+	signalGroup(child, initialSignal);
 	const deadline = performance.now() + graceMs;
 	while (groupAlive(child) && performance.now() < deadline)
 		await abortableSleep(25);

@@ -105,7 +105,11 @@ export function formatEnvironmentBanner(
 		for (const name of serviceNames) {
 			const port = ports[name];
 			const named = urls?.[name];
-			const url = named ?? `http://localhost:${port}`;
+			const url =
+				named ??
+				(port === undefined
+					? "container (no host port)"
+					: `http://localhost:${port}`);
 			lines.push(
 				`  ${pc.green("➜")}  ${paddedName(name, width)}  ${formatClickableUrl(url)}`,
 			);
@@ -139,7 +143,8 @@ export function formatEnvironmentBanner(
 		for (const name of appNames) {
 			const port = ports[name];
 			const named = urls?.[name];
-			const localUrl = named ?? `http://localhost:${port}`;
+			const localUrl =
+				named ?? (port === undefined ? "worker" : `http://localhost:${port}`);
 			const extras: string[] = [];
 			if (named && port !== undefined && !named.includes(`:${port}`)) {
 				extras.push(pc.dim(`:${port}`));

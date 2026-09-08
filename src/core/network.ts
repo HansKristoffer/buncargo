@@ -135,6 +135,7 @@ export async function waitForDevServers(
 
 	for (const [name, config] of Object.entries(apps)) {
 		if (
+			config.kind === "worker" ||
 			config.healthEndpoint === false ||
 			(config.devCommand === false &&
 				!(options.productionBuild && config.prodCommand))

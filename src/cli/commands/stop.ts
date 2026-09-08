@@ -221,6 +221,10 @@ async function stopReusedApp(
 		}
 	}
 
+	if (app.port === undefined) {
+		log.error(`Stop ${app.name} from its owning run or use dev --takeover.`);
+		return STOP_EXIT.refused;
+	}
 	const released = await killPortOwner(app.port, { verbose: false });
 	if (!released) {
 		log.error(`Could not free port ${app.port} for ${app.name}.`);

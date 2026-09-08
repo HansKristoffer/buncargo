@@ -122,11 +122,42 @@ try {
 		`
 import { defineDevConfig, createDevEnvironment, service } from "buncargo";
 ${specifiers.map((name, i) => `import * as exported${i} from ${JSON.stringify(name)}; void exported${i};`).join("\n")}
-const config = defineDevConfig({ projectPrefix: "fixture", services: { db: service.postgres() }, apps: { web: { port: 3000, devCommand: false } } });
+const config = defineDevConfig({
+  projectPrefix: "fixture",
+  services: { db: service.postgres() },
+  apps: { web: { port: 3000, devCommand: false } },
+});
+
 const env = createDevEnvironment(config, { root: process.cwd(), readOnly: true });
 const web: number = env.ports.web;
 // @ts-expect-error - published declarations must preserve configured keys
 void env.ports.missing;
+
+const legacyPort: number = service.postgres().port;
+const mixed = defineDevConfig({
+  projectPrefix: "mixed",
+  services: {
+    init: { kind: "job", rerun: "always", docker: { image: "postgres:16" } },
+  },
+  apps: { jobs: { kind: "worker", devCommand: "bun run jobs.ts" } },
+});
+const mixedEnv = createDevEnvironment(mixed, {
+  root: process.cwd(),
+  readOnly: true,
+});
+
+// @ts-expect-error - workers have no port
+void mixedEnv.ports.jobs;
+// @ts-expect-error - jobs have no host URL
+void mixedEnv.urls.init;
+// @ts-expect-error - workers cannot expose HTTP endpoints
+const invalidWorker: import("buncargo").AppConfig = { kind: "worker", devCommand: "run", port: 3000 };
+// @ts-expect-error - rerun policy is an explicit consumer decision
+const invalidJob: import("buncargo").ServiceConfig = { kind: "job", docker: { image: "postgres:16" } };
+
+void legacyPort;
+void invalidWorker;
+void invalidJob;
 void web;
 `,
 	);
@@ -155,6 +186,41 @@ void web;
 		consumer,
 	);
 	const cli = join(installed, packageJson.bin.buncargo);
+	writeFileSync(
+		join(consumer, "dev.config.ts"),
+		`export default {
+  projectPrefix: "exec-fixture",
+  services: {},
+  apps: {
+    jobs: {
+      kind: "worker",
+      devCommand: "unused",
+      staticEnv: { APP_VALUE: "ok" },
+    },
+  },
+};`,
+	);
+	const argv = ["a b", "a'b", 'a"b', "$HOME", "$(false)", ";", "--app=child"];
+	assert.deepEqual(
+		JSON.parse(
+			command(
+				[
+					process.execPath,
+					cli,
+					"exec",
+					"--app=jobs",
+					"--",
+					process.execPath,
+					"-e",
+					"process.stdout.write(JSON.stringify({args:process.argv.slice(1),overlay:process.env.APP_VALUE,port:process.env.PORT}))",
+					...argv,
+				],
+				consumer,
+			),
+		),
+		{ args: argv, overlay: "ok" },
+	);
+
 	assert(
 		command([process.execPath, cli, "--help"], consumer).includes("buncargo"),
 	);

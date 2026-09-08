@@ -76,7 +76,7 @@ struct TargetRow: View {
                 Text(name)
                     .font(.system(size: 12, weight: .medium))
                     .frame(width: 74, alignment: .leading)
-                Text(status == .stopped ? "stopped" : url)
+                Text(status == .stopped ? "stopped" : url.isEmpty ? "process" : url)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -89,8 +89,8 @@ struct TargetRow: View {
                             Actions.open(url)
                         }
                     }
-                    IconButton(symbol: "doc.on.doc", help: "Copy URL") {
-                        Actions.copy(url)
+                    if !url.isEmpty {
+                        IconButton(symbol: "doc.on.doc", help: "Copy URL") { Actions.copy(url) }
                     }
                     if let tablePlusUrl, Actions.hasTablePlus {
                         IconButton(symbol: "tablecells", help: "Open in TablePlus") {
@@ -156,7 +156,7 @@ struct RunDetailView: View {
                             loopback: app.loopbackUrl,
                             hostsActive: hostsActive
                         ),
-                        openable: true,
+                        openable: app.url != nil,
                         publicUrl: app.publicUrl,
                         tablePlusUrl: nil,
                         onStop: { onStop(app.name) },

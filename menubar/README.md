@@ -111,8 +111,12 @@ than a broken install, but the menus stay empty in the meantime.
 decoder disagree, so bumping the schema is a three-file change the CI catches:
 `core/run-registry.ts`, the fixture, and `RunRegistry.supportedVersion`.
 
-Tag `bar-v<version>`; `.github/workflows/release-menubar.yml` builds a universal
-bundle, smoke-tests it, and publishes `BuncargoBar-<version>.zip` plus a
-`.sha256`. `buncargo bar install` downloads exactly those assets. Signing and
+Releases happen by merging the Release Please PR (`docs/release-flow-plan.md`);
+a squash-merged PR that touches `menubar/` proposes the next `bar-v<version>`,
+bumping `version.txt` and `CHANGELOG.md` here. On merge, `release.yml` tags and
+calls `.github/workflows/release-menubar.yml`, which builds a universal bundle,
+smoke-tests it, and uploads `BuncargoBar-<version>.zip` plus a `.sha256` to the
+release. A schema bump touches both `src/` and `menubar/`, so one release PR
+ships both sides. `buncargo bar install` downloads exactly those assets. Signing and
 notarization happen only when the Apple secrets are configured; without them the
 ad-hoc signed bundle ships and the installer clears the quarantine attribute.

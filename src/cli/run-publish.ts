@@ -125,11 +125,15 @@ function appEntries(
 
 	return Object.keys(input.apps).flatMap((name) => {
 		const port = ports[name];
-		if (port === undefined) return [];
-		const loopbackUrl = loopbackUrls[name] ?? `http://localhost:${port}`;
+		if (port === undefined && input.apps[name]?.kind !== "worker") return [];
+		const loopbackUrl =
+			port === undefined
+				? undefined
+				: (loopbackUrls[name] ?? `http://localhost:${port}`);
 		return [
 			{
 				name,
+				kind: input.apps[name]?.kind,
 				port,
 				attached: input.attached === name ? true : undefined,
 				url: urls[name] ?? loopbackUrl,
@@ -160,14 +164,20 @@ function serviceEntries(
 		.filter(([name]) => !serviceNames || serviceNames.includes(name))
 		.flatMap(([name, service]) => {
 			const port = ports[name];
-			if (port === undefined) return [];
-			const identity = describeService({
-				name,
-				service,
-				port,
-				projectName: env.projectName,
-			});
-			const loopbackUrl = loopbackUrls[name] ?? `http://localhost:${port}`;
+
+			const identity =
+				port === undefined
+					? { preset: undefined, tablePlusUrl: undefined }
+					: describeService({
+							name,
+							service,
+							port,
+							projectName: env.projectName,
+						});
+			const loopbackUrl =
+				port === undefined
+					? undefined
+					: (loopbackUrls[name] ?? `http://localhost:${port}`);
 			return [
 				{
 					name,

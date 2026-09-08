@@ -1,5 +1,6 @@
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
 import { getPortOwner, killPortOwner } from "../core/process";
+import { stopWorker } from "../core/process/worker-ownership";
 import { askConfirm, isInteractive } from "../core/prompt";
 import { joinColoredNames } from "../core/style";
 import type { AppConfig } from "../types";
@@ -35,7 +36,7 @@ export function takeoverCandidates(
 	const apps: Record<string, AppConfig> = {};
 	for (const [name, config] of Object.entries(reusedApps)) {
 		if (config.devCommand === false) continue;
-		if (ports[name] === undefined) continue;
+		if (ports[name] === undefined && config.kind !== "worker") continue;
 		apps[name] = config;
 	}
 	return { apps, names: Object.keys(apps) };
@@ -64,14 +65,23 @@ export async function promptTakeover(names: string[]): Promise<boolean> {
 export async function stopRunningApps(
 	names: string[],
 	ports: Record<string, number>,
-	options: { runtime?: ContainerRuntimeAdapter } = {},
+	options: {
+		runtime?: ContainerRuntimeAdapter;
+		skipContainers?: boolean;
+		root?: string;
+		apps?: Record<string, AppConfig>;
+	} = {},
 ): Promise<string[]> {
 	const stopped: string[] = [];
 	for (const name of names) {
+		if (options.apps?.[name]?.kind === "worker" && options.root) {
+			if (await stopWorker(options.root, name)) stopped.push(name);
+			continue;
+		}
 		const port = ports[name];
 		if (port === undefined) continue;
 
-		const owner = getPortOwner(port, { runtime: options.runtime });
+		const owner = getPortOwner(port, options);
 		// Already gone: the other run exited between classification and here.
 		if (!owner) continue;
 		if (owner.container) {
@@ -82,6 +92,7 @@ export async function stopRunningApps(
 
 		const released = await killPortOwner(port, {
 			runtime: options.runtime,
+			skipContainers: options.skipContainers,
 			verbose: false,
 		});
 		if (!released) {

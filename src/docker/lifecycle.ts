@@ -6,6 +6,7 @@ import { isDockerDaemonRunning } from "./preflight";
 import { assertDockerRunning } from "./status";
 
 export interface StartContainersOptions {
+	noDeps?: boolean;
 	signal?: AbortSignal;
 	timeoutMs?: number;
 	verbose?: boolean;
@@ -73,6 +74,7 @@ export function startContainers(
 			"up",
 			"-d",
 			...(wait ? ["--wait"] : []),
+			...(options.noDeps ? ["--no-deps"] : []),
 			...services,
 		],
 		{
@@ -188,6 +190,7 @@ export async function startContainersAsync(
 			"up",
 			"-d",
 			...(wait ? ["--wait"] : []),
+			...(options.noDeps ? ["--no-deps"] : []),
 			...services,
 		],
 		{

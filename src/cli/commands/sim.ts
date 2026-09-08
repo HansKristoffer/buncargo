@@ -120,7 +120,11 @@ export async function handleSim(args: string[] = []): Promise<number> {
 	try {
 		const opened = await openExpoSimulator({
 			label: checkoutLabel(run),
-			port: app.port,
+			port:
+				app.port ??
+				(() => {
+					throw new Error("Expo requires a listening port");
+				})(),
 			expo: app.expo ?? {},
 			log: log.info,
 		});

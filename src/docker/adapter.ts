@@ -61,6 +61,7 @@ export function dockerRuntimeAdapter(
 		up(request: ContainerUpRequest) {
 			startContainers(request.root, request.projectName, request.envVars, {
 				verbose: request.verbose,
+				noDeps: request.noDeps,
 				wait: request.wait,
 				composeFile: request.composeFile,
 				services: request.serviceNames,

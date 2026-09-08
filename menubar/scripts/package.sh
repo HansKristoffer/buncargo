@@ -2,13 +2,14 @@
 # Build BuncargoBar and lay it out as a .app bundle.
 #
 # VERSION/BUILD_NUMBER come from the environment so the release workflow can
-# stamp them from the git tag; the defaults are for local builds.
+# stamp the released version; local builds default to version.txt, which
+# Release Please bumps.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="BuncargoBar"
 APP_BUNDLE="$ROOT/$APP_NAME.app"
-VERSION="${VERSION:-0.1.0}"
+VERSION="${VERSION:-$(tr -d "[:space:]" < "$ROOT/version.txt")}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 # Which runs.json schema this build can decode, taken from the fixture both
 # test suites already validate — so the number in the bundle and the number the

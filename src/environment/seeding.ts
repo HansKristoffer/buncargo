@@ -131,6 +131,7 @@ export async function runSeedIfNeeded<
 	ctx: DevEnvContext<TServices, TApps, TEnv>,
 	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
 	options: SeedRunOptions = {},
+	selection?: { appNames: string[]; requiredServiceKeys: string[] },
 ): Promise<SeedOutcome> {
 	const seed = ctx.config.seed;
 	if (!seed) {
@@ -149,7 +150,10 @@ export async function runSeedIfNeeded<
 					ctx.config.prisma?.service ?? "postgres",
 				);
 				return seedCheck(
-					createSeedCheckContext(envVars.getHookContext(signal), checkTable),
+					createSeedCheckContext(
+						envVars.getHookContext(signal, selection),
+						checkTable,
+					),
 				);
 			},
 			600_000,

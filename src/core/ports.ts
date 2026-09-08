@@ -320,6 +320,7 @@ export function computeUrls<
 	if (apps) {
 		for (const [name, _config] of Object.entries(apps)) {
 			const port = ports[name];
+			if (port === undefined) continue;
 			urls[name] = `http://${host}:${port}`;
 			// Also add local IP version for mobile connectivity
 			urls[`${name}Local`] = `http://${localIp}:${port}`;

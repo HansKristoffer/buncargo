@@ -15,11 +15,11 @@ enum RunStatus: String, Codable {
 
 struct RunApp: Codable, Identifiable, Hashable {
     let name: String
-    let port: Int
+    let port: Int?
     var pid: Int?
     var attached: Bool?
-    let url: String
-    let loopbackUrl: String
+    let url: String?
+    let loopbackUrl: String?
     var publicUrl: String?
     var hostname: String?
     /// Present on Expo apps. Its fields belong to the CLI; here it only means
@@ -48,9 +48,9 @@ struct RunContainer: Codable, Hashable {
 struct RunService: Codable, Identifiable, Hashable {
     let name: String
     var preset: String?
-    let port: Int
-    let url: String
-    let loopbackUrl: String
+    let port: Int?
+    let url: String?
+    let loopbackUrl: String?
     var publicUrl: String?
     var hostname: String?
     var tablePlusUrl: String?
@@ -60,7 +60,7 @@ struct RunService: Codable, Identifiable, Hashable {
     var id: String { name }
     var state: RunStatus { status ?? .starting }
     /// Only a browser-openable service gets an "open" action.
-    var isHTTP: Bool { url.hasPrefix("http://") || url.hasPrefix("https://") }
+    var isHTTP: Bool { url?.hasPrefix("http://") == true || url?.hasPrefix("https://") == true }
 }
 
 struct RunHosts: Codable, Hashable {
@@ -98,10 +98,10 @@ struct Run: Codable, Identifiable, Hashable {
     var subtitle: String? { branch != nil ? worktree : nil }
 
     var primary: RunApp? {
-        if let name = primaryApp, let match = apps.first(where: { $0.name == name }) {
+        if let name = primaryApp, let match = apps.first(where: { $0.name == name && $0.url != nil }) {
             return match
         }
-        return apps.first
+        return apps.first { $0.url != nil }
     }
 
     /// The Expo app a phone button on the run row opens, if there is exactly one live.

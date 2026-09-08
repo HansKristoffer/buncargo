@@ -14,6 +14,7 @@
 
 import { handleBar } from "./commands/bar";
 import { handleConnect } from "./commands/connect";
+import { handleExec } from "./commands/exec";
 import { showHelp } from "./commands/help";
 import { handleHosts } from "./commands/hosts";
 import { handleDoctor, handleLs, handleStatus } from "./commands/inspect";
@@ -44,6 +45,9 @@ async function runCommand(
 	switch (command) {
 		case "connect":
 			await handleConnect(commandArgs);
+			return;
+		case "exec":
+			process.exitCode = await handleExec(commandArgs);
 			return;
 		case "help":
 			showHelp();

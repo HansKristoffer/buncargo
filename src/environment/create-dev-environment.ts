@@ -99,14 +99,23 @@ export function createDevEnvironment<
 		workspaceId: ctx.workspaceId,
 		services: ctx.services,
 		apps: ctx.apps,
-		portOffset: ctx.portOffset,
-		portOffsetProvenance: ctx.portOffsetProvenance,
+		prepareStart: ctx.prepareStart,
+		get portOffset() {
+			return ctx.portOffset;
+		},
+		get portOffsetProvenance() {
+			return ctx.portOffsetProvenance;
+		},
 		isWorktree: ctx.worktree,
 		localIp: ctx.localIp,
 		root: ctx.root,
 		composeFile: ctx.composeFile,
-		containerRuntime: ctx.runtime.name,
-		containerRuntimeBinary: ctx.runtimeBinary,
+		get containerRuntime() {
+			return ctx.runtime.name;
+		},
+		get containerRuntimeBinary() {
+			return ctx.runtimeBinary;
+		},
 		hosts: ctx.hosts,
 		setNamedHostsActive: (active, extras) => {
 			ctx.setNamedHostsActive(active, extras);

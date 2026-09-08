@@ -43,7 +43,15 @@ describe("runs.json v1 fixture", () => {
 				"ready",
 				"starting",
 				"reused",
+				"ready",
 			]);
+			expect(run?.apps.find((app) => app.name === "jobs")?.kind).toBe("worker");
+			expect(run?.apps.find((app) => app.name === "jobs")).not.toHaveProperty(
+				"port",
+			);
+			expect(
+				run?.services.find((service) => service.name === "init"),
+			).not.toHaveProperty("port");
 			// The attached app is the one the app must confirm before stopping.
 			expect(run?.apps.find((app) => app.attached)?.name).toBe("api");
 			// A reused app has no pid, so the app offers the port-owner path.

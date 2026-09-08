@@ -78,7 +78,7 @@ describe("buildStartPlan", () => {
 		expect(plan.composeServiceNames).toEqual(["database", "redis"]);
 	});
 
-	it("throws when no required services are resolved", () => {
+	it("allows an app selection without required services", () => {
 		const apps: Record<string, AppConfig> = {
 			expo: {
 				port: 8081,
@@ -91,9 +91,9 @@ describe("buildStartPlan", () => {
 			},
 		};
 
-		expect(() => buildStartPlan(apps, services, ["expo"])).toThrow(
-			"No required services resolved for app selection: expo. Add requiredServices to the selected apps or their requiredApps.",
-		);
+		expect(
+			buildStartPlan(apps, services, ["expo"]).requiredServiceKeys,
+		).toEqual([]);
 	});
 });
 

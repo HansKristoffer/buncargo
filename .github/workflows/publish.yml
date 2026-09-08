@@ -1,8 +1,13 @@
-# Version is committed before dispatch. Publication consumes the exact tarball
-# verified on both platforms; no version mutation or rebuild happens afterward.
+# Called by release.yml after Release Please has bumped package.json and tagged
+# the commit; the dispatch is the escape hatch for republishing by hand.
+# Publication consumes the exact tarball built and verified in `candidate`; no
+# version mutation or rebuild happens afterward. CI already ran lint, tests and
+# tarball verification across OS/Bun cells for the PR and for the merge, so the
+# release commit (package.json + CHANGELOG.md) is not re-verified on a matrix.
 name: Publish to npm
 
 on:
+  workflow_call:
   workflow_dispatch:
 
 concurrency:
@@ -40,36 +45,8 @@ jobs:
           path: .buncargo/artifacts/
           include-hidden-files: true
 
-  verify:
-    needs: candidate
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-15]
-        bun: ["1.4.2", latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v5
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ matrix.bun }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - run: bun install --frozen-lockfile
-      - uses: actions/download-artifact@v4
-        with:
-          name: npm-candidate-${{ github.sha }}
-          path: .buncargo/artifacts/
-      - run: bun test
-      - name: Verify the release tarball without rebuilding
-        run: bun scripts/verify-package.ts .buncargo/artifacts/*.tgz
-
   publish:
-    needs: [candidate, verify]
+    needs: candidate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
