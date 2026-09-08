@@ -60,10 +60,7 @@ struct ConnectionDirectory: Decodable, Sendable {
                 run.expiresAt / 1000 <= now.timeIntervalSince1970 + 95,
                 !run.targets.isEmpty, run.targets.count <= 64,
                 Set(run.targets.map(\.id)).count == run.targets.count,
-                let endpoint = URL(string: run.endpoint), endpoint.user == nil, endpoint.password == nil,
-                endpoint.query == nil, endpoint.fragment == nil,
-                endpoint.scheme == directoryURL.scheme, endpoint.host == directoryURL.host, endpoint.port == directoryURL.port,
-                endpoint.path == "/v1/devices/\(recipientId)/sessions/\(run.sessionId)/relay",
+                run.endpoint.range(of: "^tc[A-Za-z0-9_-]{20,8190}$", options: .regularExpression) != nil,
                 ["ready", "connecting"].contains(run.transport) else {
                 throw ConnectionError("Invalid shared environment")
             }

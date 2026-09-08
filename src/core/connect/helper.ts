@@ -188,26 +188,15 @@ export async function runConnectionHelper(): Promise<void> {
 										await removeForward(siblingKey);
 										if (forwards.size >= 128)
 											throw new Error("Local connection limit reached");
-										const created = await localForward(
-											run.endpoint,
-											sibling,
-											() =>
-												client.access(
-													device.recipientId,
-													device.owner,
-													session,
-													sibling.id,
-												),
-											{
-												origins: allowed,
-												cookies: () =>
-													[...forwards]
-														.filter(([k]) => k.startsWith(`${session}:`))
-														.flatMap(([, f]) =>
-															f.browserCookie ? [f.browserCookie] : [],
-														),
-											},
-										);
+										const created = await localForward(run.endpoint, sibling, {
+											origins: allowed,
+											cookies: () =>
+												[...forwards]
+													.filter(([k]) => k.startsWith(`${session}:`))
+													.flatMap(([, f]) =>
+														f.browserCookie ? [f.browserCookie] : [],
+													),
+										});
 										forwards.set(siblingKey, created);
 										if (sibling.protocol === "http")
 											allowed.add(new URL(created.url).origin);

@@ -1,14 +1,11 @@
-import type { JWK } from "jose";
-import { signCapability } from "../core/connect/capability";
 import {
+	AUTHORIZATION_MS,
 	hashSecret,
 	identifier,
-	isLoopback,
 	jsonBody,
 	LEASE_MS,
 	parseSnapshot,
 	type Registration,
-	relayEndpoint,
 	SECRET,
 } from "../core/connect/protocol";
 export interface DeviceState {
@@ -25,18 +22,16 @@ export interface DirectoryStorage {
 }
 export interface DirectoryOptions {
 	storage: DirectoryStorage;
-	key: JWK;
 	origin: string;
 	recipientId: string;
 	now?: () => number;
-	relayReady?: (session: string) => boolean;
 }
 /** Caller serializes requests for one recipient (Durable Object or local test adapter). */
 export async function directoryRequest(
 	request: Request,
 	options: DirectoryOptions,
 ): Promise<Response> {
-	const { storage, key, origin, recipientId } = options;
+	const { storage, origin, recipientId } = options;
 	const now = options.now?.() ?? Date.now();
 	const fail = (status: number, error: string) =>
 		Response.json(
@@ -100,9 +95,10 @@ export async function directoryRequest(
 					.filter((e) => !e.withdrawn && e.snapshot.expiresAt > now)
 					.map((e) => ({
 						...e.snapshot,
-						transport: options.relayReady?.(e.snapshot.sessionId)
-							? "ready"
-							: "connecting",
+						transport:
+							e.snapshot.expiresAt - LEASE_MS + AUTHORIZATION_MS > now
+								? e.snapshot.transport
+								: "connecting",
 					})),
 			});
 		}
@@ -110,36 +106,12 @@ export async function directoryRequest(
 		const entry = Object.hasOwn(state.sessions, session)
 			? state.sessions[session]
 			: undefined;
-		if (path[2] === "access" && request.method === "POST") {
-			if (!owner) return fail(403, "Device authorization required");
-			if (!entry || entry.withdrawn || entry.snapshot.expiresAt <= now)
-				return fail(410, "Sharing expired or revoked");
-			if (!options.relayReady?.(session))
-				return fail(409, "Relay is connecting");
-			const body = await jsonBody(request);
-			const target = entry.snapshot.targets.find((t) => t.id === body.target);
-			if (!target || !["ready", "reused"].includes(target.status))
-				return fail(409, "Target is not ready");
-			return ok({
-				capability: await signCapability(
-					key,
-					origin,
-					recipientId,
-					session,
-					target.id,
-				),
-			});
-		}
 		if (path.length > 2) return fail(404, "Unknown endpoint");
 		if (request.method === "PUT") {
 			const body = await jsonBody(request);
-			const snapshot = parseSnapshot(
-				body.snapshot,
-				isLoopback(new URL(origin)),
-			);
+			const snapshot = parseSnapshot(body.snapshot);
 			if (
 				snapshot.sessionId !== session ||
-				snapshot.endpoint !== relayEndpoint(origin, recipientId, session) ||
 				!SECRET.test(String(body.sessionSecret))
 			)
 				return fail(400, "Invalid session registration");

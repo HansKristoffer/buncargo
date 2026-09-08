@@ -1,7 +1,8 @@
 /** The public contract is deliberately independent of the local run registry. */
 export const VERSION = 1;
 export const LEASE_MS = 90_000;
-export const ACCESS_SECONDS = 60;
+export const HEARTBEAT_MS = 10_000;
+export const AUTHORIZATION_MS = 20_000;
 export const MAX_BODY = 128 * 1024;
 export const MAX_TARGETS = 64;
 export const ID = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -20,9 +21,11 @@ export interface RemoteTarget {
 	kind: "app" | "service";
 	protocol: "http" | "tcp";
 	status: TargetStatus;
+	port: number;
 	preset?: string;
 }
 export interface Snapshot {
+	transport: "ready" | "connecting";
 	version: 1;
 	sessionId: string;
 	project: string;
@@ -34,7 +37,6 @@ export interface Snapshot {
 	targets: RemoteTarget[];
 }
 export interface Registration extends Snapshot {
-	transport?: "ready" | "connecting";
 	recipientId: string;
 	expiresAt: number;
 }
@@ -79,39 +81,17 @@ export function directoryOrigin(input: string): string {
 		);
 	return url.origin;
 }
-export function relayEndpoint(
-	origin: string,
-	recipient: string,
-	session: string,
-): string {
-	if (!identifier(recipient) || !identifier(session))
-		throw new Error("Invalid relay identity");
-	return `${directoryOrigin(origin)}/v1/devices/${recipient}/sessions/${session}/relay`;
+/** Tailcat addresses are opaque credentials, never URLs or executable arguments. */
+export function connectorEndpoint(input: unknown): string {
+	if (typeof input !== "string" || !/^tc[A-Za-z0-9_-]{20,8190}$/.test(input))
+		throw new Error("Invalid Tailcat address");
+	return input;
 }
-export function connectorEndpoint(input: unknown, local = false): string {
-	if (typeof input !== "string" || input.length > 2048)
-		throw new Error("Invalid relay endpoint");
-	const url = new URL(input);
-	if (
-		url.username ||
-		url.password ||
-		url.search ||
-		url.hash ||
-		!(
-			url.protocol === "https:" ||
-			(local && url.protocol === "http:" && isLoopback(url))
-		) ||
-		!/^\/v1\/devices\/[A-Za-z0-9_-]{1,128}\/sessions\/[A-Za-z0-9_-]{1,128}\/relay$/.test(
-			url.pathname,
-		)
-	)
-		throw new Error("Invalid relay endpoint");
-	return url.href;
-}
-export function parseSnapshot(input: unknown, local = false): Snapshot {
+export function parseSnapshot(input: unknown): Snapshot {
 	const v = object(input);
 	if (
 		v.version !== VERSION ||
+		!["ready", "connecting"].includes(String(v.transport)) ||
 		!identifier(v.sessionId) ||
 		!label(v.project) ||
 		!Number.isSafeInteger(v.revision) ||
@@ -128,6 +108,9 @@ export function parseSnapshot(input: unknown, local = false): Snapshot {
 		const t = object(input);
 		if (
 			!identifier(t.id) ||
+			!Number.isInteger(t.port) ||
+			Number(t.port) < 1 ||
+			Number(t.port) > 65535 ||
 			!label(t.name) ||
 			!t.name ||
 			!["app", "service"].includes(String(t.kind)) ||
@@ -138,6 +121,7 @@ export function parseSnapshot(input: unknown, local = false): Snapshot {
 			throw new Error("Invalid shared target");
 		return {
 			id: t.id,
+			port: Number(t.port),
 			name: t.name,
 			kind: t.kind as RemoteTarget["kind"],
 			protocol: t.protocol as RemoteTarget["protocol"],
@@ -163,14 +147,14 @@ export function parseSnapshot(input: unknown, local = false): Snapshot {
 		worktree: v.worktree as string | null,
 		primaryApp: v.primaryApp as string | null,
 		revision: v.revision as number,
-		endpoint: connectorEndpoint(v.endpoint, local),
+		endpoint: connectorEndpoint(v.endpoint),
+		transport: v.transport as Snapshot["transport"],
 		targets,
 	};
 }
 export function parseDirectory(
 	input: unknown,
 	recipient: string,
-	local = false,
 	now = Date.now(),
 	expectedOrigin?: string,
 ): DirectorySnapshot {
@@ -192,14 +176,13 @@ export function parseDirectory(
 		if (
 			r.recipientId !== recipient ||
 			!["ready", "connecting"].includes(String(r.transport)) ||
-			r.endpoint !== relayEndpoint(origin, recipient, String(r.sessionId)) ||
 			!Number.isFinite(r.expiresAt) ||
 			Number(r.expiresAt) <= now ||
 			Number(r.expiresAt) > now + LEASE_MS + 5000
 		)
 			throw new Error("Invalid registration lease");
 		return {
-			...parseSnapshot(r, local),
+			...parseSnapshot(r),
 			transport: r.transport as "ready" | "connecting",
 			recipientId: recipient,
 			expiresAt: Number(r.expiresAt),

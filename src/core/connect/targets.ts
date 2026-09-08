@@ -1,9 +1,7 @@
 import type { AppConfig, ServiceConfig } from "../../types";
 import { inferDockerPreset } from "../service-presets";
 import type { RemoteTarget } from "./protocol";
-export interface SharedTarget extends RemoteTarget {
-	port: number;
-}
+export type SharedTarget = RemoteTarget;
 export function sharedTargets(
 	apps: Record<string, AppConfig>,
 	services: Record<string, ServiceConfig>,
@@ -12,7 +10,7 @@ export function sharedTargets(
 ): SharedTarget[] {
 	const targets: SharedTarget[] = [];
 	for (const [name, app] of Object.entries(apps))
-		if (app.expose === true)
+		if (app.kind !== "worker")
 			targets.push({
 				id: `app-${name}`,
 				kind: "app",
@@ -23,19 +21,12 @@ export function sharedTargets(
 			});
 	for (const name of serviceNames) {
 		const service = services[name];
-		if (service?.expose !== true) continue;
+		if (!service) throw new Error(`Unknown shared service: ${name}`);
+		if (service.kind === "job" || service.port === undefined) continue;
 		const preset = inferDockerPreset(name, service);
 		const protocol =
 			service.exposeProtocol ??
-			(preset
-				? ["postgres", "redis"].includes(preset)
-					? "tcp"
-					: "http"
-				: undefined);
-		if (!protocol)
-			throw new Error(
-				`Shared service ${name} needs exposeProtocol: "http" or "tcp"`,
-			);
+			(preset && !["postgres", "redis"].includes(preset) ? "http" : "tcp");
 		targets.push({
 			id: `service-${name}`,
 			kind: "service",

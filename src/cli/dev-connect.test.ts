@@ -26,11 +26,15 @@ test("publishes one connector to multiple recipients, tracks readiness and withd
 		devices.map((d) => `bc1.${d.id}.${d.token}`),
 		new AbortController().signal,
 		directory.url,
+		async ({ targets }) => ({
+			endpoint: `tc${"a".repeat(60)}`,
+			targets,
+			exited: new Promise<void>(() => {}),
+			disconnectTarget() {},
+			async close() {},
+		}),
 	);
-	connect.plan(
-		{ web: { port: 3131, devCommand: "bun web.ts", expose: true } },
-		[],
-	);
+	connect.plan({ web: { port: 3131, devCommand: "bun web.ts" } }, []);
 	connect.start("coordinator-session", []);
 	connect.status(["web"], "ready");
 	const wait = async (predicate: () => Promise<boolean>) => {

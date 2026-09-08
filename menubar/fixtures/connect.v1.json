@@ -12,7 +12,7 @@
       "branch": "feature/checkout",
       "worktree": "agent-123",
       "primaryApp": "web",
-      "endpoint": "https://connect.hanskristoffer.dk/v1/devices/fixture-device/sessions/fixture-session/relay",
+      "endpoint": "tcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "revision": 2,
       "expiresAt": 1788870090000,
       "targets": [
@@ -21,14 +21,14 @@
           "kind": "app",
           "name": "web",
           "protocol": "http",
-          "status": "ready"
+          "status": "ready", "port": 8080
         },
         {
           "id": "service-db",
           "kind": "service",
           "name": "db",
           "protocol": "tcp",
-          "status": "ready",
+          "status": "ready", "port": 8080,
           "preset": "postgres"
         }
       ],

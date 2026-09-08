@@ -189,7 +189,6 @@
   },
   "dependencies": {
     "fast-glob": "^3.3.3",
-    "jose": "^6",
     "picocolors": "^1.1.1"
   }
 }

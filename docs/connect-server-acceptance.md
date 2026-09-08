@@ -1,56 +1,46 @@
-# Two-machine release acceptance — September 8, 2026
+# Tailcat acceptance — 2026-09-08
 
-**Result: the packed CLI and unmodified local helper passed the supplied-server acceptance through the stable Worker relay, using normal DNS.** The earlier Quick Tunnel DNS blocker is resolved by removing private Quick Tunnels from the design.
+The Tailcat implementation was tested locally and between this Mac and the supplied Mac mini at `100.79.178.107`. SSH copied and launched the isolated fixture and cleaned it up. Application traffic used Tailcat's public DERP relay with direct UDP disabled (`TS_DEBUG_ALWAYS_USE_DERP=1`); SSH did not forward application traffic.
 
-## Environment and path
-
-The publisher ran on the supplied Mac mini at `100.79.178.107`, with Bun 1.4.2, Docker 29.1.3 and the packed Buncargo build based on the current 7.10.0 release baseline. These are local candidate artifacts; Release Please will assign release versions.
-
-SSH installed the isolated fixture, launched the CLI and handled cleanup. Application and database traffic used `https://connect.hanskristoffer.dk` through outbound authenticated WebSockets. No SSH port forwarding, DNS proxy, resolver changes, hosts overrides or modified client wrapper was used.
-
-The fixture was a Git worktree on branch `feature/remote-connect`, with a temporary home and unique Compose project. Ordinary `buncargo dev --no-hosts --keep-containers` received two independent tokens through `BUNCARGO_CONNECT_TOKENS`. It started an exposed browser app, Postgres and Redis; an app with `expose: false` was excluded. The receiving side used the built CLI's `connect token`, `open`, `revoke` and detached helper, each recipient in a separate temporary home.
-
-## Results
+## Two-machine results
 
 | Check | Result |
 | --- | --- |
-| Automatic sharing without `--share` or public `--expose` | Passed |
-| Two independent recipients discover one session | Passed |
-| Project, branch and worktree metadata | Passed through the CLI directory reader |
-| Selected `expose: true` targets only | Passed |
-| Immediate access with normal DNS and unmodified CLI/helper | Passed |
-| HTTP responses, SSE and WebSocket echo for both recipients | Passed |
-| Unauthenticated loopback/relay requests and untrusted browser origin | Rejected |
-| Postgres transaction and 1,010,000-byte COPY | Passed |
-| Redis PING, SET/GET, 25 pipelined increments and Pub/Sub | Passed |
-| Postgres query lasting 65 seconds and Redis reuse afterward | Passed across capability and registration renewals |
-| Revoke one recipient while retaining the other | Passed |
-| Pause publisher until heartbeat expiry | Discovery became Connecting; new access rejected |
-| Resume publisher | Automatically reconnected on the same endpoint; new browser request succeeded |
-| Normal CLI shutdown | Discovery withdrawn |
+| Two independently addressed recipients | Passed |
+| Directory preserves project and branch | Passed with local directory adapter and remote publishers |
+| 2,000 module GETs per recipient, 16 concurrent clients | 4,000 total successful responses |
+| WebSocket/HMR echo for both recipients | Passed |
+| 1 MiB TCP echo and half-close per recipient | Both payloads complete |
+| SSE after module loading and opening the TCP target | First event in 36 ms |
+| Long SSE stream | All 70 events received over 70.2 seconds |
+| Cleanup | Isolated remote publishers/app/echo server stopped and test directory removed |
 
-Three complete two-machine runs passed through the normal path. Fresh-token cold starts measured about 3.1 seconds and 3.3 seconds; the final run included the TCP drain fix and repeated the database, renewal, revocation and outage-recovery checks.
+This is a representative dev-server fixture, not a claim that the user's current Lullu cloud-agent session was upgraded or browser-tested. The production Worker was not deployed during this change; the two-machine test registered remote metadata with the local directory adapter.
 
-The live Worker integration test separately passed two recipients, HTTP/SSE, Postgres transactions/COPY and revocation with a disposable local database. Live testing caught Cloudflare's Blob default for standard WebSocket messages; the Worker now explicitly requests ArrayBuffer delivery before accepting sockets.
+## Regression and release checks
 
-## Other release checks
+The local real-binary suite forces traffic through Tailcat's embedded test DERP and verifies:
 
-- Full Bun suite: 1,009 passed, 9 opt-in/platform tests skipped, no failures.
-- Linux (Bun 1.4.2 container): all 18 connection tests passed; the opt-in live test was skipped there.
-- Typecheck/lint, build and packed-consumer verification passed.
-- Swift tests: 5 passed. Universal arm64/x86_64 menu bar build and registry/selftest smoke checks passed.
-- Local relay tests cover multi-megabyte streams, slow readers/backpressure, TCP half-close, expired/renewed capabilities, cross-recipient isolation, malformed frames, forged credit acknowledgements and publisher replacement. The bulk and slow-reader half-close checks passed 30 repetitions each after fixing a clean TCP shutdown that could truncate queued final bytes.
+- Multi-megabyte TCP transfer and half-close.
+- 2,000 concurrent module requests, incremental SSE and WebSocket upgrade.
+- Simultaneous independent forwards to one publisher, including opening TCP while HTTP is active.
+- Browser bootstrap, app Authorization preservation and rejection of an untrusted Origin.
+- Stopping a target closes existing streams and refuses later connections.
+- Revoking one recipient closes its open stream while another stays usable.
+- Directory outage closes sharing; a separate publication deadline bounds stale grants.
+- The detached CLI helper opens/disconnects a remote app.
+- A parent killed with SIGKILL does not leave its Tailcat child running.
 
-Native menu interaction against this particular server was not manually exercised. Swift decoding/store tests and bundle smoke checks are separate evidence. The menu presents the same validated metadata and invokes the CLI/helper used in the two-machine run. Internet latency, arbitrary databases and frontend-specific absolute URLs are not universally certified by these tests.
+The PostgreSQL acceptance test used a real disposable PostgreSQL 17 cluster and local directory through forced DERP: both recipients opened HTTP/SSE; SQL transaction/temp-table aggregation and a 1,010,000-byte COPY passed. A real Redis server was not part of this run; generic TCP forwarding is covered.
 
-## Superseded Quick Tunnel finding
+Build, lint, the full Bun suite, Swift menu tests, Worker dry-run bundle and packed-package consumer verification passed. The full Bun run reported 1,005 passed, 14 opt-in/skipped, zero failed; Swift reported six passed. The same forced-DERP suite also passed in an isolated Linux arm64 Docker container using Bun 1.4.2 and the automatically downloaded upstream Linux binary: six passed, zero failed. PR CI now runs it on macOS and Linux. Release deployment also runs that suite before deploying and the live-directory/PostgreSQL test afterward, before npm publication.
 
-The first implementation carried private streams through per-run `*.trycloudflare.com` endpoints. Fresh hostnames repeatedly failed on the receiving computer's ordinary resolver due to negative caching. A diagnostic-only DNS proxy proved the transport could carry Postgres/Redis, but it was not an acceptable user setup or release result.
+## Defects found and corrected
 
-The replacement uses the existing stable Worker hostname for directory, control and data connections. There is no per-worktree DNS allocation. Transport readiness is now separate from application readiness, and outage acceptance checks the unavailable state as well as recovery. Public `--expose` continues to use the existing public tunnel feature.
+A single persistent WireGuard client identity shared across separate Tailcat processes caused their DERP connections to compete. Opening TCP could stall an existing HTTP/SSE forward; a stream's first event was delayed by about 51 seconds. Every forwarding process now uses fresh ephemeral keys. Access uses Tailcat's private per-recipient address and WireGuard pre-shared key, available only through authenticated directory reads. The same two-machine test then received its first SSE event in 36 ms.
 
-## Cleanup and release boundary
+Stopping the Tailcat process before its loopback gates had closed could discard TCP close frames. Shutdown now closes gates first and allows a bounded drain interval. A pipe guardian also terminates orphaned Tailcat processes when their owning CLI/helper dies.
 
-Acceptance removes its recipient secrets, helpers, publishers, test containers, database volume and Compose network. Existing server workloads are outside the fixture and remain running. Inert random test-device hashes remain in the directory; registrations are withdrawn. SSH key access remains configured as requested.
+## Operational limits
 
-The accepted Worker deployment is `3bda5f3b-ae24-4454-99aa-4586778169b3` at `connect.hanskristoffer.dk`. The backend is deployed separately. The npm package and menu bar remain release candidates until the normal PR/Release Please workflows publish them. Versions and changelogs are owned by those workflows.
+Tailcat's public DERP fleet is bandwidth limited. The tests demonstrate correctness and one observed latency, not a throughput/SLA guarantee. Operators can configure their own DERP map using `BUNCARGO_TAILCAT_DERPMAP_URL`; a permanent private relay was not provisioned during this task. Automatic binary installation covers Apple silicon and Linux x64/arm64. Other platforms require `BUNCARGO_TAILCAT_PATH`.

@@ -618,9 +618,9 @@ Copy a connection token from BuncargoBar's Remote environments menu, or run:
 bunx buncargo connect token
 ```
 
-Save it as `BUNCARGO_CONNECT_TOKENS` in your cloud agent/server environment secrets. For several computers, use a JSON array of tokens. Then run `bunx buncargo dev` normally. Selected apps and services marked `expose: true` are shared automatically; there is no extra sharing flag. The menu bar shows project, branch/worktree, targets and readiness. Each computer receives its own identity and token.
+Save it as `BUNCARGO_CONNECT_TOKENS` in your cloud agent/server environment secrets. For several computers, use a JSON array of tokens. Then run `bunx buncargo dev` normally. All selected apps and services with a host port are shared automatically; no `expose` setting or extra sharing flag is needed. Workers and portless containers have no endpoint to share. The menu bar shows project, branch/worktree, targets and readiness. Each computer receives its own identity and token.
 
-Browser targets open through an authenticated loopback proxy. Postgres/Redis targets create local TCP forwards; Connect copies the local address for your database client. Database credentials remain in your client and are never published to the directory. Built-in presets infer HTTP/TCP; custom services need `exposeProtocol: "http" | "tcp"` alongside `expose: true`.
+Browser targets open through an authenticated loopback proxy. Postgres/Redis targets create local TCP forwards; Connect copies the local address for your database client. Database credentials remain in your client and are never published to the directory. Apps default to HTTP and built-in service presets infer HTTP/TCP. Custom services default to TCP; use `exposeProtocol: "http"` for a custom browser/API service.
 
 ```sh
 bunx buncargo connect status
@@ -631,11 +631,11 @@ bunx buncargo connect rotate          # Existing sharing continues; new runs nee
 bunx buncargo connect rotate --all    # Revoke existing sharing too
 ```
 
-A connection token only authorizes a server to share its selected services with that device. It cannot impersonate the receiving device or access other shared servers. The hosted directory at `https://connect.hanskristoffer.dk` issues short-lived access capabilities. Active streams renew authorization every 20 seconds and fail closed within 60 seconds when access cannot be renewed. Directory registrations expire after 90 seconds without a heartbeat. Interrupted database transactions are not replayed.
+A connection token only authorizes a server to share its selected services with that device. It cannot impersonate the receiving device or access other shared servers. The hosted directory at `https://connect.hanskristoffer.dk` stores project/branch metadata and private per-recipient Tailcat addresses. Tailcat carries encrypted application traffic directly between machines when possible, with a DERP relay fallback. Buncargo renews sharing every 10 seconds and closes connections within 20 seconds of the last successful renewal if authorization is lost. Discovery registrations expire after 90 seconds. Interrupted database transactions are never replayed.
 
 Explicit `--expose` remains the separate public-URL feature. Tokens never enable an unprotected public endpoint. Without tokens, normal dev runs stay local. One-shot commands ignore inherited connection tokens.
 
-Use relative/same-origin frontend API paths through the development server's proxy where possible. Absolute sandbox-local URLs embedded in application JavaScript do not automatically become recipient-local URLs: app-specific origin configuration may still be needed. The local helper permits cross-origin HTTP requests among a session's established browser proxies. Private connections use outbound WebSockets through the stable Cloudflare relay; no tunnel installation or per-worktree DNS is needed. The menu shows Connecting while a publisher is unavailable and enables Open/Connect when its relay is ready.
+Use relative/same-origin frontend API paths through the development server's proxy where possible. Absolute sandbox-local URLs embedded in application JavaScript do not automatically become recipient-local URLs: app-specific origin configuration may still be needed. The local helper permits cross-origin HTTP requests among a session's established browser proxies. Buncargo automatically downloads a checksum-verified Tailcat 0.6.0 binary on Apple silicon and Linux x64/arm64; other platforms can supply it with `BUNCARGO_TAILCAT_PATH`. There is no Tailscale login, VPN configuration, or per-worktree DNS. The menu retains project and branch names and opens authenticated local browser URLs. Set `BUNCARGO_TAILCAT_DERPMAP_URL` on both machines to use your own DERP fleet; the default Tailcat relays are bandwidth limited. See [connection operations](docs/connect-directory.md).
 
 The optional `BUNCARGO_CONNECT_DIRECTORY` override selects an operator-hosted directory; set the same origin on both server and recipient before copying tokens. See [directory operations](docs/connect-directory.md) and [the implementation plan](docs/cloud-connect-plan.md).
 
@@ -1045,6 +1045,8 @@ HTTP app health checks probe `http://localhost:<port>`, including when the app h
 ## Public tunnels
 
 Mark targets with `expose: true`, then `bunx buncargo dev --expose` or `--expose=api,web`.
+
+The `expose` config option is deprecated. It still controls these public tunnels; token-based sharing automatically includes all selected apps and services with a host port.
 
 Tunnels open **after** wave-1 apps are healthy and **before** `needsPublicUrls` apps spawn, so Expo can read `EXPO_PACKAGER_PROXY_URL` at start. Public URLs are normalized (trailing slash stripped). Without `--expose` there is no second wave at all.
 

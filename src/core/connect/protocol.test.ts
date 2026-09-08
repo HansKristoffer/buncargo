@@ -5,26 +5,14 @@ const fixture = await Bun.file(
 	new URL("../../../menubar/fixtures/connect.v1.json", import.meta.url),
 ).json();
 test("Swift/TypeScript shared directory contract preserves branch, primary and TCP targets", () => {
-	const value = parseDirectory(
-		fixture,
-		"fixture-device",
-		false,
-		fixture.generatedAt,
-	);
+	const value = parseDirectory(fixture, "fixture-device", fixture.generatedAt);
 	expect(value.runs[0].branch).toBe("feature/checkout");
 	expect(value.runs[0].targets[1].protocol).toBe("tcp");
 });
 test("rejects stale, cross-recipient, unsafe and ambiguous snapshots", () => {
+	expect(() => parseDirectory(fixture, "other", fixture.generatedAt)).toThrow();
 	expect(() =>
-		parseDirectory(fixture, "other", false, fixture.generatedAt),
-	).toThrow();
-	expect(() =>
-		parseDirectory(
-			fixture,
-			"fixture-device",
-			false,
-			fixture.generatedAt + 180000,
-		),
+		parseDirectory(fixture, "fixture-device", fixture.generatedAt + 180000),
 	).toThrow();
 	for (const endpoint of [
 		"https://evil.example",

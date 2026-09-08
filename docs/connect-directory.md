@@ -1,83 +1,55 @@
-# Connection directory and relay operations
+# Connection directory and Tailcat operations
 
-The `buncargo-connect` Worker serves `https://connect.hanskristoffer.dk`. One SQLite-backed Durable Object per recipient stores its grants and relays its application streams. `wrangler.connect.jsonc` owns the custom domain, storage migration, rate limiter and compatibility date. Private connections use outbound WebSockets to this stable origin; no Quick Tunnel or cloudflared installation is involved.
+`https://connect.hanskristoffer.dk` is a discovery-only Cloudflare Worker. One SQLite Durable Object per recipient stores credentials, grants and expiring session metadata. Application traffic uses Tailcat directly or through a DERP fallback, and never enters the Worker. No DNS record is created for a worktree. Setting `BUNCARGO_CONNECT_TOKENS` automatically shares every selected app/service with a host port; `expose` is not required. Workers, jobs and portless containers are skipped.
 
-## Deployment
+## Deploy and release
 
-The Worker deploys automatically when the CLI release PR from Release Please is merged. `release.yml` calls `release-connect.yml` in the same run, validates the Worker with the pinned Wrangler version, deploys it, and runs the live two-recipient HTTP/SSE/Postgres acceptance test. npm publication and a combined menu bar release wait for success. A bar-only release skips Worker deployment. The Worker follows the CLI version; it has no separate version file or release PR.
-
-PR CI builds the Worker with `bun run connect:worker:check` without Cloudflare credentials. Production deployment needs the repository Actions secret `CLOUDFLARE_API_TOKEN`: scope it to the configured account and `hanskristoffer.dk`. Keep Account Settings Read and Workers Scripts Write; include Zone Read and Workers Routes Write for the domain. The broad Edit Cloudflare Workers template also grants access to products this Worker does not use, which can be removed. The account ID is pinned in `wrangler.connect.jsonc`. Local OAuth login is not a persistent CI credential. The workflow fails with a setup instruction if the secret is missing. [Cloudflare GitHub Actions authentication](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)
-
-On a failed release deployment or live check, rerun the failed jobs in that release run. For a deliberate manual retry, dispatch **Release connection Worker** at the intended release tag. Deploying an older revision is an explicit rollback, so check protocol and Durable Object migration compatibility first. Keep Worker protocol changes compatible with already released clients; deployment happens before new client publication.
-
-For local operations:
+Release Please's CLI release calls `release-connect.yml`: validate the directory, test real Tailcat through forced local DERP, deploy the Worker, and test the deployed directory with two recipients, HTTP streaming and disposable PostgreSQL. npm and combined BuncargoBar publication wait for success. Bar-only releases skip the Worker. The repository secret `CLOUDFLARE_API_TOKEN` supplies CI credentials. Ordinary local commands are:
 
 ```sh
-bunx wrangler login
 bun run connect:worker:check
 bun run connect:worker:deploy
 ```
 
-The deployed Worker already has `CONNECT_SIGNING_JWK`. Ordinary deployments preserve it. Do not generate a new key on each deployment: publishers pin its public key at startup. An intentional key rotation requires restarting publishers; old capabilities expire within 60 seconds.
+There is no signing key or `/v1/key` endpoint. The old `CONNECT_SIGNING_JWK` secret is unused and may be deleted. Old relay clients are unsupported. Update the CLI and BuncargoBar together, stop old cloud sessions, and restart the local helper. There is no legacy relay fallback.
 
-For another installation, generate an extractable Ed25519 key pair with `jose.generateKeyPair("EdDSA", { extractable: true })`, export the private JWK and upload it through Wrangler's secret prompt or a private secrets file. Never commit or print it. Set `CONNECT_ORIGIN` and the custom domain together. `/v1/key` exposes only the public key; `/health` exposes service identity and schema version.
+## Tailcat binary and relay
 
-Set `BUNCARGO_CONNECT_DIRECTORY` consistently on publishers and recipients for another operator's directory. HTTPS is required except on loopback for tests. Tokens contain no arbitrary credential destination. Session relay URLs must match the configured origin and exact recipient/session path.
+Buncargo downloads Tailcat 0.6.0 lazily into `~/.buncargo/bin`. Downloads use pinned SHA-256 checksums and atomic installation under a file lock. Linux x64/arm64 uses upstream release archives; Apple silicon uses the relocatable Homebrew Sonoma bottle, also suitable for newer macOS. No Homebrew installation is required. On other platforms build/install Tailcat 0.6.0 and set `BUNCARGO_TAILCAT_PATH` to its absolute executable path.
 
-Worker deployments can terminate active sockets. Publishers reconnect automatically; application clients must open new connections. Interrupted transactions are never replayed.
+Tailcat's default relay fleet is bandwidth limited. For a controlled production fallback, run a Tailcat-compatible DERP server on a host with public connectivity and TLS, and publish its DERP map over HTTPS. Set `BUNCARGO_TAILCAT_DERPMAP_URL` to that URL on both publisher and recipient. The map defines the relay hostname/ports; it must be reachable from the sandbox. DERP is a rendezvous/fallback service, not an HTTP app proxy. Do not place it behind an ordinary Cloudflare HTTP proxy without verifying protocol support.
 
-## Local and live verification
+References: [Tailcat source and CLI](https://github.com/tailscale/tailcat), [Tailcat architecture and relay limitations](https://tailscale.com/blog/tailcat).
 
-```sh
-bun run connect:directory:local
-# For a disposable identity/server in another shell:
-# export BUNCARGO_CONNECT_DIRECTORY=http://127.0.0.1:8787
-bun test src/connect-directory src/core/connect src/cli/dev-connect.test.ts
-swift test --package-path menubar
+## Credentials and access
 
-# Needs initdb, pg_ctl and psql on PATH; uses isolated random credentials:
-BUNCARGO_TEST_CONNECT_E2E=1 bun test src/core/connect/connect.integration.test.ts
-```
+`~/.buncargo/connect-device.json` is mode 0600 and contains the directory owner credential, registration token and CLI invocation. Server and client WireGuard private keys are ephemeral and stay in Tailcat memory. Each client gets a new identity: reusing a key across multiple Tailcat processes makes their DERP connections conflict. Tailcat addresses contain a pre-shared key: treat the entire address as sensitive and do not add it to diagnostic logs.
 
-The local adapter binds loopback with ephemeral keys/state and runs the same relay engine. It is not a persistent production server. The opt-in test exercises the live Worker, two recipients, HTTP/SSE, a disposable Postgres cluster, transactions/COPY and revocation. It cleans up its servers, cluster and registrations. Inert random device credential hashes remain; device IDs are not recycled. [The two-machine report](connect-server-acceptance.md) covers the packed CLI and supplied server.
+Copied tokens allow registration only. Device owner credentials authorize listing, rotation and revocation. Session secrets authorize updating/withdrawing only that publisher's registration. The address is a bearer capability protected by its WireGuard pre-shared key. Only the directory owner can retrieve it; possession permits connecting. Never expose it through token-authenticated endpoints, analytics, or logs. Revoking a recipient destroys its ephemeral publisher and address. Application credentials, including database passwords and Authorization headers, stay application concerns.
 
-Cloudflare's current standard WebSocket API defaults binary messages to Blob. The Worker sets `binaryType = "arraybuffer"` before `accept()` because the relay consumes byte frames. Keep this assignment when updating the adapter. [Cloudflare binary-message documentation](https://developers.cloudflare.com/workers/runtime-apis/websockets/#binary-messages)
-
-## Credentials and privacy
-
-`~/.buncargo/connect-device.json` contains the private recipient credential, registration token and local CLI invocation (mode 0600). `connect-helper.json` records the loopback helper, process birth identity and control credential. The helper starts on demand and owns local listeners independently of BuncargoBar.
-
-Copied tokens permit registration only. Private device credentials authorize directory reads and short-lived access capabilities. Per-session secrets let publishers update their own grants and attach relay sockets. The relay and publisher independently verify capabilities, and the publisher only dials its configured exposed loopback targets.
-
-Directory storage contains credential hashes, sanitized metadata and expiry, not application environment values or database passwords. Application bytes pass through the Worker in memory and are not logged or persisted by Buncargo. TLS protects each network leg; the relay operator remains trusted. Database authentication and optional database TLS remain client responsibilities.
-
-`connect rotate` changes registration tokens for new runs. Existing sessions retain their own credentials. `connect revoke --session=<id>` revokes one session; `connect rotate --all` also revokes current sessions. Interrupted rotations retain pending local intent and complete on retry.
+`connect rotate` replaces the token for new publishers. Existing publishers retain their session grants. `connect revoke --session=<id>` withdraws one session; `connect rotate --all` withdraws all current sessions too. The publisher checks authorization every 10 seconds and closes on failure, with a 20-second deadline after its last successful renewal. Closing the recipient's Tailcat server ends its existing streams without affecting other recipients.
 
 ## Limits and failures
 
-| Control | Current behavior |
-| --- | --- |
-| Registration | Renew every 30 seconds; expire after 90 seconds |
-| Publisher control | One outbound socket per session/recipient; ping every 15 seconds; unavailable after 45 seconds |
-| Capability | Valid at most 60 seconds; open streams renew every 20 seconds |
-| Pending stream | Publisher must join within 10 seconds |
-| Recipient state | At most 100 session/tombstone records; terminal IDs fenced for at least one day |
-| Targets | At most 64 per snapshot |
-| Streams | At most 64 concurrent paired streams per recipient; each publisher also caps at 64 |
-| HTTP metadata | 128 KiB request/response limit |
-| Relay bytes | Frames at most 65,537 bytes; per-direction credit bounds in-flight data to 128 KiB plus one frame |
-| Local channel | Backpressure at 256 KiB; defensive read-buffer ceiling 4 MiB |
-| Directory rate limit | 600 requests/minute per source IP for setup, listing, publication, rotation and revocation |
-| Session rate limit | Separate 6,000 requests/minute per source IP for access grants and relay upgrades; every request still requires recipient authorization |
+- Discovery leases expire after 90 seconds; UI/helper polling also removes stale forwards.
+- Each recipient has at most 100 session/tombstone records and each snapshot at most 64 targets.
+- Directory JSON is bounded to 128 KiB. The Worker permits 600 directory requests/minute/source IP. App module requests do not consume this quota.
+- The helper permits at most 128 open target forwards. Each HTTP target reuses up to 32 upstream connections. Raw TCP forwarding uses normal stream backpressure.
+- Tailcat failure closes current sockets. Publishers restart with fresh keys and metadata; clients reopen through the menu. Neither requests nor database transactions are replayed.
+- Browser URLs remain local. Public HTTPS sharing needs a separate gateway; Tailcat addresses are not browser URLs.
+- Applications embedding absolute sandbox-local API URLs need origin configuration, preferably a same-origin dev proxy. Redis Cluster and other protocols advertising additional addresses are not automatically rewritten.
 
-New access requires both a live grant and ready publisher. Target stopping, withdrawal and token-wide revocation reconcile active streams immediately. Capability expiry still closes streams when authorization cannot be renewed. Lease expiry filters discovery immediately on read; control checks enforce stale publisher shutdown. Retrying a revoked session cannot resurrect its tombstone.
+## Verification
 
-Publisher failures leave local applications running. Retry uses bounded backoff to 30 seconds. A recovered publisher uses the same stable origin/session endpoint and permits new streams. No random DNS record needs to propagate. Stale UI actions are disabled; helpers independently validate access.
+```sh
+bun test src/connect-directory src/core/connect src/cli/dev-connect.test.ts
+# Real binary, local TLS DERP, forced relay path (no public network after binary download):
+BUNCARGO_TEST_TAILCAT=1 TS_DEBUG_TAILCAT_LOCAL_DERP=1 TS_DEBUG_ALWAYS_USE_DERP=1 \
+  bun test src/core/connect/transport/transport.test.ts src/core/connect/helper.test.ts src/cli/dev-connect.integration.test.ts
+swift test --package-path menubar
+# Deployed directory, public Tailcat relay, and real disposable PostgreSQL:
+# Requires initdb, pg_ctl and psql on PATH.
+BUNCARGO_TEST_CONNECT_E2E=1 bun test src/core/connect/connect.integration.test.ts
+```
 
-## Capacity and observability
-
-The first release uses standard WebSocket listeners, not Durable Object hibernation. An object remains active while its publisher sockets are connected, so budget for duration as well as requests/storage. App data also passes through the relay. Hibernation requires restoring stream/control state correctly and is a future optimization. [Cloudflare WebSocket lifecycle and billing](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)
-
-Monitor duration, request volume, rate-limit responses, relay failures and reconnects in Cloudflare. Shared cloud egress can reach the per-IP limit sooner than a single workstation. Use `bunx wrangler tail --config wrangler.connect.jsonc` for failures, but never add Authorization, payload or environment logging. Review account quotas before expanding usage; this implementation does not promise unlimited concurrency or zero cost.
-
-Single-endpoint TCP works with Postgres and Redis. Protocols advertising other addresses, such as Redis Cluster, are not transparently rewritten. Frontends with absolute sandbox-local API URLs may need their own origin configuration; use a same-origin dev proxy where possible. Cookies are not isolated by port, so namespace development cookies as documented in the README.
+The local directory binds loopback and uses ephemeral in-memory state. It is a test adapter, not a persistent deployment. See [acceptance results](connect-server-acceptance.md) for what was actually exercised.

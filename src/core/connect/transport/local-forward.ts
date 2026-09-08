@@ -5,10 +5,10 @@ import {
 	createServer as httpServer,
 	type IncomingMessage,
 } from "node:http";
-import { type Socket, createServer as tcpServer } from "node:net";
+import { connect, createServer as tcpServer } from "node:net";
 import type { Duplex } from "node:stream";
 import { makeSecret, type RemoteTarget } from "../protocol";
-import { openStream } from "./client-stream";
+import { tailcatForward } from "../tailcat/forward";
 export interface Forward {
 	endpoint: string;
 	port: number;
@@ -21,13 +21,21 @@ export interface Forward {
 export async function localForward(
 	endpoint: string,
 	target: RemoteTarget,
-	access: () => Promise<string>,
 	browser?: { origins: ReadonlySet<string>; cookies: () => string[] },
 ): Promise<Forward> {
+	const tunnel = await tailcatForward(endpoint, target.port);
 	const streams = new Set<Duplex>();
 	const sockets = new Set<Duplex>();
+	void tunnel.exited.then(() => {
+		for (const s of streams) s.destroy();
+		for (const s of sockets) s.destroy();
+	});
 	const open = async () => {
-		const stream = await openStream(endpoint, target.id, access);
+		const stream = connect({
+			host: "127.0.0.1",
+			port: tunnel.port,
+			allowHalfOpen: true,
+		});
 		streams.add(stream);
 		stream.on("error", () => {});
 		stream.on("close", () => streams.delete(stream));
@@ -64,6 +72,7 @@ export async function localForward(
 				for (const s of streams) s.destroy();
 				for (const s of sockets) s.destroy();
 				server.close();
+				await tunnel.close();
 			},
 		};
 	}
@@ -107,13 +116,7 @@ export async function localForward(
 		h["x-forwarded-proto"] = "http";
 		return h;
 	}
-	const agent = new Agent({ keepAlive: false });
-	agent.createConnection = (_options, callback) => {
-		void open()
-			.then((stream) => callback?.(null, stream as unknown as Socket))
-			.catch((error) => callback?.(error, null as unknown as Socket));
-		return undefined as unknown as Socket;
-	};
+	const agent = new Agent({ keepAlive: true, maxSockets: 32 });
 	const server = httpServer((req, res) => {
 		const url = new URL(req.url ?? "/", origin());
 		const trustedOrigin =
@@ -163,8 +166,8 @@ export async function localForward(
 		}
 		const upstream = httpRequest(
 			{
-				hostname: "localhost",
-				port: 80,
+				hostname: "127.0.0.1",
+				port: tunnel.port,
 				path: req.url,
 				method: req.method,
 				headers: headers(req),
@@ -185,11 +188,16 @@ export async function localForward(
 					h.location = `${origin()}${parsed.pathname}${parsed.search}${parsed.hash}`;
 				}
 				res.writeHead(response.statusCode ?? 502, h);
+				res.flushHeaders();
 				response.pipe(res);
 			},
 		);
 		upstream.on("error", () => {
-			if (!res.headersSent) res.writeHead(502);
+			if (res.headersSent) {
+				res.destroy();
+				return;
+			}
+			res.writeHead(502);
 			res.end("Remote service unavailable");
 		});
 		res.on("close", () => upstream.destroy());
@@ -247,6 +255,7 @@ export async function localForward(
 			for (const s of streams) s.destroy();
 			for (const s of sockets) s.destroy();
 			server.close();
+			await tunnel.close();
 		},
 	};
 }
