@@ -4,6 +4,7 @@ import {
 	identifier,
 	jsonBody,
 	LEASE_MS,
+	MAX_SESSIONS,
 	parseSnapshot,
 	type Registration,
 	SECRET,
@@ -138,7 +139,7 @@ export async function directoryRequest(
 			for (const [id, value] of Object.entries(state.sessions))
 				if (value.snapshot.expiresAt < now - 86400_000)
 					delete state.sessions[id];
-			if (!entry && Object.keys(state.sessions).length >= 100)
+			if (!entry && Object.keys(state.sessions).length >= MAX_SESSIONS)
 				return fail(429, "Recipient session limit reached");
 			state.sessions[session] = {
 				hash: sessionHash,

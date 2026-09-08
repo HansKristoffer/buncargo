@@ -1,34 +1,38 @@
-import { once } from "node:events";
-import { connect, createServer, type Socket } from "node:net";
+import { connect, createServer } from "node:net";
 import { sleep } from "../../sleep";
-import { connectorEndpoint } from "../protocol";
-import type { SharedTarget } from "../targets";
+import {
+	connectorEndpoint,
+	isTargetReady,
+	type RemoteTarget,
+	validPort,
+} from "../protocol";
+import { ForwardSockets, listenLoopback } from "../transport/sockets";
 import { startTailcat } from "./process";
 export interface TailcatPublisher {
 	endpoint: string;
-	targets: SharedTarget[];
+	targets: RemoteTarget[];
 	exited: Promise<void>;
 	disconnectTarget(id: string): void;
 	close(): Promise<void>;
 }
 /** Gates keep stopped targets closed even if an unrelated process later reuses their app port. */
 export async function startTailcatPublisher(options: {
-	targets: SharedTarget[];
+	targets: RemoteTarget[];
 	signal: AbortSignal;
 }): Promise<TailcatPublisher> {
 	if (!options.targets.length) throw new Error("Invalid Tailcat publisher");
 	const gates: {
 		server: ReturnType<typeof createServer>;
-		sockets: Set<Socket>;
+		sockets: ForwardSockets;
 		id: string;
 	}[] = [];
-	const exposed: SharedTarget[] = [];
+	const exposed: RemoteTarget[] = [];
 	let child: Awaited<ReturnType<typeof startTailcat<string>>> | undefined;
 	let closing: Promise<void> | undefined;
 	const close = () => {
 		closing ??= (async () => {
 			for (const gate of gates) {
-				for (const socket of gate.sockets) socket.destroy();
+				gate.sockets.destroy();
 				gate.server.close();
 			}
 			// Let TCP close frames leave the userspace stack before stopping its process.
@@ -39,21 +43,12 @@ export async function startTailcatPublisher(options: {
 	};
 	try {
 		for (const target of options.targets) {
-			if (
-				!Number.isInteger(target.port) ||
-				target.port < 1 ||
-				target.port > 65535
-			)
-				throw new Error("Invalid shared port");
-			const sockets = new Set<Socket>();
-			const track = (socket: Socket) => {
-				sockets.add(socket);
-				socket.on("error", () => {});
-				socket.on("close", () => sockets.delete(socket));
-			};
+			if (!validPort(target.port)) throw new Error("Invalid shared port");
+			options.signal.throwIfAborted();
+			const sockets = new ForwardSockets();
 			const server = createServer({ allowHalfOpen: true }, (socket) => {
-				track(socket);
-				if (closing || !["ready", "reused"].includes(target.status)) {
+				sockets.track(socket);
+				if (closing || !isTargetReady(target)) {
 					socket.destroy();
 					return;
 				}
@@ -62,17 +57,14 @@ export async function startTailcatPublisher(options: {
 					port: target.port,
 					allowHalfOpen: true,
 				});
-				track(upstream);
-				socket.on("close", () => upstream.destroy());
-				upstream.on("close", () => socket.destroy());
-				socket.pipe(upstream).pipe(socket);
+				sockets.track(upstream);
+				sockets.bridge(socket, upstream);
 			});
 			gates.push({ server, sockets, id: target.id });
-			server.listen(0, "127.0.0.1");
-			await once(server, "listening");
+			const port = await listenLoopback(server);
 			exposed.push({
 				...target,
-				port: (server.address() as { port: number }).port,
+				port,
 			});
 		}
 		child = await startTailcat(
@@ -96,8 +88,7 @@ export async function startTailcatPublisher(options: {
 			exited: child.exited,
 			close,
 			disconnectTarget(id) {
-				for (const gate of gates)
-					if (gate.id === id) for (const s of gate.sockets) s.destroy();
+				for (const gate of gates) if (gate.id === id) gate.sockets.destroy();
 			},
 		};
 	} catch (error) {

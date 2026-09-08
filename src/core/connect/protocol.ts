@@ -5,6 +5,7 @@ export const HEARTBEAT_MS = 10_000;
 export const AUTHORIZATION_MS = 20_000;
 export const MAX_BODY = 128 * 1024;
 export const MAX_TARGETS = 64;
+export const MAX_SESSIONS = 100;
 export const ID = /^[a-zA-Z0-9_-]{1,128}$/;
 export const SECRET = /^[a-zA-Z0-9_-]{43}$/;
 export const STATUSES = [
@@ -62,6 +63,20 @@ export function identifier(value: unknown): value is string {
 		!["__proto__", "constructor", "prototype"].includes(value)
 	);
 }
+/** Shared admission rule for publisher gates and local helper forwards. */
+export function isTargetReady(target: RemoteTarget): boolean {
+	return target.status === "ready" || target.status === "reused";
+}
+
+export function validPort(value: unknown): value is number {
+	return (
+		typeof value === "number" &&
+		Number.isInteger(value) &&
+		value >= 1 &&
+		value <= 65535
+	);
+}
+
 export function isLoopback(url: URL): boolean {
 	return ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname);
 }
@@ -108,9 +123,7 @@ export function parseSnapshot(input: unknown): Snapshot {
 		const t = object(input);
 		if (
 			!identifier(t.id) ||
-			!Number.isInteger(t.port) ||
-			Number(t.port) < 1 ||
-			Number(t.port) > 65535 ||
+			!validPort(t.port) ||
 			!label(t.name) ||
 			!t.name ||
 			!["app", "service"].includes(String(t.kind)) ||
@@ -160,12 +173,12 @@ export function parseDirectory(
 ): DirectorySnapshot {
 	const v = object(input);
 	if (
-		v.version !== 1 ||
+		v.version !== VERSION ||
 		v.recipientId !== recipient ||
 		!Number.isFinite(v.generatedAt) ||
 		Math.abs(Number(v.generatedAt) - now) > 120_000 ||
 		!Array.isArray(v.runs) ||
-		v.runs.length > 100
+		v.runs.length > MAX_SESSIONS
 	)
 		throw new Error("Invalid or stale connection directory");
 	const origin = directoryOrigin(String(v.origin));
@@ -175,7 +188,6 @@ export function parseDirectory(
 		const r = object(input);
 		if (
 			r.recipientId !== recipient ||
-			!["ready", "connecting"].includes(String(r.transport)) ||
 			!Number.isFinite(r.expiresAt) ||
 			Number(r.expiresAt) <= now ||
 			Number(r.expiresAt) > now + LEASE_MS + 5000
@@ -183,7 +195,6 @@ export function parseDirectory(
 			throw new Error("Invalid registration lease");
 		return {
 			...parseSnapshot(r),
-			transport: r.transport as "ready" | "connecting",
 			recipientId: recipient,
 			expiresAt: Number(r.expiresAt),
 		};
@@ -227,11 +238,14 @@ export async function hashSecret(secret: string): Promise<string> {
 		(b) => b.toString(16).padStart(2, "0"),
 	).join("");
 }
+/** Bound JSON while streaming, including bodies without a Content-Length header. */
 export async function jsonBody(
-	request: Request,
+	request: Request | Response,
 ): Promise<Record<string, unknown>> {
-	if (Number(request.headers.get("content-length")) > MAX_BODY)
+	if (Number(request.headers.get("content-length")) > MAX_BODY) {
+		await request.body?.cancel().catch(() => {});
 		throw new Error("Document too large");
+	}
 	const reader = request.body?.getReader();
 	if (!reader) throw new Error("Missing document");
 	const chunks: Uint8Array[] = [];

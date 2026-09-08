@@ -5,7 +5,7 @@ import { makeSecret } from "../core/connect/protocol";
 import { sleep } from "../core/sleep";
 import { createDevConnect } from "./dev-connect";
 
-test("publishes one connector to multiple recipients, tracks readiness and withdraws its session", async () => {
+test("publishes a connector per recipient, tracks readiness and withdraws its session", async () => {
 	const directory = await startLocalDirectory();
 	const client = new DirectoryClient(directory.url);
 	const devices = [0, 1].map(() => ({

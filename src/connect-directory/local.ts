@@ -1,5 +1,5 @@
 /** Ephemeral directory for integration tests, using production authorization. */
-import { identifier } from "../core/connect/protocol";
+import { identifier, MAX_BODY } from "../core/connect/protocol";
 import { type DeviceState, directoryRequest } from "./service";
 export async function startLocalDirectory(port = 0) {
 	const records = new Map<string, DeviceState>();
@@ -7,7 +7,7 @@ export async function startLocalDirectory(port = 0) {
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
 		port,
-		maxRequestBodySize: 128 * 1024,
+		maxRequestBodySize: MAX_BODY,
 		fetch(request, server) {
 			const recipientId = new URL(request.url).pathname.split("/")[3];
 			if (!identifier(recipientId))

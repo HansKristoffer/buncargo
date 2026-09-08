@@ -1,10 +1,12 @@
 # Cloud worktree connections
 
-BuncargoBar lists remote projects, branch/worktree names, and their exposed targets. Open gives the browser a local URL; Connect gives database tools a local TCP port. Cloud and recipient computers require neither a Tailscale account nor administrator networking setup.
+BuncargoBar lists remote projects, branch/worktree names, and available apps and services. Open gives browsers a local URL; Connect gives database tools a local TCP port. Cloud and recipient computers need neither a Tailscale account nor administrator networking setup.
 
-## Automatic sharing
+## Sharing
 
-Copy a token from BuncargoBar or `bunx buncargo connect token`. Set `BUNCARGO_CONNECT_TOKENS` in the cloud environment to that token, or a JSON array of recipient tokens. Long-running dev runs automatically share all selected apps and services with a host port. No per-target `expose` setting, `--share` flag, or groups. Workers, jobs and portless containers have no endpoint to share. Apps default to HTTP, built-in presets infer the protocol, and custom services default to TCP with an optional `exposeProtocol: "http"` override. One-shot commands do not share. Existing explicit `--expose` Quick Tunnels remain a separate public-link feature.
+Copy a token from BuncargoBar or `bunx buncargo connect token`. Set `BUNCARGO_CONNECT_TOKENS` in the cloud environment to that token, or a JSON array of recipient tokens. Long-running dev runs share all selected apps and services with a host port. Workers, jobs and portless containers have no endpoint to share; one-shot commands do not share.
+
+Apps default to HTTP, built-in presets infer the protocol, and custom services default to TCP with an optional `exposeProtocol: "http"` override. The `expose` config option is deprecated and has no effect on token sharing. It still selects targets for the separate public Quick Tunnel `--expose` command.
 
 ## Architecture
 
@@ -15,28 +17,34 @@ flowchart LR
   Cloud[Cloud Buncargo] --> Directory
   Browser[Browser / database client] --> Helper
   Helper <-->|Tailcat: direct encrypted TCP or DERP fallback| Cloud
-  Cloud --> Apps[Selected exposed loopback ports]
+  Cloud --> Apps[Selected loopback endpoints]
 ```
 
-The Worker stores identities, grants, project/branch metadata, opaque Tailcat addresses, ports and expiring leases. It receives no application streams. One Tailcat server per recipient/run uses an ephemeral address containing a WireGuard pre-shared key. This makes recipient revocation independent: close that server without restarting other recipients.
+The Worker stores credentials and expiring discovery metadata. Application bytes travel through Tailcat, which owns WireGuard, NAT traversal, TCP backpressure and DERP fallback. Buncargo owns process lifetimes, selected loopback ports and browser access. No custom Worker traffic relay or compatibility adapter remains.
 
-Tailcat handles WireGuard, NAT traversal, TCP transport and relay fallback. Buncargo manages installation and process lifecycle. Per-target loopback gates prevent a stopped app's port being reused by an unrelated process behind an existing grant. HTTP forwarding retains browser bootstrap cookies, Host/Origin validation, app authorization, SSE and HMR support. A normal HTTP agent uses real loopback sockets, allowing connection reuse without custom byte framing.
+## Code ownership
 
-The former Worker relay, per-request access capabilities, custom WebSocket stream protocol and Tailscale discovery are removed. There is no compatibility adapter for old relay clients.
+| Module | Responsibility |
+| --- | --- |
+| [`cli/dev-connect.ts`](../src/cli/dev-connect.ts) | Coordinate selection, status publication, recipient renewal and shutdown. |
+| [`connect/targets.ts`](../src/core/connect/targets.ts) | Select this run's endpoints and use resolved worktree ports. |
+| [`connect/protocol.ts`](../src/core/connect/protocol.ts) | Define directory types, limits, validation and bounded JSON reading for both requests and responses. |
+| [`connect-directory/service.ts`](../src/connect-directory/service.ts) | Authorize directory operations against recipient storage; Worker and local adapters serialize requests. |
+| [`connect/tailcat/`](../src/core/connect/tailcat/) | Resolve the pinned asset through the shared tool installer, own child processes, and gate publisher ports. |
+| [`connect/helper.ts`](../src/core/connect/helper.ts) | Run the authenticated local control server and serialize UI actions with directory polling. |
+| [`connect/forwards.ts`](../src/core/connect/forwards.ts) | Own listeners and browser peers per session; reconcile stopped or replaced targets. |
+| [`connect/transport/local-forward.ts`](../src/core/connect/transport/local-forward.ts) | Compose each local TCP or HTTP listener with its Tailcat client. |
+| [`connect/transport/browser-access.ts`](../src/core/connect/transport/browser-access.ts) | Authorize browser requests, handle bootstrap/preflight, and strip private cookies upstream. |
+| [`connect/transport/sockets.ts`](../src/core/connect/transport/sockets.ts) | Track sockets, bridge half-open TCP streams, and bind ephemeral loopback listeners. |
 
-## Identity and lifecycle
+## Invariants
 
-- The copied registration token permits publishing, never reading other sessions or connecting as the recipient.
-- The private device file contains the directory owner credential and registration token, with mode 0600. Only its owner can retrieve Tailcat addresses. Each Tailcat client uses a fresh ephemeral key, avoiding DERP identity collisions between simultaneous forwards.
-- Every Tailcat publisher gets fresh ephemeral server keys and only explicit gate ports. No exit node, shell, file service, or `serve all`.
-- Renew every 10 seconds. Failed renewal closes the publisher; a separate 20-second deadline after the last successful publication bounds queued or stalled requests. Discovery expires after 90 seconds.
-- Revocation is enforced on the next renewal, bounded by that deadline; it is not instantaneous. It closes existing TCP/SSE/WebSocket streams. Token rotation alone leaves existing sessions authorized; `rotate --all` also revokes them.
-- Reconnection starts a new Tailcat address and publishes a new revision. Interrupted HTTP requests and database transactions are not replayed. Local helper polling retires forwards to old addresses.
+- Copied tokens permit registration only. Device owner credentials alone retrieve Tailcat addresses, which contain a pre-shared key and must never enter logs.
+- One ephemeral publisher per recipient/run makes revocation independent. Each local forwarding process uses a fresh client key; shared client keys cause DERP identity collisions.
+- Publisher gates retain the live target status. Stopping a target closes existing sockets and prevents an unrelated process from becoming reachable when it reuses the app's port.
+- Publication and renewal share one queue per recipient. A separate authorization deadline closes the publisher even if that queue stalls.
+- Local helper actions and polling share one queue. HTTP siblings share browser access only within their remote session; port, protocol or Tailcat address changes retire the old listener.
+- Teardown closes listeners, HTTP agents, upgraded sockets and child processes. TCP half-close remains intact; SSE and HMR have no proxy idle deadline. Interrupted requests and transactions are never replayed.
+- Browser cookies authorize the local listener. App Authorization headers remain intact, and device credentials never enter the browser. The menu executes local CLI commands, never paths supplied by remote metadata.
 
-## Operations and release
-
-The existing domain remains `connect.hanskristoffer.dk`. No worktree DNS records are needed. Tailcat's public DERP fleet is the initial fallback. Operators can use one self-hosted DERP server and publish a DERP map through `BUNCARGO_TAILCAT_DERPMAP_URL` on both sides. This is a server configuration, not a Cloudflare Worker traffic proxy.
-
-The CLI automatically installs pinned, checksum-verified Tailcat binaries for Apple silicon and Linux x64/arm64. Other architectures require a compatible binary through `BUNCARGO_TAILCAT_PATH`. See [operations](connect-directory.md).
-
-Release Please owns versions and changelogs. The Worker deploys and passes live Tailcat/HTTP/Postgres acceptance before npm and a combined menu-bar release publish. PR CI tests macOS/Linux with a real local DERP relay and forces fallback, avoiding dependence on public relay availability for regression checks.
+Deployment, credential rotation, limits, supported platforms and test commands are maintained in [connection operations](connect-directory.md). [Acceptance results](connect-server-acceptance.md) record the two-machine and database tests already performed.

@@ -1,10 +1,9 @@
-import { connectorEndpoint } from "../protocol";
+import { connectorEndpoint, validPort } from "../protocol";
 import { startTailcat } from "./process";
 /** Fresh client keys avoid DERP identity collisions between simultaneous forwards. */
 export async function tailcatForward(endpoint: string, port: number) {
 	connectorEndpoint(endpoint);
-	if (!Number.isInteger(port) || port < 1 || port > 65535)
-		throw new Error("Invalid Tailcat target port");
+	if (!validPort(port)) throw new Error("Invalid Tailcat target port");
 	const child = await startTailcat(
 		["--key=new", "forward", endpoint, `0:${port}`],
 		(line) => {

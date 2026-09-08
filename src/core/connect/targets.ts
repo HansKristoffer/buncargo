@@ -1,14 +1,14 @@
 import type { AppConfig, ServiceConfig } from "../../types";
 import { inferDockerPreset } from "../service-presets";
-import type { RemoteTarget } from "./protocol";
-export type SharedTarget = RemoteTarget;
+import { type RemoteTarget, validPort } from "./protocol";
+/** Select only this run's endpoints, using resolved worktree ports rather than config defaults. */
 export function sharedTargets(
 	apps: Record<string, AppConfig>,
 	services: Record<string, ServiceConfig>,
 	ports: Record<string, number>,
 	serviceNames: readonly string[],
-): SharedTarget[] {
-	const targets: SharedTarget[] = [];
+): RemoteTarget[] {
+	const targets: RemoteTarget[] = [];
 	for (const [name, app] of Object.entries(apps))
 		if (app.kind !== "worker")
 			targets.push({
@@ -38,11 +38,7 @@ export function sharedTargets(
 		});
 	}
 	for (const target of targets)
-		if (
-			!Number.isInteger(target.port) ||
-			target.port < 1 ||
-			target.port > 65535
-		)
+		if (!validPort(target.port))
 			throw new Error(`Invalid shared target port: ${target.name}`);
 	return targets;
 }

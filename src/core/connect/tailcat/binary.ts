@@ -1,22 +1,7 @@
-import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import {
-	mkdir,
-	mkdtemp,
-	readFile,
-	rename,
-	rm,
-	writeFile,
-} from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { promisify } from "node:util";
-import { withFileLock } from "../../file-lock";
 import { tailcatPath } from "../../runtime-flags";
-import {
-	finalizeToolBinary,
-	resolveToolBinary,
-	toolCachePath,
-} from "../../tool-binary";
+import { resolveToolBinary, toolCachePath } from "../../tool-binary";
+import { installTool } from "../../tool-install";
+
 export const TAILCAT_VERSION = "0.6.0";
 const linux = {
 	x64: "f3597a9ad02f5cca538f8f5a6f89123910bce3e9611d1e5a8e96d5f2d3cc90fd",
@@ -42,9 +27,10 @@ export function tailcatAsset(platform = process.platform, arch = process.arch) {
 		};
 	}
 	throw new Error(
-		"Automatic Tailcat installation supports Apple silicon and Linux x64/arm64. Set BUNCARGO_TAILCAT_PATH to a Tailcat 0.6.0 binary on this platform.",
+		`Automatic Tailcat installation supports Apple silicon and Linux x64/arm64. Set BUNCARGO_TAILCAT_PATH to a Tailcat ${TAILCAT_VERSION} binary on this platform.`,
 	);
 }
+/** Tailcat supplies asset metadata; the shared installer owns verification and atomic caching. */
 export async function ensureTailcat(signal?: AbortSignal): Promise<string> {
 	signal?.throwIfAborted();
 	const resolved = resolveToolBinary({
@@ -53,49 +39,29 @@ export async function ensureTailcat(signal?: AbortSignal): Promise<string> {
 			`tailcat-${TAILCAT_VERSION}-${process.platform}-${process.arch}`,
 		),
 	});
-	if (resolved.exists) return resolved.path;
-	if (resolved.source === "override")
-		throw new Error("BUNCARGO_TAILCAT_PATH does not exist");
+	if (resolved.source === "override") {
+		if (!resolved.exists)
+			throw new Error("BUNCARGO_TAILCAT_PATH does not exist");
+		return resolved.path;
+	}
 	const asset = tailcatAsset();
-	await mkdir(dirname(resolved.path), { recursive: true });
-	return withFileLock(
-		resolved.path,
-		async () => {
-			try {
-				await readFile(resolved.path);
-				return resolved.path;
-			} catch {}
-			const dir = await mkdtemp(join(dirname(resolved.path), ".tailcat-"));
-			try {
-				const response = await fetch(asset.url, {
-					headers: asset.headers,
-					signal: AbortSignal.any([
-						AbortSignal.timeout(120_000),
-						...(signal ? [signal] : []),
-					]),
-				});
-				if (!response.ok)
-					throw new Error(`Tailcat download failed (${response.status})`);
-				const bytes = Buffer.from(await response.arrayBuffer());
-				if (createHash("sha256").update(bytes).digest("hex") !== asset.sha256)
-					throw new Error("Tailcat download checksum mismatch");
-				const archive = join(dir, "download.tar.gz");
-				await writeFile(archive, bytes);
-				await promisify(execFile)("tar", [
-					"-xzf",
-					archive,
-					"-C",
-					dir,
-					asset.member,
-				]);
-				const binary = join(dir, asset.member);
-				finalizeToolBinary(binary);
-				await rename(binary, resolved.path);
-				return resolved.path;
-			} finally {
-				await rm(dir, { recursive: true, force: true });
-			}
+	return installTool({
+		to: resolved.path,
+		url: asset.url,
+		sha256: asset.sha256,
+		archiveEntry: asset.member,
+		versionArgs: ["--version"],
+		expectedVersion: new RegExp(
+			`^v?${TAILCAT_VERSION.replaceAll(".", "\\.")}(?:\\s|$)`,
+		),
+		signal,
+		fetch: (url, options) => {
+			const headers = new Headers(options.headers);
+			// The Homebrew registry's anonymous authorization must not follow cross-origin redirects.
+			if (new URL(url).origin === new URL(asset.url).origin)
+				for (const [name, value] of Object.entries(asset.headers))
+					headers.set(name, value);
+			return fetch(url, { ...options, headers });
 		},
-		{ timeoutMs: 150_000, signal },
-	);
+	});
 }

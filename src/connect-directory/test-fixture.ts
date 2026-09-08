@@ -1,7 +1,6 @@
 import { DirectoryClient } from "../core/connect/client";
-import { makeSecret } from "../core/connect/protocol";
+import { makeSecret, type RemoteTarget } from "../core/connect/protocol";
 import { startTailcatPublisher } from "../core/connect/tailcat/publisher";
-import type { SharedTarget } from "../core/connect/targets";
 import { startLocalDirectory } from "./local";
 export async function tailcatFixture(
 	port: number,
@@ -17,7 +16,7 @@ export async function tailcatFixture(
 	let publisher: Awaited<ReturnType<typeof startTailcatPublisher>> | undefined;
 	try {
 		await client.create(recipient, owner, token);
-		const upstream: SharedTarget = {
+		const upstream: RemoteTarget = {
 			id: "target",
 			name: "target",
 			kind: "app",

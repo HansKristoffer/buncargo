@@ -29,3 +29,23 @@ test("rejects stale, cross-recipient, unsafe and ambiguous snapshots", () => {
 		}),
 	).toThrow();
 });
+
+test("bounds and cancels directory response bodies with or without a length header", async () => {
+	const { jsonBody, MAX_BODY } = await import("./protocol");
+	for (const declared of [false, true]) {
+		let cancelled = false;
+		const response = new Response(
+			new ReadableStream<Uint8Array>({
+				pull(controller) {
+					controller.enqueue(new Uint8Array(MAX_BODY + 1));
+				},
+				cancel() {
+					cancelled = true;
+				},
+			}),
+			{ headers: declared ? { "content-length": String(MAX_BODY + 1) } : {} },
+		);
+		await expect(jsonBody(response)).rejects.toThrow("Document too large");
+		expect(cancelled).toBe(true);
+	}
+});

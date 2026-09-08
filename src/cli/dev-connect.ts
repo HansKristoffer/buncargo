@@ -5,6 +5,7 @@ import {
 	HEARTBEAT_MS,
 	makeSecret,
 	parseConnectionToken,
+	type RemoteTarget,
 	type Snapshot,
 	type TargetStatus,
 } from "../core/connect/protocol";
@@ -12,7 +13,7 @@ import {
 	startTailcatPublisher,
 	type TailcatPublisher,
 } from "../core/connect/tailcat/publisher";
-import { type SharedTarget, sharedTargets } from "../core/connect/targets";
+import { sharedTargets } from "../core/connect/targets";
 import { abortableSleep, withSignal } from "../core/deadline";
 import { connectionDirectory } from "../core/runtime-flags";
 import type { AppConfig, ServiceConfig } from "../types";
@@ -36,6 +37,7 @@ interface Recipient {
 	publisher?: TailcatPublisher;
 	leaseTimer?: ReturnType<typeof setTimeout>;
 }
+/** Own one independently renewable Tailcat publisher per recipient for this CLI run. */
 export function createDevConnect(
 	env: ConnectSource,
 	tokens: string[],
@@ -58,7 +60,7 @@ export function createDevConnect(
 			pending: Promise.resolve(),
 		});
 	}
-	let targets: SharedTarget[] = [],
+	let targets: RemoteTarget[] = [],
 		sessionId = "",
 		revision = 0,
 		primary: string | undefined,
@@ -83,6 +85,7 @@ export function createDevConnect(
 			})),
 		};
 	}
+	// Serialize status changes with renewals so older snapshots cannot overwrite newer ones.
 	function publish(id: string, state: Recipient) {
 		const work = state.pending
 			.catch(() => {})
@@ -109,6 +112,7 @@ export function createDevConnect(
 				state.registered = true;
 				clearTimeout(state.leaseTimer);
 				const publisher = state.publisher;
+				// This deadline is independent of the request queue and closes a stalled publisher.
 				state.leaseTimer = setTimeout(() => {
 					void publisher?.close().catch(() => {});
 				}, AUTHORIZATION_MS);

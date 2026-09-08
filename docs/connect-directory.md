@@ -1,6 +1,6 @@
 # Connection directory and Tailcat operations
 
-`https://connect.hanskristoffer.dk` is a discovery-only Cloudflare Worker. One SQLite Durable Object per recipient stores credentials, grants and expiring session metadata. Application traffic uses Tailcat directly or through a DERP fallback, and never enters the Worker. No DNS record is created for a worktree. Setting `BUNCARGO_CONNECT_TOKENS` automatically shares every selected app/service with a host port; `expose` is not required. Workers, jobs and portless containers are skipped.
+`https://connect.hanskristoffer.dk` is a discovery-only Cloudflare Worker. One SQLite Durable Object per recipient stores credentials, grants and expiring session metadata. Application traffic uses Tailcat directly or through a DERP fallback, and never enters the Worker. No DNS record is created for a worktree. See [architecture and sharing rules](cloud-connect-plan.md) for endpoint selection and code ownership.
 
 ## Deploy and release
 
@@ -15,7 +15,7 @@ There is no signing key or `/v1/key` endpoint. The old `CONNECT_SIGNING_JWK` sec
 
 ## Tailcat binary and relay
 
-Buncargo downloads Tailcat 0.6.0 lazily into `~/.buncargo/bin`. Downloads use pinned SHA-256 checksums and atomic installation under a file lock. Linux x64/arm64 uses upstream release archives; Apple silicon uses the relocatable Homebrew Sonoma bottle, also suitable for newer macOS. No Homebrew installation is required. On other platforms build/install Tailcat 0.6.0 and set `BUNCARGO_TAILCAT_PATH` to its absolute executable path.
+Buncargo downloads Tailcat 0.6.0 lazily into `~/.buncargo/bin`. The shared tool installer handles bounded downloads, pinned SHA-256 checksums, executable/version verification and atomic installation under a file lock. Cached executables use the same installation receipts as other Buncargo tools. Linux x64/arm64 uses upstream release archives; Apple silicon uses the relocatable Homebrew Sonoma bottle, also suitable for newer macOS. No Homebrew installation is required. On other platforms build/install Tailcat 0.6.0 and set `BUNCARGO_TAILCAT_PATH` to its absolute executable path.
 
 Tailcat's default relay fleet is bandwidth limited. For a controlled production fallback, run a Tailcat-compatible DERP server on a host with public connectivity and TLS, and publish its DERP map over HTTPS. Set `BUNCARGO_TAILCAT_DERPMAP_URL` to that URL on both publisher and recipient. The map defines the relay hostname/ports; it must be reachable from the sandbox. DERP is a rendezvous/fallback service, not an HTTP app proxy. Do not place it behind an ordinary Cloudflare HTTP proxy without verifying protocol support.
 
@@ -44,8 +44,7 @@ Copied tokens allow registration only. Device owner credentials authorize listin
 ```sh
 bun test src/connect-directory src/core/connect src/cli/dev-connect.test.ts
 # Real binary, local TLS DERP, forced relay path (no public network after binary download):
-BUNCARGO_TEST_TAILCAT=1 TS_DEBUG_TAILCAT_LOCAL_DERP=1 TS_DEBUG_ALWAYS_USE_DERP=1 \
-  bun test src/core/connect/transport/transport.test.ts src/core/connect/helper.test.ts src/cli/dev-connect.integration.test.ts
+bun run test:integration-tailcat
 swift test --package-path menubar
 # Deployed directory, public Tailcat relay, and real disposable PostgreSQL:
 # Requires initdb, pg_ctl and psql on PATH.

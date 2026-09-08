@@ -85,8 +85,4 @@ jobs:
           bun-version: "1.4.2"
       - run: bun install --frozen-lockfile
       - name: Verify Tailcat through a real local DERP relay
-        env:
-          BUNCARGO_TEST_TAILCAT: "1"
-          TS_DEBUG_TAILCAT_LOCAL_DERP: "1"
-          TS_DEBUG_ALWAYS_USE_DERP: "1"
-        run: bun test src/core/connect/transport/transport.test.ts src/core/connect/helper.test.ts src/cli/dev-connect.integration.test.ts
+        run: bun run test:integration-tailcat

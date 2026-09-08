@@ -1,7 +1,7 @@
 import {
 	type DirectorySnapshot,
 	directoryOrigin,
-	MAX_BODY,
+	jsonBody,
 	parseDirectory,
 	type Snapshot,
 } from "./protocol";
@@ -42,15 +42,7 @@ export class DirectoryClient {
 			await response.body?.cancel();
 			throw new DirectoryError(response.status);
 		}
-		if (Number(response.headers.get("content-length")) > MAX_BODY) {
-			await response.body?.cancel();
-			throw new Error("Directory response too large");
-		}
-		// Apply the same bounded streaming reader to responses as to requests.
-		const { jsonBody } = await import("./protocol");
-		return jsonBody(
-			new Request(this.origin, { method: "POST", body: response.body }),
-		);
+		return jsonBody(response);
 	}
 	path(recipient: string, suffix = ""): string {
 		return `/v1/devices/${encodeURIComponent(recipient)}${suffix}`;
