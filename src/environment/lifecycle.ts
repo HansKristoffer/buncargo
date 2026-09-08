@@ -53,7 +53,7 @@ export function createLifecycleApi<
 				? [
 						{
 							name: "prisma",
-							command: "bunx prisma migrate deploy",
+							command: "bunx --no-install prisma migrate deploy",
 							cwd: config.prisma.cwd ?? "packages/prisma",
 						},
 					]
