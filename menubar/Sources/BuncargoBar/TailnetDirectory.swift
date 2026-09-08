@@ -14,6 +14,12 @@ struct RemoteRun: Decodable, Identifiable, Sendable {
   let worktree: String?
   let branch: String?
   let apps: [RemoteApp]
+  var primaryApp: String? = nil
+
+  var primary: RemoteApp? {
+    guard let primaryApp else { return nil }
+    return apps.first { $0.name == primaryApp }
+  }
 }
 
 struct RemoteDirectory: Decodable, Sendable {
@@ -47,6 +53,8 @@ struct RemoteDirectory: Decodable, Sendable {
     for run in runs {
       guard !run.id.isEmpty, run.id.utf16.count <= 256, run.project.utf16.count <= 256,
         (run.branch?.utf16.count ?? 0) <= 256, (run.worktree?.utf16.count ?? 0) <= 256,
+        (run.primaryApp?.utf16.count ?? 0) <= 256,
+        run.primaryApp == nil || run.primary != nil,
         run.apps.count <= 100,
         Set(run.apps.map(\.name)).count == run.apps.count
       else {

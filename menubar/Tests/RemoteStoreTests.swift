@@ -193,6 +193,24 @@ func menuRefreshHonorsBackoffAndExplicitRefreshRetries() async {
 }
 
 @Test
+func remoteOpenUsesTheNamedPrimaryInsteadOfAppOrder() throws {
+  let api = RemoteApp(name: "api", status: "ready", url: "https://devbox.tail123.ts.net:23000")
+
+  // An unavailable primary must not redirect Open to a different, healthy app.
+  for status in ["ready", "starting", "failed", "stopped"] {
+    let platform = RemoteApp(
+      name: "platform", status: status, url: "https://devbox.tail123.ts.net:25173")
+    let run = RemoteRun(
+      id: "run", project: "lullu", worktree: nil, branch: "main",
+      apps: [api, platform], primaryApp: "platform")
+
+    #expect(run.primary?.name == "platform")
+    #expect(run.primary?.url == platform.url)
+    #expect(run.primary?.status == status)
+  }
+}
+
+@Test
 func rejectsMalformedDirectoryVariations() throws {
   let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
   let raw = try Data(contentsOf: root.appendingPathComponent("fixtures/tailnet.v1.json"))
@@ -201,6 +219,7 @@ func rejectsMalformedDirectoryVariations() throws {
 
   let valid = try JSONDecoder().decode(RemoteDirectory.self, from: raw)
   try valid.validate(host: "devbox.tail123.ts.net", expectedID: "fixture-machine", now: now)
+  #expect(valid.runs.first?.primary?.name == "platform")
 
   // Keep malformed cases next to the assertions instead of copying entire directory documents.
   func reject(_ name: String, patch: [String: Any]) throws {
@@ -229,6 +248,20 @@ func rejectsMalformedDirectoryVariations() throws {
   let run = try #require(runs.first)
   let apps = try #require(run["apps"] as? [[String: Any]])
   let app = try #require(apps.first)
+  // Older hosts omit the field; a null value means the primary is not shared.
+  // Both stay readable and leave selection to the user instead of guessing an app.
+  var legacyRun = run
+  legacyRun.removeValue(forKey: "primaryApp")
+
+  for compatibleRun in [legacyRun, run.merging(["primaryApp": NSNull()]) { _, value in value }] {
+    let document = fixture.merging(["runs": [compatibleRun]]) { _, value in value }
+    let data = try JSONSerialization.data(withJSONObject: document)
+    let directory = try JSONDecoder().decode(RemoteDirectory.self, from: data)
+
+    try directory.validate(host: "devbox.tail123.ts.net", expectedID: "fixture-machine", now: now)
+    #expect(directory.runs.first?.primary == nil)
+  }
+
   var missingApps = run
   missingApps.removeValue(forKey: "apps")
 
@@ -238,6 +271,10 @@ func rejectsMalformedDirectoryVariations() throws {
   let invalidRuns: [(String, [String: Any])] = [
     ("duplicate app", ["apps": apps + [app]]),
     ("invalid branch", ["branch": String(repeating: "a", count: 257)]),
+    ("invalid primary type", ["primaryApp": 123]),
+    ("oversized primary", ["primaryApp": String(repeating: "a", count: 257)]),
+    ("empty primary", ["primaryApp": ""]),
+    ("unlisted primary", ["primaryApp": "private-app"]),
   ]
 
   for (name, patch) in invalidRuns {

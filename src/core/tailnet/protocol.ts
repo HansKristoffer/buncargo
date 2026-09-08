@@ -12,6 +12,7 @@ export interface RemoteRun {
 	project: string;
 	worktree?: string | null;
 	branch?: string | null;
+	primaryApp?: string | null;
 	apps: RemoteApp[];
 }
 
@@ -67,6 +68,7 @@ export function parseRemoteDirectory(
 			!label(run.project) ||
 			!optionalLabel(run.worktree) ||
 			!optionalLabel(run.branch) ||
+			!optionalLabel(run.primaryApp) ||
 			!Array.isArray(run.apps) ||
 			run.apps.length > 100
 		)
@@ -109,11 +111,19 @@ export function parseRemoteDirectory(
 		if (new Set(apps.map((a) => a.name)).size !== apps.length)
 			throw new Error("Duplicate remote app");
 
+		// A primary app is a reference to an already validated shared target.
+		if (
+			run.primaryApp != null &&
+			!apps.some((app) => app.name === run.primaryApp)
+		)
+			throw new Error("Invalid remote primary app");
+
 		return {
 			id: run.id,
 			project: run.project,
 			worktree: run.worktree,
 			branch: run.branch,
+			primaryApp: run.primaryApp,
 			apps,
 		};
 	});
