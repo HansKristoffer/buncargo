@@ -293,6 +293,8 @@ async function runDevFlow<
 
 	const plan = buildStartPlan(env.apps, env.services, selectedAppNames);
 	validateDevStart(env, args, appsForDev, plan.requiredServiceKeys);
+	env.prepareStart?.(selectedAppNames);
+	const hasServices = plan.requiredServiceKeys.length > 0;
 
 	// ── Containers ───────────────────────────────────────────────────────────
 	// Held rather than printed: a run that takes over another one activates a
@@ -312,7 +314,7 @@ async function runDevFlow<
 		hostsWarnings = [];
 	};
 	const keepContainers = args.keepContainers || env.autoShutdown === false;
-	if (!args.oneShot && options.watchdog && !keepContainers)
+	if (hasServices && !args.oneShot && options.watchdog && !keepContainers)
 		startHeartbeat(env.projectName, undefined, env.root);
 	await env.start({
 		signal,
@@ -342,14 +344,18 @@ async function runDevFlow<
 						waitForServer: (url, timeout) =>
 							withSignal(env.waitForServer(url, timeout), signal),
 						context: { root: env.root, projectName: env.projectName },
-						runtime: containerRuntimeForEnv(env),
+						runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
+						skipContainers: !hasServices,
 					}),
 				);
 
 	async function takeOver(candidates: TakeoverCandidates) {
 		log.line();
 		await stopRunningApps(candidates.names, env.ports, {
-			runtime: containerRuntimeForEnv(env),
+			root: env.root,
+			apps: candidates.apps,
+			runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
+			skipContainers: !hasServices,
 		});
 		await waitForTailnetHandoff(env.root, candidates.names, signal);
 		hostsWarnings = await activateNamedHosts(env, {
@@ -492,7 +498,7 @@ async function runDevFlow<
 		return undefined;
 	}
 
-	if (options.watchdog && !keepContainers) {
+	if (hasServices && options.watchdog && !keepContainers) {
 		// Heartbeat first, then the watchdog: the runner's first poll reads this
 		// file, and a missing one is owner-death to it. Writing it up front means
 		// the ordering cannot matter however slowly the runner starts.
@@ -541,7 +547,8 @@ async function runDevFlow<
 			{
 				signal,
 				projectName: env.projectName,
-				runtime: containerRuntimeForEnv(env),
+				runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
+				skipContainers: !hasServices,
 				onReady: async (readySignal) => {
 					await withDeadline(
 						async () => {
@@ -590,7 +597,10 @@ async function runDevFlow<
 					void markApps(
 						env.root,
 						[name],
-						isDeliberateExit(code, signal) ? "stopped" : "failed",
+						isDeliberateExit(code, signal) &&
+							!(code === 0 && appsForDev[name]?.kind === "worker")
+							? "stopped"
+							: "failed",
 					);
 				},
 				onAfterWave1: (signal) =>

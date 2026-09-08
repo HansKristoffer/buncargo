@@ -1,8 +1,10 @@
 import type { ContainerRuntimeAdapter } from "../container-runtime";
 import {
+	assertServiceCapabilities,
 	resolveContainerRuntime,
 	resolveContainerRuntimeBinary,
 } from "../container-runtime";
+import { loadEnvInput } from "../core/env-input";
 import { applyHostPlanToUrls, planNamedHosts } from "../core/hosts/plan";
 import { getLocalIp } from "../core/network";
 import { resolvePortPlan } from "../core/port-allocation";
@@ -17,6 +19,7 @@ import {
 	toUrlMap,
 	type UrlMap,
 } from "../core/ports";
+import { createPortOwnerSnapshot } from "../core/process";
 import { workspaceId } from "../core/tailnet/state";
 import type { PublicTunnel } from "../core/tunnel";
 import {
@@ -25,6 +28,7 @@ import {
 	getGeneratedComposePath,
 	writeGeneratedComposeFile,
 } from "../docker-compose";
+import { buildStartPlan } from "../planning";
 import type {
 	AppConfig,
 	ComputedLoopbackUrls,
@@ -52,6 +56,10 @@ export interface DevEnvContext<
 	TApps extends Record<string, AppConfig>,
 	TEnv extends EnvValues = EnvValues,
 > {
+	prepareStart(onlyApps?: string[]): void;
+	readonly hasSelectedServices: boolean;
+	readonly ownedServerPids: Record<string, number>;
+	readonly inputEnv: Readonly<Record<string, string>>;
 	readonly config: DevConfig<TServices, TApps, TEnv>;
 	readonly root: string;
 	readonly projectName: string;
@@ -113,6 +121,7 @@ export function createDevEnvContext<
 	} = {},
 ): DevEnvContext<TServices, TApps, TEnv> {
 	const root = options.root ?? findMonorepoRoot();
+	const inputEnv = loadEnvInput(root, config.options?.envFiles);
 	const suffix = options.suffix;
 	const { worktree, worktreeSuffix, projectSuffix, projectName } =
 		computeDevIdentity({
@@ -133,10 +142,15 @@ export function createDevEnvContext<
 		flag: options.containerRuntime,
 		docker: config.docker,
 	};
-	const runtime = resolveContainerRuntime(runtimeSelection);
-	const runtimeBinary = resolveContainerRuntimeBinary(runtimeSelection);
+	let resolvedRuntime: ContainerRuntimeAdapter | undefined;
+	const runtime = () => {
+		resolvedRuntime ??= resolveContainerRuntime(runtimeSelection);
+		return resolvedRuntime;
+	};
+	let hasSelectedServices = false;
+	let preparedSelection: string | undefined;
 
-	const portPlan = resolvePortPlan({
+	let portPlan = resolvePortPlan({
 		projectPrefix: config.projectPrefix,
 		projectName,
 		root,
@@ -148,9 +162,8 @@ export function createDevEnvContext<
 		// Without the resolved backend the allocator asks Docker about every
 		// port, so this project's own Apple containers look foreign and shift
 		// the offset on every run.
-		runtime,
-		persist: !options.readOnly,
-		probeConflicts: !options.readOnly,
+		persist: false,
+		probeConflicts: false,
 	});
 	const portMap = portPlan.ports;
 	const ports = asComputedPorts<TServices, TApps>(portMap);
@@ -201,10 +214,62 @@ export function createDevEnvContext<
 			services,
 			config.docker,
 			{ projectName, root, worktree: worktreeSuffix },
-			runtime.name,
+			runtime().name,
 		);
 
 	return {
+		ownedServerPids: {},
+		inputEnv,
+		get hasSelectedServices() {
+			return hasSelectedServices;
+		},
+		prepareStart(onlyApps) {
+			const plan = buildStartPlan(apps, services, onlyApps);
+			const selection = JSON.stringify(plan.appNames);
+
+			// The CLI prepares before touching hosts; lifecycle.start reaches this
+			// again. Reuse that allocation rather than probing the same run twice.
+			if (selection === preparedSelection) {
+				return;
+			}
+			hasSelectedServices = plan.requiredServiceKeys.length > 0;
+			const selectedRuntime = hasSelectedServices ? runtime() : undefined;
+
+			if (selectedRuntime) {
+				const selectedServices = Object.fromEntries(
+					plan.requiredServiceKeys.map((name) => [name, services[name]]),
+				);
+				assertServiceCapabilities(selectedRuntime.name, selectedServices);
+			}
+
+			// App-only selection still checks host processes, without asking any runtime.
+			const snapshot = hasSelectedServices
+				? undefined
+				: createPortOwnerSnapshot({ containers: new Map() });
+			portPlan = resolvePortPlan({
+				projectPrefix: config.projectPrefix,
+				projectName,
+				root,
+				services,
+				apps,
+				suffix,
+				worktreeName: worktreeSuffix,
+				worktreeIsolation: config.options?.worktreeIsolation,
+				runtime: selectedRuntime,
+				getOwner: snapshot ? (port) => snapshot.owner(port) : undefined,
+				probeNames: hasSelectedServices ? undefined : plan.appNames,
+			});
+
+			// Keep object identity: env callbacks may already hold these maps.
+			Object.assign(portMap, portPlan.ports);
+			Object.assign(plainUrls, computeUrls(services, apps, portMap, localIp));
+			Object.assign(loopbackUrls, computeLoopbackUrls(services, apps, portMap));
+			for (const host of hostsPlan) {
+				host.targetPort = portMap[host.name] ?? host.targetPort;
+			}
+			refreshUrls();
+			preparedSelection = selection;
+		},
 		config,
 		root,
 		projectName,
@@ -220,17 +285,30 @@ export function createDevEnvContext<
 		tailnetUrls,
 		workspaceId: workspaceId(root),
 		setTailnetUrls(next) {
-			for (const key of Object.keys(tailnetUrls)) delete tailnetUrls[key];
+			for (const key of Object.keys(tailnetUrls)) {
+				delete tailnetUrls[key];
+			}
+
 			for (const [key, value] of Object.entries(next))
-				if (key in apps && value !== undefined) tailnetUrls[key] = value;
+				if (key in apps && value !== undefined) {
+					tailnetUrls[key] = value;
+				}
 
 			refreshUrls();
 		},
-		portOffset: portPlan.offset,
-		portOffsetProvenance: portPlan.provenance,
+		get portOffset() {
+			return portPlan.offset;
+		},
+		get portOffsetProvenance() {
+			return portPlan.provenance;
+		},
 		composeFile,
-		runtime,
-		runtimeBinary,
+		get runtime() {
+			return runtime();
+		},
+		get runtimeBinary() {
+			return resolveContainerRuntimeBinary(runtimeSelection);
+		},
 		hosts,
 
 		ensureComposeFile() {
@@ -240,7 +318,7 @@ export function createDevEnvContext<
 				services,
 				config.docker,
 				{ projectName, root, worktree: worktreeSuffix },
-				runtime.name,
+				runtime().name,
 				model,
 			);
 		},
@@ -251,7 +329,9 @@ export function createDevEnvContext<
 		},
 
 		setNamedHostsActive(active, extras = {}) {
-			if (!hosts) return;
+			if (!hosts) {
+				return;
+			}
 			hosts.active = active;
 			hosts.caPath = extras.caPath;
 			refreshUrls();
@@ -261,8 +341,11 @@ export function createDevEnvContext<
 			for (const key of Object.keys(publicUrls)) {
 				delete publicUrls[key];
 			}
+
 			for (const [key, value] of Object.entries(next)) {
-				if (value !== undefined) publicUrls[key] = value;
+				if (value !== undefined) {
+					publicUrls[key] = value;
+				}
 			}
 		},
 

@@ -245,12 +245,12 @@ export interface DockerComposeGenerationOptions {
 /**
  * Configuration for a Docker Compose service (e.g., postgres, redis).
  */
-export interface ServiceConfig<
+export interface ServiceConfigBase<
 	TEnv extends ServiceEnvVarMap = ServiceEnvVarMap,
 	TStatic extends EnvValues = EnvValues,
 > {
-	/** Base port for the service (before offset is applied) */
-	port: number;
+	/** Base host port; omit for a container with no published endpoint. */
+	port?: number;
 	/** Whether this service can be exposed publicly via tunnel */
 	expose?: boolean;
 	/** Optional secondary port (e.g., ClickHouse native protocol) */
@@ -279,9 +279,29 @@ export interface ServiceConfig<
 	env?: TEnv;
 	/** Constant values merged into the shared env (e.g. SMTP_HOST, API keys) */
 	staticEnv?: TStatic;
+	/** Start after database preparation/seed. Its Compose dependencies must be ready first. */
+	afterPreparation?: boolean;
 	/** Docker Compose service definition (preset helper or raw escape hatch) */
 	docker?: DockerServiceDefinition;
 }
+
+/** Portless containers have no host endpoint. Jobs require an explicit rerun policy. */
+export type ServiceConfig<
+	TEnv extends ServiceEnvVarMap = ServiceEnvVarMap,
+	TStatic extends EnvValues = EnvValues,
+> = ServiceConfigBase<TEnv, TStatic> &
+	(
+		| { kind?: "service"; rerun?: never }
+		| {
+				kind: "job";
+				rerun: "always";
+				port?: never;
+				secondaryPort?: never;
+				healthCheck?: never;
+				expose?: never;
+				urlTemplate?: never;
+		  }
+	);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // App Configuration
@@ -290,9 +310,7 @@ export interface ServiceConfig<
 /**
  * Configuration for an application (e.g., api, web).
  */
-export interface AppConfig<TStatic extends EnvValues = EnvValues> {
-	/** Base port for the app (before offset is applied) */
-	port: number;
+interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	/** Whether this app can be exposed publicly via tunnel */
 	expose?: boolean;
 	/** Command to start the dev server. Set to false to reserve/tunnel the port without starting a process. */
@@ -325,6 +343,20 @@ export interface AppConfig<TStatic extends EnvValues = EnvValues> {
 	 */
 	expo?: boolean | ExpoAppOptions;
 }
+
+/** A long-running owned process. Readiness means spawned and still alive. */
+export type WorkerAppConfig<TStatic extends EnvValues = EnvValues> =
+	AppOptions<TStatic> & {
+		kind: "worker";
+		devCommand: string;
+		port?: never;
+		expose?: never;
+		healthEndpoint?: never;
+		expo?: never;
+	};
+export type AppConfig<TStatic extends EnvValues = EnvValues> =
+	| (AppOptions<TStatic> & { kind?: "server"; port: number })
+	| WorkerAppConfig<TStatic>;
 
 export interface ExpoAppOptions {
 	/** Deep-link scheme of the development build. Default: `scheme` in app.json, else `exp+<slug>`. */
@@ -372,13 +404,17 @@ export type DeclaredAppEnvVars<TApp> = "envVars" extends keyof TApp
  * assignable to `Record<string, AppConfig>`; rewriting `never` would otherwise
  * drop the required `port` / `devCommand` members.
  */
+type AppDefinitionBase<T extends AppConfig> = T extends AppConfig
+	? Omit<T, "requiredServices" | "requiredApps" | "envVars">
+	: never;
+
 export type TypedAppDefinitions<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 > = {
 	[K in keyof TApps]: [TApps[K]] extends [never]
 		? TApps[K]
-		: Omit<TApps[K], "requiredServices" | "requiredApps" | "envVars"> & {
+		: AppDefinitionBase<TApps[K]> & {
 				requiredServices?: readonly Extract<keyof TServices, string>[];
 				requiredApps?: readonly Extract<keyof TApps, string>[];
 				envVars?: (
@@ -403,6 +439,8 @@ export type TypedAppDefinitions<
  * Execution options for the exec helper.
  */
 export interface ExecOptions {
+	/** Select an app overlay and its default working directory. */
+	app?: string;
 	/** Cancel the command and terminate its owned process group. */
 	signal?: AbortSignal;
 	/** Maximum execution time. Startup commands default to ten minutes; standalone exec has no default. */
@@ -437,6 +475,9 @@ export interface HookContext<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 > {
+	/** Selected names for this operation; requiredApps/Compose dependencies are expanded. */
+	selectedApps?: readonly Extract<keyof TApps, string>[];
+	selectedServices?: readonly Extract<keyof TServices, string>[];
 	/** Cancellation for this startup operation; pass it to custom I/O. */
 	signal?: AbortSignal;
 	/** Project name (with suffix if applicable) */
@@ -451,7 +492,7 @@ export interface HookContext<
 	publicUrls: ComputedPublicUrls<TServices, TApps>;
 	/** Execute a shell command with environment variables set */
 	exec: (
-		cmd: string,
+		cmd: string | readonly string[],
 		options?: ExecOptions,
 	) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
 	/** Path to monorepo root */
@@ -471,7 +512,9 @@ export interface DevHooks<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 > {
-	/** Called after all containers are healthy */
+	/** After database readiness and before automatic/custom migrations. Skipped in containers-only mode. */
+	beforeMigrations?: (ctx: HookContext<TServices, TApps>) => Promise<void>;
+	/** Called after all containers are healthy and preparation has finished (legacy order). */
 	afterContainersReady?: (ctx: HookContext<TServices, TApps>) => Promise<void>;
 	/** Called before starting dev servers */
 	beforeServers?: (ctx: HookContext<TServices, TApps>) => Promise<void>;
@@ -538,6 +581,8 @@ export interface PrismaRunner {
  * Configuration for a migration command to run after containers are ready.
  */
 export interface MigrationConfig {
+	/** Run only when all prerequisites are selected. Unset runs with any selected service. */
+	requiredServices?: readonly string[];
 	/** Display name for the migration (e.g., 'prisma', 'clickhouse') */
 	name: string;
 	/** Command to run the migration */
@@ -595,6 +640,7 @@ export interface SeedConfig<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 > {
+	requiredServices?: readonly Extract<keyof TServices, string>[];
 	/** Command to run the seeder */
 	command: string;
 	/** Working directory relative to monorepo root */
@@ -704,6 +750,8 @@ export interface DevOptions<
 	 * `true` uses `.env`. Off by default.
 	 */
 	envFile?: boolean | EnvFileOptions;
+	/** Root-relative dotenv defaults, loaded after config evaluation; later files win. */
+	envFiles?: readonly EnvInputFile[];
 }
 
 /**
@@ -800,6 +848,8 @@ export interface HostsRuntime {
  * passed straight through; those entries are dropped when the environment is
  * built rather than stringified into the literal `"undefined"`.
  */
+export type EnvInputFile = string | { path: string; optional?: boolean };
+
 export type EnvValues = Record<string, string | number | undefined>;
 
 /**
@@ -812,6 +862,8 @@ export type EnvVarsContext<
 	projectName: string;
 	localIp: string;
 	portOffset: number;
+	/** Root dotenv defaults overlaid by inherited environment, resolved after config evaluation. */
+	env?: Readonly<Record<string, string>>;
 	workspaceId?: string;
 	tailnetUrls?: Partial<Record<Extract<keyof TApps, string>, string>>;
 	publicUrls: ComputedPublicUrls<TServices, TApps>;
@@ -998,6 +1050,20 @@ type ServicesWithSecondaryPort<
 		: never]: number;
 };
 
+/** Keep endpoint members only when a service declares a host port. */
+type WithServicePort<TService, TValue> = "port" extends keyof TService
+	? TService["port"] extends undefined
+		? never
+		: TValue
+	: never;
+
+/** Keep unresolved app keys during inference; exclude resolved workers. */
+type ForServerApp<TApp, TValue> = [TApp] extends [never]
+	? TValue
+	: [TApp] extends [{ kind: "worker" }]
+		? never
+		: TValue;
+
 /**
  * Ports for every service and app.
  *
@@ -1011,9 +1077,9 @@ export type ComputedPorts<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 > = {
-	[K in keyof TServices]: number;
+	[K in keyof TServices as WithServicePort<TServices[K], K>]: number;
 } & {
-	[K in keyof TApps]: number;
+	[K in keyof TApps as ForServerApp<TApps[K], K>]: number;
 } & ServicesWithSecondaryPort<TServices>;
 
 /**
@@ -1023,11 +1089,11 @@ export type ComputedUrls<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 > = {
-	[K in keyof TServices]: string;
+	[K in keyof TServices as WithServicePort<TServices[K], K>]: string;
 } & {
-	[K in keyof TApps]: string;
+	[K in keyof TApps as ForServerApp<TApps[K], K>]: string;
 } & {
-	[K in keyof TApps as `${K & string}Local`]: string;
+	[K in keyof TApps as ForServerApp<TApps[K], `${K & string}Local`>]: string;
 };
 
 /**
@@ -1045,9 +1111,9 @@ export type ComputedLoopbackUrls<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 > = {
-	[K in keyof TServices]: string;
+	[K in keyof TServices as WithServicePort<TServices[K], K>]: string;
 } & {
-	[K in keyof TApps]: string;
+	[K in keyof TApps as ForServerApp<TApps[K], K>]: string;
 };
 
 /**
@@ -1116,8 +1182,11 @@ export type ServiceEnvVarNames<
 > = {
 	[K in keyof TServices]:
 		| ExplicitServiceEnvVarNames<TServices[K]>
-		| ServiceEnvVarNamesFromKey<Extract<K, string>>
-		| ServiceEnvVarNamesFromPreset<TServices[K]>
+		| WithServicePort<
+				TServices[K],
+				| ServiceEnvVarNamesFromKey<Extract<K, string>>
+				| ServiceEnvVarNamesFromPreset<TServices[K]>
+		  >
 		| OverlayEnvVarNames<DeclaredStaticEnv<TServices[K]>>;
 }[keyof TServices];
 
@@ -1206,8 +1275,7 @@ export type AppEnvVars<
 	Record<
 		| OverlayEnvVarNames<DeclaredStaticEnv<TApps[TName]>>
 		| OverlayEnvVarNames<DeclaredAppEnvVars<TApps[TName]>>
-		| "PORT"
-		| "HOST"
+		| (TApps[TName] extends { kind: "worker" } ? never : "PORT" | "HOST")
 		| "BUNCARGO_APP_NAME",
 		string
 	> &
@@ -1362,6 +1430,7 @@ export interface DevEnvironment<
 	/** Path passed to docker compose -f */
 	readonly composeFile: string;
 	/** Which backend runs the containers: 'docker' or 'apple' */
+	prepareStart?(onlyApps?: Extract<keyof TApps, string>[]): void;
 	readonly containerRuntime: ContainerRuntimeName;
 	/** Binary the runtime was resolved to, when overridden off `PATH` */
 	readonly containerRuntimeBinary?: string;
@@ -1461,7 +1530,7 @@ export interface DevEnvironment<
 	composeModel(): ComposeDocument;
 	/** Execute a command with environment variables set */
 	exec(
-		cmd: string,
+		cmd: string | readonly string[],
 		options?: ExecOptions,
 	): Promise<{ exitCode: number; stdout: string; stderr: string }>;
 	/** Wait for an HTTP server to respond */

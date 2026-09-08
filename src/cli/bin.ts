@@ -13,6 +13,7 @@
  */
 
 import { handleBar } from "./commands/bar";
+import { handleExec } from "./commands/exec";
 import { showHelp } from "./commands/help";
 import { handleHosts } from "./commands/hosts";
 import { handleDoctor, handleLs, handleStatus } from "./commands/inspect";
@@ -42,6 +43,9 @@ async function runCommand(
 	commandArgs: string[],
 ): Promise<void> {
 	switch (command) {
+		case "exec":
+			process.exitCode = await handleExec(commandArgs);
+			return;
 		case "tailnet":
 			await handleTailnet(commandArgs);
 			return;

@@ -31,7 +31,7 @@ echo "$OUTPUT"
 
 # pid 1 is always alive, so the fixture's run must survive the liveness filter
 # and every app state must decode.
-for expected in "lullu/fix-login" "platform=ready" "api=starting" "worker=reused"; do
+for expected in "lullu/fix-login" "platform=ready" "api=starting" "worker=reused" "jobs=ready"; do
   if [[ "$OUTPUT" != *"$expected"* ]]; then
     echo "Expected --status output to contain '$expected'" >&2
     exit 1

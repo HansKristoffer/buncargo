@@ -63,6 +63,7 @@ export function getDefaultPortBindings(
 	config: ServiceConfig,
 	preset?: DockerPresetName,
 ): string[] {
+	if (config.port === undefined) return [];
 	const envName = getPortEnvName(serviceKey);
 	const bindings: string[] = [];
 

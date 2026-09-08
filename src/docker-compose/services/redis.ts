@@ -10,7 +10,7 @@ export type RedisServiceOptions = PresetServiceSharedOptions;
 
 export type RedisServiceConfig = ServiceConfig<{
 	REDIS_URL: "url";
-}>;
+}> & { port: number };
 
 export const redisDockerService = defineDockerService<
 	RedisServiceOptions,

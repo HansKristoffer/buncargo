@@ -20,12 +20,13 @@ export function createWatchdogApi<
 	const heartbeat = createHeartbeatOwner(ctx.projectName, ctx.root);
 	return {
 		startHeartbeat(intervalMs) {
-			heartbeat.start(intervalMs);
+			if (ctx.hasSelectedServices) heartbeat.start(intervalMs);
 		},
 		stopHeartbeat() {
 			heartbeat.stop();
 		},
 		async spawnWatchdog(timeoutMinutes) {
+			if (!ctx.hasSelectedServices) return;
 			await spawnWatchdogFn(ctx.projectName, ctx.root, {
 				timeoutMinutes,
 				verbose: true,

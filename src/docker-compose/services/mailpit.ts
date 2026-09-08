@@ -15,7 +15,7 @@ export type MailpitServiceConfig = ServiceConfig<
 	{ SMTP_HOST: string }
 > & {
 	secondaryPort: number;
-};
+} & { port: number };
 
 export const mailpitDockerService = defineDockerService<
 	MailpitServiceOptions,

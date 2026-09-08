@@ -30,8 +30,8 @@ enum Actions {
     /// it. Falling back to loopback here is the same guard the CLI applies
     /// before it prints a named URL: a route is a file until the daemon picks
     /// it up, and opening it earlier lands on a 404 from our own proxy.
-    static func preferredURL(named: String, loopback: String, hostsActive: Bool) -> String {
-        hostsActive ? named : loopback
+    static func preferredURL(named: String?, loopback: String?, hostsActive: Bool) -> String {
+        (hostsActive ? named : loopback) ?? ""
     }
 }
 

@@ -105,7 +105,8 @@ export async function startAppServers<
 			productionBuild,
 			isCI: isCI(),
 			projectName: ctx.projectName,
-			runtime: ctx.runtime,
+			runtime: ctx.hasSelectedServices ? ctx.runtime : undefined,
+			skipContainers: !ctx.hasSelectedServices,
 			signal: options.signal,
 			deferPublicUrlApps: false,
 			waitForHealth: (wave, signal) =>
@@ -127,6 +128,7 @@ export async function startAppServers<
 		},
 	);
 
+	if (ctx.ownedServerPids) Object.assign(ctx.ownedServerPids, pids);
 	return pids;
 }
 

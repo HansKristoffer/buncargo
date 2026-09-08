@@ -34,8 +34,14 @@ export interface DevEnvVarsApi<
 		targetApps: Record<string, AppConfig>,
 		production?: boolean,
 	): Record<string, Record<string, string>>;
-	getHookContext(signal?: AbortSignal): HookContext<TServices, TApps>;
-	exec(cmd: string, options?: ExecOptions): Promise<ExecResult>;
+	getHookContext(
+		signal?: AbortSignal,
+		selection?: { appNames: string[]; requiredServiceKeys: string[] },
+	): HookContext<TServices, TApps>;
+	exec(
+		cmd: string | readonly string[],
+		options?: ExecOptions,
+	): Promise<ExecResult>;
 }
 
 export function createEnvVarsApi<
@@ -49,6 +55,7 @@ export function createEnvVarsApi<
 
 	function overlayContext() {
 		return {
+			env: ctx.inputEnv,
 			projectName: ctx.projectName,
 			workspaceId: ctx.workspaceId,
 			tailnetUrls: ctx.tailnetUrls as Partial<
@@ -74,8 +81,10 @@ export function createEnvVarsApi<
 			publicUrls: publicUrls as ComputedPublicUrls<TServices, TApps>,
 		});
 		shared.BUNCARGO_WORKSPACE_ID = ctx.workspaceId;
-		for (const [name, url] of Object.entries(ctx.tailnetUrls))
+		for (const [name, url] of Object.entries(ctx.tailnetUrls)) {
 			shared[`${name.toUpperCase()}_TAILNET_URL`] = url;
+		}
+
 		if (ctx.hosts?.active) {
 			if (ctx.hosts.caPath) {
 				shared.NODE_EXTRA_CA_CERTS = ctx.hosts.caPath;
@@ -86,7 +95,7 @@ export function createEnvVarsApi<
 		// through the dynamic record it returns.
 		return stringifyEnvValues(
 			mergeSharedEnvWithOverlay(
-				shared,
+				{ ...(config.options?.envFiles ? ctx.inputEnv : {}), ...shared },
 				config.env,
 				ports,
 				urls,
@@ -109,7 +118,7 @@ export function createEnvVarsApi<
 		const processEnv: Record<string, string> = {
 			...sharedEnv,
 			...(appConfig?.staticEnv ? stringifyEnvValues(appConfig.staticEnv) : {}),
-			HOST: "0.0.0.0",
+			...(appConfig?.kind === "worker" ? {} : { HOST: "0.0.0.0" }),
 			// So a framework plugin can configure itself without the consumer
 			// repeating which app it is. Nothing else tells the child process.
 			BUNCARGO_APP_NAME: appName,
@@ -123,8 +132,11 @@ export function createEnvVarsApi<
 			processEnv.PORT = String(appPort);
 			// Expo CLI ignores PORT; without this every worktree's Metro asks
 			// for 8081 and the second one is offered 8082, not its own block.
-			if (isExpoApp(appConfig)) processEnv.RCT_METRO_PORT = String(appPort);
+			if (isExpoApp(appConfig)) {
+				processEnv.RCT_METRO_PORT = String(appPort);
+			}
 		}
+
 		const namedHost = ctx.hosts?.active
 			? ctx.hosts.plan.find(
 					(host) => host.kind === "app" && host.name === appName,
@@ -134,6 +146,7 @@ export function createEnvVarsApi<
 			processEnv.BUNCARGO_APP_HOSTNAME = namedHost.hostname;
 			processEnv.BUNCARGO_HOSTS_PORT = String(hostsDaemonPort());
 		}
+
 		const tailnetUrl = ctx.tailnetUrls[appName];
 		if (tailnetUrl) {
 			const remote = new URL(tailnetUrl);
@@ -166,8 +179,27 @@ export function createEnvVarsApi<
 		);
 	}
 
-	function exec(cmd: string, options?: ExecOptions): Promise<ExecResult> {
-		return execAsync(cmd, ctx.root, buildEnvVars(), options);
+	function exec(
+		cmd: string | readonly string[],
+		options?: ExecOptions,
+	): Promise<ExecResult> {
+		if (options?.app !== undefined && !apps[options.app]) {
+			throw new Error(`Unknown app "${options.app}"`);
+		}
+
+		return execAsync(
+			cmd,
+			ctx.root,
+			options?.app === undefined
+				? buildEnvVars()
+				: buildAppEnvVars(options.app as Extract<keyof TApps, string>),
+			{
+				...options,
+				cwd:
+					options?.cwd ??
+					(options?.app === undefined ? undefined : apps[options.app]?.cwd),
+			},
+		);
 	}
 
 	// Created once, then reused so hooks observe a stable identity.
@@ -178,9 +210,28 @@ export function createEnvVarsApi<
 		HookContext<TServices, TApps>
 	>();
 
-	function getHookContext(signal?: AbortSignal): HookContext<TServices, TApps> {
+	function getHookContext(
+		signal?: AbortSignal,
+		selection?: { appNames: string[]; requiredServiceKeys: string[] },
+	): HookContext<TServices, TApps> {
+		if (selection) {
+			return {
+				...getHookContext(signal),
+				selectedApps: selection.appNames as Extract<keyof TApps, string>[],
+				selectedServices: selection.requiredServiceKeys as Extract<
+					keyof TServices,
+					string
+				>[],
+			};
+		}
+
 		if (!hookContext) {
 			hookContext = {
+				selectedApps: Object.keys(apps) as Extract<keyof TApps, string>[],
+				selectedServices: Object.keys(services) as Extract<
+					keyof TServices,
+					string
+				>[],
 				projectName: ctx.projectName,
 				ports,
 				urls,
@@ -193,7 +244,11 @@ export function createEnvVarsApi<
 				exec: async (cmd, opts) => exec(cmd, opts),
 			};
 		}
-		if (!signal) return hookContext;
+
+		if (!signal) {
+			return hookContext;
+		}
+
 		let scoped = scopedContexts.get(signal);
 		if (!scoped) {
 			scoped = {
@@ -210,6 +265,7 @@ export function createEnvVarsApi<
 			};
 			scopedContexts.set(signal, scoped);
 		}
+
 		return scoped;
 	}
 

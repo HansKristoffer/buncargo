@@ -223,6 +223,8 @@ bunx buncargo bar install         # Install the macOS menu bar app
 bunx buncargo bar status
 bunx buncargo env
 bunx buncargo env --get ports.api
+bunx buncargo exec -- bun scripts/maintenance.ts
+bunx buncargo exec --app=api -- bun scripts/inspect-runtime.ts
 bunx buncargo prisma <args>
 bunx buncargo typecheck
 bunx buncargo help
@@ -232,6 +234,40 @@ bunx buncargo version
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`). `--get ports.api` prints one raw value for scripts.
 
 `buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own - that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and 2 in CI; override with `--concurrency=N` or `BUNCARGO_TYPECHECK_CONCURRENCY`. `--only=platform` (path or basename) checks one workspace. The config run generates `.buncargo/config-typecheck.tsconfig.json` and records durations in `.buncargo/typecheck-timings.json`; keep `.buncargo/` in `.gitignore`.
+
+## Execute with the checkout environment
+
+Use `exec` for maintenance scripts and tooling that need the checkout's allocated
+URLs and environment:
+
+```sh
+bunx buncargo exec -- bun scripts/maintenance.ts
+bunx buncargo exec --app=api -- bun scripts/inspect-runtime.ts
+bunx buncargo exec --cwd=packages/prisma -- bun seed.ts --profile=internal
+```
+
+Shared generated values are always available. `--app` adds that app's environment
+overlay and uses its configured directory; otherwise the working directory is the
+repository root. An explicit relative `--cwd` resolves from that root, including
+when the command is launched inside a workspace.
+
+The required `--` separates buncargo options from unchanged child arguments.
+Invoke a shell explicitly for shell syntax, for example `-- sh -c 'command1 && command2'`.
+Standard streams, interrupt signals and the child's exit status propagate to the
+caller. Exec does not start apps or infrastructure, migrate, generate, or seed.
+
+Exec, Prisma and environment reads reuse persisted checkout ports without probing
+running services as foreign occupants. On a cold checkout, they compute a
+deterministic allocation without starting infrastructure or writing the allocation;
+those endpoints are a preview until `dev` resolves conflicts and persists them.
+Read-only commands retain existing persisted endpoints across base-port edits;
+new keys use the persisted offset until startup reconciles. An explicit
+`BUNCARGO_PORT_OFFSET` overrides allocation.
+
+Programmatically, `env.exec(["bun", "scripts/maintenance.ts"], { app: "api", cwd: "." })`
+uses the same environment and directory rules. String commands use a shell; argv
+arrays preserve each argument. It returns `{ exitCode, stdout, stderr }` and throws
+on failure unless `throwOnError: false` is supplied.
 
 ## Container runtime
 
@@ -247,14 +283,15 @@ export default defineDevConfig({
 
 The selection is read from `--runtime`, then `BUNCARGO_CONTAINER_RUNTIME`, then `docker.runtime`, then the `"docker"` default. `"auto"` uses Apple `container` when its system service answers and falls back to Docker otherwise; an explicit `"apple"` fails with instructions rather than silently switching, because the two runtimes keep their volumes in different places.
 
-Everything else is unchanged: the same `dev.config.ts`, the same generated compose file, the same `ls` / `status` / `doctor` / `--down --all` output, and the same named `.localhost` URLs. Apple's CLI has no compose support, so buncargo translates the generated service model into one `container run` per service, matching on the `buncargo.*` labels both backends write.
+Both backends use `dev.config.ts`, the generated Compose model, inspection commands and named `.localhost` URLs. Apple's CLI has no compose support, so buncargo translates the generated service model into one `container run` per service, matching on the `buncargo.*` labels both backends write.
 
 **Requirements.** macOS 26+ on Apple silicon, with `container system start` having been run once (the first run installs a kernel and needs a terminal, so buncargo will not do it for you).
 
 **Known gaps** compared with the Docker backend:
 
 - `restart:` policies are dropped - Apple has no equivalent. This changes nothing in practice: buncargo starts containers per `dev` run and the watchdog stops them, so no restart policy is part of the contract either backend offers.
-- Compose `healthcheck:` blocks are dropped. This also changes nothing: readiness is buncargo's own poll against the published host port, not compose's `--wait`.
+- Compose `healthcheck:` and `depends_on:` ordering are not translated. Buncargo still runs its configured published-port probes; portless containers use process-state readiness. Use Docker when container dependencies require Compose health/completion conditions.
+- Finite jobs (`kind: "job"`) require Docker. Apple selections containing a job fail before startup mutations because that backend cannot verify job exit codes.
 - Any other compose key that cannot be translated is listed in a warning rather than silently ignored.
 - **No DNS between containers.** Every Apple container joins one builtin `default` network (`192.168.64.0/24`), so containers can already reach each other by IP. Resolving each other by *name* needs `container system dns create`, which must run as an administrator; buncargo keeps a single deliberate `sudo` seam for the hosts daemon and does not add a second one. Note also that a container's hostname is `<project>-<service>` (for example `myapp-main-postgres`), not the compose service name. Apps on the host are unaffected - they reach services on `localhost:<port>` either way, which is how buncargo wires them already.
 - Bind-mounting a host directory into an image that `chown`s it fails on virtiofs. The built-in presets all use named volumes, which are unaffected.
@@ -276,8 +313,9 @@ For reproducible overhead measurements, run `bun run build` followed by `bun scr
 ```
 validate selected apps, dependencies, attachment, and expose targets
   → activate named hosts for dev
-  → reconcile selected containers and wait for service health
-  → sync envFile → migrations → optional generation → container hook → seed
+  → start early selected containers, wait for service readiness and job completion
+  → sync envFile → beforeMigrations → migrations → optional generation → container hook → seed
+  → start afterPreparation containers and wait for readiness
   → beforeServers → spawn wave 1 → wait for wave 1 health
   → open requested tunnels and inject public URLs
   → spawn wave 2 → wait for wave 2 health → afterServers
@@ -289,11 +327,187 @@ validate selected apps, dependencies, attachment, and expose targets
 | --- | --- |
 | `dev` | Containers, migrations, generation, seed, apps, readiness |
 | `dev --up-only` | Containers and dotenv sync; no migrations, generation, seeds, or apps |
-| `dev --migrate` | Containers, dotenv sync, migrations; no generation, seeds, or apps |
-| `dev --seed` | Containers, dotenv sync, migrations, generation, forced seed; no apps |
+| `dev --migrate` | Early containers, dotenv sync, bootstrap and migrations; no generation, seeds, late containers, or apps |
+| `dev --seed` | Selected containers and preparation, including bootstrap and forced seed; no apps |
 | `dev --down` / `--reset` | Stop; reset also removes volumes |
 
-Mutually exclusive modes cannot be combined. A selected app must resolve at least one required service, as before; frontend-only and services-only startup are not introduced by this change.
+Mutually exclusive modes cannot be combined. Configuration, selection, dependency
+references and cycles are validated before startup changes host configuration or
+starts resources.
+
+### App-only selections
+
+Use `services: {}` for a project with no containers. In a mixed config, an app
+without `requiredServices` can start independently of the container-backed apps:
+
+```ts
+import { defineDevConfig, service } from "buncargo";
+
+export default defineDevConfig({
+  projectPrefix: "example",
+  services: { postgres: service.postgres() },
+  apps: {
+    marketing: {
+      port: 4321,
+      cwd: "packages/marketing",
+      devCommand: "bun run dev",
+    },
+    api: {
+      port: 3000,
+      cwd: "packages/api",
+      devCommand: "bun run dev",
+      requiredServices: ["postgres"],
+    },
+  },
+});
+```
+
+`bunx buncargo dev --apps=marketing` allocates its app port, injects its environment
+and supervises the process without resolving a container runtime, writing Compose,
+or starting/stopping containers. Named hosts and tunnels remain available when
+configured. Explicit diagnostic and shutdown commands can inspect configured
+infrastructure.
+
+A partial app-only start refuses a port conflict that would relocate an unselected
+persisted service. Free the conflicting port or start the full environment to
+reconcile its shared allocation.
+
+### Portless workers
+
+Use `kind: "worker"` for a long-running process without an HTTP listener:
+
+```ts
+apps: {
+  jobs: {
+    kind: "worker",
+    cwd: "packages/jobs",
+    devCommand: "bun run dev",
+    requiredServices: ["postgres"],
+    staticEnv: { QUEUE_NAME: "local" },
+  },
+},
+```
+
+Workers require a command and reject `port`, `expose`, `healthEndpoint` and Expo
+configuration. They receive shared environment values and app overlays, but have
+no generated `PORT`, `HOST`, allocated port or URL. Inherited or explicitly
+configured environment values still apply. Computed port/URL types omit workers.
+
+Worker readiness means spawned and still alive; it does not prove a connection to
+a queue or database. An unexpected exit, including zero, fails supervision.
+Deliberate stops remain clean. Library startup keeps supervising after returning
+PIDs; cancellation and `env.stop()` clean up owned process groups.
+
+The CLI reuses a live worker in the same checkout. `dev --takeover` explicitly
+stops it and starts it in the current run. Direct library startup refuses a
+duplicate worker. Ownership uses PID and process birth identity, so simultaneous
+starts cannot create duplicate consumers and worktrees stay separate. Workers
+appear in logs and the run registry; `buncargo stop jobs --run=<session>` stops an
+owned worker. A reused worker must be stopped through its owning run.
+
+### Portless containers and finite jobs
+
+Omit `port` for an internal container: it has no host publication or generated URL.
+Buncargo waits for the runtime to report it running. That establishes process
+startup; use Docker Compose health conditions for stronger container dependencies.
+Host endpoint options and host-derived environment mappings require a port.
+
+Use a job for a finite container command. This example imports fixture data after
+database preparation:
+
+```ts
+services: {
+  postgres: service.postgres(),
+  importData: {
+    kind: "job",
+    rerun: "always",
+    afterPreparation: true,
+    healthTimeout: 60_000,
+    docker: {
+      image: "postgres:16",
+      environment: { PGPASSWORD: "postgres" },
+      volumes: ["./scripts/import.sql:/setup/import.sql:ro"],
+      command: ["psql", "-h", "postgres", "-U", "postgres", "-f", "/setup/import.sql"],
+      depends_on: { postgres: { condition: "service_healthy" } },
+    },
+  },
+},
+apps: {
+  api: {
+    port: 3000,
+    devCommand: "bun run dev",
+    requiredServices: ["importData"],
+  },
+},
+```
+
+`requiredServices` selects the job; Compose dependencies select PostgreSQL too.
+Compose references use `serviceName` when it differs from the config key.
+A container depending on a job uses `condition: "service_completed_successfully"`.
+Completion references must target jobs; `service_healthy` cannot target a job.
+
+A running job is not complete. Exit zero satisfies completion; nonzero exit
+prevents subsequent preparation/apps from starting and reports recent job output.
+Jobs cannot publish ports, expose endpoints or set restart policies. Completion
+requires Docker; Apple rejects job selections before starting resources.
+
+`rerun: "always"` is required and is the only supported policy. First startup runs
+the job; later startups rerun completed or failed jobs. Configuration changes
+reconcile the container, and volume resets run initialization again. An already
+running matching job is awaited. The consumer must make repeated execution safe.
+Late startup does not rerun jobs already completed in the early phase.
+
+### Selection-aware preparation
+
+Declare service prerequisites on migrations and seeders to scope their side effects:
+
+```ts
+prisma: { service: "postgres", cwd: "packages/prisma" },
+hooks: {
+  beforeMigrations: async (ctx) => {
+    await ctx.exec(["bun", "scripts/bootstrap-roles.ts"]);
+  },
+},
+migrations: [{
+  name: "extra-schema",
+  command: "bun scripts/migrate.ts",
+  requiredServices: ["postgres"],
+}],
+seed: {
+  command: "bun scripts/seed.ts",
+  requiredServices: ["postgres"],
+},
+```
+
+| Preparation | Selection rule |
+| --- | --- |
+| Automatic Prisma migration/generation | `prisma.service`, default `postgres`, must be selected |
+| Migration/seed with `requiredServices` | Every listed service must be selected |
+| Migration/seed without prerequisites | Runs when at least one service is selected |
+| Migration/seed with `requiredServices: []` | Also permitted in app-only runs |
+| `beforeMigrations` | Selected Prisma database; without Prisma configuration, any selected service |
+| `afterContainersReady` | Runs after migration/generation, before seeding, when services are selected |
+
+`beforeMigrations` runs after early container readiness and job completion, before
+automatic Prisma migrations and ordered custom migrations. Hooks, generation
+checks and seed checks receive expanded `selectedApps` and `selectedServices`.
+`ctx.exec` uses the migration environment and carries cancellation; pass
+`ctx.signal` to custom I/O. Bootstrap or migration failure prevents later work.
+Bootstrap/migration success is not cached by configuration hash.
+
+Set `afterPreparation: true` on a service that needs migrations or seed data before
+starting. It starts after generation, `afterContainersReady` and seed, and must be
+ready before apps start. Early services cannot depend on late ones, and migration,
+seed or Prisma prerequisites cannot require late services. Independent containers
+within a phase and apps within a wave run concurrently. `requiredApps` expands
+selection only; it does not create per-app or host-to-container readiness barriers.
+
+Containers-only mode skips all preparation hooks, migrations, generation and seed.
+`dev --migrate` runs bootstrap and migrations through the same lifecycle path.
+Direct `buncargo prisma <args>` is a Prisma passthrough with the database environment;
+it does not run development bootstrap hooks or the complete preparation/seed lifecycle.
+Startup failure and cancellation retain shared-container ownership rules instead
+of tearing down other runs' resources.
 
 ## Attached / interactive apps
 
@@ -553,13 +767,59 @@ envFile: {
 
 ## Environment variables
 
+### Dotenv input
+
+Use `options.envFiles` to load root-relative dotenv defaults for dev, Prisma, exec
+and programmatic environments:
+
+```ts
+options: {
+  envFiles: [".env.defaults", { path: ".env.local", optional: true }],
+},
+env: (_ports, urls, ctx) => ({
+  JOBS_DATABASE_URL: urls.postgres,
+  TOKEN: ctx.env?.TOKEN,
+}),
+```
+
+Paths resolve from the discovered repository root, even when invoked in a nested
+workspace. String entries are required files. `optional: true` permits a missing
+file but does not hide read/permission errors. Later files override earlier ones.
+Dotenv quoting and multiline values are supported; shell expressions and
+`${OTHER_VARIABLE}` references are not expanded.
+
+Environment precedence, lowest to highest:
+
+1. Explicit dotenv files, in order.
+2. Inherited process environment.
+3. Generated local values and service static values, then shared `config.env`.
+4. App static values, generated server `PORT`/`HOST`, then app `envVars`.
+5. Explicit programmatic exec `options.env`, if supplied.
+
+A stale dotenv `DATABASE_URL` cannot override the allocated local URL. Deliberate
+configuration and app overrides remain authoritative. Use the shared callback for
+project-specific aliases and `ctx.env` for resolved inputs.
+
+Inputs load **after config evaluation**. Top-level config imports cannot depend on
+files declared by that config. Each environment holds an input snapshot; create or
+load a new environment to reread the files. Loading does not mutate `process.env`,
+leak inputs between projects or rewrite credentials. `options.envFile` is the
+independent, opt-in [output synchronization](#dotenv-sync) setting. Without
+`envFiles`, child processes still inherit their parent environment.
+
+Use `loopbackUrls` for host-side scripts, LAN/device URLs for device access, and
+`ctx.publicUrls` for explicitly enabled tunnels. Docker containers use Compose
+service DNS names and container ports to communicate. Host gateway names such as
+`host.docker.internal` are not guaranteed across runtimes. Keep internal database
+credentials out of browser and Expo public environment mappings.
+
 ### Injected
 
 | Variable | Where | Meaning |
 | --- | --- | --- |
 | `COMPOSE_PROJECT_NAME` | Compose / shared env | Isolated project name |
 | `NODE_ENV` | Shared env | `development` unless production build |
-| `<NAME>_PORT` | Shared env | Assigned port for each service/app |
+| `<NAME>_PORT` | Shared env | Assigned port for each port-bearing service/app |
 | `<NAME>_URL` | Shared env | Local URL. Named HTTPS when hosts are active (`https://api.myapp.localhost`) |
 | `<NAME>_LOOPBACK_URL` | Shared env | Always `http://localhost:<port>`, never rewritten by named hosts |
 | `<NAME>_PUBLIC_URL` | Shared env | Tunnel URL while a tunnel is active |
@@ -569,8 +829,8 @@ envFile: {
 | `REDIS_URL` | Shared env | From `service.redis()` |
 | `CLICKHOUSE_URL` | Shared env | From `service.clickhouse()` |
 | `CLICKHOUSE_NATIVE_PORT` | Shared env | ClickHouse `secondaryPort` |
-| `PORT` | Per-app process | That app's assigned port |
-| `HOST` | Per-app process | `0.0.0.0` |
+| `PORT` | Server app process | That server app's assigned port; not generated for workers |
+| `HOST` | Server app process | `0.0.0.0`; not generated for workers |
 | `BUNCARGO_APP_NAME` | Per-app process | The app's key in `apps`, so a framework plugin knows which app it is |
 | `BUNCARGO_APP_HOSTNAME` | Per-app process | That app's named host (only when named hosts are active) |
 
@@ -620,18 +880,18 @@ Every variable above is read through [`src/core/runtime-flags.ts`](src/core/runt
 
 ## Configuration Reference
 
-Every field below is from `src/types/all-types.ts`. Anything not listed here is not a supported config option.
+The configuration reference covers the main public options; `src/types/all-types.ts` is the complete type contract.
 
 ### `DevConfig`
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `projectPrefix` | `string` | required | Compose/project prefix. Must start with a letter and be lowercase/`0-9`/`-`. Example: `"gey"` |
-| `services` | `Record<string, ServiceConfig>` | required | Docker services. At least one. |
-| `apps` | `Record<string, AppConfig>` | `undefined` | Dev servers to orchestrate |
+| `services` | `Record<string, ServiceConfig>` | required | Container services; `{}` permits app-only configurations. |
+| `apps` | `Record<string, AppConfig>` | `undefined` | Servers and portless workers to orchestrate |
 | `env` | `(ports, urls, ctx) => Record<string, string \| number>` | `undefined` | Shared overlay merged onto computed ports/urls for every process |
 | `hooks` | `DevHooks` | `undefined` | Lifecycle hooks |
-| `migrations` | `MigrationConfig[]` | `[]` | Extra migrate commands after containers (Prisma is auto-added when `prisma` is set). Run sequentially. |
+| `migrations` | `MigrationConfig[]` | `[]` | Selected custom migrations, in order after automatic Prisma migrations for the selected database |
 | `seed` | `SeedConfig` | `undefined` | After migrations, before servers |
 | `prisma` | `PrismaConfig` | `undefined` | Enables `dev.prisma` and `buncargo prisma` |
 | `options` | `DevOptions` | `undefined` | Isolation, watchdog, helper app names |
@@ -643,7 +903,10 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `port` | `number` | required | Base host port before offset |
+| `kind` | `"service" \| "job"` | `"service"` | Long-running container or finite command |
+| `rerun` | `"always"` | required for jobs | Explicitly allow execution on subsequent starts |
+| `afterPreparation` | `boolean` | `false` | Start after migrations, generation, hooks and seed |
+| `port` | `number` | omitted | Base host port; omit for an internal container or job |
 | `expose` | `boolean` | `false` | Eligible for `--expose` |
 | `secondaryPort` | `number` | `undefined` | Extra host port (ClickHouse native). Exposed as `ports.<name>Secondary` |
 | `healthCheck` | `"pg_isready" \| "redis-cli" \| "http" \| "tcp" \| (port) => Promise<boolean> \| false` | preset default | `tcp` is a real TCP connect from the host and emits no container healthcheck. `false` disables |
@@ -657,13 +920,14 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | `staticEnv` | `Record<string, string>` | `{}` | Constant shared env (API keys, `SMTP_HOST`) |
 | `docker` | preset helper or raw Compose service | inferred for postgres/redis/clickhouse/mailpit/typesense | Image, ports, healthcheck, volumes |
 
-`UrlBuilderContext`: `{ port, secondaryPort?, host, localIp }`.
+`UrlBuilderContext`: `{ port, secondaryPort?, host, localIp }`. See [portless containers and finite jobs](#portless-containers-and-finite-jobs) for completion and rerun behavior.
 
 ### `AppConfig`
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `port` | `number` | required | Base host port before offset |
+| `kind` | `"server" \| "worker"` | `"server"` | HTTP server or process without an endpoint |
+| `port` | `number` | required for servers | Base host port; prohibited for workers |
 | `devCommand` | `string \| false` | required | Start command. `false` reserves/tunnels the port without starting a process |
 | `prodCommand` | `string` | `devCommand` | Production start command |
 | `buildCommand` | `string` | `undefined` | Production build command |
@@ -679,7 +943,9 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | `needsPublicUrls` | `boolean` | `false` | Start after tunnels so env sees `*_PUBLIC_URL`. Ignored without `--expose` |
 | `expo` | `boolean \| { scheme?, simulator? }` | inferred | Expo dev server: gets `RCT_METRO_PORT` and a `buncargo sim` device. Inferred when `devCommand` mentions `expo` |
 
-`envVars` context: `{ projectName, localIp, portOffset, publicUrls, loopbackUrls }`.
+Use `kind: "worker"` for a long-running process without a listener. Workers require a command and reject port, HTTP-health, exposure and Expo options.
+
+`envVars` context: `{ projectName, localIp, portOffset, publicUrls, loopbackUrls, env }`; `env` is the resolved input snapshot.
 
 ### `DevOptions`
 
@@ -687,6 +953,7 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | --- | --- | --- | --- |
 | `worktreeIsolation` | `boolean` | `true` | Unique ports and compose project per worktree |
 | `autoShutdown` | `number \| false` | `180000` via CLI | Idle watchdog timeout in **ms**. `false` disables (same as `--keep-containers`) |
+| `envFiles` | `(string \| { path, optional? })[]` | `[]` | Root dotenv input defaults; later files win, generated local values stay authoritative |
 | `envFile` | `boolean \| { path?, createFrom? }` | `false` | Sync a dotenv to the allocated ports. `true` means `.env` |
 | `verbose` | `boolean` | `true` | Default verbosity |
 | `primaryApp` | `string` | inferred | The app this project is "about": the menu bar's Open button, and the default for `hosts.primaryApp` and `frontendApp`. Inferred from the dependency graph when unset |
@@ -721,6 +988,7 @@ Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
+| `requiredServices` | `readonly string[]` | any selected service | All listed services must be selected; `[]` permits app-only preparation |
 | `name` | `string` | required | Display name |
 | `command` | `string` | required | Shell command |
 | `cwd` | `string` | repo root | Working directory |
@@ -729,6 +997,7 @@ Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
+| `requiredServices` | `readonly string[]` | any selected service | All listed services must be selected; `[]` permits app-only preparation |
 | `command` | `string` | required | Seeder command (`buncargo dev --seed` uses this) |
 | `cwd` | `string` | repo root | Working directory |
 | `check` | `(ctx) => Promise<boolean>` | always run | Return `true` to seed. `checkTable(table)` defaults its service to `prisma.service ?? "postgres"` |
@@ -738,14 +1007,15 @@ Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.
 
 | Hook | When |
 | --- | --- |
-| `afterContainersReady` | After containers, dotenv sync, migrations, and generation; before seeding |
+| `beforeMigrations` | After selected database readiness, before automatic Prisma and custom migrations |
+| `afterContainersReady` | After early containers, dotenv sync, migrations, and generation; before seeding |
 | `beforeServers` | Before app processes start |
 | `afterServers` | After health waits succeed |
 | `beforeStop` | Before `stop()` |
 
-`HookContext`: `{ projectName, ports, urls, publicUrls, exec, root, isCI, portOffset, localIp, signal }`.
+`HookContext`: `{ projectName, ports, urls, publicUrls, exec, root, isCI, portOffset, localIp, signal, selectedApps, selectedServices }`. Migration and seed entries accept `requiredServices` to scope preparation; all listed services must be selected.
 
-`exec(cmd, { cwd?, verbose?, env?, throwOnError?, signal?, timeoutMs?, killGraceMs? })` returns `{ exitCode, stdout, stderr }`.
+`exec(cmd, { app?, cwd?, verbose?, env?, throwOnError?, signal?, timeoutMs?, killGraceMs? })` accepts a shell command string or an argv array and returns `{ exitCode, stdout, stderr }`. See [checkout execution](#execute-with-the-checkout-environment).
 
 ### `StartOptions` / `StopOptions`
 
@@ -773,9 +1043,9 @@ Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.
 
 Raise `healthTimeout` on the service if a cold start can exceed 30s (ClickHouse often does).
 
-App readiness uses `healthEndpoint` (HTTP). Set `healthEndpoint: false` for Metro/Expo.
+Server app readiness uses `healthEndpoint` (HTTP). Set `healthEndpoint: false` for Metro/Expo. Workers are ready when spawned and alive; portless containers use runtime process state, and finite jobs require successful completion.
 
-Health checks always probe `http://localhost:<port>`, never the named HTTPS URL. Putting TLS and the CA on the readiness path would break reused-process detection.
+HTTP app health checks probe `http://localhost:<port>`, including when the app has a named HTTPS URL. This keeps readiness and reused-process detection independent of local certificate trust.
 
 ## Public tunnels
 
@@ -810,7 +1080,8 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `Docker is not running (…)` | Daemon down and auto-start failed/disabled | Start OrbStack/Docker/Colima, or drop `--no-docker-autostart` |
 | `port 5173 held by container gey-other-platform-1 (project gey-other)` | Foreign compose project owns the port | Stop the other env (`buncargo ls` / `dev --down --all`) or let allocation shift |
 | `port … held by process …` | Another process owns the port | Stop that process; own-repo orphans are killed automatically |
-| `No required services resolved for app selection…` | Selected apps declare no `requiredServices` | Add `requiredServices` or start without `--apps` |
+| `Worker "…" is already running` | Library startup encountered an owned worker | Reuse it through the CLI or use `dev --takeover` |
+| `Apple container cannot verify finite job exit codes yet` | A job was selected with Apple | Use `--runtime=docker` |
 | `already listening on port … but failed health check` | Port busy but `healthEndpoint` failed | Fix the existing server or free the port |
 | `Top-level envVars has been removed…` | Old config shape | Move shared values to top-level `env`, app-only values to `apps.<name>.envVars` |
 | `App "…" uses "env", which was renamed to "staticEnv"…` | Old config shape | Rename `apps.<name>.env` to `apps.<name>.staticEnv` |
@@ -845,7 +1116,9 @@ await env.stop();
 
 `loadDevEnv()` imports the config at runtime, so pass your config type (`loadDevEnv<typeof devConfig>()`) to keep the `defineDevConfig` inference - `ports`, `urls`, `getEnvVar`, and `buildAppEnvVars` stay keyed to your actual services and apps. Without it you get the widened `AnyDevEnvironment` shape, where those keys are plain strings. `getDevEnv<typeof devConfig>()` takes the same parameter.
 
-`createDevEnvironment(config)` is the same object without going through the config loader, and infers everything from the config you pass.
+`createDevEnvironment(config)` constructs the same environment directly and infers from the supplied config. Construction reads persisted ports or computes a cold preview without runtime probes. Startup finalizes allocation and updates the ports/URLs objects in place; re-read them after startup instead of holding copied preview values.
+
+Use `env.exec(["bun", "scripts/maintenance.ts"], { app: "api" })` to run a command without starting the lifecycle.
 
 ## License
 
