@@ -1,0 +1,48 @@
+# A schema change to runs.json that breaks the Swift decoder fails the PR that
+# makes it, rather than the next release.
+name: Menubar CI
+
+on:
+  pull_request:
+    paths:
+      - "menubar/**"
+      - "src/core/run-registry*"
+      - "src/core/tailnet/**"
+      - "src/core/registry-file*"
+      - "src/cli/run-publish*"
+      - "src/cli/commands/stop*"
+      - "src/types/**"
+      - ".github/workflows/menubar-ci.yml"
+
+concurrency:
+  group: menubar-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    # macos-15 ships Xcode 16 (Swift 6); macos-14 only has Swift 5.10.
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      # Printed, not pinned: hard-coding an Xcode path breaks whenever the
+      # runner image renames one, and these three lines are what you actually
+      # need when a build starts failing after an image rotation.
+      - name: Show toolchain
+        run: |
+          xcode-select --print-path
+          swift --version
+
+      - name: Build
+        working-directory: menubar
+        run: swift build -c release --arch arm64
+
+      - name: Remote discovery and shared schema tests
+        run: swift test --package-path menubar
+
+      - name: Smoke test against a fixture registry
+        run: bash menubar/scripts/smoke-test.sh
