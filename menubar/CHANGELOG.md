@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.1.0](https://github.com/HansKristoffer/buncargo/compare/bar-v2.0.0...bar-v2.1.0) (2026-09-08)
+
+
+### Features
+
+* share remote worktree services with Tailcat ([#24](https://github.com/HansKristoffer/buncargo/issues/24)) ([aff9bae](https://github.com/HansKristoffer/buncargo/commit/aff9baeb79d61045cc57a9dcd6b1c73534f414d4))
+
+
+### Bug Fixes
+
+* **bar:** shrink the menu window when its content shrinks ([#22](https://github.com/HansKristoffer/buncargo/issues/22)) ([d4f5ea0](https://github.com/HansKristoffer/buncargo/commit/d4f5ea038695b70601b9f7b60f1564bae649e677))
+
 ## [2.0.0](https://github.com/HansKristoffer/buncargo/compare/bar-v1.1.0...bar-v2.0.0) (2026-09-08)
 
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## [8.1.0](https://github.com/HansKristoffer/buncargo/compare/v8.0.0...v8.1.0) (2026-09-08)
+
+
+### Features
+
+* share remote worktree services with Tailcat ([#24](https://github.com/HansKristoffer/buncargo/issues/24)) ([aff9bae](https://github.com/HansKristoffer/buncargo/commit/aff9baeb79d61045cc57a9dcd6b1c73534f414d4))
+
+
+### Bug Fixes
+
+* **bar:** shrink the menu window when its content shrinks ([#22](https://github.com/HansKristoffer/buncargo/issues/22)) ([d4f5ea0](https://github.com/HansKristoffer/buncargo/commit/d4f5ea038695b70601b9f7b60f1564bae649e677))
+* recover release publication on full workflow reruns ([#21](https://github.com/HansKristoffer/buncargo/issues/21)) ([3c029d9](https://github.com/HansKristoffer/buncargo/commit/3c029d9d8c2c030b6d4b4e3b9b60c791611876c9))
+
 ## [8.0.0](https://github.com/HansKristoffer/buncargo/compare/v7.10.0...v8.0.0) (2026-09-08)
 
 
