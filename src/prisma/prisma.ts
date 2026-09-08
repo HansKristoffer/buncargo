@@ -152,7 +152,7 @@ Examples:
 		console.log(`🔄 Running: prisma ${args.join(" ")}\n`);
 
 		return new Promise((resolve) => {
-			const proc = spawn("bunx", ["prisma", ...args], {
+			const proc = spawn("bunx", ["--no-install", "prisma", ...args], {
 				cwd: workingDir,
 				env: fullEnv,
 				stdio: "inherit",

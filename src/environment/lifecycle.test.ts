@@ -111,7 +111,7 @@ describe("startup modes and hooks", () => {
 			"artifact",
 			"runtime",
 			"up",
-			"bunx prisma migrate deploy",
+			"bunx --no-install prisma migrate deploy",
 			"migrate",
 		]);
 	});
@@ -122,7 +122,7 @@ describe("startup modes and hooks", () => {
 			"artifact",
 			"runtime",
 			"up",
-			"bunx prisma migrate deploy",
+			"bunx --no-install prisma migrate deploy",
 			"migrate",
 			"generate",
 			"container hook",
