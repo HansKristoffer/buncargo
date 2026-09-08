@@ -23,7 +23,11 @@ There is no signing key or `/v1/key` endpoint. The old `CONNECT_SIGNING_JWK` sec
 
 Buncargo downloads Tailcat 0.6.0 lazily into `~/.buncargo/bin`. The shared tool installer handles bounded downloads, pinned SHA-256 checksums, executable/version verification and atomic installation under a file lock. Cached executables use the same installation receipts as other Buncargo tools. Linux x64/arm64 uses upstream release archives; Apple silicon uses the relocatable Homebrew Sonoma bottle, also suitable for newer macOS. No Homebrew installation is required. On other platforms build/install Tailcat 0.6.0 and set `BUNCARGO_TAILCAT_PATH` to its absolute executable path.
 
-Tailcat's default relay fleet is bandwidth limited. For a controlled production fallback, run a Tailcat-compatible DERP server on a host with public connectivity and TLS, and publish its DERP map over HTTPS. Set `BUNCARGO_TAILCAT_DERPMAP_URL` to that URL on both publisher and recipient. The map defines the relay hostname/ports; it must be reachable from the sandbox. DERP is a rendezvous/fallback service, not an HTTP app proxy. Do not place it behind an ordinary Cloudflare HTTP proxy without verifying protocol support.
+Buncargo defaults to its Hetzner relay at `derp.hanskristoffer.dk` (`178.104.193.175`, Nuremberg). The existing Worker serves its public routing map at `https://connect.hanskristoffer.dk/derpmap.json`; no extra token or environment setting is needed. The map is cacheable and does not consume recipient discovery quota. Relay traffic connects directly to the server on TCP 443, with STUN on UDP 3478. Cloudflare DNS must stay **DNS only** for the relay hostname. TCP 80 lets the server issue and renew its Let's Encrypt certificate. The Worker still carries no application traffic.
+
+Publishers embed the selected relay's hostname, IP and ports in their private Tailcat addresses. Recipients use those details without fetching a relay map, so they do not need matching machine settings. `BUNCARGO_TAILCAT_DERPMAP_URL` remains an HTTPS override for another fleet: set it on the publisher before starting a cloud run. Direct peer connections remain preferred when possible. The default map contains only the Buncargo relay; relay failure does not silently switch to Tailcat's bandwidth-limited public fleet.
+
+The map ships with the connection Worker through the existing CLI release pipeline, before npm publication. Update and restart cloud Buncargo sessions to select the new relay; already published addresses keep their original route. A receiver that already supports Tailcat 0.6.0 can use the embedded relay details without a menu bar update. Normal PR integration uses Tailcat's local test DERP, so it does not depend on the Hetzner server. The live release acceptance verifies embedded routing, browser streaming and PostgreSQL through the deployed map. The relay server itself is managed by systemd; Worker deployment updates routing metadata, not the server binary.
 
 References: [Tailcat source and CLI](https://github.com/tailscale/tailcat), [Tailcat architecture and relay limitations](https://tailscale.com/blog/tailcat).
 
@@ -52,9 +56,9 @@ bun test src/connect-directory src/core/connect src/cli/dev-connect.test.ts
 # Real binary, local TLS DERP, forced relay path (no public network after binary download):
 bun run test:integration-tailcat
 swift test --package-path menubar
-# Deployed directory, public Tailcat relay, and real disposable PostgreSQL:
+# Deployed directory, Buncargo relay, and real disposable PostgreSQL:
 # Requires initdb, pg_ctl and psql on PATH.
-BUNCARGO_TEST_CONNECT_E2E=1 bun test src/core/connect/connect.integration.test.ts
+BUNCARGO_TEST_CONNECT_E2E=1 TS_DEBUG_ALWAYS_USE_DERP=1 bun test src/core/connect/connect.integration.test.ts
 ```
 
 The local directory binds loopback and uses ephemeral in-memory state. It is a test adapter, not a persistent deployment. See [acceptance results](connect-server-acceptance.md) for what was actually exercised.

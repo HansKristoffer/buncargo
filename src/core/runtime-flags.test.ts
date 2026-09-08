@@ -16,8 +16,37 @@ import {
 	quickTunnelRetryBaseMs,
 	quickTunnelUrlTimeoutMs,
 	shouldSyncHostsFile,
+	tailcatDerpMap,
 	typecheckConcurrencyOverride,
 } from "./runtime-flags";
+
+describe("tailcatDerpMap", () => {
+	it("defaults to the Buncargo relay map without machine-specific settings", () => {
+		for (const env of [{}, { BUNCARGO_TAILCAT_DERPMAP_URL: "  " }])
+			expect(tailcatDerpMap(env)).toBe(
+				"https://connect.hanskristoffer.dk/derpmap.json",
+			);
+	});
+
+	it("retains an explicit HTTPS fleet override", () => {
+		expect(
+			tailcatDerpMap({
+				BUNCARGO_TAILCAT_DERPMAP_URL: " https://relay.example/map.json ",
+			}),
+		).toBe("https://relay.example/map.json");
+	});
+
+	it("rejects insecure maps and embedded credentials", () => {
+		for (const url of [
+			"http://relay.example/map.json",
+			"https://user:secret@relay.example/map.json",
+			"file:///tmp/map.json",
+		])
+			expect(() =>
+				tailcatDerpMap({ BUNCARGO_TAILCAT_DERPMAP_URL: url }),
+			).toThrow("BUNCARGO_TAILCAT_DERPMAP_URL must be an HTTPS URL");
+	});
+});
 
 describe("isCI", () => {
 	it("detects the supported providers", () => {

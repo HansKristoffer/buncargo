@@ -7,8 +7,16 @@ struct RemoteTarget: Decodable, Identifiable, Sendable {
     let `protocol`: String
     let status: String
     let preset: String?
+    var isHTTP: Bool { `protocol` == "http" }
+    var isPostgres: Bool { preset == "postgres" }
     var state: RunStatus { RunStatus(rawValue: status) ?? .failed }
     var ready: Bool { status == "ready" || status == "reused" }
+
+    /// Display and TCP copy address only; browser authorization comes from the CLI.
+    func localAddress(port: Int) -> String {
+        let address = "127.0.0.1:\(port)"
+        return isHTTP ? "http://\(address)/" : address
+    }
 }
 
 struct RemoteRun: Decodable, Identifiable, Sendable {
@@ -26,7 +34,7 @@ struct RemoteRun: Decodable, Identifiable, Sendable {
     let targets: [RemoteTarget]
     var id: String { sessionId }
     var title: String { branch ?? worktree ?? "Main" }
-    var primary: RemoteTarget? { targets.first { $0.kind == "app" && $0.name == primaryApp && $0.protocol == "http" } }
+    var primary: RemoteTarget? { targets.first { $0.kind == "app" && $0.name == primaryApp && $0.isHTTP } }
 }
 
 struct ConnectionDirectory: Decodable, Sendable {

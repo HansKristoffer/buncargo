@@ -41,9 +41,11 @@ and CI turn the whole thing off.
 
 ## Remote environments
 
-Choose **Copy connection token** in the Remote environments key menu. Store it as `BUNCARGO_CONNECT_TOKENS` on a server or cloud agent, mark the intended apps/services `expose: true`, and run `buncargo dev`. Multiple recipient tokens are a JSON array. No VPN setup or sharing flag is required.
+Choose **Copy connection token** in the Remote environments key menu. Store it as `BUNCARGO_CONNECT_TOKENS` on a server or cloud agent and run `buncargo dev`. Every selected app or service with a host port is shared automatically. Multiple recipient tokens are a JSON array. No VPN setup or sharing flag is required.
 
-Remote environments appear by project and branch/worktree, with the same row presentation as local runs. Open creates an authenticated local browser proxy. Connect creates a loopback TCP listener and copies its address; use your own database credentials. PostgreSQL can also open in TablePlus. Disconnect closes the local listener; Revoke withdraws this recipient's access to the remote session without stopping the server.
+Remote environments appear by project and branch/worktree. Their detail panels share `TargetDetailPanel`, `TargetSectionHeading` and `TargetRow` with local runs: the same status dots, APPS/SERVICES sections, truncated addresses and icon buttons. Local and remote adapters supply only their own actions.
+
+A remote target shows “Not connected” until the CLI creates its loopback address. Open creates an authenticated local browser proxy. Connect creates a loopback TCP listener and copies its address; use your own database credentials. PostgreSQL can also open in TablePlus. The × icon disconnects the local listener; Revoke withdraws this recipient's access to the remote session without stopping the server.
 
 The key menu provides token rotation and revoke-all-and-rotate. Rotation affects new registrations; existing sessions retain their grants unless revoked. Device credentials stay in a private local state file owned by the CLI. The app invokes the CLI for setup, discovery and connection actions; remote data never supplies executable paths.
 
