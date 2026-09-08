@@ -8,6 +8,12 @@ struct RemoteMachine: Identifiable {
   var error: String?
 
   var id: String { directory?.machineId ?? endpoint.absoluteString }
+
+  /// Short hostname, the way the menu labels the machine.
+  var name: String {
+    let hostname = directory?.hostname ?? endpoint.host ?? "Machine"
+    return hostname.components(separatedBy: ".").first ?? hostname
+  }
 }
 
 struct RemoteDependencies {

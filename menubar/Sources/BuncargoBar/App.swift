@@ -164,7 +164,7 @@ final class AppModel: ObservableObject {
     init() {
         let store = RunStore()
         self.store = store
-        self.stopper = StopCoordinator(store: store)
+        self.stopper = StopCoordinator(store: store, remote: remote)
     }
 }
 
@@ -218,7 +218,7 @@ struct MenuContentView: View {
                 }
 
                 Divider().padding(.top, 8)
-                RemoteMachinesView(store: remote)
+                RemoteMachinesView(store: remote, stopper: stopper)
 
                 if let notice = stopper.notice {
                     Text(notice)
