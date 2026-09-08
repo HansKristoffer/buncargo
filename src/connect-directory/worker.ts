@@ -4,6 +4,7 @@ import { RecipientRelay } from "./relay";
 import { type DeviceState, directoryRequest } from "./service";
 
 interface WorkerSocket {
+	binaryType: "arraybuffer" | "blob";
 	accept(): void;
 	send(data: string | Uint8Array | ArrayBuffer): void;
 	close(code?: number, reason?: string): void;
@@ -60,6 +61,8 @@ export class RecipientDirectory {
 					try {
 						const admission = await relay.admit(request);
 						const pair = new WebSocketPair();
+						// Workers now default to Blob delivery; the relay consumes binary frames directly.
+						pair[1].binaryType = "arraybuffer";
 						pair[1].accept();
 						const listener = relay.open(admission, pair[1]);
 						pair[1].addEventListener("message", (e) =>

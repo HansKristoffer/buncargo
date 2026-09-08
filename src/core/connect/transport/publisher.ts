@@ -157,7 +157,11 @@ export function startRelayPublisher(options: {
 				stream.tcp = tcp;
 				tcp.on("error", () => closeStream(id));
 				channel.on("error", () => closeStream(id));
-				tcp.on("close", () => closeStream(id));
+				tcp.on("close", () => {
+					// A clean TCP close can precede the channel draining its final writes.
+					// Let pipe deliver FIN after those bytes; only abort on a truncated close.
+					if (!tcp.readableEnded || !tcp.writableFinished) closeStream(id);
+				});
 				channel.on("close", () => closeStream(id));
 				channel.pipe(tcp).pipe(channel);
 			};

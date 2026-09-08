@@ -47,7 +47,7 @@ Remote environments appear by project and branch/worktree, with the same row pre
 
 The key menu provides token rotation and revoke-all-and-rotate. Rotation affects new registrations; existing sessions retain their grants unless revoked. Device credentials stay in a private local state file owned by the CLI. The app invokes the CLI for setup, discovery and connection actions; remote data never supplies executable paths.
 
-Discovery refreshes every 15 seconds and when the menu opens, with failure backoff. Expired/disconnected entries disable actions. A separate CLI helper keeps streams alive when the menu closes and revalidates access. The CLI and app must both be updated to builds containing this feature.
+Discovery refreshes every 15 seconds and when the menu opens, with failure backoff. Expired/disconnected entries disable actions. A publisher whose relay is unavailable shows Connecting until it reconnects. Private streams use outbound WebSockets through the stable `connect.hanskristoffer.dk` relay, so new worktrees need no tunnel installation or DNS allocation. A separate CLI helper keeps streams alive when the menu closes and revalidates access. The CLI and app must both be updated to builds containing this feature.
 
 ## Build from source
 

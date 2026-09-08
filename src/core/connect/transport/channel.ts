@@ -7,7 +7,7 @@ export interface Wire {
 	close(): void;
 	buffered(): number;
 }
-/** Byte stream over binary WebSocket frames: data, FIN, pause, resume. */
+/** Byte stream over binary WebSocket frames: data, FIN, pause, resume and byte-credit ACKs. */
 export class Channel extends Duplex {
 	private suspended = false;
 	private unacknowledged = 0;

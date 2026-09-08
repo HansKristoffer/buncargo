@@ -1,44 +1,56 @@
-# Two-machine connection acceptance — September 8, 2026
+# Two-machine release acceptance — September 8, 2026
 
-**Result: transport functionality passed in a diagnostic run; ordinary cold startup is blocked by Quick Tunnel DNS reliability. Do not treat this as an unconditional release acceptance.**
+**Result: the packed CLI and unmodified local helper passed the supplied-server acceptance through the stable Worker relay, using normal DNS.** The earlier Quick Tunnel DNS blocker is resolved by removing private Quick Tunnels from the design.
 
-## Environment
+## Environment and path
 
-The publisher ran on the supplied Mac mini at `100.79.178.107`, using Bun 1.4.2, Docker 29.1.3 and the locally built Buncargo package. SSH was used to install the fixture, run the CLI and clean up. Application and database test traffic went through Cloudflare, not SSH forwarding.
+The publisher ran on the supplied Mac mini at `100.79.178.107`, with Bun 1.4.2, Docker 29.1.3 and the packed Buncargo build based on the current 7.10.0 release baseline. These are local candidate artifacts; Release Please will assign release versions.
 
-The fixture was an isolated Git worktree on branch `feature/remote-connect`. It used a private temporary home directory and a uniquely named Compose project. The ordinary `buncargo dev --no-hosts --keep-containers` command received two recipient tokens through `BUNCARGO_CONNECT_TOKENS`. It started an HTTP app, Postgres and Redis marked `expose: true`; an unexposed app was excluded. The directory was the deployed `https://connect.hanskristoffer.dk` Worker.
+SSH installed the isolated fixture, launched the CLI and handled cleanup. Application and database traffic used `https://connect.hanskristoffer.dk` through outbound authenticated WebSockets. No SSH port forwarding, DNS proxy, resolver changes, hosts overrides or modified client wrapper was used.
+
+The fixture was a Git worktree on branch `feature/remote-connect`, with a temporary home and unique Compose project. Ordinary `buncargo dev --no-hosts --keep-containers` received two independent tokens through `BUNCARGO_CONNECT_TOKENS`. It started an exposed browser app, Postgres and Redis; an app with `expose: false` was excluded. The receiving side used the built CLI's `connect token`, `open`, `revoke` and detached helper, each recipient in a separate temporary home.
 
 ## Results
 
 | Check | Result |
 | --- | --- |
-| SSH key authentication | Passed; key access remains configured as requested. |
-| Real CLI automatic sharing without `--share` or `--expose` | Passed. |
-| Two recipients discover the same session | Passed. |
-| Project, branch and worktree metadata | Passed through the CLI directory reader. |
-| Only selected `expose: true` targets are published | Passed. |
-| Immediate local access using default DNS | Failed repeatedly on fresh Quick Tunnel hostnames. |
-| HTTP responses, SSE and WebSocket echo for both recipients | Passed with the diagnostic DNS workaround below. |
-| Unauthenticated connector access and untrusted browser origins | Rejected as expected in the diagnostic run. |
-| Postgres transaction and 1,010,000-byte COPY | Passed in the diagnostic run. |
-| Redis PING, SET/GET, 25 pipelined increments and Pub/Sub | Passed in the diagnostic run. |
-| Postgres query lasting 65 seconds and Redis connection used afterward | Passed across capability and registration renewals in the diagnostic run. |
-| Revoke one recipient while retaining the other | Passed in the diagnostic run. |
-| Stop the CLI and withdraw discovery | Passed in the diagnostic run. |
-| Native menu bar interaction against this server | Not exercised; earlier Swift decoder/store tests and bundle smoke tests remain separate evidence. |
+| Automatic sharing without `--share` or public `--expose` | Passed |
+| Two independent recipients discover one session | Passed |
+| Project, branch and worktree metadata | Passed through the CLI directory reader |
+| Selected `expose: true` targets only | Passed |
+| Immediate access with normal DNS and unmodified CLI/helper | Passed |
+| HTTP responses, SSE and WebSocket echo for both recipients | Passed |
+| Unauthenticated loopback/relay requests and untrusted browser origin | Rejected |
+| Postgres transaction and 1,010,000-byte COPY | Passed |
+| Redis PING, SET/GET, 25 pipelined increments and Pub/Sub | Passed |
+| Postgres query lasting 65 seconds and Redis reuse afterward | Passed across capability and registration renewals |
+| Revoke one recipient while retaining the other | Passed |
+| Pause publisher until heartbeat expiry | Discovery became Connecting; new access rejected |
+| Resume publisher | Automatically reconnected on the same endpoint; new browser request succeeded |
+| Normal CLI shutdown | Discovery withdrawn |
 
-## DNS finding
+Three complete two-machine runs passed through the normal path. Fresh-token cold starts measured about 3.1 seconds and 3.3 seconds; the final run included the TCP drain fix and repeated the database, renewal, revocation and outage-recovery checks.
 
-The directory reported ready targets before this client's normal resolver could resolve the freshly allocated `*.trycloudflare.com` hostname. Both Bun and curl returned name-resolution errors. Direct DNS queries sometimes disagreed: Cloudflare's resolver returned records while Google DNS returned `NXDOMAIN` for AAAA, with a negative-cache TTL close to 1,800 seconds. Supplying a resolved address to curl while retaining the original HTTPS hostname reached the authenticated connector and received the expected HTTP 401.
+The live Worker integration test separately passed two recipients, HTTP/SSE, Postgres transactions/COPY and revocation with a disposable local database. Live testing caught Cloudflare's Blob default for standard WebSocket messages; the Worker now explicitly requests ArrayBuffer delivery before accepting sockets.
 
-A diagnostic-only loopback HTTP CONNECT proxy resolved the original hostnames through Bun's c-ares backend. A test CLI wrapper supplied that proxy to WebSocket connections. The original hostname, TLS certificate verification, directory authentication and capability checks were retained. No DNS settings or hosts-file entries were changed. This wrapper is not part of the shipping CLI and is not an acceptable user setup requirement.
+## Other release checks
 
-One full diagnostic run passed all traffic, database, renewal and revocation checks. A later fresh-hostname run also encountered a resolution timeout. A delayed direct request to a previously healthy tunnel eventually returned HTTP 401 using normal DNS, but a complete run through the unmodified local helper was not completed before that session shut down. No default-path success is claimed.
+- Full Bun suite: 1,009 passed, 9 opt-in/platform tests skipped, no failures.
+- Linux (Bun 1.4.2 container): all 18 connection tests passed; the opt-in live test was skipped there.
+- Typecheck/lint, build and packed-consumer verification passed.
+- Swift tests: 5 passed. Universal arm64/x86_64 menu bar build and registry/selftest smoke checks passed.
+- Local relay tests cover multi-megabyte streams, slow readers/backpressure, TCP half-close, expired/renewed capabilities, cross-recipient isolation, malformed frames, forged credit acknowledgements and publisher replacement. The bulk and slow-reader half-close checks passed 30 repetitions each after fixing a clean TCP shutdown that could truncate queued final bytes.
 
-## Release follow-up
+Native menu interaction against this particular server was not manually exercised. Swift decoding/store tests and bundle smoke checks are separate evidence. The menu presents the same validated metadata and invokes the CLI/helper used in the two-machine run. Internet latency, arbitrary databases and frontend-specific absolute URLs are not universally certified by these tests.
 
-Fresh-worktree acceptance must pass through the unmodified CLI/helper and normal client DNS, without a diagnostic proxy or manual resolver changes. Resolve the per-run tunnel DNS dependency and distinguish application readiness from transport availability before releasing. Repeat HTTP, TCP, renewal and revocation checks against the real server after that change.
+## Superseded Quick Tunnel finding
 
-## Cleanup
+The first implementation carried private streams through per-run `*.trycloudflare.com` endpoints. Fresh hostnames repeatedly failed on the receiving computer's ordinary resolver due to negative caching. A diagnostic-only DNS proxy proved the transport could carry Postgres/Redis, but it was not an acceptable user setup or release result.
 
-All acceptance publisher sessions, local helpers, temporary proxies, test containers, the test database volume and the test Compose network were stopped or removed. Temporary copied tokens and recipient device files were removed. Existing server applications and databases were left running. As with the earlier integration test, the directory retains inert random test-device credential hashes; registrations were withdrawn or allowed to expire. The SSH key remains installed for subsequent authorized access.
+The replacement uses the existing stable Worker hostname for directory, control and data connections. There is no per-worktree DNS allocation. Transport readiness is now separate from application readiness, and outage acceptance checks the unavailable state as well as recovery. Public `--expose` continues to use the existing public tunnel feature.
+
+## Cleanup and release boundary
+
+Acceptance removes its recipient secrets, helpers, publishers, test containers, database volume and Compose network. Existing server workloads are outside the fixture and remain running. Inert random test-device hashes remain in the directory; registrations are withdrawn. SSH key access remains configured as requested.
+
+The accepted Worker deployment is `3bda5f3b-ae24-4454-99aa-4586778169b3` at `connect.hanskristoffer.dk`. The backend is deployed separately. The npm package and menu bar remain release candidates until the normal PR/Release Please workflows publish them. Versions and changelogs are owned by those workflows.

@@ -635,7 +635,7 @@ A connection token only authorizes a server to share its selected services with 
 
 Explicit `--expose` remains the separate public-URL feature. Tokens never enable an unprotected public endpoint. Without tokens, normal dev runs stay local. One-shot commands ignore inherited connection tokens.
 
-Use relative/same-origin frontend API paths through the development server's proxy where possible. Absolute sandbox-local URLs embedded in application JavaScript do not automatically become recipient-local URLs: app-specific origin configuration may still be needed. The local helper permits cross-origin HTTP requests among a session's established browser proxies. Cloudflare Quick Tunnels have connection limits; the private byte-stream transport is tested separately from direct public HTTP tunnels.
+Use relative/same-origin frontend API paths through the development server's proxy where possible. Absolute sandbox-local URLs embedded in application JavaScript do not automatically become recipient-local URLs: app-specific origin configuration may still be needed. The local helper permits cross-origin HTTP requests among a session's established browser proxies. Private connections use outbound WebSockets through the stable Cloudflare relay; no tunnel installation or per-worktree DNS is needed. The menu shows Connecting while a publisher is unavailable and enables Open/Connect when its relay is ready.
 
 The optional `BUNCARGO_CONNECT_DIRECTORY` override selects an operator-hosted directory; set the same origin on both server and recipient before copying tokens. See [directory operations](docs/connect-directory.md) and [the implementation plan](docs/cloud-connect-plan.md).
 

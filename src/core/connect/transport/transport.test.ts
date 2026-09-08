@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { once } from "node:events";
 import { createServer } from "node:net";
+import { finished } from "node:stream/promises";
 import { importJWK, SignJWT } from "jose";
 import { relayFixture } from "../../../connect-directory/test-fixture";
 import { signCapability } from "../capability";
@@ -35,7 +36,7 @@ test("relay preserves large byte streams and half-close and rejects another reci
 		const channel = await openStream(f.endpoint, "target", f.access),
 			chunks: Buffer[] = [];
 		channel.on("data", (chunk) => chunks.push(chunk));
-		const ended = once(channel, "end");
+		const ended = finished(channel);
 		const payload = Buffer.alloc(3 * 1024 * 1024, 42);
 		channel.end(payload);
 		await ended;
@@ -225,7 +226,7 @@ test("a slow reader keeps buffers bounded and can resume a bulk transfer", async
 	const f = await relayFixture((server.address() as { port: number }).port);
 	try {
 		const channel = await openStream(f.endpoint, "target", f.access);
-		channel.write("send");
+		channel.end("send");
 		await Bun.sleep(200);
 		expect(channel.destroyed).toBe(false);
 		expect(channel.readableLength).toBeLessThan(1024 * 1024);

@@ -1,67 +1,73 @@
-# Connection directory operations
+# Connection directory and relay operations
 
-The `buncargo-connect` Worker serves `https://connect.hanskristoffer.dk`. It is deployed separately from the npm package and uses one SQLite-backed Durable Object per recipient. `wrangler.connect.jsonc` owns its route, rate limiter and storage migration. The application transport runs through Cloudflare Quick Tunnels to authenticated server connectors; application bytes never pass through the directory Worker.
+The `buncargo-connect` Worker serves `https://connect.hanskristoffer.dk`. One SQLite-backed Durable Object per recipient stores its grants and relays its application streams. `wrangler.connect.jsonc` owns the custom domain, storage migration, rate limiter and compatibility date. Private connections use outbound WebSockets to this stable origin; no Quick Tunnel or cloudflared installation is involved.
 
-## Deploy
-
-Authenticate with `bunx wrangler login`, then deploy from this checkout:
+## Deployment
 
 ```sh
+bunx wrangler login
 bunx wrangler deploy --config wrangler.connect.jsonc
 ```
 
-The deployed Worker already has `CONNECT_SIGNING_JWK` stored as a secret. Ordinary deployments preserve it. Do not generate a new signing key for each deployment: live publishers pin the public key when starting their connector. An intentional signing-key rotation requires restarting publishers so they acquire the new public key; existing capabilities expire within 60 seconds.
+The deployed Worker already has `CONNECT_SIGNING_JWK`. Ordinary deployments preserve it. Do not generate a new key on each deployment: publishers pin its public key at startup. An intentional key rotation requires restarting publishers; old capabilities expire within 60 seconds.
 
-For a new installation, generate an extractable Ed25519 key pair with `jose.generateKeyPair("EdDSA", { extractable: true })`, export the private JWK with `exportJWK`, and upload it as the `CONNECT_SIGNING_JWK` secret using Wrangler's secret prompt or a private `--secrets-file`. Never commit or print the private JWK. Set `CONNECT_ORIGIN` and the custom domain together. `/v1/key` returns only the public key; `/health` returns the service identity and schema version.
+For another installation, generate an extractable Ed25519 key pair with `jose.generateKeyPair("EdDSA", { extractable: true })`, export the private JWK and upload it through Wrangler's secret prompt or a private secrets file. Never commit or print it. Set `CONNECT_ORIGIN` and the custom domain together. `/v1/key` exposes only the public key; `/health` exposes service identity and schema version.
 
-Set `BUNCARGO_CONNECT_DIRECTORY` on clients and publishers when operating a different directory. HTTPS is required except for loopback development. Copied tokens contain no arbitrary credential destination. The default is `https://connect.hanskristoffer.dk`.
+Set `BUNCARGO_CONNECT_DIRECTORY` consistently on publishers and recipients for another operator's directory. HTTPS is required except on loopback for tests. Tokens contain no arbitrary credential destination. Session relay URLs must match the configured origin and exact recipient/session path.
 
-## Local development and verification
+Worker deployments can terminate active sockets. Publishers reconnect automatically; application clients must open new connections. Interrupted transactions are never replayed.
+
+## Local and live verification
 
 ```sh
 bun run connect:directory:local
-# In a separate shell, for a disposable local identity/server:
-# BUNCARGO_CONNECT_DIRECTORY=http://127.0.0.1:8787
+# For a disposable identity/server in another shell:
+# export BUNCARGO_CONNECT_DIRECTORY=http://127.0.0.1:8787
 bun test src/connect-directory src/core/connect src/cli/dev-connect.test.ts
 swift test --package-path menubar
-```
 
-The local server binds loopback and keeps ephemeral state and keys in memory. It is not a persistent production server. Tests use independent random credentials and do not read the user's device credentials.
-
-The opt-in live acceptance test needs `initdb`, `pg_ctl` and `psql` on PATH, plus cloudflared or permission to download it through Buncargo's existing tool installer:
-
-```sh
+# Needs initdb, pg_ctl and psql on PATH; uses isolated random credentials:
 BUNCARGO_TEST_CONNECT_E2E=1 bun test src/core/connect/connect.integration.test.ts
 ```
 
-It creates isolated recipient records, an authenticated connector, a real Cloudflare tunnel and a temporary local Postgres cluster. It tests two recipients, HTTP/SSE, transactions, COPY and recipient revocation, then stops its own servers, withdraws its registrations and removes its temporary database. Recipient credential hashes remain as inert test records; there is no device-ID recycling API. It never connects to an existing database.
+The local adapter binds loopback with ephemeral keys/state and runs the same relay engine. It is not a persistent production server. The opt-in test exercises the live Worker, two recipients, HTTP/SSE, a disposable Postgres cluster, transactions/COPY and revocation. It cleans up its servers, cluster and registrations. Inert random device credential hashes remain; device IDs are not recycled. [The two-machine report](connect-server-acceptance.md) covers the packed CLI and supplied server.
 
-## State and credentials
+Cloudflare's current standard WebSocket API defaults binary messages to Blob. The Worker sets `binaryType = "arraybuffer"` before `accept()` because the relay consumes byte frames. Keep this assignment when updating the adapter. [Cloudflare binary-message documentation](https://developers.cloudflare.com/workers/runtime-apis/websockets/#binary-messages)
 
-`~/.buncargo/connect-device.json` contains the local device credential, copied registration token and the CLI invocation to use. It is private (mode 0600). `connect-helper.json` records the local helper port, process birth identity and local control credential; the helper log contains operational failures, not copied tokens. The helper is started on demand by `connect open` and owns listeners independently of the menu bar.
+## Credentials and privacy
 
-The directory stores credential hashes, sanitized session metadata and expiry. It never receives application environment variables, database passwords or local executable paths. Every publisher proves session ownership on updates. Copied connection tokens permit registration only; the recipient credential authorizes directory reads and short-lived connection capabilities.
+`~/.buncargo/connect-device.json` contains the private recipient credential, registration token and local CLI invocation (mode 0600). `connect-helper.json` records the loopback helper, process birth identity and control credential. The helper starts on demand and owns local listeners independently of BuncargoBar.
 
-`connect rotate` replaces the registration token for new runs. Existing registrations continue with session credentials. `connect revoke --session=<id>` invalidates one registration. `connect rotate --all` revokes all existing registrations and replaces the token; use this for a leaked token. Interrupted rotations retain pending intent locally and complete on retry.
+Copied tokens permit registration only. Private device credentials authorize directory reads and short-lived access capabilities. Per-session secrets let publishers update their own grants and attach relay sockets. The relay and publisher independently verify capabilities, and the publisher only dials its configured exposed loopback targets.
 
-## Limits and failure behavior
+Directory storage contains credential hashes, sanitized metadata and expiry, not application environment values or database passwords. Application bytes pass through the Worker in memory and are not logged or persisted by Buncargo. TLS protects each network leg; the relay operator remains trusted. Database authentication and optional database TLS remain client responsibilities.
 
-- Recipient registrations renew every 30 seconds and expire after 90 seconds without renewal. Reads filter expired records immediately. Terminal IDs are retained for at least a day to fence delayed requests; records are bounded to 100 per recipient.
-- Each snapshot has at most 64 targets. Requests/responses have a 128 KiB limit. The Worker rate limit is 120 requests per minute per client IP; monitor shared cloud egress and raise it deliberately if necessary.
-- Connectors allow at most 128 concurrent streams, with bounded binary frames and buffers. Short-lived capabilities expire within 60 seconds; open streams renew every 20 seconds and close if authorization cannot be renewed.
-- Publishers retry directory/transport failures without killing local app processes. A restarted tunnel publishes its new endpoint with a newer revision. Clients open new connections; interrupted database transactions are never replayed.
-- Quick Tunnel availability and capacity limits still apply. The private framed stream path supports SSE in the recorded live test, unlike direct public Quick Tunnel HTTP SSE.
+`connect rotate` changes registration tokens for new runs. Existing sessions retain their own credentials. `connect revoke --session=<id>` revokes one session; `connect rotate --all` also revokes current sessions. Interrupted rotations retain pending local intent and complete on retry.
 
-Use `bunx wrangler tail --config wrangler.connect.jsonc` for Worker errors and Cloudflare's dashboard for traffic/storage/rate-limit metrics. Avoid adding request-body or Authorization logging. Deployments do not need access to any recipient's private credential.
+## Limits and failures
 
-## Recorded acceptance
+| Control | Current behavior |
+| --- | --- |
+| Registration | Renew every 30 seconds; expire after 90 seconds |
+| Publisher control | One outbound socket per session/recipient; ping every 15 seconds; unavailable after 45 seconds |
+| Capability | Valid at most 60 seconds; open streams renew every 20 seconds |
+| Pending stream | Publisher must join within 10 seconds |
+| Recipient state | At most 100 session/tombstone records; terminal IDs fenced for at least one day |
+| Targets | At most 64 per snapshot |
+| Streams | At most 64 concurrent paired streams per recipient; each publisher also caps at 64 |
+| HTTP metadata | 128 KiB request/response limit |
+| Relay bytes | Frames at most 65,537 bytes; per-direction credit bounds in-flight data to 128 KiB plus one frame |
+| Local channel | Backpressure at 256 KiB; defensive read-buffer ceiling 4 MiB |
+| Rate limit | 600 HTTP requests/minute per source IP, including stream upgrades and access requests |
 
-On September 8, 2026, the deployed directory and a real Cloudflare tunnel passed the opt-in acceptance test: two independent recipients discovered branch metadata, opened the authenticated HTTP app, received SSE, and connected to a disposable Postgres cluster. A transaction and a 1,010,000-byte COPY transfer succeeded. Withdrawing one recipient invalidated its access while the second recipient retained its registration.
+New access requires both a live grant and ready publisher. Target stopping, withdrawal and token-wide revocation reconcile active streams immediately. Capability expiry still closes streams when authorization cannot be renewed. Lease expiry filters discovery immediately on read; control checks enforce stale publisher shutdown. Retrying a revoked session cannot resurrect its tombstone.
 
-Local verification also covers WebSocket upgrades for HMR, an idle connection that renews authorization beyond its initial expiry, multi-megabyte byte streams with half-close, and CLI device setup plus detached-helper open/disconnect. Build, lint, the Bun test suite, Swift tests, package verification and the universal menu bar bundle smoke test pass. A later two-machine run exercised live Redis commands and Pub/Sub, but also found a cold-start DNS blocker; see the qualified results below.
+Publisher failures leave local applications running. Retry uses bounded backoff to 30 seconds. A recovered publisher uses the same stable origin/session endpoint and permits new streams. No random DNS record needs to propagate. Stale UI actions are disabled; helpers independently validate access.
 
-The initial protocol supports single-endpoint TCP. Protocols advertising additional addresses (for example Redis Cluster), arbitrary app-specific absolute frontend URLs, and restoring broken database sessions are not made transparent by port forwarding. Use a same-origin development-server API proxy where possible. Native database authentication/TLS remains the database client's responsibility.
+## Capacity and observability
 
-## Two-machine follow-up
+The first release uses standard WebSocket listeners, not Durable Object hibernation. An object remains active while its publisher sockets are connected, so budget for duration as well as requests/storage. App data also passes through the relay. Hibernation requires restoring stream/control state correctly and is a future optimization. [Cloudflare WebSocket lifecycle and billing](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)
 
-[The supplied-server acceptance report](connect-server-acceptance.md) records a complete diagnostic run with real Postgres and Redis, and repeated failures resolving new Quick Tunnel hostnames through the client’s default DNS. This remains a release blocker; the diagnostic DNS workaround is not part of the product.
+Monitor duration, request volume, rate-limit responses, relay failures and reconnects in Cloudflare. Shared cloud egress can reach the per-IP limit sooner than a single workstation. Use `bunx wrangler tail --config wrangler.connect.jsonc` for failures, but never add Authorization, payload or environment logging. Review account quotas before expanding usage; this implementation does not promise unlimited concurrency or zero cost.
+
+Single-endpoint TCP works with Postgres and Redis. Protocols advertising other addresses, such as Redis Cluster, are not transparently rewritten. Frontends with absolute sandbox-local API URLs may need their own origin configuration; use a same-origin dev proxy where possible. Cookies are not isolated by port, so namespace development cookies as documented in the README.

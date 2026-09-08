@@ -103,7 +103,7 @@ export async function handleConnect(args: string[]): Promise<void> {
 					: result.runs
 							.map(
 								(r) =>
-									`${r.project} / ${r.branch ?? r.worktree ?? "Main"} (${r.sessionId})\n${r.targets.map((t) => `  ${t.name}: ${t.status} (${t.protocol})`).join("\n")}`,
+									`${r.project} / ${r.branch ?? r.worktree ?? "Main"} (${r.sessionId}) — ${r.transport === "ready" ? "connected" : "connecting"}\n${r.targets.map((t) => `  ${t.name}: ${t.status} (${t.protocol})`).join("\n")}`,
 							)
 							.join("\n") || "No shared environments",
 			);
