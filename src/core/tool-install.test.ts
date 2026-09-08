@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
@@ -216,6 +217,38 @@ describe("installTool", () => {
 		expect(
 			readdirSync(root).filter((name) => name.startsWith(".installed")),
 		).toEqual([]);
+	});
+	it("extracts nested bottle binaries without retaining archive directories", async () => {
+		const root = directory();
+		mkdirSync(join(root, "bottle/1.2.3/bin"), { recursive: true });
+		writeFileSync(join(root, "bottle/1.2.3/bin/fixture"), executable);
+		const archive = join(root, "payload.tgz");
+		execFileSync("tar", ["-czf", archive, "-C", root, "bottle"]);
+		const to = join(root, "installed");
+		await installTool({
+			...installOptions(to, async () => new Response(readFileSync(archive))),
+			archiveEntry: "bottle/1.2.3/bin/fixture",
+		});
+		expect(isInstalledTool(to)).toBe(true);
+		expect(readFileSync(to, "utf8")).toBe(executable);
+	});
+	it("rejects archive member traversal and absolute paths", async () => {
+		for (const archiveEntry of [
+			"../fixture",
+			"/fixture",
+			"nested/../../fixture",
+			"nested/./fixture",
+			"nested\\fixture",
+		]) {
+			const to = join(directory(), "installed");
+			await expect(
+				installTool({
+					...installOptions(to, async () => new Response("unused archive")),
+					archiveEntry,
+				}),
+			).rejects.toThrow("relative path without traversal");
+			expect(existsSync(to)).toBe(false);
+		}
 	});
 	it("verifies GitHub asset digests when release metadata provides one", async () => {
 		const to = join(directory(), "fixture");

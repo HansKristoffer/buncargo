@@ -26,36 +26,70 @@ test("environment enables recipient sharing without a flag and rejects malformed
 	}
 });
 
-test("sharing intersects selection and expose, and infers protocol from presets", () => {
+test("sharing includes all selected endpoints and infers protocols without expose flags", () => {
 	const result = sharedTargets(
 		{
-			web: { port: 3000, devCommand: "bun web.ts", expose: true },
-			internal: { port: 3001, devCommand: "bun internal.ts" },
+			web: { port: 3000, devCommand: "bun web.ts" },
+			api: { port: 3001, devCommand: "bun api.ts", expose: false },
+			worker: { kind: "worker", devCommand: "bun worker.ts" },
 		},
 		{
-			db: {
-				port: 5432,
-				expose: true,
-				docker: { kind: "preset", preset: "postgres" },
-			},
+			db: { port: 5432, docker: { kind: "preset", preset: "postgres" } },
 			cache: {
 				port: 6379,
-				expose: true,
+				expose: false,
 				docker: { kind: "preset", preset: "redis" },
 			},
-			other: { port: 4444, expose: true, exposeProtocol: "tcp" },
+			mail: { port: 8025, docker: { kind: "preset", preset: "mailpit" } },
+			custom: { port: 4444 },
+			http: { port: 8080, exposeProtocol: "http" },
+			other: { port: 5555 },
+			worker: {},
+			job: { kind: "job", rerun: "always" },
 		},
-		{ web: 3000, internal: 3001, db: 5432, cache: 6379, other: 4444 },
-		["db", "cache"],
+		{
+			web: 13000,
+			api: 13001,
+			db: 15432,
+			cache: 16379,
+			mail: 18025,
+			custom: 14444,
+			http: 18080,
+			other: 15555,
+		},
+		["db", "cache", "mail", "custom", "http", "worker", "job"],
 	);
-	expect(result.map((t) => [t.name, t.protocol])).toEqual([
-		["web", "http"],
-		["db", "tcp"],
-		["cache", "tcp"],
+	expect(result.map((t) => [t.name, t.protocol, t.port])).toEqual([
+		["web", "http", 13000],
+		["api", "http", 13001],
+		["db", "tcp", 15432],
+		["cache", "tcp", 16379],
+		["mail", "http", 18025],
+		["custom", "tcp", 14444],
+		["http", "http", 18080],
 	]);
-	expect(() =>
-		sharedTargets({}, { custom: { port: 42, expose: true } }, { custom: 42 }, [
-			"custom",
-		]),
-	).toThrow("exposeProtocol");
+	expect(
+		sharedTargets(
+			{ worker: { kind: "worker", devCommand: "bun worker.ts" } },
+			{},
+			{},
+			[],
+		),
+	).toEqual([]);
+});
+
+test("sharing rejects missing or invalid resolved ports for selected endpoints", () => {
+	for (const port of [undefined, 0, -1, 65536, 1.5]) {
+		expect(() =>
+			sharedTargets(
+				{ web: { port: 3000, devCommand: false } },
+				{},
+				{ web: port as number },
+				[],
+			),
+		).toThrow("Invalid shared target port");
+		expect(() =>
+			sharedTargets({}, { db: { port: 5432 } }, { db: port as number }, ["db"]),
+		).toThrow("Invalid shared target port");
+	}
 });

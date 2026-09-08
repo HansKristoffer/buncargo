@@ -9,8 +9,14 @@ import { writeJsonDocument } from "../registry-file";
 import { sleep } from "../sleep";
 import { stateFilePath } from "../state-paths";
 import { deviceClient, readDevice } from "./device";
-import { identifier, jsonBody, makeSecret, object } from "./protocol";
-import { type Forward, localForward } from "./transport/local-forward";
+import { ConnectionForwards } from "./forwards";
+import {
+	identifier,
+	jsonBody,
+	makeSecret,
+	object,
+	validPort,
+} from "./protocol";
 
 interface HelperState {
 	version: 1;
@@ -26,9 +32,7 @@ async function readHelper(): Promise<HelperState | undefined> {
 		if (
 			v.version !== 1 ||
 			typeof v.pid !== "number" ||
-			!Number.isInteger(v.port) ||
-			Number(v.port) < 1 ||
-			Number(v.port) > 65535 ||
+			!validPort(v.port) ||
 			typeof v.secret !== "string"
 		)
 			return;
@@ -100,6 +104,7 @@ export async function helperAction(
 		throw new Error("Remote target is unavailable; refresh the directory");
 	return r.json() as Promise<{ url?: string; port?: number }>;
 }
+/** Authenticated loopback control server; remote metadata never supplies executable paths. */
 export async function runConnectionHelper(): Promise<void> {
 	await withFileLock(
 		stateFilePath("connect-helper-owner"),
@@ -108,16 +113,8 @@ export async function runConnectionHelper(): Promise<void> {
 			if (!device) throw new Error("Create a connection token first");
 			const client = deviceClient(device),
 				secret = makeSecret();
-			const forwards = new Map<string, Forward>();
-			const origins = new Map<string, Set<string>>();
-			async function removeForward(key: string) {
-				const forward = forwards.get(key);
-				if (!forward) return;
-				if (forward.target.protocol === "http")
-					origins.get(key.split(":")[0])?.delete(new URL(forward.url).origin);
-				forwards.delete(key);
-				await forward.close();
-			}
+			const forwards = new ConnectionForwards();
+			// Directory polling and UI actions share one queue to keep listener ownership atomic.
 			let pending: Promise<unknown> = Promise.resolve();
 			const server = Bun.serve({
 				hostname: "127.0.0.1",
@@ -146,75 +143,19 @@ export async function runConnectionHelper(): Promise<void> {
 								if (!identifier(body.session) || !identifier(body.target))
 									throw new Error();
 								const session = body.session,
-									targetId = body.target,
-									key = `${session}:${targetId}`;
+									targetId = body.target;
 								if (path === "/disconnect") {
-									await removeForward(key);
+									await forwards.disconnect(session, targetId);
 									return Response.json({ ok: true });
 								}
 								const directory = await client.list(
 									device.recipientId,
 									device.owner,
 								);
-								const run = directory.runs.find((r) => r.sessionId === session),
-									target = run?.targets.find((t) => t.id === targetId);
-								if (
-									!run ||
-									run.transport !== "ready" ||
-									!target ||
-									!["ready", "reused"].includes(target.status)
-								)
-									throw new Error();
-								let forward = forwards.get(key);
-								if (forward && forward.endpoint !== run.endpoint) {
-									await removeForward(key);
-									forward = undefined;
-								}
-								if (!forward) {
-									const allowed = origins.get(session) ?? new Set<string>();
-									origins.set(session, allowed);
-									const siblings =
-										target.protocol === "http"
-											? run.targets.filter(
-													(t) =>
-														t.protocol === "http" &&
-														["ready", "reused"].includes(t.status),
-												)
-											: [target];
-									for (const sibling of siblings) {
-										const siblingKey = `${session}:${sibling.id}`;
-										const existing = forwards.get(siblingKey);
-										if (existing?.endpoint === run.endpoint) continue;
-										await removeForward(siblingKey);
-										if (forwards.size >= 128)
-											throw new Error("Local connection limit reached");
-										const created = await localForward(
-											run.endpoint,
-											sibling,
-											() =>
-												client.access(
-													device.recipientId,
-													device.owner,
-													session,
-													sibling.id,
-												),
-											{
-												origins: allowed,
-												cookies: () =>
-													[...forwards]
-														.filter(([k]) => k.startsWith(`${session}:`))
-														.flatMap(([, f]) =>
-															f.browserCookie ? [f.browserCookie] : [],
-														),
-											},
-										);
-										forwards.set(siblingKey, created);
-										if (sibling.protocol === "http")
-											allowed.add(new URL(created.url).origin);
-									}
-									forward = forwards.get(key);
-								}
-								if (!forward) throw new Error();
+								await forwards.reconcile(directory);
+								const run = directory.runs.find((r) => r.sessionId === session);
+								if (!run) throw new Error("Remote session unavailable");
+								const forward = await forwards.open(run, targetId);
 								return Response.json({ url: forward.url, port: forward.port });
 							} catch {
 								return new Response("Remote target unavailable", {
@@ -241,28 +182,8 @@ export async function runConnectionHelper(): Promise<void> {
 				pending = pending
 					.catch(() => {})
 					.then(() => client.list(device.recipientId, device.owner))
-					.then(async (directory) => {
-						const live = new Map<string, string>(
-							directory.runs
-								.filter((r) => r.transport === "ready")
-								.flatMap((r) =>
-									r.targets
-										.filter((t) => ["ready", "reused"].includes(t.status))
-										.map(
-											(t) => [`${r.sessionId}:${t.id}`, r.endpoint] as const,
-										),
-								),
-						);
-						for (const key of forwards.keys())
-							if (live.get(key) !== forwards.get(key)?.endpoint) {
-								await removeForward(key);
-							}
-					})
-					.catch(async () => {
-						for (const f of forwards.values()) await f.close();
-						forwards.clear();
-						origins.clear();
-					})
+					.then((directory) => forwards.reconcile(directory))
+					.catch(() => forwards.close())
 					.finally(() => {
 						polling = false;
 					});
@@ -278,7 +199,7 @@ export async function runConnectionHelper(): Promise<void> {
 			});
 			clearInterval(timer);
 			await pending.catch(() => {});
-			for (const f of forwards.values()) await f.close();
+			await forwards.close();
 			await server.stop(true);
 		},
 		{ timeoutMs: 1000 },

@@ -58,6 +58,21 @@ describe("buildComposeModel", () => {
 		expect(compose.name).toBe("$" + "{COMPOSE_PROJECT_NAME}");
 	});
 
+	it("probes PostgreSQL over TCP for default and explicit health checks", () => {
+		const compose = buildComposeModel({
+			postgres: { port: 5432 },
+			db: service.postgres({ user: "application", healthCheck: "pg_isready" }),
+		});
+		expect(compose.services.postgres?.healthcheck?.test).toEqual([
+			"CMD-SHELL",
+			"pg_isready -h 127.0.0.1 -U postgres",
+		]);
+		expect(compose.services.db?.healthcheck?.test).toEqual([
+			"CMD-SHELL",
+			"pg_isready -h 127.0.0.1 -U application",
+		]);
+	});
+
 	it("stamps identity labels when provided", () => {
 		const compose = buildComposeModel({ postgres: { port: 5432 } }, undefined, {
 			projectName: "gey-main",

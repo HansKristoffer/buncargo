@@ -34,7 +34,7 @@ export const postgresDockerService = defineDockerService<
 		const password = config.password ?? "postgres";
 		const database = config.database ?? "postgres";
 		const defaultHealthcheck: DockerComposeHealthcheckRaw = {
-			test: ["CMD-SHELL", `pg_isready -U ${user}`],
+			test: ["CMD-SHELL", `pg_isready -h 127.0.0.1 -U ${user}`],
 			interval: "250ms",
 			timeout: "5s",
 			retries: 20,

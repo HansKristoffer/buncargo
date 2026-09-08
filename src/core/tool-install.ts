@@ -253,14 +253,32 @@ export async function installTool(
 				});
 				let executable = asset;
 				if (options.archiveEntry) {
-					if (basename(options.archiveEntry) !== options.archiveEntry)
-						throw new Error("Tool archive entry must be a basename");
+					const parts = options.archiveEntry.split("/");
+					if (
+						parts.some(
+							(part) =>
+								!part || part === "." || part === ".." || part.includes("\\"),
+						)
+					)
+						throw new Error(
+							"Tool archive entry must be a relative path without traversal",
+						);
+					// Bottles nest the binary. Strip its parents so extraction still writes
+					// one basename into staging, never an archive-controlled directory tree.
 					await runFile(
 						"tar",
-						["-xzf", asset, "-C", staging, "--", options.archiveEntry],
+						[
+							"-xzf",
+							asset,
+							"-C",
+							staging,
+							`--strip-components=${parts.length - 1}`,
+							"--",
+							options.archiveEntry,
+						],
 						{ timeout: 30_000, signal: options.signal, killSignal: "SIGKILL" },
 					);
-					executable = join(staging, options.archiveEntry);
+					executable = join(staging, basename(options.archiveEntry));
 				}
 				if (!(await lstat(executable)).isFile())
 					throw new Error("Tool archive did not contain a regular executable");
