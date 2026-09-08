@@ -36,7 +36,9 @@ of the last publish because nothing reminds anyone to release.
 2. `release.yml` runs on the push to main and creates or updates the release PR
    with the next versions and generated changelogs.
 3. Merging the release PR creates the tags and GitHub releases. The same
-   workflow run then calls the npm publish and the bar build directly.
+   workflow run deploys and live-tests the connection Worker for CLI releases,
+   then calls npm publication and the bar build. Bar-only releases skip Worker
+   deployment.
 4. If a publish job fails, rerun the failed job on that run. The tag and release
    already exist; nothing on the Release Please side is repeated.
 
@@ -93,44 +95,11 @@ version changes nothing.
 
 ### 3. `release.yml`
 
-```yaml
-name: Release
-on:
-  push:
-    branches: [main]
-concurrency:
-  group: release
-  cancel-in-progress: false
-permissions:
-  contents: write
-  pull-requests: write
-jobs:
-  release-please:
-    runs-on: ubuntu-latest
-    outputs:
-      cli_released: ${{ steps.rp.outputs.release_created }}
-      bar_released: ${{ steps.rp.outputs['menubar--release_created'] }}
-      bar_version: ${{ steps.rp.outputs['menubar--version'] }}
-    steps:
-      - uses: googleapis/release-please-action@v4
-        id: rp
-  publish-npm:
-    needs: release-please
-    if: needs.release-please.outputs.cli_released == 'true'
-    uses: ./.github/workflows/publish.yml
-    permissions:
-      contents: read
-      id-token: write
-  release-bar:
-    needs: release-please
-    if: needs.release-please.outputs.bar_released == 'true'
-    uses: ./.github/workflows/release-menubar.yml
-    with:
-      version: ${{ needs.release-please.outputs.bar_version }}
-    secrets: inherit
-    permissions:
-      contents: write
-```
+The executable definition is [release.yml](../.github/workflows/release.yml).
+It calls Release Please, then the Worker deployment gate, then the client
+publishing workflows. Keep the dependency conditions there: a bar-only release
+must tolerate a skipped Worker job, while a combined release must stop if the
+Worker fails.
 
 Root-path outputs are unprefixed; other paths are prefixed with `<path>--`.
 
@@ -225,6 +194,27 @@ action (three workflows, four identical lines each).
    a specific number, put `Release-As: 7.8.0` in the squash commit body.
 2. Merge it and watch the run: `release-please`, then `publish-npm`.
 3. Make one `menubar/`-only `fix:` PR and confirm the bar path end to end.
+
+## Connection Worker release gate
+
+`release-connect.yml` is a reusable workflow called directly by `release.yml`
+when Release Please creates a CLI release. It shares the CLI version and
+checkout; Worker-only feature/fix changes therefore release through the root
+package. No third Release Please component or manual version bump is needed.
+
+The job typechecks, runs the connection tests and bundles the Worker with pinned
+Wrangler, deploys to `connect.hanskristoffer.dk`, then exercises real relay
+connections with a disposable PostgreSQL cluster and two temporary recipients.
+The npm job waits for it. A combined menu bar release also waits; a bar-only
+release proceeds with the Worker job skipped. A deployment or live-test failure
+stops client publication. Rerun failed jobs to recover. A separate manual
+Worker dispatch at a release tag is available for deliberate retries.
+
+PR CI dry-runs the Worker build without credentials. Production requires the
+repository Actions secret `CLOUDFLARE_API_TOKEN`, scoped to the account/domain
+in `wrangler.connect.jsonc`. The existing `CONNECT_SIGNING_JWK` secret remains
+in Cloudflare and is preserved by deployment; do not copy it into GitHub or
+regenerate it on releases. See [directory operations](connect-directory.md).
 
 ## Later, not now
 

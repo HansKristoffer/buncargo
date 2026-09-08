@@ -1,0 +1,63 @@
+# The Worker shares the CLI's release version because their protocol ships
+# together. Call directly from Release Please: workflow-created tags do not
+# trigger a second workflow. Dispatch at a release tag to retry manually.
+name: Release connection Worker
+
+on:
+  workflow_call:
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+  workflow_dispatch:
+
+concurrency:
+  group: connect-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: bun install --frozen-lockfile
+
+      - name: Require deployment credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::Set the repository Actions secret CLOUDFLARE_API_TOKEN; see docs/connect-directory.md."
+            exit 1
+          fi
+
+      - name: Validate relay and Worker bundle
+        run: |
+          bun run typecheck
+          bun test src/connect-directory src/core/connect src/cli/dev-connect.test.ts
+          bun run connect:worker:check
+
+      - name: Prepare disposable PostgreSQL acceptance test
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql postgresql-client libpq-dev
+          pg_config --bindir >> "$GITHUB_PATH"
+
+      - name: Deploy connection Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: bun run connect:worker:deploy
+
+      - name: Verify deployed relay, HTTP streaming and PostgreSQL
+        env:
+          BUNCARGO_TEST_CONNECT_E2E: "1"
+        run: bun test src/core/connect/connect.integration.test.ts

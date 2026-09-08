@@ -186,6 +186,7 @@ Releases happen by merging (`docs/release-flow-plan.md`). Release Please reads s
 - PR titles are conventional commits. `fix:` releases a patch, `feat:` a minor, `feat!:` (or a `BREAKING CHANGE:` footer) a major. `chore:`, `docs:`, `refactor:`, `test:` release nothing.
 - A PR touching only `menubar/` bumps BuncargoBar; anything else bumps the CLI; both when it touches both.
 - Never edit `version` in `package.json`, `menubar/version.txt` or a `CHANGELOG.md` by hand; the release PR owns them.
+- The connection Worker shares the CLI release lifecycle. `release.yml` calls `release-connect.yml` on a CLI release; deployment and live HTTP/Postgres acceptance must pass before npm and a combined bar release publish. Bar-only releases skip the Worker. Keep Wrangler pinned and its dry-run bundle check in PR CI. `CLOUDFLARE_API_TOKEN` is a repository Actions secret; the Worker signing key stays in Cloudflare.
 
 ## Validation Checklist (for every substantive change)
 

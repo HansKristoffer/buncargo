@@ -1,5 +1,6 @@
 {
   "name": "buncargo-connect",
+  "account_id": "033e35f1867e7063e4d2e2e8c7121888",
   "main": "src/connect-directory/worker.ts",
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],

@@ -21,9 +21,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - run: bun install --frozen-lockfile
       - name: Typecheck and lint
         run: bun run lint
+      - name: Validate Cloudflare Worker bundle without credentials
+        run: bun run connect:worker:check
 
   test:
     strategy:

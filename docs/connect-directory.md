@@ -4,9 +4,18 @@ The `buncargo-connect` Worker serves `https://connect.hanskristoffer.dk`. One SQ
 
 ## Deployment
 
+The Worker deploys automatically when the CLI release PR from Release Please is merged. `release.yml` calls `release-connect.yml` in the same run, validates the Worker with the pinned Wrangler version, deploys it, and runs the live two-recipient HTTP/SSE/Postgres acceptance test. npm publication and a combined menu bar release wait for success. A bar-only release skips Worker deployment. The Worker follows the CLI version; it has no separate version file or release PR.
+
+PR CI builds the Worker with `bun run connect:worker:check` without Cloudflare credentials. Production deployment needs the repository Actions secret `CLOUDFLARE_API_TOKEN`: scope it to the configured account and `hanskristoffer.dk`. Keep Account Settings Read and Workers Scripts Write; include Zone Read and Workers Routes Write for the domain. The broad Edit Cloudflare Workers template also grants access to products this Worker does not use, which can be removed. The account ID is pinned in `wrangler.connect.jsonc`. Local OAuth login is not a persistent CI credential. The workflow fails with a setup instruction if the secret is missing. [Cloudflare GitHub Actions authentication](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)
+
+On a failed release deployment or live check, rerun the failed jobs in that release run. For a deliberate manual retry, dispatch **Release connection Worker** at the intended release tag. Deploying an older revision is an explicit rollback, so check protocol and Durable Object migration compatibility first. Keep Worker protocol changes compatible with already released clients; deployment happens before new client publication.
+
+For local operations:
+
 ```sh
 bunx wrangler login
-bunx wrangler deploy --config wrangler.connect.jsonc
+bun run connect:worker:check
+bun run connect:worker:deploy
 ```
 
 The deployed Worker already has `CONNECT_SIGNING_JWK`. Ordinary deployments preserve it. Do not generate a new key on each deployment: publishers pin its public key at startup. An intentional key rotation requires restarting publishers; old capabilities expire within 60 seconds.
