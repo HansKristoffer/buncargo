@@ -32,6 +32,7 @@ interface Env {
 	RATE_LIMITER: {
 		limit(options: { key: string }): Promise<{ success: boolean }>;
 	};
+	SESSION_RATE_LIMITER: Env["RATE_LIMITER"];
 }
 /** Explicit queue covers crypto/network awaits as well as storage operations. */
 export class RecipientDirectory {
@@ -102,7 +103,23 @@ export default {
 		const url = new URL(request.url);
 		if (url.pathname === "/health")
 			return Response.json({ service: "buncargo-connect", version: 1 });
-		const limiter = await env.RATE_LIMITER.limit({
+		// Dev servers load thousands of separate modules. Each needs an access
+		// grant and relay upgrades; they must not exhaust the directory budget.
+		// This only selects a quota: the recipient still authenticates every call.
+		const sessionTraffic =
+			(request.method === "POST" &&
+				/^\/v1\/devices\/[A-Za-z0-9_-]{1,128}\/sessions\/[A-Za-z0-9_-]{1,128}\/access$/.test(
+					url.pathname,
+				)) ||
+			(request.method === "GET" &&
+				request.headers.get("upgrade")?.toLowerCase() === "websocket" &&
+				/^\/v1\/devices\/[A-Za-z0-9_-]{1,128}\/sessions\/[A-Za-z0-9_-]{1,128}\/relay\/(?:publisher|(?:stream|pipe)\/[A-Za-z0-9_-]{1,128})$/.test(
+					url.pathname,
+				));
+		const limiter = await (sessionTraffic
+			? env.SESSION_RATE_LIMITER
+			: env.RATE_LIMITER
+		).limit({
 			key: request.headers.get("cf-connecting-ip") ?? "unknown",
 		});
 		if (!limiter.success) return new Response("Rate limited", { status: 429 });

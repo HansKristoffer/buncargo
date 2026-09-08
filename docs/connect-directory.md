@@ -67,7 +67,8 @@ Directory storage contains credential hashes, sanitized metadata and expiry, not
 | HTTP metadata | 128 KiB request/response limit |
 | Relay bytes | Frames at most 65,537 bytes; per-direction credit bounds in-flight data to 128 KiB plus one frame |
 | Local channel | Backpressure at 256 KiB; defensive read-buffer ceiling 4 MiB |
-| Rate limit | 600 HTTP requests/minute per source IP, including stream upgrades and access requests |
+| Directory rate limit | 600 requests/minute per source IP for setup, listing, publication, rotation and revocation |
+| Session rate limit | Separate 6,000 requests/minute per source IP for access grants and relay upgrades; every request still requires recipient authorization |
 
 New access requires both a live grant and ready publisher. Target stopping, withdrawal and token-wide revocation reconcile active streams immediately. Capability expiry still closes streams when authorization cannot be renewed. Lease expiry filters discovery immediately on read; control checks enforce stale publisher shutdown. Retrying a revoked session cannot resurrect its tombstone.
 
