@@ -1,5 +1,12 @@
 # Changelog
 
+## [8.2.3](https://github.com/HansKristoffer/buncargo/compare/v8.2.2...v8.2.3) (2026-09-09)
+
+
+### Bug Fixes
+
+* **tailnet:** allow sharing from unprivileged Linux sandboxes ([#36](https://github.com/HansKristoffer/buncargo/issues/36)) ([499d828](https://github.com/HansKristoffer/buncargo/commit/499d82838922fa2b541d3e55b097cbcd9d2d7ad4))
+
 ## [8.2.2](https://github.com/HansKristoffer/buncargo/compare/v8.2.1...v8.2.2) (2026-09-09)
 
 
