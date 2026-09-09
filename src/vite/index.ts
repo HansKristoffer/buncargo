@@ -1,3 +1,5 @@
+import type { ViteHostServer } from "./tailnet-host";
+
 /** Configure Vite's listener and allowed hosts from Buncargo's app environment.
  * HMR follows the URL that loaded the client, so local HTTPS and Tailscale Serve
  * can reach the same dev server without baking one machine's hostname into it.
@@ -12,6 +14,7 @@
 export interface BuncargoVitePlugin {
 	name: string;
 	config: () => BuncargoViteConfig;
+	configureServer: (server: ViteHostServer) => Promise<void>;
 }
 
 export interface BuncargoViteConfig {
@@ -98,6 +101,10 @@ export function buncargoVite(
 ): BuncargoVitePlugin {
 	return {
 		name: "buncargo",
+		async configureServer(server) {
+			const { allowTailnetHost } = await import("./tailnet-host");
+			allowTailnetHost(server);
+		},
 		config() {
 			// Read inside `config`, not at module scope: Vite loads the config file
 			// once per process, and a watched restart should see current values.
