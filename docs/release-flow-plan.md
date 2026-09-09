@@ -61,7 +61,7 @@ required on main (see step 9).
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "buncargo",
+      "package-name": "",
       "include-component-in-tag": false
     },
     "menubar": {
@@ -73,6 +73,13 @@ required on main (see step 9).
   }
 }
 ```
+
+The root release's `package-name` is intentionally empty. It identifies the
+release component, not the npm package name in `package.json`. With unprefixed
+CLI tags and a combined release branch, it must stay empty: otherwise Release
+Please treats a CLI-only release PR as standalone and rejects its unnamed
+branch component as different from `buncargo`. CLI-only, bar-only and combined
+releases must all remain recognizable after merging.
 
 `.release-please-manifest.json` bootstraps from the current tags:
 
