@@ -1,4 +1,4 @@
-import type { ViteHostServer } from "./tailnet-host";
+import { createTailnetHostAccess, type ViteHostServer } from "./tailnet-host";
 
 /** Configure Vite's listener and allowed hosts from Buncargo's app environment.
  * HMR follows the URL that loaded the client, so local HTTPS and Tailscale Serve
@@ -13,8 +13,11 @@ import type { ViteHostServer } from "./tailnet-host";
  */
 export interface BuncargoVitePlugin {
 	name: string;
-	config: () => BuncargoViteConfig;
-	configureServer: (server: ViteHostServer) => Promise<void>;
+	config: (
+		config?: unknown,
+		context?: { command: string; isPreview?: boolean },
+	) => Promise<BuncargoViteConfig>;
+	configureServer: (server: ViteHostServer) => void;
 }
 
 export interface BuncargoViteConfig {
@@ -99,21 +102,25 @@ export function buildBuncargoViteConfig(
 export function buncargoVite(
 	options: BuncargoViteOptions = {},
 ): BuncargoVitePlugin {
+	const tailnet = createTailnetHostAccess();
 	return {
 		name: "buncargo",
-		async configureServer(server) {
-			const { allowTailnetHost } = await import("./tailnet-host");
-			allowTailnetHost(server);
-		},
-		config() {
+		configureServer: (server) => tailnet.watch(server),
+		async config(_config, context) {
 			// Read inside `config`, not at module scope: Vite loads the config file
 			// once per process, and a watched restart should see current values.
 			const env = options.env ?? process.env;
 			const appName = options.app ?? env.BUNCARGO_APP_NAME;
-			return buildBuncargoViteConfig(
-				readBuncargoViteEnvironment(env, appName),
-				options.host ?? "127.0.0.1",
-			);
+			const environment = readBuncargoViteEnvironment(env, appName);
+			if (context?.command !== "build" && !context?.isPreview) {
+				environment.allowedHosts = [
+					...new Set([
+						...environment.allowedHosts,
+						...(await tailnet.allowedHosts()),
+					]),
+				];
+			}
+			return buildBuncargoViteConfig(environment, options.host ?? "127.0.0.1");
 		},
 	};
 }

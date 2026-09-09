@@ -51,15 +51,15 @@ describe("buildBuncargoViteConfig", () => {
 		expect(config.server.port).toBe(4901);
 	});
 
-	it("lets HMR follow either the local or remote page origin", () => {
-		const config = buncargoVite({
+	it("lets HMR follow either the local or remote page origin", async () => {
+		const config = await buncargoVite({
 			env: {
 				PORT: "4901",
 				BUNCARGO_APP_HOSTNAME: "project.localhost",
 				BUNCARGO_HOSTS_PORT: "8443",
 				__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: ".localhost",
 			},
-		}).config();
+		}).config({}, { command: "build" });
 		expect(config.server).not.toHaveProperty("hmr");
 		expect(config.server.allowedHosts).toEqual([".localhost"]);
 	});
@@ -74,25 +74,30 @@ describe("buildBuncargoViteConfig", () => {
 });
 
 describe("buncargoVite", () => {
-	it("resolves the app from BUNCARGO_APP_NAME", () => {
+	it("resolves the app from BUNCARGO_APP_NAME", async () => {
 		const plugin = buncargoVite({
 			env: { BUNCARGO_APP_NAME: "web", WEB_PORT: "4901" },
 		});
 		expect(plugin.name).toBe("buncargo");
-		expect(plugin.config().server.port).toBe(4901);
+		expect((await plugin.config({}, { command: "build" })).server.port).toBe(
+			4901,
+		);
 	});
 
-	it("accepts an explicit app name and host", () => {
-		const config = buncargoVite({
+	it("accepts an explicit app name and host", async () => {
+		const config = await buncargoVite({
 			app: "web",
 			host: "0.0.0.0",
 			env: { WEB_PORT: "4901" },
-		}).config();
+		}).config({}, { command: "build" });
 		expect(config.server.port).toBe(4901);
 		expect(config.server.host).toBe("0.0.0.0");
 	});
 
-	it("produces a usable config with an empty environment", () => {
-		expect(buncargoVite({ env: {} }).config().server.host).toBe("127.0.0.1");
+	it("produces a usable config with an empty environment", async () => {
+		expect(
+			(await buncargoVite({ env: {} }).config({}, { command: "build" })).server
+				.host,
+		).toBe("127.0.0.1");
 	});
 });
