@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer as httpServer, request } from "node:http";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -19,8 +19,8 @@ test("TCP half-close returns the complete response; closing one gate preserves a
 	upstream.listen(0, "127.0.0.1");
 	await once(upstream, "listening");
 	const port = (upstream.address() as { port: number }).port;
-	const a = await createGate(join(dir, "a.sock"), port, () => true),
-		b = await createGate(join(dir, "b.sock"), port, () => true);
+	const a = await createGate(join(dir, "a.sock"), port, () => true, "linux"),
+		b = await createGate(join(dir, "b.sock"), port, () => true, "linux");
 	const first = connect(join(dir, "a.sock")),
 		second = connect(join(dir, "b.sock"));
 	try {
@@ -58,7 +58,12 @@ test("HTTP headers and SSE arrive before the response completes; denied gates ne
 	await once(upstream, "listening");
 	const port = (upstream.address() as { port: number }).port;
 	let allowed = true;
-	const gate = await createGate(join(dir, "http.sock"), port, () => allowed);
+	const gate = await createGate(
+		join(dir, "http.sock"),
+		port,
+		() => allowed,
+		"linux",
+	);
 	const req = request({ socketPath: join(dir, "http.sock"), path: "/events" });
 	try {
 		const response = new Promise<string>((resolve, reject) => {
@@ -80,5 +85,43 @@ test("HTTP headers and SSE arrive before the response completes; denied gates ne
 		upstream.closeAllConnections();
 		upstream.close();
 		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("Mac loopback gates stream bytes and hold their port while disabled", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "bc-mac-gate-"));
+	const unusedPath = join(directory, "unused.sock");
+	await writeFile(unusedPath, "not owned by the TCP gate");
+	const upstream = createServer((socket) => socket.pipe(socket));
+	upstream.listen(0, "127.0.0.1");
+	await once(upstream, "listening");
+	const gate = await createGate(
+		unusedPath,
+		(upstream.address() as { port: number }).port,
+		() => true,
+		"darwin",
+	);
+	const port = Number(gate.target.split(":")[1]);
+	const socket = connect(port, "127.0.0.1");
+	try {
+		await once(socket, "connect");
+		const reply = once(socket, "data");
+		socket.write("mac-forwarding");
+		expect(String((await reply)[0])).toBe("mac-forwarding");
+		const closed = once(socket, "close");
+		gate.disable();
+		await closed;
+		const denied = connect(port, "127.0.0.1");
+		denied.on("error", () => {});
+		await once(denied, "close");
+		await Promise.all([gate.close(), gate.close()]);
+		expect(await readFile(unusedPath, "utf8")).toBe(
+			"not owned by the TCP gate",
+		);
+	} finally {
+		socket.destroy();
+		await gate.close();
+		upstream.close();
+		await rm(directory, { recursive: true, force: true });
 	}
 });

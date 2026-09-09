@@ -6,6 +6,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -234,6 +235,28 @@ void web;
 			"TS_AUTHKEY",
 		),
 	);
+	// Bun canonicalizes argv[1]; symlinked homes must identify the same coordinator bundle.
+	const realHome = join(consumer, "home");
+	const linkedHome = join(consumer, "linked-home");
+	mkdirSync(realHome);
+	symlinkSync(realHome, linkedHome, "dir");
+	const bundleProbe = join(consumer, "bundle-probe.ts");
+	writeFileSync(
+		bundleProbe,
+		`
+import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
+import { installTailnetBundle } from "./node_modules/buncargo/src/core/tailnet/bundle.ts";
+const path = installTailnetBundle();
+assert.equal(path, realpathSync(path));
+assert.equal(installTailnetBundle(), path);
+console.log(path);
+`,
+	);
+	const installedPaths = [linkedHome, realHome].map((home) =>
+		command([process.execPath, bundleProbe], consumer, { HOME: home }),
+	);
+	assert.equal(installedPaths[0], installedPaths[1]);
 	const watchdog = join(installed, "dist/core/watchdog-runner.js");
 	const watchdogResult = Bun.spawnSync([process.execPath, watchdog], {
 		cwd: consumer,

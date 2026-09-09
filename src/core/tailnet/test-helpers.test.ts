@@ -41,11 +41,18 @@ export function fixtureRun(sessionId = "one", port = 3000): RunEntry {
 	};
 }
 export function fakeTailscale() {
-	const config: {
+	type Config = {
 		TCP: Record<string, unknown>;
 		Web: Record<string, unknown>;
 		AllowFunnel: Record<string, boolean>;
-	} = { TCP: {}, Web: {}, AllowFunnel: {} };
+		Foreground?: Record<string, Config>;
+	};
+	const config: Config & { Foreground: Record<string, Config> } = {
+		TCP: {},
+		Web: {},
+		AllowFunnel: {},
+		Foreground: {},
+	};
 	const calls: string[][] = [];
 	const command: TailscaleCommand = async (args) => {
 		calls.push(args);
@@ -57,20 +64,32 @@ export function fakeTailscale() {
 			});
 		if (args[0] === "version") return "1.102.3";
 		if (args[1] === "status") return JSON.stringify(config);
+		throw new Error("Unexpected command");
+	};
+	let counter = 0;
+	const start = (args: string[]) => {
+		calls.push(args);
 		const flag = args.find((a) => /^--(https|tcp)=/.test(a));
 		if (!flag) throw new Error("Unexpected command");
 		const port = flag.split("=")[1],
 			key = `${self.hostname}:${port}`;
-		if (args.at(-1) === "off") {
-			delete config.TCP[port];
-			delete config.Web[key];
-			return "";
-		}
+		const session = String(++counter);
+		const entry: Config = { TCP: {}, Web: {}, AllowFunnel: {} };
 		if (flag.startsWith("--https")) {
-			config.TCP[port] = { HTTPS: true };
-			config.Web[key] = { Handlers: { "/": { Proxy: args.at(-1) } } };
-		} else config.TCP[port] = { TCPForward: args.at(-1) };
-		return "";
+			entry.TCP[port] = { HTTPS: true };
+			entry.Web[key] = { Handlers: { "/": { Proxy: args.at(-1) } } };
+		} else entry.TCP[port] = { TCPForward: args.at(-1) };
+		config.Foreground[session] = entry;
+		let alive = true;
+		return {
+			get alive() {
+				return alive;
+			},
+			async close() {
+				alive = false;
+				delete config.Foreground[session];
+			},
+		};
 	};
-	return { config, calls, command };
+	return { config, calls, command, start };
 }

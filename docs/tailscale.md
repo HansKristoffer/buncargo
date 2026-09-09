@@ -4,7 +4,7 @@ Buncargo discovers environments through Tailscale's peer list. Each publishing m
 
 ## Existing computers and servers
 
-1. Install and sign in to Tailscale. Publishers need version **1.102.3 or newer** for Unix socket Serve targets; receiving computers can use their existing supported Tailscale app.
+1. Install and sign in to Tailscale. Publishers require **1.102.3 or newer**; receiving computers can use their existing supported Tailscale app.
 2. Enable MagicDNS and HTTPS in the tailnet admin console. Allow the publishing user to configure Serve (on Linux, an administrator can grant that user Tailscale operator access).
 3. Allow the receiving computers to reach TCP **48443** (discovery) and **20000–29999** (service allocation) on publishers in the tailnet policy.
 4. Install the receiving menu bar with `bunx buncargo bar install`. Its installer saves a standalone discovery command, so a global CLI installation or a local dev run is not required. Run `bunx buncargo dev` on the publishing machine. BuncargoBar discovers reachable environments automatically. `bunx buncargo tailnet status` provides the same discovery from a terminal.
@@ -42,25 +42,38 @@ Tailscale Serve handles HTTPS, streaming responses and WebSocket upgrades. Bunca
 - `cli/dev-tailnet.ts` activates sharing only for normal dev runs with an installed Tailscale binary or `TS_AUTHKEY`. Download/login happens asynchronously after the run is published, without delaying app startup.
 - `bundle.ts` installs the same standalone discovery/publisher command for the menu and CLI. `launcher.ts` uses the self-contained `dist/tailnetd.js` bundle outside package caches and serializes startup. The coordinator holds a kernel file lock for its lifetime; all worktrees on a machine reuse it.
 - `daemon.ts` reads the existing run registry every two seconds. It stops forwarding retired targets, clears stale directory snapshots on errors, and exits after one minute without live runs. A new dev run starts it again.
-- `publisher.ts` derives targets once per refresh and uses Unix socket gates for each target. It checks run/app process birth identity when accepting streams. Stopping a target closes existing streams at reconciliation. Daemon death closes every gate; an unrelated process reusing an app or listener TCP port cannot revive an old forwarding rule.
-- `mappings.ts` journals ownership before calling Serve and verifies activation for both initial publication and recovery. Existing targets reserve their ports before new targets are allocated. Cleanup compares the exact hostname, port, protocol and backend, including foreground and Funnel conflicts. It never calls `serve reset`. A crash leaves safe, closed Unix endpoints; the next coordinator removes only still-owned mappings before publishing.
+- `publisher.ts` derives targets once per refresh and uses a byte-stream gate for each target: loopback TCP on macOS, private Unix sockets on Linux. The Mac app's sandboxed network extension rejects Unix connections, even when Serve accepts the configuration. It checks run/app process birth identity when accepting streams. Retirement disables the gate and closes its streams, ends the Serve session, then releases the listener. Closing a gate is idempotent.
+- `mappings.ts` starts foreground Serve sessions and verifies the exact hostname, port, protocol and backend before advertising a target. Existing targets reserve their ports before new targets are allocated. Cleanup closes only Buncargo's own CLI sessions; it never resets Serve or turns off another owner's route. A parent-pipe guard terminates those sessions if the coordinator dies, so Tailscale removes their routes without requiring a future Buncargo run. The same guard owns managed userspace nodes.
 - `discovery.ts` probes only authenticated Tailscale peers with bounded concurrency, body sizes and deadlines. It rejects stale metadata, redirects, wrong machine identity and target URLs pointing anywhere other than the expected peer. No executable path or secret is accepted from a remote directory.
 
-Sharing state lives in `tailnet-coordinator.json` and `tailnet-mappings.json` in the normal machine state directory. A different Buncargo build does not replace a live coordinator underneath other worktrees: stop its dev sessions and allow the idle coordinator to exit before starting the new build.
+Coordinator identity and readiness live in `tailnet-coordinator.json` in the normal machine state directory. Serve ownership is temporary and is not written to a second registry. A different Buncargo build does not replace a live coordinator underneath other worktrees: stop its dev sessions and allow the idle coordinator to exit before starting the new build.
 
 ## Verification and releases
 
-Ordinary tests cover discovery validation, ownership conflicts, crash recovery, TCP half-close, streaming, selected targets and menu actions. The Linux integration suite installs the real pinned binaries and starts a userspace daemon without a TUN device or an account. Live tailnet acceptance additionally requires an enrollment key and actual cloud sandbox: verify two simultaneous agents, private HTTP/SSE/WebSocket, Postgres/Redis, one worktree stopping while another remains live, and a denied peer. Measure throughput on that actual route before comparing it with other transports.
+Ordinary tests cover discovery validation, ownership conflicts, session recovery, TCP half-close, streaming, selected targets and menu actions. The Linux integration suite installs the real pinned binaries and starts a userspace daemon without a TUN device or an account. Live tailnet acceptance additionally requires an enrollment key and actual cloud sandbox: verify two simultaneous agents, private HTTP/SSE/WebSocket, Postgres/Redis, one worktree stopping while another remains live, and a denied peer. Measure throughput on that actual route before comparing it with other transports.
 
 Implementation verification (2026-09-09):
 
-- Bun: 1,025 tests passed, nine optional integration tests skipped; lint, build and packed-package verification passed, including the standalone menu discovery command. Regression tests cover port reservation during recovery, verification of restored mappings and stale coordinator readiness.
+- Bun: 1,028 tests passed, nine optional integration tests skipped; lint, build and packed-package verification passed, including the standalone menu discovery command. Regression tests cover port reservation during recovery, restored mappings, stale coordinator readiness, guarded child shutdown after SIGKILL, and idempotent gate cleanup.
 - macOS: six Swift tests, the ARM64 release build and menu bar smoke test passed.
-- Linux: 17 tailnet tests passed on the Hetzner server, including the real pinned userspace daemon. A separate run as the unprivileged `nobody` user reached the login state without a TUN device.
-- Two real CLI dev runs shared one coordinator and retired independently with a simulated Tailscale control CLI. This verifies orchestration and ownership, not authenticated network access.
+- Earlier Linux bootstrap verification: 17 tailnet tests passed on the Hetzner server, including the real pinned userspace daemon. A separate run as the unprivileged `nobody` user reached the login state without a TUN device.
 - A real Vite 6.4.2 server delivered file-change HMR updates through two different proxy origins simultaneously.
 
-Authenticated Cursor enrollment, cross-machine service access and throughput remain unverified: these checks require a real enrollment key and cloud agent.
+Authenticated Cursor enrollment and cloud-agent throughput remain unverified: these checks require a real enrollment key and cloud agent. Cross-machine Mac service access is verified below.
+
+### Live Mac mini test (2026-09-09)
+
+Tested the packed CLI against `100.79.178.107` with Tailscale 1.102.3 and Bun 1.4.2, using two disposable dev projects, Postgres and Redis. Both dev projects started with `BUCARGO_SKIP_MKCERT=true` and reused one coordinator. The receiving Mac discovered both branches and all four targets.
+
+Cross-machine HTTPS, WebSocket echo, a PostgreSQL query and Redis write/read/delete passed. The first SSE event arrived in about 70 ms; the final event arrived five seconds later, verifying streaming rather than buffering. Switching the Mac's local Serve backend to loopback TCP fixed the original Unix-socket HTTP 502 failure.
+
+Stopping the first worktree removed its three targets while the second branch and app remained reachable. Killing the coordinator with SIGKILL closed an active SSE stream and removed every owned foreground Serve session. The unrelated port 80 route survived both checks.
+
+Three 20 MiB downloads took 29.6, 38.1 and 41.4 seconds (0.48–0.68 MiB/s). A plain Tailscale Serve route directly to the same app, bypassing Buncargo's gate, took 41.6 seconds. Tailscale reported the Frankfurt DERP relay and no direct connection. This comparison points to the relay/network path as the bottleneck; it does not establish direct-connection or cloud-agent throughput.
+
+The test also exposed a coordinator identity bug with symlinked state paths (`/tmp` versus `/private/tmp`). Bundle installation now returns canonical paths; both runs subsequently adopted one coordinator. Packed-package verification covers initial installation and reuse through a symlinked home.
+
+The old discovery LaunchAgent was paused only during testing. Its original Serve configuration, including the unrelated port 80 route, was restored after each run. Final cleanup confirmed the old service running and its directory returning HTTP 200. Disposable test processes, containers, volumes and socket directories were removed.
 
 Release Please continues to publish the CLI and menu bar. There is no connection Worker deployment, Cloudflare credential or relay deployment in the release pipeline. Public `--expose` Cloudflare tunnels remain an independent feature.
 

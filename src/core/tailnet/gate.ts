@@ -1,21 +1,20 @@
-import { once } from "node:events";
 import { rm } from "node:fs/promises";
 import { connect, createServer } from "node:net";
+import { listenEndpoint } from "./endpoint";
 import { ForwardSockets } from "./sockets";
 
-/** Unix endpoints cannot accidentally forward to an unrelated process reusing a dead daemon's TCP port.
- * Tailscale Serve owns HTTP/TLS, SSE and WebSocket proxying; this bridge only enforces target lifetime.
- */
+/** A byte-stream bridge enforces target lifetime; Serve handles HTTP, SSE and WebSockets. */
 export async function createGate(
 	path: string,
 	port: number,
 	allowed: () => boolean,
+	platform = process.platform,
 ) {
 	const sockets = new ForwardSockets();
-	let closed = false;
+	let disabled = false;
 	const server = createServer({ allowHalfOpen: true }, (socket) => {
 		sockets.track(socket);
-		if (closed || !allowed()) {
+		if (disabled || !allowed()) {
 			socket.destroy();
 			return;
 		}
@@ -24,22 +23,29 @@ export async function createGate(
 		);
 		sockets.bridge(socket, upstream);
 	});
+	let target: string;
 	try {
-		const listening = once(server, "listening");
-		server.listen(path);
-		await listening;
+		target = await listenEndpoint(server, path, platform);
 	} catch (error) {
 		server.close();
 		throw error;
 	}
+	const disable = () => {
+		disabled = true;
+		sockets.destroy();
+	};
+	let closing: Promise<void> | undefined;
 	return {
-		target: `unix:${path}`,
-		async close() {
-			if (closed) return;
-			closed = true;
-			sockets.destroy();
-			await new Promise<void>((resolve) => server.close(() => resolve()));
-			await rm(path, { force: true });
+		target,
+		// Keep the listener reserved until its Serve session has ended.
+		disable,
+		close() {
+			disable();
+			closing ??= (async () => {
+				await new Promise<void>((resolve) => server.close(() => resolve()));
+				if (target.startsWith("unix:")) await rm(path, { force: true });
+			})();
+			return closing;
 		},
 	};
 }

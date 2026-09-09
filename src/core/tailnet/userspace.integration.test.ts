@@ -1,11 +1,10 @@
 import { expect, test } from "bun:test";
-import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { tailscaleProcessEnv, tailscaleTestsEnabled } from "../runtime-flags";
+import { tailscaleTestsEnabled } from "../runtime-flags";
 import { installTailscale, TAILSCALE_VERSION } from "./binary";
-import { CHILD_GUARD } from "./child-guard";
+import { startGuardedChild } from "./child-guard";
 import { createTailscaleClient } from "./client";
 
 test.skipIf(!tailscaleTestsEnabled() || process.platform !== "linux")(
@@ -14,25 +13,10 @@ test.skipIf(!tailscaleTestsEnabled() || process.platform !== "linux")(
 		const { binary, daemon } = await installTailscale();
 		const directory = await mkdtemp(join(tmpdir(), "bc-real-ts-")),
 			socket = join(directory, "tailscaled.sock");
-		const child = spawn(
-			process.execPath,
-			[
-				"-e",
-				CHILD_GUARD,
-				"--",
-				directory,
-				daemon,
-				"--tun=userspace-networking",
-				"--state=mem:",
-				`--socket=${socket}`,
-			],
-			{
-				env: tailscaleProcessEnv(),
-				stdio: ["pipe", "ignore", "ignore"],
-			},
-		);
-		const finished = new Promise<void>((resolve) =>
-			child.once("exit", () => resolve()),
+		const child = startGuardedChild(
+			daemon,
+			["--tun=userspace-networking", "--state=mem:", `--socket=${socket}`],
+			directory,
 		);
 		const command = createTailscaleClient(binary, socket);
 		try {
@@ -48,14 +32,8 @@ test.skipIf(!tailscaleTestsEnabled() || process.platform !== "linux")(
 			}
 			expect(status?.BackendState).toBe("NeedsLogin");
 		} finally {
-			child.stdin.end();
-			const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
-			try {
-				await finished;
-			} finally {
-				clearTimeout(timer);
-				await rm(directory, { recursive: true, force: true });
-			}
+			await child.close();
+			await rm(directory, { recursive: true, force: true });
 		}
 	},
 	180000,

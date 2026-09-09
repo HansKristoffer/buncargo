@@ -27,10 +27,7 @@ test("target projection omits workers, portless services, credentials and local 
 test("two worktrees coexist; retiring one preserves the other's mappings and URL", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "bc-publish-")),
 		fake = fakeTailscale();
-	const mappings = await createMappings(
-		fake.command,
-		join(dir, "mappings.json"),
-	);
+	const mappings = createMappings(fake.command, fake.start);
 	const publisher = createPublisher(mappings, dir);
 	const a = fixtureRun("a"),
 		b = fixtureRun("b", 3001);
@@ -44,7 +41,7 @@ test("two worktrees coexist; retiring one preserves the other's mappings and URL
 		expect(JSON.stringify(initial)).not.toContain("/workspace/");
 		const remaining = await publisher.refresh(self, [b]);
 		expect(remaining.runs[0]).toEqual(initial.runs[1]);
-		expect(Object.keys(fake.config.TCP)).toHaveLength(2);
+		expect(Object.keys(fake.config.Foreground)).toHaveLength(2);
 		b.apps[0].status = "stopped";
 		const stopped = await publisher.refresh(self, [b]);
 		expect(stopped.runs[0].targets.map((t) => t.name)).toEqual(["db"]);
@@ -59,10 +56,7 @@ test("two worktrees coexist; retiring one preserves the other's mappings and URL
 test("restarting a worktree retains its addresses when the upstream port changes", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "bc-restart-")),
 		fake = fakeTailscale();
-	const mappings = await createMappings(
-		fake.command,
-		join(dir, "mappings.json"),
-	);
+	const mappings = createMappings(fake.command, fake.start);
 	const publisher = createPublisher(mappings, dir);
 	const initial = fixtureRun("first", 3000);
 	try {
@@ -87,17 +81,13 @@ test("restarting a worktree retains its addresses when the upstream port changes
 test("new runs cannot claim ports reserved for mappings awaiting restoration", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "bc-restore-"));
 	const fake = fakeTailscale();
-	const mappings = await createMappings(
-		fake.command,
-		join(dir, "mappings.json"),
-	);
+	const mappings = createMappings(fake.command, fake.start);
 	const publisher = createPublisher(mappings, dir);
 	const existing = fixtureRun("existing");
 	const newcomer = { ...fixtureRun("new"), root: existing.root };
 	try {
 		const initial = await publisher.refresh(self, [existing]);
-		fake.config.TCP = {};
-		fake.config.Web = {};
+		fake.config.Foreground = {};
 		const restored = await publisher.refresh(self, [newcomer, existing]);
 		expect(restored.runs[1]).toEqual(initial.runs[0]);
 		expect(

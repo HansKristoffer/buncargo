@@ -38,3 +38,33 @@ test("a lost parent pipe terminates the userspace daemon even when it ignores SI
 		await rm(dir, { recursive: true, force: true });
 	}
 }, 10000);
+
+test("killing the coordinator closes guarded Serve children without a cleanup directory", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "bc-serve-guard-"));
+	const pidfile = join(dir, "pid");
+	const script = join(dir, "parent.ts");
+	await writeFile(
+		script,
+		`import { startGuardedChild } from ${JSON.stringify(join(import.meta.dir, "child-guard.ts"))};
+ startGuardedChild(process.execPath, ["-e", ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(pidfile)},String(process.pid)); setInterval(()=>{},1000);`)}]);`,
+	);
+	const parent = spawn(process.execPath, [script], { stdio: "ignore" });
+	const exited = new Promise<void>((resolve) =>
+		parent.once("exit", () => resolve()),
+	);
+	let pid: number | undefined;
+	try {
+		for (let i = 0; i < 100 && !existsSync(pidfile); i++) await Bun.sleep(20);
+		pid = Number(await readFile(pidfile, "utf8"));
+		expect(isProcessAlive(pid)).toBe(true);
+		parent.kill("SIGKILL");
+		await exited;
+		for (let i = 0; i < 150 && isProcessAlive(pid); i++) await Bun.sleep(20);
+		expect(isProcessAlive(pid)).toBe(false);
+		expect(existsSync(pidfile)).toBe(true);
+	} finally {
+		parent.kill("SIGKILL");
+		if (pid && isProcessAlive(pid)) process.kill(pid, "SIGKILL");
+		await rm(dir, { recursive: true, force: true });
+	}
+}, 10000);

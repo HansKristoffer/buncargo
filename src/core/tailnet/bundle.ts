@@ -2,6 +2,7 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 	writeFileSync,
@@ -19,14 +20,16 @@ export function installTailnetBundle(): string {
 		);
 	const contents = readFileSync(source, "utf8");
 	const path = stateFilePath(`bin/tailnetd-${hashDaemonBundle(contents)}.js`);
-	if (existsSync(path)) return path;
-	mkdirSync(stateFilePath("bin"), { recursive: true });
-	const temporary = `${path}.${crypto.randomUUID()}.tmp`;
-	try {
-		writeFileSync(temporary, contents, { mode: 0o600, flag: "wx" });
-		renameSync(temporary, path);
-	} finally {
-		rmSync(temporary, { force: true });
+	if (!existsSync(path)) {
+		mkdirSync(stateFilePath("bin"), { recursive: true });
+		const temporary = `${path}.${crypto.randomUUID()}.tmp`;
+		try {
+			writeFileSync(temporary, contents, { mode: 0o600, flag: "wx" });
+			renameSync(temporary, path);
+		} finally {
+			rmSync(temporary, { force: true });
+		}
 	}
-	return path;
+	// Bun resolves script symlinks before setting argv[1]; coordinator comparisons must use that same path.
+	return realpathSync(path);
 }

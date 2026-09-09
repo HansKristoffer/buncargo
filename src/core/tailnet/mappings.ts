@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
-import { readJsonDocument, writeJsonDocument } from "../registry-file";
-import { stateFilePath } from "../state-paths";
+import { sleep } from "../sleep";
 import { record, type TailscaleCommand } from "./client";
-import { PORT_END, PORT_START, validPort } from "./protocol";
+import { PORT_END, PORT_START } from "./protocol";
 
 export interface Mapping {
 	hostname: string;
@@ -12,7 +11,7 @@ export interface Mapping {
 }
 const object = (value: unknown) => (value === undefined ? {} : record(value));
 
-/** Compare the entire mapping, including foreground and Funnel ownership, before removing anything. */
+/** Require an exact backend match; foreign foreground sessions and Funnel make a port unavailable. */
 export function mappingState(
 	raw: unknown,
 	mapping: Mapping,
@@ -61,81 +60,86 @@ export function mappingPort(key: string, occupied: Set<number>): number {
 	throw new Error("No free Tailscale service ports");
 }
 
-/** The coordinator is the sole writer, under its lifetime lock. Journal before external mutations. */
-export async function createMappings(
-	command: TailscaleCommand,
-	path = stateFilePath("tailnet-mappings.json"),
-) {
-	let entries =
-		(await readJsonDocument(path, (value) => {
-			if (
-				!Array.isArray(value) ||
-				!value.every(
-					(v) =>
-						v &&
-						typeof v.hostname === "string" &&
-						validPort(v.port) &&
-						["http", "tcp"].includes(v.protocol) &&
-						typeof v.target === "string" &&
-						v.target.startsWith("unix:"),
-				)
-			)
-				return;
-			return value as Mapping[];
-		})) ?? [];
-	const save = () => writeJsonDocument(path, entries);
+export interface ServeSession {
+	readonly alive: boolean;
+	close(): Promise<void>;
+}
+type StartServe = (args: string[]) => ServeSession;
+interface MappingSession {
+	child: ServeSession;
+	sessionId?: string;
+}
+export type Mappings = ReturnType<typeof createMappings>;
+
+/** Foreground Serve owns its routes for the lifetime of its CLI connection, with no persisted rules.
+ * The parent-pipe guard closes that connection even if the coordinator is killed abruptly.
+ */
+export function createMappings(command: TailscaleCommand, start: StartServe) {
+	const entries = new Map<Mapping, MappingSession>();
 	const state = async () =>
 		record(JSON.parse(await command(["serve", "status", "--json"])));
-	const flag = (m: Mapping) =>
-		`--${m.protocol === "http" ? "https" : "tcp"}=${m.port}`;
 	const remove = async (mapping: Mapping) => {
-		const disposition = mappingState(await state(), mapping);
-		if (disposition === "conflict")
-			throw new Error(
-				`Tailscale port ${mapping.port} was changed outside Buncargo; refusing to remove it`,
-			);
-		if (disposition === "owned")
-			await command(["serve", "--bg", flag(mapping), "off"]);
-		entries = entries.filter((v) => v !== mapping);
-		await save();
+		const entry = entries.get(mapping);
+		if (!entry) return;
+		await entry.child.close();
+		entries.delete(mapping);
 	};
-	// Initial publication and recovery share journaling and post-command verification.
-	const activate = async (mapping: Mapping) => {
-		if (!entries.includes(mapping)) {
-			entries.push(mapping);
-			await save();
+	const owned = (config: unknown, mapping: Mapping) => {
+		const entry = entries.get(mapping);
+		if (!entry?.child.alive || !entry.sessionId) return false;
+		const raw = record(config),
+			foreground = { ...object(raw.Foreground) };
+		const session = foreground[entry.sessionId];
+		delete foreground[entry.sessionId];
+		return (
+			session !== undefined &&
+			mappingState(session, mapping) === "owned" &&
+			mappingState({ ...raw, Foreground: foreground }, mapping) === "free"
+		);
+	};
+	const acquire = async (mapping: Mapping) => {
+		if (mappingState(await state(), mapping) !== "free")
+			throw new Error(`Tailscale port ${mapping.port} is already in use`);
+		const child = start([
+			"serve",
+			"--yes",
+			`--${mapping.protocol === "http" ? "https" : "tcp"}=${mapping.port}`,
+			mapping.target,
+		]);
+		const entry: MappingSession = { child };
+		entries.set(mapping, entry);
+		try {
+			const deadline = Date.now() + 10000;
+			while (child.alive && Date.now() < deadline) {
+				const config = await state();
+				const matches = Object.entries(object(config.Foreground)).filter(
+					([, value]) => mappingState(value, mapping) === "owned",
+				);
+				if (matches.length === 1) {
+					entry.sessionId = matches[0][0];
+					if (owned(config, mapping)) return;
+				}
+				await sleep(50);
+			}
+			throw new Error(
+				`Tailscale did not activate port ${mapping.port}; check Serve permissions and HTTPS settings`,
+			);
+		} catch (error) {
+			await remove(mapping);
+			throw error;
 		}
-		await command(["serve", "--bg", "--yes", flag(mapping), mapping.target]);
-		if (mappingState(await state(), mapping) !== "owned")
-			throw new Error("Tailscale did not activate the service mapping");
 	};
 	return {
 		state,
-		async acquire(mapping: Mapping) {
-			if (mappingState(await state(), mapping) !== "free")
-				throw new Error(`Tailscale port ${mapping.port} is already in use`);
-			await activate(mapping);
-		},
-		async restore(mapping: Mapping, config: unknown) {
-			const disposition = mappingState(config, mapping);
-			if (disposition === "conflict")
-				throw new Error(`Tailscale port ${mapping.port} has another owner`);
-			if (disposition === "free") await activate(mapping);
-		},
+		acquire,
 		remove,
+		async restore(mapping: Mapping, config: unknown) {
+			if (owned(config, mapping)) return;
+			await remove(mapping);
+			await acquire(mapping);
+		},
 		async clear() {
-			let failed = false;
-			for (const entry of entries.slice()) {
-				try {
-					await remove(entry);
-				} catch {
-					failed = true;
-				}
-			}
-			if (failed)
-				throw new Error(
-					"Some Buncargo Tailscale mappings could not be removed; check tailscale serve status",
-				);
+			for (const mapping of entries.keys()) await remove(mapping);
 		},
 	};
 }

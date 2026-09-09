@@ -4,10 +4,11 @@ import { matchesProcessIdentity } from "../process-identity";
 import type { RunEntry } from "../run-registry";
 import { defaultServiceProtocol } from "../service-presets";
 import type { Peer } from "./client";
+import { serveTarget } from "./endpoint";
 import { createGate } from "./gate";
 import {
-	type createMappings,
 	type Mapping,
+	type Mappings,
 	mappingPort,
 	occupiedMappingPorts,
 } from "./mappings";
@@ -77,14 +78,12 @@ interface Published {
 	target: LocalTarget;
 }
 
-export function createPublisher(
-	mappings: Awaited<ReturnType<typeof createMappings>>,
-	directory: string,
-) {
+export function createPublisher(mappings: Mappings, directory: string) {
 	const published = new Map<string, Published>();
 	const retire = async (key: string, entry: Published) => {
-		await entry.gate.close();
+		entry.gate.disable();
 		await mappings.remove(entry.mapping);
+		await entry.gate.close();
 		published.delete(key);
 	};
 	return {
@@ -115,7 +114,7 @@ export function createPublisher(
 					entry.target = next.target;
 				}
 			}
-			let config = await mappings.state();
+			const config = await mappings.state();
 			const occupied = occupiedMappingPorts(config);
 			occupied.add(DIRECTORY_PORT);
 			// Reserve mappings awaiting restoration before allocating ports for new targets.
@@ -152,7 +151,7 @@ export function createPublisher(
 					hostname: self.hostname,
 					port,
 					protocol: target.protocol,
-					target: gate.target,
+					target: serveTarget(gate.target, target.protocol),
 				};
 				try {
 					await mappings.acquire(mapping);
@@ -166,7 +165,6 @@ export function createPublisher(
 					await gate.close();
 					throw error;
 				}
-				config = await mappings.state();
 			}
 			const remoteRuns: RemoteRun[] = [];
 			for (const { run, targets: localTargets } of projected) {
@@ -210,8 +208,8 @@ export function createPublisher(
 			};
 		},
 		async close() {
-			for (const entry of published.values()) await entry.gate.close();
-			published.clear();
+			for (const entry of published.values()) entry.gate.disable();
+			for (const [key, entry] of published) await retire(key, entry);
 		},
 	};
 }

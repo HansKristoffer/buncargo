@@ -1,4 +1,3 @@
-import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -9,6 +8,7 @@ import { readProcessIdentity } from "../process-identity";
 import { readLiveRuns } from "../run-registry";
 import { tailscaleAuthKey, tailscaleProcessEnv } from "../runtime-flags";
 import { stateFilePath } from "../state-paths";
+import { startGuardedChild } from "./child-guard";
 import { tailnetStatus } from "./client";
 import {
 	COORDINATOR_MAX_AGE_MS,
@@ -16,7 +16,8 @@ import {
 	type CoordinatorState,
 	writeCoordinatorState,
 } from "./coordinator-state";
-import { createMappings, type Mapping } from "./mappings";
+import { listenEndpoint, serveTarget } from "./endpoint";
+import { createMappings, type Mapping, type Mappings } from "./mappings";
 import { DIRECTORY_PORT, type Directory } from "./protocol";
 import { createPublisher } from "./publisher";
 import { startTailnetRuntime } from "./runtime";
@@ -56,7 +57,7 @@ export async function runTailnetDaemon() {
 				let runtime:
 					| Awaited<ReturnType<typeof startTailnetRuntime>>
 					| undefined;
-				let mappings: Awaited<ReturnType<typeof createMappings>> | undefined;
+				let mappings: Mappings | undefined;
 				let publisher: ReturnType<typeof createPublisher> | undefined;
 				let snapshot: Directory | undefined;
 				const server = createServer((req, res) => {
@@ -98,20 +99,22 @@ export async function runTailnetDaemon() {
 						throw new Error(
 							"Sharing requires Tailscale 1.102.3 or later. Update Tailscale on this machine.",
 						);
-					mappings = await createMappings(runtime.command);
-					// A previous process may have died mid-command. Only remove mappings whose exact journaled target still matches.
-					await mappings.clear();
+					const { binary, socket } = runtime;
+					mappings = createMappings(runtime.command, (args) =>
+						startGuardedChild(binary, [
+							...(socket ? [`--socket=${socket}`] : []),
+							...args,
+						]),
+					);
 					const path = join(directory, "directory.sock");
-					const listening = once(server, "listening");
-					server.listen(path);
-					await listening;
+					const endpoint = await listenEndpoint(server, path);
 					let self = (await tailnetStatus(runtime.command, controller.signal))
 						.self;
 					let directoryMapping: Mapping = {
 						hostname: self.hostname,
 						port: DIRECTORY_PORT,
 						protocol: "http",
-						target: `unix:${path}`,
+						target: serveTarget(endpoint, "http"),
 					};
 					await mappings.acquire(directoryMapping);
 					publisher = createPublisher(mappings, directory);
@@ -140,7 +143,7 @@ export async function runTailnetDaemon() {
 						} catch (error) {
 							snapshot = undefined;
 							await publisher.close();
-							// Close streams before network cleanup. A failed cleanup remains journaled for retry.
+							// Drop our foreground sessions without changing other Serve configuration.
 							await mappings.clear().catch(() => {});
 							await report(
 								false,
@@ -163,8 +166,8 @@ export async function runTailnetDaemon() {
 					snapshot = undefined;
 					await publisher?.close();
 					server.closeAllConnections();
-					server.close();
 					await mappings?.clear().catch(() => {});
+					server.close();
 					await runtime?.close();
 					await rm(directory, { recursive: true, force: true });
 				}

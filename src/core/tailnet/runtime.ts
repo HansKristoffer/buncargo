@@ -1,11 +1,9 @@
-import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { abortableSleep } from "../deadline";
-import { tailscaleProcessEnv } from "../runtime-flags";
 import { installTailscale } from "./binary";
-import { CHILD_GUARD } from "./child-guard";
+import { startGuardedChild } from "./child-guard";
 import {
 	createTailscaleClient,
 	type TailscaleCommand,
@@ -55,55 +53,20 @@ export async function startTailnetRuntime(
 	const directory = await mkdtemp(join(tmpdir(), "bc-ts-"));
 	const socket = join(directory, "tailscaled.sock");
 	const secretFile = join(directory, "auth-key");
-	const child = spawn(
-		process.execPath,
-		[
-			"-e",
-			CHILD_GUARD,
-			"--",
-			directory,
-			daemon,
-			"--tun=userspace-networking",
-			"--state=mem:",
-			`--socket=${socket}`,
-		],
-		{
-			env: tailscaleProcessEnv(),
-			stdio: ["pipe", "ignore", "ignore"],
-		},
+	const child = startGuardedChild(
+		daemon,
+		["--tun=userspace-networking", "--state=mem:", `--socket=${socket}`],
+		directory,
 	);
-	let exited = false;
-	const finished = new Promise<void>((resolve) => {
-		child.once("exit", () => {
-			exited = true;
-			resolve();
-		});
-		child.once("error", () => {
-			exited = true;
-			resolve();
-		});
-	});
-	let closing: Promise<void> | undefined;
-	const close = () => {
-		closing ??= (async () => {
-			if (!exited) {
-				child.stdin?.end();
-				const timer = setTimeout(() => child.kill("SIGKILL"), 3000);
-				try {
-					await finished;
-				} finally {
-					clearTimeout(timer);
-				}
-			}
-			await rm(directory, { recursive: true, force: true });
-		})();
-		return closing;
+	const close = async () => {
+		await child.close();
+		await rm(directory, { recursive: true, force: true });
 	};
 	const command = deps.command(binary, socket);
 	try {
 		for (let i = 0; ; i++) {
 			signal.throwIfAborted();
-			if (exited || i >= 50)
+			if (!child.alive || i >= 50)
 				throw new Error("Tailscale userspace daemon did not start");
 			try {
 				await command(["status", "--json"], signal);
