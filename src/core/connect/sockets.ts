@@ -25,6 +25,8 @@ export class ForwardSockets {
 	}
 
 	destroy(): void {
-		for (const socket of this.sockets) socket.destroy();
+		for (const socket of this.sockets) {
+			socket.destroy();
+		}
 	}
 }

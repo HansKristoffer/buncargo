@@ -1,24 +1,28 @@
 {
- admin off
- auto_https disable_redirects
- email hej@hanskristoffer.dk
+	admin off
+	auto_https disable_redirects
+	email hej@hanskristoffer.dk
 }
+
 connect.hanskristoffer.dk {
- tls {
-  dns cloudflare {env.CLOUDFLARE_API_TOKEN}
- }
- reverse_proxy 127.0.0.1:8081 {
-  header_up X-Real-IP {remote_host}
- }
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+
+	reverse_proxy 127.0.0.1:8081 {
+		header_up X-Real-IP {remote_host}
+	}
 }
+
 *.connect.hanskristoffer.dk {
- tls {
-  dns cloudflare {env.CLOUDFLARE_API_TOKEN}
- }
- reverse_proxy 127.0.0.1:8080 {
-  flush_interval -1
-  header_up -Forwarded
-  header_up X-Forwarded-Host {host}
-  header_up X-Forwarded-Proto https
- }
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+
+	reverse_proxy 127.0.0.1:8080 {
+		flush_interval -1
+		header_up -Forwarded
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto https
+	}
 }

@@ -26,6 +26,7 @@ test("Swift and CLI decode the same named directory and reject redirected target
 		expect(() => parseDirectory(copy, CONNECT_ORIGIN)).toThrow();
 	}
 });
+
 test("projecting a selected run omits workers/jobs and retains process identity", () => {
 	const identity = readProcessIdentity(process.pid);
 	const run: RunEntry = {
@@ -60,6 +61,7 @@ test("projecting a selected run omits workers/jobs and retains process identity"
 	expect(targets[0].processIdentity).toBe(identity);
 	expect(targets[1].protocol).toBe("tcp");
 });
+
 test("publication validation rejects oversized, duplicate and foreign database metadata", () => {
 	const base = {
 		sessionId: "run",

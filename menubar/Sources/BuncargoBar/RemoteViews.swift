@@ -21,7 +21,9 @@ struct RemoteMachinesView: View {
                 Menu {
                     Button("Copy connection token") { store.copyToken() }
                     Button("Rotate connection token") { store.copyToken(rotate: true) }
-                } label: { Image(systemName: "key") }.menuStyle(.borderlessButton).fixedSize()
+                } label: {
+                    Image(systemName: "key")
+                }.menuStyle(.borderlessButton).fixedSize()
 
             }
             .padding(.horizontal, 12)
@@ -34,10 +36,12 @@ struct RemoteMachinesView: View {
                     .padding(.horizontal, 12)
             }
             if store.runs.isEmpty {
-                Text("Copy a connection token into BUNCARGO_CONNECT_TOKENS in your cloud environment, then run buncargo dev.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 12)
+                Text(
+                    "Copy a connection token into BUNCARGO_CONNECT_TOKENS in your cloud environment, then run buncargo dev."
+                )
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
             }
             ForEach(groups, id: \.name) { group in
                 Text(group.name)
@@ -67,7 +71,7 @@ private struct RemoteRunRow: View {
             status: store.status(run)
         ) {
             if let primary = run.primary {
-                Button("Open") { store.perform(run, primary) }
+                Button("Open") { store.perform(primary) }
                     .font(.system(size: 11))
                     .help("Open \(primary.name)")
                     .disabled(!store.canUse(primary))
@@ -94,7 +98,11 @@ struct RemoteRunDetailView: View {
                 }
             }
         } footer: {
-            HStack { Text(run.hostname).font(.system(size: 10)).foregroundStyle(.secondary); Spacer(); Button("Revoke access") { store.revoke(run) }.font(.system(size: 10)) }
+            HStack {
+                Text(run.hostname).font(.system(size: 10)).foregroundStyle(.secondary)
+                Spacer()
+                Button("Revoke access") { store.revoke(run) }.font(.system(size: 10))
+            }
         }
     }
 }
@@ -110,11 +118,12 @@ struct RemoteTargetRow: View {
             name: target.name,
             status: store.status(run, target: target),
             detail: store.address(target),
-            onOpen: { store.perform(run, target) },
+            onOpen: { store.perform(target) },
             openSymbol: target.isHTTP ? "arrow.up.right" : "link",
             openHelp: target.isHTTP ? "Open" : "Connect and copy address",
-            onCopy: { store.perform(run, target, action: .copy) },
-            onTablePlus: target.supportsTablePlus ? { store.perform(run, target, action: .tablePlus) } : nil,
+            onCopy: { store.perform(target, action: .copy) },
+            onTablePlus: target.supportsTablePlus
+                ? { store.perform(target, action: .tablePlus) } : nil,
             onStop: store.connections[target.id] != nil ? { store.disconnect(target) } : nil,
             stopHelp: "Disconnect local connection",
             actionsEnabled: store.canUse(target) && !store.connecting.contains(target.id)

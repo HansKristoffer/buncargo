@@ -15,10 +15,10 @@ test("TCP half-close returns the complete response; closing one gate preserves a
 	upstream.listen(0, "127.0.0.1");
 	await once(upstream, "listening");
 	const port = (upstream.address() as { port: number }).port;
-	const a = await createGate(port, () => true),
-		b = await createGate(port, () => true);
-	const first = connect(Number(a.target.split(":")[1]), "127.0.0.1"),
-		second = connect(Number(b.target.split(":")[1]), "127.0.0.1");
+	const a = await createGate(port, () => true);
+	const b = await createGate(port, () => true);
+	const first = connect(a.port, "127.0.0.1");
+	const second = connect(b.port, "127.0.0.1");
 	try {
 		await Promise.all([once(first, "connect"), once(second, "connect")]);
 		// TCP may reset a stream whose upstream connect is still in flight.
@@ -57,7 +57,7 @@ test("HTTP headers and SSE arrive before the response completes; denied gates ne
 	const port = (upstream.address() as { port: number }).port;
 	let allowed = true;
 	const gate = await createGate(port, () => allowed);
-	const req = request(`http://${gate.target}/events`);
+	const req = request(`http://127.0.0.1:${gate.port}/events`);
 	try {
 		const response = new Promise<string>((resolve, reject) => {
 			req.on("response", (res) =>
@@ -68,7 +68,7 @@ test("HTTP headers and SSE arrive before the response completes; denied gates ne
 		req.end();
 		expect(await response).toBe("data: first\n\n");
 		allowed = false;
-		const denied = connect(Number(gate.target.split(":")[1]), "127.0.0.1");
+		const denied = connect(gate.port, "127.0.0.1");
 		denied.on("error", () => {});
 		await once(denied, "close");
 		expect(requests).toBe(1);
@@ -88,7 +88,7 @@ test("Loopback gates stream bytes and hold their port while disabled", async () 
 		(upstream.address() as { port: number }).port,
 		() => true,
 	);
-	const port = Number(gate.target.split(":")[1]);
+	const port = gate.port;
 	const socket = connect(port, "127.0.0.1");
 	try {
 		await once(socket, "connect");

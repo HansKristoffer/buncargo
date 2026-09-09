@@ -7,15 +7,17 @@ import { abortableSleep } from "../deadline";
 import { connectProcessEnv } from "../runtime-flags";
 import { installFrp } from "./binary";
 import { startGuardedChild } from "./child-guard";
-import { newCredential } from "./client";
-import { listenEndpoint } from "./endpoint";
+import { newCredential } from "./credentials";
+import { listenLoopback } from "./endpoint";
 import { type Relay, record, validPort } from "./protocol";
+
 export async function freePort() {
 	const server = createServer();
-	const endpoint = await listenEndpoint(server);
+	const port = await listenLoopback(server);
 	await new Promise<void>((resolve) => server.close(() => resolve()));
-	return Number(endpoint.split(":")[1]);
+	return port;
 }
+
 export interface FrpcConfig {
 	relay: Relay;
 	user: string;
@@ -33,20 +35,25 @@ export async function startFrpc(
 		!validPort(config.relay.port) ||
 		!/^[a-z0-9.-]+$/.test(config.relay.host) ||
 		!/^[a-z0-9.-]+$/.test(config.relay.serverName)
-	)
+	) {
 		throw new Error("Invalid relay configuration");
-	const binary = await installFrp("frpc", signal),
-		directory = await mkdtemp(join(tmpdir(), "bc-frp-"));
-	const port = await freePort(),
-		password = newCredential("admin"),
-		path = join(directory, "frpc.json");
+	}
+
+	const binary = await installFrp("frpc", signal);
+	const directory = await mkdtemp(join(tmpdir(), "bc-frp-"));
+	const port = await freePort();
+	const password = newCredential("admin");
+	const path = join(directory, "frpc.json");
 	const ca = join(directory, "ca.pem");
+
+	// frp skips certificate verification without an explicit CA file, even with TLS enabled.
 	await writeFile(ca, trustedCA, { mode: 0o600 });
 	const content = {
 		serverAddr: config.relay.host,
 		serverPort: config.relay.port,
 		user: config.user,
 		metadatas: { credential: config.credential },
+		// The server hook authenticates the scoped metadata credential, not a shared global token.
 		auth: {
 			method: "token",
 			token: "",
@@ -69,6 +76,8 @@ export async function startFrpc(
 		visitors: config.visitors ?? [],
 	};
 	await writeFile(path, JSON.stringify(content), { mode: 0o600 });
+
+	// Reject invalid configuration before handing the private directory to the child guard.
 	const verify = Bun.spawn([binary, "verify", "-c", path], {
 		stdout: "ignore",
 		stderr: "ignore",
@@ -78,6 +87,7 @@ export async function startFrpc(
 		await rm(directory, { recursive: true, force: true });
 		throw new Error("Invalid frpc configuration");
 	}
+
 	const child = startGuardedChild(binary, ["-c", path], directory);
 	const close = () => child.close();
 	const admin = async (endpoint: string) => {
@@ -87,10 +97,14 @@ export async function startFrpc(
 			},
 			signal: AbortSignal.timeout(2000),
 		});
-		if (!response.ok) throw new Error("frpc administration request failed");
+		if (!response.ok) {
+			throw new Error("frpc administration request failed");
+		}
 		return response;
 	};
+
 	const status = async () => record(await (await admin("status")).json());
+
 	// Reload only proxy definitions: keeping the login/multiplexer alive preserves other recipients' streams.
 	const reload = async (proxies: Record<string, unknown>[]) => {
 		await writeFile(`${path}.next`, JSON.stringify({ ...content, proxies }), {
@@ -99,11 +113,13 @@ export async function startFrpc(
 		await rename(`${path}.next`, path);
 		await (await admin("reload?strictConfig=true")).text();
 	};
+
 	try {
 		for (let i = 0; i < 100; i++) {
 			signal?.throwIfAborted();
-			if (!child.alive)
+			if (!child.alive) {
 				throw new Error("frpc exited; check relay TLS and credentials");
+			}
 			try {
 				await status();
 				return { close, status, reload, alive: () => child.alive };
@@ -116,7 +132,9 @@ export async function startFrpc(
 		throw e;
 	}
 }
+
 export type Frpc = Awaited<ReturnType<typeof startFrpc>>;
+
 export function runningProxies(status: Record<string, unknown>): string[] {
 	return Object.values(status).flatMap((value) =>
 		Array.isArray(value)

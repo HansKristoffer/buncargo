@@ -7,20 +7,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConnectionDirectory } from "../../../server/connect/directory";
 import { frpHook } from "../../../server/connect/http";
-import { capability, Store } from "../../../server/connect/store";
+import { Store } from "../../../server/connect/store";
 import { abortableSleep } from "../deadline";
 import { frpTestsEnabled } from "../runtime-flags";
 import { installFrp } from "./binary";
+import { newCredential } from "./credentials";
 import { type Frpc, freePort, runningProxies, startFrpc } from "./frpc";
 import { createGate } from "./gate";
 
 const integration = frpTestsEnabled() ? test : test.skip;
+
 integration(
 	"real frps: TLS, plugin admission, hostname HTTP/SSE/WebSocket, private TCP and stream revocation",
 	async () => {
 		const dir = await mkdtemp(join(tmpdir(), "bc-frp-integration-"));
-		const key = join(dir, "key.pem"),
-			cert = join(dir, "cert.pem");
+		const key = join(dir, "key.pem");
+		const cert = join(dir, "cert.pem");
 		const openssl = Bun.spawn(
 			[
 				"openssl",
@@ -43,14 +45,14 @@ integration(
 			{ stdout: "ignore", stderr: "ignore" },
 		);
 		expect(await openssl.exited).toBe(0);
-		const control = await freePort(),
-			http = await freePort();
-		const store = new Store(":memory:", Buffer.alloc(32, 2)),
-			d = new ConnectionDirectory(store, "https://connect.test", {
-				host: "localhost",
-				port: control,
-				serverName: "localhost",
-			});
+		const control = await freePort();
+		const http = await freePort();
+		const store = new Store(":memory:", Buffer.alloc(32, 2));
+		const d = new ConnectionDirectory(store, "https://connect.test", {
+			host: "localhost",
+			port: control,
+			serverName: "localhost",
+		});
 		const hook = Bun.serve({
 			hostname: "127.0.0.1",
 			port: 0,
@@ -69,7 +71,9 @@ integration(
 			port: 0,
 			idleTimeout: 0,
 			fetch(req, s) {
-				if (new URL(req.url).pathname === "/ws" && s.upgrade(req)) return;
+				if (new URL(req.url).pathname === "/ws" && s.upgrade(req)) {
+					return;
+				}
 				if (new URL(req.url).pathname === "/events") {
 					let timer: ReturnType<typeof setTimeout>;
 					return new Response(
@@ -105,8 +109,8 @@ integration(
 			(tcp.address() as { port: number }).port,
 			() => allowed,
 		);
-		const owner = d.createReceiver(),
-			credential = capability("pub");
+		const owner = d.createReceiver();
+		const credential = newCredential("pub");
 		const run = {
 			sessionId: "fixture",
 			name: "Cursor",
@@ -132,11 +136,12 @@ integration(
 				},
 			],
 		};
-		const p = d.register([owner.token], run, credential),
-			httpAssignment = p.assignments.find((a) => a.protocol === "http"),
-			tcpAssignment = p.assignments.find((a) => a.protocol === "tcp");
-		if (!httpAssignment || !tcpAssignment)
+		const p = d.register([owner.token], run, credential);
+		const httpAssignment = p.assignments.find((a) => a.protocol === "http");
+		const tcpAssignment = p.assignments.find((a) => a.protocol === "tcp");
+		if (!httpAssignment || !tcpAssignment) {
 			throw new Error("Missing assignments");
+		}
 		const config = join(dir, "frps.json");
 		await writeFile(
 			config,
@@ -162,11 +167,11 @@ integration(
 				],
 			}),
 		);
-		const log = join(dir, "frps.log"),
-			frps = Bun.spawn([await installFrp("frps"), "-c", config], {
-				stdout: Bun.file(log),
-				stderr: Bun.file(log),
-			});
+		const log = join(dir, "frps.log");
+		const frps = Bun.spawn([await installFrp("frps"), "-c", config], {
+			stdout: Bun.file(log),
+			stderr: Bun.file(log),
+		});
 		const clients: Frpc[] = [];
 		let socket: ReturnType<typeof connect> | undefined;
 		try {
@@ -189,7 +194,7 @@ integration(
 							type: "stcp",
 							secretKey: tcpAssignment.secretKey,
 							localIP: "127.0.0.1",
-							localPort: Number(gate.target.split(":")[1]),
+							localPort: gate.port,
 						},
 					],
 				},
@@ -200,7 +205,9 @@ integration(
 			let running: string[] = [];
 			for (let i = 0; i < 100; i++) {
 				running = runningProxies(await publisher.status());
-				if (running.length === 2) break;
+				if (running.length === 2) {
+					break;
+				}
 				await abortableSleep(100);
 			}
 			expect(running.length).toBe(2);
@@ -221,10 +228,12 @@ integration(
 			const response = await get("/src/routes/$.ts");
 			expect(response.statusCode).toBe(200);
 			const chunks: Buffer[] = [];
-			for await (const c of response) chunks.push(c);
+			for await (const c of response) {
+				chunks.push(c);
+			}
 			expect(Buffer.concat(chunks).length).toBe(1024 * 1024 + 7);
-			const start = Date.now(),
-				events = await get("/events");
+			const start = Date.now();
+			const events = await get("/events");
 			await once(events, "data");
 			expect(Date.now() - start).toBeLessThan(900);
 			events.destroy();
@@ -245,8 +254,8 @@ integration(
 				};
 				ws.onerror = () => reject(new Error("WebSocket failed"));
 			});
-			const v = d.visitor(owner.owner, `${p.id}.tcp`),
-				port = await freePort();
+			const v = d.visitor(owner.owner, `${p.id}.tcp`);
+			const port = await freePort();
 			const visitor = await startFrpc(
 				{
 					relay: v.relay,
@@ -280,7 +289,7 @@ integration(
 					type: "stcp",
 					secretKey: tcpAssignment.secretKey,
 					localIP: "127.0.0.1",
-					localPort: Number(gate.target.split(":")[1]),
+					localPort: gate.port,
 				},
 			]);
 			// Removing another route must preserve this already-open TCP connection.
@@ -295,7 +304,7 @@ integration(
 				{
 					relay: p.relay,
 					user: p.user,
-					credential: capability("pub"),
+					credential: newCredential("pub"),
 					proxies: [
 						{
 							name: "stolen",

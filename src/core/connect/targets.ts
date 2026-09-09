@@ -2,6 +2,7 @@ import { matchesProcessIdentity } from "../process-identity";
 import type { RunEntry } from "../run-registry";
 import { defaultServiceProtocol } from "../service-presets";
 import { type TargetInput, validPort } from "./protocol";
+
 export interface LocalTarget extends TargetInput {
 	pid?: number;
 	processIdentity?: string;
@@ -11,7 +12,9 @@ export interface LocalTarget extends TargetInput {
 export function runTargets(run: RunEntry): LocalTarget[] {
 	return [
 		...run.apps.flatMap<LocalTarget>((a) => {
-			if (a.kind === "worker" || !validPort(a.port)) return [];
+			if (a.kind === "worker" || !validPort(a.port)) {
+				return [];
+			}
 			return [
 				{
 					id: `app-${a.name}`,
@@ -29,7 +32,9 @@ export function runTargets(run: RunEntry): LocalTarget[] {
 			];
 		}),
 		...run.services.flatMap<LocalTarget>((s) => {
-			if (s.kind === "job" || !validPort(s.port)) return [];
+			if (s.kind === "job" || !validPort(s.port)) {
+				return [];
+			}
 			return [
 				{
 					id: `service-${s.name}`,

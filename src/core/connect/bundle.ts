@@ -19,14 +19,16 @@ export function installConnectBundle(): string {
 		entry &&
 		/^connectd(?:-[a-f0-9]+)?\.js$/.test(basename(entry)) &&
 		existsSync(entry)
-	)
+	) {
 		return realpathSync(entry);
+	}
 
 	const source = join(packageRoot().dir, "dist", "connectd.js");
-	if (!existsSync(source))
+	if (!existsSync(source)) {
 		throw new Error(
 			"The Connection bundle is missing. Build Buncargo with bun run build or reinstall the CLI.",
 		);
+	}
 	const contents = readFileSync(source, "utf8");
 	const path = stateFilePath(`bin/connectd-${hashDaemonBundle(contents)}.js`);
 	if (!existsSync(path)) {

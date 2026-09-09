@@ -1,3 +1,4 @@
+import { newCredential } from "../../src/core/connect/credentials";
 import {
 	type Assignment,
 	LEASE_MS,
@@ -9,13 +10,14 @@ import {
 	ready,
 	type VisitorLease,
 } from "../../src/core/connect/protocol";
-import { capability, hash, identifier, type Store } from "./store";
+import { hash, identifier, type Store } from "./store";
 
 interface ReceiverRecord {
 	id: string;
 	ownerHash: string;
 	tokenHash: string;
 }
+
 interface Publication {
 	id: string;
 	credential: string;
@@ -28,6 +30,7 @@ interface Publication {
 	assignments: Assignment[];
 	rejectedRecipients: number;
 }
+
 interface Visitor {
 	credentialHash: string;
 	publication: string;
@@ -35,6 +38,7 @@ interface Visitor {
 	assignment: string;
 	expires: number;
 }
+
 export class DirectoryError extends Error {
 	constructor(
 		message: string,
@@ -43,13 +47,17 @@ export class DirectoryError extends Error {
 		super(message);
 	}
 }
+
 function requireValue<T>(
 	value: T | undefined | null | false,
 	message = "Not authorized",
 ): T {
-	if (!value) throw new DirectoryError(message, 403);
+	if (!value) {
+		throw new DirectoryError(message, 403);
+	}
 	return value;
 }
+
 /** The synchronous transaction boundary prevents concurrent grants/heartbeats from undoing revocation. */
 export class ConnectionDirectory {
 	constructor(
@@ -58,12 +66,16 @@ export class ConnectionDirectory {
 		readonly relay: Relay,
 		readonly now = Date.now,
 	) {}
+
 	createReceiver() {
-		if (this.store.list("receivers").length >= 1000)
+		if (this.store.list("receivers").length >= 1000) {
 			throw new DirectoryError("Receiver quota reached", 429);
-		const id = identifier(),
-			owner = capability("owner"),
-			token = capability("share");
+		}
+
+		const id = identifier();
+		const owner = newCredential("owner");
+		const token = newCredential("share");
+
 		this.store.set("receivers", id, {
 			id,
 			ownerHash: hash(owner),
@@ -71,51 +83,62 @@ export class ConnectionDirectory {
 		} satisfies ReceiverRecord);
 		return { id, owner, token, origin: this.origin };
 	}
+
 	private receiver(owner: string) {
+		const ownerHash = hash(owner);
 		return requireValue(
 			this.store
 				.list<ReceiverRecord>("receivers")
-				.find((r) => r.ownerHash === hash(owner)),
+				.find((receiver) => receiver.ownerHash === ownerHash),
 		);
 	}
+
 	deleteReceiver(owner: string) {
-		const r = this.receiver(owner);
-		for (const p of this.store.list<Publication>("publications")) {
-			if (p.recipients.includes(r.id)) {
-				p.revoked.push(r.id);
-				this.reconcile(p);
-				this.store.set("publications", p.id, p);
+		const receiver = this.receiver(owner);
+		for (const publication of this.store.list<Publication>("publications")) {
+			if (publication.recipients.includes(receiver.id)) {
+				publication.revoked.push(receiver.id);
+				this.reconcile(publication);
+				this.store.set("publications", publication.id, publication);
 			}
 		}
-		this.store.delete("receivers", r.id);
+		this.store.delete("receivers", receiver.id);
 	}
 
 	rotate(owner: string) {
-		const r = this.receiver(owner),
-			token = capability("share");
-		r.tokenHash = hash(token);
-		this.store.set("receivers", r.id, r);
+		const receiver = this.receiver(owner);
+		const token = newCredential("share");
+		receiver.tokenHash = hash(token);
+		this.store.set("receivers", receiver.id, receiver);
 		return { token };
 	}
+
 	register(tokens: string[], input: unknown, credential: string) {
 		const run = parseRun(input);
-		if (!/^bc_pub_[a-f0-9]{64}$/.test(credential))
+		if (!/^bc_pub_[a-f0-9]{64}$/.test(credential)) {
 			throw new DirectoryError("Invalid publication credential");
+		}
 		const existing = this.store
 			.list<Publication>("publications")
-			.find((p) => p.credentialHash === hash(credential));
+			.find((publication) => publication.credentialHash === hash(credential));
 		if (existing) {
-			if (existing.run.sessionId !== run.sessionId)
+			if (existing.run.sessionId !== run.sessionId) {
 				throw new DirectoryError("Publication conflict", 409);
+			}
 			return this.update(existing.id, credential, run);
 		}
-		if (!tokens.length || tokens.length > 16)
+		if (!tokens.length || tokens.length > 16) {
 			throw new DirectoryError("Provide 1–16 recipient tokens");
+		}
 		const receivers = this.store.list<ReceiverRecord>("receivers");
 		const recipients = [
 			...new Set(
 				tokens
-					.map((t) => receivers.find((r) => r.tokenHash === hash(t))?.id)
+					.map(
+						(token) =>
+							receivers.find((receiver) => receiver.tokenHash === hash(token))
+								?.id,
+					)
 					.filter((id): id is string => !!id),
 			),
 		];
@@ -125,11 +148,14 @@ export class ConnectionDirectory {
 			publications.length >= 1000 ||
 			recipients.some(
 				(id) =>
-					publications.filter((p) => p.recipients.includes(id)).length >= 100,
+					publications.filter((publication) =>
+						publication.recipients.includes(id),
+					).length >= 100,
 			)
-		)
+		) {
 			throw new DirectoryError("Publication quota reached", 429);
-		const p: Publication = {
+		}
+		const publication: Publication = {
 			id: identifier(),
 			credential,
 			credentialHash: hash(credential),
@@ -141,122 +167,163 @@ export class ConnectionDirectory {
 			assignments: [],
 			rejectedRecipients: tokens.length - recipients.length,
 		};
-		this.reconcile(p);
-		this.store.set("publications", p.id, p);
-		return this.lease(p);
+
+		this.reconcile(publication);
+		this.store.set("publications", publication.id, publication);
+
+		return this.lease(publication);
 	}
+
 	private publication(id: string, credential: string) {
-		const p = this.store.get<Publication>("publications", id);
-		return requireValue(p && p.credentialHash === hash(credential) && p);
+		const publication = this.store.get<Publication>("publications", id);
+		return requireValue(
+			publication &&
+				publication.credentialHash === hash(credential) &&
+				publication,
+		);
 	}
+
 	update(
 		id: string,
 		credential: string,
 		input: unknown,
 		confirmed: string[] = [],
 	) {
-		const p = this.publication(id, credential),
-			run = parseRun(input);
-		if (p.run.sessionId !== run.sessionId)
+		const publication = this.publication(id, credential);
+		const run = parseRun(input);
+		if (publication.run.sessionId !== run.sessionId) {
 			throw new DirectoryError("Publication identity changed", 409);
-		p.run = run;
-		p.confirmed = confirmed;
-		p.expires = this.now() + LEASE_MS;
-		this.reconcile(p);
-		this.store.set("publications", p.id, p);
-		return this.lease(p);
+		}
+
+		publication.run = run;
+		publication.confirmed = confirmed;
+		publication.expires = this.now() + LEASE_MS;
+
+		this.reconcile(publication);
+		this.store.set("publications", publication.id, publication);
+
+		return this.lease(publication);
 	}
+
 	retire(id: string, credential: string) {
 		this.publication(id, credential);
 		this.store.delete("publications", id);
 	}
+
 	revoke(owner: string, id: string) {
-		const r = this.receiver(owner),
-			p = requireValue(this.store.get<Publication>("publications", id));
-		requireValue(p.recipients.includes(r.id));
-		if (!p.revoked.includes(r.id)) p.revoked.push(r.id);
-		this.reconcile(p);
-		this.store.set("publications", id, p);
+		const receiver = this.receiver(owner);
+		const publication = requireValue(
+			this.store.get<Publication>("publications", id),
+		);
+		requireValue(publication.recipients.includes(receiver.id));
+		if (!publication.revoked.includes(receiver.id)) {
+			publication.revoked.push(receiver.id);
+		}
+
+		this.reconcile(publication);
+		this.store.set("publications", id, publication);
 		return { pending: true, cutoffMs: LEASE_MS };
 	}
-	private reconcile(p: Publication) {
+
+	private reconcile(publication: Publication) {
+		const recipients = publication.recipients.filter(
+			(id) => !publication.revoked.includes(id),
+		);
+		const publicRecipient = recipients.length ? [undefined] : [];
 		const assignments: Assignment[] = [];
-		for (const t of p.run.targets.filter((t) => ready(t.status))) {
-			for (const receiverId of t.protocol === "tcp"
-				? p.recipients.filter((id) => !p.revoked.includes(id))
-				: p.recipients.some((id) => !p.revoked.includes(id))
-					? [undefined]
-					: []) {
-				const old = p.assignments.find(
-					(a) =>
-						a.targetId === t.id &&
-						a.receiverId === receiverId &&
-						a.protocol === t.protocol,
+		for (const target of publication.run.targets.filter((target) =>
+			ready(target.status),
+		)) {
+			// Public HTTP uses one route; private TCP gets a separate secret and gate per recipient.
+			const receiverIds =
+				target.protocol === "tcp" ? recipients : publicRecipient;
+			for (const receiverId of receiverIds) {
+				const old = publication.assignments.find(
+					(assignment) =>
+						assignment.targetId === target.id &&
+						assignment.receiverId === receiverId &&
+						assignment.protocol === target.protocol,
 				);
 				const id = old?.id ?? identifier();
 				assignments.push(
 					old ?? {
 						id,
-						targetId: t.id,
-						protocol: t.protocol,
+						targetId: target.id,
+						protocol: target.protocol,
 						receiverId,
-						...(t.protocol === "http"
+						...(target.protocol === "http"
 							? { subdomain: id }
-							: { secretKey: capability("tcp") }),
+							: { secretKey: newCredential("tcp") }),
 					},
 				);
 			}
 		}
-		p.assignments = assignments;
+		publication.assignments = assignments;
 	}
-	private lease(p: Publication): PublicationLease {
+
+	private lease(publication: Publication): PublicationLease {
 		return {
-			id: p.id,
-			credential: p.credential,
-			user: p.id,
+			id: publication.id,
+			credential: publication.credential,
+			user: publication.id,
 			relay: this.relay,
-			remainingMs: Math.max(0, p.expires - this.now()),
-			assignments: p.assignments,
-			rejectedRecipients: p.rejectedRecipients,
+			remainingMs: Math.max(0, publication.expires - this.now()),
+			assignments: publication.assignments,
+			rejectedRecipients: publication.rejectedRecipients,
 		};
 	}
-	private remoteRun(p: Publication, receiverId: string): RemoteRun {
-		const targets: RemoteRun["targets"] = p.run.targets
-			.map((t) => {
-				const a = p.assignments.find(
-					(a) =>
-						a.targetId === t.id &&
-						(a.protocol === "http" || a.receiverId === receiverId),
+
+	private remoteRun(publication: Publication, receiverId: string): RemoteRun {
+		const targets: RemoteRun["targets"] = publication.run.targets
+			.map((target) => {
+				const assignment = publication.assignments.find(
+					(assignment) =>
+						assignment.targetId === target.id &&
+						(assignment.protocol === "http" ||
+							assignment.receiverId === receiverId),
 				);
 				const base = new URL(this.origin);
-				if (a?.subdomain) base.hostname = `${a.subdomain}.${base.hostname}`;
+				if (assignment?.subdomain) {
+					base.hostname = `${assignment.subdomain}.${base.hostname}`;
+				}
 				// Connection credentials are returned only by the authenticated visitor endpoint.
 				return {
-					...t,
-					id: `${p.id}.${t.id}`,
+					...target,
+					id: `${publication.id}.${target.id}`,
 					tablePlusUrl: undefined,
-					status: a
-						? p.confirmed.includes(a.id)
-							? t.status
+					status: assignment
+						? publication.confirmed.includes(assignment.id)
+							? target.status
 							: "starting"
 						: "stopped",
-					url: t.protocol === "http" && a ? `${base.origin}/` : "",
+					url:
+						target.protocol === "http" && assignment ? `${base.origin}/` : "",
 				};
 			})
-			.filter((t) => t.protocol !== "http" || t.url !== "");
+			.filter((target) => target.protocol !== "http" || target.url !== "");
 		return {
-			...p.run,
-			sessionId: p.id,
+			...publication.run,
+			sessionId: publication.id,
 			targets,
 			primaryApp: targets.some(
-				(t) => t.kind === "app" && t.name === p.run.primaryApp,
+				(target) =>
+					target.kind === "app" && target.name === publication.run.primaryApp,
 			)
-				? p.run.primaryApp
+				? publication.run.primaryApp
 				: undefined,
 		};
 	}
+
+	private canReceive(publication: Publication, receiverId: string): boolean {
+		return (
+			publication.expires > this.now() &&
+			publication.recipients.includes(receiverId) &&
+			!publication.revoked.includes(receiverId)
+		);
+	}
+
 	list(owner: string) {
-		const r = this.receiver(owner);
+		const receiver = this.receiver(owner);
 		return {
 			version: 1,
 			configured: true,
@@ -264,106 +331,124 @@ export class ConnectionDirectory {
 			generatedAt: this.now(),
 			runs: this.store
 				.list<Publication>("publications")
-				.filter(
-					(p) =>
-						p.expires > this.now() &&
-						p.recipients.includes(r.id) &&
-						!p.revoked.includes(r.id),
-				)
-				.map((p) => this.remoteRun(p, r.id)),
+				.filter((publication) => this.canReceive(publication, receiver.id))
+				.map((publication) => this.remoteRun(publication, receiver.id)),
 		};
 	}
+
 	visitor(owner: string, targetId: string): VisitorLease {
-		const r = this.receiver(owner),
-			dot = targetId.indexOf("."),
-			p = requireValue(
-				this.store.get<Publication>("publications", targetId.slice(0, dot)),
-			);
-		requireValue(
-			p.expires > this.now() &&
-				p.recipients.includes(r.id) &&
-				!p.revoked.includes(r.id),
+		const receiver = this.receiver(owner);
+		const dot = targetId.indexOf(".");
+		const publication = requireValue(
+			this.store.get<Publication>("publications", targetId.slice(0, dot)),
 		);
-		const a = requireValue(
-			p.assignments.find(
-				(a) => a.targetId === targetId.slice(dot + 1) && a.receiverId === r.id,
+		requireValue(this.canReceive(publication, receiver.id));
+		const assignment = requireValue(
+			publication.assignments.find(
+				(assignment) =>
+					assignment.targetId === targetId.slice(dot + 1) &&
+					assignment.receiverId === receiver.id,
 			),
 		);
-		const t = requireValue(
-			p.run.targets.find(
-				(t) => t.id === a.targetId && t.protocol === "tcp" && ready(t.status),
+		const target = requireValue(
+			publication.run.targets.find(
+				(target) =>
+					target.id === assignment.targetId &&
+					target.protocol === "tcp" &&
+					ready(target.status),
 			),
 		);
-		const credential = capability("visit"),
-			key = hash(credential);
+		const credential = newCredential("visit");
+		const key = hash(credential);
 		// One active visitor identity per receiver/target avoids unbounded credential retention.
-		for (const old of this.store.list<Visitor>("visitors"))
-			if (old.receiver === r.id && old.assignment === a.id)
+		for (const old of this.store.list<Visitor>("visitors")) {
+			if (old.receiver === receiver.id && old.assignment === assignment.id) {
 				this.store.delete("visitors", old.credentialHash);
+			}
+		}
 		this.store.set("visitors", key, {
 			credentialHash: key,
-			publication: p.id,
-			receiver: r.id,
-			assignment: a.id,
+			publication: publication.id,
+			receiver: receiver.id,
+			assignment: assignment.id,
 			expires: this.now() + LEASE_MS,
 		} satisfies Visitor);
 		return {
 			credential,
-			user: p.id,
+			user: publication.id,
 			relay: this.relay,
-			proxyName: a.id,
-			secretKey: requireValue(a.secretKey),
+			proxyName: assignment.id,
+			secretKey: requireValue(assignment.secretKey),
 			remainingMs: LEASE_MS,
-			target: { ...t, id: targetId, url: "" },
+			target: { ...target, id: targetId, url: "" },
 		};
 	}
+
 	renewVisitor(credential: string) {
-		const v = requireValue(
-				this.store.get<Visitor>("visitors", hash(credential)),
-			),
-			p = this.activeVisitor(v);
-		v.expires = this.now() + LEASE_MS;
-		this.store.set("visitors", v.credentialHash, v);
-		return { remainingMs: Math.min(LEASE_MS, p.expires - this.now()) };
-	}
-	private activeVisitor(v: Visitor) {
-		const p = requireValue(
-			this.store.get<Publication>("publications", v.publication),
-		);
-		requireValue(
-			p.expires > this.now() &&
-				v.expires > this.now() &&
-				!p.revoked.includes(v.receiver) &&
-				p.assignments.some((a) => a.id === v.assignment),
-		);
-		return p;
-	}
-	/** Return the authenticated role; client-provided user/metas never define authorization. */
-	session(credential: string) {
-		const p = this.store
-			.list<Publication>("publications")
-			.find((p) => p.credentialHash === hash(credential));
-		if (p && p.expires > this.now())
-			return { role: "publisher" as const, publication: p };
-		const v = requireValue(
+		const visitor = requireValue(
 			this.store.get<Visitor>("visitors", hash(credential)),
 		);
-		return { role: "visitor" as const, publication: this.activeVisitor(v) };
+		const publication = this.activeVisitor(visitor);
+		visitor.expires = this.now() + LEASE_MS;
+		this.store.set("visitors", visitor.credentialHash, visitor);
+		return {
+			remainingMs: Math.min(LEASE_MS, publication.expires - this.now()),
+		};
 	}
-	collect() {
-		for (const p of this.store.list<Publication>("publications"))
-			if (p.expires < this.now() - 86_400_000)
-				this.store.delete("publications", p.id);
-		for (const v of this.store.list<Visitor>("visitors"))
-			if (v.expires < this.now())
-				this.store.delete("visitors", v.credentialHash);
+
+	private activeVisitor(visitor: Visitor) {
+		const publication = requireValue(
+			this.store.get<Publication>("publications", visitor.publication),
+		);
+		requireValue(
+			publication.expires > this.now() &&
+				visitor.expires > this.now() &&
+				!publication.revoked.includes(visitor.receiver) &&
+				publication.assignments.some(
+					(assignment) => assignment.id === visitor.assignment,
+				),
+		);
+		return publication;
 	}
-	invalidateLeases() {
-		for (const p of this.store.list<Publication>("publications")) {
-			p.expires = 0;
-			this.store.set("publications", p.id, p);
+
+	/** Return the authenticated role; client-provided user/metas never define authorization. */
+	session(credential: string) {
+		const credentialHash = hash(credential);
+		const publication = this.store
+			.list<Publication>("publications")
+			.find((publication) => publication.credentialHash === credentialHash);
+		if (publication && publication.expires > this.now()) {
+			return { role: "publisher" as const, publication };
 		}
-		for (const v of this.store.list<Visitor>("visitors"))
-			this.store.delete("visitors", v.credentialHash);
+		const visitor = requireValue(
+			this.store.get<Visitor>("visitors", credentialHash),
+		);
+		return {
+			role: "visitor" as const,
+			publication: this.activeVisitor(visitor),
+		};
+	}
+
+	collect() {
+		for (const publication of this.store.list<Publication>("publications")) {
+			if (publication.expires < this.now() - 86_400_000) {
+				this.store.delete("publications", publication.id);
+			}
+		}
+		for (const visitor of this.store.list<Visitor>("visitors")) {
+			if (visitor.expires < this.now()) {
+				this.store.delete("visitors", visitor.credentialHash);
+			}
+		}
+	}
+
+	invalidateLeases() {
+		for (const publication of this.store.list<Publication>("publications")) {
+			publication.expires = 0;
+			this.store.set("publications", publication.id, publication);
+		}
+		for (const visitor of this.store.list<Visitor>("visitors")) {
+			this.store.delete("visitors", visitor.credentialHash);
+		}
 	}
 }

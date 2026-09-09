@@ -3,7 +3,8 @@
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { connect, createServer } from "node:net";
-import { newCredential, request } from "../src/core/connect/client";
+import { request } from "../src/core/connect/client";
+import { newCredential } from "../src/core/connect/credentials";
 import {
 	type Frpc,
 	freePort,
@@ -21,17 +22,21 @@ import {
 import { abortableSleep } from "../src/core/deadline";
 import { connectOrigin } from "../src/core/runtime-flags";
 
-const origin = connectOrigin(),
-	credential = newCredential("pub"),
-	clients: Frpc[] = [];
+const origin = connectOrigin();
+const credential = newCredential("pub");
+const clients: Frpc[] = [];
+
 const payload = randomBytes(20 * 1024 * 1024);
+
 const app = Bun.serve({
 	hostname: "127.0.0.1",
 	port: 0,
 	idleTimeout: 0,
 	fetch(req, server) {
 		const path = new URL(req.url).pathname;
-		if (path === "/ws" && server.upgrade(req)) return;
+		if (path === "/ws" && server.upgrade(req)) {
+			return;
+		}
 		if (path === "/events") {
 			let timer: ReturnType<typeof setTimeout>;
 			return new Response(
@@ -58,19 +63,26 @@ const app = Bun.serve({
 		},
 	},
 });
+
 const tcp = createServer((s) => s.pipe(s));
 tcp.listen(0, "127.0.0.1");
 await once(tcp, "listening");
+
 const gate = await createGate(
 	(tcp.address() as { port: number }).port,
 	() => true,
 );
-let receiver: Receiver | undefined,
-	publication: PublicationLease | undefined,
-	socket: ReturnType<typeof connect> | undefined;
+
+let receiver: Receiver | undefined;
+let publication: PublicationLease | undefined;
+let socket: ReturnType<typeof connect> | undefined;
+
 const assert = (ok: unknown, message: string) => {
-	if (!ok) throw new Error(message);
+	if (!ok) {
+		throw new Error(message);
+	}
 };
+
 try {
 	receiver = await request<Receiver>(origin, "/v1/receivers", undefined, {});
 	const run: RunInput = {
@@ -104,9 +116,11 @@ try {
 		undefined,
 		{ tokens: [receiver.token], credential, run },
 	);
-	const web = publication.assignments.find((a) => a.protocol === "http"),
-		db = publication.assignments.find((a) => a.protocol === "tcp");
-	if (!web || !db) throw new Error("Relay did not allocate both targets");
+	const web = publication.assignments.find((a) => a.protocol === "http");
+	const db = publication.assignments.find((a) => a.protocol === "tcp");
+	if (!web || !db) {
+		throw new Error("Relay did not allocate both targets");
+	}
 	const publisher = await startFrpc({
 		relay: publication.relay,
 		user: publication.user,
@@ -124,7 +138,7 @@ try {
 				type: "stcp",
 				secretKey: db.secretKey,
 				localIP: "127.0.0.1",
-				localPort: Number(gate.target.split(":")[1]),
+				localPort: gate.port,
 			},
 		],
 	});
@@ -132,7 +146,9 @@ try {
 	let confirmed: string[] = [];
 	for (let i = 0; i < 100; i++) {
 		confirmed = runningProxies(await publisher.status());
-		if (confirmed.length === 2) break;
+		if (confirmed.length === 2) {
+			break;
+		}
 		await abortableSleep(100);
 	}
 	assert(confirmed.length === 2, "Publisher could not authenticate/register");
@@ -148,13 +164,17 @@ try {
 		origin,
 	);
 	const target = directory.runs[0]?.targets.find((t) => t.protocol === "http");
-	if (!target) throw new Error("Publication not discoverable");
+	if (!target) {
+		throw new Error("Publication not discoverable");
+	}
 	assert(
 		directory.runs[0]?.targets.every((t) => t.status === "ready"),
 		"Registered proxies must appear ready in the directory",
 	);
-	const start = performance.now(),
-		response = await fetch(target.url, { signal: AbortSignal.timeout(30000) });
+	const start = performance.now();
+	const response = await fetch(target.url, {
+		signal: AbortSignal.timeout(30000),
+	});
 	assert(response.ok, "HTTP routing failed");
 	assert(
 		Buffer.from(await response.arrayBuffer()).equals(payload),
@@ -164,9 +184,9 @@ try {
 		`20 MiB HTTPS transfer: ${((performance.now() - start) / 1000).toFixed(2)} seconds`,
 	);
 	const events = await fetch(`${target.url}events`, {
-			signal: AbortSignal.timeout(10000),
-		}),
-		reader = events.body?.getReader();
+		signal: AbortSignal.timeout(10000),
+	});
+	const reader = events.body?.getReader();
 	assert(reader, "Missing event stream");
 	const first = await reader?.read();
 	assert(
@@ -198,12 +218,12 @@ try {
 		};
 	});
 	const v = await request<VisitorLease>(
-			origin,
-			`/v1/targets/${publication.id}.tcp/visitor`,
-			receiver.owner,
-			{},
-		),
-		port = await freePort();
+		origin,
+		`/v1/targets/${publication.id}.tcp/visitor`,
+		receiver.owner,
+		{},
+	);
+	const port = await freePort();
 	clients.push(
 		await startFrpc({
 			relay: v.relay,
@@ -245,7 +265,7 @@ try {
 	await gate.close();
 	tcp.close();
 	app.stop(true);
-	if (publication)
+	if (publication) {
 		await request(
 			origin,
 			`/v1/publications/${publication.id}`,
@@ -253,7 +273,8 @@ try {
 			undefined,
 			"DELETE",
 		).catch(() => {});
-	if (receiver)
+	}
+	if (receiver) {
 		await request(
 			origin,
 			"/v1/receiver",
@@ -261,4 +282,5 @@ try {
 			undefined,
 			"DELETE",
 		).catch(() => {});
+	}
 }

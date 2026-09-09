@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { newCredential } from "../../src/core/connect/credentials";
 import {
 	LEASE_MS,
 	parseDirectory,
@@ -6,7 +7,7 @@ import {
 } from "../../src/core/connect/protocol";
 import { ConnectionDirectory } from "./directory";
 import { createAPI, frpHook } from "./http";
-import { capability, Store } from "./store";
+import { Store } from "./store";
 
 const run: RunInput = {
 	sessionId: "run-a",
@@ -34,6 +35,7 @@ const run: RunInput = {
 		},
 	],
 };
+
 function fixture() {
 	let now = Date.now();
 	const store = new Store(":memory:", Buffer.alloc(32, 1));
@@ -55,13 +57,14 @@ function fixture() {
 		},
 	};
 }
+
 test("publish-only tokens, multi-recipient isolation, idempotence, and revocation", () => {
 	const { d, store } = fixture();
 	try {
-		const a = d.createReceiver(),
-			b = d.createReceiver(),
-			c = d.createReceiver(),
-			cred = capability("pub");
+		const a = d.createReceiver();
+		const b = d.createReceiver();
+		const c = d.createReceiver();
+		const cred = newCredential("pub");
 		const p = d.register([a.token, b.token], run, cred);
 		expect(p.assignments).toHaveLength(3);
 		expect(d.register([a.token], run, cred).id).toBe(p.id);
@@ -70,7 +73,9 @@ test("publish-only tokens, multi-recipient isolation, idempotence, and revocatio
 		expect(d.list(a.owner).runs[0].name).toBe("Cursor");
 		const http = p.assignments.find((t) => t.protocol === "http");
 		const tcpA = p.assignments.find((t) => t.receiverId === a.id);
-		if (!http || !tcpA) throw new Error("Missing assignments");
+		if (!http || !tcpA) {
+			throw new Error("Missing assignments");
+		}
 		// frpc's client API returns bare proxy names, unlike server hook names.
 		d.update(p.id, cred, run, [http.id, tcpA.id]);
 		expect(d.list(a.owner).runs[0].targets.map((t) => t.status)).toEqual([
@@ -90,20 +95,21 @@ test("publish-only tokens, multi-recipient isolation, idempotence, and revocatio
 		const next = d.update(p.id, cred, run);
 		expect(next.assignments).toHaveLength(2);
 		expect(d.list(a.owner).runs).toHaveLength(0);
-		expect(() => d.retire(p.id, capability("pub"))).toThrow();
+		expect(() => d.retire(p.id, newCredential("pub"))).toThrow();
 		d.retire(p.id, cred);
 		expect(d.list(b.owner).runs).toHaveLength(0);
 	} finally {
 		store.close();
 	}
 });
+
 test("leases and restart invalidate saved visitor credentials", () => {
 	const { d, store, tick } = fixture();
 	try {
-		const a = d.createReceiver(),
-			cred = capability("pub"),
-			p = d.register([a.token], run, cred),
-			v = d.visitor(a.owner, `${p.id}.db`);
+		const a = d.createReceiver();
+		const cred = newCredential("pub");
+		const p = d.register([a.token], run, cred);
+		const v = d.visitor(a.owner, `${p.id}.db`);
 		tick();
 		expect(d.list(a.owner).runs).toHaveLength(0);
 		expect(() => d.session(v.credential)).toThrow();
@@ -115,14 +121,17 @@ test("leases and restart invalidate saved visitor credentials", () => {
 		store.close();
 	}
 });
+
 test("frps hook rejects forged namespaces and visitor publication; routing is server-owned", () => {
 	const { d, store } = fixture();
 	try {
-		const a = d.createReceiver(),
-			cred = capability("pub"),
-			p = d.register([a.token], run, cred),
-			http = p.assignments.find((a) => a.protocol === "http");
-		if (!http) throw new Error("HTTP assignment missing");
+		const a = d.createReceiver();
+		const cred = newCredential("pub");
+		const p = d.register([a.token], run, cred);
+		const http = p.assignments.find((a) => a.protocol === "http");
+		if (!http) {
+			throw new Error("HTTP assignment missing");
+		}
 		const user = { user: p.id, metas: { credential: cred } };
 		expect(
 			frpHook(d, "Login", { content: { ...user, user: "somebody-else" } }),
@@ -148,11 +157,12 @@ test("frps hook rejects forged namespaces and visitor publication; routing is se
 		store.close();
 	}
 });
+
 test("API rejects browser requests, oversized input, and owner credential misuse", async () => {
 	const { d, store } = fixture();
 	try {
-		const api = createAPI(d),
-			a = d.createReceiver();
+		const api = createAPI(d);
+		const a = d.createReceiver();
 		expect(
 			(
 				await api(
@@ -192,8 +202,8 @@ test("API rejects browser requests, oversized input, and owner credential misuse
 test("stopping the primary app does not invalidate the remaining directory", () => {
 	const { d, store } = fixture();
 	try {
-		const receiver = d.createReceiver(),
-			credential = capability("pub");
+		const receiver = d.createReceiver();
+		const credential = newCredential("pub");
 		const initial = { ...run, primaryApp: "api" };
 		const p = d.register([receiver.token], initial, credential);
 		d.update(p.id, credential, {

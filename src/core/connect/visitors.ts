@@ -1,28 +1,36 @@
 import { abortableSleep } from "../deadline";
-import { type readReceiver, request } from "./client";
+import { isTcpPortOpen } from "../network";
+import { request } from "./client";
 import { type Frpc, freePort, startFrpc } from "./frpc";
-import { LEASE_MS, type TCPConnection, type VisitorLease } from "./protocol";
-import { portReady } from "./publisher";
+import {
+	LEASE_MS,
+	type Receiver,
+	type TCPConnection,
+	type VisitorLease,
+} from "./protocol";
 
-type Receiver = NonNullable<Awaited<ReturnType<typeof readReceiver>>>;
 interface Visitor {
 	client: Frpc;
 	lease: VisitorLease;
 	deadline: number;
 	connection: TCPConnection;
 }
+
 export function createVisitors() {
 	const entries = new Map<string, Visitor>();
 	const pending = new Map<string, Promise<TCPConnection>>();
 	const disconnect = async (id: string) => {
-		const e = entries.get(id);
+		const entry = entries.get(id);
 		entries.delete(id);
-		await e?.client.close();
+		await entry?.client.close();
 	};
 	// Independently enforce leases even when network renewal or directory polling stalls.
 	const timer = setInterval(() => {
-		for (const [id, e] of entries)
-			if (performance.now() >= e.deadline) void disconnect(id);
+		for (const [id, entry] of entries) {
+			if (performance.now() >= entry.deadline) {
+				void disconnect(id);
+			}
+		}
 	}, 250);
 	timer.unref();
 	const ensure = async (
@@ -30,22 +38,24 @@ export function createVisitors() {
 		id: string,
 	): Promise<TCPConnection> => {
 		const existing = entries.get(id);
-		if (existing?.client.alive() && performance.now() < existing.deadline)
+		if (existing?.client.alive() && performance.now() < existing.deadline) {
 			return existing.connection;
+		}
 		await disconnect(id);
-		const started = performance.now(),
-			lease = await request<VisitorLease>(
-				receiver.origin,
-				`/v1/targets/${encodeURIComponent(id)}/visitor`,
-				receiver.owner,
-				{},
-			);
+		const started = performance.now();
+		const lease = await request<VisitorLease>(
+			receiver.origin,
+			`/v1/targets/${encodeURIComponent(id)}/visitor`,
+			receiver.owner,
+			{},
+		);
 		if (
 			lease.target.id !== id ||
 			!/^[a-f0-9]{32}$/.test(lease.proxyName) ||
 			!/^bc_tcp_[a-f0-9]{64}$/.test(lease.secretKey)
-		)
+		) {
 			throw new Error("Invalid visitor grant");
+		}
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const port = await freePort();
 			const client = await startFrpc({
@@ -66,7 +76,7 @@ export function createVisitors() {
 			});
 			let bound = false;
 			for (let i = 0; i < 30; i++) {
-				if (await portReady(port)) {
+				if (await isTcpPortOpen(port)) {
 					bound = true;
 					break;
 				}
@@ -82,18 +92,22 @@ export function createVisitors() {
 					: lease.target.preset === "redis"
 						? "redis"
 						: "tcp";
-			let url = `${scheme}://127.0.0.1:${port}`,
-				tablePlusUrl: string | undefined;
+			let url = `${scheme}://127.0.0.1:${port}`;
+			let tablePlusUrl: string | undefined;
 			if (lease.target.tablePlusUrl) {
-				const u = new URL(lease.target.tablePlusUrl);
-				if (!["postgresql:", "redis:", "clickhouse:"].includes(u.protocol)) {
+				const address = new URL(lease.target.tablePlusUrl);
+				if (
+					!["postgresql:", "redis:", "clickhouse:"].includes(address.protocol)
+				) {
 					await client.close();
 					throw new Error("Invalid database URL");
 				}
-				u.hostname = "127.0.0.1";
-				u.port = String(port);
-				url = u.toString();
-				if (u.protocol !== "redis:") tablePlusUrl = url;
+				address.hostname = "127.0.0.1";
+				address.port = String(port);
+				url = address.toString();
+				if (address.protocol !== "redis:") {
+					tablePlusUrl = url;
+				}
 			}
 			const connection = { targetId: id, port, url, tablePlusUrl };
 			entries.set(id, {
@@ -122,21 +136,23 @@ export function createVisitors() {
 			await pending.get(id)?.catch(() => {});
 			await disconnect(id);
 		},
-		connections: () => [...entries.values()].map((e) => e.connection),
+		connections: () => [...entries.values()].map((entry) => entry.connection),
 		async refresh(origin: string) {
 			await Promise.all(
-				[...entries].map(async ([id, e]) => {
+				[...entries].map(async ([id, entry]) => {
 					try {
 						const start = performance.now();
-						const r = await request<{ remainingMs: number }>(
+						const renewal = await request<{ remainingMs: number }>(
 							origin,
 							"/v1/visitor/renew",
-							e.lease.credential,
+							entry.lease.credential,
 							{},
 						);
-						e.deadline = start + Math.min(LEASE_MS, r.remainingMs);
+						entry.deadline = start + Math.min(LEASE_MS, renewal.remainingMs);
 					} catch {
-						if (entries.get(id) === e) await disconnect(id);
+						if (entries.get(id) === entry) {
+							await disconnect(id);
+						}
 					}
 				}),
 			);

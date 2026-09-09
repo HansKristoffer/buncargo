@@ -1,5 +1,5 @@
-import { connect } from "node:net";
 import { hostname } from "node:os";
+import { isTcpPortOpen } from "../network";
 import { matchesProcessIdentity } from "../process-identity";
 import type { RunEntry } from "../run-registry";
 import { request } from "./client";
@@ -12,6 +12,7 @@ import {
 	ready,
 } from "./protocol";
 import { runTargets } from "./targets";
+
 export interface SharingIntent {
 	sessionId: string;
 	tokens: string[];
@@ -19,50 +20,47 @@ export interface SharingIntent {
 	origin: string;
 	credential: string;
 }
-export async function portReady(port: number): Promise<boolean> {
-	return new Promise((resolve) => {
-		const s = connect({ host: "127.0.0.1", port });
-		const done = (ok: boolean) => {
-			s.destroy();
-			resolve(ok);
-		};
-		s.once("connect", () => done(true));
-		s.once("error", () => done(false));
-		s.setTimeout(1000, () => done(false));
-	});
-}
+
 /** One publisher per run isolates identity and teardown across worktrees sharing a home. */
 export function createPublisher(intent: SharingIntent) {
-	let lease: PublicationLease | undefined,
-		deadline = 0,
-		frpc: Frpc | undefined,
-		signature = "",
-		current: RunEntry | undefined;
+	let lease: PublicationLease | undefined;
+	let deadline = 0;
+	let frpc: Frpc | undefined;
+	let signature = "";
+	let current: RunEntry | undefined;
 	const gates = new Map<
 		string,
 		{
 			gate: Awaited<ReturnType<typeof createGate>>;
 			port: number;
-			targetId: string;
 			identity?: string;
 		}
 	>();
+
+	// Disable every gate before awaiting any close: no target may accept work during teardown.
 	const closeGates = async () => {
-		for (const v of gates.values()) v.gate.disable();
-		for (const v of gates.values()) await v.gate.close();
+		for (const entry of gates.values()) {
+			entry.gate.disable();
+		}
+		for (const entry of gates.values()) {
+			await entry.gate.close();
+		}
 		gates.clear();
 	};
+
 	const active = () =>
 		performance.now() < deadline &&
 		!!current &&
 		matchesProcessIdentity(current.pid, current.processIdentity);
+
 	const refresh = async (run: RunEntry) => {
 		current = run;
 		const targets = runTargets(run);
 		await Promise.all(
-			targets.map(async (t) => {
-				if (ready(t.status) && !(await portReady(t.port)))
-					t.status = "starting";
+			targets.map(async (target) => {
+				if (ready(target.status) && !(await isTcpPortOpen(target.port))) {
+					target.status = "starting";
+				}
 			}),
 		);
 		const input: RunInput = {
@@ -74,14 +72,19 @@ export function createPublisher(intent: SharingIntent) {
 			worktree: run.worktree,
 			primaryApp: run.primaryApp,
 			targets: targets.map(
-				({ pid: _pid, processIdentity: _identity, ...t }) => t,
+				({ pid: _pid, processIdentity: _identity, ...target }) => target,
 			),
 		};
 		if (
 			input.primaryApp &&
-			!targets.some((t) => t.name === input.primaryApp && t.kind === "app")
-		)
+			!targets.some(
+				(target) => target.name === input.primaryApp && target.kind === "app",
+			)
+		) {
 			delete input.primaryApp;
+		}
+
+		// Register once, then renew the same publication and report only routes confirmed by frpc.
 		const confirmed = frpc
 			? runningProxies(await frpc.status().catch(() => ({})))
 			: [];
@@ -109,24 +112,44 @@ export function createPublisher(intent: SharingIntent) {
 			lease.assignments.length > 1024 ||
 			lease.credential !== intent.credential ||
 			!/^[a-f0-9]{32}$/.test(lease.id)
-		)
+		) {
 			throw new Error("Invalid publication lease");
+		}
 		deadline = started + Math.min(LEASE_MS, Math.max(0, lease.remainingMs));
+
+		// Retire revoked routes and gates whose port or process identity changed before adding routes.
 		for (const [id, entry] of gates) {
-			const a = lease.assignments.find((a) => a.id === id),
-				t = targets.find((t) => t.id === a?.targetId);
-			if (!t || t.port !== entry.port || t.processIdentity !== entry.identity) {
+			const assignment = lease.assignments.find(
+				(assignment) => assignment.id === id,
+			);
+			const target = targets.find(
+				(target) => target.id === assignment?.targetId,
+			);
+			if (
+				!target ||
+				target.port !== entry.port ||
+				target.processIdentity !== entry.identity
+			) {
 				await entry.gate.close();
 				gates.delete(id);
 			}
 		}
+
 		const proxies: Record<string, unknown>[] = [];
-		for (const a of lease.assignments) {
-			const target = targets.find((t) => t.id === a.targetId);
-			if (!target || !ready(target.status)) continue;
-			if (!/^[a-f0-9]{32}$/.test(a.id) || a.protocol !== target.protocol)
+		for (const assignment of lease.assignments) {
+			const target = targets.find(
+				(target) => target.id === assignment.targetId,
+			);
+			if (!target || !ready(target.status)) {
+				continue;
+			}
+			if (
+				!/^[a-f0-9]{32}$/.test(assignment.id) ||
+				assignment.protocol !== target.protocol
+			) {
 				throw new Error("Invalid proxy allocation");
-			let entry = gates.get(a.id);
+			}
+			let entry = gates.get(assignment.id);
 			if (!entry) {
 				const gate = await createGate(
 					target.port,
@@ -138,25 +161,26 @@ export function createPublisher(intent: SharingIntent) {
 				entry = {
 					gate,
 					port: target.port,
-					targetId: target.id,
 					identity: target.processIdentity,
 				};
-				gates.set(a.id, entry);
+				gates.set(assignment.id, entry);
 			}
 			proxies.push({
-				name: a.id,
-				type: a.protocol === "http" ? "http" : "stcp",
+				name: assignment.id,
+				type: assignment.protocol === "http" ? "http" : "stcp",
 				localIP: "127.0.0.1",
-				localPort: Number(entry.gate.target.split(":")[1]),
+				localPort: entry.gate.port,
 				transport: { useCompression: false },
-				...(a.protocol === "http"
+				...(assignment.protocol === "http"
 					? {
-							subdomain: a.subdomain,
+							subdomain: assignment.subdomain,
 							hostHeaderRewrite: `localhost:${target.port}`,
 						}
-					: { secretKey: a.secretKey }),
+					: { secretKey: assignment.secretKey }),
 			});
 		}
+
+		// Unchanged proxy definitions must leave open database and streaming connections intact.
 		const next = JSON.stringify(proxies);
 		if (next !== signature || !frpc?.alive()) {
 			if (frpc?.alive()) {
@@ -165,13 +189,14 @@ export function createPublisher(intent: SharingIntent) {
 				await frpc?.close();
 				frpc = undefined;
 				signature = "";
-				if (proxies.length)
+				if (proxies.length) {
 					frpc = await startFrpc({
 						relay: lease.relay,
 						user: lease.user,
 						credential: intent.credential,
 						proxies,
 					});
+				}
 			}
 			signature = next;
 		}
@@ -180,13 +205,17 @@ export function createPublisher(intent: SharingIntent) {
 			rejectedRecipients: lease.rejectedRecipients,
 		};
 	};
-	let failures = 0,
-		nextAttempt = 0;
+
+	let failures = 0;
+	let nextAttempt = 0;
 	let lastError: unknown;
+
 	return {
 		async refresh(run: RunEntry) {
 			// Back off a failing publication independently; another worktree can keep renewing.
-			if (performance.now() < nextAttempt) throw lastError;
+			if (performance.now() < nextAttempt) {
+				throw lastError;
+			}
 			try {
 				const result = await refresh(run);
 				failures = 0;
@@ -202,7 +231,7 @@ export function createPublisher(intent: SharingIntent) {
 			deadline = 0;
 			await closeGates();
 			await frpc?.close();
-			if (lease)
+			if (lease) {
 				await request(
 					intent.origin,
 					`/v1/publications/${lease.id}`,
@@ -210,6 +239,7 @@ export function createPublisher(intent: SharingIntent) {
 					undefined,
 					"DELETE",
 				).catch(() => {});
+			}
 		},
 	};
 }
