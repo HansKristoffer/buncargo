@@ -274,6 +274,18 @@ integration(
 			await once(socket, "connect");
 			socket.write("private");
 			expect((await once(socket, "data"))[0].toString()).toBe("private");
+			await publisher.reload([
+				{
+					name: tcpAssignment.id,
+					type: "stcp",
+					secretKey: tcpAssignment.secretKey,
+					localIP: "127.0.0.1",
+					localPort: Number(gate.target.split(":")[1]),
+				},
+			]);
+			// Removing another route must preserve this already-open TCP connection.
+			socket.write("after-reload");
+			expect((await once(socket, "data"))[0].toString()).toBe("after-reload");
 			const closed = once(socket, "close");
 			d.revoke(owner.owner, p.id);
 			allowed = false;

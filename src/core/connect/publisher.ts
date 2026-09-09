@@ -56,114 +56,112 @@ export function createPublisher(intent: SharingIntent) {
 		performance.now() < deadline &&
 		!!current &&
 		matchesProcessIdentity(current.pid, current.processIdentity);
-	return {
-		async refresh(run: RunEntry) {
-			current = run;
-			const targets = runTargets(run);
-			await Promise.all(
-				targets.map(async (t) => {
-					if (ready(t.status) && !(await portReady(t.port)))
-						t.status = "starting";
-				}),
-			);
-			const input: RunInput = {
-				sessionId: intent.sessionId,
-				name: intent.name,
-				hostname: hostname(),
-				project: run.projectPrefix,
-				branch: run.branch,
-				worktree: run.worktree,
-				primaryApp: run.primaryApp,
-				targets: targets.map(
-					({ pid: _pid, processIdentity: _identity, ...t }) => t,
-				),
-			};
-			if (
-				input.primaryApp &&
-				!targets.some((t) => t.name === input.primaryApp && t.kind === "app")
-			)
-				delete input.primaryApp;
-			const confirmed = frpc
-				? runningProxies(await frpc.status().catch(() => ({})))
-				: [];
-			const started = performance.now();
-			lease = lease
-				? await request<PublicationLease>(
-						intent.origin,
-						`/v1/publications/${lease.id}`,
-						intent.credential,
-						{ run: input, confirmed },
-						"PUT",
-					)
-				: await request<PublicationLease>(
-						intent.origin,
-						"/v1/publications",
-						undefined,
-						{
-							tokens: intent.tokens,
-							run: input,
-							credential: intent.credential,
-						},
-					);
-			if (
-				!Array.isArray(lease.assignments) ||
-				lease.assignments.length > 1024 ||
-				lease.credential !== intent.credential ||
-				!/^[a-f0-9]{32}$/.test(lease.id)
-			)
-				throw new Error("Invalid publication lease");
-			deadline = started + Math.min(LEASE_MS, Math.max(0, lease.remainingMs));
-			for (const [id, entry] of gates) {
-				const a = lease.assignments.find((a) => a.id === id),
-					t = targets.find((t) => t.id === a?.targetId);
-				if (
-					!t ||
-					t.port !== entry.port ||
-					t.processIdentity !== entry.identity
-				) {
-					await entry.gate.close();
-					gates.delete(id);
-				}
+	const refresh = async (run: RunEntry) => {
+		current = run;
+		const targets = runTargets(run);
+		await Promise.all(
+			targets.map(async (t) => {
+				if (ready(t.status) && !(await portReady(t.port)))
+					t.status = "starting";
+			}),
+		);
+		const input: RunInput = {
+			sessionId: intent.sessionId,
+			name: intent.name,
+			hostname: hostname(),
+			project: run.projectPrefix,
+			branch: run.branch,
+			worktree: run.worktree,
+			primaryApp: run.primaryApp,
+			targets: targets.map(
+				({ pid: _pid, processIdentity: _identity, ...t }) => t,
+			),
+		};
+		if (
+			input.primaryApp &&
+			!targets.some((t) => t.name === input.primaryApp && t.kind === "app")
+		)
+			delete input.primaryApp;
+		const confirmed = frpc
+			? runningProxies(await frpc.status().catch(() => ({})))
+			: [];
+		const started = performance.now();
+		lease = lease
+			? await request<PublicationLease>(
+					intent.origin,
+					`/v1/publications/${lease.id}`,
+					intent.credential,
+					{ run: input, confirmed },
+					"PUT",
+				)
+			: await request<PublicationLease>(
+					intent.origin,
+					"/v1/publications",
+					undefined,
+					{
+						tokens: intent.tokens,
+						run: input,
+						credential: intent.credential,
+					},
+				);
+		if (
+			!Array.isArray(lease.assignments) ||
+			lease.assignments.length > 1024 ||
+			lease.credential !== intent.credential ||
+			!/^[a-f0-9]{32}$/.test(lease.id)
+		)
+			throw new Error("Invalid publication lease");
+		deadline = started + Math.min(LEASE_MS, Math.max(0, lease.remainingMs));
+		for (const [id, entry] of gates) {
+			const a = lease.assignments.find((a) => a.id === id),
+				t = targets.find((t) => t.id === a?.targetId);
+			if (!t || t.port !== entry.port || t.processIdentity !== entry.identity) {
+				await entry.gate.close();
+				gates.delete(id);
 			}
-			const proxies: Record<string, unknown>[] = [];
-			for (const a of lease.assignments) {
-				const target = targets.find((t) => t.id === a.targetId);
-				if (!target || !ready(target.status)) continue;
-				if (!/^[a-f0-9]{32}$/.test(a.id) || a.protocol !== target.protocol)
-					throw new Error("Invalid proxy allocation");
-				let entry = gates.get(a.id);
-				if (!entry) {
-					const gate = await createGate(
-						target.port,
-						() =>
-							active() &&
-							(!target.pid ||
-								matchesProcessIdentity(target.pid, target.processIdentity)),
-					);
-					entry = {
-						gate,
-						port: target.port,
-						targetId: target.id,
-						identity: target.processIdentity,
-					};
-					gates.set(a.id, entry);
-				}
-				proxies.push({
-					name: a.id,
-					type: a.protocol === "http" ? "http" : "stcp",
-					localIP: "127.0.0.1",
-					localPort: Number(entry.gate.target.split(":")[1]),
-					transport: { useCompression: false },
-					...(a.protocol === "http"
-						? {
-								subdomain: a.subdomain,
-								hostHeaderRewrite: `localhost:${target.port}`,
-							}
-						: { secretKey: a.secretKey }),
-				});
+		}
+		const proxies: Record<string, unknown>[] = [];
+		for (const a of lease.assignments) {
+			const target = targets.find((t) => t.id === a.targetId);
+			if (!target || !ready(target.status)) continue;
+			if (!/^[a-f0-9]{32}$/.test(a.id) || a.protocol !== target.protocol)
+				throw new Error("Invalid proxy allocation");
+			let entry = gates.get(a.id);
+			if (!entry) {
+				const gate = await createGate(
+					target.port,
+					() =>
+						active() &&
+						(!target.pid ||
+							matchesProcessIdentity(target.pid, target.processIdentity)),
+				);
+				entry = {
+					gate,
+					port: target.port,
+					targetId: target.id,
+					identity: target.processIdentity,
+				};
+				gates.set(a.id, entry);
 			}
-			const next = JSON.stringify(proxies);
-			if (next !== signature || !frpc?.alive()) {
+			proxies.push({
+				name: a.id,
+				type: a.protocol === "http" ? "http" : "stcp",
+				localIP: "127.0.0.1",
+				localPort: Number(entry.gate.target.split(":")[1]),
+				transport: { useCompression: false },
+				...(a.protocol === "http"
+					? {
+							subdomain: a.subdomain,
+							hostHeaderRewrite: `localhost:${target.port}`,
+						}
+					: { secretKey: a.secretKey }),
+			});
+		}
+		const next = JSON.stringify(proxies);
+		if (next !== signature || !frpc?.alive()) {
+			if (frpc?.alive()) {
+				await frpc.reload(proxies);
+			} else {
 				await frpc?.close();
 				frpc = undefined;
 				signature = "";
@@ -174,12 +172,31 @@ export function createPublisher(intent: SharingIntent) {
 						credential: intent.credential,
 						proxies,
 					});
-				signature = next;
 			}
-			return {
-				targets: proxies.length,
-				rejectedRecipients: lease.rejectedRecipients,
-			};
+			signature = next;
+		}
+		return {
+			targets: proxies.length,
+			rejectedRecipients: lease.rejectedRecipients,
+		};
+	};
+	let failures = 0,
+		nextAttempt = 0;
+	let lastError: unknown;
+	return {
+		async refresh(run: RunEntry) {
+			// Back off a failing publication independently; another worktree can keep renewing.
+			if (performance.now() < nextAttempt) throw lastError;
+			try {
+				const result = await refresh(run);
+				failures = 0;
+				return result;
+			} catch (error) {
+				lastError = error;
+				const delay = Math.min(30000, 1000 * 2 ** Math.min(failures++, 5));
+				nextAttempt = performance.now() + delay * (0.8 + Math.random() * 0.2);
+				throw error;
+			}
 		},
 		async close() {
 			deadline = 0;

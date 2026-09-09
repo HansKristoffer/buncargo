@@ -1,6 +1,6 @@
 # Replace Tailscale sharing with frp
 
-Status: replacement acceptance plan. The implementation is tracked in this branch; `docs/frp.md` describes its user and operator interfaces. Live acceptance results must be recorded before release.
+Status: replacement acceptance plan. The implementation is tracked in this branch; `docs/frp.md` describes its user and operator interfaces. Recorded implementation checks and remaining application-specific validation are in [frp-acceptance.md](frp-acceptance.md).
 
 ## 1. Outcome and scope
 

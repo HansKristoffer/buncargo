@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -80,15 +80,24 @@ export async function startFrpc(
 	}
 	const child = startGuardedChild(binary, ["-c", path], directory);
 	const close = () => child.close();
-	const status = async () => {
-		const response = await fetch(`http://127.0.0.1:${port}/api/status`, {
+	const admin = async (endpoint: string) => {
+		const response = await fetch(`http://127.0.0.1:${port}/api/${endpoint}`, {
 			headers: {
 				authorization: `Basic ${Buffer.from(`buncargo:${password}`).toString("base64")}`,
 			},
 			signal: AbortSignal.timeout(2000),
 		});
-		if (!response.ok) throw new Error("frpc status unavailable");
-		return record(await response.json());
+		if (!response.ok) throw new Error("frpc administration request failed");
+		return response;
+	};
+	const status = async () => record(await (await admin("status")).json());
+	// Reload only proxy definitions: keeping the login/multiplexer alive preserves other recipients' streams.
+	const reload = async (proxies: Record<string, unknown>[]) => {
+		await writeFile(`${path}.next`, JSON.stringify({ ...content, proxies }), {
+			mode: 0o600,
+		});
+		await rename(`${path}.next`, path);
+		await (await admin("reload?strictConfig=true")).text();
 	};
 	try {
 		for (let i = 0; i < 100; i++) {
@@ -97,7 +106,7 @@ export async function startFrpc(
 				throw new Error("frpc exited; check relay TLS and credentials");
 			try {
 				await status();
-				return { close, status, alive: () => child.alive };
+				return { close, status, reload, alive: () => child.alive };
 			} catch {}
 			await abortableSleep(100, signal);
 		}
