@@ -1,5 +1,13 @@
 # Changelog
 
+## [8.2.2](https://github.com/HansKristoffer/buncargo/compare/v8.2.1...v8.2.2) (2026-09-09)
+
+
+### Bug Fixes
+
+* **release:** recognize CLI-only combined release PRs ([#32](https://github.com/HansKristoffer/buncargo/issues/32)) ([369f999](https://github.com/HansKristoffer/buncargo/commit/369f99947b6a2af58255ed78287c5aa46b2586bd))
+* **vite:** configure Tailscale hosts before Vite 8 validation ([#33](https://github.com/HansKristoffer/buncargo/issues/33)) ([534c367](https://github.com/HansKristoffer/buncargo/commit/534c367f0a6607aff798bf2d61349499f8c1eaf1))
+
 ## [8.2.1](https://github.com/HansKristoffer/buncargo/compare/v8.2.0...v8.2.1) (2026-09-09)
 
 
