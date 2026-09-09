@@ -1,7 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { abortableSleep } from "../deadline";
 import { withFileLock } from "../file-lock";
 import { readProcessIdentity } from "../process-identity";
@@ -53,7 +50,6 @@ export async function runTailnetDaemon() {
 						message,
 					});
 				await report(false, COORDINATOR_STARTING);
-				const directory = await mkdtemp(join(tmpdir(), "bc-tailnet-"));
 				let runtime:
 					| Awaited<ReturnType<typeof startTailnetRuntime>>
 					| undefined;
@@ -106,8 +102,7 @@ export async function runTailnetDaemon() {
 							...args,
 						]),
 					);
-					const path = join(directory, "directory.sock");
-					const endpoint = await listenEndpoint(server, path);
+					const endpoint = await listenEndpoint(server);
 					let self = (await tailnetStatus(runtime.command, controller.signal))
 						.self;
 					let directoryMapping: Mapping = {
@@ -117,7 +112,7 @@ export async function runTailnetDaemon() {
 						target: serveTarget(endpoint, "http"),
 					};
 					await mappings.acquire(directoryMapping);
-					publisher = createPublisher(mappings, directory);
+					publisher = createPublisher(mappings);
 					let idleSince = Date.now();
 					while (!controller.signal.aborted) {
 						try {
@@ -169,7 +164,6 @@ export async function runTailnetDaemon() {
 					await mappings?.clear().catch(() => {});
 					server.close();
 					await runtime?.close();
-					await rm(directory, { recursive: true, force: true });
 				}
 			},
 			{ timeoutMs: 1000 },

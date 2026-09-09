@@ -1,7 +1,4 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { createMappings } from "./mappings";
 import { parseDirectory } from "./protocol";
 import { createPublisher, runTargets } from "./publisher";
@@ -25,10 +22,9 @@ test("target projection omits workers, portless services, credentials and local 
 	expect(JSON.stringify(runTargets(run))).not.toContain("secret");
 });
 test("two worktrees coexist; retiring one preserves the other's mappings and URL", async () => {
-	const dir = await mkdtemp(join(tmpdir(), "bc-publish-")),
-		fake = fakeTailscale();
+	const fake = fakeTailscale();
 	const mappings = createMappings(fake.command, fake.start);
-	const publisher = createPublisher(mappings, dir);
+	const publisher = createPublisher(mappings);
 	const a = fixtureRun("a"),
 		b = fixtureRun("b", 3001);
 	try {
@@ -49,15 +45,13 @@ test("two worktrees coexist; retiring one preserves the other's mappings and URL
 	} finally {
 		await publisher.close();
 		await mappings.clear();
-		await rm(dir, { recursive: true, force: true });
 	}
 });
 
 test("restarting a worktree retains its addresses when the upstream port changes", async () => {
-	const dir = await mkdtemp(join(tmpdir(), "bc-restart-")),
-		fake = fakeTailscale();
+	const fake = fakeTailscale();
 	const mappings = createMappings(fake.command, fake.start);
-	const publisher = createPublisher(mappings, dir);
+	const publisher = createPublisher(mappings);
 	const initial = fixtureRun("first", 3000);
 	try {
 		const before = await publisher.refresh(self, [initial]);
@@ -74,15 +68,13 @@ test("restarting a worktree retains its addresses when the upstream port changes
 	} finally {
 		await publisher.close();
 		await mappings.clear();
-		await rm(dir, { recursive: true, force: true });
 	}
 });
 
 test("new runs cannot claim ports reserved for mappings awaiting restoration", async () => {
-	const dir = await mkdtemp(join(tmpdir(), "bc-restore-"));
 	const fake = fakeTailscale();
 	const mappings = createMappings(fake.command, fake.start);
-	const publisher = createPublisher(mappings, dir);
+	const publisher = createPublisher(mappings);
 	const existing = fixtureRun("existing");
 	const newcomer = { ...fixtureRun("new"), root: existing.root };
 	try {
@@ -100,6 +92,5 @@ test("new runs cannot claim ports reserved for mappings awaiting restoration", a
 	} finally {
 		await publisher.close();
 		await mappings.clear();
-		await rm(dir, { recursive: true, force: true });
 	}
 });

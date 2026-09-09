@@ -1,15 +1,9 @@
-import { rm } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { listenEndpoint } from "./endpoint";
 import { ForwardSockets } from "./sockets";
 
 /** A byte-stream bridge enforces target lifetime; Serve handles HTTP, SSE and WebSockets. */
-export async function createGate(
-	path: string,
-	port: number,
-	allowed: () => boolean,
-	platform = process.platform,
-) {
+export async function createGate(port: number, allowed: () => boolean) {
 	const sockets = new ForwardSockets();
 	let disabled = false;
 	const server = createServer({ allowHalfOpen: true }, (socket) => {
@@ -25,7 +19,7 @@ export async function createGate(
 	});
 	let target: string;
 	try {
-		target = await listenEndpoint(server, path, platform);
+		target = await listenEndpoint(server);
 	} catch (error) {
 		server.close();
 		throw error;
@@ -41,10 +35,7 @@ export async function createGate(
 		disable,
 		close() {
 			disable();
-			closing ??= (async () => {
-				await new Promise<void>((resolve) => server.close(() => resolve()));
-				if (target.startsWith("unix:")) await rm(path, { force: true });
-			})();
+			closing ??= new Promise<void>((resolve) => server.close(() => resolve()));
 			return closing;
 		},
 	};
