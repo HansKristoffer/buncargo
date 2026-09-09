@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { LEASE_MS, type RunInput } from "../../src/core/connect/protocol";
+import {
+	LEASE_MS,
+	parseDirectory,
+	type RunInput,
+} from "../../src/core/connect/protocol";
 import { ConnectionDirectory } from "./directory";
 import { createAPI, frpHook } from "./http";
 import { capability, Store } from "./store";
@@ -180,6 +184,27 @@ test("API rejects browser requests, oversized input, and owner credential misuse
 				)
 			).status,
 		).toBe(413);
+	} finally {
+		store.close();
+	}
+});
+
+test("stopping the primary app does not invalidate the remaining directory", () => {
+	const { d, store } = fixture();
+	try {
+		const receiver = d.createReceiver(),
+			credential = capability("pub");
+		const initial = { ...run, primaryApp: "api" };
+		const p = d.register([receiver.token], initial, credential);
+		d.update(p.id, credential, {
+			...initial,
+			targets: initial.targets.map((t) =>
+				t.id === "api" ? { ...t, status: "stopped" } : t,
+			),
+		});
+		const result = parseDirectory(d.list(receiver.owner), d.origin);
+		expect(result.runs[0]?.primaryApp).toBeUndefined();
+		expect(result.runs[0]?.targets.map((t) => t.name)).toEqual(["db"]);
 	} finally {
 		store.close();
 	}

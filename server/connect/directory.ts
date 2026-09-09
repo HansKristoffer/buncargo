@@ -221,32 +221,38 @@ export class ConnectionDirectory {
 		};
 	}
 	private remoteRun(p: Publication, receiverId: string): RemoteRun {
+		const targets: RemoteRun["targets"] = p.run.targets
+			.map((t) => {
+				const a = p.assignments.find(
+					(a) =>
+						a.targetId === t.id &&
+						(a.protocol === "http" || a.receiverId === receiverId),
+				);
+				const base = new URL(this.origin);
+				if (a?.subdomain) base.hostname = `${a.subdomain}.${base.hostname}`;
+				// Connection credentials are returned only by the authenticated visitor endpoint.
+				return {
+					...t,
+					id: `${p.id}.${t.id}`,
+					tablePlusUrl: undefined,
+					status: a
+						? p.confirmed.includes(a.id)
+							? t.status
+							: "starting"
+						: "stopped",
+					url: t.protocol === "http" && a ? `${base.origin}/` : "",
+				};
+			})
+			.filter((t) => t.protocol !== "http" || t.url !== "");
 		return {
 			...p.run,
 			sessionId: p.id,
-			targets: p.run.targets
-				.map((t) => {
-					const a = p.assignments.find(
-						(a) =>
-							a.targetId === t.id &&
-							(a.protocol === "http" || a.receiverId === receiverId),
-					);
-					const base = new URL(this.origin);
-					if (a?.subdomain) base.hostname = `${a.subdomain}.${base.hostname}`;
-					// Connection credentials are returned only by the authenticated visitor endpoint.
-					return {
-						...t,
-						id: `${p.id}.${t.id}`,
-						tablePlusUrl: undefined,
-						status: a
-							? p.confirmed.includes(a.id)
-								? t.status
-								: "starting"
-							: "stopped",
-						url: t.protocol === "http" && a ? `${base.origin}/` : "",
-					};
-				})
-				.filter((t) => t.protocol !== "http" || t.url !== ""),
+			targets,
+			primaryApp: targets.some(
+				(t) => t.kind === "app" && t.name === p.run.primaryApp,
+			)
+				? p.run.primaryApp
+				: undefined,
 		};
 	}
 	list(owner: string) {
