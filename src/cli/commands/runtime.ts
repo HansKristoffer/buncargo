@@ -1,6 +1,6 @@
 import { getCaPath, waitForDaemonRoutes } from "../../core/hosts";
 import { findMonorepoRoot } from "../../core/ports";
-import { connectionTokens, isHostsForcedOff } from "../../core/runtime-flags";
+import { isHostsForcedOff } from "../../core/runtime-flags";
 import { createNoopPhaseTimer, createPhaseTimer } from "../../core/timing";
 import { loadDevEnv } from "../../loader";
 import { exitOnDevArgErrors, parseDevArgs, printDevHelp } from "../dev-flags";
@@ -58,7 +58,6 @@ export async function handleDev(args: string[]): Promise<void> {
 		return;
 	}
 	exitOnDevArgErrors(parsed);
-	if (!parsed.oneShot && !parsed.down && !parsed.reset) connectionTokens();
 	// The runtime has to be known before the environment is built, so it is read
 	// here rather than inside runCli, which is handed a finished env.
 	const timer = parsed.timing

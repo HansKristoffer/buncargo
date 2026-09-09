@@ -11,6 +11,7 @@ import {
 	openBar,
 	readBarManifest,
 	readInstalledBarInfo,
+	rememberBarCli,
 	uninstallBar,
 } from "../../core/menubar";
 import { findMonorepoRoot } from "../../core/ports";
@@ -56,6 +57,7 @@ export async function handleBar(args: string[]): Promise<void> {
 				await runInstall(false);
 				return;
 			}
+			await rememberBarCli();
 			openBar(installed);
 			return;
 		}
@@ -118,6 +120,7 @@ async function runUpdate(): Promise<void> {
 
 	const compatible = installed.registryVersion >= REGISTRY_VERSION;
 	if (compatible && installed.version === release.version) {
+		await rememberBarCli();
 		log.done(`${BAR_APP_NAME} ${release.version} is already current`);
 		return;
 	}

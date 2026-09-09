@@ -36,9 +36,7 @@ of the last publish because nothing reminds anyone to release.
 2. `release.yml` runs on the push to main and creates or updates the release PR
    with the next versions and generated changelogs.
 3. Merging the release PR creates the tags and GitHub releases. The same
-   workflow run deploys and live-tests the connection Worker for CLI releases,
-   then calls npm publication and the bar build. Bar-only releases skip Worker
-   deployment.
+   workflow run calls npm publication and the bar build.
 4. If a publish job fails, rerun the failed job on that run. A full rerun also
    works: release targets are recovered from published GitHub releases whose tags
    resolve to the run commit, even when Release Please creates nothing new.
@@ -204,27 +202,6 @@ action (three workflows, four identical lines each).
 2. Merge it and watch the run: `release-please`, then `publish-npm`.
 3. Make one `menubar/`-only `fix:` PR and confirm the bar path end to end.
 
-## Connection Worker release gate
-
-`release-connect.yml` is a reusable workflow called directly by `release.yml`
-when Release Please creates a CLI release. It shares the CLI version and
-checkout; Worker-only feature/fix changes therefore release through the root
-package. No third Release Please component or manual version bump is needed.
-
-The job typechecks, runs the connection tests and bundles the Worker with pinned
-Wrangler, deploys to `connect.hanskristoffer.dk`, then exercises real relay
-connections with a disposable PostgreSQL cluster and two temporary recipients.
-The npm job waits for it. A combined menu bar release also waits; a bar-only
-release proceeds with the Worker job skipped. A deployment or live-test failure
-stops client publication. Rerun failed jobs or the full run to recover. A separate manual
-Worker dispatch at a release tag is available for deliberate retries.
-
-PR CI dry-runs the Worker build without credentials. Production requires the
-repository Actions secret `CLOUDFLARE_API_TOKEN`, scoped to the account/domain
-in `wrangler.connect.jsonc`. The existing `CONNECT_SIGNING_JWK` secret remains
-in Cloudflare and is preserved by deployment; do not copy it into GitHub or
-regenerate it on releases. See [directory operations](connect-directory.md).
-
 ## Later, not now
 
 - Auto-merging the release PR turns this into publish-on-every-merge. Needs a
@@ -235,12 +212,6 @@ regenerate it on releases. See [directory operations](connect-directory.md).
 - Signing and notarizing the bar. Unchanged by this plan; the step still
   activates itself when the Apple secrets exist.
 
-## Recovering runs created before the retry fix
+## Retrying publication
 
-Old runs keep the workflow from their original commit. If Re-run all jobs has
-already replaced the first attempt with skipped jobs, GitHub will not rerun a
-job from that older attempt. Dispatch `release-connect.yml` at the affected CLI
-tag and wait for its live acceptance to pass. Then dispatch `publish.yml` at
-that same tag if the npm version is missing, and `release-menubar.yml` at the
-bar tag with the matching version if its assets are missing. Do not delete
-release tags or bump versions just to retry publication.
+Rerun failed jobs or the complete release workflow. Release target recovery uses the exact commit's existing tags and skips already published npm versions and complete menu bar assets. No hosted connection backend needs deployment.

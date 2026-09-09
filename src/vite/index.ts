@@ -1,18 +1,7 @@
-/**
- * A Vite plugin that configures the dev server from what buncargo injected.
- *
- * Without it, every Vite app in a buncargo repo hand-writes the same three
- * things: a loopback `server.host` (Vite's default `localhost` binds IPv6 only),
- * an `allowedHosts` entry for the named `.localhost` host, and an HMR block
- * pointing at the HTTPS proxy rather than the Vite port. All three are derivable
- * from the environment buncargo already sets, so none of them should be the
- * consumer's problem.
- *
- * Vite stays an optional peer dependency: the return value is typed
- * structurally, so importing this never pulls Vite into a non-Vite consumer.
+/** Configure Vite's listener and allowed hosts from Buncargo's app environment.
+ * HMR follows the URL that loaded the client, so local HTTPS and Tailscale Serve
+ * can reach the same dev server without baking one machine's hostname into it.
  */
-
-import { DEFAULT_HOSTS_DAEMON_PORT } from "../core/runtime-flags";
 
 /**
  * The shape Vite needs from a plugin, declared here rather than imported.
@@ -25,18 +14,11 @@ export interface BuncargoVitePlugin {
 	config: () => BuncargoViteConfig;
 }
 
-export interface BuncargoViteHmrConfig {
-	protocol: "wss";
-	host: string;
-	clientPort: number;
-}
-
 export interface BuncargoViteConfig {
 	server: {
 		port?: number;
 		host?: string;
 		allowedHosts?: string[];
-		hmr?: BuncargoViteHmrConfig;
 	};
 }
 
@@ -60,8 +42,6 @@ export interface BuncargoViteOptions {
 /** The parts of the injected environment this plugin reads. */
 export interface BuncargoViteEnvironment {
 	port?: number;
-	hostname?: string;
-	hostsPort: number;
 	allowedHosts: string[];
 }
 
@@ -93,40 +73,22 @@ export function readBuncargoViteEnvironment(
 
 	return {
 		port,
-		hostname: env.BUNCARGO_APP_HOSTNAME,
-		hostsPort: parsePort(env.BUNCARGO_HOSTS_PORT) ?? DEFAULT_HOSTS_DAEMON_PORT,
 		allowedHosts,
 	};
 }
 
-/**
- * Build the `server` config from an already-read environment.
- *
- * HMR is only overridden when a named host is active: otherwise the browser
- * reaches Vite directly and Vite's own defaults are correct. When it is, the
- * page is served from `https://<host>` on the proxy port, so the HMR socket has
- * to be `wss` to that hostname and port rather than the Vite port.
- */
+/** Preserve Vite's origin-relative WebSocket defaults; both Buncargo proxies support upgrades. */
 export function buildBuncargoViteConfig(
 	environment: BuncargoViteEnvironment,
 	host: string,
 ): BuncargoViteConfig {
-	const { port, hostname, hostsPort, allowedHosts } = environment;
+	const { port, allowedHosts } = environment;
 
 	return {
 		server: {
 			...(port === undefined ? {} : { port }),
 			host,
 			...(allowedHosts.length > 0 ? { allowedHosts } : {}),
-			...(hostname
-				? {
-						hmr: {
-							protocol: "wss" as const,
-							host: hostname,
-							clientPort: hostsPort,
-						},
-					}
-				: {}),
 		},
 	};
 }

@@ -15,6 +15,7 @@ import {
 	withdrawRun,
 } from "../core/run-registry";
 import { describeService } from "../core/service-identity";
+import { defaultServiceProtocol } from "../core/service-presets";
 import type {
 	AppConfig,
 	ContainerRuntimeName,
@@ -134,6 +135,7 @@ function appEntries(
 			{
 				name,
 				kind: input.apps[name]?.kind,
+				protocol: input.apps[name]?.exposeProtocol ?? "http",
 				port,
 				attached: input.attached === name ? true : undefined,
 				url: urls[name] ?? loopbackUrl,
@@ -182,6 +184,8 @@ function serviceEntries(
 				{
 					name,
 					preset: identity.preset,
+					protocol:
+						service.exposeProtocol ?? defaultServiceProtocol(identity.preset),
 					container: env.containerRuntime
 						? {
 								runtime: env.containerRuntime,

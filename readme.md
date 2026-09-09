@@ -596,7 +596,9 @@ The daemon logs to `/var/log/buncargo-hosts.log` (on Linux, also `journalctl -u 
 
 `buncargo hosts daemon` runs that same proxy in the foreground instead of under launchd/systemd, which is how you watch its output while debugging. It re-reads `~/.buncargo/routes.json` every second, so apps starting and stopping need no restart, and it exits on its own once no routes have been registered for a while. `--service` is what the installed unit passes: it keeps the daemon alive through idle periods and is not meant to be typed by hand. Binding `:443` still needs root, so run it under `sudo` or set `BUNCARGO_HOSTS_PORT` to an unprivileged port.
 
-Failure degrades to `http://localhost:<port>` and never blocks the dev run. Named hosts stay off on Windows, in CI (`CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL`), when `BUNCARGO_HOSTS=0`, or with `--no-hosts`.
+Failure degrades to `http://localhost:<port>` and never blocks the dev run. Named hosts stay off on Windows, in CI (`CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL`), when `BUNCARGO_HOSTS=0` or `BUCARGO_SKIP_MKCERT=true`, or with `--no-hosts`.
+
+Set `BUCARGO_SKIP_MKCERT=true` in cloud workspace secrets/environment to skip automatic local HTTPS setup, including the mkcert prompt. Local URLs use `http://localhost:<port>`; Tailscale sharing still works.
 
 ### Loopback URLs
 
@@ -612,34 +614,23 @@ export default defineConfig({ use: { baseURL: env.loopbackUrls.web } });
 
 ## Private remote services
 
-Copy a connection token from BuncargoBar's Remote environments menu, or run:
+Install and sign in to Tailscale on your computer and server, then run `bunx buncargo dev` on the server. BuncargoBar automatically discovers reachable Buncargo environments in your tailnet and groups them by project, with branch/worktree and machine names.
+
+For Cursor and other Linux cloud sandboxes, store a **reusable, ephemeral, tagged** Tailscale enrollment key as the runtime secret `TS_AUTHKEY`. Starting `buncargo dev` automatically downloads verified Tailscale binaries and signs in using userspace networking when no connected Tailscale installation is available. No root access, TUN device, systemd, browser login or per-agent secret is required. Each sandbox gets an independent identity; multiple worktrees on one machine share its coordinator. Never bake authenticated state into a sandbox image.
+
+All selected apps and services with host ports are shared. Workers, jobs and portless services are skipped. `expose` only controls the separate public Cloudflare tunnels. Browser apps open private HTTPS URLs directly; Postgres and Redis use the Tailscale hostname and port in your database client. Database passwords are not published. Custom services default to TCP; use `exposeProtocol: "http"` for custom web services.
 
 ```sh
-bunx buncargo connect token
+bunx buncargo dev
+bunx buncargo tailnet status
+bunx buncargo tailnet status --json
 ```
 
-Save it as `BUNCARGO_CONNECT_TOKENS` in your cloud agent/server environment secrets. For several computers, use a JSON array of tokens. Then run `bunx buncargo dev` normally. All selected apps and services with a host port are shared automatically; no `expose` setting or extra sharing flag is needed. Workers and portless containers have no endpoint to share. The menu bar shows project, branch/worktree, targets and readiness. Each computer receives its own identity and token.
+Publishers require Tailscale **1.102.3 or later**, MagicDNS and HTTPS enabled, and permission to configure Serve. Tailnet access rules must allow your computer to reach discovery port **48443** and service ports **20000–29999** on the publishers. Installing Tailscale alone does not sign it in. Without Tailscale or `TS_AUTHKEY`, development remains local; one-shot commands do not enroll a sandbox.
 
-Browser targets open through an authenticated loopback proxy. Postgres/Redis targets create local TCP forwards; Connect copies the local address for your database client. Database credentials remain in your client and are never published to the directory. Apps default to HTTP and built-in service presets infer HTTP/TCP. Custom services default to TCP; use `exposeProtocol: "http"` for a custom browser/API service.
+Use same-origin frontend API paths through your development server's proxy where possible. Absolute sandbox-local URLs embedded in JavaScript are still local to the browser's computer. Buncargo does not rewrite application bundles or application-specific authentication settings. SSE and WebSockets stream through Tailscale Serve. Direct versus relayed performance depends on the actual network route.
 
-```sh
-bunx buncargo connect status
-bunx buncargo connect open --session=<id> --target=<id>
-bunx buncargo connect disconnect --session=<id> --target=<id>
-bunx buncargo connect revoke --session=<id>
-bunx buncargo connect rotate          # Existing sharing continues; new runs need the new token
-bunx buncargo connect rotate --all    # Revoke existing sharing too
-```
-
-A connection token only authorizes a server to share its selected services with that device. It cannot impersonate the receiving device or access other shared servers. The hosted directory at `https://connect.hanskristoffer.dk` stores project/branch metadata and private per-recipient Tailcat addresses. Tailcat carries encrypted application traffic directly between machines when possible, with a DERP relay fallback. Buncargo renews sharing every 10 seconds and closes connections within 20 seconds of the last successful renewal if authorization is lost. Discovery registrations expire after 90 seconds. Interrupted database transactions are never replayed.
-
-Explicit `--expose` remains the separate public-URL feature. Tokens never enable an unprotected public endpoint. Without tokens, normal dev runs stay local. One-shot commands ignore inherited connection tokens.
-
-Use relative/same-origin frontend API paths through the development server's proxy where possible. Absolute sandbox-local URLs embedded in application JavaScript do not automatically become recipient-local URLs: app-specific origin configuration may still be needed. The local helper permits cross-origin HTTP requests among a session's established browser proxies. Buncargo automatically downloads a checksum-verified Tailcat 0.6.0 binary on Apple silicon and Linux x64/arm64; other platforms can supply it with `BUNCARGO_TAILCAT_PATH`. There is no Tailscale login, VPN configuration, or per-worktree DNS. The menu retains project and branch names and opens authenticated local browser URLs.
-
-Buncargo uses `derp.hanskristoffer.dk` as its relay fallback automatically. Publishers fetch the relay map from the connection Worker and include the routing details in their shared addresses, so the menu bar needs no extra configuration. Update and restart cloud sessions to switch existing shares. To use another DERP fleet, set `BUNCARGO_TAILCAT_DERPMAP_URL` to its HTTPS map URL on the publisher. See [connection operations](docs/connect-directory.md).
-
-The optional `BUNCARGO_CONNECT_DIRECTORY` override selects an operator-hosted directory; set the same origin on both server and recipient before copying tokens. See [directory operations](docs/connect-directory.md) and [the implementation plan](docs/cloud-connect-plan.md).
+See [Tailscale setup, lifecycle and verification](docs/tailscale.md).
 
 **Cookies ignore ports:** apps sharing the machine hostname must namespace their development cookies. Buncargo supplies `BUNCARGO_WORKSPACE_ID` and, for Expo apps, `EXPO_PUBLIC_BUNCARGO_WORKSPACE_ID`. Use the cookie helper in your auth configuration; install Buncargo as a runtime dependency in apps that import it. The backend helper preserves production and E2E cookie names, while the client helper uses Expo’s `__DEV__` flag. Missing workspace IDs retain the original names. This prevents accidental session collisions between trusted dev apps, not cross-app security isolation.
 
@@ -666,7 +657,7 @@ const options = {
 
 Expo requires the literal public environment-variable read in application code: Metro does not inline those reads inside dependencies. Other browser clients pass their development flag explicitly as the third argument; the client helper otherwise leaves the prefix unchanged when `__DEV__` is unavailable. The client entry has no Node or Bun imports.
 
-The CLI and menu bar require builds containing connection-token support.
+Update both the CLI and menu bar to use Tailscale discovery.
 
 ## Run registry and the menu bar app
 
@@ -847,7 +838,7 @@ export default defineConfig({
 });
 ```
 
-It sets `server.port` from `PORT`, binds `server.host` to `127.0.0.1` (Vite's default `localhost` resolves to `[::1]` on many systems, so anything dialing IPv4 gets a refused connection), passes the named-hosts suffix through to `server.allowedHosts`, and - only when `BUNCARGO_APP_HOSTNAME` is set - points `server.hmr` at `wss://<hostname>:<hosts port>` so the HMR socket follows the HTTPS page rather than the raw Vite port.
+It sets `server.port` from `PORT`, binds `server.host` to `127.0.0.1` (Vite's default `localhost` resolves to `[::1]` on many systems, so anything dialing IPv4 gets a refused connection), passes the named-hosts suffix through to `server.allowedHosts`, and leaves HMR origin-relative so its WebSocket follows whichever local or Tailscale URL loaded the page.
 
 Vite is not a dependency of buncargo: the plugin's return type is declared structurally, so importing it costs nothing in a repo without Vite. Override the app or the bind address when you need to: `buncargoVite({ app: "web", host: "0.0.0.0" })`.
 
@@ -1048,7 +1039,7 @@ HTTP app health checks probe `http://localhost:<port>`, including when the app h
 
 Mark targets with `expose: true`, then `bunx buncargo dev --expose` or `--expose=api,web`.
 
-The `expose` config option is deprecated. It still controls these public tunnels; token-based sharing automatically includes all selected apps and services with a host port.
+The `expose` config option is deprecated. It still controls these public tunnels; Tailscale sharing automatically includes all selected apps and services with a host port.
 
 Tunnels open **after** wave-1 apps are healthy and **before** `needsPublicUrls` apps spawn, so Expo can read `EXPO_PACKAGER_PROXY_URL` at start. Public URLs are normalized (trailing slash stripped). Without `--expose` there is no second wave at all.
 
