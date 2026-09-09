@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/HansKristoffer/buncargo/compare/bar-v2.1.1...bar-v2.2.0) (2026-09-09)
+
+
+### Features
+
+* replace cloud connect with Tailscale sharing ([6a83fe7](https://github.com/HansKristoffer/buncargo/commit/6a83fe7fcb6eeeac714b54c2b051c74cf9a69ffb))
+
 ## [2.1.1](https://github.com/HansKristoffer/buncargo/compare/bar-v2.1.0...bar-v2.1.1) (2026-09-08)
 
 

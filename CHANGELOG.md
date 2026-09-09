@@ -1,5 +1,17 @@
 # Changelog
 
+## [8.2.0](https://github.com/HansKristoffer/buncargo/compare/v8.1.1...v8.2.0) (2026-09-09)
+
+
+### Features
+
+* replace cloud connect with Tailscale sharing ([6a83fe7](https://github.com/HansKristoffer/buncargo/commit/6a83fe7fcb6eeeac714b54c2b051c74cf9a69ffb))
+
+
+### Bug Fixes
+
+* pass through gzip bodies on the named-hosts proxy ([#28](https://github.com/HansKristoffer/buncargo/issues/28)) ([857b9a4](https://github.com/HansKristoffer/buncargo/commit/857b9a42e06e9c53a543b400e5db5779dd23dd81))
+
 ## [8.1.1](https://github.com/HansKristoffer/buncargo/compare/v8.1.0...v8.1.1) (2026-09-08)
 
 
