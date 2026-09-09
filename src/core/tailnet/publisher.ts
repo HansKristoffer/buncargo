@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-import { join } from "node:path";
 import { matchesProcessIdentity } from "../process-identity";
 import type { RunEntry } from "../run-registry";
 import { defaultServiceProtocol } from "../service-presets";
@@ -78,7 +76,7 @@ interface Published {
 	target: LocalTarget;
 }
 
-export function createPublisher(mappings: Mappings, directory: string) {
+export function createPublisher(mappings: Mappings) {
 	const published = new Map<string, Published>();
 	const retire = async (key: string, entry: Published) => {
 		entry.gate.disable();
@@ -127,11 +125,7 @@ export function createPublisher(mappings: Mappings, directory: string) {
 				}
 				const port = mappingPort(`${run.root}:${target.id}`, occupied);
 				occupied.add(port);
-				const path = join(
-					directory,
-					`${createHash("sha256").update(key).digest("hex").slice(0, 16)}.sock`,
-				);
-				const gate = await createGate(path, target.port, () => {
+				const gate = await createGate(target.port, () => {
 					const current = published.get(key);
 					return (
 						!!current &&
