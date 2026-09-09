@@ -161,12 +161,12 @@
   },
   "scripts": {
     "build": "rm -rf dist && bun run build:js && bun run build:daemon && bun run build:types",
-    "build:daemon": "bun build ./src/cli/hostsd.ts --outfile ./dist/hostsd.js --target bun && bun build ./src/cli/tailnetd.ts --outfile ./dist/tailnetd.js --target bun",
+    "build:daemon": "bun build ./src/cli/hostsd.ts --outfile ./dist/hostsd.js --target bun && bun build ./src/cli/connectd.ts --outfile ./dist/connectd.js --target bun",
     "build:js": "bun build ./src/index.ts ./src/cli/bin.ts ./src/cli/index.ts ./src/config/index.ts ./src/environment/index.ts ./src/loader/index.ts ./src/typecheck/index.ts ./src/types/index.ts ./src/core/network.ts ./src/core/ports.ts ./src/core/process/index.ts ./src/core/tunnel.ts ./src/core/utils.ts ./src/core/watchdog.ts ./src/core/watchdog-runner.ts ./src/container-runtime/index.ts ./src/apple-container/index.ts ./src/docker/index.ts ./src/docker-compose/index.ts ./src/vite/index.ts ./src/client/index.ts ./src/runtime/index.ts --outdir ./dist --root ./src --target node --packages external --splitting",
     "build:types": "tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build",
-    "lint": "bun run typecheck && biome check src example",
-    "lint:write": "bun run typecheck && biome check --fix src example && biome format src example",
+    "lint": "bun run typecheck && biome check src example server/connect",
+    "lint:write": "bun run typecheck && biome check --fix src example server/connect && biome format src example server/connect",
     "typecheck": "tsgo --incremental",
     "test": "bun test",
     "test:integration-cloudflared": "BUNCARGO_TEST_CLOUDFLARED_SMOKE=1 bun test src/core/quick-tunnel/quick-tunnel.test.ts",
@@ -175,7 +175,7 @@
     "test:integration-hosts-soak": "BUNCARGO_TEST_HOSTS_SOAK=1 bun test src/core/hosts/worktree-soak.test.ts",
     "test:integration-apple": "BUNCARGO_TEST_APPLE_CONTAINER=1 bun test src/apple-container/apple-container.integration.test.ts",
     "verify:package": "bun scripts/verify-package.ts",
-    "test:integration-tailscale": "BUNCARGO_TEST_TAILSCALE=1 bun test src/core/tailnet/userspace.integration.test.ts"
+    "test:integration-frp": "BUNCARGO_TEST_FRP=1 bun test src/core/connect/frp.integration.test.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.4",

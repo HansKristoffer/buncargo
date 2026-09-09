@@ -253,7 +253,7 @@ export interface ServiceConfigBase<
 	port?: number;
 	/**
 	 * Opt into public URLs with --expose.
-	 * @deprecated Tailscale sharing automatically includes all selected endpoints with a host port.
+	 * @deprecated frp sharing automatically includes all selected endpoints with a host port.
 	 * This option only controls public tunnels started with --expose.
 	 */
 	expose?: boolean;
@@ -319,7 +319,7 @@ export type ServiceConfig<
 interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	/**
 	 * Opt into public URLs with --expose.
-	 * @deprecated Tailscale sharing automatically includes all selected endpoints with a host port.
+	 * @deprecated frp sharing automatically includes all selected endpoints with a host port.
 	 * This option only controls public tunnels started with --expose.
 	 */
 	expose?: boolean;

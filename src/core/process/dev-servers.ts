@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import type { AppConfig, DevServerPids } from "../../types";
 import { waitForDevServers } from "../network";
+import { connectProcessEnv } from "../runtime-flags";
 import { recordStartupMetric } from "../startup-metrics";
 import {
 	formatPidLine,
@@ -101,7 +102,7 @@ export async function spawnDevServer(
 
 	const spawnOptions: SpawnOptions = {
 		cwd: appCwd ? resolve(root, appCwd) : root,
-		env: { ...process.env, ...envVars },
+		env: connectProcessEnv({ ...process.env, ...envVars }),
 		detached,
 		stdio: isCI || verbose ? "inherit" : "ignore",
 	};
@@ -288,7 +289,7 @@ function spawnManagedApp(
 	recordStartupMetric("subprocesses");
 	const child = spawn(command, [], {
 		cwd: config.cwd ? resolve(root, config.cwd) : root,
-		env: { ...process.env, ...envVars },
+		env: connectProcessEnv({ ...process.env, ...envVars }),
 		stdio: options.attached ? "inherit" : ["ignore", "pipe", "pipe"],
 		shell: SHELL,
 		detached: true,

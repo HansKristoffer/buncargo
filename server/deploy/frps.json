@@ -1,0 +1,9 @@
+{
+ "bindAddr":"0.0.0.0", "bindPort":7000,
+ "proxyBindAddr":"127.0.0.1", "vhostHTTPPort":8080,
+ "subDomainHost":"connect.hanskristoffer.dk",
+ "maxPortsPerClient":1024,
+ "transport":{"tls":{"force":true,"certFile":"/var/lib/buncargo-connect/frps-tls/cert.pem","keyFile":"/var/lib/buncargo-connect/frps-tls/key.pem"}},
+ "auth":{"method":"token","token":"","additionalScopes":["HeartBeats","NewWorkConns"]},
+ "httpPlugins":[{"name":"buncargo","addr":"127.0.0.1:8082","path":"/internal/frp","ops":["Login","NewProxy","Ping","NewWorkConn"]}]
+}

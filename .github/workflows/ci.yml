@@ -69,7 +69,7 @@ jobs:
       - name: Verify container reuse, jobs, preparation and shutdown
         run: bun scripts/verify-docker.ts
 
-  tailnet-userspace:
+  frp:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -78,5 +78,5 @@ jobs:
         with:
           bun-version: "1.4.2"
       - run: bun install --frozen-lockfile
-      - name: Verify pinned Tailscale binaries and unprivileged userspace startup
-        run: bun run test:integration-tailscale
+      - name: Verify frp TLS, HTTP streaming, WebSockets and private TCP
+        run: bun run test:integration-frp

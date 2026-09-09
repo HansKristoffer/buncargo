@@ -9,12 +9,14 @@ struct ConnectionDependencies {
 }
 enum ConnectionAction { case open, copy, tablePlus }
 
-/// Tailscale owns connections and access. The menu only discovers metadata and opens validated URLs.
+/// Network lifecycle belongs to the CLI; the bar renders state and requests actions.
 @MainActor
 final class ConnectionStore: ObservableObject {
     @Published private(set) var runs: [RemoteRun] = []
     @Published private(set) var notice: String?
     @Published private(set) var available = false
+    @Published private(set) var connections: [String: TCPConnection] = [:]
+    @Published private(set) var connecting: Set<String> = []
     private let deps: ConnectionDependencies
     private var task: Task<Void, Never>?
     private var timer: Timer?
@@ -24,7 +26,7 @@ final class ConnectionStore: ObservableObject {
         self.deps = deps
         if startTimer {
             refresh()
-            timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.refresh() }
             }
         }
@@ -41,7 +43,8 @@ final class ConnectionStore: ObservableObject {
                 let directory = try JSONDecoder().decode(ConnectionDirectory.self, from: data)
                 try directory.validate(now: deps.now())
                 guard current == generation, !Task.isCancelled else { return }
-                runs = directory.runs.sorted { ($0.project, $0.title, $0.hostname, $0.id) < ($1.project, $1.title, $1.hostname, $1.id) }
+                runs = directory.runs.sorted { ($0.name, $0.project, $0.title, $0.id) < ($1.name, $1.project, $1.title, $1.id) }
+                connections = Dictionary((directory.connections ?? []).map { ($0.targetId, $0) }, uniquingKeysWith: { first, _ in first })
                 available = directory.configured
                 notice = directory.notice
             } catch {
@@ -59,12 +62,46 @@ final class ConnectionStore: ObservableObject {
     func waitForRefresh() async { await task?.value }
     func stop() { timer?.invalidate(); generation += 1; task?.cancel(); task = nil }
 
+    func copyToken(rotate: Bool = false) {
+        Task {
+            do {
+                struct Token: Decodable { let token: String }
+                let data = try await deps.command(["token"] + (rotate ? ["--rotate"] : []))
+                let token = try JSONDecoder().decode(Token.self, from: data)
+                deps.copy(token.token)
+                refresh(force: true)
+            } catch { notice = error.localizedDescription }
+        }
+    }
+    func revoke(_ run: RemoteRun) {
+        Task { do { _ = try await deps.command(["revoke", run.id]); notice = "Access removal requested; existing connections close within 45 seconds."; refresh(force: true) }
+        catch { notice = error.localizedDescription } }
+    }
+    func disconnect(_ target: RemoteTarget) {
+        Task { do { _ = try await deps.command(["disconnect", target.id]); connections.removeValue(forKey: target.id) }
+        catch { notice = error.localizedDescription } }
+    }
+    func address(_ target: RemoteTarget) -> String {
+        if connecting.contains(target.id) { return "Connecting…" }
+        return connections[target.id]?.url ?? target.address(hostname: "")
+    }
     func perform(_ run: RemoteRun, _ target: RemoteTarget, action: ConnectionAction = .open) {
-        guard canUse(target) else { return }
-        if action == .tablePlus {
-            if let url = target.tablePlusUrl { deps.open(url) }
-        } else if action == .copy || !target.isHTTP {
-            deps.copy(target.address(hostname: run.hostname))
-        } else { deps.open(target.url) }
+        guard canUse(target), !connecting.contains(target.id) else { return }
+        if target.isHTTP {
+            if action == .copy { deps.copy(target.url) } else { deps.open(target.url) }
+            return
+        }
+        connecting.insert(target.id)
+        Task {
+            defer { connecting.remove(target.id) }
+            do {
+                let data = try await deps.command(["tcp", target.id])
+                let connection = try JSONDecoder().decode(TCPConnection.self, from: data)
+                try connection.validate(for: target.id)
+                connections[target.id] = connection
+                if action == .tablePlus, let url = connection.tablePlusUrl { deps.open(url) }
+                else { deps.copy(connection.url) }
+            } catch { notice = error.localizedDescription }
+        }
     }
 }

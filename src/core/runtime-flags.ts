@@ -246,23 +246,64 @@ export function typecheckConcurrencyOverride(
 }
 
 /** Runtime enrollment for disposable cloud sandboxes. Never include this value in diagnostics. */
-export function tailscaleAuthKey(
+/** Sharing credentials are consumed by the coordinator, never frontend processes. */
+export function connectTokens(env: NodeJS.ProcessEnv = process.env): string[] {
+	const tokens = [
+		...new Set(
+			(env.BUNCARGO_CONNECT_TOKENS ?? "")
+				.split(",")
+				.map((t) => t.trim())
+				.filter(Boolean),
+		),
+	];
+	if (
+		tokens.length > 16 ||
+		tokens.some((t) => !/^bc_share_[a-f0-9]{64}$/.test(t))
+	)
+		throw new Error(
+			"BUNCARGO_CONNECT_TOKENS must contain up to 16 comma-separated connection tokens.",
+		);
+	return tokens;
+}
+export function connectName(
 	env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-	return env.TS_AUTHKEY?.trim() || undefined;
+	const name = env.BUNCARGO_CONNECT_NAME?.trim();
+	if (
+		name &&
+		(name.length > 80 ||
+			[...name].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127))
+	)
+		throw new Error(
+			"BUNCARGO_CONNECT_NAME must be at most 80 characters without control characters.",
+		);
+	return name || undefined;
 }
-
-/** Tailscale subprocesses must not inherit the enrollment credential. */
-export function tailscaleProcessEnv(
+export function connectOrigin(env: NodeJS.ProcessEnv = process.env): string {
+	const url = new URL(
+		env.BUNCARGO_CONNECT_URL ?? "https://connect.hanskristoffer.dk",
+	);
+	if (
+		(url.protocol !== "https:" &&
+			!(
+				url.protocol === "http:" &&
+				["localhost", "127.0.0.1"].includes(url.hostname)
+			)) ||
+		url.username ||
+		url.password ||
+		url.search ||
+		url.hash ||
+		url.pathname !== "/"
+	)
+		throw new Error("BUNCARGO_CONNECT_URL must be an HTTPS origin.");
+	return url.origin;
+}
+export function connectProcessEnv(
 	env: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-	const { TS_AUTHKEY: _, ...rest } = env;
-	return { ...rest, TAILSCALE_BE_CLI: "1" };
+	const { BUNCARGO_CONNECT_TOKENS: _tokens, ...rest } = env;
+	return rest;
 }
-
-/** Opt-in real binary/userspace startup test; does not enroll a node. */
-export function tailscaleTestsEnabled(
-	env: NodeJS.ProcessEnv = process.env,
-): boolean {
-	return env.BUNCARGO_TEST_TAILSCALE === "1";
+export function frpTestsEnabled(env: NodeJS.ProcessEnv = process.env) {
+	return env.BUNCARGO_TEST_FRP === "1";
 }

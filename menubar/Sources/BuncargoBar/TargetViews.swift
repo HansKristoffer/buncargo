@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Local and Tailscale service addresses supply actions to the same row.
+/// Local and remote service addresses supply actions to the same row.
 struct TargetRow: View {
     let name: String
     let status: RunStatus

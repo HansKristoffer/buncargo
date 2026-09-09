@@ -5,6 +5,8 @@ import { join } from "node:path";
 import {
 	cloudflaredPathOverride,
 	cloudflaredVersion,
+	connectProcessEnv,
+	connectTokens,
 	exposeTunnelStaggerMs,
 	hostsDaemonPort,
 	isCI,
@@ -16,20 +18,24 @@ import {
 	quickTunnelRetryBaseMs,
 	quickTunnelUrlTimeoutMs,
 	shouldSyncHostsFile,
-	tailscaleAuthKey,
-	tailscaleProcessEnv,
 	typecheckConcurrencyOverride,
 } from "./runtime-flags";
 
-describe("Tailscale enrollment", () => {
-	it("trims runtime secrets and treats blank values as disabled", () => {
-		expect(tailscaleAuthKey({ TS_AUTHKEY: " key " })).toBe("key");
-		expect(tailscaleAuthKey({ TS_AUTHKEY: "  " })).toBeUndefined();
+describe("Connection credentials", () => {
+	it("parses multiple tokens and deduplicates", () => {
+		const token = `bc_share_${"a".repeat(64)}`;
+		expect(
+			connectTokens({ BUNCARGO_CONNECT_TOKENS: ` ${token},,${token} ` }),
+		).toEqual([token]);
+		expect(connectTokens({})).toEqual([]);
+		expect(() =>
+			connectTokens({ BUNCARGO_CONNECT_TOKENS: "not-a-token" }),
+		).toThrow("comma-separated");
 	});
-	it("does not forward enrollment keys to subprocesses", () => {
-		expect(tailscaleProcessEnv({ TS_AUTHKEY: "secret", PATH: "/bin" })).toEqual(
-			{ PATH: "/bin", TAILSCALE_BE_CLI: "1" },
-		);
+	it("removes tokens from child environments", () => {
+		expect(
+			connectProcessEnv({ BUNCARGO_CONNECT_TOKENS: "secret", PATH: "/bin" }),
+		).toEqual({ PATH: "/bin" });
 	});
 });
 

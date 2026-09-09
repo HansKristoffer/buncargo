@@ -1,13 +1,13 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { installConnectBundle } from "./connect/bundle";
 import { withFileLock } from "./file-lock";
 import { exec } from "./process/exec";
 import { declineMarker } from "./prompt";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
 import { isCI } from "./runtime-flags";
 import { chownToInvokingUser, getStateDir, stateFilePath } from "./state-paths";
-import { installTailnetBundle } from "./tailnet/bundle";
 
 /**
  * BuncargoBar — the macOS menu bar app that reads the run registry.
@@ -108,7 +108,7 @@ export async function rememberBarCli(): Promise<void> {
 			getBarManifestPath(),
 			{
 				...manifest,
-				cli: { program: process.execPath, script: installTailnetBundle() },
+				cli: { program: process.execPath, script: installConnectBundle() },
 			},
 			{ afterWrite: chownToInvokingUser },
 		);
@@ -383,7 +383,7 @@ async function applyRelease(
 	release: BarRelease,
 	options: BarInstallOptions,
 ): Promise<BarInstallResult> {
-	const discoveryScript = installTailnetBundle();
+	const discoveryScript = installConnectBundle();
 	const workspace = mkdtempSync(join(tmpdir(), "buncargo-bar-"));
 	try {
 		const zipPath = join(workspace, "bar.zip");
@@ -439,7 +439,7 @@ async function applyRelease(
 
 /** Build and install from `menubar/` in a checkout of this repo. */
 export function installBarFromSource(repoRoot: string): BarInstallResult {
-	const discoveryScript = installTailnetBundle();
+	const discoveryScript = installConnectBundle();
 	const script = join(repoRoot, "menubar", "scripts", "install.sh");
 	if (!existsSync(script)) {
 		throw new Error(`No menubar sources at ${script}.`);
