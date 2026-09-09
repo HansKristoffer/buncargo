@@ -42,7 +42,12 @@ test.skipIf(!tailscaleTestsEnabled() || process.platform !== "linux")(
 			socket = join(directory, "tailscaled.sock");
 		const child = startGuardedChild(
 			daemon,
-			["--tun=userspace-networking", "--state=mem:", `--socket=${socket}`],
+			[
+				"--tun=userspace-networking",
+				"--state=mem:",
+				`--statedir=${directory}`,
+				`--socket=${socket}`,
+			],
 			directory,
 		);
 		const command = createTailscaleClient(binary, socket);

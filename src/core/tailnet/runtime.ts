@@ -55,7 +55,13 @@ export async function startTailnetRuntime(
 	const secretFile = join(directory, "auth-key");
 	const child = startGuardedChild(
 		daemon,
-		["--tun=userspace-networking", "--state=mem:", `--socket=${socket}`],
+		[
+			"--tun=userspace-networking",
+			"--state=mem:",
+			// TLS certificates need a writable cache even when node identity stays in memory.
+			`--statedir=${directory}`,
+			`--socket=${socket}`,
+		],
 		directory,
 	);
 	const close = async () => {

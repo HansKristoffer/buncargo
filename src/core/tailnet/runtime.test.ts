@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { startTailnetRuntime } from "./runtime";
 import { fakeTailscale } from "./test-helpers.test";
 
@@ -41,9 +41,16 @@ test("no installation or sign-in is attempted without an auth key", async () => 
 test("concurrent enrollment uses separate sockets and hosts, private key files and memory-only state", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "bc-runtime-"));
 	const daemon = join(dir, "tailscaled");
-	await writeFile(daemon, `#!${process.execPath}\nsetInterval(()=>{},1000);`, {
-		mode: 0o755,
-	});
+	await writeFile(
+		daemon,
+		`#!${process.execPath}
+const { writeFileSync } = require("node:fs");
+const { dirname, join } = require("node:path");
+const socket = process.argv.find(arg => arg.startsWith("--socket=")).slice(9);
+writeFileSync(join(dirname(socket), "daemon-args.json"), JSON.stringify(process.argv.slice(2)));
+setInterval(()=>{},1000);`,
+		{ mode: 0o755 },
+	);
 	const hosts: string[] = [],
 		sockets: string[] = [],
 		keys: string[] = [];
@@ -77,8 +84,19 @@ test("concurrent enrollment uses separate sockets and hosts, private key files a
 		expect(new Set(hosts).size).toBe(2);
 		expect(new Set(sockets).size).toBe(2);
 		for (const key of keys) expect(existsSync(key)).toBe(false);
+		for (const socket of sockets) {
+			const directory = dirname(socket);
+			const argsFile = join(directory, "daemon-args.json");
+			for (let i = 0; i < 100 && !existsSync(argsFile); i++)
+				await Bun.sleep(20);
+			const args = JSON.parse(await readFile(argsFile, "utf8"));
+			expect(args).toContain("--state=mem:");
+			expect(args).toContain(`--statedir=${directory}`);
+			expect((await stat(directory)).mode & 0o777).toBe(0o700);
+		}
 	} finally {
 		await Promise.all(runtimes.map((r) => r.close()));
 		await rm(dir, { recursive: true, force: true });
 	}
+	for (const socket of sockets) expect(existsSync(dirname(socket))).toBe(false);
 });
