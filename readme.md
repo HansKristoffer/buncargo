@@ -1095,6 +1095,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `Named hosts need one-time setup` with no prompt | No TTY, so the password prompt was skipped | Run `buncargo hosts install` from a terminal |
 | Safari cannot open `.localhost` | `/etc/hosts` missing the names | `buncargo hosts sync` (or leave auto-sync on; `BUNCARGO_SYNC_HOSTS=0` opts out) |
 | `508 Loop Detected` | Vite (or similar) proxies `/api` without rewriting Host | Add `changeOrigin: true` to the dev-server proxy config |
+| `ERR_CONTENT_DECODING_FAILED` on a named URL | Stale hostsd decoded gzip but kept `Content-Encoding` | `buncargo hosts install` to replace the daemon bundle |
 | `Portless is serving :443` (or Caddy / nginx / Docker) | Another proxy owns HTTPS | Stop that process, or set `hosts: false` / `--no-hosts` |
 | `ERR_SSL_PROTOCOL_ERROR` in the browser, `hosts status` healthy | Another server shares `:443` on `[::1]`, which browsers try first for `.localhost` | `buncargo hosts status` names it; stop it (`lsof -nP -iTCP:443`) or set `hosts: false` |
 
