@@ -838,7 +838,7 @@ export default defineConfig({
 });
 ```
 
-It sets `server.port` from `PORT`, binds `server.host` to `127.0.0.1` (Vite's default `localhost` resolves to `[::1]` on many systems, so anything dialing IPv4 gets a refused connection), passes the named-hosts suffix through to `server.allowedHosts`, and leaves HMR origin-relative so its WebSocket follows whichever local or Tailscale URL loaded the page.
+It sets `server.port` from `PORT`, binds `server.host` to `127.0.0.1` (Vite's default `localhost` resolves to `[::1]` on many systems, so anything dialing IPv4 gets a refused connection), and passes the named-hosts suffix through to `server.allowedHosts`. On a Tailscale request, it also allows the authenticated local node's exact hostname, including cloud nodes that finish signing in after Vite starts. No manual `allowedHosts` entry is needed. HMR stays origin-relative so its WebSocket follows whichever local or Tailscale URL loaded the page.
 
 Vite is not a dependency of buncargo: the plugin's return type is declared structurally, so importing it costs nothing in a repo without Vite. Override the app or the bind address when you need to: `buncargoVite({ app: "web", host: "0.0.0.0" })`.
 
