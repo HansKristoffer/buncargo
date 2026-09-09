@@ -61,13 +61,8 @@ final class ConnectionStore: ObservableObject {
 
     func perform(_ run: RemoteRun, _ target: RemoteTarget, action: ConnectionAction = .open) {
         guard canUse(target) else { return }
-        if action == .tablePlus && target.isPostgres {
-            var url = URLComponents()
-            url.scheme = "postgresql"
-            url.host = run.hostname
-            url.port = target.port
-            url.queryItems = [URLQueryItem(name: "name", value: "\(run.project) · \(run.title)")]
-            if let address = url.string { deps.open(address) }
+        if action == .tablePlus {
+            if let url = target.tablePlusUrl { deps.open(url) }
         } else if action == .copy || !target.isHTTP {
             deps.copy(target.address(hostname: run.hostname))
         } else { deps.open(target.url) }

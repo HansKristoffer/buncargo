@@ -44,6 +44,15 @@ test("directory validation binds every target to the authenticated peer", () => 
 		d.runs[0].targets[0].url = url;
 		expect(() => parseDirectory(d, self)).toThrow();
 	}
+	for (const tablePlusUrl of [
+		`postgresql://user:secret@attacker.example:21000/db`,
+		`postgresql://user:secret@${self.hostname}:21001/db`,
+		`https://${self.hostname}:21000/`,
+	]) {
+		const d = fixture();
+		d.runs[0].targets[0].tablePlusUrl = tablePlusUrl;
+		expect(() => parseDirectory(d, self)).toThrow();
+	}
 	const stale = fixture();
 	stale.generatedAt -= 31000;
 	expect(() => parseDirectory(stale, self)).toThrow();

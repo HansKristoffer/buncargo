@@ -618,7 +618,7 @@ Install and sign in to Tailscale on your computer and server, then run `bunx bun
 
 For Cursor and other Linux cloud sandboxes, store a **reusable, ephemeral, tagged** Tailscale enrollment key as the runtime secret `TS_AUTHKEY`. Starting `buncargo dev` automatically downloads verified Tailscale binaries and signs in using userspace networking when no connected Tailscale installation is available. No root access, TUN device, systemd, browser login or per-agent secret is required. Each sandbox gets an independent identity; multiple worktrees on one machine share its coordinator. Never bake authenticated state into a sandbox image.
 
-All selected apps and services with host ports are shared. Workers, jobs and portless services are skipped. `expose` only controls the separate public Cloudflare tunnels. Browser apps open private HTTPS URLs directly; Postgres and Redis use the Tailscale hostname and port in your database client. Database passwords are not published. Custom services default to TCP; use `exposeProtocol: "http"` for custom web services.
+All selected apps and services with host ports are shared. Workers, jobs and portless services are skipped. `expose` only controls the separate public Cloudflare tunnels. Browser apps open private HTTPS URLs directly; Postgres and Redis use the Tailscale hostname and port in your database client; the menu bar's TablePlus button opens the connection with the dev credentials filled in. Custom services default to TCP; use `exposeProtocol: "http"` for custom web services.
 
 ```sh
 bunx buncargo dev

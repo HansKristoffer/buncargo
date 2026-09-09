@@ -31,9 +31,15 @@ export interface LocalTarget {
 	port: number;
 	pid?: number;
 	processIdentity?: string;
+	tablePlusUrl?: string;
 }
 
-/** Derive metadata from the existing registry; never publish local paths, commands or database passwords. */
+/**
+ * Derive metadata from the existing registry; never publish local paths or
+ * commands. Database credentials ride along in `tablePlusUrl` so a peer's
+ * TablePlus button connects without a password prompt: the directory is
+ * only served to authenticated tailnet peers.
+ */
 export function runTargets(run: RunEntry): LocalTarget[] {
 	return [
 		...run.apps.flatMap<LocalTarget>((a) => {
@@ -65,10 +71,24 @@ export function runTargets(run: RunEntry): LocalTarget[] {
 					status: s.status,
 					preset: s.preset,
 					port: s.port,
+					tablePlusUrl: s.tablePlusUrl,
 				},
 			];
 		}),
 	];
+}
+
+/** The registry's deeplink points at 127.0.0.1 and the local port; retarget it at the tailnet address. */
+function remoteTablePlusUrl(
+	target: LocalTarget,
+	self: Peer,
+	port: number,
+): string | undefined {
+	if (target.protocol !== "tcp" || !target.tablePlusUrl) return undefined;
+	const url = new URL(target.tablePlusUrl);
+	url.hostname = self.hostname;
+	url.port = String(port);
+	return url.toString();
 }
 
 interface Published {
@@ -181,6 +201,7 @@ export function createPublisher(mappings: Mappings, directory: string) {
 						preset: target.preset,
 						port: entry.mapping.port,
 						url: `${target.protocol === "http" ? "https" : "tcp"}://${self.hostname}:${entry.mapping.port}/`,
+						tablePlusUrl: remoteTablePlusUrl(target, self, entry.mapping.port),
 					});
 				}
 				if (targets.length)

@@ -7,7 +7,7 @@ import { parseDirectory } from "./protocol";
 import { createPublisher, runTargets } from "./publisher";
 import { fakeTailscale, fixtureRun, self } from "./test-helpers.test";
 
-test("target projection omits workers, portless services, credentials and local commands", () => {
+test("target projection omits workers, portless services and local commands", () => {
 	const run = fixtureRun();
 	run.apps.push({ name: "worker", kind: "worker", status: "ready" });
 	run.services.push({ name: "job", status: "ready" });
@@ -22,7 +22,7 @@ test("target projection omits workers, portless services, credentials and local 
 		["db", "tcp"],
 		["custom", "http"],
 	]);
-	expect(JSON.stringify(runTargets(run))).not.toContain("secret");
+	expect(JSON.stringify(runTargets(run))).not.toContain("/workspace/");
 });
 test("two worktrees coexist; retiring one preserves the other's mappings and URL", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "bc-publish-")),
@@ -37,8 +37,11 @@ test("two worktrees coexist; retiring one preserves the other's mappings and URL
 		expect(
 			new Set(initial.runs.flatMap((r) => r.targets.map((t) => t.port))).size,
 		).toBe(4);
-		expect(JSON.stringify(initial)).not.toContain("secret");
 		expect(JSON.stringify(initial)).not.toContain("/workspace/");
+		const db = initial.runs[0].targets.find((t) => t.name === "db");
+		expect(db?.tablePlusUrl).toBe(
+			`postgresql://user:secret@${self.hostname}:${db?.port}/db?env=development&name=project-db&tLSMode=0`,
+		);
 		const remaining = await publisher.refresh(self, [b]);
 		expect(remaining.runs[0]).toEqual(initial.runs[1]);
 		expect(Object.keys(fake.config.Foreground)).toHaveLength(2);
