@@ -1,5 +1,12 @@
 # Changelog
 
+## [8.1.1](https://github.com/HansKristoffer/buncargo/compare/v8.1.0...v8.1.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* use the Buncargo relay and unify remote service rows ([#25](https://github.com/HansKristoffer/buncargo/issues/25)) ([6e55792](https://github.com/HansKristoffer/buncargo/commit/6e557926ded6c702dc4c2beb50afa9dbc6544f4f))
+
 ## [8.1.0](https://github.com/HansKristoffer/buncargo/compare/v8.0.0...v8.1.0) (2026-09-08)
 
 
