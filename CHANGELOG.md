@@ -1,5 +1,12 @@
 # Changelog
 
+## [8.2.4](https://github.com/HansKristoffer/buncargo/compare/v8.2.3...v8.2.4) (2026-09-09)
+
+
+### Bug Fixes
+
+* **tailnet:** provide certificate storage for userspace nodes ([#38](https://github.com/HansKristoffer/buncargo/issues/38)) ([8e9c692](https://github.com/HansKristoffer/buncargo/commit/8e9c6920c27001e0ea17f27b5b693a4a39a37eb8))
+
 ## [8.2.3](https://github.com/HansKristoffer/buncargo/compare/v8.2.2...v8.2.3) (2026-09-09)
 
 
