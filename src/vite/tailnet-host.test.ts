@@ -1,102 +1,118 @@
 import { describe, expect, it } from "bun:test";
-import { createServer } from "node:http";
-import { allowTailnetHost, type ViteHostServer } from "./tailnet-host";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { get } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createServer } from "vite";
+import { coordinatorStatePath } from "../core/tailnet/coordinator-state";
+import { createTailnetHostAccess } from "./tailnet-host";
 
 const ownHost = "publisher.tail123.ts.net";
 const foreignHost = "other.tail123.ts.net";
 
-/** Exercise middleware ordering: the following handler represents Vite's host check. */
-async function fixture(
-	resolveHostname: () => Promise<string | undefined>,
-	allowedHosts: string[] | true = ["project.localhost"],
-) {
-	let middleware: Parameters<ViteHostServer["middlewares"]["use"]>[0];
-	allowTailnetHost(
-		{
-			config: { server: { allowedHosts } },
-			middlewares: {
-				use: (handler) => {
-					middleware = handler;
+/** A real Vite 8 server: it freezes host validation before configureServer. */
+async function fixture(resolveHostname: () => Promise<string | undefined>) {
+	const root = await mkdtemp(join(tmpdir(), "buncargo-vite-host-"));
+	await writeFile(join(root, "index.html"), "<h1>Host validation fixture</h1>");
+	const access = createTailnetHostAccess(resolveHostname);
+	const server = await createServer({
+		root,
+		configFile: false,
+		logLevel: "silent",
+		optimizeDeps: { noDiscovery: true },
+		plugins: [
+			{
+				name: "tailnet-host-test",
+				async config() {
+					return { server: { allowedHosts: await access.allowedHosts() } };
 				},
+				configureServer: (server) => access.watch(server),
 			},
-		},
-		resolveHostname,
-	);
-	const server = createServer((req, res) => {
-		middleware(req, res, () => {
-			const host = req.headers.host?.split(":")[0]?.toLowerCase() ?? "";
-			res.writeHead(
-				allowedHosts === true || allowedHosts.includes(host) ? 200 : 403,
-			);
-			res.end();
-		});
+		],
+		server: { host: "127.0.0.1", port: 0, allowedHosts: ["project.localhost"] },
 	});
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const address = server.address();
-	if (!address || typeof address === "string") throw new Error("No listener");
+	await server.listen();
 	return {
-		allowedHosts,
-		async request(host: string) {
-			const response = await fetch(`http://127.0.0.1:${address.port}/`, {
-				headers: { host },
+		server,
+		request(host: string) {
+			const address = server.httpServer?.address();
+			if (!address || typeof address === "string")
+				throw new Error("No listener");
+			return new Promise<number>((resolve, reject) => {
+				get(
+					{
+						hostname: "127.0.0.1",
+						port: address.port,
+						headers: { Host: host },
+					},
+					(res) => {
+						res.resume();
+						res.on("end", () => resolve(res.statusCode ?? 0));
+					},
+				).on("error", reject);
 			});
-			await response.arrayBuffer();
-			return response.status;
 		},
 		async [Symbol.asyncDispose]() {
-			server.closeAllConnections();
-			await new Promise<void>((resolve) => server.close(() => resolve()));
+			await server.close();
+			await rm(root, { recursive: true, force: true });
 		},
 	};
 }
 
 describe("Vite Tailscale host checks", () => {
-	it("allows only the local node and preserves configured hosts", async () => {
+	it("allows the local node before host checks are frozen and preserves configured hosts", async () => {
 		let calls = 0;
 		await using app = await fixture(async () => {
 			calls++;
 			return ownHost;
 		});
+		expect(await app.request(ownHost)).toBe(200);
 		expect(await app.request("project.localhost")).toBe(200);
-		expect(calls).toBe(0);
-		expect(await app.request(`${ownHost.toUpperCase()}:23456`)).toBe(200);
 		expect(await app.request(foreignHost)).toBe(403);
 		expect(await app.request("attacker.example")).toBe(403);
-		expect(app.allowedHosts).toEqual(["project.localhost", ownHost]);
 		expect(calls).toBe(1);
 	});
 
-	it("shares a lookup across parallel requests without duplicate hosts", async () => {
+	it("does not probe Tailscale for parallel module requests", async () => {
 		let calls = 0;
 		await using app = await fixture(async () => {
 			calls++;
-			await Bun.sleep(25);
 			return ownHost;
 		});
 		expect(
 			await Promise.all(Array.from({ length: 20 }, () => app.request(ownHost))),
 		).toEqual(Array(20).fill(200));
 		expect(calls).toBe(1);
-		expect(app.allowedHosts).toEqual(["project.localhost", ownHost]);
 	});
 
-	it("fails closed and recovers when enrollment finishes after startup", async () => {
+	it("fails closed and reloads config after cloud enrollment without an app restart", async () => {
 		let connected = false;
+		let calls = 0;
 		await using app = await fixture(async () => {
+			calls++;
 			if (!connected) throw new Error("Tailscale unavailable");
 			return ownHost;
 		});
 		expect(await app.request(ownHost)).toBe(403);
 		expect(await app.request("project.localhost")).toBe(200);
 		connected = true;
-		await Bun.sleep(2100);
-		expect(await app.request(ownHost)).toBe(200);
-	});
-
-	it("respects an explicit disabled host check without probing Tailscale", async () => {
-		await using app = await fixture(async () => {
-			throw new Error("Must not run");
-		}, true);
-		expect(await app.request(ownHost)).toBe(200);
+		app.server.watcher.emit("change", coordinatorStatePath());
+		const deadline = Date.now() + 5000;
+		let status = 0;
+		while (Date.now() < deadline) {
+			try {
+				status = await app.request(ownHost);
+			} catch {
+				/* Vite is restarting. */
+			}
+			if (status === 200) break;
+			await Bun.sleep(20);
+		}
+		expect(status).toBe(200);
+		expect(await app.request(foreignHost)).toBe(403);
+		const after = calls;
+		app.server.watcher.emit("change", coordinatorStatePath());
+		await Bun.sleep(20);
+		expect(calls).toBe(after);
 	});
 });

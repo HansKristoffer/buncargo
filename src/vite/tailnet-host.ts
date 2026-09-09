@@ -1,23 +1,26 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
 import {
 	createTailscaleClient,
 	tailnetStatus,
 	tailscaleBinary,
 } from "../core/tailnet/client";
-import { readCoordinatorState } from "../core/tailnet/coordinator-state";
+import {
+	coordinatorStatePath,
+	readCoordinatorState,
+} from "../core/tailnet/coordinator-state";
 
-/** The Vite surface needed to extend host checks before its internal middleware runs. */
+/** The Vite lifecycle surface needed to reload config after cloud enrollment. */
 export interface ViteHostServer {
-	config: { server: { allowedHosts: string[] | true } };
-	middlewares: {
-		use(
-			middleware: (
-				req: IncomingMessage,
-				res: ServerResponse,
-				next: () => void,
-			) => void,
-		): unknown;
+	watcher: {
+		add(path: string): unknown;
+		on(event: "add" | "change", listener: (path: string) => void): unknown;
+		off(event: "add" | "change", listener: (path: string) => void): unknown;
 	};
+	httpServer: {
+		listening: boolean;
+		once(event: "close" | "listening", listener: () => void): unknown;
+	} | null;
+	restart(): Promise<void>;
+	config: { logger: { error(message: string): void } };
 }
 
 /** Read the authenticated local node, including an isolated cloud coordinator's socket. */
@@ -32,41 +35,52 @@ async function localHostname(): Promise<string | undefined> {
 	return status.self.hostname;
 }
 
-/**
- * Enrollment may finish after Vite starts. Resolve on the first Tailscale request
- * instead of freezing the hostname at config time. Never trust the request itself
- * or allow all of .ts.net; only the local authenticated node can extend the list.
- */
-export function allowTailnetHost(
-	server: ViteHostServer,
-	resolveHostname = localHostname,
-) {
-	let lookup: Promise<string | undefined> | undefined;
-	let expiresAt = 0;
-	server.middlewares.use((req, _res, next) => {
-		const host = req.headers.host?.split(":")[0]?.toLowerCase();
-		const allowed = server.config.server.allowedHosts;
-		if (
-			!host?.endsWith(".ts.net") ||
-			allowed === true ||
-			allowed.includes(host)
-		) {
-			next();
-			return;
-		}
-		// Share one bounded lookup across parallel module requests. Failed lookups
-		// expire too, so a node that signs in later works without restarting Vite.
-		if (!lookup || Date.now() >= expiresAt) {
-			expiresAt = Number.POSITIVE_INFINITY;
-			lookup = resolveHostname()
-				.catch(() => undefined)
-				.finally(() => {
-					expiresAt = Date.now() + 2000;
-				});
-		}
-		void lookup.then((hostname) => {
-			if (hostname === host && !allowed.includes(host)) allowed.push(host);
-			next();
-		});
-	});
+/** Resolve before Vite freezes host validation; late enrollment requires a config reload. */
+export function createTailnetHostAccess(resolveHostname = localHostname) {
+	let hostname: string | undefined;
+	const resolve = () => resolveHostname().catch(() => undefined);
+	return {
+		async allowedHosts() {
+			hostname = await resolve();
+			return hostname ? [hostname] : [];
+		},
+		watch(server: ViteHostServer) {
+			if (hostname || !server.httpServer) return;
+			const path = coordinatorStatePath();
+			let closed = false;
+			let checking = false;
+			const stop = () => {
+				closed = true;
+				server.watcher.off("add", changed);
+				server.watcher.off("change", changed);
+			};
+			const check = async () => {
+				if (closed || checking || !server.httpServer?.listening) return;
+				checking = true;
+				try {
+					const current = await resolve();
+					if (closed || !current) return;
+					stop();
+					await server.restart();
+				} catch {
+					server.config.logger.error(
+						"Could not reload Vite after Tailscale sign-in. Restart the dev server.",
+					);
+				} finally {
+					checking = false;
+				}
+			};
+			const changed = (file: string) => {
+				if (file === path) void check();
+			};
+			// Reuse Vite's watcher, including when the coordinator file doesn't exist
+			// yet. Local-only dev runs do not need a polling timer or CLI probes.
+			server.watcher.add(path);
+			server.watcher.on("add", changed);
+			server.watcher.on("change", changed);
+			server.httpServer.once("close", stop);
+			server.httpServer.once("listening", () => void check());
+			void check();
+		},
+	};
 }
