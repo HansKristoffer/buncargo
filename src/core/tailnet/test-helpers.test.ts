@@ -36,6 +36,8 @@ export function fixtureRun(sessionId = "one", port = 3000): RunEntry {
 				status: "ready",
 				url: "postgresql://user:secret@localhost/db",
 				loopbackUrl: "postgresql://user:secret@localhost/db",
+				tablePlusUrl:
+					"postgresql://user:secret@127.0.0.1:5432/db?env=development&name=project-db&tLSMode=0",
 			},
 		],
 	};

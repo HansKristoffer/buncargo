@@ -12,7 +12,7 @@
     "primaryApp": "web",
     "targets": [
       { "id": "app-web", "name": "web", "kind": "app", "protocol": "http", "status": "ready", "port": 21000, "url": "https://cloud.test-tailnet.ts.net:21000/" },
-      { "id": "service-db", "name": "db", "kind": "service", "protocol": "tcp", "status": "ready", "preset": "postgres", "port": 21001, "url": "tcp://cloud.test-tailnet.ts.net:21001/" }
+      { "id": "service-db", "name": "db", "kind": "service", "protocol": "tcp", "status": "ready", "preset": "postgres", "port": 21001, "url": "tcp://cloud.test-tailnet.ts.net:21001/", "tablePlusUrl": "postgresql://postgres:postgres@cloud.test-tailnet.ts.net:21001/example?env=development&name=example-db&tLSMode=0" }
     ]
   }]
 }

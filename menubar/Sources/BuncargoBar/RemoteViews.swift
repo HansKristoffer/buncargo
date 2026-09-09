@@ -98,7 +98,7 @@ struct RemoteTargetRow: View {
             detail: target.address(hostname: run.hostname),
             onOpen: target.isHTTP ? { store.perform(run, target) } : nil,
             onCopy: { store.perform(run, target, action: .copy) },
-            onTablePlus: target.isPostgres ? { store.perform(run, target, action: .tablePlus) } : nil,
+            onTablePlus: target.tablePlusUrl != nil ? { store.perform(run, target, action: .tablePlus) } : nil,
             onStop: nil,
             actionsEnabled: store.canUse(target)
         )

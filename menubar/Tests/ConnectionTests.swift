@@ -12,13 +12,18 @@ private func fixture() throws -> Data {
     try directory.validate(now: now)
     #expect(directory.runs[0].title == "feature/checkout")
     #expect(directory.runs[0].primary?.name == "web")
-    #expect(directory.runs[0].targets[1].isPostgres)
+    #expect(directory.runs[0].targets[1].tablePlusUrl != nil)
     #expect(throws: (any Error).self) { try directory.validate(now: now.addingTimeInterval(31)) }
 }
 @Test func directoryRejectsUnsafeTargetURLs() throws {
     let original = String(decoding: try fixture(), as: UTF8.self)
     for url in ["https://attacker.example:21000/", "http://cloud.test-tailnet.ts.net:21000/", "https://user:secret@cloud.test-tailnet.ts.net:21000/", "https://cloud.test-tailnet.ts.net:21001/"] {
         let text = original.replacingOccurrences(of: "https://cloud.test-tailnet.ts.net:21000/", with: url)
+        let directory = try JSONDecoder().decode(ConnectionDirectory.self, from: Data(text.utf8))
+        #expect(throws: (any Error).self) { try directory.validate(now: now) }
+    }
+    for url in ["postgresql://postgres:postgres@attacker.example:21001/example", "postgresql://postgres:postgres@cloud.test-tailnet.ts.net:21000/example", "https://cloud.test-tailnet.ts.net:21001/"] {
+        let text = original.replacingOccurrences(of: "postgresql://postgres:postgres@cloud.test-tailnet.ts.net:21001/example?env=development&name=example-db&tLSMode=0", with: url)
         let directory = try JSONDecoder().decode(ConnectionDirectory.self, from: Data(text.utf8))
         #expect(throws: (any Error).self) { try directory.validate(now: now) }
     }
@@ -44,6 +49,7 @@ private func fixture() throws -> Data {
     #expect(address.scheme == "postgresql")
     #expect(address.host == run.hostname)
     #expect(address.port == db.port)
+    #expect(address.password == "postgres")
 }
 private actor Probe {
     var fail = false

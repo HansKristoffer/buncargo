@@ -9,8 +9,9 @@ struct RemoteTarget: Decodable, Identifiable, Sendable {
     let preset: String?
     let port: Int
     let url: String
+    /// Database deeplink with credentials, published only to authenticated tailnet peers.
+    let tablePlusUrl: String?
     var isHTTP: Bool { `protocol` == "http" }
-    var isPostgres: Bool { preset == "postgres" }
     var state: RunStatus { RunStatus(rawValue: status) ?? .failed }
     var ready: Bool { status == "ready" || status == "reused" }
     func address(hostname: String) -> String { isHTTP ? url : "\(hostname):\(port)" }
@@ -58,6 +59,13 @@ struct ConnectionDirectory: Decodable, Sendable {
                       url.scheme == (target.isHTTP ? "https" : "tcp"), url.user == nil, url.password == nil,
                       url.query == nil, url.fragment == nil, url.path.isEmpty || url.path == "/" else {
                     throw ConnectionError("Invalid remote service address")
+                }
+                if let deeplink = target.tablePlusUrl {
+                    guard !target.isHTTP, deeplink.count <= 2048, let url = URL(string: deeplink),
+                          url.host == run.hostname, url.port == target.port,
+                          ["postgresql", "clickhouse"].contains(url.scheme) else {
+                        throw ConnectionError("Invalid remote service address")
+                    }
                 }
             }
             if let primary = run.primaryApp, !run.targets.contains(where: { $0.kind == "app" && $0.name == primary }) {

@@ -19,6 +19,8 @@ export interface RemoteTarget {
 	preset?: string;
 	port: number;
 	url: string;
+	/** Database deeplink with credentials, already pointing at {@link url}'s host and port. */
+	tablePlusUrl?: string;
 }
 export interface RemoteRun {
 	sessionId: string;
@@ -105,7 +107,8 @@ export function parseDirectory(
 				t.port < PORT_START ||
 				t.port > PORT_END ||
 				(t.preset !== undefined && !text(t.preset)) ||
-				!text(t.url, 2048)
+				!text(t.url, 2048) ||
+				(t.tablePlusUrl !== undefined && !text(t.tablePlusUrl, 2048))
 			)
 				throw new Error("Invalid remote target");
 			const url = new URL(t.url);
@@ -120,6 +123,16 @@ export function parseDirectory(
 				(url.pathname !== "/" && url.pathname !== "")
 			)
 				throw new Error("Invalid remote target URL");
+			if (t.tablePlusUrl !== undefined) {
+				const deeplink = new URL(t.tablePlusUrl);
+				if (
+					t.protocol !== "tcp" ||
+					deeplink.hostname !== expected.hostname ||
+					Number(deeplink.port) !== t.port ||
+					!["postgresql:", "clickhouse:"].includes(deeplink.protocol)
+				)
+					throw new Error("Invalid remote target URL");
+			}
 			targets.add(t.id);
 		}
 		if (
