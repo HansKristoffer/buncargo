@@ -19,7 +19,7 @@ Create a reusable, ephemeral auth key, tagged for the access policy you want clo
 bunx buncargo dev
 ```
 
-When no connected Tailscale installation is available, Buncargo downloads the pinned official Linux x64/arm64 binaries, verifies their SHA-256 checksums and versions, and caches them under `~/.buncargo/bin`. It starts `tailscaled` with userspace networking, an in-memory state and a private Unix control socket. No TUN device, root access, package manager, systemd or interactive sign-in is needed.
+When no connected Tailscale installation is available, Buncargo downloads the pinned official Linux x64/arm64 binaries, verifies their SHA-256 checksums and versions, and caches them under `~/.buncargo/bin`. It starts `tailscaled` with userspace networking, an in-memory state and a private Unix control socket. The daemon's private temporary directory is also passed as `--statedir` for TLS certificate storage: `--state=mem:` keeps node identity in memory, but does not provide the writable certificate cache required by Serve. The child guard deletes this directory when the daemon exits. No TUN device, root access, package manager, systemd or interactive sign-in is needed.
 
 The same reusable key can enroll simultaneous agents. Each sandbox has independent runtime state and a unique hostname. Multiple worktrees sharing a sandbox/home share one coordinator and node. Never authenticate while building a shared environment snapshot: only binaries belong in the image. Authenticated state must not be copied between agents.
 
