@@ -21,7 +21,7 @@ fi
 set -a
 source /etc/buncargo-connect/caddy.env
 set +a
-"$release/caddy" validate --config "$release/Caddyfile" --adapter caddyfile
+"$release/caddy" validate --config "$release/Caddyfile" --adapter caddyfile 2>&1 | python3 -c 'import os,sys; print(sys.stdin.read().replace(os.environ["CLOUDFLARE_API_TOKEN"], "[redacted]"), end="")' 
 previous=$(readlink -f /opt/buncargo-connect/current || true)
 ln -sfn "$release" /opt/buncargo-connect/next
 mv -Tf /opt/buncargo-connect/next /opt/buncargo-connect/current
