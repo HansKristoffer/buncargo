@@ -1,5 +1,12 @@
 # Changelog
 
+## [8.2.1](https://github.com/HansKristoffer/buncargo/compare/v8.2.0...v8.2.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* **vite:** allow the local Tailscale hostname automatically ([#30](https://github.com/HansKristoffer/buncargo/issues/30)) ([b0f6813](https://github.com/HansKristoffer/buncargo/commit/b0f6813b5c76d244433782f5034ddc05ab236391))
+
 ## [8.2.0](https://github.com/HansKristoffer/buncargo/compare/v8.1.1...v8.2.0) (2026-09-09)
 
 
