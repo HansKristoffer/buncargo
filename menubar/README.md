@@ -41,15 +41,11 @@ and CI turn the whole thing off.
 
 ## Remote environments
 
-Choose **Copy connection token** in the Remote environments key menu. Store it as `BUNCARGO_CONNECT_TOKENS` on a server or cloud agent and run `buncargo dev`. Every selected app or service with a host port is shared automatically. Multiple recipient tokens are a JSON array. No VPN setup or sharing flag is required.
+Install and sign in to Tailscale, then run `buncargo dev` on another machine in your tailnet. For disposable Linux cloud agents, set `TS_AUTHKEY` in runtime secrets. See [Tailscale setup](../docs/tailscale.md).
 
-Remote environments appear by project and branch/worktree. Their detail panels share `TargetDetailPanel`, `TargetSectionHeading` and `TargetRow` with local runs: the same status dots, APPS/SERVICES sections, truncated addresses and icon buttons. Local and remote adapters supply only their own actions.
+Discovery refreshes every 15 seconds and when the menu opens. It lists projects, branches, worktrees and machine names, using the same environment and service row components as local runs. Browser URLs open directly over private HTTPS. Database rows copy the Tailscale hostname/port and PostgreSQL offers TablePlus; supply your own database credentials.
 
-A remote target shows “Not connected” until the CLI creates its loopback address. Open creates an authenticated local browser proxy. Connect creates a loopback TCP listener and copies its address; use your own database credentials. PostgreSQL can also open in TablePlus. The × icon disconnects the local listener; Revoke withdraws this recipient's access to the remote session without stopping the server.
-
-The key menu provides token rotation and revoke-all-and-rotate. Rotation affects new registrations; existing sessions retain their grants unless revoked. Device credentials stay in a private local state file owned by the CLI. The app invokes the CLI for setup, discovery and connection actions; remote data never supplies executable paths.
-
-Discovery refreshes every 15 seconds and when the menu opens, with failure backoff. Expired/disconnected entries disable actions. A publisher whose relay is unavailable shows Connecting until it reconnects. Private streams use outbound WebSockets through the stable `connect.hanskristoffer.dk` relay, so new worktrees need no tunnel installation or DNS allocation. A separate CLI helper keeps streams alive when the menu closes and revalidates access. The CLI and app must both be updated to builds containing this feature.
+The CLI verifies directories against the authenticated peer list before returning them to the app. The app validates every address again. Access is controlled by the tailnet policy. No recipient tokens, local forwarding helper, or remote executable paths are involved.
 
 ## Build from source
 
@@ -61,6 +57,10 @@ bash menubar/scripts/package.sh     # build the .app bundle only
 swift test --package-path menubar   # remote store and shared directory contract tests (from repo root)
 bash menubar/scripts/launch.sh      # open an installed copy
 ```
+
+To install from a source checkout with remote discovery, run `bun run build`
+followed by `bun src/cli/bin.ts bar install --source`. The CLI installs the app
+and saves its standalone discovery command.
 
 ## Troubleshooting
 

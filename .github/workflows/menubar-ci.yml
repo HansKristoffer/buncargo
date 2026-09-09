@@ -7,8 +7,7 @@ on:
     paths:
       - "menubar/**"
       - "src/core/run-registry*"
-      - "src/core/connect/**"
-      - "src/connect-directory/**"
+      - "src/core/tailnet/**"
       - "src/core/registry-file*"
       - "src/cli/run-publish*"
       - "src/cli/commands/stop*"

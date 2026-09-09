@@ -15,16 +15,6 @@ struct RemoteMachinesView: View {
                 Label("Remote environments", systemImage: "network")
                     .font(.system(size: 11, weight: .semibold))
                 Spacer()
-                Menu {
-                    Button("Copy connection token") { store.copyToken() }
-                    Button("Rotate connection token") { store.copyToken(rotate: true) }
-                    Button("Revoke all sharing and rotate") { store.copyToken(rotate: true, revokeAll: true) }
-                } label: {
-                    Image(systemName: "key")
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .disabled(store.busy)
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)
@@ -36,7 +26,7 @@ struct RemoteMachinesView: View {
                     .padding(.horizontal, 12)
             }
             if store.runs.isEmpty {
-                Text("Copy a connection token to receive shared apps and services.")
+                Text("Run buncargo dev on another connected Tailscale machine.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 12)
@@ -59,14 +49,14 @@ private struct RemoteRunRow: View {
     var body: some View {
         EnvironmentRow(
             title: run.title,
-            subtitle: run.connected ? run.worktree : "Connecting…",
+            subtitle: run.worktree ?? run.hostname,
             status: store.status(run)
         ) {
             if let primary = run.primary {
-                Button("Open") { store.connect(run, primary) }
+                Button("Open") { store.perform(run, primary) }
                     .font(.system(size: 11))
                     .help("Open \(primary.name)")
-                    .disabled(!store.canConnect(run, primary))
+                    .disabled(!store.canUse(primary))
             }
         } detail: {
             RemoteRunDetailView(run: run, store: store)
@@ -90,47 +80,27 @@ struct RemoteRunDetailView: View {
                 }
             }
         } footer: {
-            HStack {
-                Spacer()
-                Button("Revoke this sharing") { store.revoke(run) }
-                    .foregroundStyle(.red)
-                    .disabled(store.busy)
-            }
+            Text(run.hostname).font(.system(size: 10)).foregroundStyle(.secondary)
         }
     }
 }
 
-/// Remote actions always go through the CLI, even when a local address is already known.
-/// In particular, opening a browser needs a fresh authorization URL, not the display address.
+/// Reuse exactly the same service row as local environments; Tailscale URLs need no local tunnel.
 struct RemoteTargetRow: View {
     let run: RemoteRun
     let target: RemoteTarget
     @ObservedObject var store: ConnectionStore
 
-    private var port: Int? { store.localPort(run, target) }
-    private var detail: String {
-        if let port {
-            return target.localAddress(port: port)
-        }
-        if !store.available { return "Unavailable" }
-        if !run.connected { return "Connecting…" }
-        return target.ready ? "Not connected" : target.status
-    }
-
     var body: some View {
         TargetRow(
             name: target.name,
             status: store.status(run, target: target),
-            detail: detail,
-            onOpen: target.isHTTP || port == nil ? { store.connect(run, target) } : nil,
-            openSymbol: target.isHTTP ? "arrow.up.right" : "cable.connector",
-            openHelp: target.isHTTP ? "Open" : "Connect and copy address",
-            onCopy: { store.connect(run, target, action: .copy) },
-            onTablePlus: target.isPostgres ? { store.connect(run, target, action: .tablePlus) } : nil,
-            onStop: port == nil ? nil : { store.disconnect(run, target) },
-            stopHelp: "Disconnect local connection",
-            actionsEnabled: store.canConnect(run, target)
+            detail: target.address(hostname: run.hostname),
+            onOpen: target.isHTTP ? { store.perform(run, target) } : nil,
+            onCopy: { store.perform(run, target, action: .copy) },
+            onTablePlus: target.isPostgres ? { store.perform(run, target, action: .tablePlus) } : nil,
+            onStop: nil,
+            actionsEnabled: store.canUse(target)
         )
-        .disabled(store.busy)
     }
 }

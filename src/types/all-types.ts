@@ -253,7 +253,7 @@ export interface ServiceConfigBase<
 	port?: number;
 	/**
 	 * Opt into public URLs with --expose.
-	 * @deprecated Token-based sharing automatically includes all selected endpoints with a host port.
+	 * @deprecated Tailscale sharing automatically includes all selected endpoints with a host port.
 	 * This option only controls public tunnels started with --expose.
 	 */
 	expose?: boolean;
@@ -319,7 +319,7 @@ export type ServiceConfig<
 interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	/**
 	 * Opt into public URLs with --expose.
-	 * @deprecated Token-based sharing automatically includes all selected endpoints with a host port.
+	 * @deprecated Tailscale sharing automatically includes all selected endpoints with a host port.
 	 * This option only controls public tunnels started with --expose.
 	 */
 	expose?: boolean;
@@ -753,7 +753,8 @@ export interface DevOptions<
 	frontendApp?: Extract<keyof TApps, string>;
 	/**
 	 * Named `.localhost` HTTPS URLs via the shared loopback proxy.
-	 * `true` uses defaults. Off on Windows, in CI, or when `BUNCARGO_HOSTS=0`.
+	 * `true` uses defaults. Off on Windows, in CI, or when `BUNCARGO_HOSTS=0`
+	 * or `BUCARGO_SKIP_MKCERT=true`.
 	 */
 	hosts?: boolean | HostsOptions<TServices, TApps>;
 	/**

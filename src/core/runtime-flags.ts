@@ -139,11 +139,15 @@ export function containerBinaryOverride(
 
 export const DEFAULT_HOSTS_DAEMON_PORT = 443;
 
-/** `BUNCARGO_HOSTS=0` (or CI) - fall back to `http://localhost:port`. */
+/** Skip automatic local HTTPS/mkcert setup and use `http://localhost:port`. */
 export function isHostsForcedOff(
 	env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-	return env.BUNCARGO_HOSTS === "0" || isCI(env);
+	return (
+		env.BUNCARGO_HOSTS === "0" ||
+		env.BUCARGO_SKIP_MKCERT === "true" ||
+		isCI(env)
+	);
 }
 
 /** `BUNCARGO_HOSTS_PORT` - port the loopback proxy daemon listens on. */
@@ -241,66 +245,24 @@ export function typecheckConcurrencyOverride(
 	return parsed;
 }
 
-/** Copied recipient tokens enable sharing; they are never printed in diagnostics. */
-export function connectionTokens(
-	env: NodeJS.ProcessEnv = process.env,
-): string[] {
-	const raw = env.BUNCARGO_CONNECT_TOKENS?.trim();
-	if (!raw) return [];
-	try {
-		const value: unknown = raw.startsWith("[") ? JSON.parse(raw) : [raw];
-		if (
-			!Array.isArray(value) ||
-			value.length > 32 ||
-			!value.every(
-				(v) =>
-					typeof v === "string" &&
-					/^bc1\.[a-zA-Z0-9_-]{1,128}\.[a-zA-Z0-9_-]{43}$/.test(v),
-			)
-		)
-			throw new Error();
-		return [...new Set(value as string[])];
-	} catch {
-		throw new Error(
-			"Invalid BUNCARGO_CONNECT_TOKENS; use a copied token or JSON array of tokens",
-		);
-	}
-}
-
-/** Operator override until the hosted directory has been deployed. */
-export function connectionDirectory(
+/** Runtime enrollment for disposable cloud sandboxes. Never include this value in diagnostics. */
+export function tailscaleAuthKey(
 	env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-	return (
-		env.BUNCARGO_CONNECT_DIRECTORY?.trim() ||
-		"https://connect.hanskristoffer.dk"
-	);
+	return env.TS_AUTHKEY?.trim() || undefined;
 }
 
-/** Opt-in test against the hosted directory and real Cloudflare transport. */
-export function connectE2EEnabled(
+/** Tailscale subprocesses must not inherit the enrollment credential. */
+export function tailscaleProcessEnv(
 	env: NodeJS.ProcessEnv = process.env,
-): boolean {
-	return env.BUNCARGO_TEST_CONNECT_E2E === "1";
+): NodeJS.ProcessEnv {
+	const { TS_AUTHKEY: _, ...rest } = env;
+	return { ...rest, TAILSCALE_BE_CLI: "1" };
 }
 
-/** Optional operator-supplied Tailcat binary and relay fleet. */
-export function tailcatPath(
-	env: NodeJS.ProcessEnv = process.env,
-): string | undefined {
-	return env.BUNCARGO_TAILCAT_PATH?.trim() || undefined;
-}
-export function tailcatDerpMap(env: NodeJS.ProcessEnv = process.env): string {
-	const raw =
-		env.BUNCARGO_TAILCAT_DERPMAP_URL?.trim() ||
-		"https://connect.hanskristoffer.dk/derpmap.json";
-	const url = new URL(raw);
-	if (url.protocol !== "https:" || url.username || url.password)
-		throw new Error("BUNCARGO_TAILCAT_DERPMAP_URL must be an HTTPS URL");
-	return url.href;
-}
-export function tailcatTestsEnabled(
+/** Opt-in real binary/userspace startup test; does not enroll a node. */
+export function tailscaleTestsEnabled(
 	env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-	return env.BUNCARGO_TEST_TAILCAT === "1";
+	return env.BUNCARGO_TEST_TAILSCALE === "1";
 }

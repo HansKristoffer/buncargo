@@ -107,9 +107,12 @@ describe("getEnvVar", () => {
 		}
 	});
 
-	it("keeps localhost URLs when BUNCARGO_HOSTS=0", () => {
-		const previousHosts = process.env.BUNCARGO_HOSTS;
-		process.env.BUNCARGO_HOSTS = "0";
+	it.each([
+		["BUNCARGO_HOSTS", "0"],
+		["BUCARGO_SKIP_MKCERT", "true"],
+	])("keeps localhost URLs when %s=%s", (name, value) => {
+		const previousHosts = process.env[name];
+		process.env[name] = value;
 		try {
 			withoutCiEnv(() => {
 				const config = defineDevConfig({
@@ -127,8 +130,8 @@ describe("getEnvVar", () => {
 				);
 			});
 		} finally {
-			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
-			else process.env.BUNCARGO_HOSTS = previousHosts;
+			if (previousHosts === undefined) delete process.env[name];
+			else process.env[name] = previousHosts;
 		}
 	});
 });

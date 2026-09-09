@@ -2,8 +2,8 @@
 #
 # Release Please keeps one PR open on main proposing the next CLI and/or
 # BuncargoBar version from conventional PR titles. Merging it creates the tags
-# and GitHub releases; this run deploys and tests the connection Worker before
-# publishing clients. A workflow-created tag never triggers another workflow.
+# and GitHub releases. This run publishes the CLI and menu bar directly.
+# A workflow-created tag never triggers another workflow.
 name: Release
 
 on:
@@ -41,17 +41,8 @@ jobs:
             const targets = await releaseTargets({ github, context, versions });
             for (const [name, value] of Object.entries(targets)) core.setOutput(name, value);
 
-  deploy-connect:
-    needs: release-please
-    if: needs.release-please.outputs.cli_released == 'true'
-    uses: ./.github/workflows/release-connect.yml
-    secrets:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-    permissions:
-      contents: read
-
   publish-npm:
-    needs: [release-please, deploy-connect]
+    needs: release-please
     if: needs.release-please.outputs.publish_npm == 'true'
     uses: ./.github/workflows/publish.yml
     permissions:
@@ -59,14 +50,8 @@ jobs:
       id-token: write
 
   release-bar:
-    needs: [release-please, deploy-connect]
-    # A bar-only release has no Worker deployment. A combined release must
-    # wait for the new backend to pass its live acceptance check.
-    if: >-
-      !cancelled() &&
-      needs.release-please.result == 'success' &&
-      needs.release-please.outputs.bar_released == 'true' &&
-      (needs.deploy-connect.result == 'success' || needs.deploy-connect.result == 'skipped')
+    needs: release-please
+    if: needs.release-please.outputs.bar_released == 'true'
     uses: ./.github/workflows/release-menubar.yml
     with:
       version: ${{ needs.release-please.outputs.bar_version }}

@@ -66,7 +66,7 @@ let cachedRoot: PackageRoot | undefined;
  * code-splits shared modules into `dist/chunk-*.js`, so the depth from here to
  * the package root is not fixed.
  */
-function packageRoot(): PackageRoot {
+export function packageRoot(): PackageRoot {
 	if (cachedRoot) return cachedRoot;
 
 	let dir = dirname(fileURLToPath(import.meta.url));

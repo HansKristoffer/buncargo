@@ -229,6 +229,11 @@ void web;
 			packageJson.version,
 		),
 	);
+	assert(
+		command([process.execPath, cli, "tailnet", "--help"], consumer).includes(
+			"TS_AUTHKEY",
+		),
+	);
 	const watchdog = join(installed, "dist/core/watchdog-runner.js");
 	const watchdogResult = Bun.spawnSync([process.execPath, watchdog], {
 		cwd: consumer,
@@ -242,10 +247,17 @@ void web;
 			.toString()
 			.includes("Missing required environment variables"),
 	);
-	for (const daemon of ["hostsd.js"]) {
+	for (const daemon of ["hostsd.js", "tailnetd.js"]) {
 		const detachedDaemon = join(consumer, "detached", daemon);
 		mkdirSync(dirname(detachedDaemon), { recursive: true });
 		copyFileSync(join(installed, "dist", daemon), detachedDaemon);
+		if (daemon === "tailnetd.js")
+			assert(
+				command(
+					[process.execPath, detachedDaemon, "tailnet", "--help"],
+					consumer,
+				).includes("TS_AUTHKEY"),
+			);
 		const bundle = await Bun.build({
 			entrypoints: [detachedDaemon],
 			target: "bun",

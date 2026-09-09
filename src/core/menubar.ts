@@ -7,6 +7,7 @@ import { declineMarker } from "./prompt";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
 import { isCI } from "./runtime-flags";
 import { chownToInvokingUser, getStateDir, stateFilePath } from "./state-paths";
+import { installTailnetBundle } from "./tailnet/bundle";
 
 /**
  * BuncargoBar — the macOS menu bar app that reads the run registry.
@@ -55,6 +56,7 @@ export const BAR_TAG_PREFIX = "bar-v";
 export const barDecline = declineMarker(BAR_DECLINE_FILENAME);
 
 export interface BarManifest {
+	cli?: { program: string; script: string };
 	version: number;
 	/** Absolute path to the installed `.app` bundle. */
 	path: string;
@@ -79,7 +81,11 @@ export function readBarManifest(): BarManifest | undefined {
 	return readJsonDocumentSync(getBarManifestPath(), isBarManifest);
 }
 
-function writeBarManifest(path: string, appVersion: string): void {
+function writeBarManifest(
+	path: string,
+	appVersion: string,
+	script: string,
+): void {
 	writeJsonDocumentSync(
 		getBarManifestPath(),
 		{
@@ -87,9 +93,26 @@ function writeBarManifest(path: string, appVersion: string): void {
 			path,
 			appVersion,
 			installedAt: new Date().toISOString(),
+			cli: { program: process.execPath, script },
 		} satisfies BarManifest,
 		{ afterWrite: chownToInvokingUser },
 	);
+}
+
+/** Refresh the receiver command even when the menu app itself is already current. */
+export async function rememberBarCli(): Promise<void> {
+	await withFileLock(getBarManifestPath(), async () => {
+		const manifest = readBarManifest();
+		if (!manifest) return;
+		writeJsonDocumentSync(
+			getBarManifestPath(),
+			{
+				...manifest,
+				cli: { program: process.execPath, script: installTailnetBundle() },
+			},
+			{ afterWrite: chownToInvokingUser },
+		);
+	});
 }
 
 /** Where the bundle can live, most preferred first. */
@@ -360,6 +383,7 @@ async function applyRelease(
 	release: BarRelease,
 	options: BarInstallOptions,
 ): Promise<BarInstallResult> {
+	const discoveryScript = installTailnetBundle();
 	const workspace = mkdtempSync(join(tmpdir(), "buncargo-bar-"));
 	try {
 		const zipPath = join(workspace, "bar.zip");
@@ -404,7 +428,7 @@ async function applyRelease(
 		// download the user did not open through Finder themselves.
 		run(`xattr -dr com.apple.quarantine ${quote(target)}`);
 
-		writeBarManifest(target, release.version);
+		writeBarManifest(target, release.version, discoveryScript);
 		barDecline.clear();
 		if (wasRunning) openBar(target);
 		return { path: target, version: release.version, relaunched: wasRunning };
@@ -415,6 +439,7 @@ async function applyRelease(
 
 /** Build and install from `menubar/` in a checkout of this repo. */
 export function installBarFromSource(repoRoot: string): BarInstallResult {
+	const discoveryScript = installTailnetBundle();
 	const script = join(repoRoot, "menubar", "scripts", "install.sh");
 	if (!existsSync(script)) {
 		throw new Error(`No menubar sources at ${script}.`);
@@ -427,7 +452,7 @@ export function installBarFromSource(repoRoot: string): BarInstallResult {
 	if (!path) {
 		throw new Error("The build finished but no app bundle was installed.");
 	}
-	writeBarManifest(path, "source");
+	writeBarManifest(path, "source", discoveryScript);
 	barDecline.clear();
 	return { path, version: "source" };
 }

@@ -11,9 +11,9 @@ export const CLI_COMMANDS = [
 		summary: "Run a command with the checkout environment",
 	},
 	{
-		name: "connect",
-		usage: "connect <subcommand>",
-		summary: "Private remote services through connection tokens",
+		name: "tailnet",
+		usage: "tailnet status",
+		summary: "Discover private services through Tailscale",
 	},
 	{ name: "dev", usage: "dev", summary: "Start the development environment" },
 	{

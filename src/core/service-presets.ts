@@ -43,6 +43,17 @@ export function isDockerPresetName(value: unknown): value is DockerPresetName {
 	);
 }
 
+/** Primary host-port transport. Custom services use raw TCP unless explicitly overridden. */
+export function defaultServiceProtocol(
+	preset: string | undefined,
+): "http" | "tcp" {
+	return preset === "clickhouse" ||
+		preset === "mailpit" ||
+		preset === "typesense"
+		? "http"
+		: "tcp";
+}
+
 /**
  * Resolve the built-in preset backing a service, either from an explicit
  * `service.<preset>()` helper definition or by the service key's name.

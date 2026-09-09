@@ -16,35 +16,20 @@ import {
 	quickTunnelRetryBaseMs,
 	quickTunnelUrlTimeoutMs,
 	shouldSyncHostsFile,
-	tailcatDerpMap,
+	tailscaleAuthKey,
+	tailscaleProcessEnv,
 	typecheckConcurrencyOverride,
 } from "./runtime-flags";
 
-describe("tailcatDerpMap", () => {
-	it("defaults to the Buncargo relay map without machine-specific settings", () => {
-		for (const env of [{}, { BUNCARGO_TAILCAT_DERPMAP_URL: "  " }])
-			expect(tailcatDerpMap(env)).toBe(
-				"https://connect.hanskristoffer.dk/derpmap.json",
-			);
+describe("Tailscale enrollment", () => {
+	it("trims runtime secrets and treats blank values as disabled", () => {
+		expect(tailscaleAuthKey({ TS_AUTHKEY: " key " })).toBe("key");
+		expect(tailscaleAuthKey({ TS_AUTHKEY: "  " })).toBeUndefined();
 	});
-
-	it("retains an explicit HTTPS fleet override", () => {
-		expect(
-			tailcatDerpMap({
-				BUNCARGO_TAILCAT_DERPMAP_URL: " https://relay.example/map.json ",
-			}),
-		).toBe("https://relay.example/map.json");
-	});
-
-	it("rejects insecure maps and embedded credentials", () => {
-		for (const url of [
-			"http://relay.example/map.json",
-			"https://user:secret@relay.example/map.json",
-			"file:///tmp/map.json",
-		])
-			expect(() =>
-				tailcatDerpMap({ BUNCARGO_TAILCAT_DERPMAP_URL: url }),
-			).toThrow("BUNCARGO_TAILCAT_DERPMAP_URL must be an HTTPS URL");
+	it("does not forward enrollment keys to subprocesses", () => {
+		expect(tailscaleProcessEnv({ TS_AUTHKEY: "secret", PATH: "/bin" })).toEqual(
+			{ PATH: "/bin", TAILSCALE_BE_CLI: "1" },
+		);
 	});
 });
 
@@ -82,8 +67,10 @@ describe("portOffsetOverride", () => {
 });
 
 describe("isHostsForcedOff", () => {
-	it("is on unless CI or BUNCARGO_HOSTS=0", () => {
+	it("stays enabled unless explicitly disabled or running in CI", () => {
 		expect(isHostsForcedOff({})).toBe(false);
+		expect(isHostsForcedOff({ BUCARGO_SKIP_MKCERT: "true" })).toBe(true);
+		expect(isHostsForcedOff({ BUCARGO_SKIP_MKCERT: "false" })).toBe(false);
 		expect(isHostsForcedOff({ BUNCARGO_HOSTS: "0" })).toBe(true);
 		expect(isHostsForcedOff({ CI: "1" })).toBe(true);
 		expect(isHostsForcedOff({ CI: "true" })).toBe(true);

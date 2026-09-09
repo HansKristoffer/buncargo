@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "configured": true,
+  "generatedAt": 1788870000000,
+  "runs": [{
+    "sessionId": "machine:fixture-session",
+    "machineId": "machine",
+    "hostname": "cloud.test-tailnet.ts.net",
+    "project": "example",
+    "branch": "feature/checkout",
+    "worktree": "checkout",
+    "primaryApp": "web",
+    "targets": [
+      { "id": "app-web", "name": "web", "kind": "app", "protocol": "http", "status": "ready", "port": 21000, "url": "https://cloud.test-tailnet.ts.net:21000/" },
+      { "id": "service-db", "name": "db", "kind": "service", "protocol": "tcp", "status": "ready", "preset": "postgres", "port": 21001, "url": "tcp://cloud.test-tailnet.ts.net:21001/" }
+    ]
+  }]
+}

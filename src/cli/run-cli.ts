@@ -3,7 +3,6 @@ import { containerRuntimeForEnv } from "../container-runtime";
 import { withDeadline, withSignal } from "../core/deadline";
 import { removeHostRoutes } from "../core/hosts";
 import { isDeliberateExit, startDevServers } from "../core/process";
-import { connectionTokens } from "../core/runtime-flags";
 import { joinColoredNames } from "../core/style";
 import {
 	createNoopPhaseTimer,
@@ -25,7 +24,6 @@ import type {
 	ServiceConfig,
 } from "../types";
 import { checkMenuBarAppUpdate, offerMenuBarApp } from "./bar-offer";
-import type { DevConnect } from "./dev-connect";
 import {
 	type DevCliArgs,
 	exitOnDevArgErrors,
@@ -33,6 +31,7 @@ import {
 	printDevHelp,
 } from "./dev-flags";
 import { activateNamedHosts, releaseNamedHosts } from "./dev-hosts";
+import { createDevTailnet, type DevTailnet } from "./dev-tailnet";
 import {
 	createTunnelCoordinator,
 	type DevTunnelCoordinator,
@@ -183,18 +182,14 @@ export async function runCli<
 			? createPhaseTimer({ json: args.timingJson })
 			: createNoopPhaseTimer());
 
-	let connect: DevConnect | undefined;
+	let tailnet: DevTailnet | undefined;
 	let exitCode: DevFlowExit;
 	try {
-		const tokens =
-			args.oneShot || args.down || args.reset ? [] : connectionTokens();
-		if (tokens.length) {
-			const { createDevConnect } = await import("./dev-connect");
-			connect = createDevConnect(env, tokens, controller.signal);
-		}
+		if (!args.oneShot && !args.down && !args.reset)
+			tailnet = createDevTailnet();
 		exitCode = await runDevFlow(env, args, tunnels, {
 			watchdog,
-			connect,
+			tailnet,
 			timer,
 			signal: controller.signal,
 		});
@@ -202,7 +197,7 @@ export async function runCli<
 		controller.abort(error);
 		timer.report();
 		if (interruptCode === undefined) reportCliError(toCliError(error));
-		await teardown(env, tunnels, connect);
+		await teardown(env, tunnels, tailnet);
 		process.exit(interruptCode ?? 1);
 	} finally {
 		for (const { signal, listener } of listeners) process.off(signal, listener);
@@ -219,13 +214,13 @@ async function teardown<
 >(
 	env: DevEnvironment<TServices, TApps>,
 	tunnels: DevTunnelCoordinator<TServices, TApps>,
-	connect?: DevConnect,
+	tailnet?: DevTailnet,
 ): Promise<void> {
 	try {
 		stopHeartbeat(env.projectName, env.root);
 		const results = await Promise.allSettled([
 			tunnels.stop(),
-			connect?.stop(),
+			tailnet?.stop(),
 			releaseNamedHosts(env),
 			withdrawCurrentRun(env.root),
 		]);
@@ -255,15 +250,15 @@ async function runDevFlow<
 		watchdog: boolean;
 		timer: PhaseTimer;
 		signal: AbortSignal;
-		connect?: DevConnect;
+		tailnet?: DevTailnet;
 	},
 ): Promise<DevFlowExit> {
-	const { timer, signal, connect } = options;
+	const { timer, signal, tailnet } = options;
 	async function exitWith(code: number): Promise<number> {
 		// The one-shot modes end here, and `--up-only` is exactly the kind of
 		// run someone times.
 		timer.report();
-		await teardown(env, tunnels, connect);
+		await teardown(env, tunnels, tailnet);
 		return code;
 	}
 
@@ -304,14 +299,11 @@ async function runDevFlow<
 
 	const plan = buildStartPlan(env.apps, env.services, selectedAppNames);
 	validateDevStart(env, args, appsForDev, plan.requiredServiceKeys);
-	connect?.plan(appsForDev, plan.requiredServiceKeys);
-	if (connect && !connect.active)
-		log.info(
-			"No selected targets have expose: true; private sharing is inactive.",
-		);
+	tailnet?.plan(appsForDev, plan.requiredServiceKeys, env.services);
+	if (tailnet && !tailnet.active)
+		log.info("No selected endpoints to share through Tailscale.");
 	env.prepareStart?.(selectedAppNames);
 	const hasServices = plan.requiredServiceKeys.length > 0;
-	connect?.plan(appsForDev, plan.requiredServiceKeys);
 
 	// ── Containers ───────────────────────────────────────────────────────────
 	// Held rather than printed: a run that takes over another one activates a
@@ -458,7 +450,7 @@ async function runDevFlow<
 		!args.takeover &&
 		nothingToSpawn &&
 		!tunnels.hasPendingTargets() &&
-		!connect?.active
+		!tailnet?.active
 			? takeoverCandidates(classifiedApps.reusedApps, env.ports)
 			: undefined;
 
@@ -486,7 +478,7 @@ async function runDevFlow<
 		attached: args.attach,
 	});
 
-	connect?.start(sessionId, classifiedApps.reusedNames);
+	tailnet?.start();
 
 	// Deliberately not awaited, and only after the run is on disk: an app that
 	// cannot read this registry has something to read the moment it updates,
@@ -499,13 +491,13 @@ async function runDevFlow<
 		env.logInfo();
 	}
 
-	if (nothingToSpawn && !tunnels.hasPendingTargets() && !connect?.active) {
+	if (nothingToSpawn && !tunnels.hasPendingTargets() && !tailnet?.active) {
 		timer.report();
 		log.success("Selected apps are already running. Nothing to start.");
 		if (takeover && takeover.names.length > 0 && !isInteractive()) {
 			log.hint("Pass --takeover to stop them and run here instead.");
 		}
-		await teardown(env, tunnels, connect);
+		await teardown(env, tunnels, tailnet);
 		return undefined;
 	}
 
@@ -585,7 +577,6 @@ async function runDevFlow<
 						signal,
 					});
 					await markApps(env.root, Object.keys(apps), "ready");
-					connect?.status(Object.keys(apps), "ready");
 				},
 				// Deliberately not awaited: the registry is a status file, and
 				// nothing about starting servers may wait on it.
@@ -603,10 +594,6 @@ async function runDevFlow<
 				// is the app falling over, which the supervisor also turns into a
 				// failed run.
 				onAppExit: (name, code, signal) => {
-					connect?.status(
-						[name],
-						isDeliberateExit(code, signal) ? "stopped" : "failed",
-					);
 					void markApps(
 						env.root,
 						[name],
@@ -626,7 +613,7 @@ async function runDevFlow<
 		return undefined;
 	} finally {
 		stopHeartbeat(env.projectName, env.root);
-		await teardown(env, tunnels, connect);
+		await teardown(env, tunnels, tailnet);
 	}
 }
 

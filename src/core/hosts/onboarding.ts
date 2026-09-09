@@ -198,7 +198,8 @@ export async function ensureHostsReady(input: {
 		return {
 			ok: false,
 			reason: "disabled",
-			message: "Named hosts disabled (CI or BUNCARGO_HOSTS=0).",
+			message:
+				"Named hosts disabled (CI, BUNCARGO_HOSTS=0 or BUCARGO_SKIP_MKCERT=true).",
 		};
 	}
 	if (!isHostsPlatformSupported()) {

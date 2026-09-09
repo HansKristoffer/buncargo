@@ -51,6 +51,8 @@ export type RunAppStatus =
 export type RunServiceStatus = "starting" | "ready" | "stopped";
 
 export interface RunAppEntry {
+	/** Transport used when sharing this endpoint through Tailscale. */
+	protocol?: "http" | "tcp";
 	kind?: "server" | "worker";
 	name: string;
 	port?: number;
@@ -69,6 +71,7 @@ export interface RunAppEntry {
 }
 
 export interface RunServiceEntry {
+	protocol?: "http" | "tcp";
 	name: string;
 	/** Built-in preset, or absent for `service.custom()`. */
 	preset?: string;
@@ -140,6 +143,9 @@ function isRunApp(value: unknown): value is RunAppEntry {
 	if (!isRecord(value)) return false;
 	return (
 		typeof value.name === "string" &&
+		(value.protocol === undefined ||
+			value.protocol === "http" ||
+			value.protocol === "tcp") &&
 		(value.port !== undefined || value.kind === "worker") &&
 		((value.port === undefined &&
 			value.url === undefined &&
@@ -161,6 +167,9 @@ function isRunService(value: unknown): value is RunServiceEntry {
 	if (!isRecord(value)) return false;
 	return (
 		typeof value.name === "string" &&
+		(value.protocol === undefined ||
+			value.protocol === "http" ||
+			value.protocol === "tcp") &&
 		((value.port === undefined &&
 			value.url === undefined &&
 			value.loopbackUrl === undefined) ||
