@@ -14,7 +14,6 @@ struct RemoteTarget: Decodable, Identifiable, Sendable {
     var state: RunStatus { RunStatus(rawValue: status) ?? .failed }
     var ready: Bool { status == "ready" || status == "reused" }
     var supportsTablePlus: Bool { ["postgres", "clickhouse"].contains(preset) }
-    func address(hostname: String) -> String { isHTTP ? url : "Private TCP" }
 }
 
 struct RemoteRun: Decodable, Identifiable, Sendable {

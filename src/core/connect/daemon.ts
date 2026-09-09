@@ -6,11 +6,15 @@ import { readLiveRuns } from "../run-registry";
 import { connectOrigin } from "../runtime-flags";
 import { stateFilePath } from "../state-paths";
 import { newCredential, readReceiver, request } from "./client";
-import { writeCoordinatorState } from "./coordinator-state";
-import { type Directory, parseDirectory, record } from "./protocol";
+import { intentsPath, writeCoordinatorState } from "./coordinator-state";
+import {
+	type Directory,
+	HEARTBEAT_MS,
+	parseDirectory,
+	record,
+} from "./protocol";
 import { createPublisher, type SharingIntent } from "./publisher";
 import { createVisitors } from "./visitors";
-export const intentsPath = () => stateFilePath("connect-intents");
 export async function runConnectDaemon() {
 	const controller = new AbortController();
 	const stop = () => controller.abort();
@@ -108,42 +112,46 @@ export async function runConnectDaemon() {
 							idleSince = Date.now();
 						else if (Date.now() - idleSince > 60000) break;
 						if (Date.now() >= next) {
-							next = Date.now() + 10000;
+							next = Date.now() + HEARTBEAT_MS;
 							notice = undefined;
 							try {
 								const runs = await readLiveRuns(),
 									wanted = new Set<string>();
 								const files = await readdir(intentsPath()).catch(() => []);
-								for (const file of files.filter((f) => f.endsWith(".json"))) {
-									const path = `${intentsPath()}/${file}`;
-									try {
-										const intent = JSON.parse(
-											await readFile(path, "utf8"),
-										) as SharingIntent;
-										const run = runs.find(
-											(r) => r.sessionId === intent.sessionId,
-										);
-										if (!run) {
-											await rm(path, { force: true });
-											continue;
-										}
-										if (intent.origin !== connectOrigin()) continue;
-										wanted.add(intent.sessionId);
-										let publisher = publishers.get(intent.sessionId);
-										if (!publisher) {
-											publisher = createPublisher(intent);
-											publishers.set(intent.sessionId, publisher);
-										}
-										const result = await publisher.refresh(run);
-										if (result.rejectedRecipients)
-											notice = `${result.rejectedRecipients} recipient token(s) rejected; update the sandbox secrets.`;
-									} catch (error) {
-										notice =
-											error instanceof Error
-												? error.message
-												: "Publication failed";
-									}
-								}
+								await Promise.all(
+									files
+										.filter((f) => f.endsWith(".json"))
+										.map(async (file) => {
+											const path = `${intentsPath()}/${file}`;
+											try {
+												const intent = JSON.parse(
+													await readFile(path, "utf8"),
+												) as SharingIntent;
+												const run = runs.find(
+													(r) => r.sessionId === intent.sessionId,
+												);
+												if (!run) {
+													await rm(path, { force: true });
+													return;
+												}
+												if (intent.origin !== connectOrigin()) return;
+												wanted.add(intent.sessionId);
+												let publisher = publishers.get(intent.sessionId);
+												if (!publisher) {
+													publisher = createPublisher(intent);
+													publishers.set(intent.sessionId, publisher);
+												}
+												const result = await publisher.refresh(run);
+												if (result.rejectedRecipients)
+													notice = `${result.rejectedRecipients} recipient token(s) rejected; update the sandbox secrets.`;
+											} catch (error) {
+												notice =
+													error instanceof Error
+														? error.message
+														: "Publication failed";
+											}
+										}),
+								);
 								for (const [id, p] of publishers)
 									if (!wanted.has(id)) {
 										await p.close();

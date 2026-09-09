@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { CONNECT_ORIGIN } from "./connect/protocol";
 
 /**
  * Every environment variable buncargo reads, in one place.
@@ -280,9 +281,7 @@ export function connectName(
 	return name || undefined;
 }
 export function connectOrigin(env: NodeJS.ProcessEnv = process.env): string {
-	const url = new URL(
-		env.BUNCARGO_CONNECT_URL ?? "https://connect.hanskristoffer.dk",
-	);
+	const url = new URL(env.BUNCARGO_CONNECT_URL ?? CONNECT_ORIGIN);
 	if (
 		(url.protocol !== "https:" &&
 			!(

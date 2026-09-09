@@ -83,7 +83,7 @@ final class ConnectionStore: ObservableObject {
     }
     func address(_ target: RemoteTarget) -> String {
         if connecting.contains(target.id) { return "Connecting…" }
-        return connections[target.id]?.url ?? target.address(hostname: "")
+        return connections[target.id]?.url ?? "Private TCP"
     }
     func perform(_ run: RemoteRun, _ target: RemoteTarget, action: ConnectionAction = .open) {
         guard canUse(target), !connecting.contains(target.id) else { return }

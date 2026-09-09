@@ -1,10 +1,10 @@
+import { CONNECT_ORIGIN } from "../../src/core/connect/protocol";
 import { ConnectionDirectory } from "./directory";
 import { createAPI, frpHook } from "./http";
 import { Store } from "./store";
 
 // Operator variables use CONNECT_*; BUNCARGO_* remains the CLI's runtime-flags surface.
-const origin =
-	process.env.CONNECT_ORIGIN ?? "https://connect.hanskristoffer.dk";
+const origin = process.env.CONNECT_ORIGIN ?? CONNECT_ORIGIN;
 const key = process.env.CONNECT_STORAGE_KEY ?? "";
 if (!/^[a-f0-9]{64}$/.test(key))
 	throw new Error("Set CONNECT_STORAGE_KEY to a persistent 32-byte hex key");

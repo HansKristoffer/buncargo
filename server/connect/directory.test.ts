@@ -64,6 +64,19 @@ test("publish-only tokens, multi-recipient isolation, idempotence, and revocatio
 		expect(() => d.list(a.token)).toThrow("Not authorized");
 		expect(d.list(c.owner).runs).toHaveLength(0);
 		expect(d.list(a.owner).runs[0].name).toBe("Cursor");
+		const http = p.assignments.find((t) => t.protocol === "http");
+		const tcpA = p.assignments.find((t) => t.receiverId === a.id);
+		if (!http || !tcpA) throw new Error("Missing assignments");
+		// frpc's client API returns bare proxy names, unlike server hook names.
+		d.update(p.id, cred, run, [http.id, tcpA.id]);
+		expect(d.list(a.owner).runs[0].targets.map((t) => t.status)).toEqual([
+			"ready",
+			"ready",
+		]);
+		expect(d.list(b.owner).runs[0].targets.map((t) => t.status)).toEqual([
+			"ready",
+			"starting",
+		]);
 		const v = d.visitor(a.owner, `${p.id}.db`);
 		expect(d.session(v.credential).role).toBe("visitor");
 		d.revoke(a.owner, p.id);

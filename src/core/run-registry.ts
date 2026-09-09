@@ -71,6 +71,7 @@ export interface RunAppEntry {
 }
 
 export interface RunServiceEntry {
+	kind?: "service" | "job";
 	protocol?: "http" | "tcp";
 	name: string;
 	/** Built-in preset, or absent for `service.custom()`. */

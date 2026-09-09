@@ -117,7 +117,11 @@ export function createVisitors() {
 			}
 			return task;
 		},
-		disconnect,
+		async disconnect(id: string) {
+			// A click during startup must not leave a listener appearing after disconnect returned.
+			await pending.get(id)?.catch(() => {});
+			await disconnect(id);
+		},
 		connections: () => [...entries.values()].map((e) => e.connection),
 		async refresh(origin: string) {
 			await Promise.all(
@@ -132,7 +136,7 @@ export function createVisitors() {
 						);
 						e.deadline = start + Math.min(LEASE_MS, r.remainingMs);
 					} catch {
-						await disconnect(id);
+						if (entries.get(id) === e) await disconnect(id);
 					}
 				}),
 			);

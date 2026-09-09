@@ -1,7 +1,7 @@
 import { rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import { newCredential } from "../core/connect/client";
-import { intentsPath } from "../core/connect/daemon";
+import { intentsPath } from "../core/connect/coordinator-state";
 import { ensureConnectCoordinator } from "../core/connect/launcher";
 import { writeJsonDocument } from "../core/registry-file";
 import {

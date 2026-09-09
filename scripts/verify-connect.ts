@@ -149,6 +149,7 @@ try {
 	);
 	const target = directory.runs[0]?.targets.find((t) => t.protocol === "http");
 	if (!target) throw new Error("Publication not discoverable");
+	assert(directory.runs[0]?.targets.every(t => t.status === "ready"), "Registered proxies must appear ready in the directory");
 	const start = performance.now(),
 		response = await fetch(target.url, { signal: AbortSignal.timeout(30000) });
 	assert(response.ok, "HTTP routing failed");

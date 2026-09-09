@@ -21,7 +21,7 @@ fi
 set -a
 source /etc/buncargo-connect/caddy.env
 set +a
-"$release/caddy" validate --config "$release/Caddyfile" --adapter caddyfile 2>&1 | python3 -c 'import os,sys; print(sys.stdin.read().replace(os.environ["CLOUDFLARE_API_TOKEN"], "[redacted]"), end="")' 
+"$release/caddy" validate --config "$release/Caddyfile" --adapter caddyfile 2>&1 | python3 -c 'import os,sys; print(sys.stdin.read().replace(os.environ["CLOUDFLARE_API_TOKEN"], "[redacted]"), end="")'
 previous=$(readlink -f /opt/buncargo-connect/current || true)
 ln -sfn "$release" /opt/buncargo-connect/next
 mv -Tf /opt/buncargo-connect/next /opt/buncargo-connect/current
@@ -50,6 +50,8 @@ ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/var/lib/buncargo-connect
 LimitNOFILE=65536
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=1000
 $extra
 [Install]
 WantedBy=multi-user.target
@@ -71,6 +73,23 @@ OnUnitActiveSec=60
 [Install]
 WantedBy=timers.target
 UNIT
+cat >/etc/systemd/system/buncargo-backup.service <<'UNIT'
+[Unit]
+Description=Back up Buncargo connection directory
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/buncargo-connect/current/backup.sh
+UNIT
+cat >/etc/systemd/system/buncargo-backup.timer <<'UNIT'
+[Unit]
+Description=Daily Buncargo directory backup
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=600
+[Install]
+WantedBy=timers.target
+UNIT
 systemctl daemon-reload
 rollback() {
  if [[ -n "$previous" && "$previous" != "$release" ]]; then
@@ -89,7 +108,7 @@ done
 [[ -s /var/lib/buncargo-connect/frps-tls/cert.pem ]]
 systemctl restart buncargo-frps
 bash "$release/smoke.sh"
-systemctl enable buncargo-directory buncargo-caddy buncargo-frps buncargo-cert-sync.timer
-systemctl start buncargo-cert-sync.timer
+systemctl enable buncargo-directory buncargo-caddy buncargo-frps buncargo-cert-sync.timer buncargo-backup.timer
+systemctl start buncargo-cert-sync.timer buncargo-backup.timer
 cp "$release/commit" /var/lib/buncargo-connect/deployed-commit
 trap - ERR

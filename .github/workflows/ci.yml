@@ -71,7 +71,7 @@ jobs:
 
   frp:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
@@ -80,3 +80,12 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Verify frp TLS, HTTP streaming, WebSockets and private TCP
         run: bun run test:integration-frp
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.1"
+          cache: false
+      - name: Build the production relay artifact
+        run: |
+          bash server/deploy/build.sh candidate-server
+          candidate-server/frps verify -c candidate-server/frps.json
+          bash -n server/deploy/*.sh

@@ -63,6 +63,6 @@ export async function ensureConnectCoordinator(
 		await abortableSleep(250, signal);
 	}
 	throw new Error(
-		"Connection startup timed out. Check the auth key and network access.",
+		"Connection startup timed out. Check relay connectivity and run buncargo connect status.",
 	);
 }

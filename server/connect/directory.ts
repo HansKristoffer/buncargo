@@ -220,13 +220,17 @@ export class ConnectionDirectory {
 			rejectedRecipients: p.rejectedRecipients,
 		};
 	}
-	private remoteRun(p: Publication): RemoteRun {
+	private remoteRun(p: Publication, receiverId: string): RemoteRun {
 		return {
 			...p.run,
 			sessionId: p.id,
 			targets: p.run.targets
 				.map((t) => {
-					const a = p.assignments.find((a) => a.targetId === t.id);
+					const a = p.assignments.find(
+						(a) =>
+							a.targetId === t.id &&
+							(a.protocol === "http" || a.receiverId === receiverId),
+					);
 					const base = new URL(this.origin);
 					if (a?.subdomain) base.hostname = `${a.subdomain}.${base.hostname}`;
 					// Connection credentials are returned only by the authenticated visitor endpoint.
@@ -235,7 +239,7 @@ export class ConnectionDirectory {
 						id: `${p.id}.${t.id}`,
 						tablePlusUrl: undefined,
 						status: a
-							? p.confirmed.includes(`${p.id}.${a.id}`)
+							? p.confirmed.includes(a.id)
 								? t.status
 								: "starting"
 							: "stopped",
@@ -260,7 +264,7 @@ export class ConnectionDirectory {
 						p.recipients.includes(r.id) &&
 						!p.revoked.includes(r.id),
 				)
-				.map((p) => this.remoteRun(p)),
+				.map((p) => this.remoteRun(p, r.id)),
 		};
 	}
 	visitor(owner: string, targetId: string): VisitorLease {

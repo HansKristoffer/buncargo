@@ -2,7 +2,7 @@ import { matchesProcessIdentity } from "../process-identity";
 import { readJsonDocument, writeJsonDocument } from "../registry-file";
 import { stateFilePath } from "../state-paths";
 import { record } from "./protocol";
-export const COORDINATOR_STARTING = "Connecting to Connection…";
+export const COORDINATOR_STARTING = "Connecting to relay…";
 export const COORDINATOR_MAX_AGE_MS = 10000;
 
 export interface CoordinatorState {
@@ -17,6 +17,7 @@ export interface CoordinatorState {
 }
 export const coordinatorStatePath = () =>
 	stateFilePath("connect-coordinator.json");
+export const intentsPath = () => stateFilePath("connect-intents");
 export async function readCoordinatorState(
 	liveOnly = true,
 ): Promise<CoordinatorState | undefined> {

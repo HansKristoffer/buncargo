@@ -183,6 +183,7 @@ function serviceEntries(
 			return [
 				{
 					name,
+					kind: service.kind,
 					preset: identity.preset,
 					protocol:
 						service.exposeProtocol ?? defaultServiceProtocol(identity.preset),

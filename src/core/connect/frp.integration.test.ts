@@ -204,6 +204,10 @@ integration(
 				await abortableSleep(100);
 			}
 			expect(running.length).toBe(2);
+			d.update(p.id, credential, run, running);
+			expect(d.list(owner.owner).runs[0]?.targets.map((t) => t.status)).toEqual(
+				["ready", "ready"],
+			);
 			const host = `${httpAssignment.subdomain}.connect.test`;
 			const get = (path: string) =>
 				new Promise<import("node:http").IncomingMessage>((resolve, reject) => {

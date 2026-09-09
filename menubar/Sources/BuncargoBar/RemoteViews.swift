@@ -3,10 +3,13 @@ import SwiftUI
 struct RemoteMachinesView: View {
     @ObservedObject var store: ConnectionStore
 
-    private var projects: [(name: String, runs: [RemoteRun])] {
-        Dictionary(grouping: store.runs, by: { "\($0.name) · \($0.project)" })
-            .map { (name: $0.key, runs: $0.value) }
-            .sorted { $0.name < $1.name }
+    private var groups: [(name: String, projects: [(name: String, runs: [RemoteRun])])] {
+        Dictionary(grouping: store.runs, by: \.name).map { name, runs in
+            let projects = Dictionary(grouping: runs, by: \.project)
+                .map { (name: $0.key, runs: $0.value.sorted { $0.id < $1.id }) }
+                .sorted { $0.name < $1.name }
+            return (name: name, projects: projects)
+        }.sorted { $0.name < $1.name }
     }
 
     var body: some View {
@@ -36,10 +39,16 @@ struct RemoteMachinesView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 12)
             }
-            ForEach(projects, id: \.name) { project in
-                ProjectHeading(name: project.name)
-                ForEach(project.runs) { run in
-                    RemoteRunRow(run: run, store: store)
+            ForEach(groups, id: \.name) { group in
+                Text(group.name)
+                    .font(.system(size: 11, weight: .semibold))
+                    .padding(.horizontal, 12)
+                    .padding(.top, 6)
+                ForEach(group.projects, id: \.name) { project in
+                    ProjectHeading(name: project.name)
+                    ForEach(project.runs) { run in
+                        RemoteRunRow(run: run, store: store)
+                    }
                 }
             }
         }

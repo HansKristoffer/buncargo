@@ -29,7 +29,7 @@ export function runTargets(run: RunEntry): LocalTarget[] {
 			];
 		}),
 		...run.services.flatMap<LocalTarget>((s) => {
-			if (!validPort(s.port)) return [];
+			if (s.kind === "job" || !validPort(s.port)) return [];
 			return [
 				{
 					id: `service-${s.name}`,
