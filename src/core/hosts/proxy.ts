@@ -218,6 +218,11 @@ export function createProxyFetch(input: {
 
 		const target = `http://${family.authority}:${port}${url.pathname}${url.search}`;
 		try {
+			// Bun's fetch decodes gzip/br/deflate and leaves Content-Encoding
+			// on the Response (oven-sh/bun#5668). Returning that from Bun.serve
+			// sends plaintext labeled gzip, which browsers reject as
+			// ERR_CONTENT_DECODING_FAILED — Mailpit is the usual case. Leave
+			// the compressed bytes and header paired.
 			return await fetch(target, {
 				method: request.method,
 				headers,
@@ -226,9 +231,9 @@ export function createProxyFetch(input: {
 						? undefined
 						: request.body,
 				redirect: "manual",
-				// @ts-expect-error Bun duplex
+				decompress: false,
 				duplex: "half",
-			});
+			} as BunFetchRequestInit);
 		} catch (error) {
 			// Re-probe next time: the family we remembered just stopped serving.
 			upstream.forget(port);

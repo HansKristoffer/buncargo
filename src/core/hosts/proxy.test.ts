@@ -355,6 +355,52 @@ describe("proxy fetch", () => {
 		expect(response.status).toBe(400);
 	});
 
+	it("forwards a gzip body without relabeling it as compressed plaintext", async () => {
+		const html = "<!DOCTYPE html><title>Mailpit</title>";
+		const gzipped = Bun.gzipSync(new TextEncoder().encode(html));
+		const upstream = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch() {
+				return new Response(gzipped, {
+					headers: {
+						"content-encoding": "gzip",
+						"content-type": "text/html; charset=utf-8",
+					},
+				});
+			},
+		});
+		servers.push(upstream);
+
+		const routes = new Map([["mailpit.serpier.localhost", upstream.port]]);
+		const proxy = await startLocalProxy({
+			lookup: (hostname) => routes.get(hostname),
+			routes: () => ({ hostnames: [...routes.keys()] }),
+			httpsPort: 0,
+			hostname: "127.0.0.1",
+		});
+		servers.push(proxy);
+
+		const url = `http://127.0.0.1:${proxy.httpsPort}/`;
+		const decoded = await fetch(url, {
+			headers: { host: "mailpit.serpier.localhost" },
+		});
+		expect(decoded.status).toBe(200);
+		expect(await decoded.text()).toBe(html);
+
+		const wire = await fetch(url, {
+			headers: {
+				host: "mailpit.serpier.localhost",
+				"accept-encoding": "gzip",
+			},
+			decompress: false,
+		});
+		expect(wire.headers.get("content-encoding")).toBe("gzip");
+		const bytes = new Uint8Array(await wire.arrayBuffer());
+		expect(bytes[0]).toBe(0x1f);
+		expect(bytes[1]).toBe(0x8b);
+	});
+
 	it("drops hop-by-hop headers before forwarding", async () => {
 		const upstream = Bun.serve({
 			hostname: "127.0.0.1",
