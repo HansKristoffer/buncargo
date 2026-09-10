@@ -33,6 +33,7 @@ jobs:
           bun run test:integration-frp
           bash server/deploy/build.sh candidate-server
           candidate-server/frps verify -c candidate-server/frps.json
+          bun scripts/verify-connect-compression.ts candidate-server/caddy
       - uses: actions/upload-artifact@v4
         if: inputs.deploy
         with:

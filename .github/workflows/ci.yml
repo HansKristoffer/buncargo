@@ -88,4 +88,5 @@ jobs:
         run: |
           bash server/deploy/build.sh candidate-server
           candidate-server/frps verify -c candidate-server/frps.json
+          bun scripts/verify-connect-compression.ts candidate-server/caddy
           bash -n server/deploy/*.sh

@@ -48,7 +48,9 @@ export function frpHook(
 					proxy_name: content.proxy_name,
 					proxy_type: content.proxy_type,
 					use_encryption: false,
-					use_compression: false,
+					// Match the publisher's framing; STCP visitors keep their own transport policy.
+					use_compression:
+						assignment.protocol === "http" && content.use_compression === true,
 					...(assignment.protocol === "http"
 						? {
 								subdomain: assignment.subdomain,

@@ -17,9 +17,9 @@ import { createGate } from "./gate";
 
 const integration = frpTestsEnabled() ? test : test.skip;
 
-integration(
-	"real frps: TLS, plugin admission, hostname HTTP/SSE/WebSocket, private TCP and stream revocation",
-	async () => {
+integration.each([false, true])(
+	"real frps (compression=%s): TLS, HTTP/SSE/WebSocket, private TCP and revocation",
+	async (useCompression) => {
 		const dir = await mkdtemp(join(tmpdir(), "bc-frp-integration-"));
 		const key = join(dir, "key.pem");
 		const cert = join(dir, "cert.pem");
@@ -186,6 +186,7 @@ integration(
 							name: httpAssignment.id,
 							type: "http",
 							subdomain: httpAssignment.subdomain,
+							transport: { useCompression },
 							localIP: "127.0.0.1",
 							localPort: origin.port,
 						},

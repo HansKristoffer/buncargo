@@ -27,6 +27,9 @@ const credential = newCredential("pub");
 const clients: Frpc[] = [];
 
 const payload = randomBytes(20 * 1024 * 1024);
+const source = await Bun.file(
+	new URL("../src/core/connect/publisher.ts", import.meta.url),
+).text();
 
 const app = Bun.serve({
 	hostname: "127.0.0.1",
@@ -36,6 +39,11 @@ const app = Bun.serve({
 		const path = new URL(req.url).pathname;
 		if (path === "/ws" && server.upgrade(req)) {
 			return;
+		}
+		if (path === "/source.js") {
+			return new Response(source, {
+				headers: { "content-type": "text/javascript" },
+			});
 		}
 		if (path === "/events") {
 			let timer: ReturnType<typeof setTimeout>;
@@ -130,6 +138,7 @@ try {
 				name: web.id,
 				type: "http",
 				subdomain: web.subdomain,
+				transport: { useCompression: true },
 				localIP: "127.0.0.1",
 				localPort: app.port,
 			},
@@ -183,9 +192,25 @@ try {
 	console.log(
 		`20 MiB HTTPS transfer: ${((performance.now() - start) / 1000).toFixed(2)} seconds`,
 	);
+	for (const encoding of ["gzip", "zstd"]) {
+		const asset = await fetch(`${target.url}source.js`, {
+			headers: { "accept-encoding": encoding },
+			signal: AbortSignal.timeout(10000),
+		});
+		assert(
+			asset.headers.get("content-encoding") === encoding,
+			"Asset compression missing",
+		);
+		assert((await asset.text()) === source, "Compression changed source code");
+	}
 	const events = await fetch(`${target.url}events`, {
+		headers: { "accept-encoding": "gzip, zstd" },
 		signal: AbortSignal.timeout(10000),
 	});
+	assert(
+		!events.headers.has("content-encoding"),
+		"SSE must remain uncompressed",
+	);
 	const reader = events.body?.getReader();
 	assert(reader, "Missing event stream");
 	const first = await reader?.read();

@@ -170,7 +170,8 @@ export function createPublisher(intent: SharingIntent) {
 				type: assignment.protocol === "http" ? "http" : "stcp",
 				localIP: "127.0.0.1",
 				localPort: entry.gate.port,
-				transport: { useCompression: false },
+				// Lossless tunnel compression leaves application bytes and debugging unchanged.
+				transport: { useCompression: assignment.protocol === "http" },
 				...(assignment.protocol === "http"
 					? {
 							subdomain: assignment.subdomain,

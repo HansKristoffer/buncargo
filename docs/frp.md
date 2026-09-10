@@ -31,6 +31,8 @@ Rotation prevents new publications with the old token. Revoke existing grants se
 
 `buncargoVite()` keeps HMR origin-relative. frp selects a target by public hostname, then sends localhost as its upstream Host, so no public wildcard `allowedHosts` setting is required. Caddy and frp stream SSE and support WebSocket upgrades. Use the application's existing same-origin API proxy; a browser cannot access a sandbox's `localhost` URL embedded in JavaScript.
 
+HTTP publications use lossless frp tunnel compression between the sandbox and relay. Caddy negotiates gzip/zstd for JavaScript, CSS, HTML, and JSON responses (including source maps). This changes only bytes in transit: source text, whitespace, line numbers, source maps, and breakpoints remain intact. SSE is excluded from HTTP compression, already encoded responses pass through, and private TCP keeps compression disabled. No minification, bundling, or development caching is added.
+
 Sharing errors do not stop local development. Check `connect status` for registration, directory, relay or target failures. A directory outage expires gates and visitors; retry does not replay interrupted database operations. Internet distance, relay load and app compilation still affect performance.
 
 ## Server operation
@@ -50,5 +52,7 @@ The dedicated server is a single point of failure. On failure, local development
 ## Verification
 
 `bun run test:integration-frp` starts real pinned frps/frpc with local TLS certificates and exercises authorization, hostname routing, streaming, WebSockets, private TCP, and gate closure. It needs OpenSSL but no production secrets. Ordinary `bun test` covers directory credentials, grants, expiry, and process guards. Swift fixtures independently validate the wire contract and action URLs.
+
+`bun scripts/verify-connect-compression.ts <caddy-binary>` tests the production Caddy handlers on loopback: gzip/zstd negotiation, exact decoded source bytes, identity/binary/already encoded responses, and immediate uncompressed SSE. CI runs it against the built deployment binary, and the release smoke repeats compression and streaming checks through public HTTPS.
 
 Release publication waits for the server deployment gate. See [release operation](release-flow-plan.md) and the [replacement acceptance plan](frp-replacement-plan.md) for the live cloud/browser performance checks.

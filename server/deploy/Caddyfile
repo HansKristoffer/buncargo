@@ -19,6 +19,18 @@ connect.hanskristoffer.dk {
 		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
 	}
 
+	# Encode bytes in transit without changing source, line numbers, or source maps.
+	# Use an allowlist: text/* would also compress and potentially buffer SSE.
+	encode zstd gzip {
+		match {
+			header Content-Type text/html*
+			header Content-Type text/css*
+			header Content-Type text/javascript*
+			header Content-Type application/javascript*
+			header Content-Type application/json*
+		}
+	}
+
 	reverse_proxy 127.0.0.1:8080 {
 		flush_interval -1
 		header_up -Forwarded
