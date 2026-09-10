@@ -24,3 +24,20 @@ The real frp integration test exercises the pinned server/client processes with 
 ## Application-specific follow-up
 
 The earlier Lullu/Cursor benchmark demonstrated the speed improvement over its observed DERP route (see the replacement plan). The new production path has been tested with actual CLI/Vite/Postgres/Redis fixtures. Lullu itself still needs a new Cursor run with this build to repeat the same uncached page benchmark and exercise its authenticated SSE subscriptions, cookies, redirects, and voice WebSocket behavior. Those app-level flows cannot be established by a generic transport fixture. The old temporary benchmark URL is retired; stop its old Cursor test terminal with Ctrl-C.
+
+## Transport compression — 10 September 2026
+
+Commit `6611dd3` enables lossless compression for HTTP frp publications and gzip/zstd negotiation in Caddy for JavaScript, CSS, HTML, and JSON. SSE is excluded from HTTP encoding; private TCP stays uncompressed. No source rewriting, minification, bundling, or caching is introduced. The relay artifact is deployed; sandbox-side compression takes effect when running the updated CLI.
+
+A Mac → Hetzner → Mac fixture returned 952,905 bytes collected from 200 non-test source files. Nine requests per configuration alternated order, used HTTPS keep-alive without response caching, and verified the decoded bytes exactly. These are individual payload transfers, not Lullu page loads or a Cursor network benchmark.
+
+| Tunnel compression | Browser encoding | Median transfer | Median response body on wire |
+| --- | --- | ---: | ---: |
+| Off | Identity | 169 ms | 952,905 bytes |
+| Off | Gzip | 99 ms | 276,614 bytes |
+| On | Identity | 186 ms | 952,905 bytes |
+| On | Gzip | 82 ms | 276,648 bytes |
+
+Browser encoding reduced response-body traffic by about 71%. Both layers together gave the lowest median in this sample; tunnel compression alone did not improve this route. Internet variability and application request dependencies limit what this predicts for a full page. An incompressible 20 MiB fixture also passed, taking 4.23 seconds with tunnel compression enabled.
+
+Validation passed: 1,021 unit tests, build, lint, packed consumer verification, both real frp compression modes on macOS and Linux, and all eight PR checks. The production Caddy handlers passed gzip/zstd negotiation and exact byte checks for source and source-map MIME types, identity/binary/already encoded responses, and immediate uncompressed SSE. The public release smoke passed encoded source delivery, SSE, WebSockets, and private TCP. Disposable benchmark publications, receivers, clients, and listeners were removed.
