@@ -3,10 +3,13 @@ import SwiftUI
 struct RemoteMachinesView: View {
     @ObservedObject var store: ConnectionStore
 
-    private var projects: [(name: String, runs: [RemoteRun])] {
-        Dictionary(grouping: store.runs, by: \.project)
-            .map { (name: $0.key, runs: $0.value) }
-            .sorted { $0.name < $1.name }
+    private var groups: [(name: String, projects: [(name: String, runs: [RemoteRun])])] {
+        Dictionary(grouping: store.runs, by: \.name).map { name, runs in
+            let projects = Dictionary(grouping: runs, by: \.project)
+                .map { (name: $0.key, runs: $0.value.sorted { $0.id < $1.id }) }
+                .sorted { $0.name < $1.name }
+            return (name: name, projects: projects)
+        }.sorted { $0.name < $1.name }
     }
 
     var body: some View {
@@ -15,6 +18,13 @@ struct RemoteMachinesView: View {
                 Label("Remote environments", systemImage: "network")
                     .font(.system(size: 11, weight: .semibold))
                 Spacer()
+                Menu {
+                    Button("Copy connection token") { store.copyToken() }
+                    Button("Rotate connection token") { store.copyToken(rotate: true) }
+                } label: {
+                    Image(systemName: "key")
+                }.menuStyle(.borderlessButton).fixedSize()
+
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)
@@ -26,15 +36,23 @@ struct RemoteMachinesView: View {
                     .padding(.horizontal, 12)
             }
             if store.runs.isEmpty {
-                Text("Run buncargo dev on another connected Tailscale machine.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 12)
+                Text(
+                    "Copy a connection token into BUNCARGO_CONNECT_TOKENS in your cloud environment, then run buncargo dev."
+                )
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
             }
-            ForEach(projects, id: \.name) { project in
-                ProjectHeading(name: project.name)
-                ForEach(project.runs) { run in
-                    RemoteRunRow(run: run, store: store)
+            ForEach(groups, id: \.name) { group in
+                Text(group.name)
+                    .font(.system(size: 11, weight: .semibold))
+                    .padding(.horizontal, 12)
+                    .padding(.top, 6)
+                ForEach(group.projects, id: \.name) { project in
+                    ProjectHeading(name: project.name)
+                    ForEach(project.runs) { run in
+                        RemoteRunRow(run: run, store: store)
+                    }
                 }
             }
         }
@@ -53,7 +71,7 @@ private struct RemoteRunRow: View {
             status: store.status(run)
         ) {
             if let primary = run.primary {
-                Button("Open") { store.perform(run, primary) }
+                Button("Open") { store.perform(primary) }
                     .font(.system(size: 11))
                     .help("Open \(primary.name)")
                     .disabled(!store.canUse(primary))
@@ -80,12 +98,16 @@ struct RemoteRunDetailView: View {
                 }
             }
         } footer: {
-            Text(run.hostname).font(.system(size: 10)).foregroundStyle(.secondary)
+            HStack {
+                Text(run.hostname).font(.system(size: 10)).foregroundStyle(.secondary)
+                Spacer()
+                Button("Revoke access") { store.revoke(run) }.font(.system(size: 10))
+            }
         }
     }
 }
 
-/// Reuse exactly the same service row as local environments; Tailscale URLs need no local tunnel.
+/// Local and remote targets share one row implementation.
 struct RemoteTargetRow: View {
     let run: RemoteRun
     let target: RemoteTarget
@@ -95,12 +117,16 @@ struct RemoteTargetRow: View {
         TargetRow(
             name: target.name,
             status: store.status(run, target: target),
-            detail: target.address(hostname: run.hostname),
-            onOpen: target.isHTTP ? { store.perform(run, target) } : nil,
-            onCopy: { store.perform(run, target, action: .copy) },
-            onTablePlus: target.tablePlusUrl != nil ? { store.perform(run, target, action: .tablePlus) } : nil,
-            onStop: nil,
-            actionsEnabled: store.canUse(target)
+            detail: store.address(target),
+            onOpen: { store.perform(target) },
+            openSymbol: target.isHTTP ? "arrow.up.right" : "link",
+            openHelp: target.isHTTP ? "Open" : "Connect and copy address",
+            onCopy: { store.perform(target, action: .copy) },
+            onTablePlus: target.supportsTablePlus
+                ? { store.perform(target, action: .tablePlus) } : nil,
+            onStop: store.connections[target.id] != nil ? { store.disconnect(target) } : nil,
+            stopHelp: "Disconnect local connection",
+            actionsEnabled: store.canUse(target) && !store.connecting.contains(target.id)
         )
     }
 }

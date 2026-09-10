@@ -41,11 +41,11 @@ and CI turn the whole thing off.
 
 ## Remote environments
 
-Install and sign in to Tailscale, then run `buncargo dev` on another machine in your tailnet. For disposable Linux cloud agents, set `TS_AUTHKEY` in runtime secrets. See [Tailscale setup](../docs/tailscale.md).
+Use the key menu to copy a connection token. Set `BUNCARGO_CONNECT_TOKENS` in the publishing environment, optionally set `BUNCARGO_CONNECT_NAME`, and run `buncargo dev`. See [connection setup](../docs/frp.md).
 
-Discovery refreshes every 15 seconds and when the menu opens. It lists projects, branches, worktrees and machine names, using the same environment and service row components as local runs. Browser URLs open directly over private HTTPS. Database rows copy the Tailscale hostname/port and PostgreSQL offers TablePlus; supply your own database credentials.
+Discovery refreshes every 10 seconds and when the menu opens. It groups runs by connection name and project, preserves branches/worktrees, and reuses the local environment and service row components. Browser actions open public HTTPS links directly. TCP actions ask the CLI to create a private loopback visitor; PostgreSQL and ClickHouse offer TablePlus. Disconnect closes only the local visitor. Revoke removes this receiver's grant, with existing streams closing within 45 seconds.
 
-The CLI verifies directories against the authenticated peer list before returning them to the app. The app validates every address again. Access is controlled by the tailnet policy. No recipient tokens, local forwarding helper, or remote executable paths are involved.
+The CLI and bar validate addresses independently. Remote metadata never selects an executable or supplies a local port to run a command against.
 
 ## Build from source
 

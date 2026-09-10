@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "configured": true,
+  "generatedAt": 1788870000000,
+  "runs": [
+    {
+      "sessionId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "hostname": "sandbox",
+      "project": "example",
+      "branch": "feature/checkout",
+      "worktree": "checkout",
+      "primaryApp": "web",
+      "targets": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.app-web",
+          "name": "web",
+          "kind": "app",
+          "protocol": "http",
+          "status": "ready",
+          "port": 7073,
+          "url": "https://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.connect.hanskristoffer.dk/"
+        },
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.service-db",
+          "name": "db",
+          "kind": "service",
+          "protocol": "tcp",
+          "status": "ready",
+          "preset": "postgres",
+          "port": 7332,
+          "url": ""
+        }
+      ],
+      "name": "Cursor cloud"
+    }
+  ],
+  "origin": "https://connect.hanskristoffer.dk",
+  "connections": []
+}

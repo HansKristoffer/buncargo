@@ -3,7 +3,7 @@
 # Release Please keeps one PR open on main proposing the next CLI and/or
 # BuncargoBar version from conventional PR titles. Merging it creates the tags
 # and GitHub releases. This run publishes the CLI and menu bar directly.
-# A workflow-created tag never triggers another workflow.
+# The relay deployment gates clients. A workflow-created tag never triggers another workflow.
 name: Release
 
 on:
@@ -41,8 +41,18 @@ jobs:
             const targets = await releaseTargets({ github, context, versions });
             for (const [name, value] of Object.entries(targets)) core.setOutput(name, value);
 
-  publish-npm:
+  deploy-connect:
     needs: release-please
+    if: needs.release-please.outputs.cli_released == 'true' || needs.release-please.outputs.bar_released == 'true'
+    uses: ./.github/workflows/deploy-connect.yml
+    with:
+      deploy: ${{ needs.release-please.outputs.cli_released == 'true' }}
+    secrets: inherit
+    permissions:
+      contents: read
+
+  publish-npm:
+    needs: [release-please, deploy-connect]
     if: needs.release-please.outputs.publish_npm == 'true'
     uses: ./.github/workflows/publish.yml
     permissions:
@@ -50,7 +60,7 @@ jobs:
       id-token: write
 
   release-bar:
-    needs: release-please
+    needs: [release-please, deploy-connect]
     if: needs.release-please.outputs.bar_released == 'true'
     uses: ./.github/workflows/release-menubar.yml
     with:

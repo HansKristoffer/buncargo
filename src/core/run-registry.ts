@@ -51,7 +51,7 @@ export type RunAppStatus =
 export type RunServiceStatus = "starting" | "ready" | "stopped";
 
 export interface RunAppEntry {
-	/** Transport used when sharing this endpoint through Tailscale. */
+	/** Transport used when sharing this endpoint through frp. */
 	protocol?: "http" | "tcp";
 	kind?: "server" | "worker";
 	name: string;
@@ -71,6 +71,7 @@ export interface RunAppEntry {
 }
 
 export interface RunServiceEntry {
+	kind?: "service" | "job";
 	protocol?: "http" | "tcp";
 	name: string;
 	/** Built-in preset, or absent for `service.custom()`. */

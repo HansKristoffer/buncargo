@@ -1,0 +1,72 @@
+name: Deploy connection relay
+on:
+  workflow_call:
+    inputs:
+      deploy:
+        type: boolean
+        default: true
+    secrets:
+      CONNECT_DEPLOY_KEY:
+        required: true
+      CONNECT_KNOWN_HOSTS:
+        required: true
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.1"
+          cache: false
+      - run: bun install --frozen-lockfile
+      - name: Build and verify immutable relay artifact
+        if: inputs.deploy
+        run: |
+          bun test server/connect
+          bun run test:integration-frp
+          bash server/deploy/build.sh candidate-server
+          candidate-server/frps verify -c candidate-server/frps.json
+          bun scripts/verify-connect-compression.ts candidate-server/caddy
+      - uses: actions/upload-artifact@v4
+        if: inputs.deploy
+        with:
+          name: connect-server-${{ github.sha }}
+          path: candidate-server
+          retention-days: 30
+      - name: Install deploy credentials
+        env:
+          DEPLOY_KEY: ${{ secrets.CONNECT_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.CONNECT_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+      - name: Deploy exact commit or verify a previous successful deployment
+        if: inputs.deploy
+        env:
+          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_ATTEMPT: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          remote="/opt/buncargo-connect/releases/$RELEASE_COMMIT"
+          if ! ssh root@178.104.193.175 "test -f '$remote/SHA256SUMS'"; then
+            staging="/opt/buncargo-connect/staging-$RELEASE_COMMIT-$RELEASE_ATTEMPT"
+            ssh root@178.104.193.175 "mkdir -p '$staging' /opt/buncargo-connect/releases"
+            scp -r candidate-server/. "root@178.104.193.175:$staging/"
+            ssh root@178.104.193.175 "cd '$staging' && sha256sum -c SHA256SUMS && mv '$staging' '$remote'"
+          fi
+          ssh root@178.104.193.175 "bash '$remote/activate.sh' '$remote'"
+      - name: Verify public health and authenticated transport
+        run: |
+          ssh root@178.104.193.175 'bash /opt/buncargo-connect/current/smoke.sh'
+          bun scripts/verify-connect.ts
+      - name: Remove temporary SSH credentials
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519

@@ -24,6 +24,7 @@ import type {
 	ServiceConfig,
 } from "../types";
 import { checkMenuBarAppUpdate, offerMenuBarApp } from "./bar-offer";
+import { createDevConnect, type DevConnect } from "./dev-connect";
 import {
 	type DevCliArgs,
 	exitOnDevArgErrors,
@@ -31,7 +32,6 @@ import {
 	printDevHelp,
 } from "./dev-flags";
 import { activateNamedHosts, releaseNamedHosts } from "./dev-hosts";
-import { createDevTailnet, type DevTailnet } from "./dev-tailnet";
 import {
 	createTunnelCoordinator,
 	type DevTunnelCoordinator,
@@ -182,14 +182,14 @@ export async function runCli<
 			? createPhaseTimer({ json: args.timingJson })
 			: createNoopPhaseTimer());
 
-	let tailnet: DevTailnet | undefined;
+	let connect: DevConnect | undefined;
 	let exitCode: DevFlowExit;
 	try {
 		if (!args.oneShot && !args.down && !args.reset)
-			tailnet = createDevTailnet();
+			connect = createDevConnect();
 		exitCode = await runDevFlow(env, args, tunnels, {
 			watchdog,
-			tailnet,
+			connect,
 			timer,
 			signal: controller.signal,
 		});
@@ -197,7 +197,7 @@ export async function runCli<
 		controller.abort(error);
 		timer.report();
 		if (interruptCode === undefined) reportCliError(toCliError(error));
-		await teardown(env, tunnels, tailnet);
+		await teardown(env, tunnels, connect);
 		process.exit(interruptCode ?? 1);
 	} finally {
 		for (const { signal, listener } of listeners) process.off(signal, listener);
@@ -214,13 +214,13 @@ async function teardown<
 >(
 	env: DevEnvironment<TServices, TApps>,
 	tunnels: DevTunnelCoordinator<TServices, TApps>,
-	tailnet?: DevTailnet,
+	connect?: DevConnect,
 ): Promise<void> {
 	try {
 		stopHeartbeat(env.projectName, env.root);
 		const results = await Promise.allSettled([
 			tunnels.stop(),
-			tailnet?.stop(),
+			connect?.stop(),
 			releaseNamedHosts(env),
 			withdrawCurrentRun(env.root),
 		]);
@@ -250,15 +250,15 @@ async function runDevFlow<
 		watchdog: boolean;
 		timer: PhaseTimer;
 		signal: AbortSignal;
-		tailnet?: DevTailnet;
+		connect?: DevConnect;
 	},
 ): Promise<DevFlowExit> {
-	const { timer, signal, tailnet } = options;
+	const { timer, signal, connect } = options;
 	async function exitWith(code: number): Promise<number> {
 		// The one-shot modes end here, and `--up-only` is exactly the kind of
 		// run someone times.
 		timer.report();
-		await teardown(env, tunnels, tailnet);
+		await teardown(env, tunnels, connect);
 		return code;
 	}
 
@@ -299,9 +299,9 @@ async function runDevFlow<
 
 	const plan = buildStartPlan(env.apps, env.services, selectedAppNames);
 	validateDevStart(env, args, appsForDev, plan.requiredServiceKeys);
-	tailnet?.plan(appsForDev, plan.requiredServiceKeys, env.services);
-	if (tailnet && !tailnet.active)
-		log.info("No selected endpoints to share through Tailscale.");
+	connect?.plan(appsForDev, plan.requiredServiceKeys, env.services);
+	if (connect && !connect.active)
+		log.info("No selected endpoints to share through frp.");
 	env.prepareStart?.(selectedAppNames);
 	const hasServices = plan.requiredServiceKeys.length > 0;
 
@@ -450,7 +450,7 @@ async function runDevFlow<
 		!args.takeover &&
 		nothingToSpawn &&
 		!tunnels.hasPendingTargets() &&
-		!tailnet?.active
+		!connect?.active
 			? takeoverCandidates(classifiedApps.reusedApps, env.ports)
 			: undefined;
 
@@ -478,7 +478,7 @@ async function runDevFlow<
 		attached: args.attach,
 	});
 
-	tailnet?.start();
+	connect?.start(sessionId);
 
 	// Deliberately not awaited, and only after the run is on disk: an app that
 	// cannot read this registry has something to read the moment it updates,
@@ -491,13 +491,13 @@ async function runDevFlow<
 		env.logInfo();
 	}
 
-	if (nothingToSpawn && !tunnels.hasPendingTargets() && !tailnet?.active) {
+	if (nothingToSpawn && !tunnels.hasPendingTargets() && !connect?.active) {
 		timer.report();
 		log.success("Selected apps are already running. Nothing to start.");
 		if (takeover && takeover.names.length > 0 && !isInteractive()) {
 			log.hint("Pass --takeover to stop them and run here instead.");
 		}
-		await teardown(env, tunnels, tailnet);
+		await teardown(env, tunnels, connect);
 		return undefined;
 	}
 
@@ -613,7 +613,7 @@ async function runDevFlow<
 		return undefined;
 	} finally {
 		stopHeartbeat(env.projectName, env.root);
-		await teardown(env, tunnels, tailnet);
+		await teardown(env, tunnels, connect);
 	}
 }
 

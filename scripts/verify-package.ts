@@ -231,8 +231,8 @@ void web;
 		),
 	);
 	assert(
-		command([process.execPath, cli, "tailnet", "--help"], consumer).includes(
-			"TS_AUTHKEY",
+		command([process.execPath, cli, "connect", "--help"], consumer).includes(
+			"BUNCARGO_CONNECT_TOKENS",
 		),
 	);
 	// Bun canonicalizes argv[1]; symlinked homes must identify the same coordinator bundle.
@@ -246,10 +246,10 @@ void web;
 		`
 import assert from "node:assert/strict";
 import { realpathSync } from "node:fs";
-import { installTailnetBundle } from "./node_modules/buncargo/src/core/tailnet/bundle.ts";
-const path = installTailnetBundle();
+import { installConnectBundle } from "./node_modules/buncargo/src/core/connect/bundle.ts";
+const path = installConnectBundle();
 assert.equal(path, realpathSync(path));
-assert.equal(installTailnetBundle(), path);
+assert.equal(installConnectBundle(), path);
 console.log(path);
 `,
 	);
@@ -270,16 +270,16 @@ console.log(path);
 			.toString()
 			.includes("Missing required environment variables"),
 	);
-	for (const daemon of ["hostsd.js", "tailnetd.js"]) {
+	for (const daemon of ["hostsd.js", "connectd.js"]) {
 		const detachedDaemon = join(consumer, "detached", daemon);
 		mkdirSync(dirname(detachedDaemon), { recursive: true });
 		copyFileSync(join(installed, "dist", daemon), detachedDaemon);
-		if (daemon === "tailnetd.js")
+		if (daemon === "connectd.js")
 			assert(
 				command(
-					[process.execPath, detachedDaemon, "tailnet", "--help"],
+					[process.execPath, detachedDaemon, "connect", "--help"],
 					consumer,
-				).includes("TS_AUTHKEY"),
+				).includes("BUNCARGO_CONNECT_TOKENS"),
 			);
 		const bundle = await Bun.build({
 			entrypoints: [detachedDaemon],
