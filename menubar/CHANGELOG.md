@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0](https://github.com/HansKristoffer/buncargo/compare/bar-v2.2.0...bar-v3.0.0) (2026-09-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove `buncargo tailnet` and TS_AUTHKEY-based remote discovery. Remote sharing now uses recipient tokens and frp. Release-please owns the CLI and bar version bumps.
+
+### Features
+
+* replace remote sharing with frp ([#40](https://github.com/HansKristoffer/buncargo/issues/40)) ([bd1fcb9](https://github.com/HansKristoffer/buncargo/commit/bd1fcb92c83ec8c9bc50d89128b6ae92b26aca42))
+
 ## [2.2.0](https://github.com/HansKristoffer/buncargo/compare/bar-v2.1.1...bar-v2.2.0) (2026-09-09)
 
 
