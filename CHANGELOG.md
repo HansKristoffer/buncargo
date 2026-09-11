@@ -1,5 +1,12 @@
 # Changelog
 
+## [9.1.0](https://github.com/HansKristoffer/buncargo/compare/v9.0.0...v9.1.0) (2026-09-11)
+
+
+### Features
+
+* **hosts:** serve HTTP/2 on the local proxy ([#42](https://github.com/HansKristoffer/buncargo/issues/42)) ([9ba8d76](https://github.com/HansKristoffer/buncargo/commit/9ba8d761331671fa1d258210c38ef518f01c5df6))
+
 ## [9.0.0](https://github.com/HansKristoffer/buncargo/compare/v8.2.4...v9.0.0) (2026-09-10)
 
 
