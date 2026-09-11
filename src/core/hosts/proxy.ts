@@ -458,6 +458,10 @@ export async function startLocalProxy(options: {
 						cert: options.cert,
 						key: options.key,
 					},
+					// Negotiated via ALPN; HTTP/1.1 clients are still served, and a
+					// browser opens its WebSocket over a separate HTTP/1.1 connection
+					// since Bun does not do RFC 8441 upgrades over h2.
+					http2: true,
 				}
 			: {}),
 	});
