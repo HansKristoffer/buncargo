@@ -1,5 +1,12 @@
 # Changelog
 
+## [9.2.1](https://github.com/HansKristoffer/buncargo/compare/v9.2.0...v9.2.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* **secrets:** inject at the spawn point every dev run shares ([#47](https://github.com/HansKristoffer/buncargo/issues/47)) ([87df967](https://github.com/HansKristoffer/buncargo/commit/87df967af51c56c928027d80561dfa1f6b9a7ae8))
+
 ## [9.2.0](https://github.com/HansKristoffer/buncargo/compare/v9.1.0...v9.2.0) (2026-09-16)
 
 
