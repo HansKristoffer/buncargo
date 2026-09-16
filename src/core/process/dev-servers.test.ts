@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
+import { chmodSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { clearScopeSecretsCache } from "../secrets/infisical";
 import { startDevServers } from "./dev-servers";
 import { signalProcessTree } from "./port-owner";
 
@@ -60,6 +62,68 @@ describe("startDevServers", () => {
 			if (silentPid) {
 				signalProcessTree(silentPid, "SIGTERM");
 			}
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
+/**
+ * The injection used to live in `startAppServers`, which `buncargo dev` does
+ * not call — it spawns through `startDevServers` itself, so the whole feature
+ * was dead code for the CLI. Asserting it at this function is the point: it is
+ * the one both spawn paths share.
+ */
+describe("startDevServers secret injection", () => {
+	it("injects an app's Infisical secrets under its computed env", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-secrets-spawn-"));
+		const savedHome = process.env.HOME;
+		const savedPath = process.env.BUNCARGO_INFISICAL_PATH;
+		const binary = join(root, "infisical");
+		await Bun.write(
+			binary,
+			`#!/bin/sh\necho '[{"key":"OPENAI_API_KEY","value":"sk-project"},{"key":"PORT","value":"9999"},{"key":"BLANK","value":""}]'\n`,
+		);
+		chmodSync(binary, 0o755);
+		process.env.HOME = root;
+		process.env.BUNCARGO_INFISICAL_PATH = binary;
+		const marker = join(root, "env.json");
+		const port = 45400 + Math.floor(Math.random() * 200);
+
+		try {
+			await startDevServers(
+				{
+					api: {
+						port,
+						healthEndpoint: false,
+						devCommand: `bun -e ${JSON.stringify(
+							`await Bun.write(${JSON.stringify(marker)}, JSON.stringify({ secret: process.env.OPENAI_API_KEY ?? null, port: process.env.PORT ?? null, blank: process.env.BLANK ?? null }))`,
+						)}`,
+						secrets: { projectId: "p1" },
+					},
+				},
+				root,
+				{ api: { PORT: String(port) } },
+				{ api: port },
+				{
+					verbose: false,
+					waitForExit: true,
+					waitForHealth: async () => {},
+				},
+			);
+
+			expect(JSON.parse(await Bun.file(marker).text())).toEqual({
+				secret: "sk-project",
+				// The computed env wins over a key of the same name.
+				port: String(port),
+				// An empty export is left out, so the app's own loader still fetches.
+				blank: null,
+			});
+		} finally {
+			if (savedHome === undefined) delete process.env.HOME;
+			else process.env.HOME = savedHome;
+			if (savedPath === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
+			else process.env.BUNCARGO_INFISICAL_PATH = savedPath;
+			clearScopeSecretsCache();
 			await rm(root, { recursive: true, force: true });
 		}
 	});
