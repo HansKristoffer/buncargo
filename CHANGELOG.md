@@ -1,5 +1,12 @@
 # Changelog
 
+## [9.2.0](https://github.com/HansKristoffer/buncargo/compare/v9.1.0...v9.2.0) (2026-09-16)
+
+
+### Features
+
+* **secrets:** fetch Infisical secrets once per dev run ([#45](https://github.com/HansKristoffer/buncargo/issues/45)) ([cd5869a](https://github.com/HansKristoffer/buncargo/commit/cd5869aaa6dca55d83fb0878cd242bfccc6c1afe))
+
 ## [9.1.0](https://github.com/HansKristoffer/buncargo/compare/v9.0.0...v9.1.0) (2026-09-11)
 
 
