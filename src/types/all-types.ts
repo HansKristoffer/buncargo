@@ -343,6 +343,11 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	requiredApps?: readonly string[];
 	/** Constant env vars injected only into this app's own processes */
 	staticEnv?: TStatic;
+	/**
+	 * Fetch this app's Infisical secrets once, in buncargo, and inject them.
+	 * Merged below the developer's own environment and below computed env vars.
+	 */
+	secrets?: SecretsScopeConfig;
 	/** Own the TTY (stdin). Only one app may be interactive. */
 	interactive?: boolean;
 	/** Start this app after public tunnels are open so env sees *_PUBLIC_URL. */
@@ -354,6 +359,25 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	 * a per-checkout iOS simulator. Inferred when `devCommand` mentions `expo`.
 	 */
 	expo?: boolean | ExpoAppOptions;
+}
+
+/**
+ * Where an app's secrets live in Infisical.
+ *
+ * Declared per app; `secrets` at the config level supplies the fields every
+ * app shares. Buncargo fetches each distinct scope once per dev run and hands
+ * the values to the child processes, so the apps' own loaders never spawn the
+ * Infisical CLI — concurrent CLI processes hang.
+ */
+export interface SecretsScopeConfig {
+	/** Infisical project id. Required, here or in the config-level defaults. */
+	projectId?: string;
+	/** Environment slug. Default: `SECRETS_ENV`, else `"dev"`. */
+	environment?: string;
+	/** Infisical origin. Default: `https://app.infisical.com`. */
+	siteUrl?: string;
+	/** Folder, matching the app's own secret path. Default: `"/"`. */
+	path?: string;
 }
 
 /** A long-running owned process. Readiness means spawned and still alive. */
@@ -950,6 +974,8 @@ export interface DevConfig<
 	prisma?: PrismaConfig<TServices, TApps>;
 	/** Additional options (optional) */
 	options?: DevOptions<TServices, TApps>;
+	/** Defaults for every app's `secrets` scope (optional) */
+	secrets?: SecretsScopeConfig;
 	/** Docker Compose generation options (optional) */
 	docker?: DockerComposeGenerationOptions;
 }

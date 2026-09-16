@@ -1,3 +1,5 @@
+const SECRETS_FIELDS = ["projectId", "environment", "siteUrl", "path"];
+
 /** Validate dynamic config shapes before semantic validation dereferences them. */
 export function validateConfigShape(value: unknown): string[] {
 	const errors: string[] = [];
@@ -110,6 +112,11 @@ export function validateConfigShape(value: unknown): string[] {
 						entry.healthEndpoint === false,
 					"a path string or false",
 				);
+				if (
+					entry.secrets !== undefined &&
+					record(entry.secrets, `${path}.secrets`)
+				)
+					fields(entry.secrets, `${path}.secrets.`, SECRETS_FIELDS, "string");
 				for (const key of ["requiredServices", "requiredApps"])
 					check(
 						entry[key],
@@ -165,6 +172,8 @@ export function validateConfigShape(value: unknown): string[] {
 			}
 		}
 	}
+	if (value.secrets !== undefined && record(value.secrets, "secrets"))
+		fields(value.secrets, "secrets.", SECRETS_FIELDS, "string");
 	for (const key of ["docker", "options", "prisma", "seed", "hooks"]) {
 		if (value[key] !== undefined) record(value[key], key);
 	}

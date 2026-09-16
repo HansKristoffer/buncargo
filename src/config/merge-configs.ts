@@ -70,5 +70,6 @@ export function mergeConfigs<
 		seed: overrides.seed ?? base.seed,
 		options: mergeGroup(base.options, overrides.options),
 		docker: mergeGroup(base.docker, overrides.docker),
+		secrets: mergeGroup(base.secrets, overrides.secrets),
 	};
 }
