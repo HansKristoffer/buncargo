@@ -852,6 +852,13 @@ starts the app anyway — its own loader then does what it does today. Values ar
 never logged, never written to the run registry, and never included in an error
 message.
 
+Two cases are left to the app's own loader on purpose: an empty exported value
+is never injected, since a blank variable would read as "already set" and hand
+the app an empty secret; and a run with `INFISICAL_CLIENT_ID` and
+`INFISICAL_CLIENT_SECRET` in its environment fetches nothing at all, because a
+machine identity authenticates without the interactive CLI session this exists
+to serialize.
+
 Defaults: `environment` is `SECRETS_ENV` or `dev`, `siteUrl` is
 `https://app.infisical.com`, `path` is `/`.
 

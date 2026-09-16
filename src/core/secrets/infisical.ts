@@ -37,6 +37,15 @@ const LOCK_TIMEOUT_MS = 120_000;
 
 const DEFAULT_SITE_URL = "https://app.infisical.com";
 
+/**
+ * A machine identity in the environment means the app's own loader can
+ * authenticate without the interactive CLI session this module drives, and the
+ * hang it exists to avoid needs that session. Leave those runs alone.
+ */
+function usesMachineIdentity(env: NodeJS.ProcessEnv): boolean {
+	return Boolean(env.INFISICAL_CLIENT_ID && env.INFISICAL_CLIENT_SECRET);
+}
+
 /** Cache + machine-wide serialization: one CLI process at a time, one per scope per run. */
 const cache = new Map<string, Promise<Record<string, string>>>();
 
@@ -67,6 +76,33 @@ export function resolveScope(
 		siteUrl: app?.siteUrl ?? defaults?.siteUrl ?? DEFAULT_SITE_URL,
 		path: app?.path ?? defaults?.path ?? "/",
 	};
+}
+
+/**
+ * Bake the config-level defaults into every opted-in app's own scope.
+ *
+ * The spawners read the scope off `app.secrets` and nothing else, so the
+ * defaults have to be resolved before the apps leave the config. Passing them
+ * alongside instead would be one more argument for the next spawner to forget,
+ * which is exactly how the CLI's own spawn path missed this in 9.2.0.
+ */
+export function applySecretDefaults<TApps extends Record<string, AppConfig>>(
+	apps: TApps,
+	defaults: SecretsScopeConfig | undefined,
+	env: NodeJS.ProcessEnv = process.env,
+): TApps {
+	if (!Object.values(apps).some((app) => app.secrets)) return apps;
+	return Object.fromEntries(
+		Object.entries(apps).map(([name, app]) => [
+			name,
+			app.secrets
+				? {
+						...app,
+						secrets: resolveScope(app.secrets, defaults, env) ?? app.secrets,
+					}
+				: app,
+		]),
+	) as TApps;
 }
 
 export function fetchScopeSecrets(
@@ -155,14 +191,18 @@ function parseExport(stdout: string): Record<string, string> {
 		for (const entry of parsed) {
 			if (typeof entry !== "object" || entry === null) continue;
 			const { key, value } = entry as { key?: unknown; value?: unknown };
-			if (typeof key === "string" && key && typeof value === "string")
+			// An empty value would satisfy the app loader's "already in the
+			// environment" check and hand the app a blank secret. Leave the key
+			// missing instead, so its own loader still fetches and still fails
+			// loudly if the project really has nothing there.
+			if (typeof key === "string" && key && typeof value === "string" && value)
 				values[key] = value;
 		}
 		return values;
 	}
 	if (typeof parsed === "object" && parsed !== null) {
 		for (const [key, value] of Object.entries(parsed))
-			if (typeof value === "string") values[key] = value;
+			if (typeof value === "string" && value) values[key] = value;
 		return values;
 	}
 	throw new Error("infisical export returned an unexpected shape");
@@ -181,6 +221,7 @@ export async function loadAppSecrets(
 	options: { signal?: AbortSignal; env?: NodeJS.ProcessEnv } = {},
 ): Promise<Record<string, Record<string, string>>> {
 	const env = options.env ?? process.env;
+	if (usesMachineIdentity(env)) return {};
 	const scopes = new Map<string, InfisicalScope>();
 	const appScopes = new Map<string, string>();
 	for (const [name, app] of Object.entries(apps)) {

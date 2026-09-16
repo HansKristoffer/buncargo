@@ -20,6 +20,7 @@ import {
 	type UrlMap,
 } from "../core/ports";
 import { createPortOwnerSnapshot } from "../core/process";
+import { applySecretDefaults } from "../core/secrets/infisical";
 import type { PublicTunnel } from "../core/tunnel";
 import { workspaceId } from "../core/workspace-identity";
 import {
@@ -131,7 +132,13 @@ export function createDevEnvContext<
 	const localIp = getLocalIp();
 
 	const services = config.services;
-	const apps = (config.apps ?? {}) as TApps;
+	// Resolved once, here, because this is the last place the config-level
+	// defaults and the apps are both in hand: every spawner downstream reads the
+	// scope off `app.secrets` alone.
+	const apps = applySecretDefaults(
+		(config.apps ?? {}) as TApps,
+		config.secrets,
+	);
 	const composeFile = getGeneratedComposePath(
 		root,
 		config.docker,

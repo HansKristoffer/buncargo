@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppConfig } from "../../types";
 import {
+	applySecretDefaults,
 	clearScopeSecretsCache,
 	loadAppSecrets,
 	resolveScope,
@@ -78,6 +79,32 @@ describe("resolveScope", () => {
 	});
 });
 
+describe("applySecretDefaults", () => {
+	it("resolves each opted-in app's scope and leaves the rest alone", () => {
+		const apps = {
+			api: app("p1"),
+			plain: { port: 3001, devCommand: "true" } as AppConfig,
+		};
+		const resolved = applySecretDefaults(
+			apps,
+			{ siteUrl: "https://eu.infisical.com" },
+			{},
+		);
+		expect(resolved.api.secrets).toEqual({
+			projectId: "p1",
+			environment: "dev",
+			siteUrl: "https://eu.infisical.com",
+			path: "/",
+		});
+		expect(resolved.plain).toBe(apps.plain);
+	});
+
+	it("returns the same object when no app opted in", () => {
+		const apps = { api: { port: 3000, devCommand: "true" } as AppConfig };
+		expect(applySecretDefaults(apps, { projectId: "p1" }, {})).toBe(apps);
+	});
+});
+
 describe("loadAppSecrets", () => {
 	it("spawns nothing when no app declares a scope", async () => {
 		const cli = fakeInfisical('echo "[]"');
@@ -113,6 +140,28 @@ describe("loadAppSecrets", () => {
 			env: { OPENAI_API_KEY: "sk-local" },
 		});
 		expect(secrets.api).toEqual({});
+	});
+
+	it("leaves an empty exported value out", async () => {
+		fakeInfisical(
+			`echo '[{"key":"FILLED","value":"x"},{"key":"BLANK","value":""}]'`,
+		);
+		expect(
+			await loadAppSecrets({ api: app("p1") }, undefined, { env: {} }),
+		).toEqual({ api: { FILLED: "x" } });
+	});
+
+	it("leaves a machine identity to the app's own loader", async () => {
+		const cli = fakeInfisical(`echo '[{"key":"K","value":"v"}]'`);
+		expect(
+			await loadAppSecrets({ api: app("p1") }, undefined, {
+				env: {
+					INFISICAL_CLIENT_ID: "id",
+					INFISICAL_CLIENT_SECRET: "secret",
+				},
+			}),
+		).toEqual({});
+		expect(cli.calls()).toEqual([]);
 	});
 
 	it("warns and yields nothing when the CLI fails", async () => {

@@ -80,20 +80,19 @@ export async function startAppServers<
 	options.signal?.throwIfAborted();
 	assertAppWorkingDirectories(appsToStart, ctx.root, productionBuild);
 
-	// Lowest precedence: the app's own computed env wins, and `startDevServers`
-	// puts the developer's `process.env` in between.
-	const secrets = await loadAppSecrets(appsToStart, ctx.config.secrets, {
-		signal: options.signal,
-	});
-	const appEnv = (production: boolean) =>
-		Object.fromEntries(
-			Object.entries(envVars.buildAppEnvVarsMap(appsToStart, production)).map(
+	if (productionBuild) {
+		// The spawn path gets its secrets inside `startDevServers`; a production
+		// build is the other process that needs them, and it runs before that.
+		// Both share one fetch per scope through the module's cache.
+		const secrets = await loadAppSecrets(appsToStart, undefined, {
+			signal: options.signal,
+		});
+		const buildEnv = Object.fromEntries(
+			Object.entries(envVars.buildAppEnvVarsMap(appsToStart, true)).map(
 				([name, env]) => [name, { ...secrets[name], ...env }],
 			),
 		);
-
-	if (productionBuild) {
-		await buildAppsAsync(appsToStart, ctx.root, appEnv(true), {
+		await buildAppsAsync(appsToStart, ctx.root, buildEnv, {
 			verbose,
 			signal: options.signal,
 		});
@@ -109,7 +108,7 @@ export async function startAppServers<
 	const pids = await startDevServers(
 		appsToStart,
 		ctx.root,
-		appEnv(productionBuild),
+		envVars.buildAppEnvVarsMap(appsToStart, productionBuild),
 		ctx.ports,
 		{
 			verbose,

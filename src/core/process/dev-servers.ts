@@ -9,6 +9,7 @@ import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import type { AppConfig, DevServerPids } from "../../types";
 import { waitForDevServers } from "../network";
 import { connectProcessEnv } from "../runtime-flags";
+import { loadAppSecrets } from "../secrets/infisical";
 import { recordStartupMetric } from "../startup-metrics";
 import {
 	formatPidLine,
@@ -396,6 +397,20 @@ export async function startDevServers(
 			([, app]) => resolveStartCommand(app, productionBuild) !== undefined,
 		),
 	);
+	// Here rather than in the environment layer because this is the one function
+	// every spawner goes through: `startAppServers` and the CLI's own dev flow
+	// both land here, and a third caller cannot miss it. Lowest precedence — the
+	// app's computed env is layered on top, and `spawnManagedApp` puts the
+	// developer's own `process.env` in between. `loadAppSecrets` returns an empty
+	// map without spawning anything when no app declared a scope.
+	const secrets = await loadAppSecrets(startable, undefined, {
+		signal: options.signal,
+	});
+	const appEnv = (name: string) => ({
+		...secrets[name],
+		...resolveAppEnv(envVarsByApp, name),
+	});
+
 	const wave1 = pickWave(startable, false, deferPublicUrlApps);
 	const wave2 = pickWave(startable, true, deferPublicUrlApps);
 	const configuredInteractive = Object.entries(startable).find(
@@ -461,7 +476,7 @@ export async function startDevServers(
 
 			const attached = name === attachedName;
 			const spawn = () =>
-				spawnManagedApp(name, config, root, resolveAppEnv(envVarsByApp, name), {
+				spawnManagedApp(name, config, root, appEnv(name), {
 					attached,
 					extraArgs: attached ? extraArgs : [],
 					productionBuild,
