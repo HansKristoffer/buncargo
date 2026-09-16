@@ -5,6 +5,7 @@ import { waitForDevServers } from "../core/network";
 import { startDevServers } from "../core/process";
 import { buildAppsAsync } from "../core/process/build";
 import { isCI } from "../core/runtime-flags";
+import { loadAppSecrets } from "../core/secrets/infisical";
 import {
 	resolveExposeTargets,
 	startPublicTunnels,
@@ -79,13 +80,23 @@ export async function startAppServers<
 	options.signal?.throwIfAborted();
 	assertAppWorkingDirectories(appsToStart, ctx.root, productionBuild);
 
-	if (productionBuild) {
-		await buildAppsAsync(
-			appsToStart,
-			ctx.root,
-			envVars.buildAppEnvVarsMap(appsToStart, true),
-			{ verbose, signal: options.signal },
+	// Lowest precedence: the app's own computed env wins, and `startDevServers`
+	// puts the developer's `process.env` in between.
+	const secrets = await loadAppSecrets(appsToStart, ctx.config.secrets, {
+		signal: options.signal,
+	});
+	const appEnv = (production: boolean) =>
+		Object.fromEntries(
+			Object.entries(envVars.buildAppEnvVarsMap(appsToStart, production)).map(
+				([name, env]) => [name, { ...secrets[name], ...env }],
+			),
 		);
+
+	if (productionBuild) {
+		await buildAppsAsync(appsToStart, ctx.root, appEnv(true), {
+			verbose,
+			signal: options.signal,
+		});
 	}
 
 	const beforeHook = ctx.config.hooks?.beforeServers;
@@ -98,7 +109,7 @@ export async function startAppServers<
 	const pids = await startDevServers(
 		appsToStart,
 		ctx.root,
-		envVars.buildAppEnvVarsMap(appsToStart, productionBuild),
+		appEnv(productionBuild),
 		ctx.ports,
 		{
 			verbose,

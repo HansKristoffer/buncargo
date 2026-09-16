@@ -822,6 +822,39 @@ credentials out of browser and Expo public environment mappings.
 
 Service `env` maps (`url` / `port` / `secondaryPort`) add more shared names. App `staticEnv` and `envVars` are injected only into that app.
 
+### Infisical secrets
+
+An app whose own secret loader shells out to the Infisical CLI at startup makes
+that CLI run once per app, and concurrent Infisical CLI processes hang. Declare
+the scope instead and buncargo runs one `infisical export` per distinct scope
+per dev run — serialized machine-wide, so parallel worktrees queue rather than
+race — and hands the values to the child processes, where the app's own loader
+finds them already in `process.env` and never spawns anything.
+
+```ts
+defineDevConfig({
+  secrets: { siteUrl: "https://eu.infisical.com", environment: "dev" },
+  apps: {
+    api: { port: 3000, devCommand: "bun run api", secrets: { projectId: "e5e73966-…" } },
+    web: { port: 5173, devCommand: "bun run web", secrets: { projectId: "0be0db90-…" } },
+    marketing: { port: 5174, devCommand: "bun run marketing", secrets: { projectId: "0be0db90-…" } },
+  },
+});
+```
+
+`web` and `marketing` share a scope, so they share one fetch. Precedence, lowest
+last: the app's `envVars`/`staticEnv` and the computed shared env, then the
+developer's own exported environment, then the injected secrets. So
+`export OPENAI_API_KEY=sk-local` still wins in that shell.
+
+Apps without a `secrets` block are untouched. A failed export warns once and
+starts the app anyway — its own loader then does what it does today. Values are
+never logged, never written to the run registry, and never included in an error
+message.
+
+Defaults: `environment` is `SECRETS_ENV` or `dev`, `siteUrl` is
+`https://app.infisical.com`, `path` is `/`.
+
 ### Vite plugin
 
 `buncargoVite()` configures the Vite dev server from the variables above, which removes the three things a Vite app in a buncargo repo otherwise hand-writes:
@@ -857,6 +890,8 @@ Vite is not a dependency of buncargo: the plugin's return type is declared struc
 | `BUNCARGO_MKCERT_PATH` | Absolute `mkcert` binary; skips PATH lookup and download |
 | `BUNCARGO_MKCERT_VERSION` | GitHub release tag for the bundled `mkcert` download (default `v1.4.4`) |
 | `BUNCARGO_SYNC_HOSTS` | `0` skips writing the `# buncargo-start` / `# buncargo-end` block in `/etc/hosts` |
+| `BUNCARGO_INFISICAL_PATH` | Absolute `infisical` binary; skips the PATH lookup |
+| `SECRETS_ENV` | Infisical environment slug when an app's `secrets` scope does not name one (default `dev`) |
 | `BUNCARGO_TYPECHECK_CONCURRENCY` | Max overlapping workspace typecheck processes (positive integer) |
 | `BUNCARGO_TIMING` | `1` prints a per-phase breakdown of `dev` startup (same as `--timing`) |
 | `CLOUDFLARED_VERSION` | GitHub release tag for the bundled download |
@@ -882,6 +917,7 @@ The configuration reference covers the main public options; `src/types/all-types
 | `prisma` | `PrismaConfig` | `undefined` | Enables `dev.prisma` and `buncargo prisma` |
 | `options` | `DevOptions` | `undefined` | Isolation, watchdog, helper app names |
 | `docker` | `DockerComposeGenerationOptions` | `undefined` | Generated compose path, volumes, Docker auto-start |
+| `secrets` | `SecretsScopeConfig` | `undefined` | Defaults for every app's `secrets` scope |
 
 Top-level `envVars` is removed. Use the top-level `env` overlay for shared values (rewritten `WEB_URL`, `VITE_*`), and `apps.<name>.envVars` for app-only values.
 
@@ -925,6 +961,7 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | `expose` | `boolean` | `false` | Eligible for `--expose` |
 | `staticEnv` | `Record<string, string \| number>` | `{}` | Constant env for this app only |
 | `envVars` | `(ports, urls, ctx) => Record<string, string \| number>` | `undefined` | Computed env for this app only |
+| `secrets` | `{ projectId?, environment?, siteUrl?, path? }` | `undefined` | Fetch this app's Infisical secrets once and inject them. See [Infisical secrets](#infisical-secrets) |
 | `interactive` | `boolean` | `false` | Own the TTY. Only one app may set this |
 | `needsPublicUrls` | `boolean` | `false` | Start after tunnels so env sees `*_PUBLIC_URL`. Ignored without `--expose` |
 | `expo` | `boolean \| { scheme?, simulator? }` | inferred | Expo dev server: gets `RCT_METRO_PORT` and a `buncargo sim` device. Inferred when `devCommand` mentions `expo` |

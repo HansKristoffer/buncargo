@@ -267,6 +267,12 @@ export function validateConfig(value: unknown): string[] {
 			errors.push(`App "${name}" must have a valid port number`);
 		}
 
+		if (app.secrets && !(app.secrets.projectId ?? config.secrets?.projectId)) {
+			errors.push(
+				`App "${name}" sets secrets without a projectId. Set apps.${name}.secrets.projectId, or secrets.projectId for every app.`,
+			);
+		}
+
 		if (app.devCommand !== false && !app.devCommand) {
 			errors.push(`App "${name}" must have a devCommand`);
 		}

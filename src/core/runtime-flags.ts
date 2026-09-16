@@ -179,6 +179,24 @@ export function mkcertVersion(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Secrets
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** `BUNCARGO_INFISICAL_PATH` - use this infisical binary instead of the PATH lookup. */
+export function infisicalPathOverride(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return readBinaryOverride(env, "BUNCARGO_INFISICAL_PATH");
+}
+
+/** `SECRETS_ENV` - Infisical environment slug, when the config does not name one. */
+export function secretsEnvironment(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return readTrimmed(env, "SECRETS_ENV");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Public tunnels
 // ═══════════════════════════════════════════════════════════════════════════
 
