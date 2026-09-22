@@ -85,7 +85,7 @@ Prints one line per run and exits. If this says `no active runs` while
 
 ```
 Sources/BuncargoBar/
-  App.swift          # MenuBarExtra scene, --status mode, stop confirmations
+  App.swift          # MenuBarExtra scene, --status mode
   RunRegistry.swift  # runs.json v1 model, supported version, liveness, grouping
   RunStore.swift     # directory watch + 5s poll, published state
   Views.swift        # rows, hover detail panel, status dots
