@@ -17,6 +17,8 @@ private func fixture() throws -> Data {
     #expect(directory.runs[0].name == "Cursor cloud")
     #expect(directory.runs[0].id.hasPrefix(directory.runs[0].publisherId))
     #expect(directory.runs[0].targets[1].supportsTablePlus)
+    // A database URL keeps its path and TablePlus query parameters.
+    #expect(directory.runs[0].targets[1].url.contains("tLSMode=0"))
     #expect(throws: (any Error).self) { try directory.validate(now: now.addingTimeInterval(31)) }
 }
 @Test func directoryRejectsAddressesOffThisComputer() throws {
@@ -34,8 +36,8 @@ private func fixture() throws -> Data {
         #expect(throws: (any Error).self) { try directory.validate(now: now) }
     }
     let foreign = original.replacingOccurrences(
-        of: "postgresql://dev:secret@127.0.0.1:49732/example",
-        with: "postgresql://dev:secret@db.example:49732/example")
+        of: "postgresql://dev:secret@127.0.0.1:49732",
+        with: "postgresql://dev:secret@db.example:49732")
     #expect(throws: (any Error).self) {
         try JSONDecoder().decode(ConnectionDirectory.self, from: Data(foreign.utf8)).validate(
             now: now)

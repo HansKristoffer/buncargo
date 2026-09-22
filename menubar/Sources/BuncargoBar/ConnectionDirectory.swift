@@ -55,7 +55,8 @@ struct ConnectionDirectory: Decodable, Sendable {
         guard let url = URL(string: value), url.host == "127.0.0.1", url.port == port,
             let scheme = url.scheme,
             ["http", "tcp", "postgresql", "redis", "clickhouse"].contains(scheme),
-            url.query == nil, url.fragment == nil,
+            url.fragment == nil,
+            allowCredentials || url.query == nil,
             allowCredentials || (url.user == nil && url.password == nil),
             allowCredentials || url.path.isEmpty || url.path == "/"
         else {

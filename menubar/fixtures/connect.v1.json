@@ -29,8 +29,8 @@
           "status": "ready",
           "preset": "postgres",
           "port": 49732,
-          "url": "postgresql://dev:secret@127.0.0.1:49732/example",
-          "tablePlusUrl": "postgresql://dev:secret@127.0.0.1:49732/example"
+          "url": "postgresql://dev:secret@127.0.0.1:49732/example?env=development&name=lullu-workspace-postgres&tLSMode=0",
+          "tablePlusUrl": "postgresql://dev:secret@127.0.0.1:49732/example?env=development&name=lullu-workspace-postgres&tLSMode=0"
         }
       ],
       "name": "Cursor cloud"

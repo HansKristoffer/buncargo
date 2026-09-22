@@ -50,6 +50,21 @@ test("Swift and CLI decode the same directory and reject addresses off this comp
 		"postgresql://dev:secret@db.example:49732/example";
 	expect(() => parseDirectory(foreign)).toThrow();
 
+	// TablePlus reads the connection name, environment and TLS mode out of the
+	// query string, and the database name out of the path. Rejecting either one
+	// made a real run with a Postgres service undecodable.
+	const tablePlus = fixture();
+	const withOptions =
+		"postgresql://postgres:postgres@127.0.0.1:49732/lullu?env=development&name=lullu-workspace-postgres&tLSMode=0";
+	tablePlus.runs[0].targets[1].url = withOptions;
+	tablePlus.runs[0].targets[1].tablePlusUrl = withOptions;
+	expect(parseDirectory(tablePlus).runs[0]?.targets[1]?.url).toBe(withOptions);
+
+	// An app address is built by the receiver and never carries either.
+	const query = fixture();
+	query.runs[0].targets[0].url = "http://127.0.0.1:49731/?next=/admin";
+	expect(() => parseDirectory(query)).toThrow();
+
 	const anonymous = fixture();
 	anonymous.runs[0].publisherId = "not-an-endpoint";
 	expect(() => parseDirectory(anonymous)).toThrow();

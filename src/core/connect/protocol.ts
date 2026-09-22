@@ -290,14 +290,16 @@ export function parseLoopbackUrl(value: unknown, port: number): URL {
 		throw new Error("Invalid local address");
 	}
 	const url = new URL(value);
+	// A database URL legitimately carries a path and query: the database name,
+	// and the parameters TablePlus reads for connection name, environment and
+	// TLS mode. An app address is built here and never has either.
 	if (
 		!LOOPBACK_SCHEMES.includes(url.protocol) ||
 		url.hostname !== "127.0.0.1" ||
 		Number(url.port) !== port ||
-		url.search ||
 		url.hash ||
 		(url.protocol === "http:" &&
-			(url.pathname !== "/" || url.username || url.password))
+			(url.pathname !== "/" || url.search || url.username || url.password))
 	) {
 		throw new Error("Invalid local address");
 	}
