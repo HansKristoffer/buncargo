@@ -1,5 +1,12 @@
 # Changelog
 
+## [9.2.2](https://github.com/HansKristoffer/buncargo/compare/v9.2.1...v9.2.2) (2026-09-22)
+
+
+### Bug Fixes
+
+* **hosts:** stop waiting forever on a stale legacy routes.json.lock ([#49](https://github.com/HansKristoffer/buncargo/issues/49)) ([861b9cf](https://github.com/HansKristoffer/buncargo/commit/861b9cf35b006a85bf0657ce3c318e30f4dd8ce8))
+
 ## [9.2.1](https://github.com/HansKristoffer/buncargo/compare/v9.2.0...v9.2.1) (2026-09-16)
 
 
