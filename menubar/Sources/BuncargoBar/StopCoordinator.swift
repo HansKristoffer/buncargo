@@ -2,19 +2,12 @@ import AppKit
 import Combine
 import Foundation
 
-/// Confirming and running `buncargo stop`, owned by the app rather than a view.
+/// Running `buncargo stop`, owned by the app rather than a view.
 ///
-/// Both halves of that matter, and both were bugs:
-///
-/// 1. **Confirmation is an `NSAlert`, not SwiftUI's `.alert`.** A
-///    `MenuBarExtra(.window)` popover dismisses as soon as it resigns key, and
-///    presenting a SwiftUI alert does exactly that — the popover closes, the
-///    view holding the alert's `@State` is torn down, and the button's action
-///    closure never runs. The alert appeared and "Stop" did nothing.
-/// 2. **The work lives here, not in the menu view.** The view is transient by
-///    design; anything it owns can be deallocated mid-flight the moment the
-///    popover closes. This object is a `@StateObject` on the `App`, so it
-///    outlives every popover.
+/// The work lives here, not in the menu view. The view is transient by design;
+/// anything it owns can be deallocated mid-flight the moment the popover
+/// closes. This object is a `@StateObject` on the `App`, so it outlives every
+/// popover.
 @MainActor
 final class StopCoordinator: ObservableObject {
     /// Last failure, shown inline while the popover is open.
@@ -37,61 +30,19 @@ final class StopCoordinator: ObservableObject {
         inFlight.contains(key(run, target))
     }
 
-    /// Confirm when it is risky, then stop.
+    /// Stop, no questions asked.
     ///
-    /// Only two cases ask, matching what the CLI itself refuses without
-    /// `--force`: the attached app, because closing it stops the whole run, and
-    /// an app this run reused from another terminal, because that process
-    /// belongs to someone else. A plain SIGTERM of a dev server is what Ctrl-C
-    /// does all day and needs no dialog.
+    /// Always `--force`: the CLI's gates (attached app, an app another terminal
+    /// started, a whole run) are there for a terminal prompt, and a click here
+    /// already said yes.
     func request(run: Run, target: String?) {
-        guard let question = confirmation(run: run, target: target) else {
-            perform(run: run, target: target, force: false)
-            return
-        }
-        guard confirm(question) else { return }
-        perform(run: run, target: target, force: true)
-    }
-
-    private func confirmation(run: Run, target: String?) -> String? {
-        guard let target else {
-            return "Stop \(run.projectName)?\n\nThis stops dev servers running in another terminal."
-        }
-        guard let app = run.apps.first(where: { $0.name == target }) else {
-            return nil
-        }
-        if app.attached == true {
-            return "Stop \(app.name)?\n\nIt holds the terminal, so this stops the whole run."
-        }
-        if !app.isOwned {
-            return "Stop \(app.name)?\n\nIt was started by another terminal, so this stops a process this run does not own."
-        }
-        return nil
-    }
-
-    private func confirm(_ message: String) -> Bool {
-        let parts = message.split(separator: "\n\n", maxSplits: 1)
-        let alert = NSAlert()
-        alert.messageText = String(parts.first ?? "")
-        alert.informativeText = parts.count > 1 ? String(parts[1]) : ""
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Stop")
-        alert.addButton(withTitle: "Cancel")
-
-        // An accessory app has no menu bar of its own, so its modal opens
-        // behind whatever is frontmost unless it activates first.
-        NSApp.activate(ignoringOtherApps: true)
-        return alert.runModal() == .alertFirstButtonReturn
-    }
-
-    private func perform(run: Run, target: String?, force: Bool) {
         let token = key(run, target)
         guard !inFlight.contains(token) else { return }
         inFlight.insert(token)
         notice = nil
 
         Task { [weak self] in
-            let outcome = await StopCommand.run(run, target: target, force: force)
+            let outcome = await StopCommand.run(run, target: target, force: true)
             guard let self else { return }
             self.inFlight.remove(token)
 
