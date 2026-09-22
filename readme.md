@@ -21,7 +21,7 @@ Local development environments are fragile: hand-written compose files, scattere
 - **Phased public tunnels** - start backend, wait for health, open tunnels, then start apps that need `*_PUBLIC_URL`
 - **Prisma integration** - `bunx buncargo prisma` with the right `DATABASE_URL`
 - **Named HTTPS URLs** - opt-in `https://api.myapp.localhost` via a shared loopback proxy (mkcert + `:443`)
-- **Watchdog** - owner-PID liveness plus a 3 minute idle backstop
+- **Watchdog** - one sweeper per machine removes containers once their run has ended, their checkout is deleted, or they are left stopped
 - **Run registry + menu bar app** - every active run in `~/.buncargo/runs.json`, surfaced by `buncargo runs` and BuncargoBar
 
 Buncargo requires Bun 1.4.2 or newer on macOS or Linux (WSL on Windows).
@@ -192,7 +192,7 @@ bunx buncargo dev --up-only
 bunx buncargo dev --migrate
 bunx buncargo dev --seed
 bunx buncargo dev --down
-bunx buncargo dev --down --all    # Stop every buncargo env on this machine
+bunx buncargo dev --down --all    # Remove every buncargo env on this machine
 bunx buncargo dev --reset
 bunx buncargo dev --takeover        # Stop apps running elsewhere, run them here
 bunx buncargo dev --keep-containers
@@ -326,7 +326,7 @@ validate selected apps, dependencies, attachment, and expose targets
 | Command | Work |
 | --- | --- |
 | `dev` | Containers, migrations, generation, seed, apps, readiness |
-| `dev --up-only` | Containers and dotenv sync; no migrations, generation, seeds, or apps |
+| `dev --up-only` | Containers and dotenv sync; no migrations, generation, seeds, or apps. The containers live as long as the checkout |
 | `dev --migrate` | Early containers, dotenv sync, bootstrap and migrations; no generation, seeds, late containers, or apps |
 | `dev --seed` | Selected containers and preparation, including bootstrap and forced seed; no apps |
 | `dev --down` / `--reset` | Stop; reset also removes volumes |
@@ -689,8 +689,9 @@ run reused from another terminal, because that process is not ours. Exit codes
 are `0` stopped, `2` no such target, `3` refused.
 
 Services are stopped, never killed, so a `restart:` policy cannot undo it.
-Nothing in buncargo brings a stopped container back - the watchdog only ever
-tears down - so it stays down until the next `dev`.
+Nothing in buncargo brings a stopped container back, so it stays down until the
+next `dev`; once the run itself ends, the watchdog removes it. Stopping a whole
+run removes its containers.
 
 ### BuncargoBar
 
@@ -982,7 +983,7 @@ Use `kind: "worker"` for a long-running process without a listener. Workers requ
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `worktreeIsolation` | `boolean` | `true` | Unique ports and compose project per worktree |
-| `autoShutdown` | `number \| false` | `180000` via CLI | Idle watchdog timeout in **ms**. `false` disables (same as `--keep-containers`) |
+| `autoShutdown` | `number \| false` | `180000` | How long containers are held after the run exits, in **ms**. `false` keeps them as long as the checkout exists (same as `--keep-containers`) |
 | `envFiles` | `(string \| { path, optional? })[]` | `[]` | Root dotenv input defaults; later files win, generated local values stay authoritative |
 | `envFile` | `boolean \| { path?, createFrom? }` | `false` | Sync a dotenv to the allocated ports. `true` means `.env` |
 | `verbose` | `boolean` | `true` | Default verbosity |
@@ -1058,7 +1059,7 @@ Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `args` | `string[]` | `process.argv.slice(2)` | CLI flags |
-| `watchdog` | `boolean` | `true` | Spawn idle watchdog. Tests set `false`. Idle timeout comes from `options.autoShutdown`, `--keep-containers`, or `--watchdog-timeout`. |
+| `watchdog` | `boolean` | `true` | Claim the containers with the CLI's flags and start the watchdog. Tests set `false`. The idle hold comes from `options.autoShutdown`, `--keep-containers`, or `--watchdog-timeout`. |
 
 ## Health Checks
 
@@ -1093,15 +1094,26 @@ Programmatic: `openPublicTunnels({ names?, waitForHealthy? })` then `buildAppEnv
 
 ## Watchdog
 
-The published runner lives at `dist/core/watchdog-runner.js`. Heartbeat files are `/tmp/<project>-<rootHash>-heartbeat` so two worktrees do not collide. Logs: `/tmp/<project>-<rootHash>-watchdog.log`.
+Every run that owns containers claims them in `~/.buncargo/runs.json` before it starts them, and one watchdog per machine (`dist/core/watchdog-runner.js`, log in `~/.buncargo/watchdog.log`) sweeps every buncargo container against that registry every 30s. `buncargo ls` and `doctor` run the same sweep inline, so a killed watchdog is never the last line of defence. A stack is removed when:
 
-- **Crashed owner:** the CLI PID is dead, or the heartbeat file is gone → ~15s grace → `docker compose down`
-- **Clean exit:** Ctrl-C leaves a `released` marker instead, and containers are held for the full idle backstop so the next `dev` reuses them rather than recreating them
-- **Idle backstop:** 3 minutes, only if the owner PID is also gone
-- **Sleep safety:** a wall-clock jump > 30s resets the idle clock; the watchdog never tears down while the owner is alive
-- Heartbeat every 10s, poll every 10s
-- `--keep-containers` / `options.autoShutdown: false` disable it
-- `--watchdog-timeout=N` sets the idle backstop in minutes
+- **its checkout is gone** - the worktree was deleted, whatever else is true
+- **it is stopped and nobody owns it** - a daemon restart or `buncargo stop <service>` left it exited and the run has ended
+- **its run exited cleanly** (Ctrl-C leaves a `released` marker) and the idle hold has passed - 3 minutes by default, so a quick restart reuses the containers rather than recreating them
+- **its run crashed** (the PID is gone without releasing) and ~15s have passed
+
+A running stack with a live owner is never touched. `--keep-containers`, `options.autoShutdown: false` and the one-shot modes (`--up-only`, `--migrate`, `--seed`) set no idle hold, so their containers live as long as the checkout. `--watchdog-timeout=N` sets the hold in minutes. The watchdog exits when there is nothing left to watch and any later `dev` starts it again.
+
+A finished run keeps its registry entry until its containers are gone — that entry is what says they may still be reused, and for how long. `buncargo runs`, `stop` and the menu bar filter it out; only the sweep sees it.
+
+**Volumes are never removed automatically.** A container costs nothing to recreate; a volume is the database. `buncargo prune` lists the volumes whose project has no containers and no run, and removes them only after you confirm:
+
+```bash
+bunx buncargo prune --dry-run   # List what would go
+bunx buncargo prune             # Review, then confirm
+bunx buncargo prune --yes       # For scripts that have already decided
+```
+
+Volumes carry no buncargo labels on purpose: Compose compares a volume against the file and offers to *recreate* it when they differ, which hangs a non-interactive run and destroys the data. So prune cannot tell which checkout a volume came from, and says so rather than guessing — volumes it cannot attribute to a project are counted and left alone.
 
 Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 
@@ -1120,6 +1132,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `options.expoApiApp "…" must match a configured app key` | Typo or removed app | Point it at a real `apps.<name>` (same for `frontendApp`) |
 | `Only one app may set interactive: true` | Two TTY owners | Keep one `interactive` or use `--attach` |
 | `Watchdog did not start` | Missing `dist/core/watchdog-runner.js` | `bun run build` / reinstall the package |
+| Disk full of old worktree volumes | Deleted checkouts leave their databases behind | `buncargo prune --dry-run`, then `buncargo prune` |
 | `Could not allocate a free port block` | 80 shifted blocks still conflict | Set `BUNCARGO_PORT_OFFSET` or free ports (`buncargo doctor`) |
 | Named URL does not resolve / TLS warning | Daemon down or CA not trusted | `buncargo hosts status`, then `buncargo hosts install` or `doctor --fix` |
 | `Named-hosts service points at … which no longer exists` | The install ran from a `node_modules` that was since removed | `buncargo hosts install` to re-point it at the current CLI |

@@ -59,6 +59,8 @@ export interface DevEnvContext<
 > {
 	prepareStart(onlyApps?: string[]): void;
 	readonly hasSelectedServices: boolean;
+	/** Service keys the current selection starts, for the run claim. */
+	readonly selectedServiceKeys: readonly string[];
 	readonly ownedServerPids: Record<string, number>;
 	readonly inputEnv: Readonly<Record<string, string>>;
 	readonly config: DevConfig<TServices, TApps, TEnv>;
@@ -153,6 +155,7 @@ export function createDevEnvContext<
 		return resolvedRuntime;
 	};
 	let hasSelectedServices = false;
+	let selectedServiceKeys: readonly string[] = [];
 	let preparedSelection: string | undefined;
 
 	let portPlan = resolvePortPlan({
@@ -223,6 +226,9 @@ export function createDevEnvContext<
 		get hasSelectedServices() {
 			return hasSelectedServices;
 		},
+		get selectedServiceKeys() {
+			return selectedServiceKeys;
+		},
 		prepareStart(onlyApps) {
 			const plan = buildStartPlan(apps, services, onlyApps);
 			const selection = JSON.stringify(plan.appNames);
@@ -233,6 +239,7 @@ export function createDevEnvContext<
 				return;
 			}
 			hasSelectedServices = plan.requiredServiceKeys.length > 0;
+			selectedServiceKeys = plan.requiredServiceKeys;
 			const selectedRuntime = hasSelectedServices ? runtime() : undefined;
 
 			if (selectedRuntime) {

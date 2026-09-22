@@ -178,6 +178,7 @@ export function toBuncargoContainer(
 	return {
 		id: record.id,
 		name: record.id,
+		state: record.state,
 		status: record.state,
 		ports: formatPublishedPorts(record.ports),
 		project: record.labels[PROJECT_LABEL] ?? "",
@@ -203,53 +204,6 @@ export function projectRecords(
 	return listContainerRecords(cli).filter(
 		(record) => record.labels[PROJECT_LABEL] === projectName,
 	);
-}
-
-export function areAppleServicesRunning(
-	cli: AppleContainerCli,
-	projectName: string,
-	serviceNames: string[],
-): boolean {
-	if (serviceNames.length === 0) return false;
-	const running = new Set(
-		projectRecords(cli, projectName)
-			.filter((record) => isRunningState(record.state))
-			.map((record) => record.labels[SERVICE_LABEL]),
-	);
-	return serviceNames.every((name) => running.has(name));
-}
-
-/**
- * State and recent output for one service.
- *
- * The state comes from the same `container ls --all` read every other question
- * here uses; the log tail is a best effort on top, because a runtime that
- * cannot produce it should still fail fast on the state alone.
- */
-export function diagnoseAppleService(
-	cli: AppleContainerCli,
-	request: ServiceDiagnosisRequest,
-): ServiceDiagnosis | undefined {
-	const containerName = containerNameFor(
-		request.projectName,
-		request.serviceName,
-	);
-	const record = listContainerRecords(cli).find(
-		(candidate) => candidate.id === containerName,
-	);
-	if (!record) return undefined;
-
-	const logs = cli.run([
-		"logs",
-		"-n",
-		String(request.tail ?? 20),
-		containerName,
-	]);
-
-	return {
-		state: record.state,
-		logTail: logs.ok ? logs.stdout.trim() : "",
-	};
 }
 
 /**
@@ -286,30 +240,6 @@ export function findAppleContainerOnPort(
 	return appleContainerPortOwners(cli).get(port);
 }
 
-/**
- * Every container this project has, from the same single `container ls` the
- * rest of this module reads.
- */
-export function appleProjectServiceStates(
-	cli: AppleContainerCli,
-	projectName: string,
-): ServiceRuntimeState[] {
-	return projectRecords(cli, projectName).flatMap((record) => {
-		const service = record.labels[SERVICE_LABEL];
-		if (!service) return [];
-		const stackHash = record.labels[STACK_HASH_LABEL];
-		const serviceHash = record.labels[SERVICE_HASH_LABEL];
-		return [
-			{
-				service,
-				running: isRunningState(record.state),
-				...(stackHash ? { stackHash } : {}),
-				...(serviceHash ? { serviceHash } : {}),
-			},
-		];
-	});
-}
-
 export async function listContainerRecordsAsync(
 	cli: AppleContainerCli,
 	signal?: AbortSignal,
@@ -322,7 +252,8 @@ export async function listContainerRecordsAsync(
 	return result.ok ? parseContainerRecords(result.stdout) : [];
 }
 
-export async function appleProjectServiceStatesAsync(
+/** Every container this project has, from one `container ls`. */
+export async function appleProjectServiceStates(
 	cli: AppleContainerCli,
 	projectName: string,
 	signal?: AbortSignal,
@@ -346,7 +277,14 @@ export async function appleProjectServiceStatesAsync(
 		});
 }
 
-export async function diagnoseAppleServiceAsync(
+/**
+ * State and recent output for one service.
+ *
+ * The state comes from the same `container ls --all` read every other question
+ * here uses; the log tail is a best effort on top, because a runtime that
+ * cannot produce it should still fail fast on the state alone.
+ */
+export async function diagnoseAppleService(
 	cli: AppleContainerCli,
 	request: ServiceDiagnosisRequest,
 ): Promise<ServiceDiagnosis | undefined> {

@@ -1,6 +1,7 @@
 import type { ComposeDocument } from "../docker-compose";
 import type {
 	BuncargoContainer,
+	BuncargoVolume,
 	ContainerRuntimeName,
 	PortContainerOwner,
 } from "../types";
@@ -161,29 +162,35 @@ export interface ContainerRuntimeAdapter {
 	isAvailable(): boolean;
 	/** Start the runtime's daemon when allowed, or throw with remediation. */
 	ensureRunning(options?: EnsureRuntimeOptions): Promise<void>;
-	up(request: ContainerUpRequest): void;
-	upAsync?(request: ContainerUpRequest): Promise<void>;
-	down(request: ContainerDownRequest): void;
-	downAsync?(request: ContainerDownRequest): Promise<void>;
-	areServicesRunning(
-		projectName: string,
-		serviceNames: string[],
-	): Promise<boolean>;
+	up(request: ContainerUpRequest): Promise<void>;
+	/**
+	 * Stop and remove the project's containers.
+	 *
+	 * Must work with nothing but the project name: the sweep tears down stacks
+	 * whose checkout, and with it the compose file, is already gone.
+	 */
+	down(request: ContainerDownRequest): Promise<void>;
 	/** Run a command in a service container; false for any failure. */
-	execInService(request: ExecInServiceRequest): boolean;
-	execInServiceAsync?(request: ExecInServiceRequest): Promise<boolean>;
+	execInService(request: ExecInServiceRequest): Promise<boolean>;
 	/**
 	 * State and recent output for one service, or undefined when the runtime
 	 * has no container for it. Never throws: this only enriches diagnostics.
 	 */
 	diagnoseService(
 		request: ServiceDiagnosisRequest,
-	): ServiceDiagnosis | undefined;
-	diagnoseServiceAsync?(
-		request: ServiceDiagnosisRequest,
 	): Promise<ServiceDiagnosis | undefined>;
 	/** Every buncargo-labeled container this runtime knows about. */
 	list(): BuncargoContainer[];
+	/**
+	 * Every volume this runtime holds, for `buncargo prune`.
+	 *
+	 * Not scoped to buncargo: a volume carries no marker of ours, so the
+	 * caller attributes them by Compose project instead. Never throws; a
+	 * runtime that cannot answer returns nothing.
+	 */
+	listVolumes(): Promise<BuncargoVolume[]>;
+	/** Remove volumes by name. Returns what could not be removed, and why. */
+	removeVolumes(names: string[]): Promise<{ name: string; error: string }[]>;
 	stopByIds(ids: string[]): void;
 	findContainerOnPort(port: number): PortContainerOwner | undefined;
 	/**
@@ -201,8 +208,7 @@ export interface ContainerRuntimeAdapter {
 	 * as "reconcile", so a failure here costs a redundant `up` rather than a
 	 * skipped one.
 	 */
-	projectServiceStates(projectName: string): ServiceRuntimeState[];
-	projectServiceStatesAsync?(
+	projectServiceStates(
 		projectName: string,
 		signal?: AbortSignal,
 	): Promise<ServiceRuntimeState[]>;

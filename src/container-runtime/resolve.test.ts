@@ -131,7 +131,7 @@ describe("containerRuntimeForEnv", () => {
 });
 
 describe("isContainerUp", () => {
-	it("accepts both runtimes' vocabulary for a live container", () => {
+	it("reads the state, not the human status line", () => {
 		const base = {
 			id: "a",
 			name: "a",
@@ -141,11 +141,27 @@ describe("isContainerUp", () => {
 			worktree: "",
 			service: "postgres",
 		};
-		expect(isContainerUp({ ...base, status: "Up 3 minutes" })).toBe(true);
-		expect(isContainerUp({ ...base, status: "running" })).toBe(true);
-		expect(isContainerUp({ ...base, status: "Exited (0) 1 hour ago" })).toBe(
+		expect(
+			isContainerUp({ ...base, state: "running", status: "Up 3 minutes" }),
+		).toBe(true);
+		// Both runtimes spell it the same, so Apple needs no second vocabulary.
+		expect(
+			isContainerUp({ ...base, state: "running", status: "running" }),
+		).toBe(true);
+		// "Exited (0) 1 hour ago" and "Up 3 minutes" both contain a word the
+		// old substring match accepted; only the state separates them.
+		expect(
+			isContainerUp({
+				...base,
+				state: "exited",
+				status: "Exited (0) 1 hour ago",
+			}),
+		).toBe(false);
+		expect(
+			isContainerUp({ ...base, state: "stopped", status: "stopped" }),
+		).toBe(false);
+		expect(isContainerUp({ ...base, state: "paused", status: "Paused" })).toBe(
 			false,
 		);
-		expect(isContainerUp({ ...base, status: "stopped" })).toBe(false);
 	});
 });

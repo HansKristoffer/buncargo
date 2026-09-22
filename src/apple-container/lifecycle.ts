@@ -220,16 +220,7 @@ export function appleStopByIds(cli: AppleContainerCli, ids: string[]): void {
 	}
 }
 
-function runSteps(
-	cli: AppleContainerCli,
-	steps: AppleSteps,
-	options: AppleCliOptions,
-): void {
-	let step = steps.next();
-	while (!step.done) step = steps.next(cli.run(step.value, options));
-}
-
-async function runStepsAsync(
+async function runSteps(
 	cli: AppleContainerCli,
 	steps: AppleSteps,
 	options: AppleCliOptions,
@@ -251,17 +242,8 @@ async function runStepsAsync(
 export function appleUp(
 	cli: AppleContainerCli,
 	request: ContainerUpRequest,
-): void {
-	runSteps(cli, upSteps(request), {
-		signal: request.signal,
-		timeoutMs: request.timeoutMs ?? 600000,
-	});
-}
-export function appleUpAsync(
-	cli: AppleContainerCli,
-	request: ContainerUpRequest,
 ): Promise<void> {
-	return runStepsAsync(cli, upSteps(request), {
+	return runSteps(cli, upSteps(request), {
 		signal: request.signal,
 		timeoutMs: request.timeoutMs ?? 600000,
 	});
@@ -269,17 +251,8 @@ export function appleUpAsync(
 export function appleDown(
 	cli: AppleContainerCli,
 	request: ContainerDownRequest,
-): void {
-	runSteps(cli, downSteps(request), {
-		signal: request.signal,
-		timeoutMs: request.timeoutMs ?? 120000,
-	});
-}
-export function appleDownAsync(
-	cli: AppleContainerCli,
-	request: ContainerDownRequest,
 ): Promise<void> {
-	return runStepsAsync(cli, downSteps(request), {
+	return runSteps(cli, downSteps(request), {
 		signal: request.signal,
 		timeoutMs: request.timeoutMs ?? 120000,
 	});

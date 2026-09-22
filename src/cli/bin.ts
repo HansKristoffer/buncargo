@@ -18,6 +18,7 @@ import { handleExec } from "./commands/exec";
 import { showHelp } from "./commands/help";
 import { handleHosts } from "./commands/hosts";
 import { handleDoctor, handleLs, handleStatus } from "./commands/inspect";
+import { handlePrune } from "./commands/prune";
 import { type CliCommandName, resolveCommandName } from "./commands/registry";
 import { handleRuns } from "./commands/runs";
 import {
@@ -86,6 +87,12 @@ async function runCommand(
 			// 2 is "no such target", 3 is "refused", and the menu bar app
 			// distinguishes them.
 			const code = await handleStop(commandArgs);
+			if (code !== 0) process.exit(code);
+			return;
+		}
+
+		case "prune": {
+			const code = await handlePrune(commandArgs);
 			if (code !== 0) process.exit(code);
 			return;
 		}

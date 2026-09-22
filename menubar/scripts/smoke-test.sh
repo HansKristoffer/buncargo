@@ -38,6 +38,14 @@ for expected in "lullu/fix-login" "platform=ready" "api=starting" "worker=reused
   fi
 done
 
+# The fixture's second run has finished and only its containers remain. Its
+# pid is alive too, so showing it would mean the app is not reading
+# `releasedAt` — a finished run back in the menu.
+if [[ "$OUTPUT" == *"t3code-released"* ]]; then
+  echo "Expected --status to hide the released run" >&2
+  exit 1
+fi
+
 HOME="$FAKE_HOME" "$BINARY" --selftest
 
 # A registry from a newer CLI must fail loudly rather than read as "nothing

@@ -1,6 +1,6 @@
 import type { ExecInServiceRequest } from "../container-runtime/types";
 import { remainingTime } from "../core/deadline";
-import { runDocker, runDockerAsync } from "./binary";
+import { runDockerAsync } from "./binary";
 
 /** Match Compose exec's default replica, excluding one-off run containers. */
 function serviceContainerArgs(request: ExecInServiceRequest): string[] {
@@ -30,27 +30,7 @@ function uniqueContainerId(stdout: string): string | undefined {
  * Postgres is ready. Resolve by labels, not a guessed name or a cached ID, so
  * custom names, aliases and container recreation still target the right one.
  */
-export function execInDockerService(
-	request: ExecInServiceRequest,
-	binary?: string,
-): boolean {
-	request.signal?.throwIfAborted();
-	const deadline = performance.now() + (request.timeoutMs ?? 2000);
-	if (remainingTime(deadline) === 0) return false;
-	const listed = runDocker(binary, serviceContainerArgs(request), {
-		cwd: request.root,
-		timeoutMs: Math.max(1, Math.ceil(remainingTime(deadline))),
-	});
-	const id = listed.ok ? uniqueContainerId(listed.stdout) : undefined;
-	request.signal?.throwIfAborted();
-	if (!id || remainingTime(deadline) === 0) return false;
-	return runDocker(binary, ["exec", id, ...request.command], {
-		cwd: request.root,
-		timeoutMs: Math.max(1, Math.ceil(remainingTime(deadline))),
-	}).ok;
-}
-
-export async function execInDockerServiceAsync(
+export async function execInDockerService(
 	request: ExecInServiceRequest,
 	binary?: string,
 ): Promise<boolean> {

@@ -1,9 +1,10 @@
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { formatPortOwner, getPortOwner } from "../core/process";
-import { formatDone, formatStep } from "../core/style";
-import { type DockerRunResult, runDocker, runDockerAsync } from "./binary";
+import { formatDone, formatStep, formatWarn } from "../core/style";
+import { type DockerRunResult, runDockerAsync } from "./binary";
 import { getComposeArgs } from "./compose-command";
 import { isDockerDaemonRunning } from "./preflight";
-import { assertDockerRunning } from "./status";
 
 export interface StartContainersOptions {
 	noDeps?: boolean;
@@ -23,6 +24,13 @@ export interface StopContainersOptions {
 	removeVolumes?: boolean;
 	composeFile?: string;
 	binary?: string;
+}
+
+/** Compose's own words for "the daemon is not there". */
+function isDaemonDownMessage(message: string): boolean {
+	return /cannot connect to the docker daemon|is the docker daemon running|docker daemon is not running|error during connect/i.test(
+		message,
+	);
 }
 
 /**
@@ -47,127 +55,8 @@ function translateComposeFailure(result: DockerRunResult): never {
 	);
 }
 
-/**
- * Start Docker Compose containers.
- */
-export function startContainers(
-	root: string,
-	projectName: string,
-	envVars: Record<string, string>,
-	options: StartContainersOptions = {},
-): void {
-	const {
-		verbose = true,
-		wait = true,
-		composeFile,
-		services = [],
-		binary,
-	} = options;
-	assertDockerRunning(binary);
-
-	if (verbose) console.log(formatStep("🐳 Starting Docker containers..."));
-
-	const result = runDocker(
-		binary,
-		[
-			...getComposeArgs({ projectName, composeFile }),
-			"up",
-			"-d",
-			...(wait ? ["--wait"] : []),
-			...(options.noDeps ? ["--no-deps"] : []),
-			...services,
-		],
-		{
-			cwd: root,
-			timeoutMs: options.timeoutMs ?? 600000,
-			env: { ...envVars, COMPOSE_PROJECT_NAME: projectName },
-			inherit: verbose,
-		},
-	);
-	if (!result.ok) translateComposeFailure(result);
-
-	if (verbose) console.log(formatDone("Containers started"));
-}
-
-/**
- * Stop Docker Compose containers.
- */
-export function stopContainers(
-	root: string,
-	projectName: string,
-	options: StopContainersOptions = {},
-): void {
-	const {
-		verbose = true,
-		removeVolumes = false,
-		composeFile,
-		binary,
-	} = options;
-	if (!isDockerDaemonRunning(binary)) {
-		if (verbose) {
-			console.log(formatStep("ℹ Docker is not running. Nothing to stop."));
-		}
-		return;
-	}
-
-	if (verbose) {
-		console.log(
-			formatStep(
-				removeVolumes
-					? "🗑️  Stopping containers and removing volumes..."
-					: "🛑 Stopping containers...",
-			),
-		);
-	}
-
-	const result = runDocker(
-		binary,
-		[
-			...getComposeArgs({ projectName, composeFile }),
-			"down",
-			...(removeVolumes ? ["-v"] : []),
-		],
-		{
-			cwd: root,
-			timeoutMs: options.timeoutMs ?? 600000,
-			env: { COMPOSE_PROJECT_NAME: projectName },
-			inherit: verbose,
-		},
-	);
-	if (!result.ok) translateComposeFailure(result);
-
-	if (verbose) console.log(formatDone("Containers stopped"));
-}
-
-/**
- * Start a specific service only.
- */
-export function startService(
-	root: string,
-	projectName: string,
-	serviceName: string,
-	envVars: Record<string, string>,
-	options: { verbose?: boolean; composeFile?: string; binary?: string } = {},
-): void {
-	const { verbose = true, composeFile, binary } = options;
-	assertDockerRunning(binary);
-
-	if (verbose) console.log(formatStep(`🐳 Starting ${serviceName}...`));
-
-	const result = runDocker(
-		binary,
-		[...getComposeArgs({ projectName, composeFile }), "up", "-d", serviceName],
-		{
-			cwd: root,
-			env: { ...envVars, COMPOSE_PROJECT_NAME: projectName },
-			inherit: verbose,
-			timeoutMs: 600000,
-		},
-	);
-	if (!result.ok) translateComposeFailure(result);
-}
-
-export async function startContainersAsync(
+/** Start Docker Compose containers. */
+export async function startContainers(
 	root: string,
 	projectName: string,
 	envVars: Record<string, string>,
@@ -205,7 +94,15 @@ export async function startContainersAsync(
 	if (verbose) console.log(formatDone("Containers started"));
 }
 
-export async function stopContainersAsync(
+/**
+ * Stop and remove Docker Compose containers.
+ *
+ * Compose finds them by the project label, so the compose file is only needed
+ * to name the volumes `removeVolumes` deletes, and the checkout only to host
+ * that file. A stack whose worktree was deleted must still come down, which is
+ * why neither is required here.
+ */
+export async function stopContainers(
 	root: string,
 	projectName: string,
 	options: StopContainersOptions = {},
@@ -219,21 +116,45 @@ export async function stopContainersAsync(
 		timeoutMs = 120000,
 	} = options;
 	if (verbose) console.log(formatStep("🛑 Stopping containers..."));
+
+	const file = composeFile && existsSync(composeFile) ? composeFile : undefined;
+	if (removeVolumes && !file) {
+		console.warn(
+			formatWarn(
+				"No compose file to name the volumes; containers were removed and volumes left in place.",
+			),
+		);
+	}
 	const result = await runDockerAsync(
 		binary,
 		[
-			...getComposeArgs({ projectName, composeFile }),
+			...getComposeArgs({ projectName, composeFile: file }),
 			"down",
-			...(removeVolumes ? ["-v"] : []),
+			...(removeVolumes && file ? ["-v"] : []),
 		],
 		{
-			cwd: root,
+			cwd: existsSync(root) ? root : homedir(),
 			env: { COMPOSE_PROJECT_NAME: projectName },
 			inherit: verbose,
 			signal,
 			timeoutMs,
 		},
 	);
-	if (!result.ok) translateComposeFailure(result);
+	if (!result.ok) {
+		// A daemon that is not there has already stopped everything. Probing it
+		// up front cost a `docker info` on every teardown, including each one
+		// the watchdog performs; compose's own failure says the same thing.
+		// A verbose run streamed that failure to the terminal instead of
+		// capturing it, so only then is the probe worth its fork.
+		const daemonDown = result.stderr.trim()
+			? isDaemonDownMessage(result.stderr)
+			: !isDockerDaemonRunning(binary);
+		if (daemonDown) {
+			if (verbose)
+				console.log(formatStep("ℹ Docker is not running. Nothing to stop."));
+			return;
+		}
+		translateComposeFailure(result);
+	}
 	if (verbose) console.log(formatDone("Containers stopped"));
 }

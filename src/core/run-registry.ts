@@ -2,7 +2,10 @@ import { chmodSync } from "node:fs";
 import type { ContainerRuntimeName } from "../types";
 import type { ExpoAppIdentity } from "./expo";
 import { withFileLock } from "./file-lock";
-import { matchesProcessIdentity } from "./process-identity";
+import {
+	matchesProcessIdentity,
+	processIdentityMatcher,
+} from "./process-identity";
 import {
 	defineListRegistry,
 	isRouteOwnerAlive,
@@ -14,11 +17,16 @@ import { chownToInvokingUser, stateFilePath } from "./state-paths";
  * What is running on this machine right now.
  *
  * Nothing on disk answered that question. There were four partial signals and
- * no join between them: the watchdog heartbeat (a pid, under a hashed name you
- * had to know in advance), the hosts route registry (only projects with named
- * hosts, only HTTP services), the tunnel registry (only exposed targets), and
- * container labels (services but never apps, and a process spawn per read).
- * `buncargo ls` needed Docker just to say a project was up.
+ * no join between them: a per-project watchdog heartbeat (a pid, under a
+ * hashed name you had to know in advance), the hosts route registry (only
+ * projects with named hosts, only HTTP services), the tunnel registry (only
+ * exposed targets), and container labels (services but never apps, and a
+ * process spawn per read). `buncargo ls` needed Docker just to say a project
+ * was up.
+ *
+ * This file is now the only one of those left for runs: the heartbeat folded
+ * into it, so a run's liveness, its containers' idle hold and the backend
+ * that started them are one record rather than two that could disagree.
  *
  * So a run publishes itself here: identity, every app and service with its URL
  * and state, and the interpreter that started it. Written on start, patched as
@@ -102,10 +110,34 @@ export interface RunEntry {
 	/** Worktree directory name, or `null` in the main checkout. */
 	worktree: string | null;
 	branch?: string;
-	/** The `buncargo dev` process. Its death retires the entry. */
+	/**
+	 * The process that owns this run.
+	 *
+	 * Its death retires the entry — unless the run owns containers, which
+	 * outlive it by design: then the entry survives, invisible to every
+	 * "live runs" reader, until the sweep has torn the containers down.
+	 * Never zeroed on release: the menu bar asks `kill(pid, 0)`, and pid 0
+	 * is that app's own process group.
+	 */
 	pid: number;
 	startedAt: string;
 	updatedAt: string;
+	/**
+	 * When the owner exited on purpose, so its containers may be reused.
+	 *
+	 * Absent while the run is live. Set instead of withdrawing the entry,
+	 * because a deliberate Ctrl-C has to be distinguishable from a crash: the
+	 * crash grace is seconds, this hold is minutes, and without the
+	 * distinction every restart paid for a container recreate.
+	 */
+	releasedAt?: string;
+	/**
+	 * How long the containers are held after {@link RunEntry.releasedAt}.
+	 *
+	 * Absent means "as long as the checkout exists", which is what
+	 * `--keep-containers` and the one-shot modes ask for.
+	 */
+	idleTimeoutMs?: number;
 	primaryApp?: string;
 	hosts: { active: boolean; tld: string } | null;
 	/**
@@ -201,6 +233,10 @@ function isRunEntry(value: unknown): value is RunEntry {
 		typeof value.projectPrefix === "string" &&
 		typeof value.startedAt === "string" &&
 		typeof value.updatedAt === "string" &&
+		(value.releasedAt === undefined || typeof value.releasedAt === "string") &&
+		(value.idleTimeoutMs === undefined ||
+			(typeof value.idleTimeoutMs === "number" &&
+				Number.isFinite(value.idleTimeoutMs))) &&
 		isRecord(value.cli) &&
 		typeof value.cli.program === "string" &&
 		Array.isArray(value.apps) &&
@@ -238,16 +274,38 @@ export async function loadRuns(
 	return registry.read(path, options);
 }
 
-/** Unlocked core, so callers already holding the lock can reuse it. */
+/** Whether the process that published an entry is still running. */
+export function isRunAlive(run: RunEntry): boolean {
+	return (
+		run.releasedAt === undefined &&
+		matchesProcessIdentity(run.pid, run.processIdentity)
+	);
+}
+
+/**
+ * Unlocked core, so callers already holding the lock can reuse it.
+ *
+ * A dead run that owns containers is *kept*. Its entry is the only record of
+ * what those containers are for, which idle hold they were given and which
+ * runtime started them, and the sweep needs all three to decide when to tear
+ * them down. Every "what is running" reader filters on liveness anyway, so a
+ * retired entry is invisible to `runs`, `stop` and the menu bar; only the
+ * sweep sees it, and only the sweep removes it.
+ */
 async function prune(path: string): Promise<RunEntry[]> {
 	const runs = await registry.read(path);
-	const live = runs.filter((run) =>
-		matchesProcessIdentity(run.pid, run.processIdentity),
+	// One `ps` for the whole file rather than one per entry: every read of
+	// this registry prunes, and the watchdog reads it on every tick.
+	const isLive = processIdentityMatcher(runs);
+	const kept = runs.filter(
+		(run) =>
+			(run.releasedAt === undefined && isLive(run.pid, run.processIdentity)) ||
+			run.services.length > 0,
 	);
-	if (live.length !== runs.length) {
-		await registry.write(path, live);
+	if (kept.length !== runs.length) {
+		await registry.write(path, kept);
 	}
-	return live;
+	return kept;
 }
 
 export async function pruneRuns(path = getRunsPath()): Promise<RunEntry[]> {
@@ -292,9 +350,73 @@ export async function publishRun(
 		if (existing && !run.sessionId && claimRun(existing, run) === "keep")
 			return;
 		const next = [...runs];
-		if (index >= 0) next[index] = run;
-		else next.push(run);
+		if (existing) {
+			// This session already claimed its containers before starting them;
+			// the publish that enriches the entry with apps and hosts knows
+			// neither when that happened nor which hold it was given.
+			next[index] = {
+				...run,
+				startedAt: existing.startedAt,
+				...(run.idleTimeoutMs === undefined &&
+				existing.idleTimeoutMs !== undefined
+					? { idleTimeoutMs: existing.idleTimeoutMs }
+					: {}),
+			};
+		} else next.push(run);
 		await registry.write(path, next);
+	});
+}
+
+/**
+ * Mark a run as deliberately finished, keeping its containers for the hold.
+ *
+ * The entry stays so the sweep can find those containers later. A run with no
+ * services is withdrawn outright: there is nothing for the sweep to do, and
+ * leaving it would show a dead row to anything that forgot to filter.
+ */
+export async function releaseRun(
+	root: string,
+	pid: number,
+	options: { path?: string; sessionId?: string } = {},
+): Promise<void> {
+	const path = options.path ?? getRunsPath();
+	await withFileLock(path, async () => {
+		const runs = await registry.read(path);
+		const index = runs.findIndex(
+			(entry) =>
+				entry.root === root &&
+				entry.pid === pid &&
+				(options.sessionId === undefined ||
+					entry.sessionId === options.sessionId),
+		);
+		const current = index >= 0 ? runs[index] : undefined;
+		if (!current) return;
+		const next = [...runs];
+		if (current.services.length === 0) next.splice(index, 1);
+		else next[index] = { ...current, releasedAt: new Date().toISOString() };
+		await registry.write(path, next);
+	});
+}
+
+/** Drop entries the sweep has finished with, by session id. */
+export async function retireRuns(
+	sessions: readonly { root: string; sessionId?: string; pid: number }[],
+	options: { path?: string } = {},
+): Promise<void> {
+	if (sessions.length === 0) return;
+	const path = options.path ?? getRunsPath();
+	await withFileLock(path, async () => {
+		const runs = await registry.read(path);
+		const next = runs.filter(
+			(entry) =>
+				!sessions.some(
+					(session) =>
+						session.root === entry.root &&
+						session.pid === entry.pid &&
+						session.sessionId === entry.sessionId,
+				),
+		);
+		if (next.length !== runs.length) await registry.write(path, next);
 	});
 }
 
@@ -434,7 +556,20 @@ export async function findRunsByRoot(
 
 /** Inspection filters stale owners in memory without mutating persisted state. */
 export async function readLiveRuns(path = getRunsPath()): Promise<RunEntry[]> {
-	return (await loadRuns(path, { strict: true })).filter((run) =>
-		matchesProcessIdentity(run.pid, run.processIdentity),
+	const runs = await loadRuns(path, { strict: true });
+	const isLive = processIdentityMatcher(runs);
+	return runs.filter(
+		(run) =>
+			run.releasedAt === undefined && isLive(run.pid, run.processIdentity),
 	);
+}
+
+/**
+ * Every entry, live or retired, for the sweep.
+ *
+ * The only reader that wants the released ones: they are what says a stack
+ * may still be reused, and for how much longer.
+ */
+export async function readAllRuns(path = getRunsPath()): Promise<RunEntry[]> {
+	return loadRuns(path, { strict: true });
 }

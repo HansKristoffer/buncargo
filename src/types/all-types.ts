@@ -183,6 +183,15 @@ export type DockerServiceDefinition =
 export interface BuncargoContainer {
 	id: string;
 	name: string;
+	/**
+	 * The runtime's own word for the state: `running`, `exited`, `paused`.
+	 *
+	 * Distinct from {@link BuncargoContainer.status}, which is for people:
+	 * deciding anything from `Up 3 minutes` means parsing prose, and the
+	 * sweep's "every container is stopped" rule hangs off this answer.
+	 */
+	state: string;
+	/** The runtime's human-readable status line, for display only. */
 	status: string;
 	ports: string;
 	project: string;
@@ -191,6 +200,23 @@ export interface BuncargoContainer {
 	service: string;
 	/** Which runtime reported it; set so `stop-all` can stop each with its own. */
 	runtime?: ContainerRuntimeName;
+}
+
+/**
+ * A volume a runtime is holding, as far as its listing can say.
+ *
+ * `project` comes from Compose's own label. Buncargo deliberately adds no
+ * labels of its own here: Compose compares a volume's configuration against
+ * the file and prompts "exists but doesn't match configuration in compose
+ * file. Recreate (data will be lost)?" — which hangs a non-interactive run and
+ * offers to destroy a database. Whatever prune knows about a volume, it has to
+ * learn without touching the volume's definition.
+ */
+export interface BuncargoVolume {
+	name: string;
+	/** Compose project, where the runtime records one. */
+	project?: string;
+	runtime: ContainerRuntimeName;
 }
 
 /** A container holding a host port, as far as a runtime can tell. */
@@ -1523,8 +1549,6 @@ export interface DevEnvironment<
 		/** When false, do not expand `onlyApps` via `requiredApps`. Default: true */
 		expandRequired?: boolean;
 	}): Promise<void>;
-	/** Idle watchdog timeout from `options.autoShutdown` (ms), or false to disable. */
-	readonly autoShutdown?: number | false;
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Utilities
@@ -1598,17 +1622,22 @@ export interface DevEnvironment<
 	getFrontendPort(): number | undefined;
 
 	// ─────────────────────────────────────────────────────────────────────────
-	// Watchdog / Heartbeat
+	// Run claim / watchdog
 	// ─────────────────────────────────────────────────────────────────────────
 
-	/** Start writing heartbeat for watchdog */
-	startHeartbeat(intervalMs?: number): void;
-	/** Stop writing heartbeat */
-	stopHeartbeat(): void;
-	/** Spawn watchdog process for auto-shutdown */
-	spawnWatchdog(timeoutMinutes?: number): Promise<void>;
-	/** Stop the watchdog process */
-	stopWatchdog(): void;
+	/** The session this environment publishes under, in `~/.buncargo/runs.json`. */
+	readonly sessionId: string;
+	/**
+	 * Claim the selected services' containers for this process.
+	 *
+	 * `start()` does this itself; call it first to set the idle hold, where
+	 * `false` keeps the containers as long as the checkout exists. Idempotent.
+	 */
+	claimRun(options?: { idleTimeoutMs?: number | false }): Promise<void>;
+	/** Release the claim: containers are held for the idle timeout, then removed. */
+	releaseRun(): Promise<void>;
+	/** Start the machine-wide watchdog unless it is already running. */
+	ensureWatchdog(): Promise<void>;
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Prisma Integration

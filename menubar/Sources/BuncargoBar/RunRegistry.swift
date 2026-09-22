@@ -83,6 +83,14 @@ struct Run: Codable, Identifiable, Hashable {
     let pid: Int
     let startedAt: String
     let updatedAt: String
+    /// Set once the run has finished and only its containers remain.
+    ///
+    /// The CLI keeps such an entry so its sweep knows those containers may
+    /// still be reused, and for how long. Nothing here should show it: the
+    /// run is over. Checked rather than relying on the pid being dead,
+    /// because these entries outlive their process and a reused pid would
+    /// otherwise put a finished run back in the menu.
+    var releasedAt: String?
     var primaryApp: String?
     var hosts: RunHosts?
     var cli: RunCLI?
@@ -110,12 +118,16 @@ struct Run: Codable, Identifiable, Hashable {
         return live.count == 1 ? live.first : nil
     }
 
+    /// Is this a run the menu should show?
+    ///
     /// Is the process that published this entry still alive?
     ///
     /// Signal 0 checks for existence without delivering anything. The registry
     /// is pruned by the CLI, but only when a CLI runs; between runs this is the
     /// only thing that retires a crashed run from the menu.
-    var isAlive: Bool { kill(pid_t(pid), 0) == 0 || errno == EPERM }
+    var isAlive: Bool {
+        releasedAt == nil && (kill(pid_t(pid), 0) == 0 || errno == EPERM)
+    }
 }
 
 private struct RunsFile: Codable {

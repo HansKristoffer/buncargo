@@ -12,7 +12,6 @@ import {
 	type RunPatch,
 	type RunServiceEntry,
 	type RunServiceStatus,
-	withdrawRun,
 } from "../core/run-registry";
 import { describeService } from "../core/service-identity";
 import { defaultServiceProtocol } from "../core/service-presets";
@@ -208,7 +207,14 @@ function serviceEntries(
 }
 
 export interface PublishRunInput {
-	sessionId?: string;
+	/**
+	 * The environment's own session id.
+	 *
+	 * Not minted here: the environment already claimed this run's containers
+	 * under it before starting them, and publishing under a second id would
+	 * leave two entries for one run — one of them the entry the sweep reads.
+	 */
+	sessionId: string;
 	serviceNames?: readonly string[];
 	/** Apps this run is responsible for, spawned or reused. */
 	apps: Record<string, AppConfig>;
@@ -249,7 +255,7 @@ async function writeRun(
 	const reused = new Set(input.reusedNames ?? []);
 	const now = new Date().toISOString();
 	const entry: RunEntry = {
-		sessionId: input.sessionId ?? crypto.randomUUID(),
+		sessionId: input.sessionId,
 		processIdentity: readProcessIdentity(process.pid),
 		projectPrefix: env.projectPrefix,
 		projectName: env.projectName,
@@ -277,7 +283,7 @@ async function writeRun(
 	};
 
 	await publishRun(entry);
-	currentSessions.set(env.root, entry.sessionId as string);
+	currentSessions.set(env.root, input.sessionId);
 	return entry;
 }
 
@@ -307,16 +313,6 @@ export async function patchCurrentRun(
 		);
 	} catch (error) {
 		reportFailure("update", error);
-	}
-}
-
-export async function withdrawCurrentRun(root: string): Promise<void> {
-	try {
-		const sessionId = currentSessions.get(root);
-		await enqueue(root, () => withdrawRun(root, process.pid, { sessionId }));
-		if (currentSessions.get(root) === sessionId) currentSessions.delete(root);
-	} catch (error) {
-		reportFailure("clear", error);
 	}
 }
 

@@ -5,6 +5,7 @@ import {
 	containerRuntimeForEnv,
 	getContainerRuntimeAdapter,
 	listBuncargoContainers,
+	sweepOrphanedContainers,
 } from "../../../container-runtime";
 import {
 	describeLoopbackHijack,
@@ -33,8 +34,10 @@ import {
 } from "../../../core/process";
 import { isRouteOwnerAlive } from "../../../core/registry-file";
 import {
+	isRunAlive,
 	loadRuns,
 	REGISTRY_VERSION,
+	readAllRuns,
 	readLiveRuns,
 } from "../../../core/run-registry";
 import { loadDevEnv } from "../../../loader";
@@ -119,21 +122,46 @@ function checkPortsLockfile(report: DoctorReport, env: DevEnv): void {
 	report.note(`ports.json offset ${lockfile.offset} looks consistent`);
 }
 
-function checkForeignContainers(
+async function checkOrphanedContainers(
 	report: DoctorReport,
 	env: DevEnv,
 	runtime: ContainerRuntimeAdapter,
-): void {
+): Promise<void> {
 	if (!runtime.isAvailable()) return;
 	try {
-		const orphans = listBuncargoContainers([runtime]).filter(
+		const { swept, failed } = await sweepOrphanedContainers({
+			runtimes: [runtime],
+			except: { projectName: env.projectName, root: env.root },
+		});
+		for (const stack of swept)
+			report.note(
+				`Removed ${stack.projectName} (${stack.root}): ${stack.reason}`,
+			);
+		for (const failure of failed)
+			report.issue(
+				`Could not remove ${failure.projectName} (${failure.root}): ${failure.error}`,
+			);
+		// Same project name from another checkout, still owned: a run in a
+		// worktree that resolved to this project's identity. Survived the
+		// sweep, so somebody is using them — say who, because the fix is to
+		// go and stop that run, not to guess.
+		const foreign = listBuncargoContainers([runtime]).filter(
 			(item) =>
 				item.project === env.projectName && item.root && item.root !== env.root,
 		);
-		if (orphans.length > 0) {
-			report.issue(
-				`${orphans.length} container${orphans.length === 1 ? "" : "s"} labeled ${env.projectName} belong to another root`,
-			);
+		if (foreign.length > 0) {
+			const runs = await readAllRuns();
+			for (const root of new Set(foreign.map((item) => item.root))) {
+				const owner = runs.find(
+					(run) => run.root === root && run.projectName === env.projectName,
+				);
+				const who = owner
+					? `${owner.worktree ?? "the main checkout"}${isRunAlive(owner) ? `, running as pid ${owner.pid}` : ", finished and being held"}`
+					: "no run on record";
+				report.issue(
+					`Containers labeled ${env.projectName} belong to ${root} (${who})`,
+				);
+			}
 		}
 	} catch (error) {
 		report.fromError(error);
@@ -346,7 +374,7 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 		);
 		checkPortOwnership(report, env, selected);
 		checkPortsLockfile(report, env);
-		checkForeignContainers(report, env, selected);
+		await checkOrphanedContainers(report, env, selected);
 		await checkTunnelRegistry(report, env);
 		await checkNamedHosts(report, env);
 	}

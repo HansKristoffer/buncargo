@@ -9,13 +9,7 @@ import type {
 } from "../container-runtime/types";
 import type { AppleContainerCli } from "./cli";
 import { createAppleContainerCli, runAppleAsync } from "./cli";
-import {
-	appleDown,
-	appleDownAsync,
-	appleStopByIds,
-	appleUp,
-	appleUpAsync,
-} from "./lifecycle";
+import { appleDown, appleStopByIds, appleUp } from "./lifecycle";
 import {
 	ensureAppleContainerRunning,
 	isAppleContainerSystemRunning,
@@ -24,13 +18,11 @@ import { containerNameFor } from "./run-plan";
 import {
 	appleContainerPortOwners,
 	appleProjectServiceStates,
-	appleProjectServiceStatesAsync,
-	areAppleServicesRunning,
 	diagnoseAppleService,
-	diagnoseAppleServiceAsync,
 	findAppleContainerOnPort,
 	listAppleBuncargoContainers,
 } from "./status";
+import { listAppleVolumes, removeAppleVolumes } from "./volumes";
 
 export interface AppleContainerAdapterOptions {
 	/** Path to the `container` binary; falls back to a PATH lookup. */
@@ -58,32 +50,14 @@ export function appleContainerRuntimeAdapter(
 		},
 
 		up(request: ContainerUpRequest) {
-			appleUp(cli, request);
+			return appleUp(cli, request);
 		},
 
-		upAsync(request: ContainerUpRequest) {
-			return appleUpAsync(cli, request);
-		},
-		downAsync(request: ContainerDownRequest) {
-			return appleDownAsync(cli, request);
-		},
 		down(request: ContainerDownRequest) {
-			appleDown(cli, request);
+			return appleDown(cli, request);
 		},
 
-		async areServicesRunning(projectName: string, serviceNames: string[]) {
-			return areAppleServicesRunning(cli, projectName, serviceNames);
-		},
-
-		execInService(request: ExecInServiceRequest) {
-			const containerName = containerNameFor(
-				request.projectName,
-				request.serviceName,
-			);
-			return cli.run(["exec", containerName, ...request.command]).ok;
-		},
-
-		async execInServiceAsync(request: ExecInServiceRequest) {
+		async execInService(request: ExecInServiceRequest) {
 			return (
 				await runAppleAsync(
 					cli,
@@ -96,9 +70,7 @@ export function appleContainerRuntimeAdapter(
 				)
 			).ok;
 		},
-		diagnoseServiceAsync(request: ServiceDiagnosisRequest) {
-			return diagnoseAppleServiceAsync(cli, request);
-		},
+
 		diagnoseService(request: ServiceDiagnosisRequest) {
 			return diagnoseAppleService(cli, request);
 		},
@@ -106,6 +78,15 @@ export function appleContainerRuntimeAdapter(
 		list() {
 			if (!isAppleContainerSystemRunning(cli)) return [];
 			return listAppleBuncargoContainers(cli);
+		},
+
+		listVolumes() {
+			if (!isAppleContainerSystemRunning(cli)) return Promise.resolve([]);
+			return listAppleVolumes(cli);
+		},
+
+		removeVolumes(names: string[]) {
+			return removeAppleVolumes(cli, names);
 		},
 
 		stopByIds(ids: string[]) {
@@ -120,11 +101,8 @@ export function appleContainerRuntimeAdapter(
 			return appleContainerPortOwners(cli);
 		},
 
-		projectServiceStatesAsync(projectName: string, signal?: AbortSignal) {
-			return appleProjectServiceStatesAsync(cli, projectName, signal);
-		},
-		projectServiceStates(projectName: string) {
-			return appleProjectServiceStates(cli, projectName);
+		projectServiceStates(projectName: string, signal?: AbortSignal) {
+			return appleProjectServiceStates(cli, projectName, signal);
 		},
 	};
 }

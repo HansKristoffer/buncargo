@@ -1,14 +1,13 @@
 import { relative } from "node:path";
-import { ensureServicesRunning } from "../container-runtime";
+import {
+	ensureServicesRunning,
+	withProjectLifecycleLock,
+} from "../container-runtime";
 import { withDeadline } from "../core/deadline";
 import { toPortMap, toUrlMap } from "../core/ports";
 import { stopDevServers } from "../core/process/dev-servers";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWarn } from "../core/style";
-import {
-	createHeartbeatOwner,
-	withWatchdogProjectLock,
-} from "../core/watchdog";
 import { buildStartPlan, resolveComposeServiceNames } from "../planning";
 import type {
 	AppConfig,
@@ -25,6 +24,7 @@ import type { DevEnvContext } from "./context";
 import { syncEnvFile } from "./env-file";
 import type { DevEnvVarsApi } from "./env-vars";
 import { runMigrationsSequentially } from "./migrations";
+import type { DevRunClaimApi } from "./run-claim";
 import { runSeedIfNeeded } from "./seeding";
 import { assertAppWorkingDirectories, startAppServers } from "./servers";
 
@@ -45,6 +45,7 @@ export function createLifecycleApi<
 >(
 	ctx: DevEnvContext<TServices, TApps, TEnv>,
 	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
+	runClaim: DevRunClaimApi,
 ): DevLifecycleApi<TApps> {
 	const { config, services, apps, ports } = ctx;
 
@@ -272,143 +273,139 @@ export function createLifecycleApi<
 			}
 		}
 
-		const startupHeartbeat = createHeartbeatOwner(ctx.projectName, ctx.root);
+		// Claimed before anything is created, so the sweep never sees a fresh
+		// container as unowned. Idempotent, so a CLI that already claimed with
+		// its own flags keeps those. The claim outlives `start()`: it is
+		// released by `stop()`, or by this process exiting.
+		if (hasServices) await runClaim.claimRun();
+
+		if (verbose && !skipEnvironmentLog) {
+			ctx.logInfo(
+				productionBuild ? "Production Environment" : "Dev Environment",
+			);
+		}
+
+		// Containers-only mode bypasses preparation and starts every selected service.
+		const earlyServices = Object.fromEntries(
+			Object.entries(targetServices).filter(
+				([, service]) => prepare === "containers" || !service.afterPreparation,
+			),
+		);
+		const lateServices = Object.fromEntries(
+			Object.entries(targetServices).filter(
+				([, service]) => service.afterPreparation,
+			),
+		);
+
+		// Both subsets must fingerprint the same Compose artifact.
+		let artifactReady = false;
+
+		async function ensureSubset(
+			subset: Record<string, ServiceConfig>,
+			noDeps = false,
+		) {
+			if (Object.keys(subset).length === 0) {
+				return;
+			}
+
+			await phase("containers", () =>
+				withProjectLifecycleLock(
+					ctx.projectName,
+					ctx.root,
+					() => {
+						if (!artifactReady) {
+							ctx.ensureComposeFile();
+							artifactReady = true;
+						}
+
+						return ensureServicesRunning({
+							signal,
+							runtime: ctx.runtime,
+							root: ctx.root,
+							projectName: ctx.projectName,
+							envVars: envVars.buildEnvVars(productionBuild),
+							services: subset,
+							noDeps,
+							ports: targetPorts,
+							model: ctx.composeModel(),
+							composeFile: ctx.composeFile,
+							verbose,
+							wait,
+							autoStartRuntime: autoStartDocker,
+						});
+					},
+					{ signal },
+				),
+			);
+		}
+
 		if (hasServices) {
-			startupHeartbeat.start();
+			await ensureSubset(earlyServices);
+		}
+
+		// Before migrations, not just before servers: Prisma and friends read
+		// `.env` off disk themselves, so a stale port fails the migrate step.
+		await phase("dotenv", () => syncConfiguredEnvFile(verbose));
+		if (prepare === "containers") {
+			return null;
 		}
 
 		try {
-			if (verbose && !skipEnvironmentLog) {
-				ctx.logInfo(
-					productionBuild ? "Production Environment" : "Dev Environment",
-				);
+			await runPrepareSteps(verbose, signal, onPhase, prepare !== "migrate");
+			if (prepare === "migrate") {
+				return null;
 			}
 
-			// Containers-only mode bypasses preparation and starts every selected service.
-			const earlyServices = Object.fromEntries(
-				Object.entries(targetServices).filter(
-					([, service]) =>
-						prepare === "containers" || !service.afterPreparation,
-				),
-			);
-			const lateServices = Object.fromEntries(
-				Object.entries(targetServices).filter(
-					([, service]) => service.afterPreparation,
-				),
-			);
-
-			// Both subsets must fingerprint the same Compose artifact.
-			let artifactReady = false;
-
-			async function ensureSubset(
-				subset: Record<string, ServiceConfig>,
-				noDeps = false,
-			) {
-				if (Object.keys(subset).length === 0) {
-					return;
-				}
-
-				await phase("containers", () =>
-					withWatchdogProjectLock(
-						ctx.projectName,
-						ctx.root,
-						() => {
-							if (!artifactReady) {
-								ctx.ensureComposeFile();
-								artifactReady = true;
-							}
-
-							return ensureServicesRunning({
-								signal,
-								runtime: ctx.runtime,
-								root: ctx.root,
-								projectName: ctx.projectName,
-								envVars: envVars.buildEnvVars(productionBuild),
-								services: subset,
-								noDeps,
-								ports: targetPorts,
-								model: ctx.composeModel(),
-								composeFile: ctx.composeFile,
-								verbose,
-								wait,
-								autoStartRuntime: autoStartDocker,
-							});
-						},
+			const afterContainersReady = config.hooks?.afterContainersReady;
+			if (afterContainersReady && hasServices) {
+				await phase("container hooks", () =>
+					withDeadline(
+						(hookSignal) => afterContainersReady(hookContext(hookSignal)),
+						600_000,
 						signal,
 					),
 				);
 			}
 
+			if (!skipSeed && preparationSelected(config.seed?.requiredServices)) {
+				const seeded = await phase("seed", () =>
+					runSeed({ verbose, productionBuild, signal }),
+				);
+				if (seeded.status === "failed") {
+					throw new Error(
+						`Seeding failed with exit code ${seeded.result.exitCode}. Fix the seed command or start with \`--up-only\` to skip it.`,
+					);
+				}
+			}
+
+			// Early jobs already completed. --no-deps prevents Compose from rerunning them.
+			await ensureSubset(lateServices, true);
+
+			if (shouldStartServers && Object.keys(appsToStart).length > 0) {
+				const pids = await startAppServers(ctx, envVars, {
+					signal,
+					apps: appsToStart,
+					productionBuild,
+					verbose,
+				});
+
+				if (verbose) {
+					console.log(formatDone("Environment ready"));
+				}
+
+				return pids;
+			}
+
+			return null;
+		} catch (error) {
 			if (hasServices) {
-				await ensureSubset(earlyServices);
+				console.error(
+					formatStep(
+						"ℹ Containers are still running. Use `bunx buncargo dev --down` to stop them now.",
+					),
+				);
 			}
-
-			// Before migrations, not just before servers: Prisma and friends read
-			// `.env` off disk themselves, so a stale port fails the migrate step.
-			await phase("dotenv", () => syncConfiguredEnvFile(verbose));
-			if (prepare === "containers") {
-				return null;
-			}
-
-			try {
-				await runPrepareSteps(verbose, signal, onPhase, prepare !== "migrate");
-				if (prepare === "migrate") {
-					return null;
-				}
-
-				const afterContainersReady = config.hooks?.afterContainersReady;
-				if (afterContainersReady && hasServices) {
-					await phase("container hooks", () =>
-						withDeadline(
-							(hookSignal) => afterContainersReady(hookContext(hookSignal)),
-							600_000,
-							signal,
-						),
-					);
-				}
-
-				if (!skipSeed && preparationSelected(config.seed?.requiredServices)) {
-					const seeded = await phase("seed", () =>
-						runSeed({ verbose, productionBuild, signal }),
-					);
-					if (seeded.status === "failed") {
-						throw new Error(
-							`Seeding failed with exit code ${seeded.result.exitCode}. Fix the seed command or start with \`--up-only\` to skip it.`,
-						);
-					}
-				}
-
-				// Early jobs already completed. --no-deps prevents Compose from rerunning them.
-				await ensureSubset(lateServices, true);
-
-				if (shouldStartServers && Object.keys(appsToStart).length > 0) {
-					const pids = await startAppServers(ctx, envVars, {
-						signal,
-						apps: appsToStart,
-						productionBuild,
-						verbose,
-					});
-
-					if (verbose) {
-						console.log(formatDone("Environment ready"));
-					}
-
-					return pids;
-				}
-
-				return null;
-			} catch (error) {
-				if (hasServices) {
-					console.error(
-						formatStep(
-							"ℹ Containers are still running. Use `bunx buncargo dev --down` to stop them.",
-						),
-					);
-				}
-				throw error;
-			}
-		} finally {
-			startupHeartbeat.stop();
+			throw error;
 		}
 	}
 
@@ -429,15 +426,12 @@ export function createLifecycleApi<
 			return;
 		}
 
-		await withWatchdogProjectLock(
+		await withProjectLifecycleLock(
 			ctx.projectName,
 			ctx.root,
 			async () => {
 				ctx.ensureComposeFile();
-				await (
-					ctx.runtime.downAsync?.bind(ctx.runtime) ??
-					ctx.runtime.down.bind(ctx.runtime)
-				)({
+				await ctx.runtime.down({
 					root: ctx.root,
 					projectName: ctx.projectName,
 					model: ctx.composeModel(),
@@ -447,8 +441,9 @@ export function createLifecycleApi<
 					signal: stopOptions.signal,
 				});
 			},
-			stopOptions.signal,
+			{ signal: stopOptions.signal },
 		);
+		await runClaim.releaseRun();
 	}
 
 	async function restart(): Promise<void> {
@@ -461,10 +456,13 @@ export function createLifecycleApi<
 			return false;
 		}
 
-		return ctx.runtime.areServicesRunning(
-			ctx.projectName,
-			resolveComposeServiceNames(services, Object.keys(services)),
+		const names = resolveComposeServiceNames(services, Object.keys(services));
+		if (names.length === 0) return false;
+		const states = await ctx.runtime.projectServiceStates(ctx.projectName);
+		const running = new Set(
+			states.filter((state) => state.running).map((state) => state.service),
 		);
+		return names.every((name) => running.has(name));
 	}
 
 	return { start, stop, restart, isRunning, runSeed };

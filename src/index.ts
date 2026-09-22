@@ -181,20 +181,11 @@ export {
 	sleep,
 } from "./core/utils";
 export {
-	getHeartbeatFile,
+	ensureWatchdog,
+	getWatchdogLogFile,
 	getWatchdogPidFile,
-	isWatchdogRunning,
-	spawnWatchdog,
-	startHeartbeat,
-	stopHeartbeat,
-	stopWatchdog,
 } from "./core/watchdog";
-export {
-	areContainersRunning,
-	assertDockerRunning,
-	isContainerRunning,
-	isDockerRunning,
-} from "./docker/index";
+export { assertDockerRunning, isDockerRunning } from "./docker/index";
 export {
 	buildComposeModel,
 	composeToYaml,

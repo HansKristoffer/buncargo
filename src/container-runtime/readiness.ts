@@ -84,18 +84,12 @@ async function diagnose(
 			root: context.root,
 			composeFile: context.composeFile,
 		};
-		const diagnoseAsync = context.runtime.diagnoseServiceAsync;
-		return diagnoseAsync
-			? await withDeadline(
-					(probeSignal) =>
-						diagnoseAsync.call(context.runtime, {
-							...request,
-							signal: probeSignal,
-						}),
-					timeoutMs,
-					signal,
-				)
-			: context.runtime.diagnoseService(request);
+		return await withDeadline(
+			(probeSignal) =>
+				context.runtime.diagnoseService({ ...request, signal: probeSignal }),
+			timeoutMs,
+			signal,
+		);
 	} catch {
 		return undefined;
 	}
@@ -177,9 +171,9 @@ async function pollUntilHealthy(
 	}
 
 	signal?.throwIfAborted();
-	if (!runtime.diagnoseServiceAsync) {
-		lastDiagnosis = (await diagnose(context, 0, signal)) ?? lastDiagnosis;
-	}
+	// One last look, on its own small budget: the state of a container that
+	// died in the final seconds is the whole explanation.
+	lastDiagnosis = (await diagnose(context, 2000, signal)) ?? lastDiagnosis;
 
 	const seconds = timeoutMs / 1000;
 	const state = lastDiagnosis
@@ -447,9 +441,7 @@ async function readProjectServiceStates(
 	signal?: AbortSignal,
 ): Promise<ServiceRuntimeState[]> {
 	try {
-		return runtime.projectServiceStatesAsync
-			? await runtime.projectServiceStatesAsync(projectName, signal)
-			: runtime.projectServiceStates(projectName);
+		return await runtime.projectServiceStates(projectName, signal);
 	} catch {
 		signal?.throwIfAborted();
 		return [];
@@ -676,11 +668,7 @@ export async function ensureServicesRunning(
 			// second, weaker copy of it.
 			wait: false,
 		};
-		if (runtime.upAsync) {
-			await runtime.upAsync(upRequest);
-		} else {
-			runtime.up(upRequest);
-		}
+		await runtime.up(upRequest);
 	}
 
 	if (
