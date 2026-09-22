@@ -4,6 +4,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withFileLock } from "./file-lock";
+import { readProcessIdentity } from "./process-identity";
+import { publishRun } from "./run-registry";
 import {
 	ensureWatchdog,
 	getWatchdogLockFile,
@@ -13,18 +15,50 @@ import {
 } from "./watchdog";
 
 const realHome = process.env.HOME;
+const realPath = process.env.PATH;
 let home = "";
 
 beforeAll(() => {
 	home = mkdtempSync(join(tmpdir(), "buncargo-watchdog-"));
 	process.env.HOME = home;
+	// The runner sweeps as soon as it starts, and it inherits this
+	// environment. With no PATH it finds no container runtime, so a test here
+	// can never reach the Docker this machine is actually running — the
+	// spawned processes are invoked by absolute path and need none.
+	process.env.PATH = "";
 });
 
 afterAll(() => {
 	if (realHome === undefined) delete process.env.HOME;
 	else process.env.HOME = realHome;
+	if (realPath === undefined) delete process.env.PATH;
+	else process.env.PATH = realPath;
 	rmSync(home, { recursive: true, force: true });
 });
+
+/**
+ * Give the runner a reason to stay alive.
+ *
+ * It exits the moment nothing on the machine needs watching, so a test that
+ * wants to inspect the process has to own something first.
+ */
+async function claimSomething(): Promise<void> {
+	await publishRun({
+		sessionId: `watchdog-test-${crypto.randomUUID()}`,
+		processIdentity: readProcessIdentity(process.pid),
+		projectPrefix: "demo",
+		projectName: "demo",
+		root: home,
+		worktree: null,
+		pid: process.pid,
+		startedAt: new Date().toISOString(),
+		updatedAt: new Date().toISOString(),
+		hosts: null,
+		cli: { program: process.execPath },
+		apps: [],
+		services: [{ name: "db", status: "ready" }],
+	});
+}
 
 async function stopWatchdog(): Promise<void> {
 	const pid = getWatchdogPid();
@@ -46,6 +80,7 @@ describe("resolveWatchdogRunnerPath", () => {
 describe("ensureWatchdog", () => {
 	it("coalesces concurrent starts into one runner and is a no-op once it is up", async () => {
 		try {
+			await claimSomething();
 			await Promise.all([
 				ensureWatchdog({ verbose: false }),
 				ensureWatchdog({ verbose: false }),
@@ -69,6 +104,7 @@ describe("ensureWatchdog", () => {
 		// pid. `detached` alone kept the watchdog a child, so the tree kill
 		// took the one process meant to outlive the run.
 		try {
+			await claimSomething();
 			await ensureWatchdog({ verbose: false });
 			const pid = getWatchdogPid();
 			expect(pid).not.toBeNull();

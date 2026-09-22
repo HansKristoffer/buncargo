@@ -58,9 +58,11 @@ process.on("SIGINT", () => {
 
 async function watch(): Promise<void> {
 	while (true) {
-		await new Promise((resolve) =>
-			setTimeout(resolve, WATCHDOG_POLL_INTERVAL_MS),
-		);
+		// Sweep first, then wait. Starting with the wait meant a `dev` that
+		// found leftovers from a crashed run left them up for a whole poll
+		// interval, and a runner with nothing to do sat idle that long before
+		// working it out. The run that started this claimed its containers
+		// before spawning us, so the first pass cannot condemn them.
 		const result = await sweepOrphanedContainers();
 		for (const stack of result.swept)
 			log(`Removed ${stack.projectName} (${stack.root}): ${stack.reason}`);
@@ -70,6 +72,9 @@ async function watch(): Promise<void> {
 			log("Nothing left to watch; exiting");
 			return;
 		}
+		await new Promise((resolve) =>
+			setTimeout(resolve, WATCHDOG_POLL_INTERVAL_MS),
+		);
 	}
 }
 
