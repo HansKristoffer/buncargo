@@ -41,6 +41,35 @@ Why not the Cloudflare plan: it keeps the Bun directory on Hetzner and requires 
 - Relay traffic is end-to-end encrypted; relays see ciphertext only. Hole punching succeeds in "roughly 9 out of 10 network configurations"; corporate firewalls and some cellular networks fall back to relay.
 - Browsers cannot dial iroh without custom WASM client code, so browser access needs a loopback listener on the receiver. That is a fixed constraint, not an option.
 
+### Cross-machine test, 22 September 2026
+
+A real `buncargo dev` on a Mac Mini (macOS arm64, `mac-mini-hans`) published one app to this MacBook. Both ran the built CLI; the sandbox side installed the packed tarball and nothing else.
+
+Working, on the first run and with no configuration beyond the token:
+
+- The run appeared in `connect status` under its name, project and branch, served at `http://127.0.0.1:62740/`.
+- Three 20 MiB downloads returned byte-exact payloads, each matching the server's own SHA-256.
+- SSE arrived incrementally, 200 ms apart as produced, about 54 ms behind the server's own timestamp. Nothing buffered.
+
+Measured on that route:
+
+| Measurement | Result |
+| --- | --- |
+| Time to first byte, small response (6 runs) | 104-131 ms, median 124 ms |
+| 20 MiB through Buncargo (5 runs) | 7.56-7.98 s, median 7.63 s, 2.62 MiB/s |
+| 20 MiB through raw iroh, same two machines | 8.31 s, 2.41 MiB/s |
+| Path actually selected during the transfer | relay `euc1-1` (Frankfurt), 60-73 ms RTT |
+
+Two conclusions, and one thing this route cannot answer.
+
+**Buncargo adds no measurable overhead.** The raw-iroh probe was marginally *slower* than the product, so the stream bridge and its `Array<number>` conversion are not the ceiling. Whatever the transport does, the product gets.
+
+**This was a relayed transfer throughout.** Hole punching did eventually select a direct path, but only after the transfer finished, and it chose the Tailscale address at 152 ms RTT rather than either machine's LAN address. Both machines sit on `192.168.1.0/24` and still could not reach each other directly, and their Tailscale link is itself relayed through Frankfurt, so this network has no fast path to find. 2.4-2.6 MiB/s is consistent with the documented rate limit on n0's free public relays rather than with anything in our code.
+
+**It is not the Phase 1 gate.** The 3.00 s frp figure came from a Cursor sandbox with a cloud uplink to a dedicated Hetzner box. A home Mac Mini through a free shared relay is a different route in every term, so the two numbers do not compare. What this run does establish is the correctness of the whole path and that a relayed worst case costs about 2.5 MiB/s. If a Cursor sandbox also ends up relayed, that is a real regression against frp and the paid relays in section 3 are the answer; Phase 1 still has to measure it there.
+
+One operational finding: the Mac Mini's resolver cached a negative answer for a receiver identity that had not published yet, and kept failing for minutes afterwards even though the record existed. The publisher's bounded backoff retries through it, so it self-heals, but a token copied into a sandbox before the receiving computer has ever run its coordinator can look broken for a few minutes.
+
 ### Spike on this Mac under Bun 1.4.2
 
 Two endpoints in one Bun process, `@number0/iroh` 1.1.0, default n0 preset:

@@ -38,9 +38,11 @@ Use the application's existing same-origin API proxy; a browser cannot reach a s
 
 Sharing errors never stop local development. Check `connect status` for the reason. Internet distance, relay fallback and app compilation still affect performance.
 
+A receiving computer becomes findable once its coordinator has run and published its address. A token copied into a sandbox before that can fail to connect for a few minutes, because a resolver that asked too early caches the miss. The publisher retries with backoff and recovers on its own; running `buncargo connect status` once on the receiving computer first avoids it.
+
 ## Relays
 
-By default both ends use the free relays and DNS discovery that number 0 operates. Those are documented for development and hobby use, are rate limited, and carry no uptime guarantee. To move onto relays with guaranteed capacity, set the same values on **both** computers, because a publisher reaches a receiver through the relay that receiver calls home:
+By default both ends use the free relays and DNS discovery that number 0 operates. Those are documented for development and hobby use, are rate limited, and carry no uptime guarantee. A measured transfer over a relayed path ran at about 2.5 MiB/s with a small request answered in roughly 120 ms; a direct path is far faster, but no code can force one when the network between two computers refuses it. To move onto relays with guaranteed capacity, set the same values on **both** computers, because a publisher reaches a receiver through the relay that receiver calls home:
 
 ```sh
 BUNCARGO_CONNECT_RELAYS='https://<relay-one>,https://<relay-two>'
