@@ -5,11 +5,12 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileLockTimeoutError, withFileLock } from "./file-lock";
+import { FileLockTimeoutError, LOCK_STALE_MS, withFileLock } from "./file-lock";
 
 const dirs: string[] = [];
 const children: ReturnType<typeof Bun.spawn>[] = [];
@@ -164,16 +165,37 @@ describe("withFileLock", () => {
 		expect(readFileSync(target, "utf8")).toBe("8");
 	});
 
-	it("waits for a live legacy owner regardless of its age", async () => {
+	it("waits for a fresh live legacy owner", async () => {
 		const target = tempTarget();
 		writeFileSync(
 			`${target}.lock`,
-			JSON.stringify({ pid: process.pid, at: 0 }),
+			JSON.stringify({ pid: process.pid, at: Date.now() }),
 		);
 		await expect(
 			withFileLock(target, async () => "unsafe", { timeoutMs: 60 }),
 		).rejects.toBeInstanceOf(FileLockTimeoutError);
 		expect(existsSync(`${target}.lock`)).toBe(true);
+	});
+
+	it("ignores a legacy lock older than the legacy protocol's stale age", async () => {
+		const target = tempTarget();
+		const stale = (Date.now() - LOCK_STALE_MS - 1000) / 1000;
+		for (const content of [JSON.stringify({ pid: process.pid, at: 0 }), ""]) {
+			writeFileSync(`${target}.lock`, content);
+			utimesSync(`${target}.lock`, stale, stale);
+			expect(
+				await withFileLock(target, async () => "recovered", { timeoutMs: 60 }),
+			).toBe("recovered");
+		}
+		expect(existsSync(`${target}.lock`)).toBe(true);
+	});
+
+	it("waits on a fresh unreadable legacy lock", async () => {
+		const target = tempTarget();
+		writeFileSync(`${target}.lock`, "");
+		await expect(
+			withFileLock(target, async () => "unsafe", { timeoutMs: 60 }),
+		).rejects.toBeInstanceOf(FileLockTimeoutError);
 	});
 
 	it("can proceed after a legacy owner died without unlinking its file", async () => {

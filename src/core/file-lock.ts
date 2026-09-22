@@ -1,4 +1,4 @@
-import { mkdir, open, readFile } from "node:fs/promises";
+import { mkdir, open, readFile, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { abortableSleep } from "./deadline";
 import { isProcessAlive } from "./process/lifecycle";
@@ -6,7 +6,11 @@ import { recordStartupMetric } from "./startup-metrics";
 import { chownToInvokingUser } from "./state-paths";
 
 const LOCK_POLL_MS = 20;
-/** @deprecated Age never grants ownership of a live process's lock. */
+/**
+ * Age past which the legacy `.lock` protocol broke a lock: old versions never
+ * honor one older than this, so neither does the v2 check. Never applied to
+ * `.lock.v2`, where the kernel releases on process death.
+ */
 export const LOCK_STALE_MS = 10_000;
 export const LOCK_TIMEOUT_MS = 5000;
 
@@ -84,15 +88,15 @@ function flockOperation(): Promise<(fd: number) => boolean> {
  * restart the hosts service when upgrading before mixing concurrent writers.
  */
 async function legacyHolderActive(target: string): Promise<boolean> {
-	let raw: string;
+	const lockPath = `${target}.lock`;
 	try {
-		raw = await readFile(`${target}.lock`, "utf8");
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-		throw error;
-	}
-	try {
-		const holder: unknown = JSON.parse(raw);
+		// A file this old is a leftover from a killed or torn-write holder — not
+		// a live one — and its pid may since have been reused by any process.
+		// Waiting on it made every hosts reload time out until the user found
+		// and deleted the file by hand.
+		if (Date.now() - (await stat(lockPath)).mtimeMs > LOCK_STALE_MS)
+			return false;
+		const holder: unknown = JSON.parse(await readFile(lockPath, "utf8"));
 		if (
 			typeof holder !== "object" ||
 			holder === null ||
@@ -103,7 +107,9 @@ async function legacyHolderActive(target: string): Promise<boolean> {
 		)
 			return true;
 		return isProcessAlive(holder.pid);
-	} catch {
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		// Unreadable or mid-write: a fresh file is a holder still writing its pid.
 		return true;
 	}
 }
