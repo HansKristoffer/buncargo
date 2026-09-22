@@ -38,10 +38,14 @@ describe.skipIf(!ENABLED)("apple container runtime", () => {
 			verbose: false,
 		};
 
+		const running = async () =>
+			(await adapter.projectServiceStates(PROJECT))
+				.filter((state) => state.running)
+				.map((state) => state.service);
 		try {
-			adapter.up(request);
+			await adapter.up(request);
 
-			expect(await adapter.areServicesRunning(PROJECT, ["redis"])).toBe(true);
+			expect(await running()).toEqual(["redis"]);
 			const containers = adapter
 				.list()
 				.filter((container) => container.project === PROJECT);
@@ -49,14 +53,14 @@ describe.skipIf(!ENABLED)("apple container runtime", () => {
 				"redis",
 			]);
 			expect(
-				adapter.execInService({
+				await adapter.execInService({
 					projectName: PROJECT,
 					serviceName: "redis",
 					command: ["redis-cli", "ping"],
 				}),
 			).toBe(true);
 		} finally {
-			adapter.down({
+			await adapter.down({
 				root: process.cwd(),
 				projectName: PROJECT,
 				model: MODEL,
@@ -65,6 +69,6 @@ describe.skipIf(!ENABLED)("apple container runtime", () => {
 			});
 		}
 
-		expect(await adapter.areServicesRunning(PROJECT, ["redis"])).toBe(false);
+		expect(await running()).toEqual([]);
 	}, 180_000);
 });

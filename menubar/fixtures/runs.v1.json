@@ -88,6 +88,39 @@
           }
         }
       ]
+    },
+    {
+      "sessionId": "released-session",
+      "projectPrefix": "lullu",
+      "projectName": "lullu-t3code-released",
+      "root": "/tmp/buncargo-fixture/lullu-released",
+      "worktree": "t3code-released",
+      "pid": 1,
+      "startedAt": "2026-09-03T09:00:00.000Z",
+      "updatedAt": "2026-09-03T09:30:00.000Z",
+      "releasedAt": "2026-09-03T09:30:00.000Z",
+      "idleTimeoutMs": 180000,
+      "hosts": null,
+      "cli": {
+        "program": "/bin/echo",
+        "script": "buncargo"
+      },
+      "apps": [],
+      "services": [
+        {
+          "name": "postgres",
+          "preset": "postgres",
+          "port": 5599,
+          "url": "http://localhost:5599",
+          "loopbackUrl": "http://localhost:5599",
+          "status": "ready",
+          "container": {
+            "runtime": "docker",
+            "name": "lullu-t3code-released-postgres",
+            "service": "postgres"
+          }
+        }
+      ]
     }
   ]
 }

@@ -4,6 +4,8 @@ export {
 	type HealthCheckContext,
 } from "./health-checks";
 export {
+	type ContainerGroup,
+	groupBuncargoContainers,
 	isContainerUp,
 	listBuncargoContainers,
 	stopBuncargoContainers,
@@ -16,6 +18,17 @@ export {
 	isContainerRuntimeName,
 	isContainerRuntimeSelection,
 } from "./names";
+export {
+	projectLockPath,
+	withProjectLifecycleLock,
+} from "./project-lock";
+export {
+	orphanedVolumes,
+	type PruneInput,
+	planVolumePrune,
+	type VolumeReport,
+	type VolumeVerdict,
+} from "./prune";
 export {
 	type EnsureServicesRunningRequest,
 	ensureServicesRunning,
@@ -36,6 +49,14 @@ export {
 	resolveContainerRuntimeBinary,
 	resolveContainerRuntimeSelection,
 } from "./resolve";
+export {
+	decideSweep,
+	type SweepInput,
+	type SweepResult,
+	type SweepVerdict,
+	type SweptStack,
+	sweepOrphanedContainers,
+} from "./sweep";
 export {
 	type ContainerDownRequest,
 	type ContainerRuntimeAdapter,

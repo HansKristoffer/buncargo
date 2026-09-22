@@ -62,13 +62,10 @@ process.exit(9);
 	);
 	chmodSync(binary, 0o700);
 	const runtime = dockerRuntimeAdapter({ binary });
-	const execInServiceAsync = runtime.execInServiceAsync;
-	if (!execInServiceAsync)
-		throw new Error("Docker must implement async probes");
 	return {
 		root,
 		state,
-		runtime: { ...runtime, execInServiceAsync },
+		runtime,
 		calls: () =>
 			readFileSync(log, "utf8")
 				.trim()
@@ -126,80 +123,70 @@ describe("Docker service probes", () => {
 		]);
 	});
 
-	for (const mode of ["sync", "async"] as const) {
-		it(`${mode}: preserves argv and re-resolves a recreated container`, async () => {
-			const { root, runtime, state, calls } = fixture();
-			const exec =
-				mode === "sync" ? runtime.execInService : runtime.execInServiceAsync;
-			const request = {
-				root,
-				projectName: "demo",
-				serviceName: "cache",
-				command: ["redis-cli", "literal argument", "$(not-a-shell)"],
-			};
-			expect(await exec(request)).toBe(true);
-			writeFileSync(state, JSON.stringify({ ids: "123456abcdef" }));
-			expect(await exec(request)).toBe(true);
-			expect(calls().filter((args) => args[0] === "exec")).toEqual([
-				["exec", "abcdef123456", ...request.command],
-				["exec", "123456abcdef", ...request.command],
-			]);
-		});
+	it("preserves argv and re-resolves a recreated container", async () => {
+		const { root, runtime, state, calls } = fixture();
+		const request = {
+			root,
+			projectName: "demo",
+			serviceName: "cache",
+			command: ["redis-cli", "literal argument", "$(not-a-shell)"],
+		};
+		expect(await runtime.execInService(request)).toBe(true);
+		writeFileSync(state, JSON.stringify({ ids: "123456abcdef" }));
+		expect(await runtime.execInService(request)).toBe(true);
+		expect(calls().filter((args) => args[0] === "exec")).toEqual([
+			["exec", "abcdef123456", ...request.command],
+			["exec", "123456abcdef", ...request.command],
+		]);
+	});
 
-		for (const options of [
-			{ ids: "" },
-			{ ids: "abcdef123456\n123456abcdef" },
-			{ listExit: 1 },
-		]) {
-			it(`${mode}: never executes with a missing, ambiguous or failed lookup ${JSON.stringify(options)}`, async () => {
-				const { root, runtime, calls } = fixture(options);
-				const exec =
-					mode === "sync" ? runtime.execInService : runtime.execInServiceAsync;
-				expect(
-					await exec({
-						root,
-						projectName: "demo",
-						serviceName: "db",
-						command: ["pg_isready"],
-					}),
-				).toBe(false);
-				expect(calls()).toHaveLength(1);
-			});
-		}
-
-		it(`${mode}: treats a failing probe as not ready`, async () => {
-			const { root, runtime } = fixture({ execExit: 1 });
-			const exec =
-				mode === "sync" ? runtime.execInService : runtime.execInServiceAsync;
+	for (const options of [
+		{ ids: "" },
+		{ ids: "abcdef123456\n123456abcdef" },
+		{ listExit: 1 },
+	]) {
+		it(`never executes with a missing, ambiguous or failed lookup ${JSON.stringify(options)}`, async () => {
+			const { root, runtime, calls } = fixture(options);
 			expect(
-				await exec({
+				await runtime.execInService({
 					root,
 					projectName: "demo",
 					serviceName: "db",
 					command: ["pg_isready"],
 				}),
 			).toBe(false);
-		});
-
-		it(`${mode}: shares the timeout between lookup and exec and leaves no probe process`, async () => {
-			const { root, runtime, execPid } = fixture({
-				listDelay: 350,
-				execDelay: 500,
-			});
-			const exec =
-				mode === "sync" ? runtime.execInService : runtime.execInServiceAsync;
-			expect(
-				await exec({
-					root,
-					projectName: "demo",
-					serviceName: "db",
-					command: ["pg_isready"],
-					timeoutMs: 800,
-				}),
-			).toBe(false);
-			expect(() => process.kill(execPid(), 0)).toThrow();
+			expect(calls()).toHaveLength(1);
 		});
 	}
+
+	it("treats a failing probe as not ready", async () => {
+		const { root, runtime } = fixture({ execExit: 1 });
+		expect(
+			await runtime.execInService({
+				root,
+				projectName: "demo",
+				serviceName: "db",
+				command: ["pg_isready"],
+			}),
+		).toBe(false);
+	});
+
+	it("shares the timeout between lookup and exec and leaves no probe process", async () => {
+		const { root, runtime, execPid } = fixture({
+			listDelay: 350,
+			execDelay: 500,
+		});
+		expect(
+			await runtime.execInService({
+				root,
+				projectName: "demo",
+				serviceName: "db",
+				command: ["pg_isready"],
+				timeoutMs: 800,
+			}),
+		).toBe(false);
+		expect(() => process.kill(execPid(), 0)).toThrow();
+	});
 
 	it("cancels an in-flight exec and waits for its process to exit", async () => {
 		const { root, runtime, execPid } = fixture({ execDelay: 5000 });
@@ -210,7 +197,7 @@ describe("Docker service probes", () => {
 		);
 		try {
 			await expect(
-				runtime.execInServiceAsync({
+				runtime.execInService({
 					root,
 					projectName: "demo",
 					serviceName: "db",

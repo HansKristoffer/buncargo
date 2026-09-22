@@ -4,6 +4,7 @@ export {
 	type DockerRunOptions,
 	type DockerRunResult,
 	runDocker,
+	runDockerAsync,
 } from "./binary";
 export {
 	type ComposeCommandContext,
@@ -18,7 +19,6 @@ export {
 	type StartContainersOptions,
 	type StopContainersOptions,
 	startContainers,
-	startService,
 	stopContainers,
 } from "./lifecycle";
 export {
@@ -31,10 +31,13 @@ export {
 	isDockerDaemonRunning,
 } from "./preflight";
 export {
-	areContainersRunning,
-	areServicesRunning,
 	assertDockerRunning,
 	DOCKER_NOT_RUNNING_MESSAGE,
-	isContainerRunning,
+	dockerProjectServiceStates,
 	isDockerRunning,
 } from "./status";
+export {
+	listDockerVolumes,
+	parseDockerVolumeLine,
+	removeDockerVolumes,
+} from "./volumes";

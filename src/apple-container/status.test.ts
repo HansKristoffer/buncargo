@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { AppleCliResult, AppleContainerCli } from "./cli";
 import {
-	areAppleServicesRunning,
+	appleProjectServiceStates,
 	findAppleContainerOnPort,
 	formatPublishedPorts,
 	listAppleBuncargoContainers,
@@ -132,19 +132,19 @@ describe("listAppleBuncargoContainers", () => {
 	});
 });
 
-describe("areAppleServicesRunning", () => {
-	it("is true only when every requested service is running", () => {
-		const cli = stubCli(LS_JSON);
-		expect(areAppleServicesRunning(cli, "gey-main", ["postgres"])).toBe(true);
-		expect(
-			areAppleServicesRunning(cli, "gey-main", ["postgres", "redis"]),
-		).toBe(false);
-	});
-
-	it("is false for another project and for an empty request", () => {
-		const cli = stubCli(LS_JSON);
-		expect(areAppleServicesRunning(cli, "other", ["postgres"])).toBe(false);
-		expect(areAppleServicesRunning(cli, "gey-main", [])).toBe(false);
+describe("appleProjectServiceStates", () => {
+	it("reports each labeled service's state for the project only", async () => {
+		const states = await appleProjectServiceStates(
+			stubCli(LS_JSON),
+			"gey-main",
+		);
+		expect(states.map((state) => [state.service, state.running])).toEqual([
+			["postgres", true],
+			["redis", false],
+		]);
+		expect(await appleProjectServiceStates(stubCli(LS_JSON), "other")).toEqual(
+			[],
+		);
 	});
 });
 

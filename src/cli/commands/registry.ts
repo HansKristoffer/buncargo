@@ -53,6 +53,11 @@ export const CLI_COMMANDS = [
 		summary: "Show this project's containers, ports, and tunnels",
 	},
 	{
+		name: "prune",
+		usage: "prune [--dry-run] [--yes]",
+		summary: "Remove volumes whose project is gone (destroys their data)",
+	},
+	{
 		name: "doctor",
 		usage: "doctor",
 		summary: "Check Docker, port owners, lockfile, hosts, and orphans",

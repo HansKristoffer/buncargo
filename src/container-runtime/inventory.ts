@@ -1,23 +1,24 @@
-import type { BuncargoContainer } from "../types";
+import type { BuncargoContainer, ContainerRuntimeName } from "../types";
 import { availableContainerRuntimes } from "./resolve";
 import type { ContainerRuntimeAdapter } from "./types";
 
 /**
- * Whether a container is up, across both runtimes' status vocabularies.
+ * Whether a container is up.
  *
- * Docker reports `Up 3 minutes`; Apple reports `running`.
+ * Both runtimes spell the live state `running`, so this reads the state
+ * rather than searching the human status line: `Up 3 minutes` and
+ * `Exited (0) 2 hours ago` both contain a word this used to match.
  */
 export function isContainerUp(container: BuncargoContainer): boolean {
-	const status = container.status.toLowerCase();
-	return status.includes("up") || status.includes("running");
+	return container.state.toLowerCase() === "running";
 }
 
 /**
  * Every buncargo container on this machine, from every runtime that answers.
  *
- * The inspect commands and `dev --down --all` are machine-wide and have no
- * config in scope, so scoping them to one backend would hide containers the
- * user started from a project configured for the other.
+ * The inspect commands and the sweep are machine-wide and have no config in
+ * scope, so scoping them to one backend would hide containers the user started
+ * from a project configured for the other.
  */
 export function listBuncargoContainers(
 	runtimes: ContainerRuntimeAdapter[] = availableContainerRuntimes(),
@@ -29,6 +30,36 @@ export function listBuncargoContainers(
 			return [];
 		}
 	});
+}
+
+/** One project's containers on one runtime: the unit `down` works on. */
+export interface ContainerGroup {
+	projectName: string;
+	root: string;
+	runtime: ContainerRuntimeName;
+	containers: BuncargoContainer[];
+}
+
+export function groupBuncargoContainers(
+	containers: BuncargoContainer[],
+): ContainerGroup[] {
+	const groups = new Map<string, ContainerGroup>();
+	for (const container of containers) {
+		const runtime = container.runtime ?? "docker";
+		const key = `${runtime}\t${container.project}\t${container.root}`;
+		let group = groups.get(key);
+		if (!group) {
+			group = {
+				projectName: container.project,
+				root: container.root,
+				runtime,
+				containers: [],
+			};
+			groups.set(key, group);
+		}
+		group.containers.push(container);
+	}
+	return [...groups.values()];
 }
 
 /** Stop the given containers, each through the runtime that reported it. */

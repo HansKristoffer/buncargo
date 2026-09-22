@@ -2,6 +2,7 @@ import {
 	availableContainerRuntimes,
 	getContainerRuntimeAdapter,
 	stopBuncargoContainers,
+	withProjectLifecycleLock,
 } from "../../container-runtime";
 import { findMonorepoRoot } from "../../core/ports";
 import {
@@ -19,11 +20,7 @@ import {
 	type RunServiceEntry,
 } from "../../core/run-registry";
 import { sleep } from "../../core/sleep";
-import {
-	isHeartbeatOwnerAlive,
-	readHeartbeatPayload,
-	withWatchdogProjectLock,
-} from "../../core/watchdog";
+
 import * as log from "../log";
 import { parseStopArgs, printStopHelp } from "../stop-flags";
 
@@ -269,7 +266,7 @@ export async function stopService(
 	run: RunEntry,
 	service: RunServiceEntry,
 ): Promise<number> {
-	return withWatchdogProjectLock(run.projectName, run.root, () =>
+	return withProjectLifecycleLock(run.projectName, run.root, () =>
 		stopServiceUnlocked(run, service),
 	);
 }
@@ -278,6 +275,10 @@ async function stopServiceUnlocked(
 	run: RunEntry,
 	service: RunServiceEntry,
 ): Promise<number> {
+	// The entry records which backend started this service and the binary it
+	// was started through, so there is nothing to probe for: asking every
+	// available runtime was only ever a fallback for entries written before
+	// the claim carried it.
 	const runtimes = service.container
 		? [
 				getContainerRuntimeAdapter(service.container.runtime, {
@@ -299,29 +300,23 @@ async function stopServiceUnlocked(
 					container.service === serviceName,
 			);
 		if (containers.length > 0) stopBuncargoContainers(containers, runtimes);
-		// The same shared service may be visible in several sessions.
-		for (const owner of await findRunsByRoot(run.root)) {
-			if (owner.projectName !== run.projectName) continue;
-			const matching = owner.services.filter(
-				(entry) =>
-					entry.name === service.name &&
-					(!entry.container ||
-						!service.container ||
-						entry.container.runtime === service.container.runtime),
-			);
-			if (matching.length > 0)
-				await patchRun(
+		// One service, one container, however many sessions are looking at it:
+		// mark it stopped in each of theirs.
+		const sharing = (await findRunsByRoot(run.root)).filter(
+			(owner) =>
+				owner.projectName === run.projectName &&
+				owner.services.some((entry) => entry.name === service.name),
+		);
+		await Promise.all(
+			sharing.map((owner) =>
+				patchRun(
 					owner.root,
 					owner.pid,
-					{
-						services: matching.map((entry) => ({
-							name: entry.name,
-							status: "stopped",
-						})),
-					},
+					{ services: [{ name: service.name, status: "stopped" }] },
 					{ sessionId: owner.sessionId },
-				);
-		}
+				),
+			),
+		);
 		log.done(`Stopped ${service.name}`);
 		return STOP_EXIT.ok;
 	} catch (error) {
@@ -338,8 +333,9 @@ async function stopServiceUnlocked(
  * Signals the `buncargo dev` process rather than its children, so the run
  * performs its own teardown — releasing host routes, withdrawing its registry
  * entry, stopping tunnels — instead of being dismantled from outside. The
- * containers are stopped here because that run hands them to the watchdog's
- * idle backstop rather than stopping them itself.
+ * containers are removed here because that run releases them to the
+ * watchdog's idle hold rather than stopping them itself, and "stop the run"
+ * from the menu bar means now.
  */
 async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 	if (!force) {
@@ -367,30 +363,42 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 		return STOP_EXIT.refused;
 	}
 	await terminate(run.pid);
-	return withWatchdogProjectLock(run.projectName, run.root, async () => {
-		// Heartbeat registration precedes registry publication. A new run may
-		// already be starting services even though it has no menu-bar row yet.
-		const heartbeat = readHeartbeatPayload(run.projectName, run.root);
-		if (heartbeat && isHeartbeatOwnerAlive(heartbeat)) {
+	return withProjectLifecycleLock(run.projectName, run.root, async () => {
+		// A second session in this checkout keeps the containers. It claims them
+		// in this same registry before it starts them, so a run that is still
+		// coming up is already visible here — which is what a separate liveness
+		// record used to be needed for.
+		const others = (await findRunsByRoot(run.root)).filter(
+			(other) => other.pid !== run.pid && other.projectName === run.projectName,
+		);
+		if (others.length > 0) {
 			log.done(
 				`Stopped ${run.projectName}; services retained for another active run`,
 			);
 			return STOP_EXIT.ok;
 		}
-		const remaining = await findRunsByRoot(run.root);
-		for (const service of run.services) {
-			const shared = remaining.some(
-				(other) =>
-					other.pid !== run.pid &&
-					other.projectName === run.projectName &&
-					other.services.some(
-						(entry) =>
-							entry.name === service.name && entry.status !== "stopped",
-					),
+		const container = run.services.find(
+			(service) => service.container,
+		)?.container;
+		const runtimes = container
+			? [
+					getContainerRuntimeAdapter(container.runtime, {
+						binary: container.binary,
+					}),
+				]
+			: availableContainerRuntimes();
+		try {
+			for (const runtime of runtimes)
+				await runtime.down({
+					root: run.root,
+					projectName: run.projectName,
+					verbose: false,
+				});
+		} catch (error) {
+			log.error(
+				`Could not remove ${run.projectName}'s containers: ${error instanceof Error ? error.message : String(error)}`,
 			);
-			if (shared) continue;
-			const result = await stopServiceUnlocked(run, service);
-			if (result !== STOP_EXIT.ok) return result;
+			return STOP_EXIT.refused;
 		}
 		log.done(`Stopped ${run.projectName}`);
 		return STOP_EXIT.ok;

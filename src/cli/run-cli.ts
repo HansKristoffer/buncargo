@@ -14,8 +14,6 @@ import {
 	startPublicTunnels,
 	stopPublicTunnels,
 } from "../core/tunnel";
-import { spawnWatchdog, startHeartbeat, stopHeartbeat } from "../core/watchdog";
-import { WATCHDOG_IDLE_TIMEOUT_MS } from "../core/watchdog-constants";
 import { buildStartPlan, resolveSelectedApps } from "../planning";
 import type {
 	AppConfig,
@@ -40,12 +38,7 @@ import {
 import { CliError, toCliError } from "./errors";
 import * as log from "./log";
 import { classifyCliApps, parseRequiredCommaSeparatedFlag } from "./port-reuse";
-import {
-	markApps,
-	patchCurrentRun,
-	publishCurrentRun,
-	withdrawCurrentRun,
-} from "./run-publish";
+import { markApps, patchCurrentRun, publishCurrentRun } from "./run-publish";
 import {
 	isInteractive,
 	promptTakeover,
@@ -99,18 +92,22 @@ function logSelectedAppsSummary(input: {
 	}
 }
 
-function resolveWatchdogTimeoutMinutes(
-	minutes: number | undefined,
-	autoShutdown: number | boolean | undefined,
-): number {
-	if (minutes !== undefined) {
-		return minutes;
-	}
-	const timeoutMs =
-		typeof autoShutdown === "number" ? autoShutdown : WATCHDOG_IDLE_TIMEOUT_MS;
-	return Number.isFinite(timeoutMs)
-		? timeoutMs / 60_000
-		: WATCHDOG_IDLE_TIMEOUT_MS / 60_000;
+/**
+ * How long this run's containers are held after it exits.
+ *
+ * `false` means as long as the checkout exists: what `--keep-containers`
+ * asks for, and what a one-shot mode like `--up-only` means by leaving them
+ * up. `undefined` defers to `options.autoShutdown`.
+ */
+function resolveIdleTimeout(args: DevCliArgs): number | false | undefined {
+	if (args.keepContainers) return false;
+	// Before the one-shot default: `--up-only --watchdog-timeout=5` is someone
+	// asking for a hold in as many words, and silently ignoring it would leave
+	// the containers up forever.
+	if (args.watchdogTimeoutMinutes !== undefined)
+		return args.watchdogTimeoutMinutes * 60_000;
+	if (args.oneShot) return false;
+	return undefined;
 }
 
 function waitForShutdownSignal(): Promise<void> {
@@ -217,12 +214,15 @@ async function teardown<
 	connect?: DevConnect,
 ): Promise<void> {
 	try {
-		stopHeartbeat(env.projectName, env.root);
 		const results = await Promise.allSettled([
 			tunnels.stop(),
 			connect?.stop(),
 			releaseNamedHosts(env),
-			withdrawCurrentRun(env.root),
+			// Releases rather than withdraws: a run that owns containers leaves
+			// its entry behind, because that entry is what tells the sweep the
+			// containers may still be reused and for how long. A run with none
+			// is withdrawn outright, there being nothing to come back for.
+			env.releaseRun(),
 		]);
 		for (const result of results)
 			if (result.status === "rejected")
@@ -322,9 +322,14 @@ async function runDevFlow<
 		for (const warning of hostsWarnings) log.warn(warning);
 		hostsWarnings = [];
 	};
-	const keepContainers = args.keepContainers || env.autoShutdown === false;
-	if (hasServices && !args.oneShot && options.watchdog && !keepContainers)
-		startHeartbeat(env.projectName, undefined, env.root);
+	if (hasServices && options.watchdog) {
+		await env.claimRun({ idleTimeoutMs: resolveIdleTimeout(args) });
+		// Deliberately not awaited: confirming the watchdog came up costs up to
+		// two seconds of polling a pid file, and it only matters once this run
+		// is gone. It reports a failure to start itself, just not before the
+		// servers.
+		void env.ensureWatchdog().catch(() => {});
+	}
 	await env.start({
 		signal,
 		startServers: false,
@@ -464,7 +469,10 @@ async function runDevFlow<
 	}
 
 	flushHostsWarnings();
-	const sessionId = crypto.randomUUID();
+	// The environment already claimed its containers under this id before it
+	// started them; publishing under a new one would leave two entries for
+	// one run, and the claim is the one the sweep reads.
+	const sessionId = env.sessionId;
 
 	// Published here, after the takeover has been decided: before it, the app
 	// classification still describes a reuse the takeover is about to undo, and
@@ -499,29 +507,6 @@ async function runDevFlow<
 		}
 		await teardown(env, tunnels, connect);
 		return undefined;
-	}
-
-	if (hasServices && options.watchdog && !keepContainers) {
-		// Heartbeat first, then the watchdog: the runner's first poll reads this
-		// file, and a missing one is owner-death to it. Writing it up front means
-		// the ordering cannot matter however slowly the runner starts.
-		// Deliberately not awaited. Confirming the runner came up costs up to two
-		// seconds of polling a pid file, and nothing about starting dev servers
-		// depends on the answer — the watchdog only matters once this run is
-		// gone. It still reports a failure to start, just not before the servers.
-		void spawnWatchdog(env.projectName, env.root, {
-			timeoutMinutes: resolveWatchdogTimeoutMinutes(
-				args.watchdogTimeoutMinutes,
-				env.autoShutdown,
-			),
-			verbose: true,
-			composeFile: env.composeFile,
-			containerRuntime: env.containerRuntime,
-			containerRuntimeBinary: env.containerRuntimeBinary,
-		}).catch(() => {
-			// spawnWatchdog reports its own failures; an idle backstop that did
-			// not start must never take the dev run down with it.
-		});
 	}
 
 	const appsStartedAt = performance.now();
@@ -567,7 +552,7 @@ async function runDevFlow<
 				extraArgs: args.passthrough,
 				waitForExit: true,
 				onSignal: () => {
-					stopHeartbeat(env.projectName, env.root);
+					void env.releaseRun();
 				},
 				waitForHealth: async (apps, signal) => {
 					await env.waitForServers({
@@ -612,7 +597,6 @@ async function runDevFlow<
 		);
 		return undefined;
 	} finally {
-		stopHeartbeat(env.projectName, env.root);
 		await teardown(env, tunnels, connect);
 	}
 }

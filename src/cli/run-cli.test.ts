@@ -157,10 +157,10 @@ function createStubEnv(
 		logInfo: () => {},
 		getExpoApiUrl: () => "http://127.0.0.1:3000",
 		getFrontendPort: () => 5173,
-		startHeartbeat: () => {},
-		stopHeartbeat: () => {},
-		spawnWatchdog: async () => {},
-		stopWatchdog: () => {},
+		sessionId: "test-session",
+		claimRun: async () => {},
+		releaseRun: async () => {},
+		ensureWatchdog: async () => {},
 		withSuffix: () =>
 			createStubEnv() as DevEnvironment<
 				Record<string, ServiceConfig>,

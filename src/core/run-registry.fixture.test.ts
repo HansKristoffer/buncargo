@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadRuns } from "./run-registry";
+import { isRunAlive, loadRuns } from "./run-registry";
 
 /**
  * The `runs.json` schema contract, shared with the Swift app.
@@ -29,7 +29,7 @@ describe("runs.json v1 fixture", () => {
 			copyFileSync(FIXTURE, path);
 			const runs = await loadRuns(path, { strict: true });
 
-			expect(runs).toHaveLength(1);
+			expect(runs).toHaveLength(2);
 			const run = runs[0];
 			expect(run?.projectPrefix).toBe("lullu");
 			expect(run?.worktree).toBe("t3code-f003056f");
@@ -71,6 +71,17 @@ describe("runs.json v1 fixture", () => {
 			expect(
 				run?.services.find((service) => service.name === "mailpit")?.status,
 			).toBe("stopped");
+
+			// A finished run whose containers are still held. It has to decode —
+			// the sweep is the one reader that wants it — and it must never read
+			// as live. `menubar/scripts/smoke-test.sh` asserts the Swift side
+			// hides it too, which matters because `pid: 1` is always alive: only
+			// `releasedAt` can hide this one.
+			const released = runs[1];
+			expect(released?.releasedAt).toBe("2026-09-03T09:30:00.000Z");
+			expect(released?.idleTimeoutMs).toBe(180_000);
+			expect(released?.services[0]?.container?.runtime).toBe("docker");
+			expect(released && isRunAlive(released)).toBe(false);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

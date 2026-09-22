@@ -1,31 +1,43 @@
 import {
 	availableContainerRuntimes,
-	isContainerUp,
+	type ContainerRuntimeAdapter,
+	groupBuncargoContainers,
 	listBuncargoContainers,
-	stopBuncargoContainers,
 } from "../../../container-runtime";
 import * as log from "../../log";
 
 /**
- * Stop every buncargo container on this machine, whatever started it.
+ * Remove every buncargo container stack on this machine, whatever started it.
  *
  * Backs `dev --down --all`, which has no project config in scope, so it asks
  * every runtime that is up rather than assuming the one this repo prefers.
+ * `down`, not `stop`: a stopped container is still a container, and this is
+ * the command people reach for to get a clean machine.
  */
-export async function stopAllBuncargoEnvironments(): Promise<void> {
-	const runtimes = availableContainerRuntimes();
+export async function stopAllBuncargoEnvironments(
+	runtimes: ContainerRuntimeAdapter[] = availableContainerRuntimes(),
+): Promise<void> {
 	if (runtimes.length === 0) {
 		log.info("No container runtime is running. Nothing to stop.");
 		return;
 	}
-	const running = listBuncargoContainers(runtimes).filter(isContainerUp);
-	if (running.length === 0) {
-		log.info("No running buncargo containers.");
+	const groups = groupBuncargoContainers(listBuncargoContainers(runtimes));
+	if (groups.length === 0) {
+		log.info("No buncargo containers.");
 		return;
 	}
 	log.info(
-		`Stopping ${running.length} container${running.length === 1 ? "" : "s"}...`,
+		`Removing ${groups.length} container stack${groups.length === 1 ? "" : "s"}...`,
 	);
-	stopBuncargoContainers(running, runtimes);
-	log.done("All buncargo environments stopped");
+	for (const group of groups) {
+		const runtime = runtimes.find((entry) => entry.name === group.runtime);
+		if (!runtime) continue;
+		await runtime.down({
+			root: group.root,
+			projectName: group.projectName,
+			verbose: false,
+		});
+		log.line(`  ${group.projectName}  ${group.root}`);
+	}
+	log.done("All buncargo environments removed");
 }

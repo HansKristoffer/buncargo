@@ -38,9 +38,7 @@ export function createBuiltInHealthCheck(
 			root,
 			composeFile,
 		};
-		return runtime.execInServiceAsync
-			? runtime.execInServiceAsync(request)
-			: runtime.execInService(request);
+		return runtime.execInService(request);
 	}
 
 	switch (type) {

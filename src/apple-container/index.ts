@@ -32,10 +32,14 @@ export {
 } from "./run-plan";
 export {
 	type AppleContainerRecord,
-	areAppleServicesRunning,
 	findAppleContainerOnPort,
 	formatPublishedPorts,
 	listAppleBuncargoContainers,
 	type PublishedPort,
 	parseContainerRecords,
 } from "./status";
+export {
+	listAppleVolumes,
+	parseAppleVolumeNames,
+	removeAppleVolumes,
+} from "./volumes";

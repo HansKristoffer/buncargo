@@ -85,7 +85,21 @@ function fixture() {
 		Record<string, ServiceConfig>,
 		Record<string, AppConfig>
 	>;
-	return { events, ctx, lifecycle: createLifecycleApi(ctx, envVars) };
+	const runClaim = {
+		sessionId: "test-session",
+		claimRun: async () => {
+			events.push("claim");
+		},
+		releaseRun: async () => {
+			events.push("release");
+		},
+		ensureWatchdog: async () => {},
+	};
+	return {
+		events,
+		ctx,
+		lifecycle: createLifecycleApi(ctx, envVars, runClaim),
+	};
 }
 
 describe("startup modes and hooks", () => {
@@ -97,7 +111,8 @@ describe("startup modes and hooks", () => {
 			verbose: false,
 			wait: false,
 		});
-		expect(events).toEqual(["artifact", "runtime", "up"]);
+		// The claim precedes the first container, so the sweep never sees one unowned.
+		expect(events).toEqual(["claim", "artifact", "runtime", "up"]);
 	});
 	it("migrate-only applies migrations without generation or seeds", async () => {
 		const { events, lifecycle } = fixture();
@@ -108,6 +123,7 @@ describe("startup modes and hooks", () => {
 			wait: false,
 		});
 		expect(events).toEqual([
+			"claim",
 			"artifact",
 			"runtime",
 			"up",
@@ -119,6 +135,7 @@ describe("startup modes and hooks", () => {
 		const { events, lifecycle } = fixture();
 		await lifecycle.start({ startServers: false, verbose: false, wait: false });
 		expect(events).toEqual([
+			"claim",
 			"artifact",
 			"runtime",
 			"up",
@@ -222,7 +239,7 @@ it("starts services requiring preparation after migrations and seeds using one a
 		devCommand: false,
 		requiredServices: ["db", "sync"],
 	};
-	ctx.runtime.up = (request) => {
+	ctx.runtime.up = async (request) => {
 		events.push(`up:${request.serviceNames.join(",")}:${!!request.noDeps}`);
 	};
 	await lifecycle.start({ startServers: false, wait: false, verbose: false });

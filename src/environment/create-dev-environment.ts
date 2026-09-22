@@ -22,8 +22,8 @@ import type {
 import { createDevEnvContext } from "./context";
 import { createEnvVarsApi } from "./env-vars";
 import { createLifecycleApi } from "./lifecycle";
+import { createRunClaimApi } from "./run-claim";
 import { createServersApi } from "./servers";
-import { createWatchdogApi } from "./watchdog";
 
 /**
  * Create a dev environment from a configuration.
@@ -61,9 +61,9 @@ export function createDevEnvironment<
 
 	const ctx = createDevEnvContext(config, options);
 	const envVars = createEnvVarsApi(ctx);
-	const lifecycle = createLifecycleApi(ctx, envVars);
+	const runClaim = createRunClaimApi(ctx);
+	const lifecycle = createLifecycleApi(ctx, envVars, runClaim);
 	const servers = createServersApi(ctx, envVars);
-	const watchdog = createWatchdogApi(ctx);
 
 	function getExpoApiUrl(): string {
 		const appName = config.options?.expoApiApp ?? "api";
@@ -123,7 +123,6 @@ export function createDevEnvironment<
 		seed: config.seed
 			? { command: config.seed.command, cwd: config.seed.cwd }
 			: undefined,
-		autoShutdown: config.options?.autoShutdown,
 
 		// Container management
 		start: lifecycle.start,
@@ -172,11 +171,11 @@ export function createDevEnvironment<
 		getExpoApiUrl,
 		getFrontendPort,
 
-		// Watchdog / Heartbeat
-		startHeartbeat: watchdog.startHeartbeat,
-		stopHeartbeat: watchdog.stopHeartbeat,
-		spawnWatchdog: watchdog.spawnWatchdog,
-		stopWatchdog: watchdog.stopWatchdog,
+		// Run claim / watchdog
+		sessionId: runClaim.sessionId,
+		claimRun: runClaim.claimRun,
+		releaseRun: runClaim.releaseRun,
+		ensureWatchdog: runClaim.ensureWatchdog,
 
 		// Prisma (created below if configured)
 		prisma: undefined,

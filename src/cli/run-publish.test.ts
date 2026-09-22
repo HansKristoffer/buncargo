@@ -10,14 +10,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readProcessIdentity } from "../core/process-identity";
-import { loadRuns, readLiveRuns } from "../core/run-registry";
+import { loadRuns, readLiveRuns, releaseRun } from "../core/run-registry";
 import { handleStop, stopService } from "./commands/stop";
 import {
 	markApps,
 	publishCurrentRun,
 	type RunSource,
 	readGitBranch,
-	withdrawCurrentRun,
 } from "./run-publish";
 import { parseStopArgs } from "./stop-flags";
 
@@ -61,10 +60,11 @@ function source(): RunSource {
 describe("published run ownership", () => {
 	it("publishes selected services with exact alias, runtime binary and process identity", async () => {
 		const run = await publishCurrentRun(source(), {
+			sessionId: "session-a",
 			apps: { web: { port: 3000, devCommand: "bun dev" } },
 			serviceNames: ["db"],
 		});
-		expect(run?.sessionId).toBeDefined();
+		expect(run?.sessionId).toBe("session-a");
 		expect(run?.processIdentity).toBe(readProcessIdentity(process.pid));
 		expect(run?.services).toHaveLength(1);
 		expect(run?.services[0]?.container).toMatchObject({
@@ -77,7 +77,22 @@ describe("published run ownership", () => {
 			markApps(root, ["web"], "ready"),
 		]);
 		expect((await loadRuns())[0]?.apps[0]?.status).toBe("stopped");
-		await withdrawCurrentRun(root);
+
+		// Releasing a run that owns containers keeps its entry: it is the only
+		// record of what they are and how long they may be reused for. Every
+		// "what is running" reader filters it out; only the sweep sees it.
+		await releaseRun(root, process.pid, { sessionId: "session-a" });
+		expect((await loadRuns())[0]?.releasedAt).toBeString();
+		expect(await readLiveRuns()).toEqual([]);
+	});
+
+	it("withdraws an app-only run outright, there being nothing to sweep", async () => {
+		await publishCurrentRun(source(), {
+			sessionId: "session-apps",
+			apps: { web: { port: 3000, devCommand: "bun dev" } },
+			serviceNames: [],
+		});
+		await releaseRun(root, process.pid, { sessionId: "session-apps" });
 		expect(await loadRuns()).toEqual([]);
 	});
 	it("reads a main checkout git branch", () => {
@@ -92,6 +107,7 @@ describe("published run ownership", () => {
 	});
 	it("refuses a mismatched recorded app pid identity before signalling", async () => {
 		const run = await publishCurrentRun(source(), {
+			sessionId: "session-b",
 			apps: { web: { port: 3000, devCommand: "bun dev" } },
 			serviceNames: [],
 		});
@@ -123,10 +139,11 @@ describe("published run ownership", () => {
 		const calls = join(root, "calls.jsonl");
 		writeFileSync(
 			binary,
-			`#!${process.execPath}\nimport { appendFileSync } from "node:fs"; const args = process.argv.slice(2); appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n"); if (args[0] === "ps") console.log("owned\\tfixture-database-1\\tUp\\t\\tfixture\\t${root}\\t\\tdatabase\\nforeign\\tfixture-other-1\\tUp\\t\\tfixture\\t${root}\\t\\tother");`,
+			`#!${process.execPath}\nimport { appendFileSync } from "node:fs"; const args = process.argv.slice(2); appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n"); if (args[0] === "ps") console.log("owned\\tfixture-database-1\\trunning\\tUp\\t\\tfixture\\t${root}\\t\\tdatabase\\nforeign\\tfixture-other-1\\trunning\\tUp\\t\\tfixture\\t${root}\\t\\tother");`,
 		);
 		chmodSync(binary, 0o755);
 		const run = await publishCurrentRun(env, {
+			sessionId: "session-c",
 			apps: {},
 			serviceNames: ["db"],
 		});

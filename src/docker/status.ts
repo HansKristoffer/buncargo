@@ -1,29 +1,9 @@
 import type { ServiceRuntimeState } from "../container-runtime/types";
-import { runDocker, runDockerAsync } from "./binary";
+import { runDockerAsync } from "./binary";
 import { DockerUnavailableError, isDockerDaemonRunning } from "./preflight";
 
 export const DOCKER_NOT_RUNNING_MESSAGE =
 	"Docker is not running. Please start Docker and try again.";
-
-/**
- * Check if a specific container service is running using docker ps.
- */
-export async function isContainerRunning(
-	project: string,
-	service: string,
-	binary?: string,
-): Promise<boolean> {
-	const result = runDocker(binary, [
-		"ps",
-		"--filter",
-		`label=com.docker.compose.project=${project}`,
-		"--filter",
-		`label=com.docker.compose.service=${service}`,
-		"--format",
-		"{{.State}}",
-	]);
-	return result.ok && result.stdout.trim() === "running";
-}
 
 /**
  * Check if Docker daemon is running and reachable.
@@ -39,44 +19,6 @@ export function assertDockerRunning(binary?: string): void {
 	if (!isDockerDaemonRunning(binary)) {
 		throw new DockerUnavailableError("unknown", DOCKER_NOT_RUNNING_MESSAGE);
 	}
-}
-
-/**
- * Check if all expected containers are running.
- */
-export async function areContainersRunning(
-	project: string,
-	minCount = 1,
-	binary?: string,
-): Promise<boolean> {
-	const result = runDocker(binary, [
-		"ps",
-		"--filter",
-		`label=com.docker.compose.project=${project}`,
-		"--format",
-		"{{.State}}",
-	]);
-	if (!result.ok) return false;
-	const states = result.stdout.trim().split("\n").filter(Boolean);
-	if (states.length < minCount) return false;
-	return states.every((state) => state === "running");
-}
-
-/**
- * Check if the requested compose services are all running.
- */
-export async function areServicesRunning(
-	project: string,
-	serviceNames: string[],
-	binary?: string,
-): Promise<boolean> {
-	if (serviceNames.length === 0) return false;
-	const runningStates = await Promise.all(
-		serviceNames.map((serviceName) =>
-			isContainerRunning(project, serviceName, binary),
-		),
-	);
-	return runningStates.every(Boolean);
 }
 
 const SERVICE_STATE_FORMAT =
@@ -123,27 +65,10 @@ export function parseDockerServiceStates(
 /**
  * Every container this project has, in one `docker ps`.
  *
- * Replaces a `docker ps` per service: `areServicesRunning` asked separately
- * about each one, so a four-service stack paid four listings before anything
- * started.
+ * One listing rather than one per service: a four-service stack used to pay
+ * four of them before anything started.
  */
-export function dockerProjectServiceStates(
-	project: string,
-	binary?: string,
-): ServiceRuntimeState[] {
-	const result = runDocker(binary, [
-		"ps",
-		"--all",
-		"--filter",
-		`label=buncargo.project=${project}`,
-		"--format",
-		SERVICE_STATE_FORMAT,
-	]);
-	if (!result.ok) return [];
-	return parseDockerServiceStates(result.stdout);
-}
-
-export async function dockerProjectServiceStatesAsync(
+export async function dockerProjectServiceStates(
 	project: string,
 	binary?: string,
 	signal?: AbortSignal,

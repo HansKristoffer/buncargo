@@ -27,19 +27,20 @@ function stubRuntime(
 		displayName: "Apple container",
 		isAvailable: () => true,
 		ensureRunning: async () => {},
-		up: () => {},
-		down: () => {},
-		areServicesRunning: async () => true,
-		execInService: () => false,
-		diagnoseService: () => {
+		up: async () => {},
+		down: async () => {},
+		execInService: async () => false,
+		diagnoseService: async () => {
 			onDiagnose?.();
 			return diagnosis;
 		},
 		list: () => [],
+		listVolumes: async () => [],
+		removeVolumes: async () => [],
 		stopByIds: () => {},
 		findContainerOnPort: () => undefined,
 		containerPortOwners: () => new Map(),
-		projectServiceStates: () => [],
+		projectServiceStates: async () => [],
 	};
 }
 
@@ -156,10 +157,10 @@ describe("ensureServicesRunning reconcile", () => {
 		let seenHash = "";
 		const runtime: ContainerRuntimeAdapter = {
 			...stubRuntime(undefined),
-			up: (request) => {
+			up: async (request) => {
 				ups.push(request);
 			},
-			projectServiceStates: () =>
+			projectServiceStates: async () =>
 				typeof states === "function" ? states(seenHash) : states,
 		};
 
@@ -247,8 +248,10 @@ describe("ensureServicesRunning reconcile", () => {
 		const ups: ContainerUpRequest[] = [];
 		const runtime: ContainerRuntimeAdapter = {
 			...stubRuntime(undefined),
-			up: (request) => ups.push(request),
-			projectServiceStates: () => {
+			up: async (request) => {
+				ups.push(request);
+			},
+			projectServiceStates: async () => {
 				throw new Error("daemon not answering");
 			},
 		};

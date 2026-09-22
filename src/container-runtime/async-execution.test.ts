@@ -33,7 +33,7 @@ exec ${quote(process.execPath)} -e 'process.on("SIGTERM", () => {}); setInterval
 			const { root, runtime, pidFile } = await fixture();
 			try {
 				const start = performance.now();
-				const ready = await runtime.execInServiceAsync?.({
+				const ready = await runtime.execInService({
 					projectName: "demo",
 					serviceName: "db",
 					command: ["probe", "literal argument"],
@@ -52,7 +52,7 @@ exec ${quote(process.execPath)} -e 'process.on("SIGTERM", () => {}); setInterval
 			const { root, runtime, pidFile } = await fixture();
 			const controller = new AbortController();
 			try {
-				const operation = runtime.upAsync?.({
+				const operation = runtime.up({
 					root,
 					projectName: "demo",
 					envVars: {},
@@ -61,7 +61,7 @@ exec ${quote(process.execPath)} -e 'process.on("SIGTERM", () => {}); setInterval
 					verbose: false,
 					signal: controller.signal,
 				});
-				const outcome = operation?.then(
+				const outcome = operation.then(
 					() => undefined,
 					(error: unknown) => error,
 				);

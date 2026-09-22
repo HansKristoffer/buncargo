@@ -66,9 +66,9 @@ function subcommands(cli: RecordingCli): string[] {
 }
 
 describe("appleUp", () => {
-	it("creates named volumes before running the service", () => {
+	it("creates named volumes before running the service", async () => {
 		const cli = recordingCli();
-		appleUp(
+		await appleUp(
 			cli,
 			upRequest(modelFor({ postgres: { port: 5432 } }), ["postgres"]),
 		);
@@ -82,9 +82,9 @@ describe("appleUp", () => {
 		expect(cli.calls[volumeCreate]?.[2]).toBe("gey-main-postgres_data");
 	});
 
-	it("reads the inventory once no matter how many services start", () => {
+	it("reads the inventory once no matter how many services start", async () => {
 		const cli = recordingCli();
-		appleUp(
+		await appleUp(
 			cli,
 			upRequest(
 				modelFor({
@@ -99,7 +99,7 @@ describe("appleUp", () => {
 		expect(cli.calls.filter((call) => call[0] === "ls")).toHaveLength(1);
 	});
 
-	it("leaves a running container with a matching config hash alone", () => {
+	it("leaves a running container with a matching config hash alone", async () => {
 		const plan = buildAppleRunPlan({
 			projectName: "gey-main",
 			model: modelFor({ postgres: { port: 5432 } }),
@@ -110,7 +110,7 @@ describe("appleUp", () => {
 			record("gey-main-postgres", "running", { [CONFIG_HASH_LABEL]: hash }),
 		]);
 
-		appleUp(
+		await appleUp(
 			cli,
 			upRequest(modelFor({ postgres: { port: 5432 } }), ["postgres"]),
 		);
@@ -119,7 +119,7 @@ describe("appleUp", () => {
 		expect(subcommands(cli)).not.toContain("delete --force");
 	});
 
-	it("starts a stopped container instead of recreating it", () => {
+	it("starts a stopped container instead of recreating it", async () => {
 		const plan = buildAppleRunPlan({
 			projectName: "gey-main",
 			model: modelFor({ postgres: { port: 5432 } }),
@@ -130,7 +130,7 @@ describe("appleUp", () => {
 			record("gey-main-postgres", "stopped", { [CONFIG_HASH_LABEL]: hash }),
 		]);
 
-		appleUp(
+		await appleUp(
 			cli,
 			upRequest(modelFor({ postgres: { port: 5432 } }), ["postgres"]),
 		);
@@ -143,14 +143,14 @@ describe("appleUp", () => {
 		expect(cli.calls.some((call) => call[0] === "run")).toBe(false);
 	});
 
-	it("recreates a container whose config hash drifted", () => {
+	it("recreates a container whose config hash drifted", async () => {
 		const cli = recordingCli([
 			record("gey-main-postgres", "running", {
 				[CONFIG_HASH_LABEL]: "stale-hash",
 			}),
 		]);
 
-		appleUp(
+		await appleUp(
 			cli,
 			upRequest(modelFor({ postgres: { port: 5432 } }), ["postgres"]),
 		);
@@ -165,7 +165,7 @@ describe("appleUp", () => {
 });
 
 describe("appleDown", () => {
-	it("stops running containers then deletes every one in the project", () => {
+	it("stops running containers then deletes every one in the project", async () => {
 		const cli = recordingCli([
 			record("gey-main-postgres", "running", {
 				"buncargo.project": "gey-main",
@@ -174,7 +174,7 @@ describe("appleDown", () => {
 			record("other-postgres", "running", { "buncargo.project": "other" }),
 		]);
 
-		appleDown(cli, {
+		await appleDown(cli, {
 			root: "/repo",
 			projectName: "gey-main",
 			model: modelFor({ postgres: { port: 5432 } }),
@@ -192,7 +192,7 @@ describe("appleDown", () => {
 		]);
 	});
 
-	it("throws rather than reporting success when a stop fails", () => {
+	it("throws rather than reporting success when a stop fails", async () => {
 		const cli = recordingCli(
 			[
 				record("gey-main-postgres", "running", {
@@ -202,16 +202,16 @@ describe("appleDown", () => {
 			{ stop: "internal error" },
 		);
 
-		expect(() =>
+		await expect(
 			appleDown(cli, {
 				root: "/repo",
 				projectName: "gey-main",
 				verbose: false,
 			}),
-		).toThrow(/stop containers gey-main-postgres failed/);
+		).rejects.toThrow(/stop containers gey-main-postgres failed/);
 	});
 
-	it("tolerates a container that vanished between listing and deleting", () => {
+	it("tolerates a container that vanished between listing and deleting", async () => {
 		const cli = recordingCli(
 			[
 				record("gey-main-postgres", "stopped", {
@@ -221,40 +221,44 @@ describe("appleDown", () => {
 			{ delete: "Error: no such container" },
 		);
 
-		expect(() =>
+		await expect(
 			appleDown(cli, {
 				root: "/repo",
 				projectName: "gey-main",
 				verbose: false,
 			}),
-		).not.toThrow();
+		).resolves.toBeUndefined();
 	});
 
-	it("needs no model to tear a project down", () => {
+	it("needs no model to tear a project down", async () => {
 		const cli = recordingCli([
 			record("gey-main-redis", "running", { "buncargo.project": "gey-main" }),
 		]);
 
 		// The detached watchdog runner has no config in scope.
-		appleDown(cli, { root: "/repo", projectName: "gey-main", verbose: false });
+		await appleDown(cli, {
+			root: "/repo",
+			projectName: "gey-main",
+			verbose: false,
+		});
 
 		expect(cli.calls).toContainEqual(["delete", "--force", "gey-main-redis"]);
 	});
 
-	it("refuses to remove volumes without a model to name them", () => {
-		expect(() =>
+	it("refuses to remove volumes without a model to name them", async () => {
+		await expect(
 			appleDown(recordingCli(), {
 				root: "/repo",
 				projectName: "gey-main",
 				removeVolumes: true,
 				verbose: false,
 			}),
-		).toThrow(/without the compose model/);
+		).rejects.toThrow(/without the compose model/);
 	});
 
-	it("removes the project's named volumes only with removeVolumes", () => {
+	it("removes the project's named volumes only with removeVolumes", async () => {
 		const withReset = recordingCli();
-		appleDown(withReset, {
+		await appleDown(withReset, {
 			root: "/repo",
 			projectName: "gey-main",
 			model: modelFor({ postgres: { port: 5432 } }),
@@ -268,7 +272,7 @@ describe("appleDown", () => {
 		]);
 
 		const withoutReset = recordingCli();
-		appleDown(withoutReset, {
+		await appleDown(withoutReset, {
 			root: "/repo",
 			projectName: "gey-main",
 			model: modelFor({ postgres: { port: 5432 } }),

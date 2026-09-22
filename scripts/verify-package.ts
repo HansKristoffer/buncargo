@@ -257,19 +257,26 @@ console.log(path);
 		command([process.execPath, bundleProbe], consumer, { HOME: home }),
 	);
 	assert.equal(installedPaths[0], installedPaths[1]);
+	// The watchdog is machine-wide and configured by nothing but the run
+	// registry, so the only thing to prove here is that the packed bundle
+	// runs standalone out of the installed package — it is executed by a
+	// detached process that cannot reach the consumer's code-split chunks.
+	//
+	// Hermetic on purpose: an isolated HOME so it reads an empty registry,
+	// and an empty PATH so it finds no container runtime. It therefore has
+	// nothing to watch and exits at once, and cannot touch whatever Docker
+	// stacks the machine running this happens to have.
+	const watchdogHome = join(consumer, "watchdog-home");
+	mkdirSync(watchdogHome, { recursive: true });
 	const watchdog = join(installed, "dist/core/watchdog-runner.js");
 	const watchdogResult = Bun.spawnSync([process.execPath, watchdog], {
 		cwd: consumer,
-		env: { PATH: process.env.PATH ?? "" },
+		env: { PATH: "", HOME: watchdogHome },
 		stdout: "pipe",
 		stderr: "pipe",
 	});
-	assert.equal(watchdogResult.exitCode, 1);
-	assert(
-		watchdogResult.stderr
-			.toString()
-			.includes("Missing required environment variables"),
-	);
+	assert.equal(watchdogResult.exitCode, 0);
+	assert(watchdogResult.stdout.toString().includes("Nothing left to watch"));
 	for (const daemon of ["hostsd.js", "connectd.js"]) {
 		const detachedDaemon = join(consumer, "detached", daemon);
 		mkdirSync(dirname(detachedDaemon), { recursive: true });
