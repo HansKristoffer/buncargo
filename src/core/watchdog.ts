@@ -36,6 +36,20 @@ export function getWatchdogLockFile(): string {
 	return `${getWatchdogPidFile()}.runner`;
 }
 
+/**
+ * Held by a caller while it starts a watchdog, so only one ever does.
+ *
+ * Distinct from the runner's own lock, and it has to be: the runner holds
+ * that one for its whole life, so a spawner cannot keep it across the spawn
+ * without deadlocking the process it just started. Without this second file
+ * two callers each spawn a runner, and the loser — which exits silently on
+ * the lock it cannot get — can instead start *after* the winner has been
+ * stopped, and quietly become the watchdog nobody asked for.
+ */
+function getWatchdogSpawnLockFile(): string {
+	return `${getWatchdogPidFile()}.spawn`;
+}
+
 export function getWatchdogPid(): number | null {
 	try {
 		const pidFile = getWatchdogPidFile();
@@ -93,9 +107,9 @@ export function resolveWatchdogRunnerPath(): string {
  * the watchdog along with the run it was there to outlive. That is the
  * failure this whole sweep was built for, so the watchdog must not share it.
  *
- * Started from the state directory, so it never holds a checkout open. The
- * runner's own lock is the arbiter: a duplicate spawned by a racing caller
- * cannot acquire it and exits without doing anything.
+ * Started from the state directory, so it never holds a checkout open, and
+ * under a spawn lock held until the runner is confirmed up, so two `dev` runs
+ * starting together cannot each launch one.
  */
 export async function ensureWatchdog(
 	options: { verbose?: boolean } = {},
@@ -103,55 +117,63 @@ export async function ensureWatchdog(
 	const { verbose = true } = options;
 	if (getWatchdogPid()) return;
 
-	try {
-		// Try-acquire: a held lock means a runner is alive, whatever the pid
-		// file says. Released immediately, because the spawned runner is what
-		// holds it from here on.
-		await withFileLock(getWatchdogLockFile(), async () => {}, {
-			timeoutMs: 0,
-		});
-	} catch (error) {
-		if (error instanceof FileLockTimeoutError) return;
-		throw error;
-	}
-
-	const logFile = getWatchdogLogFile();
-	const stateDir = getStateDir();
-	mkdirSync(stateDir, { recursive: true });
-	writeFileSync(logFile, "");
-
-	// Argv through JSON rather than a shell command line: no quoting rules to
-	// get wrong for a checkout path containing a space.
-	const bootstrap = `const { spawn } = require("node:child_process"); spawn(${JSON.stringify(
-		process.execPath,
-	)}, [${JSON.stringify(resolveWatchdogRunnerPath())}], { cwd: ${JSON.stringify(
-		stateDir,
-	)}, detached: true, stdio: "ignore" }).unref();`;
-	const proc = spawn(process.execPath, ["-e", bootstrap], {
-		cwd: stateDir,
-		detached: true,
-		stdio: ["ignore", "ignore", "ignore"],
-		env: process.env,
-	});
-
-	let spawnError: Error | undefined;
-	proc.on("error", (error) => {
-		spawnError = error;
-	});
-	proc.unref();
-
-	const startedAt = Date.now();
-	while (Date.now() - startedAt < 2000) {
-		await new Promise((resolve) => setTimeout(resolve, 100));
-		if (spawnError) throw spawnError;
+	await withFileLock(getWatchdogSpawnLockFile(), async () => {
+		// Re-checked under the lock: whoever held it before us may have just
+		// started the watchdog this call was about to duplicate.
 		if (getWatchdogPid()) return;
-	}
+		try {
+			// Try-acquire the runner's own lock: a held one means a runner is
+			// alive whatever the pid file says, which is how a `kill -9` that
+			// left the file behind is told from a live process. Released at
+			// once, because the runner we spawn is what holds it from here on.
+			await withFileLock(getWatchdogLockFile(), async () => {}, {
+				timeoutMs: 0,
+			});
+		} catch (error) {
+			if (error instanceof FileLockTimeoutError) return;
+			throw error;
+		}
 
-	if (verbose) {
-		console.warn(
-			formatWarn(
-				`Watchdog did not start. Check ${logFile} and rebuild buncargo if dist/core/watchdog-runner.js is missing.`,
-			),
-		);
-	}
+		const logFile = getWatchdogLogFile();
+		const stateDir = getStateDir();
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(logFile, "");
+
+		// Argv through JSON rather than a shell command line: no quoting rules
+		// to get wrong for a checkout path containing a space.
+		const bootstrap = `const { spawn } = require("node:child_process"); spawn(${JSON.stringify(
+			process.execPath,
+		)}, [${JSON.stringify(resolveWatchdogRunnerPath())}], { cwd: ${JSON.stringify(
+			stateDir,
+		)}, detached: true, stdio: "ignore" }).unref();`;
+		const proc = spawn(process.execPath, ["-e", bootstrap], {
+			cwd: stateDir,
+			detached: true,
+			stdio: ["ignore", "ignore", "ignore"],
+			env: process.env,
+		});
+
+		let spawnError: Error | undefined;
+		proc.on("error", (error) => {
+			spawnError = error;
+		});
+		proc.unref();
+
+		// Held until the runner is confirmed up, so a concurrent caller cannot
+		// spawn a second one into the gap.
+		const startedAt = Date.now();
+		while (Date.now() - startedAt < 2000) {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			if (spawnError) throw spawnError;
+			if (getWatchdogPid()) return;
+		}
+
+		if (verbose) {
+			console.warn(
+				formatWarn(
+					`Watchdog did not start. Check ${logFile} and rebuild buncargo if dist/core/watchdog-runner.js is missing.`,
+				),
+			);
+		}
+	});
 }
