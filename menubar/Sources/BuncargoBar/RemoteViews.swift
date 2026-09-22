@@ -120,13 +120,11 @@ struct RemoteTargetRow: View {
             detail: store.address(target),
             onOpen: { store.perform(target) },
             openSymbol: target.isHTTP ? "arrow.up.right" : "link",
-            openHelp: target.isHTTP ? "Open" : "Connect and copy address",
+            openHelp: target.isHTTP ? "Open" : "Copy connection address",
             onCopy: { store.perform(target, action: .copy) },
             onTablePlus: target.supportsTablePlus
                 ? { store.perform(target, action: .tablePlus) } : nil,
-            onStop: store.connections[target.id] != nil ? { store.disconnect(target) } : nil,
-            stopHelp: "Disconnect local connection",
-            actionsEnabled: store.canUse(target) && !store.connecting.contains(target.id)
+            actionsEnabled: store.canUse(target)
         )
     }
 }

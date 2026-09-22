@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import { CONNECT_ORIGIN } from "./connect/protocol";
 
 /**
  * Every environment variable buncargo reads, in one place.
@@ -277,7 +276,7 @@ export function connectTokens(env: NodeJS.ProcessEnv = process.env): string[] {
 	];
 	if (
 		tokens.length > 16 ||
-		tokens.some((t) => !/^bc_share_[a-f0-9]{64}$/.test(t))
+		tokens.some((t) => !/^bc_share_[a-f0-9]{128}$/.test(t))
 	)
 		throw new Error(
 			"BUNCARGO_CONNECT_TOKENS must contain up to 16 comma-separated connection tokens.",
@@ -298,29 +297,52 @@ export function connectName(
 		);
 	return name || undefined;
 }
-export function connectOrigin(env: NodeJS.ProcessEnv = process.env): string {
-	const url = new URL(env.BUNCARGO_CONNECT_URL ?? CONNECT_ORIGIN);
+/**
+ * Relays to use instead of the free public ones.
+ *
+ * Both ends of a connection must name the same relays: a dialer reaches a
+ * receiver through the relay that receiver calls home, so configuring only
+ * the sandbox would leave it unable to find the Mac at all.
+ */
+export function connectRelays(env: NodeJS.ProcessEnv = process.env): string[] {
+	const relays = [
+		...new Set(
+			(env.BUNCARGO_CONNECT_RELAYS ?? "")
+				.split(",")
+				.map((value) => value.trim())
+				.filter(Boolean),
+		),
+	];
 	if (
-		(url.protocol !== "https:" &&
-			!(
-				url.protocol === "http:" &&
-				["localhost", "127.0.0.1"].includes(url.hostname)
-			)) ||
-		url.username ||
-		url.password ||
-		url.search ||
-		url.hash ||
-		url.pathname !== "/"
+		relays.length > 8 ||
+		relays.some((value) => {
+			try {
+				return new URL(value).protocol !== "https:";
+			} catch {
+				return true;
+			}
+		})
 	)
-		throw new Error("BUNCARGO_CONNECT_URL must be an HTTPS origin.");
-	return url.origin;
+		throw new Error(
+			"BUNCARGO_CONNECT_RELAYS must contain up to 8 comma-separated HTTPS relay URLs.",
+		);
+	return relays;
+}
+export function connectRelayToken(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return env.BUNCARGO_CONNECT_RELAY_TOKEN?.trim() || undefined;
 }
 export function connectProcessEnv(
 	env: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-	const { BUNCARGO_CONNECT_TOKENS: _tokens, ...rest } = env;
+	const {
+		BUNCARGO_CONNECT_TOKENS: _tokens,
+		BUNCARGO_CONNECT_RELAY_TOKEN: _relayToken,
+		...rest
+	} = env;
 	return rest;
 }
-export function frpTestsEnabled(env: NodeJS.ProcessEnv = process.env) {
-	return env.BUNCARGO_TEST_FRP === "1";
+export function irohTestsEnabled(env: NodeJS.ProcessEnv = process.env) {
+	return env.BUNCARGO_TEST_IROH === "1";
 }

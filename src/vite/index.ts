@@ -1,5 +1,5 @@
 /** Configure Vite's listener and allowed hosts from Buncargo's app environment.
- * HMR follows the URL that loaded the client, so local HTTPS and remote frp URLs
+ * HMR follows the URL that loaded the client, so local HTTPS and shared loopback URLs
  * can reach the same dev server without baking one machine's hostname into it.
  */
 

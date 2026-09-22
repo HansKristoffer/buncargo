@@ -1,17 +1,8 @@
 import { spawnSync } from "node:child_process";
-import {
-	ensureReceiver,
-	request,
-	requireReceiver,
-} from "../../core/connect/client";
 import { readCoordinatorState } from "../../core/connect/coordinator-state";
+import { ensureReceiver, receiverToken } from "../../core/connect/identity";
 import { ensureConnectCoordinator } from "../../core/connect/launcher";
-import {
-	type Directory,
-	parseDirectory,
-	type TCPConnection,
-} from "../../core/connect/protocol";
-import { connectOrigin } from "../../core/runtime-flags";
+import { type Directory, parseDirectory } from "../../core/connect/protocol";
 import {
 	type CommandSpec,
 	findUnknownFlags,
@@ -34,8 +25,7 @@ const flags = {
 } as const;
 
 export const CONNECT_COMMAND_SPEC: CommandSpec = {
-	usage:
-		"buncargo connect <token|status|open|tcp|disconnect|revoke> [target-id] [--json]",
+	usage: "buncargo connect <token|status|open|revoke> [id] [--json]",
 	flags: Object.values(flags),
 	notes: [
 		{
@@ -47,32 +37,54 @@ export const CONNECT_COMMAND_SPEC: CommandSpec = {
 			command: "BUNCARGO_CONNECT_NAME",
 			description: "Optional remote environment group name in BuncargoBar.",
 		},
+		{
+			command: "BUNCARGO_CONNECT_RELAYS",
+			description:
+				"Optional relay URLs to use instead of the free public ones, on both ends.",
+		},
 	],
 };
 
+/** The coordinator holds the connections, so every action on one goes through it. */
 async function coordinator<T>(path: string, body?: unknown): Promise<T> {
 	await ensureConnectCoordinator();
 	const state = await readCoordinatorState();
 	if (!state?.connection) {
 		throw new Error("Connection coordinator unavailable");
 	}
-	return request(
-		`http://127.0.0.1:${state.connection.port}`,
-		path,
-		state.connection.token,
-		body,
+	const response = await fetch(
+		`http://127.0.0.1:${state.connection.port}${path}`,
+		{
+			method: body === undefined ? "GET" : "POST",
+			redirect: "error",
+			signal: AbortSignal.timeout(10000),
+			headers: {
+				authorization: `Bearer ${state.connection.token}`,
+				"content-type": "application/json",
+			},
+			body: body === undefined ? undefined : JSON.stringify(body),
+		},
 	);
+	const value = await response.json();
+	if (!response.ok) {
+		throw new Error(
+			typeof (value as { error?: unknown })?.error === "string"
+				? (value as { error: string }).error
+				: "Connection failed",
+		);
+	}
+	return value as T;
 }
 
 async function connectionStatus(): Promise<Directory> {
-	return parseDirectory(await coordinator("/status"), connectOrigin());
+	return parseDirectory(await coordinator("/status"));
 }
 
 function formatDirectory(directory: Directory): string {
 	const runs = directory.runs.map((run) => {
 		const name = `${run.name} / ${run.project} / ${run.branch ?? run.worktree ?? "Main"}`;
 		const targets = run.targets.map(
-			(target) => `  ${target.name}: ${target.url || "private TCP"}`,
+			(target) => `  ${target.name}: ${target.url}`,
 		);
 		return [name, ...targets].join("\n");
 	});
@@ -93,9 +105,7 @@ export async function handleConnect(args: string[]) {
 	);
 	if (
 		extra.length ||
-		!["token", "status", "open", "tcp", "disconnect", "revoke"].includes(
-			command,
-		) ||
+		!["token", "status", "open", "revoke"].includes(command) ||
 		(["token", "status"].includes(command) ? !!id : !id) ||
 		(readBooleanFlag(args, flags.rotate) && command !== "token")
 	) {
@@ -104,24 +114,15 @@ export async function handleConnect(args: string[]) {
 	const json = readBooleanFlag(args, flags.json);
 	let result: unknown;
 	if (command === "token") {
-		const receiver = await ensureReceiver(readBooleanFlag(args, flags.rotate));
-		result = json ? { token: receiver.token } : receiver.token;
+		const token = receiverToken(
+			await ensureReceiver(readBooleanFlag(args, flags.rotate)),
+		);
+		result = json ? { token } : token;
 	} else if (command === "status") {
 		const directory = await connectionStatus();
 		result = json ? directory : formatDirectory(directory);
-	} else if (command === "tcp") {
-		result = await coordinator<TCPConnection>("/tcp", { id });
-	} else if (command === "disconnect") {
-		result = await coordinator("/disconnect", { id });
 	} else if (command === "revoke") {
-		const receiver = await requireReceiver();
-		result = await request(
-			receiver.origin,
-			`/v1/receiver/grants/${encodeURIComponent(id)}`,
-			receiver.owner,
-			undefined,
-			"DELETE",
-		);
+		result = await coordinator("/revoke", { id });
 	} else {
 		const directory = await connectionStatus();
 		const target = directory.runs

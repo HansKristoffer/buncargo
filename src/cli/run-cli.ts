@@ -300,8 +300,7 @@ async function runDevFlow<
 	const plan = buildStartPlan(env.apps, env.services, selectedAppNames);
 	validateDevStart(env, args, appsForDev, plan.requiredServiceKeys);
 	connect?.plan(appsForDev, plan.requiredServiceKeys, env.services);
-	if (connect && !connect.active)
-		log.info("No selected endpoints to share through frp.");
+	if (connect && !connect.active) log.info("No selected endpoints to share.");
 	env.prepareStart?.(selectedAppNames);
 	const hasServices = plan.requiredServiceKeys.length > 0;
 

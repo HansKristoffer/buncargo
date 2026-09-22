@@ -1,9 +1,13 @@
-/** Wire contract shared by the directory, CLI, and Swift fixture tests. */
-export const CONNECT_ORIGIN = "https://connect.hanskristoffer.dk";
+/** Wire contract shared by the publisher, the receiver, the CLI and the Swift fixture tests. */
 
-export const LEASE_MS = 45_000;
+/** One ALPN for the whole protocol; a version bump is a new string, never a field. */
+export const CONNECT_ALPN = "buncargo/connect/1";
 
+/** How often a publisher resends its runs. */
 export const HEARTBEAT_MS = 10_000;
+
+/** A publisher that has been silent for longer than this is hidden even if its connection lingers. */
+export const STALE_MS = 45_000;
 
 export type TargetStatus =
 	| "starting"
@@ -34,11 +38,13 @@ export interface RunInput {
 	targets: TargetInput[];
 }
 
+/** What a receiver publishes: the same target, addressed by the loopback port it bound for it. */
 export interface RemoteTarget extends TargetInput {
 	url: string;
 }
 
 export interface RemoteRun extends Omit<RunInput, "targets"> {
+	publisherId: string;
 	targets: RemoteTarget[];
 }
 
@@ -46,58 +52,8 @@ export interface Directory {
 	version: 1;
 	configured: boolean;
 	generatedAt: number;
-	origin: string;
 	notice?: string;
 	runs: RemoteRun[];
-}
-
-export interface Relay {
-	host: string;
-	port: number;
-	serverName: string;
-}
-
-export interface Assignment {
-	id: string;
-	targetId: string;
-	protocol: "http" | "tcp";
-	subdomain?: string;
-	secretKey?: string;
-	receiverId?: string;
-}
-
-export interface PublicationLease {
-	id: string;
-	credential: string;
-	user: string;
-	relay: Relay;
-	remainingMs: number;
-	assignments: Assignment[];
-	rejectedRecipients: number;
-}
-
-export interface VisitorLease {
-	credential: string;
-	user: string;
-	relay: Relay;
-	proxyName: string;
-	secretKey: string;
-	remainingMs: number;
-	target: RemoteTarget;
-}
-
-export interface Receiver {
-	id: string;
-	owner: string;
-	token: string;
-	origin: string;
-}
-
-export interface TCPConnection {
-	targetId: string;
-	port: number;
-	url: string;
-	tablePlusUrl?: string;
 }
 
 export function record(value: unknown): Record<string, unknown> {
@@ -125,6 +81,115 @@ export function text(value: unknown, max = 256): value is string {
 		value.length > 0 &&
 		value.length <= max &&
 		![...value].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)
+	);
+}
+
+const HEX32 = /^[a-f0-9]{64}$/;
+
+/** An endpoint ID is an ed25519 public key, so the CLI can mint one without loading iroh. */
+export function isEndpointId(value: unknown): value is string {
+	return typeof value === "string" && HEX32.test(value);
+}
+
+export interface ConnectToken {
+	endpointId: string;
+	secret: string;
+}
+
+/** Receiver identity plus the shared secret that authorizes publishing to it. */
+export function encodeToken(token: ConnectToken): string {
+	if (!isEndpointId(token.endpointId) || !HEX32.test(token.secret)) {
+		throw new Error("Invalid connection token");
+	}
+	return `bc_share_${token.endpointId}${token.secret}`;
+}
+
+export function parseToken(value: string): ConnectToken {
+	const match = /^bc_share_([a-f0-9]{64})([a-f0-9]{64})$/.exec(value);
+	if (!match) {
+		throw new Error("Invalid connection token");
+	}
+	return { endpointId: match[1] as string, secret: match[2] as string };
+}
+
+/** The publisher proves it holds a receiver's token before that receiver reads anything else. */
+export interface HelloMessage {
+	type: "hello";
+	secret: string;
+	name: string;
+	hostname: string;
+}
+
+export interface RunsMessage {
+	type: "runs";
+	runs: RunInput[];
+}
+
+/** Opened by the receiver on the publisher's connection, one per accepted local socket. */
+export interface OpenMessage {
+	type: "open";
+	sessionId: string;
+	targetId: string;
+}
+
+export function parseHello(value: unknown): HelloMessage {
+	const message = record(value);
+	if (
+		message.type !== "hello" ||
+		!HEX32.test(String(message.secret)) ||
+		!text(message.name, 80) ||
+		!text(message.hostname)
+	) {
+		throw new Error("Invalid connection handshake");
+	}
+	return {
+		type: "hello",
+		secret: message.secret as string,
+		name: message.name,
+		hostname: message.hostname,
+	};
+}
+
+export function parseRuns(value: unknown): RunsMessage {
+	const message = record(value);
+	if (
+		message.type !== "runs" ||
+		!Array.isArray(message.runs) ||
+		message.runs.length > 32
+	) {
+		throw new Error("Invalid run update");
+	}
+	const runs = message.runs.map(parseRun);
+	if (new Set(runs.map((run) => run.sessionId)).size !== runs.length) {
+		throw new Error("Invalid run update");
+	}
+	return { type: "runs", runs };
+}
+
+export function parseOpen(value: unknown): OpenMessage {
+	const message = record(value);
+	if (
+		message.type !== "open" ||
+		!text(message.sessionId) ||
+		!text(message.targetId)
+	) {
+		throw new Error("Invalid stream request");
+	}
+	return {
+		type: "open",
+		sessionId: message.sessionId,
+		targetId: message.targetId,
+	};
+}
+
+/** Every reply is one of these two; an error carries a reason the receiver can show. */
+export function parseReply(value: unknown): void {
+	const message = record(value);
+	if (message.type === "ok") {
+		return;
+	}
+	throw new Error(
+		text(message.message, 256) ? message.message : "Connection refused",
 	);
 }
 
@@ -205,12 +270,55 @@ export function parseRun(value: unknown): RunInput {
 	};
 }
 
-export function parseDirectory(value: unknown, origin: string): Directory {
+const LOOPBACK_SCHEMES = [
+	"http:",
+	"tcp:",
+	"postgresql:",
+	"redis:",
+	"clickhouse:",
+];
+
+/**
+ * Every address the bar can act on points at this computer.
+ *
+ * A remote publisher chooses the target's name and preset, so the receiver
+ * derives the address itself; validating it again here is what keeps a
+ * publisher from talking the menu into opening someone else's URL.
+ */
+export function parseLoopbackUrl(value: unknown, port: number): URL {
+	if (!text(value, 2048)) {
+		throw new Error("Invalid local address");
+	}
+	const url = new URL(value);
+	if (
+		!LOOPBACK_SCHEMES.includes(url.protocol) ||
+		url.hostname !== "127.0.0.1" ||
+		Number(url.port) !== port ||
+		url.search ||
+		url.hash ||
+		(url.protocol === "http:" &&
+			(url.pathname !== "/" || url.username || url.password))
+	) {
+		throw new Error("Invalid local address");
+	}
+	return url;
+}
+
+export function emptyDirectory(notice?: string): Directory {
+	return {
+		version: 1,
+		configured: false,
+		generatedAt: Date.now(),
+		runs: [],
+		...(notice === undefined ? {} : { notice }),
+	};
+}
+
+export function parseDirectory(value: unknown): Directory {
 	const directory = record(value);
 	if (
 		directory.version !== 1 ||
 		typeof directory.configured !== "boolean" ||
-		directory.origin !== origin ||
 		typeof directory.generatedAt !== "number" ||
 		Math.abs(Date.now() - directory.generatedAt) > 30_000 ||
 		!Array.isArray(directory.runs) ||
@@ -222,31 +330,15 @@ export function parseDirectory(value: unknown, origin: string): Directory {
 	for (const raw of directory.runs) {
 		const run = record(raw);
 		parseRun(run);
-		if (ids.has(String(run.sessionId))) {
+		const id = `${run.publisherId}.${run.sessionId}`;
+		if (!isEndpointId(run.publisherId) || ids.has(id)) {
 			throw new Error("Invalid remote identity");
 		}
-		ids.add(String(run.sessionId));
+		ids.add(id);
 		for (const target of run.targets as RemoteTarget[]) {
-			if (target.protocol === "http") {
-				const url = new URL(target.url);
-				const base = new URL(origin);
-				if (
-					url.protocol !== base.protocol ||
-					url.port !== base.port ||
-					!/^[a-f0-9]{32}$/.test(
-						url.hostname.slice(0, -base.hostname.length - 1),
-					) ||
-					!url.hostname.endsWith(`.${base.hostname}`) ||
-					url.username ||
-					url.password ||
-					url.search ||
-					url.hash ||
-					url.pathname !== "/"
-				) {
-					throw new Error("Invalid remote URL");
-				}
-			} else if (target.url !== "") {
-				throw new Error("TCP targets require a local visitor");
+			parseLoopbackUrl(target.url, target.port);
+			if (target.tablePlusUrl !== undefined) {
+				parseLoopbackUrl(target.tablePlusUrl, target.port);
 			}
 		}
 	}

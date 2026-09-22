@@ -69,7 +69,7 @@ jobs:
       - name: Verify container reuse, jobs, preparation and shutdown
         run: bun scripts/verify-docker.ts
 
-  frp:
+  iroh:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -78,15 +78,5 @@ jobs:
         with:
           bun-version: "1.4.2"
       - run: bun install --frozen-lockfile
-      - name: Verify frp TLS, HTTP streaming, WebSockets and private TCP
-        run: bun run test:integration-frp
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.1"
-          cache: false
-      - name: Build the production relay artifact
-        run: |
-          bash server/deploy/build.sh candidate-server
-          candidate-server/frps verify -c candidate-server/frps.json
-          bun scripts/verify-connect-compression.ts candidate-server/caddy
-          bash -n server/deploy/*.sh
+      - name: Share a run over real iroh endpoints and serve it on loopback
+        run: bun run test:integration-iroh

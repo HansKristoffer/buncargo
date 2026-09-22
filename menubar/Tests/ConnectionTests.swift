@@ -15,77 +15,103 @@ private func fixture() throws -> Data {
     #expect(directory.runs[0].title == "feature/checkout")
     #expect(directory.runs[0].primary?.name == "web")
     #expect(directory.runs[0].name == "Cursor cloud")
+    #expect(directory.runs[0].id.hasPrefix(directory.runs[0].publisherId))
     #expect(directory.runs[0].targets[1].supportsTablePlus)
     #expect(throws: (any Error).self) { try directory.validate(now: now.addingTimeInterval(31)) }
 }
-@Test func directoryRejectsUnsafeTargetURLs() throws {
+@Test func directoryRejectsAddressesOffThisComputer() throws {
     let original = String(decoding: try fixture(), as: UTF8.self)
     for url in [
-        "https://attacker.example/",
-        "http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.connect.hanskristoffer.dk/",
-        "https://user:secret@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.connect.hanskristoffer.dk/",
-        "https://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.connect.hanskristoffer.dk:7000/",
+        "http://10.0.0.5:49731/",
+        "http://127.0.0.1:49999/",
+        "https://evil.example/",
+        "http://user:secret@127.0.0.1:49731/",
+        "http://127.0.0.1:49731/admin",
     ] {
         let text = original.replacingOccurrences(
-            of: "https://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.connect.hanskristoffer.dk/", with: url)
+            of: "http://127.0.0.1:49731/", with: url)
         let directory = try JSONDecoder().decode(ConnectionDirectory.self, from: Data(text.utf8))
         #expect(throws: (any Error).self) { try directory.validate(now: now) }
     }
+    let foreign = original.replacingOccurrences(
+        of: "postgresql://dev:secret@127.0.0.1:49732/example",
+        with: "postgresql://dev:secret@db.example:49732/example")
+    #expect(throws: (any Error).self) {
+        try JSONDecoder().decode(ConnectionDirectory.self, from: Data(foreign.utf8)).validate(
+            now: now)
+    }
+    let anonymous = original.replacingOccurrences(of: String(repeating: "c", count: 64), with: "cc")
+    #expect(throws: (any Error).self) {
+        try JSONDecoder().decode(ConnectionDirectory.self, from: Data(anonymous.utf8)).validate(
+            now: now)
+    }
 }
-@Test @MainActor func browserActionsUsePublicURLWithoutStartingVisitor() async throws {
+@Test @MainActor func actionsUseTheLocalAddressWithoutConnectingFirst() async throws {
     let data = try fixture()
     var opened: [String] = []
     var copied: [String] = []
+    let recorder = CommandRecorder()
     let store = ConnectionStore(
         deps: ConnectionDependencies(
-            command: { args in
-                #expect(args == ["status"])
-                return data
-            }, now: { now }, open: { opened.append($0) }, copy: { copied.append($0) }),
+            command: { args in try await recorder.run(args, data) }, now: { now },
+            open: { opened.append($0) }, copy: { copied.append($0) }),
         startTimer: false)
     defer { store.stop() }
     store.refresh()
     await store.waitForRefresh()
     let run = try #require(store.runs.first)
     let web = run.targets[0]
+    let db = run.targets[1]
     #expect(store.address(web) == web.url)
-    #expect(store.address(run.targets[1]) == "Private TCP")
+    #expect(store.address(db) == db.url)
+
     store.perform(web)
     store.perform(web, action: .copy)
-    #expect(opened == [web.url])
-    #expect(copied == [web.url])
+    // A database has nothing to open in a browser, so its primary action copies.
+    store.perform(db)
+    store.perform(db, action: .tablePlus)
+    #expect(opened == [web.url, db.tablePlusUrl])
+    #expect(copied == [web.url, db.url])
+    #expect(await recorder.calls == [["status"]])
 }
-@Test func databaseActionsRequireValidatedLoopbackVisitor() throws {
-    let valid = TCPConnection(
-        targetId: "db", port: 12345, url: "postgresql://postgres:secret@127.0.0.1:12345/test",
-        tablePlusUrl: nil)
-    try valid.validate(for: "db")
-    #expect(throws: (any Error).self) { try valid.validate(for: "other-db") }
-    let invalid = TCPConnection(
-        targetId: "db", port: 12345, url: "postgresql://remote.example:12345/test",
-        tablePlusUrl: nil)
-    #expect(throws: (any Error).self) { try invalid.validate(for: "db") }
+@Test @MainActor func revokeNamesThePublishingComputer() async throws {
+    let data = try fixture()
+    let recorder = CommandRecorder()
+    let store = ConnectionStore(
+        deps: ConnectionDependencies(
+            command: { args in try await recorder.run(args, data) }, now: { now }),
+        startTimer: false)
+    defer { store.stop() }
+    store.refresh()
+    await store.waitForRefresh()
+    let run = try #require(store.runs.first)
+    store.revoke(run)
+    try await Task.sleep(nanoseconds: 100_000_000)
+    #expect(await recorder.calls.contains(["revoke", run.publisherId]))
 }
 
-private actor Probe {
+private actor CommandRecorder {
+    var calls: [[String]] = []
     var fail = false
     func setFailure() { fail = true }
-    func read(_ data: Data) throws -> Data {
+    func run(_ args: [String], _ data: Data) throws -> Data {
+        calls.append(args)
         if fail { throw ConnectionError("Directory unavailable") }
         return data
     }
 }
 @Test @MainActor func failedDiscoveryClearsStaleRowsAndDisablesActions() async throws {
     let data = try fixture()
-    let probe = Probe()
+    let recorder = CommandRecorder()
     let store = ConnectionStore(
-        deps: ConnectionDependencies(command: { _ in try await probe.read(data) }, now: { now }),
+        deps: ConnectionDependencies(
+            command: { args in try await recorder.run(args, data) }, now: { now }),
         startTimer: false)
     defer { store.stop() }
     store.refresh()
     await store.waitForRefresh()
     let run = try #require(store.runs.first)
-    await probe.setFailure()
+    await recorder.setFailure()
     store.refresh()
     await store.waitForRefresh()
     #expect(store.runs.isEmpty)

@@ -13,7 +13,7 @@ export const CLI_COMMANDS = [
 	{
 		name: "connect",
 		usage: "connect status",
-		summary: "Discover private services through frp",
+		summary: "Discover services shared from other computers",
 	},
 	{ name: "dev", usage: "dev", summary: "Start the development environment" },
 	{

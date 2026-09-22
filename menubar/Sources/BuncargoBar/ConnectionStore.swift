@@ -16,8 +16,6 @@ final class ConnectionStore: ObservableObject {
     @Published private(set) var runs: [RemoteRun] = []
     @Published private(set) var notice: String?
     @Published private(set) var available = false
-    @Published private(set) var connections: [String: TCPConnection] = [:]
-    @Published private(set) var connecting: Set<String> = []
     private let deps: ConnectionDependencies
     private var task: Task<Void, Never>?
     private var timer: Timer?
@@ -52,9 +50,6 @@ final class ConnectionStore: ObservableObject {
                 runs = directory.runs.sorted {
                     ($0.name, $0.project, $0.title, $0.id) < ($1.name, $1.project, $1.title, $1.id)
                 }
-                connections = Dictionary(
-                    (directory.connections ?? []).map { ($0.targetId, $0) },
-                    uniquingKeysWith: { first, _ in first })
                 available = directory.configured
                 notice = directory.notice
             } catch {
@@ -94,53 +89,29 @@ final class ConnectionStore: ObservableObject {
         }
     }
 
+    /// Revocation is per publishing computer: one sandbox loses access, others keep theirs.
     func revoke(_ run: RemoteRun) {
         Task {
             do {
-                _ = try await deps.command(["revoke", run.id])
-                notice = "Access removal requested; existing connections close within 45 seconds."
+                _ = try await deps.command(["revoke", run.publisherId])
+                notice = "Access removed. That environment can no longer reach this computer."
                 refresh(force: true)
             } catch { notice = error.localizedDescription }
         }
     }
 
-    func disconnect(_ target: RemoteTarget) {
-        Task {
-            do {
-                _ = try await deps.command(["disconnect", target.id])
-                connections.removeValue(forKey: target.id)
-            } catch { notice = error.localizedDescription }
-        }
-    }
-
-    func address(_ target: RemoteTarget) -> String {
-        if target.isHTTP { return target.url }
-        if connecting.contains(target.id) { return "Connecting…" }
-        return connections[target.id]?.url ?? "Private TCP"
-    }
+    /// Every target already has a local address, so there is nothing to connect first.
+    func address(_ target: RemoteTarget) -> String { target.url }
 
     func perform(_ target: RemoteTarget, action: ConnectionAction = .open) {
-        guard canUse(target), !connecting.contains(target.id) else { return }
-        if target.isHTTP {
-            if action == .copy { deps.copy(target.url) } else { deps.open(target.url) }
-            return
-        }
-
-        // Database actions use the actual bound visitor port returned by the CLI.
-        connecting.insert(target.id)
-        Task {
-            defer { connecting.remove(target.id) }
-            do {
-                let data = try await deps.command(["tcp", target.id])
-                let connection = try JSONDecoder().decode(TCPConnection.self, from: data)
-                try connection.validate(for: target.id)
-                connections[target.id] = connection
-                if action == .tablePlus, let url = connection.tablePlusUrl {
-                    deps.open(url)
-                } else {
-                    deps.copy(connection.url)
-                }
-            } catch { notice = error.localizedDescription }
+        guard canUse(target) else { return }
+        switch action {
+        case .tablePlus:
+            if let tablePlusUrl = target.tablePlusUrl { deps.open(tablePlusUrl) }
+        case .copy:
+            deps.copy(target.url)
+        case .open:
+            if target.isHTTP { deps.open(target.url) } else { deps.copy(target.url) }
         }
     }
 }

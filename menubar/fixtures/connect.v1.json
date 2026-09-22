@@ -4,6 +4,7 @@
   "generatedAt": 1788870000000,
   "runs": [
     {
+      "publisherId": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "sessionId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "hostname": "sandbox",
       "project": "example",
@@ -12,28 +13,27 @@
       "primaryApp": "web",
       "targets": [
         {
-          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.app-web",
+          "id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.app-web",
           "name": "web",
           "kind": "app",
           "protocol": "http",
           "status": "ready",
-          "port": 7073,
-          "url": "https://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.connect.hanskristoffer.dk/"
+          "port": 49731,
+          "url": "http://127.0.0.1:49731/"
         },
         {
-          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.service-db",
+          "id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.service-db",
           "name": "db",
           "kind": "service",
           "protocol": "tcp",
           "status": "ready",
           "preset": "postgres",
-          "port": 7332,
-          "url": ""
+          "port": 49732,
+          "url": "postgresql://dev:secret@127.0.0.1:49732/example",
+          "tablePlusUrl": "postgresql://dev:secret@127.0.0.1:49732/example"
         }
       ],
       "name": "Cursor cloud"
     }
-  ],
-  "origin": "https://connect.hanskristoffer.dk",
-  "connections": []
+  ]
 }

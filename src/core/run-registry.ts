@@ -51,7 +51,7 @@ export type RunAppStatus =
 export type RunServiceStatus = "starting" | "ready" | "stopped";
 
 export interface RunAppEntry {
-	/** Transport used when sharing this endpoint through frp. */
+	/** Transport used when sharing this endpoint with another computer. */
 	protocol?: "http" | "tcp";
 	kind?: "server" | "worker";
 	name: string;

@@ -6,6 +6,7 @@ import {
 	cloudflaredPathOverride,
 	cloudflaredVersion,
 	connectProcessEnv,
+	connectRelays,
 	connectTokens,
 	exposeTunnelStaggerMs,
 	hostsDaemonPort,
@@ -23,7 +24,7 @@ import {
 
 describe("Connection credentials", () => {
 	it("parses multiple tokens and deduplicates", () => {
-		const token = `bc_share_${"a".repeat(64)}`;
+		const token = `bc_share_${"a".repeat(128)}`;
 		expect(
 			connectTokens({ BUNCARGO_CONNECT_TOKENS: ` ${token},,${token} ` }),
 		).toEqual([token]);
@@ -31,11 +32,34 @@ describe("Connection credentials", () => {
 		expect(() =>
 			connectTokens({ BUNCARGO_CONNECT_TOKENS: "not-a-token" }),
 		).toThrow("comma-separated");
+		// A receiver endpoint without its secret is half a token, not a short one.
+		expect(() =>
+			connectTokens({ BUNCARGO_CONNECT_TOKENS: `bc_share_${"a".repeat(64)}` }),
+		).toThrow("comma-separated");
 	});
-	it("removes tokens from child environments", () => {
+	it("removes credentials from child environments", () => {
 		expect(
-			connectProcessEnv({ BUNCARGO_CONNECT_TOKENS: "secret", PATH: "/bin" }),
-		).toEqual({ PATH: "/bin" });
+			connectProcessEnv({
+				BUNCARGO_CONNECT_TOKENS: "secret",
+				BUNCARGO_CONNECT_RELAY_TOKEN: "relay-secret",
+				BUNCARGO_CONNECT_NAME: "Cursor cloud",
+				PATH: "/bin",
+			}),
+		).toEqual({ BUNCARGO_CONNECT_NAME: "Cursor cloud", PATH: "/bin" });
+	});
+	it("accepts only HTTPS relay URLs", () => {
+		expect(
+			connectRelays({
+				BUNCARGO_CONNECT_RELAYS: " https://eu.example/ , https://us.example/ ",
+			}),
+		).toEqual(["https://eu.example/", "https://us.example/"]);
+		expect(connectRelays({})).toEqual([]);
+		expect(() =>
+			connectRelays({ BUNCARGO_CONNECT_RELAYS: "http://insecure.example/" }),
+		).toThrow("HTTPS relay URLs");
+		expect(() =>
+			connectRelays({ BUNCARGO_CONNECT_RELAYS: "not-a-url" }),
+		).toThrow("HTTPS relay URLs");
 	});
 });
 

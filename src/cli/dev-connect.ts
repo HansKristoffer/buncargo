@@ -1,14 +1,9 @@
 import { rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import { intentsPath } from "../core/connect/coordinator-state";
-import { newCredential } from "../core/connect/credentials";
 import { ensureConnectCoordinator } from "../core/connect/launcher";
 import { writeJsonDocument } from "../core/registry-file";
-import {
-	connectName,
-	connectOrigin,
-	connectTokens,
-} from "../core/runtime-flags";
+import { connectName, connectTokens } from "../core/runtime-flags";
 import type { AppConfig, ServiceConfig } from "../types";
 import * as log from "./log";
 
@@ -19,7 +14,6 @@ export function createDevConnect() {
 		return;
 	}
 	const name = connectName() ?? hostname();
-	const origin = connectOrigin();
 	const controller = new AbortController();
 	let count = 0;
 	let path: string | undefined;
@@ -45,13 +39,7 @@ export function createDevConnect() {
 				return;
 			}
 			path = `${intentsPath()}/${sessionId}.json`;
-			task = writeJsonDocument(path, {
-				sessionId,
-				tokens,
-				name,
-				origin,
-				credential: newCredential("pub"),
-			})
+			task = writeJsonDocument(path, { sessionId, tokens, name })
 				.then(() => ensureConnectCoordinator(controller.signal))
 				.then(() =>
 					log.info(

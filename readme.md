@@ -616,19 +616,19 @@ export default defineConfig({ use: { baseURL: env.loopbackUrls.web } });
 
 Copy a connection token from BuncargoBar's key menu, or run `bunx buncargo connect token` on your computer. Store it in your cloud environment as `BUNCARGO_CONNECT_TOKENS`; multiple recipients use comma-separated tokens. Set `BUNCARGO_CONNECT_NAME` to group runs under a name such as `Cursor cloud`, then run `bunx buncargo dev` normally.
 
-Every selected app and service with a host port is shared automatically. Workers, jobs and portless targets are skipped. There is no sharing flag or `expose` filter. Without recipient tokens, development stays local. The CLI downloads a pinned, verified frpc automatically on Linux and macOS; no administrator access or interactive sign-in is needed.
+Every selected app and service with a host port is shared automatically. Workers, jobs and portless targets are skipped. There is no sharing flag or `expose` filter. Without recipient tokens, development stays local. The two computers connect directly over [iroh](https://docs.iroh.computer/what-is-iroh), authenticated and encrypted with their own keys; Buncargo runs no server, and there is no account, administrator access or interactive sign-in.
 
-Browser apps open public HTTPS URLs directly through our relay. Tokens authorize directory discovery and private TCP connections, not browser access: anyone with an app URL can reach its existing app authentication. Postgres, Redis and other TCP services use private loopback visitors created on demand; TablePlus receives the actual local port and dev credentials. Rows reuse the same components as local runs and show name, project, branch and worktree.
+Every shared target appears on your own computer: apps at `http://127.0.0.1:<port>`, Postgres and Redis at a connection string on the same host, TablePlus with the dev credentials. Only a computer holding the token can reach them, and a shared app has no public URL. Ports stay stable while the run does. Rows reuse the same components as local runs and show name, project, branch and worktree.
 
 ```sh
 bunx buncargo connect status
 bunx buncargo connect status --json
-bunx buncargo connect tcp <target-id>
+bunx buncargo connect revoke <publisher-id>
 ```
 
-Use same-origin frontend API paths through your dev server's proxy where possible. Absolute sandbox-local URLs in JavaScript are still local to the browser's computer. HTTP, SSE and WebSockets stream through frp; Buncargo does not rewrite application authentication or frontend bundles. The separate `dev --expose` Cloudflare quick-tunnel feature is independent of remote sharing.
+Use same-origin frontend API paths through your dev server's proxy where possible. Absolute sandbox-local URLs in JavaScript are still local to the browser's computer. Nothing in the path parses HTTP, so SSE and WebSockets stream as written; Buncargo does not rewrite application authentication or frontend bundles. The separate `dev --expose` Cloudflare quick-tunnel feature is what makes a URL public.
 
-See [connection setup, lifecycle, and relay operation](docs/frp.md).
+See [connection setup, relays and lifecycle](docs/remote.md).
 
 **Cookies ignore ports:** apps sharing the machine hostname must namespace their development cookies. Buncargo supplies `BUNCARGO_WORKSPACE_ID` and, for Expo apps, `EXPO_PUBLIC_BUNCARGO_WORKSPACE_ID`. Use the cookie helper in your auth configuration; install Buncargo as a runtime dependency in apps that import it. The backend helper preserves production and E2E cookie names, while the client helper uses Expo’s `__DEV__` flag. Missing workspace IDs retain the original names. This prevents accidental session collisions between trusted dev apps, not cross-app security isolation.
 
@@ -876,7 +876,7 @@ export default defineConfig({
 });
 ```
 
-It sets `server.port` from `PORT`, binds `server.host` to `127.0.0.1` (Vite's default `localhost` resolves to `[::1]` on many systems, so anything dialing IPv4 gets a refused connection), and passes the named-hosts suffix through to `server.allowedHosts`. The frp proxy rewrites the upstream Host to localhost, so remote URLs need no extra allowed-hosts entry. HMR stays origin-relative and follows the HTTPS URL that loaded the page.
+It sets `server.port` from `PORT`, binds `server.host` to `127.0.0.1` (Vite's default `localhost` resolves to `[::1]` on many systems, so anything dialing IPv4 gets a refused connection), and passes the named-hosts suffix through to `server.allowedHosts`. A remotely shared app is reached through a loopback address on the receiving computer, so its Host header needs no extra allowed-hosts entry. HMR stays origin-relative and follows the URL that loaded the page.
 
 Vite is not a dependency of buncargo: the plugin's return type is declared structurally, so importing it costs nothing in a repo without Vite. Override the app or the bind address when you need to: `buncargoVite({ app: "web", host: "0.0.0.0" })`.
 

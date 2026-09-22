@@ -41,9 +41,9 @@ and CI turn the whole thing off.
 
 ## Remote environments
 
-Use the key menu to copy a connection token. Set `BUNCARGO_CONNECT_TOKENS` in the publishing environment, optionally set `BUNCARGO_CONNECT_NAME`, and run `buncargo dev`. See [connection setup](../docs/frp.md).
+Use the key menu to copy a connection token. Set `BUNCARGO_CONNECT_TOKENS` in the publishing environment, optionally set `BUNCARGO_CONNECT_NAME`, and run `buncargo dev`. See [connection setup](../docs/remote.md).
 
-Discovery refreshes every 10 seconds and when the menu opens. It groups runs by connection name and project, preserves branches/worktrees, and reuses the local environment and service row components. Browser actions open public HTTPS links directly. TCP actions ask the CLI to create a private loopback visitor; PostgreSQL and ClickHouse offer TablePlus. Disconnect closes only the local visitor. Revoke removes this receiver's grant, with existing streams closing within 45 seconds.
+Discovery refreshes every 10 seconds and when the menu opens. It groups runs by connection name and project, preserves branches/worktrees, and reuses the local environment and service row components. Every target already has an address on this computer, so actions are immediate: apps open in the browser, databases copy their connection string, and PostgreSQL and ClickHouse offer TablePlus. Revoke closes that publishing computer out for good.
 
 The CLI and bar validate addresses independently. Remote metadata never selects an executable or supplies a local port to run a command against.
 

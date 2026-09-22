@@ -1,191 +1,192 @@
 {
-  "name": "buncargo",
-  "version": "9.2.2",
-  "description": "A Bun-powered development environment CLI for managing Docker Compose services, dev servers, and environment variables",
-  "type": "module",
-  "module": "./dist/index.js",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/HansKristoffer/buncargo.git"
-  },
-  "author": "Kristoffer Hansen",
-  "keywords": [
-    "bun",
-    "dev-tools",
-    "docker",
-    "docker-compose",
-    "development",
-    "cli",
-    "monorepo",
-    "dev-server",
-    "environment"
-  ],
-  "engines": {
-    "bun": ">=1.4.2"
-  },
-  "files": [
-    "src/**/*.ts",
-    "dist",
-    "!src/**/*.test.ts"
-  ],
-  "bin": {
-    "dev-tools": "./dist/cli/bin.js",
-    "buncargo": "./dist/cli/bin.js"
-  },
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "bun": "./src/index.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
-    },
-    "./types": {
-      "types": "./dist/types/index.d.ts",
-      "bun": "./src/types/index.ts",
-      "import": "./dist/types/index.js",
-      "default": "./dist/types/index.js"
-    },
-    "./config": {
-      "types": "./dist/config/index.d.ts",
-      "bun": "./src/config/index.ts",
-      "import": "./dist/config/index.js",
-      "default": "./dist/config/index.js"
-    },
-    "./environment": {
-      "types": "./dist/environment/index.d.ts",
-      "bun": "./src/environment/index.ts",
-      "import": "./dist/environment/index.js",
-      "default": "./dist/environment/index.js"
-    },
-    "./core/ports": {
-      "types": "./dist/core/ports.d.ts",
-      "bun": "./src/core/ports.ts",
-      "import": "./dist/core/ports.js",
-      "default": "./dist/core/ports.js"
-    },
-    "./core/network": {
-      "types": "./dist/core/network.d.ts",
-      "bun": "./src/core/network.ts",
-      "import": "./dist/core/network.js",
-      "default": "./dist/core/network.js"
-    },
-    "./core/process": {
-      "types": "./dist/core/process/index.d.ts",
-      "bun": "./src/core/process/index.ts",
-      "import": "./dist/core/process/index.js",
-      "default": "./dist/core/process/index.js"
-    },
-    "./core/watchdog": {
-      "types": "./dist/core/watchdog.d.ts",
-      "bun": "./src/core/watchdog.ts",
-      "import": "./dist/core/watchdog.js",
-      "default": "./dist/core/watchdog.js"
-    },
-    "./core/tunnel": {
-      "types": "./dist/core/tunnel.d.ts",
-      "bun": "./src/core/tunnel.ts",
-      "import": "./dist/core/tunnel.js",
-      "default": "./dist/core/tunnel.js"
-    },
-    "./core/utils": {
-      "types": "./dist/core/utils.d.ts",
-      "bun": "./src/core/utils.ts",
-      "import": "./dist/core/utils.js",
-      "default": "./dist/core/utils.js"
-    },
-    "./cli": {
-      "types": "./dist/cli/index.d.ts",
-      "bun": "./src/cli/index.ts",
-      "import": "./dist/cli/index.js",
-      "default": "./dist/cli/index.js"
-    },
-    "./typecheck": {
-      "types": "./dist/typecheck/index.d.ts",
-      "bun": "./src/typecheck/index.ts",
-      "import": "./dist/typecheck/index.js",
-      "default": "./dist/typecheck/index.js"
-    },
-    "./loader": {
-      "types": "./dist/loader/index.d.ts",
-      "bun": "./src/loader/index.ts",
-      "import": "./dist/loader/index.js",
-      "default": "./dist/loader/index.js"
-    },
-    "./container-runtime": {
-      "types": "./dist/container-runtime/index.d.ts",
-      "bun": "./src/container-runtime/index.ts",
-      "import": "./dist/container-runtime/index.js",
-      "default": "./dist/container-runtime/index.js"
-    },
-    "./apple-container": {
-      "types": "./dist/apple-container/index.d.ts",
-      "bun": "./src/apple-container/index.ts",
-      "import": "./dist/apple-container/index.js",
-      "default": "./dist/apple-container/index.js"
-    },
-    "./docker": {
-      "types": "./dist/docker/index.d.ts",
-      "bun": "./src/docker/index.ts",
-      "import": "./dist/docker/index.js",
-      "default": "./dist/docker/index.js"
-    },
-    "./docker-compose": {
-      "types": "./dist/docker-compose/index.d.ts",
-      "bun": "./src/docker-compose/index.ts",
-      "import": "./dist/docker-compose/index.js",
-      "default": "./dist/docker-compose/index.js"
-    },
-    "./client": {
-      "types": "./dist/client/index.d.ts",
-      "react-native": "./dist/client/index.js",
-      "browser": "./dist/client/index.js",
-      "bun": "./src/client/index.ts",
-      "import": "./dist/client/index.js",
-      "default": "./dist/client/index.js"
-    },
-    "./runtime": {
-      "types": "./dist/runtime/index.d.ts",
-      "bun": "./src/runtime/index.ts",
-      "import": "./dist/runtime/index.js",
-      "default": "./dist/runtime/index.js"
-    },
-    "./vite": {
-      "types": "./dist/vite/index.d.ts",
-      "bun": "./src/vite/index.ts",
-      "import": "./dist/vite/index.js",
-      "default": "./dist/vite/index.js"
-    }
-  },
-  "scripts": {
-    "build": "rm -rf dist && bun run build:js && bun run build:daemon && bun run build:types",
-    "build:daemon": "bun build ./src/cli/hostsd.ts --outfile ./dist/hostsd.js --target bun && bun build ./src/cli/connectd.ts --outfile ./dist/connectd.js --target bun",
-    "build:js": "bun build ./src/index.ts ./src/cli/bin.ts ./src/cli/index.ts ./src/config/index.ts ./src/environment/index.ts ./src/loader/index.ts ./src/typecheck/index.ts ./src/types/index.ts ./src/core/network.ts ./src/core/ports.ts ./src/core/process/index.ts ./src/core/tunnel.ts ./src/core/utils.ts ./src/core/watchdog.ts ./src/core/watchdog-runner.ts ./src/container-runtime/index.ts ./src/apple-container/index.ts ./src/docker/index.ts ./src/docker-compose/index.ts ./src/vite/index.ts ./src/client/index.ts ./src/runtime/index.ts --outdir ./dist --root ./src --target node --packages external --splitting",
-    "build:types": "tsc -p tsconfig.build.json",
-    "prepublishOnly": "bun run build",
-    "lint": "bun run typecheck && biome check src example server/connect",
-    "lint:write": "bun run typecheck && biome check --fix src example server/connect && biome format src example server/connect",
-    "typecheck": "tsgo --incremental",
-    "test": "bun test",
-    "test:integration-cloudflared": "BUNCARGO_TEST_CLOUDFLARED_SMOKE=1 bun test src/core/quick-tunnel/quick-tunnel.test.ts",
-    "test:integration-cloudflared-e2e": "BUNCARGO_TEST_CLOUDFLARED_SMOKE=1 BUNCARGO_TEST_CLOUDFLARED_E2E=1 bun test src/core/quick-tunnel/quick-tunnel.test.ts",
-    "test:integration-hosts": "BUNCARGO_TEST_HOSTS=1 bun test src/core/hosts/hosts.integration.test.ts",
-    "test:integration-hosts-soak": "BUNCARGO_TEST_HOSTS_SOAK=1 bun test src/core/hosts/worktree-soak.test.ts",
-    "test:integration-apple": "BUNCARGO_TEST_APPLE_CONTAINER=1 bun test src/apple-container/apple-container.integration.test.ts",
-    "verify:package": "bun scripts/verify-package.ts",
-    "test:integration-frp": "BUNCARGO_TEST_FRP=1 bun test src/core/connect/frp.integration.test.ts"
-  },
-  "devDependencies": {
-    "@biomejs/biome": "2.3.4",
-    "@types/bun": "1.4.2",
-    "@typescript/native-preview": "7.0.0-dev.20260127.1",
-    "typescript": "^5.7.0",
-    "vite": "8.1.5"
-  },
-  "dependencies": {
-    "fast-glob": "^3.3.3",
-    "picocolors": "^1.1.1"
-  }
+	"name": "buncargo",
+	"version": "9.2.2",
+	"description": "A Bun-powered development environment CLI for managing Docker Compose services, dev servers, and environment variables",
+	"type": "module",
+	"module": "./dist/index.js",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/HansKristoffer/buncargo.git"
+	},
+	"author": "Kristoffer Hansen",
+	"keywords": [
+		"bun",
+		"dev-tools",
+		"docker",
+		"docker-compose",
+		"development",
+		"cli",
+		"monorepo",
+		"dev-server",
+		"environment"
+	],
+	"engines": {
+		"bun": ">=1.4.2"
+	},
+	"files": [
+		"src/**/*.ts",
+		"dist",
+		"!src/**/*.test.ts"
+	],
+	"bin": {
+		"dev-tools": "./dist/cli/bin.js",
+		"buncargo": "./dist/cli/bin.js"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"bun": "./src/index.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		},
+		"./types": {
+			"types": "./dist/types/index.d.ts",
+			"bun": "./src/types/index.ts",
+			"import": "./dist/types/index.js",
+			"default": "./dist/types/index.js"
+		},
+		"./config": {
+			"types": "./dist/config/index.d.ts",
+			"bun": "./src/config/index.ts",
+			"import": "./dist/config/index.js",
+			"default": "./dist/config/index.js"
+		},
+		"./environment": {
+			"types": "./dist/environment/index.d.ts",
+			"bun": "./src/environment/index.ts",
+			"import": "./dist/environment/index.js",
+			"default": "./dist/environment/index.js"
+		},
+		"./core/ports": {
+			"types": "./dist/core/ports.d.ts",
+			"bun": "./src/core/ports.ts",
+			"import": "./dist/core/ports.js",
+			"default": "./dist/core/ports.js"
+		},
+		"./core/network": {
+			"types": "./dist/core/network.d.ts",
+			"bun": "./src/core/network.ts",
+			"import": "./dist/core/network.js",
+			"default": "./dist/core/network.js"
+		},
+		"./core/process": {
+			"types": "./dist/core/process/index.d.ts",
+			"bun": "./src/core/process/index.ts",
+			"import": "./dist/core/process/index.js",
+			"default": "./dist/core/process/index.js"
+		},
+		"./core/watchdog": {
+			"types": "./dist/core/watchdog.d.ts",
+			"bun": "./src/core/watchdog.ts",
+			"import": "./dist/core/watchdog.js",
+			"default": "./dist/core/watchdog.js"
+		},
+		"./core/tunnel": {
+			"types": "./dist/core/tunnel.d.ts",
+			"bun": "./src/core/tunnel.ts",
+			"import": "./dist/core/tunnel.js",
+			"default": "./dist/core/tunnel.js"
+		},
+		"./core/utils": {
+			"types": "./dist/core/utils.d.ts",
+			"bun": "./src/core/utils.ts",
+			"import": "./dist/core/utils.js",
+			"default": "./dist/core/utils.js"
+		},
+		"./cli": {
+			"types": "./dist/cli/index.d.ts",
+			"bun": "./src/cli/index.ts",
+			"import": "./dist/cli/index.js",
+			"default": "./dist/cli/index.js"
+		},
+		"./typecheck": {
+			"types": "./dist/typecheck/index.d.ts",
+			"bun": "./src/typecheck/index.ts",
+			"import": "./dist/typecheck/index.js",
+			"default": "./dist/typecheck/index.js"
+		},
+		"./loader": {
+			"types": "./dist/loader/index.d.ts",
+			"bun": "./src/loader/index.ts",
+			"import": "./dist/loader/index.js",
+			"default": "./dist/loader/index.js"
+		},
+		"./container-runtime": {
+			"types": "./dist/container-runtime/index.d.ts",
+			"bun": "./src/container-runtime/index.ts",
+			"import": "./dist/container-runtime/index.js",
+			"default": "./dist/container-runtime/index.js"
+		},
+		"./apple-container": {
+			"types": "./dist/apple-container/index.d.ts",
+			"bun": "./src/apple-container/index.ts",
+			"import": "./dist/apple-container/index.js",
+			"default": "./dist/apple-container/index.js"
+		},
+		"./docker": {
+			"types": "./dist/docker/index.d.ts",
+			"bun": "./src/docker/index.ts",
+			"import": "./dist/docker/index.js",
+			"default": "./dist/docker/index.js"
+		},
+		"./docker-compose": {
+			"types": "./dist/docker-compose/index.d.ts",
+			"bun": "./src/docker-compose/index.ts",
+			"import": "./dist/docker-compose/index.js",
+			"default": "./dist/docker-compose/index.js"
+		},
+		"./client": {
+			"types": "./dist/client/index.d.ts",
+			"react-native": "./dist/client/index.js",
+			"browser": "./dist/client/index.js",
+			"bun": "./src/client/index.ts",
+			"import": "./dist/client/index.js",
+			"default": "./dist/client/index.js"
+		},
+		"./runtime": {
+			"types": "./dist/runtime/index.d.ts",
+			"bun": "./src/runtime/index.ts",
+			"import": "./dist/runtime/index.js",
+			"default": "./dist/runtime/index.js"
+		},
+		"./vite": {
+			"types": "./dist/vite/index.d.ts",
+			"bun": "./src/vite/index.ts",
+			"import": "./dist/vite/index.js",
+			"default": "./dist/vite/index.js"
+		}
+	},
+	"scripts": {
+		"build": "rm -rf dist && bun run build:js && bun run build:daemon && bun run build:types",
+		"build:daemon": "bun build ./src/cli/hostsd.ts --outfile ./dist/hostsd.js --target bun && bun build ./src/cli/connectd.ts --outfile ./dist/connectd.js --target bun --external @number0/iroh",
+		"build:js": "bun build ./src/index.ts ./src/cli/bin.ts ./src/cli/index.ts ./src/config/index.ts ./src/environment/index.ts ./src/loader/index.ts ./src/typecheck/index.ts ./src/types/index.ts ./src/core/network.ts ./src/core/ports.ts ./src/core/process/index.ts ./src/core/tunnel.ts ./src/core/utils.ts ./src/core/watchdog.ts ./src/core/watchdog-runner.ts ./src/container-runtime/index.ts ./src/apple-container/index.ts ./src/docker/index.ts ./src/docker-compose/index.ts ./src/vite/index.ts ./src/client/index.ts ./src/runtime/index.ts --outdir ./dist --root ./src --target node --packages external --splitting",
+		"build:types": "tsc -p tsconfig.build.json",
+		"prepublishOnly": "bun run build",
+		"lint": "bun run typecheck && biome check src example",
+		"lint:write": "bun run typecheck && biome check --fix src example && biome format src example",
+		"typecheck": "tsgo --incremental",
+		"test": "bun test",
+		"test:integration-cloudflared": "BUNCARGO_TEST_CLOUDFLARED_SMOKE=1 bun test src/core/quick-tunnel/quick-tunnel.test.ts",
+		"test:integration-cloudflared-e2e": "BUNCARGO_TEST_CLOUDFLARED_SMOKE=1 BUNCARGO_TEST_CLOUDFLARED_E2E=1 bun test src/core/quick-tunnel/quick-tunnel.test.ts",
+		"test:integration-hosts": "BUNCARGO_TEST_HOSTS=1 bun test src/core/hosts/hosts.integration.test.ts",
+		"test:integration-hosts-soak": "BUNCARGO_TEST_HOSTS_SOAK=1 bun test src/core/hosts/worktree-soak.test.ts",
+		"test:integration-apple": "BUNCARGO_TEST_APPLE_CONTAINER=1 bun test src/apple-container/apple-container.integration.test.ts",
+		"verify:package": "bun scripts/verify-package.ts",
+		"test:integration-iroh": "BUNCARGO_TEST_IROH=1 bun test src/core/connect/iroh.integration.test.ts"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.3.4",
+		"@types/bun": "1.4.2",
+		"@typescript/native-preview": "7.0.0-dev.20260127.1",
+		"typescript": "^5.7.0",
+		"vite": "8.1.5"
+	},
+	"dependencies": {
+		"@number0/iroh": "^1.1.0",
+		"fast-glob": "^3.3.3",
+		"picocolors": "^1.1.1"
+	}
 }

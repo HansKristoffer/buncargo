@@ -246,10 +246,16 @@ void web;
 		`
 import assert from "node:assert/strict";
 import { realpathSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { installConnectBundle } from "./node_modules/buncargo/src/core/connect/bundle.ts";
+import { addonPathFor } from "./node_modules/buncargo/src/core/connect/iroh.ts";
 const path = installConnectBundle();
 assert.equal(path, realpathSync(path));
 assert.equal(installConnectBundle(), path);
+// The coordinator runs outside node_modules, so its addon has to travel with it.
+const addon = addonPathFor(path);
+assert(existsSync(addon), "Missing iroh addon beside the coordinator " + addon);
+assert(statSync(addon).size > 1_000_000, "The iroh addon looks truncated");
 console.log(path);
 `,
 	);
@@ -284,6 +290,8 @@ console.log(path);
 		const bundle = await Bun.build({
 			entrypoints: [detachedDaemon],
 			target: "bun",
+			// The native addon is deliberately external: it is copied beside the bundle.
+			external: ["@number0/iroh"],
 		});
 		assert(
 			bundle.success,
