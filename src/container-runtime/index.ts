@@ -42,6 +42,8 @@ export {
 export {
 	availableContainerRuntimes,
 	type ContainerRuntimeAdapterOptions,
+	type ContainerRuntimeCandidateOptions,
+	containerRuntimeCandidates,
 	containerRuntimeForEnv,
 	getContainerRuntimeAdapter,
 	type ResolveContainerRuntimeOptions,

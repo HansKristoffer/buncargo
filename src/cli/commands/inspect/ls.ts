@@ -1,11 +1,9 @@
 import {
-	availableContainerRuntimes,
-	groupBuncargoContainers,
 	isContainerUp,
-	listBuncargoContainers,
+	type SweepResult,
 	sweepOrphanedContainers,
 } from "../../../container-runtime";
-import { isRunAlive, readAllRuns } from "../../../core/run-registry";
+import { getRunsPath } from "../../../core/run-registry";
 import * as log from "../../log";
 
 /** "held, 2m left" for a finished run, or nothing while one is live. */
@@ -21,38 +19,44 @@ function describeHold(
 }
 
 export async function handleLs(): Promise<void> {
-	const runtimes = availableContainerRuntimes();
-	if (runtimes.length === 0) {
+	// Sweep first, so what is listed is what is actually still in use. The
+	// sweep lists every runtime anyway, so its listing is the one shown: no
+	// probing beforehand and no second listing after.
+	let result: SweepResult;
+	try {
+		result = await sweepOrphanedContainers();
+	} catch (error) {
+		log.fail(
+			`Could not read ${getRunsPath()}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	if (result.answered.length === 0) {
 		log.fail(
 			"No container runtime is running. Start Docker or Apple container and try again.",
 		);
 	}
-	// Sweep first, so what is listed is what is actually still in use.
-	const { swept, failed } = await sweepOrphanedContainers({ runtimes });
-	for (const stack of swept)
+	for (const stack of result.swept)
 		log.info(`Removed ${stack.projectName} (${stack.root}): ${stack.reason}`);
-	for (const failure of failed)
+	for (const failure of result.failed)
 		log.warn(`Could not remove ${failure.projectName}: ${failure.error}`);
 
-	const groups = groupBuncargoContainers(listBuncargoContainers(runtimes));
-	if (groups.length === 0) {
+	if (result.remaining.length === 0) {
 		log.info("No buncargo environments found.");
 		return;
 	}
-	// The registry says who each stack belongs to, which the labels cannot:
-	// whether a run is still using it, or it is only being held for the next.
-	const runs = await readAllRuns();
 	const now = Date.now();
-	const multipleRuntimes = runtimes.length > 1;
+	const multipleRuntimes = result.answered.length > 1;
 
-	for (const group of groups) {
+	for (const group of result.remaining) {
 		const first = group.containers[0];
 		if (!first) continue;
 		const up = group.containers.filter(isContainerUp);
-		const owners = runs.filter(
+		// The registry says who each stack belongs to, which the labels cannot:
+		// whether a run is still using it, or it is only being held for the next.
+		const owners = result.runs.filter(
 			(run) => run.projectName === group.projectName && run.root === group.root,
 		);
-		const live = owners.find(isRunAlive);
+		const live = owners.find((run) => result.liveSessions.has(run.sessionId));
 		const released = owners
 			.filter((run) => run.releasedAt !== undefined)
 			.sort((a, b) =>

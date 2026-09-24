@@ -127,12 +127,9 @@ async function stopTarget(
 	if (app) {
 		const result = await stopApp(run, app, force);
 		if (result === STOP_EXIT.ok)
-			await patchRun(
-				run.root,
-				run.pid,
-				{ apps: [{ name: app.name, status: "stopped" }] },
-				{ sessionId: run.sessionId },
-			);
+			await patchRun(run.sessionId, {
+				apps: [{ name: app.name, status: "stopped" }],
+			});
 		return result;
 	}
 
@@ -309,12 +306,9 @@ async function stopServiceUnlocked(
 		);
 		await Promise.all(
 			sharing.map((owner) =>
-				patchRun(
-					owner.root,
-					owner.pid,
-					{ services: [{ name: service.name, status: "stopped" }] },
-					{ sessionId: owner.sessionId },
-				),
+				patchRun(owner.sessionId, {
+					services: [{ name: service.name, status: "stopped" }],
+				}),
 			),
 		);
 		log.done(`Stopped ${service.name}`);

@@ -189,10 +189,20 @@ export function toBuncargoContainer(
 	};
 }
 
+/**
+ * Every buncargo container, or a throw when the runtime cannot answer.
+ *
+ * Throws rather than returning nothing, the way the Docker listing does, so a
+ * machine-wide reader can tell "no containers" from "could not ask" — the
+ * sweep must never retire a record because a stopped daemon listed nothing.
+ */
 export function listAppleBuncargoContainers(
 	cli: AppleContainerCli,
 ): BuncargoContainer[] {
-	return listContainerRecords(cli)
+	const result = cli.run(["ls", "--all", "--format", "json"]);
+	if (!result.ok)
+		throw new Error(result.stderr.trim() || "container ls failed");
+	return parseContainerRecords(result.stdout)
 		.filter((record) => record.labels[PROJECT_LABEL])
 		.map(toBuncargoContainer);
 }

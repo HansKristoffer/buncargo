@@ -14,6 +14,7 @@ import {
 	startPublicTunnels,
 	stopPublicTunnels,
 } from "../core/tunnel";
+import { WATCHDOG_IDLE_TIMEOUT_MS } from "../core/watchdog-constants";
 import { buildStartPlan, resolveSelectedApps } from "../planning";
 import type {
 	AppConfig,
@@ -38,7 +39,7 @@ import {
 import { CliError, toCliError } from "./errors";
 import * as log from "./log";
 import { classifyCliApps, parseRequiredCommaSeparatedFlag } from "./port-reuse";
-import { markApps, patchCurrentRun, publishCurrentRun } from "./run-publish";
+import { markApps, publishCurrentRun, recordAppSpawn } from "./run-publish";
 import {
 	isInteractive,
 	promptTakeover,
@@ -322,15 +323,17 @@ async function runDevFlow<
 		for (const warning of hostsWarnings) log.warn(warning);
 		hostsWarnings = [];
 	};
-	if (hasServices && options.watchdog) {
-		await env.claimRun({ idleTimeoutMs: resolveIdleTimeout(args) });
-		// Deliberately not awaited: confirming the watchdog came up costs up to
-		// two seconds of polling a pid file, and it only matters once this run
-		// is gone. It reports a failure to start itself, just not before the
-		// servers.
-		void env.ensureWatchdog().catch(() => {});
-	}
+	// Claimed here rather than left to `start()`, because only the CLI knows
+	// the hold its flags ask for; `start()` claims too, and keeps this one.
+	// Claimed whether or not a watchdog is wanted: the claim is what says the
+	// containers are somebody's, and the registry has to say so either way.
+	if (hasServices)
+		await env.claimRun({
+			idleTimeoutMs: resolveIdleTimeout(args),
+			defaultIdleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS,
+		});
 	await env.start({
+		watchdog: options.watchdog,
 		signal,
 		startServers: false,
 		wait: true,
@@ -469,24 +472,19 @@ async function runDevFlow<
 	}
 
 	flushHostsWarnings();
-	// The environment already claimed its containers under this id before it
-	// started them; publishing under a new one would leave two entries for
-	// one run, and the claim is the one the sweep reads.
-	const sessionId = env.sessionId;
 
 	// Published here, after the takeover has been decided: before it, the app
 	// classification still describes a reuse the takeover is about to undo, and
 	// `env.urls` may still hold the localhost fallback from the refused first
-	// activation.
+	// activation. It lands on the entry the environment claimed, by session.
 	await publishCurrentRun(env, {
-		sessionId,
 		apps: { ...classifiedApps.startApps, ...classifiedApps.reusedApps },
 		reusedNames: classifiedApps.reusedNames,
 		serviceNames: plan.requiredServiceKeys,
 		attached: args.attach,
 	});
 
-	connect?.start(sessionId);
+	connect?.start(env.sessionId);
 
 	// Deliberately not awaited, and only after the run is on disk: an app that
 	// cannot read this registry has something to read the moment it updates,
@@ -561,7 +559,7 @@ async function runDevFlow<
 						expandRequired: false,
 						signal,
 					});
-					await markApps(env.root, Object.keys(apps), "ready");
+					await markApps(env, Object.keys(apps), "ready");
 				},
 				// Deliberately not awaited: the registry is a status file, and
 				// nothing about starting servers may wait on it.
@@ -570,9 +568,7 @@ async function runDevFlow<
 						firstSpawn = true;
 						timer.record("entry to first app spawn", timer.elapsedMs());
 					}
-					void patchCurrentRun(env.root, {
-						apps: [{ name, pid, attached: attached || undefined }],
-					});
+					void recordAppSpawn(env, name, pid, attached);
 				},
 				// A signalled exit (`code === null`) is a deliberate stop — Ctrl-C,
 				// or `buncargo stop <app>` — and reads as `stopped`. A non-zero code
@@ -580,7 +576,7 @@ async function runDevFlow<
 				// failed run.
 				onAppExit: (name, code, signal) => {
 					void markApps(
-						env.root,
+						env,
 						[name],
 						isDeliberateExit(code, signal) &&
 							!(code === 0 && appsForDev[name]?.kind === "worker")

@@ -101,6 +101,15 @@ describe("stopContainers", () => {
 		expect(calls()).toEqual([["compose", "-p", "demo", "down"]]);
 	});
 
+	it("names the missing Compose plugin instead of passing Docker's words on", async () => {
+		const { dir, binary } = fakeDocker({
+			downStderr: "docker: 'compose' is not a docker command.",
+		});
+		await expect(
+			stopContainers(dir, "demo", { binary, verbose: false }),
+		).rejects.toThrow(/Docker Compose is not available to this process/);
+	});
+
 	it("still reports a teardown that failed for any other reason", async () => {
 		const { dir, binary } = fakeDocker({ downStderr: "permission denied" });
 		await expect(

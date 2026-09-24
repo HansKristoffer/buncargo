@@ -1,14 +1,16 @@
 import { chmodSync } from "node:fs";
+import { basename } from "node:path";
 import type { ContainerRuntimeName } from "../types";
+import { buncargoCli, type CliInvocation } from "./cli-entry";
 import type { ExpoAppIdentity } from "./expo";
 import { withFileLock } from "./file-lock";
+import { getWorktreeName } from "./ports";
 import {
-	matchesProcessIdentity,
 	processIdentityMatcher,
+	readProcessIdentity,
 } from "./process-identity";
 import {
 	defineListRegistry,
-	isRouteOwnerAlive,
 	type ListRegistryReadOptions,
 } from "./registry-file";
 import { chownToInvokingUser, stateFilePath } from "./state-paths";
@@ -101,8 +103,13 @@ export interface RunServiceEntry {
 }
 
 export interface RunEntry {
-	/** Distinguishes simultaneous runs in one checkout; absent on legacy entries. */
-	sessionId?: string;
+	/**
+	 * Identifies this run; every write addresses an entry by it.
+	 *
+	 * Required: the entries that predated it were written by versions whose
+	 * runs are long over, and dropping them on read is the clean swap.
+	 */
+	sessionId: string;
 	processIdentity?: string;
 	projectPrefix: string;
 	projectName: string;
@@ -132,6 +139,14 @@ export interface RunEntry {
 	 */
 	releasedAt?: string;
 	/**
+	 * When the sweep first found this run's owner gone without releasing.
+	 *
+	 * The crash grace is measured from here. Stamped once, by the sweep, so no
+	 * live run pays for an accurate clock; `updatedAt` would not do, because a
+	 * quiet run may not have written anything for hours before it crashed.
+	 */
+	ownerLostAt?: string;
+	/**
 	 * How long the containers are held after {@link RunEntry.releasedAt}.
 	 *
 	 * Absent means "as long as the checkout exists", which is what
@@ -147,7 +162,7 @@ export interface RunEntry {
 	 * whatever `buncargo` resolves to in its own environment — in a worktree
 	 * those are routinely different versions.
 	 */
-	cli: { program: string; script?: string };
+	cli: CliInvocation;
 	apps: RunAppEntry[];
 	services: RunServiceEntry[];
 }
@@ -227,13 +242,15 @@ function isRunEntry(value: unknown): value is RunEntry {
 		typeof value.projectName === "string" &&
 		typeof value.root === "string" &&
 		isPid(value.pid) &&
-		(typeof value.sessionId === "string" || value.sessionId === undefined) &&
+		typeof value.sessionId === "string" &&
 		(typeof value.processIdentity === "string" ||
 			value.processIdentity === undefined) &&
 		typeof value.projectPrefix === "string" &&
 		typeof value.startedAt === "string" &&
 		typeof value.updatedAt === "string" &&
 		(value.releasedAt === undefined || typeof value.releasedAt === "string") &&
+		(value.ownerLostAt === undefined ||
+			typeof value.ownerLostAt === "string") &&
 		(value.idleTimeoutMs === undefined ||
 			(typeof value.idleTimeoutMs === "number" &&
 				Number.isFinite(value.idleTimeoutMs))) &&
@@ -276,10 +293,21 @@ export async function loadRuns(
 
 /** Whether the process that published an entry is still running. */
 export function isRunAlive(run: RunEntry): boolean {
-	return (
-		run.releasedAt === undefined &&
-		matchesProcessIdentity(run.pid, run.processIdentity)
-	);
+	return runLiveness([run])(run);
+}
+
+/**
+ * {@link isRunAlive} for a whole list, answered with one `ps`.
+ *
+ * The sweep asks this of every entry several times a tick. Asked one entry
+ * at a time, each answer was a fork on macOS.
+ */
+export function runLiveness(
+	runs: readonly RunEntry[],
+): (run: RunEntry) => boolean {
+	const matches = processIdentityMatcher(runs);
+	return (run) =>
+		run.releasedAt === undefined && matches(run.pid, run.processIdentity);
 }
 
 /**
@@ -294,46 +322,67 @@ export function isRunAlive(run: RunEntry): boolean {
  */
 async function prune(path: string): Promise<RunEntry[]> {
 	const runs = await registry.read(path);
-	// One `ps` for the whole file rather than one per entry: every read of
-	// this registry prunes, and the watchdog reads it on every tick.
-	const isLive = processIdentityMatcher(runs);
-	const kept = runs.filter(
-		(run) =>
-			(run.releasedAt === undefined && isLive(run.pid, run.processIdentity)) ||
-			run.services.length > 0,
-	);
+	const alive = runLiveness(runs);
+	const kept = runs.filter((run) => alive(run) || run.services.length > 0);
 	if (kept.length !== runs.length) {
 		await registry.write(path, kept);
 	}
 	return kept;
 }
 
-export async function pruneRuns(path = getRunsPath()): Promise<RunEntry[]> {
-	return withFileLock(path, () => prune(path));
+/**
+ * The entry a run starts from: who it is, where it is, and how to reach it.
+ *
+ * The one place an entry is constructed. The library claims with it before
+ * the first container exists, and the CLI publishes the same shape enriched
+ * with apps and hosts, so the two cannot drift on identity — or on how the
+ * menu bar calls back into buncargo, which is where they once did.
+ */
+export function buildRunEntry(input: {
+	sessionId: string;
+	projectPrefix: string;
+	projectName: string;
+	root: string;
+	isWorktree: boolean;
+}): RunEntry {
+	const now = new Date().toISOString();
+	return {
+		sessionId: input.sessionId,
+		processIdentity: readProcessIdentity(process.pid),
+		projectPrefix: input.projectPrefix,
+		projectName: input.projectName,
+		root: input.root,
+		worktree: input.isWorktree
+			? (getWorktreeName(input.root) ?? basename(input.root))
+			: null,
+		pid: process.pid,
+		startedAt: now,
+		updatedAt: now,
+		hosts: null,
+		cli: buncargoCli(),
+		apps: [],
+		services: [],
+	};
 }
 
-export type RunClaim = "take" | "keep" | "conflict";
+/** Read, change and write the registry under its lock, skipping no-op writes. */
+async function updateRuns(
+	path: string,
+	change: (runs: RunEntry[]) => RunEntry[] | undefined,
+): Promise<void> {
+	await withFileLock(path, async () => {
+		const next = change(await registry.read(path));
+		if (next) await registry.write(path, next);
+	});
+}
 
 /**
- * What an incoming run may do to the entry already holding its root.
+ * Insert or update a session's entry.
  *
- * The same question `classifyRouteClaim` answers for hostnames, and it must be
- * answered the same way or the two registries disagree about who owns a
- * checkout. A second `buncargo dev` in the same directory is usually *reusing*
- * the first run's servers rather than replacing it, so it gets `keep` and the
- * live run stays the owner — which is what makes the entry disappear when the
- * run that owns the processes exits, not when a bystander does.
- *
- * A takeover is the case that must overwrite: same root, different pid, and
- * the old pid is gone by the time it registers, so it never reaches here.
+ * A session is published twice: the claim, before its containers start, and
+ * then the CLI's richer entry. The second knows neither when the first
+ * happened nor which hold it was claimed with, so both carry over.
  */
-export function claimRun(existing: RunEntry, incoming: RunEntry): RunClaim {
-	if (existing.pid === incoming.pid) return "take";
-	if (!isRouteOwnerAlive(existing.pid)) return "take";
-	if (existing.root !== incoming.root) return "conflict";
-	return "keep";
-}
-
 export async function publishRun(
 	run: RunEntry,
 	options: { path?: string } = {},
@@ -341,19 +390,10 @@ export async function publishRun(
 	const path = options.path ?? getRunsPath();
 	await withFileLock(path, async () => {
 		const runs = await prune(path);
-		const index = runs.findIndex(
-			(entry) =>
-				entry.root === run.root &&
-				(run.sessionId ? entry.sessionId === run.sessionId : !entry.sessionId),
-		);
-		const existing = index >= 0 ? runs[index] : undefined;
-		if (existing && !run.sessionId && claimRun(existing, run) === "keep")
-			return;
+		const index = runs.findIndex((entry) => entry.sessionId === run.sessionId);
+		const existing = runs[index];
 		const next = [...runs];
 		if (existing) {
-			// This session already claimed its containers before starting them;
-			// the publish that enriches the entry with apps and hosts knows
-			// neither when that happened nor which hold it was given.
 			next[index] = {
 				...run,
 				startedAt: existing.startedAt,
@@ -368,55 +408,93 @@ export async function publishRun(
 }
 
 /**
- * Mark a run as deliberately finished, keeping its containers for the hold.
+ * Mark a session finished, keeping its containers for the hold.
  *
- * The entry stays so the sweep can find those containers later. A run with no
- * services is withdrawn outright: there is nothing for the sweep to do, and
- * leaving it would show a dead row to anything that forgot to filter.
+ * The first release wins. Teardown, the signal handler and `stop()` can all
+ * reach this, and stamping it again each time pushed the hold later by
+ * however long teardown took. A session with no services is removed instead:
+ * there is nothing for the sweep to hold, and a dead row would show to
+ * anything that forgot to filter.
  */
 export async function releaseRun(
-	root: string,
-	pid: number,
-	options: { path?: string; sessionId?: string } = {},
+	sessionId: string,
+	options: { path?: string } = {},
 ): Promise<void> {
-	const path = options.path ?? getRunsPath();
-	await withFileLock(path, async () => {
-		const runs = await registry.read(path);
-		const index = runs.findIndex(
-			(entry) =>
-				entry.root === root &&
-				entry.pid === pid &&
-				(options.sessionId === undefined ||
-					entry.sessionId === options.sessionId),
-		);
-		const current = index >= 0 ? runs[index] : undefined;
-		if (!current) return;
+	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+		const index = runs.findIndex((entry) => entry.sessionId === sessionId);
+		const current = runs[index];
+		if (!current || current.releasedAt !== undefined) return undefined;
 		const next = [...runs];
+		const now = new Date().toISOString();
 		if (current.services.length === 0) next.splice(index, 1);
-		else next[index] = { ...current, releasedAt: new Date().toISOString() };
-		await registry.write(path, next);
+		// `updatedAt` too: the sweep takes the most recently active session as a
+		// stack's owner, and a release is the latest thing this one did.
+		else next[index] = { ...current, releasedAt: now, updatedAt: now };
+		return next;
 	});
 }
 
-/** Drop entries the sweep has finished with, by session id. */
+/** Drop entries the sweep has finished with. */
 export async function retireRuns(
-	sessions: readonly { root: string; sessionId?: string; pid: number }[],
+	sessionIds: readonly string[],
 	options: { path?: string } = {},
 ): Promise<void> {
-	if (sessions.length === 0) return;
-	const path = options.path ?? getRunsPath();
-	await withFileLock(path, async () => {
-		const runs = await registry.read(path);
+	if (sessionIds.length === 0) return;
+	const drop = new Set(sessionIds);
+	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+		const next = runs.filter((entry) => !drop.has(entry.sessionId));
+		return next.length === runs.length ? undefined : next;
+	});
+}
+
+/**
+ * Drop every entry for a checkout's project that has nothing left to hold.
+ *
+ * Called after an explicit teardown, which knows the containers are gone:
+ * the caller's own session goes, and so does any whose owner has exited. A
+ * live session in the same checkout keeps its entry — it is still somebody's
+ * run, whatever just happened to the containers.
+ */
+export async function retireProjectRuns(
+	target: { projectName: string; root: string; sessionId: string },
+	options: { path?: string } = {},
+): Promise<void> {
+	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+		const alive = runLiveness(runs);
 		const next = runs.filter(
 			(entry) =>
-				!sessions.some(
-					(session) =>
-						session.root === entry.root &&
-						session.pid === entry.pid &&
-						session.sessionId === entry.sessionId,
+				!(
+					entry.projectName === target.projectName &&
+					entry.root === target.root &&
+					(entry.sessionId === target.sessionId || !alive(entry))
 				),
 		);
-		if (next.length !== runs.length) await registry.write(path, next);
+		return next.length === runs.length ? undefined : next;
+	});
+}
+
+/**
+ * Record when the sweep first found each session's owner gone.
+ *
+ * Only ever stamps an entry that has no stamp yet, so the grace keeps
+ * counting from the first time it was noticed however many sweeps see it.
+ */
+export async function markOwnersLost(
+	sessionIds: readonly string[],
+	at: string,
+	options: { path?: string } = {},
+): Promise<void> {
+	if (sessionIds.length === 0) return;
+	const lost = new Set(sessionIds);
+	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+		let changed = false;
+		const next = runs.map((entry) => {
+			if (!lost.has(entry.sessionId) || entry.ownerLostAt !== undefined)
+				return entry;
+			changed = true;
+			return { ...entry, ownerLostAt: at };
+		});
+		return changed ? next : undefined;
 	});
 }
 
@@ -451,31 +529,23 @@ function mergeByName<T extends { name: string }>(
 }
 
 /**
- * Update parts of a published run in place.
+ * Update parts of a session's entry in place.
  *
- * Matched on root *and* pid: a run that has already been taken over must not
- * keep writing app states over the run that replaced it.
+ * Addressed by session alone: a takeover starts a new session rather than
+ * adopting the old one, so a run that has been replaced can only ever write
+ * to its own entry, never over its replacement's.
  */
 export async function patchRun(
-	root: string,
-	pid: number,
+	sessionId: string,
 	patch: RunPatch,
-	options: { path?: string; sessionId?: string } = {},
+	options: { path?: string } = {},
 ): Promise<void> {
-	const path = options.path ?? getRunsPath();
-	await withFileLock(path, async () => {
-		const runs = await registry.read(path);
-		const index = runs.findIndex(
-			(entry) =>
-				entry.root === root &&
-				entry.pid === pid &&
-				(options.sessionId === undefined ||
-					entry.sessionId === options.sessionId),
-		);
-		const current = index >= 0 ? runs[index] : undefined;
-		if (!current || index < 0) return;
-
-		const next: RunEntry = {
+	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+		const index = runs.findIndex((entry) => entry.sessionId === sessionId);
+		const current = runs[index];
+		if (!current) return undefined;
+		const next = [...runs];
+		next[index] = {
 			...current,
 			updatedAt: new Date().toISOString(),
 			...(patch.hosts !== undefined ? { hosts: patch.hosts } : {}),
@@ -487,43 +557,8 @@ export async function patchRun(
 				? mergeByName(current.services, patch.services)
 				: current.services,
 		};
-		const updated = [...runs];
-		updated[index] = next;
-		await registry.write(path, updated);
+		return next;
 	});
-}
-
-/** Remove a run this process owns. A pid mismatch leaves the entry alone. */
-export async function withdrawRun(
-	root: string,
-	pid: number,
-	options: { path?: string; sessionId?: string } = {},
-): Promise<void> {
-	const path = options.path ?? getRunsPath();
-	await withFileLock(path, async () => {
-		const runs = await registry.read(path);
-		const next = runs.filter(
-			(entry) =>
-				!(
-					entry.root === root &&
-					entry.pid === pid &&
-					(options.sessionId === undefined ||
-						entry.sessionId === options.sessionId)
-				),
-		);
-		if (next.length !== runs.length) {
-			await registry.write(path, next);
-		}
-	});
-}
-
-/** The live run for a checkout, or `undefined`. */
-export async function findRunByRoot(
-	root: string,
-	path = getRunsPath(),
-): Promise<RunEntry | undefined> {
-	const runs = await readLiveRuns(path);
-	return runs.find((run) => run.root === root);
 }
 
 /** Runs grouped by project, main checkout first, then worktrees by start time. */
@@ -557,18 +592,16 @@ export async function findRunsByRoot(
 /** Inspection filters stale owners in memory without mutating persisted state. */
 export async function readLiveRuns(path = getRunsPath()): Promise<RunEntry[]> {
 	const runs = await loadRuns(path, { strict: true });
-	const isLive = processIdentityMatcher(runs);
-	return runs.filter(
-		(run) =>
-			run.releasedAt === undefined && isLive(run.pid, run.processIdentity),
-	);
+	return runs.filter(runLiveness(runs));
 }
 
 /**
  * Every entry, live or retired, for the sweep.
  *
  * The only reader that wants the released ones: they are what says a stack
- * may still be reused, and for how much longer.
+ * may still be reused, and for how much longer. Strict, so a registry that
+ * cannot be read throws rather than reading as empty — to the sweep, an empty
+ * registry would make every stack on the machine look unowned.
  */
 export async function readAllRuns(path = getRunsPath()): Promise<RunEntry[]> {
 	return loadRuns(path, { strict: true });

@@ -12,6 +12,7 @@ import { createAppleContainerCli, runAppleAsync } from "./cli";
 import { appleDown, appleStopByIds, appleUp } from "./lifecycle";
 import {
 	ensureAppleContainerRunning,
+	isAppleContainerSupported,
 	isAppleContainerSystemRunning,
 } from "./preflight";
 import { containerNameFor } from "./run-plan";
@@ -75,8 +76,11 @@ export function appleContainerRuntimeAdapter(
 			return diagnoseAppleService(cli, request);
 		},
 
+		// No `system status` first: the listing fails when the system is down,
+		// which answers the same question one process sooner.
 		list() {
-			if (!isAppleContainerSystemRunning(cli)) return [];
+			if (!isAppleContainerSupported())
+				throw new Error("Apple container is not supported on this machine");
 			return listAppleBuncargoContainers(cli);
 		},
 

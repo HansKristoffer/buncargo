@@ -141,11 +141,30 @@ export function resolveContainerRuntime(
  * running a pinned `docker`, and report the wrong one down.
  */
 export function availableContainerRuntimes(
-	options: ContainerRuntimeAdapterOptions & {
+	options: ContainerRuntimeCandidateOptions = {},
+): ContainerRuntimeAdapter[] {
+	return containerRuntimeCandidates(options).filter((adapter) =>
+		adapter.isAvailable(),
+	);
+}
+
+export type ContainerRuntimeCandidateOptions =
+	ContainerRuntimeAdapterOptions & {
 		/** The backend `binary` belongs to. */
 		runtime?: ContainerRuntimeName;
 		env?: NodeJS.ProcessEnv;
-	} = {},
+	};
+
+/**
+ * Every backend this machine could have, without asking whether it is up.
+ *
+ * For a caller that is about to list anyway: a listing that fails already
+ * means "not available", so probing first spent a process on every runtime
+ * for an answer the listing gives for free. The sweep runs on a timer for as
+ * long as anything is running, which is where that adds up.
+ */
+export function containerRuntimeCandidates(
+	options: ContainerRuntimeCandidateOptions = {},
 ): ContainerRuntimeAdapter[] {
 	const binary =
 		options.binary ?? containerBinaryOverride(options.env ?? process.env);
@@ -157,7 +176,7 @@ export function availableContainerRuntimes(
 	return [
 		getContainerRuntimeAdapter("docker", { binary: binaryFor("docker") }),
 		getContainerRuntimeAdapter("apple", { binary: binaryFor("apple") }),
-	].filter((adapter) => adapter.isAvailable());
+	];
 }
 
 /**

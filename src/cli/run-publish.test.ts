@@ -17,6 +17,7 @@ import {
 	publishCurrentRun,
 	type RunSource,
 	readGitBranch,
+	recordAppSpawn,
 } from "./run-publish";
 import { parseStopArgs } from "./stop-flags";
 
@@ -32,8 +33,9 @@ afterEach(() => {
 	else process.env.HOME = savedHome;
 	rmSync(root, { recursive: true, force: true });
 });
-function source(): RunSource {
+function source(sessionId = "session-a"): RunSource {
 	return {
+		sessionId,
 		projectPrefix: "fixture",
 		projectName: "fixture",
 		root,
@@ -59,8 +61,8 @@ function source(): RunSource {
 
 describe("published run ownership", () => {
 	it("publishes selected services with exact alias, runtime binary and process identity", async () => {
-		const run = await publishCurrentRun(source(), {
-			sessionId: "session-a",
+		const env = source("session-a");
+		const run = await publishCurrentRun(env, {
 			apps: { web: { port: 3000, devCommand: "bun dev" } },
 			serviceNames: ["db"],
 		});
@@ -73,26 +75,25 @@ describe("published run ownership", () => {
 			binary: join(root, "custom docker"),
 		});
 		await Promise.all([
-			markApps(root, ["web"], "stopped"),
-			markApps(root, ["web"], "ready"),
+			markApps(env, ["web"], "stopped"),
+			markApps(env, ["web"], "ready"),
 		]);
 		expect((await loadRuns())[0]?.apps[0]?.status).toBe("stopped");
 
 		// Releasing a run that owns containers keeps its entry: it is the only
 		// record of what they are and how long they may be reused for. Every
 		// "what is running" reader filters it out; only the sweep sees it.
-		await releaseRun(root, process.pid, { sessionId: "session-a" });
+		await releaseRun("session-a");
 		expect((await loadRuns())[0]?.releasedAt).toBeString();
 		expect(await readLiveRuns()).toEqual([]);
 	});
 
 	it("withdraws an app-only run outright, there being nothing to sweep", async () => {
-		await publishCurrentRun(source(), {
-			sessionId: "session-apps",
+		await publishCurrentRun(source("session-apps"), {
 			apps: { web: { port: 3000, devCommand: "bun dev" } },
 			serviceNames: [],
 		});
-		await releaseRun(root, process.pid, { sessionId: "session-apps" });
+		await releaseRun("session-apps");
 		expect(await loadRuns()).toEqual([]);
 	});
 	it("reads a main checkout git branch", () => {
@@ -106,32 +107,54 @@ describe("published run ownership", () => {
 		).toMatchObject({ names: ["web"], run: "abc", errors: [] });
 	});
 	it("refuses a mismatched recorded app pid identity before signalling", async () => {
-		const run = await publishCurrentRun(source(), {
-			sessionId: "session-b",
+		const run = await publishCurrentRun(source("session-b"), {
 			apps: { web: { port: 3000, devCommand: "bun dev" } },
 			serviceNames: [],
 		});
 		if (!run) throw new Error("run not published");
 		const { patchRun } = await import("../core/run-registry");
-		await patchRun(
-			root,
-			process.pid,
-			{
-				apps: [
-					{
-						name: "web",
-						pid: process.pid,
-						processIdentity: "stale",
-						status: "ready",
-					},
-				],
-			},
-			{ sessionId: run.sessionId },
-		);
+		await patchRun(run.sessionId, {
+			apps: [
+				{
+					name: "web",
+					pid: process.pid,
+					processIdentity: "stale",
+					status: "ready",
+				},
+			],
+		});
 		expect(
-			await handleStop(["web", "--root", root, "--run", run.sessionId ?? ""]),
+			await handleStop(["web", "--root", root, "--run", run.sessionId]),
 		).toBe(3);
 		expect(await readLiveRuns()).toHaveLength(1);
+	});
+	it("stops an app the spawner recorded, which it used to refuse every time", async () => {
+		// The CLI recorded a spawned app's pid without its identity, and `stop`
+		// refuses to signal an app without one — so the menu bar's Stop refused
+		// every app it was asked to stop.
+		const env = source("session-d");
+		const run = await publishCurrentRun(env, {
+			apps: { web: { port: 3000, devCommand: "bun dev" } },
+			serviceNames: [],
+		});
+		if (!run) throw new Error("run not published");
+		const app = Bun.spawn(
+			[process.execPath, "--eval", "setInterval(() => {}, 1000)"],
+			{
+				stdout: "ignore",
+				stderr: "ignore",
+			},
+		);
+		try {
+			await recordAppSpawn(env, "web", app.pid, false);
+			expect(
+				await handleStop(["web", "--root", root, "--run", run.sessionId]),
+			).toBe(0);
+			expect(await app.exited).not.toBeUndefined();
+			expect((await loadRuns())[0]?.apps[0]?.status).toBe("stopped");
+		} finally {
+			app.kill("SIGKILL");
+		}
 	});
 	it("stops exactly an aliased service through its recorded binary and updates status", async () => {
 		const env = source();
@@ -143,7 +166,6 @@ describe("published run ownership", () => {
 		);
 		chmodSync(binary, 0o755);
 		const run = await publishCurrentRun(env, {
-			sessionId: "session-c",
 			apps: {},
 			serviceNames: ["db"],
 		});

@@ -2,6 +2,7 @@
   "version": 1,
   "runs": [
     {
+      "sessionId": "fixture-session",
       "projectPrefix": "lullu",
       "projectName": "lullu-t3code-f003056f",
       "root": "/tmp/buncargo-fixture/lullu",

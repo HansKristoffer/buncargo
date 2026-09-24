@@ -93,7 +93,12 @@ function fixture() {
 		releaseRun: async () => {
 			events.push("release");
 		},
-		ensureWatchdog: async () => {},
+		retireRun: async () => {
+			events.push("retire");
+		},
+		ensureWatchdog: async () => {
+			events.push("watchdog");
+		},
 	};
 	return {
 		events,
@@ -111,8 +116,9 @@ describe("startup modes and hooks", () => {
 			verbose: false,
 			wait: false,
 		});
-		// The claim precedes the first container, so the sweep never sees one unowned.
-		expect(events).toEqual(["claim", "artifact", "runtime", "up"]);
+		// The claim precedes the first container, so the sweep never sees one
+		// unowned, and the watchdog is ensured right behind it.
+		expect(events).toEqual(["claim", "watchdog", "artifact", "runtime", "up"]);
 	});
 	it("migrate-only applies migrations without generation or seeds", async () => {
 		const { events, lifecycle } = fixture();
@@ -124,6 +130,7 @@ describe("startup modes and hooks", () => {
 		});
 		expect(events).toEqual([
 			"claim",
+			"watchdog",
 			"artifact",
 			"runtime",
 			"up",
@@ -136,6 +143,7 @@ describe("startup modes and hooks", () => {
 		await lifecycle.start({ startServers: false, verbose: false, wait: false });
 		expect(events).toEqual([
 			"claim",
+			"watchdog",
 			"artifact",
 			"runtime",
 			"up",
@@ -160,6 +168,34 @@ describe("startup modes and hooks", () => {
 		await lifecycle.start({ startServers: false, verbose: false, wait: false });
 		expect(events).toContain("migrate");
 		expect(events).not.toContain("generate");
+	});
+	it("a library start ensures the watchdog unless told not to", async () => {
+		// Only the CLI used to start one, so a script that started containers
+		// and then crashed left them for somebody's next CLI command.
+		const { events, lifecycle } = fixture();
+		await lifecycle.start({
+			prepare: "containers",
+			startServers: false,
+			verbose: false,
+			wait: false,
+			watchdog: false,
+		});
+		expect(events).toEqual(["claim", "artifact", "runtime", "up"]);
+	});
+	it("an explicit stop retires the claim rather than holding it", async () => {
+		const { ctx, events, lifecycle } = fixture();
+		ctx.runtime.down = async () => {
+			events.push("down");
+		};
+		await lifecycle.start({
+			prepare: "containers",
+			startServers: false,
+			verbose: false,
+			wait: false,
+		});
+		await lifecycle.stop({ verbose: false });
+		// The containers are gone, so there is nothing to hold them for.
+		expect(events.slice(-2)).toEqual(["down", "retire"]);
 	});
 	it("rejects an invalid selection before writing the artifact or starting runtime", async () => {
 		const { events, lifecycle } = fixture();

@@ -6,7 +6,8 @@
 > finding running containers whose owning run had exited hours earlier.
 > The "Plan" section below is the original; "What shipped" records where the
 > build deviated. `AGENTS.md` under `src/container-runtime/` describes the
-> design as it now is.
+> design as it now is. The review that followed, and what to do next, is in
+> `docs/container-cleanup-round-3.md`.
 
 ## The one design fact everything below follows from
 

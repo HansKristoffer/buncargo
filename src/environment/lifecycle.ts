@@ -276,8 +276,15 @@ export function createLifecycleApi<
 		// Claimed before anything is created, so the sweep never sees a fresh
 		// container as unowned. Idempotent, so a CLI that already claimed with
 		// its own flags keeps those. The claim outlives `start()`: it is
-		// released by `stop()`, or by this process exiting.
-		if (hasServices) await runClaim.claimRun();
+		// retired by `stop()`, or released when this process exits.
+		if (hasServices) {
+			await runClaim.claimRun();
+			// A script that starts containers and then crashes needs someone to
+			// clean up after it, exactly as a `buncargo dev` does. Not awaited:
+			// confirming the watchdog came up is no reason to delay the start.
+			if (startOptions.watchdog !== false)
+				void runClaim.ensureWatchdog().catch(() => {});
+		}
 
 		if (verbose && !skipEnvironmentLog) {
 			ctx.logInfo(
@@ -443,7 +450,7 @@ export function createLifecycleApi<
 			},
 			{ signal: stopOptions.signal },
 		);
-		await runClaim.releaseRun();
+		await runClaim.retireRun();
 	}
 
 	async function restart(): Promise<void> {

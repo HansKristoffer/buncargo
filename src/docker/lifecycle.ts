@@ -34,6 +34,21 @@ function isDaemonDownMessage(message: string): boolean {
 }
 
 /**
+ * The Docker CLI's words when it has no Compose plugin to hand.
+ *
+ * Docker Desktop installs Compose under `~/.docker/cli-plugins`, found through
+ * `HOME`, so a process started with a different `HOME` has Docker but not
+ * Compose. Every teardown then fails the same way, and a raw "not a docker
+ * command" says nothing about why.
+ */
+function isComposeMissingMessage(message: string): boolean {
+	return /'compose' is not a docker command/i.test(message);
+}
+
+const COMPOSE_MISSING =
+	"Docker Compose is not available to this process. Docker Desktop provides it through ~/.docker/cli-plugins, which is found through HOME; run buncargo with your usual HOME, or install the compose plugin system-wide.";
+
+/**
  * Turn compose's "port is already allocated" into a message naming the owner.
  *
  * Only reachable with a captured stderr, which means the quiet path; a verbose
@@ -154,6 +169,8 @@ export async function stopContainers(
 				console.log(formatStep("ℹ Docker is not running. Nothing to stop."));
 			return;
 		}
+		if (isComposeMissingMessage(result.stderr))
+			throw new Error(COMPOSE_MISSING);
 		translateComposeFailure(result);
 	}
 	if (verbose) console.log(formatDone("Containers stopped"));

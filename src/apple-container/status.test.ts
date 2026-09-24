@@ -127,8 +127,10 @@ describe("listAppleBuncargoContainers", () => {
 		expect(containers[0]?.ports).toBe("0.0.0.0:5433->5432/tcp");
 	});
 
-	it("returns nothing when the command fails", () => {
-		expect(listAppleBuncargoContainers(stubCli("", false))).toEqual([]);
+	it("throws when the runtime cannot answer, rather than reporting no containers", () => {
+		// The sweep retires records only for runtimes that answered, so "down"
+		// must never look like "empty".
+		expect(() => listAppleBuncargoContainers(stubCli("", false))).toThrow();
 	});
 });
 
