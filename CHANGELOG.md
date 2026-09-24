@@ -1,5 +1,19 @@
 # Changelog
 
+## [10.0.0](https://github.com/HansKristoffer/buncargo/compare/v9.2.2...v10.0.0) (2026-09-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **docker:** harden container cleanup and run ownership ([#55](https://github.com/HansKristoffer/buncargo/issues/55))
+* **container-runtime:** sweep unowned containers from one run registry ([#54](https://github.com/HansKristoffer/buncargo/issues/54))
+
+### Features
+
+* **bar:** stop services without a confirmation dialog ([#51](https://github.com/HansKristoffer/buncargo/issues/51)) ([ae461be](https://github.com/HansKristoffer/buncargo/commit/ae461be467548d26c3ad65b3e8fc2f9b10ecf707))
+* **container-runtime:** sweep unowned containers from one run registry ([#54](https://github.com/HansKristoffer/buncargo/issues/54)) ([e2356c2](https://github.com/HansKristoffer/buncargo/commit/e2356c2e69a146ed4300f770521f52dcc00045f5))
+* **docker:** harden container cleanup and run ownership ([#55](https://github.com/HansKristoffer/buncargo/issues/55)) ([6c8ec8e](https://github.com/HansKristoffer/buncargo/commit/6c8ec8e5416b36b783ed39f9bd05ef8a313f1432))
+
 ## [9.2.2](https://github.com/HansKristoffer/buncargo/compare/v9.2.1...v9.2.2) (2026-09-22)
 
 
