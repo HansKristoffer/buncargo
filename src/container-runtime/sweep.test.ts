@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readProcessIdentity } from "../core/process-identity";
@@ -36,6 +36,7 @@ afterEach(() => {
 });
 
 const NOW = 1_000_000;
+const DB = { name: "db", status: "ready" as const };
 const AGES_AGO = new Date(NOW - 10_000_000).toISOString();
 
 /** A run entry, dead by default: `pid: 1` is never one of ours. */
@@ -110,21 +111,36 @@ describe("decideSweep", () => {
 		});
 	});
 
-	it("gives a crashed owner a grace measured from its last write", () => {
-		// `updatedAt` is written on claim, publish and patch — never on a
-		// timer — so this grace protects a run that crashed shortly after
-		// doing something, and not one that crashed after a quiet spell.
-		const crashed = entry({ updatedAt: new Date(NOW - 10_000).toISOString() });
+	it("gives a crashed owner a grace counted from when a sweep first noticed", () => {
+		const crashed = entry({
+			idleTimeoutMs: 180_000,
+			ownerLostAt: new Date(NOW - 10_000).toISOString(),
+		});
 		expect(decideSweep({ ...base, run: crashed }, limits)).toEqual({
 			kind: "keep",
 		});
 		expect(
 			decideSweep({ ...base, run: crashed, now: NOW + 5_000 }, limits),
-		).toEqual({ kind: "down", reason: "owner gone, idle 15s" });
+		).toEqual({ kind: "down", reason: "owner gone for 15s" });
+	});
 
-		// A run that had been quiet for hours when it died is reclaimed at once.
-		const longQuiet = entry({ updatedAt: AGES_AGO });
-		expect(decideSweep({ ...base, run: longQuiet }, limits).kind).toBe("down");
+	it("keeps a crashed owner nobody has stamped yet, however quiet it was", () => {
+		// Measured from `updatedAt`, a run quiet for hours before it crashed
+		// lost its containers on the very next pass, with no grace at all.
+		const quiet = entry({ idleTimeoutMs: 180_000, updatedAt: AGES_AGO });
+		expect(decideSweep({ ...base, run: quiet }, limits)).toEqual({
+			kind: "keep",
+		});
+	});
+
+	it("keeps a stack with no hold however its run ended, crash included", () => {
+		// `--keep-containers`, a one-shot mode, or a script that brought a
+		// stack up and exited: to the sweep the last looks exactly like a
+		// crash, and tearing it down seconds later is not what anyone asked.
+		const exited = entry({ ownerLostAt: AGES_AGO });
+		expect(decideSweep({ ...base, run: exited }, limits)).toEqual({
+			kind: "keep",
+		});
 	});
 });
 
@@ -279,8 +295,10 @@ describe("sweepOrphanedContainers", () => {
 	});
 
 	it("retires an entry once its containers are gone, and not before", async () => {
-		await publishRun(entry({ sessionId: "finished", projectName: "finished" }));
-		await releaseRun(checkout, 1, { sessionId: "finished" });
+		await publishRun(
+			entry({ sessionId: "finished", projectName: "finished", services: [DB] }),
+		);
+		await releaseRun("finished");
 
 		// Still listed: the entry is what says these may be reused, so it has
 		// to outlive the run and not the containers.
@@ -296,11 +314,124 @@ describe("sweepOrphanedContainers", () => {
 	});
 
 	it("keeps entries when no runtime can answer, rather than reading silence as gone", async () => {
-		await publishRun(entry({ sessionId: "unknown", projectName: "unknown" }));
-		await releaseRun(checkout, 1, { sessionId: "unknown" });
+		await publishRun(
+			entry({ sessionId: "unknown", projectName: "unknown", services: [DB] }),
+		);
+		await releaseRun("unknown");
 		// No runtime is available: an empty listing means "cannot tell", and
 		// retiring on that would throw away the record of a live stack.
 		await sweepOrphanedContainers({ runtimes: [] });
 		expect(await loadRuns()).toHaveLength(1);
+	});
+
+	it("stamps an owner it finds gone, and keeps the stack for the grace", async () => {
+		await publishRun(
+			entry({
+				sessionId: "crashed",
+				projectName: "crashed",
+				idleTimeoutMs: 180_000,
+				services: [DB],
+			}),
+		);
+		const { runtime, downs } = stubRuntime([
+			container("crashed", checkout, "running"),
+		]);
+		const first = await sweepOrphanedContainers({ runtimes: [runtime] });
+		expect(first.swept).toEqual([]);
+		expect(downs).toEqual([]);
+		const stamped = (await loadRuns())[0]?.ownerLostAt;
+		expect(stamped).toBeString();
+
+		// A later pass counts from the same stamp, not from its own clock.
+		await sweepOrphanedContainers({
+			runtimes: [runtime],
+			now: Date.parse(stamped ?? "") + 60_000,
+		});
+		expect((await loadRuns())[0]?.ownerLostAt).toBe(stamped);
+		expect(downs.map((request) => request.projectName)).toEqual(["crashed"]);
+	});
+
+	it("touches nothing when the registry cannot be read", async () => {
+		// With no registry every stack looks unowned; stopping is the only
+		// safe answer, and the watchdog retries on its next pass.
+		mkdirSync(join(home, ".buncargo"), { recursive: true });
+		writeFileSync(join(home, ".buncargo", "runs.json"), "{ not json");
+		const { runtime, downs } = stubRuntime([
+			container("stopped", checkout, "exited"),
+		]);
+		await expect(
+			sweepOrphanedContainers({ runtimes: [runtime] }),
+		).rejects.toThrow();
+		expect(downs).toEqual([]);
+	});
+
+	it("retires nothing for a runtime that could not answer", async () => {
+		await publishRun(
+			entry({
+				sessionId: "apple-run",
+				projectName: "apple-run",
+				services: [
+					{
+						...DB,
+						container: { runtime: "apple", name: "apple-run-db" },
+					},
+				],
+			}),
+		);
+		await releaseRun("apple-run");
+		// Docker answers with nothing; Apple is down. An empty Docker listing
+		// says nothing about a stack Apple holds.
+		const docker = stubRuntime([]);
+		const apple = {
+			name: "apple",
+			list: () => {
+				throw new Error("container system is not running");
+			},
+		} as unknown as ContainerRuntimeAdapter;
+		const result = await sweepOrphanedContainers({
+			runtimes: [docker.runtime, apple],
+		});
+		expect(result.answered).toEqual(["docker"]);
+		expect(await loadRuns()).toHaveLength(1);
+	});
+
+	it("spares a stack a run claims while the pass is busy elsewhere", async () => {
+		// The pass condemns both stacks from its snapshot. While it tears the
+		// first down, a new run claims the second — publishing before it takes
+		// the lock, as a real start does. The recheck under the lock must see it.
+		await publishRun(
+			entry({
+				sessionId: "expired",
+				projectName: "reused",
+				releasedAt: new Date(Date.now() - 600_000).toISOString(),
+				idleTimeoutMs: 60_000,
+				services: [DB],
+			}),
+		);
+		const downs: string[] = [];
+		const runtime = {
+			name: "docker",
+			list: () => [
+				container("abandoned", checkout, "exited"),
+				container("reused", checkout, "running"),
+			],
+			down: async (request: ContainerDownRequest) => {
+				downs.push(request.projectName);
+				await publishRun(
+					entry({
+						sessionId: "new-run",
+						projectName: "reused",
+						pid: process.pid,
+						processIdentity: readProcessIdentity(process.pid),
+						services: [DB],
+					}),
+				);
+			},
+		} as unknown as ContainerRuntimeAdapter;
+		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
+		expect(downs).toEqual(["abandoned"]);
+		expect(result.remaining.map((group) => group.projectName)).toEqual([
+			"reused",
+		]);
 	});
 });

@@ -1,9 +1,9 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { describeExpoApp } from "../core/expo";
-import { getWorktreeName } from "../core/ports";
 import { readProcessIdentity } from "../core/process-identity";
 import {
+	buildRunEntry,
 	patchRun,
 	publishRun,
 	type RunAppEntry,
@@ -46,6 +46,8 @@ import * as log from "./log";
  * lists what is read and nothing else.
  */
 export interface RunSource {
+	/** The session the environment already claimed its containers under. */
+	readonly sessionId: string;
 	readonly containerRuntime?: ContainerRuntimeName;
 	readonly containerRuntimeBinary?: string;
 	readonly projectPrefix: string;
@@ -94,17 +96,6 @@ export function readGitBranch(root: string): string | undefined {
 	} catch {
 		return undefined;
 	}
-}
-
-/**
- * How to run this same buncargo again.
- *
- * `process.argv[1]` is the CLI entry that is executing right now, so a reader
- * gets the build that owns the run rather than whatever `buncargo` resolves to
- * in its own environment — routinely a different version in a worktree.
- */
-function currentCli(): RunEntry["cli"] {
-	return { program: process.execPath, script: process.argv[1] };
 }
 
 function appEntries(
@@ -207,14 +198,6 @@ function serviceEntries(
 }
 
 export interface PublishRunInput {
-	/**
-	 * The environment's own session id.
-	 *
-	 * Not minted here: the environment already claimed this run's containers
-	 * under it before starting them, and publishing under a second id would
-	 * leave two entries for one run — one of them the entry the sweep reads.
-	 */
-	sessionId: string;
 	serviceNames?: readonly string[];
 	/** Apps this run is responsible for, spawned or reused. */
 	apps: Record<string, AppConfig>;
@@ -253,23 +236,19 @@ async function writeRun(
 	input: PublishRunInput,
 ): Promise<RunEntry> {
 	const reused = new Set(input.reusedNames ?? []);
-	const now = new Date().toISOString();
+	// The environment claimed under this session before starting containers,
+	// so this publishes over that claim rather than beside it.
 	const entry: RunEntry = {
-		sessionId: input.sessionId,
-		processIdentity: readProcessIdentity(process.pid),
-		projectPrefix: env.projectPrefix,
-		projectName: env.projectName,
-		root: env.root,
-		worktree: env.isWorktree
-			? (getWorktreeName(env.root) ?? basename(env.root))
-			: null,
+		...buildRunEntry({
+			sessionId: env.sessionId,
+			projectPrefix: env.projectPrefix,
+			projectName: env.projectName,
+			root: env.root,
+			isWorktree: env.isWorktree,
+		}),
 		branch: readGitBranch(env.root),
-		pid: process.pid,
-		startedAt: now,
-		updatedAt: now,
 		primaryApp: env.resolvePrimaryApp(Object.keys(input.apps)),
 		hosts: env.hosts ? { active: env.hosts.active, tld: env.hosts.tld } : null,
-		cli: currentCli(),
 		apps: appEntries(env, {
 			apps: input.apps,
 			attached: input.attached,
@@ -283,34 +262,42 @@ async function writeRun(
 	};
 
 	await publishRun(entry);
-	currentSessions.set(env.root, input.sessionId);
 	return entry;
 }
 
-const currentSessions = new Map<string, string>();
+/** The part of an environment a patch needs: which session to write to. */
+export interface RunSession {
+	readonly sessionId: string;
+}
+
 const pendingPatches = new Map<string, Promise<void>>();
 
-function enqueue(root: string, operation: () => Promise<void>): Promise<void> {
-	const previous = pendingPatches.get(root) ?? Promise.resolve();
+/**
+ * Serialize one session's patches, so a slow write cannot land after a later
+ * one and put an app back to an older state.
+ */
+function enqueue(
+	sessionId: string,
+	operation: () => Promise<void>,
+): Promise<void> {
+	const previous = pendingPatches.get(sessionId) ?? Promise.resolve();
 	const next = previous.catch(() => {}).then(operation);
-	pendingPatches.set(root, next);
+	pendingPatches.set(sessionId, next);
 	void next
 		.finally(() => {
-			if (pendingPatches.get(root) === next) pendingPatches.delete(root);
+			if (pendingPatches.get(sessionId) === next)
+				pendingPatches.delete(sessionId);
 		})
 		.catch(() => {});
 	return next;
 }
 
 export async function patchCurrentRun(
-	root: string,
+	run: RunSession,
 	patch: RunPatch,
 ): Promise<void> {
 	try {
-		const sessionId = currentSessions.get(root);
-		await enqueue(root, () =>
-			patchRun(root, process.pid, patch, { sessionId }),
-		);
+		await enqueue(run.sessionId, () => patchRun(run.sessionId, patch));
 	} catch (error) {
 		reportFailure("update", error);
 	}
@@ -318,28 +305,37 @@ export async function patchCurrentRun(
 
 /** Mark every named app with one status, e.g. all of wave 1 becoming `ready`. */
 export async function markApps(
-	root: string,
+	run: RunSession,
 	names: readonly string[],
 	status: RunAppStatus,
 ): Promise<void> {
 	if (names.length === 0) return;
-	await patchCurrentRun(root, {
+	await patchCurrentRun(run, {
 		apps: names.map((name) => ({ name, status })),
 	});
 }
 
-/** Attach the pids the spawner handed back, so `stop` can signal one app. */
-export async function recordAppPids(
-	root: string,
-	pids: Record<string, number>,
+/**
+ * Record a spawned app's pid together with its birth identity.
+ *
+ * `stop` refuses to signal an app whose entry has no identity, since a bare
+ * pid may by then belong to something else. The spawner used to record the
+ * pid alone, so the menu bar's Stop refused every app it was asked to stop.
+ */
+export async function recordAppSpawn(
+	run: RunSession,
+	name: string,
+	pid: number,
+	attached: boolean,
 ): Promise<void> {
-	const entries = Object.entries(pids);
-	if (entries.length === 0) return;
-	await patchCurrentRun(root, {
-		apps: entries.map(([name, pid]) => ({
-			name,
-			pid,
-			processIdentity: readProcessIdentity(pid),
-		})),
+	await patchCurrentRun(run, {
+		apps: [
+			{
+				name,
+				pid,
+				processIdentity: readProcessIdentity(pid),
+				attached: attached || undefined,
+			},
+		],
 	});
 }

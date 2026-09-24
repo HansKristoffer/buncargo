@@ -1059,7 +1059,7 @@ Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `args` | `string[]` | `process.argv.slice(2)` | CLI flags |
-| `watchdog` | `boolean` | `true` | Claim the containers with the CLI's flags and start the watchdog. Tests set `false`. The idle hold comes from `options.autoShutdown`, `--keep-containers`, or `--watchdog-timeout`. |
+| `watchdog` | `boolean` | `true` | Start the watchdog that removes this run's containers once it is gone. The run claims its containers either way; `false` only skips starting the process. Tests set `false`. The idle hold comes from `options.autoShutdown`, `--keep-containers`, or `--watchdog-timeout`. |
 
 ## Health Checks
 
@@ -1094,16 +1094,18 @@ Programmatic: `openPublicTunnels({ names?, waitForHealthy? })` then `buildAppEnv
 
 ## Watchdog
 
-Every run that owns containers claims them in `~/.buncargo/runs.json` before it starts them, and one watchdog per machine (`dist/core/watchdog-runner.js`, log in `~/.buncargo/watchdog.log`) sweeps every buncargo container against that registry every 30s. `buncargo ls` and `doctor` run the same sweep inline, so a killed watchdog is never the last line of defence. A stack is removed when:
+Every run that owns containers claims them in `~/.buncargo/runs.json` before it starts them, and one watchdog per machine (`dist/core/watchdog-runner.js`, log in `~/.buncargo/watchdog.log`) sweeps every buncargo container against that registry every 30s. Runs started from a script with `dev.start()` get it too; pass `start({ watchdog: false })` to skip starting the process. A script's containers stay up after it exits — `options.autoShutdown` and the three-minute default are `buncargo dev`'s — unless it asks for a hold with `claimRun({ idleTimeoutMs })` before `start()`. `buncargo ls` and `doctor` run the same sweep inline, so a killed watchdog is never the last line of defence. A stack is removed when:
 
 - **its checkout is gone** - the worktree was deleted, whatever else is true
 - **it is stopped and nobody owns it** - a daemon restart or `buncargo stop <service>` left it exited and the run has ended
 - **its run exited cleanly** (Ctrl-C leaves a `released` marker) and the idle hold has passed - 3 minutes by default, so a quick restart reuses the containers rather than recreating them
-- **its run crashed** (the PID is gone without releasing) and ~15s have passed
+- **its run crashed** (the PID is gone without releasing) and ~15s have passed since a sweep first noticed
 
-A running stack with a live owner is never touched. `--keep-containers`, `options.autoShutdown: false` and the one-shot modes (`--up-only`, `--migrate`, `--seed`) set no idle hold, so their containers live as long as the checkout. `--watchdog-timeout=N` sets the hold in minutes. The watchdog exits when there is nothing left to watch and any later `dev` starts it again.
+A running stack with a live owner is never touched. `--keep-containers`, `options.autoShutdown: false` and the one-shot modes (`--up-only`, `--migrate`, `--seed`) set no idle hold, so their containers live as long as the checkout — even if the run crashed. `--watchdog-timeout=N` sets the hold in minutes. The watchdog exits when there is nothing left to watch and any later `dev` starts it again.
 
-A finished run keeps its registry entry until its containers are gone — that entry is what says they may still be reused, and for how long. `buncargo runs`, `stop` and the menu bar filter it out; only the sweep sees it.
+A finished run keeps its registry entry until its containers are gone — that entry is what says they may still be reused, and for how long. `buncargo runs`, `stop` and the menu bar filter it out; only the sweep sees it. `dev --down` and `stop()` remove it straight away, since they have just removed the containers.
+
+**Upgrading from 9.x or earlier.** Until every project on the machine is on this version, old and new runs share the registry. A 9.x run is seen as long as it runs, but it removes its entry on exit instead of holding its containers, and older versions write none. The rules above then apply as usual: a running stack nobody claims is left alone, and a fully stopped one is removed, as the old watchdog would have done anyway. One case differs: an old run that is still going with every service stopped can lose its containers. An old CLI also cannot read the new process identities, so whenever it writes the registry it drops every new-version entry, live runs included: they vanish from `buncargo runs` and the menu bar, and lose their hold. Their running containers are left alone. Upgrade every project on the machine together to avoid the window. Volumes are never touched, so the next `dev` recreates any container from the same data. The first `buncargo ls` after upgrading reclaims what old versions left behind.
 
 **Volumes are never removed automatically.** A container costs nothing to recreate; a volume is the database. `buncargo prune` lists the volumes whose project has no containers and no run, and removes them only after you confirm:
 

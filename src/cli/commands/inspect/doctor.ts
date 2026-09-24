@@ -4,7 +4,6 @@ import {
 	type ContainerRuntimeAdapter,
 	containerRuntimeForEnv,
 	getContainerRuntimeAdapter,
-	listBuncargoContainers,
 	sweepOrphanedContainers,
 } from "../../../container-runtime";
 import {
@@ -34,10 +33,8 @@ import {
 } from "../../../core/process";
 import { isRouteOwnerAlive } from "../../../core/registry-file";
 import {
-	isRunAlive,
 	loadRuns,
 	REGISTRY_VERSION,
-	readAllRuns,
 	readLiveRuns,
 } from "../../../core/run-registry";
 import { loadDevEnv } from "../../../loader";
@@ -129,15 +126,15 @@ async function checkOrphanedContainers(
 ): Promise<void> {
 	if (!runtime.isAvailable()) return;
 	try {
-		const { swept, failed } = await sweepOrphanedContainers({
+		const result = await sweepOrphanedContainers({
 			runtimes: [runtime],
 			except: { projectName: env.projectName, root: env.root },
 		});
-		for (const stack of swept)
+		for (const stack of result.swept)
 			report.note(
 				`Removed ${stack.projectName} (${stack.root}): ${stack.reason}`,
 			);
-		for (const failure of failed)
+		for (const failure of result.failed)
 			report.issue(
 				`Could not remove ${failure.projectName} (${failure.root}): ${failure.error}`,
 			);
@@ -145,23 +142,26 @@ async function checkOrphanedContainers(
 		// worktree that resolved to this project's identity. Survived the
 		// sweep, so somebody is using them — say who, because the fix is to
 		// go and stop that run, not to guess.
-		const foreign = listBuncargoContainers([runtime]).filter(
-			(item) =>
-				item.project === env.projectName && item.root && item.root !== env.root,
+		const foreignRoots = new Set(
+			result.remaining
+				.filter(
+					(group) =>
+						group.projectName === env.projectName &&
+						group.root &&
+						group.root !== env.root,
+				)
+				.map((group) => group.root),
 		);
-		if (foreign.length > 0) {
-			const runs = await readAllRuns();
-			for (const root of new Set(foreign.map((item) => item.root))) {
-				const owner = runs.find(
-					(run) => run.root === root && run.projectName === env.projectName,
-				);
-				const who = owner
-					? `${owner.worktree ?? "the main checkout"}${isRunAlive(owner) ? `, running as pid ${owner.pid}` : ", finished and being held"}`
-					: "no run on record";
-				report.issue(
-					`Containers labeled ${env.projectName} belong to ${root} (${who})`,
-				);
-			}
+		for (const root of foreignRoots) {
+			const owner = result.runs.find(
+				(run) => run.root === root && run.projectName === env.projectName,
+			);
+			const who = owner
+				? `${owner.worktree ?? "the main checkout"}${result.liveSessions.has(owner.sessionId) ? `, running as pid ${owner.pid}` : ", finished and being held"}`
+				: "no run on record";
+			report.issue(
+				`Containers labeled ${env.projectName} belong to ${root} (${who})`,
+			);
 		}
 	} catch (error) {
 		report.fromError(error);

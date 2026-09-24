@@ -1,14 +1,11 @@
-import { basename } from "node:path";
-import { getWorktreeName } from "../core/ports";
-import { readProcessIdentity } from "../core/process-identity";
 import {
+	buildRunEntry,
 	publishRun,
-	type RunEntry,
 	type RunServiceEntry,
 	releaseRun,
+	retireProjectRuns,
 } from "../core/run-registry";
 import { ensureWatchdog as ensureWatchdogFn } from "../core/watchdog";
-import { WATCHDOG_IDLE_TIMEOUT_MS } from "../core/watchdog-constants";
 import type { AppConfig, ServiceConfig } from "../types";
 import type { DevEnvContext } from "./context";
 
@@ -33,11 +30,50 @@ export interface DevRunClaimApi {
 	 * Idempotent, so the CLI can claim first with its flags and `start()` can
 	 * claim again with the defaults without changing anything.
 	 */
-	claimRun(options?: { idleTimeoutMs?: number | false }): Promise<void>;
+	claimRun(options?: ClaimOptions): Promise<void>;
 	/** Release the claim: containers are held for the idle timeout, then removed. */
 	releaseRun(): Promise<void>;
+	/**
+	 * Drop the claim outright, after an explicit teardown.
+	 *
+	 * The containers are gone, so there is nothing to hold: this session's
+	 * entry goes, and so does any finished session for the same checkout.
+	 * Releasing instead left entries for a later sweep to find empty.
+	 */
+	retireRun(): Promise<void>;
 	/** Start the machine-wide watchdog unless it is already running. */
 	ensureWatchdog(): Promise<void>;
+}
+
+export interface ClaimOptions {
+	/** The hold asked for explicitly; `false` keeps the containers. */
+	idleTimeoutMs?: number | false;
+	/** The hold when neither this nor `options.autoShutdown` says one. */
+	defaultIdleTimeoutMs?: number | false;
+}
+
+/**
+ * How long a run's containers outlive it, or `undefined` to keep them for as
+ * long as the checkout exists.
+ *
+ * An explicit request wins. Otherwise only a caller that brings a default —
+ * the CLI, with its three minutes — gets a hold, and `options.autoShutdown`
+ * overrides that default. A library `start()` brings none, so it keeps: a
+ * script that brings a database up and ends is indistinguishable, to the
+ * sweep, from one that crashed, and any hold would tear its containers down
+ * seconds after a perfectly ordinary exit. A script that wants cleanup asks
+ * with `claimRun({ idleTimeoutMs })` before starting.
+ */
+export function resolveClaimHold(
+	options: ClaimOptions,
+	configured: number | false | undefined,
+): number | undefined {
+	const hold =
+		options.idleTimeoutMs ??
+		(options.defaultIdleTimeoutMs === undefined
+			? false
+			: (configured ?? options.defaultIdleTimeoutMs));
+	return hold === false ? undefined : hold;
 }
 
 export function createRunClaimApi<
@@ -70,32 +106,21 @@ export function createRunClaimApi<
 
 		async claimRun(options = {}) {
 			if (claimed || !ctx.hasSelectedServices) return;
-			const configured = ctx.config.options?.autoShutdown;
-			const hold =
-				options.idleTimeoutMs ?? configured ?? WATCHDOG_IDLE_TIMEOUT_MS;
-			const now = new Date().toISOString();
-			const entry: RunEntry = {
-				sessionId,
-				processIdentity: readProcessIdentity(process.pid),
-				projectPrefix: ctx.config.projectPrefix,
-				projectName: ctx.projectName,
-				root: ctx.root,
-				worktree: ctx.worktree
-					? (getWorktreeName(ctx.root) ?? basename(ctx.root))
-					: null,
-				pid: process.pid,
-				startedAt: now,
-				updatedAt: now,
-				...(hold === false ? {} : { idleTimeoutMs: hold }),
-				hosts: null,
-				cli: { program: process.execPath, script: process.argv[1] },
-				apps: [],
-				services: serviceEntries(),
-			};
-			// Claimed before it is published as running: a write that fails must
-			// not be retried on every container subset.
+			const hold = resolveClaimHold(options, ctx.config.options?.autoShutdown);
+			// Claimed before it is published: a write that fails must not be
+			// retried on every container subset.
 			claimed = true;
-			await publishRun(entry);
+			await publishRun({
+				...buildRunEntry({
+					sessionId,
+					projectPrefix: ctx.config.projectPrefix,
+					projectName: ctx.projectName,
+					root: ctx.root,
+					isWorktree: ctx.worktree,
+				}),
+				...(hold === undefined ? {} : { idleTimeoutMs: hold }),
+				services: serviceEntries(),
+			});
 		},
 
 		async releaseRun() {
@@ -104,7 +129,16 @@ export function createRunClaimApi<
 			// the same call. The registry decides which of the two this is, from
 			// whether the entry owns services.
 			claimed = false;
-			await releaseRun(ctx.root, process.pid, { sessionId });
+			await releaseRun(sessionId);
+		},
+
+		async retireRun() {
+			claimed = false;
+			await retireProjectRuns({
+				projectName: ctx.projectName,
+				root: ctx.root,
+				sessionId,
+			});
 		},
 
 		ensureWatchdog() {

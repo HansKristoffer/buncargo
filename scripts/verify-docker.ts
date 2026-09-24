@@ -68,9 +68,11 @@ async function verifyContainerReuse(): Promise<void> {
 	});
 
 	try {
-		await first.start({ startServers: false, verbose: false });
+		// Every start here opts out of the watchdog: a real one would sweep the
+		// runner's Docker behind these assertions and race them.
+		await first.start({ startServers: false, verbose: false, watchdog: false });
 		const original = containerId();
-		await first.start({ startServers: false, verbose: false });
+		await first.start({ startServers: false, verbose: false, watchdog: false });
 		assert.equal(
 			containerId(),
 			original,
@@ -82,7 +84,7 @@ async function verifyContainerReuse(): Promise<void> {
 			"Warm start must skip the runtime up operation",
 		);
 		const changed = environment("two");
-		await changed.start({ startServers: false, verbose: false });
+		await changed.start({ startServers: false, verbose: false, watchdog: false });
 		assert.notEqual(
 			containerId(),
 			original,
@@ -213,7 +215,7 @@ async function verifyPreparation(): Promise<void> {
 	});
 
 	try {
-		await env.start({ startServers: false });
+		await env.start({ startServers: false, watchdog: false });
 		assert.equal(bootstraps, 1);
 
 		const fromExec = await env.exec([
@@ -224,7 +226,7 @@ async function verifyPreparation(): Promise<void> {
 		assert.equal(fromExec.stdout, env.urls.postgres);
 
 		// A warm restart must repeat explicitly authorized initialization.
-		await env.start({ startServers: false });
+		await env.start({ startServers: false, watchdog: false });
 		assert.equal(bootstraps, 2, "Bootstrap is never hash-cached");
 
 		const failing = createDevEnvironment(config(true), {
@@ -232,14 +234,14 @@ async function verifyPreparation(): Promise<void> {
 			containerRuntime: "docker",
 		});
 		await assert.rejects(
-			failing.start({ startServers: false }),
+			failing.start({ startServers: false, watchdog: false }),
 			/initializer-failure|exited.*7/,
 		);
 		assert.equal(bootstraps, 2, "Failed prerequisite must prevent bootstrap");
 
 		// Reset volumes removes the role and table, so initialization must rebuild both.
 		await env.stop({ removeVolumes: true, verbose: false });
-		await env.start({ startServers: false });
+		await env.start({ startServers: false, watchdog: false });
 		assert.equal(bootstraps, 3, "Reset volumes must run initialization again");
 		console.log(
 			"Disposable monorepo jobs/bootstrap/restart/reset/exec contract passed",

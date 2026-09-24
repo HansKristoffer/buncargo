@@ -2,19 +2,14 @@
 export const WATCHDOG_IDLE_TIMEOUT_MS = 3 * 60 * 1000;
 
 /**
- * How stale an unreleased entry must be before its containers are reclaimed.
+ * How long a crashed run's containers are kept before they are reclaimed.
  *
- * Reached only once the owning process is gone, so it covers a crash rather
- * than a clean exit. It is measured from the entry's `updatedAt`, which is
- * written when the run claims, publishes and patches itself — not on a timer.
- * So for a run that crashed after a long quiet spell this has already elapsed,
- * and its containers go on the next sweep; the grace only really protects a
- * run that crashed shortly after doing something.
- *
- * That is the deliberate trade. Keeping it accurate would mean every live run
- * rewriting this file on an interval forever, which is the periodic writer the
- * run registry replaced, and all it would buy is reusing warm containers after
- * a crash instead of recreating them.
+ * Reached only once the owning process is gone without releasing, so it
+ * covers a crash rather than a clean exit. Counted from `ownerLostAt`, which
+ * the sweep stamps the first time it notices — one write per crash, and none
+ * while runs are healthy. It used to be counted from `updatedAt`, which a
+ * quiet run may not have written for hours, so such a run lost its
+ * containers on the very next pass.
  */
 export const WATCHDOG_OWNER_DEAD_GRACE_MS = 15_000;
 

@@ -4,9 +4,9 @@
  *
  * It holds no per-project state. Every tick lists the buncargo containers on
  * each runtime, compares them with the run registry, and tears down what the
- * sweep condemns. A `down` that fails is logged and retried next tick rather
- * than ending the runner, because the failure is usually the daemon
- * restarting.
+ * sweep condemns. The loop itself lives in `watchdog-loop.ts`, where a pass
+ * that fails for any reason is logged and retried rather than ending the
+ * runner; this file is only the process around it.
  */
 
 import { randomUUID } from "node:crypto";
@@ -21,6 +21,7 @@ import {
 	getWatchdogPidFile,
 } from "./watchdog";
 import { WATCHDOG_POLL_INTERVAL_MS } from "./watchdog-constants";
+import { runWatchdogLoop } from "./watchdog-loop";
 
 const pidFile = getWatchdogPidFile();
 const logFile = getWatchdogLogFile();
@@ -56,26 +57,13 @@ process.on("SIGINT", () => {
 	process.exit(0);
 });
 
-async function watch(): Promise<void> {
-	while (true) {
-		// Sweep first, then wait. Starting with the wait meant a `dev` that
-		// found leftovers from a crashed run left them up for a whole poll
-		// interval, and a runner with nothing to do sat idle that long before
-		// working it out. The run that started this claimed its containers
-		// before spawning us, so the first pass cannot condemn them.
-		const result = await sweepOrphanedContainers();
-		for (const stack of result.swept)
-			log(`Removed ${stack.projectName} (${stack.root}): ${stack.reason}`);
-		for (const failure of result.failed)
-			log(`Could not remove ${failure.projectName}: ${failure.error}`);
-		if (result.containers === 0 && result.liveRuns === 0) {
-			log("Nothing left to watch; exiting");
-			return;
-		}
-		await new Promise((resolve) =>
-			setTimeout(resolve, WATCHDOG_POLL_INTERVAL_MS),
-		);
-	}
+function watch(): Promise<void> {
+	return runWatchdogLoop({
+		sweep: () => sweepOrphanedContainers(),
+		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+		log,
+		intervalMs: WATCHDOG_POLL_INTERVAL_MS,
+	});
 }
 
 // The lock held for the runner's lifetime is the startup claim, and the

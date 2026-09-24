@@ -781,7 +781,9 @@ export interface DevOptions<
 	worktreeIsolation?: boolean;
 	/**
 	 * Auto-shutdown after idle time in ms. Set to false to disable.
-	 * Default: 180000 (3 minutes) when running via CLI.
+	 * Default: 180000 (3 minutes). Applies to `buncargo dev`; a library
+	 * `start()` keeps its containers after the process exits unless the script
+	 * asks for a hold with `claimRun({ idleTimeoutMs })`.
 	 *
 	 * Also how long containers are held after a clean exit, so raise it if you
 	 * routinely stop and restart `dev` with a longer gap than this.
@@ -1379,6 +1381,13 @@ export interface StartOptions<
 	onlyApps?: Extract<keyof TApps, string>[];
 	/** Override Docker auto-start. Default: config.docker.autoStart (true, skipped in CI). */
 	autoStartDocker?: boolean;
+	/**
+	 * Start the machine-wide watchdog that removes these containers once this
+	 * process is gone. Default: true. The run claims its containers either
+	 * way; `false` only skips starting the process, for tests that must not
+	 * leave one behind.
+	 */
+	watchdog?: boolean;
 }
 
 /**
@@ -1633,7 +1642,11 @@ export interface DevEnvironment<
 	 * `start()` does this itself; call it first to set the idle hold, where
 	 * `false` keeps the containers as long as the checkout exists. Idempotent.
 	 */
-	claimRun(options?: { idleTimeoutMs?: number | false }): Promise<void>;
+	claimRun(options?: {
+		idleTimeoutMs?: number | false;
+		/** The hold when neither `idleTimeoutMs` nor `options.autoShutdown` gives one. */
+		defaultIdleTimeoutMs?: number | false;
+	}): Promise<void>;
 	/** Release the claim: containers are held for the idle timeout, then removed. */
 	releaseRun(): Promise<void>;
 	/** Start the machine-wide watchdog unless it is already running. */
@@ -1715,6 +1728,10 @@ export type PortOffsetProvenance = "hash" | "lockfile" | "env" | "shifted";
 export interface CliOptions {
 	/** Custom args (defaults to process.argv.slice(2)) */
 	args?: string[];
-	/** Enable watchdog auto-shutdown (default: true). Tests set false. */
+	/**
+	 * Start the watchdog that removes this run's containers once it is gone
+	 * (default: true). The run still claims its containers with `false`; this
+	 * only skips starting the process. Tests set false.
+	 */
 	watchdog?: boolean;
 }
