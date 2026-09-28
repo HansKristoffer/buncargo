@@ -120,7 +120,11 @@ function parseMigrateCheckArgs(args: string[]) {
 	};
 }
 
-export async function handleEnv(args: string[] = []): Promise<void> {
+/**
+ * The environment as this checkout's live run sees it: the named URLs the
+ * daemon is actually serving, and what the run's apps printed.
+ */
+export async function loadLiveEnv() {
 	const env = await loadEnv({ readOnly: true });
 	// A healthy daemon is not the same as a daemon serving this project: a
 	// `vite.config.ts` reading `urls.web` from here must not be handed an https
@@ -136,6 +140,11 @@ export async function handleEnv(args: string[] = []): Promise<void> {
 		}
 	}
 	await adoptLiveCaptures(env);
+	return env;
+}
+
+export async function handleEnv(args: string[] = []): Promise<void> {
+	const env = await loadLiveEnv();
 	const snapshot = {
 		projectName: env.projectName,
 		ports: env.ports,
@@ -147,7 +156,7 @@ export async function handleEnv(args: string[] = []): Promise<void> {
 		localIp: env.localIp,
 		root: env.root,
 		captured: env.captured,
-		integrations: env.describeIntegrations(),
+		details: env.details(),
 		hosts: env.hosts
 			? {
 					active: env.hosts.active,

@@ -12,7 +12,7 @@ import {
 } from "./app-config";
 import { shopifyChecks } from "./checks";
 import { isTestedShopifyVersion, parseVersion } from "./cli";
-import { shopify } from "./index";
+import { shopify, storeLinks } from "./index";
 import { patchWebDirectories, renderShopifyWebToml } from "./web";
 
 const roots: string[] = [];
@@ -217,20 +217,14 @@ describe("shopify()", () => {
 		]);
 		expect(config.options?.primaryApp).toBe("platform");
 
-		const env = (config.env as (...args: unknown[]) => Record<string, string>)(
-			{},
-			{},
-			{
-				publicUrls: {},
-				captured: { appUrl: "https://abc.trycloudflare.com" },
-			},
-		);
+		const env = (config.env as () => Record<string, string>)();
 		expect(env).toEqual({
 			SHOPIFY_APP_CONFIG: "shopify.app.toml",
 			SHOPIFY_API_KEY: "0123456789abcdef0123456789abcdef",
-			SHOPIFY_APP_URL: "https://abc.trycloudflare.com",
 			SHOPIFY_DEV_STORE: "s.myshopify.com",
 		});
+		// The tunnel URL arrives through the capture, not the env builder.
+		expect(config.apps?.shopify?.captures?.appUrl?.env).toBe("SHOPIFY_APP_URL");
 		expect(
 			validateConfig({
 				...base,
@@ -241,6 +235,14 @@ describe("shopify()", () => {
 });
 
 describe("helpers", () => {
+	it("links the app in the dev store admin, and the storefront", () => {
+		expect(storeLinks("https://s.myshopify.com/", "abc")).toEqual({
+			"Shopify admin": "https://admin.shopify.com/store/s/apps/abc",
+			"Dev store": "https://s.myshopify.com",
+		});
+		expect(storeLinks(undefined, "abc")).toEqual({});
+	});
+
 	it("checks the tested CLI range", () => {
 		expect(isTestedShopifyVersion(parseVersion("3.93.1") as never)).toBe(true);
 		expect(isTestedShopifyVersion(parseVersion("4.8.2") as never)).toBe(true);

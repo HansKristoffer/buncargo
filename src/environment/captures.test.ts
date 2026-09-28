@@ -132,3 +132,41 @@ it("keeps other public URLs when a capture sets one", async () => {
 		shopify: "https://abc.trycloudflare.com",
 	});
 });
+
+it("shows labelled captures in details and sets their env var", async () => {
+	const { env } = fixture({
+		apps: {
+			shopify: {
+				kind: "worker",
+				devCommand: "x",
+				captures: {
+					appUrl: {
+						pattern: /URL: (\S+)/,
+						as: "publicUrl",
+						label: "App URL",
+						env: "APP_URL",
+					},
+					secret: { pattern: /secret (\S+)/, as: "value", env: "SECRET" },
+				},
+			},
+		},
+		env: () => ({ SECRET: "from config" }),
+	});
+	expect(env.details()).toEqual({});
+
+	await env.recordCapture("shopify", {
+		name: "appUrl",
+		value: "https://abc.trycloudflare.com",
+		as: "publicUrl",
+	});
+	await env.recordCapture("shopify", {
+		name: "secret",
+		value: "whsec_1",
+		as: "value",
+	});
+	expect(env.details()).toEqual({ "App URL": "https://abc.trycloudflare.com" });
+	const vars = env.buildEnvVars() as Record<string, string>;
+	expect(vars.APP_URL).toBe("https://abc.trycloudflare.com");
+	// The config's own env wins over a capture's.
+	expect(vars.SECRET).toBe("from config");
+});

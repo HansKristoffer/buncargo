@@ -16,6 +16,7 @@ import type {
 } from "../types";
 import {
 	readShopifyAppConfig,
+	type ShopifyAppConfig,
 	shopifyConfigFile,
 	shopifyConfigName,
 } from "./app-config";
@@ -80,14 +81,24 @@ export interface ShopifyIntegrationOptions {
 /** Output Shopify CLI prints that the run cares about. */
 export const SHOPIFY_CAPTURES: Record<string, CaptureConfig> = {
 	// Box-drawing and `|` separate Ink columns; neither is part of the URL.
-	appUrl: { pattern: /Using URL:\s*(https?:\/\/[^\s│|)]+)/, as: "publicUrl" },
+	appUrl: {
+		pattern: /Using URL:\s*(https?:\/\/[^\s│|)]+)/,
+		as: "publicUrl",
+		label: "Shopify app URL",
+		env: "SHOPIFY_APP_URL",
+	},
 	// 4.x prints "GraphiQL URL (Admin API):" when not drawing its TUI.
 	graphiqlUrl: {
 		pattern: /GraphiQL URL(?: \(Admin API\))?:\s*(https?:\/\/[^\s│|)]+)/,
 		as: "value",
+		label: "GraphiQL",
 	},
-	/** The embedded app in the dev store's admin. */
-	previewUrl: { pattern: /Preview URL:\s*(https?:\/\/[^\s│|)]+)/, as: "value" },
+	/** The embedded app in the dev store's admin; opening it installs the app. */
+	previewUrl: {
+		pattern: /Preview URL:\s*(https?:\/\/[^\s│|)]+)/,
+		as: "value",
+		label: "Shopify preview",
+	},
 	shopifyReady: {
 		pattern: /Ready, watching for changes in your app/,
 		as: "event",
@@ -123,12 +134,32 @@ function nudgeThemeAssets(root: string): number {
 	return touched;
 }
 
+/** The app in the dev store's admin, and the storefront. */
+export function storeLinks(
+	store: string | undefined,
+	clientId: string | undefined,
+): Record<string, string> {
+	const domain = store?.replace(/^https?:\/\//, "").replace(/\/$/, "");
+	if (!domain) return {};
+	const handle = domain.replace(/\.myshopify\.com$/, "");
+	return {
+		...(clientId
+			? {
+					"Shopify admin": `https://admin.shopify.com/store/${handle}/apps/${clientId}`,
+				}
+			: {}),
+		"Dev store": `https://${domain}`,
+	};
+}
+
 export function shopify(
 	options: ShopifyIntegrationOptions = {},
 ): BuncargoIntegration {
 	const file = shopifyConfigFile(options.config);
 	const configName = shopifyConfigName(file);
-	const state = { config: configName, store: options.store };
+	const state = { config: configName };
+	// Read in `config()`, which runs in the process `describe` does.
+	let appToml: ShopifyAppConfig | undefined;
 	let nudged = false;
 
 	return {
@@ -139,7 +170,7 @@ export function shopify(
 			const apps = config.apps ?? {};
 			// Lenient: without the toml (CI, a fresh clone) the app still gets a
 			// dev command, and `setup` / `doctor` report what is missing.
-			const appToml = (() => {
+			appToml = (() => {
 				try {
 					return readShopifyAppConfig(file, root);
 				} catch {
@@ -201,13 +232,11 @@ export function shopify(
 				...(frontend && !config.options?.primaryApp
 					? { options: { primaryApp: frontend } }
 					: {}),
-				env: (_ports, _urls, ctx) => {
-					const appUrl = ctx.captured?.appUrl ?? ctx.publicUrls.shopify;
+				env: () => {
 					const devStore = store ?? appToml?.devStoreUrl;
 					return {
 						SHOPIFY_APP_CONFIG: configName,
 						...(appToml ? { SHOPIFY_API_KEY: appToml.clientId } : {}),
-						...(appUrl ? { SHOPIFY_APP_URL: appUrl } : {}),
 						...(devStore ? { SHOPIFY_DEV_STORE: devStore } : {}),
 					};
 				},
@@ -254,16 +283,8 @@ export function shopify(
 		checks: shopifyChecks(state),
 		commands: shopifyCommands(state),
 
-		describe: (ctx) => ({
-			...(ctx.captured.appUrl
-				? { "Shopify app URL": ctx.captured.appUrl }
-				: {}),
-			...(ctx.captured.previewUrl
-				? { "Shopify preview": ctx.captured.previewUrl }
-				: {}),
-			...(ctx.captured.graphiqlUrl
-				? { GraphiQL: ctx.captured.graphiqlUrl }
-				: {}),
-		}),
+		// The captured URLs label themselves; these are the ones the toml gives.
+		describe: () =>
+			storeLinks(options.store ?? appToml?.devStoreUrl, appToml?.clientId),
 	};
 }

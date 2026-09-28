@@ -63,6 +63,16 @@ export const CLI_COMMANDS = [
 	},
 	{ name: "env", usage: "env", summary: "Print environment info as JSON" },
 	{
+		name: "url",
+		usage: "url [<name>]",
+		summary: "Print an app's or a captured URL (lists them without a name)",
+	},
+	{
+		name: "open",
+		usage: "open [<name>]",
+		summary: "Open the primary app, or any URL `url` lists",
+	},
+	{
 		name: "ls",
 		usage: "ls",
 		summary: "List every buncargo environment on this machine",

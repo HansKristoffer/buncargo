@@ -20,7 +20,7 @@ import type {
 	PrismaRunner,
 	ServiceConfig,
 } from "../types";
-import { createCaptureRecorder } from "./captures";
+import { createCaptureRecorder, labelledCaptures } from "./captures";
 import { createDevEnvContext } from "./context";
 import { createEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
@@ -141,9 +141,9 @@ export function createDevEnvironment<
 		captured: ctx.captured,
 		recordCapture,
 		renderGeneratedFiles: () => renderGeneratedFiles(ctx, envVars),
-		describeIntegrations: () =>
+		details: () =>
 			Object.assign(
-				{},
+				labelledCaptures(resolved.apps ?? {}, ctx.captured),
 				...(resolved.integrations ?? []).map((integration) =>
 					integration.describe?.(
 						envVars.getHookContext() as unknown as Parameters<

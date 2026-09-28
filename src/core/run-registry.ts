@@ -170,7 +170,7 @@ export interface RunEntry {
 	tasks?: RunTaskEntry[];
 	/** Values apps printed (`captures`), by name: what `env --get captured.*` reads. */
 	captures?: Record<string, string>;
-	/** Labelled values from integrations' `describe` (e.g. "Shopify preview"). */
+	/** Labelled captures and integrations' `describe` values (e.g. "Shopify preview"). */
 	details?: RunDetailEntry[];
 }
 

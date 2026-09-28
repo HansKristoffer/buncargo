@@ -431,6 +431,13 @@ export interface CaptureConfig {
 	/** The first capture group is the value; without one, the whole match. */
 	pattern: RegExp;
 	as: "publicUrl" | "value" | "event";
+	/**
+	 * Show the value under this label in `buncargo env`, `buncargo url` / `open`,
+	 * the run registry and BuncargoBar.
+	 */
+	label?: string;
+	/** Also set this env var to the value, beneath the config's own `env`. */
+	env?: string;
 }
 
 /**
@@ -1851,8 +1858,8 @@ export interface DevEnvironment<
 	): Promise<readonly string[]>;
 	/** Render every generated file; returns the paths whose content changed. */
 	renderGeneratedFiles(): string[];
-	/** Every integration's `describe`, merged: labelled values for humans. */
-	describeIntegrations(): Record<string, string>;
+	/** Labelled values for humans: labelled captures, then every integration's `describe`. */
+	details(): Record<string, string>;
 	/** The config-level Infisical scope (`secrets`), when configured. */
 	readonly secrets?: SecretsScopeConfig;
 	/** `tasks` from config, for `buncargo run` */

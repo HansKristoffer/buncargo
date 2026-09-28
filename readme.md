@@ -184,9 +184,9 @@ export default defineDevConfig({
 web_directories = [".buncargo/shopify/web"]
 ```
 
-`shopify()` adds a `shopify` app running `shopify app dev --config …`, interactive, started only once `platform`, `api` and every extension watcher are up. It adds a watcher per extension workspace (`apps/extension-*`, `extensions/*` with a `dev` script), each built once with its `build` script before the watcher starts. It adds `SHOPIFY_APP_URL` (the captured tunnel URL), `SHOPIFY_API_KEY` (`client_id` from the toml), `SHOPIFY_APP_CONFIG` and `SHOPIFY_DEV_STORE` for every process, and an exclusive lease on the dev app, so two worktrees cannot both rewrite its URL. The `web_directories` line matters: when it is empty, Shopify CLI starts every `shopify.web.toml` it finds, a second API and a second Vite beside buncargo's. The generated web has the frontend's port and a `dev` command that only waits for it (`buncargo wait --app=platform --hold`), so the tunnel reaches buncargo's Vite through the CLI's proxy, and Vite's `/api` proxy (`buncargoVite({ proxy: { "/api": "api" } })`) reaches the API. Webhooks, the app proxy and customer-account extension calls all arrive through that one URL. `bunx buncargo setup` patches the toml, and checks the login, the link and version agreement between the tomls.
+`shopify()` adds a `shopify` app running `shopify app dev --config …`, interactive, started only once `platform`, `api` and every extension watcher are up. It adds a watcher per extension workspace (`apps/extension-*`, `extensions/*` with a `dev` script), each built once with its `build` script before the watcher starts. It adds `SHOPIFY_APP_URL` (the captured tunnel URL, through the capture's `env`), `SHOPIFY_API_KEY` (`client_id` from the toml), `SHOPIFY_APP_CONFIG` and `SHOPIFY_DEV_STORE` for every process, and an exclusive lease on the dev app, so two worktrees cannot both rewrite its URL. The `web_directories` line matters: when it is empty, Shopify CLI starts every `shopify.web.toml` it finds, a second API and a second Vite beside buncargo's. The generated web has the frontend's port and a `dev` command that only waits for it (`buncargo wait --app=platform --hold`), so the tunnel reaches buncargo's Vite through the CLI's proxy, and Vite's `/api` proxy (`buncargoVite({ proxy: { "/api": "api" } })`) reaches the API. Webhooks, the app proxy and customer-account extension calls all arrive through that one URL. `bunx buncargo setup` patches the toml, and checks the login, the link and version agreement between the tomls.
 
-`bunx buncargo shopify url | open [admin|store|graphiql] | env`. An app that reads `SHOPIFY_APP_URL` at startup sets `restartOn: ["captured.appUrl"]`. A generated file can carry the URL into an extension (see [captures](#captured-output-and-generated-files)). [`example/shopify-plugin`](example/shopify-plugin) is a runnable version, booted end to end in CI with a fake `shopify` binary.
+The app, preview and GraphiQL URLs are labelled captures and the admin and dev store links are the integration's `describe` rows, so `bunx buncargo url` lists them all and `bunx buncargo open "shopify admin"` or `open previewUrl` opens one. `bunx buncargo shopify env` prints the app toml. An app that reads `SHOPIFY_APP_URL` at startup sets `restartOn: ["captured.appUrl"]`. A generated file can carry the URL into an extension (see [captures](#captured-output-and-generated-files)). [`example/shopify-plugin`](example/shopify-plugin) is a runnable version, booted end to end in CI with a fake `shopify` binary.
 
 ### Built-in service helpers
 
@@ -252,6 +252,8 @@ bunx buncargo bar install         # Install the macOS menu bar app
 bunx buncargo bar status
 bunx buncargo env
 bunx buncargo env --get ports.api
+bunx buncargo url                 # Every URL this run knows, by name
+bunx buncargo open                # The primary app; or `open <name>` from `url`
 bunx buncargo exec -- bun scripts/maintenance.ts
 bunx buncargo exec --app=api -- bun scripts/inspect-runtime.ts
 bunx buncargo prisma <args>
@@ -260,7 +262,7 @@ bunx buncargo wait --app=api --hold   # Block until an app is healthy (and stay)
 bunx buncargo generate            # Render generatedFiles without starting anything
 bunx buncargo build --discovered  # Every discovered app's build, in order
 bunx buncargo secrets ls --app=api   # Key names and their source, never values
-bunx buncargo shopify url         # An integration's own commands
+bunx buncargo shopify env         # An integration's own commands
 bunx buncargo expo sim            # (`buncargo sim` still works)
 bunx buncargo run                 # List tasks
 bunx buncargo run db:seed -- --dry-run
@@ -368,7 +370,7 @@ The `actions/setup` composite action installs Bun from `.bun-version` (or `bun-v
 
 ## Integrations
 
-Project-type knowledge lives in integrations rather than in every project's scripts: `buncargo/shopify` and `buncargo/expo` today. An integration is a plain object in `integrations: [...]`. It can transform the config (add apps, env, generated files), add hooks and checks, contribute commands under its own name (`buncargo shopify url`), add env to one app's process, and describe itself in `buncargo env`, the run registry and BuncargoBar. [`docs/integrations.md`](docs/integrations.md) covers writing one, with the Shopify and Expo integrations as references.
+Project-type knowledge lives in integrations rather than in every project's scripts: `buncargo/shopify` and `buncargo/expo` today. An integration is a plain object in `integrations: [...]`. It can transform the config (add apps, env, generated files), add hooks and checks, contribute commands under its own name (`buncargo shopify env`), add env to one app's process, and describe itself in `buncargo env`, the run registry and BuncargoBar. [`docs/integrations.md`](docs/integrations.md) covers writing one, with the Shopify and Expo integrations as references.
 
 ## Startup ordering
 
@@ -407,7 +409,7 @@ generatedFiles: [{
 }],
 ```
 
-`captures` read an app's stdout and stderr, with colour codes and box-drawing characters stripped and only complete lines matched. The interactive app runs under a pseudo-terminal (`script`) so it keeps its TTY while its output is read. A `publicUrl` capture becomes `publicUrls.<app>` and `<APP>_PUBLIC_URL`, exactly like a tunnel URL, normalized to its origin. A `value` capture becomes `captured.<name>` in hooks, `envVars`, generated files and `buncargo env --get captured.<name>`. An `event` capture only fires `onCapture`, which every kind also fires. A value is reported when it appears and whenever it changes. When one changes, generated files re-render, and apps whose `restartOn` names it restart with fresh env.
+`captures` read an app's stdout and stderr, with colour codes and box-drawing characters stripped and only complete lines matched. The interactive app runs under a pseudo-terminal (`script`) so it keeps its TTY while its output is read. A `publicUrl` capture becomes `publicUrls.<app>` and `<APP>_PUBLIC_URL`, exactly like a tunnel URL, normalized to its origin. A `value` capture becomes `captured.<name>` in hooks, `envVars`, generated files and `buncargo env --get captured.<name>`. An `event` capture only fires `onCapture`, which every kind also fires. A capture's `label` shows the value in `buncargo env`, `buncargo url` / `open`, the run registry and BuncargoBar, and its `env` sets that env var for every process, beneath the config's own `env`. So `stripe listen` needs no integration to put its webhook secret in `STRIPE_WEBHOOK_SECRET`. A value is reported when it appears and whenever it changes. When one changes, generated files re-render, and apps whose `restartOn` names it restart with fresh env.
 
 `generatedFiles` render before servers start (render a placeholder for what is not known yet) and again when a capture, a tunnel URL or a port changes. They are written atomically, and not at all when the content is unchanged, so watchers stay quiet. `buncargo generate` renders them once without starting anything; it uses a live run's captures, or what the environment hands it in CI (`BASE_URL=https://… bunx buncargo generate`). `setup` and `doctor` warn about a `gitignore: true` file that git does not ignore.
 
@@ -1120,7 +1122,7 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | `requiredApps` | `string[]` | `[]` | Apps that must also start (transitive). Selection only: they are not ready first |
 | `startAfter` | `string[]` | `[]` | Spawn once these apps are healthy; also selects them |
 | `prebuild` | `string` | `undefined` | Command run to completion before `devCommand` |
-| `captures` | `Record<string, { pattern, as }>` | `{}` | Values picked from output: `publicUrl`, `value` or `event` |
+| `captures` | `Record<string, { pattern, as, label?, env? }>` | `{}` | Values picked from output: `publicUrl`, `value` or `event`, optionally shown under `label` and set as `env` |
 | `restartOn` | `string[]` | `[]` | `captured.<name>` / `publicUrls.<app>` changes that restart this app |
 | `exclusive` | `string` | `undefined` | Machine-wide lease key; see [leases](#exclusive-leases) |
 | `expose` | `boolean` | `false` | Eligible for `--expose` |

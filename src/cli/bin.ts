@@ -22,6 +22,7 @@ import { handleGenerate } from "./commands/generate";
 import { showHelp } from "./commands/help";
 import { handleHosts } from "./commands/hosts";
 import { handleDoctor, handleLs, handleStatus } from "./commands/inspect";
+import { handleOpen, handleUrl } from "./commands/open";
 import { handlePrune } from "./commands/prune";
 import { type CliCommandName, resolveCommandName } from "./commands/registry";
 import { handleRun } from "./commands/run";
@@ -67,6 +68,12 @@ async function runCommand(
 			return;
 		case "wait":
 			process.exitCode = await handleWait(commandArgs);
+			return;
+		case "url":
+			process.exitCode = await handleUrl(commandArgs);
+			return;
+		case "open":
+			process.exitCode = await handleOpen(commandArgs);
 			return;
 		case "generate":
 			process.exitCode = await handleGenerate(commandArgs);
@@ -173,7 +180,7 @@ async function main(): Promise<void> {
 
 	const command = resolveCommandName(rawCommand);
 	if (!command) {
-		// `buncargo shopify url`: an integration's own namespace.
+		// `buncargo shopify env`: an integration's own namespace.
 		const code = await runIntegrationCommand(rawCommand, commandArgs);
 		if (code !== undefined) {
 			process.exitCode = code;
