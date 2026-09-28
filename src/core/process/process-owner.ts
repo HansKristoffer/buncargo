@@ -9,6 +9,7 @@ export class ProcessOwner {
 	readonly controller = new AbortController();
 	private children: ChildProcess[] = [];
 	private live = new Set<ChildProcess>();
+	private retired = new Set<ChildProcess>();
 	private sealed = false;
 	private pendingReadiness = new Set<string>();
 	private cleanup?: Promise<void>;
@@ -57,6 +58,11 @@ export class ProcessOwner {
 		});
 		child.once("exit", (code, signal) => {
 			this.live.delete(child);
+			// Replaced on purpose (`restartOn`): its exit is not the app's.
+			if (this.retired.delete(child)) {
+				if (this.sealed && this.live.size === 0) this.resolveDone();
+				return;
+			}
 			try {
 				this.options.onAppExit?.(name, code, signal);
 			} catch {
@@ -82,6 +88,15 @@ export class ProcessOwner {
 			}
 			if (this.sealed && this.live.size === 0) this.resolveDone();
 		});
+	}
+
+	/**
+	 * Stop one child because it is being replaced. Its exit is not reported,
+	 * and does not end the run the way an app falling over does.
+	 */
+	async retire(child: ChildProcess): Promise<void> {
+		this.retired.add(child);
+		await terminateOwnedProcess(child, this.options.shutdownGraceMs);
 	}
 
 	ready(name: string): void {

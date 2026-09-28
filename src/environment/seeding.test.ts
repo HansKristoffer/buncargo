@@ -43,6 +43,7 @@ function stubSeedContext(input: {
 	} as unknown as DevEnvContext<AnyServices, AnyApps>;
 	const envVars = {
 		buildEnvVars: () => ({}),
+		resolveSecrets: async () => ({}),
 		getHookContext: () => ({}),
 		exec: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
 	} as unknown as DevEnvVarsApi<AnyServices, AnyApps>;

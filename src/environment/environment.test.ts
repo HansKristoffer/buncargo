@@ -273,3 +273,35 @@ describe("createDevEnvironment env builders", () => {
 		}
 	});
 });
+
+describe("suffixed environments", () => {
+	// A second stack in one checkout (`buncargo ci`, test isolation) must not
+	// overwrite the compose file the checkout's own dev run reads.
+	it("gets its own compose file", () => {
+		const root = createWorktreeRoot("suffix");
+		try {
+			const env = createDevEnvironment(createBaseConfig(), { root });
+			expect(env.composeFile).toBe(".buncargo/docker-compose.generated.yml");
+			const ci = env.withSuffix("ci");
+			expect(ci.composeFile).toBe(".buncargo/docker-compose.ci.generated.yml");
+			expect(ci.projectName).toBe(
+				`${env.projectName.replace(/-suffix$/, "")}-ci-suffix`,
+			);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps an explicitly configured compose path", () => {
+		const root = createWorktreeRoot("explicit");
+		try {
+			const env = createDevEnvironment(
+				{ ...createBaseConfig(), docker: { generatedFile: "compose.yml" } },
+				{ root, suffix: "ci" },
+			);
+			expect(env.composeFile).toBe("compose.yml");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});

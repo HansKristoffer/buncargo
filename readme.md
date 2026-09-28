@@ -36,6 +36,7 @@ bun add -d buncargo
 
 ### 2. Create `dev.config.ts`
 
+
 ```typescript
 import { defineDevConfig, service } from "buncargo";
 
@@ -147,7 +148,7 @@ expoApp: {
 }
 ```
 
-An app whose `devCommand` mentions `expo` (or sets `expo: true`) gets `RCT_METRO_PORT`, so each worktree's Metro listens on its own port instead of asking for 8081. See [Expo and the iOS simulator](#expo-and-the-ios-simulator).
+Add `integrations: [expo()]` (from `buncargo/expo`): every app whose `devCommand` runs `expo` then gets `RCT_METRO_PORT`, so each worktree's Metro listens on its own port instead of asking for 8081. See [Expo and the iOS simulator](#expo-and-the-ios-simulator).
 
 ```json
 {
@@ -159,6 +160,33 @@ An app whose `devCommand` mentions `expo` (or sets `expo: true`) gets `RCT_METRO
 ```
 
 `buncargo dev --apps=expoApp -- --clear` appends `--clear` to the attached Expo command.
+
+### Shopify app
+
+```typescript
+import { defineDevConfig, service } from "buncargo";
+import { shopify } from "buncargo/shopify";
+
+export default defineDevConfig({
+	projectPrefix: "sebprint",
+	services: { postgres: service.postgres(), redis: service.redis() },
+	apps: {
+		api: { port: 3000, cwd: "apps/backend", devCommand: "bun run dev", requiredServices: ["postgres", "redis"], healthEndpoint: "/health" },
+		platform: { port: 5173, cwd: "apps/platform", devCommand: "bun run dev", requiredApps: ["api"] },
+	},
+	integrations: [shopify({ config: "shopify.app.toml", frontend: "platform", backend: "api" })],
+	profiles: { default: { apps: ["shopify"] } },
+});
+```
+
+```toml
+# shopify.app.toml: buncargo owns every process; the CLI gets one web that starts nothing.
+web_directories = [".buncargo/shopify/web"]
+```
+
+`shopify()` adds a `shopify` app running `shopify app dev --config …`, interactive, started only once `platform`, `api` and every extension watcher are up. It adds a watcher per extension workspace (`apps/extension-*`, `extensions/*` with a `dev` script), each built once with its `build` script before the watcher starts. It adds `SHOPIFY_APP_URL` (the captured tunnel URL), `SHOPIFY_API_KEY` (`client_id` from the toml), `SHOPIFY_APP_CONFIG` and `SHOPIFY_DEV_STORE` for every process, and an exclusive lease on the dev app, so two worktrees cannot both rewrite its URL. The `web_directories` line matters: when it is empty, Shopify CLI starts every `shopify.web.toml` it finds, a second API and a second Vite beside buncargo's. The generated web has the frontend's port and a `dev` command that only waits for it (`buncargo wait --app=platform --hold`), so the tunnel reaches buncargo's Vite through the CLI's proxy, and Vite's `/api` proxy (`buncargoVite({ proxy: { "/api": "api" } })`) reaches the API. Webhooks, the app proxy and customer-account extension calls all arrive through that one URL. `bunx buncargo setup` patches the toml, and checks the login, the link and version agreement between the tomls.
+
+`bunx buncargo shopify url | open [admin|store|graphiql] | env`. An app that reads `SHOPIFY_APP_URL` at startup sets `restartOn: ["captured.appUrl"]`. A generated file can carry the URL into an extension (see [captures](#captured-output-and-generated-files)). [`example/shopify-plugin`](example/shopify-plugin) is a runnable version, booted end to end in CI with a fake `shopify` binary.
 
 ### Built-in service helpers
 
@@ -185,6 +213,7 @@ rabbitmq: service.custom({
 ```bash
 bunx buncargo dev                 # Start containers + selected apps
 bunx buncargo dev --apps=api,web  # Named apps plus transitive requiredApps
+bunx buncargo dev --profile=full  # The apps of profiles.full
 bunx buncargo dev --attach=expoApp
 bunx buncargo dev --expose
 bunx buncargo dev --expose=api
@@ -226,6 +255,17 @@ bunx buncargo env --get ports.api
 bunx buncargo exec -- bun scripts/maintenance.ts
 bunx buncargo exec --app=api -- bun scripts/inspect-runtime.ts
 bunx buncargo prisma <args>
+bunx buncargo prisma migrate-check  # Fail when migrations and schema differ
+bunx buncargo wait --app=api --hold   # Block until an app is healthy (and stay)
+bunx buncargo generate            # Render generatedFiles without starting anything
+bunx buncargo build --discovered  # Every discovered app's build, in order
+bunx buncargo secrets ls --app=api   # Key names and their source, never values
+bunx buncargo shopify url         # An integration's own commands
+bunx buncargo expo sim            # (`buncargo sim` still works)
+bunx buncargo run                 # List tasks
+bunx buncargo run db:seed -- --dry-run
+bunx buncargo setup               # Run the fix of every failing check
+bunx buncargo ci --migrate --seed -- bun test
 bunx buncargo typecheck
 bunx buncargo help
 bunx buncargo version
@@ -268,6 +308,112 @@ Programmatically, `env.exec(["bun", "scripts/maintenance.ts"], { app: "api", cwd
 uses the same environment and directory rules. String commands use a shell; argv
 arrays preserve each argument. It returns `{ exitCode, stdout, stderr }` and throws
 on failure unless `throwOnError: false` is supplied.
+
+## Checks, tasks and profiles
+
+```typescript
+import { defineDevConfig, exists, service } from "buncargo";
+
+export default defineDevConfig({
+	projectPrefix: "shop",
+	services: { postgres: service.postgres() },
+	apps: {
+		shopify: { port: 3000, devCommand: "bun run dev", cwd: "apps/shopify" },
+		api: { port: 4000, devCommand: "bun run dev", cwd: "apps/api", requiredServices: ["postgres"] },
+		forecastService: { port: 4100, devCommand: "bun run dev", cwd: "apps/forecast" },
+	},
+	checks: [
+		{
+			name: "GraphQL types",
+			check: () => exists("packages/shopify-admin-graphql/graphql/generated"),
+			fix: "bun run graphql-codegen",
+		},
+	],
+	tasks: {
+		"shop:seed": {
+			command: "bun scripts/shop-seed.ts",
+			description: "Seed the dev store",
+			app: "api",
+			requiredServices: ["postgres"],
+		},
+	},
+	profiles: {
+		default: { apps: ["shopify"] },
+		full: { apps: ["shopify", "forecastService"] },
+		api: { apps: ["api"] },
+	},
+});
+```
+
+**Checks** are preconditions of the checkout. `buncargo dev` runs the fast ones before it starts anything and stops with each failing check's fix, instead of failing deep inside whichever app imports the missing file first. `buncargo setup` runs all of them: core checks (Bun matches `.bun-version`, the container runtime is up, `.buncargo/` and `gitignore: true` generated files are ignored, Infisical is readable, the Prisma client matches the schema), then the config's, then the integrations' (Shopify: CLI version, login, link, `web_directories`, tomls agreeing). It offers each fix in turn, runs them all with `--yes` or in CI, and checks again. It is idempotent. `buncargo doctor` lists them too. A check returns `true`, `false` or `{ ok, detail }`; `fix` is a command or a function; `fast: false` keeps an expensive check out of `dev`; `severity: "warning"` reports without failing. A check that throws counts as failed. `exists(path)` resolves against the monorepo root, whatever directory `dev` was started from.
+
+**Tasks** are the one-off scripts a project accumulates. `buncargo run shop:seed` is `exec` with that app's env, secrets and working directory, after starting `requiredServices` (and their Compose dependencies) if they are down. Services a task starts are held on the same idle timer as a `dev` run's. Arguments after `--` are appended to the command without being re-parsed by the shell. `buncargo run` alone lists the tasks, `buncargo help` shows them too, and BuncargoBar puts a run button next to each one.
+
+**Profiles** replace a `dev:*` script per combination of apps. `buncargo dev --profile=full` runs that profile's apps, exactly like `--apps=shopify,forecastService`. A profile named `default` is what a bare `buncargo dev` runs; without one, `dev` runs every app as before. `--profile` and `--apps` cannot be combined.
+
+## CI
+
+```yaml
+- uses: actions/checkout@v5
+- uses: HansKristoffer/buncargo/actions/setup@main
+- run: bunx buncargo ci --migrate --seed -- bun test
+- run: bunx buncargo prisma migrate-check
+```
+
+`buncargo ci [--migrate] [--seed] [--services=a,b] -- <command>` starts the configured services (all of them, or `--services`), applies migrations and the seed with the same config as local, runs the command with the checkout env, and tears everything down, volumes included. It runs as its own `<project>-ci` stack, with its own ports and compose file, so running it on a laptop never touches the checkout's dev database. A PR workflow then needs no `services: postgres` block or hand-written `DATABASE_URL`, and "migrations apply" and "the seed works" are tested exactly as they run locally. Without a command it only prepares; the exit code is the command's, or the seed's when that fails. `seed.check` is skipped, because a CI database is never warm.
+
+`buncargo prisma migrate-check` wraps `prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code` against a shadow database. The shadow database (`<database>_shadow`) is created inside the configured Postgres service, so no host `psql` is needed. Prisma 6 and older get it as `--shadow-database-url` (and `--to-schema-datamodel`, their name for the flag). Prisma 7 removed that flag and reads the shadow URL from `prisma.config.ts`, so point `datasource.shadowDatabaseUrl` at `env("SHADOW_DATABASE_URL")`, which buncargo sets. `--migrations=<dir>` and `--schema=<path>` override the paths (relative to `prisma.cwd`), and arguments after `--` go to `migrate diff`. Exit code 2 means the schema has changes no migration contains.
+
+The `actions/setup` composite action installs Bun from `.bun-version` (or `bun-version`), restores a cache keyed on `bun.lock` and the Bun version, and runs `bun install --frozen-lockfile`. The cache covers the Bun store and every workspace's `node_modules` (`apps/*`, `packages/*`, `extensions/*` by default; set `node-modules` to change it), because the isolated linker puts links in each workspace and a root-only cache never skips the install.
+
+## Integrations
+
+Project-type knowledge lives in integrations rather than in every project's scripts: `buncargo/shopify` and `buncargo/expo` today. An integration is a plain object in `integrations: [...]`. It can transform the config (add apps, env, generated files), add hooks and checks, contribute commands under its own name (`buncargo shopify url`), add env to one app's process, and describe itself in `buncargo env`, the run registry and BuncargoBar. [`docs/integrations.md`](docs/integrations.md) covers writing one, with the Shopify and Expo integrations as references.
+
+## Startup ordering
+
+`startAfter: ["api"]` spawns an app only once `api` is healthy (a worker: spawned and alive). Unlike `requiredApps`, which only adds apps to the selection, this orders them in every mode, not just around `--expose` tunnels. It selects its targets too, and a cycle is a config error. `prebuild` runs a command to completion before an app's `devCommand` starts, beside the prebuilds of its wave; the app spawns only after it succeeds.
+
+`buncargo wait --app=<name> [--timeout=<seconds>] [--hold]` blocks until an app of this checkout's run is healthy, then exits 0. With `--hold` it stays alive until the app or its run stops. That is what a script or Playwright needs ("wait for the stack, then test"), and what the Shopify integration's generated web runs.
+
+## Discovered workspaces
+
+```typescript
+apps: {
+	...discoverApps({ globs: ["apps/extension-*", "extensions/*"], prebuild: "build" }),
+}
+```
+
+`discoverApps` makes a worker for every workspace matching the globs that defines the `script` (default `dev`), named after its directory. A `server` kind takes a base `port`. When a workspace defines the `prebuild` script, it runs once, before the watcher starts. Two workspaces with the same name are an error, not a silent overwrite. `buncargo build --discovered` runs every discovered app's `build` in order, for CI and deploys.
+
+## Captured output and generated files
+
+```typescript
+apps: {
+	shopifyCli: {
+		kind: "worker", interactive: true, devCommand: "shopify app dev",
+		captures: {
+			appUrl: { pattern: /Using URL:\s*(https:\/\/[^\s│|)]+)/, as: "publicUrl" },
+			ready: { pattern: /Ready, watching for changes in your app/, as: "event" },
+		},
+	},
+	api: { port: 3000, devCommand: "bun run dev", restartOn: ["captured.appUrl"] },
+},
+generatedFiles: [{
+	path: "extensions/customer-account-prints/src/application-url.generated.ts",
+	render: ({ captured, env }) =>
+		`export const APPLICATION_URL = ${JSON.stringify(captured.appUrl ?? env.BASE_URL ?? "")}\n`,
+	gitignore: true,
+}],
+```
+
+`captures` read an app's stdout and stderr, with colour codes and box-drawing characters stripped and only complete lines matched. The interactive app runs under a pseudo-terminal (`script`) so it keeps its TTY while its output is read. A `publicUrl` capture becomes `publicUrls.<app>` and `<APP>_PUBLIC_URL`, exactly like a tunnel URL, normalized to its origin. A `value` capture becomes `captured.<name>` in hooks, `envVars`, generated files and `buncargo env --get captured.<name>`. An `event` capture only fires `onCapture`, which every kind also fires. A value is reported when it appears and whenever it changes. When one changes, generated files re-render, and apps whose `restartOn` names it restart with fresh env.
+
+`generatedFiles` render before servers start (render a placeholder for what is not known yet) and again when a capture, a tunnel URL or a port changes. They are written atomically, and not at all when the content is unchanged, so watchers stay quiet. `buncargo generate` renders them once without starting anything; it uses a live run's captures, or what the environment hands it in CI (`BASE_URL=https://… bunx buncargo generate`). `setup` and `doctor` warn about a `gitignore: true` file that git does not ignore.
+
+## Exclusive leases
+
+`exclusive: "shopify-app:<client_id>"` marks a resource only one run on the machine may use at a time: one Shopify dev app, whose URL is rewritten by whoever ran `app dev` last; one Stripe webhook forwarder; one ngrok domain. The lease is taken before the app spawns and dropped when the run exits, or crashes. A second run is refused with the project, worktree and branch holding it. With `--takeover` (or `y` at the prompt), buncargo stops the holder's app and takes the lease. `buncargo runs` and BuncargoBar list who holds what.
 
 ## Container runtime
 
@@ -316,12 +462,13 @@ validate selected apps, dependencies, attachment, and expose targets
   → start early selected containers, wait for service readiness and job completion
   → sync envFile → beforeMigrations → migrations → optional generation → container hook → seed
   → start afterPreparation containers and wait for readiness
-  → beforeServers → spawn wave 1 → wait for wave 1 health
+  → beforeServers → render generated files
+  → spawn wave 1, layer by startAfter layer (prebuilds first), each layer healthy before the next
   → open requested tunnels and inject public URLs
   → spawn wave 2 → wait for wave 2 health → afterServers
 ```
 
-`needsPublicUrls` splits waves only with `--expose`. `requiredApps` expands the selection; it does not promise readiness ordering between apps in the same wave. Healthy existing apps are reused. Both CLI and library server startup call server hooks once; `start({ startServers: false })` performs preparation without server hooks.
+`needsPublicUrls` splits waves only with `--expose`. **`requiredApps` does not order readiness**: it only adds apps to the selection, and they start in the same wave as the app that requires them. For ordering, use `startAfter`, which spawns an app only once the ones it names are healthy (see [startup ordering](#startup-ordering)). Healthy existing apps are reused. Both CLI and library server startup call server hooks once; `start({ startServers: false })` performs preparation without server hooks.
 
 | Command | Work |
 | --- | --- |
@@ -537,14 +684,23 @@ bunx buncargo sim                  # in another terminal, or the phone button in
 If neither is installed on the device it says so: press `shift+i` in the Expo terminal and pick the device, or run `npx expo run:ios --device "<name>"` once. Expo CLI's plain `i` opens on the first booted device, which with two worktrees up is not always yours.
 
 ```typescript
-expoApp: {
-	devCommand: "bun run start",      // does not say "expo", so:
-	expo: {
-		scheme: "myapp",               // default: `scheme` in app.json, else exp+<slug>
-		simulator: "iPhone 17 Pro",    // default: the device Simulator.app last showed
-	},
-}
+import { expo } from "buncargo/expo";
+
+integrations: [
+	expo({
+		// Default: every app whose devCommand runs `expo`.
+		apps: {
+			expoApp: {
+				scheme: "myapp",            // default: `scheme` in app.json, else exp+<slug>
+				simulator: "iPhone 17 Pro", // default: the device Simulator.app last showed
+			},
+		},
+		apiApp: "api",                  // what getExpoApiUrl() prints
+	}),
+],
 ```
+
+The per-app `expo` field and `options.expoApiApp` still work until the next major: a config that uses them (or runs `expo` in a `devCommand`) gets `expo()` added, with a warning. `buncargo expo sim` and `buncargo sim` are the same command.
 
 The deep-link scheme and `ios.bundleIdentifier` are read from `app.json` when the run is published. A project configured only through `app.config.ts` sets `expo.scheme`. Named HTTPS hosts are not trusted inside the simulator, so point `EXPO_PUBLIC_*` URLs at the LAN IP or `loopbackUrls`.
 
@@ -825,43 +981,30 @@ Service `env` maps (`url` / `port` / `secondaryPort`) add more shared names. App
 
 ### Infisical secrets
 
-An app whose own secret loader shells out to the Infisical CLI at startup makes
-that CLI run once per app, and concurrent Infisical CLI processes hang. Declare
-the scope instead and buncargo runs one `infisical export` per distinct scope
-per dev run — serialized machine-wide, so parallel worktrees queue rather than
-race — and hands the values to the child processes, where the app's own loader
-finds them already in `process.env` and never spawns anything.
+An app whose own secret loader shells out to the Infisical CLI at startup runs that CLI once per app, and concurrent Infisical CLI processes hang. Declare the scope instead, and buncargo fetches it once per distinct scope, serialized machine-wide so parallel worktrees queue rather than race. It hands the values to the child processes, where the app's own loader finds them already in `process.env`.
 
 ```ts
 defineDevConfig({
-  secrets: { siteUrl: "https://eu.infisical.com", environment: "dev" },
+  secrets: { projectId: "e5e73966-…", organizationId: "org_…", environment: "dev" },
   apps: {
-    api: { port: 3000, devCommand: "bun run api", secrets: { projectId: "e5e73966-…" } },
+    api: { port: 3000, devCommand: "bun run api", secrets: { required: ["STRIPE_KEY"] } },
     web: { port: 5173, devCommand: "bun run web", secrets: { projectId: "0be0db90-…" } },
-    marketing: { port: 5174, devCommand: "bun run marketing", secrets: { projectId: "0be0db90-…" } },
   },
+  migrations: [{ name: "search", command: "bun scripts/reindex.ts", secrets: { path: "/search" } }],
 });
 ```
 
-`web` and `marketing` share a scope, so they share one fetch. Precedence, lowest
-last: the app's `envVars`/`staticEnv` and the computed shared env, then the
-developer's own exported environment, then the injected secrets. So
-`export OPENAI_API_KEY=sk-local` still wins in that shell.
+It fetches the way `hanzio/secrets` does, with the same defaults. The CLI is asked only for its session token for `siteUrl`. When `organizationId` names another organization, that token is exchanged for one scoped to it, so projects in different organizations run side by side without `infisical switch`, and the CLI's own session is never switched. The secrets themselves come over HTTP. With `INFISICAL_CLIENT_ID`/`INFISICAL_CLIENT_SECRET` (CI), a universal-auth identity is used instead of the CLI.
 
-Apps without a `secrets` block are untouched. A failed export warns once and
-starts the app anyway — its own loader then does what it does today. Values are
-never logged, never written to the run registry, and never included in an error
-message.
+**Where secrets go.** Apps get their own scope. Migrations, the seed, `buncargo exec`, `buncargo prisma`, tasks and hooks' `ctx.exec` get theirs too: `migrations[].secrets`, `seed.secrets`, `exec --app=<name>` (that app's scope), otherwise the config-level `secrets`. `secrets: false` turns them off for one command. Precedence, lowest first: the secrets, then the developer's own exported environment, then the computed env. So `export OPENAI_API_KEY=sk-local` still wins in that shell. Apps without a `secrets` block are untouched by the app injection.
 
-Two cases are left to the app's own loader on purpose: an empty exported value
-is never injected, since a blank variable would read as "already set" and hand
-the app an empty secret; and a run with `INFISICAL_CLIENT_ID` and
-`INFISICAL_CLIENT_SECRET` in its environment fetches nothing at all, because a
-machine identity authenticates without the interactive CLI session this exists
-to serialize.
+**Required keys.** `secrets.required` names keys an app cannot start without. A run with any of them missing (from Infisical, the environment and the computed env alike) stops before anything spawns, naming each app's missing keys.
 
-Defaults: `environment` is `SECRETS_ENV` or `dev`, `siteUrl` is
-`https://app.infisical.com`, `path` is `/`.
+**Commands.** `buncargo secrets ls [--app=api] [--env=prod]` lists key names, never values, each with its source: Infisical, env override or missing. `buncargo setup` and `buncargo doctor` check that every scope is readable and print the fix (`infisical login --domain=…`, MFA).
+
+A failed fetch warns once and continues; an app's own loader then does what it does today. Values are never logged, never written to a state file, and never included in an error: neither the CLI's output nor a response body is echoed. An empty value is never injected, since a blank variable would read as "already set". An app process under a machine identity fetches nothing itself, because its own loader authenticates without the CLI session this exists to serialize.
+
+Defaults: `siteUrl` is `https://eu.infisical.com` (like hanzio; it was `app.infisical.com` before the next major), `environment` is `SECRETS_ENV` or `dev`, `path` is `/`.
 
 ### Vite plugin
 
@@ -879,7 +1022,11 @@ export default defineConfig({
 
 It sets `server.port` from `PORT`, binds `server.host` to `127.0.0.1` (Vite's default `localhost` resolves to `[::1]` on many systems, so anything dialing IPv4 gets a refused connection), and passes the named-hosts suffix through to `server.allowedHosts`. The frp proxy rewrites the upstream Host to localhost, so remote URLs need no extra allowed-hosts entry. HMR stays origin-relative and follows the HTTPS URL that loaded the page.
 
+The port is also set with `server.strictPort`: a Vite that drifts to the next free port is one nothing is routed to. `FRONTEND_PORT` wins over `PORT` when set, which is what Shopify CLI hands its frontend web, so the same `vite.config.ts` works under buncargo and directly under `shopify app dev`.
+
 Vite is not a dependency of buncargo: the plugin's return type is declared structurally, so importing it costs nothing in a repo without Vite. Override the app or the bind address when you need to: `buncargoVite({ app: "web", host: "0.0.0.0" })`.
+
+**Proxying `/api` to another app.** `buncargoVite({ proxy: { "/api": "api" } })` adds a `server.proxy` entry targeting the `api` app's loopback URL (`API_LOOPBACK_URL`, else `API_PORT`), with WebSockets on and the incoming Host kept (`changeOrigin: false`), so the API sees the public hostname behind a tunnel. Write this rather than a hand-rolled proxy to `API_URL`: with named hosts on, that URL is `https://api.<project>.localhost`, and a proxy that keeps the Host sends the request back through the hosts daemon to the Vite it came from, which answers `508 Loop Detected`. A tunnel-first project that does not want named URLs at all can set `options.hosts: false`.
 
 ### Read by buncargo
 
@@ -926,6 +1073,11 @@ The configuration reference covers the main public options; `src/types/all-types
 | `options` | `DevOptions` | `undefined` | Isolation, watchdog, helper app names |
 | `docker` | `DockerComposeGenerationOptions` | `undefined` | Generated compose path, volumes, Docker auto-start |
 | `secrets` | `SecretsScopeConfig` | `undefined` | Defaults for every app's `secrets` scope |
+| `checks` | `{ name, check: ({ root }) => boolean \| Promise<boolean>, fix? }[]` | `[]` | Preconditions `dev` verifies first. See [checks](#checks-tasks-and-profiles) |
+| `tasks` | `Record<string, { command, description?, app?, cwd?, requiredServices? }>` | `{}` | Scripts for `buncargo run <name>` |
+| `profiles` | `Record<string, { apps, description? }>` | `{}` | App selections for `dev --profile`; `default` is used by a bare `dev` |
+| `integrations` | `BuncargoIntegration[]` | `[]` | `shopify()`, `expo()`, …; applied in order before validation |
+| `generatedFiles` | `{ path, render(ctx), gitignore? }[]` | `[]` | Files rendered from ports, URLs and captures. See [captures](#captured-output-and-generated-files) |
 
 Top-level `envVars` is removed. Use the top-level `env` overlay for shared values (rewritten `WEB_URL`, `VITE_*`), and `apps.<name>.envVars` for app-only values.
 
@@ -965,14 +1117,19 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | `healthEndpoint` | `string \| false` | `"/"` | HTTP path to wait on. `false` skips the wait |
 | `healthTimeout` | `number` | `60000` (`120000` in CI) | App readiness timeout (ms) |
 | `requiredServices` | `string[]` | `[]` | Service keys that must be up |
-| `requiredApps` | `string[]` | `[]` | Apps that must also start (transitive) |
+| `requiredApps` | `string[]` | `[]` | Apps that must also start (transitive). Selection only: they are not ready first |
+| `startAfter` | `string[]` | `[]` | Spawn once these apps are healthy; also selects them |
+| `prebuild` | `string` | `undefined` | Command run to completion before `devCommand` |
+| `captures` | `Record<string, { pattern, as }>` | `{}` | Values picked from output: `publicUrl`, `value` or `event` |
+| `restartOn` | `string[]` | `[]` | `captured.<name>` / `publicUrls.<app>` changes that restart this app |
+| `exclusive` | `string` | `undefined` | Machine-wide lease key; see [leases](#exclusive-leases) |
 | `expose` | `boolean` | `false` | Eligible for `--expose` |
 | `staticEnv` | `Record<string, string \| number>` | `{}` | Constant env for this app only |
 | `envVars` | `(ports, urls, ctx) => Record<string, string \| number>` | `undefined` | Computed env for this app only |
-| `secrets` | `{ projectId?, environment?, siteUrl?, path? }` | `undefined` | Fetch this app's Infisical secrets once and inject them. See [Infisical secrets](#infisical-secrets) |
+| `secrets` | `{ projectId?, organizationId?, environment?, siteUrl?, path?, required? }` | `undefined` | Fetch this app's Infisical secrets once and inject them. See [Infisical secrets](#infisical-secrets) |
 | `interactive` | `boolean` | `false` | Own the TTY. Only one app may set this |
 | `needsPublicUrls` | `boolean` | `false` | Start after tunnels so env sees `*_PUBLIC_URL`. Ignored without `--expose` |
-| `expo` | `boolean \| { scheme?, simulator? }` | inferred | Expo dev server: gets `RCT_METRO_PORT` and a `buncargo sim` device. Inferred when `devCommand` mentions `expo` |
+| `expo` | `boolean \| { scheme?, simulator? }` | inferred | Deprecated: use `integrations: [expo()]`. Still honored until the next major |
 
 Use `kind: "worker"` for a long-running process without a listener. Workers require a command and reject port, HTTP-health, exposure and Expo options.
 
@@ -1023,6 +1180,7 @@ Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.
 | `name` | `string` | required | Display name |
 | `command` | `string` | required | Shell command |
 | `cwd` | `string` | repo root | Working directory |
+| `secrets` | `SecretsScopeConfig \| false` | config-level `secrets` | Infisical scope for this command |
 
 ### `SeedConfig`
 
@@ -1033,6 +1191,7 @@ Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.
 | `cwd` | `string` | repo root | Working directory |
 | `check` | `(ctx) => Promise<boolean>` | always run | Return `true` to seed. `checkTable(table)` defaults its service to `prisma.service ?? "postgres"` |
 | `forceExit` | `boolean` | `true` for `bun ./file.ts` commands | Exit the seed process after the module finishes, even if sockets/pools are still open |
+| `secrets` | `SecretsScopeConfig \| false` | config-level `secrets` | Infisical scope for the seeder |
 
 ### `DevHooks` and `HookContext`
 
@@ -1043,14 +1202,17 @@ Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.
 | `beforeServers` | Before app processes start |
 | `afterServers` | After health waits succeed |
 | `beforeStop` | Before `stop()` |
+| `onCapture` | An app printed a value one of its `captures` matched: `(event, ctx)` |
 
-`HookContext`: `{ projectName, ports, urls, publicUrls, exec, root, isCI, portOffset, localIp, signal, selectedApps, selectedServices }`. Migration and seed entries accept `requiredServices` to scope preparation; all listed services must be selected.
+`HookContext`: `{ projectName, ports, urls, publicUrls, captured, exec, root, isCI, portOffset, localIp, signal, selectedApps, selectedServices }`. Migration and seed entries accept `requiredServices` to scope preparation; all listed services must be selected.
 
 `exec(cmd, { app?, cwd?, verbose?, env?, throwOnError?, signal?, timeoutMs?, killGraceMs? })` accepts a shell command string or an argv array and returns `{ exitCode, stdout, stderr }`. See [checkout execution](#execute-with-the-checkout-environment).
 
 ### `StartOptions` / `StopOptions`
 
-`start({ verbose, wait, startServers, productionBuild, skipSeed, skipEnvironmentLog, onlyApps, autoStartDocker, signal, prepare, onPhase })`
+`start({ verbose, wait, startServers, productionBuild, skipSeed, skipEnvironmentLog, onlyApps, onlyServices, autoStartDocker, signal, prepare, onPhase })`
+
+`onlyServices` starts those services (plus Compose dependencies) and no apps; it is what `buncargo run` and `buncargo ci` use.
 
 `stop({ verbose, removeVolumes, signal })`
 
@@ -1167,6 +1329,10 @@ await env.stop();
 `createDevEnvironment(config)` constructs the same environment directly and infers from the supplied config. Construction reads persisted ports or computes a cold preview without runtime probes. Startup finalizes allocation and updates the ports/URLs objects in place; re-read them after startup instead of holding copied preview values.
 
 Use `env.exec(["bun", "scripts/maintenance.ts"], { app: "api" })` to run a command without starting the lifecycle.
+
+## Upgrading
+
+[`docs/migration.md`](docs/migration.md) lists what changed in each major version and what to do about it. Config validation names the replacement for each renamed field.
 
 ## License
 

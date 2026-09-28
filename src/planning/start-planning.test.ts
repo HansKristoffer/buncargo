@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { AppConfig, ServiceConfig } from "../types";
 import {
+	buildServicePlan,
 	buildStartPlan,
 	getComposeServiceName,
 	resolveSelectedApps,
@@ -110,5 +111,27 @@ describe("getComposeServiceName", () => {
 				"postgres",
 			),
 		).toBe("database");
+	});
+});
+
+describe("buildServicePlan", () => {
+	it("selects the services and their Compose dependencies, and no apps", () => {
+		const services: Record<string, ServiceConfig> = {
+			postgres: { port: 5432 },
+			api: {
+				port: 8080,
+				docker: { image: "api", depends_on: ["postgres"] },
+			},
+			redis: { port: 6379 },
+		};
+		const plan = buildServicePlan(services, ["api"]);
+		expect(plan.appNames).toEqual([]);
+		expect(plan.requiredServiceKeys).toEqual(["api", "postgres"]);
+	});
+
+	it("rejects unknown services", () => {
+		expect(() => buildServicePlan({}, ["nats"])).toThrow(
+			"Unknown service name(s): nats",
+		);
 	});
 });

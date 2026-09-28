@@ -3,6 +3,7 @@ import {
 	buildBuncargoViteConfig,
 	buncargoVite,
 	readBuncargoViteEnvironment,
+	resolveBuncargoViteProxy,
 } from "./index";
 
 describe("readBuncargoViteEnvironment", () => {
@@ -99,5 +100,70 @@ describe("buncargoVite", () => {
 			(await buncargoVite({ env: {} }).config({}, { command: "build" })).server
 				.host,
 		).toBe("127.0.0.1");
+	});
+});
+
+describe("Shopify CLI and strict ports", () => {
+	// Shopify CLI proxies to exactly FRONTEND_PORT; PORT may be another web's.
+	it("prefers FRONTEND_PORT over PORT", () => {
+		expect(
+			readBuncargoViteEnvironment(
+				{ FRONTEND_PORT: "8081", PORT: "3000" },
+				"web",
+			).port,
+		).toBe(8081);
+	});
+
+	it("pins the port with strictPort, so Vite cannot drift off it", () => {
+		const config = buildBuncargoViteConfig(
+			{ port: 4901, allowedHosts: [] },
+			"127.0.0.1",
+		);
+		expect(config.server.strictPort).toBe(true);
+		expect(
+			buildBuncargoViteConfig({ allowedHosts: [] }, "127.0.0.1").server,
+		).not.toHaveProperty("strictPort");
+	});
+});
+
+describe("resolveBuncargoViteProxy", () => {
+	// The named https URL would route the kept Host back to this Vite: 508.
+	it("targets the app's loopback URL and keeps the Host", () => {
+		expect(
+			resolveBuncargoViteProxy(
+				{
+					API_URL: "https://api.shop.localhost",
+					API_LOOPBACK_URL: "http://localhost:4100",
+				},
+				{ "/api": "api" },
+			),
+		).toEqual({
+			"/api": {
+				target: "http://localhost:4100",
+				changeOrigin: false,
+				ws: true,
+			},
+		});
+	});
+
+	it("falls back to <APP>_PORT", () => {
+		expect(
+			resolveBuncargoViteProxy({ API_PORT: "4100" }, { "/api": "api" })["/api"]
+				?.target,
+		).toBe("http://127.0.0.1:4100");
+	});
+
+	it("throws rather than leaving /api to Vite's 404", () => {
+		expect(() => resolveBuncargoViteProxy({}, { "/api": "api" })).toThrow(
+			"cannot proxy /api",
+		);
+	});
+
+	it("is applied through the plugin", async () => {
+		const config = await buncargoVite({
+			env: { PORT: "4901", API_LOOPBACK_URL: "http://localhost:4100" },
+			proxy: { "/api": "api" },
+		}).config();
+		expect(config.server.proxy?.["/api"]?.target).toBe("http://localhost:4100");
 	});
 });

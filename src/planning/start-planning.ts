@@ -83,6 +83,21 @@ export function resolveSelectedApps(
 		visit(appName);
 	}
 
+	// `startAfter` selects too, but is a separate graph: `a` requiring `b` while
+	// `b` starts after `a` is ordering, not a cycle, so it cannot share the
+	// requiredApps walk above. Loop until no new app is pulled in.
+	for (let index = 0; index < resolvedAppNames.length; index++) {
+		const app = apps[resolvedAppNames[index] ?? ""];
+		for (const dependencyName of app?.startAfter ?? []) {
+			if (!apps[dependencyName]) {
+				throw new Error(
+					`App "${resolvedAppNames[index]}" starts after unknown app "${dependencyName}"`,
+				);
+			}
+			visit(dependencyName);
+		}
+	}
+
 	return {
 		appNames: resolvedAppNames,
 		apps: pickApps(apps, resolvedAppNames),
@@ -287,4 +302,77 @@ export function buildStartPlan(
 			requiredServiceKeys,
 		),
 	};
+}
+
+/**
+ * A services-only selection: these services and their Compose dependencies,
+ * and no apps. What `buncargo run` and `buncargo ci` start, where nothing is
+ * spawned that could name the services through `requiredServices`.
+ */
+export function buildServicePlan(
+	services: Record<string, ServiceConfig>,
+	serviceKeys: readonly string[],
+): StartPlan {
+	const unknown = serviceKeys.filter((key) => !services[key]);
+	if (unknown.length > 0) {
+		throw new Error(`Unknown service name(s): ${unknown.join(", ")}`);
+	}
+
+	const requiredServiceKeys = resolveServiceDependencies(services, [
+		...serviceKeys,
+	]);
+	return {
+		appNames: [],
+		apps: {},
+		requiredServiceKeys,
+		composeServiceNames: resolveComposeServiceNames(
+			services,
+			requiredServiceKeys,
+		),
+	};
+}
+
+/** The plan for a start: a services-only one when `onlyServices` is given. */
+export function planStart(
+	apps: Record<string, AppConfig>,
+	services: Record<string, ServiceConfig>,
+	selection: { onlyApps?: string[]; onlyServices?: readonly string[] },
+): StartPlan {
+	return selection.onlyServices
+		? buildServicePlan(services, selection.onlyServices)
+		: buildStartPlan(apps, services, selection.onlyApps);
+}
+
+/**
+ * The first cycle in the `startAfter` graph, as `a -> b -> a`, if any. A cycle
+ * there is a deadlock: every app in it waits for another to be healthy.
+ */
+export function findStartAfterCycle(
+	apps: Record<string, AppConfig>,
+): string | undefined {
+	const state = new Map<string, "visiting" | "done">();
+	const stack: string[] = [];
+
+	function visit(name: string): string | undefined {
+		if (state.get(name) === "done") return undefined;
+		if (state.get(name) === "visiting") {
+			return [...stack.slice(stack.indexOf(name)), name].join(" -> ");
+		}
+		state.set(name, "visiting");
+		stack.push(name);
+		for (const dependency of apps[name]?.startAfter ?? []) {
+			if (!apps[dependency]) continue;
+			const cycle = visit(dependency);
+			if (cycle) return cycle;
+		}
+		stack.pop();
+		state.set(name, "done");
+		return undefined;
+	}
+
+	for (const name of Object.keys(apps)) {
+		const cycle = visit(name);
+		if (cycle) return cycle;
+	}
+	return undefined;
 }

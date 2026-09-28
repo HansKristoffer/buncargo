@@ -78,6 +78,29 @@ final class StopCoordinator: ObservableObject {
         }
     }
 
+    func isRunningTask(_ run: Run, _ task: String) -> Bool {
+        inFlight.contains(key(run, "task:\(task)"))
+    }
+
+    /// Run a config task. Tasks can take minutes, so a second click while one
+    /// is running is ignored rather than starting it twice.
+    func runTask(run: Run, task: String) {
+        let token = key(run, "task:\(task)")
+        guard !inFlight.contains(token) else { return }
+        inFlight.insert(token)
+        notice = nil
+
+        Task { [weak self] in
+            let failure = await TaskCommand.run(run, task: task)
+            guard let self else { return }
+            self.inFlight.remove(token)
+            if let failure {
+                self.notice = failure
+                self.report(failure, title: "buncargo run \(task) failed")
+            }
+        }
+    }
+
     /// A failure has to survive the popover closing, which is where an inline
     /// message goes to die.
     private func report(_ message: String, title: String = "buncargo stop failed") {

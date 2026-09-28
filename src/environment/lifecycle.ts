@@ -1,4 +1,4 @@
-import { relative } from "node:path";
+import { join, relative } from "node:path";
 import {
 	ensureServicesRunning,
 	withProjectLifecycleLock,
@@ -8,7 +8,8 @@ import { toPortMap, toUrlMap } from "../core/ports";
 import { stopDevServers } from "../core/process/dev-servers";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWarn } from "../core/style";
-import { buildStartPlan, resolveComposeServiceNames } from "../planning";
+import { planStart, resolveComposeServiceNames } from "../planning";
+import { recordGeneratedPrismaHash } from "../prisma/schema-hash";
 import type {
 	AppConfig,
 	DevServerPids,
@@ -23,6 +24,7 @@ import type {
 import type { DevEnvContext } from "./context";
 import { syncEnvFile } from "./env-file";
 import type { DevEnvVarsApi } from "./env-vars";
+import { renderGeneratedFiles } from "./generated-files";
 import { runMigrationsSequentially } from "./migrations";
 import type { DevRunClaimApi } from "./run-claim";
 import { runSeedIfNeeded } from "./seeding";
@@ -30,8 +32,14 @@ import { assertAppWorkingDirectories, startAppServers } from "./servers";
 
 export interface DevLifecycleApi<
 	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
+	TServices extends Record<string, ServiceConfig> = Record<
+		string,
+		ServiceConfig
+	>,
 > {
-	start(options?: StartOptions<TApps>): Promise<DevServerPids | null>;
+	start(
+		options?: StartOptions<TApps, TServices>,
+	): Promise<DevServerPids | null>;
 	stop(options?: StopOptions): Promise<void>;
 	restart(): Promise<void>;
 	isRunning(): Promise<boolean>;
@@ -46,7 +54,7 @@ export function createLifecycleApi<
 	ctx: DevEnvContext<TServices, TApps, TEnv>,
 	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
 	runClaim: DevRunClaimApi,
-): DevLifecycleApi<TApps> {
+): DevLifecycleApi<TApps, TServices> {
 	const { config, services, apps, ports } = ctx;
 
 	let selectedServices: string[] = [];
@@ -158,10 +166,9 @@ export function createLifecycleApi<
 
 			const began = performance.now();
 			try {
-				await execute(config.prisma.generate, {
-					cwd: config.prisma.cwd ?? "packages/prisma",
-					verbose,
-				});
+				const prismaCwd = config.prisma.cwd ?? "packages/prisma";
+				await execute(config.prisma.generate, { cwd: prismaCwd, verbose });
+				recordGeneratedPrismaHash(ctx.root, join(ctx.root, prismaCwd));
 			} finally {
 				onPhase?.("generation", performance.now() - began);
 			}
@@ -218,7 +225,7 @@ export function createLifecycleApi<
 	}
 
 	async function start(
-		startOptions: StartOptions<TApps> = {},
+		startOptions: StartOptions<TApps, TServices> = {},
 	): Promise<DevServerPids | null> {
 		const { signal, onPhase, prepare = "all" } = startOptions;
 		signal?.throwIfAborted();
@@ -242,10 +249,11 @@ export function createLifecycleApi<
 			skipSeed = false,
 			skipEnvironmentLog = false,
 			onlyApps,
+			onlyServices,
 			autoStartDocker = config.docker?.autoStart,
 		} = startOptions;
 
-		const startPlan = buildStartPlan(apps, services, onlyApps);
+		const startPlan = planStart(apps, services, { onlyApps, onlyServices });
 		const appsToStart = startPlan.apps;
 		if (shouldStartServers && prepare === "all") {
 			assertAppWorkingDirectories(appsToStart, ctx.root, productionBuild);
@@ -256,7 +264,7 @@ export function createLifecycleApi<
 				(serviceKey) => [serviceKey, services[serviceKey]] as const,
 			),
 		);
-		ctx.prepareStart?.(onlyApps);
+		ctx.prepareStart?.(onlyApps, onlyServices);
 		selectedServices = startPlan.requiredServiceKeys;
 		selectedApps = startPlan.appNames;
 		started = true;
@@ -353,6 +361,11 @@ export function createLifecycleApi<
 		// Before migrations, not just before servers: Prisma and friends read
 		// `.env` off disk themselves, so a stale port fails the migrate step.
 		await phase("dotenv", () => syncConfiguredEnvFile(verbose));
+		// Before anything reads them: values not known yet (a tunnel URL, a
+		// capture) render as the file's placeholder and re-render later.
+		for (const path of renderGeneratedFiles(ctx, envVars)) {
+			if (verbose) console.log(formatDone(`Generated ${path}`));
+		}
 		if (prepare === "containers") {
 			return null;
 		}

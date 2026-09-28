@@ -85,11 +85,68 @@ struct LocalTargetRow: View {
     }
 }
 
+/// A labelled value: open it when it is a URL, copy it either way.
+struct DetailRow: View {
+    let label: String
+    let value: String
+    var isURL = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: 110, alignment: .leading)
+            Text(value)
+                .font(.system(size: 11))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help(value)
+            if isURL {
+                IconButton(symbol: "arrow.up.right", help: "Open \(label)") { Actions.open(value) }
+            }
+            IconButton(symbol: "doc.on.doc", help: "Copy") { Actions.copy(value) }
+        }
+    }
+}
+
+/// A config task with its run button, spinning while it runs.
+struct TaskRow: View {
+    let task: RunTask
+    let running: Bool
+    let onRun: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(task.name)
+                    .font(.system(size: 12))
+                if let description = task.description {
+                    Text(description)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if running {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 18, height: 18)
+            } else {
+                IconButton(symbol: "play.fill", help: "Run \(task.name)", action: onRun)
+            }
+        }
+    }
+}
+
 /// The hover panel: every app and service of one run.
 struct RunDetailView: View {
     let run: Run
     let onStop: (String?) -> Void
     let onSimulator: (String) -> Void
+    let onRunTask: (String) -> Void
+    let isRunningTask: (String) -> Bool
 
     private var hostsActive: Bool { run.hosts?.active ?? false }
 
@@ -133,6 +190,28 @@ struct RunDetailView: View {
                     )
                 }
             }
+
+            let leases = run.apps.compactMap { app in app.exclusive.map { (app.name, $0) } }
+            if !(run.details ?? []).isEmpty || !leases.isEmpty {
+                TargetSectionHeading(title: "DETAILS")
+                ForEach(run.details ?? []) { detail in
+                    DetailRow(label: detail.label, value: detail.value, isURL: detail.isURL)
+                }
+                ForEach(leases, id: \.0) { lease in
+                    DetailRow(label: "Lease (\(lease.0))", value: lease.1)
+                }
+            }
+
+            if let tasks = run.tasks, !tasks.isEmpty {
+                TargetSectionHeading(title: "TASKS")
+                ForEach(tasks) { task in
+                    TaskRow(
+                        task: task,
+                        running: isRunningTask(task.name),
+                        onRun: { onRunTask(task.name) }
+                    )
+                }
+            }
         } footer: {
             HStack(spacing: 10) {
                 Button("Reveal in Finder") { Actions.revealInFinder(run.root) }
@@ -149,6 +228,8 @@ struct RunRow: View {
     let run: Run
     let onStop: (String?) -> Void
     let onSimulator: (String) -> Void
+    let onRunTask: (String) -> Void
+    let isRunningTask: (String) -> Bool
 
     var body: some View {
         EnvironmentRow(
@@ -176,7 +257,13 @@ struct RunRow: View {
                 }
             }
         } detail: {
-            RunDetailView(run: run, onStop: onStop, onSimulator: onSimulator)
+            RunDetailView(
+                run: run,
+                onStop: onStop,
+                onSimulator: onSimulator,
+                onRunTask: onRunTask,
+                isRunningTask: isRunningTask
+            )
         }
     }
 }

@@ -5,13 +5,19 @@ export async function runMigrationsSequentially(
 	migrations: MigrationConfig[],
 	exec: (
 		command: string,
-		options?: { cwd?: string; throwOnError?: boolean },
+		options?: {
+			cwd?: string;
+			throwOnError?: boolean;
+			secrets?: MigrationConfig["secrets"];
+		},
 	) => Promise<{ exitCode: number; stdout: string; stderr: string }>,
 ): Promise<void> {
 	for (const migration of migrations) {
 		const result = await exec(migration.command, {
 			cwd: migration.cwd,
 			throwOnError: false,
+			// Undefined falls back to the config-level scope inside exec.
+			secrets: migration.secrets,
 		});
 		if (result.exitCode !== 0) {
 			console.error(formatFail(`Migration "${migration.name}" failed`));

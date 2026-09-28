@@ -3,10 +3,16 @@ import {
 	mergeSharedEnvWithOverlay,
 	stringifyEnvValues,
 } from "../core/env";
-import { isExpoApp } from "../core/expo";
 import { toPortMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
 import { hostsDaemonPort, isCI } from "../core/runtime-flags";
+import {
+	describeSecretsError,
+	loadScopeSecrets,
+	resolveScope,
+	scopeKey,
+} from "../core/secrets/infisical";
+import { formatWarn } from "../core/style";
 import type {
 	AppConfig,
 	AppEnvVars,
@@ -16,6 +22,7 @@ import type {
 	EnvVarsBuilder,
 	ExecOptions,
 	HookContext,
+	SecretsScopeConfig,
 	ServiceConfig,
 } from "../types";
 import type { DevEnvContext } from "./context";
@@ -42,6 +49,19 @@ export interface DevEnvVarsApi<
 		cmd: string | readonly string[],
 		options?: ExecOptions,
 	): Promise<ExecResult>;
+	/**
+	 * The secrets a command gets: `explicit`, else the app's scope, else the
+	 * config-level one, minus every key the computed env already sets. A
+	 * failed fetch warns once per scope and yields none, like an app's.
+	 */
+	resolveSecrets(
+		explicit: SecretsScopeConfig | false | undefined,
+		options?: {
+			app?: string;
+			signal?: AbortSignal;
+			computed?: Record<string, string>;
+		},
+	): Promise<Record<string, string>>;
 }
 
 export function createEnvVarsApi<
@@ -62,6 +82,7 @@ export function createEnvVarsApi<
 			portOffset: ctx.portOffset,
 			publicUrls: publicUrls as ComputedPublicUrls<TServices, TApps>,
 			loopbackUrls,
+			captured: ctx.captured,
 		};
 	}
 
@@ -117,16 +138,23 @@ export function createEnvVarsApi<
 			BUNCARGO_APP_NAME: appName,
 		};
 
-		if (isExpoApp(appConfig)) {
-			processEnv.EXPO_PUBLIC_BUNCARGO_WORKSPACE_ID = ctx.workspaceId;
-		}
-
 		if (appPort !== undefined) {
 			processEnv.PORT = String(appPort);
-			// Expo CLI ignores PORT; without this every worktree's Metro asks
-			// for 8081 and the second one is offered 8082, not its own block.
-			if (isExpoApp(appConfig)) {
-				processEnv.RCT_METRO_PORT = String(appPort);
+		}
+
+		// Integrations sit beneath the app's own `envVars`, which may override them.
+		if (appConfig) {
+			for (const integration of config.integrations ?? []) {
+				Object.assign(
+					processEnv,
+					integration.appEnv?.({
+						name: appName,
+						config: appConfig,
+						port: appPort,
+						root: ctx.root,
+						workspaceId: ctx.workspaceId,
+					}),
+				);
 			}
 		}
 
@@ -164,7 +192,48 @@ export function createEnvVarsApi<
 		);
 	}
 
-	function exec(
+	const warnedScopes = new Set<string>();
+
+	async function resolveSecrets(
+		explicit: SecretsScopeConfig | false | undefined,
+		options: {
+			app?: string;
+			signal?: AbortSignal;
+			computed?: Record<string, string>;
+		} = {},
+	): Promise<Record<string, string>> {
+		if (explicit === false) return {};
+		const scope =
+			explicit ??
+			(options.app === undefined ? config.secrets : apps[options.app]?.secrets);
+		if (!scope) return {};
+		const resolved = resolveScope(scope, config.secrets);
+		if (!resolved) return {};
+		try {
+			const values = await loadScopeSecrets(scope, {
+				defaults: config.secrets,
+				signal: options.signal,
+			});
+			const computed = options.computed ?? {};
+			return Object.fromEntries(
+				Object.entries(values).filter(([key]) => computed[key] === undefined),
+			);
+		} catch (error) {
+			options.signal?.throwIfAborted();
+			const key = scopeKey(resolved);
+			if (!warnedScopes.has(key)) {
+				warnedScopes.add(key);
+				console.warn(
+					formatWarn(
+						`Could not load Infisical secrets: ${describeSecretsError(error)}`,
+					),
+				);
+			}
+			return {};
+		}
+	}
+
+	async function exec(
 		cmd: string | readonly string[],
 		options?: ExecOptions,
 	): Promise<ExecResult> {
@@ -172,19 +241,23 @@ export function createEnvVarsApi<
 			throw new Error(`Unknown app "${options.app}"`);
 		}
 
-		return execAsync(
-			cmd,
-			ctx.root,
+		const computed: Record<string, string> =
 			options?.app === undefined
 				? buildEnvVars()
-				: buildAppEnvVars(options.app as Extract<keyof TApps, string>),
-			{
-				...options,
-				cwd:
-					options?.cwd ??
-					(options?.app === undefined ? undefined : apps[options.app]?.cwd),
-			},
-		);
+				: buildAppEnvVars(options.app as Extract<keyof TApps, string>);
+		// Beneath the computed env and anything passed explicitly, like an app's.
+		const secrets = await resolveSecrets(options?.secrets, {
+			app: options?.app,
+			signal: options?.signal,
+			computed,
+		});
+		return execAsync(cmd, ctx.root, computed, {
+			...options,
+			env: { ...secrets, ...options?.env },
+			cwd:
+				options?.cwd ??
+				(options?.app === undefined ? undefined : apps[options.app]?.cwd),
+		});
 	}
 
 	// Created once, then reused so hooks observe a stable identity.
@@ -226,6 +299,7 @@ export function createEnvVarsApi<
 				isCI: isCI(),
 				portOffset: ctx.portOffset,
 				localIp: ctx.localIp,
+				captured: ctx.captured,
 				exec: async (cmd, opts) => exec(cmd, opts),
 			};
 		}
@@ -260,5 +334,6 @@ export function createEnvVarsApi<
 		buildAppEnvVarsMap,
 		getHookContext,
 		exec,
+		resolveSecrets,
 	};
 }

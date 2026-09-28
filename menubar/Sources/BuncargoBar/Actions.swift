@@ -46,7 +46,10 @@ enum BuncargoCommand {
         let stderr: String
     }
 
-    static func run(_ run: Run, _ command: [String]) async -> Swift.Result<Result, Error> {
+    /// `scoped` appends `--root`/`--run`, which name the run for commands that
+    /// act on one (`stop`, `sim`). A command that only needs the checkout gets
+    /// it from the working directory instead.
+    static func run(_ run: Run, _ command: [String], scoped: Bool = true) async -> Swift.Result<Result, Error> {
         guard let cli = run.cli else {
             return .failure(CommandError("This run did not record how to invoke buncargo."))
         }
@@ -54,8 +57,10 @@ enum BuncargoCommand {
         var arguments: [String] = []
         if let script = cli.script { arguments.append(script) }
         arguments.append(contentsOf: command)
-        arguments.append(contentsOf: ["--root", run.root])
-        if let sessionId = run.sessionId { arguments.append(contentsOf: ["--run", sessionId]) }
+        if scoped {
+            arguments.append(contentsOf: ["--root", run.root])
+            if let sessionId = run.sessionId { arguments.append(contentsOf: ["--run", sessionId]) }
+        }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cli.program)
@@ -66,7 +71,9 @@ enum BuncargoCommand {
         process.standardInput = FileHandle.nullDevice
         let errorPipe = Pipe()
         process.standardError = errorPipe
-        process.standardOutput = Pipe()
+        // Discarded rather than piped: nothing reads it, and a task that prints
+        // more than a pipe buffers would block on its next write forever.
+        process.standardOutput = FileHandle.nullDevice
 
         do {
             try process.run()
@@ -123,6 +130,21 @@ enum SimulatorCommand {
         case .success(let result):
             if result.status == 0 { return nil }
             return result.stderr.isEmpty ? "buncargo sim failed" : result.stderr
+        }
+    }
+}
+
+/// `buncargo run <task>` in the run's checkout.
+enum TaskCommand {
+    /// Nil on success; otherwise the tail of what the task printed to stderr.
+    static func run(_ run: Run, task: String) async -> String? {
+        switch await BuncargoCommand.run(run, ["run", task], scoped: false) {
+        case .failure(let error):
+            return error.localizedDescription
+        case .success(let result):
+            if result.status == 0 { return nil }
+            let tail = result.stderr.split(separator: "\n").suffix(15).joined(separator: "\n")
+            return tail.isEmpty ? "buncargo run \(task) exited with code \(result.status)" : tail
         }
     }
 }

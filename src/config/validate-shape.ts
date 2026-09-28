@@ -1,4 +1,10 @@
-const SECRETS_FIELDS = ["projectId", "environment", "siteUrl", "path"];
+const SECRETS_FIELDS = [
+	"projectId",
+	"organizationId",
+	"environment",
+	"siteUrl",
+	"path",
+];
 
 /** Validate dynamic config shapes before semantic validation dereferences them. */
 export function validateConfigShape(value: unknown): string[] {
@@ -22,7 +28,7 @@ export function validateConfigShape(value: unknown): string[] {
 		if (input !== undefined && !valid)
 			errors.push(`${path} must be ${expected}`);
 	};
-	const strings = (input: unknown) =>
+	const strings = (input: unknown): input is string[] =>
 		Array.isArray(input) &&
 		input.every((entry) => typeof entry === "string" && entry.length > 0);
 	const fields = (
@@ -115,9 +121,37 @@ export function validateConfigShape(value: unknown): string[] {
 				if (
 					entry.secrets !== undefined &&
 					record(entry.secrets, `${path}.secrets`)
-				)
+				) {
 					fields(entry.secrets, `${path}.secrets.`, SECRETS_FIELDS, "string");
-				for (const key of ["requiredServices", "requiredApps"])
+					check(
+						entry.secrets.required,
+						`${path}.secrets.required`,
+						strings(entry.secrets.required),
+						"an array of nonempty strings",
+					);
+				}
+				fields(entry, `${path}.`, ["prebuild", "exclusive"], "string");
+				if (
+					entry.captures !== undefined &&
+					record(entry.captures, `${path}.captures`)
+				)
+					for (const [name, capture] of Object.entries(entry.captures)) {
+						if (!record(capture, `${path}.captures.${name}`)) continue;
+						if (!(capture.pattern instanceof RegExp))
+							errors.push(
+								`${path}.captures.${name}.pattern must be a regular expression`,
+							);
+						if (!["publicUrl", "value", "event"].includes(String(capture.as)))
+							errors.push(
+								`${path}.captures.${name}.as must be "publicUrl", "value" or "event"`,
+							);
+					}
+				for (const key of [
+					"requiredServices",
+					"requiredApps",
+					"startAfter",
+					"restartOn",
+				])
 					check(
 						entry[key],
 						`${path}.${key}`,
@@ -217,6 +251,93 @@ export function validateConfigShape(value: unknown): string[] {
 						["name", "command", "cwd"],
 						"string",
 					);
+	}
+	if (value.integrations !== undefined) {
+		if (!Array.isArray(value.integrations))
+			errors.push("integrations must be an array");
+		else
+			for (const [index, entry] of value.integrations.entries()) {
+				const path = `integrations.${index}`;
+				if (!record(entry, path)) continue;
+				if (
+					typeof entry.name !== "string" ||
+					!/^[a-z][a-z0-9-]*$/.test(entry.name)
+				)
+					errors.push(`${path}.name must be a lowercase name`);
+				for (const key of [
+					"config",
+					"describe",
+					"appEnv",
+					"describeApp",
+					"bannerHint",
+				])
+					check(
+						entry[key],
+						`${path}.${key}`,
+						typeof entry[key] === "function",
+						"a function",
+					);
+			}
+	}
+	if (value.generatedFiles !== undefined) {
+		if (!Array.isArray(value.generatedFiles))
+			errors.push("generatedFiles must be an array");
+		else
+			for (const [index, entry] of value.generatedFiles.entries()) {
+				const path = `generatedFiles.${index}`;
+				if (!record(entry, path)) continue;
+				if (typeof entry.path !== "string" || !entry.path)
+					errors.push(`${path}.path must be a nonempty string`);
+				if (typeof entry.render !== "function")
+					errors.push(`${path}.render must be a function`);
+				fields(entry, `${path}.`, ["gitignore"], "boolean");
+			}
+	}
+	if (value.checks !== undefined) {
+		if (!Array.isArray(value.checks)) errors.push("checks must be an array");
+		else
+			for (const [index, entry] of value.checks.entries()) {
+				const path = `checks.${index}`;
+				if (!record(entry, path)) continue;
+				if (typeof entry.name !== "string" || !entry.name)
+					errors.push(`${path}.name must be a nonempty string`);
+				if (typeof entry.check !== "function")
+					errors.push(`${path}.check must be a function`);
+				check(
+					entry.fix,
+					`${path}.fix`,
+					typeof entry.fix === "string" || typeof entry.fix === "function",
+					"a command string or a function",
+				);
+				fields(entry, `${path}.`, ["fixDescription", "severity"], "string");
+				fields(entry, `${path}.`, ["fast"], "boolean");
+			}
+	}
+	for (const kind of ["tasks", "profiles"] as const) {
+		const entries = value[kind];
+		if (entries === undefined || !record(entries, kind)) continue;
+		for (const [name, entry] of Object.entries(entries)) {
+			const path = `${kind}.${name}`;
+			// Colons allowed: `shop:seed` is how package scripts are named too.
+			if (!/^[A-Za-z0-9][A-Za-z0-9:._-]*$/.test(name))
+				errors.push(`${path} has an invalid name`);
+			if (!record(entry, path)) continue;
+			fields(entry, `${path}.`, ["description"], "string");
+			if (kind === "profiles") {
+				if (!strings(entry.apps) || entry.apps.length === 0)
+					errors.push(`${path}.apps must be a nonempty array of app names`);
+				continue;
+			}
+			if (typeof entry.command !== "string" || !entry.command)
+				errors.push(`${path}.command must be a nonempty string`);
+			fields(entry, `${path}.`, ["app", "cwd"], "string");
+			check(
+				entry.requiredServices,
+				`${path}.requiredServices`,
+				strings(entry.requiredServices),
+				"an array of nonempty strings",
+			);
+		}
 	}
 	if (object(value.options)) {
 		const options = value.options;

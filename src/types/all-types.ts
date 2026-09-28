@@ -365,8 +365,38 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	healthTimeout?: number;
 	/** Service keys that must be running when this app starts */
 	requiredServices?: readonly string[];
-	/** App keys that must also start when this app starts */
+	/**
+	 * App keys that must also start when this app starts. Selection only: they
+	 * start in the same wave, not first. Use `startAfter` for ordering.
+	 */
 	requiredApps?: readonly string[];
+	/**
+	 * Spawn only once these apps are healthy (a worker: spawned and alive).
+	 * Also selects them, like `requiredApps`. Holds in every mode, not just
+	 * the `--expose` waves.
+	 */
+	startAfter?: readonly string[];
+	/**
+	 * Values to pick out of this app's output (stdout and stderr, ANSI and
+	 * box-drawing stripped), by name. See {@link CaptureConfig}.
+	 */
+	captures?: Readonly<Record<string, CaptureConfig>>;
+	/**
+	 * Restart this app when one of these values changes after it started:
+	 * `captured.<name>` or `publicUrls.<app>`.
+	 */
+	restartOn?: readonly string[];
+	/**
+	 * A command run to completion before `devCommand` starts, e.g. a one-off
+	 * build whose output the watcher and other tools need to exist.
+	 */
+	prebuild?: string;
+	/**
+	 * A resource only one run on the machine may use at a time, e.g.
+	 * `"shopify-app:<client_id>"`. A second run is refused (or, with
+	 * `--takeover`, stops the holder's app and takes the lease).
+	 */
+	exclusive?: string;
 	/** Constant env vars injected only into this app's own processes */
 	staticEnv?: TStatic;
 	/**
@@ -383,8 +413,24 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	/**
 	 * An Expo dev server: gets `RCT_METRO_PORT`, and `buncargo sim` opens it in
 	 * a per-checkout iOS simulator. Inferred when `devCommand` mentions `expo`.
+	 * @deprecated Use `integrations: [expo({ apps: { name: options } })]` from `buncargo/expo`.
 	 */
 	expo?: boolean | ExpoAppOptions;
+}
+
+/**
+ * One value to capture from an app's output.
+ *
+ * `publicUrl` sets `publicUrls.<app>` / `<APP>_PUBLIC_URL`, exactly like a
+ * tunnel URL (normalized to its origin). `value` is `captured.<name>` in hooks,
+ * `envVars`, generated files and `buncargo env --get captured.<name>`. `event`
+ * only fires `onCapture`. Every kind fires `onCapture` and lands in the run
+ * registry.
+ */
+export interface CaptureConfig {
+	/** The first capture group is the value; without one, the whole match. */
+	pattern: RegExp;
+	as: "publicUrl" | "value" | "event";
 }
 
 /**
@@ -398,12 +444,23 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 export interface SecretsScopeConfig {
 	/** Infisical project id. Required, here or in the config-level defaults. */
 	projectId?: string;
+	/**
+	 * Infisical organization the project belongs to. A CLI session is scoped
+	 * to it per fetch, so projects in different organizations run side by side
+	 * without `infisical switch`.
+	 */
+	organizationId?: string;
 	/** Environment slug. Default: `SECRETS_ENV`, else `"dev"`. */
 	environment?: string;
-	/** Infisical origin. Default: `https://app.infisical.com`. */
+	/** Infisical origin. Default: `https://eu.infisical.com`, like hanzio. */
 	siteUrl?: string;
 	/** Folder, matching the app's own secret path. Default: `"/"`. */
 	path?: string;
+	/**
+	 * Keys that must be present after the fetch. A missing one stops the app
+	 * before it spawns, naming the key, instead of the app crashing on it.
+	 */
+	required?: readonly string[];
 }
 
 /** A long-running owned process. Readiness means spawned and still alive. */
@@ -479,6 +536,7 @@ export type TypedAppDefinitions<
 		: AppDefinitionBase<TApps[K]> & {
 				requiredServices?: readonly Extract<keyof TServices, string>[];
 				requiredApps?: readonly Extract<keyof TApps, string>[];
+				startAfter?: readonly Extract<keyof TApps, string>[];
 				envVars?: (
 					ports: NoInfer<
 						ComputedPorts<TServices, TypedAppDefinitions<TServices, TApps>>
@@ -503,6 +561,11 @@ export type TypedAppDefinitions<
 export interface ExecOptions {
 	/** Select an app overlay and its default working directory. */
 	app?: string;
+	/**
+	 * Infisical scope to inject, beneath everything else. Default: the app's
+	 * `secrets`, else the config-level `secrets`. `false` injects none.
+	 */
+	secrets?: SecretsScopeConfig | false;
 	/** Cancel the command and terminate its owned process group. */
 	signal?: AbortSignal;
 	/** Maximum execution time. Startup commands default to ten minutes; standalone exec has no default. */
@@ -565,6 +628,17 @@ export interface HookContext<
 	portOffset: number;
 	/** Local IP address for mobile connectivity */
 	localIp: string;
+	/** Values apps printed, by capture name (see `AppConfig.captures`). Empty until captured. */
+	captured: Readonly<Record<string, string>>;
+}
+
+/** A value an app printed that matched one of its `captures`. */
+export interface CaptureEvent {
+	/** The app whose output matched. */
+	app: string;
+	/** The key in its `captures`. */
+	name: string;
+	value: string;
 }
 
 /**
@@ -584,6 +658,11 @@ export interface DevHooks<
 	afterServers?: (ctx: HookContext<TServices, TApps>) => Promise<void>;
 	/** Called before stopping the environment */
 	beforeStop?: (ctx: HookContext<TServices, TApps>) => Promise<void>;
+	/** An app printed a value one of its `captures` matched (every `as`). */
+	onCapture?: (
+		event: CaptureEvent,
+		ctx: HookContext<TServices, TApps>,
+	) => void | Promise<void>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -633,6 +712,29 @@ export interface PrismaRunner {
 	getDatabaseUrl(): string;
 	/** Ensure the database container is running and healthy */
 	ensureDatabase(): Promise<void>;
+	/**
+	 * Fail when the migrations do not produce the schema: `prisma migrate diff
+	 * --from-migrations … --to-schema … --exit-code`, against a shadow database
+	 * created in the configured Postgres service. Returns Prisma's exit code:
+	 * 0 in sync, 2 drifted, 1 error.
+	 */
+	migrateCheck(options?: PrismaMigrateCheckOptions): Promise<number>;
+	/** `prisma.cwd`, relative to the root. */
+	readonly cwd: string;
+	/** `prisma.generate`, when configured. */
+	readonly generateCommand?: string;
+	/** Run `prisma.generate` (or `prisma generate`) and record the schema it saw. */
+	generate(): Promise<number>;
+}
+
+/** Options for {@link PrismaRunner.migrateCheck}; paths relative to `prisma.cwd`. */
+export interface PrismaMigrateCheckOptions {
+	/** Default: `prisma/migrations` */
+	migrations?: string;
+	/** Schema file or folder. Default: `prisma/schema.prisma` */
+	schema?: string;
+	/** Extra arguments appended to `prisma migrate diff`. */
+	args?: readonly string[];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -651,6 +753,8 @@ export interface MigrationConfig {
 	command: string;
 	/** Working directory relative to monorepo root */
 	cwd?: string;
+	/** Infisical scope for this command. Default: the config-level `secrets`. `false`: none. */
+	secrets?: SecretsScopeConfig | false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -707,6 +811,8 @@ export interface SeedConfig<
 	command: string;
 	/** Working directory relative to monorepo root */
 	cwd?: string;
+	/** Infisical scope for the seeder. Default: the config-level `secrets`. `false`: none. */
+	secrets?: SecretsScopeConfig | false;
 	/**
 	 * Check function to determine if seeding is needed.
 	 * Return true to run the seed command, false to skip.
@@ -752,6 +858,185 @@ export type SeedOutcome =
 	| { status: "not-needed" }
 	| { status: "succeeded"; result: ExecResult }
 	| { status: "failed"; result: ExecResult };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Checks, Tasks and Profiles
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** What a {@link SetupCheck} is handed. */
+export interface CheckContext {
+	/** Monorepo root; resolve relative paths against this. */
+	root: string;
+	/** The loaded environment: its apps, ports and `exec` in the checkout env. */
+	env: AnyDevEnvironment;
+}
+
+/** `true` passes; `{ ok: false, detail }` fails with a reason. */
+export type CheckOutcome = boolean | { ok: boolean; detail?: string };
+
+/**
+ * A precondition of the checkout, such as generated code that has to exist.
+ *
+ * `buncargo dev` runs the fast ones before it starts anything and stops with
+ * the fix instead of failing deep inside an app. `buncargo setup` and
+ * `buncargo doctor` run all of them; `setup` offers each fix.
+ */
+export interface SetupCheck {
+	/** Shown when the check fails, e.g. `'GraphQL types'`. */
+	name: string;
+	/** Return true when the checkout is ready. A check that throws has failed. */
+	check: (ctx: CheckContext) => CheckOutcome | Promise<CheckOutcome>;
+	/** A command run from the monorepo root, or a function for fixes that edit files. */
+	fix?: string | ((ctx: CheckContext) => void | Promise<void>);
+	/** What a function `fix` does, shown before asking to run it. */
+	fixDescription?: string;
+	/**
+	 * Run on every `buncargo dev`. Default: true. Set false for anything that
+	 * spawns a process or talks to a network; `setup` and `doctor` still run it.
+	 */
+	fast?: boolean;
+	/** A warning is reported but never stops `dev` or fails `setup`. Default: error. */
+	severity?: "error" | "warning";
+}
+
+/**
+ * A named one-off script run with `buncargo run <name>`: the checkout env
+ * (and `app`'s env and secrets), with `requiredServices` started first.
+ */
+export interface TaskConfig<
+	// Keys rather than the service/app records: `keyof` would make this
+	// contravariant in them, and a typed config would stop being an AnyDevConfig.
+	TServiceKey extends string = string,
+	TAppKey extends string = string,
+> {
+	/** Shell command. Arguments after `buncargo run <name> --` are appended. */
+	command: string;
+	/** One line for `buncargo run` and `buncargo help`. */
+	description?: string;
+	/** Use this app's env, secrets and default working directory. */
+	app?: TAppKey;
+	/** Working directory relative to the monorepo root. Default: the app's `cwd`, else the root. */
+	cwd?: string;
+	/** Started (with their Compose dependencies) when they are not running. */
+	requiredServices?: readonly TServiceKey[];
+}
+
+/** What a generated file's `render` sees. */
+export interface GeneratedFileContext {
+	root: string;
+	projectName: string;
+	ports: Readonly<Record<string, number>>;
+	urls: Readonly<Record<string, string>>;
+	loopbackUrls: Readonly<Record<string, string>>;
+	/** Tunnel and captured public URLs, by app/service; empty until known. */
+	publicUrls: Readonly<Record<string, string | undefined>>;
+	/** Values apps printed (`captures`); empty until captured. */
+	captured: Readonly<Record<string, string>>;
+	/** The process environment with the checkout's shared env on top. */
+	env: Readonly<Record<string, string | undefined>>;
+}
+
+/**
+ * A file buncargo keeps in sync with the run: rendered before servers start,
+ * and again whenever what it reads changes (a capture, a tunnel URL, a port).
+ * Written atomically, and only when the content changed, so watchers do not
+ * rebuild for nothing.
+ */
+export interface GeneratedFileConfig {
+	/** Relative to the monorepo root. */
+	path: string;
+	/** The whole file. Values not known yet should render a placeholder. */
+	render: (ctx: GeneratedFileContext) => string;
+	/** Should be gitignored; `doctor` and `setup` check that it is. */
+	gitignore?: boolean;
+}
+
+/** A named app selection for `buncargo dev --profile=<name>`. */
+export interface ProfileConfig<TAppKey extends string = string> {
+	/** Apps to run, plus their `requiredApps`, exactly like `--apps`. */
+	apps: readonly TAppKey[];
+	description?: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Integrations
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * App keys that integrations add to a config, so `profiles` and the like can
+ * name them. An integration's module augments this:
+ *
+ * ```ts
+ * declare module "buncargo" { interface IntegrationAppNames { shopify: true } }
+ * ```
+ */
+// biome-ignore lint/suspicious/noEmptyInterface: filled in by module augmentation
+export interface IntegrationAppNames {}
+
+/** A config as an integration sees it: keys are only known as strings. */
+export type IntegrationConfig = DevConfig<
+	Record<string, ServiceConfig>,
+	Record<string, AppConfig>
+>;
+
+/** One app, as handed to {@link BuncargoIntegration.appEnv} and `describeApp`. */
+export interface IntegrationAppContext {
+	name: string;
+	config: AppConfig;
+	/** Its allocated port; absent for workers. */
+	port?: number;
+	root: string;
+	workspaceId: string;
+}
+
+/** The runtime an integration command gets. */
+export interface IntegrationCommandContext {
+	/** Arguments after `buncargo <integration> <command>`. */
+	args: string[];
+	/** Monorepo root of the working directory, when there is one. */
+	root: string | undefined;
+	/** Load `dev.config.ts`. Commands that only read the run registry skip it. */
+	loadEnv(): Promise<AnyDevEnvironment>;
+}
+
+/** `buncargo <integration> <name>`. */
+export interface IntegrationCommand {
+	summary: string;
+	usage?: string;
+	/** Returns the exit code. */
+	run(ctx: IntegrationCommandContext): number | Promise<number>;
+}
+
+/**
+ * Project-type knowledge packaged for any config: `buncargo/shopify`,
+ * `buncargo/expo`. A plain object, so writing one needs nothing from buncargo
+ * but these types.
+ */
+export interface BuncargoIntegration {
+	/** Also its CLI namespace: `buncargo <name> <command>`. */
+	name: string;
+	/**
+	 * Transform the config: add apps, services, env, generated files. Pure, and
+	 * runs before validation, so what it adds is validated like the rest.
+	 */
+	config?(config: IntegrationConfig): IntegrationConfig;
+	/** Run beside the config's own hooks, after them. */
+	hooks?: DevHooks<Record<string, ServiceConfig>, Record<string, AppConfig>>;
+	/** Shown by `buncargo doctor`, run by `buncargo setup`; fast ones by `dev`. */
+	checks?: readonly SetupCheck[];
+	/** `buncargo <name> <command>` */
+	commands?: Readonly<Record<string, IntegrationCommand>>;
+	/** Labelled values for `buncargo env`, the run registry and BuncargoBar. */
+	describe?(
+		ctx: HookContext<Record<string, ServiceConfig>, Record<string, AppConfig>>,
+	): Record<string, string>;
+	/** Env this integration adds to one app's process, beneath the app's own `envVars`. */
+	appEnv?(app: IntegrationAppContext): Record<string, string> | undefined;
+	/** Fields merged into the app's run-registry entry (what BuncargoBar reads). */
+	describeApp?(app: IntegrationAppContext): Record<string, unknown> | undefined;
+	/** A hint shown next to the app in the startup banner. */
+	bannerHint?(app: IntegrationAppContext): string | undefined;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Dev Config
@@ -933,6 +1218,8 @@ export type EnvVarsContext<
 	publicUrls: ComputedPublicUrls<TServices, TApps>;
 	/** `http://localhost:<port>` URLs, never rewritten by named hosts */
 	loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
+	/** Values apps printed, by capture name (see `AppConfig.captures`). */
+	captured?: Readonly<Record<string, string>>;
 };
 
 /**
@@ -1006,6 +1293,30 @@ export interface DevConfig<
 	secrets?: SecretsScopeConfig;
 	/** Docker Compose generation options (optional) */
 	docker?: DockerComposeGenerationOptions;
+	/** Preconditions `buncargo dev` verifies before starting (optional) */
+	checks?: readonly SetupCheck[];
+	/** Files rendered from the run's ports, URLs and captures (optional) */
+	generatedFiles?: readonly GeneratedFileConfig[];
+	/**
+	 * Integrations (`buncargo/shopify`, `buncargo/expo`, …), applied in order
+	 * before the config is validated (optional).
+	 */
+	integrations?: readonly BuncargoIntegration[];
+	/** Named scripts for `buncargo run <name>` (optional) */
+	tasks?: Record<
+		string,
+		TaskConfig<Extract<keyof TServices, string>, Extract<keyof TApps, string>>
+	>;
+	/**
+	 * Named app selections for `buncargo dev --profile=<name>` (optional).
+	 * A profile named `default` is what a bare `buncargo dev` runs.
+	 */
+	profiles?: Record<
+		string,
+		ProfileConfig<
+			Extract<keyof TApps, string> | Extract<keyof IntegrationAppNames, string>
+		>
+	>;
 }
 
 /**
@@ -1046,7 +1357,7 @@ type AnyDevHooks = {
 	[K in keyof DevHooks<
 		Record<string, ServiceConfig>,
 		Record<string, AppConfig>
-	>]?: (...args: never[]) => Promise<void>;
+	>]?: (...args: never[]) => void | Promise<void>;
 };
 
 /** {@link SeedConfig} with `check`'s context erased. */
@@ -1358,6 +1669,10 @@ export type AppEnvVars<
  */
 export interface StartOptions<
 	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
+	TServices extends Record<string, ServiceConfig> = Record<
+		string,
+		ServiceConfig
+	>,
 > {
 	/** Print output to console. Default: true */
 	verbose?: boolean;
@@ -1379,6 +1694,11 @@ export interface StartOptions<
 	skipEnvironmentLog?: boolean;
 	/** If set, start and wait for only these app names plus any transitive `requiredApps`. */
 	onlyApps?: Extract<keyof TApps, string>[];
+	/**
+	 * Start only these services (plus their Compose dependencies) and no apps.
+	 * Takes precedence over `onlyApps`; preparation is scoped to them as usual.
+	 */
+	onlyServices?: readonly Extract<keyof TServices, string>[];
 	/** Override Docker auto-start. Default: config.docker.autoStart (true, skipped in CI). */
 	autoStartDocker?: boolean;
 	/**
@@ -1500,7 +1820,10 @@ export interface DevEnvironment<
 	/** Path passed to docker compose -f */
 	readonly composeFile: string;
 	/** Which backend runs the containers: 'docker' or 'apple' */
-	prepareStart?(onlyApps?: Extract<keyof TApps, string>[]): void;
+	prepareStart?(
+		onlyApps?: Extract<keyof TApps, string>[],
+		onlyServices?: readonly Extract<keyof TServices, string>[],
+	): void;
 	readonly containerRuntime: ContainerRuntimeName;
 	/** Binary the runtime was resolved to, when overridden off `PATH` */
 	readonly containerRuntimeBinary?: string;
@@ -1508,13 +1831,56 @@ export interface DevEnvironment<
 	readonly hosts: HostsRuntime | null;
 	/** Seed command from config, when present */
 	readonly seed?: Pick<SeedConfig<TServices, TApps>, "command" | "cwd">;
+	/** `checks` from config and its integrations, run by `buncargo dev` before it starts anything */
+	readonly checks?: readonly SetupCheck[];
+	/** The config's integrations, after they have been applied. */
+	readonly integrations?: readonly BuncargoIntegration[];
+	/** `generatedFiles` from config and its integrations */
+	readonly generatedFiles?: readonly GeneratedFileConfig[];
+	/** Values apps printed (`captures`), by name. */
+	readonly captured: Readonly<Record<string, string>>;
+	/**
+	 * Record a value an app printed: update `captured` / `publicUrls`, fire
+	 * `onCapture` hooks and re-render generated files. Returns what changed
+	 * (`captured.<name>`, `publicUrls.<app>`). For callers that spawn apps
+	 * themselves; `buncargo dev` and `startServers` do it already.
+	 */
+	recordCapture(
+		app: string,
+		captured: { name: string; value: string; as: CaptureConfig["as"] },
+	): Promise<readonly string[]>;
+	/** Render every generated file; returns the paths whose content changed. */
+	renderGeneratedFiles(): string[];
+	/** Every integration's `describe`, merged: labelled values for humans. */
+	describeIntegrations(): Record<string, string>;
+	/** The config-level Infisical scope (`secrets`), when configured. */
+	readonly secrets?: SecretsScopeConfig;
+	/** `tasks` from config, for `buncargo run` */
+	readonly tasks?: Readonly<
+		Record<
+			string,
+			TaskConfig<Extract<keyof TServices, string>, Extract<keyof TApps, string>>
+		>
+	>;
+	/** `profiles` from config, for `buncargo dev --profile` */
+	readonly profiles?: Readonly<
+		Record<
+			string,
+			ProfileConfig<
+				| Extract<keyof TApps, string>
+				| Extract<keyof IntegrationAppNames, string>
+			>
+		>
+	>;
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Container Management
 	// ─────────────────────────────────────────────────────────────────────────
 
 	/** Start the dev environment (containers + optional servers) */
-	start(options?: StartOptions<TApps>): Promise<DevServerPids | null>;
+	start(
+		options?: StartOptions<TApps, TServices>,
+	): Promise<DevServerPids | null>;
 	/** Stop the dev environment */
 	stop(options?: StopOptions): Promise<void>;
 	/** Restart containers only */

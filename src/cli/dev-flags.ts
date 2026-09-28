@@ -58,6 +58,14 @@ const FLAGS = {
 		valueHint: "=<apps>",
 		description: "Run selected apps plus their requiredApps",
 	},
+	profile: {
+		name: "--profile",
+		kind: "string",
+		valueHint: "=<name>",
+		description: "Run a profile's apps (default: the profile named default)",
+		validate: (value: string) =>
+			value ? undefined : "--profile requires a profile name",
+	},
 	attach: {
 		name: "--attach",
 		kind: "string",
@@ -138,6 +146,10 @@ export const DEV_COMMAND_SPEC: CommandSpec = {
 			description: "Run only selected apps",
 		},
 		{
+			command: "bun dev --profile=full",
+			description: "Run the apps of profiles.full",
+		},
+		{
 			command: "bun dev --expose",
 			description: "Expose all targets with expose: true",
 		},
@@ -180,6 +192,8 @@ export interface DevCliArgs {
 	exposeValue: string | undefined;
 	appsRequested: boolean;
 	appsValue: string | undefined;
+	/** `--profile`; undefined falls back to a profile named `default`. */
+	profile: string | undefined;
 	attach: string | undefined;
 	keepContainers: boolean;
 	/** Skip the prompt and stop apps already running elsewhere. */
@@ -213,6 +227,8 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		);
 	if (bool(FLAGS.all) && !bool(FLAGS.down))
 		errors.push("--all requires --down.");
+	if (bool(FLAGS.apps) && bool(FLAGS.profile))
+		errors.push("Choose either --apps or --profile, not both.");
 
 	return {
 		flags,
@@ -230,6 +246,7 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		exposeValue: str(FLAGS.expose),
 		appsRequested: bool(FLAGS.apps),
 		appsValue: str(FLAGS.apps),
+		profile: str(FLAGS.profile),
 		attach: str(FLAGS.attach),
 		keepContainers: bool(FLAGS.keepContainers),
 		takeover: bool(FLAGS.takeover),

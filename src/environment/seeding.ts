@@ -167,12 +167,19 @@ export async function runSeedIfNeeded<
 	}
 
 	if (verbose) console.log(formatStep("🌱 Running seeders..."));
+	const computed: Record<string, string> =
+		envVars.buildEnvVars(productionBuild);
+	const secrets = await envVars.resolveSecrets(seed.secrets, {
+		signal: options.signal,
+		computed,
+	});
 	const result = await runSeedCommand({
 		command: seed.command,
 		signal: options.signal,
 		root: ctx.root,
 		cwd: seed.cwd,
-		envVars: envVars.buildEnvVars(productionBuild),
+		// Secrets beneath the computed env, as for every other process.
+		envVars: { ...secrets, ...computed },
 		forceExit: seed.forceExit,
 		verbose,
 	});

@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { isTcpPortOpen } from "../core/network";
+import { sleep } from "../core/sleep";
 import type { AppConfig } from "../types";
-import { isTcpPortOpen } from "./network";
-import { sleep } from "./sleep";
 
 /**
  * Expo apps, and the iOS simulator that shows one per checkout.

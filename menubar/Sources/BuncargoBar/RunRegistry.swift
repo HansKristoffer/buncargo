@@ -25,6 +25,8 @@ struct RunApp: Codable, Identifiable, Hashable {
     /// Present on Expo apps. Its fields belong to the CLI; here it only means
     /// "offer the simulator button".
     var expo: RunExpo?
+    /// The exclusive lease this app holds, e.g. `shopify-app:<client_id>`.
+    var exclusive: String?
     var status: RunStatus?
 
     var id: String { name }
@@ -63,6 +65,23 @@ struct RunService: Codable, Identifiable, Hashable {
     var isHTTP: Bool { url?.hasPrefix("http://") == true || url?.hasPrefix("https://") == true }
 }
 
+/// A labelled value from an integration, e.g. "Shopify preview".
+struct RunDetail: Codable, Identifiable, Hashable {
+    let label: String
+    let value: String
+
+    var id: String { label }
+    var isURL: Bool { value.hasPrefix("http://") || value.hasPrefix("https://") }
+}
+
+/// A config task, run from the menu with `buncargo run <name>`.
+struct RunTask: Codable, Identifiable, Hashable {
+    let name: String
+    var description: String?
+
+    var id: String { name }
+}
+
 struct RunHosts: Codable, Hashable {
     let active: Bool
     let tld: String
@@ -96,6 +115,10 @@ struct Run: Codable, Identifiable, Hashable {
     var cli: RunCLI?
     var apps: [RunApp]
     var services: [RunService]
+    /// Absent from registries written before tasks existed.
+    var tasks: [RunTask]?
+    /// Integration rows; absent from registries that predate integrations.
+    var details: [RunDetail]?
 
     var id: String { sessionId ?? root }
 

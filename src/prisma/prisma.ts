@@ -24,6 +24,8 @@ import { toPortMap } from "../core/ports";
  */
 
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import {
 	containerRuntimeForEnv,
@@ -36,9 +38,25 @@ import type {
 	DevEnvironment,
 	EnvValues,
 	PrismaConfig,
+	PrismaMigrateCheckOptions,
 	PrismaRunner,
 	ServiceConfig,
 } from "../types";
+import { recordGeneratedPrismaHash } from "./schema-hash";
+
+/** The major version of the `prisma` package installed for `dir`, if any. */
+export function installedPrismaMajor(dir: string): number | undefined {
+	try {
+		const manifest = createRequire(join(dir, "package.json")).resolve(
+			"prisma/package.json",
+		);
+		const { version } = JSON.parse(readFileSync(manifest, "utf8"));
+		const major = Number.parseInt(String(version), 10);
+		return Number.isFinite(major) ? major : undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 /**
  * Create a Prisma runner from config (used internally by createDevEnvironment).
@@ -51,6 +69,10 @@ export function createPrismaRunner<
 >(
 	env: DevEnvironment<TServices, TApps, TEnv>,
 	config: PrismaConfig<TServices, TApps>,
+	/** The config-level Infisical secrets, beneath the computed env. */
+	resolveSecrets: (
+		computed: Record<string, string>,
+	) => Promise<Record<string, string>>,
 ): PrismaRunner {
 	const { cwd = "packages/prisma" } = config;
 	// The defaults only exist on configs that actually declare a postgres
@@ -116,38 +138,19 @@ export function createPrismaRunner<
 		});
 	}
 
-	async function run(args: string[]): Promise<number> {
-		if (args.length === 0) {
-			console.log(`
-Usage: bun prisma <command> [args...]
-
-Examples:
-  bun prisma migrate dev     # Create new migration
-  bun prisma migrate deploy  # Apply migrations
-  bun prisma db push         # Push schema changes
-  bun prisma studio          # Open Prisma Studio
-  bun prisma migrate reset   # Reset database
-`);
-			return 0;
-		}
-
-		const port = toPortMap(env.ports)[service];
-
-		console.log(`
-🔧 Prisma CLI
-   Project: ${env.projectName}
-   Database: localhost:${port}
-   ${env.portOffset > 0 ? `(port offset +${env.portOffset})` : ""}
-`);
-
-		await ensureDatabase();
-
-		const envVars = env.buildEnvVars();
+	/** Spawn the Prisma CLI in `prisma.cwd`, with the database URL set. */
+	async function spawnPrisma(
+		args: readonly string[],
+		extraEnv: Record<string, string> = {},
+	): Promise<number> {
+		const envVars: Record<string, string> = env.buildEnvVars();
 		const workingDir = join(env.root, cwd);
 		const fullEnv = {
+			...(await resolveSecrets(envVars)),
 			...process.env,
 			...envVars,
 			[urlEnvVar]: getDatabaseUrl(),
+			...extraEnv,
 		};
 
 		console.log(`🔄 Running: prisma ${args.join(" ")}\n`);
@@ -170,5 +173,135 @@ Examples:
 		});
 	}
 
-	return { run, getDatabaseUrl, ensureDatabase };
+	async function run(args: string[]): Promise<number> {
+		if (args.length === 0) {
+			console.log(`
+Usage: bun prisma <command> [args...]
+
+Examples:
+  bun prisma migrate dev     # Create new migration
+  bun prisma migrate deploy  # Apply migrations
+  bun prisma db push         # Push schema changes
+  bun prisma studio          # Open Prisma Studio
+  bun prisma migrate reset   # Reset database
+  bun prisma migrate-check   # Fail if migrations and schema differ
+`);
+			return 0;
+		}
+
+		const port = toPortMap(env.ports)[service];
+
+		console.log(`
+🔧 Prisma CLI
+   Project: ${env.projectName}
+   Database: localhost:${port}
+   ${env.portOffset > 0 ? `(port offset +${env.portOffset})` : ""}
+`);
+
+		await ensureDatabase();
+		return spawnPrisma(args);
+	}
+
+	/**
+	 * A database beside the dev one for `migrate diff` to replay migrations
+	 * into. Prisma resets it on every diff, so it must never be the dev
+	 * database itself; created inside the container, so no host `psql` is
+	 * needed, and only when missing.
+	 */
+	async function ensureShadowDatabase(): Promise<string> {
+		const url = new URL(getDatabaseUrl());
+		const database = decodeURIComponent(url.pathname.slice(1)) || "postgres";
+		const shadow = `${database}_shadow`.replace(/[^A-Za-z0-9_]/g, "_");
+		const user = decodeURIComponent(url.username) || "postgres";
+
+		const created = await containerRuntimeForEnv(env).execInService({
+			projectName: env.projectName,
+			serviceName: getComposeServiceName(env.services, service),
+			root: env.root,
+			composeFile: env.composeFile,
+			timeoutMs: 30_000,
+			// Positional parameters rather than interpolation: nothing is re-parsed.
+			command: [
+				"sh",
+				"-c",
+				`psql -U "$1" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = '$2'" | grep -q 1 || createdb -U "$1" "$2"`,
+				"sh",
+				user,
+				shadow,
+			],
+		});
+		if (!created) {
+			throw new Error(
+				`Could not create the shadow database "${shadow}" in service "${service}". migrate-check needs a Postgres service with psql and createdb.`,
+			);
+		}
+
+		url.pathname = `/${shadow}`;
+		return url.toString();
+	}
+
+	async function migrateCheck(
+		options: PrismaMigrateCheckOptions = {},
+	): Promise<number> {
+		await ensureDatabase();
+		const shadowUrl = await ensureShadowDatabase();
+
+		const schema = options.schema ?? "prisma/schema.prisma";
+		// Prisma 7 renamed `--to-schema-datamodel` and dropped
+		// `--shadow-database-url`: the shadow URL comes from prisma.config.ts,
+		// which reads it from the environment set here.
+		const modern = (installedPrismaMajor(join(env.root, cwd)) ?? 7) >= 7;
+		const code = await spawnPrisma(
+			[
+				"migrate",
+				"diff",
+				"--from-migrations",
+				options.migrations ?? "prisma/migrations",
+				...(modern
+					? ["--to-schema", schema]
+					: [
+							"--to-schema-datamodel",
+							schema,
+							"--shadow-database-url",
+							shadowUrl,
+						]),
+				"--exit-code",
+				...(options.args ?? []),
+			],
+			{ SHADOW_DATABASE_URL: shadowUrl },
+		);
+
+		if (code === 1 && modern)
+			console.error(
+				'   Prisma 7 reads the shadow database from prisma.config.ts: set datasource.shadowDatabaseUrl to env("SHADOW_DATABASE_URL").',
+			);
+
+		if (code === 0) console.log("✅ Migrations match the schema.");
+		if (code === 2)
+			console.error(
+				"❌ The schema has changes no migration contains. Create one with `bunx buncargo prisma migrate dev`.",
+			);
+		return code;
+	}
+
+	async function generate(): Promise<number> {
+		const result = await env.exec(
+			config.generate ?? "bunx --no-install prisma generate",
+			{ cwd, verbose: true, throwOnError: false },
+		);
+		if (result.exitCode === 0) {
+			recordGeneratedPrismaHash(env.root, join(env.root, cwd));
+		}
+		return result.exitCode;
+	}
+
+	return {
+		run,
+		getDatabaseUrl,
+		ensureDatabase,
+		migrateCheck,
+		cwd,
+		generateCommand: config.generate,
+		generate,
+	};
 }

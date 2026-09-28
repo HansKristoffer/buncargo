@@ -10,6 +10,7 @@ import { startAppServers } from "./servers";
 const vars = {
 	getHookContext: (signal?: AbortSignal) => ({ signal }),
 	buildAppEnvVarsMap: () => ({}),
+	buildAppEnvVars: () => ({}),
 } as unknown as DevEnvVarsApi<
 	Record<string, ServiceConfig>,
 	Record<string, AppConfig>

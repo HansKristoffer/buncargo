@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import {
 	ensureReceiver,
 	request,
@@ -11,6 +10,7 @@ import {
 	parseDirectory,
 	type TCPConnection,
 } from "../../core/connect/protocol";
+import { openUrl } from "../../core/open-url";
 import { connectOrigin } from "../../core/runtime-flags";
 import {
 	type CommandSpec,
@@ -130,12 +130,7 @@ export async function handleConnect(args: string[]) {
 		if (!target) {
 			throw new Error("App is unavailable");
 		}
-		const opened = spawnSync(
-			process.platform === "darwin" ? "open" : "xdg-open",
-			[target.url],
-			{ stdio: "ignore" },
-		);
-		if (opened.status !== 0) {
+		if (!openUrl(target.url)) {
 			throw new Error(`Open ${target.url} in your browser`);
 		}
 		result = { url: target.url };

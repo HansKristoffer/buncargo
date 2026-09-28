@@ -61,6 +61,15 @@ describe("runs.json v1 fixture", () => {
 			expect(run?.apps[1]?.publicUrl).toContain("trycloudflare");
 			// The Expo app is the one the app offers a simulator button for.
 			expect(run?.apps[1]?.expo?.scheme).toBe("lullu");
+			// Integration rows and captures, and the lease an app holds.
+			expect(run?.details?.[0]?.label).toBe("Shopify preview");
+			expect(run?.captures?.appUrl).toBe("https://example.trycloudflare.com");
+			expect(run?.apps[0]?.exclusive).toStartWith("shopify-app:");
+			// Tasks get a run button; a description is optional.
+			expect(run?.tasks).toEqual([
+				{ name: "db:seed", description: "Seed the dev database" },
+				{ name: "reindex" },
+			]);
 
 			const postgres = run?.services.find(
 				(service) => service.name === "postgres",

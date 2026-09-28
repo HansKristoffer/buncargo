@@ -1,6 +1,3 @@
-import { openExpoSimulator } from "../../core/expo";
-import { findMonorepoRoot } from "../../core/ports";
-import { findRunsByRoot, type RunEntry } from "../../core/run-registry";
 import {
 	type CommandSpec,
 	type FlagSpec,
@@ -8,8 +5,11 @@ import {
 	formatCommandHelp,
 	readBooleanFlag,
 	readStringFlag,
-} from "../command-spec";
-import * as log from "../log";
+} from "../cli/command-spec";
+import * as log from "../cli/log";
+import { findMonorepoRoot } from "../core/ports";
+import { findRunsByRoot, type RunEntry } from "../core/run-registry";
+import { openExpoSimulator } from "./simulator";
 
 /**
  * `buncargo sim [<app>]` — this checkout's Expo app, in its own iOS simulator.
@@ -59,7 +59,7 @@ const SIM_COMMAND_SPEC: CommandSpec = {
 };
 
 /** 0 opened · 1 failed · 2 nothing to open. */
-export const SIM_EXIT = { ok: 0, failed: 1, notFound: 2 } as const;
+const SIM_EXIT = { ok: 0, failed: 1, notFound: 2 } as const;
 
 export async function handleSim(args: string[] = []): Promise<number> {
 	if (readBooleanFlag(args, FLAGS.help)) {
@@ -72,7 +72,7 @@ export async function handleSim(args: string[] = []): Promise<number> {
 		return SIM_EXIT.failed;
 	}
 	const errors: string[] = [];
-	const root = readStringFlag(args, FLAGS.root, errors) ?? safeMonorepoRoot();
+	const root = readStringFlag(args, FLAGS.root, errors) ?? findMonorepoRoot();
 	const session = readStringFlag(args, FLAGS.run, errors);
 	for (const problem of errors) log.error(problem);
 	if (errors.length > 0) return SIM_EXIT.failed;
@@ -83,11 +83,9 @@ export async function handleSim(args: string[] = []): Promise<number> {
 			args[index - 1] !== "--run",
 	);
 
-	const runs = root
-		? (await findRunsByRoot(root)).filter(
-				(run) => !session || run.sessionId === session,
-			)
-		: [];
+	const runs = (await findRunsByRoot(root)).filter(
+		(run) => !session || run.sessionId === session,
+	);
 	const candidates = runs.flatMap((run) =>
 		run.apps
 			.filter((app) => app.expo && (!name || app.name === name))
@@ -95,7 +93,7 @@ export async function handleSim(args: string[] = []): Promise<number> {
 	);
 	if (candidates.length === 0) {
 		if (runs.length === 0) {
-			log.error(`No active buncargo run for ${root ?? "this directory"}.`);
+			log.error(`No active buncargo run for ${root}.`);
 			log.hint("Start one with `buncargo dev`, then `buncargo sim`.");
 		} else if (name) {
 			log.error(`"${name}" is not an Expo app of this run.`);
@@ -116,15 +114,15 @@ export async function handleSim(args: string[] = []): Promise<number> {
 		log.error(`${app.name} is ${app.status}; nothing is serving Metro.`);
 		return SIM_EXIT.notFound;
 	}
+	if (app.port === undefined) {
+		log.error(`${app.name} has no listening port for Metro.`);
+		return SIM_EXIT.failed;
+	}
 
 	try {
 		const opened = await openExpoSimulator({
 			label: checkoutLabel(run),
-			port:
-				app.port ??
-				(() => {
-					throw new Error("Expo requires a listening port");
-				})(),
+			port: app.port,
 			expo: app.expo ?? {},
 			log: log.info,
 		});
@@ -138,12 +136,4 @@ export async function handleSim(args: string[] = []): Promise<number> {
 
 function checkoutLabel(run: RunEntry): string {
 	return `${run.projectPrefix}/${run.worktree ?? "main"}`;
-}
-
-function safeMonorepoRoot(): string | undefined {
-	try {
-		return findMonorepoRoot();
-	} catch {
-		return undefined;
-	}
 }

@@ -1,9 +1,14 @@
 import {
+	integrationCommandRows,
+	readAppliedConfig,
+} from "../integration-commands";
+import {
 	barSubcommandList,
 	CLI_COMMANDS,
 	COMMAND_HELP_EXTRAS,
 	hostsSubcommandList,
 } from "./registry";
+import { formatTaskRows } from "./run";
 
 /** Commands whose subcommands are worth naming in the one-line listing. */
 const SUBCOMMAND_LISTS: Record<string, () => string> = {
@@ -27,7 +32,24 @@ function commandRows(): string[] {
 	);
 }
 
-export function showHelp(): void {
+/** The config's tasks and integration commands, which only it knows. */
+async function configSections(): Promise<string> {
+	const config = await readAppliedConfig();
+	const tasks = config?.tasks ?? {};
+	const rows = (config?.integrations ?? []).flatMap(integrationCommandRows);
+	const width = Math.max(0, ...rows.map((row) => row.command.length));
+	return [
+		Object.keys(tasks).length > 0
+			? `\nTASKS (bunx buncargo run <task>):\n${formatTaskRows(tasks).join("\n")}\n`
+			: "",
+		rows.length > 0
+			? `\nINTEGRATIONS:\n${rows.map((row) => `  ${row.command.padEnd(width)}  ${row.description}`).join("\n")}\n`
+			: "",
+	].join("");
+}
+
+export async function showHelp(): Promise<void> {
+	const sections = await configSections();
 	console.log(`
 buncargo - Development environment CLI
 
@@ -56,7 +78,9 @@ EXAMPLES:
   bunx buncargo prisma studio           # Open Prisma Studio
   bunx buncargo env                     # Get ports/urls as JSON
   bunx buncargo env --get ports.api     # One raw value for scripts
-
+  bunx buncargo run db:seed             # Run a task from dev.config.ts
+  bunx buncargo ci --migrate -- bun test # Services + migrations in CI
+${sections}
 CONFIG:
   Create a dev.config.ts with a default export:
 

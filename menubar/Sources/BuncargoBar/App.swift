@@ -75,7 +75,10 @@ enum BuncargoBarMain {
                 let apps = run.apps
                     .map { "\($0.name)=\($0.state.rawValue)" }
                     .joined(separator: " ")
-                print("OK \(run.projectPrefix)/\(run.title) pid=\(run.pid) \(apps)")
+                let tasks = (run.tasks ?? []).map(\.name).joined(separator: ",")
+                let details = (run.details ?? []).count
+                let leases = run.apps.compactMap(\.exclusive).count
+                print("OK \(run.projectPrefix)/\(run.title) pid=\(run.pid) \(apps)\(tasks.isEmpty ? "" : " tasks=\(tasks)") details=\(details) leases=\(leases)")
             }
             exit(0)
         } catch {
@@ -172,7 +175,9 @@ struct MenuContentView: View {
                             RunRow(
                                 run: run,
                                 onStop: { target in stopper.request(run: run, target: target) },
-                                onSimulator: { app in stopper.openSimulator(run: run, app: app) }
+                                onSimulator: { app in stopper.openSimulator(run: run, app: app) },
+                                onRunTask: { task in stopper.runTask(run: run, task: task) },
+                                isRunningTask: { task in stopper.isRunningTask(run, task) }
                             )
                         }
                     }

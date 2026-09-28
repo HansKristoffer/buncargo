@@ -1,5 +1,4 @@
 import pc from "picocolors";
-import { isExpoApp } from "../core/expo";
 import { describeService } from "../core/service-identity";
 import {
 	colorizeName,
@@ -8,7 +7,7 @@ import {
 	formatSection,
 	prefixWidth,
 } from "../core/style";
-import type { AppConfig, ServiceConfig } from "../types";
+import type { ServiceConfig } from "../types";
 
 function tunnelFor(
 	tunnels:
@@ -42,6 +41,8 @@ export interface EnvironmentBannerInput {
 		publicUrl: string;
 		localUrl: string;
 	}>;
+	/** A dim hint after an app's row, from its integrations (`bunx buncargo sim`). */
+	hintFor?: (app: string) => string | undefined;
 }
 
 export function formatBannerHeader(input: {
@@ -156,8 +157,9 @@ export function formatEnvironmentBanner(
 			if (t) {
 				extras.push(formatClickableUrl(t.publicUrl));
 			}
-			if (isExpoApp(apps[name] as AppConfig | undefined)) {
-				extras.push(pc.dim("bunx buncargo sim"));
+			const hint = input.hintFor?.(name);
+			if (hint) {
+				extras.push(pc.dim(hint));
 			}
 			const suffix =
 				extras.length > 0 ? `  ${extras.join(pc.dim("  ·  "))}` : "";

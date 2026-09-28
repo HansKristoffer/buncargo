@@ -65,3 +65,17 @@ describe("parseDevArgs", () => {
 		}
 	});
 });
+
+describe("parseDevArgs --profile", () => {
+	it("reads the profile name", () => {
+		expect(parseDevArgs(["--profile=full"]).profile).toBe("full");
+		expect(parseDevArgs([]).profile).toBeUndefined();
+	});
+
+	// Two ways to pick apps in one command is ambiguous about which wins.
+	it("refuses --profile together with --apps", () => {
+		expect(parseDevArgs(["--profile=full", "--apps=api"]).errors).toContain(
+			"Choose either --apps or --profile, not both.",
+		);
+	});
+});

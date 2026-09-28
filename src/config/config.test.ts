@@ -1229,3 +1229,81 @@ describe("validateConfig helper app options", () => {
 		]);
 	});
 });
+
+describe("checks, tasks and profiles", () => {
+	const base = {
+		projectPrefix: "shop",
+		services: { postgres: { port: 5432 } },
+		apps: { api: { port: 3000, devCommand: "bun dev" } },
+	};
+
+	it("accepts well-formed entries", () => {
+		expect(
+			validateConfig({
+				...base,
+				checks: [{ name: "types", check: () => true, fix: "bun codegen" }],
+				tasks: {
+					"shop:seed": {
+						command: "bun scripts/seed.ts",
+						app: "api",
+						cwd: "scripts",
+						requiredServices: ["postgres"],
+					},
+				},
+				profiles: { default: { apps: ["api"] } },
+			}),
+		).toEqual([]);
+	});
+
+	it("reports malformed shapes", () => {
+		expect(
+			validateConfig({
+				...base,
+				checks: [{ name: "", check: "yes" }],
+				tasks: { "bad name": { command: "" } },
+				profiles: { empty: { apps: [] } },
+			}),
+		).toEqual([
+			"checks.0.name must be a nonempty string",
+			"checks.0.check must be a function",
+			"tasks.bad name has an invalid name",
+			"tasks.bad name.command must be a nonempty string",
+			"profiles.empty.apps must be a nonempty array of app names",
+		]);
+	});
+
+	it("reports references to unknown apps and services", () => {
+		expect(
+			validateConfig({
+				...base,
+				tasks: {
+					seed: {
+						command: "x",
+						app: "web",
+						requiredServices: ["redis"],
+						cwd: "../outside",
+					},
+				},
+				profiles: { full: { apps: ["api", "web"] } },
+			}),
+		).toEqual([
+			'tasks.seed.app "web" must match a configured app key',
+			'tasks.seed requires unknown service "redis"',
+			"tasks.seed.cwd cannot point outside the repository root.",
+			'profiles.full includes unknown app "web"',
+		]);
+	});
+
+	it("types task and profile keys against the config", () => {
+		defineDevConfig({
+			...base,
+			// @ts-expect-error - "web" is not a configured app
+			tasks: { seed: { command: "x", app: "web" } },
+		});
+		defineDevConfig({
+			...base,
+			// @ts-expect-error - "web" is not a configured app
+			profiles: { full: { apps: ["web"] } },
+		});
+	});
+});

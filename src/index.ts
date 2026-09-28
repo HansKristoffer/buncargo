@@ -7,7 +7,10 @@ export { runCli } from "./cli/run-cli";
 // Config factory
 export {
 	assertValidConfig,
+	type DiscoverAppsOptions,
 	defineDevConfig,
+	discoverApps,
+	exists,
 	mergeConfigs,
 	validateConfig,
 } from "./config/index";
@@ -56,6 +59,11 @@ export type {
 	AppHostOnlyEnvVarNames,
 	BuiltInHealthCheck,
 	BuiltInServiceEnvVarMap,
+	BuncargoIntegration,
+	CaptureConfig,
+	CaptureEvent,
+	CheckContext,
+	CheckOutcome,
 	// CLI
 	CliOptions,
 	// Computed types
@@ -94,6 +102,8 @@ export type {
 	ExecOptions,
 	ExecResult,
 	ExposedKeys,
+	GeneratedFileConfig,
+	GeneratedFileContext,
 	GetEnvVarValue,
 	HealthCheckFn,
 	HookContext,
@@ -101,6 +111,11 @@ export type {
 	HostsOptions,
 	HostsOptionsLike,
 	HostsRuntime,
+	IntegrationAppContext,
+	IntegrationAppNames,
+	IntegrationCommand,
+	IntegrationCommandContext,
+	IntegrationConfig,
 	// Migrations & Seed
 	MigrationConfig,
 	NamedHost,
@@ -110,8 +125,11 @@ export type {
 	PortOffsetProvenance,
 	// Prisma
 	PrismaConfig,
+	PrismaMigrateCheckOptions,
 	PrismaRunner,
+	ProfileConfig,
 	PublicTunnelHandle,
+	SecretsScopeConfig,
 	SeedCheckContext,
 	SeedCheckHelpers,
 	SeedConfig,
@@ -122,10 +140,12 @@ export type {
 	ServiceEnvValueSource,
 	ServiceEnvVarMap,
 	ServiceEnvVarNames,
+	SetupCheck,
 	SharedEnvVarNames,
 	// Start/Stop options
 	StartOptions,
 	StopOptions,
+	TaskConfig,
 	TypedAppDefinitions,
 	UrlBuilderContext,
 	UrlBuilderFn,

@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import { containerRuntimeForEnv } from "../container-runtime";
 import { withDeadline, withSignal } from "../core/deadline";
 import { removeHostRoutes } from "../core/hosts";
+import { releaseLeases } from "../core/leases";
 import { isDeliberateExit, startDevServers } from "../core/process";
 import { joinColoredNames } from "../core/style";
 import {
@@ -17,12 +18,20 @@ import {
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../core/watchdog-constants";
 import { buildStartPlan, resolveSelectedApps } from "../planning";
 import type {
+	AnyDevEnvironment,
 	AppConfig,
 	CliOptions,
 	DevEnvironment,
 	ServiceConfig,
 } from "../types";
 import { checkMenuBarAppUpdate, offerMenuBarApp } from "./bar-offer";
+import {
+	checkFailureError,
+	describeCheckFailures,
+	isWarning,
+	runChecks,
+} from "./checks";
+import { allChecks } from "./core-checks";
 import { createDevConnect, type DevConnect } from "./dev-connect";
 import {
 	type DevCliArgs,
@@ -31,6 +40,7 @@ import {
 	printDevHelp,
 } from "./dev-flags";
 import { activateNamedHosts, releaseNamedHosts } from "./dev-hosts";
+import { acquireAppLeases } from "./dev-leases";
 import {
 	createTunnelCoordinator,
 	type DevTunnelCoordinator,
@@ -39,7 +49,12 @@ import {
 import { CliError, toCliError } from "./errors";
 import * as log from "./log";
 import { classifyCliApps, parseRequiredCommaSeparatedFlag } from "./port-reuse";
-import { markApps, publishCurrentRun, recordAppSpawn } from "./run-publish";
+import {
+	markApps,
+	publishCurrentRun,
+	recordAppSpawn,
+	recordRunCapture,
+} from "./run-publish";
 import {
 	isInteractive,
 	promptTakeover,
@@ -219,6 +234,7 @@ async function teardown<
 			tunnels.stop(),
 			connect?.stop(),
 			releaseNamedHosts(env),
+			releaseLeases(env.sessionId),
 			// Releases rather than withdraws: a run that owns containers leaves
 			// its entry behind, because that entry is what tells the sweep the
 			// containers may still be reused and for how long. A run with none
@@ -282,10 +298,11 @@ async function runDevFlow<
 	// argv only ever yields plain strings. `resolveSelectedApps` drops names that
 	// are not configured apps and the check below fails when nothing is left, so
 	// this is the single place the CLI crosses into the config's app keys.
-	let selectedAppNames: Extract<keyof TApps, string>[] | undefined;
+	let selectedAppNames: Extract<keyof TApps, string>[] | undefined =
+		selectProfileApps(env, args.profile);
 	let appsForDev: Record<string, AppConfig> = resolveSelectedApps(
 		env.apps,
-		undefined,
+		selectedAppNames,
 	).apps;
 	if (args.appsRequested) {
 		selectedAppNames = parseRequiredCommaSeparatedFlag(
@@ -300,6 +317,24 @@ async function runDevFlow<
 
 	const plan = buildStartPlan(env.apps, env.services, selectedAppNames);
 	validateDevStart(env, args, appsForDev, plan.requiredServiceKeys);
+
+	// Before anything is started: a missing generated file fails here with its
+	// fix, instead of deep inside whichever app imports it first. Only the fast
+	// checks: this runs on every start in every worktree.
+	if (!args.oneShot) {
+		const anyEnv = env as unknown as AnyDevEnvironment;
+		const checks = allChecks(anyEnv).filter((check) => check.fast !== false);
+		const failed = (
+			await timer.measure("checks", () =>
+				runChecks(checks, { root: env.root, env: anyEnv }),
+			)
+		).filter((result) => !result.ok);
+		for (const line of describeCheckFailures(failed.filter(isWarning))) {
+			log.warn(line);
+		}
+		const errors = failed.filter((result) => !isWarning(result));
+		if (errors.length > 0) throw checkFailureError(errors);
+	}
 	connect?.plan(appsForDev, plan.requiredServiceKeys, env.services);
 	if (connect && !connect.active)
 		log.info("No selected endpoints to share through frp.");
@@ -404,7 +439,7 @@ async function runDevFlow<
 	if (args.exposeRequested) {
 		await tunnels.planExpose({
 			exposeValue: args.exposeValue,
-			appsRequested: args.appsRequested,
+			appsRequested: selectedAppNames !== undefined,
 			selectedAppNames: new Set(Object.keys(appsForDev)),
 			selectedServiceNames: new Set(plan.requiredServiceKeys),
 			startAppNames: new Set(Object.keys(classifiedApps.startApps)),
@@ -472,6 +507,12 @@ async function runDevFlow<
 	}
 
 	flushHostsWarnings();
+
+	// Leases before anything spawns and before the run is published: a refused
+	// lease ends this run, and the registry should never show it as starting.
+	await acquireAppLeases(env, classifiedApps.startApps, {
+		takeover: args.takeover,
+	});
 
 	// Published here, after the takeover has been decided: before it, the app
 	// classification still describes a reuse the takeover is about to undo, and
@@ -584,8 +625,20 @@ async function runDevFlow<
 							: "failed",
 					);
 				},
-				onAfterWave1: (signal) =>
-					timer.measure("tunnels", () => tunnels.openOwnedTunnels(signal)),
+				onAfterWave1: async (signal) => {
+					await timer.measure("tunnels", () =>
+						tunnels.openOwnedTunnels(signal),
+					);
+					// Tunnel URLs are now known; files that print them re-render.
+					for (const path of env.renderGeneratedFiles()) {
+						log.done(`Updated ${path}`);
+					}
+				},
+				onCapture: async (app, captured) => {
+					const changed = await env.recordCapture(app, captured);
+					void recordRunCapture(env, app, captured);
+					return changed;
+				},
 				// Nothing to wait for without --expose, so needsPublicUrls apps
 				// join wave 1 and get health-checked like everything else.
 				deferPublicUrlApps: args.exposeRequested,
@@ -595,6 +648,30 @@ async function runDevFlow<
 	} finally {
 		await teardown(env, tunnels, connect);
 	}
+}
+
+/**
+ * The apps `--profile` selects, or the `default` profile's when neither it nor
+ * `--apps` is given. `undefined` means every app, as before profiles existed.
+ */
+export function selectProfileApps<TApps extends Record<string, AppConfig>>(
+	env: Pick<DevEnvironment<Record<string, ServiceConfig>, TApps>, "profiles">,
+	name: string | undefined,
+): Extract<keyof TApps, string>[] | undefined {
+	const profiles = env.profiles ?? {};
+	const profile = profiles[name ?? "default"];
+	// Validation checked these against the applied config, which includes the
+	// apps integrations add, so every name is an app key at runtime.
+	if (profile) return [...profile.apps] as Extract<keyof TApps, string>[];
+	if (name === undefined) return undefined;
+
+	const available = Object.keys(profiles);
+	throw new CliError(
+		`Unknown profile "${name}".`,
+		available.length > 0
+			? [`Available profiles: ${available.join(", ")}`]
+			: ["Add one to your dev config: profiles: { full: { apps: [...] } }"],
+	);
 }
 
 /**
