@@ -93,7 +93,7 @@ beforeAll(async () => {
 	// Up once the run has captured the CLI's URL.
 	const deadline = Date.now() + 45_000;
 	while (Date.now() < deadline) {
-		if ((await buncargo("shopify", "url")).code === 0) return;
+		if ((await buncargo("url", "shopify")).code === 0) return;
 		if (dev.exitCode !== null) break;
 		await Bun.sleep(300);
 	}
@@ -110,7 +110,7 @@ afterAll(async () => {
 });
 
 it("captures the tunnel URL and serves the API through it", async () => {
-	const { stdout: url, code } = await buncargo("shopify", "url");
+	const { stdout: url, code } = await buncargo("url", "shopify");
 	expect(code).toBe(0);
 	expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
 

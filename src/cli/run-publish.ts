@@ -65,7 +65,7 @@ export interface RunSource {
 	/** Integrations add their own fields to each app's entry (`expo`, …). */
 	readonly integrations?: readonly BuncargoIntegration[];
 	readonly workspaceId?: string;
-	describeIntegrations?(): Record<string, string>;
+	details?(): Record<string, string>;
 	readonly tasks?: Readonly<Record<string, { readonly description?: string }>>;
 	readonly hosts: {
 		readonly active: boolean;
@@ -106,12 +106,12 @@ export function readGitBranch(root: string): string | undefined {
 	}
 }
 
-/** Integrations' labelled values, as registry rows; best-effort like the rest. */
-function runDetails(env: Pick<RunSource, "describeIntegrations">): {
+/** The run's labelled values, as registry rows; best-effort like the rest. */
+function runDetails(env: Pick<RunSource, "details">): {
 	details?: RunDetailEntry[];
 } {
 	try {
-		const values = env.describeIntegrations?.() ?? {};
+		const values = env.details?.() ?? {};
 		const details = Object.entries(values).map(([label, value]) => ({
 			label,
 			value,
@@ -401,10 +401,10 @@ export async function recordAppSpawn(
 /**
  * Record a captured value: in `captures`, and as the app's `publicUrl` when
  * it is one, so BuncargoBar shows the preview URL like a tunnel's. Refreshes
- * the integrations' `describe` rows too, since those usually read captures.
+ * the labelled rows too, since those are mostly captures.
  */
 export async function recordRunCapture(
-	env: RunSession & Pick<RunSource, "describeIntegrations">,
+	env: RunSession & Pick<RunSource, "details">,
 	app: string,
 	captured: CapturedValue,
 ): Promise<void> {

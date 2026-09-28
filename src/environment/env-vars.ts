@@ -25,6 +25,7 @@ import type {
 	SecretsScopeConfig,
 	ServiceConfig,
 } from "../types";
+import { capturedEnv } from "./captures";
 import type { DevEnvContext } from "./context";
 
 export interface DevEnvVarsApi<
@@ -98,6 +99,7 @@ export function createEnvVarsApi<
 			loopbackUrls,
 			publicUrls: publicUrls as ComputedPublicUrls<TServices, TApps>,
 		});
+		Object.assign(shared, capturedEnv(apps, ctx.captured));
 		shared.BUNCARGO_WORKSPACE_ID = ctx.workspaceId;
 		if (ctx.hosts?.active) {
 			if (ctx.hosts.caPath) {

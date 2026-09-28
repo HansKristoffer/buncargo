@@ -145,6 +145,14 @@ export function validateConfigShape(value: unknown): string[] {
 							errors.push(
 								`${path}.captures.${name}.as must be "publicUrl", "value" or "event"`,
 							);
+						fields(capture, `${path}.captures.${name}.`, ["label"], "string");
+						check(
+							capture.env,
+							`${path}.captures.${name}.env`,
+							typeof capture.env === "string" &&
+								/^[A-Za-z_][A-Za-z0-9_]*$/.test(capture.env),
+							"an env var name",
+						);
 					}
 				for (const key of [
 					"requiredServices",

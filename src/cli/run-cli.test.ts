@@ -158,7 +158,7 @@ function createStubEnv(
 		captured: {},
 		recordCapture: async () => [],
 		renderGeneratedFiles: () => [],
-		describeIntegrations: () => ({}),
+		details: () => ({}),
 		getExpoApiUrl: () => "http://127.0.0.1:3000",
 		getFrontendPort: () => 5173,
 		sessionId: "test-session",
