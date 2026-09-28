@@ -41,7 +41,8 @@ function buncargo(root: string, ...args: string[]) {
 	return execAsync(
 		[process.execPath, cli, ...args],
 		root,
-		{},
+		// CI makes `setup` apply fixes on its own; the tests run on CI too.
+		{ CI: "false", GITHUB_ACTIONS: "false" },
 		{
 			throwOnError: false,
 		},
