@@ -28,7 +28,8 @@
           "url": "https://t3code-f003056f.lullu.localhost",
           "loopbackUrl": "http://localhost:9273",
           "hostname": "t3code-f003056f.lullu.localhost",
-          "status": "ready"
+          "status": "ready",
+          "exclusive": "shopify-app:0123456789abcdef0123456789abcdef"
         },
         {
           "name": "api",
@@ -87,6 +88,28 @@
             "runtime": "docker",
             "name": "fixture-init"
           }
+        }
+      ],
+      "tasks": [
+        {
+          "name": "db:seed",
+          "description": "Seed the dev database"
+        },
+        {
+          "name": "reindex"
+        }
+      ],
+      "captures": {
+        "appUrl": "https://example.trycloudflare.com"
+      },
+      "details": [
+        {
+          "label": "Shopify preview",
+          "value": "https://example.myshopify.com/admin/oauth/redirect_from_cli?client_id=x"
+        },
+        {
+          "label": "Shopify dev store",
+          "value": "example.myshopify.com"
         }
       ]
     },

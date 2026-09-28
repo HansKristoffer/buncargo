@@ -71,5 +71,7 @@ export function mergeConfigs<
 		options: mergeGroup(base.options, overrides.options),
 		docker: mergeGroup(base.docker, overrides.docker),
 		secrets: mergeGroup(base.secrets, overrides.secrets),
+		tasks: mergeGroup(base.tasks, overrides.tasks),
+		profiles: mergeGroup(base.profiles, overrides.profiles),
 	};
 }

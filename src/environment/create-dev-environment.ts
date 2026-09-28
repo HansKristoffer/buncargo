@@ -1,4 +1,5 @@
 import { assertValidConfig } from "../config";
+import { applyIntegrations } from "../config/integrations";
 import { withDeadline } from "../core/deadline";
 import { waitForServer } from "../core/network";
 import { toPortMap } from "../core/ports";
@@ -19,8 +20,10 @@ import type {
 	PrismaRunner,
 	ServiceConfig,
 } from "../types";
+import { createCaptureRecorder } from "./captures";
 import { createDevEnvContext } from "./context";
 import { createEnvVarsApi } from "./env-vars";
+import { renderGeneratedFiles } from "./generated-files";
 import { createLifecycleApi } from "./lifecycle";
 import { createRunClaimApi } from "./run-claim";
 import { createServersApi } from "./servers";
@@ -57,16 +60,24 @@ export function createDevEnvironment<
 		readOnly?: boolean;
 	} = {},
 ): DevEnvironment<TServices, TApps, TEnv> {
-	assertValidConfig(config);
+	// Integrations transform the config before anything reads it; `withSuffix`
+	// re-applies them to the original, which is pure and gives the same result.
+	const resolved = applyIntegrations(config);
+	assertValidConfig(resolved);
 
-	const ctx = createDevEnvContext(config, options);
+	const ctx = createDevEnvContext(resolved, options);
 	const envVars = createEnvVarsApi(ctx);
 	const runClaim = createRunClaimApi(ctx);
 	const lifecycle = createLifecycleApi(ctx, envVars, runClaim);
+	const recordCapture = createCaptureRecorder(ctx, envVars);
 	const servers = createServersApi(ctx, envVars);
 
 	function getExpoApiUrl(): string {
-		const appName = config.options?.expoApiApp ?? "api";
+		const expoIntegration = resolved.integrations?.find(
+			(integration) => integration.name === "expo",
+		) as { apiApp?: string } | undefined;
+		const appName =
+			resolved.options?.expoApiApp ?? expoIntegration?.apiApp ?? "api";
 		const apiPort = toPortMap(ctx.ports)[appName];
 		const url = `http://${ctx.localIp}:${apiPort}`;
 		logExpoApiUrl(url);
@@ -77,8 +88,8 @@ export function createDevEnvironment<
 		// `frontendApp` first: it is the narrower knob, and a project that set
 		// both means the frontend is not the primary app.
 		const configured =
-			config.options?.frontendApp ??
-			configuredPrimaryApp(config.options as PrimaryAppInput["options"]);
+			resolved.options?.frontendApp ??
+			configuredPrimaryApp(resolved.options as PrimaryAppInput["options"]);
 		const portMap = toPortMap(ctx.ports);
 		const port =
 			(configured ? portMap[configured] : undefined) ??
@@ -91,7 +102,7 @@ export function createDevEnvironment<
 	const env: DevEnvironment<TServices, TApps, TEnv> = {
 		// Configuration access
 		projectName: ctx.projectName,
-		projectPrefix: config.projectPrefix,
+		projectPrefix: resolved.projectPrefix,
 		ports: ctx.ports,
 		urls: ctx.urls,
 		loopbackUrls: ctx.loopbackUrls,
@@ -120,9 +131,29 @@ export function createDevEnvironment<
 		setNamedHostsActive: (active, extras) => {
 			ctx.setNamedHostsActive(active, extras);
 		},
-		seed: config.seed
-			? { command: config.seed.command, cwd: config.seed.cwd }
+		seed: resolved.seed
+			? { command: resolved.seed.command, cwd: resolved.seed.cwd }
 			: undefined,
+		checks: resolved.checks,
+		secrets: resolved.secrets,
+		integrations: resolved.integrations,
+		generatedFiles: resolved.generatedFiles,
+		captured: ctx.captured,
+		recordCapture,
+		renderGeneratedFiles: () => renderGeneratedFiles(ctx, envVars),
+		describeIntegrations: () =>
+			Object.assign(
+				{},
+				...(resolved.integrations ?? []).map((integration) =>
+					integration.describe?.(
+						envVars.getHookContext() as unknown as Parameters<
+							NonNullable<typeof integration.describe>
+						>[0],
+					),
+				),
+			),
+		tasks: resolved.tasks,
+		profiles: resolved.profiles,
 
 		// Container management
 		start: lifecycle.start,
@@ -134,7 +165,7 @@ export function createDevEnvironment<
 		resolvePrimaryApp: (selected) =>
 			resolvePrimaryApp({
 				apps: ctx.apps,
-				options: config.options as PrimaryAppInput["options"],
+				options: resolved.options as PrimaryAppInput["options"],
 				selected,
 			}) as Extract<keyof TApps, string> | undefined,
 
@@ -142,7 +173,7 @@ export function createDevEnvironment<
 		startServers: servers.startServersOnly,
 		runServerHook: async (phase, signal) => {
 			const hook =
-				config.hooks?.[phase === "before" ? "beforeServers" : "afterServers"];
+				resolved.hooks?.[phase === "before" ? "beforeServers" : "afterServers"];
 			if (hook)
 				await withDeadline(
 					(hookSignal) => hook(envVars.getHookContext(hookSignal)),
@@ -188,10 +219,11 @@ export function createDevEnvironment<
 			}),
 	};
 
-	if (config.prisma) {
+	if (resolved.prisma) {
 		(env as { prisma: PrismaRunner }).prisma = createPrismaRunner(
 			env,
-			config.prisma,
+			resolved.prisma,
+			(computed) => envVars.resolveSecrets(undefined, { computed }),
 		);
 	}
 

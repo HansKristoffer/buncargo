@@ -1,0 +1,71 @@
+#!/usr/bin/env bun
+/**
+ * A stand-in for Shopify CLI, for the example's end-to-end test: everything
+ * `shopify app dev` does that buncargo depends on, minus the Shopify login.
+ *
+ * It reads the app toml's `web_directories`, starts that web's `dev` command
+ * (buncargo's `wait --hold`) and proxies a "tunnel" to the web's fixed port,
+ * printing the lines buncargo captures, framed the way the real TUI frames
+ * them.
+ */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const args = process.argv.slice(2);
+const [command, sub] = args;
+
+if (command === "version") {
+	console.log("3.93.1");
+	process.exit(0);
+}
+if (command === "auth" || (command === "app" && sub === "config")) process.exit(0);
+if (!(command === "app" && sub === "dev")) {
+	console.error(`fake shopify: unsupported ${args.join(" ")}`);
+	process.exit(1);
+}
+
+const configIndex = args.indexOf("--config");
+const configName = configIndex >= 0 ? args[configIndex + 1] : "shopify.app.toml";
+const file = configName?.endsWith(".toml") ? configName : `shopify.app.${configName}.toml`;
+const app = Bun.TOML.parse(readFileSync(file, "utf8")) as { web_directories?: string[] };
+const webDir = app.web_directories?.[0];
+if (!webDir) {
+	console.error("fake shopify: web_directories is empty; the real CLI would start every web");
+	process.exit(1);
+}
+const web = Bun.TOML.parse(readFileSync(join(webDir, "shopify.web.toml"), "utf8")) as {
+	port?: number;
+	commands: { dev: string };
+};
+
+const child = Bun.spawn(["sh", "-c", web.commands.dev], {
+	cwd: webDir,
+	stdio: ["ignore", "inherit", "inherit"],
+});
+
+const proxy = Bun.serve({
+	port: 0,
+	hostname: "127.0.0.1",
+	fetch(request) {
+		const url = new URL(request.url);
+		return fetch(`http://127.0.0.1:${web.port}${url.pathname}${url.search}`, {
+			method: request.method,
+			headers: request.headers,
+		});
+	},
+});
+
+console.log(`\u001b[1m│\u001b[22m Using URL: \u001b[36mhttp://127.0.0.1:${proxy.port}\u001b[39m │`);
+console.log("GraphiQL URL: http://localhost:3457/graphiql?key=fake");
+console.log("✅ Ready, watching for changes in your app");
+
+const stop = () => {
+	child.kill();
+	proxy.stop(true);
+	process.exit(0);
+};
+process.on("SIGTERM", stop);
+process.on("SIGINT", stop);
+await child.exited;
+console.error("fake shopify: the web process exited");
+process.exit(1);

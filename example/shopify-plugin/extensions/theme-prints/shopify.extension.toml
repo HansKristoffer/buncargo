@@ -1,0 +1,6 @@
+api_version = "2026-01"
+
+[[extensions]]
+type = "theme"
+name = "prints"
+handle = "prints"

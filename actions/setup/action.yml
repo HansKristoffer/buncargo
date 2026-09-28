@@ -1,0 +1,75 @@
+name: buncargo setup
+description: >-
+  Install Bun (from .bun-version) and the workspace dependencies, caching
+  both the Bun store and every workspace's node_modules.
+
+inputs:
+  working-directory:
+    description: Directory holding package.json and bun.lock.
+    default: "."
+  bun-version-file:
+    description: File naming the Bun version; ignored when it does not exist.
+    default: .bun-version
+  bun-version:
+    description: Bun version when there is no version file.
+    default: latest
+  node-modules:
+    description: >-
+      node_modules directories to cache, relative to working-directory. The
+      isolated linker puts links in every workspace, so the root alone is not
+      enough for a cache hit to skip the install.
+    default: |
+      node_modules
+      apps/*/node_modules
+      packages/*/node_modules
+      extensions/*/node_modules
+  install:
+    description: Run `bun install --frozen-lockfile`.
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - id: version
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        VERSION_FILE: ${{ inputs.bun-version-file }}
+      run: |
+        if [ -f "$VERSION_FILE" ]; then
+          echo "file=$VERSION_FILE" >> "$GITHUB_OUTPUT"
+        fi
+
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version-file: ${{ steps.version.outputs.file && format('{0}/{1}', inputs.working-directory, steps.version.outputs.file) || '' }}
+        bun-version: ${{ !steps.version.outputs.file && inputs.bun-version || '' }}
+
+    - id: paths
+      shell: bash
+      env:
+        WORKDIR: ${{ inputs.working-directory }}
+        NODE_MODULES: ${{ inputs.node-modules }}
+      run: |
+        {
+          echo "list<<EOF"
+          echo "~/.bun/install/cache"
+          while IFS= read -r entry; do
+            [ -n "$entry" ] && echo "$WORKDIR/$entry"
+          done <<< "$NODE_MODULES"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    # Keyed on the lockfile and the Bun version together: node_modules built
+    # by one Bun are not guaranteed to be what another would install.
+    - uses: actions/cache@v4
+      with:
+        path: ${{ steps.paths.outputs.list }}
+        key: buncargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(format('{0}/bun.lock', inputs.working-directory), format('{0}/bun.lockb', inputs.working-directory), format('{0}/{1}', inputs.working-directory, inputs.bun-version-file)) }}
+        restore-keys: |
+          buncargo-${{ runner.os }}-${{ runner.arch }}-
+
+    - if: inputs.install == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: bun install --frozen-lockfile

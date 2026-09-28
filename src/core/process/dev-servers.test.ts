@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { chmodSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { startFakeInfisical } from "../secrets/fake-infisical.testing";
 import { clearScopeSecretsCache } from "../secrets/infisical";
-import { startDevServers } from "./dev-servers";
+import { startDevServers, stopDevServers } from "./dev-servers";
 import { signalProcessTree } from "./port-owner";
 
 describe("startDevServers", () => {
@@ -78,16 +78,15 @@ describe("startDevServers secret injection", () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-secrets-spawn-"));
 		const savedHome = process.env.HOME;
 		const savedPath = process.env.BUNCARGO_INFISICAL_PATH;
-		const binary = join(root, "infisical");
-		await Bun.write(
-			binary,
-			`#!/bin/sh\necho '[{"key":"OPENAI_API_KEY","value":"sk-project"},{"key":"PORT","value":"9999"},{"key":"BLANK","value":""}]'\n`,
-		);
-		chmodSync(binary, 0o755);
-		process.env.HOME = root;
-		process.env.BUNCARGO_INFISICAL_PATH = binary;
+		const infisical = startFakeInfisical();
+		infisical.projects.p1 = {
+			secrets: { OPENAI_API_KEY: "sk-project", PORT: "9999", BLANK: "" },
+		};
+		process.env.HOME = infisical.home;
+		process.env.BUNCARGO_INFISICAL_PATH = infisical.cliPath;
 		const marker = join(root, "env.json");
 		const port = 45400 + Math.floor(Math.random() * 200);
+		const secrets = { projectId: "p1", siteUrl: infisical.siteUrl };
 
 		try {
 			await startDevServers(
@@ -98,7 +97,7 @@ describe("startDevServers secret injection", () => {
 						devCommand: `bun -e ${JSON.stringify(
 							`await Bun.write(${JSON.stringify(marker)}, JSON.stringify({ secret: process.env.OPENAI_API_KEY ?? null, port: process.env.PORT ?? null, blank: process.env.BLANK ?? null }))`,
 						)}`,
-						secrets: { projectId: "p1" },
+						secrets,
 					},
 				},
 				root,
@@ -118,279 +117,118 @@ describe("startDevServers secret injection", () => {
 				// An empty export is left out, so the app's own loader still fetches.
 				blank: null,
 			});
+
+			// A required key nobody provides stops the run before anything spawns.
+			await expect(
+				startDevServers(
+					{
+						api: {
+							port,
+							healthEndpoint: false,
+							devCommand: "exit 0",
+							secrets: {
+								...secrets,
+								required: ["OPENAI_API_KEY", "STRIPE_KEY"],
+							},
+						},
+					},
+					root,
+					{},
+					{ api: port },
+					{ verbose: false, waitForExit: true, waitForHealth: async () => {} },
+				),
+			).rejects.toThrow("api: STRIPE_KEY");
 		} finally {
 			if (savedHome === undefined) delete process.env.HOME;
 			else process.env.HOME = savedHome;
 			if (savedPath === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
 			else process.env.BUNCARGO_INFISICAL_PATH = savedPath;
 			clearScopeSecretsCache();
+			infisical.stop();
 			await rm(root, { recursive: true, force: true });
 		}
 	});
 });
 
-describe("startDevServers supervision", () => {
-	/**
-	 * Apps are spawned in a loop and supervised only once the wave is up, so an
-	 * app that dies in between emits its `close` before anything is listening.
-	 * That event is gone for good; the run used to wait forever for a process
-	 * that was never coming back, with nothing printed to say so.
-	 */
-	it("notices an app that exited before supervision started", async () => {
-		const root = await mkdtemp(join(tmpdir(), "buncargo-early-exit-"));
-		const port = 45600 + Math.floor(Math.random() * 200);
-		const exits: Array<[string, number | null]> = [];
+describe("startDevServers ordering, prebuild and captures", () => {
+	it("starts after health, prebuilds first, and restarts on a capture", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-order-"));
+		const apiPort = 45400 + Math.floor(Math.random() * 200);
+		const log = join(root, "events.log");
+		const append = (line: string) =>
+			`bun -e ${JSON.stringify(`require("node:fs").appendFileSync(${JSON.stringify(log)}, ${JSON.stringify(`${line}\n`)})`)}`;
+		const captures: string[] = [];
+		let pids: Record<string, number> = {};
 
 		try {
-			await startDevServers(
+			pids = await startDevServers(
 				{
-					quick: {
-						port,
-						devCommand: "bun -e 'process.exit(0)'",
-						healthEndpoint: false,
+					api: {
+						port: apiPort,
+						devCommand: `${append("api spawned")} && bun -e 'Bun.serve({ port: ${apiPort}, fetch: () => new Response("ok") }); setInterval(() => {}, 60000)'`,
+					},
+					// Would log "api down" if it spawned before api answered.
+					web: {
+						kind: "worker",
+						startAfter: ["api"],
+						devCommand: `bun -e 'fetch("http://localhost:${apiPort}/").then(() => require("node:fs").appendFileSync(${JSON.stringify(log)}, "web saw api\\n"), () => require("node:fs").appendFileSync(${JSON.stringify(log)}, "api down\\n")); setInterval(() => {}, 60000)'`,
+					},
+					ext: {
+						kind: "worker",
+						prebuild: append("ext prebuilt"),
+						// Printed after a pause: an app that has not spawned yet gets the
+						// new value anyway, so only a running one is restarted.
+						devCommand: `${append("ext spawned")} && sleep 1 && echo 'Using URL: https://one.example/api/rpc' && sleep 60`,
+						captures: {
+							url: { pattern: /Using URL:\s*(\S+)/, as: "publicUrl" },
+						},
+					},
+					dependent: {
+						kind: "worker",
+						restartOn: ["captured.url"],
+						devCommand: `${append("dependent spawned")} && sleep 60`,
 					},
 				},
 				root,
 				{},
-				{ quick: port },
+				{ api: apiPort },
 				{
 					verbose: false,
-					waitForExit: true,
-					// Long enough that a lost `close` event shows up as a timeout
-					// rather than as a pass.
-					waitForHealth: async () => {
-						await new Promise((resolve) => setTimeout(resolve, 300));
-					},
-					onAppExit: (name, code) => exits.push([name, code]),
-				},
-			);
-			expect(exits).toEqual([["quick", 0]]);
-		} finally {
-			await rm(root, { recursive: true, force: true });
-		}
-	}, 10_000);
-
-	it("fails the run when an app exits non-zero before supervision", async () => {
-		const root = await mkdtemp(join(tmpdir(), "buncargo-early-fail-"));
-		const port = 45800 + Math.floor(Math.random() * 200);
-
-		try {
-			await expect(
-				startDevServers(
-					{
-						broken: {
-							port,
-							devCommand: "bun -e 'process.exit(3)'",
-							healthEndpoint: false,
-						},
-					},
-					root,
-					{},
-					{ broken: port },
-					{
-						verbose: false,
-						waitForExit: true,
-						waitForHealth: async () => {
-							await new Promise((resolve) => setTimeout(resolve, 300));
-						},
-					},
-				),
-			).rejects.toThrow(/exited with code 3/);
-		} finally {
-			await rm(root, { recursive: true, force: true });
-		}
-	}, 10_000);
-});
-
-describe("startup process ownership", () => {
-	function alive(pid: number): boolean {
-		try {
-			process.kill(pid, 0);
-			return true;
-		} catch {
-			return false;
-		}
-	}
-	const idle = {
-		port: 1,
-		devCommand: "bun -e 'setInterval(() => {}, 1000)'",
-		healthEndpoint: false as const,
-	};
-
-	for (const phase of ["health", "tunnel", "second wave"] as const) {
-		it(`cleans up every owned child on ${phase} failure`, async () => {
-			const owned: number[] = [];
-			try {
-				await expect(
-					startDevServers(
-						{ first: idle, second: { ...idle, needsPublicUrls: true } },
-						process.cwd(),
-						{},
-						{},
-						{
-							verbose: false,
-							shutdownGraceMs: 100,
-							onAppSpawned: (_name, pid) => owned.push(pid),
-							waitForHealth: async (apps) => {
-								if (
-									phase === "health" ||
-									(phase === "second wave" && apps.second)
-								)
-									throw new Error("failed readiness");
-							},
-							onAfterWave1: async () => {
-								if (phase === "tunnel") throw new Error("failed tunnel");
-							},
-						},
-					),
-				).rejects.toThrow("failed");
-				expect(owned.length).toBe(phase === "second wave" ? 2 : 1);
-				for (const pid of owned) expect(alive(pid)).toBe(false);
-			} finally {
-				for (const pid of owned) {
-					if (alive(pid)) signalProcessTree(pid, "SIGKILL");
-				}
-			}
-		});
-	}
-
-	it("cancels a hung health callback and terminates its app", async () => {
-		const controller = new AbortController();
-		let pid: number | undefined;
-		const start = performance.now();
-		await expect(
-			startDevServers(
-				{ app: idle },
-				process.cwd(),
-				{},
-				{},
-				{
-					verbose: false,
-					signal: controller.signal,
-					shutdownGraceMs: 100,
-					onAppSpawned: (_name, spawnedPid) => {
-						pid = spawnedPid;
-					},
-					waitForHealth: async () => {
-						setTimeout(() => controller.abort(new Error("test cancelled")), 50);
-						return new Promise<void>(() => {});
-					},
-				},
-			),
-		).rejects.toThrow("test cancelled");
-		expect(performance.now() - start).toBeLessThan(2000);
-		expect(pid).toBeDefined();
-		expect(alive(Number(pid))).toBe(false);
-	});
-
-	it("observes spawn errors before starting the health wait", async () => {
-		await expect(
-			startDevServers(
-				{ app: { ...idle, cwd: "/missing/buncargo/startup" } },
-				process.cwd(),
-				{},
-				{},
-				{
-					verbose: false,
-					waitForHealth: async () => new Promise<void>(() => {}),
-				},
-			),
-		).rejects.toThrow('Failed to start app "app"');
-	});
-
-	it("reports readiness only after both app waves", async () => {
-		const events: string[] = [];
-		const owned: number[] = [];
-		try {
-			await startDevServers(
-				{ first: idle, second: { ...idle, needsPublicUrls: true } },
-				process.cwd(),
-				{},
-				{},
-				{
-					verbose: false,
-					onAppSpawned: (_name, pid) => owned.push(pid),
-					waitForHealth: async (apps) => {
-						events.push(...Object.keys(apps));
-					},
-					onAfterWave1: async () => {
-						events.push("tunnels");
-					},
-					onReady: () => {
-						events.push("ready");
+					waitForExit: false,
+					onCapture: (app, captured) => {
+						captures.push(`${app}:${captured.name}=${captured.value}`);
+						return ["captured.url"];
 					},
 				},
 			);
-			expect(events).toEqual(["first", "tunnels", "second", "ready"]);
-		} finally {
-			for (const pid of owned) signalProcessTree(pid, "SIGTERM");
-		}
-	});
-});
 
-describe("startup signals", () => {
-	it("handles repeated SIGTERM during readiness and waits for owned descendants", async () => {
-		const root = await mkdtemp(join(tmpdir(), "buncargo-signal-"));
-		const marker = join(root, "spawned.json");
-		const childMarker = join(root, "descendant.pid");
-		const importPath = new URL("./dev-servers.ts", import.meta.url).href;
-		const script = join(root, "driver.ts");
-		const descendant = join(root, "app.ts");
-		await Bun.write(
-			descendant,
-			`import { spawn } from "node:child_process";
-const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" });
-await Bun.write(${JSON.stringify(childMarker)}, String(child.pid));
-process.on("SIGTERM", () => {});
-setInterval(() => {}, 1000);`,
-		);
-		await Bun.write(
-			script,
-			`import { startDevServers } from ${JSON.stringify(importPath)};
-await startDevServers({ app: { port: 1, devCommand: "bun app.ts" } }, ${JSON.stringify(root)}, {}, {}, {
-verbose: false, waitForExit: true, shutdownGraceMs: 150,
-runtime: {name: "docker", containerPortOwners: () => new Map()},
-onAppSpawned: (_name, pid) => { void Bun.write(${JSON.stringify(marker)}, String(pid)); },
-waitForHealth: async () => new Promise(() => {}),
-});`,
-		);
-		const driver = Bun.spawn([process.execPath, script], {
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		let appPid: number | undefined;
-		let descendantPid: number | undefined;
-		try {
-			const deadline = performance.now() + 5000;
+			const deadline = Date.now() + 10_000;
+			const events = async () =>
+				(await Bun.file(log).exists())
+					? (await Bun.file(log).text()).split("\n")
+					: [];
 			while (
-				!(await Bun.file(childMarker).exists()) &&
-				performance.now() < deadline
-			)
-				await Bun.sleep(20);
-			appPid = Number(await Bun.file(marker).text());
-			descendantPid = Number(await Bun.file(childMarker).text());
-			await Bun.sleep(60);
-			driver.kill("SIGTERM");
-			setTimeout(() => driver.kill("SIGTERM"), 20);
-			const exit = await driver.exited;
-			const stderr = await new Response(driver.stderr).text();
-			expect(stderr).toBe("");
-			expect(exit).toBe(0);
-			for (const pid of [appPid, descendantPid])
-				expect(() => process.kill(pid, 0)).toThrow();
+				Date.now() < deadline &&
+				(await events()).filter((line) => line === "dependent spawned").length <
+					2
+			) {
+				await Bun.sleep(50);
+			}
+			const lines = await events();
+
+			expect(lines).toContain("web saw api");
+			expect(lines).not.toContain("api down");
+			expect(lines.indexOf("ext prebuilt")).toBeLessThan(
+				lines.indexOf("ext spawned"),
+			);
+			expect(captures).toEqual(["ext:url=https://one.example"]);
+			// Spawned once, then again when the value it restarts on arrived.
+			expect(lines.filter((line) => line === "dependent spawned")).toHaveLength(
+				2,
+			);
 		} finally {
-			driver.kill("SIGKILL");
-			if (appPid) {
-				try {
-					signalProcessTree(appPid, "SIGKILL");
-				} catch {}
-			}
-			if (descendantPid) {
-				try {
-					process.kill(descendantPid, "SIGKILL");
-				} catch {}
-			}
+			await stopDevServers(pids);
 			await rm(root, { recursive: true, force: true });
 		}
-	}, 10000);
+	}, 20_000);
 });

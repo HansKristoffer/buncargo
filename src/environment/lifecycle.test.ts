@@ -77,6 +77,7 @@ function fixture() {
 		getHookContext: () => ({}),
 		buildEnvVars: () => ({}),
 		buildAppEnvVarsMap: () => ({ web: {} }),
+		buildAppEnvVars: () => ({}),
 		exec: async (command: string) => {
 			events.push(command);
 			return { exitCode: 0, stdout: "", stderr: "" };
@@ -305,4 +306,22 @@ it("cancels a pending bootstrap before migrations can start", async () => {
 	).rejects.toThrow("cancel bootstrap");
 	expect(events).not.toContain("bunx --no-install prisma migrate deploy");
 	expect(events).not.toContain("migrate");
+});
+
+it("onlyServices starts just those services, with no app selecting them", async () => {
+	const { ctx, events, lifecycle } = fixture();
+	ctx.services.cache = { port: 6379, healthCheck: false };
+	// No app requires cache; a services-only start selects it anyway.
+	ctx.runtime.up = async (request) => {
+		events.push(`up:${request.serviceNames.join(",")}`);
+	};
+	await lifecycle.start({
+		onlyServices: ["cache"],
+		prepare: "containers",
+		startServers: false,
+		wait: false,
+		verbose: false,
+	});
+	expect(events).toContain("up:cache");
+	expect(events).not.toContain("up:db");
 });

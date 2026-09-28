@@ -1,8 +1,7 @@
-import { chmodSync } from "node:fs";
 import { basename } from "node:path";
+import type { ExpoAppIdentity } from "../expo/simulator";
 import type { ContainerRuntimeName } from "../types";
 import { buncargoCli, type CliInvocation } from "./cli-entry";
-import type { ExpoAppIdentity } from "./expo";
 import { withFileLock } from "./file-lock";
 import { getWorktreeName } from "./ports";
 import {
@@ -77,6 +76,8 @@ export interface RunAppEntry {
 	hostname?: string;
 	/** Present on Expo apps: what `buncargo sim` needs without loading the config. */
 	expo?: ExpoAppIdentity;
+	/** The exclusive lease this app holds (`AppConfig.exclusive`). */
+	exclusive?: string;
 	status: RunAppStatus;
 }
 
@@ -165,6 +166,22 @@ export interface RunEntry {
 	cli: CliInvocation;
 	apps: RunAppEntry[];
 	services: RunServiceEntry[];
+	/** The config's tasks, which the menu bar runs with `buncargo run <name>`. */
+	tasks?: RunTaskEntry[];
+	/** Values apps printed (`captures`), by name: what `env --get captured.*` reads. */
+	captures?: Record<string, string>;
+	/** Labelled values from integrations' `describe` (e.g. "Shopify preview"). */
+	details?: RunDetailEntry[];
+}
+
+export interface RunDetailEntry {
+	label: string;
+	value: string;
+}
+
+export interface RunTaskEntry {
+	name: string;
+	description?: string;
 }
 
 export function getRunsPath(home?: string): string {
@@ -207,7 +224,8 @@ function isRunApp(value: unknown): value is RunAppEntry {
 		(value.pid === undefined || isPid(value.pid)) &&
 		(value.processIdentity === undefined ||
 			typeof value.processIdentity === "string") &&
-		(value.expo === undefined || isRecord(value.expo))
+		(value.expo === undefined || isRecord(value.expo)) &&
+		(value.exclusive === undefined || typeof value.exclusive === "string")
 	);
 }
 
@@ -259,29 +277,37 @@ function isRunEntry(value: unknown): value is RunEntry {
 		Array.isArray(value.apps) &&
 		value.apps.every(isRunApp) &&
 		Array.isArray(value.services) &&
-		value.services.every(isRunService)
+		value.services.every(isRunService) &&
+		(value.captures === undefined ||
+			(isRecord(value.captures) &&
+				Object.values(value.captures).every(
+					(capture) => typeof capture === "string",
+				))) &&
+		(value.details === undefined ||
+			(Array.isArray(value.details) &&
+				value.details.every(
+					(detail) =>
+						isRecord(detail) &&
+						typeof detail.label === "string" &&
+						typeof detail.value === "string",
+				))) &&
+		(value.tasks === undefined ||
+			(Array.isArray(value.tasks) &&
+				value.tasks.every(
+					(task) =>
+						isRecord(task) &&
+						typeof task.name === "string" &&
+						(task.description === undefined ||
+							typeof task.description === "string"),
+				)))
 	);
-}
-
-/**
- * The registry holds development database passwords — the compose defaults, or
- * whatever the repo's own config sets. `~/.buncargo` is the user's, but there
- * is no reason for the file to be world-readable.
- */
-function secureFile(path: string): void {
-	try {
-		chmodSync(path, 0o600);
-	} catch {
-		// A mode we could not set is not worth failing a dev run over.
-	}
-	chownToInvokingUser(path);
 }
 
 const registry = defineListRegistry<RunEntry>({
 	version: REGISTRY_VERSION,
 	key: "runs",
 	isEntry: isRunEntry,
-	afterWrite: secureFile,
+	afterWrite: chownToInvokingUser,
 });
 
 export async function loadRuns(
@@ -503,6 +529,9 @@ export interface RunPatch {
 	services?: Array<Partial<RunServiceEntry> & { name: string }>;
 	hosts?: { active: boolean; tld: string } | null;
 	primaryApp?: string;
+	/** Merged into the existing captures. */
+	captures?: Record<string, string>;
+	details?: RunDetailEntry[];
 }
 
 function mergeByName<T extends { name: string }>(
@@ -552,6 +581,10 @@ export async function patchRun(
 			...(patch.primaryApp !== undefined
 				? { primaryApp: patch.primaryApp }
 				: {}),
+			...(patch.captures
+				? { captures: { ...current.captures, ...patch.captures } }
+				: {}),
+			...(patch.details ? { details: patch.details } : {}),
 			apps: patch.apps ? mergeByName(current.apps, patch.apps) : current.apps,
 			services: patch.services
 				? mergeByName(current.services, patch.services)

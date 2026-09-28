@@ -8,7 +8,7 @@ import {
 	isExpoApp,
 	pickSourceDevice,
 	simulatorDeviceName,
-} from "./expo";
+} from "./simulator";
 
 describe("isExpoApp", () => {
 	it("infers from the dev command and honours an explicit flag", () => {

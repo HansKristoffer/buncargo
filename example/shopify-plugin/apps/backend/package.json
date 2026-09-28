@@ -1,0 +1,7 @@
+{
+	"name": "backend",
+	"private": true,
+	"scripts": {
+		"dev": "bun server.ts"
+	}
+}

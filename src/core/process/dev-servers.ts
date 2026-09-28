@@ -3,23 +3,30 @@ import {
 	type SpawnOptions,
 	spawn,
 } from "node:child_process";
-import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import type { AppConfig, DevServerPids } from "../../types";
 import { waitForDevServers } from "../network";
 import { connectProcessEnv } from "../runtime-flags";
-import { loadAppSecrets } from "../secrets/infisical";
+import { loadAppSecrets, missingRequiredSecrets } from "../secrets/infisical";
 import { recordStartupMetric } from "../startup-metrics";
 import {
 	formatPidLine,
-	formatPrefixedLine,
 	formatSection,
 	formatStep,
 	formatWarn,
-	isBlankLogLine,
 	prefixWidth,
 } from "../style";
+import {
+	ptyTeeArgv,
+	resolveStartCommand,
+	runPrebuild,
+	spawnManagedApp,
+} from "./app-process";
+import {
+	type CapturedValue,
+	createOutputCaptureScanner,
+} from "./output-capture";
 import {
 	classifyPortOccupant,
 	createPortOwnerSnapshot,
@@ -29,6 +36,7 @@ import {
 	type PortOwnerSnapshot,
 } from "./port-owner";
 import { ProcessOwner, RunInterrupted } from "./process-owner";
+import { planSpawnOrder } from "./start-order";
 import { spawnOwnedWorker } from "./worker-ownership";
 
 /**
@@ -169,6 +177,15 @@ export interface StartDevServersOptions {
 	 */
 	onAppSpawned?: (name: string, pid: number, attached: boolean) => void;
 	/**
+	 * An app printed a value one of its `captures` matched. Returns the keys
+	 * that changed (`captured.<name>`, `publicUrls.<app>`); apps whose
+	 * `restartOn` names one are restarted with fresh env.
+	 */
+	onCapture?: (
+		app: string,
+		captured: CapturedValue,
+	) => readonly string[] | Promise<readonly string[]>;
+	/**
 	 * A dev server exited. `code` is `null` when it was signalled, which is what
 	 * a `buncargo stop <app>` or a Ctrl-C looks like from here.
 	 */
@@ -177,69 +194,6 @@ export interface StartDevServersOptions {
 		code: number | null,
 		signal?: NodeJS.Signals | null,
 	) => void;
-}
-
-function resolveShell(): string {
-	for (const candidate of [
-		process.env.SHELL,
-		"/bin/zsh",
-		"/bin/bash",
-		"/bin/sh",
-	]) {
-		if (candidate && existsSync(candidate)) {
-			return candidate;
-		}
-	}
-
-	return "/bin/sh";
-}
-
-const SHELL = resolveShell();
-
-function prefixStream(
-	name: string,
-	stream: NodeJS.ReadableStream | null,
-	options: { width: number; onFirstWrite: () => void },
-): void {
-	if (!stream) {
-		return;
-	}
-
-	let buffer = "";
-	const writeLine = (line: string) => {
-		if (isBlankLogLine(line)) {
-			return;
-		}
-		options.onFirstWrite();
-		process.stdout.write(formatPrefixedLine(name, line, options.width));
-	};
-	stream.on("data", (chunk: Buffer | string) => {
-		buffer += String(chunk);
-		const lines = buffer.split("\n");
-		buffer = lines.pop() ?? "";
-		for (const line of lines) {
-			writeLine(line);
-		}
-	});
-	stream.on("end", () => {
-		if (buffer) {
-			writeLine(buffer);
-		}
-	});
-}
-
-function pickWave(
-	apps: Record<string, AppConfig>,
-	needsPublicUrls: boolean,
-	defer: boolean,
-): Record<string, AppConfig> {
-	return Object.fromEntries(
-		Object.entries(apps).filter(([, app]) => {
-			// Without deferral there is no wave 2, so wave 1 is everything.
-			const wave = defer ? Boolean(app.needsPublicUrls) : false;
-			return wave === needsPublicUrls;
-		}),
-	);
 }
 
 function resolveAppEnv(
@@ -251,64 +205,6 @@ function resolveAppEnv(
 	return typeof envVarsByApp === "function"
 		? envVarsByApp(name)
 		: (envVarsByApp[name] ?? {});
-}
-
-function resolveStartCommand(
-	config: AppConfig,
-	productionBuild: boolean,
-): string | undefined {
-	const command = productionBuild
-		? (config.prodCommand ??
-			(typeof config.devCommand === "string" ? config.devCommand : undefined))
-		: config.devCommand;
-	return typeof command === "string" ? command : undefined;
-}
-
-function spawnManagedApp(
-	name: string,
-	config: AppConfig,
-	root: string,
-	envVars: Record<string, string>,
-	options: {
-		attached: boolean;
-		extraArgs: string[];
-		productionBuild: boolean;
-		waitForExit: boolean;
-		prefixWidth: number;
-		onFirstLog: () => void;
-	},
-): ChildProcess {
-	const baseCommand = resolveStartCommand(config, options.productionBuild);
-	if (baseCommand === undefined) {
-		throw new Error(`App "${name}" has no startable devCommand`);
-	}
-
-	const command =
-		options.attached && options.extraArgs.length > 0
-			? `${baseCommand} ${options.extraArgs.join(" ")}`
-			: baseCommand;
-	recordStartupMetric("subprocesses");
-	const child = spawn(command, [], {
-		cwd: config.cwd ? resolve(root, config.cwd) : root,
-		env: connectProcessEnv({ ...process.env, ...envVars }),
-		stdio: options.attached ? "inherit" : ["ignore", "pipe", "pipe"],
-		shell: SHELL,
-		detached: true,
-	});
-	if (!options.attached) {
-		const streamOptions = {
-			width: options.prefixWidth,
-			onFirstWrite: options.onFirstLog,
-		};
-		prefixStream(name, child.stdout, streamOptions);
-		prefixStream(name, child.stderr, streamOptions);
-	}
-
-	if (!options.waitForExit && child.unref) {
-		child.unref();
-	}
-
-	return child;
 }
 
 async function prepareAppPort(
@@ -390,6 +286,7 @@ export async function startDevServers(
 		deferPublicUrlApps = true,
 		onAppSpawned,
 		onAppExit,
+		onCapture,
 	} = options;
 
 	const startable = Object.fromEntries(
@@ -411,8 +308,23 @@ export async function startDevServers(
 		...resolveAppEnv(envVarsByApp, name),
 	});
 
-	const wave1 = pickWave(startable, false, deferPublicUrlApps);
-	const wave2 = pickWave(startable, true, deferPublicUrlApps);
+	// Before anything spawns: one error naming every missing key per app,
+	// rather than each app crashing on its own first read of one.
+	const missing = missingRequiredSecrets(startable, (name) => ({
+		...process.env,
+		...appEnv(name),
+	}));
+	if (Object.keys(missing).length > 0) {
+		throw new Error(
+			`Required secrets are missing:\n${Object.entries(missing)
+				.map(([name, keys]) => `  ${name}: ${keys.join(", ")}`)
+				.join(
+					"\n",
+				)}\nAdd them to the app's Infisical scope, or export them. \`buncargo secrets ls\` shows what each app gets.`,
+		);
+	}
+
+	const order = planSpawnOrder(startable, deferPublicUrlApps);
 	const configuredInteractive = Object.entries(startable).find(
 		([, app]) => app.interactive,
 	)?.[0];
@@ -445,10 +357,73 @@ export async function startDevServers(
 		process.stdout.write(`\n${formatSection("Logs")}\n`);
 	};
 
+	// The live child per app, for `restartOn`.
+	const children = new Map<string, ChildProcess>();
+	const spawners = new Map<string, () => Promise<ChildProcess>>();
+
+	function recordChild(name: string, child: ChildProcess, attached: boolean) {
+		children.set(name, child);
+		if (!child.pid) return;
+		pids[name] = child.pid;
+		activeOwners.set(child.pid, owner);
+		onAppSpawned?.(name, child.pid, attached);
+		if (verbose) {
+			console.log(formatPidLine(name, child.pid, nameWidth));
+		}
+	}
+
+	/** Replace one app's process, with env built fresh (new public URLs, captures). */
+	async function restart(name: string): Promise<void> {
+		const current = children.get(name);
+		const respawn = spawners.get(name);
+		if (!current || !respawn || owner.controller.signal.aborted) return;
+		console.log(
+			formatStep(`🔁 Restarting ${name}: a value it restarts on changed`),
+		);
+		await owner.retire(current);
+		if (current.pid) activeOwners.delete(current.pid);
+		const child = await respawn();
+		owner.register(name, child, false, startable[name]?.kind === "worker");
+		recordChild(name, child, name === attachedName);
+	}
+
+	// Captures are handled one at a time, in arrival order: a URL and the
+	// restart it triggers must not interleave with the next URL.
+	let captureQueue = Promise.resolve();
+	function scannerFor(name: string, config: AppConfig) {
+		if (!config.captures || Object.keys(config.captures).length === 0) {
+			return undefined;
+		}
+		const scanner = createOutputCaptureScanner(config.captures);
+		return (text: string) => {
+			for (const captured of scanner.push(text)) {
+				captureQueue = captureQueue
+					.then(async () => {
+						const changed = (await onCapture?.(name, captured)) ?? [];
+						const dependents = Object.entries(startable)
+							.filter(
+								([other, app]) =>
+									other !== name &&
+									app.restartOn?.some((key) => changed.includes(key)),
+							)
+							.map(([other]) => other);
+						for (const dependent of dependents) await restart(dependent);
+					})
+					.catch((error: unknown) => {
+						console.warn(
+							formatWarn(
+								`Handling ${name}'s ${captured.name} failed: ${error instanceof Error ? error.message : String(error)}`,
+							),
+						);
+					});
+			}
+		};
+	}
+
 	async function spawnWave(wave: Record<string, AppConfig>): Promise<void> {
-		// Per wave, not per run: wave 2 spawns after tunnels have opened and
-		// wave-1 servers have bound their ports, so a snapshot taken before
-		// wave 1 would be describing a machine that has since changed.
+		// Per wave, not per run: a later wave spawns after tunnels have opened
+		// and earlier servers have bound their ports, so a snapshot taken before
+		// the first wave would be describing a machine that has since changed.
 		owner.controller.signal.throwIfAborted();
 		const portOwners = createPortOwnerSnapshot({
 			runtime: options.runtime,
@@ -458,6 +433,7 @@ export async function startDevServers(
 				return port === undefined ? [] : [port];
 			}),
 		});
+		const toStart: [string, AppConfig][] = [];
 		for (const [name, config] of Object.entries(wave)) {
 			const prepared = await prepareAppPort(
 				name,
@@ -470,12 +446,34 @@ export async function startDevServers(
 				options.skipContainers,
 			);
 			owner.controller.signal.throwIfAborted();
-			if (prepared === "reuse") {
-				continue;
-			}
+			if (prepared !== "reuse") toStart.push([name, config]);
+		}
 
+		// A wave's prebuilds run side by side, and all finish before any of its
+		// apps spawns: a watcher's first rebuild must not race its own build.
+		await owner.race(
+			Promise.all(
+				toStart.map(([name, config]) =>
+					runPrebuild(name, config, root, appEnv(name), {
+						signal: owner.controller.signal,
+						width: nameWidth,
+						onFirstLog,
+					}),
+				),
+			),
+		);
+
+		for (const [name, config] of toStart) {
 			const attached = name === attachedName;
-			const spawn = () =>
+			const onText = scannerFor(name, config);
+			if (attached && onText && process.stdin.isTTY && !ptyTeeArgv("")) {
+				console.warn(
+					formatWarn(
+						`${name}'s captures are not read: no \`script\` command to run it under a terminal.`,
+					),
+				);
+			}
+			const spawnOnce = () =>
 				spawnManagedApp(name, config, root, appEnv(name), {
 					attached,
 					extraArgs: attached ? extraArgs : [],
@@ -483,25 +481,21 @@ export async function startDevServers(
 					waitForExit,
 					prefixWidth: nameWidth,
 					onFirstLog,
+					onText,
 				});
-			const child =
+			const spawnApp = () =>
 				config.kind === "worker"
-					? await spawnOwnedWorker(root, name, spawn, owner.controller.signal)
-					: spawn();
+					? spawnOwnedWorker(root, name, spawnOnce, owner.controller.signal)
+					: Promise.resolve(spawnOnce());
+			spawners.set(name, spawnApp);
+			const child = await spawnApp();
 			owner.register(
 				name,
 				child,
 				config.kind !== "worker" && config.healthEndpoint !== false,
 				config.kind === "worker",
 			);
-			if (child.pid) {
-				pids[name] = child.pid;
-				activeOwners.set(child.pid, owner);
-				onAppSpawned?.(name, child.pid, attached);
-				if (verbose) {
-					console.log(formatPidLine(name, child.pid, nameWidth));
-				}
-			}
+			recordChild(name, child, attached);
 		}
 	}
 
@@ -532,12 +526,13 @@ export async function startDevServers(
 		}
 	}
 	try {
-		await startWave(wave1);
+		// Each layer is healthy before the next spawns: that is `startAfter`.
+		for (const layer of order.beforeTunnels) await startWave(layer);
 		if (onAfterWave1) {
 			await owner.race(onAfterWave1(owner.controller.signal));
 		}
 
-		await startWave(wave2);
+		for (const layer of order.afterTunnels) await startWave(layer);
 		owner.controller.signal.throwIfAborted();
 		if (options.onReady) {
 			await owner.race(

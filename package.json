@@ -29,7 +29,8 @@
   "files": [
     "src/**/*.ts",
     "dist",
-    "!src/**/*.test.ts"
+    "!src/**/*.test.ts",
+    "!src/**/*.testing.ts"
   ],
   "bin": {
     "dev-tools": "./dist/cli/bin.js",
@@ -157,12 +158,24 @@
       "bun": "./src/vite/index.ts",
       "import": "./dist/vite/index.js",
       "default": "./dist/vite/index.js"
+    },
+    "./expo": {
+      "types": "./dist/expo/index.d.ts",
+      "bun": "./src/expo/index.ts",
+      "import": "./dist/expo/index.js",
+      "default": "./dist/expo/index.js"
+    },
+    "./shopify": {
+      "types": "./dist/shopify/index.d.ts",
+      "bun": "./src/shopify/index.ts",
+      "import": "./dist/shopify/index.js",
+      "default": "./dist/shopify/index.js"
     }
   },
   "scripts": {
     "build": "rm -rf dist && bun run build:js && bun run build:daemon && bun run build:types",
     "build:daemon": "bun build ./src/cli/hostsd.ts --outfile ./dist/hostsd.js --target bun && bun build ./src/cli/connectd.ts --outfile ./dist/connectd.js --target bun",
-    "build:js": "bun build ./src/index.ts ./src/cli/bin.ts ./src/cli/index.ts ./src/config/index.ts ./src/environment/index.ts ./src/loader/index.ts ./src/typecheck/index.ts ./src/types/index.ts ./src/core/network.ts ./src/core/ports.ts ./src/core/process/index.ts ./src/core/tunnel.ts ./src/core/utils.ts ./src/core/watchdog.ts ./src/core/watchdog-runner.ts ./src/container-runtime/index.ts ./src/apple-container/index.ts ./src/docker/index.ts ./src/docker-compose/index.ts ./src/vite/index.ts ./src/client/index.ts ./src/runtime/index.ts --outdir ./dist --root ./src --target node --packages external --splitting",
+    "build:js": "bun build ./src/index.ts ./src/cli/bin.ts ./src/cli/index.ts ./src/config/index.ts ./src/environment/index.ts ./src/loader/index.ts ./src/typecheck/index.ts ./src/types/index.ts ./src/core/network.ts ./src/core/ports.ts ./src/core/process/index.ts ./src/core/tunnel.ts ./src/core/utils.ts ./src/core/watchdog.ts ./src/core/watchdog-runner.ts ./src/container-runtime/index.ts ./src/apple-container/index.ts ./src/docker/index.ts ./src/docker-compose/index.ts ./src/vite/index.ts ./src/expo/index.ts ./src/shopify/index.ts ./src/client/index.ts ./src/runtime/index.ts --outdir ./dist --root ./src --target node --packages external --splitting",
     "build:types": "tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build",
     "lint": "bun run typecheck && biome check src example server/connect",
@@ -175,7 +188,8 @@
     "test:integration-hosts-soak": "BUNCARGO_TEST_HOSTS_SOAK=1 bun test src/core/hosts/worktree-soak.test.ts",
     "test:integration-apple": "BUNCARGO_TEST_APPLE_CONTAINER=1 bun test src/apple-container/apple-container.integration.test.ts",
     "verify:package": "bun scripts/verify-package.ts",
-    "test:integration-frp": "BUNCARGO_TEST_FRP=1 bun test src/core/connect/frp.integration.test.ts"
+    "test:integration-frp": "BUNCARGO_TEST_FRP=1 bun test src/core/connect/frp.integration.test.ts",
+    "test:integration-shopify-cli": "BUNCARGO_TEST_SHOPIFY_CLI=1 bun test src/shopify/cli-contract.test.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.4",

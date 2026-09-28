@@ -1,3 +1,4 @@
+import { describeLeaseHolder, readLeases } from "../../core/leases";
 import {
 	groupRunsByProject,
 	type RunEntry,
@@ -18,9 +19,10 @@ import * as log from "../log";
  */
 export async function handleRuns(args: string[] = []): Promise<void> {
 	const runs = await readLiveRuns();
+	const leases = await readLeases().catch(() => []);
 
 	if (hasFlag(args, "--json")) {
-		log.line(JSON.stringify({ version: 1, runs }, null, 2));
+		log.line(JSON.stringify({ version: 1, runs, leases }, null, 2));
 		return;
 	}
 
@@ -35,6 +37,13 @@ export async function handleRuns(args: string[] = []): Promise<void> {
 			printRun(run);
 		}
 		log.line();
+	}
+
+	if (leases.length > 0) {
+		log.line("Leases");
+		for (const lease of leases) {
+			log.line(`  ${lease.key}: ${describeLeaseHolder(lease)}`);
+		}
 	}
 }
 
@@ -56,6 +65,9 @@ function printRun(run: RunEntry): void {
 		}
 		if (app.expo) {
 			log.line(`      simulator: bunx buncargo sim ${app.name}`);
+		}
+		if (app.exclusive) {
+			log.line(`      lease: ${app.exclusive}`);
 		}
 	}
 

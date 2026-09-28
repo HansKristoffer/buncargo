@@ -4,6 +4,7 @@ import {
 	findUnknownFlags,
 	formatCommandHelp,
 	readBooleanFlag,
+	readPositionals,
 	readStringFlag,
 } from "./command-spec";
 
@@ -61,22 +62,8 @@ export function parseExecArgs(args: string[]) {
 	const cwd = readOption(FLAGS.cwd);
 	const help = readBooleanFlag(optionArgs, FLAGS.help);
 
-	// Skip each option's value when looking for stray positional arguments.
-	for (let i = 0; i < optionArgs.length; i++) {
-		const token = optionArgs[i] ?? "";
-		const flag = EXEC_COMMAND_SPEC.flags.find(
-			(flag) => token === flag.name || token.startsWith(`${flag.name}=`),
-		);
-		if (!flag) {
-			if (!token.startsWith("--")) {
-				errors.push(`Unexpected argument before --: ${token}`);
-			}
-			continue;
-		}
-
-		if (flag.kind === "string" && token === flag.name) {
-			i++;
-		}
+	for (const token of readPositionals(EXEC_COMMAND_SPEC, optionArgs)) {
+		errors.push(`Unexpected argument before --: ${token}`);
 	}
 
 	if (!help && command.length === 0) {

@@ -4,9 +4,10 @@ import { isHostsForcedOff } from "../../core/runtime-flags";
 import { createNoopPhaseTimer, createPhaseTimer } from "../../core/timing";
 import { loadDevEnv } from "../../loader";
 import { exitOnDevArgErrors, parseDevArgs, printDevHelp } from "../dev-flags";
-import { getFlagValue } from "../flags";
+import { getFlagValue, splitCliArgs } from "../flags";
 import * as log from "../log";
 import { runCli } from "../run-cli";
+import { adoptLiveCaptures } from "../run-publish";
 import { parseTypecheckArgs, printTypecheckHelp } from "../typecheck-flags";
 
 export function getEnvDotPath(
@@ -75,6 +76,11 @@ export async function handleDev(args: string[]): Promise<void> {
 }
 
 export async function handlePrisma(args: string[]): Promise<void> {
+	// Parsed before the config loads, so a typo is not answered with a config error.
+	const migrateCheck =
+		args[0] === "migrate-check"
+			? parseMigrateCheckArgs(args.slice(1))
+			: undefined;
 	const env = await loadEnv();
 
 	if (!env.prisma) {
@@ -88,8 +94,30 @@ export async function handlePrisma(args: string[]): Promise<void> {
 		]);
 	}
 
-	const exitCode = await env.prisma.run(args);
+	const exitCode = migrateCheck
+		? await env.prisma.migrateCheck(migrateCheck)
+		: await env.prisma.run(args);
 	process.exit(exitCode);
+}
+
+/** `migrate-check [--migrations=<dir>] [--schema=<path>] [-- <diff args>]` */
+function parseMigrateCheckArgs(args: string[]) {
+	const { flags, passthrough } = splitCliArgs(args);
+	const unknown = flags.filter(
+		(flag) =>
+			!flag.startsWith("--migrations=") && !flag.startsWith("--schema="),
+	);
+	if (unknown.length > 0) {
+		log.fail(`Unexpected argument: ${unknown.join(" ")}`, [
+			"Usage: buncargo prisma migrate-check [--migrations=<dir>] [--schema=<path>] [-- <prisma migrate diff args>]",
+		]);
+	}
+
+	return {
+		migrations: getFlagValue(flags, "--migrations") || undefined,
+		schema: getFlagValue(flags, "--schema") || undefined,
+		args: passthrough,
+	};
 }
 
 export async function handleEnv(args: string[] = []): Promise<void> {
@@ -107,6 +135,7 @@ export async function handleEnv(args: string[] = []): Promise<void> {
 			env.setNamedHostsActive(true, { caPath: getCaPath() });
 		}
 	}
+	await adoptLiveCaptures(env);
 	const snapshot = {
 		projectName: env.projectName,
 		ports: env.ports,
@@ -117,6 +146,8 @@ export async function handleEnv(args: string[] = []): Promise<void> {
 		isWorktree: env.isWorktree,
 		localIp: env.localIp,
 		root: env.root,
+		captured: env.captured,
+		integrations: env.describeIntegrations(),
 		hosts: env.hosts
 			? {
 					active: env.hosts.active,

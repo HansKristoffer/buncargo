@@ -1,0 +1,27 @@
+# The example's dev app. The client_id is a fixture, not a real app.
+client_id = "0123456789abcdef0123456789abcdef"
+name = "buncargo-example"
+application_url = "https://example.com"
+embedded = true
+
+# buncargo owns every process; Shopify CLI only proxies to the generated web.
+web_directories = [".buncargo/shopify/web"]
+
+[build]
+automatically_update_urls_on_dev = true
+dev_store_url = "buncargo-example.myshopify.com"
+
+[webhooks]
+api_version = "2026-01"
+
+[[webhooks.subscriptions]]
+topics = ["app/uninstalled"]
+uri = "/api/webhooks/shopify"
+
+[access_scopes]
+scopes = "read_products"
+
+[app_proxy]
+url = "/api/rpc"
+prefix = "apps"
+subpath = "prints"

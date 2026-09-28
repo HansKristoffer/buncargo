@@ -11,8 +11,12 @@ import {
 	resolveServiceEnvVarSources,
 } from "../core/service-presets";
 import { buildStartPlan } from "../planning";
-import { resolveServiceDependencies } from "../planning/start-planning";
+import {
+	findStartAfterCycle,
+	resolveServiceDependencies,
+} from "../planning/start-planning";
 import type { AnyDevConfig, DevConfig, DevConfigLike } from "../types";
+import { applyIntegrations } from "./integrations";
 import { validateConfigShape } from "./validate-shape";
 
 /**
@@ -22,12 +26,25 @@ import { validateConfigShape } from "./validate-shape";
  * configs use the same boundary without losing their own callback signatures.
  */
 export function validateConfig(value: unknown): string[] {
-	const errors = validateConfigShape(value);
+	let errors = validateConfigShape(value);
 	if (errors.length > 0) {
 		return errors;
 	}
 
-	const config = value as AnyDevConfig;
+	// What integrations add is validated like everything else, so they apply
+	// first; the shape they return crosses the same boundary again.
+	let applied: unknown;
+	try {
+		applied = applyIntegrations(value as object);
+	} catch (error) {
+		return [error instanceof Error ? error.message : String(error)];
+	}
+	errors = validateConfigShape(applied);
+	if (errors.length > 0) {
+		return errors;
+	}
+
+	const config = applied as AnyDevConfig;
 	const portOwners = new Map<number, string>();
 	const namespaceOwners = new Map<string, string>();
 	const claimName = (name: string, path: string) => {
@@ -54,6 +71,7 @@ export function validateConfig(value: unknown): string[] {
 		}
 	};
 	const composeServiceNames = new Set<string>();
+	const captureOwners = new Map<string, string>();
 	const derivedEnvOwners = new Map<string, string>();
 
 	if ("envVars" in (config as object)) {
@@ -288,6 +306,48 @@ export function validateConfig(value: unknown): string[] {
 				errors.push(`App "${name}" requires unknown app "${dependencyName}"`);
 			}
 		}
+
+		for (const dependencyName of app.startAfter ?? []) {
+			if (!config.apps?.[dependencyName]) {
+				errors.push(
+					`App "${name}" starts after unknown app "${dependencyName}"`,
+				);
+			} else if (dependencyName === name) {
+				errors.push(`App "${name}" cannot start after itself`);
+			}
+		}
+
+		if (app.prebuild !== undefined && !app.prebuild.trim()) {
+			errors.push(`App "${name}" has an empty prebuild command`);
+		}
+
+		for (const [captureName, capture] of Object.entries(app.captures ?? {})) {
+			if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(captureName)) {
+				errors.push(
+					`apps.${name}.captures.${captureName} must be an identifier (it is read as captured.${captureName})`,
+				);
+			}
+			const owner = captureOwners.get(captureName);
+			if (owner && owner !== name) {
+				errors.push(
+					`Capture "${captureName}" is declared by both ${owner} and ${name}`,
+				);
+			}
+			captureOwners.set(captureName, name);
+			if (capture.as === "publicUrl" && app.kind !== "worker" && app.expose) {
+				errors.push(
+					`apps.${name} captures its public URL and sets expose: a tunnel would overwrite it`,
+				);
+			}
+		}
+
+		for (const trigger of app.restartOn ?? []) {
+			if (!/^(captured|publicUrls)\.[A-Za-z0-9_-]+$/.test(trigger)) {
+				errors.push(
+					`apps.${name}.restartOn "${trigger}" must be captured.<name> or publicUrls.<app>`,
+				);
+			}
+		}
 	}
 
 	if (config.apps) {
@@ -295,6 +355,11 @@ export function validateConfig(value: unknown): string[] {
 			buildStartPlan(config.apps, config.services, undefined);
 		} catch (error) {
 			errors.push(error instanceof Error ? error.message : String(error));
+		}
+
+		const startCycle = findStartAfterCycle(config.apps);
+		if (startCycle) {
+			errors.push(`Circular startAfter dependency: ${startCycle}`);
 		}
 
 		const interactiveApps = Object.entries(config.apps)
@@ -413,14 +478,51 @@ export function validateConfig(value: unknown): string[] {
 		}
 	}
 
-	if (config.prisma?.cwd) {
-		if (isAbsolute(config.prisma.cwd)) {
-			errors.push("prisma.cwd must be a relative path inside the repo.");
+	const checkRelativePath = (path: string, value: string | undefined) => {
+		if (!value) return;
+		if (isAbsolute(value)) {
+			errors.push(`${path} must be a relative path inside the repo.`);
 		}
 
-		const normalized = normalize(config.prisma.cwd).replace(/\\/g, "/");
+		const normalized = normalize(value).replace(/\\/g, "/");
 		if (normalized === ".." || normalized.startsWith("../")) {
-			errors.push("prisma.cwd cannot point outside the repository root.");
+			errors.push(`${path} cannot point outside the repository root.`);
+		}
+	};
+
+	checkRelativePath("prisma.cwd", config.prisma?.cwd);
+
+	const generatedPaths = new Set<string>();
+	for (const [index, file] of (config.generatedFiles ?? []).entries()) {
+		checkRelativePath(`generatedFiles.${index}.path`, file.path);
+		const normalized = normalize(file.path);
+		if (generatedPaths.has(normalized)) {
+			errors.push(`generatedFiles lists ${file.path} twice`);
+		}
+		generatedPaths.add(normalized);
+	}
+
+	for (const [name, task] of Object.entries(config.tasks ?? {})) {
+		if (task.app && !config.apps?.[task.app]) {
+			errors.push(
+				`tasks.${name}.app "${task.app}" must match a configured app key`,
+			);
+		}
+
+		for (const serviceName of task.requiredServices ?? []) {
+			if (!config.services[serviceName]) {
+				errors.push(`tasks.${name} requires unknown service "${serviceName}"`);
+			}
+		}
+
+		checkRelativePath(`tasks.${name}.cwd`, task.cwd);
+	}
+
+	for (const [name, profile] of Object.entries(config.profiles ?? {})) {
+		for (const appName of profile.apps) {
+			if (!config.apps?.[appName]) {
+				errors.push(`profiles.${name} includes unknown app "${appName}"`);
+			}
 		}
 	}
 

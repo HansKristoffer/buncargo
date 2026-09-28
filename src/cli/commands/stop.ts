@@ -58,14 +58,12 @@ export async function handleStop(args: string[] = []): Promise<number> {
 	}
 	if (parsed.errors.length > 0) return STOP_EXIT.refused;
 
-	const root = parsed.root ?? safeMonorepoRoot();
-	const runs = root
-		? (await findRunsByRoot(root)).filter(
-				(run) => !parsed.run || run.sessionId === parsed.run,
-			)
-		: [];
+	const root = parsed.root ?? findMonorepoRoot();
+	const runs = (await findRunsByRoot(root)).filter(
+		(run) => !parsed.run || run.sessionId === parsed.run,
+	);
 	if (runs.length === 0) {
-		log.error(`No active buncargo run for ${root ?? "this directory"}.`);
+		log.error(`No active buncargo run for ${root}.`);
 		log.hint("Run `buncargo runs` to see what is active.");
 		return STOP_EXIT.notFound;
 	}
@@ -103,22 +101,7 @@ export async function handleStop(args: string[] = []): Promise<number> {
 	return exitCode;
 }
 
-/**
- * The checkout we are standing in, if any.
- *
- * `findMonorepoRoot` walks up looking for a workspace marker and throws when
- * there is none. Outside a repo that is not an error here — it just means the
- * caller has to say `--root`.
- */
-function safeMonorepoRoot(): string | undefined {
-	try {
-		return findMonorepoRoot();
-	} catch {
-		return undefined;
-	}
-}
-
-async function stopTarget(
+export async function stopTarget(
 	run: RunEntry,
 	name: string,
 	force: boolean,

@@ -7,6 +7,7 @@ import { exec } from "./process/exec";
 import { declineMarker } from "./prompt";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
 import { isCI } from "./runtime-flags";
+import { shellQuote } from "./shell-quote";
 import { chownToInvokingUser, getStateDir, stateFilePath } from "./state-paths";
 
 /**
@@ -391,7 +392,9 @@ async function applyRelease(
 		await verifyChecksum(zipPath, release.checksumUrl);
 
 		const extracted = join(workspace, "extracted");
-		const unzip = run(`ditto -x -k ${quote(zipPath)} ${quote(extracted)}`);
+		const unzip = run(
+			`ditto -x -k ${shellQuote(zipPath)} ${shellQuote(extracted)}`,
+		);
 		if (unzip.exitCode !== 0) {
 			throw new Error(unzip.stderr.trim() || "could not expand the archive");
 		}
@@ -419,14 +422,14 @@ async function applyRelease(
 
 		const target = join(installDirectory(), BAR_BUNDLE_NAME);
 		rmSync(target, { recursive: true, force: true });
-		const copy = run(`ditto ${quote(source)} ${quote(target)}`);
+		const copy = run(`ditto ${shellQuote(source)} ${shellQuote(target)}`);
 		if (copy.exitCode !== 0) {
 			throw new Error(copy.stderr.trim() || `could not install to ${target}`);
 		}
 
 		// The bundle is ad-hoc signed, so Gatekeeper would otherwise refuse a
 		// download the user did not open through Finder themselves.
-		run(`xattr -dr com.apple.quarantine ${quote(target)}`);
+		run(`xattr -dr com.apple.quarantine ${shellQuote(target)}`);
 
 		writeBarManifest(target, release.version, discoveryScript);
 		barDecline.clear();
@@ -444,7 +447,7 @@ export function installBarFromSource(repoRoot: string): BarInstallResult {
 	if (!existsSync(script)) {
 		throw new Error(`No menubar sources at ${script}.`);
 	}
-	const result = run(`bash ${quote(script)}`, { verbose: true });
+	const result = run(`bash ${shellQuote(script)}`, { verbose: true });
 	if (result.exitCode !== 0) {
 		throw new Error("Building the app from source failed.");
 	}
@@ -460,7 +463,7 @@ export function installBarFromSource(repoRoot: string): BarInstallResult {
 export function openBar(path?: string): void {
 	const bundle = path ?? findInstalledBar();
 	if (!bundle) throw new Error(`${BAR_APP_NAME} is not installed.`);
-	run(`open ${quote(bundle)}`);
+	run(`open ${shellQuote(bundle)}`);
 }
 
 export function isBarRunning(): boolean {
@@ -509,11 +512,6 @@ function run(command: string, options: { verbose?: boolean } = {}) {
 			verbose: options.verbose ?? false,
 		},
 	);
-}
-
-/** Shell-quote a path. Everything here is a path, and paths have spaces. */
-function quote(value: string): string {
-	return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 /** So callers can report where state lives without importing state-paths. */

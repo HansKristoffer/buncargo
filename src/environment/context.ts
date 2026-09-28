@@ -29,7 +29,7 @@ import {
 	getGeneratedComposePath,
 	writeGeneratedComposeFile,
 } from "../docker-compose";
-import { buildStartPlan } from "../planning";
+import { planStart } from "../planning";
 import type {
 	AppConfig,
 	ComputedLoopbackUrls,
@@ -57,11 +57,13 @@ export interface DevEnvContext<
 	TApps extends Record<string, AppConfig>,
 	TEnv extends EnvValues = EnvValues,
 > {
-	prepareStart(onlyApps?: string[]): void;
+	prepareStart(onlyApps?: string[], onlyServices?: readonly string[]): void;
 	readonly hasSelectedServices: boolean;
 	/** Service keys the current selection starts, for the run claim. */
 	readonly selectedServiceKeys: readonly string[];
 	readonly ownedServerPids: Record<string, number>;
+	/** Values apps printed (`captures`), shared by hooks, env and generated files. */
+	readonly captured: Record<string, string>;
 	readonly inputEnv: Readonly<Record<string, string>>;
 	readonly config: DevConfig<TServices, TApps, TEnv>;
 	readonly root: string;
@@ -141,10 +143,18 @@ export function createDevEnvContext<
 		(config.apps ?? {}) as TApps,
 		config.secrets,
 	);
-	const composeFile = getGeneratedComposePath(
-		root,
-		config.docker,
-	).composeFileArg;
+	// A suffixed environment (`withSuffix`, `buncargo ci`) is a second stack in
+	// the same checkout: it gets its own compose file and never persists its
+	// ports, or it would overwrite the ones the checkout's own `dev` run and
+	// every `exec`/`env` read.
+	const docker =
+		suffix && !config.docker?.generatedFile
+			? {
+					...config.docker,
+					generatedFile: `.buncargo/docker-compose.${suffix.replace(/[^A-Za-z0-9-]/g, "-")}.generated.yml`,
+				}
+			: config.docker;
+	const composeFile = getGeneratedComposePath(root, docker).composeFileArg;
 	const runtimeSelection = {
 		flag: options.containerRuntime,
 		docker: config.docker,
@@ -222,6 +232,7 @@ export function createDevEnvContext<
 
 	return {
 		ownedServerPids: {},
+		captured: {},
 		inputEnv,
 		get hasSelectedServices() {
 			return hasSelectedServices;
@@ -229,9 +240,12 @@ export function createDevEnvContext<
 		get selectedServiceKeys() {
 			return selectedServiceKeys;
 		},
-		prepareStart(onlyApps) {
-			const plan = buildStartPlan(apps, services, onlyApps);
-			const selection = JSON.stringify(plan.appNames);
+		prepareStart(onlyApps, onlyServices) {
+			const plan = planStart(apps, services, { onlyApps, onlyServices });
+			const selection = JSON.stringify([
+				plan.appNames,
+				plan.requiredServiceKeys,
+			]);
 
 			// The CLI prepares before touching hosts; lifecycle.start reaches this
 			// again. Reuse that allocation rather than probing the same run twice.
@@ -263,6 +277,7 @@ export function createDevEnvContext<
 				worktreeName: worktreeSuffix,
 				worktreeIsolation: config.options?.worktreeIsolation,
 				runtime: selectedRuntime,
+				persist: suffix === undefined,
 				getOwner: snapshot ? (port) => snapshot.owner(port) : undefined,
 				probeNames: hasSelectedServices ? undefined : plan.appNames,
 			});
@@ -310,7 +325,7 @@ export function createDevEnvContext<
 			return writeGeneratedComposeFile(
 				root,
 				services,
-				config.docker,
+				docker,
 				{ projectName, root, worktree: worktreeSuffix },
 				runtime().name,
 				model,
@@ -370,6 +385,21 @@ export function createDevEnvContext<
 				localIp,
 				portOffset: portPlan.offset,
 				tunnels: tunnelRows,
+				hintFor: (name) => {
+					const app = apps[name];
+					if (!app) return undefined;
+					for (const integration of config.integrations ?? []) {
+						const hint = integration.bannerHint?.({
+							name,
+							config: app,
+							port: portMap[name],
+							root,
+							workspaceId: workspaceId(root),
+						});
+						if (hint) return hint;
+					}
+					return undefined;
+				},
 			});
 		},
 	};

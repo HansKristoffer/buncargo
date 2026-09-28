@@ -4,6 +4,7 @@ import {
 	findUnknownFlags,
 	formatCommandHelp,
 	positiveIntegerValidator,
+	readPositionals,
 	readStringFlag,
 } from "./command-spec";
 
@@ -58,5 +59,27 @@ describe("formatCommandHelp", () => {
 		expect(help).toContain("--dry-run");
 		expect(help).toContain("--count=N");
 		expect(help).toContain("buncargo demo --dry-run");
+	});
+});
+
+describe("readPositionals", () => {
+	const spec = {
+		usage: "x",
+		flags: [
+			{ name: "--app", kind: "string" as const, description: "" },
+			{ name: "--yes", kind: "boolean" as const, description: "" },
+		],
+	};
+
+	it("skips a string flag's spaced value, not a boolean's neighbour", () => {
+		expect(
+			readPositionals(spec, ["ls", "--app", "api", "--yes", "extra"]),
+		).toEqual(["ls", "extra"]);
+		expect(readPositionals(spec, ["--app=api", "export"])).toEqual(["export"]);
+	});
+
+	// No command declares short flags, so a stray one is reported, not ignored.
+	it("treats single-dash tokens as arguments", () => {
+		expect(readPositionals(spec, ["-x"])).toEqual(["-x"]);
 	});
 });

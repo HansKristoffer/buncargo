@@ -88,6 +88,24 @@ describe("published run ownership", () => {
 		expect(await readLiveRuns()).toEqual([]);
 	});
 
+	it("publishes the config's tasks for the menu bar's run button", async () => {
+		const run = await publishCurrentRun(
+			{
+				...source("session-tasks"),
+				tasks: {
+					"shop:seed": { description: "Seed the store" },
+					reindex: {},
+				},
+			},
+			{ apps: {}, serviceNames: ["db"] },
+		);
+		expect(run?.tasks).toEqual([
+			{ name: "shop:seed", description: "Seed the store" },
+			{ name: "reindex" },
+		]);
+		expect((await loadRuns())[0]?.tasks).toEqual(run?.tasks);
+	});
+
 	it("withdraws an app-only run outright, there being nothing to sweep", async () => {
 		await publishCurrentRun(source("session-apps"), {
 			apps: { web: { port: 3000, devCommand: "bun dev" } },

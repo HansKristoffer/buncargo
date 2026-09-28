@@ -189,6 +189,19 @@ export function infisicalPathOverride(
 	return readBinaryOverride(env, "BUNCARGO_INFISICAL_PATH");
 }
 
+/**
+ * An Infisical universal-auth identity (`INFISICAL_CLIENT_ID` +
+ * `INFISICAL_CLIENT_SECRET`), for commands that fetch secrets themselves
+ * (`exec`, migrations, the seed) where no CLI session exists, such as CI.
+ */
+export function infisicalMachineCredentials(
+	env: NodeJS.ProcessEnv = process.env,
+): { clientId: string; clientSecret: string } | undefined {
+	const clientId = readTrimmed(env, "INFISICAL_CLIENT_ID");
+	const clientSecret = readTrimmed(env, "INFISICAL_CLIENT_SECRET");
+	return clientId && clientSecret ? { clientId, clientSecret } : undefined;
+}
+
 /** `SECRETS_ENV` - Infisical environment slug, when the config does not name one. */
 export function secretsEnvironment(
 	env: NodeJS.ProcessEnv = process.env,

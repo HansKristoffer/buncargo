@@ -1,74 +1,71 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import {
-	chmodSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { AppConfig } from "../../types";
+import {
+	type FakeInfisical,
+	startFakeInfisical,
+} from "./fake-infisical.testing";
 import {
 	applySecretDefaults,
 	clearScopeSecretsCache,
+	DEFAULT_INFISICAL_SITE_URL,
 	loadAppSecrets,
+	loadScopeSecrets,
+	missingRequiredSecrets,
 	resolveScope,
+	sessionOrganization,
 } from "./infisical";
 
-const dirs: string[] = [];
+let fake: (FakeInfisical & { cliPath: string; home: string }) | undefined;
 const saved = {
 	home: process.env.HOME,
 	path: process.env.BUNCARGO_INFISICAL_PATH,
 };
 
-/** A stand-in CLI that records every invocation, so "one fetch" is observable. */
-function fakeInfisical(body: string): { calls: () => string[] } {
-	const dir = mkdtempSync(join(tmpdir(), "buncargo-secrets-"));
-	dirs.push(dir);
-	const log = join(dir, "calls.log");
-	const binary = join(dir, "infisical");
-	writeFileSync(
-		binary,
-		`#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\n${body}\n`,
-	);
-	chmodSync(binary, 0o755);
-	process.env.HOME = dir;
-	process.env.BUNCARGO_INFISICAL_PATH = binary;
+function start(options: Parameters<typeof startFakeInfisical>[0] = {}) {
+	fake = startFakeInfisical(options);
+	process.env.HOME = fake.home;
+	process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
+	fake.projects.p1 = { secrets: { OPENAI_API_KEY: "sk-project", BLANK: "" } };
+	return fake;
+}
+
+function app(projectId: string, extra: Partial<AppConfig> = {}): AppConfig {
 	return {
-		calls: () => {
-			try {
-				return readFileSync(log, "utf-8").trim().split("\n");
-			} catch {
-				return [];
-			}
-		},
-	};
+		port: 3000,
+		devCommand: "true",
+		...extra,
+		secrets: { projectId, siteUrl: fake?.siteUrl, ...extra.secrets },
+	} as AppConfig;
 }
 
-function app(projectId: string): AppConfig {
-	return { port: 3000, devCommand: "true", secrets: { projectId } };
-}
-
+beforeEach(() => clearScopeSecretsCache());
 afterEach(() => {
+	fake?.stop();
+	fake = undefined;
 	clearScopeSecretsCache();
-	for (const key of ["HOME", "BUNCARGO_INFISICAL_PATH"] as const) {
-		const value = key === "HOME" ? saved.home : saved.path;
+	for (const [key, value] of [
+		["HOME", saved.home],
+		["BUNCARGO_INFISICAL_PATH", saved.path],
+	] as const) {
 		if (value === undefined) delete process.env[key];
 		else process.env[key] = value;
 	}
-	for (const dir of dirs.splice(0))
-		rmSync(dir, { recursive: true, force: true });
 });
 
 describe("resolveScope", () => {
-	it("fills every field from the app, then the defaults, then the env", () => {
+	it("defaults to hanzio's EU cloud and keeps the organization", () => {
+		expect(DEFAULT_INFISICAL_SITE_URL).toBe("https://eu.infisical.com");
 		expect(
-			resolveScope({ projectId: "p1" }, { environment: "staging" }, {}),
+			resolveScope(
+				{ projectId: "p1" },
+				{ organizationId: "org-a", environment: "staging" },
+				{},
+			),
 		).toEqual({
 			projectId: "p1",
+			organizationId: "org-a",
 			environment: "staging",
-			siteUrl: "https://app.infisical.com",
+			siteUrl: "https://eu.infisical.com",
 			path: "/",
 		});
 		expect(
@@ -80,102 +77,179 @@ describe("resolveScope", () => {
 });
 
 describe("applySecretDefaults", () => {
-	it("resolves each opted-in app's scope and leaves the rest alone", () => {
+	it("resolves each opted-in app's scope, keeping its required keys", () => {
 		const apps = {
-			api: app("p1"),
+			api: {
+				port: 3000,
+				devCommand: "true",
+				secrets: { required: ["DB"] },
+			} as AppConfig,
 			plain: { port: 3001, devCommand: "true" } as AppConfig,
 		};
-		const resolved = applySecretDefaults(
-			apps,
-			{ siteUrl: "https://eu.infisical.com" },
-			{},
-		);
+		const resolved = applySecretDefaults(apps, { projectId: "p1" }, {});
 		expect(resolved.api.secrets).toEqual({
 			projectId: "p1",
 			environment: "dev",
 			siteUrl: "https://eu.infisical.com",
 			path: "/",
+			required: ["DB"],
 		});
 		expect(resolved.plain).toBe(apps.plain);
 	});
+});
 
-	it("returns the same object when no app opted in", () => {
-		const apps = { api: { port: 3000, devCommand: "true" } as AppConfig };
-		expect(applySecretDefaults(apps, { projectId: "p1" }, {})).toBe(apps);
+describe("session tokens", () => {
+	it("reads the organization claim", () => {
+		start();
+		expect(sessionOrganization("a.eyJvcmdhbml6YXRpb25JZCI6Im8xIn0.c")).toBe(
+			"o1",
+		);
+		expect(sessionOrganization("garbage")).toBeUndefined();
 	});
 });
 
 describe("loadAppSecrets", () => {
-	it("spawns nothing when no app declares a scope", async () => {
-		const cli = fakeInfisical('echo "[]"');
-		expect(
-			await loadAppSecrets(
-				{ api: { port: 3000, devCommand: "true" } },
-				{
-					projectId: "p1",
-				},
-			),
-		).toEqual({});
-		expect(cli.calls()).toEqual([]);
-	});
-
-	it("fetches a shared scope once for every app that uses it", async () => {
-		const cli = fakeInfisical(
-			`echo '[{"key":"OPENAI_API_KEY","value":"sk-project"}]'`,
-		);
+	it("fetches a shared scope once, over HTTP, with one CLI call", async () => {
+		const infisical = start();
 		const secrets = await loadAppSecrets(
-			{ web: app("shared"), marketing: app("shared"), api: app("other") },
+			{ web: app("p1"), marketing: app("p1") },
 			undefined,
 			{ env: {} },
 		);
-		expect(secrets.web).toEqual({ OPENAI_API_KEY: "sk-project" });
-		expect(secrets.marketing).toEqual({ OPENAI_API_KEY: "sk-project" });
-		expect(secrets.api).toEqual({ OPENAI_API_KEY: "sk-project" });
-		expect(cli.calls()).toHaveLength(2);
+		expect(secrets).toEqual({
+			web: { OPENAI_API_KEY: "sk-project" },
+			marketing: { OPENAI_API_KEY: "sk-project" },
+		});
+		expect(infisical.cliCalls()).toHaveLength(1);
+		expect(infisical.cliCalls()[0]).toContain("user get token");
+		expect(infisical.requests).toEqual(["GET /api/v4/secrets"]);
+	});
+
+	// Projects in two organizations, side by side, without `infisical switch`.
+	it("scopes the session to the scope's organization", async () => {
+		const infisical = start({ cliOrganization: "org-a" });
+		infisical.projects.p2 = { secrets: { B: "2" } };
+		const secrets = await loadAppSecrets(
+			{
+				a: app("p1", { secrets: { organizationId: "org-a" } }),
+				b: app("p2", { secrets: { organizationId: "org-b" } }),
+			},
+			undefined,
+			{ env: {} },
+		);
+		expect(secrets).toEqual({
+			a: { OPENAI_API_KEY: "sk-project" },
+			b: { B: "2" },
+		});
+		expect(
+			infisical.requests.filter((entry) =>
+				entry.includes("select-organization"),
+			),
+		).toHaveLength(1);
+	});
+
+	it("lets the folder's own value beat an imported one", async () => {
+		const infisical = start();
+		infisical.projects.p1 = {
+			secrets: { A: "own" },
+			imports: { A: "imported", B: "imported" },
+		};
+		expect(
+			await loadAppSecrets({ api: app("p1") }, undefined, { env: {} }),
+		).toEqual({
+			api: { A: "own", B: "imported" },
+		});
 	});
 
 	it("keeps the developer's own exported value", async () => {
-		fakeInfisical(`echo '[{"key":"OPENAI_API_KEY","value":"sk-project"}]'`);
-		const secrets = await loadAppSecrets({ api: app("p1") }, undefined, {
-			env: { OPENAI_API_KEY: "sk-local" },
-		});
-		expect(secrets.api).toEqual({});
-	});
-
-	it("leaves an empty exported value out", async () => {
-		fakeInfisical(
-			`echo '[{"key":"FILLED","value":"x"},{"key":"BLANK","value":""}]'`,
-		);
+		start();
 		expect(
-			await loadAppSecrets({ api: app("p1") }, undefined, { env: {} }),
-		).toEqual({ api: { FILLED: "x" } });
+			await loadAppSecrets({ api: app("p1") }, undefined, {
+				env: { OPENAI_API_KEY: "sk-local" },
+			}),
+		).toEqual({ api: {} });
 	});
 
 	it("leaves a machine identity to the app's own loader", async () => {
-		const cli = fakeInfisical(`echo '[{"key":"K","value":"v"}]'`);
+		const infisical = start();
 		expect(
 			await loadAppSecrets({ api: app("p1") }, undefined, {
-				env: {
-					INFISICAL_CLIENT_ID: "id",
-					INFISICAL_CLIENT_SECRET: "secret",
-				},
+				env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "right" },
 			}),
 		).toEqual({});
-		expect(cli.calls()).toEqual([]);
+		expect(infisical.cliCalls()).toEqual([]);
 	});
 
-	it("warns and yields nothing when the CLI fails", async () => {
-		fakeInfisical("exit 1");
-		const warnings: unknown[] = [];
+	it("warns with the fix, never the CLI's output, when the CLI fails", async () => {
+		start({ cliFails: true });
+		const warnings: string[] = [];
 		const warn = console.warn;
-		console.warn = (message: unknown) => warnings.push(message);
+		console.warn = (message: unknown) => warnings.push(String(message));
 		try {
 			expect(
 				await loadAppSecrets({ api: app("p1") }, undefined, { env: {} }),
-			).toEqual({ api: {} });
+			).toEqual({
+				api: {},
+			});
 		} finally {
 			console.warn = warn;
 		}
-		expect(String(warnings[0])).toContain("api");
+		expect(warnings[0]).toContain("infisical login --domain=");
+		expect(warnings[0]).not.toContain("secret-looking");
+	});
+
+	it("reports MFA instead of guessing", async () => {
+		start({ mfaOrganizations: ["org-mfa"] });
+		await expect(
+			loadScopeSecrets(
+				{ projectId: "p1", organizationId: "org-mfa", siteUrl: fake?.siteUrl },
+				{ env: {} },
+			),
+		).rejects.toThrow("requires MFA");
+	});
+});
+
+describe("loadScopeSecrets with a machine identity", () => {
+	it("uses universal auth and never the CLI", async () => {
+		const infisical = start();
+		expect(
+			await loadScopeSecrets(
+				{ projectId: "p1", siteUrl: infisical.siteUrl },
+				{
+					env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "right" },
+				},
+			),
+		).toEqual({ OPENAI_API_KEY: "sk-project" });
+		expect(infisical.cliCalls()).toEqual([]);
+		expect(infisical.requests).toEqual([
+			"POST /api/v1/auth/universal-auth/login",
+			"GET /api/v4/secrets",
+		]);
+	});
+
+	it("fails with the status and no body on bad credentials", async () => {
+		const infisical = start();
+		await expect(
+			loadScopeSecrets(
+				{ projectId: "p1", siteUrl: infisical.siteUrl },
+				{
+					env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "wrong" },
+				},
+			),
+		).rejects.toThrow("universal-auth login failed (HTTP 401)");
+	});
+});
+
+describe("missingRequiredSecrets", () => {
+	it("names what each app would start without", () => {
+		expect(
+			missingRequiredSecrets(
+				{
+					api: app("p1", { secrets: { required: ["DB", "KEY"] } }),
+					web: app("p1", { secrets: { required: ["KEY"] } }),
+				},
+				(name) => (name === "api" ? { KEY: "x" } : { KEY: "y" }),
+			),
+		).toEqual({ api: ["DB"] });
 	});
 });

@@ -20,9 +20,19 @@ export interface BuncargoVitePlugin {
 export interface BuncargoViteConfig {
 	server: {
 		port?: number;
+		/** Set with `port`: a Vite that drifts to the next port is unreachable. */
+		strictPort?: boolean;
 		host?: string;
 		allowedHosts?: string[];
+		proxy?: Record<string, BuncargoViteProxyRule>;
 	};
+}
+
+/** One `server.proxy` entry, in the shape Vite takes. */
+export interface BuncargoViteProxyRule {
+	target: string;
+	changeOrigin: boolean;
+	ws: boolean;
 }
 
 export interface BuncargoViteOptions {
@@ -40,12 +50,23 @@ export interface BuncargoViteOptions {
 	host?: string;
 	/** Environment to read. Defaults to `process.env`. */
 	env?: NodeJS.ProcessEnv;
+	/**
+	 * Proxy path prefixes to other apps: `{ '/api': 'api' }`.
+	 *
+	 * The target is the app's loopback URL, never its named `https://` one,
+	 * and the incoming Host is kept (`changeOrigin: false`), so the app sees
+	 * the public hostname behind a tunnel. Proxying to the named URL with the
+	 * Host kept is what loops: the hosts proxy routes that Host straight back
+	 * to this Vite, and answers `508 Loop Detected`.
+	 */
+	proxy?: Record<string, string>;
 }
 
 /** The parts of the injected environment this plugin reads. */
 export interface BuncargoViteEnvironment {
 	port?: number;
 	allowedHosts: string[];
+	proxy?: Record<string, BuncargoViteProxyRule>;
 }
 
 function parsePort(value: string | undefined): number | undefined {
@@ -63,9 +84,12 @@ export function readBuncargoViteEnvironment(
 	env: NodeJS.ProcessEnv,
 	appName: string | undefined,
 ): BuncargoViteEnvironment {
-	// `PORT` is what buncargo sets for the app it spawned. `<APP>_PORT` covers a
-	// Vite process started by hand outside the dev run.
+	// `FRONTEND_PORT` first: only Shopify CLI sets it, and it then proxies to
+	// exactly that port while `PORT` may name another process's. `PORT` is what
+	// buncargo sets for the app it spawned. `<APP>_PORT` covers a Vite process
+	// started by hand outside the dev run.
 	const port =
+		parsePort(env.FRONTEND_PORT) ??
 		parsePort(env.PORT) ??
 		(appName ? parsePort(env[`${appName.toUpperCase()}_PORT`]) : undefined);
 
@@ -80,18 +104,48 @@ export function readBuncargoViteEnvironment(
 	};
 }
 
+/**
+ * Resolve `proxy: { '/api': 'api' }` to each app's loopback URL.
+ *
+ * `<APP>_LOOPBACK_URL` is in every buncargo-spawned process; `<APP>_PORT` is
+ * the fallback for a Vite started by some other tool with the env exported.
+ * A target that cannot be resolved throws: a proxy silently left out answers
+ * every `/api` request with Vite's own 404.
+ */
+export function resolveBuncargoViteProxy(
+	env: NodeJS.ProcessEnv,
+	proxy: Record<string, string>,
+): Record<string, BuncargoViteProxyRule> {
+	return Object.fromEntries(
+		Object.entries(proxy).map(([path, app]) => {
+			const name = app.toUpperCase();
+			const port = parsePort(env[`${name}_PORT`]);
+			const target =
+				env[`${name}_LOOPBACK_URL`] ??
+				(port === undefined ? undefined : `http://127.0.0.1:${port}`);
+			if (!target) {
+				throw new Error(
+					`buncargoVite: cannot proxy ${path} to "${app}": neither ${name}_LOOPBACK_URL nor ${name}_PORT is set. Start Vite through buncargo, or export the env with \`buncargo exec\`.`,
+				);
+			}
+			return [path, { target, changeOrigin: false, ws: true }];
+		}),
+	);
+}
+
 /** Preserve Vite's origin-relative WebSocket defaults; both Buncargo proxies support upgrades. */
 export function buildBuncargoViteConfig(
 	environment: BuncargoViteEnvironment,
 	host: string,
 ): BuncargoViteConfig {
-	const { port, allowedHosts } = environment;
+	const { port, allowedHosts, proxy } = environment;
 
 	return {
 		server: {
-			...(port === undefined ? {} : { port }),
+			...(port === undefined ? {} : { port, strictPort: true }),
 			host,
 			...(allowedHosts.length > 0 ? { allowedHosts } : {}),
+			...(proxy && Object.keys(proxy).length > 0 ? { proxy } : {}),
 		},
 	};
 }
@@ -106,7 +160,12 @@ export function buncargoVite(
 			// once per process, and a watched restart should see current values.
 			const env = options.env ?? process.env;
 			const appName = options.app ?? env.BUNCARGO_APP_NAME;
-			const environment = readBuncargoViteEnvironment(env, appName);
+			const environment = {
+				...readBuncargoViteEnvironment(env, appName),
+				proxy: options.proxy
+					? resolveBuncargoViteProxy(env, options.proxy)
+					: undefined,
+			};
 
 			return buildBuncargoViteConfig(environment, options.host ?? "127.0.0.1");
 		},

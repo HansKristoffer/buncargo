@@ -1,0 +1,8 @@
+{
+	"name": "theme-prints",
+	"private": true,
+	"scripts": {
+		"build": "bun build.ts",
+		"dev": "bun build.ts --watch"
+	}
+}

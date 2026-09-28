@@ -24,7 +24,7 @@ type DefineDevConfigArg<
 	TEnv extends EnvValues,
 > = Omit<
 	DevConfigInput<TServices, TApps, TEnv>,
-	"apps" | "env" | "hooks" | "seed" | "options"
+	"apps" | "env" | "hooks" | "seed" | "options" | "tasks" | "profiles"
 > & {
 	// Required, not optional: an optional `apps` stops being an inference site
 	// once the parameter is buried in this intersection, and `TApps` silently
@@ -38,6 +38,8 @@ type DefineDevConfigArg<
 	hooks?: NoInfer<DevConfigInput<TServices, TApps, TEnv>["hooks"]>;
 	seed?: NoInfer<DevConfigInput<TServices, TApps, TEnv>["seed"]>;
 	options?: NoInfer<DevConfigInput<TServices, TApps, TEnv>["options"]>;
+	tasks?: NoInfer<DevConfigInput<TServices, TApps, TEnv>["tasks"]>;
+	profiles?: NoInfer<DevConfigInput<TServices, TApps, TEnv>["profiles"]>;
 };
 
 /**

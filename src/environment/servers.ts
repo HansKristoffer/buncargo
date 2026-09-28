@@ -22,6 +22,7 @@ import type {
 	OpenPublicTunnelsResult,
 	ServiceConfig,
 } from "../types";
+import { createCaptureRecorder } from "./captures";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 
@@ -105,10 +106,17 @@ export async function startAppServers<
 			600000,
 			options.signal,
 		);
+	const recordCapture = createCaptureRecorder(ctx, envVars);
 	const pids = await startDevServers(
 		appsToStart,
 		ctx.root,
-		envVars.buildAppEnvVarsMap(appsToStart, productionBuild),
+		// Built per spawn rather than once: a restarted app (`restartOn`) must
+		// see the public URL or capture that caused the restart.
+		(name) =>
+			envVars.buildAppEnvVars(
+				name as Extract<keyof TApps, string>,
+				productionBuild,
+			),
 		ctx.ports,
 		{
 			verbose,
@@ -119,6 +127,7 @@ export async function startAppServers<
 			skipContainers: !ctx.hasSelectedServices,
 			signal: options.signal,
 			deferPublicUrlApps: false,
+			onCapture: recordCapture,
 			waitForHealth: (wave, signal) =>
 				waitForDevServers(wave, ctx.ports, {
 					timeout: readyTimeout(),

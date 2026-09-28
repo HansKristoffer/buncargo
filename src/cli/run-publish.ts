@@ -1,13 +1,15 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { describeExpoApp } from "../core/expo";
+import type { CapturedValue } from "../core/process/output-capture";
 import { readProcessIdentity } from "../core/process-identity";
 import {
 	buildRunEntry,
+	findRunsByRoot,
 	patchRun,
 	publishRun,
 	type RunAppEntry,
 	type RunAppStatus,
+	type RunDetailEntry,
 	type RunEntry,
 	type RunPatch,
 	type RunServiceEntry,
@@ -17,6 +19,7 @@ import { describeService } from "../core/service-identity";
 import { defaultServiceProtocol } from "../core/service-presets";
 import type {
 	AppConfig,
+	BuncargoIntegration,
 	ContainerRuntimeName,
 	NamedHost,
 	ServiceConfig,
@@ -59,6 +62,11 @@ export interface RunSource {
 	readonly loopbackUrls: object;
 	readonly publicUrls: object;
 	readonly services: Record<string, ServiceConfig>;
+	/** Integrations add their own fields to each app's entry (`expo`, …). */
+	readonly integrations?: readonly BuncargoIntegration[];
+	readonly workspaceId?: string;
+	describeIntegrations?(): Record<string, string>;
+	readonly tasks?: Readonly<Record<string, { readonly description?: string }>>;
 	readonly hosts: {
 		readonly active: boolean;
 		readonly tld: string;
@@ -98,6 +106,46 @@ export function readGitBranch(root: string): string | undefined {
 	}
 }
 
+/** Integrations' labelled values, as registry rows; best-effort like the rest. */
+function runDetails(env: Pick<RunSource, "describeIntegrations">): {
+	details?: RunDetailEntry[];
+} {
+	try {
+		const values = env.describeIntegrations?.() ?? {};
+		const details = Object.entries(values).map(([label, value]) => ({
+			label,
+			value,
+		}));
+		return details.length > 0 ? { details } : {};
+	} catch {
+		return {};
+	}
+}
+
+/** What each integration records about one app, merged in integration order. */
+function integrationFields(
+	env: RunSource,
+	name: string,
+	config: AppConfig | undefined,
+	port: number | undefined,
+): Record<string, unknown> {
+	if (!config) return {};
+	const fields: Record<string, unknown> = {};
+	for (const integration of env.integrations ?? []) {
+		Object.assign(
+			fields,
+			integration.describeApp?.({
+				name,
+				config,
+				port,
+				root: env.root,
+				workspaceId: env.workspaceId ?? "",
+			}),
+		);
+	}
+	return fields;
+}
+
 function appEntries(
 	env: RunSource,
 	input: {
@@ -132,7 +180,8 @@ function appEntries(
 				loopbackUrl,
 				publicUrl: publicUrls[name],
 				hostname: hostnameFor.get(name),
-				expo: describeExpoApp(env.root, input.apps[name]),
+				...integrationFields(env, name, input.apps[name], port),
+				exclusive: input.apps[name]?.exclusive,
 				status: input.statusFor(name),
 			},
 		];
@@ -259,6 +308,15 @@ async function writeRun(
 			input.serviceStatus ?? "ready",
 			input.serviceNames,
 		),
+		...runDetails(env),
+		...(env.tasks && Object.keys(env.tasks).length > 0
+			? {
+					tasks: Object.entries(env.tasks).map(([name, task]) => ({
+						name,
+						...(task.description ? { description: task.description } : {}),
+					})),
+				}
+			: {}),
 	};
 
 	await publishRun(entry);
@@ -338,4 +396,61 @@ export async function recordAppSpawn(
 			},
 		],
 	});
+}
+
+/**
+ * Record a captured value: in `captures`, and as the app's `publicUrl` when
+ * it is one, so BuncargoBar shows the preview URL like a tunnel's. Refreshes
+ * the integrations' `describe` rows too, since those usually read captures.
+ */
+export async function recordRunCapture(
+	env: RunSession & Pick<RunSource, "describeIntegrations">,
+	app: string,
+	captured: CapturedValue,
+): Promise<void> {
+	const { details } = runDetails(env);
+	await patchCurrentRun(env, {
+		...(captured.as === "event"
+			? {}
+			: { captures: { [captured.name]: captured.value } }),
+		...(captured.as === "publicUrl"
+			? { apps: [{ name: app, publicUrl: captured.value }] }
+			: {}),
+		...(details ? { details } : {}),
+	});
+}
+
+/**
+ * Adopt the captures of this checkout's live run, for a command in another
+ * process (`env`, `generate`, `wait`) that should see what `dev` captured.
+ * Returns them; the newest run wins when several are live.
+ */
+export async function adoptLiveCaptures(env: {
+	root: string;
+	captured: Readonly<Record<string, string>>;
+	setPublicUrls?(urls: Record<string, string>): void;
+}): Promise<Record<string, string>> {
+	try {
+		const runs = (await findRunsByRoot(env.root)).sort((a, b) =>
+			a.startedAt.localeCompare(b.startedAt),
+		);
+		const captures: Record<string, string> = Object.assign(
+			{},
+			...runs.map((run) => run.captures ?? {}),
+		);
+		Object.assign(env.captured as Record<string, string>, captures);
+		// Captured and tunnel public URLs alike, as the run published them.
+		env.setPublicUrls?.(
+			Object.fromEntries(
+				runs.flatMap((run) =>
+					run.apps.flatMap((app) =>
+						app.publicUrl ? [[app.name, app.publicUrl] as const] : [],
+					),
+				),
+			),
+		);
+		return captures;
+	} catch {
+		return {};
+	}
 }

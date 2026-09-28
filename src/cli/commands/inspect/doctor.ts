@@ -38,6 +38,9 @@ import {
 	readLiveRuns,
 } from "../../../core/run-registry";
 import { loadDevEnv } from "../../../loader";
+import type { AnyDevEnvironment } from "../../../types";
+import { describeCheckFailures, isWarning, runChecks } from "../../checks";
+import { allChecks } from "../../core-checks";
 import { hasFlag } from "../../flags";
 import * as log from "../../log";
 import {
@@ -46,6 +49,23 @@ import {
 } from "../../tunnel-registry";
 
 type DevEnv = Awaited<ReturnType<typeof loadDevEnv>>;
+
+/** Every setup check, core, config and integrations; `setup` fixes what fails. */
+async function checkSetupChecks(
+	report: DoctorReport,
+	env: DevEnv,
+): Promise<void> {
+	const anyEnv = env as AnyDevEnvironment;
+	for (const result of await runChecks(allChecks(anyEnv), {
+		root: env.root,
+		env: anyEnv,
+	})) {
+		const [line] = describeCheckFailures([result]);
+		if (result.ok) report.note(result.check.name);
+		else if (isWarning(result)) report.note(`warning: ${line}`);
+		else report.issue(`${line} (\`buncargo setup\` offers the fix)`);
+	}
+}
 
 /** Collects the doctor report so each check stays a small pure-ish function. */
 class DoctorReport {
@@ -377,6 +397,7 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 		await checkOrphanedContainers(report, env, selected);
 		await checkTunnelRegistry(report, env);
 		await checkNamedHosts(report, env);
+		await checkSetupChecks(report, env);
 	}
 
 	await checkRunRegistry(report);

@@ -19,3 +19,14 @@ export function toCliError(error: unknown): CliError {
 	}
 	return new CliError(error instanceof Error ? error.message : String(error));
 }
+
+/** Argv problems: the first as the message, the rest as hints, then where help is. */
+export function argumentsError(
+	errors: readonly string[],
+	command: string,
+): CliError {
+	return new CliError(errors[0] ?? "Invalid arguments.", [
+		...errors.slice(1),
+		`Run "bunx buncargo ${command} --help" for options.`,
+	]);
+}

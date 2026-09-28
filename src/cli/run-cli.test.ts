@@ -155,6 +155,10 @@ function createStubEnv(
 			await options.waitForServer?.(url, timeout);
 		},
 		logInfo: () => {},
+		captured: {},
+		recordCapture: async () => [],
+		renderGeneratedFiles: () => [],
+		describeIntegrations: () => ({}),
 		getExpoApiUrl: () => "http://127.0.0.1:3000",
 		getFrontendPort: () => 5173,
 		sessionId: "test-session",

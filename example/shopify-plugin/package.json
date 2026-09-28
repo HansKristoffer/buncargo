@@ -1,0 +1,8 @@
+{
+	"name": "shopify-plugin-example",
+	"private": true,
+	"workspaces": [
+		"apps/*",
+		"extensions/*"
+	]
+}

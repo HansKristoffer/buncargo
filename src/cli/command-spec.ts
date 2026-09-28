@@ -121,3 +121,25 @@ export function positiveIntegerValidator(
 		return undefined;
 	};
 }
+
+/**
+ * Arguments that are not `--` flags, skipping the value of a spec'd string
+ * flag written as `--flag value` (taken the way `getFlagValue` takes it), so
+ * it is not mistaken for a subcommand. A single-dash token is positional:
+ * no command declares short flags, so it is reported rather than ignored.
+ */
+export function readPositionals(spec: CommandSpec, args: string[]): string[] {
+	const positionals: string[] = [];
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index] ?? "";
+		if (!arg.startsWith("--")) {
+			positionals.push(arg);
+			continue;
+		}
+		const flag = spec.flags.find((entry) => entry.name === arg);
+		if (flag?.kind === "string" && !(args[index + 1] ?? "-").startsWith("-")) {
+			index++;
+		}
+	}
+	return positionals;
+}

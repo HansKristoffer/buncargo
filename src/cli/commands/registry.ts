@@ -6,6 +6,31 @@ import type { CommandExample } from "../command-spec";
  */
 export const CLI_COMMANDS = [
 	{
+		name: "setup",
+		usage: "setup",
+		summary: "Run the fix of every failing check",
+	},
+	{
+		name: "run",
+		usage: "run [<task>] [-- args]",
+		summary: "Run a task from dev.config.ts (lists them without a name)",
+	},
+	{
+		name: "wait",
+		usage: "wait --app=<name> [--hold]",
+		summary: "Block until an app of this checkout's run is healthy",
+	},
+	{
+		name: "generate",
+		usage: "generate",
+		summary: "Render generatedFiles without starting anything",
+	},
+	{
+		name: "build",
+		usage: "build [--discovered]",
+		summary: "Run apps' buildCommand one at a time",
+	},
+	{
 		name: "exec",
 		usage: "exec [options] -- <command>",
 		summary: "Run a command with the checkout environment",
@@ -25,6 +50,16 @@ export const CLI_COMMANDS = [
 		name: "prisma",
 		usage: "prisma <args>",
 		summary: "Run Prisma CLI with correct DATABASE_URL",
+	},
+	{
+		name: "secrets",
+		usage: "secrets ls [--app=<name>]",
+		summary: "List Infisical keys and where each comes from (never values)",
+	},
+	{
+		name: "ci",
+		usage: "ci [--migrate] [--seed] [-- <command>]",
+		summary: "Start services in CI, prepare them, run a command, tear down",
 	},
 	{ name: "env", usage: "env", summary: "Print environment info as JSON" },
 	{
@@ -104,6 +139,14 @@ export const COMMAND_HELP_EXTRAS: readonly CommandExample[] = [
 	{
 		command: "typecheck --only=<workspaces>",
 		description: "Typecheck selected workspaces (path or basename)",
+	},
+	{
+		command: "dev --profile=<name>",
+		description: "Run a profile's apps from dev.config.ts",
+	},
+	{
+		command: "prisma migrate-check",
+		description: "Fail when migrations and schema.prisma differ",
 	},
 	{
 		command: "runs --json",
