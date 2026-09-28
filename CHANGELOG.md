@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.1.0](https://github.com/HansKristoffer/buncargo/compare/v10.0.0...v10.1.0) (2026-09-28)
+
+
+### Features
+
+* **cli:** add generic URL listing and open commands ([#57](https://github.com/HansKristoffer/buncargo/issues/57)) ([ac28b8a](https://github.com/HansKristoffer/buncargo/commit/ac28b8aec65cb7d8feafb5679362295e5096d1e8))
+
 ## [10.0.0](https://github.com/HansKristoffer/buncargo/compare/v9.2.2...v10.0.0) (2026-09-28)
 
 
