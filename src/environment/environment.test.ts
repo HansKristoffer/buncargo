@@ -324,3 +324,51 @@ describe("suffixed environments", () => {
 		}
 	});
 });
+
+it("filters the run banner and only asks integrations for displayed apps", () => {
+	const hints: string[] = [];
+	const env = createDevEnvironment({
+		projectPrefix: "banner",
+		services: {
+			db: { port: 5432, docker: { image: "postgres:17" } },
+			cache: { port: 6379, docker: { image: "redis:7" } },
+		},
+		apps: {
+			api: { port: 3000, devCommand: false, requiredServices: ["db"] },
+			expoApp: { port: 8081, devCommand: false },
+		},
+		integrations: [
+			{
+				name: "hint-test",
+				bannerHint: ({ name }) => {
+					hints.push(name);
+					return `hint-${name}`;
+				},
+			},
+		],
+	});
+	const lines: string[] = [];
+	const original = console.log;
+	console.log = (...args) => {
+		lines.push(args.join(" "));
+	};
+	try {
+		env.logInfo(undefined, undefined, {
+			appNames: ["api"],
+			requiredServiceKeys: ["db"],
+		});
+		expect(lines.join("\n")).toContain("api");
+		expect(lines.join("\n")).toContain("db");
+		expect(lines.join("\n")).not.toContain("expoApp");
+		expect(lines.join("\n")).not.toContain("cache");
+		expect(hints).toEqual(["api"]);
+		lines.length = 0;
+		hints.length = 0;
+		env.logInfo();
+		expect(lines.join("\n")).toContain("expoApp");
+		expect(lines.join("\n")).toContain("cache");
+		expect(hints).toEqual(["api", "expoApp"]);
+	} finally {
+		console.log = original;
+	}
+});

@@ -463,7 +463,7 @@ async function runDevFlow<
 
 	// ── One-shot modes ───────────────────────────────────────────────────────
 	if (args.migrate) {
-		env.logInfo();
+		env.logInfo(undefined, undefined, plan);
 		log.line();
 		log.success("Migrations applied successfully");
 		return exitWith(0);
@@ -474,7 +474,7 @@ async function runDevFlow<
 	}
 
 	if (args.upOnly) {
-		env.logInfo();
+		env.logInfo(undefined, undefined, plan);
 		log.line();
 		log.success("Containers started. Environment ready.");
 		log.line();
@@ -542,7 +542,13 @@ async function runDevFlow<
 	logSelectedAppsSummary(classifiedApps);
 
 	if (!args.exposeRequested) {
-		env.logInfo();
+		env.logInfo(undefined, undefined, {
+			appNames: Object.keys({
+				...classifiedApps.startApps,
+				...classifiedApps.reusedApps,
+			}),
+			requiredServiceKeys: plan.requiredServiceKeys,
+		});
 	}
 
 	if (nothingToSpawn && !tunnels.hasPendingTargets() && !connect?.active) {

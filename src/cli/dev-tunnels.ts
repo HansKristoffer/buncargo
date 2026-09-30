@@ -11,6 +11,7 @@ import type {
 	ComputedPublicUrls,
 	DevEnvironment,
 	DevEnvironmentTunnelLog,
+	EnvironmentLogSelection,
 	ServiceConfig,
 } from "../types";
 import { CliError } from "./errors";
@@ -71,6 +72,7 @@ export function createTunnelCoordinator<
 	let ownedRegistryEntries: TunnelRegistryEntry[] = [];
 	const openingController = new AbortController();
 	let opening: Promise<void> | undefined;
+	let selection: EnvironmentLogSelection | undefined;
 
 	/**
 	 * Public URLs here come from `--expose` names and the tunnel registry, so
@@ -188,6 +190,12 @@ export function createTunnelCoordinator<
 			);
 		}
 
+		selection = {
+			appNames: [...selectedAppNames],
+			requiredServiceKeys: [
+				...(selectedServiceNames ?? Object.keys(env.services)),
+			],
+		};
 		env.setPublicUrls(asPublicUrls(inheritedPublicUrls));
 		pendingTargets = liveTargets.filter(
 			(target) =>
@@ -214,7 +222,7 @@ export function createTunnelCoordinator<
 		signal.throwIfAborted();
 		if (pendingTargets.length === 0) {
 			if (options.exposeRequested) {
-				env.logInfo("Dev Environment", combinedTunnelLogs);
+				env.logInfo("Dev Environment", combinedTunnelLogs, selection);
 			}
 			return;
 		}
@@ -248,7 +256,7 @@ export function createTunnelCoordinator<
 		}
 
 		combinedTunnelLogs.push(...tunnels);
-		env.logInfo("Dev Environment", combinedTunnelLogs);
+		env.logInfo("Dev Environment", combinedTunnelLogs, selection);
 		pendingTargets = [];
 	}
 

@@ -309,6 +309,8 @@ export function createLifecycleApi<
 		if (verbose && !skipEnvironmentLog) {
 			ctx.logInfo(
 				productionBuild ? "Production Environment" : "Dev Environment",
+				undefined,
+				currentSelection(),
 			);
 		}
 

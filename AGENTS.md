@@ -40,6 +40,7 @@ All library source code lives under `src/`.
   - `createDevEnvironment()` and related orchestration helpers.
   - `context.ts` resolves identity/ports/URLs once into a `DevEnvContext`; `env-vars.ts`, `lifecycle.ts`, `servers.ts` and `run-claim.ts` are built on it and `create-dev-environment.ts` only composes them.
   - `seeding.ts` owns the only seed path: `runSeedIfNeeded` backs both `start()` and `env.runSeed()` (which `buncargo dev --seed` calls with `force: true`). A failed seed fails `start()`; it does not log and continue.
+  - `logInfo` accepts an optional `EnvironmentLogSelection`; CLI classification and library lifecycle pass the current run selection, including for tunnel banners. Integration hints run only for displayed apps. Omit selection for full configuration listings.
   - Prefer extracting complex concerns into focused modules (e.g. logging/seeding).
 - `src/loader/`
   - Config discovery/loading and cache handling.

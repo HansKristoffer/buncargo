@@ -57,6 +57,12 @@ export interface DevEnvironmentTunnelLog {
 	publicUrl: string;
 }
 
+/** The apps and service prerequisites shown in a run's banner. */
+export interface EnvironmentLogSelection {
+	appNames: readonly string[];
+	requiredServiceKeys: readonly string[];
+}
+
 /** Active tunnel with teardown — same shape as core `PublicTunnel`. */
 export type PublicTunnelHandle = DevEnvironmentTunnelLog & {
 	close: () => Promise<void>;
@@ -295,7 +301,11 @@ export interface DevEnvironment<
 	/** Wait for an HTTP server to respond */
 	waitForServer(url: string, timeout?: number): Promise<void>;
 	/** Log environment info to console; pass `tunnels` to show public URLs next to services/apps */
-	logInfo(label?: string, tunnels?: DevEnvironmentTunnelLog[]): void;
+	logInfo(
+		label?: string,
+		tunnels?: DevEnvironmentTunnelLog[],
+		selection?: EnvironmentLogSelection,
+	): void;
 
 	/**
 	 * Resolve expose targets, start public quick tunnels, and apply {@link setPublicUrls}.

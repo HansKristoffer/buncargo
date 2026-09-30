@@ -942,6 +942,8 @@ envFile: {
 
 A server that exits zero after detaching its listener is adopted by pid and process identity. Buncargo warns with the app, port and command, and stops the detached server with the run. Its framework may write logs to its own files after detaching.
 
+The `dev` banner lists the selected apps (including reused apps) and their required services. `url` and `env` continue to list the full configuration.
+
 ## Environment variables
 
 ### Dotenv input
