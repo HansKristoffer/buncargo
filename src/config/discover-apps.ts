@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { findMonorepoRoot } from "../core/ports";
+import { shellQuote } from "../core/shell-quote";
 import type { AppConfig } from "../types";
 
 /** Marks an app `discoverApps` produced, for `buncargo build --discovered`. */
@@ -11,6 +12,8 @@ export interface DiscoverAppsOptions {
 	globs: readonly string[];
 	/** The package script that runs the app. Only workspaces that define it are included. Default: `dev` */
 	script?: string;
+	/** Package script runner. Default: `bun`. */
+	runner?: "bun" | "npm" | "pnpm" | "yarn";
 	/** Default: `worker`. A `server` needs `port`. */
 	kind?: "worker" | "server";
 	/** Base port for servers; each discovered app takes the next one, in name order. */
@@ -89,6 +92,8 @@ export function discoverApps(
 ): Record<string, AppConfig> {
 	const root = options.root ?? findMonorepoRoot();
 	const script = options.script ?? "dev";
+	const runScript = (name: string) =>
+		`${options.runner ?? "bun"} run ${shellQuote(name)}`;
 	const kind = options.kind ?? "worker";
 	if (kind === "server" && options.port === undefined) {
 		throw new Error("discoverApps: servers need a base `port`");
@@ -112,12 +117,12 @@ export function discoverApps(
 
 		const shared = {
 			...options.app,
-			devCommand: `bun run ${script}`,
+			devCommand: runScript(script),
 			cwd: workspace.dir,
 			...(options.prebuild && scripts[options.prebuild]
-				? { prebuild: `bun run ${options.prebuild}` }
+				? { prebuild: runScript(options.prebuild) }
 				: {}),
-			...(scripts.build ? { buildCommand: "bun run build" } : {}),
+			...(scripts.build ? { buildCommand: runScript("build") } : {}),
 		};
 		// `options.app` is typed against both kinds; validation catches a field
 		// the chosen kind cannot take (a worker with a health endpoint).

@@ -1,11 +1,11 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { CapturedValue } from "../core/process/output-capture";
-import { readProcessIdentity } from "../core/process-identity";
+import { readProcessIdentitiesAsync } from "../core/process-identity";
 import {
-	buildRunEntry,
+	buildRunEntryAsync,
 	findRunsByRoot,
-	patchRun,
+	patchRunBatch,
 	publishRun,
 	type RunAppEntry,
 	type RunAppStatus,
@@ -288,13 +288,13 @@ async function writeRun(
 	// The environment claimed under this session before starting containers,
 	// so this publishes over that claim rather than beside it.
 	const entry: RunEntry = {
-		...buildRunEntry({
+		...(await buildRunEntryAsync({
 			sessionId: env.sessionId,
 			projectPrefix: env.projectPrefix,
 			projectName: env.projectName,
 			root: env.root,
 			isWorktree: env.isWorktree,
-		}),
+		})),
 		branch: readGitBranch(env.root),
 		primaryApp: env.resolvePrimaryApp(Object.keys(input.apps)),
 		hosts: env.hosts ? { active: env.hosts.active, tld: env.hosts.tld } : null,
@@ -328,37 +328,79 @@ export interface RunSession {
 	readonly sessionId: string;
 }
 
-const pendingPatches = new Map<string, Promise<void>>();
+interface PendingPatch {
+	patch: RunPatch;
+	identify: boolean;
+	resolve(): void;
+}
+interface PatchQueue {
+	pending: PendingPatch[];
+	running: Promise<void>;
+}
+const pendingPatches = new Map<string, PatchQueue>();
 
-/**
- * Serialize one session's patches, so a slow write cannot land after a later
- * one and put an app back to an older state.
- */
+/** Coalesce one turn's spawn/status events; later batches stay ordered. */
 function enqueue(
 	sessionId: string,
-	operation: () => Promise<void>,
+	patch: RunPatch,
+	identify = false,
 ): Promise<void> {
-	const previous = pendingPatches.get(sessionId) ?? Promise.resolve();
-	const next = previous.catch(() => {}).then(operation);
-	pendingPatches.set(sessionId, next);
-	void next
-		.finally(() => {
-			if (pendingPatches.get(sessionId) === next)
+	let queue = pendingPatches.get(sessionId);
+	if (!queue) {
+		queue = { pending: [], running: Promise.resolve() };
+		pendingPatches.set(sessionId, queue);
+		const current = queue;
+		current.running = new Promise<void>((resolve) =>
+			setImmediate(resolve),
+		).then(async () => {
+			try {
+				while (current.pending.length > 0) {
+					const batch = current.pending.splice(0);
+					try {
+						const identities = await readProcessIdentitiesAsync(
+							batch.flatMap((item) =>
+								item.identify
+									? (item.patch.apps?.flatMap((app) =>
+											app.pid === undefined ? [] : [app.pid],
+										) ?? [])
+									: [],
+							),
+						);
+						for (const item of batch)
+							if (item.identify)
+								for (const app of item.patch.apps ?? [])
+									if (app.pid !== undefined)
+										app.processIdentity = identities.get(app.pid);
+						await patchRunBatch(
+							sessionId,
+							batch.map((item) => item.patch),
+						);
+					} catch (error) {
+						reportFailure("update", error);
+					} finally {
+						for (const item of batch) item.resolve();
+					}
+				}
+			} finally {
 				pendingPatches.delete(sessionId);
-		})
-		.catch(() => {});
-	return next;
+			}
+		});
+	}
+	return new Promise((resolve) =>
+		queue?.pending.push({ patch, identify, resolve }),
+	);
+}
+
+/** Wait for observational writes before ending the session. Claims remain immediate. */
+export async function flushRunPatches(run: RunSession): Promise<void> {
+	await pendingPatches.get(run.sessionId)?.running;
 }
 
 export async function patchCurrentRun(
 	run: RunSession,
 	patch: RunPatch,
 ): Promise<void> {
-	try {
-		await enqueue(run.sessionId, () => patchRun(run.sessionId, patch));
-	} catch (error) {
-		reportFailure("update", error);
-	}
+	await enqueue(run.sessionId, patch);
 }
 
 /** Mark every named app with one status, e.g. all of wave 1 becoming `ready`. */
@@ -386,16 +428,19 @@ export async function recordAppSpawn(
 	pid: number,
 	attached: boolean,
 ): Promise<void> {
-	await patchCurrentRun(run, {
-		apps: [
-			{
-				name,
-				pid,
-				processIdentity: readProcessIdentity(pid),
-				attached: attached || undefined,
-			},
-		],
-	});
+	await enqueue(
+		run.sessionId,
+		{
+			apps: [
+				{
+					name,
+					pid,
+					attached: attached || undefined,
+				},
+			],
+		},
+		true,
+	);
 }
 
 /**

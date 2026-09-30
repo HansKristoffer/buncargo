@@ -1,5 +1,5 @@
 import type { PortContainerOwner } from "../types";
-import { runDocker } from "./binary";
+import { runDocker, runDockerAsync } from "./binary";
 
 const LIST_ARGS = [
 	"ps",
@@ -46,11 +46,21 @@ export function parseDockerPublishedPorts(portsField: string): number[] {
 export function dockerContainerPortOwners(
 	binary?: string,
 ): Map<number, PortContainerOwner> {
-	const owners = new Map<number, PortContainerOwner>();
 	const result = runDocker(binary, LIST_ARGS);
-	if (!result.ok) return owners;
+	return parsePortOwners(result.ok ? result.stdout : "");
+}
 
-	for (const line of result.stdout.trim().split("\n")) {
+export async function dockerContainerPortOwnersAsync(
+	binary?: string,
+	signal?: AbortSignal,
+): Promise<Map<number, PortContainerOwner>> {
+	const result = await runDockerAsync(binary, LIST_ARGS, { signal });
+	return parsePortOwners(result.ok ? result.stdout : "");
+}
+
+function parsePortOwners(output: string): Map<number, PortContainerOwner> {
+	const owners = new Map<number, PortContainerOwner>();
+	for (const line of output.trim().split("\n")) {
 		if (!line) continue;
 		const [id, name, portsField, composeProject] = line.split("\t");
 		if (!id || !portsField) continue;

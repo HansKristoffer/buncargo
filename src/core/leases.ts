@@ -1,7 +1,7 @@
 import { withFileLock } from "./file-lock";
 import {
-	processIdentityMatcher,
-	readProcessIdentity,
+	processIdentityMatcherAsync,
+	readCurrentProcessIdentityAsync,
 } from "./process-identity";
 import { defineListRegistry } from "./registry-file";
 import { chownToInvokingUser, stateFilePath } from "./state-paths";
@@ -63,8 +63,8 @@ function getLeasesPath(): string {
 	return stateFilePath(FILENAME);
 }
 
-function liveOnly(entries: LeaseEntry[]): LeaseEntry[] {
-	const alive = processIdentityMatcher(entries);
+async function liveOnly(entries: LeaseEntry[]): Promise<LeaseEntry[]> {
+	const alive = await processIdentityMatcherAsync(entries);
 	return entries.filter((entry) => alive(entry.pid, entry.processIdentity));
 }
 
@@ -85,7 +85,7 @@ export async function acquireLease(
 ): Promise<LeaseResult> {
 	const path = options.path ?? getLeasesPath();
 	return withFileLock(path, async () => {
-		const live = liveOnly(await registry.read(path));
+		const live = await liveOnly(await registry.read(path));
 		const holder = live.find(
 			(entry) =>
 				entry.key === request.key && entry.sessionId !== request.sessionId,
@@ -99,7 +99,7 @@ export async function acquireLease(
 			{
 				...request,
 				pid: process.pid,
-				processIdentity: readProcessIdentity(process.pid),
+				processIdentity: await readCurrentProcessIdentityAsync(),
 				acquiredAt: new Date().toISOString(),
 			},
 		]);
@@ -114,7 +114,7 @@ export async function releaseLeases(
 ): Promise<void> {
 	await withFileLock(path, async () => {
 		const entries = await registry.read(path);
-		const kept = liveOnly(entries).filter(
+		const kept = (await liveOnly(entries)).filter(
 			(entry) => entry.sessionId !== sessionId,
 		);
 		if (kept.length !== entries.length) await registry.write(path, kept);

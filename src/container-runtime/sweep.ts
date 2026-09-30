@@ -16,7 +16,7 @@ import {
 	type RunEntry,
 	readAllRuns,
 	retireRuns,
-	runLiveness,
+	runLivenessAsync,
 } from "../core/run-registry";
 import { WATCHDOG_OWNER_DEAD_GRACE_MS } from "../core/watchdog-constants";
 import type { BuncargoContainer, ContainerRuntimeName } from "../types";
@@ -184,7 +184,7 @@ export async function sweepOrphanedContainers(
 	}
 
 	const runs = await readAllRuns();
-	const alive = runLiveness(runs);
+	const alive = await runLivenessAsync(runs);
 	const now = options.now ?? Date.now();
 	const groups = groupBuncargoContainers(containers);
 	const owners = new Map(
@@ -257,7 +257,7 @@ async function sweepGroup(
 			group.root,
 			async () => {
 				const fresh = await readAllRuns();
-				const freshAlive = runLiveness(fresh);
+				const freshAlive = await runLivenessAsync(fresh);
 				const verdict = decide(runFor(group, fresh, freshAlive), freshAlive);
 				if (verdict.kind !== "down") return false;
 				await adapterFor(group, runtimes, run).down({

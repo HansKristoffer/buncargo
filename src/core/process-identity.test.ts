@@ -1,11 +1,159 @@
 import { describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import {
 	matchesProcessIdentity,
+	matchesProcessIdentityAsync,
 	processIdentityMatcher,
+	processIdentityMatcherAsync,
 	readProcessIdentities,
+	readProcessIdentitiesAsync,
 	readProcessIdentity,
 } from "./process-identity";
+import { shellQuote } from "./shell-quote";
+
+describe("asynchronous identity inspection", () => {
+	it.skipIf(process.platform === "linux")(
+		"preserves partial ps output and keeps unknown liveness separate from strict matching",
+		async () => {
+			const root = mkdtempSync(join(tmpdir(), "buncargo partial ps "));
+			const script = join(root, "ps.ts");
+			writeFileSync(
+				script,
+				`if (!process.env.EMPTY_PS) console.log(process.argv.at(-1).split(",")[0] + " Wed Sep 30 12:00:00 2026"); process.exit(1);`,
+			);
+			writeFileSync(
+				join(root, "ps"),
+				`#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(script)} "$@"\n`,
+			);
+			chmodSync(join(root, "ps"), 0o700);
+			const harness = `
+			import { readProcessIdentitiesAsync, processIdentityMatcherAsync, matchesProcessIdentityAsync } from ${JSON.stringify(import.meta.path.replace(".test.ts", ".ts"))};
+			const identities = await readProcessIdentitiesAsync([process.pid,99999999]);
+			process.env.EMPTY_PS = "1";
+			const matches = await processIdentityMatcherAsync([{pid:process.pid,processIdentity:"v2:unreadable"}]);
+			console.log(JSON.stringify({hasSelf:identities.has(process.pid),hasMissing:identities.has(99999999),alive:matches(process.pid,"v2:unreadable"),strict:await matchesProcessIdentityAsync(process.pid,"v2:unreadable")}));
+		`;
+			try {
+				const child = Bun.spawn([process.execPath, "--eval", harness], {
+					stdout: "pipe",
+					stderr: "pipe",
+					env: {
+						...process.env,
+						EMPTY_PS: "",
+						PATH: root + delimiter + process.env.PATH,
+					},
+				});
+				const [stdout, stderr, code] = await Promise.all([
+					new Response(child.stdout).text(),
+					new Response(child.stderr).text(),
+					child.exited,
+				]);
+				expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+				expect(JSON.parse(stdout)).toEqual({
+					hasSelf: true,
+					hasMissing: false,
+					alive: true,
+					strict: false,
+				});
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
+	it("shares identity format and strict/liveness policy with synchronous readers", async () => {
+		const child = Bun.spawn([process.execPath, "--eval", ""], {
+			stdout: "ignore",
+			stderr: "ignore",
+		});
+		await child.exited;
+		const identities = await readProcessIdentitiesAsync([
+			process.pid,
+			process.pid,
+			child.pid,
+			0,
+			1,
+			-1,
+		]);
+		const identity = identities.get(process.pid);
+		expect(identity).toBe(readProcessIdentity(process.pid));
+		expect(identities.size).toBe(1);
+		expect(await matchesProcessIdentityAsync(process.pid, identity)).toBe(true);
+		expect(await matchesProcessIdentityAsync(process.pid, "v2:wrong")).toBe(
+			false,
+		);
+		const matches = await processIdentityMatcherAsync([
+			{ pid: process.pid },
+			{ pid: child.pid },
+		]);
+		expect(matches(process.pid, identity)).toBe(true);
+		expect(matches(process.pid, "legacy-unknown")).toBe(true);
+		expect(matches(child.pid)).toBe(false);
+	});
+
+	it("honors cancellation even for an empty request", async () => {
+		const signal = AbortSignal.abort(new Error("cancel identities"));
+		await expect(readProcessIdentitiesAsync([], signal)).rejects.toThrow(
+			"cancel identities",
+		);
+		await expect(
+			matchesProcessIdentityAsync(process.pid, undefined, signal),
+		).rejects.toThrow("cancel identities");
+	});
+
+	it.skipIf(process.platform === "linux")(
+		"cancels a slow ps without blocking timers and waits for the child to exit",
+		async () => {
+			const root = mkdtempSync(join(tmpdir(), "buncargo async ps "));
+			const script = join(root, "slow.ts");
+			writeFileSync(
+				script,
+				`await Bun.write(${JSON.stringify(join(root, "pid"))}, String(process.pid)); await Bun.sleep(60000);`,
+			);
+			writeFileSync(
+				join(root, "ps"),
+				`#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(script)}\n`,
+			);
+			chmodSync(join(root, "ps"), 0o700);
+			const harness = `
+			import { readProcessIdentitiesAsync } from ${JSON.stringify(import.meta.path.replace(".test.ts", ".ts"))};
+			const controller = new AbortController();
+			const result = readProcessIdentitiesAsync([process.pid], controller.signal).catch(error => error);
+			const deadline = performance.now() + 3000;
+			while (!(await Bun.file(${JSON.stringify(join(root, "pid"))}).exists())) {
+				if (performance.now() > deadline) throw new Error("ps did not start");
+				await Bun.sleep(5);
+			}
+			const pid = Number(await Bun.file(${JSON.stringify(join(root, "pid"))}).text());
+			controller.abort(new Error("cancel slow ps"));
+			const error = await result;
+			let alive = true; try { process.kill(pid, 0); } catch { alive = false; }
+			console.log(JSON.stringify({message:error.message,alive}));
+		`;
+			try {
+				const child = Bun.spawn([process.execPath, "--eval", harness], {
+					stdout: "pipe",
+					stderr: "pipe",
+					env: { ...process.env, PATH: root + delimiter + process.env.PATH },
+				});
+				const [stdout, stderr, code] = await Promise.all([
+					new Response(child.stdout).text(),
+					new Response(child.stderr).text(),
+					child.exited,
+				]);
+				expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+				expect(JSON.parse(stdout)).toEqual({
+					message: "cancel slow ps",
+					alive: false,
+				});
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
+});
 
 describe("readProcessIdentities", () => {
 	it("agrees with the single-pid form, so either may verify the other's record", () => {
@@ -113,7 +261,7 @@ describe("identity across environments", () => {
 		expect(foreign.stdout).toStartWith("v2:");
 	});
 
-	it("still compares an older version's identity exactly as it used to", () => {
+	it("still compares an older version's identity exactly as it used to", async () => {
 		// Strict matching is what `stop` and worker ownership act on, so an
 		// identity recorded before the format changed keeps its old meaning:
 		// equal when read in the same environment, and nothing more.
@@ -129,6 +277,12 @@ describe("identity across environments", () => {
 		if (legacyIdentity === undefined) return;
 		expect(matchesProcessIdentity(process.pid, legacyIdentity)).toBe(true);
 		expect(matchesProcessIdentity(process.pid, "0".repeat(64))).toBe(false);
+		expect(await matchesProcessIdentityAsync(process.pid, legacyIdentity)).toBe(
+			true,
+		);
+		expect(await matchesProcessIdentityAsync(process.pid, "0".repeat(64))).toBe(
+			false,
+		);
 		// Liveness forgives what it cannot compare rather than condemning it.
 		expect(
 			processIdentityMatcher([{ pid: process.pid }])(

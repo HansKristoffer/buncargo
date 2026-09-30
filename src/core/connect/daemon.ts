@@ -1,7 +1,7 @@
 import { readdir, readFile, rm } from "node:fs/promises";
 import { abortableSleep } from "../deadline";
 import { withFileLock } from "../file-lock";
-import { readProcessIdentity } from "../process-identity";
+import { readCurrentProcessIdentityAsync } from "../process-identity";
 import { readLiveRuns } from "../run-registry";
 import { connectOrigin } from "../runtime-flags";
 import { stateFilePath } from "../state-paths";
@@ -89,7 +89,7 @@ function createPublications(origin: string) {
 
 /** Run while holding the machine-wide lifetime lock; release listeners before releasing the lock. */
 async function runCoordinator(controller: AbortController) {
-	const identity = readProcessIdentity(process.pid);
+	const identity = await readCurrentProcessIdentityAsync(controller.signal);
 	if (!identity) {
 		throw new Error("Cannot identify coordinator");
 	}

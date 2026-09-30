@@ -226,8 +226,21 @@ export function projectRecords(
 export function appleContainerPortOwners(
 	cli: AppleContainerCli,
 ): Map<number, PortContainerOwner> {
+	return portOwnersFromRecords(listContainerRecords(cli));
+}
+
+export async function appleContainerPortOwnersAsync(
+	cli: AppleContainerCli,
+	signal?: AbortSignal,
+): Promise<Map<number, PortContainerOwner>> {
+	return portOwnersFromRecords(await listContainerRecordsAsync(cli, signal));
+}
+
+function portOwnersFromRecords(
+	records: AppleContainerRecord[],
+): Map<number, PortContainerOwner> {
 	const owners = new Map<number, PortContainerOwner>();
-	for (const record of listContainerRecords(cli)) {
+	for (const record of records) {
 		if (!isRunningState(record.state)) continue;
 		const owner: PortContainerOwner = {
 			id: record.id,

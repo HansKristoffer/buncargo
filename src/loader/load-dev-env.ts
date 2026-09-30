@@ -20,7 +20,7 @@ import {
 import { findConfigFile } from "./find-config-file";
 
 const inputFileConfigs = new Set<string>();
-const moduleUrls = new Map<string, string>();
+const configModules = new Map<string, { url: string; revision: number }>();
 
 /**
  * Load `dev.config.ts` from disk and build its dev environment.
@@ -43,6 +43,8 @@ export async function loadDevEnv<
 	cwd?: string;
 	/** Re-import the config entry and rebuild state. Imported dependencies remain cached. */
 	reload?: boolean;
+	/** Create independent session state while reusing the imported config. */
+	fresh?: boolean;
 	/** Read persisted ports without probing conflicts or writing allocation state. */
 	readOnly?: boolean;
 	/** `--runtime`, taking precedence over env and config. */
@@ -77,7 +79,11 @@ export async function loadDevEnv<
 		options?.readOnly ?? false,
 		environmentHash,
 	]);
-	if (!options?.reload && !inputFileConfigs.has(configPath)) {
+	if (
+		!options?.reload &&
+		!options?.fresh &&
+		!inputFileConfigs.has(configPath)
+	) {
 		const cached = getCachedDevEnv(identity);
 		if (cached) {
 			setCachedDevEnv(cached, requested);
@@ -87,21 +93,40 @@ export async function loadDevEnv<
 
 	// Bun canonicalizes file: URLs before considering their query string.
 	// An absolute path specifier preserves the revision and refreshes the entry.
+	let moduleState = configModules.get(configPath);
+	if (!moduleState) {
+		moduleState = { url: configPath, revision: 0 };
+		configModules.set(configPath, moduleState);
+	}
+	const revision = options?.reload
+		? ++moduleState.revision
+		: moduleState.revision;
 	const moduleUrl = options?.reload
 		? `${configPath}?buncargo-reload=${crypto.randomUUID()}`
-		: (moduleUrls.get(configPath) ?? configPath);
+		: moduleState.url;
 	const mod = await import(moduleUrl);
-	moduleUrls.set(configPath, moduleUrl);
-	if (options?.reload) invalidateConfigEnvironments(configPath);
+	const isCurrentRevision =
+		revision === moduleState.revision &&
+		(options?.reload || moduleUrl === moduleState.url);
 	if (!("default" in mod) || mod.default === undefined) {
 		throw new Error(
 			`Invalid config in "${configPath}". Use defineDevConfig() and export as default.`,
 		);
 	}
+	// A slow import from before a reload must not restore its old module URL
+	// or invalidate the environment that the newer reload already published.
+	if (isCurrentRevision) {
+		moduleState.url = moduleUrl;
+		if (options?.reload) invalidateConfigEnvironments(configPath);
+	}
 
 	// Concurrent consumers can finish the same import together. The first one
 	// resolves the environment; subsequent consumers reuse that exact object.
-	if (!options?.reload && !inputFileConfigs.has(configPath)) {
+	if (
+		!options?.reload &&
+		!options?.fresh &&
+		!inputFileConfigs.has(configPath)
+	) {
 		const cached = getCachedDevEnv(identity);
 		if (cached) {
 			setCachedDevEnv(cached, requested);
@@ -110,7 +135,8 @@ export async function loadDevEnv<
 	}
 
 	const loaded: unknown = mod.default;
-	if (mod.default?.options?.envFiles) inputFileConfigs.add(configPath);
+	if (isCurrentRevision && mod.default?.options?.envFiles)
+		inputFileConfigs.add(configPath);
 
 	// The dynamic import is untyped, so the caller's TConfig is the only source
 	// of shape information. This cast is the single trust boundary for it.
@@ -125,6 +151,7 @@ export async function loadDevEnv<
 		>,
 		{ containerRuntime: requested, root, readOnly: options?.readOnly },
 	);
-	setCachedDevEnv(env, requested, identity);
+	if (isCurrentRevision)
+		setCachedDevEnv(env, requested, options?.fresh ? undefined : identity);
 	return env as DevEnvironmentFor<TConfig>;
 }

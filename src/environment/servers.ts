@@ -1,8 +1,6 @@
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
-import { withDeadline } from "../core/deadline";
 import { waitForDevServers } from "../core/network";
-import { startDevServers } from "../core/process";
 import { buildAppsAsync } from "../core/process/build";
 import { isCI } from "../core/runtime-flags";
 import { loadAppSecrets } from "../core/secrets/infisical";
@@ -25,6 +23,8 @@ import type {
 import { createCaptureRecorder } from "./captures";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
+import { renderGeneratedFiles } from "./generated-files";
+import { startServerSession } from "./server-session";
 
 /** Validate all selected working directories before any startup mutation. */
 export function assertAppWorkingDirectories(
@@ -99,25 +99,36 @@ export async function startAppServers<
 		});
 	}
 
-	const beforeHook = ctx.config.hooks?.beforeServers;
-	if (beforeHook)
-		await withDeadline(
-			(signal) => beforeHook(envVars.getHookContext(signal)),
-			600000,
-			options.signal,
-		);
-	const recordCapture = createCaptureRecorder(ctx, envVars);
-	const pids = await startDevServers(
+	const pids = await startServerSession(
+		{
+			root: ctx.root,
+			ports: ctx.ports as Record<string, number>,
+			// Restarts rebuild env so captures and public URLs are current.
+			appEnv: (name) =>
+				envVars.buildAppEnvVars(
+					name as Extract<keyof TApps, string>,
+					productionBuild,
+				),
+			runHook: async (phase, signal) => {
+				const hook =
+					ctx.config.hooks?.[
+						phase === "before" ? "beforeServers" : "afterServers"
+					];
+				await hook?.(envVars.getHookContext(signal));
+			},
+			recordCapture: createCaptureRecorder(ctx, envVars),
+			afterWave: () => {
+				renderGeneratedFiles(ctx, envVars);
+			},
+			waitForHealth: (wave, signal) =>
+				waitForDevServers(wave, ctx.ports, {
+					timeout: readyTimeout(),
+					verbose,
+					productionBuild,
+					signal,
+				}),
+		},
 		appsToStart,
-		ctx.root,
-		// Built per spawn rather than once: a restarted app (`restartOn`) must
-		// see the public URL or capture that caused the restart.
-		(name) =>
-			envVars.buildAppEnvVars(
-				name as Extract<keyof TApps, string>,
-				productionBuild,
-			),
-		ctx.ports,
 		{
 			verbose,
 			productionBuild,
@@ -127,22 +138,8 @@ export async function startAppServers<
 			skipContainers: !ctx.hasSelectedServices,
 			signal: options.signal,
 			deferPublicUrlApps: false,
-			onCapture: recordCapture,
-			waitForHealth: (wave, signal) =>
-				waitForDevServers(wave, ctx.ports, {
-					timeout: readyTimeout(),
-					verbose,
-					productionBuild,
-					signal,
-				}),
-			onReady: async (readySignal) => {
-				const afterHook = ctx.config.hooks?.afterServers;
-				if (afterHook)
-					await withDeadline(
-						(signal) => afterHook(envVars.getHookContext(signal)),
-						600000,
-						readySignal,
-					);
+			onAppSpawned: (name, pid) => {
+				if (ctx.ownedServerPids) ctx.ownedServerPids[name] = pid;
 			},
 		},
 	);

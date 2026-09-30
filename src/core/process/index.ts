@@ -14,6 +14,7 @@ export {
 	collectProcessTree,
 	containerPortOwnerMap,
 	createPortOwnerSnapshot,
+	createPortOwnerSnapshotAsync,
 	findContainerOnPort,
 	formatPortOwner,
 	getListeningPids,
@@ -31,4 +32,5 @@ export {
 export {
 	type ListenerSnapshot,
 	readListenerSnapshot,
+	readListenerSnapshotAsync,
 } from "./port-snapshot";

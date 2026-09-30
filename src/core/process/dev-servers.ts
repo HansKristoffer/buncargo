@@ -1,41 +1,33 @@
-import {
-	type ChildProcess,
-	type SpawnOptions,
-	spawn,
-} from "node:child_process";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { resolve } from "node:path";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import type { AppConfig, DevServerPids } from "../../types";
 import { waitForDevServers } from "../network";
 import { connectProcessEnv } from "../runtime-flags";
 import { loadAppSecrets, missingRequiredSecrets } from "../secrets/infisical";
-import { recordStartupMetric } from "../startup-metrics";
-import {
-	formatPidLine,
-	formatSection,
-	formatStep,
-	formatWarn,
-	prefixWidth,
-} from "../style";
+import { formatSection, formatStep, formatWarn, prefixWidth } from "../style";
 import {
 	ptyTeeArgv,
 	resolveStartCommand,
 	runPrebuild,
+	spawnAppCommand,
 	spawnManagedApp,
 } from "./app-process";
-import {
-	type CapturedValue,
-	createOutputCaptureScanner,
-} from "./output-capture";
+import { AppSupervision } from "./app-supervision";
+import { createCaptureRestarts } from "./capture-restarts";
+import type { CapturedValue } from "./output-capture";
 import {
 	classifyPortOccupant,
-	createPortOwnerSnapshot,
+	createPortOwnerSnapshotAsync,
 	formatPortOwner,
 	getPortOwner,
 	killPortOwner,
 	type PortOwnerSnapshot,
 } from "./port-owner";
-import { ProcessOwner, RunInterrupted } from "./process-owner";
+import { RunInterrupted } from "./process-owner";
+
+export { stopDevServers } from "./app-supervision";
+
 import { planSpawnOrder } from "./start-order";
 import { spawnOwnedWorker } from "./worker-ownership";
 
@@ -72,6 +64,7 @@ export interface SpawnDevServerOptions {
 }
 
 /**
+ * @deprecated Prefer startDevServers for ownership, readiness and supervision.
  * Spawn a dev server as a detached process.
  * If killExisting is true and port is provided, kills any existing process on that port first.
  */
@@ -101,14 +94,6 @@ export async function spawnDevServer(
 		}
 	}
 
-	const parts = command.split(" ");
-	const cmd = parts[0];
-	const args = parts.slice(1);
-
-	if (!cmd) {
-		throw new Error("Command cannot be empty");
-	}
-
 	const spawnOptions: SpawnOptions = {
 		cwd: appCwd ? resolve(root, appCwd) : root,
 		env: connectProcessEnv({ ...process.env, ...envVars }),
@@ -116,8 +101,7 @@ export async function spawnDevServer(
 		stdio: isCI || verbose ? "inherit" : "ignore",
 	};
 
-	recordStartupMetric("subprocesses");
-	const proc = spawn(cmd, args, spawnOptions);
+	const proc = spawnAppCommand(command, spawnOptions);
 
 	if (detached && proc.unref) {
 		proc.unref();
@@ -252,18 +236,6 @@ async function prepareAppPort(
  * Start configured dev servers, holding `needsPublicUrls` apps for a second
  * wave when tunnels are opening (see `deferPublicUrlApps`).
  */
-const activeOwners = new Map<number, ProcessOwner>();
-
-export async function stopDevServers(pids: DevServerPids): Promise<void> {
-	await Promise.all(
-		[
-			...new Set(
-				Object.values(pids).flatMap((pid) => activeOwners.get(pid) ?? []),
-			),
-		].map((owner) => owner.stop()),
-	);
-}
-
 export async function startDevServers(
 	apps: Record<string, AppConfig>,
 	root: string,
@@ -333,21 +305,19 @@ export async function startDevServers(
 		throw new Error(`--attach=${attachOverride} is not in the start set`);
 	}
 
-	const owner = new ProcessOwner({
+	const nameWidth = prefixWidth(Object.keys(startable));
+	const session = new AppSupervision({
 		signal: options.signal,
 		shutdownGraceMs: options.shutdownGraceMs,
 		attachedName,
 		onAppExit,
+		onAppSpawned,
+		verbose,
+		width: nameWidth,
 	});
-	const pids: DevServerPids = {};
+	const owner = session.owner;
+	const pids = session.pids;
 	let handedOff = false;
-	const dispose = () => {
-		for (const pid of Object.values(pids)) {
-			activeOwners.delete(pid);
-		}
-		owner.dispose();
-	};
-	const nameWidth = prefixWidth(Object.keys(startable));
 	let logsHeaderPrinted = false;
 	const onFirstLog = () => {
 		if (logsHeaderPrinted) {
@@ -357,75 +327,19 @@ export async function startDevServers(
 		process.stdout.write(`\n${formatSection("Logs")}\n`);
 	};
 
-	// The live child per app, for `restartOn`.
-	const children = new Map<string, ChildProcess>();
-	const spawners = new Map<string, () => Promise<ChildProcess>>();
-
-	function recordChild(name: string, child: ChildProcess, attached: boolean) {
-		children.set(name, child);
-		if (!child.pid) return;
-		pids[name] = child.pid;
-		activeOwners.set(child.pid, owner);
-		onAppSpawned?.(name, child.pid, attached);
-		if (verbose) {
-			console.log(formatPidLine(name, child.pid, nameWidth));
-		}
-	}
-
-	/** Replace one app's process, with env built fresh (new public URLs, captures). */
-	async function restart(name: string): Promise<void> {
-		const current = children.get(name);
-		const respawn = spawners.get(name);
-		if (!current || !respawn || owner.controller.signal.aborted) return;
-		console.log(
-			formatStep(`🔁 Restarting ${name}: a value it restarts on changed`),
-		);
-		await owner.retire(current);
-		if (current.pid) activeOwners.delete(current.pid);
-		const child = await respawn();
-		owner.register(name, child, false, startable[name]?.kind === "worker");
-		recordChild(name, child, name === attachedName);
-	}
-
-	// Captures are handled one at a time, in arrival order: a URL and the
-	// restart it triggers must not interleave with the next URL.
-	let captureQueue = Promise.resolve();
-	function scannerFor(name: string, config: AppConfig) {
-		if (!config.captures || Object.keys(config.captures).length === 0) {
-			return undefined;
-		}
-		const scanner = createOutputCaptureScanner(config.captures);
-		return (text: string) => {
-			for (const captured of scanner.push(text)) {
-				captureQueue = captureQueue
-					.then(async () => {
-						const changed = (await onCapture?.(name, captured)) ?? [];
-						const dependents = Object.entries(startable)
-							.filter(
-								([other, app]) =>
-									other !== name &&
-									app.restartOn?.some((key) => changed.includes(key)),
-							)
-							.map(([other]) => other);
-						for (const dependent of dependents) await restart(dependent);
-					})
-					.catch((error: unknown) => {
-						console.warn(
-							formatWarn(
-								`Handling ${name}'s ${captured.name} failed: ${error instanceof Error ? error.message : String(error)}`,
-							),
-						);
-					});
-			}
-		};
-	}
+	const scannerFor = createCaptureRestarts(startable, {
+		signal: owner.controller.signal,
+		onCapture,
+		restart: (name) => session.restart(name),
+	});
 
 	async function spawnWave(wave: Record<string, AppConfig>): Promise<void> {
 		// Per wave, not per run: a later wave spawns after tunnels have opened
 		// and earlier servers have bound their ports, so a snapshot taken before
 		// the first wave would be describing a machine that has since changed.
 		owner.controller.signal.throwIfAborted();
-		const portOwners = createPortOwnerSnapshot({
+		const portOwners = await createPortOwnerSnapshotAsync({
+			signal: owner.controller.signal,
 			runtime: options.runtime,
 			skipContainers: options.skipContainers,
 			ports: Object.keys(wave).flatMap((name) => {
@@ -487,15 +401,15 @@ export async function startDevServers(
 				config.kind === "worker"
 					? spawnOwnedWorker(root, name, spawnOnce, owner.controller.signal)
 					: Promise.resolve(spawnOnce());
-			spawners.set(name, spawnApp);
+			session.setSpawner(name, spawnApp, config.kind === "worker", attached);
 			const child = await spawnApp();
-			owner.register(
+			await session.register(
 				name,
 				child,
-				config.kind !== "worker" && config.healthEndpoint !== false,
 				config.kind === "worker",
+				attached,
+				config.kind !== "worker" && config.healthEndpoint !== false,
 			);
-			recordChild(name, child, attached);
 		}
 	}
 
@@ -504,7 +418,7 @@ export async function startDevServers(
 			return;
 		}
 
-		await owner.race(spawnWave(wave));
+		await spawnWave(wave);
 		if (waitForHealth) {
 			await owner.race(waitForHealth(wave, owner.controller.signal));
 			for (const name of Object.keys(wave)) {
@@ -544,7 +458,7 @@ export async function startDevServers(
 
 		if (waitForExit) {
 			await owner.wait();
-			await owner.stop();
+			await session.stop();
 		} else {
 			handedOff = true;
 			void (async () => {
@@ -560,9 +474,9 @@ export async function startDevServers(
 					}
 				} finally {
 					try {
-						await owner.stop();
+						await session.stop();
 					} finally {
-						dispose();
+						session.dispose();
 					}
 				}
 			})().catch((error) => console.error(error));
@@ -571,7 +485,7 @@ export async function startDevServers(
 		return pids;
 	} catch (error) {
 		try {
-			await owner.stop();
+			await session.stop();
 		} catch (cleanupError) {
 			throw new AggregateError(
 				[error, cleanupError],
@@ -586,7 +500,7 @@ export async function startDevServers(
 		throw error;
 	} finally {
 		if (!handedOff) {
-			dispose();
+			session.dispose();
 		}
 	}
 }

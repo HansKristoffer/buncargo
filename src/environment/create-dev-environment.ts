@@ -2,14 +2,8 @@ import { assertValidConfig } from "../config";
 import { applyIntegrations } from "../config/integrations";
 import { withDeadline } from "../core/deadline";
 import { waitForServer } from "../core/network";
-import { toPortMap } from "../core/ports";
-import {
-	configuredPrimaryApp,
-	type PrimaryAppInput,
-	resolvePrimaryApp,
-} from "../core/primary-app";
+import { type PrimaryAppInput, resolvePrimaryApp } from "../core/primary-app";
 import { stopProcess } from "../core/process";
-import { logExpoApiUrl, logFrontendPort } from "../core/utils";
 import { createPrismaRunner } from "../prisma";
 import type {
 	AppConfig,
@@ -24,9 +18,12 @@ import { createCaptureRecorder, labelledCaptures } from "./captures";
 import { createDevEnvContext } from "./context";
 import { createEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
+import { createLegacyLinks } from "./legacy-links";
 import { createLifecycleApi } from "./lifecycle";
+import { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { createRunClaimApi } from "./run-claim";
 import { createServersApi } from "./servers";
+import { registerStartPlanner } from "./start-plan";
 
 /**
  * Create a dev environment from a configuration.
@@ -68,36 +65,12 @@ export function createDevEnvironment<
 	const ctx = createDevEnvContext(resolved, options);
 	const envVars = createEnvVarsApi(ctx);
 	const runClaim = createRunClaimApi(ctx);
-	const lifecycle = createLifecycleApi(ctx, envVars, runClaim);
+	const coordinator = new LifecycleCoordinator();
+	const lifecycle = createLifecycleApi(ctx, envVars, runClaim, coordinator);
 	const recordCapture = createCaptureRecorder(ctx, envVars);
 	const servers = createServersApi(ctx, envVars);
 
-	function getExpoApiUrl(): string {
-		const expoIntegration = resolved.integrations?.find(
-			(integration) => integration.name === "expo",
-		) as { apiApp?: string } | undefined;
-		const appName =
-			resolved.options?.expoApiApp ?? expoIntegration?.apiApp ?? "api";
-		const apiPort = toPortMap(ctx.ports)[appName];
-		const url = `http://${ctx.localIp}:${apiPort}`;
-		logExpoApiUrl(url);
-		return url;
-	}
-
-	function getFrontendPort(): number | undefined {
-		// `frontendApp` first: it is the narrower knob, and a project that set
-		// both means the frontend is not the primary app.
-		const configured =
-			resolved.options?.frontendApp ??
-			configuredPrimaryApp(resolved.options as PrimaryAppInput["options"]);
-		const portMap = toPortMap(ctx.ports);
-		const port =
-			(configured ? portMap[configured] : undefined) ??
-			portMap.platform ??
-			portMap.web;
-		logFrontendPort(port);
-		return port;
-	}
+	const { getExpoApiUrl, getFrontendPort } = createLegacyLinks(ctx);
 
 	const env: DevEnvironment<TServices, TApps, TEnv> = {
 		// Configuration access
@@ -111,6 +84,7 @@ export function createDevEnvironment<
 		services: ctx.services,
 		apps: ctx.apps,
 		prepareStart: ctx.prepareStart,
+		prepareStartAsync: ctx.prepareStartAsync,
 		get portOffset() {
 			return ctx.portOffset;
 		},
@@ -170,7 +144,12 @@ export function createDevEnvironment<
 			}) as Extract<keyof TApps, string> | undefined,
 
 		// Server management
-		startServers: servers.startServersOnly,
+		startServers: (options = {}) =>
+			coordinator.start(
+				(signal) => servers.startServersOnly({ ...options, signal }),
+				options.signal,
+				(pids) => Object.keys(pids).length > 0,
+			),
 		runServerHook: async (phase, signal) => {
 			const hook =
 				resolved.hooks?.[phase === "before" ? "beforeServers" : "afterServers"];
@@ -227,5 +206,6 @@ export function createDevEnvironment<
 		);
 	}
 
+	registerStartPlanner(env, ctx.getStartPlan);
 	return env;
 }

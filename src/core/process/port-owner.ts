@@ -5,17 +5,20 @@ import { containerRuntimeDisplayName } from "../../container-runtime/names";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import {
 	dockerContainerPortOwners,
+	dockerContainerPortOwnersAsync,
 	findDockerContainerOnPort,
 } from "../../docker/port-lookup";
 import type { ContainerRuntimeName, PortContainerOwner } from "../../types";
 import {
-	matchesProcessIdentity,
-	readProcessIdentity,
+	matchesProcessIdentityAsync,
+	readProcessIdentitiesAsync,
 } from "../process-identity";
 import {
 	type ListenerSnapshot,
 	readListenerSnapshot,
+	readListenerSnapshotAsync,
 	readProcessCwds,
+	readProcessCwdsAsync,
 } from "./port-snapshot";
 
 /**
@@ -227,13 +230,14 @@ export function createPortOwnerSnapshot(
 		includeCwd?: boolean;
 		listeners?: ListenerSnapshot;
 		containers?: Map<number, PortContainerOwner>;
+		cwds?: Map<number, string | undefined>;
 	} = {},
 ): PortOwnerSnapshot {
 	if (options.ports?.length === 0 && !options.listeners && !options.containers)
 		return { owner: () => null, isBusy: () => false };
 	const listeners = options.listeners ?? readListenerSnapshot();
 	const containers = options.containers ?? containerPortOwnerMap(options);
-	const cwds = new Map<number, string | undefined>();
+	const cwds = options.cwds ?? new Map<number, string | undefined>();
 	let pendingBatch: number[] | undefined = options.ports
 		? [
 				...new Set(
@@ -279,6 +283,73 @@ export function createPortOwnerSnapshot(
 		isBusy: (port) =>
 			(listeners.pidsByPort.get(port)?.length ?? 0) > 0 || containers.has(port),
 	};
+}
+
+/** One cancellable reading per phase; listener and container listings run together. */
+export async function createPortOwnerSnapshotAsync(
+	options: Parameters<typeof createPortOwnerSnapshot>[0] & {
+		signal?: AbortSignal;
+	} = {},
+): Promise<PortOwnerSnapshot> {
+	options.signal?.throwIfAborted();
+	if (options.ports?.length === 0 && !options.listeners && !options.containers)
+		return { owner: () => null, isBusy: () => false };
+	const readContainers = async (): Promise<Map<number, PortContainerOwner>> => {
+		if (options.containers) return options.containers;
+		if (options.skipContainers) return new Map();
+		const selected = options.runtime;
+		const names = [
+			selected?.name ?? "docker",
+			...(options.fallbackRuntimes ?? [])
+				.filter((runtime) => runtime.name !== (selected?.name ?? "docker"))
+				.map((runtime) => runtime.name),
+		];
+		const reads = [
+			selected
+				? () =>
+						selected.containerPortOwnersAsync?.(options.signal) ??
+						selected.containerPortOwners()
+				: () => dockerContainerPortOwnersAsync(undefined, options.signal),
+			...(options.fallbackRuntimes ?? [])
+				.filter((runtime) => runtime.name !== (selected?.name ?? "docker"))
+				.map(
+					(runtime) => () =>
+						runtime.containerPortOwnersAsync?.(options.signal) ??
+						runtime.containerPortOwners(),
+				),
+		];
+		const results = await Promise.allSettled(
+			reads.map((read) => Promise.resolve().then(read)),
+		);
+		options.signal?.throwIfAborted();
+		const owners = new Map<number, PortContainerOwner>();
+		for (const [index, result] of results.entries()) {
+			if (result.status !== "fulfilled") continue;
+			for (const [port, owner] of result.value)
+				if (!owners.has(port))
+					owners.set(port, { ...owner, runtime: names[index] });
+		}
+		return owners;
+	};
+	const [listeners, containers] = await Promise.all([
+		options.listeners ?? readListenerSnapshotAsync(options.signal),
+		readContainers(),
+	]);
+	const pids = [
+		...new Set(
+			(options.ports ?? [...listeners.pidsByPort.keys()]).flatMap((port) =>
+				containers.has(port) ? [] : (listeners.pidsByPort.get(port) ?? []),
+			),
+		),
+	];
+	const resolved =
+		options.cwds ??
+		(options.includeCwd === false
+			? new Map()
+			: await readProcessCwdsAsync(pids, options.signal));
+	const cwds = new Map(pids.map((pid) => [pid, resolved.get(pid)]));
+	options.signal?.throwIfAborted();
+	return createPortOwnerSnapshot({ ...options, listeners, containers, cwds });
 }
 
 export function getPortOwner(
@@ -405,9 +476,7 @@ export async function killPortOwner(
 		);
 	}
 
-	const originalIdentities = new Map(
-		owner.pids.map((pid) => [pid, readProcessIdentity(pid)]),
-	);
+	const originalIdentities = await readProcessIdentitiesAsync(owner.pids);
 	for (const pid of owner.pids) {
 		signalProcessTree(pid, "SIGTERM");
 	}
@@ -426,7 +495,7 @@ export async function killPortOwner(
 	}
 	for (const pid of getListeningPids(port)) {
 		const identity = originalIdentities.get(pid);
-		if (identity && matchesProcessIdentity(pid, identity))
+		if (identity && (await matchesProcessIdentityAsync(pid, identity)))
 			signalProcessTree(pid, "SIGKILL");
 	}
 	await new Promise((resolve) => setTimeout(resolve, 500));

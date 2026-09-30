@@ -201,6 +201,10 @@ export interface ContainerRuntimeAdapter {
 	 * its own listing was most of the runtime calls a startup made.
 	 */
 	containerPortOwners(): Map<number, PortContainerOwner>;
+	/** Optional for compatibility with custom adapters. Built-in startup paths use this cancellable read. */
+	containerPortOwnersAsync?(
+		signal?: AbortSignal,
+	): Promise<Map<number, PortContainerOwner>>;
 	/**
 	 * State of every container this runtime has for the project, in one call.
 	 *

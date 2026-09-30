@@ -6,7 +6,9 @@ import { withFileLock } from "./file-lock";
 import { getWorktreeName } from "./ports";
 import {
 	processIdentityMatcher,
-	readProcessIdentity,
+	processIdentityMatcherAsync,
+	readCurrentProcessIdentity,
+	readCurrentProcessIdentityAsync,
 } from "./process-identity";
 import {
 	defineListRegistry,
@@ -336,6 +338,15 @@ export function runLiveness(
 		run.releasedAt === undefined && matches(run.pid, run.processIdentity);
 }
 
+export async function runLivenessAsync(
+	runs: readonly RunEntry[],
+	signal?: AbortSignal,
+): Promise<(run: RunEntry) => boolean> {
+	const matches = await processIdentityMatcherAsync(runs, signal);
+	return (run) =>
+		run.releasedAt === undefined && matches(run.pid, run.processIdentity);
+}
+
 /**
  * Unlocked core, so callers already holding the lock can reuse it.
  *
@@ -348,7 +359,7 @@ export function runLiveness(
  */
 async function prune(path: string): Promise<RunEntry[]> {
 	const runs = await registry.read(path);
-	const alive = runLiveness(runs);
+	const alive = await runLivenessAsync(runs);
 	const kept = runs.filter((run) => alive(run) || run.services.length > 0);
 	if (kept.length !== runs.length) {
 		await registry.write(path, kept);
@@ -370,11 +381,15 @@ export function buildRunEntry(input: {
 	projectName: string;
 	root: string;
 	isWorktree: boolean;
+	processIdentity?: string;
 }): RunEntry {
 	const now = new Date().toISOString();
 	return {
 		sessionId: input.sessionId,
-		processIdentity: readProcessIdentity(process.pid),
+		processIdentity:
+			"processIdentity" in input
+				? input.processIdentity
+				: readCurrentProcessIdentity(),
 		projectPrefix: input.projectPrefix,
 		projectName: input.projectName,
 		root: input.root,
@@ -391,13 +406,25 @@ export function buildRunEntry(input: {
 	};
 }
 
+export async function buildRunEntryAsync(
+	input: Parameters<typeof buildRunEntry>[0],
+	signal?: AbortSignal,
+): Promise<RunEntry> {
+	return buildRunEntry({
+		...input,
+		processIdentity: await readCurrentProcessIdentityAsync(signal),
+	});
+}
+
 /** Read, change and write the registry under its lock, skipping no-op writes. */
 async function updateRuns(
 	path: string,
-	change: (runs: RunEntry[]) => RunEntry[] | undefined,
+	change: (
+		runs: RunEntry[],
+	) => RunEntry[] | undefined | Promise<RunEntry[] | undefined>,
 ): Promise<void> {
 	await withFileLock(path, async () => {
-		const next = change(await registry.read(path));
+		const next = await change(await registry.read(path));
 		if (next) await registry.write(path, next);
 	});
 }
@@ -485,8 +512,8 @@ export async function retireProjectRuns(
 	target: { projectName: string; root: string; sessionId: string },
 	options: { path?: string } = {},
 ): Promise<void> {
-	await updateRuns(options.path ?? getRunsPath(), (runs) => {
-		const alive = runLiveness(runs);
+	await updateRuns(options.path ?? getRunsPath(), async (runs) => {
+		const alive = await runLivenessAsync(runs);
 		const next = runs.filter(
 			(entry) =>
 				!(
@@ -569,29 +596,41 @@ export async function patchRun(
 	patch: RunPatch,
 	options: { path?: string } = {},
 ): Promise<void> {
+	await patchRunBatch(sessionId, [patch], options);
+}
+
+/** Apply ordered updates under one lock, including terminal-state protections. */
+export async function patchRunBatch(
+	sessionId: string,
+	patches: readonly RunPatch[],
+	options: { path?: string } = {},
+): Promise<void> {
+	if (patches.length === 0) return;
 	await updateRuns(options.path ?? getRunsPath(), (runs) => {
 		const index = runs.findIndex((entry) => entry.sessionId === sessionId);
 		const current = runs[index];
 		if (!current) return undefined;
 		const next = [...runs];
-		next[index] = {
-			...current,
-			updatedAt: new Date().toISOString(),
-			...(patch.hosts !== undefined ? { hosts: patch.hosts } : {}),
-			...(patch.primaryApp !== undefined
-				? { primaryApp: patch.primaryApp }
-				: {}),
-			...(patch.captures
-				? { captures: { ...current.captures, ...patch.captures } }
-				: {}),
-			...(patch.details ? { details: patch.details } : {}),
-			apps: patch.apps ? mergeByName(current.apps, patch.apps) : current.apps,
-			services: patch.services
-				? mergeByName(current.services, patch.services)
-				: current.services,
-		};
+		next[index] = patches.reduce(applyRunPatch, current);
 		return next;
 	});
+}
+
+function applyRunPatch(current: RunEntry, patch: RunPatch): RunEntry {
+	return {
+		...current,
+		updatedAt: new Date().toISOString(),
+		...(patch.hosts !== undefined ? { hosts: patch.hosts } : {}),
+		...(patch.primaryApp !== undefined ? { primaryApp: patch.primaryApp } : {}),
+		...(patch.captures
+			? { captures: { ...current.captures, ...patch.captures } }
+			: {}),
+		...(patch.details ? { details: patch.details } : {}),
+		apps: patch.apps ? mergeByName(current.apps, patch.apps) : current.apps,
+		services: patch.services
+			? mergeByName(current.services, patch.services)
+			: current.services,
+	};
 }
 
 /** Runs grouped by project, main checkout first, then worktrees by start time. */
@@ -625,7 +664,7 @@ export async function findRunsByRoot(
 /** Inspection filters stale owners in memory without mutating persisted state. */
 export async function readLiveRuns(path = getRunsPath()): Promise<RunEntry[]> {
 	const runs = await loadRuns(path, { strict: true });
-	return runs.filter(runLiveness(runs));
+	return runs.filter(await runLivenessAsync(runs));
 }
 
 /**

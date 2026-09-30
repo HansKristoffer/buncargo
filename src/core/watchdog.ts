@@ -10,10 +10,14 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FileLockTimeoutError, withFileLock } from "./file-lock";
-import { matchesProcessIdentity } from "./process-identity";
+import {
+	matchesProcessIdentity,
+	matchesProcessIdentityAsync,
+} from "./process-identity";
 import { getStateDir, stateFilePath } from "./state-paths";
 import { formatWarn } from "./style";
 
@@ -72,6 +76,26 @@ export function getWatchdogPid(): number | null {
 	}
 }
 
+export async function getWatchdogPidAsync(): Promise<number | null> {
+	try {
+		const owner = JSON.parse(await readFile(getWatchdogPidFile(), "utf8")) as {
+			pid?: unknown;
+			processIdentity?: unknown;
+		};
+		if (typeof owner.pid !== "number") return null;
+		return (await matchesProcessIdentityAsync(
+			owner.pid,
+			typeof owner.processIdentity === "string"
+				? owner.processIdentity
+				: undefined,
+		))
+			? owner.pid
+			: null;
+	} catch {
+		return null;
+	}
+}
+
 export function resolveWatchdogRunnerPath(): string {
 	const moduleDir = dirname(fileURLToPath(import.meta.url));
 	const candidates = [
@@ -115,12 +139,12 @@ export async function ensureWatchdog(
 	options: { verbose?: boolean } = {},
 ): Promise<void> {
 	const { verbose = true } = options;
-	if (getWatchdogPid()) return;
+	if (await getWatchdogPidAsync()) return;
 
 	await withFileLock(getWatchdogSpawnLockFile(), async () => {
 		// Re-checked under the lock: whoever held it before us may have just
 		// started the watchdog this call was about to duplicate.
-		if (getWatchdogPid()) return;
+		if (await getWatchdogPidAsync()) return;
 		try {
 			// Try-acquire the runner's own lock: a held one means a runner is
 			// alive whatever the pid file says, which is how a `kill -9` that
@@ -165,7 +189,7 @@ export async function ensureWatchdog(
 		while (Date.now() - startedAt < 2000) {
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			if (spawnError) throw spawnError;
-			if (getWatchdogPid()) return;
+			if (await getWatchdogPidAsync()) return;
 		}
 
 		if (verbose) {

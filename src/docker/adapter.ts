@@ -16,6 +16,7 @@ import {
 import { startContainers, stopContainers } from "./lifecycle";
 import {
 	dockerContainerPortOwners,
+	dockerContainerPortOwnersAsync,
 	findDockerContainerOnPort,
 } from "./port-lookup";
 import { ensureDockerRunning, isDockerDaemonRunning } from "./preflight";
@@ -98,6 +99,10 @@ export function dockerRuntimeAdapter(
 
 		containerPortOwners() {
 			return dockerContainerPortOwners(binary);
+		},
+
+		containerPortOwnersAsync(signal?: AbortSignal) {
+			return dockerContainerPortOwnersAsync(binary, signal);
 		},
 
 		projectServiceStates(projectName: string, signal?: AbortSignal) {

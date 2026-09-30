@@ -1,4 +1,5 @@
 import type {
+	AnyDevConfig,
 	AppConfig,
 	DevConfig,
 	EnvValues,
@@ -11,23 +12,16 @@ import type {
  * win. Replacing instead of composing would silently drop the base config's
  * whole shared env surface.
  */
-function mergeEnvBuilders<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnvBase extends EnvValues,
-	TEnvOverride extends EnvValues,
->(
-	base: EnvVarsBuilder<TServices, TApps, TEnvBase> | undefined,
-	override: EnvVarsBuilder<TServices, TApps, TEnvOverride> | undefined,
-): EnvVarsBuilder<TServices, TApps, TEnvBase & TEnvOverride> | undefined {
-	if (!base) {
-		return override as
-			| EnvVarsBuilder<TServices, TApps, TEnvBase & TEnvOverride>
-			| undefined;
-	}
-	if (!override) {
-		return base as EnvVarsBuilder<TServices, TApps, TEnvBase & TEnvOverride>;
-	}
+type SharedEnvBuilder = EnvVarsBuilder<
+	Record<string, ServiceConfig>,
+	Record<string, AppConfig>
+>;
+function mergeEnvBuilders(
+	base: SharedEnvBuilder | undefined,
+	override: SharedEnvBuilder | undefined,
+): SharedEnvBuilder | undefined {
+	if (!base) return override;
+	if (!override) return base;
 	return (ports, urls, ctx) => ({
 		...base(ports, urls, ctx),
 		...override(ports, urls, ctx),
@@ -44,12 +38,41 @@ function mergeGroup<T extends object>(
 	return { ...base, ...override };
 }
 
-/**
- * Merge an override config over a base one.
- *
- * The result's overlay type is the intersection of both, because
- * `mergeEnvBuilders` runs both builders rather than replacing one.
- */
+/** Keys from the override replace the base, matching object spread at runtime. */
+type Overlay<TBase, TOverride> = Omit<TBase, keyof TOverride> & TOverride;
+// An unspecified overlay contributes no known names; a concrete override still does.
+type KnownEnv<T> = string extends keyof T ? Record<never, never> : T;
+type BaseApps<T extends AnyDevConfig> = NonNullable<T["apps"]>;
+type BaseEnv<T extends AnyDevConfig> = NonNullable<T["env"]> extends (
+	...args: never[]
+) => infer R
+	? Extract<R, EnvValues>
+	: Record<never, never>;
+
+/** Merge reusable configs without losing added app, service or environment keys. */
+export function mergeConfigs<
+	TBase extends AnyDevConfig,
+	const TServices extends Record<string, ServiceConfig> = Record<never, never>,
+	const TApps extends Record<string, AppConfig> = Record<never, never>,
+	TEnv extends EnvValues = Record<never, never>,
+>(
+	base: TBase,
+	overrides: Omit<
+		Partial<
+			DevConfig<
+				Overlay<TBase["services"], TServices>,
+				Overlay<BaseApps<TBase>, TApps>,
+				TEnv
+			>
+		>,
+		"services" | "apps"
+	> & { services?: TServices; apps?: TApps },
+): DevConfig<
+	Overlay<TBase["services"], TServices>,
+	Overlay<BaseApps<TBase>, TApps>,
+	Overlay<KnownEnv<BaseEnv<TBase>>, TEnv>
+>;
+/** Compatibility overload for callers that supply the original generic parameters. */
 export function mergeConfigs<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
@@ -58,13 +81,20 @@ export function mergeConfigs<
 >(
 	base: DevConfig<TServices, TApps, TEnvBase>,
 	overrides: Partial<DevConfig<TServices, TApps, TEnvOverride>>,
-): DevConfig<TServices, TApps, TEnvBase & TEnvOverride> {
+): DevConfig<TServices, TApps, Overlay<TEnvBase, TEnvOverride>>;
+export function mergeConfigs(
+	base: AnyDevConfig,
+	overrides: Partial<AnyDevConfig>,
+): AnyDevConfig {
 	return {
 		...base,
 		...overrides,
 		services: { ...base.services, ...overrides.services },
 		apps: mergeGroup(base.apps, overrides.apps),
-		env: mergeEnvBuilders(base.env, overrides.env),
+		env: mergeEnvBuilders(
+			base.env as SharedEnvBuilder | undefined,
+			overrides.env as SharedEnvBuilder | undefined,
+		),
 		hooks: mergeGroup(base.hooks, overrides.hooks),
 		migrations: overrides.migrations ?? base.migrations,
 		seed: overrides.seed ?? base.seed,

@@ -372,6 +372,16 @@ The `actions/setup` composite action installs Bun from `.bun-version` (or `bun-v
 
 Project-type knowledge lives in integrations rather than in every project's scripts: `buncargo/shopify` and `buncargo/expo` today. An integration is a plain object in `integrations: [...]`. It can transform the config (add apps, env, generated files), add hooks and checks, contribute commands under its own name (`buncargo shopify env`), add env to one app's process, and describe itself in `buncargo env`, the run registry and BuncargoBar. [`docs/integrations.md`](docs/integrations.md) covers writing one, with the Shopify and Expo integrations as references.
 
+Run `bun run benchmark:startup` for the regression matrix: cold and warm service starts, four concurrent runs, app-only selections, port allocation, workers, preparation, shared-checkout reuse, and cancellation. Results and violations are saved to `.buncargo/benchmarks/startup.json`, including failed runs. Each scenario has its own timing and subprocess limits in `scripts/startup-budgets.ts`; for example, single-run warm startup has a 700ms ceiling, shared-checkout reuse 350ms, and cancellation 300ms. CI takes five samples per worker and applies `--budget-scale=1.5` to timing limits for hosted-runner variation. Counters include process identity subprocesses. These measure orchestration overhead with simulated containers; they do not include image pulls or external network providers. The fixture owns its watchdog sentinel and isolates both container binaries.
+
+For smaller regressions, compare with a saved successful run on the same platform and Bun version using `--baseline=path/to/startup.json`. The default allowance is 25% or 50ms, whichever is larger; `--max-regression-percent` changes the percentage. Explicit `--max-p95`, `--max-cold-p95` and `--max-subprocesses` override the scenario ceilings. Capture a baseline on the same machine under similar load.
+
+```sh
+bun scripts/benchmark-startup.ts --scenario=allocation --parallel=4 --apps=2
+bun scripts/benchmark-startup.ts --scenario=reuse --same-checkout --parallel=4
+bun run benchmark:startup --samples=10 --baseline=.buncargo/benchmarks/baseline.json
+```
+
 ## Startup ordering
 
 `startAfter: ["api"]` spawns an app only once `api` is healthy (a worker: spawned and alive). Unlike `requiredApps`, which only adds apps to the selection, this orders them in every mode, not just around `--expose` tunnels. It selects its targets too, and a cycle is a config error. `prebuild` runs a command to completion before an app's `devCommand` starts, beside the prebuilds of its wave; the app spawns only after it succeeds.
@@ -387,6 +397,26 @@ apps: {
 ```
 
 `discoverApps` makes a worker for every workspace matching the globs that defines the `script` (default `dev`), named after its directory. A `server` kind takes a base `port`. When a workspace defines the `prebuild` script, it runs once, before the watcher starts. Two workspaces with the same name are an error, not a silent overwrite. `buncargo build --discovered` runs every discovered app's `build` in order, for CI and deploys.
+
+Set `runner: "npm"`, `"pnpm"`, or `"yarn"` to use that package manager for the dev, prebuild, and build scripts; Bun remains the default. Script names are passed literally.
+
+```ts
+import { defineDevConfig, discoverApps, mergeConfigs } from "buncargo/config";
+
+const shared = defineDevConfig({
+  projectPrefix: "shared",
+  services: {},
+  env: () => ({ LOG_LEVEL: "info" }),
+});
+export default mergeConfigs(shared, {
+  projectPrefix: "my-project",
+  apps: discoverApps({ globs: ["apps/*"], runner: "pnpm", prebuild: "build" }),
+  env: () => ({ LOG_LEVEL: "debug", PROJECT_FEATURE: "enabled" }),
+});
+```
+
+`mergeConfigs` keeps added service, app, and env keys in its result type. Both shared env builders run, with override values winning. App and service entries are replaced by key, while hooks, options, tasks, and profiles merge by key.
+
 
 ## Captured output and generated files
 
@@ -452,7 +482,7 @@ Both backends use `dev.config.ts`, the generated Compose model, inspection comma
 
 Warm startup skips container reconciliation only when every selected service is running with its matching `buncargo.service-hash`. Service fingerprints include effective environment values, user labels, and referenced volume definitions, and remain stable when an unrelated service joins or leaves the selection. External build/env-file inputs and unresolved Compose interpolation trigger reconciliation because equality cannot be proven.
 
-App readiness is polled every 200 ms. Container commands and probes are asynchronous and cancellable, and app health checks run concurrently. An explicit `healthEndpoint` requires a successful HTTP status; `healthEndpoint: false` explicitly disables that check. Port ownership uses one snapshot per phase, and unchanged generated files are not rewritten.
+App readiness retries start at 20 ms and back off to 200 ms. An explicit `waitForServer(url, { interval })` keeps a fixed cadence. Container commands and probes are asynchronous and cancellable, and app health checks run concurrently. An explicit `healthEndpoint` requires a successful HTTP status; `healthEndpoint: false` explicitly disables that check. Listener and container inventory are read concurrently through cancellable snapshots, once per startup phase. Registry updates and process birth identities are batched, and unchanged generated files are not rewritten.
 
 For reproducible overhead measurements, run `bun run build` followed by `bun scripts/benchmark-startup.ts --samples=10 --parallel=1`. Use `--parallel=5` or `--parallel=20` for contention. The fixture uses real CLI/app processes and a fake runtime; it excludes image pulls, real database readiness, migrations, HTTPS, and external tunnel latency. See [implementation and validation](docs/startup-reliability-implementation.md) for measured results and limits.
 
@@ -1327,6 +1357,38 @@ await env.stop();
 ```
 
 `loadDevEnv()` imports the config at runtime, so pass your config type (`loadDevEnv<typeof devConfig>()`) to keep the `defineDevConfig` inference - `ports`, `urls`, `getEnvVar`, and `buildAppEnvVars` stay keyed to your actual services and apps. Without it you get the widened `AnyDevEnvironment` shape, where those keys are plain strings. `getDevEnv<typeof devConfig>()` takes the same parameter.
+
+Repeated `loadDevEnv({ cwd })` calls keep the same environment object by default. For separate runs in one process, use `fresh: true`: the config module stays cached while ports, URLs, captures, owned processes, and the session ID belong to the new environment. Keep the returned reference for each project; `getDevEnv()` still returns the most recently loaded environment. `reload: true` re-imports the config entry, while its imported dependencies remain cached. Sessions share this checkout's service stack and allocation; use `withSuffix()` when you need isolated container stacks.
+
+One environment rejects overlapping `start()`/`startServers()` calls and starts attempted during teardown; independent sessions may start concurrently. Calling `stop()` during startup cancels that startup and waits for its child cleanup before teardown. Concurrent `restart()` calls share one operation; a subsequent `stop()` cancels the restart. Stop requests run in order, so a later `stop({ removeVolumes: true })` retains its stronger teardown. `restart()` retains its services-only behavior. Await `stop()` before reusing the environment.
+
+Run `bun run test:stress-sessions` to exercise 200 sessions across four projects in one process. It checks live HTTP apps, workers, startup and ready-session cancellation, process and signal-listener cleanup, file descriptors, worker locks, registry claims, and bounded memory growth after warmup. `--sessions=1000 --concurrency=8` increases the workload; `--max-heap-growth-mib` and `--max-rss-growth-mib` set memory ceilings. The harness isolates its home directory and container binaries, and CI runs it on macOS and Linux.
+
+```ts
+import { loadDevEnv } from "buncargo";
+import type config from "./dev.config";
+
+const web = await loadDevEnv<typeof config>({ cwd: process.cwd(), fresh: true });
+const api = await loadDevEnv<typeof config>({ cwd: process.cwd(), fresh: true });
+const lifetime = new AbortController();
+try {
+  await Promise.all([
+    web.start({ onlyApps: ["web"], productionBuild: false, signal: lifetime.signal }),
+    api.start({ onlyApps: ["api"], productionBuild: false, signal: lifetime.signal }),
+  ]);
+} finally {
+  lifetime.abort();
+  // releaseRun leaves shared containers available to other sessions.
+  // stop() explicitly tears down the shared stack; use it for that intent.
+  await Promise.all([web.releaseRun(), api.releaseRun()]);
+}
+```
+
+`releaseRun()` releases container ownership; it does not stop supervised app processes. For a script that starts servers, retain its cancellation signal or stop its returned process IDs when the script's work finishes.
+
+A complete example that awaits app cleanup is in `example/library-sessions`: run `bun example/library-sessions/run.ts` from this repository.
+
+
 
 `createDevEnvironment(config)` constructs the same environment directly and infers from the supplied config. Construction reads persisted ports or computes a cold preview without runtime probes. Startup finalizes allocation and updates the ports/URLs objects in place; re-read them after startup instead of holding copied preview values.
 

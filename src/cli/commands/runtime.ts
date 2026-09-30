@@ -1,13 +1,8 @@
-import { getCaPath, waitForDaemonRoutes } from "../../core/hosts";
-import { findMonorepoRoot } from "../../core/ports";
 import { isHostsForcedOff } from "../../core/runtime-flags";
 import { createNoopPhaseTimer, createPhaseTimer } from "../../core/timing";
-import { loadDevEnv } from "../../loader";
 import { exitOnDevArgErrors, parseDevArgs, printDevHelp } from "../dev-flags";
 import { getFlagValue, splitCliArgs } from "../flags";
 import * as log from "../log";
-import { runCli } from "../run-cli";
-import { adoptLiveCaptures } from "../run-publish";
 import { parseTypecheckArgs, printTypecheckHelp } from "../typecheck-flags";
 
 export function getEnvDotPath(
@@ -45,7 +40,7 @@ export async function loadEnv(
 	options: { containerRuntime?: string; readOnly?: boolean } = {},
 ) {
 	try {
-		return await loadDevEnv(options);
+		return await (await import("../../loader")).loadDevEnv(options);
 	} catch (error) {
 		log.fail(error instanceof Error ? error.message : String(error));
 	}
@@ -65,10 +60,12 @@ export async function handleDev(args: string[]): Promise<void> {
 		? createPhaseTimer({ startedAt: 0, json: parsed.timingJson })
 		: createNoopPhaseTimer();
 	try {
-		const env = await timer.measure("config and ports", () =>
-			loadDevEnv({ containerRuntime: parsed.runtime }),
+		const env = await timer.measure("config and ports", async () =>
+			(await import("../../loader")).loadDevEnv({
+				containerRuntime: parsed.runtime,
+			}),
 		);
-		await runCli(env, { args, timer });
+		await (await import("../run-cli")).runCli(env, { args, timer });
 	} catch (error) {
 		timer.report();
 		throw error;
@@ -125,6 +122,8 @@ function parseMigrateCheckArgs(args: string[]) {
  * daemon is actually serving, and what the run's apps printed.
  */
 export async function loadLiveEnv() {
+	const { getCaPath, waitForDaemonRoutes } = await import("../../core/hosts");
+	const { adoptLiveCaptures } = await import("../run-publish");
 	const env = await loadEnv({ readOnly: true });
 	// A healthy daemon is not the same as a daemon serving this project: a
 	// `vite.config.ts` reading `urls.web` from here must not be handed an https
@@ -198,7 +197,7 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 
 	const { runWorkspaceTypecheck } = await import("../../typecheck");
 	const result = await runWorkspaceTypecheck({
-		root: findMonorepoRoot(),
+		root: (await import("../../core/ports")).findMonorepoRoot(),
 		verbose: true,
 		concurrency: parsed.concurrency,
 		only: parsed.only,

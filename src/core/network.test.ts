@@ -79,6 +79,43 @@ describe("readiness elapsed time and HTTP semantics", () => {
 		}
 	});
 
+	it("retries a quick server before the old 200ms interval", async () => {
+		const requests: number[] = [];
+		const server = Bun.serve({
+			port: 0,
+			fetch: () => {
+				requests.push(performance.now());
+				return new Response("", { status: requests.length === 2 ? 200 : 503 });
+			},
+		});
+		try {
+			await waitForServer(server.url.href, { timeout: 1000 });
+			expect(requests).toHaveLength(2);
+			expect((requests[1] ?? 0) - (requests[0] ?? 0)).toBeLessThan(180);
+		} finally {
+			server.stop(true);
+		}
+	});
+
+	it("honors an explicit fixed interval", async () => {
+		const requests: number[] = [];
+		const server = Bun.serve({
+			port: 0,
+			fetch: () => {
+				requests.push(performance.now());
+				return new Response("", { status: requests.length === 2 ? 200 : 503 });
+			},
+		});
+		try {
+			await waitForServer(server.url.href, { timeout: 1000, interval: 80 });
+			expect((requests[1] ?? 0) - (requests[0] ?? 0)).toBeGreaterThanOrEqual(
+				70,
+			);
+		} finally {
+			server.stop(true);
+		}
+	});
+
 	it("cancels sibling probes when one app fails readiness", async () => {
 		const server = Bun.serve({
 			port: 0,

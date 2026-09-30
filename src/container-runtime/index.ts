@@ -1,5 +1,9 @@
 export { assertServiceCapabilities } from "./capabilities";
 export {
+	type EnsureServicesRunningRequest,
+	ensureServicesRunning,
+} from "./ensure-services";
+export {
 	createBuiltInHealthCheck,
 	type HealthCheckContext,
 } from "./health-checks";
@@ -30,8 +34,6 @@ export {
 	type VolumeVerdict,
 } from "./prune";
 export {
-	type EnsureServicesRunningRequest,
-	ensureServicesRunning,
 	MAX_ATTEMPTS,
 	POLL_INTERVAL,
 	type WaitForServiceOptions,

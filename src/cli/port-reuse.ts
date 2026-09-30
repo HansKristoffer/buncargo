@@ -1,7 +1,7 @@
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
 import {
 	classifyPortOccupant,
-	createPortOwnerSnapshot,
+	createPortOwnerSnapshotAsync,
 	formatPortOwner,
 	type PortOwnerSnapshot,
 } from "../core/process";
@@ -37,6 +37,7 @@ export interface ClassifiedCliApps {
 }
 
 export interface ClassifyCliAppsOptions {
+	signal?: AbortSignal;
 	skipContainers?: boolean;
 	runtime?: ContainerRuntimeAdapter;
 	isPortBusy?: (port: number) => boolean;
@@ -98,7 +99,8 @@ export async function classifyCliApps(
 	// One reading for both questions this asks of every app port — is it busy,
 	// and is a foreign container holding it — instead of an `lsof` and a
 	// container listing per app, twice over.
-	const snapshot = createPortOwnerSnapshot({
+	const snapshot = await createPortOwnerSnapshotAsync({
+		signal: options.signal,
 		includeCwd: false,
 		runtime: options.runtime,
 		skipContainers: options.skipContainers,
@@ -120,7 +122,11 @@ export async function classifyCliApps(
 	const decisions = await Promise.all(
 		Object.entries(apps).map(async ([name, config]) => {
 			if (config.kind === "worker" && options.context) {
-				const live = await findWorker(options.context.root, name);
+				const live = await findWorker(
+					options.context.root,
+					name,
+					options.signal,
+				);
 				return { name, config, reuse: !!live, inferred: false };
 			}
 			const port = ports[name];

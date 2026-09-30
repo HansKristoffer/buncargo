@@ -44,7 +44,7 @@ export function getLocalIp(): string {
 export interface WaitForServerOptions {
 	/** Timeout in milliseconds */
 	timeout?: number;
-	/** Polling interval in milliseconds */
+	/** Fixed polling interval in milliseconds. By default retries grow from 20ms to 200ms. */
 	interval?: number;
 	/** Cancel readiness and outstanding probes. */
 	signal?: AbortSignal;
@@ -63,7 +63,7 @@ export async function waitForServer(
 ): Promise<void> {
 	const {
 		timeout = 30000,
-		interval = 200,
+		interval,
 		verbose = false,
 		signal,
 		strict = false,
@@ -95,7 +95,9 @@ export async function waitForServer(
 		} catch {
 			signal?.throwIfAborted();
 		}
-		await abortableSleep(Math.min(interval, remainingTime(deadline)), signal);
+		const retryDelay =
+			interval ?? Math.min(200, 20 * 2 ** Math.min(attempts - 1, 4));
+		await abortableSleep(Math.min(retryDelay, remainingTime(deadline)), signal);
 	}
 	signal?.throwIfAborted();
 	throw new Error(
