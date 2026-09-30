@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.3.0](https://github.com/HansKristoffer/buncargo/compare/v10.2.0...v10.3.0) (2026-09-30)
+
+
+### Features
+
+* **startup:** overlap seed and app startup ([#61](https://github.com/HansKristoffer/buncargo/issues/61)) ([18224dd](https://github.com/HansKristoffer/buncargo/commit/18224ddb9faa1ae386a74708c5629d11a420bd9b))
+
 ## [10.2.0](https://github.com/HansKristoffer/buncargo/compare/v10.1.0...v10.2.0) (2026-09-30)
 
 
