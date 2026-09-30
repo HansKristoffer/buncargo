@@ -1,9 +1,16 @@
 import { expect, it } from "bun:test";
 import { join, resolve } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { parallelSeedFixture } from "../environment/parallel-seed.testing";
 
-for (const failSeed of [false, true]) {
-	it(`CLI overlaps seed and apps and joins readiness (failed seed=${failSeed})`, async () => {
+it.each([
+	[false, false],
+	[false, true],
+	[true, false],
+	[true, true],
+])(
+	"CLI overlaps seed and apps and joins readiness (failed seed=%s, color=%s)",
+	async (failSeed, color) => {
 		const fixture = await parallelSeedFixture({ beforeApps: false, failSeed });
 		const child = Bun.spawn(
 			[
@@ -20,6 +27,8 @@ for (const failSeed of [false, true]) {
 					HOME: fixture.root,
 					BUNCARGO_PORT_OFFSET: "0",
 					CI: "false",
+					NO_COLOR: color ? "" : "1",
+					FORCE_COLOR: color ? "1" : "",
 					DOCKER_HOST: "unix:///nonexistent-buncargo-test.sock",
 				},
 				stdout: "pipe",
@@ -60,7 +69,7 @@ for (const failSeed of [false, true]) {
 				expect(
 					await Bun.file(join(fixture.root, "seed-finished")).exists(),
 				).toBe(true);
-				expect(output).toMatch(/seed\s+seed output/);
+				expect(stripVTControlCharacters(output)).toMatch(/seed\s+seed output/);
 				expect(
 					(await Bun.file(join(fixture.root, "events")).text())
 						.trim()
@@ -90,5 +99,6 @@ for (const failSeed of [false, true]) {
 			await errors;
 			await fixture.cleanup();
 		}
-	}, 15000);
-}
+	},
+	15000,
+);
