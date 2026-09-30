@@ -31,6 +31,8 @@ export interface StartOptions<
 	onPhase?: (name: string, durationMs: number) => void;
 	/** Skip automatic seeding (useful when CLI handles seeding separately). Default: false */
 	skipSeed?: boolean;
+	/** Prefetch seed secrets when the caller will run seed separately. */
+	prefetchSeed?: boolean;
 	/** Skip the initial `logInfo` banner (CLI uses this with `--expose`, then logs once with tunnel URLs). Default: false */
 	skipEnvironmentLog?: boolean;
 	/** If set, start and wait for only these app names plus any transitive `requiredApps`. */

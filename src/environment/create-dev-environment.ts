@@ -106,7 +106,12 @@ export function createDevEnvironment<
 			ctx.setNamedHostsActive(active, extras);
 		},
 		seed: resolved.seed
-			? { command: resolved.seed.command, cwd: resolved.seed.cwd }
+			? {
+					command: resolved.seed.command,
+					cwd: resolved.seed.cwd,
+					beforeApps: resolved.seed.beforeApps,
+					requiredServices: resolved.seed.requiredServices,
+				}
 			: undefined,
 		checks: resolved.checks,
 		secrets: resolved.secrets,

@@ -940,6 +940,10 @@ envFile: {
 ```
 - The write lands through a temp file and a rename, so a test runner loading `.env` concurrently never sees it truncated.
 
+A server that exits zero after detaching its listener is adopted by pid and process identity. Buncargo warns with the app, port and command, and stops the detached server with the run. Its framework may write logs to its own files after detaching.
+
+The `dev` banner lists the selected apps (including reused apps) and their required services. `url` and `env` continue to list the full configuration.
+
 ## Environment variables
 
 ### Dotenv input
@@ -1006,6 +1010,7 @@ credentials out of browser and Expo public environment mappings.
 | `CLICKHOUSE_NATIVE_PORT` | Shared env | ClickHouse `secondaryPort` |
 | `PORT` | Server app process | That server app's assigned port; not generated for workers |
 | `HOST` | Server app process | `0.0.0.0`; not generated for workers |
+| `ASTRO_DEV_BACKGROUND` / `ASTRO_PREVIEW_BACKGROUND` | Per-app process | Default `1` keeps Astro in the foreground under buncargo supervision; override in `staticEnv` or `envVars` |
 | `BUNCARGO_APP_NAME` | Per-app process | The app's key in `apps`, so a framework plugin knows which app it is |
 | `BUNCARGO_APP_HOSTNAME` | Per-app process | That app's named host (only when named hosts are active) |
 
@@ -1013,7 +1018,7 @@ Service `env` maps (`url` / `port` / `secondaryPort`) add more shared names. App
 
 ### Infisical secrets
 
-An app whose own secret loader shells out to the Infisical CLI at startup runs that CLI once per app, and concurrent Infisical CLI processes hang. Declare the scope instead, and buncargo fetches it once per distinct scope, serialized machine-wide so parallel worktrees queue rather than race. It hands the values to the child processes, where the app's own loader finds them already in `process.env`.
+An app whose own secret loader shells out to the Infisical CLI at startup runs that CLI once per app, and concurrent Infisical CLI processes hang. Declare the scope instead, and buncargo fetches it once per distinct scope, serialized machine-wide so parallel worktrees queue rather than race. Startup prefetches the selected app scopes and applicable seed/migration scopes before containers, so HTTP fetches overlap preparation. `--up-only` skips this work. The `secrets` timing phase reports time consumers wait, summed across consumers; it can overlap migration, seed and readiness phases. Failed fetches are reported once per scope by consumers. The CLI session token is shared across scopes on the same site and binary for the life of the process; organization exchanges remain scoped. Failed token reads are evicted so a later call after login retries. It hands the values to the child processes, where the app's own loader finds them already in `process.env`.
 
 ```ts
 defineDevConfig({
@@ -1194,11 +1199,14 @@ Use `kind: "worker"` for a long-running process without a listener. Workers requ
 
 Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.project`, `buncargo.root`, `buncargo.worktree`, `buncargo.service`.
 
+The automatic Prisma migration step checks migration folders containing `migration.sql` against `_prisma_migrations` using Bun SQL and the local Postgres service. If every migration is successfully applied, it prints `Migrations up to date (N)` and skips the CLI. This is only a startup shortcut: missing tables/directories, failed or rolled-back rows, connection errors, other service presets, and overridden database URLs all run `migrate deploy` as usual. The migrations timing phase includes the check. For a custom directory, set e.g. `prisma.migrations: "schema/migrations"`.
+
 ### `PrismaConfig`
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `cwd` | `string` | `packages/prisma` | Schema directory |
+| `migrations` | `string` | `prisma/migrations` | Migration directory relative to `prisma.cwd`; also the default for `migrate-check` |
 | `service` | `string` | `postgres` | Service key for `DATABASE_URL` |
 | `urlEnvVar` | `string` | `DATABASE_URL` | Env var name |
 | `generate` | `string` | skipped | Command after migrations (e.g. `bunx prisma generate --schema ./schema --sql`) |
@@ -1214,6 +1222,8 @@ Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.
 | `cwd` | `string` | repo root | Working directory |
 | `secrets` | `SecretsScopeConfig \| false` | config-level `secrets` | Infisical scope for this command |
 
+Set `seed.beforeApps: false` to overlap the seed and app startup. `afterServers`, the ready message, and library `start()` completion all wait for the seed as well as app health. A seed failure fails the run and stops its apps; concurrent seed output uses the `seed` app-style prefix. When any selected service has `afterPreparation`, buncargo keeps seed and apps serial and explains why. `--seed` and other one-shot modes retain their existing order. Startup phase durations can overlap in this mode.
+
 ### `SeedConfig`
 
 | Option | Type | Default | Description |
@@ -1224,6 +1234,7 @@ Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.
 | `check` | `(ctx) => Promise<boolean>` | always run | Return `true` to seed. `checkTable(table)` defaults its service to `prisma.service ?? "postgres"` |
 | `forceExit` | `boolean` | `true` for `bun ./file.ts` commands | Exit the seed process after the module finishes, even if sockets/pools are still open |
 | `secrets` | `SecretsScopeConfig \| false` | config-level `secrets` | Infisical scope for the seeder |
+| `beforeApps` | `boolean` | `true` | `false` runs the seed alongside apps after migrations and container hooks; readiness waits for both |
 
 ### `DevHooks` and `HookContext`
 

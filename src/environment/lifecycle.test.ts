@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { tmpdir } from "node:os";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
+import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
+import {
+	clearScopeSecretsCache,
+	loadScopeSecrets,
+} from "../core/secrets/infisical";
 import { planStart } from "../planning";
 import type { AppConfig, ServiceConfig } from "../types";
 import type { DevEnvContext } from "./context";
@@ -329,4 +334,95 @@ it("onlyServices starts just those services, with no app selecting them", async 
 	});
 	expect(events).toContain("up:cache");
 	expect(events).not.toContain("up:db");
+});
+
+it("starts selected scope fetches before container preparation and skips containers-only", async () => {
+	const fake = startFakeInfisical();
+	const home = process.env.HOME;
+	const binary = process.env.BUNCARGO_INFISICAL_PATH;
+	process.env.HOME = fake.home;
+	process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
+	clearScopeSecretsCache();
+	fake.projects.app = { secrets: { KEY: "app" } };
+	fake.projects.preparation = { secrets: { KEY: "preparation" } };
+	const { ctx, lifecycle } = fixture();
+	ctx.config.secrets = { projectId: "preparation", siteUrl: fake.siteUrl };
+	const web = ctx.apps.web;
+	if (!web) throw new Error("fixture needs web");
+	const appScope = { projectId: "app", siteUrl: fake.siteUrl };
+	web.secrets = appScope;
+	const runtimeStart = ctx.runtime.ensureRunning;
+	try {
+		await lifecycle.start({
+			prepare: "containers",
+			startServers: false,
+			wait: false,
+			verbose: false,
+			watchdog: false,
+		});
+		expect(fake.cliCalls()).toEqual([]);
+		ctx.runtime.ensureRunning = async () => {
+			const deadline = Date.now() + 5000;
+			while (fake.requests.length < 2 && Date.now() < deadline)
+				await Bun.sleep(10);
+			expect(fake.requests).toHaveLength(2);
+		};
+		await lifecycle.start({
+			startServers: false,
+			wait: false,
+			verbose: false,
+			watchdog: false,
+		});
+		await Promise.all([
+			loadScopeSecrets(ctx.config.secrets),
+			loadScopeSecrets(appScope),
+		]);
+		expect(fake.cliCalls()).toHaveLength(1);
+	} finally {
+		ctx.runtime.ensureRunning = runtimeStart;
+		clearScopeSecretsCache();
+		fake.stop();
+		if (home === undefined) delete process.env.HOME;
+		else process.env.HOME = home;
+		if (binary === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
+		else process.env.BUNCARGO_INFISICAL_PATH = binary;
+	}
+});
+
+it("keeps preparation services serial when seed.beforeApps opts into overlap", async () => {
+	const { ctx, events, lifecycle } = fixture();
+	const seed = ctx.config.seed;
+	if (!seed) throw new Error("fixture needs seed");
+	seed.beforeApps = false;
+	ctx.services.sync = { port: 8080, afterPreparation: true };
+	ctx.apps.web = {
+		port: 3000,
+		devCommand: false,
+		requiredServices: ["db", "sync"],
+	};
+	ctx.runtime.up = async (request) => {
+		events.push(`up:${request.serviceNames.join(",")}`);
+	};
+	ctx.logInfo = () => {};
+	const log = console.log;
+	const messages: string[] = [];
+	console.log = (message) => messages.push(String(message));
+	try {
+		await lifecycle.start({
+			startServers: false,
+			wait: false,
+			verbose: true,
+			watchdog: false,
+		});
+		expect(events.indexOf("up:sync")).toBeGreaterThan(
+			events.indexOf("seed check"),
+		);
+		expect(
+			messages.filter((message) =>
+				message.includes("selected services use afterPreparation"),
+			),
+		).toHaveLength(1);
+	} finally {
+		console.log = log;
+	}
 });

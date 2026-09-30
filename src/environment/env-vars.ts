@@ -10,9 +10,8 @@ import {
 	describeSecretsError,
 	loadScopeSecrets,
 	resolveScope,
-	scopeKey,
+	warnSecretsOnce,
 } from "../core/secrets/infisical";
-import { formatWarn } from "../core/style";
 import type {
 	AppConfig,
 	AppEnvVars,
@@ -133,6 +132,8 @@ export function createEnvVarsApi<
 		const appPort = toPortMap(ports)[appName];
 		const processEnv: Record<string, string> = {
 			...sharedEnv,
+			ASTRO_DEV_BACKGROUND: "1",
+			ASTRO_PREVIEW_BACKGROUND: "1",
 			...(appConfig?.staticEnv ? stringifyEnvValues(appConfig.staticEnv) : {}),
 			...(appConfig?.kind === "worker" ? {} : { HOST: "0.0.0.0" }),
 			// So a framework plugin can configure itself without the consumer
@@ -194,8 +195,6 @@ export function createEnvVarsApi<
 		);
 	}
 
-	const warnedScopes = new Set<string>();
-
 	async function resolveSecrets(
 		explicit: SecretsScopeConfig | false | undefined,
 		options: {
@@ -215,6 +214,7 @@ export function createEnvVarsApi<
 			const values = await loadScopeSecrets(scope, {
 				defaults: config.secrets,
 				signal: options.signal,
+				onWait: (ms) => ctx.onSecretsWait?.(ms),
 			});
 			const computed = options.computed ?? {};
 			return Object.fromEntries(
@@ -222,15 +222,10 @@ export function createEnvVarsApi<
 			);
 		} catch (error) {
 			options.signal?.throwIfAborted();
-			const key = scopeKey(resolved);
-			if (!warnedScopes.has(key)) {
-				warnedScopes.add(key);
-				console.warn(
-					formatWarn(
-						`Could not load Infisical secrets: ${describeSecretsError(error)}`,
-					),
-				);
-			}
+			warnSecretsOnce(
+				resolved,
+				`Could not load Infisical secrets: ${describeSecretsError(error)}`,
+			);
 			return {};
 		}
 	}

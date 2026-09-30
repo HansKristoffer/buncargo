@@ -58,6 +58,8 @@ export class SecretsError extends Error {
 }
 
 const cache = new Map<string, Promise<Record<string, string>>>();
+const warnedScopes = new Set<string>();
+const sessionTokens = new Map<string, Promise<string>>();
 
 export function scopeKey(scope: InfisicalScope): string {
 	return `${scope.siteUrl}|${scope.organizationId ?? ""}|${scope.projectId}|${scope.environment}|${scope.path}`;
@@ -198,11 +200,27 @@ function tokenFrom(value: unknown, field: string, operation: string): string {
 // ─── Authentication ──────────────────────────────────────────────────────────
 
 /** `infisical user get token`, under the machine-wide CLI lock. */
-async function cliSessionToken(
+function cliSessionToken(
 	scope: InfisicalScope,
 	signal: AbortSignal,
 ): Promise<string> {
 	const binary = infisicalPathOverride() ?? "infisical";
+	const key = `${scope.siteUrl}|${binary}`;
+	const cached = sessionTokens.get(key);
+	if (cached) return cached;
+	const pending = readCliSessionToken(scope, binary, signal);
+	sessionTokens.set(key, pending);
+	void pending.catch(() => {
+		if (sessionTokens.get(key) === pending) sessionTokens.delete(key);
+	});
+	return pending;
+}
+
+async function readCliSessionToken(
+	scope: InfisicalScope,
+	binary: string,
+	signal: AbortSignal,
+): Promise<string> {
 	return withFileLock(
 		stateFilePath("infisical-cli"),
 		async () => {
@@ -382,6 +400,7 @@ export function fetchScopeSecrets(
 		env?: NodeJS.ProcessEnv;
 	} = {},
 ): Promise<Record<string, string>> {
+	options.signal?.throwIfAborted();
 	const credentials = infisicalMachineCredentials(options.env);
 	const key = `${scopeKey(scope)}|${credentials ? "machine" : "session"}`;
 	const cached = cache.get(key);
@@ -411,13 +430,25 @@ export function fetchScopeSecrets(
 	// A failure is not cached: the next caller (after `infisical login`) retries.
 	// The caller that awaits reports it; this handler also keeps a rejection
 	// nobody has awaited yet from tripping the unhandled-rejection handler.
-	pending.catch(() => cache.delete(key));
+	void pending.catch(() => {
+		if (cache.get(key) === pending) cache.delete(key);
+	});
 	return pending;
 }
 
 /** Forget every fetched scope. Tests only: a run wants exactly one fetch. */
 export function clearScopeSecretsCache(): void {
 	cache.clear();
+	sessionTokens.clear();
+	warnedScopes.clear();
+}
+
+/** Warnings belong to consumers; prefetch never reports a failure. */
+export function warnSecretsOnce(scope: InfisicalScope, message: string): void {
+	const key = scopeKey(scope);
+	if (warnedScopes.has(key)) return;
+	warnedScopes.add(key);
+	console.warn(formatWarn(message));
 }
 
 /** A failure as one line, with its fix when there is one. */
@@ -438,7 +469,11 @@ export function describeSecretsError(error: unknown): string {
 export async function loadAppSecrets(
 	apps: Record<string, AppConfig>,
 	defaults: SecretsScopeConfig | undefined,
-	options: { signal?: AbortSignal; env?: NodeJS.ProcessEnv } = {},
+	options: {
+		signal?: AbortSignal;
+		env?: NodeJS.ProcessEnv;
+		onWait?: (ms: number) => void;
+	} = {},
 ): Promise<Record<string, Record<string, string>>> {
 	const env = options.env ?? process.env;
 	// A machine identity lets an app's own loader authenticate without the CLI
@@ -458,30 +493,35 @@ export async function loadAppSecrets(
 	if (scopes.size === 0) return {};
 
 	const fetched = new Map<string, Record<string, string>>();
-	await Promise.all(
-		[...scopes].map(async ([key, scope]) => {
-			try {
-				fetched.set(
-					key,
-					withoutExported(
-						await fetchScopeSecrets(scope, { signal: options.signal, env }),
-						env,
-					),
-				);
-			} catch (error) {
-				const affected = [...appScopes]
-					.filter(([, appKey]) => appKey === key)
-					.map(([name]) => name)
-					.join(", ");
-				console.warn(
-					formatWarn(
+	const began = performance.now();
+	try {
+		await Promise.all(
+			[...scopes].map(async ([key, scope]) => {
+				try {
+					fetched.set(
+						key,
+						withoutExported(
+							await fetchScopeSecrets(scope, { signal: options.signal, env }),
+							env,
+						),
+					);
+				} catch (error) {
+					options.signal?.throwIfAborted();
+					const affected = [...appScopes]
+						.filter(([, appKey]) => appKey === key)
+						.map(([name]) => name)
+						.join(", ");
+					warnSecretsOnce(
+						scope,
 						`Could not load Infisical secrets for ${affected}: ${describeSecretsError(error)} Each app will fetch its own.`,
-					),
-				);
-				fetched.set(key, {});
-			}
-		}),
-	);
+					);
+					fetched.set(key, {});
+				}
+			}),
+		);
+	} finally {
+		options.onWait?.(performance.now() - began);
+	}
 
 	return Object.fromEntries(
 		[...appScopes].map(([name, key]) => [name, fetched.get(key) ?? {}]),
@@ -510,6 +550,7 @@ export async function loadScopeSecrets(
 		signal?: AbortSignal;
 		env?: NodeJS.ProcessEnv;
 		defaults?: SecretsScopeConfig;
+		onWait?: (ms: number) => void;
 	} = {},
 ): Promise<Record<string, string>> {
 	const env = options.env ?? process.env;
@@ -517,10 +558,15 @@ export async function loadScopeSecrets(
 	if (!resolved) {
 		throw new SecretsError("The secrets scope has no projectId.");
 	}
-	return withoutExported(
-		await fetchScopeSecrets(resolved, { signal: options.signal, env }),
-		env,
-	);
+	const began = performance.now();
+	try {
+		return withoutExported(
+			await fetchScopeSecrets(resolved, { signal: options.signal, env }),
+			env,
+		);
+	} finally {
+		options.onWait?.(performance.now() - began);
+	}
 }
 
 /**

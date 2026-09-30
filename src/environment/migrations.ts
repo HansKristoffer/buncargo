@@ -11,8 +11,10 @@ export async function runMigrationsSequentially(
 			secrets?: MigrationConfig["secrets"];
 		},
 	) => Promise<{ exitCode: number; stdout: string; stderr: string }>,
+	skip?: (migration: MigrationConfig) => Promise<boolean>,
 ): Promise<void> {
 	for (const migration of migrations) {
+		if (await skip?.(migration)) continue;
 		const result = await exec(migration.command, {
 			cwd: migration.cwd,
 			throwOnError: false,

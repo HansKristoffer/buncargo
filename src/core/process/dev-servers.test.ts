@@ -232,3 +232,70 @@ describe("startDevServers ordering, prebuild and captures", () => {
 		}
 	}, 20_000);
 });
+
+describe("detached app supervision", () => {
+	it("adopts a daemonized listener and stops it with the session", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-detached-"));
+		const port = 46000 + Math.floor(Math.random() * 1000);
+		const marker = join(root, "child.pid");
+		await Bun.write(
+			join(root, "child.ts"),
+			`Bun.serve({ port: ${port}, fetch: () => new Response("ok") }); await Bun.write(${JSON.stringify(marker)}, String(process.pid));`,
+		);
+		await Bun.write(
+			join(root, "parent.ts"),
+			`import { spawn } from "node:child_process"; const child = spawn(process.execPath, ["child.ts"], { detached: true, stdio: "ignore" }); child.unref(); while (!(await Bun.file(${JSON.stringify(marker)}).exists())) await Bun.sleep(10);`,
+		);
+		const spawned: number[] = [];
+		const exits: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{ app: { port, devCommand: "bun parent.ts" } },
+				root,
+				{},
+				{ app: port },
+				{
+					verbose: false,
+					skipContainers: true,
+					onAppSpawned: (_name, pid) => spawned.push(pid),
+					onAppExit: (name) => exits.push(name),
+				},
+			);
+			const childPid = Number(await Bun.file(marker).text());
+			const deadline = Date.now() + 5000;
+			while (pids.app !== childPid && Date.now() < deadline)
+				await Bun.sleep(20);
+			expect(pids.app).toBe(childPid);
+			expect(spawned).toHaveLength(2);
+			expect(exits).toEqual([]);
+			await stopDevServers(pids);
+			await expect(fetch(`http://localhost:${port}`)).rejects.toThrow();
+		} finally {
+			await stopDevServers(pids);
+			if (await Bun.file(marker).exists()) {
+				try {
+					signalProcessTree(Number(await Bun.file(marker).text()), "SIGKILL");
+				} catch {}
+			}
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 15000);
+
+	it("reports a clean exit that leaves no listener", async () => {
+		const exits: (number | null)[] = [];
+		await startDevServers(
+			{ app: { port: 47001, devCommand: "exit 0", healthEndpoint: false } },
+			process.cwd(),
+			{},
+			{ app: 47001 },
+			{
+				verbose: false,
+				skipContainers: true,
+				waitForExit: true,
+				onAppExit: (_name, code) => exits.push(code),
+			},
+		);
+		expect(exits).toEqual([0]);
+	});
+});

@@ -127,6 +127,7 @@ export function validateReferences(
 	};
 
 	checkRelativePath("prisma.cwd", config.prisma?.cwd);
+	checkRelativePath("prisma.migrations", config.prisma?.migrations);
 
 	const generatedPaths = new Set<string>();
 	for (const [index, file] of (config.generatedFiles ?? []).entries()) {

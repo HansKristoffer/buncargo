@@ -51,6 +51,7 @@ import type {
 	PortOffsetProvenance,
 	ServiceConfig,
 } from "../types";
+import type { EnvironmentLogSelection } from "../types/environment";
 import { logEnvironmentInfo } from "./logging";
 
 /**
@@ -120,7 +121,12 @@ export interface DevEnvContext<
 	/** Absent entries are skipped: only exposed targets that came up have a URL. */
 	setPublicUrls(urls: Readonly<Record<string, string | undefined>>): void;
 	clearPublicUrls(): void;
-	logInfo(label?: string, tunnels?: PublicTunnel[]): void;
+	onSecretsWait?: (ms: number) => void;
+	logInfo(
+		label?: string,
+		tunnels?: PublicTunnel[],
+		selection?: EnvironmentLogSelection,
+	): void;
 }
 
 function resolveHostsTld(hosts: boolean | HostsOptionsLike): string {
@@ -442,7 +448,11 @@ export function createDevEnvContext<
 			}
 		},
 
-		logInfo(label = "Dev Environment", tunnels?: PublicTunnel[]) {
+		logInfo(
+			label = "Dev Environment",
+			tunnels?: PublicTunnel[],
+			selection?: EnvironmentLogSelection,
+		) {
 			const tunnelRows: DevEnvironmentTunnelLog[] | undefined = tunnels?.map(
 				({ kind, name, localUrl, publicUrl }) => ({
 					kind,
@@ -456,8 +466,20 @@ export function createDevEnvContext<
 				projectPrefix: config.projectPrefix,
 				projectName,
 				worktreeSuffix,
-				services,
-				apps,
+				services: selection
+					? Object.fromEntries(
+							Object.entries(services).filter(([name]) =>
+								selection.requiredServiceKeys.includes(name),
+							),
+						)
+					: services,
+				apps: selection
+					? Object.fromEntries(
+							Object.entries(apps).filter(([name]) =>
+								selection.appNames.includes(name),
+							),
+						)
+					: apps,
 				ports: portMap,
 				urls: toUrlMap(urls),
 				localIp,

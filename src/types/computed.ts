@@ -245,7 +245,9 @@ export type AppEnvVars<
 		| OverlayEnvVarNames<DeclaredStaticEnv<TApps[TName]>>
 		| OverlayEnvVarNames<DeclaredAppEnvVars<TApps[TName]>>
 		| (TApps[TName] extends { kind: "worker" } ? never : "PORT" | "HOST")
-		| "BUNCARGO_APP_NAME",
+		| "BUNCARGO_APP_NAME"
+		| "ASTRO_DEV_BACKGROUND"
+		| "ASTRO_PREVIEW_BACKGROUND",
 		string
 	> &
 	Partial<

@@ -3,12 +3,13 @@ import {
 	ensureServicesRunning,
 	withProjectLifecycleLock,
 } from "../container-runtime";
-import { withDeadline } from "../core/deadline";
+import { registerAbortCleanup, withDeadline } from "../core/deadline";
 import { toPortMap, toUrlMap } from "../core/ports";
 import { stopDevServers } from "../core/process/dev-servers";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWarn } from "../core/style";
 import { resolveComposeServiceNames } from "../planning";
+import { appliedMigrationCount } from "../prisma/migrations-applied";
 import { recordGeneratedPrismaHash } from "../prisma/schema-hash";
 import type {
 	AppConfig,
@@ -27,7 +28,13 @@ import type { DevEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
 import { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { runMigrationsSequentially } from "./migrations";
+import { prefetchSecrets } from "./prefetch-secrets";
 import type { DevRunClaimApi } from "./run-claim";
+import {
+	assertSeedSucceeded,
+	seedCanOverlap,
+	startSeedTask,
+} from "./seed-startup";
 import { runSeedIfNeeded } from "./seeding";
 import { assertAppWorkingDirectories, startAppServers } from "./servers";
 
@@ -140,7 +147,41 @@ export function createLifecycleApi<
 
 			const began = performance.now();
 			try {
-				await runMigrationsSequentially(migrations, execute);
+				await runMigrationsSequentially(
+					migrations,
+					execute,
+					async (migration) => {
+						if (
+							migration !== migrations[0] ||
+							!config.prisma ||
+							!prismaSelected()
+						)
+							return false;
+						const serviceKey = config.prisma.service ?? "postgres";
+						const service = services[serviceKey];
+						const url = toUrlMap(ctx.loopbackUrls)[serviceKey];
+						// An overlay may target a different database; never skip that deploy
+						// based on the state of our local service.
+						const computed: Record<string, string> = envVars.buildEnvVars();
+						if (
+							!service ||
+							computed[config.prisma.urlEnvVar ?? "DATABASE_URL"] !== url
+						)
+							return false;
+						const count = await appliedMigrationCount({
+							root: ctx.root,
+							prisma: config.prisma,
+							serviceKey,
+							service,
+							url,
+							signal,
+						});
+						if (count === undefined) return false;
+						if (verbose)
+							console.log(formatDone(`Migrations up to date (${count})`));
+						return true;
+					},
+				);
 			} finally {
 				onPhase?.("migrations", performance.now() - began);
 			}
@@ -230,7 +271,13 @@ export function createLifecycleApi<
 		startOptions: StartOptions<TApps, TServices> = {},
 	): Promise<DevServerPids | null> {
 		return coordinator.start(
-			(signal) => startEnvironment({ ...startOptions, signal }),
+			(signal) =>
+				startEnvironment({
+					...startOptions,
+					signal: startOptions.signal
+						? AbortSignal.any([signal, startOptions.signal])
+						: signal,
+				}),
 			startOptions.signal,
 			(pids) => pids !== null && Object.keys(pids).length > 0,
 		);
@@ -281,162 +328,237 @@ export function createLifecycleApi<
 		selectedApps = startPlan.appNames;
 		started = true;
 
-		const hasServices = selectedServices.length > 0;
-		const portMap = toPortMap(ports);
-		const targetPorts: Record<string, number> = {};
-		for (const serviceKey of selectedServices) {
-			for (const name of [serviceKey, `${serviceKey}Secondary`]) {
-				const port = portMap[name];
-				if (port !== undefined) {
-					targetPorts[name] = port;
+		ctx.onSecretsWait = (ms) => onPhase?.("secrets", ms);
+		const prefetchController = new AbortController();
+		const prefetchSignal = signal
+			? AbortSignal.any([signal, prefetchController.signal])
+			: prefetchController.signal;
+		const prefetches =
+			prepare === "containers"
+				? []
+				: prefetchSecrets({
+						apps: prepare === "all" ? appsToStart : {},
+						defaults: config.secrets,
+						seed: config.seed?.secrets,
+						includeSeed:
+							prepare === "all" &&
+							(!skipSeed || startOptions.prefetchSeed === true) &&
+							!!config.seed &&
+							preparationSelected(config.seed.requiredServices),
+						migrations: collectMigrations(),
+						signal: prefetchSignal,
+					});
+		if (signal) registerAbortCleanup(signal, Promise.allSettled(prefetches));
+		try {
+			const hasServices = selectedServices.length > 0;
+			const portMap = toPortMap(ports);
+			const targetPorts: Record<string, number> = {};
+			for (const serviceKey of selectedServices) {
+				for (const name of [serviceKey, `${serviceKey}Secondary`]) {
+					const port = portMap[name];
+					if (port !== undefined) {
+						targetPorts[name] = port;
+					}
 				}
 			}
-		}
 
-		// Claimed before anything is created, so the sweep never sees a fresh
-		// container as unowned. Idempotent, so a CLI that already claimed with
-		// its own flags keeps those. The claim outlives `start()`: it is
-		// retired by `stop()`, or released when this process exits.
-		if (hasServices) {
-			await runClaim.claimRun({ signal });
-			// A script that starts containers and then crashes needs someone to
-			// clean up after it, exactly as a `buncargo dev` does. Not awaited:
-			// confirming the watchdog came up is no reason to delay the start.
-			if (startOptions.watchdog !== false)
-				void runClaim.ensureWatchdog().catch(() => {});
-		}
-
-		if (verbose && !skipEnvironmentLog) {
-			ctx.logInfo(
-				productionBuild ? "Production Environment" : "Dev Environment",
-			);
-		}
-
-		// Containers-only mode bypasses preparation and starts every selected service.
-		const earlyServices = Object.fromEntries(
-			Object.entries(targetServices).filter(
-				([, service]) => prepare === "containers" || !service.afterPreparation,
-			),
-		);
-		const lateServices = Object.fromEntries(
-			Object.entries(targetServices).filter(
-				([, service]) => service.afterPreparation,
-			),
-		);
-
-		// Both subsets must fingerprint the same Compose artifact.
-		let artifactReady = false;
-
-		async function ensureSubset(
-			subset: Record<string, ServiceConfig>,
-			noDeps = false,
-		) {
-			if (Object.keys(subset).length === 0) {
-				return;
+			// Claimed before anything is created, so the sweep never sees a fresh
+			// container as unowned. Idempotent, so a CLI that already claimed with
+			// its own flags keeps those. The claim outlives `start()`: it is
+			// retired by `stop()`, or released when this process exits.
+			if (hasServices) {
+				await runClaim.claimRun({ signal });
+				// A script that starts containers and then crashes needs someone to
+				// clean up after it, exactly as a `buncargo dev` does. Not awaited:
+				// confirming the watchdog came up is no reason to delay the start.
+				if (startOptions.watchdog !== false)
+					void runClaim.ensureWatchdog().catch(() => {});
 			}
 
-			await phase("containers", () =>
-				withProjectLifecycleLock(
-					ctx.projectName,
-					ctx.root,
-					() => {
-						if (!artifactReady) {
-							ctx.ensureComposeFile();
-							artifactReady = true;
-						}
+			if (verbose && !skipEnvironmentLog) {
+				ctx.logInfo(
+					productionBuild ? "Production Environment" : "Dev Environment",
+					undefined,
+					currentSelection(),
+				);
+			}
 
-						return ensureServicesRunning({
-							signal,
-							runtime: ctx.runtime,
-							root: ctx.root,
-							projectName: ctx.projectName,
-							envVars: envVars.buildEnvVars(productionBuild),
-							services: subset,
-							noDeps,
-							ports: targetPorts,
-							model: ctx.composeModel(),
-							composeFile: ctx.composeFile,
-							verbose,
-							wait,
-							autoStartRuntime: autoStartDocker,
-						});
-					},
-					{ signal },
+			// Containers-only mode bypasses preparation and starts every selected service.
+			const earlyServices = Object.fromEntries(
+				Object.entries(targetServices).filter(
+					([, service]) =>
+						prepare === "containers" || !service.afterPreparation,
 				),
 			);
-		}
+			const lateServices = Object.fromEntries(
+				Object.entries(targetServices).filter(
+					([, service]) => service.afterPreparation,
+				),
+			);
 
-		if (hasServices) {
-			await ensureSubset(earlyServices);
-		}
+			// Both subsets must fingerprint the same Compose artifact.
+			let artifactReady = false;
 
-		// Before migrations, not just before servers: Prisma and friends read
-		// `.env` off disk themselves, so a stale port fails the migrate step.
-		await phase("dotenv", () => syncConfiguredEnvFile(verbose));
-		// Before anything reads them: values not known yet (a tunnel URL, a
-		// capture) render as the file's placeholder and re-render later.
-		for (const path of renderGeneratedFiles(ctx, envVars)) {
-			if (verbose) console.log(formatDone(`Generated ${path}`));
-		}
-		if (prepare === "containers") {
-			return null;
-		}
+			async function ensureSubset(
+				subset: Record<string, ServiceConfig>,
+				noDeps = false,
+			) {
+				if (Object.keys(subset).length === 0) {
+					return;
+				}
 
-		try {
-			await runPrepareSteps(verbose, signal, onPhase, prepare !== "migrate");
-			if (prepare === "migrate") {
+				await phase("containers", () =>
+					withProjectLifecycleLock(
+						ctx.projectName,
+						ctx.root,
+						() => {
+							if (!artifactReady) {
+								ctx.ensureComposeFile();
+								artifactReady = true;
+							}
+
+							return ensureServicesRunning({
+								signal,
+								runtime: ctx.runtime,
+								root: ctx.root,
+								projectName: ctx.projectName,
+								envVars: envVars.buildEnvVars(productionBuild),
+								services: subset,
+								noDeps,
+								ports: targetPorts,
+								model: ctx.composeModel(),
+								composeFile: ctx.composeFile,
+								verbose,
+								wait,
+								autoStartRuntime: autoStartDocker,
+							});
+						},
+						{ signal },
+					),
+				);
+			}
+
+			if (hasServices) {
+				await ensureSubset(earlyServices);
+			}
+
+			// Before migrations, not just before servers: Prisma and friends read
+			// `.env` off disk themselves, so a stale port fails the migrate step.
+			await phase("dotenv", () => syncConfiguredEnvFile(verbose));
+			// Before anything reads them: values not known yet (a tunnel URL, a
+			// capture) render as the file's placeholder and re-render later.
+			for (const path of renderGeneratedFiles(ctx, envVars)) {
+				if (verbose) console.log(formatDone(`Generated ${path}`));
+			}
+			if (prepare === "containers") {
 				return null;
 			}
 
-			const afterContainersReady = config.hooks?.afterContainersReady;
-			if (afterContainersReady && hasServices) {
-				await phase("container hooks", () =>
-					withDeadline(
-						(hookSignal) => afterContainersReady(hookContext(hookSignal)),
-						600_000,
-						signal,
-					),
-				);
-			}
+			try {
+				await runPrepareSteps(verbose, signal, onPhase, prepare !== "migrate");
+				if (prepare === "migrate") {
+					return null;
+				}
 
-			if (!skipSeed && preparationSelected(config.seed?.requiredServices)) {
-				const seeded = await phase("seed", () =>
-					runSeed({ verbose, productionBuild, signal }),
-				);
-				if (seeded.status === "failed") {
-					throw new Error(
-						`Seeding failed with exit code ${seeded.result.exitCode}. Fix the seed command or start with \`--up-only\` to skip it.`,
+				const afterContainersReady = config.hooks?.afterContainersReady;
+				if (afterContainersReady && hasServices) {
+					await phase("container hooks", () =>
+						withDeadline(
+							(hookSignal) => afterContainersReady(hookContext(hookSignal)),
+							600_000,
+							signal,
+						),
 					);
 				}
-			}
 
-			// Early jobs already completed. --no-deps prevents Compose from rerunning them.
-			await ensureSubset(lateServices, true);
-
-			if (shouldStartServers && Object.keys(appsToStart).length > 0) {
-				const pids = await startAppServers(ctx, envVars, {
-					signal,
-					apps: appsToStart,
-					productionBuild,
-					verbose,
-				});
-
-				if (verbose) {
-					console.log(formatDone("Environment ready"));
+				const overlap =
+					!skipSeed &&
+					shouldStartServers &&
+					Object.keys(appsToStart).length > 0 &&
+					seedCanOverlap(config.seed, services, selectedServices);
+				if (
+					config.seed?.beforeApps === false &&
+					Object.keys(lateServices).length > 0 &&
+					verbose
+				) {
+					console.log(
+						formatStep(
+							"Seed will run before apps because selected services use afterPreparation.",
+						),
+					);
+				}
+				if (
+					!overlap &&
+					!skipSeed &&
+					preparationSelected(config.seed?.requiredServices)
+				) {
+					assertSeedSucceeded(
+						await phase("seed", () =>
+							runSeed({ verbose, productionBuild, signal }),
+						),
+					);
 				}
 
-				return pids;
-			}
+				// Early jobs already completed. --no-deps prevents Compose from rerunning them.
+				await ensureSubset(lateServices, true);
 
-			return null;
-		} catch (error) {
-			if (hasServices) {
-				console.error(
-					formatStep(
-						"ℹ Containers are still running. Use `bunx buncargo dev --down` to stop them now.",
-					),
-				);
+				if (shouldStartServers && Object.keys(appsToStart).length > 0) {
+					const seedTask = overlap
+						? startSeedTask(
+								(seedSignal) =>
+									phase("seed", () =>
+										runSeed({
+											verbose,
+											productionBuild,
+											signal: seedSignal,
+											prefixOutput: true,
+										}),
+									),
+								signal,
+							)
+						: undefined;
+					let pids: DevServerPids;
+					try {
+						pids = await startAppServers(ctx, envVars, {
+							signal: seedTask?.signal ?? signal,
+							apps: appsToStart,
+							onPhase,
+							productionBuild,
+							verbose,
+							beforeReady: seedTask
+								? async () => {
+										await seedTask.ready;
+										if (verbose) console.log(formatDone("All servers ready"));
+									}
+								: undefined,
+						});
+					} catch (error) {
+						seedTask?.cancel(error);
+						if (seedTask) await Promise.allSettled([seedTask.ready]);
+						throw error;
+					}
+
+					if (verbose) {
+						console.log(formatDone("Environment ready"));
+					}
+
+					return pids;
+				}
+
+				return null;
+			} catch (error) {
+				if (hasServices) {
+					console.error(
+						formatStep(
+							"ℹ Containers are still running. Use `bunx buncargo dev --down` to stop them now.",
+						),
+					);
+				}
+				throw error;
 			}
+		} catch (error) {
+			prefetchController.abort(error);
+			await Promise.allSettled(prefetches);
 			throw error;
 		}
 	}

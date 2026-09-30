@@ -72,6 +72,8 @@ export async function startAppServers<
 	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
 	options: {
 		apps: Record<string, AppConfig>;
+		onPhase?: (name: string, ms: number) => void;
+		beforeReady?: (signal?: AbortSignal) => Promise<void>;
 		productionBuild: boolean;
 		verbose: boolean;
 		signal?: AbortSignal;
@@ -87,6 +89,7 @@ export async function startAppServers<
 		// Both share one fetch per scope through the module's cache.
 		const secrets = await loadAppSecrets(appsToStart, undefined, {
 			signal: options.signal,
+			onWait: (ms) => options.onPhase?.("secrets", ms),
 		});
 		const buildEnv = Object.fromEntries(
 			Object.entries(envVars.buildAppEnvVarsMap(appsToStart, true)).map(
@@ -102,6 +105,7 @@ export async function startAppServers<
 	const pids = await startServerSession(
 		{
 			root: ctx.root,
+			beforeReady: options.beforeReady,
 			ports: ctx.ports as Record<string, number>,
 			// Restarts rebuild env so captures and public URLs are current.
 			appEnv: (name) =>
@@ -124,6 +128,7 @@ export async function startAppServers<
 				waitForDevServers(wave, ctx.ports, {
 					timeout: readyTimeout(),
 					verbose,
+					logReady: !options.beforeReady,
 					productionBuild,
 					signal,
 				}),
@@ -138,6 +143,7 @@ export async function startAppServers<
 			skipContainers: !ctx.hasSelectedServices,
 			signal: options.signal,
 			deferPublicUrlApps: false,
+			onPhase: options.onPhase,
 			onAppSpawned: (name, pid) => {
 				if (ctx.ownedServerPids) ctx.ownedServerPids[name] = pid;
 			},
@@ -163,6 +169,7 @@ export interface DevServersApi<
 		productionBuild?: boolean;
 		onlyApps?: Extract<keyof TApps, string>[];
 		expandRequired?: boolean;
+		logReady?: boolean;
 		signal?: AbortSignal;
 	}): Promise<void>;
 	openPublicTunnels(
@@ -209,6 +216,7 @@ export function createServersApi<
 			productionBuild?: boolean;
 			onlyApps?: Extract<keyof TApps, string>[];
 			expandRequired?: boolean;
+			logReady?: boolean;
 			signal?: AbortSignal;
 		} = {},
 	): Promise<void> {
@@ -231,6 +239,7 @@ export function createServersApi<
 			timeout,
 			productionBuild,
 			signal: options.signal,
+			logReady: options.logReady,
 		});
 	}
 

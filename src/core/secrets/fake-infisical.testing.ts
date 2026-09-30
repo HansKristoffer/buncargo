@@ -40,6 +40,7 @@ export function startFakeInfisical(
 	options: {
 		cliOrganization?: string;
 		cliFails?: boolean;
+		requestDelayMs?: number;
 		mfaOrganizations?: string[];
 	} = {},
 ): FakeInfisical & { cliPath: string; home: string } {
@@ -85,6 +86,7 @@ export function startFakeInfisical(
 					: new Response("{}", { status: 401 });
 			}
 			if (url.pathname === "/api/v4/secrets") {
+				if (options.requestDelayMs) await Bun.sleep(options.requestDelayMs);
 				if (!auth.startsWith("Bearer "))
 					return new Response("{}", { status: 401 });
 				const project = projects[url.searchParams.get("projectId") ?? ""];

@@ -251,6 +251,8 @@ describe("createDevEnvironment env builders", () => {
 			// these, so they have to name the app and its own host, not the primary.
 			const webEnv = env.buildAppEnvVars("web");
 			expect(webEnv.BUNCARGO_APP_NAME).toBe("web");
+			expect(webEnv.ASTRO_DEV_BACKGROUND).toBe("1");
+			expect(webEnv.ASTRO_PREVIEW_BACKGROUND).toBe("1");
 			expect(webEnv.BUNCARGO_APP_HOSTNAME).toBe(
 				"feature-hosts.serpier.localhost",
 			);
@@ -272,6 +274,23 @@ describe("createDevEnvironment env builders", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+});
+
+it("lets app overrides replace Astro supervision markers", () => {
+	const env = createDevEnvironment({
+		projectPrefix: "astro-env",
+		services: {},
+		apps: {
+			web: {
+				port: 3000,
+				devCommand: false,
+				staticEnv: { ASTRO_DEV_BACKGROUND: "" },
+				envVars: () => ({ ASTRO_PREVIEW_BACKGROUND: "custom" }),
+			},
+		},
+	});
+	expect(env.buildAppEnvVars("web").ASTRO_DEV_BACKGROUND).toBe("");
+	expect(env.buildAppEnvVars("web").ASTRO_PREVIEW_BACKGROUND).toBe("custom");
 });
 
 describe("suffixed environments", () => {
@@ -304,4 +323,52 @@ describe("suffixed environments", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+});
+
+it("filters the run banner and only asks integrations for displayed apps", () => {
+	const hints: string[] = [];
+	const env = createDevEnvironment({
+		projectPrefix: "banner",
+		services: {
+			db: { port: 5432, docker: { image: "postgres:17" } },
+			cache: { port: 6379, docker: { image: "redis:7" } },
+		},
+		apps: {
+			api: { port: 3000, devCommand: false, requiredServices: ["db"] },
+			expoApp: { port: 8081, devCommand: false },
+		},
+		integrations: [
+			{
+				name: "hint-test",
+				bannerHint: ({ name }) => {
+					hints.push(name);
+					return `hint-${name}`;
+				},
+			},
+		],
+	});
+	const lines: string[] = [];
+	const original = console.log;
+	console.log = (...args) => {
+		lines.push(args.join(" "));
+	};
+	try {
+		env.logInfo(undefined, undefined, {
+			appNames: ["api"],
+			requiredServiceKeys: ["db"],
+		});
+		expect(lines.join("\n")).toContain("api");
+		expect(lines.join("\n")).toContain("db");
+		expect(lines.join("\n")).not.toContain("expoApp");
+		expect(lines.join("\n")).not.toContain("cache");
+		expect(hints).toEqual(["api"]);
+		lines.length = 0;
+		hints.length = 0;
+		env.logInfo();
+		expect(lines.join("\n")).toContain("expoApp");
+		expect(lines.join("\n")).toContain("cache");
+		expect(hints).toEqual(["api", "expoApp"]);
+	} finally {
+		console.log = original;
+	}
 });

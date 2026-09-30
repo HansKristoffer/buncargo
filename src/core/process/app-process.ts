@@ -9,7 +9,7 @@ import type { AppConfig } from "../../types";
 import { connectProcessEnv } from "../runtime-flags";
 import { shellQuote } from "../shell-quote";
 import { recordStartupMetric } from "../startup-metrics";
-import { formatPrefixedLine, isBlankLogLine } from "../style";
+import { prefixOutput } from "./prefix-output";
 import { terminateOwnedProcess } from "./terminate";
 
 /**
@@ -43,53 +43,6 @@ export function spawnAppCommand(
 	if (!command.trim()) throw new Error("Command cannot be empty");
 	recordStartupMetric("subprocesses");
 	return spawn(command, [], { ...options, shell: SHELL });
-}
-
-function prefixStream(
-	name: string,
-	stream: NodeJS.ReadableStream | null,
-	options: {
-		width: number;
-		onFirstWrite: () => void;
-		onText?: (text: string) => void;
-	},
-): void {
-	if (!stream) {
-		return;
-	}
-
-	let buffer = "";
-	const writeLine = (line: string) => {
-		if (isBlankLogLine(line)) {
-			return;
-		}
-		options.onFirstWrite();
-		process.stdout.write(formatPrefixedLine(name, line, options.width));
-	};
-	stream.on("data", (chunk: Buffer | string) => {
-		options.onText?.(String(chunk));
-		buffer += String(chunk);
-		const lines = buffer.split("\n");
-		buffer = lines.pop() ?? "";
-		for (const line of lines) {
-			writeLine(line);
-		}
-	});
-	stream.on("end", () => {
-		if (buffer) {
-			writeLine(buffer);
-		}
-	});
-}
-
-/** Both output streams of a piped child, prefixed with its name. */
-function prefixOutput(
-	name: string,
-	child: ChildProcess,
-	options: Parameters<typeof prefixStream>[2],
-): void {
-	prefixStream(name, child.stdout, options);
-	prefixStream(name, child.stderr, options);
 }
 
 /** Where and with what env an app's commands run, in their own process group. */

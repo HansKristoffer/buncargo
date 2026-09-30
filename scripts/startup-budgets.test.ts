@@ -16,7 +16,7 @@ const result: StartupResult = {
 	coldEntryToCliReadyMs: { p95: 600 },
 };
 it("detects regressions that the old shared three-second ceiling missed", () => {
-	const budget = startupFixtures[0]!.budget;
+	const budget = startupFixtures.find((fixture) => fixture.scenario === "services" && fixture.parallel === 1)!.budget;
 	expect(budgetViolations(result, budget)).toEqual([]);
 	expect(
 		budgetViolations({ ...result, entryToCliReadyMs: { p95: 900 } }, budget),
@@ -29,7 +29,7 @@ it("requires valid measurements and separately limits cancellation", () => {
 	expect(
 		budgetViolations(
 			{ ...result, entryToCliReadyMs: undefined },
-			startupFixtures[0]!.budget,
+			startupFixtures.find((fixture) => fixture.scenario === "services" && fixture.parallel === 1)!.budget,
 		),
 	).toContain("warm p95 is missing or invalid");
 	expect(
