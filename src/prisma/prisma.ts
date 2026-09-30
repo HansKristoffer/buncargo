@@ -256,7 +256,7 @@ Examples:
 				"migrate",
 				"diff",
 				"--from-migrations",
-				options.migrations ?? "prisma/migrations",
+				options.migrations ?? config.migrations ?? "prisma/migrations",
 				...(modern
 					? ["--to-schema", schema]
 					: [

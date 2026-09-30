@@ -9,6 +9,7 @@ import { stopDevServers } from "../core/process/dev-servers";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWarn } from "../core/style";
 import { resolveComposeServiceNames } from "../planning";
+import { appliedMigrationCount } from "../prisma/migrations-applied";
 import { recordGeneratedPrismaHash } from "../prisma/schema-hash";
 import type {
 	AppConfig,
@@ -141,7 +142,41 @@ export function createLifecycleApi<
 
 			const began = performance.now();
 			try {
-				await runMigrationsSequentially(migrations, execute);
+				await runMigrationsSequentially(
+					migrations,
+					execute,
+					async (migration) => {
+						if (
+							migration !== migrations[0] ||
+							!config.prisma ||
+							!prismaSelected()
+						)
+							return false;
+						const serviceKey = config.prisma.service ?? "postgres";
+						const service = services[serviceKey];
+						const url = toUrlMap(ctx.loopbackUrls)[serviceKey];
+						// An overlay may target a different database; never skip that deploy
+						// based on the state of our local service.
+						const computed: Record<string, string> = envVars.buildEnvVars();
+						if (
+							!service ||
+							computed[config.prisma.urlEnvVar ?? "DATABASE_URL"] !== url
+						)
+							return false;
+						const count = await appliedMigrationCount({
+							root: ctx.root,
+							prisma: config.prisma,
+							serviceKey,
+							service,
+							url,
+							signal,
+						});
+						if (count === undefined) return false;
+						if (verbose)
+							console.log(formatDone(`Migrations up to date (${count})`));
+						return true;
+					},
+				);
 			} finally {
 				onPhase?.("migrations", performance.now() - began);
 			}

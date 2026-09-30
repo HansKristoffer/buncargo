@@ -21,7 +21,7 @@ export function validateSupplementShapes(
 		fields(
 			value.prisma,
 			"prisma.",
-			["cwd", "service", "urlEnvVar", "generate"],
+			["cwd", "migrations", "service", "urlEnvVar", "generate"],
 			"string",
 		);
 	if (object(value.seed)) {

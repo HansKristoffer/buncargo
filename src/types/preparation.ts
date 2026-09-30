@@ -20,6 +20,8 @@ export interface PrismaConfig<
 > {
 	/** Working directory where prisma schema lives (relative to monorepo root). Default: 'packages/prisma' */
 	cwd?: string;
+	/** Migration directory relative to prisma.cwd. Default: prisma/migrations. */
+	migrations?: string;
 	/** Configured service key for the database. Default: 'postgres' */
 	service?: Extract<keyof TServices, string>;
 	/**
@@ -68,7 +70,7 @@ export interface PrismaRunner {
 
 /** Options for {@link PrismaRunner.migrateCheck}; paths relative to `prisma.cwd`. */
 export interface PrismaMigrateCheckOptions {
-	/** Default: `prisma/migrations` */
+	/** Default: prisma.migrations, then `prisma/migrations` */
 	migrations?: string;
 	/** Schema file or folder. Default: `prisma/schema.prisma` */
 	schema?: string;

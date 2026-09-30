@@ -48,7 +48,7 @@ All library source code lives under `src/`.
 - `src/typecheck/`
   - Workspace typecheck orchestration. `typecheck.ts` runs a real process pool (`execAsync`); `scheduling.ts` is longest-first (cached durations, then descending file count) and the CPU/CI concurrency default. The CLI spec lives in `src/cli/typecheck-flags.ts` (`--concurrency`, `--only`). Do not shell out to `bun run --filter --parallel typecheck` — Bun's workspace graph would serialize dependents.
 - `src/prisma/`
-  - Prisma-specific integration layer.
+  - Prisma-specific integration layer. `migrations-applied.ts` uses a bounded, cancellable Bun SQL query against the loopback Postgres URL to skip automatic deploy only when every local migration is applied and no failed/rolled-back attempt exists. Uncertainty runs deploy. `prisma.migrations` is relative to `prisma.cwd` and also defaults `migrateCheck`; an overridden database URL never skips based on the local service.
 - `src/docker-compose/`
  - Compose generation only (model building, YAML serialization, generated-file logic).
  - `services/` contains built-in service presets/helpers.

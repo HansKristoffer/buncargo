@@ -1199,11 +1199,14 @@ Use `kind: "worker"` for a long-running process without a listener. Workers requ
 
 Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.project`, `buncargo.root`, `buncargo.worktree`, `buncargo.service`.
 
+The automatic Prisma migration step checks migration folders containing `migration.sql` against `_prisma_migrations` using Bun SQL and the local Postgres service. If every migration is successfully applied, it prints `Migrations up to date (N)` and skips the CLI. This is only a startup shortcut: missing tables/directories, failed or rolled-back rows, connection errors, other service presets, and overridden database URLs all run `migrate deploy` as usual. The migrations timing phase includes the check. For a custom directory, set e.g. `prisma.migrations: "schema/migrations"`.
+
 ### `PrismaConfig`
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `cwd` | `string` | `packages/prisma` | Schema directory |
+| `migrations` | `string` | `prisma/migrations` | Migration directory relative to `prisma.cwd`; also the default for `migrate-check` |
 | `service` | `string` | `postgres` | Service key for `DATABASE_URL` |
 | `urlEnvVar` | `string` | `DATABASE_URL` | Env var name |
 | `generate` | `string` | skipped | Command after migrations (e.g. `bunx prisma generate --schema ./schema --sql`) |
