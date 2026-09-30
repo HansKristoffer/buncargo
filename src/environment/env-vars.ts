@@ -133,6 +133,8 @@ export function createEnvVarsApi<
 		const appPort = toPortMap(ports)[appName];
 		const processEnv: Record<string, string> = {
 			...sharedEnv,
+			ASTRO_DEV_BACKGROUND: "1",
+			ASTRO_PREVIEW_BACKGROUND: "1",
 			...(appConfig?.staticEnv ? stringifyEnvValues(appConfig.staticEnv) : {}),
 			...(appConfig?.kind === "worker" ? {} : { HOST: "0.0.0.0" }),
 			// So a framework plugin can configure itself without the consumer

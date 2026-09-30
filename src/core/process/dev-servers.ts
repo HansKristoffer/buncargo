@@ -401,7 +401,13 @@ export async function startDevServers(
 				config.kind === "worker"
 					? spawnOwnedWorker(root, name, spawnOnce, owner.controller.signal)
 					: Promise.resolve(spawnOnce());
-			session.setSpawner(name, spawnApp, config.kind === "worker", attached);
+			session.setSpawner(
+				name,
+				spawnApp,
+				config.kind === "worker",
+				attached,
+				config.kind === "worker" ? undefined : ports[name],
+			);
 			const child = await spawnApp();
 			await session.register(
 				name,
@@ -409,6 +415,7 @@ export async function startDevServers(
 				config.kind === "worker",
 				attached,
 				config.kind !== "worker" && config.healthEndpoint !== false,
+				config.kind === "worker" ? undefined : ports[name],
 			);
 		}
 	}

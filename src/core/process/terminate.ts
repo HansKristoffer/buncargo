@@ -1,5 +1,8 @@
 import type { ChildProcess } from "node:child_process";
 import { abortableSleep } from "../deadline";
+import { matchesProcessIdentityAsync } from "../process-identity";
+import { DetachedApp } from "./detached-app";
+import { signalProcessTree } from "./port-owner";
 
 function processExists(pid: number): boolean {
 	try {
@@ -10,7 +13,7 @@ function processExists(pid: number): boolean {
 	}
 }
 
-function ownedProcessAlive(child: ChildProcess): boolean {
+function ownedProcessAlive(child: ChildProcess | DetachedApp): boolean {
 	if (!child.pid) return false;
 	// On macOS the group can disappear while its leader still awaits reaping.
 	// Group disappearance alone does not acknowledge process cleanup.
@@ -20,8 +23,15 @@ function ownedProcessAlive(child: ChildProcess): boolean {
 	);
 }
 
-function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+function signalGroup(
+	child: ChildProcess | DetachedApp,
+	signal: NodeJS.Signals,
+): void {
 	if (!child.pid) return;
+	if (child instanceof DetachedApp) {
+		signalProcessTree(child.pid, signal);
+		return;
+	}
 	try {
 		process.kill(process.platform === "win32" ? child.pid : -child.pid, signal);
 	} catch (error) {
@@ -34,7 +44,7 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
 
 /** Only for children spawned detached by this invocation, never reused ports. */
 export async function terminateOwnedProcess(
-	child: ChildProcess,
+	child: ChildProcess | DetachedApp,
 	graceMs = 5000,
 	initialSignal: NodeJS.Signals = "SIGTERM",
 ): Promise<void> {
@@ -44,6 +54,11 @@ export async function terminateOwnedProcess(
 	while (ownedProcessAlive(child) && performance.now() < deadline)
 		await abortableSleep(25);
 	if (!ownedProcessAlive(child)) return;
+	if (
+		child instanceof DetachedApp &&
+		!(await matchesProcessIdentityAsync(child.pid, child.identity))
+	)
+		return;
 	signalGroup(child, "SIGKILL");
 	const killDeadline = performance.now() + 1000;
 	while (ownedProcessAlive(child) && performance.now() < killDeadline)

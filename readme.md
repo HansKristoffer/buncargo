@@ -940,6 +940,8 @@ envFile: {
 ```
 - The write lands through a temp file and a rename, so a test runner loading `.env` concurrently never sees it truncated.
 
+A server that exits zero after detaching its listener is adopted by pid and process identity. Buncargo warns with the app, port and command, and stops the detached server with the run. Its framework may write logs to its own files after detaching.
+
 ## Environment variables
 
 ### Dotenv input
@@ -1006,6 +1008,7 @@ credentials out of browser and Expo public environment mappings.
 | `CLICKHOUSE_NATIVE_PORT` | Shared env | ClickHouse `secondaryPort` |
 | `PORT` | Server app process | That server app's assigned port; not generated for workers |
 | `HOST` | Server app process | `0.0.0.0`; not generated for workers |
+| `ASTRO_DEV_BACKGROUND` / `ASTRO_PREVIEW_BACKGROUND` | Per-app process | Default `1` keeps Astro in the foreground under buncargo supervision; override in `staticEnv` or `envVars` |
 | `BUNCARGO_APP_NAME` | Per-app process | The app's key in `apps`, so a framework plugin knows which app it is |
 | `BUNCARGO_APP_HOSTNAME` | Per-app process | That app's named host (only when named hosts are active) |
 

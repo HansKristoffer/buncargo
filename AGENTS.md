@@ -284,7 +284,7 @@ bun run test:integration-hosts-soak
 
 - `docs/startup-reliability-upgrade.md` records deliberate compatibility changes: Bun minimum, exclusive lock upgrade, strict HTTP health endpoints, one-shot modes, hooks, and `if-missing` drift refusal.
 - Build/write one Compose artifact for a start; publish generated YAML atomically and preserve its inode when unchanged. Never hash a different model from the file handed to Docker.
-- Own child process groups from spawn through readiness and shutdown. Signals cancel preparation, builds, health probes and tunnel opening; await bounded TERM/KILL cleanup before CLI exit. Cleanup failures must not mask the original failure or skip other cleanup.
+- Own child process groups from spawn through readiness and shutdown. `detached-app.ts` uses the shared port snapshot on a server exit zero to adopt an out-of-group listener with its birth identity; supervision republishes its pid and cleans it up with the session. Astro foreground markers default beneath app overrides. Signals cancel preparation, builds, health probes and tunnel opening; await bounded TERM/KILL cleanup before CLI exit. Cleanup failures must not mask the original failure or skip other cleanup.
 - Claim the run before preparation. Reconciliation and the sweep share a project gate and recheck live owners. One run exiting must never condemn another run's services.
 - Startup plan validation precedes hosts/runtime mutations. `requiredApps` expands selection, not per-app readiness barriers. Both waves are health-checked once; server hooks wrap actual spawning/readiness on CLI and library paths.
 - `prisma.generateCheck` is opt-in: true means generate. Never automatically skip database migrations or seed checks from a configuration hash.

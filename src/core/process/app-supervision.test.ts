@@ -1,5 +1,8 @@
 import { expect, it } from "bun:test";
 import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AppSupervision } from "./app-supervision";
 import { isProcessAlive } from "./lifecycle";
 
@@ -58,3 +61,62 @@ it("never respawns a child when stop arrives while it is being retired", async (
 		await session.stop();
 	}
 });
+
+it("adopts detached listeners after replacements and warns once per app", async () => {
+	const root = await mkdtemp(join(tmpdir(), "buncargo-restart-detached-"));
+	const probe = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+	const port = Number(probe.port);
+	probe.stop(true);
+	const marker = join(root, "ready");
+	const adopted: number[] = [];
+	const warnings: string[] = [];
+	const originalWarn = console.warn;
+	console.warn = (message) => warnings.push(String(message));
+	const session = new AppSupervision({
+		width: 1,
+		onAppAdopted: (_name, app) => adopted.push(app.pid),
+	});
+	try {
+		await Bun.write(
+			join(root, "listener.ts"),
+			`Bun.serve({ port: ${port}, fetch: () => new Response("ok") }); await Bun.write(${JSON.stringify(marker)}, "ready");`,
+		);
+		await Bun.write(
+			join(root, "parent.ts"),
+			`import { spawn } from "node:child_process"; const app = spawn(process.execPath, ["listener.ts"], { detached: true, stdio: "ignore" }); app.unref(); while (!(await Bun.file(${JSON.stringify(marker)}).exists())) await Bun.sleep(10);`,
+		);
+		await session.register("web", child(), false, false, false, port);
+		session.setSpawner(
+			"web",
+			async () => {
+				await rm(marker, { force: true });
+				return spawn(process.execPath, ["parent.ts"], {
+					cwd: root,
+					detached: true,
+					stdio: "ignore",
+				});
+			},
+			false,
+			false,
+			port,
+		);
+		for (const count of [1, 2]) {
+			await session.restart("web");
+			const deadline = Date.now() + 5000;
+			while (adopted.length < count && Date.now() < deadline)
+				await Bun.sleep(20);
+			expect(adopted).toHaveLength(count);
+			expect(session.pids.web).toBe(adopted[count - 1]);
+			expect((await fetch(`http://localhost:${port}`)).status).toBe(200);
+		}
+		expect(
+			warnings.filter((line) => line.includes("the app detached")),
+		).toHaveLength(1);
+		await session.stop();
+		await expect(fetch(`http://localhost:${port}`)).rejects.toThrow();
+	} finally {
+		await session.stop();
+		console.warn = originalWarn;
+		await rm(root, { recursive: true, force: true });
+	}
+}, 15000);

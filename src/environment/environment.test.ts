@@ -251,6 +251,8 @@ describe("createDevEnvironment env builders", () => {
 			// these, so they have to name the app and its own host, not the primary.
 			const webEnv = env.buildAppEnvVars("web");
 			expect(webEnv.BUNCARGO_APP_NAME).toBe("web");
+			expect(webEnv.ASTRO_DEV_BACKGROUND).toBe("1");
+			expect(webEnv.ASTRO_PREVIEW_BACKGROUND).toBe("1");
 			expect(webEnv.BUNCARGO_APP_HOSTNAME).toBe(
 				"feature-hosts.serpier.localhost",
 			);
@@ -272,6 +274,23 @@ describe("createDevEnvironment env builders", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+});
+
+it("lets app overrides replace Astro supervision markers", () => {
+	const env = createDevEnvironment({
+		projectPrefix: "astro-env",
+		services: {},
+		apps: {
+			web: {
+				port: 3000,
+				devCommand: false,
+				staticEnv: { ASTRO_DEV_BACKGROUND: "" },
+				envVars: () => ({ ASTRO_PREVIEW_BACKGROUND: "custom" }),
+			},
+		},
+	});
+	expect(env.buildAppEnvVars("web").ASTRO_DEV_BACKGROUND).toBe("");
+	expect(env.buildAppEnvVars("web").ASTRO_PREVIEW_BACKGROUND).toBe("custom");
 });
 
 describe("suffixed environments", () => {
