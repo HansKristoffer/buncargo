@@ -1018,7 +1018,7 @@ Service `env` maps (`url` / `port` / `secondaryPort`) add more shared names. App
 
 ### Infisical secrets
 
-An app whose own secret loader shells out to the Infisical CLI at startup runs that CLI once per app, and concurrent Infisical CLI processes hang. Declare the scope instead, and buncargo fetches it once per distinct scope, serialized machine-wide so parallel worktrees queue rather than race. It hands the values to the child processes, where the app's own loader finds them already in `process.env`.
+An app whose own secret loader shells out to the Infisical CLI at startup runs that CLI once per app, and concurrent Infisical CLI processes hang. Declare the scope instead, and buncargo fetches it once per distinct scope, serialized machine-wide so parallel worktrees queue rather than race. The CLI session token is shared across scopes on the same site and binary for the life of the process; organization exchanges remain scoped. Failed token reads are evicted so a later call after login retries. It hands the values to the child processes, where the app's own loader finds them already in `process.env`.
 
 ```ts
 defineDevConfig({

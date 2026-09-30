@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { readProcessIdentity } from "../src/core/process-identity";
 import { computeBaseOffset } from "../src/core/port-allocation";
+import { startFakeInfisical } from "../src/core/secrets/fake-infisical.testing";
 import { terminateOwnedProcess } from "../src/core/process/terminate";
 
 const option = (name: string, fallback: string) =>
@@ -43,6 +44,7 @@ if (
 		"allocation",
 		"workers",
 		"preparation",
+		"secrets",
 		"reuse",
 		"cancel",
 	].includes(scenario)
@@ -62,6 +64,7 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const children = new Set<ChildProcess>();
 const cold: Result[] = [];
+const cleanups: (() => void)[] = [];
 
 const interruption = new AbortController();
 let interruptCode: number | undefined;
@@ -105,6 +108,12 @@ async function prepareWorker(
 	interruption.signal.throwIfAborted();
 	const { mkdirSync } = await import("node:fs");
 	const project = join(root, `checkout-${index}`);
+	const infisical = scenario === "secrets" ? startFakeInfisical({requestDelayMs: 150}) : undefined;
+	if (infisical) {
+		infisical.projects.backend = {secrets: {BACKEND_KEY: "backend"}};
+		infisical.projects.frontend = {secrets: {FRONTEND_KEY: "frontend"}};
+		cleanups.push(() => infisical.stop());
+	}
 	mkdirSync(project);
 	const offset =
 		scenario === "allocation"
@@ -171,6 +180,7 @@ console.log(['postgres','running',env.BUNCARGO_STACK_HASH??'','Up (healthy)',has
 						requiredServices:
 							scenario === "apps" || scenario === "reuse" ? [] : ["postgres"],
 						healthEndpoint: "/ready",
+						...(infisical ? {secrets: {projectId: appIndex === 0 ? "backend" : "frontend", siteUrl: infisical.siteUrl}} : {}),
 					};
 	}
 	writeFileSync(
@@ -180,7 +190,7 @@ console.log(['postgres','running',env.BUNCARGO_STACK_HASH??'','Up (healthy)',has
 			services: { postgres: { port: servicePort, healthCheck: false } },
 			apps,
 			docker: { runtime: "docker", binary },
-			...(scenario === "preparation"
+			...(scenario === "preparation" || scenario === "secrets"
 				? {
 						migrations: [
 							{
@@ -191,6 +201,7 @@ console.log(['postgres','running',env.BUNCARGO_STACK_HASH??'','Up (healthy)',has
 						],
 						seed: {
 							command: `${quote(process.execPath)} -e 'void 0'`,
+							...(infisical ? {secrets: {projectId: "backend", siteUrl: infisical.siteUrl}} : {}),
 							requiredServices: ["postgres"],
 						},
 					}
@@ -264,6 +275,9 @@ console.log(['postgres','running',env.BUNCARGO_STACK_HASH??'','Up (healthy)',has
 					env: {
 						...process.env,
 						HOME: root,
+						BUNCARGO_INFISICAL_PATH: infisical?.cliPath,
+						INFISICAL_CLIENT_ID: undefined,
+						INFISICAL_CLIENT_SECRET: undefined,
 						PATH: `${project}${delimiter}${process.env.PATH ?? ""}`,
 						BUNCARGO_PORT_OFFSET: scenario === "allocation" ? undefined : "0",
 						DOCKER_HOST: `unix://${join(root, "unavailable-docker.sock")}`,
@@ -506,5 +520,6 @@ try {
 	await Promise.allSettled(
 		[...children].map((child) => terminateOwnedProcess(child, 5000)),
 	);
+	for (const cleanup of cleanups) cleanup();
 	rmSync(root, { recursive: true, force: true });
 }

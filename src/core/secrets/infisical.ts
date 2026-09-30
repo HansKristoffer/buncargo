@@ -58,6 +58,7 @@ export class SecretsError extends Error {
 }
 
 const cache = new Map<string, Promise<Record<string, string>>>();
+const sessionTokens = new Map<string, Promise<string>>();
 
 export function scopeKey(scope: InfisicalScope): string {
 	return `${scope.siteUrl}|${scope.organizationId ?? ""}|${scope.projectId}|${scope.environment}|${scope.path}`;
@@ -198,11 +199,27 @@ function tokenFrom(value: unknown, field: string, operation: string): string {
 // ─── Authentication ──────────────────────────────────────────────────────────
 
 /** `infisical user get token`, under the machine-wide CLI lock. */
-async function cliSessionToken(
+function cliSessionToken(
 	scope: InfisicalScope,
 	signal: AbortSignal,
 ): Promise<string> {
 	const binary = infisicalPathOverride() ?? "infisical";
+	const key = `${scope.siteUrl}|${binary}`;
+	const cached = sessionTokens.get(key);
+	if (cached) return cached;
+	const pending = readCliSessionToken(scope, binary, signal);
+	sessionTokens.set(key, pending);
+	void pending.catch(() => {
+		if (sessionTokens.get(key) === pending) sessionTokens.delete(key);
+	});
+	return pending;
+}
+
+async function readCliSessionToken(
+	scope: InfisicalScope,
+	binary: string,
+	signal: AbortSignal,
+): Promise<string> {
 	return withFileLock(
 		stateFilePath("infisical-cli"),
 		async () => {
@@ -418,6 +435,7 @@ export function fetchScopeSecrets(
 /** Forget every fetched scope. Tests only: a run wants exactly one fetch. */
 export function clearScopeSecretsCache(): void {
 	cache.clear();
+	sessionTokens.clear();
 }
 
 /** A failure as one line, with its fix when there is one. */

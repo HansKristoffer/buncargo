@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { readFileSync, writeFileSync } from "node:fs";
 import type { AppConfig } from "../../types";
 import {
 	type FakeInfisical,
@@ -137,6 +138,7 @@ describe("loadAppSecrets", () => {
 			undefined,
 			{ env: {} },
 		);
+		expect(infisical.cliCalls()).toHaveLength(1);
 		expect(secrets).toEqual({
 			a: { OPENAI_API_KEY: "sk-project" },
 			b: { B: "2" },
@@ -252,4 +254,30 @@ describe("missingRequiredSecrets", () => {
 			),
 		).toEqual({ api: ["DB"] });
 	});
+});
+
+it("retries a rejected session token after login and clears settled tokens", async () => {
+	const infisical = start({ cliFails: true });
+	const scope = { projectId: "p1", siteUrl: infisical.siteUrl };
+	await expect(loadScopeSecrets(scope, { env: {} })).rejects.toThrow(
+		"No Infisical session",
+	);
+	const cli = readFileSync(infisical.cliPath, "utf8");
+	const payload = Buffer.from(
+		JSON.stringify({ organizationId: "org-a" }),
+	).toString("base64url");
+	writeFileSync(
+		infisical.cliPath,
+		cli.replace(
+			'echo "secret-looking stderr" >&2\nexit 1',
+			`echo a.${payload}.sig`,
+		),
+	);
+	expect(await loadScopeSecrets(scope, { env: {} })).toEqual({
+		OPENAI_API_KEY: "sk-project",
+	});
+	expect(infisical.cliCalls()).toHaveLength(2);
+	clearScopeSecretsCache();
+	await loadScopeSecrets(scope, { env: {} });
+	expect(infisical.cliCalls()).toHaveLength(3);
 });
