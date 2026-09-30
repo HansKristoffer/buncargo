@@ -1,6 +1,5 @@
 import { readdir, stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import { SQL } from "bun";
 import { withDeadline, withSignal } from "../core/deadline";
 import { inferDockerPreset } from "../core/service-presets";
 import type { PrismaConfig, ServiceConfig } from "../types";
@@ -18,6 +17,9 @@ export async function readMigrationRows(
 ): Promise<MigrationRow[]> {
 	return withDeadline(
 		async (querySignal) => {
+			// Node consumers can import the library without loading this Bun-only shortcut.
+			const { SQL } = await import("bun");
+			querySignal.throwIfAborted();
 			const sql = new SQL(url, { max: 1, connectionTimeout: 2 });
 			const query = sql<
 				MigrationRow[]
