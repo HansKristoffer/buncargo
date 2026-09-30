@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.2.0](https://github.com/HansKristoffer/buncargo/compare/v10.1.0...v10.2.0) (2026-09-30)
+
+
+### Features
+
+* **cli:** improve startup performance and isolate library sessions ([#59](https://github.com/HansKristoffer/buncargo/issues/59)) ([a7c6e3d](https://github.com/HansKristoffer/buncargo/commit/a7c6e3d6fa048c7cded256fe795b8b30b1ba4cf7))
+
 ## [10.1.0](https://github.com/HansKristoffer/buncargo/compare/v10.0.0...v10.1.0) (2026-09-28)
 
 
