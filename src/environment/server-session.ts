@@ -21,6 +21,7 @@ export interface ServerSessionSource {
 		captured: CapturedValue,
 	): Promise<readonly string[]>;
 	afterWave?(): void;
+	beforeReady?(signal?: AbortSignal): Promise<void>;
 }
 
 type ServerSessionOptions = Omit<StartDevServersOptions, "onCapture"> & {
@@ -44,6 +45,7 @@ export async function startServerSession(
 			await options.waitForHealth?.(wave, signal);
 		},
 		onReady: async (signal) => {
+			await source.beforeReady?.(signal);
 			await withDeadline(
 				(hookSignal) => source.runHook("after", hookSignal),
 				600_000,

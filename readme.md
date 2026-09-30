@@ -1222,6 +1222,8 @@ The automatic Prisma migration step checks migration folders containing `migrati
 | `cwd` | `string` | repo root | Working directory |
 | `secrets` | `SecretsScopeConfig \| false` | config-level `secrets` | Infisical scope for this command |
 
+Set `seed.beforeApps: false` to overlap the seed and app startup. `afterServers`, the ready message, and library `start()` completion all wait for the seed as well as app health. A seed failure fails the run and stops its apps; concurrent seed output uses the `seed` app-style prefix. When any selected service has `afterPreparation`, buncargo keeps seed and apps serial and explains why. `--seed` and other one-shot modes retain their existing order. Startup phase durations can overlap in this mode.
+
 ### `SeedConfig`
 
 | Option | Type | Default | Description |
@@ -1232,6 +1234,7 @@ The automatic Prisma migration step checks migration folders containing `migrati
 | `check` | `(ctx) => Promise<boolean>` | always run | Return `true` to seed. `checkTable(table)` defaults its service to `prisma.service ?? "postgres"` |
 | `forceExit` | `boolean` | `true` for `bun ./file.ts` commands | Exit the seed process after the module finishes, even if sockets/pools are still open |
 | `secrets` | `SecretsScopeConfig \| false` | config-level `secrets` | Infisical scope for the seeder |
+| `beforeApps` | `boolean` | `true` | `false` runs the seed alongside apps after migrations and container hooks; readiness waits for both |
 
 ### `DevHooks` and `HookContext`
 

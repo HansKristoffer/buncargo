@@ -27,6 +27,7 @@ export function validateSupplementShapes(
 	if (object(value.seed)) {
 		fields(value.seed, "seed.", ["command", "cwd"], "string");
 		fields(value.seed, "seed.", ["check"], "function");
+		fields(value.seed, "seed.", ["beforeApps"], "boolean");
 	}
 	if (object(value.prisma))
 		check(

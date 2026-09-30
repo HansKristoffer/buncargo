@@ -161,7 +161,10 @@ export interface DevEnvironment<
 	/** Named-hosts plan and whether the loopback proxy is serving it */
 	readonly hosts: HostsRuntime | null;
 	/** Seed command from config, when present */
-	readonly seed?: Pick<SeedConfig<TServices, TApps>, "command" | "cwd">;
+	readonly seed?: Pick<
+		SeedConfig<TServices, TApps>,
+		"command" | "cwd" | "beforeApps" | "requiredServices"
+	>;
 	/** `checks` from config and its integrations, run by `buncargo dev` before it starts anything */
 	readonly checks?: readonly SetupCheck[];
 	/** The config's integrations, after they have been applied. */
@@ -254,6 +257,8 @@ export interface DevEnvironment<
 		onlyApps?: Extract<keyof TApps, string>[];
 		/** When false, do not expand `onlyApps` via `requiredApps`. Default: true */
 		expandRequired?: boolean;
+		/** Defer the aggregate ready message until other preparation completes. */
+		logReady?: boolean;
 	}): Promise<void>;
 
 	// ─────────────────────────────────────────────────────────────────────────

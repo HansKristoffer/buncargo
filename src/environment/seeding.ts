@@ -31,6 +31,7 @@ export async function runSeedCommand(input: {
 	envVars: Record<string, string>;
 	forceExit?: boolean;
 	verbose?: boolean;
+	prefixOutput?: boolean;
 }): Promise<ExecResult> {
 	const specifier = resolveBunSeedSpecifier(input.command);
 	const forceExit = input.forceExit ?? Boolean(specifier);
@@ -46,6 +47,7 @@ export async function runSeedCommand(input: {
 			{
 				cwd: input.cwd,
 				verbose: input.verbose,
+				outputPrefix: input.prefixOutput ? "seed" : undefined,
 				throwOnError: false,
 				signal: input.signal,
 				timeoutMs: 600_000,
@@ -56,6 +58,7 @@ export async function runSeedCommand(input: {
 	return execAsync(input.command, input.root, input.envVars, {
 		cwd: input.cwd,
 		verbose: input.verbose,
+		outputPrefix: input.prefixOutput ? "seed" : undefined,
 		throwOnError: false,
 		signal: input.signal,
 		timeoutMs: 600_000,
@@ -181,12 +184,13 @@ export async function runSeedIfNeeded<
 		// Secrets beneath the computed env, as for every other process.
 		envVars: { ...secrets, ...computed },
 		forceExit: seed.forceExit,
+		prefixOutput: options.prefixOutput,
 		verbose,
 	});
 
 	if (result.exitCode !== 0) {
 		console.error(formatFail("Seeding failed"));
-		console.error(result.stderr);
+		if (!options.prefixOutput || !verbose) console.error(result.stderr);
 		return { status: "failed", result };
 	}
 

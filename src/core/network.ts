@@ -117,6 +117,7 @@ export async function waitForDevServers(
 		productionBuild?: boolean;
 		signal?: AbortSignal;
 		onAppReady?: (name: string) => void;
+		logReady?: boolean;
 	} = {},
 ): Promise<void> {
 	const { timeout = 60000, verbose = true } = options;
@@ -169,7 +170,8 @@ export async function waitForDevServers(
 		cancelWait();
 	}
 
-	if (showedWait) console.log(formatDone("All servers ready"));
+	if (showedWait && options.logReady !== false)
+		console.log(formatDone("All servers ready"));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -148,6 +148,8 @@ export interface SeedConfig<
 	TApps extends Record<string, AppConfig>,
 > {
 	requiredServices?: readonly Extract<keyof TServices, string>[];
+	/** Seed before apps. Default true; false overlaps apps unless a selected service needs afterPreparation. */
+	beforeApps?: boolean;
 	/** Command to run the seeder */
 	command: string;
 	/** Working directory relative to monorepo root */
@@ -181,6 +183,8 @@ export interface SeedConfig<
  * Options for {@link DevEnvironment.runSeed}.
  */
 export interface SeedRunOptions {
+	/** Prefix seed output when running alongside app logs. */
+	prefixOutput?: boolean;
 	signal?: AbortSignal;
 	verbose?: boolean;
 	productionBuild?: boolean;

@@ -30,6 +30,11 @@ import { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { runMigrationsSequentially } from "./migrations";
 import { prefetchSecrets } from "./prefetch-secrets";
 import type { DevRunClaimApi } from "./run-claim";
+import {
+	assertSeedSucceeded,
+	seedCanOverlap,
+	startSeedTask,
+} from "./seed-startup";
 import { runSeedIfNeeded } from "./seeding";
 import { assertAppWorkingDirectories, startAppServers } from "./servers";
 
@@ -337,7 +342,7 @@ export function createLifecycleApi<
 						seed: config.seed?.secrets,
 						includeSeed:
 							prepare === "all" &&
-							!skipSeed &&
+							(!skipSeed || startOptions.prefetchSeed === true) &&
 							!!config.seed &&
 							preparationSelected(config.seed.requiredServices),
 						migrations: collectMigrations(),
@@ -466,28 +471,72 @@ export function createLifecycleApi<
 					);
 				}
 
-				if (!skipSeed && preparationSelected(config.seed?.requiredServices)) {
-					const seeded = await phase("seed", () =>
-						runSeed({ verbose, productionBuild, signal }),
+				const overlap =
+					!skipSeed &&
+					shouldStartServers &&
+					Object.keys(appsToStart).length > 0 &&
+					seedCanOverlap(config.seed, services, selectedServices);
+				if (
+					config.seed?.beforeApps === false &&
+					Object.keys(lateServices).length > 0 &&
+					verbose
+				) {
+					console.log(
+						formatStep(
+							"Seed will run before apps because selected services use afterPreparation.",
+						),
 					);
-					if (seeded.status === "failed") {
-						throw new Error(
-							`Seeding failed with exit code ${seeded.result.exitCode}. Fix the seed command or start with \`--up-only\` to skip it.`,
-						);
-					}
+				}
+				if (
+					!overlap &&
+					!skipSeed &&
+					preparationSelected(config.seed?.requiredServices)
+				) {
+					assertSeedSucceeded(
+						await phase("seed", () =>
+							runSeed({ verbose, productionBuild, signal }),
+						),
+					);
 				}
 
 				// Early jobs already completed. --no-deps prevents Compose from rerunning them.
 				await ensureSubset(lateServices, true);
 
 				if (shouldStartServers && Object.keys(appsToStart).length > 0) {
-					const pids = await startAppServers(ctx, envVars, {
-						signal,
-						apps: appsToStart,
-						onPhase,
-						productionBuild,
-						verbose,
-					});
+					const seedTask = overlap
+						? startSeedTask(
+								(seedSignal) =>
+									phase("seed", () =>
+										runSeed({
+											verbose,
+											productionBuild,
+											signal: seedSignal,
+											prefixOutput: true,
+										}),
+									),
+								signal,
+							)
+						: undefined;
+					let pids: DevServerPids;
+					try {
+						pids = await startAppServers(ctx, envVars, {
+							signal: seedTask?.signal ?? signal,
+							apps: appsToStart,
+							onPhase,
+							productionBuild,
+							verbose,
+							beforeReady: seedTask
+								? async () => {
+										await seedTask.ready;
+										if (verbose) console.log(formatDone("All servers ready"));
+									}
+								: undefined,
+						});
+					} catch (error) {
+						seedTask?.cancel(error);
+						if (seedTask) await Promise.allSettled([seedTask.ready]);
+						throw error;
+					}
 
 					if (verbose) {
 						console.log(formatDone("Environment ready"));

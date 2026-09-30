@@ -13,7 +13,24 @@ export interface StartupFixture {
 }
 /** Separate ceilings keep inexpensive paths from hiding behind service-start budgets. */
 export const startupFixtures: StartupFixture[] = [
-	{ scenario: "secrets", parallel: 1, apps: 2, budget: {warmP95Ms: 1000, coldP95Ms: 1700, subprocesses: 17} },
+	{
+		scenario: "seed-serial",
+		parallel: 1,
+		apps: 1,
+		budget: { warmP95Ms: 1200, coldP95Ms: 1900, subprocesses: 16 },
+	},
+	{
+		scenario: "seed-parallel",
+		parallel: 1,
+		apps: 1,
+		budget: { warmP95Ms: 750, coldP95Ms: 1700, subprocesses: 16 },
+	},
+	{
+		scenario: "secrets",
+		parallel: 1,
+		apps: 2,
+		budget: { warmP95Ms: 1000, coldP95Ms: 1700, subprocesses: 17 },
+	},
 	{
 		scenario: "services",
 		parallel: 1,

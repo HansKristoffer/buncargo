@@ -34,6 +34,8 @@ export interface ExecOptions {
 	cwd?: string;
 	/** Print output to console */
 	verbose?: boolean;
+	/** Stream verbose output with this name as a prefix. */
+	outputPrefix?: string;
 	/** Environment variables to add */
 	env?: Record<string, string>;
 	/** Throw on non-zero exit code (default: true) */

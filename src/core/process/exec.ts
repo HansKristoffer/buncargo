@@ -5,6 +5,7 @@ import type { ExecOptions, ExecResult } from "../../types";
 import { abortError, registerAbortCleanup } from "../deadline";
 import { connectProcessEnv } from "../runtime-flags";
 import { recordStartupMetric } from "../startup-metrics";
+import { prefixOutput } from "./prefix-output";
 import { terminateOwnedProcess } from "./terminate";
 
 export type { ExecResult };
@@ -108,9 +109,17 @@ export async function execAsync(
 				env: resolveCommandEnv(envVars, env),
 				shell: typeof cmd === "string",
 				detached: true,
-				stdio: verbose ? "inherit" : ["ignore", "pipe", "pipe"],
+				stdio:
+					verbose && !options.outputPrefix
+						? "inherit"
+						: ["ignore", "pipe", "pipe"],
 			},
 		);
+		if (verbose && options.outputPrefix)
+			prefixOutput(options.outputPrefix, child, {
+				width: options.outputPrefix.length,
+				onFirstWrite: () => {},
+			});
 		let stdout = "";
 		let stderr = "";
 		let cancelling = false;

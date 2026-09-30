@@ -388,3 +388,41 @@ it("starts selected scope fetches before container preparation and skips contain
 		else process.env.BUNCARGO_INFISICAL_PATH = binary;
 	}
 });
+
+it("keeps preparation services serial when seed.beforeApps opts into overlap", async () => {
+	const { ctx, events, lifecycle } = fixture();
+	const seed = ctx.config.seed;
+	if (!seed) throw new Error("fixture needs seed");
+	seed.beforeApps = false;
+	ctx.services.sync = { port: 8080, afterPreparation: true };
+	ctx.apps.web = {
+		port: 3000,
+		devCommand: false,
+		requiredServices: ["db", "sync"],
+	};
+	ctx.runtime.up = async (request) => {
+		events.push(`up:${request.serviceNames.join(",")}`);
+	};
+	ctx.logInfo = () => {};
+	const log = console.log;
+	const messages: string[] = [];
+	console.log = (message) => messages.push(String(message));
+	try {
+		await lifecycle.start({
+			startServers: false,
+			wait: false,
+			verbose: true,
+			watchdog: false,
+		});
+		expect(events.indexOf("up:sync")).toBeGreaterThan(
+			events.indexOf("seed check"),
+		);
+		expect(
+			messages.filter((message) =>
+				message.includes("selected services use afterPreparation"),
+			),
+		).toHaveLength(1);
+	} finally {
+		console.log = log;
+	}
+});

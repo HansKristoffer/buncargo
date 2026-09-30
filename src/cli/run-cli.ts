@@ -16,6 +16,7 @@ import {
 	stopPublicTunnels,
 } from "../core/tunnel";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../core/watchdog-constants";
+import { seedCanOverlap, startSeedTask } from "../environment/seed-startup";
 import { startServerSession } from "../environment/server-session";
 import { environmentStartPlan } from "../environment/start-plan";
 import { resolveSelectedApps } from "../planning";
@@ -346,6 +347,10 @@ async function runDevFlow<
 		await env.prepareStartAsync(selectedAppNames, undefined, signal);
 	else env.prepareStart?.(selectedAppNames);
 	const hasServices = plan.requiredServiceKeys.length > 0;
+	const overlapSeed =
+		!args.oneShot &&
+		Object.keys(appsForDev).length > 0 &&
+		seedCanOverlap(env.seed, env.services, plan.requiredServiceKeys);
 
 	// ── Containers ───────────────────────────────────────────────────────────
 	// Held rather than printed: a run that takes over another one activates a
@@ -378,7 +383,8 @@ async function runDevFlow<
 		signal,
 		startServers: false,
 		wait: true,
-		skipSeed: args.seed || args.migrate || args.upOnly,
+		skipSeed: args.seed || args.migrate || args.upOnly || overlapSeed,
+		prefetchSeed: overlapSeed,
 		prepare: args.upOnly ? "containers" : args.migrate ? "migrate" : "all",
 		onPhase: timer.record,
 		skipEnvironmentLog: true,
@@ -552,6 +558,12 @@ async function runDevFlow<
 	}
 
 	if (nothingToSpawn && !tunnels.hasPendingTargets() && !connect?.active) {
+		if (overlapSeed)
+			await startSeedTask(
+				(seedSignal) =>
+					timer.measure("seed", () => env.runSeed({ signal: seedSignal })),
+				signal,
+			).ready;
 		timer.report();
 		log.success("Selected apps are already running. Nothing to start.");
 		if (takeover && takeover.names.length > 0 && !isInteractive()) {
@@ -562,19 +574,35 @@ async function runDevFlow<
 	}
 
 	const appsStartedAt = performance.now();
+	const seedTask = overlapSeed
+		? startSeedTask(
+				(seedSignal) =>
+					timer.measure("seed", () =>
+						env.runSeed({ signal: seedSignal, prefixOutput: true }),
+					),
+				signal,
+			)
+		: undefined;
 	let firstSpawn = false;
 
 	try {
 		if (nothingToSpawn) {
 			await tunnels.openOwnedTunnels();
+			await seedTask?.ready;
 			timer.report();
-			await withSignal(waitForShutdownSignal(), signal);
+			await withSignal(waitForShutdownSignal(), seedTask?.signal ?? signal);
 			return undefined;
 		}
 
 		await startServerSession(
 			{
 				root: env.root,
+				beforeReady: seedTask
+					? async () => {
+							await seedTask.ready;
+							log.success("All servers ready");
+						}
+					: undefined,
 				ports: env.ports as Record<string, number>,
 				appEnv: (name) =>
 					env.buildAppEnvVars(name as Extract<keyof TApps, string>),
@@ -585,6 +613,7 @@ async function runDevFlow<
 					env.waitForServers({
 						onlyApps: Object.keys(apps) as Extract<keyof TApps, string>[],
 						expandRequired: false,
+						logReady: !seedTask,
 						signal: healthSignal,
 					}),
 				recordCapture: (app, captured) => env.recordCapture(app, captured),
@@ -595,7 +624,7 @@ async function runDevFlow<
 			},
 			classifiedApps.startApps,
 			{
-				signal,
+				signal: seedTask?.signal ?? signal,
 				projectName: env.projectName,
 				runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
 				skipContainers: !hasServices,
@@ -651,6 +680,8 @@ async function runDevFlow<
 		);
 		return undefined;
 	} finally {
+		seedTask?.cancel();
+		if (seedTask) await Promise.allSettled([seedTask.ready]);
 		await teardown(env, tunnels, connect);
 	}
 }
