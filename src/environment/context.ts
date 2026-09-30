@@ -7,7 +7,10 @@ import {
 import { loadEnvInput } from "../core/env-input";
 import { applyHostPlanToUrls, planNamedHosts } from "../core/hosts/plan";
 import { getLocalIp } from "../core/network";
-import { resolvePortPlan } from "../core/port-allocation";
+import {
+	candidateAllocationPorts,
+	resolvePortPlan,
+} from "../core/port-allocation";
 import {
 	asComputedLoopbackUrls,
 	asComputedPorts,
@@ -19,7 +22,12 @@ import {
 	toUrlMap,
 	type UrlMap,
 } from "../core/ports";
-import { createPortOwnerSnapshot } from "../core/process";
+import {
+	createPortOwnerSnapshot,
+	createPortOwnerSnapshotAsync,
+	type PortOwnerSnapshot,
+} from "../core/process";
+import { portOffsetOverride } from "../core/runtime-flags";
 import { applySecretDefaults } from "../core/secrets/infisical";
 import type { PublicTunnel } from "../core/tunnel";
 import { workspaceId } from "../core/workspace-identity";
@@ -29,7 +37,7 @@ import {
 	getGeneratedComposePath,
 	writeGeneratedComposeFile,
 } from "../docker-compose";
-import { planStart } from "../planning";
+import { planStart, type StartPlan } from "../planning";
 import type {
 	AppConfig,
 	ComputedLoopbackUrls,
@@ -57,7 +65,16 @@ export interface DevEnvContext<
 	TApps extends Record<string, AppConfig>,
 	TEnv extends EnvValues = EnvValues,
 > {
+	getStartPlan(
+		onlyApps?: string[],
+		onlyServices?: readonly string[],
+	): StartPlan;
 	prepareStart(onlyApps?: string[], onlyServices?: readonly string[]): void;
+	prepareStartAsync(
+		onlyApps?: string[],
+		onlyServices?: readonly string[],
+		signal?: AbortSignal,
+	): Promise<void>;
 	readonly hasSelectedServices: boolean;
 	/** Service keys the current selection starts, for the run claim. */
 	readonly selectedServiceKeys: readonly string[];
@@ -230,6 +247,76 @@ export function createDevEnvContext<
 			runtime().name,
 		);
 
+	let cachedPlan: { selection: string; plan: StartPlan } | undefined;
+	function getStartPlan(
+		onlyApps?: string[],
+		onlyServices?: readonly string[],
+	): StartPlan {
+		const selection = JSON.stringify([onlyApps ?? null, onlyServices ?? null]);
+		if (cachedPlan?.selection !== selection)
+			cachedPlan = {
+				selection,
+				plan: planStart(apps, services, { onlyApps, onlyServices }),
+			};
+		return cachedPlan.plan;
+	}
+
+	function prepareStart(
+		onlyApps?: string[],
+		onlyServices?: readonly string[],
+		suppliedSnapshot?: PortOwnerSnapshot,
+	) {
+		const plan = getStartPlan(onlyApps, onlyServices);
+		const selection = JSON.stringify([plan.appNames, plan.requiredServiceKeys]);
+
+		// The CLI prepares before touching hosts; lifecycle.start reaches this
+		// again. Reuse that allocation rather than probing the same run twice.
+		if (selection === preparedSelection) {
+			return;
+		}
+		hasSelectedServices = plan.requiredServiceKeys.length > 0;
+		selectedServiceKeys = plan.requiredServiceKeys;
+		const selectedRuntime = hasSelectedServices ? runtime() : undefined;
+
+		if (selectedRuntime) {
+			const selectedServices = Object.fromEntries(
+				plan.requiredServiceKeys.map((name) => [name, services[name]]),
+			);
+			assertServiceCapabilities(selectedRuntime.name, selectedServices);
+		}
+
+		// App-only selection still checks host processes, without asking any runtime.
+		const snapshot =
+			suppliedSnapshot ??
+			(hasSelectedServices
+				? undefined
+				: createPortOwnerSnapshot({ containers: new Map() }));
+		portPlan = resolvePortPlan({
+			projectPrefix: config.projectPrefix,
+			projectName,
+			root,
+			services,
+			apps,
+			suffix,
+			worktreeName: worktreeSuffix,
+			worktreeIsolation: config.options?.worktreeIsolation,
+			runtime: selectedRuntime,
+			persist: suffix === undefined,
+			getOwner: snapshot ? (port) => snapshot.owner(port) : undefined,
+			probeNames: hasSelectedServices ? undefined : plan.appNames,
+		});
+
+		// Keep object identity: env callbacks may already hold these maps.
+		Object.assign(portMap, portPlan.ports);
+		Object.assign(plainUrls, computeUrls(services, apps, portMap, localIp));
+		Object.assign(loopbackUrls, computeLoopbackUrls(services, apps, portMap));
+		for (const host of hostsPlan) {
+			host.targetPort = portMap[host.name] ?? host.targetPort;
+		}
+		refreshUrls();
+		preparedSelection = selection;
+	}
+
 	return {
 		ownedServerPids: {},
 		captured: {},
@@ -240,57 +327,48 @@ export function createDevEnvContext<
 		get selectedServiceKeys() {
 			return selectedServiceKeys;
 		},
-		prepareStart(onlyApps, onlyServices) {
-			const plan = planStart(apps, services, { onlyApps, onlyServices });
+		getStartPlan,
+		prepareStart,
+		async prepareStartAsync(onlyApps, onlyServices, signal) {
+			signal?.throwIfAborted();
+			const plan = getStartPlan(onlyApps, onlyServices);
 			const selection = JSON.stringify([
 				plan.appNames,
 				plan.requiredServiceKeys,
 			]);
-
-			// The CLI prepares before touching hosts; lifecycle.start reaches this
-			// again. Reuse that allocation rather than probing the same run twice.
-			if (selection === preparedSelection) {
-				return;
-			}
-			hasSelectedServices = plan.requiredServiceKeys.length > 0;
-			selectedServiceKeys = plan.requiredServiceKeys;
-			const selectedRuntime = hasSelectedServices ? runtime() : undefined;
-
-			if (selectedRuntime) {
-				const selectedServices = Object.fromEntries(
-					plan.requiredServiceKeys.map((name) => [name, services[name]]),
+			if (selection === preparedSelection) return;
+			const selectedRuntime =
+				plan.requiredServiceKeys.length > 0 ? runtime() : undefined;
+			if (selectedRuntime)
+				assertServiceCapabilities(
+					selectedRuntime.name,
+					Object.fromEntries(
+						plan.requiredServiceKeys.map((name) => [name, services[name]]),
+					),
 				);
-				assertServiceCapabilities(selectedRuntime.name, selectedServices);
-			}
-
-			// App-only selection still checks host processes, without asking any runtime.
-			const snapshot = hasSelectedServices
-				? undefined
-				: createPortOwnerSnapshot({ containers: new Map() });
-			portPlan = resolvePortPlan({
-				projectPrefix: config.projectPrefix,
-				projectName,
-				root,
-				services,
-				apps,
-				suffix,
-				worktreeName: worktreeSuffix,
-				worktreeIsolation: config.options?.worktreeIsolation,
-				runtime: selectedRuntime,
-				persist: suffix === undefined,
-				getOwner: snapshot ? (port) => snapshot.owner(port) : undefined,
-				probeNames: hasSelectedServices ? undefined : plan.appNames,
-			});
-
-			// Keep object identity: env callbacks may already hold these maps.
-			Object.assign(portMap, portPlan.ports);
-			Object.assign(plainUrls, computeUrls(services, apps, portMap, localIp));
-			Object.assign(loopbackUrls, computeLoopbackUrls(services, apps, portMap));
-			for (const host of hostsPlan) {
-				host.targetPort = portMap[host.name] ?? host.targetPort;
-			}
-			refreshUrls();
-			preparedSelection = selection;
+			const candidatePorts = candidateAllocationPorts(
+				{
+					projectPrefix: config.projectPrefix,
+					worktreeName: worktreeSuffix,
+					suffix,
+					worktreeIsolation: config.options?.worktreeIsolation,
+					services,
+					apps,
+					probeNames: selectedRuntime ? undefined : plan.appNames,
+				},
+				portPlan.offset,
+			);
+			const snapshot =
+				portOffsetOverride() === undefined
+					? await createPortOwnerSnapshotAsync({
+							runtime: selectedRuntime,
+							ports: candidatePorts,
+							skipContainers: !selectedRuntime,
+							signal,
+						})
+					: { owner: () => null, isBusy: () => false };
+			signal?.throwIfAborted();
+			prepareStart(onlyApps, onlyServices, snapshot);
 		},
 		config,
 		root,

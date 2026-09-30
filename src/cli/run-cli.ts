@@ -1,9 +1,9 @@
 import { execSync } from "node:child_process";
 import { containerRuntimeForEnv } from "../container-runtime";
-import { withDeadline, withSignal } from "../core/deadline";
+import { withSignal } from "../core/deadline";
 import { removeHostRoutes } from "../core/hosts";
 import { releaseLeases } from "../core/leases";
-import { isDeliberateExit, startDevServers } from "../core/process";
+import { isDeliberateExit } from "../core/process";
 import { joinColoredNames } from "../core/style";
 import {
 	createNoopPhaseTimer,
@@ -16,7 +16,9 @@ import {
 	stopPublicTunnels,
 } from "../core/tunnel";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../core/watchdog-constants";
-import { buildStartPlan, resolveSelectedApps } from "../planning";
+import { startServerSession } from "../environment/server-session";
+import { environmentStartPlan } from "../environment/start-plan";
+import { resolveSelectedApps } from "../planning";
 import type {
 	AnyDevEnvironment,
 	AppConfig,
@@ -50,6 +52,7 @@ import { CliError, toCliError } from "./errors";
 import * as log from "./log";
 import { classifyCliApps, parseRequiredCommaSeparatedFlag } from "./port-reuse";
 import {
+	flushRunPatches,
 	markApps,
 	publishCurrentRun,
 	recordAppSpawn,
@@ -229,6 +232,7 @@ async function teardown<
 	tunnels: DevTunnelCoordinator<TServices, TApps>,
 	connect?: DevConnect,
 ): Promise<void> {
+	await flushRunPatches(env);
 	try {
 		const results = await Promise.allSettled([
 			tunnels.stop(),
@@ -315,7 +319,7 @@ async function runDevFlow<
 		}
 	}
 
-	const plan = buildStartPlan(env.apps, env.services, selectedAppNames);
+	const plan = environmentStartPlan(env, selectedAppNames);
 	validateDevStart(env, args, appsForDev, plan.requiredServiceKeys);
 
 	// Before anything is started: a missing generated file fails here with its
@@ -338,7 +342,9 @@ async function runDevFlow<
 	connect?.plan(appsForDev, plan.requiredServiceKeys, env.services);
 	if (connect && !connect.active)
 		log.info("No selected endpoints to share through frp.");
-	env.prepareStart?.(selectedAppNames);
+	if (env.prepareStartAsync)
+		await env.prepareStartAsync(selectedAppNames, undefined, signal);
+	else env.prepareStart?.(selectedAppNames);
 	const hasServices = plan.requiredServiceKeys.length > 0;
 
 	// ── Containers ───────────────────────────────────────────────────────────
@@ -391,6 +397,7 @@ async function runDevFlow<
 				}
 			: await timer.measure("app ports", () =>
 					classifyCliApps(appsForDev, env.ports, {
+						signal,
 						// No `isPortBusy` override: the default reads every app port from
 						// one snapshot rather than probing each of them separately.
 						waitForServer: (url, timeout) =>
@@ -559,31 +566,34 @@ async function runDevFlow<
 			return undefined;
 		}
 
-		await withDeadline(
-			async () => {
-				await env.runServerHook?.("before", signal);
+		await startServerSession(
+			{
+				root: env.root,
+				ports: env.ports as Record<string, number>,
+				appEnv: (name) =>
+					env.buildAppEnvVars(name as Extract<keyof TApps, string>),
+				runHook: async (phase, hookSignal) => {
+					await env.runServerHook?.(phase, hookSignal);
+				},
+				waitForHealth: (apps, healthSignal) =>
+					env.waitForServers({
+						onlyApps: Object.keys(apps) as Extract<keyof TApps, string>[],
+						expandRequired: false,
+						signal: healthSignal,
+					}),
+				recordCapture: (app, captured) => env.recordCapture(app, captured),
+				afterWave: () => {
+					for (const path of env.renderGeneratedFiles())
+						log.done(`Updated ${path}`);
+				},
 			},
-			600_000,
-			signal,
-		);
-		await startDevServers(
 			classifiedApps.startApps,
-			env.root,
-			(name) => env.buildAppEnvVars(name as Extract<keyof TApps, string>),
-			env.ports,
 			{
 				signal,
 				projectName: env.projectName,
 				runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
 				skipContainers: !hasServices,
-				onReady: async (readySignal) => {
-					await withDeadline(
-						async () => {
-							await env.runServerHook?.("after", readySignal);
-						},
-						600_000,
-						signal,
-					);
+				onReady: async () => {
 					timer.record("app readiness", performance.now() - appsStartedAt);
 					timer.report();
 				},
@@ -593,13 +603,7 @@ async function runDevFlow<
 				onSignal: () => {
 					void env.releaseRun();
 				},
-				waitForHealth: async (apps, signal) => {
-					await env.waitForServers({
-						// These came out of `env.apps`, so they are app keys already.
-						onlyApps: Object.keys(apps) as Extract<keyof TApps, string>[],
-						expandRequired: false,
-						signal,
-					});
+				waitForHealth: async (apps) => {
 					await markApps(env, Object.keys(apps), "ready");
 				},
 				// Deliberately not awaited: the registry is a status file, and
@@ -629,15 +633,9 @@ async function runDevFlow<
 					await timer.measure("tunnels", () =>
 						tunnels.openOwnedTunnels(signal),
 					);
-					// Tunnel URLs are now known; files that print them re-render.
-					for (const path of env.renderGeneratedFiles()) {
-						log.done(`Updated ${path}`);
-					}
 				},
 				onCapture: async (app, captured) => {
-					const changed = await env.recordCapture(app, captured);
 					void recordRunCapture(env, app, captured);
-					return changed;
 				},
 				// Nothing to wait for without --expose, so needsPublicUrls apps
 				// join wave 1 and get health-checked like everything else.

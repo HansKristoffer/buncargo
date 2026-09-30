@@ -13,6 +13,7 @@ import type {
 	BuncargoIntegration,
 	CaptureConfig,
 	GeneratedFileContext,
+	IntegrationConfig,
 } from "../types";
 import {
 	readShopifyAppConfig,
@@ -258,7 +259,7 @@ export function shopify(
 							]
 						: []),
 				],
-			});
+			}) as IntegrationConfig;
 		},
 
 		hooks: {

@@ -66,7 +66,9 @@ function runtimeFromContext(context: string): DockerRuntime {
 }
 
 export function isDockerDaemonRunning(binary?: string): boolean {
-	return runDocker(binary, ["info", "--format", "{{.ServerVersion}}"]).ok;
+	// `info` also inspects CLI plugins, whose metadata can stall a healthy
+	// daemon's probe. `version` asks the server without that extra discovery.
+	return runDocker(binary, ["version", "--format", "{{.Server.Version}}"]).ok;
 }
 
 function remediationFor(runtime: DockerRuntime): string {
@@ -125,10 +127,14 @@ export async function ensureDockerRunning(
 	const deadline = performance.now() + timeoutMs;
 	const daemonRunning = async () =>
 		(
-			await runDockerAsync(binary, ["info", "--format", "{{.ServerVersion}}"], {
-				signal,
-				timeoutMs: Math.min(5000, remainingTime(deadline)),
-			})
+			await runDockerAsync(
+				binary,
+				["version", "--format", "{{.Server.Version}}"],
+				{
+					signal,
+					timeoutMs: Math.min(5000, remainingTime(deadline)),
+				},
+			)
 		).ok;
 	if (await daemonRunning()) return;
 	const context = await runDockerAsync(binary, ["context", "show"], {

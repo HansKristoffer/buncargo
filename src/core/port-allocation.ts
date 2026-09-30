@@ -23,6 +23,7 @@ export const PORT_OFFSET_MIN = 100;
 export const PORT_OFFSET_MAX = 9000;
 export const PORTS_LOCKFILE = `${STATE_DIRNAME}/ports.json`;
 const LOCKFILE_VERSION = 1;
+const PORT_ALLOCATION_ATTEMPTS = 80;
 
 export interface PortLockfile {
 	version: number;
@@ -89,6 +90,34 @@ export function buildPortMap(
 		}
 	}
 	return ports;
+}
+
+/** Ports an allocation can inspect, for one scoped asynchronous cwd reading. */
+export function candidateAllocationPorts(
+	input: Pick<
+		Parameters<typeof resolvePortPlan>[0],
+		| "projectPrefix"
+		| "worktreeName"
+		| "suffix"
+		| "worktreeIsolation"
+		| "services"
+		| "apps"
+		| "probeNames"
+	>,
+	currentOffset: number,
+): number[] {
+	const baseOffset = computeBaseOffset(input);
+	const offsets = new Set([
+		currentOffset,
+		...Array.from(
+			{ length: PORT_ALLOCATION_ATTEMPTS },
+			(_, index) => baseOffset + index * PORT_OFFSET_STEP,
+		),
+	]);
+	return Object.entries(buildPortMap(input.services, input.apps))
+		.filter(([name]) => !input.probeNames || input.probeNames.includes(name))
+		.flatMap(([, base]) => [...offsets].map((offset) => base + offset))
+		.filter((port) => port > 0 && port <= 65535);
 }
 
 function shiftPorts(
@@ -347,7 +376,7 @@ export function resolvePortPlan(input: {
 	});
 	let provenance: PortOffsetProvenance = "hash";
 
-	for (let attempt = 0; attempt < 80; attempt++) {
+	for (let attempt = 0; attempt < PORT_ALLOCATION_ATTEMPTS; attempt++) {
 		const ports = shiftPorts(basePorts, offset);
 		const overflow = Object.values(ports).some((port) => port > 65535);
 		if (!overflow) {

@@ -7,7 +7,7 @@ export class RunInterrupted extends Error {}
 /** Owns only children created by one startDevServers invocation. */
 export class ProcessOwner {
 	readonly controller = new AbortController();
-	private children: ChildProcess[] = [];
+	private children = new Set<ChildProcess>();
 	private live = new Set<ChildProcess>();
 	private retired = new Set<ChildProcess>();
 	private sealed = false;
@@ -48,7 +48,7 @@ export class ProcessOwner {
 		worker = false,
 	): void {
 		if (needsReadiness) this.pendingReadiness.add(name);
-		this.children.push(child);
+		this.children.add(child);
 		this.live.add(child);
 		child.once("error", (error) => {
 			this.live.delete(child);
@@ -60,7 +60,7 @@ export class ProcessOwner {
 			this.live.delete(child);
 			// Replaced on purpose (`restartOn`): its exit is not the app's.
 			if (this.retired.delete(child)) {
-				if (this.sealed && this.live.size === 0) this.resolveDone();
+				// Replacement owns this gap; retiring the last child is not completion.
 				return;
 			}
 			try {
@@ -97,6 +97,9 @@ export class ProcessOwner {
 	async retire(child: ChildProcess): Promise<void> {
 		this.retired.add(child);
 		await terminateOwnedProcess(child, this.options.shutdownGraceMs);
+		this.children.delete(child);
+		if (child.exitCode !== null || child.signalCode !== null)
+			this.retired.delete(child);
 	}
 
 	ready(name: string): void {
@@ -117,7 +120,7 @@ export class ProcessOwner {
 		this.cleanup ??= (async () => {
 			this.controller.abort(new RunInterrupted("Run stopped"));
 			const results = await Promise.allSettled(
-				this.children.map((child) =>
+				[...this.children].map((child) =>
 					terminateOwnedProcess(child, this.options.shutdownGraceMs),
 				),
 			);

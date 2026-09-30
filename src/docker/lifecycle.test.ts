@@ -29,7 +29,7 @@ function fakeDocker(options: { downStderr?: string } = {}) {
 import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
-if (args[0] === 'info') console.log('27.5.1');
+if (args[0] === 'version') console.log('27.5.1');
 const downStderr = ${JSON.stringify(options.downStderr ?? "")};
 if (downStderr && args.includes('down')) {
   process.stderr.write(downStderr);

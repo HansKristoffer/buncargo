@@ -1,5 +1,5 @@
 import {
-	buildRunEntry,
+	buildRunEntryAsync,
 	publishRun,
 	type RunServiceEntry,
 	releaseRun,
@@ -46,6 +46,7 @@ export interface DevRunClaimApi {
 }
 
 export interface ClaimOptions {
+	signal?: AbortSignal;
 	/** The hold asked for explicitly; `false` keeps the containers. */
 	idleTimeoutMs?: number | false;
 	/** The hold when neither this nor `options.autoShutdown` says one. */
@@ -111,13 +112,16 @@ export function createRunClaimApi<
 			// retried on every container subset.
 			claimed = true;
 			await publishRun({
-				...buildRunEntry({
-					sessionId,
-					projectPrefix: ctx.config.projectPrefix,
-					projectName: ctx.projectName,
-					root: ctx.root,
-					isWorktree: ctx.worktree,
-				}),
+				...(await buildRunEntryAsync(
+					{
+						sessionId,
+						projectPrefix: ctx.config.projectPrefix,
+						projectName: ctx.projectName,
+						root: ctx.root,
+						isWorktree: ctx.worktree,
+					},
+					options.signal,
+				)),
 				...(hold === undefined ? {} : { idleTimeoutMs: hold }),
 				services: serviceEntries(),
 			});

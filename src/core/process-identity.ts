@@ -1,7 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { execAsync } from "./process/exec";
 import { isProcessAlive } from "./process/lifecycle";
+import { recordStartupMetric } from "./startup-metrics";
 
 /**
  * Marks an identity written in the current, environment-independent format.
@@ -19,6 +22,7 @@ import { isProcessAlive } from "./process/lifecycle";
  * and {@link processIdentityMatcher} for what each makes of one.
  */
 const IDENTITY_PREFIX = "v2:";
+let bootId: string | undefined;
 
 function hashBirth(birth: string): string {
 	return createHash("sha256").update(birth).digest("hex");
@@ -33,10 +37,7 @@ function linuxBirth(pid: number): string | undefined {
 		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
 		const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
 		if (!start) return undefined;
-		const bootId = readFileSync(
-			"/proc/sys/kernel/random/boot_id",
-			"utf8",
-		).trim();
+		bootId ??= readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
 		return `${bootId}:${start}`;
 	} catch {
 		return undefined;
@@ -50,12 +51,26 @@ function linuxBirth(pid: number): string | undefined {
  * pid is missing, yet still prints the ones it found. `env` is the locale and
  * time zone to ask in; the current format always passes C and UTC.
  */
+function parsePsBirths(stdout: string): Map<number, string> {
+	const births = new Map<number, string>();
+	for (const raw of stdout.split("\n")) {
+		const line = raw.trim();
+		const boundary = line.indexOf(" ");
+		if (boundary <= 0) continue;
+		const pid = Number.parseInt(line.slice(0, boundary), 10);
+		const birth = line.slice(boundary + 1).trim();
+		if (Number.isInteger(pid) && birth) births.set(pid, birth);
+	}
+	return births;
+}
+
 function psBirths(
 	pids: readonly number[],
 	env: NodeJS.ProcessEnv,
 ): Map<number, string> {
-	const births = new Map<number, string>();
 	try {
+		recordStartupMetric("subprocesses");
+		recordStartupMetric("processIdentityReads");
 		const { stdout = "" } = spawnSync(
 			"ps",
 			["-o", "pid=,lstart=", "-p", pids.join(",")],
@@ -66,25 +81,28 @@ function psBirths(
 				stdio: ["ignore", "pipe", "ignore"],
 			},
 		);
-		for (const raw of stdout.split("\n")) {
-			const line = raw.trim();
-			if (!line) continue;
-			// `pid=,lstart=` prints the pid right-aligned, then the date. The
-			// date itself contains spaces, so split once and keep the rest.
-			const boundary = line.indexOf(" ");
-			if (boundary <= 0) continue;
-			const pid = Number.parseInt(line.slice(0, boundary), 10);
-			const birth = line.slice(boundary + 1).trim();
-			if (Number.isInteger(pid) && birth) births.set(pid, birth);
-		}
+		return parsePsBirths(stdout);
 	} catch {
 		// A `ps` that cannot run reads as "cannot inspect". Liveness keeps the
 		// run on that answer; signalling refuses on it.
 	}
-	return births;
+	return new Map();
 }
 
 const STABLE_PS_ENV = { ...process.env, LC_ALL: "C", TZ: "UTC" };
+
+function wantedPids(pids: readonly number[]): number[] {
+	return [...new Set(pids)].filter((pid) => Number.isInteger(pid) && pid > 1);
+}
+
+function encodeBirths(births: Map<number, string>): Map<number, string> {
+	return new Map(
+		[...births].map(([pid, birth]) => [
+			pid,
+			`${IDENTITY_PREFIX}${hashBirth(birth)}`,
+		]),
+	);
+}
 
 /**
  * Birth identity for many pids at once, in the current format.
@@ -97,11 +115,8 @@ const STABLE_PS_ENV = { ...process.env, LC_ALL: "C", TZ: "UTC" };
 export function readProcessIdentities(
 	pids: readonly number[],
 ): Map<number, string> {
-	const identities = new Map<number, string>();
-	const wanted = [...new Set(pids)].filter(
-		(pid) => Number.isInteger(pid) && pid > 1,
-	);
-	if (wanted.length === 0) return identities;
+	const wanted = wantedPids(pids);
+	if (wanted.length === 0) return new Map();
 
 	const births =
 		process.platform === "linux"
@@ -112,14 +127,107 @@ export function readProcessIdentities(
 					}),
 				)
 			: psBirths(wanted, STABLE_PS_ENV);
-	for (const [pid, birth] of births)
-		identities.set(pid, `${IDENTITY_PREFIX}${hashBirth(birth)}`);
-	return identities;
+	return encodeBirths(births);
+}
+
+async function linuxBirthAsync(
+	pid: number,
+	signal?: AbortSignal,
+): Promise<string | undefined> {
+	try {
+		const stat = await readFile(`/proc/${pid}/stat`, {
+			encoding: "utf8",
+			signal,
+		});
+		const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+		if (!start) return undefined;
+		bootId ??= (
+			await readFile("/proc/sys/kernel/random/boot_id", {
+				encoding: "utf8",
+				signal,
+			})
+		).trim();
+		return `${bootId}:${start}`;
+	} catch {
+		signal?.throwIfAborted();
+		return undefined;
+	}
+}
+
+async function psBirthsAsync(
+	pids: readonly number[],
+	stable: boolean,
+	signal?: AbortSignal,
+): Promise<Map<number, string>> {
+	recordStartupMetric("processIdentityReads");
+	const result = await execAsync(
+		["ps", "-o", "pid=,lstart=", "-p", pids.join(",")],
+		process.cwd(),
+		{},
+		{
+			env: stable ? { LC_ALL: "C", TZ: "UTC" } : {},
+			timeoutMs: 1000,
+			killGraceMs: 0,
+			maxBufferBytes: 1024 * 1024,
+			throwOnError: false,
+			signal,
+		},
+	);
+	signal?.throwIfAborted();
+	return parsePsBirths(result.stdout);
+}
+
+/** Async counterpart: inspection failures are unknown; cancellation still rejects. */
+export async function readProcessIdentitiesAsync(
+	pids: readonly number[],
+	signal?: AbortSignal,
+): Promise<Map<number, string>> {
+	signal?.throwIfAborted();
+	const wanted = wantedPids(pids);
+	if (!wanted.length) return new Map();
+	const births =
+		process.platform === "linux"
+			? new Map(
+					(
+						await Promise.all(
+							wanted.map(async (pid) => {
+								const birth = await linuxBirthAsync(pid, signal);
+								return birth === undefined ? [] : [[pid, birth] as const];
+							}),
+						)
+					).flat(),
+				)
+			: await psBirthsAsync(wanted, true, signal);
+	signal?.throwIfAborted();
+	return encodeBirths(births);
+}
+
+export async function readProcessIdentityAsync(
+	pid: number,
+	signal?: AbortSignal,
+): Promise<string | undefined> {
+	return (await readProcessIdentitiesAsync([pid], signal)).get(pid);
 }
 
 /** Process birth identity survives exec but changes when an OS reuses a pid. */
 export function readProcessIdentity(pid: number): string | undefined {
 	return readProcessIdentities([pid]).get(pid);
+}
+
+let currentIdentity: string | undefined;
+
+/** The current process cannot change birth identity during its lifetime. */
+export function readCurrentProcessIdentity(): string | undefined {
+	currentIdentity ??= readProcessIdentity(process.pid);
+	return currentIdentity;
+}
+
+export async function readCurrentProcessIdentityAsync(
+	signal?: AbortSignal,
+): Promise<string | undefined> {
+	signal?.throwIfAborted();
+	currentIdentity ??= await readProcessIdentityAsync(process.pid, signal);
+	return currentIdentity;
 }
 
 /**
@@ -154,6 +262,47 @@ export function matchesProcessIdentity(
 		: readLegacyIdentity(pid) === identity;
 }
 
+export async function matchesProcessIdentityAsync(
+	pid: number,
+	identity?: string,
+	signal?: AbortSignal,
+): Promise<boolean> {
+	signal?.throwIfAborted();
+	if (!Number.isInteger(pid) || pid <= 1 || !isProcessAlive(pid)) return false;
+	if (identity === undefined) return true;
+	if (identity.startsWith(IDENTITY_PREFIX))
+		return (await readProcessIdentityAsync(pid, signal)) === identity;
+	const birth =
+		process.platform === "linux"
+			? await linuxBirthAsync(pid, signal)
+			: (await psBirthsAsync([pid], false, signal)).get(pid);
+	return birth !== undefined && hashBirth(birth) === identity;
+}
+
+type IdentityEntry = { pid: number; processIdentity?: string };
+function livePids(entries: readonly IdentityEntry[]): Set<number> {
+	return new Set(
+		entries
+			.map((entry) => entry.pid)
+			.filter((pid) => Number.isInteger(pid) && pid > 1 && isProcessAlive(pid)),
+	);
+}
+
+function identityMatcher(
+	alive: Set<number>,
+	identities: Map<number, string>,
+): (pid: number, identity?: string) => boolean {
+	return (pid, identity) => {
+		if (!alive.has(pid)) return false;
+		// Older identities cannot be compared across environments; preserve the run.
+		if (identity === undefined || !identity.startsWith(IDENTITY_PREFIX))
+			return true;
+		const actual = identities.get(pid);
+		// Unknown inspection preserves liveness; strict signalling never uses this.
+		return actual === undefined || actual === identity;
+	};
+}
+
 /**
  * Whether each process is still the one that was recorded, for a whole list
  * with one `ps` between them.
@@ -167,27 +316,23 @@ export function matchesProcessIdentity(
  * shape their entries have.
  */
 export function processIdentityMatcher(
-	entries: readonly { pid: number; processIdentity?: string }[],
+	entries: readonly IdentityEntry[],
 ): (pid: number, identity?: string) => boolean {
 	// Only live pids are worth an identity, and asking `ps` about one that is
 	// not a pid at all makes it refuse the whole batch.
-	const alive = new Set(
-		entries
-			.map((entry) => entry.pid)
-			.filter((pid) => Number.isInteger(pid) && pid > 1 && isProcessAlive(pid)),
-	);
+	const alive = livePids(entries);
 	const identities = readProcessIdentities([...alive]);
-	return (pid, identity) => {
-		if (!alive.has(pid)) return false;
-		// Recorded by an older version in an environment we cannot reproduce:
-		// it cannot be compared, so it cannot condemn a live process either.
-		if (identity === undefined || !identity.startsWith(IDENTITY_PREFIX))
-			return true;
-		const actual = identities.get(pid);
-		// Unreadable is not a mismatch. This answers "is the run still going?",
-		// and reading a live run as dead because `ps` was slow would let the
-		// sweep tear down containers somebody is using. A reused pid has an
-		// identity, a different one, and still reads as gone.
-		return actual === undefined || actual === identity;
-	};
+	return identityMatcher(alive, identities);
+}
+
+/** Same forgiving liveness policy, without blocking the event loop. */
+export async function processIdentityMatcherAsync(
+	entries: readonly IdentityEntry[],
+	signal?: AbortSignal,
+): Promise<(pid: number, identity?: string) => boolean> {
+	const alive = livePids(entries);
+	return identityMatcher(
+		alive,
+		await readProcessIdentitiesAsync([...alive], signal),
+	);
 }

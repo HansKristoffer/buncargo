@@ -636,11 +636,9 @@ describe("mergeConfigs", () => {
 			},
 		};
 
-		// @ts-expect-error - testing merge behavior
 		const result = mergeConfigs(base, override);
 
 		expect(result.services.postgres).toEqual({ port: 5432 });
-		// @ts-expect-error - testing merge behavior
 		expect(result.services.redis).toEqual({ port: 6379 });
 	});
 
@@ -652,11 +650,9 @@ describe("mergeConfigs", () => {
 			},
 		};
 
-		// @ts-expect-error - testing merge behavior
 		const result = mergeConfigs(base, override);
 
 		expect(result.apps?.api).toEqual({ port: 3000, devCommand: "bun run dev" });
-		// @ts-expect-error - testing merge behavior
 		expect(result.apps?.web).toEqual({
 			port: 5173,
 			devCommand: "bun run dev:web",
@@ -754,14 +750,11 @@ describe("mergeConfigs", () => {
 	});
 
 	it("composes the shared env builders instead of replacing", () => {
-		const base: DevConfig<
-			{ postgres: ServiceConfig },
-			Record<string, never>
-		> = {
+		const base = defineDevConfig({
 			projectPrefix: "myapp",
 			services: { postgres: { port: 5432 } },
 			env: () => ({ FROM_BASE: "1", SHARED: "base" }),
-		};
+		});
 		const override = {
 			env: () => ({ FROM_OVERRIDE: "1", SHARED: "override" }),
 		};

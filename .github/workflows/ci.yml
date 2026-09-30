@@ -53,6 +53,31 @@ jobs:
       - name: Verify the packed consumer artifact
         run: bun run verify:package
 
+  startup:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - run: bun install --frozen-lockfile
+      - run: bun run build:js
+      - name: Check startup and cancellation budgets
+        run: bun run benchmark:startup --samples=5 --budget-scale=1.5
+      - name: Check 200 library sessions for leaked resources
+        run: bun run test:stress-sessions
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: startup-${{ matrix.os }}
+          path: .buncargo/benchmarks/startup.json
+          if-no-files-found: ignore
+
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -18,6 +18,7 @@ import {
 import { containerNameFor } from "./run-plan";
 import {
 	appleContainerPortOwners,
+	appleContainerPortOwnersAsync,
 	appleProjectServiceStates,
 	diagnoseAppleService,
 	findAppleContainerOnPort,
@@ -103,6 +104,10 @@ export function appleContainerRuntimeAdapter(
 
 		containerPortOwners() {
 			return appleContainerPortOwners(cli);
+		},
+
+		containerPortOwnersAsync(signal?: AbortSignal) {
+			return appleContainerPortOwnersAsync(cli, signal);
 		},
 
 		projectServiceStates(projectName: string, signal?: AbortSignal) {

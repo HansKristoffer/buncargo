@@ -10,7 +10,7 @@ import {
 	killPortOwner,
 	signalProcessTree,
 } from "../../core/process";
-import { matchesProcessIdentity } from "../../core/process-identity";
+import { matchesProcessIdentityAsync } from "../../core/process-identity";
 import { askConfirm, isInteractive } from "../../core/prompt";
 import {
 	findRunsByRoot,
@@ -160,7 +160,7 @@ async function stopApp(
 	}
 
 	if (
-		!matchesProcessIdentity(app.pid, app.processIdentity) ||
+		!(await matchesProcessIdentityAsync(app.pid, app.processIdentity)) ||
 		(run.sessionId && !app.processIdentity)
 	) {
 		log.error(
@@ -331,7 +331,7 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 	}
 
 	if (
-		!matchesProcessIdentity(run.pid, run.processIdentity) ||
+		!(await matchesProcessIdentityAsync(run.pid, run.processIdentity)) ||
 		(run.sessionId && !run.processIdentity)
 	) {
 		log.error(

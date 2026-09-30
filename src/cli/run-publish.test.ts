@@ -13,7 +13,9 @@ import { readProcessIdentity } from "../core/process-identity";
 import { loadRuns, readLiveRuns, releaseRun } from "../core/run-registry";
 import { handleStop, stopService } from "./commands/stop";
 import {
+	flushRunPatches,
 	markApps,
+	patchCurrentRun,
 	publishCurrentRun,
 	type RunSource,
 	readGitBranch,
@@ -86,6 +88,40 @@ describe("published run ownership", () => {
 		await releaseRun("session-a");
 		expect((await loadRuns())[0]?.releasedAt).toBeString();
 		expect(await readLiveRuns()).toEqual([]);
+	});
+
+	it("batches spawn identities and ordered terminal updates without losing captures", async () => {
+		const env = source("batch");
+		await publishCurrentRun(env, {
+			apps: {
+				web: { port: 3000, devCommand: "bun dev" },
+				worker: { kind: "worker", devCommand: "bun worker" },
+			},
+			serviceNames: [],
+		});
+		const writes = [
+			recordAppSpawn(env, "web", process.pid, false),
+			recordAppSpawn(env, "worker", process.ppid, false),
+			patchCurrentRun(env, { captures: { first: "a" } }),
+			markApps(env, ["web"], "failed"),
+			markApps(env, ["web", "worker"], "ready"),
+			patchCurrentRun(env, { captures: { second: "b" } }),
+		];
+		await flushRunPatches(env);
+		await Promise.all(writes);
+		const entry = (await loadRuns())[0];
+		if (!entry) throw new Error("Run entry missing");
+		expect(entry.apps.find((app) => app.name === "web")).toMatchObject({
+			pid: process.pid,
+			processIdentity: readProcessIdentity(process.pid),
+			status: "failed",
+		});
+		expect(entry.apps.find((app) => app.name === "worker")).toMatchObject({
+			pid: process.ppid,
+			processIdentity: readProcessIdentity(process.ppid),
+			status: "ready",
+		});
+		expect(entry.captures).toEqual({ first: "a", second: "b" });
 	});
 
 	it("publishes the config's tasks for the menu bar's run button", async () => {

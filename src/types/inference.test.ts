@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { defineDevConfig } from "../config";
+import { defineDevConfig, mergeConfigs } from "../config";
 import { getEnvVar } from "../core/utils";
 import { service } from "../docker-compose/services";
 import { createDevEnvironment } from "../environment";
@@ -261,3 +261,85 @@ describe("config inference guardrails", () => {
 		expect(partial.projectPrefix).toBe("partial");
 	});
 });
+
+// Merging reusable configs retains new keys and replaces overlapping value types.
+function _probeMergedConfig() {
+	const base = defineDevConfig({
+		projectPrefix: "merge-types",
+		services: { db: service.postgres() },
+		apps: { api: { port: 3000, devCommand: false } },
+		env: () => ({ MODE: "base" as const, BASE: 1 }),
+	});
+	const merged = mergeConfigs(base, {
+		services: { cache: service.redis() },
+		apps: { web: { port: 5173, devCommand: "npm run dev" } },
+		env: (ports) => ({
+			MODE: "override" as const,
+			CACHE: ports.cache,
+			WEB: ports.web,
+		}),
+	});
+	type _Services = Expect<Equal<keyof typeof merged.services, "db" | "cache">>;
+	type _Apps = Expect<
+		Equal<keyof NonNullable<typeof merged.apps>, "api" | "web">
+	>;
+	type Overlay = ReturnType<NonNullable<typeof merged.env>>;
+	type _OverrideWins = Expect<Equal<Overlay["MODE"], "override">>;
+	type _OverlayKeys = Expect<
+		Equal<keyof Overlay, "BASE" | "MODE" | "CACHE" | "WEB">
+	>;
+	const env = createDevEnvironment(merged);
+	const url: string = env.urls.web;
+	const value: number = getEnvVar(merged, "CACHE");
+	// @ts-expect-error - merging does not widen the namespace to arbitrary keys
+	getEnvVar(merged, "MISSING");
+	return { url, value };
+}
+
+function _probeMergeWithoutBaseApps() {
+	const merged = mergeConfigs(
+		{ projectPrefix: "no-app-base", services: {} },
+		{ apps: { web: { port: 3000, devCommand: "pnpm dev" } } },
+	);
+	type _Apps = Expect<Equal<keyof NonNullable<typeof merged.apps>, "web">>;
+	return merged;
+}
+
+function _probeOriginalMergeTypeParameters() {
+	const base = defineDevConfig({
+		projectPrefix: "legacy-merge",
+		services: { db: service.postgres() },
+		apps: { web: { port: 3000, devCommand: false } },
+		env: () => ({ BASE: 1 }),
+	});
+	const merged = mergeConfigs<
+		typeof base.services,
+		NonNullable<typeof base.apps>,
+		{ BASE: number },
+		{ OVERRIDE: string }
+	>(base, { env: () => ({ OVERRIDE: "value" }) });
+	type _Overlay = Expect<
+		Equal<keyof ReturnType<NonNullable<typeof merged.env>>, "BASE" | "OVERRIDE">
+	>;
+	return merged;
+}
+
+function _probeMergeAddingFirstEnvBuilder() {
+	const base = defineDevConfig({
+		projectPrefix: "first-overlay",
+		services: {},
+	});
+	const merged = mergeConfigs(base, { env: () => ({ FEATURE: "enabled" }) });
+	type _EnvKeys = Expect<
+		Equal<keyof ReturnType<NonNullable<typeof merged.env>>, "FEATURE">
+	>;
+	const value: string = getEnvVar(merged, "FEATURE");
+	const raw = mergeConfigs(
+		{ projectPrefix: "raw-overlay", services: {} },
+		{ env: () => ({ FLAG: 1 }) },
+	);
+	type _RawEnvKeys = Expect<
+		Equal<keyof ReturnType<NonNullable<typeof raw.env>>, "FLAG">
+	>;
+	return { value, raw };
+}

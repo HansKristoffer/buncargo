@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync, unlinkSync } from "node:fs";
 import { sweepOrphanedContainers } from "../container-runtime/sweep";
 import { FileLockTimeoutError, withFileLock } from "./file-lock";
-import { readProcessIdentity } from "./process-identity";
+import { readCurrentProcessIdentityAsync } from "./process-identity";
 import { writeJsonDocumentSync } from "./registry-file";
 import {
 	getWatchdogLockFile,
@@ -74,7 +74,7 @@ withFileLock(
 		writeJsonDocumentSync(pidFile, {
 			pid: process.pid,
 			ownerId,
-			processIdentity: readProcessIdentity(process.pid),
+			processIdentity: await readCurrentProcessIdentityAsync(),
 		});
 		log(`Started (PID: ${process.pid})`);
 		try {

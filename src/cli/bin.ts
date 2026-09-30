@@ -12,34 +12,8 @@
  *   bunx buncargo help          # Show help
  */
 
-import { handleSim } from "../expo/sim-command";
-import { handleBar } from "./commands/bar";
-import { handleBuild } from "./commands/build";
-import { handleCi } from "./commands/ci";
-import { handleConnect } from "./commands/connect";
-import { handleExec } from "./commands/exec";
-import { handleGenerate } from "./commands/generate";
-import { showHelp } from "./commands/help";
-import { handleHosts } from "./commands/hosts";
-import { handleDoctor, handleLs, handleStatus } from "./commands/inspect";
-import { handleOpen, handleUrl } from "./commands/open";
-import { handlePrune } from "./commands/prune";
 import { type CliCommandName, resolveCommandName } from "./commands/registry";
-import { handleRun } from "./commands/run";
-import { handleRuns } from "./commands/runs";
-import {
-	handleDev,
-	handleEnv,
-	handlePrisma,
-	handleTypecheck,
-} from "./commands/runtime";
-import { handleSecrets } from "./commands/secrets";
-import { handleSetup } from "./commands/setup";
-import { handleStop } from "./commands/stop";
-import { showVersion } from "./commands/version";
-import { handleWait } from "./commands/wait";
 import { CliError } from "./errors";
-import { runIntegrationCommand } from "./integration-commands";
 import * as log from "./log";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -55,105 +29,131 @@ async function runCommand(
 ): Promise<void> {
 	switch (command) {
 		case "connect":
-			await handleConnect(commandArgs);
+			await (await import("./commands/connect")).handleConnect(commandArgs);
 			return;
 		case "exec":
-			process.exitCode = await handleExec(commandArgs);
+			process.exitCode = await (await import("./commands/exec")).handleExec(
+				commandArgs,
+			);
 			return;
 		case "run":
-			process.exitCode = await handleRun(commandArgs);
+			process.exitCode = await (await import("./commands/run")).handleRun(
+				commandArgs,
+			);
 			return;
 		case "ci":
-			process.exitCode = await handleCi(commandArgs);
+			process.exitCode = await (await import("./commands/ci")).handleCi(
+				commandArgs,
+			);
 			return;
 		case "wait":
-			process.exitCode = await handleWait(commandArgs);
+			process.exitCode = await (await import("./commands/wait")).handleWait(
+				commandArgs,
+			);
 			return;
 		case "url":
-			process.exitCode = await handleUrl(commandArgs);
+			process.exitCode = await (await import("./commands/open")).handleUrl(
+				commandArgs,
+			);
 			return;
 		case "open":
-			process.exitCode = await handleOpen(commandArgs);
+			process.exitCode = await (await import("./commands/open")).handleOpen(
+				commandArgs,
+			);
 			return;
 		case "generate":
-			process.exitCode = await handleGenerate(commandArgs);
+			process.exitCode = await (
+				await import("./commands/generate")
+			).handleGenerate(commandArgs);
 			return;
 		case "build":
-			process.exitCode = await handleBuild(commandArgs);
+			process.exitCode = await (await import("./commands/build")).handleBuild(
+				commandArgs,
+			);
 			return;
 		case "secrets":
-			process.exitCode = await handleSecrets(commandArgs);
+			process.exitCode = await (
+				await import("./commands/secrets")
+			).handleSecrets(commandArgs);
 			return;
 		case "setup":
-			process.exitCode = await handleSetup(commandArgs);
+			process.exitCode = await (await import("./commands/setup")).handleSetup(
+				commandArgs,
+			);
 			return;
 		case "help":
-			await showHelp();
+			await (await import("./commands/help")).showHelp();
 			return;
 
 		case "version":
-			showVersion();
+			(await import("./commands/version")).showVersion();
 			return;
 
 		case "dev":
-			await handleDev(commandArgs);
+			await (await import("./commands/runtime")).handleDev(commandArgs);
 			return;
 
 		case "typecheck":
-			await handleTypecheck(commandArgs);
+			await (await import("./commands/runtime")).handleTypecheck(commandArgs);
 			return;
 
 		case "prisma":
-			await handlePrisma(commandArgs);
+			await (await import("./commands/runtime")).handlePrisma(commandArgs);
 			return;
 
 		case "env":
-			await handleEnv(commandArgs);
+			await (await import("./commands/runtime")).handleEnv(commandArgs);
 			return;
 
 		case "ls":
-			await handleLs();
+			await (await import("./commands/inspect")).handleLs();
 			return;
 
 		case "runs":
-			await handleRuns(commandArgs);
+			await (await import("./commands/runs")).handleRuns(commandArgs);
 			return;
 
 		case "stop": {
 			// The only command whose exit code carries meaning to a caller:
 			// 2 is "no such target", 3 is "refused", and the menu bar app
 			// distinguishes them.
-			const code = await handleStop(commandArgs);
+			const code = await (await import("./commands/stop")).handleStop(
+				commandArgs,
+			);
 			if (code !== 0) process.exit(code);
 			return;
 		}
 
 		case "prune": {
-			const code = await handlePrune(commandArgs);
+			const code = await (await import("./commands/prune")).handlePrune(
+				commandArgs,
+			);
 			if (code !== 0) process.exit(code);
 			return;
 		}
 
 		case "sim": {
-			const code = await handleSim(commandArgs);
+			const code = await (await import("../expo/sim-command")).handleSim(
+				commandArgs,
+			);
 			if (code !== 0) process.exit(code);
 			return;
 		}
 
 		case "status":
-			await handleStatus();
+			await (await import("./commands/inspect")).handleStatus();
 			return;
 
 		case "doctor":
-			await handleDoctor(commandArgs);
+			await (await import("./commands/inspect")).handleDoctor(commandArgs);
 			return;
 
 		case "hosts":
-			await handleHosts(commandArgs);
+			await (await import("./commands/hosts")).handleHosts(commandArgs);
 			return;
 
 		case "bar":
-			await handleBar(commandArgs);
+			await (await import("./commands/bar")).handleBar(commandArgs);
 			return;
 
 		default: {
@@ -169,19 +169,21 @@ async function main(): Promise<void> {
 	const commandArgs = args.slice(1);
 
 	if (!rawCommand || HELP_ALIASES.has(rawCommand)) {
-		await showHelp();
+		await (await import("./commands/help")).showHelp();
 		process.exit(0);
 	}
 
 	if (VERSION_ALIASES.has(rawCommand)) {
-		showVersion();
+		(await import("./commands/version")).showVersion();
 		process.exit(0);
 	}
 
 	const command = resolveCommandName(rawCommand);
 	if (!command) {
 		// `buncargo shopify env`: an integration's own namespace.
-		const code = await runIntegrationCommand(rawCommand, commandArgs);
+		const code = await (
+			await import("./integration-commands")
+		).runIntegrationCommand(rawCommand, commandArgs);
 		if (code !== undefined) {
 			process.exitCode = code;
 			return;

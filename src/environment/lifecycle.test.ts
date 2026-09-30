@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { tmpdir } from "node:os";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
+import { planStart } from "../planning";
 import type { AppConfig, ServiceConfig } from "../types";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
@@ -73,6 +74,10 @@ function fixture() {
 		Record<string, ServiceConfig>,
 		Record<string, AppConfig>
 	>;
+	ctx.getStartPlan = (onlyApps, onlyServices) =>
+		planStart(ctx.apps, ctx.services, { onlyApps, onlyServices });
+	ctx.prepareStartAsync = async () => {};
+
 	const envVars = {
 		getHookContext: () => ({}),
 		buildEnvVars: () => ({}),

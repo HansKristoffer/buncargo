@@ -1,8 +1,13 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import {
+	type ChildProcess,
+	type SpawnOptions,
+	spawn,
+} from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AppConfig } from "../../types";
 import { connectProcessEnv } from "../runtime-flags";
+import { shellQuote } from "../shell-quote";
 import { recordStartupMetric } from "../startup-metrics";
 import { formatPrefixedLine, isBlankLogLine } from "../style";
 import { terminateOwnedProcess } from "./terminate";
@@ -29,6 +34,16 @@ function resolveShell(): string {
 }
 
 const SHELL = resolveShell();
+
+/** Execute configured shell syntax consistently across every app spawn path. */
+export function spawnAppCommand(
+	command: string,
+	options: SpawnOptions,
+): ChildProcess {
+	if (!command.trim()) throw new Error("Command cannot be empty");
+	recordStartupMetric("subprocesses");
+	return spawn(command, [], { ...options, shell: SHELL });
+}
 
 function prefixStream(
 	name: string,
@@ -124,9 +139,8 @@ export function spawnManagedApp(
 
 	const command =
 		options.attached && options.extraArgs.length > 0
-			? `${baseCommand} ${options.extraArgs.join(" ")}`
+			? `${baseCommand} ${options.extraArgs.map(shellQuote).join(" ")}`
 			: baseCommand;
-	recordStartupMetric("subprocesses");
 	const base = appSpawnOptions(config, root, envVars);
 
 	// The attached app keeps its terminal. Capturing from it needs its output
@@ -136,14 +150,14 @@ export function spawnManagedApp(
 	const capturing = options.attached && options.onText !== undefined;
 	const tee = capturing && process.stdin.isTTY ? ptyTeeArgv(command) : null;
 	const piped = capturing && !process.stdin.isTTY;
+	if (tee) recordStartupMetric("subprocesses");
 	const child = tee
 		? spawn(tee[0], tee.slice(1), {
 				...base,
 				stdio: ["inherit", "pipe", "inherit"],
 			})
-		: spawn(command, [], {
+		: spawnAppCommand(command, {
 				...base,
-				shell: SHELL,
 				stdio: !options.attached
 					? ["ignore", "pipe", "pipe"]
 					: piped
@@ -210,11 +224,9 @@ export async function runPrebuild(
 	const command = config.prebuild;
 	if (!command) return;
 	options.signal.throwIfAborted();
-	recordStartupMetric("subprocesses");
-	const child = spawn(command, [], {
+	const child = spawnAppCommand(command, {
 		...appSpawnOptions(config, root, envVars),
 		stdio: ["ignore", "pipe", "pipe"],
-		shell: SHELL,
 	});
 	prefixOutput(name, child, {
 		width: options.width,

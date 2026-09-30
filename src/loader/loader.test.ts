@@ -232,6 +232,31 @@ describe("loadDevEnv", () => {
 		expect(apiUrl).toBe(loaded.urls.api);
 	});
 
+	it("creates independent fresh sessions while keeping the config import and default cache", async () => {
+		writeFileSync(
+			join(testDir, "dev.config.ts"),
+			`const nonce = crypto.randomUUID(); export default { projectPrefix: "fresh", services: {}, apps: {web: {port: 3000, devCommand: false}}, env: () => ({NONCE: nonce}) };`,
+		);
+		const cached = await loadDevEnv({ cwd: testDir });
+		const [first, second] = await Promise.all([
+			loadDevEnv({ cwd: testDir, fresh: true }),
+			loadDevEnv({ cwd: testDir, fresh: true }),
+		]);
+		expect(
+			new Set([cached.sessionId, first.sessionId, second.sessionId]).size,
+		).toBe(3);
+		expect(first).not.toBe(second);
+		expect((first.buildEnvVars() as Record<string, string>).NONCE).toBe(
+			(cached.buildEnvVars() as Record<string, string>).NONCE,
+		);
+		first.setPublicUrls({ web: "https://first.example" });
+		(first.captured as Record<string, string>).token = "first";
+		expect(second.publicUrls).toEqual({});
+		expect(second.captured).toEqual({});
+		expect(cached.publicUrls).toEqual({});
+		expect(await loadDevEnv({ cwd: testDir })).toBe(cached);
+	});
+
 	it("throws when no config file exists", async () => {
 		await expect(loadDevEnv({ cwd: testDir })).rejects.toThrow(
 			"No config file found",
@@ -292,6 +317,54 @@ describe("loadDevEnv", () => {
 			(await loadDevEnv({ cwd: testDir, readOnly: true })).projectPrefix,
 		).toBe("one-edited");
 	});
+
+	it.each([false, true])(
+		"keeps a newer reload when an older import finishes last (older reload: %s)",
+		async (olderReload) => {
+			const entry = join(testDir, "dev.config.ts");
+			const began = join(testDir, "import-began");
+			const release = join(testDir, "import-release");
+			writeFileSync(
+				entry,
+				`await Bun.write(${JSON.stringify(began)}, "yes");
+				while (!(await Bun.file(${JSON.stringify(release)}).exists())) await Bun.sleep(5);
+				export default { ...${JSON.stringify(typedConfig)}, projectPrefix: "older" };`,
+			);
+			const older = loadDevEnv({
+				cwd: testDir,
+				readOnly: true,
+				reload: olderReload,
+			});
+			try {
+				const deadline = performance.now() + 3000;
+				while (!existsSync(began)) {
+					if (performance.now() > deadline)
+						throw new Error("The older config import did not start");
+					await Bun.sleep(5);
+				}
+				writeFileSync(
+					entry,
+					`export default { ...${JSON.stringify(typedConfig)}, projectPrefix: "newer" };`,
+				);
+				const newer = await loadDevEnv({
+					cwd: testDir,
+					readOnly: true,
+					reload: true,
+				});
+				writeFileSync(release, "yes");
+				await older;
+				expect(getDevEnv()).toBe(newer);
+				expect(await loadDevEnv({ cwd: testDir, readOnly: true })).toBe(newer);
+				clearDevEnvCache();
+				expect(
+					(await loadDevEnv({ cwd: testDir, readOnly: true })).projectPrefix,
+				).toBe("newer");
+			} finally {
+				writeFileSync(release, "yes");
+				await older;
+			}
+		},
+	);
 
 	it("invalidates runtime and environment inputs and separates read-only resolutions", async () => {
 		writeFileSync(

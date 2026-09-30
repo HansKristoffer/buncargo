@@ -8,7 +8,7 @@ import { toPortMap, toUrlMap } from "../core/ports";
 import { stopDevServers } from "../core/process/dev-servers";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWarn } from "../core/style";
-import { planStart, resolveComposeServiceNames } from "../planning";
+import { resolveComposeServiceNames } from "../planning";
 import { recordGeneratedPrismaHash } from "../prisma/schema-hash";
 import type {
 	AppConfig,
@@ -25,6 +25,7 @@ import type { DevEnvContext } from "./context";
 import { syncEnvFile } from "./env-file";
 import type { DevEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
+import { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { runMigrationsSequentially } from "./migrations";
 import type { DevRunClaimApi } from "./run-claim";
 import { runSeedIfNeeded } from "./seeding";
@@ -54,8 +55,9 @@ export function createLifecycleApi<
 	ctx: DevEnvContext<TServices, TApps, TEnv>,
 	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
 	runClaim: DevRunClaimApi,
+	coordinator = new LifecycleCoordinator(),
 ): DevLifecycleApi<TApps, TServices> {
-	const { config, services, apps, ports } = ctx;
+	const { config, services, ports } = ctx;
 
 	let selectedServices: string[] = [];
 	let selectedApps: string[] = [];
@@ -224,7 +226,17 @@ export function createLifecycleApi<
 		}
 	}
 
-	async function start(
+	function start(
+		startOptions: StartOptions<TApps, TServices> = {},
+	): Promise<DevServerPids | null> {
+		return coordinator.start(
+			(signal) => startEnvironment({ ...startOptions, signal }),
+			startOptions.signal,
+			(pids) => pids !== null && Object.keys(pids).length > 0,
+		);
+	}
+
+	async function startEnvironment(
 		startOptions: StartOptions<TApps, TServices> = {},
 	): Promise<DevServerPids | null> {
 		const { signal, onPhase, prepare = "all" } = startOptions;
@@ -253,7 +265,7 @@ export function createLifecycleApi<
 			autoStartDocker = config.docker?.autoStart,
 		} = startOptions;
 
-		const startPlan = planStart(apps, services, { onlyApps, onlyServices });
+		const startPlan = ctx.getStartPlan(onlyApps, onlyServices);
 		const appsToStart = startPlan.apps;
 		if (shouldStartServers && prepare === "all") {
 			assertAppWorkingDirectories(appsToStart, ctx.root, productionBuild);
@@ -264,7 +276,7 @@ export function createLifecycleApi<
 				(serviceKey) => [serviceKey, services[serviceKey]] as const,
 			),
 		);
-		ctx.prepareStart?.(onlyApps, onlyServices);
+		await ctx.prepareStartAsync(onlyApps, onlyServices, signal);
 		selectedServices = startPlan.requiredServiceKeys;
 		selectedApps = startPlan.appNames;
 		started = true;
@@ -286,7 +298,7 @@ export function createLifecycleApi<
 		// its own flags keeps those. The claim outlives `start()`: it is
 		// retired by `stop()`, or released when this process exits.
 		if (hasServices) {
-			await runClaim.claimRun();
+			await runClaim.claimRun({ signal });
 			// A script that starts containers and then crashes needs someone to
 			// clean up after it, exactly as a `buncargo dev` does. Not awaited:
 			// confirming the watchdog came up is no reason to delay the start.
@@ -429,7 +441,14 @@ export function createLifecycleApi<
 		}
 	}
 
-	async function stop(stopOptions: StopOptions = {}): Promise<void> {
+	function stop(stopOptions: StopOptions = {}): Promise<void> {
+		return coordinator.stop(
+			() => stopEnvironment(stopOptions),
+			stopOptions.signal,
+		);
+	}
+
+	async function stopEnvironment(stopOptions: StopOptions = {}): Promise<void> {
 		const { verbose = true, removeVolumes = false } = stopOptions;
 		stopOptions.signal?.throwIfAborted();
 		const beforeStop = config.hooks?.beforeStop;
@@ -442,6 +461,8 @@ export function createLifecycleApi<
 		}
 
 		await stopDevServers(ctx.ownedServerPids ?? {});
+		for (const name of Object.keys(ctx.ownedServerPids ?? {}))
+			delete ctx.ownedServerPids?.[name];
 		if (appOnlyRun()) {
 			return;
 		}
@@ -466,9 +487,11 @@ export function createLifecycleApi<
 		await runClaim.retireRun();
 	}
 
-	async function restart(): Promise<void> {
-		await stop();
-		await start({ startServers: false });
+	function restart(): Promise<void> {
+		return coordinator.restart(
+			(signal) => stopEnvironment({ signal }),
+			(signal) => startEnvironment({ startServers: false, signal }),
+		);
 	}
 
 	async function isRunning(): Promise<boolean> {

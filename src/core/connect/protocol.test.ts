@@ -18,8 +18,8 @@ test("Swift and CLI decode the same named directory and reject redirected target
 	expect(d.runs[0].targets[1].url).toBe("");
 	for (const url of [
 		"https://evil.example/",
-		"http://" + "b".repeat(32) + ".connect.hanskristoffer.dk/",
-		"https://" + "b".repeat(32) + ".connect.hanskristoffer.dk.evil.example/",
+		`http://${"b".repeat(32)}.connect.hanskristoffer.dk/`,
+		`https://${"b".repeat(32)}.connect.hanskristoffer.dk.evil.example/`,
 	]) {
 		const copy = structuredClone(fixture);
 		copy.runs[0].targets[0].url = url;

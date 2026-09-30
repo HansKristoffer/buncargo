@@ -1,6 +1,6 @@
 import { formatWarn } from "../core/style";
-import { expo } from "../expo";
-import { isExpoApp } from "../expo/simulator";
+import { isExpoApp } from "../expo/app-identity";
+import { expo } from "../expo/integration";
 import type {
 	AppConfig,
 	BuncargoIntegration,

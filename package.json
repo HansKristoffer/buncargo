@@ -189,7 +189,9 @@
     "test:integration-apple": "BUNCARGO_TEST_APPLE_CONTAINER=1 bun test src/apple-container/apple-container.integration.test.ts",
     "verify:package": "bun scripts/verify-package.ts",
     "test:integration-frp": "BUNCARGO_TEST_FRP=1 bun test src/core/connect/frp.integration.test.ts",
-    "test:integration-shopify-cli": "BUNCARGO_TEST_SHOPIFY_CLI=1 bun test src/shopify/cli-contract.test.ts"
+    "test:integration-shopify-cli": "BUNCARGO_TEST_SHOPIFY_CLI=1 bun test src/shopify/cli-contract.test.ts",
+    "benchmark:startup": "bun scripts/benchmark-startup-matrix.ts",
+    "test:stress-sessions": "bun scripts/stress-library-sessions.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.4",

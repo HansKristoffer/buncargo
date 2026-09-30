@@ -2,8 +2,9 @@ import type { ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { withFileLock } from "../file-lock";
 import {
-	matchesProcessIdentity,
-	readProcessIdentity,
+	matchesProcessIdentityAsync,
+	readProcessIdentitiesAsync,
+	readProcessIdentityAsync,
 } from "../process-identity";
 import { defineListRegistry } from "../registry-file";
 import { STATE_DIRNAME } from "../state-paths";
@@ -38,14 +39,14 @@ const pathFor = (root: string) => join(root, STATE_DIRNAME, "workers.json");
 export async function findWorker(
 	root: string,
 	name: string,
+	signal?: AbortSignal,
 ): Promise<WorkerOwner | undefined> {
 	const entries = await registry.read(pathFor(root), { strict: true });
-	return entries.find((entry) => entry.name === name && isLiveOwner(entry));
-}
-
-function isLiveOwner(entry: WorkerOwner): boolean {
-	// A PID can be recycled; only its recorded birth identity owns the worker.
-	return matchesProcessIdentity(entry.pid, entry.identity);
+	const entry = entries.find((entry) => entry.name === name);
+	return entry &&
+		(await matchesProcessIdentityAsync(entry.pid, entry.identity, signal))
+		? entry
+		: undefined;
 }
 
 /**
@@ -64,7 +65,26 @@ export async function spawnOwnedWorker(
 		path,
 		async () => {
 			const recorded = await registry.read(path, { strict: true });
-			const entries = recorded.filter(isLiveOwner);
+			// Ownership is strict: an unreadable birth identity cannot grant a claim.
+			const identities = await readProcessIdentitiesAsync(
+				recorded.map((entry) => entry.pid),
+				signal,
+			);
+			const live = await Promise.all(
+				recorded.map(async (entry) => ({
+					entry,
+					matches: entry.identity.startsWith("v2:")
+						? identities.get(entry.pid) === entry.identity
+						: await matchesProcessIdentityAsync(
+								entry.pid,
+								entry.identity,
+								signal,
+							),
+				})),
+			);
+			const entries = live
+				.filter((item) => item.matches)
+				.map((item) => item.entry);
 
 			if (entries.some((entry) => entry.name === name)) {
 				throw new Error(
@@ -82,7 +102,9 @@ export async function spawnOwnedWorker(
 					child.once("error", reject);
 				});
 
-				const identity = child.pid ? readProcessIdentity(child.pid) : undefined;
+				const identity = child.pid
+					? await readProcessIdentityAsync(child.pid, signal)
+					: undefined;
 				if (!child.pid || !identity || child.exitCode !== null) {
 					throw new Error(`Worker "${name}" exited before process startup`);
 				}
@@ -116,7 +138,10 @@ export async function stopWorker(root: string, name: string): Promise<boolean> {
 	return withFileLock(path, async () => {
 		const entries = await registry.read(path, { strict: true });
 		const entry = entries.find((item) => item.name === name);
-		if (!entry || !isLiveOwner(entry)) {
+		if (
+			!entry ||
+			!(await matchesProcessIdentityAsync(entry.pid, entry.identity))
+		) {
 			return false;
 		}
 

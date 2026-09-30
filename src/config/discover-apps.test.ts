@@ -51,6 +51,25 @@ describe("discoverApps", () => {
 		expect(isDiscoveredApp({ ...apps.theme } as never)).toBe(true);
 	});
 
+	it.each(["bun", "npm", "pnpm", "yarn"] as const)(
+		"uses %s for every discovered command and preserves script names",
+		(runner) => {
+			const root = repo({
+				"apps/web": { "dev with spaces": "x", "prepare;echo": "x", build: "x" },
+			});
+			const app = discoverApps({
+				root,
+				globs: ["apps/*"],
+				runner,
+				script: "dev with spaces",
+				prebuild: "prepare;echo",
+			}).web;
+			expect(app?.devCommand).toBe(`${runner} run 'dev with spaces'`);
+			expect(app?.prebuild).toBe(`${runner} run 'prepare;echo'`);
+			expect(app?.buildCommand).toBe(`${runner} run build`);
+		},
+	);
+
 	it("gives servers consecutive ports", () => {
 		const root = repo({ "svc/a": { dev: "x" }, "svc/b": { dev: "x" } });
 		const apps = discoverApps({
