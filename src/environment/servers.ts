@@ -72,6 +72,7 @@ export async function startAppServers<
 	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
 	options: {
 		apps: Record<string, AppConfig>;
+		onPhase?: (name: string, ms: number) => void;
 		productionBuild: boolean;
 		verbose: boolean;
 		signal?: AbortSignal;
@@ -87,6 +88,7 @@ export async function startAppServers<
 		// Both share one fetch per scope through the module's cache.
 		const secrets = await loadAppSecrets(appsToStart, undefined, {
 			signal: options.signal,
+			onWait: (ms) => options.onPhase?.("secrets", ms),
 		});
 		const buildEnv = Object.fromEntries(
 			Object.entries(envVars.buildAppEnvVarsMap(appsToStart, true)).map(
@@ -138,6 +140,7 @@ export async function startAppServers<
 			skipContainers: !ctx.hasSelectedServices,
 			signal: options.signal,
 			deferPublicUrlApps: false,
+			onPhase: options.onPhase,
 			onAppSpawned: (name, pid) => {
 				if (ctx.ownedServerPids) ctx.ownedServerPids[name] = pid;
 			},

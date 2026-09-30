@@ -115,6 +115,7 @@ export async function spawnDevServer(
 }
 
 export interface StartDevServersOptions {
+	onPhase?: (name: string, ms: number) => void;
 	/** Reports a supervised failure after a library start returned its pids. */
 	onFailure?: (error: unknown) => void;
 	skipContainers?: boolean;
@@ -274,6 +275,7 @@ export async function startDevServers(
 	// map without spawning anything when no app declared a scope.
 	const secrets = await loadAppSecrets(startable, undefined, {
 		signal: options.signal,
+		onWait: (ms) => options.onPhase?.("secrets", ms),
 	});
 	const appEnv = (name: string) => ({
 		...secrets[name],

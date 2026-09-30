@@ -599,6 +599,7 @@ async function runDevFlow<
 				projectName: env.projectName,
 				runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
 				skipContainers: !hasServices,
+				onPhase: timer.record,
 				onReady: async () => {
 					timer.record("app readiness", performance.now() - appsStartedAt);
 					timer.report();

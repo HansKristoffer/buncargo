@@ -121,6 +121,7 @@ export interface DevEnvContext<
 	/** Absent entries are skipped: only exposed targets that came up have a URL. */
 	setPublicUrls(urls: Readonly<Record<string, string | undefined>>): void;
 	clearPublicUrls(): void;
+	onSecretsWait?: (ms: number) => void;
 	logInfo(
 		label?: string,
 		tunnels?: PublicTunnel[],

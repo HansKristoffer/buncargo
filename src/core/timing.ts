@@ -56,7 +56,12 @@ export function createPhaseTimer(
 	const recorded: Array<{ name: string; durationMs: number }> = [];
 
 	function record(name: string, durationMs: number): void {
-		recorded.push({ name, durationMs: Math.round(durationMs) });
+		const previous =
+			name === "secrets"
+				? recorded.find((phase) => phase.name === name)
+				: undefined;
+		if (previous) previous.durationMs += Math.round(durationMs);
+		else recorded.push({ name, durationMs: Math.round(durationMs) });
 	}
 
 	return {
