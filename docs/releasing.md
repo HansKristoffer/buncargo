@@ -27,3 +27,9 @@ Rerun the failed release workflow after correcting credentials or infrastructure
 Server deployment depends on `cli_released`, independently of `publish_npm`. An npm version already present must not prevent a missing/failed server deployment from running. Reinstalling the same checksummed server artifact and activating the same commit is safe. Existing npm versions and complete bar assets remain skipped by their existing publication logic. API errors fail the job rather than being interpreted as missing releases.
 
 Manual publication workflows remain operator escape hatches; use the normal release workflow so the server gate is enforced.
+
+## PR checks and npm identity
+
+The release workflow explicitly dispatches CI on Release Please's branch using `actions: write`. Required checks therefore do not need a personal access token. Publication consumes the verified tarball and uses npm trusted publishing: package `buncargo`, owner `HansKristoffer`, repository `buncargo`, calling workflow `release.yml`, no environment, publish permission.
+
+Release workflows run in order; do not auto-merge release PRs. The GitHub release can exist before its npm publication or downloadable bar assets complete. Check the Release run before announcing availability.

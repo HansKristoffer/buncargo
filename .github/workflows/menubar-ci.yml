@@ -4,15 +4,7 @@ name: Menubar CI
 
 on:
   pull_request:
-    paths:
-      - "menubar/**"
-      - "src/core/run-registry*"
-      - "src/core/connect/**"
-      - "src/core/registry-file*"
-      - "src/cli/run-publish*"
-      - "src/cli/commands/stop*"
-      - "src/types/**"
-      - ".github/workflows/menubar-ci.yml"
+  workflow_dispatch:
 
 concurrency:
   group: menubar-ci-${{ github.event.pull_request.number || github.ref }}

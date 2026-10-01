@@ -108,7 +108,7 @@ export interface BarUpdateInput {
  * The whole policy, as a pure function.
  *
  * Kept separate from the fetching and the printing so every row of the table
- * in `docs/bar-update-plan.md` is one assertion in a unit test.
+ * in `docs/bar-updates.md` is one assertion in a unit test.
  */
 export function decideBarUpdate(input: BarUpdateInput): BarUpdateDecision {
 	const { installed, cliRegistryVersion, latestVersion, hintedVersion } = input;
