@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.4.0](https://github.com/HansKristoffer/buncargo/compare/v10.3.0...v10.4.0) (2026-10-01)
+
+
+### Features
+
+* **secrets:** unify app injection and add environment opt-outs ([#63](https://github.com/HansKristoffer/buncargo/issues/63)) ([6336bdd](https://github.com/HansKristoffer/buncargo/commit/6336bdd1299ff5734ddd3321be224732aae3f9f3))
+
 ## [10.3.0](https://github.com/HansKristoffer/buncargo/compare/v10.2.0...v10.3.0) (2026-09-30)
 
 
