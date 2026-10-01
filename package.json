@@ -203,5 +203,10 @@
   "dependencies": {
     "fast-glob": "^3.3.3",
     "picocolors": "^1.1.1"
-  }
+  },
+  "homepage": "https://github.com/HansKristoffer/buncargo#readme",
+  "bugs": {
+    "url": "https://github.com/HansKristoffer/buncargo/issues"
+  },
+  "packageManager": "bun@1.4.2"
 }

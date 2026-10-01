@@ -55,4 +55,4 @@ The dedicated server is a single point of failure. On failure, local development
 
 `bun scripts/verify-connect-compression.ts <caddy-binary>` tests the production Caddy handlers on loopback: gzip/zstd negotiation, exact decoded source bytes, identity/binary/already encoded responses, and immediate uncompressed SSE. CI runs it against the built deployment binary, and the release smoke repeats compression and streaming checks through public HTTPS.
 
-Release publication waits for the server deployment gate. See [release operation](release-flow-plan.md) and the [replacement acceptance plan](frp-replacement-plan.md) for the live cloud/browser performance checks.
+Release publication waits for the server deployment gate. See [release operation](releasing.md) and [transport validation](frp-acceptance.md) for the remaining application-specific checks.

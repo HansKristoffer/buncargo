@@ -2,15 +2,43 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, edited]
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
+  pr-title:
+    name: PR title
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            let title = context.payload.pull_request?.title;
+            if (!title) {
+              const { data: prs } = await github.rest.pulls.list({
+                ...context.repo, state: 'open',
+                head: `${context.repo.owner}:${context.ref.replace('refs/heads/', '')}`,
+              });
+              if (!prs.length) return;
+              title = prs[0].title;
+            }
+            if (!/^(feat|fix|perf|docs|style|refactor|test|build|ci|chore|revert)(\([^\r\n]+\))?!?: \S[^\r\n]*$/.test(title)) {
+              core.setFailed('Use a conventional PR title, for example fix: handle startup failures or feat!: change the public API.');
+            }
+
   # Its own job so a formatting slip fails in a minute as one check, not as
   # four test cells after the slow parts have run.
   lint:
@@ -33,7 +61,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-15]
-        bun: ["1.4.2", latest]
+        bun: ["1.4.2"]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:

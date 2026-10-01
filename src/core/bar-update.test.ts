@@ -7,7 +7,7 @@ import {
 } from "./bar-update";
 
 /**
- * The two-tier policy from `docs/bar-update-plan.md`, one assertion per row.
+ * The two-tier policy from `docs/bar-updates.md`, one assertion per row.
  *
  * `decideBarUpdate` is the only thing standing between a schema bump and every
  * installed app showing an empty menu, so each branch is pinned here rather
