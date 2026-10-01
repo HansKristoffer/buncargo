@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.4.1](https://github.com/HansKristoffer/buncargo/compare/v10.4.0...v10.4.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **release:** finish relay TLS checks and validate release PRs ([#65](https://github.com/HansKristoffer/buncargo/issues/65)) ([1639270](https://github.com/HansKristoffer/buncargo/commit/16392703bf9bc827b3c676880b3893e5539bc8ed))
+
 ## [10.4.0](https://github.com/HansKristoffer/buncargo/compare/v10.3.0...v10.4.0) (2026-10-01)
 
 
