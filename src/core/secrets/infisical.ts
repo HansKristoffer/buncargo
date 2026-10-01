@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AppConfig, SecretsScopeConfig } from "../../types";
 import { withFileLock } from "../file-lock";
 import {
@@ -72,10 +73,12 @@ export function scopeKey(scope: InfisicalScope): string {
  * that declared nothing keeps today's behaviour.
  */
 export function resolveScope(
-	scope: SecretsScopeConfig | undefined,
-	defaults: SecretsScopeConfig | undefined,
+	scope: SecretsScopeConfig | false | undefined,
+	defaults: SecretsScopeConfig | false | undefined,
 	env: NodeJS.ProcessEnv = process.env,
 ): InfisicalScope | undefined {
+	if (scope === false || defaults === false) return undefined;
+
 	const projectId = scope?.projectId ?? defaults?.projectId;
 	if (!projectId) return undefined;
 	const organizationId = scope?.organizationId ?? defaults?.organizationId;
@@ -106,9 +109,18 @@ export function resolveScope(
  */
 export function applySecretDefaults<TApps extends Record<string, AppConfig>>(
 	apps: TApps,
-	defaults: SecretsScopeConfig | undefined,
+	defaults: SecretsScopeConfig | false | undefined,
 	env: NodeJS.ProcessEnv = process.env,
 ): TApps {
+	if (defaults === false) {
+		return Object.fromEntries(
+			Object.entries(apps).map(([name, app]) => [
+				name,
+				{ ...app, secrets: false },
+			]),
+		) as TApps;
+	}
+
 	if (!Object.values(apps).some((app) => app.secrets)) return apps;
 	return Object.fromEntries(
 		Object.entries(apps).map(([name, app]) => [
@@ -402,7 +414,12 @@ export function fetchScopeSecrets(
 ): Promise<Record<string, string>> {
 	options.signal?.throwIfAborted();
 	const credentials = infisicalMachineCredentials(options.env);
-	const key = `${scopeKey(scope)}|${credentials ? "machine" : "session"}`;
+	// A different identity or rotated credential must authenticate for itself.
+	// Keep raw credentials out of cache keys and diagnostic metadata.
+	const authKey = credentials
+		? createHash("sha256").update(JSON.stringify(credentials)).digest("hex")
+		: "session";
+	const key = `${scopeKey(scope)}|${authKey}`;
 	const cached = cache.get(key);
 	if (cached) return cached;
 
@@ -468,7 +485,7 @@ export function describeSecretsError(error: unknown): string {
  */
 export async function loadAppSecrets(
 	apps: Record<string, AppConfig>,
-	defaults: SecretsScopeConfig | undefined,
+	defaults: SecretsScopeConfig | false | undefined,
 	options: {
 		signal?: AbortSignal;
 		env?: NodeJS.ProcessEnv;
@@ -476,9 +493,6 @@ export async function loadAppSecrets(
 	} = {},
 ): Promise<Record<string, Record<string, string>>> {
 	const env = options.env ?? process.env;
-	// A machine identity lets an app's own loader authenticate without the CLI
-	// session, whose hang this avoids. Commands still fetch with the identity.
-	if (infisicalMachineCredentials(env)) return {};
 	const scopes = new Map<string, InfisicalScope>();
 	const appScopes = new Map<string, string>();
 	for (const [name, app] of Object.entries(apps)) {
@@ -540,8 +554,8 @@ function withoutExported(
 
 /**
  * Every secret in one scope, for something that runs one command with one
- * scope (migrations, seed, `exec`, tasks). Unlike app processes,
- * these fetch with a machine identity too: they have no loader of their own.
+ * scope (migrations, seed, `exec`, tasks). Uses the same authentication and
+ * per-scope cache as app processes.
  * Throws when the scope has no project or the fetch fails.
  */
 export async function loadScopeSecrets(
@@ -549,7 +563,7 @@ export async function loadScopeSecrets(
 	options: {
 		signal?: AbortSignal;
 		env?: NodeJS.ProcessEnv;
-		defaults?: SecretsScopeConfig;
+		defaults?: SecretsScopeConfig | false;
 		onWait?: (ms: number) => void;
 	} = {},
 ): Promise<Record<string, string>> {
@@ -581,7 +595,7 @@ export function missingRequiredSecrets(
 ): Record<string, string[]> {
 	const missing: Record<string, string[]> = {};
 	for (const [name, app] of Object.entries(apps)) {
-		const required = app.secrets?.required ?? [];
+		const required = app.secrets ? (app.secrets.required ?? []) : [];
 		if (required.length === 0) continue;
 		const env = provided(name);
 		const absent = required.filter((key) => !env[key]);

@@ -100,7 +100,10 @@ export function mergeConfigs(
 		seed: overrides.seed ?? base.seed,
 		options: mergeGroup(base.options, overrides.options),
 		docker: mergeGroup(base.docker, overrides.docker),
-		secrets: mergeGroup(base.secrets, overrides.secrets),
+		secrets:
+			base.secrets === false || overrides.secrets === false
+				? (overrides.secrets ?? base.secrets)
+				: mergeGroup(base.secrets, overrides.secrets),
 		tasks: mergeGroup(base.tasks, overrides.tasks),
 		profiles: mergeGroup(base.profiles, overrides.profiles),
 	};

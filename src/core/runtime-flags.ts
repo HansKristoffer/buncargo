@@ -192,7 +192,7 @@ export function infisicalPathOverride(
 /**
  * An Infisical universal-auth identity (`INFISICAL_CLIENT_ID` +
  * `INFISICAL_CLIENT_SECRET`), for commands that fetch secrets themselves
- * (`exec`, migrations, the seed) where no CLI session exists, such as CI.
+ * (apps, `exec`, migrations, the seed) where no CLI session exists, such as CI.
  */
 export function infisicalMachineCredentials(
 	env: NodeJS.ProcessEnv = process.env,

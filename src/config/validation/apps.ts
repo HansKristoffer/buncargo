@@ -36,7 +36,11 @@ export function validateApps(
 			errors.push(`App "${name}" must have a valid port number`);
 		}
 
-		if (app.secrets && !(app.secrets.projectId ?? config.secrets?.projectId)) {
+		if (
+			config.secrets !== false &&
+			app.secrets &&
+			!(app.secrets.projectId ?? config.secrets?.projectId)
+		) {
 			errors.push(
 				`App "${name}" sets secrets without a projectId. Set apps.${name}.secrets.projectId, or secrets.projectId for every app.`,
 			);

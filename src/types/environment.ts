@@ -188,7 +188,7 @@ export interface DevEnvironment<
 	/** Labelled values for humans: labelled captures, then every integration's `describe`. */
 	details(): Record<string, string>;
 	/** The config-level Infisical scope (`secrets`), when configured. */
-	readonly secrets?: SecretsScopeConfig;
+	readonly secrets?: SecretsScopeConfig | false;
 	/** `tasks` from config, for `buncargo run` */
 	readonly tasks?: Readonly<
 		Record<

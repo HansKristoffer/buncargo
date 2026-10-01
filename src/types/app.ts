@@ -74,8 +74,9 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	/**
 	 * Fetch this app's Infisical secrets once, in buncargo, and inject them.
 	 * Merged below the developer's own environment and below computed env vars.
+	 * Set false to skip this app, including startup prefetch.
 	 */
-	secrets?: SecretsScopeConfig;
+	secrets?: SecretsScopeConfig | false;
 	/** Own the TTY (stdin). Only one app may be interactive. */
 	interactive?: boolean;
 	/** Start this app after public tunnels are open so env sees *_PUBLIC_URL. */

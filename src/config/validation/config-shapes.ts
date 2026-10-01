@@ -5,7 +5,11 @@ export function validateSupplementShapes(
 	checks: ShapeChecks,
 ): void {
 	const { errors, object, record, check, strings, fields, duration } = checks;
-	if (value.secrets !== undefined && record(value.secrets, "secrets"))
+	if (
+		value.secrets !== undefined &&
+		value.secrets !== false &&
+		record(value.secrets, "secrets")
+	)
 		fields(value.secrets, "secrets.", SECRETS_FIELDS, "string");
 	for (const key of ["docker", "options", "prisma", "seed", "hooks"]) {
 		if (value[key] !== undefined) record(value[key], key);

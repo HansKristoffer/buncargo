@@ -1300,3 +1300,38 @@ describe("checks, tasks and profiles", () => {
 		});
 	});
 });
+
+describe("disabled secrets", () => {
+	it("accepts app opt-outs and an environment opt-out over incomplete scopes", () => {
+		expect(
+			validateConfig({
+				projectPrefix: "offline",
+				services: {},
+				secrets: false,
+				apps: { api: { port: 3000, devCommand: "true", secrets: {} } },
+			}),
+		).toEqual([]);
+		expect(
+			validateConfig({
+				projectPrefix: "offline",
+				services: {},
+				apps: { api: { port: 3000, devCommand: "true", secrets: false } },
+			}),
+		).toEqual([]);
+	});
+
+	it("keeps a false override and permits explicitly re-enabling a base config", () => {
+		const base = defineDevConfig({
+			projectPrefix: "offline",
+			services: {},
+			secrets: { projectId: "p1" },
+		});
+		const disabled = mergeConfigs(base, { secrets: false });
+
+		expect(disabled.secrets).toBe(false);
+		expect(mergeConfigs(disabled, {}).secrets).toBe(false);
+		expect(
+			mergeConfigs(disabled, { secrets: { projectId: "p2" } }).secrets,
+		).toEqual({ projectId: "p2" });
+	});
+});
