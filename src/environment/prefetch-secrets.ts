@@ -8,7 +8,7 @@ import type { AppConfig, MigrationConfig, SecretsScopeConfig } from "../types";
 /** Fire early; consumers own warnings and await the same cached promises. */
 export function prefetchSecrets(input: {
 	apps: Record<string, AppConfig>;
-	defaults?: SecretsScopeConfig;
+	defaults?: SecretsScopeConfig | false;
 	seed?: SecretsScopeConfig | false;
 	includeSeed: boolean;
 	migrations: MigrationConfig[];

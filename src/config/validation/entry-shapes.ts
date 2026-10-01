@@ -68,6 +68,7 @@ export function validateEntryShapes(
 				);
 				if (
 					entry.secrets !== undefined &&
+					entry.secrets !== false &&
 					record(entry.secrets, `${path}.secrets`)
 				) {
 					fields(entry.secrets, `${path}.secrets.`, SECRETS_FIELDS, "string");

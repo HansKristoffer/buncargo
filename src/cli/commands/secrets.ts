@@ -108,7 +108,7 @@ export async function handleSecrets(args: string[]): Promise<number> {
 		throw error;
 	}
 
-	const required = config?.required ?? [];
+	const required = config ? (config.required ?? []) : [];
 	const keys = [...new Set([...Object.keys(values), ...required])].sort();
 	const width = Math.max(0, ...keys.map((key) => key.length));
 	const org = scope.organizationId ? ` org ${scope.organizationId}` : "";

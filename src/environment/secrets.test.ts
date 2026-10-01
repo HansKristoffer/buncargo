@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
 import { clearScopeSecretsCache } from "../core/secrets/infisical";
 import { createDevEnvironment } from "./create-dev-environment";
+import { runMigrationsSequentially } from "./migrations";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -73,4 +74,69 @@ it("gives exec the app's scope, else the config's, beneath the computed env", as
 	expect(plain.db).toStartWith("postgresql://");
 	expect(await read({ app: "api" })).toMatchObject({ a: "api-scope", s: null });
 	expect(await read({ secrets: false })).toMatchObject({ s: null, a: null });
+});
+
+it("runs app startup, seed, migrations and exec offline without fetching disabled scopes", async () => {
+	const infisical = startFakeInfisical({ cliFails: true });
+	const saved = {
+		home: process.env.HOME,
+		path: process.env.BUNCARGO_INFISICAL_PATH,
+	};
+	process.env.HOME = infisical.home;
+	process.env.BUNCARGO_INFISICAL_PATH = infisical.cliPath;
+	const root = mkdtempSync(join(tmpdir(), "buncargo-offline-secrets-"));
+	cleanups.push(() => {
+		infisical.stop();
+		rmSync(root, { recursive: true, force: true });
+		if (saved.home === undefined) delete process.env.HOME;
+		else process.env.HOME = saved.home;
+		if (saved.path === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
+		else process.env.BUNCARGO_INFISICAL_PATH = saved.path;
+	});
+	writeFileSync(join(root, "package.json"), JSON.stringify({ workspaces: [] }));
+	writeFileSync(
+		join(root, "read.ts"),
+		'if (process.env.SYNTHETIC_KEY !== "test-value") throw new Error("Missing synthetic input"); console.log("offline-ok")',
+	);
+	writeFileSync(
+		join(root, "app.ts"),
+		"Bun.serve({port:Number(process.env.PORT),fetch:()=>new Response(process.env.SYNTHETIC_KEY)})",
+	);
+	const scope = { projectId: "must-not-fetch", siteUrl: infisical.siteUrl };
+	const env = createDevEnvironment(
+		{
+			projectPrefix: "offline",
+			services: {},
+			secrets: false,
+			apps: {
+				api: {
+					port: 3000,
+					devCommand: "bun app.ts",
+					healthEndpoint: "/",
+					secrets: scope,
+				},
+			},
+			seed: { command: "bun read.ts", secrets: scope },
+			env: () => ({ SYNTHETIC_KEY: "test-value" }),
+			options: { verbose: false, hosts: false },
+		},
+		{ root },
+	);
+
+	try {
+		expect((await env.runSeed({ verbose: false })).status).toBe("succeeded");
+		await env.start({ onlyApps: ["api"], productionBuild: false });
+		expect(await (await fetch(env.urls.api)).text()).toBe("test-value");
+		expect(
+			(await env.exec(["bun", "read.ts"], { secrets: scope })).stdout.trim(),
+		).toBe("offline-ok");
+		await runMigrationsSequentially(
+			[{ name: "isolated", command: "bun read.ts", secrets: scope }],
+			env.exec,
+		);
+		expect(infisical.requests).toEqual([]);
+		expect(infisical.cliCalls()).toEqual([]);
+	} finally {
+		await env.stop();
+	}
 });

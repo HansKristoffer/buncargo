@@ -172,14 +172,25 @@ describe("loadAppSecrets", () => {
 		).toEqual({ api: {} });
 	});
 
-	it("leaves a machine identity to the app's own loader", async () => {
+	it("injects machine-auth secrets once per scope across apps and commands", async () => {
 		const infisical = start();
 		expect(
-			await loadAppSecrets({ api: app("p1") }, undefined, {
+			await loadAppSecrets({ api: app("p1"), web: app("p1") }, undefined, {
 				env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "right" },
 			}),
-		).toEqual({});
+		).toEqual({
+			api: { OPENAI_API_KEY: "sk-project" },
+			web: { OPENAI_API_KEY: "sk-project" },
+		});
+		await loadScopeSecrets(
+			{ projectId: "p1", siteUrl: infisical.siteUrl },
+			{ env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "right" } },
+		);
 		expect(infisical.cliCalls()).toEqual([]);
+		expect(infisical.requests).toEqual([
+			"POST /api/v1/auth/universal-auth/login",
+			"GET /api/v4/secrets",
+		]);
 	});
 
 	it("warns with the fix, never the CLI's output, when the CLI fails", async () => {
@@ -280,4 +291,45 @@ it("retries a rejected session token after login and clears settled tokens", asy
 	clearScopeSecretsCache();
 	await loadScopeSecrets(scope, { env: {} });
 	expect(infisical.cliCalls()).toHaveLength(3);
+});
+
+it("never loads disabled scopes, even with machine credentials and explicit app scopes", async () => {
+	const infisical = start();
+	const disabledApp: AppConfig = {
+		port: 3000,
+		devCommand: "true",
+		secrets: false,
+	};
+	const defaults = { projectId: "p1", siteUrl: infisical.siteUrl };
+	const env = { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "right" };
+
+	expect(resolveScope(false, defaults, env)).toBeUndefined();
+	expect(resolveScope(defaults, false, env)).toBeUndefined();
+	expect(await loadAppSecrets({ disabledApp }, defaults, { env })).toEqual({});
+	expect(await loadAppSecrets({ api: app("p1") }, false, { env })).toEqual({});
+	expect(applySecretDefaults({ api: app("p1") }, false, env).api.secrets).toBe(
+		false,
+	);
+	expect(infisical.requests).toEqual([]);
+	expect(infisical.cliCalls()).toEqual([]);
+});
+
+it("does not reuse a machine-auth scope after credentials change", async () => {
+	const infisical = start();
+	const scope = { projectId: "p1", siteUrl: infisical.siteUrl };
+	await loadScopeSecrets(scope, {
+		env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "right" },
+	});
+
+	await expect(
+		loadScopeSecrets(scope, {
+			env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "wrong" },
+		}),
+	).rejects.toThrow("universal-auth login failed (HTTP 401)");
+	expect(infisical.cliCalls()).toEqual([]);
+	expect(infisical.requests).toEqual([
+		"POST /api/v1/auth/universal-auth/login",
+		"GET /api/v4/secrets",
+		"POST /api/v1/auth/universal-auth/login",
+	]);
 });

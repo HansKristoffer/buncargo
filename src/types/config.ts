@@ -267,8 +267,8 @@ export interface DevConfig<
 	prisma?: PrismaConfig<TServices, TApps>;
 	/** Additional options (optional) */
 	options?: DevOptions<TServices, TApps>;
-	/** Defaults for every app's `secrets` scope (optional) */
-	secrets?: SecretsScopeConfig;
+	/** Scope defaults. Set false to disable all buncargo secret fetching for this environment. */
+	secrets?: SecretsScopeConfig | false;
 	/** Docker Compose generation options (optional) */
 	docker?: DockerComposeGenerationOptions;
 	/** Preconditions `buncargo dev` verifies before starting (optional) */

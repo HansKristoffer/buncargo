@@ -147,3 +147,27 @@ it("reports a failed prefetched scope only once when consumers retry", async () 
 		else process.env.BUNCARGO_INFISICAL_PATH = binary;
 	}
 });
+
+it("does not prefetch disabled apps, commands or environments", () => {
+	const scope = { projectId: "must-not-fetch" };
+	const disabled = { port: 3000, devCommand: "true", secrets: false as const };
+
+	expect(
+		prefetchSecrets({
+			apps: { disabled },
+			defaults: scope,
+			includeSeed: true,
+			seed: false,
+			migrations: [{ name: "offline", command: "true", secrets: false }],
+		}),
+	).toEqual([]);
+	expect(
+		prefetchSecrets({
+			apps: { api: { ...disabled, secrets: scope } },
+			defaults: false,
+			includeSeed: true,
+			seed: scope,
+			migrations: [{ name: "offline", command: "true", secrets: scope }],
+		}),
+	).toEqual([]);
+});
