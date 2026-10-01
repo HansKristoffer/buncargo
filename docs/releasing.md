@@ -30,6 +30,8 @@ Manual publication workflows remain operator escape hatches; use the normal rele
 
 ## PR checks and npm identity
 
-The release workflow explicitly dispatches CI on Release Please's branch using `actions: write`. Required checks therefore do not need a personal access token. Publication consumes the verified tarball and uses npm trusted publishing: package `buncargo`, owner `HansKristoffer`, repository `buncargo`, calling workflow `release.yml`, no environment, publish permission.
+Release Please uses the built-in repository token. Select **Approve workflows to run** on its release PR to start the required PR checks, and wait for them before merging. GitHub requires this approval for bot-created or updated PRs; manual dispatch runs do not satisfy branch protection. No personal access token is needed. Publication consumes the verified tarball and uses npm trusted publishing: package `buncargo`, owner `HansKristoffer`, repository `buncargo`, calling workflow `release.yml`, no environment, publish permission.
 
 Release workflows run in order; do not auto-merge release PRs. The GitHub release can exist before its npm publication or downloadable bar assets complete. Check the Release run before announcing availability.
+
+GitHub documents this token behavior in [Triggering a workflow](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).

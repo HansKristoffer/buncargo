@@ -19,22 +19,14 @@ permissions:
 jobs:
   pr-title:
     name: PR title
-    if: github.event_name != 'push'
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/github-script@v8
         with:
           script: |
-            let title = context.payload.pull_request?.title;
-            if (!title) {
-              const { data: prs } = await github.rest.pulls.list({
-                ...context.repo, state: 'open',
-                head: `${context.repo.owner}:${context.ref.replace('refs/heads/', '')}`,
-              });
-              if (!prs.length) return;
-              title = prs[0].title;
-            }
+            const title = context.payload.pull_request.title;
             if (!/^(feat|fix|perf|docs|style|refactor|test|build|ci|chore|revert)(\([^\r\n]+\))?!?: \S[^\r\n]*$/.test(title)) {
               core.setFailed('Use a conventional PR title, for example fix: handle startup failures or feat!: change the public API.');
             }
