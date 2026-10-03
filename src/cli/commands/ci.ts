@@ -154,7 +154,11 @@ export async function handleCi(args: string[]): Promise<number> {
 				return { exitCode: 0, stdout: "", stderr: "" };
 			}
 
+			// The command gets no shared scope: a CI job should not need
+			// Infisical access for its tests. Migrations and the seed still get
+			// their own scopes.
 			return env.exec(parsed.command, {
+				secrets: false,
 				verbose: true,
 				throwOnError: false,
 				signal,
