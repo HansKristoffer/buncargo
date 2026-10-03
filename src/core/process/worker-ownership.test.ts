@@ -1,11 +1,14 @@
 import { afterEach, expect, it } from "bun:test";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineDevConfig } from "../../config";
 import { createDevEnvironment } from "../../environment";
 import { startDevServers } from "./dev-servers";
-import { findWorker, stopWorker } from "./worker-ownership";
+import { ProcessOwner } from "./process-owner";
+import type { AppChild } from "./pty-app";
+import { findWorker, spawnOwnedWorker, stopWorker } from "./worker-ownership";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -148,5 +151,43 @@ it("cancellation remains attached after library readiness and stop cleans owned 
 			if (Date.now() > deadline) throw new Error("worker survived cleanup");
 			await Bun.sleep(20);
 		}
+	}
+});
+
+/** A worker that is already gone when its claim checks on it. */
+function exitedChild(): AppChild {
+	const child = Object.assign(new EventEmitter(), {
+		pid: 2 ** 22,
+		exitCode: 3,
+		signalCode: null,
+	});
+	queueMicrotask(() => child.emit("spawn"));
+	return child as unknown as AppChild;
+}
+
+it("hands a non-essential worker that died while being claimed to the supervisor", async () => {
+	const root = fixture();
+	await expect(spawnOwnedWorker(root, "jobs", exitedChild)).rejects.toThrow(
+		'Worker "jobs" exited before process startup',
+	);
+	const child = await spawnOwnedWorker(root, "jobs", exitedChild, undefined, {
+		allowEarlyExit: true,
+	});
+	expect(child.exitCode).toBe(3);
+	expect(await findWorker(root, "jobs")).toBeUndefined();
+
+	// The supervisor reports its exit although it never sees an `exit` event.
+	const exits: (number | null)[] = [];
+	const owner = new ProcessOwner({
+		optional: new Set(["jobs"]),
+		onAppExit: (_name, code) => exits.push(code),
+	});
+	try {
+		owner.register("jobs", child, false, true);
+		await Bun.sleep(0);
+		expect(exits).toEqual([3]);
+		expect(owner.controller.signal.aborted).toBe(false);
+	} finally {
+		owner.dispose();
 	}
 });
