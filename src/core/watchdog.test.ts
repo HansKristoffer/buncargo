@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withFileLock } from "./file-lock";
+import { isProcessAlive } from "./process/lifecycle";
 import { readProcessIdentity } from "./process-identity";
 import { publishRun } from "./run-registry";
 import {
@@ -60,10 +61,18 @@ async function claimSomething(): Promise<void> {
 	});
 }
 
+/**
+ * Stop the runner and wait until the process is gone, not just its pid file:
+ * the runner deletes the file before it exits, and its lock is released only
+ * on exit. A test that started the next runner in that gap found the lock
+ * held, so nothing started, and read no pid.
+ */
 async function stopWatchdog(): Promise<void> {
 	const pid = getWatchdogPid();
 	if (pid) process.kill(pid, "SIGTERM");
 	for (let i = 0; i < 200 && getWatchdogPid(); i++) await Bun.sleep(10);
+	for (let i = 0; pid && i < 200 && isProcessAlive(pid); i++)
+		await Bun.sleep(10);
 }
 
 describe("resolveWatchdogRunnerPath", () => {
