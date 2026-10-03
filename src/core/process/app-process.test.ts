@@ -1,10 +1,12 @@
 import { expect, it } from "bun:test";
+import type { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { shellQuote } from "../shell-quote";
 import { spawnManagedApp } from "./app-process";
 import { spawnDevServer } from "./dev-servers";
+import { RunOutput } from "./run-output";
 
 it("passes attached arguments literally, including shell syntax and empty values", async () => {
 	const root = mkdtempSync(join(tmpdir(), "buncargo literal args "));
@@ -38,10 +40,9 @@ it("passes attached arguments literally, including shell syntax and empty values
 				extraArgs: args,
 				productionBuild: false,
 				waitForExit: true,
-				prefixWidth: 3,
-				onFirstLog: () => {},
+				output: new RunOutput(),
 			},
-		);
+		) as EventEmitter;
 		const code = await new Promise((resolve, reject) => {
 			child.once("exit", resolve);
 			child.once("error", reject);

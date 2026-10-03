@@ -21,6 +21,8 @@ struct RunApp: Codable, Identifiable, Hashable {
     let url: String?
     let loopbackUrl: String?
     var publicUrl: String?
+    /// What "open" opens, decided by the CLI (`preferredAppUrl`); absent from older runs.
+    var openUrl: String?
     var hostname: String?
     /// Present on Expo apps. Its fields belong to the CLI; here it only means
     /// "offer the simulator button".
@@ -34,6 +36,11 @@ struct RunApp: Codable, Identifiable, Hashable {
     /// A dev server this run spawned, and can therefore stop on its own.
     var isOwned: Bool { pid != nil }
     var hasSimulator: Bool { expo != nil && state != .stopped }
+
+    /// The CLI's choice when it recorded one, the old rule otherwise.
+    func preferredURL(hostsActive: Bool) -> String {
+        openUrl ?? Actions.preferredURL(named: url, loopback: loopbackUrl, hostsActive: hostsActive)
+    }
 }
 
 struct RunExpo: Codable, Hashable {

@@ -75,6 +75,8 @@ export interface RunAppEntry {
 	url?: string;
 	loopbackUrl?: string;
 	publicUrl?: string;
+	/** What "open" opens for this app (`preferredAppUrl`), so every reader agrees. */
+	openUrl?: string;
 	hostname?: string;
 	/** Present on Expo apps: what `buncargo sim` needs without loading the config. */
 	expo?: ExpoAppIdentity;

@@ -47,6 +47,7 @@ import {
 } from "./dev-flags";
 import { activateNamedHosts, releaseNamedHosts } from "./dev-hosts";
 import { acquireAppLeases } from "./dev-leases";
+import { openDevOutput } from "./dev-output";
 import {
 	createTunnelCoordinator,
 	type DevTunnelCoordinator,
@@ -580,8 +581,11 @@ async function runDevFlow<
 
 	const appsStartedAt = performance.now();
 	let firstSpawn = false;
+	const view = openDevOutput(env, classifiedApps.startApps, { tui: args.tui });
 
 	try {
+		// After every prompt and the banner, which stay in the scrollback.
+		view.start();
 		await startServerSession(
 			{
 				root: env.root,
@@ -631,6 +635,7 @@ async function runDevFlow<
 				},
 				attach: args.attach,
 				extraArgs: args.passthrough,
+				output: view.output,
 				waitForExit: true,
 				onSignal: () => {
 					void env.releaseRun();
@@ -652,11 +657,12 @@ async function runDevFlow<
 				// is the app falling over, which the supervisor also turns into a
 				// failed run.
 				onAppExit: (name, code, signal) => {
+					const app = appsForDev[name];
 					void markApps(
 						env,
 						[name],
 						isDeliberateExit(code, signal) &&
-							!(code === 0 && appsForDev[name]?.kind === "worker")
+							!(code === 0 && app?.kind === "worker" && app.essential !== false)
 							? "stopped"
 							: "failed",
 					);
@@ -676,6 +682,8 @@ async function runDevFlow<
 		);
 		return undefined;
 	} finally {
+		// First, so teardown's messages land on the user's own screen.
+		view.stop();
 		await teardown(env, tunnels, connect);
 	}
 }

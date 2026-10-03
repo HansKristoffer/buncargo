@@ -5,7 +5,7 @@ import type { AppConfig, DevServerPids } from "../../types";
 import { waitForDevServers } from "../network";
 import { connectProcessEnv } from "../runtime-flags";
 import { loadAppSecrets, missingRequiredSecrets } from "../secrets/infisical";
-import { formatSection, formatStep, formatWarn, prefixWidth } from "../style";
+import { formatStep, formatWarn, prefixWidth } from "../style";
 import {
 	ptyTeeArgv,
 	resolveStartCommand,
@@ -25,6 +25,7 @@ import {
 	type PortOwnerSnapshot,
 } from "./port-owner";
 import { RunInterrupted } from "./process-owner";
+import { printStream, RunOutput } from "./run-output";
 
 export { stopDevServers } from "./app-supervision";
 
@@ -130,8 +131,13 @@ export interface StartDevServersOptions {
 	isCI?: boolean;
 	/** Compose/project name used to classify port occupants. */
 	projectName?: string;
-	/** App that owns the TTY. Others get prefixed pipes. */
+	/** App that owns the TTY. Others get prefixed pipes. Ignored by the TUI. */
 	attach?: string;
+	/**
+	 * Where app output goes. Default: prefixed lines on stdout. The TUI passes
+	 * one with `terminalSize` set, which gives every app its own terminal.
+	 */
+	output?: RunOutput;
 	/** Extra args appended to the attached app command. */
 	extraArgs?: string[];
 	/** Called after wave-1 apps are healthy (CLI opens tunnels here). */
@@ -299,40 +305,87 @@ export async function startDevServers(
 	}
 
 	const order = planSpawnOrder(startable, deferPublicUrlApps);
-	const configuredInteractive = Object.entries(startable).find(
-		([, app]) => app.interactive,
-	)?.[0];
+	const nameWidth = prefixWidth(Object.keys(startable));
+	const output = options.output ?? new RunOutput();
+	const stopPrinting = options.output
+		? undefined
+		: printStream(output, { width: nameWidth });
+	// In the TUI every app has a terminal of its own: none needs the real one.
+	const configuredInteractive = output.terminalSize
+		? undefined
+		: Object.entries(startable).find(([, app]) => app.interactive)?.[0];
 	const attachedName = attachOverride ?? configuredInteractive;
 	if (attachOverride && !startable[attachOverride]) {
 		throw new Error(`--attach=${attachOverride} is not in the start set`);
 	}
+	const optional = new Set(
+		Object.entries(startable)
+			.filter(([, app]) => app.essential === false)
+			.map(([name]) => name),
+	);
 
-	const nameWidth = prefixWidth(Object.keys(startable));
 	const session = new AppSupervision({
 		signal: options.signal,
 		shutdownGraceMs: options.shutdownGraceMs,
 		attachedName,
-		onAppExit,
-		onAppSpawned,
-		verbose,
+		optional,
+		onAppExit: (name, code, signal) => {
+			if (!owner.controller.signal.aborted) {
+				// After the app's last screen, so its final words precede the verdict.
+				const report = () =>
+					output.state(name, {
+						state:
+							isDeliberateExit(code, signal) &&
+							!(
+								code === 0 &&
+								startable[name]?.kind === "worker" &&
+								!optional.has(name)
+							)
+								? "stopped"
+								: "failed",
+						detail: signal ? `signal ${signal}` : `exit ${code}`,
+						restartable: optional.has(name),
+					});
+				const screen = output.screens.get(name);
+				if (screen) void screen.flush().then(report);
+				else report();
+			}
+			onAppExit?.(name, code, signal);
+		},
+		onAppSpawned: (name, pid, attached) => {
+			output.state(name, { state: "starting" });
+			onAppSpawned?.(name, pid, attached);
+		},
+		onRestart: (name, reason) => output.event(name, `restarting: ${reason}`),
+		verbose: verbose && !output.terminalSize,
 		width: nameWidth,
 	});
 	const owner = session.owner;
 	const pids = session.pids;
 	let handedOff = false;
-	let logsHeaderPrinted = false;
-	const onFirstLog = () => {
-		if (logsHeaderPrinted) {
-			return;
-		}
-		logsHeaderPrinted = true;
-		process.stdout.write(`\n${formatSection("Logs")}\n`);
+	// A replaced app is ready again the way it was the first time: health-
+	// checked on the side, so a failing restart never stalls the others.
+	const restartApp = async (name: string, reason?: string) => {
+		await session.restart(name, reason);
+		const config = startable[name];
+		if (config && !owner.controller.signal.aborted)
+			void waitForWave({ [name]: config }).catch(() => {});
+	};
+	output.controls = { restart: (name) => restartApp(name, "requested") };
+	const markReady = (name: string) => {
+		owner.ready(name);
+		if (output.states.get(name)?.state === "ready") return;
+		output.state(name, { state: "ready" });
+		options.onAppReady?.(name);
 	};
 
 	const scannerFor = createCaptureRestarts(startable, {
 		signal: owner.controller.signal,
-		onCapture,
-		restart: (name) => session.restart(name),
+		onCapture: (app, captured) => {
+			output.capture(app, captured);
+			return onCapture?.(app, captured) ?? [];
+		},
+		restart: (name) => restartApp(name),
 	});
 
 	async function spawnWave(wave: Record<string, AppConfig>): Promise<void> {
@@ -372,8 +425,7 @@ export async function startDevServers(
 				toStart.map(([name, config]) =>
 					runPrebuild(name, config, root, appEnv(name), {
 						signal: owner.controller.signal,
-						width: nameWidth,
-						onFirstLog,
+						output,
 					}),
 				),
 			),
@@ -382,7 +434,13 @@ export async function startDevServers(
 		for (const [name, config] of toStart) {
 			const attached = name === attachedName;
 			const onText = scannerFor(name, config);
-			if (attached && onText && process.stdin.isTTY && !ptyTeeArgv("")) {
+			if (
+				attached &&
+				onText &&
+				!output.terminalSize &&
+				process.stdin.isTTY &&
+				!ptyTeeArgv("")
+			) {
 				console.warn(
 					formatWarn(
 						`${name}'s captures are not read: no \`script\` command to run it under a terminal.`,
@@ -395,8 +453,7 @@ export async function startDevServers(
 					extraArgs: attached ? extraArgs : [],
 					productionBuild,
 					waitForExit,
-					prefixWidth: nameWidth,
-					onFirstLog,
+					output,
 					onText,
 				});
 			const spawnApp = () =>
@@ -422,31 +479,39 @@ export async function startDevServers(
 		}
 	}
 
+	function waitForWave(wave: Record<string, AppConfig>): Promise<void> {
+		if (waitForHealth)
+			return waitForHealth(wave, owner.controller.signal).then(() => {
+				for (const name of Object.keys(wave)) markReady(name);
+			});
+		// Workers and `healthEndpoint: false` apps are ready once the wave is.
+		return waitForDevServers(wave, ports, {
+			verbose: verbose && !output.terminalSize,
+			productionBuild,
+			signal: owner.controller.signal,
+			onAppReady: markReady,
+		}).then(() => {
+			for (const name of Object.keys(wave)) markReady(name);
+		});
+	}
+
 	async function startWave(wave: Record<string, AppConfig>): Promise<void> {
 		if (Object.keys(wave).length === 0) {
 			return;
 		}
 
 		await spawnWave(wave);
-		if (waitForHealth) {
-			await owner.race(waitForHealth(wave, owner.controller.signal));
-			for (const name of Object.keys(wave)) {
-				owner.ready(name);
-				options.onAppReady?.(name);
-			}
-		} else {
-			await owner.race(
-				waitForDevServers(wave, ports, {
-					verbose,
-					productionBuild,
-					signal: owner.controller.signal,
-					onAppReady: (name) => {
-						owner.ready(name);
-						options.onAppReady?.(name);
-					},
-				}),
-			);
-		}
+		// A non-essential app never holds the run up: it is health-checked on
+		// the side, and its failing to come up is its own problem.
+		for (const name of Object.keys(wave).filter((name) => optional.has(name)))
+			void waitForWave({ [name]: wave[name] as AppConfig }).catch(() => {});
+		await owner.race(
+			waitForWave(
+				Object.fromEntries(
+					Object.entries(wave).filter(([name]) => !optional.has(name)),
+				),
+			),
+		);
 	}
 	try {
 		// Each layer is healthy before the next spawns: that is `startAfter`.
@@ -486,6 +551,8 @@ export async function startDevServers(
 						await session.stop();
 					} finally {
 						session.dispose();
+						output.close();
+						stopPrinting?.();
 					}
 				}
 			})().catch((error) => console.error(error));
@@ -510,6 +577,8 @@ export async function startDevServers(
 	} finally {
 		if (!handedOff) {
 			session.dispose();
+			output.close();
+			stopPrinting?.();
 		}
 	}
 }

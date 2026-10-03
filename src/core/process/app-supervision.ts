@@ -1,8 +1,8 @@
-import type { ChildProcess } from "node:child_process";
 import type { DevServerPids } from "../../types";
 import { formatPidLine, formatStep } from "../style";
 import type { DetachedApp } from "./detached-app";
 import { ProcessOwner, RunInterrupted } from "./process-owner";
+import type { AppChild } from "./pty-app";
 import { terminateOwnedProcess } from "./terminate";
 
 const activeSessions = new Map<number, AppSupervision>();
@@ -11,11 +11,11 @@ const activeSessions = new Map<number, AppSupervision>();
 export class AppSupervision {
 	readonly owner: ProcessOwner;
 	readonly pids: DevServerPids = {};
-	private children = new Map<string, ChildProcess | DetachedApp>();
+	private children = new Map<string, AppChild | DetachedApp>();
 	private spawners = new Map<
 		string,
 		{
-			spawn(): Promise<ChildProcess>;
+			spawn(): Promise<AppChild>;
 			worker: boolean;
 			attached: boolean;
 			port?: number;
@@ -29,6 +29,8 @@ export class AppSupervision {
 			verbose?: boolean;
 			width: number;
 			onAppSpawned?: (name: string, pid: number, attached: boolean) => void;
+			/** Replaces the console line a restart prints. */
+			onRestart?: (name: string, reason: string) => void;
 		},
 	) {
 		this.owner = new ProcessOwner({
@@ -47,7 +49,7 @@ export class AppSupervision {
 
 	setSpawner(
 		name: string,
-		spawn: () => Promise<ChildProcess>,
+		spawn: () => Promise<AppChild>,
 		worker: boolean,
 		attached: boolean,
 		port?: number,
@@ -57,7 +59,7 @@ export class AppSupervision {
 
 	async register(
 		name: string,
-		child: ChildProcess,
+		child: AppChild,
 		worker: boolean,
 		attached: boolean,
 		needsReadiness: boolean,
@@ -78,8 +80,11 @@ export class AppSupervision {
 			console.log(formatPidLine(name, child.pid, this.options.width));
 	}
 
-	restart(name: string): Promise<void> {
-		const operation = this.replace(name);
+	restart(
+		name: string,
+		reason = "a value it restarts on changed",
+	): Promise<void> {
+		const operation = this.replace(name, reason);
 		this.restarts.add(operation);
 		void operation
 			.finally(() => this.restarts.delete(operation))
@@ -87,13 +92,13 @@ export class AppSupervision {
 		return operation;
 	}
 
-	private async replace(name: string): Promise<void> {
+	private async replace(name: string, reason: string): Promise<void> {
 		const current = this.children.get(name);
 		const spawner = this.spawners.get(name);
 		if (!current || !spawner || this.owner.controller.signal.aborted) return;
-		console.log(
-			formatStep(`🔁 Restarting ${name}: a value it restarts on changed`),
-		);
+		this.options.onRestart?.(name, reason);
+		if (!this.options.onRestart)
+			console.log(formatStep(`🔁 Restarting ${name}: ${reason}`));
 		await this.owner.retire(current);
 		if (current.pid) activeSessions.delete(current.pid);
 		this.owner.controller.signal.throwIfAborted();

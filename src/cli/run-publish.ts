@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { preferredAppUrl } from "../core/app-url";
 import type { CapturedValue } from "../core/process/output-capture";
 import { readProcessIdentitiesAsync } from "../core/process-identity";
 import {
@@ -179,6 +180,14 @@ function appEntries(
 				url: urls[name] ?? loopbackUrl,
 				loopbackUrl,
 				publicUrl: publicUrls[name],
+				openUrl: preferredAppUrl(
+					{
+						url: urls[name] ?? loopbackUrl,
+						loopbackUrl,
+						publicUrl: publicUrls[name],
+					},
+					env.hosts?.active ?? false,
+				),
 				hostname: hostnameFor.get(name),
 				...integrationFields(env, name, input.apps[name], port),
 				exclusive: input.apps[name]?.exclusive,
@@ -459,7 +468,11 @@ export async function recordRunCapture(
 			? {}
 			: { captures: { [captured.name]: captured.value } }),
 		...(captured.as === "publicUrl"
-			? { apps: [{ name: app, publicUrl: captured.value }] }
+			? {
+					apps: [
+						{ name: app, publicUrl: captured.value, openUrl: captured.value },
+					],
+				}
 			: {}),
 		...(details ? { details } : {}),
 	});

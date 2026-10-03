@@ -158,12 +158,8 @@ struct RunDetailView: View {
                     LocalTargetRow(
                         name: app.name,
                         status: app.state,
-                        url: Actions.preferredURL(
-                            named: app.url,
-                            loopback: app.loopbackUrl,
-                            hostsActive: hostsActive
-                        ),
-                        openable: app.url != nil,
+                        url: app.preferredURL(hostsActive: hostsActive),
+                        openable: app.url != nil || app.openUrl != nil,
                         publicUrl: app.publicUrl,
                         tablePlusUrl: nil,
                         onStop: { onStop(app.name) },
@@ -239,13 +235,7 @@ struct RunRow: View {
         ) {
             if let primary = run.primary, primary.state != .stopped {
                 Button("Open") {
-                    Actions.open(
-                        Actions.preferredURL(
-                            named: primary.url,
-                            loopback: primary.loopbackUrl,
-                            hostsActive: run.hosts?.active ?? false
-                        )
-                    )
+                    Actions.open(primary.preferredURL(hostsActive: run.hosts?.active ?? false))
                 }
                 .font(.system(size: 11))
                 .help("Open \(primary.name)")

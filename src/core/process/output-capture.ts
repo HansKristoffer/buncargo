@@ -18,10 +18,25 @@ const ANSI =
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: that is the point
 	/\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
 const BOX_DRAWING = /[─-╿▀-▟]/g;
+/** Cursor jumps and screen erases: a redraw starts a new line there. */
+const CURSOR_JUMP =
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: that is the point
+	/\u001b\[[0-9;?]*[ABEFHJf]/g;
+/** An OSC 8 hyperlink: its target, then its text. */
+const HYPERLINK =
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: that is the point
+	/\u001b\]8;[^;\u0007\u001b]*;([^\u0007\u001b]*)(?:\u0007|\u001b\\)([\s\S]*?)\u001b\]8;;(?:\u0007|\u001b\\)/g;
 
-/** Output as a person reads it: no escapes, no frame, one line per `\r`. */
+/**
+ * Output as a person reads it: no escapes, no frame, one line per `\r`.
+ *
+ * A hyperlink becomes its target, not its text: a TUI's "Preview" link
+ * carries the URL only in the escape, and a long URL's text is often cut off.
+ */
 export function stripTerminalOutput(text: string): string {
 	return text
+		.replace(HYPERLINK, (_, target: string, label: string) => target || label)
+		.replace(CURSOR_JUMP, "\n")
 		.replace(ANSI, "")
 		.replace(BOX_DRAWING, " ")
 		.replace(/\r\n?/g, "\n");
@@ -50,6 +65,20 @@ interface OutputCaptureScanner {
 	push(chunk: string): CapturedValue[];
 }
 
+const UNCLOSED_LINK =
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: that is the point
+	/\u001b\]8;[^;\u0007\u001b]*;[^\u0007\u001b]+(?:\u0007|\u001b\\)(?![\s\S]*\u001b\]8;;)/;
+const UNFINISHED_ESCAPE =
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: that is the point
+	/\u001b(?:\][^\u0007\u001b]*\u001b?|\[[0-9;?]*[ -/]*)?$/;
+
+/** Where an escape sequence the chunk did not finish starts, or -1. */
+export function openEscapeAt(raw: string): number {
+	const link = raw.search(UNCLOSED_LINK);
+	if (link !== -1) return link;
+	return raw.search(UNFINISHED_ESCAPE);
+}
+
 function lastMatch(pattern: RegExp, text: string): string | undefined {
 	// A fresh global copy: the caller's regex may be sticky, global or neither,
 	// and its `lastIndex` is theirs.
@@ -73,9 +102,16 @@ export function createOutputCaptureScanner(
 	// URL, and reporting it would render files and restart apps with it.
 	let partial = "";
 
+	// Raw output held back because an escape is still open at the chunk's end:
+	// stripped half-way, a hyperlink would lose the URL it carries.
+	let held = "";
+
 	return {
 		push(chunk) {
-			const text = `${partial}${stripTerminalOutput(chunk)}`;
+			const raw = `${held}${chunk}`;
+			const cut = openEscapeAt(raw);
+			held = cut === -1 ? "" : raw.slice(cut).slice(-TAIL_BYTES);
+			const text = `${partial}${stripTerminalOutput(cut === -1 ? raw : raw.slice(0, cut))}`;
 			const end = text.lastIndexOf("\n") + 1;
 			partial = text.slice(end).slice(-TAIL_BYTES);
 			if (end === 0) return [];

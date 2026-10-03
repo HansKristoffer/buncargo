@@ -1,8 +1,8 @@
-import type { ChildProcess } from "node:child_process";
 import { abortableSleep } from "../deadline";
 import { matchesProcessIdentityAsync } from "../process-identity";
 import { DetachedApp } from "./detached-app";
 import { signalProcessTree } from "./port-owner";
+import type { AppChild } from "./pty-app";
 
 function processExists(pid: number): boolean {
 	try {
@@ -13,7 +13,7 @@ function processExists(pid: number): boolean {
 	}
 }
 
-function ownedProcessAlive(child: ChildProcess | DetachedApp): boolean {
+function ownedProcessAlive(child: AppChild | DetachedApp): boolean {
 	if (!child.pid) return false;
 	// On macOS the group can disappear while its leader still awaits reaping.
 	// Group disappearance alone does not acknowledge process cleanup.
@@ -24,7 +24,7 @@ function ownedProcessAlive(child: ChildProcess | DetachedApp): boolean {
 }
 
 function signalGroup(
-	child: ChildProcess | DetachedApp,
+	child: AppChild | DetachedApp,
 	signal: NodeJS.Signals,
 ): void {
 	if (!child.pid) return;
@@ -44,7 +44,7 @@ function signalGroup(
 
 /** Only for children spawned detached by this invocation, never reused ports. */
 export async function terminateOwnedProcess(
-	child: ChildProcess | DetachedApp,
+	child: AppChild | DetachedApp,
 	graceMs = 5000,
 	initialSignal: NodeJS.Signals = "SIGTERM",
 ): Promise<void> {
