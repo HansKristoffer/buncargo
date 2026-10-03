@@ -1,5 +1,19 @@
-import { Terminal } from "@xterm/headless";
+import { createRequire } from "node:module";
+import type { Terminal } from "@xterm/headless";
 import type { PtyApp } from "./pty-app";
+
+/**
+ * `@xterm/headless` is CommonJS: Node's ESM cannot import its `Terminal` by
+ * name, so it is required. Lazily, too: only the TUI needs it, and every
+ * library consumer reaches this module through `startDevServers`.
+ */
+let xterm: typeof import("@xterm/headless") | undefined;
+function loadXterm(): typeof import("@xterm/headless") {
+	xterm ??= createRequire(import.meta.url)(
+		"@xterm/headless",
+	) as typeof import("@xterm/headless");
+	return xterm;
+}
 
 /** Scrollback each app's virtual screen keeps. */
 export const SCREEN_SCROLLBACK = 10_000;
@@ -50,7 +64,7 @@ export class AppScreen {
 		rows: number,
 		private readonly onLine: (text: string) => void,
 	) {
-		this.term = new Terminal({
+		this.term = new (loadXterm().Terminal)({
 			cols,
 			rows,
 			scrollback: SCREEN_SCROLLBACK,
