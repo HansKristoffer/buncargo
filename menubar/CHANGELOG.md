@@ -1,5 +1,16 @@
 # Changelog
 
+## [5.0.0](https://github.com/HansKristoffer/buncargo/compare/bar-v4.0.1...bar-v5.0.0) (2026-10-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** add a terminal UI and optional app supervision ([#70](https://github.com/HansKristoffer/buncargo/issues/70))
+
+### Features
+
+* **cli:** add a terminal UI and optional app supervision ([#70](https://github.com/HansKristoffer/buncargo/issues/70)) ([2c9996d](https://github.com/HansKristoffer/buncargo/commit/2c9996d5c69f959f7f5c3bf1fa7f90811b5e058c))
+
 ## [4.0.1](https://github.com/HansKristoffer/buncargo/compare/bar-v4.0.0...bar-v4.0.1) (2026-10-01)
 
 
