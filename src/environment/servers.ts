@@ -18,6 +18,7 @@ import type {
 	EnvValues,
 	OpenPublicTunnelsOptions,
 	OpenPublicTunnelsResult,
+	SeedOutcome,
 	ServiceConfig,
 } from "../types";
 import { createCaptureRecorder } from "./captures";
@@ -73,7 +74,8 @@ export async function startAppServers<
 	options: {
 		apps: Record<string, AppConfig>;
 		onPhase?: (name: string, ms: number) => void;
-		beforeReady?: (signal?: AbortSignal) => Promise<void>;
+		seed?: (signal: AbortSignal) => Promise<SeedOutcome>;
+		onSeedReady?: () => void;
 		productionBuild: boolean;
 		verbose: boolean;
 		signal?: AbortSignal;
@@ -83,29 +85,30 @@ export async function startAppServers<
 	options.signal?.throwIfAborted();
 	assertAppWorkingDirectories(appsToStart, ctx.root, productionBuild);
 
-	if (productionBuild) {
-		// The spawn path gets its secrets inside `startDevServers`; a production
-		// build is the other process that needs them, and it runs before that.
-		// Both share one fetch per scope through the module's cache.
-		const secrets = await loadAppSecrets(appsToStart, undefined, {
-			signal: options.signal,
-			onWait: (ms) => options.onPhase?.("secrets", ms),
-		});
-		const buildEnv = Object.fromEntries(
-			Object.entries(envVars.buildAppEnvVarsMap(appsToStart, true)).map(
-				([name, env]) => [name, { ...secrets[name], ...env }],
-			),
-		);
-		await buildAppsAsync(appsToStart, ctx.root, buildEnv, {
-			verbose,
-			signal: options.signal,
-		});
-	}
-
 	const pids = await startServerSession(
 		{
 			root: ctx.root,
-			beforeReady: options.beforeReady,
+			onSeedReady: options.onSeedReady,
+			prepare: async (signal) => {
+				if (productionBuild) {
+					// The spawn path gets its secrets inside `startDevServers`; a production
+					// build is the other process that needs them, and it runs before that.
+					// Both share one fetch per scope through the module's cache.
+					const secrets = await loadAppSecrets(appsToStart, undefined, {
+						signal,
+						onWait: (ms) => options.onPhase?.("secrets", ms),
+					});
+					const buildEnv = Object.fromEntries(
+						Object.entries(envVars.buildAppEnvVarsMap(appsToStart, true)).map(
+							([name, env]) => [name, { ...secrets[name], ...env }],
+						),
+					);
+					await buildAppsAsync(appsToStart, ctx.root, buildEnv, {
+						verbose,
+						signal,
+					});
+				}
+			},
 			ports: ctx.ports as Record<string, number>,
 			// Restarts rebuild env so captures and public URLs are current.
 			appEnv: (name) =>
@@ -128,7 +131,7 @@ export async function startAppServers<
 				waitForDevServers(wave, ctx.ports, {
 					timeout: readyTimeout(),
 					verbose,
-					logReady: !options.beforeReady,
+					logReady: !options.seed,
 					productionBuild,
 					signal,
 				}),
@@ -142,6 +145,7 @@ export async function startAppServers<
 			runtime: ctx.hasSelectedServices ? ctx.runtime : undefined,
 			skipContainers: !ctx.hasSelectedServices,
 			signal: options.signal,
+			seed: options.seed,
 			deferPublicUrlApps: false,
 			onPhase: options.onPhase,
 			onAppSpawned: (name, pid) => {

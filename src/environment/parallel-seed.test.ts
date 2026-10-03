@@ -1,5 +1,6 @@
 import { expect, it } from "bun:test";
 import { join } from "node:path";
+import { shellQuote } from "../core/shell-quote";
 import { createDevEnvironment } from "./create-dev-environment";
 import { parallelSeedFixture } from "./parallel-seed.testing";
 
@@ -67,3 +68,46 @@ for (const failure of ["seed", "app"] as const) {
 		}
 	}, 15000);
 }
+
+it("cancels a production build when the concurrent seed fails", async () => {
+	const fixture = await parallelSeedFixture({ beforeApps: false });
+	await Bun.write(
+		join(fixture.root, "build.ts"),
+		`
+await Bun.write("build-started", String(process.pid));
+await new Promise(() => {});
+`,
+	);
+	await Bun.write(
+		join(fixture.root, "seed.ts"),
+		`
+while (!(await Bun.file("build-started").exists())) await Bun.sleep(10);
+process.exit(17);
+`,
+	);
+	const config = {
+		...fixture.config,
+		apps: {
+			web: {
+				...fixture.config.apps.web,
+				buildCommand: `${shellQuote(process.execPath)} build.ts`,
+			},
+		},
+	};
+	const env = createDevEnvironment(config, { root: fixture.root });
+	try {
+		await expect(
+			env.start({ productionBuild: true, verbose: false, watchdog: false }),
+		).rejects.toThrow("Seeding failed with exit code 17");
+		const buildPid = Number(
+			await Bun.file(join(fixture.root, "build-started")).text(),
+		);
+		expect(() => process.kill(buildPid, 0)).toThrow();
+		expect(await Bun.file(join(fixture.root, "app-started")).exists()).toBe(
+			false,
+		);
+	} finally {
+		await env.stop({ verbose: false });
+		await fixture.cleanup();
+	}
+}, 15000);

@@ -3,11 +3,12 @@ import {
 	acquireLease,
 	describeLeaseHolder,
 	type LeaseEntry,
+	transferLease,
 } from "../core/leases";
 import { askConfirm, isInteractive } from "../core/prompt";
 import { readLiveRuns } from "../core/run-registry";
 import type { AppConfig } from "../types";
-import { stopTarget } from "./commands/stop";
+import { STOP_EXIT, stopTarget } from "./commands/stop";
 import { CliError } from "./errors";
 import * as log from "./log";
 import { readGitBranch } from "./run-publish";
@@ -19,12 +20,16 @@ interface LeaseOwner {
 	isWorktree: boolean;
 }
 
-async function stopHolder(holder: LeaseEntry): Promise<void> {
+async function stopHolder(holder: LeaseEntry): Promise<boolean> {
 	const run = (await readLiveRuns()).find(
 		(entry) => entry.sessionId === holder.sessionId,
 	);
-	// Its run may have ended between the refusal and here; nothing to stop.
-	if (run) await stopTarget(run, holder.app, true);
+	// A starting app without a pid may still spawn after this check. A free
+	// port is not proof that its owner has stopped using the resource.
+	const app = run?.apps.find((entry) => entry.name === holder.app);
+	if (!run || !app || (app.status === "starting" && app.pid === undefined))
+		return false;
+	return (await stopTarget(run, holder.app, true)) === STOP_EXIT.ok;
 }
 
 /**
@@ -37,7 +42,7 @@ async function stopHolder(holder: LeaseEntry): Promise<void> {
 export async function acquireAppLeases(
 	owner: LeaseOwner,
 	apps: Record<string, AppConfig>,
-	options: { takeover: boolean },
+	options: { takeover: boolean; signal?: AbortSignal },
 ): Promise<void> {
 	for (const [name, app] of Object.entries(apps)) {
 		if (!app.exclusive) continue;
@@ -50,7 +55,7 @@ export async function acquireAppLeases(
 			worktree: owner.isWorktree ? basename(owner.root) : null,
 			branch: readGitBranch(owner.root),
 		};
-		const result = await acquireLease(request);
+		const result = await acquireLease(request, { signal: options.signal });
 		if (result.ok) continue;
 
 		const holder = describeLeaseHolder(result.holder);
@@ -69,8 +74,21 @@ export async function acquireAppLeases(
 			]);
 		}
 
-		await stopHolder(result.holder);
-		await acquireLease(request, { force: true });
+		const transferred = await transferLease(
+			request,
+			result.holder,
+			stopHolder,
+			{
+				signal: options.signal,
+			},
+		);
+		if (!transferred.ok) {
+			throw new CliError(
+				transferred.reason === "stop-refused"
+					? `Could not stop ${app.exclusive} held by ${holder}.`
+					: `${app.exclusive} ownership changed during takeover. Retry to check its current owner.`,
+			);
+		}
 		log.info(`🔑 Took over ${app.exclusive} from ${holder}`);
 	}
 }

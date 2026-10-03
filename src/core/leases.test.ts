@@ -7,6 +7,7 @@ import {
 	describeLeaseHolder,
 	readLeases,
 	releaseLeases,
+	transferLease,
 } from "./leases";
 
 let dir: string;
@@ -44,12 +45,148 @@ describe("leases", () => {
 
 	it("moves the lease on a takeover", async () => {
 		await acquireLease(request("a"), { path });
-		expect(await acquireLease(request("b"), { path, force: true })).toEqual({
+		const refused = await acquireLease(request("b"), { path });
+		if (refused.ok) throw new Error("Expected a lease conflict");
+		expect(
+			await transferLease(
+				request("b"),
+				refused.holder,
+				async () => {
+					// A stopped run can release its leases without waiting for the transfer.
+					await releaseLeases("a", path);
+					return true;
+				},
+				{ path },
+			),
+		).toEqual({
 			ok: true,
 		});
 		expect((await readLeases(path)).map((lease) => lease.sessionId)).toEqual([
 			"b",
 		]);
+	});
+
+	it("allows only one takeover of the same observed holder", async () => {
+		await acquireLease(request("a"), { path });
+		const refused = await acquireLease(request("b"), { path });
+		if (refused.ok) throw new Error("Expected a lease conflict");
+		const stopped: string[] = [];
+		const results = await Promise.all(
+			["b", "c"].map((session) =>
+				transferLease(
+					request(session),
+					refused.holder,
+					async (holder) => {
+						stopped.push(holder.sessionId);
+						return true;
+					},
+					{ path },
+				),
+			),
+		);
+		expect(results.filter((result) => result.ok)).toHaveLength(1);
+		expect(results.filter((result) => !result.ok)).toMatchObject([
+			{ reason: "changed" },
+		]);
+		expect(stopped).toEqual(["a"]);
+		const winner = ["b", "c"][results.findIndex((result) => result.ok)];
+		expect((await readLeases(path)).map((entry) => entry.sessionId)).toEqual([
+			winner,
+		]);
+	});
+
+	it("keeps the lease when stopping its holder is refused", async () => {
+		await acquireLease(request("a"), { path });
+		const refused = await acquireLease(request("b"), { path });
+		if (refused.ok) throw new Error("Expected a lease conflict");
+		expect(
+			await transferLease(request("b"), refused.holder, async () => false, {
+				path,
+			}),
+		).toMatchObject({ ok: false, reason: "stop-refused" });
+		expect((await readLeases(path)).map((entry) => entry.sessionId)).toEqual([
+			"a",
+		]);
+	});
+
+	it("rechecks an intervening registry writer after stopping", async () => {
+		await acquireLease(request("a"), { path });
+		const refused = await acquireLease(request("b"), { path });
+		if (refused.ok) throw new Error("Expected a lease conflict");
+		const result = await transferLease(
+			request("b"),
+			refused.holder,
+			async () => {
+				writeFileSync(
+					path,
+					JSON.stringify({
+						version: 1,
+						leases: [{ ...refused.holder, sessionId: "c" }],
+					}),
+				);
+				return true;
+			},
+			{ path },
+		);
+		expect(result).toMatchObject({
+			ok: false,
+			reason: "changed",
+			holder: { sessionId: "c" },
+		});
+		expect((await readLeases(path)).map((entry) => entry.sessionId)).toEqual([
+			"c",
+		]);
+	});
+
+	it("makes an ordinary claimant wait for a transfer's decision", async () => {
+		await acquireLease(request("a"), { path });
+		const conflict = await acquireLease(request("b"), { path });
+		if (conflict.ok) throw new Error("Expected a lease conflict");
+		let enter!: () => void;
+		let finish!: () => void;
+		const entered = new Promise<void>((resolve) => {
+			enter = resolve;
+		});
+		const stopped = new Promise<boolean>((resolve) => {
+			finish = () => resolve(true);
+		});
+		const transfer = transferLease(
+			request("b"),
+			conflict.holder,
+			() => {
+				enter();
+				return stopped;
+			},
+			{ path },
+		);
+		await entered;
+		const claimant = acquireLease(request("c"), { path });
+		finish();
+		expect(await transfer).toEqual({ ok: true });
+		expect(await claimant).toMatchObject({
+			ok: false,
+			holder: { sessionId: "b" },
+		});
+	});
+
+	it("keeps ownership and releases the transfer gate when stopping throws", async () => {
+		await acquireLease(request("a"), { path });
+		const conflict = await acquireLease(request("b"), { path });
+		if (conflict.ok) throw new Error("Expected a lease conflict");
+		await expect(
+			transferLease(
+				request("b"),
+				conflict.holder,
+				async () => {
+					throw new Error("stop failed");
+				},
+				{ path },
+			),
+		).rejects.toThrow("stop failed");
+		expect(await acquireLease(request("c"), { path })).toMatchObject({
+			ok: false,
+			holder: { sessionId: "a" },
+		});
 	});
 
 	// A crashed run releases nothing, and must not hold anything either.

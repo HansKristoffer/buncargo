@@ -40,6 +40,7 @@ export function startFakeInfisical(
 	options: {
 		cliOrganization?: string;
 		cliFails?: boolean;
+		cliDelayMs?: number;
 		requestDelayMs?: number;
 		mfaOrganizations?: string[];
 	} = {},
@@ -51,7 +52,7 @@ export function startFakeInfisical(
 		cliPath,
 		options.cliFails
 			? `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\necho "secret-looking stderr" >&2\nexit 1\n`
-			: `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\necho ${JSON.stringify(sessionToken(options.cliOrganization ?? "org-a"))}\n`,
+			: `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\n${options.cliDelayMs ? `sleep ${options.cliDelayMs / 1000}\n` : ""}echo ${JSON.stringify(sessionToken(options.cliOrganization ?? "org-a"))}\n`,
 	);
 	chmodSync(cliPath, 0o755);
 
