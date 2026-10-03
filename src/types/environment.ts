@@ -3,6 +3,7 @@ import type { AppConfig, CaptureConfig, SecretsScopeConfig } from "./app";
 import type { PortOffsetProvenance } from "./cli";
 import type {
 	GeneratedFileConfig,
+	PreflightStep,
 	ProfileConfig,
 	SetupCheck,
 	TaskConfig,
@@ -167,6 +168,8 @@ export interface DevEnvironment<
 	>;
 	/** `checks` from config and its integrations, run by `buncargo dev` before it starts anything */
 	readonly checks?: readonly SetupCheck[];
+	/** `preflight` from config and its integrations, run by `buncargo dev` with the terminal */
+	readonly preflight?: readonly PreflightStep[];
 	/** The config's integrations, after they have been applied. */
 	readonly integrations?: readonly BuncargoIntegration[];
 	/** `generatedFiles` from config and its integrations */

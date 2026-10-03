@@ -48,9 +48,6 @@ export interface RunTuiOptions {
 	stdout?: NodeJS.WriteStream;
 }
 
-/** Keys buncargo keeps for itself; a declared action may not use them. */
-export const BUILT_IN_KEYS = ["o", "e", "r", "l", "q", "j", "k"] as const;
-
 const SIDEBAR_MIN = 18;
 const SIDEBAR_MAX = 32;
 const FRAME_MS = 33;

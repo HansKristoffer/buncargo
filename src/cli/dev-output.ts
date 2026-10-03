@@ -40,21 +40,45 @@ export function openDevOutput(
 	if (options.tui && !terminal)
 		log.warn("--tui needs a terminal; printing prefixed lines instead.");
 
+	const actions = appActions(apps);
 	const tui =
 		options.tui && terminal && names.length > 0
 			? new RunTui({
 					output,
 					apps: names,
 					urlFor: (app) => appOpenUrl(env, app),
-					actions: appActions(apps),
+					actions,
 					logPath: (app) => (app ? logs?.file(app) : logs?.dir),
 					quit: () => process.kill(process.pid, "SIGINT"),
 				})
 			: undefined;
 	if (tui) output.terminalSize = () => tui.paneSize();
-	const stopStream = tui
+	const stopPrinting = tui
 		? undefined
 		: printStream(output, { width: prefixWidth(names) });
+	// Stream mode has no footer: say once where each declared action leads.
+	const hinted = new Set<TuiAction>();
+	const stopHints = tui
+		? undefined
+		: output.subscribe({
+				capture: (app, captured) => {
+					for (const action of actions)
+						if (
+							action.app === app &&
+							action.open === captured.name &&
+							!hinted.has(action)
+						) {
+							hinted.add(action);
+							log.hint(
+								`${app}: ${action.label} → buncargo open ${app} ${action.open}`,
+							);
+						}
+				},
+			});
+	const stopStream = () => {
+		stopPrinting?.();
+		stopHints?.();
+	};
 	const stopWatching = watchRestartRequests(env.root, env.sessionId, (app) => {
 		void output.controls?.restart(app).catch(() => {});
 	});
@@ -64,7 +88,7 @@ export function openDevOutput(
 		start: () => tui?.start(),
 		stop: () => {
 			tui?.stop();
-			stopStream?.();
+			stopStream();
 			stopWatching();
 			output.close();
 		},

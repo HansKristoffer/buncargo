@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createOutputCaptureScanner } from "../core/process/output-capture";
 import { SHOPIFY_CAPTURES } from "./index";
 
 /**
@@ -42,6 +43,46 @@ function bundle(version: string): string {
 	}
 }
 
+/**
+ * The captures, against output the way the CLI's TUI draws it under a
+ * pseudo-terminal (the TUI gives it one): framed, redrawn in place, URLs
+ * behind OSC 8 links whose text is a label. Always runs.
+ */
+describe("Shopify captures under a terminal", () => {
+	it("read the URLs from a framed, redrawn TUI with hyperlinks", () => {
+		const link = (url: string, text: string) =>
+			`\u001b]8;;${url}\u001b\\${text}\u001b]8;;\u001b\\`;
+		const frame = (n: number) =>
+			[
+				`\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G`,
+				`╭─ info ──────────────╮\r\n`,
+				`│ Using URL: \u001b[36mhttps://tunnel-${n}.trycloudflare.com\u001b[39m │\r\n`,
+				`│ Preview URL: ${link("https://admin.shopify.com/store/s/apps/x?dev=1", "Open")} │\r\n`,
+				`│ GraphiQL URL (Admin API): ${link("http://localhost:3457/graphiql?key=k", "localhost:3457…")} │\r\n`,
+				`╰──────────────────────╯\r\n`,
+				`\u001b[2m(p) Preview in your browser · (g) GraphiQL · (q) Quit\u001b[22m`,
+			].join("");
+		const scanner = createOutputCaptureScanner(SHOPIFY_CAPTURES);
+		const raw = `${frame(1)}${frame(1)}\r\n✅ Ready, watching for changes in your app\r\n`;
+		const found = [];
+		// As a pseudo-terminal delivers it: in arbitrary chunks.
+		for (let index = 0; index < raw.length; index += 37)
+			found.push(...scanner.push(raw.slice(index, index + 37)));
+		expect(
+			Object.fromEntries(found.map((entry) => [entry.name, entry.value])),
+		).toEqual({
+			appUrl: "https://tunnel-1.trycloudflare.com",
+			previewUrl: "https://admin.shopify.com/store/s/apps/x?dev=1",
+			graphiqlUrl: "http://localhost:3457/graphiql?key=k",
+			shopifyReady: expect.any(String),
+		});
+		// Each value once, though the frame was drawn twice.
+		expect(found.filter((entry) => entry.name === "previewUrl")).toHaveLength(
+			1,
+		);
+	});
+});
+
 describe.skipIf(!enabled)("Shopify CLI contract", () => {
 	for (const version of VERSIONS) {
 		it(`holds for ${version}`, () => {
@@ -53,6 +94,9 @@ describe.skipIf(!enabled)("Shopify CLI contract", () => {
 			expect(source).toContain("Ready, watching for changes in your app");
 			expect(source).toContain("Preview URL: ");
 			expect(source).toMatch(/GraphiQL URL( \(Admin API\))?: /);
+			// Links are OSC 8 hyperlinks under a terminal: the captures read their
+			// targets (see the pty test beside this one).
+			expect(source).toContain("\\x1B]8;;");
 
 			// And the patterns match lines rendered the way the CLI renders them.
 			expect(

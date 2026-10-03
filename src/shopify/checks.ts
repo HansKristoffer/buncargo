@@ -8,17 +8,23 @@ import {
 } from "./app-config";
 import {
 	isShopifyAppLinked,
-	isShopifyLoggedIn,
+	isShopifySessionExpired,
 	isTestedShopifyVersion,
 	parseVersion,
+	readShopifySession,
 	resolveShopifyBin,
+	shopifyAppInfo,
+	shopifyLogin,
 	shopifyVersion,
 } from "./cli";
+import { describeChange, linkShopifyApp } from "./link";
 import { patchWebDirectories, SHOPIFY_WEB_DIR } from "./web";
 
 function failed(detail: string) {
 	return { ok: false, detail };
 }
+
+export const isClientId = (value: string) => /^[0-9a-f]{32}$/i.test(value);
 
 /** `extensions/*\/shopify.extension.toml` api_versions, by extension. */
 function extensionApiVersions(root: string): Map<string, string> {
@@ -105,49 +111,56 @@ export function shopifyChecks(input: { config: string }): SetupCheck[] {
 		{
 			name: "Logged in to Shopify",
 			fast: false,
-			check: () =>
-				isShopifyLoggedIn() || failed("no stored Shopify CLI session"),
-			fix: ({ root }) => {
-				const result = Bun.spawnSync(
-					[resolveShopifyBin(root), "auth", "login"],
-					{
-						cwd: root,
-						stdio: ["inherit", "inherit", "inherit"],
-					},
-				);
-				if (result.exitCode !== 0) throw new Error("shopify auth login failed");
+			check: () => {
+				const session = readShopifySession();
+				if (!session) return failed("no stored Shopify CLI session");
+				// An expired token is often refreshed by the CLI itself; `dev`
+				// makes sure before it starts (its login preflight).
+				return isShopifySessionExpired(session)
+					? {
+							ok: false,
+							severity: "warning",
+							detail:
+								"the session has expired; `dev` renews it before starting",
+						}
+					: true;
 			},
+			fix: ({ root }) => shopifyLogin(root),
 			fixDescription: "`shopify auth login` (opens a browser)",
 		},
 		{
-			name: `${input.config} is linked to a Shopify app`,
+			name: `${input.config} has a client_id`,
 			fast: false,
 			check: ({ root }) => {
 				const config = read(root);
-				if (!/^[0-9a-f]{32}$/i.test(config.clientId)) {
-					return failed(`client_id "${config.clientId}" is a placeholder`);
-				}
+				return (
+					isClientId(config.clientId) ||
+					failed(`client_id "${config.clientId}" is a placeholder`)
+				);
+			},
+			// Only offered without a valid client_id: re-linking a linked app
+			// is how the toml lost its scopes and webhooks before.
+			fix: ({ root }) => {
+				const { path, before } = linkShopifyApp(root, input.config);
+				console.log(describeChange(path, before));
+			},
+			fixDescription: `\`buncargo shopify link --config ${input.config}\` (keeps the rest of the toml)`,
+		},
+		{
+			name: `${input.config}'s client_id resolves to an app`,
+			fast: false,
+			severity: "warning",
+			check: ({ root }) => {
+				const config = read(root);
+				if (!isClientId(config.clientId)) return true;
 				return (
 					isShopifyAppLinked(root, config.clientId) ||
-					failed("no .shopify/project.json entry for its client_id")
+					shopifyAppInfo(root, input.config).ok ||
+					failed(
+						"`shopify app info` could not resolve it: not logged in, or the app is not this account's. `buncargo shopify link` relinks without losing the toml",
+					)
 				);
 			},
-			fix: ({ root }) => {
-				const result = Bun.spawnSync(
-					[
-						resolveShopifyBin(root),
-						"app",
-						"config",
-						"link",
-						"--config",
-						input.config,
-					],
-					{ cwd: root, stdio: ["inherit", "inherit", "inherit"] },
-				);
-				if (result.exitCode !== 0)
-					throw new Error("shopify app config link failed");
-			},
-			fixDescription: `\`shopify app config link --config ${input.config}\``,
 		},
 		{
 			// The one that matters on every run: without it Shopify CLI starts a

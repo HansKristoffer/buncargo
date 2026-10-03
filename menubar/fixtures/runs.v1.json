@@ -39,6 +39,7 @@
           "url": "https://t3code-f003056f.api.lullu.localhost",
           "loopbackUrl": "http://localhost:7100",
           "publicUrl": "https://example.trycloudflare.com",
+          "openUrl": "https://example.trycloudflare.com",
           "hostname": "t3code-f003056f.api.lullu.localhost",
           "expo": {
             "scheme": "lullu",

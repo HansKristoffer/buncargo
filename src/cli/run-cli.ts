@@ -56,6 +56,7 @@ import {
 import { CliError, toCliError } from "./errors";
 import * as log from "./log";
 import { classifyCliApps, parseRequiredCommaSeparatedFlag } from "./port-reuse";
+import { runPreflight } from "./preflight";
 import {
 	flushRunPatches,
 	markApps,
@@ -346,6 +347,9 @@ async function runDevFlow<
 		}
 		const errors = failed.filter((result) => !isWarning(result));
 		if (errors.length > 0) throw checkFailureError(errors);
+		await timer.measure("preflight", () =>
+			runPreflight(anyEnv, Object.keys(appsForDev)),
+		);
 	}
 	connect?.plan(appsForDev, plan.requiredServiceKeys, env.services);
 	if (connect && !connect.active)

@@ -12,8 +12,14 @@ export interface CheckContext {
 	env: AnyDevEnvironment;
 }
 
-/** `true` passes; `{ ok: false, detail }` fails with a reason. */
-export type CheckOutcome = boolean | { ok: boolean; detail?: string };
+/**
+ * `true` passes; `{ ok: false, detail }` fails with a reason. `severity`
+ * overrides the check's own for this result: a login that exists but has
+ * expired is a warning, a missing one an error.
+ */
+export type CheckOutcome =
+	| boolean
+	| { ok: boolean; detail?: string; severity?: "error" | "warning" };
 
 /**
  * A precondition of the checkout, such as generated code that has to exist.
@@ -38,6 +44,28 @@ export interface SetupCheck {
 	fast?: boolean;
 	/** A warning is reported but never stops `dev` or fails `setup`. Default: error. */
 	severity?: "error" | "warning";
+}
+
+/** What a {@link PreflightStep} is handed. */
+export interface PreflightContext extends CheckContext {
+	/**
+	 * Whether a person is at the terminal: the step may prompt, open a browser
+	 * or run an interactive login. False in CI, agents and piped output.
+	 */
+	interactive: boolean;
+}
+
+/**
+ * A step `buncargo dev` runs before the TUI takes the screen, with the real
+ * terminal, so it can prompt or open a browser: a login that would otherwise
+ * fail half-way through the run. Throwing stops the start with its message,
+ * like a failing check.
+ */
+export interface PreflightStep {
+	name: string;
+	/** Run only when one of these apps is selected. Default: always. */
+	apps?: readonly string[];
+	run(ctx: PreflightContext): void | Promise<void>;
 }
 
 /**

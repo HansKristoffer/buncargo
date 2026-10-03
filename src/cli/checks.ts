@@ -6,6 +6,8 @@ export interface CheckResult {
 	ok: boolean;
 	/** Why it failed: the check's own detail, or what it threw. */
 	detail?: string;
+	/** This result's severity, when the check set one for it. */
+	severity?: "error" | "warning";
 }
 
 /**
@@ -24,7 +26,12 @@ export async function runChecks(
 				const outcome = await check.check(ctx);
 				return typeof outcome === "boolean"
 					? { check, ok: outcome }
-					: { check, ok: outcome.ok, detail: outcome.detail };
+					: {
+							check,
+							ok: outcome.ok,
+							detail: outcome.detail,
+							severity: outcome.severity,
+						};
 			} catch (error) {
 				return {
 					check,
@@ -37,7 +44,7 @@ export async function runChecks(
 }
 
 export function isWarning(result: CheckResult): boolean {
-	return result.check.severity === "warning";
+	return (result.severity ?? result.check.severity) === "warning";
 }
 
 /** How to fix a failed check, as one line. */

@@ -21,9 +21,10 @@ import {
 	shopifyConfigFile,
 	shopifyConfigName,
 } from "./app-config";
-import { shopifyChecks } from "./checks";
+import { isClientId, shopifyChecks } from "./checks";
 import { resolveShopifyBin } from "./cli";
 import { shopifyCommands } from "./commands";
+import { ensureShopifyLogin } from "./login";
 import { renderShopifyWebToml, SHOPIFY_WEB_DIR } from "./web";
 
 /**
@@ -211,10 +212,19 @@ export function shopify(
 				...(store ? ["--store", shellQuote(store)] : []),
 			].join(" ");
 
+			// No `interactive`: in the TUI it has a terminal (and pane) of its
+			// own; in stream mode piped output makes it print plain lines, which
+			// the captures read. Not `CI=1` to force that: it also turns off the
+			// device-code login. And not essential: an extension build error or a
+			// lost session stops this app, not the API and the frontend with it.
 			const shopifyApp: AppConfig = {
 				kind: "worker",
 				devCommand,
-				interactive: !Object.values(apps).some((app) => app.interactive),
+				essential: false,
+				actions: [
+					{ key: "p", label: "preview", open: "previewUrl" },
+					{ key: "g", label: "GraphiQL", open: "graphiqlUrl" },
+				],
 				startAfter: [
 					...(frontend ? [frontend] : []),
 					...(options.backend ? [options.backend] : []),
@@ -283,6 +293,19 @@ export function shopify(
 
 		checks: shopifyChecks(state),
 		commands: shopifyCommands(state),
+		preflight: [
+			{
+				name: "Shopify CLI session is valid",
+				apps: ["shopify"],
+				run: ({ root, interactive }) =>
+					ensureShopifyLogin({
+						root,
+						config: configName,
+						linked: appToml !== undefined && isClientId(appToml.clientId),
+						interactive,
+					}),
+			},
+		],
 
 		// The captured URLs label themselves; these are the ones the toml gives.
 		describe: () =>

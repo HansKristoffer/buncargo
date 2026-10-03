@@ -78,7 +78,7 @@ function composeHooks(
 
 /**
  * Apply a config's integrations: each `config()` transform in order, then the
- * hooks and checks they contribute. Runs before validation, so everything an
+ * hooks, checks and preflight steps they contribute. Runs before validation, so everything an
  * integration adds is validated like the rest.
  */
 export function applyIntegrations<T extends object>(config: T): T {
@@ -105,12 +105,17 @@ export function applyIntegrations<T extends object>(config: T): T {
 		...(resolved.checks ?? []),
 		...integrations.flatMap((integration) => integration.checks ?? []),
 	];
+	const preflight = [
+		...(resolved.preflight ?? []),
+		...integrations.flatMap((integration) => integration.preflight ?? []),
+	];
 	return Object.assign(
 		{
 			...resolved,
 			integrations,
 			...(hooks ? { hooks } : {}),
 			...(checks.length > 0 ? { checks } : {}),
+			...(preflight.length > 0 ? { preflight } : {}),
 		},
 		{ [APPLIED]: true },
 	) as T;

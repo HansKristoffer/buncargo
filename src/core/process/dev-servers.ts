@@ -356,7 +356,11 @@ export async function startDevServers(
 			output.state(name, { state: "starting" });
 			onAppSpawned?.(name, pid, attached);
 		},
-		onRestart: (name, reason) => output.event(name, `restarting: ${reason}`),
+		onRestart: (name, reason) => {
+			output.event(name, `restarting: ${reason}`);
+			if (!output.terminalSize)
+				console.log(formatStep(`🔁 Restarting ${name}: ${reason}`));
+		},
 		verbose: verbose && !output.terminalSize,
 		width: nameWidth,
 	});

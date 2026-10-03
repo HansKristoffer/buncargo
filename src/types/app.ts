@@ -89,7 +89,8 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	/**
 	 * Single keys that open one of this app's captured URLs, shown in the TUI
 	 * footer once the capture has a value (`buncargo open <app> <capture>` does
-	 * the same from anywhere). Keys must be unique and not one of buncargo's.
+	 * the same from anywhere). Keys must be unique and not one of buncargo's
+	 * (`o e r l q j k`).
 	 */
 	actions?: readonly AppAction[];
 	/** Start this app after public tunnels are open so env sees *_PUBLIC_URL. */

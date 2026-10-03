@@ -59,6 +59,7 @@ describe("runs.json v1 fixture", () => {
 				run?.apps.find((app) => app.name === "worker")?.pid,
 			).toBeUndefined();
 			expect(run?.apps[1]?.publicUrl).toContain("trycloudflare");
+			expect(run?.apps[1]?.openUrl).toBe(run?.apps[1]?.publicUrl);
 			// The Expo app is the one the app offers a simulator button for.
 			expect(run?.apps[1]?.expo?.scheme).toBe("lullu");
 			// Integration rows and captures, and the lease an app holds.
