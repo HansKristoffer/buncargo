@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.1.0](https://github.com/HansKristoffer/buncargo/compare/v11.0.0...v11.1.0) (2026-10-03)
+
+
+### Features
+
+* **ci:** skip secrets for CI commands ([#73](https://github.com/HansKristoffer/buncargo/issues/73)) ([4cfefdb](https://github.com/HansKristoffer/buncargo/commit/4cfefdba14a40474c339ad977d4447b3cafec9c7))
+
 ## [11.0.0](https://github.com/HansKristoffer/buncargo/compare/v10.4.1...v11.0.0) (2026-10-03)
 
 
