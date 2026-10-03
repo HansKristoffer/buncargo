@@ -9,6 +9,7 @@ import {
 	applySecretDefaults,
 	clearScopeSecretsCache,
 	DEFAULT_INFISICAL_SITE_URL,
+	fetchScopeSecrets,
 	loadAppSecrets,
 	loadScopeSecrets,
 	missingRequiredSecrets,
@@ -51,6 +52,88 @@ afterEach(() => {
 		if (value === undefined) delete process.env[key];
 		else process.env[key] = value;
 	}
+});
+
+describe("shared request cancellation", () => {
+	async function waitUntil(ready: () => boolean) {
+		const deadline = Date.now() + 3000;
+		while (!ready() && Date.now() < deadline) await Bun.sleep(5);
+		expect(ready()).toBe(true);
+	}
+
+	it.each([0, 1])(
+		"cancels waiter %s without cancelling the other scope consumer",
+		async (index) => {
+			const infisical = start({ requestDelayMs: 100 });
+			const controllers = [new AbortController(), new AbortController()];
+			const pending = controllers.map((controller) =>
+				loadScopeSecrets(
+					{ projectId: "p1", siteUrl: infisical.siteUrl },
+					{ signal: controller.signal, env: {} },
+				),
+			);
+			const cancelled = pending[index].then(
+				() => "fulfilled",
+				(error) => error,
+			);
+			const survivor = pending[1 - index];
+			void survivor.catch(() => {});
+			await waitUntil(() => infisical.requests.includes("GET /api/v4/secrets"));
+			controllers[index].abort(new Error("Cancelled waiter"));
+			expect(await cancelled).toMatchObject({ message: "Cancelled waiter" });
+			expect(await survivor).toEqual({ OPENAI_API_KEY: "sk-project" });
+			expect(
+				infisical.requests.filter((path) => path === "GET /api/v4/secrets"),
+			).toHaveLength(1);
+			expect(infisical.cliCalls()).toHaveLength(1);
+		},
+	);
+
+	it("keeps shared CLI authentication alive for a different scope", async () => {
+		const infisical = start({ cliDelayMs: 150 });
+		infisical.projects.p2 = { secrets: { KEY: "second" } };
+		const controller = new AbortController();
+		const first = loadScopeSecrets(
+			{ projectId: "p1", siteUrl: infisical.siteUrl },
+			{ signal: controller.signal, env: {} },
+		);
+		const cancelled = first.then(
+			() => "fulfilled",
+			(error) => error,
+		);
+		const second = loadScopeSecrets(
+			{ projectId: "p2", siteUrl: infisical.siteUrl },
+			{ env: {} },
+		);
+		void second.catch(() => {});
+		await waitUntil(() => infisical.cliCalls().length > 0);
+		controller.abort(new Error("Cancelled scope"));
+		expect(await cancelled).toMatchObject({ message: "Cancelled scope" });
+		expect(await second).toEqual({ KEY: "second" });
+		expect(infisical.cliCalls()).toHaveLength(1);
+	});
+
+	it("applies a waiter's timeout without shortening another wait", async () => {
+		const infisical = start({ requestDelayMs: 100 });
+		const scope = resolveScope(
+			{ projectId: "p1", siteUrl: infisical.siteUrl },
+			undefined,
+			{},
+		);
+		if (!scope) throw new Error("Missing test scope");
+		const first = fetchScopeSecrets(scope, { timeoutMs: 10, env: {} });
+		const timedOut = first.then(
+			() => "fulfilled",
+			(error) => error,
+		);
+		const second = fetchScopeSecrets(scope, { timeoutMs: 3000, env: {} });
+		void second.catch(() => {});
+		expect(await timedOut).toMatchObject({
+			message: "Infisical did not answer within 10ms.",
+		});
+		expect(await second).toEqual({ OPENAI_API_KEY: "sk-project" });
+		expect(infisical.cliCalls()).toHaveLength(1);
+	});
 });
 
 describe("resolveScope", () => {

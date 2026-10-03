@@ -16,7 +16,10 @@ import {
 	stopPublicTunnels,
 } from "../core/tunnel";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../core/watchdog-constants";
-import { seedCanOverlap, startSeedTask } from "../environment/seed-startup";
+import {
+	assertSeedSucceeded,
+	seedCanOverlap,
+} from "../environment/seed-startup";
 import { startServerSession } from "../environment/server-session";
 import { environmentStartPlan } from "../environment/start-plan";
 import { resolveSelectedApps } from "../planning";
@@ -130,17 +133,20 @@ function resolveIdleTimeout(args: DevCliArgs): number | false | undefined {
 	return undefined;
 }
 
-function waitForShutdownSignal(): Promise<void> {
+function waitForShutdownSignal(signal: AbortSignal): Promise<void> {
 	return new Promise<void>((resolve) => {
 		const done = () => {
 			process.off("SIGINT", done);
 			process.off("SIGTERM", done);
 			process.off("SIGHUP", done);
+			signal.removeEventListener("abort", done);
 			resolve();
 		};
 		process.on("SIGINT", done);
 		process.on("SIGTERM", done);
 		process.on("SIGHUP", done);
+		signal.addEventListener("abort", done, { once: true });
+		if (signal.aborted) done();
 	});
 }
 
@@ -524,6 +530,7 @@ async function runDevFlow<
 	// Leases before anything spawns and before the run is published: a refused
 	// lease ends this run, and the registry should never show it as starting.
 	await acquireAppLeases(env, classifiedApps.startApps, {
+		signal,
 		takeover: args.takeover,
 	});
 
@@ -559,11 +566,9 @@ async function runDevFlow<
 
 	if (nothingToSpawn && !tunnels.hasPendingTargets() && !connect?.active) {
 		if (overlapSeed)
-			await startSeedTask(
-				(seedSignal) =>
-					timer.measure("seed", () => env.runSeed({ signal: seedSignal })),
-				signal,
-			).ready;
+			assertSeedSucceeded(
+				await timer.measure("seed", () => env.runSeed({ signal })),
+			);
 		timer.report();
 		log.success("Selected apps are already running. Nothing to start.");
 		if (takeover && takeover.names.length > 0 && !isInteractive()) {
@@ -574,35 +579,18 @@ async function runDevFlow<
 	}
 
 	const appsStartedAt = performance.now();
-	const seedTask = overlapSeed
-		? startSeedTask(
-				(seedSignal) =>
-					timer.measure("seed", () =>
-						env.runSeed({ signal: seedSignal, prefixOutput: true }),
-					),
-				signal,
-			)
-		: undefined;
 	let firstSpawn = false;
 
 	try {
-		if (nothingToSpawn) {
-			await tunnels.openOwnedTunnels();
-			await seedTask?.ready;
-			timer.report();
-			await withSignal(waitForShutdownSignal(), seedTask?.signal ?? signal);
-			return undefined;
-		}
-
 		await startServerSession(
 			{
 				root: env.root,
-				beforeReady: seedTask
-					? async () => {
-							await seedTask.ready;
-							log.success("All servers ready");
-						}
+				prepare: nothingToSpawn
+					? (sessionSignal) => tunnels.openOwnedTunnels(sessionSignal)
 					: undefined,
+				onSeedReady: () => {
+					if (!nothingToSpawn) log.success("All servers ready");
+				},
 				ports: env.ports as Record<string, number>,
 				appEnv: (name) =>
 					env.buildAppEnvVars(name as Extract<keyof TApps, string>),
@@ -613,7 +601,7 @@ async function runDevFlow<
 					env.waitForServers({
 						onlyApps: Object.keys(apps) as Extract<keyof TApps, string>[],
 						expandRequired: false,
-						logReady: !seedTask,
+						logReady: !overlapSeed,
 						signal: healthSignal,
 					}),
 				recordCapture: (app, captured) => env.recordCapture(app, captured),
@@ -624,13 +612,21 @@ async function runDevFlow<
 			},
 			classifiedApps.startApps,
 			{
-				signal: seedTask?.signal ?? signal,
+				signal,
+				seed: overlapSeed
+					? (seedSignal) =>
+							timer.measure("seed", () =>
+								env.runSeed({ signal: seedSignal, prefixOutput: true }),
+							)
+					: undefined,
+				stayOpen: nothingToSpawn ? waitForShutdownSignal : undefined,
 				projectName: env.projectName,
 				runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
 				skipContainers: !hasServices,
 				onPhase: timer.record,
 				onReady: async () => {
-					timer.record("app readiness", performance.now() - appsStartedAt);
+					if (!nothingToSpawn)
+						timer.record("app readiness", performance.now() - appsStartedAt);
 					timer.report();
 				},
 				attach: args.attach,
@@ -680,8 +676,6 @@ async function runDevFlow<
 		);
 		return undefined;
 	} finally {
-		seedTask?.cancel();
-		if (seedTask) await Promise.allSettled([seedTask.ready]);
 		await teardown(env, tunnels, connect);
 	}
 }

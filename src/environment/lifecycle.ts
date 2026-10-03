@@ -30,11 +30,7 @@ import { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { runMigrationsSequentially } from "./migrations";
 import { prefetchSecrets } from "./prefetch-secrets";
 import type { DevRunClaimApi } from "./run-claim";
-import {
-	assertSeedSucceeded,
-	seedCanOverlap,
-	startSeedTask,
-} from "./seed-startup";
+import { assertSeedSucceeded, seedCanOverlap } from "./seed-startup";
 import { runSeedIfNeeded } from "./seeding";
 import { assertAppWorkingDirectories, startAppServers } from "./servers";
 
@@ -503,9 +499,14 @@ export function createLifecycleApi<
 				await ensureSubset(lateServices, true);
 
 				if (shouldStartServers && Object.keys(appsToStart).length > 0) {
-					const seedTask = overlap
-						? startSeedTask(
-								(seedSignal) =>
+					const pids = await startAppServers(ctx, envVars, {
+						signal,
+						apps: appsToStart,
+						onPhase,
+						productionBuild,
+						verbose,
+						seed: overlap
+							? (seedSignal) =>
 									phase("seed", () =>
 										runSeed({
 											verbose,
@@ -513,30 +514,12 @@ export function createLifecycleApi<
 											signal: seedSignal,
 											prefixOutput: true,
 										}),
-									),
-								signal,
-							)
-						: undefined;
-					let pids: DevServerPids;
-					try {
-						pids = await startAppServers(ctx, envVars, {
-							signal: seedTask?.signal ?? signal,
-							apps: appsToStart,
-							onPhase,
-							productionBuild,
-							verbose,
-							beforeReady: seedTask
-								? async () => {
-										await seedTask.ready;
-										if (verbose) console.log(formatDone("All servers ready"));
-									}
-								: undefined,
-						});
-					} catch (error) {
-						seedTask?.cancel(error);
-						if (seedTask) await Promise.allSettled([seedTask.ready]);
-						throw error;
-					}
+									)
+							: undefined,
+						onSeedReady: () => {
+							if (verbose) console.log(formatDone("All servers ready"));
+						},
+					});
 
 					if (verbose) {
 						console.log(formatDone("Environment ready"));

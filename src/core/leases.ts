@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { withFileLock } from "./file-lock";
 import {
 	processIdentityMatcherAsync,
@@ -75,36 +76,118 @@ export async function readLeases(
 	return liveOnly(await registry.read(path));
 }
 
+function transferGate(path: string, key: string): string {
+	return `${path}.transfer-${createHash("sha256").update(key).digest("hex")}`;
+}
+
+function sameHolder(left: LeaseEntry, right: LeaseEntry): boolean {
+	return (
+		left.key === right.key &&
+		left.sessionId === right.sessionId &&
+		left.pid === right.pid &&
+		left.processIdentity === right.processIdentity &&
+		left.acquiredAt === right.acquiredAt
+	);
+}
+
+async function writeLease(
+	path: string,
+	live: LeaseEntry[],
+	request: LeaseRequest,
+): Promise<void> {
+	await registry.write(path, [
+		...live.filter((entry) => entry.key !== request.key),
+		{
+			...request,
+			pid: process.pid,
+			processIdentity: await readCurrentProcessIdentityAsync(),
+			acquiredAt: new Date().toISOString(),
+		},
+	]);
+}
+
+type LeaseOptions = { path?: string; signal?: AbortSignal };
+
 /**
  * Take a lease, or report who holds it. Re-acquiring your own is a no-op, and
  * a holder whose `dev` process is gone is dropped on the way.
  */
 export async function acquireLease(
 	request: LeaseRequest,
-	options: { path?: string; force?: boolean } = {},
+	options: LeaseOptions = {},
 ): Promise<LeaseResult> {
 	const path = options.path ?? getLeasesPath();
-	return withFileLock(path, async () => {
-		const live = await liveOnly(await registry.read(path));
-		const holder = live.find(
-			(entry) =>
-				entry.key === request.key && entry.sessionId !== request.sessionId,
-		);
-		// `force` is the takeover: the holder's app has been stopped, but its
-		// `dev` process may live on, so its entry would otherwise still count.
-		if (holder && !options.force) return { ok: false, holder };
+	return withFileLock(
+		transferGate(path, request.key),
+		() =>
+			withFileLock(
+				path,
+				async () => {
+					const live = await liveOnly(await registry.read(path));
+					const holder = live.find((entry) => entry.key === request.key);
+					if (holder)
+						return holder.sessionId === request.sessionId
+							? { ok: true }
+							: { ok: false, holder };
+					options.signal?.throwIfAborted();
+					await writeLease(path, live, request);
+					return { ok: true };
+				},
+				options,
+			),
+		{ signal: options.signal, timeoutMs: 30_000 },
+	);
+}
 
-		await registry.write(path, [
-			...live.filter((entry) => entry.key !== request.key),
-			{
-				...request,
-				pid: process.pid,
-				processIdentity: await readCurrentProcessIdentityAsync(),
-				acquiredAt: new Date().toISOString(),
-			},
-		]);
-		return { ok: true };
-	});
+type TransferResult =
+	| { ok: true }
+	| { ok: false; reason: "changed"; holder?: LeaseEntry }
+	| { ok: false; reason: "stop-refused"; holder: LeaseEntry };
+
+/**
+ * Transfer only the ownership the caller observed, after its app has stopped.
+ * The per-key gate excludes competing claims across the stop. The registry
+ * lock is released while stopping so the old run can release its leases.
+ */
+export async function transferLease(
+	request: LeaseRequest,
+	expected: LeaseEntry,
+	stop: (holder: LeaseEntry) => Promise<boolean>,
+	options: LeaseOptions = {},
+): Promise<TransferResult> {
+	const path = options.path ?? getLeasesPath();
+	return withFileLock(
+		transferGate(path, request.key),
+		async () => {
+			const holder = await withFileLock(
+				path,
+				async () =>
+					(await liveOnly(await registry.read(path))).find(
+						(entry) => entry.key === request.key,
+					),
+				options,
+			);
+			if (!holder || !sameHolder(holder, expected))
+				return { ok: false, reason: "changed", holder };
+			options.signal?.throwIfAborted();
+			if (!(await stop(holder)))
+				return { ok: false, reason: "stop-refused", holder };
+			return withFileLock(
+				path,
+				async () => {
+					const live = await liveOnly(await registry.read(path));
+					const current = live.find((entry) => entry.key === request.key);
+					if (current && !sameHolder(current, expected))
+						return { ok: false, reason: "changed", holder: current };
+					options.signal?.throwIfAborted();
+					await writeLease(path, live, request);
+					return { ok: true };
+				},
+				options,
+			);
+		},
+		{ signal: options.signal, timeoutMs: 30_000 },
+	);
 }
 
 /** Give up every lease a session holds. */

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AppConfig, SecretsScopeConfig } from "../../types";
+import { registerAbortCleanup } from "../deadline";
 import { withFileLock } from "../file-lock";
 import {
 	connectProcessEnv,
@@ -10,6 +11,7 @@ import {
 import { recordStartupMetric } from "../startup-metrics";
 import { stateFilePath } from "../state-paths";
 import { formatWarn } from "../style";
+import { SharedRequestCache } from "./shared-request";
 
 /**
  * Infisical, fetched once per scope per process, the way hanzio fetches it.
@@ -58,9 +60,9 @@ export class SecretsError extends Error {
 	}
 }
 
-const cache = new Map<string, Promise<Record<string, string>>>();
+const cache = new SharedRequestCache<Record<string, string>>();
 const warnedScopes = new Set<string>();
-const sessionTokens = new Map<string, Promise<string>>();
+const sessionTokens = new SharedRequestCache<string>();
 
 export function scopeKey(scope: InfisicalScope): string {
 	return `${scope.siteUrl}|${scope.organizationId ?? ""}|${scope.projectId}|${scope.environment}|${scope.path}`;
@@ -218,14 +220,19 @@ function cliSessionToken(
 ): Promise<string> {
 	const binary = infisicalPathOverride() ?? "infisical";
 	const key = `${scope.siteUrl}|${binary}`;
-	const cached = sessionTokens.get(key);
-	if (cached) return cached;
-	const pending = readCliSessionToken(scope, binary, signal);
-	sessionTokens.set(key, pending);
-	void pending.catch(() => {
-		if (sessionTokens.get(key) === pending) sessionTokens.delete(key);
-	});
-	return pending;
+	return sessionTokens.get(
+		key,
+		(sharedSignal) =>
+			readCliSessionToken(
+				scope,
+				binary,
+				AbortSignal.any([
+					sharedSignal,
+					AbortSignal.timeout(REQUEST_TIMEOUT_MS * 2),
+				]),
+			),
+		signal,
+	);
 }
 
 async function readCliSessionToken(
@@ -404,7 +411,7 @@ async function listSecrets(
 	return values;
 }
 
-export function fetchScopeSecrets(
+export async function fetchScopeSecrets(
 	scope: InfisicalScope,
 	options: {
 		signal?: AbortSignal;
@@ -420,37 +427,36 @@ export function fetchScopeSecrets(
 		? createHash("sha256").update(JSON.stringify(credentials)).digest("hex")
 		: "session";
 	const key = `${scopeKey(scope)}|${authKey}`;
-	const cached = cache.get(key);
-	if (cached) return cached;
-
 	const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS * 2;
 	const timeout = AbortSignal.timeout(timeoutMs);
-	const signal = options.signal
+	const waitSignal = options.signal
 		? AbortSignal.any([options.signal, timeout])
 		: timeout;
-	const pending = (async () => {
-		try {
+	const pending = cache.get(
+		key,
+		async (sharedSignal) => {
+			// Transport has its own ceiling. A caller's shorter wait never
+			// changes the request or authentication lifetime of another caller.
+			const signal = AbortSignal.any([
+				sharedSignal,
+				AbortSignal.timeout(REQUEST_TIMEOUT_MS * 2),
+			]);
+			signal.throwIfAborted();
 			const token = credentials
 				? await machineToken(scope, credentials, signal)
 				: await scopedSessionToken(scope, signal);
 			return await listSecrets(scope, token, signal);
-		} catch (error) {
-			if (timeout.aborted && !options.signal?.aborted) {
-				throw new SecretsError(
-					`Infisical did not answer within ${timeoutMs}ms.`,
-				);
-			}
-			throw error;
-		}
-	})();
-	cache.set(key, pending);
-	// A failure is not cached: the next caller (after `infisical login`) retries.
-	// The caller that awaits reports it; this handler also keeps a rejection
-	// nobody has awaited yet from tripping the unhandled-rejection handler.
-	void pending.catch(() => {
-		if (cache.get(key) === pending) cache.delete(key);
-	});
-	return pending;
+		},
+		waitSignal,
+	);
+	if (options.signal) registerAbortCleanup(options.signal, pending);
+	try {
+		return await pending;
+	} catch (error) {
+		if (timeout.aborted && !options.signal?.aborted)
+			throw new SecretsError(`Infisical did not answer within ${timeoutMs}ms.`);
+		throw error;
+	}
 }
 
 /** Forget every fetched scope. Tests only: a run wants exactly one fetch. */
