@@ -68,88 +68,90 @@ export class ProcessOwner {
 				new Error(`Failed to start app "${name}": ${error.message}`),
 			);
 		});
-		(child as EventEmitter).once(
-			"exit",
-			(code: number | null, signal: NodeJS.Signals | null) => {
-				const operation = (async () => {
-					// Replaced on purpose (`restartOn`): its exit is not the app's.
-					if (this.retired.delete(child)) {
-						this.live.delete(child);
-						// Replacement owns this gap; retiring the last child is not completion.
-						return;
-					}
-					if (
-						code === 0 &&
-						!worker &&
-						port !== undefined &&
-						child.pid &&
-						!(child instanceof DetachedApp)
-					) {
-						const detached = await findDetachedApp(port, child.pid);
-						if (detached) {
-							this.live.delete(child);
-							this.register(
-								name,
-								detached.child,
-								this.pendingReadiness.has(name),
-							);
-							this.options.onAppAdopted?.(name, detached.child);
-							if (!this.warnedDetaches.has(name)) {
-								this.warnedDetaches.add(name);
-								console.warn(
-									formatWarn(
-										`App "${name}" on port ${port}, pid ${detached.child.pid} (${detached.command ?? "unknown command"}): the app detached from buncargo; it will be stopped with the run`,
-									),
-								);
-							}
-							if (this.controller.signal.aborted)
-								await terminateOwnedProcess(
-									detached.child,
-									this.options.shutdownGraceMs,
-								);
-							else detached.child.watch();
-							return;
-						}
-					}
+		const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+			const operation = (async () => {
+				// Replaced on purpose (`restartOn`): its exit is not the app's.
+				if (this.retired.delete(child)) {
 					this.live.delete(child);
-					try {
-						this.options.onAppExit?.(name, code, signal);
-					} catch {
-						/* Observers cannot break process cleanup. */
-					}
-					const deliberate =
-						(code === 0 && !worker) ||
-						code === 130 ||
-						code === 143 ||
-						signal === "SIGINT" ||
-						signal === "SIGTERM";
-					if (
-						this.options.optional?.has(name) &&
-						!this.controller.signal.aborted
-					) {
-						this.pendingReadiness.delete(name);
-						this.parked.add(name);
-					} else if (!this.controller.signal.aborted) {
-						if (!deliberate || this.pendingReadiness.has(name))
-							this.controller.abort(
-								new Error(
-									`App "${name}" exited with ${signal ? `signal ${signal}` : `code ${code}`}`,
+					// Replacement owns this gap; retiring the last child is not completion.
+					return;
+				}
+				if (
+					code === 0 &&
+					!worker &&
+					port !== undefined &&
+					child.pid &&
+					!(child instanceof DetachedApp)
+				) {
+					const detached = await findDetachedApp(port, child.pid);
+					if (detached) {
+						this.live.delete(child);
+						this.register(
+							name,
+							detached.child,
+							this.pendingReadiness.has(name),
+						);
+						this.options.onAppAdopted?.(name, detached.child);
+						if (!this.warnedDetaches.has(name)) {
+							this.warnedDetaches.add(name);
+							console.warn(
+								formatWarn(
+									`App "${name}" on port ${port}, pid ${detached.child.pid} (${detached.command ?? "unknown command"}): the app detached from buncargo; it will be stopped with the run`,
 								),
 							);
-						else if (name === this.options.attachedName)
-							this.controller.abort(
-								new RunInterrupted(`Attached app "${name}" exited`),
+						}
+						if (this.controller.signal.aborted)
+							await terminateOwnedProcess(
+								detached.child,
+								this.options.shutdownGraceMs,
 							);
+						else detached.child.watch();
+						return;
 					}
-					if (this.sealed && this.live.size === 0 && this.parked.size === 0)
-						this.resolveDone();
-				})();
-				this.exits.add(operation);
-				void operation
-					.catch((error) => this.controller.abort(error))
-					.finally(() => this.exits.delete(operation));
-			},
-		);
+				}
+				this.live.delete(child);
+				try {
+					this.options.onAppExit?.(name, code, signal);
+				} catch {
+					/* Observers cannot break process cleanup. */
+				}
+				const deliberate =
+					(code === 0 && !worker) ||
+					code === 130 ||
+					code === 143 ||
+					signal === "SIGINT" ||
+					signal === "SIGTERM";
+				if (
+					this.options.optional?.has(name) &&
+					!this.controller.signal.aborted
+				) {
+					this.pendingReadiness.delete(name);
+					this.parked.add(name);
+				} else if (!this.controller.signal.aborted) {
+					if (!deliberate || this.pendingReadiness.has(name))
+						this.controller.abort(
+							new Error(
+								`App "${name}" exited with ${signal ? `signal ${signal}` : `code ${code}`}`,
+							),
+						);
+					else if (name === this.options.attachedName)
+						this.controller.abort(
+							new RunInterrupted(`Attached app "${name}" exited`),
+						);
+				}
+				if (this.sealed && this.live.size === 0 && this.parked.size === 0)
+					this.resolveDone();
+			})();
+			this.exits.add(operation);
+			void operation
+				.catch((error) => this.controller.abort(error))
+				.finally(() => this.exits.delete(operation));
+		};
+		// A child can be gone before it is registered: a worker that crashed
+		// while its ownership was being claimed. Its exit counts all the same.
+		if (child.exitCode !== null || child.signalCode !== null)
+			queueMicrotask(() => onExit(child.exitCode, child.signalCode));
+		else (child as EventEmitter).once("exit", onExit);
 	}
 
 	/**

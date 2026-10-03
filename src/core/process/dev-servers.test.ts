@@ -348,6 +348,46 @@ describe("startDevServers essential: false", () => {
 	});
 });
 
+describe("startDevServers non-essential crash on start", () => {
+	it("reports a worker that dies while it is being claimed, and keeps the run", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-optional-crash-"));
+		const output = new RunOutput();
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					keeper: {
+						kind: "worker",
+						devCommand: "bun -e 'setInterval(() => {}, 60000)'",
+					},
+					// Gone before its birth identity can be read.
+					crash: { kind: "worker", essential: false, devCommand: "exit 3" },
+				},
+				root,
+				{},
+				{},
+				{ verbose: false, waitForExit: false, output },
+			);
+			for (let i = 0; i < 100 && !output.states.get("crash"); i++)
+				await Bun.sleep(20);
+			for (
+				let i = 0;
+				i < 100 && output.states.get("crash")?.state !== "failed";
+				i++
+			)
+				await Bun.sleep(20);
+			expect(output.states.get("crash")).toMatchObject({
+				state: "failed",
+				detail: "exit 3",
+			});
+			expect(processExists(pids.keeper)).toBe(true);
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("startDevServers non-essential readiness", () => {
 	it("never reports an app ready after it has exited", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-optional-ready-"));
