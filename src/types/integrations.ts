@@ -1,5 +1,5 @@
 import type { AppConfig } from "./app";
-import type { SetupCheck } from "./commands";
+import type { PreflightStep, SetupCheck } from "./commands";
 import type { DevConfig } from "./config";
 import type { AnyDevEnvironment } from "./environment";
 import type { DevHooks, HookContext } from "./hooks";
@@ -69,6 +69,8 @@ export interface BuncargoIntegration {
 	hooks?: DevHooks<Record<string, ServiceConfig>, Record<string, AppConfig>>;
 	/** Shown by `buncargo doctor`, run by `buncargo setup`; fast ones by `dev`. */
 	checks?: readonly SetupCheck[];
+	/** Run by `dev` with the terminal, before anything starts (a login). */
+	preflight?: readonly PreflightStep[];
 	/** `buncargo <name> <command>` */
 	commands?: Readonly<Record<string, IntegrationCommand>>;
 	/** Labelled values for `buncargo env`, the run registry and BuncargoBar. */

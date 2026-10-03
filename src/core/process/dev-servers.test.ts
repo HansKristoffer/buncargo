@@ -6,6 +6,7 @@ import { startFakeInfisical } from "../secrets/fake-infisical.testing";
 import { clearScopeSecretsCache } from "../secrets/infisical";
 import { startDevServers, stopDevServers } from "./dev-servers";
 import { signalProcessTree } from "./port-owner";
+import { RunOutput } from "./run-output";
 
 describe("startDevServers", () => {
 	it("skips healthEndpoint: false / devCommand: false and honors attach", async () => {
@@ -299,3 +300,104 @@ describe("detached app supervision", () => {
 		expect(exits).toEqual([0]);
 	});
 });
+
+describe("startDevServers essential: false", () => {
+	it("keeps the run going when a non-essential app fails, and restarts it on request", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-optional-"));
+		const marker = join(root, "ran-once");
+		const output = new RunOutput();
+		output.terminalSize = () => ({ cols: 80, rows: 10 });
+		const states: string[] = [];
+		output.subscribe({
+			state: (app, { state }) => states.push(`${app}:${state}`),
+		});
+		const flaky = `bun -e ${JSON.stringify(
+			`const f = ${JSON.stringify(marker)}; if (!(await Bun.file(f).exists())) { await Bun.write(f, "1"); console.log("build error: boom"); process.exit(1); } console.log("tty", process.stdout.isTTY); setInterval(() => {}, 60000);`,
+		)}`;
+		let pids: Record<string, number> = {};
+		const until = async (check: () => boolean) => {
+			for (let i = 0; i < 200 && !check(); i++) await Bun.sleep(25);
+			expect(check()).toBe(true);
+		};
+		try {
+			pids = await startDevServers(
+				{
+					keeper: {
+						kind: "worker",
+						devCommand: "bun -e 'setInterval(() => {}, 60000)'",
+					},
+					flaky: { kind: "worker", essential: false, devCommand: flaky },
+				},
+				root,
+				{},
+				{},
+				{ verbose: false, waitForExit: false, output },
+			);
+			await until(() => states.includes("flaky:failed"));
+			expect(output.tail("flaky")).toContain("build error: boom");
+			expect(processExists(pids.keeper)).toBe(true);
+
+			await output.controls?.restart("flaky");
+			await until(() => output.tail("flaky").includes("tty true"));
+			await until(() => output.states.get("flaky")?.state === "ready");
+			expect(processExists(pids.keeper)).toBe(true);
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("startDevServers non-essential readiness", () => {
+	it("never reports an app ready after it has exited", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-optional-ready-"));
+		const output = new RunOutput();
+		const ready: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					keeper: {
+						kind: "worker",
+						devCommand: "bun -e 'setInterval(() => {}, 60000)'",
+					},
+					flaky: {
+						kind: "worker",
+						essential: false,
+						devCommand: "bun -e 'process.exit(1)'",
+					},
+				},
+				root,
+				{},
+				{},
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					onAppReady: (name) => ready.push(name),
+					// A slow check: it finishes after flaky is already gone.
+					waitForHealth: async (wave, signal) => {
+						if ("flaky" in wave) await Bun.sleep(600);
+						signal?.throwIfAborted();
+					},
+				},
+			);
+			await Bun.sleep(900);
+			expect(output.states.get("flaky")?.state).toBe("failed");
+			expect(ready).not.toContain("flaky");
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
+function processExists(pid: number | undefined): boolean {
+	if (!pid) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}

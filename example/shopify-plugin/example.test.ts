@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, it } from "bun:test";
 import {
 	cpSync,
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	realpathSync,
@@ -9,7 +10,8 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { shopifySessionFile } from "../../src/shopify/cli";
 
 /**
  * The Shopify example, booted end to end with a fake `shopify` binary: what
@@ -31,6 +33,7 @@ function env(): Record<string, string> {
 	return {
 		...(process.env as Record<string, string>),
 		HOME: home,
+		XDG_CONFIG_HOME: join(home, ".config"),
 		PATH: `${join(root, "fake-shopify")}:${process.env.PATH}`,
 		BUNCARGO_HOSTS: "0",
 	};
@@ -53,6 +56,25 @@ async function buncargo(...args: string[]) {
 beforeAll(async () => {
 	root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-shopify-example-")));
 	home = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-shopify-home-")));
+	// A developer who is logged in: the login preflight trusts a fresh session.
+	const session = shopifySessionFile(home, env());
+	mkdirSync(dirname(session), { recursive: true });
+	writeFileSync(
+		session,
+		JSON.stringify({
+			currentSessionId: "user-1",
+			sessionStore: JSON.stringify({
+				"accounts.shopify.com": {
+					"user-1": {
+						identity: {
+							userId: "user-1",
+							expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+						},
+					},
+				},
+			}),
+		}),
+	);
 	cpSync(import.meta.dir, root, {
 		recursive: true,
 		filter: (path) =>

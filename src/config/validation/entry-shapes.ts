@@ -28,7 +28,13 @@ export function validateEntryShapes(
 			fields(
 				entry,
 				`${path}.`,
-				["expose", "interactive", "needsPublicUrls", "afterPreparation"],
+				[
+					"expose",
+					"interactive",
+					"essential",
+					"needsPublicUrls",
+					"afterPreparation",
+				],
 				"boolean",
 			);
 			check(
@@ -80,6 +86,13 @@ export function validateEntryShapes(
 					);
 				}
 				fields(entry, `${path}.`, ["prebuild", "exclusive"], "string");
+				check(
+					entry.actions,
+					`${path}.actions`,
+					Array.isArray(entry.actions) &&
+						entry.actions.every((action) => object(action)),
+					"an array of { key, label, open }",
+				);
 				if (
 					entry.captures !== undefined &&
 					record(entry.captures, `${path}.captures`)

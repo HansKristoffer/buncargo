@@ -114,6 +114,7 @@ export function createDevEnvironment<
 				}
 			: undefined,
 		checks: resolved.checks,
+		preflight: resolved.preflight,
 		secrets: resolved.secrets,
 		integrations: resolved.integrations,
 		generatedFiles: resolved.generatedFiles,

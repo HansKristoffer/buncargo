@@ -120,3 +120,46 @@ it("adopts detached listeners after replacements and warns once per app", async 
 		await rm(root, { recursive: true, force: true });
 	}
 }, 15000);
+
+it("runs concurrent restarts of one app one after another, coalescing a waiting one", async () => {
+	const session = new AppSupervision({ width: 1 });
+	let spawned = 0;
+	let live = 0;
+	let overlap = false;
+	try {
+		await session.register("web", child(), true, false, false);
+		live = 1;
+		const watching = session.owner.wait().catch(() => {});
+		session.setSpawner(
+			"web",
+			async () => {
+				spawned++;
+				// Retire has to have finished: only one copy may hold the port.
+				if (live !== 0) overlap = true;
+				live++;
+				const replacement = child();
+				replacement.once("exit", () => live--);
+				return replacement;
+			},
+			true,
+			false,
+		);
+		const first = session.owner;
+		// The original child is not tracked by `live`'s exit handler.
+		live = 0;
+		// Requests before the first has begun join it.
+		await Promise.all([session.restart("web"), session.restart("web")]);
+		expect(spawned).toBe(1);
+		// One arriving mid-restart waits for it instead of racing it.
+		const running = session.restart("web");
+		await Bun.sleep(0);
+		await Promise.all([running, session.restart("web")]);
+		expect(spawned).toBe(3);
+		expect(overlap).toBe(false);
+		expect(first.controller.signal.aborted).toBe(false);
+		await session.stop();
+		await watching;
+	} finally {
+		await session.stop();
+	}
+});

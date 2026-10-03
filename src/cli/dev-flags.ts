@@ -72,6 +72,17 @@ const FLAGS = {
 		valueHint: "=<app>",
 		description: "Give one app the TTY (overrides interactive: true)",
 	},
+	tui: {
+		name: "--tui",
+		kind: "boolean",
+		description:
+			"Terminal UI: a sidebar of apps, each in its own terminal (needs a terminal)",
+	},
+	noTui: {
+		name: "--no-tui",
+		kind: "boolean",
+		description: "Prefixed lines on stdout, even in a terminal",
+	},
 	keepContainers: {
 		name: "--keep-containers",
 		kind: "boolean",
@@ -166,6 +177,11 @@ export const DEV_COMMAND_SPEC: CommandSpec = {
 			description: "Run services on Apple container instead of Docker",
 		},
 		{
+			command: "bun dev --tui",
+			description:
+				"Every app in its own pane; full-screen apps render natively",
+		},
+		{
 			command: "bun dev --takeover",
 			description: "Move apps running in another terminal into this one",
 		},
@@ -195,6 +211,8 @@ export interface DevCliArgs {
 	/** `--profile`; undefined falls back to a profile named `default`. */
 	profile: string | undefined;
 	attach: string | undefined;
+	/** `--tui`; still opt-in. Stream mode whenever stdout is not a terminal. */
+	tui: boolean;
 	keepContainers: boolean;
 	/** Skip the prompt and stop apps already running elsewhere. */
 	takeover: boolean;
@@ -227,6 +245,8 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		);
 	if (bool(FLAGS.all) && !bool(FLAGS.down))
 		errors.push("--all requires --down.");
+	if (bool(FLAGS.tui) && bool(FLAGS.noTui))
+		errors.push("Choose either --tui or --no-tui, not both.");
 	if (bool(FLAGS.apps) && bool(FLAGS.profile))
 		errors.push("Choose either --apps or --profile, not both.");
 
@@ -248,6 +268,7 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		appsValue: str(FLAGS.apps),
 		profile: str(FLAGS.profile),
 		attach: str(FLAGS.attach),
+		tui: bool(FLAGS.tui) && !bool(FLAGS.noTui),
 		keepContainers: bool(FLAGS.keepContainers),
 		takeover: bool(FLAGS.takeover),
 		watchdogTimeoutMinutes:

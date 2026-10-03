@@ -77,8 +77,22 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	 * Set false to skip this app, including startup prefetch.
 	 */
 	secrets?: SecretsScopeConfig | false;
-	/** Own the TTY (stdin). Only one app may be interactive. */
+	/** Own the TTY (stdin). Only one app may be interactive. Ignored by the TUI. */
 	interactive?: boolean;
+	/**
+	 * Whether the run ends when this app exits. Default: true. With `false` the
+	 * other apps keep going: the app shows as stopped with its exit code, and
+	 * `r` in the TUI (or `buncargo restart <app>`) starts it again. It never
+	 * holds startup up: it is health-checked on the side.
+	 */
+	essential?: boolean;
+	/**
+	 * Single keys that open one of this app's captured URLs, shown in the TUI
+	 * footer once the capture has a value (`buncargo open <app> <capture>` does
+	 * the same from anywhere). Keys must be unique and not one of buncargo's
+	 * (`o e r l q j k`).
+	 */
+	actions?: readonly AppAction[];
 	/** Start this app after public tunnels are open so env sees *_PUBLIC_URL. */
 	needsPublicUrls?: boolean;
 	/** Computed env vars injected only into this app's own processes */
@@ -89,6 +103,15 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	 * @deprecated Use `integrations: [expo({ apps: { name: options } })]` from `buncargo/expo`.
 	 */
 	expo?: boolean | ExpoAppOptions;
+}
+
+/** A key that opens a captured URL: `{ key: "p", label: "open preview", open: "previewUrl" }`. */
+export interface AppAction {
+	/** One character. */
+	key: string;
+	label: string;
+	/** The name of one of this app's `captures`. */
+	open: string;
 }
 
 /**

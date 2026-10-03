@@ -124,6 +124,18 @@ async function runCommand(
 			return;
 		}
 
+		case "restart":
+			process.exitCode = await (
+				await import("./commands/restart")
+			).handleRestart(commandArgs);
+			return;
+
+		case "logs":
+			process.exitCode = await (await import("./commands/logs")).handleLogs(
+				commandArgs,
+			);
+			return;
+
 		case "prune": {
 			const code = await (await import("./commands/prune")).handlePrune(
 				commandArgs,

@@ -1,8 +1,8 @@
-import type { ChildProcess } from "node:child_process";
 import type { EventEmitter } from "node:events";
 import { abortError, withSignal } from "../deadline";
 import { formatWarn } from "../style";
 import { DetachedApp, findDetachedApp } from "./detached-app";
+import type { AppChild } from "./pty-app";
 import { terminateOwnedProcess } from "./terminate";
 
 export class RunInterrupted extends Error {}
@@ -10,12 +10,14 @@ export class RunInterrupted extends Error {}
 /** Owns only children created by one startDevServers invocation. */
 export class ProcessOwner {
 	readonly controller = new AbortController();
-	private children = new Set<ChildProcess | DetachedApp>();
-	private live = new Set<ChildProcess | DetachedApp>();
-	private retired = new Set<ChildProcess | DetachedApp>();
+	private children = new Set<AppChild | DetachedApp>();
+	private live = new Set<AppChild | DetachedApp>();
+	private retired = new Set<AppChild | DetachedApp>();
 	private sealed = false;
 	private exits = new Set<Promise<void>>();
 	private pendingReadiness = new Set<string>();
+	/** Non-essential apps that exited: the run waits for a restart, not for them. */
+	private parked = new Set<string>();
 	private warnedDetaches = new Set<string>();
 	private cleanup?: Promise<void>;
 	private resolveDone!: () => void;
@@ -32,6 +34,8 @@ export class ProcessOwner {
 			signal?: AbortSignal;
 			shutdownGraceMs?: number;
 			attachedName?: string;
+			/** Apps with `essential: false`: their exit never ends the run. */
+			optional?: ReadonlySet<string>;
 			onAppAdopted?: (name: string, child: DetachedApp) => void;
 			onAppExit?: (
 				name: string,
@@ -49,12 +53,13 @@ export class ProcessOwner {
 
 	register(
 		name: string,
-		child: ChildProcess | DetachedApp,
+		child: AppChild | DetachedApp,
 		needsReadiness = true,
 		worker = false,
 		port?: number,
 	): void {
 		if (needsReadiness) this.pendingReadiness.add(name);
+		this.parked.delete(name);
 		this.children.add(child);
 		this.live.add(child);
 		(child as EventEmitter).once("error", (error: Error) => {
@@ -118,7 +123,13 @@ export class ProcessOwner {
 						code === 143 ||
 						signal === "SIGINT" ||
 						signal === "SIGTERM";
-					if (!this.controller.signal.aborted) {
+					if (
+						this.options.optional?.has(name) &&
+						!this.controller.signal.aborted
+					) {
+						this.pendingReadiness.delete(name);
+						this.parked.add(name);
+					} else if (!this.controller.signal.aborted) {
 						if (!deliberate || this.pendingReadiness.has(name))
 							this.controller.abort(
 								new Error(
@@ -130,7 +141,8 @@ export class ProcessOwner {
 								new RunInterrupted(`Attached app "${name}" exited`),
 							);
 					}
-					if (this.sealed && this.live.size === 0) this.resolveDone();
+					if (this.sealed && this.live.size === 0 && this.parked.size === 0)
+						this.resolveDone();
 				})();
 				this.exits.add(operation);
 				void operation
@@ -144,7 +156,7 @@ export class ProcessOwner {
 	 * Stop one child because it is being replaced. Its exit is not reported,
 	 * and does not end the run the way an app falling over does.
 	 */
-	async retire(child: ChildProcess | DetachedApp): Promise<void> {
+	async retire(child: AppChild | DetachedApp): Promise<void> {
 		this.retired.add(child);
 		await terminateOwnedProcess(child, this.options.shutdownGraceMs);
 		if (child instanceof DetachedApp) {
@@ -167,7 +179,7 @@ export class ProcessOwner {
 
 	async wait(): Promise<void> {
 		this.sealed = true;
-		if (this.live.size === 0) this.resolveDone();
+		if (this.live.size === 0 && this.parked.size === 0) this.resolveDone();
 		await this.race(this.done);
 	}
 

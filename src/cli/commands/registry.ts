@@ -88,6 +88,17 @@ export const CLI_COMMANDS = [
 		summary: "Stop one app or service, or a whole run",
 	},
 	{
+		name: "restart",
+		usage: "restart <app>",
+		summary:
+			"Restart one app of a running dev (e.g. a stopped non-essential one)",
+	},
+	{
+		name: "logs",
+		usage: "logs [<app>] [-f] [--since=5m] [--errors]",
+		summary: "Read app output from the current or last run",
+	},
+	{
 		name: "sim",
 		usage: "sim [<app>]",
 		summary: "Open this checkout's Expo app in its own iOS simulator",

@@ -6,6 +6,8 @@
 bunx buncargo dev                 # Start containers + selected apps
 bunx buncargo dev --apps=api,web  # Named apps plus transitive requiredApps
 bunx buncargo dev --profile=full  # The apps of profiles.full
+bunx buncargo dev --tui           # Sidebar of apps, each in its own terminal
+bunx buncargo dev --no-tui        # Prefixed lines, even in a terminal
 bunx buncargo dev --attach=expoApp
 bunx buncargo dev --expose
 bunx buncargo dev --expose=api
@@ -30,6 +32,9 @@ bunx buncargo runs --json         # Same, machine-readable
 bunx buncargo stop api            # Stop one dev server
 bunx buncargo stop postgres       # Stop one service's container
 bunx buncargo stop --all          # Stop this checkout's whole run
+bunx buncargo restart shopify     # Start a stopped app of a running dev again
+bunx buncargo logs                # Every app's output from the current or last run
+bunx buncargo logs shopify --errors -f --since=5m
 bunx buncargo sim                 # Open the Expo app in this checkout's own simulator
 bunx buncargo status
 bunx buncargo doctor
@@ -46,6 +51,7 @@ bunx buncargo env
 bunx buncargo env --get ports.api
 bunx buncargo url                 # Every URL this run knows, by name
 bunx buncargo open                # The primary app; or `open <name>` from `url`
+bunx buncargo open shopify previewUrl  # An app's captured URL (what its action key opens)
 bunx buncargo exec -- bun scripts/maintenance.ts
 bunx buncargo exec --app=api -- bun scripts/inspect-runtime.ts
 bunx buncargo prisma <args>
@@ -55,6 +61,8 @@ bunx buncargo generate            # Render generatedFiles without starting anyth
 bunx buncargo build --discovered  # Every discovered app's build, in order
 bunx buncargo secrets ls --app=api   # Key names and their source, never values
 bunx buncargo shopify env         # An integration's own commands
+bunx buncargo shopify login       # Log the Shopify CLI in
+bunx buncargo shopify link --config=local  # Link a toml without losing it
 bunx buncargo expo sim            # (`buncargo sim` still works)
 bunx buncargo run                 # List tasks
 bunx buncargo run db:seed -- --dry-run
@@ -215,7 +223,7 @@ export default mergeConfigs(shared, {
 ```typescript
 apps: {
 	shopifyCli: {
-		kind: "worker", interactive: true, devCommand: "shopify app dev",
+		kind: "worker", devCommand: "shopify app dev",
 		captures: {
 			appUrl: { pattern: /Using URL:\s*(https:\/\/[^\s│|)]+)/, as: "publicUrl" },
 			ready: { pattern: /Ready, watching for changes in your app/, as: "event" },
@@ -231,7 +239,7 @@ generatedFiles: [{
 }],
 ```
 
-`captures` read an app's stdout and stderr, with colour codes and box-drawing characters stripped and only complete lines matched. The interactive app runs under a pseudo-terminal (`script`) so it keeps its TTY while its output is read. A `publicUrl` capture becomes `publicUrls.<app>` and `<APP>_PUBLIC_URL`, exactly like a tunnel URL, normalized to its origin. A `value` capture becomes `captured.<name>` in hooks, `envVars`, generated files and `buncargo env --get captured.<name>`. An `event` capture only fires `onCapture`, which every kind also fires. A capture's `label` shows the value in `buncargo env`, `buncargo url` / `open`, the run registry and BuncargoBar, and its `env` sets that env var for every process, beneath the config's own `env`. So `stripe listen` needs no integration to put its webhook secret in `STRIPE_WEBHOOK_SECRET`. A value is reported when it appears and whenever it changes. When one changes, generated files re-render, and apps whose `restartOn` names it restart with fresh env.
+`captures` read an app's stdout and stderr, with colour codes and box-drawing characters stripped and only complete lines matched. In the TUI every app runs under its own pseudo-terminal; a hyperlink is read as its target and a cursor jump as a line break, so URLs inside a full-screen app's links are captured too. A stream-mode attached app runs under `script` so it keeps its TTY while its output is read. A `publicUrl` capture becomes `publicUrls.<app>` and `<APP>_PUBLIC_URL`, exactly like a tunnel URL, normalized to its origin. A `value` capture becomes `captured.<name>` in hooks, `envVars`, generated files and `buncargo env --get captured.<name>`. An `event` capture only fires `onCapture`, which every kind also fires. A capture's `label` shows the value in `buncargo env`, `buncargo url` / `open`, the run registry and BuncargoBar, and its `env` sets that env var for every process, beneath the config's own `env`. So `stripe listen` needs no integration to put its webhook secret in `STRIPE_WEBHOOK_SECRET`. A value is reported when it appears and whenever it changes. When one changes, generated files re-render, and apps whose `restartOn` names it restart with fresh env.
 
 `generatedFiles` render before servers start (render a placeholder for what is not known yet) and again when a capture, a tunnel URL or a port changes. They are written atomically, and not at all when the content is unchanged, so watchers stay quiet. `buncargo generate` renders them once without starting anything; it uses a live run's captures, or what the environment hands it in CI (`BASE_URL=https://… bunx buncargo generate`). `setup` and `doctor` warn about a `gitignore: true` file that git does not ignore.
 
@@ -480,14 +488,72 @@ it does not run development bootstrap hooks or the complete preparation/seed lif
 Startup failure and cancellation retain shared-container ownership rules instead
 of tearing down other runs' resources.
 
-## Attached / interactive apps
+## Output: the TUI and stream mode
 
-Only one app may set `interactive: true`. `--attach=<app>` overrides it.
+A run shows its apps' output one of two ways, never both: two writers on one
+screen is what garbles a full-screen app like Shopify CLI or Expo.
 
-- Attached app: `stdio: inherit` (real TTY)
-- Other apps: piped stdout/stderr with a `[name]` prefix, stdin ignored
-- When the attached app exits, siblings are killed via process group
-- Args after `--` are appended only to the attached command
+| Mode | When | What you see |
+| --- | --- | --- |
+| TUI | `--tui` and a terminal | A sidebar with the **Overview** and every app; the main pane shows all apps' lines interleaved, or the selected app's own terminal |
+| Stream | otherwise (CI, agents, piped output, `--no-tui`) | Prefixed lines (`➜ api …`). Apps get pipes, so full-screen tools print plain lines on their own |
+
+In the TUI every app runs under its own pseudo-terminal sized to the pane, with
+an xterm.js screen and 10,000 lines of scrollback, so a full-screen app renders
+natively and the others are one keypress away. The Overview gets the lines a
+full-screen app scrolls past and its status events (ready, stopped, captured
+URLs), not its live footer.
+
+| Key | Action |
+| --- | --- |
+| `↑` `↓` / `k` `j` | Select the Overview or an app |
+| `Enter` | Interact: keys go to the selected app (Shopify's `p`/`q`, Expo's menu) |
+| `Ctrl-]` | Leave interact mode |
+| `Esc` | Back to the Overview |
+| `e` | Overview: errors and warnings only |
+| `o` | Open the app's URL (the Overview offers a picker) |
+| `r` | Restart the selected app |
+| `l` | The app's log in `$PAGER` (the Overview: the run's log directory) |
+| `PgUp` `PgDn` | Scroll |
+| `q` | Quit the run |
+
+Keys an app declares in `actions` show in the footer once their capture has a
+value. Anything else that prints during the run (hooks, warnings) lands in the
+Overview as a `buncargo` line. The terminal is restored on every exit path,
+including a crash.
+
+`o`, `buncargo open <app>` and BuncargoBar's Open use one rule, recorded per app
+in the run registry as `openUrl`: a public tunnel URL when the app is exposed,
+else the named `https://` host while the hosts daemon serves it, else loopback.
+
+Both modes write each app's output, plain, to `.buncargo/logs/<run>/<app>.log`
+(the last ten runs, 5 MB per file). `buncargo logs [app] [-f] [--since=5m]
+[--errors]` reads the current or last run.
+
+### Non-essential apps
+
+`essential: false` keeps the run going when that app exits. It shows as stopped
+(or failed) with its exit code, its pane keeps its last output, and `r` in the
+TUI or `buncargo restart <app>` starts it again without re-running anything
+else. It never holds startup up: it is health-checked on the side. In stream
+mode the run prints the app's last error lines and the restart command.
+
+### Preflight
+
+`preflight: [{ name, apps?, run({ root, env, interactive }) }]` runs before the
+TUI takes the screen, with the real terminal, so a step can prompt or open a
+browser. `apps` limits a step to runs that select one of them. A step that
+throws stops the start with its message. Integrations contribute steps too:
+`shopify()` renews an expired Shopify CLI session here instead of failing
+inside the run.
+
+### Attached apps (stream mode)
+
+Without the TUI, one app may set `interactive: true` (`--attach=<app>`
+overrides it) and keep the real terminal; the others are prefixed lines with
+stdin ignored. When the attached app exits, the run ends. Args after `--` are
+appended only to the attached command. The TUI ignores `interactive`: every app
+has a terminal of its own.
 
 ## Expo and the iOS simulator
 
@@ -905,6 +971,7 @@ The configuration reference covers the main public options; `src/types/all-types
 | `docker` | `DockerComposeGenerationOptions` | `undefined` | Generated compose path, volumes, Docker auto-start |
 | `secrets` | `SecretsScopeConfig` | `undefined` | Defaults for every app's `secrets` scope |
 | `checks` | `{ name, check: ({ root }) => boolean \| Promise<boolean>, fix? }[]` | `[]` | Preconditions `dev` verifies first. See [checks](#checks-tasks-and-profiles) |
+| `preflight` | `{ name, apps?, run(ctx) }[]` | `[]` | Steps `dev` runs with the terminal before starting. See [preflight](#preflight) |
 | `tasks` | `Record<string, { command, description?, app?, cwd?, requiredServices? }>` | `{}` | Scripts for `buncargo run <name>` |
 | `profiles` | `Record<string, { apps, description? }>` | `{}` | App selections for `dev --profile`; `default` is used by a bare `dev` |
 | `integrations` | `BuncargoIntegration[]` | `[]` | `shopify()`, `expo()`, …; applied in order before validation |
@@ -958,7 +1025,9 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | `staticEnv` | `Record<string, string \| number>` | `{}` | Constant env for this app only |
 | `envVars` | `(ports, urls, ctx) => Record<string, string \| number>` | `undefined` | Computed env for this app only |
 | `secrets` | `{ projectId?, organizationId?, environment?, siteUrl?, path?, required? }` | `undefined` | Fetch this app's Infisical secrets once and inject them. See [Infisical secrets](#infisical-secrets) |
-| `interactive` | `boolean` | `false` | Own the TTY. Only one app may set this |
+| `interactive` | `boolean` | `false` | Own the TTY in stream mode. Only one app may set this; the TUI ignores it |
+| `essential` | `boolean` | `true` | `false`: the run keeps going when this app exits; `r` / `buncargo restart` starts it again |
+| `actions` | `{ key, label, open }[]` | `[]` | Keys that open a captured URL from the TUI footer. Unique, and not `o e r l q j k` |
 | `needsPublicUrls` | `boolean` | `false` | Start after tunnels so env sees `*_PUBLIC_URL`. Ignored without `--expose` |
 | `expo` | `boolean \| { scheme?, simulator? }` | inferred | Deprecated: use `integrations: [expo()]`. Still honored until the next major |
 

@@ -2,6 +2,7 @@ import type { IntegrationAppNames } from "./all-types";
 import type { AppConfig, SecretsScopeConfig, TypedAppDefinitions } from "./app";
 import type {
 	GeneratedFileConfig,
+	PreflightStep,
 	ProfileConfig,
 	SetupCheck,
 	TaskConfig,
@@ -273,6 +274,8 @@ export interface DevConfig<
 	docker?: DockerComposeGenerationOptions;
 	/** Preconditions `buncargo dev` verifies before starting (optional) */
 	checks?: readonly SetupCheck[];
+	/** Steps `buncargo dev` runs with the terminal before it starts (optional) */
+	preflight?: readonly PreflightStep[];
 	/** Files rendered from the run's ports, URLs and captures (optional) */
 	generatedFiles?: readonly GeneratedFileConfig[];
 	/**

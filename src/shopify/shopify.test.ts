@@ -11,8 +11,15 @@ import {
 	shopifyConfigName,
 } from "./app-config";
 import { shopifyChecks } from "./checks";
-import { isTestedShopifyVersion, parseVersion } from "./cli";
+import {
+	isShopifySessionExpired,
+	isTestedShopifyVersion,
+	parseVersion,
+	readShopifySession,
+} from "./cli";
 import { shopify, storeLinks } from "./index";
+import { mergeLinkedConfig, setDevStoreUrl, setTopLevelKey } from "./link";
+import { ensureShopifyLogin } from "./login";
 import { patchWebDirectories, renderShopifyWebToml } from "./web";
 
 const roots: string[] = [];
@@ -201,10 +208,15 @@ describe("shopify()", () => {
 
 		expect(config.apps?.shopify).toMatchObject({
 			kind: "worker",
-			interactive: true,
+			essential: false,
+			actions: [
+				{ key: "p", open: "previewUrl" },
+				{ key: "g", open: "graphiqlUrl" },
+			],
 			startAfter: ["platform", "api", "theme"],
 			exclusive: "shopify-app:0123456789abcdef0123456789abcdef",
 		});
+		expect(config.apps?.shopify?.interactive).toBeUndefined();
 		expect(config.apps?.shopify?.devCommand).toEndWith(
 			"app dev --config shopify.app.toml --store s.myshopify.com",
 		);
@@ -248,5 +260,136 @@ describe("helpers", () => {
 		expect(isTestedShopifyVersion(parseVersion("4.8.2") as never)).toBe(true);
 		expect(isTestedShopifyVersion(parseVersion("3.80.0") as never)).toBe(false);
 		expect(isTestedShopifyVersion(parseVersion("5.0.0") as never)).toBe(false);
+	});
+});
+
+describe("Shopify session", () => {
+	const store = (expiresAt: string, nested = true) =>
+		JSON.stringify({
+			currentSessionId: "u1",
+			sessionStore: JSON.stringify({
+				"accounts.shopify.com": nested
+					? { u1: { identity: { userId: "u1", expiresAt } } }
+					: { identity: { userId: "u1", expiresAt } },
+			}),
+		});
+
+	it("reads the identity's expiry from either store layout", () => {
+		const root = repo({
+			"new.json": store("2026-01-01T10:00:00.000Z"),
+			"old.json": store("2026-01-01T10:00:00.000Z", false),
+			"none.json": JSON.stringify({ sessionStore: "{}" }),
+		});
+		for (const file of ["new.json", "old.json"]) {
+			const session = readShopifySession(join(root, file));
+			expect(session?.expiresAt?.toISOString()).toBe(
+				"2026-01-01T10:00:00.000Z",
+			);
+			expect(
+				isShopifySessionExpired(
+					session as never,
+					Date.parse("2026-01-01T09:00:00Z"),
+				),
+			).toBe(false);
+			expect(
+				isShopifySessionExpired(
+					session as never,
+					Date.parse("2026-01-01T09:59:30Z"),
+				),
+			).toBe(true);
+		}
+		expect(readShopifySession(join(root, "none.json"))).toBeUndefined();
+		expect(readShopifySession(join(root, "missing.json"))).toBeUndefined();
+	});
+
+	it("fails the login preflight without a terminal instead of prompting", () => {
+		const root = repo({});
+		expect(() =>
+			ensureShopifyLogin({
+				root,
+				config: "shopify.app.toml",
+				linked: true,
+				interactive: false,
+				sessionFile: join(root, "no-session.json"),
+			}),
+		).toThrow(
+			"not logged in to the Shopify CLI. Run `buncargo shopify login`.",
+		);
+		// A Partners token is how CI authenticates: nothing to check or prompt.
+		expect(() =>
+			ensureShopifyLogin({
+				root,
+				config: "shopify.app.toml",
+				linked: true,
+				interactive: false,
+				sessionFile: join(root, "no-session.json"),
+				env: { SHOPIFY_CLI_PARTNERS_TOKEN: "token" },
+			}),
+		).not.toThrow();
+	});
+});
+
+describe("shopify link", () => {
+	it("takes only client_id and name from the linked app and keeps the dev store", () => {
+		const existing = TOML.replace("dev.myshopify.com", "mine.myshopify.com");
+		const merged = mergeLinkedConfig({
+			template: TOML,
+			linked: { clientId: "f".repeat(32), name: "My dev app" },
+			existing,
+		});
+		const config = parseShopifyAppConfig(
+			merged,
+			"shopify.app.local.toml",
+			"local",
+		);
+		expect(config.clientId).toBe("f".repeat(32));
+		expect(config.appName).toBe("My dev app");
+		expect(config.devStoreUrl).toBe("mine.myshopify.com");
+		// Everything else is the template's, untouched.
+		expect(config.scopes).toEqual(["read_products", "write_products"]);
+		expect(config.webhooks).toHaveLength(1);
+		expect(config.appProxy?.subpath).toBe("prints");
+		expect(merged.split("\n").length).toBe(TOML.split("\n").length);
+	});
+
+	it("edits commented headers and indented keys, and refuses what it cannot edit", () => {
+		const linked = { clientId: "f".repeat(32), name: "Dev" };
+		const commented = mergeLinkedConfig({
+			template:
+				'  client_id = "old"\n  name = "Old"\n\n[build] # dev settings\n  dev_store_url = "a.myshopify.com"\n',
+			linked,
+			existing: '[build]\ndev_store_url = "mine.myshopify.com"\n',
+		});
+		expect(Bun.TOML.parse(commented)).toEqual({
+			client_id: "f".repeat(32),
+			name: "Dev",
+			build: { dev_store_url: "mine.myshopify.com" },
+		});
+		// A multi-line name the line edit would corrupt: refused, not written.
+		expect(() =>
+			mergeLinkedConfig({
+				template: 'client_id = "old"\nname = """\nOld\nApp"""\n',
+				linked,
+			}),
+		).toThrow("could not edit the toml safely");
+		expect(() =>
+			mergeLinkedConfig({
+				template: 'client_id = "old"\nbuild.dev_store_url = "a"\n',
+				linked,
+				existing: '[build]\ndev_store_url = "b"\n',
+			}),
+		).toThrow("could not edit the toml safely");
+	});
+
+	it("adds keys and a [build] table when the template has none", () => {
+		const toml = setDevStoreUrl(
+			setTopLevelKey('scopes = "a"\n', "client_id", "x"),
+			"s.myshopify.com",
+		);
+		expect(Bun.TOML.parse(toml)).toEqual({
+			client_id: "x",
+			scopes: "a",
+			build: { dev_store_url: "s.myshopify.com" },
+		});
 	});
 });

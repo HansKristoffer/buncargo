@@ -60,7 +60,10 @@ export function shopifyVersion(bin: string, cwd: string): string | undefined {
 }
 
 /** Where `@shopify/cli-kit` keeps its `conf` store, per platform. */
-function shopifySessionFile(home = homedir()): string {
+export function shopifySessionFile(
+	home = homedir(),
+	env: Record<string, string | undefined> = process.env,
+): string {
 	return process.platform === "darwin"
 		? join(
 				home,
@@ -70,35 +73,92 @@ function shopifySessionFile(home = homedir()): string {
 				"config.json",
 			)
 		: join(
-				process.env.XDG_CONFIG_HOME ?? join(home, ".config"),
+				env.XDG_CONFIG_HOME ?? join(home, ".config"),
 				"shopify-cli-kit-nodejs",
 				"config.json",
 			);
 }
 
+export interface ShopifySession {
+	/** When the identity token expires; the CLI refreshes it when it can. */
+	expiresAt?: Date;
+}
+
+interface StoredIdentity {
+	userId?: unknown;
+	expiresAt?: unknown;
+}
+
+/** Every `{ identity }` in the session store, whichever nesting this CLI version uses. */
+function identities(value: unknown, depth = 0): StoredIdentity[] {
+	if (!value || typeof value !== "object" || depth > 3) return [];
+	const record = value as Record<string, unknown>;
+	if (record.identity && typeof record.identity === "object")
+		return [record.identity as StoredIdentity];
+	return Object.values(record).flatMap((entry) => identities(entry, depth + 1));
+}
+
 /**
- * Whether a Partners/account session is stored. The CLI refreshes an expired
- * token itself; a missing one needs `shopify auth login`, which is browser
- * interactive and cannot happen inside a dev run's TUI without confusion.
+ * The stored Partners/account session, or undefined without one.
+ *
+ * Only what the file says: a session can be present and still rejected (a
+ * revoked refresh token). The preflight runs an authenticated command to
+ * find out, because a refresh needs the network and maybe a browser.
  */
-export function isShopifyLoggedIn(file = shopifySessionFile()): boolean {
+export function readShopifySession(
+	file = shopifySessionFile(),
+): ShopifySession | undefined {
 	try {
 		const store = JSON.parse(readFileSync(file, "utf8")) as {
 			sessionStore?: unknown;
 			currentSessionId?: unknown;
 		};
-		return (
-			typeof store.sessionStore === "string" &&
-			store.sessionStore.length > 2 &&
-			typeof store.currentSessionId === "string" &&
-			store.currentSessionId.length > 0
-		);
+		if (
+			typeof store.sessionStore !== "string" ||
+			store.sessionStore.length <= 2 ||
+			typeof store.currentSessionId !== "string" ||
+			store.currentSessionId.length === 0
+		)
+			return undefined;
+		let found: StoredIdentity[] = [];
+		try {
+			found = identities(JSON.parse(store.sessionStore));
+		} catch {
+			// An unreadable store is still a session: the CLI decides.
+		}
+		const identity =
+			found.find((entry) => entry.userId === store.currentSessionId) ??
+			found[0];
+		const expiresAt =
+			typeof identity?.expiresAt === "string"
+				? new Date(identity.expiresAt)
+				: undefined;
+		return {
+			expiresAt:
+				expiresAt && !Number.isNaN(expiresAt.getTime()) ? expiresAt : undefined,
+		};
 	} catch {
-		return false;
+		return undefined;
 	}
 }
 
-/** Whether `.shopify/project.json` records this app (linked, dev store chosen). */
+/** A minute of slack: a token that expires mid-start is as good as expired. */
+export function isShopifySessionExpired(
+	session: ShopifySession,
+	now = Date.now(),
+): boolean {
+	return (
+		session.expiresAt !== undefined &&
+		session.expiresAt.getTime() <= now + 60_000
+	);
+}
+
+/** Whether a Partners/account session is stored at all. */
+export function isShopifyLoggedIn(file = shopifySessionFile()): boolean {
+	return readShopifySession(file) !== undefined;
+}
+
+/** Whether `.shopify/project.json` records this app: how CLIs before 4.8 linked. */
 export function isShopifyAppLinked(root: string, clientId: string): boolean {
 	try {
 		const project = JSON.parse(
@@ -108,4 +168,48 @@ export function isShopifyAppLinked(root: string, clientId: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * `shopify app info --config <name> --json`: a cheap authenticated command.
+ * It succeeds only when the session is valid (refreshing it if it can) and
+ * the toml's `client_id` resolves to an app the account can see.
+ *
+ * `terminal` hands it the real terminal, so an expired session can be
+ * renewed right there; without it nothing can prompt and it just fails.
+ */
+export function shopifyAppInfo(
+	root: string,
+	config: string,
+	options: { terminal?: boolean } = {},
+): { ok: boolean; info?: Record<string, unknown> } {
+	try {
+		const result = Bun.spawnSync(
+			[resolveShopifyBin(root), "app", "info", "--config", config, "--json"],
+			{
+				cwd: root,
+				stdin: options.terminal ? "inherit" : "ignore",
+				stdout: "pipe",
+				stderr: options.terminal ? "inherit" : "pipe",
+				env: { ...process.env, SHOPIFY_CLI_NO_ANALYTICS: "1" },
+			},
+		);
+		if (result.exitCode !== 0) return { ok: false };
+		try {
+			return { ok: true, info: JSON.parse(result.stdout.toString()) };
+		} catch {
+			return { ok: true };
+		}
+	} catch {
+		return { ok: false };
+	}
+}
+
+/** `shopify auth login`, with the terminal. Throws when it does not succeed. */
+export function shopifyLogin(root: string): void {
+	const result = Bun.spawnSync([resolveShopifyBin(root), "auth", "login"], {
+		cwd: root,
+		stdio: ["inherit", "inherit", "inherit"],
+	});
+	if (result.exitCode !== 0) throw new Error("`shopify auth login` failed");
 }

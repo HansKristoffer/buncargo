@@ -1,4 +1,4 @@
-import type { ChildProcess } from "node:child_process";
+import type { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { withFileLock } from "../file-lock";
 import {
@@ -8,6 +8,7 @@ import {
 } from "../process-identity";
 import { defineListRegistry } from "../registry-file";
 import { STATE_DIRNAME } from "../state-paths";
+import type { AppChild } from "./pty-app";
 import { terminateOwnedProcess } from "./terminate";
 
 interface WorkerOwner {
@@ -56,9 +57,9 @@ export async function findWorker(
 export async function spawnOwnedWorker(
 	root: string,
 	name: string,
-	spawn: () => ChildProcess,
+	spawn: () => AppChild,
 	signal?: AbortSignal,
-): Promise<ChildProcess> {
+): Promise<AppChild> {
 	const path = pathFor(root);
 
 	return withFileLock(
@@ -98,8 +99,8 @@ export async function spawnOwnedWorker(
 			try {
 				// Observe spawn errors here until the caller attaches its supervisor.
 				await new Promise<void>((resolve, reject) => {
-					child.once("spawn", resolve);
-					child.once("error", reject);
+					(child as EventEmitter).once("spawn", resolve);
+					(child as EventEmitter).once("error", reject);
 				});
 
 				const identity = child.pid
@@ -145,7 +146,7 @@ export async function stopWorker(root: string, name: string): Promise<boolean> {
 			return false;
 		}
 
-		await terminateOwnedProcess({ pid: entry.pid } as ChildProcess, 5000);
+		await terminateOwnedProcess({ pid: entry.pid } as AppChild, 5000);
 		await registry.write(
 			path,
 			entries.filter((item) => item !== entry),

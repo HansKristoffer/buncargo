@@ -83,6 +83,18 @@ export function validateSupplementShapes(
 					);
 			}
 	}
+	check(
+		value.preflight,
+		"preflight",
+		Array.isArray(value.preflight) &&
+			value.preflight.every(
+				(step) =>
+					object(step) &&
+					typeof step.name === "string" &&
+					typeof step.run === "function",
+			),
+		"an array of { name, run }",
+	);
 	if (value.generatedFiles !== undefined) {
 		if (!Array.isArray(value.generatedFiles))
 			errors.push("generatedFiles must be an array");

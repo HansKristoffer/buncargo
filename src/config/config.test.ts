@@ -1335,3 +1335,40 @@ describe("disabled secrets", () => {
 		).toEqual({ projectId: "p2" });
 	});
 });
+
+describe("validateConfig actions", () => {
+	const app = (actions: unknown): AnyDevConfig =>
+		({
+			projectPrefix: "myapp",
+			services: {},
+			apps: {
+				shopify: {
+					kind: "worker",
+					devCommand: "shopify app dev",
+					captures: { previewUrl: { pattern: /Preview: (\S+)/, as: "value" } },
+					actions,
+				},
+			},
+		}) as AnyDevConfig;
+
+	it("accepts a key that opens one of the app's captures", () => {
+		expect(
+			validateConfig(app([{ key: "p", label: "preview", open: "previewUrl" }])),
+		).toEqual([]);
+	});
+
+	it("rejects a built-in key, a duplicate and an unknown capture", () => {
+		const errors = validateConfig(
+			app([
+				{ key: "o", label: "open", open: "previewUrl" },
+				{ key: "p", label: "preview", open: "previewUrl" },
+				{ key: "p", label: "again", open: "nope" },
+			]),
+		);
+		expect(errors).toEqual([
+			`apps.shopify.actions[0].key "o" is one of buncargo's own keys (o e r l q j k)`,
+			`apps.shopify.actions[2].key "p" is declared twice`,
+			`apps.shopify.actions[2].open "nope" is not one of apps.shopify.captures`,
+		]);
+	});
+});

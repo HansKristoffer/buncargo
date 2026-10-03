@@ -3,6 +3,12 @@ import { findStartAfterCycle } from "../../planning/start-planning";
 import type { AnyDevConfig } from "../../types";
 import type { ValidationContext } from "./context";
 
+/**
+ * Keys the TUI keeps for itself, besides arrows, Enter and Esc (`run-tui.ts`).
+ * A declared action may not use one.
+ */
+export const BUILT_IN_KEYS = ["o", "e", "r", "l", "q", "j", "k"] as const;
+
 export function validateApps(
 	config: AnyDevConfig,
 	context: ValidationContext,
@@ -96,6 +102,28 @@ export function validateApps(
 			}
 		}
 
+		const keys = new Set<string>();
+		const actions = Array.isArray(app.actions) ? app.actions : [];
+		for (const [index, action] of actions.entries()) {
+			const at = `apps.${name}.actions[${index}]`;
+			if (typeof action?.key !== "string" || [...action.key].length !== 1) {
+				errors.push(`${at}.key must be one character`);
+			} else if ((BUILT_IN_KEYS as readonly string[]).includes(action.key)) {
+				errors.push(
+					`${at}.key "${action.key}" is one of buncargo's own keys (${BUILT_IN_KEYS.join(" ")})`,
+				);
+			} else if (keys.has(action.key)) {
+				errors.push(`${at}.key "${action.key}" is declared twice`);
+			}
+			if (typeof action?.key === "string") keys.add(action.key);
+			if (typeof action?.label !== "string" || !action.label.trim())
+				errors.push(`${at}.label must be a nonempty string`);
+			if (!app.captures?.[action?.open])
+				errors.push(
+					`${at}.open "${String(action?.open)}" is not one of apps.${name}.captures`,
+				);
+		}
+
 		for (const trigger of app.restartOn ?? []) {
 			if (!/^(captured|publicUrls)\.[A-Za-z0-9_-]+$/.test(trigger)) {
 				errors.push(
@@ -116,6 +144,17 @@ export function validateApps(
 		if (startCycle) {
 			errors.push(`Circular startAfter dependency: ${startCycle}`);
 		}
+
+		const keyOwners = new Map<string, string>();
+		for (const [name, app] of Object.entries(config.apps))
+			for (const action of Array.isArray(app.actions) ? app.actions : []) {
+				const owner = keyOwners.get(action.key);
+				if (owner && owner !== name)
+					errors.push(
+						`Action key "${action.key}" is declared by both ${owner} and ${name}`,
+					);
+				keyOwners.set(action.key, name);
+			}
 
 		const interactiveApps = Object.entries(config.apps)
 			.filter(([, app]) => app.interactive)

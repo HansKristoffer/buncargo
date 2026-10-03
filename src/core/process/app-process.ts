@@ -9,13 +9,15 @@ import type { AppConfig } from "../../types";
 import { connectProcessEnv } from "../runtime-flags";
 import { shellQuote } from "../shell-quote";
 import { recordStartupMetric } from "../startup-metrics";
-import { prefixOutput } from "./prefix-output";
+import { type AppChild, PtyApp } from "./pty-app";
+import type { RunOutput } from "./run-output";
 import { terminateOwnedProcess } from "./terminate";
 
 /**
- * Spawning one app process: the shell it runs under, its prefixed output,
- * the pseudo-terminal tee that lets captures read an attached app, and its
- * prebuild. `dev-servers.ts` orchestrates many of these.
+ * Spawning one app process: the shell it runs under, where its output goes
+ * (a pseudo-terminal of its own in the TUI, pipes otherwise), the `script`
+ * tee that lets captures read a legacy attached app, and its prebuild.
+ * `dev-servers.ts` orchestrates many of these.
  */
 
 function resolveShell(): string {
@@ -79,12 +81,11 @@ export function spawnManagedApp(
 		extraArgs: string[];
 		productionBuild: boolean;
 		waitForExit: boolean;
-		prefixWidth: number;
-		onFirstLog: () => void;
+		output: RunOutput;
 		/** Raw output, for `captures`. */
 		onText?: (text: string) => void;
 	},
-): ChildProcess {
+): AppChild {
 	const baseCommand = resolveStartCommand(config, options.productionBuild);
 	if (baseCommand === undefined) {
 		throw new Error(`App "${name}" has no startable devCommand`);
@@ -95,12 +96,36 @@ export function spawnManagedApp(
 			? `${baseCommand} ${options.extraArgs.map(shellQuote).join(" ")}`
 			: baseCommand;
 	const base = appSpawnOptions(config, root, envVars);
+	const { output } = options;
 
-	// The attached app keeps its terminal. Capturing from it needs its output
-	// too, so it runs under a pseudo-terminal (`script`) whose copy of the
-	// output passes through here unchanged; TUIs like Shopify CLI see a TTY.
-	// Without a terminal to keep (CI, a test) plain pipes do the same job.
-	const capturing = options.attached && options.onText !== undefined;
+	// The TUI: every app gets a terminal of its own, sized to its pane, and
+	// keeps its screen (and scrollback) across restarts.
+	if (output.terminalSize) {
+		const screen = output.screen(name);
+		const decoder = new TextDecoder();
+		const child = new PtyApp([SHELL, "-c", command], {
+			cwd: base.cwd,
+			env: base.env,
+			cols: screen.term.cols,
+			rows: screen.term.rows,
+			onData: (data) => {
+				screen.write(data);
+				options.onText?.(decoder.decode(data, { stream: true }));
+			},
+		});
+		screen.bind(child);
+		if (!options.waitForExit) child.unref();
+		return child;
+	}
+
+	// The legacy attached app keeps the real terminal. Capturing from it needs
+	// its output too, so it runs under a pseudo-terminal (`script`) whose copy
+	// of the output passes through here unchanged; TUIs like Shopify CLI see a
+	// TTY. Without a terminal to keep (CI, a test) plain pipes do the same job.
+	// Captured also when logging, so the attached app has a log file too.
+	const capturing =
+		options.attached &&
+		(options.onText !== undefined || output.logs !== undefined);
 	const tee = capturing && process.stdin.isTTY ? ptyTeeArgv(command) : null;
 	const piped = capturing && !process.stdin.isTTY;
 	if (tee) recordStartupMetric("subprocesses");
@@ -119,21 +144,17 @@ export function spawnManagedApp(
 			});
 
 	if (!options.attached) {
-		prefixOutput(name, child, {
-			width: options.prefixWidth,
-			onFirstWrite: options.onFirstLog,
-			onText: options.onText,
-		});
+		output.pipe(name, child.stdout, options.onText);
+		output.pipe(name, child.stderr, options.onText);
 	} else if (tee || piped) {
-		// Passed through unchanged; stderr is only piped without the tee.
+		// Passed through unchanged; stderr is only piped without the tee. The
+		// feed gets a copy for the log, marked as already on the terminal.
 		for (const [stream, target] of [
 			[child.stdout, process.stdout],
 			[child.stderr, process.stderr],
 		] as const) {
-			stream?.on("data", (chunk: Buffer) => {
-				target.write(chunk);
-				options.onText?.(chunk.toString("utf8"));
-			});
+			stream?.on("data", (chunk: Buffer) => target.write(chunk));
+			output.pipe(name, stream, options.onText, { echoed: true });
 		}
 	}
 
@@ -172,7 +193,7 @@ export async function runPrebuild(
 	config: AppConfig,
 	root: string,
 	envVars: Record<string, string>,
-	options: { signal: AbortSignal; width: number; onFirstLog: () => void },
+	options: { signal: AbortSignal; output: RunOutput },
 ): Promise<void> {
 	const command = config.prebuild;
 	if (!command) return;
@@ -181,10 +202,8 @@ export async function runPrebuild(
 		...appSpawnOptions(config, root, envVars),
 		stdio: ["ignore", "pipe", "pipe"],
 	});
-	prefixOutput(name, child, {
-		width: options.width,
-		onFirstWrite: options.onFirstLog,
-	});
+	options.output.pipe(name, child.stdout);
+	options.output.pipe(name, child.stderr);
 
 	const onAbort = () => void terminateOwnedProcess(child);
 	options.signal.addEventListener("abort", onAbort, { once: true });

@@ -1,8 +1,8 @@
-import type { ChildProcess } from "node:child_process";
 import type { DevServerPids } from "../../types";
 import { formatPidLine, formatStep } from "../style";
 import type { DetachedApp } from "./detached-app";
 import { ProcessOwner, RunInterrupted } from "./process-owner";
+import type { AppChild } from "./pty-app";
 import { terminateOwnedProcess } from "./terminate";
 
 const activeSessions = new Map<number, AppSupervision>();
@@ -11,17 +11,20 @@ const activeSessions = new Map<number, AppSupervision>();
 export class AppSupervision {
 	readonly owner: ProcessOwner;
 	readonly pids: DevServerPids = {};
-	private children = new Map<string, ChildProcess | DetachedApp>();
+	private children = new Map<string, AppChild | DetachedApp>();
 	private spawners = new Map<
 		string,
 		{
-			spawn(): Promise<ChildProcess>;
+			spawn(): Promise<AppChild>;
 			worker: boolean;
 			attached: boolean;
 			port?: number;
 		}
 	>();
 	private restarts = new Set<Promise<void>>();
+	/** Per app: the restart in flight, and one waiting behind it. */
+	private running = new Map<string, Promise<void>>();
+	private queued = new Map<string, Promise<void>>();
 	private cleanup?: Promise<void>;
 
 	constructor(
@@ -29,6 +32,8 @@ export class AppSupervision {
 			verbose?: boolean;
 			width: number;
 			onAppSpawned?: (name: string, pid: number, attached: boolean) => void;
+			/** Replaces the console line a restart prints. */
+			onRestart?: (name: string, reason: string) => void;
 		},
 	) {
 		this.owner = new ProcessOwner({
@@ -47,7 +52,7 @@ export class AppSupervision {
 
 	setSpawner(
 		name: string,
-		spawn: () => Promise<ChildProcess>,
+		spawn: () => Promise<AppChild>,
 		worker: boolean,
 		attached: boolean,
 		port?: number,
@@ -57,7 +62,7 @@ export class AppSupervision {
 
 	async register(
 		name: string,
-		child: ChildProcess,
+		child: AppChild,
 		worker: boolean,
 		attached: boolean,
 		needsReadiness: boolean,
@@ -78,8 +83,32 @@ export class AppSupervision {
 			console.log(formatPidLine(name, child.pid, this.options.width));
 	}
 
-	restart(name: string): Promise<void> {
-		const operation = this.replace(name);
+	/**
+	 * Replace one app. Restarts of the same app run one after another: two at
+	 * once would both retire the same child and both spawn a replacement, and
+	 * the second fails on the port the first just bound. A request arriving
+	 * while one is still waiting its turn joins that one.
+	 */
+	restart(
+		name: string,
+		reason = "a value it restarts on changed",
+	): Promise<void> {
+		const queued = this.queued.get(name);
+		if (queued) return queued;
+		const previous = this.running.get(name) ?? Promise.resolve();
+		const operation = previous
+			.catch(() => {})
+			.then(() => {
+				this.queued.delete(name);
+				return this.replace(name, reason);
+			});
+		this.queued.set(name, operation);
+		this.running.set(name, operation);
+		void operation
+			.finally(() => {
+				if (this.running.get(name) === operation) this.running.delete(name);
+			})
+			.catch(() => {});
 		this.restarts.add(operation);
 		void operation
 			.finally(() => this.restarts.delete(operation))
@@ -87,13 +116,13 @@ export class AppSupervision {
 		return operation;
 	}
 
-	private async replace(name: string): Promise<void> {
+	private async replace(name: string, reason: string): Promise<void> {
 		const current = this.children.get(name);
 		const spawner = this.spawners.get(name);
 		if (!current || !spawner || this.owner.controller.signal.aborted) return;
-		console.log(
-			formatStep(`🔁 Restarting ${name}: a value it restarts on changed`),
-		);
+		this.options.onRestart?.(name, reason);
+		if (!this.options.onRestart)
+			console.log(formatStep(`🔁 Restarting ${name}: ${reason}`));
 		await this.owner.retire(current);
 		if (current.pid) activeSessions.delete(current.pid);
 		this.owner.controller.signal.throwIfAborted();

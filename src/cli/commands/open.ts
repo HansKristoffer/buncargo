@@ -1,3 +1,4 @@
+import { preferredAppUrl } from "../../core/app-url";
 import { openUrl } from "../../core/open-url";
 import {
 	type CommandSpec,
@@ -32,18 +33,25 @@ export const URL_COMMAND_SPEC: CommandSpec = {
 };
 
 export const OPEN_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo open [<name>]",
+	usage: "buncargo open [<name>] [<capture>]",
 	flags: [HELP],
 	examples: [
 		{ command: "buncargo open", description: "Open the primary app" },
+		{ command: "buncargo open api", description: "What `o` opens in the TUI" },
 		{ command: "buncargo open previewUrl", description: "Open a captured URL" },
+		{
+			command: "buncargo open shopify previewUrl",
+			description: "An app's captured URL, as its declared action does",
+		},
 	],
 };
 
 export interface OpenSource {
 	apps: Readonly<Record<string, unknown>>;
 	urls: Readonly<Record<string, string | undefined>>;
+	loopbackUrls?: Readonly<Record<string, string | undefined>>;
 	publicUrls: Readonly<Record<string, string | undefined>>;
+	hosts?: { active: boolean } | null;
 	captured: Readonly<Record<string, string>>;
 	details(): Record<string, string>;
 }
@@ -61,8 +69,19 @@ export function openTargets(env: OpenSource): Record<string, string> {
 		targets[name] = url;
 	};
 
+	// The app's own URL is the one the TUI's `o` and BuncargoBar open.
 	for (const app of Object.keys(env.apps)) {
-		add(app, env.urls[app] ?? env.publicUrls[app]);
+		add(
+			app,
+			preferredAppUrl(
+				{
+					url: env.urls[app],
+					loopbackUrl: env.loopbackUrls?.[app],
+					publicUrl: env.publicUrls[app],
+				},
+				env.hosts?.active ?? true,
+			),
+		);
 	}
 	for (const [name, value] of Object.entries(env.captured)) add(name, value);
 	for (const [label, value] of Object.entries(env.details())) add(label, value);
@@ -81,14 +100,19 @@ export function findTarget(
 	)?.[1];
 }
 
-function parseName(spec: CommandSpec, args: string[], command: string) {
-	const [name, ...extra] = readPositionals(spec, args);
+function parseNames(
+	spec: CommandSpec,
+	args: string[],
+	command: string,
+	max: number,
+) {
+	const names = readPositionals(spec, args);
 	const errors = [
 		...findUnknownFlags(spec, args).map((flag) => `Unknown flag: ${flag}`),
-		...extra.map((arg) => `Unexpected argument: ${arg}`),
+		...names.slice(max).map((arg) => `Unexpected argument: ${arg}`),
 	];
 	if (errors.length > 0) throw argumentsError(errors, command);
-	return name;
+	return names;
 }
 
 function resolveTarget(targets: Record<string, string>, name: string): string {
@@ -108,7 +132,7 @@ export async function handleUrl(args: string[]): Promise<number> {
 		console.log(formatCommandHelp(URL_COMMAND_SPEC));
 		return 0;
 	}
-	const name = parseName(URL_COMMAND_SPEC, args, "url");
+	const [name] = parseNames(URL_COMMAND_SPEC, args, "url", 1);
 	const targets = openTargets(await loadLiveEnv());
 
 	if (name !== undefined) {
@@ -130,8 +154,20 @@ export async function handleOpen(args: string[]): Promise<number> {
 		console.log(formatCommandHelp(OPEN_COMMAND_SPEC));
 		return 0;
 	}
-	const name = parseName(OPEN_COMMAND_SPEC, args, "open");
+	const [name, capture] = parseNames(OPEN_COMMAND_SPEC, args, "open", 2);
 	const env = await loadLiveEnv();
+	if (name !== undefined && capture !== undefined) {
+		const url = (env.captured as Record<string, string | undefined>)[capture];
+		if (!(name in env.apps))
+			throw new CliError(`"${name}" is not an app of this config.`);
+		if (!url)
+			throw new CliError(`${name} has not printed ${capture} yet.`, [
+				"Is `buncargo dev` running? `buncargo url` lists what is known.",
+			]);
+		log.info(`Opening ${url}`);
+		openUrl(url);
+		return 0;
+	}
 	const targets = openTargets(env);
 
 	const target = name ?? env.resolvePrimaryApp();
