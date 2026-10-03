@@ -330,6 +330,7 @@ export async function startDevServers(
 		attachedName,
 		optional,
 		onAppExit: (name, code, signal) => {
+			sideChecks.get(name)?.abort();
 			if (!owner.controller.signal.aborted) {
 				// After the app's last screen, so its final words precede the verdict.
 				const report = () =>
@@ -353,7 +354,10 @@ export async function startDevServers(
 			onAppExit?.(name, code, signal);
 		},
 		onAppSpawned: (name, pid, attached) => {
-			output.state(name, { state: "starting" });
+			// A ready app reporting a new pid adopted its detached server;
+			// a restart says "starting" itself.
+			if (output.states.get(name)?.state !== "ready")
+				output.state(name, { state: "starting" });
 			onAppSpawned?.(name, pid, attached);
 		},
 		onRestart: (name, reason) => {
@@ -370,15 +374,16 @@ export async function startDevServers(
 	// A replaced app is ready again the way it was the first time: health-
 	// checked on the side, so a failing restart never stalls the others.
 	const restartApp = async (name: string, reason?: string) => {
+		sideChecks.get(name)?.abort();
+		output.state(name, { state: "starting" });
 		await session.restart(name, reason);
-		const config = startable[name];
-		if (config && !owner.controller.signal.aborted)
-			void waitForWave({ [name]: config }).catch(() => {});
+		checkOnTheSide(name);
 	};
 	output.controls = { restart: (name) => restartApp(name, "requested") };
 	const markReady = (name: string) => {
 		owner.ready(name);
-		if (output.states.get(name)?.state === "ready") return;
+		// Only a starting app becomes ready; an exited one stays as it ended.
+		if (output.states.get(name)?.state !== "starting") return;
 		output.state(name, { state: "ready" });
 		options.onAppReady?.(name);
 	};
@@ -483,20 +488,42 @@ export async function startDevServers(
 		}
 	}
 
-	function waitForWave(wave: Record<string, AppConfig>): Promise<void> {
+	function waitForWave(
+		wave: Record<string, AppConfig>,
+		signal: AbortSignal = owner.controller.signal,
+	): Promise<void> {
+		const ready = (name: string) => {
+			if (!signal.aborted) markReady(name);
+		};
 		if (waitForHealth)
-			return waitForHealth(wave, owner.controller.signal).then(() => {
-				for (const name of Object.keys(wave)) markReady(name);
+			return waitForHealth(wave, signal).then(() => {
+				for (const name of Object.keys(wave)) ready(name);
 			});
 		// Workers and `healthEndpoint: false` apps are ready once the wave is.
 		return waitForDevServers(wave, ports, {
 			verbose: verbose && !output.terminalSize,
 			productionBuild,
-			signal: owner.controller.signal,
-			onAppReady: markReady,
+			signal,
+			onAppReady: ready,
 		}).then(() => {
-			for (const name of Object.keys(wave)) markReady(name);
+			for (const name of Object.keys(wave)) ready(name);
 		});
+	}
+
+	// A non-essential app's readiness is checked on the side, one check per
+	// process: its exit or replacement cancels it, so a check that outlives
+	// the process cannot report the next one (or a dead one) as ready.
+	const sideChecks = new Map<string, AbortController>();
+	function checkOnTheSide(name: string): void {
+		const config = startable[name];
+		if (!config || owner.controller.signal.aborted) return;
+		sideChecks.get(name)?.abort();
+		const controller = new AbortController();
+		sideChecks.set(name, controller);
+		void waitForWave(
+			{ [name]: config },
+			AbortSignal.any([owner.controller.signal, controller.signal]),
+		).catch(() => {});
 	}
 
 	async function startWave(wave: Record<string, AppConfig>): Promise<void> {
@@ -508,7 +535,7 @@ export async function startDevServers(
 		// A non-essential app never holds the run up: it is health-checked on
 		// the side, and its failing to come up is its own problem.
 		for (const name of Object.keys(wave).filter((name) => optional.has(name)))
-			void waitForWave({ [name]: wave[name] as AppConfig }).catch(() => {});
+			checkOnTheSide(name);
 		await owner.race(
 			waitForWave(
 				Object.fromEntries(

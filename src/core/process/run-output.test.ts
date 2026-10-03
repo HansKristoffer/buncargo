@@ -50,6 +50,18 @@ describe("RunOutput", () => {
 		}
 	});
 
+	it("orders runs started within the same second by start time", () => {
+		const root = mkdtempSync(join(tmpdir(), "buncargo-run-logs-ms-"));
+		try {
+			const at = (ms: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, 0, ms));
+			new AppLogs(root, "zzzz-older", at(100));
+			const newer = new AppLogs(root, "aaaa-newer", at(900));
+			expect(listRunLogDirs(root).at(-1)).toBe(newer.dir);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("prints a stopped non-essential app with its errors and how to restart it", () => {
 		const output = new RunOutput();
 		let printed = "";

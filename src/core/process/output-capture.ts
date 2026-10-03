@@ -67,7 +67,7 @@ interface OutputCaptureScanner {
 
 const UNCLOSED_LINK =
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: that is the point
-	/\u001b\]8;[^;\u0007\u001b]*;[^\u0007\u001b]+(?:\u0007|\u001b\\)(?![\s\S]*\u001b\]8;;)/;
+	/\u001b\]8;[^;\u0007\u001b]*;[^\u0007\u001b]+(?:\u0007|\u001b\\)(?![\s\S]*\u001b\]8;;(?:\u0007|\u001b\\))/;
 const UNFINISHED_ESCAPE =
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: that is the point
 	/\u001b(?:\][^\u0007\u001b]*\u001b?|\[[0-9;?]*[ -/]*)?$/;

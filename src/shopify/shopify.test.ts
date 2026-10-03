@@ -315,6 +315,17 @@ describe("Shopify session", () => {
 		).toThrow(
 			"not logged in to the Shopify CLI. Run `buncargo shopify login`.",
 		);
+		// A Partners token is how CI authenticates: nothing to check or prompt.
+		expect(() =>
+			ensureShopifyLogin({
+				root,
+				config: "shopify.app.toml",
+				linked: true,
+				interactive: false,
+				sessionFile: join(root, "no-session.json"),
+				env: { SHOPIFY_CLI_PARTNERS_TOKEN: "token" },
+			}),
+		).not.toThrow();
 	});
 });
 
@@ -339,6 +350,35 @@ describe("shopify link", () => {
 		expect(config.webhooks).toHaveLength(1);
 		expect(config.appProxy?.subpath).toBe("prints");
 		expect(merged.split("\n").length).toBe(TOML.split("\n").length);
+	});
+
+	it("edits commented headers and indented keys, and refuses what it cannot edit", () => {
+		const linked = { clientId: "f".repeat(32), name: "Dev" };
+		const commented = mergeLinkedConfig({
+			template:
+				'  client_id = "old"\n  name = "Old"\n\n[build] # dev settings\n  dev_store_url = "a.myshopify.com"\n',
+			linked,
+			existing: '[build]\ndev_store_url = "mine.myshopify.com"\n',
+		});
+		expect(Bun.TOML.parse(commented)).toEqual({
+			client_id: "f".repeat(32),
+			name: "Dev",
+			build: { dev_store_url: "mine.myshopify.com" },
+		});
+		// A multi-line name the line edit would corrupt: refused, not written.
+		expect(() =>
+			mergeLinkedConfig({
+				template: 'client_id = "old"\nname = """\nOld\nApp"""\n',
+				linked,
+			}),
+		).toThrow("could not edit the toml safely");
+		expect(() =>
+			mergeLinkedConfig({
+				template: 'client_id = "old"\nbuild.dev_store_url = "a"\n',
+				linked,
+				existing: '[build]\ndev_store_url = "b"\n',
+			}),
+		).toThrow("could not edit the toml safely");
 	});
 
 	it("adds keys and a [build] table when the template has none", () => {

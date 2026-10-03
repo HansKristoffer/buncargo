@@ -1,4 +1,5 @@
 import { isInteractive } from "../core/prompt";
+import { isCI } from "../core/runtime-flags";
 import type { AnyDevEnvironment } from "../types";
 import { CliError } from "./errors";
 import * as log from "./log";
@@ -15,9 +16,11 @@ export async function runPreflight(
 	const steps = (env.preflight ?? []).filter(
 		(step) => !step.apps || step.apps.some((app) => selectedApps.includes(app)),
 	);
+	// A CI job can have a terminal, and still nobody to log in.
+	const interactive = isInteractive() && !isCI();
 	for (const step of steps) {
 		try {
-			await step.run({ root: env.root, env, interactive: isInteractive() });
+			await step.run({ root: env.root, env, interactive });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			throw new CliError(`${step.name}: ${message}`);

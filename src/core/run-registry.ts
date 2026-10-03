@@ -574,14 +574,26 @@ function mergeByName<T extends { name: string }>(
 		// inserted: a half-populated entry would show in the UI as a real app.
 		if (!existing) continue;
 		// Delayed readiness/PID publication must never resurrect a stopped app.
-		const prior = existing as T & { status?: string };
-		const incoming = update as Partial<T> & { status?: string };
+		// A new pid on a stopped app is a new process (a restart): it starts
+		// over. On a running one it is the same app adopting a detached pid.
+		const prior = existing as T & { status?: string; pid?: number };
+		const incoming = update as Partial<T> & { status?: string; pid?: number };
+		const ended = prior.status === "stopped" || prior.status === "failed";
+		const restarted =
+			ended && incoming.pid !== undefined && incoming.pid !== prior.pid;
 		if (
-			(prior.status === "stopped" || prior.status === "failed") &&
+			!restarted &&
+			ended &&
 			(incoming.status === "ready" || incoming.status === "starting")
 		)
 			continue;
-		byName.set(update.name, { ...existing, ...update });
+		byName.set(update.name, {
+			...existing,
+			...update,
+			...(restarted && incoming.status === undefined
+				? { status: "starting" }
+				: {}),
+		});
 	}
 	return current.map((entry) => byName.get(entry.name) ?? entry);
 }

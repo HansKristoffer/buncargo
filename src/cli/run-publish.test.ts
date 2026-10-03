@@ -20,6 +20,7 @@ import {
 	type RunSource,
 	readGitBranch,
 	recordAppSpawn,
+	recordAppUrls,
 } from "./run-publish";
 import { parseStopArgs } from "./stop-flags";
 
@@ -122,6 +123,26 @@ describe("published run ownership", () => {
 			status: "ready",
 		});
 		expect(entry.captures).toEqual({ first: "a", second: "b" });
+	});
+
+	it("records an app's tunnel as what open opens once the tunnel exists", async () => {
+		const env = source("tunnel-urls");
+		await publishCurrentRun(env, {
+			apps: { web: { port: 3000, devCommand: "bun dev" } },
+			serviceNames: [],
+		});
+		const web = async () =>
+			(await loadRuns())[0]?.apps.find((app) => app.name === "web");
+		expect((await web())?.openUrl).not.toContain("trycloudflare");
+
+		(env.publicUrls as Record<string, string>).web =
+			"https://web.trycloudflare.com";
+		await recordAppUrls(env, ["web"]);
+		await flushRunPatches(env);
+		expect(await web()).toMatchObject({
+			publicUrl: "https://web.trycloudflare.com",
+			openUrl: "https://web.trycloudflare.com",
+		});
 	});
 
 	it("publishes the config's tasks for the menu bar's run button", async () => {

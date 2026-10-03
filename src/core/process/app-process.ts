@@ -122,7 +122,10 @@ export function spawnManagedApp(
 	// its output too, so it runs under a pseudo-terminal (`script`) whose copy
 	// of the output passes through here unchanged; TUIs like Shopify CLI see a
 	// TTY. Without a terminal to keep (CI, a test) plain pipes do the same job.
-	const capturing = options.attached && options.onText !== undefined;
+	// Captured also when logging, so the attached app has a log file too.
+	const capturing =
+		options.attached &&
+		(options.onText !== undefined || output.logs !== undefined);
 	const tee = capturing && process.stdin.isTTY ? ptyTeeArgv(command) : null;
 	const piped = capturing && !process.stdin.isTTY;
 	if (tee) recordStartupMetric("subprocesses");
@@ -144,15 +147,14 @@ export function spawnManagedApp(
 		output.pipe(name, child.stdout, options.onText);
 		output.pipe(name, child.stderr, options.onText);
 	} else if (tee || piped) {
-		// Passed through unchanged; stderr is only piped without the tee.
+		// Passed through unchanged; stderr is only piped without the tee. The
+		// feed gets a copy for the log, marked as already on the terminal.
 		for (const [stream, target] of [
 			[child.stdout, process.stdout],
 			[child.stderr, process.stderr],
 		] as const) {
-			stream?.on("data", (chunk: Buffer) => {
-				target.write(chunk);
-				options.onText?.(chunk.toString("utf8"));
-			});
+			stream?.on("data", (chunk: Buffer) => target.write(chunk));
+			output.pipe(name, stream, options.onText, { echoed: true });
 		}
 	}
 

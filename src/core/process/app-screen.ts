@@ -38,6 +38,8 @@ export class AppScreen {
 	private calm = 0;
 	/** What each recent row was sent as, so a redraw of the same text is not repeated. */
 	private sent = new Map<number, string>();
+	/** Scrollback rows `ESC[3J` removed since the last commit. */
+	private cleared = 0;
 	private anchor?: {
 		marker: { line: number; isDisposed: boolean; dispose(): void };
 		line: number;
@@ -85,6 +87,12 @@ export class AppScreen {
 			{ final: "M" },
 			up((y) => y - 1),
 		);
+		parser.registerCsiHandler({ final: "J" }, (params) => {
+			const buffer = this.term.buffer.active;
+			if (params.includes(3) && buffer.type === "normal")
+				this.cleared += buffer.baseY;
+			return false;
+		});
 		for (const [final, visible] of [
 			["h", true],
 			["l", false],
@@ -132,17 +140,29 @@ export class AppScreen {
 	private commit(final: boolean): void {
 		const normal = this.term.buffer.normal;
 		// Rows shift up once the scrollback is full; a marker follows them.
-		if (this.anchor) {
-			const shift = this.anchor.line - this.anchor.marker.line;
-			if (shift > 0 && !this.anchor.marker.isDisposed) {
-				this.emitted = Math.max(0, this.emitted - shift);
-				this.low -= shift;
-				this.sent = new Map(
-					[...this.sent].map(([row, text]) => [row - shift, text]),
-				);
-			}
-			this.anchor.marker.dispose();
+		let shift = 0;
+		if (this.anchor && !this.anchor.marker.isDisposed)
+			shift = this.anchor.line - this.anchor.marker.line;
+		else if (this.cleared > 0) shift = this.cleared;
+		else if (
+			this.anchor &&
+			normal.length >= this.term.rows + SCREEN_SCROLLBACK
+		) {
+			// Trimmed away: a burst longer than the scrollback since the last
+			// commit. Every row still in the buffer arrived after it.
+			this.emitted = 0;
+			this.low = Number.POSITIVE_INFINITY;
+			this.sent.clear();
 		}
+		if (shift > 0) {
+			this.emitted = Math.max(0, this.emitted - shift);
+			this.low -= shift;
+			this.sent = new Map(
+				[...this.sent].map(([row, text]) => [row - shift, text]),
+			);
+		}
+		this.cleared = 0;
+		this.anchor?.marker.dispose();
 
 		if (this.reach > 0) {
 			this.live = this.reach;
@@ -151,9 +171,11 @@ export class AppScreen {
 
 		const cursor = normal.baseY + normal.cursorY;
 		const start = Math.min(this.emitted, this.low);
-		const end = final
+		let end = final
 			? lastContentRow(normal) + 1
 			: Math.min(cursor - this.live, normal.length);
+		// A logical line still wrapping onto the next row is not finished.
+		while (!final && end > start && normal.getLine(end)?.isWrapped) end--;
 		if (this.term.buffer.active.type === "normal" || final)
 			this.emitRows(normal, start, end);
 		this.emitted = Math.max(start, end);
@@ -168,7 +190,11 @@ export class AppScreen {
 			if (row < this.emitted - 500) this.sent.delete(row);
 		this.low = Number.POSITIVE_INFINITY;
 		this.reach = 0;
-		const marker = this.term.registerMarker(0);
+		// In the scrollback when there is one: rows on screen can be erased
+		// (which disposes a marker too), rows above it only trimmed or cleared.
+		const marker = this.term.registerMarker(
+			normal.baseY > 0 ? -(normal.cursorY + 1) : 0,
+		);
 		this.anchor = marker ? { marker, line: marker.line } : undefined;
 	}
 

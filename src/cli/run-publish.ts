@@ -453,6 +453,34 @@ export async function recordAppSpawn(
 }
 
 /**
+ * Record each app's public URL and what "open" now means for it, once
+ * tunnels have opened: the run was published before they had URLs, so
+ * BuncargoBar would otherwise keep opening loopback.
+ */
+export async function recordAppUrls(
+	env: RunSession &
+		Pick<RunSource, "urls" | "loopbackUrls" | "publicUrls" | "hosts">,
+	names: readonly string[],
+): Promise<void> {
+	const read = (urls: object, name: string) =>
+		(urls as Record<string, string | undefined>)[name];
+	const apps = names.flatMap((name) => {
+		const publicUrl = read(env.publicUrls, name);
+		if (!publicUrl) return [];
+		const openUrl = preferredAppUrl(
+			{
+				url: read(env.urls, name),
+				loopbackUrl: read(env.loopbackUrls, name),
+				publicUrl,
+			},
+			env.hosts?.active ?? false,
+		);
+		return [{ name, publicUrl, openUrl }];
+	});
+	if (apps.length > 0) await patchCurrentRun(env, { apps });
+}
+
+/**
  * Record a captured value: in `captures`, and as the app's `publicUrl` when
  * it is one, so BuncargoBar shows the preview URL like a tunnel's. Refreshes
  * the labelled rows too, since those are mostly captures.

@@ -23,7 +23,11 @@ export function ensureShopifyLogin(input: {
 	linked: boolean;
 	interactive: boolean;
 	sessionFile?: string;
+	env?: Record<string, string | undefined>;
 }): void {
+	// Token authentication (CI, automation) has no stored session to check:
+	// the CLI uses the token itself.
+	if ((input.env ?? process.env).SHOPIFY_CLI_PARTNERS_TOKEN) return;
 	const session = readShopifySession(input.sessionFile);
 	if (session && !isShopifySessionExpired(session)) return;
 	if (

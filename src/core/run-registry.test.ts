@@ -279,6 +279,62 @@ describe("patchRun", () => {
 		);
 		expect((await loadRuns(path))[0]?.apps[0]?.status).toBe("stopped");
 	});
+
+	it("lets a restarted app (a new pid) start over after it stopped", async () => {
+		await publishRun(makeRun(), { path });
+		const read = async () => (await loadRuns(path))[0]?.apps[0];
+		await patchRun(
+			"s1",
+			{ apps: [{ name: "api", status: "failed" }] },
+			{ path },
+		);
+		// What `recordAppSpawn` sends for the replacement: a pid, no status.
+		await patchRun(
+			"s1",
+			{ apps: [{ name: "api", pid: process.ppid }] },
+			{ path },
+		);
+		expect(await read()).toMatchObject({
+			pid: process.ppid,
+			status: "starting",
+		});
+		await patchRun(
+			"s1",
+			{ apps: [{ name: "api", status: "ready" }] },
+			{ path },
+		);
+		expect((await read())?.status).toBe("ready");
+		// The same pid again is not a restart: a stopped app stays stopped.
+		await patchRun(
+			"s1",
+			{ apps: [{ name: "api", status: "stopped" }] },
+			{ path },
+		);
+		await patchRun(
+			"s1",
+			{ apps: [{ name: "api", pid: process.ppid, status: "starting" }] },
+			{ path },
+		);
+		expect((await read())?.status).toBe("stopped");
+	});
+
+	it("keeps a running app's status when it adopts a detached pid", async () => {
+		await publishRun(makeRun(), { path });
+		await patchRun(
+			"s1",
+			{ apps: [{ name: "api", status: "ready" }] },
+			{ path },
+		);
+		await patchRun(
+			"s1",
+			{ apps: [{ name: "api", pid: process.ppid + 1 }] },
+			{ path },
+		);
+		expect((await loadRuns(path))[0]?.apps[0]).toMatchObject({
+			pid: process.ppid + 1,
+			status: "ready",
+		});
+	});
 });
 
 describe("liveness", () => {

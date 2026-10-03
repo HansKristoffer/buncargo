@@ -348,6 +348,50 @@ describe("startDevServers essential: false", () => {
 	});
 });
 
+describe("startDevServers non-essential readiness", () => {
+	it("never reports an app ready after it has exited", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-optional-ready-"));
+		const output = new RunOutput();
+		const ready: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					keeper: {
+						kind: "worker",
+						devCommand: "bun -e 'setInterval(() => {}, 60000)'",
+					},
+					flaky: {
+						kind: "worker",
+						essential: false,
+						devCommand: "bun -e 'process.exit(1)'",
+					},
+				},
+				root,
+				{},
+				{},
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					onAppReady: (name) => ready.push(name),
+					// A slow check: it finishes after flaky is already gone.
+					waitForHealth: async (wave, signal) => {
+						if ("flaky" in wave) await Bun.sleep(600);
+						signal?.throwIfAborted();
+					},
+				},
+			);
+			await Bun.sleep(900);
+			expect(output.states.get("flaky")?.state).toBe("failed");
+			expect(ready).not.toContain("flaky");
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
 function processExists(pid: number | undefined): boolean {
 	if (!pid) return false;
 	try {

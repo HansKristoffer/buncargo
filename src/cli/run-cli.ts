@@ -62,6 +62,7 @@ import {
 	markApps,
 	publishCurrentRun,
 	recordAppSpawn,
+	recordAppUrls,
 	recordRunCapture,
 } from "./run-publish";
 import {
@@ -594,7 +595,10 @@ async function runDevFlow<
 			{
 				root: env.root,
 				prepare: nothingToSpawn
-					? (sessionSignal) => tunnels.openOwnedTunnels(sessionSignal)
+					? async (sessionSignal) => {
+							await tunnels.openOwnedTunnels(sessionSignal);
+							void recordAppUrls(env, Object.keys(appsForDev));
+						}
 					: undefined,
 				onSeedReady: () => {
 					if (!nothingToSpawn) log.success("All servers ready");
@@ -675,6 +679,7 @@ async function runDevFlow<
 					await timer.measure("tunnels", () =>
 						tunnels.openOwnedTunnels(signal),
 					);
+					void recordAppUrls(env, Object.keys(appsForDev));
 				},
 				onCapture: async (app, captured) => {
 					void recordRunCapture(env, app, captured);

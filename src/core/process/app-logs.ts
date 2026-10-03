@@ -39,7 +39,8 @@ export function listRunLogDirs(root: string): string[] {
 }
 
 function runDirName(sessionId: string, now: Date): string {
-	const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\..*/, "");
+	// Milliseconds kept: two runs in one second must still sort by start.
+	const stamp = now.toISOString().replace(/[-:.]/g, "");
 	return `${stamp}-${sessionId.slice(0, 8)}`;
 }
 

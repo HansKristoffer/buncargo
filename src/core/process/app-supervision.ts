@@ -22,6 +22,9 @@ export class AppSupervision {
 		}
 	>();
 	private restarts = new Set<Promise<void>>();
+	/** Per app: the restart in flight, and one waiting behind it. */
+	private running = new Map<string, Promise<void>>();
+	private queued = new Map<string, Promise<void>>();
 	private cleanup?: Promise<void>;
 
 	constructor(
@@ -80,11 +83,32 @@ export class AppSupervision {
 			console.log(formatPidLine(name, child.pid, this.options.width));
 	}
 
+	/**
+	 * Replace one app. Restarts of the same app run one after another: two at
+	 * once would both retire the same child and both spawn a replacement, and
+	 * the second fails on the port the first just bound. A request arriving
+	 * while one is still waiting its turn joins that one.
+	 */
 	restart(
 		name: string,
 		reason = "a value it restarts on changed",
 	): Promise<void> {
-		const operation = this.replace(name, reason);
+		const queued = this.queued.get(name);
+		if (queued) return queued;
+		const previous = this.running.get(name) ?? Promise.resolve();
+		const operation = previous
+			.catch(() => {})
+			.then(() => {
+				this.queued.delete(name);
+				return this.replace(name, reason);
+			});
+		this.queued.set(name, operation);
+		this.running.set(name, operation);
+		void operation
+			.finally(() => {
+				if (this.running.get(name) === operation) this.running.delete(name);
+			})
+			.catch(() => {});
 		this.restarts.add(operation);
 		void operation
 			.finally(() => this.restarts.delete(operation))

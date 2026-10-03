@@ -76,6 +76,7 @@ export class RunTui {
 	private lastRender = 0;
 	private active = false;
 	private suspended = false;
+	private pager?: Bun.Subprocess;
 	private hooked = new WeakSet<object>();
 	private unsubscribe?: () => void;
 	private restoreOutput?: () => void;
@@ -131,6 +132,8 @@ export class RunTui {
 	stop(): void {
 		if (!this.active) return;
 		this.active = false;
+		// An open pager would hold the terminal past the run.
+		this.pager?.kill();
 		clearTimeout(this.timer);
 		this.unsubscribe?.();
 		this.stdin.off("data", this.onInput);
@@ -149,7 +152,9 @@ export class RunTui {
 			// Not a terminal any more.
 		}
 		try {
-			writeSync((this.stdout as { fd?: number }).fd ?? 1, LEAVE_SCREEN);
+			const fd = (this.stdout as { fd?: number }).fd;
+			if (fd === undefined) this.stdout.write(LEAVE_SCREEN);
+			else writeSync(fd, LEAVE_SCREEN);
 		} catch {
 			// Nothing to restore on.
 		}
@@ -178,8 +183,18 @@ export class RunTui {
 				? saved.stdout.bind(process.stdout)
 				: this.stdout.write.bind(this.stdout);
 		this.write = (text) => realWrite(text);
-		const capture = ((chunk: string | Uint8Array) => {
+		// Both Writable overloads: a caller awaiting the callback must not hang.
+		const capture = ((
+			chunk: string | Uint8Array,
+			encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+			callback?: (error?: Error | null) => void,
+		) => {
 			log(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+			const done =
+				typeof encodingOrCallback === "function"
+					? encodingOrCallback
+					: callback;
+			if (done) queueMicrotask(() => done(null));
 			return true;
 		}) as typeof process.stdout.write;
 		process.stdout.write = capture;
@@ -363,23 +378,33 @@ export class RunTui {
 			this.open(path);
 			return;
 		}
-		// Hand the terminal to the pager, then take it back.
+		// Hand the terminal to the pager, then take it back. The pager reads
+		// the keys meanwhile: this process stops reading stdin altogether.
 		this.suspended = true;
+		this.stdin.off("data", this.onInput);
+		this.stdin.pause();
 		this.restoreTerminal();
 		const pager = (process.env.PAGER || "less +G").split(" ");
 		try {
-			const child = Bun.spawn([...pager, path], {
+			this.pager = Bun.spawn([...pager, path], {
 				stdio: ["inherit", "inherit", "inherit"],
 			});
-			await child.exited;
+			await this.pager.exited;
 		} catch {
 			this.message = `Could not run ${pager[0]}`;
 		} finally {
+			this.pager = undefined;
 			this.suspended = false;
-			this.write(ENTER_SCREEN);
-			this.stdin.setRawMode?.(true);
-			this.frame = [];
-			this.invalidate();
+			// The run may have ended while the pager was open: then the
+			// terminal is the user's again and must stay restored.
+			if (this.active) {
+				this.write(ENTER_SCREEN);
+				this.stdin.setRawMode?.(true);
+				this.stdin.on("data", this.onInput);
+				this.stdin.resume();
+				this.frame = [];
+				this.invalidate();
+			}
 		}
 	}
 

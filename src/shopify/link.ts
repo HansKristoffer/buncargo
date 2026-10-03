@@ -1,4 +1,10 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { shopifyConfigFile } from "./app-config";
@@ -26,11 +32,11 @@ export function setTopLevelKey(
 	key: string,
 	value: string,
 ): string {
-	const firstTable = toml.search(/^\[/m);
+	const firstTable = toml.search(/^[ \t]*\[/m);
 	const head = firstTable < 0 ? toml : toml.slice(0, firstTable);
 	const tail = firstTable < 0 ? "" : toml.slice(firstTable);
 	const line = `${key} = ${tomlString(value)}`;
-	const pattern = new RegExp(`^${key}\\s*=.*$`, "m");
+	const pattern = new RegExp(`^[ \\t]*${key}[ \\t]*=.*$`, "m");
 	if (pattern.test(head)) return `${head.replace(pattern, line)}${tail}`;
 	return `${line}\n${head}${tail}`;
 }
@@ -38,14 +44,15 @@ export function setTopLevelKey(
 /** `[build] dev_store_url`, replaced or added. */
 export function setDevStoreUrl(toml: string, value: string): string {
 	const line = `dev_store_url = ${tomlString(value)}`;
-	const build = /^\[build\][^\S\n]*$/m.exec(toml);
+	const build = /^[ \t]*\[build\][ \t]*(?:#.*)?$/m.exec(toml);
 	if (!build) return `${toml.replace(/\n*$/, "\n")}\n[build]\n${line}\n`;
 	const start = build.index + build[0].length;
-	const next = toml.slice(start).search(/^\[/m);
+	const next = toml.slice(start).search(/^[ \t]*\[/m);
 	const end = next < 0 ? toml.length : start + next;
 	const section = toml.slice(start, end);
-	const updated = /^dev_store_url\s*=.*$/m.test(section)
-		? section.replace(/^dev_store_url\s*=.*$/m, line)
+	const key = /^[ \t]*dev_store_url[ \t]*=.*$/m;
+	const updated = key.test(section)
+		? section.replace(key, line)
 		: `\n${line}${section}`;
 	return `${toml.slice(0, start)}${updated}${toml.slice(end)}`;
 }
@@ -65,6 +72,11 @@ function devStoreUrl(toml: string): string | undefined {
 /**
  * The target's new content: the template with the linked app's `client_id`
  * and `name`, keeping the target's own `dev_store_url`.
+ *
+ * The edits are line-based, so the result is checked: it must parse to
+ * exactly the template plus those three values. Anything the edits cannot
+ * express (a multi-line string, a dotted `build.dev_store_url`) throws
+ * instead of writing a broken or different toml.
  */
 export function mergeLinkedConfig(input: {
 	template: string;
@@ -74,7 +86,27 @@ export function mergeLinkedConfig(input: {
 	let toml = setTopLevelKey(input.template, "client_id", input.linked.clientId);
 	if (input.linked.name) toml = setTopLevelKey(toml, "name", input.linked.name);
 	const store = input.existing ? devStoreUrl(input.existing) : undefined;
-	return store ? setDevStoreUrl(toml, store) : toml;
+	if (store) toml = setDevStoreUrl(toml, store);
+
+	const expected = Bun.TOML.parse(input.template) as Record<string, unknown>;
+	expected.client_id = input.linked.clientId;
+	if (input.linked.name) expected.name = input.linked.name;
+	if (store)
+		expected.build = {
+			...(expected.build as Record<string, unknown> | undefined),
+			dev_store_url: store,
+		};
+	let actual: unknown;
+	try {
+		actual = Bun.TOML.parse(toml);
+	} catch {
+		actual = undefined;
+	}
+	if (!Bun.deepEquals(actual, expected))
+		throw new Error(
+			`could not edit the toml safely. Set client_id = ${tomlString(input.linked.clientId)}${input.linked.name ? ` and name = ${tomlString(input.linked.name)}` : ""} in it by hand.`,
+		);
+	return toml;
 }
 
 /**
@@ -118,7 +150,10 @@ export function linkShopifyApp(
 			linked: { clientId, name: topLevelValue(linked, "name") },
 			existing: before,
 		});
-		writeFileSync(path, after);
+		// Atomically: a half-written toml is worse than the old one.
+		const temporary = `${path}.${process.pid}.tmp`;
+		writeFileSync(temporary, after);
+		renameSync(temporary, path);
 		return { path, before, after };
 	} finally {
 		rmSync(scratch, { force: true });

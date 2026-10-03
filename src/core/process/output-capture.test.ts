@@ -92,3 +92,24 @@ describe("createOutputCaptureScanner", () => {
 		]);
 	});
 });
+
+describe("hyperlinks split across chunks", () => {
+	it("reads the target wherever a pty cuts the link, BEL or ST terminated", () => {
+		for (const end of ["\u0007", "\u001b\\"]) {
+			const line = `Preview URL: \u001b]8;;https://a.example/p${end}Open\u001b]8;;${end}\n`;
+			for (let cut = 1; cut < line.length; cut++) {
+				const scanner = createOutputCaptureScanner({
+					preview: { pattern: /Preview URL:\s*(https?:\/\/\S+)/, as: "value" },
+				});
+				const found = [
+					...scanner.push(line.slice(0, cut)),
+					...scanner.push(line.slice(cut)),
+				];
+				expect({ cut, value: found[0]?.value }).toEqual({
+					cut,
+					value: "https://a.example/p",
+				});
+			}
+		}
+	});
+});

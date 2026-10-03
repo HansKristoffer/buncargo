@@ -73,6 +73,41 @@ describe("AppScreen", () => {
 			"c\r\n",
 		);
 		expect(lines.slice(30)).toEqual(["ready", "a", "b", "c"]);
+		// Vite's clear also drops the scrollback: rows renumber under us.
+		await feed(
+			screen,
+			"\u001b[2J\u001b[3J\u001b[H",
+			"again\r\n",
+			"x\r\n",
+			"y\r\n",
+			"z\r\n",
+		);
+		expect(lines.slice(34)).toEqual(["again", "x", "y", "z"]);
+		screen.dispose();
+	});
+
+	it("joins a wrapped line that arrives in two chunks", async () => {
+		const lines: string[] = [];
+		const screen = new AppScreen(10, 5, (line) => lines.push(line));
+		await feed(screen, "0123456789abcdef", "ghijkl\r\n", "next\r\n");
+		expect(lines).toEqual(["0123456789abcdefghijkl", "next"]);
+		screen.dispose();
+	});
+
+	it("keeps feeding after a burst longer than the scrollback", async () => {
+		const lines: string[] = [];
+		const screen = new AppScreen(40, 5, (line) => lines.push(line));
+		const block = (from: number, count: number) =>
+			Array.from({ length: count }, (_, i) => `line ${from + i}\r\n`).join("");
+		await feed(screen, block(0, 5000));
+		// One chunk that trims away everything the screen had committed.
+		await feed(screen, block(5000, 15_000));
+		await feed(screen, block(20_000, 5000));
+		// The burst's head is gone from the buffer; the rest is all there.
+		expect(lines).toContain("line 12000");
+		expect(lines.at(-1)).toBe("line 24999");
+		expect(new Set(lines).size).toBe(lines.length);
+		expect(lines.slice(-5000)[0]).toBe("line 20000");
 		screen.dispose();
 	});
 

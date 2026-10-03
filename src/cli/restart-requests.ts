@@ -3,6 +3,7 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -39,12 +40,16 @@ export function watchRestartRequests(
 	restart: (app: string) => void,
 ): () => void {
 	const file = requestFile(root, sessionId);
+	const taken = `${file}.taken`;
 	const timer = setInterval(() => {
 		if (!existsSync(file)) return;
 		let names: string[] = [];
 		try {
-			names = readFileSync(file, "utf8").split("\n").filter(Boolean);
-			rmSync(file, { force: true });
+			// Moved aside before it is read: a request appended meanwhile lands
+			// in a new file for the next poll instead of being deleted unread.
+			renameSync(file, taken);
+			names = readFileSync(taken, "utf8").split("\n").filter(Boolean);
+			rmSync(taken, { force: true });
 		} catch {
 			return;
 		}

@@ -27,6 +27,8 @@ export interface OutputLine {
 	time: Date;
 	/** A run event about the app ("ready", "stopped (exit 1)"), not its output. */
 	event: boolean;
+	/** Already on the user's terminal (a stream-mode attached app): log it, do not print it. */
+	echoed?: boolean;
 	level?: "error" | "warn";
 }
 
@@ -76,7 +78,7 @@ export class RunOutput {
 	}
 
 	/** One complete line of an app's output. */
-	line(app: string, raw: string): void {
+	line(app: string, raw: string, options: { echoed?: boolean } = {}): void {
 		if (isBlankLogLine(raw)) return;
 		const text = stripTerminalOutput(raw).replace(/\n/g, " ").trimEnd();
 		if (!text.trim()) return;
@@ -86,6 +88,7 @@ export class RunOutput {
 			text,
 			time: new Date(),
 			event: false,
+			echoed: options.echoed,
 			level: lineLevel(text),
 		});
 	}
@@ -137,6 +140,7 @@ export class RunOutput {
 		app: string,
 		stream: NodeJS.ReadableStream | null,
 		onText?: (text: string) => void,
+		options: { echoed?: boolean } = {},
 	): void {
 		if (!stream) return;
 		let buffer = "";
@@ -145,10 +149,10 @@ export class RunOutput {
 			buffer += String(chunk);
 			const lines = buffer.split("\n");
 			buffer = lines.pop() ?? "";
-			for (const line of lines) this.line(app, line);
+			for (const line of lines) this.line(app, line, options);
 		});
 		stream.on("end", () => {
-			if (buffer) this.line(app, buffer);
+			if (buffer) this.line(app, buffer, options);
 			buffer = "";
 		});
 	}
@@ -186,7 +190,7 @@ export function printStream(
 	let headerPrinted = false;
 	return output.subscribe({
 		line(line) {
-			if (line.event) return;
+			if (line.event || line.echoed) return;
 			if (!headerPrinted) {
 				headerPrinted = true;
 				write(`\n${formatSection("Logs")}\n`);
