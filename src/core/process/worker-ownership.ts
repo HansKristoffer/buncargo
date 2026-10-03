@@ -59,6 +59,13 @@ export async function spawnOwnedWorker(
 	name: string,
 	spawn: () => AppChild,
 	signal?: AbortSignal,
+	options: {
+		/**
+		 * Hand back a worker that exited before it could be claimed instead
+		 * of failing: a non-essential app's crash is the supervisor's to report.
+		 */
+		allowEarlyExit?: boolean;
+	} = {},
 ): Promise<AppChild> {
 	const path = pathFor(root);
 
@@ -106,7 +113,9 @@ export async function spawnOwnedWorker(
 				const identity = child.pid
 					? await readProcessIdentityAsync(child.pid, signal)
 					: undefined;
-				if (!child.pid || !identity || child.exitCode !== null) {
+				const exited = child.exitCode !== null || child.signalCode !== null;
+				if (exited && options.allowEarlyExit) return child;
+				if (!child.pid || !identity || exited) {
 					throw new Error(`Worker "${name}" exited before process startup`);
 				}
 
