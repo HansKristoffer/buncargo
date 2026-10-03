@@ -1,6 +1,13 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { execAsync } from "../../core/process";
+import { startFakeInfisical } from "../../core/secrets/fake-infisical.testing";
 import { parseCiArgs } from "./ci";
 import { withAppendedArgs } from "./exec";
+
+const cli = [process.execPath, resolve(import.meta.dir, "../bin.ts")];
 
 describe("parseCiArgs", () => {
 	it("splits options from the command at --", () => {
@@ -49,4 +56,39 @@ describe("withAppendedArgs", () => {
 			"$HOME",
 		]);
 	});
+});
+
+it("runs the command without fetching app or config-level secrets", async () => {
+	const infisical = startFakeInfisical();
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-ci-")));
+	writeFileSync(join(root, "package.json"), JSON.stringify({ workspaces: [] }));
+	writeFileSync(
+		join(root, "dev.config.ts"),
+		`export default {projectPrefix:'cisec',services:{},apps:{api:{port:3000,devCommand:false,secrets:{projectId:'api'}}},secrets:{projectId:'shared',siteUrl:${JSON.stringify(infisical.siteUrl)}}};`,
+	);
+
+	try {
+		const result = await execAsync(
+			[
+				...cli,
+				"ci",
+				"--migrate",
+				"--",
+				process.execPath,
+				"-e",
+				"console.log('ran')",
+			],
+			root,
+			{
+				HOME: infisical.home,
+				BUNCARGO_INFISICAL_PATH: infisical.cliPath,
+			},
+		);
+		expect(result.stdout).toContain("ran");
+		expect(infisical.requests).toEqual([]);
+		expect(infisical.cliCalls()).toEqual([]);
+	} finally {
+		infisical.stop();
+		rmSync(root, { recursive: true, force: true });
+	}
 });
