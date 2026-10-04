@@ -192,6 +192,8 @@ export interface DevEnvironment<
 	details(): Record<string, string>;
 	/** The config-level Infisical scope (`secrets`), when configured. */
 	readonly secrets?: SecretsScopeConfig | false;
+	/** `options.onAppFailure` from config, for `buncargo dev` */
+	readonly onAppFailure?: "keep-others" | "stop-run";
 	/** `tasks` from config, for `buncargo run` */
 	readonly tasks?: Readonly<
 		Record<

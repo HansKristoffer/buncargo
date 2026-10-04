@@ -173,6 +173,14 @@ export interface ContainerRuntimeAdapter {
 	/** Run a command in a service container; false for any failure. */
 	execInService(request: ExecInServiceRequest): Promise<boolean>;
 	/**
+	 * The argv that runs `command` in the service's container on the caller's
+	 * own stdio (`-i`, plus `-t` for a terminal), for `buncargo sql`. The
+	 * caller spawns it; undefined when the service has no running container.
+	 */
+	interactiveExecArgv(
+		request: Omit<ExecInServiceRequest, "timeoutMs"> & { tty: boolean },
+	): Promise<string[] | undefined>;
+	/**
 	 * State and recent output for one service, or undefined when the runtime
 	 * has no container for it. Never throws: this only enriches diagnostics.
 	 */

@@ -1,7 +1,9 @@
+import { findMonorepoRoot } from "../../core/ports";
 import { askChoice, isInteractive } from "../../core/prompt";
 import { isCI } from "../../core/runtime-flags";
 import { loadDevEnv } from "../../loader";
 import type { AnyDevEnvironment, CheckContext, SetupCheck } from "../../types";
+import { writeAgentsBlock } from "../agents-guide";
 import {
 	type CheckResult,
 	describeCheckFailures,
@@ -30,10 +32,16 @@ const FLAGS = {
 		kind: "boolean",
 		description: "Run every fix without asking (implied in CI)",
 	},
+	agents: {
+		name: "--agents",
+		kind: "boolean",
+		description:
+			"Add or update the buncargo block in AGENTS.md (pointing at `help agents`), then exit",
+	},
 } as const;
 
 export const SETUP_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo setup [--yes]",
+	usage: "buncargo setup [--yes] [--agents]",
 	flags: Object.values(FLAGS),
 	examples: [
 		{
@@ -93,6 +101,13 @@ export async function handleSetup(args: string[]): Promise<number> {
 			[`Unexpected argument: ${unknown.join(" ")}`],
 			"setup",
 		);
+	}
+
+	if (readBooleanFlag(args, FLAGS.agents)) {
+		const { path, changed } = writeAgentsBlock(findMonorepoRoot());
+		if (changed) log.done(`Updated the buncargo block in ${path}`);
+		else log.done(`${path} is up to date`);
+		return 0;
 	}
 
 	const env = (await loadDevEnv({ readOnly: true })) as AnyDevEnvironment;

@@ -82,11 +82,11 @@ it("setup only reports without a terminal, and fixes with --yes", async () => {
 	const result = await buncargo(root, "setup", "--yes");
 	expect(result.exitCode).toBe(0);
 	expect(existsSync(join(root, "marker"))).toBe(true);
-	// The core check's fix, alongside the config's.
+	// The core checks' fixes, alongside the config's.
 	expect(readFileSync(join(root, ".gitignore"), "utf8")).toContain(
 		".buncargo/",
 	);
-	expect(result.stdout).toContain("All 2 checks pass.");
+	expect(result.stdout).toContain("All 3 checks pass.");
 
 	// Idempotent: a ready checkout changes nothing.
 	expect((await buncargo(root, "setup")).exitCode).toBe(0);

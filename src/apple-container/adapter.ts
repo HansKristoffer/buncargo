@@ -8,7 +8,11 @@ import type {
 	ServiceDiagnosisRequest,
 } from "../container-runtime/types";
 import type { AppleContainerCli } from "./cli";
-import { createAppleContainerCli, runAppleAsync } from "./cli";
+import {
+	APPLE_CONTAINER_COMMAND,
+	createAppleContainerCli,
+	runAppleAsync,
+} from "./cli";
 import { appleDown, appleStopByIds, appleUp } from "./lifecycle";
 import {
 	ensureAppleContainerRunning,
@@ -71,6 +75,18 @@ export function appleContainerRuntimeAdapter(
 					{ signal: request.signal, timeoutMs: request.timeoutMs ?? 2000 },
 				)
 			).ok;
+		},
+
+		async interactiveExecArgv(request) {
+			// Apple names the container itself, so there is no lookup to make.
+			return [
+				options.binary ?? APPLE_CONTAINER_COMMAND,
+				"exec",
+				"-i",
+				...(request.tty ? ["-t"] : []),
+				containerNameFor(request.projectName, request.serviceName),
+				...request.command,
+			];
 		},
 
 		diagnoseService(request: ServiceDiagnosisRequest) {

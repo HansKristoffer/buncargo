@@ -63,6 +63,49 @@ export interface PortOwner {
 	command?: string;
 	cwd?: string;
 	container?: PortContainerOwner;
+	/**
+	 * Nothing this user can list holds the port, yet it cannot be bound: a
+	 * root process `lsof` hides, often a macOS service (Screen Sharing on
+	 * :5900, AirPlay on :5000/:7000). Never one of ours, so always foreign.
+	 */
+	unidentified?: true;
+}
+
+const BIND_PROBE_HOSTS = ["127.0.0.1", "0.0.0.0", "::"] as const;
+
+/**
+ * Whether this process could listen on `port` right now.
+ *
+ * Every address is tried because they do not block each other: a listener on
+ * `0.0.0.0` still lets `127.0.0.1` bind, and the reverse. Only `EADDRINUSE`
+ * counts; an address the machine lacks (IPv6 turned off) says nothing.
+ */
+export function canBindPort(port: number): boolean {
+	for (const hostname of BIND_PROBE_HOSTS) {
+		try {
+			Bun.listen({ hostname, port, socket: { data() {} } }).stop(true);
+		} catch (error) {
+			if ((error as { code?: string }).code === "EADDRINUSE") return false;
+		}
+	}
+	return true;
+}
+
+/**
+ * An owner lookup that also catches the holders it cannot see.
+ *
+ * The lookup answers from `lsof` and the container runtime. A port it reports
+ * free but that will not bind is held by something invisible to this user, and
+ * an app given that port drifts to the next one or never answers - which tore
+ * down healthy apps along with it. Binding is only tried when the lookup found
+ * nothing, so ports our own containers and processes hold are never touched.
+ */
+export function withBindProbe(
+	lookup: (port: number) => PortOwner | null,
+	canBind: (port: number) => boolean = canBindPort,
+): (port: number) => PortOwner | null {
+	return (port) =>
+		lookup(port) ?? (canBind(port) ? null : { pids: [], unidentified: true });
 }
 
 function parsePids(output: string): number[] {
@@ -582,6 +625,8 @@ export function formatPortOwner(
 		}
 		return base;
 	}
+	if (owner.unidentified)
+		return `port ${port} is held by an unidentified process (one this user cannot list, often a system service)`;
 	const command = owner.command ? ` (${owner.command})` : "";
 	const cwd = owner.cwd ? ` in ${owner.cwd}` : "";
 	const pid = owner.pids[0] ?? "unknown";

@@ -30,6 +30,12 @@ const FLAGS = {
 		kind: "boolean",
 		description: "Stop containers and remove volumes (fresh start)",
 	},
+	yes: {
+		name: "--yes",
+		kind: "boolean",
+		description:
+			"Confirm --reset or --down --all without a prompt (required without a terminal)",
+	},
 	migrate: {
 		name: "--migrate",
 		kind: "boolean",
@@ -71,6 +77,12 @@ const FLAGS = {
 		kind: "string",
 		valueHint: "=<app>",
 		description: "Give one app the TTY (overrides interactive: true)",
+	},
+	detach: {
+		name: "--detach",
+		kind: "boolean",
+		description:
+			"Run in the background; return once the apps are up (logs: buncargo logs)",
 	},
 	tui: {
 		name: "--tui",
@@ -200,6 +212,8 @@ export interface DevCliArgs {
 	down: boolean;
 	all: boolean;
 	reset: boolean;
+	/** `--yes`: the destructive modes run without asking. */
+	yes: boolean;
 	migrate: boolean;
 	seed: boolean;
 	upOnly: boolean;
@@ -213,6 +227,8 @@ export interface DevCliArgs {
 	attach: string | undefined;
 	/** `--tui`; still opt-in. Stream mode whenever stdout is not a terminal. */
 	tui: boolean;
+	/** `--detach`: the run goes to the background (`dev-detach.ts`). */
+	detach: boolean;
 	keepContainers: boolean;
 	/** Skip the prompt and stop apps already running elsewhere. */
 	takeover: boolean;
@@ -249,6 +265,13 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		errors.push("Choose either --tui or --no-tui, not both.");
 	if (bool(FLAGS.apps) && bool(FLAGS.profile))
 		errors.push("Choose either --apps or --profile, not both.");
+	if (
+		bool(FLAGS.detach) &&
+		(modes.some(Boolean) || bool(FLAGS.tui) || bool(FLAGS.attach))
+	)
+		errors.push(
+			"--detach runs the dev servers in the background; it cannot be combined with --tui, --attach or a one-shot mode.",
+		);
 
 	return {
 		flags,
@@ -259,6 +282,7 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		down: bool(FLAGS.down),
 		all: bool(FLAGS.all),
 		reset: bool(FLAGS.reset),
+		yes: bool(FLAGS.yes),
 		migrate,
 		seed,
 		upOnly,
@@ -269,6 +293,7 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		profile: str(FLAGS.profile),
 		attach: str(FLAGS.attach),
 		tui: bool(FLAGS.tui) && !bool(FLAGS.noTui),
+		detach: bool(FLAGS.detach),
 		keepContainers: bool(FLAGS.keepContainers),
 		takeover: bool(FLAGS.takeover),
 		watchdogTimeoutMinutes:
@@ -315,4 +340,22 @@ export function exitOnDevArgErrors(args: DevCliArgs): void {
 		printDevHelp();
 	}
 	process.exit(1);
+}
+
+/**
+ * What a mode that destroys someone else's state needs before it runs.
+ *
+ * `--reset` deletes the checkout's volumes and `--down --all` stops every
+ * other checkout's run. An agent running `dev --reset` to "fix" a migration
+ * wiped a developer's data, so without a terminal neither runs unless `--yes`
+ * says it was meant. CI is exempt: its containers are disposable and its
+ * pipelines already pass these flags.
+ */
+export function destructiveModeGate(
+	args: Pick<DevCliArgs, "reset" | "down" | "all" | "yes">,
+	context: { interactive: boolean; ci: boolean },
+): "run" | "confirm" | "refuse" {
+	const destructive = args.reset || (args.down && args.all);
+	if (!destructive || args.yes || context.ci) return "run";
+	return context.interactive ? "confirm" : "refuse";
 }

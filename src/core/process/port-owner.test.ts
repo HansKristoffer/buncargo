@@ -3,9 +3,12 @@ import { spawn } from "node:child_process";
 import { externalStackProjectName } from "../ports";
 import { isProcessAlive } from "./lifecycle";
 import {
+	canBindPort,
 	classifyPortOccupant,
 	formatPortOwner,
+	type PortOwner,
 	signalProcessTree,
+	withBindProbe,
 } from "./port-owner";
 
 describe("classifyPortOccupant", () => {
@@ -226,4 +229,49 @@ it("does not classify a neighboring checkout sharing a prefix as ours", () => {
 			{ root: "/repo", projectName: "demo" },
 		),
 	).toBe("kill");
+});
+
+describe("bind probe", () => {
+	it("reports a port held on any address", () => {
+		// Held on 0.0.0.0 only: 127.0.0.1 still binds, so only probing every
+		// address catches it.
+		const held = Bun.listen({
+			hostname: "0.0.0.0",
+			port: 0,
+			socket: { data() {} },
+		});
+		try {
+			expect(canBindPort(held.port)).toBe(false);
+		} finally {
+			held.stop(true);
+		}
+		expect(canBindPort(held.port)).toBe(true);
+	});
+
+	it("turns a hidden holder into a foreign, unidentified owner", () => {
+		const lookup = withBindProbe(
+			() => null,
+			(port) => port !== 8021,
+		);
+		expect(lookup(8020)).toBeNull();
+		const owner = lookup(8021);
+		expect(owner?.unidentified).toBe(true);
+		expect(
+			classifyPortOccupant(owner, { root: "/repo", projectName: "app" }),
+		).toBe("fail");
+		expect(formatPortOwner(8021, owner as PortOwner)).toContain(
+			"unidentified process",
+		);
+	});
+
+	it("never binds a port the lookup already explained", () => {
+		const ours = { pids: [1], cwd: "/repo" };
+		const lookup = withBindProbe(
+			() => ours,
+			() => {
+				throw new Error("must not probe");
+			},
+		);
+		expect(lookup(5432)).toBe(ours);
+	});
 });

@@ -30,6 +30,7 @@ import {
 	classifyPortOccupant,
 	formatPortOwner,
 	getPortOwner,
+	withBindProbe,
 } from "../../../core/process";
 import { isRouteOwnerAlive } from "../../../core/registry-file";
 import {
@@ -111,8 +112,11 @@ function checkPortOwnership(
 		(candidate) => candidate.name !== runtime.name,
 	);
 
+	const lookup = withBindProbe((port) =>
+		getPortOwner(port, { runtime, fallbackRuntimes }),
+	);
 	for (const [name, port] of Object.entries(env.ports)) {
-		const owner = getPortOwner(port, { runtime, fallbackRuntimes });
+		const owner = lookup(port);
 		if (!owner) continue;
 		const action = classifyPortOccupant(owner, {
 			root: env.root,

@@ -80,6 +80,9 @@ beforeAll(async () => {
 		filter: (path) =>
 			!/\/(\.buncargo|node_modules|assets)(\/|$)|\.generated\.ts$/.test(path),
 	});
+	// Stands for an installed checkout: the config imports buncargo by path,
+	// so nothing from the example's own dependencies is used.
+	mkdirSync(join(root, "node_modules"), { recursive: true });
 	// The copy is outside the repo, so its relative `../../src` has to point back.
 	const config = join(root, "dev.config.ts");
 	writeFileSync(

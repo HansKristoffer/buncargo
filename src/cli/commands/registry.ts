@@ -61,7 +61,11 @@ export const CLI_COMMANDS = [
 		usage: "ci [--migrate] [--seed] [-- <command>]",
 		summary: "Start services in CI, prepare them, run a command, tear down",
 	},
-	{ name: "env", usage: "env", summary: "Print environment info as JSON" },
+	{
+		name: "env",
+		usage: "env [--get <path>] [--export]",
+		summary: "Print environment info as JSON, including injected vars",
+	},
 	{
 		name: "url",
 		usage: "url [<name>]",
@@ -99,13 +103,18 @@ export const CLI_COMMANDS = [
 		summary: "Read app output from the current or last run",
 	},
 	{
+		name: "sql",
+		usage: "sql [<service>] [-c <query>] [--json]",
+		summary: "Open the database's own client in this checkout's container",
+	},
+	{
 		name: "sim",
 		usage: "sim [<app>]",
 		summary: "Open this checkout's Expo app in its own iOS simulator",
 	},
 	{
 		name: "status",
-		usage: "status",
+		usage: "status [--json]",
 		summary: "Show this project's containers, ports, and tunnels",
 	},
 	{
@@ -128,7 +137,11 @@ export const CLI_COMMANDS = [
 		usage: "bar <subcommand>",
 		summary: "The BuncargoBar menu bar app",
 	},
-	{ name: "help", usage: "help", summary: "Show this help message" },
+	{
+		name: "help",
+		usage: "help [agents]",
+		summary: "Show this help message, or the guide for AI agents",
+	},
 	{ name: "version", usage: "version", summary: "Show version" },
 ] as const satisfies readonly {
 	name: string;
@@ -151,7 +164,12 @@ export function resolveCommandName(
 export const COMMAND_HELP_EXTRAS: readonly CommandExample[] = [
 	{
 		command: "env --get <path>",
-		description: "Print one value (e.g. ports.api, urls.web)",
+		description: "Print one value (e.g. ports.api, urls.web, DATABASE_URL)",
+	},
+	{
+		command: "env --export",
+		description:
+			'Injected vars as shell exports: eval "$(buncargo env --export)"',
 	},
 	{
 		command: "doctor --fix",

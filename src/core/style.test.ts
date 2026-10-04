@@ -7,6 +7,7 @@ import {
 	isBlankLogLine,
 	prefixWidth,
 	scheduleLog,
+	supportsHyperlinks,
 } from "./style";
 
 function visible(text: string): string {
@@ -63,11 +64,28 @@ describe("formatHyperlink", () => {
 	it("wraps the full URI in OSC 8 so query strings stay one click target", () => {
 		const url =
 			"postgresql://postgres@127.0.0.1:5432/db?env=development&name=app";
-		const link = formatHyperlink(url, "open");
+		const link = formatHyperlink(url, "open", true);
 		expect(link.startsWith("\u001b]8;;")).toBe(true);
 		expect(link).toContain(url);
 		expect(link).toContain("open");
 		expect(link.endsWith("\u001b]8;;\u001b\\")).toBe(true);
+	});
+
+	it("prints plain text when nobody can click it", () => {
+		expect(formatHyperlink("http://a.test/", undefined, false)).toBe(
+			"http://a.test/",
+		);
+		expect(formatHyperlink("tableplus://x", "TablePlus", false)).toBe(
+			"TablePlus tableplus://x",
+		);
+	});
+});
+
+describe("supportsHyperlinks", () => {
+	it("needs a terminal and no NO_COLOR", () => {
+		expect(supportsHyperlinks({ isTTY: true }, {})).toBe(true);
+		expect(supportsHyperlinks({ isTTY: false }, {})).toBe(false);
+		expect(supportsHyperlinks({ isTTY: true }, { NO_COLOR: "1" })).toBe(false);
 	});
 });
 

@@ -503,3 +503,89 @@ function processExists(pid: number | undefined): boolean {
 		return false;
 	}
 }
+
+describe("startDevServers keepOthersOnFailure", () => {
+	const serve = (port: number) =>
+		`bun -e 'Bun.serve({ port: ${port}, fetch: () => new Response("ok") }); setInterval(() => {}, 60000)'`;
+	const silent = "bun -e 'setInterval(() => {}, 60000)'";
+
+	it("stops the app that never came up and keeps the healthy one", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-"));
+		const api = 46500 + Math.floor(Math.random() * 200);
+		const marketing = api + 1;
+		const output = new RunOutput();
+		output.terminalSize = () => ({ cols: 80, rows: 10 });
+		const failed: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					api: { port: api, devCommand: serve(api) },
+					marketing: {
+						port: marketing,
+						healthTimeout: 500,
+						devCommand: silent,
+					},
+				},
+				root,
+				{},
+				{ api, marketing },
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					keepOthersOnFailure: true,
+					onAppFailed: (name) => failed.push(name),
+				},
+			);
+			expect(failed).toEqual(["marketing"]);
+			expect(processExists(pids.api)).toBe(true);
+			for (
+				let i = 0;
+				i < 100 && output.states.get("marketing")?.state !== "failed";
+				i++
+			)
+				await Bun.sleep(20);
+			expect(output.states.get("marketing")?.state).toBe("failed");
+			expect(output.states.get("marketing")?.restartable).toBe(true);
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 15000);
+
+	it("still fails the run when nothing came up, or a later app waits on it", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-"));
+		const port = 46800 + Math.floor(Math.random() * 100);
+		try {
+			await expect(
+				startDevServers(
+					{ only: { port, healthTimeout: 300, devCommand: silent } },
+					root,
+					{},
+					{ only: port },
+					{ verbose: false, waitForExit: false, keepOthersOnFailure: true },
+				),
+			).rejects.toThrow("did not respond");
+
+			await expect(
+				startDevServers(
+					{
+						base: { port, healthTimeout: 300, devCommand: silent },
+						next: {
+							port: port + 1,
+							startAfter: ["base"],
+							devCommand: serve(port + 1),
+						},
+					},
+					root,
+					{},
+					{ base: port, next: port + 1 },
+					{ verbose: false, waitForExit: false, keepOthersOnFailure: true },
+				),
+			).rejects.toThrow("next starts after base");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 15000);
+});

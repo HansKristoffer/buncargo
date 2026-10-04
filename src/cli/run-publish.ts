@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { preferredAppUrl } from "../core/app-url";
+import { appEntryPath, preferredAppUrl } from "../core/app-url";
 import type { CapturedValue } from "../core/process/output-capture";
 import { readProcessIdentitiesAsync } from "../core/process-identity";
 import {
@@ -185,6 +185,7 @@ function appEntries(
 						url: urls[name] ?? loopbackUrl,
 						loopbackUrl,
 						publicUrl: publicUrls[name],
+						entryPath: input.apps[name]?.entryPath,
 					},
 					env.hosts?.active ?? false,
 				),
@@ -461,7 +462,9 @@ export async function recordAppSpawn(
  */
 export async function recordAppUrls(
 	env: RunSession &
-		Pick<RunSource, "urls" | "loopbackUrls" | "publicUrls" | "hosts">,
+		Pick<RunSource, "urls" | "loopbackUrls" | "publicUrls" | "hosts"> & {
+			readonly apps?: object;
+		},
 	names: readonly string[],
 ): Promise<void> {
 	const read = (urls: object, name: string) =>
@@ -474,6 +477,7 @@ export async function recordAppUrls(
 				url: read(env.urls, name),
 				loopbackUrl: read(env.loopbackUrls, name),
 				publicUrl,
+				entryPath: appEntryPath(read(env.apps ?? {}, name)),
 			},
 			env.hosts?.active ?? false,
 		);

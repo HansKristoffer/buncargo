@@ -134,6 +134,7 @@ export function createDevEnvironment<
 			),
 		tasks: resolved.tasks,
 		profiles: resolved.profiles,
+		onAppFailure: resolved.options?.onAppFailure,
 
 		// Container management
 		start: lifecycle.start,

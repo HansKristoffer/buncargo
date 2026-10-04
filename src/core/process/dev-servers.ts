@@ -29,8 +29,17 @@ import { printStream, RunOutput } from "./run-output";
 
 export { stopDevServers } from "./app-supervision";
 
+import {
+	type DriftProbe,
+	systemDriftProbe,
+	watchPortDrift,
+} from "./port-drift";
 import { planSpawnOrder } from "./start-order";
 import { spawnOwnedWorker } from "./worker-ownership";
+
+function toError(reason: unknown): Error {
+	return reason instanceof Error ? reason : new Error(String(reason));
+}
 
 /**
  * Did this app stop because something asked it to?
@@ -185,6 +194,19 @@ export interface StartDevServersOptions {
 		code: number | null,
 		signal?: NodeJS.Signals | null,
 	) => void;
+	/**
+	 * An app that does not become ready is stopped and the others keep
+	 * running, unless a later app `startAfter`s it. Default: false, the run
+	 * ends - what `ci` and a library `start()` want. `buncargo dev` turns it on.
+	 */
+	keepOthersOnFailure?: boolean;
+	/** An app was stopped because it did not become ready (see above). */
+	onAppFailed?: (name: string, error: Error) => void;
+	/**
+	 * How to notice an app listening on another port than its own while it
+	 * starts (see `port-drift.ts`). `false` turns it off. Default: the system.
+	 */
+	portDrift?: DriftProbe | false;
 }
 
 function resolveAppEnv(
@@ -327,6 +349,8 @@ export async function startDevServers(
 	// seen, not when it is shown (that waits for the app's last screen), so
 	// no readiness check can report a dead process ready in between.
 	const exited = new Set<string>();
+	// Apps stopped because they never became ready, and why.
+	const readinessFailures = new Map<string, string>();
 
 	const session = new AppSupervision({
 		signal: options.signal,
@@ -338,18 +362,20 @@ export async function startDevServers(
 			sideChecks.get(name)?.abort();
 			if (!owner.controller.signal.aborted) {
 				// After the app's last screen, so its final words precede the verdict.
+				const failure = readinessFailures.get(name);
 				const report = () =>
 					output.state(name, {
-						state:
-							isDeliberateExit(code, signal) &&
-							!(
-								code === 0 &&
-								startable[name]?.kind === "worker" &&
-								!optional.has(name)
-							)
+						state: failure
+							? "failed"
+							: isDeliberateExit(code, signal) &&
+									!(
+										code === 0 &&
+										startable[name]?.kind === "worker" &&
+										!optional.has(name)
+									)
 								? "stopped"
 								: "failed",
-						detail: signal ? `signal ${signal}` : `exit ${code}`,
+						detail: failure ?? (signal ? `signal ${signal}` : `exit ${code}`),
 						restartable: optional.has(name),
 					});
 				const screen = output.screens.get(name);
@@ -380,6 +406,7 @@ export async function startDevServers(
 	// A replaced app is ready again the way it was the first time: health-
 	// checked on the side, so a failing restart never stalls the others.
 	const restartApp = async (name: string, reason?: string) => {
+		readinessFailures.delete(name);
 		sideChecks.get(name)?.abort();
 		output.state(name, { state: "starting" });
 		await session.restart(name, reason);
@@ -504,19 +531,55 @@ export async function startDevServers(
 		const ready = (name: string) => {
 			if (!signal.aborted) markReady(name);
 		};
-		if (waitForHealth)
-			return waitForHealth(wave, signal).then(() => {
-				for (const name of Object.keys(wave)) ready(name);
-			});
-		// Workers and `healthEndpoint: false` apps are ready once the wave is.
-		return waitForDevServers(wave, ports, {
-			verbose: verbose && !output.terminalSize,
-			productionBuild,
-			signal,
-			onAppReady: ready,
-		}).then(() => {
+		const health = waitForHealth
+			? waitForHealth(wave, signal)
+			: // Workers and `healthEndpoint: false` apps are ready once the wave is.
+				waitForDevServers(wave, ports, {
+					verbose: verbose && !output.terminalSize,
+					productionBuild,
+					signal,
+					onAppReady: ready,
+				});
+		return raceDrift(wave, health, signal).then(() => {
 			for (const name of Object.keys(wave)) ready(name);
 		});
+	}
+
+	// An app that drifted to another port fails now rather than when its
+	// health check times out.
+	const driftProbe =
+		options.portDrift === false
+			? undefined
+			: (options.portDrift ?? systemDriftProbe({ root, projectName }));
+	async function raceDrift(
+		wave: Record<string, AppConfig>,
+		health: Promise<void>,
+		signal: AbortSignal,
+	): Promise<void> {
+		if (!driftProbe) return health;
+		const targets = () =>
+			Object.entries(wave).flatMap(([name, config]) => {
+				const pid = pids[name];
+				const port = ports[name];
+				return config.kind === "worker" ||
+					config.healthEndpoint === false ||
+					pid === undefined ||
+					port === undefined ||
+					exited.has(name)
+					? []
+					: [{ name, pid, port }];
+			});
+		const done = new AbortController();
+		const drift = watchPortDrift(
+			targets,
+			driftProbe,
+			AbortSignal.any([signal, done.signal]),
+		);
+		try {
+			await Promise.race([health, drift.then(() => health)]);
+		} finally {
+			done.abort();
+		}
 	}
 
 	// A non-essential app's readiness is checked on the side, one check per
@@ -545,13 +608,82 @@ export async function startDevServers(
 		// the side, and its failing to come up is its own problem.
 		for (const name of Object.keys(wave).filter((name) => optional.has(name)))
 			checkOnTheSide(name);
-		await owner.race(
-			waitForWave(
-				Object.fromEntries(
-					Object.entries(wave).filter(([name]) => !optional.has(name)),
+		let essential = Object.fromEntries(
+			Object.entries(wave).filter(([name]) => !optional.has(name)),
+		);
+		if (options.keepOthersOnFailure)
+			essential = await spareHealthyApps(essential);
+		await owner.race(waitForWave(essential));
+	}
+
+	/**
+	 * Wait for each app on its own, so one that never comes up is named,
+	 * stopped and parked while the rest of the wave carries on. Returns the
+	 * apps that came up, for the wave's usual readiness wait.
+	 */
+	async function spareHealthyApps(
+		wave: Record<string, AppConfig>,
+	): Promise<Record<string, AppConfig>> {
+		const signal = owner.controller.signal;
+		const results = await owner.race(
+			Promise.allSettled(
+				Object.entries(wave).map(([name, config]) =>
+					raceDrift(
+						{ [name]: config },
+						waitForDevServers({ [name]: config }, ports, {
+							verbose: false,
+							logReady: false,
+							productionBuild,
+							signal,
+						}),
+						signal,
+					),
 				),
 			),
 		);
+		signal.throwIfAborted();
+
+		const healthy: Record<string, AppConfig> = {};
+		const failed: [string, Error][] = [];
+		for (const [index, [name, config]] of Object.entries(wave).entries()) {
+			const result = results[index];
+			if (result?.status === "fulfilled") healthy[name] = config;
+			else failed.push([name, toError(result?.reason)]);
+		}
+		if (failed.length === 0) return healthy;
+
+		// Decided before anything is parked, so a run that is about to fail
+		// never reports that "the rest keeps going".
+		for (const [name, error] of failed) {
+			// Something waiting for it to be healthy cannot start without it.
+			const dependents = Object.entries(startable)
+				.filter(([, app]) => app.startAfter?.includes(name))
+				.map(([dependent]) => dependent);
+			if (dependents.length > 0)
+				throw new Error(
+					`${error.message} (${dependents.join(", ")} start${dependents.length === 1 ? "s" : ""} after ${name})`,
+				);
+		}
+		// Nothing left running is a failed run, not one quietly waiting on
+		// restarts nobody will ask for.
+		const down = new Set([
+			...readinessFailures.keys(),
+			...exited,
+			...failed.map(([name]) => name),
+		]);
+		if (Object.keys(startable).every((name) => down.has(name)))
+			throw failed[0]?.[1];
+
+		for (const [name, error] of failed) await parkFailedApp(name, error);
+		return healthy;
+	}
+
+	/** Its row (stream or TUI) says it failed and how to restart it. */
+	async function parkFailedApp(name: string, error: Error): Promise<void> {
+		readinessFailures.set(name, error.message);
+		optional.add(name);
+		await session.stopApp(name);
+		options.onAppFailed?.(name, error);
 	}
 	try {
 		// Each layer is healthy before the next spawns: that is `startAfter`.

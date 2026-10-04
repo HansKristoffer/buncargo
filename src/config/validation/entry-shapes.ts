@@ -87,6 +87,13 @@ export function validateEntryShapes(
 				}
 				fields(entry, `${path}.`, ["prebuild", "exclusive"], "string");
 				check(
+					entry.entryPath,
+					`${path}.entryPath`,
+					typeof entry.entryPath === "string" &&
+						entry.entryPath.startsWith("/"),
+					'a path starting with "/"',
+				);
+				check(
 					entry.actions,
 					`${path}.actions`,
 					Array.isArray(entry.actions) &&
