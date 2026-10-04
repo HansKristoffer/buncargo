@@ -75,8 +75,10 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	prebuild?: string;
 	/**
 	 * A resource only one run on the machine may use at a time, e.g.
-	 * `"shopify-app:<client_id>"`. A second run is refused (or, with
-	 * `--takeover`, stops the holder's app and takes the lease).
+	 * `"shopify-app:<client_id>"`. While another run holds it, a second run
+	 * skips the app when it is `essential: false` and refuses otherwise,
+	 * naming the holder's checkout; `--takeover` (or `y` at the prompt) stops
+	 * the holder's app and takes the lease.
 	 */
 	exclusive?: string;
 	/**

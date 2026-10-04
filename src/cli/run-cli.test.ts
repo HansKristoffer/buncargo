@@ -5,6 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { acquireLease, releaseLeases } from "../core/leases";
 import { resolveExposeTargets, stopPublicTunnels } from "../core/tunnel";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import { runCli } from "./run-cli";
@@ -614,6 +615,69 @@ it("takes over a reused API while also starting a new web app", async () => {
 				/* Already stopped by takeover. */
 			}
 		}
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+it("starts the rest of the run without an optional app whose lease another run holds", async () => {
+	const root = await mkdtemp(join(tmpdir(), "buncargo-lease-skip-"));
+	try {
+		// Another checkout's run, alive (this process), holds the lease.
+		await acquireLease({
+			key: "shopify-app:skip-test",
+			sessionId: "other-run",
+			app: "shopify",
+			projectName: "stub-cli",
+			root: "/elsewhere/checkout",
+			worktree: "checkout",
+		});
+		const probe = Bun.serve({ port: 0, fetch: () => new Response("probe") });
+		const apiPort = probe.port as number;
+		probe.stop(true);
+		const command = (name: string) =>
+			`bun -e 'await Bun.write("${name}-started", "yes")'`;
+		const env = createStubEnv({
+			root,
+			apps: {
+				api: {
+					port: apiPort,
+					devCommand: command("api"),
+					healthEndpoint: false,
+				},
+				shopify: {
+					kind: "worker",
+					devCommand: command("shopify"),
+					essential: false,
+					exclusive: "shopify-app:skip-test",
+				},
+			},
+		});
+		// Without a terminal, whatever runs the tests: a prompt would wait forever.
+		const stdinTTY = process.stdin.isTTY;
+		process.stdin.isTTY = false;
+		const warnings: string[] = [];
+		const realWarn = console.warn;
+		const realError = console.error;
+		console.warn = (...parts: unknown[]) => warnings.push(parts.join(" "));
+		console.error = (...parts: unknown[]) => warnings.push(parts.join(" "));
+		try {
+			await runCli(env, { args: ["--no-hosts"], watchdog: false });
+		} finally {
+			console.warn = realWarn;
+			console.error = realError;
+			process.stdin.isTTY = stdinTTY;
+		}
+
+		expect(await Bun.file(join(root, "api-started")).text()).toBe("yes");
+		expect(await Bun.file(join(root, "shopify-started")).exists()).toBe(false);
+		const said = warnings.join("\n");
+		expect(said).toContain(
+			"Not starting shopify: shopify-app:skip-test is held by another run.",
+		);
+		expect(said).toContain("Checkout: /elsewhere/checkout");
+		expect(said).toContain("buncargo dev --takeover");
+	} finally {
+		await releaseLeases("other-run");
 		await rm(root, { recursive: true, force: true });
 	}
 });

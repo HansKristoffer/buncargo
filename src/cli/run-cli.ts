@@ -49,7 +49,14 @@ import {
 	printDevHelp,
 } from "./dev-flags";
 import { activateNamedHosts, releaseNamedHosts } from "./dev-hosts";
-import { acquireAppLeases } from "./dev-leases";
+import {
+	acquireAppLeases,
+	describeLeaseRefusal,
+	leaseSkipLines,
+	leaseTakeoverHints,
+	type SkippedLeaseApp,
+	warnSkippedLeaseApps,
+} from "./dev-leases";
 import { openDevOutput } from "./dev-output";
 import {
 	createTunnelCoordinator,
@@ -104,8 +111,10 @@ function logSelectedAppsSummary(input: {
 	startNames: string[];
 	reusedNames: string[];
 	inferredReuseNames: string[];
+	skippedNames?: string[];
 }): void {
 	const { startNames, reusedNames, inferredReuseNames } = input;
+	const skippedNames = input.skippedNames ?? [];
 
 	log.line();
 	if (startNames.length > 0) {
@@ -117,6 +126,11 @@ function logSelectedAppsSummary(input: {
 	if (inferredReuseNames.length > 0) {
 		log.info(
 			`ℹ Inferred reuse from busy port: ${joinColoredNames(inferredReuseNames)}`,
+		);
+	}
+	if (skippedNames.length > 0) {
+		log.info(
+			`⏭️  Skipped (lease held by another run): ${joinColoredNames(skippedNames)}`,
 		);
 	}
 }
@@ -573,10 +587,41 @@ async function runDevFlow<
 
 	// Leases before anything spawns and before the run is published: a refused
 	// lease ends this run, and the registry should never show it as starting.
-	await acquireAppLeases(env, classifiedApps.startApps, {
-		signal,
-		takeover: args.takeover,
-	});
+	// A skipped one (an `essential: false` app, the Shopify CLI) leaves the
+	// spawn set here, so the summary, the banner and the registry describe the
+	// run that actually happens, and says why where it can be seen.
+	const { skipped: leaseSkips } = await acquireAppLeases(
+		env,
+		classifiedApps.startApps,
+		{ signal, takeover: args.takeover },
+	);
+	if (leaseSkips.length > 0) {
+		const skippedNames = new Set(leaseSkips.map((skip) => skip.app));
+		const startApps = Object.fromEntries(
+			Object.entries(classifiedApps.startApps).filter(
+				([name]) => !skippedNames.has(name),
+			),
+		);
+		classifiedApps = {
+			...classifiedApps,
+			startApps,
+			startNames: Object.keys(startApps),
+		};
+		nothingToSpawn = classifiedApps.startNames.length === 0;
+		if (
+			nothingToSpawn &&
+			classifiedApps.reusedNames.length === 0 &&
+			!tunnels.hasPendingTargets() &&
+			!connect?.active
+		) {
+			const [skip] = leaseSkips as [SkippedLeaseApp];
+			throw new CliError(
+				`Nothing to start: ${skip.key} is in use by another run.`,
+				[...describeLeaseRefusal(skip), ...leaseTakeoverHints(skip)],
+			);
+		}
+		warnSkippedLeaseApps(leaseSkips);
+	}
 
 	// Published here, after the takeover has been decided: before it, the app
 	// classification still describes a reuse the takeover is about to undo, and
@@ -596,7 +641,10 @@ async function runDevFlow<
 	// and a GitHub round trip never sits between the user and their servers.
 	void checkMenuBarAppUpdate();
 
-	logSelectedAppsSummary(classifiedApps);
+	logSelectedAppsSummary({
+		...classifiedApps,
+		skippedNames: leaseSkips.map((skip) => skip.app),
+	});
 
 	if (!args.exposeRequested) {
 		env.logInfo(undefined, undefined, {
@@ -629,6 +677,11 @@ async function runDevFlow<
 	try {
 		// After every prompt and the banner, which stay in the scrollback.
 		view.start();
+		// The TUI covers that scrollback: repeat why an app is missing in its
+		// Overview (events are not printed again in stream mode).
+		for (const skip of leaseSkips)
+			for (const line of leaseSkipLines(skip))
+				view.output.event(skip.app, line, "warn");
 		await startServerSession(
 			{
 				root: env.root,
