@@ -13,6 +13,7 @@ import {
 	createPortOwnerSnapshot,
 	formatPortOwner,
 	type PortOwner,
+	withBindProbe,
 } from "./process";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
 import { portOffsetOverride } from "./runtime-flags";
@@ -313,7 +314,7 @@ export function resolvePortPlan(input: {
 	// read-only caller gets the lockfile back rather than a block reallocated
 	// around its own running services.
 	const lookupOwner = probeConflicts
-		? (input.getOwner ?? snapshotOwnerLookup(basePorts, runtime))
+		? (input.getOwner ?? withBindProbe(snapshotOwnerLookup(basePorts, runtime)))
 		: () => null;
 
 	const probed = (ports: Record<string, number>) =>

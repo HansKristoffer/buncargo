@@ -4,6 +4,8 @@ import { withSignal } from "../core/deadline";
 import { removeHostRoutes } from "../core/hosts";
 import { releaseLeases } from "../core/leases";
 import { isDeliberateExit } from "../core/process";
+import { askConfirm } from "../core/prompt";
+import { isCI } from "../core/runtime-flags";
 import { joinColoredNames } from "../core/style";
 import {
 	createNoopPhaseTimer,
@@ -41,6 +43,7 @@ import { allChecks } from "./core-checks";
 import { createDevConnect, type DevConnect } from "./dev-connect";
 import {
 	type DevCliArgs,
+	destructiveModeGate,
 	exitOnDevArgErrors,
 	parseDevArgs,
 	printDevHelp,
@@ -181,6 +184,16 @@ export async function runCli<
 
 	exitOnDevArgErrors(args);
 
+	if (args.detach) {
+		const { runDetached } = await import("./dev-detach");
+		process.exit(
+			await runDetached({
+				root: env.root,
+				expectApps: Object.keys(env.apps).length > 0,
+			}),
+		);
+	}
+
 	const controller = new AbortController();
 	let interruptCode: number | undefined;
 	const signals = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
@@ -263,6 +276,29 @@ async function teardown<
 	}
 }
 
+/** Ask, or refuse without a terminal, before `--reset` or `--down --all`. */
+async function confirmDestructiveMode(
+	env: { projectName: string },
+	args: DevCliArgs,
+): Promise<void> {
+	const gate = destructiveModeGate(args, {
+		interactive: isInteractive(),
+		ci: isCI(),
+	});
+	if (gate === "run") return;
+
+	const what = args.reset
+		? `--reset removes ${env.projectName}'s volumes, including its database.`
+		: "--down --all stops every buncargo environment on this machine, including other checkouts' runs.";
+	if (gate === "refuse") {
+		throw new CliError(`${what} Refusing without a terminal.`, [
+			"Pass --yes if that is really what you want.",
+		]);
+	}
+	if (!(await askConfirm([`  ${what}`, "  Continue? [y/N]"])))
+		throw new CliError("Cancelled.");
+}
+
 /**
  * The dev command flow. Returns an exit code for the one-shot modes and
  * `undefined` when the caller should simply return.
@@ -292,6 +328,8 @@ async function runDevFlow<
 		await teardown(env, tunnels, connect);
 		return code;
 	}
+
+	await confirmDestructiveMode(env, args);
 
 	if (args.down && args.all) {
 		const { stopAllBuncargoEnvironments } = await import("./commands/inspect");
@@ -650,6 +688,12 @@ async function runDevFlow<
 				},
 				waitForHealth: async (apps) => {
 					await markApps(env, Object.keys(apps), "ready");
+				},
+				// A developer's other apps should not go down with one that
+				// never came up; `ci` and library starts keep failing the run.
+				keepOthersOnFailure: env.onAppFailure !== "stop-run",
+				onAppFailed: (name) => {
+					void markApps(env, [name], "failed");
 				},
 				// Deliberately not awaited: the registry is a status file, and
 				// nothing about starting servers may wait on it.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { formatEnvDotValue, getEnvDotPath } from "./runtime";
+import { formatEnvDotValue, formatEnvExports, getEnvDotPath } from "./runtime";
 
 describe("getEnvDotPath", () => {
 	const snapshot = {
@@ -27,5 +27,13 @@ describe("formatEnvDotValue", () => {
 			"http://localhost:3000",
 		);
 		expect(formatEnvDotValue({ api: 3000 })).toBe('{"api":3000}');
+	});
+});
+
+describe("formatEnvExports", () => {
+	it("quotes values so a shell expands nothing", () => {
+		expect(
+			formatEnvExports({ DATABASE_URL: "postgres://a$b@x/db", NOTE: "it's" }),
+		).toBe("export DATABASE_URL='postgres://a$b@x/db'\nexport NOTE='it'\\''s'");
 	});
 });

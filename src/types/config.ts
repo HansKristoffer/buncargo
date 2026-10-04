@@ -59,6 +59,14 @@ export interface DevOptions<
 	/** Default verbose setting for all operations. Default: true */
 	verbose?: boolean;
 	/**
+	 * What `buncargo dev` does when an app does not become ready.
+	 * `"keep-others"` (default) stops that app and keeps the rest running, unless
+	 * an app `startAfter`s it; `buncargo restart <app>` tries it again.
+	 * `"stop-run"` ends the run, which is what `ci` and a library `start()`
+	 * always do.
+	 */
+	onAppFailure?: "keep-others" | "stop-run";
+	/**
 	 * The app this project is "about": the one a menu bar Open button, the bare
 	 * named hostname and any other "just show me the app" surface should pick.
 	 *

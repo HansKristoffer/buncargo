@@ -30,6 +30,7 @@ function stubRuntime(
 		up: async () => {},
 		down: async () => {},
 		execInService: async () => false,
+		interactiveExecArgv: async () => undefined,
 		diagnoseService: async () => {
 			onDiagnose?.();
 			return diagnosis;

@@ -8,6 +8,7 @@ bunx buncargo dev --apps=api,web  # Named apps plus transitive requiredApps
 bunx buncargo dev --profile=full  # The apps of profiles.full
 bunx buncargo dev --tui           # Sidebar of apps, each in its own terminal
 bunx buncargo dev --no-tui        # Prefixed lines, even in a terminal
+bunx buncargo dev --detach        # In the background; returns once the apps are up
 bunx buncargo dev --attach=expoApp
 bunx buncargo dev --expose
 bunx buncargo dev --expose=api
@@ -17,6 +18,7 @@ bunx buncargo dev --seed
 bunx buncargo dev --down
 bunx buncargo dev --down --all    # Remove every buncargo env on this machine
 bunx buncargo dev --reset
+bunx buncargo dev --reset --yes   # Without a terminal, --reset and --down --all need --yes
 bunx buncargo dev --takeover        # Stop apps running elsewhere, run them here
 bunx buncargo dev --keep-containers
 bunx buncargo dev --watchdog-timeout=5
@@ -37,6 +39,10 @@ bunx buncargo logs                # Every app's output from the current or last 
 bunx buncargo logs shopify --errors -f --since=5m
 bunx buncargo sim                 # Open the Expo app in this checkout's own simulator
 bunx buncargo status
+bunx buncargo status --json       # Ports, containers, URLs and app states as one object
+bunx buncargo sql                 # psql (or clickhouse-client) in this checkout's container
+bunx buncargo sql -c "select count(*) from users" --json
+bunx buncargo sql redis -c "GET key"
 bunx buncargo doctor
 bunx buncargo doctor --fix
 bunx buncargo hosts install
@@ -49,6 +55,8 @@ bunx buncargo bar install         # Install the macOS menu bar app
 bunx buncargo bar status
 bunx buncargo env
 bunx buncargo env --get ports.api
+bunx buncargo env --get DATABASE_URL   # Any variable the apps get
+eval "$(bunx buncargo env --export)"   # All of them, as shell exports
 bunx buncargo url                 # Every URL this run knows, by name
 bunx buncargo open                # The primary app; or `open <name>` from `url`
 bunx buncargo open shopify previewUrl  # An app's captured URL (what its action key opens)
@@ -67,13 +75,23 @@ bunx buncargo expo sim            # (`buncargo sim` still works)
 bunx buncargo run                 # List tasks
 bunx buncargo run db:seed -- --dry-run
 bunx buncargo setup               # Run the fix of every failing check
+bunx buncargo setup --agents      # Keep a buncargo block in AGENTS.md
 bunx buncargo ci --migrate --seed -- bun test
 bunx buncargo typecheck
 bunx buncargo help
+bunx buncargo help agents         # The guide for AI agents working in a checkout
 bunx buncargo version
 ```
 
-`buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`). `--get ports.api` prints one raw value for scripts.
+`buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`), including `vars`: the variables `exec`, tasks and the apps are given, without their Infisical secrets. `--get ports.api` prints one raw value for scripts, and a bare name (`--get DATABASE_URL`) reads from `vars`. `--export` prints `vars` as quoted `export` lines.
+
+`buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached.log` and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, 1 when one is not (the others keep running) or the run ended. Stop it with `buncargo stop --all --force` (`--force` because there is no terminal to confirm in). It is the way to run `dev` from an agent or a script.
+
+`buncargo sql [service]` runs the service's own client inside this checkout's container, with the credentials from the config: `psql` for Postgres, `clickhouse-client` for ClickHouse, `redis-cli` for Redis. Without a service it picks the first Postgres or ClickHouse one. `-c <query>` runs one query, and `--json` prints its rows as a JSON array (Postgres) or JSON lines (ClickHouse).
+
+Without a terminal, `dev --reset` (which deletes the checkout's volumes) and `dev --down --all` (which stops every checkout's run) refuse unless `--yes` is passed; in a terminal they ask first. CI is exempt.
+
+`buncargo help agents` prints a guide for AI agents working in a checkout, and `buncargo setup --agents` adds (or updates) a short block in the project's `AGENTS.md` that points at it.
 
 `buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own - that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and 2 in CI; override with `--concurrency=N` or `BUNCARGO_TYPECHECK_CONCURRENCY`. `--only=platform` (path or basename) checks one workspace. The config run generates `.buncargo/config-typecheck.tsconfig.json` and records durations in `.buncargo/typecheck-timings.json`; keep `.buncargo/` in `.gitignore`.
 
@@ -550,6 +568,19 @@ TUI or `buncargo restart <app>` starts it again without re-running anything
 else. It never holds startup up: it is health-checked on the side. In stream
 mode the run prints the app's last error lines and the restart command.
 
+### When an app does not come up
+
+In `buncargo dev`, an app that does not become ready is stopped and shown as
+failed, and the other apps keep running; `buncargo restart <app>` tries it
+again. The run still fails when nothing else is left, or when another app
+`startAfter`s the failed one. `options.onAppFailure: "stop-run"` ends the run
+instead, which is what `ci` and a library `start()` always do.
+
+An app that starts listening on a different port than its own while that port
+is held by something else (Astro and Vite without `strictPort` move to the next
+port) fails within a second or two, naming both ports and the holder, instead
+of waiting out its health timeout.
+
 ### Preflight
 
 `preflight: [{ name, apps?, run({ root, env, interactive }) }]` runs before the
@@ -617,9 +648,12 @@ BUNCARGO_PORT_OFFSET set?
           yes → re-verify ports still free or ours (provenance: lockfile)
           no / conflict → hash projectPrefix [+ worktree] [+ suffix]
                           probe every service and app port
-                          on a foreign owner, shift the whole block by 100
+                          on a foreign owner, or a port that will not bind,
+                          shift the whole block by 100
                           persist { version, projectName, root, offset, ports }
 ```
+
+A port nothing visible holds but that cannot be bound (a root process `lsof` hides from this user, often a macOS service such as Screen Sharing on `:5900`) counts as foreign; `doctor` reports it as held by an unidentified process.
 
 Offsets use a step of 100 in the 100–9000 range so `5432` becomes `5532` / `5632` instead of overlapping nearby defaults.
 
@@ -1027,6 +1061,7 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | `cwd` | `string` | repo root | Working directory relative to root |
 | `healthEndpoint` | `string \| false` | `"/"` | HTTP path to wait on. `false` skips the wait |
 | `healthTimeout` | `number` | `60000` (`120000` in CI) | App readiness timeout (ms) |
+| `entryPath` | `string` | `undefined` | Path people start at, e.g. `/app/`. Added to what `open`, `url`, the banner and BuncargoBar show; URL env vars stay origins |
 | `requiredServices` | `string[]` | `[]` | Service keys that must be up |
 | `requiredApps` | `string[]` | `[]` | Apps that must also start (transitive). Selection only: they are not ready first |
 | `startAfter` | `string[]` | `[]` | Spawn once these apps are healthy; also selects them |
@@ -1057,6 +1092,7 @@ Use `kind: "worker"` for a long-running process without a listener. Workers requ
 | `envFiles` | `(string \| { path, optional? })[]` | `[]` | Root dotenv input defaults; later files win, generated local values stay authoritative |
 | `envFile` | `boolean \| { path?, createFrom? }` | `false` | Sync a dotenv to the allocated ports. `true` means `.env` |
 | `verbose` | `boolean` | `true` | Default verbosity |
+| `onAppFailure` | `"keep-others" \| "stop-run"` | `"keep-others"` | What `buncargo dev` does when an app does not become ready. See [when an app does not come up](#when-an-app-does-not-come-up) |
 | `primaryApp` | `string` | inferred | The app this project is "about": the menu bar's Open button, and the default for `hosts.primaryApp` and `frontendApp`. Inferred from the dependency graph when unset |
 | `expoApiApp` | `string` | `"api"` | App key used by `getExpoApiUrl()`. Must match a configured app |
 | `frontendApp` | `string` | `primaryApp`, then `"platform"`, then `"web"` | App key used by `getFrontendPort()`. Must match a configured app |
@@ -1207,6 +1243,10 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `Docker is not running (…)` | Daemon down and auto-start failed/disabled | Start OrbStack/Docker/Colima, or drop `--no-docker-autostart` |
 | `port 5173 held by container gey-other-platform-1 (project gey-other)` | Foreign compose project owns the port | Stop the other env (`buncargo ls` / `dev --down --all`) or let allocation shift |
 | `port … held by process …` | Another process owns the port | Stop that process; own-repo orphans are killed automatically |
+| `port … is held by an unidentified process` | A process this user cannot list (often a macOS service) holds it | Run `dev` again: allocation moves to a free block |
+| `… listens on :8022, not its assigned :8021` | The app moved to the next port because its own was taken | Run `dev` again; set `strictPort` (Vite, Astro's `vite.server`) so it fails instead of moving |
+| `--reset removes …'s volumes … Refusing without a terminal` | `--reset` / `--down --all` from a script or agent | Pass `--yes` if that is really meant |
+| `Dependencies are installed (no node_modules)` | Fresh worktree | `bun install`, or `buncargo setup --yes` |
 | `Worker "…" is already running` | Library startup encountered an owned worker | Reuse it through the CLI or use `dev --takeover` |
 | `Apple container cannot verify finite job exit codes yet` | A job was selected with Apple | Use `--runtime=docker` |
 | `already listening on port … but failed health check` | Port busy but `healthEndpoint` failed | Fix the existing server or free the port |

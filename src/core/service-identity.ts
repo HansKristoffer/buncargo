@@ -28,7 +28,7 @@ export interface ServiceIdentity {
 /** Presets a GUI database client can open. */
 const DATABASE_PRESETS = new Set<DockerPresetName>(["postgres", "clickhouse"]);
 
-interface Credentials {
+export interface Credentials {
 	user: string;
 	password: string;
 	database: string;
@@ -67,6 +67,23 @@ export function tablePlusUrl(input: {
 	return url.toString();
 }
 
+/** The user, password and database a preset's container was created with. */
+export function serviceCredentials(
+	preset: DockerPresetName,
+	service: ServiceConfig | undefined,
+): Credentials | undefined {
+	const defaults = PRESET_CREDENTIALS[preset];
+	if (!defaults) return undefined;
+	const config = service as
+		| { database?: string; user?: string; password?: string }
+		| undefined;
+	return {
+		user: config?.user ?? defaults.user,
+		password: config?.password ?? defaults.password,
+		database: config?.database ?? defaults.database,
+	};
+}
+
 export function describeService(input: {
 	name: string;
 	service: ServiceConfig | undefined;
@@ -87,15 +104,12 @@ export function describeService(input: {
 		return identity;
 	}
 
-	const defaults = PRESET_CREDENTIALS[preset];
-	const config = service as
-		| { database?: string; user?: string; password?: string }
-		| undefined;
+	const credentials = serviceCredentials(preset, service);
 	identity.tablePlusUrl = tablePlusUrl({
-		user: config?.user ?? defaults?.user ?? "",
-		password: config?.password ?? defaults?.password ?? "",
+		user: credentials?.user ?? "",
+		password: credentials?.password ?? "",
 		port,
-		database: config?.database ?? defaults?.database ?? "",
+		database: credentials?.database ?? "",
 		name: projectName ? `${projectName}-${name}` : name,
 		// ClickHouse speaks its own scheme to TablePlus; everything else here
 		// is Postgres-compatible.

@@ -29,6 +29,12 @@
   "files": [
     "src/**/*.ts",
     "dist",
+    "readme.md",
+    "docs/reference.md",
+    "docs/integrations.md",
+    "docs/migration.md",
+    "docs/frp.md",
+    "docs/runtime-maintenance.md",
     "!src/**/*.test.ts",
     "!src/**/*.testing.ts"
   ],

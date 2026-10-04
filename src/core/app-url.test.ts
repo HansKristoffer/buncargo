@@ -13,3 +13,18 @@ it("prefers a public URL, then the named host only while hosts are active", () =
 	).toBe("https://x.trycloudflare.com");
 	expect(preferredAppUrl({}, true)).toBeUndefined();
 });
+
+it("opens an app at its entryPath, without touching its origin", () => {
+	expect(
+		preferredAppUrl(
+			{ loopbackUrl: "http://localhost:3000", entryPath: "/app/" },
+			false,
+		),
+	).toBe("http://localhost:3000/app/");
+	expect(
+		preferredAppUrl(
+			{ url: "https://web.app.localhost/", entryPath: "/app/" },
+			true,
+		),
+	).toBe("https://web.app.localhost/app/");
+});

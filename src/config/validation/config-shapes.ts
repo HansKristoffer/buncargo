@@ -183,6 +183,12 @@ export function validateSupplementShapes(
 		);
 		if (options.autoShutdown !== false)
 			duration(options.autoShutdown, "options.autoShutdown");
+		if (
+			options.onAppFailure !== undefined &&
+			options.onAppFailure !== "keep-others" &&
+			options.onAppFailure !== "stop-run"
+		)
+			errors.push('options.onAppFailure must be "keep-others" or "stop-run"');
 		for (const name of ["hosts", "envFile"]) {
 			const option = options[name];
 			if (option === undefined || typeof option === "boolean") continue;

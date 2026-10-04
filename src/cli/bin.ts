@@ -82,6 +82,10 @@ async function runCommand(
 			);
 			return;
 		case "help":
+			if (commandArgs[0] === "agents") {
+				console.log((await import("./agents-guide")).AGENTS_GUIDE);
+				return;
+			}
 			await (await import("./commands/help")).showHelp();
 			return;
 
@@ -130,6 +134,12 @@ async function runCommand(
 			).handleRestart(commandArgs);
 			return;
 
+		case "sql":
+			process.exitCode = await (await import("./commands/sql")).handleSql(
+				commandArgs,
+			);
+			return;
+
 		case "logs":
 			process.exitCode = await (await import("./commands/logs")).handleLogs(
 				commandArgs,
@@ -153,7 +163,7 @@ async function runCommand(
 		}
 
 		case "status":
-			await (await import("./commands/inspect")).handleStatus();
+			await (await import("./commands/inspect")).handleStatus(commandArgs);
 			return;
 
 		case "doctor":

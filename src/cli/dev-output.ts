@@ -1,4 +1,4 @@
-import { preferredAppUrl } from "../core/app-url";
+import { appEntryPath, preferredAppUrl } from "../core/app-url";
 import { AppLogs } from "../core/process/app-logs";
 import { printStream, RunOutput } from "../core/process/run-output";
 import { prefixWidth } from "../core/style";
@@ -15,6 +15,7 @@ export interface DevOutputSource {
 	loopbackUrls: object;
 	publicUrls: object;
 	hosts?: { active: boolean } | null;
+	apps?: object;
 }
 
 /**
@@ -107,6 +108,7 @@ export function appOpenUrl(
 			url: read(env.urls),
 			loopbackUrl: read(env.loopbackUrls),
 			publicUrl: read(env.publicUrls),
+			entryPath: appEntryPath(read(env.apps ?? {})),
 		},
 		env.hosts?.active ?? false,
 	);

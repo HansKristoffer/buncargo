@@ -8,7 +8,7 @@ import type {
 	ServiceDiagnosisRequest,
 } from "../container-runtime/types";
 import { diagnoseDockerService } from "./diagnose";
-import { execInDockerService } from "./exec";
+import { dockerInteractiveExecArgv, execInDockerService } from "./exec";
 import {
 	listDockerBuncargoContainers,
 	stopDockerContainersByIds,
@@ -69,6 +69,10 @@ export function dockerRuntimeAdapter(
 
 		execInService(request: ExecInServiceRequest) {
 			return execInDockerService(request, binary);
+		},
+
+		interactiveExecArgv(request) {
+			return dockerInteractiveExecArgv(request, binary);
 		},
 
 		diagnoseService(request: ServiceDiagnosisRequest) {

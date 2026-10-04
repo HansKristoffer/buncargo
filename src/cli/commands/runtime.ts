@@ -1,7 +1,7 @@
 import { isHostsForcedOff } from "../../core/runtime-flags";
 import { createNoopPhaseTimer, createPhaseTimer } from "../../core/timing";
 import { exitOnDevArgErrors, parseDevArgs, printDevHelp } from "../dev-flags";
-import { getFlagValue, splitCliArgs } from "../flags";
+import { getFlagValue, hasFlag, splitCliArgs } from "../flags";
 import * as log from "../log";
 import { parseTypecheckArgs, printTypecheckHelp } from "../typecheck-flags";
 
@@ -21,6 +21,15 @@ export function getEnvDotPath(
 		current = (current as Record<string, unknown>)[part];
 	}
 	return current;
+}
+
+/** `export NAME='value'` lines a shell can `eval`, quoted so nothing expands. */
+export function formatEnvExports(vars: Record<string, string>): string {
+	return Object.entries(vars)
+		.map(
+			([name, value]) => `export ${name}='${value.replaceAll("'", "'\\''")}'`,
+		)
+		.join("\n");
 }
 
 export function formatEnvDotValue(value: unknown): string {
@@ -163,13 +172,23 @@ export async function handleEnv(args: string[] = []): Promise<void> {
 					plan: env.hosts.plan,
 				}
 			: null,
+		// What `exec`, tasks and the apps are given (without their secrets),
+		// so `DATABASE_URL` can be read rather than reassembled from ports.
+		vars: env.buildEnvVars() as Record<string, string>,
 	};
+	if (hasFlag(args, "--export")) {
+		log.line(formatEnvExports(snapshot.vars));
+		return;
+	}
 	const getPath = getFlagValue(args, "--get");
 	if (getPath !== undefined) {
 		if (getPath === "") {
 			log.fail("Flag --get requires a dot path (e.g. ports.api).");
 		}
-		const value = getEnvDotPath(snapshot as Record<string, unknown>, getPath);
+		// A bare variable name (`--get DATABASE_URL`) reads from `vars`.
+		const value =
+			getEnvDotPath(snapshot as Record<string, unknown>, getPath) ??
+			(getPath.includes(".") ? undefined : snapshot.vars[getPath]);
 		if (value === undefined) {
 			log.fail(`Unknown env path: ${getPath}`);
 		}

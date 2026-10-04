@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { DEV_COMMAND_SPEC, parseDevArgs } from "./dev-flags";
+import {
+	DEV_COMMAND_SPEC,
+	destructiveModeGate,
+	parseDevArgs,
+} from "./dev-flags";
 
 describe("parseDevArgs", () => {
 	it("splits passthrough args at --", () => {
@@ -77,5 +81,32 @@ describe("parseDevArgs --profile", () => {
 		expect(parseDevArgs(["--profile=full", "--apps=api"]).errors).toContain(
 			"Choose either --apps or --profile, not both.",
 		);
+	});
+});
+
+describe("destructiveModeGate", () => {
+	const terminal = { interactive: true, ci: false };
+	const agent = { interactive: false, ci: false };
+
+	it("asks in a terminal and refuses without one", () => {
+		const reset = parseDevArgs(["--reset"]);
+		expect(destructiveModeGate(reset, terminal)).toBe("confirm");
+		expect(destructiveModeGate(reset, agent)).toBe("refuse");
+		expect(destructiveModeGate(parseDevArgs(["--down", "--all"]), agent)).toBe(
+			"refuse",
+		);
+	});
+
+	it("runs with --yes, in CI, and for a plain --down", () => {
+		expect(destructiveModeGate(parseDevArgs(["--reset", "--yes"]), agent)).toBe(
+			"run",
+		);
+		expect(
+			destructiveModeGate(parseDevArgs(["--reset"]), {
+				interactive: false,
+				ci: true,
+			}),
+		).toBe("run");
+		expect(destructiveModeGate(parseDevArgs(["--down"]), agent)).toBe("run");
 	});
 });

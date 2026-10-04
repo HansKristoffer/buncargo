@@ -137,6 +137,15 @@ export class AppSupervision {
 		);
 	}
 
+	/**
+	 * Stop one app without replacing it. Its exit is reported like any other,
+	 * so an app that is optional by then is parked rather than ending the run.
+	 */
+	async stopApp(name: string): Promise<void> {
+		const child = this.children.get(name);
+		if (child) await terminateOwnedProcess(child, this.options.shutdownGraceMs);
+	}
+
 	stop(): Promise<void> {
 		this.cleanup ??= (async () => {
 			this.owner.controller.abort(new RunInterrupted("Run stopped"));

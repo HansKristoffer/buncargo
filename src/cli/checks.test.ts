@@ -101,3 +101,33 @@ describe("checkFailureError", () => {
 		expect(describeCheckFailures([])).toEqual([]);
 	});
 });
+
+describe("dependencies check", () => {
+	it("fails a checkout that declares dependencies but never installed them", async () => {
+		const { mkdtemp, mkdir, rm, writeFile } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const { allChecks } = await import("./core-checks");
+		const root = await mkdtemp(join(tmpdir(), "buncargo-deps-"));
+		try {
+			await writeFile(
+				join(root, "package.json"),
+				JSON.stringify({ devDependencies: { typescript: "5" } }),
+			);
+			const env = { root, services: {}, apps: {} } as AnyDevEnvironment;
+			const deps = allChecks(env).filter(
+				(check) => check.name === "Dependencies are installed",
+			);
+			expect(deps).toHaveLength(1);
+			const context = { root, env };
+			expect((await runChecks(deps, context))[0]).toMatchObject({
+				ok: false,
+				detail: "no node_modules",
+			});
+			await mkdir(join(root, "node_modules"));
+			expect((await runChecks(deps, context))[0]?.ok).toBe(true);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+});

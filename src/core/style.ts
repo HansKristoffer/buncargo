@@ -39,8 +39,30 @@ export function formatUrl(url: string): string {
 	);
 }
 
-/** OSC 8 hyperlink so the full URI is clickable (query strings included). */
-export function formatHyperlink(url: string, label = url): string {
+/**
+ * Whether OSC 8 hyperlinks reach someone who can click them.
+ *
+ * A log file, a pipe or an agent's shell gets the escapes as noise, and the
+ * agents reading those logs spent turns stripping them out.
+ */
+export function supportsHyperlinks(
+	stream: { isTTY?: boolean } = process.stdout,
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return Boolean(stream.isTTY) && !env.NO_COLOR;
+}
+
+/**
+ * OSC 8 hyperlink so the full URI is clickable (query strings included).
+ * Without a terminal the URL is printed as text, beside the label when they
+ * differ, so nothing the link carried is lost.
+ */
+export function formatHyperlink(
+	url: string,
+	label = url,
+	enabled = supportsHyperlinks(),
+): string {
+	if (!enabled) return label === url ? url : `${label} ${url}`;
 	return `\u001b]8;;${url}\u001b\\${label}\u001b]8;;\u001b\\`;
 }
 

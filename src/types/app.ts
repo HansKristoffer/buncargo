@@ -69,6 +69,12 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	 * `--takeover`, stops the holder's app and takes the lease).
 	 */
 	exclusive?: string;
+	/**
+	 * Path people actually start at, e.g. `/app/` when `/` is a marketing
+	 * 404. Added to what `open`, `url`, the banner and BuncargoBar show; the
+	 * app's URL env vars stay origins.
+	 */
+	entryPath?: string;
 	/** Constant env vars injected only into this app's own processes */
 	staticEnv?: TStatic;
 	/**

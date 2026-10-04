@@ -1,4 +1,4 @@
-import { preferredAppUrl } from "../../core/app-url";
+import { appEntryPath, preferredAppUrl } from "../../core/app-url";
 import { openUrl } from "../../core/open-url";
 import {
 	type CommandSpec,
@@ -78,6 +78,7 @@ export function openTargets(env: OpenSource): Record<string, string> {
 					url: env.urls[app],
 					loopbackUrl: env.loopbackUrls?.[app],
 					publicUrl: env.publicUrls[app],
+					entryPath: appEntryPath(env.apps[app]),
 				},
 				env.hosts?.active ?? true,
 			),

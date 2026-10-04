@@ -1,4 +1,5 @@
 import pc from "picocolors";
+import { appEntryPath, withEntryPath } from "../core/app-url";
 import { describeService } from "../core/service-identity";
 import {
 	colorizeName,
@@ -145,7 +146,12 @@ export function formatEnvironmentBanner(
 			const port = ports[name];
 			const named = urls?.[name];
 			const localUrl =
-				named ?? (port === undefined ? "worker" : `http://localhost:${port}`);
+				port === undefined && !named
+					? "worker"
+					: (withEntryPath(
+							named ?? `http://localhost:${port}`,
+							appEntryPath(apps[name]),
+						) ?? "worker");
 			const extras: string[] = [];
 			if (named && port !== undefined && !named.includes(`:${port}`)) {
 				extras.push(pc.dim(`:${port}`));

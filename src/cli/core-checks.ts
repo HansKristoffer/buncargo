@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { containerRuntimeForEnv } from "../container-runtime";
 import {
 	describeSecretsError,
@@ -62,9 +62,45 @@ function appendToGitignore(root: string, lines: readonly string[]): void {
 	writeFileSync(path, `${current}${prefix}${lines.join("\n")}\n`);
 }
 
+/** Whether the root `package.json` declares anything to install. */
+function declaresDependencies(root: string): boolean {
+	try {
+		const manifest = JSON.parse(
+			readFileSync(join(root, "package.json"), "utf8"),
+		) as Record<string, unknown>;
+		return ["dependencies", "devDependencies", "workspaces"].some(
+			(field) =>
+				manifest[field] !== undefined &&
+				Object.keys(manifest[field] as object).length > 0,
+		);
+	} catch {
+		return false;
+	}
+}
+
+/** `node_modules` here or above: module resolution walks up, so a nested project may use its parent's. */
+function hasNodeModules(root: string): boolean {
+	for (let dir = root; ; dir = dirname(dir)) {
+		if (existsSync(join(dir, "node_modules"))) return true;
+		if (dirname(dir) === dir) return false;
+	}
+}
+
 function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 	const checks: SetupCheck[] = [];
 	const pinned = pinnedBunVersion(env.root);
+
+	// A fresh worktree has none, and every app then fails on its first import
+	// (`tsgo: command not found`) after the containers were already started.
+	// ponytail: presence only; a lockfile edit since the install is not caught.
+	if (declaresDependencies(env.root)) {
+		checks.push({
+			name: "Dependencies are installed",
+			check: ({ root }) =>
+				hasNodeModules(root) || { ok: false, detail: "no node_modules" },
+			fix: "bun install",
+		});
+	}
 
 	if (pinned) {
 		checks.push({

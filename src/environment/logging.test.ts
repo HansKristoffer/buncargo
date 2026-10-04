@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { formatBannerHeader, formatEnvironmentBanner } from "./logging";
 
 function visible(text: string): string {
@@ -44,6 +44,19 @@ describe("formatBannerHeader", () => {
 });
 
 describe("formatEnvironmentBanner", () => {
+	// The banner's links are for a terminal; under `bun test` stdout is a pipe.
+	const tty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+	beforeAll(() => {
+		Object.defineProperty(process.stdout, "isTTY", {
+			value: true,
+			configurable: true,
+		});
+	});
+	afterAll(() => {
+		if (tty) Object.defineProperty(process.stdout, "isTTY", tty);
+		else delete (process.stdout as { isTTY?: boolean }).isTTY;
+	});
+
 	it("keeps postgres and TablePlus on a compact two-line service row", () => {
 		const lines = visibleLines({
 			label: "Dev Environment",

@@ -10,6 +10,7 @@ export {
 export { CommandSignalError, type ExecResult, exec, execAsync } from "./exec";
 export { isProcessAlive, stopAllProcesses, stopProcess } from "./lifecycle";
 export {
+	canBindPort,
 	classifyPortOccupant,
 	collectProcessTree,
 	containerPortOwnerMap,
@@ -28,6 +29,7 @@ export {
 	type PortOwnerLookupOptions,
 	type PortOwnerSnapshot,
 	signalProcessTree,
+	withBindProbe,
 } from "./port-owner";
 export {
 	type ListenerSnapshot,
