@@ -517,11 +517,17 @@ URLs), not its live footer.
 | Mouse wheel, `PgUp` `PgDn` | Scroll the Overview or the selected app's scrollback |
 | `End` / `Home` | Back to the live output / the oldest line kept |
 | Click in the sidebar | Select the Overview or an app |
+| Drag in the pane | Select text; releasing copies it to the clipboard |
 | `q` | Quit the run |
 
-The TUI turns on mouse reporting for the wheel and clicks, so the terminal
-does not select text by itself while it runs: hold Option (iTerm, Terminal) or
-Shift (most other terminals) to select and copy.
+Drag in the main pane to select text: it is highlighted, and releasing the
+button copies it to the clipboard (`pbcopy`, `wl-copy` or `xclip`; over SSH or
+without one, OSC 52 through the terminal). The selection stays inside the
+pane, so no sidebar text comes along, and a line cut off with `…` copies in
+full when the selection reaches the pane's edge. This is the TUI's own
+selection, because the terminal cannot select while the TUI reports the mouse;
+Option-drag (iTerm, Terminal) or Shift-drag (most others) still selects
+natively.
 
 Keys an app declares in `actions` show in the footer once their capture has a
 value. Anything else that prints during the run (hooks, warnings) lands in the

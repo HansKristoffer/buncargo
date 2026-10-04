@@ -274,3 +274,111 @@ describe("RunTui interact mode", () => {
 		}
 	});
 });
+
+describe("RunTui selection", () => {
+	const press = (col: number, row: number) => `\u001b[<0;${col};${row}M`;
+	const drag = (col: number, row: number) => `\u001b[<32;${col};${row}M`;
+	const release = (col: number, row: number) => `\u001b[<0;${col};${row}m`;
+
+	it("copies a drag in the Overview as whole lines, and highlights it", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		try {
+			tui.start();
+			output.line("api", "first line");
+			output.line("api", `second ${"x".repeat(200)} end`);
+			// 80x20 terminal: sidebar 1-18, divider 19, the pane from column 20 and rows 2..19; the two
+			// lines sit on the last two pane rows.
+			terminal.stdin.write(press(20, 18) + drag(80, 19) + release(80, 19));
+			await Bun.sleep(80);
+			expect(copied).toHaveLength(1);
+			const [first, second] = (copied[0] ?? "").split("\n");
+			expect(first).toMatch(/^\d\d:\d\d:\d\d api {7}first line$/);
+			// Dragged to the edge: the cut-off line is copied in full.
+			expect(second).toEndWith(`${"x".repeat(200)} end`);
+
+			// Stopping mid-line copies only up to there.
+			terminal.stdin.write(press(20, 19) + drag(39, 19) + release(39, 19));
+			await Bun.sleep(80);
+			expect(copied[1]).toMatch(/^\d\d:\d\d:\d\d api {7}s$/);
+			expect(copied[1]?.length).toBe(20);
+			expect(terminal.writes.join("")).toContain("\u001b[7m");
+			expect(Bun.stripANSI(terminal.writes.join(""))).toContain(
+				"Copied 2 lines",
+			);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("copies from an app's own terminal", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		try {
+			tui.start();
+			const screen = output.screen("api");
+			await new Promise<void>((resolve) =>
+				screen.term.write("alpha beta\r\ngamma delta\r\n", resolve),
+			);
+			terminal.stdin.write(press(3, 4) + release(3, 4)); // select api
+			terminal.stdin.write(press(26, 2) + drag(24, 3) + release(24, 3));
+			await Bun.sleep(80);
+			expect(copied).toEqual(["beta\ngamma"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("treats a click without a drag as no selection", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		try {
+			tui.start();
+			output.line("api", "only line");
+			terminal.stdin.write(press(30, 19) + release(30, 19));
+			await Bun.sleep(80);
+			expect(copied).toEqual([]);
+		} finally {
+			tui.stop();
+		}
+	});
+});

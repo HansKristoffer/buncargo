@@ -116,6 +116,25 @@ export function renderSidebar(
 	return rows.slice(0, height);
 }
 
+/** An Overview row as plain text, uncut: what a selection of it copies. */
+export function overviewPlainLine(line: OutputLine, nameWidth: number): string {
+	return `${line.time.toTimeString().slice(0, 8)} ${line.app.padEnd(nameWidth)}  ${line.text}`;
+}
+
+/** A rendered row with columns `[from, to)` in reverse video (the selection). */
+export function highlightColumns(
+	row: string,
+	from: number,
+	to: number,
+	width: number,
+): string {
+	const plain = Bun.stripANSI(row);
+	return fit(
+		`${Bun.sliceAnsi(plain, 0, from)}\u001b[7m${Bun.sliceAnsi(plain, from, to)}\u001b[27m${Bun.sliceAnsi(plain, to)}`,
+		width,
+	);
+}
+
 /** Overview rows: every app's lines, interleaved by time, newest at the bottom. */
 export function renderOverview(
 	lines: readonly OutputLine[],

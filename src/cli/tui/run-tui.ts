@@ -4,8 +4,11 @@ import pc from "picocolors";
 import { openUrl } from "../../core/open-url";
 import type { OutputLine, RunOutput } from "../../core/process/run-output";
 import { colorizeName } from "../../core/style";
+import { copyToClipboard } from "./clipboard";
 import {
 	fit,
+	highlightColumns,
+	overviewPlainLine,
 	renderFooter,
 	renderOverview,
 	renderScreenRow,
@@ -46,6 +49,8 @@ export interface RunTuiOptions {
 	quit(): void;
 	stdin?: NodeJS.ReadStream;
 	stdout?: NodeJS.WriteStream;
+	/** Where a selection goes. Default: the system clipboard. */
+	copy?(text: string): "clipboard" | "terminal";
 }
 
 const SIDEBAR_MIN = 18;
@@ -63,12 +68,13 @@ const ESC = "\u001b";
 const LEAVE = "\u001d";
 
 /**
- * Mouse reporting (SGR encoding): the wheel scrolls the pane, a click selects
- * in the sidebar. While it is on the terminal does not select text itself;
- * Option-drag (iTerm, Terminal) or Shift-drag (most others) still does.
+ * Mouse reporting (SGR encoding, with drags): the wheel scrolls the pane, a
+ * click selects in the sidebar, and a drag in the pane selects text, which
+ * the TUI copies itself, the way tmux does: the terminal cannot select while
+ * it reports the mouse (Option- or Shift-drag still selects natively).
  */
-const MOUSE_ON = "\u001b[?1000h\u001b[?1006h";
-const MOUSE_OFF = "\u001b[?1000l\u001b[?1006l";
+const MOUSE_ON = "\u001b[?1000h\u001b[?1002h\u001b[?1006h";
+const MOUSE_OFF = "\u001b[?1000l\u001b[?1002l\u001b[?1006l";
 const ENTER_SCREEN = `\u001b[?1049h\u001b[?25l\u001b[H\u001b[2J${MOUSE_ON}`;
 const LEAVE_SCREEN = `${MOUSE_OFF}\u001b[0m\u001b[?25h\u001b[?1049l`;
 /** Lines one wheel notch scrolls. */
@@ -85,6 +91,13 @@ export class RunTui {
 	private interacting = false;
 	private errorsOnly = false;
 	private picker: number | undefined;
+	/** Text selected in a pane, in content rows and display columns. */
+	private selection?: {
+		pane: string;
+		anchor: { row: number; col: number };
+		head: { row: number; col: number };
+		dragging: boolean;
+	};
 	private message: string | undefined;
 	private scroll = new Map<string, number>();
 	private unread = new Set<string>();
@@ -276,10 +289,8 @@ export class RunTui {
 			// never asked for them must not receive them as typed input.
 			for (const match of data.matchAll(MOUSE)) this.mouse(match);
 			data = data.replace(MOUSE, "");
-			if (!data) {
-				this.invalidate();
-				return;
-			}
+			this.invalidate();
+			if (!data) return;
 			const leave = data === ESC ? 0 : data.indexOf(LEAVE);
 			const app = this.selectedApp();
 			const screen = app ? this.options.output.screens.get(app) : undefined;
@@ -297,15 +308,16 @@ export class RunTui {
 	}
 
 	private key(key: string): void {
-		this.message = undefined;
-		const app = this.selectedApp();
-		const count = this.options.apps.length + 1;
-
 		const mouse = [...key.matchAll(MOUSE)][0];
 		if (mouse) {
 			if (this.picker === undefined) this.mouse(mouse);
 			return;
 		}
+
+		this.message = undefined;
+		this.selection = undefined;
+		const app = this.selectedApp();
+		const count = this.options.apps.length + 1;
 
 		if (this.picker !== undefined) {
 			const targets = this.urlTargets();
@@ -390,28 +402,135 @@ export class RunTui {
 		if (action) this.open(action.url);
 	}
 
-	/** A mouse report: the wheel scrolls, a click in the sidebar selects. */
+	/**
+	 * A mouse report: the wheel scrolls, a click in the sidebar selects, and a
+	 * drag in the pane selects text, copied when the button is released.
+	 */
 	private mouse(match: RegExpMatchArray): void {
 		const button = Number(match[1]) & ~0b11100; // drop Shift/Alt/Ctrl
 		const column = Number(match[2]);
 		const row = Number(match[3]);
+		const pressed = match[4] === "M";
 		if (button === 64) this.scrollBy(WHEEL_LINES);
 		else if (button === 65) this.scrollBy(-WHEEL_LINES);
-		else if (
-			button === 0 &&
-			match[4] === "M" &&
-			!this.interacting &&
-			column <= this.sidebarWidth()
-		) {
-			// Row 1 is the header; then Overview, the rule, and the apps.
-			const entry = row - 2;
-			if (entry === 0) this.select(0);
-			else if (entry >= 2 && entry - 1 <= this.options.apps.length)
-				this.select(entry - 1);
+		else if (button === 0 && pressed) {
+			this.selection = undefined;
+			if (column <= this.sidebarWidth()) {
+				if (this.interacting) return;
+				// Row 1 is the header; then Overview, the rule, and the apps.
+				const entry = row - 2;
+				if (entry === 0) this.select(0);
+				else if (entry >= 2 && entry - 1 <= this.options.apps.length)
+					this.select(entry - 1);
+				return;
+			}
+			const point = this.pointAt(column, row);
+			if (point)
+				this.selection = {
+					pane: this.selectedApp() ?? "",
+					anchor: point,
+					head: point,
+					dragging: true,
+				};
+		} else if (button === 32 && pressed && this.selection?.dragging) {
+			const point = this.pointAt(column, row);
+			if (point) this.selection.head = point;
+		} else if (!pressed && this.selection?.dragging) {
+			const { anchor, head } = this.selection;
+			this.selection.dragging = false;
+			if (anchor.row === head.row && anchor.col === head.col)
+				this.selection = undefined;
+			else this.copySelection();
 		}
 	}
 
+	/** Where a mouse position falls in the shown pane's content, clamped to it. */
+	private pointAt(
+		column: number,
+		row: number,
+	): { row: number; col: number } | undefined {
+		const pane = this.paneSize();
+		const x = Math.min(
+			pane.cols - 1,
+			Math.max(0, column - this.sidebarWidth() - 2),
+		);
+		const y = Math.min(pane.rows - 1, Math.max(0, row - 2));
+		const content = this.contentRow(y, true);
+		return content === undefined ? undefined : { row: content, col: x };
+	}
+
+	/**
+	 * The content row on screen row `y` of the pane: an index into the
+	 * Overview's lines, or an absolute row of the app's buffer. `clamp` maps
+	 * the Overview's blank top rows onto its first line instead of nothing.
+	 */
+	private contentRow(y: number, clamp = false): number | undefined {
+		const app = this.selectedApp();
+		const pane = this.paneSize();
+		if (!app) {
+			const count = this.overviewLines().length;
+			if (count === 0) return undefined;
+			const end = Math.max(0, count - (this.scroll.get("") ?? 0));
+			const first = Math.max(0, end - pane.rows);
+			const index = first + y - (pane.rows - (end - first));
+			if (index >= first) return Math.min(index, count - 1);
+			return clamp ? first : undefined;
+		}
+		const screen = this.options.output.screens.get(app);
+		if (!screen) return undefined;
+		const buffer = screen.term.buffer.active;
+		return Math.max(0, buffer.baseY - (this.scroll.get(app) ?? 0)) + y;
+	}
+
+	/** The selection, first point first. */
+	private orderedSelection() {
+		if (!this.selection) return undefined;
+		const { anchor, head } = this.selection;
+		return anchor.row < head.row ||
+			(anchor.row === head.row && anchor.col <= head.col)
+			? { start: anchor, end: head }
+			: { start: head, end: anchor };
+	}
+
+	private copySelection(): void {
+		const range = this.orderedSelection();
+		if (!range) return;
+		const app = this.selectedApp();
+		const nameWidth = this.overviewNameWidth();
+		const lines = this.overviewLines();
+		const buffer = app
+			? this.options.output.screens.get(app)?.term.buffer.active
+			: undefined;
+		let text = "";
+		for (let row = range.start.row; row <= range.end.row; row++) {
+			// Whole lines, not what fits on screen: a cut-off line copies in full.
+			const full = app
+				? (buffer?.getLine(row)?.translateToString(true) ?? "")
+				: lines[row]
+					? overviewPlainLine(lines[row] as OutputLine, nameWidth)
+					: "";
+			const from = row === range.start.row ? range.start.col : 0;
+			// Ending at the pane's edge (where a cut-off line shows "…") means
+			// the rest of the line too.
+			const toEdge = range.end.col >= this.paneSize().cols - 1;
+			const piece =
+				row === range.end.row && !toEdge
+					? Bun.sliceAnsi(full, from, range.end.col + 1)
+					: Bun.sliceAnsi(full, from);
+			const wraps = app && buffer?.getLine(row + 1)?.isWrapped;
+			text += row === range.end.row || wraps ? piece : `${piece.trimEnd()}\n`;
+		}
+		text = text.trimEnd();
+		if (!text) return;
+		const where = this.options.copy
+			? this.options.copy(text)
+			: copyToClipboard(text, (sequence) => this.write(sequence));
+		const count = range.end.row - range.start.row + 1;
+		this.message = `Copied ${count === 1 ? `${text.length} characters` : `${count} lines`}${where === "terminal" ? " (through the terminal)" : ""}`;
+	}
+
 	private select(index: number): void {
+		if (index !== this.selected) this.selection = undefined;
 		this.selected = index;
 		const app = this.selectedApp();
 		if (app) this.unread.delete(app);
@@ -488,6 +607,10 @@ export class RunTui {
 				?.get(action.open);
 			return url ? [{ ...action, url }] : [];
 		});
+	}
+
+	private overviewNameWidth(): number {
+		return Math.max(8, ...this.options.apps.map((name) => name.length));
 	}
 
 	private overviewLines(): OutputLine[] {
@@ -578,12 +701,15 @@ export class RunTui {
 			return rows;
 		}
 		if (!app)
-			return renderOverview(this.overviewLines(), {
-				width: pane.cols,
-				height: pane.rows,
-				scroll: this.scroll.get("") ?? 0,
-				nameWidth: Math.max(8, ...this.options.apps.map((name) => name.length)),
-			});
+			return this.highlight(
+				renderOverview(this.overviewLines(), {
+					width: pane.cols,
+					height: pane.rows,
+					scroll: this.scroll.get("") ?? 0,
+					nameWidth: this.overviewNameWidth(),
+				}),
+				pane.cols,
+			);
 		const screen = output.screens.get(app);
 		if (!screen) {
 			const tail = output.tail(app).slice(-pane.rows);
@@ -594,9 +720,31 @@ export class RunTui {
 		const buffer = screen.term.buffer.active;
 		const start = Math.max(0, buffer.baseY - (this.scroll.get(app) ?? 0));
 		const cell = buffer.getNullCell();
-		return Array.from({ length: pane.rows }, (_, y) =>
-			renderScreenRow(buffer.getLine(start + y), pane.cols, cell),
+		return this.highlight(
+			Array.from({ length: pane.rows }, (_, y) =>
+				renderScreenRow(buffer.getLine(start + y), pane.cols, cell),
+			),
+			pane.cols,
 		);
+	}
+
+	/** The pane's rows with the selection, if it is in this pane, reversed. */
+	private highlight(rows: string[], width: number): string[] {
+		const range = this.orderedSelection();
+		if (!range || this.selection?.pane !== (this.selectedApp() ?? ""))
+			return rows;
+		return rows.map((row, y) => {
+			const content = this.contentRow(y);
+			if (
+				content === undefined ||
+				content < range.start.row ||
+				content > range.end.row
+			)
+				return row;
+			const from = content === range.start.row ? range.start.col : 0;
+			const to = content === range.end.row ? range.end.col + 1 : width;
+			return highlightColumns(row, from, to, width);
+		});
 	}
 
 	private header(app: string | undefined, side: number, cols: number): string {
