@@ -508,7 +508,7 @@ URLs), not its live footer.
 | --- | --- |
 | `↑` `↓` / `k` `j` | Select the Overview or an app |
 | `Enter` | Interact: keys go to the selected app (Shopify's `p`/`q`, Expo's menu) |
-| `Ctrl-]` | Leave interact mode |
+| `Esc` (or `Ctrl-]`) | Leave interact mode. An app therefore never receives a bare Esc; arrow keys and Alt combinations still reach it |
 | `Esc` | Back to the Overview |
 | `e` | Overview: errors and warnings only |
 | `o` | Open the app's URL (the Overview offers a picker) |

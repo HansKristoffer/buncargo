@@ -235,3 +235,42 @@ describe("RunTui mouse", () => {
 		}
 	});
 });
+
+describe("RunTui interact mode", () => {
+	it("leaves on a lone Esc or Ctrl-], and still sends escape sequences to the app", () => {
+		const forwarded: string[] = [];
+		const output = new RunOutput();
+		output.screen("api").input = (data: string) => void forwarded.push(data);
+		const terminal = fakeTerminal();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+		});
+		const state = tui as unknown as {
+			input(data: string): void;
+			interacting: boolean;
+		};
+		try {
+			tui.start();
+			state.input("j");
+			state.input("\r");
+			expect(state.interacting).toBe(true);
+			state.input("\u001b[A");
+			state.input("\u001bb");
+			state.input("\u001b");
+			expect(state.interacting).toBe(false);
+			expect(forwarded).toEqual(["\u001b[A", "\u001bb"]);
+
+			state.input("\r");
+			state.input("x\u001d");
+			expect(state.interacting).toBe(false);
+			expect(forwarded).toEqual(["\u001b[A", "\u001bb", "x"]);
+		} finally {
+			tui.stop();
+		}
+	});
+});

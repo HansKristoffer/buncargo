@@ -52,7 +52,14 @@ const SIDEBAR_MIN = 18;
 const SIDEBAR_MAX = 32;
 const FRAME_MS = 33;
 const OVERVIEW_LINES = 10_000;
-/** Ctrl-]: leaves interact mode. Apps do not use it themselves. */
+/**
+ * Leaving interact mode: Esc on its own, or Ctrl-] (what Turborepo and telnet
+ * use, but out of reach on layouts where `]` needs Option). A lone Esc arrives
+ * as a chunk of one byte; arrow keys, Alt combinations and mouse reports start
+ * with the same byte but arrive as longer sequences, so they still reach the
+ * app. The price: an app cannot be sent a bare Esc.
+ */
+const ESC = "\u001b";
 const LEAVE = "\u001d";
 
 /**
@@ -273,7 +280,7 @@ export class RunTui {
 				this.invalidate();
 				return;
 			}
-			const leave = data.indexOf(LEAVE);
+			const leave = data === ESC ? 0 : data.indexOf(LEAVE);
 			const app = this.selectedApp();
 			const screen = app ? this.options.output.screens.get(app) : undefined;
 			if (leave === -1) {
@@ -601,7 +608,7 @@ export class RunTui {
 		} else {
 			const url = this.options.urlFor(app);
 			const scroll = this.scroll.get(app) ?? 0;
-			title = ` ${colorizeName(app)}${url ? `  ${pc.cyan(url)}` : ""}${scroll > 0 ? pc.yellow(`  ↑ ${scroll} lines · End to follow`) : ""}${this.interacting ? pc.green("  keys go to the app · Ctrl-] to leave") : ""}`;
+			title = ` ${colorizeName(app)}${url ? `  ${pc.cyan(url)}` : ""}${scroll > 0 ? pc.yellow(`  ↑ ${scroll} lines · End to follow`) : ""}${this.interacting ? pc.green("  keys go to the app · Esc to leave") : ""}`;
 		}
 		return `${left}${pc.dim("│")}${fit(title, cols - side - 1)}`;
 	}
@@ -610,7 +617,7 @@ export class RunTui {
 		if (this.message) return fit(` ${this.message}`, cols);
 		if (this.interacting)
 			return fit(
-				` ${pc.green("●")} interacting with ${app} · ${pc.bold("Ctrl-]")} back to buncargo`,
+				` ${pc.green("●")} interacting with ${app} · ${pc.bold("Esc")} back to buncargo`,
 				cols,
 			);
 		const hints = app
