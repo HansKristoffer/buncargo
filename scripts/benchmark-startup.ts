@@ -141,7 +141,7 @@ if(args.includes('up')) {writeFileSync(${JSON.stringify(state)}, JSON.stringify(
 if(args[0]==='version') {console.log('benchmark'); process.exit(0);}
 if(args[0]==='ps' && args.join(' ').includes('buncargo.service') && existsSync(${JSON.stringify(state)})) {
 const env=JSON.parse(readFileSync(${JSON.stringify(state)},'utf8')); const hash=Object.entries(env).find(([key])=>key.startsWith('BUNCARGO_SERVICE_HASH_'))?.[1]??'';
-console.log(['postgres','running',env.BUNCARGO_STACK_HASH??'','Up (healthy)',hash].join('\\t'));}
+console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
 `,
 	);
 	writeFileSync(
