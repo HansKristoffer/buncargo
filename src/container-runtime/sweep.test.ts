@@ -1,5 +1,11 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readProcessIdentity } from "../core/process-identity";
@@ -311,6 +317,44 @@ describe("sweepOrphanedContainers", () => {
 		const empty = stubRuntime([]);
 		await sweepOrphanedContainers({ runtimes: [empty.runtime] });
 		expect(await loadRuns()).toEqual([]);
+	});
+
+	it("stops a released run's integration stack after its hold, and retires the entry", async () => {
+		// The Supabase CLI's containers carry none of our labels, so no listing
+		// finds them: the recorded command is the only way to stop them.
+		const marker = join(checkout, "stack-downs");
+		const stacks = [
+			{ name: "supabase", down: ["sh", "-c", `echo down >> '${marker}'`] },
+		];
+		await publishRun(
+			entry({
+				sessionId: "held",
+				projectName: "held",
+				releasedAt: new Date(Date.now() - 30_000).toISOString(),
+				idleTimeoutMs: 60_000,
+				stacks,
+			}),
+		);
+		await publishRun(
+			entry({
+				sessionId: "expired",
+				projectName: "expired",
+				releasedAt: new Date(Date.now() - 120_000).toISOString(),
+				idleTimeoutMs: 60_000,
+				stacks,
+			}),
+		);
+		const { runtime } = stubRuntime([]);
+
+		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
+
+		expect(result.swept).toEqual([
+			expect.objectContaining({ projectName: "expired", runtime: "supabase" }),
+		]);
+		expect(readFileSync(marker, "utf8")).toBe("down\n");
+		expect(result.pendingStacks).toBe(1);
+		expect((await loadRuns()).map((run) => run.sessionId)).toEqual(["held"]);
+		rmSync(marker);
 	});
 
 	it("keeps entries when no runtime can answer, rather than reading silence as gone", async () => {

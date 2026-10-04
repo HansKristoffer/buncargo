@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import {
 	availableContainerRuntimes,
 	getContainerRuntimeAdapter,
@@ -6,6 +8,7 @@ import {
 } from "../../container-runtime";
 import { findMonorepoRoot } from "../../core/ports";
 import {
+	execAsync,
 	isProcessAlive,
 	killPortOwner,
 	signalProcessTree,
@@ -246,6 +249,13 @@ export async function stopService(
 	run: RunEntry,
 	service: RunServiceEntry,
 ): Promise<number> {
+	// Its stack's CLI runs it as part of a whole; one piece cannot be stopped.
+	if (service.stack) {
+		log.error(
+			`${service.name} is part of the ${service.stack} stack; stop the run to stop it.`,
+		);
+		return STOP_EXIT.refused;
+	}
 	return withProjectLifecycleLock(run.projectName, run.root, () =>
 		stopServiceUnlocked(run, service),
 	);
@@ -371,6 +381,9 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 					projectName: run.projectName,
 					verbose: false,
 				});
+			const cwd = existsSync(run.root) ? run.root : homedir();
+			for (const stack of run.stacks ?? [])
+				await execAsync(stack.down, cwd, {}, { timeoutMs: 120_000 });
 		} catch (error) {
 			log.error(
 				`Could not remove ${run.projectName}'s containers: ${error instanceof Error ? error.message : String(error)}`,

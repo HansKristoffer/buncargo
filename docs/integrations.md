@@ -1,6 +1,6 @@
 # Writing an integration
 
-An integration packages what one kind of project needs, so the project's `dev.config.ts` stays short. `buncargo/shopify` and `buncargo/expo` are the reference implementations ([`src/shopify`](../src/shopify), [`src/expo`](../src/expo)).
+An integration packages what one kind of project needs, so the project's `dev.config.ts` stays short. `buncargo/shopify`, `buncargo/expo` and `buncargo/supabase` are the reference implementations ([`src/shopify`](../src/shopify), [`src/expo`](../src/expo), [`src/supabase`](../src/supabase)).
 
 An integration is a plain object. A function that returns one is how options get in:
 
@@ -54,6 +54,7 @@ export function stripe(options: { app: string }): BuncargoIntegration {
 | `appEnv(app)` | building one app's process env | Env for the integration's apps, beneath their own `envVars` (Expo's `RCT_METRO_PORT`) |
 | `describeApp(app)` | publishing the run | Fields on an app's registry entry (Expo's `expo`, which BuncargoBar's simulator button reads) |
 | `bannerHint(app)` | the startup banner | A dim hint after the app's row |
+| `stacks` | a start that selects one of its services; `stop`; the sweep | Containers another CLI runs. `up(ctx)` starts them idempotently beside `compose up`; `down(...)` returns the argv that stops them, which is recorded in the run registry so the sweep can run it after the idle hold without a config. Services name it with `external: { stack }`. The CLI must label its containers `com.docker.compose.project=<externalStackProjectName(projectName)>`, or their ports read as foreign |
 
 ## Guidelines
 
@@ -84,3 +85,11 @@ export function stripe(options: { app: string }): BuncargoIntegration {
 - `appEnv` gives each one `RCT_METRO_PORT` and `EXPO_PUBLIC_BUNCARGO_WORKSPACE_ID`.
 - `describeApp` records the scheme and bundle id, which `sim` and BuncargoBar read without loading the config.
 - `commands.sim` opens the app in this checkout's own simulator.
+
+## The Supabase integration, as a map
+
+- `config()` reads `supabase/config.toml` leniently and adds `supabase`, `supabaseDb`, `supabaseStudio` and `supabaseMail` as external services of the `supabase` stack (only the enabled, non-excluded ones). Its env builder sets the `SUPABASE_*` overrides the CLI reads instead of the toml (project id, every port, `auth.site_url`, the redirect list) and the URLs and keys apps read. The keys are derived, not asked for: the anon and service-role JWTs are signed with `auth.jwt_secret`, the publishable and secret keys are the CLI's local constants.
+- `stacks.supabase`: `up` runs `supabase start [-x …]`; `down` is `supabase stop --project-id <id>`, with `--no-backup` for a reset. The CLI labels its containers with the Compose project label we pass as the project id, which is what makes their ports this run's.
+- A `supabase migration up --local` migration, first in the list; `hooks.afterContainersReady` regenerates types when the migrations changed.
+- `checks`: CLI installed, `config.toml` present and readable, Docker rather than Apple's runtime, CLI version in the tested 2.x range.
+- `describe`: Studio and the mail UI, for `buncargo open`.

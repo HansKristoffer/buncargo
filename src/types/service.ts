@@ -317,6 +317,20 @@ export interface ServiceConfigBase<
 	afterPreparation?: boolean;
 	/** Docker Compose service definition (preset helper or raw escape hatch) */
 	docker?: DockerServiceDefinition;
+	/**
+	 * Provided by an integration's stack (`BuncargoIntegration.stacks`) instead
+	 * of the generated Compose file: buncargo allocates its port, URL and env,
+	 * and starts the stack when the service is selected.
+	 */
+	external?: ExternalServiceConfig;
+}
+
+/** See {@link ServiceConfigBase.external}. */
+export interface ExternalServiceConfig {
+	/** The stack's key in its integration's `stacks`. */
+	stack: string;
+	/** What it is, for TablePlus links and the like; it adds no default env. */
+	preset?: DockerPresetName;
 }
 
 /** Portless containers have no host endpoint. Jobs require an explicit rerun policy. */

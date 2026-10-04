@@ -102,6 +102,7 @@ export type {
 	ExecOptions,
 	ExecResult,
 	ExposedKeys,
+	ExternalServiceConfig,
 	GeneratedFileConfig,
 	GeneratedFileContext,
 	GetEnvVarValue,
@@ -116,6 +117,7 @@ export type {
 	IntegrationCommand,
 	IntegrationCommandContext,
 	IntegrationConfig,
+	IntegrationStack,
 	// Migrations & Seed
 	MigrationConfig,
 	NamedHost,

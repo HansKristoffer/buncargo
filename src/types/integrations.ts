@@ -83,4 +83,37 @@ export interface BuncargoIntegration {
 	describeApp?(app: IntegrationAppContext): Record<string, unknown> | undefined;
 	/** A hint shown next to the app in the startup banner. */
 	bannerHint?(app: IntegrationAppContext): string | undefined;
+	/**
+	 * Containers another tool runs (the Supabase CLI), by stack key. Services
+	 * with `external: { stack }` are provided by one.
+	 */
+	stacks?: Readonly<Record<string, IntegrationStack>>;
+}
+
+/**
+ * A set of services a CLI starts and stops itself.
+ *
+ * Its containers must carry `com.docker.compose.project` set to
+ * {@link externalStackProjectName} of the run's project name: that label is
+ * how buncargo recognizes the ports they hold as its own.
+ */
+export interface IntegrationStack {
+	/**
+	 * Start it, idempotently: called on every start that selects one of its
+	 * services, beside `compose up`, and expected to return once it is ready.
+	 * `ctx.exec` runs commands in the checkout's env.
+	 */
+	up(
+		ctx: HookContext<Record<string, ServiceConfig>, Record<string, AppConfig>>,
+	): Promise<void>;
+	/**
+	 * The command that stops it, run from the checkout (or the home directory
+	 * once the checkout is gone). Recorded in the run registry, so the sweep can
+	 * run it without loading the config. Keeps data unless `removeVolumes`.
+	 */
+	down(input: {
+		projectName: string;
+		root: string;
+		removeVolumes: boolean;
+	}): readonly string[];
 }

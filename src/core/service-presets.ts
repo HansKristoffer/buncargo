@@ -62,6 +62,7 @@ export function inferDockerPreset(
 	serviceKey: string,
 	service?: ServiceConfig,
 ): DockerPresetName | undefined {
+	if (service?.external) return service.external.preset;
 	const dockerConfig = service?.docker;
 	if (dockerConfig?.kind === "preset") {
 		return isDockerPresetName(dockerConfig.preset)
@@ -81,11 +82,20 @@ export function resolveServiceEnvVarSources(
 	serviceKey: string,
 	service: ServiceConfig,
 ): Record<string, ServiceEnvValueSource> {
-	const preset = inferDockerPreset(serviceKey, service);
+	// An external service names what it is, but its integration decides its
+	// env: a second `DATABASE_URL` would collide with the project's own Postgres.
+	const preset = service.external
+		? undefined
+		: inferDockerPreset(serviceKey, service);
 	return {
 		...(preset && service.port !== undefined
 			? BUILT_IN_SERVICE_ENV_VARS[preset]
 			: {}),
 		...(service.env ?? {}),
 	};
+}
+
+/** Provided by an integration's stack rather than the generated Compose file. */
+export function isExternalService(service: ServiceConfig | undefined): boolean {
+	return service?.external !== undefined;
 }

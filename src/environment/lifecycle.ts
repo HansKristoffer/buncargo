@@ -12,6 +12,7 @@ import { resolveComposeServiceNames } from "../planning";
 import { appliedMigrationCount } from "../prisma/migrations-applied";
 import { recordGeneratedPrismaHash } from "../prisma/schema-hash";
 import type {
+	AnyDevConfig,
 	AppConfig,
 	DevServerPids,
 	EnvValues,
@@ -33,6 +34,11 @@ import type { DevRunClaimApi } from "./run-claim";
 import { assertSeedSucceeded, seedCanOverlap } from "./seed-startup";
 import { runSeedIfNeeded } from "./seeding";
 import { assertAppWorkingDirectories, startAppServers } from "./servers";
+import {
+	composeServicesOf,
+	configuredStacks,
+	stacksForServices,
+} from "./stacks";
 
 export interface DevLifecycleApi<
 	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
@@ -399,11 +405,17 @@ export function createLifecycleApi<
 				subset: Record<string, ServiceConfig>,
 				noDeps = false,
 			) {
-				if (Object.keys(subset).length === 0) {
+				// Stacks start themselves, beside Compose rather than after it.
+				const compose = composeServicesOf(subset);
+				const stacks = stacksForServices(
+					config as AnyDevConfig,
+					Object.keys(subset),
+				);
+				if (Object.keys(compose).length === 0 && stacks.length === 0) {
 					return;
 				}
 
-				await phase("containers", () =>
+				const composeUp = () =>
 					withProjectLifecycleLock(
 						ctx.projectName,
 						ctx.root,
@@ -419,7 +431,7 @@ export function createLifecycleApi<
 								root: ctx.root,
 								projectName: ctx.projectName,
 								envVars: envVars.buildEnvVars(productionBuild),
-								services: subset,
+								services: compose,
 								noDeps,
 								ports: targetPorts,
 								model: ctx.composeModel(),
@@ -430,7 +442,19 @@ export function createLifecycleApi<
 							});
 						},
 						{ signal },
-					),
+					);
+
+				await phase("containers", () =>
+					Promise.all([
+						Object.keys(compose).length > 0 ? composeUp() : undefined,
+						...stacks.map(({ stack }) =>
+							withDeadline(
+								(stackSignal) => stack.up(hookContext(stackSignal)),
+								600_000,
+								signal,
+							),
+						),
+					]),
 				);
 			}
 
@@ -572,23 +596,38 @@ export function createLifecycleApi<
 			return;
 		}
 
-		await withProjectLifecycleLock(
-			ctx.projectName,
-			ctx.root,
-			async () => {
-				ctx.ensureComposeFile();
-				await ctx.runtime.down({
-					root: ctx.root,
+		if (Object.keys(composeServicesOf(services)).length > 0) {
+			await withProjectLifecycleLock(
+				ctx.projectName,
+				ctx.root,
+				async () => {
+					ctx.ensureComposeFile();
+					await ctx.runtime.down({
+						root: ctx.root,
+						projectName: ctx.projectName,
+						model: ctx.composeModel(),
+						composeFile: ctx.composeFile,
+						verbose,
+						removeVolumes,
+						signal: stopOptions.signal,
+					});
+				},
+				{ signal: stopOptions.signal },
+			);
+		}
+
+		// Every stack, not just this run's selection: stop means the environment.
+		for (const { name, stack } of configuredStacks(config as AnyDevConfig)) {
+			await envVars.exec(
+				stack.down({
 					projectName: ctx.projectName,
-					model: ctx.composeModel(),
-					composeFile: ctx.composeFile,
-					verbose,
+					root: ctx.root,
 					removeVolumes,
-					signal: stopOptions.signal,
-				});
-			},
-			{ signal: stopOptions.signal },
-		);
+				}),
+				{ secrets: false, signal: stopOptions.signal, timeoutMs: 120_000 },
+			);
+			if (verbose) console.log(formatDone(`Stopped ${name}`));
+		}
 		await runClaim.retireRun();
 	}
 
@@ -604,7 +643,8 @@ export function createLifecycleApi<
 			return false;
 		}
 
-		const names = resolveComposeServiceNames(services, Object.keys(services));
+		const compose = composeServicesOf(services);
+		const names = resolveComposeServiceNames(compose, Object.keys(compose));
 		if (names.length === 0) return false;
 		const states = await ctx.runtime.projectServiceStates(ctx.projectName);
 		const running = new Set(

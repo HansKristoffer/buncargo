@@ -2,12 +2,14 @@ import {
 	buildRunEntryAsync,
 	publishRun,
 	type RunServiceEntry,
+	type RunStackEntry,
 	releaseRun,
 	retireProjectRuns,
 } from "../core/run-registry";
 import { ensureWatchdog as ensureWatchdogFn } from "../core/watchdog";
-import type { AppConfig, ServiceConfig } from "../types";
+import type { AnyDevConfig, AppConfig, ServiceConfig } from "../types";
 import type { DevEnvContext } from "./context";
+import { stacksForServices } from "./stacks";
 
 /**
  * A run's claim on its containers.
@@ -92,14 +94,35 @@ export function createRunClaimApi<
 				name,
 				kind: service?.kind,
 				status: "starting" as const,
-				container: {
-					runtime: ctx.runtime.name,
-					binary: ctx.runtimeBinary,
-					service: composeName,
-					name: `${ctx.projectName}-${composeName}`,
-				},
+				// A stack's own CLI names its containers; `stop` cannot reach one.
+				...(service?.external
+					? { stack: service.external.stack }
+					: {
+							container: {
+								runtime: ctx.runtime.name,
+								binary: ctx.runtimeBinary,
+								service: composeName,
+								name: `${ctx.projectName}-${composeName}`,
+							},
+						}),
 			};
 		});
+	}
+
+	function stackEntries(): RunStackEntry[] {
+		return stacksForServices(
+			ctx.config as AnyDevConfig,
+			ctx.selectedServiceKeys,
+		).map(({ name, stack }) => ({
+			name,
+			down: [
+				...stack.down({
+					projectName: ctx.projectName,
+					root: ctx.root,
+					removeVolumes: false,
+				}),
+			],
+		}));
 	}
 
 	return {
@@ -108,6 +131,7 @@ export function createRunClaimApi<
 		async claimRun(options = {}) {
 			if (claimed || !ctx.hasSelectedServices) return;
 			const hold = resolveClaimHold(options, ctx.config.options?.autoShutdown);
+			const stacks = stackEntries();
 			// Claimed before it is published: a write that fails must not be
 			// retried on every container subset.
 			claimed = true;
@@ -124,6 +148,7 @@ export function createRunClaimApi<
 				)),
 				...(hold === undefined ? {} : { idleTimeoutMs: hold }),
 				services: serviceEntries(),
+				...(stacks.length > 0 ? { stacks } : {}),
 			});
 		},
 

@@ -271,6 +271,19 @@ export function resolveServiceDependencies(
 			visitDependency(dependency);
 		}
 
+		// One CLI starts a stack's services together, so selecting one selects
+		// them all: its migrations and banner rows must not depend on which one
+		// an app happened to name.
+		const stack = services[key]?.external?.stack;
+		if (stack) {
+			for (const [sibling, service] of Object.entries(services)) {
+				if (service.external?.stack !== stack || seenServiceKeys.has(sibling))
+					continue;
+				seenServiceKeys.add(sibling);
+				resolvedServiceKeys.push(sibling);
+			}
+		}
+
 		visiting.delete(key);
 		visited.add(key);
 	}

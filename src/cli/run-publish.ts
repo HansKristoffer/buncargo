@@ -235,14 +235,16 @@ function serviceEntries(
 					preset: identity.preset,
 					protocol:
 						service.exposeProtocol ?? defaultServiceProtocol(identity.preset),
-					container: env.containerRuntime
-						? {
-								runtime: env.containerRuntime,
-								binary: env.containerRuntimeBinary,
-								service: service.serviceName ?? name,
-								name: `${env.projectName}-${service.serviceName ?? name}`,
-							}
-						: undefined,
+					stack: service.external?.stack,
+					container:
+						env.containerRuntime && !service.external
+							? {
+									runtime: env.containerRuntime,
+									binary: env.containerRuntimeBinary,
+									service: service.serviceName ?? name,
+									name: `${env.projectName}-${service.serviceName ?? name}`,
+								}
+							: undefined,
 					port,
 					url: urls[name] ?? loopbackUrl,
 					loopbackUrl,
