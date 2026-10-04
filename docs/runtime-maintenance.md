@@ -6,4 +6,4 @@ The watchdog and the machine-wide `ls`/`doctor` commands sweep orphaned stacks u
 
 Liveness treats an unreadable process identity as alive; signaling requires a strict identity match. Never test the sweep against an isolated registry and a real container runtime: stub adapters or set `DOCKER_HOST` to an unreachable endpoint as well as isolating HOME.
 
-Docker integration is exercised in CI using disposable fixtures. The live Apple container path and privileged named-host installation still require their opt-in integration checks on a suitable Mac. See the repository's AGENTS.md for the implementation invariants and the CLI reference for status, stop and prune usage.
+Docker integration is exercised in CI using disposable fixtures. The live Apple container path and privileged named-host installation still require their opt-in integration checks on a suitable Mac. See `docs/internals/run-registry-and-sweep.md` in the repository for the implementation invariants and the CLI reference for status, stop and prune usage.

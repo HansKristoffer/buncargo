@@ -83,6 +83,13 @@ export function isCI(env: NodeJS.ProcessEnv = process.env): boolean {
 	);
 }
 
+/** `BUNCARGO_BAR=0` - turn the menu bar offer off without persisting a decline. */
+export function barOfferOptedOut(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return env.BUNCARGO_BAR === "0";
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Ports
 // ═══════════════════════════════════════════════════════════════════════════
