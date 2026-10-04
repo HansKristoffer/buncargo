@@ -1,328 +1,223 @@
-# Buncargo Contributor Guide
+# Buncargo
 
-## Purpose
+`buncargo` is a Bun-first library and CLI for local development environments. One `dev.config.ts`
+describes a project's services (containers) and apps (dev servers); buncargo gives every checkout
+its own ports, containers, URLs and named `https://*.localhost` hosts, starts and supervises
+everything, and cleans up after runs that ended. BuncargoBar (`menubar/`) is a macOS menu bar app
+that shows the runs.
 
-`buncargo` is a Bun-first library/CLI for local development environments:
-- Docker Compose service orchestration
-- App/dev-server process orchestration
-- Worktree-aware ports and project identity
-- Typed config and programmatic environment access
+It is used only by our own projects, mostly from many Git worktrees at once, and most changes to it
+are made by agents working in one of those worktrees.
 
-This file defines how to structure code and how to implement changes consistently.
+## What we never compromise on
 
-## Project Structure
+1. **Every checkout is isolated.** Two worktrees of one project run side by side with no shared
+   port, container, database, hostname or state file. A change that works in the main checkout and
+   collides in a worktree is broken.
+2. **Data survives.** A container is cheap to recreate; a volume is a developer's database.
+   Nothing removes a volume without an explicit, confirmed command, and one run ending never takes
+   down another run's services.
+3. **Startup is fast.** It is paid on every run in every worktree. Count the processes a change
+   forks before anything starts, and measure with `buncargo dev --timing`.
+4. **Named hosts are reliable.** Their failure mode is silent: the run falls back to
+   `localhost:port` with no error. Treat "sometimes does not attach" as a bug, not flakiness.
+5. **Agents can drive it.** Every flow works without a terminal: `--detach`, `--yes`, `--json`,
+   exit codes that mean one thing. `src/cli/agents-guide.ts` (`buncargo help agents`) is what
+   agents in *our projects* read; keep it true when behavior changes.
 
-All library source code lives under `src/`.
+Think of everything below as good defaults. If a rule here fights the task in front of you, say so
+loudly and get a human sign-off before breaking it.
 
-- `src/index.ts`
-  - Public API aggregation for library consumers.
-- `src/cli/`
-  - CLI runtime and command handlers.
-  - `bin.ts` is the CLI executable entrypoint.
-  - `index.ts` is the canonical CLI module entry.
-  - `run-cli.ts` contains core CLI flow; `flags.ts` (argv primitives), `dev-flags.ts` (the dev command's typed args + help), `dev-hosts.ts` and `dev-tunnels.ts` hold the pieces it orchestrates.
-  - `command-spec.ts` is the flag-spec primitive: one `CommandSpec` per command drives parsing, unknown-flag detection, value validation and generated help, so those four cannot drift. Add a flag to the spec, not to a parallel list. `readPositionals` finds subcommands and stray arguments, skipping `--flag value` pairs, so no command re-walks argv itself.
-  - `takeover.ts` answers the dead end where every selected app was already running: the run used to print "nothing to start" and exit, leaving the developer to find the other window. It prompts, and on `y` (or `--takeover`) stops those ports' owners and spawns them here. Reuse stays the default and a bare Enter declines, because taking over kills servers in a terminal the developer may not be looking at. Only apps with a `devCommand` are candidates — stopping the port of one buncargo does not spawn would leave it down instead of moving it. The other run tears itself down safely: `releaseNamedHosts` drops only routes carrying its own pid, and `env.releaseRun()` releases the containers to the watchdog's idle hold rather than stopping them. The decision is made *before* `logSelectedAppsSummary` and the banner, so both describe the run that actually happens and the reclaimed hostnames are the ones printed. `run-cli.ts` then calls `activateNamedHosts` a second time: the first attempt was refused because the other run still owned the hostnames, and `upsertHostRoutes` only rejects an owner that is still alive, so the retry succeeds once that pid is gone. Without it a takeover silently downgrades every named URL to `localhost:port`.
- - `commands/registry.ts` is the single source for top-level command names (`CliCommandName`, used by the `bin.ts` switch and by `help.ts`) and for the `hosts` and `bar` subcommands. Every switch over them ends in a `never` default.
-  - Failures inside a command flow throw `CliError` (`errors.ts`) so the flow can release tunnels, host routes and the terminal before exiting 1. Argv problems, which happen before anything starts, exit through `log.fail`.
-  - `log.ts` is the CLI status/error facade (`info`/`success`/`done`/`warn`/`error`/`hint`/`fail`); `src/environment/logging.ts` stays responsible for the rich environment banner.
-  - `commands/` contains command-specific behavior (`dev`, `env`, `prisma`, etc.); `commands/inspect/` splits the `ls`, `status` and `doctor` commands over a shared `containers.ts`. `stop-all.ts` sits alongside them for the same container helpers but is not a command: it backs `dev --down --all`.
-  - `run-publish.ts` is the CLI's writer of the run registry (`core/run-registry.ts`); `environment/run-claim.ts` is the library's. Both build their entry with `buildRunEntry`, so identity, worktree and the recorded CLI cannot drift between them — the recorded CLI is exactly where they once did. The CLI publishes onto the session the environment already claimed (`env.sessionId`), and `publishRun` keeps that claim's `startedAt` and idle hold. It takes a structural `RunSource` rather than `DevEnvironment` because that type's app keys appear in both parameter and return positions, so a widened version is not a supertype of a specific one. Every function swallows its own failures: a run that started servers but could not write a status file is still a working dev environment. `runDevFlow` publishes *after* the takeover is decided, since before that the classification describes a reuse the takeover is about to undo and `env.urls` may still hold the localhost fallback. `recordAppSpawn` stores a spawned app's process identity with its pid, because `stop` refuses to signal an app without one; recording the pid alone made the menu bar's Stop refuse every app.
-  - `commands/stop.ts` is what the menu bar app shells out to, so it reads only the registry: no config load, no Docker unless a service is the target. Stopping one app must not end the run, which is why `isDeliberateExit` in `process/dev-servers.ts` treats a signalled exit (and `130`/`143`, what a shell wrapper reports for SIGINT/SIGTERM) as a clean stop rather than a failure. The two refusals — the attached app, and an app reused from another terminal — carry exit code 3; `2` is "no such target". Services are `stop`ped, never `kill`ed, so a `restart:` policy cannot undo it; the exited container is removed by the sweep once the run has ended. Stopping the whole run `down`s its containers, because the run itself only releases them to the idle hold and "stop" from the menu bar means now.
-  - `checks.ts` runs `SetupCheck`s (core from `core-checks.ts`, then the config's, then integrations'). `dev` runs only `fast !== false` ones before anything starts, not in the one-shot modes; warnings are printed and never stop it. `commands/setup.ts` offers each fix (`--yes` or CI runs them all; a terminal-less run without `--yes` only reports), then checks again. `doctor` lists them. A check that throws counts as failed.
-  - `commands/run.ts` is `exec` for `config.tasks` (which injects the app's secrets), with `requiredServices` started through `start({ onlyServices })`. It claims with the CLI's idle hold, not the library's keep-forever default. Extra argv goes through `withAppendedArgs` (`sh -c '<cmd> "$@"'`), so nothing is re-parsed. Tasks are published into the run entry for BuncargoBar's run button, which calls `buncargo run` *unscoped*: `--root`/`--run` name a run, and a task only needs the checkout (the working directory).
-  - `commands/ci.ts` runs on `env.withSuffix("ci")`, starts services with `onlyServices`, forces the seed (a CI database is never warm), runs the command and always `stop({ removeVolumes: true })`s. The suffix is not optional: on the shared project that teardown deletes a developer's dev database. A suffixed environment writes its own compose file and never persists `ports.json`, or it would overwrite the dev run's. `--profile` lives in `dev-flags.ts`; `selectProfileApps` in `run-cli.ts` turns it (or a `default` profile) into the same selection `--apps` makes.
-  - `dev-output.ts` decides where a dev run's app output goes: the TUI (`--tui` and a terminal) or stream mode, never both, since two writers on one screen is the garbling the TUI exists to end. Both write the log files and answer `buncargo restart` (`restart-requests.ts`: a request file the run polls, not a signal — SIGUSR2 to a run from an older buncargo, which has no handler, would kill it). `view.start()` runs after every prompt and the banner; `view.stop()` runs before teardown so its messages land on the user's own screen.
-  - `tui/` is the TUI: `render.ts` is pure (every row exactly the width asked for, so frames diff row by row) and `run-tui.ts` the controller. While it owns the terminal it captures `process.stdout/stderr.write` and `console.*` into the Overview as `buncargo` lines — Bun's `console.log` does not go through `process.stdout.write`, so patching only the stream misses it. It restores raw mode, the alternate screen and the cursor on `stop()` and from a process `exit` handler (sync `writeSync`), which is what `run-tui.test.ts` checks under a real pty with `stty`. Input is read as keys, not chunks: a sequence cut off at a chunk's end waits for the rest, and an Esc nothing follows within 30ms is the Esc key (chunks split anywhere, so a one-byte chunk proves nothing). Interact mode forwards every key except Esc and `Ctrl-]`, either of which leaves it; `q`/`Ctrl-C` outside it sends the run SIGINT, the same shutdown path as a terminal Ctrl-C. The captured `write` honors Writable callbacks, or a hook awaiting one hangs. While the pager (`l`) runs, the TUI stops reading stdin entirely and only takes the screen back if it is still active; `stop()` kills an open pager. Mouse reporting (SGR with drags, `?1000`/`?1002`/`?1006`) is part of entering and leaving the screen, so every restore path turns it off too; the wheel scrolls the shown pane, also in interact mode, where mouse reports are stripped rather than typed into an app that never asked for them. Because the terminal cannot select while it reports the mouse, the TUI selects itself, like tmux: each end of a drag is held by what it points at — the Overview `OutputLine`, or an xterm marker on the app's buffer row (a plain row on the alternate screen, which takes no markers) — so it survives scrolling and trimming, and ends instead of attaching to other text once its line is dropped, cleared, or the app switches screens. A release where the pointer last was keeps the head on the text it was on. It is drawn reversed over the row's own styles (concealed text stays concealed), and on release copies whole lines (`overviewPlainLine`, not the cut-off row) through `clipboard.ts` (`pbcopy`/`wl-copy`/`xclip`, else OSC 52; tests inject `copy` so they never touch the real clipboard).
-  - `dev-detach.ts` is `dev --detach`: the same argv without the flag, re-run with `detached: true` (its own session, so a harness's SIGTERM does not reach it) and its output in `.buncargo/logs/detached.log`. The parent waits on the run registry entry whose `pid` is the child's until every app has settled; an empty `apps` list is the claim, not "done", unless the config has no apps.
-  - `dev-flags.ts`' `destructiveModeGate`: `--reset` and `--down --all` ask in a terminal and refuse without one unless `--yes`. CI is exempt. An agent ran `--reset` to fix a migration and deleted a developer's data.
-  - `agents-guide.ts` is the one copy of the agent guide (`help agents`) and the `AGENTS.md` block `setup --agents` keeps between `<!-- buncargo:start/end -->` markers. In code, not `docs/`, so the guide an agent reads matches the installed version.
-  - `commands/ports.ts` shows the offset claims and `pin`s one: it checks every port of the block through `withBindProbe` and the claims before writing the lockfile and the claim. `commands/send.ts` types into an app over the same request-file channel as `restart` (`restart-requests.ts`, now one file per kind: a line per request, renamed aside before it is read). The run delivers it to `output.screens`, so only an app with a pseudo-terminal reads keys.
-  - `commands/inspect/file-table.ts` reads the machine's open-file table (`sysctl` / `/proc/sys/fs/file-nr`); `doctor` runs the full `lsof` for the top holders only past half full, because it takes seconds on a crowded machine.
-  - `commands/sql.ts` runs the preset's own client inside the service's container through `interactiveExecArgv` (the one adapter method that hands back argv for inherited stdio). `--json` for Postgres wraps the query in `json_agg`, so it only fits row-returning statements. `--create-scratch` always prefixes `scratch_`, so `--drop-scratch` cannot reach a database the project uses, and uses two `-c`s because `CREATE DATABASE` refuses the transaction one multi-statement `-c` becomes.
-  - `preflight.ts` runs `config.preflight` (and integrations') after the fast checks, with the real terminal, filtered by each step's `apps`. A throw is a `CliError` with the step's name.
-  - `bar-offer.ts` is the one-question offer of the menu bar app inside `dev`, and `commands/bar.ts` the `install`/`status`/`open`/`uninstall`/`reset` group over `core/menubar.ts`. The offer's gates are checked cheapest-first and bail on two `existsSync` calls in the common case, because `dev` runs constantly.
-- `src/config/`
-  - Dev config API and validation.
-  - Keep definition, validation, and merge logic split by responsibility.
-- `src/environment/`
-  - `createDevEnvironment()` and related orchestration helpers.
-  - `context.ts` resolves identity/ports/URLs once into a `DevEnvContext`; `env-vars.ts`, `lifecycle.ts`, `servers.ts` and `run-claim.ts` are built on it and `create-dev-environment.ts` only composes them.
-  - `prefetch-secrets.ts` starts distinct selected scopes immediately after startup preparation, excluding containers-only mode. Consumers await the shared cache and own warn-once messages. Prefetch cancellation releases the CLI lock; failed startup drains fetches. `secrets` timing measures consumer waits, which can overlap other phases.
-  - `seeding.ts` owns the only seed path: `runSeedIfNeeded` backs both `start()` and `env.runSeed()` (which `buncargo dev --seed` calls with `force: true`). A failed seed fails `start()`; it does not log and continue. `seed-startup.ts` shares selection for `seed.beforeApps: false`; any selected `afterPreparation` service forces the serial path. `server-session.ts` owns the concurrent seed task, cancellation and draining across CLI and library, including production builds and empty sessions kept open for tunnels. CLI defers automatic seed through `skipSeed`/`prefetchSeed`, and `server-session.ts` joins the seed before `afterServers` and readiness. Concurrent output uses `process/prefix-output.ts`.
-  - `logInfo` accepts an optional `EnvironmentLogSelection`; CLI classification and library lifecycle pass the current run selection, including for tunnel banners. Integration hints run only for displayed apps. Omit selection for full configuration listings.
-  - Prefer extracting complex concerns into focused modules (e.g. logging/seeding).
-- `src/core/process/run-output.ts` is the one text feed per app behind stream mode, the TUI Overview and `.buncargo/logs/<run>/<app>.log` (`app-logs.ts`: buffered, capped, last ten runs). Apps print into it, the supervisor reports `state` and `capture`. `startDevServers` takes it as `options.output`; without one it prints stream mode itself, so library callers are unchanged. With `terminalSize` set every app spawns as a `PtyApp` (`pty-app.ts`: `Bun.spawn({ terminal })`, a session leader so `kill(-pid)` still reaches the group, `exit` reported with Node's `(null, signal)` arguments) into an `AppScreen` (`app-screen.ts`: `@xterm/headless`) that survives restarts. `AppScreen` turns a screen back into lines by holding back the rows a recent redraw reached (an Ink footer) and re-sending a rewritten row only when its text changed; the first frame of a live footer cannot be told from plain lines and can appear once. Row numbers move when the scrollback trims or `ESC[3J` clears it: a marker in the scrollback follows trims (it sits above the screen because erasing the screen disposes markers too), `ESC[3J` is counted by its own handler, and a marker trimmed away means every row still in the buffer is new. A logical line still wrapping onto the cursor row is not committed yet. A stream-mode attached app's output is fed in marked `echoed`: logged, not printed again.
-- `keepOthersOnFailure` (on in `dev` unless `options.onAppFailure: "stop-run"`) waits for each app of a wave on its own, then stops and parks the ones that never came up by adding them to the same `optional` set an `essential: false` app is in, so restart, the TUI and the registry need nothing new. Whether the run fails is decided before anything is parked: when a later app `startAfter`s a failed one, or nothing else is left. `process/port-drift.ts` races every wave's readiness: an app whose process tree listens on another port while its own is held by something else fails at once. It connects to the assigned port and never binds it, because a probe that bound it could push the booting app off.
-- `process/app-watch.ts` is the `watch` config: one recursive `fs.watch` (FSEvents) per path, debounced, restarting through `restartApp`, which already retires, waits and serializes. Watchers start after the waves, so a save mid-start cannot race readiness, and only for apps this run spawned. `readyWhen` is matched by a scanner created per spawn (`watchForReady`), not through `captures`, whose scanner reports a value only when it changes and would never see the line again after a restart; `waitForDevServers` skips those apps and `waitForPrinted` runs before the wave's health wait. An attached app with no TTY runs as a `PtyApp` like the TUI's, which is what lets Expo start under an agent and `send` reach it.
-- `essential: false` is `ProcessOwner.optional`: the app's exit parks it instead of aborting, `owner.wait()` keeps waiting while anything is parked, and its readiness never gates a wave (it is health-checked on the side, also after every restart). Each side check belongs to one process: exit or replacement aborts it, and `markReady` only promotes a `starting` app, so a late check cannot report a dead or replaced app ready. `AppSupervision.restart` runs restarts of one app one after another (a request before the first has begun joins it): two at once would both retire the same child and the second replacement fails on the port. In the run registry a new pid is a new process generation, the one update allowed to take a `stopped`/`failed` app back to `starting`. A non-essential worker that dies while its ownership is being claimed — before or while the claim is written — is handed to the supervisor anyway (`spawnOwnedWorker`'s `allowEarlyExit`), with no claim left behind and its process group stopped first, since what it spawned would otherwise run unowned; and `ProcessOwner.register` reports the exit of a child that is already gone, which never emits `exit` to it: otherwise a crash at boot failed the whole start, the one thing `essential: false` promises not to do. `startDevServers` records an exit the moment it is seen (`exited`), not when it is shown: the verdict waits for the app's last screen to flush, and in between a readiness check would otherwise promote the dead process.
-- `src/core/app-url.ts` is the "open" rule (`preferredAppUrl`): public URL, else the named host while hosts are active, else loopback. The run registry records it per app as `openUrl`, and BuncargoBar prefers that field over its own fallback rule.
-- `src/loader/`
-  - Config discovery/loading and cache handling.
-- `src/typecheck/`
-  - Workspace typecheck orchestration. `typecheck.ts` runs a real process pool (`execAsync`); `scheduling.ts` is longest-first (cached durations, then descending file count) and the CPU/CI concurrency default. The CLI spec lives in `src/cli/typecheck-flags.ts` (`--concurrency`, `--only`). `config-settings.ts` reads only the config's `typecheck` key (`include`/`exclude`, validated by `validateTypecheckShape`) by importing the module, never building an environment; an `include` entry with nothing to check is a failed result, not a skip. `project-tsc.ts` finds the project's own `tsc` for both the root config and tsconfig-only includes. Do not shell out to `bun run --filter --parallel typecheck` — Bun's workspace graph would serialize dependents.
-- `src/prisma/`
-  - Prisma-specific integration layer. `migrations-applied.ts` uses a bounded, cancellable Bun SQL query against the loopback Postgres URL to skip automatic deploy only when every local migration is applied and no failed/rolled-back attempt exists. Uncertainty runs deploy. `prisma.migrations` is relative to `prisma.cwd` and also defaults `migrateCheck`; an overridden database URL never skips based on the local service.
-- `src/docker-compose/`
- - Compose generation only (model building, YAML serialization, generated-file logic).
- - `services/` contains built-in service presets/helpers.
- - `interpolate.ts` is compose's own `${VAR}` substitution and the fingerprints built on it. It lives here rather than with one backend because it is compose semantics: `docker compose` interpolates the file itself and the Apple backend has to reproduce it, so a second copy would be a second thing to keep in step. `run-plan.ts` re-exports it.
- - `computeDevIdentity` leaves the worktree name out of the project name when the directory already carries it.
- - `serviceFingerprint` and `buncargo.service-hash` govern reuse per service, independent of selected subsets. Include effective interpolation, user labels and referenced definitions; exclude only self-referential hash metadata. Unverifiable external inputs must reconcile.
- - `buildComposeModel` takes the *resolved* `ContainerRuntimeName`, not the configured selection, because `docker.runtime` may still say `"auto"` at that point. It exists for the few places the runtimes genuinely differ: the postgres preset sets `PGDATA` to a subdirectory on Apple, whose named volumes are formatted block devices carrying a `lost+found` that `initdb` refuses. Docker's are plain directories, and moving them would hide every existing project's database behind an empty one. A preset that branches on this for anything cosmetic is not worth the ambiguity it adds to the generated model.
-- `src/container-runtime/`
- - The runtime-neutral seam, and the canonical import for everything outside the two backends.
- - `types.ts` is the `ContainerRuntimeAdapter` port. `ContainerUpRequest` carries both `composeFile` and `model` because they are one artifact seen two ways: Docker hands the file to `docker compose`, Apple walks the model. Deriving the model separately per backend would let the two drift.
- - `resolve.ts` is the precedence: `--runtime`, then `BUNCARGO_CONTAINER_RUNTIME`, then `config.docker.runtime`, then `"docker"`. Only `"auto"` probes; an explicit choice is returned even when its daemon is down, so the failure surfaces as that runtime's own remediation instead of a silent switch to the other one — the two keep their volumes in different places.
- - There is one `binary` override for two backends, so it only means anything once a runtime is chosen: `resolveContainerRuntimeBinary` returns nothing under `"auto"`, config validation rejects the pairing outright, and `availableContainerRuntimes` applies the path only to the runtime named alongside it. Otherwise probing for Apple's `container` would mean executing whatever `docker` was pinned to, and reporting the wrong one down.
- - `ExecInServiceRequest.command` is argv, not a shell command line, so neither backend has to quote it and the two cannot disagree about which shell runs a probe. Both backends spawn argv throughout; the only surviving shell is `command -v` in `src/docker/preflight.ts`, which is a builtin with nothing to exec.
- - `diagnoseService` is why a dead container fails in about two seconds instead of after the full readiness timeout. `readiness.ts` calls it every eighth poll, and only a state in `isTerminalContainerState` aborts — matched positively so a state neither backend has shown us yet keeps polling rather than killing a startup that would have worked. `logTail` is enrichment: a backend that cannot produce it returns empty and the state alone still fails fast.
- - `ensureServicesRunning` skips `up` only when each selected service is running with a matching service fingerprint and every relevant input can be proven unchanged. Old unlabeled containers reconcile once. Every adapter operation that talks to the daemon is async and cancellable; the sync methods that remain (`list`, `stopByIds`, the port lookups) back the snapshot readers.
- - `projectServiceStates(projectName)` reads state and the stack hash for the whole project in one call. `areServicesRunning` asked separately per service, so a four-service stack paid four `docker ps` listings before anything started.
- - `containerPortOwners()` is the batch form of `findContainerOnPort`, for the same reason: a dev run asks about every service and app port, and one listing answers all of them.
- - `ContainerDownRequest.model` is optional because containers are found by label. Only `removeVolumes` needs it, to name the volumes, which is why the sweep can tear a project down without loading its config. For the same reason the Docker backend passes `-f` only when the compose file still exists and never requires the checkout as `cwd`: a stack whose worktree was deleted must still come down, and that used to be the one case the watchdog could not handle.
- - `sweep.ts` is the one cleanup policy. `decideSweep` is pure: a stack nobody owns comes down when its checkout is gone, when every container is stopped, when its run released it longer ago than its idle hold, or when its owner has been gone for longer than the grace; a running stack with no entry at all is left alone. The grace counts from `ownerLostAt`, which the sweep stamps the first time it finds an unreleased owner gone — not from `updatedAt`, which a quiet run may not have written for hours before it crashed. `sweepOrphanedContainers` lists every runtime without probing first (a failed `list()` is the probe, and records which runtimes *answered*), reads liveness once for the whole registry, decides each stack under its project's lifecycle lock (`project-lock.ts`; a busy lock is skipped, not failed), then retires entries whose containers are gone — only when the runtime that held them answered, since an empty listing from a daemon that is down means "cannot tell". It throws when the registry cannot be read, before touching anything: with no registry every stack looks unowned. It returns what it listed, so `ls` and `doctor` do not list again. The watchdog (`core/watchdog-runner.ts`, one per machine, started by `ensureWatchdog`) runs it through `core/watchdog-loop.ts`, which logs and retries a pass that throws instead of exiting, and logs a repeated failure once until it changes; `ls` and `doctor` sweep inline, so a killed watchdog is never the last line of defence.
- - Anything that runs the sweep outside a unit test's stub runtimes must isolate the container runtime as well as `HOME` — stub adapters, or `DOCKER_HOST` pointed at nothing. Isolating only the registry makes every real stack on the machine look unowned. Docker Desktop finds its Compose plugin through `HOME`, so a stray isolated `HOME` fails every teardown, which is luck, not safety; `stopContainers` names that failure (`'compose' is not a docker command`) rather than passing it through.
- - There is **one** liveness record: `~/.buncargo/runs.json`. `environment/run-claim.ts` publishes a run's entry *before* its first container exists, so the sweep can never see a fresh stack as unowned, and the entry carries the idle hold, the runtime and the pinned binary — which is why the sweep needs no config. The library claims too, not only the CLI, and `start()` ensures the watchdog right after claiming (`StartOptions.watchdog: false` opts out, for tests; the claim happens either way). Releasing sets `releasedAt` once — the first release wins, however many teardown paths reach it — and keeps the entry; a run with no services is withdrawn instead. An explicit `stop()` *retires* instead of releasing, because it has just torn the containers down: its own session and any finished session for the same checkout go. Every write addresses an entry by `sessionId`, which is required; entries without one are dropped on read. Liveness is forgiving where signalling is strict: `processIdentityMatcher`/`runLiveness` read a process whose identity cannot be read as *alive*, because reading a live run as dead lets the sweep tear its containers down, while `matchesProcessIdentity` (used by `stop` before it signals, and by worker ownership) reads the same as *not a match*. The batch asks `ps` only about pids that exist and reads its output whatever the exit status — one pid `ps` rejected used to void the whole batch. Identities are compared across processes, so they must not depend on the reader's environment: on macOS `ps -o lstart` follows the caller's locale and time zone, and a run started from a Danish-locale terminal and a watchdog started from a `C.UTF-8` agent shell disagreed about the same live pid. `ps` is always asked in `LC_ALL=C`, `TZ=UTC`; identities carry a `v2:` prefix. A library run with no hold asked for through `claimRun` keeps its containers after it exits — `options.autoShutdown` is the CLI's, applied only on top of the default the CLI passes: a script that brings a stack up and ends is indistinguishable from a crash, and "no hold" means "as long as the checkout" however the run ended. The CLI passes its three-minute default explicitly. A stack condemned from the sweep's snapshot is decided again from a fresh registry read under its lock, because a new run publishes its claim before it takes the lock to reuse those containers. `core/cli-entry.ts` records buncargo's own CLI (`src/cli/bin.ts` or `dist/cli/bin.js`, whichever flavor is running) as the command the menu bar calls back; `process.argv[1]` is the user's script under a library `start()` or a wrapped `runCli`, and Stop used to run it. `core/watchdog.ts` is just `ensureWatchdog` and its pid file. Two locks, and it needs both: the runner holds `.runner` for its whole life, which is the "is one running?" answer a `kill -9` cannot fake, and a caller holds `.spawn` across spawn-and-confirm so two `dev` runs starting together cannot each launch one. Collapsing them looks tempting and deadlocks — the spawner would be holding the lock its own child must take.
- - `prune.ts` is the volume half, and it is deliberately not automatic: a container costs nothing to recreate, a volume is the database. `planVolumePrune` is pure and proposes only a volume whose Compose project has no containers *and* no entry; `cli/commands/prune.ts` confirms before removing. Buncargo attaches **no labels to volumes** — verified: Compose compares a volume against the file and prompts "exists but doesn't match configuration in compose file. Recreate (data will be lost)?", which hangs a non-interactive run. So a volume's checkout is unknowable, anonymous (64-hex) Docker volumes are filtered out as never ours, and anything unattributable is counted and left alone rather than guessed at.
- - `readiness.ts` and `health-checks.ts` are the polling loop and the built-in probes, both driven through the adapter. `pg_isready` / `redis-cli` go through `adapter.execInService`; `http` / `tcp` hit the published host port and are runtime-independent by construction.
- - `inventory.ts` backs the machine-wide commands (`ls`, `doctor`, `dev --down --all`). Those have no project config in scope, so they ask every available runtime rather than one.
- - `containerRuntimeForEnv()` is how a caller holding a finished `DevEnvironment` rebuilds its adapter. The runtime name and the resolved binary have to travel together, so going through the name alone would silently drop a configured `docker.binary` in `status`, `doctor` and prisma.
- - A port held by the *other* backend is invisible to the selected one, so the diagnostic degraded to the daemon that owns the socket: switching a project to Apple with a Docker container still up reported `com.docker.backend` rather than the container's own name. `getPortOwner`'s `fallbackRuntimes` asks the other runtimes only after the selected one comes back empty, and only from `assertServicePortsClaimable` and `doctor` — the two places that report the failure. `killPortOwner` polls ten times a second and deliberately does not pay for it. The adapters are passed in rather than resolved in `core/`, which would make `core/process` import the runtimes that import it back.
- - `PortContainerOwner.runtime` is what stops a cross-runtime container being classified `reuse`: it carries this project's own name, but this run cannot start, exec into or tear it down through the backend it selected. `formatPortOwner` names the backend only when it differs from the selected one, and does so *after* the noun — `containerRuntimeDisplayName` is a product name, so "Apple container" cannot qualify "container".
-- `src/docker/`
- - Docker runtime operations only, split by concern: `status.ts` (container/daemon checks), `lifecycle.ts` (up/down/start), `compose-command.ts` (`docker compose` argument building), `inventory.ts` (`docker ps` listing), `port-lookup.ts` (published-port owner). `adapter.ts` is a factory binding them to the port, taking the same `{ binary }` as Apple's.
- - `binary.ts` is the one place the `docker` command name is spelled. Every command builder here goes through it, so `docker.binary` reaches all of them rather than only the ones somebody remembered.
- - `exec.ts` resolves the running service by Compose project/service/replica labels and probes it with direct `docker exec`. Do not use `docker compose exec` for readiness: Compose startup can exceed the two-second probe budget even when Postgres is healthy, making a new worktree time out until the next invocation skips probing via container health. Lookup and exec share one deadline; never cache the container ID across polls or guess it from a name.
- - `preflight.ts` detects the local Docker runtime and auto-starts it when possible.
-- `src/apple-container/`
- - The Apple `container` backend, for macOS 26+ on Apple silicon. Apple has said Docker CLI/compose compatibility is not a project goal, so this translates the generated model into per-container commands instead of swapping a command prefix.
- - `run-plan.ts` is a **pure** `ComposeDocument` → argv translation, which is why it carries most of the tests. It also does compose's `${VAR:-default}` substitution itself: the model writes port bindings as `${POSTGRES_PORT:-5432}` on the assumption that `docker compose` interpolates the file, and Apple's CLI does not. `interpolate` matches every form in one pass, which is what makes `$$` an escape rather than a `$` a second pass could re-read.
- - `SILENTLY_DROPPED_KEYS` is `healthcheck`, `depends_on` and `restart`: the three the preset builders emit on every service. Warning on those would fire on every run and teach people to ignore the warning that matters, which is worse than the gap it reports. Everything else a user hand-wrote is reported.
- - `--entrypoint` takes one command, so compose's list form splits: head to the flag, tail ahead of `command` in the container's arguments. Joining the list would ask Apple to exec a binary literally named `/bin/sh -c`.
- - `command` and `entrypoint` both go through `commandWords`, because compose splits their string form into words. Passing the string through whole hands the image one long argument: the typesense preset writes `command` as a string, and unsplit it printed its usage and exited instead of starting. The split is `splitCommandLine`, which honors quotes and backslashes — splitting on whitespace alone turns `sh -c "echo hi"` into four broken tokens.
- - `interpolate` keeps compose's colon distinction: `${VAR:-d}` replaces an empty value, `${VAR-d}` keeps it, and `${VAR:?msg}` / `${VAR?msg}` fail with the author's message. Collapsing the two would substitute a default over a variable somebody deliberately set to empty.
- - `container_name` is in the *warned* set, not the translated one. The container is always `<project>-<service>` so exec, reuse and teardown agree on one name; honoring a user-set value would mean threading a second name through all three, for a key buncargo's own presets never emit.
- - Each container carries a `buncargo.config-hash` label, so `up` can tell "mine and still matching" (start it) from "config changed underneath it" (recreate) rather than throwing away a warm data volume on every run.
- - `cli.ts` is the only place the binary is executed, and is injectable so `lifecycle.ts` and `status.ts` are tested without the runtime installed.
- - `status.ts` reads `container ls --all --format json` once and filters client-side: Apple's `ls` has no `--filter`. Its JSON shape has moved between releases, so each field is read defensively rather than against a fixed schema.
- - `preflight.ts` auto-starts via `container system start` but never passes `--enable-kernel-install`: with it, a first run would install a kernel without asking; without it, the command prompts and would hang a non-interactive spawn.
-- `src/core/`
- - `connect/` owns frp sharing. `cli/dev-connect.ts` registers per-run recipient intent only when `BUNCARGO_CONNECT_TOKENS` is configured; the existing run registry remains the lifecycle authority. The coordinator supervises one publisher per run and private receiver visitors, with guarded children and 45-second leases. Tokens never reach child app environments.
- - `connect/publisher.ts` gates loopback targets against process birth identity and lease expiry. frp owns HTTP/SSE/WebSocket and STCP transport. Browser actions open validated public URLs; TCP actions receive local visitor addresses. `server/connect/` is the encrypted SQLite directory and mandatory frps authorization plugin; `server/deploy/` owns the pinned release artifact and Hetzner deployment. Shared local/remote menu rows stay in Swift's existing target components. See `docs/frp.md`.
- - Shared runtime utilities (network, ports, process, utils, watchdog).
- - `runtime-flags.ts` is the only place `BUNCARGO_*` / `CI` are read; getters take the environment as an argument.
- - `child-env.ts` is the environment of every process started for the project (apps, `exec`, tasks, migrations, the seed, prisma): never the connect tokens, never the config's `unsetEnv`. Module state set by `createDevEnvironment`, because every spawn point reaches here and none has the config. buncargo's own tools (frpc, the Infisical CLI) keep `connectProcessEnv`.
- - `offset-claims.ts` is `~/.buncargo/offsets.json`, root → offset. Every probing allocation skips another existing checkout's offset; only a persisting one writes its own. A claim lives as long as its directory, which is what tells "stopped" from "deleted". The lockfile is honoured by its offset alone, applied to the config's current ports, so an added service or a hand-written `{ "offset": n }` keeps the block, and a run that sets the lockfile aside says why.
- - `state-paths.ts` owns both state directories — `~/.buncargo` (machine-wide: routes, runs, certificates, downloaded tools) and `<root>/.buncargo` (per-checkout: port lockfile, tunnel registry, typecheck artifacts) — plus the `sudo`-aware home resolution and chown that make the first one correct when the root daemon writes it. Relocated for tests by pointing `HOME` elsewhere, deliberately *not* by a dedicated override: a second mechanism outranking `HOME` leaks between test files that already isolate this way.
- - `prompt.ts` is the one prompt primitive: `askChoice`/`askConfirm`, `isInteractive`, decline markers, and `claimFirstRunPrompt`. That last one is why it exists — "at most one first-run setup question per run" cannot be enforced while each prompt owns its own gating, and a fresh machine can otherwise hit both named-hosts setup and the menu bar offer in one `dev`.
- - `run-registry.ts` stores private `~/.buncargo/runs.json` with additive per-session identity, process birth identity, selected service/runtime/binary/alias metadata, and owned versus reused apps. Multiple new sessions in one root coexist. `run-publish.ts` serializes updates and terminal states cannot regress to ready. Read-only consumers filter live entries without writing; writers prune. `stop --run` selects an exact session.
- - `primary-app.ts` answers "which app is this project about" once, from `options.primaryApp`. `resolvePrimaryApp` infers from the dependency graph when nothing is configured; `configuredPrimaryApp` never infers and is what named hosts use, because inferring an owner for the bare `myapp.localhost` would silently move a name people have bookmarked.
- - `service-identity.ts` decides what a service *is* from its preset rather than its name. The banner used `name.includes("postgres")`, so a service keyed `db` from `service.postgres()` got no TablePlus link while the compose side knew the preset all along. Banner, run registry and menu bar app now share one answer, and `tablePlusUrl` lives here.
- - `menubar.ts` is the BuncargoBar app from the CLI side: detection, GitHub release download with checksum verification, install, update, uninstall. The CLI is the only updater (`docs/bar-updates.md`); the app has no checker, so two updaters never race on one bundle. `fetchLatestBarRelease` filters the releases list by the `bar-v` tag prefix rather than using `releases/latest`, which would return whichever tag was published most recently, usually a CLI one.
- - `secrets/infisical.ts` fetches each Infisical scope once per process, the way `hanzio/secrets` does, with the same defaults (EU `siteUrl`). `shared-request.ts` caches successful requests and gives each caller its own cancellation/timeout wait; the final waiter cancels and drains the underlying work before rejecting. CLI authentication shares the same lifetime across different scopes. The CLI session token is cached per site and binary alongside scope fetches, evicted on rejection, and cleared by `clearScopeSecretsCache`; organization exchanges stay per scope. The CLI is only asked for `infisical user get token`, under a `withFileLock` on `~/.buncargo/infisical-cli`, because concurrent Infisical CLI processes hang. When `organizationId` differs from the token's claim, the token is exchanged with `select-organization`, and the scoped token stays in memory so the CLI's own session is never switched. The secrets are listed over HTTP (v4, imports beneath the folder's own values). A universal-auth identity replaces the CLI for commands (`infisicalMachineCredentials` in `runtime-flags.ts`). App processes still skip the fetch under a machine identity, because their own loaders authenticate without the CLI. `process/dev-servers.ts` injects app scopes in `startDevServers`, the one function both spawn paths reach, and refuses to spawn when a `secrets.required` key is missing everywhere. `environment/env-vars.ts` `resolveSecrets` gives `exec` (and so migrations, hooks and tasks), the seed and prisma their scope: explicit, else the app's, else the config-level one, always beneath `process.env` and the computed env. Hanzio's public loader only returns named keys, so it is ported here rather than depended on; sharing code needs hanzio to export an all-keys fetch. A failure warns once and continues. Never log a value, and never echo the CLI's output or a response body in an error. `fake-infisical.testing.ts` is the HTTP server and CLI the tests run against (`*.testing.ts` is excluded from the package).
- - `sleep.ts` is a leaf on its own rather than part of `utils.ts`, which also holds `getEnvVar` and therefore imports port allocation, the host plan and the network helpers. The hosts daemon needs nothing but `sleep`, and taking it from `utils` pulled that whole graph into the single file a root launchd job executes. `utils.ts` re-exports it, because `buncargo/core/utils` is a published entry point.
- - `timing.ts` measures CLI entry through actual app readiness (or startup failure), including config/ports, preparation, tunnels and both waves. `--timing-json` includes numeric-only startup metrics. Keep diagnostics free of commands, secrets and environment values; counters are dormant when unobserved.
- - `withBindProbe` (`process/port-owner.ts`) wraps the allocator's owner lookup: a port the lookup reports free but that will not bind on `127.0.0.1`, `0.0.0.0` or `::` is held by something `lsof` cannot show this user (a root macOS service) and is foreign. Every address is tried because they do not block each other. It binds only ports the lookup found nobody on, so ours are never touched.
- - `process/port-snapshot.ts` is one reading of every TCP listener (`lsof -Fpcn`), and `createPortOwnerSnapshot` in `port-owner.ts` answers "who holds this port" for many ports from it. A dev run asks that question in four places — the allocator, the service preflight, `classifyCliApps` and the spawner — and each answer used to cost an `lsof`, a container listing, a `ps` and a second `lsof`, so a small config forked about thirty times before the first server started. The snapshot is created per phase and thrown away; anything that changes ownership on purpose (`killPortOwner`, the takeover) takes a fresh reading. The spawner takes one **per wave**, because wave 2 runs after wave-1 servers have bound their ports.
- - `tool-binary.ts`'s `lookupOnPath` scans `PATH` with `access` rather than shelling out to `command -v`. It is a builtin, so it looked free, but it is still a fork and an exec — reached for `docker`, `container` and `mkcert` before a run starts anything.
- - `registry-file.ts` reads/writes the persisted state files (`routes.json`, `hosts-daemon.json`, `hosts-service.json`, `ports.json`, `public-tunnels.json`) through typed validators. Writes go via temp file + rename: the hosts daemon re-reads `routes.json` every second, and a truncating write would let it read the file empty and conclude there is no state. A read is lenient by default and `strict` for a consumer that only reads: a missing file is "no state yet", but an unreadable one is state we cannot see, and the daemon must fail rather than serve an empty world. Writers stay lenient — they can repair the file, while throwing would strand them behind one only a human could delete.
- - `file-lock.ts` guards every shared read-modify-write using kernel flock on a persistent `.lock.v2` inode. Never unlink that inode or steal a live holder. Death releases the kernel lock; acquisition times out with an error and never executes unlocked. Bun FFI loads lazily on macOS/Linux; Windows users need WSL.
- - `tool-binary.ts` resolves external binaries: env override, then `PATH`, then the download cache. That cache is `~/.buncargo/bin`, not `tmpdir()`, which macOS purges — a vanished `mkcert` takes named hosts down on the next run that has to widen the certificate.
-  - `port-allocation.ts` hashes a project offset, probes conflicts, and persists `.buncargo/ports.json`. `probeConflicts: false` turns the probe off for a read: `getEnvVar` answers a `vite.config.ts` with the ports the environment is *using*, and cannot resolve a runtime without importing the backends that import it back, so probing there would read this project's own service container as foreign and shift the block onto a port nothing is listening on. It takes the resolved runtime for the same reason the readiness check does: asking Docker about a port an Apple container published reports the `container` forwarder process, which classifies as a foreign occupant and shifts the offset by `PORT_OFFSET_STEP`. A shifted port changes the generated model, which changes Apple's `buncargo.config-hash`, so every run recreated its own containers and alternated between two ports. A container of ours on the *other* backend must still shift — that port really is taken.
- - `process/` is command execution (`exec.ts`), the dev-server spawner (`dev-servers.ts`: waves, ownership, captures, restarts) and the single-app spawn it drives (`app-process.ts`: shell, prefixed output, the `script` tee, prebuild), port ownership/kill classification (`port-owner.ts`), PID lifecycle (`lifecycle.ts`) and production builds (`build.ts`), re-exported from `process/index.ts`.
- - `isProcessAlive` counts `EPERM` as alive. It is the ordinary answer when an unelevated CLI asks about the root hosts daemon, and only `ESRCH` means gone. Reading `EPERM` as dead had a dev run break the daemon's registry lock the moment it held one — the exact race the lock exists to prevent — and prune every route the daemon owned.
-  - `hosts/` is named `.localhost` HTTPS: hostname planning, user-level `~/.buncargo/routes.json`, mkcert, loopback proxy daemon, `/etc/hosts` sync, and first-run onboarding.
-    - `daemon.ts` is the server (what `hostsd.js` bundles); `daemon-client.ts` is the CLI side (health readers, `waitForDaemonRoutes`, `ensureHostsDaemonRunning`) and `daemon-config.ts` is the port/pidfile state both share. The direction is one-way: the daemon must never import the client, which reaches for the service manifest and the container runtimes to name a `:443` squatter. That split, plus the `sleep` leaf, is what keeps `dist/hostsd.js` down to the 19 modules it actually needs.
-    - `ensureHostsDaemonRunning` never starts a daemon itself. A user-level one could not bind `:443` beside the service, and now that the listener sets `SO_REUSEPORT` it would bind *successfully* and the two would answer from separate route maps at random. `runHostsDaemon` refuses to start when another live pid is already answering, on the foreground path only — under `KeepAlive` an exit there would just be respawned.
-    - `cert-names.ts` remembers which certificate names each repo root wants. The leaf used to be minted from the live route registry alone, so a project stopping dropped its names and starting it again reminted — and a remint rebinds the listener, dropping every proxied websocket on the machine, including other projects' HMR sockets. Entries are retired when their checkout is gone from disk, which is the only signal that separates "not running" from "no longer exists".
-    - `certificateHostnames` adds `*.<hostname>` and one wildcard per ancestor down to one label above the TLD, so a new worktree of a known project needs no remint at all. A wildcard covers exactly one label, which is why both directions are needed. Never `*.<tld>`: browsers reject it and it would let any project serve any other's name. `certificateCovers` applies the same one-label rule, so `certNeedsRenewal` does not report a gap for a name a wildcard already serves.
-    - `service-files.ts` builds the launchd plist / systemd unit (pure); `privileged.ts` is the one `sudo` seam, injectable so `service.ts` can be tested without a password prompt; `service.ts` installs, removes and validates the service.
-    - Installs are all-or-nothing: a unit file left behind by a failed load would make `isHostsServiceInstalled()` report success and every later run would skip setup. On failure `service.ts` removes the file it wrote.
-   - `daemon-bundle.ts` owns the one file the service executes: `dist/hostsd.js`, bundled from `src/cli/hostsd.ts` and installed to `/usr/local/libexec/buncargo/hostsd-<version>.js`. The service cannot run `dist/cli/bin.js` — it is code-split across sibling chunks, it disappears when a project reinstalls dependencies, and macOS denies a root daemon any path under `~/Documents`, so launchd cannot even read it. Installing a single root-owned file answers all three and stops root executing a user-writable file.
-   - The daemon runs as root under launchd/systemd, which give it a minimal `PATH` and no `HOME`. `privilegedDaemonEnv` injects `HOME` and `SUDO_*` so it reads the installing user's `~/.buncargo` and chowns what it writes back to them.
-   - The daemon spawns nothing. `certificates.ts` mints the leaf in the CLI, where `mkcert` resolves the way it does interactively; the daemon polls `certificateFingerprint()`, rebinds when the CLI reminted underneath it, and reports `describeCertificateGap()` rather than shelling out as root.
-   - Minting and reading the pair both go through `withFileLock` on the cert path, and `mintCert` renames the two files in (key first, cert last) instead of letting `mkcert` write them in place. Landing a pair is two steps whichever way it is done, so an unlocked daemon can bind a new certificate against the previous key and take every named URL down until the next reload.
-   - `dev-hosts.ts` mints for the plan's hostnames *before* publishing them to the registry, via `syncCertificateForRoutes({ include })`. Published first, a hostname is one the daemon's next poll tries to serve with a certificate that omits it. `activateNamedHosts` returns its warnings rather than printing them: a run that goes on to take over another one activates twice, and the first failure — the other run still owning the hostnames — is one the second attempt undoes, so printing it there would have the banner contradict it three lines later.
-   - `hosts-service.json` records what the service was installed with. The bundle path carries the version it was built from, so `describeStaleHostsService()` catches both a vanished path and an upgraded CLI still pointing at the previous bundle, instead of silently degrading to `localhost:port`. It also records the bundle's content hash, because the path stops at the version: a rebuild during development passes every path comparison while running code that no longer matches the CLI. Either side being unknown means "cannot compare", never "stale".
-    - `runHostsDaemon` never lets a `reload()` throw escape: `KeepAlive` would respawn it forever. Failures go to `/var/log/buncargo-hosts.log` and retry on a widening backoff.
-   - A rebind binds the replacement **before** stopping the old listener, under `SO_REUSEPORT`. Stopping first left a window where nothing answered `:443`, and a CLI health probe landing in it reported the daemon as down — which the remint for a new worktree's hostnames makes likely. A failed bind therefore leaves the previous listener serving and `lastCertKey` unadvanced, so the next reload retries.
-   - `waitForDaemonRoutes` retries a probe that does not answer rather than failing on it, for the same reason. It still distinguishes the two outcomes: a daemon that never answered needs a restart; one that answered without the hostname has a registry it is not picking up.
-   - `watchHostsState` reloads on a filesystem event instead of waiting for the next poll, which is 0-1000ms of pure waiting on every run in every worktree. It watches the *directories*, because writes land through a temp file and a rename, so a file watch would hold an inode that never comes back. The 1s poll stays as the backstop — it is also what prunes routes whose owner died, which no event announces — and `MAX_RELOAD_BACKOFF_MS` is 5s, because a reload is a file read and a longer ceiling delayed every other project's routes over one project's problem.
-   - `upsertHostRoutes` answers a second `buncargo dev` in the same checkout, pointing at the same port, with `keep` rather than a conflict: it is reusing the servers the first run started, not competing for the hostname. The live owner stays the owner, because `releaseNamedHosts` filters by pid and the route has to disappear when the run owning the servers exits. Refusing instead left that run printing `localhost:port` while the named URLs worked.
-   - `syncCertificateForRoutes` runs a **second** time in `activateNamedHosts`, after the routes are published. The first pass reads the registry before publishing, so a run that minted in that gap produced a certificate covering itself and not us. The second pass runs under the same lock, sees every concurrent run's routes, and mints nothing when the certificate is already sufficient.
-   - `syncHostsFile` writes through a temp file and a rename. `writeFileSync` truncates in place, and every name resolution on the machine reads this file — including the `localhost` entry the system itself depends on.
-   - `prune` drops a static (pid-less) route whose `root` no longer exists. Nothing else retires one, so a deleted worktree kept its hostnames in the registry, and in `/etc/hosts`, forever.
-   - Only a reminted certificate rebinds the listener. `lookup` reads the live route map, so a route change needs no restart, and restarting on one would drop every proxied websocket each time an app registers or expires. That rule lives in `createHostsReloader`, which takes every edge (routes, fingerprint, proxy, `/etc/hosts`, clock, exit) as an injected dependency so it can be tested without binding a port; `runHostsDaemon` is only the composition that supplies the real ones.
-   - `isProxyHealthy` probes the one scheme `readDaemonConfig().tls` says the daemon serves and validates the health body, not just the status. `ensureHostsDaemonRunning` returns early when health passes and never reaches the squatter check, so accepting any 200 on `:443` would hand the whole flow to whatever else is listening. Do **not** gate it on `routes > 0`: the daemon binds before any route exists, and a fresh machine would report itself down and fall through to the squatter path.
- - The listener and the reload loop fail independently, so health alone proves nothing about routing: a loop that stops leaves `Bun.serve` answering 200 while every named URL 404s against a frozen map. `lastReloadAt` travels in the health body, the proxy notices a stale map **from the request path** (a timer-based watchdog would die with the timers it watches), and the daemon reloads in-band before falling back to `process.exit(1)` for `KeepAlive` to restart. On the CLI side `waitForDaemonRoutes` is what stands between the registry and the banner — a route is a file until the daemon picks it up, and advertising it earlier is how https URLs come to point at our own 404. A daemon that reports no `hostnames` is unverifiable, not failing.
-   - `proxy.ts` repeats the client's `sec-websocket-protocol` to the upstream and back. Vite only adopts an upgrade whose protocol is `vite-hmr`; strip it and the socket stays in Vite's HTTP server with no `error` listener, so the next reset kills the dev server with an unhandled `ECONNRESET`. For the same reason `stop()` closes bridged upstreams before the forced server stop, and an upgrade Bun refuses gets a 400 rather than being forwarded over `fetch`, which cannot finish a handshake.
-   - Both `Bun.serve` calls in `startLocalProxy` set `idleTimeout: 0`. A proxy has no say in how often its upstream speaks, and Bun's 10s default counts a quiet streamed response as idle, so it resets SSE, oRPC Event Iterators and idle HMR sockets mid-body — the browser reports that as `ERR_INCOMPLETE_CHUNKED_ENCODING` on a request that already returned 200. Anything that keep-alives less often than 10s (oRPC defaults to 15s, tuned for hosted proxies) dies before its first ping. Do not answer this by shortening the app's keep-alive; the proxy is what is wrong.
-- `src/expo/`, `src/shopify/`, `src/supabase/` (`buncargo/expo`, `buncargo/shopify`, `buncargo/supabase`)
-  - Integrations: plain `BuncargoIntegration` objects applied by `config/integrations.ts` (`applyIntegrations`) in order before validation. It composes hooks (the config's first), appends checks, and is idempotent (a symbol marks an applied config). Core reaches integrations only through `appEnv`, `describeApp`, `bannerHint`, `describe`, `checks` and `commands`. Expo lives entirely there: without `expo()` no app is Expo. `cli/integration-commands.ts` dispatches `buncargo <name> <cmd>`, preferring the configured instance (its options) and falling back to the built-ins, so `expo sim` works without a config.
-  - Shopify: the CLI app is `essential: false` with `p`/`g` actions and no `interactive`; a `preflight` (`login.ts`) trusts an unexpired stored session and otherwise runs `shopify app info --json` with the terminal, falling back to `auth login` — never `CI=1`, which also disables the device-code login. `link.ts` links into a scratch toml and takes only `client_id` and `name`, the rest from `shopify.app.toml` and the target's `dev_store_url`, because `app config link` rewrites the whole file from the app's bare remote config. The link fix is only offered without a valid `client_id`; a `CheckOutcome` may set its own `severity`, which is how an expired session warns while a missing one fails.
-  - Shopify: one owner per process. The app toml's `web_directories` points at the generated `.buncargo/shopify/web`, whose web has the frontend's fixed `port` and runs only `buncargo wait --hold`. An empty `web_directories` makes Shopify CLI start every `shopify.web.toml`, a second API and Vite. `config()` is lenient without the toml, so CI and fresh clones load; the checks report it. `cli-contract.test.ts` (opt-in) pins the bundle strings buncargo depends on in 3.x and 4.x; `example/shopify-plugin` boots end to end with a fake `shopify` binary.
-  - Stacks: `BuncargoIntegration.stacks` is containers another CLI runs, and `ServiceConfig.external: { stack }` the services one provides. They are allocated ports, URLs, env, hosts and registry rows like any service, and never reach the Compose model (`buildComposeModel` skips them; `environment/stacks.ts` splits them out). Selecting one of a stack's services selects all of them (`resolveServiceDependencies`), because one CLI starts them together. `lifecycle.ts` runs `stack.up` beside `compose up`, and `stop()` runs every stack's `down` argv. The claim records that argv in the run entry's `stacks` (and gives external services `stack` instead of `container`), so the sweep can stop a released stack after its hold with no config: `sweepStacks` decides with the same `decideSweep`, counting the stack as running (its containers carry none of our labels, so nothing lists them), clears `stacks` once stopped, and `finishedSessions` never retires an entry that still has some. `pendingStacks` keeps the watchdog alive meanwhile. `stop` refuses one external service (exit 3) and runs the stacks when stopping the whole run. A buncargo older than this retires a stack-only entry at once, leaving that stack running as it would without the integration.
-  - A stack's containers must carry `com.docker.compose.project` = `externalStackProjectName(projectName)` (`core/ports.ts`: the name itself up to 40 characters, else a prefix plus a hash). `classifyPortOccupant` reads that label as this run's, which is the whole ownership seam: without it the allocator sees the stack's ports as foreign and shifts the block on every warm start. The Supabase CLI sets the label from its project id, and cuts ids at 40 characters, which is where the limit comes from. Compose ignores those containers on `down`: they have no `com.docker.compose.service` label.
-  - Supabase: the CLI reads every `config.toml` key from a `SUPABASE_<SECTION>_<KEY>` env var, so `config()` never rewrites the toml: the env builder sets the project id, the ports (unpublished ones as base + `portOffset`) and auth's site and redirect URLs, plus `SUPABASE_URL`/keys/`SUPABASE_DB_URL` for apps, and `buncargo exec -- supabase …` targets the checkout for free. The anon/service-role keys are HS256 over the CLI's fixed demo claims, signed with `auth.jwt_secret`, and match `supabase status` byte for byte; the publishable/secret keys are the CLI's local constants. `supabase start` on a running stack takes under a second and `migration up` with nothing to apply 0.3s, so neither is skipped by a check of ours. `stop` removes containers and keeps the volume (24s to start again), which is why the idle hold matters. An excluded container's service is not added. A stack keeps the settings it started with until it is stopped.
-- `src/config/discover-apps.ts`: `discoverApps` marks its apps with an enumerable symbol (it survives spreads) for `build --discovered`.
-- Process ordering and output: `core/process/start-order.ts` turns `startAfter` into layers inside the two tunnel phases (without `startAfter` a phase is one layer, the old wave). `core/process/output-capture.ts` matches complete lines only, because a URL cut off mid-chunk is still a valid URL. For the same reason it joins rows an app wrapped itself (Ink at a narrow pane's width) back onto a line ending in a URL (`joinWrappedUrls`), holds a trailing `\r` for its `\n`, never takes an incomplete `publicUrl` (`looksLikeCompleteUrl`: a dotted host with a TLD, not stopping inside `trycloudflare.com`), and lets a URL ending the newest line wait for the row that may continue it. The attached app is teed through `script` when stdin is a TTY, else through pipes. `ProcessOwner.retire` replaces a child for `restartOn` without its exit counting as a crash. `environment/captures.ts` is the one place a capture changes state (public URLs, `captured`, hooks, generated files); `setPublicUrls` replaces the map, so captures merge into it. A capture's `label` and `env` are what make a value generic: `env.details()` (labelled captures, then integrations' `describe`) feeds `buncargo env`, the registry's `details` and BuncargoBar, and `env` names go into the shared env beneath `config.env`. `cli/commands/open.ts` (`url`, `open`) resolves app names, capture names, then those labels, so no integration needs its own URL commands. `environment/generated-files.ts` writes atomically and skips unchanged content.
-- `core/leases.ts`: exclusive leases in `~/.buncargo/leases.json`, held by the `dev` process and free once it is gone. Acquisition and `transferLease` share a per-key gate; transfer checks the observed holder before stopping and again before writing. The registry lock is never held during stop, so the old run can release its leases. `cli/dev-leases.ts` takes over via `stop.ts`'s `stopTarget`, requiring a successful stop and refusing a starting app without a pid; declined, it skips an `essential: false` app (returned, dropped from the spawn set before the summary and banner, and repeated into the TUI's Overview as events, because the TUI hides the scrollback) and refuses an essential one. Every refusal names the holder's checkout path and `--takeover`: a run that quietly started without the Shopify CLI was the bug.
-- `src/types/`
-  - Type surface canonical source (via `all-types.ts` + `index.ts`).
-- `menubar/`
-  - BuncargoBar, the macOS menu bar app (Swift 6 / SwiftUI `MenuBarExtra`, SwiftPM, no Xcode project). Not shipped in the npm package and not built by `bun run build`; it releases on its own `bar-v*` tags.
-  - It is a **reader**. It decodes `~/.buncargo/runs.json` and shells every mutation out to `buncargo stop`, using the interpreter recorded in the entry so a worktree on a different version stops with its own build. It never signals a process or talks to Docker itself.
-  - `fixtures/runs.v1.json` is the schema contract. `menubar/scripts/smoke-test.sh` runs the app's `--status` mode against it and `src/core/run-registry.fixture.test.ts` decodes the same file, so a field one side drops fails a test on both.
-  - `RunRegistry.stateDirectory` reads `HOME` before `homeDirectoryForCurrentUser`, which ignores the environment — without that the smoke test is silently handed the developer's real registry.
+## Words
 
-## Canonical Imports
+Use these the same way in code, comments and PRs. Full table: `docs/internals/glossary.md`.
 
-- Prefer directory index modules over ad-hoc wrapper files.
-- Canonical examples:
-  - `./config/index`
-  - `./environment/index`
-  - `./loader/index`
-  - `./typecheck/index`
-  - `./types/index`
-- Do not reintroduce thin top-level wrapper files that only re-export another module.
+- **checkout** (or root): one directory with a `dev.config.ts`, the main clone or a worktree. The
+  unit of isolation.
+- **run**: one `buncargo dev` or library `start()`. Its **session** is its entry in
+  `~/.buncargo/runs.json`.
+- **claim** a run before its first container exists. **Release** it when it ends on purpose: the
+  containers wait out the **idle hold** for the next run. **Stop** means tear down now. **Retire**
+  means remove the entry because nothing is left to hold.
+- **service**: a container. **App**: a supervised process. **Stack**: containers another CLI runs
+  for an integration. **Worker**: an app with no endpoint.
+- **sweep**: the one cleanup policy, run by the per-machine **watchdog** and by `ls`/`doctor`.
+- **surface**: a place one behavior must exist (see below).
 
-## Architectural Rules
+## The ways to hurt yourself
 
-1. Keep Docker concerns separated:
-   - `src/docker-compose/*` = compose artifact generation.
-   - `src/docker/*` = runtime container operations.
-2. Keep modules single-purpose:
-   - If a file grows large or mixes concerns, split it.
-3. Keep public API stable through `src/index.ts`:
-   - New public exports should be intentionally added there.
-4. Keep tests co-located with code:
-   - Use `*.test.ts` in the same folder as the module under test.
-5. Prefer composition over monolith files:
-   - Extract helpers for logging, seeding, command handling, etc.
+This machine runs the developer's real dev environments while you work, including other
+worktrees of this repo and of the projects that use it.
 
-## Coding Standards
+1. **The sweep against real Docker.** Anything that runs the sweep, the watchdog or
+   `dev --down --all` with an isolated `HOME` but a reachable container runtime sees every real
+   stack on the machine as unowned and tears it down. Isolate both: stub the adapters, or point
+   `DOCKER_HOST` at nothing. `bun test` already stubs `docker` and `container`
+   (`scripts/test-runtime-isolation.ts`); scripts and manual runs do not.
+2. **Volumes.** Leave volumes unlabelled and unremoved. Labelling a Compose volume makes Compose
+   prompt "Recreate (data will be lost)?" and hangs every non-interactive run. Only
+   `buncargo prune`, after confirmation, removes one.
+3. **Killing by pattern.** Stop only what you started, by the pid you captured or through
+   `buncargo stop`. Never `pkill -f`, `killall`, or `docker rm` by name: other worktrees' runs and
+   your own agent share these names and paths.
+4. **The developer's machine state.** `~/.buncargo`, `/etc/hosts`, the root hosts daemon and its
+   certificates are live. In tests, point `HOME` at a temporary directory and inject the seams the
+   modules take (`privileged`, the reloader's edges, `copy`). Never run `sudo`, and never
+   `dev --reset` or `dev --down --all` to "fix" something.
 
-- Use TypeScript strict mode patterns.
-- Prefer small, pure helper functions where possible.
-- Keep function and file names descriptive and domain-oriented.
-- Use existing shared utilities before introducing new duplicates.
-- Avoid hidden side effects; keep I/O boundaries explicit.
-- Keep import paths aligned to the current folder architecture (no legacy root paths).
-- Separate logical steps with blank lines so setup, validation, side effects and cleanup are easy to scan.
-- Add short comments that explain intent, non-obvious constraints and transitions between phases. Keep closely related statements grouped; avoid narrating every line.
+## Hit every surface
 
-## API and Behavior Changes
+The most common defect here is a change that works on the path you tested and is missing on the
+others. Before calling work done, walk this list and say which entries applied:
 
-- Treat changes to `src/index.ts`, CLI command behavior, and exported types as high-impact.
-- If changing behavior, update/extend tests in the same change.
-- Keep error messages actionable and user-oriented.
+- **CLI and library.** `runDevFlow` (`src/cli/run-cli.ts`) and `start()` (`src/environment/`) are
+  two entry points to one behavior. Claims, seeding, server hooks, secrets and readiness must
+  match on both.
+- **Runtimes.** Docker (`src/docker/`) and Apple `container` (`src/apple-container/`) sit behind
+  `ContainerRuntimeAdapter`. A container behavior needs a decision per backend, even if it is "not
+  supported here".
+- **Output modes.** Stream mode and the TUI both render app output, answer `restart` and `send`,
+  and write the per-run logs.
+- **Run registry readers.** `runs.json` is read by `stop`, `ls`, `status`, the sweep, `dev --detach`
+  and BuncargoBar. A field change updates `menubar/fixtures/runs.v1.json`, which both sides test
+  against.
+- **Machine-readable output.** `--json`, exit codes and `buncargo help agents` are contracts agents
+  depend on.
+- **Reverse states.** A way in needs a way out and a way to see it: claim/release/stop,
+  setup/uninstall, takeover/reuse. A one-way door is a bug.
+- **Integrations.** Expo, Shopify and Supabase reach core only through `BuncargoIntegration`
+  hooks. A core change that assumes one of them goes through those hooks instead.
+- **Docs.** `readme.md` and `docs/reference.md` for usage, `docs/migration.md` for a breaking
+  change, and the [documentation rules](#documentation) for anything else.
+
+## Before you change a subsystem
+
+Read the matching internal note first. Each one records the constraints and the incidents behind
+them that the code alone does not explain.
+
+- Run lifecycle, `runs.json`, `stop`, the sweep, watchdog, volumes, BuncargoBar:
+  `docs/internals/run-registry-and-sweep.md`
+- `src/core/hosts/`, certificates, the proxy, `/etc/hosts`: `docs/internals/named-hosts.md`
+- Compose generation, `src/container-runtime/`, either backend: `docs/internals/container-runtimes.md`
+- Port allocation, offsets, port owners: `docs/internals/ports.md`
+- Spawning, waves, restarts, `essential`, workers, leases: `docs/internals/process-supervision.md`
+- The TUI, pseudo-terminals, app output and logs: `docs/internals/tui.md`
+- `src/environment/`, seeding, captures, Prisma: `docs/internals/environment.md`
+- CLI commands, flags, takeover, detach, typecheck: `docs/internals/cli.md`
+- Infisical secrets: `docs/internals/secrets.md`
+- Expo, Shopify, Supabase, stacks: `docs/internals/integrations.md`
+- State paths, file locks, persisted files, `runtime-flags.ts`, prompts: `docs/internals/core.md`
+- frp sharing: `docs/internals/connect.md`
+
+How a run fits together, and the startup invariants: `docs/internals/overview.md`.
+
+## Working in this repo
+
+- `bun install` installs. Worktrees need it before anything resolves.
+- `example/playground` is a runnable project (Postgres, a Bun API, Vite) for trying the CLI end to
+  end; run the CLI from source there with `bun ../../src/cli/bin.ts dev --detach`. The
+  `verify-buncargo` skill (`.agents/skills/verify-buncargo/SKILL.md`) is the full procedure. That
+  run is real: it claims ports, containers and hostnames on the developer's machine, so stop it
+  with `buncargo stop --all` when you are done.
+- Prefer a hermetic test over a real run. Reach for the playground when the change is about what a
+  real process, container or terminal does.
+
+## Verifying
+
+- While iterating, run the tests you touched: `bun test <files>`.
+- Before finishing a substantive change, run all three: `bun run build`, `bun run lint:write`
+  (typecheck, then Biome) and `bun test`. Leave the repo with all three passing.
+- Behavior changes ship with tests for that behavior, co-located as `*.test.ts`. Test what a
+  module observably does, not how it is wired.
+- A test that needs a sleep to pass is wrong. Await the event, poll a condition against a deadline,
+  or inject the clock.
+- Rules with a history of being broken are enforced by `src/architecture.test.ts`. Fix the code
+  rather than widening its allow-list.
+- Opt-in suites (real tunnels, mkcert, the hosts soak, Apple `container`, frp, the Shopify CLI)
+  and when to run them: `docs/testing.md`.
 
 ## Compatibility
 
-`buncargo` is only used by our own projects. Breaking changes are hard cutovers in a major release: no aliases for old names, no readers for old on-disk formats, no deprecation periods. Write what changed in `docs/migration.md` and update the projects instead.
+Breaking changes are hard cutovers in a major release: no aliases for old names, no readers for
+old on-disk formats, no deprecation periods. Write what changed in `docs/migration.md` and update
+the projects instead. Treat `src/index.ts`, the published subpath exports, CLI behavior and
+exported types as high-impact.
 
-## Releasing
+## Pull requests and releasing
 
-Releases happen by merging (`docs/releasing.md`). Release Please reads squash-merged PR titles as conventional commits and keeps one release PR open on `main`; merging it tags, publishes the npm package and builds BuncargoBar.
+Releases happen by merging; Release Please reads squash-merged PR titles as conventional commits.
+Procedure and recovery: `docs/releasing.md`.
 
-- PR titles are conventional commits. `fix:` releases a patch, `feat:` a minor, `feat!:` (or a `BREAKING CHANGE:` footer) a major. `chore:`, `docs:`, `refactor:`, `test:` release nothing.
-- The squash **body** has to parse too, not just the title. GitHub squashes with the PR description as the body, and the conventional-commits parser reads the whole message: a fenced code block containing a line like `defineDevConfig({` is read as a `type(scope)` header, the parse throws, and Release Please drops the commit with `commit could not be parsed` and cuts no release at all — a silent no-op, since the workflow itself is green. Keep PR descriptions plain prose and bullets, or pass `--subject`/`--body` to `gh pr merge --squash` and keep the code sample in the PR only.
-- A PR touching only `menubar/` bumps BuncargoBar; anything else bumps the CLI; both when it touches both.
-- Never edit `version` in `package.json`, `menubar/version.txt` or a `CHANGELOG.md` by hand; the release PR owns them.
-- Release retries resolve existing releases from manifest tags at the exact run commit (`scripts/release-targets.cjs`), not only Release Please’s one-time `release_created` outputs. Skip npm versions and complete bar assets that already exist; fail on API errors instead of treating them as absence.
+- Never open a PR unless asked.
+- Titles are conventional commits with a scope: `fix(hosts): …` releases a patch, `feat(cli): …` a
+  minor, `feat(cli)!: …` a major. `chore`, `docs`, `refactor`, `test` and `ci` release nothing. Use
+  `bar` as the scope for `menubar/`. A PR touching only `menubar/` bumps BuncargoBar, anything else
+  bumps the CLI, and both when it touches both.
+- The squash **body** must parse too. Keep PR descriptions plain prose and `-` bullets: a fenced
+  code block or a line shaped like `word(scope):` makes the parse throw, and Release Please
+  silently cuts no release with CI green. `.github/pull_request_template.md` spells out the
+  format.
+- `package.json` `version`, `menubar/version.txt` and every `CHANGELOG.md` belong to the release
+  PR.
 
-## Validation Checklist (for every substantive change)
+## Documentation
 
-Run before finishing:
+Most changes need no internal documentation change. Agents can read the code.
 
-1. `bun run build`
-2. `bun run lint:write`
-3. `bun test`
+- A reason that only one function or file needs goes in a short comment there, and moves with the
+  code.
+- `docs/internals/` is for decisions and their reasons, constraints that span modules, and traps
+  that are hard to discover from the source. Before adding a paragraph, ask what a maintainer
+  would get wrong without it. When a documented decision changes, rewrite or remove the affected
+  text; do not append a second account of the new behavior.
+- `readme.md`, `docs/reference.md` and `docs/integrations.md` help users get something done. Keep
+  them in the product's voice, free of internals. Update the section whose usage changed.
+- This file holds what every task needs. A subsystem's detail belongs in its internal note,
+  reached through the list above.
 
-If relevant, also run:
+## Plans and scratch work
 
-4. `bun run lint`
+Keep implementation plans, research notes and scratch files out of the repository; `.plans/` is
+gitignored for them. A merged PR is the implementation record.
 
-Do not leave the repo in a state where build/tests fail.
+## Where code lives
 
-## Cloudflared tests (co-located)
+All library source is under `src/`; tests sit beside the module they test.
 
-- **[`src/cli/run-cli.test.ts`](src/cli/run-cli.test.ts)** — `runCli expose routing`: stub `DevEnvironment` and `cliTestTunnel` assert `startPublicTunnels` runs only when `--expose` is present (no cloudflared).
-- **[`src/core/quick-tunnel/quick-tunnel.test.ts`](src/core/quick-tunnel/quick-tunnel.test.ts)** — **Smoke** (public HTTPS URL from `getURL()`) and **E2E** (curl through `*.trycloudflare.com`) are **opt-in**: Cloudflare quick-tunnel may **429** rate-limit; default `bun test` skips them. Set `BUNCARGO_TEST_CLOUDFLARED_SMOKE=1` for smoke; add `BUNCARGO_TEST_CLOUDFLARED_E2E=1` for E2E. First run may download `cloudflared` if missing.
+- `index.ts`: the public API. New public exports are added here on purpose.
+- `cli/`: the CLI. `bin.ts` is the executable, `run-cli.ts` the dev flow, `commands/` one module
+  per command, `tui/` the TUI.
+- `config/`: `defineDevConfig`, validation and integration application. Definition, validation and
+  merging stay in separate modules.
+- `environment/`: `createDevEnvironment()`, composed from focused modules built on `context.ts`.
+- `docker-compose/`: Compose model generation and the service presets. No runtime calls.
+- `container-runtime/`: the runtime-neutral adapter port, readiness, inventory, the sweep and
+  volume pruning. Everything outside the backends imports runtimes from here.
+- `docker/`, `apple-container/`: the two backends.
+- `core/`: shared runtime: `process/`, `hosts/`, `secrets/`, `connect/`, the run registry, port
+  allocation, locks and state files.
+- `loader/`: config discovery and loading. `typecheck/`: the workspace typecheck pool. `prisma/`:
+  Prisma integration. `types/`: the type surface (`all-types.ts`, `index.ts`).
+- `expo/`, `shopify/`, `supabase/`: integrations, published as subpaths.
+- `vite/`, `client/`, `runtime/`: small entry points loaded inside users' apps; keep their import
+  graphs tiny.
+- `menubar/` (Swift), `server/` (the connect relay), `example/` (configs and the playground),
+  `scripts/` (CI, benchmarks, package verification).
 
-Convenience scripts (only that file):
+Import a directory through its `index.ts` (`./config/index`, `./environment/index`); do not add
+thin top-level files that only re-export another module.
 
-```bash
-bun run test:integration-cloudflared
-# smoke + E2E:
-bun run test:integration-cloudflared-e2e
-```
+## Taste
 
-GitHub Actions: [`.github/workflows/integration-cloudflared.yml`](.github/workflows/integration-cloudflared.yml) is **workflow_dispatch** only (manual run from the Actions tab); sets `BUNCARGO_TEST_CLOUDFLARED_SMOKE=1` and `BUNCARGO_TEST_CLOUDFLARED_E2E=1`.
-
-### Expose / cloudflared (optional env)
-
-When using `bunx buncargo dev --expose` (Cloudflare quick tunnels), you can tune behavior:
-
-- **`BUNCARGO_EXPOSE_TUNNEL_STAGGER_MS`** — Milliseconds to wait between starting each exposed target (default `900`). Increase if you expose many targets and hit rate limits.
-- **`BUNCARGO_QUICK_TUNNEL_MAX_ATTEMPTS`** — Retries after transient tunnel errors (default `5`).
-- **`BUNCARGO_QUICK_TUNNEL_RETRY_BASE_MS`** — Backoff base in ms; delay is `base × attempt` between retries (default `2000`).
-- **`BUNCARGO_QUICK_TUNNEL_TIMEOUT_MS`** — Max wait for a public `*.trycloudflare.com` URL from `cloudflared` (default `30000`; set `0` to disable the timeout).
-- **`BUNCARGO_CLOUDFLARED_PATH`** — Absolute path to a `cloudflared` binary; when set, buncargo uses it and does not download into `~/.buncargo/bin`.
-- **`CLOUDFLARED_VERSION`** — GitHub release tag for the bundled download when not using `BUNCARGO_CLOUDFLARED_PATH` (default is pinned in [`src/core/runtime-flags.ts`](src/core/runtime-flags.ts); `latest` is also supported).
-
-### Named hosts / mkcert (optional env)
-
-When `options.hosts` is on (`bunx buncargo dev`):
-
-- **`BUNCARGO_HOSTS`** — `0` forces `http://localhost:port` and skips the daemon (same as `--no-hosts`). CI also disables named hosts.
-- **`BUNCARGO_HOSTS_PORT`** — HTTPS port the loopback proxy daemon binds (default `443`). The plain-HTTP `:80` redirect listener is only started when the default port is used.
-- **`BUNCARGO_MKCERT_PATH`** — Absolute path to a `mkcert` binary; when set, buncargo uses it and does not download into `~/.buncargo/bin`.
-- **`BUNCARGO_MKCERT_VERSION`** — GitHub release tag for the bundled `mkcert` download (default `v1.4.4`).
-- **`BUNCARGO_SYNC_HOSTS`** — `0` skips writing the `# buncargo-start` / `# buncargo-end` block in `/etc/hosts`.
-- **`BUNCARGO_TYPECHECK_CONCURRENCY`** — Max overlapping workspace typecheck processes. Default is `availableParallelism()`, capped at 4 locally and 2 in CI.
-
-### Startup timing
-
-- **`BUNCARGO_TIMING=1`** (or `bunx buncargo dev --timing`) — print how long each startup phase took (`hosts`, `containers`, `app ports`) before the dev servers take the terminal. Startup cost is paid on every run in every worktree, so a regression in it has to be visible without a profiler.
-
-### Reading environment flags
-
-All `BUNCARGO_*` (plus `CI` / `CLOUDFLARED_VERSION`) reads live in [`src/core/runtime-flags.ts`](src/core/runtime-flags.ts). Add new flags there instead of reading `process.env` inline: every getter takes the environment as its last argument (defaulting to `process.env`), so tests inject a plain object and nothing is captured at import time. CI detection is `isCI()` — `CI=1|true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL` — and is the same check for named hosts, Docker auto-start, and readiness timeouts.
-
-## Hosts tests (co-located)
-
-- **[`src/core/hosts/plan.test.ts`](src/core/hosts/plan.test.ts)**, **[`registry.test.ts`](src/core/hosts/registry.test.ts)**, **[`proxy.test.ts`](src/core/hosts/proxy.test.ts)**, **[`hosts-file.test.ts`](src/core/hosts/hosts-file.test.ts)** — hermetic: hostname planning, route registry, Host/WS/x-forwarded/508 proxy, `/etc/hosts` block rewrite.
-- **[`src/core/hosts/hosts.integration.test.ts`](src/core/hosts/hosts.integration.test.ts)** — **opt-in** mkcert mint (may download `mkcert` if missing). Default `bun test` skips it. Set `BUNCARGO_TEST_HOSTS=1`. Does **not** require sudo, system trust, or a bind on `:443`.
-
-Convenience script:
-
-```bash
-bun run test:integration-hosts
-```
-
-- **[`src/core/hosts/worktree-soak.test.ts`](src/core/hosts/worktree-soak.test.ts)** — **opt-in** soak for the failure a single run almost never shows: a hostname that "sometimes" does not attach in a worktree, leaving the run on `localhost:port` with no error. It activates several worktrees in parallel, repeatedly, against a real reloader, real file locking and a real mint, and asserts every hostname attached every time. Reverting either the tolerant route wait or the bind-before-stop rebind makes it fail (3 of 20 activations fell back), which is what makes it a regression test rather than one that always passes. Set `BUNCARGO_TEST_HOSTS_SOAK=1`.
-
-```bash
-bun run test:integration-hosts-soak
-```
-
-## Startup reliability invariants
-
-- `docs/startup-reliability-upgrade.md` records deliberate compatibility changes: Bun minimum, exclusive lock upgrade, strict HTTP health endpoints, one-shot modes, hooks, and `if-missing` drift refusal.
-- Build/write one Compose artifact for a start; publish generated YAML atomically and preserve its inode when unchanged. Never hash a different model from the file handed to Docker.
-- Own child process groups from spawn through readiness and shutdown. `detached-app.ts` uses the shared port snapshot on a server exit zero to adopt an out-of-group listener with its birth identity; supervision republishes its pid and cleans it up with the session. Astro foreground markers default beneath app overrides. Signals cancel preparation, builds, health probes and tunnel opening; await bounded TERM/KILL cleanup before CLI exit. Cleanup failures must not mask the original failure or skip other cleanup.
-- Claim the run before preparation. Reconciliation and the sweep share a project gate and recheck live owners. One run exiting must never condemn another run's services.
-- Startup plan validation precedes hosts/runtime mutations. `requiredApps` expands selection, not per-app readiness barriers. Both waves are health-checked once; server hooks wrap actual spawning/readiness on CLI and library paths.
-- `prisma.generateCheck` is opt-in: true means generate. Never automatically skip database migrations or seed checks from a configuration hash.
-- Package verification installs the exact release tarball into a clean consumer; publish that verified artifact with scripts disabled. CI covers macOS/Linux, tested minimum/current Bun, schema consumers and disposable Docker integration. Privileged hosts installation and Apple VM testing remain external runner checks.
-
-## Monorepo startup
-
-- `readme.md` documents app-only selection, workers, finite jobs, preparation ordering, checkout execution and dotenv precedence. Keep examples and option tables aligned with the public types.
-- Environment construction is a runtime-free allocation read. `context.prepareStart` validates selection and resolves/probes infrastructure only for selected services, before host mutations. App-only runs do not write Compose or claim containers.
-- `beforeMigrations` precedes Prisma and ordered custom migrations. Migration/seed `requiredServices` scope preparation; omitted prerequisites prepare whenever a service is selected, while `[]` explicitly permits app-only work. `afterPreparation` uses a second container subset after preparation, with `noDeps` to avoid rerunning completed early jobs. Keep one Compose artifact per start.
-- Workers have no endpoint. `process/worker-ownership.ts` atomically claims per-checkout PID/birth identity before supervision; CLI reuse/takeover and library duplicate refusal must not permit duplicate consumers. Unexpected worker exit zero is a failure. Keep returned library processes supervised and cancellation connected.
-- Jobs require `kind: "job", rerun: "always"`; exited zero satisfies completion, running does not. Apple rejects jobs before mutation until it can report trustworthy exit codes. Compose completion references must target jobs.
-- `core/env-input.ts` is the only dotenv input loader. It returns an isolated root-relative snapshot after config evaluation. Shared generated values beat defaults; app overrides stay last. `exec` uses the existing argv execution primitive and persisted ports without startup or probes.
+- Small, pure functions with I/O at explicit boundaries. Pure decisions (`decideSweep`,
+  `run-plan.ts`, `render.ts`) carry most of the tests.
+- One owner per concern: `runtime-flags.ts` reads environment flags, `docker/binary.ts` spells
+  `docker`, `prompt.ts` asks questions, `child-env.ts` builds child environments, `state-paths.ts`
+  places state. Use the existing owner before writing a second one.
+- Persisted files are written through a temp file and a rename, and shared read-modify-writes go
+  through `withFileLock`.
+- Separate setup, validation, side effects and cleanup with blank lines. Comments explain intent,
+  constraints and phase transitions, never every line.
+- Error messages say what to do next, and name the checkout, port or process involved.
+- Strict TypeScript. Prefer inferred types; `any` is the enemy. A `switch` over a closed union ends
+  in a `never` default.

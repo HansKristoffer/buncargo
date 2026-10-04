@@ -11,3 +11,6 @@ dist
 # Swift build output and the locally built app bundle (menubar/)
 .build/
 menubar/BuncargoBar.app
+
+# Plans, research notes and agent scratch work never belong in the repository.
+.plans/
