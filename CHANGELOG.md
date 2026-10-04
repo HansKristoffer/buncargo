@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.3.0](https://github.com/HansKristoffer/buncargo/compare/v11.2.0...v11.3.0) (2026-10-04)
+
+
+### Features
+
+* **cli:** keep dev runs alive under agents and hidden port holders ([#79](https://github.com/HansKristoffer/buncargo/issues/79)) ([a282bb5](https://github.com/HansKristoffer/buncargo/commit/a282bb56a3168d6d7e038d9d44721d1b9d1f9b85))
+
 ## [11.2.0](https://github.com/HansKristoffer/buncargo/compare/v11.1.0...v11.2.0) (2026-10-04)
 
 
