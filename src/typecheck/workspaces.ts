@@ -17,7 +17,7 @@ export function workspacePatterns(root: string, override?: string[]): string[] {
 		)
 			return declared;
 	} catch {
-		// A standalone checkout without a package manifest keeps legacy discovery.
+		// A standalone checkout without a package manifest: the default patterns.
 	}
 	return DEFAULT_PATTERNS;
 }

@@ -305,25 +305,6 @@ function _probeMergeWithoutBaseApps() {
 	return merged;
 }
 
-function _probeOriginalMergeTypeParameters() {
-	const base = defineDevConfig({
-		projectPrefix: "legacy-merge",
-		services: { db: service.postgres() },
-		apps: { web: { port: 3000, devCommand: false } },
-		env: () => ({ BASE: 1 }),
-	});
-	const merged = mergeConfigs<
-		typeof base.services,
-		NonNullable<typeof base.apps>,
-		{ BASE: number },
-		{ OVERRIDE: string }
-	>(base, { env: () => ({ OVERRIDE: "value" }) });
-	type _Overlay = Expect<
-		Equal<keyof ReturnType<NonNullable<typeof merged.env>>, "BASE" | "OVERRIDE">
-	>;
-	return merged;
-}
-
 function _probeMergeAddingFirstEnvBuilder() {
 	const base = defineDevConfig({
 		projectPrefix: "first-overlay",

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { AppConfig } from "../types";
+import type { AppConfig, ExpoAppOptions } from "../types";
 
 /** What `buncargo sim` needs, resolved once at publish time into the run registry. */
 export interface ExpoAppIdentity {
@@ -12,22 +12,20 @@ export interface ExpoAppIdentity {
 	simulator?: string;
 }
 
-type ExpoAppLike = Pick<AppConfig, "devCommand" | "cwd" | "expo">;
+type ExpoAppLike = Pick<AppConfig, "devCommand" | "cwd">;
 
+/** The default for `expo()` without `apps`: an app whose `devCommand` runs `expo`. */
 export function isExpoApp(config: ExpoAppLike | undefined): boolean {
-	if (!config) return false;
-	if (config.expo !== undefined) return config.expo !== false;
 	return (
-		typeof config.devCommand === "string" && /\bexpo\b/.test(config.devCommand)
+		typeof config?.devCommand === "string" && /\bexpo\b/.test(config.devCommand)
 	);
 }
 
 export function describeExpoApp(
 	root: string,
-	config: ExpoAppLike | undefined,
-): ExpoAppIdentity | undefined {
-	if (!config || !isExpoApp(config)) return undefined;
-	const options = typeof config.expo === "object" ? config.expo : {};
+	config: ExpoAppLike,
+	options: ExpoAppOptions = {},
+): ExpoAppIdentity {
 	const app = readAppJson(resolve(root, config.cwd ?? "."));
 	const declared = Array.isArray(app.scheme) ? app.scheme[0] : app.scheme;
 	const scheme =

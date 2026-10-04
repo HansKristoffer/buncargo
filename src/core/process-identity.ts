@@ -15,11 +15,7 @@ import { recordStartupMetric } from "./startup-metrics";
  * output follows the caller's locale and time zone, so two processes read the
  * same pid differently: a run started from a Danish-locale terminal and a
  * watchdog started from a `C.UTF-8` agent shell disagreed, and the watchdog
- * read the live run as dead. `ps` is now always asked in the C locale and UTC.
- *
- * An identity without the prefix was written by an older version, in
- * whatever environment that version ran in. See {@link matchesProcessIdentity}
- * and {@link processIdentityMatcher} for what each makes of one.
+ * read the live run as dead. `ps` is always asked in the C locale and UTC.
  */
 const IDENTITY_PREFIX = "v2:";
 let bootId: string | undefined;
@@ -48,8 +44,7 @@ function linuxBirth(pid: number): string | undefined {
  * Birth on macOS: `ps -o lstart` for many pids in one fork.
  *
  * Reads stdout whatever the exit status: `ps` exits non-zero when a requested
- * pid is missing, yet still prints the ones it found. `env` is the locale and
- * time zone to ask in; the current format always passes C and UTC.
+ * pid is missing, yet still prints the ones it found.
  */
 function parsePsBirths(stdout: string): Map<number, string> {
 	const births = new Map<number, string>();
@@ -64,10 +59,9 @@ function parsePsBirths(stdout: string): Map<number, string> {
 	return births;
 }
 
-function psBirths(
-	pids: readonly number[],
-	env: NodeJS.ProcessEnv,
-): Map<number, string> {
+const STABLE_PS_ENV = { ...process.env, LC_ALL: "C", TZ: "UTC" };
+
+function psBirths(pids: readonly number[]): Map<number, string> {
 	try {
 		recordStartupMetric("subprocesses");
 		recordStartupMetric("processIdentityReads");
@@ -77,7 +71,7 @@ function psBirths(
 			{
 				encoding: "utf8",
 				timeout: 1000,
-				env,
+				env: STABLE_PS_ENV,
 				stdio: ["ignore", "pipe", "ignore"],
 			},
 		);
@@ -88,8 +82,6 @@ function psBirths(
 	}
 	return new Map();
 }
-
-const STABLE_PS_ENV = { ...process.env, LC_ALL: "C", TZ: "UTC" };
 
 function wantedPids(pids: readonly number[]): number[] {
 	return [...new Set(pids)].filter((pid) => Number.isInteger(pid) && pid > 1);
@@ -126,7 +118,7 @@ export function readProcessIdentities(
 						return birth === undefined ? [] : [[pid, birth] as const];
 					}),
 				)
-			: psBirths(wanted, STABLE_PS_ENV);
+			: psBirths(wanted);
 	return encodeBirths(births);
 }
 
@@ -156,7 +148,6 @@ async function linuxBirthAsync(
 
 async function psBirthsAsync(
 	pids: readonly number[],
-	stable: boolean,
 	signal?: AbortSignal,
 ): Promise<Map<number, string>> {
 	recordStartupMetric("processIdentityReads");
@@ -165,7 +156,7 @@ async function psBirthsAsync(
 		process.cwd(),
 		{},
 		{
-			env: stable ? { LC_ALL: "C", TZ: "UTC" } : {},
+			env: { LC_ALL: "C", TZ: "UTC" },
 			timeoutMs: 1000,
 			killGraceMs: 0,
 			maxBufferBytes: 1024 * 1024,
@@ -197,7 +188,7 @@ export async function readProcessIdentitiesAsync(
 						)
 					).flat(),
 				)
-			: await psBirthsAsync(wanted, true, signal);
+			: await psBirthsAsync(wanted, signal);
 	signal?.throwIfAborted();
 	return encodeBirths(births);
 }
@@ -231,21 +222,6 @@ export async function readCurrentProcessIdentityAsync(
 }
 
 /**
- * The identity an older version would have recorded for this pid.
- *
- * Read in this process's own environment, the way those versions read it, so
- * a record they wrote compares exactly as it did before. It only ever matches
- * when the environments agree, which was already the limit of that format.
- */
-function readLegacyIdentity(pid: number): string | undefined {
-	const birth =
-		process.platform === "linux"
-			? linuxBirth(pid)
-			: psBirths([pid], process.env).get(pid);
-	return birth === undefined ? undefined : hashBirth(birth);
-}
-
-/**
  * Whether `pid` is still the process that was recorded, strictly.
  *
  * For deciding to act on a pid — signalling it, or treating it as the one
@@ -257,9 +233,7 @@ export function matchesProcessIdentity(
 ): boolean {
 	if (!Number.isInteger(pid) || pid <= 1 || !isProcessAlive(pid)) return false;
 	if (identity === undefined) return true;
-	return identity.startsWith(IDENTITY_PREFIX)
-		? readProcessIdentity(pid) === identity
-		: readLegacyIdentity(pid) === identity;
+	return readProcessIdentity(pid) === identity;
 }
 
 export async function matchesProcessIdentityAsync(
@@ -270,13 +244,7 @@ export async function matchesProcessIdentityAsync(
 	signal?.throwIfAborted();
 	if (!Number.isInteger(pid) || pid <= 1 || !isProcessAlive(pid)) return false;
 	if (identity === undefined) return true;
-	if (identity.startsWith(IDENTITY_PREFIX))
-		return (await readProcessIdentityAsync(pid, signal)) === identity;
-	const birth =
-		process.platform === "linux"
-			? await linuxBirthAsync(pid, signal)
-			: (await psBirthsAsync([pid], false, signal)).get(pid);
-	return birth !== undefined && hashBirth(birth) === identity;
+	return (await readProcessIdentityAsync(pid, signal)) === identity;
 }
 
 type IdentityEntry = { pid: number; processIdentity?: string };
@@ -294,9 +262,7 @@ function identityMatcher(
 ): (pid: number, identity?: string) => boolean {
 	return (pid, identity) => {
 		if (!alive.has(pid)) return false;
-		// Older identities cannot be compared across environments; preserve the run.
-		if (identity === undefined || !identity.startsWith(IDENTITY_PREFIX))
-			return true;
+		if (identity === undefined) return true;
 		const actual = identities.get(pid);
 		// Unknown inspection preserves liveness; strict signalling never uses this.
 		return actual === undefined || actual === identity;

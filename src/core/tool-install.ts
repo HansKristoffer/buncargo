@@ -214,22 +214,6 @@ export async function installTool(
 			if (isInstalledTool(to, options.expectedVersion.source)) return to;
 			await mkdir(dirname(to), { recursive: true });
 			chownToInvokingUser(dirname(to));
-			// Adopt a legacy cache only after proving it executes the desired tool.
-			if (existsSync(to)) {
-				try {
-					await verifyBinary(
-						to,
-						options.versionArgs,
-						options.expectedVersion,
-						options.signal,
-					);
-					await writeReceipt(to, options.expectedVersion.source);
-					return to;
-				} catch {
-					options.signal?.throwIfAborted();
-					/* Preserve it until a verified replacement is ready. */
-				}
-			}
 			const staging = await mkdtemp(
 				join(dirname(to), `.${basename(to)}.install-`),
 			);

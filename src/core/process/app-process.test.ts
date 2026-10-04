@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { shellQuote } from "../shell-quote";
 import { AppLogs } from "./app-logs";
 import { spawnManagedApp } from "./app-process";
-import { spawnDevServer } from "./dev-servers";
 import { printStream, RunOutput } from "./run-output";
 
 it("passes attached arguments literally, including shell syntax and empty values", async () => {
@@ -52,26 +51,6 @@ it("passes attached arguments literally, including shell syntax and empty values
 		expect(JSON.parse(readFileSync(join(root, "args.json"), "utf8"))).toEqual(
 			args,
 		);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-it("runs quoted shell commands through the legacy spawn export", async () => {
-	const root = mkdtempSync(join(tmpdir(), "buncargo legacy shell "));
-	try {
-		const child = await spawnDevServer(
-			"printf '%s' 'two words' > result.txt",
-			root,
-			undefined,
-			{},
-			{ killExisting: false, detached: false },
-		);
-		await new Promise<void>((resolve, reject) => {
-			child.once("error", reject);
-			child.once("exit", () => resolve());
-		});
-		expect(readFileSync(join(root, "result.txt"), "utf8")).toBe("two words");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

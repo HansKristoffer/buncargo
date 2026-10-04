@@ -100,15 +100,6 @@ describe("findConfigFile", () => {
 		expect(result).toBe(configPath);
 	});
 
-	it("finds dev-tools.config.ts as alternative name", () => {
-		const configPath = join(testDir, "dev-tools.config.ts");
-		writeFileSync(configPath, "export default {}");
-
-		const result = findConfigFile(testDir);
-
-		expect(result).toBe(configPath);
-	});
-
 	it("prefers dev.config.ts over dev.config.js", () => {
 		writeFileSync(join(testDir, "dev.config.js"), "module.exports = {}");
 		const tsConfigPath = join(testDir, "dev.config.ts");
@@ -128,8 +119,6 @@ describe("CONFIG_FILES", () => {
 	it("contains expected config file names", () => {
 		expect(CONFIG_FILES).toContain("dev.config.ts");
 		expect(CONFIG_FILES).toContain("dev.config.js");
-		expect(CONFIG_FILES).toContain("dev-tools.config.ts");
-		expect(CONFIG_FILES).toContain("dev-tools.config.js");
 	});
 
 	it("has .ts files before .js files for priority", () => {

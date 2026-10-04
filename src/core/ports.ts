@@ -210,14 +210,6 @@ export interface DevIdentity {
 	worktreeSuffix: string | null;
 	projectSuffix?: string;
 	projectName: string;
-	/**
-	 * The name this checkout's containers had before 12.0, when it differs:
-	 * the worktree name used to be appended to a directory already named
-	 * after it (`gey-t3code-fc4fa622-t3code-fc4fa622`). Startup takes those
-	 * containers down so they release their ports; their volumes are left for
-	 * `buncargo prune`.
-	 */
-	legacyProjectName?: string;
 }
 
 /**
@@ -244,18 +236,12 @@ export function computeDevIdentity(options: DevIdentityOptions): DevIdentity {
 	const projectSuffix =
 		[suffix, nameSuffix].filter(Boolean).join("-") || undefined;
 	const projectName = getProjectName(projectPrefix, projectSuffix, root);
-	const legacyProjectName = getProjectName(
-		projectPrefix,
-		[suffix, worktreeSuffix].filter(Boolean).join("-") || undefined,
-		root,
-	);
 
 	return {
 		worktree,
 		worktreeSuffix,
 		projectSuffix,
 		projectName,
-		...(legacyProjectName !== projectName ? { legacyProjectName } : {}),
 	};
 }
 

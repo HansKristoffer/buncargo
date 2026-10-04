@@ -665,12 +665,11 @@ integrations: [
 				simulator: "iPhone 17 Pro", // default: the device Simulator.app last showed
 			},
 		},
-		apiApp: "api",                  // what getExpoApiUrl() prints
 	}),
 ],
 ```
 
-The per-app `expo` field and `options.expoApiApp` still work until the next major: a config that uses them (or runs `expo` in a `devCommand`) gets `expo()` added, with a warning. `buncargo expo sim` and `buncargo sim` are the same command.
+Without `integrations: [expo()]` an app is not treated as Expo, even when its `devCommand` runs `expo`. `buncargo expo sim` and `buncargo sim` are the same command.
 
 The deep-link scheme and `ios.bundleIdentifier` are read from `app.json` when the run is published. A project configured only through `app.config.ts` sets `expo.scheme`. Named HTTPS hosts are not trusted inside the simulator, so point `EXPO_PUBLIC_*` URLs at the LAN IP or `loopbackUrls`.
 
@@ -726,9 +725,9 @@ Opt-in HTTPS names on loopback. Buncargo still allocates ports and starts proces
 | Main | `https://web.myapp.localhost` | `https://api.myapp.localhost` | `https://mailpit.myapp.localhost` |
 | Worktree `fix-ui` | `https://fix-ui.web.myapp.localhost` | `https://fix-ui.api.myapp.localhost` | `https://fix-ui.mailpit.myapp.localhost` |
 
-`options.hosts.primaryApp: "web"` collapses that app to `https://myapp.localhost` (or `https://fix-ui.myapp.localhost` in a worktree). The worktree label is the **directory name**, not the git branch.
+`options.primaryApp: "web"` collapses that app to `https://myapp.localhost` (or `https://fix-ui.myapp.localhost` in a worktree). The worktree label is the **directory name**, not the git branch.
 
-Enable with `options.hosts: true` (or `{ tld?, primaryApp?, services? }`). Postgres, Redis, and other TCP services stay as connection strings on `localhost:<port>`. Default named HTTP services are Mailpit and Typesense.
+Enable with `options.hosts: true` (or `{ tld?, services? }`). Postgres, Redis, and other TCP services stay as connection strings on `localhost:<port>`. Default named HTTP services are Mailpit and Typesense.
 
 The first `buncargo dev` in a repo with `hosts` on prompts for one-time machine setup (trust a local CA, bind `:443`). Enter accepts, `s` skips once, `n` persists a decline. `buncargo hosts install` is the non-interactive path. Setup is per machine: later repos and worktrees reuse it.
 
@@ -744,9 +743,9 @@ The daemon logs to `/var/log/buncargo-hosts.log` (on Linux, also `journalctl -u 
 
 `buncargo hosts daemon` runs that same proxy in the foreground instead of under launchd/systemd, which is how you watch its output while debugging. It re-reads `~/.buncargo/routes.json` every second, so apps starting and stopping need no restart, and it exits on its own once no routes have been registered for a while. `--service` is what the installed unit passes: it keeps the daemon alive through idle periods and is not meant to be typed by hand. Binding `:443` still needs root, so run it under `sudo` or set `BUNCARGO_HOSTS_PORT` to an unprivileged port.
 
-Failure degrades to `http://localhost:<port>` and never blocks the dev run. Named hosts stay off on Windows, in CI (`CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL`), when `BUNCARGO_HOSTS=0` or `BUCARGO_SKIP_MKCERT=true`, or with `--no-hosts`.
+Failure degrades to `http://localhost:<port>` and never blocks the dev run. Named hosts stay off on Windows, in CI (`CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL`), when `BUNCARGO_HOSTS=0`, or with `--no-hosts`.
 
-Set `BUCARGO_SKIP_MKCERT=true` in cloud workspace secrets/environment to skip automatic local HTTPS setup, including the mkcert prompt. Local URLs use `http://localhost:<port>`; Remote sharing still works.
+Set `BUNCARGO_HOSTS=0` in cloud workspace secrets/environment to skip automatic local HTTPS setup, including the mkcert prompt. Local URLs use `http://localhost:<port>`; Remote sharing still works.
 
 ### Loopback URLs
 
@@ -1080,7 +1079,7 @@ The configuration reference covers the main public options; `src/types/all-types
 | `generatedFiles` | `{ path, render(ctx), gitignore? }[]` | `[]` | Files rendered from ports, URLs and captures. See [captures](#captured-output-and-generated-files) |
 | `unsetEnv` | `string[]` | `[]` | Variables removed from every process buncargo starts (apps, tasks, `exec`, migrations, the seed, prisma), e.g. those tools use to detect an agent's shell. buncargo's own environment is unchanged |
 
-Top-level `envVars` is removed. Use the top-level `env` overlay for shared values (rewritten `WEB_URL`, `VITE_*`), and `apps.<name>.envVars` for app-only values.
+Use the top-level `env` overlay for shared values (rewritten `WEB_URL`, `VITE_*`), and `apps.<name>.envVars` for app-only values.
 
 ### `ServiceConfig`
 
@@ -1136,7 +1135,6 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | `essential` | `boolean` | `true` | `false`: the run keeps going when this app exits; `r` / `buncargo restart` starts it again |
 | `actions` | `{ key, label, open }[]` | `[]` | Keys that open a captured URL from the TUI footer. Unique, and not `o e r l q j k` |
 | `needsPublicUrls` | `boolean` | `false` | Start after tunnels so env sees `*_PUBLIC_URL`. Ignored without `--expose` |
-| `expo` | `boolean \| { scheme?, simulator? }` | inferred | Deprecated: use `integrations: [expo()]`. Still honored until the next major |
 
 Use `kind: "worker"` for a long-running process without a listener. Workers require a command and reject port, HTTP-health, exposure and Expo options.
 
@@ -1152,10 +1150,8 @@ Use `kind: "worker"` for a long-running process without a listener. Workers requ
 | `envFile` | `boolean \| { path?, createFrom? }` | `false` | Sync a dotenv to the allocated ports. `true` means `.env` |
 | `verbose` | `boolean` | `true` | Default verbosity |
 | `onAppFailure` | `"keep-others" \| "stop-run"` | `"keep-others"` | What `buncargo dev` does when an app does not become ready. See [when an app does not come up](#when-an-app-does-not-come-up) |
-| `primaryApp` | `string` | inferred | The app this project is "about": the menu bar's Open button, and the default for `hosts.primaryApp` and `frontendApp`. Inferred from the dependency graph when unset |
-| `expoApiApp` | `string` | `"api"` | App key used by `getExpoApiUrl()`. Must match a configured app |
-| `frontendApp` | `string` | `primaryApp`, then `"platform"`, then `"web"` | App key used by `getFrontendPort()`. Must match a configured app |
-| `hosts` | `boolean \| HostsOptions` | `undefined` (off) | Named `.localhost` HTTPS URLs. `true` uses TLD `localhost` and names Mailpit/Typesense. `{ tld, primaryApp, services }` for a custom TLD, collapsed primary app, or extra HTTP service UIs |
+| `primaryApp` | `string` | inferred | The app this project is "about": the menu bar's Open button, the TUI's `o`, and the bare named hostname. Inferred from the dependency graph when unset (but the bare hostname is only ever given to a configured one) |
+| `hosts` | `boolean \| HostsOptions` | `undefined` (off) | Named `.localhost` HTTPS URLs. `true` uses TLD `localhost` and names Mailpit/Typesense. `{ tld, services }` for a custom TLD or extra HTTP service UIs |
 
 ### `DockerComposeGenerationOptions`
 
@@ -1258,7 +1254,7 @@ HTTP app health checks probe `http://localhost:<port>`, including when the app h
 
 Mark targets with `expose: true`, then `bunx buncargo dev --expose` or `--expose=api,web`.
 
-The `expose` config option is deprecated. It still controls these public tunnels; Remote sharing automatically includes all selected apps and services with a host port.
+`expose` only governs these public tunnels: remote sharing includes every selected app and service with a host port.
 
 Tunnels open **after** wave-1 apps are healthy and **before** `needsPublicUrls` apps spawn, so Expo can read `EXPO_PACKAGER_PROXY_URL` at start. Public URLs are normalized (trailing slash stripped). Without `--expose` there is no second wave at all.
 
@@ -1280,8 +1276,6 @@ Every run that owns containers claims them in `~/.buncargo/runs.json` before it 
 A running stack with a live owner is never touched. `--keep-containers`, `options.autoShutdown: false` and the one-shot modes (`--up-only`, `--migrate`, `--seed`) set no idle hold, so their containers live as long as the checkout — even if the run crashed. `--watchdog-timeout=N` sets the hold in minutes. The watchdog exits when there is nothing left to watch and any later `dev` starts it again.
 
 A finished run keeps its registry entry until its containers are gone — that entry is what says they may still be reused, and for how long. `buncargo runs`, `stop` and the menu bar filter it out; only the sweep sees it. `dev --down` and `stop()` remove it straight away, since they have just removed the containers.
-
-**Upgrading from 9.x or earlier.** Until every project on the machine is on this version, old and new runs share the registry. A 9.x run is seen as long as it runs, but it removes its entry on exit instead of holding its containers, and older versions write none. The rules above then apply as usual: a running stack nobody claims is left alone, and a fully stopped one is removed, as the old watchdog would have done anyway. One case differs: an old run that is still going with every service stopped can lose its containers. An old CLI also cannot read the new process identities, so whenever it writes the registry it drops every new-version entry, live runs included: they vanish from `buncargo runs` and the menu bar, and lose their hold. Their running containers are left alone. Upgrade every project on the machine together to avoid the window. Volumes are never touched, so the next `dev` recreates any container from the same data. The first `buncargo ls` after upgrading reclaims what old versions left behind.
 
 **Volumes are never removed automatically.** A container costs nothing to recreate; a volume is the database. `buncargo prune` lists the volumes whose project has no containers and no run, and removes them only after you confirm:
 
@@ -1309,9 +1303,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `Worker "…" is already running` | Library startup encountered an owned worker | Reuse it through the CLI or use `dev --takeover` |
 | `Apple container cannot verify finite job exit codes yet` | A job was selected with Apple | Use `--runtime=docker` |
 | `already listening on port … but failed health check` | Port busy but `healthEndpoint` failed | Fix the existing server or free the port |
-| `Top-level envVars has been removed…` | Old config shape | Move shared values to top-level `env`, app-only values to `apps.<name>.envVars` |
-| `App "…" uses "env", which was renamed to "staticEnv"…` | Old config shape | Rename `apps.<name>.env` to `apps.<name>.staticEnv` |
-| `options.expoApiApp "…" must match a configured app key` | Typo or removed app | Point it at a real `apps.<name>` (same for `frontendApp`) |
+| `options.primaryApp "…" must match a configured app key` | Typo or removed app | Point it at a real `apps.<name>` |
 | `Only one app may set interactive: true` | Two TTY owners | Keep one `interactive` or use `--attach` |
 | `Watchdog did not start` | Missing `dist/core/watchdog-runner.js` | `bun run build` / reinstall the package |
 | Disk full of old worktree volumes | Deleted checkouts leave their databases behind | `buncargo prune --dry-run`, then `buncargo prune` |

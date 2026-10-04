@@ -75,8 +75,6 @@ describe("portOffsetOverride", () => {
 describe("isHostsForcedOff", () => {
 	it("stays enabled unless explicitly disabled or running in CI", () => {
 		expect(isHostsForcedOff({})).toBe(false);
-		expect(isHostsForcedOff({ BUCARGO_SKIP_MKCERT: "true" })).toBe(true);
-		expect(isHostsForcedOff({ BUCARGO_SKIP_MKCERT: "false" })).toBe(false);
 		expect(isHostsForcedOff({ BUNCARGO_HOSTS: "0" })).toBe(true);
 		expect(isHostsForcedOff({ CI: "1" })).toBe(true);
 		expect(isHostsForcedOff({ CI: "true" })).toBe(true);

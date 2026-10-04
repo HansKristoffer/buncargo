@@ -108,7 +108,7 @@ export interface DevHooks<
 > {
 	/** After database readiness and before automatic/custom migrations. Skipped in containers-only mode. */
 	beforeMigrations?: (ctx: HookContext<TServices, TApps>) => Promise<void>;
-	/** Called after all containers are healthy and preparation has finished (legacy order). */
+	/** After every container is healthy and migrations have run, before the seed and the apps. */
 	afterContainersReady?: (ctx: HookContext<TServices, TApps>) => Promise<void>;
 	/** Called before starting dev servers */
 	beforeServers?: (ctx: HookContext<TServices, TApps>) => Promise<void>;

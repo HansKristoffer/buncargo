@@ -87,8 +87,6 @@ export interface DevEnvContext<
 	readonly config: DevConfig<TServices, TApps, TEnv>;
 	readonly root: string;
 	readonly projectName: string;
-	/** See `DevIdentity.legacyProjectName`. */
-	readonly legacyProjectName: string | undefined;
 	readonly projectSuffix: string | undefined;
 	readonly worktree: boolean;
 	readonly localIp: string;
@@ -152,18 +150,13 @@ export function createDevEnvContext<
 	const root = options.root ?? findMonorepoRoot();
 	const inputEnv = loadEnvInput(root, config.options?.envFiles);
 	const suffix = options.suffix;
-	const {
-		worktree,
-		worktreeSuffix,
-		projectSuffix,
-		projectName,
-		legacyProjectName,
-	} = computeDevIdentity({
-		projectPrefix: config.projectPrefix,
-		suffix,
-		root,
-		worktreeIsolation: config.options?.worktreeIsolation,
-	});
+	const { worktree, worktreeSuffix, projectSuffix, projectName } =
+		computeDevIdentity({
+			projectPrefix: config.projectPrefix,
+			suffix,
+			root,
+			worktreeIsolation: config.options?.worktreeIsolation,
+		});
 	const localIp = getLocalIp();
 
 	const services = config.services;
@@ -316,7 +309,6 @@ export function createDevEnvContext<
 			worktreeIsolation: config.options?.worktreeIsolation,
 			runtime: selectedRuntime,
 			persist: suffix === undefined,
-			legacyProjectName,
 			// The bind probe here too: this is the allocation every dev run
 			// makes, and a snapshot only knows what `lsof` lets this user see.
 			getOwner: snapshot
@@ -392,7 +384,6 @@ export function createDevEnvContext<
 		config,
 		root,
 		projectName,
-		legacyProjectName,
 		projectSuffix,
 		worktree,
 		localIp,

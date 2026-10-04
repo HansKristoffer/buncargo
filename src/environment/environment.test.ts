@@ -231,7 +231,7 @@ describe("createDevEnvironment env builders", () => {
 						api: { port: 3000, devCommand: "bun run api" },
 						web: { port: 3001, devCommand: "bun run web" },
 					},
-					options: { hosts: { primaryApp: "web" } },
+					options: { hosts: true, primaryApp: "web" },
 				}),
 			);
 

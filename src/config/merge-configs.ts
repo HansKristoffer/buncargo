@@ -72,16 +72,6 @@ export function mergeConfigs<
 	Overlay<BaseApps<TBase>, TApps>,
 	Overlay<KnownEnv<BaseEnv<TBase>>, TEnv>
 >;
-/** Compatibility overload for callers that supply the original generic parameters. */
-export function mergeConfigs<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnvBase extends EnvValues = EnvValues,
-	TEnvOverride extends EnvValues = EnvValues,
->(
-	base: DevConfig<TServices, TApps, TEnvBase>,
-	overrides: Partial<DevConfig<TServices, TApps, TEnvOverride>>,
-): DevConfig<TServices, TApps, Overlay<TEnvBase, TEnvOverride>>;
 export function mergeConfigs(
 	base: AnyDevConfig,
 	overrides: Partial<AnyDevConfig>,

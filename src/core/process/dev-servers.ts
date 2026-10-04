@@ -1,8 +1,6 @@
-import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { resolve } from "node:path";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import type { AppConfig, DevServerPids } from "../../types";
-import { childProcessEnv } from "../child-env";
 import { abortableSleep } from "../deadline";
 import { waitForDevServers } from "../network";
 import { loadAppSecrets, missingRequiredSecrets } from "../secrets/infisical";
@@ -11,7 +9,6 @@ import {
 	ptyTeeArgv,
 	resolveStartCommand,
 	runPrebuild,
-	spawnAppCommand,
 	spawnManagedApp,
 } from "./app-process";
 import { AppSupervision } from "./app-supervision";
@@ -24,7 +21,6 @@ import {
 	classifyPortOccupant,
 	createPortOwnerSnapshotAsync,
 	formatPortOwner,
-	getPortOwner,
 	killPortOwner,
 	type PortOwnerSnapshot,
 } from "./port-owner";
@@ -66,67 +62,6 @@ export function isDeliberateExit(
 		code === 130 ||
 		code === 143
 	);
-}
-
-export interface SpawnDevServerOptions {
-	verbose?: boolean;
-	detached?: boolean;
-	isCI?: boolean;
-	/** Kill any existing process using the port before starting. Default: true */
-	killExisting?: boolean;
-	/** The port this server will use (required if killExisting is true) */
-	port?: number;
-}
-
-/**
- * @deprecated Prefer startDevServers for ownership, readiness and supervision.
- * Spawn a dev server as a detached process.
- * If killExisting is true and port is provided, kills any existing process on that port first.
- */
-export async function spawnDevServer(
-	command: string,
-	root: string,
-	appCwd: string | undefined,
-	envVars: Record<string, string>,
-	options: SpawnDevServerOptions = {},
-): Promise<ChildProcess> {
-	const {
-		verbose = false,
-		detached = true,
-		isCI = false,
-		killExisting = true,
-		port,
-	} = options;
-
-	if (killExisting && port !== undefined) {
-		const owner = getPortOwner(port);
-		if (owner) {
-			if (verbose) {
-				console.log(formatWarn(`Port ${port} is in use`));
-			}
-
-			await killPortOwner(port, { verbose });
-		}
-	}
-
-	const spawnOptions: SpawnOptions = {
-		cwd: appCwd ? resolve(root, appCwd) : root,
-		env: childProcessEnv({ ...process.env, ...envVars }),
-		detached,
-		stdio: isCI || verbose ? "inherit" : "ignore",
-	};
-
-	const proc = spawnAppCommand(command, spawnOptions);
-
-	if (detached && proc.unref) {
-		proc.unref();
-	}
-
-	await new Promise<void>((resolvePromise, rejectPromise) => {
-		proc.once("error", rejectPromise);
-		proc.once("spawn", resolvePromise);
-	});
-	return proc;
 }
 
 export interface StartDevServersOptions {

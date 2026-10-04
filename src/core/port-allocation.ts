@@ -218,7 +218,6 @@ function findForeignConflict(
 	options: {
 		root: string;
 		projectName: string;
-		legacyProjectName?: string;
 		runtime?: ContainerRuntimeName;
 		getOwner: (port: number) => PortOwner | null;
 	},
@@ -272,11 +271,6 @@ export function resolvePortPlan(input: {
 	 * the config hash and recreates the container on every single run.
 	 */
 	runtime?: ContainerRuntimeAdapter;
-	/**
-	 * This checkout's pre-12.0 project name: its containers still hold this
-	 * block on the first run after upgrading, and must not shift it.
-	 */
-	legacyProjectName?: string;
 	/**
 	 * Whether a busy port may shift the block. Default: true.
 	 *
@@ -372,7 +366,6 @@ export function resolvePortPlan(input: {
 		findForeignConflict(probed(ports), {
 			root,
 			projectName,
-			legacyProjectName: input.legacyProjectName,
 			runtime: runtimeName,
 			getOwner: lookupOwner,
 		});
@@ -464,7 +457,6 @@ export function resolvePortPlan(input: {
 	const conflict = findForeignConflict(probed(failedPorts), {
 		root,
 		projectName,
-		legacyProjectName: input.legacyProjectName,
 		runtime: runtimeName,
 		getOwner: lookupOwner,
 	});

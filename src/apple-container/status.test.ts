@@ -54,7 +54,12 @@ function stubCli(stdout: string, ok = true): AppleContainerCli {
 		stdout,
 		stderr: "",
 	};
-	return { binary: "container", found: true, run: () => result };
+	return {
+		binary: "container",
+		found: true,
+		run: () => result,
+		runAsync: async () => result,
+	};
 }
 
 describe("parseContainerRecords", () => {

@@ -181,12 +181,7 @@ export function validateSupplementShapes(
 				}
 		}
 		fields(options, "options.", ["worktreeIsolation", "verbose"], "boolean");
-		fields(
-			options,
-			"options.",
-			["primaryApp", "frontendApp", "expoApiApp"],
-			"string",
-		);
+		fields(options, "options.", ["primaryApp"], "string");
 		if (options.autoShutdown !== false)
 			duration(options.autoShutdown, "options.autoShutdown");
 		if (
@@ -200,7 +195,7 @@ export function validateSupplementShapes(
 			if (option === undefined || typeof option === "boolean") continue;
 			if (!record(option, `options.${name}`)) continue;
 			if (name === "hosts") {
-				fields(option, "options.hosts.", ["tld", "primaryApp"], "string");
+				fields(option, "options.hosts.", ["tld"], "string");
 				check(
 					option.services,
 					"options.hosts.services",

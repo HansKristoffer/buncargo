@@ -19,7 +19,6 @@ import { createCaptureRecorder, labelledCaptures } from "./captures";
 import { createDevEnvContext } from "./context";
 import { createEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
-import { createLegacyLinks } from "./legacy-links";
 import { createLifecycleApi } from "./lifecycle";
 import { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { createRunClaimApi } from "./run-claim";
@@ -71,8 +70,6 @@ export function createDevEnvironment<
 	const lifecycle = createLifecycleApi(ctx, envVars, runClaim, coordinator);
 	const recordCapture = createCaptureRecorder(ctx, envVars);
 	const servers = createServersApi(ctx, envVars);
-
-	const { getExpoApiUrl, getFrontendPort } = createLegacyLinks(ctx);
 
 	const env: DevEnvironment<TServices, TApps, TEnv> = {
 		// Configuration access
@@ -185,10 +182,6 @@ export function createDevEnvironment<
 		},
 		logInfo: ctx.logInfo,
 		openPublicTunnels: servers.openPublicTunnels,
-
-		// Vibe Kanban Integration
-		getExpoApiUrl,
-		getFrontendPort,
 
 		// Run claim / watchdog
 		sessionId: runClaim.sessionId,

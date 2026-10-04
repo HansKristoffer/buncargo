@@ -16,7 +16,7 @@ import { terminateOwnedProcess } from "./terminate";
 /**
  * Spawning one app process: the shell it runs under, where its output goes
  * (a pseudo-terminal of its own in the TUI, pipes otherwise), the `script`
- * tee that lets captures read a legacy attached app, and its prebuild.
+ * tee that lets captures read an attached app, and its prebuild.
  * `dev-servers.ts` orchestrates many of these.
  */
 
@@ -122,7 +122,7 @@ export function spawnManagedApp(
 		return child;
 	}
 
-	// The legacy attached app keeps the real terminal (one without a terminal
+	// The attached app keeps the real terminal (one without a terminal
 	// took the pseudo-terminal path above). Capturing from it needs its output
 	// too, so it runs under `script`, whose copy of the output passes through
 	// here unchanged; TUIs like Shopify CLI see a TTY. Captured also when

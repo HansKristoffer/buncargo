@@ -5,7 +5,6 @@
 
 import { cloudflaredPathOverride, cloudflaredVersion } from "../runtime-flags";
 import {
-	legacyToolCachePath,
 	resolveToolBinary,
 	type ToolBinaryResolution,
 	toolCachePath,
@@ -13,8 +12,6 @@ import {
 
 export const RELEASE_BASE =
 	"https://github.com/cloudflare/cloudflared/releases/";
-
-const LEGACY_CLOUDFLARED_CACHE_DIRNAME = "buncargo-cloudflared";
 
 function cloudflaredFileName(version: string): string {
 	return process.platform === "win32"
@@ -29,16 +26,6 @@ export function cloudflaredBinPath(version = cloudflaredVersion()): string {
 	);
 }
 
-/** The `tmpdir()` cache earlier versions downloaded into. */
-export function legacyCloudflaredBinPath(
-	version = cloudflaredVersion(),
-): string {
-	return legacyToolCachePath(
-		LEGACY_CLOUDFLARED_CACHE_DIRNAME,
-		cloudflaredFileName(version),
-	);
-}
-
 /**
  * Spawn/install target: optional `BUNCARGO_CLOUDFLARED_PATH` overrides the
  * bundled cache path. No `PATH` lookup — buncargo pins the release it downloads.
@@ -47,10 +34,6 @@ export function resolveCloudflared(): ToolBinaryResolution {
 	return resolveToolBinary({
 		override: cloudflaredPathOverride(),
 		cachePath: cloudflaredBinPath(),
-		legacyCachePath: legacyCloudflaredBinPath(),
-		legacyCachePaths: [
-			toolCachePath(cloudflaredFileName(cloudflaredVersion())),
-		],
 	});
 }
 

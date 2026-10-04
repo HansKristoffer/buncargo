@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { tablePlusUrl } from "./tableplus";
+import { tablePlusUrl } from "./service-identity";
 
 describe("tablePlusUrl", () => {
 	it("builds a TablePlus connection URL, not a table-filter deeplink", () => {

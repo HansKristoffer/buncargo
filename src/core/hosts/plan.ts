@@ -87,14 +87,14 @@ export function sanitizeTld(tld: string): string {
 
 export function resolveHostsOptions(
 	hosts: boolean | HostsOptionsLike | undefined,
-	/** `options.primaryApp`, which `hosts.primaryApp` still overrides. */
+	/** `options.primaryApp`: its hostname is the bare one. */
 	primaryApp?: string,
 ): ResolvedHostsOptions | null {
 	if (!hosts) return null;
 	const options = hosts === true ? {} : hosts;
 	return {
 		tld: sanitizeTld(options.tld ?? "localhost"),
-		primaryApp: options.primaryApp ?? primaryApp,
+		primaryApp,
 		services: options.services ?? [...DEFAULT_HTTP_SERVICE_NAMES],
 	};
 }

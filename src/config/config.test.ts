@@ -415,53 +415,7 @@ describe("validateConfig", () => {
 			expect(validateConfig(config)).toEqual([]);
 		});
 
-		it("returns an upgrade error for removed top-level envVars", () => {
-			const config = {
-				projectPrefix: "myapp",
-				services: {
-					postgres: { port: 5432 },
-				},
-				envVars: () => ({
-					DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/myapp",
-				}),
-			} as unknown as DevConfig<
-				Record<string, ServiceConfig>,
-				Record<string, AppConfig>
-			>;
-
-			const errors = validateConfig(config);
-
-			expect(errors).toContain(
-				"Top-level envVars has been removed. Use the top-level env overlay for shared values, or apps.<name>.envVars for app-only values.",
-			);
-		});
-
-		it("returns an upgrade error for the renamed per-app env key", () => {
-			const config = {
-				projectPrefix: "myapp",
-				services: {
-					postgres: { port: 5432 },
-				},
-				apps: {
-					api: {
-						port: 3000,
-						devCommand: "bun run dev",
-						env: { SECRETS_ENV: "dev" },
-					},
-				},
-			} as unknown as DevConfig<
-				Record<string, ServiceConfig>,
-				Record<string, AppConfig>
-			>;
-
-			const errors = validateConfig(config);
-
-			expect(errors).toContain(
-				'App "api" uses "env", which was renamed to "staticEnv" to avoid colliding with the top-level env overlay. Use apps.api.staticEnv for constants, or apps.api.envVars for computed values.',
-			);
-		});
-
-		it("accepts the renamed staticEnv key", () => {
+		it("accepts staticEnv", () => {
 			const config = {
 				projectPrefix: "myapp",
 				services: {
@@ -1144,7 +1098,7 @@ describe("defineDevConfig factory inference", () => {
 						publicUrls.api ?? `http://${localIp}:${ports.api}`,
 					...(e2e ? { E2E_TEST: "true" } : {}),
 				}),
-				options: e2e ? undefined : { hosts: { primaryApp: "platform" } },
+				options: e2e ? undefined : { hosts: true, primaryApp: "platform" },
 			});
 		}
 
@@ -1184,9 +1138,9 @@ describe("validateConfig hosts", () => {
 		// A typed config rejects this at compile time; the runtime guard covers
 		// configs loaded from disk, whose app keys are only known as strings.
 		const config = createValidConfig() as AnyDevConfig;
-		config.options = { hosts: { primaryApp: "web" } };
+		config.options = { hosts: true, primaryApp: "web" };
 		expect(validateConfig(config)).toContain(
-			'options.hosts.primaryApp "web" must match a configured app key',
+			'options.primaryApp "web" must match a configured app key',
 		);
 	});
 
@@ -1203,23 +1157,6 @@ describe("validateConfig hosts", () => {
 		expect(
 			validateConfig(config).some((error) => error.includes("hosts.tld")),
 		).toBe(true);
-	});
-});
-
-describe("validateConfig helper app options", () => {
-	it("accepts helper app keys that exist", () => {
-		const config = createValidConfig();
-		config.options = { expoApiApp: "api", frontendApp: "api" };
-		expect(validateConfig(config)).toEqual([]);
-	});
-
-	it("rejects unknown expoApiApp and frontendApp keys", () => {
-		const config = createValidConfig() as AnyDevConfig;
-		config.options = { expoApiApp: "mobile", frontendApp: "web" };
-		expect(validateConfig(config)).toEqual([
-			'options.expoApiApp "mobile" must match a configured app key',
-			'options.frontendApp "web" must match a configured app key',
-		]);
 	});
 });
 

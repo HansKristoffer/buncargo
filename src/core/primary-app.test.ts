@@ -15,18 +15,6 @@ describe("resolvePrimaryApp", () => {
 		);
 	});
 
-	it("falls back to hosts.primaryApp", () => {
-		expect(
-			resolvePrimaryApp({ apps, options: { hosts: { primaryApp: "admin" } } }),
-		).toBe("admin");
-	});
-
-	it("falls back to frontendApp", () => {
-		expect(resolvePrimaryApp({ apps, options: { frontendApp: "admin" } })).toBe(
-			"admin",
-		);
-	});
-
 	// An API + web project: nothing depends on the web app, so that is the one
 	// someone clicking "open" wants.
 	it("infers the dependency root when nothing is configured", () => {
@@ -59,6 +47,5 @@ describe("configuredPrimaryApp", () => {
 	// `myapp.localhost` would silently move a name people have bookmarked.
 	it("never infers", () => {
 		expect(configuredPrimaryApp({})).toBeUndefined();
-		expect(configuredPrimaryApp({ hosts: true })).toBeUndefined();
 	});
 });

@@ -329,18 +329,6 @@ export interface DevEnvironment<
 	// Vibe Kanban Integration
 	// ─────────────────────────────────────────────────────────────────────────
 
-	/**
-	 * Get the Expo API URL (http://<local-ip>:<api-port>) and log it for detection.
-	 * Used by tools like Vibe Kanban to find the API server for mobile testing.
-	 */
-	getExpoApiUrl(): string;
-
-	/**
-	 * Get the frontend port and log it for detection.
-	 * Used by tools like Vibe Kanban to find the dev server.
-	 */
-	getFrontendPort(): number | undefined;
-
 	// ─────────────────────────────────────────────────────────────────────────
 	// Run claim / watchdog
 	// ─────────────────────────────────────────────────────────────────────────

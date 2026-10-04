@@ -4,11 +4,19 @@ Each section lists what a consumer of `buncargo` has to change when crossing one
 
 ## 11.0 → 12.0
 
-12.0 stops repeating a worktree's name in its project name. A worktree in a directory named after it (`t3code-fc4fa622`) used to get `gey-t3code-fc4fa622-t3code-fc4fa622`, and its E2E stack `gey-t3code-fc4fa622-e2e-t3code-fc4fa622`; they are now `gey-t3code-fc4fa622` and `gey-t3code-fc4fa622-e2e`. The main checkout's name does not change, nor does any worktree whose directory is named differently.
+12.0 is a hard cutover: the compatibility code for older versions, configs and on-disk state is gone. **Stop every run before upgrading** (`bunx buncargo dev --down --all` with the old version): 12.0 does not recognise an older run's containers or locks.
 
-- **Each such worktree starts on an empty database once.** The Compose project name names the volumes, so the first `dev` after upgrading creates new ones. It takes the old containers down first (they hold the ports, which stay the same) and leaves their volumes; seed again, and run `bunx buncargo prune` to remove the old ones. A run of the checkout from an older buncargo that is still up is refused rather than pulled out from under it: stop it, then start again.
-- **Anything that names containers or projects by hand** (`docker exec gey-…-t3code-x-t3code-x-postgres-1`, a `COMPOSE_PROJECT_NAME`) needs the new name. `buncargo sql` and `buncargo status --json` find them for you.
-- **Offsets are now claimed per checkout** in `~/.buncargo/offsets.json`. A worktree that used to share its hashed offset with another stopped one may move once to the next free block, and then keeps it. `buncargo ports` shows the claims.
+- **Worktree project names stop repeating the worktree.** A worktree in a directory named after it (`t3code-fc4fa622`) was `gey-t3code-fc4fa622-t3code-fc4fa622` and is now `gey-t3code-fc4fa622`; its E2E stack `gey-t3code-fc4fa622-e2e`. The volumes are named after the project, so each such worktree starts on an empty database: seed again, and `bunx buncargo prune` removes the old volumes. Anything that names containers by hand needs the new name; `buncargo sql` and `buncargo status --json` find them for you.
+- **Offsets are claimed per checkout** in `~/.buncargo/offsets.json`. A worktree that shared its hashed offset with another may move once to the next free block, and then keeps it.
+- **`options.hosts.primaryApp` is gone.** Set `options.primaryApp` instead; it also gives that app the bare named hostname.
+- **`options.frontendApp`, `options.expoApiApp`, `getFrontendPort()` and `getExpoApiUrl()` are gone**, and so is `expo({ apiApp })`. Read ports and URLs from `env.ports` / `env.urls`, or `buncargo env --get`.
+- **Expo needs `integrations: [expo()]`.** The per-app `expo` field is gone, and an app whose `devCommand` runs `expo` is no longer made an Expo app without the integration.
+- **Removed names:** the `dev-tools` binary (use `buncargo`), the `dev-tools.config.ts` / `.js` config file names (use `dev.config.ts`), and `BUCARGO_SKIP_MKCERT` (use `BUNCARGO_HOSTS=0`).
+- **Removed exports:** `spawnDevServer` (use `startDevServers`), the sync `buildApps` from `buncargo/core/process` (`buildApps` is now the async one), `logExpoApiUrl`, and the `mergeConfigs` overload taking explicit type parameters.
+- **Custom container runtime adapters** must implement `containerPortOwnersAsync`, and an injected Apple CLI must implement `runAsync`.
+- **Older on-disk state is not read.** Process identities without the `v2:` prefix no longer match (an older run reads as gone), the old `.lock` file protocol is ignored, and `mkcert` / `cloudflared` cached under `tmpdir()` are downloaded again into `~/.buncargo/bin`.
+- **BuncargoBar installs need the release's checksum**, which every release publishes.
+- **Removed config errors:** a top-level `envVars` or an app-level `env` is no longer explained by a dedicated error; use the top-level `env` overlay and `apps.<name>.staticEnv` / `envVars`.
 
 ## 10.0 → 11.0
 

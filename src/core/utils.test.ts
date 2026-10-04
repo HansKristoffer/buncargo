@@ -107,31 +107,31 @@ describe("getEnvVar", () => {
 		}
 	});
 
-	it.each([
-		["BUNCARGO_HOSTS", "0"],
-		["BUCARGO_SKIP_MKCERT", "true"],
-	])("keeps localhost URLs when %s=%s", (name, value) => {
-		const previousHosts = process.env[name];
-		process.env[name] = value;
-		try {
-			withoutCiEnv(() => {
-				const config = defineDevConfig({
-					projectPrefix: "serpier",
-					services: {
-						postgres: service.postgres({ database: "typed" }),
-					},
-					apps: {
-						api: { port: 3000, devCommand: "bun run api" },
-					},
-					options: { hosts: true },
+	it.each([["BUNCARGO_HOSTS", "0"]])(
+		"keeps localhost URLs when %s=%s",
+		(name, value) => {
+			const previousHosts = process.env[name];
+			process.env[name] = value;
+			try {
+				withoutCiEnv(() => {
+					const config = defineDevConfig({
+						projectPrefix: "serpier",
+						services: {
+							postgres: service.postgres({ database: "typed" }),
+						},
+						apps: {
+							api: { port: 3000, devCommand: "bun run api" },
+						},
+						options: { hosts: true },
+					});
+					expect(getEnvVar(config, "API_URL")).toMatch(
+						/^http:\/\/localhost:\d+$/,
+					);
 				});
-				expect(getEnvVar(config, "API_URL")).toMatch(
-					/^http:\/\/localhost:\d+$/,
-				);
-			});
-		} finally {
-			if (previousHosts === undefined) delete process.env[name];
-			else process.env[name] = previousHosts;
-		}
-	});
+			} finally {
+				if (previousHosts === undefined) delete process.env[name];
+				else process.env[name] = previousHosts;
+			}
+		},
+	);
 });

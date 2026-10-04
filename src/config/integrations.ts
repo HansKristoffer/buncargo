@@ -1,6 +1,3 @@
-import { formatWarn } from "../core/style";
-import { isExpoApp } from "../expo/app-identity";
-import { expo } from "../expo/integration";
 import type {
 	AppConfig,
 	BuncargoIntegration,
@@ -16,38 +13,6 @@ type AnyHooks = DevHooks<
 
 /** Marks a config whose integrations have been applied, so applying is idempotent. */
 const APPLIED = Symbol.for("buncargo.integrations.applied");
-
-let warnedLegacyExpo = false;
-
-/**
- * Expo predates integrations: an `expo` field on an app, `options.expoApiApp`,
- * or a `devCommand` that runs `expo` switched it on from core. For one major
- * those keep working by adding `expo()` here, with a warning naming the
- * replacement.
- */
-function withLegacyExpo(
-	config: IntegrationConfig,
-	integrations: readonly BuncargoIntegration[],
-): readonly BuncargoIntegration[] {
-	if (integrations.some((integration) => integration.name === "expo")) {
-		return integrations;
-	}
-	const apps = Object.values(config.apps ?? {});
-	const legacy =
-		apps.some((app) => app.expo !== undefined && app.expo !== false) ||
-		config.options?.expoApiApp !== undefined;
-	if (!legacy && !apps.some((app) => isExpoApp(app))) return integrations;
-
-	if (!warnedLegacyExpo) {
-		warnedLegacyExpo = true;
-		console.warn(
-			formatWarn(
-				'Expo support moved to an integration: add `integrations: [expo()]` (from "buncargo/expo") to dev.config.ts. The `expo` app field and `options.expoApiApp` still work until the next major.',
-			),
-		);
-	}
-	return [...integrations, expo({ apiApp: config.options?.expoApiApp })];
-}
 
 /** Each hook runs the config's own first, then every integration's, in order. */
 function composeHooks(
@@ -85,7 +50,7 @@ export function applyIntegrations<T extends object>(config: T): T {
 	const input = config as IntegrationConfig;
 	if ((input as { [APPLIED]?: true })[APPLIED]) return config;
 
-	const integrations = withLegacyExpo(input, input.integrations ?? []);
+	const integrations = input.integrations ?? [];
 	if (integrations.length === 0) return config;
 
 	let resolved = input;
@@ -119,9 +84,4 @@ export function applyIntegrations<T extends object>(config: T): T {
 		},
 		{ [APPLIED]: true },
 	) as T;
-}
-
-/** Test-only: warn about the legacy Expo fields again. */
-export function resetLegacyExpoWarning(): void {
-	warnedLegacyExpo = false;
 }

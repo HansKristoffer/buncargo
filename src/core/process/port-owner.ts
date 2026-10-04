@@ -350,16 +350,12 @@ export async function createPortOwnerSnapshotAsync(
 		];
 		const reads = [
 			selected
-				? () =>
-						selected.containerPortOwnersAsync?.(options.signal) ??
-						selected.containerPortOwners()
+				? () => selected.containerPortOwnersAsync(options.signal)
 				: () => dockerContainerPortOwnersAsync(undefined, options.signal),
 			...(options.fallbackRuntimes ?? [])
 				.filter((runtime) => runtime.name !== (selected?.name ?? "docker"))
 				.map(
-					(runtime) => () =>
-						runtime.containerPortOwnersAsync?.(options.signal) ??
-						runtime.containerPortOwners(),
+					(runtime) => () => runtime.containerPortOwnersAsync(options.signal),
 				),
 		];
 		const results = await Promise.allSettled(
@@ -563,8 +559,6 @@ export function classifyPortOccupant(
 		projectName: string;
 		/** The backend this run will use; anything else cannot be reused. */
 		runtime?: ContainerRuntimeName;
-		/** This checkout's pre-12.0 project name (see `DevIdentity`). */
-		legacyProjectName?: string;
 	},
 ): PortOccupantAction {
 	if (!owner) return "free";
@@ -582,7 +576,6 @@ export function classifyPortOccupant(
 			sameRuntime &&
 			project &&
 			(project === options.projectName ||
-				project === options.legacyProjectName ||
 				project === externalStackProjectName(options.projectName))
 		) {
 			return "reuse";

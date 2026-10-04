@@ -132,11 +132,9 @@ export interface ServiceRuntimeState {
 	service: string;
 	running: boolean;
 	/**
-	 * The `buncargo.stack-hash` label, absent on a container created before
-	 * the label existed. Absent means "cannot compare", never "does not match".
+	 * Fingerprint of this service and its referenced top-level definitions.
+	 * Absent means "cannot compare", never "does not match".
 	 */
-	stackHash?: string;
-	/** Fingerprint of this service and its referenced top-level definitions. */
 	serviceHash?: string;
 	/**
 	 * Whether the runtime's own healthcheck currently passes.
@@ -209,8 +207,8 @@ export interface ContainerRuntimeAdapter {
 	 * its own listing was most of the runtime calls a startup made.
 	 */
 	containerPortOwners(): Map<number, PortContainerOwner>;
-	/** Optional for compatibility with custom adapters. Built-in startup paths use this cancellable read. */
-	containerPortOwnersAsync?(
+	/** The same, cancellable: what startup paths use. */
+	containerPortOwnersAsync(
 		signal?: AbortSignal,
 	): Promise<Map<number, PortContainerOwner>>;
 	/**

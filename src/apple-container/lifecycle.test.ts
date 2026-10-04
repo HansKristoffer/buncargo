@@ -38,6 +38,9 @@ function recordingCli(
 			const stdout = args[0] === "ls" ? JSON.stringify(lsRecords) : "";
 			return { ok: true, exitCode: 0, stdout, stderr: "" };
 		},
+		async runAsync(args) {
+			return cli.run(args);
+		},
 	};
 	return cli;
 }

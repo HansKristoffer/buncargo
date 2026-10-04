@@ -152,11 +152,7 @@ export const DEFAULT_HOSTS_DAEMON_PORT = 443;
 export function isHostsForcedOff(
 	env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-	return (
-		env.BUNCARGO_HOSTS === "0" ||
-		env.BUCARGO_SKIP_MKCERT === "true" ||
-		isCI(env)
-	);
+	return env.BUNCARGO_HOSTS === "0" || isCI(env);
 }
 
 /** `BUNCARGO_HOSTS_PORT` - port the loopback proxy daemon listens on. */

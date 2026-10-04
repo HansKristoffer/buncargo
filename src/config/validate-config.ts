@@ -35,12 +35,6 @@ export function validateConfig(value: unknown): string[] {
 	const config = applied as AnyDevConfig;
 	const context = createValidationContext(errors);
 
-	if ("envVars" in (config as object)) {
-		errors.push(
-			"Top-level envVars has been removed. Use the top-level env overlay for shared values, or apps.<name>.envVars for app-only values.",
-		);
-	}
-
 	if (!config.projectPrefix) {
 		errors.push("projectPrefix is required");
 	} else if (!/^[a-z][a-z0-9-]*$/.test(config.projectPrefix)) {

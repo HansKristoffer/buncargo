@@ -350,7 +350,6 @@ describe("computeDevIdentity", () => {
 			expect(identity.projectName).toBe(
 				getProjectName("myapp", "feature-a", testDir),
 			);
-			expect(identity.legacyProjectName).toBeUndefined();
 		} finally {
 			rmSync(testDir, { recursive: true, force: true });
 		}
@@ -371,9 +370,6 @@ describe("computeDevIdentity", () => {
 			});
 			expect(identity.worktreeSuffix).toBe("t3code-fc4fa622");
 			expect(identity.projectName).toBe("gey-t3code-fc4fa622");
-			expect(identity.legacyProjectName).toBe(
-				"gey-t3code-fc4fa622-t3code-fc4fa622",
-			);
 
 			const e2e = computeDevIdentity({
 				projectPrefix: "gey",
@@ -381,9 +377,6 @@ describe("computeDevIdentity", () => {
 				root: testDir,
 			});
 			expect(e2e.projectName).toBe("gey-t3code-fc4fa622-e2e");
-			expect(e2e.legacyProjectName).toBe(
-				"gey-t3code-fc4fa622-e2e-t3code-fc4fa622",
-			);
 		} finally {
 			rmSync(parent, { recursive: true, force: true });
 		}

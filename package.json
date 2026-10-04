@@ -39,7 +39,6 @@
     "!src/**/*.testing.ts"
   ],
   "bin": {
-    "dev-tools": "./dist/cli/bin.js",
     "buncargo": "./dist/cli/bin.js"
   },
   "exports": {

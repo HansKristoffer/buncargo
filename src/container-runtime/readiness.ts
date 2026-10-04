@@ -414,9 +414,3 @@ export async function waitForServiceByType(
 		options.signal,
 	);
 }
-
-// Compatibility for existing callers; orchestration lives beside readiness.
-export {
-	type EnsureServicesRunningRequest,
-	ensureServicesRunning,
-} from "./ensure-services";

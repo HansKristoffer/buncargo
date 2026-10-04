@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { waitForDevServers } from "../core/network";
-import { buildAppsAsync } from "../core/process/build";
+import { buildApps } from "../core/process/build";
 import { isCI } from "../core/runtime-flags";
 import { loadAppSecrets } from "../core/secrets/infisical";
 import {
@@ -103,7 +103,7 @@ export async function startAppServers<
 							([name, env]) => [name, { ...secrets[name], ...env }],
 						),
 					);
-					await buildAppsAsync(appsToStart, ctx.root, buildEnv, {
+					await buildApps(appsToStart, ctx.root, buildEnv, {
 						verbose,
 						signal,
 					});

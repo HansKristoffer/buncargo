@@ -1,11 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { serviceHashEnv } from "../docker-compose/interpolate";
 import type { ServiceConfig } from "../types";
-import {
-	ensureServicesRunning,
-	runtimeAnsweredReadiness,
-	waitForService,
-} from "./readiness";
+import { ensureServicesRunning } from "./ensure-services";
+import { runtimeAnsweredReadiness, waitForService } from "./readiness";
 import type {
 	ContainerRuntimeAdapter,
 	ContainerUpRequest,
@@ -41,6 +38,7 @@ function stubRuntime(
 		stopByIds: () => {},
 		findContainerOnPort: () => undefined,
 		containerPortOwners: () => new Map(),
+		containerPortOwnersAsync: async () => new Map(),
 		projectServiceStates: async () => [],
 	};
 }
@@ -225,7 +223,7 @@ describe("ensureServicesRunning reconcile", () => {
 	// port has to take effect without a manual `--down`.
 	it("reconciles when the running stack was created from other config", async () => {
 		const harness = reconcileHarness([
-			{ service: "postgres", running: true, stackHash: "0000000000000000" },
+			{ service: "postgres", running: true, serviceHash: "0000000000000000" },
 		]);
 		expect(await harness.run()).toHaveLength(1);
 	});

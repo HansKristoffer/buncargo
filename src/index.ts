@@ -199,7 +199,6 @@ export {
 export {
 	getEnvVar,
 	logApiUrl,
-	logExpoApiUrl,
 	logFrontendPort,
 	sleep,
 } from "./core/utils";

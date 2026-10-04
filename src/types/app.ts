@@ -15,11 +15,7 @@ import type { ServiceConfig } from "./service";
  * Configuration for an application (e.g., api, web).
  */
 interface AppOptions<TStatic extends EnvValues = EnvValues> {
-	/**
-	 * Opt into public URLs with --expose.
-	 * @deprecated frp sharing automatically includes all selected endpoints with a host port.
-	 * This option only controls public tunnels started with --expose.
-	 */
+	/** Eligible for a public tunnel with `dev --expose`. */
 	expose?: boolean;
 	/** Protocol for recipient sharing; apps default to HTTP, presets infer it, custom services default to TCP. */
 	exposeProtocol?: "http" | "tcp";
@@ -117,12 +113,6 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	needsPublicUrls?: boolean;
 	/** Computed env vars injected only into this app's own processes */
 	envVars?: (...args: never[]) => EnvValues;
-	/**
-	 * An Expo dev server: gets `RCT_METRO_PORT`, and `buncargo sim` opens it in
-	 * a per-checkout iOS simulator. Inferred when `devCommand` mentions `expo`.
-	 * @deprecated Use `integrations: [expo({ apps: { name: options } })]` from `buncargo/expo`.
-	 */
-	expo?: boolean | ExpoAppOptions;
 }
 
 /** See {@link AppConfigBase.watch}. */
@@ -207,7 +197,6 @@ export type WorkerAppConfig<TStatic extends EnvValues = EnvValues> =
 		port?: never;
 		expose?: never;
 		healthEndpoint?: never;
-		expo?: never;
 	};
 export type AppConfig<TStatic extends EnvValues = EnvValues> =
 	| (AppOptions<TStatic> & { kind?: "server"; port: number })
