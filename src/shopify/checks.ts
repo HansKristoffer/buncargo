@@ -153,12 +153,13 @@ export function shopifyChecks(input: { config: string }): SetupCheck[] {
 			check: ({ root }) => {
 				const config = read(root);
 				if (!isClientId(config.clientId)) return true;
-				return (
-					isShopifyAppLinked(root, config.clientId) ||
-					shopifyAppInfo(root, input.config).ok ||
-					failed(
-						"`shopify app info` could not resolve it: not logged in, or the app is not this account's. `buncargo shopify link` relinks without losing the toml",
-					)
+				if (isShopifyAppLinked(root, config.clientId)) return true;
+				const info = shopifyAppInfo(root, input.config);
+				if (info.ok) return true;
+				return failed(
+					info.timedOut
+						? "`shopify app info` did not answer in time; check the network and run `buncargo doctor` again"
+						: "`shopify app info` could not resolve it: not logged in, or the app is not this account's. `buncargo shopify link` relinks without losing the toml",
 				);
 			},
 		},

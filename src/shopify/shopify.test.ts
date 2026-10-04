@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runChecks } from "../cli/checks";
@@ -16,6 +23,8 @@ import {
 	isTestedShopifyVersion,
 	parseVersion,
 	readShopifySession,
+	shopifyAppInfo,
+	shopifyLogin,
 } from "./cli";
 import { shopify, storeLinks } from "./index";
 import { mergeLinkedConfig, setDevStoreUrl, setTopLevelKey } from "./link";
@@ -180,6 +189,42 @@ describe("shopify checks", () => {
 			"prod vs shopify.app.toml: scope write_orders only in the first",
 		);
 		expect(agree?.detail).not.toContain("app_proxy");
+	});
+});
+
+describe("shopify CLI runs", () => {
+	/** A checkout whose own `shopify` runs `script`. */
+	const withFakeShopify = (script: string) => {
+		const root = repo({
+			"node_modules/.bin/shopify": `#!/bin/sh\n${script}\n`,
+		});
+		chmodSync(join(root, "node_modules/.bin/shopify"), 0o755);
+		return root;
+	};
+
+	it("gives up on `shopify app info` that does not answer", () => {
+		const root = withFakeShopify("exec sleep 30");
+		const started = performance.now();
+		expect(
+			shopifyAppInfo(root, "shopify.app.toml", { timeoutMs: 200 }),
+		).toEqual({ ok: false, timedOut: true });
+		expect(performance.now() - started).toBeLessThan(5000);
+	});
+
+	it("runs `shopify auth login` with the environment the config set", () => {
+		const root = withFakeShopify(
+			`printf %s "$BUNCARGO_TEST_SHOPIFY_TOKEN" > "$(dirname "$0")/seen"`,
+		);
+		// Set after this process started, the way a config's dotenv import does.
+		process.env.BUNCARGO_TEST_SHOPIFY_TOKEN = "from-config";
+		try {
+			shopifyLogin(root);
+		} finally {
+			delete process.env.BUNCARGO_TEST_SHOPIFY_TOKEN;
+		}
+		expect(readFileSync(join(root, "node_modules/.bin/seen"), "utf8")).toBe(
+			"from-config",
+		);
 	});
 });
 
