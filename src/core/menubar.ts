@@ -6,7 +6,7 @@ import { withFileLock } from "./file-lock";
 import { exec } from "./process/exec";
 import { declineMarker } from "./prompt";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
-import { isCI } from "./runtime-flags";
+import { barOfferOptedOut, isCI } from "./runtime-flags";
 import { shellQuote } from "./shell-quote";
 import { chownToInvokingUser, getStateDir, stateFilePath } from "./state-paths";
 
@@ -208,7 +208,7 @@ export function isBarSupported(
 export function isBarOfferDisabled(
 	env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-	return env.BUNCARGO_BAR === "0" || isCI(env);
+	return barOfferOptedOut(env) || isCI(env);
 }
 
 export interface BarRelease {
