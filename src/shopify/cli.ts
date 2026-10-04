@@ -43,6 +43,20 @@ export function isTestedShopifyVersion(version: readonly number[]): boolean {
 	);
 }
 
+/**
+ * The environment of every `shopify` run. Passed explicitly: Bun's default is
+ * the environment this process started with, which misses whatever the
+ * config set since (a `dotenv` import, a `SHOPIFY_*` token), and the PATH the
+ * binary is looked up on.
+ */
+export function shopifyEnv(): Record<string, string | undefined> {
+	return { ...process.env, SHOPIFY_CLI_NO_ANALYTICS: "1" };
+}
+
+/** How long a run nobody is watching may take; one with the terminal has no limit. */
+const VERSION_TIMEOUT_MS = 10_000;
+const APP_INFO_TIMEOUT_MS = 15_000;
+
 /** `shopify version`, or undefined when the binary cannot run. */
 export function shopifyVersion(bin: string, cwd: string): string | undefined {
 	try {
@@ -50,7 +64,8 @@ export function shopifyVersion(bin: string, cwd: string): string | undefined {
 			cwd,
 			stdout: "pipe",
 			stderr: "ignore",
-			env: { ...process.env, SHOPIFY_CLI_NO_ANALYTICS: "1" },
+			env: shopifyEnv(),
+			timeout: VERSION_TIMEOUT_MS,
 		});
 		if (result.exitCode !== 0) return undefined;
 		return parseVersion(result.stdout.toString())?.join(".");
@@ -181,8 +196,8 @@ export function isShopifyAppLinked(root: string, clientId: string): boolean {
 export function shopifyAppInfo(
 	root: string,
 	config: string,
-	options: { terminal?: boolean } = {},
-): { ok: boolean; info?: Record<string, unknown> } {
+	options: { terminal?: boolean; timeoutMs?: number } = {},
+): { ok: boolean; timedOut?: boolean; info?: Record<string, unknown> } {
 	try {
 		const result = Bun.spawnSync(
 			[resolveShopifyBin(root), "app", "info", "--config", config, "--json"],
@@ -191,9 +206,14 @@ export function shopifyAppInfo(
 				stdin: options.terminal ? "inherit" : "ignore",
 				stdout: "pipe",
 				stderr: options.terminal ? "inherit" : "pipe",
-				env: { ...process.env, SHOPIFY_CLI_NO_ANALYTICS: "1" },
+				env: shopifyEnv(),
+				// A network call: it can hang, and nobody may be there to notice.
+				timeout: options.terminal
+					? undefined
+					: (options.timeoutMs ?? APP_INFO_TIMEOUT_MS),
 			},
 		);
+		if (result.exitedDueToTimeout) return { ok: false, timedOut: true };
 		if (result.exitCode !== 0) return { ok: false };
 		try {
 			return { ok: true, info: JSON.parse(result.stdout.toString()) };
@@ -210,6 +230,7 @@ export function shopifyLogin(root: string): void {
 	const result = Bun.spawnSync([resolveShopifyBin(root), "auth", "login"], {
 		cwd: root,
 		stdio: ["inherit", "inherit", "inherit"],
+		env: shopifyEnv(),
 	});
 	if (result.exitCode !== 0) throw new Error("`shopify auth login` failed");
 }

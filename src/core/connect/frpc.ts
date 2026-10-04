@@ -82,10 +82,15 @@ export async function startFrpc(
 		stdout: "ignore",
 		stderr: "ignore",
 		env: connectProcessEnv(),
+		timeout: 10_000,
 	});
 	if ((await verify.exited) !== 0) {
 		await rm(directory, { recursive: true, force: true });
-		throw new Error("Invalid frpc configuration");
+		throw new Error(
+			verify.signalCode
+				? "`frpc verify` did not finish"
+				: "Invalid frpc configuration",
+		);
 	}
 
 	const child = startGuardedChild(binary, ["-c", path], directory);
