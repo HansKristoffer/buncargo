@@ -35,3 +35,4 @@ Delete this comment before opening the PR.
 One or two sentences on what changed and why.
 
 - Anything non-obvious: behaviour changes, migration notes, what was left out on purpose.
+- What you ran to verify it and what it showed, beyond "tests pass", and anything you could not check.
