@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startFakeInfisical } from "../secrets/fake-infisical.testing";
@@ -382,6 +382,68 @@ describe("startDevServers non-essential crash on start", () => {
 			});
 			expect(processExists(pids.keeper)).toBe(true);
 		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("startDevServers non-essential crash under a terminal", () => {
+	it("never reports a worker ready once its exit has been seen", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-optional-pty-"));
+		// A slow `ps`: on macOS the worker is gone before its birth identity is
+		// read, the path that used to report it ready. Linux reads /proc, so
+		// there it may still be alive when claimed, and then ready is true.
+		const bin = join(root, "bin");
+		await mkdir(bin);
+		await writeFile(
+			join(bin, "ps"),
+			`#!/bin/sh\nsleep 0.3\nexec /bin/ps "$@"\n`,
+			{ mode: 0o755 },
+		);
+		const path = process.env.PATH;
+		process.env.PATH = `${bin}:${path}`;
+		const output = new RunOutput();
+		output.terminalSize = () => ({ cols: 80, rows: 10 });
+		const states: string[] = [];
+		output.subscribe({
+			state: (app, { state }) => states.push(`${app}:${state}`),
+		});
+		const events: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					keeper: {
+						kind: "worker",
+						devCommand: "bun -e 'setInterval(() => {}, 60000)'",
+					},
+					crash: { kind: "worker", essential: false, devCommand: "exit 3" },
+				},
+				root,
+				{},
+				{},
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					onAppReady: (name) => events.push(`ready:${name}`),
+					onAppExit: (name) => events.push(`exit:${name}`),
+				},
+			);
+			for (
+				let i = 0;
+				i < 100 && output.states.get("crash")?.state !== "failed";
+				i++
+			)
+				await Bun.sleep(20);
+			expect(output.states.get("crash")?.state).toBe("failed");
+			// Ready, if at all, only while the process was still alive.
+			const exit = events.indexOf("exit:crash");
+			expect(exit).toBeGreaterThan(-1);
+			expect(events.slice(exit)).not.toContain("ready:crash");
+		} finally {
+			process.env.PATH = path;
 			await stopDevServers(pids);
 			await rm(root, { recursive: true, force: true });
 		}

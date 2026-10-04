@@ -323,6 +323,10 @@ export async function startDevServers(
 			.filter(([, app]) => app.essential === false)
 			.map(([name]) => name),
 	);
+	// Apps whose current process has exited. Recorded the moment the exit is
+	// seen, not when it is shown (that waits for the app's last screen), so
+	// no readiness check can report a dead process ready in between.
+	const exited = new Set<string>();
 
 	const session = new AppSupervision({
 		signal: options.signal,
@@ -330,6 +334,7 @@ export async function startDevServers(
 		attachedName,
 		optional,
 		onAppExit: (name, code, signal) => {
+			exited.add(name);
 			sideChecks.get(name)?.abort();
 			if (!owner.controller.signal.aborted) {
 				// After the app's last screen, so its final words precede the verdict.
@@ -354,6 +359,7 @@ export async function startDevServers(
 			onAppExit?.(name, code, signal);
 		},
 		onAppSpawned: (name, pid, attached) => {
+			exited.delete(name);
 			// A ready app reporting a new pid adopted its detached server;
 			// a restart says "starting" itself.
 			if (output.states.get(name)?.state !== "ready")
@@ -381,6 +387,7 @@ export async function startDevServers(
 	};
 	output.controls = { restart: (name) => restartApp(name, "requested") };
 	const markReady = (name: string) => {
+		if (exited.has(name)) return;
 		owner.ready(name);
 		// Only a starting app becomes ready; an exited one stays as it ended.
 		if (output.states.get(name)?.state !== "starting") return;
@@ -518,7 +525,7 @@ export async function startDevServers(
 	const sideChecks = new Map<string, AbortController>();
 	function checkOnTheSide(name: string): void {
 		const config = startable[name];
-		if (!config || owner.controller.signal.aborted) return;
+		if (!config || owner.controller.signal.aborted || exited.has(name)) return;
 		sideChecks.get(name)?.abort();
 		const controller = new AbortController();
 		sideChecks.set(name, controller);

@@ -147,3 +147,387 @@ describe("RunTui", () => {
 		}
 	});
 });
+
+describe("RunTui mouse", () => {
+	const wheelUp = "\u001b[<64;40;10M";
+	const frame = async (terminal: ReturnType<typeof fakeTerminal>) => {
+		await Bun.sleep(80);
+		return Bun.stripANSI(terminal.writes.join(""));
+	};
+
+	it("scrolls the Overview with the wheel, and End follows the output again", async () => {
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+		});
+		try {
+			tui.start();
+			for (let i = 0; i < 60; i++) output.line("api", `line ${i}`);
+			expect(terminal.writes.join("")).toContain("\u001b[?1000h");
+			terminal.stdin.write(wheelUp + wheelUp);
+			expect(await frame(terminal)).toContain("↑ 6 lines · End to follow");
+			terminal.writes.length = 0;
+			terminal.stdin.write("\u001b[F");
+			const after = await frame(terminal);
+			expect(after).not.toContain("↑ 6 lines");
+			expect(after).toContain("line 59");
+		} finally {
+			tui.stop();
+		}
+		// Reporting is turned off again with the screen.
+		const last = terminal.writes.join("");
+		expect(last.lastIndexOf("\u001b[?1000l")).toBeGreaterThan(
+			last.lastIndexOf("\u001b[?1000h"),
+		);
+	});
+
+	it("selects an app clicked in the sidebar", async () => {
+		const terminal = fakeTerminal();
+		const tui = new RunTui({
+			output: new RunOutput(),
+			apps: ["api", "web"],
+			urlFor: (app) => `http://${app}.test`,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+		});
+		try {
+			tui.start();
+			// Row 1 header, 2 Overview, 3 the rule, 4 api, 5 web.
+			terminal.stdin.write("\u001b[<0;3;5M\u001b[<0;3;5m");
+			expect(await frame(terminal)).toContain("http://web.test");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("never types mouse reports into an app in interact mode", () => {
+		const forwarded: string[] = [];
+		const output = new RunOutput();
+		const screen = output.screen("api");
+		screen.input = (data: string) => void forwarded.push(data);
+		const terminal = fakeTerminal();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+		});
+		try {
+			tui.start();
+			const input = (data: string) =>
+				(tui as unknown as { input(data: string): void }).input(data);
+			input("j");
+			input("\r");
+			input(`a${wheelUp}b`);
+			input(wheelUp);
+			expect(forwarded).toEqual(["ab"]);
+		} finally {
+			tui.stop();
+		}
+	});
+});
+
+describe("RunTui interact mode", () => {
+	const setup = () => {
+		const forwarded: string[] = [];
+		let quits = 0;
+		const output = new RunOutput();
+		output.screen("api").input = (data: string) => void forwarded.push(data);
+		const terminal = fakeTerminal();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => quits++,
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+		});
+		const state = tui as unknown as {
+			input(data: string): void;
+			interacting: boolean;
+		};
+		tui.start();
+		state.input("j");
+		state.input("\r");
+		expect(state.interacting).toBe(true);
+		return { tui, state, forwarded, quits: () => quits };
+	};
+	// Past the wait that tells a lone Esc from the start of a longer key.
+	const settle = () => Bun.sleep(60);
+
+	it("leaves on a lone Esc or Ctrl-], and still sends escape sequences to the app", async () => {
+		const { tui, state, forwarded } = setup();
+		try {
+			state.input("\u001b[A");
+			state.input("\u001bb");
+			state.input("\u001b");
+			expect(state.interacting).toBe(true);
+			await settle();
+			expect(state.interacting).toBe(false);
+			expect(forwarded).toEqual(["\u001b[A", "\u001bb"]);
+
+			state.input("\r");
+			state.input("x\u001d");
+			expect(state.interacting).toBe(false);
+			expect(forwarded).toEqual(["\u001b[A", "\u001bb", "x"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("reads keys across chunk boundaries", async () => {
+		const { tui, state, forwarded, quits } = setup();
+		try {
+			// Alt+q split in two: one key for the app, not Esc then q (quit).
+			state.input("\u001b");
+			state.input("q");
+			// A mouse report split in two: the wheel, never typed into the app.
+			state.input("\u001b[<64;");
+			state.input("40;10M");
+			await settle();
+			expect(state.interacting).toBe(true);
+			expect(quits()).toBe(0);
+			expect(forwarded).toEqual(["\u001bq"]);
+
+			// A key and Esc in one chunk: the key goes to the app, Esc leaves.
+			state.input("a\u001b");
+			await settle();
+			expect(forwarded).toEqual(["\u001bq", "a"]);
+			expect(state.interacting).toBe(false);
+		} finally {
+			tui.stop();
+		}
+	});
+});
+
+describe("RunTui selection", () => {
+	const press = (col: number, row: number) => `\u001b[<0;${col};${row}M`;
+	const drag = (col: number, row: number) => `\u001b[<32;${col};${row}M`;
+	const release = (col: number, row: number) => `\u001b[<0;${col};${row}m`;
+
+	it("copies a drag in the Overview as whole lines, and highlights it", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		try {
+			tui.start();
+			output.line("api", "first line");
+			output.line("api", `second ${"x".repeat(200)} end`);
+			// 80x20 terminal: sidebar 1-18, divider 19, the pane from column 20 and rows 2..19; the two
+			// lines sit on the last two pane rows.
+			terminal.stdin.write(press(20, 18) + drag(80, 19) + release(80, 19));
+			await Bun.sleep(80);
+			expect(copied).toHaveLength(1);
+			const [first, second] = (copied[0] ?? "").split("\n");
+			expect(first).toMatch(/^\d\d:\d\d:\d\d api {7}first line$/);
+			// Dragged to the edge: the cut-off line is copied in full.
+			expect(second).toEndWith(`${"x".repeat(200)} end`);
+
+			// Stopping mid-line copies only up to there.
+			terminal.stdin.write(press(20, 19) + drag(39, 19) + release(39, 19));
+			await Bun.sleep(80);
+			expect(copied[1]).toMatch(/^\d\d:\d\d:\d\d api {7}s$/);
+			expect(copied[1]?.length).toBe(20);
+			expect(terminal.writes.join("")).toContain("\u001b[7m");
+			expect(Bun.stripANSI(terminal.writes.join(""))).toContain(
+				"Copied 2 lines",
+			);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("copies from an app's own terminal", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		try {
+			tui.start();
+			const screen = output.screen("api");
+			await new Promise<void>((resolve) =>
+				screen.term.write("alpha beta\r\ngamma delta\r\n", resolve),
+			);
+			terminal.stdin.write(press(3, 4) + release(3, 4)); // select api
+			terminal.stdin.write(press(26, 2) + drag(24, 3) + release(24, 3));
+			await Bun.sleep(80);
+			expect(copied).toEqual(["beta\ngamma"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("ends a selection where the button is released", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		try {
+			tui.start();
+			output.line("api", "only line");
+			// No motion report between press and release.
+			terminal.stdin.write(press(20, 19) + release(39, 19));
+			await Bun.sleep(80);
+			expect(copied[0]).toMatch(/^\d\d:\d\d:\d\d api {7}o$/);
+			// The highlight is in the pane, not the sidebar's selected row.
+			const paneRows = terminal.writes
+				.join("")
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: cursor moves
+				.split(/\u001b\[\d+;1H/)
+				.map((row) => row.split("│").slice(1).join("│"));
+			expect(paneRows.some((row) => row.includes("\u001b[7m"))).toBe(true);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("copies the lines it selected after the Overview drops old ones", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		try {
+			tui.start();
+			for (let i = 0; i < 10_000; i++) output.line("api", `line-${i}`);
+			// The last line, from the start of its text to its end.
+			terminal.stdin.write(press(39, 19) + drag(80, 19));
+			await Bun.sleep(20);
+			output.line("api", "line-new");
+			terminal.stdin.write(release(80, 19));
+			await Bun.sleep(80);
+			expect(copied).toEqual(["line-9999"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("copies the rows it selected after the app's scrollback trims", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		const write = (text: string) =>
+			new Promise<void>((resolve) => screen.term.write(text, resolve));
+		const screen = output.screen("api");
+		try {
+			tui.start();
+			let text = "";
+			for (let i = 0; i < 10_100; i++) text += `app-${i}\r\n`;
+			await write(text);
+			terminal.stdin.write(press(3, 4) + release(3, 4)); // select api
+			// The top pane row, whole.
+			terminal.stdin.write(press(20, 2) + drag(80, 2));
+			await Bun.sleep(20);
+			const top = screen.term.buffer.active.getLine(
+				screen.term.buffer.active.baseY,
+			);
+			const selected = top?.translateToString(true);
+			await write("more\r\n");
+			terminal.stdin.write(release(80, 2));
+			await Bun.sleep(80);
+			expect(copied).toEqual([selected ?? ""]);
+
+			// The app switching screens under a drag ends it: nothing is copied.
+			terminal.stdin.write(press(20, 2) + drag(80, 3));
+			await Bun.sleep(20);
+			await write("\u001b[?1049h");
+			terminal.stdin.write(release(80, 3));
+			await Bun.sleep(80);
+			expect(copied).toHaveLength(1);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("treats a click without a drag as no selection", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		try {
+			tui.start();
+			output.line("api", "only line");
+			terminal.stdin.write(press(30, 19) + release(30, 19));
+			await Bun.sleep(80);
+			expect(copied).toEqual([]);
+		} finally {
+			tui.stop();
+		}
+	});
+});

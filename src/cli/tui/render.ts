@@ -116,6 +116,33 @@ export function renderSidebar(
 	return rows.slice(0, height);
 }
 
+/** An Overview row as plain text, uncut: what a selection of it copies. */
+export function overviewPlainLine(line: OutputLine, nameWidth: number): string {
+	return `${line.time.toTimeString().slice(0, 8)} ${line.app.padEnd(nameWidth)}  ${line.text}`;
+}
+
+/**
+ * A rendered row with columns `[from, to)` in reverse video (the selection).
+ * The row keeps its own styles, concealed text included; reverse is laid
+ * over them, and set again after every style change inside the selection.
+ */
+export function highlightColumns(
+	row: string,
+	from: number,
+	to: number,
+	width: number,
+): string {
+	const selected = Bun.sliceAnsi(row, from, to).replace(
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: SGR sequences
+		/\u001b\[[0-9;]*m/g,
+		"$&\u001b[7m",
+	);
+	return fit(
+		`${Bun.sliceAnsi(row, 0, from)}\u001b[7m${selected}\u001b[27m${Bun.sliceAnsi(row, to)}`,
+		width,
+	);
+}
+
 /** Overview rows: every app's lines, interleaved by time, newest at the bottom. */
 export function renderOverview(
 	lines: readonly OutputLine[],

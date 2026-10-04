@@ -1,6 +1,7 @@
 import { afterEach, expect, it } from "bun:test";
+import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineDevConfig } from "../../config";
@@ -190,4 +191,77 @@ it("hands a non-essential worker that died while being claimed to the supervisor
 	} finally {
 		owner.dispose();
 	}
+});
+
+const alive = (pid: number) => {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+};
+
+/** `real`, but reporting `spawn` only once it has exited: it died while being claimed. */
+function deadOnArrival(real: ChildProcess): AppChild {
+	const child = new EventEmitter();
+	for (const key of ["pid", "exitCode", "signalCode"] as const)
+		Object.defineProperty(child, key, { get: () => real[key] });
+	real.once("exit", () => child.emit("spawn"));
+	return child as unknown as AppChild;
+}
+
+it("stops what a worker that died while being claimed left running", async () => {
+	const root = fixture();
+	const real = spawn("sh", ["-c", "sleep 60 & echo $!; exit 3"], {
+		detached: true,
+		stdio: ["ignore", "pipe", "ignore"],
+	});
+	const descendant = new Promise<number>((resolve) =>
+		real.stdout?.once("data", (data) => resolve(Number(String(data).trim()))),
+	);
+	const child = await spawnOwnedWorker(
+		root,
+		"jobs",
+		() => deadOnArrival(real),
+		undefined,
+		{ allowEarlyExit: true },
+	);
+	expect(child.exitCode).toBe(3);
+	expect(alive(await descendant)).toBe(false);
+});
+
+it("hands back a non-essential worker that died while its claim was written", async () => {
+	const root = fixture();
+	const real = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
+	const registryFile = join(root, ".buncargo", "workers.json");
+	// Exits the moment its claim reaches the disk.
+	let exitCode: number | null = null;
+	const child = Object.defineProperties(new EventEmitter(), {
+		pid: { get: () => real.pid },
+		exitCode: {
+			get: () => {
+				if (existsSync(registryFile)) exitCode = 3;
+				return exitCode;
+			},
+		},
+		signalCode: { value: null },
+	});
+
+	const handed = await spawnOwnedWorker(
+		root,
+		"jobs",
+		() => {
+			queueMicrotask(() => child.emit("spawn"));
+			return child as unknown as AppChild;
+		},
+		undefined,
+		{ allowEarlyExit: true },
+	);
+	expect(handed.exitCode).toBe(3);
+	expect(await findWorker(root, "jobs")).toBeUndefined();
+	if (existsSync(registryFile))
+		expect(readFileSync(registryFile, "utf8")).not.toContain('"jobs"');
+	for (let i = 0; i < 40 && alive(real.pid ?? 0); i++) await Bun.sleep(25);
+	expect(real.exitCode !== null || real.signalCode !== null).toBe(true);
 });
