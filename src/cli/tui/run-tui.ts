@@ -55,11 +55,23 @@ const OVERVIEW_LINES = 10_000;
 /** Ctrl-]: leaves interact mode. Apps do not use it themselves. */
 const LEAVE = "\u001d";
 
-const ENTER_SCREEN = "\u001b[?1049h\u001b[?25l\u001b[H\u001b[2J";
-const LEAVE_SCREEN = "\u001b[0m\u001b[?25h\u001b[?1049l";
+/**
+ * Mouse reporting (SGR encoding): the wheel scrolls the pane, a click selects
+ * in the sidebar. While it is on the terminal does not select text itself;
+ * Option-drag (iTerm, Terminal) or Shift-drag (most others) still does.
+ */
+const MOUSE_ON = "\u001b[?1000h\u001b[?1006h";
+const MOUSE_OFF = "\u001b[?1000l\u001b[?1006l";
+const ENTER_SCREEN = `\u001b[?1049h\u001b[?25l\u001b[H\u001b[2J${MOUSE_ON}`;
+const LEAVE_SCREEN = `${MOUSE_OFF}\u001b[0m\u001b[?25h\u001b[?1049l`;
+/** Lines one wheel notch scrolls. */
+const WHEEL_LINES = 3;
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: keys are escape sequences
-const KEY = /\u001b\[[0-9;]*[~A-Za-z]|\u001bO[A-Za-z]|\u001b|[\s\S]/g;
+const KEY =
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: keys are escape sequences
+	/\u001b\[<\d+;\d+;\d+[Mm]|\u001b\[[0-9;]*[~A-Za-z]|\u001bO[A-Za-z]|\u001b|[\s\S]/g;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: mouse reports are escape sequences
+const MOUSE = /\u001b\[<(\d+);(\d+);(\d+)([Mm])/g;
 
 export class RunTui {
 	private selected = 0;
@@ -112,7 +124,8 @@ export class RunTui {
 					this.unread.add(line.app);
 				// Keep a scrolled-back view where it is.
 				const overview = this.scroll.get("") ?? 0;
-				if (overview > 0) this.scroll.set("", overview + 1);
+				if (overview > 0 && (!this.errorsOnly || line.level !== undefined))
+					this.scroll.set("", overview + 1);
 				this.invalidate();
 			},
 			state: () => this.invalidate(),
@@ -252,6 +265,14 @@ export class RunTui {
 	private input(data: string): void {
 		if (this.suspended) return;
 		if (this.interacting) {
+			// Mouse reports are ours (the wheel scrolls the pane); an app that
+			// never asked for them must not receive them as typed input.
+			for (const match of data.matchAll(MOUSE)) this.mouse(match);
+			data = data.replace(MOUSE, "");
+			if (!data) {
+				this.invalidate();
+				return;
+			}
 			const leave = data.indexOf(LEAVE);
 			const app = this.selectedApp();
 			const screen = app ? this.options.output.screens.get(app) : undefined;
@@ -272,6 +293,12 @@ export class RunTui {
 		this.message = undefined;
 		const app = this.selectedApp();
 		const count = this.options.apps.length + 1;
+
+		const mouse = [...key.matchAll(MOUSE)][0];
+		if (mouse) {
+			if (this.picker === undefined) this.mouse(mouse);
+			return;
+		}
 
 		if (this.picker !== undefined) {
 			const targets = this.urlTargets();
@@ -309,6 +336,17 @@ export class RunTui {
 			case "\u001b[6~":
 				this.scrollBy(-(this.paneSize().rows - 1));
 				return;
+			// End: back to the live bottom. Home: the oldest line kept.
+			case "\u001b[F":
+			case "\u001bOF":
+			case "\u001b[4~":
+				this.scroll.set(app ?? "", 0);
+				return;
+			case "\u001b[H":
+			case "\u001bOH":
+			case "\u001b[1~":
+				this.scrollBy(Number.MAX_SAFE_INTEGER);
+				return;
 			case "e":
 				if (!app) {
 					this.errorsOnly = !this.errorsOnly;
@@ -343,6 +381,27 @@ export class RunTui {
 		}
 		const action = this.liveActions().find((entry) => entry.key === key);
 		if (action) this.open(action.url);
+	}
+
+	/** A mouse report: the wheel scrolls, a click in the sidebar selects. */
+	private mouse(match: RegExpMatchArray): void {
+		const button = Number(match[1]) & ~0b11100; // drop Shift/Alt/Ctrl
+		const column = Number(match[2]);
+		const row = Number(match[3]);
+		if (button === 64) this.scrollBy(WHEEL_LINES);
+		else if (button === 65) this.scrollBy(-WHEEL_LINES);
+		else if (
+			button === 0 &&
+			match[4] === "M" &&
+			!this.interacting &&
+			column <= this.sidebarWidth()
+		) {
+			// Row 1 is the header; then Overview, the rule, and the apps.
+			const entry = row - 2;
+			if (entry === 0) this.select(0);
+			else if (entry >= 2 && entry - 1 <= this.options.apps.length)
+				this.select(entry - 1);
+		}
 	}
 
 	private select(index: number): void {
@@ -536,12 +595,13 @@ export class RunTui {
 	private header(app: string | undefined, side: number, cols: number): string {
 		const left = fit(pc.inverse(pc.bold(" buncargo ")), side);
 		let title: string;
-		if (!app)
-			title = ` Overview${this.errorsOnly ? pc.yellow("  errors and warnings only") : ""}`;
-		else {
+		if (!app) {
+			const scroll = this.scroll.get("") ?? 0;
+			title = ` Overview${this.errorsOnly ? pc.yellow("  errors and warnings only") : ""}${scroll > 0 ? pc.yellow(`  ↑ ${scroll} lines · End to follow`) : ""}`;
+		} else {
 			const url = this.options.urlFor(app);
 			const scroll = this.scroll.get(app) ?? 0;
-			title = ` ${colorizeName(app)}${url ? `  ${pc.cyan(url)}` : ""}${scroll > 0 ? pc.yellow(`  ↑ ${scroll} lines`) : ""}${this.interacting ? pc.green("  keys go to the app · Ctrl-] to leave") : ""}`;
+			title = ` ${colorizeName(app)}${url ? `  ${pc.cyan(url)}` : ""}${scroll > 0 ? pc.yellow(`  ↑ ${scroll} lines · End to follow`) : ""}${this.interacting ? pc.green("  keys go to the app · Ctrl-] to leave") : ""}`;
 		}
 		return `${left}${pc.dim("│")}${fit(title, cols - side - 1)}`;
 	}

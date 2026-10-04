@@ -514,8 +514,14 @@ URLs), not its live footer.
 | `o` | Open the app's URL (the Overview offers a picker) |
 | `r` | Restart the selected app |
 | `l` | The app's log in `$PAGER` (the Overview: the run's log directory) |
-| `PgUp` `PgDn` | Scroll |
+| Mouse wheel, `PgUp` `PgDn` | Scroll the Overview or the selected app's scrollback |
+| `End` / `Home` | Back to the live output / the oldest line kept |
+| Click in the sidebar | Select the Overview or an app |
 | `q` | Quit the run |
+
+The TUI turns on mouse reporting for the wheel and clicks, so the terminal
+does not select text by itself while it runs: hold Option (iTerm, Terminal) or
+Shift (most other terminals) to select and copy.
 
 Keys an app declares in `actions` show in the footer once their capture has a
 value. Anything else that prints during the run (hooks, warnings) lands in the

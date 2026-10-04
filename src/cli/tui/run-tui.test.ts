@@ -147,3 +147,91 @@ describe("RunTui", () => {
 		}
 	});
 });
+
+describe("RunTui mouse", () => {
+	const wheelUp = "\u001b[<64;40;10M";
+	const frame = async (terminal: ReturnType<typeof fakeTerminal>) => {
+		await Bun.sleep(80);
+		return Bun.stripANSI(terminal.writes.join(""));
+	};
+
+	it("scrolls the Overview with the wheel, and End follows the output again", async () => {
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+		});
+		try {
+			tui.start();
+			for (let i = 0; i < 60; i++) output.line("api", `line ${i}`);
+			expect(terminal.writes.join("")).toContain("\u001b[?1000h");
+			terminal.stdin.write(wheelUp + wheelUp);
+			expect(await frame(terminal)).toContain("↑ 6 lines · End to follow");
+			terminal.writes.length = 0;
+			terminal.stdin.write("\u001b[F");
+			const after = await frame(terminal);
+			expect(after).not.toContain("↑ 6 lines");
+			expect(after).toContain("line 59");
+		} finally {
+			tui.stop();
+		}
+		// Reporting is turned off again with the screen.
+		const last = terminal.writes.join("");
+		expect(last.lastIndexOf("\u001b[?1000l")).toBeGreaterThan(
+			last.lastIndexOf("\u001b[?1000h"),
+		);
+	});
+
+	it("selects an app clicked in the sidebar", async () => {
+		const terminal = fakeTerminal();
+		const tui = new RunTui({
+			output: new RunOutput(),
+			apps: ["api", "web"],
+			urlFor: (app) => `http://${app}.test`,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+		});
+		try {
+			tui.start();
+			// Row 1 header, 2 Overview, 3 the rule, 4 api, 5 web.
+			terminal.stdin.write("\u001b[<0;3;5M\u001b[<0;3;5m");
+			expect(await frame(terminal)).toContain("http://web.test");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("never types mouse reports into an app in interact mode", () => {
+		const forwarded: string[] = [];
+		const output = new RunOutput();
+		const screen = output.screen("api");
+		screen.input = (data: string) => void forwarded.push(data);
+		const terminal = fakeTerminal();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+		});
+		try {
+			tui.start();
+			const input = (data: string) =>
+				(tui as unknown as { input(data: string): void }).input(data);
+			input("j");
+			input("\r");
+			input(`a${wheelUp}b`);
+			input(wheelUp);
+			expect(forwarded).toEqual(["ab"]);
+		} finally {
+			tui.stop();
+		}
+	});
+});
