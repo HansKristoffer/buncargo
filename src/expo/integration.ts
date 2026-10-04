@@ -7,23 +7,20 @@ import { describeExpoApp, isExpoApp } from "./app-identity";
  *
  * ```ts
  * import { expo } from "buncargo/expo";
- * integrations: [expo({ apps: ["mobile"], apiApp: "api" })]
+ * integrations: [expo({ apps: ["mobile"] })]
  * ```
  */
 
 export interface ExpoIntegrationOptions {
 	/**
 	 * The Expo apps, by key, optionally with per-app options. Default: every app
-	 * whose `devCommand` runs `expo` (or that sets the deprecated `expo` field).
+	 * whose `devCommand` runs `expo`.
 	 */
 	apps?: readonly string[] | Readonly<Record<string, ExpoAppOptions | true>>;
-	/** The app the Expo app calls; `getExpoApiUrl()` prints its LAN URL. Default: `api` */
-	apiApp?: string;
 }
 
 export interface ExpoIntegration extends BuncargoIntegration {
 	readonly name: "expo";
-	readonly apiApp?: string;
 	/** Expo apps and their options, resolved when the config is applied. */
 	appOptions(name: string): ExpoAppOptions | undefined;
 }
@@ -32,27 +29,21 @@ function resolveExpoApps(
 	apps: Record<string, AppConfig>,
 	selected: ExpoIntegrationOptions["apps"],
 ): Map<string, ExpoAppOptions> {
-	// The deprecated per-app field still carries options for one major.
-	const fieldOptions = (name: string): ExpoAppOptions => {
-		const field = apps[name]?.expo;
-		return typeof field === "object" ? field : {};
-	};
-
 	if (Array.isArray(selected)) {
-		return new Map(selected.map((name) => [name, fieldOptions(name)]));
+		return new Map(selected.map((name) => [name, {}]));
 	}
 	if (selected) {
 		return new Map(
 			Object.entries(selected).map(([name, options]) => [
 				name,
-				{ ...fieldOptions(name), ...(options === true ? {} : options) },
+				options === true ? {} : options,
 			]),
 		);
 	}
 	return new Map(
 		Object.entries(apps)
 			.filter(([, app]) => isExpoApp(app))
-			.map(([name]) => [name, fieldOptions(name)]),
+			.map(([name]) => [name, {}]),
 	);
 }
 
@@ -61,7 +52,6 @@ export function expo(options: ExpoIntegrationOptions = {}): ExpoIntegration {
 
 	return {
 		name: "expo",
-		apiApp: options.apiApp,
 		appOptions: (name) => expoApps.get(name),
 
 		config(config) {
@@ -87,7 +77,7 @@ export function expo(options: ExpoIntegrationOptions = {}): ExpoIntegration {
 		describeApp({ name, config, root }) {
 			const appOptions = expoApps.get(name);
 			if (!appOptions) return undefined;
-			return { expo: describeExpoApp(root, { ...config, expo: appOptions }) };
+			return { expo: describeExpoApp(root, config, appOptions) };
 		},
 
 		bannerHint: ({ name }) =>

@@ -32,7 +32,7 @@ export function validateReferences(
 	}
 
 	// Prisma has an implicit database prerequisite; apply the same phase rule
-	// as explicit migration/seed entries without changing its legacy validation.
+	// as explicit migration/seed entries.
 	const prismaPrerequisites = config.prisma
 		? [config.prisma.service ?? "postgres"]
 		: undefined;
@@ -74,17 +74,11 @@ export function validateReferences(
 		);
 	}
 
-	for (const optionKey of [
-		"primaryApp",
-		"expoApiApp",
-		"frontendApp",
-	] as const) {
-		const appName = config.options?.[optionKey];
-		if (appName && !config.apps?.[appName]) {
-			errors.push(
-				`options.${optionKey} "${appName}" must match a configured app key`,
-			);
-		}
+	const primaryApp = config.options?.primaryApp;
+	if (primaryApp && !config.apps?.[primaryApp]) {
+		errors.push(
+			`options.primaryApp "${primaryApp}" must match a configured app key`,
+		);
 	}
 
 	const hosts = config.options?.hosts;
@@ -95,12 +89,6 @@ export function validateReferences(
 			} catch (error) {
 				errors.push(error instanceof Error ? error.message : String(error));
 			}
-		}
-
-		if (hosts.primaryApp && !config.apps?.[hosts.primaryApp]) {
-			errors.push(
-				`options.hosts.primaryApp "${hosts.primaryApp}" must match a configured app key`,
-			);
 		}
 
 		if (Array.isArray(hosts.services)) {

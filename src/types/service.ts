@@ -279,11 +279,7 @@ export interface ServiceConfigBase<
 > {
 	/** Base host port; omit for a container with no published endpoint. */
 	port?: number;
-	/**
-	 * Opt into public URLs with --expose.
-	 * @deprecated frp sharing automatically includes all selected endpoints with a host port.
-	 * This option only controls public tunnels started with --expose.
-	 */
+	/** Eligible for a public tunnel with `dev --expose`. */
 	expose?: boolean;
 	/** Protocol for recipient sharing; apps default to HTTP, presets infer it, custom services default to TCP. */
 	exposeProtocol?: "http" | "tcp";

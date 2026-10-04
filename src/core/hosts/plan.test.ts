@@ -137,7 +137,8 @@ describe("planNamedHosts", () => {
 			apps,
 			services,
 			ports,
-			hosts: { primaryApp: "web" },
+			hosts: true,
+			primaryApp: "web",
 		});
 		expect(plan.find((entry) => entry.name === "web")?.hostname).toBe(
 			"serpier.localhost",
@@ -154,7 +155,8 @@ describe("planNamedHosts", () => {
 			apps,
 			services,
 			ports,
-			hosts: { primaryApp: "web" },
+			hosts: true,
+			primaryApp: "web",
 		});
 		expect(plan.find((entry) => entry.name === "web")?.hostname).toBe(
 			"fix-ui.serpier.localhost",

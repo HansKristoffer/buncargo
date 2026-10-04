@@ -15,7 +15,8 @@ export default defineDevConfig({
 	},
 
 	options: {
-		hosts: { primaryApp: "web" },
+		hosts: true,
+		primaryApp: "web",
 	},
 
 	// Each app answers on its own hostname, so calls from web to api are

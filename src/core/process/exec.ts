@@ -2,8 +2,8 @@ import { execSync, spawn } from "node:child_process";
 import { constants } from "node:os";
 import { resolve } from "node:path";
 import type { ExecOptions, ExecResult } from "../../types";
+import { childProcessEnv } from "../child-env";
 import { abortError, registerAbortCleanup } from "../deadline";
-import { connectProcessEnv } from "../runtime-flags";
 import { recordStartupMetric } from "../startup-metrics";
 import { prefixOutput } from "./prefix-output";
 import { terminateOwnedProcess } from "./terminate";
@@ -20,7 +20,7 @@ function resolveCommandEnv(
 	envVars: Record<string, string>,
 	env: Record<string, string>,
 ): NodeJS.ProcessEnv {
-	return connectProcessEnv({ ...process.env, ...envVars, ...env });
+	return childProcessEnv({ ...process.env, ...envVars, ...env });
 }
 
 function commandFailure(cmd: string, result: ExecResult): Error {

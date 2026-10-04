@@ -137,22 +137,15 @@ function withoutHashLabels(
 			...rest,
 			labels: labels.filter(
 				(entry) =>
-					![
-						STACK_HASH_LABEL,
-						SERVICE_HASH_LABEL,
-						"buncargo.config-hash",
-					].includes(String(entry).split("=")[0] ?? ""),
+					![SERVICE_HASH_LABEL, "buncargo.config-hash"].includes(
+						String(entry).split("=")[0] ?? "",
+					),
 			),
 		};
 	}
 	const userLabels = Object.fromEntries(
 		Object.entries(normalizeComposeLabels(labels)).filter(
-			([key]) =>
-				![
-					STACK_HASH_LABEL,
-					SERVICE_HASH_LABEL,
-					"buncargo.config-hash",
-				].includes(key),
+			([key]) => ![SERVICE_HASH_LABEL, "buncargo.config-hash"].includes(key),
 		),
 	);
 	return {
@@ -164,50 +157,6 @@ function withoutHashLabels(
 export function configHashFor(service: DockerComposeServiceRaw): string {
 	return createHash("sha256")
 		.update(stableStringify(withoutHashLabels(service)))
-		.digest("hex")
-		.slice(0, 16);
-}
-
-/** Label carrying the fingerprint of the whole stack a run would create. */
-export const STACK_HASH_LABEL = "buncargo.stack-hash";
-
-/**
- * Environment variable the generated model reads the stack hash from.
- *
- * The hash cannot be baked into the file: it depends on the interpolated
- * values, which are only known once ports have been allocated, and the file is
- * written before that is handed to a backend. Writing a `${...}` reference
- * instead means both backends pick it up through the substitution they already
- * do.
- */
-export const STACK_HASH_ENV = "BUNCARGO_STACK_HASH";
-
-/**
- * Fingerprint the services a run is about to bring up, as they will actually
- * be created.
- *
- * Interpolated first, so a port block that moved changes the hash even though
- * the file text did not. Only hash labels are excluded, as in {@link configHashFor}.
- *
- * The whole selected stack rather than one service, because the only question
- * it answers is whether this run needs to reconcile at all.
- */
-export function projectStackHash(input: {
-	model: ComposeDocument;
-	envVars: Record<string, string>;
-	serviceNames: string[];
-}): string {
-	const services = [...input.serviceNames].sort().map((name) => {
-		const service = input.model.services?.[name];
-		if (!service) return `${name}:absent`;
-		const interpolated = interpolateNode(
-			service as DockerComposeNode,
-			input.envVars,
-		) as DockerComposeServiceRaw;
-		return `${name}:${configHashFor(interpolated)}`;
-	});
-	return createHash("sha256")
-		.update(services.join("\n"))
 		.digest("hex")
 		.slice(0, 16);
 }

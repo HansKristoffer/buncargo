@@ -140,6 +140,8 @@ export async function waitForDevServers(
 		if (
 			config.kind === "worker" ||
 			config.healthEndpoint === false ||
+			// Ready by its output, which `startDevServers` waits for.
+			config.readyWhen !== undefined ||
 			(config.devCommand === false &&
 				!(options.productionBuild && config.prodCommand))
 		) {

@@ -70,20 +70,15 @@ export interface DevOptions<
 	 * The app this project is "about": the one a menu bar Open button, the bare
 	 * named hostname and any other "just show me the app" surface should pick.
 	 *
-	 * Defaults to `hosts.primaryApp`, then `frontendApp`, then the app no other
-	 * selected app depends on. Set it once here rather than per consumer.
+	 * Defaults to the app no other selected app depends on. Its named host is
+	 * the bare one (`web` → `myapp.localhost`).
 	 */
 	primaryApp?: Extract<keyof TApps, string>;
-	/** App key used by getExpoApiUrl(). Default: 'api' */
-	expoApiApp?: Extract<keyof TApps, string>;
-	/** App key used by getFrontendPort(). Default: 'platform', then 'web' */
-	frontendApp?: Extract<keyof TApps, string>;
 	/**
 	 * Named `.localhost` HTTPS URLs via the shared loopback proxy.
-	 * `true` uses defaults. Off on Windows, in CI, or when `BUNCARGO_HOSTS=0`
-	 * or `BUCARGO_SKIP_MKCERT=true`.
+	 * `true` uses defaults. Off on Windows, in CI, or when `BUNCARGO_HOSTS=0`.
 	 */
-	hosts?: boolean | HostsOptions<TServices, TApps>;
+	hosts?: boolean | HostsOptions<TServices>;
 	/**
 	 * Keep a dotenv on disk in step with the allocated ports, for tooling that
 	 * reads `.env` instead of inheriting buncargo's environment.
@@ -125,12 +120,9 @@ export interface HostsOptions<
 		string,
 		ServiceConfig
 	>,
-	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
 > {
 	/** DNS suffix. Default: `localhost`. Multi-label values like `dev.example.com` are allowed. */
 	tld?: string;
-	/** App key whose hostname omits the app label (`web` → `serpier.localhost`). */
-	primaryApp?: Extract<keyof TApps, string>;
 	/**
 	 * HTTP Docker UIs to name. Default: `mailpit` and `typesense`.
 	 * `true` names every HTTP-capable service.
@@ -141,13 +133,12 @@ export interface HostsOptions<
 /**
  * {@link HostsOptions} with its keys widened to `string`.
  *
- * Runtime consumers take this: a `HostsOptions<TServices, TApps>` from a typed
+ * Runtime consumers take this: a `HostsOptions<TServices>` from a typed
  * config is assignable to it, while a generic `HostsOptions<…>` is not
  * assignable to another instantiation of itself.
  */
 export type HostsOptionsLike = {
 	tld?: string;
-	primaryApp?: string;
 	services?: readonly string[] | true;
 };
 
@@ -278,6 +269,13 @@ export interface DevConfig<
 	options?: DevOptions<TServices, TApps>;
 	/** Scope defaults. Set false to disable all buncargo secret fetching for this environment. */
 	secrets?: SecretsScopeConfig | false;
+	/**
+	 * Variables removed from every process buncargo starts for the project:
+	 * apps, tasks, `exec`, migrations, the seed and prisma. For tools that
+	 * change behaviour when they detect an agent's shell, e.g.
+	 * `["CLAUDECODE", "CODEX_SANDBOX"]` (optional).
+	 */
+	unsetEnv?: readonly string[];
 	/** Docker Compose generation options (optional) */
 	docker?: DockerComposeGenerationOptions;
 	/** Preconditions `buncargo dev` verifies before starting (optional) */
@@ -325,13 +323,8 @@ export type DevConfigInput<
  * `keyof T` inverts variance, so `DevOptions<{ api: … }>` is not assignable to
  * `DevOptions<Record<string, …>>`. Widening the keys is what restores it.
  */
-type AnyDevOptions = Omit<
-	DevOptions,
-	"primaryApp" | "expoApiApp" | "frontendApp" | "hosts"
-> & {
+type AnyDevOptions = Omit<DevOptions, "primaryApp" | "hosts"> & {
 	primaryApp?: string;
-	expoApiApp?: string;
-	frontendApp?: string;
 	hosts?: boolean | HostsOptionsLike;
 };
 

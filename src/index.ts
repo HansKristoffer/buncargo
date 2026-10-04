@@ -57,6 +57,7 @@ export type {
 	AppConfig,
 	AppEnvVars,
 	AppHostOnlyEnvVarNames,
+	AppWatchConfig,
 	BuiltInHealthCheck,
 	BuiltInServiceEnvVarMap,
 	BuncargoIntegration,
@@ -198,7 +199,6 @@ export {
 export {
 	getEnvVar,
 	logApiUrl,
-	logExpoApiUrl,
 	logFrontendPort,
 	sleep,
 } from "./core/utils";

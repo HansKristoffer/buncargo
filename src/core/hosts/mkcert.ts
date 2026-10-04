@@ -11,7 +11,6 @@ import { dirname, join } from "node:path";
 import { mkcertPathOverride, mkcertVersion } from "../runtime-flags";
 import {
 	isInstalledTool,
-	legacyToolCachePath,
 	resolveToolBinary,
 	toolCachePath,
 } from "../tool-binary";
@@ -28,8 +27,6 @@ export const MKCERT_RELEASE_BASE =
 
 const RENEW_BEFORE_MS = 1000 * 60 * 60 * 24 * 30;
 
-const LEGACY_MKCERT_CACHE_DIRNAME = "buncargo-mkcert";
-
 function mkcertFileName(version: string): string {
 	return process.platform === "win32"
 		? `mkcert.${version}.exe`
@@ -42,20 +39,10 @@ export function cachedMkcertBinPath(version = mkcertVersion()): string {
 	);
 }
 
-/** The `tmpdir()` cache earlier versions downloaded into. */
-export function legacyMkcertBinPath(version = mkcertVersion()): string {
-	return legacyToolCachePath(
-		LEGACY_MKCERT_CACHE_DIRNAME,
-		mkcertFileName(version),
-	);
-}
-
 function mkcertResolution() {
 	return resolveToolBinary({
 		override: mkcertPathOverride(),
 		cachePath: cachedMkcertBinPath(),
-		legacyCachePath: legacyMkcertBinPath(),
-		legacyCachePaths: [toolCachePath(mkcertFileName(mkcertVersion()))],
 		pathCommand: "mkcert",
 	});
 }

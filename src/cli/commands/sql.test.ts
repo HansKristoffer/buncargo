@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { sqlClientCommand } from "./sql";
+import { scratchCommand, scratchUrl, sqlClientCommand } from "./sql";
 
 const credentials = { user: "app", password: "secret", database: "appdb" };
 
@@ -44,6 +44,35 @@ describe("sqlClientCommand", () => {
 		).toThrow("--json needs a query");
 		expect(() => sqlClientCommand("mailpit", undefined, {})).toThrow(
 			"no client for mailpit",
+		);
+	});
+});
+
+describe("scratch databases", () => {
+	it("recreates scratch_<name> in two statements, outside a transaction", () => {
+		const argv = scratchCommand(credentials, "migcheck", "create");
+		expect(argv.slice(-4)).toEqual([
+			"-c",
+			"drop database if exists scratch_migcheck with (force)",
+			"-c",
+			"create database scratch_migcheck",
+		]);
+		expect(argv).toContain("postgres");
+		expect(scratchCommand(credentials, "migcheck", "drop").at(-1)).toBe(
+			"drop database if exists scratch_migcheck with (force)",
+		);
+	});
+
+	it("only takes names that cannot reach another database", () => {
+		for (const name of ["app; drop", "App", "", "1x"])
+			expect(() => scratchCommand(credentials, name, "drop")).toThrow(
+				"Scratch database names",
+			);
+	});
+
+	it("prints a URL the host can connect to", () => {
+		expect(scratchUrl(credentials, 13432, "migcheck")).toBe(
+			"postgresql://app:secret@localhost:13432/scratch_migcheck",
 		);
 	});
 });

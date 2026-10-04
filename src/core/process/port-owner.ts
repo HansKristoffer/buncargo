@@ -350,16 +350,12 @@ export async function createPortOwnerSnapshotAsync(
 		];
 		const reads = [
 			selected
-				? () =>
-						selected.containerPortOwnersAsync?.(options.signal) ??
-						selected.containerPortOwners()
+				? () => selected.containerPortOwnersAsync(options.signal)
 				: () => dockerContainerPortOwnersAsync(undefined, options.signal),
 			...(options.fallbackRuntimes ?? [])
 				.filter((runtime) => runtime.name !== (selected?.name ?? "docker"))
 				.map(
-					(runtime) => () =>
-						runtime.containerPortOwnersAsync?.(options.signal) ??
-						runtime.containerPortOwners(),
+					(runtime) => () => runtime.containerPortOwnersAsync(options.signal),
 				),
 		];
 		const results = await Promise.allSettled(

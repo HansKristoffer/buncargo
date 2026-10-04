@@ -2,7 +2,31 @@
 
 Each section lists what a consumer of `buncargo` has to change when crossing one major version, newest first. Breaking changes that shipped inside a minor release are listed under the major you cross when you pick them up. If you are several majors behind, work through the sections from the bottom up.
 
-## 9.0 → next major (unreleased)
+## 11.0 → 12.0
+
+12.0 is a hard cutover: the compatibility code for older versions, configs and on-disk state is gone. **Stop every run before upgrading** (`bunx buncargo dev --down --all` with the old version): 12.0 does not recognise an older run's containers or locks.
+
+- **Worktree project names stop repeating the worktree.** A worktree in a directory named after it (`t3code-fc4fa622`) was `gey-t3code-fc4fa622-t3code-fc4fa622` and is now `gey-t3code-fc4fa622`; its E2E stack `gey-t3code-fc4fa622-e2e`. The volumes are named after the project, so each such worktree starts on an empty database: seed again, and `bunx buncargo prune` removes the old volumes. Anything that names containers by hand needs the new name; `buncargo sql` and `buncargo status --json` find them for you.
+- **Offsets are claimed per checkout** in `~/.buncargo/offsets.json`. A worktree that shared its hashed offset with another may move once to the next free block, and then keeps it.
+- **`options.hosts.primaryApp` is gone.** Set `options.primaryApp` instead; it also gives that app the bare named hostname.
+- **`options.frontendApp`, `options.expoApiApp`, `getFrontendPort()` and `getExpoApiUrl()` are gone**, and so is `expo({ apiApp })`. Read ports and URLs from `env.ports` / `env.urls`, or `buncargo env --get`.
+- **Expo needs `integrations: [expo()]`.** The per-app `expo` field is gone, and an app whose `devCommand` runs `expo` is no longer made an Expo app without the integration.
+- **Removed names:** the `dev-tools` binary (use `buncargo`), the `dev-tools.config.ts` / `.js` config file names (use `dev.config.ts`), and `BUCARGO_SKIP_MKCERT` (use `BUNCARGO_HOSTS=0`).
+- **Removed exports:** `spawnDevServer` (use `startDevServers`), the sync `buildApps` from `buncargo/core/process` (`buildApps` is now the async one), `logExpoApiUrl`, and the `mergeConfigs` overload taking explicit type parameters.
+- **Custom container runtime adapters** must implement `containerPortOwnersAsync`, and an injected Apple CLI must implement `runAsync`.
+- **Older on-disk state is not read.** Process identities without the `v2:` prefix no longer match (an older run reads as gone), the old `.lock` file protocol is ignored, and `mkcert` / `cloudflared` cached under `tmpdir()` are downloaded again into `~/.buncargo/bin`.
+- **BuncargoBar installs need the release's checksum**, which every release publishes.
+- **Removed config errors:** a top-level `envVars` or an app-level `env` is no longer explained by a dedicated error; use the top-level `env` overlay and `apps.<name>.staticEnv` / `envVars`.
+
+## 10.0 → 11.0
+
+11.0 added the terminal UI (`dev --tui`) and supervision for apps that may stop without ending the run.
+
+- **`interactive: true` only applies in stream mode.** The TUI gives every app a terminal of its own, so it ignores the setting. Stream mode (the default, and every run without a terminal) still hands that app the TTY. `--attach=<app>` does the same for one run.
+- **The Shopify CLI app is non-essential and not interactive.** Its exit no longer ends the run: it shows as stopped, and `r` in the TUI or `buncargo restart shopify` starts it again. Its `p`/`g` keys open the preview and GraphiQL URLs. Remove any `interactive: true` you added to it.
+- **App output is logged.** Every run writes `.buncargo/logs/<run>/<app>.log` (the last ten runs). Keep `.buncargo/` in `.gitignore`; `buncargo setup` adds it.
+
+## 9.0 → 10.0
 
 Container cleanup now runs from one machine-wide sweep against one run registry (`~/.buncargo/runs.json`). It used to rely on a watchdog per project that tracked heartbeat files.
 

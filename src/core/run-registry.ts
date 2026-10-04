@@ -167,6 +167,11 @@ export interface RunEntry {
 	 */
 	idleTimeoutMs?: number;
 	primaryApp?: string;
+	/**
+	 * Started by `dev --detach`: no terminal shows its servers, so stopping it
+	 * kills nothing anyone is watching and `stop` does not ask first.
+	 */
+	detached?: boolean;
 	hosts: { active: boolean; tld: string } | null;
 	/**
 	 * How to invoke this same buncargo again.
@@ -288,6 +293,7 @@ function isRunEntry(value: unknown): value is RunEntry {
 		(value.releasedAt === undefined || typeof value.releasedAt === "string") &&
 		(value.ownerLostAt === undefined ||
 			typeof value.ownerLostAt === "string") &&
+		(value.detached === undefined || typeof value.detached === "boolean") &&
 		(value.idleTimeoutMs === undefined ||
 			(typeof value.idleTimeoutMs === "number" &&
 				Number.isFinite(value.idleTimeoutMs))) &&

@@ -26,6 +26,7 @@ import {
 	createPortOwnerSnapshot,
 	createPortOwnerSnapshotAsync,
 	type PortOwnerSnapshot,
+	withBindProbe,
 } from "../core/process";
 import { portOffsetOverride } from "../core/runtime-flags";
 import { applySecretDefaults } from "../core/secrets/infisical";
@@ -308,7 +309,11 @@ export function createDevEnvContext<
 			worktreeIsolation: config.options?.worktreeIsolation,
 			runtime: selectedRuntime,
 			persist: suffix === undefined,
-			getOwner: snapshot ? (port) => snapshot.owner(port) : undefined,
+			// The bind probe here too: this is the allocation every dev run
+			// makes, and a snapshot only knows what `lsof` lets this user see.
+			getOwner: snapshot
+				? withBindProbe((port) => snapshot.owner(port))
+				: undefined,
 			probeNames: hasSelectedServices ? undefined : plan.appNames,
 		});
 

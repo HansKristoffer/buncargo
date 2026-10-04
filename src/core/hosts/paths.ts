@@ -1,10 +1,5 @@
 import { join } from "node:path";
-import {
-	getStateDir,
-	type InvokingUser,
-	STATE_DIRNAME,
-	stateFilePath,
-} from "../state-paths";
+import { stateFilePath } from "../state-paths";
 
 /**
  * The named-hosts subsystem's own files inside `~/.buncargo`.
@@ -23,8 +18,6 @@ export {
 	resolveUserHome,
 } from "../state-paths";
 
-/** @deprecated Use `STATE_DIRNAME` from `core/state-paths`. */
-export const HOSTS_STATE_DIRNAME = STATE_DIRNAME;
 export const ROUTES_FILENAME = "routes.json";
 export const PIDFILE_FILENAME = "hosts.pid";
 export const DAEMON_CONFIG_FILENAME = "hosts-daemon.json";
@@ -34,11 +27,6 @@ export const CERTS_DIRNAME = "certs";
 export const CERT_FILENAME = "hosts.pem";
 export const KEY_FILENAME = "hosts-key.pem";
 export const TOOLS_DIRNAME = "bin";
-
-export type { InvokingUser as HostsInvokingUser };
-
-/** @deprecated Use `getStateDir` from `core/state-paths`. */
-export const getHostsStateDir = getStateDir;
 
 export function getRoutesPath(home?: string): string {
 	return stateFilePath(ROUTES_FILENAME, home);

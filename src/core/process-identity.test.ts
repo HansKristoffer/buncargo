@@ -4,7 +4,6 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import {
-	matchesProcessIdentity,
 	matchesProcessIdentityAsync,
 	processIdentityMatcher,
 	processIdentityMatcherAsync,
@@ -89,7 +88,7 @@ describe("asynchronous identity inspection", () => {
 			{ pid: child.pid },
 		]);
 		expect(matches(process.pid, identity)).toBe(true);
-		expect(matches(process.pid, "legacy-unknown")).toBe(true);
+		expect(matches(process.pid, "v2:another-process")).toBe(false);
 		expect(matches(child.pid)).toBe(false);
 	});
 
@@ -259,36 +258,5 @@ describe("identity across environments", () => {
 		});
 		expect(foreign.stdout).toBe(readProcessIdentity(process.pid) ?? "");
 		expect(foreign.stdout).toStartWith("v2:");
-	});
-
-	it("still compares an older version's identity exactly as it used to", async () => {
-		// Strict matching is what `stop` and worker ownership act on, so an
-		// identity recorded before the format changed keeps its old meaning:
-		// equal when read in the same environment, and nothing more.
-		const legacy = spawnSync(
-			"ps",
-			["-p", String(process.pid), "-o", "lstart="],
-			{ encoding: "utf8" },
-		).stdout.trim();
-		const legacyIdentity =
-			process.platform === "linux"
-				? undefined
-				: new Bun.CryptoHasher("sha256").update(legacy).digest("hex");
-		if (legacyIdentity === undefined) return;
-		expect(matchesProcessIdentity(process.pid, legacyIdentity)).toBe(true);
-		expect(matchesProcessIdentity(process.pid, "0".repeat(64))).toBe(false);
-		expect(await matchesProcessIdentityAsync(process.pid, legacyIdentity)).toBe(
-			true,
-		);
-		expect(await matchesProcessIdentityAsync(process.pid, "0".repeat(64))).toBe(
-			false,
-		);
-		// Liveness forgives what it cannot compare rather than condemning it.
-		expect(
-			processIdentityMatcher([{ pid: process.pid }])(
-				process.pid,
-				"0".repeat(64),
-			),
-		).toBe(true);
 	});
 });

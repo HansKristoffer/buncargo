@@ -78,6 +78,11 @@ const FLAGS = {
 		valueHint: "=<app>",
 		description: "Give one app the TTY (overrides interactive: true)",
 	},
+	noWatch: {
+		name: "--no-watch",
+		kind: "boolean",
+		description: "Do not restart apps when their watched files change",
+	},
 	detach: {
 		name: "--detach",
 		kind: "boolean",
@@ -229,6 +234,8 @@ export interface DevCliArgs {
 	tui: boolean;
 	/** `--detach`: the run goes to the background (`dev-detach.ts`). */
 	detach: boolean;
+	/** `--no-watch`: apps' `watch` config is ignored for this run. */
+	watch: boolean;
 	keepContainers: boolean;
 	/** Skip the prompt and stop apps already running elsewhere. */
 	takeover: boolean;
@@ -294,6 +301,7 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		attach: str(FLAGS.attach),
 		tui: bool(FLAGS.tui) && !bool(FLAGS.noTui),
 		detach: bool(FLAGS.detach),
+		watch: !bool(FLAGS.noWatch),
 		keepContainers: bool(FLAGS.keepContainers),
 		takeover: bool(FLAGS.takeover),
 		watchdogTimeoutMinutes:

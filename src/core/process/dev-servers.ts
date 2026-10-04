@@ -1,26 +1,26 @@
-import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { resolve } from "node:path";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import type { AppConfig, DevServerPids } from "../../types";
+import { abortableSleep } from "../deadline";
 import { waitForDevServers } from "../network";
-import { connectProcessEnv } from "../runtime-flags";
 import { loadAppSecrets, missingRequiredSecrets } from "../secrets/infisical";
 import { formatStep, formatWarn, prefixWidth } from "../style";
 import {
 	ptyTeeArgv,
 	resolveStartCommand,
 	runPrebuild,
-	spawnAppCommand,
 	spawnManagedApp,
 } from "./app-process";
 import { AppSupervision } from "./app-supervision";
 import { createCaptureRestarts } from "./capture-restarts";
-import type { CapturedValue } from "./output-capture";
+import {
+	type CapturedValue,
+	createOutputCaptureScanner,
+} from "./output-capture";
 import {
 	classifyPortOccupant,
 	createPortOwnerSnapshotAsync,
 	formatPortOwner,
-	getPortOwner,
 	killPortOwner,
 	type PortOwnerSnapshot,
 } from "./port-owner";
@@ -29,6 +29,7 @@ import { printStream, RunOutput } from "./run-output";
 
 export { stopDevServers } from "./app-supervision";
 
+import { watchApp } from "./app-watch";
 import {
 	type DriftProbe,
 	systemDriftProbe,
@@ -61,67 +62,6 @@ export function isDeliberateExit(
 		code === 130 ||
 		code === 143
 	);
-}
-
-export interface SpawnDevServerOptions {
-	verbose?: boolean;
-	detached?: boolean;
-	isCI?: boolean;
-	/** Kill any existing process using the port before starting. Default: true */
-	killExisting?: boolean;
-	/** The port this server will use (required if killExisting is true) */
-	port?: number;
-}
-
-/**
- * @deprecated Prefer startDevServers for ownership, readiness and supervision.
- * Spawn a dev server as a detached process.
- * If killExisting is true and port is provided, kills any existing process on that port first.
- */
-export async function spawnDevServer(
-	command: string,
-	root: string,
-	appCwd: string | undefined,
-	envVars: Record<string, string>,
-	options: SpawnDevServerOptions = {},
-): Promise<ChildProcess> {
-	const {
-		verbose = false,
-		detached = true,
-		isCI = false,
-		killExisting = true,
-		port,
-	} = options;
-
-	if (killExisting && port !== undefined) {
-		const owner = getPortOwner(port);
-		if (owner) {
-			if (verbose) {
-				console.log(formatWarn(`Port ${port} is in use`));
-			}
-
-			await killPortOwner(port, { verbose });
-		}
-	}
-
-	const spawnOptions: SpawnOptions = {
-		cwd: appCwd ? resolve(root, appCwd) : root,
-		env: connectProcessEnv({ ...process.env, ...envVars }),
-		detached,
-		stdio: isCI || verbose ? "inherit" : "ignore",
-	};
-
-	const proc = spawnAppCommand(command, spawnOptions);
-
-	if (detached && proc.unref) {
-		proc.unref();
-	}
-
-	await new Promise<void>((resolvePromise, rejectPromise) => {
-		proc.once("error", rejectPromise);
-		proc.once("spawn", resolvePromise);
-	});
-	return proc;
 }
 
 export interface StartDevServersOptions {
@@ -200,6 +140,8 @@ export interface StartDevServersOptions {
 	 * ends - what `ci` and a library `start()` want. `buncargo dev` turns it on.
 	 */
 	keepOthersOnFailure?: boolean;
+	/** Start the apps' `watch` watchers. Default: true; `dev --no-watch` passes false. */
+	watch?: boolean;
 	/** An app was stopped because it did not become ready (see above). */
 	onAppFailed?: (name: string, error: Error) => void;
 	/**
@@ -497,7 +439,7 @@ export async function startDevServers(
 					productionBuild,
 					waitForExit,
 					output,
-					onText,
+					onText: watchForReady(name, config, onText),
 				});
 			const spawnApp = () =>
 				config.kind === "worker"
@@ -531,15 +473,19 @@ export async function startDevServers(
 		const ready = (name: string) => {
 			if (!signal.aborted) markReady(name);
 		};
-		const health = waitForHealth
-			? waitForHealth(wave, signal)
-			: // Workers and `healthEndpoint: false` apps are ready once the wave is.
-				waitForDevServers(wave, ports, {
-					verbose: verbose && !output.terminalSize,
-					productionBuild,
-					signal,
-					onAppReady: ready,
-				});
+		// Printed lines first: the health wait skips `readyWhen` apps, and its
+		// callers mark the whole wave ready when it returns.
+		const health = waitForPrinted(wave, signal).then(() =>
+			waitForHealth
+				? waitForHealth(wave, signal)
+				: // Workers and `healthEndpoint: false` apps are ready once the wave is.
+					waitForDevServers(wave, ports, {
+						verbose: verbose && !output.terminalSize,
+						productionBuild,
+						signal,
+						onAppReady: ready,
+					}),
+		);
 		return raceDrift(wave, health, signal).then(() => {
 			for (const name of Object.keys(wave)) ready(name);
 		});
@@ -580,6 +526,64 @@ export async function startDevServers(
 		} finally {
 			done.abort();
 		}
+	}
+
+	// `readyWhen`: one promise per process, resolved when its output matches.
+	// A fresh scanner per spawn, so a restart waits for the line again; the
+	// app's own captures keep theirs, which report a value only when it changes.
+	const printedReady = new Map<
+		string,
+		{ promise: Promise<void>; resolve: () => void }
+	>();
+	function watchForReady(
+		name: string,
+		config: AppConfig,
+		onText: ((text: string) => void) | undefined,
+	): ((text: string) => void) | undefined {
+		if (!config.readyWhen) return onText;
+		const { promise, resolve } = Promise.withResolvers<void>();
+		printedReady.set(name, { promise, resolve });
+		const scanner = createOutputCaptureScanner({
+			ready: { pattern: config.readyWhen, as: "event" },
+		});
+		let seen = false;
+		return (text) => {
+			onText?.(text);
+			if (!seen && scanner.push(text).length > 0) {
+				seen = true;
+				resolve();
+			}
+		};
+	}
+	/** Resolves once every `readyWhen` app of the wave has printed its line. */
+	async function waitForPrinted(
+		wave: Record<string, AppConfig>,
+		signal: AbortSignal,
+	): Promise<void> {
+		await Promise.all(
+			Object.entries(wave).map(async ([name, config]) => {
+				const ready = printedReady.get(name);
+				// Reused from another run: nothing of ours to read.
+				if (!config.readyWhen || !ready) return;
+				const timeoutMs = config.healthTimeout ?? 60_000;
+				const done = new AbortController();
+				try {
+					await Promise.race([
+						ready.promise,
+						abortableSleep(
+							timeoutMs,
+							AbortSignal.any([signal, done.signal]),
+						).then(() => {
+							throw new Error(
+								`${name} did not print ${config.readyWhen} within ${Math.round(timeoutMs / 1000)}s`,
+							);
+						}),
+					]);
+				} finally {
+					done.abort();
+				}
+			}),
+		);
 	}
 
 	// A non-essential app's readiness is checked on the side, one check per
@@ -630,12 +634,14 @@ export async function startDevServers(
 				Object.entries(wave).map(([name, config]) =>
 					raceDrift(
 						{ [name]: config },
-						waitForDevServers({ [name]: config }, ports, {
-							verbose: false,
-							logReady: false,
-							productionBuild,
-							signal,
-						}),
+						waitForPrinted({ [name]: config }, signal).then(() =>
+							waitForDevServers({ [name]: config }, ports, {
+								verbose: false,
+								logReady: false,
+								productionBuild,
+								signal,
+							}),
+						),
 						signal,
 					),
 				),
@@ -694,6 +700,21 @@ export async function startDevServers(
 
 		for (const layer of order.afterTunnels) await startWave(layer);
 		owner.controller.signal.throwIfAborted();
+
+		// After startup, so a save mid-start cannot race the first health check.
+		// Only apps this run spawned: a reused one has nothing here to restart.
+		if (options.watch !== false)
+			for (const [name, config] of Object.entries(startable))
+				if (config.watch && pids[name] !== undefined)
+					watchApp({
+						name,
+						dir: config.cwd ? resolve(root, config.cwd) : root,
+						config: config.watch,
+						signal: owner.controller.signal,
+						onChange: (reason) => {
+							void restartApp(name, reason).catch(() => {});
+						},
+					});
 		if (options.onReady) {
 			await owner.race(
 				Promise.resolve().then(() =>

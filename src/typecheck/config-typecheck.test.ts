@@ -74,18 +74,6 @@ describe("typecheckRootConfig", () => {
 		expect(result.errorOutput).toContain("dev.config.ts");
 	});
 
-	it("finds the alternate config filenames", async () => {
-		const root = makeFixture();
-		writeFileSync(
-			join(root, "dev-tools.config.ts"),
-			"export default { projectPrefix: 'alt' }\n",
-		);
-
-		const result = await typecheckRootConfig({ root, verbose: false });
-
-		expect(result.configFile).toBe("dev-tools.config.ts");
-		expect(result.success).toBe(true);
-	});
 	it("ignores inherited root include while checking config imports", async () => {
 		const root = makeFixture();
 		writeFileSync(

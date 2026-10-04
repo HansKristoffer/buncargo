@@ -22,7 +22,7 @@ export function assertDockerRunning(binary?: string): void {
 }
 
 const SERVICE_STATE_FORMAT =
-	'{{.Label "buncargo.service"}}\t{{.State}}\t{{.Label "buncargo.stack-hash"}}\t{{.Status}}\t{{.Label "buncargo.service-hash"}}';
+	'{{.Label "buncargo.service"}}\t{{.State}}\t{{.Status}}\t{{.Label "buncargo.service-hash"}}';
 
 /**
  * Docker reports its healthcheck inside the human-readable status, as
@@ -48,13 +48,12 @@ export function parseDockerServiceStates(
 	for (const raw of stdout.split("\n")) {
 		const line = raw.replace(/\r$/, "");
 		if (!line.trim()) continue;
-		const [service, state, stackHash, status, serviceHash] = line.split("\t");
+		const [service, state, status, serviceHash] = line.split("\t");
 		if (!service) continue;
 		const healthy = parseDockerHealth(status ?? "");
 		states.push({
 			service,
 			running: state === "running",
-			...(stackHash ? { stackHash } : {}),
 			...(serviceHash ? { serviceHash } : {}),
 			...(healthy === undefined ? {} : { healthy }),
 		});

@@ -18,7 +18,7 @@ export function validateApps(
 	for (const [name, app] of Object.entries(config.apps ?? {})) {
 		claimName(name, `apps.${name}`);
 		if (app.kind === "worker") {
-			for (const field of ["port", "expose", "healthEndpoint", "expo"] as const)
+			for (const field of ["port", "expose", "healthEndpoint"] as const)
 				if (app[field] !== undefined) {
 					errors.push(`Worker "${name}" cannot set ${field}`);
 				}
@@ -30,12 +30,6 @@ export function validateApps(
 				errors.push(`App "${name}" has an invalid kind`);
 			}
 			claimPort(app.port, `apps.${name}.port`);
-		}
-
-		if ("env" in (app as object)) {
-			errors.push(
-				`App "${name}" uses "env", which was renamed to "staticEnv" to avoid colliding with the top-level env overlay. Use apps.${name}.staticEnv for constants, or apps.${name}.envVars for computed values.`,
-			);
 		}
 
 		if (app.kind !== "worker" && (!app.port || typeof app.port !== "number")) {

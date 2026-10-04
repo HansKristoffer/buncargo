@@ -166,10 +166,15 @@ export function getProjectName(
 	suffix?: string,
 	root?: string,
 ): string {
-	const monorepoRoot = root ?? findMonorepoRoot();
-	const dirName = basename(monorepoRoot);
-	const baseName = `${prefix}-${dirName.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`;
+	const baseName = `${prefix}-${directorySegment(root ?? findMonorepoRoot())}`;
 	return suffix ? `${baseName}-${suffix}` : baseName;
+}
+
+/** The checkout directory as it appears in a project name. */
+function directorySegment(root: string): string {
+	return basename(root)
+		.toLowerCase()
+		.replace(/[^a-z0-9-]/g, "-");
 }
 
 /** The longest project id the Supabase CLI keeps; it cuts anything longer. */
@@ -221,8 +226,15 @@ export function computeDevIdentity(options: DevIdentityOptions): DevIdentity {
 	const worktree = isWorktree(root);
 	const worktreeSuffix =
 		worktree && worktreeIsolation ? getWorktreeProjectSuffix(root) : null;
+	// The directory name is already in the project name, and a worktree's
+	// directory is normally named after it: only a worktree whose directory
+	// says something else still needs its name added.
+	const nameSuffix =
+		worktreeSuffix && worktreeSuffix !== directorySegment(root)
+			? worktreeSuffix
+			: null;
 	const projectSuffix =
-		[suffix, worktreeSuffix].filter(Boolean).join("-") || undefined;
+		[suffix, nameSuffix].filter(Boolean).join("-") || undefined;
 	const projectName = getProjectName(projectPrefix, projectSuffix, root);
 
 	return {

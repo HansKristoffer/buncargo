@@ -7,6 +7,11 @@ import type {
 	ServiceConfig,
 } from "../types";
 import { simpleHash } from "./hash";
+import {
+	claimOffset,
+	offsetClaimedBy,
+	readOffsetClaims,
+} from "./offset-claims";
 import type { PortMap } from "./ports";
 import {
 	classifyPortOccupant,
@@ -18,6 +23,7 @@ import {
 import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
 import { portOffsetOverride } from "./runtime-flags";
 import { STATE_DIRNAME } from "./state-paths";
+import { formatWarn } from "./style";
 
 export const PORT_OFFSET_STEP = 100;
 export const PORT_OFFSET_MIN = 100;
@@ -26,10 +32,14 @@ export const PORTS_LOCKFILE = `${STATE_DIRNAME}/ports.json`;
 const LOCKFILE_VERSION = 1;
 const PORT_ALLOCATION_ATTEMPTS = 80;
 
+/**
+ * `.buncargo/ports.json`. Only `offset` is required: a hand-written
+ * `{ "offset": 2500 }` pins the checkout, and the next run fills in the rest.
+ */
 export interface PortLockfile {
 	version: number;
-	projectName: string;
-	root: string;
+	projectName?: string;
+	root?: string;
 	offset: number;
 	ports: Record<string, number>;
 	provenance: Exclude<PortOffsetProvenance, "env">;
@@ -137,30 +147,51 @@ export function getPortsLockfilePath(root: string): string {
 function validatePortLockfile(value: unknown): PortLockfile | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
 	const lockfile = value as Partial<PortLockfile>;
-	if (lockfile.version !== LOCKFILE_VERSION) return undefined;
+	if (lockfile.version !== undefined && lockfile.version !== LOCKFILE_VERSION)
+		return undefined;
 	if (!Number.isInteger(lockfile.offset) || (lockfile.offset ?? -1) < 0)
 		return undefined;
-	if (typeof lockfile.projectName !== "string") return undefined;
-	if (typeof lockfile.root !== "string") return undefined;
-	if (typeof lockfile.ports !== "object" || lockfile.ports === null) {
-		return undefined;
-	}
+	for (const field of ["projectName", "root"] as const)
+		if (lockfile[field] !== undefined && typeof lockfile[field] !== "string")
+			return undefined;
+	const ports = lockfile.ports ?? {};
 	if (
-		Object.values(lockfile.ports).some(
+		typeof ports !== "object" ||
+		ports === null ||
+		Object.values(ports).some(
 			(port) => !Number.isInteger(port) || port < 1 || port > 65535,
 		)
-	) {
+	)
 		return undefined;
-	}
-	const provenance = lockfile.provenance;
+	const provenance = lockfile.provenance ?? "lockfile";
 	if (
 		provenance !== "hash" &&
 		provenance !== "lockfile" &&
 		provenance !== "shifted"
-	) {
+	)
 		return undefined;
-	}
-	return lockfile as PortLockfile;
+	return {
+		...lockfile,
+		version: LOCKFILE_VERSION,
+		offset: lockfile.offset as number,
+		ports,
+		provenance,
+	};
+}
+
+/** Why a lockfile is not this checkout's, or undefined when it is. */
+function foreignLockfile(
+	lockfile: PortLockfile,
+	input: { projectName: string; root: string },
+): string | undefined {
+	if (lockfile.root !== undefined && lockfile.root !== input.root)
+		return `it was written for ${lockfile.root}`;
+	if (
+		lockfile.projectName !== undefined &&
+		lockfile.projectName !== input.projectName
+	)
+		return `it was written for project ${lockfile.projectName}`;
+	return undefined;
 }
 
 export function readPortsLockfile(root: string): PortLockfile | null {
@@ -172,23 +203,6 @@ export function readPortsLockfile(root: string): PortLockfile | null {
 
 export function writePortsLockfile(root: string, lockfile: PortLockfile): void {
 	writeJsonDocumentSync(getPortsLockfilePath(root), lockfile);
-}
-
-function lockfileMatches(
-	lockfile: PortLockfile,
-	input: {
-		projectName: string;
-		root: string;
-		basePorts: Record<string, number>;
-	},
-): boolean {
-	if (lockfile.projectName !== input.projectName) return false;
-	if (lockfile.root !== input.root) return false;
-	const expectedKeys = Object.keys(input.basePorts);
-	if (expectedKeys.length !== Object.keys(lockfile.ports).length) return false;
-	return expectedKeys.every(
-		(key) => lockfile.ports[key] === input.basePorts[key] + lockfile.offset,
-	);
 }
 
 export function describePortConflict(
@@ -326,48 +340,94 @@ export function resolvePortPlan(input: {
 				)
 			: ports;
 	const lockfile = readPortsLockfile(root);
-	if (
-		!probeConflicts &&
-		lockfile?.projectName === projectName &&
-		lockfile.root === root
-	) {
+	const notOurs = lockfile && foreignLockfile(lockfile, { projectName, root });
+	const ownLockfile = lockfile && !notOurs ? lockfile : undefined;
+	if (!probeConflicts && ownLockfile) {
 		// A config edit must not make a maintenance command switch away from
 		// the endpoints the last startup published. New keys use the same offset.
 		const ports = Object.fromEntries(
 			Object.entries(basePorts).map(([name, base]) => [
 				name,
-				lockfile.ports[name] ?? base + lockfile.offset,
+				ownLockfile.ports[name] ?? base + ownLockfile.offset,
 			]),
 		);
 		if (Object.values(ports).some((port) => port > 65535))
 			throw new Error(
 				"Persisted offset cannot accommodate this config; run dev to reconcile the allocation.",
 			);
-		return { offset: lockfile.offset, ports, provenance: "lockfile" };
+		return { offset: ownLockfile.offset, ports, provenance: "lockfile" };
 	}
-	if (lockfile && lockfileMatches(lockfile, { projectName, root, basePorts })) {
-		const conflict = findForeignConflict(probed(lockfile.ports), {
+
+	// Other checkouts' offsets are skipped whether or not they are running;
+	// only a run that persists its allocation claims one.
+	const claims = readOffsetClaims();
+	const claimant = (offset: number) => offsetClaimedBy(claims, offset, root);
+	const conflictAt = (ports: Record<string, number>) =>
+		findForeignConflict(probed(ports), {
 			root,
 			projectName,
 			runtime: runtimeName,
 			getOwner: lookupOwner,
 		});
-		if (!conflict) {
-			return {
-				offset: lockfile.offset,
-				ports: lockfile.ports,
-				provenance: "lockfile",
+	const settle = (
+		offset: number,
+		ports: Record<string, number>,
+		provenance: PortOffsetProvenance,
+	): PortPlan => {
+		if (persist) {
+			const next: PortLockfile = {
+				version: LOCKFILE_VERSION,
+				projectName,
+				root,
+				offset,
+				ports,
+				provenance: provenance === "env" ? "lockfile" : provenance,
 			};
+			if (JSON.stringify(next) !== JSON.stringify(lockfile))
+				writePortsLockfile(root, next);
+			claimOffset(root, offset, projectName);
 		}
-		if (
-			input.probeNames &&
-			Object.keys(basePorts).some((name) => !input.probeNames?.includes(name))
-		) {
-			throw new Error(
-				"Selected app ports conflict with the persisted allocation. Stop the conflicting port owner, or start the full environment to reconcile its shared port block.",
-			);
+		return { offset, ports, provenance };
+	};
+
+	// The lockfile's offset, applied to whatever ports the config has now: an
+	// added service keeps the block, and `{ "offset": 2500 }` alone pins it.
+	let ignored = notOurs;
+	if (ownLockfile) {
+		const ports = shiftPorts(basePorts, ownLockfile.offset);
+		const holder = claimant(ownLockfile.offset);
+		if (holder)
+			ignored = `offset ${ownLockfile.offset} is claimed by ${holder}`;
+		else if (Object.values(ports).some((port) => port > 65535))
+			ignored = `offset ${ownLockfile.offset} puts a port above 65535`;
+		else {
+			const conflict = conflictAt(ports);
+			if (!conflict) return settle(ownLockfile.offset, ports, "lockfile");
+			if (
+				input.probeNames &&
+				Object.keys(basePorts).some((name) => !input.probeNames?.includes(name))
+			) {
+				throw new Error(
+					"Selected app ports conflict with the persisted allocation. Stop the conflicting port owner, or start the full environment to reconcile its shared port block.",
+				);
+			}
+			ignored = describePortConflict(conflict.port, conflict.owner);
 		}
 	}
+	const settleAllocated = (
+		offset: number,
+		ports: Record<string, number>,
+		provenance: PortOffsetProvenance,
+	): PortPlan => {
+		// Moving off a lockfile changes every URL of the checkout: say why.
+		if (persist && lockfile && ignored && lockfile.offset !== offset)
+			console.warn(
+				formatWarn(
+					`.buncargo/ports.json (offset ${lockfile.offset}) not used: ${ignored}. Using offset ${offset}.`,
+				),
+			);
+		return settle(offset, ports, provenance);
+	};
 
 	let offset = computeBaseOffset({
 		projectPrefix,
@@ -380,27 +440,12 @@ export function resolvePortPlan(input: {
 	for (let attempt = 0; attempt < PORT_ALLOCATION_ATTEMPTS; attempt++) {
 		const ports = shiftPorts(basePorts, offset);
 		const overflow = Object.values(ports).some((port) => port > 65535);
-		if (!overflow) {
-			const conflict = findForeignConflict(probed(ports), {
-				root,
-				projectName,
-				runtime: runtimeName,
-				getOwner: lookupOwner,
-			});
-			if (!conflict) {
-				if (persist) {
-					writePortsLockfile(root, {
-						version: LOCKFILE_VERSION,
-						projectName,
-						root,
-						offset,
-						ports,
-						provenance: provenance === "hash" ? "hash" : "shifted",
-					});
-				}
-				return { offset, ports, provenance };
-			}
-		}
+		if (!overflow && !claimant(offset) && !conflictAt(ports))
+			return settleAllocated(
+				offset,
+				ports,
+				provenance === "hash" ? "hash" : "shifted",
+			);
 		offset += PORT_OFFSET_STEP;
 		provenance = "shifted";
 		if (offset > PORT_OFFSET_MAX + PORT_OFFSET_STEP * 20) {

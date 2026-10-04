@@ -98,13 +98,23 @@ export const CLI_COMMANDS = [
 			"Restart one app of a running dev (e.g. a stopped non-essential one)",
 	},
 	{
+		name: "send",
+		usage: "send <app> <keys> [--enter]",
+		summary: "Type into an app that has a terminal (e.g. Expo's i)",
+	},
+	{
 		name: "logs",
 		usage: "logs [<app>] [-f] [--since=5m] [--errors]",
 		summary: "Read app output from the current or last run",
 	},
 	{
+		name: "ports",
+		usage: "ports [pin <offset>]",
+		summary: "Show this checkout's ports and every offset; pin one",
+	},
+	{
 		name: "sql",
-		usage: "sql [<service>] [-c <query>] [--json]",
+		usage: "sql [<service>] [-c <query>] [--json] [--create-scratch=<name>]",
 		summary: "Open the database's own client in this checkout's container",
 	},
 	{

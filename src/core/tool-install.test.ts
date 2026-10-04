@@ -191,17 +191,6 @@ describe("installTool", () => {
 		expect(isInstalledTool(to)).toBe(true);
 		expect(readFileSync(to, "utf8")).toBe(executable);
 	});
-	it("adopts a working older cache without downloading", async () => {
-		const to = join(directory(), "fixture");
-		writeFileSync(to, executable);
-		chmodSync(to, 0o755);
-		await installTool(
-			installOptions(to, async () => {
-				throw new Error("must not download");
-			}),
-		);
-		expect(isInstalledTool(to)).toBe(true);
-	});
 	it("extracts one named archive entry in a private directory with shell-sensitive paths", async () => {
 		const root = directory();
 		const source = join(root, "fixture");

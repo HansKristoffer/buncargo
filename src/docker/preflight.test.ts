@@ -21,7 +21,12 @@ afterEach(() => {
 });
 
 function fixture(
-	options: { versionExit?: number; versionDelay?: number } = {},
+	options: {
+		versionExit?: number;
+		versionDelay?: number;
+		/** Fail this many `version` probes first, then answer. */
+		downFor?: number;
+	} = {},
 ) {
 	const root = mkdtempSync(join(tmpdir(), "buncargo docker preflight "));
 	roots.push(root);
@@ -42,6 +47,9 @@ if (args[0] === "info") {
   console.log("27.5.1");
 } else if (args[0] === "version") {
   writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+  const { readFileSync } = await import("node:fs");
+  const probes = readFileSync(${JSON.stringify(log)}, "utf8").split("\\n").filter((line) => line.startsWith('["version"')).length;
+  if (probes <= ${options.downFor ?? 0}) process.exit(1);
   await Bun.sleep(${options.versionDelay ?? 0});
   console.log("27.5.1");
   process.exit(${options.versionExit ?? 0});
@@ -70,11 +78,27 @@ if (args[0] === "info") {
 }
 
 describe("Docker daemon preflight", () => {
+	it("waits for a daemon that is still coming up in CI instead of failing on one probe", async () => {
+		const { binary, calls } = fixture({ downFor: 2 });
+		await ensureDockerRunning({
+			binary,
+			ci: true,
+			verbose: false,
+			timeoutMs: 10_000,
+		});
+		// Never tried to start anything: CI only waits.
+		expect(calls().every((args) => args[0] !== "start")).toBe(true);
+		expect(
+			calls().filter((args) => args[0] === "version").length,
+		).toBeGreaterThanOrEqual(3);
+	}, 15_000);
+
 	it("checks the server without collecting slow CLI plugin metadata", async () => {
 		const { binary, calls } = fixture();
 		await ensureDockerRunning({
 			binary,
 			autoStart: false,
+			ci: false,
 			verbose: false,
 			timeoutMs: 1000,
 		});
@@ -89,7 +113,12 @@ describe("Docker daemon preflight", () => {
 		const { binary } = fixture({ versionExit: 1 });
 		expect(isDockerDaemonRunning(binary)).toBe(false);
 		await expect(
-			ensureDockerRunning({ binary, autoStart: false, verbose: false }),
+			ensureDockerRunning({
+				binary,
+				autoStart: false,
+				ci: false,
+				verbose: false,
+			}),
 		).rejects.toBeInstanceOf(DockerUnavailableError);
 	});
 
@@ -99,6 +128,7 @@ describe("Docker daemon preflight", () => {
 			ensureDockerRunning({
 				binary,
 				autoStart: false,
+				ci: false,
 				verbose: false,
 				timeoutMs: 500,
 			}),
@@ -114,6 +144,7 @@ describe("Docker daemon preflight", () => {
 		const outcome = ensureDockerRunning({
 			binary,
 			autoStart: false,
+			ci: false,
 			verbose: false,
 			signal: controller.signal,
 		}).catch((error: unknown) => error);

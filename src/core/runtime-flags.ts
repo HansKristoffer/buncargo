@@ -111,6 +111,14 @@ export function isTimingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 	return env.BUNCARGO_TIMING === "1" || env.BUNCARGO_TIMING === "true";
 }
 
+/**
+ * `BUNCARGO_DETACHED=1` - set by `dev --detach` on the run it starts in the
+ * background, so the run registry can say no terminal is watching it.
+ */
+export function isDetachedRun(env: NodeJS.ProcessEnv = process.env): boolean {
+	return env.BUNCARGO_DETACHED === "1";
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Container runtime
 // ═══════════════════════════════════════════════════════════════════════════
@@ -144,11 +152,7 @@ export const DEFAULT_HOSTS_DAEMON_PORT = 443;
 export function isHostsForcedOff(
 	env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-	return (
-		env.BUNCARGO_HOSTS === "0" ||
-		env.BUCARGO_SKIP_MKCERT === "true" ||
-		isCI(env)
-	);
+	return env.BUNCARGO_HOSTS === "0" || isCI(env);
 }
 
 /** `BUNCARGO_HOSTS_PORT` - port the loopback proxy daemon listens on. */

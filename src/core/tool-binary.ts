@@ -6,7 +6,6 @@ import {
 	readFileSync,
 	statSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { chownToInvokingUser, getToolsDir } from "./hosts/paths";
 
@@ -29,16 +28,6 @@ export function toolCachePath(fileName: string): string {
 	return join(getToolsDir(), fileName);
 }
 
-/**
- * Where releases were cached before `~/.buncargo/bin`.
- *
- * Still read, never written: a machine that already downloaded the binary
- * should not fetch it again just because the cache moved.
- */
-export function legacyToolCachePath(dirName: string, fileName: string): string {
-	return join(tmpdir(), dirName, fileName);
-}
-
 /** Make a freshly downloaded binary executable and owned by the invoking user. */
 export function finalizeToolBinary(path: string): void {
 	chmodSync(path, 0o755);
@@ -50,13 +39,10 @@ export function resolveToolBinary(options: {
 	override?: string;
 	/** Version-pinned download cache path. */
 	cachePath: string;
-	/** Previous cache location, adopted when it still holds the binary. */
-	legacyCachePath?: string;
-	legacyCachePaths?: string[];
 	/** Binary name to look up on `PATH`; omit to skip the lookup. */
 	pathCommand?: string;
 }): ToolBinaryResolution {
-	const { override, cachePath, legacyCachePath, pathCommand } = options;
+	const { override, cachePath, pathCommand } = options;
 
 	if (override) {
 		const path = resolve(override);
@@ -72,13 +58,6 @@ export function resolveToolBinary(options: {
 
 	if (existsSync(cachePath)) {
 		return { path: cachePath, source: "cache", exists: true };
-	}
-
-	for (const path of [
-		...(options.legacyCachePaths ?? []),
-		...(legacyCachePath ? [legacyCachePath] : []),
-	]) {
-		if (existsSync(path)) return { path, source: "cache", exists: true };
 	}
 
 	return { path: cachePath, source: "cache", exists: false };

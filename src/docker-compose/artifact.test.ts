@@ -9,7 +9,6 @@ import {
 	canProveServiceUnchanged,
 	configHashFor,
 	SERVICE_HASH_LABEL,
-	STACK_HASH_LABEL,
 	serviceFingerprint,
 } from "./interpolate";
 
@@ -52,7 +51,6 @@ describe("resolved container artifact", () => {
 				image: "redis",
 				labels: {
 					[SERVICE_HASH_LABEL]: "one",
-					[STACK_HASH_LABEL]: "old",
 					team: "a",
 				},
 			}),
@@ -61,7 +59,6 @@ describe("resolved container artifact", () => {
 				image: "redis",
 				labels: {
 					[SERVICE_HASH_LABEL]: "two",
-					[STACK_HASH_LABEL]: "new",
 					team: "a",
 				},
 			}),

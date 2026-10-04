@@ -287,20 +287,24 @@ async function download(url: string, destination: string): Promise<void> {
 }
 
 /**
- * Verify the zip against the published checksum.
- *
- * A release without one still installs: the asset is ours to publish and an
- * older release may predate it. A checksum that is present and wrong is fatal.
+ * Verify the zip against the checksum the release workflow publishes beside
+ * it. A release without one, or one that cannot be read, is not installed.
  */
 async function verifyChecksum(
 	zipPath: string,
 	checksumUrl: string | undefined,
 ): Promise<void> {
-	if (!checksumUrl) return;
+	if (!checksumUrl)
+		throw new Error(
+			"The release has no checksum for the app; not installing it.",
+		);
 	const response = await fetch(checksumUrl, { redirect: "follow" });
-	if (!response.ok) return;
+	if (!response.ok)
+		throw new Error(
+			`Could not download the app's checksum (HTTP ${response.status}).`,
+		);
 	const expected = (await response.text()).trim().split(/\s+/)[0];
-	if (!expected) return;
+	if (!expected) throw new Error("The app's published checksum is empty.");
 
 	const hasher = new Bun.CryptoHasher("sha256");
 	hasher.update(await Bun.file(zipPath).arrayBuffer());

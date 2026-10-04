@@ -195,13 +195,3 @@ export function getEnvVar<
 export function logApiUrl(url: string): void {
 	console.log(`using_api_url:${url}`);
 }
-
-/**
- * Log the Expo API URL in a format that tools can detect.
- * This is typically the local IP address for mobile device connectivity.
- *
- * @param url - The Expo API URL (usually http://<local-ip>:<port>)
- */
-export function logExpoApiUrl(url: string): void {
-	console.log(`using_expo_api_url:${url}`);
-}

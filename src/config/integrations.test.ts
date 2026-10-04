@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { expo } from "../expo";
 import type { BuncargoIntegration, IntegrationConfig } from "../types";
-import { applyIntegrations, resetLegacyExpoWarning } from "./integrations";
+import { applyIntegrations } from "./integrations";
 import { mergeConfigs } from "./merge-configs";
 import { validateConfig } from "./validate-config";
 
@@ -22,8 +22,6 @@ function adding(name: string, app: string): BuncargoIntegration {
 }
 
 describe("applyIntegrations", () => {
-	beforeEach(() => resetLegacyExpoWarning());
-
 	it("applies each config transform in order and keeps the integrations", () => {
 		const order: string[] = [];
 		const first: BuncargoIntegration = {
@@ -112,28 +110,7 @@ describe("applyIntegrations", () => {
 		).toThrow('Integration "broken" failed to apply: no toml');
 	});
 
-	// The deprecated alias: a config written before integrations still works.
-	it("adds expo() for the legacy expo field, with one warning", () => {
-		const warn = spyOn(console, "warn").mockImplementation(() => {});
-		try {
-			const legacy = {
-				...base,
-				apps: {
-					mobile: { port: 8081, devCommand: "bun start", expo: true },
-				},
-			};
-			const resolved = applyIntegrations(legacy);
-			applyIntegrations({ ...legacy });
-			expect(resolved.integrations?.map((entry) => entry.name)).toEqual([
-				"expo",
-			]);
-			expect(warn).toHaveBeenCalledTimes(1);
-		} finally {
-			warn.mockRestore();
-		}
-	});
-
-	it("leaves a config without Expo alone", () => {
+	it("leaves a config without integrations alone", () => {
 		expect(applyIntegrations(base)).toBe(base);
 	});
 });

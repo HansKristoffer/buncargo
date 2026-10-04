@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { defineListRegistry } from "../registry-file";
-import { chownToInvokingUser, getHostsStateDir } from "./paths";
+import { chownToInvokingUser, getStateDir } from "../state-paths";
 
 /**
  * The certificate names each project wants, remembered across runs.
@@ -40,7 +40,7 @@ export interface CertNameEntry {
 export const CERT_NAMES_FILENAME = "cert-names.json";
 
 export function getCertNamesPath(): string {
-	return join(getHostsStateDir(), CERT_NAMES_FILENAME);
+	return join(getStateDir(), CERT_NAMES_FILENAME);
 }
 
 function isCertNameEntry(value: unknown): value is CertNameEntry {

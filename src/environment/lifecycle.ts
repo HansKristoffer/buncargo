@@ -73,8 +73,8 @@ export function createLifecycleApi<
 	let started = false;
 
 	function preparationSelected(prerequisites?: readonly string[]): boolean {
-		// Omitted prerequisites preserve legacy container-backed preparation;
-		// an explicit empty list opts into preparation for app-only selections.
+		// Omitted prerequisites prepare whenever any service is selected; an
+		// explicit empty list opts into preparation for app-only selections.
 		return prerequisites
 			? prerequisites.every((name) => selectedServices.includes(name))
 			: selectedServices.length > 0;

@@ -2,8 +2,6 @@ import { recordStartupMetric } from "../core/startup-metrics";
 import type { ComposeDocument } from "../docker-compose";
 import {
 	canProveServiceInputs,
-	projectStackHash,
-	STACK_HASH_ENV,
 	serviceFingerprint,
 	serviceHashEnv,
 } from "../docker-compose/interpolate";
@@ -154,14 +152,8 @@ export async function ensureServicesRunning(
 		),
 	);
 
-	const stackHash = projectStackHash({
-		model,
-		envVars: effectiveEnv,
-		serviceNames: composeServiceNames,
-	});
 	const runtimeEnv = {
 		...effectiveEnv,
-		[STACK_HASH_ENV]: stackHash,
 		...Object.fromEntries(
 			Object.entries(hashes).map(([name, hash]) => [
 				serviceHashEnv(name),

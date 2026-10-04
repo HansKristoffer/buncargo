@@ -15,11 +15,7 @@ import type { ServiceConfig } from "./service";
  * Configuration for an application (e.g., api, web).
  */
 interface AppOptions<TStatic extends EnvValues = EnvValues> {
-	/**
-	 * Opt into public URLs with --expose.
-	 * @deprecated frp sharing automatically includes all selected endpoints with a host port.
-	 * This option only controls public tunnels started with --expose.
-	 */
+	/** Eligible for a public tunnel with `dev --expose`. */
 	expose?: boolean;
 	/** Protocol for recipient sharing; apps default to HTTP, presets infer it, custom services default to TCP. */
 	exposeProtocol?: "http" | "tcp";
@@ -58,6 +54,20 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	 * `captured.<name>` or `publicUrls.<app>`.
 	 */
 	restartOn?: readonly string[];
+	/**
+	 * The app is ready once its output matches this, instead of when its
+	 * `healthEndpoint` answers: for a process with nothing to ask over HTTP,
+	 * e.g. Expo's `/Logs for your project/` or a worker's "connected" line.
+	 * Matched on each process, so a restart waits for it again. Times out
+	 * after `healthTimeout`.
+	 */
+	readyWhen?: RegExp;
+	/**
+	 * Restart this app with a fresh process when one of these paths changes,
+	 * instead of the command's own `--watch` (see {@link AppWatchConfig}).
+	 * `buncargo dev --no-watch` turns it off.
+	 */
+	watch?: AppWatchConfig;
 	/**
 	 * A command run to completion before `devCommand` starts, e.g. a one-off
 	 * build whose output the watcher and other tools need to exist.
@@ -103,12 +113,19 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	needsPublicUrls?: boolean;
 	/** Computed env vars injected only into this app's own processes */
 	envVars?: (...args: never[]) => EnvValues;
+}
+
+/** See {@link AppConfigBase.watch}. */
+export interface AppWatchConfig {
+	/** Files or directories, relative to the app's `cwd`, watched recursively. */
+	paths: readonly string[];
 	/**
-	 * An Expo dev server: gets `RCT_METRO_PORT`, and `buncargo sim` opens it in
-	 * a per-checkout iOS simulator. Inferred when `devCommand` mentions `expo`.
-	 * @deprecated Use `integrations: [expo({ apps: { name: options } })]` from `buncargo/expo`.
+	 * Globs (relative to the app's `cwd`) whose changes are ignored, on top of
+	 * `node_modules`, `.git` and `.buncargo`.
 	 */
-	expo?: boolean | ExpoAppOptions;
+	ignore?: readonly string[];
+	/** Changes this close together restart once. Default: 150 ms. */
+	debounceMs?: number;
 }
 
 /** A key that opens a captured URL: `{ key: "p", label: "open preview", open: "previewUrl" }`. */
@@ -180,7 +197,6 @@ export type WorkerAppConfig<TStatic extends EnvValues = EnvValues> =
 		port?: never;
 		expose?: never;
 		healthEndpoint?: never;
-		expo?: never;
 	};
 export type AppConfig<TStatic extends EnvValues = EnvValues> =
 	| (AppOptions<TStatic> & { kind?: "server"; port: number })

@@ -18,6 +18,7 @@ import {
 	DEFAULT_HOSTS_DAEMON_PORT,
 	shouldSyncHostsFile,
 } from "../runtime-flags";
+import { getStateDir } from "../state-paths";
 import {
 	certificateFingerprint,
 	describeCertificateGap,
@@ -34,7 +35,6 @@ import {
 	chownToInvokingUser,
 	getCertPath,
 	getCertsDir,
-	getHostsStateDir,
 	getKeyPath,
 	getPidfilePath,
 	getRoutesPath,
@@ -308,7 +308,7 @@ export function watchHostsState(deps: {
 }
 
 function writePidfile(pid: number): void {
-	mkdirSync(getHostsStateDir(), { recursive: true });
+	mkdirSync(getStateDir(), { recursive: true });
 	const path = getPidfilePath();
 	writeFileSync(path, `${pid}\n`);
 	chownToInvokingUser(path);
@@ -586,7 +586,7 @@ export async function runHostsDaemon(
 	let filesystemChanged = false;
 	const stopWatching = watchHostsState({
 		// The registry and the certificate: the two inputs a reload reads.
-		directories: [getHostsStateDir(), getCertsDir()],
+		directories: [getStateDir(), getCertsDir()],
 		files: [getRoutesPath(), getCertPath(), getKeyPath()],
 		onChange: () => {
 			filesystemChanged = true;

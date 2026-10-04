@@ -34,7 +34,7 @@ export interface AppleContainerCli {
 	/** Whether the binary could be found at all. */
 	readonly found: boolean;
 	run(args: string[], options?: AppleCliOptions): AppleCliResult;
-	runAsync?(args: string[], options?: AppleCliOptions): Promise<AppleCliResult>;
+	runAsync(args: string[], options?: AppleCliOptions): Promise<AppleCliResult>;
 }
 
 export const APPLE_CONTAINER_COMMAND = "container";
@@ -116,12 +116,11 @@ export function isAlreadyExistsMessage(message: string): boolean {
 	return /already exists|already in use|exists/i.test(message);
 }
 
-/** Injected legacy CLIs remain compatible; real CLIs always execute asynchronously. */
 export async function runAppleAsync(
 	cli: AppleContainerCli,
 	args: string[],
 	options: AppleCliOptions = {},
 ): Promise<AppleCliResult> {
 	options.signal?.throwIfAborted();
-	return cli.runAsync ? cli.runAsync(args, options) : cli.run(args, options);
+	return cli.runAsync(args, options);
 }

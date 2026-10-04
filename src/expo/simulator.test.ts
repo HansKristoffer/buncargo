@@ -11,13 +11,9 @@ import {
 } from "./simulator";
 
 describe("isExpoApp", () => {
-	it("infers from the dev command and honours an explicit flag", () => {
+	it("infers from the dev command", () => {
 		expect(isExpoApp({ devCommand: "bunx expo start" })).toBe(true);
 		expect(isExpoApp({ devCommand: "bun run dev" })).toBe(false);
-		expect(isExpoApp({ devCommand: "bun run dev", expo: true })).toBe(true);
-		expect(isExpoApp({ devCommand: "bunx expo start", expo: false })).toBe(
-			false,
-		);
 		expect(isExpoApp(undefined)).toBe(false);
 	});
 });
@@ -40,10 +36,11 @@ describe("describeExpoApp", () => {
 			bundleId: "com.lullu.app",
 		});
 		expect(
-			describeExpoApp(root, {
-				devCommand: "bunx expo start",
-				expo: { scheme: "other", simulator: "iPhone 17" },
-			}),
+			describeExpoApp(
+				root,
+				{ devCommand: "bunx expo start" },
+				{ scheme: "other", simulator: "iPhone 17" },
+			),
 		).toEqual({
 			scheme: "other",
 			bundleId: "com.lullu.app",
@@ -63,9 +60,6 @@ describe("describeExpoApp", () => {
 		expect(
 			describeExpoApp(root, { devCommand: "bunx expo start", cwd: "nope" }),
 		).toEqual({});
-		expect(
-			describeExpoApp(root, { devCommand: "bun run dev" }),
-		).toBeUndefined();
 	});
 });
 

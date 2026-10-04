@@ -589,3 +589,84 @@ describe("startDevServers keepOthersOnFailure", () => {
 		}
 	}, 15000);
 });
+
+describe("startDevServers readyWhen and interactive apps without a terminal", () => {
+	it("waits for the line the app prints, and fails when it never comes", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-ready-when-"));
+		const port = 47100 + Math.floor(Math.random() * 200);
+		let pids: Record<string, number> = {};
+		try {
+			// Nothing listens on the port: only the printed line can make it ready.
+			const started = performance.now();
+			pids = await startDevServers(
+				{
+					metro: {
+						port,
+						readyWhen: /Logs for your project/,
+						devCommand: `bun -e 'setTimeout(() => console.log("Logs for your project will appear below."), 300); setInterval(() => {}, 60000)'`,
+					},
+				},
+				root,
+				{},
+				{ metro: port },
+				{ verbose: false, waitForExit: false },
+			);
+			expect(performance.now() - started).toBeGreaterThan(250);
+			await stopDevServers(pids);
+			pids = {};
+
+			await expect(
+				startDevServers(
+					{
+						metro: {
+							port,
+							readyWhen: /Logs for your project/,
+							healthTimeout: 400,
+							devCommand: "bun -e 'setInterval(() => {}, 60000)'",
+						},
+					},
+					root,
+					{},
+					{ metro: port },
+					{ verbose: false, waitForExit: false },
+				),
+			).rejects.toThrow("metro did not print /Logs for your project/");
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 15000);
+
+	it("gives an interactive app a terminal of its own, and types into it", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-headless-tty-"));
+		const output = new RunOutput();
+		const lines: string[] = [];
+		output.subscribe({ line: (line) => lines.push(line.text) });
+		let pids: Record<string, number> = {};
+		const until = async (check: () => boolean) => {
+			for (let i = 0; i < 200 && !check(); i++) await Bun.sleep(25);
+			expect(check()).toBe(true);
+		};
+		try {
+			pids = await startDevServers(
+				{
+					expo: {
+						kind: "worker",
+						interactive: true,
+						devCommand: `bun -e 'console.log("tty", Boolean(process.stdin.isTTY)); process.stdin.setRawMode(true); process.stdin.on("data", (d) => console.log("key", String(d)))'`,
+					},
+				},
+				root,
+				{},
+				{},
+				{ verbose: false, waitForExit: false, output },
+			);
+			await until(() => lines.includes("tty true"));
+			output.screens.get("expo")?.input("i");
+			await until(() => lines.includes("key i"));
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 15000);
+});

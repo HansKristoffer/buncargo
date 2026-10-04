@@ -4,7 +4,7 @@ import { printStream, RunOutput } from "../core/process/run-output";
 import { prefixWidth } from "../core/style";
 import type { AppConfig } from "../types";
 import * as log from "./log";
-import { watchRestartRequests } from "./restart-requests";
+import { watchRestartRequests, watchSendRequests } from "./restart-requests";
 import { RunTui, type TuiAction } from "./tui/run-tui";
 
 /** What `runDevFlow` needs of the environment to show a run's output. */
@@ -80,9 +80,25 @@ export function openDevOutput(
 		stopPrinting?.();
 		stopHints?.();
 	};
-	const stopWatching = watchRestartRequests(env.root, env.sessionId, (app) => {
+	const stopRestarts = watchRestartRequests(env.root, env.sessionId, (app) => {
 		void output.controls?.restart(app).catch(() => {});
 	});
+	// Keys for an app under a pseudo-terminal: one in the TUI, or an
+	// interactive app with no terminal to attach to.
+	const stopSends = watchSendRequests(env.root, env.sessionId, (app, text) => {
+		const screen = output.screens.get(app);
+		if (screen) screen.input(text);
+		else
+			output.event(
+				app,
+				"buncargo send: this app reads no keys (it has no terminal of its own)",
+				"warn",
+			);
+	});
+	const stopWatching = () => {
+		stopRestarts();
+		stopSends();
+	};
 
 	return {
 		output,

@@ -1,5 +1,6 @@
 import { assertValidConfig } from "../config";
 import { applyIntegrations } from "../config/integrations";
+import { setUnsetEnv } from "../core/child-env";
 import { withDeadline } from "../core/deadline";
 import { waitForServer } from "../core/network";
 import { type PrimaryAppInput, resolvePrimaryApp } from "../core/primary-app";
@@ -18,7 +19,6 @@ import { createCaptureRecorder, labelledCaptures } from "./captures";
 import { createDevEnvContext } from "./context";
 import { createEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
-import { createLegacyLinks } from "./legacy-links";
 import { createLifecycleApi } from "./lifecycle";
 import { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { createRunClaimApi } from "./run-claim";
@@ -61,6 +61,7 @@ export function createDevEnvironment<
 	// re-applies them to the original, which is pure and gives the same result.
 	const resolved = applyIntegrations(config);
 	assertValidConfig(resolved);
+	setUnsetEnv(resolved.unsetEnv);
 
 	const ctx = createDevEnvContext(resolved, options);
 	const envVars = createEnvVarsApi(ctx);
@@ -69,8 +70,6 @@ export function createDevEnvironment<
 	const lifecycle = createLifecycleApi(ctx, envVars, runClaim, coordinator);
 	const recordCapture = createCaptureRecorder(ctx, envVars);
 	const servers = createServersApi(ctx, envVars);
-
-	const { getExpoApiUrl, getFrontendPort } = createLegacyLinks(ctx);
 
 	const env: DevEnvironment<TServices, TApps, TEnv> = {
 		// Configuration access
@@ -183,10 +182,6 @@ export function createDevEnvironment<
 		},
 		logInfo: ctx.logInfo,
 		openPublicTunnels: servers.openPublicTunnels,
-
-		// Vibe Kanban Integration
-		getExpoApiUrl,
-		getFrontendPort,
 
 		// Run claim / watchdog
 		sessionId: runClaim.sessionId,

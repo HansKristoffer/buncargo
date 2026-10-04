@@ -692,6 +692,7 @@ async function runDevFlow<
 				// A developer's other apps should not go down with one that
 				// never came up; `ci` and library starts keep failing the run.
 				keepOthersOnFailure: env.onAppFailure !== "stop-run",
+				watch: args.watch,
 				onAppFailed: (name) => {
 					void markApps(env, [name], "failed");
 				},

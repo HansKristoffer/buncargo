@@ -355,6 +355,33 @@ describe("computeDevIdentity", () => {
 		}
 	});
 
+	it("does not repeat a worktree name its directory already carries", () => {
+		const parent = join(tmpdir(), `buncargo-identity-test-${Date.now()}-3`);
+		const testDir = join(parent, "t3code-fc4fa622");
+		mkdirSync(testDir, { recursive: true });
+		try {
+			writeFileSync(
+				join(testDir, ".git"),
+				"gitdir: /tmp/repo/worktrees/t3code-fc4fa622",
+			);
+			const identity = computeDevIdentity({
+				projectPrefix: "gey",
+				root: testDir,
+			});
+			expect(identity.worktreeSuffix).toBe("t3code-fc4fa622");
+			expect(identity.projectName).toBe("gey-t3code-fc4fa622");
+
+			const e2e = computeDevIdentity({
+				projectPrefix: "gey",
+				suffix: "e2e",
+				root: testDir,
+			});
+			expect(e2e.projectName).toBe("gey-t3code-fc4fa622-e2e");
+		} finally {
+			rmSync(parent, { recursive: true, force: true });
+		}
+	});
+
 	it("omits worktree suffix when isolation is disabled", () => {
 		const testDir = join(tmpdir(), `buncargo-identity-test-${Date.now()}-2`);
 		mkdirSync(testDir, { recursive: true });

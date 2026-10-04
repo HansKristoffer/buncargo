@@ -3,7 +3,8 @@ import { validateConfig } from "../config";
 import { buildComposeModel } from "../docker-compose";
 import { buildStartPlan } from "../planning";
 import type { ServiceConfig } from "../types";
-import { ensureServicesRunning, waitForService } from "./readiness";
+import { ensureServicesRunning } from "./ensure-services";
+import { waitForService } from "./readiness";
 import type { ContainerRuntimeAdapter, ServiceDiagnosis } from "./types";
 
 const job: ServiceConfig = {

@@ -361,18 +361,6 @@ describe("liveness", () => {
 	});
 });
 
-describe("identities written by older versions", () => {
-	it("never condemns a live run for an identity it cannot compare", async () => {
-		// Recorded in whatever locale and time zone that version ran in. Reading
-		// it as a mismatch would let the sweep tear down a live 9.x run's stack.
-		await publishRun(makeRun({ processIdentity: "legacy-unprefixed-hash" }), {
-			path,
-		});
-		expect(await sessions()).toEqual(["s1"]);
-		expect(await readLiveRuns(path)).toHaveLength(1);
-	});
-});
-
 describe("buildRunEntry", () => {
 	it("records this process and buncargo's own CLI, never the running script", () => {
 		const entry = buildRunEntry({
@@ -423,11 +411,11 @@ describe("the persisted boundary", () => {
 		expect(await loadRuns(path)).toEqual([]);
 	});
 
-	it("drops an entry with no session id, which only old versions wrote", async () => {
-		const { sessionId: _dropped, ...legacy } = makeRun();
+	it("drops an entry with no session id", async () => {
+		const { sessionId: _dropped, ...unnamed } = makeRun();
 		writeFileSync(
 			path,
-			JSON.stringify({ version: 1, runs: [legacy, makeRun()] }),
+			JSON.stringify({ version: 1, runs: [unnamed, makeRun()] }),
 		);
 		expect(await sessions()).toEqual(["s1"]);
 	});

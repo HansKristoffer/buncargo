@@ -4,10 +4,7 @@ import type {
 	ServiceRuntimeState,
 } from "../container-runtime/types";
 import { remainingTime } from "../core/deadline";
-import {
-	SERVICE_HASH_LABEL,
-	STACK_HASH_LABEL,
-} from "../docker-compose/interpolate";
+import { SERVICE_HASH_LABEL } from "../docker-compose/interpolate";
 import type { BuncargoContainer, PortContainerOwner } from "../types";
 import type { AppleContainerCli } from "./cli";
 import { runAppleAsync } from "./cli";
@@ -287,13 +284,11 @@ export async function appleProjectServiceStates(
 		.flatMap((record) => {
 			const service = record.labels[SERVICE_LABEL];
 			if (!service) return [];
-			const stackHash = record.labels[STACK_HASH_LABEL];
 			const serviceHash = record.labels[SERVICE_HASH_LABEL];
 			return [
 				{
 					service,
 					running: isRunningState(record.state),
-					...(stackHash ? { stackHash } : {}),
 					...(serviceHash ? { serviceHash } : {}),
 				},
 			];

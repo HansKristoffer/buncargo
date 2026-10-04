@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { serviceHashEnv } from "../docker-compose/interpolate";
 import type { ComposeDocument, ServiceConfig } from "../types";
-import { ensureServicesRunning } from "./readiness";
+import { ensureServicesRunning } from "./ensure-services";
 import type {
 	ContainerRuntimeAdapter,
 	ContainerUpRequest,

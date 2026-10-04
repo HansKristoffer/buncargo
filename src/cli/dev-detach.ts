@@ -88,7 +88,7 @@ export async function runDetached(input: {
 		cwd: process.cwd(),
 		stdio: ["ignore", out, out],
 		detached: true,
-		env: process.env,
+		env: { ...process.env, BUNCARGO_DETACHED: "1" },
 	});
 	closeSync(out);
 	child.unref();
@@ -111,7 +111,7 @@ export async function runDetached(input: {
 			log.line(`  pid ${child.pid} · output: ${logPath}`);
 			if (down.length === 0) {
 				log.success(
-					"Running in the background. Stop it with `buncargo stop --all --force`.",
+					"Running in the background. Stop it with `buncargo stop --all`.",
 				);
 				return 0;
 			}

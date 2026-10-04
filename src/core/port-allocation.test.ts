@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,8 +15,17 @@ import {
 import type { PortOwner } from "./process";
 
 const originalOffset = process.env.BUNCARGO_PORT_OFFSET;
+// Offset claims live in ~/.buncargo: never the developer's.
+const originalHome = process.env.HOME;
+let home: string;
+beforeEach(() => {
+	home = mkdtempSync(join(tmpdir(), "buncargo-claims-"));
+	process.env.HOME = home;
+});
 
 afterEach(() => {
+	process.env.HOME = originalHome;
+	rmSync(home, { recursive: true, force: true });
 	if (originalOffset === undefined) {
 		delete process.env.BUNCARGO_PORT_OFFSET;
 	} else {
@@ -379,4 +388,90 @@ it("a partial start cannot relocate the unselected persisted infrastructure", ()
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+describe("offset claims", () => {
+	const plan = (root: string, projectName = "lullu-a") =>
+		resolvePortPlan({
+			projectPrefix: "lullu",
+			projectName,
+			root,
+			services: { postgres: { port: 5432 } },
+			getOwner: () => null,
+		});
+
+	it("gives a second checkout that hashes to the same offset another block, even while the first is stopped", () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		const first = mkdtempSync(join(tmpdir(), "buncargo-claim-a-"));
+		const second = mkdtempSync(join(tmpdir(), "buncargo-claim-b-"));
+		try {
+			const a = plan(first);
+			// Nothing is running: only the claim keeps the second one off it.
+			const b = plan(second, "lullu-b");
+			expect(b.offset).toBe(a.offset + PORT_OFFSET_STEP);
+			expect(b.provenance).toBe("shifted");
+
+			// Stable from then on, whichever starts first.
+			expect(plan(second, "lullu-b").offset).toBe(b.offset);
+			expect(plan(first).offset).toBe(a.offset);
+
+			// A deleted checkout gives its offset back.
+			rmSync(first, { recursive: true, force: true });
+			rmSync(join(second, ".buncargo"), { recursive: true, force: true });
+			expect(plan(second, "lullu-b").offset).toBe(a.offset);
+		} finally {
+			rmSync(first, { recursive: true, force: true });
+			rmSync(second, { recursive: true, force: true });
+		}
+	});
+
+	it("pins a checkout with an offset-only lockfile and fills in the rest", async () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		const root = mkdtempSync(join(tmpdir(), "buncargo-pin-"));
+		try {
+			await Bun.write(
+				join(root, ".buncargo/ports.json"),
+				JSON.stringify({ offset: 2500 }),
+			);
+			const pinned = plan(root);
+			expect(pinned).toMatchObject({
+				offset: 2500,
+				provenance: "lockfile",
+				ports: { postgres: 7932 },
+			});
+			expect(readPortsLockfile(root)).toMatchObject({
+				offset: 2500,
+				root,
+				ports: { postgres: 7932 },
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("says why a lockfile is not used", () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		const root = mkdtempSync(join(tmpdir(), "buncargo-copied-"));
+		const warnings: string[] = [];
+		const warn = console.warn;
+		console.warn = (message: string) => warnings.push(String(message));
+		try {
+			writePortsLockfile(root, {
+				version: 1,
+				projectName: "lullu-a",
+				root: "/somewhere/else",
+				offset: 2500,
+				ports: {},
+				provenance: "lockfile",
+			});
+			const allocated = plan(root);
+			expect(allocated.offset).not.toBe(2500);
+			expect(warnings.join("\n")).toContain(
+				"not used: it was written for /somewhere/else",
+			);
+		} finally {
+			console.warn = warn;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 });

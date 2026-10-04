@@ -1,17 +1,10 @@
-import { mkdir, open, readFile, stat } from "node:fs/promises";
+import { mkdir, open } from "node:fs/promises";
 import { dirname } from "node:path";
 import { abortableSleep } from "./deadline";
-import { isProcessAlive } from "./process/lifecycle";
 import { recordStartupMetric } from "./startup-metrics";
 import { chownToInvokingUser } from "./state-paths";
 
 const LOCK_POLL_MS = 20;
-/**
- * Age past which the legacy `.lock` protocol broke a lock: old versions never
- * honor one older than this, so neither does the v2 check. Never applied to
- * `.lock.v2`, where the kernel releases on process death.
- */
-export const LOCK_STALE_MS = 10_000;
 export const LOCK_TIMEOUT_MS = 5000;
 
 export class FileLockTimeoutError extends Error {
@@ -81,39 +74,6 @@ function flockOperation(): Promise<(fd: number) => boolean> {
 	return loadFlock;
 }
 
-/**
- * Do not overlap an older CLI already holding its legacy lock during upgrade.
- * No legacy file is removed here: check/unlink would race a replacement owner.
- * Old versions cannot honor the v2 protocol, so stop old dev sessions and
- * restart the hosts service when upgrading before mixing concurrent writers.
- */
-async function legacyHolderActive(target: string): Promise<boolean> {
-	const lockPath = `${target}.lock`;
-	try {
-		// A file this old is a leftover from a killed or torn-write holder — not
-		// a live one — and its pid may since have been reused by any process.
-		// Waiting on it made every hosts reload time out until the user found
-		// and deleted the file by hand.
-		if (Date.now() - (await stat(lockPath)).mtimeMs > LOCK_STALE_MS)
-			return false;
-		const holder: unknown = JSON.parse(await readFile(lockPath, "utf8"));
-		if (
-			typeof holder !== "object" ||
-			holder === null ||
-			!("pid" in holder) ||
-			typeof holder.pid !== "number" ||
-			!Number.isInteger(holder.pid) ||
-			holder.pid <= 0
-		)
-			return true;
-		return isProcessAlive(holder.pid);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-		// Unreadable or mid-write: a fresh file is a holder still writing its pid.
-		return true;
-	}
-}
-
 /** Run a mutation exclusively, or reject on bounded contention without running it. */
 export async function withFileLock<T>(
 	target: string,
@@ -134,7 +94,7 @@ export async function withFileLock<T>(
 	try {
 		for (;;) {
 			options.signal?.throwIfAborted();
-			if (flock(handle.fd) && !(await legacyHolderActive(target))) break;
+			if (flock(handle.fd)) break;
 			const remaining = deadline - performance.now();
 			if (remaining <= 0) {
 				recordStartupMetric("lock timeouts");

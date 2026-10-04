@@ -54,12 +54,6 @@ export function validateEntryShapes(
 				);
 				fields(entry, `${path}.`, ["envVars"], "function");
 				check(
-					entry.expo,
-					`${path}.expo`,
-					typeof entry.expo === "boolean" || object(entry.expo),
-					"a boolean or an object",
-				);
-				check(
 					entry.devCommand,
 					`${path}.devCommand`,
 					typeof entry.devCommand === "string" || entry.devCommand === false,
@@ -86,6 +80,35 @@ export function validateEntryShapes(
 					);
 				}
 				fields(entry, `${path}.`, ["prebuild", "exclusive"], "string");
+				if (entry.watch !== undefined && record(entry.watch, `${path}.watch`)) {
+					check(
+						entry.watch.paths,
+						`${path}.watch.paths`,
+						strings(entry.watch.paths) && entry.watch.paths.length > 0,
+						"a nonempty array of paths",
+					);
+					check(
+						entry.watch.ignore,
+						`${path}.watch.ignore`,
+						strings(entry.watch.ignore),
+						"an array of globs",
+					);
+					check(
+						entry.watch.debounceMs,
+						`${path}.watch.debounceMs`,
+						Number.isInteger(entry.watch.debounceMs) &&
+							(entry.watch.debounceMs as number) >= 0,
+						"a whole number of milliseconds",
+					);
+					if (entry.watch.paths === undefined)
+						errors.push(`${path}.watch.paths is required`);
+				}
+				check(
+					entry.readyWhen,
+					`${path}.readyWhen`,
+					entry.readyWhen instanceof RegExp,
+					"a RegExp",
+				);
 				check(
 					entry.entryPath,
 					`${path}.entryPath`,
