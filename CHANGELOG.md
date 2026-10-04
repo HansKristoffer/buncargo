@@ -1,5 +1,18 @@
 # Changelog
 
+## [11.2.0](https://github.com/HansKristoffer/buncargo/compare/v11.1.0...v11.2.0) (2026-10-04)
+
+
+### Features
+
+* **cli:** mouse scrolling, text selection and Esc in the TUI ([#75](https://github.com/HansKristoffer/buncargo/issues/75)) ([309202a](https://github.com/HansKristoffer/buncargo/commit/309202ac624081dcbb1a1d2ce691cb5458d87169))
+* **supabase:** add worktree-aware Supabase integration ([#78](https://github.com/HansKristoffer/buncargo/issues/78)) ([81fc8e9](https://github.com/HansKristoffer/buncargo/commit/81fc8e9b9e0bc548fd0c86db2470a156ae92e02c))
+
+
+### Bug Fixes
+
+* **shopify:** time out non-interactive shopify calls and pass the current env ([#76](https://github.com/HansKristoffer/buncargo/issues/76)) ([79caf4f](https://github.com/HansKristoffer/buncargo/commit/79caf4f46f3db288960382070e6975c62cf2f932))
+
 ## [11.1.0](https://github.com/HansKristoffer/buncargo/compare/v11.0.0...v11.1.0) (2026-10-03)
 
 
