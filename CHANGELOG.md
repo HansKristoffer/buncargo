@@ -1,5 +1,16 @@
 # Changelog
 
+## [12.0.0](https://github.com/HansKristoffer/buncargo/compare/v11.3.0...v12.0.0) (2026-10-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** 12.0 is a hard cutover. Worktree project names no longer repeat the worktree name, so those worktrees start on an empty database once. Compatibility code for older versions, configs and on-disk state is removed, including hosts.primaryApp, frontendApp, expoApiApp, getFrontendPort, getExpoApiUrl, the per-app expo field and the dev-tools names. See docs/migration.md.
+
+### Features
+
+* **cli:** stable port offsets, an owned file watcher and Expo without a terminal ([#81](https://github.com/HansKristoffer/buncargo/issues/81)) ([414ea5b](https://github.com/HansKristoffer/buncargo/commit/414ea5b202017614850914b802812ab3dabb4f15))
+
 ## [11.3.0](https://github.com/HansKristoffer/buncargo/compare/v11.2.0...v11.3.0) (2026-10-04)
 
 
