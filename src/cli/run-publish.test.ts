@@ -145,6 +145,25 @@ describe("published run ownership", () => {
 		});
 	});
 
+	it("marks a run dev --detach started, so stop does not ask first", async () => {
+		process.env.BUNCARGO_DETACHED = "1";
+		try {
+			const run = await publishCurrentRun(source("session-detached"), {
+				apps: {},
+				serviceNames: [],
+			});
+			expect(run?.detached).toBe(true);
+			expect((await loadRuns())[0]?.detached).toBe(true);
+		} finally {
+			delete process.env.BUNCARGO_DETACHED;
+		}
+		const attached = await publishCurrentRun(source("session-terminal"), {
+			apps: {},
+			serviceNames: [],
+		});
+		expect(attached?.detached).toBeUndefined();
+	});
+
 	it("publishes the config's tasks for the menu bar's run button", async () => {
 		const run = await publishCurrentRun(
 			{

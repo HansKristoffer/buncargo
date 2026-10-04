@@ -325,7 +325,9 @@ async function stopServiceUnlocked(
  * from the menu bar means now.
  */
 async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
-	if (!force) {
+	// A detached run has no terminal showing its servers: there is nobody to
+	// warn, and asking only taught agents to pass --force everywhere.
+	if (!force && !run.detached) {
 		const accepted =
 			isInteractive() &&
 			(await askConfirm([

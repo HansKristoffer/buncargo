@@ -16,6 +16,7 @@ import {
 	type RunServiceEntry,
 	type RunServiceStatus,
 } from "../core/run-registry";
+import { isDetachedRun } from "../core/runtime-flags";
 import { describeService } from "../core/service-identity";
 import { defaultServiceProtocol } from "../core/service-presets";
 import type {
@@ -308,6 +309,7 @@ async function writeRun(
 			isWorktree: env.isWorktree,
 		})),
 		branch: readGitBranch(env.root),
+		...(isDetachedRun() ? { detached: true } : {}),
 		primaryApp: env.resolvePrimaryApp(Object.keys(input.apps)),
 		hosts: env.hosts ? { active: env.hosts.active, tld: env.hosts.tld } : null,
 		apps: appEntries(env, {

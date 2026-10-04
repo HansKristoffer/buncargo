@@ -111,13 +111,16 @@ export interface EnsureDockerRunningOptions {
 	timeoutMs?: number;
 	verbose?: boolean;
 	binary?: string;
+	/** Whether this is CI, where a down daemon is waited for rather than started. */
+	ci?: boolean;
 }
 
 export async function ensureDockerRunning(
 	options: EnsureDockerRunningOptions = {},
 ): Promise<void> {
 	const {
-		autoStart = !isCI(),
+		ci = isCI(),
+		autoStart = !ci,
 		timeoutMs = 90_000,
 		verbose = true,
 		binary,
@@ -144,11 +147,15 @@ export async function ensureDockerRunning(
 	const runtime = runtimeFromContext(
 		context.ok ? context.stdout.trim().toLowerCase() : "",
 	);
-	if (!autoStart)
+	// CI never starts Docker itself, but a runner's daemon is often still
+	// coming up when the job starts: keep asking until the deadline. Locally,
+	// `--no-docker-autostart` wants the answer now, not in 90 seconds.
+	const waitOnly = !autoStart && ci;
+	if (!autoStart && !waitOnly)
 		throw new DockerUnavailableError(runtime, remediationFor(runtime));
-	if (verbose)
+	if (verbose && !waitOnly)
 		console.log(formatStep(`🐳 Docker is not running. Starting ${runtime}...`));
-	const command = runtimeStartCommand(runtime);
+	const command = waitOnly ? undefined : runtimeStartCommand(runtime);
 	if (command && remainingTime(deadline) > 0)
 		await execAsync(
 			command,

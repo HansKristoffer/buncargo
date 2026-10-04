@@ -563,6 +563,8 @@ export function classifyPortOccupant(
 		projectName: string;
 		/** The backend this run will use; anything else cannot be reused. */
 		runtime?: ContainerRuntimeName;
+		/** This checkout's pre-12.0 project name (see `DevIdentity`). */
+		legacyProjectName?: string;
 	},
 ): PortOccupantAction {
 	if (!owner) return "free";
@@ -580,6 +582,7 @@ export function classifyPortOccupant(
 			sameRuntime &&
 			project &&
 			(project === options.projectName ||
+				project === options.legacyProjectName ||
 				project === externalStackProjectName(options.projectName))
 		) {
 			return "reuse";

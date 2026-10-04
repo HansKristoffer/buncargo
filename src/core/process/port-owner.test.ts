@@ -12,6 +12,26 @@ import {
 } from "./port-owner";
 
 describe("classifyPortOccupant", () => {
+	it("reuses a container under this checkout's pre-12.0 project name", () => {
+		expect(
+			classifyPortOccupant(
+				{
+					pids: [],
+					container: {
+						id: "abc",
+						name: "gey-wt-wt-postgres-1",
+						composeProject: "gey-wt-wt",
+					},
+				} as PortOwner,
+				{
+					root: "/repo",
+					projectName: "gey-wt",
+					legacyProjectName: "gey-wt-wt",
+				},
+			),
+		).toBe("reuse");
+	});
+
 	it("reuses a container from this compose project", () => {
 		expect(
 			classifyPortOccupant(

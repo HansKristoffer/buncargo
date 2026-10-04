@@ -2,7 +2,23 @@
 
 Each section lists what a consumer of `buncargo` has to change when crossing one major version, newest first. Breaking changes that shipped inside a minor release are listed under the major you cross when you pick them up. If you are several majors behind, work through the sections from the bottom up.
 
-## 9.0 → next major (unreleased)
+## 11.0 → 12.0
+
+12.0 stops repeating a worktree's name in its project name. A worktree in a directory named after it (`t3code-fc4fa622`) used to get `gey-t3code-fc4fa622-t3code-fc4fa622`, and its E2E stack `gey-t3code-fc4fa622-e2e-t3code-fc4fa622`; they are now `gey-t3code-fc4fa622` and `gey-t3code-fc4fa622-e2e`. The main checkout's name does not change, nor does any worktree whose directory is named differently.
+
+- **Each such worktree starts on an empty database once.** The Compose project name names the volumes, so the first `dev` after upgrading creates new ones. It takes the old containers down first (they hold the ports, which stay the same) and leaves their volumes; seed again, and run `bunx buncargo prune` to remove the old ones. A run of the checkout from an older buncargo that is still up is refused rather than pulled out from under it: stop it, then start again.
+- **Anything that names containers or projects by hand** (`docker exec gey-…-t3code-x-t3code-x-postgres-1`, a `COMPOSE_PROJECT_NAME`) needs the new name. `buncargo sql` and `buncargo status --json` find them for you.
+- **Offsets are now claimed per checkout** in `~/.buncargo/offsets.json`. A worktree that used to share its hashed offset with another stopped one may move once to the next free block, and then keeps it. `buncargo ports` shows the claims.
+
+## 10.0 → 11.0
+
+11.0 added the terminal UI (`dev --tui`) and supervision for apps that may stop without ending the run.
+
+- **`interactive: true` only applies in stream mode.** The TUI gives every app a terminal of its own, so it ignores the setting. Stream mode (the default, and every run without a terminal) still hands that app the TTY. `--attach=<app>` does the same for one run.
+- **The Shopify CLI app is non-essential and not interactive.** Its exit no longer ends the run: it shows as stopped, and `r` in the TUI or `buncargo restart shopify` starts it again. Its `p`/`g` keys open the preview and GraphiQL URLs. Remove any `interactive: true` you added to it.
+- **App output is logged.** Every run writes `.buncargo/logs/<run>/<app>.log` (the last ten runs). Keep `.buncargo/` in `.gitignore`; `buncargo setup` adds it.
+
+## 9.0 → 10.0
 
 Container cleanup now runs from one machine-wide sweep against one run registry (`~/.buncargo/runs.json`). It used to rely on a watchdog per project that tracked heartbeat files.
 

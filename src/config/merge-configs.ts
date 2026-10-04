@@ -105,6 +105,15 @@ export function mergeConfigs(
 				? (overrides.secrets ?? base.secrets)
 				: mergeGroup(base.secrets, overrides.secrets),
 		tasks: mergeGroup(base.tasks, overrides.tasks),
+		unsetEnv:
+			base.unsetEnv || overrides.unsetEnv
+				? [
+						...new Set([
+							...(base.unsetEnv ?? []),
+							...(overrides.unsetEnv ?? []),
+						]),
+					]
+				: undefined,
 		profiles: mergeGroup(base.profiles, overrides.profiles),
 	};
 }

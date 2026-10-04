@@ -23,6 +23,10 @@ import {
 	readInstalledBarInfo,
 } from "../../../core/menubar";
 import {
+	duplicateOffsetClaims,
+	readOffsetClaims,
+} from "../../../core/offset-claims";
+import {
 	getPortsLockfilePath,
 	readPortsLockfile,
 } from "../../../core/port-allocation";
@@ -48,6 +52,12 @@ import {
 	getTunnelRegistryPath,
 	readLiveTunnelRegistry,
 } from "../../tunnel-registry";
+import {
+	type FileHolder,
+	type FileTableUsage,
+	readFileTableUsage,
+	readTopFileHolders,
+} from "./file-table";
 
 type DevEnv = Awaited<ReturnType<typeof loadDevEnv>>;
 
@@ -69,6 +79,38 @@ async function checkSetupChecks(
 }
 
 /** Collects the doctor report so each check stays a small pure-ish function. */
+/** Above this share of the open-file table, name who holds the most. */
+const FILE_TABLE_NOTE = 0.5;
+const FILE_TABLE_ISSUE = 0.8;
+
+export function describeFileTable(
+	usage: FileTableUsage,
+	holders: () => FileHolder[],
+): { level: "note" | "issue"; lines: string[] } {
+	const share = usage.open / usage.max;
+	const lines = [
+		`Open files: ${usage.open.toLocaleString("en")} of ${usage.max.toLocaleString("en")} (${Math.round(share * 100)}%)`,
+	];
+	if (share >= FILE_TABLE_NOTE)
+		for (const holder of holders())
+			lines.push(
+				`  ${holder.files.toLocaleString("en")} held by ${holder.command || "?"} (pid ${holder.pid})`,
+			);
+	return { level: share >= FILE_TABLE_ISSUE ? "issue" : "note", lines };
+}
+
+function checkFileTable(report: DoctorReport): void {
+	const usage = readFileTableUsage();
+	if (!usage) return;
+	const { level, lines } = describeFileTable(usage, () => readTopFileHolders());
+	const message = lines.join("\n");
+	if (level === "issue")
+		report.issue(
+			`${message}\n  Near the limit, tools fail with ENFILE. A dev server under \`bun --watch\` leaks descriptors on every reload: use the app's \`watch\` config instead.`,
+		);
+	else report.note(message);
+}
+
 class DoctorReport {
 	readonly issues: string[] = [];
 	readonly notes: string[] = [];
@@ -134,13 +176,25 @@ function checkPortOwnership(
 function checkPortsLockfile(report: DoctorReport, env: DevEnv): void {
 	const lockfile = readPortsLockfile(env.root);
 	if (!lockfile) return;
-	if (lockfile.projectName !== env.projectName || lockfile.root !== env.root) {
+	if (
+		(lockfile.projectName !== undefined &&
+			lockfile.projectName !== env.projectName) ||
+		(lockfile.root !== undefined && lockfile.root !== env.root)
+	) {
 		report.issue(
 			`Stale ${getPortsLockfilePath(env.root)} (project/root mismatch). Delete it or run buncargo dev to rewrite it.`,
 		);
 		return;
 	}
 	report.note(`ports.json offset ${lockfile.offset} looks consistent`);
+}
+
+/** Two checkouts on one offset collide whenever both run (a lost race, a copied lockfile). */
+function checkOffsetClaims(report: DoctorReport): void {
+	for (const [offset, roots] of duplicateOffsetClaims(readOffsetClaims()))
+		report.issue(
+			`Offset ${offset} is claimed by ${roots.join(" and ")}. Move one: \`buncargo ports pin <offset>\` in that checkout.`,
+		);
 }
 
 async function checkOrphanedContainers(
@@ -406,6 +460,8 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 
 	await checkRunRegistry(report);
 	checkMenuBarApp(report);
+	checkFileTable(report);
+	checkOffsetClaims(report);
 
 	if (hasFlag(args, "--fix")) {
 		for (const fixed of await doctorFixHosts()) {

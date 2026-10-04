@@ -1,5 +1,6 @@
 import { assertValidConfig } from "../config";
 import { applyIntegrations } from "../config/integrations";
+import { setUnsetEnv } from "../core/child-env";
 import { withDeadline } from "../core/deadline";
 import { waitForServer } from "../core/network";
 import { type PrimaryAppInput, resolvePrimaryApp } from "../core/primary-app";
@@ -61,6 +62,7 @@ export function createDevEnvironment<
 	// re-applies them to the original, which is pure and gives the same result.
 	const resolved = applyIntegrations(config);
 	assertValidConfig(resolved);
+	setUnsetEnv(resolved.unsetEnv);
 
 	const ctx = createDevEnvContext(resolved, options);
 	const envVars = createEnvVarsApi(ctx);

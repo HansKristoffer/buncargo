@@ -57,6 +57,7 @@ export type {
 	AppConfig,
 	AppEnvVars,
 	AppHostOnlyEnvVarNames,
+	AppWatchConfig,
 	BuiltInHealthCheck,
 	BuiltInServiceEnvVarMap,
 	BuncargoIntegration,

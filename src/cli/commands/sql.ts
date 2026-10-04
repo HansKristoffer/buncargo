@@ -30,6 +30,19 @@ const FLAGS = {
 		description:
 			"Run one query and exit (-c); without it, an interactive shell",
 	},
+	createScratch: {
+		name: "--create-scratch",
+		kind: "string",
+		valueHint: "=<name>",
+		description:
+			"(Re)create an empty Postgres database scratch_<name> and print its URL",
+	},
+	dropScratch: {
+		name: "--drop-scratch",
+		kind: "string",
+		valueHint: "=<name>",
+		description: "Drop the database scratch_<name>",
+	},
 	json: {
 		name: "--json",
 		kind: "boolean",
@@ -51,8 +64,69 @@ export const SQL_COMMAND_SPEC: CommandSpec = {
 			description: "One query, rows as JSON",
 		},
 		{ command: "buncargo sql redis -c 'GET key'", description: "redis-cli" },
+		{
+			command:
+				"DATABASE_URL=$(buncargo sql --create-scratch=migcheck) bun test",
+			description: "A throwaway database in this checkout's Postgres",
+		},
 	],
 };
+
+const SCRATCH_NAME = /^[a-z][a-z0-9_]{0,40}$/;
+
+/**
+ * psql argv that drops (and for `create`, recreates) `scratch_<name>`.
+ *
+ * Always prefixed, so `--drop-scratch` can never reach a database the project
+ * uses. Two `-c`s, because `CREATE DATABASE` refuses to run inside the one
+ * transaction a single multi-statement `-c` becomes. Recreated on every
+ * create: a migration check wants an empty database, not last run's.
+ */
+export function scratchCommand(
+	credentials: Credentials | undefined,
+	name: string,
+	action: "create" | "drop",
+): string[] {
+	if (!SCRATCH_NAME.test(name))
+		throw new CliError(
+			`Scratch database names are lowercase letters, digits and _, starting with a letter: got "${name}".`,
+		);
+	const { user, password } = credentials ?? {
+		user: "postgres",
+		password: "postgres",
+	};
+	const database = `scratch_${name}`;
+	return [
+		"env",
+		`PGPASSWORD=${password}`,
+		// "does not exist, skipping" is the expected first run, not news.
+		"PGOPTIONS=-c client_min_messages=warning",
+		"psql",
+		"-X",
+		"-q",
+		"-U",
+		user,
+		"-d",
+		"postgres",
+		"-v",
+		"ON_ERROR_STOP=1",
+		"-c",
+		`drop database if exists ${database} with (force)`,
+		...(action === "create" ? ["-c", `create database ${database}`] : []),
+	];
+}
+
+/** The host-side URL of a scratch database, for the caller's own tools. */
+export function scratchUrl(
+	credentials: Credentials | undefined,
+	port: number,
+	name: string,
+): string {
+	const url = new URL(`postgresql://localhost:${port}/scratch_${name}`);
+	url.username = credentials?.user ?? "postgres";
+	url.password = credentials?.password ?? "postgres";
+	return url.toString();
+}
 
 /** Presets picked when no service is named: the SQL databases. */
 const DEFAULT_PRESETS: readonly DockerPresetName[] = ["postgres", "clickhouse"];
@@ -173,6 +247,13 @@ export async function handleSql(rawArgs: string[]): Promise<number> {
 	}
 	const problems: string[] = [];
 	const query = readStringFlag(args, FLAGS.command, problems);
+	const createScratch = readStringFlag(args, FLAGS.createScratch, problems);
+	const dropScratch = readStringFlag(args, FLAGS.dropScratch, problems);
+	const scratch = createScratch ?? dropScratch;
+	if (createScratch !== undefined && dropScratch !== undefined)
+		problems.push("Choose either --create-scratch or --drop-scratch.");
+	if (scratch !== undefined && query !== undefined)
+		problems.push("--command cannot be combined with a scratch database.");
 	const [name, ...extra] = readPositionals(SQL_COMMAND_SPEC, args);
 	problems.push(
 		...findUnknownFlags(SQL_COMMAND_SPEC, args).map(
@@ -184,11 +265,20 @@ export async function handleSql(rawArgs: string[]): Promise<number> {
 
 	const env = await loadDevEnv({ readOnly: true });
 	const target = pickService(env.services, name);
-	const command = sqlClientCommand(
-		target.preset,
-		serviceCredentials(target.preset, target.service),
-		{ query, json: readBooleanFlag(args, FLAGS.json) },
-	);
+	const credentials = serviceCredentials(target.preset, target.service);
+	if (scratch !== undefined && target.preset !== "postgres")
+		throw new CliError("Scratch databases are Postgres only.");
+	const command =
+		scratch === undefined
+			? sqlClientCommand(target.preset, credentials, {
+					query,
+					json: readBooleanFlag(args, FLAGS.json),
+				})
+			: scratchCommand(
+					credentials,
+					scratch,
+					createScratch !== undefined ? "create" : "drop",
+				);
 	const argv = await containerRuntimeForEnv(env).interactiveExecArgv({
 		projectName: env.projectName,
 		serviceName: target.name,
@@ -196,6 +286,7 @@ export async function handleSql(rawArgs: string[]): Promise<number> {
 		root: env.root,
 		tty:
 			query === undefined &&
+			scratch === undefined &&
 			Boolean(process.stdin.isTTY && process.stdout.isTTY),
 	});
 	if (!argv)
@@ -204,9 +295,15 @@ export async function handleSql(rawArgs: string[]): Promise<number> {
 			["Start it with: buncargo dev --up-only"],
 		);
 
+	// A scratch database answers with its URL alone on stdout, so it can be
+	// captured: `DATABASE_URL=$(buncargo sql --create-scratch=x) bun test`.
 	const child = Bun.spawn(argv, {
 		cwd: env.root,
-		stdio: ["inherit", "inherit", "inherit"],
+		stdio: ["inherit", scratch === undefined ? "inherit" : "ignore", "inherit"],
 	});
-	return await child.exited;
+	const code = await child.exited;
+	const port = (env.ports as Record<string, number | undefined>)[target.name];
+	if (code === 0 && createScratch !== undefined && port !== undefined)
+		console.log(scratchUrl(credentials, port, createScratch));
+	return code;
 }

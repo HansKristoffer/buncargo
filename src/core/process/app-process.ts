@@ -6,7 +6,7 @@ import {
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AppConfig } from "../../types";
-import { connectProcessEnv } from "../runtime-flags";
+import { childProcessEnv } from "../child-env";
 import { shellQuote } from "../shell-quote";
 import { recordStartupMetric } from "../startup-metrics";
 import { type AppChild, PtyApp } from "./pty-app";
@@ -55,7 +55,7 @@ function appSpawnOptions(
 ) {
 	return {
 		cwd: config.cwd ? resolve(root, config.cwd) : root,
-		env: connectProcessEnv({ ...process.env, ...envVars }),
+		env: childProcessEnv({ ...process.env, ...envVars }),
 		detached: true,
 	};
 }
@@ -99,8 +99,12 @@ export function spawnManagedApp(
 	const { output } = options;
 
 	// The TUI: every app gets a terminal of its own, sized to its pane, and
-	// keeps its screen (and scrollback) across restarts.
-	if (output.terminalSize) {
+	// keeps its screen (and scrollback) across restarts. The same for an
+	// interactive app with no terminal to attach to (an agent's shell, a
+	// detached run): Expo refuses to start its dev server without one, and
+	// agents piped `tail -f /dev/null | script …` into it to fake it. Its keys
+	// then come from `buncargo send`.
+	if (output.terminalSize || (options.attached && !process.stdin.isTTY)) {
 		const screen = output.screen(name);
 		const decoder = new TextDecoder();
 		const child = new PtyApp([SHELL, "-c", command], {
@@ -118,16 +122,15 @@ export function spawnManagedApp(
 		return child;
 	}
 
-	// The legacy attached app keeps the real terminal. Capturing from it needs
-	// its output too, so it runs under a pseudo-terminal (`script`) whose copy
-	// of the output passes through here unchanged; TUIs like Shopify CLI see a
-	// TTY. Without a terminal to keep (CI, a test) plain pipes do the same job.
-	// Captured also when logging, so the attached app has a log file too.
+	// The legacy attached app keeps the real terminal (one without a terminal
+	// took the pseudo-terminal path above). Capturing from it needs its output
+	// too, so it runs under `script`, whose copy of the output passes through
+	// here unchanged; TUIs like Shopify CLI see a TTY. Captured also when
+	// logging, so the attached app has a log file too.
 	const capturing =
 		options.attached &&
 		(options.onText !== undefined || output.logs !== undefined);
-	const tee = capturing && process.stdin.isTTY ? ptyTeeArgv(command) : null;
-	const piped = capturing && !process.stdin.isTTY;
+	const tee = capturing ? ptyTeeArgv(command) : null;
 	if (tee) recordStartupMetric("subprocesses");
 	const child = tee
 		? spawn(tee[0], tee.slice(1), {
@@ -136,26 +139,17 @@ export function spawnManagedApp(
 			})
 		: spawnAppCommand(command, {
 				...base,
-				stdio: !options.attached
-					? ["ignore", "pipe", "pipe"]
-					: piped
-						? ["inherit", "pipe", "pipe"]
-						: "inherit",
+				stdio: options.attached ? "inherit" : ["ignore", "pipe", "pipe"],
 			});
 
 	if (!options.attached) {
 		output.pipe(name, child.stdout, options.onText);
 		output.pipe(name, child.stderr, options.onText);
-	} else if (tee || piped) {
-		// Passed through unchanged; stderr is only piped without the tee. The
-		// feed gets a copy for the log, marked as already on the terminal.
-		for (const [stream, target] of [
-			[child.stdout, process.stdout],
-			[child.stderr, process.stderr],
-		] as const) {
-			stream?.on("data", (chunk: Buffer) => target.write(chunk));
-			output.pipe(name, stream, options.onText, { echoed: true });
-		}
+	} else if (tee) {
+		// Passed through unchanged. The feed gets a copy for the log, marked as
+		// already on the terminal.
+		child.stdout?.on("data", (chunk: Buffer) => process.stdout.write(chunk));
+		output.pipe(name, child.stdout, options.onText, { echoed: true });
 	}
 
 	if (!options.waitForExit && child.unref) {

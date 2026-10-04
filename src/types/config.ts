@@ -278,6 +278,13 @@ export interface DevConfig<
 	options?: DevOptions<TServices, TApps>;
 	/** Scope defaults. Set false to disable all buncargo secret fetching for this environment. */
 	secrets?: SecretsScopeConfig | false;
+	/**
+	 * Variables removed from every process buncargo starts for the project:
+	 * apps, tasks, `exec`, migrations, the seed and prisma. For tools that
+	 * change behaviour when they detect an agent's shell, e.g.
+	 * `["CLAUDECODE", "CODEX_SANDBOX"]` (optional).
+	 */
+	unsetEnv?: readonly string[];
 	/** Docker Compose generation options (optional) */
 	docker?: DockerComposeGenerationOptions;
 	/** Preconditions `buncargo dev` verifies before starting (optional) */

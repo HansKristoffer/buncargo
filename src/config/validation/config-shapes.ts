@@ -11,6 +11,12 @@ export function validateSupplementShapes(
 		record(value.secrets, "secrets")
 	)
 		fields(value.secrets, "secrets.", SECRETS_FIELDS, "string");
+	check(
+		value.unsetEnv,
+		"unsetEnv",
+		strings(value.unsetEnv),
+		"an array of variable names",
+	);
 	for (const key of ["docker", "options", "prisma", "seed", "hooks"]) {
 		if (value[key] !== undefined) record(value[key], key);
 	}

@@ -350,8 +350,42 @@ describe("computeDevIdentity", () => {
 			expect(identity.projectName).toBe(
 				getProjectName("myapp", "feature-a", testDir),
 			);
+			expect(identity.legacyProjectName).toBeUndefined();
 		} finally {
 			rmSync(testDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not repeat a worktree name its directory already carries", () => {
+		const parent = join(tmpdir(), `buncargo-identity-test-${Date.now()}-3`);
+		const testDir = join(parent, "t3code-fc4fa622");
+		mkdirSync(testDir, { recursive: true });
+		try {
+			writeFileSync(
+				join(testDir, ".git"),
+				"gitdir: /tmp/repo/worktrees/t3code-fc4fa622",
+			);
+			const identity = computeDevIdentity({
+				projectPrefix: "gey",
+				root: testDir,
+			});
+			expect(identity.worktreeSuffix).toBe("t3code-fc4fa622");
+			expect(identity.projectName).toBe("gey-t3code-fc4fa622");
+			expect(identity.legacyProjectName).toBe(
+				"gey-t3code-fc4fa622-t3code-fc4fa622",
+			);
+
+			const e2e = computeDevIdentity({
+				projectPrefix: "gey",
+				suffix: "e2e",
+				root: testDir,
+			});
+			expect(e2e.projectName).toBe("gey-t3code-fc4fa622-e2e");
+			expect(e2e.legacyProjectName).toBe(
+				"gey-t3code-fc4fa622-e2e-t3code-fc4fa622",
+			);
+		} finally {
+			rmSync(parent, { recursive: true, force: true });
 		}
 	});
 

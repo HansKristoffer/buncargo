@@ -1,4 +1,6 @@
+import { findRunsByRoot } from "../core/run-registry";
 import { recordStartupMetric } from "../core/startup-metrics";
+import { formatStep } from "../core/style";
 import type { ComposeDocument } from "../docker-compose";
 import {
 	canProveServiceInputs,
@@ -75,6 +77,8 @@ export interface EnsureServicesRunningRequest {
 	runtime: ContainerRuntimeAdapter;
 	root: string;
 	projectName: string;
+	/** Containers under this checkout's pre-12.0 name, taken down first. */
+	legacyProjectName?: string;
 	envVars: Record<string, string>;
 	services: Record<string, ServiceConfig>;
 	ports: Record<string, number>;
@@ -84,6 +88,42 @@ export interface EnsureServicesRunningRequest {
 	wait?: boolean;
 	/** Override the runtime's auto-start. Default: the runtime's own policy. */
 	autoStartRuntime?: boolean;
+}
+
+/**
+ * Take down containers left under this checkout's pre-12.0 project name.
+ *
+ * They hold the ports the new project is about to publish. Volumes stay: a
+ * volume is the database, and `buncargo prune` lists it once nothing uses it.
+ */
+export async function retireLegacyProject(
+	runtime: ContainerRuntimeAdapter,
+	legacyProjectName: string,
+	root: string,
+	verbose: boolean,
+	signal?: AbortSignal,
+): Promise<void> {
+	const states = await readProjectServiceStates(
+		runtime,
+		legacyProjectName,
+		signal,
+	);
+	if (states.length === 0) return;
+	// A run from an older buncargo in this checkout may still be using them.
+	const live = (await findRunsByRoot(root).catch(() => [])).some(
+		(run) => run.projectName === legacyProjectName,
+	);
+	if (live)
+		throw new Error(
+			`A run of this checkout from an older buncargo still uses ${legacyProjectName}. Stop it first (buncargo stop --all), then start again.`,
+		);
+	if (verbose)
+		console.log(
+			formatStep(
+				`Moving off the old project name ${legacyProjectName}: its containers stop, its volumes stay (the database starts empty; \`buncargo prune\` removes the old one).`,
+			),
+		);
+	await runtime.down({ projectName: legacyProjectName, root, signal });
 }
 
 /**
@@ -118,6 +158,15 @@ export async function ensureServicesRunning(
 		verbose,
 		signal: request.signal,
 	});
+
+	if (request.legacyProjectName)
+		await retireLegacyProject(
+			runtime,
+			request.legacyProjectName,
+			root,
+			verbose,
+			request.signal,
+		);
 
 	await assertServicePortsClaimable(
 		runtime,

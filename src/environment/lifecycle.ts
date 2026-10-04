@@ -430,6 +430,7 @@ export function createLifecycleApi<
 								runtime: ctx.runtime,
 								root: ctx.root,
 								projectName: ctx.projectName,
+								legacyProjectName: ctx.legacyProjectName,
 								envVars: envVars.buildEnvVars(productionBuild),
 								services: compose,
 								noDeps,

@@ -134,6 +134,18 @@ async function runCommand(
 			).handleRestart(commandArgs);
 			return;
 
+		case "send":
+			process.exitCode = await (await import("./commands/send")).handleSend(
+				commandArgs,
+			);
+			return;
+
+		case "ports":
+			process.exitCode = await (await import("./commands/ports")).handlePorts(
+				commandArgs,
+			);
+			return;
+
 		case "sql":
 			process.exitCode = await (await import("./commands/sql")).handleSql(
 				commandArgs,

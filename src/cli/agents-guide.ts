@@ -27,11 +27,18 @@ hardcode a port. Ask buncargo instead.
   running. Do not use \`nohup\`, \`&\` or \`disown\`.
 - \`bunx buncargo dev --detach --apps=api\` starts only some apps (and the apps
   they require). \`--profile=<name>\` picks a configured set.
-- \`bunx buncargo stop --all --force\` stops this checkout's run (without a
-  terminal it refuses unless \`--force\` says the run is yours to stop).
+- \`bunx buncargo stop --all\` stops this checkout's run. A run someone started
+  in a terminal (not with \`--detach\`) asks first, and without a terminal needs
+  \`--force\`: only stop that one when the user asked.
   \`bunx buncargo stop <app>\` stops one app and \`bunx buncargo restart <app>\`
   restarts one.
 - An app already running in another terminal is reused, not started twice.
+- An interactive app (Expo) runs in a terminal of its own when you have none.
+  Press its keys with \`bunx buncargo send <app> <keys>\`, e.g.
+  \`bunx buncargo send expoApp i\` to open the iOS simulator. Do not wrap it in
+  \`script\` or \`tail -f /dev/null\`.
+- Apps with a \`watch\` config restart themselves when their files change; do
+  not run them under \`bun --watch\` as well.
 
 ## Readiness
 
@@ -60,6 +67,11 @@ hardcode a port. Ask buncargo instead.
 - \`bunx buncargo sql\` opens the database's own client in this checkout's
   container. \`bunx buncargo sql -c "select …" --json\` runs one query and prints
   the rows as JSON. \`bunx buncargo sql redis -c "GET key"\` works for Redis.
+- For a throwaway database (a migration check, a test run), use
+  \`DATABASE_URL=$(bunx buncargo sql --create-scratch=<name>) <command>\`: an
+  empty \`scratch_<name>\` in this checkout's Postgres, recreated each time.
+  \`bunx buncargo sql --drop-scratch=<name>\` removes it. Do not \`docker run\`
+  a Postgres of your own.
 - Do not \`docker exec\` into a database by name or read credentials from the
   generated compose file: other worktrees run databases of their own.
 
@@ -77,6 +89,19 @@ hardcode a port. Ask buncargo instead.
   dependencies, generated files).
 - A port "held by an unidentified process" is usually a system service. Run
   \`dev\` again: buncargo moves the checkout to a free port block.
+- Each checkout keeps its port offset (\`bunx buncargo ports\`). Do not set
+  \`BUNCARGO_PORT_OFFSET\` or edit \`.buncargo/ports.json\`; to move a checkout,
+  \`bunx buncargo ports pin <offset>\`.
+
+## Changing dev.config.ts
+
+- Housekeeping that needs the database before any app starts (unlocking stale
+  jobs, resetting a queue) goes in \`hooks.afterContainersReady\`: it runs on
+  every start, after migrations and before the apps. \`preflight\` runs before
+  the containers start, so the database is not up yet there.
+- Tools that change behaviour in an agent's shell can be kept from seeing it with
+  \`unsetEnv: ["VAR", …]\`, which removes those variables from every process
+  buncargo starts.
 `;
 
 const BLOCK_START = "<!-- buncargo:start -->";
@@ -90,10 +115,11 @@ Services and dev servers run through buncargo, with ports, containers and URLs
 of their own per worktree. Run \`bunx buncargo help agents\` before starting,
 stopping or querying anything. In short:
 
-- Start: \`bunx buncargo dev --detach\` (returns once apps are up). Stop: \`bunx buncargo stop --all --force\`.
+- Start: \`bunx buncargo dev --detach\` (returns once apps are up). Stop: \`bunx buncargo stop --all\`.
 - Wait: \`bunx buncargo wait --app=<app>\`. Logs: \`bunx buncargo logs <app> --errors\`.
 - Values: \`bunx buncargo env --get DATABASE_URL\`, \`bunx buncargo url <app>\`, \`bunx buncargo status --json\`.
-- Database: \`bunx buncargo sql -c "<query>" --json\`.
+- Database: \`bunx buncargo sql -c "<query>" --json\`; a throwaway one: \`bunx buncargo sql --create-scratch=<name>\`.
+- Keys for Expo and other interactive apps: \`bunx buncargo send <app> <keys>\`.
 - Never \`dev --reset\` or \`dev --down --all\` unless asked.
 ${BLOCK_END}`;
 

@@ -1,3 +1,4 @@
+import { childProcessEnv } from "../core/child-env";
 import { toPortMap } from "../core/ports";
 /**
  * Prisma integration for buncargo.
@@ -145,13 +146,13 @@ export function createPrismaRunner<
 	): Promise<number> {
 		const envVars: Record<string, string> = env.buildEnvVars();
 		const workingDir = join(env.root, cwd);
-		const fullEnv = {
+		const fullEnv = childProcessEnv({
 			...(await resolveSecrets(envVars)),
 			...process.env,
 			...envVars,
 			[urlEnvVar]: getDatabaseUrl(),
 			...extraEnv,
-		};
+		});
 
 		console.log(`🔄 Running: prisma ${args.join(" ")}\n`);
 

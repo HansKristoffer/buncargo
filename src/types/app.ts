@@ -59,6 +59,20 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	 */
 	restartOn?: readonly string[];
 	/**
+	 * The app is ready once its output matches this, instead of when its
+	 * `healthEndpoint` answers: for a process with nothing to ask over HTTP,
+	 * e.g. Expo's `/Logs for your project/` or a worker's "connected" line.
+	 * Matched on each process, so a restart waits for it again. Times out
+	 * after `healthTimeout`.
+	 */
+	readyWhen?: RegExp;
+	/**
+	 * Restart this app with a fresh process when one of these paths changes,
+	 * instead of the command's own `--watch` (see {@link AppWatchConfig}).
+	 * `buncargo dev --no-watch` turns it off.
+	 */
+	watch?: AppWatchConfig;
+	/**
 	 * A command run to completion before `devCommand` starts, e.g. a one-off
 	 * build whose output the watcher and other tools need to exist.
 	 */
@@ -109,6 +123,19 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	 * @deprecated Use `integrations: [expo({ apps: { name: options } })]` from `buncargo/expo`.
 	 */
 	expo?: boolean | ExpoAppOptions;
+}
+
+/** See {@link AppConfigBase.watch}. */
+export interface AppWatchConfig {
+	/** Files or directories, relative to the app's `cwd`, watched recursively. */
+	paths: readonly string[];
+	/**
+	 * Globs (relative to the app's `cwd`) whose changes are ignored, on top of
+	 * `node_modules`, `.git` and `.buncargo`.
+	 */
+	ignore?: readonly string[];
+	/** Changes this close together restart once. Default: 150 ms. */
+	debounceMs?: number;
 }
 
 /** A key that opens a captured URL: `{ key: "p", label: "open preview", open: "previewUrl" }`. */
