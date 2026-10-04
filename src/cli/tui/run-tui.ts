@@ -1,5 +1,6 @@
 import { writeSync } from "node:fs";
 import { format } from "node:util";
+import type { IMarker } from "@xterm/headless";
 import pc from "picocolors";
 import { openUrl } from "../../core/open-url";
 import type { OutputLine, RunOutput } from "../../core/process/run-output";
@@ -59,13 +60,15 @@ const FRAME_MS = 33;
 const OVERVIEW_LINES = 10_000;
 /**
  * Leaving interact mode: Esc on its own, or Ctrl-] (what Turborepo and telnet
- * use, but out of reach on layouts where `]` needs Option). A lone Esc arrives
- * as a chunk of one byte; arrow keys, Alt combinations and mouse reports start
- * with the same byte but arrive as longer sequences, so they still reach the
- * app. The price: an app cannot be sent a bare Esc.
+ * use, but out of reach on layouts where `]` needs Option). Arrow keys, Alt
+ * combinations and mouse reports start with the same byte as Esc, so input is
+ * read as keys rather than chunks: a sequence cut off at the end of a chunk
+ * waits for the rest, and an Esc nothing follows within `ESC_WAIT_MS` is the
+ * Esc key. The price: an app cannot be sent a bare Esc.
  */
 const ESC = "\u001b";
 const LEAVE = "\u001d";
+const ESC_WAIT_MS = 30;
 
 /**
  * Mouse reporting (SGR encoding, with drags): the wheel scrolls the pane, a
@@ -80,24 +83,47 @@ const LEAVE_SCREEN = `${MOUSE_OFF}\u001b[0m\u001b[?25h\u001b[?1049l`;
 /** Lines one wheel notch scrolls. */
 const WHEEL_LINES = 3;
 
+/** One key: a CSI sequence (arrows, function keys, mouse reports), an SS3 key, an Alt combination, or one character. */
 const KEY =
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: keys are escape sequences
-	/\u001b\[<\d+;\d+;\d+[Mm]|\u001b\[[0-9;]*[~A-Za-z]|\u001bO[A-Za-z]|\u001b|[\s\S]/g;
+	/\u001b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|\u001bO[\s\S]|\u001b[^[O\u001b]|[\s\S]/g;
+/** The start of a key cut off at the end of the input so far. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: keys are escape sequences
+const PARTIAL = /\u001b(?:\[[\x30-\x3f]*[\x20-\x2f]*|O)?$/;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: mouse reports are escape sequences
-const MOUSE = /\u001b\[<(\d+);(\d+);(\d+)([Mm])/g;
+const MOUSE = /^\u001b\[<(\d+);(\d+);(\d+)([Mm])$/;
+
+/**
+ * One end of a selection, held by what it points at rather than where that
+ * is now: an Overview line, or a marker on the app's buffer row (the alternate
+ * screen has no scrollback and takes no markers, so there it is the row).
+ */
+interface SelectionEnd {
+	col: number;
+	line?: OutputLine;
+	marker?: IMarker;
+	row?: number;
+}
 
 export class RunTui {
 	private selected = 0;
 	private interacting = false;
 	private errorsOnly = false;
 	private picker: number | undefined;
-	/** Text selected in a pane, in content rows and display columns. */
+	/** Text selected in a pane, in display columns. */
 	private selection?: {
 		pane: string;
-		anchor: { row: number; col: number };
-		head: { row: number; col: number };
+		/** The app buffer it was made in: a switch to the other one ends it. */
+		buffer?: string;
+		anchor: SelectionEnd;
+		head: SelectionEnd;
+		/** The mouse position the head was taken at. */
+		at: string;
 		dragging: boolean;
 	};
+	/** Input that may be the start of a key still arriving. */
+	private pending = "";
+	private escTimer?: ReturnType<typeof setTimeout>;
 	private message: string | undefined;
 	private scroll = new Map<string, number>();
 	private unread = new Set<string>();
@@ -168,6 +194,7 @@ export class RunTui {
 		// An open pager would hold the terminal past the run.
 		this.pager?.kill();
 		clearTimeout(this.timer);
+		clearTimeout(this.escTimer);
 		this.unsubscribe?.();
 		this.stdin.off("data", this.onInput);
 		this.stdout.off("resize", this.onResize);
@@ -284,38 +311,46 @@ export class RunTui {
 
 	private input(data: string): void {
 		if (this.suspended) return;
-		if (this.interacting) {
-			// Mouse reports are ours (the wheel scrolls the pane); an app that
-			// never asked for them must not receive them as typed input.
-			for (const match of data.matchAll(MOUSE)) this.mouse(match);
-			data = data.replace(MOUSE, "");
-			this.invalidate();
-			if (!data) return;
-			const leave = data === ESC ? 0 : data.indexOf(LEAVE);
+		clearTimeout(this.escTimer);
+		data = this.pending + data;
+		const partial = PARTIAL.exec(data);
+		this.pending = partial?.[0] ?? "";
+		this.keys(data.slice(0, partial?.index).match(KEY) ?? []);
+		// Only time tells a lone Esc from the start of a longer key.
+		if (this.pending)
+			this.escTimer = setTimeout(() => {
+				const key = this.pending;
+				this.pending = "";
+				if (this.active && !this.suspended) this.keys([key]);
+			}, ESC_WAIT_MS);
+	}
+
+	private keys(keys: readonly string[]): void {
+		let typed = "";
+		const send = () => {
 			const app = this.selectedApp();
-			const screen = app ? this.options.output.screens.get(app) : undefined;
-			if (leave === -1) {
-				screen?.input(data);
-				return;
-			}
-			if (leave > 0) screen?.input(data.slice(0, leave));
-			this.interacting = false;
-			this.invalidate();
-			return;
+			if (typed && app) this.options.output.screens.get(app)?.input(typed);
+			typed = "";
+		};
+		for (const key of keys) {
+			const mouse = MOUSE.exec(key);
+			// Mouse reports are ours (the wheel scrolls the pane): an app that
+			// never asked for them must not receive them as typed input.
+			if (mouse) {
+				if (this.picker === undefined) this.mouse(mouse);
+			} else if (!this.interacting) this.key(key);
+			else if (key === ESC || key === LEAVE) {
+				send();
+				this.interacting = false;
+			} else typed += key;
 		}
-		for (const key of data.match(KEY) ?? []) this.key(key);
+		send();
 		this.invalidate();
 	}
 
 	private key(key: string): void {
-		const mouse = [...key.matchAll(MOUSE)][0];
-		if (mouse) {
-			if (this.picker === undefined) this.mouse(mouse);
-			return;
-		}
-
 		this.message = undefined;
-		this.selection = undefined;
+		this.clearSelection();
 		const app = this.selectedApp();
 		const count = this.options.apps.length + 1;
 
@@ -414,7 +449,7 @@ export class RunTui {
 		if (button === 64) this.scrollBy(WHEEL_LINES);
 		else if (button === 65) this.scrollBy(-WHEEL_LINES);
 		else if (button === 0 && pressed) {
-			this.selection = undefined;
+			this.clearSelection();
 			if (column <= this.sidebarWidth()) {
 				if (this.interacting) return;
 				// Row 1 is the header; then Overview, the rule, and the apps.
@@ -424,24 +459,78 @@ export class RunTui {
 					this.select(entry - 1);
 				return;
 			}
-			const point = this.pointAt(column, row);
-			if (point)
+			const end = this.endAt(column, row);
+			const app = this.selectedApp();
+			if (end)
 				this.selection = {
-					pane: this.selectedApp() ?? "",
-					anchor: point,
-					head: point,
+					pane: app ?? "",
+					buffer: app
+						? this.options.output.screens.get(app)?.term.buffer.active.type
+						: undefined,
+					anchor: end,
+					head: end,
+					at: `${column};${row}`,
 					dragging: true,
 				};
-		} else if (button === 32 && pressed && this.selection?.dragging) {
-			const point = this.pointAt(column, row);
-			if (point) this.selection.head = point;
-		} else if (!pressed && this.selection?.dragging) {
-			const { anchor, head } = this.selection;
+		} else if (this.selection?.dragging && (button === 32 || !pressed)) {
+			// A drag, or the release that ends it, moves the head. A pointer
+			// that has not moved keeps the text it was on, even if output
+			// scrolled other text under it since.
+			const end =
+				this.selection.at === `${column};${row}`
+					? undefined
+					: this.endAt(column, row);
+			if (end) {
+				this.selection.at = `${column};${row}`;
+				if (this.selection.head !== this.selection.anchor)
+					this.selection.head.marker?.dispose();
+				this.selection.head = end;
+			}
+			if (pressed) return;
 			this.selection.dragging = false;
-			if (anchor.row === head.row && anchor.col === head.col)
-				this.selection = undefined;
-			else this.copySelection();
+			const range = this.orderedSelection();
+			if (
+				!range ||
+				(range.start.row === range.end.row && range.start.col === range.end.col)
+			)
+				this.clearSelection();
+			else this.copySelection(range);
 		}
+	}
+
+	/** A selection end at a mouse position in the pane. */
+	private endAt(column: number, row: number): SelectionEnd | undefined {
+		const point = this.pointAt(column, row);
+		if (!point) return undefined;
+		const app = this.selectedApp();
+		if (!app) {
+			const line = this.overviewLines()[point.row];
+			return line && { col: point.col, line };
+		}
+		const term = this.options.output.screens.get(app)?.term;
+		if (!term) return undefined;
+		const buffer = term.buffer.active;
+		if (buffer.type === "alternate") return { col: point.col, row: point.row };
+		const marker = term.registerMarker(
+			point.row - (buffer.baseY + buffer.cursorY),
+		);
+		return marker && { col: point.col, marker };
+	}
+
+	/** The content row a selection end points at now, if it still exists. */
+	private resolve(end: SelectionEnd): number | undefined {
+		if (end.line) {
+			const index = this.overviewLines().indexOf(end.line);
+			return index < 0 ? undefined : index;
+		}
+		if (end.marker) return end.marker.isDisposed ? undefined : end.marker.line;
+		return end.row;
+	}
+
+	private clearSelection(): void {
+		this.selection?.anchor.marker?.dispose();
+		this.selection?.head.marker?.dispose();
+		this.selection = undefined;
 	}
 
 	/** Where a mouse position falls in the shown pane's content, clamped to it. */
@@ -482,19 +571,39 @@ export class RunTui {
 		return Math.max(0, buffer.baseY - (this.scroll.get(app) ?? 0)) + y;
 	}
 
-	/** The selection, first point first. */
+	/**
+	 * The selection in content rows, first point first. One whose text is gone
+	 * (trimmed, cleared, or the app switched screens under it) ends here
+	 * rather than attaching to whatever replaced it.
+	 */
 	private orderedSelection() {
-		if (!this.selection) return undefined;
-		const { anchor, head } = this.selection;
-		return anchor.row < head.row ||
-			(anchor.row === head.row && anchor.col <= head.col)
-			? { start: anchor, end: head }
-			: { start: head, end: anchor };
+		const selection = this.selection;
+		if (!selection) return undefined;
+		const app = this.selectedApp();
+		const buffer = app
+			? this.options.output.screens.get(app)?.term.buffer.active.type
+			: undefined;
+		const anchor = this.resolve(selection.anchor);
+		const head = this.resolve(selection.head);
+		if (
+			anchor === undefined ||
+			head === undefined ||
+			buffer !== selection.buffer
+		) {
+			this.clearSelection();
+			return undefined;
+		}
+		const a = { row: anchor, col: selection.anchor.col };
+		const b = { row: head, col: selection.head.col };
+		return a.row < b.row || (a.row === b.row && a.col <= b.col)
+			? { start: a, end: b }
+			: { start: b, end: a };
 	}
 
-	private copySelection(): void {
-		const range = this.orderedSelection();
-		if (!range) return;
+	private copySelection(range: {
+		start: { row: number; col: number };
+		end: { row: number; col: number };
+	}): void {
 		const app = this.selectedApp();
 		const nameWidth = this.overviewNameWidth();
 		const lines = this.overviewLines();
@@ -530,7 +639,7 @@ export class RunTui {
 	}
 
 	private select(index: number): void {
-		if (index !== this.selected) this.selection = undefined;
+		if (index !== this.selected) this.clearSelection();
 		this.selected = index;
 		const app = this.selectedApp();
 		if (app) this.unread.delete(app);
@@ -566,6 +675,8 @@ export class RunTui {
 		// Hand the terminal to the pager, then take it back. The pager reads
 		// the keys meanwhile: this process stops reading stdin altogether.
 		this.suspended = true;
+		clearTimeout(this.escTimer);
+		this.pending = "";
 		this.stdin.off("data", this.onInput);
 		this.stdin.pause();
 		this.restoreTerminal();
@@ -730,9 +841,9 @@ export class RunTui {
 
 	/** The pane's rows with the selection, if it is in this pane, reversed. */
 	private highlight(rows: string[], width: number): string[] {
+		if (this.selection?.pane !== (this.selectedApp() ?? "")) return rows;
 		const range = this.orderedSelection();
-		if (!range || this.selection?.pane !== (this.selectedApp() ?? ""))
-			return rows;
+		if (!range) return rows;
 		return rows.map((row, y) => {
 			const content = this.contentRow(y);
 			if (

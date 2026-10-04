@@ -102,6 +102,13 @@ export async function spawnOwnedWorker(
 
 			signal?.throwIfAborted();
 			const child = spawn();
+			const exited = () => child.exitCode !== null || child.signalCode !== null;
+			// A worker that died before it was claimed can leave its own
+			// children holding the group, unowned: nothing would ever stop them.
+			const handBack = async () => {
+				await terminateOwnedProcess(child, 1000);
+				return child;
+			};
 
 			try {
 				// Observe spawn errors here until the caller attaches its supervisor.
@@ -113,9 +120,8 @@ export async function spawnOwnedWorker(
 				const identity = child.pid
 					? await readProcessIdentityAsync(child.pid, signal)
 					: undefined;
-				const exited = child.exitCode !== null || child.signalCode !== null;
-				if (exited && options.allowEarlyExit) return child;
-				if (!child.pid || !identity || exited) {
+				if (exited() && options.allowEarlyExit) return await handBack();
+				if (!child.pid || !identity || exited()) {
 					throw new Error(`Worker "${name}" exited before process startup`);
 				}
 
@@ -125,7 +131,9 @@ export async function spawnOwnedWorker(
 				]);
 
 				// The child can exit while its identity is being written to disk.
-				if (child.exitCode !== null || child.signalCode !== null) {
+				if (exited()) {
+					await registry.write(path, entries);
+					if (options.allowEarlyExit) return await handBack();
 					throw new Error(`Worker "${name}" exited before process startup`);
 				}
 

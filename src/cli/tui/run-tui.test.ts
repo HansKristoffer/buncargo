@@ -237,8 +237,9 @@ describe("RunTui mouse", () => {
 });
 
 describe("RunTui interact mode", () => {
-	it("leaves on a lone Esc or Ctrl-], and still sends escape sequences to the app", () => {
+	const setup = () => {
 		const forwarded: string[] = [];
+		let quits = 0;
 		const output = new RunOutput();
 		output.screen("api").input = (data: string) => void forwarded.push(data);
 		const terminal = fakeTerminal();
@@ -246,7 +247,7 @@ describe("RunTui interact mode", () => {
 			output,
 			apps: ["api"],
 			urlFor: () => undefined,
-			quit: () => {},
+			quit: () => quits++,
 			stdin: terminal.stdin,
 			stdout: terminal.stdout,
 		});
@@ -254,14 +255,23 @@ describe("RunTui interact mode", () => {
 			input(data: string): void;
 			interacting: boolean;
 		};
+		tui.start();
+		state.input("j");
+		state.input("\r");
+		expect(state.interacting).toBe(true);
+		return { tui, state, forwarded, quits: () => quits };
+	};
+	// Past the wait that tells a lone Esc from the start of a longer key.
+	const settle = () => Bun.sleep(60);
+
+	it("leaves on a lone Esc or Ctrl-], and still sends escape sequences to the app", async () => {
+		const { tui, state, forwarded } = setup();
 		try {
-			tui.start();
-			state.input("j");
-			state.input("\r");
-			expect(state.interacting).toBe(true);
 			state.input("\u001b[A");
 			state.input("\u001bb");
 			state.input("\u001b");
+			expect(state.interacting).toBe(true);
+			await settle();
 			expect(state.interacting).toBe(false);
 			expect(forwarded).toEqual(["\u001b[A", "\u001bb"]);
 
@@ -269,6 +279,30 @@ describe("RunTui interact mode", () => {
 			state.input("x\u001d");
 			expect(state.interacting).toBe(false);
 			expect(forwarded).toEqual(["\u001b[A", "\u001bb", "x"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("reads keys across chunk boundaries", async () => {
+		const { tui, state, forwarded, quits } = setup();
+		try {
+			// Alt+q split in two: one key for the app, not Esc then q (quit).
+			state.input("\u001b");
+			state.input("q");
+			// A mouse report split in two: the wheel, never typed into the app.
+			state.input("\u001b[<64;");
+			state.input("40;10M");
+			await settle();
+			expect(state.interacting).toBe(true);
+			expect(quits()).toBe(0);
+			expect(forwarded).toEqual(["\u001bq"]);
+
+			// A key and Esc in one chunk: the key goes to the app, Esc leaves.
+			state.input("a\u001b");
+			await settle();
+			expect(forwarded).toEqual(["\u001bq", "a"]);
+			expect(state.interacting).toBe(false);
 		} finally {
 			tui.stop();
 		}
@@ -350,6 +384,121 @@ describe("RunTui selection", () => {
 			terminal.stdin.write(press(26, 2) + drag(24, 3) + release(24, 3));
 			await Bun.sleep(80);
 			expect(copied).toEqual(["beta\ngamma"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("ends a selection where the button is released", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		try {
+			tui.start();
+			output.line("api", "only line");
+			// No motion report between press and release.
+			terminal.stdin.write(press(20, 19) + release(39, 19));
+			await Bun.sleep(80);
+			expect(copied[0]).toMatch(/^\d\d:\d\d:\d\d api {7}o$/);
+			// The highlight is in the pane, not the sidebar's selected row.
+			const paneRows = terminal.writes
+				.join("")
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: cursor moves
+				.split(/\u001b\[\d+;1H/)
+				.map((row) => row.split("│").slice(1).join("│"));
+			expect(paneRows.some((row) => row.includes("\u001b[7m"))).toBe(true);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("copies the lines it selected after the Overview drops old ones", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		try {
+			tui.start();
+			for (let i = 0; i < 10_000; i++) output.line("api", `line-${i}`);
+			// The last line, from the start of its text to its end.
+			terminal.stdin.write(press(39, 19) + drag(80, 19));
+			await Bun.sleep(20);
+			output.line("api", "line-new");
+			terminal.stdin.write(release(80, 19));
+			await Bun.sleep(80);
+			expect(copied).toEqual(["line-9999"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("copies the rows it selected after the app's scrollback trims", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		const write = (text: string) =>
+			new Promise<void>((resolve) => screen.term.write(text, resolve));
+		const screen = output.screen("api");
+		try {
+			tui.start();
+			let text = "";
+			for (let i = 0; i < 10_100; i++) text += `app-${i}\r\n`;
+			await write(text);
+			terminal.stdin.write(press(3, 4) + release(3, 4)); // select api
+			// The top pane row, whole.
+			terminal.stdin.write(press(20, 2) + drag(80, 2));
+			await Bun.sleep(20);
+			const top = screen.term.buffer.active.getLine(
+				screen.term.buffer.active.baseY,
+			);
+			const selected = top?.translateToString(true);
+			await write("more\r\n");
+			terminal.stdin.write(release(80, 2));
+			await Bun.sleep(80);
+			expect(copied).toEqual([selected ?? ""]);
+
+			// The app switching screens under a drag ends it: nothing is copied.
+			terminal.stdin.write(press(20, 2) + drag(80, 3));
+			await Bun.sleep(20);
+			await write("\u001b[?1049h");
+			terminal.stdin.write(release(80, 3));
+			await Bun.sleep(80);
+			expect(copied).toHaveLength(1);
 		} finally {
 			tui.stop();
 		}

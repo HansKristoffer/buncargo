@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startFakeInfisical } from "../secrets/fake-infisical.testing";
@@ -382,6 +382,65 @@ describe("startDevServers non-essential crash on start", () => {
 			});
 			expect(processExists(pids.keeper)).toBe(true);
 		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("startDevServers non-essential crash under a terminal", () => {
+	it("never reports a worker ready that died while being claimed", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-optional-pty-"));
+		// A slow `ps`: the worker is gone before its birth identity is read.
+		const bin = join(root, "bin");
+		await mkdir(bin);
+		await writeFile(
+			join(bin, "ps"),
+			`#!/bin/sh\nsleep 0.3\nexec /bin/ps "$@"\n`,
+			{ mode: 0o755 },
+		);
+		const path = process.env.PATH;
+		process.env.PATH = `${bin}:${path}`;
+		const output = new RunOutput();
+		output.terminalSize = () => ({ cols: 80, rows: 10 });
+		const states: string[] = [];
+		output.subscribe({
+			state: (app, { state }) => states.push(`${app}:${state}`),
+		});
+		const ready: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					keeper: {
+						kind: "worker",
+						devCommand: "bun -e 'setInterval(() => {}, 60000)'",
+					},
+					crash: { kind: "worker", essential: false, devCommand: "exit 3" },
+				},
+				root,
+				{},
+				{},
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					onAppReady: (name) => ready.push(name),
+				},
+			);
+			for (
+				let i = 0;
+				i < 100 && output.states.get("crash")?.state !== "failed";
+				i++
+			)
+				await Bun.sleep(20);
+			expect(states.filter((entry) => entry.startsWith("crash:"))).toEqual([
+				"crash:starting",
+				"crash:failed",
+			]);
+			expect(ready).not.toContain("crash");
+		} finally {
+			process.env.PATH = path;
 			await stopDevServers(pids);
 			await rm(root, { recursive: true, force: true });
 		}
