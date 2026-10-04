@@ -6,6 +6,7 @@ import type {
 	ProfileConfig,
 	SetupCheck,
 	TaskConfig,
+	TypecheckConfig,
 } from "./commands";
 import type {
 	ComputedLoopbackUrls,
@@ -294,6 +295,8 @@ export interface DevConfig<
 		string,
 		TaskConfig<Extract<keyof TServices, string>, Extract<keyof TApps, string>>
 	>;
+	/** Directories `buncargo typecheck` adds to or leaves out of discovery (optional) */
+	typecheck?: TypecheckConfig;
 	/**
 	 * Named app selections for `buncargo dev --profile=<name>` (optional).
 	 * A profile named `default` is what a bare `buncargo dev` runs.

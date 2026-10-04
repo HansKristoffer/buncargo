@@ -103,6 +103,17 @@ Without a terminal, `dev --reset` (which deletes the checkout's volumes) and `de
 
 `buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own - that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and 2 in CI; override with `--concurrency=N` or `BUNCARGO_TYPECHECK_CONCURRENCY`. `--only=platform` (path or basename) checks one workspace. The config run generates `.buncargo/config-typecheck.tsconfig.json` and records durations in `.buncargo/typecheck-timings.json`; keep `.buncargo/` in `.gitignore`.
 
+Workspaces are discovered from the root `package.json` `workspaces` (else `apps/*`, `packages/*`, `modules`), keeping those whose `package.json` has a `typecheck` script. `typecheck` in `dev.config.ts` changes that set:
+
+```typescript
+typecheck: {
+	include: ["scripts", "tools/*"], // checked beside the discovered workspaces
+	exclude: ["legacy", "packages/old-*"], // left out: path, glob or basename
+},
+```
+
+`include` takes directories relative to the root, globs allowed: a root `scripts/` folder, a package outside `workspaces`. Each runs its own `typecheck` script when its `package.json` has one, else `tsc --noEmit -p tsconfig.json` with the project's TypeScript. An entry that matches no directory, or a directory with neither a script nor a `tsconfig.json`, fails the typecheck instead of being skipped. `exclude` removes workspaces, discovered or included, by path, glob or basename (like `--only`). Both are validated with the config; absolute paths and paths leaving the root are rejected. `buncargo typecheck` reads only this key of the config module, without building an environment; a config that fails to import is a warning there, since its own typecheck reports the problem.
+
 ## Execute with the checkout environment
 
 Use `exec` for maintenance scripts and tooling that need the checkout's allocated
@@ -1079,6 +1090,7 @@ The configuration reference covers the main public options; `src/types/all-types
 | `profiles` | `Record<string, { apps, description? }>` | `{}` | App selections for `dev --profile`; `default` is used by a bare `dev` |
 | `integrations` | `BuncargoIntegration[]` | `[]` | `shopify()`, `expo()`, …; applied in order before validation |
 | `generatedFiles` | `{ path, render(ctx), gitignore? }[]` | `[]` | Files rendered from ports, URLs and captures. See [captures](#captured-output-and-generated-files) |
+| `typecheck` | `{ include?: string[], exclude?: string[] }` | `undefined` | Directories `buncargo typecheck` checks beyond discovery, and workspaces it leaves out. See [typecheck](#cli-reference) |
 | `unsetEnv` | `string[]` | `[]` | Variables removed from every process buncargo starts (apps, tasks, `exec`, migrations, the seed, prisma), e.g. those tools use to detect an agent's shell. buncargo's own environment is unchanged |
 
 Use the top-level `env` overlay for shared values (rewritten `WEB_URL`, `VITE_*`), and `apps.<name>.envVars` for app-only values.

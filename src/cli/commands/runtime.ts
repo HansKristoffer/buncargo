@@ -214,12 +214,27 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 		log.fail(parsed.errors[0] ?? "Invalid typecheck arguments.");
 	}
 
+	const root = (await import("../../core/ports")).findMonorepoRoot();
+	// `typecheck` in dev.config.ts: directories discovery cannot see, and ones
+	// to leave out.
+	const settings = await (
+		await import("../../typecheck/config-settings")
+	).loadTypecheckConfig(root);
+	if (settings.errors.length > 0) {
+		log.fail(settings.errors[0] ?? "Invalid typecheck config.", [
+			...settings.errors.slice(1),
+		]);
+	}
+	if (settings.warning) log.warn(settings.warning);
+
 	const { runWorkspaceTypecheck } = await import("../../typecheck");
 	const result = await runWorkspaceTypecheck({
-		root: (await import("../../core/ports")).findMonorepoRoot(),
+		root,
 		verbose: true,
 		concurrency: parsed.concurrency,
 		only: parsed.only,
+		include: settings.config?.include,
+		exclude: settings.config?.exclude,
 	});
 	process.exit(result.success ? 0 : 1);
 }

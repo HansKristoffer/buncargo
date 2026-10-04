@@ -1202,6 +1202,45 @@ describe("checks, tasks and profiles", () => {
 		]);
 	});
 
+	it("accepts typecheck include and exclude lists", () => {
+		expect(
+			validateConfig({
+				...base,
+				typecheck: { include: ["scripts", "tools/*"], exclude: ["legacy"] },
+			}),
+		).toEqual([]);
+		defineDevConfig({
+			...base,
+			typecheck: { include: ["scripts"] },
+		});
+	});
+
+	it("reports malformed typecheck settings", () => {
+		expect(
+			validateConfig({
+				...base,
+				typecheck: {
+					include: ["/abs/scripts", "../sibling", ""],
+					exclude: "legacy",
+					workspaces: ["x"],
+				},
+			}),
+		).toEqual([
+			"typecheck.workspaces is not an option (include, exclude)",
+			"typecheck.include must be an array of paths or globs relative to the root",
+			"typecheck.exclude must be an array of paths or globs relative to the root",
+		]);
+		expect(
+			validateConfig({
+				...base,
+				typecheck: { include: ["/abs/scripts", "a/../../b"] },
+			}),
+		).toEqual([
+			'typecheck.include: "/abs/scripts" must be relative to the root and stay inside it',
+			'typecheck.include: "a/../../b" must be relative to the root and stay inside it',
+		]);
+	});
+
 	it("reports references to unknown apps and services", () => {
 		expect(
 			validateConfig({

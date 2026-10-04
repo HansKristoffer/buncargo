@@ -7,6 +7,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { loadTypecheckConfig } from "./config-settings";
 import { runWorkspaceTypecheck } from "./typecheck";
 
 /**
@@ -154,5 +155,139 @@ describe("runWorkspaceTypecheck pool", () => {
 			"workspace-start",
 			"workspace-end",
 		]);
+	});
+});
+
+describe("typecheck include and exclude", () => {
+	it("checks an included directory with a typecheck script outside discovery", async () => {
+		const root = makeFixture();
+		writeSleepingWorkspace(root, "apps/one", 0);
+		writeSleepingWorkspace(root, "scripts", 0);
+
+		const result = await runWorkspaceTypecheck({
+			root,
+			verbose: false,
+			includeRootConfig: false,
+			include: ["scripts"],
+		});
+
+		expect(result.success).toBe(true);
+		expect(result.results.map((entry) => entry.workspace).sort()).toEqual([
+			"apps/one",
+			"scripts",
+		]);
+	});
+
+	it("runs the project's tsc on an included directory that only has a tsconfig.json", async () => {
+		const root = makeFixture();
+		const calls = join(root, "tsc-calls.jsonl");
+		const compilerDir = join(root, "node_modules/typescript/bin");
+		mkdirSync(compilerDir, { recursive: true });
+		// A stand-in compiler: records how it was run, fails for "broken".
+		writeFileSync(
+			join(compilerDir, "tsc"),
+			`import { appendFileSync } from "node:fs"; appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2) }) + "\\n"); if (process.cwd().endsWith("broken")) { console.log("index.ts(1,7): error TS2322"); process.exit(2); }`,
+		);
+		for (const dir of ["tools/ok", "tools/broken"]) {
+			mkdirSync(join(root, dir), { recursive: true });
+			writeFileSync(join(root, dir, "tsconfig.json"), "{}");
+		}
+
+		const result = await runWorkspaceTypecheck({
+			root,
+			verbose: false,
+			includeRootConfig: false,
+			include: ["tools/*"],
+		});
+
+		expect(result.success).toBe(false);
+		const byPath = Object.fromEntries(
+			result.results.map((entry) => [entry.workspace, entry]),
+		);
+		expect(byPath["tools/ok"]?.success).toBe(true);
+		expect(byPath["tools/broken"]?.success).toBe(false);
+		expect(byPath["tools/broken"]?.errorOutput).toContain("TS2322");
+		const recorded = readFileSync(calls, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as { args: string[] });
+		for (const call of recorded)
+			expect(call.args).toEqual(["--noEmit", "-p", "tsconfig.json"]);
+	});
+
+	it("fails an include entry that matches nothing or has nothing to check", async () => {
+		const root = makeFixture();
+		mkdirSync(join(root, "empty"), { recursive: true });
+
+		const result = await runWorkspaceTypecheck({
+			root,
+			verbose: false,
+			includeRootConfig: false,
+			include: ["missing", "empty"],
+		});
+
+		expect(result.success).toBe(false);
+		expect(result.results.map((entry) => entry.errorOutput)).toEqual([
+			'typecheck.include: "missing" matches no directory.',
+			'typecheck.include: empty has no "typecheck" script in a package.json and no tsconfig.json to check.',
+		]);
+	});
+
+	it("leaves out excluded workspaces by path, glob or basename", async () => {
+		const root = makeFixture();
+		for (const path of [
+			"apps/one",
+			"apps/two",
+			"packages/legacy-a",
+			"packages/legacy-b",
+			"packages/keep",
+		])
+			writeSleepingWorkspace(root, path, 0);
+
+		const result = await runWorkspaceTypecheck({
+			root,
+			verbose: false,
+			includeRootConfig: false,
+			exclude: ["apps/one", "packages/legacy-*", "two"],
+		});
+
+		expect(result.success).toBe(true);
+		expect(result.results.map((entry) => entry.workspace)).toEqual([
+			"packages/keep",
+		]);
+	});
+});
+
+describe("loadTypecheckConfig", () => {
+	it("reads the config's typecheck key without building an environment", async () => {
+		const root = makeFixture();
+		writeFileSync(
+			join(root, "dev.config.ts"),
+			'export default { projectPrefix: "x", services: {}, typecheck: { include: ["scripts"], exclude: ["legacy"] } };',
+		);
+		expect(await loadTypecheckConfig(root)).toEqual({
+			config: { include: ["scripts"], exclude: ["legacy"] },
+			errors: [],
+		});
+	});
+
+	it("reports an invalid typecheck key", async () => {
+		const root = makeFixture();
+		writeFileSync(
+			join(root, "dev.config.ts"),
+			'export default { typecheck: { include: "scripts", workspaces: [] } };',
+		);
+		expect((await loadTypecheckConfig(root)).errors).toEqual([
+			"typecheck.workspaces is not an option (include, exclude)",
+			"typecheck.include must be an array of paths or globs relative to the root",
+		]);
+	});
+
+	it("warns, rather than fails, when the config does not load", async () => {
+		const root = makeFixture();
+		writeFileSync(join(root, "dev.config.ts"), 'throw new Error("boom");');
+		const loaded = await loadTypecheckConfig(root);
+		expect(loaded.errors).toEqual([]);
+		expect(loaded.warning).toContain("boom");
 	});
 });

@@ -120,6 +120,28 @@ export interface GeneratedFileConfig {
 	gitignore?: boolean;
 }
 
+/**
+ * What `buncargo typecheck` checks beyond the workspaces it discovers (the
+ * root `package.json` `workspaces`, else `apps/*`, `packages/*`, `modules`,
+ * each with a `typecheck` script).
+ */
+export interface TypecheckConfig {
+	/**
+	 * More directories to check, relative to the root; globs allowed. For a
+	 * directory discovery cannot see: a root `scripts/`, a package outside
+	 * `workspaces`. Each runs its `typecheck` script when its `package.json`
+	 * has one, else `tsc --noEmit -p tsconfig.json` with the project's own
+	 * TypeScript. An entry that matches no directory, or a directory with
+	 * neither, fails the check rather than being skipped.
+	 */
+	include?: readonly string[];
+	/**
+	 * Workspaces to leave out: paths relative to the root, globs, or a bare
+	 * name matching a workspace's basename (like `--only`).
+	 */
+	exclude?: readonly string[];
+}
+
 /** A named app selection for `buncargo dev --profile=<name>`. */
 export interface ProfileConfig<TAppKey extends string = string> {
 	/** Apps to run, plus their `requiredApps`, exactly like `--apps`. */
