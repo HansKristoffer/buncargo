@@ -97,6 +97,8 @@ export interface RunServiceEntry {
 	publicUrl?: string;
 	hostname?: string;
 	tablePlusUrl?: string;
+	/** The integration stack providing it (see {@link RunEntry.stacks}); it has no container of ours. */
+	stack?: string;
 	/** What `stop` needs to reach the container without loading the config. */
 	container?: {
 		runtime: ContainerRuntimeName;
@@ -105,6 +107,12 @@ export interface RunServiceEntry {
 		binary?: string;
 	};
 	status: RunServiceStatus;
+}
+
+export interface RunStackEntry {
+	name: string;
+	/** argv, run from the checkout (or home once it is gone). Keeps data. */
+	down: string[];
 }
 
 export interface RunEntry {
@@ -170,6 +178,12 @@ export interface RunEntry {
 	cli: CliInvocation;
 	apps: RunAppEntry[];
 	services: RunServiceEntry[];
+	/**
+	 * Integration stacks (the Supabase CLI) this run started, with the command
+	 * that stops each. The sweep runs it when it would tear the run's
+	 * containers down: it has no config to ask.
+	 */
+	stacks?: RunStackEntry[];
 	/** The config's tasks, which the menu bar runs with `buncargo run <name>`. */
 	tasks?: RunTaskEntry[];
 	/** Values apps printed (`captures`), by name: what `env --get captured.*` reads. */
@@ -247,6 +261,7 @@ function isRunService(value: unknown): value is RunServiceEntry {
 				typeof value.url === "string" &&
 				typeof value.loopbackUrl === "string")) &&
 		["starting", "ready", "stopped"].includes(String(value.status)) &&
+		(value.stack === undefined || typeof value.stack === "string") &&
 		(value.container === undefined ||
 			(isRecord(value.container) &&
 				["docker", "apple"].includes(String(value.container.runtime)) &&
@@ -282,6 +297,16 @@ function isRunEntry(value: unknown): value is RunEntry {
 		value.apps.every(isRunApp) &&
 		Array.isArray(value.services) &&
 		value.services.every(isRunService) &&
+		(value.stacks === undefined ||
+			(Array.isArray(value.stacks) &&
+				value.stacks.every(
+					(stack) =>
+						isRecord(stack) &&
+						typeof stack.name === "string" &&
+						Array.isArray(stack.down) &&
+						stack.down.length > 0 &&
+						stack.down.every((arg) => typeof arg === "string"),
+				))) &&
 		(value.captures === undefined ||
 			(isRecord(value.captures) &&
 				Object.values(value.captures).every(
@@ -452,6 +477,9 @@ export async function publishRun(
 			next[index] = {
 				...run,
 				startedAt: existing.startedAt,
+				...(run.stacks === undefined && existing.stacks !== undefined
+					? { stacks: existing.stacks }
+					: {}),
 				...(run.idleTimeoutMs === undefined &&
 				existing.idleTimeoutMs !== undefined
 					? { idleTimeoutMs: existing.idleTimeoutMs }
@@ -525,6 +553,26 @@ export async function retireProjectRuns(
 				),
 		);
 		return next.length === runs.length ? undefined : next;
+	});
+}
+
+/** Forget stacks the sweep has stopped, so the entry can retire like any other. */
+export async function clearRunStacks(
+	sessionIds: readonly string[],
+	options: { path?: string } = {},
+): Promise<void> {
+	if (sessionIds.length === 0) return;
+	const cleared = new Set(sessionIds);
+	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+		let changed = false;
+		const next = runs.map((entry) => {
+			if (!cleared.has(entry.sessionId) || entry.stacks === undefined)
+				return entry;
+			changed = true;
+			const { stacks: _stacks, ...rest } = entry;
+			return rest;
+		});
+		return changed ? next : undefined;
 	});
 }
 

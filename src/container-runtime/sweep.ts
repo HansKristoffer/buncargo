@@ -10,8 +10,11 @@
  */
 
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { FileLockTimeoutError } from "../core/file-lock";
+import { execAsync } from "../core/process/exec";
 import {
+	clearRunStacks,
 	markOwnersLost,
 	type RunEntry,
 	readAllRuns,
@@ -94,7 +97,8 @@ export function decideSweep(
 export interface SweptStack {
 	projectName: string;
 	root: string;
-	runtime: ContainerRuntimeName;
+	/** The container runtime, or the integration stack's name (`supabase`). */
+	runtime: ContainerRuntimeName | string;
 	reason: string;
 }
 
@@ -105,6 +109,8 @@ export interface SweepResult {
 	containers: number;
 	/** Runs still alive, so the watchdog knows whether it has anything to watch. */
 	liveRuns: number;
+	/** Runs whose integration stacks are still recorded, so still to be stopped. */
+	pendingStacks: number;
 	/** The runtimes whose listing succeeded; an empty list means none is up. */
 	answered: ContainerRuntimeName[];
 	/** Stacks still standing afterwards, so a caller need not list again. */
@@ -190,13 +196,15 @@ export async function sweepOrphanedContainers(
 	const owners = new Map(
 		groups.map((group) => [group, runFor(group, runs, alive)]),
 	);
-	await stampLostOwners(owners, alive, now);
+	const stackRuns = runs.filter((run) => (run.stacks?.length ?? 0) > 0);
+	await stampLostOwners([...owners.values(), ...stackRuns], alive, now);
 
 	const result: SweepResult = {
 		swept: [],
 		failed: [],
 		containers: containers.length,
 		liveRuns: runs.filter(alive).length,
+		pendingStacks: 0,
 		answered,
 		remaining: [],
 		runs,
@@ -212,6 +220,16 @@ export async function sweepOrphanedContainers(
 			!excepted && (await sweepGroup(group, run, alive, now, runtimes, result));
 		if (!removed) result.remaining.push(group);
 	}
+
+	for (const run of stackRuns) {
+		const excepted =
+			options.except?.projectName === run.projectName &&
+			options.except.root === run.root;
+		if (!excepted) await sweepStacks(run, runs, alive, now, result);
+	}
+	result.pendingStacks = stackRuns.filter(
+		(run) => (run.stacks?.length ?? 0) > 0,
+	).length;
 
 	try {
 		await retireRuns(finishedSessions(runs, groups, answered, alive));
@@ -288,6 +306,75 @@ async function sweepGroup(
 }
 
 /**
+ * Stop the integration stacks (the Supabase CLI's containers) a run recorded,
+ * when the same policy would take its containers down.
+ *
+ * Those containers carry none of our labels, so no listing finds them: the
+ * recorded `down` command is the only handle, and it is safe to run on a stack
+ * that is already gone. So the stack counts as running, and only the hold, the
+ * crash grace and a deleted checkout decide. Any live session in the checkout
+ * shares the stack (it runs under the project's name) and keeps it.
+ */
+async function sweepStacks(
+	run: RunEntry,
+	runs: RunEntry[],
+	alive: (run: RunEntry) => boolean,
+	now: number,
+	result: SweepResult,
+): Promise<void> {
+	const decide = (runs: RunEntry[], isAlive: (run: RunEntry) => boolean) => {
+		const sameCheckout = runs.filter(
+			(entry) =>
+				entry.projectName === run.projectName && entry.root === run.root,
+		);
+		const owner =
+			runs.find((entry) => entry.sessionId === run.sessionId) ?? null;
+		return decideSweep({
+			rootExists: run.root !== "" && existsSync(run.root),
+			anyRunning: true,
+			run: owner,
+			ownerAlive: sameCheckout.some(isAlive),
+			now,
+		});
+	};
+	if (decide(runs, alive).kind !== "down") return;
+
+	try {
+		await withProjectLifecycleLock(
+			run.projectName,
+			run.root,
+			async () => {
+				const fresh = await readAllRuns();
+				const freshAlive = await runLivenessAsync(fresh);
+				const verdict = decide(fresh, freshAlive);
+				if (verdict.kind !== "down") return;
+				const cwd = existsSync(run.root) ? run.root : homedir();
+				for (const stack of run.stacks ?? []) {
+					await execAsync(stack.down, cwd, {}, { timeoutMs: 120_000 });
+					result.swept.push({
+						projectName: run.projectName,
+						root: run.root,
+						runtime: stack.name,
+						reason: verdict.reason,
+					});
+				}
+				await clearRunStacks([run.sessionId]);
+				// Retirable this pass, like an entry whose containers are gone.
+				run.stacks = undefined;
+			},
+			{ timeoutMs: 0 },
+		);
+	} catch (error) {
+		if (!(error instanceof FileLockTimeoutError))
+			result.failed.push({
+				projectName: run.projectName,
+				root: run.root,
+				error: error instanceof Error ? error.message : String(error),
+			});
+	}
+}
+
+/**
  * Stamp the moment a stack's owner was first found gone.
  *
  * Written into the registry so the next pass counts from the same moment, and
@@ -296,11 +383,11 @@ async function sweepGroup(
  * waits a pass longer rather than coming down early.
  */
 async function stampLostOwners(
-	owners: Map<ContainerGroup, RunEntry | null>,
+	owners: readonly (RunEntry | null)[],
 	alive: (run: RunEntry) => boolean,
 	now: number,
 ): Promise<void> {
-	const lost = [...new Set(owners.values())].filter(
+	const lost = [...new Set(owners)].filter(
 		(run): run is RunEntry =>
 			run !== null &&
 			run.releasedAt === undefined &&
@@ -352,6 +439,8 @@ function finishedSessions(
 			(run) =>
 				!alive(run) &&
 				!stillHasContainers(run) &&
+				// Its stacks are only recorded here; retiring would orphan them.
+				(run.stacks?.length ?? 0) === 0 &&
 				(runtimeAnswered(run) || !existsSync(run.root)),
 		)
 		.map((run) => run.sessionId);

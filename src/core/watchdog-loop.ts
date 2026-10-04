@@ -44,7 +44,11 @@ export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 			}
 			reportedFailures = failures;
 
-			if (result.containers === 0 && result.liveRuns === 0) {
+			if (
+				result.containers === 0 &&
+				result.liveRuns === 0 &&
+				result.pendingStacks === 0
+			) {
 				deps.log("Nothing left to watch; exiting");
 				return;
 			}

@@ -191,6 +191,26 @@ The `shopify` app is not essential: an extension build error or a lost session s
 
 The app, preview and GraphiQL URLs are labelled captures and the admin and dev store links are the integration's `describe` rows, so `bunx buncargo url` lists them all and `bunx buncargo open "shopify admin"` or `open previewUrl` opens one. `bunx buncargo shopify env` prints the app toml. An app that reads `SHOPIFY_APP_URL` at startup sets `restartOn: ["captured.appUrl"]`. A generated file can carry the URL into an extension (see [captures](#captured-output-and-generated-files)). [`example/shopify-plugin`](example/shopify-plugin) is a runnable version, booted end to end in CI with a fake `shopify` binary.
 
+### Supabase
+
+```typescript
+import { defineDevConfig } from "buncargo";
+import { supabase } from "buncargo/supabase";
+
+export default defineDevConfig({
+	projectPrefix: "myapp",
+	services: {},
+	apps: {
+		web: { port: 5173, devCommand: "bun run dev", requiredServices: ["supabase"] },
+	},
+	integrations: [supabase({ publicEnvPrefix: "VITE_", types: { output: "src/database.types.ts" } })],
+});
+```
+
+The Supabase CLI keeps running the local stack (`bun add -d supabase`, then `supabase init`); buncargo gives each checkout its own copy. The stack runs under the checkout's project name and ports through the CLI's `SUPABASE_*` overrides, so two worktrees no longer share one database and `supabase/config.toml` is never rewritten. `supabase` (the API), `supabaseDb` and, when enabled in the toml, `supabaseStudio` and `supabaseMail` are services: requiring any of them starts the whole stack, and they get ports, URLs, named hosts and the TablePlus link like any other service. Every process gets `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_SECRET_KEY` and `SUPABASE_DB_URL`, plus prefixed browser copies of the first three. Auth's `site_url` points at the primary app (`siteUrlApp` to choose) and its redirect list gains every app's URLs.
+
+Each start runs `supabase migration up`, so a pull with new migrations needs nothing else; `types` regenerates the TypeScript types when the migrations change. `functions: true` adds `supabase functions serve` as a worker, and `exclude` skips containers (`["studio", "imgproxy"]`; CI skips Studio and analytics by default). `buncargo exec -- supabase db diff` runs the CLI against this checkout's stack. A run's stack is held for the idle timeout after it exits, like containers; `dev --down` stops it, and `dev --reset` deletes its data. Settings the stack started with, such as the redirect list, change with the next start after `dev --down`.
+
 ### Built-in service helpers
 
 All of `service.postgres()`, `redis()`, `clickhouse()`, `mailpit()`, `typesense()` accept `port`, `expose`, `healthCheck`, `serviceName`, and `docker`. Beyond that each takes only what it honors: `database` / `user` / `password` on `postgres` and `clickhouse` (their URLs carry credentials), `secondaryPort` on `clickhouse` and `mailpit`, `apiKey` on `typesense`. Anything else is a type error - use `service.custom({ ... })` for a service that needs more.
@@ -214,7 +234,7 @@ rabbitmq: service.custom({
 ## Documentation
 
 - [CLI, configuration and programmatic API reference](docs/reference.md)
-- [Integrations](docs/integrations.md), including Expo and Shopify
+- [Integrations](docs/integrations.md), including Expo, Shopify and Supabase
 - [Remote sharing and relay operation](docs/frp.md)
 - [BuncargoBar](menubar/README.md)
 - [Container lifecycle and cleanup](docs/runtime-maintenance.md)

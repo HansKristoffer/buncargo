@@ -9,6 +9,7 @@ import {
 	findDockerContainerOnPort,
 } from "../../docker/port-lookup";
 import type { ContainerRuntimeName, PortContainerOwner } from "../../types";
+import { externalStackProjectName } from "../ports";
 import {
 	matchesProcessIdentityAsync,
 	readProcessIdentitiesAsync,
@@ -529,10 +530,14 @@ export function classifyPortOccupant(
 			options.runtime === undefined ||
 			owner.container.runtime === undefined ||
 			owner.container.runtime === options.runtime;
+		// An integration's stack (the Supabase CLI) labels its containers with
+		// the shortened name it was given: those are this run's too.
+		const project = owner.container.composeProject;
 		if (
 			sameRuntime &&
-			owner.container.composeProject === options.projectName &&
-			owner.container.composeProject
+			project &&
+			(project === options.projectName ||
+				project === externalStackProjectName(options.projectName))
 		) {
 			return "reuse";
 		}

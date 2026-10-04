@@ -8,6 +8,7 @@ function pass(extra: Partial<SweepResult> = {}): SweepResult {
 		failed: [],
 		containers: 1,
 		liveRuns: 1,
+		pendingStacks: 0,
 		answered: ["docker"],
 		remaining: [],
 		runs: [],
@@ -49,6 +50,25 @@ describe("runWatchdogLoop", () => {
 		]);
 		expect(logs).toEqual([
 			"Sweep failed, retrying next pass: runs.json could not be read",
+			"Nothing left to watch; exiting",
+		]);
+	});
+
+	it("keeps watching while a released run's stack waits for its hold", async () => {
+		// No containers of ours and no live run, but a Supabase stack the
+		// sweep still has to stop once the hold runs out.
+		const stopped = {
+			projectName: "demo",
+			root: "/repo",
+			runtime: "supabase",
+			reason: "released 200s ago",
+		};
+		const logs = await loop([
+			pass({ containers: 0, liveRuns: 0, pendingStacks: 1 }),
+			pass({ containers: 0, liveRuns: 0, swept: [stopped] }),
+		]);
+		expect(logs).toEqual([
+			"Removed demo (/repo): released 200s ago",
 			"Nothing left to watch; exiting",
 		]);
 	});

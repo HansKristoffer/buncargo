@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import type {
@@ -169,6 +170,27 @@ export function getProjectName(
 	const dirName = basename(monorepoRoot);
 	const baseName = `${prefix}-${dirName.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`;
 	return suffix ? `${baseName}-${suffix}` : baseName;
+}
+
+/** The longest project id the Supabase CLI keeps; it cuts anything longer. */
+const EXTERNAL_STACK_NAME_MAX = 40;
+
+/**
+ * The project name an integration's stack runs under.
+ *
+ * The project name itself when it fits, so the stack's containers carry the
+ * same Compose project label as ours and their ports read as this run's.
+ * Worktree names make it long, and a CLI that silently truncates would label
+ * its containers with a name we never compare against, so anything longer is
+ * shortened here, the same way for every caller, and keeps a hash of the whole.
+ */
+export function externalStackProjectName(projectName: string): string {
+	if (projectName.length <= EXTERNAL_STACK_NAME_MAX) return projectName;
+	const hash = createHash("sha256")
+		.update(projectName)
+		.digest("hex")
+		.slice(0, 8);
+	return `${projectName.slice(0, EXTERNAL_STACK_NAME_MAX - 9)}-${hash}`;
 }
 
 export interface DevIdentityOptions {

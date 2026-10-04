@@ -5,7 +5,7 @@ import {
 	resolveServiceEnvVarSources,
 } from "../../core/service-presets";
 import { resolveServiceDependencies } from "../../planning/start-planning";
-import type { AnyDevConfig } from "../../types";
+import type { AnyDevConfig, ServiceConfig } from "../../types";
 import type { ValidationContext } from "./context";
 
 export function validateServices(
@@ -15,6 +15,11 @@ export function validateServices(
 	const { errors, claimName, claimPort } = context;
 	const composeServiceNames = new Set<string>();
 	const derivedEnvOwners = new Map<string, string>();
+	const stacks = new Set(
+		(config.integrations ?? []).flatMap((integration) =>
+			Object.keys(integration.stacks ?? {}),
+		),
+	);
 	for (const [name, service] of Object.entries(config.services ?? {})) {
 		claimName(name, `services.${name}`);
 		if (service.port !== undefined) {
@@ -87,7 +92,9 @@ export function validateServices(
 		composeServiceNames.add(composeServiceName);
 
 		const dockerConfig = service.docker;
-		if (!dockerConfig && !inferDockerPreset(name)) {
+		if (service.external) {
+			validateExternalService(name, service, stacks, errors);
+		} else if (!dockerConfig && !inferDockerPreset(name)) {
 			errors.push(
 				`Service "${name}" must define docker config (helper or raw) because it has no built-in preset.`,
 			);
@@ -131,5 +138,29 @@ export function validateServices(
 		resolveServiceDependencies(config.services, Object.keys(config.services));
 	} catch (error) {
 		errors.push(error instanceof Error ? error.message : String(error));
+	}
+}
+
+function validateExternalService(
+	name: string,
+	service: ServiceConfig,
+	stacks: ReadonlySet<string>,
+	errors: string[],
+): void {
+	const stack = service.external?.stack;
+	if (!stack || !stacks.has(stack)) {
+		errors.push(
+			`Service "${name}" is provided by stack "${String(stack)}", which no integration defines`,
+		);
+	}
+	if (service.docker) {
+		errors.push(
+			`Service "${name}" is provided by stack "${stack}" and cannot also define docker`,
+		);
+	}
+	if (service.kind === "job" || service.afterPreparation) {
+		errors.push(
+			`Service "${name}" is provided by stack "${stack}" and cannot be a job or afterPreparation`,
+		);
 	}
 }

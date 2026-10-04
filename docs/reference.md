@@ -170,7 +170,7 @@ The `actions/setup` composite action installs Bun from `.bun-version` (or `bun-v
 
 ## Integrations
 
-Project-type knowledge lives in integrations rather than in every project's scripts: `buncargo/shopify` and `buncargo/expo` today. An integration is a plain object in `integrations: [...]`. It can transform the config (add apps, env, generated files), add hooks and checks, contribute commands under its own name (`buncargo shopify env`), add env to one app's process, and describe itself in `buncargo env`, the run registry and BuncargoBar. [`docs/integrations.md`](../docs/integrations.md) covers writing one, with the Shopify and Expo integrations as references.
+Project-type knowledge lives in integrations rather than in every project's scripts: `buncargo/shopify`, `buncargo/expo` and `buncargo/supabase` today. An integration is a plain object in `integrations: [...]`. It can transform the config (add apps, env, generated files), run a stack of containers another CLI manages (`stacks`), add hooks and checks, contribute commands under its own name (`buncargo shopify env`), add env to one app's process, and describe itself in `buncargo env`, the run registry and BuncargoBar. [`docs/integrations.md`](../docs/integrations.md) covers writing one, with the Shopify and Expo integrations as references.
 
 Run `bun run benchmark:startup` for the regression matrix: cold and warm service starts, four concurrent runs, app-only selections, port allocation, workers, preparation, shared-checkout reuse, and cancellation. Results and violations are saved to `.buncargo/benchmarks/startup.json`, including failed runs. Each scenario has its own timing and subprocess limits in `scripts/startup-budgets.ts`; for example, single-run warm startup has a 700ms ceiling, shared-checkout reuse 350ms, and cancellation 300ms. CI takes five samples per worker and applies `--budget-scale=1.5` to timing limits for hosted-runner variation. Counters include process identity subprocesses. These measure orchestration overhead with simulated containers; they do not include image pulls or external network providers. The fixture owns its watchdog sentinel and isolates both container binaries.
 
@@ -1011,6 +1011,7 @@ Top-level `envVars` is removed. Use the top-level `env` overlay for shared value
 | `env` | `Record<string, "url" \| "port" \| "secondaryPort">` | preset aliases | Shared env outputs |
 | `staticEnv` | `Record<string, string>` | `{}` | Constant shared env (API keys, `SMTP_HOST`) |
 | `docker` | preset helper or raw Compose service | inferred for postgres/redis/clickhouse/mailpit/typesense | Image, ports, healthcheck, volumes |
+| `external` | `{ stack, preset? }` | `undefined` | Provided by an integration's stack (the Supabase CLI) instead of the Compose file: allocated a port, URL and env, never written to Compose. `preset` says what it is (TablePlus link), without the preset's default env. Selecting one of a stack's services selects them all |
 
 `UrlBuilderContext`: `{ port, secondaryPort?, host, localIp }`. See [portless containers and finite jobs](#portless-containers-and-finite-jobs) for completion and rerun behavior.
 

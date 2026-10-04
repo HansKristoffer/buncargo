@@ -1,4 +1,4 @@
-import { inferDockerPreset } from "../core/service-presets";
+import { inferDockerPreset, isExternalService } from "../core/service-presets";
 import type {
 	ComposeDocument,
 	ComposeIdentity,
@@ -176,6 +176,8 @@ export function buildComposeModel(
 	const composeVolumes: Record<string, DockerComposeVolumeRaw> = {};
 
 	for (const [name, serviceConfig] of Object.entries(services)) {
+		// Its stack's own CLI creates it; buncargo only knows its port.
+		if (isExternalService(serviceConfig)) continue;
 		const { serviceName, service, volume } = resolveServiceDefinition(
 			name,
 			serviceConfig,

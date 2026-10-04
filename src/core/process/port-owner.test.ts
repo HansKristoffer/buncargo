@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
+import { externalStackProjectName } from "../ports";
 import { isProcessAlive } from "./lifecycle";
 import {
 	classifyPortOccupant,
@@ -20,6 +21,29 @@ describe("classifyPortOccupant", () => {
 					},
 				},
 				{ root: "/repo", projectName: "gey-main" },
+			),
+		).toBe("reuse");
+	});
+
+	it("reuses an integration stack's container under its shortened project name", () => {
+		// The Supabase CLI cuts project ids at 40 characters; a worktree's
+		// project name is often longer, and reading its stack as foreign
+		// shifts every port on each warm start.
+		const projectName = "myproject-t3code-e92a078e-t3code-e92a078e";
+		const stackName = externalStackProjectName(projectName);
+		expect(stackName.length).toBeLessThanOrEqual(40);
+		expect(stackName).not.toBe(externalStackProjectName(`${projectName}-ci`));
+		expect(
+			classifyPortOccupant(
+				{
+					pids: [],
+					container: {
+						id: "abc",
+						name: `supabase_db_${stackName}`,
+						composeProject: stackName,
+					},
+				},
+				{ root: "/repo", projectName },
 			),
 		).toBe("reuse");
 	});
