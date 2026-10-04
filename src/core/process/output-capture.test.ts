@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
 	createOutputCaptureScanner,
+	joinWrappedUrls,
+	looksLikeCompleteUrl,
 	normalizeOrigin,
 	stripTerminalOutput,
 } from "./output-capture";
@@ -111,5 +113,169 @@ describe("hyperlinks split across chunks", () => {
 				});
 			}
 		}
+	});
+});
+
+describe("looksLikeCompleteUrl", () => {
+	it("accepts whole hosts", () => {
+		for (const url of [
+			"https://manufacturing-analytical-specifications-hamburg.trycloudflare.com",
+			"https://abc.trycloudflare.com/api/proxy",
+			"http://localhost:3457/graphiql?key=k",
+			"http://127.0.0.1:8080",
+			"https://admin.shopify.com/store/s/apps/x",
+			"https://my-tunnel.example.dev",
+			"http://[::1]:3000",
+		])
+			expect({ url, complete: looksLikeCompleteUrl(url) }).toEqual({
+				url,
+				complete: true,
+			});
+	});
+
+	it("rejects hosts a wrap cut off", () => {
+		for (const url of [
+			"https://foo-bar.trycloudflare",
+			"https://foo-bar.trycloudflare.co",
+			"https://foo-bar.trycloudfl",
+			"https://manufacturing-analytical-spec",
+			"https://foo-bar.",
+			"https://foo-",
+			"http://localhost:",
+			"http://127.0.0",
+			"https://abc.c",
+			"https://",
+		])
+			expect({ url, complete: looksLikeCompleteUrl(url) }).toEqual({
+				url,
+				complete: false,
+			});
+	});
+});
+
+describe("joinWrappedUrls", () => {
+	it("joins a URL's tail from the next row, through frames and log columns", () => {
+		expect(
+			joinWrappedUrls(
+				[
+					"12:34:56   app-home         Using URL: https://manufacturing-analytical-spec  ",
+					"                             ifications-hamburg.trycloudflare.com",
+					"12:34:57   app-home         Ready",
+					"",
+				].join("\n"),
+			),
+		).toBe(
+			[
+				"12:34:56   app-home         Using URL: https://manufacturing-analytical-specifications-hamburg.trycloudflare.com",
+				"12:34:57   app-home         Ready",
+				"",
+			].join("\n"),
+		);
+	});
+
+	it("joins across pipe-separated columns and more than one row", () => {
+		expect(
+			joinWrappedUrls(
+				[
+					"app | Using URL: https://manufacturing-",
+					"    | analytical-specifications-",
+					"    | hamburg.trycloudflare.com",
+				].join("\n"),
+			),
+		).toBe(
+			"app | Using URL: https://manufacturing-analytical-specifications-hamburg.trycloudflare.com",
+		);
+	});
+
+	it("leaves a whole URL and the prose after it alone", () => {
+		const text = [
+			"  Using URL: https://a-b.trycloudflare.com  ",
+			"  Preview URL: https://admin.shopify.com/store/s/apps/x",
+			"  Ready",
+			"  (p) Preview in your browser",
+			"",
+		].join("\n");
+		expect(joinWrappedUrls(text)).toBe(text);
+	});
+
+	it("does not join two URLs", () => {
+		const text = "https://a.example.com\nhttps://b.example.com\n";
+		expect(joinWrappedUrls(text)).toBe(text);
+	});
+});
+
+describe("URLs a terminal wrapped", () => {
+	const appUrl = {
+		appUrl: {
+			pattern: /Using URL:\s*(https?:\/\/[^\s│|)]+)/,
+			as: "publicUrl" as const,
+		},
+	};
+
+	it("waits for the row that completes a cut-off public URL", () => {
+		const scanner = createOutputCaptureScanner(appUrl);
+		// The chunk ends exactly where Ink wrapped the line.
+		expect(
+			scanner.push("│ Using URL: https://foo-bar.trycloudflare      │\r\n"),
+		).toEqual([]);
+		expect(
+			scanner.push("│ .com                                     │\r\n"),
+		).toEqual([
+			{
+				name: "appUrl",
+				value: "https://foo-bar.trycloudflare.com",
+				as: "publicUrl",
+			},
+		]);
+	});
+
+	it("never reports a public URL whose host was cut off", () => {
+		const scanner = createOutputCaptureScanner(appUrl);
+		expect(
+			scanner.push(
+				"Using URL: https://foo-bar.trycloudflare\n\nsomething else\n",
+			),
+		).toEqual([]);
+	});
+
+	it("replaces a URL that looked whole once its wrapped tail arrives", () => {
+		const scanner = createOutputCaptureScanner({
+			link: { pattern: /Link:\s*(https?:\/\/\S+)/, as: "value" },
+		});
+		expect(scanner.push("Link: https://example.co\n")).toEqual([
+			{ name: "link", value: "https://example.co", as: "value" },
+		]);
+		expect(scanner.push("m/some/path?x=1\n")).toEqual([
+			{ name: "link", value: "https://example.com/some/path?x=1", as: "value" },
+		]);
+	});
+
+	it("reports a value URL that cannot be whole once the next line shows it ends there", () => {
+		const scanner = createOutputCaptureScanner({
+			link: { pattern: /Link:\s*(https?:\/\/\S+)/, as: "value" },
+		});
+		expect(scanner.push("Link: http://devbox:8080\n")).toEqual([]);
+		expect(scanner.push("\n")).toEqual([
+			{ name: "link", value: "http://devbox:8080", as: "value" },
+		]);
+	});
+
+	it("keeps a URL row that follows an event for its tail", () => {
+		const scanner = createOutputCaptureScanner({
+			...appUrl,
+			ready: { pattern: /Ready, watching/, as: "event" },
+		});
+		expect(
+			scanner
+				.push("Ready, watching\nUsing URL: https://a-b.trycloudfl\n")
+				.map((entry) => entry.name),
+		).toEqual(["ready"]);
+		expect(scanner.push("are.com\n")).toEqual([
+			{
+				name: "appUrl",
+				value: "https://a-b.trycloudflare.com",
+				as: "publicUrl",
+			},
+		]);
 	});
 });

@@ -1,11 +1,12 @@
-import { readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { basename, join } from "node:path";
 import fg from "fast-glob";
 import { execAsync } from "../core/process";
 import {
 	type ConfigTypecheckResult,
 	typecheckRootConfig,
 } from "./config-typecheck";
+import { resolveProjectTsc } from "./project-tsc";
 import {
 	defaultTypecheckConcurrency,
 	selectWorkspaces,
@@ -34,6 +35,14 @@ export interface WorkspaceTypecheckOptions {
 	includeRootConfig?: boolean;
 	/** Restrict to these workspace paths or basenames */
 	only?: string[];
+	/**
+	 * More directories to check, relative to the root (globs allowed): the
+	 * config's `typecheck.include`. Each runs its `typecheck` script, else
+	 * `tsc --noEmit -p tsconfig.json`.
+	 */
+	include?: readonly string[];
+	/** Workspaces to leave out: paths, globs or basenames (`typecheck.exclude`) */
+	exclude?: readonly string[];
 }
 
 /**
@@ -65,6 +74,8 @@ export interface TypecheckResult {
 interface Workspace {
 	path: string;
 	fileCount: number;
+	/** How to check it, run in the workspace. Default: its `typecheck` script. */
+	command?: string[];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -150,8 +161,7 @@ function workspaceLabel(workspace: string, fileCount: number): string {
 }
 
 async function runSingleTypecheck(
-	workspace: string,
-	fileCount: number,
+	{ path: workspace, fileCount, command }: Workspace,
 	root: string,
 	verbose: boolean,
 	isRetry = false,
@@ -165,7 +175,7 @@ async function runSingleTypecheck(
 
 	const workspacePath = join(root, workspace);
 	const result = await execAsync(
-		[process.execPath, "run", "typecheck"],
+		command ?? [process.execPath, "run", "typecheck"],
 		workspacePath,
 		{},
 		{
@@ -183,53 +193,178 @@ async function runSingleTypecheck(
 
 		if (!isRetry && errorOutput && isCorruptedCacheError(errorOutput)) {
 			await clearTsBuildInfo(workspacePath, verbose);
-			return runSingleTypecheck(workspace, fileCount, root, verbose, true);
+			return runSingleTypecheck(
+				{ path: workspace, fileCount, command },
+				root,
+				verbose,
+				true,
+			);
 		}
 	}
 
 	return { workspace, duration, success, fileCount, errorOutput };
 }
 
+function hasTypecheckScript(root: string, path: string): boolean {
+	try {
+		const pkgJson = JSON.parse(
+			readFileSync(join(root, path, "package.json"), "utf-8"),
+		) as { scripts?: { typecheck?: string } };
+		return Boolean(pkgJson.scripts?.typecheck);
+	} catch {
+		// No package.json, or an invalid one.
+		return false;
+	}
+}
+
+/** A config entry failing on its own: no directory, or nothing to run there. */
+interface IncludeProblem {
+	workspace: string;
+	message: string;
+}
+
+/**
+ * The directories `include` names, and how to check each. Unlike discovery,
+ * an entry is a promise that something there gets checked, so one that
+ * matches nothing, or a directory with neither a `typecheck` script nor a
+ * `tsconfig.json`, is reported instead of skipped.
+ */
+async function resolveIncludedWorkspaces(
+	include: readonly string[],
+	root: string,
+): Promise<{ workspaces: Workspace[]; problems: IncludeProblem[] }> {
+	const workspaces: Workspace[] = [];
+	const problems: IncludeProblem[] = [];
+	const seen = new Set<string>();
+	let tsc: string | undefined;
+
+	for (const entry of include) {
+		const pattern = entry.replace(/^\.\//, "").replace(/\/$/, "") || ".";
+		const directories =
+			pattern === "."
+				? ["."]
+				: await fg(pattern, {
+						cwd: root,
+						onlyDirectories: true,
+						ignore: ["**/node_modules/**"],
+					});
+		if (directories.length === 0) {
+			problems.push({
+				workspace: entry,
+				message: `typecheck.include: "${entry}" matches no directory.`,
+			});
+			continue;
+		}
+		for (const path of directories.sort()) {
+			if (seen.has(path)) continue;
+			seen.add(path);
+			if (hasTypecheckScript(root, path)) {
+				workspaces.push({ path, fileCount: 0 });
+			} else if (existsSync(join(root, path, "tsconfig.json"))) {
+				try {
+					tsc ??= await resolveProjectTsc(root);
+				} catch (error) {
+					problems.push({
+						workspace: path,
+						message: error instanceof Error ? error.message : String(error),
+					});
+					continue;
+				}
+				workspaces.push({
+					path,
+					fileCount: 0,
+					command: [process.execPath, tsc, "--noEmit", "-p", "tsconfig.json"],
+				});
+			} else {
+				problems.push({
+					workspace: path,
+					message: `typecheck.include: ${path} has no "typecheck" script in a package.json and no tsconfig.json to check.`,
+				});
+			}
+		}
+	}
+	return { workspaces, problems };
+}
+
+/** Whether `exclude` names this workspace: its path, a glob over it, or its basename. */
+async function excludedPaths(
+	exclude: readonly string[],
+	root: string,
+	workspaces: readonly Workspace[],
+): Promise<Set<string>> {
+	const excluded = new Set<string>();
+	if (exclude.length === 0) return excluded;
+	const patterns = exclude.map((entry) =>
+		entry.replace(/^\.\//, "").replace(/\/$/, ""),
+	);
+	for (const path of await fg(patterns, {
+		cwd: root,
+		onlyDirectories: true,
+		ignore: ["**/node_modules/**"],
+	}))
+		excluded.add(path);
+	for (const workspace of workspaces)
+		if (
+			patterns.includes(workspace.path) ||
+			patterns.includes(basename(workspace.path))
+		)
+			excluded.add(workspace.path);
+	return excluded;
+}
+
 async function discoverWorkspaces(
 	patterns: string[],
 	root: string,
 	timings: Readonly<Record<string, number>>,
-): Promise<Workspace[]> {
-	const matchLists = [
-		await fg(
-			patterns.map((pattern) => `${pattern.replace(/\/$/, "")}/package.json`),
-			{ cwd: root, ignore: ["**/node_modules/**"] },
-		),
-	];
-
-	const seen = new Set<string>();
-	const candidates: string[] = [];
-	for (const matches of matchLists) {
-		for (const match of matches) {
-			const pkgPath = match.replace("/package.json", "");
-			if (seen.has(pkgPath)) continue;
-			seen.add(pkgPath);
-			try {
-				const pkgJson = JSON.parse(
-					readFileSync(join(root, match), "utf-8"),
-				) as { scripts?: { typecheck?: string } };
-				if (pkgJson.scripts?.typecheck) {
-					candidates.push(pkgPath);
-				}
-			} catch {
-				// Skip invalid package.json files
-			}
-		}
-	}
-
-	const workspaces = await Promise.all(
-		candidates.map(async (path) => {
-			const fileCount = await countTypeScriptFiles(path, root);
-			return { path, fileCount };
-		}),
+	selection: { include?: readonly string[]; exclude?: readonly string[] } = {},
+): Promise<{ workspaces: Workspace[]; problems: IncludeProblem[] }> {
+	const matches = await fg(
+		patterns.map((pattern) => `${pattern.replace(/\/$/, "")}/package.json`),
+		{ cwd: root, ignore: ["**/node_modules/**"] },
 	);
 
-	return sortWorkspacesByExpectedDuration(workspaces, timings);
+	const seen = new Set<string>();
+	const candidates: Workspace[] = [];
+	for (const match of matches) {
+		const pkgPath = match.replace("/package.json", "");
+		if (seen.has(pkgPath)) continue;
+		seen.add(pkgPath);
+		if (hasTypecheckScript(root, pkgPath))
+			candidates.push({ path: pkgPath, fileCount: 0 });
+	}
+
+	// The config's own entries, after discovery: a directory both found and
+	// listed is checked once.
+	const included = await resolveIncludedWorkspaces(
+		selection.include ?? [],
+		root,
+	);
+	for (const workspace of included.workspaces) {
+		if (seen.has(workspace.path)) continue;
+		seen.add(workspace.path);
+		candidates.push(workspace);
+	}
+
+	const excluded = await excludedPaths(
+		selection.exclude ?? [],
+		root,
+		candidates,
+	);
+	const workspaces = await Promise.all(
+		candidates
+			.filter((workspace) => !excluded.has(workspace.path))
+			.map(async (workspace) => ({
+				...workspace,
+				fileCount: await countTypeScriptFiles(workspace.path, root),
+			})),
+	);
+
+	return {
+		workspaces: sortWorkspacesByExpectedDuration(workspaces, timings),
+		problems: included.problems.filter(
+			(problem) => !excluded.has(problem.workspace),
+		),
+	};
 }
 
 function logWorkspaceResult(
@@ -287,6 +422,8 @@ export async function runWorkspaceTypecheck(
 		verbose = true,
 		includeRootConfig = true,
 		only,
+		include,
+		exclude,
 	} = options;
 	const concurrency = options.concurrency ?? defaultTypecheckConcurrency();
 
@@ -299,7 +436,30 @@ export async function runWorkspaceTypecheck(
 	let rootConfig: ConfigTypecheckResult | undefined;
 
 	const timings = await readTypecheckTimings(root);
-	let workspaces = await discoverWorkspaces(patterns, root, timings);
+	const discovered = await discoverWorkspaces(patterns, root, timings, {
+		include,
+		exclude,
+	});
+	let workspaces = discovered.workspaces;
+	// An `include` entry with nothing to check fails like a workspace would,
+	// unless `--only` looks elsewhere.
+	const problemResults: WorkspaceTypecheckResult[] = discovered.problems
+		.filter(
+			(problem) =>
+				!only?.length ||
+				only.some(
+					(name) =>
+						problem.workspace === name || basename(problem.workspace) === name,
+				),
+		)
+		.map((problem) => ({
+			workspace: problem.workspace,
+			duration: 0,
+			success: false,
+			fileCount: 0,
+			errorOutput: problem.message,
+		}));
+	for (const result of problemResults) logWorkspaceResult(result, verbose);
 
 	if (only && only.length > 0) {
 		const { selected, unknown } = selectWorkspaces(workspaces, only);
@@ -332,13 +492,13 @@ export async function runWorkspaceTypecheck(
 			console.log("No workspaces with typecheck script found.");
 		}
 		return {
-			success: rootConfig?.success ?? true,
+			success: (rootConfig?.success ?? true) && problemResults.length === 0,
 			totalDuration: Number(
 				((performance.now() - totalStartTime) / 1000).toFixed(2),
 			),
 			totalFiles: 0,
 			workspaceCount: 0,
-			results: [],
+			results: problemResults,
 			...(rootConfig ? { rootConfig } : {}),
 		};
 	}
@@ -367,8 +527,7 @@ export async function runWorkspaceTypecheck(
 		while (running.size >= concurrency) await Promise.race(running);
 		const workspace = workspaces[i];
 		if (!workspace) continue;
-		const { path, fileCount } = workspace;
-		const promise = runSingleTypecheck(path, fileCount, root, verbose).then(
+		const promise = runSingleTypecheck(workspace, root, verbose).then(
 			(result) => {
 				results[i] = result;
 				running.delete(promise);
@@ -391,6 +550,7 @@ export async function runWorkspaceTypecheck(
 		((performance.now() - totalStartTime) / 1000).toFixed(2),
 	);
 	const totalFiles = workspaces.reduce((sum, w) => sum + w.fileCount, 0);
+	results.push(...problemResults);
 	const success =
 		results.every((r) => r.success) && (rootConfig?.success ?? true);
 

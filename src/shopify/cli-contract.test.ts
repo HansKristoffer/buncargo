@@ -83,6 +83,43 @@ describe("Shopify captures under a terminal", () => {
 	});
 });
 
+/**
+ * The same, in a pane narrower than the tunnel URL: Ink wraps the dev
+ * session's log lines itself, with hard newlines and the time and source
+ * columns repeated as padding, so the URL arrives in pieces. Always runs.
+ */
+describe("Shopify captures in a narrow pane", () => {
+	const TUNNEL =
+		"https://manufacturing-analytical-specifications-hamburg.trycloudflare.com";
+	const dim = (text: string) => `\u001b[2m${text}\u001b[22m`;
+	const raw = [
+		`${dim("12:34:56")} │ \u001b[33mapp-preferences\u001b[39m │ Using URL: https://manufacturing-analyt\r\n`,
+		`         │                 │ ical-specifications-hamburg.trycloudflare\r\n`,
+		`         │                 │ .com\r\n`,
+		`${dim("12:34:56")} │ \u001b[33mapp-proxy\u001b[39m       │ Using URL: https://manufacturing-analytica\r\n`,
+		`         │                 │ l-specifications-hamburg.trycloudflare.com/api/\r\n`,
+		`         │                 │ proxy\r\n`,
+		// The footer redrawn in place.
+		`\u001b[2K\u001b[1A\u001b[2K\u001b[G${dim("(p) Preview in your browser · (q) Quit")}`,
+		`\u001b[2K\u001b[1A\u001b[2K\u001b[G✅ Ready, watching for changes in your app\r\n`,
+	].join("");
+
+	for (const size of [1, 7, 37, raw.length]) {
+		it(`reads the whole tunnel URL in ${size}-byte chunks, and nothing cut off`, () => {
+			const scanner = createOutputCaptureScanner(SHOPIFY_CAPTURES);
+			const found = [];
+			for (let index = 0; index < raw.length; index += size)
+				found.push(...scanner.push(raw.slice(index, index + size)));
+			expect(
+				found
+					.filter((entry) => entry.name === "appUrl")
+					.map((entry) => entry.value),
+			).toEqual([TUNNEL]);
+			expect(found.some((entry) => entry.name === "shopifyReady")).toBe(true);
+		});
+	}
+});
+
 describe.skipIf(!enabled)("Shopify CLI contract", () => {
 	for (const version of VERSIONS) {
 		it(`holds for ${version}`, () => {

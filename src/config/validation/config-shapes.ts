@@ -135,6 +135,7 @@ export function validateSupplementShapes(
 				fields(entry, `${path}.`, ["fast"], "boolean");
 			}
 	}
+	validateTypecheckShape(value.typecheck, checks);
 	for (const kind of ["tasks", "profiles"] as const) {
 		const entries = value[kind];
 		if (entries === undefined || !record(entries, kind)) continue;
@@ -207,5 +208,40 @@ export function validateSupplementShapes(
 				fields(option, "options.envFile.", ["values"], "function");
 			}
 		}
+	}
+}
+
+/**
+ * `typecheck`: lists of paths inside the root. Shared with `buncargo
+ * typecheck`, which reads only this key of the config rather than building a
+ * whole dev environment.
+ */
+export function validateTypecheckShape(
+	value: unknown,
+	checks: ShapeChecks,
+): void {
+	const { errors, record, strings } = checks;
+	if (value === undefined || !record(value, "typecheck")) return;
+	for (const key of Object.keys(value))
+		if (key !== "include" && key !== "exclude")
+			errors.push(`typecheck.${key} is not an option (include, exclude)`);
+	for (const key of ["include", "exclude"] as const) {
+		const entries = value[key];
+		if (entries === undefined) continue;
+		if (!strings(entries)) {
+			errors.push(
+				`typecheck.${key} must be an array of paths or globs relative to the root`,
+			);
+			continue;
+		}
+		for (const entry of entries)
+			if (
+				entry.startsWith("/") ||
+				/^[A-Za-z]:[\\/]/.test(entry) ||
+				entry.split(/[\\/]/).includes("..")
+			)
+				errors.push(
+					`typecheck.${key}: "${entry}" must be relative to the root and stay inside it`,
+				);
 	}
 }

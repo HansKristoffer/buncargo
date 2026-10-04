@@ -103,6 +103,17 @@ Without a terminal, `dev --reset` (which deletes the checkout's volumes) and `de
 
 `buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own - that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and 2 in CI; override with `--concurrency=N` or `BUNCARGO_TYPECHECK_CONCURRENCY`. `--only=platform` (path or basename) checks one workspace. The config run generates `.buncargo/config-typecheck.tsconfig.json` and records durations in `.buncargo/typecheck-timings.json`; keep `.buncargo/` in `.gitignore`.
 
+Workspaces are discovered from the root `package.json` `workspaces` (else `apps/*`, `packages/*`, `modules`), keeping those whose `package.json` has a `typecheck` script. `typecheck` in `dev.config.ts` changes that set:
+
+```typescript
+typecheck: {
+	include: ["scripts", "tools/*"], // checked beside the discovered workspaces
+	exclude: ["legacy", "packages/old-*"], // left out: path, glob or basename
+},
+```
+
+`include` takes directories relative to the root, globs allowed: a root `scripts/` folder, a package outside `workspaces`. Each runs its own `typecheck` script when its `package.json` has one, else `tsc --noEmit -p tsconfig.json` with the project's TypeScript. An entry that matches no directory, or a directory with neither a script nor a `tsconfig.json`, fails the typecheck instead of being skipped. `exclude` removes workspaces, discovered or included, by path, glob or basename (like `--only`). Both are validated with the config; absolute paths and paths leaving the root are rejected. `buncargo typecheck` reads only this key of the config module, without building an environment; a config that fails to import is a warning there, since its own typecheck reports the problem.
+
 ## Execute with the checkout environment
 
 Use `exec` for maintenance scripts and tooling that need the checkout's allocated
@@ -267,11 +278,13 @@ generatedFiles: [{
 
 `captures` read an app's stdout and stderr, with colour codes and box-drawing characters stripped and only complete lines matched. In the TUI every app runs under its own pseudo-terminal; a hyperlink is read as its target and a cursor jump as a line break, so URLs inside a full-screen app's links are captured too. A stream-mode attached app runs under `script` so it keeps its TTY while its output is read. A `publicUrl` capture becomes `publicUrls.<app>` and `<APP>_PUBLIC_URL`, exactly like a tunnel URL, normalized to its origin. A `value` capture becomes `captured.<name>` in hooks, `envVars`, generated files and `buncargo env --get captured.<name>`. An `event` capture only fires `onCapture`, which every kind also fires. A capture's `label` shows the value in `buncargo env`, `buncargo url` / `open`, the run registry and BuncargoBar, and its `env` sets that env var for every process, beneath the config's own `env`. So `stripe listen` needs no integration to put its webhook secret in `STRIPE_WEBHOOK_SECRET`. A value is reported when it appears and whenever it changes. When one changes, generated files re-render, and apps whose `restartOn` names it restart with fresh env.
 
+A URL wider than the app's terminal is wrapped by the app itself (Ink, which Shopify CLI draws with, inserts hard newlines at the pane's width), so the scanner joins a row back onto a line that ends in a URL when the row continues it: a single token of URL characters, padding and frame aside, or the first token when the URL above cannot be complete without it. A URL counts as complete when its host is `localhost`, an IP, or a dotted name with a plausible TLD that does not stop part-way through a known tunnel domain (`https://a-b.trycloudflare` does). A `publicUrl` capture only ever takes a complete URL; a URL ending the newest line that cannot be complete waits for the next row; and a later, longer match replaces one that looked complete too early.
+
 `generatedFiles` render before servers start (render a placeholder for what is not known yet) and again when a capture, a tunnel URL or a port changes. They are written atomically, and not at all when the content is unchanged, so watchers stay quiet. `buncargo generate` renders them once without starting anything; it uses a live run's captures, or what the environment hands it in CI (`BASE_URL=https://… bunx buncargo generate`). `setup` and `doctor` warn about a `gitignore: true` file that git does not ignore.
 
 ## Exclusive leases
 
-`exclusive: "shopify-app:<client_id>"` marks a resource only one run on the machine may use at a time: one Shopify dev app, whose URL is rewritten by whoever ran `app dev` last; one Stripe webhook forwarder; one ngrok domain. The lease is taken before the app spawns and dropped when the run exits, or crashes. A second run is refused with the project, worktree and branch holding it. With `--takeover` (or `y` at the prompt), buncargo stops the holder's app and takes the lease. `buncargo runs` and BuncargoBar list who holds what.
+`exclusive: "shopify-app:<client_id>"` marks a resource only one run on the machine may use at a time: one Shopify dev app, whose URL is rewritten by whoever ran `app dev` last; one Stripe webhook forwarder; one ngrok domain. The lease is taken before the app spawns and dropped when the run exits, or crashes. With `--takeover` (or `y` at the prompt), buncargo stops the holder's app and takes the lease. Otherwise a second run names the holder (project, worktree, branch, pid), its checkout path and since when it has held the lease, and the two ways to get it: `buncargo dev --takeover`, or ending that run (`buncargo stop --all --root <checkout>`). What it does next depends on the app: an `essential: false` app, like the Shopify CLI, is skipped and the rest of the run starts, listed as `Skipped (lease held by another run)` in the summary and repeated in the TUI's Overview, where the scrollback is out of sight; an essential app refuses the run. In a terminal it asks first, and a bare Enter means "skip" or "cancel" respectively. A run left with nothing to start fails with the same explanation. `buncargo runs` and BuncargoBar list who holds what.
 
 ## Container runtime
 
@@ -1077,6 +1090,7 @@ The configuration reference covers the main public options; `src/types/all-types
 | `profiles` | `Record<string, { apps, description? }>` | `{}` | App selections for `dev --profile`; `default` is used by a bare `dev` |
 | `integrations` | `BuncargoIntegration[]` | `[]` | `shopify()`, `expo()`, …; applied in order before validation |
 | `generatedFiles` | `{ path, render(ctx), gitignore? }[]` | `[]` | Files rendered from ports, URLs and captures. See [captures](#captured-output-and-generated-files) |
+| `typecheck` | `{ include?: string[], exclude?: string[] }` | `undefined` | Directories `buncargo typecheck` checks beyond discovery, and workspaces it leaves out. See [typecheck](#cli-reference) |
 | `unsetEnv` | `string[]` | `[]` | Variables removed from every process buncargo starts (apps, tasks, `exec`, migrations, the seed, prisma), e.g. those tools use to detect an agent's shell. buncargo's own environment is unchanged |
 
 Use the top-level `env` overlay for shared values (rewritten `WEB_URL`, `VITE_*`), and `apps.<name>.envVars` for app-only values.

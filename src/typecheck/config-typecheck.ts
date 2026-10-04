@@ -1,10 +1,9 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import fg from "fast-glob";
+import { join } from "node:path";
 import { execAsync } from "../core/process";
 import { getProjectStateDir, STATE_DIRNAME } from "../core/state-paths";
 import { CONFIG_FILES } from "../loader";
-import { workspacePatterns } from "./workspaces";
+import { resolveProjectTsc } from "./project-tsc";
 
 /**
  * Result of typechecking the root dev config.
@@ -50,40 +49,6 @@ function findRootConfigFile(root: string): string | null {
 		if (existsSync(join(root, file))) return file;
 	}
 	return null;
-}
-
-/**
- * Prefer the project's own `tsc`. `bunx tsc` with no local TypeScript downloads
- * whatever is latest on npm (today, 7.x) and that compiler rejects `process`
- * unless `types` names `node` — which is how a perfectly valid `dev.config.ts`
- * failed the first time this check ran in a monorepo that only installs
- * TypeScript inside workspaces.
- */
-async function resolveProjectTsc(root: string): Promise<string> {
-	let current = root;
-	while (true) {
-		const candidate = join(current, "node_modules", "typescript", "bin", "tsc");
-		if (existsSync(candidate)) return candidate;
-		const parent = dirname(current);
-		if (parent === current) break;
-		current = parent;
-	}
-
-	const workspaceCopies = await fg(
-		workspacePatterns(root).map(
-			(pattern) => `${pattern}/node_modules/typescript/bin/tsc`,
-		),
-		{
-			cwd: root,
-			absolute: true,
-			ignore: ["**/node_modules/**/node_modules/**"],
-		},
-	);
-	if (workspaceCopies[0]) return workspaceCopies[0];
-
-	throw new Error(
-		"No project TypeScript compiler found. Install typescript in the root or a declared workspace to check the dev config.",
-	);
 }
 
 /**
