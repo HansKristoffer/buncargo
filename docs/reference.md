@@ -563,7 +563,9 @@ Drag in the main pane to select text: it is highlighted, and releasing the
 button copies it to the clipboard (`pbcopy`, `wl-copy` or `xclip`; over SSH or
 without one, OSC 52 through the terminal). The selection stays inside the
 pane, so no sidebar text comes along, and a line cut off with `…` copies in
-full when the selection reaches the pane's edge. This is the TUI's own
+full when the selection reaches the pane's edge. A line an app wrapped to fit
+the pane (Shopify CLI does) copies as one line, so a long URL comes out whole.
+This is the TUI's own
 selection, because the terminal cannot select while the TUI reports the mouse;
 Option-drag (iTerm, Terminal) or Shift-drag (most others) still selects
 natively.

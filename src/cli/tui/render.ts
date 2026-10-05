@@ -121,6 +121,45 @@ export function overviewPlainLine(line: OutputLine, nameWidth: number): string {
 	return `${line.time.toTimeString().slice(0, 8)} ${line.app.padEnd(nameWidth)}  ${line.text}`;
 }
 
+// A box's border and padding: what an app's wrapper keeps clear of the edge.
+const ROW_START = /^[\s│┃|]*/;
+const ROW_END = /[\s│┃|]*$/;
+const EDGE_INSET = 3;
+// Longer first words are counted as this long: a long word after a line that
+// ends short of the edge is more often a new line (a timestamp, a path) than
+// a wrap, and a line break kept is safer than two lines merged.
+const MAX_WORD = 12;
+
+/**
+ * How an app row continues on the next one, if the app wrapped it there
+ * itself: Ink and other wrappers break with real newlines, which the terminal
+ * cannot tell from the app's own. A greedy wrapper breaks only when the next
+ * word does not fit, so a row continues when its text, a space and the next
+ * row's first word would not fit the pane (less a border and padding). A word
+ * wider than a row, like a URL, was cut and continues without the space. The
+ * terminal cannot say which apps wrap themselves, so this is a heuristic: a
+ * line that really ends near the edge can still be joined to the next.
+ */
+export function wrapJoint(
+	row: string,
+	next: string,
+	cols: number,
+): "" | " " | undefined {
+	const text = row.replace(ROW_END, "");
+	const lastWord = /\S*$/.exec(text)?.[0] ?? "";
+	const firstWord = /^\S*/.exec(next.replace(ROW_START, ""))?.[0] ?? "";
+	if (!lastWord || !firstWord) return undefined;
+	const edge = cols - EDGE_INSET;
+	const word = Math.min(Bun.stringWidth(firstWord), MAX_WORD);
+	if (Bun.stringWidth(text) + 1 + word <= edge) return undefined;
+	return Bun.stringWidth(lastWord + firstWord) > edge ? "" : " ";
+}
+
+/** `row` and `next` as one line, joined by `joint` (see `wrapJoint`). */
+export function joinRows(row: string, joint: string, next: string): string {
+	return row.replace(ROW_END, "") + joint + next.replace(ROW_START, "");
+}
+
 /**
  * A rendered row with columns `[from, to)` in reverse video (the selection).
  * The row keeps its own styles, concealed text included; reverse is laid

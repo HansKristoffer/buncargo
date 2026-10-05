@@ -9,11 +9,13 @@ import { copyToClipboard } from "./clipboard";
 import {
 	fit,
 	highlightColumns,
+	joinRows,
 	overviewPlainLine,
 	renderFooter,
 	renderOverview,
 	renderScreenRow,
 	renderSidebar,
+	wrapJoint,
 } from "./render";
 
 /**
@@ -610,7 +612,12 @@ export class RunTui {
 		const buffer = app
 			? this.options.output.screens.get(app)?.term.buffer.active
 			: undefined;
+		// The app's terminal is the pane's size: the width it wraps at.
+		const { cols } = this.paneSize();
 		let text = "";
+		// How the row being added continues the one above, when the app
+		// wrapped it there with a real newline.
+		let joint: string | undefined;
 		for (let row = range.start.row; row <= range.end.row; row++) {
 			// Whole lines, not what fits on screen: a cut-off line copies in full.
 			const full = app
@@ -621,20 +628,29 @@ export class RunTui {
 			const from = row === range.start.row ? range.start.col : 0;
 			// Ending at the pane's edge (where a cut-off line shows "…") means
 			// the rest of the line too.
-			const toEdge = range.end.col >= this.paneSize().cols - 1;
+			const toEdge = range.end.col >= cols - 1;
 			const piece =
 				row === range.end.row && !toEdge
 					? Bun.sliceAnsi(full, from, range.end.col + 1)
 					: Bun.sliceAnsi(full, from);
-			const wraps = app && buffer?.getLine(row + 1)?.isWrapped;
-			text += row === range.end.row || wraps ? piece : `${piece.trimEnd()}\n`;
+			text = joint === undefined ? text + piece : joinRows(text, joint, piece);
+			joint = undefined;
+			if (row === range.end.row) break;
+
+			// A row the terminal wrapped continues as it is. A line it had to
+			// wrap came from an app that does not wrap its own output.
+			const next = buffer?.getLine(row + 1);
+			if (next?.isWrapped) continue;
+			if (next && !buffer?.getLine(row)?.isWrapped)
+				joint = wrapJoint(full, next.translateToString(true), cols);
+			if (joint === undefined) text = `${text.trimEnd()}\n`;
 		}
 		text = text.trimEnd();
 		if (!text) return;
 		const where = this.options.copy
 			? this.options.copy(text)
 			: copyToClipboard(text, (sequence) => this.write(sequence));
-		const count = range.end.row - range.start.row + 1;
+		const count = text.split("\n").length;
 		this.message = `Copied ${count === 1 ? `${text.length} characters` : `${count} lines`}${where === "terminal" ? " (through the terminal)" : ""}`;
 	}
 
