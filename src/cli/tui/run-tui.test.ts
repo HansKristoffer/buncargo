@@ -389,6 +389,89 @@ describe("RunTui selection", () => {
 		}
 	});
 
+	it("copies lines the app wrapped itself as one line each", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		try {
+			tui.start();
+			const screen = output.screen("api");
+			// Wrapped the way Ink wraps at the 61-column pane, one column of
+			// padding on each side.
+			const rows = [
+				" Your app is running. Press p to open the preview in the",
+				" browser.",
+				" Preview URL: https://admin.shopify.com/store/s/apps/bb99c65",
+				" 43038?dev-console=show",
+				" GraphiQL URL: http://localhost:3457/graphiql",
+			];
+			await new Promise<void>((resolve) =>
+				screen.term.write(`${rows.join("\r\n")}\r\n`, resolve),
+			);
+			terminal.stdin.write(press(3, 4) + release(3, 4)); // select api
+			terminal.stdin.write(press(20, 2) + drag(80, 6) + release(80, 6));
+			await Bun.sleep(80);
+			expect(copied).toEqual([
+				[
+					" Your app is running. Press p to open the preview in the browser.",
+					" Preview URL: https://admin.shopify.com/store/s/apps/bb99c6543038?dev-console=show",
+					" GraphiQL URL: http://localhost:3457/graphiql",
+				].join("\n"),
+			]);
+			expect(Bun.stripANSI(terminal.writes.join(""))).toContain(
+				"Copied 3 lines",
+			);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("keeps the lines of an app the terminal had to wrap", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		try {
+			tui.start();
+			const screen = output.screen("api");
+			// Wider than the 61-column pane, so the terminal wraps it, and its
+			// last row ends close enough to the edge to look wrapped by the app.
+			const long = `request ${"x".repeat(50)} ${"y".repeat(57)}`;
+			await new Promise<void>((resolve) =>
+				screen.term.write(`${long}\r\ndone\r\n`, resolve),
+			);
+			terminal.stdin.write(press(3, 4) + release(3, 4)); // select api
+			terminal.stdin.write(press(20, 2) + drag(80, 4) + release(80, 4));
+			await Bun.sleep(80);
+			expect(copied).toEqual([`${long}\ndone`]);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("ends a selection where the button is released", async () => {
 		const copied: string[] = [];
 		const terminal = fakeTerminal();

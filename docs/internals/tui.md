@@ -64,3 +64,10 @@ text it was on. It is drawn reversed over the row's own styles (concealed text s
 and on release copies whole lines (`overviewPlainLine`, not the cut-off row) through `clipboard.ts`
 (`pbcopy`/`wl-copy`/`xclip`, else OSC 52; tests inject `copy` so they never touch the real
 clipboard).
+
+Rows the terminal wrapped are joined from xterm's `isWrapped`. Rows an app wrapped itself (Ink
+breaks at the pane's width with real newlines) look like separate lines, so `wrapJoint` guesses
+from widths, and a wrong guess merges two lines. It leans toward keeping a break, and never joins
+after a line the terminal had to wrap, since that app does not wrap its own output. The capture
+scanner's `joinWrappedUrls` is not used here: it joins `http://localhost:3000` and a following
+`ready`, harmless for a capture but corrupting for a copy.
