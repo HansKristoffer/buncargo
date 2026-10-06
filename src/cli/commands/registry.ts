@@ -36,6 +36,12 @@ export const CLI_COMMANDS = [
 		summary: "Run a command with the checkout environment",
 	},
 	{
+		name: "slot",
+		usage: "slot -- <command>",
+		summary:
+			"Run a heavy command in a machine-wide check slot, environment untouched",
+	},
+	{
 		name: "connect",
 		usage: "connect status",
 		summary: "Discover private services through frp",

@@ -63,8 +63,9 @@ hardcode a port. Ask buncargo instead.
   touched and the ones depending on them.
 - Typechecks share a few slots across every checkout on the machine. One that
   says it is waiting for a slot is not stuck; let it wait.
-- Run test suites as \`bunx buncargo exec --slot -- <command>\` so they take
-  a slot too.
+- Run test suites as \`bunx buncargo slot -- <command>\` so they take a slot
+  too. \`slot\` leaves the environment alone; \`exec --slot\` adds the
+  checkout's URLs and secrets.
 
 ## Logs
 

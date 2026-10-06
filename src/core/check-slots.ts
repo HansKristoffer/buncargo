@@ -22,7 +22,7 @@ import { getStateDir } from "./state-paths";
  * reclaimed.
  *
  * The holder exports `BUNCARGO_CHECK_SLOT` to its children, so a command that
- * already holds a slot (`exec --slot -- bun run lint`) never waits on itself
+ * already holds a slot (`slot -- bun run lint`) never waits on itself
  * when it reaches `buncargo typecheck`.
  */
 
