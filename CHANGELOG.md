@@ -1,5 +1,18 @@
 # Changelog
 
+## [12.1.0](https://github.com/HansKristoffer/buncargo/compare/v12.0.0...v12.1.0) (2026-10-06)
+
+
+### Features
+
+* **cli:** project-scoped prune, ci teardown that survives signals, exported stack names ([#87](https://github.com/HansKristoffer/buncargo/issues/87)) ([914e6c5](https://github.com/HansKristoffer/buncargo/commit/914e6c5df61dd71f0ef216ea2dfeeeda8130f6bb))
+* wrapped Shopify tunnel URLs, explained lease skips, typecheck include/exclude ([#83](https://github.com/HansKristoffer/buncargo/issues/83)) ([ecd18fd](https://github.com/HansKristoffer/buncargo/commit/ecd18fd99e0005b045f5d378170ef1ee226ce88c))
+
+
+### Bug Fixes
+
+* **cli:** join app-wrapped rows when copying TUI selections ([#86](https://github.com/HansKristoffer/buncargo/issues/86)) ([c2b6a63](https://github.com/HansKristoffer/buncargo/commit/c2b6a63006e30eaecd183a1bc2992bedb7239a38))
+
 ## [12.0.0](https://github.com/HansKristoffer/buncargo/compare/v11.3.0...v12.0.0) (2026-10-04)
 
 
