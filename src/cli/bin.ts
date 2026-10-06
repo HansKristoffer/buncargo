@@ -36,6 +36,11 @@ async function runCommand(
 				commandArgs,
 			);
 			return;
+		case "slot":
+			process.exitCode = await (await import("./commands/slot")).handleSlot(
+				commandArgs,
+			);
+			return;
 		case "run":
 			process.exitCode = await (await import("./commands/run")).handleRun(
 				commandArgs,

@@ -85,6 +85,7 @@ bunx buncargo setup --agents      # Keep a buncargo block in AGENTS.md
 bunx buncargo ci --migrate --seed -- bun test
 bunx buncargo typecheck
 bunx buncargo typecheck --changed  # What this branch can break
+bunx buncargo slot -- bun test      # A heavy command in a check slot
 bunx buncargo help
 bunx buncargo help agents         # The guide for AI agents working in a checkout
 bunx buncargo version
@@ -104,7 +105,7 @@ Without a terminal, `dev --reset` (which deletes the checkout's volumes) and `de
 
 `buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own - that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and 2 in CI; override with `--concurrency=N` or `BUNCARGO_TYPECHECK_CONCURRENCY`. `--only=platform` (path or basename) checks one workspace. `--changed[=<ref>]` checks only what the branch can break: the workspaces holding files changed since the merge base with `<ref>` (default `origin/HEAD`, then `origin/main`, then `main`), committed, uncommitted, untracked or deleted, plus every workspace that depends on one of them through `package.json`, transitively. A root `package.json`, lockfile, `tsconfig*.json` or `dev.config.ts` among them checks everything, the root config included; otherwise the root config is skipped.
 
-A typecheck holds one of the machine-wide check slots while it runs (`BUNCARGO_CHECK_SLOTS`, default 3, `0` turns the cap off). Coding agents in many worktrees otherwise start several native `tsc` runs at once, each peaking at several GB, and run the machine out of memory. A typecheck that finds every slot taken prints who holds them and waits. A killed holder's slot is reclaimed. `exec --slot` takes a slot for any other heavy command, such as a test suite, and its children see `BUNCARGO_CHECK_SLOT`, so a `buncargo typecheck` inside it does not wait for a second slot. CI takes no slot. The config run generates `.buncargo/config-typecheck.tsconfig.json` and records durations in `.buncargo/typecheck-timings.json`; keep `.buncargo/` in `.gitignore`.
+A typecheck holds one of the machine-wide check slots while it runs (`BUNCARGO_CHECK_SLOTS`, default 3, `0` turns the cap off). Coding agents in many worktrees otherwise start several native `tsc` runs at once, each peaking at several GB, and run the machine out of memory. A typecheck that finds every slot taken prints who holds them and waits. A killed holder's slot is reclaimed. `buncargo slot -- <command>` takes a slot for any other heavy command, such as a test suite, and runs it with the shell's own environment; `exec --slot` does the same with the checkout environment added. Their children see `BUNCARGO_CHECK_SLOT`, so a `buncargo typecheck` inside does not wait for a second slot. CI takes no slot. The config run generates `.buncargo/config-typecheck.tsconfig.json` and records durations in `.buncargo/typecheck-timings.json`; keep `.buncargo/` in `.gitignore`.
 
 Workspaces are discovered from the root `package.json` `workspaces` (else `apps/*`, `packages/*`, `modules`), keeping those whose `package.json` has a `typecheck` script. `typecheck` in `dev.config.ts` changes that set:
 
@@ -134,8 +135,11 @@ repository root. An explicit relative `--cwd` resolves from that root, including
 when the command is launched inside a workspace.
 
 `--slot` runs the command inside one of the machine-wide check slots (see
-[typecheck](#cli-reference)), for test suites and other checks heavy enough to
-crowd out other checkouts: `bunx buncargo exec --slot -- bun test`.
+[typecheck](#cli-reference)), for checks heavy enough to crowd out other
+checkouts that also need the checkout's URLs or secrets. A command that must
+not see them, such as a unit test suite that mocks Redis unless `REDIS_URL` is
+set, takes its slot with `bunx buncargo slot -- bun test` instead, which adds
+nothing to the environment.
 
 The required `--` separates buncargo options from unchanged child arguments.
 Invoke a shell explicitly for shell syntax, for example `-- sh -c 'command1 && command2'`.
@@ -1089,7 +1093,7 @@ Vite is not a dependency of buncargo: the plugin's return type is declared struc
 | `BUNCARGO_INFISICAL_PATH` | Absolute `infisical` binary; skips the PATH lookup |
 | `SECRETS_ENV` | Infisical environment slug when an app's `secrets` scope does not name one (default `dev`) |
 | `BUNCARGO_TYPECHECK_CONCURRENCY` | Max overlapping workspace typecheck processes (positive integer) |
-| `BUNCARGO_CHECK_SLOTS` | Typechecks and `exec --slot` commands that may run at once across every checkout on the machine (default `3`, `0` turns the cap off) |
+| `BUNCARGO_CHECK_SLOTS` | Typechecks, `slot` and `exec --slot` commands that may run at once across every checkout on the machine (default `3`, `0` turns the cap off) |
 | `BUNCARGO_TIMING` | `1` prints a per-phase breakdown of `dev` startup (same as `--timing`) |
 | `CLOUDFLARED_VERSION` | GitHub release tag for the bundled download |
 | `CI` | Skips Docker auto-start; also disables named hosts. Detected from `CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL` |
