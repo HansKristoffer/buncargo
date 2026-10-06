@@ -37,9 +37,11 @@ The sweep and volume pruning live in `container-runtime/` too; see
   `docker compose`, Apple walks the model. Deriving the model separately per backend would let the
   two drift.
 - `resolve.ts` is the precedence: `--runtime`, then `BUNCARGO_CONTAINER_RUNTIME`, then
-  `config.docker.runtime`, then `"docker"`. Only `"auto"` probes; an explicit choice is returned
-  even when its daemon is down, so the failure surfaces as that runtime's own remediation instead
-  of a silent switch to the other one. The two keep their volumes in different places.
+  `config.docker.runtime`, then `"docker"`. An explicit choice is returned even when its daemon is
+  down, so the failure surfaces as that runtime's own remediation instead of a silent switch to the
+  other one. The two keep their volumes in different places. For the same reason `"auto"` asks
+  whether Apple is *installed*, not whether it is running: its system service is down after every
+  reboot until something starts it, and a running-check sent those runs to Docker's empty volumes.
 - There is one `binary` override for two backends, so it only means anything once a runtime is
   chosen: `resolveContainerRuntimeBinary` returns nothing under `"auto"`, config validation rejects
   the pairing outright, and `availableContainerRuntimes` applies the path only to the runtime named
@@ -58,8 +60,12 @@ The sweep and volume pruning live in `container-runtime/` too; see
 ## Readiness and reuse
 
 - `readiness.ts` and `health-checks.ts` are the polling loop and the built-in probes, both driven
-  through the adapter. `pg_isready` / `redis-cli` go through `adapter.execInService`; `http` /
-  `tcp` hit the published host port and are runtime-independent by construction.
+  through the adapter. `pg_isready` / `redis-cli` go through `adapter.execInService`; `http` hits
+  the published host port. `tcp` does too unless the adapter has `probeServicePort`: Apple's port
+  forwarder accepts a connection on the published port whether or not anything listens inside, and
+  holds it open, so a host-side connect passed the moment the VM booted. Apple answers from the
+  container's own address instead. `http` needs no such help, since the forwarder resets the
+  connection once the request is written.
 - `diagnoseService` is why a dead container fails in about two seconds instead of after the full
   readiness timeout. `readiness.ts` calls it every eighth poll, and only a state in
   `isTerminalContainerState` aborts, matched positively so a state neither backend has shown us yet
@@ -116,6 +122,11 @@ command prefix.
   typesense preset writes `command` as a string, and unsplit it printed its usage and exited
   instead of starting. The split is `splitCommandLine`, which honors quotes and backslashes;
   splitting on whitespace alone turns `sh -c "echo hi"` into four broken tokens.
+- Compose's list forms of `labels` and `environment` are normalized like the map forms. The list
+  form of `labels` is the one a typed config can write, and it carries buncargo's own labels too:
+  dropping it left a container that `down`, `ls` and the sweep could not find by project.
+- Container names are capped at 63 characters, the most Apple accepts, ending in a hash of the full
+  name. Volume names are not: Apple takes them longer, and renaming one would hide its data.
 - `container_name` is in the *warned* set, not the translated one. The container is always
   `<project>-<service>` so exec, reuse and teardown agree on one name; honoring a user-set value
   would mean threading a second name through all three, for a key buncargo's own presets never
@@ -123,6 +134,17 @@ command prefix.
 - Each container carries a `buncargo.config-hash` label, so `up` can tell "mine and still matching"
   (start it) from "config changed underneath it" (recreate) rather than throwing away a warm data
   volume on every run.
+- New named volumes are created at 256G. Apple formats each as a sparse ext4 image, and formatting
+  its 512G default took about a second against ~0.4s, paid by every new checkout's database. The
+  CLI cannot grow one later.
+- The apiserver serializes VM creation and volume formatting: three `run`s in parallel took as long
+  as in sequence. Do not parallelize `up` for speed.
+- A verbose `up` pulls a missing image itself, streamed, before `run`: inside `run` the pull is
+  captured and silent for minutes. The pull names the platform, because `image pull` without one
+  fetches every platform the image publishes.
+- Recreating a running container stops it before `delete --force`, which kills. `run` is retried
+  once when Apple reports the container it is creating as not found, a transient seen after a
+  delete of the same name.
 - `cli.ts` is the only place the binary is executed, and is injectable so `lifecycle.ts` and
   `status.ts` are tested without the runtime installed.
 - `status.ts` reads `container ls --all --format json` once and filters client-side: Apple's `ls`

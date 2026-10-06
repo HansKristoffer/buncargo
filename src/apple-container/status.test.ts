@@ -6,6 +6,7 @@ import {
 	formatPublishedPorts,
 	listAppleBuncargoContainers,
 	parseContainerRecords,
+	probeAppleServicePort,
 } from "./status";
 
 const LS_JSON = JSON.stringify([
@@ -167,5 +168,114 @@ describe("findAppleContainerOnPort", () => {
 	it("ignores the container port and unknown ports", () => {
 		expect(findAppleContainerOnPort(stubCli(LS_JSON), 5432)).toBeUndefined();
 		expect(findAppleContainerOnPort(stubCli(LS_JSON), 9999)).toBeUndefined();
+	});
+});
+
+/** `ls` output in the 1.3 shape: state, networks and `proto` under their keys. */
+function liveRecord(options: {
+	state?: string;
+	address?: string;
+	ports: Record<string, unknown>[];
+}): string {
+	return JSON.stringify([
+		{
+			status: {
+				state: options.state ?? "running",
+				networks: options.address
+					? [{ ipv4Address: `${options.address}/24`, network: "default" }]
+					: [],
+			},
+			configuration: {
+				id: "gey-main-api",
+				labels: { "buncargo.project": "gey-main" },
+				publishedPorts: options.ports,
+			},
+		},
+	]);
+}
+
+describe("the 1.3 ls shape", () => {
+	it("reads the container address, proto and port ranges", () => {
+		const [record] = parseContainerRecords(
+			liveRecord({
+				address: "192.168.64.5",
+				ports: [
+					{ hostPort: 7000, containerPort: 7000, proto: "udp", count: 3 },
+				],
+			}),
+		);
+		expect(record?.address).toBe("192.168.64.5");
+		expect(record?.ports).toEqual([
+			{ hostPort: 7000, containerPort: 7000, protocol: "udp", count: 3 },
+		]);
+	});
+
+	it("counts every port of a published range as owned", () => {
+		const cli = stubCli(
+			liveRecord({
+				address: "192.168.64.5",
+				ports: [{ hostPort: 7000, containerPort: 7000, count: 3 }],
+			}),
+		);
+		expect(findAppleContainerOnPort(cli, 7002)?.id).toBe("gey-main-api");
+		expect(findAppleContainerOnPort(cli, 7003)).toBeUndefined();
+	});
+});
+
+describe("probeAppleServicePort", () => {
+	const request = {
+		projectName: "gey-main",
+		serviceName: "api",
+		hostPort: 18080,
+	};
+
+	it("connects to the container port at the container's address", async () => {
+		// A local listener stands in for the service inside the container.
+		const server = Bun.listen({
+			hostname: "127.0.0.1",
+			port: 0,
+			socket: { data() {} },
+		});
+		try {
+			const cli = stubCli(
+				liveRecord({
+					address: "127.0.0.1",
+					ports: [{ hostPort: 18080, containerPort: server.port }],
+				}),
+			);
+			expect(await probeAppleServicePort(cli, request)).toBe(true);
+		} finally {
+			server.stop(true);
+		}
+	});
+
+	it("is false when nothing listens behind the published port", async () => {
+		const server = Bun.listen({
+			hostname: "127.0.0.1",
+			port: 0,
+			socket: { data() {} },
+		});
+		const port = server.port;
+		server.stop(true);
+		const cli = stubCli(
+			liveRecord({
+				address: "127.0.0.1",
+				ports: [{ hostPort: 18080, containerPort: port }],
+			}),
+		);
+		expect(await probeAppleServicePort(cli, request)).toBe(false);
+	});
+
+	it("is false for a stopped container or one with no address", async () => {
+		const ports = [{ hostPort: 18080, containerPort: 1 }];
+		expect(
+			await probeAppleServicePort(
+				stubCli(liveRecord({ state: "stopped", address: "127.0.0.1", ports })),
+				request,
+			),
+		).toBe(false);
+		expect(
+			await probeAppleServicePort(stubCli(liveRecord({ ports })), request),
+		).toBe(false);
 	});
 });

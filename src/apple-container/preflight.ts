@@ -4,7 +4,11 @@ import { abortableSleep, remainingTime } from "../core/deadline";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWait } from "../core/style";
 import type { AppleContainerCli } from "./cli";
-import { APPLE_CONTAINER_COMMAND, runAppleAsync } from "./cli";
+import {
+	APPLE_CONTAINER_COMMAND,
+	createAppleContainerCli,
+	runAppleAsync,
+} from "./cli";
 
 const DISPLAY_NAME = "Apple container";
 
@@ -26,6 +30,13 @@ export function unsupportedPlatformMessage(): string {
 
 function installMessage(): string {
 	return `Install it from https://github.com/apple/container, or point docker.binary / BUNCARGO_CONTAINER_BINARY at the "${APPLE_CONTAINER_COMMAND}" binary.`;
+}
+
+/** Whether this machine can run Apple's runtime and has it installed. */
+export function isAppleContainerInstalled(
+	cli: AppleContainerCli = createAppleContainerCli(),
+): boolean {
+	return isAppleContainerSupported() && cli.found;
 }
 
 export function isAppleContainerSystemRunning(cli: AppleContainerCli): boolean {
@@ -74,7 +85,7 @@ export async function ensureAppleContainerRunning(
 		);
 	}
 
-	const remediation = `Run \`${APPLE_CONTAINER_COMMAND} system start\` and try again.`;
+	const remediation = `Run \`${APPLE_CONTAINER_COMMAND} system start\` and try again, or set docker.runtime: "docker".`;
 	if (!autoStart) {
 		throw new ContainerRuntimeUnavailableError(
 			"apple",
@@ -93,6 +104,15 @@ export async function ensureAppleContainerRunning(
 		["system", "start", "--timeout", "30"],
 		{ signal, timeoutMs: Math.min(30000, remainingTime(deadline)) },
 	);
+	// A start that failed (on a machine never set up, it stops at the kernel
+	// prompt) will not come up by waiting: say so now, not after the timeout.
+	if (!started.ok && !(await running())) {
+		throw new ContainerRuntimeUnavailableError(
+			"apple",
+			DISPLAY_NAME,
+			`${remediation}${started.stderr.trim() ? ` Last error: ${started.stderr.trim()}` : ""}`,
+		);
+	}
 
 	while (remainingTime(deadline) > 0) {
 		if (await running()) {

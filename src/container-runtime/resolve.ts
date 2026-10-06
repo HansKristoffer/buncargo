@@ -1,4 +1,7 @@
-import { appleContainerRuntimeAdapter } from "../apple-container";
+import {
+	appleContainerRuntimeAdapter,
+	isAppleContainerInstalled,
+} from "../apple-container";
 import {
 	containerBinaryOverride,
 	containerRuntimeOverride,
@@ -21,6 +24,8 @@ export interface ResolveContainerRuntimeOptions {
 	flag?: string;
 	docker?: DockerComposeGenerationOptions;
 	env?: NodeJS.ProcessEnv;
+	/** Whether Apple `container` is installed. Injected by tests. */
+	appleInstalled?: () => boolean;
 }
 
 function assertSelection(
@@ -113,9 +118,14 @@ export function getContainerRuntimeAdapter(
 /**
  * Resolve the selection to a concrete backend.
  *
- * Only `"auto"` probes: an explicit choice is returned even when its daemon is
- * down, so the failure surfaces later as that runtime's own remediation
- * message instead of a silent fallback to the other one.
+ * An explicit choice is returned even when its daemon is down, so the failure
+ * surfaces later as that runtime's own remediation message instead of a
+ * silent fallback to the other one.
+ *
+ * `"auto"` asks whether Apple is installed, not whether it is running. Its
+ * system service is down after every reboot until something starts it, and
+ * picking Docker then would move the project onto Docker's volumes, away from
+ * its data. The run starts Apple's service instead.
  */
 export function resolveContainerRuntime(
 	options: ResolveContainerRuntimeOptions = {},
@@ -129,8 +139,8 @@ export function resolveContainerRuntime(
 
 	// Probed on PATH: `binary` is undefined here by construction, so neither
 	// runtime is ever probed by running the other one's binary.
-	const apple = getContainerRuntimeAdapter("apple");
-	return apple.isAvailable() ? apple : getContainerRuntimeAdapter("docker");
+	const appleInstalled = options.appleInstalled ?? isAppleContainerInstalled;
+	return getContainerRuntimeAdapter(appleInstalled() ? "apple" : "docker");
 }
 
 /**

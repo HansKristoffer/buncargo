@@ -300,11 +300,11 @@ export default defineDevConfig({
 });
 ```
 
-The selection is read from `--runtime`, then `BUNCARGO_CONTAINER_RUNTIME`, then `docker.runtime`, then the `"docker"` default. `"auto"` uses Apple `container` when its system service answers and falls back to Docker otherwise; an explicit `"apple"` fails with instructions rather than silently switching, because the two runtimes keep their volumes in different places.
+The selection is read from `--runtime`, then `BUNCARGO_CONTAINER_RUNTIME`, then `docker.runtime`, then the `"docker"` default. `"auto"` uses Apple `container` whenever it is installed on a supported Mac, and Docker otherwise. It does not switch to Docker just because Apple's system service is stopped, which it is after every reboot: the two runtimes keep their volumes in different places, so a switch would start the project on an empty database. Buncargo starts the service instead. An explicit `"apple"` likewise fails with instructions rather than switching.
 
 Both backends use `dev.config.ts`, the generated Compose model, inspection commands and named `.localhost` URLs. Apple's CLI has no compose support, so buncargo translates the generated service model into one `container run` per service, matching on the `buncargo.*` labels both backends write.
 
-**Requirements.** macOS 26+ on Apple silicon, with `container system start` having been run once (the first run installs a kernel and needs a terminal, so buncargo will not do it for you).
+**Requirements.** macOS 26+ on Apple silicon, with `container system start` having been run once (the first run installs a kernel and needs a terminal, so buncargo will not do it for you). After that, buncargo starts the system service itself when a run needs it, except under CI.
 
 **Known gaps** compared with the Docker backend:
 
@@ -314,6 +314,10 @@ Both backends use `dev.config.ts`, the generated Compose model, inspection comma
 - Any other compose key that cannot be translated is listed in a warning rather than silently ignored.
 - **No DNS between containers.** Every Apple container joins one builtin `default` network (`192.168.64.0/24`), so containers can already reach each other by IP. Resolving each other by *name* needs `container system dns create`, which must run as an administrator; buncargo keeps a single deliberate `sudo` seam for the hosts daemon and does not add a second one. Note also that a container's hostname is `<project>-<service>` (for example `myapp-main-postgres`), not the compose service name. Apps on the host are unaffected - they reach services on `localhost:<port>` either way, which is how buncargo wires them already.
 - Bind-mounting a host directory into an image that `chown`s it fails on virtiofs. The built-in presets all use named volumes, which are unaffected.
+- New named volumes are created with a 256 GB size limit (sparse, so they take only the space used). Apple cannot grow a volume afterwards. Volumes created before this limit keep their size.
+- Published ports listen on IPv4 only. Clients that connect to `localhost` fall back from `::1` to `127.0.0.1` (Bun, Node and Python all do).
+- A container name longer than 63 characters, the most Apple accepts, is shortened and ends in a hash of the full name.
+- Memory and CPU default to Apple's 1 GiB and 4 CPUs per container. Set `mem_limit` and `cpus` on a service that needs more.
 
 `service.postgres()` needs no special handling: Apple's named volumes are formatted filesystems, so a fresh one already contains `lost+found` and `initdb` refuses to use it as a data directory, and on this runtime the preset points `PGDATA` at a subdirectory of the mount for you. Docker's named volumes start empty and keep the mount root, so an existing project's data stays where it is.
 

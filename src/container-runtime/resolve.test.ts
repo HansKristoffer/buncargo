@@ -71,18 +71,26 @@ describe("resolveContainerRuntime", () => {
 		);
 	});
 
-	it("falls back to docker under auto when Apple is unavailable", () => {
-		// No `container` binary is installed in CI, and the adapter's probe is
-		// the only thing `auto` consults.
-		const adapter = resolveContainerRuntime({
-			flag: "auto",
-			env: {},
-			docker: { binary: undefined },
-		});
-		expect(["docker", "apple"]).toContain(adapter.name);
-		if (!adapter.isAvailable()) {
-			expect(adapter.name).toBe("docker");
-		}
+	it("picks Apple under auto whenever it is installed, running or not", () => {
+		// After a reboot Apple's service is down; picking Docker then would
+		// move the project onto Docker's volumes.
+		expect(
+			resolveContainerRuntime({
+				flag: "auto",
+				env: {},
+				appleInstalled: () => true,
+			}).name,
+		).toBe("apple");
+	});
+
+	it("picks docker under auto when Apple is not installed", () => {
+		expect(
+			resolveContainerRuntime({
+				flag: "auto",
+				env: {},
+				appleInstalled: () => false,
+			}).name,
+		).toBe("docker");
 	});
 });
 

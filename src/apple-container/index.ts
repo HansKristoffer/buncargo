@@ -13,6 +13,7 @@ export { appleDown, appleStopByIds, appleUp } from "./lifecycle";
 export {
 	type EnsureAppleContainerOptions,
 	ensureAppleContainerRunning,
+	isAppleContainerInstalled,
 	isAppleContainerSupported,
 	isAppleContainerSystemRunning,
 } from "./preflight";
