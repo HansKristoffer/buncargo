@@ -1,5 +1,17 @@
 # Changelog
 
+## [12.2.0](https://github.com/HansKristoffer/buncargo/compare/v12.1.0...v12.2.0) (2026-10-06)
+
+
+### Features
+
+* **cli:** typecheck --changed and machine-wide check slots ([#90](https://github.com/HansKristoffer/buncargo/issues/90)) ([0cb1ffd](https://github.com/HansKristoffer/buncargo/commit/0cb1ffdec8a79712abc8a0d82a7843bf2501dec2))
+
+
+### Bug Fixes
+
+* **apple:** stop false tcp readiness and auto switching to Docker ([#88](https://github.com/HansKristoffer/buncargo/issues/88)) ([68038f5](https://github.com/HansKristoffer/buncargo/commit/68038f58a0a14bb996348b09839eb317af85f6da))
+
 ## [12.1.0](https://github.com/HansKristoffer/buncargo/compare/v12.0.0...v12.1.0) (2026-10-06)
 
 
