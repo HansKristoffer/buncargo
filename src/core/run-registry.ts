@@ -269,7 +269,10 @@ function isRunService(value: unknown): value is RunServiceEntry {
 		(value.stack === undefined || typeof value.stack === "string") &&
 		(value.container === undefined ||
 			(isRecord(value.container) &&
-				["docker", "apple"].includes(String(value.container.runtime)) &&
+				(value.container.runtime === "apple" ||
+					(value.container.runtime === "docker" &&
+						(value.container.engine === undefined ||
+							value.container.engine === "orbstack"))) &&
 				typeof value.container.name === "string" &&
 				(value.container.binary === undefined ||
 					typeof value.container.binary === "string") &&
@@ -338,10 +341,55 @@ function isRunEntry(value: unknown): value is RunEntry {
 	);
 }
 
+/**
+ * OrbStack is written as the Docker runtime plus `engine: "orbstack"`.
+ *
+ * Every buncargo version on the machine shares this file, and an older one
+ * validates `runtime` against the names it knows: it dropped a run recorded
+ * as `"orbstack"` the next time its watchdog rewrote the file, while the run
+ * was still going. Older versions keep unknown fields, so `engine` survives
+ * their rewrites.
+ */
+function mapContainers(
+	run: RunEntry,
+	map: (
+		container: NonNullable<RunServiceEntry["container"]>,
+	) => NonNullable<RunServiceEntry["container"]>,
+): RunEntry {
+	if (!run.services.some((service) => service.container)) return run;
+	return {
+		...run,
+		services: run.services.map((service) =>
+			service.container
+				? { ...service, container: map(service.container) }
+				: service,
+		),
+	};
+}
+
+function encodeRun(run: RunEntry): RunEntry {
+	return mapContainers(run, (container) =>
+		container.runtime === "orbstack"
+			? ({ ...container, runtime: "docker", engine: "orbstack" } as never)
+			: container,
+	);
+}
+
+function decodeRun(run: RunEntry): RunEntry {
+	return mapContainers(run, (container) => {
+		const { engine, ...rest } = container as typeof container & {
+			engine?: string;
+		};
+		return engine === "orbstack" ? { ...rest, runtime: "orbstack" } : container;
+	});
+}
+
 const registry = defineListRegistry<RunEntry>({
 	version: REGISTRY_VERSION,
 	key: "runs",
 	isEntry: isRunEntry,
+	encode: encodeRun,
+	decode: decodeRun,
 	afterWrite: chownToInvokingUser,
 });
 

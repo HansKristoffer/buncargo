@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { containerRuntimeDisplayName } from "../container-runtime/names";
 import type {
 	ContainerDownRequest,
@@ -7,6 +9,8 @@ import type {
 	ExecInServiceRequest,
 	ServiceDiagnosisRequest,
 } from "../container-runtime/types";
+import type { ContainerRuntimeName } from "../types";
+import type { DockerBinary } from "./binary";
 import { diagnoseDockerService } from "./diagnose";
 import { dockerInteractiveExecArgv, execInDockerService } from "./exec";
 import {
@@ -30,6 +34,16 @@ import { listDockerVolumes, removeDockerVolumes } from "./volumes";
 export interface DockerAdapterOptions {
 	/** Path to the `docker` binary; falls back to a PATH lookup. */
 	binary?: string;
+	/**
+	 * `"orbstack"` pins every command to OrbStack's engine. Default `"docker"`:
+	 * the engine of Docker's current context.
+	 */
+	engine?: "docker" | "orbstack";
+}
+
+/** OrbStack's own Docker socket, which exists whether or not a context names it. */
+export function orbstackDockerSocket(): string {
+	return join(homedir(), ".orbstack", "run", "docker.sock");
 }
 
 /**
@@ -41,18 +55,30 @@ export interface DockerAdapterOptions {
 export function dockerRuntimeAdapter(
 	options: DockerAdapterOptions = {},
 ): ContainerRuntimeAdapter {
-	const { binary } = options;
+	const name = options.engine ?? "docker";
+	const binary: DockerBinary | undefined =
+		name === "orbstack"
+			? { binary: options.binary, host: `unix://${orbstackDockerSocket()}` }
+			: options.binary;
+	// Listings say which runtime they came from; this backend serves two.
+	const fromThisRuntime = <T extends { runtime?: ContainerRuntimeName }>(
+		items: T[],
+	): T[] => items.map((item) => ({ ...item, runtime: name }));
 
 	return {
-		name: "docker",
-		displayName: containerRuntimeDisplayName("docker"),
+		name,
+		displayName: containerRuntimeDisplayName(name),
 
 		isAvailable() {
 			return isDockerDaemonRunning(binary);
 		},
 
 		ensureRunning(ensureOptions: EnsureRuntimeOptions = {}) {
-			return ensureDockerRunning({ ...ensureOptions, binary });
+			return ensureDockerRunning({
+				...ensureOptions,
+				binary,
+				...(name === "orbstack" ? { engine: "orbstack" as const } : {}),
+			});
 		},
 
 		up(request: ContainerUpRequest) {
@@ -86,11 +112,11 @@ export function dockerRuntimeAdapter(
 		// No daemon probe: the only caller that lists without knowing the daemon
 		// is up is container-runtime/inventory.ts, which catches.
 		list() {
-			return listDockerBuncargoContainers(binary);
+			return fromThisRuntime(listDockerBuncargoContainers(binary));
 		},
 
-		listVolumes() {
-			return listDockerVolumes(binary);
+		async listVolumes() {
+			return fromThisRuntime(await listDockerVolumes(binary));
 		},
 
 		removeVolumes(names: string[]) {

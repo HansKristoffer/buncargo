@@ -59,7 +59,7 @@ describe("parseDevArgs", () => {
 		const invalid = parseDevArgs(["--runtime=podman"]);
 		expect(invalid.runtime).toBeUndefined();
 		expect(invalid.errors).toEqual([
-			'--runtime expects one of docker, apple, auto, got "podman".',
+			'--runtime expects one of docker, apple, orbstack, auto, got "podman".',
 		]);
 	});
 

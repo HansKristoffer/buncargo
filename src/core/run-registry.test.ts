@@ -411,6 +411,41 @@ describe("the persisted boundary", () => {
 		expect(await loadRuns(path)).toEqual([]);
 	});
 
+	it("stores OrbStack in a form older readers accept", async () => {
+		const run = makeRun({
+			services: [{ ...DB, container: { runtime: "orbstack", name: "p-db-1" } }],
+		});
+		await publishRun(run, { path });
+
+		// Older versions know only docker and apple, and drop the rest.
+		const onDisk = JSON.parse(readFileSync(path, "utf8")).runs[0].services[0];
+		expect(onDisk.container).toEqual({
+			runtime: "docker",
+			engine: "orbstack",
+			name: "p-db-1",
+		});
+		expect((await loadRuns(path))[0]?.services[0]?.container?.runtime).toBe(
+			"orbstack",
+		);
+	});
+
+	it("drops a runtime it does not know", async () => {
+		writeFileSync(
+			path,
+			JSON.stringify({
+				version: 1,
+				runs: [
+					makeRun({
+						services: [
+							{ ...DB, container: { runtime: "podman", name: "x" } } as never,
+						],
+					}),
+				],
+			}),
+		);
+		expect(await loadRuns(path)).toEqual([]);
+	});
+
 	it("drops an entry with no session id", async () => {
 		const { sessionId: _dropped, ...unnamed } = makeRun();
 		writeFileSync(

@@ -12,6 +12,31 @@ import { recordStartupMetric } from "../core/startup-metrics";
 
 export const DEFAULT_DOCKER_BINARY = "docker";
 
+/**
+ * Which `docker` to run: a binary path, or a binary and the engine it must
+ * talk to.
+ *
+ * The engine is passed as `--host` on every command rather than taken from
+ * Docker's current context, so a project pinned to one engine (OrbStack) stays
+ * on it whichever context the machine has selected. A plain string keeps the
+ * context's engine.
+ */
+export type DockerBinary = string | { binary?: string; host?: string };
+
+/** The full argv for `docker <args>` against the engine `binary` names. */
+export function dockerArgv(
+	binary: DockerBinary | undefined,
+	args: string[],
+): string[] {
+	if (typeof binary !== "object")
+		return [binary ?? DEFAULT_DOCKER_BINARY, ...args];
+	return [
+		binary.binary ?? DEFAULT_DOCKER_BINARY,
+		...(binary.host ? ["--host", binary.host] : []),
+		...args,
+	];
+}
+
 export interface DockerRunResult {
 	ok: boolean;
 	exitCode: number;
@@ -36,12 +61,16 @@ export interface DockerRunOptions {
  * a space, and so the two backends execute the same way.
  */
 export function runDocker(
-	binary: string = DEFAULT_DOCKER_BINARY,
+	binary: DockerBinary | undefined,
 	args: string[],
 	options: DockerRunOptions = {},
 ): DockerRunResult {
 	recordStartupMetric("subprocesses");
-	const result = spawnSync(binary, args, {
+	const [executable = DEFAULT_DOCKER_BINARY, ...argv] = dockerArgv(
+		binary,
+		args,
+	);
+	const result = spawnSync(executable, argv, {
 		cwd: options.cwd,
 		timeout: options.timeoutMs ?? 10000,
 		killSignal: "SIGKILL",
@@ -72,12 +101,12 @@ export function runDocker(
 
 /** Async runtime execution keeps cancellation responsive during pulls and probes. */
 export async function runDockerAsync(
-	binary: string = DEFAULT_DOCKER_BINARY,
+	binary: DockerBinary | undefined,
 	args: string[],
 	options: DockerRunOptions = {},
 ): Promise<DockerRunResult> {
 	const result = await execAsync(
-		[binary, ...args],
+		dockerArgv(binary, args),
 		options.cwd ?? process.cwd(),
 		options.env ?? {},
 		{

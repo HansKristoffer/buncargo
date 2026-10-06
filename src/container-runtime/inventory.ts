@@ -23,12 +23,30 @@ export function isContainerUp(container: BuncargoContainer): boolean {
 export function listBuncargoContainers(
 	runtimes: ContainerRuntimeAdapter[] = availableContainerRuntimes(),
 ): BuncargoContainer[] {
-	return runtimes.flatMap((runtime) => {
-		try {
-			return runtime.list();
-		} catch {
-			return [];
-		}
+	return uniqueContainers(
+		runtimes.flatMap((runtime) => {
+			try {
+				return runtime.list();
+			} catch {
+				return [];
+			}
+		}),
+	);
+}
+
+/**
+ * One entry per container. Docker and OrbStack are the same engine when
+ * Docker's context points at OrbStack, so both list the same containers; the
+ * first runtime to list one keeps it.
+ */
+export function uniqueContainers(
+	containers: BuncargoContainer[],
+): BuncargoContainer[] {
+	const seen = new Set<string>();
+	return containers.filter((container) => {
+		if (seen.has(container.id)) return false;
+		seen.add(container.id);
+		return true;
 	});
 }
 

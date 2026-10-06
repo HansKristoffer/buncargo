@@ -1,5 +1,5 @@
 import type { PortContainerOwner } from "../types";
-import { runDocker, runDockerAsync } from "./binary";
+import { type DockerBinary, runDocker, runDockerAsync } from "./binary";
 
 const LIST_ARGS = [
 	"ps",
@@ -44,14 +44,14 @@ export function parseDockerPublishedPorts(portsField: string): number[] {
  * running `docker ps` once per question was most of a dev run's fork count.
  */
 export function dockerContainerPortOwners(
-	binary?: string,
+	binary?: DockerBinary,
 ): Map<number, PortContainerOwner> {
 	const result = runDocker(binary, LIST_ARGS);
 	return parsePortOwners(result.ok ? result.stdout : "");
 }
 
 export async function dockerContainerPortOwnersAsync(
-	binary?: string,
+	binary?: DockerBinary,
 	signal?: AbortSignal,
 ): Promise<Map<number, PortContainerOwner>> {
 	const result = await runDockerAsync(binary, LIST_ARGS, { signal });
@@ -81,7 +81,7 @@ function parsePortOwners(output: string): Map<number, PortContainerOwner> {
 
 export function findDockerContainerOnPort(
 	port: number,
-	binary?: string,
+	binary?: DockerBinary,
 ): PortContainerOwner | undefined {
 	return dockerContainerPortOwners(binary).get(port);
 }

@@ -83,6 +83,33 @@ The sweep and volume pruning live in `container-runtime/` too; see
 
 ## Docker backend
 
+It serves two runtime names. `"docker"` talks to whatever engine Docker's current context points
+at; `"orbstack"` is the same backend with `--host unix://~/.orbstack/run/docker.sock` on every
+command (`DockerBinary` in `binary.ts`), so a project stays on OrbStack whichever context the
+machine has selected.
+
+- OrbStack is a runtime name rather than a context setting because the name is what a run records
+  in `runs.json`, and the sweep, `stop` and `ls` tear down and list through the recorded runtime
+  with no config in scope. Recorded as `"docker"`, an OrbStack stack would be looked for on Docker
+  Desktop and leak.
+- On disk it is written as `runtime: "docker"` plus `engine: "orbstack"` (`encodeRun` in
+  `run-registry.ts`). Every buncargo version on the machine shares `runs.json`, and older ones
+  validate `runtime` against the names they know: one dropped a live OrbStack run the next time its
+  watchdog rewrote the file. They keep unknown fields, so `engine` survives. A new runtime name
+  needs the same treatment.
+- When Docker's context *is* OrbStack, both runtimes reach one engine and list the same
+  containers. `uniqueContainers` keeps the first listing; ownership matches on project and root,
+  never runtime, so the duplicate could only cost a second, empty teardown.
+- The OrbStack candidate is gated on its socket file existing: the sweep asks every runtime every
+  30s, and a spawn there on every machine without OrbStack is waste.
+- `--host` rather than `DOCKER_HOST` because `interactiveExecArgv` hands argv to a caller that
+  spawns it with its own environment.
+- `runtimeFromContext` trusts a context that names its engine (`desktop-linux`, `orbstack`) before
+  any installed app. Checking `/Applications/OrbStack.app` first made a machine with OrbStack
+  installed and Docker Desktop selected start OrbStack, then wait for a socket that never came up.
+- The Supabase CLI follows Docker's context, not ours, so the Supabase check refuses a pinned
+  `"orbstack"` the way it refuses Apple, instead of splitting the project across two engines.
+
 - Split by concern: `status.ts` (container and daemon checks), `lifecycle.ts` (up/down/start),
   `compose-command.ts` (`docker compose` argument building), `inventory.ts` (`docker ps`
   listing), `port-lookup.ts` (published-port owner). `adapter.ts` is a factory binding them to the

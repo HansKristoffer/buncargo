@@ -185,10 +185,25 @@ export function defineListRegistry<T>(options: {
 	version: number;
 	key: string;
 	isEntry: (value: unknown) => value is T;
+	/**
+	 * Map an entry to and from its on-disk form, for a value that older
+	 * readers of the same file must still accept. `isEntry` checks the
+	 * on-disk form.
+	 */
+	encode?: (entry: T) => T;
+	decode?: (entry: T) => T;
 	afterWrite?: (path: string) => void;
 	mode?: number;
 }): ListRegistry<T> {
-	const { version, key, isEntry, afterWrite, mode = 0o600 } = options;
+	const {
+		version,
+		key,
+		isEntry,
+		encode = (entry: T) => entry,
+		decode = (entry: T) => entry,
+		afterWrite,
+		mode = 0o600,
+	} = options;
 
 	const validate: JsonValidator<T[]> = (value) => {
 		if (typeof value !== "object" || value === null) return undefined;
@@ -230,14 +245,15 @@ export function defineListRegistry<T>(options: {
 			}
 			checkVersion(path, raw);
 			const entries = parse(raw, validate);
-			if (entries) return entries;
+			if (entries) return entries.map(decode);
 			if (!readOptions.strict) return [];
 			throw new StateFileUnreadableError(
 				path,
 				`not a valid version ${version} ${key} document`,
 			);
 		},
-		async write(path, entries) {
+		async write(path, decoded) {
+			const entries = decoded.map(encode);
 			let raw: string | undefined;
 			try {
 				raw = await readFile(path, "utf-8");

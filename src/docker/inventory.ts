@@ -1,5 +1,5 @@
 import type { BuncargoContainer } from "../types";
-import { runDocker } from "./binary";
+import { type DockerBinary, runDocker } from "./binary";
 
 const LIST_ARGS = [
 	"ps",
@@ -32,7 +32,7 @@ export function parseDockerContainerLine(
 
 /** Every container (running or not) labeled by buncargo on this machine. */
 export function listDockerBuncargoContainers(
-	binary?: string,
+	binary?: DockerBinary,
 ): BuncargoContainer[] {
 	const result = runDocker(binary, LIST_ARGS);
 	if (!result.ok) {
@@ -50,7 +50,7 @@ export function listDockerBuncargoContainers(
 
 export function stopDockerContainersByIds(
 	ids: string[],
-	binary?: string,
+	binary?: DockerBinary,
 ): void {
 	if (ids.length === 0) return;
 	const result = runDocker(binary, ["stop", ...ids], { inherit: true });

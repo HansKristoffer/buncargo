@@ -2,7 +2,11 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { formatPortOwner, getPortOwner } from "../core/process";
 import { formatDone, formatStep, formatWarn } from "../core/style";
-import { type DockerRunResult, runDockerAsync } from "./binary";
+import {
+	type DockerBinary,
+	type DockerRunResult,
+	runDockerAsync,
+} from "./binary";
 import { getComposeArgs } from "./compose-command";
 import { isDockerDaemonRunning } from "./preflight";
 
@@ -14,7 +18,7 @@ export interface StartContainersOptions {
 	wait?: boolean;
 	composeFile?: string;
 	services?: string[];
-	binary?: string;
+	binary?: DockerBinary;
 }
 
 export interface StopContainersOptions {
@@ -23,7 +27,7 @@ export interface StopContainersOptions {
 	verbose?: boolean;
 	removeVolumes?: boolean;
 	composeFile?: string;
-	binary?: string;
+	binary?: DockerBinary;
 }
 
 /** Compose's own words for "the daemon is not there". */

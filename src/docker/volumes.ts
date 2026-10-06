@@ -1,5 +1,5 @@
 import type { BuncargoVolume } from "../types";
-import { runDockerAsync } from "./binary";
+import { type DockerBinary, runDockerAsync } from "./binary";
 
 /**
  * Reading and removing Docker volumes, for `buncargo prune`.
@@ -40,7 +40,7 @@ export function parseDockerVolumeLine(line: string): BuncargoVolume | null {
 }
 
 export async function listDockerVolumes(
-	binary?: string,
+	binary?: DockerBinary,
 ): Promise<BuncargoVolume[]> {
 	const result = await runDockerAsync(binary, LIST_ARGS);
 	if (!result.ok) return [];
@@ -63,7 +63,7 @@ export async function listDockerVolumes(
  */
 export async function removeDockerVolumes(
 	names: string[],
-	binary?: string,
+	binary?: DockerBinary,
 ): Promise<{ name: string; error: string }[]> {
 	const failures: { name: string; error: string }[] = [];
 	for (const name of names) {
