@@ -190,6 +190,10 @@ export const COMMAND_HELP_EXTRAS: readonly CommandExample[] = [
 		description: "Typecheck selected workspaces (path or basename)",
 	},
 	{
+		command: "typecheck --changed",
+		description: "Typecheck what this branch changed, plus its dependents",
+	},
+	{
 		command: "dev --profile=<name>",
 		description: "Run a profile's apps from dev.config.ts",
 	},

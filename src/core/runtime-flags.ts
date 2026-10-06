@@ -288,6 +288,14 @@ export function typecheckConcurrencyOverride(
 	return parsed;
 }
 
+/**
+ * `BUNCARGO_CHECK_SLOTS` - how many heavy checks may run at once across every
+ * checkout on the machine. Default 3; 0 turns the cap off.
+ */
+export function checkSlotCount(env: NodeJS.ProcessEnv = process.env): number {
+	return readInt(env, "BUNCARGO_CHECK_SLOTS", 3);
+}
+
 /** Runtime enrollment for disposable cloud sandboxes. Never include this value in diagnostics. */
 /** Sharing credentials are consumed by the coordinator, never frontend processes. */
 export function connectTokens(env: NodeJS.ProcessEnv = process.env): string[] {

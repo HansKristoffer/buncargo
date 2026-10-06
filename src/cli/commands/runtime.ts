@@ -228,13 +228,38 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 	if (settings.warning) log.warn(settings.warning);
 
 	const { runWorkspaceTypecheck } = await import("../../typecheck");
-	const result = await runWorkspaceTypecheck({
-		root,
-		verbose: true,
-		concurrency: parsed.concurrency,
-		only: parsed.only,
-		include: settings.config?.include,
-		exclude: settings.config?.exclude,
-	});
+	const { changedFilesSince } = await import("../../typecheck/changed");
+	let changedFiles: string[] | undefined;
+	if (parsed.changed) {
+		try {
+			changedFiles = changedFilesSince(root, parsed.changed.ref);
+		} catch (error) {
+			log.fail(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	// A machine-wide slot: typechecks from many checkouts at once exhaust memory.
+	const { withCheckSlot, formatCheckSlotHolder } = await import(
+		"../../core/check-slots"
+	);
+	const result = await withCheckSlot(
+		"typecheck",
+		() =>
+			runWorkspaceTypecheck({
+				root,
+				verbose: true,
+				concurrency: parsed.concurrency,
+				only: parsed.only,
+				include: settings.config?.include,
+				exclude: settings.config?.exclude,
+				changedFiles,
+			}),
+		{
+			onWait: (holders) =>
+				log.info(
+					`Waiting for a check slot: ${holders.map(formatCheckSlotHolder).join(", ")}`,
+				),
+		},
+	);
 	process.exit(result.success ? 0 : 1);
 }

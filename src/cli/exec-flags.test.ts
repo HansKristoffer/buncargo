@@ -27,3 +27,12 @@ it("rejects missing commands, empty options, unknown options and stray positiona
 		expect(parseExecArgs(args).errors.length).toBeGreaterThan(0);
 	expect(parseExecArgs(["--help"]).errors).toEqual([]);
 });
+
+it("reads --slot before -- and leaves a child's --slot alone", () => {
+	expect(parseExecArgs(["--slot", "--", "bun", "test"])).toMatchObject({
+		slot: true,
+		command: ["bun", "test"],
+		errors: [],
+	});
+	expect(parseExecArgs(["--", "tool", "--slot"]).slot).toBe(false);
+});
