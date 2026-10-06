@@ -1,5 +1,12 @@
 # Changelog
 
+## [12.3.0](https://github.com/HansKristoffer/buncargo/compare/v12.2.0...v12.3.0) (2026-10-06)
+
+
+### Features
+
+* **cli:** buncargo slot runs a heavy command in a check slot as is ([#92](https://github.com/HansKristoffer/buncargo/issues/92)) ([eb4eabf](https://github.com/HansKristoffer/buncargo/commit/eb4eabfc003feacaa8d80bd8baa4f8031e09494c))
+
 ## [12.2.0](https://github.com/HansKristoffer/buncargo/compare/v12.1.0...v12.2.0) (2026-10-06)
 
 
