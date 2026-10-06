@@ -3,7 +3,7 @@ import type {
 	ComposeProjectResourceKind,
 	ComposeProjectResources,
 } from "../container-runtime/types";
-import { runDocker, runDockerAsync } from "./binary";
+import { type DockerBinary, runDocker, runDockerAsync } from "./binary";
 
 /**
  * Listing and removing Compose projects' resources, for
@@ -18,7 +18,7 @@ const PROJECT = '{{.Label "com.docker.compose.project"}}';
 const FILTER = ["--filter", "label=com.docker.compose.project"];
 const STOPPED = new Set(["exited", "created", "dead"]);
 
-function rows(args: string[], binary?: string): string[][] {
+function rows(args: string[], binary?: DockerBinary): string[][] {
 	const result = runDocker(binary, args, { timeoutMs: 30_000 });
 	if (!result.ok)
 		throw new Error(
@@ -33,7 +33,7 @@ function rows(args: string[], binary?: string): string[][] {
 
 function resources(
 	command: "volume" | "network",
-	binary?: string,
+	binary?: DockerBinary,
 ): ComposeProjectResource[] {
 	return rows(
 		[command, "ls", ...FILTER, "--format", `{{.Name}}\t${PROJECT}`],
@@ -42,7 +42,7 @@ function resources(
 }
 
 export function listDockerComposeProjectResources(
-	binary?: string,
+	binary?: DockerBinary,
 ): ComposeProjectResources {
 	return {
 		containers: rows(
@@ -73,7 +73,7 @@ const REMOVE: Record<ComposeProjectResourceKind, string[]> = {
 export async function removeDockerComposeProjectResource(
 	kind: ComposeProjectResourceKind,
 	name: string,
-	binary?: string,
+	binary?: DockerBinary,
 ): Promise<string | undefined> {
 	const result = await runDockerAsync(binary, [...REMOVE[kind], name], {
 		timeoutMs: 30_000,

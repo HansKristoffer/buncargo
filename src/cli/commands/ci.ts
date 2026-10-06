@@ -42,7 +42,7 @@ const FLAGS = {
 	runtime: {
 		name: "--runtime",
 		kind: "string",
-		valueHint: "=<docker|apple|auto>",
+		valueHint: "=<docker|orbstack|apple|auto>",
 		description: "Container runtime backend (default: docker)",
 		validate: enumValidator("--runtime", CONTAINER_RUNTIME_SELECTIONS),
 	},

@@ -1,6 +1,6 @@
 import type { ExecInServiceRequest } from "../container-runtime/types";
 import { remainingTime } from "../core/deadline";
-import { DEFAULT_DOCKER_BINARY, runDockerAsync } from "./binary";
+import { type DockerBinary, dockerArgv, runDockerAsync } from "./binary";
 
 /** Match Compose exec's default replica, excluding one-off run containers. */
 function serviceContainerArgs(request: ExecInServiceRequest): string[] {
@@ -27,7 +27,7 @@ function uniqueContainerId(stdout: string): string | undefined {
 /** `docker exec -i[t] <id> …` for the service's running container. */
 export async function dockerInteractiveExecArgv(
 	request: Omit<ExecInServiceRequest, "timeoutMs"> & { tty: boolean },
-	binary?: string,
+	binary?: DockerBinary,
 ): Promise<string[] | undefined> {
 	const listed = await runDockerAsync(binary, serviceContainerArgs(request), {
 		cwd: request.root,
@@ -36,14 +36,13 @@ export async function dockerInteractiveExecArgv(
 	});
 	const id = listed.ok ? uniqueContainerId(listed.stdout) : undefined;
 	if (!id) return undefined;
-	return [
-		binary ?? DEFAULT_DOCKER_BINARY,
+	return dockerArgv(binary, [
 		"exec",
 		"-i",
 		...(request.tty ? ["-t"] : []),
 		id,
 		...request.command,
-	];
+	]);
 }
 
 /**
@@ -54,7 +53,7 @@ export async function dockerInteractiveExecArgv(
  */
 export async function execInDockerService(
 	request: ExecInServiceRequest,
-	binary?: string,
+	binary?: DockerBinary,
 ): Promise<boolean> {
 	request.signal?.throwIfAborted();
 	const deadline = performance.now() + (request.timeoutMs ?? 2000);

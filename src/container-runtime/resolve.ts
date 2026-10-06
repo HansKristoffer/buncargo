@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import {
 	appleContainerRuntimeAdapter,
 	isAppleContainerInstalled,
@@ -6,7 +7,7 @@ import {
 	containerBinaryOverride,
 	containerRuntimeOverride,
 } from "../core/runtime-flags";
-import { dockerRuntimeAdapter } from "../docker/adapter";
+import { dockerRuntimeAdapter, orbstackDockerSocket } from "../docker/adapter";
 import type {
 	ContainerRuntimeName,
 	ContainerRuntimeSelection,
@@ -108,6 +109,8 @@ export function getContainerRuntimeAdapter(
 			return dockerRuntimeAdapter(options);
 		case "apple":
 			return appleContainerRuntimeAdapter(options);
+		case "orbstack":
+			return dockerRuntimeAdapter({ ...options, engine: "orbstack" });
 		default: {
 			const _exhaustive: never = name;
 			return _exhaustive;
@@ -186,6 +189,14 @@ export function containerRuntimeCandidates(
 	return [
 		getContainerRuntimeAdapter("docker", { binary: binaryFor("docker") }),
 		getContainerRuntimeAdapter("apple", { binary: binaryFor("apple") }),
+		// A file check, not a spawn: the sweep asks every 30s on every machine.
+		...(existsSync(orbstackDockerSocket())
+			? [
+					getContainerRuntimeAdapter("orbstack", {
+						binary: binaryFor("orbstack"),
+					}),
+				]
+			: []),
 	];
 }
 

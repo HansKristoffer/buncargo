@@ -1,5 +1,5 @@
 import type { ServiceRuntimeState } from "../container-runtime/types";
-import { runDockerAsync } from "./binary";
+import { type DockerBinary, runDockerAsync } from "./binary";
 import { DockerUnavailableError, isDockerDaemonRunning } from "./preflight";
 
 export const DOCKER_NOT_RUNNING_MESSAGE =
@@ -8,14 +8,14 @@ export const DOCKER_NOT_RUNNING_MESSAGE =
 /**
  * Check if Docker daemon is running and reachable.
  */
-export function isDockerRunning(binary?: string): boolean {
+export function isDockerRunning(binary?: DockerBinary): boolean {
 	return isDockerDaemonRunning(binary);
 }
 
 /**
  * Ensure Docker is running before attempting compose operations.
  */
-export function assertDockerRunning(binary?: string): void {
+export function assertDockerRunning(binary?: DockerBinary): void {
 	if (!isDockerDaemonRunning(binary)) {
 		throw new DockerUnavailableError("unknown", DOCKER_NOT_RUNNING_MESSAGE);
 	}
@@ -69,7 +69,7 @@ export function parseDockerServiceStates(
  */
 export async function dockerProjectServiceStates(
 	project: string,
-	binary?: string,
+	binary?: DockerBinary,
 	signal?: AbortSignal,
 ): Promise<ServiceRuntimeState[]> {
 	const result = await runDockerAsync(

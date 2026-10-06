@@ -461,7 +461,7 @@ describe("validateConfig", () => {
 		});
 
 		it("accepts every valid docker.runtime", () => {
-			for (const runtime of ["docker", "apple", "auto"] as const) {
+			for (const runtime of ["docker", "apple", "orbstack", "auto"] as const) {
 				const config = createValidConfig();
 				config.docker = { runtime };
 				expect(validateConfig(config)).toEqual([]);
@@ -475,7 +475,7 @@ describe("validateConfig", () => {
 			};
 
 			expect(validateConfig(config)).toContain(
-				'docker.runtime "podman" is invalid. Use "docker", "apple", "auto".',
+				'docker.runtime "podman" is invalid. Use "docker", "apple", "orbstack", "auto".',
 			);
 		});
 

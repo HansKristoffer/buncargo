@@ -3,7 +3,7 @@ import type {
 	ServiceDiagnosisRequest,
 } from "../container-runtime/types";
 import { remainingTime } from "../core/deadline";
-import { runDockerAsync } from "./binary";
+import { type DockerBinary, runDockerAsync } from "./binary";
 import { getComposeArgs } from "./compose-command";
 
 /**
@@ -66,7 +66,7 @@ export function readComposeState(row: Record<string, unknown>): {
 
 export async function diagnoseDockerService(
 	request: ServiceDiagnosisRequest,
-	binary?: string,
+	binary?: DockerBinary,
 ): Promise<ServiceDiagnosis | undefined> {
 	const deadline = performance.now() + (request.timeoutMs ?? 2000);
 	const composeArgs = getComposeArgs({

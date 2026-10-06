@@ -1,8 +1,10 @@
 export { type DockerAdapterOptions, dockerRuntimeAdapter } from "./adapter";
 export {
 	DEFAULT_DOCKER_BINARY,
+	type DockerBinary,
 	type DockerRunOptions,
 	type DockerRunResult,
+	dockerArgv,
 	runDocker,
 	runDockerAsync,
 } from "./binary";

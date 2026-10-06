@@ -27,6 +27,7 @@ import {
 	type ContainerGroup,
 	groupBuncargoContainers,
 	isContainerUp,
+	uniqueContainers,
 } from "./inventory";
 import { withProjectLifecycleLock } from "./project-lock";
 import {
@@ -192,7 +193,8 @@ export async function sweepOrphanedContainers(
 	const runs = await readAllRuns();
 	const alive = await runLivenessAsync(runs);
 	const now = options.now ?? Date.now();
-	const groups = groupBuncargoContainers(containers);
+	const listed = uniqueContainers(containers);
+	const groups = groupBuncargoContainers(listed);
 	const owners = new Map(
 		groups.map((group) => [group, runFor(group, runs, alive)]),
 	);
@@ -202,7 +204,7 @@ export async function sweepOrphanedContainers(
 	const result: SweepResult = {
 		swept: [],
 		failed: [],
-		containers: containers.length,
+		containers: listed.length,
 		liveRuns: runs.filter(alive).length,
 		pendingStacks: 0,
 		answered,

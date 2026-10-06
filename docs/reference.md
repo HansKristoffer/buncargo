@@ -25,6 +25,7 @@ bunx buncargo dev --keep-containers
 bunx buncargo dev --watchdog-timeout=5
 bunx buncargo dev --no-docker-autostart
 bunx buncargo dev --no-hosts
+bunx buncargo dev --runtime=orbstack  # Run services on OrbStack
 bunx buncargo dev --runtime=apple  # Run services on Apple container
 bunx buncargo dev --timing         # Entry through app readiness, including preparation
 bunx buncargo dev --timing-json    # Same measurements and numeric counters as JSON
@@ -297,7 +298,10 @@ A URL wider than the app's terminal is wrapped by the app itself (Ink, which Sho
 
 ## Container runtime
 
-Services run on Docker by default. On macOS 26 or later on Apple silicon they can run on [Apple `container`](https://github.com/apple/container) instead, which boots each container in its own lightweight VM with no Docker Desktop.
+Services run on Docker by default, on whichever engine Docker's current context points at. Two alternatives:
+
+- `"orbstack"` runs them on [OrbStack](https://orbstack.dev)'s engine whatever Docker's context is, so one project can use OrbStack while the rest of the machine stays on Docker Desktop. It is the same Docker Compose backend pointed at OrbStack's socket (`~/.orbstack/run/docker.sock`), and buncargo starts OrbStack when it is not running. If Docker's context already points at OrbStack, `"docker"` runs there too. OrbStack keeps its own volumes, so a project moved to it from Docker Desktop starts on an empty database.
+- `"apple"`, on macOS 26 or later on Apple silicon, runs them on [Apple `container`](https://github.com/apple/container), which boots each container in its own lightweight VM with no Docker Desktop.
 
 ```ts
 export default defineDevConfig({
@@ -307,9 +311,9 @@ export default defineDevConfig({
 });
 ```
 
-The selection is read from `--runtime`, then `BUNCARGO_CONTAINER_RUNTIME`, then `docker.runtime`, then the `"docker"` default. `"auto"` uses Apple `container` whenever it is installed on a supported Mac, and Docker otherwise. It does not switch to Docker just because Apple's system service is stopped, which it is after every reboot: the two runtimes keep their volumes in different places, so a switch would start the project on an empty database. Buncargo starts the service instead. An explicit `"apple"` likewise fails with instructions rather than switching.
+The selection is read from `--runtime`, then `BUNCARGO_CONTAINER_RUNTIME`, then `docker.runtime`, then the `"docker"` default. `"auto"` uses Apple `container` whenever it is installed on a supported Mac, and Docker otherwise. It does not switch to Docker just because Apple's system service is stopped, which it is after every reboot: the two runtimes keep their volumes in different places, so a switch would start the project on an empty database. Buncargo starts the service instead. An explicit `"apple"` or `"orbstack"` likewise fails with instructions rather than switching. `"auto"` never picks OrbStack; name it.
 
-Both backends use `dev.config.ts`, the generated Compose model, inspection commands and named `.localhost` URLs. Apple's CLI has no compose support, so buncargo translates the generated service model into one `container run` per service, matching on the `buncargo.*` labels both backends write.
+Every runtime uses `dev.config.ts`, the generated Compose model, inspection commands and named `.localhost` URLs. `buncargo ls`, `doctor` and the watchdog look at every runtime on the machine, so a stack is found and cleaned up whichever one it runs on. The Supabase integration drives Docker through its own CLI, which follows Docker's context: to run it on OrbStack, keep `"docker"` and run `docker context use orbstack`. Apple's CLI has no compose support, so buncargo translates the generated service model into one `container run` per service, matching on the `buncargo.*` labels both backends write.
 
 **Requirements.** macOS 26+ on Apple silicon, with `container system start` having been run once (the first run installs a kernel and needs a terminal, so buncargo will not do it for you). After that, buncargo starts the system service itself when a run needs it, except under CI.
 
@@ -1074,7 +1078,7 @@ Vite is not a dependency of buncargo: the plugin's return type is declared struc
 | Variable | Meaning |
 | --- | --- |
 | `BUNCARGO_PORT_OFFSET` | Hard port offset; skips probing |
-| `BUNCARGO_CONTAINER_RUNTIME` | `docker` \| `apple` \| `auto`; overrides `docker.runtime` |
+| `BUNCARGO_CONTAINER_RUNTIME` | `docker` \| `orbstack` \| `apple` \| `auto`; overrides `docker.runtime` |
 | `BUNCARGO_CONTAINER_BINARY` | Absolute path to the selected runtime's binary; skips the PATH lookup. `docker.binary` wins over it |
 | `BUNCARGO_EXPOSE_TUNNEL_STAGGER_MS` | Delay between starting tunnels (default `900`) |
 | `BUNCARGO_QUICK_TUNNEL_MAX_ATTEMPTS` | Tunnel retries (default `5`) |
@@ -1206,8 +1210,8 @@ Use `kind: "worker"` for a long-running process without a listener. Workers requ
 | `writeStrategy` | `"always" \| "if-missing"` | `"always"` | Atomic write when content changes; `if-missing` rejects an existing file that differs from the model |
 | `volumes` | `Record<string, DockerComposeVolumeRaw>` | `{}` | Extra top-level named volumes |
 | `autoStart` | `boolean` | `true` (skipped in CI) | Try to start Docker if the daemon is down |
-| `runtime` | `"docker" \| "apple" \| "auto"` | `"docker"` | Which container runtime runs the services (see [Container runtime](#container-runtime)) |
-| `binary` | `string` | PATH lookup | Absolute path to the selected runtime's binary (`docker` or `container`) |
+| `runtime` | `"docker" \| "orbstack" \| "apple" \| "auto"` | `"docker"` | Which container runtime runs the services (see [Container runtime](#container-runtime)) |
+| `binary` | `string` | PATH lookup | Absolute path to the selected runtime's binary (`docker`, also for `"orbstack"`, or `container`) |
 
 Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.project`, `buncargo.root`, `buncargo.worktree`, `buncargo.service`.
 

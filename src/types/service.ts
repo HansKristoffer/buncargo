@@ -239,10 +239,12 @@ export interface PortContainerOwner {
 /**
  * Container runtime backend that runs the generated service model.
  *
- * `"docker"` drives `docker compose`; `"apple"` translates the same model into
- * Apple `container` invocations (macOS on Apple silicon only).
+ * `"docker"` drives `docker compose` against Docker's current context;
+ * `"orbstack"` drives it against OrbStack's engine whatever the context is;
+ * `"apple"` translates the same model into Apple `container` invocations
+ * (macOS on Apple silicon only).
  */
-export type ContainerRuntimeName = "docker" | "apple";
+export type ContainerRuntimeName = "docker" | "apple" | "orbstack";
 
 /**
  * Runtime selection accepted from config, env and CLI.

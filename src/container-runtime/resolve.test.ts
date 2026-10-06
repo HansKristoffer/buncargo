@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { isContainerUp } from "./inventory";
+import { isContainerUp, uniqueContainers } from "./inventory";
 import {
 	containerRuntimeForEnv,
 	resolveContainerRuntime,
@@ -69,6 +69,15 @@ describe("resolveContainerRuntime", () => {
 		expect(resolveContainerRuntime({ flag: "apple", env: {} }).name).toBe(
 			"apple",
 		);
+	});
+
+	it("returns OrbStack as its own runtime", () => {
+		expect(
+			resolveContainerRuntimeSelection({ docker: { runtime: "orbstack" } }),
+		).toBe("orbstack");
+		const adapter = resolveContainerRuntime({ flag: "orbstack", env: {} });
+		expect(adapter.name).toBe("orbstack");
+		expect(adapter.displayName).toBe("OrbStack");
 	});
 
 	it("picks Apple under auto whenever it is installed, running or not", () => {
@@ -171,5 +180,27 @@ describe("isContainerUp", () => {
 		expect(isContainerUp({ ...base, state: "paused", status: "Paused" })).toBe(
 			false,
 		);
+	});
+});
+
+describe("uniqueContainers", () => {
+	it("lists a container once when two runtimes reach the same engine", () => {
+		const container = {
+			id: "abc",
+			name: "p-postgres-1",
+			state: "running",
+			status: "Up",
+			ports: "",
+			project: "p",
+			root: "/r",
+			worktree: "",
+			service: "postgres",
+		};
+		expect(
+			uniqueContainers([
+				{ ...container, runtime: "docker" },
+				{ ...container, runtime: "orbstack" },
+			]).map((entry) => entry.runtime),
+		).toEqual(["docker"]);
 	});
 });

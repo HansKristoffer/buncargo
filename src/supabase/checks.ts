@@ -46,15 +46,24 @@ export function supabaseChecks(state: {
 			fixDescription: "Run `supabase init`",
 		},
 		{
-			// The CLI drives Docker (or Podman) itself; Apple's runtime would run
-			// the project's own services and leave Supabase with no daemon.
+			// The CLI drives Docker (or Podman) itself, through Docker's current
+			// context. Apple's runtime leaves it with no daemon, and a pinned
+			// OrbStack would split the project across two engines.
 			name: "Supabase runs on Docker",
 			check: ({ env }) =>
-				env.containerRuntime !== "apple" || {
-					ok: false,
-					detail:
-						'The Supabase CLI needs Docker or Podman; set docker.runtime to "docker"',
-				},
+				env.containerRuntime === "apple"
+					? {
+							ok: false,
+							detail:
+								'The Supabase CLI needs Docker or Podman; set docker.runtime to "docker"',
+						}
+					: env.containerRuntime === "orbstack"
+						? {
+								ok: false,
+								detail:
+									'The Supabase CLI uses Docker\'s current context, not docker.runtime "orbstack". Set docker.runtime to "docker" and run `docker context use orbstack` to run Supabase on OrbStack.',
+							}
+						: true,
 		},
 		{
 			name: "Supabase CLI version is tested",

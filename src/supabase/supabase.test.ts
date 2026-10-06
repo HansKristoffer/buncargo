@@ -174,4 +174,19 @@ describe("supabase checks", () => {
 		expect(await runtimeCheck.check(ctx("docker"))).toBe(true);
 		expect(await runtimeCheck.check(ctx("apple"))).toMatchObject({ ok: false });
 	});
+
+	it("refuses a pinned OrbStack, since the CLI follows Docker's context", async () => {
+		const runtimeCheck = check("Supabase runs on Docker");
+		expect(
+			await runtimeCheck.check({
+				root,
+				env: {
+					containerRuntime: "orbstack",
+				} as unknown as AnyDevEnvironment,
+			} as CheckContext),
+		).toMatchObject({
+			ok: false,
+			detail: expect.stringContaining("docker context use orbstack"),
+		});
+	});
 });

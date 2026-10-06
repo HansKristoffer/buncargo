@@ -12,6 +12,7 @@ import {
 	DockerUnavailableError,
 	ensureDockerRunning,
 	isDockerDaemonRunning,
+	runtimeFromContext,
 } from "./preflight";
 
 const roots: string[] = [];
@@ -163,5 +164,31 @@ describe("Docker daemon preflight", () => {
 			controller.abort();
 			await outcome;
 		}
+	});
+});
+
+describe("runtimeFromContext", () => {
+	it("follows a context that names its engine over installed apps", () => {
+		// With Docker Desktop selected, an installed OrbStack must not be
+		// started in its place.
+		expect(runtimeFromContext("desktop-linux")).toBe("docker-desktop");
+		expect(runtimeFromContext("orbstack")).toBe("orbstack");
+		expect(runtimeFromContext("colima-dev")).toBe("colima");
+	});
+});
+
+describe("a pinned engine", () => {
+	it("is started without asking Docker's context", async () => {
+		const { binary, calls } = fixture({ versionExit: 1 });
+		const failure = await ensureDockerRunning({
+			binary,
+			engine: "orbstack",
+			autoStart: false,
+			ci: false,
+			verbose: false,
+		}).catch((error: unknown) => error);
+		expect(failure).toBeInstanceOf(DockerUnavailableError);
+		expect((failure as DockerUnavailableError).runtime).toBe("orbstack");
+		expect(calls().some((args) => args[0] === "context")).toBe(false);
 	});
 });

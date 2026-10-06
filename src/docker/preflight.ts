@@ -4,7 +4,7 @@ import { execAsync } from "../core/process/exec";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWait } from "../core/style";
 import { lookupOnPath } from "../core/tool-binary";
-import { runDocker, runDockerAsync } from "./binary";
+import { type DockerBinary, runDocker, runDockerAsync } from "./binary";
 
 export type DockerRuntime =
 	| "orbstack"
@@ -31,41 +31,40 @@ function commandExists(command: string): boolean {
 	return lookupOnPath(command) !== undefined;
 }
 
-function dockerContextName(binary?: string): string | null {
+function dockerContextName(binary?: DockerBinary): string | null {
 	const result = runDocker(binary, ["context", "show"]);
 	return result.ok ? result.stdout.trim() : null;
 }
 
-export function detectDockerRuntime(binary?: string): DockerRuntime {
+export function detectDockerRuntime(binary?: DockerBinary): DockerRuntime {
 	return runtimeFromContext(dockerContextName(binary)?.toLowerCase() ?? "");
 }
 
-function runtimeFromContext(context: string): DockerRuntime {
-	if (
-		context.includes("orbstack") ||
-		existsSync("/Applications/OrbStack.app")
-	) {
-		return "orbstack";
-	}
-	if (context.includes("colima") || commandExists("colima")) {
-		return "colima";
-	}
-	if (
-		context.includes("rancher") ||
-		existsSync("/Applications/Rancher Desktop.app")
-	) {
-		return "rancher";
-	}
-	if (context.includes("podman") || commandExists("podman")) {
-		return "podman";
-	}
+/**
+ * Which engine a Docker context belongs to.
+ *
+ * The context decides when it names one: with Docker Desktop selected,
+ * OrbStack merely being installed must not make buncargo start OrbStack and
+ * then wait for a Docker Desktop socket that never comes up. Installed apps
+ * only break the tie for a context that names no engine (`default`).
+ */
+export function runtimeFromContext(context: string): DockerRuntime {
+	if (context.includes("orbstack")) return "orbstack";
+	if (context.startsWith("desktop-")) return "docker-desktop";
+	if (context.includes("colima")) return "colima";
+	if (context.includes("rancher")) return "rancher";
+	if (context.includes("podman")) return "podman";
+	if (existsSync("/Applications/OrbStack.app")) return "orbstack";
+	if (commandExists("colima")) return "colima";
+	if (existsSync("/Applications/Rancher Desktop.app")) return "rancher";
+	if (commandExists("podman")) return "podman";
 	if (existsSync("/Applications/Docker.app") || commandExists("docker")) {
 		return "docker-desktop";
 	}
 	return "unknown";
 }
 
-export function isDockerDaemonRunning(binary?: string): boolean {
+export function isDockerDaemonRunning(binary?: DockerBinary): boolean {
 	// `info` also inspects CLI plugins, whose metadata can stall a healthy
 	// daemon's probe. `version` asks the server without that extra discovery.
 	return runDocker(binary, ["version", "--format", "{{.Server.Version}}"]).ok;
@@ -110,7 +109,9 @@ export interface EnsureDockerRunningOptions {
 	autoStart?: boolean;
 	timeoutMs?: number;
 	verbose?: boolean;
-	binary?: string;
+	binary?: DockerBinary;
+	/** The engine to start, when the caller already knows it; otherwise read from the context. */
+	engine?: DockerRuntime;
 	/** Whether this is CI, where a down daemon is waited for rather than started. */
 	ci?: boolean;
 }
@@ -140,13 +141,16 @@ export async function ensureDockerRunning(
 			)
 		).ok;
 	if (await daemonRunning()) return;
-	const context = await runDockerAsync(binary, ["context", "show"], {
-		signal,
-		timeoutMs: Math.min(5000, remainingTime(deadline)),
-	});
-	const runtime = runtimeFromContext(
-		context.ok ? context.stdout.trim().toLowerCase() : "",
-	);
+	const runtime =
+		options.engine ??
+		runtimeFromContext(
+			await runDockerAsync(binary, ["context", "show"], {
+				signal,
+				timeoutMs: Math.min(5000, remainingTime(deadline)),
+			}).then((context) =>
+				context.ok ? context.stdout.trim().toLowerCase() : "",
+			),
+		);
 	// CI never starts Docker itself, but a runner's daemon is often still
 	// coming up when the job starts: keep asking until the deadline. Locally,
 	// `--no-docker-autostart` wants the answer now, not in 90 seconds.
