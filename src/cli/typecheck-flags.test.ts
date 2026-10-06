@@ -33,6 +33,22 @@ describe("parseTypecheckArgs", () => {
 		);
 	});
 
+	it("parses --changed with and without a ref", () => {
+		expect(parseTypecheckArgs(["--changed"]).changed).toEqual({
+			ref: undefined,
+		});
+		expect(parseTypecheckArgs(["--changed=origin/dev"]).changed).toEqual({
+			ref: "origin/dev",
+		});
+		expect(parseTypecheckArgs([]).changed).toBeUndefined();
+	});
+
+	it("rejects --changed together with --only", () => {
+		expect(
+			parseTypecheckArgs(["--changed", "--only=platform"]).errors,
+		).toContain("--changed and --only cannot be combined.");
+	});
+
 	it("reports unknown flags without throwing", () => {
 		expect(parseTypecheckArgs(["--nope"]).unknownFlags).toEqual(["--nope"]);
 	});

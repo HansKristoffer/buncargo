@@ -29,10 +29,17 @@ const FLAGS = {
 		description: "Working directory relative to the repository root",
 		validate: (value: string) => (value ? undefined : "--cwd requires a path"),
 	},
+	slot: {
+		name: "--slot",
+		kind: "boolean",
+		description:
+			"Hold one of the machine-wide check slots (BUNCARGO_CHECK_SLOTS, default 3) while it runs",
+	},
 } as const satisfies Record<string, FlagSpec>;
 
 export const EXEC_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo exec [--app=<name>] [--cwd=<path>] -- <command> [args...]",
+	usage:
+		"buncargo exec [--app=<name>] [--cwd=<path>] [--slot] -- <command> [args...]",
 	flags: Object.values(FLAGS),
 	notes: [
 		{
@@ -61,6 +68,7 @@ export function parseExecArgs(args: string[]) {
 	const app = readOption(FLAGS.app);
 	const cwd = readOption(FLAGS.cwd);
 	const help = readBooleanFlag(optionArgs, FLAGS.help);
+	const slot = readBooleanFlag(optionArgs, FLAGS.slot);
 
 	for (const token of readPositionals(EXEC_COMMAND_SPEC, optionArgs)) {
 		errors.push(`Unexpected argument before --: ${token}`);
@@ -74,6 +82,7 @@ export function parseExecArgs(args: string[]) {
 		app,
 		cwd,
 		help,
+		slot,
 		command,
 		errors: [
 			...errors,

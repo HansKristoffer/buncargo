@@ -158,6 +158,48 @@ describe("runWorkspaceTypecheck pool", () => {
 	});
 });
 
+describe("typecheck changedFiles", () => {
+	it("checks the changed workspace and its dependents, not the rest or the root config", async () => {
+		const root = makeFixture();
+		writeSleepingWorkspace(root, "packages/shared", 0);
+		writeSleepingWorkspace(root, "apps/one", 0);
+		writeSleepingWorkspace(root, "apps/two", 0);
+		const one = join(root, "apps/one/package.json");
+		const pkg = JSON.parse(readFileSync(one, "utf8"));
+		writeFileSync(
+			one,
+			JSON.stringify({ ...pkg, dependencies: { "packages-shared": "*" } }),
+		);
+
+		const result = await runWorkspaceTypecheck({
+			root,
+			verbose: false,
+			changedFiles: ["packages/shared/src/index.ts"],
+		});
+
+		expect(result.success).toBe(true);
+		expect(result.rootConfig).toBeUndefined();
+		expect(result.results.map((entry) => entry.workspace).sort()).toEqual([
+			"apps/one",
+			"packages/shared",
+		]);
+	});
+
+	it("succeeds without running anything when no workspace changed", async () => {
+		const root = makeFixture();
+		writeSleepingWorkspace(root, "apps/one", 0);
+
+		const result = await runWorkspaceTypecheck({
+			root,
+			verbose: false,
+			changedFiles: ["README.md"],
+		});
+
+		expect(result.success).toBe(true);
+		expect(result.results).toEqual([]);
+	});
+});
+
 describe("typecheck include and exclude", () => {
 	it("checks an included directory with a typecheck script outside discovery", async () => {
 		const root = makeFixture();

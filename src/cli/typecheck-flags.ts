@@ -29,6 +29,13 @@ const FLAGS = {
 		description:
 			"Check only these workspaces (path or basename, comma-separated)",
 	},
+	changed: {
+		name: "--changed",
+		kind: "string",
+		valueHint: "[=<ref>]",
+		description:
+			"Check only workspaces changed since the merge base with <ref> (default: origin's default branch), and their dependents",
+	},
 } as const satisfies Record<string, FlagSpec>;
 
 export const TYPECHECK_COMMAND_SPEC: CommandSpec = {
@@ -44,6 +51,11 @@ export const TYPECHECK_COMMAND_SPEC: CommandSpec = {
 			description: "Check one workspace (path or basename)",
 		},
 		{
+			command: "bunx buncargo typecheck --changed",
+			description:
+				"Check what this branch can break, uncommitted work included",
+		},
+		{
 			command: "bunx buncargo typecheck --concurrency=2",
 			description: "Cap overlapping typecheck processes",
 		},
@@ -56,6 +68,8 @@ export interface TypecheckCliArgs {
 	help: boolean;
 	concurrency: number | undefined;
 	only: string[] | undefined;
+	/** Set when `--changed` was passed; `ref` is undefined for the default base. */
+	changed: { ref: string | undefined } | undefined;
 }
 
 export function parseTypecheckArgs(rawArgs: string[]): TypecheckCliArgs {
@@ -74,6 +88,14 @@ export function parseTypecheckArgs(rawArgs: string[]): TypecheckCliArgs {
 		}
 	}
 
+	const changedValue = readStringFlag(rawArgs, FLAGS.changed, errors);
+	const changed = readBooleanFlag(rawArgs, FLAGS.changed)
+		? { ref: changedValue || undefined }
+		: undefined;
+	if (changed && only) {
+		errors.push("--changed and --only cannot be combined.");
+	}
+
 	return {
 		unknownFlags: findUnknownFlags(TYPECHECK_COMMAND_SPEC, rawArgs),
 		errors,
@@ -83,6 +105,7 @@ export function parseTypecheckArgs(rawArgs: string[]): TypecheckCliArgs {
 				? undefined
 				: Number.parseInt(concurrencyValue, 10),
 		only,
+		changed,
 	};
 }
 

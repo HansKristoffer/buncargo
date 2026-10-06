@@ -2,6 +2,7 @@ import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { basename, join } from "node:path";
 import fg from "fast-glob";
 import { execAsync } from "../core/process";
+import { readWorkspaceGraph, selectChangedWorkspaces } from "./changed";
 import {
 	type ConfigTypecheckResult,
 	typecheckRootConfig,
@@ -43,6 +44,12 @@ export interface WorkspaceTypecheckOptions {
 	include?: readonly string[];
 	/** Workspaces to leave out: paths, globs or basenames (`typecheck.exclude`) */
 	exclude?: readonly string[];
+	/**
+	 * Check only what these files can break (paths relative to `root`): their
+	 * workspaces and the workspaces depending on those. A root manifest,
+	 * lockfile, tsconfig or dev config among them checks everything.
+	 */
+	changedFiles?: readonly string[];
 }
 
 /**
@@ -420,11 +427,12 @@ export async function runWorkspaceTypecheck(
 		root = process.cwd(),
 		patterns: overridePatterns,
 		verbose = true,
-		includeRootConfig = true,
 		only,
 		include,
 		exclude,
+		changedFiles,
 	} = options;
+	let includeRootConfig = options.includeRootConfig ?? true;
 	const concurrency = options.concurrency ?? defaultTypecheckConcurrency();
 
 	const totalStartTime = performance.now();
@@ -483,13 +491,38 @@ export async function runWorkspaceTypecheck(
 		workspaces = selected;
 	}
 
+	if (changedFiles) {
+		const selection = selectChangedWorkspaces(
+			changedFiles,
+			await readWorkspaceGraph(root, patterns),
+			workspaces.map((workspace) => workspace.path),
+		);
+		if (selection.kind === "workspaces") {
+			workspaces = workspaces.filter((workspace) =>
+				selection.paths.includes(workspace.path),
+			);
+			includeRootConfig = false;
+		}
+		if (verbose) {
+			console.log(
+				selection.kind === "all"
+					? "A root config changed: checking everything."
+					: `Changed workspaces and their dependents: ${selection.paths.join(", ") || "none"}`,
+			);
+		}
+	}
+
 	if (workspaces.length === 0) {
 		const rootConfig = includeRootConfig
 			? await typecheckRootConfig({ root, verbose: false })
 			: undefined;
 		if (verbose) {
 			if (rootConfig) logRootConfigResult(rootConfig, verbose);
-			console.log("No workspaces with typecheck script found.");
+			console.log(
+				changedFiles
+					? "Nothing to typecheck."
+					: "No workspaces with typecheck script found.",
+			);
 		}
 		return {
 			success: (rootConfig?.success ?? true) && problemResults.length === 0,

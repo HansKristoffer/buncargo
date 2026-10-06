@@ -57,6 +57,15 @@ hardcode a port. Ask buncargo instead.
   environment. \`bunx buncargo run <task>\` runs a configured task;
   \`bunx buncargo help\` lists them.
 
+## Checks
+
+- \`bunx buncargo typecheck --changed\` checks the workspaces this branch
+  touched and the ones depending on them.
+- Typechecks share a few slots across every checkout on the machine. One that
+  says it is waiting for a slot is not stuck; let it wait.
+- Run test suites as \`bunx buncargo exec --slot -- <command>\` so they take
+  a slot too.
+
 ## Logs
 
 - \`bunx buncargo logs <app> --errors\`, \`--since=5m\`, \`-f\`. App output is kept
