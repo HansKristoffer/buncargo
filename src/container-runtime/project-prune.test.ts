@@ -1,4 +1,13 @@
 import { describe, expect, it } from "bun:test";
+import {
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { GitCheckout } from "../core/git-checkouts";
 import { type ProjectPruneInput, planProjectPrune } from "./project-prune";
 import type { ComposeProjectContainer } from "./types";
@@ -217,5 +226,42 @@ describe("planProjectPrune", () => {
 				}),
 			),
 		).toEqual(["shopify-app-renamed_data"]);
+	});
+
+	it("keeps the stack checkouts share when the config sits below the top level (round 1 F1)", () => {
+		// No worktree name reaches the project names there (see listGitCheckouts).
+		const web = (top: string, exists: boolean): GitCheckout => ({
+			root: `${top}/apps/web`,
+			worktree: null,
+			exists,
+		});
+		const result = plan({
+			checkouts: [web("/code/app", false), web("/wt/feature", true)],
+			volumes: ["shopify-app-web", "shopify-app-web-ci"],
+		});
+		expect(removedVolumes(result)).toEqual(["shopify-app-web-ci_data"]);
+	});
+
+	it("keeps a dev stack started from a symlink whose name reads as a checkout's ci stack (round 1 F2)", () => {
+		const base = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-alias-")));
+		try {
+			mkdirSync(join(base, "main"));
+			symlinkSync(join(base, "main"), join(base, "main-ci"));
+			const result = plan({
+				checkouts: [{ root: join(base, "main"), worktree: null, exists: true }],
+				containers: [
+					container("dev", "shopify-app-main-ci", {
+						root: join(base, "main-ci"),
+					}),
+				],
+				volumes: ["shopify-app-main-ci"],
+			});
+			expect(result.remove).toEqual([]);
+			expect(result.kept.map((stack) => stack.projectName)).toEqual([
+				"shopify-app-main-ci",
+			]);
+		} finally {
+			rmSync(base, { recursive: true, force: true });
+		}
 	});
 });

@@ -13,8 +13,14 @@ import {
 export interface GitCheckout {
 	/** The checkout's buncargo root: the same directory inside this checkout. */
 	root: string;
-	/** Its name under `.git/worktrees`, or null for the main checkout. */
+	/**
+	 * The worktree name buncargo puts in this checkout's project names: its
+	 * name under `.git/worktrees`, but only when the root is the worktree's
+	 * top level, since buncargo reads it from the root's own `.git` file.
+	 * Null for the main checkout and for a root below the top level.
+	 */
 	worktree: string | null;
+	/** Whether the checkout is still there (its top level, not the root). */
 	exists: boolean;
 }
 
@@ -42,12 +48,13 @@ export function listGitCheckouts(root: string): GitCheckout[] {
 	const commonDir = resolve(root, git(root, ["rev-parse", "--git-common-dir"]));
 	const at = (checkoutTop: string, worktree: string | null): GitCheckout => {
 		const checkoutRoot = join(checkoutTop, inside);
-		const exists = existsSync(checkoutRoot);
-		// Real, as buncargo records a root in its labels and lock names.
+		// Real, as the loader records a root in its labels and lock names.
 		return {
-			root: exists ? realpathSync(checkoutRoot) : checkoutRoot,
-			worktree,
-			exists,
+			root: existsSync(checkoutRoot)
+				? realpathSync(checkoutRoot)
+				: checkoutRoot,
+			worktree: inside === "" ? worktree : null,
+			exists: existsSync(checkoutTop),
 		};
 	};
 

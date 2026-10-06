@@ -4,6 +4,7 @@ import {
 	containerRuntimeForEnv,
 	listBuncargoContainers,
 	orphanedVolumes,
+	type ProjectPrunePlan,
 	type ProjectPruneStack,
 	planProjectPrune,
 	planVolumePrune,
@@ -163,14 +164,23 @@ async function pruneProject(parsed: {
 		return 0;
 	}
 
-	const checkouts = listGitCheckouts(env.root);
-	const plan = planProjectPrune({
-		projectPrefix: env.projectPrefix,
-		worktreeIsolation: env.worktreeIsolation,
-		checkouts,
-		resources: list.call(runtime),
-		liveProjects: await liveProjects(),
-	});
+	// Every inventory must answer, or this throws before anything is removed.
+	const inventory = async () => {
+		const checkouts = listGitCheckouts(env.root);
+		return {
+			checkouts,
+			plan: planProjectPrune({
+				projectPrefix: env.projectPrefix,
+				worktreeIsolation: env.worktreeIsolation,
+				checkouts,
+				resources: list.call(runtime),
+				liveProjects: new Set(
+					(await readLiveRuns()).map((run) => run.projectName),
+				),
+			}),
+		};
+	};
+	const { checkouts, plan } = await inventory();
 
 	for (const stack of plan.kept)
 		log.info(`Kept ${stack.projectName}: ${stack.reason}.`);
@@ -217,7 +227,7 @@ async function pruneProject(parsed: {
 
 	let removed = 0;
 	for (const stack of plan.remove) {
-		if (await removeStack(runtime, stack)) removed++;
+		if (await removeStack(runtime, stack, inventory)) removed++;
 	}
 	log.done(
 		`Removed ${removed} of ${plan.remove.length} stack${plan.remove.length === 1 ? "" : "s"}`,
@@ -225,55 +235,62 @@ async function pruneProject(parsed: {
 	return 0;
 }
 
-async function liveProjects(): Promise<Set<string>> {
-	return new Set((await readLiveRuns()).map((run) => run.projectName));
-}
-
 function count(n: number, noun: string): string {
 	return n === 0 ? "" : `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
 /**
- * One stack, under its lifecycle lock and decided again from a fresh registry
- * read, like the sweep: a run that started since the listing claims before it
- * takes the lock. Containers first, without force, so a running one is
- * refused and its volume stays in use.
+ * One stack, under its lifecycle lock and decided again from fresh
+ * inventories, like the sweep: since the listing, a run may have claimed it,
+ * a deleted worktree may be back, a container may have started. Only what
+ * was listed is removed. Containers first, without force, and a refused one
+ * keeps the rest of the stack: its volume may be in use.
  */
 async function removeStack(
 	runtime: ContainerRuntimeAdapter,
-	stack: ProjectPruneStack,
+	listed: ProjectPruneStack,
+	inventory: () => Promise<{ plan: ProjectPrunePlan }>,
 ): Promise<boolean> {
 	const remove = runtime.removeComposeProjectResource?.bind(runtime);
 	if (!remove) return false;
 	try {
 		return await withProjectLifecycleLock(
-			stack.projectName,
-			stack.root,
+			listed.projectName,
+			listed.root,
 			async () => {
-				if ((await liveProjects()).has(stack.projectName)) {
-					log.info(`Kept ${stack.projectName}: a run started using it.`);
+				const { plan } = await inventory();
+				const stack = plan.remove.find(
+					(fresh) => fresh.projectName === listed.projectName,
+				);
+				if (!stack) {
+					const reason =
+						plan.kept.find((kept) => kept.projectName === listed.projectName)
+							?.reason ?? "it is no longer a leftover";
+					log.info(`Kept ${listed.projectName}: ${reason}.`);
 					return false;
 				}
-				let complete = true;
 				for (const [kind, names] of [
 					["container", stack.containers],
 					["volume", stack.volumes],
 					["network", stack.networks],
 				] as const) {
-					for (const name of names) {
+					const confirmed = new Set(listed[`${kind}s`]);
+					for (const name of names.filter((name) => confirmed.has(name))) {
 						const error = await remove(kind, name);
 						if (error === undefined) continue;
-						complete = false;
-						log.warn(`Kept ${kind} ${name}: ${error}`);
+						log.warn(
+							`Kept the rest of ${stack.projectName}: ${kind} ${name}: ${error}`,
+						);
+						return false;
 					}
 				}
-				return complete;
+				return true;
 			},
 			{ timeoutMs: 0 },
 		);
 	} catch (error) {
 		if (!(error instanceof FileLockTimeoutError)) throw error;
-		log.info(`Kept ${stack.projectName}: a run is starting or stopping it.`);
+		log.info(`Kept ${listed.projectName}: a run is starting or stopping it.`);
 		return false;
 	}
 }

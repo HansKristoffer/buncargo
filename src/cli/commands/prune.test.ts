@@ -49,7 +49,8 @@ beforeAll(() => {
 		`#!/bin/sh
 echo "$*" >> "${base}/calls"
 case "$1 $2" in
-  "ps -a") cat "${base}/listing/containers" ;;
+  "ps -a") if [ -f "${base}/listing/listed" ] && [ -f "${base}/listing/containers.next" ]; then cat "${base}/listing/containers.next"; else touch "${base}/listing/listed"; cat "${base}/listing/containers"; fi ;;
+  "rm "*) grep -qx "$2" "${base}/listing/refuse" 2>/dev/null && { echo "container is restarting" >&2; exit 1; } ;;
   "volume ls") [ -f "${base}/listing/fail" ] && { echo "daemon hung" >&2; exit 1; }; cat "${base}/listing/volumes" ;;
   "network ls") cat "${base}/listing/networks" ;;
 esac
@@ -66,6 +67,9 @@ function listing(files: {
 	volumes?: string[];
 	networks?: string[];
 	fail?: boolean;
+	/** What `ps` lists from its second call on: the state at removal. */
+	containersNext?: string[];
+	refuse?: string[];
 }) {
 	rmSync(join(base, "listing"), { recursive: true, force: true });
 	rmSync(join(base, "calls"), { force: true });
@@ -76,6 +80,15 @@ function listing(files: {
 			(files[kind] ?? []).map((line) => `${line}\n`).join(""),
 		);
 	if (files.fail) writeFileSync(join(base, "listing", "fail"), "");
+	if (files.containersNext)
+		writeFileSync(
+			join(base, "listing", "containers.next"),
+			files.containersNext.map((line) => `${line}\n`).join(""),
+		);
+	writeFileSync(
+		join(base, "listing", "refuse"),
+		(files.refuse ?? []).map((name) => `${name}\n`).join(""),
+	);
 }
 
 const prune = (cwd: string, ...args: string[]) =>
@@ -143,5 +156,40 @@ describe("buncargo prune --project", () => {
 		expect(result.exitCode).not.toBe(0);
 		expect(`${result.stdout}${result.stderr}`).toContain("daemon hung");
 		expect(removals()).toEqual([]);
+	});
+
+	it("decides each stack again at removal: a container that started since the listing keeps it (round 1 F3)", async () => {
+		listing({
+			containers: [`c1\tpp-app-ci\texited\t${main}`],
+			containersNext: [`c1\tpp-app-ci\trunning\t${main}`],
+			volumes: ["pp-app-ci_postgres-data\tpp-app-ci"],
+		});
+		const result = await prune(main, "--yes");
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain(
+			"Kept pp-app-ci: a container is running (stop it first).",
+		);
+		expect(removals()).toEqual([]);
+	});
+
+	it("keeps the rest of a stack when Docker refuses one of its containers (round 1 F3)", async () => {
+		listing({
+			containers: [
+				`c1\tpp-app-ci\texited\t${main}`,
+				`c2\tpp-gone\texited\t${join(base, "gone")}`,
+			],
+			volumes: [
+				"pp-app-ci_postgres-data\tpp-app-ci",
+				"pp-gone_postgres-data\tpp-gone",
+			],
+			refuse: ["c1"],
+		});
+		const result = await prune(main, "--yes");
+		expect(result.exitCode).toBe(0);
+		expect(removals()).toEqual([
+			"rm c1",
+			"rm c2",
+			"volume rm pp-gone_postgres-data",
+		]);
 	});
 });

@@ -14,8 +14,7 @@
  * with a container that buncargo did not start from one of these checkouts.
  */
 
-import { existsSync, realpathSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { GitCheckout } from "../core/git-checkouts";
 import {
 	CI_PROJECT_SUFFIX,
@@ -77,48 +76,50 @@ function namesOf(input: ProjectPruneInput, checkout: GitCheckout) {
 	return { dev, ci };
 }
 
-/** A path as a label recorded it: real, where it still exists. */
-function canonical(path: string): string {
-	if (existsSync(path)) return realpathSync(path);
-	const parent = dirname(path);
-	return existsSync(parent)
-		? join(realpathSync(parent), basename(path))
-		: resolve(path);
-}
-
 export function planProjectPrune(input: ProjectPruneInput): ProjectPrunePlan {
 	const kept = new Set<string>();
-	const disposable = new Map<string, string>();
+	// Each disposable name, and the checkouts whose name it is.
+	const disposable = new Map<string, Set<string>>();
+	const dispose = (name: string, root: string) =>
+		disposable.set(
+			name,
+			(disposable.get(name) ?? new Set()).add(resolve(root)),
+		);
 	for (const checkout of input.checkouts) {
 		const names = namesOf(input, checkout);
-		for (const name of names.ci) disposable.set(name, checkout.root);
+		for (const name of names.ci) dispose(name, checkout.root);
 		for (const name of names.dev) {
 			if (checkout.exists) kept.add(name);
-			else disposable.set(name, checkout.root);
+			else dispose(name, checkout.root);
 		}
 	}
 
-	const roots = new Set(
-		input.checkouts.map((checkout) => canonical(checkout.root)),
-	);
 	const why = new Map<string, string>();
 	for (const name of input.liveProjects) why.set(name, "a run is using it");
 	for (const container of input.resources.containers) {
+		// Compared as recorded, not resolved through links: a stack started
+		// from a symlink to a checkout is named after the link, so its name
+		// can read as that checkout's ci stack while being a dev stack.
+		const owners = disposable.get(container.project);
 		if (container.running)
 			why.set(container.project, "a container is running (stop it first)");
-		else if (!container.root || !roots.has(canonical(container.root)))
+		else if (!container.root || !owners?.has(resolve(container.root)))
 			why.set(
 				container.project,
-				"a container was not started by buncargo from one of this project's checkouts",
+				"a container was not started by buncargo from the checkout this name belongs to",
 			);
 	}
 
 	const plan: ProjectPrunePlan = { remove: [], kept: [] };
 	const stacks = new Map<string, ProjectPruneStack>();
 	const stackOf = (project: string) => {
-		const root = disposable.get(project);
-		if (root === undefined || kept.has(project) || why.has(project))
-			return undefined;
+		const owners = disposable.get(project);
+		if (!owners || kept.has(project) || why.has(project)) return undefined;
+		// Its containers' checkout when it has any (they all agree by now).
+		const root =
+			input.resources.containers.find((c) => c.project === project)?.root ??
+			[...owners][0] ??
+			"";
 		let stack = stacks.get(project);
 		if (!stack) {
 			stack = {
