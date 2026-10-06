@@ -91,6 +91,8 @@ export function openEscapeAt(raw: string): number {
 const URL_CONTINUATION = /^[\w\-.~:/?#[\]@!$&*+=%]+/;
 /** A line ending in a URL: the token, then only padding (box frames are spaces by now). */
 const TRAILING_URL = /(\S*:\/\/[^\s|]*)[\s|]*$/;
+/** A line's last token, then only padding. */
+const TRAILING_TOKEN = /(\S+)[\s|]*$/;
 /** Leading padding of a continuation row: spaces, and `|` column separators. */
 const ROW_PADDING = /^[\s|]*/;
 /** A capitalised word on its own is the next line of prose, not a URL's tail. */
@@ -162,7 +164,9 @@ export function looksLikeCompleteUrl(value: string): boolean {
  * by the frame and the log's columns. A row is joined to the line above when
  * that line ends in a URL and the row starts with what can continue one: the
  * whole row when it is a single token (`are.com`), or its first token when
- * the URL above cannot be complete without it. Nothing else is touched.
+ * the URL above cannot be complete without it. A row wrapped inside the
+ * scheme (`Using URL: htt`, then `ps://…`) is joined when the two halves
+ * make `http://` or `https://`. Nothing else is touched.
  */
 export function joinWrappedUrls(text: string): string {
 	const joined: string[] = [];
@@ -172,6 +176,19 @@ export function joinWrappedUrls(text: string): string {
 			previous === undefined ? undefined : TRAILING_URL.exec(previous);
 		const content = line.replace(ROW_PADDING, "");
 		const token = URL_CONTINUATION.exec(content)?.[0];
+		const head =
+			previous === undefined ? undefined : TRAILING_TOKEN.exec(previous);
+		if (
+			previous !== undefined &&
+			head?.[1] &&
+			token &&
+			!head[1].includes("://") &&
+			/^https?:\/\/./i.test(head[1] + token)
+		) {
+			joined[joined.length - 1] =
+				previous.slice(0, head.index + head[1].length) + content;
+			continue;
+		}
 		if (previous !== undefined && url?.[1] && token && !token.includes("://")) {
 			const wholeRow = token === content.trimEnd();
 			const incomplete = !looksLikeCompleteUrl(url[1]);

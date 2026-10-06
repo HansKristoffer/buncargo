@@ -137,6 +137,17 @@ lost)?", which hangs a non-interactive run. So a volume's checkout is unknowable
 (64-hex) Docker volumes are filtered out as never ours, and anything unattributable is counted and
 left alone rather than guessed at.
 
+`prune --project` (`project-prune.ts`) can say more, because the config and Git are in hand: the
+project's stacks are exactly the names `checkoutProjectNames` gives each checkout in `.git`'s
+worktree list, deleted ones included, under current and pre-12 naming. Never a prefix match: a
+renamed worktree's dev stack can read `<prefix>-<dir>-ci-<name>`, and another project can share the
+prefix. It is a flag rather than the default inside a checkout so plain `prune` keeps meaning the
+same thing everywhere, and it does not sweep first, since the sweep reaches every project. A
+container in the stack without this project's `buncargo.root` keeps the whole stack. An inventory
+that fails aborts rather than reading as empty, and each stack is removed under its lifecycle lock
+after a fresh registry read, like the sweep. It is Docker-only through two optional adapter
+methods: Apple records no Compose project on volumes.
+
 ## BuncargoBar
 
 `menubar/` is the macOS menu bar app (Swift 6 / SwiftUI `MenuBarExtra`, SwiftPM, no Xcode project).

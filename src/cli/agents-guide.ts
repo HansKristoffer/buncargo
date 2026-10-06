@@ -92,6 +92,10 @@ hardcode a port. Ask buncargo instead.
 - Each checkout keeps its port offset (\`bunx buncargo ports\`). Do not set
   \`BUNCARGO_PORT_OFFSET\` or edit \`.buncargo/ports.json\`; to move a checkout,
   \`bunx buncargo ports pin <offset>\`.
+- Docker out of disk, or hanging: \`bunx buncargo prune --project --dry-run\`
+  lists this project's leftover \`ci\` stacks and deleted worktrees' stacks.
+  Removing them deletes their data, so ask before running it without
+  \`--dry-run\`. It never touches an existing checkout's dev database.
 
 ## Changing dev.config.ts
 

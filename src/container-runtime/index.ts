@@ -27,6 +27,12 @@ export {
 	withProjectLifecycleLock,
 } from "./project-lock";
 export {
+	type ProjectPruneInput,
+	type ProjectPrunePlan,
+	type ProjectPruneStack,
+	planProjectPrune,
+} from "./project-prune";
+export {
 	orphanedVolumes,
 	type PruneInput,
 	planVolumePrune,
@@ -62,6 +68,10 @@ export {
 	sweepOrphanedContainers,
 } from "./sweep";
 export {
+	type ComposeProjectContainer,
+	type ComposeProjectResource,
+	type ComposeProjectResourceKind,
+	type ComposeProjectResources,
 	type ContainerDownRequest,
 	type ContainerRuntimeAdapter,
 	ContainerRuntimeUnavailableError,

@@ -137,6 +137,8 @@ export interface DevEnvironment<
 	readonly portOffsetProvenance: PortOffsetProvenance;
 	/** Whether running in a git worktree */
 	readonly isWorktree: boolean;
+	/** `options.worktreeIsolation`: whether worktrees get stacks of their own. */
+	readonly worktreeIsolation: boolean;
 	/** Local IP address for mobile connectivity */
 	readonly localIp: string;
 	/** Path to monorepo root */

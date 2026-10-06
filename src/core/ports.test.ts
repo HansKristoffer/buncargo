@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { AppConfig, ServiceConfig } from "../types";
 import { applyHostPlanToUrls } from "./hosts/plan";
 import {
+	checkoutProjectNames,
 	computeDevIdentity,
 	computeLoopbackUrls,
 	computeUrls,
@@ -426,5 +427,64 @@ describe("computeDevIdentity", () => {
 		} finally {
 			rmSync(testDir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("checkoutProjectNames", () => {
+	it("names a checkout's dev and ci stacks the way its runs do", () => {
+		const parent = join(tmpdir(), `buncargo-names-test-${Date.now()}`);
+		const worktree = join(parent, "t3code-fc4fa622");
+		const renamed = join(parent, "renamed");
+		mkdirSync(worktree, { recursive: true });
+		mkdirSync(renamed, { recursive: true });
+		try {
+			writeFileSync(
+				join(worktree, ".git"),
+				"gitdir: /tmp/repo/.git/worktrees/t3code-fc4fa622",
+			);
+			writeFileSync(
+				join(renamed, ".git"),
+				"gitdir: /tmp/repo/.git/worktrees/Feature_A",
+			);
+			for (const root of [worktree, renamed, parent]) {
+				const names = checkoutProjectNames({ projectPrefix: "gey", root });
+				expect(names).toEqual({
+					dev: computeDevIdentity({ projectPrefix: "gey", root }).projectName,
+					ci: computeDevIdentity({ projectPrefix: "gey", root, suffix: "ci" })
+						.projectName,
+				});
+			}
+			expect(
+				checkoutProjectNames({ projectPrefix: "gey", root: renamed }),
+			).toEqual({
+				dev: "gey-renamed-feature-a",
+				ci: "gey-renamed-ci-feature-a",
+			});
+		} finally {
+			rmSync(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("names a deleted worktree's stacks from its worktree name", () => {
+		const gone = { projectPrefix: "gey", root: "/nowhere/renamed" };
+		expect(checkoutProjectNames({ ...gone, worktree: "Feature_A" })).toEqual({
+			dev: "gey-renamed-feature-a",
+			ci: "gey-renamed-ci-feature-a",
+		});
+		expect(checkoutProjectNames({ ...gone, worktree: "renamed" })).toEqual({
+			dev: "gey-renamed",
+			ci: "gey-renamed-ci",
+		});
+		expect(checkoutProjectNames({ ...gone, worktree: null })).toEqual({
+			dev: "gey-renamed",
+			ci: "gey-renamed-ci",
+		});
+		expect(
+			checkoutProjectNames({
+				...gone,
+				worktree: "Feature_A",
+				worktreeIsolation: false,
+			}),
+		).toEqual({ dev: "gey-renamed", ci: "gey-renamed-ci" });
 	});
 });

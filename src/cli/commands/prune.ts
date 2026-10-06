@@ -1,13 +1,21 @@
 import {
 	availableContainerRuntimes,
+	type ContainerRuntimeAdapter,
+	containerRuntimeForEnv,
 	listBuncargoContainers,
 	orphanedVolumes,
+	type ProjectPruneStack,
+	planProjectPrune,
 	planVolumePrune,
 	sweepOrphanedContainers,
 	type VolumeReport,
+	withProjectLifecycleLock,
 } from "../../container-runtime";
+import { FileLockTimeoutError } from "../../core/file-lock";
+import { listGitCheckouts } from "../../core/git-checkouts";
 import { askConfirm, isInteractive } from "../../core/prompt";
-import { readAllRuns } from "../../core/run-registry";
+import { readAllRuns, readLiveRuns } from "../../core/run-registry";
+import { loadDevEnv } from "../../loader";
 import * as log from "../log";
 import { parsePruneArgs, printPruneHelp } from "../prune-flags";
 
@@ -30,6 +38,7 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 		printPruneHelp();
 		return 1;
 	}
+	if (parsed.project) return pruneProject(parsed);
 
 	const runtimes = availableContainerRuntimes();
 	if (runtimes.length === 0) {
@@ -127,4 +136,144 @@ function reportUnattributed(reports: readonly VolumeReport[]): void {
 	log.info(
 		`${unattributed.length} volume${unattributed.length === 1 ? "" : "s"} could not be traced to a project and ${unattributed.length === 1 ? "was" : "were"} left alone.`,
 	);
+}
+
+/**
+ * `buncargo prune --project`: this project's leftover stacks only.
+ *
+ * No sweep first, unlike the machine-wide prune: that would reach other
+ * projects' stacks. Every inventory (Git, the runtime, the run registry) must
+ * answer, or nothing is removed: an empty answer makes everything disposable.
+ */
+async function pruneProject(parsed: {
+	dryRun: boolean;
+	yes: boolean;
+}): Promise<number> {
+	const env = await loadDevEnv({ readOnly: true });
+	const runtime = containerRuntimeForEnv(env);
+	const list = runtime.listComposeProjectResources;
+	if (!list || !runtime.removeComposeProjectResource) {
+		log.error(
+			`prune --project needs Docker. ${runtime.displayName} records no Compose project on its volumes, so none can be traced to a checkout.`,
+		);
+		return 1;
+	}
+	if (!runtime.isAvailable()) {
+		log.info(`${runtime.displayName} is not running. Nothing to prune.`);
+		return 0;
+	}
+
+	const checkouts = listGitCheckouts(env.root);
+	const plan = planProjectPrune({
+		projectPrefix: env.projectPrefix,
+		worktreeIsolation: env.worktreeIsolation,
+		checkouts,
+		resources: list.call(runtime),
+		liveProjects: await liveProjects(),
+	});
+
+	for (const stack of plan.kept)
+		log.info(`Kept ${stack.projectName}: ${stack.reason}.`);
+	if (plan.remove.length === 0) {
+		log.info(
+			`Nothing to reclaim across ${checkouts.length} checkout${checkouts.length === 1 ? "" : "s"}. Every existing checkout's dev stack is kept.`,
+		);
+		return 0;
+	}
+
+	log.line();
+	log.info(
+		`${plan.remove.length} stack${plan.remove.length === 1 ? "" : "s"} of this project's ci runs and deleted worktrees:`,
+	);
+	for (const stack of plan.remove) {
+		const parts = [
+			count(stack.containers.length, "stopped container"),
+			count(stack.volumes.length, "volume"),
+			count(stack.networks.length, "network"),
+		].filter(Boolean);
+		log.line(`  ${stack.projectName}  (${parts.join(", ")})`);
+		for (const volume of stack.volumes) log.line(`    volume  ${volume}`);
+	}
+	log.line();
+	log.warn("Removing these destroys their data, databases included.");
+
+	if (parsed.dryRun) {
+		log.hint("Run without --dry-run to remove them.");
+		return 0;
+	}
+	if (!parsed.yes) {
+		const accepted =
+			isInteractive() &&
+			(await askConfirm([
+				`  Remove ${plan.remove.length} stack${plan.remove.length === 1 ? "" : "s"}? This cannot be undone.`,
+				"",
+				"  y to remove  ·  Enter to keep them",
+			]));
+		if (!accepted) {
+			log.info("Kept. Nothing was removed.");
+			return 0;
+		}
+	}
+
+	let removed = 0;
+	for (const stack of plan.remove) {
+		if (await removeStack(runtime, stack)) removed++;
+	}
+	log.done(
+		`Removed ${removed} of ${plan.remove.length} stack${plan.remove.length === 1 ? "" : "s"}`,
+	);
+	return 0;
+}
+
+async function liveProjects(): Promise<Set<string>> {
+	return new Set((await readLiveRuns()).map((run) => run.projectName));
+}
+
+function count(n: number, noun: string): string {
+	return n === 0 ? "" : `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * One stack, under its lifecycle lock and decided again from a fresh registry
+ * read, like the sweep: a run that started since the listing claims before it
+ * takes the lock. Containers first, without force, so a running one is
+ * refused and its volume stays in use.
+ */
+async function removeStack(
+	runtime: ContainerRuntimeAdapter,
+	stack: ProjectPruneStack,
+): Promise<boolean> {
+	const remove = runtime.removeComposeProjectResource?.bind(runtime);
+	if (!remove) return false;
+	try {
+		return await withProjectLifecycleLock(
+			stack.projectName,
+			stack.root,
+			async () => {
+				if ((await liveProjects()).has(stack.projectName)) {
+					log.info(`Kept ${stack.projectName}: a run started using it.`);
+					return false;
+				}
+				let complete = true;
+				for (const [kind, names] of [
+					["container", stack.containers],
+					["volume", stack.volumes],
+					["network", stack.networks],
+				] as const) {
+					for (const name of names) {
+						const error = await remove(kind, name);
+						if (error === undefined) continue;
+						complete = false;
+						log.warn(`Kept ${kind} ${name}: ${error}`);
+					}
+				}
+				return complete;
+			},
+			{ timeoutMs: 0 },
+		);
+	} catch (error) {
+		if (!(error instanceof FileLockTimeoutError)) throw error;
+		log.info(`Kept ${stack.projectName}: a run is starting or stopping it.`);
+		return false;
+	}
 }

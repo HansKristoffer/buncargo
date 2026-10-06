@@ -22,6 +22,12 @@ const FLAGS = {
 		kind: "boolean",
 		description: "Skip the confirmation (for scripts)",
 	},
+	project: {
+		name: "--project",
+		kind: "boolean",
+		description:
+			"Only this project's leftovers: every checkout's ci stack and every stack of a deleted worktree (containers, volumes, networks)",
+	},
 } as const satisfies Record<string, FlagSpec>;
 
 export const PRUNE_COMMAND_SPEC: CommandSpec = {
@@ -43,6 +49,11 @@ export const PRUNE_COMMAND_SPEC: CommandSpec = {
 			command: "bunx buncargo prune",
 			description: "Review the list, then confirm removal",
 		},
+		{
+			command: "bunx buncargo prune --project --dry-run",
+			description:
+				"List this project's leftover ci and deleted-worktree stacks",
+		},
 	],
 };
 
@@ -51,6 +62,7 @@ export interface PruneCliArgs {
 	help: boolean;
 	dryRun: boolean;
 	yes: boolean;
+	project: boolean;
 }
 
 export function parsePruneArgs(rawArgs: string[]): PruneCliArgs {
@@ -59,6 +71,7 @@ export function parsePruneArgs(rawArgs: string[]): PruneCliArgs {
 		help: readBooleanFlag(rawArgs, FLAGS.help),
 		dryRun: readBooleanFlag(rawArgs, FLAGS.dryRun),
 		yes: readBooleanFlag(rawArgs, FLAGS.yes),
+		project: readBooleanFlag(rawArgs, FLAGS.project),
 	};
 }
 

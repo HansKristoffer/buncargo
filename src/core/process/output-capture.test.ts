@@ -202,6 +202,26 @@ describe("joinWrappedUrls", () => {
 		const text = "https://a.example.com\nhttps://b.example.com\n";
 		expect(joinWrappedUrls(text)).toBe(text);
 	});
+
+	it("joins a URL wrapped inside its scheme", () => {
+		for (const cut of ["h", "htt", "https", "https:", "https:/"])
+			expect(
+				joinWrappedUrls(
+					[
+						`app | Using URL: ${cut}`,
+						`    | ${"https://manufacturing-analytical".slice(cut.length)}`,
+						"    | -specifications-hamburg.trycloudflare.com",
+					].join("\n"),
+				),
+			).toBe(
+				"app | Using URL: https://manufacturing-analytical-specifications-hamburg.trycloudflare.com",
+			);
+	});
+
+	it("leaves prose that ends in the start of a scheme alone", () => {
+		const text = "Install with\nhttps://example.com\nor ht\ntp\n";
+		expect(joinWrappedUrls(text)).toBe(text);
+	});
 });
 
 describe("URLs a terminal wrapped", () => {

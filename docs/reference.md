@@ -201,6 +201,8 @@ export default defineDevConfig({
 
 `buncargo ci [--migrate] [--seed] [--services=a,b] -- <command>` starts the configured services (all of them, or `--services`), applies migrations and the seed with the same config as local, runs the command with the checkout env (but no Infisical secrets: a CI job should not need Infisical access for its tests; migrations and the seed keep their scopes), and tears everything down, volumes included. It runs as its own `<project>-ci` stack, with its own ports and compose file, so running it on a laptop never touches the checkout's dev database. A PR workflow then needs no `services: postgres` block or hand-written `DATABASE_URL`, and "migrations apply" and "the seed works" are tested exactly as they run locally. Without a command it only prepares; the exit code is the command's, or the seed's when that fails. `seed.check` is skipped, because a CI database is never warm.
 
+The teardown runs however the run ends: the command failing, the services failing to start, or `SIGINT`/`SIGTERM`/`SIGHUP` at any point, including one that arrives while the stack is already coming down. An interrupted run exits `130`/`143`/`129`. Only a run killed outright (`SIGKILL`) leaves its stack: the sweep (the watchdog, `ls`, `doctor`) removes its containers, and `buncargo prune --project` its volume.
+
 `buncargo prisma migrate-check` wraps `prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code` against a shadow database. The shadow database (`<database>_shadow`) is created inside the configured Postgres service, so no host `psql` is needed. Prisma 6 and older get it as `--shadow-database-url` (and `--to-schema-datamodel`, their name for the flag). Prisma 7 removed that flag and reads the shadow URL from `prisma.config.ts`, so point `datasource.shadowDatabaseUrl` at `env("SHADOW_DATABASE_URL")`, which buncargo sets. `--migrations=<dir>` and `--schema=<path>` override the paths (relative to `prisma.cwd`), and arguments after `--` go to `migrate diff`. Exit code 2 means the schema has changes no migration contains.
 
 The `actions/setup` composite action installs Bun from `.bun-version` (or `bun-version`), restores a cache keyed on `bun.lock` and the Bun version, and runs `bun install --frozen-lockfile`. The cache covers the Bun store and every workspace's `node_modules` (`apps/*`, `packages/*`, `extensions/*` by default; set `node-modules` to change it), because the isolated linker puts links in each workspace and a root-only cache never skips the install.
@@ -728,6 +730,21 @@ A port nothing visible holds but that cannot be bound (a root process `lsof` hid
 Offsets use a step of 100 in the 100–9000 range so `5432` becomes `5532` / `5632` instead of overlapping nearby defaults.
 
 `worktreeIsolation: false` shares the compose project name **and** the offset across worktrees.
+
+`checkoutProjectNames()` returns the Compose project names a checkout's stacks run under, for tools that find or clean up its containers and volumes without loading the config:
+
+```ts
+import { checkoutProjectNames } from "buncargo";
+
+checkoutProjectNames({ projectPrefix: "gey", root: "/code/t3code-fc4fa622" });
+// { dev: "gey-t3code-fc4fa622", ci: "gey-t3code-fc4fa622-ci" }
+
+// A deleted worktree: name it, since its `.git` file is gone.
+checkoutProjectNames({ projectPrefix: "gey", root: "/code/renamed", worktree: "feature" });
+// { dev: "gey-renamed-feature", ci: "gey-renamed-ci-feature" }
+```
+
+`root` defaults to the monorepo root above the working directory, and `worktree` to the name in the root's `.git` file (`null` is the main checkout). Pass the config's `worktreeIsolation` when it is `false`.
 
 Ports still exist: processes listen on the allocated numbers, Docker publishes them, and tools like TablePlus keep using `localhost:<port>`. Named hosts are an overlay so humans and `*_URL` env vars stop typing those ports.
 
@@ -1303,6 +1320,15 @@ bunx buncargo prune --yes       # For scripts that have already decided
 
 Volumes carry no buncargo labels on purpose: Compose compares a volume against the file and offers to *recreate* it when they differ, which hangs a non-interactive run and destroys the data. So prune cannot tell which checkout a volume came from, and says so rather than guessing — volumes it cannot attribute to a project are counted and left alone.
 
+`buncargo prune --project` is the same, for one project: run it in any checkout, and it removes only that project's leftovers, by name. That is every checkout's `ci` stack, and every stack of a worktree whose directory was deleted (until `git worktree prune` forgets it). It takes their stopped containers, volumes and networks:
+
+```bash
+bunx buncargo prune --project --dry-run   # List this project's leftovers
+bunx buncargo prune --project             # Review, then confirm
+```
+
+Each existing checkout's dev stack is kept, and so is any stack with a running container or a live run, and any stack with a container that buncargo did not start from one of this project's checkouts (its `buncargo.root` label). Nothing is forced, so Docker refuses whatever is in use, and if Git, Docker or the run registry cannot be read, nothing is removed. Docker only: Apple `container` records no Compose project on its volumes.
+
 Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 
 ## Troubleshooting
@@ -1322,7 +1348,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `options.primaryApp "…" must match a configured app key` | Typo or removed app | Point it at a real `apps.<name>` |
 | `Only one app may set interactive: true` | Two TTY owners | Keep one `interactive` or use `--attach` |
 | `Watchdog did not start` | Missing `dist/core/watchdog-runner.js` | `bun run build` / reinstall the package |
-| Disk full of old worktree volumes | Deleted checkouts leave their databases behind | `buncargo prune --dry-run`, then `buncargo prune` |
+| Disk full of old worktree volumes | Deleted checkouts and interrupted `ci` runs leave their databases behind | `buncargo prune --project --dry-run` for this project, `buncargo prune --dry-run` for every project; then without `--dry-run` |
 | `Could not allocate a free port block` | 80 shifted blocks still conflict | Set `BUNCARGO_PORT_OFFSET` or free ports (`buncargo doctor`) |
 | Named URL does not resolve / TLS warning | Daemon down or CA not trusted | `buncargo hosts status`, then `buncargo hosts install` or `doctor --fix` |
 | `Named-hosts service points at … which no longer exists` | The install ran from a `node_modules` that was since removed | `buncargo hosts install` to re-point it at the current CLI |
