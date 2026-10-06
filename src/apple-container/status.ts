@@ -1,9 +1,11 @@
 import type {
 	ServiceDiagnosis,
 	ServiceDiagnosisRequest,
+	ServicePortProbeRequest,
 	ServiceRuntimeState,
 } from "../container-runtime/types";
 import { remainingTime } from "../core/deadline";
+import { isTcpPortOpen } from "../core/network";
 import { SERVICE_HASH_LABEL } from "../docker-compose/interpolate";
 import type { BuncargoContainer, PortContainerOwner } from "../types";
 import type { AppleContainerCli } from "./cli";
@@ -24,6 +26,8 @@ export interface AppleContainerRecord {
 	state: string;
 	labels: Record<string, string>;
 	ports: PublishedPort[];
+	/** The container's IPv4 address on Apple's network, while it runs. */
+	address?: string;
 }
 
 export interface PublishedPort {
@@ -31,6 +35,8 @@ export interface PublishedPort {
 	hostPort: number;
 	containerPort?: number;
 	protocol?: string;
+	/** Consecutive ports from `hostPort` a range publishes. Default 1. */
+	count?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -93,11 +99,13 @@ function readPort(entry: unknown): PublishedPort | null {
 	const containerPort = Number(
 		entry.containerPort ?? entry.container_port ?? entry.container,
 	);
+	const count = Number(entry.count);
 	return {
 		hostAddress: readString(entry.hostAddress ?? entry.host_address),
 		hostPort,
 		containerPort: Number.isFinite(containerPort) ? containerPort : undefined,
-		protocol: readString(entry.protocol),
+		protocol: readString(entry.protocol ?? entry.proto),
+		...(Number.isInteger(count) && count > 1 ? { count } : {}),
 	};
 }
 
@@ -122,6 +130,18 @@ function readPorts(source: Record<string, unknown>): PublishedPort[] {
 	return [];
 }
 
+function readAddress(source: Record<string, unknown>): string | undefined {
+	const status = isRecord(source.status) ? source.status : undefined;
+	const networks = Array.isArray(status?.networks) ? status.networks : [];
+	for (const network of networks) {
+		if (!isRecord(network)) continue;
+		// "192.168.64.5/24"
+		const address = readString(network.ipv4Address ?? network.address);
+		if (address) return address.split("/")[0];
+	}
+	return undefined;
+}
+
 export function parseContainerRecords(stdout: string): AppleContainerRecord[] {
 	const trimmed = stdout.trim();
 	if (!trimmed) return [];
@@ -135,12 +155,14 @@ export function parseContainerRecords(stdout: string): AppleContainerRecord[] {
 	return entries.filter(isRecord).flatMap((entry) => {
 		const id = readId(entry);
 		if (!id) return [];
+		const address = readAddress(entry);
 		return [
 			{
 				id,
 				state: readState(entry),
 				labels: readLabels(entry),
 				ports: readPorts(entry),
+				...(address ? { address } : {}),
 			},
 		];
 	});
@@ -245,8 +267,9 @@ function portOwnersFromRecords(
 			composeProject: record.labels[PROJECT_LABEL] || undefined,
 		};
 		for (const published of record.ports) {
-			if (!owners.has(published.hostPort)) {
-				owners.set(published.hostPort, owner);
+			for (let offset = 0; offset < (published.count ?? 1); offset++) {
+				const port = published.hostPort + offset;
+				if (!owners.has(port)) owners.set(port, owner);
 			}
 		}
 	}
@@ -328,4 +351,58 @@ export async function diagnoseAppleService(
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * Whether the service listens on the container port behind `hostPort`.
+ *
+ * Asked of the container's own address because the host side cannot answer:
+ * Apple's port forwarder accepts a connection on the published port whether or
+ * not anything listens inside, so a host-side connect passes the moment the VM
+ * boots. The container address refuses or drops instead, so the connect is
+ * bounded short to keep the poll cadence.
+ */
+export async function probeAppleServicePort(
+	cli: AppleContainerCli,
+	request: ServicePortProbeRequest,
+): Promise<boolean> {
+	const deadline = performance.now() + (request.timeoutMs ?? 1000);
+	const name = containerNameFor(request.projectName, request.serviceName);
+	const record = (
+		await listContainerRecordsAsync(
+			cli,
+			request.signal,
+			remainingTime(deadline),
+		)
+	).find((candidate) => candidate.id === name);
+	if (!record?.address || !isRunningState(record.state)) return false;
+	const published = record.ports.find(
+		(port) =>
+			request.hostPort >= port.hostPort &&
+			request.hostPort < port.hostPort + (port.count ?? 1),
+	);
+	const containerPort =
+		published?.containerPort === undefined
+			? request.hostPort
+			: published.containerPort + (request.hostPort - published.hostPort);
+	return isTcpPortOpen(
+		containerPort,
+		record.address,
+		Math.min(250, remainingTime(deadline)),
+		request.signal,
+	);
+}
+
+/** Whether the service's container is running, for an interactive exec. */
+export async function isAppleServiceRunning(
+	cli: AppleContainerCli,
+	projectName: string,
+	serviceName: string,
+	signal?: AbortSignal,
+): Promise<boolean> {
+	const name = containerNameFor(projectName, serviceName);
+	const record = (await listContainerRecordsAsync(cli, signal)).find(
+		(candidate) => candidate.id === name,
+	);
+	return record !== undefined && isRunningState(record.state);
 }

@@ -21,8 +21,11 @@ interface RecordingCli extends AppleContainerCli {
  */
 function recordingCli(
 	lsRecords: unknown[] = [],
-	/** Subcommands that should fail, with the stderr they fail with. */
-	failures: Record<string, string> = {},
+	/**
+	 * Subcommands that should fail, with the stderr they fail with. A list
+	 * fails that many calls in turn, then succeeds.
+	 */
+	failures: Record<string, string | string[]> = {},
 ): RecordingCli {
 	const calls: string[][] = [];
 	const cli: RecordingCli = {
@@ -31,7 +34,10 @@ function recordingCli(
 		found: true,
 		run(args): AppleCliResult {
 			calls.push(args);
-			const failure = args[0] ? failures[args[0]] : undefined;
+			const configured = args[0] ? failures[args[0]] : undefined;
+			const failure = Array.isArray(configured)
+				? configured.shift()
+				: configured;
 			if (failure !== undefined) {
 				return { ok: false, exitCode: 1, stdout: "", stderr: failure };
 			}
@@ -82,7 +88,13 @@ describe("appleUp", () => {
 		const run = cli.calls.findIndex((call) => call[0] === "run");
 		expect(volumeCreate).toBeGreaterThanOrEqual(0);
 		expect(run).toBeGreaterThan(volumeCreate);
-		expect(cli.calls[volumeCreate]?.[2]).toBe("gey-main-postgres_data");
+		expect(cli.calls[volumeCreate]).toEqual([
+			"volume",
+			"create",
+			"-s",
+			"256G",
+			"gey-main-postgres_data",
+		]);
 	});
 
 	it("reads the inventory once no matter how many services start", async () => {
@@ -164,6 +176,132 @@ describe("appleUp", () => {
 			),
 		).toBe(true);
 		expect(cli.calls.some((call) => call[0] === "run")).toBe(true);
+	});
+});
+
+describe("appleUp recreating and running", () => {
+	it("stops a running container before deleting it for a config change", async () => {
+		const cli = recordingCli([
+			record("gey-main-postgres", "running", {
+				[CONFIG_HASH_LABEL]: "stale-hash",
+			}),
+		]);
+
+		await appleUp(
+			cli,
+			upRequest(modelFor({ postgres: { port: 5432 } }), ["postgres"]),
+		);
+
+		expect(
+			subcommands(cli).filter((call) => !call.startsWith("volume")),
+		).toEqual([
+			"ls --all",
+			"stop gey-main-postgres",
+			"delete --force",
+			"run --detach",
+		]);
+	});
+
+	it("does not stop a container that is already stopped", async () => {
+		const cli = recordingCli([
+			record("gey-main-postgres", "stopped", {
+				[CONFIG_HASH_LABEL]: "stale-hash",
+			}),
+		]);
+
+		await appleUp(
+			cli,
+			upRequest(modelFor({ postgres: { port: 5432 } }), ["postgres"]),
+		);
+
+		expect(cli.calls.some((call) => call[0] === "stop")).toBe(false);
+	});
+
+	it("runs again once when Apple reports the new container missing", async () => {
+		const cli = recordingCli([], {
+			run: ["Error: container with ID gey-main-redis not found"],
+		});
+
+		await appleUp(
+			cli,
+			upRequest(modelFor({ redis: { port: 6379 } }), ["redis"]),
+		);
+
+		expect(cli.calls.filter((call) => call[0] === "run")).toHaveLength(2);
+	});
+
+	it("does not retry any other run failure", async () => {
+		const cli = recordingCli([], { run: ["Error: image not found: nope"] });
+
+		await expect(
+			appleUp(cli, upRequest(modelFor({ redis: { port: 6379 } }), ["redis"])),
+		).rejects.toThrow(/image not found/);
+		expect(cli.calls.filter((call) => call[0] === "run")).toHaveLength(1);
+	});
+
+	it("names whoever holds a published port", async () => {
+		const holder = Bun.listen({
+			hostname: "0.0.0.0",
+			port: 0,
+			socket: { data() {} },
+		});
+		try {
+			const cli = recordingCli([], {
+				run: `Error: failed to bootstrap container (cause: "bind(descriptor:ptr:bytes:): Address already in use) (errno: 48)")`,
+			});
+
+			await expect(
+				appleUp(
+					cli,
+					upRequest(modelFor({ redis: { port: holder.port } }), ["redis"]),
+				),
+			).rejects.toThrow(
+				new RegExp(`port ${holder.port} held by process ${process.pid}`),
+			);
+		} finally {
+			holder.stop(true);
+		}
+	});
+
+	it("pulls a missing image for its platform only when verbose", async () => {
+		// The inspect fails, the pull after it succeeds.
+		const cli = recordingCli([], { image: ["Error: image not found"] });
+
+		await appleUp(cli, {
+			...upRequest(modelFor({ redis: { port: 6379 } }), ["redis"]),
+			verbose: true,
+		});
+
+		const pull = cli.calls.findIndex(
+			(call) => call[0] === "image" && call[1] === "pull",
+		);
+		expect(cli.calls[pull]).toEqual([
+			"image",
+			"pull",
+			"--platform",
+			"linux/arm64",
+			"redis:7-alpine",
+		]);
+		expect(pull).toBeLessThan(cli.calls.findIndex((call) => call[0] === "run"));
+
+		const quiet = recordingCli([], { image: "Error: image not found" });
+		await appleUp(
+			quiet,
+			upRequest(modelFor({ redis: { port: 6379 } }), ["redis"]),
+		);
+		expect(quiet.calls.some((call) => call[0] === "image")).toBe(false);
+	});
+
+	it("does not pull an image that is already present", async () => {
+		const cli = recordingCli();
+
+		await appleUp(cli, {
+			...upRequest(modelFor({ redis: { port: 6379 } }), ["redis"]),
+			verbose: true,
+		});
+
+		expect(cli.calls).toContainEqual(["image", "inspect", "redis:7-alpine"]);
+		expect(cli.calls.some((call) => call[1] === "pull")).toBe(false);
 	});
 });
 

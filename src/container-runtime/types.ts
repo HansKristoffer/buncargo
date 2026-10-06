@@ -87,6 +87,15 @@ export interface ServiceDiagnosisRequest {
 	tail?: number;
 }
 
+export interface ServicePortProbeRequest {
+	signal?: AbortSignal;
+	timeoutMs?: number;
+	projectName: string;
+	serviceName: string;
+	/** The published host port the health check was configured with. */
+	hostPort: number;
+}
+
 /** How a service container is doing, for reporting a failed startup. */
 export interface ServiceDiagnosis {
 	/** The runtime's own word for the state: "running", "exited", "stopped". */
@@ -211,6 +220,12 @@ export interface ContainerRuntimeAdapter {
 	diagnoseService(
 		request: ServiceDiagnosisRequest,
 	): Promise<ServiceDiagnosis | undefined>;
+	/**
+	 * A `tcp` health check, where connecting to the published host port
+	 * cannot be trusted. Absent means it can: the check connects to the host
+	 * port. Never throws; false for anything but a listening service.
+	 */
+	probeServicePort?(request: ServicePortProbeRequest): Promise<boolean>;
 	/** Every buncargo-labeled container this runtime knows about. */
 	list(): BuncargoContainer[];
 	/**

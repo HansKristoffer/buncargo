@@ -1,7 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { homedir } from "node:os";
 import { buildComposeModel } from "../docker-compose";
-import type { ComposeDocument, ServiceConfig } from "../types";
+import type {
+	ComposeDocument,
+	DockerComposeServiceRaw,
+	ServiceConfig,
+} from "../types";
 import {
 	buildAppleRunPlan,
 	CONFIG_HASH_LABEL,
@@ -35,6 +39,14 @@ function planFor(
 		root: IDENTITY.root,
 		env,
 	});
+}
+
+/**
+ * Compose forms the typed config rejects but a plain JS config can still pass,
+ * since nothing validates the raw service at runtime.
+ */
+function untyped(service: Record<string, unknown>): DockerComposeServiceRaw {
+	return service as DockerComposeServiceRaw;
 }
 
 /** Read the value that follows each occurrence of a flag. */
@@ -150,6 +162,27 @@ describe("sanitizeContainerName", () => {
 	});
 });
 
+describe("containerNameFor", () => {
+	it("keeps a name within Apple's 63-character limit unchanged", () => {
+		expect(containerNameFor("gey-main", "postgres")).toBe("gey-main-postgres");
+	});
+
+	it("shortens a longer name to 63 characters, keeping two of them apart", () => {
+		const long = `gey-${"feature-".repeat(8)}`;
+		const a = containerNameFor(`${long}a`, "postgres");
+		const b = containerNameFor(`${long}b`, "postgres");
+		expect(a).toHaveLength(63);
+		expect(a.startsWith("gey-feature-")).toBe(true);
+		expect(a).not.toBe(b);
+		expect(containerNameFor(`${long}a`, "postgres")).toBe(a);
+	});
+
+	it("leaves long volume names alone so existing data stays reachable", () => {
+		const long = `gey-${"feature-".repeat(8)}`;
+		expect(volumeNameFor(long, "postgres_data")).toBe(`${long}-postgres_data`);
+	});
+});
+
 describe("buildAppleRunPlan", () => {
 	it("translates the postgres preset to container run argv", () => {
 		const plan = planFor({ postgres: { port: 5432 } });
@@ -159,9 +192,11 @@ describe("buildAppleRunPlan", () => {
 		expect(plan.services).toHaveLength(1);
 		expect(service.containerName).toBe("gey-main-postgres");
 		expect(service.image).toBe("pgvector/pgvector:pg16");
-		expect(service.runArgs.slice(0, 4)).toEqual([
+		expect(service.runArgs.slice(0, 6)).toEqual([
 			"run",
 			"--detach",
+			"--progress",
+			"none",
 			"--name",
 			"gey-main-postgres",
 		]);
@@ -262,6 +297,161 @@ describe("buildAppleRunPlan", () => {
 			},
 		});
 		expect(plan.unsupportedKeys).toEqual(["networks", "privileged"]);
+	});
+
+	it("keeps list-form labels, including buncargo's own", () => {
+		const plan = planFor({
+			custom: {
+				port: 9000,
+				docker: { image: "busybox", labels: ["team=core"] },
+			},
+		});
+		const labels = valuesOf(plan.services[0]?.runArgs ?? [], "--label");
+		expect(labels).toContain("team=core");
+		expect(labels).toContain("buncargo.project=gey-main");
+		expect(labels).toContain("buncargo.service=custom");
+	});
+
+	it("reads list-form environment, taking a bare key from the environment", () => {
+		const plan = planFor(
+			{
+				custom: {
+					port: 9000,
+					docker: untyped({
+						image: "busybox",
+						environment: ["A=1", "B", "UNSET", "C=x=y"],
+					}),
+				},
+			},
+			{ B: "from-env" },
+		);
+		expect(valuesOf(plan.services[0]?.runArgs ?? [], "--env")).toEqual([
+			"A=1",
+			"B=from-env",
+			"C=x=y",
+		]);
+	});
+
+	it("takes a valueless map-form variable from the environment", () => {
+		const plan = planFor(
+			{
+				custom: {
+					port: 9000,
+					docker: untyped({
+						image: "busybox",
+						environment: { A: null, B: null },
+					}),
+				},
+			},
+			{ A: "set" },
+		);
+		expect(valuesOf(plan.services[0]?.runArgs ?? [], "--env")).toEqual([
+			"A=set",
+		]);
+	});
+
+	it("translates long-form ports and volumes", () => {
+		const plan = buildAppleRunPlan({
+			projectName: "gey-main",
+			root: "/repo",
+			model: {
+				services: {
+					app: untyped({
+						image: "busybox",
+						ports: [
+							{ target: 80, published: "8080", host_ip: "127.0.0.1" },
+							{ target: 53, published: 5353, protocol: "udp" },
+						],
+						volumes: [
+							{ type: "volume", source: "data", target: "/data" },
+							{
+								type: "bind",
+								source: "./src",
+								target: "/app",
+								read_only: true,
+							},
+							{ type: "tmpfs", target: "/tmp" },
+						],
+					}),
+				},
+				volumes: { data: {} },
+			},
+		});
+		const service = plan.services[0];
+		const args = service?.runArgs ?? [];
+		expect(valuesOf(args, "--publish")).toEqual([
+			"127.0.0.1:8080:80",
+			"5353:53/udp",
+		]);
+		expect(valuesOf(args, "--volume")).toEqual([
+			"gey-main-data:/data",
+			"/repo/src:/app:ro",
+		]);
+		expect(valuesOf(args, "--tmpfs")).toEqual(["/tmp"]);
+		expect(service?.volumes).toEqual(["gey-main-data"]);
+		expect(service?.publishedPorts).toEqual([8080, 5353]);
+	});
+
+	it("refuses a long-form port with no published host port", () => {
+		expect(() =>
+			buildAppleRunPlan({
+				projectName: "gey-main",
+				root: "/repo",
+				model: {
+					services: {
+						app: untyped({ image: "busybox", ports: [{ target: 80 }] }),
+					},
+				},
+			}),
+		).toThrow(/without both "target" and "published"/);
+	});
+
+	it("lists the host ports a service publishes", () => {
+		const plan = planFor(
+			{ postgres: { port: 5432 } },
+			{ POSTGRES_PORT: "15432" },
+		);
+		expect(plan.services[0]?.publishedPorts).toEqual([15432]);
+	});
+
+	it("translates resource limits, env files, capabilities, init and platform", () => {
+		const plan = planFor({
+			custom: {
+				port: 9000,
+				docker: {
+					image: "busybox",
+					mem_limit: "512mb",
+					cpus: 1.5,
+					env_file: ["./.env.local", { path: "/abs/.env" }],
+					cap_add: ["NET_ADMIN"],
+					cap_drop: ["ALL"],
+					init: true,
+					platform: "linux/arm64",
+				},
+			},
+		});
+		const service = plan.services[0];
+		const args = service?.runArgs ?? [];
+		expect(plan.unsupportedKeys).toEqual([]);
+		expect(valuesOf(args, "--memory")).toEqual(["512M"]);
+		expect(valuesOf(args, "--cpus")).toEqual(["2"]);
+		expect(valuesOf(args, "--env-file")).toEqual([
+			"/repo/.env.local",
+			"/abs/.env",
+		]);
+		expect(valuesOf(args, "--cap-add")).toEqual(["NET_ADMIN"]);
+		expect(valuesOf(args, "--cap-drop")).toEqual(["ALL"]);
+		expect(valuesOf(args, "--platform")).toEqual(["linux/arm64"]);
+		expect(args).toContain("--init");
+	});
+
+	it("rounds a byte mem_limit up to whole MiB", () => {
+		const plan = planFor({
+			custom: { port: 9000, docker: { image: "busybox", mem_limit: 1048577 } },
+		});
+		expect(valuesOf(plan.services[0]?.runArgs ?? [], "--memory")).toEqual([
+			"2M",
+		]);
 	});
 
 	it("translates command, entrypoint, working_dir and ulimits", () => {

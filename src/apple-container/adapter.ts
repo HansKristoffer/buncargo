@@ -6,6 +6,7 @@ import type {
 	EnsureRuntimeOptions,
 	ExecInServiceRequest,
 	ServiceDiagnosisRequest,
+	ServicePortProbeRequest,
 } from "../container-runtime/types";
 import type { AppleContainerCli } from "./cli";
 import {
@@ -26,7 +27,9 @@ import {
 	appleProjectServiceStates,
 	diagnoseAppleService,
 	findAppleContainerOnPort,
+	isAppleServiceRunning,
 	listAppleBuncargoContainers,
+	probeAppleServicePort,
 } from "./status";
 import { listAppleVolumes, removeAppleVolumes } from "./volumes";
 
@@ -78,7 +81,17 @@ export function appleContainerRuntimeAdapter(
 		},
 
 		async interactiveExecArgv(request) {
-			// Apple names the container itself, so there is no lookup to make.
+			// Apple names the container itself, so the lookup only confirms it
+			// runs; otherwise the caller would print Apple's own "not found".
+			if (
+				!(await isAppleServiceRunning(
+					cli,
+					request.projectName,
+					request.serviceName,
+					request.signal,
+				))
+			)
+				return undefined;
 			return [
 				options.binary ?? APPLE_CONTAINER_COMMAND,
 				"exec",
@@ -91,6 +104,15 @@ export function appleContainerRuntimeAdapter(
 
 		diagnoseService(request: ServiceDiagnosisRequest) {
 			return diagnoseAppleService(cli, request);
+		},
+
+		async probeServicePort(request: ServicePortProbeRequest) {
+			try {
+				return await probeAppleServicePort(cli, request);
+			} catch {
+				request.signal?.throwIfAborted();
+				return false;
+			}
 		},
 
 		// No `system status` first: the listing fails when the system is down,

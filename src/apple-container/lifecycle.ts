@@ -21,7 +21,9 @@ import {
 import type { AppleContainerRecord } from "./status";
 import { isRunningState, parseContainerRecords } from "./status";
 
-type AppleSteps = Generator<string[], void, AppleCliResult>;
+/** A `container` argv, or one whose output streams to the terminal. */
+type AppleStep = string[] | { args: string[]; stream: true };
+type AppleSteps = Generator<AppleStep, void, AppleCliResult>;
 
 /**
  * Starting and stopping a project's containers on Apple's runtime.
@@ -39,27 +41,48 @@ function failed(result: AppleCliResult, action: string): never {
 	);
 }
 
-/** Turn "port in use" into a message naming whoever holds it. */
-function translatePortError(result: AppleCliResult, action: string): never {
+/**
+ * Turn "port in use" into a message naming whoever holds it.
+ *
+ * Apple's message names no port (`bind(...): Address already in use (errno:
+ * 48)`), so the candidates are the ports this container publishes.
+ */
+function translatePortError(
+	result: AppleCliResult,
+	action: string,
+	publishedPorts: number[],
+): never {
 	const message = `${result.stderr}\n${result.stdout}`;
 	if (
 		/address already in use|port is already allocated|already bound/i.test(
 			message,
 		)
 	) {
-		const portMatch = message.match(/:(\d{2,5})\b/);
-		const port = portMatch?.[1] ? Number.parseInt(portMatch[1], 10) : undefined;
-		if (port !== undefined) {
-			throw new Error(
-				formatPortOwner(port, getPortOwner(port) ?? { pids: [] }),
-			);
+		for (const port of publishedPorts) {
+			const owner = getPortOwner(port);
+			if (owner) throw new Error(formatPortOwner(port, owner));
 		}
 	}
 	failed(result, action);
 }
 
+/**
+ * Apple sometimes reports the container it is creating as missing, seen when
+ * the same name was deleted moments before. A second `run` succeeds.
+ */
+function isTransientRunFailure(result: AppleCliResult): boolean {
+	return /container with id .* not found/i.test(result.stderr);
+}
+
+/**
+ * The size of a new named volume. Apple formats each as a sparse ext4 image,
+ * and formatting its 512G default takes about a second against ~0.4s here,
+ * paid by every new checkout's database. The CLI cannot grow a volume later.
+ */
+const VOLUME_SIZE = "256G";
+
 function* ensureVolume(name: string): AppleSteps {
-	const result = yield ["volume", "create", name];
+	const result = yield ["volume", "create", "-s", VOLUME_SIZE, name];
 	if (result.ok || isAlreadyExistsMessage(result.stderr)) return;
 	failed(result, `create volume ${name}`);
 }
@@ -70,9 +93,26 @@ function* removeContainer(containerName: string): AppleSteps {
 	failed(result, `delete container ${containerName}`);
 }
 
+/**
+ * Pull a missing image where the user can watch it. Inside `run` the pull is
+ * silent, and a first pull of a database image takes minutes. The platform is
+ * explicit because `image pull` otherwise fetches every platform the image has.
+ */
+function* pullIfMissing(plan: ContainerRunPlan): AppleSteps {
+	const present = yield ["image", "inspect", plan.image];
+	if (present.ok) return;
+	console.log(formatStep(`⬇️  Pulling ${plan.image}...`));
+	const pulled = yield {
+		args: ["image", "pull", "--platform", plan.platform, plan.image],
+		stream: true,
+	};
+	if (!pulled.ok) failed(pulled, `pull image ${plan.image}`);
+}
+
 function* startService(
 	plan: ContainerRunPlan,
 	existing: AppleContainerRecord | undefined,
+	verbose: boolean,
 ): AppleSteps {
 	if (existing) {
 		if (existing.labels[CONFIG_HASH_LABEL] === plan.configHash) {
@@ -88,15 +128,30 @@ function* startService(
 			console.log(
 				formatStep(`♻️  Recreating ${plan.serviceName} (config changed)`),
 			);
+			// Stopped first: `delete --force` kills, and the container being
+			// replaced is usually a database with a volume to keep consistent.
+			if (isRunningState(existing.state)) {
+				const stopped = yield ["stop", plan.containerName];
+				if (!stopped.ok && !isMissingResourceMessage(stopped.stderr)) {
+					failed(stopped, `stop container ${plan.containerName}`);
+				}
+			}
 			yield* removeContainer(plan.containerName);
 		}
 	}
 
+	if (verbose) yield* pullIfMissing(plan);
+
 	// The plan already carries interpolated values, so nothing depends on the
 	// child's own environment.
-	const result = yield plan.runArgs;
+	let result = yield plan.runArgs;
+	if (!result.ok && isTransientRunFailure(result)) result = yield plan.runArgs;
 	if (!result.ok) {
-		translatePortError(result, `start container ${plan.containerName}`);
+		translatePortError(
+			result,
+			`start container ${plan.containerName}`,
+			plan.publishedPorts,
+		);
 	}
 }
 
@@ -138,7 +193,7 @@ function* upSteps(request: ContainerUpRequest): AppleSteps {
 	);
 
 	for (const service of plan.services) {
-		yield* startService(service, existing.get(service.containerName));
+		yield* startService(service, existing.get(service.containerName), verbose);
 	}
 
 	if (verbose) console.log(formatDone("Containers started"));
@@ -231,8 +286,11 @@ async function runSteps(
 		options.signal?.throwIfAborted();
 		if (remainingTime(deadline) === 0)
 			throw new Error("Apple container operation timed out");
-		const result = await runAppleAsync(cli, step.value, {
+		const streamed = !Array.isArray(step.value);
+		const args = Array.isArray(step.value) ? step.value : step.value.args;
+		const result = await runAppleAsync(cli, args, {
 			...options,
+			inherit: streamed,
 			timeoutMs: remainingTime(deadline),
 		});
 		step = steps.next(result);

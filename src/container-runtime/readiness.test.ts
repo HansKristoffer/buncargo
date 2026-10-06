@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { serviceHashEnv } from "../docker-compose/interpolate";
 import type { ServiceConfig } from "../types";
 import { ensureServicesRunning } from "./ensure-services";
+import { createBuiltInHealthCheck } from "./health-checks";
 import { runtimeAnsweredReadiness, waitForService } from "./readiness";
 import type {
 	ContainerRuntimeAdapter,
@@ -386,5 +387,52 @@ describe("runtime health overrides", () => {
 				true,
 			),
 		).toBe(false);
+	});
+});
+
+describe("the tcp health check", () => {
+	it("asks a runtime whose published ports cannot be trusted", async () => {
+		const asked: unknown[] = [];
+		const runtime: ContainerRuntimeAdapter = {
+			...stubRuntime(undefined),
+			probeServicePort: async (request) => {
+				asked.push({ service: request.serviceName, port: request.hostPort });
+				return false;
+			},
+		};
+		// Something does listen on the host port: the check must not settle
+		// for that when the runtime has its own answer.
+		const server = Bun.listen({
+			hostname: "127.0.0.1",
+			port: 0,
+			socket: { data() {} },
+		});
+		try {
+			const check = createBuiltInHealthCheck("tcp", "api", {
+				runtime,
+				projectName: "test",
+			});
+			expect(await check(server.port)).toBe(false);
+			expect(asked).toEqual([{ service: "api", port: server.port }]);
+		} finally {
+			server.stop(true);
+		}
+	});
+
+	it("connects to the host port otherwise", async () => {
+		const server = Bun.listen({
+			hostname: "127.0.0.1",
+			port: 0,
+			socket: { data() {} },
+		});
+		try {
+			const check = createBuiltInHealthCheck("tcp", "api", {
+				runtime: stubRuntime(undefined),
+				projectName: "test",
+			});
+			expect(await check(server.port)).toBe(true);
+		} finally {
+			server.stop(true);
+		}
 	});
 });

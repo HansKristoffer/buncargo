@@ -117,13 +117,17 @@ export async function ensureServicesRunning(
 		signal: request.signal,
 	});
 
-	await assertServicePortsClaimable(
-		runtime,
-		services,
-		ports,
-		{ root, projectName },
-		request.signal,
-	);
+	// Two independent reads of the runtime, so a warm start waits for one.
+	const [states] = await Promise.all([
+		readProjectServiceStates(runtime, projectName, request.signal),
+		assertServicePortsClaimable(
+			runtime,
+			services,
+			ports,
+			{ root, projectName },
+			request.signal,
+		),
+	]);
 
 	const composeServiceNames = Object.entries(services).map(
 		([serviceKey, config]) => config.serviceName ?? serviceKey,
@@ -162,11 +166,6 @@ export async function ensureServicesRunning(
 		),
 	};
 
-	const states = await readProjectServiceStates(
-		runtime,
-		projectName,
-		request.signal,
-	);
 	const alreadyRunning = servicesAllRunning(states, composeServiceNames);
 	const upToDate = stackMatches(states, composeServiceNames, hashes, provable);
 
