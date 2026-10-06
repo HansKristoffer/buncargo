@@ -146,6 +146,32 @@ export interface ServiceRuntimeState {
 	healthy?: boolean;
 }
 
+/** A container as `buncargo prune --project` reads it. */
+export interface ComposeProjectContainer {
+	id: string;
+	/** Compose's `com.docker.compose.project` label. */
+	project: string;
+	/** Anything but stopped: running, paused, restarting. */
+	running: boolean;
+	/** The `buncargo.root` label: the checkout that started it, or empty. */
+	root: string;
+}
+
+/** A volume or network as `buncargo prune --project` reads it. */
+export interface ComposeProjectResource {
+	name: string;
+	project: string;
+}
+
+/** Everything a runtime holds that carries a Compose project label. */
+export interface ComposeProjectResources {
+	containers: ComposeProjectContainer[];
+	volumes: ComposeProjectResource[];
+	networks: ComposeProjectResource[];
+}
+
+export type ComposeProjectResourceKind = "container" | "volume" | "network";
+
 /**
  * The single seam between buncargo and a container backend.
  *
@@ -197,6 +223,23 @@ export interface ContainerRuntimeAdapter {
 	listVolumes(): Promise<BuncargoVolume[]>;
 	/** Remove volumes by name. Returns what could not be removed, and why. */
 	removeVolumes(names: string[]): Promise<{ name: string; error: string }[]>;
+	/**
+	 * Every Compose-labelled container, volume and network, for
+	 * `buncargo prune --project`. Throws when the runtime cannot answer, since
+	 * a partial listing makes the rest look disposable.
+	 *
+	 * Absent where the runtime records no Compose project on a volume (Apple),
+	 * so nothing there can be traced to a checkout.
+	 */
+	listComposeProjectResources?(): ComposeProjectResources;
+	/**
+	 * Remove one, without force: the runtime refuses a running container and
+	 * a volume or network still in use. Returns why it was refused.
+	 */
+	removeComposeProjectResource?(
+		kind: ComposeProjectResourceKind,
+		name: string,
+	): Promise<string | undefined>;
 	stopByIds(ids: string[]): void;
 	findContainerOnPort(port: number): PortContainerOwner | undefined;
 	/**

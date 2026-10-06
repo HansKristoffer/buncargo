@@ -149,9 +149,12 @@ function sanitizeProjectSuffix(value: string): string {
  */
 export function getWorktreeProjectSuffix(root?: string): string | null {
 	const worktreeName = getWorktreeName(root);
-	if (!worktreeName) return null;
-	const sanitized = sanitizeProjectSuffix(worktreeName);
-	return sanitized || "worktree";
+	return worktreeName ? worktreeProjectSuffix(worktreeName) : null;
+}
+
+/** A worktree name as it appears in a project name. */
+export function worktreeProjectSuffix(worktreeName: string): string {
+	return sanitizeProjectSuffix(worktreeName) || "worktree";
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -212,6 +215,31 @@ export interface DevIdentity {
 	projectName: string;
 }
 
+/** The suffix `buncargo ci` runs its own stack under. */
+export const CI_PROJECT_SUFFIX = "ci";
+
+/** A project name from its parts; the one place the order is decided. */
+function identityProjectName(
+	projectPrefix: string,
+	root: string,
+	suffix: string | undefined,
+	worktreeSuffix: string | null,
+) {
+	// The directory name is already in the project name, and a worktree's
+	// directory is normally named after it: only a worktree whose directory
+	// says something else still needs its name added.
+	const nameSuffix =
+		worktreeSuffix && worktreeSuffix !== directorySegment(root)
+			? worktreeSuffix
+			: null;
+	const projectSuffix =
+		[suffix, nameSuffix].filter(Boolean).join("-") || undefined;
+	return {
+		projectSuffix,
+		projectName: getProjectName(projectPrefix, projectSuffix, root),
+	};
+}
+
 /**
  * Compute all identity values used by the dev environment in one place.
  */
@@ -226,23 +254,53 @@ export function computeDevIdentity(options: DevIdentityOptions): DevIdentity {
 	const worktree = isWorktree(root);
 	const worktreeSuffix =
 		worktree && worktreeIsolation ? getWorktreeProjectSuffix(root) : null;
-	// The directory name is already in the project name, and a worktree's
-	// directory is normally named after it: only a worktree whose directory
-	// says something else still needs its name added.
-	const nameSuffix =
-		worktreeSuffix && worktreeSuffix !== directorySegment(root)
-			? worktreeSuffix
-			: null;
-	const projectSuffix =
-		[suffix, nameSuffix].filter(Boolean).join("-") || undefined;
-	const projectName = getProjectName(projectPrefix, projectSuffix, root);
-
 	return {
 		worktree,
 		worktreeSuffix,
-		projectSuffix,
-		projectName,
+		...identityProjectName(projectPrefix, root, suffix, worktreeSuffix),
 	};
+}
+
+export interface CheckoutProjectNamesOptions {
+	projectPrefix: string;
+	/** The checkout's root. Default: the monorepo root above the working directory. */
+	root?: string;
+	/**
+	 * The checkout's Git worktree name (the directory under `.git/worktrees`),
+	 * or null for the main checkout. Read from the root's `.git` when left
+	 * out; pass it for a worktree whose directory is already gone.
+	 */
+	worktree?: string | null;
+	/** `options.worktreeIsolation` from the config. Default: true. */
+	worktreeIsolation?: boolean;
+}
+
+/** The Compose project names a checkout's stacks run under. */
+export interface CheckoutProjectNames {
+	/** `buncargo dev`, `dev.start()` and every command that reuses them. */
+	dev: string;
+	/** `buncargo ci`. */
+	ci: string;
+}
+
+/**
+ * The project names buncargo gives a checkout's stacks, for tools that find
+ * or clean up a checkout's containers and volumes without loading its config.
+ */
+export function checkoutProjectNames(
+	options: CheckoutProjectNamesOptions,
+): CheckoutProjectNames {
+	const root = options.root ?? findMonorepoRoot();
+	const worktree =
+		options.worktree === undefined ? getWorktreeName(root) : options.worktree;
+	const worktreeSuffix =
+		worktree !== null && options.worktreeIsolation !== false
+			? worktreeProjectSuffix(worktree)
+			: null;
+	const name = (suffix?: string) =>
+		identityProjectName(options.projectPrefix, root, suffix, worktreeSuffix)
+			.projectName;
+	return { dev: name(), ci: name(CI_PROJECT_SUFFIX) };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

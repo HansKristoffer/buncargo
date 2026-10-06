@@ -1,13 +1,22 @@
 import {
 	availableContainerRuntimes,
+	type ContainerRuntimeAdapter,
+	containerRuntimeForEnv,
 	listBuncargoContainers,
 	orphanedVolumes,
+	type ProjectPrunePlan,
+	type ProjectPruneStack,
+	planProjectPrune,
 	planVolumePrune,
 	sweepOrphanedContainers,
 	type VolumeReport,
+	withProjectLifecycleLock,
 } from "../../container-runtime";
+import { FileLockTimeoutError } from "../../core/file-lock";
+import { listGitCheckouts } from "../../core/git-checkouts";
 import { askConfirm, isInteractive } from "../../core/prompt";
-import { readAllRuns } from "../../core/run-registry";
+import { readAllRuns, readLiveRuns } from "../../core/run-registry";
+import { loadDevEnv } from "../../loader";
 import * as log from "../log";
 import { parsePruneArgs, printPruneHelp } from "../prune-flags";
 
@@ -30,6 +39,7 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 		printPruneHelp();
 		return 1;
 	}
+	if (parsed.project) return pruneProject(parsed);
 
 	const runtimes = availableContainerRuntimes();
 	if (runtimes.length === 0) {
@@ -127,4 +137,160 @@ function reportUnattributed(reports: readonly VolumeReport[]): void {
 	log.info(
 		`${unattributed.length} volume${unattributed.length === 1 ? "" : "s"} could not be traced to a project and ${unattributed.length === 1 ? "was" : "were"} left alone.`,
 	);
+}
+
+/**
+ * `buncargo prune --project`: this project's leftover stacks only.
+ *
+ * No sweep first, unlike the machine-wide prune: that would reach other
+ * projects' stacks. Every inventory (Git, the runtime, the run registry) must
+ * answer, or nothing is removed: an empty answer makes everything disposable.
+ */
+async function pruneProject(parsed: {
+	dryRun: boolean;
+	yes: boolean;
+}): Promise<number> {
+	const env = await loadDevEnv({ readOnly: true });
+	const runtime = containerRuntimeForEnv(env);
+	const list = runtime.listComposeProjectResources;
+	if (!list || !runtime.removeComposeProjectResource) {
+		log.error(
+			`prune --project needs Docker. ${runtime.displayName} records no Compose project on its volumes, so none can be traced to a checkout.`,
+		);
+		return 1;
+	}
+	if (!runtime.isAvailable()) {
+		log.info(`${runtime.displayName} is not running. Nothing to prune.`);
+		return 0;
+	}
+
+	// Every inventory must answer, or this throws before anything is removed.
+	const inventory = async () => {
+		const checkouts = listGitCheckouts(env.root);
+		return {
+			checkouts,
+			plan: planProjectPrune({
+				projectPrefix: env.projectPrefix,
+				worktreeIsolation: env.worktreeIsolation,
+				checkouts,
+				resources: list.call(runtime),
+				liveProjects: new Set(
+					(await readLiveRuns()).map((run) => run.projectName),
+				),
+			}),
+		};
+	};
+	const { checkouts, plan } = await inventory();
+
+	for (const stack of plan.kept)
+		log.info(`Kept ${stack.projectName}: ${stack.reason}.`);
+	if (plan.remove.length === 0) {
+		log.info(
+			`Nothing to reclaim across ${checkouts.length} checkout${checkouts.length === 1 ? "" : "s"}. Every existing checkout's dev stack is kept.`,
+		);
+		return 0;
+	}
+
+	log.line();
+	log.info(
+		`${plan.remove.length} stack${plan.remove.length === 1 ? "" : "s"} of this project's ci runs and deleted worktrees:`,
+	);
+	for (const stack of plan.remove) {
+		const parts = [
+			count(stack.containers.length, "stopped container"),
+			count(stack.volumes.length, "volume"),
+			count(stack.networks.length, "network"),
+		].filter(Boolean);
+		log.line(`  ${stack.projectName}  (${parts.join(", ")})`);
+		for (const volume of stack.volumes) log.line(`    volume  ${volume}`);
+	}
+	log.line();
+	log.warn("Removing these destroys their data, databases included.");
+
+	if (parsed.dryRun) {
+		log.hint("Run without --dry-run to remove them.");
+		return 0;
+	}
+	if (!parsed.yes) {
+		const accepted =
+			isInteractive() &&
+			(await askConfirm([
+				`  Remove ${plan.remove.length} stack${plan.remove.length === 1 ? "" : "s"}? This cannot be undone.`,
+				"",
+				"  y to remove  ·  Enter to keep them",
+			]));
+		if (!accepted) {
+			log.info("Kept. Nothing was removed.");
+			return 0;
+		}
+	}
+
+	let removed = 0;
+	for (const stack of plan.remove) {
+		if (await removeStack(runtime, stack, inventory)) removed++;
+	}
+	log.done(
+		`Removed ${removed} of ${plan.remove.length} stack${plan.remove.length === 1 ? "" : "s"}`,
+	);
+	return 0;
+}
+
+function count(n: number, noun: string): string {
+	return n === 0 ? "" : `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * One stack, under its lifecycle lock and decided again from fresh
+ * inventories, like the sweep: since the listing, a run may have claimed it,
+ * a deleted worktree may be back, a container may have started. Only what
+ * was listed is removed. Containers first, without force, and a refused one
+ * keeps the rest of the stack: its volume may be in use.
+ */
+async function removeStack(
+	runtime: ContainerRuntimeAdapter,
+	listed: ProjectPruneStack,
+	inventory: () => Promise<{ plan: ProjectPrunePlan }>,
+): Promise<boolean> {
+	const remove = runtime.removeComposeProjectResource?.bind(runtime);
+	if (!remove) return false;
+	try {
+		return await withProjectLifecycleLock(
+			listed.projectName,
+			listed.root,
+			async () => {
+				const { plan } = await inventory();
+				const stack = plan.remove.find(
+					(fresh) => fresh.projectName === listed.projectName,
+				);
+				if (!stack) {
+					const reason =
+						plan.kept.find((kept) => kept.projectName === listed.projectName)
+							?.reason ?? "it is no longer a leftover";
+					log.info(`Kept ${listed.projectName}: ${reason}.`);
+					return false;
+				}
+				for (const [kind, names] of [
+					["container", stack.containers],
+					["volume", stack.volumes],
+					["network", stack.networks],
+				] as const) {
+					const confirmed = new Set(listed[`${kind}s`]);
+					for (const name of names.filter((name) => confirmed.has(name))) {
+						const error = await remove(kind, name);
+						if (error === undefined) continue;
+						log.warn(
+							`Kept the rest of ${stack.projectName}: ${kind} ${name}: ${error}`,
+						);
+						return false;
+					}
+				}
+				return true;
+			},
+			{ timeoutMs: 0 },
+		);
+	} catch (error) {
+		if (!(error instanceof FileLockTimeoutError)) throw error;
+		log.info(`Kept ${listed.projectName}: a run is starting or stopping it.`);
+		return false;
+	}
 }

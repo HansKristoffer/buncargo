@@ -1,4 +1,5 @@
 import { CONTAINER_RUNTIME_SELECTIONS } from "../../container-runtime";
+import { CI_PROJECT_SUFFIX } from "../../core/ports";
 import { loadDevEnv } from "../../loader";
 import {
 	type CommandSpec,
@@ -114,7 +115,7 @@ export async function handleCi(args: string[]): Promise<number> {
 	// developer ran this locally against the shared project.
 	const env = (
 		await loadDevEnv({ containerRuntime: parsed.runtime })
-	).withSuffix("ci");
+	).withSuffix(CI_PROJECT_SUFFIX);
 	const services = parsed.services ?? Object.keys(env.services);
 	const unknown = services.filter((name) => !env.services[name]);
 	if (unknown.length > 0) {
@@ -123,8 +124,13 @@ export async function handleCi(args: string[]): Promise<number> {
 		]);
 	}
 
-	try {
-		return await runForwardingSignals(async (signal) => {
+	// The teardown runs inside the signal scope: a second Ctrl-C, or the
+	// runner's SIGTERM after its SIGINT, arriving while the stack comes down
+	// would otherwise kill this process half way and leave the stack, volume
+	// included. The containers' own commands run in their own process group,
+	// so the terminal's signal does not reach them.
+	return runForwardingSignals(async (signal) => {
+		try {
 			await env.start({
 				onlyServices: services,
 				startServers: false,
@@ -157,14 +163,18 @@ export async function handleCi(args: string[]): Promise<number> {
 			// The command gets no shared scope: a CI job should not need
 			// Infisical access for its tests. Migrations and the seed still get
 			// their own scopes.
-			return env.exec(parsed.command, {
+			return await env.exec(parsed.command, {
 				secrets: false,
 				verbose: true,
 				throwOnError: false,
 				signal,
 			});
-		});
-	} finally {
-		await env.stop({ removeVolumes: true });
-	}
+		} catch (error) {
+			// Interrupted before the command: the signal's exit code says so.
+			if (signal.aborted) return { exitCode: 1, stdout: "", stderr: "" };
+			throw error;
+		} finally {
+			await env.stop({ removeVolumes: true });
+		}
+	});
 }

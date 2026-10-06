@@ -91,6 +91,7 @@ export function createDevEnvironment<
 			return ctx.portOffsetProvenance;
 		},
 		isWorktree: ctx.worktree,
+		worktreeIsolation: resolved.options?.worktreeIsolation !== false,
 		localIp: ctx.localIp,
 		root: ctx.root,
 		composeFile: ctx.composeFile,

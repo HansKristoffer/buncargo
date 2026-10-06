@@ -20,6 +20,10 @@ import {
 	findDockerContainerOnPort,
 } from "./port-lookup";
 import { ensureDockerRunning, isDockerDaemonRunning } from "./preflight";
+import {
+	listDockerComposeProjectResources,
+	removeDockerComposeProjectResource,
+} from "./project-resources";
 import { dockerProjectServiceStates } from "./status";
 import { listDockerVolumes, removeDockerVolumes } from "./volumes";
 
@@ -91,6 +95,14 @@ export function dockerRuntimeAdapter(
 
 		removeVolumes(names: string[]) {
 			return removeDockerVolumes(names, binary);
+		},
+
+		listComposeProjectResources() {
+			return listDockerComposeProjectResources(binary);
+		},
+
+		removeComposeProjectResource(kind, name) {
+			return removeDockerComposeProjectResource(kind, name, binary);
 		},
 
 		stopByIds(ids: string[]) {

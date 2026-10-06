@@ -175,6 +175,9 @@ export {
 } from "./container-runtime/index";
 export { getLocalIp, isPortAvailable, waitForServer } from "./core/network";
 export {
+	type CheckoutProjectNames,
+	type CheckoutProjectNamesOptions,
+	checkoutProjectNames,
 	computeDevIdentity,
 	findMonorepoRoot,
 	getProjectName,
