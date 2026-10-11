@@ -33,6 +33,8 @@ hardcode a port. Ask buncargo instead.
   \`bunx buncargo stop <app>\` stops one app and \`bunx buncargo restart <app>\`
   restarts one.
 - An app already running in another terminal is reused, not started twice.
+  One that fails its health check is replaced when its run was started with
+  \`--detach\` or is gone; one in someone's terminal needs \`--takeover\`.
 - An interactive app (Expo) runs in a terminal of its own when you have none.
   Press its keys with \`bunx buncargo send <app> <keys>\`, e.g.
   \`bunx buncargo send expoApp i\` to open the iOS simulator. Do not wrap it in

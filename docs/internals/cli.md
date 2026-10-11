@@ -37,6 +37,14 @@ flow; `flags.ts` (argv primitives), `dev-flags.ts` (the dev command's typed args
   owned the hostnames, and `upsertHostRoutes` only rejects an owner that is still alive, so the
   retry succeeds once that pid is gone. Without it a takeover silently downgrades every named URL
   to `localhost:port`.
+- An app whose port is busy but fails its health check is never reused. `port-reuse.ts` stops a
+  leftover of this checkout that no live run lists (a dev server that outlived a run killed hard),
+  since the spawner would kill it anyway. A live sibling run's server is handed to the takeover
+  instead, never killed during classification: only the takeover retries the named hosts that run
+  still owns. A `--detach` run's server is taken over without asking, as `stop` does; one in a
+  terminal is asked about, and without a terminal the run refuses and names `--takeover`. A
+  Lullu `dev --detach` whose Astro server answered 500 used to block every later `dev` with no
+  way through but finding and stopping it.
 - `checks.ts` runs `SetupCheck`s (core from `core-checks.ts`, then the config's, then
   integrations'). `dev` runs only `fast !== false` ones before anything starts, not in the one-shot
   modes; warnings are printed and never stop it. `commands/setup.ts` offers each fix (`--yes` or CI

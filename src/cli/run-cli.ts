@@ -65,7 +65,12 @@ import {
 } from "./dev-tunnels";
 import { CliError, toCliError } from "./errors";
 import * as log from "./log";
-import { classifyCliApps, parseRequiredCommaSeparatedFlag } from "./port-reuse";
+import {
+	classifyCliApps,
+	parseRequiredCommaSeparatedFlag,
+	type UnhealthyApp,
+	unhealthyAppMessage,
+} from "./port-reuse";
 import { runPreflight } from "./preflight";
 import {
 	flushRunPatches,
@@ -78,6 +83,7 @@ import {
 import {
 	isInteractive,
 	promptTakeover,
+	promptUnhealthyTakeover,
 	stopRunningApps,
 	type TakeoverCandidates,
 	takeoverCandidates,
@@ -464,6 +470,7 @@ async function runDevFlow<
 					startNames: [],
 					reusedNames: [],
 					inferredReuseNames: [],
+					unhealthy: [],
 				}
 			: await timer.measure("app ports", () =>
 					classifyCliApps(appsForDev, env.ports, {
@@ -504,12 +511,46 @@ async function runDevFlow<
 			inferredReuseNames: classifiedApps.inferredReuseNames.filter(
 				(name) => !candidates.names.includes(name),
 			),
+			unhealthy: classifiedApps.unhealthy.filter(
+				(app) => !candidates.names.includes(app.name),
+			),
 		};
 	}
 	// Explicit takeover precedes public URL inheritance as well as private URL acquisition.
 	if (args.takeover && !args.oneShot) {
 		const candidates = takeoverCandidates(classifiedApps.reusedApps, env.ports);
 		if (candidates.names.length) await takeOver(candidates);
+	}
+
+	// A sibling run's server failing its health check is not worth reusing:
+	// replace it through the takeover, which also reclaims its named hosts.
+	// A detached run has no terminal to ask, as with `stop`.
+	if (classifiedApps.unhealthy.length > 0) {
+		const unhealthy = classifiedApps.unhealthy;
+		const candidates = takeoverCandidates(
+			Object.fromEntries(
+				unhealthy.flatMap(({ name }) => {
+					const app = classifiedApps.reusedApps[name];
+					return app ? [[name, app]] : [];
+				}),
+			),
+			env.ports,
+		);
+		const replaceable =
+			!args.oneShot && candidates.names.length === unhealthy.length;
+		const accepted =
+			replaceable &&
+			(unhealthy.every((app) => app.detached) ||
+				(isInteractive() && (await promptUnhealthyTakeover(candidates.names))));
+		if (!accepted) {
+			throw new CliError(
+				unhealthyAppMessage(unhealthy[0] as UnhealthyApp),
+				replaceable
+					? ["Pass --takeover to stop it and run here instead."]
+					: ["Stop the existing process or free the port."],
+			);
+		}
+		await takeOver(candidates);
 	}
 
 	// ── Expose planning ──────────────────────────────────────────────────────
