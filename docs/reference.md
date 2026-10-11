@@ -1360,7 +1360,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `Dependencies are installed (no node_modules)` | Fresh worktree | `bun install`, or `buncargo setup --yes` |
 | `Worker "…" is already running` | Library startup encountered an owned worker | Reuse it through the CLI or use `dev --takeover` |
 | `Apple container cannot verify finite job exit codes yet` | A job was selected with Apple | Use `--runtime=docker` |
-| `already listening on port … but failed health check` | Port busy but `healthEndpoint` failed | Fix the existing server or free the port |
+| `already listening on port … but failed health check` | Port busy, `healthEndpoint` failed, and the server runs in another terminal of this checkout or is not from this checkout | `dev --takeover` replaces another run's server; otherwise free the port. A leftover no run owns and a `--detach` run's server are replaced without asking |
 | `options.primaryApp "…" must match a configured app key` | Typo or removed app | Point it at a real `apps.<name>` |
 | `Only one app may set interactive: true` | Two TTY owners | Keep one `interactive` or use `--attach` |
 | `Watchdog did not start` | Missing `dist/core/watchdog-runner.js` | `bun run build` / reinstall the package |

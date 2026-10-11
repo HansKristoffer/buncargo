@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { classifyCliApps, parseRequiredCommaSeparatedFlag } from "./port-reuse";
+import {
+	classifyCliApps,
+	parseRequiredCommaSeparatedFlag,
+	type UnhealthyHolder,
+} from "./port-reuse";
 
 describe("parseRequiredCommaSeparatedFlag", () => {
 	it("parses comma-separated names", () => {
@@ -71,6 +75,47 @@ describe("classifyCliApps", () => {
 			),
 		).rejects.toThrow(
 			'App "api" is already listening on port 3000, but failed health check at http://localhost:3000/health. Stop the existing process or free the port before reusing it.',
+		);
+	});
+
+	const unhealthyWeb = (holder: UnhealthyHolder) =>
+		classifyCliApps(
+			{ web: { port: 4321, devCommand: "bun run dev", healthEndpoint: "/" } },
+			{ web: 4321 },
+			{
+				isPortBusy: () => true,
+				waitForServer: async () => {
+					throw new Error("unhealthy");
+				},
+				inspectUnhealthyHolder: async () => holder,
+			},
+		);
+
+	it("starts an unhealthy app once its leftover holder was stopped", async () => {
+		const result = await unhealthyWeb("stopped");
+
+		expect(result.startNames).toEqual(["web"]);
+		expect(result.reusedNames).toEqual([]);
+		expect(result.unhealthy).toEqual([]);
+	});
+
+	it("reports an unhealthy app a sibling run serves", async () => {
+		const result = await unhealthyWeb({ detached: true });
+
+		expect(result.reusedNames).toEqual(["web"]);
+		expect(result.unhealthy).toEqual([
+			{
+				name: "web",
+				port: 4321,
+				url: "http://localhost:4321/",
+				detached: true,
+			},
+		]);
+	});
+
+	it("still throws when the unhealthy holder is not this checkout's", async () => {
+		await expect(unhealthyWeb(undefined)).rejects.toThrow(
+			'App "web" is already listening on port 4321',
 		);
 	});
 

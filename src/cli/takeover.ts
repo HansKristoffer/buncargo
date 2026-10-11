@@ -55,6 +55,21 @@ export async function promptTakeover(names: string[]): Promise<boolean> {
 }
 
 /**
+ * Ask whether to replace another run's servers that fail their health check.
+ * Enter cancels this run: reusing them would serve the broken server.
+ */
+export async function promptUnhealthyTakeover(
+	names: string[],
+): Promise<boolean> {
+	const one = names.length === 1;
+	return askConfirm([
+		`  ${joinColoredNames(names)} ${one ? "is" : "are"} running from another terminal, but ${one ? "fails its" : "fail their"} health check.`,
+		"",
+		"  y to stop it and run here  ·  Enter to cancel",
+	]);
+}
+
+/**
  * Stop whatever serves each app's port, so this run can bind it.
  *
  * The other `buncargo dev` notices its servers exit and tears itself down: it

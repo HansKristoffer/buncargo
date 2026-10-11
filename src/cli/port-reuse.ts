@@ -3,10 +3,14 @@ import {
 	classifyPortOccupant,
 	createPortOwnerSnapshotAsync,
 	formatPortOwner,
+	getPortOwner,
+	killPortOwner,
 	type PortOwnerSnapshot,
 } from "../core/process";
 import { findWorker } from "../core/process/worker-ownership";
+import { findRunsByRoot } from "../core/run-registry";
 import type { AppConfig } from "../types";
+import * as log from "./log";
 
 /**
  * CLI-level port reuse, the counterpart to `prepareAppPort` in
@@ -26,7 +30,9 @@ import type { AppConfig } from "../types";
  * fails on it while the health probe would happily reuse it — so that check
  * moves up here via {@link classifyPortOccupant}. Plain processes stay with the
  * health probe, since a sibling `buncargo dev` is a legitimate reuse and its
- * reported cwd is not a reliable owner signal.
+ * reported cwd is not a reliable owner signal. Only when the probe fails does
+ * the cwd count, and only together with the run registry: see
+ * {@link inspectUnhealthyHolder}.
  */
 export interface ClassifiedCliApps {
 	startApps: Record<string, AppConfig>;
@@ -34,6 +40,30 @@ export interface ClassifiedCliApps {
 	startNames: string[];
 	reusedNames: string[];
 	inferredReuseNames: string[];
+	/**
+	 * Reused apps whose server, from a sibling run of this checkout, failed its
+	 * health check. The caller replaces them through the takeover or refuses.
+	 */
+	unhealthy: UnhealthyApp[];
+}
+
+export interface UnhealthyApp {
+	name: string;
+	port: number;
+	url: string;
+	/** The owning run has no terminal, so replacing it needs no question. */
+	detached: boolean;
+}
+
+/** `stopped`: a leftover was killed. An object: a sibling run's server. */
+export type UnhealthyHolder = "stopped" | { detached: boolean } | undefined;
+
+interface AppDecision {
+	name: string;
+	config: AppConfig;
+	reuse: boolean;
+	inferred: boolean;
+	unhealthy?: UnhealthyApp;
 }
 
 export interface ClassifyCliAppsOptions {
@@ -46,6 +76,11 @@ export interface ClassifyCliAppsOptions {
 	context?: { root: string; projectName: string };
 	/** Returns a message when the port owner is not ours. Injectable for tests. */
 	describePortConflict?: (port: number) => string | undefined;
+	/** See {@link inspectUnhealthyHolder}. Injectable for tests. */
+	inspectUnhealthyHolder?: (
+		name: string,
+		port: number,
+	) => Promise<UnhealthyHolder>;
 }
 
 export function parseRequiredCommaSeparatedFlag(
@@ -91,6 +126,51 @@ function conflictDescriber(
 	};
 }
 
+export function unhealthyAppMessage(app: UnhealthyApp): string {
+	return `App "${app.name}" is already listening on port ${app.port}, but failed health check at ${app.url}.`;
+}
+
+/**
+ * Who holds an app port that failed its health check, when it is a process of
+ * this checkout.
+ *
+ * A leftover no live run owns (a dev server that outlived a run killed hard)
+ * is stopped here: the spawner kills those anyway, and the failed probe used
+ * to stop the run before it got there. A sibling run's server is only
+ * reported, because replacing it goes through the takeover, which also
+ * reclaims the named hosts that run owns. When the registry cannot be read,
+ * nothing is killed.
+ */
+async function inspectUnhealthyHolder(
+	name: string,
+	port: number,
+	options: ClassifyCliAppsOptions,
+): Promise<UnhealthyHolder> {
+	const { context, runtime, skipContainers } = options;
+	if (!context) return undefined;
+
+	const owner = getPortOwner(port, { runtime, skipContainers });
+	const action = classifyPortOccupant(owner, {
+		...context,
+		runtime: runtime?.name,
+	});
+	if (action !== "kill") return undefined;
+
+	const runs = await findRunsByRoot(context.root).catch(() => undefined);
+	if (!runs) return undefined;
+	const sibling = runs.find((run) =>
+		run.apps.some((app) => app.name === name && app.pid !== undefined),
+	);
+	if (sibling) return { detached: sibling.detached === true };
+
+	const released = await killPortOwner(port, { runtime, skipContainers });
+	if (!released) return undefined;
+	log.info(
+		`🧹 Stopped a leftover "${name}" on port ${port}: no run owns it and it failed its health check`,
+	);
+	return "stopped";
+}
+
 export async function classifyCliApps(
 	apps: Record<string, AppConfig>,
 	ports: Record<string, number>,
@@ -113,14 +193,19 @@ export async function classifyCliApps(
 		waitForServer,
 	} = options;
 	const describeConflict = conflictDescriber(options, snapshot);
+	const inspectHolder =
+		options.inspectUnhealthyHolder ??
+		((name: string, port: number) =>
+			inspectUnhealthyHolder(name, port, options));
 	const startApps: Record<string, AppConfig> = {};
 	const reusedApps: Record<string, AppConfig> = {};
 	const startNames: string[] = [];
 	const reusedNames: string[] = [];
 	const inferredReuseNames: string[] = [];
+	const unhealthy: UnhealthyApp[] = [];
 
 	const decisions = await Promise.all(
-		Object.entries(apps).map(async ([name, config]) => {
+		Object.entries(apps).map(async ([name, config]): Promise<AppDecision> => {
 			if (config.kind === "worker" && options.context) {
 				const live = await findWorker(
 					options.context.root,
@@ -151,15 +236,30 @@ export async function classifyCliApps(
 				try {
 					await waitForServer(url, config.healthTimeout ?? 3000);
 				} catch {
+					const holder = await inspectHolder(name, port);
+					if (holder === "stopped") {
+						return { name, config, reuse: false, inferred: false };
+					}
+					const app = { name, port, url, detached: !!holder?.detached };
+					if (holder) {
+						return {
+							name,
+							config,
+							reuse: true,
+							inferred: false,
+							unhealthy: app,
+						};
+					}
 					throw new Error(
-						`App "${name}" is already listening on port ${port}, but failed health check at ${url}. Stop the existing process or free the port before reusing it.`,
+						`${unhealthyAppMessage(app)} Stop the existing process or free the port before reusing it.`,
 					);
 				}
 			}
 			return { name, config, reuse: true, inferred: !config.healthEndpoint };
 		}),
 	);
-	for (const { name, config, reuse, inferred } of decisions) {
+	for (const { name, config, reuse, inferred, unhealthy: sick } of decisions) {
+		if (sick) unhealthy.push(sick);
 		if (reuse) {
 			reusedApps[name] = config;
 			reusedNames.push(name);
@@ -176,5 +276,6 @@ export async function classifyCliApps(
 		startNames,
 		reusedNames,
 		inferredReuseNames,
+		unhealthy,
 	};
 }

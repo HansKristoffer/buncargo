@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireLease, releaseLeases } from "../core/leases";
+import { buildRunEntry, publishRun, retireRuns } from "../core/run-registry";
 import { resolveExposeTargets, stopPublicTunnels } from "../core/tunnel";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import { runCli } from "./run-cli";
@@ -617,6 +618,109 @@ it("takes over a reused API while also starting a new web app", async () => {
 		}
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+describe("an app port held by a server failing its health check", () => {
+	async function replaceUnhealthyApi(
+		holder: (root: string, pid: number, port: number) => Promise<void>,
+	): Promise<string> {
+		// Real path: the cwd lsof reports for the server is resolved.
+		const root = await realpath(
+			await mkdtemp(join(tmpdir(), "buncargo-unhealthy-")),
+		);
+		const child = spawn(
+			process.execPath,
+			[
+				"-e",
+				'const s = Bun.serve({port: 0, fetch: () => new Response("broken", {status: 500})}); console.log(s.port)',
+			],
+			{ cwd: root, detached: true, stdio: ["ignore", "pipe", "ignore"] },
+		);
+		try {
+			const apiPort = await new Promise<number>((resolve, reject) => {
+				child.stdout.once("data", (data) =>
+					resolve(Number(String(data).trim())),
+				);
+				child.once("error", reject);
+			});
+			await holder(root, child.pid as number, apiPort);
+			let probes = 0;
+			const env = createStubEnv({
+				root,
+				apps: {
+					api: {
+						port: apiPort,
+						devCommand: `bun -e 'await Bun.write("api-started", "yes")'`,
+						healthEndpoint: "/",
+					},
+				},
+				waitForServer: async () => {
+					probes++;
+					if (probes === 1) throw new Error("500");
+				},
+			});
+			const stdinTTY = process.stdin.isTTY;
+			process.stdin.isTTY = false;
+			const said: string[] = [];
+			const realLog = console.log;
+			console.log = (...parts: unknown[]) => said.push(parts.join(" "));
+			try {
+				// The stub app exits before it answers, which ends the run: only
+				// that it was spawned matters here.
+				await withProcessExitTrap(() =>
+					runCli(env, { args: ["--no-hosts"], watchdog: false }),
+				);
+			} finally {
+				console.log = realLog;
+				process.stdin.isTTY = stdinTTY;
+			}
+
+			expect(await Bun.file(join(root, "api-started")).text()).toBe("yes");
+			return said.join("\n");
+		} finally {
+			if (child.pid) {
+				try {
+					process.kill(-child.pid, "SIGKILL");
+				} catch {
+					/* Already stopped by this run. */
+				}
+			}
+			await retireRuns(["unhealthy-sibling"]);
+			await rm(root, { recursive: true, force: true });
+		}
+	}
+
+	it("stops a leftover no run owns and starts the app", async () => {
+		const said = await replaceUnhealthyApi(async () => {});
+		expect(said).toContain('Stopped a leftover "api"');
+	});
+
+	it("takes over a detached sibling run's app without asking", async () => {
+		const said = await replaceUnhealthyApi(async (root, pid, port) => {
+			await publishRun({
+				...buildRunEntry({
+					sessionId: "unhealthy-sibling",
+					projectPrefix: "stub",
+					projectName: "stub-cli",
+					root,
+					isWorktree: false,
+				}),
+				detached: true,
+				apps: [
+					{
+						name: "api",
+						pid,
+						port,
+						url: `http://localhost:${port}`,
+						loopbackUrl: `http://localhost:${port}`,
+						status: "ready",
+					},
+				],
+			});
+		});
+		expect(said).not.toContain("leftover");
+		expect(said).toContain("Stopped:");
+	});
 });
 
 it("starts the rest of the run without an optional app whose lease another run holds", async () => {
