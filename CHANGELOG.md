@@ -1,5 +1,12 @@
 # Changelog
 
+## [12.3.1](https://github.com/HansKristoffer/buncargo/compare/v12.3.0...v12.3.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* **cli:** replace an unhealthy app server instead of refusing the run ([#94](https://github.com/HansKristoffer/buncargo/issues/94)) ([4cda7e8](https://github.com/HansKristoffer/buncargo/commit/4cda7e8963713a7fec951530325bfd71b14cd5bb))
+
 ## [12.3.0](https://github.com/HansKristoffer/buncargo/compare/v12.2.0...v12.3.0) (2026-10-06)
 
 
