@@ -120,11 +120,7 @@ export async function withFileLock<T>(
 	}
 }
 
-/**
- * {@link withFileLock} for a synchronous caller: port allocation decides and
- * claims an offset with no await in between, so two checkouts starting at once
- * cannot both take the same block. Blocks the thread while it waits.
- */
+/** {@link withFileLock} for a synchronous caller. Blocks the thread while it waits. */
 export function withFileLockSync<T>(
 	target: string,
 	operation: () => T,

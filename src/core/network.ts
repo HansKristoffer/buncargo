@@ -21,8 +21,8 @@ import {
  * Prefers IPv4 addresses on non-internal interfaces, unless `BUNCARGO_LOCAL_IP`
  * names one: on a server the first interface is its public address.
  */
-export function getLocalIp(env: NodeJS.ProcessEnv = process.env): string {
-	const override = localIpOverride(env);
+export function getLocalIp(): string {
+	const override = localIpOverride();
 	if (override) return override;
 	const interfaces = networkInterfaces();
 

@@ -180,9 +180,9 @@ export async function handleOpen(args: string[]): Promise<number> {
  * 0 when a browser opened. A machine with no opener (a headless server) must
  * not report success: an agent would tell the person it opened.
  */
-export function openOrFail(url: string, open = openUrl): number {
+function openOrFail(url: string) {
 	log.info(`Opening ${url}`);
-	if (open(url)) return 0;
+	if (openUrl(url)) return 0;
 	throw new CliError(`Could not open a browser here. The URL is ${url}`, [
 		"On a remote machine, give that URL to the person at the browser.",
 	]);

@@ -14,7 +14,6 @@ import { homedir } from "node:os";
 import { FileLockTimeoutError } from "../core/file-lock";
 import {
 	dropDeletedOffsetClaims,
-	type OffsetClaim,
 	readAllOffsetClaims,
 } from "../core/offset-claims";
 import { execAsync } from "../core/process/exec";
@@ -331,7 +330,7 @@ async function sweepGroup(
  * (`BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`) remove their volumes first, then drop
  * the claims.
  *
- * Worked from the claims rather than from container stacks, because by the
+ * Works from the claims rather than from container stacks, because by the
  * time a worktree is deleted its containers are usually long gone. A volume
  * names its Compose project, not its checkout, and two checkouts can share a
  * project name (a root below the repository's top level), so the project must
@@ -339,39 +338,33 @@ async function sweepGroup(
  * still has its checkout. A container of it still standing means its stack is
  * coming down; the next pass decides.
  */
-export async function settleDeletedCheckouts(
-	input: {
-		runtimes: ContainerRuntimeAdapter[];
-		runs: RunEntry[];
-		result: Pick<SweepResult, "swept" | "failed">;
-	},
-	options: {
-		enabled?: boolean;
-		claims?: Record<string, OffsetClaim>;
-		dropClaims?: (roots: readonly string[]) => Promise<void>;
-	} = {},
-): Promise<void> {
+export async function settleDeletedCheckouts(input: {
+	runtimes: ContainerRuntimeAdapter[];
+	runs: RunEntry[];
+	result: Pick<SweepResult, "swept" | "failed">;
+}) {
 	const { runtimes, runs, result } = input;
-	const claims = options.claims ?? readAllOffsetClaims();
-	const dropClaims = options.dropClaims ?? dropDeletedOffsetClaims;
-	const deleted = Object.entries(claims).filter(([root]) => !existsSync(root));
+	const claims = Object.entries(readAllOffsetClaims());
+	const deleted = claims.filter(([root]) => !existsSync(root));
 	if (deleted.length === 0) return;
-	if (!(options.enabled ?? pruneDeletedCheckoutVolumes())) {
-		await dropClaims(deleted.map(([root]) => root));
+
+	if (!pruneDeletedCheckoutVolumes()) {
+		await dropDeletedOffsetClaims(deleted.map(([root]) => root));
 		return;
 	}
 
 	// With no runtime answering, nothing says whether volumes are left.
 	if (runtimes.length === 0) return;
+
 	const containers: BuncargoContainer[] = [];
-	const volumes: {
+	const listings: {
 		runtime: ContainerRuntimeAdapter;
-		names: BuncargoVolume[];
+		volumes: BuncargoVolume[];
 	}[] = [];
 	try {
 		for (const runtime of runtimes) {
 			containers.push(...runtime.list());
-			volumes.push({ runtime, names: await runtime.listVolumes() });
+			listings.push({ runtime, volumes: await runtime.listVolumes() });
 		}
 	} catch {
 		// A runtime that cannot answer could hold the project's containers.
@@ -380,29 +373,40 @@ export async function settleDeletedCheckouts(
 
 	const settled: string[] = [];
 	for (const [root, { projectName }] of deleted) {
-		const shared =
-			Object.entries(claims).some(
-				([other, claim]) =>
-					claim.projectName === projectName && existsSync(other),
-			) ||
-			runs.some(
-				(run) => run.projectName === projectName && existsSync(run.root),
-			);
-		if (!shared && containers.some((c) => c.project === projectName)) continue;
+		const claimedElsewhere = claims.some(
+			([other, claim]) =>
+				claim.projectName === projectName && existsSync(other),
+		);
+		const runElsewhere = runs.some(
+			(run) => run.projectName === projectName && existsSync(run.root),
+		);
+		if (claimedElsewhere || runElsewhere) {
+			settled.push(root);
+			continue;
+		}
+
+		const stackStillUp = containers.some(
+			(container) => container.project === projectName,
+		);
+		if (stackStillUp) continue;
+
 		let refusedAny = false;
-		for (const { runtime, names } of shared ? [] : volumes) {
-			const ours = names
+		for (const { runtime, volumes } of listings) {
+			const ours = volumes
 				.filter((volume) => volume.project === projectName)
 				.map((volume) => volume.name);
 			if (ours.length === 0) continue;
+
 			const refused = await runtime.removeVolumes(ours);
-			refusedAny ||= refused.length > 0;
-			for (const { name, error } of refused)
+			for (const { name, error } of refused) {
+				refusedAny = true;
 				result.failed.push({
 					projectName,
 					root,
 					error: `volume ${name}: ${error}`,
 				});
+			}
+
 			const removed = ours.filter(
 				(name) => !refused.some((entry) => entry.name === name),
 			);
@@ -416,7 +420,7 @@ export async function settleDeletedCheckouts(
 		}
 		if (!refusedAny) settled.push(root);
 	}
-	await dropClaims(settled);
+	await dropDeletedOffsetClaims(settled);
 }
 
 /**
