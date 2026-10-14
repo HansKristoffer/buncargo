@@ -2,6 +2,7 @@ import net from "node:net";
 import { networkInterfaces } from "node:os";
 import type { AppConfig } from "../types";
 import { abortableSleep, remainingTime, withDeadline } from "./deadline";
+import { localIpOverride } from "./runtime-flags";
 import { recordStartupMetric } from "./startup-metrics";
 import {
 	formatDone,
@@ -17,9 +18,12 @@ import {
 
 /**
  * Gets the local IP address of the machine for mobile device connectivity.
- * Prefers IPv4 addresses on non-internal interfaces.
+ * Prefers IPv4 addresses on non-internal interfaces, unless `BUNCARGO_LOCAL_IP`
+ * names one: on a server the first interface is its public address.
  */
 export function getLocalIp(): string {
+	const override = localIpOverride();
+	if (override) return override;
 	const interfaces = networkInterfaces();
 
 	for (const name of Object.keys(interfaces)) {

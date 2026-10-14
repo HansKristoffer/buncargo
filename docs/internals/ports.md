@@ -20,7 +20,11 @@ per port.
   still shift: that port really is taken.
 - `offset-claims.ts` is `~/.buncargo/offsets.json`, root → offset. Every probing allocation skips
   another existing checkout's offset; only a persisting one writes its own. A claim lives as long
-  as its directory, which is what tells "stopped" from "deleted". The lockfile is honoured by its
+  as its directory, which is what tells "stopped" from "deleted"; allocation ignores a deleted
+  checkout's claim, and the sweep drops it (after its volumes, on the opt-in in
+  `run-registry-and-sweep.md`). A persisting allocation holds
+  `offsets.json`'s lock from reading the claims to writing its own (`withFileLockSync`, because the
+  allocator is synchronous), or two checkouts starting together pick the same block. The lockfile is honoured by its
   offset alone, applied to the config's current ports, so an added service or a hand-written
   `{ "offset": n }` keeps the block, and a run that sets the lockfile aside says why.
 

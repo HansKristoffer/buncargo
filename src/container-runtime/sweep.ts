@@ -12,6 +12,10 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { FileLockTimeoutError } from "../core/file-lock";
+import {
+	dropDeletedOffsetClaims,
+	readAllOffsetClaims,
+} from "../core/offset-claims";
 import { execAsync } from "../core/process/exec";
 import {
 	clearRunStacks,
@@ -21,8 +25,13 @@ import {
 	retireRuns,
 	runLivenessAsync,
 } from "../core/run-registry";
+import { pruneDeletedCheckoutVolumes } from "../core/runtime-flags";
 import { WATCHDOG_OWNER_DEAD_GRACE_MS } from "../core/watchdog-constants";
-import type { BuncargoContainer, ContainerRuntimeName } from "../types";
+import type {
+	BuncargoContainer,
+	BuncargoVolume,
+	ContainerRuntimeName,
+} from "../types";
 import {
 	type ContainerGroup,
 	groupBuncargoContainers,
@@ -232,6 +241,17 @@ export async function sweepOrphanedContainers(
 	).length;
 
 	try {
+		await settleDeletedCheckouts({
+			runtimes: runtimes.filter((runtime) => answered.includes(runtime.name)),
+			runs,
+			result,
+		});
+	} catch (error) {
+		// A busy claims file: the deleted checkouts are still there next pass.
+		if (!(error instanceof FileLockTimeoutError)) throw error;
+	}
+
+	try {
 		await retireRuns(finishedSessions(runs, groups, answered, alive));
 	} catch {
 		// A busy registry: these are still finished next pass.
@@ -303,6 +323,104 @@ async function sweepGroup(
 			});
 		return false;
 	}
+}
+
+/**
+ * Settle the port claims of deleted checkouts: on the machine's opt-in
+ * (`BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`) remove their volumes first, then drop
+ * the claims.
+ *
+ * Works from the claims rather than from container stacks, because by the
+ * time a worktree is deleted its containers are usually long gone. A volume
+ * names its Compose project, not its checkout, and two checkouts can share a
+ * project name (a root below the repository's top level), so the project must
+ * be nobody else's: no existing checkout claims it, no run on record for it
+ * still has its checkout. A container of it still standing means its stack is
+ * coming down; the next pass decides.
+ */
+export async function settleDeletedCheckouts(input: {
+	runtimes: ContainerRuntimeAdapter[];
+	runs: RunEntry[];
+	result: Pick<SweepResult, "swept" | "failed">;
+}) {
+	const { runtimes, runs, result } = input;
+	const claims = Object.entries(readAllOffsetClaims());
+	const deleted = claims.filter(([root]) => !existsSync(root));
+	if (deleted.length === 0) return;
+
+	if (!pruneDeletedCheckoutVolumes()) {
+		await dropDeletedOffsetClaims(deleted.map(([root]) => root));
+		return;
+	}
+
+	// With no runtime answering, nothing says whether volumes are left.
+	if (runtimes.length === 0) return;
+
+	const containers: BuncargoContainer[] = [];
+	const listings: {
+		runtime: ContainerRuntimeAdapter;
+		volumes: BuncargoVolume[];
+	}[] = [];
+	try {
+		for (const runtime of runtimes) {
+			containers.push(...runtime.list());
+			listings.push({ runtime, volumes: await runtime.listVolumes() });
+		}
+	} catch {
+		// A runtime that cannot answer could hold the project's containers.
+		return;
+	}
+
+	const settled: string[] = [];
+	for (const [root, { projectName }] of deleted) {
+		const claimedElsewhere = claims.some(
+			([other, claim]) =>
+				claim.projectName === projectName && existsSync(other),
+		);
+		const runElsewhere = runs.some(
+			(run) => run.projectName === projectName && existsSync(run.root),
+		);
+		if (claimedElsewhere || runElsewhere) {
+			settled.push(root);
+			continue;
+		}
+
+		const stackStillUp = containers.some(
+			(container) => container.project === projectName,
+		);
+		if (stackStillUp) continue;
+
+		let refusedAny = false;
+		for (const { runtime, volumes } of listings) {
+			const ours = volumes
+				.filter((volume) => volume.project === projectName)
+				.map((volume) => volume.name);
+			if (ours.length === 0) continue;
+
+			const refused = await runtime.removeVolumes(ours);
+			for (const { name, error } of refused) {
+				refusedAny = true;
+				result.failed.push({
+					projectName,
+					root,
+					error: `volume ${name}: ${error}`,
+				});
+			}
+
+			const removed = ours.filter(
+				(name) => !refused.some((entry) => entry.name === name),
+			);
+			if (removed.length > 0)
+				result.swept.push({
+					projectName,
+					root,
+					runtime: runtime.name,
+					reason: `checkout deleted, removed volumes ${removed.join(", ")}`,
+				});
+		}
+		if (!refusedAny) settled.push(root);
+	}
+	await dropDeletedOffsetClaims(settled);
 }
 
 /**

@@ -21,7 +21,7 @@ import {
 	computeUrls,
 	findMonorepoRoot,
 } from "./ports";
-import { isHostsForcedOff } from "./runtime-flags";
+import { isHostsForcedOff, urlHostOverride } from "./runtime-flags";
 
 /**
  * Core utility functions shared across modules.
@@ -137,7 +137,13 @@ export function getEnvVar<
 					hosts: config.options.hosts,
 				})
 			: undefined;
-	const urlMap = computeUrls(services, apps, portMap, localIp);
+	const urlMap = computeUrls(
+		services,
+		apps,
+		portMap,
+		localIp,
+		urlHostOverride(),
+	);
 	if (hostPlan && hostPlan.length > 0) {
 		applyHostPlanToUrls(urlMap, hostPlan);
 	}

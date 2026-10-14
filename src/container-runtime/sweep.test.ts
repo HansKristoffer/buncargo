@@ -8,6 +8,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	claimOffset,
+	getOffsetClaimsPath,
+	readAllOffsetClaims,
+} from "../core/offset-claims";
 import { readProcessIdentity } from "../core/process-identity";
 import {
 	loadRuns,
@@ -17,7 +22,11 @@ import {
 } from "../core/run-registry";
 import type { BuncargoContainer } from "../types";
 import { withProjectLifecycleLock } from "./project-lock";
-import { decideSweep, sweepOrphanedContainers } from "./sweep";
+import {
+	decideSweep,
+	settleDeletedCheckouts,
+	sweepOrphanedContainers,
+} from "./sweep";
 import type { ContainerDownRequest, ContainerRuntimeAdapter } from "./types";
 
 const realHome = process.env.HOME;
@@ -477,5 +486,100 @@ describe("sweepOrphanedContainers", () => {
 		expect(result.remaining.map((group) => group.projectName)).toEqual([
 			"reused",
 		]);
+	});
+});
+
+describe("settleDeletedCheckouts", () => {
+	const gone = join(tmpdir(), "buncargo-never-existed");
+	const optIn = process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS;
+
+	afterEach(() => {
+		if (optIn === undefined)
+			delete process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS;
+		else process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS = optIn;
+		rmSync(getOffsetClaimsPath(), { force: true });
+	});
+
+	function setup(options: {
+		enabled: boolean;
+		claims: Record<string, string>;
+		left?: BuncargoContainer[];
+	}) {
+		if (options.enabled) process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS = "1";
+		else delete process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS;
+		for (const [root, projectName] of Object.entries(options.claims))
+			claimOffset(root, 100, projectName);
+
+		const removed: string[][] = [];
+		const runtime = {
+			name: "docker",
+			list: () => options.left ?? [],
+			listVolumes: async () => [
+				{ name: "app-gone_db", project: "app-gone", runtime: "docker" },
+				{ name: "other_db", project: "other", runtime: "docker" },
+				{ name: "loose", runtime: "docker" },
+			],
+			removeVolumes: async (names: string[]) => {
+				removed.push(names);
+				return [];
+			},
+		} as unknown as ContainerRuntimeAdapter;
+		return { runtime, removed, result: { swept: [], failed: [] } };
+	}
+	const claimedRoots = () => Object.keys(readAllOffsetClaims());
+
+	it("only drops the claims unless the machine opted in", async () => {
+		const { runtime, removed, result } = setup({
+			enabled: false,
+			claims: { [gone]: "app-gone" },
+		});
+		await settleDeletedCheckouts({ runtimes: [runtime], runs: [], result });
+		expect(removed).toEqual([]);
+		expect(claimedRoots()).toEqual([]);
+	});
+
+	it("removes a deleted checkout's project volumes, then its claim", async () => {
+		const { runtime, removed, result } = setup({
+			enabled: true,
+			claims: { [gone]: "app-gone", [checkout]: "other" },
+		});
+		await settleDeletedCheckouts({ runtimes: [runtime], runs: [], result });
+		expect(removed).toEqual([["app-gone_db"]]);
+		expect(claimedRoots()).toEqual([checkout]);
+		expect(result.swept).toHaveLength(1);
+	});
+
+	it("keeps volumes another checkout or run still uses, and waits out leftover containers", async () => {
+		const run = { projectName: "app-gone", root: checkout } as RunEntry;
+		const leftover = container("app-gone", gone, "exited");
+		for (const [runs, claims, left, settled] of [
+			[[], { [gone]: "app-gone", [checkout]: "app-gone" }, [], true],
+			[[run], { [gone]: "app-gone" }, [], true],
+			[[], { [gone]: "app-gone" }, [leftover], false],
+		] as const) {
+			const { runtime, removed, result } = setup({
+				enabled: true,
+				claims,
+				left: [...left],
+			});
+			await settleDeletedCheckouts({
+				runtimes: [runtime],
+				runs: [...runs],
+				result,
+			});
+			expect(removed).toEqual([]);
+			expect(claimedRoots().includes(gone)).toBe(!settled);
+			rmSync(getOffsetClaimsPath(), { force: true });
+		}
+	});
+
+	it("decides nothing while no runtime answers", async () => {
+		const { removed, result } = setup({
+			enabled: true,
+			claims: { [gone]: "app-gone" },
+		});
+		await settleDeletedCheckouts({ runtimes: [], runs: [], result });
+		expect(removed).toEqual([]);
+		expect(claimedRoots()).toEqual([gone]);
 	});
 });

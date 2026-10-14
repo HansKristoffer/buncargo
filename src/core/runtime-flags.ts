@@ -162,6 +162,45 @@ export function isHostsForcedOff(
 	return env.BUNCARGO_HOSTS === "0" || isCI(env);
 }
 
+/**
+ * `BUNCARGO_URL_HOST` - the host in app URLs, for a machine people reach from
+ * another one (a Tailscale name, say). Service URLs and health checks stay on
+ * `localhost`: only processes on this machine use them.
+ */
+export function urlHostOverride(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return readTrimmed(env, "BUNCARGO_URL_HOST");
+}
+
+/** `BUNCARGO_LOCAL_IP` - the address `<app>Local` URLs use instead of the first network interface's. */
+export function localIpOverride(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return readTrimmed(env, "BUNCARGO_LOCAL_IP");
+}
+
+/**
+ * `BUNCARGO_PRUNE_DELETED_CHECKOUTS=1` - the sweep also removes the volumes of
+ * a checkout whose directory is gone. For machines where worktrees come and go
+ * by the hundred; off by default, because a volume is someone's database.
+ */
+export function pruneDeletedCheckoutVolumes(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return env.BUNCARGO_PRUNE_DELETED_CHECKOUTS === "1";
+}
+
+/**
+ * `BUNCARGO_SYSTEMD_SCOPE=0` - start the watchdog, detached runs and the
+ * sharing coordinator in the caller's cgroup, not a systemd scope of their own.
+ */
+export function systemdScopeEnabled(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return env.BUNCARGO_SYSTEMD_SCOPE !== "0";
+}
+
 /** `BUNCARGO_HOSTS_PORT` - port the loopback proxy daemon listens on. */
 export function hostsDaemonPort(
 	env: NodeJS.ProcessEnv = process.env,

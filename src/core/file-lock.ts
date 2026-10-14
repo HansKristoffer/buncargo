@@ -1,3 +1,4 @@
+import { closeSync, mkdirSync, openSync } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
 import { dirname } from "node:path";
 import { abortableSleep } from "./deadline";
@@ -28,15 +29,19 @@ export class FileLockTimeoutError extends Error {
  * Lazy loading keeps bun:ffi out of CLI import/help and Node consumers which
  * only use the pure library modules. Buncargo's runtime is Bun on macOS/Linux.
  */
-let loadFlock: Promise<(fd: number) => boolean> | undefined;
+let loadedFlock: ((fd: number) => boolean) | undefined;
 function flockOperation(): Promise<(fd: number) => boolean> {
-	loadFlock ??= (async () => {
+	return Promise.resolve().then(flockOperationSync);
+}
+
+function flockOperationSync(): (fd: number) => boolean {
+	loadedFlock ??= (() => {
 		if (process.platform !== "darwin" && process.platform !== "linux") {
 			throw new Error(
 				"Exclusive buncargo state locking requires Bun on macOS or Linux. On Windows, run buncargo in WSL.",
 			);
 		}
-		const { dlopen, read } = await import("bun:ffi");
+		const { dlopen, read } = require("bun:ffi") as typeof import("bun:ffi");
 		const errnoSymbol =
 			process.platform === "darwin" ? "__error" : "__errno_location";
 		const libraries =
@@ -71,7 +76,7 @@ function flockOperation(): Promise<(fd: number) => boolean> {
 			cause: lastError,
 		});
 	})();
-	return loadFlock;
+	return loadedFlock;
 }
 
 /** Run a mutation exclusively, or reject on bounded contention without running it. */
@@ -112,5 +117,40 @@ export async function withFileLock<T>(
 		// close also releases ownership after throws. Process death closes it in
 		// the kernel, so no stale timer, PID eviction or release unlink is needed.
 		await handle.close();
+	}
+}
+
+/** {@link withFileLock} for a synchronous caller. Blocks the thread while it waits. */
+export function withFileLockSync<T>(
+	target: string,
+	operation: () => T,
+	options: { timeoutMs?: number } = {},
+): T {
+	const timeoutMs = options.timeoutMs ?? LOCK_TIMEOUT_MS;
+	if (!Number.isFinite(timeoutMs) || timeoutMs < 0)
+		throw new Error("Lock timeout must be a non-negative finite duration");
+	const startedAt = performance.now();
+	const deadline = startedAt + timeoutMs;
+	const flock = flockOperationSync();
+	const lockPath = `${target}.lock.v2`;
+	mkdirSync(dirname(lockPath), { recursive: true });
+	const fd = openSync(lockPath, "a+", 0o600);
+	chownToInvokingUser(lockPath);
+	try {
+		for (;;) {
+			if (flock(fd)) break;
+			const remaining = deadline - performance.now();
+			if (remaining <= 0) {
+				recordStartupMetric("lock timeouts");
+				throw new FileLockTimeoutError(target, timeoutMs);
+			}
+			Bun.sleepSync(
+				Math.min(remaining, LOCK_POLL_MS + Math.random() * LOCK_POLL_MS),
+			);
+		}
+		recordStartupMetric("lock wait ms", performance.now() - startedAt);
+		return operation();
+	} finally {
+		closeSync(fd);
 	}
 }

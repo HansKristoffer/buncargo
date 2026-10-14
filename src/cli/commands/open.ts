@@ -165,9 +165,7 @@ export async function handleOpen(args: string[]): Promise<number> {
 			throw new CliError(`${name} has not printed ${capture} yet.`, [
 				"Is `buncargo dev` running? `buncargo url` lists what is known.",
 			]);
-		log.info(`Opening ${url}`);
-		openUrl(url);
-		return 0;
+		return openOrFail(url);
 	}
 	const targets = openTargets(env);
 
@@ -175,8 +173,17 @@ export async function handleOpen(args: string[]): Promise<number> {
 	if (target === undefined) {
 		throw new CliError("No apps to open: name a URL from `buncargo url`.");
 	}
-	const url = resolveTarget(targets, target);
+	return openOrFail(resolveTarget(targets, target));
+}
+
+/**
+ * 0 when a browser opened. A machine with no opener (a headless server) must
+ * not report success: an agent would tell the person it opened.
+ */
+function openOrFail(url: string) {
 	log.info(`Opening ${url}`);
-	openUrl(url);
-	return 0;
+	if (openUrl(url)) return 0;
+	throw new CliError(`Could not open a browser here. The URL is ${url}`, [
+		"On a remote machine, give that URL to the person at the browser.",
+	]);
 }

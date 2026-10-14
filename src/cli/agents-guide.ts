@@ -49,7 +49,8 @@ hardcode a port. Ask buncargo instead.
 
 ## Reading the environment
 
-- \`bunx buncargo url <app>\` prints the URL to open.
+- \`bunx buncargo url <app>\` prints the URL to open. When \`BUNCARGO_URL_HOST\`
+  is set, the person is on another machine: hand them that URL, not localhost.
 - \`bunx buncargo env --get DATABASE_URL\` prints any variable the apps get, and
   \`bunx buncargo env --get ports.<name>\` one port.
   \`eval "$(bunx buncargo env --export)"\` loads them all into a shell.

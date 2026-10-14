@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { abortableSleep } from "../deadline";
 import { withFileLock } from "../file-lock";
+import { inOwnUserScope } from "../process/user-scope";
 import { matchesProcessIdentity } from "../process-identity";
 import { connectProcessEnv } from "../runtime-flags";
 import { stateFilePath } from "../state-paths";
@@ -24,7 +25,11 @@ export async function ensureConnectCoordinator(
 				}
 				return existing;
 			}
-			const child = spawn(process.execPath, [bundle], {
+			const [command, ...args] = inOwnUserScope(
+				[process.execPath, bundle],
+				"buncargo sharing coordinator",
+			);
+			const child = spawn(command as string, args, {
 				detached: true,
 				stdio: "ignore",
 				env: connectProcessEnv(),

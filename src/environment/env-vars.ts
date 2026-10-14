@@ -5,7 +5,7 @@ import {
 } from "../core/env";
 import { toPortMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
-import { hostsDaemonPort, isCI } from "../core/runtime-flags";
+import { hostsDaemonPort, isCI, urlHostOverride } from "../core/runtime-flags";
 import {
 	describeSecretsError,
 	loadScopeSecrets,
@@ -100,11 +100,17 @@ export function createEnvVarsApi<
 		});
 		Object.assign(shared, capturedEnv(apps, ctx.captured));
 		shared.BUNCARGO_WORKSPACE_ID = ctx.workspaceId;
-		if (ctx.hosts?.active) {
-			if (ctx.hosts.caPath) {
-				shared.NODE_EXTRA_CA_CERTS = ctx.hosts.caPath;
-			}
-			shared.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS = `.${ctx.hosts.tld}`;
+		if (ctx.hosts?.active && ctx.hosts.caPath) {
+			shared.NODE_EXTRA_CA_CERTS = ctx.hosts.caPath;
+		}
+		// Vite answers 403 to a Host it does not know. Comma-separated: the
+		// buncargo Vite plugin splits the list.
+		const allowedHosts = [
+			ctx.hosts?.active ? `.${ctx.hosts.tld}` : undefined,
+			urlHostOverride(),
+		].filter((host) => host !== undefined);
+		if (allowedHosts.length > 0) {
+			shared.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS = allowedHosts.join(",");
 		}
 		// buildSharedEnvValues emits every computed name; TS cannot see that
 		// through the dynamic record it returns.

@@ -9,7 +9,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileLockTimeoutError, withFileLock } from "./file-lock";
+import {
+	FileLockTimeoutError,
+	withFileLock,
+	withFileLockSync,
+} from "./file-lock";
 
 const dirs: string[] = [];
 const children: ReturnType<typeof Bun.spawn>[] = [];
@@ -162,5 +166,22 @@ describe("withFileLock", () => {
 			Array(8).fill(0),
 		);
 		expect(readFileSync(target, "utf8")).toBe("8");
+	});
+});
+
+describe("withFileLockSync", () => {
+	it("shares the lock with withFileLock and runs once it is free", async () => {
+		const target = tempTarget();
+		const marker = `${target}.held`;
+		const child = holder(
+			target,
+			`require("node:fs").writeFileSync(${JSON.stringify(marker)}, ""); await Bun.sleep(400);`,
+		);
+		await waitForFile(marker);
+		expect(() =>
+			withFileLockSync(target, () => "early", { timeoutMs: 50 }),
+		).toThrow(FileLockTimeoutError);
+		await child.exited;
+		expect(withFileLockSync(target, () => "free")).toBe("free");
 	});
 });

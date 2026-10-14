@@ -15,7 +15,8 @@ are made by agents working in one of those worktrees.
    port, container, database, hostname or state file. A change that works in the main checkout and
    collides in a worktree is broken.
 2. **Data survives.** A container is cheap to recreate; a volume is a developer's database.
-   Nothing removes a volume without an explicit, confirmed command, and one run ending never takes
+   Nothing removes a volume without an explicit, confirmed command or a machine's explicit opt-in
+   (`BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`, deleted checkouts only), and one run ending never takes
    down another run's services.
 3. **Startup is fast.** It is paid on every run in every worktree. Count the processes a change
    forks before anything starts, and measure with `buncargo dev --timing`.
