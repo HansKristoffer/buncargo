@@ -28,7 +28,7 @@ import {
 	type PortOwnerSnapshot,
 	withBindProbe,
 } from "../core/process";
-import { portOffsetOverride } from "../core/runtime-flags";
+import { portOffsetOverride, urlHostOverride } from "../core/runtime-flags";
 import { applySecretDefaults } from "../core/secrets/infisical";
 import type { PublicTunnel } from "../core/tunnel";
 import { workspaceId } from "../core/workspace-identity";
@@ -229,7 +229,13 @@ export function createDevEnvContext<
 			}
 		: null;
 
-	const plainUrls: UrlMap = computeUrls(services, apps, portMap, localIp);
+	const plainUrls: UrlMap = computeUrls(
+		services,
+		apps,
+		portMap,
+		localIp,
+		urlHostOverride(),
+	);
 	const urls = asComputedUrls<TServices, TApps>({ ...plainUrls });
 	const loopbackUrls = asComputedLoopbackUrls<TServices, TApps>(
 		computeLoopbackUrls(services, apps, portMap),
@@ -319,7 +325,10 @@ export function createDevEnvContext<
 
 		// Keep object identity: env callbacks may already hold these maps.
 		Object.assign(portMap, portPlan.ports);
-		Object.assign(plainUrls, computeUrls(services, apps, portMap, localIp));
+		Object.assign(
+			plainUrls,
+			computeUrls(services, apps, portMap, localIp, urlHostOverride()),
+		);
 		Object.assign(loopbackUrls, computeLoopbackUrls(services, apps, portMap));
 		for (const host of hostsPlan) {
 			host.targetPort = portMap[host.name] ?? host.targetPort;

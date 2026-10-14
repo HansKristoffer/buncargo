@@ -371,6 +371,8 @@ export function computeUrls<
 	apps: TApps | undefined,
 	ports: PortMap,
 	localIp: string,
+	/** Host for app URLs (`BUNCARGO_URL_HOST`); services always use `localhost`. */
+	appHost?: string,
 ): UrlMap {
 	const urls: UrlMap = {};
 	const host = "localhost";
@@ -413,7 +415,7 @@ export function computeUrls<
 		for (const [name, _config] of Object.entries(apps)) {
 			const port = ports[name];
 			if (port === undefined) continue;
-			urls[name] = `http://${host}:${port}`;
+			urls[name] = `http://${appHost ?? host}:${port}`;
 			// Also add local IP version for mobile connectivity
 			urls[`${name}Local`] = `http://${localIp}:${port}`;
 		}

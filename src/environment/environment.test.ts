@@ -211,6 +211,38 @@ describe("createDevEnvironment env builders", () => {
 		}
 	});
 
+	it("puts BUNCARGO_URL_HOST in app URLs and leaves services on localhost", () => {
+		const root = createWorktreeRoot("Remote_Host");
+		const previous = process.env.BUNCARGO_URL_HOST;
+		process.env.BUNCARGO_URL_HOST = "worker.tailnet.ts.net";
+		try {
+			process.chdir(root);
+			const env = createDevEnvironment(
+				defineDevConfig({
+					projectPrefix: "remote",
+					services: { postgres: { port: 5432 } },
+					apps: { web: { port: 3001, devCommand: "bun run web" } },
+				}),
+			);
+
+			expect(env.urls.web).toBe(
+				`http://worker.tailnet.ts.net:${env.ports.web}`,
+			);
+			expect(env.urls.postgres).toContain("@localhost:");
+			const vars = env.buildEnvVars();
+			expect(vars.WEB_URL).toBe(env.urls.web);
+			expect(vars.WEB_LOOPBACK_URL).toBe(`http://localhost:${env.ports.web}`);
+			expect(vars.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS).toBe(
+				"worker.tailnet.ts.net",
+			);
+		} finally {
+			if (previous === undefined) delete process.env.BUNCARGO_URL_HOST;
+			else process.env.BUNCARGO_URL_HOST = previous;
+			process.chdir(originalCwd);
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("rewrites app URLs when named hosts are activated", () => {
 		const root = createWorktreeRoot("Feature_Hosts");
 		const previousHosts = process.env.BUNCARGO_HOSTS;

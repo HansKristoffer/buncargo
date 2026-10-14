@@ -28,3 +28,12 @@ it("opens an app at its entryPath, without touching its origin", () => {
 		),
 	).toBe("https://web.app.localhost/app/");
 });
+
+it("opens the plain URL instead of loopback when BUNCARGO_URL_HOST is set", () => {
+	const app = {
+		url: "http://worker.ts.net:3000",
+		loopbackUrl: "http://localhost:3000",
+	};
+	expect(preferredAppUrl(app, false, true)).toBe("http://worker.ts.net:3000");
+	expect(preferredAppUrl(app, false, false)).toBe("http://localhost:3000");
+});

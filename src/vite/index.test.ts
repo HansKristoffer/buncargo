@@ -95,6 +95,22 @@ describe("buncargoVite", () => {
 		expect(config.server.host).toBe("0.0.0.0");
 	});
 
+	it("binds every interface when BUNCARGO_URL_HOST is set, unless told otherwise", async () => {
+		const env = { BUNCARGO_URL_HOST: "worker.ts.net" };
+		expect(
+			(await buncargoVite({ env }).config({}, { command: "serve" })).server
+				.host,
+		).toBe("0.0.0.0");
+		expect(
+			(
+				await buncargoVite({ env, host: "::1" }).config(
+					{},
+					{ command: "serve" },
+				)
+			).server.host,
+		).toBe("::1");
+	});
+
 	it("produces a usable config with an empty environment", async () => {
 		expect(
 			(await buncargoVite({ env: {} }).config({}, { command: "build" })).server

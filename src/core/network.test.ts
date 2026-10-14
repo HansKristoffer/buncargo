@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { AppConfig } from "../types";
-import { waitForDevServers, waitForServer } from "./network";
+import { getLocalIp, waitForDevServers, waitForServer } from "./network";
 
 describe("waitForDevServers", () => {
 	it("skips apps with healthEndpoint: false", async () => {
@@ -145,5 +145,11 @@ describe("readiness elapsed time and HTTP semantics", () => {
 		} finally {
 			server.stop(true);
 		}
+	});
+});
+
+describe("getLocalIp", () => {
+	it("returns BUNCARGO_LOCAL_IP instead of the first interface", () => {
+		expect(getLocalIp({ BUNCARGO_LOCAL_IP: "100.64.0.1" })).toBe("100.64.0.1");
 	});
 });

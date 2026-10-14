@@ -162,6 +162,24 @@ export function isHostsForcedOff(
 	return env.BUNCARGO_HOSTS === "0" || isCI(env);
 }
 
+/**
+ * `BUNCARGO_URL_HOST` - the host in app URLs, for a machine people reach from
+ * another one (a Tailscale name, say). Service URLs and health checks stay on
+ * `localhost`: only processes on this machine use them.
+ */
+export function urlHostOverride(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return readTrimmed(env, "BUNCARGO_URL_HOST");
+}
+
+/** `BUNCARGO_LOCAL_IP` - the address `<app>Local` URLs use instead of the first network interface's. */
+export function localIpOverride(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return readTrimmed(env, "BUNCARGO_LOCAL_IP");
+}
+
 /** `BUNCARGO_HOSTS_PORT` - port the loopback proxy daemon listens on. */
 export function hostsDaemonPort(
 	env: NodeJS.ProcessEnv = process.env,

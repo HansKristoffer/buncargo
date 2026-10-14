@@ -20,6 +20,18 @@ import {
 describe("computeUrls", () => {
 	const localIp = "192.168.1.100";
 
+	it("uses the app host for apps only", () => {
+		const result = computeUrls(
+			{ postgres: { port: 5432 } },
+			{ api: { port: 3000, devCommand: "bun run dev" } },
+			{ postgres: 5432, api: 3000 },
+			localIp,
+			"worker.ts.net",
+		);
+		expect(result.api).toBe("http://worker.ts.net:3000");
+		expect(result.postgres).toContain("@localhost:5432");
+	});
+
 	it("uses default URL builder for postgres", () => {
 		const services: Record<string, ServiceConfig> = {
 			postgres: { port: 5432 },

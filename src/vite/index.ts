@@ -42,7 +42,8 @@ export interface BuncargoViteOptions {
 	 */
 	app?: string;
 	/**
-	 * Address to bind. Defaults to `127.0.0.1`.
+	 * Address to bind. Defaults to `127.0.0.1`, or `0.0.0.0` when
+	 * `BUNCARGO_URL_HOST` says people reach this machine from another one.
 	 *
 	 * Vite's default `localhost` resolves to `[::1]` on many systems, and
 	 * anything dialing IPv4 then gets a connection refused.
@@ -167,7 +168,10 @@ export function buncargoVite(
 					: undefined,
 			};
 
-			return buildBuncargoViteConfig(environment, options.host ?? "127.0.0.1");
+			const defaultHost = env.BUNCARGO_URL_HOST?.trim()
+				? "0.0.0.0"
+				: "127.0.0.1";
+			return buildBuncargoViteConfig(environment, options.host ?? defaultHost);
 		},
 	};
 }

@@ -1069,7 +1069,7 @@ It sets `server.port` from `PORT`, binds `server.host` to `127.0.0.1` (Vite's de
 
 The port is also set with `server.strictPort`: a Vite that drifts to the next free port is one nothing is routed to. `FRONTEND_PORT` wins over `PORT` when set, which is what Shopify CLI hands its frontend web, so the same `vite.config.ts` works under buncargo and directly under `shopify app dev`.
 
-Vite is not a dependency of buncargo: the plugin's return type is declared structurally, so importing it costs nothing in a repo without Vite. Override the app or the bind address when you need to: `buncargoVite({ app: "web", host: "0.0.0.0" })`.
+Vite is not a dependency of buncargo: the plugin's return type is declared structurally, so importing it costs nothing in a repo without Vite. It listens on `127.0.0.1`, or on `0.0.0.0` when `BUNCARGO_URL_HOST` is set. Override the app or the bind address when you need to: `buncargoVite({ app: "web", host: "0.0.0.0" })`.
 
 **Proxying `/api` to another app.** `buncargoVite({ proxy: { "/api": "api" } })` adds a `server.proxy` entry targeting the `api` app's loopback URL (`API_LOOPBACK_URL`, else `API_PORT`), with WebSockets on and the incoming Host kept (`changeOrigin: false`), so the API sees the public hostname behind a tunnel. Write this rather than a hand-rolled proxy to `API_URL`: with named hosts on, that URL is `https://api.<project>.localhost`, and a proxy that keeps the Host sends the request back through the hosts daemon to the Vite it came from, which answers `508 Loop Detected`. A tunnel-first project that does not want named URLs at all can set `options.hosts: false`.
 
@@ -1078,6 +1078,8 @@ Vite is not a dependency of buncargo: the plugin's return type is declared struc
 | Variable | Meaning |
 | --- | --- |
 | `BUNCARGO_PORT_OFFSET` | Hard port offset; skips probing |
+| `BUNCARGO_URL_HOST` | Host in app URLs (`<APP>_URL`, the banner, `url`, `open`, `status`), for a machine people reach from another one, such as `worker.<tailnet>.ts.net`. Service URLs, health checks and `<APP>_LOOPBACK_URL` stay on `localhost`. Vite apps then accept that host, and the Vite plugin listens on `0.0.0.0` |
+| `BUNCARGO_LOCAL_IP` | Address for the `<app>Local` URLs instead of the first network interface's |
 | `BUNCARGO_CONTAINER_RUNTIME` | `docker` \| `apple` \| `auto`; overrides `docker.runtime` |
 | `BUNCARGO_CONTAINER_BINARY` | Absolute path to the selected runtime's binary; skips the PATH lookup. `docker.binary` wins over it |
 | `BUNCARGO_EXPOSE_TUNNEL_STAGGER_MS` | Delay between starting tunnels (default `900`) |

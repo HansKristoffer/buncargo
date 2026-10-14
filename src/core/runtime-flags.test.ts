@@ -11,6 +11,7 @@ import {
 	hostsDaemonPort,
 	isCI,
 	isHostsForcedOff,
+	localIpOverride,
 	mkcertPathOverride,
 	mkcertVersion,
 	portOffsetOverride,
@@ -19,6 +20,7 @@ import {
 	quickTunnelUrlTimeoutMs,
 	shouldSyncHostsFile,
 	typecheckConcurrencyOverride,
+	urlHostOverride,
 } from "./runtime-flags";
 
 describe("Connection credentials", () => {
@@ -181,5 +183,18 @@ describe("typecheckConcurrencyOverride", () => {
 		expect(() =>
 			typecheckConcurrencyOverride({ BUNCARGO_TYPECHECK_CONCURRENCY: "nope" }),
 		).toThrow(/BUNCARGO_TYPECHECK_CONCURRENCY/);
+	});
+});
+
+describe("urlHostOverride and localIpOverride", () => {
+	it("read trimmed values and treat blank as unset", () => {
+		expect(urlHostOverride({ BUNCARGO_URL_HOST: " worker.ts.net " })).toBe(
+			"worker.ts.net",
+		);
+		expect(urlHostOverride({ BUNCARGO_URL_HOST: "  " })).toBeUndefined();
+		expect(localIpOverride({ BUNCARGO_LOCAL_IP: "100.64.0.1" })).toBe(
+			"100.64.0.1",
+		);
+		expect(localIpOverride({})).toBeUndefined();
 	});
 });

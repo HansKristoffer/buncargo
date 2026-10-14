@@ -1,3 +1,5 @@
+import { urlHostOverride } from "./runtime-flags";
+
 /**
  * The one URL "open" means for an app: what the TUI's `o`, `buncargo open
  * <app>` and BuncargoBar's Open button all use, recorded per app in the run
@@ -7,7 +9,8 @@
  * only URL it has); else the named `https://` host when the hosts daemon is
  * serving it, otherwise loopback. Falling back to loopback is the same guard
  * the banner applies: a route is a file until the daemon picks it up, and
- * opening it earlier lands on a 404 from our own proxy.
+ * opening it earlier lands on a 404 from our own proxy. With `BUNCARGO_URL_HOST`
+ * the plain URL is the one people can reach, so it wins over loopback.
  */
 export function preferredAppUrl(
 	app: {
@@ -18,9 +21,12 @@ export function preferredAppUrl(
 		entryPath?: string;
 	},
 	hostsActive: boolean,
+	urlHostSet: boolean = urlHostOverride() !== undefined,
 ): string | undefined {
 	const url =
-		app.publicUrl ?? (hostsActive ? app.url : app.loopbackUrl) ?? app.url;
+		app.publicUrl ??
+		(hostsActive || urlHostSet ? app.url : app.loopbackUrl) ??
+		app.url;
 	return withEntryPath(url, app.entryPath);
 }
 
