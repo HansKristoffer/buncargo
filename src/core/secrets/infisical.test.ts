@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { AppConfig } from "../../types";
 import {
 	type FakeInfisical,
@@ -321,6 +322,34 @@ describe("loadScopeSecrets with a machine identity", () => {
 			"POST /api/v1/auth/universal-auth/login",
 			"GET /api/v4/secrets",
 		]);
+	});
+
+	it("reads the machine identity file when the environment names none", async () => {
+		const infisical = start();
+		const write = (siteUrl: string) => {
+			mkdirSync(join(infisical.home, ".infisical"), { recursive: true });
+			writeFileSync(
+				join(infisical.home, ".infisical", "universal-auth.json"),
+				JSON.stringify({ clientId: "id", clientSecret: "right", siteUrl }),
+			);
+		};
+		write(infisical.siteUrl);
+		expect(
+			await loadScopeSecrets(
+				{ projectId: "p1", siteUrl: infisical.siteUrl },
+				{ env: {} },
+			),
+		).toEqual({ OPENAI_API_KEY: "sk-project" });
+		expect(infisical.cliCalls()).toEqual([]);
+
+		// Another instance's identity is never sent here: the CLI session is used.
+		clearScopeSecretsCache();
+		write("https://other.example.com");
+		await loadScopeSecrets(
+			{ projectId: "p1", siteUrl: infisical.siteUrl },
+			{ env: {} },
+		).catch(() => {});
+		expect(infisical.cliCalls().length).toBeGreaterThan(0);
 	});
 
 	it("fails with the status and no body on bad credentials", async () => {
