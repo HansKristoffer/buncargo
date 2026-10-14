@@ -11,6 +11,7 @@ import {
 	claimOffset,
 	offsetClaimedBy,
 	readOffsetClaims,
+	withOffsetClaimsLock,
 } from "./offset-claims";
 import type { PortMap } from "./ports";
 import {
@@ -283,6 +284,14 @@ export function resolvePortPlan(input: {
 	getOwner?: (port: number) => PortOwner | null;
 	probeNames?: readonly string[];
 }): PortPlan {
+	// A persisting run reads other checkouts' claims, picks a free offset and
+	// claims it: one step, or two checkouts starting together pick the same.
+	return input.persist === false
+		? planPorts(input)
+		: withOffsetClaimsLock(() => planPorts(input));
+}
+
+function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 	const {
 		projectPrefix,
 		projectName,

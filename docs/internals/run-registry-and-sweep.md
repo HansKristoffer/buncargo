@@ -119,6 +119,12 @@ sweep through `core/watchdog-loop.ts`, which logs and retries a pass that throws
 and logs a repeated failure once until it changes. `ls` and `doctor` sweep inline, so a killed
 watchdog is never the last line of defence.
 
+On Linux the watchdog, like `dev --detach` and the sharing coordinator, starts in a systemd
+user scope of its own when there is a user manager (`process/user-scope.ts`; off with
+`BUNCARGO_SYSTEMD_SCOPE=0`). A detached child is still in its parent's cgroup, and an agent harness
+running as a `systemctl --user` service (`KillMode=mixed`) kills that whole cgroup on restart.
+`systemd-run --scope` execs in place, so the pid the pid file and the registry match is unchanged.
+
 `core/watchdog.ts` is just `ensureWatchdog` and its pid file. Two locks, and it needs both: the
 runner holds `.runner` for its whole life, which is the "is one running?" answer a `kill -9` cannot
 fake, and a caller holds `.spawn` across spawn-and-confirm so two `dev` runs starting together
@@ -136,6 +142,17 @@ and prompts "exists but doesn't match configuration in compose file. Recreate (d
 lost)?", which hangs a non-interactive run. So a volume's checkout is unknowable, anonymous
 (64-hex) Docker volumes are filtered out as never ours, and anything unattributable is counted and
 left alone rather than guessed at.
+
+One exception, opt-in per machine: with `BUNCARGO_PRUNE_DELETED_CHECKOUTS=1` the sweep also
+removes a deleted checkout's volumes (`settleDeletedCheckouts`), for servers where agents create
+and delete worktrees by the hundred. It works from the port claims in `offsets.json`, not from
+container stacks: a checkout's claim names its root and project, and by the time a worktree is
+deleted its containers are usually long gone, so a stack-driven rule would never see it. The sweep
+keeps a deleted checkout's claim until it has settled it, and without the opt-in only drops it.
+Volumes match by Compose project, and two checkouts can share one, so it removes them only when
+no existing checkout claims the project and no run on record for it still has its checkout; a
+container of the project still standing defers the decision to the next pass, and a runtime that
+does not answer defers everything.
 
 `prune --project` (`project-prune.ts`) can say more, because the config and Git are in hand: the
 project's stacks are exactly the names `checkoutProjectNames` gives each checkout in `.git`'s

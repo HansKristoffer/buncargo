@@ -12,6 +12,7 @@ import {
 	DockerUnavailableError,
 	ensureDockerRunning,
 	isDockerDaemonRunning,
+	runtimeFromContext,
 } from "./preflight";
 
 const roots: string[] = [];
@@ -26,6 +27,8 @@ function fixture(
 		versionDelay?: number;
 		/** Fail this many `version` probes first, then answer. */
 		downFor?: number;
+		/** Refuse every `version` probe with this on stderr. */
+		versionStderr?: string;
 	} = {},
 ) {
 	const root = mkdtempSync(join(tmpdir(), "buncargo docker preflight "));
@@ -50,6 +53,7 @@ if (args[0] === "info") {
   const { readFileSync } = await import("node:fs");
   const probes = readFileSync(${JSON.stringify(log)}, "utf8").split("\\n").filter((line) => line.startsWith('["version"')).length;
   if (probes <= ${options.downFor ?? 0}) process.exit(1);
+  if (${JSON.stringify(options.versionStderr ?? "")}) { console.error(${JSON.stringify(options.versionStderr ?? "")}); process.exit(1); }
   await Bun.sleep(${options.versionDelay ?? 0});
   console.log("27.5.1");
   process.exit(${options.versionExit ?? 0});
@@ -107,6 +111,23 @@ describe("Docker daemon preflight", () => {
 			["version", "--format", "{{.Server.Version}}"],
 			["version", "--format", "{{.Server.Version}}"],
 		]);
+	});
+
+	it("names a socket permission problem instead of waiting for a daemon that is up", async () => {
+		const { binary } = fixture({
+			versionStderr:
+				"permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock",
+		});
+		await expect(
+			ensureDockerRunning({ binary, ci: false, verbose: false }),
+		).rejects.toThrow(/cannot open its socket.*docker group/);
+	});
+
+	it("treats a bare docker on Linux as the engine, not Docker Desktop", () => {
+		expect(runtimeFromContext("default", "linux")).toBe("docker-engine");
+		expect(runtimeFromContext("desktop-linux", "linux")).not.toBe(
+			"docker-engine",
+		);
 	});
 
 	it("rejects an unavailable server even if the CLI prints a version", async () => {

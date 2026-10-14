@@ -53,7 +53,9 @@ flow; `flags.ts` (argv primitives), `dev-flags.ts` (the dev command's typed args
 - `preflight.ts` runs `config.preflight` (and integrations') after the fast checks, with the real
   terminal, filtered by each step's `apps`. A throw is a `CliError` with the step's name.
 - `dev-detach.ts` is `dev --detach`: the same argv without the flag, re-run with `detached: true`
-  (its own session, so a harness's SIGTERM does not reach it) and its output in
+  (its own session, so a harness's SIGTERM does not reach it) and, on Linux with a user manager,
+  in a systemd scope of its own (`process/user-scope.ts`), so restarting the service the harness
+  runs as does not kill it with that service's cgroup. Its output goes to
   `.buncargo/logs/detached.log`. The parent waits on the run registry entry whose `pid` is the
   child's until every app has settled; an empty `apps` list is the claim, not "done", unless the
   config has no apps.

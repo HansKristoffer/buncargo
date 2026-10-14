@@ -1,6 +1,7 @@
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { logsRoot } from "../core/process/app-logs";
+import { inOwnUserScope } from "../core/process/user-scope";
 import {
 	findRunsByRoot,
 	type RunAppEntry,
@@ -84,7 +85,9 @@ export async function runDetached(input: {
 	const logPath = detachedLogPath(root);
 	mkdirSync(logsRoot(root), { recursive: true });
 	const out = openSync(logPath, "w");
-	const child = Bun.spawn(argv, {
+	// Its own scope on Linux: the run outlives a restart of the service that
+	// started it. The pid stays the run's own, which the wait below matches.
+	const child = Bun.spawn(inOwnUserScope(argv, `buncargo dev ${root}`), {
 		cwd: process.cwd(),
 		stdio: ["ignore", out, out],
 		detached: true,

@@ -1080,6 +1080,8 @@ Vite is not a dependency of buncargo: the plugin's return type is declared struc
 | `BUNCARGO_PORT_OFFSET` | Hard port offset; skips probing |
 | `BUNCARGO_URL_HOST` | Host in app URLs (`<APP>_URL`, the banner, `url`, `open`, `status`), for a machine people reach from another one, such as `worker.<tailnet>.ts.net`. Service URLs, health checks and `<APP>_LOOPBACK_URL` stay on `localhost`. Vite apps then accept that host, and the Vite plugin listens on `0.0.0.0` |
 | `BUNCARGO_LOCAL_IP` | Address for the `<app>Local` URLs instead of the first network interface's |
+| `BUNCARGO_PRUNE_DELETED_CHECKOUTS` | `1`: the sweep also removes the volumes of a checkout whose directory is gone (see [watchdog](#watchdog)) |
+| `BUNCARGO_SYSTEMD_SCOPE` | `0`: on Linux, start the watchdog, `dev --detach` runs and the sharing coordinator in the caller's cgroup instead of a systemd user scope of their own |
 | `BUNCARGO_CONTAINER_RUNTIME` | `docker` \| `apple` \| `auto`; overrides `docker.runtime` |
 | `BUNCARGO_CONTAINER_BINARY` | Absolute path to the selected runtime's binary; skips the PATH lookup. `docker.binary` wins over it |
 | `BUNCARGO_EXPOSE_TUNNEL_STAGGER_MS` | Delay between starting tunnels (default `900`) |
@@ -1338,6 +1340,8 @@ bunx buncargo prune --yes       # For scripts that have already decided
 
 Volumes carry no buncargo labels on purpose: Compose compares a volume against the file and offers to *recreate* it when they differ, which hangs a non-interactive run and destroys the data. So prune cannot tell which checkout a volume came from, and says so rather than guessing — volumes it cannot attribute to a project are counted and left alone.
 
+A machine where worktrees come and go all day, such as a server agents work on, can opt in with `BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`: the sweep then also removes the volumes of a checkout whose directory was deleted. It works for checkouts whose containers are already gone, and leaves the volumes whenever another checkout or a run still uses the same project name.
+
 `buncargo prune --project` is the same, for one project: run it in any checkout, and it removes only that project's leftovers, by name. That is every checkout's `ci` stack, and every stack of a worktree whose directory was deleted (until `git worktree prune` forgets it). It takes their stopped containers, volumes and networks:
 
 ```bash
@@ -1353,7 +1357,8 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 
 | Error | Cause | Fix |
 | --- | --- | --- |
-| `Docker is not running (…)` | Daemon down and auto-start failed/disabled | Start OrbStack/Docker/Colima, or drop `--no-docker-autostart` |
+| `Docker is not running (…)` | Daemon down and auto-start failed/disabled | Start OrbStack/Docker/Colima, or drop `--no-docker-autostart`. On Linux: `sudo systemctl start docker` |
+| `Docker is running, but this user cannot open its socket` | User not in the `docker` group, or a process started before it was added | `sudo usermod -aG docker $USER`, then log in again or restart the service you run buncargo from |
 | `port 5173 held by container gey-other-platform-1 (project gey-other)` | Foreign compose project owns the port | Stop the other env (`buncargo ls` / `dev --down --all`) or let allocation shift |
 | `port … held by process …` | Another process owns the port | Stop that process; own-repo orphans are killed automatically |
 | `port … is held by an unidentified process` | A process this user cannot list (often a macOS service) holds it | Run `dev` again: allocation moves to a free block |

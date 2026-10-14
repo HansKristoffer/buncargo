@@ -17,7 +17,11 @@ import {
 } from "../core/run-registry";
 import type { BuncargoContainer } from "../types";
 import { withProjectLifecycleLock } from "./project-lock";
-import { decideSweep, sweepOrphanedContainers } from "./sweep";
+import {
+	decideSweep,
+	settleDeletedCheckouts,
+	sweepOrphanedContainers,
+} from "./sweep";
 import type { ContainerDownRequest, ContainerRuntimeAdapter } from "./types";
 
 const realHome = process.env.HOME;
@@ -477,5 +481,92 @@ describe("sweepOrphanedContainers", () => {
 		expect(result.remaining.map((group) => group.projectName)).toEqual([
 			"reused",
 		]);
+	});
+});
+
+describe("settleDeletedCheckouts", () => {
+	const gone = join(tmpdir(), "buncargo-never-existed");
+	const claim = (projectName: string) => ({
+		offset: 100,
+		projectName,
+		updatedAt: "",
+	});
+	function setup(left: BuncargoContainer[] = []) {
+		const removed: string[][] = [];
+		const dropped: string[][] = [];
+		const runtime = {
+			name: "docker",
+			list: () => left,
+			listVolumes: async () => [
+				{ name: "app-gone_db", project: "app-gone", runtime: "docker" },
+				{ name: "other_db", project: "other", runtime: "docker" },
+				{ name: "loose", runtime: "docker" },
+			],
+			removeVolumes: async (names: string[]) => {
+				removed.push(names);
+				return [];
+			},
+		} as unknown as ContainerRuntimeAdapter;
+		const result = { swept: [], failed: [] };
+		const dropClaims = async (roots: readonly string[]) => {
+			dropped.push([...roots]);
+		};
+		return { runtime, removed, dropped, result, dropClaims };
+	}
+
+	it("only drops the claims unless the machine opted in", async () => {
+		const { runtime, removed, dropped, result, dropClaims } = setup();
+		await settleDeletedCheckouts(
+			{ runtimes: [runtime], runs: [], result },
+			{ enabled: false, claims: { [gone]: claim("app-gone") }, dropClaims },
+		);
+		expect(removed).toEqual([]);
+		expect(dropped).toEqual([[gone]]);
+	});
+
+	it("removes a deleted checkout's project volumes, then its claim", async () => {
+		const { runtime, removed, dropped, result, dropClaims } = setup();
+		await settleDeletedCheckouts(
+			{ runtimes: [runtime], runs: [], result },
+			{
+				enabled: true,
+				claims: { [gone]: claim("app-gone"), [checkout]: claim("other") },
+				dropClaims,
+			},
+		);
+		expect(removed).toEqual([["app-gone_db"]]);
+		expect(dropped).toEqual([[gone]]);
+		expect(result.swept).toHaveLength(1);
+	});
+
+	it("keeps volumes another checkout or run still uses, and waits out leftover containers", async () => {
+		const shared = { [gone]: claim("app-gone"), [checkout]: claim("app-gone") };
+		const run = { projectName: "app-gone", root: checkout } as RunEntry;
+		const leftover = container("app-gone", gone, "exited");
+		for (const [runs, claims, left, droppedClaim] of [
+			[[], shared, [], true],
+			[[run], { [gone]: claim("app-gone") }, [], true],
+			[[], { [gone]: claim("app-gone") }, [leftover], false],
+		] as const) {
+			const { runtime, removed, dropped, result, dropClaims } = setup([
+				...left,
+			]);
+			await settleDeletedCheckouts(
+				{ runtimes: [runtime], runs: [...runs], result },
+				{ enabled: true, claims, dropClaims },
+			);
+			expect(removed).toEqual([]);
+			expect(dropped).toEqual([droppedClaim ? [gone] : []]);
+		}
+	});
+
+	it("decides nothing while no runtime answers", async () => {
+		const { removed, dropped, result, dropClaims } = setup();
+		await settleDeletedCheckouts(
+			{ runtimes: [], runs: [], result },
+			{ enabled: true, claims: { [gone]: claim("app-gone") }, dropClaims },
+		);
+		expect(removed).toEqual([]);
+		expect(dropped).toEqual([]);
 	});
 });

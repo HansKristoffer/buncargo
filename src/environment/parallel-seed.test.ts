@@ -94,6 +94,10 @@ process.exit(17);
 			},
 		},
 	};
+	// The fixture's port is an ephemeral one, up to 65535: any shifted block
+	// would overflow, so pin the offset as the other tests here do.
+	const offset = process.env.BUNCARGO_PORT_OFFSET;
+	process.env.BUNCARGO_PORT_OFFSET = "0";
 	const env = createDevEnvironment(config, { root: fixture.root });
 	try {
 		await expect(
@@ -108,6 +112,8 @@ process.exit(17);
 		);
 	} finally {
 		await env.stop({ verbose: false });
+		if (offset === undefined) delete process.env.BUNCARGO_PORT_OFFSET;
+		else process.env.BUNCARGO_PORT_OFFSET = offset;
 		await fixture.cleanup();
 	}
 }, 15000);

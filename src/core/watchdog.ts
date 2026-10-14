@@ -14,6 +14,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FileLockTimeoutError, withFileLock } from "./file-lock";
+import { inOwnUserScope } from "./process/user-scope";
 import {
 	matchesProcessIdentity,
 	matchesProcessIdentityAsync,
@@ -170,7 +171,13 @@ export async function ensureWatchdog(
 		)}, [${JSON.stringify(resolveWatchdogRunnerPath())}], { cwd: ${JSON.stringify(
 			stateDir,
 		)}, detached: true, stdio: "ignore" }).unref();`;
-		const proc = spawn(process.execPath, ["-e", bootstrap], {
+		// Its own scope on Linux, so restarting the service an agent runs in
+		// does not take the watchdog down with that service's cgroup.
+		const [command, ...args] = inOwnUserScope(
+			[process.execPath, "-e", bootstrap],
+			"buncargo watchdog",
+		);
+		const proc = spawn(command as string, args, {
 			cwd: stateDir,
 			detached: true,
 			stdio: ["ignore", "ignore", "ignore"],

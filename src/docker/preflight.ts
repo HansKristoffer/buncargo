@@ -9,6 +9,8 @@ import { runDocker, runDockerAsync } from "./binary";
 export type DockerRuntime =
 	| "orbstack"
 	| "docker-desktop"
+	/** The plain engine on Linux, run by the system service manager. */
+	| "docker-engine"
 	| "colima"
 	| "rancher"
 	| "podman"
@@ -18,8 +20,12 @@ export class DockerUnavailableError extends Error {
 	readonly runtime: DockerRuntime;
 	readonly remediation: string;
 
-	constructor(runtime: DockerRuntime, remediation: string) {
-		super(`Docker is not running (${runtime}). ${remediation}`);
+	constructor(
+		runtime: DockerRuntime,
+		remediation: string,
+		problem = `Docker is not running (${runtime}).`,
+	) {
+		super(`${problem} ${remediation}`);
 		this.name = "DockerUnavailableError";
 		this.runtime = runtime;
 		this.remediation = remediation;
@@ -40,7 +46,11 @@ export function detectDockerRuntime(binary?: string): DockerRuntime {
 	return runtimeFromContext(dockerContextName(binary)?.toLowerCase() ?? "");
 }
 
-function runtimeFromContext(context: string): DockerRuntime {
+/** Exported for tests: the platform decides what a bare `docker` binary means. */
+export function runtimeFromContext(
+	context: string,
+	platform: NodeJS.Platform = process.platform,
+): DockerRuntime {
 	if (
 		context.includes("orbstack") ||
 		existsSync("/Applications/OrbStack.app")
@@ -58,6 +68,11 @@ function runtimeFromContext(context: string): DockerRuntime {
 	}
 	if (context.includes("podman") || commandExists("podman")) {
 		return "podman";
+	}
+	// Docker Desktop for Linux names its context; anything else on Linux is the
+	// engine itself, which nothing here can or should start.
+	if (platform === "linux" && context !== "desktop-linux") {
+		return "docker-engine";
 	}
 	if (existsSync("/Applications/Docker.app") || commandExists("docker")) {
 		return "docker-desktop";
@@ -77,6 +92,8 @@ function remediationFor(runtime: DockerRuntime): string {
 			return "Start OrbStack (open -a OrbStack) and try again.";
 		case "docker-desktop":
 			return "Start Docker Desktop (open -a Docker) and try again.";
+		case "docker-engine":
+			return "Start the Docker service (sudo systemctl start docker) and try again.";
 		case "colima":
 			return "Run `colima start` and try again.";
 		case "rancher":
@@ -128,18 +145,14 @@ export async function ensureDockerRunning(
 
 	const { signal } = options;
 	const deadline = performance.now() + timeoutMs;
-	const daemonRunning = async () =>
-		(
-			await runDockerAsync(
-				binary,
-				["version", "--format", "{{.Server.Version}}"],
-				{
-					signal,
-					timeoutMs: Math.min(5000, remainingTime(deadline)),
-				},
-			)
-		).ok;
-	if (await daemonRunning()) return;
+	const probe = () =>
+		runDockerAsync(binary, ["version", "--format", "{{.Server.Version}}"], {
+			signal,
+			timeoutMs: Math.min(5000, remainingTime(deadline)),
+		});
+	const daemonRunning = async () => (await probe()).ok;
+	const first = await probe();
+	if (first.ok) return;
 	const context = await runDockerAsync(binary, ["context", "show"], {
 		signal,
 		timeoutMs: Math.min(5000, remainingTime(deadline)),
@@ -147,6 +160,14 @@ export async function ensureDockerRunning(
 	const runtime = runtimeFromContext(
 		context.ok ? context.stdout.trim().toLowerCase() : "",
 	);
+	// A daemon that is up but refuses this user would otherwise read as "not
+	// running", and the wait below could never end differently.
+	if (/permission denied/i.test(first.stderr))
+		throw new DockerUnavailableError(
+			runtime,
+			"Add your user to the docker group (sudo usermod -aG docker $USER), then log in again or restart the service you run buncargo from: running processes keep their old groups.",
+			"Docker is running, but this user cannot open its socket.",
+		);
 	// CI never starts Docker itself, but a runner's daemon is often still
 	// coming up when the job starts: keep asking until the deadline. Locally,
 	// `--no-docker-autostart` wants the answer now, not in 90 seconds.
