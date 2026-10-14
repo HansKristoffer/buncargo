@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { AppConfig, SecretsScopeConfig } from "../../types";
 import { registerAbortCleanup } from "../deadline";
 import { withFileLock } from "../file-lock";
@@ -49,6 +52,57 @@ export const DEFAULT_INFISICAL_SITE_URL = "https://eu.infisical.com";
 const REQUEST_TIMEOUT_MS = 30_000;
 /** Every worktree on the machine queues on one lock, so allow a real queue. */
 const LOCK_TIMEOUT_MS = 120_000;
+
+/**
+ * The machine identity hanzio also reads when the environment names none:
+ * `~/.infisical/universal-auth.json` (`INFISICAL_UNIVERSAL_AUTH_FILE` overrides
+ * it), which agentgate keeps on every machine. Only used for its own instance.
+ */
+function identityFile(
+	env: NodeJS.ProcessEnv,
+	siteUrl: string,
+): { clientId: string; clientSecret: string } | undefined {
+	if (env.INFISICAL_CLIENT_ID?.trim() || env.INFISICAL_CLIENT_SECRET?.trim())
+		return undefined;
+	const file =
+		env.INFISICAL_UNIVERSAL_AUTH_FILE?.trim() ||
+		join(
+			process.env.HOME?.trim() || homedir(),
+			".infisical",
+			"universal-auth.json",
+		);
+	let identity: {
+		clientId?: unknown;
+		clientSecret?: unknown;
+		siteUrl?: unknown;
+	};
+	try {
+		identity = JSON.parse(readFileSync(file, "utf8"));
+	} catch (error) {
+		if ((error as { code?: string }).code === "ENOENT") return undefined;
+		// Never echo the file: it holds a client secret.
+		throw new SecretsError(
+			`The Infisical identity file ${file} is not valid JSON.`,
+			"Set it again with agentgate logins identity, or remove it.",
+		);
+	}
+	const { clientId, clientSecret, siteUrl: own } = identity;
+	if (
+		typeof clientId !== "string" ||
+		!clientId ||
+		typeof clientSecret !== "string" ||
+		!clientSecret ||
+		typeof own !== "string" ||
+		!URL.canParse(own)
+	)
+		throw new SecretsError(
+			`The Infisical identity file ${file} needs clientId, clientSecret and siteUrl.`,
+			"Set it again with agentgate logins identity, or remove it.",
+		);
+	return new URL(own).origin === new URL(siteUrl).origin
+		? { clientId, clientSecret }
+		: undefined;
+}
 
 export class SecretsError extends Error {
 	constructor(
@@ -420,7 +474,9 @@ export async function fetchScopeSecrets(
 	} = {},
 ): Promise<Record<string, string>> {
 	options.signal?.throwIfAborted();
-	const credentials = infisicalMachineCredentials(options.env);
+	const env = options.env ?? process.env;
+	const credentials =
+		infisicalMachineCredentials(env) ?? identityFile(env, scope.siteUrl);
 	// A different identity or rotated credential must authenticate for itself.
 	// Keep raw credentials out of cache keys and diagnostic metadata.
 	const authKey = credentials
