@@ -51,6 +51,14 @@ export function runtimeFromContext(
 	context: string,
 	platform: NodeJS.Platform = process.platform,
 ): DockerRuntime {
+	// On Linux the context decides, not which other tools are installed: a CI image
+	// with podman on PATH still runs Docker's own engine under the "default" context.
+	// Anything not named for another runtime (or Docker Desktop) is that engine,
+	// which nothing here can or should start.
+	const otherRuntime = /colima|rancher|podman|desktop-linux/.test(context);
+	if (platform === "linux" && !otherRuntime) {
+		return "docker-engine";
+	}
 	if (
 		context.includes("orbstack") ||
 		existsSync("/Applications/OrbStack.app")
@@ -68,11 +76,6 @@ export function runtimeFromContext(
 	}
 	if (context.includes("podman") || commandExists("podman")) {
 		return "podman";
-	}
-	// Docker Desktop for Linux names its context; anything else on Linux is the
-	// engine itself, which nothing here can or should start.
-	if (platform === "linux" && context !== "desktop-linux") {
-		return "docker-engine";
 	}
 	if (existsSync("/Applications/Docker.app") || commandExists("docker")) {
 		return "docker-desktop";
