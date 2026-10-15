@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import {
-	CI_TYPECHECK_CONCURRENCY_CAP,
 	defaultTypecheckConcurrency,
 	LOCAL_TYPECHECK_CONCURRENCY_CAP,
 	selectWorkspaces,
@@ -52,13 +51,17 @@ describe("sortWorkspacesByExpectedDuration", () => {
 });
 
 describe("defaultTypecheckConcurrency", () => {
-	it("caps local at 4 and CI at 2", () => {
-		expect(defaultTypecheckConcurrency({}, 8)).toBe(
+	it("caps local at 4 and sizes CI by memory", () => {
+		const gb = 1024 ** 3;
+		expect(defaultTypecheckConcurrency({}, 64, 314 * gb)).toBe(
 			LOCAL_TYPECHECK_CONCURRENCY_CAP,
 		);
-		expect(defaultTypecheckConcurrency({ CI: "1" }, 8)).toBe(
-			CI_TYPECHECK_CONCURRENCY_CAP,
-		);
+		// A 7 GB hosted runner, a 16 GB one, and a large self-hosted server.
+		expect(defaultTypecheckConcurrency({ CI: "1" }, 2, 7.7 * gb)).toBe(2);
+		expect(defaultTypecheckConcurrency({ CI: "1" }, 4, 15.6 * gb)).toBe(4);
+		expect(defaultTypecheckConcurrency({ CI: "1" }, 8, 15.6 * gb)).toBe(4);
+		expect(defaultTypecheckConcurrency({ CI: "1" }, 64, 314 * gb)).toBe(64);
+		expect(defaultTypecheckConcurrency({ CI: "1" }, 8, 2 * gb)).toBe(1);
 	});
 
 	it("never goes below 1", () => {
