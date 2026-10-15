@@ -119,6 +119,11 @@ sweep through `core/watchdog-loop.ts`, which logs and retries a pass that throws
 and logs a repeated failure once until it changes. `ls` and `doctor` sweep inline, so a killed
 watchdog is never the last line of defence.
 
+It also serves the live entries, as a `runs.json` document, on the machine's Tailscale address
+(`core/tailnet-directory.ts`) to BuncargoBar on the other machines of the tailnet. That bar may be
+a different version than the CLI it reads, so the registry's old-reader compatibility now holds
+across machines too. A watchdog started by an older buncargo keeps running old code until it exits.
+
 On Linux the watchdog, like `dev --detach` and the sharing coordinator, starts in a systemd
 user scope of its own when there is a user manager (`process/user-scope.ts`; off with
 `BUNCARGO_SYSTEMD_SCOPE=0`). A detached child is still in its parent's cgroup, and an agent harness

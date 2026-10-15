@@ -173,6 +173,16 @@ export function urlHostOverride(
 	return readTrimmed(env, "BUNCARGO_URL_HOST");
 }
 
+/**
+ * `BUNCARGO_TAILNET_DIRECTORY=0` - do not list this machine's runs to
+ * BuncargoBar on other machines of its tailnet.
+ */
+export function tailnetDirectoryEnabled(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return env.BUNCARGO_TAILNET_DIRECTORY !== "0";
+}
+
 /** `BUNCARGO_LOCAL_IP` - the address `<app>Local` URLs use instead of the first network interface's. */
 export function localIpOverride(
 	env: NodeJS.ProcessEnv = process.env,

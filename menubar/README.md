@@ -39,6 +39,10 @@ Answers are cached in `~/.buncargo/bar-check.json` (24 h, 1 h when an update is
 required) so `dev` does not spend GitHub's anonymous rate limit. `BUNCARGO_BAR=0`
 and CI turn the whole thing off.
 
+## Your other machines
+
+When this Mac is on a Tailscale network, the menu also shows the runs on your other machines there, such as a server agents work on, under each machine's name. Nothing to set up: the bar asks every online peer from `tailscale status`, and buncargo on each machine answers on its Tailscale address while it has runs. Open and copy use the peer's Tailscale IP, or the app's own URL when that machine sets `BUNCARGO_URL_HOST`. Apps must listen on more than `127.0.0.1` to be reachable; the Vite plugin does on any machine on a tailnet. Stopping and tasks stay on the machine itself.
+
 ## Remote environments
 
 Use the key menu to copy a connection token. Set `BUNCARGO_CONNECT_TOKENS` in the publishing environment, optionally set `BUNCARGO_CONNECT_NAME`, and run `buncargo dev`. See [connection setup](../docs/frp.md).

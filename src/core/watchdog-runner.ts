@@ -15,6 +15,8 @@ import { sweepOrphanedContainers } from "../container-runtime/sweep";
 import { FileLockTimeoutError, withFileLock } from "./file-lock";
 import { readCurrentProcessIdentityAsync } from "./process-identity";
 import { writeJsonDocumentSync } from "./registry-file";
+import { tailnetDirectoryEnabled } from "./runtime-flags";
+import { serveTailnetDirectory } from "./tailnet-directory";
 import {
 	getWatchdogLockFile,
 	getWatchdogLogFile,
@@ -77,9 +79,13 @@ withFileLock(
 			processIdentity: await readCurrentProcessIdentityAsync(),
 		});
 		log(`Started (PID: ${process.pid})`);
+		const stopDirectory = tailnetDirectoryEnabled()
+			? serveTailnetDirectory({ log, intervalMs: WATCHDOG_POLL_INTERVAL_MS })
+			: () => {};
 		try {
 			await watch();
 		} finally {
+			stopDirectory();
 			cleanup();
 		}
 	},

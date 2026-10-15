@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
 	buildBuncargoViteConfig,
 	buncargoVite,
+	defaultBuncargoViteHost,
 	readBuncargoViteEnvironment,
 	resolveBuncargoViteProxy,
 } from "./index";
@@ -112,10 +113,29 @@ describe("buncargoVite", () => {
 	});
 
 	it("produces a usable config with an empty environment", async () => {
+		const { server } = await buncargoVite({ env: {} }).config(
+			{},
+			{ command: "build" },
+		);
+		expect(server.allowedHosts).toBeUndefined();
+		expect(["127.0.0.1", "0.0.0.0"]).toContain(server.host ?? "");
+	});
+
+	it("binds every interface on a tailnet, where BuncargoBar opens it by IP", () => {
+		expect(defaultBuncargoViteHost({}, undefined)).toBe("127.0.0.1");
+		expect(defaultBuncargoViteHost({}, "100.105.134.66")).toBe("0.0.0.0");
 		expect(
-			(await buncargoVite({ env: {} }).config({}, { command: "build" })).server
-				.host,
+			defaultBuncargoViteHost(
+				{ BUNCARGO_TAILNET_DIRECTORY: "0" },
+				"100.105.134.66",
+			),
 		).toBe("127.0.0.1");
+		expect(
+			defaultBuncargoViteHost(
+				{ BUNCARGO_URL_HOST: "worker.ts.net" },
+				undefined,
+			),
+		).toBe("0.0.0.0");
 	});
 });
 

@@ -1076,7 +1076,7 @@ It sets `server.port` from `PORT`, binds `server.host` to `127.0.0.1` (Vite's de
 
 The port is also set with `server.strictPort`: a Vite that drifts to the next free port is one nothing is routed to. `FRONTEND_PORT` wins over `PORT` when set, which is what Shopify CLI hands its frontend web, so the same `vite.config.ts` works under buncargo and directly under `shopify app dev`.
 
-Vite is not a dependency of buncargo: the plugin's return type is declared structurally, so importing it costs nothing in a repo without Vite. It listens on `127.0.0.1`, or on `0.0.0.0` when `BUNCARGO_URL_HOST` is set. Override the app or the bind address when you need to: `buncargoVite({ app: "web", host: "0.0.0.0" })`.
+Vite is not a dependency of buncargo: the plugin's return type is declared structurally, so importing it costs nothing in a repo without Vite. It listens on `127.0.0.1`, or on `0.0.0.0` when other machines open the app: `BUNCARGO_URL_HOST` is set, or the machine is on a Tailscale network (unless `BUNCARGO_TAILNET_DIRECTORY=0`). Override the app or the bind address when you need to: `buncargoVite({ app: "web", host: "0.0.0.0" })`.
 
 **Proxying `/api` to another app.** `buncargoVite({ proxy: { "/api": "api" } })` adds a `server.proxy` entry targeting the `api` app's loopback URL (`API_LOOPBACK_URL`, else `API_PORT`), with WebSockets on and the incoming Host kept (`changeOrigin: false`), so the API sees the public hostname behind a tunnel. Write this rather than a hand-rolled proxy to `API_URL`: with named hosts on, that URL is `https://api.<project>.localhost`, and a proxy that keeps the Host sends the request back through the hosts daemon to the Vite it came from, which answers `508 Loop Detected`. A tunnel-first project that does not want named URLs at all can set `options.hosts: false`.
 
@@ -1086,6 +1086,7 @@ Vite is not a dependency of buncargo: the plugin's return type is declared struc
 | --- | --- |
 | `BUNCARGO_PORT_OFFSET` | Hard port offset; skips probing |
 | `BUNCARGO_URL_HOST` | Host in app URLs (`<APP>_URL`, the banner, `url`, `open`, `status`), for a machine people reach from another one, such as `worker.<tailnet>.ts.net`. Service URLs, health checks and `<APP>_LOOPBACK_URL` stay on `localhost`. Vite apps then accept that host, and the Vite plugin listens on `0.0.0.0` |
+| `BUNCARGO_TAILNET_DIRECTORY` | `0`: do not list this machine's runs to BuncargoBar on the other machines of its tailnet (see [watchdog](#watchdog)), and keep its Vite apps on `127.0.0.1` |
 | `BUNCARGO_LOCAL_IP` | Address for the `<app>Local` URLs instead of the first network interface's |
 | `BUNCARGO_PRUNE_DELETED_CHECKOUTS` | `1`: the sweep also removes the volumes of a checkout whose directory is gone (see [watchdog](#watchdog)) |
 | `BUNCARGO_SYSTEMD_SCOPE` | `0`: on Linux, start the watchdog, `dev --detach` runs and the sharing coordinator in the caller's cgroup instead of a systemd user scope of their own |
@@ -1334,6 +1335,8 @@ Every run that owns containers claims them in `~/.buncargo/runs.json` before it 
 - **its run crashed** (the PID is gone without releasing) and ~15s have passed since a sweep first noticed
 
 A running stack with a live owner is never touched. `--keep-containers`, `options.autoShutdown: false` and the one-shot modes (`--up-only`, `--migrate`, `--seed`) set no idle hold, so their containers live as long as the checkout — even if the run crashed. `--watchdog-timeout=N` sets the hold in minutes. The watchdog exits when there is nothing left to watch and any later `dev` starts it again.
+
+On a machine on a [Tailscale](https://tailscale.com) network, the watchdog also lists the live runs at `http://<tailscale-ip>:48480/v1/runs`, on the Tailscale address only, so BuncargoBar on your other machines shows them. Who can read it is up to your tailnet's access rules; the list includes connection strings with the dev database passwords. `BUNCARGO_TAILNET_DIRECTORY=0` turns it off, and keeps Vite apps on `127.0.0.1`.
 
 A finished run keeps its registry entry until its containers are gone — that entry is what says they may still be reused, and for how long. `buncargo runs`, `stop` and the menu bar filter it out; only the sweep sees it. `dev --down` and `stop()` remove it straight away, since they have just removed the containers.
 
