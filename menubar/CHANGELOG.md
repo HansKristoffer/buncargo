@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.1.0](https://github.com/HansKristoffer/buncargo/compare/bar-v5.0.0...bar-v5.1.0) (2026-10-15)
+
+
+### Features
+
+* **cli:** show runs from your other tailnet machines in BuncargoBar ([#101](https://github.com/HansKristoffer/buncargo/issues/101)) ([32d1171](https://github.com/HansKristoffer/buncargo/commit/32d1171f7eb11eb24cd02e242588ea00df8ecdb6))
+
 ## [5.0.0](https://github.com/HansKristoffer/buncargo/compare/bar-v4.0.1...bar-v5.0.0) (2026-10-03)
 
 
