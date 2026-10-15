@@ -201,6 +201,7 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 		? []
 		: checkoutFileSpecs(env.checkoutFiles);
 	if (checkoutFiles.length > 0) {
+		const paths = checkoutFiles.map((file) => file.path);
 		// Fast because loading already synced them: `dev` reads that report
 		// rather than forking git again. `doctor` loads without syncing and
 		// inspects here.
@@ -224,12 +225,9 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 			severity: "warning",
 			fast: false,
 			check: ({ root }) => {
-				const refused = [
-					...gitignoreRefusals(
-						root,
-						checkoutFiles.map((file) => file.path),
-					),
-				].map(([path, reason]) => `${path} ${reason}`);
+				const refused = [...gitignoreRefusals(root, paths)].map(
+					([path, reason]) => `${path} ${reason}`,
+				);
 				return (
 					refused.length === 0 || { ok: false, detail: refused.join("; ") }
 				);
@@ -238,12 +236,7 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 			fix: ({ root }) =>
 				appendToGitignore(
 					root,
-					[
-						...gitignoreRefusals(
-							root,
-							checkoutFiles.map((file) => file.path),
-						),
-					]
+					[...gitignoreRefusals(root, paths)]
 						.filter(([, reason]) => reason === "is not gitignored")
 						.map(([path]) => `/${path}`),
 				),

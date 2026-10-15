@@ -215,10 +215,9 @@ function status(
 	if (report.files.length === 0) log.line("No checkout files configured.");
 	const width = Math.max(0, ...report.files.map((file) => file.path.length));
 	for (const file of report.files) {
+		const state = checkoutFileProblem(file) ?? STATE_LABELS[file.state];
 		const machine = file.machine ? " (this machine only)" : "";
-		log.line(
-			`  ${file.path.padEnd(width)}  ${checkoutFileProblem(file) ?? STATE_LABELS[file.state]}${machine}`,
-		);
+		log.line(`  ${file.path.padEnd(width)}  ${state}${machine}`);
 	}
 	return 0;
 }
@@ -249,9 +248,11 @@ async function pull(
 			file.refusal || (file.state !== "in-sync" && file.state !== "missing"),
 	);
 	for (const file of behind) {
-		log.warn(
+		const edited =
 			!file.refusal &&
-				(file.state === "local-edits" || file.state === "conflict")
+			(file.state === "local-edits" || file.state === "conflict");
+		log.warn(
+			edited
 				? `${file.path} has local edits, so it was not pulled. \`buncargo files pull --force ${file.path}\` replaces them (backed up first).`
 				: `${file.path} ${checkoutFileProblem(file) ?? "was not pulled"}`,
 		);
@@ -280,9 +281,12 @@ function diff(
 		const local = view.local.data;
 		const store = view.store?.data;
 		if (!local || !store) {
-			log.line(
-				`${path}: ${local ? "only in this checkout" : store ? "only in the file store" : "in neither"}`,
-			);
+			const where = local
+				? "only in this checkout"
+				: store
+					? "only in the file store"
+					: "in neither";
+			log.line(`${path}: ${where}`);
 			continue;
 		}
 		if (view.localHash === view.store?.hash) {
@@ -313,8 +317,9 @@ async function exportFiles(
 		includeMachine,
 	});
 	console.log(JSON.stringify(bundle));
+	const count = bundle.files.length;
 	log.hint(
-		`Exported ${bundle.files.length} file${bundle.files.length === 1 ? "" : "s"}; the output holds their values.`,
+		`Exported ${count} file${count === 1 ? "" : "s"}; the output holds their values.`,
 	);
 	return 0;
 }
@@ -342,9 +347,8 @@ async function importFiles(
 			["Export it from a checkout of the same repository."],
 		);
 	await importBundle(storeDir(repoKey), bundle);
-	log.done(
-		`Imported ${bundle.files.map((file) => file.path).join(", ") || "nothing"} into the file store.`,
-	);
+	const imported = bundle.files.map((file) => file.path).join(", ");
+	log.done(`Imported ${imported || "nothing"} into the file store.`);
 	if (specs.length === 0) return 0;
 	return pull(root, specs, undefined, false);
 }

@@ -110,19 +110,22 @@ const STATE_FILE = "files.json";
 type CheckoutState = Record<string, { base: string }>;
 
 function readCheckoutState(root: string): CheckoutState {
+	let value: { version?: unknown; files?: Record<string, { base?: unknown }> };
 	try {
-		const value = JSON.parse(
-			readFileSync(projectStateFilePath(root, STATE_FILE), "utf8"),
-		) as { version?: unknown; files?: unknown };
-		if (value.version !== 1 || typeof value.files !== "object") return {};
-		const files: CheckoutState = {};
-		for (const [path, entry] of Object.entries(value.files ?? {}))
-			if (typeof (entry as { base?: unknown })?.base === "string")
-				files[path] = { base: (entry as { base: string }).base };
-		return files;
+		const text = readFileSync(projectStateFilePath(root, STATE_FILE), "utf8");
+		value = JSON.parse(text);
 	} catch {
+		// Never synced, or damaged: every file starts without a base.
 		return {};
 	}
+	if (value?.version !== 1 || typeof value.files !== "object") return {};
+
+	const files: CheckoutState = {};
+	for (const [path, entry] of Object.entries(value.files ?? {})) {
+		const base = entry?.base;
+		if (typeof base === "string") files[path] = { base };
+	}
+	return files;
 }
 
 function writeCheckoutState(root: string, files: CheckoutState): void {
@@ -363,10 +366,6 @@ function otherCheckouts(root: string): string[] {
 	}
 }
 
-function backupStamp(now: Date): string {
-	return now.toISOString().replace(/[:.]/g, "-");
-}
-
 const lastReports = new Map<string, CheckoutFilesReport>();
 
 /**
@@ -442,13 +441,15 @@ export async function syncCheckoutFiles(
 			opened = readOpened(root, selected, opened.repoKey, opened.dir);
 		});
 
-	for (const view of opened.views)
-		if (stateOf(view) === "conflict" && !view.local.refusal)
-			log(
-				formatWarn(
-					`${view.spec.path} has local edits and the file store changed too. Keep yours with \`buncargo files save ${view.spec.path}\`, or take the store's with \`buncargo files pull --force ${view.spec.path}\` (yours is backed up).`,
-				),
-			);
+	for (const view of opened.views) {
+		if (stateOf(view) !== "conflict" || view.local.refusal) continue;
+		const path = view.spec.path;
+		log(
+			formatWarn(
+				`${path} has local edits and the file store changed too. Keep yours with \`buncargo files save ${path}\`, or take the store's with \`buncargo files pull --force ${path}\` (yours is backed up).`,
+			),
+		);
+	}
 	const report = reportOf(opened, refusals);
 	if (!options.paths) lastReports.set(root, report);
 	return report;
@@ -498,7 +499,8 @@ function apply(
 			case "force": {
 				if (!view.store) break;
 				if (action === "force" && view.local.data) {
-					const backup = `.buncargo/files-backup/${backupStamp(now)}/${path}`;
+					const stamp = now.toISOString().replace(/[:.]/g, "-");
+					const backup = `.buncargo/files-backup/${stamp}/${path}`;
 					writeLocal(root, backup, view.local.data);
 					log(
 						formatStep(
@@ -657,11 +659,8 @@ export async function syncConfiguredCheckoutFiles(
 	try {
 		await syncCheckoutFiles(root, specs, { ci: isCI() });
 	} catch (error) {
-		console.error(
-			formatWarn(
-				`Checkout files were not synced: ${error instanceof Error ? error.message : String(error)}`,
-			),
-		);
+		const reason = error instanceof Error ? error.message : String(error);
+		console.error(formatWarn(`Checkout files were not synced: ${reason}`));
 	}
 
 	const envFiles = Array.isArray(options?.envFiles) ? options.envFiles : [];

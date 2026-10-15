@@ -14,10 +14,10 @@ import {
  * agentgate: `buncargo files export | ssh box 'cd app && buncargo files import'`.
  */
 
-export const BUNDLE_KIND = "buncargo-checkout-files";
-export const BUNDLE_VERSION = 1;
+const BUNDLE_KIND = "buncargo-checkout-files";
+const BUNDLE_VERSION = 1;
 
-export interface BundleFile {
+interface BundleFile {
 	path: string;
 	sha256: string;
 	updatedAt: string;

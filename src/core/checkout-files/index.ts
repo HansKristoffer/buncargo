@@ -1,5 +1,4 @@
 export {
-	type Bundle,
 	exportBundle,
 	importBundle,
 	parseBundle,
@@ -9,17 +8,13 @@ export {
 	type CheckoutFileSpec,
 	checkoutFileErrors,
 	checkoutFileSpecs,
-	checkoutPathError,
 } from "./spec";
 export {
-	fileStoreRoot,
 	isLockStale,
 	LOCK_STALE_MS,
 	MAX_FILE_BYTES,
-	type Manifest,
 	readManifest,
 	readStoreData,
-	STORE_VERSION,
 	sha256,
 	storeDir,
 	withStoreLock,
@@ -27,9 +22,7 @@ export {
 } from "./store";
 export {
 	type CheckoutFileStatus,
-	type CheckoutFilesReport,
 	dotenvKeyDiff,
-	type FileState,
 	fileState,
 	gitignoreRefusals,
 	inspectCheckoutFiles,

@@ -44,14 +44,11 @@ export function checkoutFileErrors(value: unknown): string[] {
 				? (entry as Record<string, unknown>)
 				: undefined;
 		const path = typeof entry === "string" ? entry : object?.path;
-		if (
-			typeof path !== "string" ||
-			(object &&
-				((object.template !== undefined &&
-					typeof object.template !== "string") ||
-					(object.machine !== undefined &&
-						typeof object.machine !== "boolean")))
-		) {
+		const badTemplate =
+			object?.template !== undefined && typeof object.template !== "string";
+		const badMachine =
+			object?.machine !== undefined && typeof object.machine !== "boolean";
+		if (typeof path !== "string" || badTemplate || badMachine) {
 			errors.push(`${at} must be a path or {path, template?, machine?}`);
 			continue;
 		}

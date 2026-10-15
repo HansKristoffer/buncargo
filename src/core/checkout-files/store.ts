@@ -22,11 +22,11 @@ import { checkoutPathError } from "./spec";
  * buncargo's code (docs/internals/checkout-files.md).
  */
 
-export const STORE_VERSION = 1;
+const STORE_VERSION = 1;
 export const MAX_FILE_BYTES = 1024 * 1024;
 export const LOCK_STALE_MS = 30_000;
 
-export interface ManifestEntry {
+interface ManifestEntry {
 	sha256: string;
 	updatedAt: string;
 	machine: boolean;
@@ -37,7 +37,7 @@ export interface Manifest {
 	files: Record<string, ManifestEntry>;
 }
 
-export type StoreRead =
+type StoreRead =
 	| { kind: "absent" }
 	/** Another program's format, or a manifest that does not parse: left alone. */
 	| { kind: "unusable"; reason: string }
@@ -47,12 +47,8 @@ export function sha256(data: Uint8Array): string {
 	return createHash("sha256").update(data).digest("hex");
 }
 
-export function fileStoreRoot(home?: string): string {
-	return join(getStateDir(home), "files");
-}
-
 export function storeDir(repoKey: string, home?: string): string {
-	return join(fileStoreRoot(home), ...repoKey.split("/"));
+	return join(getStateDir(home), "files", ...repoKey.split("/"));
 }
 
 function dataPath(dir: string, path: string): string {
