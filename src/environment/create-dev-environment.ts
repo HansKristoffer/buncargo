@@ -173,6 +173,7 @@ export function createDevEnvironment<
 		// Utilities
 		buildEnvVars: envVars.buildEnvVars,
 		buildAppEnvVars: envVars.buildAppEnvVars,
+		buildEnvFingerprint: envVars.buildEnvFingerprint,
 		setPublicUrls: ctx.setPublicUrls,
 		clearPublicUrls: ctx.clearPublicUrls,
 		ensureComposeFile: ctx.ensureComposeFile,

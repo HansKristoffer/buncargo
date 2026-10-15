@@ -18,6 +18,13 @@ import { stateFilePath } from "./state-paths";
  * running" from "no longer exists". The sweep drops it, after removing the
  * checkout's volumes where the machine opted in, so it is also the record of
  * which project a deleted checkout used.
+ *
+ * A suffixed environment (`withSuffix`, `buncargo ci`, an E2E stack) hashes to
+ * its own offset and claims it under its own key, so it never replaces its
+ * checkout's dev claim. Parallel CI jobs on one machine are the case this is
+ * for: each runner's checkout has the same directory name and so the same hash,
+ * and without a claim they probed together, before any of them had bound a
+ * port, and all took the same block.
  */
 
 const VERSION = 1;
@@ -26,6 +33,28 @@ export interface OffsetClaim {
 	offset: number;
 	projectName: string;
 	updatedAt: string;
+	/** Set on a suffixed claim, whose key is not the bare root. */
+	root?: string;
+	suffix?: string;
+}
+
+/**
+ * Where a checkout's claim is stored. Never parsed: a suffixed claim carries its
+ * `root` and `suffix`, and a dev claim's key is its root.
+ */
+export function offsetClaimKey(root: string, suffix?: string): string {
+	return suffix ? `${root}#${suffix}` : root;
+}
+
+/** The checkout a claim belongs to. */
+export function offsetClaimRoot(key: string, claim: OffsetClaim): string {
+	return claim.root ?? key;
+}
+
+/** How a claim's holder reads in messages: its checkout, and its suffix if any. */
+export function offsetClaimHolder(key: string, claim: OffsetClaim): string {
+	const root = offsetClaimRoot(key, claim);
+	return claim.suffix ? `${root} (${claim.suffix})` : root;
 }
 
 interface OffsetClaimsDocument {
@@ -58,34 +87,43 @@ export function readAllOffsetClaims(): Record<string, OffsetClaim> {
 	return readJsonDocumentSync(getOffsetClaimsPath(), validate)?.claims ?? {};
 }
 
-/** Every claim whose checkout still exists, by root. */
+/** Every claim whose checkout still exists, by {@link offsetClaimKey}. */
 export function readOffsetClaims(): Record<string, OffsetClaim> {
 	return Object.fromEntries(
-		Object.entries(readAllOffsetClaims()).filter(([root]) => existsSync(root)),
+		Object.entries(readAllOffsetClaims()).filter(([key, claim]) =>
+			existsSync(offsetClaimRoot(key, claim)),
+		),
 	);
 }
 
-/** Drop the claims of `roots` whose directories are still gone. */
+/** Drop the claims under `keys` whose checkouts are still gone. */
 export async function dropDeletedOffsetClaims(
-	roots: readonly string[],
+	keys: readonly string[],
 ): Promise<void> {
-	if (roots.length === 0) return;
+	if (keys.length === 0) return;
 	await withFileLock(getOffsetClaimsPath(), async () => {
 		const claims = readAllOffsetClaims();
-		for (const root of roots) if (!existsSync(root)) delete claims[root];
+		for (const key of keys) {
+			const claim = claims[key];
+			if (claim && !existsSync(offsetClaimRoot(key, claim))) delete claims[key];
+		}
 		writeJsonDocumentSync(getOffsetClaimsPath(), { version: VERSION, claims });
 	});
 }
 
-/** The other checkout holding `offset`, if any. */
+/**
+ * Whoever else holds `offset`: another checkout, or another environment of this
+ * one. `key` is the asker's own {@link offsetClaimKey}.
+ */
 export function offsetClaimedBy(
 	claims: Record<string, OffsetClaim>,
 	offset: number,
-	root: string,
+	key: string,
 ): string | undefined {
-	return Object.entries(claims).find(
-		([other, claim]) => other !== root && claim.offset === offset,
-	)?.[0];
+	const holder = Object.entries(claims).find(
+		([other, claim]) => other !== key && claim.offset === offset,
+	);
+	return holder && offsetClaimHolder(...holder);
 }
 
 /**
@@ -99,14 +137,21 @@ export function claimOffset(
 	root: string,
 	offset: number,
 	projectName: string,
+	suffix?: string,
 ): void {
+	const key = offsetClaimKey(root, suffix);
 	const claims = readAllOffsetClaims();
 	if (
-		claims[root]?.offset === offset &&
-		claims[root]?.projectName === projectName
+		claims[key]?.offset === offset &&
+		claims[key]?.projectName === projectName
 	)
 		return;
-	claims[root] = { offset, projectName, updatedAt: new Date().toISOString() };
+	claims[key] = {
+		offset,
+		projectName,
+		updatedAt: new Date().toISOString(),
+		...(suffix ? { root, suffix } : {}),
+	};
 	writeJsonDocumentSync(getOffsetClaimsPath(), { version: VERSION, claims });
 }
 
@@ -115,12 +160,15 @@ export function withOffsetClaimsLock<T>(operation: () => T): T {
 	return withFileLockSync(getOffsetClaimsPath(), operation);
 }
 
-/** Offsets more than one existing checkout claims, e.g. a pre-lock race. */
+/** Offsets more than one existing claim holds, e.g. a pre-lock race. */
 export function duplicateOffsetClaims(
 	claims: Record<string, OffsetClaim>,
 ): Map<number, string[]> {
 	const byOffset = new Map<number, string[]>();
-	for (const [root, claim] of Object.entries(claims))
-		byOffset.set(claim.offset, [...(byOffset.get(claim.offset) ?? []), root]);
+	for (const [key, claim] of Object.entries(claims))
+		byOffset.set(claim.offset, [
+			...(byOffset.get(claim.offset) ?? []),
+			offsetClaimHolder(key, claim),
+		]);
 	return new Map([...byOffset].filter(([, roots]) => roots.length > 1));
 }

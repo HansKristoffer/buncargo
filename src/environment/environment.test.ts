@@ -211,6 +211,41 @@ describe("createDevEnvironment env builders", () => {
 		}
 	});
 
+	it("gives checkouts with their own ports and names the same build fingerprint", () => {
+		const roots = [
+			createWorktreeRoot("Runner_1"),
+			createWorktreeRoot("Runner_2"),
+		];
+		const offset = process.env.BUNCARGO_PORT_OFFSET;
+		try {
+			const fingerprints = roots.map((root, index) => {
+				process.chdir(root);
+				process.env.BUNCARGO_PORT_OFFSET = String(100 + index);
+				const env = createDevEnvironment(
+					defineDevConfig({
+						projectPrefix: "myapp",
+						services: { postgres: { port: 5432 } },
+						apps: {
+							web: {
+								port: 5173,
+								devCommand: "bun run web",
+								envVars: (_ports, urls) => ({ DB: urls.postgres }),
+							},
+						},
+					}),
+				);
+				expect(env.buildAppEnvVars("web").PORT).toBe(String(5273 + index));
+				return env.buildEnvFingerprint("web");
+			});
+			expect(fingerprints[0]).toBe(fingerprints[1]);
+		} finally {
+			if (offset === undefined) delete process.env.BUNCARGO_PORT_OFFSET;
+			else process.env.BUNCARGO_PORT_OFFSET = offset;
+			process.chdir(originalCwd);
+			for (const root of roots) rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("puts BUNCARGO_URL_HOST in app URLs and leaves services on localhost", () => {
 		const root = createWorktreeRoot("Remote_Host");
 		const previous = process.env.BUNCARGO_URL_HOST;

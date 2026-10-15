@@ -1,9 +1,14 @@
-import { availableParallelism } from "node:os";
+import { availableParallelism, totalmem } from "node:os";
 import { basename } from "node:path";
 import { isCI, typecheckConcurrencyOverride } from "../core/runtime-flags";
 
 export const LOCAL_TYPECHECK_CONCURRENCY_CAP = 4;
-export const CI_TYPECHECK_CONCURRENCY_CAP = 2;
+/**
+ * Memory one native `tsc` may peak at in CI, which sizes the CI pool by the
+ * machine: two on a 7 GB hosted runner, four on a 16 GB one, and the CPU count
+ * on a self-hosted server with the memory for it.
+ */
+export const CI_TYPECHECK_BYTES_PER_PROCESS = 3.5 * 1024 ** 3;
 
 export interface RankedWorkspace {
 	path: string;
@@ -37,19 +42,21 @@ export function sortWorkspacesByExpectedDuration<T extends RankedWorkspace>(
  * How many typecheck processes to run at once.
  *
  * CLI `--concurrency` is applied by the caller. Here the env override wins
- * over the CPU-derived default; CI is capped at 2 so several native `tsc`
- * processes do not OOM a 7 GB runner.
+ * over the CPU-derived default. Locally the cap leaves the machine usable;
+ * in CI it is what memory allows, so native `tsc` processes do not OOM a small
+ * runner and a large one is not left idle.
  */
 export function defaultTypecheckConcurrency(
 	env: NodeJS.ProcessEnv = process.env,
 	parallelism: number = availableParallelism(),
+	memoryBytes: number = totalmem(),
 ): number {
 	const override = typecheckConcurrencyOverride(env);
 	if (override !== undefined) return override;
 	const cap = isCI(env)
-		? CI_TYPECHECK_CONCURRENCY_CAP
+		? Math.floor(memoryBytes / CI_TYPECHECK_BYTES_PER_PROCESS)
 		: LOCAL_TYPECHECK_CONCURRENCY_CAP;
-	return Math.min(Math.max(1, parallelism), cap);
+	return Math.max(1, Math.min(parallelism, cap));
 }
 
 /**

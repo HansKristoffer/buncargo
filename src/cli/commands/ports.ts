@@ -3,6 +3,7 @@ import {
 	claimOffset,
 	duplicateOffsetClaims,
 	offsetClaimedBy,
+	offsetClaimHolder,
 	readOffsetClaims,
 } from "../../core/offset-claims";
 import {
@@ -106,11 +107,11 @@ export async function handlePorts(args: string[]): Promise<number> {
 		log.line();
 		log.line("Offsets claimed on this machine:");
 		const duplicates = duplicateOffsetClaims(claims);
-		for (const [root, claim] of Object.entries(claims).sort(
+		for (const [key, claim] of Object.entries(claims).sort(
 			([, a], [, b]) => a.offset - b.offset,
 		))
 			log.line(
-				`  ${String(claim.offset).padStart(5)}  ${root}${duplicates.has(claim.offset) ? "  (claimed twice)" : ""}`,
+				`  ${String(claim.offset).padStart(5)}  ${offsetClaimHolder(key, claim)}${duplicates.has(claim.offset) ? "  (claimed twice)" : ""}`,
 			);
 		return 0;
 	}

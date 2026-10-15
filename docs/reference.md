@@ -103,7 +103,7 @@ Without a terminal, `dev --reset` (which deletes the checkout's volumes) and `de
 
 `buncargo help agents` prints a guide for AI agents working in a checkout, and `buncargo setup --agents` adds (or updates) a short block in the project's `AGENTS.md` that points at it.
 
-`buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own - that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and 2 in CI; override with `--concurrency=N` or `BUNCARGO_TYPECHECK_CONCURRENCY`. `--only=platform` (path or basename) checks one workspace. `--changed[=<ref>]` checks only what the branch can break: the workspaces holding files changed since the merge base with `<ref>` (default `origin/HEAD`, then `origin/main`, then `main`), committed, uncommitted, untracked or deleted, plus every workspace that depends on one of them through `package.json`, transitively. A root `package.json`, lockfile, `tsconfig*.json` or `dev.config.ts` among them checks everything, the root config included; otherwise the root config is skipped.
+`buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own - that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and in CI at one process per 3.5 GB of memory (2 on a 7 GB runner, the CPU count on a large self-hosted machine); override with `--concurrency=N` or `BUNCARGO_TYPECHECK_CONCURRENCY`. `--only=platform` (path or basename) checks one workspace. `--changed[=<ref>]` checks only what the branch can break: the workspaces holding files changed since the merge base with `<ref>` (default `origin/HEAD`, then `origin/main`, then `main`), committed, uncommitted, untracked or deleted, plus every workspace that depends on one of them through `package.json`, transitively. A root `package.json`, lockfile, `tsconfig*.json` or `dev.config.ts` among them checks everything, the root config included; otherwise the root config is skipped.
 
 A typecheck holds one of the machine-wide check slots while it runs (`BUNCARGO_CHECK_SLOTS`, default 3, `0` turns the cap off). Coding agents in many worktrees otherwise start several native `tsc` runs at once, each peaking at several GB, and run the machine out of memory. A typecheck that finds every slot taken prints who holds them and waits. A killed holder's slot is reclaimed. `buncargo slot -- <command>` takes a slot for any other heavy command, such as a test suite, and runs it with the shell's own environment; `exec --slot` does the same with the checkout environment added. Their children see `BUNCARGO_CHECK_SLOT`, so a `buncargo typecheck` inside does not wait for a second slot. CI takes no slot. The config run generates `.buncargo/config-typecheck.tsconfig.json` and records durations in `.buncargo/typecheck-timings.json`; keep `.buncargo/` in `.gitignore`.
 
@@ -716,12 +716,13 @@ BUNCARGO_PORT_OFFSET set?
           yes → its offset, applied to the config's current ports, if they
                 are free or ours and no other checkout claims the offset
                 (provenance: lockfile)
-          no / not usable → hash projectPrefix [+ worktree] [+ suffix]
-                          skip offsets another checkout claims
+          no / not usable → a suffixed environment's own claim, if free
+                          else hash projectPrefix [+ worktree] [+ suffix]
+                          skip offsets another checkout or environment claims
                           probe every service and app port
                           on a foreign owner, or a port that will not bind,
                           shift the whole block by 100
-          persist { version, projectName, root, offset, ports }
+          persist { version, projectName, root, offset, ports } (dev only)
           and claim the offset in ~/.buncargo/offsets.json
 ```
 
@@ -731,6 +732,12 @@ when its directory does. Without claims, two worktrees whose names hash to the
 same offset only collided while both ran, so which got which ports depended on
 which started first. `buncargo ports` lists the claims, and `doctor` reports an
 offset two checkouts claim.
+
+A suffixed environment (`withSuffix()`, `buncargo ci`, an E2E stack) claims its
+own offset next to its checkout's dev claim, and takes it back on its next run.
+So parallel CI jobs on one machine get separate ports without
+`BUNCARGO_PORT_OFFSET`: each runner's checkout has the same directory name, and
+so the same hash, but the first job to start claims it and the next ones shift.
 
 `buncargo ports pin <offset>` moves a checkout to a block and keeps it there:
 it checks every port of the block (binding it, so hidden holders count) and
@@ -1400,6 +1407,8 @@ await env.start({ onlyApps: ["api"], autoStartDocker: false });
 const webEnv = env.buildAppEnvVars("web");
 await env.stop();
 ```
+
+`env.buildEnvFingerprint("web")` is a digest of `buildAppEnvVars("web")` that is the same in every checkout and on every machine: it leaves out ports, IP addresses, the project name, the workspace id and the checkout root. Key a build cache on it to share one build between worktrees or CI runners. It is only correct when the build bakes in none of those values, so leave a URL with a port out of the build's env first.
 
 `loadDevEnv()` imports the config at runtime, so pass your config type (`loadDevEnv<typeof devConfig>()`) to keep the `defineDevConfig` inference - `ports`, `urls`, `getEnvVar`, and `buildAppEnvVars` stay keyed to your actual services and apps. Without it you get the widened `AnyDevEnvironment` shape, where those keys are plain strings. `getDevEnv<typeof devConfig>()` takes the same parameter.
 

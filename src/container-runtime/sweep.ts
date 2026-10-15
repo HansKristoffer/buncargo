@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { FileLockTimeoutError } from "../core/file-lock";
 import {
 	dropDeletedOffsetClaims,
+	offsetClaimRoot,
 	readAllOffsetClaims,
 } from "../core/offset-claims";
 import { execAsync } from "../core/process/exec";
@@ -344,12 +345,18 @@ export async function settleDeletedCheckouts(input: {
 	result: Pick<SweepResult, "swept" | "failed">;
 }) {
 	const { runtimes, runs, result } = input;
-	const claims = Object.entries(readAllOffsetClaims());
-	const deleted = claims.filter(([root]) => !existsSync(root));
+	// A checkout's suffixed environments (E2E, `buncargo ci`) have claims of
+	// their own, each naming its own project.
+	const claims = Object.entries(readAllOffsetClaims()).map(([key, claim]) => ({
+		key,
+		root: offsetClaimRoot(key, claim),
+		claim,
+	}));
+	const deleted = claims.filter(({ root }) => !existsSync(root));
 	if (deleted.length === 0) return;
 
 	if (!pruneDeletedCheckoutVolumes()) {
-		await dropDeletedOffsetClaims(deleted.map(([root]) => root));
+		await dropDeletedOffsetClaims(deleted.map(({ key }) => key));
 		return;
 	}
 
@@ -372,16 +379,20 @@ export async function settleDeletedCheckouts(input: {
 	}
 
 	const settled: string[] = [];
-	for (const [root, { projectName }] of deleted) {
+	for (const {
+		key,
+		root,
+		claim: { projectName },
+	} of deleted) {
 		const claimedElsewhere = claims.some(
-			([other, claim]) =>
-				claim.projectName === projectName && existsSync(other),
+			(other) =>
+				other.claim.projectName === projectName && existsSync(other.root),
 		);
 		const runElsewhere = runs.some(
 			(run) => run.projectName === projectName && existsSync(run.root),
 		);
 		if (claimedElsewhere || runElsewhere) {
-			settled.push(root);
+			settled.push(key);
 			continue;
 		}
 
@@ -418,7 +429,7 @@ export async function settleDeletedCheckouts(input: {
 					reason: `checkout deleted, removed volumes ${removed.join(", ")}`,
 				});
 		}
-		if (!refusedAny) settled.push(root);
+		if (!refusedAny) settled.push(key);
 	}
 	await dropDeletedOffsetClaims(settled);
 }

@@ -295,6 +295,18 @@ export interface DevEnvironment<
 		appName: TName,
 		production?: boolean,
 	): AppEnvVars<TServices, TApps, TEnv, TName>;
+	/**
+	 * A digest of {@link buildAppEnvVars} that is the same in every checkout and
+	 * on every machine: ports, IP addresses, the project name, the workspace id
+	 * and the checkout root are left out. Key a build cache on it to share a
+	 * build between checkouts or CI runners. Only correct when the build does not
+	 * bake in any of those values (an API URL with a port, for instance): leave
+	 * them out of the build's env first.
+	 */
+	buildEnvFingerprint(
+		appName: Extract<keyof TApps, string>,
+		production?: boolean,
+	): string;
 	/** Set public tunnel URLs used by envVars and *_PUBLIC_URL injection */
 	setPublicUrls(urls: ComputedPublicUrls<TServices, TApps>): void;
 	/** Clear all public tunnel URLs */

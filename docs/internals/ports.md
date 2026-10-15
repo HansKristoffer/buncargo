@@ -19,10 +19,15 @@ per port.
   containers and alternated between two ports. A container of ours on the *other* backend must
   still shift: that port really is taken.
 - `offset-claims.ts` is `~/.buncargo/offsets.json`, root → offset. Every probing allocation skips
-  another existing checkout's offset; only a persisting one writes its own. A claim lives as long
+  another existing checkout's offset, and every claiming one writes its own. A suffixed
+  environment claims without persisting a lockfile, under `offsetClaimKey(root, suffix)` with
+  `root` and `suffix` stored in the claim (the key is never parsed), so it never replaces its
+  checkout's dev claim; its claim is also the record its next run takes the offset back from.
+  It was unclaimed before, and parallel CI jobs on one machine all took the same block: their
+  checkouts share a directory name and so a hash, and they probed before any had bound a port. A claim lives as long
   as its directory, which is what tells "stopped" from "deleted"; allocation ignores a deleted
   checkout's claim, and the sweep drops it (after its volumes, on the opt-in in
-  `run-registry-and-sweep.md`). A persisting allocation holds
+  `run-registry-and-sweep.md`). A claiming allocation holds
   `offsets.json`'s lock from reading the claims to writing its own (`withFileLockSync`, because the
   allocator is synchronous), or two checkouts starting together pick the same block. The lockfile is honoured by its
   offset alone, applied to the config's current ports, so an added service or a hand-written

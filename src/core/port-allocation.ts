@@ -10,6 +10,7 @@ import { simpleHash } from "./hash";
 import {
 	claimOffset,
 	offsetClaimedBy,
+	offsetClaimKey,
 	readOffsetClaims,
 	withOffsetClaimsLock,
 } from "./offset-claims";
@@ -260,7 +261,15 @@ export function resolvePortPlan(input: {
 	suffix?: string;
 	worktreeName?: string | null;
 	worktreeIsolation?: boolean;
+	/** Write `.buncargo/ports.json`. Default: true. Only the dev environment has one. */
 	persist?: boolean;
+	/**
+	 * Claim the offset in `~/.buncargo/offsets.json`, so no other checkout or
+	 * environment takes it. Default: `persist`. A suffixed environment claims
+	 * without persisting: its claim is its only record, and the next run of it
+	 * takes the same offset back.
+	 */
+	claim?: boolean;
 	/**
 	 * Backend the caller resolved, so this project's own containers are not
 	 * mistaken for foreign occupants.
@@ -284,11 +293,12 @@ export function resolvePortPlan(input: {
 	getOwner?: (port: number) => PortOwner | null;
 	probeNames?: readonly string[];
 }): PortPlan {
-	// A persisting run reads other checkouts' claims, picks a free offset and
-	// claims it: one step, or two checkouts starting together pick the same.
-	return input.persist === false
-		? planPorts(input)
-		: withOffsetClaimsLock(() => planPorts(input));
+	// A claiming run reads the other claims, picks a free offset and claims it:
+	// one step, or two runs starting together pick the same.
+	const claim = input.claim ?? input.persist !== false;
+	return claim
+		? withOffsetClaimsLock(() => planPorts({ ...input, claim }))
+		: planPorts({ ...input, claim });
 }
 
 function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
@@ -302,6 +312,7 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 		worktreeName = null,
 		worktreeIsolation = true,
 		persist = true,
+		claim = persist,
 		runtime,
 		probeConflicts = true,
 	} = input;
@@ -367,10 +378,12 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 		return { offset: ownLockfile.offset, ports, provenance: "lockfile" };
 	}
 
-	// Other checkouts' offsets are skipped whether or not they are running;
-	// only a run that persists its allocation claims one.
+	// Other claims are skipped whether or not their runs are running; only a
+	// claiming run writes its own.
+	const claimKey = offsetClaimKey(root, suffix);
 	const claims = readOffsetClaims();
-	const claimant = (offset: number) => offsetClaimedBy(claims, offset, root);
+	const claimant = (offset: number) =>
+		offsetClaimedBy(claims, offset, claimKey);
 	const conflictAt = (ports: Record<string, number>) =>
 		findForeignConflict(probed(ports), {
 			root,
@@ -394,8 +407,8 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 			};
 			if (JSON.stringify(next) !== JSON.stringify(lockfile))
 				writePortsLockfile(root, next);
-			claimOffset(root, offset, projectName);
 		}
+		if (claim) claimOffset(root, offset, projectName, suffix);
 		return { offset, ports, provenance };
 	};
 
@@ -438,12 +451,29 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 		return settle(offset, ports, provenance);
 	};
 
-	let offset = computeBaseOffset({
+	const hashed = computeBaseOffset({
 		projectPrefix,
 		worktreeName,
 		suffix,
 		worktreeIsolation,
 	});
+
+	// A suffixed environment has no lockfile; its own claim keeps its ports
+	// from one run to the next, as a lockfile does for dev, and read-only
+	// callers find the ports its last run used.
+	const ownClaim = persist ? undefined : claims[claimKey];
+	if (ownClaim && !claimant(ownClaim.offset)) {
+		const ports = shiftPorts(basePorts, ownClaim.offset);
+		const overflow = Object.values(ports).some((port) => port > 65535);
+		if (!overflow && !conflictAt(ports))
+			return settle(
+				ownClaim.offset,
+				ports,
+				ownClaim.offset === hashed ? "hash" : "shifted",
+			);
+	}
+
+	let offset = hashed;
 	let provenance: PortOffsetProvenance = "hash";
 
 	for (let attempt = 0; attempt < PORT_ALLOCATION_ATTEMPTS; attempt++) {

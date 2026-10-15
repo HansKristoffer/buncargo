@@ -314,7 +314,10 @@ export function createDevEnvContext<
 			worktreeName: worktreeSuffix,
 			worktreeIsolation: config.options?.worktreeIsolation,
 			runtime: selectedRuntime,
+			// Only dev has a lockfile; every environment claims its offset, so
+			// parallel suffixed runs (CI jobs on one machine) never share one.
 			persist: suffix === undefined,
+			claim: true,
 			// The bind probe here too: this is the allocation every dev run
 			// makes, and a snapshot only knows what `lsof` lets this user see.
 			getOwner: snapshot
