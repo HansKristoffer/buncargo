@@ -107,7 +107,8 @@ struct BuncargoBarApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContentView(store: model.store, stopper: model.stopper, remote: model.remote)
+            MenuContentView(
+                store: model.store, stopper: model.stopper, tailnet: model.tailnet, remote: model.remote)
         } label: {
             MenuBarLabel(store: model.store)
         }
@@ -124,6 +125,7 @@ final class AppModel: ObservableObject {
     let store: RunStore
     let stopper: StopCoordinator
     let remote = ConnectionStore()
+    let tailnet = TailnetStore()
 
     init() {
         let store = RunStore()
@@ -148,6 +150,7 @@ private struct MenuBarLabel: View {
 struct MenuContentView: View {
     @ObservedObject var store: RunStore
     @ObservedObject var stopper: StopCoordinator
+    @ObservedObject var tailnet: TailnetStore
     @ObservedObject var remote: ConnectionStore
 
     var body: some View {
@@ -183,6 +186,8 @@ struct MenuContentView: View {
                     }
                 }
 
+                TailnetMachinesView(store: tailnet)
+
                 Divider().padding(.top, 8)
                 RemoteMachinesView(store: remote)
 
@@ -199,6 +204,7 @@ struct MenuContentView: View {
                 HStack {
                     Button("Refresh") {
                         store.reload()
+                        tailnet.refresh(force: true)
                         remote.refresh(force: true)
                     }
                     .buttonStyle(.link)

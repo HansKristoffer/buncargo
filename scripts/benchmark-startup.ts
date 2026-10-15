@@ -1,10 +1,10 @@
 /** Isolated end-to-end dev benchmark: real CLI/apps, deterministic fake runtime. */
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import {
 	chmodSync,
-	mkdtempSync,
-	mkdirSync,
 	existsSync,
+	mkdirSync,
+	mkdtempSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
@@ -12,10 +12,10 @@ import {
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { readProcessIdentity } from "../src/core/process-identity";
 import { computeBaseOffset } from "../src/core/port-allocation";
-import { startFakeInfisical } from "../src/core/secrets/fake-infisical.testing";
 import { terminateOwnedProcess } from "../src/core/process/terminate";
+import { readProcessIdentity } from "../src/core/process-identity";
+import { startFakeInfisical } from "../src/core/secrets/fake-infisical.testing";
 
 const option = (name: string, fallback: string) =>
 	process.argv
@@ -81,17 +81,29 @@ const onTerm = () => {
 process.once("SIGINT", onInt);
 process.once("SIGTERM", onTerm);
 
+const handedOut = new Set<number>();
+
+/**
+ * A free port below the ephemeral range (Linux 32768+, macOS 49152+). A port
+ * from `listen(0)` is free only until the next outgoing connection: the
+ * readiness polling here and in every CLI picks source ports from that same
+ * range, and one landing on an app port fails the run as "port held".
+ */
 async function unusedPort(): Promise<number> {
-	const server = createServer();
-	await new Promise<void>((resolve, reject) => {
-		server.once("error", reject);
-		server.listen(0, "127.0.0.1", resolve);
-	});
-	const address = server.address();
-	if (!address || typeof address === "string")
-		throw new Error("No ephemeral port");
-	await new Promise<void>((resolve) => server.close(() => resolve()));
-	return address.port;
+	for (let attempt = 0; attempt < 100; attempt++) {
+		const port = 20000 + Math.floor(Math.random() * 12000);
+		if (handedOut.has(port)) continue;
+		const server = createServer();
+		const free = await new Promise<boolean>((resolve) => {
+			server.once("error", () => resolve(false));
+			server.listen(port, "127.0.0.1", () => resolve(true));
+		});
+		if (!free) continue;
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+		handedOut.add(port);
+		return port;
+	}
+	throw new Error("No free port in 20000-31999");
 }
 
 interface Result {

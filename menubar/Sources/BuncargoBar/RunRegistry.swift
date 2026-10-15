@@ -160,7 +160,7 @@ struct Run: Codable, Identifiable, Hashable {
     }
 }
 
-private struct RunsFile: Codable {
+struct RunsFile: Codable {
     let version: Int
     let runs: [Run]
 }

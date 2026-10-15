@@ -3,6 +3,8 @@
  * can reach the same dev server without baking one machine's hostname into it.
  */
 
+import { tailscaleAddress } from "../core/tailscale";
+
 /**
  * The shape Vite needs from a plugin, declared here rather than imported.
  *
@@ -42,8 +44,9 @@ export interface BuncargoViteOptions {
 	 */
 	app?: string;
 	/**
-	 * Address to bind. Defaults to `127.0.0.1`, or `0.0.0.0` when
-	 * `BUNCARGO_URL_HOST` says people reach this machine from another one.
+	 * Address to bind. Defaults to `127.0.0.1`, or `0.0.0.0` when other
+	 * machines reach this one: `BUNCARGO_URL_HOST` is set, or it is on a
+	 * tailnet, where BuncargoBar opens apps by its Tailscale IP.
 	 *
 	 * Vite's default `localhost` resolves to `[::1]` on many systems, and
 	 * anything dialing IPv4 then gets a connection refused.
@@ -151,6 +154,20 @@ export function buildBuncargoViteConfig(
 	};
 }
 
+/**
+ * `0.0.0.0` when another machine opens this app, `127.0.0.1` otherwise.
+ * `BUNCARGO_TAILNET_DIRECTORY=0` keeps a tailnet machine's apps local.
+ */
+export function defaultBuncargoViteHost(
+	env: NodeJS.ProcessEnv,
+	tailnet: string | undefined,
+): string {
+	const remote =
+		env.BUNCARGO_URL_HOST?.trim() ||
+		(tailnet && env.BUNCARGO_TAILNET_DIRECTORY !== "0");
+	return remote ? "0.0.0.0" : "127.0.0.1";
+}
+
 export function buncargoVite(
 	options: BuncargoViteOptions = {},
 ): BuncargoVitePlugin {
@@ -168,10 +185,10 @@ export function buncargoVite(
 					: undefined,
 			};
 
-			const defaultHost = env.BUNCARGO_URL_HOST?.trim()
-				? "0.0.0.0"
-				: "127.0.0.1";
-			return buildBuncargoViteConfig(environment, options.host ?? defaultHost);
+			return buildBuncargoViteConfig(
+				environment,
+				options.host ?? defaultBuncargoViteHost(env, tailscaleAddress()),
+			);
 		},
 	};
 }
