@@ -191,9 +191,9 @@ function checkPortsLockfile(report: DoctorReport, env: DevEnv): void {
 
 /** Two checkouts on one offset collide whenever both run (a lost race, a copied lockfile). */
 function checkOffsetClaims(report: DoctorReport): void {
-	for (const [offset, roots] of duplicateOffsetClaims(readOffsetClaims()))
+	for (const [offset, holders] of duplicateOffsetClaims(readOffsetClaims()))
 		report.issue(
-			`Offset ${offset} is claimed by ${roots.join(" and ")}. Move one: \`buncargo ports pin <offset>\` in that checkout.`,
+			`Offset ${offset} is claimed by ${holders.join(" and ")}. Move one: \`buncargo ports pin <offset>\` in that checkout.`,
 		);
 }
 

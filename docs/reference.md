@@ -716,12 +716,13 @@ BUNCARGO_PORT_OFFSET set?
           yes → its offset, applied to the config's current ports, if they
                 are free or ours and no other checkout claims the offset
                 (provenance: lockfile)
-          no / not usable → hash projectPrefix [+ worktree] [+ suffix]
-                          skip offsets another checkout claims
+          no / not usable → a suffixed environment's own claim, if free
+                          else hash projectPrefix [+ worktree] [+ suffix]
+                          skip offsets another checkout or environment claims
                           probe every service and app port
                           on a foreign owner, or a port that will not bind,
                           shift the whole block by 100
-          persist { version, projectName, root, offset, ports }
+          persist { version, projectName, root, offset, ports } (dev only)
           and claim the offset in ~/.buncargo/offsets.json
 ```
 
@@ -731,6 +732,12 @@ when its directory does. Without claims, two worktrees whose names hash to the
 same offset only collided while both ran, so which got which ports depended on
 which started first. `buncargo ports` lists the claims, and `doctor` reports an
 offset two checkouts claim.
+
+A suffixed environment (`withSuffix()`, `buncargo ci`, an E2E stack) claims its
+own offset next to its checkout's dev claim, and takes it back on its next run.
+So parallel CI jobs on one machine get separate ports without
+`BUNCARGO_PORT_OFFSET`: each runner's checkout has the same directory name, and
+so the same hash, but the first job to start claims it and the next ones shift.
 
 `buncargo ports pin <offset>` moves a checkout to a block and keeps it there:
 it checks every port of the block (binding it, so hidden holders count) and

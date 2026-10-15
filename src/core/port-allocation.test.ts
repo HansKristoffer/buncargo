@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
 import type { AppConfig, ServiceConfig } from "../types";
+import { offsetClaimKey, readOffsetClaims } from "./offset-claims";
 import {
 	buildPortMap,
 	computeBaseOffset,
@@ -419,6 +420,44 @@ describe("offset claims", () => {
 			rmSync(first, { recursive: true, force: true });
 			rmSync(join(second, ".buncargo"), { recursive: true, force: true });
 			expect(plan(second, "lullu-b").offset).toBe(a.offset);
+		} finally {
+			rmSync(first, { recursive: true, force: true });
+			rmSync(second, { recursive: true, force: true });
+		}
+	});
+
+	it("gives parallel suffixed environments their own offsets and keeps them, apart from dev's claim", () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		// Two CI runners: same directory name, so same project name and hash.
+		const first = mkdtempSync(join(tmpdir(), "buncargo-runner-1-"));
+		const second = mkdtempSync(join(tmpdir(), "buncargo-runner-2-"));
+		const suffixed = (root: string, read = false) =>
+			resolvePortPlan({
+				projectPrefix: "lullu",
+				projectName: "lullu-app-ci",
+				root,
+				suffix: "ci",
+				services: { postgres: { port: 5432 } },
+				persist: false,
+				...(read ? { probeConflicts: false } : { claim: true }),
+				getOwner: () => null,
+			});
+		try {
+			// Nothing is listening yet: the claim alone separates them.
+			const a = suffixed(first);
+			const b = suffixed(second);
+			expect(b.offset).toBe(a.offset + PORT_OFFSET_STEP);
+
+			expect(suffixed(second).offset).toBe(b.offset);
+			expect(suffixed(first).offset).toBe(a.offset);
+			expect(suffixed(second, true).offset).toBe(b.offset);
+			expect(readPortsLockfile(second)).toBeNull();
+
+			const dev = plan(first);
+			expect(readOffsetClaims()).toMatchObject({
+				[first]: { offset: dev.offset },
+				[offsetClaimKey(first, "ci")]: { offset: a.offset, root: first },
+			});
 		} finally {
 			rmSync(first, { recursive: true, force: true });
 			rmSync(second, { recursive: true, force: true });

@@ -516,6 +516,11 @@ describe("settleDeletedCheckouts", () => {
 			list: () => options.left ?? [],
 			listVolumes: async () => [
 				{ name: "app-gone_db", project: "app-gone", runtime: "docker" },
+				{
+					name: "app-gone-e2e_db",
+					project: "app-gone-e2e",
+					runtime: "docker",
+				},
 				{ name: "other_db", project: "other", runtime: "docker" },
 				{ name: "loose", runtime: "docker" },
 			],
@@ -547,6 +552,17 @@ describe("settleDeletedCheckouts", () => {
 		expect(removed).toEqual([["app-gone_db"]]);
 		expect(claimedRoots()).toEqual([checkout]);
 		expect(result.swept).toHaveLength(1);
+	});
+
+	it("settles a deleted checkout's suffixed environments with it", async () => {
+		const { runtime, removed, result } = setup({
+			enabled: true,
+			claims: { [gone]: "app-gone", [checkout]: "other" },
+		});
+		claimOffset(gone, 200, "app-gone-e2e", "e2e");
+		await settleDeletedCheckouts({ runtimes: [runtime], runs: [], result });
+		expect(removed.flat().sort()).toEqual(["app-gone-e2e_db", "app-gone_db"]);
+		expect(claimedRoots()).toEqual([checkout]);
 	});
 
 	it("keeps volumes another checkout or run still uses, and waits out leftover containers", async () => {
