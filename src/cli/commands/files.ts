@@ -25,7 +25,7 @@ import {
 	readBooleanFlag,
 	readPositionals,
 } from "../command-spec";
-import { describeCheckoutFile } from "../core-checks";
+import { checkoutFileProblem } from "../core-checks";
 import { argumentsError, CliError } from "../errors";
 import * as log from "../log";
 
@@ -215,10 +215,9 @@ function status(
 	if (report.files.length === 0) log.line("No checkout files configured.");
 	const width = Math.max(0, ...report.files.map((file) => file.path.length));
 	for (const file of report.files) {
-		const [problem] = describeCheckoutFile(file);
 		const machine = file.machine ? " (this machine only)" : "";
 		log.line(
-			`  ${file.path.padEnd(width)}  ${STATE_LABELS[file.state]}${machine}${problem ? `: ${problem}` : ""}`,
+			`  ${file.path.padEnd(width)}  ${checkoutFileProblem(file) ?? STATE_LABELS[file.state]}${machine}`,
 		);
 	}
 	return 0;
@@ -250,11 +249,11 @@ async function pull(
 			file.refusal || (file.state !== "in-sync" && file.state !== "missing"),
 	);
 	for (const file of behind) {
-		const [problem] = describeCheckoutFile(file);
 		log.warn(
-			file.state === "local-edits" || file.state === "conflict"
+			!file.refusal &&
+				(file.state === "local-edits" || file.state === "conflict")
 				? `${file.path} has local edits, so it was not pulled. \`buncargo files pull --force ${file.path}\` replaces them (backed up first).`
-				: (problem ?? `${file.path} was not pulled`),
+				: `${file.path} ${checkoutFileProblem(file) ?? "was not pulled"}`,
 		);
 	}
 	if (behind.length === 0) log.done("Checkout files match the file store.");

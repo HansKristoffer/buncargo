@@ -94,26 +94,24 @@ function hasNodeModules(root: string): boolean {
 	}
 }
 
-/** What a checkout file needs, with the command that fixes it; [] when nothing. */
-export function describeCheckoutFile(file: CheckoutFileStatus): string[] {
-	if (file.refusal)
-		return [`${file.path} ${file.refusal}, so it is not synced`];
+/**
+ * What a checkout file needs and the command that fixes it, after its path
+ * ("has local edits (…)"); undefined when nothing.
+ */
+export function checkoutFileProblem(
+	file: CheckoutFileStatus,
+): string | undefined {
+	if (file.refusal) return `${file.refusal}, so it is not synced`;
 	switch (file.state) {
 		case "in-sync":
 		case "missing":
-			return [];
+			return undefined;
 		case "local-edits":
-			return [
-				`${file.path} has local edits (\`buncargo files save ${file.path}\` shares them)`,
-			];
+			return `has local edits (\`buncargo files save ${file.path}\` shares them)`;
 		case "store-newer":
-			return [
-				`${file.path} is behind the file store (\`buncargo files pull ${file.path}\`)`,
-			];
+			return `is behind the file store (\`buncargo files pull ${file.path}\`)`;
 		case "conflict":
-			return [
-				`${file.path} and the file store both changed (\`buncargo files diff ${file.path}\`, then \`files save\` or \`files pull --force\`)`,
-			];
+			return `and the file store both changed (\`buncargo files diff ${file.path}\`, then \`files save\` or \`files pull --force\`)`;
 		default: {
 			const exhaustive: never = file.state;
 			throw new Error(`Unhandled checkout file state: ${String(exhaustive)}`);
@@ -212,7 +210,10 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 			check: ({ root }) => {
 				const report =
 					lastSyncReport(root) ?? inspectCheckoutFiles(root, checkoutFiles);
-				const problems = report.files.flatMap(describeCheckoutFile);
+				const problems = report.files.flatMap((file) => {
+					const problem = checkoutFileProblem(file);
+					return problem ? [`${file.path} ${problem}`] : [];
+				});
 				return (
 					problems.length === 0 || { ok: false, detail: problems.join("; ") }
 				);

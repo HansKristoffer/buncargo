@@ -1,0 +1,20 @@
+{
+	"version": 1,
+	"files": {
+		".env.local": {
+			"sha256": "a793e726d196b76fb8333b416334b7984f2f40c8b469bf4df1691f75939e3aec",
+			"updatedAt": "2026-10-15T09:30:00.000Z",
+			"machine": false
+		},
+		"apps/mobile/.env": {
+			"sha256": "c350c66205febea391d3156c203192825f591f42d8ca8a803a6790122e7fe884",
+			"updatedAt": "2026-10-15T09:30:00.000Z",
+			"machine": false
+		},
+		".env.machine": {
+			"sha256": "33523d35f2aad198529b8dfc15c19eb25c8180147b1b1b9fc16b677fcfea54a1",
+			"updatedAt": "2026-10-15T09:30:00.000Z",
+			"machine": true
+		}
+	}
+}

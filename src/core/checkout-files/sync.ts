@@ -187,9 +187,10 @@ export function gitignoreRefusals(
 ): Map<string, string> {
 	const refusals = new Map<string, string>();
 	if (paths.length === 0) return refusals;
-	const ignored = spawnSync("git", ["check-ignore", "-z", "--", ...paths], {
+	const ignored = spawnSync("git", ["check-ignore", "--stdin", "-z"], {
 		cwd: root,
 		encoding: "utf-8",
+		input: `${paths.join("\0")}\0`,
 	});
 	if (ignored.status !== 0 && ignored.status !== 1) {
 		for (const path of paths)
