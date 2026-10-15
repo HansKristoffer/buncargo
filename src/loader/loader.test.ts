@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
@@ -10,6 +11,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineDevConfig } from "../config";
+import { storeDir, writeStoreEntries } from "../core/checkout-files";
+import { CI_ENV_VARS } from "../core/runtime-flags";
 import { service } from "../docker-compose/services";
 import {
 	CONFIG_FILES,
@@ -397,5 +400,49 @@ describe("loadDevEnv", () => {
 		writeFileSync(lock, '{"fixture":"preserve"}');
 		await loadDevEnv({ cwd: testDir, readOnly: true, reload: true });
 		expect(readFileSync(lock, "utf8")).toBe('{"fixture":"preserve"}');
+	});
+
+	it("copies checkout files from the store before envFiles are read", async () => {
+		const home = join(testDir, "home");
+		const saved = new Map(
+			["HOME", ...CI_ENV_VARS].map((name) => [name, process.env[name]]),
+		);
+		for (const name of CI_ENV_VARS) delete process.env[name];
+		process.env.HOME = home;
+		try {
+			spawnSync("git", ["init", "-q"], { cwd: testDir });
+			spawnSync(
+				"git",
+				["remote", "add", "origin", "https://github.com/acme/loader.git"],
+				{ cwd: testDir },
+			);
+			writeFileSync(join(testDir, ".gitignore"), ".env.local\n");
+			writeStoreEntries(
+				storeDir("github.com/acme/loader"),
+				{ version: 1, files: {} },
+				[
+					{
+						path: ".env.local",
+						data: Buffer.from("TOKEN=abc\n"),
+						machine: false,
+					},
+				],
+			);
+			writeFileSync(
+				join(testDir, "dev.config.ts"),
+				`export default { projectPrefix: "files", services: {}, options: { envFiles: [".env.local"], checkoutFiles: [".env.local"] }, env: (_p, _u, ctx) => ({ TOKEN: ctx.env?.TOKEN }) };`,
+			);
+
+			await expect(
+				loadDevEnv({ cwd: testDir, readOnly: true, syncCheckoutFiles: false }),
+			).rejects.toThrow("Cannot load environment input");
+			const env = await loadDevEnv({ cwd: testDir, readOnly: true });
+			expect((env.buildEnvVars() as Record<string, string>).TOKEN).toBe("abc");
+		} finally {
+			for (const [name, value] of saved) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+		}
 	});
 });
