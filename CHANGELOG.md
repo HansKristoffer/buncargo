@@ -1,5 +1,12 @@
 # Changelog
 
+## [12.5.0](https://github.com/HansKristoffer/buncargo/compare/v12.4.0...v12.5.0) (2026-10-15)
+
+
+### Features
+
+* **cli:** keep gitignored checkout files in every checkout ([#100](https://github.com/HansKristoffer/buncargo/issues/100)) ([cdde646](https://github.com/HansKristoffer/buncargo/commit/cdde64691b4bf74affc1a505d8c888f1fb38d51c))
+
 ## [12.4.0](https://github.com/HansKristoffer/buncargo/compare/v12.3.1...v12.4.0) (2026-10-15)
 
 
