@@ -8,7 +8,6 @@ import {
 } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { parseEnv } from "node:util";
-import { listGitCheckouts } from "../git-checkouts";
 import { isCI } from "../runtime-flags";
 import { projectStateFilePath } from "../state-paths";
 import { formatStep, formatWarn } from "../style";
@@ -66,8 +65,8 @@ export type SyncAction =
 	| "copy"
 	/** checkout → store */
 	| "adopt"
-	/** another checkout or the template → checkout (and store) */
-	| "adopt-other"
+	/** the template → checkout, not stored */
+	| "template"
 	/** local edits or a conflict: left alone */
 	| "leave";
 
@@ -76,7 +75,7 @@ export function syncAction(
 	base: string | undefined,
 	store: string | undefined,
 ): SyncAction {
-	if (local === undefined) return store === undefined ? "adopt-other" : "copy";
+	if (local === undefined) return store === undefined ? "template" : "copy";
 	if (store === undefined) return "adopt";
 	if (local === store) return base === local ? "none" : "record-base";
 	if (base === local) return "copy";
@@ -332,34 +331,11 @@ export function inspectCheckoutFiles(
 	);
 }
 
-/** Where another checkout or the template can supply a file nobody stored. */
-function findSource(
+function readTemplate(
 	root: string,
 	spec: CheckoutFileSpec,
-	others: () => string[],
-): { data: Buffer; from: string; template: boolean } | undefined {
-	for (const other of others()) {
-		const found = readLocal(other, spec.path);
-		if (found.data) return { data: found.data, from: other, template: false };
-	}
-	if (spec.template) {
-		const found = readLocal(root, spec.template);
-		if (found.data)
-			return { data: found.data, from: spec.template, template: true };
-	}
-	return undefined;
-}
-
-/** Other checkouts of this repository, the main one first; [] when git cannot say. */
-function otherCheckouts(root: string): string[] {
-	try {
-		const real = realpathSync(root);
-		return listGitCheckouts(root)
-			.filter((checkout) => checkout.exists && checkout.root !== real)
-			.map((checkout) => checkout.root);
-	} catch {
-		return [];
-	}
+): Buffer | undefined {
+	return spec.template ? readLocal(root, spec.template).data : undefined;
 }
 
 const lastReports = new Map<string, CheckoutFilesReport>();
@@ -412,28 +388,19 @@ export async function syncCheckoutFiles(
 		return report;
 	}
 
-	// ponytail: a file no checkout and no store has re-runs this search (two
-	// git forks) on every load until someone saves it.
-	let others: string[] | undefined;
-	const listOthers = () => {
-		others ??= otherCheckouts(root);
-		return others;
-	};
 	const plan = (view: View): Planned => {
 		const action = syncAction(view.localHash, view.base, view.store?.hash);
 		if (action === "leave" && options.force && view.store) return "force";
-		if (action === "adopt-other")
-			return findSource(root, view.spec, listOthers) ? action : "none";
+		if (action === "template" && !readTemplate(root, view.spec)) return "none";
 		return action;
 	};
-	const needsWrite = (view: View) =>
-		!["none", "leave"].includes(plan(view)) || flagStale(view);
+	const needsWrite = (view: View) => !["none", "leave"].includes(plan(view));
 
 	let refusals = new Map<string, string>();
 	if (opened.views.some(needsWrite))
 		await withStoreLock(opened.dir, () => {
 			opened = readOpened(root, selected, opened.repoKey, opened.dir);
-			refusals = apply(root, opened, plan, listOthers, log);
+			refusals = apply(root, opened, plan, log);
 			opened = readOpened(root, selected, opened.repoKey, opened.dir);
 		});
 
@@ -453,17 +420,11 @@ export async function syncCheckoutFiles(
 
 type Planned = SyncAction | "force";
 
-/** The store's entry says `machine` differently from this checkout's config. */
-function flagStale(view: View): boolean {
-	return view.store !== undefined && view.store.machine !== view.spec.machine;
-}
-
 /** Carry out a plan under the lock; returns the gitignore refusals it met. */
 function apply(
 	root: string,
 	opened: Opened,
 	plan: (view: View) => Planned,
-	listOthers: () => string[],
 	log: Log,
 ): Map<string, string> {
 	const now = new Date();
@@ -521,18 +482,14 @@ function apply(
 				state[path] = { base: view.localHash };
 				log(formatStep(`Saved ${path} to the file store`));
 				break;
-			case "adopt-other": {
-				const source = findSource(root, view.spec, listOthers);
-				if (!source) break;
-				writeLocal(root, path, source.data);
-				if (source.template) {
-					// Not stored: the next load adopts the copy, filled in or not.
-					log(formatStep(`Created ${path} from ${source.from}; fill it in`));
-					break;
-				}
-				storeWrites.push({ path, data: source.data, machine });
-				state[path] = { base: sha256(source.data) };
-				log(formatStep(`Copied ${path} from ${source.from}`));
+			case "template": {
+				const data = readTemplate(root, view.spec);
+				if (!data) break;
+				// Not stored: the next load adopts the copy, filled in or not.
+				writeLocal(root, path, data);
+				log(
+					formatStep(`Created ${path} from ${view.spec.template}; fill it in`),
+				);
 				break;
 			}
 			case "none":
@@ -545,12 +502,6 @@ function apply(
 				);
 			}
 		}
-		if (
-			flagStale(view) &&
-			view.store &&
-			!storeWrites.some((write) => write.path === path)
-		)
-			storeWrites.push({ path, data: view.store.data, machine });
 	}
 
 	if (storeWrites.length > 0)
@@ -664,7 +615,7 @@ export async function syncConfiguredCheckoutFiles(
 		);
 		if (spec && !existsSync(checkoutPath(root, spec.path)))
 			throw new Error(
-				`${spec.path} is missing, and neither the file store nor another checkout on this machine has it. Run \`buncargo files save ${spec.path}\` in a checkout that has it, or \`buncargo files export\` on a machine that has it and \`buncargo files import\` here.`,
+				`${spec.path} is missing, and this machine's file store does not have it. Run \`buncargo files save ${spec.path}\` in a checkout that has it, or \`buncargo files export\` on a machine that has it and \`buncargo files import\` here.`,
 			);
 	}
 }

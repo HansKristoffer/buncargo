@@ -982,8 +982,7 @@ Buncargo keeps one copy of each per machine, the file store (`~/.buncargo/files/
 any command reads `envFiles` it brings the checkout's copy up to date:
 
 - A checkout without the file gets the store's copy. When the store has none either, buncargo
-  takes it from another checkout of the repository (the main one first), else copies `template`
-  for you to fill in.
+  copies `template` for you to fill in.
 - A checkout that has a file the store lacks puts it in the store, so other checkouts get it.
   Existing setups need no migration.
 - When the store's copy changes, every checkout whose copy is untouched gets the new one, with

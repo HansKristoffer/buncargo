@@ -143,7 +143,7 @@ describe("the sync table", () => {
 			undefined,
 			undefined,
 			undefined,
-			"adopt-other",
+			"template",
 			"missing",
 		],
 		[
@@ -182,38 +182,6 @@ describe("syncCheckoutFiles", () => {
 			files: [{ path: ENV, state: "in-sync", machine: false }],
 		});
 		expect(statSync(join(repo.root, ENV)).mode & 0o777).toBe(0o600);
-	});
-
-	it("adopts a file another checkout has, the main checkout first", async () => {
-		const repo = makeRepo();
-		// Worktrees get the .gitignore through the commit.
-		git(repo.root, "add", ".gitignore");
-		git(
-			repo.root,
-			"-c",
-			"user.email=t@t",
-			"-c",
-			"user.name=t",
-			"commit",
-			"-q",
-			"-m",
-			"init",
-		);
-		const second = join(repo.dir, "second");
-		const third = join(repo.dir, "third");
-		git(repo.root, "worktree", "add", "-q", second);
-		git(repo.root, "worktree", "add", "-q", third);
-		writeFileSync(join(second, ENV), "FROM=second\n");
-		writeLocal(repo, "FROM=main\n");
-
-		await syncCheckoutFiles(third, spec(), {
-			home: repo.home,
-			log: (line) => repo.lines.push(line),
-		});
-
-		expect(readFileSync(join(third, ENV), "utf8")).toBe("FROM=main\n");
-		expect(readStore(repo)).toBe("FROM=main\n");
-		expect(repo.lines.join("\n")).toContain(`Copied ${ENV} from ${repo.root}`);
 	});
 
 	it("copies the template when nobody has the file, without storing it", async () => {
@@ -301,14 +269,6 @@ describe("syncCheckoutFiles", () => {
 		expect(readFileSync(join(backups, stamp ?? "", ENV), "utf8")).toBe(
 			"A=mine\n",
 		);
-	});
-
-	it("records the config's machine flag in the store", async () => {
-		const repo = makeRepo();
-		seedStore(repo, "A=1\n");
-		await sync(repo, spec(ENV, { machine: true }));
-		const read = readManifest(repo.store);
-		expect(read.kind === "ok" && read.manifest.files[ENV]?.machine).toBe(true);
 	});
 
 	it("only syncs in CI when a store exists", async () => {

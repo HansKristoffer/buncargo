@@ -16,8 +16,9 @@ agentgate syncs file stores between machines without buncargo's code. Everything
 - **Copies, not symlinks.** A symlink cannot hold a per-worktree change, and Docker build contexts
   do not follow symlinks out of the context.
 - **Adopted without asking.** A checkout that has a file the store lacks puts it in the store, and
-  a checkout that lacks one takes it from the store or another checkout. Migrating a project
-  that copied `.env.local` by hand is therefore a no-op.
+  a checkout that lacks one takes it from the store. Migrating a project that copied `.env.local`
+  by hand is therefore a no-op once any checkout that has the file runs a command. Other
+  checkouts are not searched: that cost git forks on every load for a one-time case.
 - **The base tells edits from updates.** `<checkout>/.buncargo/files.json` records, per file, the
   store content the copy was last written from (`{ "version": 1, "files": { "<path>": { "base":
   "<sha256>" } } }`). It is buncargo's alone, not part of the contract.
@@ -29,13 +30,14 @@ agentgate syncs file stores between machines without buncargo's code. Everything
   no sync.
 - **Cheap when in step.** A load reads without the lock and forks git once, for the repository
   key (about 16 ms on an M-series Mac). Only when something has to be written does it take the
-  lock, read again and run `git check-ignore`. A file no checkout and no store has re-runs the
-  search of other checkouts (two more forks) on every load until someone saves it.
+  lock, read again and run `git check-ignore`.
 - **`dev` reports, it does not fork again.** The "Checkout files are current" check is fast because
   it reads the report the load's sync left (`lastSyncReport`); `doctor` inspects instead. The
   gitignore check forks, so it is not fast and only `setup` and `doctor` run it.
 - **Never values.** Output names files and dotenv keys (`files diff`), never values. Only
   `files export` writes values, to stdout.
+- **`machine` is written with the entry.** Changing it in the config takes effect at the next
+  `files save`; until then `export` still goes by the stored flag.
 - **CI** syncs only when a store exists, so a job never invents one; `envFiles` `optional` still
   decides whether a missing file is an error.
 
@@ -44,7 +46,7 @@ agentgate syncs file stores between machines without buncargo's code. Everything
 | Checkout copy | Store | Action |
 | --- | --- | --- |
 | missing | present | copy, record base |
-| missing | missing | take it from another checkout (the main one first) into the store, then copy; else copy `template` and record no base, so the next load adopts it filled in; else leave missing |
+| missing | missing | copy `template` and record no base, so the next load adopts it filled in; else leave missing |
 | present, no base | missing | adopt into the store, record base |
 | present, base | missing | the same: the store was emptied, refill it |
 | present, no base | equal | record base |
