@@ -76,6 +76,11 @@ async function runCommand(
 				commandArgs,
 			);
 			return;
+		case "files":
+			process.exitCode = await (await import("./commands/files")).handleFiles(
+				commandArgs,
+			);
+			return;
 		case "secrets":
 			process.exitCode = await (
 				await import("./commands/secrets")

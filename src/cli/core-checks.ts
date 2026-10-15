@@ -2,6 +2,14 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { containerRuntimeForEnv } from "../container-runtime";
 import {
+	type CheckoutFileStatus,
+	checkoutFileErrors,
+	checkoutFileSpecs,
+	gitignoreRefusals,
+	inspectCheckoutFiles,
+	lastSyncReport,
+} from "../core/checkout-files";
+import {
 	describeSecretsError,
 	fetchScopeSecrets,
 	resolveScope,
@@ -86,6 +94,33 @@ function hasNodeModules(root: string): boolean {
 	}
 }
 
+/** What a checkout file needs, with the command that fixes it; [] when nothing. */
+export function describeCheckoutFile(file: CheckoutFileStatus): string[] {
+	if (file.refusal)
+		return [`${file.path} ${file.refusal}, so it is not synced`];
+	switch (file.state) {
+		case "in-sync":
+		case "missing":
+			return [];
+		case "local-edits":
+			return [
+				`${file.path} has local edits (\`buncargo files save ${file.path}\` shares them)`,
+			];
+		case "store-newer":
+			return [
+				`${file.path} is behind the file store (\`buncargo files pull ${file.path}\`)`,
+			];
+		case "conflict":
+			return [
+				`${file.path} and the file store both changed (\`buncargo files diff ${file.path}\`, then \`files save\` or \`files pull --force\`)`,
+			];
+		default: {
+			const exhaustive: never = file.state;
+			throw new Error(`Unhandled checkout file state: ${String(exhaustive)}`);
+		}
+	}
+}
+
 function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 	const checks: SetupCheck[] = [];
 	const pinned = pinnedBunVersion(env.root);
@@ -161,6 +196,57 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 				);
 			},
 			fix: `infisical login --domain=${scopes[0]?.siteUrl}`,
+		});
+	}
+
+	const checkoutFiles = checkoutFileErrors(env.checkoutFiles).length
+		? []
+		: checkoutFileSpecs(env.checkoutFiles);
+	if (checkoutFiles.length > 0) {
+		// Fast because loading already synced them: `dev` reads that report
+		// rather than forking git again. `doctor` loads without syncing and
+		// inspects here.
+		checks.push({
+			name: "Checkout files are current",
+			severity: "warning",
+			check: ({ root }) => {
+				const report =
+					lastSyncReport(root) ?? inspectCheckoutFiles(root, checkoutFiles);
+				const problems = report.files.flatMap(describeCheckoutFile);
+				return (
+					problems.length === 0 || { ok: false, detail: problems.join("; ") }
+				);
+			},
+		});
+		checks.push({
+			name: "Checkout files are gitignored",
+			severity: "warning",
+			fast: false,
+			check: ({ root }) => {
+				const refused = [
+					...gitignoreRefusals(
+						root,
+						checkoutFiles.map((file) => file.path),
+					),
+				].map(([path, reason]) => `${path} ${reason}`);
+				return (
+					refused.length === 0 || { ok: false, detail: refused.join("; ") }
+				);
+			},
+			// Tracked files stay tracked; the detail says how to untrack them.
+			fix: ({ root }) =>
+				appendToGitignore(
+					root,
+					[
+						...gitignoreRefusals(
+							root,
+							checkoutFiles.map((file) => file.path),
+						),
+					]
+						.filter(([, reason]) => reason === "is not gitignored")
+						.map(([path]) => `/${path}`),
+				),
+			fixDescription: "add them to .gitignore",
 		});
 	}
 

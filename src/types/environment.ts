@@ -19,6 +19,7 @@ import type {
 	ExposedKeys,
 } from "./computed";
 import type {
+	CheckoutFile,
 	DevConfig,
 	DevConfigLike,
 	EnvValues,
@@ -174,6 +175,8 @@ export interface DevEnvironment<
 	readonly preflight?: readonly PreflightStep[];
 	/** The config's integrations, after they have been applied. */
 	readonly integrations?: readonly BuncargoIntegration[];
+	/** `options.checkoutFiles` from config */
+	readonly checkoutFiles?: readonly CheckoutFile[];
 	/** `generatedFiles` from config and its integrations */
 	readonly generatedFiles?: readonly GeneratedFileConfig[];
 	/** Values apps printed (`captures`), by name. */

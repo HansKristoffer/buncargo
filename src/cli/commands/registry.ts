@@ -58,6 +58,11 @@ export const CLI_COMMANDS = [
 		summary: "Run Prisma CLI with correct DATABASE_URL",
 	},
 	{
+		name: "files",
+		usage: "files <status|save|pull|diff|export|import>",
+		summary: "Gitignored files every checkout needs (.env.local), per machine",
+	},
+	{
 		name: "secrets",
 		usage: "secrets ls [--app=<name>]",
 		summary: "List Infisical keys and where each comes from (never values)",

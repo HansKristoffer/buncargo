@@ -419,7 +419,8 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 	// off `PATH`, which the probe below has to use or it reports a false "down".
 	let env: DevEnv | undefined;
 	try {
-		env = await loadDevEnv({ readOnly: true });
+		// Inspect-only: the checkout files check reports their state instead.
+		env = await loadDevEnv({ readOnly: true, syncCheckoutFiles: false });
 	} catch (error) {
 		report.issue(
 			`Could not load dev config: ${error instanceof Error ? error.message : String(error)}`,

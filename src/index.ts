@@ -65,6 +65,7 @@ export type {
 	CaptureEvent,
 	CheckContext,
 	CheckOutcome,
+	CheckoutFile,
 	// CLI
 	CliOptions,
 	// Computed types
