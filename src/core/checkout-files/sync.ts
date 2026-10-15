@@ -320,13 +320,9 @@ function selectSpecs(
 export function inspectCheckoutFiles(
 	root: string,
 	specs: readonly CheckoutFileSpec[],
-	options: CheckoutFilesOptions & { paths?: readonly string[] } = {},
+	options: CheckoutFilesOptions = {},
 ): CheckoutFilesReport {
-	const opened = openCheckoutFiles(
-		root,
-		selectSpecs(specs, options.paths),
-		options,
-	);
+	const opened = openCheckoutFiles(root, specs, options);
 	return reportOf(
 		opened,
 		gitignoreRefusals(
@@ -576,12 +572,11 @@ export async function saveCheckoutFiles(
 	root: string,
 	specs: readonly CheckoutFileSpec[],
 	options: CheckoutFilesOptions & { paths?: readonly string[] } = {},
-): Promise<{ report: CheckoutFilesReport; failed: string[] }> {
+): Promise<{ failed: string[] }> {
 	const log = options.log ?? defaultLog;
 	const selected = selectSpecs(specs, options.paths);
 	const first = openCheckoutFiles(root, selected, options);
 	const failed: string[] = [];
-	let report: CheckoutFilesReport | undefined;
 	await withStoreLock(first.dir, () => {
 		const opened = readOpened(root, selected, first.repoKey, first.dir);
 		const refusals = gitignoreRefusals(
@@ -614,12 +609,8 @@ export async function saveCheckoutFiles(
 				writes,
 			);
 		writeCheckoutState(root, state);
-		report = reportOf(
-			readOpened(root, selected, opened.repoKey, opened.dir),
-			refusals,
-		);
 	});
-	return { report: report as CheckoutFilesReport, failed };
+	return { failed };
 }
 
 /** Keys added, removed and changed from the store's copy to the checkout's. Never values. */

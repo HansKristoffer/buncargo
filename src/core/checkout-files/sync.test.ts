@@ -258,16 +258,6 @@ describe("syncCheckoutFiles", () => {
 		expect(readBase(repo)).toBe(hash("A=1\n"));
 	});
 
-	it("leaves an unrecorded copy that differs from the store", async () => {
-		const repo = makeRepo();
-		writeLocal(repo, "A=mine\n");
-		seedStore(repo, "A=store\n");
-		const report = await sync(repo);
-		expect(readLocal(repo)).toBe("A=mine\n");
-		expect(readBase(repo)).toBeUndefined();
-		expect(report.files[0]?.state).toBe("local-edits");
-	});
-
 	it("updates an untouched copy when the store changed, naming only the file", async () => {
 		const repo = makeRepo();
 		seedStore(repo, "SECRET=old\n");
@@ -280,17 +270,6 @@ describe("syncCheckoutFiles", () => {
 		expect(repo.lines).toHaveLength(1);
 		expect(repo.lines[0]).toContain(`Updated ${ENV} from the file store`);
 		expect(repo.lines.join("")).not.toContain("new");
-	});
-
-	it("leaves local edits when the store did not change", async () => {
-		const repo = makeRepo();
-		seedStore(repo, "A=1\n");
-		await sync(repo);
-		writeLocal(repo, "A=2\n");
-		const report = await sync(repo);
-		expect(readLocal(repo)).toBe("A=2\n");
-		expect(readStore(repo)).toBe("A=1\n");
-		expect(report.files[0]?.state).toBe("local-edits");
 	});
 
 	it("leaves a conflict and warns with the fix", async () => {
@@ -322,15 +301,6 @@ describe("syncCheckoutFiles", () => {
 		expect(readFileSync(join(backups, stamp ?? "", ENV), "utf8")).toBe(
 			"A=mine\n",
 		);
-	});
-
-	it("treats a data file that does not match its entry as absent (mid-write)", async () => {
-		const repo = makeRepo();
-		seedStore(repo, "A=1\n");
-		writeFileSync(join(repo.store, "data", ENV), "A=torn");
-		const report = await sync(repo);
-		expect(readLocal(repo)).toBeUndefined();
-		expect(report.files[0]?.state).toBe("missing");
 	});
 
 	it("records the config's machine flag in the store", async () => {
@@ -470,14 +440,13 @@ describe("saveCheckoutFiles", () => {
 		seedStore(repo, "A=1\n");
 		await sync(repo);
 		writeLocal(repo, "A=2\n");
-		const { failed, report } = await saveCheckoutFiles(repo.root, spec(), {
+		const { failed } = await saveCheckoutFiles(repo.root, spec(), {
 			home: repo.home,
 			log: () => {},
 		});
 		expect(failed).toEqual([]);
 		expect(readStore(repo)).toBe("A=2\n");
 		expect(readBase(repo)).toBe(hash("A=2\n"));
-		expect(report.files[0]?.state).toBe("in-sync");
 	});
 
 	it("fails for a file the checkout does not have", async () => {

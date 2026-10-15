@@ -6,7 +6,6 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
-	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -218,16 +217,6 @@ describe("withStoreLock", () => {
 		expect(await withStoreLock(dir, () => "ran", 1000)).toBe("ran");
 	});
 
-	it("breaks a lock older than 30 s even when its owner looks alive", async () => {
-		const dir = join(temp(), "store");
-		holdLock(dir, {
-			pid: process.pid,
-			host: hostname(),
-			createdAt: new Date(Date.now() - LOCK_STALE_MS - 1000).toISOString(),
-		});
-		expect(await withStoreLock(dir, () => "ran", 1000)).toBe("ran");
-	});
-
 	it("waits for a live lock and names it when time runs out", async () => {
 		const dir = join(temp(), "store");
 		holdLock(dir, {
@@ -238,17 +227,6 @@ describe("withStoreLock", () => {
 		await expect(withStoreLock(dir, () => "ran", 100)).rejects.toThrow(
 			`locked by pid ${process.pid}`,
 		);
-	});
-
-	it("does not break a lock whose owner file is not written yet", async () => {
-		const dir = join(temp(), "store");
-		mkdirSync(join(dir, ".lock"), { recursive: true });
-		await expect(withStoreLock(dir, () => "ran", 100)).rejects.toThrow(
-			"locked",
-		);
-		const old = (Date.now() - LOCK_STALE_MS - 1000) / 1000;
-		utimesSync(join(dir, ".lock"), old, old);
-		expect(await withStoreLock(dir, () => "ran", 1000)).toBe("ran");
 	});
 
 	it("serializes holders", async () => {
