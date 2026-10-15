@@ -1,5 +1,14 @@
 # Changelog
 
+## [12.4.0](https://github.com/HansKristoffer/buncargo/compare/v12.3.1...v12.4.0) (2026-10-15)
+
+
+### Features
+
+* **cli:** let parallel CI jobs share one machine ([#99](https://github.com/HansKristoffer/buncargo/issues/99)) ([ea03eb5](https://github.com/HansKristoffer/buncargo/commit/ea03eb5d953504772030f0da281e306927b7eebd))
+* **cli:** make buncargo work on remote agent servers ([#96](https://github.com/HansKristoffer/buncargo/issues/96)) ([6dcc88d](https://github.com/HansKristoffer/buncargo/commit/6dcc88d7c2a0d9ac7bcedb84b43c5c04d671c21b))
+* **secrets:** use the machine identity file when no client credentials are set ([#97](https://github.com/HansKristoffer/buncargo/issues/97)) ([b0aeb33](https://github.com/HansKristoffer/buncargo/commit/b0aeb3349fe6a49e1ccc1ef651d8e2ac258c43ab))
+
 ## [12.3.1](https://github.com/HansKristoffer/buncargo/compare/v12.3.0...v12.3.1) (2026-10-11)
 
 
