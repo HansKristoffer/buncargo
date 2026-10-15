@@ -1,0 +1,50 @@
+[
+	{
+		"remote": "https://github.com/Bliss-Budget/budget-app.git",
+		"key": "github.com/bliss-budget/budget-app"
+	},
+	{
+		"remote": "git@github.com:Bliss-Budget/budget-app.git",
+		"key": "github.com/bliss-budget/budget-app"
+	},
+	{
+		"remote": "ssh://git@github.com/Bliss-Budget/budget-app.git",
+		"key": "github.com/bliss-budget/budget-app"
+	},
+	{
+		"remote": "ssh://git@github.com:22/Bliss-Budget/budget-app.git",
+		"key": "github.com/bliss-budget/budget-app"
+	},
+	{
+		"remote": "https://user:token@gitlab.example.com:8443/group/sub/project.git/",
+		"key": "gitlab.example.com/group/sub/project"
+	},
+	{
+		"remote": "https://github.com/acme/app/",
+		"key": "github.com/acme/app"
+	},
+	{
+		"remote": "git@github.com:acme/app",
+		"key": "github.com/acme/app"
+	},
+	{
+		"remote": "/srv/git/app.git",
+		"key": null
+	},
+	{
+		"remote": "file:///srv/git/app.git",
+		"key": null
+	},
+	{
+		"remote": "github.com:acme/app.git",
+		"key": null
+	},
+	{
+		"remote": "https://github.com/acme/my app.git",
+		"key": null
+	},
+	{
+		"remote": "git@host:/abs/path.git",
+		"key": null
+	}
+]

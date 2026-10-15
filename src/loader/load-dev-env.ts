@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { syncConfiguredCheckoutFiles } from "../core/checkout-files";
 import { findMonorepoRoot } from "../core/ports";
 import { createDevEnvironment } from "../environment";
 import type {
@@ -49,6 +50,11 @@ export async function loadDevEnv<
 	readOnly?: boolean;
 	/** `--runtime`, taking precedence over env and config. */
 	containerRuntime?: string;
+	/**
+	 * Bring `options.checkoutFiles` up to date before `envFiles` are read.
+	 * Default true; false for commands that only inspect (`doctor`).
+	 */
+	syncCheckoutFiles?: boolean;
 }): Promise<DevEnvironmentFor<TConfig>> {
 	const requested = options?.containerRuntime;
 
@@ -137,6 +143,11 @@ export async function loadDevEnv<
 	const loaded: unknown = mod.default;
 	if (isCurrentRevision && mod.default?.options?.envFiles)
 		inputFileConfigs.add(configPath);
+
+	// Before the environment is built: it reads required `envFiles`, which a
+	// fresh checkout only has once they are copied in.
+	if (options?.syncCheckoutFiles !== false)
+		await syncConfiguredCheckoutFiles(root, loaded);
 
 	// The dynamic import is untyped, so the caller's TConfig is the only source
 	// of shape information. This cast is the single trust boundary for it.

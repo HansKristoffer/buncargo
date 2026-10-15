@@ -118,6 +118,7 @@ export function createDevEnvironment<
 		secrets: resolved.secrets,
 		integrations: resolved.integrations,
 		generatedFiles: resolved.generatedFiles,
+		checkoutFiles: resolved.options?.checkoutFiles,
 		captured: ctx.captured,
 		recordCapture,
 		renderGeneratedFiles: () => renderGeneratedFiles(ctx, envVars),

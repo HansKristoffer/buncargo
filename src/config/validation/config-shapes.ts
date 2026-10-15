@@ -1,3 +1,4 @@
+import { checkoutFileErrors } from "../../core/checkout-files/spec";
 import { SECRETS_FIELDS, type ShapeChecks } from "./shape-checks";
 
 export function validateSupplementShapes(
@@ -181,6 +182,7 @@ export function validateSupplementShapes(
 						);
 				}
 		}
+		errors.push(...checkoutFileErrors(options.checkoutFiles));
 		fields(options, "options.", ["worktreeIsolation", "verbose"], "boolean");
 		fields(options, "options.", ["primaryApp"], "string");
 		if (options.autoShutdown !== false)

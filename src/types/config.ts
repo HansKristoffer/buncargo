@@ -88,6 +88,13 @@ export interface DevOptions<
 	envFile?: boolean | EnvFileOptions;
 	/** Root-relative dotenv defaults, loaded after config evaluation; later files win. */
 	envFiles?: readonly EnvInputFile[];
+	/**
+	 * Gitignored files every checkout needs, usually dotenvs. Buncargo keeps
+	 * one copy per machine and copies it into each checkout before anything
+	 * reads `envFiles`, keeps those copies current and never overwrites local
+	 * edits. Manage them with `buncargo files`.
+	 */
+	checkoutFiles?: readonly CheckoutFile[];
 }
 
 /**
@@ -181,6 +188,20 @@ export interface HostsRuntime {
  * built rather than stringified into the literal `"undefined"`.
  */
 export type EnvInputFile = string | { path: string; optional?: boolean };
+
+/**
+ * One entry of {@link DevOptions.checkoutFiles}: a path relative to the
+ * checkout root, or that path with options.
+ */
+export type CheckoutFile =
+	| string
+	| {
+			path: string;
+			/** Copied in when neither this checkout nor the file store has the file, e.g. `.env.example`. */
+			template?: string;
+			/** Kept on this machine only: never exported or synced to another. */
+			machine?: boolean;
+	  };
 
 export type EnvValues = Record<string, string | number | undefined>;
 

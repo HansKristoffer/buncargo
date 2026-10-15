@@ -60,6 +60,17 @@ hardcode a port. Ask buncargo instead.
   environment. \`bunx buncargo run <task>\` runs a configured task;
   \`bunx buncargo help\` lists them.
 
+## Gitignored files (.env.local)
+
+- When the config lists \`checkoutFiles\`, buncargo copies those files into this
+  checkout from the machine's file store before any command reads them. Do not
+  copy them from another worktree by hand.
+- \`bunx buncargo files status\` shows each one's state. A file with local
+  edits is never overwritten: \`bunx buncargo files save <path>\` shares the
+  edit with every checkout, \`bunx buncargo files pull --force <path>\` takes the
+  store's copy. Neither prints values; \`files diff\` lists differing keys.
+  Ask the user before saving or forcing a file you did not change on purpose.
+
 ## Checks
 
 - \`bunx buncargo typecheck --changed\` checks the workspaces this branch

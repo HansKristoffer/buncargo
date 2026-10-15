@@ -106,6 +106,8 @@ them that the code alone does not explain.
 - `src/environment/`, seeding, captures, Prisma: `docs/internals/environment.md`
 - CLI commands, flags, takeover, detach, typecheck: `docs/internals/cli.md`
 - Infisical secrets: `docs/internals/secrets.md`
+- `options.checkoutFiles`, the file store, `buncargo files` (a contract shared with agentgate):
+  `docs/internals/checkout-files.md`
 - Expo, Shopify, Supabase, stacks: `docs/internals/integrations.md`
 - State paths, file locks, persisted files, `runtime-flags.ts`, prompts: `docs/internals/core.md`
 - frp sharing: `docs/internals/connect.md`

@@ -1,0 +1,10 @@
+{
+	"version": 2,
+	"files": {
+		".env.local": {
+			"sha256": "a793e726d196b76fb8333b416334b7984f2f40c8b469bf4df1691f75939e3aec",
+			"updatedAt": "2026-10-15T09:30:00.000Z",
+			"machine": false
+		}
+	}
+}
