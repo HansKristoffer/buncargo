@@ -3,6 +3,7 @@ import {
 	mergeSharedEnvWithOverlay,
 	stringifyEnvValues,
 } from "../core/env";
+import { portableEnvFingerprint } from "../core/env-fingerprint";
 import { toPortMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
 import { hostsDaemonPort, isCI, urlHostOverride } from "../core/runtime-flags";
@@ -41,6 +42,10 @@ export interface DevEnvVarsApi<
 		targetApps: Record<string, AppConfig>,
 		production?: boolean,
 	): Record<string, Record<string, string>>;
+	buildEnvFingerprint(
+		appName: Extract<keyof TApps, string>,
+		production?: boolean,
+	): string;
 	getHookContext(
 		signal?: AbortSignal,
 		selection?: { appNames: string[]; requiredServiceKeys: string[] },
@@ -189,6 +194,16 @@ export function createEnvVarsApi<
 		return processEnv as unknown as AppEnvVars<TServices, TApps, TEnv, TName>;
 	}
 
+	function buildEnvFingerprint(
+		appName: Extract<keyof TApps, string>,
+		production = false,
+	): string {
+		return portableEnvFingerprint(buildAppEnvVars(appName, production), {
+			ports: Object.values(toPortMap(ports)),
+			names: [ctx.root, ctx.projectName, ctx.workspaceId],
+		});
+	}
+
 	function buildAppEnvVarsMap(
 		targetApps: Record<string, AppConfig>,
 		production = false,
@@ -335,6 +350,7 @@ export function createEnvVarsApi<
 		buildEnvVars,
 		buildAppEnvVars,
 		buildAppEnvVarsMap,
+		buildEnvFingerprint,
 		getHookContext,
 		exec,
 		resolveSecrets,
