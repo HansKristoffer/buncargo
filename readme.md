@@ -20,6 +20,7 @@ Local development environments are fragile: hand-written compose files, scattere
 - **Terminal UI** - `--tui`: every app in its own terminal pane, full-screen apps (Shopify CLI, Expo) render natively, an Overview interleaves the rest
 - **Non-essential apps and logs** - `essential: false` apps stop without ending the run (`r` restarts); every run's output in `.buncargo/logs`, read with `buncargo logs`
 - **Phased public tunnels** - start backend, wait for health, open tunnels, then start apps that need `*_PUBLIC_URL`
+- **Checkout files** - gitignored `.env.local` files reach every worktree and clone from one copy per machine, without overwriting local edits (`buncargo files`)
 - **Prisma integration** - `bunx buncargo prisma` with the right `DATABASE_URL`
 - **Named HTTPS URLs** - opt-in `https://api.myapp.localhost` via a shared loopback proxy (mkcert + `:443`)
 - **Watchdog** - one sweeper per machine removes containers once their run has ended, their checkout is deleted, or they are left stopped

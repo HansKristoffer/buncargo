@@ -69,6 +69,7 @@ run has ended. BuncargoBar reads the run registry and shells every mutation out 
 - [Ports](./ports.md)
 - [Named hosts](./named-hosts.md)
 - [Secrets](./secrets.md)
+- [Checkout files](./checkout-files.md)
 - [Integrations and stacks](./integrations.md)
 - [Shared core](./core.md)
 - [Connect](./connect.md)

@@ -74,6 +74,11 @@ bunx buncargo wait --app=api --hold   # Block until an app is healthy (and stay)
 bunx buncargo generate            # Render generatedFiles without starting anything
 bunx buncargo build --discovered  # Every discovered app's build, in order
 bunx buncargo secrets ls --app=api   # Key names and their source, never values
+bunx buncargo files status        # Each checkout file: in sync, local edits, ...
+bunx buncargo files save          # This checkout's copies to the file store
+bunx buncargo files pull --force  # The file store to this checkout, over local edits
+bunx buncargo files diff .env.local  # Keys that differ, never values
+bunx buncargo files export | ssh box 'cd app && bunx buncargo files import'
 bunx buncargo shopify env         # An integration's own commands
 bunx buncargo shopify login       # Log the Shopify CLI in
 bunx buncargo shopify link --config=local  # Link a toml without losing it
@@ -957,6 +962,50 @@ A server that exits zero after detaching its listener is adopted by pid and proc
 
 The `dev` banner lists the selected apps (including reused apps) and their required services. `url` and `env` continue to list the full configuration.
 
+## Checkout files
+
+Secrets that live in gitignored dotenvs (`.env.local`, `apps/expo-app/.env`) are missing from every
+new worktree and every fresh clone. List them in `checkoutFiles` and buncargo puts them there:
+
+```ts
+options: {
+  envFiles: [".env.local"],                          // what buncargo reads
+  checkoutFiles: [
+    { path: ".env.local", template: ".env.example" }, // template when nobody has it yet
+    "apps/expo-app/.env",                            // a file buncargo itself does not read
+    { path: ".env.machine", machine: true },         // never leaves this machine
+  ],
+},
+```
+
+Buncargo keeps one copy of each per machine, the file store (`~/.buncargo/files/`), and before
+any command reads `envFiles` it brings the checkout's copy up to date:
+
+- A checkout without the file gets the store's copy. When the store has none either, buncargo
+  takes it from another checkout of the repository (the main one first), else copies `template`
+  for you to fill in.
+- A checkout that has a file the store lacks puts it in the store, so other checkouts get it.
+  Existing setups need no migration.
+- When the store's copy changes, every checkout whose copy is untouched gets the new one, with
+  one line naming the file.
+- A copy you changed is never overwritten. `buncargo dev` reports it; `buncargo files save`
+  shares your change with the other checkouts, and `buncargo files pull --force` takes the
+  store's copy instead (yours is kept in `.buncargo/files-backup/`).
+
+Files must be gitignored, under 1 MiB and inside the checkout; buncargo refuses symlinks and
+tracked files, and `buncargo setup` adds a missing ignore rule. Nothing prints values: `files diff`
+lists the keys that differ. In CI, files are only copied when a store exists.
+
+`buncargo files status [--json]` shows each file's state (`in-sync`, `store-newer`, `local-edits`,
+`conflict`, `missing`). `pull` exits 1 when a file is left different from the store. To set up
+another machine, `buncargo files export` writes the store as a bundle to stdout (without
+`machine` files unless `--include-machine`) and `buncargo files import [file]` reads one from a
+file or stdin, then pulls:
+
+```bash
+bunx buncargo files export | ssh box 'cd app && bunx buncargo files import'
+```
+
 ## Environment variables
 
 ### Dotenv input
@@ -1208,6 +1257,7 @@ Use `kind: "worker"` for a long-running process without a listener. Workers requ
 | `autoShutdown` | `number \| false` | `180000` | How long containers are held after the run exits, in **ms**. `false` keeps them as long as the checkout exists (same as `--keep-containers`) |
 | `envFiles` | `(string \| { path, optional? })[]` | `[]` | Root dotenv input defaults; later files win, generated local values stay authoritative |
 | `envFile` | `boolean \| { path?, createFrom? }` | `false` | Sync a dotenv to the allocated ports. `true` means `.env` |
+| `checkoutFiles` | `(string \| { path, template?, machine? })[]` | `[]` | Gitignored files every checkout gets from this machine's file store. See [checkout files](#checkout-files) |
 | `verbose` | `boolean` | `true` | Default verbosity |
 | `onAppFailure` | `"keep-others" \| "stop-run"` | `"keep-others"` | What `buncargo dev` does when an app does not become ready. See [when an app does not come up](#when-an-app-does-not-come-up) |
 | `primaryApp` | `string` | inferred | The app this project is "about": the menu bar's Open button, the TUI's `o`, and the bare named hostname. Inferred from the dependency graph when unset (but the bare hostname is only ever given to a configured one) |

@@ -47,3 +47,11 @@ Terms whose meaning matters across buncargo. Use them this way in code, comments
 | Named host        | An `https://<name>.localhost` URL served by the root hosts daemon's proxy, backed by a route in `~/.buncargo/routes.json`.     |
 | Process identity  | A pid plus its birth time (`v2:` prefixed). Liveness reads an unreadable identity as alive; signalling requires a strict match. |
 | BuncargoBar       | The macOS menu bar app. It only reads the run registry and calls `buncargo stop`.                                             |
+
+## Checkout files
+
+| Term          | Meaning                                                                                                                      |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Checkout file | A gitignored file every checkout needs (usually a dotenv), listed in `options.checkoutFiles`. Managed with `buncargo files`. |
+| File store    | This machine's copy of a repository's checkout files, in `~/.buncargo/files/<repository key>/`.                              |
+| Base          | The store content a checkout's copy was last written from; it tells local edits from store updates.                          |
