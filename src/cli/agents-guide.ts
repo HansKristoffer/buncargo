@@ -67,11 +67,13 @@ hardcode a port. Ask buncargo instead.
   copy them from another worktree by hand.
 - \`bunx buncargo files status\` shows each one's state. A file with local
   edits is never overwritten: \`bunx buncargo files save <path>\` shares the
-  edit with every checkout, \`bunx buncargo files pull --force <path>\` takes the
-  store's copy, and \`bunx buncargo files merge <path>\` keeps both sides'
-  changes to a dotenv key by key. Merge exits 1 naming keys changed on both
-  sides; rerun it with \`--checkout=KEY,...\` or \`--store=KEY,...\`. None of them
-  prints values; \`files diff\` lists differing keys.
+  edit with every checkout, and \`bunx buncargo files pull --force <path>\` takes
+  the store's copy. For a \`conflict\` (both changed), run
+  \`bunx buncargo files merge <path>\` first when the hint offers it (dotenv
+  files): it keeps both sides' changes key by key. Merge exits 1 naming keys
+  changed on both sides; rerun it with \`--checkout=KEY,...\` or
+  \`--store=KEY,...\`. None of them prints values; \`files diff\` lists
+  differing keys.
   Ask the user before saving or forcing a file you did not change on purpose.
 
 ## Checks

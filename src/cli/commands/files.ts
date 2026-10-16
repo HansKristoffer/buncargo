@@ -294,11 +294,8 @@ async function pull(
 			file.refusal || (file.state !== "in-sync" && file.state !== "missing"),
 	);
 	for (const file of behind) {
-		const edited =
-			!file.refusal &&
-			(file.state === "local-edits" || file.state === "conflict");
 		log.warn(
-			edited
+			!file.refusal && file.state === "local-edits"
 				? `${file.path} has local edits, so it was not pulled. \`buncargo files pull --force ${file.path}\` replaces them (backed up first).`
 				: `${file.path} ${checkoutFileProblem(file) ?? "was not pulled"}`,
 		);
