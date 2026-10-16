@@ -6,8 +6,7 @@
 bunx buncargo dev                 # Start containers + selected apps
 bunx buncargo dev --apps=api,web  # Named apps plus transitive requiredApps
 bunx buncargo dev --profile=full  # The apps of profiles.full
-bunx buncargo dev --tui           # Sidebar of apps, each in its own terminal
-bunx buncargo dev --no-tui        # Prefixed lines, even in a terminal
+bunx buncargo dev --no-tui        # Prefixed lines instead of the terminal UI
 bunx buncargo dev --detach        # In the background; returns once the apps are up
 bunx buncargo dev --no-watch      # Ignore the apps' watch config for this run
 bunx buncargo dev --attach=expoApp
@@ -563,7 +562,7 @@ screen is what garbles a full-screen app like Shopify CLI or Expo.
 
 | Mode | When | What you see |
 | --- | --- | --- |
-| TUI | `--tui` and a terminal | A sidebar with the **Overview** and every app; the main pane shows all apps' lines interleaved, or the selected app's own terminal |
+| TUI | a terminal (the default) | A sidebar with the **Overview** and every app; the main pane shows all apps' lines interleaved, or the selected app's own terminal |
 | Stream | otherwise (CI, agents, piped output, `--no-tui`) | Prefixed lines (`➜ api …`). Apps get pipes, so full-screen tools print plain lines on their own |
 
 In the TUI every app runs under its own pseudo-terminal sized to the pane, with
