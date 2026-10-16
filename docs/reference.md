@@ -78,6 +78,7 @@ bunx buncargo files status        # Each checkout file: in sync, local edits, ..
 bunx buncargo files save          # This checkout's copies to the file store
 bunx buncargo files pull --force  # The file store to this checkout, over local edits
 bunx buncargo files diff .env.local  # Keys that differ, never values
+bunx buncargo files merge .env.local # Your edits and the store's changes, key by key
 bunx buncargo files export | ssh box 'cd app && bunx buncargo files import'
 bunx buncargo shopify env         # An integration's own commands
 bunx buncargo shopify login       # Log the Shopify CLI in
@@ -95,6 +96,12 @@ bunx buncargo help
 bunx buncargo help agents         # The guide for AI agents working in a checkout
 bunx buncargo version
 ```
+
+Inside a project, the CLI runs the project's own buncargo. When `bunx buncargo` reaches a
+different version (a global install, because the checkout has no `node_modules/.bin`), it prints
+one line and hands over to the version in the project's `node_modules`, with the same arguments.
+When the project's `package.json` lists buncargo but it is not installed, it stops and asks for
+`bun install` instead of running a version the project did not choose.
 
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`), including `vars`: the variables `exec`, tasks and the apps are given, without their Infisical secrets. `--get ports.api` prints one raw value for scripts, and a bare name (`--get DATABASE_URL`) reads from `vars`. `--export` prints `vars` as quoted `export` lines.
 
@@ -990,6 +997,11 @@ any command reads `envFiles` it brings the checkout's copy up to date:
 - A copy you changed is never overwritten. `buncargo dev` reports it; `buncargo files save`
   shares your change with the other checkouts, and `buncargo files pull --force` takes the
   store's copy instead (yours is kept in `.buncargo/files-backup/`).
+- When you changed a dotenv and the store changed too, `buncargo files merge <path>` keeps both
+  sides' changes, key by key, and saves the result to the store. A key changed on both sides is
+  named (never its value) for you to choose: it asks in a terminal, or takes
+  `--checkout=KEY,...` (keep yours) and `--store=KEY,...` (take the store's). Comments, order and
+  quoting stay as in your copy.
 
 Files must be gitignored, under 1 MiB and inside the checkout; buncargo refuses symlinks and
 tracked files, and `buncargo setup` adds a missing ignore rule. Nothing prints values: `files diff`
@@ -1424,6 +1436,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `… listens on :8022, not its assigned :8021` | The app moved to the next port because its own was taken | Run `dev` again; set `strictPort` (Vite, Astro's `vite.server`) so it fails instead of moving |
 | `--reset removes …'s volumes … Refusing without a terminal` | `--reset` / `--down --all` from a script or agent | Pass `--yes` if that is really meant |
 | `Dependencies are installed (no node_modules)` | Fresh worktree | `bun install`, or `buncargo setup --yes` |
+| `This project's buncargo (package.json) is not installed` | `bunx buncargo` found a different buncargo than the project lists, and the project's is not installed | `bun install` |
 | `Worker "…" is already running` | Library startup encountered an owned worker | Reuse it through the CLI or use `dev --takeover` |
 | `Apple container cannot verify finite job exit codes yet` | A job was selected with Apple | Use `--runtime=docker` |
 | `already listening on port … but failed health check` | Port busy, `healthEndpoint` failed, and the server runs in another terminal of this checkout or is not from this checkout | `dev --takeover` replaces another run's server; otherwise free the port. A leftover no run owns and a `--detach` run's server are replaced without asking |

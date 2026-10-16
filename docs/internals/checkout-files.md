@@ -22,6 +22,18 @@ agentgate syncs file stores between machines without buncargo's code. Everything
 - **The base tells edits from updates.** `<checkout>/.buncargo/files.json` records, per file, the
   store content the copy was last written from (`{ "version": 1, "files": { "<path>": { "base":
   "<sha256>" } } }`). It is buncargo's alone, not part of the contract.
+- **The base's content stays in the checkout.** `files merge` is three-way, so whenever the base
+  is recorded its bytes go to `<checkout>/.buncargo/files-base/<path>` (`0600`), read only while
+  their hash is still the base. Not in the store: one checkout's base is no other checkout's, and
+  the store's layout is the contract. A checkout synced before these copies existed gets one on
+  the next load while its copy or the store still equals the base; when neither does, the merge
+  runs from an empty base, so every difference is an addition or a conflict.
+- **Merge is dotenv only.** Every line must be `KEY=value` (a quoted value may span lines), a
+  comment or blank, no key set twice, and Node's `parseEnv` must agree on the keys; anything else
+  is refused. The checkout's copy is the skeleton, so its comments and order survive; a key taken
+  from the store brings its line(s) and the comment right above it. Conflicts are computed under
+  the store's lock but asked about outside it (a prompt would outlive the 30 s stale-lock
+  window), so the merge is computed again, under the lock, with the answers.
 - **Synced in the loader.** `loadDevEnv` syncs after importing the config and before
   `createDevEnvironment`, which reads required `envFiles` (`environment/context.ts`) and would
   throw on a fresh worktree before any fix ran. Every command syncs, `exec` included; `doctor`
@@ -57,7 +69,8 @@ agentgate syncs file stores between machines without buncargo's code. Everything
 
 `files pull --force` turns the two "leave" rows into a copy, after backing the checkout's copy up
 to `.buncargo/files-backup/<timestamp>/<path>`. `files save` writes the checkout's copy to the
-store whatever its state.
+store whatever its state. `files merge` writes the merged result to both, backing up the
+checkout's copy the same way.
 
 Refused, with a warning naming the fix: a path outside the checkout (also through a symlinked
 directory), a symlink, a tracked file, a file git does not ignore (`buncargo setup` appends it to
