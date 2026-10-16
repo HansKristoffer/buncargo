@@ -1,5 +1,12 @@
 # Changelog
 
+## [12.7.0](https://github.com/HansKristoffer/buncargo/compare/v12.6.0...v12.7.0) (2026-10-16)
+
+
+### Features
+
+* **cli:** run the project's own buncargo and merge checkout files by key ([#104](https://github.com/HansKristoffer/buncargo/issues/104)) ([d16092c](https://github.com/HansKristoffer/buncargo/commit/d16092cb67544feac26bb9872ae7f42fd0133c37))
+
 ## [12.6.0](https://github.com/HansKristoffer/buncargo/compare/v12.5.0...v12.6.0) (2026-10-15)
 
 
