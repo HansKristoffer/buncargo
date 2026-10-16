@@ -249,11 +249,26 @@ describe("syncCheckoutFiles", () => {
 		seedStore(repo, "A=theirs\n");
 		const report = await sync(repo);
 		expect(readLocal(repo)).toBe("A=mine\n");
-		expect(report.files[0]?.state).toBe("conflict");
+		expect(report.files[0]).toMatchObject({
+			state: "conflict",
+			mergeable: true,
+		});
 		const warning = repo.lines.join("\n");
+		expect(warning).toContain(`buncargo files merge ${ENV}`);
 		expect(warning).toContain(`buncargo files save ${ENV}`);
 		expect(warning).toContain(`buncargo files pull --force ${ENV}`);
 		expect(warning).not.toContain("mine");
+
+		// Not dotenv: merge cannot apply, so it is not offered.
+		repo.lines.length = 0;
+		writeLocal(repo, '{"a": "mine"}\n');
+		const json = await sync(repo);
+		expect(json.files[0]).toMatchObject({
+			state: "conflict",
+			mergeable: false,
+		});
+		expect(repo.lines.join("\n")).not.toContain("files merge");
+		expect(repo.lines.join("\n")).toContain(`buncargo files save ${ENV}`);
 	});
 
 	it("backs local edits up before --force replaces them", async () => {

@@ -89,6 +89,8 @@ export interface CheckoutFileStatus {
 	machine: boolean;
 	/** Why buncargo will not read or write this file, when it will not. */
 	refusal?: string;
+	/** A conflict `files merge` can resolve: every copy reads as dotenv. */
+	mergeable?: boolean;
 }
 
 export interface CheckoutFilesReport {
@@ -330,7 +332,25 @@ function stateOf(view: View): FileState {
 	return fileState(view.localHash, view.base, view.store?.hash);
 }
 
+/** Whether `files merge` would read the checkout's copy, the store's and the base as dotenv. */
+function isMergeable(root: string, view: View): boolean {
+	if (!view.local.data || !view.store) return false;
+	const decoder = new TextDecoder("utf-8", { fatal: true });
+	const base = readBaseCopy(root, view.spec.path, view.base);
+	try {
+		mergeDotenv(
+			decoder.decode(base ?? new Uint8Array()),
+			decoder.decode(view.local.data),
+			decoder.decode(view.store.data),
+		);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function reportOf(
+	root: string,
 	opened: Opened,
 	refusals: ReadonlyMap<string, string>,
 ): CheckoutFilesReport {
@@ -338,11 +358,15 @@ function reportOf(
 		repoKey: opened.repoKey,
 		files: opened.views.map((view) => {
 			const refusal = view.local.refusal ?? refusals.get(view.spec.path);
+			const state = stateOf(view);
 			return {
 				path: view.spec.path,
-				state: stateOf(view),
+				state,
 				machine: view.spec.machine,
 				...(refusal ? { refusal } : {}),
+				...(state === "conflict" && !refusal
+					? { mergeable: isMergeable(root, view) }
+					: {}),
 			};
 		}),
 	};
@@ -371,6 +395,7 @@ export function inspectCheckoutFiles(
 ): CheckoutFilesReport {
 	const opened = openCheckoutFiles(root, specs, options);
 	return reportOf(
+		root,
 		opened,
 		gitignoreRefusals(
 			root,
@@ -469,13 +494,16 @@ export async function syncCheckoutFiles(
 	for (const view of opened.views) {
 		if (stateOf(view) !== "conflict" || view.local.refusal) continue;
 		const path = view.spec.path;
+		const keep = isMergeable(root, view)
+			? `Merge them key by key with \`buncargo files merge ${path}\`, keep`
+			: "Keep";
 		log(
 			formatWarn(
-				`${path} has local edits and the file store changed too. Merge them key by key with \`buncargo files merge ${path}\`, keep yours with \`buncargo files save ${path}\`, or take the store's with \`buncargo files pull --force ${path}\` (yours is backed up).`,
+				`${path} has local edits and the file store changed too. ${keep} yours with \`buncargo files save ${path}\`, or take the store's with \`buncargo files pull --force ${path}\` (yours is backed up).`,
 			),
 		);
 	}
-	const report = reportOf(opened, refusals);
+	const report = reportOf(root, opened, refusals);
 	if (!options.paths) lastReports.set(root, report);
 	return report;
 }

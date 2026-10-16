@@ -997,8 +997,10 @@ any command reads `envFiles` it brings the checkout's copy up to date:
 - A copy you changed is never overwritten. `buncargo dev` reports it; `buncargo files save`
   shares your change with the other checkouts, and `buncargo files pull --force` takes the
   store's copy instead (yours is kept in `.buncargo/files-backup/`).
-- When you changed a dotenv and the store changed too, `buncargo files merge <path>` keeps both
-  sides' changes, key by key, and saves the result to the store. A key changed on both sides is
+- When you changed a dotenv and the store changed too (`conflict`), start with
+  `buncargo files merge <path>`: it keeps both sides' changes, key by key, and saves the result to
+  the store; `files save` and `files pull --force` keep one side instead. For a file that is not
+  dotenv, buncargo suggests only those two. A key changed on both sides is
   named (never its value) for you to choose: it asks in a terminal, or takes
   `--checkout=KEY,...` (keep yours) and `--store=KEY,...` (take the store's). Comments, order and
   quoting stay as in your copy.
@@ -1444,6 +1446,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `Only one app may set interactive: true` | Two TTY owners | Keep one `interactive` or use `--attach` |
 | `Watchdog did not start` | Missing `dist/core/watchdog-runner.js` | `bun run build` / reinstall the package |
 | Disk full of old worktree volumes | Deleted checkouts and interrupted `ci` runs leave their databases behind | `buncargo prune --project --dry-run` for this project, `buncargo prune --dry-run` for every project; then without `--dry-run` |
+| `.env.local has local edits and the file store changed too` | This checkout and another both changed a checkout file | `buncargo files merge .env.local` keeps both sides' keys (dotenv only); `files save` keeps yours, `files pull --force` takes the store's |
 | `Could not allocate a free port block` | 80 shifted blocks still conflict | Set `BUNCARGO_PORT_OFFSET` or free ports (`buncargo doctor`) |
 | Named URL does not resolve / TLS warning | Daemon down or CA not trusted | `buncargo hosts status`, then `buncargo hosts install` or `doctor --fix` |
 | `Named-hosts service points at … which no longer exists` | The install ran from a `node_modules` that was since removed | `buncargo hosts install` to re-point it at the current CLI |

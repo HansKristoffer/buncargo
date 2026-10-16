@@ -65,7 +65,7 @@ agentgate syncs file stores between machines without buncargo's code. Everything
 | present, no base | different | local edits: leave |
 | equal to base | changed | update the copy, print one line naming the file |
 | changed | equal to base | local edits: leave |
-| changed | changed, different | conflict: leave, warn with the fix |
+| changed | changed, different | conflict: leave, warn with the fix (`files merge` first when every copy parses as dotenv) |
 
 `files pull --force` turns the two "leave" rows into a copy, after backing the checkout's copy up
 to `.buncargo/files-backup/<timestamp>/<path>`. `files save` writes the checkout's copy to the

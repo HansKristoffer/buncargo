@@ -122,6 +122,10 @@ it("merges key by key, asking for conflicting keys by name only", () => {
 	files(other, home, ["save"]);
 	writeFileSync(join(root, ".env.local"), "A=2\nSECRET=mine\n");
 
+	const status = files(root, home, ["status"]);
+	expect(status.stdout).toContain("buncargo files merge .env.local");
+	expect(status.stdout).not.toMatch(/stored|mine/);
+
 	const stopped = files(root, home, ["merge", ".env.local"]);
 	expect(stopped.code).toBe(1);
 	expect(stopped.stderr).toContain("--checkout=SECRET");
