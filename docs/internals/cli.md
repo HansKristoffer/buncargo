@@ -6,6 +6,14 @@ flow; `flags.ts` (argv primitives), `dev-flags.ts` (the dev command's typed args
 
 ## Commands, flags and errors
 
+- `version-guard.ts` runs first in `bin.ts`: inside a project whose `node_modules/buncargo` (the
+  first found from the working directory up to the repository root) is another version, it
+  `execve`s that package's `bin` with the same arguments, so the pid, stdio and signals stay the
+  run's. `BUNCARGO_REEXEC` stops a second hand-over and is removed before anything starts, so
+  apps never inherit it. A `package.json` listing buncargo with nothing installed is a
+  `CliError`. A CLI run from `src/` is never replaced: that is someone testing the source. It
+  reads files only; a matching version costs a few `stat`s.
+
 - `command-spec.ts` is the flag-spec primitive: one `CommandSpec` per command drives parsing,
   unknown-flag detection, value validation and generated help, so those four cannot drift. Add a
   flag to the spec, not to a parallel list. `readPositionals` finds subcommands and stray

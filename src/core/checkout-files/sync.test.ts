@@ -31,6 +31,7 @@ import {
 	dotenvKeyDiff,
 	fileState,
 	inspectCheckoutFiles,
+	mergeCheckoutFile,
 	saveCheckoutFiles,
 	syncAction,
 	syncCheckoutFiles,
@@ -416,6 +417,82 @@ describe("saveCheckoutFiles", () => {
 			log: () => {},
 		});
 		expect(failed).toEqual([ENV]);
+	});
+});
+
+describe("mergeCheckoutFile", () => {
+	const merge = (repo: Repo, take = new Map<string, "checkout" | "store">()) =>
+		mergeCheckoutFile(repo.root, spec(), ENV, {
+			home: repo.home,
+			log: (line) => repo.lines.push(line),
+			take,
+		});
+
+	/** Synced at `base`, then edited in the checkout and in the store. */
+	async function diverged(base: string, mine: string, theirs: string) {
+		const repo = makeRepo();
+		seedStore(repo, base);
+		await sync(repo);
+		writeLocal(repo, mine);
+		seedStore(repo, theirs);
+		return repo;
+	}
+
+	it("merges both sides' changes from the last synced copy into the checkout and the store", async () => {
+		const repo = await diverged(
+			"A=1\nB=1\n",
+			"A=mine\nB=1\nLOCAL=1\n",
+			"A=1\nB=theirs\n",
+		);
+		const result = await merge(repo);
+		expect(result).toMatchObject({ conflicts: [], merged: true, base: true });
+		expect(readLocal(repo)).toBe("A=mine\nB=theirs\nLOCAL=1\n");
+		expect(readStore(repo)).toBe("A=mine\nB=theirs\nLOCAL=1\n");
+		expect(readBase(repo)).toBe(hash("A=mine\nB=theirs\nLOCAL=1\n"));
+		expect(readFileSync(join(repo.root, result.backup ?? ""), "utf8")).toBe(
+			"A=mine\nB=1\nLOCAL=1\n",
+		);
+		expect((await sync(repo)).files[0]?.state).toBe("in-sync");
+	});
+
+	it("writes nothing while a key changed on both sides is unresolved, and names only the key", async () => {
+		const repo = await diverged("A=1\n", "A=mine\n", "A=theirs\n");
+		const result = await merge(repo);
+		expect(result).toEqual({ conflicts: ["A"], merged: false, base: true });
+		expect(readLocal(repo)).toBe("A=mine\n");
+		expect(readStore(repo)).toBe("A=theirs\n");
+		expect(repo.lines.join("\n")).not.toMatch(/mine|theirs/);
+
+		await merge(repo, new Map([["A", "store"]]));
+		expect(readLocal(repo)).toBe("A=theirs\n");
+	});
+
+	it("records base copies for checkouts synced before they existed", async () => {
+		const repo = await diverged("A=1\n", "A=1\n", "A=1\n");
+		rmSync(join(repo.root, ".buncargo", "files-base"), { recursive: true });
+		writeLocal(repo, "A=1\nMINE=1\n");
+		seedStore(repo, "A=2\n");
+		// The store no longer has the base, and the checkout changed: lost.
+		await sync(repo);
+		expect((await merge(repo, new Map([["A", "store"]]))).base).toBe(false);
+
+		const fresh = await diverged("A=1\n", "A=1\n", "A=1\n");
+		rmSync(join(fresh.root, ".buncargo", "files-base"), { recursive: true });
+		await sync(fresh);
+		writeLocal(fresh, "A=1\nMINE=1\n");
+		seedStore(fresh, "B=1\n");
+		const result = await merge(fresh);
+		expect(result.base).toBe(true);
+		// A was removed in the store and untouched here, so it goes.
+		expect(readLocal(fresh)).toBe("B=1\nMINE=1\n");
+	});
+
+	it("refuses a file that is not dotenv, naming the alternatives", async () => {
+		const repo = await diverged("{}\n", '{"a": 1}\n', '{"b": 2}\n');
+		await expect(merge(repo)).rejects.toThrow(
+			`only dotenv files merge key by key`,
+		);
+		expect(readLocal(repo)).toBe('{"a": 1}\n');
 	});
 });
 

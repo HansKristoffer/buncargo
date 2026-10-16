@@ -3,6 +3,7 @@ export {
 	importBundle,
 	parseBundle,
 } from "./bundle";
+export { DotenvMergeError, type MergeSide, mergeDotenv } from "./dotenv-merge";
 export { localRepoKey, repoKeyFromRemote, resolveRepoKey } from "./repo-key";
 export {
 	type CheckoutFileSpec,
@@ -27,6 +28,8 @@ export {
 	gitignoreRefusals,
 	inspectCheckoutFiles,
 	lastSyncReport,
+	type MergeResult,
+	mergeCheckoutFile,
 	openCheckoutFiles,
 	saveCheckoutFiles,
 	syncAction,

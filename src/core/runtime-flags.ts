@@ -126,6 +126,19 @@ export function isDetachedRun(env: NodeJS.ProcessEnv = process.env): boolean {
 	return env.BUNCARGO_DETACHED === "1";
 }
 
+/**
+ * `BUNCARGO_REEXEC` - set by a buncargo that handed over to the project's own
+ * installed buncargo (`cli/version-guard.ts`), so that one never hands over
+ * again. Holds the version that handed over.
+ */
+export const REEXEC_ENV = "BUNCARGO_REEXEC";
+
+export function reexecedFrom(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return readTrimmed(env, REEXEC_ENV);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Container runtime
 // ═══════════════════════════════════════════════════════════════════════════

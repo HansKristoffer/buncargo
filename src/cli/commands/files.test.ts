@@ -110,3 +110,30 @@ it("diffs keys without printing values", () => {
 	expect(stdout).toContain("+ NEW");
 	expect(stdout).not.toContain("two");
 });
+
+it("merges key by key, asking for conflicting keys by name only", () => {
+	const root = checkout("app");
+	const home = join(dir, "home");
+	writeFileSync(join(root, ".env.local"), "A=1\nSECRET=one\n");
+	files(root, home, ["save"]);
+	const other = checkout("other");
+	files(other, home, ["pull"]);
+	writeFileSync(join(other, ".env.local"), "A=1\nSECRET=stored\nNEW=x\n");
+	files(other, home, ["save"]);
+	writeFileSync(join(root, ".env.local"), "A=2\nSECRET=mine\n");
+
+	const stopped = files(root, home, ["merge", ".env.local"]);
+	expect(stopped.code).toBe(1);
+	expect(stopped.stderr).toContain("--checkout=SECRET");
+	expect(stopped.stdout + stopped.stderr).not.toMatch(/stored|mine/);
+
+	const merged = files(root, home, ["merge", ".env.local", "--store=SECRET"]);
+	expect(merged.code).toBe(0);
+	expect(readFileSync(join(root, ".env.local"), "utf8")).toBe(
+		"A=2\nSECRET=stored\nNEW=x\n",
+	);
+	expect(files(other, home, ["pull"]).code).toBe(0);
+	expect(readFileSync(join(other, ".env.local"), "utf8")).toBe(
+		"A=2\nSECRET=stored\nNEW=x\n",
+	);
+});
