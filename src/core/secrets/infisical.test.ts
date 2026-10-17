@@ -9,7 +9,6 @@ import {
 import {
 	applySecretDefaults,
 	clearScopeSecretsCache,
-	DEFAULT_INFISICAL_SITE_URL,
 	fetchScopeSecrets,
 	type InfisicalScope,
 	loadAppSecrets,
@@ -146,7 +145,6 @@ describe("shared request cancellation", () => {
 
 describe("resolveScope", () => {
 	it("defaults to hanzio's EU cloud and keeps the organization", () => {
-		expect(DEFAULT_INFISICAL_SITE_URL).toBe("https://eu.infisical.com");
 		expect(
 			resolveScope(
 				{ projectId: "p1" },

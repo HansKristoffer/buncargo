@@ -46,7 +46,7 @@ export interface InfisicalScope {
 }
 
 /** Same default as hanzio: the EU cloud. */
-export const DEFAULT_INFISICAL_SITE_URL = "https://eu.infisical.com";
+const DEFAULT_INFISICAL_SITE_URL = "https://eu.infisical.com";
 
 /** One HTTP call or CLI run; only has to outlast a stalled network call. */
 const REQUEST_TIMEOUT_MS = 30_000;
