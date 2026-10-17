@@ -8,6 +8,7 @@ import {
 	connectTokens,
 	exposeTunnelStaggerMs,
 	hostsDaemonPort,
+	infisicalUniversalAuthFile,
 	isCI,
 	isHostsForcedOff,
 	mkcertPathOverride,
@@ -175,5 +176,28 @@ describe("typecheckConcurrencyOverride", () => {
 		expect(() =>
 			typecheckConcurrencyOverride({ BUNCARGO_TYPECHECK_CONCURRENCY: "nope" }),
 		).toThrow(/BUNCARGO_TYPECHECK_CONCURRENCY/);
+	});
+});
+
+describe("infisicalUniversalAuthFile", () => {
+	it("is the override, else the identity file under the given home", () => {
+		expect(infisicalUniversalAuthFile({}, "/home/dev")).toBe(
+			"/home/dev/.infisical/universal-auth.json",
+		);
+		expect(
+			infisicalUniversalAuthFile(
+				{ INFISICAL_UNIVERSAL_AUTH_FILE: " /etc/id.json " },
+				"/home/dev",
+			),
+		).toBe("/etc/id.json");
+	});
+
+	it("is unused while the environment names any client credential", () => {
+		expect(
+			infisicalUniversalAuthFile({ INFISICAL_CLIENT_ID: "id" }, "/home/dev"),
+		).toBeUndefined();
+		expect(
+			infisicalUniversalAuthFile({ INFISICAL_CLIENT_SECRET: "s" }, "/home/dev"),
+		).toBeUndefined();
 	});
 });

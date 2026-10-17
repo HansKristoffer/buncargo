@@ -1,7 +1,5 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { AppConfig, SecretsScopeConfig } from "../../types";
 import { connectProcessEnv } from "../child-env";
 import { registerAbortCleanup } from "../deadline";
@@ -9,10 +7,11 @@ import { withFileLock } from "../file-lock";
 import {
 	infisicalMachineCredentials,
 	infisicalPathOverride,
+	infisicalUniversalAuthFile,
 	secretsEnvironment,
 } from "../runtime-flags";
 import { recordStartupMetric } from "../startup-metrics";
-import { stateFilePath } from "../state-paths";
+import { resolveUserHome, stateFilePath } from "../state-paths";
 import { formatWarn } from "../style";
 import { SharedRequestCache } from "./shared-request";
 
@@ -62,15 +61,8 @@ function identityFile(
 	env: NodeJS.ProcessEnv,
 	siteUrl: string,
 ): { clientId: string; clientSecret: string } | undefined {
-	if (env.INFISICAL_CLIENT_ID?.trim() || env.INFISICAL_CLIENT_SECRET?.trim())
-		return undefined;
-	const file =
-		env.INFISICAL_UNIVERSAL_AUTH_FILE?.trim() ||
-		join(
-			process.env.HOME?.trim() || homedir(),
-			".infisical",
-			"universal-auth.json",
-		);
+	const file = infisicalUniversalAuthFile(env, resolveUserHome(env));
+	if (!file) return undefined;
 	let identity: {
 		clientId?: unknown;
 		clientSecret?: unknown;

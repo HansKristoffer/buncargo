@@ -32,6 +32,11 @@ function start(options: Parameters<typeof startFakeInfisical>[0] = {}) {
 	return fake;
 }
 
+/** No credentials, and the fake's home: the developer's identity file is never read. */
+function noIdentity(): NodeJS.ProcessEnv {
+	return { HOME: fake?.home };
+}
+
 /** A resolved scope on the running fake, as the environment layer passes one. */
 function scopeOf(
 	projectId: string,
@@ -82,7 +87,10 @@ describe("shared request cancellation", () => {
 			const infisical = start({ holdRequests: true });
 			const controllers = [new AbortController(), new AbortController()];
 			const pending = controllers.map((controller) =>
-				loadScopeSecrets(scopeOf("p1"), { signal: controller.signal, env: {} }),
+				loadScopeSecrets(scopeOf("p1"), {
+					signal: controller.signal,
+					env: noIdentity(),
+				}),
 			);
 			const cancelled = pending[index].then(
 				() => "fulfilled",
@@ -108,13 +116,13 @@ describe("shared request cancellation", () => {
 		const controller = new AbortController();
 		const first = loadScopeSecrets(scopeOf("p1"), {
 			signal: controller.signal,
-			env: {},
+			env: noIdentity(),
 		});
 		const cancelled = first.then(
 			() => "fulfilled",
 			(error) => error,
 		);
-		const second = loadScopeSecrets(scopeOf("p2"), { env: {} });
+		const second = loadScopeSecrets(scopeOf("p2"), { env: noIdentity() });
 		void second.catch(() => {});
 		await waitUntil(() => infisical.cliCalls().length > 0);
 		controller.abort(new Error("Cancelled scope"));
@@ -127,12 +135,18 @@ describe("shared request cancellation", () => {
 	it("applies a waiter's timeout without shortening another wait", async () => {
 		const infisical = start({ holdRequests: true });
 		const scope = scopeOf("p1");
-		const first = fetchScopeSecrets(scope, { timeoutMs: 10, env: {} });
+		const first = fetchScopeSecrets(scope, {
+			timeoutMs: 10,
+			env: noIdentity(),
+		});
 		const timedOut = first.then(
 			() => "fulfilled",
 			(error) => error,
 		);
-		const second = fetchScopeSecrets(scope, { timeoutMs: 3000, env: {} });
+		const second = fetchScopeSecrets(scope, {
+			timeoutMs: 3000,
+			env: noIdentity(),
+		});
 		void second.catch(() => {});
 		expect(await timedOut).toMatchObject({
 			message: "Infisical did not answer within 10ms.",
@@ -203,7 +217,7 @@ describe("loadAppSecrets", () => {
 		const infisical = start();
 		const secrets = await loadAppSecrets(
 			{ web: app("p1"), marketing: app("p1") },
-			{ env: {} },
+			{ env: noIdentity() },
 		);
 		expect(secrets).toEqual({
 			web: { OPENAI_API_KEY: "sk-project" },
@@ -223,7 +237,7 @@ describe("loadAppSecrets", () => {
 				a: app("p1", { secrets: { organizationId: "org-a" } }),
 				b: app("p2", { secrets: { organizationId: "org-b" } }),
 			},
-			{ env: {} },
+			{ env: noIdentity() },
 		);
 		expect(infisical.cliCalls()).toHaveLength(1);
 		expect(secrets).toEqual({
@@ -243,7 +257,9 @@ describe("loadAppSecrets", () => {
 			secrets: { A: "own" },
 			imports: { A: "imported", B: "imported" },
 		};
-		expect(await loadAppSecrets({ api: app("p1") }, { env: {} })).toEqual({
+		expect(
+			await loadAppSecrets({ api: app("p1") }, { env: noIdentity() }),
+		).toEqual({
 			api: { A: "own", B: "imported" },
 		});
 	});
@@ -253,7 +269,7 @@ describe("loadAppSecrets", () => {
 		expect(
 			await loadAppSecrets(
 				{ api: app("p1") },
-				{ env: { OPENAI_API_KEY: "sk-local" } },
+				{ env: { ...noIdentity(), OPENAI_API_KEY: "sk-local" } },
 			),
 		).toEqual({ api: {} });
 	});
@@ -287,7 +303,9 @@ describe("loadAppSecrets", () => {
 		const warn = console.warn;
 		console.warn = (message: unknown) => warnings.push(String(message));
 		try {
-			expect(await loadAppSecrets({ api: app("p1") }, { env: {} })).toEqual({
+			expect(
+				await loadAppSecrets({ api: app("p1") }, { env: noIdentity() }),
+			).toEqual({
 				api: {},
 			});
 		} finally {
@@ -301,7 +319,7 @@ describe("loadAppSecrets", () => {
 		start({ mfaOrganizations: ["org-mfa"] });
 		await expect(
 			loadScopeSecrets(scopeOf("p1", { organizationId: "org-mfa" }), {
-				env: {},
+				env: noIdentity(),
 			}),
 		).rejects.toThrow("requires MFA");
 	});
@@ -322,25 +340,29 @@ describe("loadScopeSecrets with a machine identity", () => {
 		]);
 	});
 
-	it("reads the machine identity file when the environment names none", async () => {
+	it("reads the machine identity file in the given environment's home", async () => {
 		const infisical = start();
+		// Not process.env.HOME, which start() points at the fake.
+		const home = join(infisical.home, "elsewhere");
 		const write = (siteUrl: string) => {
-			mkdirSync(join(infisical.home, ".infisical"), { recursive: true });
+			mkdirSync(join(home, ".infisical"), { recursive: true });
 			writeFileSync(
-				join(infisical.home, ".infisical", "universal-auth.json"),
+				join(home, ".infisical", "universal-auth.json"),
 				JSON.stringify({ clientId: "id", clientSecret: "right", siteUrl }),
 			);
 		};
 		write(infisical.siteUrl);
-		expect(await loadScopeSecrets(scopeOf("p1"), { env: {} })).toEqual({
-			OPENAI_API_KEY: "sk-project",
-		});
+		expect(
+			await loadScopeSecrets(scopeOf("p1"), { env: { HOME: home } }),
+		).toEqual({ OPENAI_API_KEY: "sk-project" });
 		expect(infisical.cliCalls()).toEqual([]);
 
 		// Another instance's identity is never sent here: the CLI session is used.
 		clearScopeSecretsCache();
 		write("https://other.example.com");
-		await loadScopeSecrets(scopeOf("p1"), { env: {} }).catch(() => {});
+		await loadScopeSecrets(scopeOf("p1"), { env: { HOME: home } }).catch(
+			() => {},
+		);
 		expect(infisical.cliCalls().length).toBeGreaterThan(0);
 	});
 
@@ -371,7 +393,7 @@ describe("missingRequiredSecrets", () => {
 it("retries a rejected session token after login and clears settled tokens", async () => {
 	const infisical = start({ cliFails: true });
 	const scope = scopeOf("p1");
-	await expect(loadScopeSecrets(scope, { env: {} })).rejects.toThrow(
+	await expect(loadScopeSecrets(scope, { env: noIdentity() })).rejects.toThrow(
 		"No Infisical session",
 	);
 	const cli = readFileSync(infisical.cliPath, "utf8");
@@ -385,12 +407,12 @@ it("retries a rejected session token after login and clears settled tokens", asy
 			`echo a.${payload}.sig`,
 		),
 	);
-	expect(await loadScopeSecrets(scope, { env: {} })).toEqual({
+	expect(await loadScopeSecrets(scope, { env: noIdentity() })).toEqual({
 		OPENAI_API_KEY: "sk-project",
 	});
 	expect(infisical.cliCalls()).toHaveLength(2);
 	clearScopeSecretsCache();
-	await loadScopeSecrets(scope, { env: {} });
+	await loadScopeSecrets(scope, { env: noIdentity() });
 	expect(infisical.cliCalls()).toHaveLength(3);
 });
 

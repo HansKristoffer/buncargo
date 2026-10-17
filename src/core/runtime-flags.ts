@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { CONNECT_ORIGIN } from "./connect/origin";
 
 /**
@@ -273,6 +274,29 @@ export function infisicalMachineCredentials(
 	const clientId = readTrimmed(env, "INFISICAL_CLIENT_ID");
 	const clientSecret = readTrimmed(env, "INFISICAL_CLIENT_SECRET");
 	return clientId && clientSecret ? { clientId, clientSecret } : undefined;
+}
+
+/**
+ * The machine identity file hanzio also reads when the environment names no
+ * identity: `INFISICAL_UNIVERSAL_AUTH_FILE`, else
+ * `<home>/.infisical/universal-auth.json`. Undefined while
+ * `INFISICAL_CLIENT_ID` or `INFISICAL_CLIENT_SECRET` is set, even alone.
+ * `home` comes from the caller (`resolveUserHome`), which keeps this module
+ * free of state-paths for the runtime entry point.
+ */
+export function infisicalUniversalAuthFile(
+	env: NodeJS.ProcessEnv,
+	home: string,
+): string | undefined {
+	if (
+		readTrimmed(env, "INFISICAL_CLIENT_ID") ||
+		readTrimmed(env, "INFISICAL_CLIENT_SECRET")
+	)
+		return undefined;
+	return (
+		readTrimmed(env, "INFISICAL_UNIVERSAL_AUTH_FILE") ??
+		join(home, ".infisical", "universal-auth.json")
+	);
 }
 
 /** `SECRETS_ENV` - Infisical environment slug, when the config does not name one. */
