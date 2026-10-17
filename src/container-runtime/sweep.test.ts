@@ -274,7 +274,7 @@ describe("sweepOrphanedContainers", () => {
 		const gone = join(checkout, "deleted-worktree");
 		const theirs = {
 			...container("runner-ci", gone, "exited"),
-			user: "runner",
+			user: "someone-else-not-this-user",
 		};
 		const unlabelled = {
 			...container("old-cli", gone, "exited"),
