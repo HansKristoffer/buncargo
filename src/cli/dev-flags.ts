@@ -23,7 +23,8 @@ const FLAGS = {
 	all: {
 		name: "--all",
 		kind: "boolean",
-		description: "With --down, stop every buncargo environment on this machine",
+		description:
+			"With --down, stop every buncargo environment you started on this machine",
 	},
 	reset: {
 		name: "--reset",

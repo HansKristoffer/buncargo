@@ -90,7 +90,16 @@ no config load, no Docker unless a service is the target.
 
 - `decideSweep` is pure: a stack nobody owns comes down when its checkout is gone, when every
   container is stopped, when its run released it longer ago than its idle hold, or when its owner
-  has been gone for longer than the grace. A running stack with no entry at all is left alone.
+  has been gone for longer than the grace. A live owner keeps its stack before the checkout is
+  even looked at. A running stack with only a claim is left alone.
+- Only a stack this `HOME`'s state names is a candidate (`isKnownStack`): a `runs.json` entry
+  (any session, live or not) or an `offsets.json` claim with its project and root. Several users
+  can share one daemon, and from another account a live run's stack has no entry and a checkout
+  under an unreadable home. Anything else is `foreign`: reported by `ls` and `doctor` with
+  `manualDownCommand`, never touched. `dev --down --all` (`stop-all.ts`) follows the same rule.
+  So a claim must outlive its stack: `settleDeletedCheckouts` keeps a deleted checkout's claim
+  while a stack of its project and root is still listed (a failed `down`, a busy lock) or while
+  no runtime answers, or that stack would be nobody's to remove.
 - "Checkout gone" means confirmed missing: `checkoutPresence` (`core/checkout-presence.ts`) says
   `deleted` only on `ENOENT`. Any other error, typically `EACCES` on another user's home, is
   `unknown` and counts as present wherever a root decides what to remove or forget: the sweep,

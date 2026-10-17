@@ -19,6 +19,7 @@ import {
 import { FileLockTimeoutError } from "../core/file-lock";
 import {
 	dropDeletedOffsetClaims,
+	type OffsetClaim,
 	offsetClaimRoot,
 	readAllOffsetClaims,
 } from "../core/offset-claims";
@@ -43,6 +44,7 @@ import {
 	type ContainerGroup,
 	groupBuncargoContainers,
 	isContainerUp,
+	manualDownCommand,
 } from "./inventory";
 import { withProjectLifecycleLock } from "./project-lock";
 import {
@@ -52,6 +54,12 @@ import {
 import type { ContainerRuntimeAdapter } from "./types";
 
 export interface SweepInput {
+	/**
+	 * This user's state names the stack: a run in `runs.json` or a port claim
+	 * in `offsets.json` for its project and checkout. Nothing else is ours to
+	 * remove (see {@link isKnownStack}).
+	 */
+	known: boolean;
 	/**
 	 * Whether the checkout the containers were started from is still there.
 	 * Only `deleted` (confirmed missing) condemns a stack; `unknown`, a path
@@ -66,7 +74,11 @@ export interface SweepInput {
 	now: number;
 }
 
-export type SweepVerdict = { kind: "keep" } | { kind: "down"; reason: string };
+export type SweepVerdict =
+	| { kind: "keep" }
+	| { kind: "down"; reason: string }
+	/** Not this user's to remove; reported and left alone. */
+	| { kind: "foreign"; reason: string };
 
 function seconds(ms: number): string {
 	return `${Math.ceil(ms / 1000)}s`;
@@ -82,7 +94,8 @@ export function decideSweep(
 		ownerDeadGraceMs: WATCHDOG_OWNER_DEAD_GRACE_MS,
 	},
 ): SweepVerdict {
-	const { checkout, anyRunning, run, ownerAlive, now } = input;
+	const { known, checkout, anyRunning, run, ownerAlive, now } = input;
+	if (!known) return { kind: "foreign", reason: foreignReason(input) };
 	// A live owner keeps its stack whatever the checkout looks like: a run
 	// between `start()` and `startServers()` is using these containers.
 	if (ownerAlive) return { kind: "keep" };
@@ -117,6 +130,63 @@ export function decideSweep(
 		: { kind: "keep" };
 }
 
+/** Why a stack nobody here knows is still worth a look. */
+function foreignReason({
+	checkout,
+	anyRunning,
+}: Pick<SweepInput, "checkout" | "anyRunning">): string {
+	if (checkout === "unknown") return "this user cannot read its checkout";
+	if (checkout === "deleted") return "its checkout was deleted";
+	return anyRunning ? "it is running" : "it is stopped";
+}
+
+/**
+ * Whether this user's own state names a stack: a run in `runs.json` (any
+ * session, live or not) or a port claim in `offsets.json` with its project
+ * and checkout.
+ *
+ * Only such a stack may be removed. Several users can share one container
+ * daemon, and a stack another user's buncargo started is listed here with
+ * none of its runs: to this user it looks unowned, and its checkout,
+ * under a home this user cannot read, looks deleted.
+ */
+export function isKnownStack(
+	stack: { projectName: string; root: string },
+	runs: readonly Pick<RunEntry, "projectName" | "root">[],
+	claims: Record<string, OffsetClaim>,
+): boolean {
+	return (
+		runs.some(
+			(run) => run.projectName === stack.projectName && run.root === stack.root,
+		) ||
+		Object.entries(claims).some(
+			([key, claim]) =>
+				claim.projectName === stack.projectName &&
+				offsetClaimRoot(key, claim) === stack.root,
+		)
+	);
+}
+
+/** A stack the sweep found and left alone because this user's state does not name it. */
+export interface ForeignStack {
+	projectName: string;
+	root: string;
+	runtime: ContainerRuntimeName;
+	reason: string;
+	/** What removes it by hand, if it really is orphaned. Keeps its volumes. */
+	command: string;
+}
+
+function foreignStack(group: ContainerGroup, reason: string): ForeignStack {
+	return {
+		projectName: group.projectName,
+		root: group.root,
+		runtime: group.runtime,
+		reason,
+		command: manualDownCommand(group),
+	};
+}
+
 export interface SweptStack {
 	projectName: string;
 	root: string;
@@ -138,6 +208,12 @@ export interface SweepResult {
 	answered: ContainerRuntimeName[];
 	/** Stacks still standing afterwards, so a caller need not list again. */
 	remaining: ContainerGroup[];
+	/**
+	 * Stacks this user's state does not name, so not this sweep's to remove:
+	 * another user's buncargo on a shared daemon, or state that was wiped.
+	 * Also in `remaining`.
+	 */
+	foreign: ForeignStack[];
 	/** The registry as the sweep read it, and which of its sessions are live. */
 	runs: RunEntry[];
 	liveSessions: ReadonlySet<string>;
@@ -213,6 +289,7 @@ export async function sweepOrphanedContainers(
 	}
 
 	const runs = await readAllRuns();
+	const claims = readAllOffsetClaims();
 	const alive = await runLivenessAsync(runs);
 	const now = options.now ?? Date.now();
 	const groups = groupBuncargoContainers(containers);
@@ -230,6 +307,7 @@ export async function sweepOrphanedContainers(
 		pendingStacks: 0,
 		answered,
 		remaining: [],
+		foreign: [],
 		runs,
 		liveSessions: new Set(runs.filter(alive).map((run) => run.sessionId)),
 	};
@@ -240,7 +318,8 @@ export async function sweepOrphanedContainers(
 			options.except?.projectName === group.projectName &&
 			options.except.root === group.root;
 		const removed =
-			!excepted && (await sweepGroup(group, run, alive, now, runtimes, result));
+			!excepted &&
+			(await sweepGroup(group, run, claims, alive, now, runtimes, result));
 		if (!removed) result.remaining.push(group);
 	}
 
@@ -258,6 +337,7 @@ export async function sweepOrphanedContainers(
 		await settleDeletedCheckouts({
 			runtimes: runtimes.filter((runtime) => answered.includes(runtime.name)),
 			runs,
+			stacks: result.remaining,
 			result,
 		});
 	} catch (error) {
@@ -303,6 +383,7 @@ export async function runStackDowns(
 async function sweepGroup(
 	group: ContainerGroup,
 	run: RunEntry | null,
+	claims: Record<string, OffsetClaim>,
 	alive: (run: RunEntry) => boolean,
 	now: number,
 	runtimes: ContainerRuntimeAdapter[],
@@ -311,15 +392,23 @@ async function sweepGroup(
 	const decide = (
 		owner: RunEntry | null,
 		isAlive: (run: RunEntry) => boolean,
+		claims: Record<string, OffsetClaim>,
 	) =>
 		decideSweep({
+			// `runFor` finds an owner exactly when a run on record names the stack.
+			known: owner !== null || isKnownStack(group, [], claims),
 			checkout: checkoutPresence(group.root),
 			anyRunning: group.containers.some(isContainerUp),
 			run: owner,
 			ownerAlive: owner !== null && isAlive(owner),
 			now,
 		});
-	if (decide(run, alive).kind !== "down") return false;
+	const verdict = decide(run, alive, claims);
+	if (verdict.kind === "foreign") {
+		result.foreign.push(foreignStack(group, verdict.reason));
+		return false;
+	}
+	if (verdict.kind !== "down") return false;
 
 	try {
 		return await withProjectLifecycleLock(
@@ -328,7 +417,11 @@ async function sweepGroup(
 			async () => {
 				const fresh = await readAllRuns();
 				const freshAlive = await runLivenessAsync(fresh);
-				const verdict = decide(runFor(group, fresh, freshAlive), freshAlive);
+				const verdict = decide(
+					runFor(group, fresh, freshAlive),
+					freshAlive,
+					readAllOffsetClaims(),
+				);
 				if (verdict.kind !== "down") return false;
 				await adapterFor(group, runtimes, run).down({
 					root: group.root,
@@ -369,13 +462,22 @@ async function sweepGroup(
  * be nobody else's: no existing checkout claims it, no run on record for it
  * still has its checkout. A container of it still standing means its stack is
  * coming down; the next pass decides.
+ *
+ * A claim is also what makes its checkout's stack this user's to remove
+ * ({@link isKnownStack}), so it stays while `stacks` (what is still listed)
+ * holds one of its project and checkout: a stack whose removal failed, or
+ * whose lock was busy, would otherwise be left to nobody.
  */
 export async function settleDeletedCheckouts(input: {
 	runtimes: ContainerRuntimeAdapter[];
 	runs: RunEntry[];
+	stacks: readonly Pick<ContainerGroup, "projectName" | "root">[];
 	result: Pick<SweepResult, "swept" | "failed">;
 }) {
-	const { runtimes, runs, result } = input;
+	const { runtimes, runs, stacks, result } = input;
+	// With no runtime answering, nothing says whether its stack or its
+	// volumes are left.
+	if (runtimes.length === 0) return;
 	// A checkout's suffixed environments (E2E, `buncargo ci`) have claims of
 	// their own, each naming its own project.
 	const claims = Object.entries(readAllOffsetClaims()).map(([key, claim]) => ({
@@ -383,16 +485,20 @@ export async function settleDeletedCheckouts(input: {
 		root: offsetClaimRoot(key, claim),
 		claim,
 	}));
-	const deleted = claims.filter(({ root }) => checkoutDeleted(root));
+	const deleted = claims.filter(
+		({ root, claim }) =>
+			checkoutDeleted(root) &&
+			!stacks.some(
+				(stack) =>
+					stack.projectName === claim.projectName && stack.root === root,
+			),
+	);
 	if (deleted.length === 0) return;
 
 	if (!pruneDeletedCheckoutVolumes()) {
 		await dropDeletedOffsetClaims(deleted.map(({ key }) => key));
 		return;
 	}
-
-	// With no runtime answering, nothing says whether volumes are left.
-	if (runtimes.length === 0) return;
 
 	const containers: BuncargoContainer[] = [];
 	const listings: {
@@ -490,6 +596,8 @@ async function sweepStacks(
 		const owner =
 			runs.find((entry) => entry.sessionId === run.sessionId) ?? null;
 		return decideSweep({
+			// Recorded by a run of this user's: known by definition.
+			known: true,
 			checkout: checkoutPresence(run.root),
 			anyRunning: true,
 			run: owner,

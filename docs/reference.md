@@ -16,7 +16,7 @@ bunx buncargo dev --up-only
 bunx buncargo dev --migrate
 bunx buncargo dev --seed
 bunx buncargo dev --down
-bunx buncargo dev --down --all    # Remove every buncargo env on this machine
+bunx buncargo dev --down --all    # Remove every buncargo env you started on this machine
 bunx buncargo dev --reset
 bunx buncargo dev --reset --yes   # Without a terminal, --reset and --down --all need --yes
 bunx buncargo dev --takeover        # Stop apps running elsewhere, run them here
@@ -1441,12 +1441,14 @@ Programmatic: `openPublicTunnels({ names?, waitForHealthy? })` then `buildAppEnv
 
 ## Watchdog
 
-Every run that owns containers claims them in `~/.buncargo/runs.json` before it starts them, and one watchdog per machine (`dist/core/watchdog-runner.js`, log in `~/.buncargo/watchdog.log`) sweeps every buncargo container against that registry every 30s. Runs started from a script with `dev.start()` get it too; pass `start({ watchdog: false })` to skip starting the process. A script's containers stay up after it exits — `options.autoShutdown` and the three-minute default are `buncargo dev`'s — unless it asks for a hold with `claimRun({ idleTimeoutMs })` before `start()`. `buncargo ls` and `doctor` run the same sweep inline, so a killed watchdog is never the last line of defence. A stack is removed when:
+Every run that owns containers claims them in `~/.buncargo/runs.json` before it starts them, and one watchdog per machine (`dist/core/watchdog-runner.js`, log in `~/.buncargo/watchdog.log`) sweeps every buncargo container against that registry every 30s. Runs started from a script with `dev.start()` get it too; pass `start({ watchdog: false })` to skip starting the process. A script's containers stay up after it exits — `options.autoShutdown` and the three-minute default are `buncargo dev`'s — unless it asks for a hold with `claimRun({ idleTimeoutMs })` before `start()`. `buncargo ls` and `doctor` run the same sweep inline, so a killed watchdog is never the last line of defence. The sweep only removes a stack your own buncargo state names: a run in your `~/.buncargo/runs.json` or a port claim in your `~/.buncargo/offsets.json` for its project and checkout. Such a stack is removed when:
 
 - **its checkout is gone** - the worktree was deleted and no live run holds the stack. A checkout this user cannot read (another user's home) is not gone
 - **it is stopped and nobody owns it** - a daemon restart or `buncargo stop <service>` left it exited and the run has ended
 - **its run exited cleanly** (Ctrl-C leaves a `released` marker) and the idle hold has passed - 3 minutes by default, so a quick restart reuses the containers rather than recreating them
 - **its run crashed** (the PID is gone without releasing) and ~15s have passed since a sweep first noticed
+
+Any other stack is left alone, however it looks: on a machine where several users share one Docker daemon, another user's stacks are listed too, and from your account their checkouts look unowned or deleted. `buncargo ls` and `doctor` mark each as not yours, with the command that removes it by hand (`docker compose -p <project> down`, or `container delete --force <ids>` for Apple container) if it really is orphaned, for example after `~/.buncargo` was wiped. Volumes stay either way. `dev --down --all` follows the same rule: it removes your stacks and lists the others with those commands.
 
 A running stack with a live owner is never touched. `--keep-containers`, `options.autoShutdown: false` and the one-shot modes (`--up-only`, `--migrate`, `--seed`) set no idle hold, so their containers live as long as the checkout — even if the run crashed. `--watchdog-timeout=N` sets the hold in minutes. The watchdog exits when no container and no live run is left to watch, and any later `dev` starts it again.
 

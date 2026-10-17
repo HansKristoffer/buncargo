@@ -223,6 +223,12 @@ async function checkOrphanedContainers(
 			report.issue(
 				`Could not remove ${failure.projectName} (${failure.root}): ${failure.error}`,
 			);
+		// Not this user's to remove: another user's buncargo on a shared
+		// daemon, or state that was wiped. Said, never touched.
+		for (const stack of result.foreign)
+			report.note(
+				`warning: ${stack.projectName} (${stack.root || "no checkout recorded"}, ${stack.runtime}) is not in this user's runs or port claims, and ${stack.reason}. It belongs to another user's buncargo or to wiped state, so it is left alone. If it is orphaned, remove it by hand: ${stack.command}`,
+			);
 		// Same project name from another checkout, still owned: a run in a
 		// worktree that resolved to this project's identity. Survived the
 		// sweep, so somebody is using them — say who, because the fix is to

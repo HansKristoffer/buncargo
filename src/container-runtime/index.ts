@@ -12,6 +12,7 @@ export {
 	groupBuncargoContainers,
 	isContainerUp,
 	listBuncargoContainers,
+	manualDownCommand,
 	stopBuncargoContainers,
 } from "./inventory";
 export {
@@ -58,6 +59,8 @@ export {
 } from "./resolve";
 export {
 	decideSweep,
+	type ForeignStack,
+	isKnownStack,
 	type SweepInput,
 	type SweepResult,
 	type SweepVerdict,

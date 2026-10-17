@@ -16,6 +16,7 @@ function pass(extra: Partial<SweepResult> = {}): SweepResult {
 		pendingStacks: 0,
 		answered: ["docker"],
 		remaining: [],
+		foreign: [],
 		runs: [],
 		liveSessions: new Set(),
 		...extra,

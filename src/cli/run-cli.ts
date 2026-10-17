@@ -323,7 +323,7 @@ async function confirmDestructiveMode(
 
 	const what = args.reset
 		? `--reset removes ${env.projectName}'s volumes, including its database.`
-		: "--down --all stops every buncargo environment on this machine, including other checkouts' runs.";
+		: "--down --all stops every buncargo environment you started on this machine, including other checkouts' runs.";
 	if (gate === "refuse") {
 		throw new CliError(`${what} Refusing without a terminal.`, [
 			"Pass --yes if that is really what you want.",

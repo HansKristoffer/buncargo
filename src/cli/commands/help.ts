@@ -66,7 +66,7 @@ EXAMPLES:
   bunx buncargo dev --expose=api        # Public quick tunnel for selected target
   bunx buncargo dev --help              # Show dev command options
   bunx buncargo dev --down              # Stop containers
-  bunx buncargo dev --down --all        # Stop every buncargo environment
+  bunx buncargo dev --down --all        # Stop every buncargo environment you started
   bunx buncargo ls                      # List environments
   bunx buncargo status                  # This project's ports and containers
   bunx buncargo doctor                  # Diagnose common local-dev problems
