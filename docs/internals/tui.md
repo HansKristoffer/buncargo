@@ -44,8 +44,11 @@ and `run-tui.ts` is the controller.
   Overview as `buncargo` lines. Bun's `console.log` does not go through `process.stdout.write`, so
   patching only the stream misses it. The captured `write` honors Writable callbacks, or a hook
   awaiting one hangs.
-- It restores raw mode, the alternate screen and the cursor on `stop()` and from a process `exit`
-  handler (sync `writeSync`), which is what `run-tui.test.ts` checks under a real pty with `stty`.
+- It restores raw mode, the alternate screen and the cursor on `stop()`, which also runs from a
+  process `exit` handler (sync `writeSync`) and from `uncaughtExceptionMonitor`, before Bun prints
+  the error: restored at exit, leaving the alternate screen would erase it. Bun has no monitor
+  event for a rejection, so an `unhandledRejection` handler restores and rethrows it (still
+  printed, still exit 1). `run-tui.test.ts` checks all of it under a real pty with `stty`.
 - Input is read as keys, not chunks: a sequence cut off at a chunk's end waits for the rest, and an
   Esc nothing follows within 30ms is the Esc key (chunks split anywhere, so a one-byte chunk proves
   nothing). Interact mode forwards every key except Esc and `Ctrl-]`, either of which leaves it;

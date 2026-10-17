@@ -22,14 +22,14 @@ async function until(condition: () => boolean, timeoutMs = 5_000) {
  * The child runs under a real pseudo-terminal, and `stty` reads the same
  * terminal once it is gone.
  */
-async function runChild(how: "throw" | "exit" | "sigterm") {
+async function runChild(how: "throw" | "reject" | "exit" | "sigterm") {
 	const child = join(import.meta.dir, "tui-child.testing.ts");
 	let output = "";
 	const proc = Bun.spawn(
 		[
 			"sh",
 			"-c",
-			`${JSON.stringify(process.execPath)} ${JSON.stringify(child)} ${how}; stty -a`,
+			`${JSON.stringify(process.execPath)} ${JSON.stringify(child)} ${how}; echo "exit:$?"; stty -a`,
 		],
 		{
 			terminal: {
@@ -53,7 +53,7 @@ async function runChild(how: "throw" | "exit" | "sigterm") {
 }
 
 describe("RunTui terminal restore", () => {
-	for (const how of ["throw", "exit", "sigterm"] as const) {
+	for (const how of ["throw", "reject", "exit", "sigterm"] as const) {
 		it(`restores the terminal when the process ends by ${how}`, async () => {
 			const output = await runChild(how);
 			expect(output).toContain("\u001b[?1049h");
@@ -65,6 +65,21 @@ describe("RunTui terminal restore", () => {
 			// Canonical mode and echo are back on: not raw any more.
 			expect(output).toMatch(/[^-]icanon/);
 			expect(output).toMatch(/[^-]echo\b/);
+		});
+	}
+
+	// The error is printed after the screen is left, not erased with it.
+	for (const [how, message] of [
+		["throw", "boom"],
+		["reject", "rejected"],
+	] as const) {
+		it(`shows the error of a ${how} after leaving the screen`, async () => {
+			const output = await runChild(how);
+			const after = Bun.stripANSI(
+				output.slice(output.lastIndexOf("\u001b[?1049l")),
+			);
+			expect(after).toContain(`error: ${message}`);
+			expect(after).toContain("exit:1");
 		});
 	}
 });

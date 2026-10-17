@@ -145,7 +145,16 @@ export class RunTui {
 	private readonly onInput = (data: Buffer | string) =>
 		this.input(String(data));
 	private readonly onResize = () => this.layout(true);
-	private readonly onExit = () => this.restoreTerminal();
+	/**
+	 * A crash gives the terminal back before Bun prints the error, or leaving
+	 * the alternate screen at exit would erase it. A rejection has no monitor
+	 * event: restore, then rethrow, so it still prints and exits 1.
+	 */
+	private readonly onExit = () => this.stop();
+	private readonly onRejection = (reason: unknown) => {
+		this.stop();
+		throw reason;
+	};
 
 	constructor(private readonly options: RunTuiOptions) {
 		this.stdin = options.stdin ?? process.stdin;
@@ -187,6 +196,8 @@ export class RunTui {
 		this.stdin.on("data", this.onInput);
 		this.stdout.on("resize", this.onResize);
 		process.on("exit", this.onExit);
+		process.on("uncaughtExceptionMonitor", this.onExit);
+		process.on("unhandledRejection", this.onRejection);
 		this.invalidate();
 	}
 
@@ -201,6 +212,8 @@ export class RunTui {
 		this.stdin.off("data", this.onInput);
 		this.stdout.off("resize", this.onResize);
 		process.off("exit", this.onExit);
+		process.off("uncaughtExceptionMonitor", this.onExit);
+		process.off("unhandledRejection", this.onRejection);
 		this.restoreTerminal();
 		this.restoreOutput?.();
 		this.stdin.pause();

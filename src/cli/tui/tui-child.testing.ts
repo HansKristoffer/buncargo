@@ -19,6 +19,7 @@ output.line("api", "hello from api");
 console.log("captured, not drawn over the frame");
 setTimeout(() => {
 	if (process.argv[2] === "throw") throw new Error("boom");
+	if (process.argv[2] === "reject") void Promise.reject(new Error("rejected"));
 	if (process.argv[2] === "exit") process.exit(1);
 }, 300);
 setInterval(() => {}, 1000);
