@@ -123,6 +123,19 @@ describe("Docker daemon preflight", () => {
 		).rejects.toThrow(/cannot open its socket.*docker group/);
 	});
 
+	it.skipIf(process.platform !== "linux")(
+		"says how to start the Linux engine instead of waiting for a daemon nothing will start",
+		async () => {
+			const { binary, calls } = fixture({ versionExit: 1 });
+			const startedAt = performance.now();
+			await expect(
+				ensureDockerRunning({ binary, ci: false, verbose: false }),
+			).rejects.toThrow(/sudo systemctl start docker/);
+			expect(performance.now() - startedAt).toBeLessThan(5000);
+			expect(calls().filter((args) => args[0] === "version")).toHaveLength(1);
+		},
+	);
+
 	it("treats a bare docker on Linux as the engine, not Docker Desktop", () => {
 		expect(runtimeFromContext("default", "linux")).toBe("docker-engine");
 		expect(runtimeFromContext("desktop-linux", "linux")).not.toBe(

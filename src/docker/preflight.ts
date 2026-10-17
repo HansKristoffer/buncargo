@@ -173,13 +173,15 @@ export async function ensureDockerRunning(
 		);
 	// CI never starts Docker itself, but a runner's daemon is often still
 	// coming up when the job starts: keep asking until the deadline. Locally,
-	// `--no-docker-autostart` wants the answer now, not in 90 seconds.
+	// `--no-docker-autostart` wants the answer now, not in 90 seconds, and so
+	// does a runtime nothing here can start (the Linux engine): no daemon is
+	// coming while we wait.
 	const waitOnly = !autoStart && ci;
-	if (!autoStart && !waitOnly)
+	const command = waitOnly ? undefined : runtimeStartCommand(runtime);
+	if (!waitOnly && (!autoStart || command === undefined))
 		throw new DockerUnavailableError(runtime, remediationFor(runtime));
 	if (verbose && !waitOnly)
 		console.log(formatStep(`🐳 Docker is not running. Starting ${runtime}...`));
-	const command = waitOnly ? undefined : runtimeStartCommand(runtime);
 	if (command && remainingTime(deadline) > 0)
 		await execAsync(
 			command,
