@@ -3,7 +3,7 @@ import { abortError, withSignal } from "../deadline";
 import { formatWarn } from "../style";
 import { DetachedApp, findDetachedApp } from "./detached-app";
 import type { AppChild } from "./pty-app";
-import { terminateOwnedProcess } from "./terminate";
+import { ownedProcessAlive, terminateOwnedProcess } from "./terminate";
 
 export class RunInterrupted extends Error {}
 
@@ -86,6 +86,7 @@ export class ProcessOwner {
 					const detached = await findDetachedApp(port, child.pid);
 					if (detached) {
 						this.live.delete(child);
+						this.forgetIfGone(child);
 						this.register(
 							name,
 							detached.child,
@@ -110,6 +111,7 @@ export class ProcessOwner {
 					}
 				}
 				this.live.delete(child);
+				this.forgetIfGone(child);
 				try {
 					this.options.onAppExit?.(name, code, signal);
 				} catch {
@@ -152,6 +154,14 @@ export class ProcessOwner {
 		if (child.exitCode !== null || child.signalCode !== null)
 			queueMicrotask(() => onExit(child.exitCode, child.signalCode));
 		else (child as EventEmitter).once("exit", onExit);
+	}
+
+	/**
+	 * A child whose exit was seen and whose group is gone has nothing left to
+	 * stop, and its pid may already belong to an unrelated process.
+	 */
+	private forgetIfGone(child: AppChild | DetachedApp): void {
+		if (!ownedProcessAlive(child)) this.children.delete(child);
 	}
 
 	/**

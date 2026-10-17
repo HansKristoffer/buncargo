@@ -1,26 +1,39 @@
 import { abortableSleep } from "../deadline";
 import { matchesProcessIdentityAsync } from "../process-identity";
 import { DetachedApp } from "./detached-app";
+import { isProcessAlive } from "./lifecycle";
 import { signalProcessTree } from "./port-owner";
 import type { AppChild } from "./pty-app";
 
-function processExists(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
-	}
+function exitSeen(child: AppChild | DetachedApp): boolean {
+	return child.exitCode !== null || child.signalCode !== null;
 }
 
-function ownedProcessAlive(child: AppChild | DetachedApp): boolean {
+function groupAlive(pid: number): boolean {
+	return process.platform !== "win32" && isProcessAlive(-pid);
+}
+
+/** Whether anything of `child` (its leader, or what is left of its group) still runs. */
+export function ownedProcessAlive(child: AppChild | DetachedApp): boolean {
 	if (!child.pid) return false;
-	// On macOS the group can disappear while its leader still awaits reaping.
-	// Group disappearance alone does not acknowledge process cleanup.
-	return (
-		(process.platform !== "win32" && processExists(-child.pid)) ||
-		processExists(child.pid)
-	);
+	// Its identity stopped matching: whatever holds that pid now is not ours.
+	if (child instanceof DetachedApp && child.exitCode !== null) return false;
+	if (groupAlive(child.pid)) return true;
+	// On macOS the group can disappear while its leader still awaits reaping,
+	// so group disappearance alone does not acknowledge process cleanup. Once
+	// the exit was seen the leader is reaped, and its pid may be reused.
+	return !exitSeen(child) && isProcessAlive(child.pid);
+}
+
+/**
+ * Whether a process this invocation did not spawn is still the one it took
+ * over. A leader that is gone while its group lives is: a group id is never
+ * handed to a new process while any member of the group remains.
+ */
+async function stillOurs(child: AppChild | DetachedApp): Promise<boolean> {
+	if (!(child instanceof DetachedApp)) return true;
+	if (!isProcessAlive(child.pid)) return true;
+	return matchesProcessIdentityAsync(child.pid, child.identity);
 }
 
 function signalGroup(
@@ -42,27 +55,30 @@ function signalGroup(
 	}
 }
 
-/** Only for children spawned detached by this invocation, never reused ports. */
-export async function terminateOwnedProcess(
+async function signalUntilGone(
 	child: AppChild | DetachedApp,
-	graceMs = 5000,
-	initialSignal: NodeJS.Signals = "SIGTERM",
+	graceMs: number,
+	initialSignal: NodeJS.Signals,
 ): Promise<void> {
-	if (!ownedProcessAlive(child)) return;
 	signalGroup(child, initialSignal);
 	const deadline = performance.now() + graceMs;
 	while (ownedProcessAlive(child) && performance.now() < deadline)
 		await abortableSleep(25);
-	if (!ownedProcessAlive(child)) return;
-	if (
-		child instanceof DetachedApp &&
-		!(await matchesProcessIdentityAsync(child.pid, child.identity))
-	)
-		return;
+	if (!ownedProcessAlive(child) || !(await stillOurs(child))) return;
 	signalGroup(child, "SIGKILL");
 	const killDeadline = performance.now() + 1000;
 	while (ownedProcessAlive(child) && performance.now() < killDeadline)
 		await abortableSleep(25);
 	if (ownedProcessAlive(child))
 		throw new Error(`Process group ${child.pid} did not exit after SIGKILL`);
+}
+
+/** Only for children spawned detached by this invocation, never reused ports. */
+export async function terminateOwnedProcess(
+	child: AppChild | DetachedApp,
+	graceMs = 5000,
+	initialSignal: NodeJS.Signals = "SIGTERM",
+): Promise<void> {
+	if (!ownedProcessAlive(child) || !(await stillOurs(child))) return;
+	await signalUntilGone(child, graceMs, initialSignal);
 }
