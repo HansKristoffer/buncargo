@@ -1,8 +1,12 @@
+import { resolve } from "node:path";
 import { containerRuntimeForEnv } from "../../container-runtime";
 import {
 	describeOffsetClaimOverlap,
 	offsetClaimHolder,
+	offsetClaimRoot,
+	offsetClaimsOf,
 	overlappingOffsetClaims,
+	releaseOffsetClaims,
 } from "../../core/offset-claims";
 import {
 	PORT_OFFSET_STEP,
@@ -10,7 +14,8 @@ import {
 	readOffsetClaimsWithPorts,
 } from "../../core/port-allocation";
 import { getPortOwner, withBindProbe } from "../../core/process";
-import { findRunsByRoot } from "../../core/run-registry";
+import { askConfirm, isInteractive } from "../../core/prompt";
+import { findCheckoutRuns, findRunsByRoot } from "../../core/run-registry";
 import { loadDevEnv } from "../../loader";
 import {
 	type CommandSpec,
@@ -18,6 +23,7 @@ import {
 	formatCommandHelp,
 	readBooleanFlag,
 	readPositionals,
+	readStringFlag,
 } from "../command-spec";
 import { argumentsError, CliError } from "../errors";
 import * as log from "../log";
@@ -28,10 +34,21 @@ const FLAGS = {
 		kind: "boolean",
 		description: "Show this help message",
 	},
+	root: {
+		name: "--root",
+		kind: "string",
+		valueHint: "=<path>",
+		description: "ports release: the checkout whose claims to drop",
+	},
+	yes: {
+		name: "--yes",
+		kind: "boolean",
+		description: "ports release: skip the confirmation (for scripts)",
+	},
 } as const;
 
 export const PORTS_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo ports [pin <offset>]",
+	usage: "buncargo ports [pin <offset> | release --root <path> [--yes]]",
 	flags: Object.values(FLAGS),
 	examples: [
 		{
@@ -41,6 +58,11 @@ export const PORTS_COMMAND_SPEC: CommandSpec = {
 		{
 			command: "buncargo ports pin 2500",
 			description: "Keep this checkout on offset 2500 from now on",
+		},
+		{
+			command: "buncargo ports release --root ../old-worktree",
+			description:
+				"Drop another checkout's claims on its ports and project name",
 		},
 	],
 };
@@ -82,9 +104,23 @@ export async function handlePorts(args: string[]): Promise<number> {
 		),
 		...extra.map((arg) => `Unexpected argument: ${arg}`),
 	];
-	if (subcommand !== undefined && subcommand !== "pin")
+	if (
+		subcommand !== undefined &&
+		subcommand !== "pin" &&
+		subcommand !== "release"
+	)
 		problems.push(`Unknown subcommand: ${subcommand}`);
+	const root = readStringFlag(args, FLAGS.root, problems);
+	const yes = readBooleanFlag(args, FLAGS.yes);
+	if (subcommand === "release") {
+		if (value !== undefined) problems.push(`Unexpected argument: ${value}`);
+		if (root === undefined)
+			problems.push("ports release needs the checkout: --root <path>.");
+	} else if (root !== undefined || yes)
+		problems.push("--root and --yes are only for ports release.");
 	if (problems.length > 0) throw argumentsError(problems, "ports");
+	if (subcommand === "release" && root !== undefined)
+		return releaseClaims(resolve(root), yes);
 
 	const env = await loadDevEnv({ readOnly: true });
 
@@ -144,6 +180,75 @@ export async function handlePorts(args: string[]): Promise<number> {
 		running
 			? "The run in this checkout still uses the old ports: restart it (`buncargo stop --all`, then `buncargo dev`)."
 			: "The next `buncargo dev` starts on the new ports.",
+	);
+	return 0;
+}
+
+/**
+ * `buncargo ports release --root <path>`: drop another checkout's claims.
+ *
+ * A claim protects an idle checkout's ports and project name, so none is
+ * dropped by age. One left by a config its checkout no longer runs (a
+ * renamed projectPrefix, not started since) refuses every other checkout
+ * under that name until it runs again or is deleted; this is the way out.
+ * It refuses while the checkout has a run or standing containers, and
+ * touches no container or volume.
+ */
+async function releaseClaims(root: string, yes: boolean): Promise<number> {
+	const claims = offsetClaimsOf(root);
+	const keys = Object.keys(claims);
+	if (keys.length === 0) {
+		log.info(`${root} holds no claim. Nothing to release.`);
+		return 0;
+	}
+
+	const roots = new Set(
+		Object.entries(claims).map(([key, claim]) => offsetClaimRoot(key, claim)),
+	);
+	for (const claimRoot of roots) {
+		const { live, held } = await findCheckoutRuns(claimRoot);
+		const stop = `Stop it first: \`buncargo stop --all --root ${claimRoot}\`.`;
+		if (live.length > 0)
+			throw new CliError(
+				`${claimRoot} is running (pid ${live.map((run) => run.pid).join(", ")}), so its claims are in use.`,
+				[stop],
+			);
+		if (held.length > 0)
+			throw new CliError(
+				`${claimRoot}'s containers from its last run are still standing, under the project name its claim holds.`,
+				[stop],
+			);
+	}
+
+	log.line(`Claims of ${root}:`);
+	for (const [key, claim] of Object.entries(claims))
+		log.line(
+			`  ${offsetClaimHolder(key, claim)}: offset ${claim.offset}, project ${claim.projectName}${claim.ports?.length ? `, ports ${claim.ports.join(", ")}` : ""}`,
+		);
+	log.warn(
+		"Another checkout can then take these ports and run under these project names, using any volume left under them, its database included. No container or volume is touched, and the checkout's next run claims again.",
+	);
+
+	if (!yes) {
+		if (!isInteractive())
+			throw new CliError(
+				`Refusing to release ${root}'s claims without a terminal.`,
+				["Pass --yes if that is really meant."],
+			);
+		const accepted = await askConfirm([
+			`  Release ${keys.length} claim${keys.length === 1 ? "" : "s"} of ${root}?`,
+			"",
+			"  y to release  ·  Enter to keep them",
+		]);
+		if (!accepted) {
+			log.info("Kept. Nothing was released.");
+			return 0;
+		}
+	}
+
+	await releaseOffsetClaims(keys);
+	log.success(
+		`Released ${keys.length} claim${keys.length === 1 ? "" : "s"} of ${root}.`,
 	);
 	return 0;
 }

@@ -130,6 +130,32 @@ export async function dropDeletedOffsetClaims(
 	});
 }
 
+/** Every claim of the checkout at `root`, its dev claim and its suffixed ones, by key. */
+export function offsetClaimsOf(root: string): Record<string, OffsetClaim> {
+	return Object.fromEntries(
+		Object.entries(readAllOffsetClaims()).filter(([key, claim]) =>
+			sameCheckout(offsetClaimRoot(key, claim), root),
+		),
+	);
+}
+
+/**
+ * Drop the claims under `keys`, whatever their checkouts' state: what
+ * `buncargo ports release` does after checking no run holds them. A stale
+ * claim otherwise holds its project name until its checkout runs again or is
+ * deleted. The checkout's next run claims again.
+ */
+export async function releaseOffsetClaims(
+	keys: readonly string[],
+): Promise<void> {
+	if (keys.length === 0) return;
+	await withFileLock(getOffsetClaimsPath(), async () => {
+		const claims = readAllOffsetClaims();
+		for (const key of keys) delete claims[key];
+		writeJsonDocumentSync(getOffsetClaimsPath(), { version: VERSION, claims });
+	});
+}
+
 /**
  * Why the block at `offset` with `ports` is someone else's, or undefined when
  * it is free: another checkout, or another environment of this one, claims the
@@ -153,8 +179,8 @@ export function offsetClaimConflict(
 }
 
 /**
- * The holder of another existing checkout's claim on `projectName`, or
- * undefined when no other checkout uses it.
+ * Another existing checkout's claim on `projectName` (who holds it, and its
+ * checkout), or undefined when no other checkout uses it.
  *
  * The project name decides which containers and volumes a run uses, so two
  * checkouts under one name share a database, and one's `ci` teardown
@@ -164,11 +190,12 @@ export function offsetClaimConflict(
 export function projectNameClaimant(
 	claims: Record<string, OffsetClaim>,
 	input: { root: string; projectName: string },
-): string | undefined {
+): { holder: string; root: string } | undefined {
 	for (const [key, claim] of Object.entries(claims)) {
 		if (claim.projectName !== input.projectName) continue;
-		if (!sameCheckout(offsetClaimRoot(key, claim), input.root))
-			return offsetClaimHolder(key, claim);
+		const root = offsetClaimRoot(key, claim);
+		if (!sameCheckout(root, input.root))
+			return { holder: offsetClaimHolder(key, claim), root };
 	}
 	return undefined;
 }

@@ -47,6 +47,7 @@ bunx buncargo sql --create-scratch=migcheck   # Empty scratch_migcheck; prints i
 bunx buncargo sql --drop-scratch=migcheck
 bunx buncargo ports               # This checkout's ports, and every checkout's offset
 bunx buncargo ports pin 2500      # Keep this checkout on offset 2500
+bunx buncargo ports release --root ../old-worktree   # Drop another checkout's claims
 bunx buncargo send expoApp i      # Type into an app that has a terminal of its own
 bunx buncargo doctor
 bunx buncargo doctor --fix
@@ -785,6 +786,15 @@ worktree shares the main clone's. Derive its prefix from the worktree:
 `getWorktreeProjectSuffix(<repository root>)` returns the worktree's name, or
 `null` in the main clone. `example/playground/dev.config.ts` does this.
 
+A claim stays until its checkout runs again or is deleted, so a checkout that
+last ran an older config keeps that config's project name, and the refusal
+names it. When it no longer uses that name, release its claims:
+`buncargo ports release --root <path>`. It lists the claims and asks first
+(`--yes` from a script or agent), refuses while that checkout is running or its
+containers are still up (`buncargo stop --all --root <path>`), and touches no
+container or volume. The checkout claims again on its next run. Whoever runs
+under the released name next uses the volumes left under it.
+
 `buncargo ports pin <offset>` moves a checkout to a block and keeps it there:
 it checks every port of the block (binding it, so hidden holders count) and
 the claims, then writes the lockfile and the claim. Like `dev`, it refuses while another
@@ -1488,7 +1498,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `Watchdog did not start` | Missing `dist/core/watchdog-runner.js` | `bun run build` / reinstall the package |
 | Disk full of old worktree volumes | Deleted checkouts and interrupted `ci` runs leave their databases behind | `buncargo prune --project --dry-run` for this project, `buncargo prune --dry-run` for every project; then without `--dry-run` |
 | `.env.local has local edits and the file store changed too` | This checkout and another both changed a checkout file | `buncargo files merge .env.local` keeps both sides' keys (dotenv only); `files save` keeps yours, `files pull --force` takes the store's |
-| `… would run under Compose project …, which … already uses` | Another checkout with the same project name exists: CI runners in same-named directories, or a config below a worktree's top level | Give one of them its own `projectPrefix` (see [Ports and isolation](#ports-and-isolation)) and start it once, or delete the checkout no longer used |
+| `… would run under Compose project …, which … already uses` | Another checkout with the same project name exists: CI runners in same-named directories, or a config below a worktree's top level | Give one of them its own `projectPrefix` (see [Ports and isolation](#ports-and-isolation)) and start it once, or delete the checkout no longer used. If the other checkout's claim is from a config it no longer runs, `buncargo ports release --root <path>` (the error names the path) |
 | `Could not allocate a free port block` | 80 shifted blocks still conflict | Set `BUNCARGO_PORT_OFFSET` or free ports (`buncargo doctor`) |
 | Named URL does not resolve / TLS warning | Daemon down or CA not trusted | `buncargo hosts status`, then `buncargo hosts install` or `doctor --fix` |
 | `Named-hosts service points at … which no longer exists` | The install ran from a `node_modules` that was since removed | `buncargo hosts install` to re-point it at the current CLI |

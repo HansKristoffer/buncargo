@@ -381,13 +381,13 @@ function sharedProjectNameRefusal(
 	input: { root: string; projectName: string },
 ): string | undefined {
 	const { root, projectName } = input;
-	const holder = projectNameClaimant(claims, input);
-	if (!holder) return undefined;
+	const claimant = projectNameClaimant(claims, input);
+	if (!claimant) return undefined;
 	const worktree = enclosingWorktreeName(root);
 	const below = worktree
 		? ` ${root} is below the top of Git worktree ${worktree}, so the worktree's name is not in its project name: derive projectPrefix from the worktree.`
 		: "";
-	return `${root} would run under Compose project ${projectName}, which ${holder} already uses: they would share containers and volumes, the database included. Give one of them its own projectPrefix in dev.config.ts (it may be computed, e.g. from the CI runner's name) or a directory with another name. If you change the other one, start it once so it records its new name, or delete it if it is no longer used.${below}`;
+	return `${root} would run under Compose project ${projectName}, which ${claimant.holder} already uses: they would share containers and volumes, the database included. Give one of them its own projectPrefix in dev.config.ts (it may be computed, e.g. from the CI runner's name) or a directory with another name. If you change the other one, start it once so it records its new name, or delete it if it is no longer used. If it no longer runs under this name (its claim is from an older config), release the claim: \`buncargo ports release --root ${claimant.root}\`.${below}`;
 }
 
 function planPorts(

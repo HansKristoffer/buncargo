@@ -120,8 +120,9 @@ export const CLI_COMMANDS = [
 	},
 	{
 		name: "ports",
-		usage: "ports [pin <offset>]",
-		summary: "Show this checkout's ports and every offset; pin one",
+		usage: "ports [pin <offset> | release --root <path>]",
+		summary:
+			"Show this checkout's ports and every claim; pin one, or release a stale one",
 	},
 	{
 		name: "sql",

@@ -147,7 +147,10 @@ hardcode a port. Ask buncargo instead.
   \`dev\` again: buncargo moves the checkout to a free port block.
 - \`dev\` refusing because another checkout "already uses" its Compose project:
   the two would share one database. Do not work around it; tell the user, who
-  gives one of them its own \`projectPrefix\`.
+  gives one of them its own \`projectPrefix\`, or, when the other checkout's
+  claim is from a config it no longer runs, releases it with the
+  \`bunx buncargo ports release --root <path>\` the error names. Run that only
+  when the user asks: whoever runs under the name next gets its volumes.
 - Each checkout keeps its port offset (\`bunx buncargo ports\`). Do not set
   \`BUNCARGO_PORT_OFFSET\` or edit \`.buncargo/ports.json\`; to move a checkout,
   \`bunx buncargo ports pin <offset>\`.

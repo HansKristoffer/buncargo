@@ -200,7 +200,7 @@ function checkOffsetClaims(report: DoctorReport): void {
 	// Claimed before runs refused a shared name: they share one database.
 	for (const [projectName, holders] of sharedProjectNameClaims(claims))
 		report.issue(
-			`Compose project ${projectName} is used by ${holders.join(" and ")}, so they share its containers and volumes. Give one its own projectPrefix and start it once.`,
+			`Compose project ${projectName} is used by ${holders.join(" and ")}, so they share its containers and volumes. Give one its own projectPrefix and start it once, or release the claims of one that no longer runs under it: \`buncargo ports release --root <path>\`.`,
 		);
 }
 

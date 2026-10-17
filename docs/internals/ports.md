@@ -53,6 +53,13 @@ per port.
   checkout's claim, `BUNCARGO_PORT_OFFSET` (checked, though it records nothing) and
   `worktreeIsolation: false` (sharing is what it asks for) do not refuse. `doctor` reports names
   two existing claims already share.
+- A claim can outlive the config that wrote it: worktrees that last ran an older playground
+  config held `buncargo-playground-playground`, and the main clone's playground was refused until
+  each ran once or was deleted. Claims are not dropped by age, because an idle checkout's claim is
+  what keeps its database to itself. `buncargo ports release --root <path>` is the one way to drop
+  another checkout's claims, and the refusal names it with the holder's root. It confirms first
+  (`--yes` without a terminal), refuses while that checkout has a live run or containers in the
+  idle hold, and touches no container or volume: whoever runs under the name next uses its volume.
 
 ## Who holds a port
 

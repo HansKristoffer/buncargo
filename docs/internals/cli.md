@@ -96,7 +96,9 @@ pieces it orchestrates.
   `setup --agents` keeps between `<!-- buncargo:start/end -->` markers. It lives in code, not
   `docs/`, so the guide an agent reads matches the installed version.
 - `commands/ports.ts` shows the offset claims and `pin`s one: it checks every port of the block
-  through `withBindProbe` and the claims before writing the lockfile and the claim.
+  through `withBindProbe` and the claims before writing the lockfile and the claim. `release`
+  drops another checkout's claims under the claims lock, refusing while that checkout has a live or
+  held run.
 - `commands/send.ts` types into an app over the same request-file channel as `restart`
   (`restart-requests.ts`, one file per kind: a line per request, renamed aside before it is read).
   The run delivers it to `output.screens`, so only an app with a pseudo-terminal reads keys. Each
