@@ -8,13 +8,26 @@ import { startDevServers, stopDevServers } from "./dev-servers";
 import { signalProcessTree } from "./port-owner";
 import { RunOutput } from "./run-output";
 
+// Ports the OS hands out, held together so they differ. A random port in a
+// fixed range collided with another test's app still letting go of it.
+async function freePorts(count: number): Promise<number[]> {
+	const servers = Array.from({ length: count }, () =>
+		Bun.serve({ port: 0, fetch: () => new Response() }),
+	);
+	const ports = servers.map((server) => server.port ?? 0);
+	await Promise.all(servers.map((server) => server.stop(true)));
+	return ports;
+}
+
+async function freePort(): Promise<number> {
+	const [port] = await freePorts(1);
+	return port;
+}
+
 describe("startDevServers", () => {
 	it("skips healthEndpoint: false / devCommand: false and honors attach", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-process-"));
-		const basePort = 45100 + Math.floor(Math.random() * 200);
-		const skipPort = basePort;
-		const silentPort = basePort + 1;
-		const attachPort = basePort + 2;
+		const [skipPort, silentPort, attachPort] = await freePorts(3);
 		const marker = join(root, "attached.txt");
 		let silentPid: number | undefined;
 
@@ -86,7 +99,7 @@ describe("startDevServers secret injection", () => {
 		process.env.HOME = infisical.home;
 		process.env.BUNCARGO_INFISICAL_PATH = infisical.cliPath;
 		const marker = join(root, "env.json");
-		const port = 45400 + Math.floor(Math.random() * 200);
+		const port = await freePort();
 		const secrets = { projectId: "p1", siteUrl: infisical.siteUrl };
 
 		try {
@@ -154,7 +167,7 @@ describe("startDevServers secret injection", () => {
 describe("startDevServers ordering, prebuild and captures", () => {
 	it("starts after health, prebuilds first, and restarts on a capture", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-order-"));
-		const apiPort = 45400 + Math.floor(Math.random() * 200);
+		const apiPort = await freePort();
 		const log = join(root, "events.log");
 		const append = (line: string) =>
 			`bun -e ${JSON.stringify(`require("node:fs").appendFileSync(${JSON.stringify(log)}, ${JSON.stringify(`${line}\n`)})`)}`;
@@ -237,7 +250,7 @@ describe("startDevServers ordering, prebuild and captures", () => {
 describe("stopDevServers", () => {
 	it("returns after a library run's apps' last words are printed", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-last-words-"));
-		const port = 47100 + Math.floor(Math.random() * 500);
+		const port = await freePort();
 		let printed = "";
 		const write = spyOn(process.stdout, "write").mockImplementation(
 			(chunk: string | Uint8Array) => {
@@ -282,7 +295,7 @@ describe("stopDevServers", () => {
 describe("detached app supervision", () => {
 	it("adopts a daemonized listener and stops it with the session", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-detached-"));
-		const port = 46000 + Math.floor(Math.random() * 1000);
+		const port = await freePort();
 		const marker = join(root, "child.pid");
 		await Bun.write(
 			join(root, "child.ts"),
@@ -652,7 +665,7 @@ describe("startDevServers keepOthersOnFailure", () => {
 
 	it("stops the app that never came up and keeps the healthy one", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-"));
-		const api = 46500 + Math.floor(Math.random() * 200);
+		const api = await freePort();
 		const marketing = api + 1;
 		const output = new RunOutput();
 		output.terminalSize = () => ({ cols: 80, rows: 10 });
@@ -697,7 +710,7 @@ describe("startDevServers keepOthersOnFailure", () => {
 
 	it("still fails the run when nothing came up, or a later app waits on it", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-"));
-		const port = 46800 + Math.floor(Math.random() * 100);
+		const port = await freePort();
 		try {
 			await expect(
 				startDevServers(
@@ -734,7 +747,7 @@ describe("startDevServers keepOthersOnFailure", () => {
 describe("startDevServers readyWhen and interactive apps without a terminal", () => {
 	it("waits for the line the app prints, and fails when it never comes", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-ready-when-"));
-		const port = 47100 + Math.floor(Math.random() * 200);
+		const port = await freePort();
 		let pids: Record<string, number> = {};
 		try {
 			// Nothing listens on the port: only the printed line can make it ready.
