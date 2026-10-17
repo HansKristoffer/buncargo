@@ -1,5 +1,6 @@
 import { CONTAINER_RUNTIME_SELECTIONS } from "../../container-runtime";
 import { CI_PROJECT_SUFFIX } from "../../core/ports";
+import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
 import { loadDevEnv } from "../../loader";
 import {
 	type CommandSpec,
@@ -131,6 +132,14 @@ export async function handleCi(args: string[]): Promise<number> {
 	// so the terminal's signal does not reach them.
 	return runForwardingSignals(async (signal) => {
 		try {
+			// Claimed with a hold, unlike a library run's keep-forever default:
+			// a run killed outright (`SIGKILL`) cannot tear down, and with no
+			// hold the sweep keeps its stack for as long as the checkout exists.
+			// Explicit, so a config's `autoShutdown: false`, which is about dev
+			// containers, does not keep a ci stack. Prepared first: the claim
+			// names the selection's services.
+			await env.prepareStartAsync?.(undefined, services, signal);
+			await env.claimRun({ idleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS, signal });
 			await env.start({
 				onlyServices: services,
 				startServers: false,

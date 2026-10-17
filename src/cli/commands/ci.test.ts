@@ -176,3 +176,38 @@ describe("ci teardown", () => {
 		});
 	}
 });
+
+it("claims its stack with an idle hold, so the sweep removes it after a SIGKILL", async () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-ci-")));
+	const docker = join(root, "docker");
+	const snapshot = join(root, "runs.snapshot.json");
+	writeFileSync(join(root, "package.json"), JSON.stringify({ workspaces: [] }));
+	writeFileSync(
+		join(root, "dev.config.ts"),
+		"export default {projectPrefix:'cihold',services:{postgres:{port:5432}},apps:{},options:{autoShutdown:false}};",
+	);
+	writeFileSync(docker, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+	try {
+		const result = await execAsync(
+			[
+				...cli,
+				"ci",
+				"--",
+				"cp",
+				join(root, "home", ".buncargo", "runs.json"),
+				snapshot,
+			],
+			root,
+			{ HOME: join(root, "home"), BUNCARGO_CONTAINER_BINARY: docker },
+			{ throwOnError: false },
+		);
+		expect(result.exitCode).toBe(0);
+		const { runs } = JSON.parse(readFileSync(snapshot, "utf-8")) as {
+			runs: { idleTimeoutMs?: number }[];
+		};
+		expect(runs.map((run) => run.idleTimeoutMs)).toEqual([3 * 60 * 1000]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
