@@ -1,4 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	accessSync,
+	constants,
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { installConnectBundle } from "./connect/bundle";
@@ -316,14 +323,15 @@ async function verifyChecksum(
 	}
 }
 
-function installDirectory(home = homedir()): string {
+export function installDirectory(
+	home = homedir(),
+	system = "/Applications",
+): string {
 	// `/Applications` when we can write it, the user's own otherwise. Never
 	// asks for a password: an optional menu bar app is not worth a sudo prompt.
 	try {
-		const probe = join("/Applications", `.buncargo-write-probe-${process.pid}`);
-		Bun.write(probe, "");
-		rmSync(probe, { force: true });
-		return "/Applications";
+		accessSync(system, constants.W_OK);
+		return system;
 	} catch {
 		return join(home, "Applications");
 	}

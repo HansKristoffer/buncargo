@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	getBarManifestPath,
+	installDirectory,
 	readBundleInfo,
 	readInstalledBarInfo,
 } from "./menubar";
@@ -101,4 +102,19 @@ describe("readInstalledBarInfo", () => {
 			registryVersion: 7,
 		});
 	});
+});
+
+describe("installDirectory", () => {
+	it("installs into the system directory when it is writable", () => {
+		expect(installDirectory(home, home)).toBe(home);
+	});
+
+	it.skipIf(process.getuid?.() === 0)(
+		"falls back to ~/Applications when the system directory is read-only",
+		() => {
+			const system = join(home, "system");
+			mkdirSync(system, { mode: 0o555 });
+			expect(installDirectory(home, system)).toBe(join(home, "Applications"));
+		},
+	);
 });
