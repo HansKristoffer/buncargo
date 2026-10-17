@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import type { ExpoAppIdentity } from "../expo/simulator";
+import type { ExpoAppIdentity } from "../expo/app-identity";
 import type { ContainerRuntimeName } from "../types";
 import { buncargoCli, type CliInvocation } from "./cli-entry";
 import { withFileLock } from "./file-lock";
