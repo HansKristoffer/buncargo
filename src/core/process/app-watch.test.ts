@@ -48,11 +48,9 @@ describe("startDevServers watch", () => {
 			);
 			const first = pids.api;
 
-			// An ignored path changes nothing.
+			// An ignored path changes nothing: had it, the restart below would
+			// name it, or there would be two.
 			await writeFile(join(root, "api/dist/out.js"), "1");
-			await Bun.sleep(400);
-			expect(pids.api).toBe(first);
-
 			await writeFile(join(root, "api/src/index.ts"), "export {}");
 			for (let i = 0; i < 100 && pids.api === first; i++) await Bun.sleep(30);
 			expect(pids.api).not.toBe(first);

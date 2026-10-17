@@ -82,7 +82,7 @@ it("gives an attached app without a terminal one of its own: printed once, logge
 			},
 		) as EventEmitter;
 		await new Promise((resolve) => child.once("exit", resolve));
-		await Bun.sleep(50);
+		// close() waits for every screen to flush before it writes the logs.
 		await output.close();
 		expect(readFileSync(logs.file("web"), "utf8")).toContain("hello from web");
 		// Through the screen and the stream printer, never also raw.

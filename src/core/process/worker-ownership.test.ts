@@ -207,7 +207,10 @@ function deadOnArrival(real: ChildProcess): AppChild {
 	const child = new EventEmitter();
 	for (const key of ["pid", "exitCode", "signalCode"] as const)
 		Object.defineProperty(child, key, { get: () => real[key] });
-	real.once("exit", () => child.emit("spawn"));
+	// It may be gone before the claim's lock is taken and this is called.
+	if (real.exitCode !== null || real.signalCode !== null)
+		queueMicrotask(() => child.emit("spawn"));
+	else real.once("exit", () => child.emit("spawn"));
 	return child as unknown as AppChild;
 }
 

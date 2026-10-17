@@ -455,6 +455,8 @@ describe("startDevServers non-essential readiness", () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-optional-ready-"));
 		const output = new RunOutput();
 		const ready: string[] = [];
+		const flakyExited = Promise.withResolvers<void>();
+		const flakyChecked = Promise.withResolvers<void>();
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
@@ -477,14 +479,24 @@ describe("startDevServers non-essential readiness", () => {
 					waitForExit: false,
 					output,
 					onAppReady: (name) => ready.push(name),
+					onAppExit: (name) => {
+						if (name === "flaky") flakyExited.resolve();
+					},
 					// A slow check: it finishes after flaky is already gone.
 					waitForHealth: async (wave, signal) => {
-						if ("flaky" in wave) await Bun.sleep(600);
-						signal?.throwIfAborted();
+						if (!("flaky" in wave)) return;
+						try {
+							await flakyExited.promise;
+							signal?.throwIfAborted();
+						} finally {
+							flakyChecked.resolve();
+						}
 					},
 				},
 			);
-			await Bun.sleep(900);
+			await flakyChecked.promise;
+			// Whatever the finished check would report runs before the next turn.
+			await new Promise((resolve) => setImmediate(resolve));
 			expect(output.states.get("flaky")?.state).toBe("failed");
 			expect(ready).not.toContain("flaky");
 		} finally {
