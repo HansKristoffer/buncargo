@@ -32,6 +32,12 @@ describe("parseDevArgs", () => {
 		expect(args.dockerAutostart).toBe(false);
 	});
 
+	it("defaults to the TUI, and --no-tui opts out", () => {
+		expect(parseDevArgs([]).tui).toBe("auto");
+		expect(parseDevArgs(["--tui"]).tui).toBe("on");
+		expect(parseDevArgs(["--no-tui"]).tui).toBe("off");
+	});
+
 	it("reports unknown flags without throwing", () => {
 		expect(parseDevArgs(["--nope", "--reset"]).unknownFlags).toEqual([
 			"--nope",

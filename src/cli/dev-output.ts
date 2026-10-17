@@ -19,15 +19,15 @@ export interface DevOutputSource {
 }
 
 /**
- * Where a dev run's app output goes. The TUI when asked for and there is a
- * terminal to draw it in; stream mode (prefixed lines) otherwise. Never both:
+ * Where a dev run's app output goes. The TUI when there is a terminal to draw
+ * it in and `--no-tui` was not passed; stream mode (prefixed lines) otherwise. Never both:
  * two writers on one screen is the garbling the TUI exists to end. Both write
  * the log files and answer `buncargo restart`.
  */
 export function openDevOutput(
 	env: DevOutputSource,
 	apps: Record<string, AppConfig>,
-	options: { tui: boolean },
+	options: { tui: "auto" | "on" | "off" },
 ): { output: RunOutput; start(): void; stop(): void } {
 	let logs: AppLogs | undefined;
 	try {
@@ -38,12 +38,12 @@ export function openDevOutput(
 	const output = new RunOutput(logs);
 	const names = Object.keys(apps);
 	const terminal = Boolean(process.stdout.isTTY && process.stdin.isTTY);
-	if (options.tui && !terminal)
+	if (options.tui === "on" && !terminal)
 		log.warn("--tui needs a terminal; printing prefixed lines instead.");
 
 	const actions = appActions(apps);
 	const tui =
-		options.tui && terminal && names.length > 0
+		options.tui !== "off" && terminal && names.length > 0
 			? new RunTui({
 					output,
 					apps: names,

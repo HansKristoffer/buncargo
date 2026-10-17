@@ -2,6 +2,11 @@
 
 Each section lists what a consumer of `buncargo` has to change when crossing one major version, newest first. Breaking changes that shipped inside a minor release are listed under the major you cross when you pick them up. If you are several majors behind, work through the sections from the bottom up.
 
+## 12.0 → 13.0
+
+- **`dev` opens the terminal UI whenever it runs in a terminal.** `--tui` is no longer needed; pass `--no-tui` for prefixed lines. Runs without a terminal (CI, agents, piped output, `--detach`) still print prefixed lines.
+- **`interactive: true` takes effect only with `--no-tui`.** In the TUI every app has a terminal of its own, so an Expo app's keys work in its pane. A script that relies on an app owning the real TTY should pass `--no-tui`.
+
 ## 11.0 → 12.0
 
 12.0 is a hard cutover: the compatibility code for older versions, configs and on-disk state is gone. **Stop every run before upgrading** (`bunx buncargo dev --down --all` with the old version): 12.0 does not recognise an older run's containers or locks.
