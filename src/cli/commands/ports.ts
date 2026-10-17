@@ -113,6 +113,7 @@ export async function handlePorts(args: string[]): Promise<number> {
 		services: env.services as Parameters<typeof pinOffset>[0]["services"],
 		apps: env.apps as Parameters<typeof pinOffset>[0]["apps"],
 		offset,
+		worktreeIsolation: env.worktreeIsolation,
 		runtime: runtime.name,
 		getOwner: withBindProbe((port) => getPortOwner(port, { runtime })),
 	});

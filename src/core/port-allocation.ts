@@ -362,22 +362,23 @@ export function resolvePortPlan(input: {
 }
 
 /**
- * A run refused because another checkout already uses its project name: both
- * would run one stack, so they would share containers and the database, and
- * one's teardown takes the other's down.
+ * Why `root` may not claim under `projectName`, or undefined when it may:
+ * another existing checkout's claim carries the name, so both would run one
+ * stack, sharing containers and the database, and one's teardown takes the
+ * other's down. A run and `ports pin` both ask it under the claims lock.
  */
-function sharedProjectNameError(
-	root: string,
-	projectName: string,
-	holder: string,
-): Error {
+function sharedProjectNameRefusal(
+	claims: Record<string, OffsetClaim>,
+	input: { root: string; projectName: string },
+): string | undefined {
+	const { root, projectName } = input;
+	const holder = projectNameClaimant(claims, input);
+	if (!holder) return undefined;
 	const worktree = enclosingWorktreeName(root);
 	const below = worktree
 		? ` ${root} is below the top of Git worktree ${worktree}, so the worktree's name is not in its project name: derive projectPrefix from the worktree.`
 		: "";
-	return new Error(
-		`${root} would run under Compose project ${projectName}, which ${holder} already uses: they would share containers and volumes, the database included. Give one of them its own projectPrefix in dev.config.ts (it may be computed, e.g. from the CI runner's name) or a directory with another name. If you change the other one, start it once so it records its new name, or delete it if it is no longer used.${below}`,
-	);
+	return `${root} would run under Compose project ${projectName}, which ${holder} already uses: they would share containers and volumes, the database included. Give one of them its own projectPrefix in dev.config.ts (it may be computed, e.g. from the CI runner's name) or a directory with another name. If you change the other one, start it once so it records its new name, or delete it if it is no longer used.${below}`;
 }
 
 function planPorts(
@@ -406,8 +407,11 @@ function planPorts(
 	// it writes a lockfile or a claim, under any offset.
 	const existingClaims = claim ? readOffsetClaims() : undefined;
 	if (existingClaims && worktreeIsolation) {
-		const holder = projectNameClaimant(existingClaims, { root, projectName });
-		if (holder) throw sharedProjectNameError(root, projectName, holder);
+		const refused = sharedProjectNameRefusal(existingClaims, {
+			root,
+			projectName,
+		});
+		if (refused) throw new Error(refused);
 	}
 
 	const envOffset = portOffsetOverride();
@@ -627,15 +631,25 @@ export function pinOffset(input: {
 	services: Record<string, ServiceConfig>;
 	apps?: Record<string, AppConfig>;
 	offset: number;
+	/** `options.worktreeIsolation`: without it, sharing the name is asked for. */
+	worktreeIsolation?: boolean;
 	runtime?: ContainerRuntimeName;
 	getOwner: (port: number) => PortOwner | null;
 }): PinResult {
 	const { root, projectName, offset, runtime } = input;
 	const ports = buildPortMap(input.services, input.apps, offset);
 	const block = { offset, ports: Object.values(ports) };
-	const claimedBy = () => {
+	// A claim under a name another checkout holds would only make the next
+	// run refuse, after the lockfile had moved.
+	const claimedBy = (): PinResult | undefined => {
+		const claims = readOffsetClaims();
+		const shared =
+			input.worktreeIsolation === false
+				? undefined
+				: sharedProjectNameRefusal(claims, { root, projectName });
+		if (shared) return { refused: shared, claimed: false };
 		const claimed = offsetClaimConflict(
-			claimsWithLockfilePorts(readOffsetClaims()),
+			claimsWithLockfilePorts(claims),
 			block,
 			root,
 		);

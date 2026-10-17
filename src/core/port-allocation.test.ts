@@ -902,6 +902,51 @@ describe("pinOffset", () => {
 		}
 	});
 
+	it("refuses a project name another existing checkout claims, as a run does", () => {
+		const root = mkdtempSync(join(tmpdir(), "buncargo-pin-"));
+		const other = mkdtempSync(join(tmpdir(), "buncargo-pin-other-"));
+		const pin = (worktreeIsolation?: boolean) =>
+			pinOffset({
+				root,
+				projectName: "lullu-a",
+				services,
+				offset: 2500,
+				worktreeIsolation,
+				getOwner: () => null,
+			});
+		try {
+			withOffsetClaimsLock(() =>
+				claimOffset({
+					root: other,
+					offset: 1100,
+					ports: [6532],
+					projectName: "lullu-a",
+				}),
+			);
+			const result = pin();
+			expect(result).toMatchObject({ claimed: false });
+			expect("refused" in result && result.refused).toContain(
+				`${root} would run under Compose project lullu-a, which ${other} already uses`,
+			);
+			expect(() =>
+				resolvePortPlan({
+					projectPrefix: "lullu",
+					projectName: "lullu-a",
+					root,
+					services,
+					getOwner: () => null,
+				}),
+			).toThrow("refused" in result ? result.refused : "");
+			expect(readPortsLockfile(root)).toBeNull();
+			expect(Object.keys(readOffsetClaims())).toEqual([other]);
+
+			expect(pin(false)).toEqual({ pinned: { postgres: 7932 } });
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+			rmSync(other, { recursive: true, force: true });
+		}
+	});
+
 	it("leaves a block another checkout claimed while its ports were probed", () => {
 		const root = mkdtempSync(join(tmpdir(), "buncargo-pin-"));
 		const other = mkdtempSync(join(tmpdir(), "buncargo-pin-other-"));

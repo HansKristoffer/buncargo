@@ -787,7 +787,8 @@ worktree shares the main clone's. Derive its prefix from the worktree:
 
 `buncargo ports pin <offset>` moves a checkout to a block and keeps it there:
 it checks every port of the block (binding it, so hidden holders count) and
-the claims, then writes the lockfile and the claim. Its containers move on the
+the claims, then writes the lockfile and the claim. Like `dev`, it refuses while another
+checkout claims its Compose project name. Its containers move on the
 next start, since their ports are part of what decides reuse. A hand-written
 `{ "offset": 2500 }` in `.buncargo/ports.json` pins the same way, and the next
 run fills in the rest. When a run cannot use the lockfile (another checkout's,
