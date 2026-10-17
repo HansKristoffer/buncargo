@@ -192,7 +192,14 @@ keeps a deleted checkout's claim until it has settled it, and without the opt-in
 Volumes match by Compose project, and two checkouts can share one, so it removes them only when
 no existing checkout claims the project and no run on record for it still has its checkout; a
 container of the project still standing defers the decision to the next pass, and a runtime that
-does not answer defers everything.
+does not answer defers everything. "Still has its checkout" includes one this user cannot read.
+
+Volumes need more proof than containers. A deletion counts only when confirmed (`ENOENT`) on two
+passes at least `DELETED_CHECKOUT_SETTLE_MS` (10 minutes) apart: the first sighting is stamped on
+the claim as `deletedSeenAt` under the claims lock, and cleared if the checkout is back, so an
+unmounted disk or a worktree being recreated costs nothing. Containers still come down on the
+first confirmed sighting. The watchdog may exit in between; the next pass, whenever it runs,
+decides.
 
 `prune --project` (`project-prune.ts`) can say more, because the config and Git are in hand: the
 project's stacks are exactly the names `checkoutProjectNames` gives each checkout in `.git`'s

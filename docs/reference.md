@@ -1466,7 +1466,7 @@ bunx buncargo prune --yes       # For scripts that have already decided
 
 Volumes carry no buncargo labels on purpose: Compose compares a volume against the file and offers to *recreate* it when they differ, which hangs a non-interactive run and destroys the data. So prune cannot tell which checkout a volume came from, and says so rather than guessing — volumes it cannot attribute to a project are counted and left alone.
 
-A machine where worktrees come and go all day, such as a server agents work on, can opt in with `BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`: the sweep then also removes the volumes of a checkout whose directory was deleted. It works for checkouts whose containers are already gone, and leaves the volumes whenever another checkout or a run still uses the same project name.
+A machine where worktrees come and go all day, such as a server agents work on, can opt in with `BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`: the sweep then also removes the volumes of a checkout whose directory was deleted, once a pass at least 10 minutes after the first still finds it gone. It works for checkouts whose containers are already gone, and leaves the volumes whenever another checkout or a run still uses the same project name. A checkout your user cannot read never counts as deleted.
 
 `buncargo prune --project` is the same, for one project: run it in any checkout, and it removes only that project's leftovers, by name. That is every checkout's `ci` stack, and every stack of a worktree whose directory was deleted (until `git worktree prune` forgets it). It takes their stopped containers, volumes and networks:
 

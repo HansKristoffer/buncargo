@@ -25,6 +25,7 @@ import {
 import type { BuncargoContainer } from "../types";
 import { withProjectLifecycleLock } from "./project-lock";
 import {
+	DELETED_CHECKOUT_SETTLE_MS,
 	decideSweep,
 	settleDeletedCheckouts,
 	sweepOrphanedContainers,
@@ -608,6 +609,8 @@ describe("sweepOrphanedContainers", () => {
 describe("settleDeletedCheckouts", () => {
 	const gone = join(tmpdir(), "buncargo-never-existed");
 	const optIn = process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS;
+	/** A pass long enough after the first to confirm the deletion. */
+	const LATER = NOW + DELETED_CHECKOUT_SETTLE_MS;
 
 	afterEach(() => {
 		if (optIn === undefined)
@@ -645,43 +648,79 @@ describe("settleDeletedCheckouts", () => {
 				return [];
 			},
 		} as unknown as ContainerRuntimeAdapter;
-		return { runtime, removed, result: { swept: [], failed: [] } };
+		const result = { swept: [], failed: [] };
+		/** One sweep pass's settling, at `now`. */
+		const settle = (
+			now: number,
+			extra: Partial<Parameters<typeof settleDeletedCheckouts>[0]> = {},
+		) =>
+			settleDeletedCheckouts({
+				runtimes: [runtime],
+				runs: [],
+				stacks: [],
+				result,
+				now,
+				...extra,
+			});
+		return { removed, result, settle };
 	}
 	const claimedRoots = () => Object.keys(readAllOffsetClaims());
 
 	it("only drops the claims unless the machine opted in", async () => {
-		const { runtime, removed, result } = setup({
+		const { removed, settle } = setup({
 			enabled: false,
 			claims: { [gone]: "app-gone" },
 		});
-		await settleDeletedCheckouts({
-			runtimes: [runtime],
-			runs: [],
-			stacks: [],
-			result,
-		});
+		await settle(NOW);
 		expect(removed).toEqual([]);
 		expect(claimedRoots()).toEqual([]);
 	});
 
-	it("removes a deleted checkout's project volumes, then its claim", async () => {
-		const { runtime, removed, result } = setup({
+	it("removes a deleted checkout's project volumes once a later pass finds it still gone, then its claim", async () => {
+		const { removed, result, settle } = setup({
 			enabled: true,
 			claims: { [gone]: "app-gone", [checkout]: "other" },
 		});
-		await settleDeletedCheckouts({
-			runtimes: [runtime],
-			runs: [],
-			stacks: [],
-			result,
-		});
+
+		// The first sighting is only stamped: a path briefly missing must not
+		// cost a database.
+		await settle(NOW);
+		expect(removed).toEqual([]);
+		expect(readAllOffsetClaims()[gone]?.deletedSeenAt).toBe(
+			new Date(NOW).toISOString(),
+		);
+		await settle(LATER - 1);
+		expect(removed).toEqual([]);
+
+		await settle(LATER);
 		expect(removed).toEqual([["app-gone_db"]]);
 		expect(claimedRoots()).toEqual([checkout]);
 		expect(result.swept).toHaveLength(1);
 	});
 
+	it("starts over for a checkout that comes back before it is settled", async () => {
+		const root = join(checkout, "comes-back");
+		const { removed, settle } = setup({
+			enabled: true,
+			claims: { [root]: "app-gone" },
+		});
+		await settle(NOW);
+		expect(readAllOffsetClaims()[root]?.deletedSeenAt).toBeString();
+
+		mkdirSync(root);
+		await settle(NOW + 1);
+		expect(readAllOffsetClaims()[root]?.deletedSeenAt).toBeUndefined();
+
+		rmSync(root, { recursive: true });
+		await settle(LATER);
+		expect(removed).toEqual([]);
+		expect(readAllOffsetClaims()[root]?.deletedSeenAt).toBe(
+			new Date(LATER).toISOString(),
+		);
+	});
+
 	it("settles a deleted checkout's suffixed environments with it", async () => {
-		const { runtime, removed, result } = setup({
+		const { removed, settle } = setup({
 			enabled: true,
 			claims: { [gone]: "app-gone", [checkout]: "other" },
 		});
@@ -692,12 +731,8 @@ describe("settleDeletedCheckouts", () => {
 			projectName: "app-gone-e2e",
 			suffix: "e2e",
 		});
-		await settleDeletedCheckouts({
-			runtimes: [runtime],
-			runs: [],
-			stacks: [],
-			result,
-		});
+		await settle(NOW);
+		await settle(LATER);
 		expect(removed.flat().sort()).toEqual(["app-gone-e2e_db", "app-gone_db"]);
 		expect(claimedRoots()).toEqual([checkout]);
 	});
@@ -710,17 +745,13 @@ describe("settleDeletedCheckouts", () => {
 			[[run], { [gone]: "app-gone" }, [], true],
 			[[], { [gone]: "app-gone" }, [leftover], false],
 		] as const) {
-			const { runtime, removed, result } = setup({
+			const { removed, settle } = setup({
 				enabled: true,
 				claims,
 				left: [...left],
 			});
-			await settleDeletedCheckouts({
-				runtimes: [runtime],
-				runs: [...runs],
-				stacks: [],
-				result,
-			});
+			await settle(NOW, { runs: [...runs] });
+			await settle(LATER, { runs: [...runs] });
 			expect(removed).toEqual([]);
 			expect(claimedRoots().includes(gone)).toBe(!settled);
 			rmSync(getOffsetClaimsPath(), { force: true });
@@ -731,27 +762,19 @@ describe("settleDeletedCheckouts", () => {
 		"never settles a checkout it cannot read, nor removes a project such a checkout claims",
 		async () => {
 			const root = unreadable?.root ?? "";
-			const { runtime, removed, result } = setup({
+			const { removed, settle } = setup({
 				enabled: true,
 				claims: { [gone]: "app-gone", [root]: "app-gone" },
 			});
 			expect(Object.keys(readOffsetClaims())).toEqual([root]);
-			await settleDeletedCheckouts({
-				runtimes: [runtime],
-				runs: [],
-				stacks: [],
-				result,
-			});
+			await settle(NOW);
+			await settle(LATER);
 			expect(removed).toEqual([]);
 			expect(claimedRoots()).toContain(root);
+			expect(readAllOffsetClaims()[root]?.deletedSeenAt).toBeUndefined();
 
 			delete process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS;
-			await settleDeletedCheckouts({
-				runtimes: [runtime],
-				runs: [],
-				stacks: [],
-				result,
-			});
+			await settle(LATER);
 			expect(claimedRoots()).toEqual([root]);
 		},
 	);
@@ -761,16 +784,13 @@ describe("settleDeletedCheckouts", () => {
 		// stack stands (its removal failed, or its lock was busy), the stack
 		// would be nobody's to remove.
 		for (const enabled of [false, true]) {
-			const { runtime, removed, result } = setup({
+			const { removed, settle } = setup({
 				enabled,
 				claims: { [gone]: "app-gone" },
 			});
-			await settleDeletedCheckouts({
-				runtimes: [runtime],
-				runs: [],
-				stacks: [{ projectName: "app-gone", root: gone }],
-				result,
-			});
+			const stacks = [{ projectName: "app-gone", root: gone }];
+			await settle(NOW, { stacks });
+			await settle(LATER, { stacks });
 			expect(removed).toEqual([]);
 			expect(claimedRoots()).toEqual([gone]);
 			rmSync(getOffsetClaimsPath(), { force: true });
@@ -780,16 +800,12 @@ describe("settleDeletedCheckouts", () => {
 	it("decides nothing while no runtime answers", async () => {
 		// Its stack could still be on the runtime that did not answer.
 		for (const enabled of [false, true]) {
-			const { removed, result } = setup({
+			const { removed, settle } = setup({
 				enabled,
 				claims: { [gone]: "app-gone" },
 			});
-			await settleDeletedCheckouts({
-				runtimes: [],
-				runs: [],
-				stacks: [],
-				result,
-			});
+			await settle(NOW, { runtimes: [] });
+			await settle(LATER, { runtimes: [] });
 			expect(removed).toEqual([]);
 			expect(claimedRoots()).toEqual([gone]);
 			rmSync(getOffsetClaimsPath(), { force: true });

@@ -45,6 +45,11 @@ export interface OffsetClaim {
 	/** Set on a suffixed claim, whose key is not the bare root. */
 	root?: string;
 	suffix?: string;
+	/**
+	 * When a sweep first found the checkout deleted. Its volumes wait for a
+	 * later pass to find it still gone (see `settleDeletedCheckouts`).
+	 */
+	deletedSeenAt?: string;
 }
 
 /**
@@ -117,6 +122,37 @@ export function readOffsetClaims(): Record<string, OffsetClaim> {
 			([key, claim]) => !checkoutDeleted(offsetClaimRoot(key, claim)),
 		),
 	);
+}
+
+/**
+ * Stamp `at` on the claims under `seen` whose checkouts are still gone and
+ * carry no stamp yet, and clear the stamp of those under `back`, whose
+ * checkouts are there again.
+ */
+export async function markDeletedOffsetClaims(input: {
+	seen: readonly string[];
+	back: readonly string[];
+	at: string;
+}): Promise<void> {
+	if (input.seen.length === 0 && input.back.length === 0) return;
+	await withFileLock(getOffsetClaimsPath(), async () => {
+		const claims = readAllOffsetClaims();
+		for (const key of input.seen) {
+			const claim = claims[key];
+			if (
+				claim &&
+				claim.deletedSeenAt === undefined &&
+				checkoutDeleted(offsetClaimRoot(key, claim))
+			)
+				claim.deletedSeenAt = input.at;
+		}
+		for (const key of input.back) {
+			const claim = claims[key];
+			if (claim && !checkoutDeleted(offsetClaimRoot(key, claim)))
+				delete claim.deletedSeenAt;
+		}
+		writeJsonDocumentSync(getOffsetClaimsPath(), { version: VERSION, claims });
+	});
 }
 
 /** Drop the claims under `keys` whose checkouts are still gone. */

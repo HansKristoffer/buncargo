@@ -19,6 +19,7 @@ import {
 import { FileLockTimeoutError } from "../core/file-lock";
 import {
 	dropDeletedOffsetClaims,
+	markDeletedOffsetClaims,
 	type OffsetClaim,
 	offsetClaimRoot,
 	readAllOffsetClaims,
@@ -52,6 +53,12 @@ import {
 	getContainerRuntimeAdapter,
 } from "./resolve";
 import type { ContainerRuntimeAdapter } from "./types";
+
+/**
+ * How long a checkout must stay deleted, from the sweep's first sighting to a
+ * later pass, before `BUNCARGO_PRUNE_DELETED_CHECKOUTS` removes its volumes.
+ */
+export const DELETED_CHECKOUT_SETTLE_MS = 10 * 60_000;
 
 export interface SweepInput {
 	/**
@@ -339,6 +346,7 @@ export async function sweepOrphanedContainers(
 			runs,
 			stacks: result.remaining,
 			result,
+			now,
 		});
 	} catch (error) {
 		// A busy claims file: the deleted checkouts are still there next pass.
@@ -467,14 +475,21 @@ async function sweepGroup(
  * ({@link isKnownStack}), so it stays while `stacks` (what is still listed)
  * holds one of its project and checkout: a stack whose removal failed, or
  * whose lock was busy, would otherwise be left to nobody.
+ *
+ * Volumes need more proof than containers: the checkout confirmed missing
+ * (not merely unreadable) on two passes at least
+ * {@link DELETED_CHECKOUT_SETTLE_MS} apart, the first stamped on the claim. A
+ * path that is briefly missing, an unmounted disk or a worktree being
+ * recreated, must not cost a database.
  */
 export async function settleDeletedCheckouts(input: {
 	runtimes: ContainerRuntimeAdapter[];
 	runs: RunEntry[];
 	stacks: readonly Pick<ContainerGroup, "projectName" | "root">[];
 	result: Pick<SweepResult, "swept" | "failed">;
+	now: number;
 }) {
-	const { runtimes, runs, stacks, result } = input;
+	const { runtimes, runs, stacks, result, now } = input;
 	// With no runtime answering, nothing says whether its stack or its
 	// volumes are left.
 	if (runtimes.length === 0) return;
@@ -493,12 +508,30 @@ export async function settleDeletedCheckouts(input: {
 					stack.projectName === claim.projectName && stack.root === root,
 			),
 	);
-	if (deleted.length === 0) return;
+	// A checkout that is back starts over: its next deletion is a first sighting.
+	const back = claims.filter(
+		({ root, claim }) =>
+			claim.deletedSeenAt !== undefined && checkoutPresence(root) === "present",
+	);
+	if (deleted.length === 0 && back.length === 0) return;
 
 	if (!pruneDeletedCheckoutVolumes()) {
+		await markDeletedOffsetClaims({
+			seen: [],
+			back: back.map(({ key }) => key),
+			at: new Date(now).toISOString(),
+		});
 		await dropDeletedOffsetClaims(deleted.map(({ key }) => key));
 		return;
 	}
+	await markDeletedOffsetClaims({
+		seen: deleted
+			.filter(({ claim }) => claim.deletedSeenAt === undefined)
+			.map(({ key }) => key),
+		back: back.map(({ key }) => key),
+		at: new Date(now).toISOString(),
+	});
+	if (deleted.length === 0) return;
 
 	const containers: BuncargoContainer[] = [];
 	const listings: {
@@ -519,7 +552,7 @@ export async function settleDeletedCheckouts(input: {
 	for (const {
 		key,
 		root,
-		claim: { projectName },
+		claim: { projectName, deletedSeenAt },
 	} of deleted) {
 		const claimedElsewhere = claims.some(
 			(other) =>
@@ -537,6 +570,11 @@ export async function settleDeletedCheckouts(input: {
 			(container) => container.project === projectName,
 		);
 		if (stackStillUp) continue;
+
+		// Seen deleted only on this pass, or too recently: a later one decides.
+		const deletedFor =
+			deletedSeenAt === undefined ? 0 : now - Date.parse(deletedSeenAt);
+		if (!(deletedFor >= DELETED_CHECKOUT_SETTLE_MS)) continue;
 
 		let refusedAny = false;
 		for (const { runtime, volumes } of listings) {
