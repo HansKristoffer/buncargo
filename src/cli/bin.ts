@@ -179,14 +179,6 @@ async function runCommand(
 			return;
 		}
 
-		case "sim": {
-			const code = await (await import("../expo/sim-command")).handleSim(
-				commandArgs,
-			);
-			if (code !== 0) process.exit(code);
-			return;
-		}
-
 		case "status":
 			await (await import("./commands/inspect")).handleStatus(commandArgs);
 			return;

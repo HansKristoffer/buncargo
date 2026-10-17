@@ -129,11 +129,6 @@ export const CLI_COMMANDS = [
 		summary: "Open the database's own client in this checkout's container",
 	},
 	{
-		name: "sim",
-		usage: "sim [<app>]",
-		summary: "Open this checkout's Expo app in its own iOS simulator",
-	},
-	{
 		name: "status",
 		usage: "status [--json]",
 		summary: "Show this project's containers, ports, and tunnels",

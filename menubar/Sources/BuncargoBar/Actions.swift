@@ -47,7 +47,7 @@ enum BuncargoCommand {
     }
 
     /// `scoped` appends `--root`/`--run`, which name the run for commands that
-    /// act on one (`stop`, `sim`). A command that only needs the checkout gets
+    /// act on one (`stop`, `expo sim`). A command that only needs the checkout gets
     /// it from the working directory instead.
     static func run(_ run: Run, _ command: [String], scoped: Bool = true) async -> Swift.Result<Result, Error> {
         guard let cli = run.cli else {
@@ -121,15 +121,15 @@ enum StopCommand {
     }
 }
 
-/// `buncargo sim <app>`: boot the checkout's own simulator and open the app in it.
+/// `buncargo expo sim <app>`: boot the checkout's own simulator and open the app in it.
 enum SimulatorCommand {
     static func run(_ run: Run, app: String) async -> String? {
-        switch await BuncargoCommand.run(run, ["sim", app]) {
+        switch await BuncargoCommand.run(run, ["expo", "sim", app]) {
         case .failure(let error):
             return error.localizedDescription
         case .success(let result):
             if result.status == 0 { return nil }
-            return result.stderr.isEmpty ? "buncargo sim failed" : result.stderr
+            return result.stderr.isEmpty ? "buncargo expo sim failed" : result.stderr
         }
     }
 }

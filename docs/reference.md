@@ -37,7 +37,7 @@ bunx buncargo stop --all          # Stop this checkout's whole run
 bunx buncargo restart shopify     # Start a stopped app of a running dev again
 bunx buncargo logs                # Every app's output from the current or last run
 bunx buncargo logs shopify --errors -f --since=5m
-bunx buncargo sim                 # Open the Expo app in this checkout's own simulator
+bunx buncargo expo sim            # Open the Expo app in this checkout's own simulator
 bunx buncargo status
 bunx buncargo status --json       # Ports, containers, URLs and app states as one object
 bunx buncargo sql                 # psql (or clickhouse-client) in this checkout's container
@@ -82,7 +82,6 @@ bunx buncargo files export | ssh box 'cd app && bunx buncargo files import'
 bunx buncargo shopify env         # An integration's own commands
 bunx buncargo shopify login       # Log the Shopify CLI in
 bunx buncargo shopify link --config=local  # Link a toml without losing it
-bunx buncargo expo sim            # (`buncargo sim` still works)
 bunx buncargo run                 # List tasks
 bunx buncargo run db:seed -- --dry-run
 bunx buncargo setup               # Run the fix of every failing check
@@ -686,9 +685,9 @@ has a terminal of its own.
 When `dev` itself has no terminal (an agent's shell, `--detach`), the
 interactive app gets a pseudo-terminal of its own instead, so Expo starts its
 dev server rather than refusing, and its output is logged like any app's.
-`buncargo send <app> <keys>` types into it (`buncargo send expoApp i` opens the
-iOS simulator; `--enter` presses Enter after the text). `send` reaches every
-app in the TUI the same way. It waits for the run to answer: exit `0` typed,
+`buncargo send <app> <keys>` types into it (`buncargo send expoApp r` reloads
+it; `--enter` presses Enter after the text). `send` reaches every app in the
+TUI the same way. It waits for the run to answer: exit `0` typed,
 `2` no run started that app, `3` the app cannot take keys (no terminal of its
 own, or not running; it says which), `1` when the run does not answer within
 five seconds.
@@ -699,10 +698,10 @@ Expo Go and a development build are shells: the JavaScript comes from whichever 
 
 ```bash
 bunx buncargo dev --apps=expoApp   # Expo attached, Metro on this worktree's port
-bunx buncargo sim                  # in another terminal, or the phone button in BuncargoBar
+bunx buncargo expo sim             # in another terminal, or the phone button in BuncargoBar
 ```
 
-`buncargo sim` reads the run registry, so it needs no config and no Docker. It
+`buncargo expo sim` reads the run registry, so it needs no config and no Docker. It
 
 1. finds or creates this checkout's device, named `<projectPrefix>/<worktree> · iPhone 16 Pro`, by cloning the simulator you last used in Simulator.app (or the app's `simulator` in `expo({ apps })`), so the development build installed there comes along;
 2. boots it and brings Simulator.app to the front;
@@ -727,7 +726,7 @@ integrations: [
 ],
 ```
 
-Without `integrations: [expo()]` an app is not treated as Expo, even when its `devCommand` runs `expo`. `buncargo expo sim` and `buncargo sim` are the same command.
+Without `integrations: [expo()]` an app is not treated as Expo, even when its `devCommand` runs `expo`.
 
 The deep-link scheme and `ios.bundleIdentifier` are read from `app.json` when the run is published. A project configured only through `app.config.ts` sets the app's `scheme` in `expo({ apps })`. Named HTTPS hosts are not trusted inside the simulator, so point `EXPO_PUBLIC_*` URLs at the LAN IP or `loopbackUrls`.
 
@@ -958,7 +957,7 @@ databases, a simulator button for Expo apps, and a stop button. **Stop run**
 stops everything.
 
 It is a reader: it never signals a process, talks to Docker or drives `simctl`;
-it shells out to `buncargo stop` and `buncargo sim` using the exact interpreter
+it shells out to `buncargo stop` and `buncargo expo sim` using the exact interpreter
 that started the run, so a worktree on a different buncargo version acts with
 its own build. See [`menubar/README.md`](../menubar/README.md).
 

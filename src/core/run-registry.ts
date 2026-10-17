@@ -77,7 +77,7 @@ export interface RunAppEntry {
 	/** What "open" opens for this app (`preferredAppUrl`), so every reader agrees. */
 	openUrl?: string;
 	hostname?: string;
-	/** Present on Expo apps: what `buncargo sim` needs without loading the config. */
+	/** Present on Expo apps: what `buncargo expo sim` needs without loading the config. */
 	expo?: ExpoAppIdentity;
 	/** The exclusive lease this app holds (`AppConfig.exclusive`). */
 	exclusive?: string;

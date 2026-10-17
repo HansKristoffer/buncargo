@@ -93,7 +93,7 @@ Sources/BuncargoBar/
   RunRegistry.swift  # runs.json v1 model, supported version, liveness, grouping
   RunStore.swift     # directory watch + 5s poll, published state
   Views.swift        # rows, hover detail panel, status dots
-  Actions.swift      # open/copy/TablePlus, and `buncargo stop` / `buncargo sim` invocation
+  Actions.swift      # open/copy/TablePlus, and `buncargo stop` / `buncargo expo sim` invocation
   Notifications.swift # "workspace started" notifications, Open/Copy actions
 fixtures/
   runs.v1.json       # schema contract, checked by Swift and TypeScript tests

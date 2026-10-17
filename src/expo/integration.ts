@@ -81,7 +81,7 @@ export function expo(options: ExpoIntegrationOptions = {}): ExpoIntegration {
 		},
 
 		bannerHint: ({ name }) =>
-			expoApps.has(name) ? "bunx buncargo sim" : undefined,
+			expoApps.has(name) ? "bunx buncargo expo sim" : undefined,
 
 		commands: {
 			sim: {

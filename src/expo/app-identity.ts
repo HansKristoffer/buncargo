@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AppConfig, ExpoAppOptions } from "../types";
 
-/** What `buncargo sim` needs, resolved once at publish time into the run registry. */
+/** What `buncargo expo sim` needs, resolved once at publish time into the run registry. */
 export interface ExpoAppIdentity {
 	/** Deep-link scheme of the development build, `exp+<slug>` when the app declares none. */
 	scheme?: string;
