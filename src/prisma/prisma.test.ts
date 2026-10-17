@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { installedPrismaMajor } from "./prisma";
+import { databaseHealthCheck, installedPrismaMajor } from "./prisma";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -31,4 +31,18 @@ it("reads the installed prisma major version", () => {
 
 it("is undefined when prisma is not installed", () => {
 	expect(installedPrismaMajor(project())).toBeUndefined();
+});
+
+it("waits for the database by its preset, whatever the service is keyed", () => {
+	expect(
+		databaseHealthCheck("db", {
+			port: 5432,
+			docker: { kind: "preset", preset: "postgres" },
+		}),
+	).toBe("pg_isready");
+	expect(databaseHealthCheck("postgres", { port: 5432 })).toBe("pg_isready");
+	expect(databaseHealthCheck("db", { port: 5432 })).toBe("tcp");
+	expect(
+		databaseHealthCheck("postgres", { port: 5432, healthCheck: false }),
+	).toBe(false);
 });
