@@ -747,7 +747,7 @@ export async function startDevServers(
 			await session.stop();
 		} else {
 			handedOff = true;
-			void (async () => {
+			const closing = (async () => {
 				try {
 					await owner.wait();
 				} catch (error) {
@@ -767,6 +767,7 @@ export async function startDevServers(
 					}
 				}
 			})().catch((error) => console.error(error));
+			session.closeWith(closing);
 		}
 
 		return pids;

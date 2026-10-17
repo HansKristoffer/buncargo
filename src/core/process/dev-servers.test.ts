@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -228,6 +228,51 @@ describe("startDevServers ordering, prebuild and captures", () => {
 				2,
 			);
 		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 20_000);
+});
+
+describe("stopDevServers", () => {
+	it("returns after a library run's apps' last words are printed", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-last-words-"));
+		const port = 47100 + Math.floor(Math.random() * 500);
+		let printed = "";
+		const write = spyOn(process.stdout, "write").mockImplementation(
+			(chunk: string | Uint8Array) => {
+				printed += String(chunk);
+				return true;
+			},
+		);
+		let pids = {};
+		try {
+			// Interactive with no terminal to attach to, so it gets a screen; its
+			// goodbye has no newline, so only the screen's final flush emits it.
+			const script = `process.on("SIGTERM", () => { process.stdout.write("last words"); process.exit(0); }); console.log("started"); setInterval(() => {}, 60000);`;
+			pids = await startDevServers(
+				{
+					app: {
+						port,
+						healthEndpoint: false,
+						interactive: true,
+						devCommand: `bun -e ${JSON.stringify(script)}`,
+					},
+				},
+				root,
+				{},
+				{ app: port },
+				{ verbose: false, waitForExit: false },
+			);
+			const deadline = Date.now() + 10_000;
+			while (!printed.includes("started") && Date.now() < deadline)
+				await Bun.sleep(20);
+			expect(printed).toContain("started");
+
+			await stopDevServers(pids);
+			expect(Bun.stripANSI(printed)).toContain("last words");
+		} finally {
+			write.mockRestore();
 			await stopDevServers(pids);
 			await rm(root, { recursive: true, force: true });
 		}

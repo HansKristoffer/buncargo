@@ -26,6 +26,8 @@ export class AppSupervision {
 	private running = new Map<string, Promise<void>>();
 	private queued = new Map<string, Promise<void>>();
 	private cleanup?: Promise<void>;
+	/** What a handed-off session still does once stopped: its output's last flush. */
+	private closing: Promise<void> = Promise.resolve();
 
 	constructor(
 		private options: ConstructorParameters<typeof ProcessOwner>[0] & {
@@ -144,6 +146,19 @@ export class AppSupervision {
 		if (child) await terminateOwnedProcess(child, this.options.shutdownGraceMs);
 	}
 
+	/**
+	 * Work that ends a session handed off to run in the background, after it
+	 * stops. {@link stopDevServers} waits for it, or a library caller's process
+	 * exits before its apps' last words are printed.
+	 */
+	closeWith(closing: Promise<void>): void {
+		this.closing = closing;
+	}
+
+	closed(): Promise<void> {
+		return this.closing;
+	}
+
 	stop(): Promise<void> {
 		this.cleanup ??= (async () => {
 			this.owner.controller.abort(new RunInterrupted("Run stopped"));
@@ -166,7 +181,13 @@ export async function stopDevServers(pids: DevServerPids): Promise<void> {
 		Object.values(pids).flatMap((pid) => activeSessions.get(pid) ?? []),
 	);
 	const results = await Promise.allSettled(
-		[...sessions].map((session) => session.stop()),
+		[...sessions].map(async (session) => {
+			try {
+				await session.stop();
+			} finally {
+				await session.closed();
+			}
+		}),
 	);
 	const errors = results.flatMap((result) =>
 		result.status === "rejected" ? [result.reason] : [],
