@@ -72,7 +72,7 @@ export class AppSupervision {
 	): Promise<void> {
 		// An async worker claim can finish while stop is cancelling this session.
 		if (this.owner.controller.signal.aborted) {
-			await terminateOwnedProcess(child, this.options.shutdownGraceMs);
+			await terminateOwnedProcess(child, this.owner.graceFor(name));
 			this.owner.controller.signal.throwIfAborted();
 		}
 		this.owner.register(name, child, needsReadiness, worker, port);
@@ -143,7 +143,7 @@ export class AppSupervision {
 	 */
 	async stopApp(name: string): Promise<void> {
 		const child = this.children.get(name);
-		if (child) await terminateOwnedProcess(child, this.options.shutdownGraceMs);
+		if (child) await terminateOwnedProcess(child, this.owner.graceFor(name));
 	}
 
 	/**

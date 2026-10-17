@@ -316,6 +316,11 @@ export async function startDevServers(
 	const session = new AppSupervision({
 		signal: options.signal,
 		shutdownGraceMs: options.shutdownGraceMs,
+		appGraceMs: new Map(
+			Object.entries(startable).flatMap(([name, app]) =>
+				app.stopGraceMs === undefined ? [] : [[name, app.stopGraceMs]],
+			),
+		),
 		attachedName,
 		optional,
 		onAppExit: (name, code, signal) => {

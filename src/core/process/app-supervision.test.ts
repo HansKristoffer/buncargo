@@ -164,3 +164,61 @@ it("runs concurrent restarts of one app one after another, coalescing a waiting 
 		await session.stop();
 	}
 });
+
+/**
+ * A child that ignores SIGTERM, so only the SIGKILL after its grace stops it.
+ * Resolves once the handler is installed: a SIGTERM before that still kills.
+ */
+async function stubborn() {
+	const app = spawn(
+		process.execPath,
+		[
+			"--eval",
+			"process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000)",
+		],
+		{ detached: true, stdio: ["ignore", "pipe", "ignore"] },
+	);
+	await new Promise<void>((resolve) =>
+		app.stdout.once("data", () => resolve()),
+	);
+	return app;
+}
+
+// The default grace is a minute here: an app that is not given its own would
+// hold `stop` far past the test's timeout.
+it("stops each app after its own grace, not the default", async () => {
+	const session = new AppSupervision({
+		width: 1,
+		onRestart: () => {},
+		shutdownGraceMs: 60_000,
+		appGraceMs: new Map([["emulators", 50]]),
+	});
+	try {
+		await session.register("emulators", await stubborn(), true, false, false);
+		const pid = session.pids.emulators;
+		if (pid === undefined) throw new Error("App did not have a pid");
+		await session.stop();
+		expect(isProcessAlive(pid)).toBe(false);
+	} finally {
+		await session.stop();
+	}
+});
+
+it("replaces an app after its own grace on restart", async () => {
+	const session = new AppSupervision({
+		width: 1,
+		onRestart: () => {},
+		shutdownGraceMs: 60_000,
+		appGraceMs: new Map([["emulators", 50]]),
+	});
+	try {
+		await session.register("emulators", await stubborn(), true, false, false);
+		const first = session.pids.emulators;
+		session.setSpawner("emulators", async () => child(), true, false);
+		await session.restart("emulators");
+		if (first === undefined) throw new Error("App did not have a pid");
+		expect(isProcessAlive(first)).toBe(false);
+	} finally {
+		await session.stop();
+	}
+});

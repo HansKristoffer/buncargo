@@ -71,6 +71,15 @@ emits `exit` to it: otherwise a crash at boot failed the whole start, the one th
 verdict waits for the app's last screen to flush, and in between a readiness check would otherwise
 promote the dead process.
 
+## Stop grace
+
+Every SIGTERM an app gets is followed by SIGKILL after its `stopGraceMs` (`ProcessOwner.graceFor`,
+default the session's `shutdownGraceMs`): on stop, restart, retire and the detached-adoption path
+alike, because an app that saves data on exit (the Firebase emulators' export) loses it to the
+first path that kills it early. `runs.json` records the grace, so `buncargo stop <app>` waits as
+long, and stopping a whole run waits 5 s plus the longest one before killing the `dev` process,
+which is still stopping its apps.
+
 ## Watching files and ready-by-output
 
 `app-watch.ts` is the `watch` config: one recursive `fs.watch` (FSEvents) per path, debounced,

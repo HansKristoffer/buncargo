@@ -233,7 +233,7 @@ The `actions/setup` composite action installs Bun from `.bun-version` (or `bun-v
 
 ## Integrations
 
-Project-type knowledge lives in integrations rather than in every project's scripts: `buncargo/shopify`, `buncargo/expo` and `buncargo/supabase` today. An integration is a plain object in `integrations: [...]`. It can transform the config (add apps, env, generated files), run a stack of containers another CLI manages (`stacks`), add hooks and checks, contribute commands under its own name (`buncargo shopify env`), add env to one app's process, and describe itself in `buncargo env`, the run registry and BuncargoBar. [`docs/integrations.md`](../docs/integrations.md) covers writing one, with the Shopify and Expo integrations as references.
+Project-type knowledge lives in integrations rather than in every project's scripts: `buncargo/shopify`, `buncargo/expo`, `buncargo/supabase` and `buncargo/firebase` today. An integration is a plain object in `integrations: [...]`. It can transform the config (add apps, env, generated files), run a stack of containers another CLI manages (`stacks`), add hooks and checks, contribute commands under its own name (`buncargo shopify env`), add env to one app's process, and describe itself in `buncargo env`, the run registry and BuncargoBar. [`docs/integrations.md`](../docs/integrations.md) covers writing one, with the Shopify and Expo integrations as references.
 
 Run `bun run benchmark:startup` for the regression matrix: cold and warm service starts, four concurrent runs, app-only selections, port allocation, workers, preparation, shared-checkout reuse, and cancellation. Results and violations are saved to `.buncargo/benchmarks/startup.json`, including failed runs. Each scenario has its own timing and subprocess limits in `scripts/startup-budgets.ts`; for example, single-run warm startup has a 700ms ceiling, shared-checkout reuse 350ms, and cancellation 300ms. CI takes five samples per worker and applies `--budget-scale=1.5` to timing limits for hosted-runner variation. Counters include process identity subprocesses. These measure orchestration overhead with simulated containers; they do not include image pulls or external network providers. The fixture owns its watchdog sentinel and isolates both container binaries.
 
@@ -963,6 +963,10 @@ whose identity cannot be read (`ps` failed or timed out) is refused too, rather
 than reported stopped while it may still run. Exit codes are `0` stopped, `2` no
 such target, `3` refused.
 
+An app gets its `stopGraceMs` (5 seconds unless set) to exit after SIGTERM
+before it is killed. Stopping a whole run waits 5 seconds plus the longest
+grace among its apps, because the run stops its apps itself.
+
 Services are stopped, never killed, so a `restart:` policy cannot undo it.
 Nothing in buncargo brings a stopped container back, so it stays down until the
 next `dev`; once the run itself ends, the watchdog removes it. Stopping a whole
@@ -1206,6 +1210,27 @@ Vite is not a dependency of buncargo: the plugin's return type is declared struc
 
 **Proxying `/api` to another app.** `buncargoVite({ proxy: { "/api": "api" } })` adds a `server.proxy` entry targeting the `api` app's loopback URL (`API_LOOPBACK_URL`, else `API_PORT`), with WebSockets on and the incoming Host kept (`changeOrigin: false`), so the API sees the public hostname behind a tunnel. Write this rather than a hand-rolled proxy to `API_URL`: with named hosts on, that URL is `https://api.<project>.localhost`, and a proxy that keeps the Host sends the request back through the hosts daemon to the Vite it came from, which answers `508 Loop Detected`. A tunnel-first project that does not want named URLs at all can set `options.hosts: false`.
 
+### Next.js
+
+`withBuncargo()` wraps a Next config so `next dev` accepts the origins a buncargo run serves the app from:
+
+```ts
+// apps/web/next.config.ts
+import { withBuncargo } from "buncargo/next";
+
+export default withBuncargo({ reactStrictMode: true });
+```
+
+Next answers a 403 to requests for its scripts and its HMR socket from any host outside `allowedDevOrigins`, and by default allows only `localhost` and its subdomains. Without the wrapper, a page opened by the machine's Tailscale address (as BuncargoBar does on a tailnet), through `BUNCARGO_URL_HOST`, on a hosts `tld` other than `localhost`, or through a `--expose` tunnel loads its HTML and nothing else. The wrapper adds those hosts to `allowedDevOrigins`, and the tunnels' hosts to `experimental.serverActions.allowedOrigins`. Origins the config lists itself are kept. A config function (`withBuncargo(async (phase) => ({ … }))`) works too, and only `next dev` sees the change, so a `next build` run inside a buncargo environment stays clean.
+
+`next dev` reads `PORT`, so the app needs no port flag. It compiles a route on its first request, so wait for its ready line rather than a health request:
+
+```ts
+web: { port: 3000, cwd: "apps/web", devCommand: "next dev", readyWhen: /Ready in/ },
+```
+
+Next is not a dependency of buncargo, and the wrapper imports nothing from it.
+
 ### Read by buncargo
 
 | Variable | Meaning |
@@ -1320,6 +1345,7 @@ Use the top-level `env` overlay for shared values (rewritten `WEB_URL`, `VITE_*`
 | `secrets` | `{ projectId?, organizationId?, environment?, siteUrl?, path?, required? }` | `undefined` | Fetch this app's Infisical secrets once and inject them. See [Infisical secrets](#infisical-secrets) |
 | `interactive` | `boolean` | `false` | Own the TTY in stream mode. Only one app may set this; the TUI ignores it |
 | `essential` | `boolean` | `true` | `false`: the run keeps going when this app exits; `r` / `buncargo restart` starts it again |
+| `stopGraceMs` | `number` | `5000` | Time between SIGTERM and SIGKILL on stop, restart and `buncargo stop`. Raise it for a process that saves data as it exits |
 | `actions` | `{ key, label, open }[]` | `[]` | Keys that open a captured URL from the TUI footer. Unique, and not `o e r l q j k` |
 | `needsPublicUrls` | `boolean` | `false` | Start after tunnels so env sees `*_PUBLIC_URL`. Ignored without `--expose` |
 

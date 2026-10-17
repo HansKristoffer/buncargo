@@ -81,6 +81,8 @@ export interface RunAppEntry {
 	expo?: ExpoAppIdentity;
 	/** The exclusive lease this app holds (`AppConfig.exclusive`). */
 	exclusive?: string;
+	/** `AppConfig.stopGraceMs`: how long `stop` waits for it after SIGTERM. */
+	stopGraceMs?: number;
 	status: RunAppStatus;
 }
 
@@ -247,7 +249,9 @@ function isRunApp(value: unknown): value is RunAppEntry {
 		(value.processIdentity === undefined ||
 			typeof value.processIdentity === "string") &&
 		(value.expo === undefined || isRecord(value.expo)) &&
-		(value.exclusive === undefined || typeof value.exclusive === "string")
+		(value.exclusive === undefined || typeof value.exclusive === "string") &&
+		(value.stopGraceMs === undefined ||
+			(typeof value.stopGraceMs === "number" && value.stopGraceMs > 0))
 	);
 }
 

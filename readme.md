@@ -213,6 +213,34 @@ The Supabase CLI keeps running the local stack (`bun add -d supabase`, then `sup
 
 Each start runs `supabase migration up`, so a pull with new migrations needs nothing else; `types` regenerates the TypeScript types when the migrations change. `functions: true` adds `supabase functions serve` as a worker, and `exclude` skips containers (`["studio", "imgproxy"]`; CI skips Studio and analytics by default). `buncargo exec -- supabase db diff` runs the CLI against this checkout's stack. A run's stack is held for the idle timeout after it exits, like containers; `dev --down` stops it, and `dev --reset` deletes its data. Settings the stack started with, such as the redirect list, change with the next start after `dev --down`.
 
+### Next.js and Firebase
+
+```typescript
+import { defineDevConfig } from "buncargo";
+import { firebase } from "buncargo/firebase";
+
+export default defineDevConfig({
+	projectPrefix: "myapp",
+	services: {},
+	apps: {
+		web: { port: 3000, cwd: "apps/web", devCommand: "next dev", readyWhen: /Ready in/, startAfter: ["firebase"] },
+	},
+	integrations: [firebase({ publicEnvPrefix: "NEXT_PUBLIC_" })],
+});
+```
+
+```ts
+// apps/web/next.config.ts
+import { withBuncargo } from "buncargo/next";
+export default withBuncargo({});
+```
+
+`firebase()` runs the Emulator Suite (`bun add -d firebase-tools`, then `firebase init emulators`) as the `firebase` app, one suite per checkout. Emulator ports exist only in `firebase.json`, so buncargo writes a copy beside it, `firebase.buncargo.json`, with every port moved by the checkout's offset, and starts the CLI on that copy; `firebase.json` itself is never rewritten. It starts every emulator `firebase.json` configures except Hosting and App Hosting, which would serve the app buncargo already runs (`emulators: [...]` to choose). The project is `.firebaserc`'s default, else `demo-<projectPrefix>`, which can never reach a real project (`projectId` to set it).
+
+Every process gets the variables `firebase emulators:exec` sets, so the Admin SDK and Google Cloud clients find the emulators on their own: `FIRESTORE_EMULATOR_HOST`, `FIREBASE_AUTH_EMULATOR_HOST`, `FIREBASE_STORAGE_EMULATOR_HOST`, `FIREBASE_DATABASE_EMULATOR_HOST`, `PUBSUB_EMULATOR_HOST`, `FIREBASE_EMULATOR_HUB` and `GCLOUD_PROJECT`, each only for an emulator that runs. The web SDK reads nothing on its own, so it gets prefixed browser copies of the emulator hosts plus `FIREBASE_FUNCTIONS_EMULATOR_HOST` and `FIREBASE_PROJECT_ID`, to pass to `connectFirestoreEmulator` and the other `connect*Emulator` calls.
+
+The data survives: it is imported from `.firebase-emulator-data` on start and exported there on stop and restart, and the suite gets a minute to finish exporting before it is killed (`persist` to move it or turn it off, `stopGraceMs` for the time). Delete the directory to start empty. `bunx buncargo doctor` checks that the CLI, `firebase.json` and, for the Firestore, Realtime Database and Storage emulators, Java are present, and that the data and the generated config are gitignored. The Emulator UI is the `firebase` app's URL, so `bunx buncargo open firebase` opens it. `withBuncargo()` lets `next dev` serve the page from a tailnet address, a tunnel or a named host; see [Next.js](docs/reference.md#nextjs).
+
 ### Built-in service helpers
 
 All of `service.postgres()`, `redis()`, `clickhouse()`, `mailpit()`, `typesense()` accept `port`, `expose`, `healthCheck`, `serviceName`, and `docker`. Beyond that each takes only what it honors: `database` / `user` / `password` on `postgres` and `clickhouse` (their URLs carry credentials), `secondaryPort` on `clickhouse` and `mailpit`, `apiKey` on `typesense`. Anything else is a type error - use `service.custom({ ... })` for a service that needs more.
@@ -254,7 +282,7 @@ bunx buncargo stop --all               # Stop this checkout's run
 ## Documentation
 
 - [CLI, configuration and programmatic API reference](docs/reference.md)
-- [Integrations](docs/integrations.md), including Expo, Shopify and Supabase
+- [Integrations](docs/integrations.md), including Expo, Shopify, Supabase and Firebase
 - [Remote sharing and relay operation](docs/frp.md)
 - [BuncargoBar](menubar/README.md)
 - [Container lifecycle and cleanup](docs/runtime-maintenance.md)

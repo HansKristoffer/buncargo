@@ -53,6 +53,7 @@ export function validateEntryShapes(
 					"string",
 				);
 				fields(entry, `${path}.`, ["envVars"], "function");
+				duration(entry.stopGraceMs, `${path}.stopGraceMs`);
 				check(
 					entry.devCommand,
 					`${path}.devCommand`,
