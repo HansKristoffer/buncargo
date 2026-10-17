@@ -50,14 +50,17 @@ describe("architecture", () => {
 				"loaded by users' vite.config.ts; imports nothing by design",
 		};
 		const read = /\benv(?:\.|\[["'])(BUNCARGO_\w+|CI)\b(?!["']?\]?\s*=[^=])/g;
+		// A name held in a constant escapes `read`: `env[NAME]` is a read too.
+		const named = /\bconst\s+\w+\s*=\s*["'](BUNCARGO_\w+)["']/g;
 
 		const offenders = sourceFiles()
 			.filter((file) => !(file in allowed))
-			.flatMap((file) =>
-				[...readFileSync(join(ROOT, file), "utf8").matchAll(read)].map(
+			.flatMap((file) => {
+				const source = readFileSync(join(ROOT, file), "utf8");
+				return [...source.matchAll(read), ...source.matchAll(named)].map(
 					(match) => `${file}: ${match[1]}`,
-				),
-			);
+				);
+			});
 
 		expect(offenders).toEqual([]);
 	});

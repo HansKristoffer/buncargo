@@ -358,6 +358,19 @@ export function checkSlotCount(env: NodeJS.ProcessEnv = process.env): number {
 	return readInt(env, "BUNCARGO_CHECK_SLOTS", 3);
 }
 
+/**
+ * `BUNCARGO_CHECK_SLOT` - the slot lock file this process tree already holds.
+ * Set by `withCheckSlot` for its children, so a nested check never waits on
+ * the slot its own parent holds.
+ */
+export const CHECK_SLOT_ENV = "BUNCARGO_CHECK_SLOT";
+
+export function heldCheckSlot(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return readTrimmed(env, CHECK_SLOT_ENV);
+}
+
 /** Runtime enrollment for disposable cloud sandboxes. Never include this value in diagnostics. */
 /** Sharing credentials are consumed by the coordinator, never frontend processes. */
 export function connectTokens(env: NodeJS.ProcessEnv = process.env): string[] {

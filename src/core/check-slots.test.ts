@@ -9,11 +9,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	CHECK_SLOT_ENV,
-	type CheckSlotHolder,
-	withCheckSlot,
-} from "./check-slots";
+import { type CheckSlotHolder, withCheckSlot } from "./check-slots";
+import { CHECK_SLOT_ENV } from "./runtime-flags";
 
 const dirs: string[] = [];
 
