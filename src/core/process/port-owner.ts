@@ -489,26 +489,39 @@ export function signalProcessTree(pid: number, signal: NodeJS.Signals): void {
 	}
 }
 
-export async function killPortOwner(
+type KillPortOwnerOptions = PortOwnerLookupOptions & {
+	verbose?: boolean;
+	timeout?: number;
+};
+
+export function killPortOwner(
 	port: number,
-	options: PortOwnerLookupOptions & {
-		verbose?: boolean;
-		timeout?: number;
-	} = {},
+	options: KillPortOwnerOptions = {},
+): Promise<boolean> {
+	return killPortOwnerFoundBy(getPortOwner, port, options);
+}
+
+/** `killPortOwner` with the lookup that finds the holder passed in. */
+export async function killPortOwnerFoundBy(
+	lookup: (port: number, options: PortOwnerLookupOptions) => PortOwner | null,
+	port: number,
+	options: KillPortOwnerOptions = {},
 ): Promise<boolean> {
 	const { verbose = false, timeout = 5000, runtime, skipContainers } = options;
-	const owner = getPortOwner(port, { runtime, skipContainers });
+	const owner = lookup(port, { runtime, skipContainers });
 	if (!owner) {
 		return false;
 	}
 
-	if (owner.container && owner.pids.length === 0) {
+	// The process holding a published port is the runtime's own (Docker
+	// Desktop's backend, the `container` forwarder): signalling it takes down
+	// every container on the machine, and still not this one.
+	if (owner.container) {
+		const project = owner.container.composeProject;
 		throw new Error(
 			`Port ${port} is held by container ${owner.container.name}${
-				owner.container.composeProject
-					? ` (project ${owner.container.composeProject})`
-					: ""
-			}`,
+				project ? ` (project ${project})` : ""
+			}, which buncargo does not kill. Stop the run that owns it (\`buncargo stop --all\` in its checkout), or stop the container itself.`,
 		);
 	}
 
@@ -526,7 +539,9 @@ export async function killPortOwner(
 	const startTime = Date.now();
 	while (Date.now() - startTime < timeout) {
 		await new Promise((resolve) => setTimeout(resolve, 100));
-		if (!isPortInUse(port, { runtime, skipContainers })) {
+		// Only the listeners: a full owner lookup also asks the container
+		// runtime and blocks the event loop ten times a second.
+		if (getListeningPids(port).length === 0) {
 			if (verbose) console.log(`   ✓ Port ${port} released`);
 			return true;
 		}
@@ -541,7 +556,7 @@ export async function killPortOwner(
 			signalProcessTree(pid, "SIGKILL");
 	}
 	await new Promise((resolve) => setTimeout(resolve, 500));
-	const released = !isPortInUse(port, { runtime, skipContainers });
+	const released = getListeningPids(port).length === 0;
 	if (verbose) {
 		console.log(
 			released
