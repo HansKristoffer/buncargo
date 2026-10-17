@@ -1,12 +1,14 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import * as identities from "../process-identity";
 import { readProcessIdentityAsync } from "../process-identity";
 import { DetachedApp } from "./detached-app";
 import { isProcessAlive } from "./lifecycle";
 import { ProcessOwner } from "./process-owner";
 import {
 	ownedProcessGone,
+	ProcessIdentityUnreadable,
 	terminateOwnedProcess,
 	terminateProcessGroup,
 } from "./terminate";
@@ -133,6 +135,77 @@ describe.skipIf(process.platform === "win32")("terminateOwnedProcess", () => {
 			expect(signals).toEqual([[-pid, 0]]);
 		} finally {
 			probe.mockRestore();
+		}
+	});
+});
+
+describe.skipIf(process.platform === "win32")("an unreadable identity", () => {
+	/** A process group whose leader ignores SIGTERM. */
+	async function spawnStubborn(): Promise<number> {
+		const child = spawn(
+			"sh",
+			["-c", `trap "" TERM; echo ready; exec sleep 30`],
+			{
+				detached: true,
+				stdio: ["ignore", "pipe", "ignore"],
+			},
+		);
+		child.unref();
+		await new Promise((resolve) => child.stdout?.once("data", resolve));
+		return child.pid ?? 0;
+	}
+
+	it("refuses to signal a recorded process it cannot identify", async () => {
+		const pid = spawnBystander();
+		const identity = await readProcessIdentityAsync(pid);
+		const read = spyOn(
+			identities,
+			"readProcessIdentityAsync",
+		).mockResolvedValue(undefined);
+		try {
+			const stopping = terminateProcessGroup(pid, identity ?? "", 0);
+			await expect(stopping).rejects.toBeInstanceOf(ProcessIdentityUnreadable);
+			await expect(stopping).rejects.toThrow(`pid ${pid}'s identity`);
+			expect(isProcessAlive(pid)).toBe(true);
+		} finally {
+			read.mockRestore();
+			process.kill(pid, "SIGKILL");
+		}
+	});
+
+	it("does not report a TERM-ignoring process stopped when it cannot confirm it before SIGKILL", async () => {
+		const pid = await spawnStubborn();
+		const identity = await readProcessIdentityAsync(pid);
+		const read = spyOn(identities, "readProcessIdentityAsync")
+			.mockResolvedValueOnce(identity)
+			.mockResolvedValue(undefined);
+		try {
+			await expect(
+				terminateProcessGroup(pid, identity ?? "", 0),
+			).rejects.toThrow(`pid ${pid} is still running after SIGTERM`);
+			expect(isProcessAlive(pid)).toBe(true);
+		} finally {
+			read.mockRestore();
+			process.kill(-pid, "SIGKILL");
+		}
+	});
+
+	it("warns instead of silently skipping an adopted app it cannot identify", async () => {
+		const pid = spawnBystander();
+		const identity = await readProcessIdentityAsync(pid);
+		const read = spyOn(
+			identities,
+			"readProcessIdentityAsync",
+		).mockResolvedValue(undefined);
+		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			await terminateOwnedProcess(new DetachedApp(pid, identity ?? ""), 0);
+			expect(isProcessAlive(pid)).toBe(true);
+			expect(String(warn.mock.calls[0]?.[0])).toContain(`ps -p ${pid}`);
+		} finally {
+			warn.mockRestore();
+			read.mockRestore();
+			process.kill(pid, "SIGKILL");
 		}
 	});
 });

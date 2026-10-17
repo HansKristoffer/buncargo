@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
 	chmodSync,
 	mkdirSync,
@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as identities from "../core/process-identity";
 import { readProcessIdentity } from "../core/process-identity";
 import { loadRuns, readLiveRuns, releaseRun } from "../core/run-registry";
 import { handleStop, stopService } from "./commands/stop";
@@ -247,6 +248,37 @@ describe("published run ownership", () => {
 			expect(await app.exited).not.toBeUndefined();
 			expect((await loadRuns())[0]?.apps[0]?.status).toBe("stopped");
 		} finally {
+			app.kill("SIGKILL");
+		}
+	});
+	it("refuses, rather than reporting it stopped, an app whose identity cannot be read", async () => {
+		const env = source("session-e");
+		const run = await publishCurrentRun(env, {
+			apps: { web: { port: 3000, devCommand: "bun dev" } },
+			serviceNames: [],
+		});
+		if (!run) throw new Error("run not published");
+		const app = Bun.spawn(
+			[process.execPath, "--eval", "setInterval(() => {}, 1000)"],
+			{ stdout: "ignore", stderr: "ignore" },
+		);
+		const read = spyOn(identities, "readProcessIdentityAsync");
+		const errors = spyOn(console, "error").mockImplementation(() => {});
+		try {
+			await recordAppSpawn(env, "web", app.pid, false);
+			// `ps` failed or timed out.
+			read.mockResolvedValue(undefined);
+			expect(
+				await handleStop(["web", "--root", root, "--run", run.sessionId]),
+			).toBe(3);
+			const printed = errors.mock.calls.map(String).join("\n");
+			expect(printed).toContain(`pid ${app.pid}'s identity could not be read`);
+			expect(printed).toContain(`ps -p ${app.pid}`);
+			expect(app.exitCode).toBeNull();
+			expect((await loadRuns())[0]?.apps[0]?.status).not.toBe("stopped");
+		} finally {
+			errors.mockRestore();
+			read.mockRestore();
 			app.kill("SIGKILL");
 		}
 	});

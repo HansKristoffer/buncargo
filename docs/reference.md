@@ -899,8 +899,10 @@ Stopping one app does not end the run: a signalled exit is not a failure to the
 child supervisor, so the other apps and the containers keep going. Two targets
 are refused without `--force` (and prompt when there is a terminal): the
 attached app, because closing it tears the run down by design, and an app this
-run reused from another terminal, because that process is not ours. Exit codes
-are `0` stopped, `2` no such target, `3` refused.
+run reused from another terminal, because that process is not ours. A process
+whose identity cannot be read (`ps` failed or timed out) is refused too, rather
+than reported stopped while it may still run. Exit codes are `0` stopped, `2` no
+such target, `3` refused.
 
 Services are stopped, never killed, so a `restart:` policy cannot undo it.
 Nothing in buncargo brings a stopped container back, so it stays down until the

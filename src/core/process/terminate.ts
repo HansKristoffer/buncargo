@@ -1,5 +1,9 @@
 import { abortableSleep } from "../deadline";
-import { matchesProcessIdentityAsync } from "../process-identity";
+import {
+	checkProcessIdentityAsync,
+	type ProcessIdentityCheck,
+} from "../process-identity";
+import { formatWarn } from "../style";
 import { DetachedApp } from "./detached-app";
 import { isProcessAlive } from "./lifecycle";
 import { signalProcessTree } from "./port-owner";
@@ -67,10 +71,30 @@ export function ownedProcessGone(
  * over. A leader that is gone while its group lives is: a group id is never
  * handed to a new process while any member of the group remains.
  */
-async function stillOurs(child: AppChild | DetachedApp): Promise<boolean> {
-	if (!(child instanceof DetachedApp)) return true;
-	if (!isProcessAlive(child.pid)) return true;
-	return matchesProcessIdentityAsync(child.pid, child.identity);
+async function stillOurs(
+	child: AppChild | DetachedApp,
+): Promise<ProcessIdentityCheck> {
+	if (!(child instanceof DetachedApp)) return "match";
+	if (!isProcessAlive(child.pid)) return "match";
+	return checkProcessIdentityAsync(child.pid, child.identity);
+}
+
+/**
+ * A process that may still run, but whose identity could not be read to
+ * confirm it is the recorded one, so it was not sent `signal`. Never reads as
+ * "already gone": the caller must not report it stopped.
+ */
+export class ProcessIdentityUnreadable extends Error {
+	constructor(
+		readonly pid: number,
+		readonly signal: NodeJS.Signals,
+	) {
+		super(
+			signal === "SIGKILL"
+				? `pid ${pid} is still running after SIGTERM, and its identity could not be read to confirm it before SIGKILL`
+				: `pid ${pid}'s identity could not be read to confirm it is still the recorded process; nothing was signalled`,
+		);
+	}
 }
 
 function signalGroup(
@@ -101,7 +125,11 @@ async function signalUntilGone(
 	const deadline = performance.now() + graceMs;
 	while (ownedProcessAlive(child) && performance.now() < deadline)
 		await abortableSleep(25);
-	if (!ownedProcessAlive(child) || !(await stillOurs(child))) return;
+	if (!ownedProcessAlive(child)) return;
+	const ours = await stillOurs(child);
+	if (ours === "unreadable")
+		throw new ProcessIdentityUnreadable(child.pid ?? 0, "SIGKILL");
+	if (ours === "mismatch") return;
 	signalGroup(child, "SIGKILL");
 	const killDeadline = performance.now() + 1000;
 	while (ownedProcessAlive(child) && performance.now() < killDeadline)
@@ -110,14 +138,33 @@ async function signalUntilGone(
 		throw new Error(`Process group ${child.pid} did not exit after SIGKILL`);
 }
 
-/** Only for children spawned detached by this invocation, never reused ports. */
+/**
+ * Only for children spawned detached by this invocation, never reused ports.
+ *
+ * An adopted app whose identity cannot be read is left alone with a warning:
+ * signalling it could hit an unrelated process, and staying silent would let
+ * the run report it stopped.
+ */
 export async function terminateOwnedProcess(
 	child: AppChild | DetachedApp,
 	graceMs = 5000,
 	initialSignal: NodeJS.Signals = "SIGTERM",
 ): Promise<void> {
-	if (!ownedProcessAlive(child) || !(await stillOurs(child))) return;
-	await signalUntilGone(child, graceMs, initialSignal);
+	try {
+		if (!ownedProcessAlive(child)) return;
+		const ours = await stillOurs(child);
+		if (ours === "unreadable")
+			throw new ProcessIdentityUnreadable(child.pid ?? 0, initialSignal);
+		if (ours === "mismatch") return;
+		await signalUntilGone(child, graceMs, initialSignal);
+	} catch (error) {
+		if (!(error instanceof ProcessIdentityUnreadable)) throw error;
+		console.warn(
+			formatWarn(
+				`${error.message}. Check it with \`ps -p ${error.pid}\` and stop it yourself if it is still the app.`,
+			),
+		);
+	}
 }
 
 /**
@@ -127,14 +174,19 @@ export async function terminateOwnedProcess(
  * keeps the port when only the shell is gone.
  *
  * Returns false, signalling nothing, when `pid` is no longer the process
- * `identity` names (it exited, or the pid was reused).
+ * `identity` names (it exited, or the pid was reused). Throws
+ * {@link ProcessIdentityUnreadable} when that cannot be read, before the
+ * first signal or before SIGKILL.
  */
 export async function terminateProcessGroup(
 	pid: number,
 	identity: string,
 	graceMs = 5000,
 ): Promise<boolean> {
-	if (!(await matchesProcessIdentityAsync(pid, identity))) return false;
+	const check = await checkProcessIdentityAsync(pid, identity);
+	if (check === "unreadable")
+		throw new ProcessIdentityUnreadable(pid, "SIGTERM");
+	if (check === "mismatch") return false;
 	await signalUntilGone(new DetachedApp(pid, identity), graceMs, "SIGTERM");
 	return true;
 }

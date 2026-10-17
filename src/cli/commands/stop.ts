@@ -7,7 +7,10 @@ import {
 import { runStackDowns } from "../../container-runtime/sweep";
 import { findMonorepoRoot } from "../../core/ports";
 import { killPortOwner } from "../../core/process";
-import { terminateProcessGroup } from "../../core/process/terminate";
+import {
+	ProcessIdentityUnreadable,
+	terminateProcessGroup,
+} from "../../core/process/terminate";
 import { askConfirm, isInteractive } from "../../core/prompt";
 import {
 	findRunsByRoot,
@@ -148,10 +151,15 @@ async function stopApp(app: RunAppEntry, force: boolean): Promise<number> {
 		return stopReusedApp(app, force);
 	}
 
-	if (
-		!app.processIdentity ||
-		!(await terminateProcessGroup(app.pid, app.processIdentity))
-	) {
+	const stopped =
+		app.processIdentity &&
+		(await terminateUnlessUnreadable(
+			`${app.name}'s process`,
+			app.pid,
+			app.processIdentity,
+		));
+	if (stopped === "refused") return STOP_EXIT.refused;
+	if (!stopped) {
 		log.error(
 			`${app.name}'s process (pid ${app.pid}) has exited or was replaced; nothing was signalled.`,
 		);
@@ -160,6 +168,27 @@ async function stopApp(app: RunAppEntry, force: boolean): Promise<number> {
 	}
 	log.done(`Stopped ${app.name}`);
 	return STOP_EXIT.ok;
+}
+
+/**
+ * {@link terminateProcessGroup}, refusing when the process's identity cannot
+ * be read: it may still run, so it is neither reported stopped nor gone.
+ */
+async function terminateUnlessUnreadable(
+	what: string,
+	pid: number,
+	identity: string,
+): Promise<boolean | "refused"> {
+	try {
+		return await terminateProcessGroup(pid, identity);
+	} catch (error) {
+		if (!(error instanceof ProcessIdentityUnreadable)) throw error;
+		log.error(`${what}: ${error.message}.`);
+		log.hint(
+			`Check it with \`ps -p ${pid}\` and run \`buncargo stop\` again, or stop pid ${pid} yourself.`,
+		);
+		return "refused";
+	}
 }
 
 /**
@@ -304,10 +333,15 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 		}
 	}
 
-	if (
-		!run.processIdentity ||
-		!(await terminateProcessGroup(run.pid, run.processIdentity))
-	) {
+	const stopped =
+		run.processIdentity &&
+		(await terminateUnlessUnreadable(
+			`${run.projectName}'s run process`,
+			run.pid,
+			run.processIdentity,
+		));
+	if (stopped === "refused") return STOP_EXIT.refused;
+	if (!stopped) {
 		log.error(
 			`${run.projectName}'s run process (pid ${run.pid}) has exited or was replaced; nothing was signalled.`,
 		);

@@ -241,10 +241,32 @@ export async function matchesProcessIdentityAsync(
 	identity?: string,
 	signal?: AbortSignal,
 ): Promise<boolean> {
+	return (await checkProcessIdentityAsync(pid, identity, signal)) === "match";
+}
+
+/**
+ * `unreadable`: the pid runs, but its birth could not be read (`ps` failed or
+ * timed out). Not a mismatch: a caller about to report a process stopped must
+ * not read it as "already gone".
+ */
+export type ProcessIdentityCheck = "match" | "mismatch" | "unreadable";
+
+/** {@link matchesProcessIdentityAsync}, telling "cannot tell" apart from "no". */
+export async function checkProcessIdentityAsync(
+	pid: number,
+	identity?: string,
+	signal?: AbortSignal,
+): Promise<ProcessIdentityCheck> {
 	signal?.throwIfAborted();
-	if (!Number.isInteger(pid) || pid <= 1 || !isProcessAlive(pid)) return false;
-	if (identity === undefined) return true;
-	return (await readProcessIdentityAsync(pid, signal)) === identity;
+	if (!Number.isInteger(pid) || pid <= 1 || !isProcessAlive(pid))
+		return "mismatch";
+	if (identity === undefined) return "match";
+	const actual = await readProcessIdentityAsync(pid, signal);
+	if (actual === identity) return "match";
+	// Linux reads nothing for a pid that exited during the read.
+	if (actual === undefined)
+		return isProcessAlive(pid) ? "unreadable" : "mismatch";
+	return "mismatch";
 }
 
 type IdentityEntry = { pid: number; processIdentity?: string };
