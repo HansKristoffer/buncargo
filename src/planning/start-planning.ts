@@ -1,12 +1,9 @@
 import type { AppConfig, DockerComposeNode, ServiceConfig } from "../types";
 import { assertOnlyAppNames, pickApps } from "./app-selection";
 
-export interface AppSelectionPlan {
+export interface StartPlan {
 	appNames: string[];
 	apps: Record<string, AppConfig>;
-}
-
-export interface StartPlan extends AppSelectionPlan {
 	requiredServiceKeys: string[];
 	composeServiceNames: string[];
 }
@@ -35,7 +32,7 @@ export function resolveComposeServiceNames(
 export function resolveSelectedApps(
 	apps: Record<string, AppConfig>,
 	onlyApps: string[] | undefined,
-): AppSelectionPlan {
+): Pick<StartPlan, "appNames" | "apps"> {
 	assertOnlyAppNames(Object.keys(apps), onlyApps);
 
 	const requestedAppNames = onlyApps ?? Object.keys(apps);
@@ -104,7 +101,7 @@ export function resolveSelectedApps(
 	};
 }
 
-export function resolveRequiredServiceKeys(
+function resolveRequiredServiceKeys(
 	apps: Record<string, AppConfig>,
 	services: Record<string, ServiceConfig>,
 	appNames: string[],
