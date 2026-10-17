@@ -284,15 +284,20 @@ describe("sweepOrphanedContainers", () => {
 			container("busy", checkout, "exited"),
 		]);
 		let release!: () => void;
+		let acquired!: () => void;
+		const isHeld = new Promise<void>((resolve) => {
+			acquired = resolve;
+		});
 		const held = withProjectLifecycleLock(
 			"busy",
 			checkout,
 			() =>
 				new Promise<void>((resolve) => {
 					release = resolve;
+					acquired();
 				}),
 		);
-		await Bun.sleep(20);
+		await isHeld;
 		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
 		release();
 		await held;

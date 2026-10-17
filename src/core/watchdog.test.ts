@@ -148,14 +148,19 @@ describe("ensureWatchdog", () => {
 		// The lock, not the pid file, is what says a watchdog is alive: a
 		// `kill -9` leaves the pid file behind, and the kernel releases this.
 		let release!: () => void;
+		let acquired!: () => void;
+		const isHeld = new Promise<void>((resolve) => {
+			acquired = resolve;
+		});
 		const held = withFileLock(
 			getWatchdogLockFile(),
 			() =>
 				new Promise<void>((resolve) => {
 					release = resolve;
+					acquired();
 				}),
 		);
-		await Bun.sleep(20);
+		await isHeld;
 		try {
 			await ensureWatchdog({ verbose: false });
 			expect(getWatchdogPid()).toBeNull();

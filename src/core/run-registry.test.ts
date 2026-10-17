@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	setSystemTime,
+} from "bun:test";
 import {
 	mkdtempSync,
 	readFileSync,
@@ -129,8 +136,12 @@ describe("releaseRun", () => {
 		await releaseRun("s1", { path });
 		const first = (await loadRuns(path))[0]?.releasedAt;
 		expect(first).toBeString();
-		await Bun.sleep(5);
-		await releaseRun("s1", { path });
+		setSystemTime(new Date(Date.now() + 60_000));
+		try {
+			await releaseRun("s1", { path });
+		} finally {
+			setSystemTime();
+		}
 		expect((await loadRuns(path))[0]?.releasedAt).toBe(first);
 	});
 
