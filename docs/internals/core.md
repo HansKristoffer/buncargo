@@ -58,7 +58,10 @@ Cross-cutting utilities in `src/core/` that most features touch.
 - `prompt.ts` is the one prompt primitive: `askChoice`/`askConfirm`, `isInteractive`, decline
   markers, and `claimFirstRunPrompt`. That last one is why it exists: "at most one first-run setup
   question per run" cannot be enforced while each prompt owns its own gating, and a fresh machine
-  can otherwise hit both named-hosts setup and the menu bar offer in one `dev`.
+  can otherwise hit both named-hosts setup and the menu bar offer in one `dev`. Ctrl-C and Ctrl-D
+  at a prompt never pick the fallback (the hosts offer's is the password-asking setup): readline's
+  raw mode swallows the signal, so `askChoice` rejects with `PromptInterruptedError` and re-raises
+  SIGINT, which kills a command with no listener and sends `dev` into its teardown.
 - `primary-app.ts` answers "which app is this project about" once, from `options.primaryApp`.
   `resolvePrimaryApp` infers from the dependency graph when nothing is configured;
   `configuredPrimaryApp` never infers and is what named hosts use.

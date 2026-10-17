@@ -4,7 +4,7 @@ import { withSignal } from "../core/deadline";
 import { removeHostRoutes } from "../core/hosts";
 import { releaseLeases } from "../core/leases";
 import { isDeliberateExit } from "../core/process";
-import { askConfirm } from "../core/prompt";
+import { askConfirm, PromptInterruptedError } from "../core/prompt";
 import { isCI } from "../core/runtime-flags";
 import { joinColoredNames } from "../core/style";
 import {
@@ -255,6 +255,8 @@ export async function runCli<
 	} catch (error) {
 		controller.abort(error);
 		timer.report();
+		// The prompt re-raises SIGINT, but the listener above runs after this.
+		if (error instanceof PromptInterruptedError) interruptCode ??= 130;
 		if (interruptCode === undefined) reportCliError(toCliError(error));
 		await teardown(env, tunnels, connect);
 		process.exit(interruptCode ?? 1);
