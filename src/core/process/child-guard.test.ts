@@ -4,8 +4,8 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isProcessAlive } from "../process/lifecycle";
 import { CHILD_GUARD } from "./child-guard";
+import { isProcessAlive } from "./lifecycle";
 
 test("a lost parent pipe terminates the userspace daemon even when it ignores SIGTERM", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "bc-guard-"));
@@ -17,7 +17,7 @@ test("a lost parent pipe terminates the userspace daemon even when it ignores SI
 	);
 	const guard = spawn(
 		process.execPath,
-		["-e", CHILD_GUARD, "--", dir, process.execPath, script],
+		["-e", CHILD_GUARD, "--", dir, "ignore", process.execPath, script],
 		{ stdio: ["pipe", "ignore", "ignore"] },
 	);
 	const exited = new Promise<void>((resolve) =>

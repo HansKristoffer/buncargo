@@ -2,9 +2,9 @@
  * Spawn cloudflared and parse the quick-tunnel public URL from output.
  * Derived from unjs/untun (MIT), originally forked from node-cloudflared.
  */
-import { type ChildProcess, spawn } from "node:child_process";
-import { connectProcessEnv } from "../child-env";
+import type { ChildProcess } from "node:child_process";
 import { abortError } from "../deadline";
+import { spawnGuarded } from "../process/child-guard";
 import { terminateOwnedProcess } from "../process/terminate";
 import { quickTunnelUrlTimeoutMs } from "../runtime-flags";
 import { resolvedCloudflaredBinPath } from "./constants";
@@ -26,7 +26,13 @@ export function parseQuickTunnelUrlFromOutput(log: string): string | null {
 	return direct?.[1] ?? null;
 }
 
-/** cloudflared is buncargo's own tool: it never sees the connect tokens. */
+/**
+ * cloudflared is buncargo's own tool: it never sees the connect tokens.
+ *
+ * It runs under a child guard, so a buncargo that is hard-killed takes it
+ * down too instead of leaving a public tunnel open. `child` is the guard;
+ * it leads a process group that holds cloudflared, which `close` signals.
+ */
 export function startCloudflaredTunnel(
 	localUrl: string,
 	lifecycle: {
@@ -42,14 +48,10 @@ export function startCloudflaredTunnel(
 } {
 	lifecycle.signal?.throwIfAborted();
 	const binPath = lifecycle.binary ?? resolvedCloudflaredBinPath();
-	const child = spawn(
+	const child = spawnGuarded(
 		binPath,
 		["tunnel", "--url", localUrl, "--no-tls-verify"],
-		{
-			stdio: ["ignore", "pipe", "pipe"],
-			detached: true,
-			env: connectProcessEnv(),
-		},
+		{ output: "pipe", detached: true },
 	);
 
 	let settled = false;

@@ -17,6 +17,11 @@ prevent) and prune every route the daemon owned.
 listener with its birth identity; supervision republishes its pid and cleans it up with the
 session. Astro foreground markers default beneath app overrides.
 
+buncargo's own long-lived tools (frpc, cloudflared) run under `child-guard.ts`: a small parent
+that stops the tool when the stdin buncargo holds reaches EOF. That is the only cleanup a SIGKILL
+leaves us, and a cloudflared spawned detached on its own outlived a hard-killed `dev --expose`
+with its public tunnel still open.
+
 ## Ordering and output capture
 
 `start-order.ts` turns `startAfter` into layers inside the two tunnel phases (without `startAfter`
