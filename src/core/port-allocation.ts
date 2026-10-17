@@ -293,21 +293,45 @@ export function resolvePortPlan(input: {
 	getOwner?: (port: number) => PortOwner | null;
 	probeNames?: readonly string[];
 }): PortPlan {
+	const basePorts = buildPortMap(input.services, input.apps);
+	for (const [name, port] of Object.entries(basePorts))
+		if (!Number.isInteger(port) || port < 1 || port > 65535)
+			throw new Error(
+				`Invalid base port for ${name}: ${port}. Expected an integer in 1..65535.`,
+			);
+
+	// One reading of the machine for every port this allocator may look at,
+	// including the shifted blocks it can fall through to. Probing per port cost
+	// an `lsof` and a `docker ps` each, and the allocator is the first thing a
+	// dev run does. It is taken before the claims lock: a slow runtime would
+	// otherwise hold every other checkout's allocation past the lock's timeout.
+	//
+	// Reporting no owner is what makes every conflict check pass, so a
+	// read-only caller gets the lockfile back rather than a block reallocated
+	// around its own running services.
+	const getOwner =
+		input.probeConflicts === false || portOffsetOverride() !== undefined
+			? () => null
+			: (input.getOwner ??
+				withBindProbe(snapshotOwnerLookup(basePorts, input.runtime)));
+
 	// A claiming run reads the other claims, picks a free offset and claims it:
 	// one step, or two runs starting together pick the same.
 	const claim = input.claim ?? input.persist !== false;
-	return claim
-		? withOffsetClaimsLock(() => planPorts({ ...input, claim }))
-		: planPorts({ ...input, claim });
+	const plan = () => planPorts({ ...input, claim, getOwner }, basePorts);
+	return claim ? withOffsetClaimsLock(plan) : plan();
 }
 
-function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
+function planPorts(
+	input: Parameters<typeof resolvePortPlan>[0] & {
+		getOwner: (port: number) => PortOwner | null;
+	},
+	basePorts: Record<string, number>,
+): PortPlan {
 	const {
 		projectPrefix,
 		projectName,
 		root,
-		services,
-		apps,
 		suffix,
 		worktreeName = null,
 		worktreeIsolation = true,
@@ -315,14 +339,9 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 		claim = persist,
 		runtime,
 		probeConflicts = true,
+		getOwner: lookupOwner,
 	} = input;
 	const runtimeName = runtime?.name;
-	const basePorts = buildPortMap(services, apps);
-	for (const [name, port] of Object.entries(basePorts))
-		if (!Number.isInteger(port) || port < 1 || port > 65535)
-			throw new Error(
-				`Invalid base port for ${name}: ${port}. Expected an integer in 1..65535.`,
-			);
 
 	const envOffset = portOffsetOverride();
 	if (envOffset !== undefined) {
@@ -338,18 +357,6 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 			provenance: "env",
 		};
 	}
-
-	// One reading of the machine for every port this allocator may look at,
-	// including the shifted blocks it can fall through to. Probing per port cost
-	// an `lsof` and a `docker ps` each, and the allocator is the first thing a
-	// dev run does.
-	//
-	// Reporting no owner is what makes every conflict check below pass, so a
-	// read-only caller gets the lockfile back rather than a block reallocated
-	// around its own running services.
-	const lookupOwner = probeConflicts
-		? (input.getOwner ?? withBindProbe(snapshotOwnerLookup(basePorts, runtime)))
-		: () => null;
 
 	const probed = (ports: Record<string, number>) =>
 		input.probeNames
