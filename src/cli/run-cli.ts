@@ -215,10 +215,15 @@ export async function runCli<
 
 	if (args.detach) {
 		const { runDetached } = await import("./dev-detach");
+		const plan = planStart(env.apps, env.services, {
+			onlyApps: selectDevApps(env, args),
+		});
 		process.exit(
 			await runDetached({
 				root: env.root,
-				expectApps: Object.keys(env.apps).length > 0,
+				expectApps: Object.values(plan.apps).some(
+					(app) => app.devCommand !== false,
+				),
 			}),
 		);
 	}
@@ -378,15 +383,7 @@ async function runDevFlow<
 	}
 
 	// ── App selection ────────────────────────────────────────────────────────
-	// argv only ever yields plain strings: every --apps name is checked against
-	// the config's app keys here, before planning trusts them.
-	let selectedAppNames: Extract<keyof TApps, string>[] | undefined =
-		selectProfileApps(env, args.profile);
-	if (args.appsRequested) {
-		const names = parseRequiredCommaSeparatedFlag("--apps", args.appsValue);
-		assertConfiguredApps(Object.keys(env.apps), names);
-		selectedAppNames = names as Extract<keyof TApps, string>[];
-	}
+	const selectedAppNames = selectDevApps(env, args);
 
 	const plan = planStart(env.apps, env.services, {
 		onlyApps: selectedAppNames,
@@ -881,6 +878,25 @@ async function runDevFlow<
 		await view.stop();
 		await teardown(env, tunnels, connect);
 	}
+}
+
+/**
+ * The apps `--apps` or `--profile` select, `undefined` for every app. argv
+ * only ever yields plain strings: every `--apps` name is checked against the
+ * config's app keys here, before planning trusts them.
+ */
+function selectDevApps<TApps extends Record<string, AppConfig>>(
+	env: Pick<
+		DevEnvironment<Record<string, ServiceConfig>, TApps>,
+		"apps" | "profiles"
+	>,
+	args: DevCliArgs,
+): Extract<keyof TApps, string>[] | undefined {
+	const profile = selectProfileApps(env, args.profile);
+	if (!args.appsRequested) return profile;
+	const names = parseRequiredCommaSeparatedFlag("--apps", args.appsValue);
+	assertConfiguredApps(Object.keys(env.apps), names);
+	return names as Extract<keyof TApps, string>[];
 }
 
 /**

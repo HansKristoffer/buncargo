@@ -66,7 +66,9 @@ flow; `flags.ts` (argv primitives), `dev-flags.ts` (the dev command's typed args
   runs as does not kill it with that service's cgroup. Its output goes to
   `.buncargo/logs/detached.log`. The parent waits on the run registry entry whose `pid` is the
   child's until every app has settled; an empty `apps` list is the claim, not "done", unless the
-  config has no apps.
+  selection has no app to spawn. A child that exits 0 had nothing to keep running (every app
+  reused) and is a success, as it is for attached `dev`; its exit is checked before the entry,
+  which can outlive it.
 - `dev-flags.ts`' `destructiveModeGate`: `--reset` and `--down --all` ask in a terminal and refuse
   without one unless `--yes`. CI is exempt. An agent ran `--reset` to fix a migration and deleted a
   developer's data.

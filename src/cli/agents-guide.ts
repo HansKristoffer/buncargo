@@ -24,7 +24,8 @@ hardcode a port. Ask buncargo instead.
 
 - \`bunx buncargo dev --detach\` starts the run in the background and returns once
   every app is up. Exit 1 names the apps that did not come up; the others keep
-  running. Do not use \`nohup\`, \`&\` or \`disown\`.
+  running. Exit 0 also when every app was already running and is reused. Do
+  not use \`nohup\`, \`&\` or \`disown\`.
 - \`bunx buncargo dev --detach --apps=api\` starts only some apps (and the apps
   they require). \`--profile=<name>\` picks a configured set.
 - \`bunx buncargo stop --all\` stops this checkout's run, and removes the

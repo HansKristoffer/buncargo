@@ -41,9 +41,10 @@ export function detachedArgv(
 }
 
 /**
- * Every app has settled: up, or down for good. A config without apps settles
- * once its services are ready. `expectApps` matters because the run's first
- * claim is written before its apps are, and an empty list is not "done".
+ * Every app has settled: up, or down for good. A selection with no app to
+ * spawn settles once its services are ready. `expectApps` matters because the
+ * run's first claim is written before its apps are, and an empty list is not
+ * "done".
  */
 export function settledRun(run: RunEntry, expectApps: boolean): boolean {
 	if (expectApps)
@@ -87,11 +88,13 @@ export function namedHostsFallbacks(output: string): string[] {
 
 /**
  * Start the run in the background and wait for it. 0 when every app came up,
- * 1 when the run ended or an app failed (the others keep running).
+ * or when the run finished cleanly with nothing left to run (every selected
+ * app already running elsewhere, as attached `dev` exits 0 on); 1 when the run
+ * failed or an app did not come up (the others keep running).
  */
 export async function runDetached(input: {
 	root: string;
-	/** Whether the config has apps to wait for (see {@link settledRun}). */
+	/** Whether the selection has apps to spawn and wait for (see {@link settledRun}). */
 	expectApps: boolean;
 	argv?: readonly string[];
 	timeoutMs?: number;
@@ -119,6 +122,18 @@ export async function runDetached(input: {
 
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {
+		// First: an entry can outlive its run, released for the idle hold.
+		if (exited !== undefined) {
+			const output = tail(logPath);
+			if (exited === 0) {
+				if (output) log.line(output);
+				log.success("The run had nothing to keep running in the background.");
+				return 0;
+			}
+			log.error(`The run exited with code ${exited} before its apps came up.`);
+			if (output) log.line(output);
+			return 1;
+		}
 		const run = (await findRunsByRoot(root).catch(() => [])).find(
 			(entry) => entry.pid === child.pid,
 		);
@@ -140,12 +155,6 @@ export async function runDetached(input: {
 				`${down.map((app) => app.name).join(", ")} did not come up; the other apps keep running.`,
 			);
 			for (const app of down) log.hint(`buncargo logs ${app.name} --errors`);
-			return 1;
-		}
-		if (exited !== undefined) {
-			log.error(`The run exited with code ${exited} before its apps came up.`);
-			const output = tail(logPath);
-			if (output) log.line(output);
 			return 1;
 		}
 		if (Date.now() >= deadline) {
