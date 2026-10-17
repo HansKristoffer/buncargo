@@ -5,7 +5,6 @@ import { buncargoCli, type CliInvocation } from "./cli-entry";
 import { withFileLock } from "./file-lock";
 import { getWorktreeName } from "./ports";
 import {
-	processIdentityMatcher,
 	processIdentityMatcherAsync,
 	readCurrentProcessIdentity,
 	readCurrentProcessIdentityAsync,
@@ -49,7 +48,7 @@ import { chownToInvokingUser, stateFilePath } from "./state-paths";
  * installed bundle's `BuncargoRegistryVersion` and updates the app.
  */
 export const REGISTRY_VERSION = 1;
-export const RUNS_FILENAME = "runs.json";
+const RUNS_FILENAME = "runs.json";
 
 export type RunAppStatus =
 	| "starting"
@@ -352,25 +351,13 @@ export async function loadRuns(
 	return registry.read(path, options);
 }
 
-/** Whether the process that published an entry is still running. */
-export function isRunAlive(run: RunEntry): boolean {
-	return runLiveness([run])(run);
-}
-
 /**
- * {@link isRunAlive} for a whole list, answered with one `ps`.
+ * Whether each entry's run is still going, answered with one `ps`.
  *
  * The sweep asks this of every entry several times a tick. Asked one entry
- * at a time, each answer was a fork on macOS.
+ * at a time, each answer was a fork on macOS. A released entry never reads
+ * as live, whatever its pid.
  */
-export function runLiveness(
-	runs: readonly RunEntry[],
-): (run: RunEntry) => boolean {
-	const matches = processIdentityMatcher(runs);
-	return (run) =>
-		run.releasedAt === undefined && matches(run.pid, run.processIdentity);
-}
-
 export async function runLivenessAsync(
 	runs: readonly RunEntry[],
 	signal?: AbortSignal,

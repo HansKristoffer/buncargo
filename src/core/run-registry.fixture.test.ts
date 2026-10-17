@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isRunAlive, loadRuns } from "./run-registry";
+import { loadRuns, runLivenessAsync } from "./run-registry";
 
 /**
  * The `runs.json` schema contract, shared with the Swift app.
@@ -91,7 +91,7 @@ describe("runs.json v1 fixture", () => {
 			expect(released?.releasedAt).toBe("2026-09-03T09:30:00.000Z");
 			expect(released?.idleTimeoutMs).toBe(180_000);
 			expect(released?.services[0]?.container?.runtime).toBe("docker");
-			expect(released && isRunAlive(released)).toBe(false);
+			expect(released && (await runLivenessAsync(runs))(released)).toBe(false);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

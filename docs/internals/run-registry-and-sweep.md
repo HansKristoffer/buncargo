@@ -28,7 +28,7 @@ writers prune. `stop --run` selects an exact session.
 
 ## Process identity
 
-Liveness is forgiving where signalling is strict. `processIdentityMatcher`/`runLiveness` read a
+Liveness is forgiving where signalling is strict. `processIdentityMatcherAsync`/`runLivenessAsync` read a
 process whose identity cannot be read as *alive*, because reading a live run as dead lets the sweep
 tear its containers down. `matchesProcessIdentity` (used by `stop` before it signals, and by worker
 ownership) reads the same as *not a match*.

@@ -28,7 +28,7 @@ import {
 	releaseRun,
 	retireProjectRuns,
 	retireRuns,
-	runLiveness,
+	runLivenessAsync,
 } from "./run-registry";
 
 let dir: string;
@@ -349,7 +349,7 @@ describe("patchRun", () => {
 });
 
 describe("liveness", () => {
-	it("counts a live owner and never a released one, from one reading", () => {
+	it("counts a live owner and never a released one, from one reading", async () => {
 		const identity = readProcessIdentity(process.pid);
 		const live = makeRun({ sessionId: "live", processIdentity: identity });
 		const released = makeRun({
@@ -358,7 +358,7 @@ describe("liveness", () => {
 			releasedAt: new Date().toISOString(),
 		});
 		const dead = makeRun({ sessionId: "dead", pid: DEAD_PID });
-		const alive = runLiveness([live, released, dead]);
+		const alive = await runLivenessAsync([live, released, dead]);
 		expect([live, released, dead].map(alive)).toEqual([true, false, false]);
 	});
 

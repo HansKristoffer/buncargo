@@ -281,21 +281,12 @@ function identityMatcher(
  * Returns a predicate rather than a filtered list so callers keep whatever
  * shape their entries have.
  */
-export function processIdentityMatcher(
-	entries: readonly IdentityEntry[],
-): (pid: number, identity?: string) => boolean {
-	// Only live pids are worth an identity, and asking `ps` about one that is
-	// not a pid at all makes it refuse the whole batch.
-	const alive = livePids(entries);
-	const identities = readProcessIdentities([...alive]);
-	return identityMatcher(alive, identities);
-}
-
-/** Same forgiving liveness policy, without blocking the event loop. */
 export async function processIdentityMatcherAsync(
 	entries: readonly IdentityEntry[],
 	signal?: AbortSignal,
 ): Promise<(pid: number, identity?: string) => boolean> {
+	// Only live pids are worth an identity, and asking `ps` about one that is
+	// not a pid at all makes it refuse the whole batch.
 	const alive = livePids(entries);
 	return identityMatcher(
 		alive,
