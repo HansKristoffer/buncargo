@@ -425,7 +425,7 @@ export function getProcessOnPort(port: number): number | null {
  * Check if a port is currently in use.
  *
  * Ownership-based: reports a listening process or published container port.
- * Compare with `isPortAvailable` in `core/network.ts`, which connect-probes.
+ * Compare with `isTcpPortOpen` in `core/network.ts`, which connect-probes.
  */
 export function isPortInUse(
 	port: number,
