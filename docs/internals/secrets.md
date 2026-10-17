@@ -30,6 +30,8 @@ warns once and continues.
   paths reach, and refuses to spawn when a `secrets.required` key is missing everywhere.
   `environment/server-session.ts` runs the same check (`loadStartSecrets`) first, so the refusal
   comes before a production build or `beforeServers`; the second one reads the cache.
+  `buncargo secrets ls` judges the listed scope with the same `missingKeys` over the same layers,
+  computed env included, so it never disagrees with `dev` about what is missing.
 - `environment/env-vars.ts` `resolveSecrets` gives `exec` (and so migrations, hooks and tasks), the
   seed and prisma their scope: explicit, else the app's, else the config-level one, always beneath
   `process.env` and the computed env.

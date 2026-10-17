@@ -1144,7 +1144,7 @@ It fetches the way `hanzio/secrets` does, with the same defaults. The CLI is ask
 
 **Required keys.** `secrets.required` names keys an app cannot start without. A run with any of them missing (from Infisical, the environment and the computed env alike) stops before anything spawns, naming each app's missing keys.
 
-**Commands.** `buncargo secrets ls [--app=api] [--env=prod]` lists key names, never values, each with its source: Infisical, env override or missing. `buncargo setup` and `buncargo doctor` check that every scope is readable and print the fix (`infisical login --domain=…`, MFA).
+**Commands.** `buncargo secrets ls [--app=api] [--env=prod]` lists key names, never values, each with the source of the value the app gets: Infisical, env override, computed (buncargo's own env, which wins) or missing. It exits 1 when a required key is missing by the same rule `dev` refuses to start on, so an exported empty value counts as missing. `buncargo setup` and `buncargo doctor` check that every scope is readable and print the fix (`infisical login --domain=…`, MFA).
 
 A failed fetch warns once and continues; an app's own loader then does what it does today. Values are never logged, never written to a state file, and never included in an error: neither the CLI's output nor a response body is echoed. An empty value is never injected, since a blank variable would read as "already set".
 

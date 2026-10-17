@@ -651,9 +651,19 @@ export function missingRequiredSecrets(
 	for (const [name, app] of Object.entries(apps)) {
 		const required = app.secrets ? (app.secrets.required ?? []) : [];
 		if (required.length === 0) continue;
-		const env = provided(name);
-		const absent = required.filter((key) => !env[key]);
+		const absent = missingKeys(required, provided(name));
 		if (absent.length > 0) missing[name] = absent;
 	}
 	return missing;
+}
+
+/**
+ * The `required` keys `env` leaves unset or empty: the rule `dev` refuses to
+ * start on, and the one `buncargo secrets ls` reports with.
+ */
+export function missingKeys(
+	required: readonly string[],
+	env: Record<string, string | undefined>,
+): string[] {
+	return required.filter((key) => !env[key]);
 }

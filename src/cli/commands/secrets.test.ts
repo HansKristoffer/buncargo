@@ -4,6 +4,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { CI_ENV_VARS } from "../../core/runtime-flags";
+import { startFakeInfisical } from "../../core/secrets/fake-infisical.testing";
 
 const cli = resolve(import.meta.dir, "../bin.ts");
 let dir: string;
@@ -56,3 +57,58 @@ it("names the config change that gives an app a scope", () => {
 		"dev.config.ts sets apps.web.secrets: false",
 	);
 });
+
+/** `secrets ls --app=api` against a fake Infisical, without blocking it. */
+async function secretsLsAgainst(
+	infisical: ReturnType<typeof startFakeInfisical>,
+	required: string[],
+	exported: Record<string, string> = {},
+) {
+	writeFileSync(
+		join(dir, "dev.config.ts"),
+		`export default { projectPrefix: "secrets", services: {}, secrets: { projectId: "p1", siteUrl: ${JSON.stringify(infisical.siteUrl)} }, apps: { api: { port: 3000, devCommand: "true", secrets: { required: ${JSON.stringify(required)} } } } };`,
+	);
+	const env: Record<string, string | undefined> = {
+		...process.env,
+		...exported,
+		HOME: infisical.home,
+		BUNCARGO_INFISICAL_PATH: infisical.cliPath,
+	};
+	for (const name of CI_ENV_VARS) delete env[name];
+	delete env.INFISICAL_CLIENT_ID;
+	delete env.INFISICAL_CLIENT_SECRET;
+	const proc = Bun.spawn(
+		[process.execPath, cli, "secrets", "ls", "--app=api"],
+		{ cwd: dir, env, stdout: "pipe", stderr: "pipe" },
+	);
+	const [stdout, stderr, code] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	return { code, output: Bun.stripANSI(stdout + stderr) };
+}
+
+// `dev` refuses on a key that is empty everywhere and starts with one only
+// the computed env provides; `secrets ls` has to say the same.
+it("judges required keys the way dev does", async () => {
+	const infisical = startFakeInfisical();
+	infisical.projects.p1 = { secrets: { STRIPE_KEY: "sk" } };
+	try {
+		const computed = await secretsLsAgainst(infisical, [
+			"STRIPE_KEY",
+			"API_PORT",
+		]);
+		expect(computed.output).toMatch(/API_PORT\s+computed/);
+		expect(computed.code).toBe(0);
+
+		const blank = await secretsLsAgainst(infisical, ["STRIPE_KEY", "BLANK"], {
+			BLANK: "",
+		});
+		expect(blank.output).toMatch(/BLANK\s+missing/);
+		expect(blank.output).toContain("Required secrets are missing: BLANK");
+		expect(blank.code).toBe(1);
+	} finally {
+		infisical.stop();
+	}
+}, 30_000);

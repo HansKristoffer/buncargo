@@ -1,5 +1,6 @@
 import {
 	fetchScopeSecrets,
+	missingKeys,
 	resolveScope,
 	SecretsError,
 } from "../../core/secrets/infisical";
@@ -116,6 +117,11 @@ export async function handleSecrets(args: string[]): Promise<number> {
 		throw error;
 	}
 
+	// What the app is given, in `dev`'s precedence: the secrets, then the
+	// developer's exported environment, then the computed env.
+	const computed: Record<string, string> =
+		app === undefined ? env.buildEnvVars() : env.buildAppEnvVars(app);
+	const effective = { ...values, ...process.env, ...computed };
 	const required = config ? (config.required ?? []) : [];
 	const keys = [...new Set([...Object.keys(values), ...required])].sort();
 	const width = Math.max(0, ...keys.map((key) => key.length));
@@ -123,19 +129,29 @@ export async function handleSecrets(args: string[]): Promise<number> {
 	log.line(
 		`${app ?? "config"}: ${scope.projectId} ${scope.environment}${scope.path === "/" ? "" : scope.path} @ ${scope.siteUrl}${org}`,
 	);
-	for (const key of keys) {
-		const source =
-			process.env[key] !== undefined
-				? "env override"
-				: values[key]
-					? "infisical"
-					: "missing";
-		log.line(`  ${key.padEnd(width)}  ${source}`);
-	}
-	// A required key nobody provides is the failure `dev` would stop on.
-	return required.some((key) => !values[key] && process.env[key] === undefined)
-		? 1
-		: 0;
+	for (const key of keys)
+		log.line(
+			`  ${key.padEnd(width)}  ${secretSource(key, values, computed, effective)}`,
+		);
+	// The same check `dev` refuses to start on.
+	const missing = missingKeys(required, effective);
+	if (missing.length === 0) return 0;
+	log.error(`Required secrets are missing: ${missing.join(", ")}`);
+	log.hint("Add them to the Infisical scope above, or export them.");
+	return 1;
+}
+
+/** Where the value the app gets for `key` comes from, or `missing` when it gets none. */
+function secretSource(
+	key: string,
+	values: Record<string, string>,
+	computed: Record<string, string>,
+	effective: Record<string, string | undefined>,
+): string {
+	if (!effective[key]) return "missing";
+	if (computed[key] !== undefined) return "computed";
+	if (process.env[key] !== undefined) return "env override";
+	return values[key] ? "infisical" : "missing";
 }
 
 /** What to change in dev.config.ts so `app` has a scope to list. */
