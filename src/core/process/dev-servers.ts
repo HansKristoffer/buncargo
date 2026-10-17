@@ -443,6 +443,7 @@ export async function startDevServers(
 					runPrebuild(name, config, root, appEnv(name), {
 						signal: owner.controller.signal,
 						output,
+						graceMs: options.shutdownGraceMs,
 					}),
 				),
 			),

@@ -504,6 +504,50 @@ function processExists(pid: number | undefined): boolean {
 	}
 }
 
+describe("startDevServers prebuild", () => {
+	it("has stopped an aborted prebuild by the time it rejects", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-prebuild-abort-"));
+		const output = new RunOutput();
+		const controller = new AbortController();
+		const { promise: prebuildPid, resolve } = Promise.withResolvers<number>();
+		output.subscribe({
+			line: (line) => {
+				const match = /^prebuild (\d+)$/.exec(line.text);
+				if (match) resolve(Number(match[1]));
+			},
+		});
+		try {
+			const run = startDevServers(
+				{
+					api: {
+						kind: "worker",
+						// Ignores SIGTERM: only the escalation stops it.
+						prebuild: `trap "" TERM; echo prebuild $$; exec sleep 30`,
+						devCommand: "bun -e 'setInterval(() => {}, 60000)'",
+					},
+				},
+				root,
+				{},
+				{},
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					signal: controller.signal,
+					shutdownGraceMs: 200,
+				},
+			);
+			void run.catch(() => {});
+			const pid = await prebuildPid;
+			controller.abort();
+			await expect(run).rejects.toThrow();
+			expect(processExists(pid)).toBe(false);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("startDevServers keepOthersOnFailure", () => {
 	const serve = (port: number) =>
 		`bun -e 'Bun.serve({ port: ${port}, fetch: () => new Response("ok") }); setInterval(() => {}, 60000)'`;
