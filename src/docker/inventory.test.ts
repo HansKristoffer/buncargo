@@ -20,6 +20,7 @@ describe("parseDockerContainerLine", () => {
 				"/repo",
 				"t3code-1c22f5fa",
 				"postgres",
+				"dev",
 			),
 		);
 		expect(container).toEqual({
@@ -32,6 +33,7 @@ describe("parseDockerContainerLine", () => {
 			root: "/repo",
 			worktree: "t3code-1c22f5fa",
 			service: "postgres",
+			user: "dev",
 			runtime: "docker",
 		});
 		expect(container && isContainerUp(container)).toBe(true);

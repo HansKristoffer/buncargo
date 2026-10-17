@@ -7,14 +7,24 @@ const LIST_ARGS = [
 	"--filter",
 	"label=buncargo.project",
 	"--format",
-	'{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}\t{{.Label "buncargo.project"}}\t{{.Label "buncargo.root"}}\t{{.Label "buncargo.worktree"}}\t{{.Label "buncargo.service"}}',
+	'{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}\t{{.Label "buncargo.project"}}\t{{.Label "buncargo.root"}}\t{{.Label "buncargo.worktree"}}\t{{.Label "buncargo.service"}}\t{{.Label "buncargo.user"}}',
 ];
 
 export function parseDockerContainerLine(
 	line: string,
 ): BuncargoContainer | null {
-	const [id, name, state, status, ports, project, root, worktree, service] =
-		line.split("\t");
+	const [
+		id,
+		name,
+		state,
+		status,
+		ports,
+		project,
+		root,
+		worktree,
+		service,
+		user,
+	] = line.split("\t");
 	if (!id || !project) return null;
 	return {
 		id,
@@ -26,6 +36,7 @@ export function parseDockerContainerLine(
 		root: root ?? "",
 		worktree: worktree ?? "",
 		service: service ?? "",
+		user: user ?? "",
 		runtime: "docker",
 	};
 }

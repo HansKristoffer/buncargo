@@ -5,6 +5,11 @@ export interface WatchdogLoopDeps {
 	sleep: (ms: number) => Promise<void>;
 	log: (message: string) => void;
 	intervalMs: number;
+	/**
+	 * Who is sweeping, appended to every removal: on a machine where several
+	 * users or installs share one daemon, a removal must name its watchdog.
+	 */
+	identity: string;
 }
 
 /**
@@ -32,7 +37,7 @@ export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 			reportedPassError = undefined;
 			for (const stack of result.swept)
 				deps.log(
-					`Removed ${stack.projectName} (${stack.root}): ${stack.reason}`,
+					`Removed ${stack.projectName} on ${stack.runtime} (root ${stack.root}): ${stack.reason} [${deps.identity}]`,
 				);
 
 			const failures = new Map<string, string>();

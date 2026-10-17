@@ -1,12 +1,13 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import {
+	chmodSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import {
 	claimOffset,
@@ -23,6 +24,7 @@ import {
 import type { BuncargoContainer } from "../types";
 import { withProjectLifecycleLock } from "./project-lock";
 import {
+	checkoutMissing,
 	decideSweep,
 	settleDeletedCheckouts,
 	sweepOrphanedContainers,
@@ -79,31 +81,54 @@ describe("decideSweep", () => {
 		anyRunning: true,
 		run: null,
 		ownerAlive: false,
+		ownedByCurrentUser: true,
 		now: NOW,
 	};
 	const limits = { ownerDeadGraceMs: 15_000 };
+	const dead = entry();
 
 	it("removes a stack whose checkout is gone, whatever else is true", () => {
 		expect(
-			decideSweep({ ...base, rootExists: false, ownerAlive: true }, limits),
+			decideSweep(
+				{ ...base, run: dead, rootExists: false, ownerAlive: true },
+				limits,
+			),
 		).toEqual({ kind: "down", reason: "checkout deleted" });
 	});
 
 	it("keeps anything with a live owner", () => {
 		expect(
-			decideSweep({ ...base, anyRunning: false, ownerAlive: true }, limits),
+			decideSweep(
+				{ ...base, run: dead, anyRunning: false, ownerAlive: true },
+				limits,
+			),
 		).toEqual({ kind: "keep" });
 	});
 
-	it("removes a stopped stack nobody owns", () => {
+	it("removes a stopped stack whose owner is gone", () => {
+		expect(
+			decideSweep({ ...base, run: dead, anyRunning: false }, limits),
+		).toEqual({ kind: "down", reason: "stopped with no owner" });
+	});
+
+	it("leaves a stack with no entry alone, stopped or running", () => {
+		expect(decideSweep(base, limits)).toEqual({ kind: "keep" });
 		expect(decideSweep({ ...base, anyRunning: false }, limits)).toEqual({
-			kind: "down",
-			reason: "stopped with no owner",
+			kind: "keep",
 		});
 	});
 
-	it("leaves a running stack with no entry alone", () => {
-		expect(decideSweep(base, limits)).toEqual({ kind: "keep" });
+	it("removes a stack with no entry only when its checkout is gone and it is labelled ours", () => {
+		const gone = { ...base, rootExists: false, anyRunning: false };
+		expect(decideSweep(gone, limits)).toEqual({
+			kind: "down",
+			reason: "checkout deleted",
+		});
+		// Another OS user's stack on a shared daemon, or one from before the
+		// user label: not this watchdog's to remove.
+		expect(decideSweep({ ...gone, ownedByCurrentUser: false }, limits)).toEqual(
+			{ kind: "keep" },
+		);
 	});
 
 	it("holds a released stack for its idle timeout, then removes it", () => {
@@ -174,6 +199,7 @@ function container(
 		root,
 		worktree: "",
 		service: "db",
+		user: userInfo().username,
 		runtime: "docker",
 	};
 }
@@ -192,9 +218,34 @@ function stubRuntime(containers: BuncargoContainer[]) {
 	return { runtime, downs };
 }
 
+describe("checkoutMissing", () => {
+	it("is true only for a path that provably does not exist", () => {
+		expect(checkoutMissing(checkout)).toBe(false);
+		expect(checkoutMissing(join(checkout, "nope"))).toBe(true);
+		expect(checkoutMissing("")).toBe(false);
+	});
+
+	it("treats an unreadable checkout as present", () => {
+		// The incident: `existsSync` said false for another user's checkout
+		// behind a directory this user cannot search.
+		if (process.getuid?.() === 0) return; // root reads through any mode
+		const locked = mkdtempSync(join(tmpdir(), "buncargo-locked-"));
+		const inside = join(locked, "checkout");
+		mkdirSync(inside);
+		chmodSync(locked, 0o000);
+		try {
+			expect(checkoutMissing(inside)).toBe(false);
+		} finally {
+			chmodSync(locked, 0o700);
+			rmSync(locked, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("sweepOrphanedContainers", () => {
 	it("removes deleted checkouts and stopped stacks, and skips the caller's own project", async () => {
 		const gone = join(checkout, "deleted-worktree");
+		await publishRun(entry({ sessionId: "stopped", projectName: "stopped" }));
 		const { runtime, downs } = stubRuntime([
 			container("gone", gone, "running"),
 			container("stopped", checkout, "exited"),
@@ -217,6 +268,59 @@ describe("sweepOrphanedContainers", () => {
 			"stopped",
 		]);
 		expect(downs[0]).toMatchObject({ root: gone, verbose: false });
+	});
+
+	it("leaves alone stacks this user's registry does not know, unless provably ours and deleted", async () => {
+		const gone = join(checkout, "deleted-worktree");
+		const theirs = {
+			...container("runner-ci", gone, "exited"),
+			user: "someone-else-not-this-user",
+		};
+		const unlabelled = {
+			...container("old-cli", gone, "exited"),
+			user: undefined,
+		};
+		const { runtime, downs } = stubRuntime([
+			theirs,
+			unlabelled,
+			container("unknown-stopped", checkout, "exited"),
+			container("ours-gone", gone, "exited"),
+		]);
+
+		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
+
+		expect(downs.map((request) => request.projectName)).toEqual(["ours-gone"]);
+		expect(result.swept.map((stack) => stack.reason)).toEqual([
+			"checkout deleted",
+		]);
+	});
+
+	it("keeps a registered stack whose checkout cannot be read", async () => {
+		if (process.getuid?.() === 0) return; // root reads through any mode
+		const locked = mkdtempSync(join(tmpdir(), "buncargo-locked-"));
+		const root = join(locked, "checkout");
+		mkdirSync(root);
+		await publishRun(
+			entry({
+				projectName: "hidden",
+				root,
+				releasedAt: new Date().toISOString(),
+				idleTimeoutMs: 60_000,
+			}),
+		);
+		const { runtime, downs } = stubRuntime([
+			container("hidden", root, "running"),
+		]);
+
+		chmodSync(locked, 0o000);
+		try {
+			await sweepOrphanedContainers({ runtimes: [runtime] });
+		} finally {
+			chmodSync(locked, 0o700);
+			rmSync(locked, { recursive: true, force: true });
+		}
+
+		expect(downs).toEqual([]);
 	});
 
 	it("keeps a stack whose run is live and one still inside its idle hold", async () => {
@@ -280,6 +384,7 @@ describe("sweepOrphanedContainers", () => {
 	});
 
 	it("skips a project whose lock is held and reports a failed down", async () => {
+		await publishRun(entry({ projectName: "busy" }));
 		const { runtime, downs } = stubRuntime([
 			container("busy", checkout, "exited"),
 		]);
@@ -452,6 +557,7 @@ describe("sweepOrphanedContainers", () => {
 		// The pass condemns both stacks from its snapshot. While it tears the
 		// first down, a new run claims the second — publishing before it takes
 		// the lock, as a real start does. The recheck under the lock must see it.
+		await publishRun(entry({ sessionId: "gone", projectName: "abandoned" }));
 		await publishRun(
 			entry({
 				sessionId: "expired",

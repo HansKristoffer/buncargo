@@ -9,7 +9,7 @@
  * that was killed.
  */
 
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { FileLockTimeoutError } from "../core/file-lock";
 import {
@@ -17,6 +17,7 @@ import {
 	offsetClaimRoot,
 	readAllOffsetClaims,
 } from "../core/offset-claims";
+import { currentOsUser } from "../core/os-user";
 import { execAsync } from "../core/process/exec";
 import {
 	clearRunStacks,
@@ -45,14 +46,38 @@ import {
 } from "./resolve";
 import type { ContainerRuntimeAdapter } from "./types";
 
+/**
+ * Whether a checkout is provably gone: only ENOENT or ENOTDIR say so.
+ *
+ * `existsSync` also answers false for EACCES, so another user's unreadable
+ * checkout (`/home/runner/...` on a shared Docker daemon) looked deleted and
+ * its containers were swept. Any error other than "no such path" means the
+ * checkout may be there, and the sweep keeps what it cannot see.
+ */
+export function checkoutMissing(root: string): boolean {
+	if (root === "") return false;
+	try {
+		statSync(root);
+		return false;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		return code === "ENOENT" || code === "ENOTDIR";
+	}
+}
+
 export interface SweepInput {
-	/** The checkout the containers were started from still exists. */
+	/** The checkout the containers were started from is not provably gone. */
 	rootExists: boolean;
 	/** At least one container in the stack is running. */
 	anyRunning: boolean;
 	/** The run that owns them, or null when nothing on disk claims them. */
 	run: RunEntry | null;
 	ownerAlive: boolean;
+	/**
+	 * Every container in the stack is labelled with this process's OS user.
+	 * Only consulted for a stack with no entry in this user's registry.
+	 */
+	ownedByCurrentUser: boolean;
 	now: number;
 }
 
@@ -72,13 +97,20 @@ export function decideSweep(
 		ownerDeadGraceMs: WATCHDOG_OWNER_DEAD_GRACE_MS,
 	},
 ): SweepVerdict {
-	const { rootExists, anyRunning, run, ownerAlive, now } = input;
+	const { rootExists, anyRunning, run, ownerAlive, ownedByCurrentUser, now } =
+		input;
+
+	// Nothing in this user's registry: another OS user's run on a shared
+	// daemon, an older CLI, a hand-started stack, or ours after the registry
+	// was wiped. Only our own label on a provably deleted checkout lets it go.
+	if (!run)
+		return !rootExists && ownedByCurrentUser
+			? { kind: "down", reason: "checkout deleted" }
+			: { kind: "keep" };
+
 	if (!rootExists) return { kind: "down", reason: "checkout deleted" };
 	if (ownerAlive) return { kind: "keep" };
 	if (!anyRunning) return { kind: "down", reason: "stopped with no owner" };
-	// Running, unowned, and nothing on record: an old CLI or a hand-started
-	// stack. Only the two rules above may touch it.
-	if (!run) return { kind: "keep" };
 
 	// No hold at all means "as long as the checkout exists", however the run
 	// ended: `--keep-containers`, a one-shot mode, or a script that brought a
@@ -277,15 +309,19 @@ async function sweepGroup(
 	runtimes: ContainerRuntimeAdapter[],
 	result: SweepResult,
 ): Promise<boolean> {
+	const user = currentOsUser();
 	const decide = (
 		owner: RunEntry | null,
 		isAlive: (run: RunEntry) => boolean,
 	) =>
 		decideSweep({
-			rootExists: group.root !== "" && existsSync(group.root),
+			rootExists: !checkoutMissing(group.root),
 			anyRunning: group.containers.some(isContainerUp),
 			run: owner,
 			ownerAlive: owner !== null && isAlive(owner),
+			ownedByCurrentUser:
+				user !== "" &&
+				group.containers.every((container) => container.user === user),
 			now,
 		});
 	if (decide(run, alive).kind !== "down") return false;
@@ -352,7 +388,7 @@ export async function settleDeletedCheckouts(input: {
 		root: offsetClaimRoot(key, claim),
 		claim,
 	}));
-	const deleted = claims.filter(({ root }) => !existsSync(root));
+	const deleted = claims.filter(({ root }) => checkoutMissing(root));
 	if (deleted.length === 0) return;
 
 	if (!pruneDeletedCheckoutVolumes()) {
@@ -386,10 +422,10 @@ export async function settleDeletedCheckouts(input: {
 	} of deleted) {
 		const claimedElsewhere = claims.some(
 			(other) =>
-				other.claim.projectName === projectName && existsSync(other.root),
+				other.claim.projectName === projectName && !checkoutMissing(other.root),
 		);
 		const runElsewhere = runs.some(
-			(run) => run.projectName === projectName && existsSync(run.root),
+			(run) => run.projectName === projectName && !checkoutMissing(run.root),
 		);
 		if (claimedElsewhere || runElsewhere) {
 			settled.push(key);
@@ -459,10 +495,12 @@ async function sweepStacks(
 		const owner =
 			runs.find((entry) => entry.sessionId === run.sessionId) ?? null;
 		return decideSweep({
-			rootExists: run.root !== "" && existsSync(run.root),
+			rootExists: !checkoutMissing(run.root),
 			anyRunning: true,
 			run: owner,
 			ownerAlive: sameCheckout.some(isAlive),
+			// Recorded in this user's registry, so ours.
+			ownedByCurrentUser: true,
 			now,
 		});
 	};
@@ -477,7 +515,7 @@ async function sweepStacks(
 				const freshAlive = await runLivenessAsync(fresh);
 				const verdict = decide(fresh, freshAlive);
 				if (verdict.kind !== "down") return;
-				const cwd = existsSync(run.root) ? run.root : homedir();
+				const cwd = checkoutMissing(run.root) ? homedir() : run.root;
 				for (const stack of run.stacks ?? []) {
 					await execAsync(stack.down, cwd, {}, { timeoutMs: 120_000 });
 					result.swept.push({
@@ -570,7 +608,7 @@ function finishedSessions(
 				!stillHasContainers(run) &&
 				// Its stacks are only recorded here; retiring would orphan them.
 				(run.stacks?.length ?? 0) === 0 &&
-				(runtimeAnswered(run) || !existsSync(run.root)),
+				(runtimeAnswered(run) || checkoutMissing(run.root)),
 		)
 		.map((run) => run.sessionId);
 }

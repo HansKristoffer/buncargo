@@ -1,3 +1,4 @@
+import { currentOsUser } from "../core/os-user";
 import { inferDockerPreset, isExternalService } from "../core/service-presets";
 import type {
 	ComposeDocument,
@@ -188,6 +189,8 @@ export function buildComposeModel(
 				"buncargo.project": identity.projectName,
 				"buncargo.root": identity.root,
 				"buncargo.worktree": identity.worktree ?? "",
+				// Whose stack this is: the sweep never removes another user's.
+				"buncargo.user": currentOsUser(),
 				"buncargo.service": serviceName,
 				// Stable across selected subsets; the backend receives the interpolated hash.
 				[SERVICE_HASH_LABEL]: `\${${serviceHashEnv(serviceName)}:-}`,

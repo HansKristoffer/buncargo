@@ -85,7 +85,11 @@ no config load, no Docker unless a service is the target.
 
 - `decideSweep` is pure: a stack nobody owns comes down when its checkout is gone, when every
   container is stopped, when its run released it longer ago than its idle hold, or when its owner
-  has been gone for longer than the grace. A running stack with no entry at all is left alone.
+  has been gone for longer than the grace. A stack with no entry in this user's registry is left
+  alone, unless its checkout is provably gone (ENOENT/ENOTDIR, never `existsSync`, which says false
+  on EACCES) and every container carries this OS user's `buncargo.user` label. A shared Docker
+  daemon shows every user's stacks; a watchdog once removed a CI runner's because its checkout was
+  unreadable.
 - The grace counts from `ownerLostAt`, which the sweep stamps the first time it finds an unreleased
   owner gone, not from `updatedAt`, which a quiet run may not have written for hours before it
   crashed.

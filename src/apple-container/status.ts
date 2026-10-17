@@ -204,6 +204,7 @@ export function toBuncargoContainer(
 		root: record.labels["buncargo.root"] ?? "",
 		worktree: record.labels["buncargo.worktree"] ?? "",
 		service: record.labels[SERVICE_LABEL] ?? "",
+		user: record.labels["buncargo.user"] ?? "",
 		runtime: "apple",
 	};
 }
