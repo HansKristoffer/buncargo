@@ -1,4 +1,4 @@
-import { isAbsolute, normalize } from "node:path";
+import { normalize } from "node:path";
 import { sanitizeTld } from "../../core/hosts/plan";
 import type { AnyDevConfig } from "../../types";
 import type { ValidationContext } from "./context";
@@ -7,7 +7,7 @@ export function validateReferences(
 	config: AnyDevConfig,
 	context: ValidationContext,
 ): void {
-	const { errors } = context;
+	const { errors, checkRelativePath } = context;
 	const preparationEntries = [
 		...(config.migrations ?? []).map((entry, index) => ({
 			path: `migrations.${index}`,
@@ -101,18 +101,6 @@ export function validateReferences(
 			}
 		}
 	}
-
-	const checkRelativePath = (path: string, value: string | undefined) => {
-		if (!value) return;
-		if (isAbsolute(value)) {
-			errors.push(`${path} must be a relative path inside the repo.`);
-		}
-
-		const normalized = normalize(value).replace(/\\/g, "/");
-		if (normalized === ".." || normalized.startsWith("../")) {
-			errors.push(`${path} cannot point outside the repository root.`);
-		}
-	};
 
 	checkRelativePath("prisma.cwd", config.prisma?.cwd);
 	checkRelativePath("prisma.migrations", config.prisma?.migrations);
