@@ -125,7 +125,10 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   routing: a loop that stops leaves `Bun.serve` answering 200 while every named URL 404s against a
   frozen map. `lastReloadAt` travels in the health body, the proxy notices a stale map **from the
   request path** (a timer-based watchdog would die with the timers it watches), and the daemon
-  reloads in-band before falling back to `process.exit(1)` for `KeepAlive` to restart.
+  reloads in-band before falling back to `process.exit(1)` for `KeepAlive` to restart. Only
+  consecutive recoveries that left the map stale count toward that exit: an exit drops every
+  proxied websocket on the machine, so a stall that an in-band reload repaired must never add up
+  to one.
 - On the CLI side `waitForDaemonRoutes` is what stands between the registry and the banner: a route
   is a file until the daemon picks it up, and advertising it earlier is how https URLs come to
   point at our own 404. It retries a probe that does not answer rather than failing on it (the

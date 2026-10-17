@@ -72,8 +72,9 @@ const MAX_RELOAD_BACKOFF_MS = 5_000;
 export const RELOAD_STALL_MS = 45_000;
 
 /**
- * Failed in-band recoveries before the daemon gives up and lets the supervisor
- * restart it. Two is enough to tell a transient read error from a wedge.
+ * Consecutive failed in-band recoveries tolerated before the daemon gives up
+ * and lets the supervisor restart it. Two is enough to tell a transient read
+ * error from a wedge.
  */
 const MAX_STALL_RECOVERIES = 2;
 
@@ -103,6 +104,35 @@ export function nextReloadDelayMs(consecutiveFailures: number): number {
 	if (consecutiveFailures <= 0) return RELOAD_INTERVAL_MS;
 	const backoff = RELOAD_INTERVAL_MS * 2 ** (consecutiveFailures - 1);
 	return Math.min(backoff, MAX_RELOAD_BACKOFF_MS);
+}
+
+/**
+ * Whether the daemon should give up after an in-band stall recovery.
+ *
+ * Only recoveries that left the map stale count, and a successful one resets
+ * the count: a daemon that stalls now and then over weeks and recovers each
+ * time is working, and exiting it drops every proxied websocket on the machine.
+ */
+export function createStallRecoveryPolicy(input: {
+	lastReloadAt: () => number | undefined;
+	now: () => number;
+	staleAfterMs?: number;
+	maxFailures?: number;
+}): { shouldExitAfterRecovery: () => boolean } {
+	const staleAfterMs = input.staleAfterMs ?? RELOAD_STALL_MS;
+	const maxFailures = input.maxFailures ?? MAX_STALL_RECOVERIES;
+	let failures = 0;
+	return {
+		shouldExitAfterRecovery: () => {
+			const at = input.lastReloadAt();
+			if (at !== undefined && input.now() - at <= staleAfterMs) {
+				failures = 0;
+				return false;
+			}
+			failures += 1;
+			return failures > maxFailures;
+		},
+	};
 }
 
 export {
@@ -644,11 +674,14 @@ export async function runHostsDaemon(
 	 * request is the one signal still known to work, so it drives the repair.
 	 *
 	 * Reloading in-band is tried first because it fixes the common case without
-	 * dropping a single connection. Only when that does not move the timestamp
-	 * does the daemon exit and let launchd/systemd `KeepAlive` restart it — a
+	 * dropping a single connection. Only when it keeps failing to move the
+	 * timestamp ({@link createStallRecoveryPolicy}) does the daemon exit and let launchd/systemd `KeepAlive` restart it — a
 	 * rebind costs milliseconds, and a wedged daemon costs everything.
 	 */
-	let recoveries = 0;
+	const stallPolicy = createStallRecoveryPolicy({
+		lastReloadAt: () => reloader.routes().lastReloadAt,
+		now: Date.now,
+	});
 	let recovering: Promise<void> | undefined;
 	recoverFromStall = (ageMs) => {
 		if (recovering) return;
@@ -657,8 +690,7 @@ export async function runHostsDaemon(
 		);
 		recovering = reloadOrReport("recovery")
 			.then(() => {
-				recoveries += 1;
-				if (recoveries <= MAX_STALL_RECOVERIES) return;
+				if (!stallPolicy.shouldExitAfterRecovery()) return;
 				logDaemonError(
 					"[buncargo hosts] route map is still stale after in-band reloads; exiting so the service restarts",
 				);

@@ -15,6 +15,7 @@ import {
 	createDebouncedTrigger,
 	createHostsReloader,
 	createReloadWakeup,
+	createStallRecoveryPolicy,
 	createThrottledFailureLog,
 	type HostsReloaderDeps,
 	nextReloadDelayMs,
@@ -48,6 +49,49 @@ describe("nextReloadDelayMs", () => {
 	// up every other project's routes for that long.
 	it("caps the backoff so recovery is still noticed", () => {
 		expect(nextReloadDelayMs(50)).toBe(5_000);
+	});
+});
+
+describe("createStallRecoveryPolicy", () => {
+	function policy() {
+		let now = 1_000_000;
+		let lastReloadAt = now;
+		const recovery = createStallRecoveryPolicy({
+			lastReloadAt: () => lastReloadAt,
+			now: () => now,
+			staleAfterMs: 45_000,
+			maxFailures: 2,
+		});
+		return {
+			// The map stalls; the in-band reload either refreshes it or does not.
+			stallThenRecover(refreshed: boolean): boolean {
+				now += 60_000;
+				if (refreshed) lastReloadAt = now;
+				return recovery.shouldExitAfterRecovery();
+			},
+		};
+	}
+
+	// The daemon used to count every recovery for its whole lifetime, so the
+	// third stall in weeks exited it even though each one had been repaired.
+	it("keeps running through any number of successful recoveries", () => {
+		const daemon = policy();
+		const exits = [1, 2, 3, 4].map(() => daemon.stallThenRecover(true));
+		expect(exits).toEqual([false, false, false, false]);
+	});
+
+	it("exits once in-band reloads keep leaving the map stale", () => {
+		const daemon = policy();
+		const exits = [1, 2, 3].map(() => daemon.stallThenRecover(false));
+		expect(exits).toEqual([false, false, true]);
+	});
+
+	it("starts counting again after a recovery that worked", () => {
+		const daemon = policy();
+		daemon.stallThenRecover(false);
+		daemon.stallThenRecover(false);
+		daemon.stallThenRecover(true);
+		expect(daemon.stallThenRecover(false)).toBe(false);
 	});
 });
 
