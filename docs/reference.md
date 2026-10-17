@@ -618,7 +618,8 @@ in the run registry as `openUrl`: a public tunnel URL when the app is exposed,
 else the named `https://` host while the hosts daemon serves it, else loopback.
 
 Both modes write each app's output, plain, to `.buncargo/logs/<run>/<app>.log`
-(the last ten runs, 5 MB per file). `buncargo logs [app] [-f] [--since=5m]
+(the last ten runs, 5 MB per file), and a seed that runs beside the apps
+(`seed.beforeApps: false`) to `seed.log`. `buncargo logs [app] [-f] [--since=5m]
 [--errors]` reads the current or last run.
 
 ### Non-essential apps

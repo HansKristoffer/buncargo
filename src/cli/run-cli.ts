@@ -786,7 +786,12 @@ async function runDevFlow<
 				seed: overlapSeed
 					? (seedSignal) =>
 							timer.measure("seed", () =>
-								env.runSeed({ signal: seedSignal, prefixOutput: true }),
+								// Through the run's output, so stream mode and the TUI
+								// both show it and write it to the run's `seed.log`.
+								env.runSeed({
+									signal: seedSignal,
+									onOutputLine: (line) => view.output.line("seed", line),
+								}),
 							)
 					: undefined,
 				stayOpen: nothingToSpawn ? waitForShutdownSignal : undefined,

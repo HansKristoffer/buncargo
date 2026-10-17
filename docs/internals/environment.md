@@ -15,7 +15,9 @@ log and continue. `seed-startup.ts` shares selection for `seed.beforeApps: false
 task, cancellation and draining across CLI and library, including production builds and empty
 sessions kept open for tunnels. The CLI defers the automatic seed through
 `skipSeed`/`prefetchSeed`, and `server-session.ts` joins the seed before `afterServers` and
-readiness. Concurrent output uses `process/prefix-output.ts`.
+readiness. Concurrent output uses `process/prefix-output.ts` in the library; the CLI passes
+`onOutputLine` and feeds it to the run's output as `seed`, so stream mode and the TUI both show it
+and log it to `seed.log`.
 
 ## Secrets prefetch
 

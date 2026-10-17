@@ -185,6 +185,11 @@ export interface SeedConfig<
 export interface SeedRunOptions {
 	/** Prefix seed output when running alongside app logs. */
 	prefixOutput?: boolean;
+	/**
+	 * Each line the seed command prints, instead of the terminal. The CLI feeds
+	 * it to the run's output, so the seed reaches the TUI and the run's logs.
+	 */
+	onOutputLine?: (line: string) => void;
 	signal?: AbortSignal;
 	verbose?: boolean;
 	productionBuild?: boolean;

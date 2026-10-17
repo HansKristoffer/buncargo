@@ -33,6 +33,7 @@ export async function runSeedCommand(input: {
 	forceExit?: boolean;
 	verbose?: boolean;
 	prefixOutput?: boolean;
+	onOutputLine?: (line: string) => void;
 }): Promise<ExecResult> {
 	const specifier = resolveBunSeedSpecifier(input.command);
 	const forceExit = input.forceExit ?? Boolean(specifier);
@@ -49,6 +50,7 @@ export async function runSeedCommand(input: {
 				cwd: input.cwd,
 				verbose: input.verbose,
 				outputPrefix: input.prefixOutput ? "seed" : undefined,
+				onOutputLine: input.onOutputLine,
 				throwOnError: false,
 				signal: input.signal,
 				timeoutMs: 600_000,
@@ -60,6 +62,7 @@ export async function runSeedCommand(input: {
 		cwd: input.cwd,
 		verbose: input.verbose,
 		outputPrefix: input.prefixOutput ? "seed" : undefined,
+		onOutputLine: input.onOutputLine,
 		throwOnError: false,
 		signal: input.signal,
 		timeoutMs: 600_000,
@@ -186,12 +189,16 @@ export async function runSeedIfNeeded<
 		envVars: { ...secrets, ...computed },
 		forceExit: seed.forceExit,
 		prefixOutput: options.prefixOutput,
+		onOutputLine: options.onOutputLine,
 		verbose,
 	});
 
 	if (result.exitCode !== 0) {
 		console.error(formatFail("Seeding failed"));
-		if (!options.prefixOutput || !verbose) console.error(result.stderr);
+		// Already shown when its output was streamed.
+		const streamed =
+			verbose && (options.prefixOutput || options.onOutputLine !== undefined);
+		if (!streamed) console.error(result.stderr);
 		return { status: "failed", result };
 	}
 
