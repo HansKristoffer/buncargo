@@ -133,6 +133,8 @@ How a run fits together, and the startup invariants: `docs/internals/overview.md
 - While iterating, run the tests you touched: `bun test <files>`.
 - Before finishing a substantive change, run all three: `bun run build`, `bun run lint:write`
   (typecheck, then Biome) and `bun test`. Leave the repo with all three passing.
+- A branch of several commits: `bun scripts/check-commits.ts <base>` runs `bun run lint` on each
+  commit on its own (`--test` adds `bun test`).
 - Behavior changes ship with tests for that behavior, co-located as `*.test.ts`. Test what a
   module observably does, not how it is wired.
 - A test that needs a sleep to pass is wrong. Await the event, poll a condition against a deadline,
