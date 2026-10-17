@@ -18,6 +18,14 @@ per port.
   generated model, which changes Apple's `buncargo.config-hash`, so every run recreated its own
   containers and alternated between two ports. A container of ours on the *other* backend must
   still shift: that port really is taken.
+- `buncargo prisma` and `env.prisma` (`ensureDatabase`) start the database outside `start()`, and
+  used to start it on the context's unprobed preview with no claim: a CI runner's Postgres landed on
+  a port another OS user's stack published and failed the service preflight on every rerun. Claims
+  are per user (`~/.buncargo`), so the container listing is what keeps users sharing one daemon
+  apart. They now allocate with `prepareStartAsync` for the database, unless this environment has
+  already allocated: probing again would move a live run's block under it and replace its
+  selection. An app-only allocation never probed the database's port against containers, so that
+  case still meets a foreign one at the preflight.
 - `offset-claims.ts` is `~/.buncargo/offsets.json`, root → offset and the block's ports. Every
   probing allocation skips a block another existing checkout claims, by its offset or by any one of
   its ports, and every claiming one writes its own. Offsets alone missed collisions between
