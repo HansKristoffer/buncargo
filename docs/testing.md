@@ -38,7 +38,8 @@ only.
   container runtime is reachable. Every real stack on the machine then looks unowned. Stub the
   adapters, or point `DOCKER_HOST` at nothing as well.
 - Write to the real `~/.buncargo`, `/etc/hosts`, the clipboard or the installed hosts service.
-  Point `HOME` at a temporary directory and inject the seams (`copy`, `privileged`, the reloader's
-  edges) the modules already take.
+  `bun test` gives the run a temporary `HOME` unless an opt-in suite's flag is set; those suites
+  keep the real one and must move `HOME` themselves before writing state. Inject the seams
+  (`copy`, `privileged`, the reloader's edges) the modules already take.
 - Wait on `sleep` for a state change. Await the event, poll the condition with a deadline, or
   inject the clock.

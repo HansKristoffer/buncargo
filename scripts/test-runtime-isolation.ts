@@ -1,7 +1,72 @@
-/** Unit tests must not depend on or mutate the developer's container daemons. */
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+/** Unit tests must not depend on or mutate the developer's container daemons or state. */
+import { afterAll } from "bun:test";
+import {
+	chmodSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { matchesProcessIdentity } from "../src/core/process-identity";
+
+/**
+ * The opt-in suites that run against the real machine on purpose
+ * (docs/testing.md). They read the real home (a cached mkcert, a CLI's login)
+ * and move `HOME` themselves where they write state.
+ */
+const REAL_MACHINE_SUITES = [
+	"BUNCARGO_TEST_APPLE_CONTAINER",
+	"BUNCARGO_TEST_CLOUDFLARED_SMOKE",
+	"BUNCARGO_TEST_FRP",
+	"BUNCARGO_TEST_HOSTS",
+	"BUNCARGO_TEST_HOSTS_SOAK",
+	"BUNCARGO_TEST_PROXY_IDLE",
+	"BUNCARGO_TEST_SHOPIFY_CLI",
+] as const;
+
+/**
+ * Stop the watchdog a test started under `home`, if the pid file still names
+ * that process. Only this run's own home is read, so nothing else is touched.
+ */
+function stopWatchdogOf(home: string): void {
+	let owner: { pid?: unknown; processIdentity?: unknown };
+	try {
+		owner = JSON.parse(
+			readFileSync(join(home, ".buncargo", "watchdog.pid"), "utf8"),
+		);
+	} catch {
+		// No watchdog was started under this home.
+		return;
+	}
+	if (
+		typeof owner.pid !== "number" ||
+		typeof owner.processIdentity !== "string"
+	)
+		return;
+	if (!matchesProcessIdentity(owner.pid, owner.processIdentity)) return;
+	try {
+		process.kill(owner.pid, "SIGTERM");
+	} catch {
+		// It exited between the check and the signal.
+	}
+}
+
+// The whole run gets a temporary home, so a test that forgets to move HOME
+// writes there rather than to the developer's `~/.buncargo`. A test that sets
+// its own HOME still can.
+if (!REAL_MACHINE_SUITES.some((name) => process.env[name])) {
+	const realHome = process.env.HOME;
+	const home = mkdtempSync(join(tmpdir(), "buncargo-test-home-"));
+	process.env.HOME = home;
+	afterAll(() => {
+		stopWatchdogOf(home);
+		// Bun writes its transpiler cache under HOME as it exits, after this.
+		process.env.HOME = realHome;
+		rmSync(home, { recursive: true, force: true });
+	});
+}
 
 // The explicitly enabled Apple integration exercises the real installed runtime.
 // Docker integration runs as a separate script, outside this test preload.
@@ -16,11 +81,10 @@ if (
 		chmodSync(path, 0o700);
 	}
 	process.env.PATH = `${directory}${delimiter}${process.env.PATH ?? ""}`;
-	process.once("exit", () =>
-		rmSync(directory, { recursive: true, force: true }),
-	);
+	// A global `afterAll`: Bun runs no `exit` handler of a test preload.
+	afterAll(() => rmSync(directory, { recursive: true, force: true }));
 
-	// The stubs go when this process exits, but a watchdog a test's run
+	// The stubs go when the run ends, but a watchdog a test's run
 	// started may outlive it, with an isolated HOME whose registry names no
 	// stack, and then find the real `docker` further down PATH. A dead
 	// DOCKER_HOST outlives the stubs; with the tailnet directory off, such a

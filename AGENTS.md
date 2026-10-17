@@ -53,7 +53,8 @@ worktrees of this repo and of the projects that use it.
 1. **The sweep against real Docker.** Anything that runs the sweep, the watchdog or
    `dev --down --all` with an isolated `HOME` but a reachable container runtime sees every real
    stack on the machine as unowned and tears it down. Isolate both: stub the adapters, or point
-   `DOCKER_HOST` at nothing. `bun test` already stubs `docker` and `container`
+   `DOCKER_HOST` at nothing. `bun test` already stubs `docker` and `container`, points
+   `DOCKER_HOST` at nothing and gives the run a temporary `HOME`
    (`scripts/test-runtime-isolation.ts`); scripts and manual runs do not. An empty `PATH` hides
    nothing: Bun falls back to `/usr/bin` and finds the real `docker` (`src/architecture.test.ts`
    rejects it).
@@ -64,8 +65,8 @@ worktrees of this repo and of the projects that use it.
    `buncargo stop`. Never `pkill -f`, `killall`, or `docker rm` by name: other worktrees' runs and
    your own agent share these names and paths.
 4. **The developer's machine state.** `~/.buncargo`, `/etc/hosts`, the root hosts daemon and its
-   certificates are live. In tests, point `HOME` at a temporary directory and inject the seams the
-   modules take (`privileged`, the reloader's edges, `copy`). Never run `sudo`, and never
+   certificates are live. In tests, inject the seams the modules take (`privileged`, the
+   reloader's edges, `copy`); the opt-in suites that keep the real `HOME` move it themselves. Never run `sudo`, and never
    `dev --reset` or `dev --down --all` to "fix" something.
 
 ## Hit every surface
