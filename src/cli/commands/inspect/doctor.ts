@@ -27,6 +27,7 @@ import {
 	readOffsetClaims,
 } from "../../../core/offset-claims";
 import {
+	foreignLockfile,
 	getPortsLockfilePath,
 	readPortsLockfile,
 } from "../../../core/port-allocation";
@@ -176,13 +177,10 @@ function checkPortOwnership(
 function checkPortsLockfile(report: DoctorReport, env: DevEnv): void {
 	const lockfile = readPortsLockfile(env.root);
 	if (!lockfile) return;
-	if (
-		(lockfile.projectName !== undefined &&
-			lockfile.projectName !== env.projectName) ||
-		(lockfile.root !== undefined && lockfile.root !== env.root)
-	) {
+	const foreign = foreignLockfile(lockfile, env);
+	if (foreign) {
 		report.issue(
-			`Stale ${getPortsLockfilePath(env.root)} (project/root mismatch). Delete it or run buncargo dev to rewrite it.`,
+			`Stale ${getPortsLockfilePath(env.root)}: ${foreign}. Delete it or run buncargo dev to rewrite it.`,
 		);
 		return;
 	}

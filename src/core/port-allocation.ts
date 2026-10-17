@@ -182,7 +182,7 @@ function validatePortLockfile(value: unknown): PortLockfile | undefined {
 }
 
 /** Why a lockfile is not this checkout's, or undefined when it is. */
-function foreignLockfile(
+export function foreignLockfile(
 	lockfile: PortLockfile,
 	input: { projectName: string; root: string },
 ): string | undefined {
