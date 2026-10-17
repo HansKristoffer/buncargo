@@ -149,6 +149,25 @@ export function describeSwept(stack: SweptStack): string {
  * one stack that cannot come down does not write the same line every pass for
  * as long as the machine is up.
  */
+/**
+ * Nothing of this user's is left: no live run, no recorded integration stack,
+ * and no container outside the stacks this user's state does not name.
+ * Another user's stacks on a shared daemon are not a reason to stay up for as
+ * long as they exist.
+ */
+export function watchesNothing(result: SweepResult): boolean {
+	if (result.liveRuns > 0 || result.pendingStacks > 0) return false;
+	if (result.containers === 0) return true;
+	return result.remaining.every((group) =>
+		result.foreign.some(
+			(stack) =>
+				stack.projectName === group.projectName &&
+				stack.root === group.root &&
+				stack.runtime === group.runtime,
+		),
+	);
+}
+
 export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 	let reportedFailures = new Map<string, string>();
 	let reportedPassError: string | undefined;
@@ -172,11 +191,7 @@ export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 			}
 			reportedFailures = failures;
 
-			if (
-				result.containers === 0 &&
-				result.liveRuns === 0 &&
-				result.pendingStacks === 0
-			) {
+			if (watchesNothing(result)) {
 				if (await deps.exitIfIdle(result)) {
 					deps.log("Nothing left to watch; exiting");
 					return;

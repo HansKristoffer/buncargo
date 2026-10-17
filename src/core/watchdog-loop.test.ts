@@ -7,6 +7,7 @@ import {
 	exitUnlessClaimed,
 	formatWatchdogLine,
 	runWatchdogLoop,
+	watchesNothing,
 } from "./watchdog-loop";
 
 function pass(extra: Partial<SweepResult> = {}): SweepResult {
@@ -308,5 +309,52 @@ describe("claimedSincePass", () => {
 			false,
 		);
 		expect(claimedSincePass(pass({ runs: [earlier] }), [], alive)).toBe(false);
+	});
+});
+
+describe("watchesNothing", () => {
+	const group = (projectName: string) => ({
+		projectName,
+		root: `/home/runner/${projectName}`,
+		runtime: "docker" as const,
+		containers: [],
+	});
+	const foreign = (projectName: string) => ({
+		projectName,
+		root: `/home/runner/${projectName}`,
+		runtime: "docker" as const,
+		reason: "not in this user's runs.json or offsets.json",
+		command: `docker compose -p ${projectName} down`,
+	});
+
+	it("does not stay up for another user's stacks", () => {
+		expect(
+			watchesNothing(
+				pass({
+					containers: 2,
+					liveRuns: 0,
+					remaining: [group("ci-1"), group("ci-2")],
+					foreign: [foreign("ci-1"), foreign("ci-2")],
+				}),
+			),
+		).toBe(true);
+	});
+
+	it("stays up for a stack of its own, a live run or a recorded stack", () => {
+		expect(
+			watchesNothing(
+				pass({
+					containers: 2,
+					liveRuns: 0,
+					remaining: [group("mine"), group("ci-1")],
+					foreign: [foreign("ci-1")],
+				}),
+			),
+		).toBe(false);
+		expect(watchesNothing(pass({ containers: 0, liveRuns: 1 }))).toBe(false);
+		expect(
+			watchesNothing(pass({ containers: 0, liveRuns: 0, pendingStacks: 1 })),
+		).toBe(false);
+		expect(watchesNothing(pass({ containers: 0, liveRuns: 0 }))).toBe(true);
 	});
 });

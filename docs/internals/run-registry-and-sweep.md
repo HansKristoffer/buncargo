@@ -166,7 +166,11 @@ across machines too. So a run without containers ensures the watchdog as well, o
 are up and not awaited, so nothing is added before they start: `runDevFlow` from `onReady`, and
 `start()` after its apps are ready unless `watchdog: false`. `startServers()` takes no options to
 opt out with, so it ensures none. The loop already stays while any entry is live, containers or
-not.
+not, and stays for no container of a stack the sweep reports as another user's
+(`watchesNothing`): on a daemon shared with a CI user, those would keep it up for good. It also
+exits once its state directory is confirmed gone, which is a test's temporary `HOME` deleted
+under it: one such runner outlived its test, found the real `docker` and, with no registry left,
+swept another user's stacks.
 
 One watchdog sweeps for every checkout, so whichever buncargo started it decides for all of them: a
 12.4 runner started from one worktree swept stacks of worktrees on 13. The runner records its
