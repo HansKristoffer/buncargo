@@ -66,6 +66,10 @@ describe("runs.json v1 fixture", () => {
 			expect(run?.details?.[0]?.label).toBe("Shopify preview");
 			expect(run?.captures?.appUrl).toBe("https://example.trycloudflare.com");
 			expect(run?.apps[0]?.exclusive).toStartWith("shopify-app:");
+			// `stop` waits this long for an app that saves data on its way out.
+			expect(run?.apps.find((app) => app.name === "jobs")?.stopGraceMs).toBe(
+				60_000,
+			);
 			// Tasks get a run button; a description is optional.
 			expect(run?.tasks).toEqual([
 				{ name: "db:seed", description: "Seed the dev database" },

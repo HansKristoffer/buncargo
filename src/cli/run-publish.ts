@@ -193,6 +193,7 @@ function appEntries(
 				hostname: hostnameFor.get(name),
 				...integrationFields(env, name, input.apps[name], port),
 				exclusive: input.apps[name]?.exclusive,
+				stopGraceMs: input.apps[name]?.stopGraceMs,
 				status: input.statusFor(name),
 			},
 		];

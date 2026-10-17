@@ -45,6 +45,19 @@ export const STOP_EXIT = { ok: 0, notFound: 2, refused: 3 } as const;
 const TERM_GRACE_MS = 5000;
 const TERM_POLL_MS = 100;
 
+/**
+ * How long a whole run gets before its `dev` process is killed.
+ *
+ * That process stops its apps itself, each with its own `stopGraceMs`, so it
+ * needs the longest of them on top of its own teardown. Killing it sooner
+ * leaves an app that is still saving data with no one to finish stopping it.
+ */
+export function runStopGraceMs(run: Pick<RunEntry, "apps">): number {
+	return (
+		TERM_GRACE_MS + Math.max(0, ...run.apps.map((app) => app.stopGraceMs ?? 0))
+	);
+}
+
 export async function handleStop(args: string[] = []): Promise<number> {
 	const parsed = parseStopArgs(args);
 	if (parsed.help) {
@@ -171,7 +184,7 @@ async function stopApp(
 		);
 		return STOP_EXIT.refused;
 	}
-	await terminate(app.pid);
+	await terminate(app.pid, app.stopGraceMs ?? TERM_GRACE_MS);
 	log.done(`Stopped ${app.name}`);
 	return STOP_EXIT.ok;
 }
@@ -220,11 +233,11 @@ async function stopReusedApp(
  * The group, not the pid: a dev command is usually a shell that spawns the real
  * server, and signalling only the parent leaves the server holding the port.
  */
-async function terminate(pid: number): Promise<void> {
+async function terminate(pid: number, graceMs: number): Promise<void> {
 	if (!isProcessAlive(pid)) return;
 	signalProcessTree(pid, "SIGTERM");
 
-	const deadline = Date.now() + TERM_GRACE_MS;
+	const deadline = Date.now() + graceMs;
 	while (Date.now() < deadline) {
 		if (!isProcessAlive(pid)) return;
 		await sleep(TERM_POLL_MS);
@@ -351,7 +364,7 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 		);
 		return STOP_EXIT.refused;
 	}
-	await terminate(run.pid);
+	await terminate(run.pid, runStopGraceMs(run));
 	return withProjectLifecycleLock(run.projectName, run.root, async () => {
 		// A second session in this checkout keeps the containers. It claims them
 		// in this same registry before it starts them, so a run that is still

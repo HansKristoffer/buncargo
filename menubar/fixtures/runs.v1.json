@@ -58,6 +58,7 @@
           "name": "jobs",
           "kind": "worker",
           "pid": 1,
+          "stopGraceMs": 60000,
           "status": "ready"
         }
       ],

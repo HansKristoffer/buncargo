@@ -31,6 +31,12 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	healthEndpoint?: string | false;
 	/** Timeout for health check in milliseconds */
 	healthTimeout?: number;
+	/**
+	 * How long the app gets to exit after SIGTERM before it is killed, in
+	 * milliseconds: on stop, restart and `buncargo stop`. Raise it for a
+	 * process that saves data on its way out. Default: 5000.
+	 */
+	stopGraceMs?: number;
 	/** Service keys that must be running when this app starts */
 	requiredServices?: readonly string[];
 	/**

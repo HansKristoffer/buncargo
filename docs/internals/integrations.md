@@ -2,8 +2,8 @@
 
 User-facing guide: [integrations](../integrations.md).
 
-`src/expo/`, `src/shopify/` and `src/supabase/` (published as `buncargo/expo`, `buncargo/shopify`,
-`buncargo/supabase`) are integrations: plain `BuncargoIntegration` objects applied by
+`src/expo/`, `src/shopify/`, `src/supabase/` and `src/firebase/` (published as `buncargo/expo`,
+`buncargo/shopify`, `buncargo/supabase`, `buncargo/firebase`) are integrations: plain `BuncargoIntegration` objects applied by
 `config/integrations.ts` (`applyIntegrations`) in order before validation. It composes hooks (the
 config's first), appends checks, and is idempotent (a symbol marks an applied config).
 
@@ -75,3 +75,27 @@ limit comes from. Compose ignores those containers on `down`: they have no
   matters.
 - An excluded container's service is not added. A stack keeps the settings it started with until it
   is stopped.
+
+## Firebase
+
+The Emulator Suite is a process, not containers, so it is an app rather than a stack, and it is not
+held between runs. What it depends on in `firebase-tools` (checked against 15.34):
+
+- Ports live only in `firebase.json`; there is no env override. `--config <file>` makes the file's
+  directory the project directory, and `functions.source` is joined onto that directory, so an
+  absolute path breaks it. The per-checkout copy therefore sits beside `firebase.json`
+  (`firebase.buncargo.json`), not under `.buncargo/`. An unset hub, UI, logging, Eventarc or Tasks
+  port makes the CLI pick a free one, so every port is written out.
+- Adding `emulators.<name>` to the copy would make that emulator a target. Only the selected
+  emulators get one, and `--only` always names them. Eventarc and Tasks are skipped by the CLI's
+  target loop and only listen beside Functions, so they are safe to write whenever Functions runs.
+- The hub writes `hub-<project id>.json` in `os.tmpdir()`, and a second suite on the same id reads
+  the first one's (the CLI only warns). Each checkout's suite gets its own `TMPDIR` rather than its
+  own project id, so the id the apps' SDK config uses stays the project's.
+- `--export-on-exit` runs on the first SIGINT/SIGTERM/SIGHUP/SIGQUIT; a second signal more than
+  100 ms later skips the export. The CLI is run directly, not through `npx`/`bunx`, which forward
+  the signal again, and the app has a long `stopGraceMs` for the single SIGTERM.
+- The JVM emulators are spawned `detached`, in their own process groups. A clean stop ends them; a
+  SIGKILL after the grace runs out leaves them holding their ports.
+- The data directory defaults to `.firebase-emulator-data` beside `firebase.json`, not under the
+  per-checkout `.buncargo/`, which is disposable state; nothing in buncargo removes it.
