@@ -5,8 +5,8 @@ import {
 	type InvokingUser,
 	invokingUserIdentity,
 } from "../state-paths";
+import { requireBuncargoPackage } from "../version";
 import {
-	buncargoVersion,
 	currentDaemonBundleHash,
 	HOSTS_DAEMON_DIR,
 	hashDaemonBundle,
@@ -86,7 +86,7 @@ export function toHostsUserMessage(error: unknown): string {
  * it so a Bun that later moves is reported as stale rather than failing
  * silently.
  */
-export function resolveHostsDaemonCommand(version = buncargoVersion()): {
+export function resolveHostsDaemonCommand(version: string): {
 	program: string;
 	args: string[];
 } {
@@ -218,7 +218,7 @@ export function describeStaleHostsService(): string | undefined {
 	return describeStaleService({
 		installed: isHostsServiceInstalled(),
 		manifest: readHostsServiceManifest(),
-		expectedBundle: hostsDaemonBundlePath(buncargoVersion()),
+		expectedBundle: hostsDaemonBundlePath(requireBuncargoPackage().version),
 		expectedBundleHash: currentDaemonBundleHash(),
 	});
 }

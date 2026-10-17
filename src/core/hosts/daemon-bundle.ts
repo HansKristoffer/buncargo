@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { requireBuncargoPackage } from "../version";
 
 /**
  * The self-contained daemon file the system service actually executes.
@@ -52,52 +52,12 @@ export function supersededBundles(keep: string): string[] {
 		.filter((path) => path !== keep);
 }
 
-interface PackageRoot {
-	dir: string;
-	version: string;
-}
-
-let cachedRoot: PackageRoot | undefined;
-
-/**
- * Walk up to the buncargo package root.
- *
- * Resolving relative to this module's own path is not enough: the bundler
- * code-splits shared modules into `dist/chunk-*.js`, so the depth from here to
- * the package root is not fixed.
- */
-export function packageRoot(): PackageRoot {
-	if (cachedRoot) return cachedRoot;
-
-	let dir = dirname(fileURLToPath(import.meta.url));
-	for (;;) {
-		const manifest = join(dir, "package.json");
-		if (existsSync(manifest)) {
-			const version = JSON.parse(readFileSync(manifest, "utf-8")).version;
-			cachedRoot = {
-				dir,
-				version: typeof version === "string" ? version : "0.0.0",
-			};
-			return cachedRoot;
-		}
-		const parent = dirname(dir);
-		if (parent === dir) {
-			throw new Error("Could not locate the buncargo package root.");
-		}
-		dir = parent;
-	}
-}
-
-export function buncargoVersion(): string {
-	return packageRoot().version;
-}
-
 /** The built bundle to install, or a message naming what to do about it. */
 export function readDaemonBundleSource(): {
 	contents: string;
 	version: string;
 } {
-	const { dir, version } = packageRoot();
+	const { dir, version } = requireBuncargoPackage();
 	const source = join(dir, "dist", "hostsd.js");
 	if (!existsSync(source)) {
 		throw new Error(

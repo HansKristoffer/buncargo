@@ -37,40 +37,59 @@ export function isVersionInRange(
 	);
 }
 
+/** The buncargo package: its root directory and its version. */
+export interface BuncargoPackage {
+	dir: string;
+	version: string;
+}
+
 /**
- * The version in the `package.json` of the buncargo package containing
- * `fromDir`, or `undefined` when there is none (buncargo bundled into someone
- * else's build).
+ * The buncargo package containing `fromDir`, or `undefined` when there is
+ * none (buncargo bundled into someone else's build).
  *
  * Walked up to rather than imported: the build splits shared code into chunks
- * at the root of `dist/`, so the relative path differs between source and
- * build. The name check keeps a bundle from reporting its host's version.
+ * at the root of `dist/`, so the depth from a module to the package root
+ * differs between source and build. The name check keeps a bundle from
+ * reporting its host's package.
  */
-export function readBuncargoVersion(fromDir: string): string | undefined {
+export function findBuncargoPackage(
+	fromDir: string,
+): BuncargoPackage | undefined {
 	let dir = fromDir;
-	for (let depth = 0; depth < 6; depth++) {
+	while (true) {
 		try {
 			const pkg = JSON.parse(
 				readFileSync(join(dir, "package.json"), "utf8"),
 			) as { name?: unknown; version?: unknown };
 			if (pkg.name === "buncargo" && typeof pkg.version === "string")
-				return pkg.version;
+				return { dir, version: pkg.version };
 		} catch {
 			// No package.json at this level: keep walking.
 		}
 		const parent = dirname(dir);
-		if (parent === dir) break;
+		if (parent === dir) return undefined;
 		dir = parent;
 	}
-	return undefined;
 }
 
-let ownVersion: { value: string | undefined } | undefined;
+let ownPackage: { value: BuncargoPackage | undefined } | undefined;
 
-/** This buncargo's own version, read once. */
-export function buncargoVersion(): string | undefined {
-	ownVersion ??= {
-		value: readBuncargoVersion(dirname(fileURLToPath(import.meta.url))),
+/** This buncargo's own package, found once. */
+export function buncargoPackage(): BuncargoPackage | undefined {
+	ownPackage ??= {
+		value: findBuncargoPackage(dirname(fileURLToPath(import.meta.url))),
 	};
-	return ownVersion.value;
+	return ownPackage.value;
+}
+
+/** This buncargo's own package, for code that cannot run without its files. */
+export function requireBuncargoPackage(): BuncargoPackage {
+	const own = buncargoPackage();
+	if (!own) throw new Error("Could not locate the buncargo package root.");
+	return own;
+}
+
+/** This buncargo's own version, or `undefined` when it cannot be found. */
+export function buncargoVersion(): string | undefined {
+	return buncargoPackage()?.version;
 }

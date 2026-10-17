@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, realpathSync, writeSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { REEXEC_ENV, reexecedFrom } from "../core/runtime-flags";
+import { buncargoPackage } from "../core/version";
 import { CliError } from "./errors";
 
 /**
@@ -97,18 +98,18 @@ export function decideVersionGuard(
  * Hand over to the project's buncargo, or stop when it is listed but not
  * installed. Returns when this CLI is the one to run.
  *
- * `root` is this CLI's package root. A CLI run from a source checkout
- * (`bun src/cli/bin.ts`) is never replaced: that is someone testing the
- * source on purpose.
+ * A CLI run from a source checkout (`bun src/cli/bin.ts`) is never
+ * replaced: that is someone testing the source on purpose.
  */
-export function guardVersion(root: string, fromSource: boolean): void {
+export function guardVersion(fromSource: boolean): void {
 	const handedOver = reexecedFrom();
 	// Not inherited by the apps and tools this run starts.
 	delete process.env[REEXEC_ENV];
 	if (handedOver || fromSource) return;
 
-	const own = readPackageJson(join(root, "package.json"));
-	if (typeof own?.version !== "string") return;
+	const own = buncargoPackage();
+	if (!own) return;
+	const root = own.dir;
 	const decision = decideVersionGuard(process.cwd(), {
 		version: own.version,
 		root,

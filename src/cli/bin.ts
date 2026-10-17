@@ -12,7 +12,7 @@
  *   bunx buncargo help          # Show help
  */
 
-import { basename, dirname, join } from "node:path";
+import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type CliCommandName, resolveCommandName } from "./commands/registry";
 import { CliError } from "./errors";
@@ -205,7 +205,7 @@ async function runCommand(
 async function main(): Promise<void> {
 	// `<package>/src/cli` from source, `<package>/dist/cli` when installed.
 	const cliDir = dirname(fileURLToPath(import.meta.url));
-	guardVersion(join(cliDir, "..", ".."), basename(dirname(cliDir)) === "src");
+	guardVersion(basename(dirname(cliDir)) === "src");
 
 	const args = process.argv.slice(2);
 	const rawCommand = args[0];

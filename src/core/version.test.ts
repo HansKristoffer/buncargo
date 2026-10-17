@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	compareVersions,
+	findBuncargoPackage,
 	isVersionInRange,
 	parseVersion,
-	readBuncargoVersion,
 } from "./version";
 
 describe("compareVersions", () => {
@@ -41,12 +41,12 @@ describe("parseVersion", () => {
 	});
 });
 
-describe("readBuncargoVersion", () => {
+describe("findBuncargoPackage", () => {
 	it("reads this package's version from source", () => {
 		const pkg = JSON.parse(
 			readFileSync(join(import.meta.dir, "../../package.json"), "utf8"),
 		);
-		expect(readBuncargoVersion(import.meta.dir)).toBe(pkg.version);
+		expect(findBuncargoPackage(import.meta.dir)?.version).toBe(pkg.version);
 	});
 
 	it("ignores another package's version", () => {
@@ -56,7 +56,7 @@ describe("readBuncargoVersion", () => {
 				join(dir, "package.json"),
 				JSON.stringify({ name: "someone-else", version: "9.9.9" }),
 			);
-			expect(readBuncargoVersion(dir)).toBeUndefined();
+			expect(findBuncargoPackage(dir)).toBeUndefined();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
