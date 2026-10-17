@@ -111,7 +111,7 @@ interface Result {
 	wallMs: number;
 	readyResponseMs?: number;
 	cleanupMs?: number;
-	cli?: {
+	cli: {
 		totalMs: number;
 		phases: unknown[];
 		counters?: Record<string, number>;
@@ -287,7 +287,7 @@ console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
 		for (let sample = 0; sample <= samples; sample++) {
 			interruption.signal.throwIfAborted();
 			let output = "";
-			let report: Result["cli"];
+			let report: Result["cli"] | undefined;
 			const ownedAppPids = new Set<number>();
 			let readyResponseMs: number | undefined;
 			let cancelledAt: number | undefined;
@@ -328,7 +328,7 @@ console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
 			child.on("error", (error) => {
 				output += String(error);
 			});
-			child.stdout!.on("data", (data) => {
+			child.stdout.on("data", (data) => {
 				output += data;
 				for (const match of output.matchAll(/PID:\s*(\d+)/g))
 					ownedAppPids.add(Number(match[1]));
@@ -341,7 +341,7 @@ console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
 					}
 				}
 			});
-			child.stderr!.on("data", (data) => {
+			child.stderr.on("data", (data) => {
 				output += data;
 			});
 			try {
@@ -469,7 +469,8 @@ try {
 		sentinel.once("spawn", resolve);
 		sentinel.once("error", reject);
 	});
-	const identity = readProcessIdentity(sentinel.pid!);
+	const identity =
+		sentinel.pid === undefined ? undefined : readProcessIdentity(sentinel.pid);
 	if (!identity) throw new Error("Cannot identify benchmark watchdog sentinel");
 	writeFileSync(
 		join(root, ".buncargo/watchdog.pid"),
@@ -493,21 +494,26 @@ try {
 		return result.value;
 	});
 
+	// A cancelled run that reported no cleanup time is a broken benchmark, not a fast one.
+	const measured = (ms: number | undefined) => {
+		if (ms === undefined) throw new Error("A run reported no cleanup time");
+		return ms;
+	};
 	const quantiles = (numbers: number[]) => {
 		const ordered = [...numbers].sort((a, b) => a - b);
 		return {
-			p50: Math.round(ordered[Math.floor((ordered.length - 1) * 0.5)]!),
-			p95: Math.round(ordered[Math.ceil((ordered.length - 1) * 0.95)]!),
+			p50: Math.round(ordered[Math.floor((ordered.length - 1) * 0.5)]),
+			p95: Math.round(ordered[Math.ceil((ordered.length - 1) * 0.95)]),
 		};
 	};
-	const cliReady = quantiles(values.map((value) => value.cli!.totalMs));
-	const coldReady = quantiles(cold.map((value) => value.cli!.totalMs));
+	const cliReady = quantiles(values.map((value) => value.cli.totalMs));
+	const coldReady = quantiles(cold.map((value) => value.cli.totalMs));
 	if (coldReady.p95 > maxColdP95)
 		throw new Error(
 			`Cold startup budget exceeded: ${coldReady.p95}ms (max ${maxColdP95})`,
 		);
 	const subprocesses = Math.max(
-		...values.map((value) => value.cli?.counters?.subprocesses ?? 0),
+		...values.map((value) => value.cli.counters?.subprocesses ?? 0),
 	);
 	if (cliReady.p95 > maxP95 || subprocesses > maxSubprocesses)
 		throw new Error(
@@ -541,7 +547,7 @@ try {
 				entryToCliReadyMs: scenario === "cancel" ? undefined : cliReady,
 				cleanupMs:
 					scenario === "cancel"
-						? quantiles(values.map((value) => value.cleanupMs!))
+						? quantiles(values.map((value) => measured(value.cleanupMs)))
 						: undefined,
 				coldEntryToCliReadyMs: scenario === "cancel" ? undefined : coldReady,
 				cold,
