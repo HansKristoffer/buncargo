@@ -369,8 +369,9 @@ export function createLifecycleApi<
 
 			// Claimed before anything is created, so the sweep never sees a fresh
 			// container as unowned. Idempotent, so a CLI that already claimed with
-			// its own flags keeps those. The claim outlives `start()`: it is
-			// retired by `stop()`, or released when this process exits.
+			// its own flags keeps those. The claim outlives `start()` and this
+			// process: `stop()` retires it, `releaseRun()` releases it, and the
+			// sweep reads an owner that died without either as a crash.
 			if (hasServices) {
 				await runClaim.claimRun({ signal });
 				// A script that starts containers and then crashes needs someone to

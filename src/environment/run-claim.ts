@@ -85,6 +85,10 @@ export function createRunClaimApi<
 >(ctx: DevEnvContext<TServices, TApps>): DevRunClaimApi {
 	const sessionId = crypto.randomUUID();
 	let claimed = false;
+	// The hold of the last claim. `restart()` retires and then claims again
+	// with only a signal, and resolving that afresh dropped a hold the first
+	// claim asked for, which kept the containers forever.
+	let lastHold: { value: number | undefined } | undefined;
 
 	function serviceEntries(): RunServiceEntry[] {
 		return ctx.selectedServiceKeys.map((name) => {
@@ -130,7 +134,14 @@ export function createRunClaimApi<
 
 		async claimRun(options = {}) {
 			if (claimed || !ctx.hasSelectedServices) return;
-			const hold = resolveClaimHold(options, ctx.config.options?.autoShutdown);
+			const namesHold =
+				options.idleTimeoutMs !== undefined ||
+				options.defaultIdleTimeoutMs !== undefined;
+			const hold =
+				lastHold && !namesHold
+					? lastHold.value
+					: resolveClaimHold(options, ctx.config.options?.autoShutdown);
+			lastHold = { value: hold };
 			const stacks = stackEntries();
 			// Claimed before it is published: a write that fails must not be
 			// retried on every container subset.
