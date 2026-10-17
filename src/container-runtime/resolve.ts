@@ -146,7 +146,8 @@ export function resolveContainerRuntime(
 /**
  * Every backend that could run containers on this machine right now.
  *
- * `binary` applies only to `runtime`, because it names one backend's
+ * `binary` applies only to `runtime` (by default the one
+ * `BUNCARGO_CONTAINER_RUNTIME` selects), because it names one backend's
  * executable: applying it to both would probe for Apple's `container` by
  * running a pinned `docker`, and report the wrong one down.
  */
@@ -160,7 +161,7 @@ export function availableContainerRuntimes(
 
 export type ContainerRuntimeCandidateOptions =
 	ContainerRuntimeAdapterOptions & {
-		/** The backend `binary` belongs to. */
+		/** The backend `binary` belongs to. Defaults to the environment's selection. */
 		runtime?: ContainerRuntimeName;
 		env?: NodeJS.ProcessEnv;
 	};
@@ -176,12 +177,17 @@ export type ContainerRuntimeCandidateOptions =
 export function containerRuntimeCandidates(
 	options: ContainerRuntimeCandidateOptions = {},
 ): ContainerRuntimeAdapter[] {
-	const binary =
-		options.binary ?? containerBinaryOverride(options.env ?? process.env);
+	const env = options.env ?? process.env;
+	const binary = options.binary ?? containerBinaryOverride(env);
+	// Without a named runtime the path belongs to the one the environment
+	// selects. `"auto"` (or a value that is no runtime) names neither, as in
+	// `resolveContainerRuntimeBinary`.
+	const owner =
+		options.runtime ??
+		containerRuntimeOverride(env) ??
+		DEFAULT_CONTAINER_RUNTIME;
 	const binaryFor = (name: ContainerRuntimeName) =>
-		options.runtime === undefined || options.runtime === name
-			? binary
-			: undefined;
+		owner === name ? binary : undefined;
 
 	return [
 		getContainerRuntimeAdapter("docker", { binary: binaryFor("docker") }),
