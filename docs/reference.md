@@ -582,7 +582,7 @@ URLs), not its live footer.
 | `e` | Overview: errors and warnings only |
 | `o` | Open the app's URL (the Overview offers a picker) |
 | `r` | Restart the selected app |
-| `l` | The app's log in `$PAGER` (the Overview: the run's log directory) |
+| `l` | The app's log in `$PAGER` (the Overview: the run's log directory); `q` or `Ctrl-C` closes it and the run keeps going |
 | Mouse wheel, `PgUp` `PgDn` | Scroll the Overview or the selected app's scrollback |
 | `End` / `Home` | Back to the live output / the oldest line kept |
 | Click in the sidebar | Select the Overview or an app |

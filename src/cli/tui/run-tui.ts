@@ -107,6 +107,26 @@ interface SelectionEnd {
 	row?: number;
 }
 
+/**
+ * Route SIGINT to `onInterrupt` alone until the returned release, which puts
+ * the process's own listeners back. The pager gets the terminal in cooked
+ * mode, so Ctrl-C there signals this whole process group: without this it
+ * would end the run instead of closing the pager. Bun signals the listeners
+ * directly, so they have to be moved aside rather than filtered.
+ */
+function holdInterrupts(onInterrupt: () => void): () => void {
+	const held = process.listeners("SIGINT");
+	process.removeAllListeners("SIGINT");
+	process.on("SIGINT", onInterrupt);
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		process.off("SIGINT", onInterrupt);
+		for (const listener of held) process.on("SIGINT", listener);
+	};
+}
+
 export class RunTui {
 	private selected = 0;
 	private interacting = false;
@@ -137,6 +157,8 @@ export class RunTui {
 	private active = false;
 	private suspended = false;
 	private pager?: Bun.Subprocess;
+	/** Gives the run its own SIGINT listeners back once the pager is closed. */
+	private releaseInterrupts?: () => void;
 	private hooked = new WeakSet<object>();
 	private unsubscribe?: () => void;
 	private restoreOutput?: () => void;
@@ -206,6 +228,7 @@ export class RunTui {
 		this.active = false;
 		// An open pager would hold the terminal past the run.
 		this.pager?.kill();
+		this.releaseInterrupts?.();
 		clearTimeout(this.timer);
 		clearTimeout(this.escTimer);
 		this.unsubscribe?.();
@@ -714,10 +737,12 @@ export class RunTui {
 			this.pager = Bun.spawn([...pager, path], {
 				stdio: ["inherit", "inherit", "inherit"],
 			});
+			this.releaseInterrupts = holdInterrupts(() => this.pager?.kill());
 			await this.pager.exited;
 		} catch {
 			this.message = `Could not run ${pager[0]}`;
 		} finally {
+			this.releaseInterrupts?.();
 			this.pager = undefined;
 			this.suspended = false;
 			// The run may have ended while the pager was open: then the

@@ -54,7 +54,10 @@ and `run-tui.ts` is the controller.
   nothing). Interact mode forwards every key except Esc and `Ctrl-]`, either of which leaves it;
   `q`/`Ctrl-C` outside it sends the run SIGINT, the same shutdown path as a terminal Ctrl-C.
 - While the pager (`l`) runs, the TUI stops reading stdin entirely and only takes the screen back
-  if it is still active; `stop()` kills an open pager.
+  if it is still active; `stop()` kills an open pager. The pager has the terminal in cooked mode,
+  so Ctrl-C there is a SIGINT to the whole process group, run included: the run's SIGINT listeners
+  are moved aside until the pager exits, and the signal closes the pager instead (Bun calls the
+  listeners directly, so wrapping `process.emit` does not intercept it).
 - Mouse reporting (SGR with drags, `?1000`/`?1002`/`?1006`) is part of entering and leaving the
   screen, so every restore path turns it off too. The wheel scrolls the shown pane, also in
   interact mode, where mouse reports are stripped rather than typed into an app that never asked

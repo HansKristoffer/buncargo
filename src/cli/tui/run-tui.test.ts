@@ -84,6 +84,52 @@ describe("RunTui terminal restore", () => {
 	}
 });
 
+describe("RunTui pager", () => {
+	// The pager has the terminal in cooked mode, so Ctrl-C is a real SIGINT to
+	// the whole process group, the run included. Like less, the fake pager
+	// ignores it: only the TUI closing it ends it.
+	it("closes the pager on Ctrl-C and keeps the run", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-tui-pager-int-"));
+		const pager = join(dir, "pager.sh");
+		writeFileSync(
+			pager,
+			"#!/bin/sh\ntrap '' INT\necho pager-open\nexec sleep 30\n",
+		);
+		chmodSync(pager, 0o755);
+		const child = join(import.meta.dir, "tui-child.testing.ts");
+		let output = "";
+		const proc = Bun.spawn([process.execPath, child, "pager", pager], {
+			terminal: {
+				cols: 80,
+				rows: 20,
+				data: (_terminal, data) => {
+					output += new TextDecoder().decode(data);
+				},
+			},
+		});
+		try {
+			await until(() => output.includes("hello from api"));
+			proc.terminal?.write("j");
+			proc.terminal?.write("l");
+			await until(() => output.includes("pager-open"));
+			proc.terminal?.write("\u0003");
+			// The TUI takes the screen back once the pager is gone.
+			const reentered = () =>
+				output.slice(output.indexOf("pager-open")).includes("\u001b[?1049h");
+			await until(() => reentered() || output.includes("run interrupted"));
+			expect(output).not.toContain("run interrupted");
+			expect(reentered()).toBe(true);
+		} finally {
+			// By its own pid, never by a pattern other worktrees' runs share.
+			const pid = Number(/pid:(\d+)/.exec(output)?.[1]);
+			if (pid) process.kill(pid, "SIGTERM");
+			await proc.exited;
+			rmSync(dir, { recursive: true, force: true });
+		}
+		expect(proc.exitCode).toBe(143);
+	});
+});
+
 /** Keys and mouse reports as the TUI reads them from stdin, without the stream's delay. */
 function type(tui: RunTui, data: string) {
 	(tui as unknown as { input(data: string): void }).input(data);
