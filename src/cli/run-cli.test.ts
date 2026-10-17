@@ -563,6 +563,36 @@ describe("runCli phased tunnels and attach", () => {
 		}
 	});
 
+	it("gives apps the library's readiness timeout, longer in CI", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-ready-timeout-"));
+		const port = 43810 + Math.floor(Math.random() * 200);
+		const timeouts: unknown[] = [];
+		const env = createStubEnv({
+			root,
+			apps: {
+				api: {
+					port,
+					devCommand: "bun -e 'process.exit(0)'",
+					healthEndpoint: false,
+				},
+			},
+			waitForServers: (waitOptions) => {
+				timeouts.push((waitOptions as { timeout?: number }).timeout);
+			},
+		});
+		const ci = process.env.CI;
+		process.env.CI = "true";
+
+		try {
+			await runCli(env, { args: [], watchdog: false });
+			expect(timeouts).toEqual([120_000]);
+		} finally {
+			if (ci === undefined) delete process.env.CI;
+			else process.env.CI = ci;
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
 	it("kills sibling apps when the attached app exits", async () => {
 		const apiPort = 43410 + Math.floor(Math.random() * 200);
 		const expoPort = apiPort + 1;

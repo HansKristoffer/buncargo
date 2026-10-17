@@ -55,7 +55,8 @@ export function assertAppWorkingDirectories(
 	}
 }
 
-function readyTimeout(): number {
+/** How long a wave of apps gets to become healthy, for `start()` and the CLI. */
+export function serverReadyTimeout(): number {
 	return isCI() ? 120000 : 60000;
 }
 
@@ -148,7 +149,7 @@ export async function startAppServers<
 			},
 			waitForHealth: (wave, signal) =>
 				waitForDevServers(wave, ctx.ports, {
-					timeout: readyTimeout(),
+					timeout: serverReadyTimeout(),
 					verbose,
 					logReady: !options.seed,
 					productionBuild,
@@ -275,7 +276,7 @@ export function createServersApi<
 		if (waitForHealthy?.length) {
 			assertOnlyAppNames(Object.keys(apps), waitForHealthy);
 			await waitForDevServers(pickApps(apps, waitForHealthy), ports, {
-				timeout: readyTimeout(),
+				timeout: serverReadyTimeout(),
 				verbose: config.options?.verbose ?? true,
 				productionBuild: false,
 				signal: options.signal,
