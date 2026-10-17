@@ -1429,7 +1429,7 @@ On a machine on a [Tailscale](https://tailscale.com) network, the watchdog also 
 
 A finished run keeps its registry entry until its containers are gone — that entry is what says they may still be reused, and for how long. `buncargo runs`, `stop` and the menu bar filter it out; only the sweep sees it. `dev --down` and `stop()` remove it straight away, since they have just removed the containers.
 
-**Volumes are never removed automatically.** A container costs nothing to recreate; a volume is the database. `buncargo prune` lists the volumes whose project has no containers and no run, and removes them only after you confirm:
+**Volumes are never removed automatically.** A container costs nothing to recreate; a volume is the database. `buncargo prune` lists the volumes whose project has no containers, no run and no checkout that still exists, and removes them only after you confirm. An idle checkout's database stays until its directory is deleted; a `ci` or E2E stack's volume is listed once its run is gone:
 
 ```bash
 bunx buncargo prune --dry-run   # List what would go

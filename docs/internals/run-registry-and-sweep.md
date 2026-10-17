@@ -149,7 +149,10 @@ spawner holding `.spawn` only try-acquires `.runner`, so neither waits on the ot
 
 `prune.ts` is the volume half, and it is deliberately not automatic: a container costs nothing to
 recreate, a volume is the database. `planVolumePrune` is pure and proposes only a volume whose
-Compose project has no containers *and* no entry; `cli/commands/prune.ts` confirms before removing.
+Compose project has no containers, no entry *and* no existing checkout; `cli/commands/prune.ts`
+confirms before removing. The checkouts come from the dev port claims in `offsets.json`, because
+an idle checkout after `dev --down` has neither containers nor an entry, and its volume is still its
+database. Suffixed claims (`ci`, E2E) do not count: their stacks are leftovers once the run is gone.
 
 Buncargo attaches **no labels to volumes**. Verified: Compose compares a volume against the file
 and prompts "exists but doesn't match configuration in compose file. Recreate (data will be

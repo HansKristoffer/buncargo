@@ -14,9 +14,10 @@ import {
 } from "../../container-runtime";
 import { FileLockTimeoutError } from "../../core/file-lock";
 import { listGitCheckouts } from "../../core/git-checkouts";
+import { offsetClaimRoot, readOffsetClaims } from "../../core/offset-claims";
 import { askConfirm, isInteractive } from "../../core/prompt";
 import { readAllRuns, readLiveRuns } from "../../core/run-registry";
-import { loadDevEnv } from "../../loader";
+import { findConfigFile, loadDevEnv } from "../../loader";
 import * as log from "../log";
 import { parsePruneArgs, printPruneHelp } from "../prune-flags";
 
@@ -61,6 +62,7 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 		volumes,
 		containers: listBuncargoContainers(runtimes),
 		runs: await readAllRuns(),
+		checkouts: existingCheckouts(),
 	});
 
 	reportUnattributed(reports);
@@ -73,7 +75,7 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 
 	log.line();
 	log.info(
-		`${names.length} volume${names.length === 1 ? "" : "s"} belong to projects with no containers and no run:`,
+		`${names.length} volume${names.length === 1 ? "" : "s"} belong to projects with no containers, no run and no checkout:`,
 	);
 	for (const report of reports) {
 		if (report.verdict.kind !== "orphaned") continue;
@@ -118,6 +120,21 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 	}
 	log.done(`Removed ${removed} volume${removed === 1 ? "" : "s"}`);
 	return 0;
+}
+
+/**
+ * The checkouts on this machine that still exist, from their dev port claims.
+ *
+ * An idle checkout has no containers and, after `dev --down`, no run either,
+ * yet its volume is still its database. A suffixed claim (`buncargo ci`, E2E)
+ * is left out: those stacks are leftovers once their run is gone.
+ */
+function existingCheckouts(): { projectName: string; root: string }[] {
+	return Object.entries(readOffsetClaims()).flatMap(([key, claim]) => {
+		const root = offsetClaimRoot(key, claim);
+		if (claim.suffix || !findConfigFile(root)) return [];
+		return [{ projectName: claim.projectName, root }];
+	});
 }
 
 /**
