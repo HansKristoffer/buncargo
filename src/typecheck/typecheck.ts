@@ -151,16 +151,9 @@ async function countTypeScriptFiles(
 	return files.length;
 }
 
+/** `file.ts(3,7): error` becomes `file.ts:3:7 - error`, which terminals link. */
 function formatErrorOutput(output: string): string {
-	return output
-		.split("\n")
-		.map((line) => {
-			return line
-				.replace(/\.\.\/\.\.\/packages\/modules\//g, "")
-				.replace(/\((\d+),(\d+)\):?/g, ":$1:$2 -");
-		})
-		.join("\n")
-		.trim();
+	return output.replace(/\((\d+),(\d+)\):?/g, ":$1:$2 -").trim();
 }
 
 function workspaceLabel(workspace: string, fileCount: number): string {
