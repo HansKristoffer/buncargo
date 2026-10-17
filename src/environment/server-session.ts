@@ -15,9 +15,11 @@ export interface ServerSessionSource {
 	appEnv(name: string): Record<string, string>;
 	/** `beforeServers`/`afterServers`; bounds its own wait. */
 	runHook(phase: "before" | "after", signal?: AbortSignal): Promise<void>;
+	/** Calls `onAppReady` as each app comes up, before the whole set is. */
 	waitForHealth(
 		apps: Record<string, AppConfig>,
 		signal?: AbortSignal,
+		onAppReady?: (name: string) => void,
 	): Promise<void>;
 	recordCapture(
 		app: string,
@@ -74,9 +76,9 @@ export async function startServerSession(
 			{
 				...options,
 				signal,
-				waitForHealth: async (wave, signal) => {
-					await source.waitForHealth(wave, signal);
-					await options.waitForHealth?.(wave, signal);
+				waitForHealth: async (wave, signal, onAppReady) => {
+					await source.waitForHealth(wave, signal, onAppReady);
+					await options.waitForHealth?.(wave, signal, onAppReady);
 				},
 				onReady: async (signal) => {
 					await joinSeed();

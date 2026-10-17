@@ -83,10 +83,14 @@ export interface StartDevServersOptions {
 	waitForExit?: boolean;
 	/** Called once when SIGINT/SIGTERM/SIGHUP arrives (waitForExit only). */
 	onSignal?: () => void | Promise<void>;
-	/** Override wave-1 health wait. */
+	/**
+	 * Override the health wait of each wave. Call `onAppReady` as each app
+	 * comes up, so it is marked ready then rather than with the whole wave.
+	 */
 	waitForHealth?: (
 		apps: Record<string, AppConfig>,
 		signal?: AbortSignal,
+		onAppReady?: (name: string) => void,
 	) => Promise<void>;
 	/**
 	 * A dev server was spawned, with the pid of the process group leader.
@@ -504,7 +508,7 @@ export async function startDevServers(
 		// callers mark the whole wave ready when it returns.
 		const health = waitForPrinted(wave, signal).then(() =>
 			waitForHealth
-				? waitForHealth(wave, signal)
+				? waitForHealth(wave, signal, ready)
 				: // Workers and `healthEndpoint: false` apps are ready once the wave is.
 					waitForDevServers(wave, ports, {
 						verbose: verbose && !output.terminalSize,

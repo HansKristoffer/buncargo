@@ -147,13 +147,14 @@ export async function startAppServers<
 			afterWave: () => {
 				renderGeneratedFiles(ctx, envVars);
 			},
-			waitForHealth: (wave, signal) =>
+			waitForHealth: (wave, signal, onAppReady) =>
 				waitForDevServers(wave, ctx.ports, {
 					timeout: serverReadyTimeout(),
 					verbose,
 					logReady: !options.seed,
 					productionBuild,
 					signal,
+					onAppReady,
 				}),
 		},
 		appsToStart,
@@ -195,6 +196,7 @@ export interface DevServersApi<
 		expandRequired?: boolean;
 		logReady?: boolean;
 		signal?: AbortSignal;
+		onAppReady?: (name: string) => void;
 	}): Promise<void>;
 	openPublicTunnels(
 		options?: OpenPublicTunnelsOptions<TServices, TApps>,
@@ -242,6 +244,7 @@ export function createServersApi<
 			expandRequired?: boolean;
 			logReady?: boolean;
 			signal?: AbortSignal;
+			onAppReady?: (name: string) => void;
 		} = {},
 	): Promise<void> {
 		const {
@@ -264,6 +267,7 @@ export function createServersApi<
 			productionBuild,
 			signal: options.signal,
 			logReady: options.logReady,
+			onAppReady: options.onAppReady,
 		});
 	}
 

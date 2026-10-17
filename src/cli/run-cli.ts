@@ -752,13 +752,14 @@ async function runDevFlow<
 				runHook: async (phase, hookSignal) => {
 					await env.runServerHook?.(phase, hookSignal);
 				},
-				waitForHealth: (apps, healthSignal) =>
+				waitForHealth: (apps, healthSignal, onAppReady) =>
 					env.waitForServers({
 						onlyApps: Object.keys(apps) as Extract<keyof TApps, string>[],
 						expandRequired: false,
 						timeout: serverReadyTimeout(),
 						logReady: !overlapSeed,
 						signal: healthSignal,
+						onAppReady,
 					}),
 				recordCapture: (app, captured) => env.recordCapture(app, captured),
 				afterWave: () => {
@@ -792,8 +793,9 @@ async function runDevFlow<
 				onSignal: () => {
 					void env.releaseRun();
 				},
-				waitForHealth: async (apps) => {
-					await markApps(env, Object.keys(apps), "ready");
+				// As each app comes up, not when its whole wave has.
+				onAppReady: (name) => {
+					void markApps(env, [name], "ready");
 				},
 				// A developer's other apps should not go down with one that
 				// never came up; `ci` and library starts keep failing the run.

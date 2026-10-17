@@ -269,6 +269,8 @@ export interface DevEnvironment<
 		expandRequired?: boolean;
 		/** Defer the aggregate ready message until other preparation completes. */
 		logReady?: boolean;
+		/** Called as each app passes its health check, before the rest have. */
+		onAppReady?: (name: string) => void;
 	}): Promise<void>;
 
 	// ─────────────────────────────────────────────────────────────────────────
