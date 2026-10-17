@@ -803,6 +803,9 @@ async function runDevFlow<
 					parked.add(name);
 					void markApps(env, [name], "failed");
 				},
+				onAppRestartFailed: (name) => {
+					void markApps(env, [name], "failed");
+				},
 				// Deliberately not awaited: the registry is a status file, and
 				// nothing about starting servers may wait on it.
 				onAppSpawned: (name, pid, attached) => {

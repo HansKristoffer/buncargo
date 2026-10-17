@@ -56,7 +56,9 @@ cannot report a dead or replaced app ready.
 `AppSupervision.restart` runs restarts of one app one after another (a request before the first
 has begun joins it): two at once would both retire the same child and the second replacement fails
 on the port. In the run registry a new pid is a new process generation, the one update allowed to
-take a `stopped`/`failed` app back to `starting`.
+take a `stopped`/`failed` app back to `starting`. A restart that retires the old process and cannot spawn
+its replacement reports `onAppRestartFailed`: a retired process's exit is never reported, so
+nothing else would move the app's output row and registry entry off its old state.
 
 A non-essential worker that dies while its ownership is being claimed (before or while the claim
 is written) is handed to the supervisor anyway (`spawnOwnedWorker`'s `allowEarlyExit`), with no

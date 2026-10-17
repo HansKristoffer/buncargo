@@ -124,6 +124,12 @@ export interface StartDevServersOptions {
 	/** An app was stopped because it did not become ready (see above). */
 	onAppFailed?: (name: string, error: Error) => void;
 	/**
+	 * A restart retired the app's process and could not replace it: the app
+	 * is down until restarted again. Reported once, like an exit, so the run
+	 * registry stops saying `starting`.
+	 */
+	onAppRestartFailed?: (name: string, error: Error) => void;
+	/**
 	 * How to notice an app listening on another port than its own while it
 	 * starts (see `port-drift.ts`). `false` turns it off. Default: the system.
 	 */
@@ -362,12 +368,14 @@ export async function startDevServers(
 		} catch (error) {
 			// The old process is gone and no new one took over. A run that is
 			// ending reports its apps itself.
-			if (!owner.controller.signal.aborted)
+			if (!owner.controller.signal.aborted) {
 				output.state(name, {
 					state: "failed",
 					detail: `restart failed: ${toError(error).message}`,
 					restartable: true,
 				});
+				options.onAppRestartFailed?.(name, toError(error));
+			}
 			throw error;
 		}
 		checkOnTheSide(name);

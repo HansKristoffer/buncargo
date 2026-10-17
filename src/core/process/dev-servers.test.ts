@@ -611,6 +611,7 @@ describe("startDevServers restart", () => {
 		await mkdir(join(root, "api"));
 		const output = new RunOutput();
 		const silent = "bun -e 'setInterval(() => {}, 60000)'";
+		const restartFailures: string[] = [];
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
@@ -621,7 +622,12 @@ describe("startDevServers restart", () => {
 				root,
 				{},
 				{},
-				{ verbose: false, waitForExit: false, output },
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					onAppRestartFailed: (name) => restartFailures.push(name),
+				},
 			);
 			// Its working directory is gone: the replacement cannot spawn.
 			await rm(join(root, "api"), { recursive: true });
@@ -630,6 +636,8 @@ describe("startDevServers restart", () => {
 				state: "failed",
 				restartable: true,
 			});
+			// What the CLI marks `failed` in the run registry.
+			expect(restartFailures).toEqual(["api"]);
 		} finally {
 			await stopDevServers(pids);
 			await rm(root, { recursive: true, force: true });
