@@ -23,8 +23,7 @@ import {
 	seedCanOverlap,
 } from "../environment/seed-startup";
 import { startServerSession } from "../environment/server-session";
-import { environmentStartPlan } from "../environment/start-plan";
-import { resolveSelectedApps } from "../planning";
+import { planStart } from "../planning";
 import type {
 	AnyDevEnvironment,
 	AppConfig,
@@ -369,27 +368,21 @@ async function runDevFlow<
 	}
 
 	// ── App selection ────────────────────────────────────────────────────────
-	// argv only ever yields plain strings. `resolveSelectedApps` drops names that
-	// are not configured apps and the check below fails when nothing is left, so
-	// this is the single place the CLI crosses into the config's app keys.
+	// argv only ever yields plain strings; `planStart` throws on a name that is
+	// not a configured app, so this is where the CLI crosses into its keys.
 	let selectedAppNames: Extract<keyof TApps, string>[] | undefined =
 		selectProfileApps(env, args.profile);
-	let appsForDev: Record<string, AppConfig> = resolveSelectedApps(
-		env.apps,
-		selectedAppNames,
-	).apps;
 	if (args.appsRequested) {
 		selectedAppNames = parseRequiredCommaSeparatedFlag(
 			"--apps",
 			args.appsValue,
 		) as Extract<keyof TApps, string>[];
-		appsForDev = resolveSelectedApps(env.apps, selectedAppNames).apps;
-		if (Object.keys(appsForDev).length === 0) {
-			throw new CliError("Flag --apps requires at least one valid app name.");
-		}
 	}
 
-	const plan = environmentStartPlan(env, selectedAppNames);
+	const plan = planStart(env.apps, env.services, {
+		onlyApps: selectedAppNames,
+	});
+	const appsForDev = plan.apps;
 	validateDevStart(env, args, appsForDev, plan.requiredServiceKeys);
 
 	// Before anything is started: a missing generated file fails here with its

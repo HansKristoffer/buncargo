@@ -22,7 +22,6 @@ import { createLifecycleApi } from "./lifecycle";
 import { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { createRunClaimApi } from "./run-claim";
 import { createServerHookRunner, createServersApi } from "./servers";
-import { registerStartPlanner } from "./start-plan";
 
 /**
  * Create a dev environment from a configuration.
@@ -201,6 +200,5 @@ export function createDevEnvironment<
 		);
 	}
 
-	registerStartPlanner(env, ctx.getStartPlan);
 	return env;
 }
