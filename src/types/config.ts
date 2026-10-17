@@ -178,6 +178,25 @@ export interface HostsRuntime {
 	active: boolean;
 	tld: string;
 	caPath?: string;
+	/**
+	 * How the names are served: `loopback` is `https://*.<tld>` through the
+	 * hosts daemon, `tailscale` (`BUNCARGO_HOSTS=tailscale`) is each app on
+	 * its own HTTPS port of the machine's Tailscale name.
+	 */
+	mode: "loopback" | "tailscale";
+	/**
+	 * In `tailscale` mode, the URL of each app Tailscale is serving, by app.
+	 * Apps missing here keep their plain URL.
+	 */
+	tailscaleUrls: Record<string, string>;
+}
+
+/** What `setNamedHostsActive` switches `urls` to, besides on or off. */
+export interface NamedHostsActivation {
+	/** The loopback daemon's CA, for `NODE_EXTRA_CA_CERTS`. */
+	caPath?: string;
+	/** Tailscale mode: the URL of each served app. */
+	tailscaleUrls?: Record<string, string>;
 }
 
 /**

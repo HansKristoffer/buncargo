@@ -24,6 +24,7 @@ import type {
 	DevConfigLike,
 	EnvValues,
 	HostsRuntime,
+	NamedHostsActivation,
 } from "./config";
 import type { ExecOptions } from "./hooks";
 import type { BuncargoIntegration } from "./integrations";
@@ -326,7 +327,7 @@ export interface DevEnvironment<
 	/** Clear all public tunnel URLs */
 	clearPublicUrls(): void;
 	/** Switch `urls` between localhost:port and named HTTPS hostnames */
-	setNamedHostsActive(active: boolean, extras?: { caPath?: string }): void;
+	setNamedHostsActive(active: boolean, extras?: NamedHostsActivation): void;
 	/** Ensure generated docker compose file exists and return path used with -f */
 	ensureComposeFile(): string;
 	/** The service model the compose file is rendered from */

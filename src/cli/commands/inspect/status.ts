@@ -95,12 +95,15 @@ async function readStatus() {
 		containers,
 		hosts: env.hosts
 			? {
+					mode: env.hosts.mode,
 					tld: env.hosts.tld,
 					active: env.hosts.active,
 					plan: env.hosts.plan.map((entry) => ({
 						hostname: entry.hostname,
 						targetPort: entry.targetPort,
 					})),
+					// Tailscale mode: each app Tailscale serves, by name.
+					tailscaleUrls: env.hosts.tailscaleUrls,
 				}
 			: null,
 		tunnels,
@@ -133,10 +136,16 @@ function printStatus(status: Awaited<ReturnType<typeof readStatus>>): void {
 	if (status.hosts) {
 		log.line();
 		log.line("hosts:");
-		log.line(`  tld: ${status.hosts.tld}`);
+		log.line(`  mode: ${status.hosts.mode}`);
 		log.line(`  active: ${status.hosts.active ? "yes" : "no"}`);
-		for (const entry of status.hosts.plan)
-			log.line(`  ${entry.hostname} → :${entry.targetPort}`);
+		if (status.hosts.mode === "tailscale") {
+			for (const [app, url] of Object.entries(status.hosts.tailscaleUrls))
+				log.line(`  ${app}: ${url} → :${status.ports[app].port}`);
+		} else {
+			log.line(`  tld: ${status.hosts.tld}`);
+			for (const entry of status.hosts.plan)
+				log.line(`  ${entry.hostname} → :${entry.targetPort}`);
+		}
 	}
 	if (existsSync(getTunnelRegistryPath(status.root))) {
 		log.line();

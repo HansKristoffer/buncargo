@@ -8,6 +8,11 @@ import {
 	waitForDaemonRoutes,
 } from "../core/hosts";
 import { certificateHostnames } from "../core/hosts/plan";
+import {
+	activateTailscaleServe,
+	releaseTailscaleServe,
+	tailscaleServeDeps,
+} from "../core/hosts/tailscale-serve";
 import type {
 	AppConfig,
 	DevEnvironment,
@@ -43,6 +48,8 @@ export async function activateNamedHosts<
 	if (!env.hosts || !options.enabled) {
 		return [];
 	}
+	if (env.hosts.mode === "tailscale")
+		return activateTailscaleHosts(env, env.hosts, options);
 
 	// Named hosts still work, but something about the setup will bite later.
 	const notes: string[] = [];
@@ -126,6 +133,54 @@ export async function activateNamedHosts<
 }
 
 /**
+ * `BUNCARGO_HOSTS=tailscale`: serve each app on its own HTTPS port of the
+ * machine's Tailscale name, and switch `env.urls` to the apps Tailscale
+ * answers for. An app it does not answer for keeps its plain URL, with a
+ * `Named URLs unavailable:` warning, which `dev --detach` repeats.
+ */
+async function activateTailscaleHosts(
+	env: {
+		root: string;
+		ports: object;
+		setNamedHostsActive: DevEnvironment<
+			Record<string, ServiceConfig>,
+			Record<string, AppConfig>
+		>["setNamedHostsActive"];
+	},
+	hosts: HostsRuntime,
+	options: { signal?: AbortSignal; takeover?: readonly string[] },
+): Promise<string[]> {
+	const unavailable = (reason: string) => `Named URLs unavailable: ${reason}`;
+	options.signal?.throwIfAborted();
+	const apps = hosts.plan
+		.filter((entry) => entry.kind === "app")
+		.map((entry) => ({ name: entry.name, port: entry.targetPort }));
+	try {
+		const result = await activateTailscaleServe(
+			{
+				root: env.root,
+				pid: process.pid,
+				apps,
+				blockPorts: Object.values(env.ports as Record<string, number>),
+				takeover: new Set(options.takeover),
+			},
+			tailscaleServeDeps(),
+		);
+		options.signal?.throwIfAborted();
+		env.setNamedHostsActive(Object.keys(result.urls).length > 0, {
+			tailscaleUrls: result.urls,
+		});
+		return [...result.notes, ...result.fallbacks.map(unavailable)];
+	} catch (error) {
+		// The record's lock or file, never Tailscale itself: that degrades
+		// inside. The run goes on with its plain URLs either way.
+		options.signal?.throwIfAborted();
+		env.setNamedHostsActive(false);
+		return [unavailable(toHostsUserMessage(error))];
+	}
+}
+
+/**
  * Claim one app's route again when it restarts in a run serving named hosts.
  *
  * A run that took this app over moved its route to itself, and that run's
@@ -138,6 +193,10 @@ export async function reclaimAppRoute(
 	name: string,
 ): Promise<void> {
 	if (!env.hosts?.active) return;
+	if (env.hosts.mode === "tailscale") {
+		await reclaimTailscaleApp(env.root, env.hosts, name);
+		return;
+	}
 	const routes = routesFromPlan(env.hosts.plan, {
 		root: env.root,
 		pid: process.pid,
@@ -152,13 +211,51 @@ export async function reclaimAppRoute(
 }
 
 /**
+ * The Tailscale side of {@link reclaimAppRoute}: an entry another run took
+ * over and then removed is added back. One that a live run of this checkout
+ * holds stays that run's; an intact one costs two reads and a probe.
+ */
+async function reclaimTailscaleApp(
+	root: string,
+	hosts: HostsRuntime,
+	name: string,
+): Promise<void> {
+	const app = hosts.plan.find(
+		(entry) => entry.kind === "app" && entry.name === name,
+	);
+	if (!app || !hosts.tailscaleUrls[name]) return;
+	try {
+		await activateTailscaleServe(
+			{
+				root,
+				pid: process.pid,
+				apps: [{ name, port: app.targetPort }],
+				blockPorts: [],
+				takeover: new Set(),
+			},
+			tailscaleServeDeps(),
+		);
+	} catch {
+		// Best-effort, like the route: activation already reported the setup.
+	}
+}
+
+/**
  * Drop the app routes this process owns and revert `env.urls` to localhost.
  */
 export async function releaseNamedHosts<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
->(env: DevEnvironment<TServices, TApps>): Promise<void> {
-	if (!env.hosts) return;
+>(env: DevEnvironment<TServices, TApps>): Promise<string[]> {
+	if (!env.hosts) return [];
+	if (env.hosts.mode === "tailscale") {
+		const warnings = await releaseTailscaleServe(
+			{ root: env.root, pid: process.pid },
+			tailscaleServeDeps(),
+		);
+		env.setNamedHostsActive(false);
+		return warnings;
+	}
 	try {
 		await removeHostRoutes(
 			(route) =>
@@ -170,4 +267,5 @@ export async function releaseNamedHosts<
 		// registry is best-effort
 	}
 	env.setNamedHostsActive(false);
+	return [];
 }

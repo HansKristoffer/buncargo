@@ -7,8 +7,15 @@ import {
 	removeHostRoutes,
 	upsertHostRoutes,
 } from "../core/hosts";
-import type { HostsRuntime } from "../types";
-import { reclaimAppRoute } from "./dev-hosts";
+import { lookupOnPath } from "../core/tool-binary";
+import type {
+	AppConfig,
+	DevEnvironment,
+	HostsRuntime,
+	ServiceConfig,
+} from "../types";
+import { namedHostsFallbacks } from "./dev-detach";
+import { activateNamedHosts, reclaimAppRoute } from "./dev-hosts";
 
 // The routes registry lives in ~/.buncargo: never the developer's.
 const savedHome = process.env.HOME;
@@ -28,6 +35,8 @@ afterEach(() => {
 const hosts = (active: boolean): HostsRuntime => ({
 	active,
 	tld: "localhost",
+	mode: "loopback",
+	tailscaleUrls: {},
 	plan: [
 		{
 			kind: "app",
@@ -79,4 +88,34 @@ describe("reclaimAppRoute", () => {
 		await reclaimAppRoute({ root, hosts: null }, "web");
 		expect(await loadHostRoutes()).toEqual([]);
 	});
+});
+
+// Only against the test run's failing `tailscale` stub: the real one would
+// add Serve entries to the developer's machine.
+const tailscaleStubbed =
+	lookupOnPath("tailscale")?.includes("buncargo-test-runtimes-") === true;
+
+describe("activateNamedHosts in tailscale mode", () => {
+	it.skipIf(!tailscaleStubbed)(
+		"keeps the plain URLs, with the warning dev --detach repeats, when Tailscale is unreachable",
+		async () => {
+			const switches: boolean[] = [];
+			const env = {
+				root,
+				ports: { web: 3100, api: 3200 },
+				hosts: { ...hosts(false), mode: "tailscale" },
+				setNamedHostsActive: (active: boolean) => switches.push(active),
+			} as unknown as DevEnvironment<
+				Record<string, ServiceConfig>,
+				Record<string, AppConfig>
+			>;
+
+			const warnings = await activateNamedHosts(env, { enabled: true });
+
+			expect(switches).toEqual([false]);
+			expect(namedHostsFallbacks(warnings.join("\n"))).toEqual([
+				expect.stringContaining("Tailscale is not reachable"),
+			]);
+		},
+	);
 });

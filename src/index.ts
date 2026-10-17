@@ -124,6 +124,7 @@ export type {
 	// Migrations & Seed
 	MigrationConfig,
 	NamedHost,
+	NamedHostsActivation,
 	OpenPublicTunnelsOptions,
 	OpenPublicTunnelsResult,
 	OverlayEnvVarNames,

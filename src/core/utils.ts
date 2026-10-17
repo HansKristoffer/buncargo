@@ -11,6 +11,7 @@ import type {
 import { buildSharedEnvValues, mergeSharedEnvWithOverlay } from "./env";
 import { loadEnvInput } from "./env-input";
 import { applyHostPlanToUrls, planNamedHosts } from "./hosts/plan";
+import { readServedTailscaleUrlsSync } from "./hosts/tailscale-serve";
 import { getLocalIp } from "./network";
 import { resolvePortPlan } from "./port-allocation";
 import {
@@ -22,7 +23,7 @@ import {
 	computeUrls,
 	findMonorepoRoot,
 } from "./ports";
-import { isHostsForcedOff, urlHostOverride } from "./runtime-flags";
+import { hostsMode, urlHostOverride } from "./runtime-flags";
 
 /**
  * Core utility functions shared across modules.
@@ -131,8 +132,9 @@ export function getEnvVar<
 	const localIp = getLocalIp();
 
 	const portMap = portPlan.ports;
+	const mode = hostsMode();
 	const hostPlan =
-		!isHostsForcedOff() && applied.options?.hosts
+		mode === "loopback" && applied.options?.hosts
 			? planNamedHosts({
 					projectPrefix: applied.projectPrefix,
 					worktreeSuffix: identity.worktreeSuffix,
@@ -153,6 +155,10 @@ export function getEnvVar<
 	);
 	if (hostPlan && hostPlan.length > 0) {
 		applyHostPlanToUrls(urlMap, hostPlan);
+	}
+	// Tailscale URLs exist only once a run serves them: what that run recorded.
+	if (mode === "tailscale" && applied.options?.hosts) {
+		Object.assign(urlMap, readServedTailscaleUrlsSync(root, portMap));
 	}
 
 	type Apps = NonNullable<typeof apps>;

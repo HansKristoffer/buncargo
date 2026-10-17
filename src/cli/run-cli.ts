@@ -290,10 +290,11 @@ async function teardown<
 ): Promise<void> {
 	await flushRunPatches(env);
 	try {
+		const hosts = releaseNamedHosts(env);
 		const results = await Promise.allSettled([
 			tunnels.stop(),
 			connect?.stop(),
-			releaseNamedHosts(env),
+			hosts,
 			releaseLeases(env.sessionId),
 			// Releases rather than withdraws: a run that owns containers leaves
 			// its entry behind, because that entry is what tells the sweep the
@@ -304,6 +305,7 @@ async function teardown<
 		for (const result of results)
 			if (result.status === "rejected")
 				log.warn(`Cleanup failed: ${String(result.reason)}`);
+		for (const warning of await hosts.catch(() => [])) log.warn(warning);
 	} finally {
 		restoreTerminal();
 	}

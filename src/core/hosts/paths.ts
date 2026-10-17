@@ -17,9 +17,15 @@ export const DECLINE_FILENAME = "hosts-declined";
 export const CERTS_DIRNAME = "certs";
 export const CERT_FILENAME = "hosts.pem";
 export const KEY_FILENAME = "hosts-key.pem";
+export const TAILSCALE_SERVE_FILENAME = "tailscale-serve.json";
 
 export function getRoutesPath(home?: string): string {
 	return stateFilePath(ROUTES_FILENAME, home);
+}
+
+/** Every Tailscale Serve entry buncargo added (`BUNCARGO_HOSTS=tailscale`). */
+export function getTailscaleServePath(): string {
+	return stateFilePath(TAILSCALE_SERVE_FILENAME);
 }
 
 export function getPidfilePath(home?: string): string {

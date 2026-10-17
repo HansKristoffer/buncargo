@@ -5,6 +5,11 @@ import { stateFilePath } from "./state-paths";
 
 export interface WatchdogLoopDeps {
 	sweep: () => Promise<SweepResult>;
+	/**
+	 * Take out the Tailscale Serve entries of runs that have ended, before the
+	 * containers. Reports rather than throws.
+	 */
+	sweepServeEntries: () => Promise<{ removed: string[]; failures: string[] }>;
 	sleep: (ms: number) => Promise<void>;
 	log: (message: string) => void;
 	intervalMs: number;
@@ -169,6 +174,7 @@ export function watchesNothing(result: SweepResult): boolean {
 export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 	let reportedFailures = new Map<string, string>();
 	let reportedPassError: string | undefined;
+	let reportedServeFailures = new Set<string>();
 
 	while (true) {
 		const outlived = deps.outlived?.();
@@ -177,6 +183,12 @@ export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 			return;
 		}
 		try {
+			const serve = await deps.sweepServeEntries();
+			for (const line of serve.removed) deps.log(line);
+			for (const failure of serve.failures)
+				if (!reportedServeFailures.has(failure)) deps.log(failure);
+			reportedServeFailures = new Set(serve.failures);
+
 			const result = await deps.sweep();
 			reportedPassError = undefined;
 			for (const stack of result.swept) deps.log(describeSwept(stack));

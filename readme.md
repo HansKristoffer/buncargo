@@ -22,7 +22,7 @@ Local development environments are fragile: hand-written compose files, scattere
 - **Phased public tunnels** - start backend, wait for health, open tunnels, then start apps that need `*_PUBLIC_URL`
 - **Checkout files** - gitignored `.env.local` files reach every worktree and clone from one copy per machine, without overwriting local edits (`buncargo files`)
 - **Prisma integration** - `bunx buncargo prisma` with the right `DATABASE_URL`
-- **Named HTTPS URLs** - opt-in `https://api.myapp.localhost` via a shared loopback proxy (mkcert + `:443`)
+- **Named HTTPS URLs** - opt-in `https://api.myapp.localhost` via a shared loopback proxy (mkcert + `:443`), or on a remote machine `https://<machine>.ts.net:<port>` through Tailscale Serve with `BUNCARGO_HOSTS=tailscale`
 - **Watchdog** - one sweeper per machine removes containers once their run has ended, their checkout is deleted, or they are left stopped
 - **Run registry + menu bar app** - every active run in `~/.buncargo/runs.json`, surfaced by `buncargo runs` and BuncargoBar
 - **Works under AI agents** - `dev --detach` returns once the apps are up, `wait`, `logs`, `status --json`, `env --get DATABASE_URL` and `sql` answer what agents otherwise dig out of logs and `docker ps`; `buncargo help agents` is their guide

@@ -4,6 +4,10 @@ import {
 	type SweepResult,
 	sweepOrphanedContainers,
 } from "../../../container-runtime";
+import {
+	sweepTailscaleServe,
+	tailscaleServeDeps,
+} from "../../../core/hosts/tailscale-serve";
 import { getRunsPath } from "../../../core/run-registry";
 import { describeSwept } from "../../../core/watchdog-loop";
 import * as log from "../../log";
@@ -21,6 +25,11 @@ function describeHold(
 }
 
 export async function handleLs(): Promise<void> {
+	// Tailscale Serve entries of runs that ended: one file read when there are none.
+	const serve = await sweepTailscaleServe(tailscaleServeDeps());
+	for (const line of serve.removed) log.info(line);
+	for (const line of serve.failures) log.warn(line);
+
 	// Sweep first, so what is listed is what is actually still in use. The
 	// sweep lists every runtime anyway, so its listing is the one shown: no
 	// probing beforehand and no second listing after.

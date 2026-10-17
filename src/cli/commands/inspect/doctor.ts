@@ -20,6 +20,12 @@ import {
 import { isCaPresent } from "../../../core/hosts/mkcert";
 import { describeStaleHostsService } from "../../../core/hosts/service";
 import {
+	diagnoseTailscaleHosts,
+	sweepTailscaleServe,
+	type TailscaleServeDeps,
+	tailscaleServeDeps,
+} from "../../../core/hosts/tailscale-serve";
+import {
 	barDecline,
 	isBarSupported,
 	readInstalledBarInfo,
@@ -46,7 +52,8 @@ import {
 	readAllRuns,
 	runLivenessAsync,
 } from "../../../core/run-registry";
-import { isHostsForcedOff } from "../../../core/runtime-flags";
+import { type HostsMode, hostsMode } from "../../../core/runtime-flags";
+import { invokingUserIdentity } from "../../../core/state-paths";
 import { describeSwept } from "../../../core/watchdog-loop";
 import { loadDevEnv } from "../../../loader";
 import type { AnyDevEnvironment } from "../../../types";
@@ -271,17 +278,46 @@ async function checkTunnelRegistry(
 	);
 }
 
+/**
+ * What doctor says about named hosts outside loopback mode, where the daemon
+ * and its CA are not in use and so not a fault: off says so, and tailscale
+ * mode checks what it needs instead. Undefined in loopback mode.
+ */
+async function namedHostsModeReport(
+	mode: HostsMode,
+	deps: TailscaleServeDeps,
+	user: { name: string; uid: number; platform: NodeJS.Platform },
+): Promise<{ notes: string[]; issues: string[] } | undefined> {
+	if (mode === "loopback") return undefined;
+	if (mode === "off")
+		return {
+			notes: [
+				"Named hosts are off (BUNCARGO_HOSTS=0 or CI): apps use http://localhost:port",
+			],
+			issues: [],
+		};
+	const sweep = await sweepTailscaleServe(deps);
+	const diagnosis = await diagnoseTailscaleHosts(deps, user);
+	return {
+		notes: [...sweep.removed, ...diagnosis.notes],
+		issues: [...sweep.failures, ...diagnosis.issues],
+	};
+}
+
 async function checkNamedHosts(
 	report: DoctorReport,
 	env: DevEnv,
 ): Promise<void> {
 	if (!env.hosts) return;
-	// Off (`BUNCARGO_HOSTS=0` or CI): the daemon and its CA are not in use,
-	// so neither is a fault.
-	if (isHostsForcedOff()) {
-		report.note(
-			"Named hosts are off (BUNCARGO_HOSTS=0 or CI): apps use http://localhost:port",
-		);
+	const identity = invokingUserIdentity();
+	const other = await namedHostsModeReport(hostsMode(), tailscaleServeDeps(), {
+		name: identity.user,
+		uid: identity.uid,
+		platform: process.platform,
+	});
+	if (other) {
+		for (const note of other.notes) report.note(note);
+		for (const issue of other.issues) report.issue(issue);
 		return;
 	}
 	const health = await readHostsDaemonHealth(readDaemonConfig().httpsPort);
@@ -483,8 +519,8 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 	checkFileTable(report);
 	checkOffsetClaims(report);
 
-	// Named hosts that are off have no daemon or CA to repair.
-	if (hasFlag(args, "--fix") && !isHostsForcedOff()) {
+	// Only loopback named hosts have a daemon and a CA to repair.
+	if (hasFlag(args, "--fix") && hostsMode() === "loopback") {
 		for (const fixed of await doctorFixHosts()) {
 			report.note(fixed);
 		}

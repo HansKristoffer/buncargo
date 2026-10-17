@@ -73,6 +73,8 @@ export interface RunSource {
 		readonly active: boolean;
 		readonly tld: string;
 		readonly plan: readonly NamedHost[];
+		readonly mode: "loopback" | "tailscale";
+		readonly tailscaleUrls: Readonly<Record<string, string>>;
 	} | null;
 	resolvePrimaryApp(selected?: readonly string[]): string | undefined;
 }
@@ -148,6 +150,24 @@ function integrationFields(
 	return fields;
 }
 
+/**
+ * Each app's and service's named hostname: the planned `.localhost` name, or
+ * in tailscale mode the machine name of each app Tailscale serves (services
+ * are not served there, and BuncargoBar opens a hostname-less one on loopback).
+ */
+function namedHostnames(hosts: RunSource["hosts"]): Map<string, string> {
+	if (hosts?.mode === "tailscale")
+		return new Map(
+			Object.entries(hosts.tailscaleUrls).map(([name, url]) => [
+				name,
+				new URL(url).hostname,
+			]),
+		);
+	return new Map(
+		(hosts?.plan ?? []).map((entry) => [entry.name, entry.hostname]),
+	);
+}
+
 function appEntries(
 	env: RunSource,
 	input: {
@@ -160,9 +180,7 @@ function appEntries(
 	const urls = env.urls as Record<string, string>;
 	const loopbackUrls = env.loopbackUrls as Record<string, string>;
 	const publicUrls = env.publicUrls as Record<string, string>;
-	const hostnameFor = new Map(
-		(env.hosts?.plan ?? []).map((entry) => [entry.name, entry.hostname]),
-	);
+	const hostnameFor = namedHostnames(env.hosts);
 
 	return Object.keys(input.apps).flatMap((name) => {
 		const port = ports[name];
@@ -208,9 +226,7 @@ function serviceEntries(
 	const urls = env.urls as Record<string, string>;
 	const loopbackUrls = env.loopbackUrls as Record<string, string>;
 	const publicUrls = env.publicUrls as Record<string, string>;
-	const hostnameFor = new Map(
-		(env.hosts?.plan ?? []).map((entry) => [entry.name, entry.hostname]),
-	);
+	const hostnameFor = namedHostnames(env.hosts);
 
 	return Object.entries(env.services)
 		.filter(([name]) => !serviceNames || serviceNames.includes(name))

@@ -169,11 +169,25 @@ export function containerBinaryOverride(
 
 export const DEFAULT_HOSTS_DAEMON_PORT = 443;
 
-/** Skip automatic local HTTPS/mkcert setup and use `http://localhost:port`. */
-export function isHostsForcedOff(
-	env: NodeJS.ProcessEnv = process.env,
-): boolean {
-	return env.BUNCARGO_HOSTS === "0" || isCI(env);
+/**
+ * How named hosts are served on this machine, from `BUNCARGO_HOSTS`.
+ *
+ * - `loopback` (unset): `https://*.localhost` through the root hosts daemon.
+ * - `tailscale`: each app on its own HTTPS port of the machine's MagicDNS
+ *   name, through Tailscale Serve. For a remote machine, where `*.localhost`
+ *   resolves to the viewer's own computer.
+ * - `off` (`0`, and always in CI): `http://localhost:port`.
+ *
+ * Any other value is the default, as it was before the modes existed.
+ */
+export type HostsMode = "loopback" | "tailscale" | "off";
+
+export function hostsMode(env: NodeJS.ProcessEnv = process.env): HostsMode {
+	if (isCI(env)) return "off";
+	const raw = readTrimmed(env, "BUNCARGO_HOSTS");
+	if (raw === "0") return "off";
+	if (raw === "tailscale") return "tailscale";
+	return "loopback";
 }
 
 /**

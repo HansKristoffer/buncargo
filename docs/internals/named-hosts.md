@@ -158,3 +158,34 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   keep-alives less often than 10s (oRPC defaults to 15s, tuned for hosted proxies) dies before its
   first ping. Do not answer this by shortening the app's keep-alive; the proxy is what is wrong.
   Only elapsed time proves it, so its test is the opt-in `test:integration-proxy-idle`.
+
+## Tailscale mode
+
+`BUNCARGO_HOSTS=tailscale` serves the plan's apps through Tailscale Serve instead of the daemon
+(`tailscale-serve.ts`; `tailscale-cli.ts` runs the binary), for remote machines where
+`*.localhost` resolves to the viewer. Like loopback hosts, only `buncargo dev` activates it;
+`start()` stays on plain URLs.
+
+- Each app gets its own HTTPS port, `port + 20000`. Serve cannot share the app's port: the app
+  holds `*:<port>`, and Tailscale binds the tailnet address on the HTTPS port. A pure function of
+  the app port, so the allocator claims it with the block (`companionPorts`) before any run
+  serves it. It must not probe it: Tailscale's listener on a checkout's own entry fails the bind
+  probe like a stranger and would move the whole block.
+- `tailscale serve status` lists an entry whose listener failed to bind (another process on
+  `0.0.0.0:<port>`), so it proves nothing. Readiness is a TLS handshake for the MagicDNS name on
+  the HTTPS port: only Tailscale holds that certificate. It connects to the Tailscale IP rather
+  than the name, because a server with `--accept-dns=false` cannot resolve its own name, and
+  allows 15s for the first handshake, which waits on Tailscale fetching the certificate.
+  `servedAt` in the record is what readers (`getEnvVar`, `env`, `status`) advertise, and an
+  adopted entry of an ended run loses it until this run's probe answers.
+- Serve changes write the whole config under an etag, so concurrent `tailscale serve` calls fail
+  ("etag mismatch") rather than merge. Changes run one at a time under the record's lock (30s
+  timeout, since the holder forks once per app) and retry on that error. The Serve config is
+  read under the lock too, so a run never plans from a port another run just freed.
+- The machine may have Serve config of its own. An entry is recorded before its command runs,
+  and removed only while the live config is exactly what was recorded; a port with config
+  buncargo did not record is never written. A refused change stays recorded, because one that
+  timed out may have applied. `--bg` entries survive reboots, so the watchdog, `ls`, `doctor` and
+  `hosts prune` take out entries whose run has ended, without taking the lock when there are none.
+- The hostname is `Self.DNSName`, never `BUNCARGO_URL_HOST`: the certificate covers that name
+  only.

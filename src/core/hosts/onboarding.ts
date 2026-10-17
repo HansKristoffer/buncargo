@@ -6,7 +6,7 @@ import {
 	declineMarker,
 	isInteractive,
 } from "../prompt";
-import { isHostsForcedOff } from "../runtime-flags";
+import { hostsMode } from "../runtime-flags";
 import { getCertNamesPath } from "./cert-names";
 import { syncCertificateForRoutes } from "./certificates";
 import {
@@ -212,11 +212,13 @@ export async function ensureHostsReady(input: {
 			message: "Named hosts are not enabled in config.",
 		};
 	}
-	if (isHostsForcedOff()) {
+	// Tailscale mode never reaches here, but must never install the daemon.
+	if (hostsMode() !== "loopback") {
 		return {
 			ok: false,
 			reason: "disabled",
-			message: "Named hosts disabled (CI or BUNCARGO_HOSTS=0).",
+			message:
+				"Loopback named hosts are off (CI, BUNCARGO_HOSTS=0 or BUNCARGO_HOSTS=tailscale).",
 		};
 	}
 	if (!isHostsPlatformSupported()) {
