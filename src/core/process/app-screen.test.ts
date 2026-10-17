@@ -58,6 +58,22 @@ describe("AppScreen", () => {
 		screen.dispose();
 	});
 
+	it("emits an app's last screen once, however often it is flushed", async () => {
+		// Flushed when the app exits and again when the run's output closes.
+		const lines: string[] = [];
+		const screen = new AppScreen(40, 5, (line) => lines.push(line));
+		await feed(screen, "\u001b[?1049h\u001b[Hfull screen\r\nmore");
+		await screen.flush();
+		await screen.flush();
+		expect(lines).toEqual(["full screen", "more"]);
+
+		// A restart in the same screen draws a new one, which is emitted in turn.
+		await feed(screen, "\u001b[H\u001b[2Kagain");
+		await screen.flush();
+		expect(lines).toEqual(["full screen", "more", "again", "more"]);
+		screen.dispose();
+	});
+
 	it("feeds every line of an app that scrolls, and recovers after a clear screen", async () => {
 		const lines: string[] = [];
 		const screen = new AppScreen(40, 5, (line) => lines.push(line));
