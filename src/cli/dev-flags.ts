@@ -206,8 +206,6 @@ export const DEV_COMMAND_SPEC: CommandSpec = {
 };
 
 export interface DevCliArgs {
-	/** Flags before `--`, kept for error messages. */
-	flags: string[];
 	/** Args after `--`, appended to the attached app command. */
 	passthrough: string[];
 	unknownFlags: string[];
@@ -284,7 +282,6 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		);
 
 	return {
-		flags,
 		passthrough,
 		unknownFlags: findUnknownFlags(DEV_COMMAND_SPEC, flags),
 		errors,
