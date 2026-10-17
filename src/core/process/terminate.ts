@@ -82,3 +82,22 @@ export async function terminateOwnedProcess(
 	if (!ownedProcessAlive(child) || !(await stillOurs(child))) return;
 	await signalUntilGone(child, graceMs, initialSignal);
 }
+
+/**
+ * Stop a process group this invocation did not spawn: an app or a run from
+ * the registry, a worker another run claimed. The group, not the pid: a dev
+ * command is usually a shell that spawns the real server, and the server
+ * keeps the port when only the shell is gone.
+ *
+ * Returns false, signalling nothing, when `pid` is no longer the process
+ * `identity` names (it exited, or the pid was reused).
+ */
+export async function terminateProcessGroup(
+	pid: number,
+	identity: string,
+	graceMs = 5000,
+): Promise<boolean> {
+	if (!(await matchesProcessIdentityAsync(pid, identity))) return false;
+	await signalUntilGone(new DetachedApp(pid, identity), graceMs, "SIGTERM");
+	return true;
+}

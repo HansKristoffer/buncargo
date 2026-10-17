@@ -6,12 +6,8 @@ import {
 } from "../../container-runtime";
 import { runStackDowns } from "../../container-runtime/sweep";
 import { findMonorepoRoot } from "../../core/ports";
-import {
-	isProcessAlive,
-	killPortOwner,
-	signalProcessTree,
-} from "../../core/process";
-import { matchesProcessIdentityAsync } from "../../core/process-identity";
+import { killPortOwner } from "../../core/process";
+import { terminateProcessGroup } from "../../core/process/terminate";
 import { askConfirm, isInteractive } from "../../core/prompt";
 import {
 	findRunsByRoot,
@@ -20,7 +16,6 @@ import {
 	type RunEntry,
 	type RunServiceEntry,
 } from "../../core/run-registry";
-import { sleep } from "../../core/sleep";
 
 import * as log from "../log";
 import { parseStopArgs, printStopHelp } from "../stop-flags";
@@ -39,9 +34,6 @@ import { parseStopArgs, printStopHelp } from "../stop-flags";
 
 /** 0 stopped · 2 nothing matched · 3 refused. */
 export const STOP_EXIT = { ok: 0, notFound: 2, refused: 3 } as const;
-
-const TERM_GRACE_MS = 5000;
-const TERM_POLL_MS = 100;
 
 export async function handleStop(args: string[] = []): Promise<number> {
 	const parsed = parseStopArgs(args);
@@ -109,7 +101,7 @@ export async function stopTarget(
 ): Promise<number> {
 	const app = run.apps.find((entry) => entry.name === name);
 	if (app) {
-		const result = await stopApp(run, app, force);
+		const result = await stopApp(app, force);
 		if (result === STOP_EXIT.ok)
 			await patchRun(run.sessionId, {
 				apps: [{ name: app.name, status: "stopped" }],
@@ -127,11 +119,7 @@ export async function stopTarget(
 	return STOP_EXIT.notFound;
 }
 
-async function stopApp(
-	run: RunEntry,
-	app: RunAppEntry,
-	force: boolean,
-): Promise<number> {
+async function stopApp(app: RunAppEntry, force: boolean): Promise<number> {
 	if (app.status === "stopped") {
 		log.info(`${app.name} is already stopped.`);
 		return STOP_EXIT.ok;
@@ -161,15 +149,14 @@ async function stopApp(
 	}
 
 	if (
-		!(await matchesProcessIdentityAsync(app.pid, app.processIdentity)) ||
-		(run.sessionId && !app.processIdentity)
+		!app.processIdentity ||
+		!(await terminateProcessGroup(app.pid, app.processIdentity))
 	) {
 		log.error(
 			`${app.name}'s recorded process identity no longer matches. Refresh the run before stopping it.`,
 		);
 		return STOP_EXIT.refused;
 	}
-	await terminate(app.pid);
 	log.done(`Stopped ${app.name}`);
 	return STOP_EXIT.ok;
 }
@@ -210,30 +197,6 @@ async function stopReusedApp(
 	}
 	log.done(`Stopped ${app.name}`);
 	return STOP_EXIT.ok;
-}
-
-/**
- * SIGTERM the process group, then SIGKILL what is left.
- *
- * The group, not the pid: a dev command is usually a shell that spawns the real
- * server, and signalling only the parent leaves the server holding the port.
- */
-async function terminate(pid: number): Promise<void> {
-	if (!isProcessAlive(pid)) return;
-	signalProcessTree(pid, "SIGTERM");
-
-	const deadline = Date.now() + TERM_GRACE_MS;
-	while (Date.now() < deadline) {
-		if (!isProcessAlive(pid)) return;
-		await sleep(TERM_POLL_MS);
-	}
-
-	if (isProcessAlive(pid)) signalProcessTree(pid, "SIGKILL");
-	const verifyDeadline = Date.now() + 1000;
-	while (isProcessAlive(pid) && Date.now() < verifyDeadline)
-		await sleep(TERM_POLL_MS);
-	if (isProcessAlive(pid))
-		throw new Error(`Process ${pid} did not exit after SIGKILL`);
 }
 
 /**
@@ -341,15 +304,14 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 	}
 
 	if (
-		!(await matchesProcessIdentityAsync(run.pid, run.processIdentity)) ||
-		(run.sessionId && !run.processIdentity)
+		!run.processIdentity ||
+		!(await terminateProcessGroup(run.pid, run.processIdentity))
 	) {
 		log.error(
 			"The recorded run process identity no longer matches. Refresh the run before stopping it.",
 		);
 		return STOP_EXIT.refused;
 	}
-	await terminate(run.pid);
 	return withProjectLifecycleLock(run.projectName, run.root, async () => {
 		// A second session in this checkout keeps the containers. It claims them
 		// in this same registry before it starts them, so a run that is still

@@ -9,7 +9,7 @@ import {
 import { defineListRegistry } from "../registry-file";
 import { STATE_DIRNAME } from "../state-paths";
 import type { AppChild } from "./pty-app";
-import { terminateOwnedProcess } from "./terminate";
+import { terminateOwnedProcess, terminateProcessGroup } from "./terminate";
 
 interface WorkerOwner {
 	name: string;
@@ -156,14 +156,9 @@ export async function stopWorker(root: string, name: string): Promise<boolean> {
 	return withFileLock(path, async () => {
 		const entries = await registry.read(path, { strict: true });
 		const entry = entries.find((item) => item.name === name);
-		if (
-			!entry ||
-			!(await matchesProcessIdentityAsync(entry.pid, entry.identity))
-		) {
+		if (!entry || !(await terminateProcessGroup(entry.pid, entry.identity)))
 			return false;
-		}
 
-		await terminateOwnedProcess({ pid: entry.pid } as AppChild, 5000);
 		await registry.write(
 			path,
 			entries.filter((item) => item !== entry),

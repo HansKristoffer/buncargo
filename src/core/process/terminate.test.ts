@@ -1,8 +1,9 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
+import { readProcessIdentityAsync } from "../process-identity";
 import { DetachedApp } from "./detached-app";
 import { isProcessAlive } from "./lifecycle";
-import { terminateOwnedProcess } from "./terminate";
+import { terminateOwnedProcess, terminateProcessGroup } from "./terminate";
 
 /** A live process in a group of its own, standing in for an unrelated one. */
 function spawnBystander(): number {
@@ -126,6 +127,42 @@ describe.skipIf(process.platform === "win32")("terminateOwnedProcess", () => {
 			expect(signals).toEqual([[-pid, 0]]);
 		} finally {
 			probe.mockRestore();
+		}
+	});
+});
+
+describe.skipIf(process.platform === "win32")("terminateProcessGroup", () => {
+	it("waits for the whole group, not only its leader", async () => {
+		// The leader dies on SIGTERM; the member it started ignores it, the
+		// way a dev server outlives the shell that spawned it.
+		const leader = spawn(
+			"sh",
+			["-c", `sh -c 'trap "" TERM; echo $$; exec sleep 30' & wait`],
+			{ detached: true, stdio: ["ignore", "pipe", "ignore"] },
+		);
+		const pid = leader.pid ?? 0;
+		const member = await new Promise<number>((resolve) =>
+			leader.stdout?.once("data", (chunk) => resolve(Number(String(chunk)))),
+		);
+		try {
+			const identity = await readProcessIdentityAsync(pid);
+			if (!identity) throw new Error("no identity for the leader");
+			expect(await terminateProcessGroup(pid, identity, 200)).toBe(true);
+			expect(isProcessAlive(member)).toBe(false);
+		} finally {
+			try {
+				process.kill(-pid, "SIGKILL");
+			} catch {}
+		}
+	});
+
+	it("signals nothing once the pid is another process", async () => {
+		const pid = spawnBystander();
+		try {
+			expect(await terminateProcessGroup(pid, "v2:bogus", 0)).toBe(false);
+			expect(isProcessAlive(pid)).toBe(true);
+		} finally {
+			process.kill(pid, "SIGKILL");
 		}
 	});
 });
