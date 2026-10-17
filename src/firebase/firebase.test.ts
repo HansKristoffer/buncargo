@@ -16,14 +16,13 @@ import {
 	generatedFirebaseConfig,
 	selectEmulators,
 } from "./emulators";
-import { firebase } from "./index";
+import { emulatorTmpDir, firebase } from "./index";
 import { readFirebaseProject } from "./project";
 
 const saved = {
 	HOME: process.env.HOME,
 	BUNCARGO_PORT_OFFSET: process.env.BUNCARGO_PORT_OFFSET,
 };
-const cwd = process.cwd();
 let root = "";
 
 const FIREBASE_JSON = `{
@@ -47,11 +46,9 @@ beforeAll(() => {
 	writeFileSync(join(root, "firebase.json"), FIREBASE_JSON);
 	process.env.HOME = root;
 	process.env.BUNCARGO_PORT_OFFSET = "100";
-	process.chdir(root);
 });
 
 afterAll(() => {
-	process.chdir(cwd);
 	for (const [key, value] of Object.entries(saved)) {
 		if (value === undefined) delete process.env[key];
 		else process.env[key] = value;
@@ -173,12 +170,28 @@ describe("firebase()", () => {
 		expect(rendered.emulators.ui.port).toBe(env.ports.firebase);
 	});
 
-	it("gives the suite a temp dir of its own, where the hub announces itself", () => {
+	it("gives the suite a short temp dir of its own, where the hub announces itself", () => {
 		const env = createDevEnvironment(config, { root });
-		expect(env.buildAppEnvVars("firebase")).toMatchObject({
-			TMPDIR: join(root, ".buncargo", "firebase", "tmp"),
-		});
+		const dir = (env.buildAppEnvVars("firebase") as Record<string, string>)
+			.TMPDIR;
+		expect(dir).toBe(emulatorTmpDir(root));
+		expect(emulatorTmpDir(join(root, "another-worktree"))).not.toBe(dir);
 		expect(env.buildAppEnvVars("web")).not.toHaveProperty("TMPDIR");
+		// The Functions emulator's socket, which macOS cuts off past 103 bytes
+		// however deep the checkout is.
+		const socket = join(
+			emulatorTmpDir(join(root, ".claude", "worktrees", "x".repeat(80))),
+			`fire_emu_${"0".repeat(16)}.sock`,
+		);
+		expect(socket.length).toBeLessThan(104);
+	});
+
+	it("claims every port the suite listens on with the checkout's block", () => {
+		const env = createDevEnvironment(config, { root });
+		// The UI is the app's own port; the rest move with it.
+		expect(env.apps.firebase?.extraPorts).toEqual([
+			9099, 5001, 8080, 9199, 4400, 4500, 9150, 9299, 9499,
+		]);
 	});
 
 	it("runs as .firebaserc's project, or the one given", () => {
@@ -241,15 +254,17 @@ describe("firebase checks", () => {
 		if (!found) throw new Error(`no check named ${name}`);
 		return found;
 	};
-	const ctx = { root, env: {} as AnyDevEnvironment } as CheckContext;
+	// Built per test: `root` is only set once `beforeAll` has run.
+	const context = () =>
+		({ root, env: {} as AnyDevEnvironment }) as CheckContext;
 
 	it("asks for Java only when a JVM emulator runs", async () => {
 		const path = process.env.PATH;
 		process.env.PATH = join(root, "no-bin");
 		try {
 			const java = "Java is installed for the Firebase emulators";
-			expect(await check(java, ["auth"]).check(ctx)).toBe(true);
-			expect(await check(java, ["firestore"]).check(ctx)).toMatchObject({
+			expect(await check(java, ["auth"]).check(context())).toBe(true);
+			expect(await check(java, ["firestore"]).check(context())).toMatchObject({
 				ok: false,
 			});
 		} finally {
@@ -257,10 +272,29 @@ describe("firebase checks", () => {
 		}
 	});
 
+	it("offers to gitignore the data directory", async () => {
+		const gitignored = firebaseChecks({
+			project: () => readFirebaseProject(root),
+			workdir: () => root,
+			emulators: () => [],
+			dataDir: () => ".firebase-emulator-data",
+		}).find((entry) => entry.name === "Firebase emulator data is gitignored");
+		Bun.spawnSync(["git", "init", "-q", root]);
+		expect(await gitignored?.check(context())).toMatchObject({ ok: false });
+		const fix = gitignored?.fix;
+		if (typeof fix !== "function") throw new Error("no fix");
+		await fix(context());
+		expect(await gitignored?.check(context())).toBe(true);
+	});
+
 	it("fails when firebase.json starts no emulator", async () => {
-		expect(await check("firebase.json exists", []).check(ctx)).toMatchObject({
+		expect(
+			await check("firebase.json exists", []).check(context()),
+		).toMatchObject({
 			ok: false,
 		});
-		expect(await check("firebase.json exists", ["auth"]).check(ctx)).toBe(true);
+		expect(await check("firebase.json exists", ["auth"]).check(context())).toBe(
+			true,
+		);
 	});
 });

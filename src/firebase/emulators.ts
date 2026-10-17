@@ -180,6 +180,26 @@ export function emulatorPorts(
 }
 
 /**
+ * Every port the suite listens on except `anchor`, the app's own: what the
+ * app declares as `extraPorts`, so the allocator claims and probes them.
+ */
+export function suitePorts(
+	ports: FirebaseEmulatorPorts,
+	anchor: number,
+): number[] {
+	return [
+		...Object.values(ports.port),
+		ports.hub,
+		ports.logging,
+		ports.ui,
+		ports.firestoreWebsocket,
+		ports.eventarc,
+		ports.tasks,
+		ports.dataconnectPostgres,
+	].filter((port): port is number => port !== undefined && port !== anchor);
+}
+
+/**
  * `firebase.json` with this checkout's ports.
  *
  * Every port is written out, because the CLI picks a free one for an unset

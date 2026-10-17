@@ -139,7 +139,8 @@ hardcode a port. Ask buncargo instead.
 
 ## Do not
 
-- \`dev --reset\` deletes this checkout's database and \`dev --down --all\` stops
+- \`dev --reset\` deletes this checkout's database (not Firebase emulator
+  data, which lives in \`.firebase-emulator-data\`) and \`dev --down --all\` stops
   every checkout's run. Both refuse without a terminal unless \`--yes\` is
   passed. Pass it only when the user asked for exactly that.
 - Do not edit \`.buncargo/\`, the generated compose file or other generated

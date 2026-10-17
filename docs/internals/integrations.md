@@ -95,7 +95,12 @@ held between runs. What it depends on in `firebase-tools` (checked against 15.34
   target loop and only listen beside Functions, so they are safe to write whenever Functions runs.
 - The hub writes `hub-<project id>.json` in `os.tmpdir()`, and a second suite on the same id reads
   the first one's (the CLI only warns). Each checkout's suite gets its own `TMPDIR` rather than its
-  own project id, so the id the apps' SDK config uses stays the project's.
+  own project id, so the id the apps' SDK config uses stays the project's. It is a short directory
+  under the system's (`bcfb-<checkout hash>`), not under the checkout: the Functions emulator puts
+  its Unix socket there, and a worktree's path pushes it past the 103-byte limit on macOS.
+- Emulator ports are the app's `extraPorts`. They are spaced like the offset step (9099, 9199,
+  9299…), so moving them by the offset alone put one checkout's Auth on the next one's Storage;
+  claimed and probed with the block, a block that lands on another's emulators moves on.
 - `--export-on-exit` runs on the first SIGINT/SIGTERM/SIGHUP/SIGQUIT; a second signal more than
   100 ms later skips the export. The CLI is run directly, not through `npx`/`bunx`, which forward
   the signal again, and the app has a long `stopGraceMs` for the single SIGTERM.

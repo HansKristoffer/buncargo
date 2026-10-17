@@ -144,6 +144,7 @@ export function unhealthyAppMessage(app: UnhealthyApp): string {
 async function inspectUnhealthyHolder(
 	name: string,
 	port: number,
+	graceMs: number | undefined,
 	options: ClassifyCliAppsOptions,
 ): Promise<UnhealthyHolder> {
 	const { context, runtime, skipContainers } = options;
@@ -163,7 +164,11 @@ async function inspectUnhealthyHolder(
 	);
 	if (sibling) return { detached: sibling.detached === true };
 
-	const released = await killPortOwner(port, { runtime, skipContainers });
+	const released = await killPortOwner(port, {
+		runtime,
+		skipContainers,
+		timeout: graceMs,
+	});
 	if (!released) return undefined;
 	log.info(
 		`🧹 Stopped a leftover "${name}" on port ${port}: no run owns it and it failed its health check`,
@@ -196,7 +201,7 @@ export async function classifyCliApps(
 	const inspectHolder =
 		options.inspectUnhealthyHolder ??
 		((name: string, port: number) =>
-			inspectUnhealthyHolder(name, port, options));
+			inspectUnhealthyHolder(name, port, apps[name]?.stopGraceMs, options));
 	const startApps: Record<string, AppConfig> = {};
 	const reusedApps: Record<string, AppConfig> = {};
 	const startNames: string[] = [];

@@ -17,7 +17,12 @@ export function validateApps(
 	for (const [name, app] of Object.entries(config.apps ?? {})) {
 		claimName(name, `apps.${name}`);
 		if (app.kind === "worker") {
-			for (const field of ["port", "expose", "healthEndpoint"] as const)
+			for (const field of [
+				"port",
+				"extraPorts",
+				"expose",
+				"healthEndpoint",
+			] as const)
 				if (app[field] !== undefined) {
 					errors.push(`Worker "${name}" cannot set ${field}`);
 				}
@@ -29,6 +34,11 @@ export function validateApps(
 				errors.push(`App "${name}" has an invalid kind`);
 			}
 			claimPort(app.port, `apps.${name}.port`);
+			if (app.extraPorts !== undefined && !Array.isArray(app.extraPorts))
+				errors.push(`apps.${name}.extraPorts must be an array of ports`);
+			else
+				for (const [index, port] of (app.extraPorts ?? []).entries())
+					claimPort(port, `apps.${name}.extraPorts[${index}]`);
 		}
 
 		if (

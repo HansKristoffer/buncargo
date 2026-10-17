@@ -92,5 +92,8 @@ per port.
 - Tailscale mode's HTTPS ports (`companionPorts`, [named hosts](./named-hosts.md#tailscale-mode))
   are part of the block's claim but never probed: Tailscale binds them on the tailnet address,
   which fails the bind probe for the checkout's own entry.
+- An app's `extraPorts` (`extraPortMap`) are claimed *and* probed, keyed `<app>#<n>` so a
+  selection that names the app probes them and one that does not leaves them alone. They are not in
+  the port map, so they never reach the env or the lockfile: the lockfile's offset brings them back.
 - An integration stack's containers are recognized as this run's by their Compose project label;
   see [integrations](./integrations.md#stacks).

@@ -16,11 +16,12 @@
  * `BUNCARGO_URL_HOST`, on a hosts `tld` other than `localhost`, or through a
  * tunnel. The port needs nothing: `next dev` reads `PORT`.
  *
- * Imports nothing but `node:os`, through `tailscaleAddress`: it is loaded by
- * users' `next.config.ts`.
+ * Loaded by users' `next.config.ts`, so its imports stay leaves
+ * (`architecture.test.ts` pins them).
  */
 
 import { tailscaleAddress } from "../core/tailscale";
+import { readBuncargoViteEnvironment } from "../vite/resolve";
 
 /** Next's phase for `next dev`; the others get the config unchanged. */
 const DEVELOPMENT_PHASE = "phase-development-server";
@@ -71,11 +72,10 @@ export function readBuncargoNextOrigins(
 	// Buncargo names the hosts Vite should allow in its own syntax, where a
 	// leading dot means "and every subdomain". Next spells that `**.`; its `*.`
 	// matches exactly one label.
-	const allowedHosts = (env.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS ?? "")
-		.split(",")
-		.map((entry) => entry.trim())
-		.filter((entry) => entry.length > 0)
-		.map((entry) => (entry.startsWith(".") ? `**${entry}` : entry));
+	const allowedHosts = readBuncargoViteEnvironment(
+		env,
+		undefined,
+	).allowedHosts.map((entry) => (entry.startsWith(".") ? `**${entry}` : entry));
 	const tunnels = Object.entries(env)
 		.filter(([name]) => name.endsWith("_PUBLIC_URL"))
 		.map(([, value]) => (value ? hostnameOf(value) : undefined))

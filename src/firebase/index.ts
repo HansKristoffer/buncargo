@@ -1,8 +1,9 @@
 import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, normalize, resolve } from "node:path";
 import { findMonorepoRoot } from "../core/ports";
 import { shellQuote } from "../core/shell-quote";
-import { getProjectStateDir } from "../core/state-paths";
+import { workspaceId } from "../core/workspace-identity";
 import type {
 	AppConfig,
 	BuncargoIntegration,
@@ -19,6 +20,7 @@ import {
 	type FirebaseEmulator,
 	generatedFirebaseConfig,
 	selectEmulators,
+	suitePorts,
 	uiEnabled,
 } from "./emulators";
 import {
@@ -116,9 +118,13 @@ function publicCopies(
 	);
 }
 
-/** Where the hub writes its locator file; one per checkout, see `appEnv`. */
-function emulatorTmpDir(root: string): string {
-	return join(getProjectStateDir(root), "firebase", "tmp");
+/**
+ * The suite's temp dir, one per checkout (see `appEnv`). Short, under the
+ * system's: the Functions emulator puts a Unix socket here, and a socket path
+ * past 103 bytes (macOS) is cut off, which a deep worktree's root would do.
+ */
+export function emulatorTmpDir(root: string): string {
+	return join(tmpdir(), `bcfb-${workspaceId(root).slice(0, 8)}`);
 }
 
 export function firebase(
@@ -141,8 +147,8 @@ export function firebase(
 	return {
 		name: "firebase",
 
-		config(config) {
-			const root = findMonorepoRoot();
+		config(config, ctx) {
+			const root = ctx?.root ?? findMonorepoRoot();
 			const read = readFirebaseProject(workdirOf(root));
 			project = read;
 			selected = selectEmulators(read.raw, options.emulators);
@@ -181,6 +187,7 @@ export function firebase(
 			const apps: Record<string, AppConfig> = { ...(config.apps ?? {}) };
 			apps[FIREBASE_APP] ??= {
 				port: base,
+				extraPorts: suitePorts(emulatorPorts(raw, selected, 0), base),
 				devCommand: command,
 				cwd: workdirOption,
 				readyWhen: /All emulators ready/,

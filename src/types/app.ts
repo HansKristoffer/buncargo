@@ -32,6 +32,13 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	/** Timeout for health check in milliseconds */
 	healthTimeout?: number;
 	/**
+	 * Base ports this app's process listens on besides `port`, e.g. an emulator
+	 * suite's. Moved by the checkout's offset like `port`, and claimed and
+	 * probed with the checkout's block, so no other checkout lands on them.
+	 * The app reads them as `base + portOffset`; they get no env vars or URLs.
+	 */
+	extraPorts?: readonly number[];
+	/**
 	 * How long the app gets to exit after SIGTERM before it is killed, in
 	 * milliseconds: on stop, restart and `buncargo stop`. Raise it for a
 	 * process that saves data on its way out. Default: 5000.
@@ -203,6 +210,7 @@ export type WorkerAppConfig<TStatic extends EnvValues = EnvValues> =
 		kind: "worker";
 		devCommand: string;
 		port?: never;
+		extraPorts?: never;
 		expose?: never;
 		healthEndpoint?: never;
 	};

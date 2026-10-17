@@ -8,6 +8,7 @@ import { runStackDowns } from "../../container-runtime/sweep";
 import { findMonorepoRoot } from "../../core/ports";
 import { killPortOwner } from "../../core/process";
 import {
+	DEFAULT_STOP_GRACE_MS,
 	ProcessIdentityUnreadable,
 	terminateProcessGroup,
 } from "../../core/process/terminate";
@@ -184,7 +185,7 @@ async function stopApp(app: RunAppEntry, force: boolean): Promise<number> {
 			`${app.name}'s process`,
 			app.pid,
 			app.processIdentity,
-			app.stopGraceMs ?? DEFAULT_GRACE_MS,
+			app.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
 		));
 	if (stopped === "refused") return STOP_EXIT.refused;
 	if (!stopped) {
@@ -198,9 +199,6 @@ async function stopApp(app: RunAppEntry, force: boolean): Promise<number> {
 	return STOP_EXIT.ok;
 }
 
-/** How long `stop` waits after SIGTERM for an app that sets no `stopGraceMs`. */
-const DEFAULT_GRACE_MS = 5000;
-
 /**
  * How long a whole run gets before its `dev` process is killed.
  *
@@ -210,7 +208,7 @@ const DEFAULT_GRACE_MS = 5000;
  */
 export function runStopGraceMs(run: Pick<RunEntry, "apps">): number {
 	return (
-		DEFAULT_GRACE_MS +
+		DEFAULT_STOP_GRACE_MS +
 		Math.max(0, ...run.apps.map((app) => app.stopGraceMs ?? 0))
 	);
 }
@@ -266,7 +264,10 @@ async function stopReusedApp(
 		log.error(`Stop ${app.name} from its owning run or use dev --takeover.`);
 		return STOP_EXIT.refused;
 	}
-	const released = await killPortOwner(app.port, { verbose: false });
+	const released = await killPortOwner(app.port, {
+		verbose: false,
+		timeout: app.stopGraceMs,
+	});
 	if (!released) {
 		log.error(`Could not free port ${app.port} for ${app.name}.`);
 		return STOP_EXIT.refused;

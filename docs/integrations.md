@@ -100,6 +100,7 @@ export function stripe(options: { app: string }): BuncargoIntegration {
 
 - `config()` reads `firebase.json` (comments allowed) and `.firebaserc` leniently, picks the emulators to start, and adds the `firebase` app: `firebase emulators:start --config firebase.buncargo.json --project <id> --only <emulators>` with `--import`/`--export-on-exit`, ready by its "All emulators ready" line, with a 60-second `stopGraceMs` so the export finishes. The app's port is the Emulator UI's (the hub's with the UI off); every other emulator port moves by the same offset. Its env builder sets the `*_EMULATOR_HOST` variables the Admin SDK reads, plus `publicEnvPrefix` copies for the web SDK.
 - `generatedFiles` writes `firebase.buncargo.json` beside `firebase.json`, with every port written out and listen hosts defaulting to `127.0.0.1`.
-- `appEnv` gives the `firebase` app its own `TMPDIR`, and `hooks.beforeServers` creates it.
+- The `firebase` app lists every other emulator port as `extraPorts`, so the allocator claims and probes them with the checkout's block.
+- `appEnv` gives the `firebase` app a short temp dir of its own, and `hooks.beforeServers` creates it.
 - `checks`: CLI installed, `firebase.json` present and configuring an emulator, Java on `PATH` when a JVM emulator runs, the data directory gitignored, CLI version in the tested 13.x–15.x range.
 - `describe`: the Emulator UI.

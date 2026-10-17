@@ -1,12 +1,11 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { relative } from "node:path";
+import { appendToGitignore, isGitIgnored } from "../core/gitignore";
 import { lookupOnPath } from "../core/tool-binary";
 import type { SetupCheck } from "../types";
 import {
 	firebaseVersion,
 	isFirebaseInstalled,
 	isTestedFirebaseVersion,
-	parseFirebaseVersion,
 	resolveFirebaseBin,
 } from "./cli";
 import type { FirebaseEmulator } from "./emulators";
@@ -18,14 +17,6 @@ const JAVA_EMULATORS: readonly FirebaseEmulator[] = [
 	"database",
 	"storage",
 ];
-
-/** Add a path to the root `.gitignore`, creating it when missing. */
-function ignoreInGit(root: string, path: string): void {
-	const file = join(root, ".gitignore");
-	const current = existsSync(file) ? readFileSync(file, "utf8") : "";
-	const prefix = current && !current.endsWith("\n") ? "\n" : "";
-	appendFileSync(file, `${prefix}/${path}\n`);
-}
 
 export function firebaseChecks(state: {
 	project: (root: string) => FirebaseProject;
@@ -83,13 +74,8 @@ export function firebaseChecks(state: {
 			check: ({ root }) => {
 				const dir = state.dataDir(root);
 				if (!dir) return true;
-				const result = Bun.spawnSync(["git", "check-ignore", "-q", dir], {
-					cwd: root,
-					stdout: "ignore",
-					stderr: "ignore",
-				});
 				return (
-					result.exitCode === 0 || {
+					isGitIgnored(root, dir) || {
 						ok: false,
 						detail: `${dir} is not gitignored`,
 					}
@@ -97,7 +83,7 @@ export function firebaseChecks(state: {
 			},
 			fix: ({ root }) => {
 				const dir = state.dataDir(root);
-				if (dir) ignoreInGit(root, dir);
+				if (dir) appendToGitignore(root, [`/${dir}`]);
 			},
 			fixDescription: "add it to .gitignore",
 		},
@@ -112,9 +98,8 @@ export function firebaseChecks(state: {
 				);
 				if (!version)
 					return { ok: false, detail: "`firebase --version` failed" };
-				const parsed = parseFirebaseVersion(version);
 				return (
-					(parsed !== undefined && isTestedFirebaseVersion(parsed)) || {
+					isTestedFirebaseVersion(version) || {
 						ok: false,
 						detail: `Firebase CLI ${version} is outside the tested 13.x–15.x range`,
 					}

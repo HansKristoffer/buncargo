@@ -1345,7 +1345,8 @@ Use the top-level `env` overlay for shared values (rewritten `WEB_URL`, `VITE_*`
 | `secrets` | `{ projectId?, organizationId?, environment?, siteUrl?, path?, required? }` | `undefined` | Fetch this app's Infisical secrets once and inject them. See [Infisical secrets](#infisical-secrets) |
 | `interactive` | `boolean` | `false` | Own the TTY in stream mode. Only one app may set this; the TUI ignores it |
 | `essential` | `boolean` | `true` | `false`: the run keeps going when this app exits; `r` / `buncargo restart` starts it again |
-| `stopGraceMs` | `number` | `5000` | Time between SIGTERM and SIGKILL on stop, restart and `buncargo stop`. Raise it for a process that saves data as it exits |
+| `stopGraceMs` | `number` | `5000` | Time between SIGTERM and SIGKILL on stop, restart, takeover and `buncargo stop`. Raise it for a process that saves data as it exits |
+| `extraPorts` | `number[]` | `[]` | Base ports the app also listens on. Moved by the checkout's offset and claimed and checked with its block; no env vars or URLs. Servers only |
 | `actions` | `{ key, label, open }[]` | `[]` | Keys that open a captured URL from the TUI footer. Unique, and not `o e r l q j k` |
 | `needsPublicUrls` | `boolean` | `false` | Start after tunnels so env sees `*_PUBLIC_URL`. Ignored without `--expose` |
 

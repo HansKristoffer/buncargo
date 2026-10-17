@@ -153,6 +153,7 @@ function resolveAppEnv(
 async function prepareAppPort(
 	name: string,
 	port: number | undefined,
+	graceMs: number | undefined,
 	root: string,
 	projectName: string,
 	verbose: boolean,
@@ -185,7 +186,12 @@ async function prepareAppPort(
 	}
 
 	if (action === "kill") {
-		await killPortOwner(port, { verbose, runtime, skipContainers });
+		await killPortOwner(port, {
+			verbose,
+			runtime,
+			skipContainers,
+			timeout: graceMs,
+		});
 	}
 
 	return "start";
@@ -426,6 +432,7 @@ export async function startDevServers(
 			const prepared = await prepareAppPort(
 				name,
 				ports[name],
+				config.stopGraceMs,
 				root,
 				projectName,
 				verbose,
