@@ -7,7 +7,7 @@ import {
 	rmSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { installConnectBundle } from "./connect/bundle";
 import { withFileLock } from "./file-lock";
 import { exec } from "./process/exec";
@@ -123,10 +123,15 @@ export async function rememberBarCli(): Promise<void> {
 	});
 }
 
+const SYSTEM_APPLICATIONS = "/Applications";
+
 /** Where the bundle can live, most preferred first. */
-function candidateBundlePaths(home = homedir()): string[] {
+function candidateBundlePaths(
+	home = homedir(),
+	system = SYSTEM_APPLICATIONS,
+): string[] {
 	return [
-		join("/Applications", BAR_BUNDLE_NAME),
+		join(system, BAR_BUNDLE_NAME),
 		join(home, "Applications", BAR_BUNDLE_NAME),
 	];
 }
@@ -323,18 +328,27 @@ async function verifyChecksum(
 	}
 }
 
+/**
+ * Where to install: over the `existing` bundle when its folder is writable, so
+ * an update leaves one copy; else `/Applications` when we can write it, the
+ * user's own otherwise. Never asks for a password: an optional menu bar app is
+ * not worth a sudo prompt.
+ */
 export function installDirectory(
 	home = homedir(),
-	system = "/Applications",
+	system = SYSTEM_APPLICATIONS,
+	existing?: string,
 ): string {
-	// `/Applications` when we can write it, the user's own otherwise. Never
-	// asks for a password: an optional menu bar app is not worth a sudo prompt.
-	try {
-		accessSync(system, constants.W_OK);
-		return system;
-	} catch {
-		return join(home, "Applications");
+	for (const directory of [existing && dirname(existing), system]) {
+		if (!directory) continue;
+		try {
+			accessSync(directory, constants.W_OK);
+			return directory;
+		} catch {
+			// Not ours to write: try the next.
+		}
 	}
+	return join(home, "Applications");
 }
 
 export interface BarInstallResult {
@@ -425,7 +439,10 @@ async function applyRelease(
 		// it was running to begin with.
 		const wasRunning = await quitBar();
 
-		const target = join(installDirectory(), BAR_BUNDLE_NAME);
+		const target = join(
+			installDirectory(undefined, undefined, findInstalledBar()),
+			BAR_BUNDLE_NAME,
+		);
 		rmSync(target, { recursive: true, force: true });
 		const copy = run(`ditto ${shellQuote(source)} ${shellQuote(target)}`);
 		if (copy.exitCode !== 0) {
@@ -499,11 +516,26 @@ export async function quitBar(): Promise<boolean> {
 }
 
 export async function uninstallBar(): Promise<boolean> {
-	const path = findInstalledBar();
 	await quitBar();
-	if (path) rmSync(path, { recursive: true, force: true });
+	return removeInstalledBars();
+}
+
+/**
+ * Remove every copy of the bundle and the manifest. An update that could not
+ * write over a copy in `/Applications` installs a second one in
+ * `~/Applications`, so there can be two. Whether any was there.
+ */
+export function removeInstalledBars(home?: string, system?: string): boolean {
+	const manifest = readBarManifest();
+	const copies = [
+		...new Set([
+			...(manifest ? [manifest.path] : []),
+			...candidateBundlePaths(home, system),
+		]),
+	].filter((path) => existsSync(path));
+	for (const path of copies) rmSync(path, { recursive: true, force: true });
 	rmSync(getBarManifestPath(), { force: true });
-	return path !== undefined;
+	return copies.length > 0;
 }
 
 /** `exec` with the arguments this module never varies. */

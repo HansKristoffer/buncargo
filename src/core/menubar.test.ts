@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +13,7 @@ import {
 	installDirectory,
 	readBundleInfo,
 	readInstalledBarInfo,
+	removeInstalledBars,
 } from "./menubar";
 
 /**
@@ -117,4 +124,36 @@ describe("installDirectory", () => {
 			expect(installDirectory(home, system)).toBe(join(home, "Applications"));
 		},
 	);
+
+	it("updates a copy in place where its folder is writable", () => {
+		// Installed to ~/Applications earlier; /Applications became writable since.
+		const existing = writeBundle(join(home, "Applications", "BuncargoBar.app"));
+		expect(installDirectory(home, home, existing)).toBe(
+			join(home, "Applications"),
+		);
+	});
+});
+
+describe("removeInstalledBars", () => {
+	it("removes every copy, including the second one an update left", () => {
+		const system = join(home, "system");
+		const systemCopy = writeBundle(join(system, "BuncargoBar.app"));
+		const userCopy = writeBundle(join(home, "Applications", "BuncargoBar.app"));
+		mkdirSync(join(home, ".buncargo"), { recursive: true });
+		writeFileSync(
+			getBarManifestPath(),
+			JSON.stringify({
+				version: 1,
+				path: userCopy,
+				appVersion: "1.2.3",
+				installedAt: new Date().toISOString(),
+			}),
+		);
+
+		expect(removeInstalledBars(home, system)).toBe(true);
+		expect(existsSync(systemCopy)).toBe(false);
+		expect(existsSync(userCopy)).toBe(false);
+		expect(existsSync(getBarManifestPath())).toBe(false);
+		expect(removeInstalledBars(home, system)).toBe(false);
+	});
 });
