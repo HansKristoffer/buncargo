@@ -15,25 +15,31 @@ import {
 	resolveWatchdogRunnerPath,
 } from "./watchdog";
 
-const realHome = process.env.HOME;
-const realPath = process.env.PATH;
+const isolated = ["HOME", "DOCKER_HOST", "DOCKER_CONTEXT"] as const;
+const saved = Object.fromEntries(
+	isolated.map((key) => [key, process.env[key]]),
+);
 let home = "";
 
 beforeAll(() => {
 	home = mkdtempSync(join(tmpdir(), "buncargo-watchdog-"));
 	process.env.HOME = home;
-	// The runner sweeps as soon as it starts, and it inherits this
-	// environment. With no PATH it finds no container runtime, so a test here
-	// can never reach the Docker this machine is actually running — the
-	// spawned processes are invoked by absolute path and need none.
-	process.env.PATH = "";
+	// The runner sweeps as soon as it starts, inherits this environment, and
+	// with an empty registry reads every stack it can list as unowned. It
+	// finds the failing `docker` the test preload puts first on PATH; an
+	// empty PATH is no substitute, since Bun then falls back to /usr/bin and
+	// finds the real one. The dead DOCKER_HOST holds even for a runner that
+	// outlives the preload's stub directory.
+	process.env.DOCKER_HOST = "unix:///nonexistent/buncargo-watchdog-test.sock";
+	delete process.env.DOCKER_CONTEXT;
 });
 
 afterAll(() => {
-	if (realHome === undefined) delete process.env.HOME;
-	else process.env.HOME = realHome;
-	if (realPath === undefined) delete process.env.PATH;
-	else process.env.PATH = realPath;
+	for (const key of isolated) {
+		const value = saved[key];
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
 	rmSync(home, { recursive: true, force: true });
 });
 
