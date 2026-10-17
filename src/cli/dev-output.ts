@@ -1,4 +1,4 @@
-import { appEntryPath, preferredAppUrl } from "../core/app-url";
+import { environmentOpenUrl } from "../core/app-url";
 import { AppLogs } from "../core/process/app-logs";
 import { printStream, RunOutput } from "../core/process/run-output";
 import { isInteractive } from "../core/prompt";
@@ -48,7 +48,7 @@ export function openDevOutput(
 			? new RunTui({
 					output,
 					apps: names,
-					urlFor: (app) => appOpenUrl(env, app),
+					urlFor: (app) => environmentOpenUrl(env, app),
 					actions,
 					logPath: (app) => (app ? logs?.file(app) : logs?.dir),
 					quit: () => process.kill(process.pid, "SIGINT"),
@@ -111,21 +111,6 @@ export function openDevOutput(
 			stopWatching();
 		},
 	};
-}
-
-/** The URL the TUI's `o` opens for an app, from the live environment. */
-function appOpenUrl(env: DevOutputSource, app: string): string | undefined {
-	const read = (urls: object) =>
-		(urls as Record<string, string | undefined>)[app];
-	return preferredAppUrl(
-		{
-			url: read(env.urls),
-			loopbackUrl: read(env.loopbackUrls),
-			publicUrl: read(env.publicUrls),
-			entryPath: appEntryPath(read(env.apps ?? {})),
-		},
-		env.hosts?.active ?? false,
-	);
 }
 
 function appActions(apps: Record<string, AppConfig>): TuiAction[] {

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { appEntryPath, preferredAppUrl } from "../core/app-url";
+import { environmentOpenUrl, preferredAppUrl } from "../core/app-url";
 import type { CapturedValue } from "../core/process/output-capture";
 import { readProcessIdentitiesAsync } from "../core/process-identity";
 import {
@@ -469,21 +469,12 @@ export async function recordAppUrls(
 		},
 	names: readonly string[],
 ): Promise<void> {
-	const read = (urls: object, name: string) =>
-		(urls as Record<string, string | undefined>)[name];
 	const apps = names.flatMap((name) => {
-		const publicUrl = read(env.publicUrls, name);
+		const publicUrl = (env.publicUrls as Record<string, string | undefined>)[
+			name
+		];
 		if (!publicUrl) return [];
-		const openUrl = preferredAppUrl(
-			{
-				url: read(env.urls, name),
-				loopbackUrl: read(env.loopbackUrls, name),
-				publicUrl,
-				entryPath: appEntryPath(read(env.apps ?? {}, name)),
-			},
-			env.hosts?.active ?? false,
-		);
-		return [{ name, publicUrl, openUrl }];
+		return [{ name, publicUrl, openUrl: environmentOpenUrl(env, name) }];
 	});
 	if (apps.length > 0) await patchCurrentRun(env, { apps });
 }

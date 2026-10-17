@@ -1,4 +1,4 @@
-import { appEntryPath, preferredAppUrl } from "../../core/app-url";
+import { environmentOpenUrl } from "../../core/app-url";
 import { openUrl } from "../../core/open-url";
 import {
 	type CommandSpec,
@@ -71,18 +71,7 @@ export function openTargets(env: OpenSource): Record<string, string> {
 
 	// The app's own URL is the one the TUI's `o` and BuncargoBar open.
 	for (const app of Object.keys(env.apps)) {
-		add(
-			app,
-			preferredAppUrl(
-				{
-					url: env.urls[app],
-					loopbackUrl: env.loopbackUrls?.[app],
-					publicUrl: env.publicUrls[app],
-					entryPath: appEntryPath(env.apps[app]),
-				},
-				env.hosts?.active ?? true,
-			),
-		);
+		add(app, environmentOpenUrl(env, app));
 	}
 	for (const [name, value] of Object.entries(env.captured)) add(name, value);
 	for (const [label, value] of Object.entries(env.details())) add(label, value);
