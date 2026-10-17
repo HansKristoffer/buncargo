@@ -75,6 +75,23 @@ async function stopWatchdog(): Promise<void> {
 		await Bun.sleep(10);
 }
 
+/** The parent pids of `pid`, nearest first, up to init. */
+function ancestorsOf(pid: number): number[] {
+	const chain: number[] = [];
+	for (let current = pid; chain.length < 64; ) {
+		const parent = Number(
+			execFileSync("ps", ["-p", String(current), "-o", "ppid="], {
+				encoding: "utf8",
+			}).trim(),
+		);
+		if (!(parent > 0)) break;
+		chain.push(parent);
+		if (parent === 1) break;
+		current = parent;
+	}
+	return chain;
+}
+
 describe("resolveWatchdogRunnerPath", () => {
 	it("resolves a real runner file next to source or dist", () => {
 		const path = resolveWatchdogRunnerPath();
@@ -117,14 +134,11 @@ describe("ensureWatchdog", () => {
 			await ensureWatchdog({ verbose: false });
 			const pid = getWatchdogPid();
 			expect(pid).not.toBeNull();
-			const parent = Number(
-				execFileSync("ps", ["-p", String(pid), "-o", "ppid="], {
-					encoding: "utf8",
-				}).trim(),
-			);
-			expect(parent).not.toBe(process.pid);
-			// Reparented to init/launchd the moment the intermediate exited.
-			expect(parent).toBe(1);
+			const ancestors = ancestorsOf(pid as number);
+			expect(ancestors[0]).not.toBe(process.pid);
+			// Reparented the moment the intermediate exited: to init/launchd, or
+			// to a subreaper such as a systemd user manager, never to us.
+			expect(ancestors).not.toContain(process.pid);
 		} finally {
 			await stopWatchdog();
 		}
