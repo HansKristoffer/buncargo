@@ -28,9 +28,9 @@ import { STATE_DIRNAME } from "./state-paths";
 import { formatWarn } from "./style";
 
 export const PORT_OFFSET_STEP = 100;
-export const PORT_OFFSET_MIN = 100;
-export const PORT_OFFSET_MAX = 9000;
-export const PORTS_LOCKFILE = `${STATE_DIRNAME}/ports.json`;
+const PORT_OFFSET_MIN = 100;
+const PORT_OFFSET_MAX = 9000;
+const PORTS_LOCKFILE = `${STATE_DIRNAME}/ports.json`;
 const LOCKFILE_VERSION = 1;
 const PORT_ALLOCATION_ATTEMPTS = 80;
 
