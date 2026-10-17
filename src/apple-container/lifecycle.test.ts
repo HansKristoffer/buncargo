@@ -263,6 +263,29 @@ describe("appleUp recreating and running", () => {
 		}
 	});
 
+	it("names the Apple container holding a published port, not its forwarder", async () => {
+		const port = 47914;
+		const cli = recordingCli(
+			[
+				{
+					status: { state: "running" },
+					configuration: {
+						id: "other-main-redis",
+						labels: { "buncargo.project": "other-main" },
+						publishedPorts: [{ hostPort: port, containerPort: 6379 }],
+					},
+				},
+			],
+			{ run: "Error: bind(...): Address already in use (errno: 48)" },
+		);
+
+		await expect(
+			appleUp(cli, upRequest(modelFor({ redis: { port } }), ["redis"])),
+		).rejects.toThrow(
+			`port ${port} held by container other-main-redis (project other-main)`,
+		);
+	});
+
 	it("pulls a missing image for its platform only when verbose", async () => {
 		// The inspect fails, the pull after it succeeds.
 		const cli = recordingCli([], { image: ["Error: image not found"] });
@@ -369,6 +392,54 @@ describe("appleDown", () => {
 				verbose: false,
 			}),
 		).resolves.toBeUndefined();
+	});
+
+	it("has nothing to stop while the system service is stopped", async () => {
+		const cli = recordingCli([], {
+			ls: "Error: XPC connection error",
+			system: "apiserver is not running",
+		});
+
+		await expect(
+			appleDown(cli, {
+				root: "/repo",
+				projectName: "gey-main",
+				verbose: false,
+			}),
+		).resolves.toBeUndefined();
+		expect(subcommands(cli)).toEqual(["ls --all", "system status"]);
+	});
+
+	it("refuses to report volumes removed while the system service is stopped", async () => {
+		const cli = recordingCli([], {
+			ls: "Error: XPC connection error",
+			system: "apiserver is not running",
+		});
+
+		await expect(
+			appleDown(cli, {
+				root: "/repo",
+				projectName: "gey-main",
+				model: modelFor({ postgres: { port: 5432 } }),
+				removeVolumes: true,
+				verbose: false,
+			}),
+		).rejects.toThrow(
+			/volumes of gey-main were not removed. Start it with `container system start`/,
+		);
+		expect(subcommands(cli)).toEqual(["ls --all", "system status"]);
+	});
+
+	it("still reports a failed listing while the system service runs", async () => {
+		const cli = recordingCli([], { ls: "internal error" });
+
+		await expect(
+			appleDown(cli, {
+				root: "/repo",
+				projectName: "gey-main",
+				verbose: false,
+			}),
+		).rejects.toThrow(/read container inventory failed.*internal error/);
 	});
 
 	it("needs no model to tear a project down", async () => {

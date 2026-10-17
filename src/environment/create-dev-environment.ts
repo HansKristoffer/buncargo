@@ -1,8 +1,8 @@
 import { assertValidConfig } from "../config";
 import { applyIntegrations } from "../config/integrations";
 import { setUnsetEnv } from "../core/child-env";
-import { withDeadline } from "../core/deadline";
 import { waitForServer } from "../core/network";
+import { findMonorepoRoot } from "../core/ports";
 import { type PrimaryAppInput, resolvePrimaryApp } from "../core/primary-app";
 import { stopProcess } from "../core/process";
 import { createPrismaRunner } from "../prisma";
@@ -16,14 +16,14 @@ import type {
 	ServiceConfig,
 } from "../types";
 import { createCaptureRecorder, labelledCaptures } from "./captures";
+import { explainMissingContainers, withLossNotice } from "./container-loss";
 import { createDevEnvContext } from "./context";
 import { createEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
 import { createLifecycleApi } from "./lifecycle";
 import { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { createRunClaimApi } from "./run-claim";
-import { createServersApi } from "./servers";
-import { registerStartPlanner } from "./start-plan";
+import { createServerHookRunner, createServersApi } from "./servers";
 
 /**
  * Create a dev environment from a configuration.
@@ -59,17 +59,23 @@ export function createDevEnvironment<
 ): DevEnvironment<TServices, TApps, TEnv> {
 	// Integrations transform the config before anything reads it; `withSuffix`
 	// re-applies them to the original, which is pure and gives the same result.
-	const resolved = applyIntegrations(config);
+	// They read project files from the checkout, wherever this process runs.
+	const root = options.root ?? findMonorepoRoot();
+	const resolved = applyIntegrations(config, { root });
 	assertValidConfig(resolved);
 	setUnsetEnv(resolved.unsetEnv);
 
-	const ctx = createDevEnvContext(resolved, options);
+	const ctx = createDevEnvContext(resolved, { ...options, root });
 	const envVars = createEnvVarsApi(ctx);
-	const runClaim = createRunClaimApi(ctx);
+	// The entry an app run publishes is built from the environment itself.
+	const runClaim = createRunClaimApi(ctx, () => env);
 	const coordinator = new LifecycleCoordinator();
 	const lifecycle = createLifecycleApi(ctx, envVars, runClaim, coordinator);
 	const recordCapture = createCaptureRecorder(ctx, envVars);
-	const servers = createServersApi(ctx, envVars);
+	const servers = createServersApi(ctx, envVars, runClaim);
+	const createdAt = Date.now();
+	const missingContainers = () =>
+		explainMissingContainers(ctx, runClaim.claimedAt ?? createdAt);
 
 	const env: DevEnvironment<TServices, TApps, TEnv> = {
 		// Configuration access
@@ -142,6 +148,7 @@ export function createDevEnvironment<
 		stop: lifecycle.stop,
 		restart: lifecycle.restart,
 		isRunning: lifecycle.isRunning,
+		explainMissingContainers: missingContainers,
 		runSeed: lifecycle.runSeed,
 
 		resolvePrimaryApp: (selected) =>
@@ -153,23 +160,19 @@ export function createDevEnvironment<
 
 		// Server management
 		startServers: (options = {}) =>
-			coordinator.start(
-				(signal) => servers.startServersOnly({ ...options, signal }),
-				options.signal,
-				(pids) => Object.keys(pids).length > 0,
+			withLossNotice(missingContainers, () =>
+				coordinator.start(
+					(signal) => servers.startServersOnly({ ...options, signal }),
+					options.signal,
+					(pids) => Object.keys(pids).length > 0,
+				),
 			),
-		runServerHook: async (phase, signal) => {
-			const hook =
-				resolved.hooks?.[phase === "before" ? "beforeServers" : "afterServers"];
-			if (hook)
-				await withDeadline(
-					(hookSignal) => hook(envVars.getHookContext(hookSignal)),
-					600000,
-					signal,
-				);
-		},
+		runServerHook: createServerHookRunner(ctx, envVars),
 		stopProcess,
-		waitForServers: servers.waitForServersReady,
+		waitForServers: (options = {}) =>
+			withLossNotice(missingContainers, () =>
+				servers.waitForServersReady(options),
+			),
 
 		// Utilities
 		buildEnvVars: envVars.buildEnvVars,
@@ -211,6 +214,5 @@ export function createDevEnvironment<
 		);
 	}
 
-	registerStartPlanner(env, ctx.getStartPlan);
 	return env;
 }

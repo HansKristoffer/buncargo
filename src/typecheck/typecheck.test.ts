@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -7,6 +8,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { isProcessAlive } from "../core/process";
 import { loadTypecheckConfig } from "./config-settings";
 import { runWorkspaceTypecheck } from "./typecheck";
 
@@ -45,6 +47,33 @@ function writeSleepingWorkspace(
 	);
 }
 
+/** A workspace whose typecheck runs `body` with `file` bound to `eventFile`. */
+function writeEventWorkspace(
+	root: string,
+	name: string,
+	body: string,
+	eventFile: string,
+): void {
+	const dir = join(root, "apps", name);
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(
+		join(dir, "check.ts"),
+		`import { appendFileSync, readFileSync } from "node:fs"; const file = ${JSON.stringify(eventFile)}; ${body}`,
+	);
+	writeFileSync(
+		join(dir, "package.json"),
+		JSON.stringify({ name, scripts: { typecheck: "bun check.ts" } }),
+	);
+}
+
+async function waitFor(condition: () => boolean, timeoutMs = 5_000) {
+	const deadline = Date.now() + timeoutMs;
+	while (!condition()) {
+		if (Date.now() > deadline) throw new Error("condition not met in time");
+		await Bun.sleep(10);
+	}
+}
+
 afterEach(() => {
 	while (created.length > 0) {
 		const dir = created.pop();
@@ -55,27 +84,91 @@ afterEach(() => {
 describe("runWorkspaceTypecheck pool", () => {
 	it("overlaps workspaces when concurrency is 2", async () => {
 		const root = makeFixture();
-		writeSleepingWorkspace(root, "apps/one", 200);
-		writeSleepingWorkspace(root, "apps/two", 200);
+		const eventFile = join(root, "events.jsonl");
+		// Each check ends only once the other has started: the run can pass
+		// only if both are running at the same time.
+		for (const [name, peer] of [
+			["one", "two"],
+			["two", "one"],
+		] as const)
+			writeEventWorkspace(
+				root,
+				name,
+				`appendFileSync(file, "${name}-start\\n"); const deadline = Date.now() + 10_000; while (!readFileSync(file, "utf8").includes("${peer}-start") && Date.now() < deadline) await Bun.sleep(5); appendFileSync(file, "${name}-end\\n");`,
+				eventFile,
+			);
 
-		const overlapping = await runWorkspaceTypecheck({
+		const result = await runWorkspaceTypecheck({
 			root,
 			verbose: false,
 			includeRootConfig: false,
 			concurrency: 2,
 		});
-		expect(overlapping.success).toBe(true);
-		expect(overlapping.workspaceCount).toBe(2);
-		expect(overlapping.totalDuration).toBeLessThan(0.38);
+		expect(result.success).toBe(true);
+		expect(result.workspaceCount).toBe(2);
+		const events = readFileSync(eventFile, "utf8").trim().split("\n");
+		expect(events.slice(0, 2).sort()).toEqual(["one-start", "two-start"]);
+	});
 
-		const serial = await runWorkspaceTypecheck({
+	it("runs one workspace at a time when concurrency is 1", async () => {
+		const root = makeFixture();
+		const eventFile = join(root, "events.jsonl");
+		for (const name of ["one", "two"])
+			writeEventWorkspace(
+				root,
+				name,
+				`appendFileSync(file, "${name}-start\\n"); await Bun.sleep(100); appendFileSync(file, "${name}-end\\n");`,
+				eventFile,
+			);
+
+		const result = await runWorkspaceTypecheck({
 			root,
 			verbose: false,
 			includeRootConfig: false,
 			concurrency: 1,
 		});
-		expect(serial.success).toBe(true);
-		expect(serial.totalDuration).toBeGreaterThan(0.35);
+		expect(result.success).toBe(true);
+		const events = readFileSync(eventFile, "utf8").trim().split("\n");
+		const [first, , second] = events.map((event) => event.split("-")[0]);
+		expect(events).toEqual([
+			`${first}-start`,
+			`${first}-end`,
+			`${second}-start`,
+			`${second}-end`,
+		]);
+	});
+
+	it("stops the checks it started, process groups included, and starts no more once aborted", async () => {
+		const root = makeFixture();
+		const pidFile = join(root, "pids");
+		// Each check records itself and a child of its own, then waits on it.
+		for (const name of ["one", "two"])
+			writeEventWorkspace(
+				root,
+				name,
+				`const sleeper = Bun.spawn(["sleep", "60"]); appendFileSync(file, process.pid + " " + sleeper.pid + "\\n"); await sleeper.exited;`,
+				pidFile,
+			);
+		const readPids = () =>
+			existsSync(pidFile)
+				? readFileSync(pidFile, "utf8").trim().split(/\s+/).map(Number)
+				: [];
+
+		const controller = new AbortController();
+		const run = runWorkspaceTypecheck({
+			root,
+			verbose: false,
+			includeRootConfig: false,
+			concurrency: 1,
+			signal: controller.signal,
+		});
+		await waitFor(() => readPids().length === 2);
+		controller.abort(new Error("interrupted"));
+
+		await expect(run).rejects.toThrow("interrupted");
+		const pids = readPids();
+		expect(pids).toHaveLength(2);
+		await waitFor(() => pids.every((pid) => !isProcessAlive(pid)));
 	});
 
 	it("fails loudly when --only names an unknown workspace", async () => {

@@ -1,9 +1,11 @@
 import {
 	fetchScopeSecrets,
+	missingKeys,
 	resolveScope,
 	SecretsError,
 } from "../../core/secrets/infisical";
 import { loadDevEnv } from "../../loader";
+import type { SecretsScopeConfig } from "../../types";
 import {
 	type CommandSpec,
 	type FlagSpec,
@@ -81,7 +83,10 @@ export async function handleSecrets(args: string[]): Promise<number> {
 
 	const env = await loadDevEnv({ readOnly: true });
 	if (app !== undefined && !env.apps[app]) {
-		throw new CliError(`Unknown app "${app}".`);
+		const names = Object.keys(env.apps);
+		throw new CliError(
+			`Unknown app "${app}". ${names.length > 0 ? `Apps in dev.config.ts: ${names.join(", ")}.` : "dev.config.ts has no apps."}`,
+		);
 	}
 	const config = app === undefined ? env.secrets : env.apps[app]?.secrets;
 	const scope = config
@@ -91,11 +96,15 @@ export async function handleSecrets(args: string[]): Promise<number> {
 			)
 		: undefined;
 	if (!scope) {
-		throw new CliError(
-			app === undefined
-				? "No config-level secrets scope: set secrets.projectId in dev.config.ts."
-				: `App "${app}" has no secrets scope.`,
-		);
+		throw app === undefined
+			? new CliError(
+					env.secrets === false
+						? "dev.config.ts turns secrets off with secrets: false."
+						: "No config-level secrets scope: set secrets.projectId in dev.config.ts.",
+				)
+			: new CliError(`App "${app}" has no secrets scope.`, [
+					noAppScopeFix(app, env.apps[app]?.secrets, env.secrets),
+				]);
 	}
 
 	let values: Record<string, string>;
@@ -108,6 +117,11 @@ export async function handleSecrets(args: string[]): Promise<number> {
 		throw error;
 	}
 
+	// What the app is given, in `dev`'s precedence: the secrets, then the
+	// developer's exported environment, then the computed env.
+	const computed: Record<string, string> =
+		app === undefined ? env.buildEnvVars() : env.buildAppEnvVars(app);
+	const effective = { ...values, ...process.env, ...computed };
 	const required = config ? (config.required ?? []) : [];
 	const keys = [...new Set([...Object.keys(values), ...required])].sort();
 	const width = Math.max(0, ...keys.map((key) => key.length));
@@ -115,17 +129,42 @@ export async function handleSecrets(args: string[]): Promise<number> {
 	log.line(
 		`${app ?? "config"}: ${scope.projectId} ${scope.environment}${scope.path === "/" ? "" : scope.path} @ ${scope.siteUrl}${org}`,
 	);
-	for (const key of keys) {
-		const source =
-			process.env[key] !== undefined
-				? "env override"
-				: values[key]
-					? "infisical"
-					: "missing";
-		log.line(`  ${key.padEnd(width)}  ${source}`);
-	}
-	// A required key nobody provides is the failure `dev` would stop on.
-	return required.some((key) => !values[key] && process.env[key] === undefined)
-		? 1
-		: 0;
+	for (const key of keys)
+		log.line(
+			`  ${key.padEnd(width)}  ${secretSource(key, values, computed, effective)}`,
+		);
+	// The same check `dev` refuses to start on.
+	const missing = missingKeys(required, effective);
+	if (missing.length === 0) return 0;
+	log.error(`Required secrets are missing: ${missing.join(", ")}`);
+	log.hint("Add them to the Infisical scope above, or export them.");
+	return 1;
+}
+
+/** Where the value the app gets for `key` comes from, or `missing` when it gets none. */
+function secretSource(
+	key: string,
+	values: Record<string, string>,
+	computed: Record<string, string>,
+	effective: Record<string, string | undefined>,
+): string {
+	if (!effective[key]) return "missing";
+	if (computed[key] !== undefined) return "computed";
+	if (process.env[key] !== undefined) return "env override";
+	return values[key] ? "infisical" : "missing";
+}
+
+/** What to change in dev.config.ts so `app` has a scope to list. */
+function noAppScopeFix(
+	app: string,
+	own: SecretsScopeConfig | false | undefined,
+	config: SecretsScopeConfig | false | undefined,
+): string {
+	if (config === false)
+		return "dev.config.ts sets secrets: false, which turns secrets off for every app.";
+	if (own === false)
+		return `dev.config.ts sets apps.${app}.secrets: false; give it a scope instead, such as { projectId: "…" }.`;
+	if (own === undefined && config?.projectId)
+		return `Add apps.${app}.secrets: {} to dev.config.ts to use the config-level scope, or { projectId: "…" } for its own.`;
+	return `Set apps.${app}.secrets.projectId, or secrets.projectId for every app, in dev.config.ts.`;
 }

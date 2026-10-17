@@ -64,7 +64,7 @@ function printRun(run: RunEntry): void {
 			log.line(`      public: ${app.publicUrl}`);
 		}
 		if (app.expo) {
-			log.line(`      simulator: bunx buncargo sim ${app.name}`);
+			log.line(`      simulator: bunx buncargo expo sim ${app.name}`);
 		}
 		if (app.exclusive) {
 			log.line(`      lease: ${app.exclusive}`);

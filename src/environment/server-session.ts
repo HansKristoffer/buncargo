@@ -1,6 +1,7 @@
-import { withDeadline } from "../core/deadline";
 import {
+	loadStartSecrets,
 	type StartDevServersOptions,
+	startableApps,
 	startDevServers,
 } from "../core/process/dev-servers";
 import type { CapturedValue } from "../core/process/output-capture";
@@ -12,10 +13,13 @@ export interface ServerSessionSource {
 	root: string;
 	ports: Record<string, number>;
 	appEnv(name: string): Record<string, string>;
+	/** `beforeServers`/`afterServers`; bounds its own wait. */
 	runHook(phase: "before" | "after", signal?: AbortSignal): Promise<void>;
+	/** Calls `onAppReady` as each app comes up, before the whole set is. */
 	waitForHealth(
 		apps: Record<string, AppConfig>,
 		signal?: AbortSignal,
+		onAppReady?: (name: string) => void,
 	): Promise<void>;
 	recordCapture(
 		app: string,
@@ -49,6 +53,13 @@ export async function startServerSession(
 		if (seed) source.onSeedReady?.();
 	};
 	try {
+		// A missing required secret refuses before a production build or
+		// `beforeServers` runs; `startDevServers` checks again from the cache.
+		await loadStartSecrets(
+			startableApps(apps, options.productionBuild ?? false),
+			source.appEnv,
+			{ signal, onWait: (ms) => options.onPhase?.("secrets", ms) },
+		);
 		await source.prepare?.(signal);
 		if (Object.keys(apps).length === 0 && options.stayOpen) {
 			await joinSeed();
@@ -56,11 +67,7 @@ export async function startServerSession(
 			await options.stayOpen?.(signal);
 			return {};
 		}
-		await withDeadline(
-			(signal) => source.runHook("before", signal),
-			600_000,
-			signal,
-		);
+		await source.runHook("before", signal);
 		return await startDevServers(
 			apps,
 			source.root,
@@ -69,17 +76,13 @@ export async function startServerSession(
 			{
 				...options,
 				signal,
-				waitForHealth: async (wave, signal) => {
-					await source.waitForHealth(wave, signal);
-					await options.waitForHealth?.(wave, signal);
+				waitForHealth: async (wave, signal, onAppReady) => {
+					await source.waitForHealth(wave, signal, onAppReady);
+					await options.waitForHealth?.(wave, signal, onAppReady);
 				},
 				onReady: async (signal) => {
 					await joinSeed();
-					await withDeadline(
-						(hookSignal) => source.runHook("after", hookSignal),
-						600_000,
-						signal,
-					);
+					await source.runHook("after", signal);
 					await options.onReady?.(signal);
 				},
 				onAfterWave1: async (signal) => {

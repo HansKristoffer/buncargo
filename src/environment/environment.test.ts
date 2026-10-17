@@ -439,3 +439,36 @@ it("filters the run banner and only asks integrations for displayed apps", () =>
 		console.log = original;
 	}
 });
+
+describe("createDevEnvironment integrations", () => {
+	it("tells config() the checkout root, not the working directory", () => {
+		const root = join(
+			tmpdir(),
+			`buncargo-env-root-${Date.now()}-${Math.random()}`,
+		);
+		mkdirSync(root, { recursive: true });
+		let seen: string | undefined;
+		try {
+			// The working directory is some other project's, as for a script
+			// that loads this checkout's environment from elsewhere.
+			createDevEnvironment(
+				{
+					...createBaseConfig(),
+					integrations: [
+						{
+							name: "probe",
+							config: (config, ctx) => {
+								seen = ctx?.root;
+								return config;
+							},
+						},
+					],
+				},
+				{ root, readOnly: true },
+			);
+			expect(seen).toBe(root);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});

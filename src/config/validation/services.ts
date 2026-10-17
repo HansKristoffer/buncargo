@@ -4,7 +4,7 @@ import {
 	isDockerPresetName,
 	resolveServiceEnvVarSources,
 } from "../../core/service-presets";
-import { resolveServiceDependencies } from "../../planning/start-planning";
+import { resolveServiceDependencies } from "../../planning";
 import type { AnyDevConfig, ServiceConfig } from "../../types";
 import type { ValidationContext } from "./context";
 
@@ -72,15 +72,6 @@ export function validateServices(
 		if (service.secondaryPort !== undefined) {
 			claimName(`${name}Secondary`, `services.${name}.secondaryPort`);
 			claimPort(service.secondaryPort, `services.${name}.secondaryPort`);
-		}
-
-		if (
-			service.secondaryPort !== undefined &&
-			(service.secondaryPort < 1 || service.secondaryPort > 65535)
-		) {
-			errors.push(
-				`Service "${name}" secondaryPort must be between 1 and 65535`,
-			);
 		}
 
 		const composeServiceName = service.serviceName ?? name;

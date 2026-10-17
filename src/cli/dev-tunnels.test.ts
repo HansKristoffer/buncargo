@@ -65,3 +65,34 @@ it("closes a tunnel acquired while startup is being cancelled", async () => {
 	await opening;
 	expect(closed).toBe(1);
 });
+
+it("refuses an expose target outside --apps", async () => {
+	const env = {
+		services: { db: { port: 5432, expose: true } },
+		apps: { web: { expose: true }, api: { expose: true } },
+		ports: { db: 5432, web: 3000, api: 4000 },
+		root: process.cwd(),
+	} as unknown as DevEnvironment<
+		Record<string, ServiceConfig>,
+		Record<string, AppConfig>
+	>;
+	const coordinator = createTunnelCoordinator(
+		env,
+		{
+			resolveExposeTargets,
+			stopPublicTunnels,
+			startPublicTunnels: async () => [],
+		},
+		{ exposeRequested: true },
+	);
+
+	await expect(
+		coordinator.planExpose({
+			exposeValue: "db, web,api",
+			appsRequested: true,
+			selectedAppNames: new Set(["web"]),
+			startAppNames: new Set(["web"]),
+			reusedAppNames: new Set(),
+		}),
+	).rejects.toThrow("Expose target not included in --apps: api");
+});

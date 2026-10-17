@@ -6,10 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineDevConfig } from "../../config";
 import { createDevEnvironment } from "../../environment";
+import { isolateHome } from "../test-env.testing";
 import { startDevServers } from "./dev-servers";
 import { ProcessOwner } from "./process-owner";
 import type { AppChild } from "./pty-app";
 import { findWorker, spawnOwnedWorker, stopWorker } from "./worker-ownership";
+
+isolateHome("buncargo-worker-home-");
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -143,7 +146,11 @@ it("cancellation remains attached after library readiness and stop cleans owned 
 			},
 			{ root },
 		);
-		await env.start({ signal: controller.signal, productionBuild: false });
+		await env.start({
+			signal: controller.signal,
+			productionBuild: false,
+			watchdog: false,
+		});
 		expect(await findWorker(root, "jobs")).toBeDefined();
 		if (cancel) controller.abort();
 		else await env.stop();
@@ -207,7 +214,10 @@ function deadOnArrival(real: ChildProcess): AppChild {
 	const child = new EventEmitter();
 	for (const key of ["pid", "exitCode", "signalCode"] as const)
 		Object.defineProperty(child, key, { get: () => real[key] });
-	real.once("exit", () => child.emit("spawn"));
+	// It may be gone before the claim's lock is taken and this is called.
+	if (real.exitCode !== null || real.signalCode !== null)
+		queueMicrotask(() => child.emit("spawn"));
+	else real.once("exit", () => child.emit("spawn"));
 	return child as unknown as AppChild;
 }
 

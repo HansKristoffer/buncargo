@@ -8,7 +8,12 @@ import {
 	writeSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { checkSlotCount, isCI } from "./runtime-flags";
+import {
+	CHECK_SLOT_ENV,
+	checkSlotCount,
+	heldCheckSlot,
+	isCI,
+} from "./runtime-flags";
 import { getStateDir } from "./state-paths";
 
 /**
@@ -26,7 +31,6 @@ import { getStateDir } from "./state-paths";
  * when it reaches `buncargo typecheck`.
  */
 
-export const CHECK_SLOT_ENV = "BUNCARGO_CHECK_SLOT";
 const SLOT_DIRNAME = "check-slots";
 // A holder writes its lock within milliseconds of creating it. An unreadable
 // lock older than this was left half-written (a full disk, a kill mid-write).
@@ -141,7 +145,7 @@ export async function withCheckSlot<T>(
 ): Promise<T> {
 	const env = options.env ?? process.env;
 	const slots = options.slots ?? checkSlotCount(env);
-	if (isCI(env) || slots === 0 || env[CHECK_SLOT_ENV]) return run();
+	if (isCI(env) || slots === 0 || heldCheckSlot(env)) return run();
 
 	const dir = options.dir ?? join(getStateDir(), SLOT_DIRNAME);
 	const holder: CheckSlotHolder = {

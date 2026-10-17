@@ -71,7 +71,13 @@ process.exit(9);
 				.trim()
 				.split("\n")
 				.map((line) => JSON.parse(line) as string[]),
-		execPid: () => Number(readFileSync(pid, "utf8")),
+		/** The exec probe's pid, once it has started. */
+		async execPid() {
+			const deadline = performance.now() + 4000;
+			while (!(await Bun.file(pid).exists()) && performance.now() < deadline)
+				await Bun.sleep(20);
+			return Number(readFileSync(pid, "utf8"));
+		},
 	};
 }
 
@@ -172,9 +178,10 @@ describe("Docker service probes", () => {
 	});
 
 	it("shares the timeout between lookup and exec and leaves no probe process", async () => {
+		// Each step fits the budget alone; together they overrun it.
 		const { root, runtime, execPid } = fixture({
-			listDelay: 350,
-			execDelay: 500,
+			listDelay: 400,
+			execDelay: 900,
 		});
 		expect(
 			await runtime.execInService({
@@ -182,32 +189,35 @@ describe("Docker service probes", () => {
 				projectName: "demo",
 				serviceName: "db",
 				command: ["pg_isready"],
-				timeoutMs: 800,
+				timeoutMs: 1200,
 			}),
 		).toBe(false);
-		expect(() => process.kill(execPid(), 0)).toThrow();
+		const pid = await execPid();
+		expect(() => process.kill(pid, 0)).toThrow();
 	});
 
 	it("cancels an in-flight exec and waits for its process to exit", async () => {
 		const { root, runtime, execPid } = fixture({ execDelay: 5000 });
 		const controller = new AbortController();
-		const timer = setTimeout(
-			() => controller.abort(new Error("cancel probe")),
-			350,
-		);
+		const outcome = runtime
+			.execInService({
+				root,
+				projectName: "demo",
+				serviceName: "db",
+				command: ["pg_isready"],
+				signal: controller.signal,
+			})
+			.catch((error: unknown) => error);
 		try {
-			await expect(
-				runtime.execInService({
-					root,
-					projectName: "demo",
-					serviceName: "db",
-					command: ["pg_isready"],
-					signal: controller.signal,
-				}),
-			).rejects.toThrow("cancel probe");
-			expect(() => process.kill(execPid(), 0)).toThrow();
+			// Aborted once the exec exists: a fixed timer can fire during the
+			// lookup under suite load and never test the exec's cleanup.
+			const pid = await execPid();
+			controller.abort(new Error("cancel probe"));
+			expect(await outcome).toMatchObject({ message: "cancel probe" });
+			expect(() => process.kill(pid, 0)).toThrow();
 		} finally {
-			clearTimeout(timer);
+			controller.abort();
+			await outcome;
 		}
 	});
 });

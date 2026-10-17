@@ -192,10 +192,6 @@ export async function ensureServicesRunning(
 			serviceNames: composeServiceNames,
 			composeFile,
 			verbose: verbose && !alreadyRunning,
-			// Readiness is polled below against the published ports, which works
-			// the same on both backends; a runtime-side wait would only be a
-			// second, weaker copy of it.
-			wait: false,
 		};
 		await runtime.up(upRequest);
 	}

@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import {
 	matchesProcessIdentityAsync,
-	processIdentityMatcher,
 	processIdentityMatcherAsync,
 	readProcessIdentities,
 	readProcessIdentitiesAsync,
@@ -184,10 +183,10 @@ describe("readProcessIdentities", () => {
 	});
 });
 
-describe("processIdentityMatcher", () => {
-	it("accepts a live pid with its own identity and rejects a mismatched one", () => {
+describe("processIdentityMatcherAsync", () => {
+	it("accepts a live pid with its own identity and rejects a mismatched one", async () => {
 		const identity = readProcessIdentity(process.pid);
-		const matches = processIdentityMatcher([
+		const matches = await processIdentityMatcherAsync([
 			{ pid: process.pid, processIdentity: identity },
 		]);
 		expect(matches(process.pid, identity)).toBe(true);
@@ -203,7 +202,9 @@ describe("processIdentityMatcher", () => {
 		});
 		const pid = child.pid;
 		await child.exited;
-		expect(processIdentityMatcher([{ pid }])(pid, undefined)).toBe(false);
+		expect((await processIdentityMatcherAsync([{ pid }]))(pid, undefined)).toBe(
+			false,
+		);
 	});
 });
 
@@ -213,9 +214,9 @@ describe("liveness over a list that contains a bad pid", () => {
 	// is what the sweep acts on.
 	const NOT_A_PID = 2 ** 22;
 
-	it("still reads the live process's identity", () => {
+	it("still reads the live process's identity", async () => {
 		const identity = readProcessIdentity(process.pid);
-		const matches = processIdentityMatcher([
+		const matches = await processIdentityMatcherAsync([
 			{ pid: NOT_A_PID, processIdentity: "gone" },
 			{ pid: process.pid, processIdentity: identity },
 		]);

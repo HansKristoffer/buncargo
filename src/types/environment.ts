@@ -65,7 +65,7 @@ export interface EnvironmentLogSelection {
 	requiredServiceKeys: readonly string[];
 }
 
-/** Active tunnel with teardown — same shape as core `PublicTunnel`. */
+/** Active tunnel with teardown; core `PublicTunnel` is this type. */
 export type PublicTunnelHandle = DevEnvironmentTunnelLog & {
 	close: () => Promise<void>;
 };
@@ -127,7 +127,8 @@ export interface DevEnvironment<
 	readonly loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
 	/** Public tunnel URLs for exposed services/apps (when active) */
 	readonly publicUrls: ComputedPublicUrls<TServices, TApps>;
-	readonly workspaceId?: string;
+	/** Stable id of this checkout, which apps see as `BUNCARGO_WORKSPACE_ID`. */
+	readonly workspaceId: string;
 	/** Services configuration */
 	readonly services: TServices;
 	/** Apps configuration (for CLI to build commands) */
@@ -147,14 +148,14 @@ export interface DevEnvironment<
 	/** Path passed to docker compose -f */
 	readonly composeFile: string;
 	/** Validate selection and resolve startup allocation before activating hosts. */
-	prepareStart?(
+	prepareStart(
 		onlyApps?: Extract<keyof TApps, string>[],
 		onlyServices?: readonly Extract<keyof TServices, string>[],
 	): void;
 	/** Which backend runs the containers: 'docker' or 'apple' */
 	readonly containerRuntime: ContainerRuntimeName;
 	/** Cancellable startup allocation; prefer this when preparing before host activation. */
-	prepareStartAsync?(
+	prepareStartAsync(
 		onlyApps?: Extract<keyof TApps, string>[],
 		onlyServices?: readonly Extract<keyof TServices, string>[],
 		signal?: AbortSignal,
@@ -232,6 +233,14 @@ export interface DevEnvironment<
 	/** Check if containers are running */
 	isRunning(): Promise<boolean>;
 	/**
+	 * Why the selected services' containers are gone, when they are: who
+	 * removed them since this run claimed them, as buncargo recorded it, or
+	 * where to look when nothing here did. `undefined` while they are all
+	 * there or the runtime cannot answer. Lists the runtime's containers, so
+	 * call it when something has already failed.
+	 */
+	explainMissingContainers(): string | undefined;
+	/**
 	 * Run `seed.command` through the same path `start()` uses.
 	 *
 	 * Pass `force: true` to skip `seed.check`. Returns the outcome rather than
@@ -253,12 +262,12 @@ export interface DevEnvironment<
 	}): Promise<DevServerPids>;
 	/** Stop a process by PID */
 	stopProcess(pid: number): void;
-	/** Wait for servers to be ready */
 	/** Run lifecycle hooks for callers that supervise servers themselves. */
 	runServerHook?(
 		phase: "before" | "after",
 		signal?: AbortSignal,
 	): Promise<void>;
+	/** Wait for servers to be ready */
 	waitForServers(options?: {
 		signal?: AbortSignal;
 		timeout?: number;
@@ -269,20 +278,14 @@ export interface DevEnvironment<
 		expandRequired?: boolean;
 		/** Defer the aggregate ready message until other preparation completes. */
 		logReady?: boolean;
+		/** Called as each app passes its health check, before the rest have. */
+		onAppReady?: (name: string) => void;
 	}): Promise<void>;
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Utilities
 	// ─────────────────────────────────────────────────────────────────────────
 
-	/**
-	 * Build the shared environment variables for shell commands.
-	 *
-	 * Keys are the computed names ({@link ConfigEnvVarNames}) plus whatever
-	 * `config.env` declared, so an unknown name is a compile error.
-	 *
-	 * Call **after** {@link setPublicUrls} or {@link openPublicTunnels} so `*_PUBLIC_URL` values reflect tunnel URLs.
-	 */
 	/**
 	 * The app this project is "about", optionally narrowed to a running set.
 	 *
@@ -292,6 +295,14 @@ export interface DevEnvironment<
 	resolvePrimaryApp(
 		selected?: readonly string[],
 	): Extract<keyof TApps, string> | undefined;
+	/**
+	 * Build the shared environment variables for shell commands.
+	 *
+	 * Keys are the computed names ({@link ConfigEnvVarNames}) plus whatever
+	 * `config.env` declared, so an unknown name is a compile error.
+	 *
+	 * Call **after** {@link setPublicUrls} or {@link openPublicTunnels} so `*_PUBLIC_URL` values reflect tunnel URLs.
+	 */
 	buildEnvVars(production?: boolean): ComputedEnvVars<TServices, TApps, TEnv>;
 	/** Build the full environment for a specific app process (`shared env + apps[name].envVars`). */
 	buildAppEnvVars<TName extends Extract<keyof TApps, string>>(
@@ -341,10 +352,6 @@ export interface DevEnvironment<
 	openPublicTunnels(
 		options?: OpenPublicTunnelsOptions<TServices, TApps>,
 	): Promise<OpenPublicTunnelsResult<TServices, TApps>>;
-
-	// ─────────────────────────────────────────────────────────────────────────
-	// Vibe Kanban Integration
-	// ─────────────────────────────────────────────────────────────────────────
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Run claim / watchdog

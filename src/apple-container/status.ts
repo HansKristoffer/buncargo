@@ -204,7 +204,6 @@ export function toBuncargoContainer(
 		root: record.labels["buncargo.root"] ?? "",
 		worktree: record.labels["buncargo.worktree"] ?? "",
 		service: record.labels[SERVICE_LABEL] ?? "",
-		user: record.labels["buncargo.user"] ?? "",
 		runtime: "apple",
 	};
 }
@@ -225,15 +224,6 @@ export function listAppleBuncargoContainers(
 	return parseContainerRecords(result.stdout)
 		.filter((record) => record.labels[PROJECT_LABEL])
 		.map(toBuncargoContainer);
-}
-
-export function projectRecords(
-	cli: AppleContainerCli,
-	projectName: string,
-): AppleContainerRecord[] {
-	return listContainerRecords(cli).filter(
-		(record) => record.labels[PROJECT_LABEL] === projectName,
-	);
 }
 
 /**

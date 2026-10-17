@@ -1,12 +1,9 @@
 import type { AppConfig, DockerComposeNode, ServiceConfig } from "../types";
 import { assertOnlyAppNames, pickApps } from "./app-selection";
 
-export interface AppSelectionPlan {
+export interface StartPlan {
 	appNames: string[];
 	apps: Record<string, AppConfig>;
-}
-
-export interface StartPlan extends AppSelectionPlan {
 	requiredServiceKeys: string[];
 	composeServiceNames: string[];
 }
@@ -35,7 +32,7 @@ export function resolveComposeServiceNames(
 export function resolveSelectedApps(
 	apps: Record<string, AppConfig>,
 	onlyApps: string[] | undefined,
-): AppSelectionPlan {
+): Pick<StartPlan, "appNames" | "apps"> {
 	assertOnlyAppNames(Object.keys(apps), onlyApps);
 
 	const requestedAppNames = onlyApps ?? Object.keys(apps);
@@ -104,7 +101,7 @@ export function resolveSelectedApps(
 	};
 }
 
-export function resolveRequiredServiceKeys(
+function resolveRequiredServiceKeys(
 	apps: Record<string, AppConfig>,
 	services: Record<string, ServiceConfig>,
 	appNames: string[],
@@ -301,11 +298,12 @@ export function buildStartPlan(
 	onlyApps: string[] | undefined,
 ): StartPlan {
 	const selection = resolveSelectedApps(apps, onlyApps);
-	const requiredServiceKeys = resolveRequiredServiceKeys(
-		apps,
-		services,
-		selection.appNames,
-	);
+	// With no app to name them through `requiredServices`, a config of only
+	// services is a run of all of them, not of none.
+	const requiredServiceKeys =
+		Object.keys(apps).length === 0
+			? resolveServiceDependencies(services, Object.keys(services))
+			: resolveRequiredServiceKeys(apps, services, selection.appNames);
 
 	return {
 		...selection,
@@ -357,11 +355,13 @@ export function planStart(
 }
 
 /**
- * The first cycle in the `startAfter` graph, as `a -> b -> a`, if any. A cycle
- * there is a deadlock: every app in it waits for another to be healthy.
+ * The first cycle in one app dependency graph (`requiredApps` or
+ * `startAfter`), as `a -> b -> a`, if any. Edges to unknown apps are skipped;
+ * validation reports those on their own.
  */
-export function findStartAfterCycle(
+export function findCycle(
 	apps: Record<string, AppConfig>,
+	edges: (app: AppConfig) => readonly string[] | undefined,
 ): string | undefined {
 	const state = new Map<string, "visiting" | "done">();
 	const stack: string[] = [];
@@ -373,7 +373,8 @@ export function findStartAfterCycle(
 		}
 		state.set(name, "visiting");
 		stack.push(name);
-		for (const dependency of apps[name]?.startAfter ?? []) {
+		const app = apps[name];
+		for (const dependency of (app && edges(app)) ?? []) {
 			if (!apps[dependency]) continue;
 			const cycle = visit(dependency);
 			if (cycle) return cycle;

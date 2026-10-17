@@ -30,11 +30,7 @@ export class FileLockTimeoutError extends Error {
  * only use the pure library modules. Buncargo's runtime is Bun on macOS/Linux.
  */
 let loadedFlock: ((fd: number) => boolean) | undefined;
-function flockOperation(): Promise<(fd: number) => boolean> {
-	return Promise.resolve().then(flockOperationSync);
-}
-
-function flockOperationSync(): (fd: number) => boolean {
+function flockOperation(): (fd: number) => boolean {
 	loadedFlock ??= (() => {
 		if (process.platform !== "darwin" && process.platform !== "linux") {
 			throw new Error(
@@ -91,7 +87,7 @@ export async function withFileLock<T>(
 		throw new Error("Lock timeout must be a non-negative finite duration");
 	const startedAt = performance.now();
 	const deadline = startedAt + timeoutMs;
-	const flock = await flockOperation();
+	const flock = flockOperation();
 	const lockPath = `${target}.lock.v2`;
 	await mkdir(dirname(lockPath), { recursive: true });
 	const handle = await open(lockPath, "a+", 0o600);
@@ -131,7 +127,7 @@ export function withFileLockSync<T>(
 		throw new Error("Lock timeout must be a non-negative finite duration");
 	const startedAt = performance.now();
 	const deadline = startedAt + timeoutMs;
-	const flock = flockOperationSync();
+	const flock = flockOperation();
 	const lockPath = `${target}.lock.v2`;
 	mkdirSync(dirname(lockPath), { recursive: true });
 	const fd = openSync(lockPath, "a+", 0o600);

@@ -21,8 +21,8 @@ import {
 import {
 	MAX_FILE_BYTES,
 	type Manifest,
-	readManifest,
 	readStoreData,
+	readStoreManifest,
 	type StoreWrite,
 	sha256,
 	storeDir,
@@ -158,6 +158,19 @@ function readBaseCopy(
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * The bytes to write as `view`'s base copy when it is missing or stale (synced
+ * before base copies existed, or a crash between the copy and the state) and
+ * either side still holds the base, so a later `files merge` is three-way.
+ */
+function baseCopyRepair(root: string, view: View): Buffer | undefined {
+	if (!view.base || readBaseCopy(root, view.spec.path, view.base))
+		return undefined;
+	if (view.base === view.localHash) return view.local.data;
+	if (view.base === view.store?.hash) return view.store.data;
+	return undefined;
 }
 
 /** Record `data` as the base of `path`: its hash in the state, its content beside it. */
@@ -303,12 +316,7 @@ function readOpened(
 	repoKey: string,
 	dir: string,
 ): Opened {
-	const read = readManifest(dir);
-	if (read.kind === "unusable")
-		throw new Error(
-			`Left the file store ${dir} alone: ${read.reason}. Update buncargo, or move the directory aside.`,
-		);
-	const manifest = read.kind === "ok" ? read.manifest : undefined;
+	const manifest = readStoreManifest(dir);
 	const state = readCheckoutState(root);
 	const views = specs.map((spec): View => {
 		const local = readLocal(root, spec.path);
@@ -372,7 +380,8 @@ function reportOf(
 	};
 }
 
-function selectSpecs(
+/** The configured files named in `paths`, all of them when none are named. */
+export function selectSpecs(
 	specs: readonly CheckoutFileSpec[],
 	paths: readonly string[] | undefined,
 ): CheckoutFileSpec[] {
@@ -468,33 +477,27 @@ export async function syncCheckoutFiles(
 		return action;
 	};
 	const needsWrite = (view: View) => !["none", "leave"].includes(plan(view));
+	const needsBaseCopy = (view: View) =>
+		baseCopyRepair(root, view) !== undefined;
 
 	let refusals = new Map<string, string>();
-	if (opened.views.some(needsWrite))
+	if (opened.views.some(needsWrite) || opened.views.some(needsBaseCopy))
 		await withStoreLock(opened.dir, () => {
 			opened = readOpened(root, selected, opened.repoKey, opened.dir);
-			refusals = apply(root, opened, plan, log);
-			opened = readOpened(root, selected, opened.repoKey, opened.dir);
+			if (opened.views.some(needsWrite)) {
+				refusals = apply(root, opened, plan, log);
+				opened = readOpened(root, selected, opened.repoKey, opened.dir);
+			}
+			for (const view of opened.views) {
+				const data = baseCopyRepair(root, view);
+				if (data) writeFileAtomic(baseCopyPath(root, view.spec.path), data);
+			}
 		});
 
-	// Checkouts synced before base copies existed get one while either side
-	// still holds the base, so a later `files merge` is three-way.
-	for (const view of opened.views) {
-		const path = view.spec.path;
-		const data =
-			view.base === view.localHash
-				? view.local.data
-				: view.base === view.store?.hash
-					? view.store?.data
-					: undefined;
-		if (data && !existsSync(baseCopyPath(root, path)))
-			writeFileAtomic(baseCopyPath(root, path), data);
-	}
-
-	for (const view of opened.views) {
-		if (stateOf(view) !== "conflict" || view.local.refusal) continue;
-		const path = view.spec.path;
-		const keep = isMergeable(root, view)
+	const report = reportOf(root, opened, refusals);
+	for (const { path, state, refusal, mergeable } of report.files) {
+		if (state !== "conflict" || refusal) continue;
+		const keep = mergeable
 			? `Merge them key by key with \`buncargo files merge ${path}\`, keep`
 			: "Keep";
 		log(
@@ -503,7 +506,6 @@ export async function syncCheckoutFiles(
 			),
 		);
 	}
-	const report = reportOf(root, opened, refusals);
 	if (!options.paths) lastReports.set(root, report);
 	return report;
 }
@@ -594,12 +596,7 @@ function apply(
 	}
 
 	if (storeWrites.length > 0)
-		writeStoreEntries(
-			opened.dir,
-			opened.manifest ?? { version: 1, files: {} },
-			storeWrites,
-			now,
-		);
+		writeStoreEntries(opened.dir, opened.manifest, storeWrites, now);
 	writeCheckoutState(root, state);
 	return refusals;
 }
@@ -643,11 +640,7 @@ export async function saveCheckoutFiles(
 				log(formatStep(`Saved ${path} to the file store`));
 		}
 		if (writes.length > 0)
-			writeStoreEntries(
-				opened.dir,
-				opened.manifest ?? { version: 1, files: {} },
-				writes,
-			);
+			writeStoreEntries(opened.dir, opened.manifest, writes);
 		writeCheckoutState(root, state);
 	});
 	return { failed };
@@ -740,11 +733,9 @@ export async function mergeCheckoutFile(
 			writeLocal(root, path, data);
 		}
 		if (hash !== store.hash)
-			writeStoreEntries(
-				opened.dir,
-				opened.manifest ?? { version: 1, files: {} },
-				[{ path, data, machine: view.spec.machine }],
-			);
+			writeStoreEntries(opened.dir, opened.manifest, [
+				{ path, data, machine: view.spec.machine },
+			]);
 		const state = { ...opened.state };
 		recordBase(root, state, path, data, hash);
 		writeCheckoutState(root, state);

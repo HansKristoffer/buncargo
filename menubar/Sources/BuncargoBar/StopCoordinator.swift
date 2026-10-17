@@ -73,7 +73,7 @@ final class StopCoordinator: ObservableObject {
             self.inFlight.remove(token)
             if let failure {
                 self.notice = failure
-                self.report(failure, title: "buncargo sim failed")
+                self.report(failure, title: "buncargo expo sim failed")
             }
         }
     }

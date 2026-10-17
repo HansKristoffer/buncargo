@@ -42,7 +42,7 @@ export interface EnvironmentBannerInput {
 		publicUrl: string;
 		localUrl: string;
 	}>;
-	/** A dim hint after an app's row, from its integrations (`bunx buncargo sim`). */
+	/** A dim hint after an app's row, from its integrations (`bunx buncargo expo sim`). */
 	hintFor?: (app: string) => string | undefined;
 }
 

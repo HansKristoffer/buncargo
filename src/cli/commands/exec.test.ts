@@ -125,6 +125,16 @@ it("propagates child exit status and rejects unknown app names", async () => {
 	);
 	expect(missing.exitCode).toBe(1);
 	expect(missing.stderr + missing.stdout).toContain('Unknown app "missing"');
+
+	const noCommand = await execAsync(
+		[process.execPath, cli, "exec"],
+		root,
+		{},
+		{ throwOnError: false },
+	);
+	expect(noCommand.exitCode).toBe(1);
+	expect(noCommand.stderr).toContain("Provide a command after --");
+	expect(noCommand.stderr).toContain('Run "bunx buncargo exec --help"');
 });
 
 it("reloads dotenv input on later calls and resolves root/nested calls identically", async () => {

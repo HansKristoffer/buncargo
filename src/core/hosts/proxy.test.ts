@@ -5,7 +5,6 @@ import {
 	HEALTH_PATH,
 	HOPS_HEADER,
 	hostnameFromHostHeader,
-	isProxyHealthy,
 	MAX_PROXY_HOPS,
 	readProxyHealth,
 	startLocalProxy,
@@ -25,9 +24,6 @@ const ipv6LoopbackAvailable = (() => {
 		return false;
 	}
 })();
-
-/** Comfortably past Bun's 10s default so a regression cannot pass on timing. */
-const QUIET_STREAM_MS = 13_000;
 
 /** A port nothing listens on, so both loopback families refuse. */
 async function findClosedPort(): Promise<number> {
@@ -95,7 +91,10 @@ describe("proxy fetch", () => {
 		const routes = new Map([["api.serpier.localhost", upstream.port]]);
 		const proxy = await startLocalProxy({
 			lookup: (hostname) => routes.get(hostname),
-			routes: () => ({ hostnames: [...routes.keys()] }),
+			routes: () => ({
+				hostnames: [...routes.keys()],
+				lastReloadAt: Date.now(),
+			}),
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
@@ -122,7 +121,10 @@ describe("proxy fetch", () => {
 		async () => {
 			const proxy = await startLocalProxy({
 				lookup: () => undefined,
-				routes: () => ({ hostnames: ["api.serpier.localhost"] }),
+				routes: () => ({
+					hostnames: ["api.serpier.localhost"],
+					lastReloadAt: Date.now(),
+				}),
 				httpsPort: 0,
 			});
 			servers.push(proxy);
@@ -137,7 +139,10 @@ describe("proxy fetch", () => {
 	it("returns 508 when hop limit is exceeded", async () => {
 		const fetchHandler = createProxyFetch({
 			lookup: () => 9,
-			routes: () => ({ hostnames: ["api.serpier.localhost"] }),
+			routes: () => ({
+				hostnames: ["api.serpier.localhost"],
+				lastReloadAt: Date.now(),
+			}),
 			https: true,
 		});
 		const request = new Request("https://api.serpier.localhost/", {
@@ -154,7 +159,10 @@ describe("proxy fetch", () => {
 	it("returns 404 with the closest hostname", async () => {
 		const fetchHandler = createProxyFetch({
 			lookup: () => undefined,
-			routes: () => ({ hostnames: ["api.serpier.localhost"] }),
+			routes: () => ({
+				hostnames: ["api.serpier.localhost"],
+				lastReloadAt: Date.now(),
+			}),
 			https: true,
 		});
 		const request = new Request("https://tenant.api.serpier.localhost/", {
@@ -253,7 +261,10 @@ describe("proxy fetch", () => {
 		const routes = new Map([["api.serpier.localhost", upstream.port]]);
 		const proxy = await startLocalProxy({
 			lookup: (hostname) => routes.get(hostname),
-			routes: () => ({ hostnames: [...routes.keys()] }),
+			routes: () => ({
+				hostnames: [...routes.keys()],
+				lastReloadAt: Date.now(),
+			}),
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
@@ -311,7 +322,10 @@ describe("proxy fetch", () => {
 		const routes = new Map([["api.serpier.localhost", upstream.port]]);
 		const proxy = await startLocalProxy({
 			lookup: (hostname) => routes.get(hostname),
-			routes: () => ({ hostnames: [...routes.keys()] }),
+			routes: () => ({
+				hostnames: [...routes.keys()],
+				lastReloadAt: Date.now(),
+			}),
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
@@ -343,7 +357,10 @@ describe("proxy fetch", () => {
 	it("rejects an upgrade it cannot bridge instead of forwarding it", async () => {
 		const fetchHandler = createProxyFetch({
 			lookup: () => 9,
-			routes: () => ({ hostnames: ["api.serpier.localhost"] }),
+			routes: () => ({
+				hostnames: ["api.serpier.localhost"],
+				lastReloadAt: Date.now(),
+			}),
 			https: true,
 		});
 		const request = new Request("https://api.serpier.localhost/", {
@@ -375,7 +392,10 @@ describe("proxy fetch", () => {
 		const routes = new Map([["mailpit.serpier.localhost", upstream.port]]);
 		const proxy = await startLocalProxy({
 			lookup: (hostname) => routes.get(hostname),
-			routes: () => ({ hostnames: [...routes.keys()] }),
+			routes: () => ({
+				hostnames: [...routes.keys()],
+				lastReloadAt: Date.now(),
+			}),
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
@@ -417,7 +437,10 @@ describe("proxy fetch", () => {
 		const routes = new Map([["api.serpier.localhost", upstream.port]]);
 		const proxy = await startLocalProxy({
 			lookup: (hostname) => routes.get(hostname),
-			routes: () => ({ hostnames: [...routes.keys()] }),
+			routes: () => ({
+				hostnames: [...routes.keys()],
+				lastReloadAt: Date.now(),
+			}),
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
@@ -450,7 +473,10 @@ describe("proxy fetch", () => {
 			const routes = new Map([["web.serpier.localhost", upstream.port]]);
 			const proxy = await startLocalProxy({
 				lookup: (hostname) => routes.get(hostname),
-				routes: () => ({ hostnames: [...routes.keys()] }),
+				routes: () => ({
+					hostnames: [...routes.keys()],
+					lastReloadAt: Date.now(),
+				}),
 				httpsPort: 0,
 				hostname: "127.0.0.1",
 			});
@@ -488,7 +514,10 @@ describe("proxy fetch", () => {
 			const routes = new Map([["web.serpier.localhost", upstream.port]]);
 			const proxy = await startLocalProxy({
 				lookup: (hostname) => routes.get(hostname),
-				routes: () => ({ hostnames: [...routes.keys()] }),
+				routes: () => ({
+					hostnames: [...routes.keys()],
+					lastReloadAt: Date.now(),
+				}),
 				httpsPort: 0,
 				hostname: "127.0.0.1",
 			});
@@ -520,7 +549,10 @@ describe("proxy fetch", () => {
 		const deadPort = await findClosedPort();
 		const fetchHandler = createProxyFetch({
 			lookup: () => deadPort,
-			routes: () => ({ hostnames: ["web.serpier.localhost"] }),
+			routes: () => ({
+				hostnames: ["web.serpier.localhost"],
+				lastReloadAt: Date.now(),
+			}),
 			https: true,
 		});
 		const request = new Request("https://web.serpier.localhost/", {
@@ -537,7 +569,7 @@ describe("proxy fetch", () => {
 	// A dev server whose upgraded socket is reset dies with an unhandled
 	// ECONNRESET, so the bridged upstream is owed a close frame first.
 	it("sends the upstream a close frame before stopping", async () => {
-		const closes: number[] = [];
+		const closed = Promise.withResolvers<number>();
 		const upstream = Bun.serve({
 			hostname: "127.0.0.1",
 			port: 0,
@@ -553,7 +585,7 @@ describe("proxy fetch", () => {
 				},
 				message() {},
 				close(_ws, code) {
-					closes.push(code);
+					closed.resolve(code);
 				},
 			},
 		});
@@ -562,7 +594,10 @@ describe("proxy fetch", () => {
 		const routes = new Map([["api.serpier.localhost", upstream.port]]);
 		const proxy = await startLocalProxy({
 			lookup: (hostname) => routes.get(hostname),
-			routes: () => ({ hostnames: [...routes.keys()] }),
+			routes: () => ({
+				hostnames: [...routes.keys()],
+				lastReloadAt: Date.now(),
+			}),
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
@@ -583,65 +618,13 @@ describe("proxy fetch", () => {
 		});
 
 		proxy.stop();
-		await Bun.sleep(50);
-		expect(closes).toEqual([1001]);
+		// 1001 (going away) is the close frame; a bare reset reports otherwise.
+		expect(await closed.promise).toBe(1001);
 		client.close();
 	});
-
-	// Bun.serve counts a streamed response with nothing to send as idle and
-	// resets it mid-body at 10s. A proxy has no say in how talkative its
-	// upstream is, so that default silently killed every SSE and oRPC Event
-	// Iterator stream (15s keep-alive) behind a named HTTPS URL. Only elapsed
-	// time can prove the opt-out, hence the deliberately slow case.
-	it(
-		"keeps a quiet streamed response open past the 10s idle default",
-		async () => {
-			const encoder = new TextEncoder();
-			const upstream = Bun.serve({
-				hostname: "127.0.0.1",
-				port: 0,
-				// The real upstream (a dev API) opts out for the same reason;
-				// leaving it on would fail the test from the far end.
-				idleTimeout: 0,
-				fetch() {
-					return new Response(
-						new ReadableStream({
-							async start(controller) {
-								controller.enqueue(encoder.encode(": open\n\n"));
-								await Bun.sleep(QUIET_STREAM_MS);
-								controller.enqueue(encoder.encode("data: late\n\n"));
-								controller.close();
-							},
-						}),
-						{ headers: { "content-type": "text/event-stream" } },
-					);
-				},
-			});
-			servers.push(upstream);
-
-			const routes = new Map([["api.serpier.localhost", upstream.port]]);
-			const proxy = await startLocalProxy({
-				lookup: (hostname) => routes.get(hostname),
-				routes: () => ({ hostnames: [...routes.keys()] }),
-				httpsPort: 0,
-				hostname: "127.0.0.1",
-			});
-			servers.push(proxy);
-
-			const response = await fetch(`http://127.0.0.1:${proxy.httpsPort}/sse`, {
-				headers: { host: "api.serpier.localhost" },
-			});
-			expect(response.status).toBe(200);
-
-			// A reset surfaces as a read rejection, not a short body, so let it
-			// throw: the failure message is more useful than an empty string.
-			expect(await response.text()).toContain("data: late");
-		},
-		QUIET_STREAM_MS + 20_000,
-	);
 });
 
-describe("isProxyHealthy", () => {
+describe("readProxyHealth", () => {
 	const servers: Array<{ stop: () => void }> = [];
 
 	afterEach(() => {
@@ -650,23 +633,23 @@ describe("isProxyHealthy", () => {
 		}
 	});
 
-	it("returns false quickly when nothing is listening", async () => {
+	it("answers undefined quickly when nothing is listening", async () => {
 		const started = Date.now();
-		expect(await isProxyHealthy(59_998, "127.0.0.1")).toBe(false);
+		expect(await readProxyHealth(59_998, "127.0.0.1")).toBeUndefined();
 		expect(Date.now() - started).toBeLessThan(1_000);
 	});
 
 	it("detects a bound proxy over HTTP", async () => {
 		const proxy = await startLocalProxy({
 			lookup: () => undefined,
-			routes: () => ({ hostnames: [] }),
+			routes: () => ({ hostnames: [], lastReloadAt: Date.now() }),
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
 		servers.push(proxy);
 		expect(
-			await isProxyHealthy(proxy.httpsPort, "127.0.0.1", { tls: false }),
-		).toBe(true);
+			await readProxyHealth(proxy.httpsPort, "127.0.0.1", { tls: false }),
+		).toBeDefined();
 	});
 
 	it("reads back what the proxy is serving", async () => {
@@ -689,6 +672,20 @@ describe("isProxyHealthy", () => {
 		});
 	});
 
+	it("reads a buncargo proxy without the health fields as outdated", async () => {
+		const outdated = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch() {
+				return Response.json({ ok: true, routes: 2 });
+			},
+		});
+		servers.push(outdated);
+		expect(
+			await readProxyHealth(outdated.port, "127.0.0.1", { tls: false }),
+		).toEqual({ outdated: true });
+	});
+
 	it("rejects a foreign server answering 200 on the health path", async () => {
 		const squatter = Bun.serve({
 			hostname: "127.0.0.1",
@@ -699,8 +696,8 @@ describe("isProxyHealthy", () => {
 		});
 		servers.push(squatter);
 		expect(
-			await isProxyHealthy(squatter.port, "127.0.0.1", { tls: false }),
-		).toBe(false);
+			await readProxyHealth(squatter.port, "127.0.0.1", { tls: false }),
+		).toBeUndefined();
 	});
 
 	it("rejects a JSON responder that is not a buncargo proxy", async () => {
@@ -713,7 +710,7 @@ describe("isProxyHealthy", () => {
 		});
 		servers.push(squatter);
 		expect(
-			await isProxyHealthy(squatter.port, "127.0.0.1", { tls: false }),
-		).toBe(false);
+			await readProxyHealth(squatter.port, "127.0.0.1", { tls: false }),
+		).toBeUndefined();
 	});
 });

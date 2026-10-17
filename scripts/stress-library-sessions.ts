@@ -6,8 +6,8 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
-	readFileSync,
 	readdirSync,
+	readFileSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -146,6 +146,7 @@ async function cycle(fixture: Fixture, index: number): Promise<void> {
 					onlyApps: ["blocked"],
 					productionBuild: false,
 					signal: caller.signal,
+					watchdog: false,
 				})
 				.then(
 					() => undefined,
@@ -160,6 +161,8 @@ async function cycle(fixture: Fixture, index: number): Promise<void> {
 				productionBuild: false,
 				verbose: false,
 				signal: caller.signal,
+				// A watchdog would invoke the stub runtimes and outlive the run.
+				watchdog: false,
 			};
 			const pids =
 				index % 2 ? await env.start(options) : await env.startServers(options);

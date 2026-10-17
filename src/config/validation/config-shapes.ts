@@ -98,9 +98,12 @@ export function validateSupplementShapes(
 				(step) =>
 					object(step) &&
 					typeof step.name === "string" &&
-					typeof step.run === "function",
+					typeof step.run === "function" &&
+					(step.apps === undefined ||
+						(Array.isArray(step.apps) &&
+							step.apps.every((app) => typeof app === "string"))),
 			),
-		"an array of { name, run }",
+		"an array of { name, apps?, run }",
 	);
 	if (value.generatedFiles !== undefined) {
 		if (!Array.isArray(value.generatedFiles))

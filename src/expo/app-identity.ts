@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AppConfig, ExpoAppOptions } from "../types";
 
-/** What `buncargo sim` needs, resolved once at publish time into the run registry. */
+/** What `buncargo expo sim` needs, resolved once at publish time into the run registry. */
 export interface ExpoAppIdentity {
 	/** Deep-link scheme of the development build, `exp+<slug>` when the app declares none. */
 	scheme?: string;
@@ -46,7 +46,7 @@ interface AppJson {
 	ios?: { bundleIdentifier?: unknown };
 }
 
-/** `app.json` only: `app.config.ts` needs evaluating, and `expo.scheme` covers that case. */
+/** `app.json` only: `app.config.ts` needs evaluating, and the `scheme` option covers that case. */
 function readAppJson(dir: string): AppJson {
 	try {
 		const parsed = JSON.parse(readFileSync(resolve(dir, "app.json"), "utf-8"));

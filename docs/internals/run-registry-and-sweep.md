@@ -28,7 +28,7 @@ writers prune. `stop --run` selects an exact session.
 
 ## Process identity
 
-Liveness is forgiving where signalling is strict. `processIdentityMatcher`/`runLiveness` read a
+Liveness is forgiving where signalling is strict. `processIdentityMatcherAsync`/`runLivenessAsync` read a
 process whose identity cannot be read as *alive*, because reading a live run as dead lets the sweep
 tear its containers down. `matchesProcessIdentity` (used by `stop` before it signals, and by worker
 ownership) reads the same as *not a match*.
@@ -42,12 +42,16 @@ and time zone, and a run started from a Danish-locale terminal and a watchdog st
 
 ## Writers
 
-`src/cli/run-publish.ts` is the CLI's writer of the run registry; `environment/run-claim.ts` is the
-library's. Both build their entry with `buildRunEntry`, so identity, worktree and the recorded CLI
-cannot drift between them (the recorded CLI is exactly where they once did).
+`environment/run-claim.ts` writes the claim; `core/run-publish.ts` writes the entry with its
+apps, for `runDevFlow` and for a library `start()`/`startServers()` that spawns apps (through the
+claim's `claimApps`, with the environment as its `RunSource`). Both build their entry with
+`buildRunEntry`, so identity, worktree and the recorded CLI cannot drift between them (the
+recorded CLI is exactly where they once did), and a script's apps get the same rows as `dev`'s.
 
-- The CLI publishes onto the session the environment already claimed (`env.sessionId`), and
-  `publishRun` keeps that claim's `startedAt` and idle hold. It takes a structural `RunSource`
+- Both publish onto the session the environment already claimed (`env.sessionId`), and
+  `publishRun` keeps that claim's `startedAt` and idle hold. An app-only run has no claim, so its
+  first entry is this one; it is withdrawn when its apps stop (`stop()`), when the start that
+  listed them fails, or by the next writer's prune once its process is gone. It takes a structural `RunSource`
   rather than `DevEnvironment` because that type's app keys appear in both parameter and return
   positions, so a widened version is not a supertype of a specific one.
 - Every function swallows its own failures: a run that started servers but could not write a
@@ -70,14 +74,19 @@ cannot drift between them (the recorded CLI is exactly where they once did).
 no config load, no Docker unless a service is the target.
 
 - Stopping one app must not end the run, which is why `isDeliberateExit` in
-  `process/dev-servers.ts` treats a signalled exit (and `130`/`143`, what a shell wrapper reports
+  `process/process-owner.ts` treats a signalled exit (and `130`/`143`, what a shell wrapper reports
   for SIGINT/SIGTERM) as a clean stop rather than a failure.
 - The two refusals (the attached app, and an app reused from another terminal) carry exit code 3;
   `2` is "no such target".
 - Services are `stop`ped, never `kill`ed, so a `restart:` policy cannot undo it; the exited
   container is removed by the sweep once the run has ended. Stopping the whole run `down`s its
   containers, because the run itself only releases them to the idle hold and "stop" from the menu
-  bar means now.
+  bar means now. It downs only on the runtimes the entry records: probing every runtime for an
+  app-only run's project once took down a stack another run held. Then it retires the entry, and
+  the project's finished entries whose containers all came down with it.
+- `stop --all` also takes down what a checkout's finished runs left (released into the hold, or
+  crashed inside the grace), without asking, since nothing of theirs runs. A live run of the same
+  project keeps them, and a live run the person declined to stop keeps the whole checkout's.
 
 ## The sweep
 
@@ -85,11 +94,22 @@ no config load, no Docker unless a service is the target.
 
 - `decideSweep` is pure: a stack nobody owns comes down when its checkout is gone, when every
   container is stopped, when its run released it longer ago than its idle hold, or when its owner
-  has been gone for longer than the grace. A stack with no entry in this user's registry is left
-  alone, unless its checkout is provably gone (ENOENT/ENOTDIR, never `existsSync`, which says false
-  on EACCES) and every container carries this OS user's `buncargo.user` label. A shared Docker
-  daemon shows every user's stacks; a watchdog once removed a CI runner's because its checkout was
-  unreadable.
+  has been gone for longer than the grace. A live owner keeps its stack before the checkout is
+  even looked at. A running stack with only a claim is left alone.
+- Only a stack this `HOME`'s state names is a candidate (`isKnownStack`): a `runs.json` entry
+  (any session, live or not) or an `offsets.json` claim with its project and root. Several users
+  can share one daemon, and from another account a live run's stack has no entry and a checkout
+  under an unreadable home. Anything else is `foreign`: reported by `ls` and `doctor` with
+  `manualDownCommand`, never touched. `dev --down --all` (`stop-all.ts`) follows the same rule.
+  So a claim must outlive its stack: `settleDeletedCheckouts` keeps a deleted checkout's claim
+  while a stack of its project and root is still listed (a failed `down`, a busy lock) or while
+  no runtime answers, or that stack would be nobody's to remove.
+- "Checkout gone" means confirmed missing: `checkoutPresence` (`core/checkout-presence.ts`) says
+  `deleted` only on `ENOENT` or `ENOTDIR`. Any other error, typically `EACCES` on another user's
+  home, is `unknown` and counts as present wherever a root decides what to remove or forget: the
+  sweep, settling claims, `readOffsetClaims`, prune's existing checkouts, host routes and
+  certificate names. `existsSync` reads `EACCES` as missing, and a watchdog running as one user took every
+  checkout of the CI user's home for deleted and tore its stacks down, a live E2E run's included.
 - The grace counts from `ownerLostAt`, which the sweep stamps the first time it finds an unreleased
   owner gone, not from `updatedAt`, which a quiet run may not have written for hours before it
   crashed.
@@ -108,13 +128,30 @@ no config load, no Docker unless a service is the target.
   compose file still exists and never requires the checkout as `cwd`: a stack whose worktree was
   deleted must still come down, and that used to be the one case the watchdog could not handle.
 
+### The removal log
+
+A container cannot be relabelled after it exists, and a removed one carries nothing, so who removed
+a stack is recorded on our side: `core/removal-log.ts`, `~/.buncargo/removals.json`, the newest 500
+records, rewritten whole under its file lock. The sweep records at each `result.swept` push, with
+the run the verdict was decided against; `stop`, `dev --down --all` and the library's `stop()`
+record their own teardowns. Recording never throws: a removal that happened must not read as
+failed.
+
+It is read only on failure paths, never before startup: `explainMissingContainers` lists the
+runtime's containers, and only when a selected one is missing reads the log for a record of the
+project and root since the run's claim. The incident behind it: a CI job saw `ECONNREFUSED` and
+then Compose's "No resource found to remove", and the cause, another user's watchdog, was only in
+that user's `watchdog.log`. The log is per user like the rest of `~/.buncargo`, which is why "no
+record" points at other users' logs and `docker events` instead of guessing.
+
 **Anything that runs the sweep outside a unit test's stub runtimes must isolate the container
 runtime as well as `HOME`**: stub adapters, or `DOCKER_HOST` pointed at nothing. Isolating only the
 registry makes every real stack on the machine look unowned. Docker Desktop finds its Compose plugin
 through `HOME`, so a stray isolated `HOME` fails every teardown, which is luck, not safety;
 `stopContainers` names that failure (`'compose' is not a docker command`) rather than passing it
-through. `bunfig.toml` preloads `scripts/test-runtime-isolation.ts`, which puts failing `docker`
-and `container` stubs first on `PATH` for every unit test.
+through. For every unit test, `bunfig.toml` preloads `scripts/test-runtime-isolation.ts`, which
+does both: failing `docker` and `container` stubs first on `PATH` and a dead `DOCKER_HOST`, and a
+temporary `HOME` for the run.
 
 ## The watchdog
 
@@ -126,7 +163,29 @@ watchdog is never the last line of defence.
 It also serves the live entries, as a `runs.json` document, on the machine's Tailscale address
 (`core/tailnet-directory.ts`) to BuncargoBar on the other machines of the tailnet. That bar may be
 a different version than the CLI it reads, so the registry's old-reader compatibility now holds
-across machines too. A watchdog started by an older buncargo keeps running old code until it exits.
+across machines too. So a run without containers ensures the watchdog as well, once its apps
+are up and not awaited, so nothing is added before they start: `runDevFlow` from `onReady`, and
+`start()` after its apps are ready unless `watchdog: false`. `startServers()` takes no options to
+opt out with, so it ensures none. The loop already stays while any entry is live, containers or
+not, and stays for no container of a stack the sweep reports as another user's
+(`watchesNothing`): on a daemon shared with a CI user, those would keep it up for good. It also
+exits once its state directory is confirmed gone, which is a test's temporary `HOME` deleted
+under it, or once the process `BUNCARGO_WATCHDOG_PARENT` names has ended, which the test preload
+sets to the `bun test` process: two runners started by a test outlived it, found the real `docker`
+and, with no registry of theirs naming a stack, swept another user's. A real watchdog never gets
+the variable, because it has to outlive the run that started it.
+
+One watchdog sweeps for every checkout, so whichever buncargo started it decides for all of them: a
+12.4 runner started from one worktree swept stacks of worktrees on 13. The runner records its
+version in the pid file, and `ensureWatchdog` replaces a runner whose version is strictly older, or
+missing (written before versions were recorded). It sends SIGTERM only after a strict identity
+match, never to a pid file without an identity and never to itself (`watchdog.testing.ts`'s
+stand-in is the test process), then waits for `.runner` with a bounded timeout and spawns as usual.
+Strictly older only, so two current versions never take turns, and an older CLI, which knows
+nothing of versions, leaves a newer runner alone. It runs inside the `.spawn` hold, which is safe:
+the old runner exits on SIGTERM without taking `.spawn`, and one already waiting for `.spawn` in
+`exitUnlessClaimed` is killed while it waits. A stand-in pid file must record the current version,
+or the first CLI it serves replaces it.
 
 On Linux the watchdog, like `dev --detach` and the sharing coordinator, starts in a systemd
 user scope of its own when there is a user manager (`process/user-scope.ts`; off with
@@ -140,11 +199,23 @@ fake, and a caller holds `.spawn` across spawn-and-confirm so two `dev` runs sta
 cannot each launch one. Collapsing them looks tempting and deadlocks: the spawner would be holding
 the lock its own child must take.
 
+The runner takes `.spawn` too, once, to exit (`exitUnlessClaimed` in `watchdog-loop.ts`). A pass
+that finds nothing to watch read the registry before a run that claims after it, and that run's
+`ensureWatchdog` sees this runner and starts none. So the runner removes its pid file under
+`.spawn`, reads the registry again, and either restores the file and keeps watching or exits still
+holding `.spawn`, releasing it only after `.runner`. It stays for a live run, and for any session
+the pass did not see: one that claimed after the pass and already released or crashed is no longer
+live, but its containers are still to be swept (`claimedSincePass`). It never waits on `.spawn` at start, and a
+spawner holding `.spawn` only try-acquires `.runner`, so neither waits on the other.
+
 ## Volumes
 
 `prune.ts` is the volume half, and it is deliberately not automatic: a container costs nothing to
 recreate, a volume is the database. `planVolumePrune` is pure and proposes only a volume whose
-Compose project has no containers *and* no entry; `cli/commands/prune.ts` confirms before removing.
+Compose project has no containers, no entry *and* no existing checkout; `cli/commands/prune.ts`
+confirms before removing. The checkouts come from the dev port claims in `offsets.json`, because
+an idle checkout after `dev --down` has neither containers nor an entry, and its volume is still its
+database. Suffixed claims (`ci`, E2E) do not count: their stacks are leftovers once the run is gone.
 
 Buncargo attaches **no labels to volumes**. Verified: Compose compares a volume against the file
 and prompts "exists but doesn't match configuration in compose file. Recreate (data will be
@@ -161,7 +232,14 @@ keeps a deleted checkout's claim until it has settled it, and without the opt-in
 Volumes match by Compose project, and two checkouts can share one, so it removes them only when
 no existing checkout claims the project and no run on record for it still has its checkout; a
 container of the project still standing defers the decision to the next pass, and a runtime that
-does not answer defers everything.
+does not answer defers everything. "Still has its checkout" includes one this user cannot read.
+
+Volumes need more proof than containers. A deletion counts only when confirmed (`ENOENT`) on two
+passes at least `DELETED_CHECKOUT_SETTLE_MS` (10 minutes) apart: the first sighting is stamped on
+the claim as `deletedSeenAt` under the claims lock, and cleared if the checkout is back, so an
+unmounted disk or a worktree being recreated costs nothing. Containers still come down on the
+first confirmed sighting. The watchdog may exit in between; the next pass, whenever it runs,
+decides.
 
 `prune --project` (`project-prune.ts`) can say more, because the config and Git are in hand: the
 project's stacks are exactly the names `checkoutProjectNames` gives each checkout in `.git`'s

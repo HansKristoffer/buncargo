@@ -18,8 +18,15 @@ per port.
   generated model, which changes Apple's `buncargo.config-hash`, so every run recreated its own
   containers and alternated between two ports. A container of ours on the *other* backend must
   still shift: that port really is taken.
-- `offset-claims.ts` is `~/.buncargo/offsets.json`, root → offset. Every probing allocation skips
-  another existing checkout's offset, and every claiming one writes its own. A suffixed
+- `offset-claims.ts` is `~/.buncargo/offsets.json`, root → offset and the block's ports. Every
+  probing allocation skips a block another existing checkout claims, by its offset or by any one of
+  its ports, and every claiming one writes its own. Offsets alone missed collisions between
+  configs: api 3000 at offset 1100 and admin 4000 at offset 100 are both 4100. The ports are an
+  optional field, so the file keeps its version and an older buncargo still reads it. A claim
+  written without them takes its ports from its checkout's lockfile (when the offsets match) until
+  that checkout's next run rewrites it; holding the offset alone let a newcomer take an
+  overlapping block and moved the incumbent on its next run. `doctor` and `ports` report
+  overlapping claims by the same rule and the same lockfile reading. A suffixed
   environment claims without persisting a lockfile, under `offsetClaimKey(root, suffix)` with
   `root` and `suffix` stored in the claim (the key is never parsed), so it never replaces its
   checkout's dev claim; its claim is also the record its next run takes the offset back from.
@@ -32,6 +39,27 @@ per port.
   allocator is synchronous), or two checkouts starting together pick the same block. The lockfile is honoured by its
   offset alone, applied to the config's current ports, so an added service or a hand-written
   `{ "offset": n }` keeps the block, and a run that sets the lockfile aside says why.
+- A claim also records the checkout's Compose project name, and a claiming run refuses to start,
+  under the same lock and before it writes anything, when another existing checkout's claim
+  carries its name; `ports pin` refuses with the same check and message. Offsets only keep two
+  checkouts apart on ports; one name is one stack, so they shared the database, and one
+  parallel CI job's `ci` teardown deleted the other's volume.
+  Two cases produced it: CI runners whose checkouts share a directory name, and a `dev.config.ts`
+  below a worktree's top level (`example/playground`), which `getWorktreeName` does not see as a
+  worktree because it reads only the root's own `.git`. Deriving the name from the enclosing
+  worktree instead would rename every such checkout's stack and detach its volume, so the refusal
+  is the guarantee and the fix is a `projectPrefix` that differs per checkout (the playground
+  derives one from its worktree). Claims of the same checkout through another path, a deleted
+  checkout's claim, `BUNCARGO_PORT_OFFSET` (checked, though it records nothing) and
+  `worktreeIsolation: false` (sharing is what it asks for) do not refuse. `doctor` reports names
+  two existing claims already share.
+- A claim can outlive the config that wrote it: worktrees that last ran an older playground
+  config held `buncargo-playground-playground`, and the main clone's playground was refused until
+  each ran once or was deleted. Claims are not dropped by age, because an idle checkout's claim is
+  what keeps its database to itself. `buncargo ports release --root <path>` is the one way to drop
+  another checkout's claims, and the refusal names it with the holder's root. It confirms first
+  (`--yes` without a terminal), refuses while that checkout has a live run or containers in the
+  idle hold, and touches no container or volume: whoever runs under the name next uses its volume.
 
 ## Who holds a port
 

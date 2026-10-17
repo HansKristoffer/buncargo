@@ -1,9 +1,20 @@
 // While developing buncargo in this repo, import from source for accurate types.
 // In a standalone copy, use: `import { defineDevConfig, service } from "buncargo";`
-import { defineDevConfig, service } from "../../src";
+import { fileURLToPath } from "node:url";
+import { defineDevConfig, getWorktreeProjectSuffix, service } from "../../src";
+
+// This config sits below the repository's top level, where buncargo does not
+// see the worktree, so every worktree's playground would share one project
+// (and database) with the main clone's. Each worktree gets its own prefix; the
+// main clone keeps the plain one.
+const worktree = getWorktreeProjectSuffix(
+	fileURLToPath(new URL("../..", import.meta.url)),
+);
 
 export default defineDevConfig({
-	projectPrefix: "buncargo-playground",
+	projectPrefix: worktree
+		? `buncargo-playground-${worktree}`
+		: "buncargo-playground",
 
 	docker: {
 		runtime: "auto",

@@ -1,8 +1,11 @@
 import { expect, it } from "bun:test";
 import { join } from "node:path";
 import { shellQuote } from "../core/shell-quote";
+import { isolateHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "./create-dev-environment";
 import { parallelSeedFixture } from "./parallel-seed.testing";
+
+isolateHome("buncargo-parallel-seed-home-");
 
 for (const beforeApps of [undefined, false] as const) {
 	it(`library seed/app ordering with beforeApps=${beforeApps}`, async () => {

@@ -8,6 +8,7 @@ import {
 	relative,
 	resolve,
 } from "node:path";
+import { checkoutDeleted } from "./checkout-presence";
 
 /** A checkout Git knows of, whether or not its directory still exists. */
 export interface GitCheckout {
@@ -20,7 +21,10 @@ export interface GitCheckout {
 	 * Null for the main checkout and for a root below the top level.
 	 */
 	worktree: string | null;
-	/** Whether the checkout is still there (its top level, not the root). */
+	/**
+	 * Whether the checkout is still there (its top level, not the root). One
+	 * this user cannot read counts as there.
+	 */
 	exists: boolean;
 }
 
@@ -54,7 +58,7 @@ export function listGitCheckouts(root: string): GitCheckout[] {
 				? realpathSync(checkoutRoot)
 				: checkoutRoot,
 			worktree: inside === "" ? worktree : null,
-			exists: existsSync(checkoutTop),
+			exists: !checkoutDeleted(checkoutTop),
 		};
 	};
 

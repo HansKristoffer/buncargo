@@ -1,5 +1,6 @@
 import {
 	fetchScopeSecrets,
+	type InfisicalScope,
 	resolveScope,
 	scopeKey,
 } from "../core/secrets/infisical";
@@ -14,10 +15,7 @@ export function prefetchSecrets(input: {
 	migrations: MigrationConfig[];
 	signal?: AbortSignal;
 }): Promise<unknown>[] {
-	const scopes = new Map<
-		string,
-		NonNullable<ReturnType<typeof resolveScope>>
-	>();
+	const scopes = new Map<string, InfisicalScope>();
 	const add = (scope: SecretsScopeConfig | false | undefined) => {
 		if (scope === false) return;
 		const resolved = resolveScope(scope, input.defaults);

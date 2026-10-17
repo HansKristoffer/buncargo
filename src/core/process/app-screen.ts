@@ -54,6 +54,11 @@ export class AppScreen {
 	private sent = new Map<number, string>();
 	/** Scrollback rows `ESC[3J` removed since the last commit. */
 	private cleared = 0;
+	/**
+	 * The alternate screen as a flush last emitted it. The app's exit and the
+	 * run's close both flush, and the same screen must not be repeated.
+	 */
+	private alternateSent?: string;
 	private anchor?: {
 		marker: { line: number; isDisposed: boolean; dispose(): void };
 		line: number;
@@ -196,8 +201,15 @@ export class AppScreen {
 
 		if (final && this.term.buffer.active.type === "alternate") {
 			const alt = this.term.buffer.alternate;
-			for (let row = 0; row <= lastContentRow(alt); row++)
-				this.onLine(alt.getLine(row)?.translateToString(true) ?? "");
+			const rows = Array.from(
+				{ length: lastContentRow(alt) + 1 },
+				(_, row) => alt.getLine(row)?.translateToString(true) ?? "",
+			);
+			const screen = rows.join("\n");
+			if (screen !== this.alternateSent) {
+				this.alternateSent = screen;
+				for (const row of rows) this.onLine(row);
+			}
 		}
 
 		for (const row of this.sent.keys())

@@ -98,6 +98,19 @@ export function readManifest(dir: string): StoreRead {
 }
 
 /**
+ * The manifest to read and write through, undefined while the store does not
+ * exist. A store another program owns is left alone: this throws naming the fix.
+ */
+export function readStoreManifest(dir: string): Manifest | undefined {
+	const read = readManifest(dir);
+	if (read.kind === "unusable")
+		throw new Error(
+			`Left the file store ${dir} alone: ${read.reason}. Update buncargo, or move the directory aside.`,
+		);
+	return read.kind === "ok" ? read.manifest : undefined;
+}
+
+/**
  * An entry's bytes, or undefined when they are not there yet.
  *
  * A data file whose hash differs from its entry is mid-write (data is written
@@ -144,15 +157,15 @@ export interface StoreWrite {
 
 /**
  * Write entries: every data file first, then the manifest. The caller holds
- * the lock and passes the manifest it read under it.
+ * the lock and passes the manifest it read under it (undefined for a new store).
  */
 export function writeStoreEntries(
 	dir: string,
-	manifest: Manifest,
+	manifest: Manifest | undefined,
 	writes: readonly StoreWrite[],
 	now = new Date(),
 ): Manifest {
-	const files = { ...manifest.files };
+	const files = { ...manifest?.files };
 	for (const write of writes) {
 		// Always rewritten: an entry whose data file was lost or torn would
 		// otherwise stay unreadable forever.

@@ -86,7 +86,7 @@ describe("hosts registry", () => {
 		}
 	});
 
-	it("rejects a live owner unless force is set", async () => {
+	it("rejects a live owner from another checkout", async () => {
 		const { dir, path } = await tempRegistry();
 		try {
 			await upsertHostRoutes(
@@ -116,7 +116,8 @@ describe("hosts registry", () => {
 							updatedAt: new Date().toISOString(),
 						},
 					],
-					{ path },
+					// A takeover is within one checkout; it never crosses projects.
+					{ path, takeover: new Set(["api"]) },
 				),
 			).rejects.toBeInstanceOf(HostsRouteConflictError);
 		} finally {
@@ -182,6 +183,48 @@ describe("hosts registry", () => {
 			const saved = await loadHostRoutes(path);
 			expect(saved).toHaveLength(1);
 			expect(saved[0]?.pid).toBe(process.pid);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	// A takeover stops the first run's server but not the first `buncargo dev`,
+	// which goes on to release the routes carrying its pid. Left as owner, it
+	// deleted the named URLs of the run that took over.
+	it("moves a taken-over route to the new run and leaves the rest", async () => {
+		const { dir, path } = await tempRegistry();
+		try {
+			const first = process.pid;
+			const second = process.pid + 1;
+			const api: HostsRoute = {
+				hostname: "api.serpier.localhost",
+				port: 3000,
+				kind: "app",
+				name: "api",
+				root: "/repo",
+				pid: first,
+				updatedAt: new Date().toISOString(),
+			};
+			const web: HostsRoute = {
+				...api,
+				hostname: "web.serpier.localhost",
+				port: 3001,
+				name: "web",
+			};
+			await upsertHostRoutes([api, web], { path });
+			await upsertHostRoutes(
+				[
+					{ ...api, pid: second },
+					{ ...web, pid: second },
+				],
+				{ path, takeover: new Set(["api"]) },
+			);
+			await removeHostRoutes((route) => route.pid === first, path);
+
+			const saved = await loadHostRoutes(path);
+			expect(saved.map((route) => [route.name, route.pid])).toEqual([
+				["api", second],
+			]);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
@@ -290,6 +333,12 @@ describe("classifyRouteClaim", () => {
 	// that run printing localhost:port URLs while the named ones worked.
 	it("leaves the live owner in place for a second run of the same checkout", () => {
 		expect(classifyRouteClaim(base, { ...base, pid: 200 })).toBe("keep");
+	});
+
+	it("hands the route to a run that took over its server", () => {
+		expect(
+			classifyRouteClaim(base, { ...base, pid: 200 }, { takeover: true }),
+		).toBe("take");
 	});
 
 	// Same checkout but a different port is a real disagreement: one of the two

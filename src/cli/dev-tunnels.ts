@@ -85,16 +85,6 @@ export function createTunnelCoordinator<
 		return urls as ComputedPublicUrls<TServices, TApps>;
 	}
 
-	function parseExposeNames(
-		exposeValue: string | undefined,
-	): string[] | undefined {
-		if (exposeValue === undefined) return undefined;
-		return exposeValue
-			.split(",")
-			.map((name) => name.trim())
-			.filter(Boolean);
-	}
-
 	async function inheritReusedPublicUrls(appNames: string[]): Promise<void> {
 		if (appNames.length === 0) return;
 		const reused = await loadReusableTunnelApps(env.root, {
@@ -144,11 +134,14 @@ export function createTunnelCoordinator<
 			);
 		}
 
-		const explicitNames = parseExposeNames(exposeValue);
-		if (appsRequested && explicitNames) {
-			const excluded = explicitNames.filter(
-				(name) => env.apps[name] !== undefined && !selectedAppNames.has(name),
-			);
+		// With explicit names and no unknown or disabled one, the targets are exactly those names.
+		if (appsRequested && exposeValue !== undefined) {
+			const excluded = targets
+				.filter(
+					(target) =>
+						target.kind === "app" && !selectedAppNames.has(target.name),
+				)
+				.map((target) => target.name);
 			if (excluded.length > 0) {
 				throw new CliError(
 					`Expose target${excluded.length > 1 ? "s" : ""} not included in --apps: ${excluded.join(", ")}`,

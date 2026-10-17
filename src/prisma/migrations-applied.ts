@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { withDeadline, withSignal } from "../core/deadline";
 import { inferDockerPreset } from "../core/service-presets";
 import type { PrismaConfig, ServiceConfig } from "../types";
+import { resolvePrismaConfig } from "./config";
 
 export interface MigrationRow {
 	migration_name: string;
@@ -63,11 +64,8 @@ export async function appliedMigrationCount(
 			!["postgres:", "postgresql:"].includes(url.protocol)
 		)
 			return;
-		const directory = resolve(
-			input.root,
-			input.prisma.cwd ?? "packages/prisma",
-			input.prisma.migrations ?? "prisma/migrations",
-		);
+		const { cwd, migrations } = resolvePrismaConfig(input.prisma);
+		const directory = resolve(input.root, cwd, migrations);
 		const entries = await readdir(directory, { withFileTypes: true });
 		const local: string[] = [];
 		for (const entry of entries) {

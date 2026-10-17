@@ -3,8 +3,8 @@ import {
 	baselineViolations,
 	budgetViolations,
 	fixtureKey,
-	startupFixtures,
 	type StartupResult,
+	startupFixtures,
 } from "./startup-budgets";
 
 const result: StartupResult = {
@@ -15,8 +15,17 @@ const result: StartupResult = {
 	entryToCliReadyMs: { p95: 350 },
 	coldEntryToCliReadyMs: { p95: 600 },
 };
+/** The budget of the single-run fixture for `scenario`. */
+function budgetOf(scenario: StartupResult["scenario"]) {
+	const fixture = startupFixtures.find(
+		(entry) => entry.scenario === scenario && entry.parallel === 1,
+	);
+	if (!fixture) throw new Error(`No single-run ${scenario} fixture`);
+	return fixture.budget;
+}
+
 it("detects regressions that the old shared three-second ceiling missed", () => {
-	const budget = startupFixtures.find((fixture) => fixture.scenario === "services" && fixture.parallel === 1)!.budget;
+	const budget = budgetOf("services");
 	expect(budgetViolations(result, budget)).toEqual([]);
 	expect(
 		budgetViolations({ ...result, entryToCliReadyMs: { p95: 900 } }, budget),
@@ -29,13 +38,13 @@ it("requires valid measurements and separately limits cancellation", () => {
 	expect(
 		budgetViolations(
 			{ ...result, entryToCliReadyMs: undefined },
-			startupFixtures.find((fixture) => fixture.scenario === "services" && fixture.parallel === 1)!.budget,
+			budgetOf("services"),
 		),
 	).toContain("warm p95 is missing or invalid");
 	expect(
 		budgetViolations(
 			{ ...result, scenario: "cancel", cleanupMs: { p95: 400 } },
-			startupFixtures.at(-1)!.budget,
+			budgetOf("cancel"),
 		),
 	).toContain("cleanup p95: 400 exceeds 300");
 });

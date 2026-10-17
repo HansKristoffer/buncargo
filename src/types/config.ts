@@ -181,11 +181,8 @@ export interface HostsRuntime {
 }
 
 /**
- * Env values a config may declare or compute.
- *
- * `undefined` is allowed so `process.env.X` and optional public URLs can be
- * passed straight through; those entries are dropped when the environment is
- * built rather than stringified into the literal `"undefined"`.
+ * One entry of {@link DevOptions.envFiles}: a dotenv path relative to the
+ * root, or that path marked optional.
  */
 export type EnvInputFile = string | { path: string; optional?: boolean };
 
@@ -203,6 +200,13 @@ export type CheckoutFile =
 			machine?: boolean;
 	  };
 
+/**
+ * Env values a config may declare or compute.
+ *
+ * `undefined` is allowed so `process.env.X` and optional public URLs can be
+ * passed straight through; those entries are dropped when the environment is
+ * built rather than stringified into the literal `"undefined"`.
+ */
 export type EnvValues = Record<string, string | number | undefined>;
 
 /**
@@ -242,11 +246,6 @@ export type EnvVarsBuilder<
 	urls: ComputedUrls<TServices, TApps>,
 	ctx: EnvVarsContext<TServices, TApps>,
 ) => TEnv;
-
-/**
- * Object keys that are not a wide `string` index (`Record<string, …>`).
- * Used so empty-app configs and open records do not unlock every `*_URL`.
- */
 
 /**
  * Keys declared by a narrowly inferred `env` overlay.

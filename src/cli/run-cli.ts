@@ -1,10 +1,19 @@
 import { execSync } from "node:child_process";
 import { containerRuntimeForEnv } from "../container-runtime";
+import { describeLeaseRefusal, type SkippedLeaseApp } from "../core/app-leases";
 import { withSignal } from "../core/deadline";
 import { removeHostRoutes } from "../core/hosts";
 import { releaseLeases } from "../core/leases";
-import { isDeliberateExit } from "../core/process";
-import { askConfirm } from "../core/prompt";
+import { appExitState } from "../core/process/process-owner";
+import { askConfirm, PromptInterruptedError } from "../core/prompt";
+import {
+	flushRunPatches,
+	markApps,
+	publishCurrentRun,
+	recordAppSpawn,
+	recordAppUrls,
+	recordRunCapture,
+} from "../core/run-publish";
 import { isCI } from "../core/runtime-flags";
 import { joinColoredNames } from "../core/style";
 import {
@@ -17,14 +26,15 @@ import {
 	startPublicTunnels,
 	stopPublicTunnels,
 } from "../core/tunnel";
+import { ensureWatchdog } from "../core/watchdog";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../core/watchdog-constants";
 import {
 	assertSeedSucceeded,
 	seedCanOverlap,
 } from "../environment/seed-startup";
 import { startServerSession } from "../environment/server-session";
-import { environmentStartPlan } from "../environment/start-plan";
-import { resolveSelectedApps } from "../planning";
+import { serverReadyTimeout } from "../environment/servers";
+import { planStart } from "../planning";
 import type {
 	AnyDevEnvironment,
 	AppConfig,
@@ -48,13 +58,15 @@ import {
 	parseDevArgs,
 	printDevHelp,
 } from "./dev-flags";
-import { activateNamedHosts, releaseNamedHosts } from "./dev-hosts";
+import {
+	activateNamedHosts,
+	reclaimAppRoute,
+	releaseNamedHosts,
+} from "./dev-hosts";
 import {
 	acquireAppLeases,
-	describeLeaseRefusal,
 	leaseSkipLines,
 	leaseTakeoverHints,
-	type SkippedLeaseApp,
 	warnSkippedLeaseApps,
 } from "./dev-leases";
 import { openDevOutput } from "./dev-output";
@@ -73,14 +85,6 @@ import {
 } from "./port-reuse";
 import { runPreflight } from "./preflight";
 import {
-	flushRunPatches,
-	markApps,
-	publishCurrentRun,
-	recordAppSpawn,
-	recordAppUrls,
-	recordRunCapture,
-} from "./run-publish";
-import {
 	isInteractive,
 	promptTakeover,
 	promptUnhealthyTakeover,
@@ -88,9 +92,11 @@ import {
 	type TakeoverCandidates,
 	takeoverCandidates,
 } from "./takeover";
-import { validateDevStart } from "./validate-dev-start";
-
-export { getFlagValue, hasFlag, splitCliArgs } from "./flags";
+import {
+	assertConfiguredApps,
+	seedSelectionError,
+	validateDevStart,
+} from "./validate-dev-start";
 
 /** `undefined` keeps the process alive; a number is the exit code to use. */
 type DevFlowExit = number | undefined;
@@ -206,10 +212,15 @@ export async function runCli<
 
 	if (args.detach) {
 		const { runDetached } = await import("./dev-detach");
+		const plan = planStart(env.apps, env.services, {
+			onlyApps: selectDevApps(env, args),
+		});
 		process.exit(
 			await runDetached({
 				root: env.root,
-				expectApps: Object.keys(env.apps).length > 0,
+				expectApps: Object.values(plan.apps).some(
+					(app) => app.devCommand !== false,
+				),
 			}),
 		);
 	}
@@ -255,6 +266,8 @@ export async function runCli<
 	} catch (error) {
 		controller.abort(error);
 		timer.report();
+		// The prompt re-raises SIGINT, but the listener above runs after this.
+		if (error instanceof PromptInterruptedError) interruptCode ??= 130;
 		if (interruptCode === undefined) reportCliError(toCliError(error));
 		await teardown(env, tunnels, connect);
 		process.exit(interruptCode ?? 1);
@@ -309,7 +322,7 @@ async function confirmDestructiveMode(
 
 	const what = args.reset
 		? `--reset removes ${env.projectName}'s volumes, including its database.`
-		: "--down --all stops every buncargo environment on this machine, including other checkouts' runs.";
+		: "--down --all stops every buncargo environment you started on this machine, including other checkouts' runs.";
 	if (gate === "refuse") {
 		throw new CliError(`${what} Refusing without a terminal.`, [
 			"Pass --yes if that is really what you want.",
@@ -367,27 +380,12 @@ async function runDevFlow<
 	}
 
 	// ── App selection ────────────────────────────────────────────────────────
-	// argv only ever yields plain strings. `resolveSelectedApps` drops names that
-	// are not configured apps and the check below fails when nothing is left, so
-	// this is the single place the CLI crosses into the config's app keys.
-	let selectedAppNames: Extract<keyof TApps, string>[] | undefined =
-		selectProfileApps(env, args.profile);
-	let appsForDev: Record<string, AppConfig> = resolveSelectedApps(
-		env.apps,
-		selectedAppNames,
-	).apps;
-	if (args.appsRequested) {
-		selectedAppNames = parseRequiredCommaSeparatedFlag(
-			"--apps",
-			args.appsValue,
-		) as Extract<keyof TApps, string>[];
-		appsForDev = resolveSelectedApps(env.apps, selectedAppNames).apps;
-		if (Object.keys(appsForDev).length === 0) {
-			throw new CliError("Flag --apps requires at least one valid app name.");
-		}
-	}
+	const selectedAppNames = selectDevApps(env, args);
 
-	const plan = environmentStartPlan(env, selectedAppNames);
+	const plan = planStart(env.apps, env.services, {
+		onlyApps: selectedAppNames,
+	});
+	const appsForDev = plan.apps;
 	validateDevStart(env, args, appsForDev, plan.requiredServiceKeys);
 
 	// Before anything is started: a missing generated file fails here with its
@@ -413,9 +411,7 @@ async function runDevFlow<
 	connect?.plan(appsForDev, plan.requiredServiceKeys, env.services);
 	if (connect && !connect.active)
 		log.info("No selected endpoints to share through frp.");
-	if (env.prepareStartAsync)
-		await env.prepareStartAsync(selectedAppNames, undefined, signal);
-	else env.prepareStart?.(selectedAppNames);
+	await env.prepareStartAsync(selectedAppNames, undefined, signal);
 	const hasServices = plan.requiredServiceKeys.length > 0;
 	const overlapSeed =
 		!args.oneShot &&
@@ -424,8 +420,7 @@ async function runDevFlow<
 
 	// ── Containers ───────────────────────────────────────────────────────────
 	// Held rather than printed: a run that takes over another one activates a
-	// second time, and the failure this first attempt reports - the other run
-	// still owning the hostnames - is exactly what the takeover undoes.
+	// second time, and only that attempt describes the URLs the banner prints.
 	let hostsWarnings = args.oneShot
 		? []
 		: await timer.measure("hosts", () =>
@@ -435,8 +430,11 @@ async function runDevFlow<
 	// machine, and before the containers, so a question cannot land in the
 	// middle of startup output.
 	if (!args.oneShot) await offerMenuBarApp();
+	// Kept for the TUI, which covers the scrollback they were printed in.
+	const printedHostsWarnings: string[] = [];
 	const flushHostsWarnings = (): void => {
 		for (const warning of hostsWarnings) log.warn(warning);
+		printedHostsWarnings.push(...hostsWarnings);
 		hostsWarnings = [];
 	};
 	// Claimed here rather than left to `start()`, because only the CLI knows
@@ -454,12 +452,15 @@ async function runDevFlow<
 		startServers: false,
 		wait: true,
 		skipSeed: args.seed || args.migrate || args.upOnly || overlapSeed,
-		prefetchSeed: overlapSeed,
+		// `--seed` runs the seed next: fetch its scope beside the containers.
+		prefetchSeed: overlapSeed || args.seed,
 		prepare: args.upOnly ? "containers" : args.migrate ? "migrate" : "all",
 		onPhase: timer.record,
 		skipEnvironmentLog: true,
 		onlyApps: selectedAppNames,
 		autoStartDocker: args.dockerAutostart ? undefined : false,
+		// The dev servers below run their dev commands in CI too.
+		productionBuild: false,
 	});
 
 	let classifiedApps =
@@ -496,6 +497,7 @@ async function runDevFlow<
 		hostsWarnings = await activateNamedHosts(env, {
 			enabled: args.hosts,
 			signal,
+			takeover: candidates.names,
 		});
 		classifiedApps = {
 			startApps: { ...classifiedApps.startApps, ...candidates.apps },
@@ -581,7 +583,7 @@ async function runDevFlow<
 	}
 
 	if (args.seed) {
-		return exitWith(await runCliSeed(env, signal));
+		return exitWith(await runCliSeed(env, plan.requiredServiceKeys, signal));
 	}
 
 	if (args.upOnly) {
@@ -603,6 +605,12 @@ async function runDevFlow<
 		startApps: startableApps,
 		startNames: Object.keys(startableApps),
 	};
+	// Services and no app buncargo runs: the containers are the run. It holds
+	// them until Ctrl-C like any other run, rather than releasing them to the
+	// idle hold the moment they are up.
+	const servicesOnly =
+		hasServices &&
+		!Object.values(appsForDev).some((app) => app.devCommand !== false);
 
 	// Decided before the summary and the banner, so both describe what this run
 	// ends up doing rather than a reuse the takeover is about to undo.
@@ -697,7 +705,12 @@ async function runDevFlow<
 		});
 	}
 
-	if (nothingToSpawn && !tunnels.hasPendingTargets() && !connect?.active) {
+	if (
+		nothingToSpawn &&
+		!servicesOnly &&
+		!tunnels.hasPendingTargets() &&
+		!connect?.active
+	) {
 		if (overlapSeed)
 			assertSeedSucceeded(
 				await timer.measure("seed", () => env.runSeed({ signal })),
@@ -713,13 +726,29 @@ async function runDevFlow<
 
 	const appsStartedAt = performance.now();
 	let firstSpawn = false;
+	const spawned = new Set<string>();
+	// Parked after never coming up: the supervisor treats them as non-essential.
+	const parked = new Set<string>();
 	const view = openDevOutput(env, classifiedApps.startApps, { tui: args.tui });
+	// An app that falls over is often the first sign its database was removed
+	// under it; say who did, once, rather than leave a refused connection.
+	let lossExplained = !hasServices;
+	const explainLoss = () => {
+		if (lossExplained) return;
+		const loss = env.explainMissingContainers();
+		if (!loss) return;
+		lossExplained = true;
+		view.output.event("buncargo", loss, "warn");
+	};
 
 	try {
 		// After every prompt and the banner, which stay in the scrollback.
 		view.start();
-		// The TUI covers that scrollback: repeat why an app is missing in its
-		// Overview (events are not printed again in stream mode).
+		// The TUI covers that scrollback: repeat why an app is missing, and why
+		// the URLs are `localhost:port`, in its Overview (events are not
+		// printed again in stream mode).
+		for (const warning of printedHostsWarnings)
+			view.output.event("buncargo", warning, "warn");
 		for (const skip of leaseSkips)
 			for (const line of leaseSkipLines(skip))
 				view.output.event(skip.app, line, "warn");
@@ -741,12 +770,14 @@ async function runDevFlow<
 				runHook: async (phase, hookSignal) => {
 					await env.runServerHook?.(phase, hookSignal);
 				},
-				waitForHealth: (apps, healthSignal) =>
+				waitForHealth: (apps, healthSignal, onAppReady) =>
 					env.waitForServers({
 						onlyApps: Object.keys(apps) as Extract<keyof TApps, string>[],
 						expandRequired: false,
+						timeout: serverReadyTimeout(),
 						logReady: !overlapSeed,
 						signal: healthSignal,
+						onAppReady,
 					}),
 				recordCapture: (app, captured) => env.recordCapture(app, captured),
 				afterWave: () => {
@@ -760,7 +791,12 @@ async function runDevFlow<
 				seed: overlapSeed
 					? (seedSignal) =>
 							timer.measure("seed", () =>
-								env.runSeed({ signal: seedSignal, prefixOutput: true }),
+								// Through the run's output, so stream mode and the TUI
+								// both show it and write it to the run's `seed.log`.
+								env.runSeed({
+									signal: seedSignal,
+									onOutputLine: (line) => view.output.line("seed", line),
+								}),
 							)
 					: undefined,
 				stayOpen: nothingToSpawn ? waitForShutdownSignal : undefined,
@@ -772,6 +808,15 @@ async function runDevFlow<
 					if (!nothingToSpawn)
 						timer.record("app readiness", performance.now() - appsStartedAt);
 					timer.report();
+					// `start()` ensures the watchdog only for a run with containers,
+					// but the watchdog is also what lists live runs to BuncargoBar
+					// on the tailnet, and it stays while a run is live. Once the
+					// apps are up and not awaited, so startup pays nothing; quiet,
+					// because the TUI may own the screen.
+					if (!hasServices && options.watchdog)
+						void ensureWatchdog({ verbose: false }).catch(() => {});
+					if (servicesOnly)
+						log.success("Services ready. Press Ctrl-C to end the run.");
 				},
 				attach: args.attach,
 				extraArgs: args.passthrough,
@@ -780,14 +825,19 @@ async function runDevFlow<
 				onSignal: () => {
 					void env.releaseRun();
 				},
-				waitForHealth: async (apps) => {
-					await markApps(env, Object.keys(apps), "ready");
+				// As each app comes up, not when its whole wave has.
+				onAppReady: (name) => {
+					void markApps(env, [name], "ready");
 				},
 				// A developer's other apps should not go down with one that
 				// never came up; `ci` and library starts keep failing the run.
 				keepOthersOnFailure: env.onAppFailure !== "stop-run",
 				watch: args.watch,
 				onAppFailed: (name) => {
+					parked.add(name);
+					void markApps(env, [name], "failed");
+				},
+				onAppRestartFailed: (name) => {
 					void markApps(env, [name], "failed");
 				},
 				// Deliberately not awaited: the registry is a status file, and
@@ -798,20 +848,25 @@ async function runDevFlow<
 						timer.record("entry to first app spawn", timer.elapsedMs());
 					}
 					void recordAppSpawn(env, name, pid, attached);
+					// Activation claimed the first spawn's route; a restart claims it
+					// again in case a takeover moved it away and its run ended.
+					if (spawned.has(name)) void reclaimAppRoute(env, name);
+					spawned.add(name);
 				},
 				// A signalled exit (`code === null`) is a deliberate stop — Ctrl-C,
 				// or `buncargo stop <app>` — and reads as `stopped`. A non-zero code
 				// is the app falling over, which the supervisor also turns into a
 				// failed run.
 				onAppExit: (name, code, signal) => {
+					if (code !== null && code !== 0) explainLoss();
 					const app = appsForDev[name];
 					void markApps(
 						env,
 						[name],
-						isDeliberateExit(code, signal) &&
-							!(code === 0 && app?.kind === "worker" && app.essential !== false)
-							? "stopped"
-							: "failed",
+						appExitState(code, signal, {
+							worker: app?.kind === "worker",
+							optional: app?.essential === false || parked.has(name),
+						}),
 					);
 				},
 				onAfterWave1: async (signal) => {
@@ -831,9 +886,28 @@ async function runDevFlow<
 		return undefined;
 	} finally {
 		// First, so teardown's messages land on the user's own screen.
-		view.stop();
+		await view.stop();
 		await teardown(env, tunnels, connect);
 	}
+}
+
+/**
+ * The apps `--apps` or `--profile` select, `undefined` for every app. argv
+ * only ever yields plain strings: every `--apps` name is checked against the
+ * config's app keys here, before planning trusts them.
+ */
+function selectDevApps<TApps extends Record<string, AppConfig>>(
+	env: Pick<
+		DevEnvironment<Record<string, ServiceConfig>, TApps>,
+		"apps" | "profiles"
+	>,
+	args: DevCliArgs,
+): Extract<keyof TApps, string>[] | undefined {
+	const profile = selectProfileApps(env, args.profile);
+	if (!args.appsRequested) return profile;
+	const names = parseRequiredCommaSeparatedFlag("--apps", args.appsValue);
+	assertConfiguredApps(Object.keys(env.apps), names);
+	return names as Extract<keyof TApps, string>[];
 }
 
 /**
@@ -862,13 +936,15 @@ export function selectProfileApps<TApps extends Record<string, AppConfig>>(
 
 /**
  * `--seed` runs the environment's seed path with `force`, so an explicit seed
- * request ignores `seed.check`. Exits 1 on failure, like every other flow.
+ * request ignores `seed.check` and "not needed" can only mean the selection
+ * left out its services. Exits 1 on failure, like every other flow.
  */
 async function runCliSeed<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 >(
 	env: DevEnvironment<TServices, TApps>,
+	selectedServices: readonly string[],
 	signal?: AbortSignal,
 ): Promise<number> {
 	const outcome = await env.runSeed({ force: true, signal });
@@ -878,6 +954,13 @@ async function runCliSeed<
 			"Add a seed block to your dev config:",
 			"  seed: { command: 'bun run run:seeder' }",
 		]);
+	}
+
+	if (outcome.status === "not-needed") {
+		throw (
+			seedSelectionError(env.seed, selectedServices, env) ??
+			new CliError("The seed did not run for this selection.")
+		);
 	}
 
 	if (outcome.status === "failed") {

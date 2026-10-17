@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
 	appendFileSync,
 	existsSync,
@@ -5,8 +6,10 @@ import {
 	readFileSync,
 	renameSync,
 	rmSync,
+	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { sleep } from "../core/sleep";
 import { getProjectStateDir } from "../core/state-paths";
 
 /**
@@ -86,30 +89,108 @@ export function watchRestartRequests(
 	});
 }
 
+/** Ask the run to type `text` into `app`; the id its answer is filed under. */
 export function requestSend(
 	root: string,
 	sessionId: string,
 	app: string,
 	text: string,
-): void {
-	appendRequest(root, sessionId, "send", JSON.stringify({ app, text }));
+): string {
+	const id = randomUUID();
+	appendRequest(root, sessionId, "send", JSON.stringify({ id, app, text }));
+	return id;
 }
 
-/** Type each requested text into its app, in order, until the returned stop. */
+/**
+ * The run's answer to one send: typed, or why not. `send` waits for it, so a
+ * key that reached no app is an exit code rather than a line in the run's log.
+ */
+export type SendReply =
+	| { delivered: true }
+	| { delivered: false; reason: string };
+
+const SEND_ID = /^[\w-]+$/;
+
+function repliesDir(root: string, sessionId: string): string {
+	return `${requestFile(root, sessionId, "send")}.replies`;
+}
+
+function writeSendReply(
+	root: string,
+	sessionId: string,
+	id: string,
+	reply: SendReply,
+): void {
+	// A request line is not trusted to name a path.
+	if (!SEND_ID.test(id)) return;
+	const dir = repliesDir(root, sessionId);
+	const path = join(dir, id);
+	try {
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(`${path}.tmp`, JSON.stringify(reply));
+		renameSync(`${path}.tmp`, path);
+	} catch {
+		// The keys were handled; only the answer is lost, and `send` says so.
+	}
+}
+
+/**
+ * Type each requested text into its app, in order, until the returned stop.
+ * `send` returns why it could not, or `undefined` once it typed it.
+ */
 export function watchSendRequests(
 	root: string,
 	sessionId: string,
-	send: (app: string, text: string) => void,
+	send: (app: string, text: string) => string | undefined,
 ): () => void {
-	return watchRequests(root, sessionId, "send", (lines) => {
+	const stop = watchRequests(root, sessionId, "send", (lines) => {
 		for (const line of lines) {
 			try {
-				const { app, text } = JSON.parse(line) as { app: string; text: string };
-				if (typeof app === "string" && typeof text === "string")
-					send(app, text);
+				const { id, app, text } = JSON.parse(line) as {
+					id?: unknown;
+					app: string;
+					text: string;
+				};
+				if (typeof app !== "string" || typeof text !== "string") continue;
+				const refusal = send(app, text);
+				if (typeof id === "string")
+					writeSendReply(
+						root,
+						sessionId,
+						id,
+						refusal === undefined
+							? { delivered: true }
+							: { delivered: false, reason: refusal },
+					);
 			} catch {
 				// A torn line: the request is lost, not the run.
 			}
 		}
 	});
+	return () => {
+		stop();
+		rmSync(repliesDir(root, sessionId), { recursive: true, force: true });
+	};
+}
+
+/** The run's answer to request `id`, or `undefined` when none came in time. */
+export async function awaitSendReply(
+	root: string,
+	sessionId: string,
+	id: string,
+	timeoutMs: number,
+): Promise<SendReply | undefined> {
+	const path = join(repliesDir(root, sessionId), id);
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		try {
+			const reply = JSON.parse(readFileSync(path, "utf8")) as SendReply;
+			rmSync(path, { force: true });
+			return reply;
+		} catch {
+			// Not answered yet.
+		}
+		if (Date.now() >= deadline) return undefined;
+		await sleep(50);
+	}
 }

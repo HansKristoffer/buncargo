@@ -1,6 +1,8 @@
 import { expect, it } from "bun:test";
 import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
+import { listRunLogDirs } from "../core/process/app-logs";
+import { standInForWatchdog } from "../core/watchdog.testing";
 import { parallelSeedFixture } from "../environment/parallel-seed.testing";
 
 it.each([
@@ -12,6 +14,7 @@ it.each([
 	"CLI overlaps seed and apps and joins readiness (failed seed=%s, color=%s)",
 	async (failSeed, color) => {
 		const fixture = await parallelSeedFixture({ beforeApps: false, failSeed });
+		await standInForWatchdog(fixture.root);
 		const child = Bun.spawn(
 			[
 				process.execPath,
@@ -70,6 +73,8 @@ it.each([
 					await Bun.file(join(fixture.root, "seed-finished")).exists(),
 				).toBe(true);
 				expect(stripVTControlCharacters(output)).toMatch(/seed\s+seed output/);
+				// Stream mode writes the seed to the run's logs, as the TUI does.
+				expect(await seedLog(fixture.root, deadline)).toContain("seed output");
 				expect(
 					(await Bun.file(join(fixture.root, "events")).text())
 						.trim()
@@ -102,3 +107,14 @@ it.each([
 	},
 	15000,
 );
+
+/** The run's `seed.log`, once its buffered write has landed. */
+async function seedLog(root: string, deadline: number): Promise<string> {
+	while (Date.now() < deadline) {
+		const [dir] = listRunLogDirs(root);
+		const file = dir ? Bun.file(join(dir, "seed.log")) : undefined;
+		if (file && (await file.exists())) return file.text();
+		await Bun.sleep(20);
+	}
+	return "";
+}

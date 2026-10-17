@@ -241,10 +241,32 @@ export async function matchesProcessIdentityAsync(
 	identity?: string,
 	signal?: AbortSignal,
 ): Promise<boolean> {
+	return (await checkProcessIdentityAsync(pid, identity, signal)) === "match";
+}
+
+/**
+ * `unreadable`: the pid runs, but its birth could not be read (`ps` failed or
+ * timed out). Not a mismatch: a caller about to report a process stopped must
+ * not read it as "already gone".
+ */
+export type ProcessIdentityCheck = "match" | "mismatch" | "unreadable";
+
+/** {@link matchesProcessIdentityAsync}, telling "cannot tell" apart from "no". */
+export async function checkProcessIdentityAsync(
+	pid: number,
+	identity?: string,
+	signal?: AbortSignal,
+): Promise<ProcessIdentityCheck> {
 	signal?.throwIfAborted();
-	if (!Number.isInteger(pid) || pid <= 1 || !isProcessAlive(pid)) return false;
-	if (identity === undefined) return true;
-	return (await readProcessIdentityAsync(pid, signal)) === identity;
+	if (!Number.isInteger(pid) || pid <= 1 || !isProcessAlive(pid))
+		return "mismatch";
+	if (identity === undefined) return "match";
+	const actual = await readProcessIdentityAsync(pid, signal);
+	if (actual === identity) return "match";
+	// Linux reads nothing for a pid that exited during the read.
+	if (actual === undefined)
+		return isProcessAlive(pid) ? "unreadable" : "mismatch";
+	return "mismatch";
 }
 
 type IdentityEntry = { pid: number; processIdentity?: string };
@@ -281,21 +303,12 @@ function identityMatcher(
  * Returns a predicate rather than a filtered list so callers keep whatever
  * shape their entries have.
  */
-export function processIdentityMatcher(
-	entries: readonly IdentityEntry[],
-): (pid: number, identity?: string) => boolean {
-	// Only live pids are worth an identity, and asking `ps` about one that is
-	// not a pid at all makes it refuse the whole batch.
-	const alive = livePids(entries);
-	const identities = readProcessIdentities([...alive]);
-	return identityMatcher(alive, identities);
-}
-
-/** Same forgiving liveness policy, without blocking the event loop. */
 export async function processIdentityMatcherAsync(
 	entries: readonly IdentityEntry[],
 	signal?: AbortSignal,
 ): Promise<(pid: number, identity?: string) => boolean> {
+	// Only live pids are worth an identity, and asking `ps` about one that is
+	// not a pid at all makes it refuse the whole batch.
 	const alive = livePids(entries);
 	return identityMatcher(
 		alive,

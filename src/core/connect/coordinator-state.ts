@@ -11,7 +11,7 @@ export interface CoordinatorState {
 	bundle: string;
 	updatedAt: number;
 	ready: boolean;
-	connection?: { port: number; token: string };
+	connection: { port: number; token: string };
 	cli: { program: string; script?: string };
 }
 

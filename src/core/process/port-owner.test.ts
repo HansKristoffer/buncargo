@@ -6,6 +6,7 @@ import {
 	canBindPort,
 	classifyPortOccupant,
 	formatPortOwner,
+	killPortOwnerFoundBy,
 	type PortOwner,
 	signalProcessTree,
 	withBindProbe,
@@ -229,6 +230,48 @@ it("does not classify a neighboring checkout sharing a prefix as ours", () => {
 			{ root: "/repo", projectName: "demo" },
 		),
 	).toBe("kill");
+});
+
+it("does not classify a worktree checked out inside the root as ours", () => {
+	const checkouts = new Set(["/repo/.claude/worktrees/x", "/repo/vendor/tool"]);
+	const classify = (cwd: string) =>
+		classifyPortOccupant(
+			{ pids: [123], cwd },
+			{
+				root: "/repo",
+				projectName: "demo",
+				isCheckoutRoot: (dir) => checkouts.has(dir),
+			},
+		);
+	expect(classify("/repo/.claude/worktrees/x")).toBe("fail");
+	expect(classify("/repo/.claude/worktrees/x/apps/web")).toBe("fail");
+	expect(classify("/repo/vendor/tool/bin")).toBe("fail");
+	expect(classify("/repo/.claude/worktrees")).toBe("kill");
+	expect(classify("/repo/apps/web")).toBe("kill");
+	expect(classify("/repo")).toBe("kill");
+});
+
+describe("killPortOwner", () => {
+	it("never signals the process behind a port a container holds", async () => {
+		// On Docker Desktop the listener is the runtime's own backend.
+		const backend = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+		const pid = backend.pid ?? 0;
+		try {
+			await expect(
+				killPortOwnerFoundBy(
+					() => ({
+						pids: [pid],
+						command: "com.docker.backend",
+						container: { id: "abc", name: "web-1", composeProject: "shop" },
+					}),
+					5432,
+				),
+			).rejects.toThrow("Port 5432 is held by container web-1 (project shop)");
+			expect(isProcessAlive(pid)).toBe(true);
+		} finally {
+			process.kill(pid, "SIGKILL");
+		}
+	});
 });
 
 describe("bind probe", () => {

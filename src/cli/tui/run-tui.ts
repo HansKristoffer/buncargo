@@ -40,7 +40,7 @@ export interface TuiAction {
 	open: string;
 }
 
-export interface RunTuiOptions {
+interface RunTuiOptions {
 	output: RunOutput;
 	apps: readonly string[];
 	/** The URL `o` opens for an app (what BuncargoBar's open does). */
@@ -107,6 +107,26 @@ interface SelectionEnd {
 	row?: number;
 }
 
+/**
+ * Route SIGINT to `onInterrupt` alone until the returned release, which puts
+ * the process's own listeners back. The pager gets the terminal in cooked
+ * mode, so Ctrl-C there signals this whole process group: without this it
+ * would end the run instead of closing the pager. Bun signals the listeners
+ * directly, so they have to be moved aside rather than filtered.
+ */
+function holdInterrupts(onInterrupt: () => void): () => void {
+	const held = process.listeners("SIGINT");
+	process.removeAllListeners("SIGINT");
+	process.on("SIGINT", onInterrupt);
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		process.off("SIGINT", onInterrupt);
+		for (const listener of held) process.on("SIGINT", listener);
+	};
+}
+
 export class RunTui {
 	private selected = 0;
 	private interacting = false;
@@ -137,6 +157,8 @@ export class RunTui {
 	private active = false;
 	private suspended = false;
 	private pager?: Bun.Subprocess;
+	/** Gives the run its own SIGINT listeners back once the pager is closed. */
+	private releaseInterrupts?: () => void;
 	private hooked = new WeakSet<object>();
 	private unsubscribe?: () => void;
 	private restoreOutput?: () => void;
@@ -145,7 +167,16 @@ export class RunTui {
 	private readonly onInput = (data: Buffer | string) =>
 		this.input(String(data));
 	private readonly onResize = () => this.layout(true);
-	private readonly onExit = () => this.restoreTerminal();
+	/**
+	 * A crash gives the terminal back before Bun prints the error, or leaving
+	 * the alternate screen at exit would erase it. A rejection has no monitor
+	 * event: restore, then rethrow, so it still prints and exits 1.
+	 */
+	private readonly onExit = () => this.stop();
+	private readonly onRejection = (reason: unknown) => {
+		this.stop();
+		throw reason;
+	};
 
 	constructor(private readonly options: RunTuiOptions) {
 		this.stdin = options.stdin ?? process.stdin;
@@ -187,6 +218,8 @@ export class RunTui {
 		this.stdin.on("data", this.onInput);
 		this.stdout.on("resize", this.onResize);
 		process.on("exit", this.onExit);
+		process.on("uncaughtExceptionMonitor", this.onExit);
+		process.on("unhandledRejection", this.onRejection);
 		this.invalidate();
 	}
 
@@ -195,12 +228,15 @@ export class RunTui {
 		this.active = false;
 		// An open pager would hold the terminal past the run.
 		this.pager?.kill();
+		this.releaseInterrupts?.();
 		clearTimeout(this.timer);
 		clearTimeout(this.escTimer);
 		this.unsubscribe?.();
 		this.stdin.off("data", this.onInput);
 		this.stdout.off("resize", this.onResize);
 		process.off("exit", this.onExit);
+		process.off("uncaughtExceptionMonitor", this.onExit);
+		process.off("unhandledRejection", this.onRejection);
 		this.restoreTerminal();
 		this.restoreOutput?.();
 		this.stdin.pause();
@@ -701,10 +737,12 @@ export class RunTui {
 			this.pager = Bun.spawn([...pager, path], {
 				stdio: ["inherit", "inherit", "inherit"],
 			});
+			this.releaseInterrupts = holdInterrupts(() => this.pager?.kill());
 			await this.pager.exited;
 		} catch {
 			this.message = `Could not run ${pager[0]}`;
 		} finally {
+			this.releaseInterrupts?.();
 			this.pager = undefined;
 			this.suspended = false;
 			// The run may have ended while the pager was open: then the

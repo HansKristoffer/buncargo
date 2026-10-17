@@ -11,8 +11,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isProcessAlive } from "../core/process/lifecycle";
 import { shellQuote } from "../core/shell-quote";
+import { isolateHome } from "../core/test-env.testing";
 import { clearDevEnvCache, loadDevEnv } from "../loader";
 import { createDevEnvironment } from "./create-dev-environment";
+
+isolateHome("buncargo-sessions-home-");
 
 it("does not retain cancellation listeners across preparation-only starts", async () => {
 	const root = mkdtempSync(join(tmpdir(), "buncargo preparation listeners "));
@@ -50,8 +53,16 @@ it("runs independent same-checkout sessions and stops only the session's own app
 	]);
 	try {
 		await Promise.all([
-			first.start({ onlyApps: ["one"], productionBuild: false }),
-			second.start({ onlyApps: ["two"], productionBuild: false }),
+			first.start({
+				onlyApps: ["one"],
+				productionBuild: false,
+				watchdog: false,
+			}),
+			second.start({
+				onlyApps: ["two"],
+				productionBuild: false,
+				watchdog: false,
+			}),
 		]);
 		expect(await (await fetch(first.urls.one)).text()).toBe("one");
 		await first.stop({ verbose: false });
@@ -91,7 +102,11 @@ it("rejects overlapping starts on one mutable environment before changing its se
 	);
 	try {
 		const first = env
-			.start({ signal: controller.signal, productionBuild: false })
+			.start({
+				signal: controller.signal,
+				productionBuild: false,
+				watchdog: false,
+			})
 			.then(
 				() => undefined,
 				(error) => error,
@@ -129,10 +144,11 @@ it.each(["start", "startServers"] as const)(
 			},
 			{ root },
 		);
-		const starting = env[method]({
-			verbose: false,
-			productionBuild: false,
-		}).catch((error) => error);
+		const starting = (
+			method === "start"
+				? env.start({ verbose: false, productionBuild: false, watchdog: false })
+				: env.startServers({ verbose: false, productionBuild: false })
+		).catch((error) => error);
 		try {
 			await hookEntered;
 			await env.stop({ verbose: false });
@@ -183,7 +199,11 @@ it("stops the replacement worker after a capture restart in a library session", 
 			? readFileSync(join(root, "pids"), "utf8").trim().split("\n").map(Number)
 			: [];
 	try {
-		await env.start({ verbose: false, productionBuild: false });
+		await env.start({
+			verbose: false,
+			productionBuild: false,
+			watchdog: false,
+		});
 		const deadline = performance.now() + 3000;
 		while (pids().length < 1 && performance.now() < deadline)
 			await Bun.sleep(10);

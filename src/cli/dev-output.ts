@@ -1,6 +1,7 @@
-import { appEntryPath, preferredAppUrl } from "../core/app-url";
+import { environmentOpenUrl } from "../core/app-url";
 import { AppLogs } from "../core/process/app-logs";
 import { printStream, RunOutput } from "../core/process/run-output";
+import { isInteractive } from "../core/prompt";
 import { prefixWidth } from "../core/style";
 import type { AppConfig } from "../types";
 import * as log from "./log";
@@ -28,7 +29,7 @@ export function openDevOutput(
 	env: DevOutputSource,
 	apps: Record<string, AppConfig>,
 	options: { tui: "auto" | "on" | "off" },
-): { output: RunOutput; start(): void; stop(): void } {
+): { output: RunOutput; start(): void; stop(): Promise<void> } {
 	let logs: AppLogs | undefined;
 	try {
 		logs = new AppLogs(env.root, env.sessionId);
@@ -37,7 +38,7 @@ export function openDevOutput(
 	}
 	const output = new RunOutput(logs);
 	const names = Object.keys(apps);
-	const terminal = Boolean(process.stdout.isTTY && process.stdin.isTTY);
+	const terminal = isInteractive();
 	if (options.tui === "on" && !terminal)
 		log.warn("--tui needs a terminal; printing prefixed lines instead.");
 
@@ -47,13 +48,12 @@ export function openDevOutput(
 			? new RunTui({
 					output,
 					apps: names,
-					urlFor: (app) => appOpenUrl(env, app),
+					urlFor: (app) => environmentOpenUrl(env, app),
 					actions,
 					logPath: (app) => (app ? logs?.file(app) : logs?.dir),
 					quit: () => process.kill(process.pid, "SIGINT"),
 				})
 			: undefined;
-	if (tui) output.terminalSize = () => tui.paneSize();
 	const stopPrinting = tui
 		? undefined
 		: printStream(output, { width: prefixWidth(names) });
@@ -86,14 +86,13 @@ export function openDevOutput(
 	// Keys for an app under a pseudo-terminal: one in the TUI, or an
 	// interactive app with no terminal to attach to.
 	const stopSends = watchSendRequests(env.root, env.sessionId, (app, text) => {
-		const screen = output.screens.get(app);
-		if (screen) screen.input(text);
-		else
-			output.event(
-				app,
-				"buncargo send: this app reads no keys (it has no terminal of its own)",
-				"warn",
-			);
+		const refusal = sendRefusal(output, app);
+		if (refusal !== undefined) {
+			output.event(app, `buncargo send: ${refusal}`, "warn");
+			return refusal;
+		}
+		output.screens.get(app)?.input(text);
+		return undefined;
 	});
 	const stopWatching = () => {
 		stopRestarts();
@@ -103,31 +102,27 @@ export function openDevOutput(
 	return {
 		output,
 		start: () => tui?.start(),
-		stop: () => {
+		stop: async () => {
 			tui?.stop();
+			// Before the printer goes: what the apps left on screen is printed too.
+			await output.close();
 			stopStream();
 			stopWatching();
-			output.close();
 		},
 	};
 }
 
-/** The URL `o` and `buncargo open <app>` use, from the live environment. */
-export function appOpenUrl(
-	env: DevOutputSource,
+/** Why `app` cannot take keys from `buncargo send`, or `undefined` when it can. */
+export function sendRefusal(
+	output: Pick<RunOutput, "screens" | "states">,
 	app: string,
 ): string | undefined {
-	const read = (urls: object) =>
-		(urls as Record<string, string | undefined>)[app];
-	return preferredAppUrl(
-		{
-			url: read(env.urls),
-			loopbackUrl: read(env.loopbackUrls),
-			publicUrl: read(env.publicUrls),
-			entryPath: appEntryPath(read(env.apps ?? {})),
-		},
-		env.hosts?.active ?? false,
-	);
+	if (!output.screens.has(app))
+		return "it has no terminal of its own to type into; every app in the TUI has one, and outside it an app with interactive: true";
+	const state = output.states.get(app)?.state;
+	if (state === "stopped" || state === "failed")
+		return `it is not running (${state}); start it again with \`buncargo restart ${app}\``;
+	return undefined;
 }
 
 function appActions(apps: Record<string, AppConfig>): TuiAction[] {

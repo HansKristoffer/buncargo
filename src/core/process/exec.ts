@@ -5,7 +5,7 @@ import type { ExecOptions, ExecResult } from "../../types";
 import { childProcessEnv } from "../child-env";
 import { abortError, registerAbortCleanup } from "../deadline";
 import { recordStartupMetric } from "../startup-metrics";
-import { prefixOutput } from "./prefix-output";
+import { forEachOutputLine, prefixOutput } from "./prefix-output";
 import { terminateOwnedProcess } from "./terminate";
 
 export type { ExecResult };
@@ -77,13 +77,14 @@ export function exec(
 }
 
 /**
- * Execute a shell command asynchronously.
+ * Execute a shell command asynchronously. With `verbose`, `onOutputLine`
+ * takes each line of output instead of the terminal.
  */
 export async function execAsync(
 	cmd: string | readonly string[],
 	root: string,
 	envVars: Record<string, string>,
-	options: ExecOptions = {},
+	options: ExecOptions & { onOutputLine?: (line: string) => void } = {},
 ): Promise<ExecResult> {
 	const {
 		cwd,
@@ -94,6 +95,8 @@ export async function execAsync(
 		timeoutMs,
 		killGraceMs = 1000,
 		maxBufferBytes,
+		outputPrefix,
+		onOutputLine,
 	} = options;
 	signal?.throwIfAborted();
 	const executable = typeof cmd === "string" ? cmd : cmd[0];
@@ -110,16 +113,14 @@ export async function execAsync(
 				shell: typeof cmd === "string",
 				detached: true,
 				stdio:
-					verbose && !options.outputPrefix
+					verbose && !outputPrefix && !onOutputLine
 						? "inherit"
 						: ["ignore", "pipe", "pipe"],
 			},
 		);
-		if (verbose && options.outputPrefix)
-			prefixOutput(options.outputPrefix, child, {
-				width: options.outputPrefix.length,
-				onFirstWrite: () => {},
-			});
+		if (verbose && onOutputLine) forEachOutputLine(child, onOutputLine);
+		else if (verbose && outputPrefix)
+			prefixOutput(outputPrefix, child, { width: outputPrefix.length });
 		let stdout = "";
 		let stderr = "";
 		let cancelling = false;

@@ -26,7 +26,7 @@ import type {
 	ServiceConfig,
 } from "../types";
 import { capturedEnv } from "./captures";
-import type { DevEnvContext } from "./context";
+import type { DevEnvContext, StartSelection } from "./context";
 
 export interface DevEnvVarsApi<
 	TServices extends Record<string, ServiceConfig>,
@@ -46,13 +46,16 @@ export interface DevEnvVarsApi<
 		appName: Extract<keyof TApps, string>,
 		production?: boolean,
 	): string;
+	/** Without a selection, hooks see the prepared one (every name before preparation). */
 	getHookContext(
 		signal?: AbortSignal,
-		selection?: { appNames: string[]; requiredServiceKeys: string[] },
+		selection?: StartSelection,
 	): HookContext<TServices, TApps>;
+	/** `production` builds the env a production start gives its processes. */
 	exec(
 		cmd: string | readonly string[],
 		options?: ExecOptions,
+		production?: boolean,
 	): Promise<ExecResult>;
 	/**
 	 * The secrets a command gets: `explicit`, else the app's scope, else the
@@ -232,8 +235,7 @@ export function createEnvVarsApi<
 		const resolved = resolveScope(scope, config.secrets);
 		if (!resolved) return {};
 		try {
-			const values = await loadScopeSecrets(scope, {
-				defaults: config.secrets,
+			const values = await loadScopeSecrets(resolved, {
 				signal: options.signal,
 				onWait: (ms) => ctx.onSecretsWait?.(ms),
 			});
@@ -254,6 +256,7 @@ export function createEnvVarsApi<
 	async function exec(
 		cmd: string | readonly string[],
 		options?: ExecOptions,
+		production = false,
 	): Promise<ExecResult> {
 		if (options?.app !== undefined && !apps[options.app]) {
 			throw new Error(`Unknown app "${options.app}"`);
@@ -261,8 +264,11 @@ export function createEnvVarsApi<
 
 		const computed: Record<string, string> =
 			options?.app === undefined
-				? buildEnvVars()
-				: buildAppEnvVars(options.app as Extract<keyof TApps, string>);
+				? buildEnvVars(production)
+				: buildAppEnvVars(
+						options.app as Extract<keyof TApps, string>,
+						production,
+					);
 		// Beneath the computed env and anything passed explicitly, like an app's.
 		const secrets = await resolveSecrets(options?.secrets, {
 			app: options?.app,
@@ -288,11 +294,11 @@ export function createEnvVarsApi<
 
 	function getHookContext(
 		signal?: AbortSignal,
-		selection?: { appNames: string[]; requiredServiceKeys: string[] },
+		selection: StartSelection | undefined = ctx.selection,
 	): HookContext<TServices, TApps> {
 		if (selection) {
 			return {
-				...getHookContext(signal),
+				...scopedHookContext(signal),
 				selectedApps: selection.appNames as Extract<keyof TApps, string>[],
 				selectedServices: selection.requiredServiceKeys as Extract<
 					keyof TServices,
@@ -300,7 +306,12 @@ export function createEnvVarsApi<
 				>[],
 			};
 		}
+		return scopedHookContext(signal);
+	}
 
+	function scopedHookContext(
+		signal?: AbortSignal,
+	): HookContext<TServices, TApps> {
 		if (!hookContext) {
 			hookContext = {
 				selectedApps: Object.keys(apps) as Extract<keyof TApps, string>[],

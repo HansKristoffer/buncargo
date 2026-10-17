@@ -1,4 +1,5 @@
+import { buncargoVersion } from "../../core/version";
+
 export function showVersion(): void {
-	const pkg = require("../../../package.json");
-	console.log(`buncargo v${pkg.version}`);
+	console.log(`buncargo v${buncargoVersion() ?? "of unknown version"}`);
 }

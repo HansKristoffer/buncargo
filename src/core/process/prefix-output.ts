@@ -1,49 +1,49 @@
 import type { ChildProcess } from "node:child_process";
 import { formatPrefixedLine, isBlankLogLine } from "../style";
 
-function prefixStream(
-	name: string,
+function forEachLine(
 	stream: NodeJS.ReadableStream | null,
-	options: {
-		width: number;
-		onFirstWrite: () => void;
-		onText?: (text: string) => void;
-	},
+	onLine: (line: string) => void,
 ): void {
 	if (!stream) {
 		return;
 	}
 
 	let buffer = "";
-	const writeLine = (line: string) => {
-		if (isBlankLogLine(line)) {
-			return;
-		}
-		options.onFirstWrite();
-		process.stdout.write(formatPrefixedLine(name, line, options.width));
+	const emit = (line: string) => {
+		if (!isBlankLogLine(line)) onLine(line);
 	};
 	stream.on("data", (chunk: Buffer | string) => {
-		options.onText?.(String(chunk));
 		buffer += String(chunk);
 		const lines = buffer.split("\n");
 		buffer = lines.pop() ?? "";
 		for (const line of lines) {
-			writeLine(line);
+			emit(line);
 		}
 	});
 	stream.on("end", () => {
 		if (buffer) {
-			writeLine(buffer);
+			emit(buffer);
 		}
 	});
+}
+
+/** Each non-blank line of a piped child's stdout and stderr. */
+export function forEachOutputLine(
+	child: ChildProcess,
+	onLine: (line: string) => void,
+): void {
+	forEachLine(child.stdout, onLine);
+	forEachLine(child.stderr, onLine);
 }
 
 /** Both output streams of a piped child, prefixed with its name. */
 export function prefixOutput(
 	name: string,
 	child: ChildProcess,
-	options: Parameters<typeof prefixStream>[2],
+	options: { width: number },
 ): void {
-	prefixStream(name, child.stdout, options);
-	prefixStream(name, child.stderr, options);
+	forEachOutputLine(child, (line) =>
+		process.stdout.write(formatPrefixedLine(name, line, options.width)),
+	);
 }

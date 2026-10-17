@@ -15,7 +15,6 @@ import {
 	extractManagedBlock,
 	HOSTS_BLOCK_END,
 	HOSTS_BLOCK_START,
-	readManagedHostnames,
 	syncHostsFile,
 } from "./hosts-file";
 
@@ -45,14 +44,6 @@ describe("hosts file block", () => {
 		const cleaned = applyHostsBlock(withBlock, []);
 		expect(cleaned).not.toContain(HOSTS_BLOCK_START);
 		expect(cleaned).toContain("127.0.0.1 localhost");
-	});
-
-	it("reads managed hostnames from a block", () => {
-		const contents = applyHostsBlock("", ["api.localhost", "web.localhost"]);
-		expect(readManagedHostnames(contents).sort()).toEqual([
-			"api.localhost",
-			"web.localhost",
-		]);
 	});
 
 	it("extracts nothing when no block exists", () => {

@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { standInForWatchdog } from "../../src/core/watchdog.testing";
 import { shopifySessionFile } from "../../src/shopify/cli";
 
 /**
@@ -56,6 +57,9 @@ async function buncargo(...args: string[]) {
 beforeAll(async () => {
 	root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-shopify-example-")));
 	home = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-shopify-home-")));
+	// The run ensures a watchdog once its apps are up; one started from this
+	// home outlived the test and swept the machine's real stacks.
+	await standInForWatchdog(home);
 	// A developer who is logged in: the login preflight trusts a fresh session.
 	const session = shopifySessionFile(home, env());
 	mkdirSync(dirname(session), { recursive: true });

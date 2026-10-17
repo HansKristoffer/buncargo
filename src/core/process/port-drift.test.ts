@@ -90,14 +90,19 @@ describe("startDevServers port drift", () => {
 				root,
 				{},
 				{ marketing: assigned },
-				{ verbose: false, waitForExit: false },
+				{
+					verbose: false,
+					waitForExit: false,
+					// Once its port was found free and the app spawned.
+					onAppSpawned: () => {
+						holder = Bun.listen({
+							hostname: "127.0.0.1",
+							port: assigned,
+							socket: { data() {} },
+						});
+					},
+				},
 			);
-			await Bun.sleep(150);
-			holder = Bun.listen({
-				hostname: "127.0.0.1",
-				port: assigned,
-				socket: { data() {} },
-			});
 			await expect(run).rejects.toThrow(
 				`marketing listens on :${drifted}, not its assigned :${assigned}`,
 			);

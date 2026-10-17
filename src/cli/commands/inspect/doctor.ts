@@ -9,7 +9,9 @@ import {
 import {
 	describeLoopbackHijack,
 	doctorFixHosts,
+	isRouteLive,
 	loadHostRoutes,
+	OUTDATED_DAEMON_MESSAGE,
 	type ProxyHealth,
 	RELOAD_STALL_MS,
 	readDaemonConfig,
@@ -23,11 +25,14 @@ import {
 	readInstalledBarInfo,
 } from "../../../core/menubar";
 import {
-	duplicateOffsetClaims,
-	readOffsetClaims,
+	describeOffsetClaimOverlap,
+	overlappingOffsetClaims,
+	sharedProjectNameClaims,
 } from "../../../core/offset-claims";
 import {
+	foreignLockfile,
 	getPortsLockfilePath,
+	readOffsetClaimsWithPorts,
 	readPortsLockfile,
 } from "../../../core/port-allocation";
 import {
@@ -36,12 +41,12 @@ import {
 	getPortOwner,
 	withBindProbe,
 } from "../../../core/process";
-import { isRouteOwnerAlive } from "../../../core/registry-file";
 import {
-	loadRuns,
 	REGISTRY_VERSION,
-	readLiveRuns,
+	readAllRuns,
+	runLivenessAsync,
 } from "../../../core/run-registry";
+import { describeSwept } from "../../../core/watchdog-loop";
 import { loadDevEnv } from "../../../loader";
 import type { AnyDevEnvironment } from "../../../types";
 import { describeCheckFailures, isWarning, runChecks } from "../../checks";
@@ -78,7 +83,6 @@ async function checkSetupChecks(
 	}
 }
 
-/** Collects the doctor report so each check stays a small pure-ish function. */
 /** Above this share of the open-file table, name who holds the most. */
 const FILE_TABLE_NOTE = 0.5;
 const FILE_TABLE_ISSUE = 0.8;
@@ -111,6 +115,7 @@ function checkFileTable(report: DoctorReport): void {
 	else report.note(message);
 }
 
+/** Collects the doctor report so each check stays a small pure-ish function. */
 class DoctorReport {
 	readonly issues: string[] = [];
 	readonly notes: string[] = [];
@@ -176,24 +181,27 @@ function checkPortOwnership(
 function checkPortsLockfile(report: DoctorReport, env: DevEnv): void {
 	const lockfile = readPortsLockfile(env.root);
 	if (!lockfile) return;
-	if (
-		(lockfile.projectName !== undefined &&
-			lockfile.projectName !== env.projectName) ||
-		(lockfile.root !== undefined && lockfile.root !== env.root)
-	) {
+	const foreign = foreignLockfile(lockfile, env);
+	if (foreign) {
 		report.issue(
-			`Stale ${getPortsLockfilePath(env.root)} (project/root mismatch). Delete it or run buncargo dev to rewrite it.`,
+			`Stale ${getPortsLockfilePath(env.root)}: ${foreign}. Delete it or run buncargo dev to rewrite it.`,
 		);
 		return;
 	}
 	report.note(`ports.json offset ${lockfile.offset} looks consistent`);
 }
 
-/** Two checkouts on one offset collide whenever both run (a lost race, a copied lockfile). */
+/** Two checkouts whose blocks overlap collide whenever both run (a lost race, a copied lockfile). */
 function checkOffsetClaims(report: DoctorReport): void {
-	for (const [offset, holders] of duplicateOffsetClaims(readOffsetClaims()))
+	const claims = readOffsetClaimsWithPorts();
+	for (const overlap of overlappingOffsetClaims(claims))
 		report.issue(
-			`Offset ${offset} is claimed by ${holders.join(" and ")}. Move one: \`buncargo ports pin <offset>\` in that checkout.`,
+			`${describeOffsetClaimOverlap(overlap)}. Move one: \`buncargo ports pin <offset>\` in that checkout.`,
+		);
+	// Claimed before runs refused a shared name: they share one database.
+	for (const [projectName, holders] of sharedProjectNameClaims(claims))
+		report.issue(
+			`Compose project ${projectName} is used by ${holders.join(" and ")}, so they share its containers and volumes. Give one its own projectPrefix and start it once, or release the claims of one that no longer runs under it: \`buncargo ports release --root <path>\`.`,
 		);
 }
 
@@ -208,13 +216,16 @@ async function checkOrphanedContainers(
 			runtimes: [runtime],
 			except: { projectName: env.projectName, root: env.root },
 		});
-		for (const stack of result.swept)
-			report.note(
-				`Removed ${stack.projectName} (${stack.root}): ${stack.reason}`,
-			);
+		for (const stack of result.swept) report.note(describeSwept(stack));
 		for (const failure of result.failed)
 			report.issue(
 				`Could not remove ${failure.projectName} (${failure.root}): ${failure.error}`,
+			);
+		// Not this user's to remove: another user's buncargo on a shared
+		// daemon, or state that was wiped. Said, never touched.
+		for (const stack of result.foreign)
+			report.note(
+				`warning: ${stack.projectName} (${stack.root || "no checkout recorded"}, ${stack.runtime}) is not in this user's runs or port claims, and ${stack.reason}. It belongs to another user's buncargo or to wiped state, so it is left alone. If it is orphaned, remove it by hand: ${stack.command}`,
 			);
 		// Same project name from another checkout, still owned: a run in a
 		// worktree that resolved to this project's identity. Survived the
@@ -284,10 +295,7 @@ async function checkNamedHosts(
 		report.issue(staleService);
 	}
 	const hostRoutes = (await loadHostRoutes(undefined, { strict: true })).filter(
-		(route) =>
-			route.pid !== undefined
-				? isRouteOwnerAlive(route.pid)
-				: !route.root || existsSync(route.root),
+		(route) => isRouteLive(route),
 	);
 	report.note(
 		hostRoutes.length === 0
@@ -308,7 +316,11 @@ function reportDaemonRouteGap(
 	health: ProxyHealth | undefined,
 	registered: Array<{ hostname: string }>,
 ): void {
-	if (!health?.hostnames) return;
+	if (!health) return;
+	if (health.outdated) {
+		report.issue(`Named-hosts: ${OUTDATED_DAEMON_MESSAGE}`);
+		return;
+	}
 
 	const served = new Set(health.hostnames);
 	const missing = registered
@@ -320,7 +332,6 @@ function reportDaemonRouteGap(
 		);
 	}
 
-	if (health.lastReloadAt === undefined) return;
 	const ageMs = Date.now() - health.lastReloadAt;
 	if (ageMs > RELOAD_STALL_MS) {
 		report.issue(
@@ -359,22 +370,21 @@ async function checkSelectedRuntime(
 }
 
 /**
- * Prune runs whose owner is gone, and say how many.
+ * Say how many runs are registered, and how many of those have ended and
+ * only hold their containers for reuse.
  *
- * The registry prunes itself on every read, so this is really a report. It is
- * here because "the menu bar shows a project that is not running" is a support
- * question, and this is where someone looks.
+ * A report, not a cleanup: the sweep retires what is finished. It is
+ * here because "the menu bar shows a project that is not running" is a
+ * support question, and this is where someone looks.
  */
 async function checkRunRegistry(report: DoctorReport): Promise<void> {
 	try {
-		const before = (await loadRuns()).length;
-		const after = (await readLiveRuns()).length;
-		if (before !== after) {
-			report.note(
-				`Found ${before - after} stale run entr${before - after === 1 ? "y" : "ies"}`,
-			);
-		}
-		report.note(`${after} active run${after === 1 ? "" : "s"} registered`);
+		const runs = await readAllRuns();
+		const active = runs.filter(await runLivenessAsync(runs)).length;
+		const held = runs.length - active;
+		report.note(
+			`${active} active run${active === 1 ? "" : "s"}, ${held} held for reuse`,
+		);
 	} catch (error) {
 		report.issue(
 			`Could not read the run registry: ${error instanceof Error ? error.message : String(error)}`,

@@ -8,8 +8,8 @@ import {
 } from "../core/secrets/infisical";
 import { prefetchSecrets } from "./prefetch-secrets";
 
-it("prefetches distinct app, seed and migration scopes and consumers wait near zero", async () => {
-	const fake = startFakeInfisical({ requestDelayMs: 100 });
+it("prefetches distinct app, seed and migration scopes that consumers share", async () => {
+	const fake = startFakeInfisical({ holdRequests: true });
 	const home = process.env.HOME;
 	const binary = process.env.BUNCARGO_INFISICAL_PATH;
 	process.env.HOME = fake.home;
@@ -29,6 +29,8 @@ it("prefetches distinct app, seed and migration scopes and consumers wait near z
 			secrets: { projectId: "app", siteUrl: fake.siteUrl },
 		},
 	};
+	const listRequests = () =>
+		fake.requests.filter((request) => request === "GET /api/v4/secrets");
 	try {
 		const pending = prefetchSecrets({
 			apps,
@@ -44,16 +46,22 @@ it("prefetches distinct app, seed and migration scopes and consumers wait near z
 			],
 		});
 		expect(pending).toHaveLength(3);
+		const consumer = loadAppSecrets(apps, undefined);
+		const deadline = Date.now() + 3000;
+		while (listRequests().length < 3 && Date.now() < deadline)
+			await Bun.sleep(5);
+		fake.release();
 		await Promise.all(pending);
-		expect(
-			fake.requests.filter((request) => request === "GET /api/v4/secrets"),
-		).toHaveLength(3);
+		expect(await consumer).toEqual({
+			web: { KEY: "app" },
+			duplicate: { KEY: "app" },
+		});
+		expect(await loadAppSecrets(apps, undefined)).toEqual({
+			web: { KEY: "app" },
+			duplicate: { KEY: "app" },
+		});
+		expect(listRequests()).toHaveLength(3);
 		expect(fake.cliCalls()).toHaveLength(1);
-		const waits: number[] = [];
-		expect(
-			await loadAppSecrets(apps, undefined, { onWait: (ms) => waits.push(ms) }),
-		).toEqual({ web: { KEY: "app" }, duplicate: { KEY: "app" } });
-		expect(waits[0]).toBeLessThan(20);
 	} finally {
 		clearScopeSecretsCache();
 		fake.stop();

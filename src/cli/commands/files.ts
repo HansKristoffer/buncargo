@@ -14,6 +14,7 @@ import {
 	parseBundle,
 	resolveRepoKey,
 	saveCheckoutFiles,
+	selectSpecs,
 	storeDir,
 	syncCheckoutFiles,
 } from "../../core/checkout-files";
@@ -363,15 +364,7 @@ function diff(
 	paths: readonly string[] | undefined,
 ): number {
 	requireSpecs(specs);
-	const unknown = paths?.find(
-		(path) => !specs.some((spec) => spec.path === path),
-	);
-	if (unknown)
-		throw new CliError(`${unknown} is not in options.checkoutFiles.`);
-	const opened = openCheckoutFiles(
-		root,
-		paths ? specs.filter((spec) => paths.includes(spec.path)) : specs,
-	);
+	const opened = openCheckoutFiles(root, selectSpecs(specs, paths));
 	for (const view of opened.views) {
 		const path = view.spec.path;
 		const local = view.local.data;

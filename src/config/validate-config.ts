@@ -32,6 +32,12 @@ export function validateConfig(value: unknown): string[] {
 		return errors;
 	}
 
+	// Required only once applied: an integration may contribute the services.
+	// Every semantic check below reads `config.services`.
+	if ((applied as { services?: unknown }).services === undefined) {
+		return ["services must be an object (use {} for app-only configurations)"];
+	}
+
 	const config = applied as AnyDevConfig;
 	const context = createValidationContext(errors);
 
@@ -40,12 +46,6 @@ export function validateConfig(value: unknown): string[] {
 	} else if (!/^[a-z][a-z0-9-]*$/.test(config.projectPrefix)) {
 		errors.push(
 			"projectPrefix must start with a letter and contain only lowercase letters, numbers, and hyphens",
-		);
-	}
-
-	if (!config.services) {
-		errors.push(
-			"services must be an object (use {} for app-only configurations)",
 		);
 	}
 

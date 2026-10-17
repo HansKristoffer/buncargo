@@ -24,6 +24,15 @@ export type IntegrationConfig = DevConfig<
 	Record<string, AppConfig>
 >;
 
+/** What {@link BuncargoIntegration.config} is told besides the config. */
+export interface IntegrationConfigContext {
+	/**
+	 * The checkout root: read project files relative to this, not the working
+	 * directory, which is wherever inside the checkout `buncargo` was run.
+	 */
+	root: string;
+}
+
 /** One app, as handed to {@link BuncargoIntegration.appEnv} and `describeApp`. */
 export interface IntegrationAppContext {
 	name: string;
@@ -63,8 +72,12 @@ export interface BuncargoIntegration {
 	/**
 	 * Transform the config: add apps, services, env, generated files. Pure, and
 	 * runs before validation, so what it adds is validated like the rest.
+	 * Buncargo always passes `ctx`; it is optional only for direct callers.
 	 */
-	config?(config: IntegrationConfig): IntegrationConfig;
+	config?(
+		config: IntegrationConfig,
+		ctx?: IntegrationConfigContext,
+	): IntegrationConfig;
 	/** Run beside the config's own hooks, after them. */
 	hooks?: DevHooks<Record<string, ServiceConfig>, Record<string, AppConfig>>;
 	/** Shown by `buncargo doctor`, run by `buncargo setup`; fast ones by `dev`. */

@@ -8,8 +8,6 @@ import type {
 import type { DockerServicePreset } from "./define-docker-service";
 
 export type {
-	DockerServicePreset,
-	DockerServicePresetDefaults,
 	PresetServiceCredentialOptions,
 	PresetServiceSecondaryPortOptions,
 	PresetServiceSharedOptions,
@@ -35,13 +33,6 @@ const PRESET_SERVICES = {
 	typesense: typesenseDockerService,
 } satisfies Record<DockerPresetName, DockerServicePreset>;
 
-export {
-	clickhouseDockerService,
-	mailpitDockerService,
-	postgresDockerService,
-	redisDockerService,
-	typesenseDockerService,
-};
 export type {
 	ClickhouseServiceOptions,
 	MailpitServiceOptions,

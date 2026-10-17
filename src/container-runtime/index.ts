@@ -3,6 +3,7 @@ export {
 	type EnsureServicesRunningRequest,
 	ensureServicesRunning,
 } from "./ensure-services";
+export { foreignStackOf } from "./foreign-stack";
 export {
 	createBuiltInHealthCheck,
 	type HealthCheckContext,
@@ -12,6 +13,7 @@ export {
 	groupBuncargoContainers,
 	isContainerUp,
 	listBuncargoContainers,
+	manualDownCommand,
 	stopBuncargoContainers,
 } from "./inventory";
 export {
@@ -40,12 +42,9 @@ export {
 	type VolumeVerdict,
 } from "./prune";
 export {
-	MAX_ATTEMPTS,
-	POLL_INTERVAL,
 	type WaitForServiceOptions,
 	waitForAllServices,
 	waitForService,
-	waitForServiceByType,
 } from "./readiness";
 export {
 	availableContainerRuntimes,
@@ -61,6 +60,8 @@ export {
 } from "./resolve";
 export {
 	decideSweep,
+	type ForeignStack,
+	isKnownStack,
 	type SweepInput,
 	type SweepResult,
 	type SweepVerdict,

@@ -3,7 +3,8 @@
 `createDevEnvironment()` lives in `src/environment/`. `context.ts` resolves identity, ports and URLs
 once into a `DevEnvContext`; `env-vars.ts`, `lifecycle.ts`, `servers.ts` and `run-claim.ts` are
 built on it, and `create-dev-environment.ts` only composes them. Extract a complex concern into a
-focused module (logging, seeding) rather than growing the composition.
+focused module (logging, seeding) rather than growing the composition. What `start()` leaves to the
+CLI, and why, is in [what only `buncargo dev` does](./overview.md#what-only-buncargo-dev-does).
 
 ## Seeding
 
@@ -14,7 +15,9 @@ log and continue. `seed-startup.ts` shares selection for `seed.beforeApps: false
 task, cancellation and draining across CLI and library, including production builds and empty
 sessions kept open for tunnels. The CLI defers the automatic seed through
 `skipSeed`/`prefetchSeed`, and `server-session.ts` joins the seed before `afterServers` and
-readiness. Concurrent output uses `process/prefix-output.ts`.
+readiness. Concurrent output uses `process/prefix-output.ts` in the library; the CLI passes
+`onOutputLine` and feeds it to the run's output as `seed`, so stream mode and the TUI both show it
+and log it to `seed.log`.
 
 ## Secrets prefetch
 

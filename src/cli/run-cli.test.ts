@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { acquireLease, releaseLeases } from "../core/leases";
 import { buildRunEntry, publishRun, retireRuns } from "../core/run-registry";
 import { resolveExposeTargets, stopPublicTunnels } from "../core/tunnel";
+import * as watchdog from "../core/watchdog";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import { runCli } from "./run-cli";
 import { upsertTunnelRegistryEntries } from "./tunnel-registry";
@@ -116,6 +117,9 @@ function createStubEnv(
 		>["loopbackUrls"],
 		projectName: "stub-cli",
 		projectPrefix: "stub",
+		workspaceId: "0123456789abcdef",
+		prepareStart: () => {},
+		prepareStartAsync: async () => {},
 		resolvePrimaryApp: (selected?: readonly string[]) =>
 			(selected ?? Object.keys(apps))[0],
 		root: options.root ?? "/tmp/buncargo-cli-stub",
@@ -297,7 +301,31 @@ describe("runCli expose routing", () => {
 				skipEnvironmentLog: true,
 				onlyApps: ["expo"],
 				autoStartDocker: undefined,
+				// Development in CI too, like the dev servers it goes on to run.
+				productionBuild: false,
 			},
+		]);
+	});
+
+	it("prefetches the seed's secrets for --seed while the containers start", async () => {
+		const startCalls: unknown[] = [];
+		const env = createStubEnv({
+			start: async (startOptions) => {
+				startCalls.push(startOptions);
+				return null;
+			},
+		});
+		(env as { runSeed: unknown }).runSeed = async () => ({
+			status: "succeeded",
+			result: { exitCode: 0, stdout: "", stderr: "" },
+		});
+		const code = await withProcessExitTrap(() =>
+			runCli(env, { args: ["--seed"], watchdog: false }),
+		);
+
+		expect(code).toBe(0);
+		expect(startCalls).toMatchObject([
+			{ skipSeed: true, prefetchSeed: true, prepare: "all" },
 		]);
 	});
 
@@ -537,6 +565,72 @@ describe("runCli phased tunnels and attach", () => {
 			await runCli(env, { args: [], watchdog: false });
 			expect(healthChecked).toEqual([["api", "expoApp"]]);
 		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("gives apps the library's readiness timeout, longer in CI", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-ready-timeout-"));
+		const port = 43810 + Math.floor(Math.random() * 200);
+		const timeouts: unknown[] = [];
+		const env = createStubEnv({
+			root,
+			apps: {
+				api: {
+					port,
+					devCommand: "bun -e 'process.exit(0)'",
+					healthEndpoint: false,
+				},
+			},
+			waitForServers: (waitOptions) => {
+				timeouts.push((waitOptions as { timeout?: number }).timeout);
+			},
+		});
+		const ci = process.env.CI;
+		process.env.CI = "true";
+
+		try {
+			await runCli(env, { args: [], watchdog: false });
+			expect(timeouts).toEqual([120_000]);
+		} finally {
+			if (ci === undefined) delete process.env.CI;
+			else process.env.CI = ci;
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	// The watchdog is what lists live runs to BuncargoBar on the tailnet, and
+	// `start()` only ensures it for a run with containers.
+	it("ensures the watchdog for an app-only run once its apps are up", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-app-only-"));
+		const port = 44010 + Math.floor(Math.random() * 200);
+		const order: string[] = [];
+		const ensure = spyOn(watchdog, "ensureWatchdog").mockImplementation(
+			async () => {
+				order.push("watchdog");
+			},
+		);
+		const env = createStubEnv({
+			root,
+			apps: {
+				api: {
+					port,
+					devCommand: "bun -e 'process.exit(0)'",
+					healthEndpoint: false,
+					requiredServices: [],
+				},
+			},
+			waitForServers: () => {
+				order.push("ready");
+			},
+		});
+
+		try {
+			await runCli(env, { args: [] });
+			expect(order).toEqual(["ready", "watchdog"]);
+			expect(ensure).toHaveBeenCalledWith({ verbose: false });
+		} finally {
+			ensure.mockRestore();
 			await rm(root, { recursive: true, force: true });
 		}
 	});
@@ -782,6 +876,42 @@ it("starts the rest of the run without an optional app whose lease another run h
 		expect(said).toContain("buncargo dev --takeover");
 	} finally {
 		await releaseLeases("other-run");
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+// A config with services and no apps used to print "Nothing to start" and
+// release the containers it had just brought up.
+it("holds a services-only run until it is told to stop", async () => {
+	const root = await mkdtemp(join(tmpdir(), "buncargo-services-only-"));
+	let released = 0;
+	const env = createStubEnv({ apps: {}, root });
+	Object.assign(env, {
+		releaseRun: async () => {
+			released++;
+		},
+	});
+	const printed: string[] = [];
+	const realLog = console.log;
+	console.log = (...parts: unknown[]) => printed.push(parts.join(" "));
+	const said = (text: string) => printed.some((line) => line.includes(text));
+	const run = runCli(env, { args: ["--no-hosts"], watchdog: false });
+	try {
+		const deadline = performance.now() + 5_000;
+		while (!said("Services ready") && !said("Nothing to start")) {
+			if (performance.now() > deadline) throw new Error("The run never said");
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		expect(said("Nothing to start")).toBe(false);
+		expect(released).toBe(0);
+
+		process.emit("SIGINT");
+		await run;
+		expect(released).toBe(1);
+	} finally {
+		console.log = realLog;
+		if (released === 0) process.emit("SIGTERM");
+		await run;
 		await rm(root, { recursive: true, force: true });
 	}
 });

@@ -32,18 +32,21 @@ import {
 	containerRuntimeForEnv,
 	ensureServicesRunning,
 } from "../container-runtime";
+import { inferDockerPreset } from "../core/service-presets";
 import { getComposeServiceName } from "../planning";
 import type {
 	AppConfig,
 	BuiltInHealthCheck,
 	DevEnvironment,
+	DockerPresetName,
 	EnvValues,
 	PrismaConfig,
 	PrismaMigrateCheckOptions,
 	PrismaRunner,
 	ServiceConfig,
 } from "../types";
-import { recordGeneratedPrismaHash } from "./schema-hash";
+import { resolvePrismaConfig } from "./config";
+import { generatePrismaClient } from "./schema-hash";
 
 /** The major version of the `prisma` package installed for `dir`, if any. */
 export function installedPrismaMajor(dir: string): number | undefined {
@@ -57,6 +60,27 @@ export function installedPrismaMajor(dir: string): number | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+const PRESET_HEALTH_CHECKS: Partial<
+	Record<DockerPresetName, BuiltInHealthCheck>
+> = {
+	postgres: "pg_isready",
+	redis: "redis-cli",
+	clickhouse: "http",
+};
+
+/**
+ * How `ensureDatabase` waits for the database service: its own `healthCheck`,
+ * else its preset's (whatever the service is keyed), else an open port.
+ */
+export function databaseHealthCheck(
+	serviceKey: string,
+	service: ServiceConfig,
+): ServiceConfig["healthCheck"] {
+	if (service.healthCheck !== undefined) return service.healthCheck;
+	const preset = inferDockerPreset(serviceKey, service);
+	return (preset && PRESET_HEALTH_CHECKS[preset]) ?? "tcp";
 }
 
 /**
@@ -75,22 +99,12 @@ export function createPrismaRunner<
 		computed: Record<string, string>,
 	) => Promise<Record<string, string>>,
 ): PrismaRunner {
-	const { cwd = "packages/prisma" } = config;
+	const resolved = resolvePrismaConfig(config);
+	const { cwd, urlEnvVar } = resolved;
 	// The defaults only exist on configs that actually declare a postgres
 	// service; `validateConfig` rejects the rest, including disk-loaded configs
 	// whose keys are only known as strings.
-	const service = (config.service ?? "postgres") as Extract<
-		keyof TServices,
-		string
-	>;
-	const urlEnvVar: string = config.urlEnvVar ?? "DATABASE_URL";
-
-	// Map service names to health check types
-	const healthCheckTypes: Record<string, BuiltInHealthCheck> = {
-		postgres: "pg_isready",
-		redis: "redis-cli",
-		clickhouse: "http",
-	};
+	const service = resolved.service as Extract<keyof TServices, string>;
 
 	function getDatabaseUrl(): string {
 		// `urlEnvVar` defaults to a name the config need not declare, so the lookup
@@ -118,10 +132,9 @@ export function createPrismaRunner<
 			throw new Error(`Service ${service} not found in dev environment ports`);
 		}
 
-		const healthCheckType = healthCheckTypes[service] ?? "tcp";
 		const healthCheckedServiceConfig: ServiceConfig = {
 			...serviceConfig,
-			healthCheck: serviceConfig.healthCheck ?? healthCheckType,
+			healthCheck: databaseHealthCheck(service, serviceConfig),
 			serviceName: getComposeServiceName(env.services, service),
 		};
 
@@ -219,7 +232,6 @@ Examples:
 			projectName: env.projectName,
 			serviceName: getComposeServiceName(env.services, service),
 			root: env.root,
-			composeFile: env.composeFile,
 			timeoutMs: 30_000,
 			// Positional parameters rather than interpolation: nothing is re-parsed.
 			command: [
@@ -257,7 +269,7 @@ Examples:
 				"migrate",
 				"diff",
 				"--from-migrations",
-				options.migrations ?? config.migrations ?? "prisma/migrations",
+				options.migrations ?? resolved.migrations,
 				...(modern
 					? ["--to-schema", schema]
 					: [
@@ -285,15 +297,14 @@ Examples:
 		return code;
 	}
 
-	async function generate(): Promise<number> {
-		const result = await env.exec(
-			config.generate ?? "bunx --no-install prisma generate",
-			{ cwd, verbose: true, throwOnError: false },
+	function generate(): Promise<number> {
+		return generatePrismaClient(env.root, cwd, () =>
+			env.exec(config.generate ?? "bunx --no-install prisma generate", {
+				cwd,
+				verbose: true,
+				throwOnError: false,
+			}),
 		);
-		if (result.exitCode === 0) {
-			recordGeneratedPrismaHash(env.root, join(env.root, cwd));
-		}
-		return result.exitCode;
 	}
 
 	return {

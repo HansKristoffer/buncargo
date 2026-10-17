@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import {
 	availableContainerRuntimes,
 	type ContainerRuntimeAdapter,
@@ -12,11 +13,14 @@ import {
 	type VolumeReport,
 	withProjectLifecycleLock,
 } from "../../container-runtime";
+import { checkoutPresence } from "../../core/checkout-presence";
 import { FileLockTimeoutError } from "../../core/file-lock";
 import { listGitCheckouts } from "../../core/git-checkouts";
+import { offsetClaimRoot, readOffsetClaims } from "../../core/offset-claims";
 import { askConfirm, isInteractive } from "../../core/prompt";
 import { readAllRuns, readLiveRuns } from "../../core/run-registry";
-import { loadDevEnv } from "../../loader";
+import { describeSwept } from "../../core/watchdog-loop";
+import { CONFIG_FILES, findConfigFile, loadDevEnv } from "../../loader";
 import * as log from "../log";
 import { parsePruneArgs, printPruneHelp } from "../prune-flags";
 
@@ -51,8 +55,7 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 	// whose containers are removed here stops counting as in use, and its
 	// entry is retired in the same pass.
 	const swept = await sweepOrphanedContainers({ runtimes });
-	for (const stack of swept.swept)
-		log.info(`Removed ${stack.projectName} (${stack.root}): ${stack.reason}`);
+	for (const stack of swept.swept) log.info(describeSwept(stack));
 
 	const volumes = (
 		await Promise.all(runtimes.map((runtime) => runtime.listVolumes()))
@@ -61,6 +64,7 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 		volumes,
 		containers: listBuncargoContainers(runtimes),
 		runs: await readAllRuns(),
+		checkouts: existingCheckouts(),
 	});
 
 	reportUnattributed(reports);
@@ -73,7 +77,7 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 
 	log.line();
 	log.info(
-		`${names.length} volume${names.length === 1 ? "" : "s"} belong to projects with no containers and no run:`,
+		`${names.length} volume${names.length === 1 ? "" : "s"} belong to projects with no containers, no run and no checkout:`,
 	);
 	for (const report of reports) {
 		if (report.verdict.kind !== "orphaned") continue;
@@ -118,6 +122,27 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 	}
 	log.done(`Removed ${removed} volume${removed === 1 ? "" : "s"}`);
 	return 0;
+}
+
+/**
+ * The checkouts on this machine that still exist, from their dev port claims.
+ *
+ * An idle checkout has no containers and, after `dev --down`, no run either,
+ * yet its volume is still its database. A suffixed claim (`buncargo ci`, E2E)
+ * is left out: those stacks are leftovers once their run is gone. A checkout
+ * whose config this user cannot read is kept: it may well still be there.
+ */
+function existingCheckouts(): { projectName: string; root: string }[] {
+	return Object.entries(readOffsetClaims()).flatMap(([key, claim]) => {
+		const root = offsetClaimRoot(key, claim);
+		if (claim.suffix) return [];
+		const hasConfig =
+			findConfigFile(root) !== null ||
+			CONFIG_FILES.some(
+				(file) => checkoutPresence(join(root, file)) === "unknown",
+			);
+		return hasConfig ? [{ projectName: claim.projectName, root }] : [];
+	});
 }
 
 /**

@@ -4,7 +4,7 @@ import { execAsync } from "../core/process/exec";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWait } from "../core/style";
 import { lookupOnPath } from "../core/tool-binary";
-import { runDocker, runDockerAsync } from "./binary";
+import { DEFAULT_DOCKER_BINARY, runDocker, runDockerAsync } from "./binary";
 
 export type DockerRuntime =
 	| "orbstack"
@@ -23,7 +23,9 @@ export class DockerUnavailableError extends Error {
 	constructor(
 		runtime: DockerRuntime,
 		remediation: string,
-		problem = `Docker is not running (${runtime}).`,
+		problem = runtime === "unknown"
+			? "Docker is not running."
+			: `Docker is not running (${runtime}).`,
 	) {
 		super(`${problem} ${remediation}`);
 		this.name = "DockerUnavailableError";
@@ -37,19 +39,11 @@ function commandExists(command: string): boolean {
 	return lookupOnPath(command) !== undefined;
 }
 
-function dockerContextName(binary?: string): string | null {
-	const result = runDocker(binary, ["context", "show"]);
-	return result.ok ? result.stdout.trim() : null;
-}
-
-export function detectDockerRuntime(binary?: string): DockerRuntime {
-	return runtimeFromContext(dockerContextName(binary)?.toLowerCase() ?? "");
-}
-
 /** Exported for tests: the platform decides what a bare `docker` binary means. */
 export function runtimeFromContext(
 	context: string,
 	platform: NodeJS.Platform = process.platform,
+	binary: string = DEFAULT_DOCKER_BINARY,
 ): DockerRuntime {
 	// On Linux the context decides, not which other tools are installed: a CI image
 	// with podman on PATH still runs Docker's own engine under the "default" context.
@@ -77,7 +71,7 @@ export function runtimeFromContext(
 	if (context.includes("podman") || commandExists("podman")) {
 		return "podman";
 	}
-	if (existsSync("/Applications/Docker.app") || commandExists("docker")) {
+	if (existsSync("/Applications/Docker.app") || commandExists(binary)) {
 		return "docker-desktop";
 	}
 	return "unknown";
@@ -89,7 +83,7 @@ export function isDockerDaemonRunning(binary?: string): boolean {
 	return runDocker(binary, ["version", "--format", "{{.Server.Version}}"]).ok;
 }
 
-function remediationFor(runtime: DockerRuntime): string {
+export function remediationFor(runtime: DockerRuntime): string {
 	switch (runtime) {
 		case "orbstack":
 			return "Start OrbStack (open -a OrbStack) and try again.";
@@ -162,6 +156,8 @@ export async function ensureDockerRunning(
 	});
 	const runtime = runtimeFromContext(
 		context.ok ? context.stdout.trim().toLowerCase() : "",
+		process.platform,
+		binary,
 	);
 	// A daemon that is up but refuses this user would otherwise read as "not
 	// running", and the wait below could never end differently.
@@ -173,13 +169,15 @@ export async function ensureDockerRunning(
 		);
 	// CI never starts Docker itself, but a runner's daemon is often still
 	// coming up when the job starts: keep asking until the deadline. Locally,
-	// `--no-docker-autostart` wants the answer now, not in 90 seconds.
+	// `--no-docker-autostart` wants the answer now, not in 90 seconds, and so
+	// does a runtime nothing here can start (the Linux engine): no daemon is
+	// coming while we wait.
 	const waitOnly = !autoStart && ci;
-	if (!autoStart && !waitOnly)
+	const command = waitOnly ? undefined : runtimeStartCommand(runtime);
+	if (!waitOnly && (!autoStart || command === undefined))
 		throw new DockerUnavailableError(runtime, remediationFor(runtime));
 	if (verbose && !waitOnly)
 		console.log(formatStep(`🐳 Docker is not running. Starting ${runtime}...`));
-	const command = waitOnly ? undefined : runtimeStartCommand(runtime);
 	if (command && remainingTime(deadline) > 0)
 		await execAsync(
 			command,

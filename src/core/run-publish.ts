@@ -1,8 +1,15 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { appEntryPath, preferredAppUrl } from "../core/app-url";
-import type { CapturedValue } from "../core/process/output-capture";
-import { readProcessIdentitiesAsync } from "../core/process-identity";
+import type {
+	AppConfig,
+	BuncargoIntegration,
+	ContainerRuntimeName,
+	NamedHost,
+	ServiceConfig,
+} from "../types";
+import { environmentOpenUrl, preferredAppUrl } from "./app-url";
+import type { CapturedValue } from "./process/output-capture";
+import { readProcessIdentitiesAsync } from "./process-identity";
 import {
 	buildRunEntryAsync,
 	findRunsByRoot,
@@ -15,26 +22,19 @@ import {
 	type RunPatch,
 	type RunServiceEntry,
 	type RunServiceStatus,
-} from "../core/run-registry";
-import { isDetachedRun } from "../core/runtime-flags";
-import { describeService } from "../core/service-identity";
-import { defaultServiceProtocol } from "../core/service-presets";
-import type {
-	AppConfig,
-	BuncargoIntegration,
-	ContainerRuntimeName,
-	NamedHost,
-	ServiceConfig,
-} from "../types";
-import * as log from "./log";
+} from "./run-registry";
+import { isDetachedRun } from "./runtime-flags";
+import { describeService } from "./service-identity";
+import { defaultServiceProtocol } from "./service-presets";
+import { formatWarn } from "./style";
 
 /**
- * Publishing a `buncargo dev` into the run registry.
+ * Publishing a run and its apps into the run registry.
  *
- * CLI-side on purpose: the entry records this *process* — its pid, the
- * interpreter that started it, the apps this invocation chose to spawn — none
- * of which the environment object knows. `createDevEnvironment` is also a
- * library API that a test or a script may build without any of this being true.
+ * The entry records a *process*: its pid, the interpreter that started it,
+ * the apps it chose to spawn. The environment's claim (`run-claim.ts`) is the
+ * smaller entry a run publishes before its containers exist; this is the one
+ * it publishes once it knows which apps it runs, on the same session.
  *
  * Every function here swallows its own failures. The registry is what powers
  * `runs`, `stop` and the menu bar; none of them is worth failing a dev run
@@ -79,7 +79,7 @@ export interface RunSource {
 
 function reportFailure(action: string, error: unknown): void {
 	const message = error instanceof Error ? error.message : String(error);
-	log.warn(`Could not ${action} the run registry: ${message}`);
+	console.warn(formatWarn(`Could not ${action} the run registry: ${message}`));
 }
 
 /**
@@ -469,21 +469,12 @@ export async function recordAppUrls(
 		},
 	names: readonly string[],
 ): Promise<void> {
-	const read = (urls: object, name: string) =>
-		(urls as Record<string, string | undefined>)[name];
 	const apps = names.flatMap((name) => {
-		const publicUrl = read(env.publicUrls, name);
+		const publicUrl = (env.publicUrls as Record<string, string | undefined>)[
+			name
+		];
 		if (!publicUrl) return [];
-		const openUrl = preferredAppUrl(
-			{
-				url: read(env.urls, name),
-				loopbackUrl: read(env.loopbackUrls, name),
-				publicUrl,
-				entryPath: appEntryPath(read(env.apps ?? {}, name)),
-			},
-			env.hosts?.active ?? false,
-		);
-		return [{ name, publicUrl, openUrl }];
+		return [{ name, publicUrl, openUrl: environmentOpenUrl(env, name) }];
 	});
 	if (apps.length > 0) await patchCurrentRun(env, { apps });
 }

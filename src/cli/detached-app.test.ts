@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { signalProcessTree } from "../core/process/port-owner";
+import { standInForWatchdog } from "../core/watchdog.testing";
 
 for (const stop of ["command", "SIGINT"] as const) {
 	it(`publishes a detached app as ready and cleans it up through ${stop}`, async () => {
@@ -36,6 +37,7 @@ for (const stop of ["command", "SIGINT"] as const) {
 			join(root, "dev.config.ts"),
 			`export default ${JSON.stringify({ projectPrefix: "detached-test", services: {}, apps: { app: { port, devCommand: `${process.execPath} parent.ts`, requiredServices: [] } }, options: { worktreeIsolation: false, hosts: false } })};`,
 		);
+		await standInForWatchdog(root);
 		const child = Bun.spawn([process.execPath, cli, "dev", "--no-hosts"], {
 			cwd: root,
 			env,

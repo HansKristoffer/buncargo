@@ -23,7 +23,8 @@ const FLAGS = {
 	all: {
 		name: "--all",
 		kind: "boolean",
-		description: "With --down, stop every buncargo environment on this machine",
+		description:
+			"With --down, stop every buncargo environment you started on this machine",
 	},
 	reset: {
 		name: "--reset",
@@ -104,7 +105,8 @@ const FLAGS = {
 	keepContainers: {
 		name: "--keep-containers",
 		kind: "boolean",
-		description: "Do not start the idle watchdog",
+		description:
+			"Keep the containers after the run exits, as long as the checkout exists",
 	},
 	takeover: {
 		name: "--takeover",
@@ -206,8 +208,6 @@ export const DEV_COMMAND_SPEC: CommandSpec = {
 };
 
 export interface DevCliArgs {
-	/** Flags before `--`, kept for error messages. */
-	flags: string[];
 	/** Args after `--`, appended to the attached app command. */
 	passthrough: string[];
 	unknownFlags: string[];
@@ -284,7 +284,6 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		);
 
 	return {
-		flags,
 		passthrough,
 		unknownFlags: findUnknownFlags(DEV_COMMAND_SPEC, flags),
 		errors,

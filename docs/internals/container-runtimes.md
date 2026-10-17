@@ -16,7 +16,7 @@ The sweep and volume pruning live in `container-runtime/` too; see
 - `interpolate.ts` is Compose's own `${VAR}` substitution and the fingerprints built on it. It
   lives here rather than with one backend because it is Compose semantics: `docker compose`
   interpolates the file itself and the Apple backend has to reproduce it, so a second copy would be
-  a second thing to keep in step. `apple-container/run-plan.ts` re-exports it.
+  a second thing to keep in step.
 - `computeDevIdentity` leaves the worktree name out of the project name when the directory already
   carries it.
 - `serviceFingerprint` and `buncargo.service-hash` govern reuse per service, independent of
@@ -52,8 +52,14 @@ The sweep and volume pruning live in `container-runtime/` too; see
   alone would silently drop a configured `docker.binary` in `status`, `doctor` and prisma.
 - `ExecInServiceRequest.command` is argv, not a shell command line, so neither backend has to quote
   it and the two cannot disagree about which shell runs a probe. Both backends spawn argv
-  throughout; the only surviving shell is `command -v` in `src/docker/preflight.ts`, a builtin with
-  nothing to exec.
+  throughout.
+- `down` with the runtime stopped (Docker's daemon, Apple's system service) is a successful no-op:
+  a stopped runtime runs no containers. Each backend reads that off its own failed teardown or
+  listing and only then probes, so a normal teardown pays no extra process. `removeVolumes` is the
+  exception and fails, naming how to start the runtime: `dev --reset` reporting success over
+  volumes it never removed is a reset that did not happen. For the same reason Docker's `down`
+  fails, after removing the containers, when no compose file names the volumes. It finds that
+  file from the checkout, never from the caller's working directory.
 - `inventory.ts` backs the machine-wide commands (`ls`, `doctor`, `dev --down --all`). Those have no
   project config in scope, so they ask every available runtime rather than one.
 
@@ -94,7 +100,8 @@ The sweep and volume pruning live in `container-runtime/` too; see
   with direct `docker exec`. Do not use `docker compose exec` for readiness: Compose startup can
   exceed the two-second probe budget even when Postgres is healthy, making a new worktree time out
   until the next invocation skips probing via container health. Lookup and exec share one deadline;
-  never cache the container ID across polls or guess it from a name.
+  never cache the container ID across polls or guess it from a name. `diagnose.ts` resolves the
+  same way, with `--all`: readiness polls it as the probe for jobs and port-less services.
 - `preflight.ts` detects the local Docker runtime and auto-starts it when possible.
 
 ## Apple container backend

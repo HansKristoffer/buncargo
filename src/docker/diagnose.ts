@@ -4,64 +4,28 @@ import type {
 } from "../container-runtime/types";
 import { remainingTime } from "../core/deadline";
 import { runDockerAsync } from "./binary";
-import { getComposeArgs } from "./compose-command";
+import { serviceContainerFilters } from "./exec";
 
 /**
  * Why a compose service is not answering.
  *
- * Read through `docker compose ps --all`, which unlike `docker ps` still lists
- * a container that exited seconds after starting - the case this exists to
- * report.
+ * Resolved by Compose's labels with `docker ps --all`, which still lists a
+ * container that exited seconds after starting - the case this exists to
+ * report. Not `docker compose ps`: readiness calls this on every poll for a
+ * service without a port, and Compose reparsing the project can overrun the
+ * two-second budget (the same reason `exec.ts` avoids `docker compose exec`).
  */
 
 const DEFAULT_TAIL = 20;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/**
- * Compose has emitted both a JSON array and one object per line depending on
- * the version, so accept either rather than pinning to the installed one.
- */
-export function parseComposePs(stdout: string): Record<string, unknown>[] {
-	const trimmed = stdout.trim();
-	if (!trimmed) return [];
-
-	try {
-		const parsed: unknown = JSON.parse(trimmed);
-		if (Array.isArray(parsed)) return parsed.filter(isRecord);
-		if (isRecord(parsed)) return [parsed];
-	} catch {
-		// Fall through to the line-delimited form.
-	}
-
-	const rows: Record<string, unknown>[] = [];
-	for (const line of trimmed.split("\n")) {
-		if (!line.trim()) continue;
-		try {
-			const parsed: unknown = JSON.parse(line);
-			if (isRecord(parsed)) rows.push(parsed);
-		} catch {
-			// A partial line is not worth failing a diagnostic over.
-		}
-	}
-	return rows;
-}
-
-export function readComposeState(row: Record<string, unknown>): {
-	state: string;
-	exitCode?: number;
-} {
-	const state =
-		typeof row.State === "string"
-			? row.State
-			: typeof row.Status === "string"
-				? row.Status
-				: "unknown";
-	const rawExit = row.ExitCode;
-	const exitCode = typeof rawExit === "number" ? rawExit : undefined;
-	return { state, exitCode };
+/** One `{{.ID}}\t{{.State}}\t{{.Status}}` line; the exit code only `Status` carries. */
+export function parseDockerPsState(
+	line: string,
+): { id: string; state: string; exitCode?: number } | undefined {
+	const [id, state, status = ""] = line.trim().split("\t");
+	if (!id || !state) return undefined;
+	const exit = /^Exited \((\d+)\)/i.exec(status)?.[1];
+	return { id, state, exitCode: exit === undefined ? undefined : Number(exit) };
 }
 
 export async function diagnoseDockerService(
@@ -69,10 +33,6 @@ export async function diagnoseDockerService(
 	binary?: string,
 ): Promise<ServiceDiagnosis | undefined> {
 	const deadline = performance.now() + (request.timeoutMs ?? 2000);
-	const composeArgs = getComposeArgs({
-		projectName: request.projectName,
-		composeFile: request.composeFile,
-	});
 	const options = () => ({
 		cwd: request.root,
 		signal: request.signal,
@@ -81,25 +41,29 @@ export async function diagnoseDockerService(
 	try {
 		const ps = await runDockerAsync(
 			binary,
-			[...composeArgs, "ps", "--all", "--format", "json", request.serviceName],
-			options(),
-		);
-		const row = ps.ok ? parseComposePs(ps.stdout)[0] : undefined;
-		if (!row) return undefined;
-		const state = readComposeState(row);
-		if (remainingTime(deadline) === 0) return { ...state, logTail: "" };
-		const logs = await runDockerAsync(
-			binary,
 			[
-				...composeArgs,
-				"logs",
-				"--no-color",
-				`--tail=${request.tail ?? DEFAULT_TAIL}`,
-				request.serviceName,
+				"ps",
+				"--all",
+				...serviceContainerFilters(request),
+				"--format",
+				"{{.ID}}\t{{.State}}\t{{.Status}}",
 			],
 			options(),
 		);
-		return { ...state, logTail: logs.ok ? logs.stdout.trim() : "" };
+		const first = ps.stdout.trim().split("\n")[0] ?? "";
+		const found = ps.ok ? parseDockerPsState(first) : undefined;
+		if (!found) return undefined;
+		const { id, ...state } = found;
+		if (remainingTime(deadline) === 0) return { ...state, logTail: "" };
+		const logs = await runDockerAsync(
+			binary,
+			["logs", `--tail=${request.tail ?? DEFAULT_TAIL}`, id],
+			options(),
+		);
+		// The container writes its own stderr there too, and that is usually
+		// where a startup failure explains itself.
+		const output = `${logs.stdout}${logs.stderr}`.trim();
+		return { ...state, logTail: logs.ok ? output : "" };
 	} catch {
 		return undefined;
 	}

@@ -8,8 +8,9 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { hashDaemonBundle, packageRoot } from "../hosts/daemon-bundle";
+import { hashDaemonBundle } from "../hosts/daemon-bundle";
 import { stateFilePath } from "../state-paths";
+import { requireBuncargoPackage } from "../version";
 
 /** One immutable bundle serves both the publisher and receiver. It survives bunx cache eviction. */
 export function installConnectBundle(): string {
@@ -23,7 +24,7 @@ export function installConnectBundle(): string {
 		return realpathSync(entry);
 	}
 
-	const source = join(packageRoot().dir, "dist", "connectd.js");
+	const source = join(requireBuncargoPackage().dir, "dist", "connectd.js");
 	if (!existsSync(source)) {
 		throw new Error(
 			"The Connection bundle is missing. Build Buncargo with bun run build or reinstall the CLI.",

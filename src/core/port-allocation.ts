@@ -9,12 +9,14 @@ import type {
 import { simpleHash } from "./hash";
 import {
 	claimOffset,
-	offsetClaimedBy,
+	type OffsetClaim,
+	offsetClaimConflict,
 	offsetClaimKey,
+	projectNameClaimant,
 	readOffsetClaims,
 	withOffsetClaimsLock,
 } from "./offset-claims";
-import type { PortMap } from "./ports";
+import { enclosingWorktreeName, type PortMap } from "./ports";
 import {
 	classifyPortOccupant,
 	createPortOwnerSnapshot,
@@ -28,9 +30,9 @@ import { STATE_DIRNAME } from "./state-paths";
 import { formatWarn } from "./style";
 
 export const PORT_OFFSET_STEP = 100;
-export const PORT_OFFSET_MIN = 100;
-export const PORT_OFFSET_MAX = 9000;
-export const PORTS_LOCKFILE = `${STATE_DIRNAME}/ports.json`;
+const PORT_OFFSET_MIN = 100;
+const PORT_OFFSET_MAX = 9000;
+const PORTS_LOCKFILE = `${STATE_DIRNAME}/ports.json`;
 const LOCKFILE_VERSION = 1;
 const PORT_ALLOCATION_ATTEMPTS = 80;
 
@@ -182,7 +184,7 @@ function validatePortLockfile(value: unknown): PortLockfile | undefined {
 }
 
 /** Why a lockfile is not this checkout's, or undefined when it is. */
-function foreignLockfile(
+export function foreignLockfile(
 	lockfile: PortLockfile,
 	input: { projectName: string; root: string },
 ): string | undefined {
@@ -207,12 +209,58 @@ export function writePortsLockfile(root: string, lockfile: PortLockfile): void {
 	writeJsonDocumentSync(getPortsLockfilePath(root), lockfile);
 }
 
+/**
+ * The claims of existing checkouts as allocation weighs them: a port-less
+ * claim holds the ports its checkout's lockfile records. What `doctor` and
+ * `buncargo ports` report overlaps from.
+ */
+export function readOffsetClaimsWithPorts(): Record<string, OffsetClaim> {
+	return claimsWithLockfilePorts(readOffsetClaims());
+}
+
+/**
+ * The claims, with a port-less claim's ports read from its checkout's lockfile.
+ *
+ * A claim written before claims carried their ports holds only its offset, so
+ * a newcomer could take a block overlapping it and the incumbent moved on its
+ * next run. Its lockfile still records the block it uses. One read per such
+ * claim, and only until that checkout's next run rewrites its claim.
+ */
+function claimsWithLockfilePorts(
+	claims: Record<string, OffsetClaim>,
+): Record<string, OffsetClaim> {
+	return Object.fromEntries(
+		Object.entries(claims).map(([key, claim]) => {
+			// A suffixed environment has no lockfile; its checkout's is dev's.
+			if (claim.ports || claim.suffix) return [key, claim];
+			const lockfile = readPortsLockfile(key);
+			const ports = lockfile ? Object.values(lockfile.ports) : [];
+			if (
+				!lockfile ||
+				lockfile.offset !== claim.offset ||
+				foreignLockfile(lockfile, {
+					projectName: claim.projectName,
+					root: key,
+				}) ||
+				ports.length === 0
+			)
+				return [key, claim];
+			return [key, { ...claim, ports: ports.sort((a, b) => a - b) }];
+		}),
+	);
+}
+
+/**
+ * A clause naming who holds `port`, to embed in a sentence. `runtime` is the
+ * selected backend, so a container on the other one says how to stop it.
+ */
 export function describePortConflict(
 	port: number,
 	owner: PortOwner | null,
+	runtime?: ContainerRuntimeName,
 ): string {
 	if (!owner) return `port ${port} is in use`;
-	return formatPortOwner(port, owner);
+	return formatPortOwner(port, owner, { runtime }).replace(/\.$/, "");
 }
 
 function findForeignConflict(
@@ -293,21 +341,65 @@ export function resolvePortPlan(input: {
 	getOwner?: (port: number) => PortOwner | null;
 	probeNames?: readonly string[];
 }): PortPlan {
+	const basePorts = buildPortMap(input.services, input.apps);
+	for (const [name, port] of Object.entries(basePorts))
+		if (!Number.isInteger(port) || port < 1 || port > 65535)
+			throw new Error(
+				`Invalid base port for ${name}: ${port}. Expected an integer in 1..65535.`,
+			);
+
+	// One reading of the machine for every port this allocator may look at,
+	// including the shifted blocks it can fall through to. Probing per port cost
+	// an `lsof` and a `docker ps` each, and the allocator is the first thing a
+	// dev run does. It is taken before the claims lock: a slow runtime would
+	// otherwise hold every other checkout's allocation past the lock's timeout.
+	//
+	// Reporting no owner is what makes every conflict check pass, so a
+	// read-only caller gets the lockfile back rather than a block reallocated
+	// around its own running services.
+	const getOwner =
+		input.probeConflicts === false || portOffsetOverride() !== undefined
+			? () => null
+			: (input.getOwner ??
+				withBindProbe(snapshotOwnerLookup(basePorts, input.runtime)));
+
 	// A claiming run reads the other claims, picks a free offset and claims it:
 	// one step, or two runs starting together pick the same.
 	const claim = input.claim ?? input.persist !== false;
-	return claim
-		? withOffsetClaimsLock(() => planPorts({ ...input, claim }))
-		: planPorts({ ...input, claim });
+	const plan = () => planPorts({ ...input, claim, getOwner }, basePorts);
+	return claim ? withOffsetClaimsLock(plan) : plan();
 }
 
-function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
+/**
+ * Why `root` may not claim under `projectName`, or undefined when it may:
+ * another existing checkout's claim carries the name, so both would run one
+ * stack, sharing containers and the database, and one's teardown takes the
+ * other's down. A run and `ports pin` both ask it under the claims lock.
+ */
+function sharedProjectNameRefusal(
+	claims: Record<string, OffsetClaim>,
+	input: { root: string; projectName: string },
+): string | undefined {
+	const { root, projectName } = input;
+	const claimant = projectNameClaimant(claims, input);
+	if (!claimant) return undefined;
+	const worktree = enclosingWorktreeName(root);
+	const below = worktree
+		? ` ${root} is below the top of Git worktree ${worktree}, so the worktree's name is not in its project name: derive projectPrefix from the worktree.`
+		: "";
+	return `${root} would run under Compose project ${projectName}, which ${claimant.holder} already uses: they would share containers and volumes, the database included. Give one of them its own projectPrefix in dev.config.ts (it may be computed, e.g. from the CI runner's name) or a directory with another name. If you change the other one, start it once so it records its new name, or delete it if it is no longer used. If it no longer runs under this name (its claim is from an older config), release the claim: \`buncargo ports release --root ${claimant.root}\`.${below}`;
+}
+
+function planPorts(
+	input: Parameters<typeof resolvePortPlan>[0] & {
+		getOwner: (port: number) => PortOwner | null;
+	},
+	basePorts: Record<string, number>,
+): PortPlan {
 	const {
 		projectPrefix,
 		projectName,
 		root,
-		services,
-		apps,
 		suffix,
 		worktreeName = null,
 		worktreeIsolation = true,
@@ -315,14 +407,21 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 		claim = persist,
 		runtime,
 		probeConflicts = true,
+		getOwner: lookupOwner,
 	} = input;
 	const runtimeName = runtime?.name;
-	const basePorts = buildPortMap(services, apps);
-	for (const [name, port] of Object.entries(basePorts))
-		if (!Number.isInteger(port) || port < 1 || port > 65535)
-			throw new Error(
-				`Invalid base port for ${name}: ${port}. Expected an integer in 1..65535.`,
-			);
+
+	// Claims of checkouts that still exist. A claiming run reads them before
+	// anything else, so a project name another checkout uses stops it before
+	// it writes a lockfile or a claim, under any offset.
+	const existingClaims = claim ? readOffsetClaims() : undefined;
+	if (existingClaims && worktreeIsolation) {
+		const refused = sharedProjectNameRefusal(existingClaims, {
+			root,
+			projectName,
+		});
+		if (refused) throw new Error(refused);
+	}
 
 	const envOffset = portOffsetOverride();
 	if (envOffset !== undefined) {
@@ -338,18 +437,6 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 			provenance: "env",
 		};
 	}
-
-	// One reading of the machine for every port this allocator may look at,
-	// including the shifted blocks it can fall through to. Probing per port cost
-	// an `lsof` and a `docker ps` each, and the allocator is the first thing a
-	// dev run does.
-	//
-	// Reporting no owner is what makes every conflict check below pass, so a
-	// read-only caller gets the lockfile back rather than a block reallocated
-	// around its own running services.
-	const lookupOwner = probeConflicts
-		? (input.getOwner ?? withBindProbe(snapshotOwnerLookup(basePorts, runtime)))
-		: () => null;
 
 	const probed = (ports: Record<string, number>) =>
 		input.probeNames
@@ -381,9 +468,13 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 	// Other claims are skipped whether or not their runs are running; only a
 	// claiming run writes its own.
 	const claimKey = offsetClaimKey(root, suffix);
-	const claims = readOffsetClaims();
-	const claimant = (offset: number) =>
-		offsetClaimedBy(claims, offset, claimKey);
+	const claims = claimsWithLockfilePorts(existingClaims ?? readOffsetClaims());
+	const claimant = (offset: number, ports: Record<string, number>) =>
+		offsetClaimConflict(
+			claims,
+			{ offset, ports: Object.values(ports) },
+			claimKey,
+		);
 	const conflictAt = (ports: Record<string, number>) =>
 		findForeignConflict(probed(ports), {
 			root,
@@ -408,7 +499,14 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 			if (JSON.stringify(next) !== JSON.stringify(lockfile))
 				writePortsLockfile(root, next);
 		}
-		if (claim) claimOffset(root, offset, projectName, suffix);
+		if (claim)
+			claimOffset({
+				root,
+				offset,
+				ports: Object.values(ports),
+				projectName,
+				suffix,
+			});
 		return { offset, ports, provenance };
 	};
 
@@ -417,23 +515,33 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 	let ignored = notOurs;
 	if (ownLockfile) {
 		const ports = shiftPorts(basePorts, ownLockfile.offset);
-		const holder = claimant(ownLockfile.offset);
-		if (holder)
-			ignored = `offset ${ownLockfile.offset} is claimed by ${holder}`;
+		// A partial start must not move the block: the containers and apps it
+		// did not select still publish the persisted ports.
+		const partial =
+			input.probeNames &&
+			Object.keys(basePorts).some((name) => !input.probeNames?.includes(name));
+		const refusePartial = (reason: string, next: string) => {
+			if (partial)
+				throw new Error(
+					`Selected app ports conflict with the persisted allocation: ${reason}. ${next}`,
+				);
+			return reason;
+		};
+		const claimed = claimant(ownLockfile.offset, ports);
+		if (claimed)
+			ignored = refusePartial(
+				claimed,
+				"Start the full environment to move this checkout's shared port block.",
+			);
 		else if (Object.values(ports).some((port) => port > 65535))
 			ignored = `offset ${ownLockfile.offset} puts a port above 65535`;
 		else {
 			const conflict = conflictAt(ports);
 			if (!conflict) return settle(ownLockfile.offset, ports, "lockfile");
-			if (
-				input.probeNames &&
-				Object.keys(basePorts).some((name) => !input.probeNames?.includes(name))
-			) {
-				throw new Error(
-					"Selected app ports conflict with the persisted allocation. Stop the conflicting port owner, or start the full environment to reconcile its shared port block.",
-				);
-			}
-			ignored = describePortConflict(conflict.port, conflict.owner);
+			ignored = refusePartial(
+				describePortConflict(conflict.port, conflict.owner, runtimeName),
+				"Stop that port's owner, or start the full environment to reconcile its shared port block.",
+			);
 		}
 	}
 	const settleAllocated = (
@@ -458,14 +566,28 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 		worktreeIsolation,
 	});
 
+	// Why the block at `offset` cannot be used, or undefined when it can.
+	const problemAt = (
+		offset: number,
+		ports: Record<string, number>,
+	): string | undefined => {
+		if (Object.values(ports).some((port) => port > 65535))
+			return `offset ${offset} puts a port above 65535`;
+		const claimed = claimant(offset, ports);
+		if (claimed) return claimed;
+		const conflict = conflictAt(ports);
+		return conflict
+			? describePortConflict(conflict.port, conflict.owner, runtimeName)
+			: undefined;
+	};
+
 	// A suffixed environment has no lockfile; its own claim keeps its ports
 	// from one run to the next, as a lockfile does for dev, and read-only
 	// callers find the ports its last run used.
 	const ownClaim = persist ? undefined : claims[claimKey];
-	if (ownClaim && !claimant(ownClaim.offset)) {
+	if (ownClaim) {
 		const ports = shiftPorts(basePorts, ownClaim.offset);
-		const overflow = Object.values(ports).some((port) => port > 65535);
-		if (!overflow && !conflictAt(ports))
+		if (!problemAt(ownClaim.offset, ports))
 			return settle(
 				ownClaim.offset,
 				ports,
@@ -475,16 +597,18 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 
 	let offset = hashed;
 	let provenance: PortOffsetProvenance = "hash";
+	let lastTried = { offset, problem: "" };
 
 	for (let attempt = 0; attempt < PORT_ALLOCATION_ATTEMPTS; attempt++) {
 		const ports = shiftPorts(basePorts, offset);
-		const overflow = Object.values(ports).some((port) => port > 65535);
-		if (!overflow && !claimant(offset) && !conflictAt(ports))
+		const problem = problemAt(offset, ports);
+		if (!problem)
 			return settleAllocated(
 				offset,
 				ports,
 				provenance === "hash" ? "hash" : "shifted",
 			);
+		lastTried = { offset, problem };
 		offset += PORT_OFFSET_STEP;
 		provenance = "shifted";
 		if (offset > PORT_OFFSET_MAX + PORT_OFFSET_STEP * 20) {
@@ -492,16 +616,88 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 		}
 	}
 
-	const failedPorts = shiftPorts(basePorts, offset);
-	const conflict = findForeignConflict(probed(failedPorts), {
-		root,
-		projectName,
-		runtime: runtimeName,
-		getOwner: lookupOwner,
-	});
 	throw new Error(
-		conflict
-			? `Could not allocate a free port block. ${describePortConflict(conflict.port, conflict.owner)}.`
-			: "Could not allocate a free port block.",
+		`Could not allocate a free port block for ${root} (offsets ${hashed} to ${lastTried.offset}); at ${lastTried.offset}, ${lastTried.problem}. Free the ports, or move this checkout with \`buncargo ports pin <offset>\` (\`buncargo ports\` lists the claimed offsets).`,
 	);
+}
+
+/** What `buncargo ports pin` did: the block's ports, or why it is not free. */
+export type PinResult =
+	| { pinned: Record<string, number> }
+	| { refused: string; claimed: boolean };
+
+/**
+ * `buncargo ports pin`: move `root` to the block at `offset` and keep it there.
+ *
+ * Every port is probed first, outside the claims lock: binding each one takes
+ * a while, and every other checkout's allocation waits on that lock. The claims
+ * are read again under the lock before the lockfile and the claim are written,
+ * so a checkout that claimed the block in the meantime keeps it.
+ */
+export function pinOffset(input: {
+	root: string;
+	projectName: string;
+	services: Record<string, ServiceConfig>;
+	apps?: Record<string, AppConfig>;
+	offset: number;
+	/** `options.worktreeIsolation`: without it, sharing the name is asked for. */
+	worktreeIsolation?: boolean;
+	runtime?: ContainerRuntimeName;
+	getOwner: (port: number) => PortOwner | null;
+}): PinResult {
+	const { root, projectName, offset, runtime } = input;
+	const ports = buildPortMap(input.services, input.apps, offset);
+	const block = { offset, ports: Object.values(ports) };
+	// A claim under a name another checkout holds would only make the next
+	// run refuse, after the lockfile had moved.
+	const claimedBy = (): PinResult | undefined => {
+		const claims = readOffsetClaims();
+		const shared =
+			input.worktreeIsolation === false
+				? undefined
+				: sharedProjectNameRefusal(claims, { root, projectName });
+		if (shared) return { refused: shared, claimed: false };
+		const claimed = offsetClaimConflict(
+			claimsWithLockfilePorts(claims),
+			block,
+			root,
+		);
+		return claimed
+			? { refused: `Offset ${offset} is not free: ${claimed}.`, claimed: true }
+			: undefined;
+	};
+
+	const claimed = claimedBy();
+	if (claimed) return claimed;
+	for (const port of block.ports) {
+		if (port > 65535)
+			return {
+				refused: `Offset ${offset} puts port ${port} above 65535.`,
+				claimed: false,
+			};
+		const owner = input.getOwner(port);
+		if (
+			owner &&
+			classifyPortOccupant(owner, { root, projectName, runtime }) === "fail"
+		)
+			return {
+				refused: `Offset ${offset} is not free: ${describePortConflict(port, owner, runtime)}.`,
+				claimed: false,
+			};
+	}
+
+	return withOffsetClaimsLock((): PinResult => {
+		const claimedMeanwhile = claimedBy();
+		if (claimedMeanwhile) return claimedMeanwhile;
+		writePortsLockfile(root, {
+			version: LOCKFILE_VERSION,
+			projectName,
+			root,
+			offset,
+			ports,
+			provenance: "lockfile",
+		});
+		claimOffset({ root, offset, ports: block.ports, projectName });
+		return { pinned: ports };
+	});
 }

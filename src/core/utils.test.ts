@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { defineDevConfig } from "../config";
 import { service } from "../docker-compose/services";
-import { withoutCiEnv } from "./test-env";
+import { withoutCiEnv } from "./test-env.testing";
 import { getEnvVar, sleep } from "./utils";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -70,9 +70,7 @@ describe("getEnvVar", () => {
 		expect(getEnvVar(config, "NATS_URL")).toMatch(/^http:\/\/localhost:\d+$/);
 		expect(getEnvVar(config, "API_URL")).toMatch(/^http:\/\/localhost:\d+$/);
 		expect(getEnvVar(config, "WEBLOCAL_URL")).toMatch(/^http:\/\//);
-		// Each getEnvVar call resolves ports from scratch, and every resolution
-		// probes for conflicts, so six of them do not fit the default timeout.
-	}, 30_000);
+	});
 
 	it("emits named HTTPS URLs when hosts are enabled", () => {
 		const previousHosts = process.env.BUNCARGO_HOSTS;
@@ -100,6 +98,66 @@ describe("getEnvVar", () => {
 				expect(getEnvVar(config, "POSTGRES_LOOPBACK_URL")).toMatch(
 					/^postgresql:\/\/postgres:postgres@localhost:\d+\/typed$/,
 				);
+			});
+		} finally {
+			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
+			else process.env.BUNCARGO_HOSTS = previousHosts;
+		}
+	});
+
+	it("gives the primary app the bare hostname a run serves it on", () => {
+		const previousHosts = process.env.BUNCARGO_HOSTS;
+		delete process.env.BUNCARGO_HOSTS;
+		try {
+			withoutCiEnv(() => {
+				const config = defineDevConfig({
+					projectPrefix: "serpier",
+					services: {},
+					apps: {
+						api: { port: 3000, devCommand: "bun run api" },
+						web: { port: 5173, devCommand: "bun run web" },
+					},
+					options: { hosts: true, primaryApp: "web" },
+				});
+				expect(getEnvVar(config, "WEB_URL")).toMatch(
+					/^https:\/\/(?:[a-z0-9-]+\.)?serpier\.localhost$/,
+				);
+				expect(getEnvVar(config, "WEB_URL")).not.toContain("web.");
+				expect(getEnvVar(config, "API_URL")).toMatch(
+					/^https:\/\/(?:[a-z0-9-]+\.)?api\.serpier\.localhost$/,
+				);
+			});
+		} finally {
+			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
+			else process.env.BUNCARGO_HOSTS = previousHosts;
+		}
+	});
+
+	it("sees what the config's integrations add, like a run does", () => {
+		const previousHosts = process.env.BUNCARGO_HOSTS;
+		delete process.env.BUNCARGO_HOSTS;
+		try {
+			withoutCiEnv(() => {
+				const config = defineDevConfig({
+					projectPrefix: "serpier",
+					services: {},
+					apps: {
+						api: { port: 3000, devCommand: "bun run api" },
+						web: { port: 5173, devCommand: "bun run web" },
+					},
+					options: { hosts: true },
+					// Shopify's sets its frontend as the primary app this way.
+					integrations: [
+						{
+							name: "primary",
+							config: (config) => ({
+								...config,
+								options: { ...config.options, primaryApp: "web" },
+							}),
+						},
+					],
+				});
+				expect(getEnvVar(config, "WEB_URL")).not.toContain("web.");
 			});
 		} finally {
 			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;

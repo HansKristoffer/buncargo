@@ -1,5 +1,4 @@
-import { buildStartPlan } from "../../planning";
-import { findStartAfterCycle } from "../../planning/start-planning";
+import { findCycle } from "../../planning";
 import type { AnyDevConfig } from "../../types";
 import type { ValidationContext } from "./context";
 
@@ -30,10 +29,6 @@ export function validateApps(
 				errors.push(`App "${name}" has an invalid kind`);
 			}
 			claimPort(app.port, `apps.${name}.port`);
-		}
-
-		if (app.kind !== "worker" && (!app.port || typeof app.port !== "number")) {
-			errors.push(`App "${name}" must have a valid port number`);
 		}
 
 		if (
@@ -67,8 +62,6 @@ export function validateApps(
 				errors.push(
 					`App "${name}" starts after unknown app "${dependencyName}"`,
 				);
-			} else if (dependencyName === name) {
-				errors.push(`App "${name}" cannot start after itself`);
 			}
 		}
 
@@ -128,15 +121,11 @@ export function validateApps(
 	}
 
 	if (config.apps) {
-		try {
-			buildStartPlan(config.apps, config.services, undefined);
-		} catch (error) {
-			errors.push(error instanceof Error ? error.message : String(error));
-		}
-
-		const startCycle = findStartAfterCycle(config.apps);
-		if (startCycle) {
-			errors.push(`Circular startAfter dependency: ${startCycle}`);
+		// A requiredApps cycle cannot select; a startAfter cycle deadlocks, every
+		// app in it waiting for another to be healthy.
+		for (const field of ["requiredApps", "startAfter"] as const) {
+			const cycle = findCycle(config.apps, (app) => app[field]);
+			if (cycle) errors.push(`Circular ${field} dependency: ${cycle}`);
 		}
 
 		const keyOwners = new Map<string, string>();

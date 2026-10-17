@@ -1,13 +1,12 @@
 import {
 	accessSync,
-	chmodSync,
 	constants,
 	existsSync,
 	readFileSync,
 	statSync,
 } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
-import { chownToInvokingUser, getToolsDir } from "./hosts/paths";
+import { stateFilePath } from "./state-paths";
 
 /**
  * Locating the external binaries buncargo shells out to (`mkcert`,
@@ -23,15 +22,16 @@ export interface ToolBinaryResolution {
 	exists: boolean;
 }
 
-/** Download target for a tool, under `~/.buncargo/bin`. */
+/**
+ * Download target for a tool, under `~/.buncargo/bin`.
+ *
+ * Beside the certificates and the registry rather than in `tmpdir()`: macOS
+ * clears `$TMPDIR`, and a cache that disappears takes named hosts down with it
+ * — a run that has to widen the certificate for a new worktree hostname finds
+ * no `mkcert` and falls back to `localhost:port`.
+ */
 export function toolCachePath(fileName: string): string {
-	return join(getToolsDir(), fileName);
-}
-
-/** Make a freshly downloaded binary executable and owned by the invoking user. */
-export function finalizeToolBinary(path: string): void {
-	chmodSync(path, 0o755);
-	chownToInvokingUser(path);
+	return join(stateFilePath("bin"), fileName);
 }
 
 export function resolveToolBinary(options: {

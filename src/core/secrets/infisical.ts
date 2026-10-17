@@ -1,18 +1,17 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { AppConfig, SecretsScopeConfig } from "../../types";
+import { connectProcessEnv } from "../child-env";
 import { registerAbortCleanup } from "../deadline";
 import { withFileLock } from "../file-lock";
 import {
-	connectProcessEnv,
 	infisicalMachineCredentials,
 	infisicalPathOverride,
+	infisicalUniversalAuthFile,
 	secretsEnvironment,
 } from "../runtime-flags";
 import { recordStartupMetric } from "../startup-metrics";
-import { stateFilePath } from "../state-paths";
+import { resolveUserHome, stateFilePath } from "../state-paths";
 import { formatWarn } from "../style";
 import { SharedRequestCache } from "./shared-request";
 
@@ -46,7 +45,7 @@ export interface InfisicalScope {
 }
 
 /** Same default as hanzio: the EU cloud. */
-export const DEFAULT_INFISICAL_SITE_URL = "https://eu.infisical.com";
+const DEFAULT_INFISICAL_SITE_URL = "https://eu.infisical.com";
 
 /** One HTTP call or CLI run; only has to outlast a stalled network call. */
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -62,15 +61,8 @@ function identityFile(
 	env: NodeJS.ProcessEnv,
 	siteUrl: string,
 ): { clientId: string; clientSecret: string } | undefined {
-	if (env.INFISICAL_CLIENT_ID?.trim() || env.INFISICAL_CLIENT_SECRET?.trim())
-		return undefined;
-	const file =
-		env.INFISICAL_UNIVERSAL_AUTH_FILE?.trim() ||
-		join(
-			process.env.HOME?.trim() || homedir(),
-			".infisical",
-			"universal-auth.json",
-		);
+	const file = infisicalUniversalAuthFile(env, resolveUserHome(env));
+	if (!file) return undefined;
 	let identity: {
 		clientId?: unknown;
 		clientSecret?: unknown;
@@ -225,9 +217,7 @@ async function request(
 		// The body is not echoed: it can quote what was sent.
 		throw new SecretsError(
 			`Infisical ${operation} failed (HTTP ${response.status}).`,
-			response.status === 401 || response.status === 403
-				? `infisical login --domain=${scope.siteUrl}`
-				: undefined,
+			failureFix(scope, response.status),
 		);
 	}
 	try {
@@ -237,6 +227,14 @@ async function request(
 			`Infisical ${operation} returned something other than JSON.`,
 		);
 	}
+}
+
+function failureFix(scope: InfisicalScope, status: number): string | undefined {
+	if (status === 401 || status === 403)
+		return `infisical login --domain=${scope.siteUrl}`;
+	if (status === 404)
+		return `check that project ${scope.projectId} has environment "${scope.environment}" and path "${scope.path}" on ${scope.siteUrl}; a 404 usually means one of them is misspelled or missing.`;
+	return undefined;
 }
 
 /** The organization a session token is scoped to; routing metadata only. */
@@ -547,7 +545,6 @@ export function describeSecretsError(error: unknown): string {
  */
 export async function loadAppSecrets(
 	apps: Record<string, AppConfig>,
-	defaults: SecretsScopeConfig | false | undefined,
 	options: {
 		signal?: AbortSignal;
 		env?: NodeJS.ProcessEnv;
@@ -560,7 +557,7 @@ export async function loadAppSecrets(
 	for (const [name, app] of Object.entries(apps)) {
 		// An app that declared nothing is not opted in, whatever the defaults say.
 		if (!app.secrets) continue;
-		const scope = resolveScope(app.secrets, defaults, env);
+		const scope = resolveScope(app.secrets, undefined, env);
 		if (!scope) continue;
 		const key = scopeKey(scope);
 		scopes.set(key, scope);
@@ -618,26 +615,21 @@ function withoutExported(
  * Every secret in one scope, for something that runs one command with one
  * scope (migrations, seed, `exec`, tasks). Uses the same authentication and
  * per-scope cache as app processes.
- * Throws when the scope has no project or the fetch fails.
+ * Throws when the fetch fails.
  */
 export async function loadScopeSecrets(
-	scope: SecretsScopeConfig,
+	scope: InfisicalScope,
 	options: {
 		signal?: AbortSignal;
 		env?: NodeJS.ProcessEnv;
-		defaults?: SecretsScopeConfig | false;
 		onWait?: (ms: number) => void;
 	} = {},
 ): Promise<Record<string, string>> {
 	const env = options.env ?? process.env;
-	const resolved = resolveScope(scope, options.defaults, env);
-	if (!resolved) {
-		throw new SecretsError("The secrets scope has no projectId.");
-	}
 	const began = performance.now();
 	try {
 		return withoutExported(
-			await fetchScopeSecrets(resolved, { signal: options.signal, env }),
+			await fetchScopeSecrets(scope, { signal: options.signal, env }),
 			env,
 		);
 	} finally {
@@ -659,9 +651,19 @@ export function missingRequiredSecrets(
 	for (const [name, app] of Object.entries(apps)) {
 		const required = app.secrets ? (app.secrets.required ?? []) : [];
 		if (required.length === 0) continue;
-		const env = provided(name);
-		const absent = required.filter((key) => !env[key]);
+		const absent = missingKeys(required, provided(name));
 		if (absent.length > 0) missing[name] = absent;
 	}
 	return missing;
+}
+
+/**
+ * The `required` keys `env` leaves unset or empty: the rule `dev` refuses to
+ * start on, and the one `buncargo secrets ls` reports with.
+ */
+export function missingKeys(
+	required: readonly string[],
+	env: Record<string, string | undefined>,
+): string[] {
+	return required.filter((key) => !env[key]);
 }

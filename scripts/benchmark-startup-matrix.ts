@@ -5,14 +5,16 @@ import {
 	baselineViolations,
 	budgetViolations,
 	fixtureKey,
-	startupFixtures,
 	type StartupResult,
+	startupFixtures,
 } from "./startup-budgets";
 
 const option = (name: string) =>
 	process.argv
 		.find((arg) => arg.startsWith(`--${name}=`))
 		?.slice(name.length + 3);
+function positiveOption(name: string, fallback: number): number;
+function positiveOption(name: string): number | undefined;
 function positiveOption(name: string, fallback?: number): number | undefined {
 	const raw = option(name);
 	const value = raw === undefined ? fallback : Number(raw);
@@ -20,14 +22,14 @@ function positiveOption(name: string, fallback?: number): number | undefined {
 		throw new Error(`--${name} must be a positive finite number`);
 	return value;
 }
-const samples = positiveOption("samples", 5)!;
+const samples = positiveOption("samples", 5);
 if (!Number.isInteger(samples)) throw new Error("--samples must be an integer");
 const output = resolve(option("output") ?? ".buncargo/benchmarks/startup.json");
-const scale = positiveOption("budget-scale", 1)!;
+const scale = positiveOption("budget-scale", 1);
 const maxColdP95 = positiveOption("max-cold-p95");
 const maxP95 = positiveOption("max-p95");
 const maxSubprocesses = positiveOption("max-subprocesses");
-const maxRegressionPercent = positiveOption("max-regression-percent", 25)!;
+const maxRegressionPercent = positiveOption("max-regression-percent", 25);
 const baselinePath = option("baseline");
 const baseline = baselinePath
 	? (JSON.parse(readFileSync(baselinePath, "utf8")) as {

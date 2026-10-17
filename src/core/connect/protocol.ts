@@ -1,6 +1,4 @@
 /** Wire contract shared by the directory, CLI, and Swift fixture tests. */
-export const CONNECT_ORIGIN = "https://connect.hanskristoffer.dk";
-
 export const LEASE_MS = 45_000;
 
 export const HEARTBEAT_MS = 10_000;

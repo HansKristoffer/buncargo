@@ -1,6 +1,11 @@
 import { rmSync } from "node:fs";
 import type { HostsOptions } from "../../types";
-import { askChoice, declineMarker, isInteractive } from "../prompt";
+import {
+	askChoice,
+	claimFirstRunPrompt,
+	declineMarker,
+	isInteractive,
+} from "../prompt";
 import { isHostsForcedOff } from "../runtime-flags";
 import { getCertNamesPath } from "./cert-names";
 import { syncCertificateForRoutes } from "./certificates";
@@ -59,7 +64,20 @@ export function clearHostsDecline(): void {
 	hostsDecline.clear();
 }
 
-async function promptFirstRun(): Promise<"setup" | "skip" | "decline"> {
+type FirstRunChoice = "setup" | "skip" | "decline";
+
+/**
+ * The first-run setup question, unless another one was asked this run: that
+ * is a skip, not a decline. `ask` is a test seam.
+ */
+export async function promptFirstRun(
+	ask: () => Promise<FirstRunChoice> = askFirstRunSetup,
+): Promise<FirstRunChoice> {
+	if (!claimFirstRunPrompt()) return "skip";
+	return ask();
+}
+
+async function askFirstRunSetup(): Promise<FirstRunChoice> {
 	return askChoice(
 		[
 			"  buncargo needs one-time setup for named URLs (~10s, asks for your password)",

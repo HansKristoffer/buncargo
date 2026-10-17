@@ -126,6 +126,25 @@ export function getWorktreeName(root?: string): string | null {
 }
 
 /**
+ * The Git worktree a root sits below, when the root is not its top level.
+ *
+ * {@link getWorktreeName} reads only the root's own `.git`, so a config in a
+ * subdirectory of a worktree gets no worktree name in its project name. That
+ * cannot change without renaming every such checkout's existing stack and
+ * volume; this only lets an error say why two checkouts share a name.
+ */
+export function enclosingWorktreeName(root: string): string | null {
+	if (existsSync(resolve(root, ".git"))) return null;
+	let dir = dirname(resolve(root));
+	for (;;) {
+		if (existsSync(resolve(dir, ".git"))) return getWorktreeName(dir);
+		const parent = dirname(dir);
+		if (parent === dir) return null;
+		dir = parent;
+	}
+}
+
+/**
  * Check if the current directory is a git worktree.
  */
 export function isWorktree(root?: string): boolean {

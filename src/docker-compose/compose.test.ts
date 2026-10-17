@@ -6,7 +6,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServiceConfig } from "../types";
 import {
@@ -84,7 +84,6 @@ describe("buildComposeModel", () => {
 			"buncargo.root": "/repo",
 			"buncargo.worktree": "feature",
 			"buncargo.service": "postgres",
-			"buncargo.user": userInfo().username,
 			// Substituted by whichever backend runs it: the hash covers the
 			// interpolated file, so it is not known when this is written.
 			"buncargo.service-hash": `\${${serviceHashEnv("postgres")}:-}`,

@@ -1,9 +1,8 @@
 import { checkoutPathError } from "./spec";
 import {
 	MAX_FILE_BYTES,
-	type Manifest,
-	readManifest,
 	readStoreData,
+	readStoreManifest,
 	sha256,
 	withStoreLock,
 	writeStoreEntries,
@@ -33,13 +32,6 @@ export interface Bundle {
 	files: BundleFile[];
 }
 
-function readStore(dir: string): Manifest {
-	const read = readManifest(dir);
-	if (read.kind === "unusable")
-		throw new Error(`Left the file store ${dir} alone: ${read.reason}.`);
-	return read.kind === "ok" ? read.manifest : { version: 1, files: {} };
-}
-
 /** Every entry of a store; `machine` ones only when asked. */
 export async function exportBundle(
 	dir: string,
@@ -48,7 +40,9 @@ export async function exportBundle(
 ): Promise<Bundle> {
 	return withStoreLock(dir, () => {
 		const files: BundleFile[] = [];
-		for (const [path, entry] of Object.entries(readStore(dir).files).sort()) {
+		for (const [path, entry] of Object.entries(
+			readStoreManifest(dir)?.files ?? {},
+		).sort()) {
 			if (entry.machine && !options.includeMachine) continue;
 			const data = readStoreData(dir, path, entry);
 			if (!data) continue;
@@ -113,7 +107,7 @@ export async function importBundle(dir: string, bundle: Bundle): Promise<void> {
 	await withStoreLock(dir, () => {
 		writeStoreEntries(
 			dir,
-			readStore(dir),
+			readStoreManifest(dir),
 			bundle.files.map((file) => ({
 				path: file.path,
 				data: Buffer.from(file.data, "base64"),

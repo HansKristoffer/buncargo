@@ -1,5 +1,6 @@
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
+import { withDeadline } from "../core/deadline";
 import { waitForDevServers } from "../core/network";
 import { buildApps } from "../core/process/build";
 import { isCI } from "../core/runtime-flags";
@@ -25,6 +26,7 @@ import { createCaptureRecorder } from "./captures";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
+import type { DevRunClaimApi } from "./run-claim";
 import { startServerSession } from "./server-session";
 
 /** Validate all selected working directories before any startup mutation. */
@@ -54,8 +56,33 @@ export function assertAppWorkingDirectories(
 	}
 }
 
-function readyTimeout(): number {
+/** How long a wave of apps gets to become healthy, for `start()` and the CLI. */
+export function serverReadyTimeout(): number {
 	return isCI() ? 120000 : 60000;
+}
+
+/**
+ * `beforeServers`/`afterServers` for `start()` and the CLI alike, told the
+ * prepared selection and bounded like every other hook.
+ */
+export function createServerHookRunner<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+	TEnv extends EnvValues = EnvValues,
+>(
+	ctx: DevEnvContext<TServices, TApps, TEnv>,
+	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
+): (phase: "before" | "after", signal?: AbortSignal) => Promise<void> {
+	return async (phase, signal) => {
+		const hook =
+			ctx.config.hooks?.[phase === "before" ? "beforeServers" : "afterServers"];
+		if (hook)
+			await withDeadline(
+				(hookSignal) => hook(envVars.getHookContext(hookSignal)),
+				600_000,
+				signal,
+			);
+	};
 }
 
 /**
@@ -79,12 +106,35 @@ export async function startAppServers<
 		productionBuild: boolean;
 		verbose: boolean;
 		signal?: AbortSignal;
+		/** This environment's run claim, for what the apps hold while they run. */
+		claim: Pick<DevRunClaimApi, "claimApps" | "appEvents" | "abandonApps">;
 	},
 ): Promise<DevServerPids> {
-	const { apps: appsToStart, productionBuild, verbose } = options;
+	const { productionBuild, claim } = options;
 	options.signal?.throwIfAborted();
-	assertAppWorkingDirectories(appsToStart, ctx.root, productionBuild);
+	assertAppWorkingDirectories(options.apps, ctx.root, productionBuild);
 
+	// Before anything is built or spawned, like `buncargo dev`.
+	const appsToStart = await claim.claimApps(options.apps, options.signal);
+	try {
+		return await spawnAppServers(ctx, envVars, appsToStart, options);
+	} catch (error) {
+		await claim.abandonApps();
+		throw error;
+	}
+}
+
+async function spawnAppServers<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+	TEnv extends EnvValues = EnvValues,
+>(
+	ctx: DevEnvContext<TServices, TApps, TEnv>,
+	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
+	appsToStart: Record<string, AppConfig>,
+	options: Parameters<typeof startAppServers>[2],
+): Promise<DevServerPids> {
+	const { productionBuild, verbose } = options;
 	const pids = await startServerSession(
 		{
 			root: ctx.root,
@@ -94,7 +144,7 @@ export async function startAppServers<
 					// The spawn path gets its secrets inside `startDevServers`; a production
 					// build is the other process that needs them, and it runs before that.
 					// Both share one fetch per scope through the module's cache.
-					const secrets = await loadAppSecrets(appsToStart, undefined, {
+					const secrets = await loadAppSecrets(appsToStart, {
 						signal,
 						onWait: (ms) => options.onPhase?.("secrets", ms),
 					});
@@ -116,31 +166,25 @@ export async function startAppServers<
 					name as Extract<keyof TApps, string>,
 					productionBuild,
 				),
-			runHook: async (phase, signal) => {
-				const hook =
-					ctx.config.hooks?.[
-						phase === "before" ? "beforeServers" : "afterServers"
-					];
-				await hook?.(envVars.getHookContext(signal));
-			},
+			runHook: createServerHookRunner(ctx, envVars),
 			recordCapture: createCaptureRecorder(ctx, envVars),
 			afterWave: () => {
 				renderGeneratedFiles(ctx, envVars);
 			},
-			waitForHealth: (wave, signal) =>
+			waitForHealth: (wave, signal, onAppReady) =>
 				waitForDevServers(wave, ctx.ports, {
-					timeout: readyTimeout(),
+					timeout: serverReadyTimeout(),
 					verbose,
 					logReady: !options.seed,
 					productionBuild,
 					signal,
+					onAppReady,
 				}),
 		},
 		appsToStart,
 		{
 			verbose,
 			productionBuild,
-			isCI: isCI(),
 			projectName: ctx.projectName,
 			runtime: ctx.hasSelectedServices ? ctx.runtime : undefined,
 			skipContainers: !ctx.hasSelectedServices,
@@ -148,8 +192,10 @@ export async function startAppServers<
 			seed: options.seed,
 			deferPublicUrlApps: false,
 			onPhase: options.onPhase,
-			onAppSpawned: (name, pid) => {
+			...options.claim.appEvents,
+			onAppSpawned: (name, pid, attached) => {
 				if (ctx.ownedServerPids) ctx.ownedServerPids[name] = pid;
+				options.claim.appEvents.onAppSpawned?.(name, pid, attached);
 			},
 		},
 	);
@@ -175,6 +221,7 @@ export interface DevServersApi<
 		expandRequired?: boolean;
 		logReady?: boolean;
 		signal?: AbortSignal;
+		onAppReady?: (name: string) => void;
 	}): Promise<void>;
 	openPublicTunnels(
 		options?: OpenPublicTunnelsOptions<TServices, TApps>,
@@ -188,6 +235,7 @@ export function createServersApi<
 >(
 	ctx: DevEnvContext<TServices, TApps, TEnv>,
 	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
+	runClaim: DevRunClaimApi,
 ): DevServersApi<TServices, TApps> {
 	const { apps, services, ports, config } = ctx;
 
@@ -211,6 +259,7 @@ export function createServersApi<
 			productionBuild,
 			verbose,
 			signal: options.signal,
+			claim: runClaim,
 		});
 	}
 
@@ -222,6 +271,7 @@ export function createServersApi<
 			expandRequired?: boolean;
 			logReady?: boolean;
 			signal?: AbortSignal;
+			onAppReady?: (name: string) => void;
 		} = {},
 	): Promise<void> {
 		const {
@@ -244,6 +294,7 @@ export function createServersApi<
 			productionBuild,
 			signal: options.signal,
 			logReady: options.logReady,
+			onAppReady: options.onAppReady,
 		});
 	}
 
@@ -256,7 +307,7 @@ export function createServersApi<
 		if (waitForHealthy?.length) {
 			assertOnlyAppNames(Object.keys(apps), waitForHealthy);
 			await waitForDevServers(pickApps(apps, waitForHealthy), ports, {
-				timeout: readyTimeout(),
+				timeout: serverReadyTimeout(),
 				verbose: config.options?.verbose ?? true,
 				productionBuild: false,
 				signal: options.signal,

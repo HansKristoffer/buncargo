@@ -16,7 +16,7 @@ bunx buncargo dev --up-only
 bunx buncargo dev --migrate
 bunx buncargo dev --seed
 bunx buncargo dev --down
-bunx buncargo dev --down --all    # Remove every buncargo env on this machine
+bunx buncargo dev --down --all    # Remove every buncargo env you started on this machine
 bunx buncargo dev --reset
 bunx buncargo dev --reset --yes   # Without a terminal, --reset and --down --all need --yes
 bunx buncargo dev --takeover        # Stop apps running elsewhere, run them here
@@ -37,7 +37,7 @@ bunx buncargo stop --all          # Stop this checkout's whole run
 bunx buncargo restart shopify     # Start a stopped app of a running dev again
 bunx buncargo logs                # Every app's output from the current or last run
 bunx buncargo logs shopify --errors -f --since=5m
-bunx buncargo sim                 # Open the Expo app in this checkout's own simulator
+bunx buncargo expo sim            # Open the Expo app in this checkout's own simulator
 bunx buncargo status
 bunx buncargo status --json       # Ports, containers, URLs and app states as one object
 bunx buncargo sql                 # psql (or clickhouse-client) in this checkout's container
@@ -47,6 +47,7 @@ bunx buncargo sql --create-scratch=migcheck   # Empty scratch_migcheck; prints i
 bunx buncargo sql --drop-scratch=migcheck
 bunx buncargo ports               # This checkout's ports, and every checkout's offset
 bunx buncargo ports pin 2500      # Keep this checkout on offset 2500
+bunx buncargo ports release --root ../old-worktree   # Drop another checkout's claims
 bunx buncargo send expoApp i      # Type into an app that has a terminal of its own
 bunx buncargo doctor
 bunx buncargo doctor --fix
@@ -82,7 +83,6 @@ bunx buncargo files export | ssh box 'cd app && bunx buncargo files import'
 bunx buncargo shopify env         # An integration's own commands
 bunx buncargo shopify login       # Log the Shopify CLI in
 bunx buncargo shopify link --config=local  # Link a toml without losing it
-bunx buncargo expo sim            # (`buncargo sim` still works)
 bunx buncargo run                 # List tasks
 bunx buncargo run db:seed -- --dry-run
 bunx buncargo setup               # Run the fix of every failing check
@@ -104,7 +104,7 @@ When the project's `package.json` lists buncargo but it is not installed, it sto
 
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`), including `vars`: the variables `exec`, tasks and the apps are given, without their Infisical secrets. `--get ports.api` prints one raw value for scripts, and a bare name (`--get DATABASE_URL`) reads from `vars`. `--export` prints `vars` as quoted `export` lines.
 
-`buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached.log` and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, 1 when one is not (the others keep running) or the run ended. Stop it with `buncargo stop --all`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
+`buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached.log` and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed. Stop it with `buncargo stop --all`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
 
 `buncargo sql --create-scratch=<name>` drops and recreates an empty Postgres database `scratch_<name>` in this checkout's container and prints its URL alone on stdout, so `DATABASE_URL=$(buncargo sql --create-scratch=migcheck) bun test` works. `--drop-scratch=<name>` drops it. The prefix is always added, so neither can touch a database the project uses. A scratch database lives in the checkout's volume: `dev --reset` and `prune` remove it with the rest.
 
@@ -128,6 +128,8 @@ typecheck: {
 ```
 
 `include` takes directories relative to the root, globs allowed: a root `scripts/` folder, a package outside `workspaces`. Each runs its own `typecheck` script when its `package.json` has one, else `tsc --noEmit -p tsconfig.json` with the project's TypeScript. An entry that matches no directory, or a directory with neither a script nor a `tsconfig.json`, fails the typecheck instead of being skipped. `exclude` removes workspaces, discovered or included, by path, glob or basename (like `--only`). Both are validated with the config; absolute paths and paths leaving the root are rejected. `buncargo typecheck` reads only this key of the config module, without building an environment; a config that fails to import is a warning there, since its own typecheck reports the problem.
+
+From code, `runWorkspaceTypecheck(options)` (exported from `buncargo`) runs the same checks and resolves to a `TypecheckResult`; it takes the flags above as `concurrency`, `only`, `changedFiles`, `include` and `exclude`. Pass `signal` (an `AbortSignal`) to cancel a run: the checks it started are terminated with their child processes, none is started after, and the promise rejects with the abort reason. `buncargo typecheck` does this on Ctrl-C or `SIGTERM` and exits 130 or 143.
 
 ## Execute with the checkout environment
 
@@ -223,7 +225,7 @@ export default defineDevConfig({
 
 `buncargo ci [--migrate] [--seed] [--services=a,b] -- <command>` starts the configured services (all of them, or `--services`), applies migrations and the seed with the same config as local, runs the command with the checkout env (but no Infisical secrets: a CI job should not need Infisical access for its tests; migrations and the seed keep their scopes), and tears everything down, volumes included. It runs as its own `<project>-ci` stack, with its own ports and compose file, so running it on a laptop never touches the checkout's dev database. A PR workflow then needs no `services: postgres` block or hand-written `DATABASE_URL`, and "migrations apply" and "the seed works" are tested exactly as they run locally. Without a command it only prepares; the exit code is the command's, or the seed's when that fails. `seed.check` is skipped, because a CI database is never warm.
 
-The teardown runs however the run ends: the command failing, the services failing to start, or `SIGINT`/`SIGTERM`/`SIGHUP` at any point, including one that arrives while the stack is already coming down. An interrupted run exits `130`/`143`/`129`. Only a run killed outright (`SIGKILL`) leaves its stack: the sweep (the watchdog, `ls`, `doctor`) removes its containers, and `buncargo prune --project` its volume.
+The teardown runs however the run ends: the command failing, the services failing to start, or `SIGINT`/`SIGTERM`/`SIGHUP` at any point, including one that arrives while the stack is already coming down. An interrupted run exits `130`/`143`/`129`. Only a run killed outright (`SIGKILL`) leaves its stack: the sweep (the watchdog, `ls`, `doctor`) removes its containers once it has seen the run gone for 15 seconds, and `buncargo prune --project` its volume. `ci` starts no watchdog of its own: on a machine where no other run started one, the next `ls` or `doctor` sweeps.
 
 `buncargo prisma migrate-check` wraps `prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code` against a shadow database. The shadow database (`<database>_shadow`) is created inside the configured Postgres service, so no host `psql` is needed. Prisma 6 and older get it as `--shadow-database-url` (and `--to-schema-datamodel`, their name for the flag). Prisma 7 removed that flag and reads the shadow URL from `prisma.config.ts`, so point `datasource.shadowDatabaseUrl` at `env("SHADOW_DATABASE_URL")`, which buncargo sets. `--migrations=<dir>` and `--schema=<path>` override the paths (relative to `prisma.cwd`), and arguments after `--` go to `migrate diff`. Exit code 2 means the schema has changes no migration contains.
 
@@ -308,7 +310,7 @@ A URL wider than the app's terminal is wrapped by the app itself (Ink, which Sho
 
 ## Exclusive leases
 
-`exclusive: "shopify-app:<client_id>"` marks a resource only one run on the machine may use at a time: one Shopify dev app, whose URL is rewritten by whoever ran `app dev` last; one Stripe webhook forwarder; one ngrok domain. The lease is taken before the app spawns and dropped when the run exits, or crashes. With `--takeover` (or `y` at the prompt), buncargo stops the holder's app and takes the lease. Otherwise a second run names the holder (project, worktree, branch, pid), its checkout path and since when it has held the lease, and the two ways to get it: `buncargo dev --takeover`, or ending that run (`buncargo stop --all --root <checkout>`). What it does next depends on the app: an `essential: false` app, like the Shopify CLI, is skipped and the rest of the run starts, listed as `Skipped (lease held by another run)` in the summary and repeated in the TUI's Overview, where the scrollback is out of sight; an essential app refuses the run. In a terminal it asks first, and a bare Enter means "skip" or "cancel" respectively. A run left with nothing to start fails with the same explanation. `buncargo runs` and BuncargoBar list who holds what.
+`exclusive: "shopify-app:<client_id>"` marks a resource only one run on the machine may use at a time: one Shopify dev app, whose URL is rewritten by whoever ran `app dev` last; one Stripe webhook forwarder; one ngrok domain. The lease is taken before the app spawns and dropped when the run exits, or crashes. With `--takeover` (or `y` at the prompt), buncargo stops the holder's app and takes the lease. Otherwise a second run names the holder (project, worktree, branch, pid), its checkout path and since when it has held the lease, and the two ways to get it: `buncargo dev --takeover`, or ending that run (`buncargo stop --all --root <checkout>`). What it does next depends on the app: an `essential: false` app, like the Shopify CLI, is skipped and the rest of the run starts, listed as `Skipped (lease held by another run)` in the summary and repeated in the TUI's Overview, where the scrollback is out of sight; an essential app refuses the run. In a terminal it asks first, and a bare Enter means "skip" or "cancel" respectively. A run left with nothing to start fails with the same explanation. A library `start()` takes the same leases and holds them until `stop()` or until its process exits; it answers a held lease the way `dev` does without a terminal, skipping an `essential: false` app with a warning and throwing for an essential one, with the holder and `buncargo stop --all --root <checkout>` in the message. `buncargo runs` and BuncargoBar list who holds what.
 
 ## Container runtime
 
@@ -377,6 +379,11 @@ validate selected apps, dependencies, attachment, and expose targets
 | `dev --seed` | Selected containers and preparation, including bootstrap and forced seed; no apps |
 | `dev --down` / `--reset` | Stop; reset also removes volumes |
 
+A config with services and no apps starts every service. When nothing in the
+selection is an app buncargo spawns (no apps, or only `devCommand: false` ones),
+`dev` holds the containers until Ctrl-C like any run, then releases them to the
+idle hold; `--detach` returns once they are ready.
+
 Mutually exclusive modes cannot be combined. Configuration, selection, dependency
 references and cycles are validated before startup changes host configuration or
 starts resources.
@@ -414,9 +421,9 @@ or starting/stopping containers. Named hosts and tunnels remain available when
 configured. Explicit diagnostic and shutdown commands can inspect configured
 infrastructure.
 
-A partial app-only start refuses a port conflict that would relocate an unselected
-persisted service. Free the conflicting port or start the full environment to
-reconcile its shared allocation.
+A partial app-only start refuses a port conflict, or a block another checkout now
+claims, that would relocate an unselected persisted service. Free the conflicting
+port or start the full environment to reconcile its shared allocation.
 
 ### Portless workers
 
@@ -534,6 +541,10 @@ seed: {
 | `beforeMigrations` | Selected Prisma database; without Prisma configuration, any selected service |
 | `afterContainersReady` | Runs after migration/generation, before seeding, when services are selected |
 
+A selection that skips the seed is fine for `dev`, but `dev --seed` asks for it:
+there it fails before anything starts, naming the services the seed needs
+(`--seed --apps=web` when `web` does not require `postgres`).
+
 `beforeMigrations` runs after early container readiness and job completion, before
 automatic Prisma migrations and ordered custom migrations. Hooks, generation
 checks and seed checks receive expanded `selectedApps` and `selectedServices`.
@@ -580,7 +591,7 @@ URLs), not its live footer.
 | `e` | Overview: errors and warnings only |
 | `o` | Open the app's URL (the Overview offers a picker) |
 | `r` | Restart the selected app |
-| `l` | The app's log in `$PAGER` (the Overview: the run's log directory) |
+| `l` | The app's log in `$PAGER` (the Overview: the run's log directory); `q` or `Ctrl-C` closes it and the run keeps going |
 | Mouse wheel, `PgUp` `PgDn` | Scroll the Overview or the selected app's scrollback |
 | `End` / `Home` | Back to the live output / the oldest line kept |
 | Click in the sidebar | Select the Overview or an app |
@@ -608,7 +619,8 @@ in the run registry as `openUrl`: a public tunnel URL when the app is exposed,
 else the named `https://` host while the hosts daemon serves it, else loopback.
 
 Both modes write each app's output, plain, to `.buncargo/logs/<run>/<app>.log`
-(the last ten runs, 5 MB per file). `buncargo logs [app] [-f] [--since=5m]
+(the last ten runs, 5 MB per file), and a seed that runs beside the apps
+(`seed.beforeApps: false`) to `seed.log`. `buncargo logs [app] [-f] [--since=5m]
 [--errors]` reads the current or last run.
 
 ### Non-essential apps
@@ -653,7 +665,8 @@ of waiting out its health timeout.
 
 `preflight: [{ name, apps?, run({ root, env, interactive }) }]` runs before the
 TUI takes the screen, with the real terminal, so a step can prompt or open a
-browser. `apps` limits a step to runs that select one of them. A step that
+browser. `apps` limits a step to runs that select one of them, and must name
+configured apps. A step that
 throws stops the start with its message. Integrations contribute steps too:
 `shopify()` renews an expired Shopify CLI session here instead of failing
 inside the run.
@@ -674,9 +687,12 @@ has a terminal of its own.
 When `dev` itself has no terminal (an agent's shell, `--detach`), the
 interactive app gets a pseudo-terminal of its own instead, so Expo starts its
 dev server rather than refusing, and its output is logged like any app's.
-`buncargo send <app> <keys>` types into it (`buncargo send expoApp i` opens the
-iOS simulator; `--enter` presses Enter after the text). `send` reaches every
-app in the TUI the same way.
+`buncargo send <app> <keys>` types into it (`buncargo send expoApp r` reloads
+it; `--enter` presses Enter after the text). `send` reaches every app in the
+TUI the same way. It waits for the run to answer: exit `0` typed,
+`2` no run started that app, `3` the app cannot take keys (no terminal of its
+own, or not running; it says which), `1` when the run does not answer within
+five seconds.
 
 ## Expo and the iOS simulator
 
@@ -684,12 +700,12 @@ Expo Go and a development build are shells: the JavaScript comes from whichever 
 
 ```bash
 bunx buncargo dev --apps=expoApp   # Expo attached, Metro on this worktree's port
-bunx buncargo sim                  # in another terminal, or the phone button in BuncargoBar
+bunx buncargo expo sim             # in another terminal, or the phone button in BuncargoBar
 ```
 
-`buncargo sim` reads the run registry, so it needs no config and no Docker. It
+`buncargo expo sim` reads the run registry, so it needs no config and no Docker. It
 
-1. finds or creates this checkout's device, named `<projectPrefix>/<worktree> · iPhone 16 Pro`, by cloning the simulator you last used in Simulator.app (or `expo.simulator`), so the development build installed there comes along;
+1. finds or creates this checkout's device, named `<projectPrefix>/<worktree> · iPhone 16 Pro`, by cloning the simulator you last used in Simulator.app (or the app's `simulator` in `expo({ apps })`), so the development build installed there comes along;
 2. boots it and brings Simulator.app to the front;
 3. waits for Metro to listen on the app's port;
 4. opens the development build when it is installed on that device, else Expo Go, on `127.0.0.1:<port>`.
@@ -712,9 +728,9 @@ integrations: [
 ],
 ```
 
-Without `integrations: [expo()]` an app is not treated as Expo, even when its `devCommand` runs `expo`. `buncargo expo sim` and `buncargo sim` are the same command.
+Without `integrations: [expo()]` an app is not treated as Expo, even when its `devCommand` runs `expo`.
 
-The deep-link scheme and `ios.bundleIdentifier` are read from `app.json` when the run is published. A project configured only through `app.config.ts` sets `expo.scheme`. Named HTTPS hosts are not trusted inside the simulator, so point `EXPO_PUBLIC_*` URLs at the LAN IP or `loopbackUrls`.
+The deep-link scheme and `ios.bundleIdentifier` are read from `app.json` when the run is published. A project configured only through `app.config.ts` sets the app's `scheme` in `expo({ apps })`. Named HTTPS hosts are not trusted inside the simulator, so point `EXPO_PUBLIC_*` URLs at the LAN IP or `loopbackUrls`.
 
 ## Ports and isolation
 
@@ -725,34 +741,64 @@ BUNCARGO_PORT_OFFSET set?
   yes → use it, skip probing (provenance: env)
   no  → .buncargo/ports.json of this checkout?
           yes → its offset, applied to the config's current ports, if they
-                are free or ours and no other checkout claims the offset
+                are free or ours and no other checkout claims the block
                 (provenance: lockfile)
           no / not usable → a suffixed environment's own claim, if free
                           else hash projectPrefix [+ worktree] [+ suffix]
-                          skip offsets another checkout or environment claims
+                          skip blocks another checkout or environment claims
+                          (its offset, or any one of its ports)
                           probe every service and app port
                           on a foreign owner, or a port that will not bind,
                           shift the whole block by 100
           persist { version, projectName, root, offset, ports } (dev only)
-          and claim the offset in ~/.buncargo/offsets.json
+          and claim the offset and its ports in ~/.buncargo/offsets.json
 ```
 
-Offsets are claimed machine-wide, by checkout, in `~/.buncargo/offsets.json`. A
-checkout keeps its offset whether or not it is running, and the claim goes
-when its directory does. Without claims, two worktrees whose names hash to the
+Offsets are claimed machine-wide, by checkout, in `~/.buncargo/offsets.json`,
+together with the ports of the block, so two projects whose ports differ never
+end up sharing one through different offsets. A checkout keeps its offset
+whether or not it is running, and the claim goes when its directory does. Without claims, two worktrees whose names hash to the
 same offset only collided while both ran, so which got which ports depended on
-which started first. `buncargo ports` lists the claims, and `doctor` reports an
-offset two checkouts claim.
+which started first. `buncargo ports` lists the claims, and it and `doctor` report
+two claims whose blocks overlap, naming both checkouts and the ports they share.
 
 A suffixed environment (`withSuffix()`, `buncargo ci`, an E2E stack) claims its
 own offset next to its checkout's dev claim, and takes it back on its next run.
-So parallel CI jobs on one machine get separate ports without
-`BUNCARGO_PORT_OFFSET`: each runner's checkout has the same directory name, and
-so the same hash, but the first job to start claims it and the next ones shift.
+
+A claim also records the checkout's Compose project name, and `dev`, `ci` and
+`start()` refuse to run under a name another existing checkout uses: the two
+would share containers and volumes, and one's `ci` teardown would delete the
+other's database. Self-hosted CI runners on one machine check their repository
+out into directories with the same name, so give each runner its own prefix:
+
+```ts
+const runner = process.env.RUNNER_NAME?.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+
+export default defineDevConfig({
+	projectPrefix: runner ? `myapp-${runner}` : "myapp",
+	// ...
+});
+```
+
+A `dev.config.ts` below the top of a Git worktree (in a subdirectory, not at the
+repository root) does not get the worktree's name in its project name, so every
+worktree shares the main clone's. Derive its prefix from the worktree:
+`getWorktreeProjectSuffix(<repository root>)` returns the worktree's name, or
+`null` in the main clone. `example/playground/dev.config.ts` does this.
+
+A claim stays until its checkout runs again or is deleted, so a checkout that
+last ran an older config keeps that config's project name, and the refusal
+names it. When it no longer uses that name, release its claims:
+`buncargo ports release --root <path>`. It lists the claims and asks first
+(`--yes` from a script or agent), refuses while that checkout is running or its
+containers are still up (`buncargo stop --all --root <path>`), and touches no
+container or volume. The checkout claims again on its next run. Whoever runs
+under the released name next uses the volumes left under it.
 
 `buncargo ports pin <offset>` moves a checkout to a block and keeps it there:
 it checks every port of the block (binding it, so hidden holders count) and
-the claims, then writes the lockfile and the claim. Its containers move on the
+the claims, then writes the lockfile and the claim. Like `dev`, it refuses while another
+checkout claims its Compose project name. Its containers move on the
 next start, since their ports are part of what decides reuse. A hand-written
 `{ "offset": 2500 }` in `.buncargo/ports.json` pins the same way, and the next
 run fills in the rest. When a run cannot use the lockfile (another checkout's,
@@ -889,7 +935,7 @@ with Docker stopped.
 ```bash
 bunx buncargo stop api        # SIGTERM that dev server's process group
 bunx buncargo stop postgres   # docker/container stop for that service
-bunx buncargo stop --all      # checkout sessions; retains containers another live session needs
+bunx buncargo stop --all      # checkout sessions and their idle containers; retains containers another live session needs
 bunx buncargo stop api --run=<session-id>  # select an exact run
 ```
 
@@ -897,13 +943,17 @@ Stopping one app does not end the run: a signalled exit is not a failure to the
 child supervisor, so the other apps and the containers keep going. Two targets
 are refused without `--force` (and prompt when there is a terminal): the
 attached app, because closing it tears the run down by design, and an app this
-run reused from another terminal, because that process is not ours. Exit codes
-are `0` stopped, `2` no such target, `3` refused.
+run reused from another terminal, because that process is not ours. A process
+whose identity cannot be read (`ps` failed or timed out) is refused too, rather
+than reported stopped while it may still run. Exit codes are `0` stopped, `2` no
+such target, `3` refused.
 
 Services are stopped, never killed, so a `restart:` policy cannot undo it.
 Nothing in buncargo brings a stopped container back, so it stays down until the
 next `dev`; once the run itself ends, the watchdog removes it. Stopping a whole
-run removes its containers.
+run removes its containers. `stop --all` also removes the containers a finished
+run of this checkout left waiting out its idle hold (after Ctrl-C, say) and
+forgets that run; no confirmation, since nothing of it is still running.
 
 ### BuncargoBar
 
@@ -919,7 +969,7 @@ databases, a simulator button for Expo apps, and a stop button. **Stop run**
 stops everything.
 
 It is a reader: it never signals a process, talks to Docker or drives `simctl`;
-it shells out to `buncargo stop` and `buncargo sim` using the exact interpreter
+it shells out to `buncargo stop` and `buncargo expo sim` using the exact interpreter
 that started the run, so a worktree on a different buncargo version acts with
 its own build. See [`menubar/README.md`](../menubar/README.md).
 
@@ -1113,9 +1163,9 @@ It fetches the way `hanzio/secrets` does, with the same defaults. The CLI is ask
 
 **Required keys.** `secrets.required` names keys an app cannot start without. A run with any of them missing (from Infisical, the environment and the computed env alike) stops before anything spawns, naming each app's missing keys.
 
-**Commands.** `buncargo secrets ls [--app=api] [--env=prod]` lists key names, never values, each with its source: Infisical, env override or missing. `buncargo setup` and `buncargo doctor` check that every scope is readable and print the fix (`infisical login --domain=…`, MFA).
+**Commands.** `buncargo secrets ls [--app=api] [--env=prod]` lists key names, never values, each with the source of the value the app gets: Infisical, env override, computed (buncargo's own env, which wins) or missing. It exits 1 when a required key is missing by the same rule `dev` refuses to start on, so an exported empty value counts as missing. `buncargo setup` and `buncargo doctor` check that every scope is readable and print the fix (`infisical login --domain=…`, MFA).
 
-A failed fetch warns once and continues; an app's own loader then does what it does today. Values are never logged, never written to a state file, and never included in an error: neither the CLI's output nor a response body is echoed. An empty value is never injected, since a blank variable would read as "already set". An app process under a machine identity fetches nothing itself, because its own loader authenticates without the CLI session this exists to serialize.
+A failed fetch warns once and continues; an app's own loader then does what it does today. Values are never logged, never written to a state file, and never included in an error: neither the CLI's output nor a response body is echoed. An empty value is never injected, since a blank variable would read as "already set".
 
 Defaults: `siteUrl` is `https://eu.infisical.com` (like hanzio; it was `app.infisical.com` before the next major), `environment` is `SECRETS_ENV` or `dev`, `path` is `/`.
 
@@ -1347,6 +1397,8 @@ Set `seed.beforeApps: false` to overlap the seed and app startup. `afterServers`
 
 `onlyServices` starts those services (plus Compose dependencies) and no apps; it is what `buncargo run` and `buncargo ci` use.
 
+`productionBuild` runs each app's `buildCommand` and `prodCommand` and gives the containers, migrations, seed and apps `NODE_ENV=production`. It defaults to `true` in CI when `start()` runs the servers and `false` otherwise, so `start({ startServers: false })` prepares for the development processes `startServers()` and `exec()` run. `buncargo dev` is always development.
+
 `stop({ verbose, removeVolumes, signal })`
 
 ### `CliOptions` (programmatic `runCli`)
@@ -1389,20 +1441,26 @@ Programmatic: `openPublicTunnels({ names?, waitForHealthy? })` then `buildAppEnv
 
 ## Watchdog
 
-Every run that owns containers claims them in `~/.buncargo/runs.json` before it starts them, and one watchdog per machine (`dist/core/watchdog-runner.js`, log in `~/.buncargo/watchdog.log`) sweeps every buncargo container against that registry every 30s. Runs started from a script with `dev.start()` get it too; pass `start({ watchdog: false })` to skip starting the process. A script's containers stay up after it exits — `options.autoShutdown` and the three-minute default are `buncargo dev`'s — unless it asks for a hold with `claimRun({ idleTimeoutMs })` before `start()`. `buncargo ls` and `doctor` run the same sweep inline, so a killed watchdog is never the last line of defence. A stack is removed when:
+Every run that owns containers claims them in `~/.buncargo/runs.json` before it starts them, and one watchdog per machine (`dist/core/watchdog-runner.js`, log in `~/.buncargo/watchdog.log`) sweeps every buncargo container against that registry every 30s. Runs started from a script with `dev.start()` get it too; pass `start({ watchdog: false })` to skip starting the process. A script's containers stay up after it exits — `options.autoShutdown` and the three-minute default are `buncargo dev`'s — unless it asks for a hold with `claimRun({ idleTimeoutMs })` before `start()`. `buncargo ls` and `doctor` run the same sweep inline, so a killed watchdog is never the last line of defence. The sweep only removes a stack your own buncargo state names: a run in your `~/.buncargo/runs.json` or a port claim in your `~/.buncargo/offsets.json` for its project and checkout. Such a stack is removed when:
 
-- **its checkout is gone** - the worktree was deleted, whatever else is true
+- **its checkout is gone** - the worktree was deleted and no live run holds the stack. A checkout this user cannot read (another user's home) is not gone
 - **it is stopped and nobody owns it** - a daemon restart or `buncargo stop <service>` left it exited and the run has ended
 - **its run exited cleanly** (Ctrl-C leaves a `released` marker) and the idle hold has passed - 3 minutes by default, so a quick restart reuses the containers rather than recreating them
 - **its run crashed** (the PID is gone without releasing) and ~15s have passed since a sweep first noticed
 
-A running stack with a live owner is never touched. `--keep-containers`, `options.autoShutdown: false` and the one-shot modes (`--up-only`, `--migrate`, `--seed`) set no idle hold, so their containers live as long as the checkout — even if the run crashed. `--watchdog-timeout=N` sets the hold in minutes. The watchdog exits when there is nothing left to watch and any later `dev` starts it again.
+Any other stack is left alone, however it looks: on a machine where several users share one Docker daemon, another user's stacks are listed too, and from your account their checkouts look unowned or deleted. `buncargo ls` and `doctor` mark each as not yours, with the command that removes it by hand (`docker compose -p <project> down`, or `container delete --force <ids>` for Apple container) if it really is orphaned, for example after `~/.buncargo` was wiped. Volumes stay either way. `dev --down --all` follows the same rule: it removes your stacks and lists the others with those commands.
 
-On a machine on a [Tailscale](https://tailscale.com) network, the watchdog also lists the live runs at `http://<tailscale-ip>:48480/v1/runs`, on the Tailscale address only, so BuncargoBar on your other machines shows them. Who can read it is up to your tailnet's access rules; the list includes connection strings with the dev database passwords. `BUNCARGO_TAILNET_DIRECTORY=0` turns it off, and keeps Vite apps on `127.0.0.1`.
+Each `watchdog.log` line starts with the watchdog's buncargo version and pid (`[watchdog 13.0.0 pid 4242]`), and each removal names the run it was decided against: `Removed shop's containers (/work/shop, docker): owner gone for 16s; its run: session …, pid 4242, worktree feature, branch feature/login`. `ls`, `doctor` and `prune` report their removals the same way.
 
-A finished run keeps its registry entry until its containers are gone — that entry is what says they may still be reused, and for how long. `buncargo runs`, `stop` and the menu bar filter it out; only the sweep sees it. `dev --down` and `stop()` remove it straight away, since they have just removed the containers.
+Every removal, by the sweep, `stop`, `dev --down` or `stop()`, is recorded in `~/.buncargo/removals.json` (the last 500): when, which project and checkout, why, the run it was decided against, and the command, pid, user and buncargo version that did it. When a run fails without its containers (`ci`'s command or seed, an app of a `dev` run exiting with an error, a library `startServers()` or `waitForServers()`), it prints who removed them since it claimed them, or, when nothing here recorded it, the time window and where to look: other users' `~/.buncargo/watchdog.log` and `docker events`. A library caller can ask the same with `explainMissingContainers()`.
 
-**Volumes are never removed automatically.** A container costs nothing to recreate; a volume is the database. `buncargo prune` lists the volumes whose project has no containers and no run, and removes them only after you confirm:
+A running stack with a live owner is never touched. `--keep-containers`, `options.autoShutdown: false` and the one-shot modes (`--up-only`, `--migrate`, `--seed`) set no idle hold, so their containers live as long as the checkout — even if the run crashed. `--watchdog-timeout=N` sets the hold in minutes. The watchdog exits when no container and no live run is left to watch, and any later `dev` starts it again. A run of a newer buncargo replaces a watchdog started by an older one, so one worktree on an old version does not sweep the others with old rules; an older buncargo leaves a newer watchdog alone.
+
+On a machine on a [Tailscale](https://tailscale.com) network, the watchdog also lists the live runs at `http://<tailscale-ip>:48480/v1/runs`, on the Tailscale address only, so BuncargoBar on your other machines shows them. A run with no containers, `buncargo dev` or a `start()` that spawns apps, starts the watchdog too once its apps are up, so it is listed as well (`start({ watchdog: false })` skips it). Who can read it is up to your tailnet's access rules; the list includes connection strings with the dev database passwords. `BUNCARGO_TAILNET_DIRECTORY=0` turns it off, and keeps Vite apps on `127.0.0.1`.
+
+A finished run keeps its registry entry until its containers are gone — that entry is what says they may still be reused, and for how long. `buncargo runs` and the menu bar filter it out; the sweep and `stop` see it, and `stop --all` removes its containers now. `dev --down`, `stop --all` and `stop()` remove the entry straight away, since they have just removed the containers.
+
+**Volumes are never removed automatically.** A container costs nothing to recreate; a volume is the database. `buncargo prune` lists the volumes whose project has no containers, no run and no checkout that still exists, and removes them only after you confirm. An idle checkout's database stays until its directory is deleted; a `ci` or E2E stack's volume is listed once its run is gone:
 
 ```bash
 bunx buncargo prune --dry-run   # List what would go
@@ -1412,7 +1470,7 @@ bunx buncargo prune --yes       # For scripts that have already decided
 
 Volumes carry no buncargo labels on purpose: Compose compares a volume against the file and offers to *recreate* it when they differ, which hangs a non-interactive run and destroys the data. So prune cannot tell which checkout a volume came from, and says so rather than guessing — volumes it cannot attribute to a project are counted and left alone.
 
-A machine where worktrees come and go all day, such as a server agents work on, can opt in with `BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`: the sweep then also removes the volumes of a checkout whose directory was deleted. It works for checkouts whose containers are already gone, and leaves the volumes whenever another checkout or a run still uses the same project name.
+A machine where worktrees come and go all day, such as a server agents work on, can opt in with `BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`: the sweep then also removes the volumes of a checkout whose directory was deleted, once a pass at least 10 minutes after the first still finds it gone. It works for checkouts whose containers are already gone, and leaves the volumes whenever another checkout or a run still uses the same project name. A checkout your user cannot read never counts as deleted.
 
 `buncargo prune --project` is the same, for one project: run it in any checkout, and it removes only that project's leftovers, by name. That is every checkout's `ci` stack, and every stack of a worktree whose directory was deleted (until `git worktree prune` forgets it). It takes their stopped containers, volumes and networks:
 
@@ -1429,7 +1487,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 
 | Error | Cause | Fix |
 | --- | --- | --- |
-| `Docker is not running (…)` | Daemon down and auto-start failed/disabled | Start OrbStack/Docker/Colima, or drop `--no-docker-autostart`. On Linux: `sudo systemctl start docker` |
+| `Docker is not running` | Daemon down and auto-start failed/disabled | Start OrbStack/Docker/Colima, or drop `--no-docker-autostart`. On Linux: `sudo systemctl start docker` |
 | `Docker is running, but this user cannot open its socket` | User not in the `docker` group, or a process started before it was added | `sudo usermod -aG docker $USER`, then log in again or restart the service you run buncargo from |
 | `port 5173 held by container gey-other-platform-1 (project gey-other)` | Foreign compose project owns the port | Stop the other env (`buncargo ls` / `dev --down --all`) or let allocation shift |
 | `port … held by process …` | Another process owns the port | Stop that process; own-repo orphans are killed automatically |
@@ -1446,6 +1504,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `Watchdog did not start` | Missing `dist/core/watchdog-runner.js` | `bun run build` / reinstall the package |
 | Disk full of old worktree volumes | Deleted checkouts and interrupted `ci` runs leave their databases behind | `buncargo prune --project --dry-run` for this project, `buncargo prune --dry-run` for every project; then without `--dry-run` |
 | `.env.local has local edits and the file store changed too` | This checkout and another both changed a checkout file | `buncargo files merge .env.local` keeps both sides' keys (dotenv only); `files save` keeps yours, `files pull --force` takes the store's |
+| `… would run under Compose project …, which … already uses` | Another checkout with the same project name exists: CI runners in same-named directories, or a config below a worktree's top level | Give one of them its own `projectPrefix` (see [Ports and isolation](#ports-and-isolation)) and start it once, or delete the checkout no longer used. If the other checkout's claim is from a config it no longer runs, `buncargo ports release --root <path>` (the error names the path) |
 | `Could not allocate a free port block` | 80 shifted blocks still conflict | Set `BUNCARGO_PORT_OFFSET` or free ports (`buncargo doctor`) |
 | Named URL does not resolve / TLS warning | Daemon down or CA not trusted | `buncargo hosts status`, then `buncargo hosts install` or `doctor --fix` |
 | `Named-hosts service points at … which no longer exists` | The install ran from a `node_modules` that was since removed | `buncargo hosts install` to re-point it at the current CLI |
@@ -1474,6 +1533,8 @@ await env.start({ onlyApps: ["api"], autoStartDocker: false });
 const webEnv = env.buildAppEnvVars("web");
 await env.stop();
 ```
+
+`start()` prepares the selected services and spawns, supervises and health-checks the selected apps, but it is not `buncargo dev`, and leaves out what the CLI adds around a run. It takes the same [`exclusive` leases](#exclusive-leases) as `dev`, but cannot ask or take one over: a lease another run holds leaves an `essential: false` app out, with a warning, and makes `start()` throw for an essential one. It does not activate named hosts, so `env.urls` stay `http://localhost:<port>`. It runs neither the fast `checks` nor integration `preflight` steps such as the Shopify login, and it does not share apps and services with [remote recipients](#remote-services) (`BUNCARGO_CONNECT_TOKENS`). It records its apps and services in the run registry as `dev` does, so `buncargo ls`, `stop` and BuncargoBar show and stop them, and the entry goes when `stop()` stops the apps or the process exits; `restart`, `send` and `logs` reach only a `buncargo dev` run, because nothing in a script answers them and it writes no per-run logs. An app that never becomes ready fails the whole `start()` rather than being parked, and tunnels open only when you call `openPublicTunnels()`. Use `buncargo dev`, or `runCli` from a script, when you need any of these.
 
 `env.buildEnvFingerprint("web")` is a digest of `buildAppEnvVars("web")` that is the same in every checkout and on every machine: it leaves out ports, IP addresses, the project name, the workspace id and the checkout root. Key a build cache on it to share one build between worktrees or CI runners. It is only correct when the build bakes in none of those values, so leave a URL with a port out of the build's env first.
 

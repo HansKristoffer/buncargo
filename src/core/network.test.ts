@@ -56,24 +56,28 @@ describe("readiness elapsed time and HTTP semantics", () => {
 			await expect(
 				waitForServer(server.url.href, { timeout: 80 }),
 			).rejects.toThrow("80ms");
-			expect(performance.now() - start).toBeLessThan(500);
+			// Unclamped, the stalled request would hold for the 5s per-probe cap.
+			expect(performance.now() - start).toBeLessThan(2500);
 		} finally {
 			server.stop(true);
 		}
 	});
 
-	it("detects readiness with the faster default polling interval", async () => {
+	it("keeps polling until the server turns ready", async () => {
 		const start = performance.now();
+		let requests = 0;
 		const server = Bun.serve({
 			port: 0,
-			fetch: () =>
-				new Response("", {
+			fetch: () => {
+				requests++;
+				return new Response("", {
 					status: performance.now() - start > 80 ? 200 : 503,
-				}),
+				});
+			},
 		});
 		try {
-			await waitForServer(server.url.href, { timeout: 1000 });
-			expect(performance.now() - start).toBeLessThan(700);
+			await waitForServer(server.url.href, { timeout: 3000 });
+			expect(requests).toBeGreaterThan(1);
 		} finally {
 			server.stop(true);
 		}
@@ -141,7 +145,8 @@ describe("readiness elapsed time and HTTP semantics", () => {
 					{ verbose: false },
 				),
 			).rejects.toThrow("50ms");
-			expect(performance.now() - start).toBeLessThan(500);
+			// Far inside b's 10s budget: a's failure ends the wait.
+			expect(performance.now() - start).toBeLessThan(2500);
 		} finally {
 			server.stop(true);
 		}

@@ -53,7 +53,7 @@ describe("leases", () => {
 				refused.holder,
 				async () => {
 					// A stopped run can release its leases without waiting for the transfer.
-					await releaseLeases("a", path);
+					await releaseLeases("a", { path });
 					return true;
 				},
 				{ path },
@@ -211,7 +211,16 @@ describe("leases", () => {
 	it("releases every lease of a session", async () => {
 		await acquireLease(request("a"), { path });
 		await acquireLease({ ...request("a"), key: "stripe-forwarder" }, { path });
-		await releaseLeases("a", path);
+		await releaseLeases("a", { path });
 		expect(await readLeases(path)).toEqual([]);
+	});
+
+	it("releases only the named leases of a session", async () => {
+		await acquireLease(request("a"), { path });
+		await acquireLease({ ...request("a"), key: "stripe-forwarder" }, { path });
+		await releaseLeases("a", { path, keys: ["stripe-forwarder"] });
+		expect((await readLeases(path)).map((entry) => entry.key)).toEqual([
+			request("a").key,
+		]);
 	});
 });

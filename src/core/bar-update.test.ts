@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
 	type BarUpdateInput,
-	compareVersions,
 	decideBarUpdate,
 	isCacheFresh,
 } from "./bar-update";
@@ -92,21 +91,6 @@ describe("decideBarUpdate", () => {
 		expect(
 			decide({ installed: installed(1, undefined), latestVersion: "9.9.9" }),
 		).toEqual({ action: "none" });
-	});
-});
-
-describe("compareVersions", () => {
-	it("compares numerically, not as strings", () => {
-		// The comparison a string sort gets backwards, and the only one that
-		// has to be right.
-		expect(compareVersions("0.10.0", "0.9.0")).toBe(1);
-		expect(compareVersions("1.0.0", "1.0.0")).toBe(0);
-		expect(compareVersions("1.2", "1.2.0")).toBe(0);
-		expect(compareVersions("2.0.0", "10.0.0")).toBe(-1);
-	});
-
-	it("treats unparseable segments as zero rather than as newer", () => {
-		expect(compareVersions("nonsense", "0.1.0")).toBe(-1);
 	});
 });
 

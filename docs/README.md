@@ -34,4 +34,3 @@ follow the [documentation rules](../AGENTS.md#documentation) before adding to th
 
 - [Testing](./testing.md)
 - [Releasing](./releasing.md)
-- [frp relay acceptance](./frp-acceptance.md)

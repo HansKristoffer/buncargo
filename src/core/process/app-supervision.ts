@@ -1,5 +1,5 @@
 import type { DevServerPids } from "../../types";
-import { formatPidLine, formatStep } from "../style";
+import { formatPidLine } from "../style";
 import type { DetachedApp } from "./detached-app";
 import { ProcessOwner, RunInterrupted } from "./process-owner";
 import type { AppChild } from "./pty-app";
@@ -26,14 +26,16 @@ export class AppSupervision {
 	private running = new Map<string, Promise<void>>();
 	private queued = new Map<string, Promise<void>>();
 	private cleanup?: Promise<void>;
+	/** What a handed-off session still does once stopped: its output's last flush. */
+	private closing: Promise<void> = Promise.resolve();
 
 	constructor(
 		private options: ConstructorParameters<typeof ProcessOwner>[0] & {
 			verbose?: boolean;
 			width: number;
 			onAppSpawned?: (name: string, pid: number, attached: boolean) => void;
-			/** Replaces the console line a restart prints. */
-			onRestart?: (name: string, reason: string) => void;
+			/** A restart is beginning: where it is announced. */
+			onRestart: (name: string, reason: string) => void;
 		},
 	) {
 		this.owner = new ProcessOwner({
@@ -120,9 +122,7 @@ export class AppSupervision {
 		const current = this.children.get(name);
 		const spawner = this.spawners.get(name);
 		if (!current || !spawner || this.owner.controller.signal.aborted) return;
-		this.options.onRestart?.(name, reason);
-		if (!this.options.onRestart)
-			console.log(formatStep(`🔁 Restarting ${name}: ${reason}`));
+		this.options.onRestart(name, reason);
 		await this.owner.retire(current);
 		if (current.pid) activeSessions.delete(current.pid);
 		this.owner.controller.signal.throwIfAborted();
@@ -144,6 +144,19 @@ export class AppSupervision {
 	async stopApp(name: string): Promise<void> {
 		const child = this.children.get(name);
 		if (child) await terminateOwnedProcess(child, this.options.shutdownGraceMs);
+	}
+
+	/**
+	 * Work that ends a session handed off to run in the background, after it
+	 * stops. {@link stopDevServers} waits for it, or a library caller's process
+	 * exits before its apps' last words are printed.
+	 */
+	closeWith(closing: Promise<void>): void {
+		this.closing = closing;
+	}
+
+	closed(): Promise<void> {
+		return this.closing;
 	}
 
 	stop(): Promise<void> {
@@ -168,7 +181,13 @@ export async function stopDevServers(pids: DevServerPids): Promise<void> {
 		Object.values(pids).flatMap((pid) => activeSessions.get(pid) ?? []),
 	);
 	const results = await Promise.allSettled(
-		[...sessions].map((session) => session.stop()),
+		[...sessions].map(async (session) => {
+			try {
+				await session.stop();
+			} finally {
+				await session.closed();
+			}
+		}),
 	);
 	const errors = results.flatMap((result) =>
 		result.status === "rejected" ? [result.reason] : [],

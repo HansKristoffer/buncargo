@@ -1,6 +1,8 @@
 import { CONTAINER_RUNTIME_SELECTIONS } from "../../container-runtime";
 import { CI_PROJECT_SUFFIX } from "../../core/ports";
+import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
 import { loadDevEnv } from "../../loader";
+import type { AnyDevEnvironment } from "../../types";
 import {
 	type CommandSpec,
 	enumValidator,
@@ -13,6 +15,7 @@ import {
 } from "../command-spec";
 import { argumentsError, CliError } from "../errors";
 import { splitCliArgs } from "../flags";
+import * as log from "../log";
 import { runForwardingSignals } from "./exec";
 
 const FLAGS = {
@@ -93,6 +96,20 @@ export function parseCiArgs(args: string[]) {
 }
 
 /**
+ * Say who removed the stack when a step failed because it was gone.
+ *
+ * Before the teardown, which would otherwise be the only sign: Compose's "No
+ * resource found to remove", long after the command failed on a refused
+ * connection.
+ */
+function reportContainerLoss(
+	env: Pick<AnyDevEnvironment, "explainMissingContainers">,
+): void {
+	const loss = env.explainMissingContainers();
+	if (loss) log.warn(loss);
+}
+
+/**
  * Local services in CI: start them, apply migrations and the seed with the
  * same config as local, run the command with the environment, tear down.
  *
@@ -131,6 +148,14 @@ export async function handleCi(args: string[]): Promise<number> {
 	// so the terminal's signal does not reach them.
 	return runForwardingSignals(async (signal) => {
 		try {
+			// Claimed with a hold, unlike a library run's keep-forever default:
+			// a run killed outright (`SIGKILL`) cannot tear down, and with no
+			// hold the sweep keeps its stack for as long as the checkout exists.
+			// Explicit, so a config's `autoShutdown: false`, which is about dev
+			// containers, does not keep a ci stack. Prepared first: the claim
+			// names the selection's services.
+			await env.prepareStartAsync(undefined, services, signal);
+			await env.claimRun({ idleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS, signal });
 			await env.start({
 				onlyServices: services,
 				startServers: false,
@@ -148,12 +173,14 @@ export async function handleCi(args: string[]): Promise<number> {
 				const outcome = await env.runSeed({ force: true, signal });
 				if (outcome.status === "not-configured")
 					throw new CliError("--seed needs a seed block in your dev config.");
-				if (outcome.status === "failed")
+				if (outcome.status === "failed") {
+					reportContainerLoss(env);
 					return {
 						exitCode: outcome.result.exitCode || 1,
 						stdout: "",
 						stderr: "",
 					};
+				}
 			}
 
 			if (parsed.command.length === 0) {
@@ -163,15 +190,18 @@ export async function handleCi(args: string[]): Promise<number> {
 			// The command gets no shared scope: a CI job should not need
 			// Infisical access for its tests. Migrations and the seed still get
 			// their own scopes.
-			return await env.exec(parsed.command, {
+			const result = await env.exec(parsed.command, {
 				secrets: false,
 				verbose: true,
 				throwOnError: false,
 				signal,
 			});
+			if (result.exitCode !== 0 && !signal.aborted) reportContainerLoss(env);
+			return result;
 		} catch (error) {
 			// Interrupted before the command: the signal's exit code says so.
 			if (signal.aborted) return { exitCode: 1, stdout: "", stderr: "" };
+			reportContainerLoss(env);
 			throw error;
 		} finally {
 			await env.stop({ removeVolumes: true });

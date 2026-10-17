@@ -10,6 +10,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateConfig } from "../config";
+import {
+	projectLockPath,
+	withProjectLifecycleLock,
+} from "../container-runtime";
+import { FileLockTimeoutError } from "../core/file-lock";
 import { loadRuns } from "../core/run-registry";
 import { buildComposeModel } from "../docker-compose";
 import { service } from "../docker-compose/services";
@@ -113,6 +118,122 @@ describe("integration stacks", () => {
 			`up api,db\ndown ${env.projectName} true\n`,
 		);
 		expect(await loadRuns()).toEqual([]);
+	});
+
+	it("starts and stops the stack under the project lifecycle lock", async () => {
+		const log = join(root, "locked.log");
+		const probe = join(root, "lock-probe.ts");
+		// The sweep skips a busy lock, so whether the lock is free while a stack
+		// comes up or goes down decides whether the sweep can race it.
+		writeFileSync(
+			probe,
+			`import { appendFileSync } from "node:fs";
+import { withFileLock } from ${JSON.stringify(join(import.meta.dir, "../core/file-lock.ts"))};
+const [target, log] = process.argv.slice(2);
+const held = await withFileLock(target, async () => false, { timeoutMs: 0 }).catch(() => true);
+appendFileSync(log, held ? "down locked\\n" : "down free\\n");
+`,
+		);
+		const config: DevConfig = {
+			projectPrefix: "stklock",
+			services: { api: { port: 4110, external: { stack: "probe" } } },
+			integrations: [
+				{
+					name: "probe",
+					stacks: {
+						probe: {
+							up: async (ctx) => {
+								const held = await withProjectLifecycleLock(
+									ctx.projectName,
+									ctx.root,
+									async () => false,
+									{ timeoutMs: 0 },
+								).catch((error) => error instanceof FileLockTimeoutError);
+								appendFileSync(log, held ? "up locked\n" : "up free\n");
+							},
+							down: ({ projectName, root: stackRoot }) => [
+								process.execPath,
+								probe,
+								projectLockPath(projectName, stackRoot),
+								log,
+							],
+						},
+					},
+				},
+			],
+		};
+		const env = createDevEnvironment(config, { root });
+
+		await env.start({
+			onlyServices: ["api"],
+			startServers: false,
+			watchdog: false,
+			verbose: false,
+		});
+		await env.stop({ verbose: false });
+
+		expect(readFileSync(log, "utf8")).toBe("up locked\ndown locked\n");
+	});
+
+	it("holds the project lock until every stack settled when one fails", async () => {
+		const { promise: failed, resolve: fail } = Promise.withResolvers<void>();
+		let lockWhileSlowCameUp = "";
+		const lockFree = (ctx: { projectName: string; root: string }) =>
+			withProjectLifecycleLock(ctx.projectName, ctx.root, async () => true, {
+				timeoutMs: 0,
+			}).catch((error) => {
+				if (error instanceof FileLockTimeoutError) return false;
+				throw error;
+			});
+		const config: DevConfig = {
+			projectPrefix: "stkfail",
+			services: {
+				slow: { port: 4120, external: { stack: "slow" } },
+				broken: { port: 4121, external: { stack: "broken" } },
+			},
+			integrations: [
+				{
+					name: "pair",
+					stacks: {
+						// Still coming up after its sibling failed, the way `compose up`
+						// runs on while `supabase start` hits a port conflict.
+						slow: {
+							up: async (ctx) => {
+								await failed;
+								// Each probe is a real round of file operations, which is
+								// what releasing the lock takes.
+								for (let probe = 0; probe < 20; probe++)
+									if (await lockFree(ctx)) {
+										lockWhileSlowCameUp = "free";
+										return;
+									}
+								lockWhileSlowCameUp = "held";
+							},
+							down: () => ["true"],
+						},
+						broken: {
+							up: async () => {
+								fail();
+								throw new Error("port 54321 is already allocated");
+							},
+							down: () => ["true"],
+						},
+					},
+				},
+			],
+		};
+		const env = createDevEnvironment(config, { root });
+
+		await expect(
+			env.start({
+				onlyServices: ["slow", "broken"],
+				startServers: false,
+				watchdog: false,
+				verbose: false,
+			}),
+		).rejects.toThrow("port 54321 is already allocated");
+		expect(lockWhileSlowCameUp).toBe("held");
+		await env.stop({ verbose: false });
 	});
 
 	it("leaves external services out of the Compose file", () => {

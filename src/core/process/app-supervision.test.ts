@@ -14,7 +14,7 @@ function child() {
 }
 
 it("keeps supervision alive across replacement of its last child", async () => {
-	const session = new AppSupervision({ width: 1 });
+	const session = new AppSupervision({ width: 1, onRestart: () => {} });
 	let replacementPid: number | undefined;
 	try {
 		await session.register("worker", child(), true, false, false);
@@ -37,7 +37,7 @@ it("keeps supervision alive across replacement of its last child", async () => {
 });
 
 it("never respawns a child when stop arrives while it is being retired", async () => {
-	const session = new AppSupervision({ width: 1 });
+	const session = new AppSupervision({ width: 1, onRestart: () => {} });
 	let spawns = 0;
 	try {
 		await session.register("worker", child(), true, false, false);
@@ -74,6 +74,7 @@ it("adopts detached listeners after replacements and warns once per app", async 
 	console.warn = (message) => warnings.push(String(message));
 	const session = new AppSupervision({
 		width: 1,
+		onRestart: () => {},
 		onAppAdopted: (_name, app) => adopted.push(app.pid),
 	});
 	try {
@@ -122,7 +123,7 @@ it("adopts detached listeners after replacements and warns once per app", async 
 }, 15000);
 
 it("runs concurrent restarts of one app one after another, coalescing a waiting one", async () => {
-	const session = new AppSupervision({ width: 1 });
+	const session = new AppSupervision({ width: 1, onRestart: () => {} });
 	let spawned = 0;
 	let live = 0;
 	let overlap = false;

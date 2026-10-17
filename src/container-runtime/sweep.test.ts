@@ -1,20 +1,22 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import {
-	chmodSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { unreadableCheckout } from "../core/checkout-presence.testing";
 import {
 	claimOffset,
 	getOffsetClaimsPath,
 	readAllOffsetClaims,
+	readOffsetClaims,
 } from "../core/offset-claims";
 import { readProcessIdentity } from "../core/process-identity";
+import { readRemovals } from "../core/removal-log";
 import {
 	loadRuns,
 	publishRun,
@@ -24,8 +26,9 @@ import {
 import type { BuncargoContainer } from "../types";
 import { withProjectLifecycleLock } from "./project-lock";
 import {
-	checkoutMissing,
+	DELETED_CHECKOUT_SETTLE_MS,
 	decideSweep,
+	type SweepResult,
 	settleDeletedCheckouts,
 	sweepOrphanedContainers,
 } from "./sweep";
@@ -34,6 +37,7 @@ import type { ContainerDownRequest, ContainerRuntimeAdapter } from "./types";
 const realHome = process.env.HOME;
 let home = "";
 let checkout = "";
+const unreadable = unreadableCheckout();
 
 beforeAll(() => {
 	home = mkdtempSync(join(tmpdir(), "buncargo-sweep-"));
@@ -46,11 +50,18 @@ afterAll(() => {
 	else process.env.HOME = realHome;
 	rmSync(home, { recursive: true, force: true });
 	rmSync(checkout, { recursive: true, force: true });
+	unreadable?.cleanup();
 });
 
 afterEach(() => {
 	rmSync(join(home, ".buncargo", "runs.json"), { force: true });
+	rmSync(getOffsetClaimsPath(), { force: true });
 });
+
+/** Give `root` a port claim for `projectName`, as a run of this user's does. */
+function claim(projectName: string, root: string) {
+	claimOffset({ root, offset: 100, ports: [], projectName });
+}
 
 const NOW = 1_000_000;
 const DB = { name: "db", status: "ready" as const };
@@ -77,58 +88,62 @@ function entry(extra: Partial<RunEntry> = {}): RunEntry {
 
 describe("decideSweep", () => {
 	const base = {
-		rootExists: true,
+		known: true,
+		checkout: "present" as const,
 		anyRunning: true,
 		run: null,
 		ownerAlive: false,
-		ownedByCurrentUser: true,
 		now: NOW,
 	};
 	const limits = { ownerDeadGraceMs: 15_000 };
-	const dead = entry();
 
-	it("removes a stack whose checkout is gone, whatever else is true", () => {
+	it("removes a stack whose checkout is gone once no live run owns it", () => {
+		const held = entry({ releasedAt: new Date(NOW).toISOString() });
 		expect(
-			decideSweep(
-				{ ...base, run: dead, rootExists: false, ownerAlive: true },
-				limits,
-			),
+			decideSweep({ ...base, checkout: "deleted", run: held }, limits),
 		).toEqual({ kind: "down", reason: "checkout deleted" });
+	});
+
+	it("keeps a stack its live owner holds, even when its checkout reads deleted", () => {
+		expect(
+			decideSweep({ ...base, checkout: "deleted", ownerAlive: true }, limits),
+		).toEqual({ kind: "keep" });
+	});
+
+	it("never reads a checkout it cannot read as deleted", () => {
+		const exited = entry({ ownerLostAt: AGES_AGO });
+		expect(
+			decideSweep({ ...base, checkout: "unknown", run: exited }, limits),
+		).toEqual({ kind: "keep" });
 	});
 
 	it("keeps anything with a live owner", () => {
 		expect(
-			decideSweep(
-				{ ...base, run: dead, anyRunning: false, ownerAlive: true },
-				limits,
-			),
+			decideSweep({ ...base, anyRunning: false, ownerAlive: true }, limits),
 		).toEqual({ kind: "keep" });
 	});
 
-	it("removes a stopped stack whose owner is gone", () => {
-		expect(
-			decideSweep({ ...base, run: dead, anyRunning: false }, limits),
-		).toEqual({ kind: "down", reason: "stopped with no owner" });
+	it("reports a stack this user's state does not name, whatever else is true", () => {
+		for (const [checkout, anyRunning, reason] of [
+			["deleted", false, "its checkout was deleted"],
+			["unknown", true, "this user cannot read its checkout"],
+			["present", false, "it is stopped"],
+			["present", true, "it is running"],
+		] as const)
+			expect(
+				decideSweep({ ...base, known: false, checkout, anyRunning }, limits),
+			).toEqual({ kind: "foreign", reason });
 	});
 
-	it("leaves a stack with no entry alone, stopped or running", () => {
-		expect(decideSweep(base, limits)).toEqual({ kind: "keep" });
+	it("removes a stopped stack nobody owns", () => {
 		expect(decideSweep({ ...base, anyRunning: false }, limits)).toEqual({
-			kind: "keep",
+			kind: "down",
+			reason: "stopped with no owner",
 		});
 	});
 
-	it("removes a stack with no entry only when its checkout is gone and it is labelled ours", () => {
-		const gone = { ...base, rootExists: false, anyRunning: false };
-		expect(decideSweep(gone, limits)).toEqual({
-			kind: "down",
-			reason: "checkout deleted",
-		});
-		// Another OS user's stack on a shared daemon, or one from before the
-		// user label: not this watchdog's to remove.
-		expect(decideSweep({ ...gone, ownedByCurrentUser: false }, limits)).toEqual(
-			{ kind: "keep" },
-		);
+	it("leaves a running stack with no entry alone", () => {
+		expect(decideSweep(base, limits)).toEqual({ kind: "keep" });
 	});
 
 	it("holds a released stack for its idle timeout, then removes it", () => {
@@ -199,7 +214,6 @@ function container(
 		root,
 		worktree: "",
 		service: "db",
-		user: userInfo().username,
 		runtime: "docker",
 	};
 }
@@ -218,34 +232,11 @@ function stubRuntime(containers: BuncargoContainer[]) {
 	return { runtime, downs };
 }
 
-describe("checkoutMissing", () => {
-	it("is true only for a path that provably does not exist", () => {
-		expect(checkoutMissing(checkout)).toBe(false);
-		expect(checkoutMissing(join(checkout, "nope"))).toBe(true);
-		expect(checkoutMissing("")).toBe(false);
-	});
-
-	it("treats an unreadable checkout as present", () => {
-		// The incident: `existsSync` said false for another user's checkout
-		// behind a directory this user cannot search.
-		if (process.getuid?.() === 0) return; // root reads through any mode
-		const locked = mkdtempSync(join(tmpdir(), "buncargo-locked-"));
-		const inside = join(locked, "checkout");
-		mkdirSync(inside);
-		chmodSync(locked, 0o000);
-		try {
-			expect(checkoutMissing(inside)).toBe(false);
-		} finally {
-			chmodSync(locked, 0o700);
-			rmSync(locked, { recursive: true, force: true });
-		}
-	});
-});
-
 describe("sweepOrphanedContainers", () => {
 	it("removes deleted checkouts and stopped stacks, and skips the caller's own project", async () => {
 		const gone = join(checkout, "deleted-worktree");
-		await publishRun(entry({ sessionId: "stopped", projectName: "stopped" }));
+		claim("gone", gone);
+		claim("stopped", checkout);
 		const { runtime, downs } = stubRuntime([
 			container("gone", gone, "running"),
 			container("stopped", checkout, "exited"),
@@ -270,57 +261,133 @@ describe("sweepOrphanedContainers", () => {
 		expect(downs[0]).toMatchObject({ root: gone, verbose: false });
 	});
 
-	it("leaves alone stacks this user's registry does not know, unless provably ours and deleted", async () => {
-		const gone = join(checkout, "deleted-worktree");
-		const theirs = {
-			...container("runner-ci", gone, "exited"),
-			user: "someone-else-not-this-user",
-		};
-		const unlabelled = {
-			...container("old-cli", gone, "exited"),
-			user: undefined,
-		};
+	it("reports a stack this user's state does not name, and leaves it alone", async () => {
+		// Another user's stack on a shared daemon: no run and no claim of ours
+		// names it, so its checkout reading deleted and its containers being
+		// stopped say nothing about whether anyone still needs it.
+		const theirs = join(checkout, "another-users-checkout");
+		await publishRun(entry({ projectName: "theirs", root: checkout }));
+		claim("theirs", join(checkout, "elsewhere"));
 		const { runtime, downs } = stubRuntime([
-			theirs,
-			unlabelled,
-			container("unknown-stopped", checkout, "exited"),
-			container("ours-gone", gone, "exited"),
+			container("theirs", theirs, "exited"),
 		]);
-
 		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
-
-		expect(downs.map((request) => request.projectName)).toEqual(["ours-gone"]);
-		expect(result.swept.map((stack) => stack.reason)).toEqual([
-			"checkout deleted",
+		expect(downs).toEqual([]);
+		expect(result.swept).toEqual([]);
+		expect(result.foreign).toEqual([
+			{
+				projectName: "theirs",
+				root: theirs,
+				runtime: "docker",
+				reason: "its checkout was deleted",
+				command: "docker compose -p theirs down",
+			},
+		]);
+		expect(result.remaining.map((group) => group.projectName)).toEqual([
+			"theirs",
 		]);
 	});
 
-	it("keeps a registered stack whose checkout cannot be read", async () => {
-		if (process.getuid?.() === 0) return; // root reads through any mode
-		const locked = mkdtempSync(join(tmpdir(), "buncargo-locked-"));
-		const root = join(locked, "checkout");
-		mkdirSync(root);
+	it.skipIf(!unreadable)(
+		"keeps a stack whose checkout it cannot read",
+		async () => {
+			// Another user's home: existsSync reads it as missing, and a
+			// watchdog once tore down every stack under it as deleted.
+			const root = unreadable?.root ?? "";
+			await publishRun(
+				entry({ sessionId: "other-user", projectName: "e2e", root }),
+			);
+			const { runtime, downs } = stubRuntime([
+				container("e2e", root, "running"),
+			]);
+			const result = await sweepOrphanedContainers({ runtimes: [runtime] });
+			expect(result.swept).toEqual([]);
+			expect(downs).toEqual([]);
+			expect(await loadRuns()).toHaveLength(1);
+		},
+	);
+
+	it("keeps a live run's containers and integration stacks when its checkout reads deleted", async () => {
+		const gone = join(checkout, "deleted-while-running");
+		const marker = join(checkout, "live-stack-downs");
 		await publishRun(
 			entry({
-				projectName: "hidden",
-				root,
-				releasedAt: new Date().toISOString(),
-				idleTimeoutMs: 60_000,
+				sessionId: "live",
+				projectName: "live",
+				root: gone,
+				pid: process.pid,
+				processIdentity: readProcessIdentity(process.pid),
+				stacks: [
+					{ name: "supabase", down: ["sh", "-c", `echo down >> '${marker}'`] },
+				],
 			}),
 		);
 		const { runtime, downs } = stubRuntime([
-			container("hidden", root, "running"),
+			container("live", gone, "running"),
 		]);
-
-		chmodSync(locked, 0o000);
-		try {
-			await sweepOrphanedContainers({ runtimes: [runtime] });
-		} finally {
-			chmodSync(locked, 0o700);
-			rmSync(locked, { recursive: true, force: true });
-		}
-
+		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
+		expect(result.swept).toEqual([]);
 		expect(downs).toEqual([]);
+		expect(await Bun.file(marker).exists()).toBe(false);
+	});
+
+	it("records each removal with who did it and the run it was decided against", async () => {
+		// The run that loses these reads this record to say who removed them;
+		// the containers themselves are gone and cannot carry it.
+		const now = Date.now();
+		await publishRun(
+			entry({
+				sessionId: "released",
+				projectName: "expired",
+				pid: 4242,
+				worktree: "feature",
+				branch: "feature/login",
+				releasedAt: new Date(now - 120_000).toISOString(),
+				idleTimeoutMs: 60_000,
+			}),
+		);
+		const { runtime } = stubRuntime([
+			container("expired", checkout, "running"),
+		]);
+		const actor = {
+			command: "buncargo watchdog",
+			pid: 777,
+			user: "ci",
+			version: "13.0.0",
+		};
+		const result = await sweepOrphanedContainers({
+			runtimes: [runtime],
+			actor,
+			now,
+		});
+
+		const owner = {
+			sessionId: "released",
+			pid: 4242,
+			worktree: "feature",
+			branch: "feature/login",
+		};
+		expect(result.swept).toEqual([
+			{
+				projectName: "expired",
+				root: checkout,
+				runtime: "docker",
+				reason: "released 120s ago",
+				owner,
+			},
+		]);
+		const [record] = readRemovals().filter(
+			(entry) => entry.projectName === "expired",
+		);
+		expect(record).toMatchObject({
+			projectName: "expired",
+			root: checkout,
+			runtime: "docker",
+			reason: "released 120s ago",
+			owner,
+			by: actor,
+		});
+		expect(Date.parse(record?.at ?? "")).toBeGreaterThanOrEqual(now);
 	});
 
 	it("keeps a stack whose run is live and one still inside its idle hold", async () => {
@@ -384,20 +451,25 @@ describe("sweepOrphanedContainers", () => {
 	});
 
 	it("skips a project whose lock is held and reports a failed down", async () => {
-		await publishRun(entry({ projectName: "busy" }));
+		claim("busy", checkout);
 		const { runtime, downs } = stubRuntime([
 			container("busy", checkout, "exited"),
 		]);
 		let release!: () => void;
+		let acquired!: () => void;
+		const isHeld = new Promise<void>((resolve) => {
+			acquired = resolve;
+		});
 		const held = withProjectLifecycleLock(
 			"busy",
 			checkout,
 			() =>
 				new Promise<void>((resolve) => {
 					release = resolve;
+					acquired();
 				}),
 		);
-		await Bun.sleep(20);
+		await isHeld;
 		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
 		release();
 		await held;
@@ -557,7 +629,6 @@ describe("sweepOrphanedContainers", () => {
 		// The pass condemns both stacks from its snapshot. While it tears the
 		// first down, a new run claims the second — publishing before it takes
 		// the lock, as a real start does. The recheck under the lock must see it.
-		await publishRun(entry({ sessionId: "gone", projectName: "abandoned" }));
 		await publishRun(
 			entry({
 				sessionId: "expired",
@@ -567,6 +638,7 @@ describe("sweepOrphanedContainers", () => {
 				services: [DB],
 			}),
 		);
+		claim("abandoned", checkout);
 		const downs: string[] = [];
 		const runtime = {
 			name: "docker",
@@ -598,6 +670,8 @@ describe("sweepOrphanedContainers", () => {
 describe("settleDeletedCheckouts", () => {
 	const gone = join(tmpdir(), "buncargo-never-existed");
 	const optIn = process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS;
+	/** A pass long enough after the first to confirm the deletion. */
+	const LATER = NOW + DELETED_CHECKOUT_SETTLE_MS;
 
 	afterEach(() => {
 		if (optIn === undefined)
@@ -614,7 +688,7 @@ describe("settleDeletedCheckouts", () => {
 		if (options.enabled) process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS = "1";
 		else delete process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS;
 		for (const [root, projectName] of Object.entries(options.claims))
-			claimOffset(root, 100, projectName);
+			claimOffset({ root, offset: 100, ports: [5532], projectName });
 
 		const removed: string[][] = [];
 		const runtime = {
@@ -635,38 +709,95 @@ describe("settleDeletedCheckouts", () => {
 				return [];
 			},
 		} as unknown as ContainerRuntimeAdapter;
-		return { runtime, removed, result: { swept: [], failed: [] } };
+		const result: Pick<SweepResult, "swept" | "failed"> = {
+			swept: [],
+			failed: [],
+		};
+		/** One sweep pass's settling, at `now`. */
+		const settle = (
+			now: number,
+			extra: Partial<Parameters<typeof settleDeletedCheckouts>[0]> = {},
+		) =>
+			settleDeletedCheckouts({
+				runtimes: [runtime],
+				runs: [],
+				stacks: [],
+				result,
+				now,
+				swept: async (stack) => void result.swept.push(stack),
+				...extra,
+			});
+		return { removed, result, settle };
 	}
 	const claimedRoots = () => Object.keys(readAllOffsetClaims());
 
 	it("only drops the claims unless the machine opted in", async () => {
-		const { runtime, removed, result } = setup({
+		const { removed, settle } = setup({
 			enabled: false,
 			claims: { [gone]: "app-gone" },
 		});
-		await settleDeletedCheckouts({ runtimes: [runtime], runs: [], result });
+		await settle(NOW);
 		expect(removed).toEqual([]);
 		expect(claimedRoots()).toEqual([]);
 	});
 
-	it("removes a deleted checkout's project volumes, then its claim", async () => {
-		const { runtime, removed, result } = setup({
+	it("removes a deleted checkout's project volumes once a later pass finds it still gone, then its claim", async () => {
+		const { removed, result, settle } = setup({
 			enabled: true,
 			claims: { [gone]: "app-gone", [checkout]: "other" },
 		});
-		await settleDeletedCheckouts({ runtimes: [runtime], runs: [], result });
+
+		// The first sighting is only stamped: a path briefly missing must not
+		// cost a database.
+		await settle(NOW);
+		expect(removed).toEqual([]);
+		expect(readAllOffsetClaims()[gone]?.deletedSeenAt).toBe(
+			new Date(NOW).toISOString(),
+		);
+		await settle(LATER - 1);
+		expect(removed).toEqual([]);
+
+		await settle(LATER);
 		expect(removed).toEqual([["app-gone_db"]]);
 		expect(claimedRoots()).toEqual([checkout]);
 		expect(result.swept).toHaveLength(1);
 	});
 
+	it("starts over for a checkout that comes back before it is settled", async () => {
+		const root = join(checkout, "comes-back");
+		const { removed, settle } = setup({
+			enabled: true,
+			claims: { [root]: "app-gone" },
+		});
+		await settle(NOW);
+		expect(readAllOffsetClaims()[root]?.deletedSeenAt).toBeString();
+
+		mkdirSync(root);
+		await settle(NOW + 1);
+		expect(readAllOffsetClaims()[root]?.deletedSeenAt).toBeUndefined();
+
+		rmSync(root, { recursive: true });
+		await settle(LATER);
+		expect(removed).toEqual([]);
+		expect(readAllOffsetClaims()[root]?.deletedSeenAt).toBe(
+			new Date(LATER).toISOString(),
+		);
+	});
+
 	it("settles a deleted checkout's suffixed environments with it", async () => {
-		const { runtime, removed, result } = setup({
+		const { removed, settle } = setup({
 			enabled: true,
 			claims: { [gone]: "app-gone", [checkout]: "other" },
 		});
-		claimOffset(gone, 200, "app-gone-e2e", "e2e");
-		await settleDeletedCheckouts({ runtimes: [runtime], runs: [], result });
+		claimOffset({
+			root: gone,
+			offset: 200,
+			ports: [5632],
+			projectName: "app-gone-e2e",
+			suffix: "e2e",
+		});
+		await settle(NOW);
+		await settle(LATER);
 		expect(removed.flat().sort()).toEqual(["app-gone-e2e_db", "app-gone_db"]);
 		expect(claimedRoots()).toEqual([checkout]);
 	});
@@ -679,29 +810,70 @@ describe("settleDeletedCheckouts", () => {
 			[[run], { [gone]: "app-gone" }, [], true],
 			[[], { [gone]: "app-gone" }, [leftover], false],
 		] as const) {
-			const { runtime, removed, result } = setup({
+			const { removed, settle } = setup({
 				enabled: true,
 				claims,
 				left: [...left],
 			});
-			await settleDeletedCheckouts({
-				runtimes: [runtime],
-				runs: [...runs],
-				result,
-			});
+			await settle(NOW, { runs: [...runs] });
+			await settle(LATER, { runs: [...runs] });
 			expect(removed).toEqual([]);
 			expect(claimedRoots().includes(gone)).toBe(!settled);
 			rmSync(getOffsetClaimsPath(), { force: true });
 		}
 	});
 
+	it.skipIf(!unreadable)(
+		"never settles a checkout it cannot read, nor removes a project such a checkout claims",
+		async () => {
+			const root = unreadable?.root ?? "";
+			const { removed, settle } = setup({
+				enabled: true,
+				claims: { [gone]: "app-gone", [root]: "app-gone" },
+			});
+			expect(Object.keys(readOffsetClaims())).toEqual([root]);
+			await settle(NOW);
+			await settle(LATER);
+			expect(removed).toEqual([]);
+			expect(claimedRoots()).toContain(root);
+			expect(readAllOffsetClaims()[root]?.deletedSeenAt).toBeUndefined();
+
+			delete process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS;
+			await settle(LATER);
+			expect(claimedRoots()).toEqual([root]);
+		},
+	);
+
+	it("keeps a deleted checkout's claim while a stack of it is still listed", async () => {
+		// The claim is what makes the stack this user's: dropped while the
+		// stack stands (its removal failed, or its lock was busy), the stack
+		// would be nobody's to remove.
+		for (const enabled of [false, true]) {
+			const { removed, settle } = setup({
+				enabled,
+				claims: { [gone]: "app-gone" },
+			});
+			const stacks = [{ projectName: "app-gone", root: gone }];
+			await settle(NOW, { stacks });
+			await settle(LATER, { stacks });
+			expect(removed).toEqual([]);
+			expect(claimedRoots()).toEqual([gone]);
+			rmSync(getOffsetClaimsPath(), { force: true });
+		}
+	});
+
 	it("decides nothing while no runtime answers", async () => {
-		const { removed, result } = setup({
-			enabled: true,
-			claims: { [gone]: "app-gone" },
-		});
-		await settleDeletedCheckouts({ runtimes: [], runs: [], result });
-		expect(removed).toEqual([]);
-		expect(claimedRoots()).toEqual([gone]);
+		// Its stack could still be on the runtime that did not answer.
+		for (const enabled of [false, true]) {
+			const { removed, settle } = setup({
+				enabled,
+				claims: { [gone]: "app-gone" },
+			});
+			await settle(NOW, { runtimes: [] });
+			await settle(LATER, { runtimes: [] });
+			expect(removed).toEqual([]);
+			expect(claimedRoots()).toEqual([gone]);
+			rmSync(getOffsetClaimsPath(), { force: true });
+		}
 	});
 });

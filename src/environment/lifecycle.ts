@@ -1,4 +1,4 @@
-import { join, relative } from "node:path";
+import { relative } from "node:path";
 import {
 	ensureServicesRunning,
 	withProjectLifecycleLock,
@@ -9,8 +9,9 @@ import { stopDevServers } from "../core/process/dev-servers";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWarn } from "../core/style";
 import { resolveComposeServiceNames } from "../planning";
+import { resolvePrismaConfig } from "../prisma/config";
 import { appliedMigrationCount } from "../prisma/migrations-applied";
-import { recordGeneratedPrismaHash } from "../prisma/schema-hash";
+import { generatePrismaClient } from "../prisma/schema-hash";
 import type {
 	AnyDevConfig,
 	AppConfig,
@@ -23,6 +24,7 @@ import type {
 	StartOptions,
 	StopOptions,
 } from "../types";
+import { recordTeardown } from "./container-loss";
 import type { DevEnvContext } from "./context";
 import { syncEnvFile } from "./env-file";
 import type { DevEnvVarsApi } from "./env-vars";
@@ -96,7 +98,9 @@ export function createLifecycleApi<
 	}
 
 	function prismaSelected(): boolean {
-		return selectedServices.includes(config.prisma?.service ?? "postgres");
+		return selectedServices.includes(
+			resolvePrismaConfig(config.prisma).service,
+		);
 	}
 
 	function collectMigrations(): MigrationConfig[] {
@@ -106,7 +110,7 @@ export function createLifecycleApi<
 			migrations.push({
 				name: "prisma",
 				command: "bunx --no-install prisma migrate deploy",
-				cwd: config.prisma.cwd ?? "packages/prisma",
+				cwd: resolvePrismaConfig(config.prisma).cwd,
 			});
 		}
 
@@ -119,16 +123,21 @@ export function createLifecycleApi<
 
 	async function runPrepareSteps(
 		verbose: boolean,
+		production: boolean,
 		signal?: AbortSignal,
 		onPhase?: (name: string, ms: number) => void,
 		generate = true,
 	): Promise<void> {
 		const execute: typeof envVars.exec = (cmd, options) =>
-			envVars.exec(cmd, {
-				...options,
-				signal,
-				timeoutMs: options?.timeoutMs ?? 600000,
-			});
+			envVars.exec(
+				cmd,
+				{
+					...options,
+					signal,
+					timeoutMs: options?.timeoutMs ?? 600000,
+				},
+				production,
+			);
 		const migrations = collectMigrations();
 		const beforeMigrations = config.hooks?.beforeMigrations;
 		if (
@@ -159,17 +168,15 @@ export function createLifecycleApi<
 							!prismaSelected()
 						)
 							return false;
-						const serviceKey = config.prisma.service ?? "postgres";
+						const { service: serviceKey, urlEnvVar } = resolvePrismaConfig(
+							config.prisma,
+						);
 						const service = services[serviceKey];
 						const url = toUrlMap(ctx.loopbackUrls)[serviceKey];
 						// An overlay may target a different database; never skip that deploy
 						// based on the state of our local service.
 						const computed: Record<string, string> = envVars.buildEnvVars();
-						if (
-							!service ||
-							computed[config.prisma.urlEnvVar ?? "DATABASE_URL"] !== url
-						)
-							return false;
+						if (!service || computed[urlEnvVar] !== url) return false;
 						const count = await appliedMigrationCount({
 							root: ctx.root,
 							prisma: config.prisma,
@@ -211,9 +218,11 @@ export function createLifecycleApi<
 
 			const began = performance.now();
 			try {
-				const prismaCwd = config.prisma.cwd ?? "packages/prisma";
-				await execute(config.prisma.generate, { cwd: prismaCwd, verbose });
-				recordGeneratedPrismaHash(ctx.root, join(ctx.root, prismaCwd));
+				const command = config.prisma.generate;
+				const { cwd } = resolvePrismaConfig(config.prisma);
+				await generatePrismaClient(ctx.root, cwd, () =>
+					execute(command, { cwd, verbose }),
+				);
 			} finally {
 				onPhase?.("generation", performance.now() - began);
 			}
@@ -301,12 +310,15 @@ export function createLifecycleApi<
 			}
 		}
 
-		const ci = isCI();
 		const {
 			verbose = config.options?.verbose ?? true,
 			wait = true,
 			startServers: shouldStartServers = true,
-			productionBuild = ci,
+			// One decision for the whole start: containers, migrations, the seed
+			// and the apps all get the env of the commands that run. Without
+			// servers the caller runs its own processes (the CLI's dev servers,
+			// `startServers()`, `exec`), which are development unless asked.
+			productionBuild = shouldStartServers && isCI(),
 			skipSeed = false,
 			skipEnvironmentLog = false,
 			onlyApps,
@@ -366,8 +378,9 @@ export function createLifecycleApi<
 
 			// Claimed before anything is created, so the sweep never sees a fresh
 			// container as unowned. Idempotent, so a CLI that already claimed with
-			// its own flags keeps those. The claim outlives `start()`: it is
-			// retired by `stop()`, or released when this process exits.
+			// its own flags keeps those. The claim outlives `start()` and this
+			// process: `stop()` retires it, `releaseRun()` releases it, and the
+			// sweep reads an owner that died without either as a crash.
 			if (hasServices) {
 				await runClaim.claimRun({ signal });
 				// A script that starts containers and then crashes needs someone to
@@ -415,46 +428,54 @@ export function createLifecycleApi<
 					return;
 				}
 
-				const composeUp = () =>
+				function composeUp() {
+					if (!artifactReady) {
+						ctx.ensureComposeFile();
+						artifactReady = true;
+					}
+
+					return ensureServicesRunning({
+						signal,
+						runtime: ctx.runtime,
+						root: ctx.root,
+						projectName: ctx.projectName,
+						envVars: envVars.buildEnvVars(productionBuild),
+						services: compose,
+						noDeps,
+						ports: targetPorts,
+						model: ctx.composeModel(),
+						composeFile: ctx.composeFile,
+						verbose,
+						wait,
+						autoStartRuntime: autoStartDocker,
+					});
+				}
+
+				// One hold over Compose and the stacks: the sweep and `stop` take the
+				// same lock, so neither can tear a stack down while it comes up. The
+				// lock is not reentrant; nothing inside may take it again. Every
+				// step settles before it is released: one failing must not free the
+				// lock while `compose up` or another stack is still coming up.
+				await phase("containers", () =>
 					withProjectLifecycleLock(
 						ctx.projectName,
 						ctx.root,
-						() => {
-							if (!artifactReady) {
-								ctx.ensureComposeFile();
-								artifactReady = true;
-							}
-
-							return ensureServicesRunning({
-								signal,
-								runtime: ctx.runtime,
-								root: ctx.root,
-								projectName: ctx.projectName,
-								envVars: envVars.buildEnvVars(productionBuild),
-								services: compose,
-								noDeps,
-								ports: targetPorts,
-								model: ctx.composeModel(),
-								composeFile: ctx.composeFile,
-								verbose,
-								wait,
-								autoStartRuntime: autoStartDocker,
-							});
+						async () => {
+							const results = await Promise.allSettled([
+								Object.keys(compose).length > 0 ? composeUp() : undefined,
+								...stacks.map(({ stack }) =>
+									withDeadline(
+										(stackSignal) => stack.up(hookContext(stackSignal)),
+										600_000,
+										signal,
+									),
+								),
+							]);
+							for (const result of results)
+								if (result.status === "rejected") throw result.reason;
 						},
 						{ signal },
-					);
-
-				await phase("containers", () =>
-					Promise.all([
-						Object.keys(compose).length > 0 ? composeUp() : undefined,
-						...stacks.map(({ stack }) =>
-							withDeadline(
-								(stackSignal) => stack.up(hookContext(stackSignal)),
-								600_000,
-								signal,
-							),
-						),
-					]),
+					),
 				);
 			}
 
@@ -475,7 +496,13 @@ export function createLifecycleApi<
 			}
 
 			try {
-				await runPrepareSteps(verbose, signal, onPhase, prepare !== "migrate");
+				await runPrepareSteps(
+					verbose,
+					productionBuild,
+					signal,
+					onPhase,
+					prepare !== "migrate",
+				);
 				if (prepare === "migrate") {
 					return null;
 				}
@@ -526,6 +553,7 @@ export function createLifecycleApi<
 					const pids = await startAppServers(ctx, envVars, {
 						signal,
 						apps: appsToStart,
+						claim: runClaim,
 						onPhase,
 						productionBuild,
 						verbose,
@@ -544,6 +572,16 @@ export function createLifecycleApi<
 							if (verbose) console.log(formatDone("All servers ready"));
 						},
 					});
+					// A run without containers is in the registry for its apps,
+					// and the watchdog is what lists live runs to BuncargoBar on
+					// the tailnet. Once they are up and not awaited, as `dev`
+					// does, so startup pays nothing for it.
+					if (
+						!hasServices &&
+						startOptions.watchdog !== false &&
+						Object.keys(pids).length > 0
+					)
+						void runClaim.ensureWatchdog().catch(() => {});
 
 					if (verbose) {
 						console.log(formatDone("Environment ready"));
@@ -592,41 +630,58 @@ export function createLifecycleApi<
 		await stopDevServers(ctx.ownedServerPids ?? {});
 		for (const name of Object.keys(ctx.ownedServerPids ?? {}))
 			delete ctx.ownedServerPids?.[name];
+		await runClaim.releaseApps();
 		if (appOnlyRun()) {
 			return;
 		}
 
-		if (Object.keys(composeServicesOf(services)).length > 0) {
+		const hasCompose = Object.keys(composeServicesOf(services)).length > 0;
+		// Every stack, not just this run's selection: stop means the environment.
+		const stacks = configuredStacks(config as AnyDevConfig);
+		if (hasCompose || stacks.length > 0) {
 			await withProjectLifecycleLock(
 				ctx.projectName,
 				ctx.root,
 				async () => {
-					ctx.ensureComposeFile();
-					await ctx.runtime.down({
-						root: ctx.root,
-						projectName: ctx.projectName,
-						model: ctx.composeModel(),
-						composeFile: ctx.composeFile,
-						verbose,
-						removeVolumes,
-						signal: stopOptions.signal,
-					});
+					if (hasCompose) {
+						ctx.ensureComposeFile();
+						await ctx.runtime.down({
+							root: ctx.root,
+							projectName: ctx.projectName,
+							model: ctx.composeModel(),
+							composeFile: ctx.composeFile,
+							verbose,
+							removeVolumes,
+							signal: stopOptions.signal,
+						});
+					}
+
+					for (const { name, stack } of stacks) {
+						await envVars.exec(
+							stack.down({
+								projectName: ctx.projectName,
+								root: ctx.root,
+								removeVolumes,
+							}),
+							{
+								secrets: false,
+								signal: stopOptions.signal,
+								timeoutMs: 120_000,
+							},
+						);
+						if (verbose) console.log(formatDone(`Stopped ${name}`));
+					}
 				},
 				{ signal: stopOptions.signal },
 			);
-		}
-
-		// Every stack, not just this run's selection: stop means the environment.
-		for (const { name, stack } of configuredStacks(config as AnyDevConfig)) {
-			await envVars.exec(
-				stack.down({
-					projectName: ctx.projectName,
-					root: ctx.root,
-					removeVolumes,
-				}),
-				{ secrets: false, signal: stopOptions.signal, timeoutMs: 120_000 },
-			);
-			if (verbose) console.log(formatDone(`Stopped ${name}`));
+			await recordTeardown(ctx, {
+				sessionId: runClaim.sessionId,
+				runtimes: [
+					...(hasCompose ? [ctx.runtime.name] : []),
+					...stacks.map(({ name }) => name),
+				],
+				removeVolumes,
+			});
 		}
 		await runClaim.retireRun();
 	}

@@ -25,9 +25,10 @@ agentgate syncs file stores between machines without buncargo's code. Everything
 - **The base's content stays in the checkout.** `files merge` is three-way, so whenever the base
   is recorded its bytes go to `<checkout>/.buncargo/files-base/<path>` (`0600`), read only while
   their hash is still the base. Not in the store: one checkout's base is no other checkout's, and
-  the store's layout is the contract. A checkout synced before these copies existed gets one on
-  the next load while its copy or the store still equals the base; when neither does, the merge
-  runs from an empty base, so every difference is an addition or a conflict.
+  the store's layout is the contract. A missing or stale copy (synced before these copies
+  existed, or a crash between the copy and `files.json`) is rewritten, under the store's lock, on
+  the next load while the checkout's copy or the store still equals the base; when neither does,
+  the merge runs from an empty base, so every difference is an addition or a conflict.
 - **Merge is dotenv only.** Every line must be `KEY=value` (a quoted value may span lines), a
   comment or blank, no key set twice, and Node's `parseEnv` must agree on the keys; anything else
   is refused. The checkout's copy is the skeleton, so its comments and order survive; a key taken

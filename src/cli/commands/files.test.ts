@@ -109,6 +109,12 @@ it("diffs keys without printing values", () => {
 	expect(stdout).toContain("~ SECRET");
 	expect(stdout).toContain("+ NEW");
 	expect(stdout).not.toContain("two");
+
+	const unknown = files(root, home, ["diff", ".env.nope"]);
+	expect(unknown.code).toBe(1);
+	expect(unknown.stderr).toContain(
+		".env.nope is not in options.checkoutFiles (.env.local, .env.machine)",
+	);
 });
 
 it("merges key by key, asking for conflicting keys by name only", () => {

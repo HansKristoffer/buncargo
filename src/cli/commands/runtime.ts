@@ -132,7 +132,7 @@ function parseMigrateCheckArgs(args: string[]) {
  */
 export async function loadLiveEnv() {
 	const { getCaPath, waitForDaemonRoutes } = await import("../../core/hosts");
-	const { adoptLiveCaptures } = await import("../run-publish");
+	const { adoptLiveCaptures } = await import("../../core/run-publish");
 	const env = await loadEnv({ readOnly: true });
 	// A healthy daemon is not the same as a daemon serving this project: a
 	// `vite.config.ts` reading `urls.web` from here must not be handed an https
@@ -242,17 +242,31 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 	const { withCheckSlot, formatCheckSlotHolder } = await import(
 		"../../core/check-slots"
 	);
-	const result = await withCheckSlot(
+	const { runForwardingSignals } = await import("./exec");
+	const exitCode = await withCheckSlot(
 		"typecheck",
+		// Each check runs in its own process group, which the terminal's
+		// Ctrl-C does not reach: the signal is forwarded, or every `tsc` would
+		// outlive this process.
 		() =>
-			runWorkspaceTypecheck({
-				root,
-				verbose: true,
-				concurrency: parsed.concurrency,
-				only: parsed.only,
-				include: settings.config?.include,
-				exclude: settings.config?.exclude,
-				changedFiles,
+			runForwardingSignals(async (signal) => {
+				try {
+					const result = await runWorkspaceTypecheck({
+						root,
+						verbose: true,
+						concurrency: parsed.concurrency,
+						only: parsed.only,
+						include: settings.config?.include,
+						exclude: settings.config?.exclude,
+						changedFiles,
+						signal,
+					});
+					return { exitCode: result.success ? 0 : 1, stdout: "", stderr: "" };
+				} catch (error) {
+					// Interrupted: the signal's exit code says so.
+					if (signal.aborted) return { exitCode: 1, stdout: "", stderr: "" };
+					throw error;
+				}
 			}),
 		{
 			onWait: (holders) =>
@@ -261,5 +275,5 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 				),
 		},
 	);
-	process.exit(result.success ? 0 : 1);
+	process.exit(exitCode);
 }

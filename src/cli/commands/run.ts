@@ -107,7 +107,7 @@ async function runTask(
 				// services. The CLI's idle hold, not the library's keep-forever
 				// default, so a task that started a database leaves it on the
 				// same timer as a `dev` run would.
-				env.prepareStart?.(undefined, services);
+				await env.prepareStartAsync(undefined, services, signal);
 				await env.claimRun({ defaultIdleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS });
 				await env.start({
 					onlyServices: services,

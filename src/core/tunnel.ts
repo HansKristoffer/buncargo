@@ -1,4 +1,9 @@
-import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
+import type {
+	AppConfig,
+	DevEnvironment,
+	PublicTunnelHandle,
+	ServiceConfig,
+} from "../types";
 import { abortableSleep, withSignal } from "./deadline";
 import { toPortMap } from "./ports";
 import { startQuickTunnel } from "./quick-tunnel";
@@ -10,13 +15,7 @@ export interface PublicExposeTarget {
 	port: number;
 }
 
-export interface PublicTunnel {
-	kind: "service" | "app";
-	name: string;
-	localUrl: string;
-	publicUrl: string;
-	close: () => Promise<void>;
-}
+export type PublicTunnel = PublicTunnelHandle;
 
 interface TunnelBackendResult {
 	getURL?: () => Promise<string>;

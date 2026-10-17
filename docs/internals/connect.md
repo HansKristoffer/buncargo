@@ -7,6 +7,13 @@ Operating the relay: [frp](../frp.md).
   authority. The coordinator supervises one publisher per run and private receiver visitors, with
   guarded children and 45-second leases. Tokens never reach child app environments (see
   `child-env.ts` in [shared core](./core.md)).
+- A run writes its intent before it calls the launcher. An idle coordinator decides to exit under
+  the `connect-launch` lock, after one more look for intents, and first writes `ready: false`; the
+  launcher adopts only a ready coordinator and otherwise starts a new one. Exiting without that
+  lock left a run that registered in the last refresh interval unshared for its whole lifetime.
+  `buncargo connect status|tcp|disconnect` write no intent, so the coordinator they adopt can
+  still leave before the request lands: `requestCoordinator` ensures it again and resends once,
+  only when the connection was refused or reset, never for an error the coordinator answered.
 - `connect/publisher.ts` gates loopback targets against process birth identity and lease expiry.
   frp owns HTTP/SSE/WebSocket and STCP transport. Browser actions open validated public URLs; TCP
   actions receive local visitor addresses.

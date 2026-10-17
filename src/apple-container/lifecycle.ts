@@ -3,8 +3,9 @@ import type {
 	ContainerUpRequest,
 } from "../container-runtime/types";
 import { remainingTime } from "../core/deadline";
-import { formatPortOwner, getPortOwner } from "../core/process";
+import { formatPortOwner, getPortOwner, type PortOwner } from "../core/process";
 import { formatDone, formatStep, formatWarn } from "../core/style";
+import { appleContainerRuntimeAdapter } from "./adapter";
 import type { AppleCliOptions, AppleCliResult, AppleContainerCli } from "./cli";
 import {
 	isAlreadyExistsMessage,
@@ -24,6 +25,7 @@ import { isRunningState, parseContainerRecords } from "./status";
 /** A `container` argv, or one whose output streams to the terminal. */
 type AppleStep = string[] | { args: string[]; stream: true };
 type AppleSteps = Generator<AppleStep, void, AppleCliResult>;
+type PortOwnerLookup = (port: number) => PortOwner | null;
 
 /**
  * Starting and stopping a project's containers on Apple's runtime.
@@ -51,6 +53,7 @@ function translatePortError(
 	result: AppleCliResult,
 	action: string,
 	publishedPorts: number[],
+	ownerOf: PortOwnerLookup,
 ): never {
 	const message = `${result.stderr}\n${result.stdout}`;
 	if (
@@ -59,7 +62,7 @@ function translatePortError(
 		)
 	) {
 		for (const port of publishedPorts) {
-			const owner = getPortOwner(port);
+			const owner = ownerOf(port);
 			if (owner) throw new Error(formatPortOwner(port, owner));
 		}
 	}
@@ -113,6 +116,7 @@ function* startService(
 	plan: ContainerRunPlan,
 	existing: AppleContainerRecord | undefined,
 	verbose: boolean,
+	ownerOf: PortOwnerLookup,
 ): AppleSteps {
 	if (existing) {
 		if (existing.labels[CONFIG_HASH_LABEL] === plan.configHash) {
@@ -151,11 +155,15 @@ function* startService(
 			result,
 			`start container ${plan.containerName}`,
 			plan.publishedPorts,
+			ownerOf,
 		);
 	}
 }
 
-function* upSteps(request: ContainerUpRequest): AppleSteps {
+function* upSteps(
+	request: ContainerUpRequest,
+	ownerOf: PortOwnerLookup,
+): AppleSteps {
 	const { verbose = true } = request;
 	const plan = buildAppleRunPlan({
 		projectName: request.projectName,
@@ -193,7 +201,12 @@ function* upSteps(request: ContainerUpRequest): AppleSteps {
 	);
 
 	for (const service of plan.services) {
-		yield* startService(service, existing.get(service.containerName), verbose);
+		yield* startService(
+			service,
+			existing.get(service.containerName),
+			verbose,
+			ownerOf,
+		);
 	}
 
 	if (verbose) console.log(formatDone("Containers started"));
@@ -203,7 +216,23 @@ function* downSteps(request: ContainerDownRequest): AppleSteps {
 	const { verbose = true, removeVolumes = false } = request;
 
 	const inventory = yield ["ls", "--all", "--format", "json"];
-	if (!inventory.ok) failed(inventory, "read container inventory");
+	if (!inventory.ok) {
+		// A stopped system service runs no containers, so there is nothing to
+		// stop, as with Docker's daemon. Asked only after the listing failed,
+		// to keep every other teardown at one process. Volumes cannot be
+		// removed without it, and a reset that silently kept them would not be.
+		const status = yield ["system", "status"];
+		if (status.ok) failed(inventory, "read container inventory");
+		if (removeVolumes)
+			throw new Error(
+				`Apple container is not running, so the volumes of ${request.projectName} were not removed. Start it with \`container system start\`, then run again.`,
+			);
+		if (verbose)
+			console.log(
+				formatStep("ℹ Apple container is not running. Nothing to stop."),
+			);
+		return;
+	}
 	const records = parseContainerRecords(inventory.stdout).filter(
 		(record) => record.labels[PROJECT_LABEL] === request.projectName,
 	);
@@ -301,7 +330,11 @@ export function appleUp(
 	cli: AppleContainerCli,
 	request: ContainerUpRequest,
 ): Promise<void> {
-	return runSteps(cli, upSteps(request), {
+	// Asked of Apple itself: its port forwarder holds the socket, so the host
+	// lookup alone names the forwarder rather than the container behind it.
+	const runtime = appleContainerRuntimeAdapter({ cli });
+	const ownerOf = (port: number) => getPortOwner(port, { runtime });
+	return runSteps(cli, upSteps(request, ownerOf), {
 		signal: request.signal,
 		timeoutMs: request.timeoutMs ?? 600000,
 	});

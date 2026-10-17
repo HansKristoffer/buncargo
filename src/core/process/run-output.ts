@@ -157,8 +157,14 @@ export class RunOutput {
 		});
 	}
 
-	close(): void {
-		for (const screen of this.screens.values()) void screen.flush();
+	/**
+	 * Emit what every app left on screen, then write the log files. Awaited
+	 * before a view unsubscribes, or an app's last words reach neither.
+	 */
+	async close(): Promise<void> {
+		await Promise.all(
+			[...this.screens.values()].map((screen) => screen.flush()),
+		);
 		this.logs?.flush();
 	}
 

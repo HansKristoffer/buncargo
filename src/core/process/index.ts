@@ -1,12 +1,11 @@
 export { buildApps } from "./build";
 export {
-	isDeliberateExit,
 	type StartDevServersOptions,
 	startDevServers,
 	stopDevServers,
 } from "./dev-servers";
 export { CommandSignalError, type ExecResult, exec, execAsync } from "./exec";
-export { isProcessAlive, stopAllProcesses, stopProcess } from "./lifecycle";
+export { isProcessAlive, stopProcess } from "./lifecycle";
 export {
 	canBindPort,
 	classifyPortOccupant,
@@ -34,3 +33,4 @@ export {
 	readListenerSnapshot,
 	readListenerSnapshotAsync,
 } from "./port-snapshot";
+export { isDeliberateExit } from "./process-owner";

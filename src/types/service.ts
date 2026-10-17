@@ -200,11 +200,6 @@ export interface BuncargoContainer {
 	root: string;
 	worktree: string;
 	service: string;
-	/**
-	 * The OS user whose run created it (`buncargo.user`). Missing on containers
-	 * from older versions; the sweep treats that as another user's.
-	 */
-	user?: string;
 	/** Which runtime reported it; set so `stop-all` can stop each with its own. */
 	runtime?: ContainerRuntimeName;
 }

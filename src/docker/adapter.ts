@@ -60,7 +60,10 @@ export function dockerRuntimeAdapter(
 				request.root,
 				request.projectName,
 				request.envVars,
-				{ ...request, services: request.serviceNames, binary },
+				// No `--wait`: callers poll readiness against the published ports,
+				// the same on both backends, and Compose's wait would be a second,
+				// weaker copy of it.
+				{ ...request, services: request.serviceNames, binary, wait: false },
 			);
 		},
 

@@ -73,14 +73,19 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   produced a certificate covering itself and not us. The second pass runs under the same lock, sees
   every concurrent run's routes, and mints nothing when the certificate is already sufficient.
 - `activateNamedHosts` returns its warnings rather than printing them: a run that goes on to take
-  over another one activates twice, and the first failure (the other run still owning the
-  hostnames) is one the second attempt undoes, so printing it would have the banner contradict it
-  three lines later.
+  over another one activates twice, and only the second attempt describes the URLs the banner
+  prints. A failed attempt reverts `env.urls` to `localhost:port`, so a retry that fails never
+  leaves the first attempt's named URLs beside its warning.
 - `upsertHostRoutes` answers a second `buncargo dev` in the same checkout, pointing at the same
   port, with `keep` rather than a conflict: it is reusing the servers the first run started, not
   competing for the hostname. The live owner stays the owner, because `releaseNamedHosts` filters
   by pid and the route has to disappear when the run owning the servers exits. Refusing instead
-  left that run printing `localhost:port` while the named URLs worked.
+  left that run printing `localhost:port` while the named URLs worked. A takeover is the reverse
+  case: it passes the apps it took over as `takeover`, and those routes move to its pid, because
+  the old `buncargo dev` outlives its killed server and would delete them on exit. The old run
+  can outlive the new one too (the app was `essential: false`, so it only parked): an app that
+  restarts in a run serving named hosts claims its route again (`reclaimAppRoute`), or its named
+  URL 404s once the run that took it over has exited.
 - `prune` drops a static (pid-less) route whose `root` no longer exists. Nothing else retires one,
   so a deleted worktree kept its hostnames in the registry, and in `/etc/hosts`, forever.
 - `syncHostsFile` writes through a temp file and a rename. `writeFileSync` truncates in place, and
@@ -113,7 +118,7 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
 
 ## Health
 
-- `isProxyHealthy` probes the one scheme `readDaemonConfig().tls` says the daemon serves and
+- `readProxyHealth` probes the one scheme `readDaemonConfig().tls` says the daemon serves and
   validates the health body, not just the status. `ensureHostsDaemonRunning` returns early when
   health passes and never reaches the squatter check, so accepting any 200 on `:443` would hand the
   whole flow to whatever else is listening. Do **not** gate it on `routes > 0`: the daemon binds
@@ -123,13 +128,20 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   routing: a loop that stops leaves `Bun.serve` answering 200 while every named URL 404s against a
   frozen map. `lastReloadAt` travels in the health body, the proxy notices a stale map **from the
   request path** (a timer-based watchdog would die with the timers it watches), and the daemon
-  reloads in-band before falling back to `process.exit(1)` for `KeepAlive` to restart.
+  reloads in-band before falling back to `process.exit(1)` for `KeepAlive` to restart. Only
+  consecutive recoveries that left the map stale count toward that exit: an exit drops every
+  proxied websocket on the machine, so a stall that an in-band reload repaired must never add up
+  to one. A recovery whose reload has not settled after `STALL_RECOVERY_TIMEOUT_MS` counts as
+  failed: every caller joins the one in-flight reload, so a hung reload otherwise held recovery
+  forever and the exit was never reached.
 - On the CLI side `waitForDaemonRoutes` is what stands between the registry and the banner: a route
   is a file until the daemon picks it up, and advertising it earlier is how https URLs come to
   point at our own 404. It retries a probe that does not answer rather than failing on it (the
   rebind window above), and still distinguishes the two outcomes: a daemon that never answered
   needs a restart; one that answered without the hostname has a registry it is not picking up. A
-  daemon that reports no `hostnames` is unverifiable, not failing.
+  daemon whose health body lacks `hostnames` or `lastReloadAt` predates them and is reported as
+  outdated, with `buncargo hosts install` as the fix: the run falls back to `localhost:port`
+  rather than advertising URLs nothing can confirm.
 
 ## Proxy
 
@@ -145,3 +157,4 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   `ERR_INCOMPLETE_CHUNKED_ENCODING` on a request that already returned 200. Anything that
   keep-alives less often than 10s (oRPC defaults to 15s, tuned for hosted proxies) dies before its
   first ping. Do not answer this by shortening the app's keep-alive; the proxy is what is wrong.
+  Only elapsed time proves it, so its test is the opt-in `test:integration-proxy-idle`.
