@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+	existsSync,
 	mkdtempSync,
 	readFileSync,
 	renameSync,
 	rmSync,
 	statSync,
-	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -215,63 +215,52 @@ describe("watchHostsState", () => {
 });
 
 describe("hosts reload isolation", () => {
-	it("stays at the polling cadence when reloads acquire registry locks", async () => {
-		const directory = mkdtempSync(join(tmpdir(), "buncargo-idle-reload-"));
-		let filesystemWakeups = 0;
-		let reloads = 0;
-		const target = join(directory, "routes.json");
-		const reload = async () => {
-			await withFileLock(target, async () => {
-				reloads += 1;
-			});
-		};
-		const stop = watchHostsState({
-			directories: [directory],
-			onChange: () => {
-				filesystemWakeups += 1;
-				void reload();
-			},
-			log: () => {},
-		});
-		const timer = setInterval(() => {
-			void reload();
-		}, 1000);
-		try {
-			await reload();
-			await Bun.sleep(2150);
-			expect(filesystemWakeups).toBe(0);
-			expect(reloads).toBeGreaterThanOrEqual(2);
-			expect(reloads).toBeLessThanOrEqual(3);
-		} finally {
-			clearInterval(timer);
-			stop();
-			rmSync(directory, { recursive: true, force: true });
-		}
-	});
-
-	it("ignores lock churn, temporary files, and run-status writes", async () => {
+	// Every reload takes the registry lock, which creates `routes.json.lock.v2`
+	// beside the watched file. Waking on that would turn a reload into the
+	// next one; waking on temp files or run-status writes reloads for nothing.
+	//
+	// A watched sentinel goes through the same watcher after the noise, and
+	// every wakeup records what it saw, so one caused by noise shows up as a
+	// reading without the sentinel or as a repeated reading.
+	it("wakes once per registry write, not on lock churn, temp files or run status", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "buncargo-watch-feedback-"));
-		let changes = 0;
+		const routes = join(dir, "routes.json");
+		const sentinel = join(dir, "sentinel");
+		const read = (path: string) =>
+			existsSync(path) ? readFileSync(path, "utf8") : "-";
+		const seen: string[] = [];
+		let reloading = Promise.resolve();
+		let next = Promise.withResolvers<void>();
 		const stop = watchHostsState({
 			directories: [dir],
-			debounceMs: 5,
+			files: [routes, sentinel],
+			debounceMs: 0,
 			log: () => {},
 			onChange: () => {
-				changes += 1;
-				writeFileSync(join(dir, "routes.json.lock"), "lock");
-				unlinkSync(join(dir, "routes.json.lock"));
+				seen.push(`${read(routes)} ${read(sentinel)}`);
+				// What the daemon does next: reload under the real lock.
+				reloading = withFileLock(routes, async () => {});
+				next.resolve();
 			},
 		});
+		const change = async (write: () => void) => {
+			next = Promise.withResolvers<void>();
+			write();
+			await next.promise;
+			await reloading;
+		};
+		const land = (contents: string) => () => {
+			writeFileSync(`${routes}.tmp`, contents);
+			renameSync(`${routes}.tmp`, routes);
+		};
 		try {
-			writeFileSync(join(dir, "routes.json.tmp"), "{}");
 			writeFileSync(join(dir, "runs.json"), "{}");
-			await Bun.sleep(100);
-			expect(changes).toBe(0);
-			renameSync(join(dir, "routes.json.tmp"), join(dir, "routes.json"));
-			for (let i = 0; i < 100 && changes === 0; i++) await Bun.sleep(10);
-			expect(changes).toBe(1);
-			await Bun.sleep(250);
-			expect(changes).toBe(1);
+			writeFileSync(join(dir, "routes.json.tmp"), "{}");
+			await change(() => writeFileSync(sentinel, "1"));
+			await change(land("a"));
+			await change(land("b"));
+			await change(() => writeFileSync(sentinel, "2"));
+			expect(seen).toEqual(["- 1", "a 1", "b 1", "b 2"]);
 		} finally {
 			stop();
 			rmSync(dir, { recursive: true, force: true });

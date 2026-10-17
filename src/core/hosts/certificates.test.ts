@@ -112,12 +112,15 @@ describe("syncCertificateForRoutes", () => {
 		const { mkcertPath } = sandbox();
 
 		let released = false;
+		const { promise: held, resolve: markHeld } = Promise.withResolvers<void>();
 		const otherRun = withFileLock(getCertPath(), async () => {
+			markHeld();
+			// Long enough that a sync ignoring the lock would finish first.
 			await Bun.sleep(300);
 			released = true;
 		});
 
-		await Bun.sleep(20);
+		await held;
 		await syncCertificateForRoutes({
 			mkcertPath,
 			include: ["a.demo.localhost"],
@@ -254,12 +257,15 @@ describe("readCertificatePair", () => {
 		writeFileSync(getKeyPath(), "key");
 
 		let released = false;
+		const { promise: held, resolve: markHeld } = Promise.withResolvers<void>();
 		const minting = withFileLock(certPath, async () => {
+			markHeld();
+			// Long enough that a read ignoring the lock would finish first.
 			await Bun.sleep(300);
 			released = true;
 		});
 
-		await Bun.sleep(20);
+		await held;
 		const pair = await readCertificatePair();
 		expect(released).toBe(true);
 		expect(pair.cert).toBe("cert");

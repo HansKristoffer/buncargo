@@ -536,7 +536,7 @@ describe("proxy fetch", () => {
 	// A dev server whose upgraded socket is reset dies with an unhandled
 	// ECONNRESET, so the bridged upstream is owed a close frame first.
 	it("sends the upstream a close frame before stopping", async () => {
-		const closes: number[] = [];
+		const closed = Promise.withResolvers<number>();
 		const upstream = Bun.serve({
 			hostname: "127.0.0.1",
 			port: 0,
@@ -552,7 +552,7 @@ describe("proxy fetch", () => {
 				},
 				message() {},
 				close(_ws, code) {
-					closes.push(code);
+					closed.resolve(code);
 				},
 			},
 		});
@@ -582,8 +582,8 @@ describe("proxy fetch", () => {
 		});
 
 		proxy.stop();
-		await Bun.sleep(50);
-		expect(closes).toEqual([1001]);
+		// 1001 (going away) is the close frame; a bare reset reports otherwise.
+		expect(await closed.promise).toBe(1001);
 		client.close();
 	});
 
