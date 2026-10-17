@@ -34,6 +34,9 @@ hardcode a port. Ask buncargo instead.
   \`--force\`: only stop that one when the user asked.
   \`bunx buncargo stop <app>\` stops one app and \`bunx buncargo restart <app>\`
   restarts one.
+- Stopping can take as long as an app's \`stopGraceMs\`: up to a minute for
+  an app that saves data as it exits, such as the Firebase emulators. Let it
+  finish; killing it loses that data.
 - An app already running in another terminal is reused, not started twice.
   One that fails its health check is replaced when its run was started with
   \`--detach\` or is gone; one in someone's terminal needs \`--takeover\`.
@@ -136,10 +139,12 @@ hardcode a port. Ask buncargo instead.
 
 ## Do not
 
-- \`dev --reset\` deletes this checkout's database and \`dev --down --all\` stops
+- \`dev --reset\` deletes this checkout's database (not Firebase emulator
+  data, which lives in \`.firebase-emulator-data\`) and \`dev --down --all\` stops
   every checkout's run. Both refuse without a terminal unless \`--yes\` is
   passed. Pass it only when the user asked for exactly that.
-- Do not edit \`.buncargo/\` or the generated compose file.
+- Do not edit \`.buncargo/\`, the generated compose file or other generated
+  files such as \`firebase.buncargo.json\`.
 
 ## When something fails
 

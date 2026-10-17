@@ -825,6 +825,68 @@ describe("offset claims", () => {
 		}
 	});
 
+	it("claims and probes an app's extra ports with its block", async () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		const first = mkdtempSync(join(tmpdir(), "buncargo-extra-a-"));
+		const second = mkdtempSync(join(tmpdir(), "buncargo-extra-b-"));
+		const warn = console.warn;
+		console.warn = () => {};
+		// An emulator suite: the UI is the app's port, the emulators 100 apart,
+		// which is exactly the offset step.
+		const apps: Record<string, AppConfig> = {
+			firebase: { port: 4000, extraPorts: [9099, 9199], devCommand: "true" },
+		};
+		try {
+			await Bun.write(
+				join(first, ".buncargo/ports.json"),
+				JSON.stringify({ offset: 100 }),
+			);
+			await Bun.write(
+				join(second, ".buncargo/ports.json"),
+				JSON.stringify({ offset: 0 }),
+			);
+			const a = resolvePortPlan({
+				projectPrefix: "fb",
+				projectName: "fb-a",
+				root: first,
+				services: {},
+				apps,
+				getOwner: () => null,
+			});
+			expect(a.offset).toBe(100);
+			expect(readOffsetClaims()[first]?.ports).toEqual([4100, 9199, 9299]);
+
+			// At offset 0 the second checkout's 9199 is the first one's auth port.
+			const b = resolvePortPlan({
+				projectPrefix: "fb",
+				projectName: "fb-b",
+				root: second,
+				services: {},
+				apps,
+				getOwner: () => null,
+			});
+			expect(b.offset).not.toBe(0);
+
+			// And a stranger on an extra port moves the block too.
+			const third = resolvePortPlan({
+				projectPrefix: "fb",
+				projectName: "fb-c",
+				root: second,
+				services: {},
+				apps,
+				getOwner: (port) =>
+					port === 9099 + b.offset
+						? { pids: [99999], command: "java", cwd: "/elsewhere" }
+						: null,
+			});
+			expect(third.offset).not.toBe(b.offset);
+		} finally {
+			console.warn = warn;
+			rmSync(first, { recursive: true, force: true });
+			rmSync(second, { recursive: true, force: true });
+		}
+	});
+
 	it("keeps honouring a claim written without its ports by its offset", async () => {
 		delete process.env.BUNCARGO_PORT_OFFSET;
 		const older = mkdtempSync(join(tmpdir(), "buncargo-older-"));

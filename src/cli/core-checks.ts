@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { containerRuntimeForEnv } from "../container-runtime";
 import {
@@ -9,6 +9,11 @@ import {
 	inspectCheckoutFiles,
 	lastSyncReport,
 } from "../core/checkout-files";
+import {
+	appendToGitignore,
+	gitignoreCovers,
+	isGitIgnored,
+} from "../core/gitignore";
 import {
 	describeSecretsError,
 	fetchScopeSecrets,
@@ -37,37 +42,6 @@ function pinnedBunVersion(root: string): string | undefined {
 	} catch {
 		return undefined;
 	}
-}
-
-/** Whether `.gitignore` names a path, the way a person would write it. */
-function gitignoreCovers(root: string, path: string): boolean {
-	try {
-		const bare = path.replace(/^\/+|\/+$/g, "");
-		return readFileSync(join(root, ".gitignore"), "utf8")
-			.split("\n")
-			.map((line) => line.trim().replace(/^\/+|\/+$/g, ""))
-			.some((line) => line === bare || line === `${bare}/**`);
-	} catch {
-		return false;
-	}
-}
-
-/** Whether git ignores a path; outside a git checkout nothing is. */
-function isGitIgnored(root: string, path: string): boolean {
-	const result = Bun.spawnSync(["git", "check-ignore", "-q", path], {
-		cwd: root,
-		stdout: "ignore",
-		stderr: "ignore",
-	});
-	return result.exitCode === 0;
-}
-
-/** Append lines to `.gitignore`, creating it when missing. */
-function appendToGitignore(root: string, lines: readonly string[]): void {
-	const path = join(root, ".gitignore");
-	const current = existsSync(path) ? readFileSync(path, "utf8") : "";
-	const prefix = current && !current.endsWith("\n") ? "\n" : "";
-	writeFileSync(path, `${current}${prefix}${lines.join("\n")}\n`);
 }
 
 /** Whether the root `package.json` declares anything to install. */

@@ -53,6 +53,7 @@ export function appExitState(
 export class ProcessOwner {
 	readonly controller = new AbortController();
 	private children = new Set<AppChild | DetachedApp>();
+	private names = new Map<AppChild | DetachedApp, string>();
 	private live = new Set<AppChild | DetachedApp>();
 	private retired = new Set<AppChild | DetachedApp>();
 	private sealed = false;
@@ -75,6 +76,8 @@ export class ProcessOwner {
 		private options: {
 			signal?: AbortSignal;
 			shutdownGraceMs?: number;
+			/** Apps that set `stopGraceMs`: their own grace instead of the default. */
+			appGraceMs?: ReadonlyMap<string, number>;
 			attachedName?: string;
 			/** Apps with `essential: false`: their exit never ends the run. */
 			optional?: ReadonlySet<string>;
@@ -103,6 +106,7 @@ export class ProcessOwner {
 		if (needsReadiness) this.pendingReadiness.add(name);
 		this.parked.delete(name);
 		this.children.add(child);
+		this.names.set(child, name);
 		this.live.add(child);
 		(child as EventEmitter).once("error", (error: Error) => {
 			this.live.delete(child);
@@ -144,10 +148,7 @@ export class ProcessOwner {
 							);
 						}
 						if (this.controller.signal.aborted)
-							await terminateOwnedProcess(
-								detached.child,
-								this.options.shutdownGraceMs,
-							);
+							await terminateOwnedProcess(detached.child, this.graceFor(name));
 						else detached.child.watch();
 						return;
 					}
@@ -213,15 +214,28 @@ export class ProcessOwner {
 	 */
 	async retire(child: AppChild | DetachedApp): Promise<void> {
 		this.retired.add(child);
-		await terminateOwnedProcess(child, this.options.shutdownGraceMs);
+		await terminateOwnedProcess(child, this.graceOf(child));
 		if (child instanceof DetachedApp) {
 			child.dispose();
 			this.live.delete(child);
 			this.retired.delete(child);
 		}
 		this.children.delete(child);
+		this.names.delete(child);
 		if (child.exitCode !== null || child.signalCode !== null)
 			this.retired.delete(child);
+	}
+
+	/** How long one app gets between SIGTERM and SIGKILL. */
+	graceFor(name: string): number | undefined {
+		return this.options.appGraceMs?.get(name) ?? this.options.shutdownGraceMs;
+	}
+
+	private graceOf(child: AppChild | DetachedApp): number | undefined {
+		const name = this.names.get(child);
+		return name === undefined
+			? this.options.shutdownGraceMs
+			: this.graceFor(name);
 	}
 
 	ready(name: string): void {
@@ -244,7 +258,7 @@ export class ProcessOwner {
 			await Promise.allSettled([...this.exits]);
 			const results = await Promise.allSettled(
 				[...this.children].map((child) =>
-					terminateOwnedProcess(child, this.options.shutdownGraceMs),
+					terminateOwnedProcess(child, this.graceOf(child)),
 				),
 			);
 			await Promise.allSettled([...this.exits]);

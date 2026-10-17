@@ -136,11 +136,16 @@ describe("architecture", () => {
 	});
 
 	it("keeps the entry points loaded inside users' apps small", () => {
-		// vite.config.ts, browser bundles and app servers load these. Any new
+		// vite.config.ts, next.config.ts, browser bundles and app servers load these. Any new
 		// module here ships into every project's app; keep each one a leaf.
 		const pinned: Record<string, string[]> = {
 			"src/vite/index.ts": [
 				"src/vite/index.ts",
+				"src/vite/resolve.ts",
+				"src/core/tailscale.ts",
+			],
+			"src/next/index.ts": [
+				"src/next/index.ts",
 				"src/vite/resolve.ts",
 				"src/core/tailscale.ts",
 			],

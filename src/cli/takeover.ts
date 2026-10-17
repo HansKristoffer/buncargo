@@ -109,6 +109,7 @@ export async function stopRunningApps(
 			runtime: options.runtime,
 			skipContainers: options.skipContainers,
 			verbose: false,
+			timeout: options.apps?.[name]?.stopGraceMs,
 		});
 		if (!released) {
 			throw new Error(

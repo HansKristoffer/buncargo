@@ -70,6 +70,32 @@ describe("unknown config boundary", () => {
 			).toContain("apps.web.healthTimeout");
 		},
 	);
+	it.each([NaN, -1, 0, "60000"])(
+		"rejects invalid stop grace %j",
+		(stopGraceMs) => {
+			expect(
+				validateConfig({
+					...config(),
+					apps: { web: { port: 3000, devCommand: false, stopGraceMs } },
+				}).join("\n"),
+			).toContain("apps.web.stopGraceMs");
+		},
+	);
+	it("rejects extra ports that overlap another port or belong to a worker", () => {
+		const errors = validateConfig({
+			...config(),
+			apps: {
+				web: { port: 3000, devCommand: "next dev" },
+				emulators: { port: 4000, extraPorts: [9099, 5432], devCommand: "x" },
+				jobs: { kind: "worker", extraPorts: [9300], devCommand: "x" },
+			},
+		}).join("\n");
+		expect(errors).toContain(
+			"apps.emulators.extraPorts[1] duplicates port 5432 used by",
+		);
+		expect(errors).toContain('Worker "jobs" cannot set extraPorts');
+		expect(errors).not.toContain("9099");
+	});
 	it("validates primary-app references even with no apps", () => {
 		expect(
 			validateConfig({

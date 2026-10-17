@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readProcessIdentityAsync } from "../../core/process-identity";
 import { loadRuns, publishRun, type RunEntry } from "../../core/run-registry";
-import { handleStop } from "./stop";
+import { handleStop, runStopGraceMs } from "./stop";
 
 /**
  * `HOME` is a temporary directory and the only runtime is a fake `docker`
@@ -164,5 +164,19 @@ describe("buncargo stop --all", () => {
 
 	it("reports nothing to stop when the checkout has no run at all", async () => {
 		expect(await handleStop(["--all", "--root", root])).toBe(2);
+	});
+});
+
+describe("runStopGraceMs", () => {
+	it("gives a run its own teardown time on top of its slowest app", () => {
+		expect(runStopGraceMs({ apps: [] })).toBe(5000);
+		expect(
+			runStopGraceMs({
+				apps: [
+					{ name: "web", status: "ready" },
+					{ name: "firebase", status: "ready", stopGraceMs: 60_000 },
+				],
+			}),
+		).toBe(65_000);
 	});
 });

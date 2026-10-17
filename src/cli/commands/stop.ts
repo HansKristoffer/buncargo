@@ -8,6 +8,7 @@ import { runStackDowns } from "../../container-runtime/sweep";
 import { findMonorepoRoot } from "../../core/ports";
 import { killPortOwner } from "../../core/process";
 import {
+	DEFAULT_STOP_GRACE_MS,
 	ProcessIdentityUnreadable,
 	terminateProcessGroup,
 } from "../../core/process/terminate";
@@ -184,6 +185,7 @@ async function stopApp(app: RunAppEntry, force: boolean): Promise<number> {
 			`${app.name}'s process`,
 			app.pid,
 			app.processIdentity,
+			app.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
 		));
 	if (stopped === "refused") return STOP_EXIT.refused;
 	if (!stopped) {
@@ -198,6 +200,20 @@ async function stopApp(app: RunAppEntry, force: boolean): Promise<number> {
 }
 
 /**
+ * How long a whole run gets before its `dev` process is killed.
+ *
+ * That process stops its apps itself, each with its own `stopGraceMs`, so it
+ * needs the longest of them on top of its own teardown. Killing it sooner
+ * leaves an app that is still saving data with no one to finish stopping it.
+ */
+export function runStopGraceMs(run: Pick<RunEntry, "apps">): number {
+	return (
+		DEFAULT_STOP_GRACE_MS +
+		Math.max(0, ...run.apps.map((app) => app.stopGraceMs ?? 0))
+	);
+}
+
+/**
  * {@link terminateProcessGroup}, refusing when the process's identity cannot
  * be read: it may still run, so it is neither reported stopped nor gone.
  */
@@ -205,9 +221,10 @@ async function terminateUnlessUnreadable(
 	what: string,
 	pid: number,
 	identity: string,
+	graceMs: number,
 ): Promise<boolean | "refused"> {
 	try {
-		return await terminateProcessGroup(pid, identity);
+		return await terminateProcessGroup(pid, identity, graceMs);
 	} catch (error) {
 		if (!(error instanceof ProcessIdentityUnreadable)) throw error;
 		log.error(`${what}: ${error.message}.`);
@@ -247,7 +264,10 @@ async function stopReusedApp(
 		log.error(`Stop ${app.name} from its owning run or use dev --takeover.`);
 		return STOP_EXIT.refused;
 	}
-	const released = await killPortOwner(app.port, { verbose: false });
+	const released = await killPortOwner(app.port, {
+		verbose: false,
+		timeout: app.stopGraceMs,
+	});
 	if (!released) {
 		log.error(`Could not free port ${app.port} for ${app.name}.`);
 		return STOP_EXIT.refused;
@@ -366,6 +386,7 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 			`${run.projectName}'s run process`,
 			run.pid,
 			run.processIdentity,
+			runStopGraceMs(run),
 		));
 	if (stopped === "refused") return STOP_EXIT.refused;
 	if (!stopped) {

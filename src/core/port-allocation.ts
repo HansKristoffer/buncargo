@@ -107,6 +107,34 @@ export function buildPortMap(
 	return ports;
 }
 
+/**
+ * Each app's `extraPorts`, moved with the app's own port, keyed
+ * `<app>#<index>`: they are claimed and probed with the block, but are no
+ * port of the config's, so they never reach the env or the lockfile.
+ */
+export function extraPortMap(
+	apps: Record<string, AppConfig> | undefined,
+	ports: Record<string, number>,
+	basePorts: Record<string, number>,
+): Record<string, number> {
+	return Object.fromEntries(
+		Object.entries(apps ?? {}).flatMap(([name, app]) => {
+			const port = ports[name];
+			const base = basePorts[name];
+			if (port === undefined || base === undefined) return [];
+			return (app.extraPorts ?? []).map((extra, index) => [
+				`${name}#${index}`,
+				extra + port - base,
+			]);
+		}),
+	);
+}
+
+/** The app or service an entry of the port map (or {@link extraPortMap}) belongs to. */
+function portOwnerName(key: string): string {
+	return key.split("#")[0] ?? key;
+}
+
 /** Ports an allocation can inspect, for one scoped asynchronous cwd reading. */
 export function candidateAllocationPorts(
 	input: Pick<
@@ -129,8 +157,12 @@ export function candidateAllocationPorts(
 			(_, index) => baseOffset + index * PORT_OFFSET_STEP,
 		),
 	]);
-	return Object.entries(buildPortMap(input.services, input.apps))
-		.filter(([name]) => !input.probeNames || input.probeNames.includes(name))
+	const base = buildPortMap(input.services, input.apps);
+	return Object.entries({ ...base, ...extraPortMap(input.apps, base, base) })
+		.filter(
+			([name]) =>
+				!input.probeNames || input.probeNames.includes(portOwnerName(name)),
+		)
 		.flatMap(([, base]) => [...offsets].map((offset) => base + offset))
 		.filter((port) => port > 0 && port <= 65535);
 }
@@ -417,6 +449,10 @@ function planPorts(
 		getOwner: lookupOwner,
 	} = input;
 	const runtimeName = runtime?.name;
+	const withExtras = (ports: Record<string, number>) => ({
+		...ports,
+		...extraPortMap(input.apps, ports, basePorts),
+	});
 
 	// Claims of checkouts that still exist. A claiming run reads them before
 	// anything else, so a project name another checkout uses stops it before
@@ -433,7 +469,7 @@ function planPorts(
 	const envOffset = portOffsetOverride();
 	if (envOffset !== undefined) {
 		const ports = shiftPorts(basePorts, envOffset);
-		for (const [name, port] of Object.entries(ports))
+		for (const [name, port] of Object.entries(withExtras(ports)))
 			if (!Number.isInteger(port) || port < 1 || port > 65535)
 				throw new Error(
 					`Effective port for ${name} is ${port}; BUNCARGO_PORT_OFFSET must keep every port in 1..65535.`,
@@ -449,7 +485,7 @@ function planPorts(
 		input.probeNames
 			? Object.fromEntries(
 					Object.entries(ports).filter(([name]) =>
-						input.probeNames?.includes(name),
+						input.probeNames?.includes(portOwnerName(name)),
 					),
 				)
 			: ports;
@@ -465,7 +501,7 @@ function planPorts(
 				ownLockfile.ports[name] ?? base + ownLockfile.offset,
 			]),
 		);
-		if (Object.values(ports).some((port) => port > 65535))
+		if (Object.values(withExtras(ports)).some((port) => port > 65535))
 			throw new Error(
 				"Persisted offset cannot accommodate this config; run dev to reconcile the allocation.",
 			);
@@ -477,13 +513,13 @@ function planPorts(
 	const claimKey = offsetClaimKey(root, suffix);
 	const claims = claimsWithLockfilePorts(existingClaims ?? readOffsetClaims());
 	const blockPorts = (ports: Record<string, number>) => [
-		...Object.values(ports),
+		...Object.values(withExtras(ports)),
 		...(input.companionPorts?.(ports) ?? []),
 	];
 	const claimant = (offset: number, ports: Record<string, number>) =>
 		offsetClaimConflict(claims, { offset, ports: blockPorts(ports) }, claimKey);
 	const conflictAt = (ports: Record<string, number>) =>
-		findForeignConflict(probed(ports), {
+		findForeignConflict(probed(withExtras(ports)), {
 			root,
 			projectName,
 			runtime: runtimeName,
@@ -540,7 +576,7 @@ function planPorts(
 				claimed,
 				"Start the full environment to move this checkout's shared port block.",
 			);
-		else if (Object.values(ports).some((port) => port > 65535))
+		else if (Object.values(withExtras(ports)).some((port) => port > 65535))
 			ignored = `offset ${ownLockfile.offset} puts a port above 65535`;
 		else {
 			const conflict = conflictAt(ports);
@@ -578,7 +614,7 @@ function planPorts(
 		offset: number,
 		ports: Record<string, number>,
 	): string | undefined => {
-		if (Object.values(ports).some((port) => port > 65535))
+		if (Object.values(withExtras(ports)).some((port) => port > 65535))
 			return `offset ${offset} puts a port above 65535`;
 		const claimed = claimant(offset, ports);
 		if (claimed) return claimed;
@@ -656,8 +692,16 @@ export function pinOffset(input: {
 }): PinResult {
 	const { root, projectName, offset, runtime } = input;
 	const ports = buildPortMap(input.services, input.apps, offset);
+	const extras = extraPortMap(
+		input.apps,
+		ports,
+		buildPortMap(input.services, input.apps),
+	);
 	const companions = input.companionPorts?.(ports) ?? [];
-	const block = { offset, ports: [...Object.values(ports), ...companions] };
+	const block = {
+		offset,
+		ports: [...Object.values(ports), ...Object.values(extras), ...companions],
+	};
 	// A claim under a name another checkout holds would only make the next
 	// run refuse, after the lockfile had moved.
 	const claimedBy = (): PinResult | undefined => {
@@ -679,7 +723,7 @@ export function pinOffset(input: {
 
 	const claimed = claimedBy();
 	if (claimed) return claimed;
-	for (const port of Object.values(ports)) {
+	for (const port of [...Object.values(ports), ...Object.values(extras)]) {
 		if (port > 65535)
 			return {
 				refused: `Offset ${offset} puts port ${port} above 65535.`,

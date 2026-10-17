@@ -138,6 +138,9 @@ async function signalUntilGone(
 		throw new Error(`Process group ${child.pid} did not exit after SIGKILL`);
 }
 
+/** How long a process gets after SIGTERM before SIGKILL, unless it sets `stopGraceMs`. */
+export const DEFAULT_STOP_GRACE_MS = 5000;
+
 /**
  * Only for children spawned detached by this invocation, never reused ports.
  *
@@ -147,7 +150,7 @@ async function signalUntilGone(
  */
 export async function terminateOwnedProcess(
 	child: AppChild | DetachedApp,
-	graceMs = 5000,
+	graceMs = DEFAULT_STOP_GRACE_MS,
 	initialSignal: NodeJS.Signals = "SIGTERM",
 ): Promise<void> {
 	try {
@@ -181,7 +184,7 @@ export async function terminateOwnedProcess(
 export async function terminateProcessGroup(
 	pid: number,
 	identity: string,
-	graceMs = 5000,
+	graceMs = DEFAULT_STOP_GRACE_MS,
 ): Promise<boolean> {
 	const check = await checkProcessIdentityAsync(pid, identity);
 	if (check === "unreadable")

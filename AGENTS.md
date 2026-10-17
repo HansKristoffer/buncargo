@@ -89,8 +89,8 @@ others. Before calling work done, walk this list and say which entries applied:
   depend on.
 - **Reverse states.** A way in needs a way out and a way to see it: claim/release/stop,
   setup/uninstall, takeover/reuse. A one-way door is a bug.
-- **Integrations.** Expo, Shopify and Supabase reach core only through `BuncargoIntegration`
-  hooks. A core change that assumes one of them goes through those hooks instead.
+- **Integrations.** Expo, Shopify, Supabase and Firebase reach core only through
+  `BuncargoIntegration` hooks. A core change that assumes one of them goes through those hooks instead.
 - **Docs.** `readme.md` and `docs/reference.md` for usage, `docs/migration.md` for a breaking
   change, and the [documentation rules](#documentation) for anything else.
 
@@ -111,7 +111,7 @@ them that the code alone does not explain.
 - Infisical secrets: `docs/internals/secrets.md`
 - `options.checkoutFiles`, the file store, `buncargo files` (a contract shared with agentgate):
   `docs/internals/checkout-files.md`
-- Expo, Shopify, Supabase, stacks: `docs/internals/integrations.md`
+- Expo, Shopify, Supabase, Firebase, stacks: `docs/internals/integrations.md`
 - State paths, file locks, persisted files, `runtime-flags.ts`, prompts: `docs/internals/core.md`
 - frp sharing: `docs/internals/connect.md`
 
@@ -210,8 +210,8 @@ All library source is under `src/`; tests sit beside the module they test.
   allocation, locks and state files.
 - `loader/`: config discovery and loading. `typecheck/`: the workspace typecheck pool. `prisma/`:
   Prisma integration. `types/`: the type surface (`all-types.ts`, `index.ts`).
-- `expo/`, `shopify/`, `supabase/`: integrations, published as subpaths.
-- `vite/`, `client/`, `runtime/`: small entry points loaded inside users' apps; keep their import
+- `expo/`, `shopify/`, `supabase/`, `firebase/`: integrations, published as subpaths.
+- `vite/`, `next/`, `client/`, `runtime/`: small entry points loaded inside users' apps; keep their import
   graphs tiny.
 - `menubar/` (Swift), `server/` (the connect relay), `example/` (configs and the playground),
   `scripts/` (CI, benchmarks, package verification).

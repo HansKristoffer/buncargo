@@ -1,6 +1,6 @@
 # Writing an integration
 
-An integration packages what one kind of project needs, so the project's `dev.config.ts` stays short. `buncargo/shopify`, `buncargo/expo` and `buncargo/supabase` are the reference implementations ([`src/shopify`](../src/shopify), [`src/expo`](../src/expo), [`src/supabase`](../src/supabase)).
+An integration packages what one kind of project needs, so the project's `dev.config.ts` stays short. `buncargo/shopify`, `buncargo/expo`, `buncargo/supabase` and `buncargo/firebase` are the reference implementations ([`src/shopify`](../src/shopify), [`src/expo`](../src/expo), [`src/supabase`](../src/supabase), [`src/firebase`](../src/firebase)).
 
 An integration is a plain object. A function that returns one is how options get in:
 
@@ -95,3 +95,12 @@ export function stripe(options: { app: string }): BuncargoIntegration {
 - A `supabase migration up --local` migration, first in the list; `hooks.afterContainersReady` regenerates types when the migrations changed.
 - `checks`: CLI installed, `config.toml` present and readable, Docker rather than Apple's runtime, CLI version in the tested 2.x range.
 - `describe`: Studio and the mail UI, for `buncargo open`.
+
+## The Firebase integration, as a map
+
+- `config()` reads `firebase.json` (comments allowed) and `.firebaserc` leniently, picks the emulators to start, and adds the `firebase` app: `firebase emulators:start --config firebase.buncargo.json --project <id> --only <emulators>` with `--import`/`--export-on-exit`, ready by its "All emulators ready" line, with a 60-second `stopGraceMs` so the export finishes. The app's port is the Emulator UI's (the hub's with the UI off); every other emulator port moves by the same offset. Its env builder sets the `*_EMULATOR_HOST` variables the Admin SDK reads, plus `publicEnvPrefix` copies for the web SDK.
+- `generatedFiles` writes `firebase.buncargo.json` beside `firebase.json`, with every port written out and listen hosts defaulting to `127.0.0.1`.
+- The `firebase` app lists every other emulator port as `extraPorts`, so the allocator claims and probes them with the checkout's block.
+- `appEnv` gives the `firebase` app a short temp dir of its own, and `hooks.beforeServers` creates it.
+- `checks`: CLI installed, `firebase.json` present and configuring an emulator, Java on `PATH` when a JVM emulator runs, the data directory gitignored, CLI version in the tested 13.x–15.x range.
+- `describe`: the Emulator UI.

@@ -164,6 +164,12 @@
       "import": "./dist/vite/index.js",
       "default": "./dist/vite/index.js"
     },
+    "./next": {
+      "types": "./dist/next/index.d.ts",
+      "bun": "./src/next/index.ts",
+      "import": "./dist/next/index.js",
+      "default": "./dist/next/index.js"
+    },
     "./expo": {
       "types": "./dist/expo/index.d.ts",
       "bun": "./src/expo/index.ts",
@@ -181,12 +187,18 @@
       "bun": "./src/supabase/index.ts",
       "import": "./dist/supabase/index.js",
       "default": "./dist/supabase/index.js"
+    },
+    "./firebase": {
+      "types": "./dist/firebase/index.d.ts",
+      "bun": "./src/firebase/index.ts",
+      "import": "./dist/firebase/index.js",
+      "default": "./dist/firebase/index.js"
     }
   },
   "scripts": {
     "build": "rm -rf dist && bun run build:js && bun run build:daemon && bun run build:types",
     "build:daemon": "bun build ./src/cli/hostsd.ts --outfile ./dist/hostsd.js --target bun && bun build ./src/cli/connectd.ts --outfile ./dist/connectd.js --target bun",
-    "build:js": "bun build ./src/index.ts ./src/cli/bin.ts ./src/cli/index.ts ./src/config/index.ts ./src/environment/index.ts ./src/loader/index.ts ./src/typecheck/index.ts ./src/types/index.ts ./src/core/network.ts ./src/core/ports.ts ./src/core/process/index.ts ./src/core/tunnel.ts ./src/core/utils.ts ./src/core/watchdog.ts ./src/core/watchdog-runner.ts ./src/container-runtime/index.ts ./src/apple-container/index.ts ./src/docker/index.ts ./src/docker-compose/index.ts ./src/vite/index.ts ./src/expo/index.ts ./src/shopify/index.ts ./src/supabase/index.ts ./src/client/index.ts ./src/runtime/index.ts --outdir ./dist --root ./src --target node --packages external --splitting",
+    "build:js": "bun build ./src/index.ts ./src/cli/bin.ts ./src/cli/index.ts ./src/config/index.ts ./src/environment/index.ts ./src/loader/index.ts ./src/typecheck/index.ts ./src/types/index.ts ./src/core/network.ts ./src/core/ports.ts ./src/core/process/index.ts ./src/core/tunnel.ts ./src/core/utils.ts ./src/core/watchdog.ts ./src/core/watchdog-runner.ts ./src/container-runtime/index.ts ./src/apple-container/index.ts ./src/docker/index.ts ./src/docker-compose/index.ts ./src/vite/index.ts ./src/next/index.ts ./src/expo/index.ts ./src/shopify/index.ts ./src/supabase/index.ts ./src/firebase/index.ts ./src/client/index.ts ./src/runtime/index.ts --outdir ./dist --root ./src --target node --packages external --splitting",
     "build:types": "tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build",
     "lint": "bun run typecheck && biome check src scripts example server/connect",

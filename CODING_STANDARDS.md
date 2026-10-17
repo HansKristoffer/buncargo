@@ -19,6 +19,7 @@ of these anywhere else has written a second owner: flag it and name the first.
 | The `tailscale` binary | `src/core/hosts/tailscale-cli.ts` |
 | The Tailscale Serve entries buncargo adds | `src/core/hosts/tailscale-serve.ts` |
 | buncargo's package root and version | `src/core/version.ts` |
+| Reading and extending `.gitignore` | `src/core/gitignore.ts` |
 | Whether a checkout is deleted (only `ENOENT` or `ENOTDIR` is) | `src/core/checkout-presence.ts` |
 | Who removed a stack or volume | `src/core/removal-log.ts` |
 | Exclusive leases as a run takes and explains them | `src/core/app-leases.ts` |
