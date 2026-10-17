@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
+import { connectProcessEnv } from "../child-env";
 import { abortableSleep } from "../deadline";
 import { withFileLock } from "../file-lock";
 import { inOwnUserScope } from "../process/user-scope";
 import { matchesProcessIdentity } from "../process-identity";
-import { connectProcessEnv } from "../runtime-flags";
 import { stateFilePath } from "../state-paths";
 import { installConnectBundle } from "./bundle";
 import { isCoordinatorReady, readCoordinatorState } from "./coordinator-state";

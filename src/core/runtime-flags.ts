@@ -422,12 +422,8 @@ export function connectOrigin(env: NodeJS.ProcessEnv = process.env): string {
 		throw new Error("BUNCARGO_CONNECT_URL must be an HTTPS origin.");
 	return url.origin;
 }
-export function connectProcessEnv(
-	env: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-	const { BUNCARGO_CONNECT_TOKENS: _tokens, ...rest } = env;
-	return rest;
-}
+/** Named here so `child-env.ts` can withhold it without reading `BUNCARGO_*` itself. */
+export const CONNECT_TOKENS_ENV = "BUNCARGO_CONNECT_TOKENS";
 export function frpTestsEnabled(env: NodeJS.ProcessEnv = process.env) {
 	return env.BUNCARGO_TEST_FRP === "1";
 }

@@ -3,9 +3,10 @@
  * Derived from unjs/untun (MIT), originally forked from node-cloudflared.
  */
 import { type ChildProcess, spawn } from "node:child_process";
+import { connectProcessEnv } from "../child-env";
 import { abortError } from "../deadline";
 import { terminateOwnedProcess } from "../process/terminate";
-import { connectProcessEnv, quickTunnelUrlTimeoutMs } from "../runtime-flags";
+import { quickTunnelUrlTimeoutMs } from "../runtime-flags";
 import { resolvedCloudflaredBinPath } from "./constants";
 
 /** Primary: ASCII box line from cloudflared (`|  https://…  |`). */

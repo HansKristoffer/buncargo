@@ -1,4 +1,15 @@
-import { connectProcessEnv } from "./runtime-flags";
+import { CONNECT_TOKENS_ENV } from "./runtime-flags";
+
+/**
+ * The environment of buncargo's own tools: the connect coordinator, frpc,
+ * cloudflared, infisical. Everything but the connect tokens.
+ */
+export function connectProcessEnv(
+	env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+	const { [CONNECT_TOKENS_ENV]: _tokens, ...rest } = env;
+	return rest;
+}
 
 /**
  * The environment of a process buncargo starts for the project: an app, a

@@ -3,10 +3,10 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AppConfig, SecretsScopeConfig } from "../../types";
+import { connectProcessEnv } from "../child-env";
 import { registerAbortCleanup } from "../deadline";
 import { withFileLock } from "../file-lock";
 import {
-	connectProcessEnv,
 	infisicalMachineCredentials,
 	infisicalPathOverride,
 	secretsEnvironment,

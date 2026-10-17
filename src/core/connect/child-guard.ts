@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { connectProcessEnv } from "../runtime-flags";
+import { connectProcessEnv } from "../child-env";
 
 /** EOF on the coordinator-owned stdin also handles SIGKILL for every supervised frpc process. */
 export const CHILD_GUARD = `

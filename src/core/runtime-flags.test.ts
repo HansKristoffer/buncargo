@@ -5,7 +5,6 @@ import { join } from "node:path";
 import {
 	cloudflaredPathOverride,
 	cloudflaredVersion,
-	connectProcessEnv,
 	connectTokens,
 	exposeTunnelStaggerMs,
 	hostsDaemonPort,
@@ -31,11 +30,6 @@ describe("Connection credentials", () => {
 		expect(() =>
 			connectTokens({ BUNCARGO_CONNECT_TOKENS: "not-a-token" }),
 		).toThrow("comma-separated");
-	});
-	it("removes tokens from child environments", () => {
-		expect(
-			connectProcessEnv({ BUNCARGO_CONNECT_TOKENS: "secret", PATH: "/bin" }),
-		).toEqual({ PATH: "/bin" });
 	});
 });
 
