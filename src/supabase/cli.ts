@@ -2,48 +2,34 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { childProcessEnv } from "../core/child-env";
 import { lookupOnPath } from "../core/tool-binary";
+import { isVersionInRange, parseVersion } from "../core/version";
 
 /** Versions the integration is tested against. */
-const TESTED_SUPABASE_CLI = { min: [2, 0, 0], below: [3, 0, 0] } as const;
+const TESTED_SUPABASE_CLI = { min: "2.0.0", below: "3.0.0" } as const;
+
+/** The project's own CLI first, so every checkout runs its pinned version; then `PATH`. */
+function findSupabaseBin(root: string): string | undefined {
+	const local = join(root, "node_modules", ".bin", "supabase");
+	return existsSync(local) ? local : lookupOnPath("supabase");
+}
 
 /**
- * The project's own CLI first, so every checkout runs its pinned version;
- * then `PATH`. Absolute when it can be: the path is recorded in the run
- * registry for the sweep, which runs it from a different environment.
+ * Absolute when it can be: the path is recorded in the run registry for the
+ * sweep, which runs it from a different environment.
  */
 export function resolveSupabaseBin(root: string): string {
-	const local = join(root, "node_modules", ".bin", "supabase");
-	if (existsSync(local)) return local;
-	return lookupOnPath("supabase") ?? "supabase";
+	return findSupabaseBin(root) ?? "supabase";
 }
 
 export function isSupabaseInstalled(root: string): boolean {
-	return (
-		existsSync(join(root, "node_modules", ".bin", "supabase")) ||
-		lookupOnPath("supabase") !== undefined
-	);
+	return findSupabaseBin(root) !== undefined;
 }
 
-export function parseSupabaseVersion(
-	text: string,
-): [number, number, number] | undefined {
-	const match = /(\d+)\.(\d+)\.(\d+)/.exec(text);
-	return match
-		? [Number(match[1]), Number(match[2]), Number(match[3])]
-		: undefined;
-}
-
-export function isTestedSupabaseVersion(version: readonly number[]): boolean {
-	const compare = (a: readonly number[], b: readonly number[]) => {
-		for (let index = 0; index < 3; index++) {
-			const diff = (a[index] ?? 0) - (b[index] ?? 0);
-			if (diff !== 0) return diff;
-		}
-		return 0;
-	};
-	return (
-		compare(version, TESTED_SUPABASE_CLI.min) >= 0 &&
-		compare(version, TESTED_SUPABASE_CLI.below) < 0
+export function isTestedSupabaseVersion(version: string): boolean {
+	return isVersionInRange(
+		version,
+		TESTED_SUPABASE_CLI.min,
+		TESTED_SUPABASE_CLI.below,
 	);
 }
 
@@ -58,7 +44,7 @@ export function supabaseVersion(bin: string, cwd: string): string | undefined {
 			timeout: 15_000,
 		});
 		if (result.exitCode !== 0) return undefined;
-		return parseSupabaseVersion(result.stdout.toString())?.join(".");
+		return parseVersion(result.stdout.toString());
 	} catch {
 		return undefined;
 	}

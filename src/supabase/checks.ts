@@ -4,7 +4,6 @@ import type { SetupCheck } from "../types";
 import {
 	isSupabaseInstalled,
 	isTestedSupabaseVersion,
-	parseSupabaseVersion,
 	resolveSupabaseBin,
 	supabaseVersion,
 } from "./cli";
@@ -70,9 +69,8 @@ export function supabaseChecks(state: {
 				const version = supabaseVersion(resolveSupabaseBin(root), root);
 				if (!version)
 					return { ok: false, detail: "`supabase --version` failed" };
-				const parsed = parseSupabaseVersion(version);
 				return (
-					(parsed !== undefined && isTestedSupabaseVersion(parsed)) || {
+					isTestedSupabaseVersion(version) || {
 						ok: false,
 						detail: `Supabase CLI ${version} is outside the tested 2.x range`,
 					}

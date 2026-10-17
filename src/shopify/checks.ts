@@ -10,7 +10,6 @@ import {
 	isShopifyAppLinked,
 	isShopifySessionExpired,
 	isTestedShopifyVersion,
-	parseVersion,
 	readShopifySession,
 	resolveShopifyBin,
 	shopifyAppInfo,
@@ -100,10 +99,9 @@ export function shopifyChecks(input: { config: string }): SetupCheck[] {
 			severity: "warning",
 			check: ({ root }) => {
 				const version = shopifyVersion(resolveShopifyBin(root), root);
-				const parsed = version ? parseVersion(version) : undefined;
 				return (
-					!parsed ||
-					isTestedShopifyVersion(parsed) ||
+					!version ||
+					isTestedShopifyVersion(version) ||
 					failed(`found ${version}`)
 				);
 			},

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { childProcessEnv } from "../core/child-env";
+import { isVersionInRange, parseVersion } from "../core/version";
 
 /**
  * The Shopify CLI as buncargo drives it: which binary, which version, and
@@ -9,10 +10,7 @@ import { childProcessEnv } from "../core/child-env";
  */
 
 /** Versions the integration is tested against: 3.90 and newer 3.x, and 4.x. */
-const TESTED_SHOPIFY_CLI = {
-	min: [3, 90, 0],
-	below: [5, 0, 0],
-} as const;
+const TESTED_SHOPIFY_CLI = { min: "3.90.0", below: "5.0.0" } as const;
 
 /** The project's own CLI first, so every checkout runs its pinned version. */
 export function resolveShopifyBin(root: string): string {
@@ -20,27 +18,11 @@ export function resolveShopifyBin(root: string): string {
 	return existsSync(local) ? local : "shopify";
 }
 
-export function parseVersion(
-	text: string,
-): [number, number, number] | undefined {
-	const match = /(\d+)\.(\d+)\.(\d+)/.exec(text);
-	return match
-		? [Number(match[1]), Number(match[2]), Number(match[3])]
-		: undefined;
-}
-
-function compare(a: readonly number[], b: readonly number[]): number {
-	for (let index = 0; index < 3; index++) {
-		const diff = (a[index] ?? 0) - (b[index] ?? 0);
-		if (diff !== 0) return diff;
-	}
-	return 0;
-}
-
-export function isTestedShopifyVersion(version: readonly number[]): boolean {
-	return (
-		compare(version, TESTED_SHOPIFY_CLI.min) >= 0 &&
-		compare(version, TESTED_SHOPIFY_CLI.below) < 0
+export function isTestedShopifyVersion(version: string): boolean {
+	return isVersionInRange(
+		version,
+		TESTED_SHOPIFY_CLI.min,
+		TESTED_SHOPIFY_CLI.below,
 	);
 }
 
@@ -69,7 +51,7 @@ export function shopifyVersion(bin: string, cwd: string): string | undefined {
 			timeout: VERSION_TIMEOUT_MS,
 		});
 		if (result.exitCode !== 0) return undefined;
-		return parseVersion(result.stdout.toString())?.join(".");
+		return parseVersion(result.stdout.toString());
 	} catch {
 		return undefined;
 	}

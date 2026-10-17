@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runChecks } from "../cli/checks";
 import { validateConfig } from "../config";
+import { parseVersion } from "../core/version";
 import type { AnyDevEnvironment, IntegrationConfig } from "../types";
 import {
 	parseShopifyAppConfig,
@@ -21,7 +22,6 @@ import { shopifyChecks } from "./checks";
 import {
 	isShopifySessionExpired,
 	isTestedShopifyVersion,
-	parseVersion,
 	readShopifySession,
 	shopifyAppInfo,
 	shopifyLogin,
