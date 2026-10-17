@@ -10,9 +10,11 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { appendFileSync, readFileSync, unlinkSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { sweepOrphanedContainers } from "../container-runtime/sweep";
 import { FileLockTimeoutError, withFileLock } from "./file-lock";
+import { currentOsUser } from "./os-user";
 import { readCurrentProcessIdentityAsync } from "./process-identity";
 import { writeJsonDocumentSync } from "./registry-file";
 import { tailnetDirectoryEnabled } from "./runtime-flags";
@@ -37,6 +39,32 @@ function log(message: string): void {
 	} catch {
 		// ignore log write failures
 	}
+}
+
+/** The buncargo install this runner was started from, and its version. */
+function installIdentity(): { checkout: string; version: string } {
+	let dir = import.meta.dir;
+	while (true) {
+		const manifest = join(dir, "package.json");
+		if (existsSync(manifest)) {
+			try {
+				const pkg = JSON.parse(readFileSync(manifest, "utf8"));
+				if (pkg.name === "buncargo")
+					return { checkout: dir, version: String(pkg.version) };
+			} catch {
+				// Not readable: keep walking up.
+			}
+		}
+		const parent = dirname(dir);
+		if (parent === dir)
+			return { checkout: import.meta.dir, version: "unknown" };
+		dir = parent;
+	}
+}
+
+function watchdogIdentity(): string {
+	const { checkout, version } = installIdentity();
+	return `watchdog v${version} pid ${process.pid} user ${currentOsUser() || "unknown"} checkout ${checkout}`;
 }
 
 function cleanup(): void {
@@ -65,6 +93,7 @@ function watch(): Promise<void> {
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		log,
 		intervalMs: WATCHDOG_POLL_INTERVAL_MS,
+		identity: watchdogIdentity(),
 	});
 }
 

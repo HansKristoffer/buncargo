@@ -31,6 +31,7 @@ async function loop(script: Array<SweepResult | string>): Promise<string[]> {
 		sleep: async () => {},
 		log: (message) => logs.push(message),
 		intervalMs: 0,
+		identity: "watchdog v1.0.0 pid 42 user dev checkout /opt/buncargo",
 	});
 	return logs;
 }
@@ -68,7 +69,7 @@ describe("runWatchdogLoop", () => {
 			pass({ containers: 0, liveRuns: 0, swept: [stopped] }),
 		]);
 		expect(logs).toEqual([
-			"Removed demo (/repo): released 200s ago",
+			"Removed demo on supabase (root /repo): released 200s ago [watchdog v1.0.0 pid 42 user dev checkout /opt/buncargo]",
 			"Nothing left to watch; exiting",
 		]);
 	});
@@ -106,7 +107,7 @@ describe("runWatchdogLoop", () => {
 			pass({ containers: 0, liveRuns: 0 }),
 		]);
 		expect(logs).toEqual([
-			"Removed demo (/repo): checkout deleted",
+			"Removed demo on docker (root /repo): checkout deleted [watchdog v1.0.0 pid 42 user dev checkout /opt/buncargo]",
 			"Nothing left to watch; exiting",
 		]);
 	});
