@@ -153,8 +153,9 @@ async function stopApp(app: RunAppEntry, force: boolean): Promise<number> {
 		!(await terminateProcessGroup(app.pid, app.processIdentity))
 	) {
 		log.error(
-			`${app.name}'s recorded process identity no longer matches. Refresh the run before stopping it.`,
+			`${app.name}'s process (pid ${app.pid}) has exited or was replaced; nothing was signalled.`,
 		);
+		log.hint("Run `buncargo runs` to see the current run.");
 		return STOP_EXIT.refused;
 	}
 	log.done(`Stopped ${app.name}`);
@@ -308,8 +309,9 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 		!(await terminateProcessGroup(run.pid, run.processIdentity))
 	) {
 		log.error(
-			"The recorded run process identity no longer matches. Refresh the run before stopping it.",
+			`${run.projectName}'s run process (pid ${run.pid}) has exited or was replaced; nothing was signalled.`,
 		);
+		log.hint("Run `buncargo runs` to see what is active.");
 		return STOP_EXIT.refused;
 	}
 	return withProjectLifecycleLock(run.projectName, run.root, async () => {
