@@ -1,17 +1,14 @@
 import type { AnyDevEnvironment } from "../types";
 
 let cachedEnv: AnyDevEnvironment | null = null;
-let cachedRuntimeSelection: string | undefined;
 const environments = new Map<string, AnyDevEnvironment>();
 
 /** getDevEnv() retains its historical meaning: the most recently loaded env. */
 export function setCachedDevEnv(
 	env: AnyDevEnvironment,
-	runtimeSelection?: string,
 	identity?: string,
 ): void {
 	cachedEnv = env;
-	cachedRuntimeSelection = runtimeSelection;
 	if (identity !== undefined) {
 		environments.delete(identity);
 		environments.set(identity, env);
@@ -29,14 +26,8 @@ export function getCachedDevEnv(identity?: string): AnyDevEnvironment | null {
 		: (environments.get(identity) ?? null);
 }
 
-/** The explicit runtime selection the most recently loaded environment used. */
-export function getCachedRuntimeSelection(): string | undefined {
-	return cachedRuntimeSelection;
-}
-
 export function clearDevEnvCache(): void {
 	cachedEnv = null;
-	cachedRuntimeSelection = undefined;
 	environments.clear();
 }
 

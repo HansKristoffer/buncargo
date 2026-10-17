@@ -92,7 +92,7 @@ export async function loadDevEnv<
 	) {
 		const cached = getCachedDevEnv(identity);
 		if (cached) {
-			setCachedDevEnv(cached, requested);
+			setCachedDevEnv(cached);
 			return cached as DevEnvironmentFor<TConfig>;
 		}
 	}
@@ -135,7 +135,7 @@ export async function loadDevEnv<
 	) {
 		const cached = getCachedDevEnv(identity);
 		if (cached) {
-			setCachedDevEnv(cached, requested);
+			setCachedDevEnv(cached);
 			return cached as DevEnvironmentFor<TConfig>;
 		}
 	}
@@ -163,6 +163,6 @@ export async function loadDevEnv<
 		{ containerRuntime: requested, root, readOnly: options?.readOnly },
 	);
 	if (isCurrentRevision)
-		setCachedDevEnv(env, requested, options?.fresh ? undefined : identity);
+		setCachedDevEnv(env, options?.fresh ? undefined : identity);
 	return env as DevEnvironmentFor<TConfig>;
 }
