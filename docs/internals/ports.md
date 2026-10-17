@@ -25,7 +25,8 @@ per port.
   optional field, so the file keeps its version and an older buncargo still reads it. A claim
   written without them takes its ports from its checkout's lockfile (when the offsets match) until
   that checkout's next run rewrites it; holding the offset alone let a newcomer take an
-  overlapping block and moved the incumbent on its next run. A suffixed
+  overlapping block and moved the incumbent on its next run. `doctor` and `ports` report
+  overlapping claims by the same rule and the same lockfile reading. A suffixed
   environment claims without persisting a lockfile, under `offsetClaimKey(root, suffix)` with
   `root` and `suffix` stored in the claim (the key is never parsed), so it never replaces its
   checkout's dev claim; its claim is also the record its next run takes the offset back from.

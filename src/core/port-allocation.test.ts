@@ -12,7 +12,9 @@ import type { ContainerRuntimeAdapter } from "../container-runtime/types";
 import type { AppConfig, ServiceConfig } from "../types";
 import {
 	claimOffset,
+	describeOffsetClaimOverlap,
 	offsetClaimKey,
+	overlappingOffsetClaims,
 	readOffsetClaims,
 	sharedProjectNameClaims,
 	withOffsetClaimsLock,
@@ -22,6 +24,7 @@ import {
 	computeBaseOffset,
 	PORT_OFFSET_STEP,
 	pinOffset,
+	readOffsetClaimsWithPorts,
 	readPortsLockfile,
 	resolvePortPlan,
 	writePortsLockfile,
@@ -627,6 +630,79 @@ describe("offset claims", () => {
 			rmSync(main, { recursive: true, force: true });
 			rmSync(worktree, { recursive: true, force: true });
 		}
+	});
+
+	it("reports claims whose blocks overlap through different offsets, and a port-less claim by its lockfile", async () => {
+		const api = mkdtempSync(join(tmpdir(), "buncargo-overlap-api-"));
+		const admin = mkdtempSync(join(tmpdir(), "buncargo-overlap-admin-"));
+		const older = mkdtempSync(join(tmpdir(), "buncargo-overlap-older-"));
+		const apart = mkdtempSync(join(tmpdir(), "buncargo-overlap-apart-"));
+		try {
+			withOffsetClaimsLock(() => {
+				// api 3000 at 1100 and admin 4000 at 100 are both 4100.
+				claimOffset({
+					root: api,
+					offset: 1100,
+					ports: [4100, 6532],
+					projectName: "lullu-api",
+				});
+				claimOffset({
+					root: admin,
+					offset: 100,
+					ports: [4100],
+					projectName: "lullu-admin",
+				});
+				claimOffset({
+					root: apart,
+					offset: 2500,
+					ports: [7932],
+					projectName: "lullu-apart",
+				});
+			});
+			// Claimed before claims recorded ports; its lockfile has them.
+			const claims = JSON.parse(
+				await Bun.file(join(home, ".buncargo/offsets.json")).text(),
+			);
+			claims.claims[older] = {
+				offset: 1200,
+				projectName: "lullu-older",
+				updatedAt: "2026-01-01T00:00:00.000Z",
+			};
+			await Bun.write(
+				join(home, ".buncargo/offsets.json"),
+				JSON.stringify(claims),
+			);
+			writePortsLockfile(older, {
+				version: 1,
+				projectName: "lullu-older",
+				root: older,
+				offset: 1200,
+				ports: { postgres: 6532 },
+				provenance: "hash",
+			});
+
+			expect(
+				overlappingOffsetClaims(readOffsetClaimsWithPorts()).map(
+					describeOffsetClaimOverlap,
+				),
+			).toEqual([
+				`${api} (offset 1100) and ${admin} (offset 100) both claim port 4100`,
+				`${api} (offset 1100) and ${older} (offset 1200) both claim port 6532`,
+			]);
+		} finally {
+			for (const root of [api, admin, older, apart])
+				rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("reports two claims on one offset even when neither recorded its ports", () => {
+		expect(
+			overlappingOffsetClaims({
+				"/a": { offset: 300, projectName: "a", updatedAt: "" },
+				"/b": { offset: 300, projectName: "b", updatedAt: "" },
+				"/c": { offset: 400, projectName: "c", updatedAt: "" },
+			}).map(describeOffsetClaimOverlap),
+		).toEqual(["/a and /b both claim offset 300"]);
 	});
 
 	it("lists the project names more than one existing checkout claims", () => {

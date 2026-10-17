@@ -210,6 +210,15 @@ export function writePortsLockfile(root: string, lockfile: PortLockfile): void {
 }
 
 /**
+ * The claims of existing checkouts as allocation weighs them: a port-less
+ * claim holds the ports its checkout's lockfile records. What `doctor` and
+ * `buncargo ports` report overlaps from.
+ */
+export function readOffsetClaimsWithPorts(): Record<string, OffsetClaim> {
+	return claimsWithLockfilePorts(readOffsetClaims());
+}
+
+/**
  * The claims, with a port-less claim's ports read from its checkout's lockfile.
  *
  * A claim written before claims carried their ports holds only its offset, so

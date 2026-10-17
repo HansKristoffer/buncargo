@@ -758,8 +758,8 @@ together with the ports of the block, so two projects whose ports differ never
 end up sharing one through different offsets. A checkout keeps its offset
 whether or not it is running, and the claim goes when its directory does. Without claims, two worktrees whose names hash to the
 same offset only collided while both ran, so which got which ports depended on
-which started first. `buncargo ports` lists the claims, and `doctor` reports an
-offset two checkouts claim.
+which started first. `buncargo ports` lists the claims, and it and `doctor` report
+two claims whose blocks overlap, naming both checkouts and the ports they share.
 
 A suffixed environment (`withSuffix()`, `buncargo ci`, an E2E stack) claims its
 own offset next to its checkout's dev claim, and takes it back on its next run.

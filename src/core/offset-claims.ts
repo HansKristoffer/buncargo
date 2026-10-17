@@ -145,7 +145,7 @@ export function offsetClaimConflict(
 		const holder = offsetClaimHolder(other, claim);
 		if (claim.offset === block.offset)
 			return `offset ${block.offset} is claimed by ${holder}`;
-		const shared = block.ports.find((port) => claim.ports?.includes(port));
+		const [shared] = sharedPorts(block, claim);
 		if (shared !== undefined)
 			return `port ${shared} is in the block ${holder} claims (offset ${claim.offset})`;
 	}
@@ -222,17 +222,56 @@ export function withOffsetClaimsLock<T>(operation: () => T): T {
 	return withFileLockSync(getOffsetClaimsPath(), operation);
 }
 
-/** Offsets more than one existing claim holds, e.g. a pre-lock race. */
-export function duplicateOffsetClaims(
+/** Two claims whose blocks collide, and the ports they share (none known when only their offsets are equal). */
+export interface OffsetClaimOverlap {
+	holders: [string, string];
+	offsets: [number, number];
+	ports: number[];
+}
+
+/**
+ * Pairs of claims that collide by the rule {@link offsetClaimConflict}
+ * allocates by: the same offset, or a shared port. A pre-lock race, a copied
+ * lockfile or two configs whose ports meet through different offsets.
+ */
+export function overlappingOffsetClaims(
 	claims: Record<string, OffsetClaim>,
-): Map<number, string[]> {
-	const byOffset = new Map<number, string[]>();
-	for (const [key, claim] of Object.entries(claims))
-		byOffset.set(claim.offset, [
-			...(byOffset.get(claim.offset) ?? []),
-			offsetClaimHolder(key, claim),
-		]);
-	return new Map([...byOffset].filter(([, roots]) => roots.length > 1));
+): OffsetClaimOverlap[] {
+	const entries = Object.entries(claims);
+	return entries.flatMap(([key, claim], index) =>
+		entries.slice(index + 1).flatMap(([otherKey, other]) => {
+			const ports = sharedPorts(claim, other);
+			if (claim.offset !== other.offset && ports.length === 0) return [];
+			return [
+				{
+					holders: [
+						offsetClaimHolder(key, claim),
+						offsetClaimHolder(otherKey, other),
+					],
+					offsets: [claim.offset, other.offset],
+					ports,
+				} satisfies OffsetClaimOverlap,
+			];
+		}),
+	);
+}
+
+/** One overlap as a sentence, naming both checkouts and what they share. */
+export function describeOffsetClaimOverlap(
+	overlap: OffsetClaimOverlap,
+): string {
+	const [a, b] = overlap.holders;
+	const shared = `port${overlap.ports.length === 1 ? "" : "s"} ${overlap.ports.join(", ")}`;
+	if (overlap.offsets[0] === overlap.offsets[1])
+		return `${a} and ${b} both claim offset ${overlap.offsets[0]}${overlap.ports.length > 0 ? ` (${shared})` : ""}`;
+	return `${a} (offset ${overlap.offsets[0]}) and ${b} (offset ${overlap.offsets[1]}) both claim ${shared}`;
+}
+
+function sharedPorts(
+	a: { ports?: readonly number[] },
+	b: { ports?: readonly number[] },
+): number[] {
+	return (a.ports ?? []).filter((port) => b.ports?.includes(port));
 }
 
 /** Project names claimed by more than one existing checkout, with their holders. */

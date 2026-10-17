@@ -1,10 +1,14 @@
 import { containerRuntimeForEnv } from "../../container-runtime";
 import {
-	duplicateOffsetClaims,
+	describeOffsetClaimOverlap,
 	offsetClaimHolder,
-	readOffsetClaims,
+	overlappingOffsetClaims,
 } from "../../core/offset-claims";
-import { PORT_OFFSET_STEP, pinOffset } from "../../core/port-allocation";
+import {
+	PORT_OFFSET_STEP,
+	pinOffset,
+	readOffsetClaimsWithPorts,
+} from "../../core/port-allocation";
 import { getPortOwner, withBindProbe } from "../../core/process";
 import { findRunsByRoot } from "../../core/run-registry";
 import { loadDevEnv } from "../../loader";
@@ -85,7 +89,7 @@ export async function handlePorts(args: string[]): Promise<number> {
 	const env = await loadDevEnv({ readOnly: true });
 
 	if (subcommand === undefined) {
-		const claims = readOffsetClaims();
+		const claims = readOffsetClaimsWithPorts();
 		log.line(
 			`${env.projectName}: offset ${env.portOffset} (${env.portOffsetProvenance})`,
 		);
@@ -95,13 +99,21 @@ export async function handlePorts(args: string[]): Promise<number> {
 			log.line(`  ${name}: ${port}`);
 		log.line();
 		log.line("Offsets claimed on this machine:");
-		const duplicates = duplicateOffsetClaims(claims);
 		for (const [key, claim] of Object.entries(claims).sort(
 			([, a], [, b]) => a.offset - b.offset,
 		))
 			log.line(
-				`  ${String(claim.offset).padStart(5)}  ${offsetClaimHolder(key, claim)}${duplicates.has(claim.offset) ? "  (claimed twice)" : ""}`,
+				`  ${String(claim.offset).padStart(5)}  ${offsetClaimHolder(key, claim)}`,
 			);
+		const overlaps = overlappingOffsetClaims(claims);
+		if (overlaps.length > 0) {
+			log.line();
+			log.line(
+				"Overlapping claims (`buncargo ports pin <offset>` in one of them moves it):",
+			);
+			for (const overlap of overlaps)
+				log.line(`  ${describeOffsetClaimOverlap(overlap)}`);
+		}
 		return 0;
 	}
 

@@ -25,13 +25,14 @@ import {
 	readInstalledBarInfo,
 } from "../../../core/menubar";
 import {
-	duplicateOffsetClaims,
-	readOffsetClaims,
+	describeOffsetClaimOverlap,
+	overlappingOffsetClaims,
 	sharedProjectNameClaims,
 } from "../../../core/offset-claims";
 import {
 	foreignLockfile,
 	getPortsLockfilePath,
+	readOffsetClaimsWithPorts,
 	readPortsLockfile,
 } from "../../../core/port-allocation";
 import {
@@ -189,12 +190,12 @@ function checkPortsLockfile(report: DoctorReport, env: DevEnv): void {
 	report.note(`ports.json offset ${lockfile.offset} looks consistent`);
 }
 
-/** Two checkouts on one offset collide whenever both run (a lost race, a copied lockfile). */
+/** Two checkouts whose blocks overlap collide whenever both run (a lost race, a copied lockfile). */
 function checkOffsetClaims(report: DoctorReport): void {
-	const claims = readOffsetClaims();
-	for (const [offset, holders] of duplicateOffsetClaims(claims))
+	const claims = readOffsetClaimsWithPorts();
+	for (const overlap of overlappingOffsetClaims(claims))
 		report.issue(
-			`Offset ${offset} is claimed by ${holders.join(" and ")}. Move one: \`buncargo ports pin <offset>\` in that checkout.`,
+			`${describeOffsetClaimOverlap(overlap)}. Move one: \`buncargo ports pin <offset>\` in that checkout.`,
 		);
 	// Claimed before runs refused a shared name: they share one database.
 	for (const [projectName, holders] of sharedProjectNameClaims(claims))
