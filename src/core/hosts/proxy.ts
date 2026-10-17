@@ -18,8 +18,8 @@ export const HEALTH_PATH = "/_buncargo/health";
  */
 export interface ProxyRoutesView {
 	hostnames: string[];
-	/** Epoch ms of the last successful refresh, if the owner tracks one. */
-	lastReloadAt?: number;
+	/** Epoch ms of the last successful refresh. */
+	lastReloadAt: number;
 }
 
 const LOOP_MESSAGE =
@@ -119,8 +119,7 @@ export function createProxyFetch(input: {
 	 * whose scheduling stopped, and a watchdog on the same timers would stop
 	 * with it. Serving a request is the one thing still known to work.
 	 */
-	function reloadAgeMs(view: ProxyRoutesView): number | undefined {
-		if (view.lastReloadAt === undefined) return undefined;
+	function reloadAgeMs(view: ProxyRoutesView): number {
 		const age = now() - view.lastReloadAt;
 		if (staleAfterMs !== undefined && age > staleAfterMs) {
 			onStale?.(age);
@@ -155,9 +154,7 @@ export function createProxyFetch(input: {
 		if (port === undefined) {
 			const hint = closestHostname(hostname, view.hostnames);
 			const stale =
-				staleAfterMs !== undefined &&
-				ageMs !== undefined &&
-				ageMs > staleAfterMs
+				staleAfterMs !== undefined && ageMs > staleAfterMs
 					? `The route map has not refreshed in ${Math.round(ageMs / 1000)}s, so this may be stale. Run \`buncargo hosts install\`.\n`
 					: "";
 			const message = hint
@@ -528,15 +525,21 @@ function isProxyHealthBody(value: unknown): boolean {
 	return typeof body.routes === "number" || body.redirect === true;
 }
 
-export interface ProxyHealth {
-	routeCount: number;
-	/**
-	 * Hostnames the proxy is serving, or `undefined` from a daemon predating
-	 * the field. Absent is "cannot tell", never "serves nothing".
-	 */
-	hostnames?: string[];
-	lastReloadAt?: number;
-}
+/**
+ * What a buncargo proxy says it is serving.
+ *
+ * `outdated` is a buncargo daemon that answers but predates the `hostnames`
+ * and `lastReloadAt` fields, so nothing it serves can be checked. It is not
+ * served on trust: callers tell the user to update it.
+ */
+export type ProxyHealth =
+	| {
+			outdated?: false;
+			routeCount: number;
+			hostnames: string[];
+			lastReloadAt: number;
+	  }
+	| { outdated: true };
 
 function parseProxyHealth(value: unknown): ProxyHealth | undefined {
 	if (!isProxyHealthBody(value)) return undefined;
@@ -545,15 +548,17 @@ function parseProxyHealth(value: unknown): ProxyHealth | undefined {
 		hostnames?: unknown;
 		lastReloadAt?: unknown;
 	};
+	if (
+		!Array.isArray(body.hostnames) ||
+		!body.hostnames.every((entry) => typeof entry === "string") ||
+		typeof body.lastReloadAt !== "number"
+	) {
+		return { outdated: true };
+	}
 	return {
 		routeCount: typeof body.routes === "number" ? body.routes : 0,
-		hostnames:
-			Array.isArray(body.hostnames) &&
-			body.hostnames.every((entry) => typeof entry === "string")
-				? (body.hostnames as string[])
-				: undefined,
-		lastReloadAt:
-			typeof body.lastReloadAt === "number" ? body.lastReloadAt : undefined,
+		hostnames: body.hostnames as string[],
+		lastReloadAt: body.lastReloadAt,
 	};
 }
 

@@ -1,6 +1,7 @@
 import {
 	describeLoopbackHijack,
 	loadHostRoutes,
+	OUTDATED_DAEMON_MESSAGE,
 	pruneHostRoutes,
 	RELOAD_STALL_MS,
 	readDaemonConfig,
@@ -77,8 +78,12 @@ async function printHostsStatus(): Promise<void> {
 	const health = await readHostsDaemonHealth(config.httpsPort);
 	const healthy = health !== undefined;
 	const mkcertPath = resolvedMkcertPath();
-	log.line(`daemon: ${healthy ? "healthy" : "down"}`);
-	if (health?.lastReloadAt !== undefined) {
+	log.line(
+		`daemon: ${!health ? "down" : health.outdated ? "outdated" : "healthy"}`,
+	);
+	if (health?.outdated) {
+		log.line(`  ${OUTDATED_DAEMON_MESSAGE}`);
+	} else if (health) {
 		const ageMs = Date.now() - health.lastReloadAt;
 		const stale = ageMs > RELOAD_STALL_MS ? "  (stale)" : "";
 		log.line(`  refreshed: ${Math.round(ageMs / 1000)}s ago${stale}`);
@@ -118,7 +123,8 @@ async function printHostsStatus(): Promise<void> {
 	// Marked per route rather than summarized: the registry and the daemon
 	// disagreeing is invisible from either side alone, and it is the difference
 	// between a working named URL and a 404 from our own proxy.
-	const served = health?.hostnames ? new Set(health.hostnames) : undefined;
+	const served =
+		health && !health.outdated ? new Set(health.hostnames) : undefined;
 	for (const route of routes) {
 		const owner = route.pid === undefined ? "static" : `pid ${route.pid}`;
 		const unserved =

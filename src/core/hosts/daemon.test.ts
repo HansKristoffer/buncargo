@@ -762,26 +762,27 @@ describe("waitForDaemonRoutes", () => {
 		});
 	});
 
-	// A daemon predating the field cannot be checked, and reporting that as a
-	// failure would downgrade every URL on a machine whose service is merely
-	// due an upgrade — which `describeStaleHostsService` already reports.
-	it("proceeds against a daemon that does not report hostnames", async () => {
+	// A daemon predating the health fields cannot prove what it serves. It is
+	// not served on trust: the run falls back and says how to update it.
+	it("tells the user to update a daemon that does not report hostnames", async () => {
 		const home = mkdtempSync(join(tmpdir(), "buncargo-daemon-test-"));
 		dirs.push(home);
 		process.env.HOME = home;
 
-		const legacy = Bun.serve({
+		const outdated = Bun.serve({
 			hostname: "127.0.0.1",
 			port: 0,
 			fetch: () => Response.json({ ok: true, routes: 0 }),
 		});
-		const port = legacy.port ?? 0;
-		servers.push({ httpsPort: port, stop: () => legacy.stop(true) });
+		const port = outdated.port ?? 0;
+		servers.push({ httpsPort: port, stop: () => outdated.stop(true) });
 		writeDaemonConfig({ httpsPort: port, httpPort: 0, tls: false });
 
 		expect(await waitForDaemonRoutes(["web.demo.localhost"])).toEqual({
-			ok: true,
-			unverifiable: true,
+			ok: false,
+			reason: expect.stringContaining(
+				"Run `buncargo hosts install` to update it.",
+			),
 		});
 	});
 });

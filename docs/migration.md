@@ -5,6 +5,7 @@ Each section lists what a consumer of `buncargo` has to change when crossing one
 ## 13.0 → 14.0
 
 - **A run refuses a Compose project name another checkout uses.** `dev`, `ci` and `start()` used to share the other checkout's containers and database silently; they now stop with an error naming both checkouts. Self-hosted CI runners whose checkouts share a directory name, which used to start on separate ports under one project, need a `projectPrefix` that differs per runner, and a `dev.config.ts` below a worktree's top level needs one that differs per worktree; [Ports and isolation](./reference.md#ports-and-isolation) shows both. Start the checkout once after changing it so its claim records the new name.
+- **A named-hosts daemon from before 12.0 is no longer used.** One that answers without reporting the hostnames it serves now leaves the run on `localhost:port` with "Run `buncargo hosts install` to update it", and `doctor` and `hosts status` report it as outdated. Run `buncargo hosts install` once on each machine that still has one.
 
 ## 12.0 → 13.0
 

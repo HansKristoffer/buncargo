@@ -40,14 +40,21 @@ export async function isHostsDaemonHealthy(port?: number): Promise<boolean> {
  *
  * Health alone is not enough: the listener and the reload loop are independent,
  * so a daemon whose loop stopped keeps returning 200 while every named URL
- * 404s against a frozen map. Both cases want the same repair — reload it.
+ * 404s against a frozen map. Both cases want the same repair — reload it. So
+ * does an outdated daemon, which the reload replaces with this version's.
  */
 export async function isHostsDaemonWedged(): Promise<boolean> {
 	const health = await readHostsDaemonHealth();
-	if (!health) return true;
-	if (health.lastReloadAt === undefined) return false;
+	if (!health || health.outdated) return true;
 	return Date.now() - health.lastReloadAt > RELOAD_STALL_MS;
 }
+
+/**
+ * A daemon that answers but predates the health fields every check here reads.
+ * It is reported rather than served on trust: nothing it serves can be proven.
+ */
+export const OUTDATED_DAEMON_MESSAGE =
+	"the named-hosts daemon predates this buncargo and cannot report what it serves. Run `buncargo hosts install` to update it.";
 
 /**
  * A loopback address the browser will dial that is answered by something other
@@ -82,11 +89,7 @@ export async function describeLoopbackHijack(
 export const ROUTE_PICKUP_TIMEOUT_MS = 3000;
 const ROUTE_POLL_MS = 100;
 
-export type DaemonRouteCheck =
-	| { ok: true }
-	/** The daemon answers but does not report hostnames, so nothing can be proven. */
-	| { ok: true; unverifiable: true }
-	| { ok: false; reason: string };
+export type DaemonRouteCheck = { ok: true } | { ok: false; reason: string };
 
 /**
  * Wait until the daemon is actually serving `hostnames`.
@@ -116,12 +119,8 @@ export async function waitForDaemonRoutes(
 		const health = await readHostsDaemonHealth(options.port);
 		if (health !== undefined) {
 			everAnswered = true;
-			// A daemon from before this field cannot be checked. Reporting that
-			// as a failure would downgrade every URL on a machine whose service
-			// is simply due an upgrade, which `describeStaleHostsService`
-			// already reports.
-			if (health.hostnames === undefined) {
-				return { ok: true, unverifiable: true };
+			if (health.outdated) {
+				return { ok: false, reason: OUTDATED_DAEMON_MESSAGE };
 			}
 			const served = new Set(health.hostnames);
 			missing = hostnames.filter((hostname) => !served.has(hostname));

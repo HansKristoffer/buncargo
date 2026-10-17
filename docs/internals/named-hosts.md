@@ -137,7 +137,9 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   point at our own 404. It retries a probe that does not answer rather than failing on it (the
   rebind window above), and still distinguishes the two outcomes: a daemon that never answered
   needs a restart; one that answered without the hostname has a registry it is not picking up. A
-  daemon that reports no `hostnames` is unverifiable, not failing.
+  daemon whose health body lacks `hostnames` or `lastReloadAt` predates them and is reported as
+  outdated, with `buncargo hosts install` as the fix: the run falls back to `localhost:port`
+  rather than advertising URLs nothing can confirm.
 
 ## Proxy
 

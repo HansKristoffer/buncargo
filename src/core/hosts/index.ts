@@ -2,6 +2,7 @@ export { syncCertificateForRoutes } from "./certificates";
 export { RELOAD_STALL_MS, runHostsDaemon } from "./daemon";
 export {
 	describeLoopbackHijack,
+	OUTDATED_DAEMON_MESSAGE,
 	readHostsDaemonHealth,
 	waitForDaemonRoutes,
 } from "./daemon-client";

@@ -11,6 +11,7 @@ import {
 	doctorFixHosts,
 	isRouteLive,
 	loadHostRoutes,
+	OUTDATED_DAEMON_MESSAGE,
 	type ProxyHealth,
 	RELOAD_STALL_MS,
 	readDaemonConfig,
@@ -310,7 +311,11 @@ function reportDaemonRouteGap(
 	health: ProxyHealth | undefined,
 	registered: Array<{ hostname: string }>,
 ): void {
-	if (!health?.hostnames) return;
+	if (!health) return;
+	if (health.outdated) {
+		report.issue(`Named-hosts: ${OUTDATED_DAEMON_MESSAGE}`);
+		return;
+	}
 
 	const served = new Set(health.hostnames);
 	const missing = registered
@@ -322,7 +327,6 @@ function reportDaemonRouteGap(
 		);
 	}
 
-	if (health.lastReloadAt === undefined) return;
 	const ageMs = Date.now() - health.lastReloadAt;
 	if (ageMs > RELOAD_STALL_MS) {
 		report.issue(
