@@ -298,11 +298,12 @@ export function buildStartPlan(
 	onlyApps: string[] | undefined,
 ): StartPlan {
 	const selection = resolveSelectedApps(apps, onlyApps);
-	const requiredServiceKeys = resolveRequiredServiceKeys(
-		apps,
-		services,
-		selection.appNames,
-	);
+	// With no app to name them through `requiredServices`, a config of only
+	// services is a run of all of them, not of none.
+	const requiredServiceKeys =
+		Object.keys(apps).length === 0
+			? resolveServiceDependencies(services, Object.keys(services))
+			: resolveRequiredServiceKeys(apps, services, selection.appNames);
 
 	return {
 		...selection,
