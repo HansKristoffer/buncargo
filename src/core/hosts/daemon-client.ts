@@ -3,7 +3,6 @@ import { sleep } from "../sleep";
 import { RELOAD_STALL_MS } from "./daemon";
 import { readDaemonConfig, readDaemonPid } from "./daemon-config";
 import {
-	isProxyHealthy,
 	LOOPBACK_HOSTNAMES,
 	loopbackAuthority,
 	type ProxyHealth,
@@ -22,13 +21,6 @@ import { describePortSquatter } from "./squatter";
  * executes.
  */
 
-export async function isHostsDaemonHealthy(port?: number): Promise<boolean> {
-	const config = readDaemonConfig();
-	return isProxyHealthy(port ?? config.httpsPort, "127.0.0.1", {
-		tls: config.tls,
-	});
-}
-
 /** What the running daemon reports it is serving, if it answers at all. */
 export async function readHostsDaemonHealth(
 	port?: number,
@@ -37,6 +29,10 @@ export async function readHostsDaemonHealth(
 	return readProxyHealth(port ?? config.httpsPort, "127.0.0.1", {
 		tls: config.tls,
 	});
+}
+
+export async function isHostsDaemonHealthy(port?: number): Promise<boolean> {
+	return (await readHostsDaemonHealth(port)) !== undefined;
 }
 
 /**
@@ -155,17 +151,6 @@ const HEALTH_POLL_MS = 150;
 /** Budget after `hosts install` / doctor, while launchd/systemd cold-starts the unit. */
 export const SERVICE_START_TIMEOUT_MS = 15_000;
 
-/**
- * How long to poll an already-installed launchd/systemd unit.
- *
- * KeepAlive means a loaded unit is either answering or down. A routine
- * `buncargo dev` must not sit on {@link SERVICE_START_TIMEOUT_MS}; that budget
- * is only for the caller that just loaded the unit.
- */
-export function resolveInstalledServiceWaitMs(timeoutMs?: number): number {
-	return timeoutMs ?? 0;
-}
-
 export async function waitForDaemonHealthy(
 	port: number,
 	timeoutMs: number,
@@ -219,7 +204,7 @@ export async function ensureHostsDaemonRunning(
 	// `KeepAlive` means a loaded unit is either answering or down, so a routine
 	// `buncargo dev` must not sit on the cold-start budget. Only a caller that
 	// just loaded the unit passes `timeoutMs`.
-	const waitMs = resolveInstalledServiceWaitMs(options.timeoutMs);
+	const waitMs = options.timeoutMs ?? 0;
 	if (waitMs > 0 && (await waitForDaemonHealthy(config.httpsPort, waitMs))) {
 		return { ok: true };
 	}

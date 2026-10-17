@@ -50,7 +50,6 @@ import {
 import { pruneHostRoutes } from "./registry";
 import { HOSTS_SERVICE_LOG } from "./service-files";
 
-const _DEFAULT_HTTP_PORT = 80;
 const IDLE_EXIT_MS = 30_000;
 const RELOAD_INTERVAL_MS = 1000;
 /**
@@ -135,10 +134,6 @@ export function createStallRecoveryPolicy(input: {
 	};
 }
 
-export {
-	createThrottledFailureLog,
-	type ThrottledFailureLog,
-} from "../failure-log";
 /**
  * Keep the service log from growing without bound.
  *

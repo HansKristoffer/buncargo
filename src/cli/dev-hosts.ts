@@ -68,7 +68,6 @@ export async function activateNamedHosts<
 			include: certificateHostnames(env.hosts.plan, env.hosts.tld),
 			root: env.root,
 		});
-		options.signal?.throwIfAborted();
 		// App routes die with this process; service routes outlive it.
 		options.signal?.throwIfAborted();
 		await upsertHostRoutes(

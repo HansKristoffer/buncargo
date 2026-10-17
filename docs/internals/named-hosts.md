@@ -115,7 +115,7 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
 
 ## Health
 
-- `isProxyHealthy` probes the one scheme `readDaemonConfig().tls` says the daemon serves and
+- `readProxyHealth` probes the one scheme `readDaemonConfig().tls` says the daemon serves and
   validates the health body, not just the status. `ensureHostsDaemonRunning` returns early when
   health passes and never reaches the squatter check, so accepting any 200 on `:443` would hand the
   whole flow to whatever else is listening. Do **not** gate it on `routes > 0`: the daemon binds

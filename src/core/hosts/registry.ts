@@ -73,9 +73,9 @@ export async function loadHostRoutes(
  * and in `/etc/hosts`, forever. The checkout being gone from disk is the only
  * signal that distinguishes "not running" from "no longer exists".
  */
-function isRouteLive(
+export function isRouteLive(
 	route: HostsRoute,
-	directoryExists: (path: string) => boolean,
+	directoryExists: (path: string) => boolean = existsSync,
 ): boolean {
 	if (route.pid !== undefined) return isRouteOwnerAlive(route.pid);
 	return route.root === "" || directoryExists(route.root);

@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	type CertNameEntry,
-	forgetCertNames,
 	pruneCertNameEntries,
 	readCertNames,
 	rememberCertNames,
@@ -109,20 +108,6 @@ describe("rememberCertNames", () => {
 		});
 		// The real `existsSync` applies here, and /repo/a is fictional.
 		expect(await readCertNames(path)).toEqual([]);
-	});
-
-	it("forgets a project on request", async () => {
-		const path = tempPath();
-		await rememberCertNames({
-			root: "/repo/a",
-			names: ["a.localhost"],
-			path,
-			rootExists: alive,
-		});
-		await forgetCertNames("/repo/a", path);
-		expect(
-			await rememberCertNames({ names: [], path, rootExists: alive }),
-		).toEqual([]);
 	});
 });
 

@@ -558,11 +558,12 @@ function parseProxyHealth(value: unknown): ProxyHealth | undefined {
 }
 
 /**
- * What the proxy says it is serving, or `undefined` when nothing answered.
+ * What the proxy says it is serving, or `undefined` when nothing answered or
+ * what answered is not a buncargo proxy.
  *
- * The counterpart to {@link isProxyHealthy}: callers that are about to
- * advertise a hostname need to know the daemon actually has it, not merely
- * that something is listening.
+ * Probes only the scheme the caller says the proxy serves: racing an HTTP and
+ * an HTTPS probe against the same port means one of them is always speaking
+ * the wrong protocol into the listener.
  */
 export async function readProxyHealth(
 	port = 443,
@@ -580,30 +581,5 @@ export async function readProxyHealth(
 		return parseProxyHealth(await response.json());
 	} catch {
 		return undefined;
-	}
-}
-
-/**
- * Probe the scheme the proxy actually serves.
- *
- * Racing an HTTP and an HTTPS probe against the same port means one of them is
- * always speaking the wrong protocol into the listener.
- */
-export async function isProxyHealthy(
-	port = 443,
-	hostname = "127.0.0.1",
-	options: { tls?: boolean } = {},
-): Promise<boolean> {
-	const tls = options.tls ?? true;
-	const url = `${tls ? "https" : "http"}://${loopbackAuthority(hostname, port)}${HEALTH_PATH}`;
-	try {
-		const response = await fetch(url, {
-			signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
-			...(tls ? { tls: { rejectUnauthorized: false } } : {}),
-		});
-		if (!response.ok) return false;
-		return isProxyHealthBody(await response.json());
-	} catch {
-		return false;
 	}
 }

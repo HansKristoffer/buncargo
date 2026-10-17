@@ -5,7 +5,6 @@ import {
 	HEALTH_PATH,
 	HOPS_HEADER,
 	hostnameFromHostHeader,
-	isProxyHealthy,
 	MAX_PROXY_HOPS,
 	readProxyHealth,
 	startLocalProxy,
@@ -641,7 +640,7 @@ describe("proxy fetch", () => {
 	);
 });
 
-describe("isProxyHealthy", () => {
+describe("readProxyHealth", () => {
 	const servers: Array<{ stop: () => void }> = [];
 
 	afterEach(() => {
@@ -650,9 +649,9 @@ describe("isProxyHealthy", () => {
 		}
 	});
 
-	it("returns false quickly when nothing is listening", async () => {
+	it("answers undefined quickly when nothing is listening", async () => {
 		const started = Date.now();
-		expect(await isProxyHealthy(59_998, "127.0.0.1")).toBe(false);
+		expect(await readProxyHealth(59_998, "127.0.0.1")).toBeUndefined();
 		expect(Date.now() - started).toBeLessThan(1_000);
 	});
 
@@ -665,8 +664,8 @@ describe("isProxyHealthy", () => {
 		});
 		servers.push(proxy);
 		expect(
-			await isProxyHealthy(proxy.httpsPort, "127.0.0.1", { tls: false }),
-		).toBe(true);
+			await readProxyHealth(proxy.httpsPort, "127.0.0.1", { tls: false }),
+		).toBeDefined();
 	});
 
 	it("reads back what the proxy is serving", async () => {
@@ -699,8 +698,8 @@ describe("isProxyHealthy", () => {
 		});
 		servers.push(squatter);
 		expect(
-			await isProxyHealthy(squatter.port, "127.0.0.1", { tls: false }),
-		).toBe(false);
+			await readProxyHealth(squatter.port, "127.0.0.1", { tls: false }),
+		).toBeUndefined();
 	});
 
 	it("rejects a JSON responder that is not a buncargo proxy", async () => {
@@ -713,7 +712,7 @@ describe("isProxyHealthy", () => {
 		});
 		servers.push(squatter);
 		expect(
-			await isProxyHealthy(squatter.port, "127.0.0.1", { tls: false }),
-		).toBe(false);
+			await readProxyHealth(squatter.port, "127.0.0.1", { tls: false }),
+		).toBeUndefined();
 	});
 });

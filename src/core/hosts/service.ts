@@ -227,10 +227,6 @@ export function describeStaleHostsService(): string | undefined {
 const UNLOAD_TIMEOUT_MS = 20_000;
 const UNLOAD_POLL_MS = 100;
 
-function sleepSync(ms: number): void {
-	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
 function isLaunchdJobLoaded(runner: PrivilegedRunner): boolean {
 	try {
 		runner.run("launchctl", ["print", `system/${LAUNCHD_LABEL}`], {
@@ -252,7 +248,7 @@ function waitForLaunchdUnload(runner: PrivilegedRunner): void {
 	const deadline = Date.now() + UNLOAD_TIMEOUT_MS;
 	while (isLaunchdJobLoaded(runner)) {
 		if (Date.now() >= deadline) return;
-		sleepSync(UNLOAD_POLL_MS);
+		Bun.sleepSync(UNLOAD_POLL_MS);
 	}
 }
 

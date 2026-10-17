@@ -9,6 +9,7 @@ import {
 import {
 	describeLoopbackHijack,
 	doctorFixHosts,
+	isRouteLive,
 	loadHostRoutes,
 	type ProxyHealth,
 	RELOAD_STALL_MS,
@@ -37,7 +38,6 @@ import {
 	getPortOwner,
 	withBindProbe,
 } from "../../../core/process";
-import { isRouteOwnerAlive } from "../../../core/registry-file";
 import {
 	REGISTRY_VERSION,
 	readAllRuns,
@@ -282,10 +282,7 @@ async function checkNamedHosts(
 		report.issue(staleService);
 	}
 	const hostRoutes = (await loadHostRoutes(undefined, { strict: true })).filter(
-		(route) =>
-			route.pid !== undefined
-				? isRouteOwnerAlive(route.pid)
-				: !route.root || existsSync(route.root),
+		(route) => isRouteLive(route),
 	);
 	report.note(
 		hostRoutes.length === 0
