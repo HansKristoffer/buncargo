@@ -133,6 +133,38 @@ describe("getEnvVar", () => {
 		}
 	});
 
+	it("sees what the config's integrations add, like a run does", () => {
+		const previousHosts = process.env.BUNCARGO_HOSTS;
+		delete process.env.BUNCARGO_HOSTS;
+		try {
+			withoutCiEnv(() => {
+				const config = defineDevConfig({
+					projectPrefix: "serpier",
+					services: {},
+					apps: {
+						api: { port: 3000, devCommand: "bun run api" },
+						web: { port: 5173, devCommand: "bun run web" },
+					},
+					options: { hosts: true },
+					// Shopify's sets its frontend as the primary app this way.
+					integrations: [
+						{
+							name: "primary",
+							config: (config) => ({
+								...config,
+								options: { ...config.options, primaryApp: "web" },
+							}),
+						},
+					],
+				});
+				expect(getEnvVar(config, "WEB_URL")).not.toContain("web.");
+			});
+		} finally {
+			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
+			else process.env.BUNCARGO_HOSTS = previousHosts;
+		}
+	});
+
 	it.each([["BUNCARGO_HOSTS", "0"]])(
 		"keeps localhost URLs when %s=%s",
 		(name, value) => {
