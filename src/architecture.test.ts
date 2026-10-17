@@ -48,6 +48,7 @@ describe("architecture", () => {
 			"src/core/runtime-flags.ts": "the single reader",
 			"src/vite/index.ts":
 				"loaded by users' vite.config.ts; its import graph is pinned below",
+			"src/vite/resolve.ts": "the same plugin's environment reading",
 		};
 		const read = /\benv(?:\.|\[["'])(BUNCARGO_\w+|CI)\b(?!["']?\]?\s*=[^=])/g;
 		// A name held in a constant escapes `read`: `env[NAME]` is a read too.
@@ -87,7 +88,11 @@ describe("architecture", () => {
 		// vite.config.ts, browser bundles and app servers load these. Any new
 		// module here ships into every project's app; keep each one a leaf.
 		const pinned: Record<string, string[]> = {
-			"src/vite/index.ts": ["src/vite/index.ts", "src/core/tailscale.ts"],
+			"src/vite/index.ts": [
+				"src/vite/index.ts",
+				"src/vite/resolve.ts",
+				"src/core/tailscale.ts",
+			],
 			"src/client/index.ts": ["src/client/index.ts"],
 			"src/runtime/index.ts": [
 				"src/runtime/index.ts",
