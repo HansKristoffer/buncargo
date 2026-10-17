@@ -25,6 +25,7 @@ import {
 } from "./watchdog";
 import { WATCHDOG_POLL_INTERVAL_MS } from "./watchdog-constants";
 import {
+	claimedSincePass,
 	exitUnlessClaimed,
 	getWatchdogSpawnLockFile,
 	runWatchdogLoop,
@@ -70,7 +71,7 @@ function watch(owner: object): Promise<void> {
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		log,
 		intervalMs: WATCHDOG_POLL_INTERVAL_MS,
-		exitIfIdle: () =>
+		exitIfIdle: (pass) =>
 			exitUnlessClaimed({
 				withSpawnLock: (operation) =>
 					withFileLock(getWatchdogSpawnLockFile(), operation),
@@ -78,7 +79,7 @@ function watch(owner: object): Promise<void> {
 				restorePidFile: () => writeJsonDocumentSync(pidFile, owner),
 				hasLiveRuns: async () => {
 					const runs = await readAllRuns();
-					return runs.some(await runLivenessAsync(runs));
+					return claimedSincePass(pass, runs, await runLivenessAsync(runs));
 				},
 			}),
 	});

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import type { SweepResult } from "../container-runtime/sweep";
-import { exitUnlessClaimed, runWatchdogLoop } from "./watchdog-loop";
+import type { RunEntry } from "./run-registry";
+import {
+	claimedSincePass,
+	exitUnlessClaimed,
+	runWatchdogLoop,
+} from "./watchdog-loop";
 
 function pass(extra: Partial<SweepResult> = {}): SweepResult {
 	return {
@@ -204,5 +209,32 @@ describe("exitUnlessClaimed", () => {
 		});
 		await expect(decided).rejects.toThrow("spawn lock busy");
 		expect(events).toEqual([]);
+	});
+});
+
+describe("claimedSincePass", () => {
+	const run = (sessionId: string, released = false) =>
+		({
+			sessionId,
+			releasedAt: released ? "2026-10-17T00:00:00.000Z" : undefined,
+		}) as RunEntry;
+	const alive = (entry: RunEntry) => entry.releasedAt === undefined;
+
+	it("stays for a run that claimed after the pass and has already released", () => {
+		// Released, so not live; but its containers were not in the pass.
+		expect(
+			claimedSincePass(pass({ runs: [] }), [run("late", true)], alive),
+		).toBe(true);
+	});
+
+	it("stays for a live run, and exits when every entry was the pass's and none is live", () => {
+		const earlier = run("earlier", true);
+		expect(
+			claimedSincePass(pass({ runs: [earlier] }), [run("earlier")], alive),
+		).toBe(true);
+		expect(claimedSincePass(pass({ runs: [earlier] }), [earlier], alive)).toBe(
+			false,
+		);
+		expect(claimedSincePass(pass({ runs: [earlier] }), [], alive)).toBe(false);
 	});
 });

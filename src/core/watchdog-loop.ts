@@ -1,4 +1,5 @@
 import type { SweepResult } from "../container-runtime/sweep";
+import type { RunEntry } from "./run-registry";
 import { stateFilePath } from "./state-paths";
 
 export interface WatchdogLoopDeps {
@@ -7,11 +8,11 @@ export interface WatchdogLoopDeps {
 	log: (message: string) => void;
 	intervalMs: number;
 	/**
-	 * Asked when a pass finds nothing to watch: `true` to exit, `false` when a
-	 * run has claimed since that pass read the registry. See
+	 * Asked with a pass that found nothing to watch: `true` to exit, `false`
+	 * when a run has claimed since that pass read the registry. See
 	 * {@link exitUnlessClaimed}.
 	 */
-	exitIfIdle: () => Promise<boolean>;
+	exitIfIdle: (pass: SweepResult) => Promise<boolean>;
 }
 
 /**
@@ -37,8 +38,23 @@ export interface WatchdogExitDeps {
 	withSpawnLock: (operation: () => Promise<void>) => Promise<void>;
 	removePidFile: () => void;
 	restorePidFile: () => void;
-	/** Whether the registry, read now, holds a live run. */
+	/** Whether the registry, read now, holds a run to stay for: {@link claimedSincePass}. */
 	hasLiveRuns: () => Promise<boolean>;
+}
+
+/**
+ * Whether a registry read after an idle pass holds a run that pass did not
+ * account for: one live now, or a session the pass never saw. A run that
+ * claimed after the pass read the registry and has since released or crashed
+ * is no longer live, but its containers are still there for the next pass.
+ */
+export function claimedSincePass(
+	pass: Pick<SweepResult, "runs">,
+	fresh: readonly RunEntry[],
+	alive: (run: RunEntry) => boolean,
+): boolean {
+	const seen = new Set(pass.runs.map((run) => run.sessionId));
+	return fresh.some((run) => alive(run) || !seen.has(run.sessionId));
 }
 
 /**
@@ -119,7 +135,7 @@ export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 				result.liveRuns === 0 &&
 				result.pendingStacks === 0
 			) {
-				if (await deps.exitIfIdle()) {
+				if (await deps.exitIfIdle(result)) {
 					deps.log("Nothing left to watch; exiting");
 					return;
 				}
