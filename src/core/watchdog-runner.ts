@@ -12,12 +12,14 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync, unlinkSync } from "node:fs";
 import { sweepOrphanedContainers } from "../container-runtime/sweep";
+import { checkoutDeleted } from "./checkout-presence";
 import { FileLockTimeoutError, withFileLock } from "./file-lock";
 import { readCurrentProcessIdentityAsync } from "./process-identity";
 import { writeJsonDocumentSync } from "./registry-file";
 import { removalActor } from "./removal-log";
 import { readAllRuns, runLivenessAsync } from "./run-registry";
 import { tailnetDirectoryEnabled } from "./runtime-flags";
+import { getStateDir } from "./state-paths";
 import { serveTailnetDirectory } from "./tailnet-directory";
 import {
 	getWatchdogLockFile,
@@ -78,6 +80,7 @@ function watch(owner: object): Promise<void> {
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		log,
 		intervalMs: WATCHDOG_POLL_INTERVAL_MS,
+		stateGone: () => checkoutDeleted(getStateDir()),
 		exitIfIdle: (pass) =>
 			exitUnlessClaimed({
 				withSpawnLock: (operation) =>

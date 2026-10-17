@@ -56,6 +56,26 @@ const failed = (error: string) => ({
 });
 
 describe("runWatchdogLoop", () => {
+	it("stops without sweeping once its state directory is gone", async () => {
+		// A watchdog a test started outlived the test's temporary HOME and,
+		// with no registry left to name a stack, swept real ones.
+		const logs: string[] = [];
+		let sweeps = 0;
+		await runWatchdogLoop({
+			sweep: async () => {
+				sweeps += 1;
+				return sweeps < 3 ? pass() : pass({ containers: 0, liveRuns: 0 });
+			},
+			sleep: async () => {},
+			log: (message) => logs.push(message),
+			intervalMs: 0,
+			exitIfIdle: async () => true,
+			stateGone: () => sweeps === 2,
+		});
+		expect(sweeps).toBe(2);
+		expect(logs).toEqual(["The state directory is gone; exiting"]);
+	});
+
 	it("survives a pass that throws, and keeps sweeping", async () => {
 		// The runner used to exit here, leaving nothing to sweep until the
 		// next buncargo command.

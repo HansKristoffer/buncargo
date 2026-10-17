@@ -13,6 +13,12 @@ export interface WatchdogLoopDeps {
 	 * {@link exitUnlessClaimed}.
 	 */
 	exitIfIdle: (pass: SweepResult) => Promise<boolean>;
+	/**
+	 * True once the state directory it was started for is confirmed gone: a
+	 * test's temporary HOME, deleted under it. Its registry can name nothing
+	 * any more, so it stops rather than sweep on what an empty one says.
+	 */
+	stateGone?: () => boolean;
 }
 
 /**
@@ -148,6 +154,10 @@ export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 	let reportedPassError: string | undefined;
 
 	while (true) {
+		if (deps.stateGone?.()) {
+			deps.log("The state directory is gone; exiting");
+			return;
+		}
 		try {
 			const result = await deps.sweep();
 			reportedPassError = undefined;
