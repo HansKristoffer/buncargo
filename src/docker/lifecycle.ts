@@ -1,9 +1,14 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { formatPortOwner, getPortOwner } from "../core/process";
-import { formatDone, formatStep, formatWarn } from "../core/style";
+import { formatDone, formatStep } from "../core/style";
 import { dockerRuntimeAdapter } from "./adapter";
-import { type DockerRunResult, runDockerAsync } from "./binary";
+import {
+	DEFAULT_DOCKER_BINARY,
+	type DockerRunResult,
+	runDockerAsync,
+} from "./binary";
 import { getComposeArgs } from "./compose-command";
 import { isDockerDaemonRunning } from "./preflight";
 
@@ -125,7 +130,8 @@ export async function startContainers(
  * Compose finds them by the project label, so the compose file is only needed
  * to name the volumes `removeVolumes` deletes, and the checkout only to host
  * that file. A stack whose worktree was deleted must still come down, which is
- * why neither is required here.
+ * why neither is required here; `removeVolumes` without the file still brings
+ * the containers down, then fails, because the volumes stay.
  */
 export async function stopContainers(
 	root: string,
@@ -142,14 +148,11 @@ export async function stopContainers(
 	} = options;
 	if (verbose) console.log(formatStep("🛑 Stopping containers..."));
 
-	const file = composeFile && existsSync(composeFile) ? composeFile : undefined;
-	if (removeVolumes && !file) {
-		console.warn(
-			formatWarn(
-				"No compose file to name the volumes; containers were removed and volumes left in place.",
-			),
-		);
-	}
+	// `composeFile` is relative to the checkout, as compose reads it from
+	// `cwd: root` below; the caller's own cwd can be anywhere (an E2E runner
+	// that changed into a package kept every volume it meant to reset).
+	const composePath = composeFile ? resolve(root, composeFile) : undefined;
+	const file = composePath && existsSync(composePath) ? composeFile : undefined;
 	const result = await runDockerAsync(
 		binary,
 		[
@@ -176,7 +179,7 @@ export async function stopContainers(
 			: !isDockerDaemonRunning(binary);
 		if (daemonDown) {
 			// A reset that silently kept the volumes would not be one.
-			if (removeVolumes && file)
+			if (removeVolumes)
 				throw new Error(
 					`Docker is not running, so the volumes of ${projectName} were not removed. Start Docker, then run again.`,
 				);
@@ -185,6 +188,18 @@ export async function stopContainers(
 			return;
 		}
 		translateComposeFailure(result, binary);
+	}
+
+	// A reset that kept the database is not one: the next run reads stale data.
+	if (removeVolumes && !file) {
+		const where = composePath
+			? `no compose file at ${composePath}`
+			: "no compose file was given";
+		const docker = binary ?? DEFAULT_DOCKER_BINARY;
+		const remove = `${docker} volume rm $(${docker} volume ls -q --filter label=com.docker.compose.project=${projectName})`;
+		throw new Error(
+			`Removed ${projectName}'s containers but kept its volumes: ${where} to name them. Remove them with \`${remove}\`, or start the environment once so it writes the file, then stop it again.`,
+		);
 	}
 	if (verbose) console.log(formatDone("Containers stopped"));
 }

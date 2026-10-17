@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
 	chmodSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -70,10 +71,55 @@ describe("stopContainers", () => {
 		await stopContainers(gone, "demo", {
 			binary,
 			composeFile: join(gone, ".buncargo", "compose.yml"),
-			removeVolumes: true,
 			verbose: false,
 		});
 		expect(calls().at(-1)).toEqual(["compose", "-p", "demo", "down"]);
+	});
+
+	it("fails when it could not name the volumes it was asked to remove", async () => {
+		const { dir, binary, calls } = fakeDocker();
+		const gone = join(dir, "deleted-worktree");
+		await expect(
+			stopContainers(gone, "demo", {
+				binary,
+				composeFile: ".buncargo/compose.yml",
+				removeVolumes: true,
+				verbose: false,
+			}),
+		).rejects.toThrow(/Removed demo's containers but kept its volumes/);
+		// The containers still come down.
+		expect(calls().at(-1)).toEqual(["compose", "-p", "demo", "down"]);
+	});
+
+	it("finds a compose file relative to the checkout from any working directory", async () => {
+		const { dir, binary, calls } = fakeDocker();
+		mkdirSync(join(dir, ".buncargo"));
+		writeFileSync(join(dir, ".buncargo", "compose.yml"), "services: {}\n");
+		const elsewhere = join(dir, "apps", "platform");
+		mkdirSync(elsewhere, { recursive: true });
+
+		const cwd = process.cwd();
+		process.chdir(elsewhere);
+		try {
+			await stopContainers(dir, "demo", {
+				binary,
+				composeFile: ".buncargo/compose.yml",
+				removeVolumes: true,
+				verbose: false,
+			});
+		} finally {
+			process.chdir(cwd);
+		}
+
+		expect(calls().at(-1)).toEqual([
+			"compose",
+			"-f",
+			".buncargo/compose.yml",
+			"-p",
+			"demo",
+			"down",
+			"-v",
+		]);
 	});
 
 	it("hands compose the file, and the volumes flag, while the checkout exists", async () => {

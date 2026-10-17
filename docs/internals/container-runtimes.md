@@ -57,7 +57,9 @@ The sweep and volume pruning live in `container-runtime/` too; see
   a stopped runtime runs no containers. Each backend reads that off its own failed teardown or
   listing and only then probes, so a normal teardown pays no extra process. `removeVolumes` is the
   exception and fails, naming how to start the runtime: `dev --reset` reporting success over
-  volumes it never removed is a reset that did not happen.
+  volumes it never removed is a reset that did not happen. For the same reason Docker's `down`
+  fails, after removing the containers, when no compose file names the volumes. It finds that
+  file from the checkout, never from the caller's working directory.
 - `inventory.ts` backs the machine-wide commands (`ls`, `doctor`, `dev --down --all`). Those have no
   project config in scope, so they ask every available runtime rather than one.
 
