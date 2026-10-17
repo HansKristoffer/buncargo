@@ -1,5 +1,5 @@
 import type { DevServerPids } from "../../types";
-import { formatPidLine, formatStep } from "../style";
+import { formatPidLine } from "../style";
 import type { DetachedApp } from "./detached-app";
 import { ProcessOwner, RunInterrupted } from "./process-owner";
 import type { AppChild } from "./pty-app";
@@ -32,8 +32,8 @@ export class AppSupervision {
 			verbose?: boolean;
 			width: number;
 			onAppSpawned?: (name: string, pid: number, attached: boolean) => void;
-			/** Replaces the console line a restart prints. */
-			onRestart?: (name: string, reason: string) => void;
+			/** A restart is beginning: where it is announced. */
+			onRestart: (name: string, reason: string) => void;
 		},
 	) {
 		this.owner = new ProcessOwner({
@@ -120,9 +120,7 @@ export class AppSupervision {
 		const current = this.children.get(name);
 		const spawner = this.spawners.get(name);
 		if (!current || !spawner || this.owner.controller.signal.aborted) return;
-		this.options.onRestart?.(name, reason);
-		if (!this.options.onRestart)
-			console.log(formatStep(`🔁 Restarting ${name}: ${reason}`));
+		this.options.onRestart(name, reason);
 		await this.owner.retire(current);
 		if (current.pid) activeSessions.delete(current.pid);
 		this.owner.controller.signal.throwIfAborted();

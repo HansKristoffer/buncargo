@@ -1,5 +1,4 @@
 import type { EventEmitter } from "node:events";
-import { join } from "node:path";
 import { withFileLock } from "../file-lock";
 import {
 	matchesProcessIdentityAsync,
@@ -7,7 +6,7 @@ import {
 	readProcessIdentityAsync,
 } from "../process-identity";
 import { defineListRegistry } from "../registry-file";
-import { STATE_DIRNAME } from "../state-paths";
+import { projectStateFilePath } from "../state-paths";
 import type { AppChild } from "./pty-app";
 import { terminateOwnedProcess, terminateProcessGroup } from "./terminate";
 
@@ -35,7 +34,7 @@ const registry = defineListRegistry<WorkerOwner>({
 	},
 });
 
-const pathFor = (root: string) => join(root, STATE_DIRNAME, "workers.json");
+const pathFor = (root: string) => projectStateFilePath(root, "workers.json");
 
 export async function findWorker(
 	root: string,
@@ -78,21 +77,9 @@ export async function spawnOwnedWorker(
 				recorded.map((entry) => entry.pid),
 				signal,
 			);
-			const live = await Promise.all(
-				recorded.map(async (entry) => ({
-					entry,
-					matches: entry.identity.startsWith("v2:")
-						? identities.get(entry.pid) === entry.identity
-						: await matchesProcessIdentityAsync(
-								entry.pid,
-								entry.identity,
-								signal,
-							),
-				})),
+			const entries = recorded.filter(
+				(entry) => identities.get(entry.pid) === entry.identity,
 			);
-			const entries = live
-				.filter((item) => item.matches)
-				.map((item) => item.entry);
 
 			if (entries.some((entry) => entry.name === name)) {
 				throw new Error(

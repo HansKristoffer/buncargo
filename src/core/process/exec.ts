@@ -118,7 +118,6 @@ export async function execAsync(
 		if (verbose && options.outputPrefix)
 			prefixOutput(options.outputPrefix, child, {
 				width: options.outputPrefix.length,
-				onFirstWrite: () => {},
 			});
 		let stdout = "";
 		let stderr = "";

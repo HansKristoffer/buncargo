@@ -4,11 +4,7 @@ import { formatPrefixedLine, isBlankLogLine } from "../style";
 function prefixStream(
 	name: string,
 	stream: NodeJS.ReadableStream | null,
-	options: {
-		width: number;
-		onFirstWrite: () => void;
-		onText?: (text: string) => void;
-	},
+	options: { width: number },
 ): void {
 	if (!stream) {
 		return;
@@ -19,11 +15,9 @@ function prefixStream(
 		if (isBlankLogLine(line)) {
 			return;
 		}
-		options.onFirstWrite();
 		process.stdout.write(formatPrefixedLine(name, line, options.width));
 	};
 	stream.on("data", (chunk: Buffer | string) => {
-		options.onText?.(String(chunk));
 		buffer += String(chunk);
 		const lines = buffer.split("\n");
 		buffer = lines.pop() ?? "";
