@@ -94,6 +94,7 @@ export function getEnvVar<
 			envFiles?: readonly import("../types").EnvInputFile[];
 			worktreeIsolation?: boolean;
 			hosts?: boolean | HostsOptionsLike;
+			primaryApp?: string;
 		};
 	},
 	name: TName,
@@ -135,6 +136,8 @@ export function getEnvVar<
 					services,
 					ports: portMap,
 					hosts: config.options.hosts,
+					// The bare hostname is the primary app's, as in a run.
+					primaryApp: config.options.primaryApp,
 				})
 			: undefined;
 	const urlMap = computeUrls(

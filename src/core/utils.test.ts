@@ -105,6 +105,34 @@ describe("getEnvVar", () => {
 		}
 	});
 
+	it("gives the primary app the bare hostname a run serves it on", () => {
+		const previousHosts = process.env.BUNCARGO_HOSTS;
+		delete process.env.BUNCARGO_HOSTS;
+		try {
+			withoutCiEnv(() => {
+				const config = defineDevConfig({
+					projectPrefix: "serpier",
+					services: {},
+					apps: {
+						api: { port: 3000, devCommand: "bun run api" },
+						web: { port: 5173, devCommand: "bun run web" },
+					},
+					options: { hosts: true, primaryApp: "web" },
+				});
+				expect(getEnvVar(config, "WEB_URL")).toMatch(
+					/^https:\/\/(?:[a-z0-9-]+\.)?serpier\.localhost$/,
+				);
+				expect(getEnvVar(config, "WEB_URL")).not.toContain("web.");
+				expect(getEnvVar(config, "API_URL")).toMatch(
+					/^https:\/\/(?:[a-z0-9-]+\.)?api\.serpier\.localhost$/,
+				);
+			});
+		} finally {
+			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
+			else process.env.BUNCARGO_HOSTS = previousHosts;
+		}
+	});
+
 	it.each([["BUNCARGO_HOSTS", "0"]])(
 		"keeps localhost URLs when %s=%s",
 		(name, value) => {
