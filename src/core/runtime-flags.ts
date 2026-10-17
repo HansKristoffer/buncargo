@@ -395,7 +395,6 @@ export function heldCheckSlot(
 	return readTrimmed(env, CHECK_SLOT_ENV);
 }
 
-/** Runtime enrollment for disposable cloud sandboxes. Never include this value in diagnostics. */
 /** Sharing credentials are consumed by the coordinator, never frontend processes. */
 export function connectTokens(env: NodeJS.ProcessEnv = process.env): string[] {
 	const tokens = [

@@ -83,7 +83,6 @@ async function checkSetupChecks(
 	}
 }
 
-/** Collects the doctor report so each check stays a small pure-ish function. */
 /** Above this share of the open-file table, name who holds the most. */
 const FILE_TABLE_NOTE = 0.5;
 const FILE_TABLE_ISSUE = 0.8;
@@ -116,6 +115,7 @@ function checkFileTable(report: DoctorReport): void {
 	else report.note(message);
 }
 
+/** Collects the doctor report so each check stays a small pure-ish function. */
 class DoctorReport {
 	readonly issues: string[] = [];
 	readonly notes: string[] = [];

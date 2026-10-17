@@ -17,6 +17,16 @@ function sourceFiles(): string[] {
 		.map((path) => `src/${path}`);
 }
 
+/** Every TypeScript file under `src/` and `scripts/`, tests included. */
+function allTypeScriptFiles(): string[] {
+	return [
+		...[...new Bun.Glob("**/*.ts").scanSync(SRC)].map((path) => `src/${path}`),
+		...[...new Bun.Glob("**/*.ts").scanSync(join(ROOT, "scripts"))].map(
+			(path) => `scripts/${path}`,
+		),
+	];
+}
+
 /** Every module reachable from `entry` through relative, non-type imports. */
 function importGraph(entry: string): Set<string> {
 	const seen = new Set<string>();
@@ -79,18 +89,22 @@ describe("architecture", () => {
 				"calls inOwnUserScope, which only builds argv; spawns nothing",
 		};
 		const emptied = /\bPATH\s*[:=]\s*(["'`])\1/;
-		const files = [
-			...[...new Bun.Glob("**/*.ts").scanSync(SRC)].map(
-				(path) => `src/${path}`,
-			),
-			...[...new Bun.Glob("**/*.ts").scanSync(join(ROOT, "scripts"))].map(
-				(path) => `scripts/${path}`,
-			),
-		];
-
-		const offenders = files
+		const offenders = allTypeScriptFiles()
 			.filter((file) => !(file in allowed))
 			.filter((file) => emptied.test(readFileSync(join(ROOT, file), "utf8")));
+
+		expect(offenders).toEqual([]);
+	});
+
+	it("attaches every doc comment to a declaration", () => {
+		// A doc comment directly above another documents nothing: the editor
+		// and the reader take the second as the declaration's. One added
+		// between a function and its own doc took that function's
+		// documentation away.
+		const stacked = /\*\/\n[ \t]*\/\*\*/;
+		const offenders = allTypeScriptFiles().filter((file) =>
+			stacked.test(readFileSync(join(ROOT, file), "utf8")),
+		);
 
 		expect(offenders).toEqual([]);
 	});

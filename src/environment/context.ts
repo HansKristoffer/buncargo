@@ -55,6 +55,12 @@ import type {
 import type { EnvironmentLogSelection } from "../types/environment";
 import { logEnvironmentInfo } from "./logging";
 
+/** The apps and services a run selected, `requiredApps` and dependencies expanded. */
+export interface StartSelection {
+	readonly appNames: readonly string[];
+	readonly requiredServiceKeys: readonly string[];
+}
+
 /**
  * Everything a dev environment derives from its config once, up front: identity,
  * ports, URLs and the mutable url/public-url state the CLI flips at runtime.
@@ -62,12 +68,6 @@ import { logEnvironmentInfo } from "./logging";
  * The sibling modules (`env-vars`, `lifecycle`, `servers`, `watchdog`) take this
  * as their only shared state, so `createDevEnvironment` stays a composer.
  */
-/** The apps and services a run selected, `requiredApps` and dependencies expanded. */
-export interface StartSelection {
-	readonly appNames: readonly string[];
-	readonly requiredServiceKeys: readonly string[];
-}
-
 export interface DevEnvContext<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
