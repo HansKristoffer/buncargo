@@ -21,8 +21,6 @@ export interface ExpoIntegrationOptions {
 
 export interface ExpoIntegration extends BuncargoIntegration {
 	readonly name: "expo";
-	/** Expo apps and their options, resolved when the config is applied. */
-	appOptions(name: string): ExpoAppOptions | undefined;
 }
 
 function resolveExpoApps(
@@ -52,7 +50,6 @@ export function expo(options: ExpoIntegrationOptions = {}): ExpoIntegration {
 
 	return {
 		name: "expo",
-		appOptions: (name) => expoApps.get(name),
 
 		config(config) {
 			expoApps = resolveExpoApps(config.apps ?? {}, options.apps);
