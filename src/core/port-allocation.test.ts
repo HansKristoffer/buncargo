@@ -4,11 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
 import type { AppConfig, ServiceConfig } from "../types";
-import { offsetClaimKey, readOffsetClaims } from "./offset-claims";
+import {
+	claimOffset,
+	offsetClaimKey,
+	readOffsetClaims,
+	withOffsetClaimsLock,
+} from "./offset-claims";
 import {
 	buildPortMap,
 	computeBaseOffset,
 	PORT_OFFSET_STEP,
+	pinOffset,
 	readPortsLockfile,
 	resolvePortPlan,
 	writePortsLockfile,
@@ -589,6 +595,67 @@ describe("offset claims", () => {
 		} finally {
 			console.warn = warn;
 			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("pinOffset", () => {
+	const services = { postgres: { port: 5432 } };
+
+	it("writes the lockfile and claims the block", () => {
+		const root = mkdtempSync(join(tmpdir(), "buncargo-pin-"));
+		try {
+			expect(
+				pinOffset({
+					root,
+					projectName: "lullu-a",
+					services,
+					offset: 2500,
+					getOwner: () => null,
+				}),
+			).toEqual({ pinned: { postgres: 7932 } });
+			expect(readPortsLockfile(root)).toMatchObject({ offset: 2500, root });
+			expect(readOffsetClaims()[root]).toMatchObject({
+				offset: 2500,
+				ports: [7932],
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("leaves a block another checkout claimed while its ports were probed", () => {
+		const root = mkdtempSync(join(tmpdir(), "buncargo-pin-"));
+		const other = mkdtempSync(join(tmpdir(), "buncargo-pin-other-"));
+		try {
+			const result = pinOffset({
+				root,
+				projectName: "lullu-a",
+				services,
+				offset: 2500,
+				// The probe runs outside the claims lock, so another checkout's
+				// allocation can take the block meanwhile.
+				getOwner: () => {
+					withOffsetClaimsLock(() =>
+						claimOffset({
+							root: other,
+							offset: 2500,
+							ports: [7932],
+							projectName: "lullu-b",
+						}),
+					);
+					return null;
+				},
+			});
+			expect(result).toEqual({
+				refused: `Offset 2500 is not free: offset 2500 is claimed by ${other}.`,
+				claimed: true,
+			});
+			expect(Object.keys(readOffsetClaims())).toEqual([other]);
+			expect(readPortsLockfile(root)).toBeNull();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+			rmSync(other, { recursive: true, force: true });
 		}
 	});
 });

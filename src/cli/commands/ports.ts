@@ -1,22 +1,11 @@
 import { containerRuntimeForEnv } from "../../container-runtime";
 import {
-	claimOffset,
 	duplicateOffsetClaims,
-	offsetClaimConflict,
 	offsetClaimHolder,
 	readOffsetClaims,
 } from "../../core/offset-claims";
-import {
-	buildPortMap,
-	describePortConflict,
-	PORT_OFFSET_STEP,
-	writePortsLockfile,
-} from "../../core/port-allocation";
-import {
-	classifyPortOccupant,
-	getPortOwner,
-	withBindProbe,
-} from "../../core/process";
+import { PORT_OFFSET_STEP, pinOffset } from "../../core/port-allocation";
+import { getPortOwner, withBindProbe } from "../../core/process";
 import { findRunsByRoot } from "../../core/run-registry";
 import { loadDevEnv } from "../../loader";
 import {
@@ -94,9 +83,9 @@ export async function handlePorts(args: string[]): Promise<number> {
 	if (problems.length > 0) throw argumentsError(problems, "ports");
 
 	const env = await loadDevEnv({ readOnly: true });
-	const claims = readOffsetClaims();
 
 	if (subcommand === undefined) {
+		const claims = readOffsetClaims();
 		log.line(
 			`${env.projectName}: offset ${env.portOffset} (${env.portOffsetProvenance})`,
 		);
@@ -117,52 +106,23 @@ export async function handlePorts(args: string[]): Promise<number> {
 	}
 
 	const offset = parsePinnedOffset(value);
-	const ports = buildPortMap(
-		env.services as Parameters<typeof buildPortMap>[0],
-		env.apps as Parameters<typeof buildPortMap>[1],
-		offset,
-	);
-	const claimed = offsetClaimConflict(
-		claims,
-		{ offset, ports: Object.values(ports) },
-		env.root,
-	);
-	if (claimed)
-		throw new CliError(`Offset ${offset} is not free: ${claimed}.`, [
-			"Pick another one: `buncargo ports` lists the claimed offsets.",
-		]);
-
 	const runtime = containerRuntimeForEnv(env);
-	const ownerOf = withBindProbe((port) => getPortOwner(port, { runtime }));
-	for (const port of Object.values(ports)) {
-		if (port > 65535)
-			throw new CliError(`Offset ${offset} puts port ${port} above 65535.`);
-		const owner = ownerOf(port);
-		const action = classifyPortOccupant(owner, {
-			root: env.root,
-			projectName: env.projectName,
-			runtime: runtime.name,
-		});
-		if (action === "fail" && owner)
-			throw new CliError(
-				`Offset ${offset} is not free: ${describePortConflict(port, owner)}.`,
-			);
-	}
-
-	writePortsLockfile(env.root, {
-		version: 1,
-		projectName: env.projectName,
+	const result = pinOffset({
 		root: env.root,
-		offset,
-		ports,
-		provenance: "lockfile",
-	});
-	claimOffset({
-		root: env.root,
-		offset,
-		ports: Object.values(ports),
 		projectName: env.projectName,
+		services: env.services as Parameters<typeof pinOffset>[0]["services"],
+		apps: env.apps as Parameters<typeof pinOffset>[0]["apps"],
+		offset,
+		runtime: runtime.name,
+		getOwner: withBindProbe((port) => getPortOwner(port, { runtime })),
 	});
+	if ("refused" in result)
+		throw new CliError(
+			result.refused,
+			result.claimed
+				? ["Pick another one: `buncargo ports` lists the claimed offsets."]
+				: [],
+		);
 	log.success(`Pinned ${env.projectName} to offset ${offset}.`);
 	// The services' containers are recreated on the next start: their
 	// published ports are part of what decides whether one is reused.

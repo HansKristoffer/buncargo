@@ -515,3 +515,70 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 			: "Could not allocate a free port block.",
 	);
 }
+
+/** What `buncargo ports pin` did: the block's ports, or why it is not free. */
+export type PinResult =
+	| { pinned: Record<string, number> }
+	| { refused: string; claimed: boolean };
+
+/**
+ * `buncargo ports pin`: move `root` to the block at `offset` and keep it there.
+ *
+ * Every port is probed first, outside the claims lock: binding each one takes
+ * a while, and every other checkout's allocation waits on that lock. The claims
+ * are read again under the lock before the lockfile and the claim are written,
+ * so a checkout that claimed the block in the meantime keeps it.
+ */
+export function pinOffset(input: {
+	root: string;
+	projectName: string;
+	services: Record<string, ServiceConfig>;
+	apps?: Record<string, AppConfig>;
+	offset: number;
+	runtime?: ContainerRuntimeName;
+	getOwner: (port: number) => PortOwner | null;
+}): PinResult {
+	const { root, projectName, offset, runtime } = input;
+	const ports = buildPortMap(input.services, input.apps, offset);
+	const block = { offset, ports: Object.values(ports) };
+	const claimedBy = () => {
+		const claimed = offsetClaimConflict(readOffsetClaims(), block, root);
+		return claimed
+			? { refused: `Offset ${offset} is not free: ${claimed}.`, claimed: true }
+			: undefined;
+	};
+
+	const claimed = claimedBy();
+	if (claimed) return claimed;
+	for (const port of block.ports) {
+		if (port > 65535)
+			return {
+				refused: `Offset ${offset} puts port ${port} above 65535.`,
+				claimed: false,
+			};
+		const owner = input.getOwner(port);
+		if (
+			owner &&
+			classifyPortOccupant(owner, { root, projectName, runtime }) === "fail"
+		)
+			return {
+				refused: `Offset ${offset} is not free: ${describePortConflict(port, owner)}.`,
+				claimed: false,
+			};
+	}
+
+	return withOffsetClaimsLock((): PinResult => {
+		const claimedMeanwhile = claimedBy();
+		if (claimedMeanwhile) return claimedMeanwhile;
+		writePortsLockfile(root, {
+			version: LOCKFILE_VERSION,
+			projectName,
+			root,
+			offset,
+			ports,
+			provenance: "lockfile",
+		});
+		claimOffset({ root, offset, ports: block.ports, projectName });
+		return { pinned: ports };
+	});
+}
