@@ -502,6 +502,18 @@ describe("mergeCheckoutFile", () => {
 		expect(readLocal(fresh)).toBe("B=1\nMINE=1\n");
 	});
 
+	it("repairs a base copy whose hash is not the recorded base", async () => {
+		const repo = await diverged("A=1\n", "A=1\n", "A=1\n");
+		// A crash between writing the base copy and files.json leaves one stale.
+		writeFileSync(join(repo.root, ".buncargo", "files-base", ENV), "A=0\n");
+		await sync(repo);
+		writeLocal(repo, "A=1\nMINE=1\n");
+		seedStore(repo, "B=1\n");
+		const result = await merge(repo);
+		expect(result.base).toBe(true);
+		expect(readLocal(repo)).toBe("B=1\nMINE=1\n");
+	});
+
 	it("refuses a file that is not dotenv, naming the alternatives", async () => {
 		const repo = await diverged("{}\n", '{"a": 1}\n', '{"b": 2}\n');
 		await expect(merge(repo)).rejects.toThrow(

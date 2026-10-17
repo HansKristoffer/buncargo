@@ -160,6 +160,19 @@ function readBaseCopy(
 	}
 }
 
+/**
+ * The bytes to write as `view`'s base copy when it is missing or stale (synced
+ * before base copies existed, or a crash between the copy and the state) and
+ * either side still holds the base, so a later `files merge` is three-way.
+ */
+function baseCopyRepair(root: string, view: View): Buffer | undefined {
+	if (!view.base || readBaseCopy(root, view.spec.path, view.base))
+		return undefined;
+	if (view.base === view.localHash) return view.local.data;
+	if (view.base === view.store?.hash) return view.store.data;
+	return undefined;
+}
+
 /** Record `data` as the base of `path`: its hash in the state, its content beside it. */
 function recordBase(
 	root: string,
@@ -468,28 +481,22 @@ export async function syncCheckoutFiles(
 		return action;
 	};
 	const needsWrite = (view: View) => !["none", "leave"].includes(plan(view));
+	const needsBaseCopy = (view: View) =>
+		baseCopyRepair(root, view) !== undefined;
 
 	let refusals = new Map<string, string>();
-	if (opened.views.some(needsWrite))
+	if (opened.views.some(needsWrite) || opened.views.some(needsBaseCopy))
 		await withStoreLock(opened.dir, () => {
 			opened = readOpened(root, selected, opened.repoKey, opened.dir);
-			refusals = apply(root, opened, plan, log);
-			opened = readOpened(root, selected, opened.repoKey, opened.dir);
+			if (opened.views.some(needsWrite)) {
+				refusals = apply(root, opened, plan, log);
+				opened = readOpened(root, selected, opened.repoKey, opened.dir);
+			}
+			for (const view of opened.views) {
+				const data = baseCopyRepair(root, view);
+				if (data) writeFileAtomic(baseCopyPath(root, view.spec.path), data);
+			}
 		});
-
-	// Checkouts synced before base copies existed get one while either side
-	// still holds the base, so a later `files merge` is three-way.
-	for (const view of opened.views) {
-		const path = view.spec.path;
-		const data =
-			view.base === view.localHash
-				? view.local.data
-				: view.base === view.store?.hash
-					? view.store?.data
-					: undefined;
-		if (data && !existsSync(baseCopyPath(root, path)))
-			writeFileAtomic(baseCopyPath(root, path), data);
-	}
 
 	for (const view of opened.views) {
 		if (stateOf(view) !== "conflict" || view.local.refusal) continue;
