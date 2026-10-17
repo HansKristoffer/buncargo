@@ -562,10 +562,6 @@ export async function runWorkspaceTypecheck(
 		);
 
 		running.add(promise);
-
-		if (running.size >= concurrency) {
-			await Promise.race(running);
-		}
 	}
 
 	await Promise.all(running);
