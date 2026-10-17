@@ -71,7 +71,8 @@ describe("runWatchdogLoop", () => {
 			log: (message) => logs.push(message),
 			intervalMs: 0,
 			exitIfIdle: async () => true,
-			stateGone: () => sweeps === 2,
+			outlived: () =>
+				sweeps === 2 ? "The state directory is gone" : undefined,
 		});
 		expect(sweeps).toBe(2);
 		expect(logs).toEqual(["The state directory is gone; exiting"]);

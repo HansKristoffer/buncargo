@@ -1,7 +1,9 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { isProcessAlive } from "./process/lifecycle";
 import { readProcessIdentityAsync } from "./process-identity";
 import { buncargoVersion } from "./version";
+import { readWatchdogOwnerAsync } from "./watchdog";
 
 /**
  * Record this test process as the watchdog of the state directory under
@@ -23,4 +25,25 @@ export async function standInForWatchdog(home: string): Promise<void> {
 			version: buncargoVersion(),
 		}),
 	);
+}
+
+/**
+ * Stop the watchdog the current `HOME`'s pid file names, if that is still the
+ * process recorded and not this one, and wait for it to exit: one that is
+ * still writing its log would recreate a home its caller is about to delete.
+ */
+export async function stopWatchdog(): Promise<void> {
+	const owner = await readWatchdogOwnerAsync();
+	if (!owner || owner.pid === process.pid) return;
+	if (owner.processIdentity === undefined) return;
+
+	try {
+		process.kill(owner.pid, "SIGTERM");
+	} catch {
+		// It exited between the check and the signal.
+		return;
+	}
+	const deadline = Date.now() + 5000;
+	while (isProcessAlive(owner.pid) && Date.now() < deadline)
+		await Bun.sleep(20);
 }

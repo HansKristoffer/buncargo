@@ -1,8 +1,9 @@
 # Testing
 
 `bun test` runs the hermetic suite. `bunfig.toml` preloads `scripts/test-runtime-isolation.ts`,
-which puts failing `docker` and `container` stubs first on `PATH`, so unit tests can never reach the
-developer's container daemons. Tests are co-located with their module as `*.test.ts`; test helpers
+which keeps unit tests off the developer's machine: failing `docker` and `container` stubs first on
+`PATH`, `DOCKER_HOST` pointed at nothing, a temporary `HOME` for the run, and
+`BUNCARGO_WATCHDOG_PARENT`, so every watchdog a test starts ends with the run. Tests are co-located with their module as `*.test.ts`; test helpers
 shared across files are `*.testing.ts` and excluded from the package.
 
 ## Opt-in suites

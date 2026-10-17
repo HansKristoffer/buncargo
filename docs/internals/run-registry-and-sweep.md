@@ -149,8 +149,9 @@ runtime as well as `HOME`**: stub adapters, or `DOCKER_HOST` pointed at nothing.
 registry makes every real stack on the machine look unowned. Docker Desktop finds its Compose plugin
 through `HOME`, so a stray isolated `HOME` fails every teardown, which is luck, not safety;
 `stopContainers` names that failure (`'compose' is not a docker command`) rather than passing it
-through. `bunfig.toml` preloads `scripts/test-runtime-isolation.ts`, which puts failing `docker`
-and `container` stubs first on `PATH` for every unit test.
+through. For every unit test, `bunfig.toml` preloads `scripts/test-runtime-isolation.ts`, which
+does both: failing `docker` and `container` stubs first on `PATH` and a dead `DOCKER_HOST`, and a
+temporary `HOME` for the run.
 
 ## The watchdog
 
@@ -169,8 +170,10 @@ opt out with, so it ensures none. The loop already stays while any entry is live
 not, and stays for no container of a stack the sweep reports as another user's
 (`watchesNothing`): on a daemon shared with a CI user, those would keep it up for good. It also
 exits once its state directory is confirmed gone, which is a test's temporary `HOME` deleted
-under it: one such runner outlived its test, found the real `docker` and, with no registry left,
-swept another user's stacks.
+under it, or once the process `BUNCARGO_WATCHDOG_PARENT` names has ended, which the test preload
+sets to the `bun test` process: two runners started by a test outlived it, found the real `docker`
+and, with no registry of theirs naming a stack, swept another user's. A real watchdog never gets
+the variable, because it has to outlive the run that started it.
 
 One watchdog sweeps for every checkout, so whichever buncargo started it decides for all of them: a
 12.4 runner started from one worktree swept stacks of worktrees on 13. The runner records its

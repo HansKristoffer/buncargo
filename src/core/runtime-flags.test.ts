@@ -19,6 +19,7 @@ import {
 	quickTunnelUrlTimeoutMs,
 	shouldSyncHostsFile,
 	typecheckConcurrencyOverride,
+	watchdogParent,
 } from "./runtime-flags";
 
 describe("Connection credentials", () => {
@@ -199,5 +200,25 @@ describe("infisicalUniversalAuthFile", () => {
 		expect(
 			infisicalUniversalAuthFile({ INFISICAL_CLIENT_SECRET: "s" }, "/home/dev"),
 		).toBeUndefined();
+	});
+});
+
+describe("watchdogParent", () => {
+	it("reads the pid and the identity, which may itself hold colons", () => {
+		expect(
+			watchdogParent({ BUNCARGO_WATCHDOG_PARENT: "4242:linux:boot:123" }),
+		).toEqual({ pid: 4242, identity: "linux:boot:123" });
+		expect(watchdogParent({ BUNCARGO_WATCHDOG_PARENT: "4242:" })).toEqual({
+			pid: 4242,
+			identity: undefined,
+		});
+	});
+
+	it("names no parent for an unset or unusable value", () => {
+		expect(watchdogParent({})).toBeUndefined();
+		expect(
+			watchdogParent({ BUNCARGO_WATCHDOG_PARENT: "abc:x" }),
+		).toBeUndefined();
+		expect(watchdogParent({ BUNCARGO_WATCHDOG_PARENT: "1:x" })).toBeUndefined();
 	});
 });

@@ -185,6 +185,33 @@ describe("ensureWatchdog", () => {
 	});
 });
 
+describe("the watchdog runner", () => {
+	it("exits without sweeping once the process it may not outlive has ended", async () => {
+		// A watchdog a test run started outlived it and, from a temporary HOME,
+		// swept real stacks on the machine's daemon.
+		const parent = Bun.spawn([process.execPath, "-e", ""]);
+		await parent.exited;
+
+		const runner = Bun.spawn([process.execPath, resolveWatchdogRunnerPath()], {
+			cwd: home,
+			env: { ...process.env, BUNCARGO_WATCHDOG_PARENT: `${parent.pid}:` },
+			stdio: ["ignore", "pipe", "inherit"],
+		});
+		const exited = await Promise.race([
+			runner.exited.then(() => true),
+			Bun.sleep(15_000).then(() => false),
+		]);
+		if (!exited) runner.kill();
+
+		const output = await new Response(runner.stdout).text();
+		expect(exited).toBe(true);
+		expect(output).toContain(
+			`Process ${parent.pid}, which BUNCARGO_WATCHDOG_PARENT names, has ended; exiting`,
+		);
+		expect(output).not.toContain("Removed");
+	}, 20_000);
+});
+
 describe("isOutdatedWatchdog", () => {
 	it("replaces only strictly older code, and one that recorded no version", () => {
 		expect(isOutdatedWatchdog({ version: "12.4.0" }, "13.0.0")).toBe(true);

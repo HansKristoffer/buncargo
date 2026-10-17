@@ -15,11 +15,13 @@ export interface WatchdogLoopDeps {
 	 */
 	exitIfIdle: (pass: SweepResult) => Promise<boolean>;
 	/**
-	 * True once the state directory it was started for is confirmed gone: a
-	 * test's temporary HOME, deleted under it. Its registry can name nothing
-	 * any more, so it stops rather than sweep on what an empty one says.
+	 * Why the watchdog has outlived what it was started for, or undefined
+	 * while it has not: its state directory confirmed gone (a test's
+	 * temporary HOME, whose registry can name nothing any more), or the test
+	 * run it may not outlive ended. It stops rather than sweep on what an
+	 * empty registry says.
 	 */
-	stateGone?: () => boolean;
+	outlived?: () => string | undefined;
 }
 
 /**
@@ -169,8 +171,9 @@ export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 	let reportedPassError: string | undefined;
 
 	while (true) {
-		if (deps.stateGone?.()) {
-			deps.log("The state directory is gone; exiting");
+		const outlived = deps.outlived?.();
+		if (outlived) {
+			deps.log(`${outlived}; exiting`);
 			return;
 		}
 		try {

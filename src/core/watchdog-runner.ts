@@ -14,11 +14,14 @@ import { appendFileSync, readFileSync, unlinkSync } from "node:fs";
 import { sweepOrphanedContainers } from "../container-runtime/sweep";
 import { checkoutDeleted } from "./checkout-presence";
 import { FileLockTimeoutError, withFileLock } from "./file-lock";
-import { readCurrentProcessIdentityAsync } from "./process-identity";
+import {
+	matchesProcessIdentity,
+	readCurrentProcessIdentityAsync,
+} from "./process-identity";
 import { writeJsonDocumentSync } from "./registry-file";
 import { removalActor } from "./removal-log";
 import { readAllRuns, runLivenessAsync } from "./run-registry";
-import { tailnetDirectoryEnabled } from "./runtime-flags";
+import { tailnetDirectoryEnabled, watchdogParent } from "./runtime-flags";
 import { getStateDir } from "./state-paths";
 import { serveTailnetDirectory } from "./tailnet-directory";
 import {
@@ -74,13 +77,22 @@ process.on("SIGINT", () => {
 	process.exit(0);
 });
 
+const parent = watchdogParent();
+
+function outlived(): string | undefined {
+	if (checkoutDeleted(getStateDir())) return "The state directory is gone";
+	if (parent && !matchesProcessIdentity(parent.pid, parent.identity))
+		return `Process ${parent.pid}, which BUNCARGO_WATCHDOG_PARENT names, has ended`;
+	return undefined;
+}
+
 function watch(owner: object): Promise<void> {
 	return runWatchdogLoop({
 		sweep: () => sweepOrphanedContainers({ actor }),
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		log,
 		intervalMs: WATCHDOG_POLL_INTERVAL_MS,
-		stateGone: () => checkoutDeleted(getStateDir()),
+		outlived,
 		exitIfIdle: (pass) =>
 			exitUnlessClaimed({
 				withSpawnLock: (operation) =>

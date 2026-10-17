@@ -197,6 +197,23 @@ export function tailnetDirectoryEnabled(
 	return env.BUNCARGO_TAILNET_DIRECTORY !== "0";
 }
 
+/**
+ * `BUNCARGO_WATCHDOG_PARENT=<pid>:<identity>` - a process the watchdog exits
+ * once it is gone. The test preload sets it, so a watchdog a test started ends
+ * with the test run; a real watchdog outlives the run that started it.
+ */
+export function watchdogParent(
+	env: NodeJS.ProcessEnv = process.env,
+): { pid: number; identity?: string } | undefined {
+	const raw = readTrimmed(env, "BUNCARGO_WATCHDOG_PARENT");
+	if (!raw) return undefined;
+	const [pidText = "", ...rest] = raw.split(":");
+	const pid = Number(pidText);
+	if (!Number.isInteger(pid) || pid <= 1) return undefined;
+	const identity = rest.join(":");
+	return { pid, identity: identity || undefined };
+}
+
 /** `BUNCARGO_LOCAL_IP` - the address `<app>Local` URLs use instead of the first network interface's. */
 export function localIpOverride(
 	env: NodeJS.ProcessEnv = process.env,

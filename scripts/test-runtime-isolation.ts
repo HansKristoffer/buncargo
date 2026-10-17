@@ -1,15 +1,10 @@
 /** Unit tests must not depend on or mutate the developer's container daemons or state. */
 import { afterAll } from "bun:test";
-import {
-	chmodSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { matchesProcessIdentity } from "../src/core/process-identity";
+import { readProcessIdentity } from "../src/core/process-identity";
+import { stopWatchdog } from "../src/core/watchdog.testing";
 
 /**
  * The opt-in suites that run against the real machine on purpose
@@ -26,32 +21,10 @@ const REAL_MACHINE_SUITES = [
 	"BUNCARGO_TEST_SHOPIFY_CLI",
 ] as const;
 
-/**
- * Stop the watchdog a test started under `home`, if the pid file still names
- * that process. Only this run's own home is read, so nothing else is touched.
- */
-function stopWatchdogOf(home: string): void {
-	let owner: { pid?: unknown; processIdentity?: unknown };
-	try {
-		owner = JSON.parse(
-			readFileSync(join(home, ".buncargo", "watchdog.pid"), "utf8"),
-		);
-	} catch {
-		// No watchdog was started under this home.
-		return;
-	}
-	if (
-		typeof owner.pid !== "number" ||
-		typeof owner.processIdentity !== "string"
-	)
-		return;
-	if (!matchesProcessIdentity(owner.pid, owner.processIdentity)) return;
-	try {
-		process.kill(owner.pid, "SIGTERM");
-	} catch {
-		// It exited between the check and the signal.
-	}
-}
+// Every watchdog a test starts, under any HOME, exits once this run has
+// ended: a temporary HOME alone does not keep a sweep off the machine's
+// container daemon.
+process.env.BUNCARGO_WATCHDOG_PARENT = `${process.pid}:${readProcessIdentity(process.pid) ?? ""}`;
 
 // The whole run gets a temporary home, so a test that forgets to move HOME
 // writes there rather than to the developer's `~/.buncargo`. A test that sets
@@ -60,8 +33,8 @@ if (!REAL_MACHINE_SUITES.some((name) => process.env[name])) {
 	const realHome = process.env.HOME;
 	const home = mkdtempSync(join(tmpdir(), "buncargo-test-home-"));
 	process.env.HOME = home;
-	afterAll(() => {
-		stopWatchdogOf(home);
+	afterAll(async () => {
+		await stopWatchdog();
 		// Bun writes its transpiler cache under HOME as it exits, after this.
 		process.env.HOME = realHome;
 		rmSync(home, { recursive: true, force: true });
