@@ -429,8 +429,11 @@ async function runDevFlow<
 	// machine, and before the containers, so a question cannot land in the
 	// middle of startup output.
 	if (!args.oneShot) await offerMenuBarApp();
+	// Kept for the TUI, which covers the scrollback they were printed in.
+	const printedHostsWarnings: string[] = [];
 	const flushHostsWarnings = (): void => {
 		for (const warning of hostsWarnings) log.warn(warning);
+		printedHostsWarnings.push(...hostsWarnings);
 		hostsWarnings = [];
 	};
 	// Claimed here rather than left to `start()`, because only the CLI knows
@@ -716,8 +719,11 @@ async function runDevFlow<
 	try {
 		// After every prompt and the banner, which stay in the scrollback.
 		view.start();
-		// The TUI covers that scrollback: repeat why an app is missing in its
-		// Overview (events are not printed again in stream mode).
+		// The TUI covers that scrollback: repeat why an app is missing, and why
+		// the URLs are `localhost:port`, in its Overview (events are not
+		// printed again in stream mode).
+		for (const warning of printedHostsWarnings)
+			view.output.event("buncargo", warning, "warn");
 		for (const skip of leaseSkips)
 			for (const line of leaseSkipLines(skip))
 				view.output.event(skip.app, line, "warn");
