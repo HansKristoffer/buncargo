@@ -6,6 +6,16 @@ import { PassThrough } from "node:stream";
 import { RunOutput } from "../../core/process/run-output";
 import { RunTui } from "./run-tui";
 
+/** Poll a condition until it holds or the deadline passes. */
+async function until(condition: () => boolean, timeoutMs = 5_000) {
+	const deadline = performance.now() + timeoutMs;
+	while (!condition()) {
+		if (performance.now() > deadline)
+			throw new Error(`Condition not met within ${timeoutMs}ms`);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
 /**
  * A crash must never leave the user's terminal broken: raw mode off, the
  * alternate screen left, the cursor shown, whichever way the process ends.
@@ -32,8 +42,11 @@ async function runChild(how: "throw" | "exit" | "sigterm") {
 		},
 	);
 	if (how === "sigterm") {
-		await Bun.sleep(400);
-		Bun.spawnSync(["pkill", "-TERM", "-f", "tui-child.testing.ts sigterm"]);
+		// Once it has drawn a frame; by its own pid, never by a pattern other
+		// worktrees' runs of this test share.
+		await until(() => output.includes("hello from api"));
+		const pid = Number(/pid:(\d+)/.exec(output)?.[1]);
+		process.kill(pid, "SIGTERM");
 	}
 	await proc.exited;
 	return output;
