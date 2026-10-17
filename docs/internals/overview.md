@@ -6,9 +6,23 @@ are resolved once into a `DevEnvContext` (`src/environment/context.ts`) without 
 (Compose up, readiness, migrations, seed), spawns the apps in waves, and publishes what it
 started back into the run entry; tunnels open only when the caller asks (`openPublicTunnels()`).
 The CLI (`src/cli/run-cli.ts`) drives the same environment and adds the terminal: prompts, the
-banner, the TUI or stream output, takeover and detach. Named hosts are the CLI's alone
-(`cli/dev-hosts.ts`, `commands/runtime.ts`): `start()` leaves `env.urls` on `localhost:port`. The machine-wide watchdog and the `ls`/`doctor` commands sweep stacks whose
-run has ended. BuncargoBar reads the run registry and shells every mutation out to `buncargo stop`.
+banner, the TUI or stream output, takeover and detach. The machine-wide watchdog and the
+`ls`/`doctor` commands sweep stacks whose run has ended. BuncargoBar reads the run registry and
+shells every mutation out to `buncargo stop`.
+
+## What only `buncargo dev` does
+
+`runDevFlow` does more than `start()`, by decision rather than oversight: `exclusive` leases
+(`cli/dev-leases.ts`), named hosts (`cli/dev-hosts.ts`; `start()` leaves `env.urls` on
+`localhost:port`), the fast checks and integration `preflight` steps, connect sharing, the app rows
+and per-run logs that `ls`, `stop`, `restart`, `logs` and BuncargoBar read, and parking an app that
+never came up. Each one belongs to a long-lived run that a person or agent started: it asks at a
+terminal (preflight, takeover), claims machine-wide state held by that process until it exits
+(leases, host routes, connect), or describes that process to other tools. A library `start()` runs
+inside a test or script buncargo does not own, often many sessions to one process. The cost is
+real: without a lease, a `start()` and a `dev` can both run one exclusive app. The user-facing
+list is in `docs/reference.md` (Programmatic API); keep it in step when a behavior crosses this
+line, and port one to `start()` only on purpose.
 
 ## Ownership
 

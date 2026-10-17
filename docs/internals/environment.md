@@ -3,7 +3,8 @@
 `createDevEnvironment()` lives in `src/environment/`. `context.ts` resolves identity, ports and URLs
 once into a `DevEnvContext`; `env-vars.ts`, `lifecycle.ts`, `servers.ts` and `run-claim.ts` are
 built on it, and `create-dev-environment.ts` only composes them. Extract a complex concern into a
-focused module (logging, seeding) rather than growing the composition.
+focused module (logging, seeding) rather than growing the composition. What `start()` leaves to the
+CLI, and why, is in [what only `buncargo dev` does](./overview.md#what-only-buncargo-dev-does).
 
 ## Seeding
 
