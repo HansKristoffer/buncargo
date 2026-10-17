@@ -1,11 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "../registry-file";
 import { hostsDaemonPort } from "../runtime-flags";
-import {
-	chownToInvokingUser,
-	getDaemonConfigPath,
-	getPidfilePath,
-} from "./paths";
+import { chownToInvokingUser } from "../state-paths";
+import { getDaemonConfigPath, getPidfilePath } from "./paths";
 
 /**
  * What the `:443` proxy was configured with, and which process is running it.

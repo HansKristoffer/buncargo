@@ -6,7 +6,8 @@ import {
 	isRouteOwnerAlive,
 	type ListRegistryReadOptions,
 } from "../registry-file";
-import { chownToInvokingUser, getRoutesPath } from "./paths";
+import { chownToInvokingUser } from "../state-paths";
+import { getRoutesPath } from "./paths";
 
 const REGISTRY_VERSION = 1;
 

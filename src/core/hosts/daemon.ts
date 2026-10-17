@@ -18,7 +18,7 @@ import {
 	DEFAULT_HOSTS_DAEMON_PORT,
 	shouldSyncHostsFile,
 } from "../runtime-flags";
-import { getStateDir } from "../state-paths";
+import { chownToInvokingUser, getStateDir } from "../state-paths";
 import {
 	certificateFingerprint,
 	describeCertificateGap,
@@ -32,7 +32,6 @@ import {
 import { cleanHostsFile, syncHostsFile } from "./hosts-file";
 import {
 	CERT_FILENAME,
-	chownToInvokingUser,
 	getCertPath,
 	getCertsDir,
 	getKeyPath,

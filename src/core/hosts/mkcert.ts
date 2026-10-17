@@ -9,17 +9,13 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { mkcertPathOverride, mkcertVersion } from "../runtime-flags";
+import { chownToInvokingUser, resolveUserHome } from "../state-paths";
 import {
 	isInstalledTool,
 	resolveToolBinary,
 	toolCachePath,
 } from "../tool-binary";
-import {
-	chownToInvokingUser,
-	getCertPath,
-	getKeyPath,
-	resolveUserHome,
-} from "./paths";
+import { getCertPath, getKeyPath } from "./paths";
 import { certificateCovers } from "./plan";
 
 export const MKCERT_RELEASE_BASE =

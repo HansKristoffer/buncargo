@@ -1,6 +1,11 @@
 import { existsSync, rmSync } from "node:fs";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "../registry-file";
 import {
+	chownToInvokingUser,
+	type InvokingUser,
+	invokingUserIdentity,
+} from "../state-paths";
+import {
 	buncargoVersion,
 	currentDaemonBundleHash,
 	HOSTS_DAEMON_DIR,
@@ -10,12 +15,7 @@ import {
 	readDaemonBundleSource,
 	supersededBundles,
 } from "./daemon-bundle";
-import {
-	chownToInvokingUser,
-	getServiceManifestPath,
-	type InvokingUser,
-	invokingUserIdentity,
-} from "./paths";
+import { getServiceManifestPath } from "./paths";
 import { type PrivilegedRunner, systemPrivilegedRunner } from "./privileged";
 import {
 	buildLaunchdPlist,

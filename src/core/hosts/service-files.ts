@@ -1,4 +1,4 @@
-import type { InvokingUser } from "./paths";
+import type { InvokingUser } from "../state-paths";
 
 /**
  * The launchd plist and systemd unit that run the named-hosts proxy as root.

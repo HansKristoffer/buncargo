@@ -15,7 +15,7 @@ import { declineMarker } from "./prompt";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
 import { barOfferOptedOut, isCI } from "./runtime-flags";
 import { shellQuote } from "./shell-quote";
-import { chownToInvokingUser, getStateDir, stateFilePath } from "./state-paths";
+import { chownToInvokingUser, stateFilePath } from "./state-paths";
 
 /**
  * BuncargoBar — the macOS menu bar app that reads the run registry.
@@ -344,13 +344,6 @@ export interface BarInstallResult {
 	relaunched?: boolean;
 }
 
-/**
- * Download and install the app.
- *
- * `ditto` rather than `unzip`, matching how the release is packed: it is the
- * only extractor that reliably preserves a bundle's code signature and
- * resource forks.
- */
 export interface BarInstallOptions {
 	/**
 	 * Refuse a release whose bundle cannot decode this `runs.json` version.
@@ -524,9 +517,4 @@ function run(command: string, options: { verbose?: boolean } = {}) {
 			verbose: options.verbose ?? false,
 		},
 	);
-}
-
-/** So callers can report where state lives without importing state-paths. */
-export function barStateDir(): string {
-	return getStateDir();
 }
