@@ -21,9 +21,8 @@ warns once and continues.
   `select-organization`, and the scoped token stays in memory so the CLI's own session is never
   switched.
 - The secrets are listed over HTTP (v4, imports beneath the folder's own values).
-- A universal-auth identity replaces the CLI for commands (`infisicalMachineCredentials` in
-  `runtime-flags.ts`). App processes still skip the fetch under a machine identity, because their
-  own loaders authenticate without the CLI.
+- A universal-auth identity (`infisicalMachineCredentials` in `runtime-flags.ts`, else the
+  identity file) replaces the CLI for apps and commands alike, sharing the per-scope cache.
 
 ## Where they go
 

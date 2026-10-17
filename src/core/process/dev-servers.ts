@@ -240,9 +240,9 @@ export async function startDevServers(
 	// Here rather than in the environment layer because this is the one function
 	// every spawner goes through: `startAppServers` and the CLI's own dev flow
 	// both land here, and a third caller cannot miss it. Lowest precedence — the
-	// app's computed env is layered on top, and `spawnManagedApp` puts the
-	// developer's own `process.env` in between. `loadAppSecrets` returns an empty
-	// map without spawning anything when no app declared a scope.
+	// app's computed env is layered on top, and `loadAppSecrets` drops keys the
+	// developer already exported. It returns an empty map without spawning
+	// anything when no app declared a scope.
 	const secrets = await loadAppSecrets(startable, undefined, {
 		signal: options.signal,
 		onWait: (ms) => options.onPhase?.("secrets", ms),

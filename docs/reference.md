@@ -1117,7 +1117,7 @@ It fetches the way `hanzio/secrets` does, with the same defaults. The CLI is ask
 
 **Commands.** `buncargo secrets ls [--app=api] [--env=prod]` lists key names, never values, each with its source: Infisical, env override or missing. `buncargo setup` and `buncargo doctor` check that every scope is readable and print the fix (`infisical login --domain=…`, MFA).
 
-A failed fetch warns once and continues; an app's own loader then does what it does today. Values are never logged, never written to a state file, and never included in an error: neither the CLI's output nor a response body is echoed. An empty value is never injected, since a blank variable would read as "already set". An app process under a machine identity fetches nothing itself, because its own loader authenticates without the CLI session this exists to serialize.
+A failed fetch warns once and continues; an app's own loader then does what it does today. Values are never logged, never written to a state file, and never included in an error: neither the CLI's output nor a response body is echoed. An empty value is never injected, since a blank variable would read as "already set".
 
 Defaults: `siteUrl` is `https://eu.infisical.com` (like hanzio; it was `app.infisical.com` before the next major), `environment` is `SECRETS_ENV` or `dev`, `path` is `/`.
 
