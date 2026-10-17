@@ -383,7 +383,19 @@ export async function startDevServers(
 		readinessFailures.delete(name);
 		sideChecks.get(name)?.abort();
 		output.state(name, { state: "starting" });
-		await session.restart(name, reason);
+		try {
+			await session.restart(name, reason);
+		} catch (error) {
+			// The old process is gone and no new one took over. A run that is
+			// ending reports its apps itself.
+			if (!owner.controller.signal.aborted)
+				output.state(name, {
+					state: "failed",
+					detail: `restart failed: ${toError(error).message}`,
+					restartable: true,
+				});
+			throw error;
+		}
 		checkOnTheSide(name);
 	};
 	output.controls = { restart: (name) => restartApp(name, "requested") };

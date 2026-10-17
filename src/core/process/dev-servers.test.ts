@@ -548,6 +548,38 @@ describe("startDevServers prebuild", () => {
 	});
 });
 
+describe("startDevServers restart", () => {
+	it("reports a restart that could not replace the app as failed", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-restart-failed-"));
+		await mkdir(join(root, "api"));
+		const output = new RunOutput();
+		const silent = "bun -e 'setInterval(() => {}, 60000)'";
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					keeper: { kind: "worker", devCommand: silent },
+					api: { kind: "worker", cwd: "api", devCommand: silent },
+				},
+				root,
+				{},
+				{},
+				{ verbose: false, waitForExit: false, output },
+			);
+			// Its working directory is gone: the replacement cannot spawn.
+			await rm(join(root, "api"), { recursive: true });
+			await expect(output.controls?.restart("api")).rejects.toThrow();
+			expect(output.states.get("api")).toMatchObject({
+				state: "failed",
+				restartable: true,
+			});
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("startDevServers keepOthersOnFailure", () => {
 	const serve = (port: number) =>
 		`bun -e 'Bun.serve({ port: ${port}, fetch: () => new Response("ok") }); setInterval(() => {}, 60000)'`;
