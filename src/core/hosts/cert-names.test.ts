@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -108,6 +108,26 @@ describe("rememberCertNames", () => {
 		});
 		// The real `existsSync` applies here, and /repo/a is fictional.
 		expect(await readCertNames(path)).toEqual([]);
+	});
+
+	// This runs on every dev start, in a directory the daemon watches.
+	it("leaves the file alone when a project's names have not changed", async () => {
+		const path = tempPath();
+		const remember = () =>
+			rememberCertNames({
+				root: "/repo/a",
+				names: ["a.localhost", "*.a.localhost"],
+				path,
+				rootExists: alive,
+			});
+		await remember();
+		const stored = JSON.parse(readFileSync(path, "utf8"));
+		stored.projects[0].updatedAt = "2020-01-01T00:00:00.000Z";
+		writeFileSync(path, JSON.stringify(stored));
+		const before = readFileSync(path, "utf8");
+
+		await remember();
+		expect(readFileSync(path, "utf8")).toBe(before);
 	});
 });
 

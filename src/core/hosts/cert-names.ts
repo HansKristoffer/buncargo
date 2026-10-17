@@ -101,21 +101,21 @@ export async function rememberCertNames(input: {
 	// union must not be able to erase a project's coverage by omission.
 	// An entry is retired only when its checkout is gone from disk
 	// (`pruneCertNameEntries`); `hosts uninstall` removes the whole file.
-	const next =
-		input.root && input.names.length > 0
-			? [
-					...live.filter((entry) => entry.root !== input.root),
-					{
-						root: input.root,
-						names: [...new Set(input.names)].sort(),
-						updatedAt: new Date().toISOString(),
-					},
-				]
-			: live;
+	const { root } = input;
+	const names = [...new Set(input.names)].sort();
+	const current = live.find((entry) => entry.root === root);
+	const changed =
+		root && names.length > 0 && current?.names.join(",") !== names.join(",");
+	const next = changed
+		? [
+				...live.filter((entry) => entry.root !== root),
+				{ root, names, updatedAt: new Date().toISOString() },
+			]
+		: live;
 
 	// Only when something actually changed: this runs on every dev start, and
-	// the daemon watches this directory.
-	if (JSON.stringify(next) !== JSON.stringify(stored)) {
+	// the daemon watches this directory. Pruning only ever removes entries.
+	if (changed || live.length !== stored.length) {
 		await registry.write(path, next);
 	}
 
