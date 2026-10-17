@@ -7,13 +7,15 @@ shared across files are `*.testing.ts` and excluded from the package.
 
 ## Opt-in suites
 
-These touch the network, real binaries or real runtimes, so the default run skips them.
+These touch the network, real binaries or real runtimes, or wait out a real timer, so the default
+run skips them.
 
 | Script                                   | Variable                                   | What it proves                                                                                                       |
 | ---------------------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
 | `bun run test:integration-cloudflared`   | `BUNCARGO_TEST_CLOUDFLARED_SMOKE=1`        | A quick tunnel returns a public HTTPS URL. Cloudflare may 429; may download `cloudflared`.                            |
 | `bun run test:integration-cloudflared-e2e` | `…_SMOKE=1 BUNCARGO_TEST_CLOUDFLARED_E2E=1` | `curl` through `*.trycloudflare.com` reaches the local server.                                                     |
 | `bun run test:integration-hosts`         | `BUNCARGO_TEST_HOSTS=1`                    | A real mkcert mint. Needs no sudo, system trust or `:443`; may download `mkcert`.                                    |
+| `bun run test:integration-proxy-idle`    | `BUNCARGO_TEST_PROXY_IDLE=1`               | The proxy keeps a quiet streamed response (SSE) open past Bun's 10s idle default. Takes ~13s: only elapsed time proves it. |
 | `bun run test:integration-hosts-soak`    | `BUNCARGO_TEST_HOSTS_SOAK=1`               | Several worktrees activate in parallel, repeatedly, and every hostname attaches every time. See below.               |
 | `bun run test:integration-apple`         | `BUNCARGO_TEST_APPLE_CONTAINER=1`          | The live Apple `container` runtime (macOS 26+, Apple silicon).                                                       |
 | `bun run test:integration-frp`           | `BUNCARGO_TEST_FRP=1`                      | frp publishing end to end.                                                                                           |

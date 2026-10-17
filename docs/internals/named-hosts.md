@@ -157,3 +157,4 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   `ERR_INCOMPLETE_CHUNKED_ENCODING` on a request that already returned 200. Anything that
   keep-alives less often than 10s (oRPC defaults to 15s, tuned for hosted proxies) dies before its
   first ping. Do not answer this by shortening the app's keep-alive; the proxy is what is wrong.
+  Only elapsed time proves it, so its test is the opt-in `test:integration-proxy-idle`.
