@@ -2,6 +2,7 @@ import { assertValidConfig } from "../config";
 import { applyIntegrations } from "../config/integrations";
 import { setUnsetEnv } from "../core/child-env";
 import { waitForServer } from "../core/network";
+import { findMonorepoRoot } from "../core/ports";
 import { type PrimaryAppInput, resolvePrimaryApp } from "../core/primary-app";
 import { stopProcess } from "../core/process";
 import { createPrismaRunner } from "../prisma";
@@ -57,11 +58,13 @@ export function createDevEnvironment<
 ): DevEnvironment<TServices, TApps, TEnv> {
 	// Integrations transform the config before anything reads it; `withSuffix`
 	// re-applies them to the original, which is pure and gives the same result.
-	const resolved = applyIntegrations(config);
+	// They read project files from the checkout, wherever this process runs.
+	const root = options.root ?? findMonorepoRoot();
+	const resolved = applyIntegrations(config, { root });
 	assertValidConfig(resolved);
 	setUnsetEnv(resolved.unsetEnv);
 
-	const ctx = createDevEnvContext(resolved, options);
+	const ctx = createDevEnvContext(resolved, { ...options, root });
 	const envVars = createEnvVarsApi(ctx);
 	const runClaim = createRunClaimApi(ctx);
 	const coordinator = new LifecycleCoordinator();

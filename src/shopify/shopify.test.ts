@@ -246,6 +246,23 @@ describe("shopify CLI runs", () => {
 });
 
 describe("shopify()", () => {
+	it("reads the app toml from the checkout it is given, not the working directory", () => {
+		const root = repo({ "shopify.app.toml": TOML });
+		process.chdir(mkdtempSync(join(tmpdir(), "buncargo-elsewhere-")));
+		roots.push(process.cwd());
+		const base: IntegrationConfig = {
+			projectPrefix: "shop",
+			services: {},
+			apps: { platform: { port: 5173, devCommand: "bun dev" } },
+		};
+		const config = shopify({ frontend: "platform" }).config?.(base, {
+			root,
+		}) as IntegrationConfig;
+		expect(config.apps?.shopify?.exclusive).toBe(
+			"shopify-app:0123456789abcdef0123456789abcdef",
+		);
+	});
+
 	it("adds the CLI app, extension watchers, env and the web toml", () => {
 		const root = repo({
 			"shopify.app.toml": TOML,

@@ -223,8 +223,8 @@ export function supabase(
 	return {
 		name: "supabase",
 
-		config(config) {
-			const root = findMonorepoRoot();
+		config(config, ctx) {
+			const root = ctx?.root ?? findMonorepoRoot();
 			const toml = readSupabaseProject(workdirOf(root));
 			project = toml;
 			bin = resolveSupabaseBin(root);

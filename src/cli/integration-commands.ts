@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import { applyIntegrations } from "../config/integrations";
 import { findMonorepoRoot } from "../core/ports";
 import { loadDevEnv } from "../loader";
@@ -39,7 +40,10 @@ export async function readAppliedConfig(): Promise<
 		const config = (await import(path)).default as
 			| IntegrationConfig
 			| undefined;
-		return config ? applyIntegrations(config) : undefined;
+		// The config's checkout, as `loadDevEnv` resolves it.
+		return config
+			? applyIntegrations(config, { root: findMonorepoRoot(dirname(path)) })
+			: undefined;
 	} catch {
 		return undefined;
 	}

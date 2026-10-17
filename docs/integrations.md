@@ -46,7 +46,7 @@ export function stripe(options: { app: string }): BuncargoIntegration {
 | Member | When | Use it for |
 | --- | --- | --- |
 | `name` | always | Identity, and the CLI namespace: `buncargo <name> <command>` |
-| `config(config)` | before validation, in `integrations` order | Adding apps, services, `env`, `generatedFiles`, `options`. What it adds is validated like the rest. Keep it pure; read files, don't start anything |
+| `config(config, { root })` | before validation, in `integrations` order | Adding apps, services, `env`, `generatedFiles`, `options`. What it adds is validated like the rest. Keep it pure; read files relative to `root` (the checkout, not the working directory), don't start anything |
 | `hooks` | beside the config's own hooks, after them | `beforeServers`, `afterServers`, `onCapture`, … |
 | `checks` | `dev` (fast ones), `setup`, `doctor` | Preconditions with a fix: a command, or a function (`fixDescription` says what it does) |
 | `preflight` | `dev`, with the terminal, before anything starts | Steps that may need the user, such as a login. `apps` limits a step to starts that select one of them; `ctx.interactive` is false in CI and without a terminal; a step that throws stops the start |

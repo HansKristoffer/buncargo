@@ -167,8 +167,8 @@ export function shopify(
 	return {
 		name: "shopify",
 
-		config(config) {
-			const root = findMonorepoRoot();
+		config(config, ctx) {
+			const root = ctx?.root ?? findMonorepoRoot();
 			const apps = config.apps ?? {};
 			// Lenient: without the toml (CI, a fresh clone) the app still gets a
 			// dev command, and `setup` / `doctor` report what is missing.

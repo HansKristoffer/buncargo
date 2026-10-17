@@ -119,6 +119,7 @@ export type {
 	IntegrationCommand,
 	IntegrationCommandContext,
 	IntegrationConfig,
+	IntegrationConfigContext,
 	IntegrationStack,
 	// Migrations & Seed
 	MigrationConfig,
