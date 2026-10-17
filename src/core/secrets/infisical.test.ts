@@ -65,7 +65,7 @@ describe("shared request cancellation", () => {
 	it.each([0, 1])(
 		"cancels waiter %s without cancelling the other scope consumer",
 		async (index) => {
-			const infisical = start({ requestDelayMs: 100 });
+			const infisical = start({ holdRequests: true });
 			const controllers = [new AbortController(), new AbortController()];
 			const pending = controllers.map((controller) =>
 				loadScopeSecrets(
@@ -82,6 +82,7 @@ describe("shared request cancellation", () => {
 			await waitUntil(() => infisical.requests.includes("GET /api/v4/secrets"));
 			controllers[index].abort(new Error("Cancelled waiter"));
 			expect(await cancelled).toMatchObject({ message: "Cancelled waiter" });
+			infisical.release();
 			expect(await survivor).toEqual({ OPENAI_API_KEY: "sk-project" });
 			expect(
 				infisical.requests.filter((path) => path === "GET /api/v4/secrets"),
@@ -91,7 +92,7 @@ describe("shared request cancellation", () => {
 	);
 
 	it("keeps shared CLI authentication alive for a different scope", async () => {
-		const infisical = start({ cliDelayMs: 150 });
+		const infisical = start({ holdCli: true });
 		infisical.projects.p2 = { secrets: { KEY: "second" } };
 		const controller = new AbortController();
 		const first = loadScopeSecrets(
@@ -110,12 +111,13 @@ describe("shared request cancellation", () => {
 		await waitUntil(() => infisical.cliCalls().length > 0);
 		controller.abort(new Error("Cancelled scope"));
 		expect(await cancelled).toMatchObject({ message: "Cancelled scope" });
+		infisical.release();
 		expect(await second).toEqual({ KEY: "second" });
 		expect(infisical.cliCalls()).toHaveLength(1);
 	});
 
 	it("applies a waiter's timeout without shortening another wait", async () => {
-		const infisical = start({ requestDelayMs: 100 });
+		const infisical = start({ holdRequests: true });
 		const scope = resolveScope(
 			{ projectId: "p1", siteUrl: infisical.siteUrl },
 			undefined,
@@ -132,6 +134,7 @@ describe("shared request cancellation", () => {
 		expect(await timedOut).toMatchObject({
 			message: "Infisical did not answer within 10ms.",
 		});
+		infisical.release();
 		expect(await second).toEqual({ OPENAI_API_KEY: "sk-project" });
 		expect(infisical.cliCalls()).toHaveLength(1);
 	});

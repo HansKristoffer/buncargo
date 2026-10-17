@@ -28,6 +28,8 @@ export interface FakeInfisical {
 	requests: string[];
 	/** Argument lists of every CLI run. */
 	cliCalls(): string[];
+	/** Let held list requests and CLI runs answer. */
+	release(): void;
 	/** Secrets per project; `imports` are listed as imported folders. */
 	projects: Record<
 		string,
@@ -40,21 +42,32 @@ export function startFakeInfisical(
 	options: {
 		cliOrganization?: string;
 		cliFails?: boolean;
-		cliDelayMs?: number;
+		/** CLI runs wait for {@link FakeInfisical.release} before answering. */
+		holdCli?: boolean;
+		/** List requests wait for {@link FakeInfisical.release} before answering. */
+		holdRequests?: boolean;
+		/** Simulated network latency for the startup benchmark; tests hold instead. */
 		requestDelayMs?: number;
 		mfaOrganizations?: string[];
 	} = {},
 ): FakeInfisical & { cliPath: string; home: string } {
 	const dir = mkdtempSync(join(tmpdir(), "buncargo-fake-infisical-"));
 	const log = join(dir, "cli.log");
+	const releaseFile = join(dir, "released");
 	const cliPath = join(dir, "infisical");
 	writeFileSync(
 		cliPath,
 		options.cliFails
 			? `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\necho "secret-looking stderr" >&2\nexit 1\n`
-			: `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\n${options.cliDelayMs ? `sleep ${options.cliDelayMs / 1000}\n` : ""}echo ${JSON.stringify(sessionToken(options.cliOrganization ?? "org-a"))}\n`,
+			: `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\n${options.holdCli ? `while [ ! -e ${JSON.stringify(releaseFile)} ]; do sleep 0.01; done\n` : ""}echo ${JSON.stringify(sessionToken(options.cliOrganization ?? "org-a"))}\n`,
 	);
 	chmodSync(cliPath, 0o755);
+
+	const gate = Promise.withResolvers<void>();
+	const release = () => {
+		writeFileSync(releaseFile, "");
+		gate.resolve();
+	};
 
 	const requests: string[] = [];
 	const projects: FakeInfisical["projects"] = {};
@@ -87,6 +100,7 @@ export function startFakeInfisical(
 					: new Response("{}", { status: 401 });
 			}
 			if (url.pathname === "/api/v4/secrets") {
+				if (options.holdRequests) await gate.promise;
 				if (options.requestDelayMs) await Bun.sleep(options.requestDelayMs);
 				if (!auth.startsWith("Bearer "))
 					return new Response("{}", { status: 401 });
@@ -109,6 +123,7 @@ export function startFakeInfisical(
 		projects,
 		cliPath,
 		home: dir,
+		release,
 		cliCalls: () => {
 			try {
 				return readFileSync(log, "utf8").trim().split("\n").filter(Boolean);
@@ -117,6 +132,7 @@ export function startFakeInfisical(
 			}
 		},
 		stop: () => {
+			release();
 			server.stop(true);
 			rmSync(dir, { recursive: true, force: true });
 		},
