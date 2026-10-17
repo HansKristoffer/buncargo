@@ -3,10 +3,11 @@
 A `dev.config.ts` becomes a `DevEnvironment`. Construction is a read: identity, ports and URLs
 are resolved once into a `DevEnvContext` (`src/environment/context.ts`) without touching a runtime.
 `start()` then claims the run in `~/.buncargo/runs.json`, prepares the selected services
-(Compose up, readiness, migrations, seed), spawns the apps in waves, activates named hosts and
-tunnels, and publishes what it started back into the run entry. The CLI (`src/cli/run-cli.ts`)
-drives the same environment and adds the terminal: prompts, the banner, the TUI or stream output,
-takeover and detach. The machine-wide watchdog and the `ls`/`doctor` commands sweep stacks whose
+(Compose up, readiness, migrations, seed), spawns the apps in waves, and publishes what it
+started back into the run entry; tunnels open only when the caller asks (`openPublicTunnels()`).
+The CLI (`src/cli/run-cli.ts`) drives the same environment and adds the terminal: prompts, the
+banner, the TUI or stream output, takeover and detach. Named hosts are the CLI's alone
+(`cli/dev-hosts.ts`, `commands/runtime.ts`): `start()` leaves `env.urls` on `localhost:port`. The machine-wide watchdog and the `ls`/`doctor` commands sweep stacks whose
 run has ended. BuncargoBar reads the run registry and shells every mutation out to `buncargo stop`.
 
 ## Ownership
