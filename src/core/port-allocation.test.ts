@@ -320,6 +320,48 @@ describe("resolvePortPlan", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	it("names the last block it tried, and why, when every block is taken", () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		const root = mkdtempSync(join(tmpdir(), "buncargo-full-"));
+		const hashed = computeBaseOffset({ projectPrefix: "geysier" });
+		const otherRuntime: PortOwner = {
+			pids: [4242],
+			command: "com.docker.backend",
+			container: {
+				id: "abc",
+				name: "geysier-main-postgres-1",
+				composeProject: "geysier-main",
+				runtime: "docker",
+			},
+		};
+		try {
+			let message = "";
+			try {
+				resolvePortPlan({
+					projectPrefix: "geysier",
+					projectName: "geysier-main",
+					root,
+					services,
+					apps,
+					runtime: { name: "apple" } as ContainerRuntimeAdapter,
+					getOwner: () => otherRuntime,
+				});
+			} catch (error) {
+				message = String(error);
+			}
+			const last = Number(/to (\d+)\)/.exec(message)?.[1]);
+			expect(last).toBeGreaterThan(hashed);
+			expect(message).toContain(
+				`(offsets ${hashed} to ${last}); at ${last}, port ${5432 + last} held by container geysier-main-postgres-1`,
+			);
+			// The selected backend reaches the owner's description.
+			expect(message).toContain("running on Docker");
+			expect(message).not.toContain("..");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 });
 
 it("rejects an explicit offset that overflows a service port before any probe", () => {
@@ -390,7 +432,7 @@ it("a partial start cannot relocate the unselected persisted infrastructure", ()
 				probeNames: ["marketing"],
 				getOwner: () => ({ pids: [99999], command: "foreign", cwd: "/other" }),
 			}),
-		).toThrow("persisted allocation");
+		).toThrow("persisted allocation: port 3100 held by process 99999");
 		expect(readPortsLockfile(root)?.ports.postgres).toBe(5532);
 	} finally {
 		rmSync(root, { recursive: true, force: true });

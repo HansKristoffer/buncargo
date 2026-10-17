@@ -207,12 +207,17 @@ export function writePortsLockfile(root: string, lockfile: PortLockfile): void {
 	writeJsonDocumentSync(getPortsLockfilePath(root), lockfile);
 }
 
+/**
+ * A clause naming who holds `port`, to embed in a sentence. `runtime` is the
+ * selected backend, so a container on the other one says how to stop it.
+ */
 export function describePortConflict(
 	port: number,
 	owner: PortOwner | null,
+	runtime?: ContainerRuntimeName,
 ): string {
 	if (!owner) return `port ${port} is in use`;
-	return formatPortOwner(port, owner);
+	return formatPortOwner(port, owner, { runtime }).replace(/\.$/, "");
 }
 
 function findForeignConflict(
@@ -442,15 +447,20 @@ function planPorts(
 		else {
 			const conflict = conflictAt(ports);
 			if (!conflict) return settle(ownLockfile.offset, ports, "lockfile");
+			const reason = describePortConflict(
+				conflict.port,
+				conflict.owner,
+				runtimeName,
+			);
 			if (
 				input.probeNames &&
 				Object.keys(basePorts).some((name) => !input.probeNames?.includes(name))
 			) {
 				throw new Error(
-					"Selected app ports conflict with the persisted allocation. Stop the conflicting port owner, or start the full environment to reconcile its shared port block.",
+					`Selected app ports conflict with the persisted allocation: ${reason}. Stop that port's owner, or start the full environment to reconcile its shared port block.`,
 				);
 			}
-			ignored = describePortConflict(conflict.port, conflict.owner);
+			ignored = reason;
 		}
 	}
 	const settleAllocated = (
@@ -475,14 +485,28 @@ function planPorts(
 		worktreeIsolation,
 	});
 
+	// Why the block at `offset` cannot be used, or undefined when it can.
+	const problemAt = (
+		offset: number,
+		ports: Record<string, number>,
+	): string | undefined => {
+		if (Object.values(ports).some((port) => port > 65535))
+			return `offset ${offset} puts a port above 65535`;
+		const claimed = claimant(offset, ports);
+		if (claimed) return claimed;
+		const conflict = conflictAt(ports);
+		return conflict
+			? describePortConflict(conflict.port, conflict.owner, runtimeName)
+			: undefined;
+	};
+
 	// A suffixed environment has no lockfile; its own claim keeps its ports
 	// from one run to the next, as a lockfile does for dev, and read-only
 	// callers find the ports its last run used.
 	const ownClaim = persist ? undefined : claims[claimKey];
 	if (ownClaim) {
 		const ports = shiftPorts(basePorts, ownClaim.offset);
-		const overflow = Object.values(ports).some((port) => port > 65535);
-		if (!overflow && !claimant(ownClaim.offset, ports) && !conflictAt(ports))
+		if (!problemAt(ownClaim.offset, ports))
 			return settle(
 				ownClaim.offset,
 				ports,
@@ -492,16 +516,18 @@ function planPorts(
 
 	let offset = hashed;
 	let provenance: PortOffsetProvenance = "hash";
+	let lastTried = { offset, problem: "" };
 
 	for (let attempt = 0; attempt < PORT_ALLOCATION_ATTEMPTS; attempt++) {
 		const ports = shiftPorts(basePorts, offset);
-		const overflow = Object.values(ports).some((port) => port > 65535);
-		if (!overflow && !claimant(offset, ports) && !conflictAt(ports))
+		const problem = problemAt(offset, ports);
+		if (!problem)
 			return settleAllocated(
 				offset,
 				ports,
 				provenance === "hash" ? "hash" : "shifted",
 			);
+		lastTried = { offset, problem };
 		offset += PORT_OFFSET_STEP;
 		provenance = "shifted";
 		if (offset > PORT_OFFSET_MAX + PORT_OFFSET_STEP * 20) {
@@ -509,17 +535,8 @@ function planPorts(
 		}
 	}
 
-	const failedPorts = shiftPorts(basePorts, offset);
-	const conflict = findForeignConflict(probed(failedPorts), {
-		root,
-		projectName,
-		runtime: runtimeName,
-		getOwner: lookupOwner,
-	});
 	throw new Error(
-		conflict
-			? `Could not allocate a free port block. ${describePortConflict(conflict.port, conflict.owner)}.`
-			: "Could not allocate a free port block.",
+		`Could not allocate a free port block for ${root} (offsets ${hashed} to ${lastTried.offset}); at ${lastTried.offset}, ${lastTried.problem}. Free the ports, or move this checkout with \`buncargo ports pin <offset>\` (\`buncargo ports\` lists the claimed offsets).`,
 	);
 }
 
@@ -569,7 +586,7 @@ export function pinOffset(input: {
 			classifyPortOccupant(owner, { root, projectName, runtime }) === "fail"
 		)
 			return {
-				refused: `Offset ${offset} is not free: ${describePortConflict(port, owner)}.`,
+				refused: `Offset ${offset} is not free: ${describePortConflict(port, owner, runtime)}.`,
 				claimed: false,
 			};
 	}
