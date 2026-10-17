@@ -228,6 +228,40 @@ describe("validateConfig", () => {
 				'Service "clickhouse" declares env "CLICKHOUSE_TCP_PORT" from secondaryPort but no secondaryPort is configured.',
 			);
 		});
+
+		it("reports an out-of-range secondaryPort once", () => {
+			expect(
+				validateConfig({
+					projectPrefix: "myapp",
+					services: { postgres: { port: 5432, secondaryPort: 70000 } },
+				}),
+			).toEqual([
+				"services.postgres.secondaryPort must be an integer between 1 and 65535",
+			]);
+		});
+
+		it("reports an unknown depends_on once when an app requires the service", () => {
+			expect(
+				validateConfig({
+					projectPrefix: "myapp",
+					services: {
+						postgres: {
+							port: 5432,
+							docker: { image: "postgres:17", depends_on: ["cache"] },
+						},
+					},
+					apps: {
+						api: {
+							port: 3000,
+							devCommand: "bun run dev",
+							requiredServices: ["postgres"],
+						},
+					},
+				}),
+			).toEqual([
+				'Service "postgres" depends on unknown Compose service "cache"',
+			]);
+		});
 	});
 
 	describe("apps validation", () => {
@@ -266,7 +300,9 @@ describe("validateConfig", () => {
 
 			const errors = validateConfig(config);
 
-			expect(errors).toContain('App "api" must have a valid port number');
+			expect(errors).toEqual([
+				"apps.api.port must be an integer between 1 and 65535",
+			]);
 		});
 
 		it("accepts valid app config", () => {
@@ -294,7 +330,7 @@ describe("validateConfig", () => {
 
 			const errors = validateConfig(config);
 
-			expect(errors).toContain('App "api" requires unknown service "redis"');
+			expect(errors).toEqual(['App "api" requires unknown service "redis"']);
 		});
 
 		it("returns error when app requires an unknown app", () => {
@@ -314,7 +350,7 @@ describe("validateConfig", () => {
 
 			const errors = validateConfig(config);
 
-			expect(errors).toContain('App "expo" requires unknown app "api"');
+			expect(errors).toEqual(['App "expo" requires unknown app "api"']);
 		});
 
 		it("accepts devCommand: false and healthEndpoint: false", () => {
@@ -384,9 +420,33 @@ describe("validateConfig", () => {
 
 			const errors = validateConfig(config);
 
-			expect(errors).toContain(
+			expect(errors).toEqual([
 				"Circular requiredApps dependency: api -> expo -> api",
-			);
+			]);
+		});
+
+		it("reports each startAfter problem once", () => {
+			const withStartAfter = (apps: Record<string, string[]>) =>
+				validateConfig({
+					projectPrefix: "myapp",
+					services: {},
+					apps: Object.fromEntries(
+						Object.entries(apps).map(([name, startAfter], index) => [
+							name,
+							{ port: 3000 + index, devCommand: "bun run dev", startAfter },
+						]),
+					),
+				});
+
+			expect(withStartAfter({ api: ["web"] })).toEqual([
+				'App "api" starts after unknown app "web"',
+			]);
+			expect(withStartAfter({ api: ["api"] })).toEqual([
+				"Circular startAfter dependency: api -> api",
+			]);
+			expect(withStartAfter({ api: ["web"], web: ["api"] })).toEqual([
+				"Circular startAfter dependency: api -> web -> api",
+			]);
 		});
 	});
 

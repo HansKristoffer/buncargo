@@ -357,11 +357,13 @@ export function planStart(
 }
 
 /**
- * The first cycle in the `startAfter` graph, as `a -> b -> a`, if any. A cycle
- * there is a deadlock: every app in it waits for another to be healthy.
+ * The first cycle in one app dependency graph (`requiredApps` or
+ * `startAfter`), as `a -> b -> a`, if any. Edges to unknown apps are skipped;
+ * validation reports those on their own.
  */
-export function findStartAfterCycle(
+export function findCycle(
 	apps: Record<string, AppConfig>,
+	edges: (app: AppConfig) => readonly string[] | undefined,
 ): string | undefined {
 	const state = new Map<string, "visiting" | "done">();
 	const stack: string[] = [];
@@ -373,7 +375,8 @@ export function findStartAfterCycle(
 		}
 		state.set(name, "visiting");
 		stack.push(name);
-		for (const dependency of apps[name]?.startAfter ?? []) {
+		const app = apps[name];
+		for (const dependency of (app && edges(app)) ?? []) {
 			if (!apps[dependency]) continue;
 			const cycle = visit(dependency);
 			if (cycle) return cycle;
