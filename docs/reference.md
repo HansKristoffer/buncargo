@@ -129,6 +129,8 @@ typecheck: {
 
 `include` takes directories relative to the root, globs allowed: a root `scripts/` folder, a package outside `workspaces`. Each runs its own `typecheck` script when its `package.json` has one, else `tsc --noEmit -p tsconfig.json` with the project's TypeScript. An entry that matches no directory, or a directory with neither a script nor a `tsconfig.json`, fails the typecheck instead of being skipped. `exclude` removes workspaces, discovered or included, by path, glob or basename (like `--only`). Both are validated with the config; absolute paths and paths leaving the root are rejected. `buncargo typecheck` reads only this key of the config module, without building an environment; a config that fails to import is a warning there, since its own typecheck reports the problem.
 
+From code, `runWorkspaceTypecheck(options)` (exported from `buncargo`) runs the same checks and resolves to a `TypecheckResult`; it takes the flags above as `concurrency`, `only`, `changedFiles`, `include` and `exclude`. Pass `signal` (an `AbortSignal`) to cancel a run: the checks it started are terminated with their child processes, none is started after, and the promise rejects with the abort reason. `buncargo typecheck` does this on Ctrl-C or `SIGTERM` and exits 130 or 143.
+
 ## Execute with the checkout environment
 
 Use `exec` for maintenance scripts and tooling that need the checkout's allocated

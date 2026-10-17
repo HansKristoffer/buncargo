@@ -88,8 +88,10 @@ function writeGeneratedTsconfig(root: string, configFile: string): string {
 export async function typecheckRootConfig(options: {
 	root: string;
 	verbose?: boolean;
+	/** Terminates the check's `tsc`, which then reports a failed result. */
+	signal?: AbortSignal;
 }): Promise<ConfigTypecheckResult> {
-	const { root, verbose = true } = options;
+	const { root, verbose = true, signal } = options;
 	const configFile = findRootConfigFile(root);
 
 	if (!configFile) {
@@ -124,7 +126,7 @@ export async function typecheckRootConfig(options: {
 			[process.execPath, tsc, "-p", tsconfigPath],
 			root,
 			{},
-			{ throwOnError: false },
+			{ throwOnError: false, signal },
 		);
 		success = result.exitCode === 0;
 		if (!success) {

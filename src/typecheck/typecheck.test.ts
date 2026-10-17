@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -7,6 +8,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { isProcessAlive } from "../core/process";
 import { loadTypecheckConfig } from "./config-settings";
 import { runWorkspaceTypecheck } from "./typecheck";
 
@@ -62,6 +64,14 @@ function writeEventWorkspace(
 		join(dir, "package.json"),
 		JSON.stringify({ name, scripts: { typecheck: "bun check.ts" } }),
 	);
+}
+
+async function waitFor(condition: () => boolean, timeoutMs = 5_000) {
+	const deadline = Date.now() + timeoutMs;
+	while (!condition()) {
+		if (Date.now() > deadline) throw new Error("condition not met in time");
+		await Bun.sleep(10);
+	}
 }
 
 afterEach(() => {
@@ -126,6 +136,39 @@ describe("runWorkspaceTypecheck pool", () => {
 			`${second}-start`,
 			`${second}-end`,
 		]);
+	});
+
+	it("stops the checks it started, process groups included, and starts no more once aborted", async () => {
+		const root = makeFixture();
+		const pidFile = join(root, "pids");
+		// Each check records itself and a child of its own, then waits on it.
+		for (const name of ["one", "two"])
+			writeEventWorkspace(
+				root,
+				name,
+				`const sleeper = Bun.spawn(["sleep", "60"]); appendFileSync(file, process.pid + " " + sleeper.pid + "\\n"); await sleeper.exited;`,
+				pidFile,
+			);
+		const readPids = () =>
+			existsSync(pidFile)
+				? readFileSync(pidFile, "utf8").trim().split(/\s+/).map(Number)
+				: [];
+
+		const controller = new AbortController();
+		const run = runWorkspaceTypecheck({
+			root,
+			verbose: false,
+			includeRootConfig: false,
+			concurrency: 1,
+			signal: controller.signal,
+		});
+		await waitFor(() => readPids().length === 2);
+		controller.abort(new Error("interrupted"));
+
+		await expect(run).rejects.toThrow("interrupted");
+		const pids = readPids();
+		expect(pids).toHaveLength(2);
+		await waitFor(() => pids.every((pid) => !isProcessAlive(pid)));
 	});
 
 	it("fails loudly when --only names an unknown workspace", async () => {
