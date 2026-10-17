@@ -87,10 +87,17 @@ describe("decideSweep", () => {
 	};
 	const limits = { ownerDeadGraceMs: 15_000 };
 
-	it("removes a stack whose checkout is gone, whatever else is true", () => {
+	it("removes a stack whose checkout is gone once no live run owns it", () => {
+		const held = entry({ releasedAt: new Date(NOW).toISOString() });
+		expect(
+			decideSweep({ ...base, checkout: "deleted", run: held }, limits),
+		).toEqual({ kind: "down", reason: "checkout deleted" });
+	});
+
+	it("keeps a stack its live owner holds, even when its checkout reads deleted", () => {
 		expect(
 			decideSweep({ ...base, checkout: "deleted", ownerAlive: true }, limits),
-		).toEqual({ kind: "down", reason: "checkout deleted" });
+		).toEqual({ kind: "keep" });
 	});
 
 	it("never reads a checkout it cannot read as deleted", () => {
@@ -248,6 +255,30 @@ describe("sweepOrphanedContainers", () => {
 			expect(await loadRuns()).toHaveLength(1);
 		},
 	);
+
+	it("keeps a live run's containers and integration stacks when its checkout reads deleted", async () => {
+		const gone = join(checkout, "deleted-while-running");
+		const marker = join(checkout, "live-stack-downs");
+		await publishRun(
+			entry({
+				sessionId: "live",
+				projectName: "live",
+				root: gone,
+				pid: process.pid,
+				processIdentity: readProcessIdentity(process.pid),
+				stacks: [
+					{ name: "supabase", down: ["sh", "-c", `echo down >> '${marker}'`] },
+				],
+			}),
+		);
+		const { runtime, downs } = stubRuntime([
+			container("live", gone, "running"),
+		]);
+		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
+		expect(result.swept).toEqual([]);
+		expect(downs).toEqual([]);
+		expect(await Bun.file(marker).exists()).toBe(false);
+	});
 
 	it("keeps a stack whose run is live and one still inside its idle hold", async () => {
 		await publishRun(

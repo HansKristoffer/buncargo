@@ -83,9 +83,11 @@ export function decideSweep(
 	},
 ): SweepVerdict {
 	const { checkout, anyRunning, run, ownerAlive, now } = input;
+	// A live owner keeps its stack whatever the checkout looks like: a run
+	// between `start()` and `startServers()` is using these containers.
+	if (ownerAlive) return { kind: "keep" };
 	if (checkout === "deleted")
 		return { kind: "down", reason: "checkout deleted" };
-	if (ownerAlive) return { kind: "keep" };
 	if (!anyRunning) return { kind: "down", reason: "stopped with no owner" };
 	// Running, unowned, and nothing on record: an old CLI or a hand-started
 	// stack. Only the two rules above may touch it.
