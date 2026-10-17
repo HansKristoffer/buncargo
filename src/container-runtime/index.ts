@@ -40,8 +40,6 @@ export {
 	type VolumeVerdict,
 } from "./prune";
 export {
-	MAX_ATTEMPTS,
-	POLL_INTERVAL,
 	type WaitForServiceOptions,
 	waitForAllServices,
 	waitForService,

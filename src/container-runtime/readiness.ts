@@ -16,8 +16,7 @@ import { createBuiltInHealthCheck } from "./health-checks";
 import type { ContainerRuntimeAdapter, ServiceDiagnosis } from "./types";
 import { isTerminalContainerState } from "./types";
 
-export const POLL_INTERVAL = 250; // Fast polling for quicker startup
-export const MAX_ATTEMPTS = 120; // 30 seconds total (120 * 250ms)
+const POLL_INTERVAL = 250; // Fast polling for quicker startup
 
 export interface WaitForServiceOptions {
 	verbose?: boolean;
