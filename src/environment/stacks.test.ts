@@ -175,6 +175,67 @@ appendFileSync(log, held ? "down locked\\n" : "down free\\n");
 		expect(readFileSync(log, "utf8")).toBe("up locked\ndown locked\n");
 	});
 
+	it("holds the project lock until every stack settled when one fails", async () => {
+		const { promise: failed, resolve: fail } = Promise.withResolvers<void>();
+		let lockWhileSlowCameUp = "";
+		const lockFree = (ctx: { projectName: string; root: string }) =>
+			withProjectLifecycleLock(ctx.projectName, ctx.root, async () => true, {
+				timeoutMs: 0,
+			}).catch((error) => {
+				if (error instanceof FileLockTimeoutError) return false;
+				throw error;
+			});
+		const config: DevConfig = {
+			projectPrefix: "stkfail",
+			services: {
+				slow: { port: 4120, external: { stack: "slow" } },
+				broken: { port: 4121, external: { stack: "broken" } },
+			},
+			integrations: [
+				{
+					name: "pair",
+					stacks: {
+						// Still coming up after its sibling failed, the way `compose up`
+						// runs on while `supabase start` hits a port conflict.
+						slow: {
+							up: async (ctx) => {
+								await failed;
+								// Each probe is a real round of file operations, which is
+								// what releasing the lock takes.
+								for (let probe = 0; probe < 20; probe++)
+									if (await lockFree(ctx)) {
+										lockWhileSlowCameUp = "free";
+										return;
+									}
+								lockWhileSlowCameUp = "held";
+							},
+							down: () => ["true"],
+						},
+						broken: {
+							up: async () => {
+								fail();
+								throw new Error("port 54321 is already allocated");
+							},
+							down: () => ["true"],
+						},
+					},
+				},
+			],
+		};
+		const env = createDevEnvironment(config, { root });
+
+		await expect(
+			env.start({
+				onlyServices: ["slow", "broken"],
+				startServers: false,
+				watchdog: false,
+				verbose: false,
+			}),
+		).rejects.toThrow("port 54321 is already allocated");
+		expect(lockWhileSlowCameUp).toBe("held");
+		await env.stop({ verbose: false });
+	});
+
 	it("leaves external services out of the Compose file", () => {
 		const model = buildComposeModel({
 			db: { port: 4101, external: { stack: "fake" } },

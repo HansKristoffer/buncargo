@@ -444,13 +444,15 @@ export function createLifecycleApi<
 
 				// One hold over Compose and the stacks: the sweep and `stop` take the
 				// same lock, so neither can tear a stack down while it comes up. The
-				// lock is not reentrant; nothing inside may take it again.
+				// lock is not reentrant; nothing inside may take it again. Every
+				// step settles before it is released: one failing must not free the
+				// lock while `compose up` or another stack is still coming up.
 				await phase("containers", () =>
 					withProjectLifecycleLock(
 						ctx.projectName,
 						ctx.root,
-						() =>
-							Promise.all([
+						async () => {
+							const results = await Promise.allSettled([
 								Object.keys(compose).length > 0 ? composeUp() : undefined,
 								...stacks.map(({ stack }) =>
 									withDeadline(
@@ -459,7 +461,10 @@ export function createLifecycleApi<
 										signal,
 									),
 								),
-							]),
+							]);
+							for (const result of results)
+								if (result.status === "rejected") throw result.reason;
+						},
 						{ signal },
 					),
 				);
