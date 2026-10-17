@@ -1,5 +1,5 @@
 import {
-	availableContainerRuntimes,
+	type ContainerRuntimeAdapter,
 	getContainerRuntimeAdapter,
 	stopBuncargoContainers,
 	withProjectLifecycleLock,
@@ -257,21 +257,21 @@ async function stopServiceUnlocked(
 	service: RunServiceEntry,
 ): Promise<number> {
 	// The entry records which backend started this service and the binary it
-	// was started through, so there is nothing to probe for: asking every
-	// available runtime was only ever a fallback for entries written before
-	// the claim carried it.
-	const runtimes = service.container
-		? [
-				getContainerRuntimeAdapter(service.container.runtime, {
-					binary: service.container.binary,
-				}),
-			]
-		: availableContainerRuntimes();
-	if (runtimes.length === 0) {
-		log.error("No container runtime is running.");
+	// was started through. Only that: probing every runtime for the project
+	// reaches containers this entry never recorded.
+	if (!service.container) {
+		log.error(
+			`${run.projectName}'s entry records no container for ${service.name}; nothing was stopped.`,
+		);
+		log.hint("Stop the whole run with `buncargo stop --all`.");
 		return STOP_EXIT.refused;
 	}
-	const serviceName = service.container?.service ?? service.name;
+	const runtimes = [
+		getContainerRuntimeAdapter(service.container.runtime, {
+			binary: service.container.binary,
+		}),
+	];
+	const serviceName = service.container.service;
 	try {
 		const containers = runtimes
 			.flatMap((runtime) => runtime.list())
@@ -362,18 +362,11 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 			);
 			return STOP_EXIT.ok;
 		}
-		const container = run.services.find(
-			(service) => service.container,
-		)?.container;
-		const runtimes = container
-			? [
-					getContainerRuntimeAdapter(container.runtime, {
-						binary: container.binary,
-					}),
-				]
-			: availableContainerRuntimes();
+		// Only what the entry records. A run with no container of its own (an
+		// app-only run) has none to take down: probing every runtime for its
+		// project used to `down` a stack another run had left in its idle hold.
 		try {
-			for (const runtime of runtimes)
+			for (const runtime of recordedRuntimes(run))
 				await runtime.down({
 					root: run.root,
 					projectName: run.projectName,
@@ -389,4 +382,21 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 		log.done(`Stopped ${run.projectName}`);
 		return STOP_EXIT.ok;
 	});
+}
+
+/** One adapter per runtime and binary the entry's containers were started through. */
+function recordedRuntimes(run: RunEntry): ContainerRuntimeAdapter[] {
+	const runtimes = new Map<string, ContainerRuntimeAdapter>();
+	for (const { container } of run.services) {
+		if (!container) continue;
+		const key = `${container.runtime}\0${container.binary ?? ""}`;
+		if (!runtimes.has(key))
+			runtimes.set(
+				key,
+				getContainerRuntimeAdapter(container.runtime, {
+					binary: container.binary,
+				}),
+			);
+	}
+	return [...runtimes.values()];
 }
