@@ -53,7 +53,7 @@ export const CONNECT_COMMAND_SPEC: CommandSpec = {
 async function coordinator<T>(path: string, body?: unknown): Promise<T> {
 	await ensureConnectCoordinator();
 	const state = await readCoordinatorState();
-	if (!state?.connection) {
+	if (!state) {
 		throw new Error("Connection coordinator unavailable");
 	}
 	return request(

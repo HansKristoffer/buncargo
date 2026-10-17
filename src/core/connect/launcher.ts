@@ -17,13 +17,21 @@ export async function ensureConnectCoordinator(
 		stateFilePath("connect-launch"),
 		async () => {
 			const existing = await readCoordinatorState();
-			if (existing) {
+			if (existing?.ready) {
 				if (existing.bundle !== bundle) {
 					throw new Error(
 						"A different Buncargo build is sharing services. Stop its dev sessions before starting this build.",
 					);
 				}
 				return existing;
+			}
+			if (existing) {
+				// It found nothing to share and is exiting; it never reads this run's intent. Its replacement needs its lifetime lock.
+				await withFileLock(
+					stateFilePath("connect-coordinator"),
+					async () => {},
+					{ timeoutMs: 3000, signal },
+				);
 			}
 			const [command, ...args] = inOwnUserScope(
 				[process.execPath, bundle],
