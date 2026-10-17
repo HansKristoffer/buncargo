@@ -6,12 +6,12 @@ import {
 	transferLease,
 } from "../core/leases";
 import { askConfirm, isInteractive } from "../core/prompt";
+import { readGitBranch } from "../core/run-publish";
 import { readLiveRuns } from "../core/run-registry";
 import type { AppConfig } from "../types";
 import { STOP_EXIT, stopTarget } from "./commands/stop";
 import { CliError } from "./errors";
 import * as log from "./log";
-import { readGitBranch } from "./run-publish";
 
 interface LeaseOwner {
 	sessionId: string;

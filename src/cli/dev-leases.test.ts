@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readLeases } from "../core/leases";
+import { publishCurrentRun, type RunSource } from "../core/run-publish";
 import { patchRun } from "../core/run-registry";
 import {
 	acquireAppLeases,
@@ -11,7 +12,6 @@ import {
 	type SkippedLeaseApp,
 } from "./dev-leases";
 import { CliError } from "./errors";
-import { publishCurrentRun, type RunSource } from "./run-publish";
 
 let root: string;
 let savedHome: string | undefined;

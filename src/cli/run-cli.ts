@@ -5,6 +5,14 @@ import { removeHostRoutes } from "../core/hosts";
 import { releaseLeases } from "../core/leases";
 import { appExitState } from "../core/process/process-owner";
 import { askConfirm, PromptInterruptedError } from "../core/prompt";
+import {
+	flushRunPatches,
+	markApps,
+	publishCurrentRun,
+	recordAppSpawn,
+	recordAppUrls,
+	recordRunCapture,
+} from "../core/run-publish";
 import { isCI } from "../core/runtime-flags";
 import { joinColoredNames } from "../core/style";
 import {
@@ -77,14 +85,6 @@ import {
 	unhealthyAppMessage,
 } from "./port-reuse";
 import { runPreflight } from "./preflight";
-import {
-	flushRunPatches,
-	markApps,
-	publishCurrentRun,
-	recordAppSpawn,
-	recordAppUrls,
-	recordRunCapture,
-} from "./run-publish";
 import {
 	isInteractive,
 	promptTakeover,

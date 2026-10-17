@@ -9,10 +9,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import * as identities from "../core/process-identity";
-import { readProcessIdentity } from "../core/process-identity";
-import { loadRuns, readLiveRuns, releaseRun } from "../core/run-registry";
-import { handleStop, stopService } from "./commands/stop";
+import { handleStop, stopService } from "../cli/commands/stop";
+import { parseStopArgs } from "../cli/stop-flags";
+import * as identities from "./process-identity";
+import { readProcessIdentity } from "./process-identity";
 import {
 	flushRunPatches,
 	markApps,
@@ -23,7 +23,7 @@ import {
 	recordAppSpawn,
 	recordAppUrls,
 } from "./run-publish";
-import { parseStopArgs } from "./stop-flags";
+import { loadRuns, readLiveRuns, releaseRun } from "./run-registry";
 
 let root: string;
 let savedHome: string | undefined;
@@ -207,7 +207,7 @@ describe("published run ownership", () => {
 			serviceNames: [],
 		});
 		if (!run) throw new Error("run not published");
-		const { patchRun } = await import("../core/run-registry");
+		const { patchRun } = await import("./run-registry");
 		await patchRun(run.sessionId, {
 			apps: [
 				{

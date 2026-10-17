@@ -42,7 +42,7 @@ and time zone, and a run started from a Danish-locale terminal and a watchdog st
 
 ## Writers
 
-`src/cli/run-publish.ts` is the CLI's writer of the run registry; `environment/run-claim.ts` is the
+`core/run-publish.ts` is the CLI's writer of the run registry; `environment/run-claim.ts` is the
 library's. Both build their entry with `buildRunEntry`, so identity, worktree and the recorded CLI
 cannot drift between them (the recorded CLI is exactly where they once did).
 
