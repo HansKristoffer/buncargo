@@ -226,6 +226,23 @@ describe("shopify CLI runs", () => {
 			"from-config",
 		);
 	});
+
+	it("never hands `shopify` the connect tokens", () => {
+		const root = withFakeShopify(
+			`printf %s "\${BUNCARGO_CONNECT_TOKENS-unset}" > "$(dirname "$0")/seen"`,
+		);
+		const saved = process.env.BUNCARGO_CONNECT_TOKENS;
+		process.env.BUNCARGO_CONNECT_TOKENS = "secret";
+		try {
+			shopifyLogin(root);
+		} finally {
+			if (saved === undefined) delete process.env.BUNCARGO_CONNECT_TOKENS;
+			else process.env.BUNCARGO_CONNECT_TOKENS = saved;
+		}
+		expect(readFileSync(join(root, "node_modules/.bin/seen"), "utf8")).toBe(
+			"unset",
+		);
+	});
 });
 
 describe("shopify()", () => {

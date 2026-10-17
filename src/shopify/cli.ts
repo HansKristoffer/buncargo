@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { childProcessEnv } from "../core/child-env";
 
 /**
  * The Shopify CLI as buncargo drives it: which binary, which version, and
@@ -44,13 +45,13 @@ export function isTestedShopifyVersion(version: readonly number[]): boolean {
 }
 
 /**
- * The environment of every `shopify` run. Passed explicitly: Bun's default is
- * the environment this process started with, which misses whatever the
- * config set since (a `dotenv` import, a `SHOPIFY_*` token), and the PATH the
- * binary is looked up on.
+ * The environment of every `shopify` run, a project tool like any other
+ * child. Passed explicitly: Bun's default is the environment this process
+ * started with, which misses whatever the config set since (a `dotenv`
+ * import, a `SHOPIFY_*` token), and the PATH the binary is looked up on.
  */
-export function shopifyEnv(): Record<string, string | undefined> {
-	return { ...process.env, SHOPIFY_CLI_NO_ANALYTICS: "1" };
+export function shopifyEnv(): NodeJS.ProcessEnv {
+	return { ...childProcessEnv(), SHOPIFY_CLI_NO_ANALYTICS: "1" };
 }
 
 /** How long a run nobody is watching may take; one with the terminal has no limit. */

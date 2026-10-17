@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { childProcessEnv } from "../core/child-env";
 import { lookupOnPath } from "../core/tool-binary";
 
 /** Versions the integration is tested against. */
@@ -53,7 +54,7 @@ export function supabaseVersion(bin: string, cwd: string): string | undefined {
 			cwd,
 			stdout: "pipe",
 			stderr: "ignore",
-			env: process.env,
+			env: childProcessEnv(),
 			timeout: 15_000,
 		});
 		if (result.exitCode !== 0) return undefined;

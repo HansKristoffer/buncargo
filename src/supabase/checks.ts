@@ -1,4 +1,5 @@
 import { relative } from "node:path";
+import { childProcessEnv } from "../core/child-env";
 import type { SetupCheck } from "../types";
 import {
 	isSupabaseInstalled,
@@ -39,7 +40,12 @@ export function supabaseChecks(state: {
 			fix: ({ root }) => {
 				const result = Bun.spawnSync(
 					[resolveSupabaseBin(root), "init", "--yes"],
-					{ cwd: state.workdir(root), stdout: "inherit", stderr: "inherit" },
+					{
+						cwd: state.workdir(root),
+						stdout: "inherit",
+						stderr: "inherit",
+						env: childProcessEnv(),
+					},
 				);
 				if (result.exitCode !== 0) throw new Error("supabase init failed");
 			},
