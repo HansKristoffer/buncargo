@@ -169,11 +169,6 @@ export function isShopifySessionExpired(
 	);
 }
 
-/** Whether a Partners/account session is stored at all. */
-export function isShopifyLoggedIn(file = shopifySessionFile()): boolean {
-	return readShopifySession(file) !== undefined;
-}
-
 /** Whether `.shopify/project.json` records this app: how CLIs before 4.8 linked. */
 export function isShopifyAppLinked(root: string, clientId: string): boolean {
 	try {
