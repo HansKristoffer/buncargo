@@ -3,8 +3,9 @@ import type {
 	ContainerUpRequest,
 } from "../container-runtime/types";
 import { remainingTime } from "../core/deadline";
-import { formatPortOwner, getPortOwner } from "../core/process";
+import { formatPortOwner, getPortOwner, type PortOwner } from "../core/process";
 import { formatDone, formatStep, formatWarn } from "../core/style";
+import { appleContainerRuntimeAdapter } from "./adapter";
 import type { AppleCliOptions, AppleCliResult, AppleContainerCli } from "./cli";
 import {
 	isAlreadyExistsMessage,
@@ -24,6 +25,7 @@ import { isRunningState, parseContainerRecords } from "./status";
 /** A `container` argv, or one whose output streams to the terminal. */
 type AppleStep = string[] | { args: string[]; stream: true };
 type AppleSteps = Generator<AppleStep, void, AppleCliResult>;
+type PortOwnerLookup = (port: number) => PortOwner | null;
 
 /**
  * Starting and stopping a project's containers on Apple's runtime.
@@ -51,6 +53,7 @@ function translatePortError(
 	result: AppleCliResult,
 	action: string,
 	publishedPorts: number[],
+	ownerOf: PortOwnerLookup,
 ): never {
 	const message = `${result.stderr}\n${result.stdout}`;
 	if (
@@ -59,7 +62,7 @@ function translatePortError(
 		)
 	) {
 		for (const port of publishedPorts) {
-			const owner = getPortOwner(port);
+			const owner = ownerOf(port);
 			if (owner) throw new Error(formatPortOwner(port, owner));
 		}
 	}
@@ -113,6 +116,7 @@ function* startService(
 	plan: ContainerRunPlan,
 	existing: AppleContainerRecord | undefined,
 	verbose: boolean,
+	ownerOf: PortOwnerLookup,
 ): AppleSteps {
 	if (existing) {
 		if (existing.labels[CONFIG_HASH_LABEL] === plan.configHash) {
@@ -151,11 +155,15 @@ function* startService(
 			result,
 			`start container ${plan.containerName}`,
 			plan.publishedPorts,
+			ownerOf,
 		);
 	}
 }
 
-function* upSteps(request: ContainerUpRequest): AppleSteps {
+function* upSteps(
+	request: ContainerUpRequest,
+	ownerOf: PortOwnerLookup,
+): AppleSteps {
 	const { verbose = true } = request;
 	const plan = buildAppleRunPlan({
 		projectName: request.projectName,
@@ -193,7 +201,12 @@ function* upSteps(request: ContainerUpRequest): AppleSteps {
 	);
 
 	for (const service of plan.services) {
-		yield* startService(service, existing.get(service.containerName), verbose);
+		yield* startService(
+			service,
+			existing.get(service.containerName),
+			verbose,
+			ownerOf,
+		);
 	}
 
 	if (verbose) console.log(formatDone("Containers started"));
@@ -301,7 +314,11 @@ export function appleUp(
 	cli: AppleContainerCli,
 	request: ContainerUpRequest,
 ): Promise<void> {
-	return runSteps(cli, upSteps(request), {
+	// Asked of Apple itself: its port forwarder holds the socket, so the host
+	// lookup alone names the forwarder rather than the container behind it.
+	const runtime = appleContainerRuntimeAdapter({ cli });
+	const ownerOf = (port: number) => getPortOwner(port, { runtime });
+	return runSteps(cli, upSteps(request, ownerOf), {
 		signal: request.signal,
 		timeoutMs: request.timeoutMs ?? 600000,
 	});

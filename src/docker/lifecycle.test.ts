@@ -17,7 +17,9 @@ afterEach(() => {
 });
 
 /** A `docker` that answers every command with success and records its argv. */
-function fakeDocker(options: { downStderr?: string; upStderr?: string } = {}) {
+function fakeDocker(
+	options: { downStderr?: string; upStderr?: string; psStdout?: string } = {},
+) {
 	const dir = mkdtempSync(join(tmpdir(), "buncargo docker down "));
 	roots.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -30,6 +32,7 @@ import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
 if (args[0] === 'version') console.log('27.5.1');
+if (args[0] === 'ps') console.log(${JSON.stringify(options.psStdout ?? "")});
 const downStderr = ${JSON.stringify(options.downStderr ?? "")};
 if (downStderr && args.includes('down')) {
   process.stderr.write(downStderr);
@@ -131,5 +134,18 @@ describe("startContainers", () => {
 		await expect(
 			startContainers(dir, "demo", {}, { binary, verbose: false }),
 		).rejects.toThrow(/Docker Compose is not available to this process/);
+	});
+
+	it("names the container holding a port, asking the same docker that failed", async () => {
+		const port = 47913;
+		const { dir, binary } = fakeDocker({
+			upStderr: `Bind for 0.0.0.0:${port} failed: port is already allocated`,
+			psStdout: `abc123\tother-postgres-1\t0.0.0.0:${port}->5432/tcp\tother`,
+		});
+		await expect(
+			startContainers(dir, "demo", {}, { binary, verbose: false }),
+		).rejects.toThrow(
+			`port ${port} held by container other-postgres-1 (project other)`,
+		);
 	});
 });

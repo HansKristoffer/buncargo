@@ -263,6 +263,29 @@ describe("appleUp recreating and running", () => {
 		}
 	});
 
+	it("names the Apple container holding a published port, not its forwarder", async () => {
+		const port = 47914;
+		const cli = recordingCli(
+			[
+				{
+					status: { state: "running" },
+					configuration: {
+						id: "other-main-redis",
+						labels: { "buncargo.project": "other-main" },
+						publishedPorts: [{ hostPort: port, containerPort: 6379 }],
+					},
+				},
+			],
+			{ run: "Error: bind(...): Address already in use (errno: 48)" },
+		);
+
+		await expect(
+			appleUp(cli, upRequest(modelFor({ redis: { port } }), ["redis"])),
+		).rejects.toThrow(
+			`port ${port} held by container other-main-redis (project other-main)`,
+		);
+	});
+
 	it("pulls a missing image for its platform only when verbose", async () => {
 		// The inspect fails, the pull after it succeeds.
 		const cli = recordingCli([], { image: ["Error: image not found"] });

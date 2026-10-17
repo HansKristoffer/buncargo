@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { formatPortOwner, getPortOwner } from "../core/process";
 import { formatDone, formatStep, formatWarn } from "../core/style";
+import { dockerRuntimeAdapter } from "./adapter";
 import { type DockerRunResult, runDockerAsync } from "./binary";
 import { getComposeArgs } from "./compose-command";
 import { isDockerDaemonRunning } from "./preflight";
@@ -55,7 +56,10 @@ const COMPOSE_MISSING =
  * Only reachable with a captured stderr, which means the quiet path; a verbose
  * run streamed compose's own output to the terminal already.
  */
-function translateComposeFailure(result: DockerRunResult): never {
+function translateComposeFailure(
+	result: DockerRunResult,
+	binary: string | undefined,
+): never {
 	const message = result.stderr.trim();
 	if (isComposeMissingMessage(message)) throw new Error(COMPOSE_MISSING);
 	const allocated =
@@ -64,7 +68,11 @@ function translateComposeFailure(result: DockerRunResult): never {
 	const portMatch = message.match(/:(\d{2,5})/);
 	if (allocated && portMatch?.[1]) {
 		const port = Number.parseInt(portMatch[1], 10);
-		const owner = getPortOwner(port);
+		// Asked of the same `docker` that failed, so a pinned binary's container
+		// is found rather than one on whatever `docker` PATH names.
+		const owner = getPortOwner(port, {
+			runtime: dockerRuntimeAdapter({ binary }),
+		});
 		throw new Error(formatPortOwner(port, owner ?? { pids: [] }));
 	}
 	throw new Error(
@@ -107,7 +115,7 @@ export async function startContainers(
 			timeoutMs,
 		},
 	);
-	if (!result.ok) translateComposeFailure(result);
+	if (!result.ok) translateComposeFailure(result, binary);
 	if (verbose) console.log(formatDone("Containers started"));
 }
 
@@ -171,7 +179,7 @@ export async function stopContainers(
 				console.log(formatStep("ℹ Docker is not running. Nothing to stop."));
 			return;
 		}
-		translateComposeFailure(result);
+		translateComposeFailure(result, binary);
 	}
 	if (verbose) console.log(formatDone("Containers stopped"));
 }
