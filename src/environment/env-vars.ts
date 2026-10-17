@@ -51,9 +51,11 @@ export interface DevEnvVarsApi<
 		signal?: AbortSignal,
 		selection?: StartSelection,
 	): HookContext<TServices, TApps>;
+	/** `production` builds the env a production start gives its processes. */
 	exec(
 		cmd: string | readonly string[],
 		options?: ExecOptions,
+		production?: boolean,
 	): Promise<ExecResult>;
 	/**
 	 * The secrets a command gets: `explicit`, else the app's scope, else the
@@ -254,6 +256,7 @@ export function createEnvVarsApi<
 	async function exec(
 		cmd: string | readonly string[],
 		options?: ExecOptions,
+		production = false,
 	): Promise<ExecResult> {
 		if (options?.app !== undefined && !apps[options.app]) {
 			throw new Error(`Unknown app "${options.app}"`);
@@ -261,8 +264,11 @@ export function createEnvVarsApi<
 
 		const computed: Record<string, string> =
 			options?.app === undefined
-				? buildEnvVars()
-				: buildAppEnvVars(options.app as Extract<keyof TApps, string>);
+				? buildEnvVars(production)
+				: buildAppEnvVars(
+						options.app as Extract<keyof TApps, string>,
+						production,
+					);
 		// Beneath the computed env and anything passed explicitly, like an app's.
 		const secrets = await resolveSecrets(options?.secrets, {
 			app: options?.app,

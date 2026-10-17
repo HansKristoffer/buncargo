@@ -115,6 +115,7 @@ function fixture() {
 	return {
 		events,
 		ctx,
+		envVars,
 		lifecycle: createLifecycleApi(ctx, envVars, runClaim),
 	};
 }
@@ -222,6 +223,73 @@ describe("startup modes and hooks", () => {
 			lifecycle.start({ signal: AbortSignal.abort(new Error("cancelled")) }),
 		).rejects.toThrow("cancelled");
 		expect(events).toEqual([]);
+	});
+});
+
+describe("production or development, in CI", () => {
+	async function withCi<T>(run: () => Promise<T>): Promise<T> {
+		const previous = process.env.CI;
+		process.env.CI = "1";
+		try {
+			return await run();
+		} finally {
+			if (previous === undefined) delete process.env.CI;
+			else process.env.CI = previous;
+		}
+	}
+
+	/** Which env (production or not) each process of a start was given. */
+	function recordModes(fixtureValue: ReturnType<typeof fixture>): string[] {
+		const modes: string[] = [];
+		const { envVars } = fixtureValue;
+		envVars.buildEnvVars = ((production?: boolean) => {
+			modes.push(`containers:${!!production}`);
+			return {};
+		}) as typeof envVars.buildEnvVars;
+		envVars.exec = (async (
+			command: string | readonly string[],
+			_options?: unknown,
+			production?: boolean,
+		) => {
+			modes.push(`${String(command)}:${!!production}`);
+			return { exitCode: 0, stdout: "", stderr: "" };
+		}) as typeof envVars.exec;
+		envVars.buildAppEnvVars = ((name: string, production?: boolean) => {
+			modes.push(`${name}:${!!production}`);
+			return {};
+		}) as typeof envVars.buildAppEnvVars;
+		return modes;
+	}
+
+	it("a start without servers prepares for development processes", async () => {
+		const value = fixture();
+		const modes = recordModes(value);
+		await withCi(() =>
+			value.lifecycle.start({
+				startServers: false,
+				wait: false,
+				verbose: false,
+				watchdog: false,
+			}),
+		);
+		// The caller's own processes (the CLI's dev servers, `exec`) are
+		// development: the containers and migrations must not be production.
+		expect(modes).toContain("containers:false");
+		expect(modes).toContain("migrate:false");
+		expect(modes.some((mode) => mode.endsWith(":true"))).toBe(false);
+	});
+
+	it("a start that runs the servers is production throughout", async () => {
+		const value = fixture();
+		const modes = recordModes(value);
+		await withCi(() =>
+			value.lifecycle.start({ wait: false, verbose: false, watchdog: false }),
+		);
+		expect(modes).toContain("containers:true");
+		expect(modes).toContain("migrate:true");
+		expect(modes).toContain("web:true");
+		expect(modes).not.toContain("migrate:false");
+		expect(modes).not.toContain("web:false");
 	});
 });
 

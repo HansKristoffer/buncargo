@@ -462,6 +462,8 @@ async function runDevFlow<
 		skipEnvironmentLog: true,
 		onlyApps: selectedAppNames,
 		autoStartDocker: args.dockerAutostart ? undefined : false,
+		// The dev servers below run their dev commands in CI too.
+		productionBuild: false,
 	});
 
 	let classifiedApps =

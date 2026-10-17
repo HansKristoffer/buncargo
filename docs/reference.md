@@ -1372,6 +1372,8 @@ Set `seed.beforeApps: false` to overlap the seed and app startup. `afterServers`
 
 `onlyServices` starts those services (plus Compose dependencies) and no apps; it is what `buncargo run` and `buncargo ci` use.
 
+`productionBuild` runs each app's `buildCommand` and `prodCommand` and gives the containers, migrations, seed and apps `NODE_ENV=production`. It defaults to `true` in CI when `start()` runs the servers and `false` otherwise, so `start({ startServers: false })` prepares for the development processes `startServers()` and `exec()` run. `buncargo dev` is always development.
+
 `stop({ verbose, removeVolumes, signal })`
 
 ### `CliOptions` (programmatic `runCli`)

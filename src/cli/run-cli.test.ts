@@ -297,6 +297,8 @@ describe("runCli expose routing", () => {
 				skipEnvironmentLog: true,
 				onlyApps: ["expo"],
 				autoStartDocker: undefined,
+				// Development in CI too, like the dev servers it goes on to run.
+				productionBuild: false,
 			},
 		]);
 	});

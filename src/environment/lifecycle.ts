@@ -122,16 +122,21 @@ export function createLifecycleApi<
 
 	async function runPrepareSteps(
 		verbose: boolean,
+		production: boolean,
 		signal?: AbortSignal,
 		onPhase?: (name: string, ms: number) => void,
 		generate = true,
 	): Promise<void> {
 		const execute: typeof envVars.exec = (cmd, options) =>
-			envVars.exec(cmd, {
-				...options,
-				signal,
-				timeoutMs: options?.timeoutMs ?? 600000,
-			});
+			envVars.exec(
+				cmd,
+				{
+					...options,
+					signal,
+					timeoutMs: options?.timeoutMs ?? 600000,
+				},
+				production,
+			);
 		const migrations = collectMigrations();
 		const beforeMigrations = config.hooks?.beforeMigrations;
 		if (
@@ -304,12 +309,15 @@ export function createLifecycleApi<
 			}
 		}
 
-		const ci = isCI();
 		const {
 			verbose = config.options?.verbose ?? true,
 			wait = true,
 			startServers: shouldStartServers = true,
-			productionBuild = ci,
+			// One decision for the whole start: containers, migrations, the seed
+			// and the apps all get the env of the commands that run. Without
+			// servers the caller runs its own processes (the CLI's dev servers,
+			// `startServers()`, `exec`), which are development unless asked.
+			productionBuild = shouldStartServers && isCI(),
 			skipSeed = false,
 			skipEnvironmentLog = false,
 			onlyApps,
@@ -487,7 +495,13 @@ export function createLifecycleApi<
 			}
 
 			try {
-				await runPrepareSteps(verbose, signal, onPhase, prepare !== "migrate");
+				await runPrepareSteps(
+					verbose,
+					productionBuild,
+					signal,
+					onPhase,
+					prepare !== "migrate",
+				);
 				if (prepare === "migrate") {
 					return null;
 				}
