@@ -858,6 +858,21 @@ Failure degrades to `http://localhost:<port>` and never blocks the dev run. Name
 
 Set `BUNCARGO_HOSTS=0` in cloud workspace secrets/environment to skip automatic local HTTPS setup, including the mkcert prompt. Local URLs use `http://localhost:<port>`; Remote sharing still works.
 
+### Named URLs over Tailscale
+
+On a remote dev machine, `*.localhost` names are no use: they resolve to whoever is looking. Set `BUNCARGO_HOSTS=tailscale` on that machine and, in a config with `hosts` on, each app gets a real HTTPS URL on the machine's Tailscale name, reachable from every device on the tailnet:
+
+| Checkout | App `web` (port 5199) | App `api` (port 3010) |
+| --- | --- | --- |
+| Main | `https://worker.tailnet.ts.net:25199` | `https://worker.tailnet.ts.net:23010` |
+| Worktree at offset 100 | `https://worker.tailnet.ts.net:25299` | `https://worker.tailnet.ts.net:23110` |
+
+Each app is served on its own port plus 20000, through [Tailscale Serve](https://tailscale.com/kb/1312/serve) with the certificate Tailscale issues for the machine: no CA to install, no root. The HTTPS port is claimed with the checkout's port block, so two worktrees never get the same one. `<APP>_URL`, `urls.<app>`, the banner, `open` and the menu bar use the HTTPS URL; `loopbackUrls`, `<APP>_LOOPBACK_URL` and `<app>Local` stay as they are, and services are not served.
+
+It needs Tailscale up and logged in, HTTPS Certificates and MagicDNS turned on for the tailnet (admin console, DNS), and on Linux permission for your user to change Serve: `sudo tailscale set --operator=$USER`, once. An app is only given its HTTPS URL once Tailscale answers on it; anything missing degrades to a warning and the plain URL, and never stops the run. `buncargo doctor` checks each requirement.
+
+Buncargo records every Serve entry it adds in `~/.buncargo/tailscale-serve.json` and removes them when the run ends; the watchdog, `ls`, `doctor` and `buncargo hosts prune` remove those of a run that ended without cleaning up. It never touches a Serve entry it did not add. `buncargo hosts status` lists them.
+
 ### Loopback URLs
 
 Some clients cannot follow a named HTTPS URL: Playwright does not trust the local CA, the Stripe CLI fails the HTTP→HTTPS redirect, and GUI database clients want a plain connection string. Enabling `hosts` rewrites `urls.<name>` in place, so those consumers get `loopbackUrls` instead - the same set of services and apps, always addressed as `http://localhost:<port>`.
@@ -1123,11 +1138,11 @@ credentials out of browser and Expo public environment mappings.
 | `COMPOSE_PROJECT_NAME` | Compose / shared env | Isolated project name |
 | `NODE_ENV` | Shared env | `development` unless production build |
 | `<NAME>_PORT` | Shared env | Assigned port for each port-bearing service/app |
-| `<NAME>_URL` | Shared env | Local URL. Named HTTPS when hosts are active (`https://api.myapp.localhost`) |
+| `<NAME>_URL` | Shared env | Local URL. Named HTTPS when hosts are active (`https://api.myapp.localhost`, or `https://<machine>.ts.net:<port>` with `BUNCARGO_HOSTS=tailscale`) |
 | `<NAME>_LOOPBACK_URL` | Shared env | Always `http://localhost:<port>`, never rewritten by named hosts |
 | `<NAME>_PUBLIC_URL` | Shared env | Tunnel URL while a tunnel is active |
 | `NODE_EXTRA_CA_CERTS` | Shared env | Path to the mkcert CA when named hosts are active |
-| `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` | Shared env | `.localhost` (or `.<tld>`) so Vite accepts the named Host |
+| `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` | Shared env | `.localhost` (or `.<tld>`), or the Tailscale name, so Vite accepts the named Host |
 | `DATABASE_URL` | Shared env | From `service.postgres()` |
 | `REDIS_URL` | Shared env | From `service.redis()` |
 | `CLICKHOUSE_URL` | Shared env | From `service.clickhouse()` |
@@ -1136,7 +1151,7 @@ credentials out of browser and Expo public environment mappings.
 | `HOST` | Server app process | `0.0.0.0`; not generated for workers |
 | `ASTRO_DEV_BACKGROUND` / `ASTRO_PREVIEW_BACKGROUND` | Per-app process | Default `1` keeps Astro in the foreground under buncargo supervision; override in `staticEnv` or `envVars` |
 | `BUNCARGO_APP_NAME` | Per-app process | The app's key in `apps`, so a framework plugin knows which app it is |
-| `BUNCARGO_APP_HOSTNAME` | Per-app process | That app's named host (only when named hosts are active) |
+| `BUNCARGO_APP_HOSTNAME` | Per-app process | That app's named host (only when loopback named hosts are active) |
 
 Service `env` maps (`url` / `port` / `secondaryPort`) add more shared names. App `staticEnv` and `envVars` are injected only into that app.
 
@@ -1208,7 +1223,7 @@ Vite is not a dependency of buncargo: the plugin's return type is declared struc
 | `BUNCARGO_QUICK_TUNNEL_RETRY_BASE_MS` | Backoff base (default `2000`) |
 | `BUNCARGO_QUICK_TUNNEL_TIMEOUT_MS` | Wait for a `*.trycloudflare.com` URL (default `30000`; `0` disables) |
 | `BUNCARGO_CLOUDFLARED_PATH` | Absolute `cloudflared` binary; skips download |
-| `BUNCARGO_HOSTS` | `0` forces `http://localhost:port` even when `options.hosts` is on |
+| `BUNCARGO_HOSTS` | `0` forces `http://localhost:port` even when `options.hosts` is on; `tailscale` serves each app's named URL through Tailscale Serve instead of the loopback daemon ([Named URLs over Tailscale](#named-urls-over-tailscale)) |
 | `BUNCARGO_HOSTS_PORT` | HTTPS port the loopback proxy daemon binds (default `443`; plain HTTP on `:80` only when the default is used) |
 | `BUNCARGO_MKCERT_PATH` | Absolute `mkcert` binary; skips PATH lookup and download |
 | `BUNCARGO_MKCERT_VERSION` | GitHub release tag for the bundled `mkcert` download (default `v1.4.4`) |
@@ -1507,6 +1522,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `… would run under Compose project …, which … already uses` | Another checkout with the same project name exists: CI runners in same-named directories, or a config below a worktree's top level | Give one of them its own `projectPrefix` (see [Ports and isolation](#ports-and-isolation)) and start it once, or delete the checkout no longer used. If the other checkout's claim is from a config it no longer runs, `buncargo ports release --root <path>` (the error names the path) |
 | `Could not allocate a free port block` | 80 shifted blocks still conflict | Set `BUNCARGO_PORT_OFFSET` or free ports (`buncargo doctor`) |
 | Named URL does not resolve / TLS warning | Daemon down or CA not trusted | `buncargo hosts status`, then `buncargo hosts install` or `doctor --fix` |
+| `Tailscale URLs unavailable` with `BUNCARGO_HOSTS=tailscale` | Tailscale down or logged out, HTTPS Certificates off, or no permission to change Serve | `buncargo doctor` names which, and the fix |
 | `Named-hosts service points at … which no longer exists` | The install ran from a `node_modules` that was since removed | `buncargo hosts install` to re-point it at the current CLI |
 | `Named-hosts service is installed but did not answer on :443` | Daemon started and crashed | `tail /var/log/buncargo-hosts.log`, then `buncargo hosts install` |
 | `… is still owned by root` | A `sudo` run wrote a file under `~/.buncargo` and could not hand it back | `sudo chown -R "$USER" ~/.buncargo` |

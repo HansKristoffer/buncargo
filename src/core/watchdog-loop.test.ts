@@ -33,10 +33,12 @@ function pass(extra: Partial<SweepResult> = {}): SweepResult {
 async function loop(
 	script: Array<SweepResult | string>,
 	exits: boolean[] = [],
+	serve: Array<{ removed: string[]; failures: string[] }> = [],
 ): Promise<string[]> {
 	const logs: string[] = [];
 	const passes = [...script];
 	const answers = [...exits];
+	const servePasses = [...serve];
 	await runWatchdogLoop({
 		sweep: async () => {
 			const next = passes.shift();
@@ -44,6 +46,8 @@ async function loop(
 			if (typeof next === "string") throw new Error(next);
 			return next;
 		},
+		sweepServeEntries: async () =>
+			servePasses.shift() ?? { removed: [], failures: [] },
 		sleep: async () => {},
 		log: (message) => logs.push(message),
 		intervalMs: 0,
@@ -67,6 +71,7 @@ describe("runWatchdogLoop", () => {
 				sweeps += 1;
 				return sweeps < 3 ? pass() : pass({ containers: 0, liveRuns: 0 });
 			},
+			sweepServeEntries: async () => ({ removed: [], failures: [] }),
 			sleep: async () => {},
 			log: (message) => logs.push(message),
 			intervalMs: 0,
@@ -107,6 +112,27 @@ describe("runWatchdogLoop", () => {
 		]);
 		expect(logs).toEqual([
 			"Removed demo's containers (/repo, supabase): released 200s ago; its run: none on record",
+			"Nothing left to watch; exiting",
+		]);
+	});
+
+	it("takes out ended runs' Tailscale Serve entries every pass, saying a failure once", async () => {
+		const tailscaleDown = "Tailscale Serve entries of /repo are still there";
+		const logs = await loop(
+			[pass(), pass(), pass(), pass({ containers: 0, liveRuns: 0 })],
+			[],
+			[
+				{ removed: [], failures: [tailscaleDown] },
+				{ removed: [], failures: [tailscaleDown] },
+				{
+					removed: ["Removed https://box.ts.net:23000 (web, /repo)"],
+					failures: [],
+				},
+			],
+		);
+		expect(logs).toEqual([
+			tailscaleDown,
+			"Removed https://box.ts.net:23000 (web, /repo)",
 			"Nothing left to watch; exiting",
 		]);
 	});

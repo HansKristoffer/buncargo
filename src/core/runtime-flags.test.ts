@@ -8,9 +8,9 @@ import {
 	connectTokens,
 	exposeTunnelStaggerMs,
 	hostsDaemonPort,
+	hostsMode,
 	infisicalUniversalAuthFile,
 	isCI,
-	isHostsForcedOff,
 	mkcertPathOverride,
 	mkcertVersion,
 	portOffsetOverride,
@@ -68,17 +68,27 @@ describe("portOffsetOverride", () => {
 	});
 });
 
-describe("isHostsForcedOff", () => {
-	it("stays enabled unless explicitly disabled or running in CI", () => {
-		expect(isHostsForcedOff({})).toBe(false);
-		expect(isHostsForcedOff({ BUNCARGO_HOSTS: "0" })).toBe(true);
-		expect(isHostsForcedOff({ CI: "1" })).toBe(true);
-		expect(isHostsForcedOff({ CI: "true" })).toBe(true);
+describe("hostsMode", () => {
+	it("serves loopback named hosts unless told otherwise", () => {
+		expect(hostsMode({})).toBe("loopback");
+		expect(hostsMode({ BUNCARGO_HOSTS: "1" })).toBe("loopback");
+	});
+
+	it("is off with BUNCARGO_HOSTS=0 and in CI", () => {
+		expect(hostsMode({ BUNCARGO_HOSTS: "0" })).toBe("off");
+		expect(hostsMode({ CI: "1" })).toBe("off");
+		expect(hostsMode({ CI: "true" })).toBe("off");
 	});
 
 	it("stays off in CI providers that do not set CI", () => {
-		expect(isHostsForcedOff({ GITLAB_CI: "true" })).toBe(true);
-		expect(isHostsForcedOff({ GITHUB_ACTIONS: "true" })).toBe(true);
+		expect(hostsMode({ GITLAB_CI: "true" })).toBe("off");
+		expect(hostsMode({ GITHUB_ACTIONS: "true" })).toBe("off");
+	});
+
+	it("serves through Tailscale with BUNCARGO_HOSTS=tailscale, outside CI", () => {
+		expect(hostsMode({ BUNCARGO_HOSTS: "tailscale" })).toBe("tailscale");
+		expect(hostsMode({ BUNCARGO_HOSTS: " tailscale " })).toBe("tailscale");
+		expect(hostsMode({ BUNCARGO_HOSTS: "tailscale", CI: "1" })).toBe("off");
 	});
 });
 

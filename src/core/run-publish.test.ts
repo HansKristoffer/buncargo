@@ -126,6 +126,42 @@ describe("published run ownership", () => {
 		expect(entry.captures).toEqual({ first: "a", second: "b" });
 	});
 
+	it("records a Tailscale-served app's https URL as its URL, hostname and what open opens", async () => {
+		const served = "https://box.tail1234.ts.net:23000";
+		const env: RunSource = {
+			...source("tailscale"),
+			urls: { web: served, db: "postgresql://localhost:5432/db" },
+			loopbackUrls: { web: "http://localhost:3000" },
+			hosts: {
+				active: true,
+				tld: "localhost",
+				mode: "tailscale",
+				tailscaleUrls: { web: served },
+				plan: [
+					{
+						kind: "app",
+						name: "web",
+						hostname: "fixture.localhost",
+						baseHostname: "fixture.localhost",
+						targetPort: 3000,
+					},
+				],
+			},
+		};
+		const run = await publishCurrentRun(env, {
+			apps: { web: { port: 3000, devCommand: "bun dev" } },
+			serviceNames: ["db"],
+		});
+		expect(run?.apps[0]).toMatchObject({
+			url: served,
+			loopbackUrl: "http://localhost:3000",
+			openUrl: served,
+			hostname: "box.tail1234.ts.net",
+		});
+		// Services are not served: BuncargoBar opens them on loopback.
+		expect(run?.services[0]?.hostname).toBeUndefined();
+	});
+
 	it("records an app's tunnel as what open opens once the tunnel exists", async () => {
 		const env = source("tunnel-urls");
 		await publishCurrentRun(env, {

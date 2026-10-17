@@ -774,6 +774,57 @@ describe("offset claims", () => {
 		}
 	});
 
+	it("claims a block's Tailscale HTTPS ports without probing them, and keeps other checkouts off them", async () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		const first = mkdtempSync(join(tmpdir(), "buncargo-https-a-"));
+		const second = mkdtempSync(join(tmpdir(), "buncargo-https-b-"));
+		const warnings: string[] = [];
+		const warn = console.warn;
+		console.warn = (message: string) => warnings.push(String(message));
+		try {
+			await Bun.write(
+				join(first, ".buncargo/ports.json"),
+				JSON.stringify({ offset: 200 }),
+			);
+			await Bun.write(
+				join(second, ".buncargo/ports.json"),
+				JSON.stringify({ offset: 100 }),
+			);
+			// Tailscale's listener on the first checkout's own HTTPS port fails
+			// the bind probe, exactly as a stranger would.
+			const a = resolvePortPlan({
+				projectPrefix: "lullu",
+				projectName: "lullu-a",
+				root: first,
+				services: {},
+				apps: { web: { port: 5173, devCommand: "true" } },
+				getOwner: (port) =>
+					port === 25373 ? { pids: [], unidentified: true } : null,
+				companionPorts: (ports) =>
+					ports.web === undefined ? [] : [ports.web + 20_000],
+			});
+			expect(a.offset).toBe(200);
+			expect(readOffsetClaims()[first]?.ports).toEqual([5373, 25373]);
+
+			// 25273 at offset 100 is the first checkout's HTTPS port.
+			const b = resolvePortPlan({
+				projectPrefix: "lullu",
+				projectName: "lullu-b",
+				root: second,
+				services: { other: { port: 25273 } },
+				getOwner: () => null,
+			});
+			expect(b.offset).not.toBe(100);
+			expect(warnings.join("\n")).toContain(
+				`port 25373 is in the block ${first} claims`,
+			);
+		} finally {
+			console.warn = warn;
+			rmSync(first, { recursive: true, force: true });
+			rmSync(second, { recursive: true, force: true });
+		}
+	});
+
 	it("keeps honouring a claim written without its ports by its offset", async () => {
 		delete process.env.BUNCARGO_PORT_OFFSET;
 		const older = mkdtempSync(join(tmpdir(), "buncargo-older-"));

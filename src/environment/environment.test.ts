@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineDevConfig } from "../config";
 import { getProjectName } from "../core/ports";
+import { CI_ENV_VARS } from "../core/runtime-flags";
 import type { DevConfig, ServiceConfig } from "../types";
 import { createDevEnvironment } from ".";
 
@@ -337,6 +338,81 @@ describe("createDevEnvironment env builders", () => {
 		} finally {
 			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
 			else process.env.BUNCARGO_HOSTS = previousHosts;
+			process.chdir(originalCwd);
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("serves app URLs through Tailscale and leaves loopback, LAN and services alone", () => {
+		const root = createWorktreeRoot("Remote_Tailscale");
+		// What a remote dev server sets; CI would turn every mode off.
+		const overrides: Record<string, string | undefined> = {
+			BUNCARGO_HOSTS: "tailscale",
+			BUNCARGO_URL_HOST: undefined,
+			BUNCARGO_LOCAL_IP: "100.64.0.7",
+			...Object.fromEntries(CI_ENV_VARS.map((name) => [name, undefined])),
+		};
+		const previous = Object.fromEntries(
+			Object.keys(overrides).map((name) => [name, process.env[name]]),
+		);
+		const apply = (values: Record<string, string | undefined>) => {
+			for (const [name, value] of Object.entries(values)) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+		};
+		apply(overrides);
+		try {
+			process.chdir(root);
+			const env = createDevEnvironment(
+				defineDevConfig({
+					projectPrefix: "remote",
+					services: {
+						postgres: { port: 5432 },
+						mailpit: { port: 8025, secondaryPort: 1025 },
+					},
+					apps: {
+						api: { port: 3000, devCommand: "bun run api" },
+						web: { port: 3001, devCommand: "bun run web" },
+					},
+					options: { hosts: true },
+				}),
+			);
+			const served = `https://box.tail1234.ts.net:${env.ports.web + 20_000}`;
+
+			expect(env.hosts?.mode).toBe("tailscale");
+			expect(env.urls.web).toBe(`http://localhost:${env.ports.web}`);
+			env.setNamedHostsActive(true, { tailscaleUrls: { web: served } });
+
+			expect(env.urls.web).toBe(served);
+			// Not served (Tailscale did not answer for it): its plain URL.
+			expect(env.urls.api).toBe(`http://localhost:${env.ports.api}`);
+			expect(env.urls.mailpit).toBe(`http://localhost:${env.ports.mailpit}`);
+			expect(env.loopbackUrls.web).toBe(`http://localhost:${env.ports.web}`);
+			expect(env.urls.webLocal).toBe(`http://100.64.0.7:${env.ports.web}`);
+			// The HTTPS port is Tailscale's, not a port of the run.
+			expect(Object.keys(env.ports).sort()).toEqual([
+				"api",
+				"mailpit",
+				"mailpitSecondary",
+				"postgres",
+				"web",
+			]);
+			const vars = env.buildEnvVars();
+			expect(vars.WEB_URL).toBe(served);
+			expect(vars.WEB_LOOPBACK_URL).toBe(`http://localhost:${env.ports.web}`);
+			expect(vars.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS).toBe(
+				"box.tail1234.ts.net",
+			);
+			// Those name the loopback daemon, which is not serving this app.
+			const webEnv: Record<string, string | undefined> =
+				env.buildAppEnvVars("web");
+			expect(webEnv.BUNCARGO_APP_HOSTNAME).toBeUndefined();
+
+			env.setNamedHostsActive(false);
+			expect(env.urls.web).toBe(`http://localhost:${env.ports.web}`);
+		} finally {
+			apply(previous);
 			process.chdir(originalCwd);
 			rmSync(root, { recursive: true, force: true });
 		}

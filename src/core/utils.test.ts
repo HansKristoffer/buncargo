@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { defineDevConfig } from "../config";
 import { service } from "../docker-compose/services";
+import { activateTailscaleServe } from "./hosts/tailscale-serve";
+import { findMonorepoRoot } from "./ports";
 import { withoutCiEnv } from "./test-env.testing";
 import { getEnvVar, sleep } from "./utils";
 
@@ -192,4 +197,72 @@ describe("getEnvVar", () => {
 			}
 		},
 	);
+
+	it("emits the Tailscale URL a live run of the checkout serves, and the plain one before", async () => {
+		const saved = {
+			HOME: process.env.HOME,
+			BUNCARGO_HOSTS: process.env.BUNCARGO_HOSTS,
+			BUNCARGO_URL_HOST: process.env.BUNCARGO_URL_HOST,
+		};
+		const home = mkdtempSync(join(tmpdir(), "buncargo-getenv-tailscale-"));
+		process.env.HOME = home;
+		process.env.BUNCARGO_HOSTS = "tailscale";
+		delete process.env.BUNCARGO_URL_HOST;
+		const config = defineDevConfig({
+			projectPrefix: "serpier",
+			services: {},
+			apps: { api: { port: 3000, devCommand: "bun run api" } },
+			options: { hosts: true },
+		});
+		try {
+			const port = Number(withoutCiEnv(() => getEnvVar(config, "API_PORT")));
+			expect(withoutCiEnv(() => getEnvVar(config, "API_URL"))).toBe(
+				`http://localhost:${port}`,
+			);
+
+			const host = "box.tail1234.ts.net";
+			await activateTailscaleServe(
+				{
+					root: findMonorepoRoot(),
+					pid: process.pid,
+					apps: [{ name: "api", port }],
+					blockPorts: [port],
+					takeover: new Set(),
+				},
+				{
+					cli: async (args) => ({
+						exitCode: 0,
+						stderr: "",
+						stdout:
+							args[0] === "status"
+								? JSON.stringify({
+										BackendState: "Running",
+										CertDomains: [host],
+										Self: {
+											DNSName: `${host}.`,
+											TailscaleIPs: ["100.64.0.9"],
+										},
+									})
+								: args[1] === "status"
+									? "{}"
+									: "",
+					}),
+					probe: async () => undefined,
+					isAlive: () => true,
+				},
+			);
+			expect(withoutCiEnv(() => getEnvVar(config, "API_URL"))).toBe(
+				`https://${host}:${port + 20_000}`,
+			);
+			expect(withoutCiEnv(() => getEnvVar(config, "API_LOOPBACK_URL"))).toBe(
+				`http://localhost:${port}`,
+			);
+		} finally {
+			for (const [name, value] of Object.entries(saved)) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
 });

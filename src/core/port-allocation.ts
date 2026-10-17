@@ -340,6 +340,13 @@ export function resolvePortPlan(input: {
 	probeConflicts?: boolean;
 	getOwner?: (port: number) => PortOwner | null;
 	probeNames?: readonly string[];
+	/**
+	 * Ports outside the map that the block also holds (Tailscale Serve's HTTPS
+	 * ports): claimed with it and checked against other checkouts' claims, so
+	 * none lands on another block, but never probed, because the checkout's
+	 * own serve entry on one fails the bind probe like a stranger would.
+	 */
+	companionPorts?: (ports: Record<string, number>) => number[];
 }): PortPlan {
 	const basePorts = buildPortMap(input.services, input.apps);
 	for (const [name, port] of Object.entries(basePorts))
@@ -469,12 +476,12 @@ function planPorts(
 	// claiming run writes its own.
 	const claimKey = offsetClaimKey(root, suffix);
 	const claims = claimsWithLockfilePorts(existingClaims ?? readOffsetClaims());
+	const blockPorts = (ports: Record<string, number>) => [
+		...Object.values(ports),
+		...(input.companionPorts?.(ports) ?? []),
+	];
 	const claimant = (offset: number, ports: Record<string, number>) =>
-		offsetClaimConflict(
-			claims,
-			{ offset, ports: Object.values(ports) },
-			claimKey,
-		);
+		offsetClaimConflict(claims, { offset, ports: blockPorts(ports) }, claimKey);
 	const conflictAt = (ports: Record<string, number>) =>
 		findForeignConflict(probed(ports), {
 			root,
@@ -503,7 +510,7 @@ function planPorts(
 			claimOffset({
 				root,
 				offset,
-				ports: Object.values(ports),
+				ports: blockPorts(ports),
 				projectName,
 				suffix,
 			});
@@ -644,10 +651,13 @@ export function pinOffset(input: {
 	worktreeIsolation?: boolean;
 	runtime?: ContainerRuntimeName;
 	getOwner: (port: number) => PortOwner | null;
+	/** As in {@link resolvePortPlan}: claimed, never probed. */
+	companionPorts?: (ports: Record<string, number>) => number[];
 }): PinResult {
 	const { root, projectName, offset, runtime } = input;
 	const ports = buildPortMap(input.services, input.apps, offset);
-	const block = { offset, ports: Object.values(ports) };
+	const companions = input.companionPorts?.(ports) ?? [];
+	const block = { offset, ports: [...Object.values(ports), ...companions] };
 	// A claim under a name another checkout holds would only make the next
 	// run refuse, after the lockfile had moved.
 	const claimedBy = (): PinResult | undefined => {
@@ -669,7 +679,7 @@ export function pinOffset(input: {
 
 	const claimed = claimedBy();
 	if (claimed) return claimed;
-	for (const port of block.ports) {
+	for (const port of Object.values(ports)) {
 		if (port > 65535)
 			return {
 				refused: `Offset ${offset} puts port ${port} above 65535.`,

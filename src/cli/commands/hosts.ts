@@ -22,6 +22,12 @@ import {
 	readHostsServiceManifest,
 } from "../../core/hosts/service";
 import { describePortSquatter } from "../../core/hosts/squatter";
+import {
+	describeTailscaleServeEntries,
+	sweepTailscaleServe,
+	tailscaleServeDeps,
+} from "../../core/hosts/tailscale-serve";
+import { hostsMode } from "../../core/runtime-flags";
 import * as log from "../log";
 import { hostsSubcommandList, resolveHostsSubcommand } from "./registry";
 
@@ -61,6 +67,9 @@ export async function handleHosts(args: string[]): Promise<void> {
 			const after = await pruneHostRoutes();
 			const removed = before - after.length;
 			log.done(`Pruned ${removed} stale route${removed === 1 ? "" : "s"}`);
+			const serve = await sweepTailscaleServe(tailscaleServeDeps());
+			for (const line of serve.removed) log.done(line);
+			for (const line of serve.failures) log.warn(line);
 			return;
 		}
 		case "daemon":
@@ -74,6 +83,12 @@ export async function handleHosts(args: string[]): Promise<void> {
 }
 
 async function printHostsStatus(): Promise<void> {
+	const mode = hostsMode();
+	log.line(`mode: ${mode}`);
+	if (mode === "tailscale") {
+		await printTailscaleStatus();
+		return;
+	}
 	const config = readDaemonConfig();
 	const health = await readHostsDaemonHealth(config.httpsPort);
 	const healthy = health !== undefined;
@@ -135,4 +150,13 @@ async function printHostsStatus(): Promise<void> {
 			`  ${route.hostname} → :${route.port}  (${route.kind}:${route.name}, ${owner})${unserved}`,
 		);
 	}
+}
+
+/** Tailscale mode: every serve entry buncargo recorded, and whether Tailscale still has it. */
+async function printTailscaleStatus(): Promise<void> {
+	const entries = await describeTailscaleServeEntries(tailscaleServeDeps());
+	log.line();
+	log.line("tailscale serve:");
+	if (entries.length === 0) log.line("  (none)");
+	for (const entry of entries) log.line(`  ${entry}`);
 }

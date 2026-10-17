@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { containerRuntimeForEnv } from "../../container-runtime";
+import { tailscaleBlockPorts } from "../../core/hosts/tailscale-serve";
 import {
 	describeOffsetClaimOverlap,
 	offsetClaimHolder,
@@ -16,6 +17,7 @@ import {
 import { getPortOwner, withBindProbe } from "../../core/process";
 import { askConfirm, isInteractive } from "../../core/prompt";
 import { findCheckoutRuns, findRunsByRoot } from "../../core/run-registry";
+import { hostsMode } from "../../core/runtime-flags";
 import { loadDevEnv } from "../../loader";
 import {
 	type CommandSpec,
@@ -164,6 +166,11 @@ export async function handlePorts(args: string[]): Promise<number> {
 		worktreeIsolation: env.worktreeIsolation,
 		runtime: runtime.name,
 		getOwner: withBindProbe((port) => getPortOwner(port, { runtime })),
+		companionPorts: tailscaleBlockPorts({
+			mode: hostsMode(),
+			hosts: env.hosts !== null,
+			appNames: Object.keys(env.apps),
+		}),
 	});
 	if ("refused" in result)
 		throw new CliError(

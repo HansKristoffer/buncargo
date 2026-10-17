@@ -48,7 +48,9 @@ if (
 	process.platform !== "win32"
 ) {
 	const directory = mkdtempSync(join(tmpdir(), "buncargo-test-runtimes-"));
-	for (const name of ["docker", "container"]) {
+	// `tailscale` too: a serve entry is machine state that outlives the test
+	// run, and the tests inject their own CLI.
+	for (const name of ["docker", "container", "tailscale"]) {
 		const path = join(directory, name);
 		writeFileSync(path, "#!/bin/sh\nexit 1\n", { mode: 0o700 });
 		chmodSync(path, 0o700);

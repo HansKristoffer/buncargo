@@ -158,7 +158,10 @@ temporary `HOME` for the run.
 The watchdog (`core/watchdog-runner.ts`, one per machine, started by `ensureWatchdog`) runs the
 sweep through `core/watchdog-loop.ts`, which logs and retries a pass that throws instead of exiting,
 and logs a repeated failure once until it changes. `ls` and `doctor` sweep inline, so a killed
-watchdog is never the last line of defence.
+watchdog is never the last line of defence. Each pass first takes out the Tailscale Serve entries
+of runs that have ended ([named hosts](./named-hosts.md#tailscale-mode)); with none, that is one
+file read. It does not keep the watchdog up: an entry whose removal failed waits for the next
+`ls`, `doctor` or tailscale-mode activation.
 
 It also serves the live entries, as a `runs.json` document, on the machine's Tailscale address
 (`core/tailnet-directory.ts`) to BuncargoBar on the other machines of the tailnet. That bar may be

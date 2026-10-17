@@ -22,6 +22,7 @@ import type {
 	EnvVarsBuilder,
 	ExecOptions,
 	HookContext,
+	HostsRuntime,
 	SecretsScopeConfig,
 	ServiceConfig,
 } from "../types";
@@ -72,6 +73,19 @@ export interface DevEnvVarsApi<
 	): Promise<Record<string, string>>;
 }
 
+/**
+ * The hosts Vite must accept for named URLs: every `.<tld>` name behind the
+ * loopback daemon, or the machine names Tailscale serves apps under.
+ */
+function namedAllowedHosts(hosts: HostsRuntime | null): string[] {
+	if (!hosts?.active) return [];
+	if (hosts.mode === "loopback") return [`.${hosts.tld}`];
+	const names = Object.values(hosts.tailscaleUrls).map(
+		(url) => new URL(url).hostname,
+	);
+	return [...new Set(names)];
+}
+
 export function createEnvVarsApi<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
@@ -114,8 +128,7 @@ export function createEnvVarsApi<
 		// Vite answers 403 to a Host it does not know. Comma-separated: the
 		// buncargo Vite plugin splits the list.
 		const allowedHosts = [
-			ctx.hosts?.active ? `.${ctx.hosts.tld}` : undefined,
-			urlHostOverride(),
+			...new Set([...namedAllowedHosts(ctx.hosts), urlHostOverride()]),
 		].filter((host) => host !== undefined);
 		if (allowedHosts.length > 0) {
 			shared.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS = allowedHosts.join(",");
@@ -175,11 +188,13 @@ export function createEnvVarsApi<
 			}
 		}
 
-		const namedHost = ctx.hosts?.active
-			? ctx.hosts.plan.find(
-					(host) => host.kind === "app" && host.name === appName,
-				)
-			: undefined;
+		// The loopback daemon's; a Tailscale-served app has only its URL.
+		const namedHost =
+			ctx.hosts?.active && ctx.hosts.mode === "loopback"
+				? ctx.hosts.plan.find(
+						(host) => host.kind === "app" && host.name === appName,
+					)
+				: undefined;
 		if (namedHost) {
 			processEnv.BUNCARGO_APP_HOSTNAME = namedHost.hostname;
 			processEnv.BUNCARGO_HOSTS_PORT = String(hostsDaemonPort());

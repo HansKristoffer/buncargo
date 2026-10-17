@@ -89,5 +89,8 @@ per port.
   backend it selected. `formatPortOwner` names the backend only when it differs from the selected
   one, and does so *after* the noun: `containerRuntimeDisplayName` is a product name, so "Apple
   container" cannot qualify "container".
+- Tailscale mode's HTTPS ports (`companionPorts`, [named hosts](./named-hosts.md#tailscale-mode))
+  are part of the block's claim but never probed: Tailscale binds them on the tailnet address,
+  which fails the bind probe for the checkout's own entry.
 - An integration stack's containers are recognized as this run's by their Compose project label;
   see [integrations](./integrations.md#stacks).

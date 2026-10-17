@@ -15,6 +15,10 @@ import { sweepOrphanedContainers } from "../container-runtime/sweep";
 import { checkoutDeleted } from "./checkout-presence";
 import { FileLockTimeoutError, withFileLock } from "./file-lock";
 import {
+	sweepTailscaleServe,
+	tailscaleServeDeps,
+} from "./hosts/tailscale-serve";
+import {
 	matchesProcessIdentity,
 	readCurrentProcessIdentityAsync,
 } from "./process-identity";
@@ -89,6 +93,7 @@ function outlived(): string | undefined {
 function watch(owner: object): Promise<void> {
 	return runWatchdogLoop({
 		sweep: () => sweepOrphanedContainers({ actor }),
+		sweepServeEntries: () => sweepTailscaleServe(tailscaleServeDeps()),
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		log,
 		intervalMs: WATCHDOG_POLL_INTERVAL_MS,
