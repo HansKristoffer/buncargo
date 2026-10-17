@@ -57,16 +57,32 @@ function describeApp(app: RunAppEntry): string {
 	return `${app.name}: ${app.status}${app.openUrl ? `  ${app.openUrl}` : ""}`;
 }
 
-function tail(path: string, lines = 30): string {
+function readLog(path: string): string {
 	try {
-		return readFileSync(path, "utf8")
-			.trimEnd()
-			.split("\n")
-			.slice(-lines)
-			.join("\n");
+		return readFileSync(path, "utf8");
 	} catch {
 		return "";
 	}
+}
+
+function tail(path: string, lines = 30): string {
+	return readLog(path).trimEnd().split("\n").slice(-lines).join("\n");
+}
+
+const HOSTS_FALLBACK = "Named URLs unavailable:";
+
+/**
+ * Why the run's URLs are `localhost:port`, from its output. The run printed
+ * it into the detached log, where nobody looking at the app list would see
+ * it, and the fallback is otherwise silent.
+ */
+export function namedHostsFallbacks(output: string): string[] {
+	return Bun.stripANSI(output)
+		.split("\n")
+		.flatMap((line) => {
+			const at = line.indexOf(HOSTS_FALLBACK);
+			return at === -1 ? [] : [line.slice(at).trimEnd()];
+		});
 }
 
 /**
@@ -112,6 +128,8 @@ export async function runDetached(input: {
 			);
 			for (const app of run.apps) log.line(`  ${describeApp(app)}`);
 			log.line(`  pid ${child.pid} · output: ${logPath}`);
+			for (const warning of namedHostsFallbacks(readLog(logPath)))
+				log.warn(warning);
 			if (down.length === 0) {
 				log.success(
 					"Running in the background. Stop it with `buncargo stop --all`.",

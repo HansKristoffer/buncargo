@@ -1,6 +1,27 @@
 import { describe, expect, it } from "bun:test";
 import type { RunEntry } from "../core/run-registry";
-import { detachedArgv, settledRun } from "./dev-detach";
+import { detachedArgv, namedHostsFallbacks, settledRun } from "./dev-detach";
+
+describe("namedHostsFallbacks", () => {
+	// The parent prints only the app list, with localhost URLs, so the reason
+	// they are not named ones has to be lifted out of the run's own output.
+	it("finds the run's named-hosts warnings in its output", () => {
+		const output = [
+			"  ✓  Postgres ready",
+			"  \u001b[33m⚠\u001b[39m  Named URLs unavailable: the daemon on :443 stopped answering. Run `buncargo hosts install`.",
+			"  api  http://localhost:3000",
+		].join("\n");
+		expect(namedHostsFallbacks(output)).toEqual([
+			"Named URLs unavailable: the daemon on :443 stopped answering. Run `buncargo hosts install`.",
+		]);
+	});
+
+	it("finds nothing when named hosts came up", () => {
+		expect(namedHostsFallbacks("  api  https://api.app.localhost\n")).toEqual(
+			[],
+		);
+	});
+});
 
 describe("detachedArgv", () => {
 	it("re-runs the same invocation without --detach", () => {
