@@ -1,5 +1,7 @@
 import {
+	loadStartSecrets,
 	type StartDevServersOptions,
+	startableApps,
 	startDevServers,
 } from "../core/process/dev-servers";
 import type { CapturedValue } from "../core/process/output-capture";
@@ -49,6 +51,13 @@ export async function startServerSession(
 		if (seed) source.onSeedReady?.();
 	};
 	try {
+		// A missing required secret refuses before a production build or
+		// `beforeServers` runs; `startDevServers` checks again from the cache.
+		await loadStartSecrets(
+			startableApps(apps, options.productionBuild ?? false),
+			source.appEnv,
+			{ signal, onWait: (ms) => options.onPhase?.("secrets", ms) },
+		);
 		await source.prepare?.(signal);
 		if (Object.keys(apps).length === 0 && options.stayOpen) {
 			await joinSeed();

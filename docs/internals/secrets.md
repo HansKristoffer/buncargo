@@ -28,6 +28,8 @@ warns once and continues.
 
 - `process/dev-servers.ts` injects app scopes in `startDevServers`, the one function both spawn
   paths reach, and refuses to spawn when a `secrets.required` key is missing everywhere.
+  `environment/server-session.ts` runs the same check (`loadStartSecrets`) first, so the refusal
+  comes before a production build or `beforeServers`; the second one reads the cache.
 - `environment/env-vars.ts` `resolveSecrets` gives `exec` (and so migrations, hooks and tasks), the
   seed and prisma their scope: explicit, else the app's, else the config-level one, always beneath
   `process.env` and the computed env.

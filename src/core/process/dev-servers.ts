@@ -204,6 +204,49 @@ async function prepareAppPort(
 	return "start";
 }
 
+/** The apps that have a command to run in this mode. */
+export function startableApps(
+	apps: Record<string, AppConfig>,
+	productionBuild: boolean,
+): Record<string, AppConfig> {
+	return Object.fromEntries(
+		Object.entries(apps).filter(
+			([, app]) => resolveStartCommand(app, productionBuild) !== undefined,
+		),
+	);
+}
+
+/**
+ * The apps' Infisical secrets, refusing with one error naming every missing
+ * required key per app rather than each app crashing on its own first read of
+ * one. Lowest precedence: the app's computed env (`appEnv`) is layered on top,
+ * and `loadAppSecrets` drops keys the developer already exported.
+ * Fetches are cached per scope, so a second call costs nothing, and no app
+ * declaring a scope spawns nothing.
+ */
+export async function loadStartSecrets(
+	apps: Record<string, AppConfig>,
+	appEnv: (name: string) => Record<string, string>,
+	options: { signal?: AbortSignal; onWait?: (ms: number) => void } = {},
+): Promise<Record<string, Record<string, string>>> {
+	const secrets = await loadAppSecrets(apps, options);
+	const missing = missingRequiredSecrets(apps, (name) => ({
+		...process.env,
+		...secrets[name],
+		...appEnv(name),
+	}));
+	if (Object.keys(missing).length > 0) {
+		throw new Error(
+			`Required secrets are missing:\n${Object.entries(missing)
+				.map(([name, keys]) => `  ${name}: ${keys.join(", ")}`)
+				.join(
+					"\n",
+				)}\nAdd them to the app's Infisical scope, or export them. \`buncargo secrets ls\` shows what each app gets.`,
+		);
+	}
+	return secrets;
+}
+
 /**
  * Start configured dev servers, holding `needsPublicUrls` apps for a second
  * wave when tunnels are opening (see `deferPublicUrlApps`).
@@ -233,41 +276,24 @@ export async function startDevServers(
 		onCapture,
 	} = options;
 
-	const startable = Object.fromEntries(
-		Object.entries(apps).filter(
-			([, app]) => resolveStartCommand(app, productionBuild) !== undefined,
-		),
-	);
+	const startable = startableApps(apps, productionBuild);
 	// Here rather than in the environment layer because this is the one function
 	// every spawner goes through: `startAppServers` and the CLI's own dev flow
 	// both land here, and a third caller cannot miss it. Lowest precedence — the
 	// app's computed env is layered on top, and `loadAppSecrets` drops keys the
-	// developer already exported. It returns an empty map without spawning
-	// anything when no app declared a scope.
-	const secrets = await loadAppSecrets(startable, {
-		signal: options.signal,
-		onWait: (ms) => options.onPhase?.("secrets", ms),
-	});
+	// developer already exported.
+	const secrets = await loadStartSecrets(
+		startable,
+		(name) => resolveAppEnv(envVarsByApp, name),
+		{
+			signal: options.signal,
+			onWait: (ms) => options.onPhase?.("secrets", ms),
+		},
+	);
 	const appEnv = (name: string) => ({
 		...secrets[name],
 		...resolveAppEnv(envVarsByApp, name),
 	});
-
-	// Before anything spawns: one error naming every missing key per app,
-	// rather than each app crashing on its own first read of one.
-	const missing = missingRequiredSecrets(startable, (name) => ({
-		...process.env,
-		...appEnv(name),
-	}));
-	if (Object.keys(missing).length > 0) {
-		throw new Error(
-			`Required secrets are missing:\n${Object.entries(missing)
-				.map(([name, keys]) => `  ${name}: ${keys.join(", ")}`)
-				.join(
-					"\n",
-				)}\nAdd them to the app's Infisical scope, or export them. \`buncargo secrets ls\` shows what each app gets.`,
-		);
-	}
 
 	const order = planSpawnOrder(startable, deferPublicUrlApps);
 	const nameWidth = prefixWidth(Object.keys(startable));

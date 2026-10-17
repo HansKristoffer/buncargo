@@ -120,3 +120,28 @@ it("cancels preparation when the seed fails and never reports ready", async () =
 	expect(cancelled).toBe(true);
 	expect(ready).toBe(false);
 });
+
+it("refuses a missing required secret before preparing or running beforeServers", async () => {
+	const events: string[] = [];
+	await expect(
+		startServerSession(
+			source({
+				prepare: async () => {
+					events.push("prepare");
+				},
+				runHook: async (phase) => {
+					events.push(phase);
+				},
+			}),
+			{
+				api: {
+					port: 1,
+					devCommand: "exit 0",
+					secrets: { required: ["BUNCARGO_TEST_REQUIRED_SECRET"] },
+				},
+			},
+			{},
+		),
+	).rejects.toThrow("api: BUNCARGO_TEST_REQUIRED_SECRET");
+	expect(events).toEqual([]);
+});
