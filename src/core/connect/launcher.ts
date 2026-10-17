@@ -95,8 +95,13 @@ class CoordinatorUnavailableError extends Error {
 /** The coordinator was not there to answer: refused, reset, or no live state left. */
 export function coordinatorWentAway(error: unknown): boolean {
 	if (error instanceof CoordinatorUnavailableError) return true;
+	// Bun 1.4.2's fetch reports a refused connection as `ConnectionRefused`.
 	const code = (error as { code?: unknown } | null)?.code;
-	return code === "ECONNREFUSED" || code === "ECONNRESET";
+	return (
+		code === "ECONNREFUSED" ||
+		code === "ConnectionRefused" ||
+		code === "ECONNRESET"
+	);
 }
 
 /**
