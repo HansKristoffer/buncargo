@@ -1,4 +1,4 @@
-import { join, relative } from "node:path";
+import { relative } from "node:path";
 import {
 	ensureServicesRunning,
 	withProjectLifecycleLock,
@@ -9,8 +9,9 @@ import { stopDevServers } from "../core/process/dev-servers";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWarn } from "../core/style";
 import { resolveComposeServiceNames } from "../planning";
+import { resolvePrismaConfig } from "../prisma/config";
 import { appliedMigrationCount } from "../prisma/migrations-applied";
-import { recordGeneratedPrismaHash } from "../prisma/schema-hash";
+import { generatePrismaClient } from "../prisma/schema-hash";
 import type {
 	AnyDevConfig,
 	AppConfig,
@@ -96,7 +97,9 @@ export function createLifecycleApi<
 	}
 
 	function prismaSelected(): boolean {
-		return selectedServices.includes(config.prisma?.service ?? "postgres");
+		return selectedServices.includes(
+			resolvePrismaConfig(config.prisma).service,
+		);
 	}
 
 	function collectMigrations(): MigrationConfig[] {
@@ -106,7 +109,7 @@ export function createLifecycleApi<
 			migrations.push({
 				name: "prisma",
 				command: "bunx --no-install prisma migrate deploy",
-				cwd: config.prisma.cwd ?? "packages/prisma",
+				cwd: resolvePrismaConfig(config.prisma).cwd,
 			});
 		}
 
@@ -159,17 +162,15 @@ export function createLifecycleApi<
 							!prismaSelected()
 						)
 							return false;
-						const serviceKey = config.prisma.service ?? "postgres";
+						const { service: serviceKey, urlEnvVar } = resolvePrismaConfig(
+							config.prisma,
+						);
 						const service = services[serviceKey];
 						const url = toUrlMap(ctx.loopbackUrls)[serviceKey];
 						// An overlay may target a different database; never skip that deploy
 						// based on the state of our local service.
 						const computed: Record<string, string> = envVars.buildEnvVars();
-						if (
-							!service ||
-							computed[config.prisma.urlEnvVar ?? "DATABASE_URL"] !== url
-						)
-							return false;
+						if (!service || computed[urlEnvVar] !== url) return false;
 						const count = await appliedMigrationCount({
 							root: ctx.root,
 							prisma: config.prisma,
@@ -211,9 +212,11 @@ export function createLifecycleApi<
 
 			const began = performance.now();
 			try {
-				const prismaCwd = config.prisma.cwd ?? "packages/prisma";
-				await execute(config.prisma.generate, { cwd: prismaCwd, verbose });
-				recordGeneratedPrismaHash(ctx.root, join(ctx.root, prismaCwd));
+				const command = config.prisma.generate;
+				const { cwd } = resolvePrismaConfig(config.prisma);
+				await generatePrismaClient(ctx.root, cwd, () =>
+					execute(command, { cwd, verbose }),
+				);
 			} finally {
 				onPhase?.("generation", performance.now() - began);
 			}

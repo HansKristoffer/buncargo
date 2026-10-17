@@ -43,7 +43,8 @@ import type {
 	PrismaRunner,
 	ServiceConfig,
 } from "../types";
-import { recordGeneratedPrismaHash } from "./schema-hash";
+import { resolvePrismaConfig } from "./config";
+import { generatePrismaClient } from "./schema-hash";
 
 /** The major version of the `prisma` package installed for `dir`, if any. */
 export function installedPrismaMajor(dir: string): number | undefined {
@@ -75,15 +76,12 @@ export function createPrismaRunner<
 		computed: Record<string, string>,
 	) => Promise<Record<string, string>>,
 ): PrismaRunner {
-	const { cwd = "packages/prisma" } = config;
+	const resolved = resolvePrismaConfig(config);
+	const { cwd, urlEnvVar } = resolved;
 	// The defaults only exist on configs that actually declare a postgres
 	// service; `validateConfig` rejects the rest, including disk-loaded configs
 	// whose keys are only known as strings.
-	const service = (config.service ?? "postgres") as Extract<
-		keyof TServices,
-		string
-	>;
-	const urlEnvVar: string = config.urlEnvVar ?? "DATABASE_URL";
+	const service = resolved.service as Extract<keyof TServices, string>;
 
 	// Map service names to health check types
 	const healthCheckTypes: Record<string, BuiltInHealthCheck> = {
@@ -257,7 +255,7 @@ Examples:
 				"migrate",
 				"diff",
 				"--from-migrations",
-				options.migrations ?? config.migrations ?? "prisma/migrations",
+				options.migrations ?? resolved.migrations,
 				...(modern
 					? ["--to-schema", schema]
 					: [
@@ -285,15 +283,14 @@ Examples:
 		return code;
 	}
 
-	async function generate(): Promise<number> {
-		const result = await env.exec(
-			config.generate ?? "bunx --no-install prisma generate",
-			{ cwd, verbose: true, throwOnError: false },
+	function generate(): Promise<number> {
+		return generatePrismaClient(env.root, cwd, () =>
+			env.exec(config.generate ?? "bunx --no-install prisma generate", {
+				cwd,
+				verbose: true,
+				throwOnError: false,
+			}),
 		);
-		if (result.exitCode === 0) {
-			recordGeneratedPrismaHash(env.root, join(env.root, cwd));
-		}
-		return result.exitCode;
 	}
 
 	return {

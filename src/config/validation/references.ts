@@ -1,5 +1,6 @@
 import { normalize } from "node:path";
 import { sanitizeTld } from "../../core/hosts/plan";
+import { resolvePrismaConfig } from "../../prisma/config";
 import type { AnyDevConfig } from "../../types";
 import type { ValidationContext } from "./context";
 
@@ -34,7 +35,7 @@ export function validateReferences(
 	// Prisma has an implicit database prerequisite; apply the same phase rule
 	// as explicit migration/seed entries.
 	const prismaPrerequisites = config.prisma
-		? [config.prisma.service ?? "postgres"]
+		? [resolvePrismaConfig(config.prisma).service]
 		: undefined;
 
 	for (const { path, requiredServices } of [

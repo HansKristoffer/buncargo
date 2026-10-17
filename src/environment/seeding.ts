@@ -4,6 +4,7 @@ import { withDeadline } from "../core/deadline";
 import { toUrlMap, type UrlMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
 import { formatDone, formatFail, formatStep, formatWarn } from "../core/style";
+import { resolvePrismaConfig } from "../prisma/config";
 import type {
 	AppConfig,
 	EnvValues,
@@ -150,7 +151,7 @@ export async function runSeedIfNeeded<
 					toUrlMap(ctx.urls),
 					(cmd, execOptions) =>
 						envVars.exec(cmd, { ...execOptions, signal, timeoutMs: 600_000 }),
-					ctx.config.prisma?.service ?? "postgres",
+					resolvePrismaConfig(ctx.config.prisma).service,
 				);
 				return seedCheck(
 					createSeedCheckContext(
