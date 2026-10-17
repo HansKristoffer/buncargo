@@ -193,6 +193,7 @@ All library source is under `src/`; tests sit beside the module they test.
 - `config/`: `defineDevConfig`, validation and integration application. Definition, validation and
   merging stay in separate modules.
 - `environment/`: `createDevEnvironment()`, composed from focused modules built on `context.ts`.
+- `planning/`: pure start planning, app and service selection. No I/O.
 - `docker-compose/`: Compose model generation and the service presets. No runtime calls.
 - `container-runtime/`: the runtime-neutral adapter port, readiness, inventory, the sweep and
   volume pruning. Everything outside the backends imports runtimes from here.
