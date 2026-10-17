@@ -41,10 +41,10 @@ flow; `flags.ts` (argv primitives), `dev-flags.ts` (the dev command's typed args
   `env.releaseRun()` releases the containers to the watchdog's idle hold rather than stopping them.
   The decision is made *before* `logSelectedAppsSummary` and the banner, so both describe the run
   that actually happens and the reclaimed hostnames are the ones printed. `run-cli.ts` then calls
-  `activateNamedHosts` a second time: the first attempt was refused because the other run still
-  owned the hostnames, and `upsertHostRoutes` only rejects an owner that is still alive, so the
-  retry succeeds once that pid is gone. Without it a takeover silently downgrades every named URL
-  to `localhost:port`.
+  `activateNamedHosts` a second time with the taken-over app names. The first attempt left the
+  other run as the routes' owner (`keep`), and that `buncargo dev` is still alive after its server
+  is killed, so its exit would delete the routes and the new run's named URLs would 404. The
+  `takeover` option moves those routes, and only those, to this run's pid.
 - An app whose port is busy but fails its health check is never reused. `port-reuse.ts` stops a
   leftover of this checkout that no live run lists (a dev server that outlived a run killed hard),
   since the spawner would kill it anyway. A live sibling run's server is handed to the takeover

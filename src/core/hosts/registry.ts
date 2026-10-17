@@ -140,23 +140,36 @@ export type RouteClaim = "take" | "keep" | "conflict";
  *
  * Refusing here instead is what left a second run printing `localhost:port`
  * URLs while the named ones were working the whole time.
+ *
+ * A takeover is the exception. It has stopped the first run's server and
+ * serves the port itself, but the first `buncargo dev` is still alive, so
+ * leaving it as owner would let its exit delete the route from under the run
+ * now serving it.
  */
 export function classifyRouteClaim(
 	existing: HostsRoute,
 	incoming: HostsRoute,
+	options: { takeover?: boolean } = {},
 ): RouteClaim {
 	if (existing.root !== incoming.root) return "conflict";
 	// The same run re-registering: refresh it.
 	if (existing.pid === incoming.pid) return "take";
 	if (existing.port === incoming.port && existing.kind === incoming.kind) {
-		return "keep";
+		return options.takeover ? "take" : "keep";
 	}
 	return "conflict";
 }
 
 export async function upsertHostRoutes(
 	routesToSave: HostsRoute[],
-	options: { path?: string; force?: boolean } = {},
+	options: {
+		path?: string;
+		/**
+		 * Route names (apps) this run took over from another run of the same
+		 * checkout. Only those change owner: the other run still serves the rest.
+		 */
+		takeover?: ReadonlySet<string>;
+	} = {},
 ): Promise<void> {
 	const path = options.path ?? getRoutesPath();
 	await withFileLock(path, async () => {
@@ -165,8 +178,10 @@ export async function upsertHostRoutes(
 
 		for (const route of routesToSave) {
 			const existing = byHost.get(route.hostname);
-			if (existing && isRouteOwnerAlive(existing.pid) && !options.force) {
-				const claim = classifyRouteClaim(existing, route);
+			if (existing && isRouteOwnerAlive(existing.pid)) {
+				const claim = classifyRouteClaim(existing, route, {
+					takeover: options.takeover?.has(route.name),
+				});
 				if (claim === "conflict") {
 					throw new HostsRouteConflictError(route.hostname, existing.pid);
 				}

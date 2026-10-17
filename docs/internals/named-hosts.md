@@ -73,14 +73,16 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   produced a certificate covering itself and not us. The second pass runs under the same lock, sees
   every concurrent run's routes, and mints nothing when the certificate is already sufficient.
 - `activateNamedHosts` returns its warnings rather than printing them: a run that goes on to take
-  over another one activates twice, and the first failure (the other run still owning the
-  hostnames) is one the second attempt undoes, so printing it would have the banner contradict it
-  three lines later.
+  over another one activates twice, and only the second attempt describes the URLs the banner
+  prints. A failed attempt reverts `env.urls` to `localhost:port`, so a retry that fails never
+  leaves the first attempt's named URLs beside its warning.
 - `upsertHostRoutes` answers a second `buncargo dev` in the same checkout, pointing at the same
   port, with `keep` rather than a conflict: it is reusing the servers the first run started, not
   competing for the hostname. The live owner stays the owner, because `releaseNamedHosts` filters
   by pid and the route has to disappear when the run owning the servers exits. Refusing instead
-  left that run printing `localhost:port` while the named URLs worked.
+  left that run printing `localhost:port` while the named URLs worked. A takeover is the reverse
+  case: it passes the apps it took over as `takeover`, and those routes move to its pid, because
+  the old `buncargo dev` outlives its killed server and would delete them on exit.
 - `prune` drops a static (pid-less) route whose `root` no longer exists. Nothing else retires one,
   so a deleted worktree kept its hostnames in the registry, and in `/etc/hosts`, forever.
 - `syncHostsFile` writes through a temp file and a rename. `writeFileSync` truncates in place, and

@@ -419,8 +419,7 @@ async function runDevFlow<
 
 	// ── Containers ───────────────────────────────────────────────────────────
 	// Held rather than printed: a run that takes over another one activates a
-	// second time, and the failure this first attempt reports - the other run
-	// still owning the hostnames - is exactly what the takeover undoes.
+	// second time, and only that attempt describes the URLs the banner prints.
 	let hostsWarnings = args.oneShot
 		? []
 		: await timer.measure("hosts", () =>
@@ -492,6 +491,7 @@ async function runDevFlow<
 		hostsWarnings = await activateNamedHosts(env, {
 			enabled: args.hosts,
 			signal,
+			takeover: candidates.names,
 		});
 		classifiedApps = {
 			startApps: { ...classifiedApps.startApps, ...candidates.apps },
