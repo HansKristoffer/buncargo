@@ -93,7 +93,8 @@ The sweep and volume pruning live in `container-runtime/` too; see
   with direct `docker exec`. Do not use `docker compose exec` for readiness: Compose startup can
   exceed the two-second probe budget even when Postgres is healthy, making a new worktree time out
   until the next invocation skips probing via container health. Lookup and exec share one deadline;
-  never cache the container ID across polls or guess it from a name.
+  never cache the container ID across polls or guess it from a name. `diagnose.ts` resolves the
+  same way, with `--all`: readiness polls it as the probe for jobs and port-less services.
 - `preflight.ts` detects the local Docker runtime and auto-starts it when possible.
 
 ## Apple container backend

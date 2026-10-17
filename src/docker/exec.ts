@@ -3,9 +3,11 @@ import { remainingTime } from "../core/deadline";
 import { DEFAULT_DOCKER_BINARY, runDockerAsync } from "./binary";
 
 /** Match Compose exec's default replica, excluding one-off run containers. */
-function serviceContainerArgs(request: ExecInServiceRequest): string[] {
+export function serviceContainerFilters(request: {
+	projectName: string;
+	serviceName: string;
+}): string[] {
 	return [
-		"ps",
 		"--filter",
 		`label=com.docker.compose.project=${request.projectName}`,
 		"--filter",
@@ -14,9 +16,11 @@ function serviceContainerArgs(request: ExecInServiceRequest): string[] {
 		"label=com.docker.compose.oneoff=False",
 		"--filter",
 		"label=com.docker.compose.container-number=1",
-		"--format",
-		"{{.ID}}",
 	];
+}
+
+function serviceContainerArgs(request: ExecInServiceRequest): string[] {
+	return ["ps", ...serviceContainerFilters(request), "--format", "{{.ID}}"];
 }
 
 function uniqueContainerId(stdout: string): string | undefined {
