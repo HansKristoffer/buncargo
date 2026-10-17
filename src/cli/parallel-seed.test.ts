@@ -1,6 +1,7 @@
 import { expect, it } from "bun:test";
 import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
+import { standInForWatchdog } from "../core/watchdog.testing";
 import { parallelSeedFixture } from "../environment/parallel-seed.testing";
 
 it.each([
@@ -12,6 +13,7 @@ it.each([
 	"CLI overlaps seed and apps and joins readiness (failed seed=%s, color=%s)",
 	async (failSeed, color) => {
 		const fixture = await parallelSeedFixture({ beforeApps: false, failSeed });
+		await standInForWatchdog(fixture.root);
 		const child = Bun.spawn(
 			[
 				process.execPath,

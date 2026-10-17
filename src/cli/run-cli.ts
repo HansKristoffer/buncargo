@@ -17,6 +17,7 @@ import {
 	startPublicTunnels,
 	stopPublicTunnels,
 } from "../core/tunnel";
+import { ensureWatchdog } from "../core/watchdog";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../core/watchdog-constants";
 import {
 	assertSeedSucceeded,
@@ -785,6 +786,13 @@ async function runDevFlow<
 					if (!nothingToSpawn)
 						timer.record("app readiness", performance.now() - appsStartedAt);
 					timer.report();
+					// `start()` ensures the watchdog only for a run with containers,
+					// but the watchdog is also what lists live runs to BuncargoBar
+					// on the tailnet, and it stays while a run is live. Once the
+					// apps are up and not awaited, so startup pays nothing; quiet,
+					// because the TUI may own the screen.
+					if (!hasServices && options.watchdog)
+						void ensureWatchdog({ verbose: false }).catch(() => {});
 				},
 				attach: args.attach,
 				extraArgs: args.passthrough,

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { acquireLease, releaseLeases } from "../core/leases";
 import { buildRunEntry, publishRun, retireRuns } from "../core/run-registry";
 import { resolveExposeTargets, stopPublicTunnels } from "../core/tunnel";
+import * as watchdog from "../core/watchdog";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import { runCli } from "./run-cli";
 import { upsertTunnelRegistryEntries } from "./tunnel-registry";
@@ -591,6 +592,42 @@ describe("runCli phased tunnels and attach", () => {
 		} finally {
 			if (ci === undefined) delete process.env.CI;
 			else process.env.CI = ci;
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	// The watchdog is what lists live runs to BuncargoBar on the tailnet, and
+	// `start()` only ensures it for a run with containers.
+	it("ensures the watchdog for an app-only run once its apps are up", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-app-only-"));
+		const port = 44010 + Math.floor(Math.random() * 200);
+		const order: string[] = [];
+		const ensure = spyOn(watchdog, "ensureWatchdog").mockImplementation(
+			async () => {
+				order.push("watchdog");
+			},
+		);
+		const env = createStubEnv({
+			root,
+			apps: {
+				api: {
+					port,
+					devCommand: "bun -e 'process.exit(0)'",
+					healthEndpoint: false,
+					requiredServices: [],
+				},
+			},
+			waitForServers: () => {
+				order.push("ready");
+			},
+		});
+
+		try {
+			await runCli(env, { args: [] });
+			expect(order).toEqual(["ready", "watchdog"]);
+			expect(ensure).toHaveBeenCalledWith({ verbose: false });
+		} finally {
+			ensure.mockRestore();
 			await rm(root, { recursive: true, force: true });
 		}
 	});

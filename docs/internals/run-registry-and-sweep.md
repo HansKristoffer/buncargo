@@ -127,7 +127,10 @@ watchdog is never the last line of defence.
 It also serves the live entries, as a `runs.json` document, on the machine's Tailscale address
 (`core/tailnet-directory.ts`) to BuncargoBar on the other machines of the tailnet. That bar may be
 a different version than the CLI it reads, so the registry's old-reader compatibility now holds
-across machines too. A watchdog started by an older buncargo keeps running old code until it exits.
+across machines too. So a CLI run without containers ensures the watchdog as well, from
+`onReady` in `runDevFlow`, after its apps are up and not awaited: nothing is added before they
+start. `start()` does not, because the library publishes no entry for an app-only run, so there is
+nothing to list. The loop already stays while any entry is live, containers or not. A watchdog started by an older buncargo keeps running old code until it exits.
 
 On Linux the watchdog, like `dev --detach` and the sharing coordinator, starts in a systemd
 user scope of its own when there is a user manager (`process/user-scope.ts`; off with
