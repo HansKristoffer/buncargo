@@ -65,7 +65,7 @@ export interface EnvironmentLogSelection {
 	requiredServiceKeys: readonly string[];
 }
 
-/** Active tunnel with teardown — same shape as core `PublicTunnel`. */
+/** Active tunnel with teardown; core `PublicTunnel` is this type. */
 export type PublicTunnelHandle = DevEnvironmentTunnelLog & {
 	close: () => Promise<void>;
 };
