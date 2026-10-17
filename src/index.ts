@@ -212,7 +212,7 @@ export {
 	getWatchdogLogFile,
 	getWatchdogPidFile,
 } from "./core/watchdog";
-export { assertDockerRunning, isDockerRunning } from "./docker/index";
+export { assertDockerRunning } from "./docker/index";
 export {
 	buildComposeModel,
 	composeToYaml,

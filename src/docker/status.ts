@@ -6,13 +6,6 @@ export const DOCKER_NOT_RUNNING_MESSAGE =
 	"Docker is not running. Please start Docker and try again.";
 
 /**
- * Check if Docker daemon is running and reachable.
- */
-export function isDockerRunning(binary?: string): boolean {
-	return isDockerDaemonRunning(binary);
-}
-
-/**
  * Ensure Docker is running before attempting compose operations.
  */
 export function assertDockerRunning(binary?: string): void {

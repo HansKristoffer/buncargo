@@ -34,7 +34,6 @@ export {
 	assertDockerRunning,
 	DOCKER_NOT_RUNNING_MESSAGE,
 	dockerProjectServiceStates,
-	isDockerRunning,
 } from "./status";
 export {
 	listDockerVolumes,

@@ -8,6 +8,7 @@ Each section lists what a consumer of `buncargo` has to change when crossing one
 - **A named-hosts daemon from before 12.0 is no longer used.** One that answers without reporting the hostnames it serves now leaves the run on `localhost:port` with "Run `buncargo hosts install` to update it", and `doctor` and `hosts status` report it as outdated. Run `buncargo hosts install` once on each machine that still has one.
 - **`buncargo send` exits by what became of the keys.** It waits for the run to answer: `0` typed, `2` no run started that app (was `1`), `3` the app cannot take keys because it has no terminal of its own or is not running (was `0`, with only a warning in the run's output), `1` when the run does not answer within 5 seconds. A script that ignored `send`'s exit code should check for `3`.
 - **`buncargo sim` is gone.** Use `buncargo expo sim`, which takes the same arguments. BuncargoBar runs `expo sim` from this release on, which every buncargo since 10.2 answers.
+- **Removed exports:** `isDockerRunning` (use `isDockerDaemonRunning` from `buncargo/docker`), and the unread `binary` field of `ComposeCommandContext`.
 
 ## 12.0 → 13.0
 
