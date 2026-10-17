@@ -412,9 +412,7 @@ async function runDevFlow<
 	connect?.plan(appsForDev, plan.requiredServiceKeys, env.services);
 	if (connect && !connect.active)
 		log.info("No selected endpoints to share through frp.");
-	if (env.prepareStartAsync)
-		await env.prepareStartAsync(selectedAppNames, undefined, signal);
-	else env.prepareStart?.(selectedAppNames);
+	await env.prepareStartAsync(selectedAppNames, undefined, signal);
 	const hasServices = plan.requiredServiceKeys.length > 0;
 	const overlapSeed =
 		!args.oneShot &&

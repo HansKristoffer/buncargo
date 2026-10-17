@@ -127,7 +127,8 @@ export interface DevEnvironment<
 	readonly loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
 	/** Public tunnel URLs for exposed services/apps (when active) */
 	readonly publicUrls: ComputedPublicUrls<TServices, TApps>;
-	readonly workspaceId?: string;
+	/** Stable id of this checkout, which apps see as `BUNCARGO_WORKSPACE_ID`. */
+	readonly workspaceId: string;
 	/** Services configuration */
 	readonly services: TServices;
 	/** Apps configuration (for CLI to build commands) */
@@ -147,14 +148,14 @@ export interface DevEnvironment<
 	/** Path passed to docker compose -f */
 	readonly composeFile: string;
 	/** Validate selection and resolve startup allocation before activating hosts. */
-	prepareStart?(
+	prepareStart(
 		onlyApps?: Extract<keyof TApps, string>[],
 		onlyServices?: readonly Extract<keyof TServices, string>[],
 	): void;
 	/** Which backend runs the containers: 'docker' or 'apple' */
 	readonly containerRuntime: ContainerRuntimeName;
 	/** Cancellable startup allocation; prefer this when preparing before host activation. */
-	prepareStartAsync?(
+	prepareStartAsync(
 		onlyApps?: Extract<keyof TApps, string>[],
 		onlyServices?: readonly Extract<keyof TServices, string>[],
 		signal?: AbortSignal,

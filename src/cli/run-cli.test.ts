@@ -117,6 +117,9 @@ function createStubEnv(
 		>["loopbackUrls"],
 		projectName: "stub-cli",
 		projectPrefix: "stub",
+		workspaceId: "0123456789abcdef",
+		prepareStart: () => {},
+		prepareStartAsync: async () => {},
 		resolvePrimaryApp: (selected?: readonly string[]) =>
 			(selected ?? Object.keys(apps))[0],
 		root: options.root ?? "/tmp/buncargo-cli-stub",

@@ -138,7 +138,7 @@ export async function handleCi(args: string[]): Promise<number> {
 			// Explicit, so a config's `autoShutdown: false`, which is about dev
 			// containers, does not keep a ci stack. Prepared first: the claim
 			// names the selection's services.
-			await env.prepareStartAsync?.(undefined, services, signal);
+			await env.prepareStartAsync(undefined, services, signal);
 			await env.claimRun({ idleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS, signal });
 			await env.start({
 				onlyServices: services,

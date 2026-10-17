@@ -43,8 +43,8 @@ it("refuses to start a second checkout under a project name another one claims, 
 	const second = checkout("runner-2");
 	expect(second.env.projectName).toBe(first.env.projectName);
 
-	await first.env.prepareStartAsync?.(["web"]);
-	await first.env.withSuffix(CI_PROJECT_SUFFIX).prepareStartAsync?.(["web"]);
+	await first.env.prepareStartAsync(["web"]);
+	await first.env.withSuffix(CI_PROJECT_SUFFIX).prepareStartAsync(["web"]);
 
 	await expect(
 		second.env.start({ onlyApps: ["web"], startServers: false }),

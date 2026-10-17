@@ -72,7 +72,7 @@ it("tells onCapture the prepared selection", async () => {
 		{ root },
 	);
 
-	env.prepareStart?.(["web"]);
+	env.prepareStart(["web"]);
 	await env.recordCapture?.("web", { name: "token", value: "x", as: "value" });
 	expect(selected).toEqual(["web"]);
 });
