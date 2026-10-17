@@ -82,7 +82,10 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   by pid and the route has to disappear when the run owning the servers exits. Refusing instead
   left that run printing `localhost:port` while the named URLs worked. A takeover is the reverse
   case: it passes the apps it took over as `takeover`, and those routes move to its pid, because
-  the old `buncargo dev` outlives its killed server and would delete them on exit.
+  the old `buncargo dev` outlives its killed server and would delete them on exit. The old run
+  can outlive the new one too (the app was `essential: false`, so it only parked): an app that
+  restarts in a run serving named hosts claims its route again (`reclaimAppRoute`), or its named
+  URL 404s once the run that took it over has exited.
 - `prune` drops a static (pid-less) route whose `root` no longer exists. Nothing else retires one,
   so a deleted worktree kept its hostnames in the registry, and in `/etc/hosts`, forever.
 - `syncHostsFile` writes through a temp file and a rename. `writeFileSync` truncates in place, and

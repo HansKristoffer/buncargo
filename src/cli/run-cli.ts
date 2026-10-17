@@ -48,7 +48,11 @@ import {
 	parseDevArgs,
 	printDevHelp,
 } from "./dev-flags";
-import { activateNamedHosts, releaseNamedHosts } from "./dev-hosts";
+import {
+	activateNamedHosts,
+	reclaimAppRoute,
+	releaseNamedHosts,
+} from "./dev-hosts";
 import {
 	acquireAppLeases,
 	describeLeaseRefusal,
@@ -712,6 +716,7 @@ async function runDevFlow<
 
 	const appsStartedAt = performance.now();
 	let firstSpawn = false;
+	const spawned = new Set<string>();
 	// Parked after never coming up: the supervisor treats them as non-essential.
 	const parked = new Set<string>();
 	const view = openDevOutput(env, classifiedApps.startApps, { tui: args.tui });
@@ -804,6 +809,10 @@ async function runDevFlow<
 						timer.record("entry to first app spawn", timer.elapsedMs());
 					}
 					void recordAppSpawn(env, name, pid, attached);
+					// Activation claimed the first spawn's route; a restart claims it
+					// again in case a takeover moved it away and its run ended.
+					if (spawned.has(name)) void reclaimAppRoute(env, name);
+					spawned.add(name);
 				},
 				// A signalled exit (`code === null`) is a deliberate stop — Ctrl-C,
 				// or `buncargo stop <app>` — and reads as `stopped`. A non-zero code

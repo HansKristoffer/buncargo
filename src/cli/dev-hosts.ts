@@ -8,7 +8,12 @@ import {
 	waitForDaemonRoutes,
 } from "../core/hosts";
 import { certificateHostnames } from "../core/hosts/plan";
-import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
+import type {
+	AppConfig,
+	DevEnvironment,
+	HostsRuntime,
+	ServiceConfig,
+} from "../types";
 
 /**
  * Claim this run's named `.localhost` routes and switch `env.urls` over to them.
@@ -118,6 +123,32 @@ export async function activateNamedHosts<
 		return unavailable(toHostsUserMessage(error));
 	}
 	return notes;
+}
+
+/**
+ * Claim one app's route again when it restarts in a run serving named hosts.
+ *
+ * A run that took this app over moved its route to itself, and that run's
+ * exit deleted it; restarted here, the app would serve a named URL that 404s.
+ * A route another live run of this checkout holds stays that run's. One locked
+ * file write, no fork. Best-effort, like the rest of the registry.
+ */
+export async function reclaimAppRoute(
+	env: { root: string; hosts: HostsRuntime | null },
+	name: string,
+): Promise<void> {
+	if (!env.hosts?.active) return;
+	const routes = routesFromPlan(env.hosts.plan, {
+		root: env.root,
+		pid: process.pid,
+		kinds: ["app"],
+	}).filter((route) => route.name === name);
+	if (routes.length === 0) return;
+	try {
+		await upsertHostRoutes(routes);
+	} catch {
+		// A conflict is another project's hostname: activation already said so.
+	}
 }
 
 /**
