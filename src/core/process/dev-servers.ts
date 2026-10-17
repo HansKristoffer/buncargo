@@ -55,7 +55,6 @@ export interface StartDevServersOptions {
 	onAppReady?: (name: string) => void;
 	verbose?: boolean;
 	productionBuild?: boolean;
-	isCI?: boolean;
 	/** Compose/project name used to classify port occupants. */
 	projectName?: string;
 	/** App that owns the TTY. Others get prefixed pipes. Ignored by the TUI. */

@@ -161,7 +161,6 @@ export async function startAppServers<
 		{
 			verbose,
 			productionBuild,
-			isCI: isCI(),
 			projectName: ctx.projectName,
 			runtime: ctx.hasSelectedServices ? ctx.runtime : undefined,
 			skipContainers: !ctx.hasSelectedServices,
