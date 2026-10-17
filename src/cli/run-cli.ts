@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import { containerRuntimeForEnv } from "../container-runtime";
+import { describeLeaseRefusal, type SkippedLeaseApp } from "../core/app-leases";
 import { withSignal } from "../core/deadline";
 import { removeHostRoutes } from "../core/hosts";
 import { releaseLeases } from "../core/leases";
@@ -64,10 +65,8 @@ import {
 } from "./dev-hosts";
 import {
 	acquireAppLeases,
-	describeLeaseRefusal,
 	leaseSkipLines,
 	leaseTakeoverHints,
-	type SkippedLeaseApp,
 	warnSkippedLeaseApps,
 } from "./dev-leases";
 import { openDevOutput } from "./dev-output";

@@ -12,16 +12,16 @@ import { chownToInvokingUser, stateFilePath } from "./state-paths";
  *
  * One Shopify dev app is the case that motivated them: whoever last ran
  * `shopify app dev` rewrites its app URL, so two worktrees on one app silently
- * break each other. The lease is held by the `dev` process (not the app), is
- * checked and written under one lock so two runs starting together cannot
- * both win, and needs no release to survive a crash: a holder whose process
- * is gone holds nothing.
+ * break each other. The lease is held by the run's process (`dev`, or a
+ * script's `start()`; not the app), is checked and written under one lock so
+ * two runs starting together cannot both win, and needs no release to survive
+ * a crash: a holder whose process is gone holds nothing.
  */
 
 export interface LeaseEntry {
 	key: string;
 	sessionId: string;
-	/** The `dev` process holding it. */
+	/** The run's process holding it. */
 	pid: number;
 	processIdentity?: string;
 	/** The app it was taken for. */
@@ -33,7 +33,10 @@ export interface LeaseEntry {
 	acquiredAt: string;
 }
 
-type LeaseRequest = Omit<LeaseEntry, "pid" | "processIdentity" | "acquiredAt">;
+export type LeaseRequest = Omit<
+	LeaseEntry,
+	"pid" | "processIdentity" | "acquiredAt"
+>;
 
 type LeaseResult = { ok: true } | { ok: false; holder: LeaseEntry };
 
@@ -110,7 +113,7 @@ type LeaseOptions = { path?: string; signal?: AbortSignal };
 
 /**
  * Take a lease, or report who holds it. Re-acquiring your own is a no-op, and
- * a holder whose `dev` process is gone is dropped on the way.
+ * a holder whose process is gone is dropped on the way.
  */
 export async function acquireLease(
 	request: LeaseRequest,
@@ -190,15 +193,20 @@ export async function transferLease(
 	);
 }
 
-/** Give up every lease a session holds. */
+/** Give up every lease a session holds, or only the `keys` named. */
 export async function releaseLeases(
 	sessionId: string,
-	path = getLeasesPath(),
+	options: { path?: string; keys?: readonly string[] } = {},
 ): Promise<void> {
+	const path = options.path ?? getLeasesPath();
+	const keys = options.keys && new Set(options.keys);
+	if (keys?.size === 0) return;
 	await withFileLock(path, async () => {
 		const entries = await registry.read(path);
 		const kept = (await liveOnly(entries)).filter(
-			(entry) => entry.sessionId !== sessionId,
+			(entry) =>
+				entry.sessionId !== sessionId ||
+				(keys !== undefined && !keys.has(entry.key)),
 		);
 		if (kept.length !== entries.length) await registry.write(path, kept);
 	});

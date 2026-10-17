@@ -16,6 +16,11 @@ const vars = {
 	Record<string, AppConfig>
 >;
 
+const claim = {
+	claimApps: async (apps: Record<string, AppConfig>) => apps,
+	abandonApps: async () => {},
+};
+
 it("cancels an uncooperative beforeServers hook before spawning", async () => {
 	const controller = new AbortController();
 	let seen: AbortSignal | undefined;
@@ -39,6 +44,7 @@ it("cancels an uncooperative beforeServers hook before spawning", async () => {
 			productionBuild: false,
 			verbose: false,
 			signal: controller.signal,
+			claim,
 		}),
 	).rejects.toThrow("cancel before hook");
 	expect(seen?.aborted).toBe(true);
@@ -81,6 +87,7 @@ it("cleans up spawned servers when the afterServers hook fails", async () => {
 				apps,
 				productionBuild: false,
 				verbose: false,
+				claim,
 			}),
 		).rejects.toThrow("after hook failed");
 		const pid = Number(await Bun.file(marker).text());

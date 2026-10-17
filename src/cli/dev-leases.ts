@@ -1,4 +1,10 @@
-import { basename } from "node:path";
+import {
+	appLeaseRequest,
+	describeLeaseRefusal,
+	endLeaseHolderHint,
+	type LeaseOwner,
+	type SkippedLeaseApp,
+} from "../core/app-leases";
 import {
 	acquireLease,
 	describeLeaseHolder,
@@ -6,26 +12,11 @@ import {
 	transferLease,
 } from "../core/leases";
 import { askConfirm, isInteractive } from "../core/prompt";
-import { readGitBranch } from "../core/run-publish";
 import { readLiveRuns } from "../core/run-registry";
 import type { AppConfig } from "../types";
 import { STOP_EXIT, stopTarget } from "./commands/stop";
 import { CliError } from "./errors";
 import * as log from "./log";
-
-interface LeaseOwner {
-	sessionId: string;
-	projectName: string;
-	root: string;
-	isWorktree: boolean;
-}
-
-/** An app this run does not start because another run holds its lease. */
-export interface SkippedLeaseApp {
-	app: string;
-	key: string;
-	holder: LeaseEntry;
-}
 
 async function stopHolder(holder: LeaseEntry): Promise<boolean> {
 	const run = (await readLiveRuns()).find(
@@ -39,46 +30,11 @@ async function stopHolder(holder: LeaseEntry): Promise<boolean> {
 	return (await stopTarget(run, holder.app, true)) === STOP_EXIT.ok;
 }
 
-function formatSince(acquiredAt: string, now: Date): string | undefined {
-	const at = new Date(acquiredAt);
-	if (Number.isNaN(at.getTime())) return undefined;
-	const minutes = Math.max(
-		0,
-		Math.round((now.getTime() - at.getTime()) / 60_000),
-	);
-	const ago =
-		minutes < 1
-			? "just now"
-			: minutes < 120
-				? `${minutes} min ago`
-				: `${Math.round(minutes / 60)} h ago`;
-	// Local HH:MM, the same whatever the locale.
-	return `${at.toTimeString().slice(0, 5)} (${ago})`;
-}
-
-/**
- * Who holds a lease and where, as the lines under a refusal, a skip or the
- * takeover prompt: the checkout path is what lets someone find the other
- * terminal, which the project name alone does not when every worktree has it.
- */
-export function describeLeaseRefusal(
-	skip: SkippedLeaseApp,
-	options: { now?: Date } = {},
-): string[] {
-	const { holder } = skip;
-	const since = formatSince(holder.acquiredAt, options.now ?? new Date());
-	return [
-		`Held by:  ${describeLeaseHolder(holder)}`,
-		`Checkout: ${holder.root}`,
-		...(since ? [`Since:    ${since}`] : []),
-	];
-}
-
 /** How to get the lease without guessing: the flag, or ending the other run. */
 export function leaseTakeoverHints(skip: SkippedLeaseApp): string[] {
 	return [
 		`To run ${skip.app} here: buncargo dev --takeover (stops ${skip.app} in that run and moves the lease here)`,
-		`Or end that run first: Ctrl-C in its terminal, or buncargo stop --all --root ${skip.holder.root}`,
+		endLeaseHolderHint(skip, { or: true }),
 	];
 }
 
@@ -123,15 +79,7 @@ export async function acquireAppLeases(
 
 	for (const [name, app] of Object.entries(apps)) {
 		if (!app.exclusive) continue;
-		const request = {
-			key: app.exclusive,
-			sessionId: owner.sessionId,
-			app: name,
-			projectName: owner.projectName,
-			root: owner.root,
-			worktree: owner.isWorktree ? basename(owner.root) : null,
-			branch: readGitBranch(owner.root),
-		};
+		const request = appLeaseRequest(owner, name, app.exclusive);
 		const result = await acquireLease(request, { signal: options.signal });
 		if (result.ok) continue;
 

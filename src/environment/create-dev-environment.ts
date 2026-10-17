@@ -70,7 +70,7 @@ export function createDevEnvironment<
 	const coordinator = new LifecycleCoordinator();
 	const lifecycle = createLifecycleApi(ctx, envVars, runClaim, coordinator);
 	const recordCapture = createCaptureRecorder(ctx, envVars);
-	const servers = createServersApi(ctx, envVars);
+	const servers = createServersApi(ctx, envVars, runClaim);
 
 	const env: DevEnvironment<TServices, TApps, TEnv> = {
 		// Configuration access

@@ -12,17 +12,18 @@ shells every mutation out to `buncargo stop`.
 
 ## What only `buncargo dev` does
 
-`runDevFlow` does more than `start()`, by decision rather than oversight: `exclusive` leases
-(`cli/dev-leases.ts`), named hosts (`cli/dev-hosts.ts`; `start()` leaves `env.urls` on
+`runDevFlow` does more than `start()`, by decision rather than oversight: named hosts (`cli/dev-hosts.ts`; `start()` leaves `env.urls` on
 `localhost:port`), the fast checks and integration `preflight` steps, connect sharing, the app rows
 and per-run logs that `ls`, `stop`, `restart`, `logs` and BuncargoBar read, and parking an app that
 never came up. Each one belongs to a long-lived run that a person or agent started: it asks at a
 terminal (preflight, takeover), claims machine-wide state held by that process until it exits
-(leases, host routes, connect), or describes that process to other tools. A library `start()` runs
-inside a test or script buncargo does not own, often many sessions to one process. The cost is
-real: without a lease, a `start()` and a `dev` can both run one exclusive app. The user-facing
-list is in `docs/reference.md` (Programmatic API); keep it in step when a behavior crosses this
-line, and port one to `start()` only on purpose.
+(host routes, connect), or describes that process to other tools. A library `start()` runs
+inside a test or script buncargo does not own, often many sessions to one process. `exclusive`
+leases crossed the line on purpose: without one, a `start()` and a `dev` both ran one exclusive
+app. `start()` takes them per session and answers a held one the way `dev` does without a
+terminal, never with a takeover. The user-facing list is in `docs/reference.md` (Programmatic
+API); keep it in step when a behavior crosses this line, and port one to `start()` only on
+purpose.
 
 ## Ownership
 

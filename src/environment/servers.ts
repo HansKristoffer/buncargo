@@ -26,6 +26,7 @@ import { createCaptureRecorder } from "./captures";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
+import type { DevRunClaimApi } from "./run-claim";
 import { startServerSession } from "./server-session";
 
 /** Validate all selected working directories before any startup mutation. */
@@ -105,12 +106,35 @@ export async function startAppServers<
 		productionBuild: boolean;
 		verbose: boolean;
 		signal?: AbortSignal;
+		/** This environment's run claim, for what the apps hold while they run. */
+		claim: Pick<DevRunClaimApi, "claimApps" | "abandonApps">;
 	},
 ): Promise<DevServerPids> {
-	const { apps: appsToStart, productionBuild, verbose } = options;
+	const { productionBuild, claim } = options;
 	options.signal?.throwIfAborted();
-	assertAppWorkingDirectories(appsToStart, ctx.root, productionBuild);
+	assertAppWorkingDirectories(options.apps, ctx.root, productionBuild);
 
+	// Before anything is built or spawned, like `buncargo dev`.
+	const appsToStart = await claim.claimApps(options.apps, options.signal);
+	try {
+		return await spawnAppServers(ctx, envVars, appsToStart, options);
+	} catch (error) {
+		await claim.abandonApps();
+		throw error;
+	}
+}
+
+async function spawnAppServers<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+	TEnv extends EnvValues = EnvValues,
+>(
+	ctx: DevEnvContext<TServices, TApps, TEnv>,
+	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
+	appsToStart: Record<string, AppConfig>,
+	options: Parameters<typeof startAppServers>[2],
+): Promise<DevServerPids> {
+	const { productionBuild, verbose } = options;
 	const pids = await startServerSession(
 		{
 			root: ctx.root,
@@ -209,6 +233,7 @@ export function createServersApi<
 >(
 	ctx: DevEnvContext<TServices, TApps, TEnv>,
 	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
+	runClaim: DevRunClaimApi,
 ): DevServersApi<TServices, TApps> {
 	const { apps, services, ports, config } = ctx;
 
@@ -232,6 +257,7 @@ export function createServersApi<
 			productionBuild,
 			verbose,
 			signal: options.signal,
+			claim: runClaim,
 		});
 	}
 

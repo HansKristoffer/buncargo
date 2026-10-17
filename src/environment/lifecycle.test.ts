@@ -111,6 +111,9 @@ function fixture() {
 		ensureWatchdog: async () => {
 			events.push("watchdog");
 		},
+		claimApps: async (apps: Record<string, AppConfig>) => apps,
+		abandonApps: async () => {},
+		releaseApps: async () => {},
 	};
 	return {
 		events,

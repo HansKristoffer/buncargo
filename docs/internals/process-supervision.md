@@ -93,3 +93,10 @@ requiring a successful stop and refusing a starting app without a pid. Declined,
 repeated into the TUI's Overview as events, because the TUI hides the scrollback) and refuses an
 essential one. Every refusal names the holder's checkout path and `--takeover`: a run that quietly
 started without the Shopify CLI was the bug.
+
+A library `start()` takes the same leases through `environment/app-leases.ts`, for its session,
+and can neither prompt nor take over: it skips an `essential: false` app with a warning and throws
+for an essential one. `core/app-leases.ts` holds what both say about a holder. A start that fails
+after taking leases gives back only the ones it took (`releaseLeases` with `keys`), since an
+earlier `start()` of the same environment may still run an app holding another; `stop()` gives
+back the rest.

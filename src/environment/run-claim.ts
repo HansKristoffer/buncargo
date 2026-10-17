@@ -1,3 +1,4 @@
+import { releaseLeases } from "../core/leases";
 import {
 	buildRunEntryAsync,
 	publishRun,
@@ -8,6 +9,7 @@ import {
 } from "../core/run-registry";
 import { ensureWatchdog as ensureWatchdogFn } from "../core/watchdog";
 import type { AnyDevConfig, AppConfig, ServiceConfig } from "../types";
+import { acquireStartLeases } from "./app-leases";
 import type { DevEnvContext } from "./context";
 import { stacksForServices } from "./stacks";
 
@@ -45,6 +47,20 @@ export interface DevRunClaimApi {
 	retireRun(): Promise<void>;
 	/** Start the machine-wide watchdog unless it is already running. */
 	ensureWatchdog(): Promise<void>;
+	/**
+	 * Claim what the apps about to spawn need from the machine: each one's
+	 * `exclusive` lease. Returns the apps to spawn, without an
+	 * `essential: false` one whose lease another run holds; an essential one
+	 * throws instead.
+	 */
+	claimApps(
+		apps: Record<string, AppConfig>,
+		signal?: AbortSignal,
+	): Promise<Record<string, AppConfig>>;
+	/** After a start that failed: give back what its `claimApps` newly took. */
+	abandonApps(): Promise<void>;
+	/** After the apps have stopped: give back everything they held. */
+	releaseApps(): Promise<void>;
 }
 
 export interface ClaimOptions {
@@ -85,6 +101,9 @@ export function createRunClaimApi<
 >(ctx: DevEnvContext<TServices, TApps>): DevRunClaimApi {
 	const sessionId = crypto.randomUUID();
 	let claimed = false;
+	// Leases this session holds, and those the last `claimApps` took.
+	const heldLeases = new Set<string>();
+	let lastAcquired: string[] = [];
 	// The hold of the last claim. `restart()` retires and then claims again
 	// with only a signal, and resolving that afresh dropped a hold the first
 	// claim asked for, which kept the containers forever.
@@ -183,6 +202,36 @@ export function createRunClaimApi<
 
 		ensureWatchdog() {
 			return ensureWatchdogFn();
+		},
+
+		async claimApps(apps, signal) {
+			const leases = await acquireStartLeases(
+				{
+					sessionId,
+					projectName: ctx.projectName,
+					root: ctx.root,
+					isWorktree: ctx.worktree,
+				},
+				apps,
+				{ held: heldLeases, signal },
+			);
+			for (const key of leases.acquired) heldLeases.add(key);
+			lastAcquired = leases.acquired;
+			return leases.apps;
+		},
+
+		async abandonApps() {
+			const keys = lastAcquired;
+			lastAcquired = [];
+			for (const key of keys) heldLeases.delete(key);
+			await releaseLeases(sessionId, { keys });
+		},
+
+		async releaseApps() {
+			lastAcquired = [];
+			if (heldLeases.size === 0) return;
+			heldLeases.clear();
+			await releaseLeases(sessionId);
 		},
 	};
 }

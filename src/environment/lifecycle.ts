@@ -552,6 +552,7 @@ export function createLifecycleApi<
 					const pids = await startAppServers(ctx, envVars, {
 						signal,
 						apps: appsToStart,
+						claim: runClaim,
 						onPhase,
 						productionBuild,
 						verbose,
@@ -618,6 +619,7 @@ export function createLifecycleApi<
 		await stopDevServers(ctx.ownedServerPids ?? {});
 		for (const name of Object.keys(ctx.ownedServerPids ?? {}))
 			delete ctx.ownedServerPids?.[name];
+		await runClaim.releaseApps();
 		if (appOnlyRun()) {
 			return;
 		}
