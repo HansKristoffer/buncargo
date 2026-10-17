@@ -193,3 +193,56 @@ describe("buncargo prune --project", () => {
 		]);
 	});
 });
+
+describe("buncargo prune", () => {
+	it("keeps the volumes of a checkout that still exists, even with no containers and no run", async () => {
+		listing({
+			volumes: [
+				"pp-app_postgres-data\tpp-app",
+				"pp-feature_postgres-data\tpp-feature",
+				"pp-app-ci_postgres-data\tpp-app-ci",
+				"pp-gone_postgres-data\tpp-gone",
+			],
+		});
+		const home = join(base, "home-machine");
+		mkdirSync(join(home, ".buncargo"), { recursive: true });
+		const claim = (projectName: string, extra: object = {}) => ({
+			offset: 100,
+			projectName,
+			updatedAt: "2026-10-01T00:00:00.000Z",
+			...extra,
+		});
+		writeFileSync(
+			join(home, ".buncargo", "offsets.json"),
+			JSON.stringify({
+				version: 1,
+				claims: {
+					[main]: claim("pp-app"),
+					[join(base, "feature")]: claim("pp-feature"),
+					[`${main}#ci`]: claim("pp-app-ci", { root: main, suffix: "ci" }),
+					[join(base, "gone")]: claim("pp-gone"),
+				},
+			}),
+		);
+
+		const result = await execAsync(
+			[...cli, "prune", "--dry-run"],
+			base,
+			{
+				HOME: home,
+				BUNCARGO_CONTAINER_BINARY: fake,
+				BUNCARGO_CONTAINER_RUNTIME: "docker",
+				BUNCARGO_PRUNE_DELETED_CHECKOUTS: "0",
+				NO_COLOR: "1",
+			},
+			{ throwOnError: false },
+		);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("pp-app-ci_postgres-data  (pp-app-ci)");
+		expect(result.stdout).toContain("pp-gone_postgres-data  (pp-gone)");
+		expect(result.stdout).not.toContain("pp-app_postgres-data");
+		expect(result.stdout).not.toContain("pp-feature_postgres-data");
+		expect(removals()).toEqual([]);
+	});
+});

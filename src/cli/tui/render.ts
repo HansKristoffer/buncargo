@@ -75,7 +75,7 @@ const GLYPH: Record<AppState, string> = {
 	failed: pc.red("✗"),
 };
 
-export interface SidebarEntry {
+interface SidebarEntry {
 	name: string;
 	state?: AppState;
 	/** "exit 1", shown for a stopped or failed app. */

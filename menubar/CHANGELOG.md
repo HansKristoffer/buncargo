@@ -1,5 +1,16 @@
 # Changelog
 
+## [6.0.0](https://github.com/HansKristoffer/buncargo/compare/bar-v5.1.0...bar-v6.0.0) (2026-10-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** the sweep removes only stacks your own ~/.buncargo names, stop with removeVolumes throws when it keeps the volumes, a library start() takes exclusive leases and is listed in runs.json, buncargo send has new exit codes, buncargo sim and several exports are removed, a run refuses a Compose project name another checkout uses, and a pre-12 hosts daemon is no longer used. See docs/migration.md for what to change.
+
+### Features
+
+* **cli:** make the sweep safe and library start() a full run ([#109](https://github.com/HansKristoffer/buncargo/issues/109)) ([f5c3794](https://github.com/HansKristoffer/buncargo/commit/f5c37947b1e2163be9572005918b4c2f02f4b435))
+
 ## [5.1.0](https://github.com/HansKristoffer/buncargo/compare/bar-v5.0.0...bar-v5.1.0) (2026-10-15)
 
 

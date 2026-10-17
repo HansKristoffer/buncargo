@@ -119,10 +119,12 @@ export type {
 	IntegrationCommand,
 	IntegrationCommandContext,
 	IntegrationConfig,
+	IntegrationConfigContext,
 	IntegrationStack,
 	// Migrations & Seed
 	MigrationConfig,
 	NamedHost,
+	NamedHostsActivation,
 	OpenPublicTunnelsOptions,
 	OpenPublicTunnelsResult,
 	OverlayEnvVarNames,
@@ -174,7 +176,7 @@ export {
 	waitForAllServices,
 	waitForService,
 } from "./container-runtime/index";
-export { getLocalIp, isPortAvailable, waitForServer } from "./core/network";
+export { getLocalIp, waitForServer } from "./core/network";
 export {
 	type CheckoutProjectNames,
 	type CheckoutProjectNamesOptions,
@@ -211,7 +213,7 @@ export {
 	getWatchdogLogFile,
 	getWatchdogPidFile,
 } from "./core/watchdog";
-export { assertDockerRunning, isDockerRunning } from "./docker/index";
+export { assertDockerRunning } from "./docker/index";
 export {
 	buildComposeModel,
 	composeToYaml,

@@ -2,9 +2,12 @@ import { existsSync, statSync } from "node:fs";
 import { withFileLock } from "../file-lock";
 import { readCertNames, rememberCertNames } from "./cert-names";
 import {
+	type CertificateShortfall,
+	certificateShortfall,
 	certNeedsRenewal,
 	ensureMkcert,
 	mintCert,
+	readCertificateLeaf,
 	resolvedMkcertPath,
 } from "./mkcert";
 import { getCertPath, getKeyPath } from "./paths";
@@ -179,11 +182,45 @@ export function describeCertificateGap(
 	if (!existsSync(certPath)) {
 		return `Named-hosts certificate is missing at ${certPath}. Run \`buncargo hosts install\`.`;
 	}
-	const wanted = hostnamesForCertificate(hostnames);
-	if (certNeedsRenewal(certPath, wanted)) {
-		return `Named-hosts certificate does not cover ${wanted.join(", ")}. Run \`buncargo hosts install\`.`;
+	const leaf = readCertificateLeaf(certPath);
+	if (!leaf) {
+		return `Named-hosts certificate at ${certPath} could not be read. Run \`buncargo hosts install\`.`;
 	}
-	return undefined;
+	const shortfall = certificateShortfall(
+		leaf,
+		hostnamesForCertificate(hostnames),
+	);
+	return shortfall && describeCertificateShortfall(shortfall);
+}
+
+/**
+ * Say which of the two reasons applies. An expiring certificate covers every
+ * name, so reporting it as "does not cover" sends someone looking for a
+ * hostname problem that is not there.
+ */
+export function describeCertificateShortfall(
+	shortfall: CertificateShortfall,
+	now = Date.now(),
+): string {
+	switch (shortfall.kind) {
+		case "uncovered":
+			return `Named-hosts certificate does not cover ${shortfall.hostnames.join(", ")}. Run \`buncargo hosts install\`.`;
+		case "expiring": {
+			const day = Number.isFinite(shortfall.validTo)
+				? new Date(shortfall.validTo).toISOString().slice(0, 10)
+				: undefined;
+			const when = !day
+				? "has no readable expiry date"
+				: shortfall.validTo <= now
+					? `expired on ${day}`
+					: `expires on ${day}`;
+			return `Named-hosts certificate ${when}. The next \`buncargo dev\` renews it, or run \`buncargo hosts install\`.`;
+		}
+		default: {
+			const unhandled: never = shortfall;
+			return unhandled;
+		}
+	}
 }
 
 /**

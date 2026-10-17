@@ -1,5 +1,6 @@
-import { isAbsolute, normalize } from "node:path";
+import { normalize } from "node:path";
 import { sanitizeTld } from "../../core/hosts/plan";
+import { resolvePrismaConfig } from "../../prisma/config";
 import type { AnyDevConfig } from "../../types";
 import type { ValidationContext } from "./context";
 
@@ -7,7 +8,7 @@ export function validateReferences(
 	config: AnyDevConfig,
 	context: ValidationContext,
 ): void {
-	const { errors } = context;
+	const { errors, checkRelativePath } = context;
 	const preparationEntries = [
 		...(config.migrations ?? []).map((entry, index) => ({
 			path: `migrations.${index}`,
@@ -34,7 +35,7 @@ export function validateReferences(
 	// Prisma has an implicit database prerequisite; apply the same phase rule
 	// as explicit migration/seed entries.
 	const prismaPrerequisites = config.prisma
-		? [config.prisma.service ?? "postgres"]
+		? [resolvePrismaConfig(config.prisma).service]
 		: undefined;
 
 	for (const { path, requiredServices } of [
@@ -102,18 +103,6 @@ export function validateReferences(
 		}
 	}
 
-	const checkRelativePath = (path: string, value: string | undefined) => {
-		if (!value) return;
-		if (isAbsolute(value)) {
-			errors.push(`${path} must be a relative path inside the repo.`);
-		}
-
-		const normalized = normalize(value).replace(/\\/g, "/");
-		if (normalized === ".." || normalized.startsWith("../")) {
-			errors.push(`${path} cannot point outside the repository root.`);
-		}
-	};
-
 	checkRelativePath("prisma.cwd", config.prisma?.cwd);
 	checkRelativePath("prisma.migrations", config.prisma?.migrations);
 
@@ -147,6 +136,19 @@ export function validateReferences(
 		for (const appName of profile.apps) {
 			if (!config.apps?.[appName]) {
 				errors.push(`profiles.${name} includes unknown app "${appName}"`);
+			}
+		}
+	}
+
+	// A step whose apps are never selected never runs, so a misspelt name would
+	// skip it without a word.
+	const configuredApps = Object.keys(config.apps ?? {}).join(", ") || "none";
+	for (const step of config.preflight ?? []) {
+		for (const appName of step.apps ?? []) {
+			if (!config.apps?.[appName]) {
+				errors.push(
+					`preflight "${step.name}" includes unknown app "${appName}" (configured apps: ${configuredApps})`,
+				);
 			}
 		}
 	}

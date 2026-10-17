@@ -11,18 +11,17 @@ export interface SupabaseProject {
 	exists: boolean;
 	/** Why an existing toml could not be read; its defaults are used meanwhile. */
 	error?: string;
-	projectId?: string;
 	api: { enabled: boolean; port: number };
 	db: {
 		port: number;
 		shadowPort: number;
-		pooler: { enabled: boolean; port: number };
+		pooler: { port: number };
 	};
 	studio: { enabled: boolean; port: number };
 	/** `[local_smtp]`, or the deprecated `[inbucket]` the CLI still reads. */
 	mail: { enabled: boolean; port: number };
-	analytics: { enabled: boolean; port: number };
-	edgeRuntime: { enabled: boolean; inspectorPort: number };
+	analytics: { port: number };
+	edgeRuntime: { inspectorPort: number };
 	auth: {
 		/** Absent means the CLI's well-known default, and its fixed demo keys. */
 		jwtSecret?: string;
@@ -56,8 +55,8 @@ function port(value: unknown, fallback: number): number {
 		: fallback;
 }
 
-function enabled(section: Table, fallback = true): boolean {
-	return typeof section.enabled === "boolean" ? section.enabled : fallback;
+function enabled(section: Table): boolean {
+	return typeof section.enabled === "boolean" ? section.enabled : true;
 }
 
 /** Parse a `config.toml`. Throws on invalid TOML; missing keys take the CLI's defaults. */
@@ -79,27 +78,19 @@ export function parseSupabaseConfig(
 	return {
 		path,
 		exists: true,
-		projectId: typeof raw.project_id === "string" ? raw.project_id : undefined,
 		api: { enabled: enabled(api), port: port(api.port, defaults.api) },
 		db: {
 			port: port(db.port, defaults.db),
 			shadowPort: port(db.shadow_port, defaults.shadow),
-			pooler: {
-				enabled: enabled(pooler, false),
-				port: port(pooler.port, defaults.pooler),
-			},
+			pooler: { port: port(pooler.port, defaults.pooler) },
 		},
 		studio: {
 			enabled: enabled(studio),
 			port: port(studio.port, defaults.studio),
 		},
 		mail: { enabled: enabled(mail), port: port(mail.port, defaults.mail) },
-		analytics: {
-			enabled: enabled(analytics),
-			port: port(analytics.port, defaults.analytics),
-		},
+		analytics: { port: port(analytics.port, defaults.analytics) },
 		edgeRuntime: {
-			enabled: enabled(edgeRuntime),
 			inspectorPort: port(edgeRuntime.inspector_port, defaults.inspector),
 		},
 		auth: {

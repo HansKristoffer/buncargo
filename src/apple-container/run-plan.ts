@@ -20,13 +20,6 @@ export const CONFIG_HASH_LABEL = "buncargo.config-hash";
 // compose model, not with one backend: `docker compose` interpolates the file
 // itself and this backend has to reproduce it, so a second copy here is a
 // second thing to keep in step.
-export {
-	configHashFor,
-	interpolate,
-	interpolateNode,
-	stableStringify,
-} from "../docker-compose/interpolate";
-
 import {
 	configHashFor,
 	interpolateNode,

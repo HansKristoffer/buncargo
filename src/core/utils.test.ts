@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { defineDevConfig } from "../config";
 import { service } from "../docker-compose/services";
-import { withoutCiEnv } from "./test-env";
+import { activateTailscaleServe } from "./hosts/tailscale-serve";
+import { findMonorepoRoot } from "./ports";
+import { withoutCiEnv } from "./test-env.testing";
 import { getEnvVar, sleep } from "./utils";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -70,9 +75,7 @@ describe("getEnvVar", () => {
 		expect(getEnvVar(config, "NATS_URL")).toMatch(/^http:\/\/localhost:\d+$/);
 		expect(getEnvVar(config, "API_URL")).toMatch(/^http:\/\/localhost:\d+$/);
 		expect(getEnvVar(config, "WEBLOCAL_URL")).toMatch(/^http:\/\//);
-		// Each getEnvVar call resolves ports from scratch, and every resolution
-		// probes for conflicts, so six of them do not fit the default timeout.
-	}, 30_000);
+	});
 
 	it("emits named HTTPS URLs when hosts are enabled", () => {
 		const previousHosts = process.env.BUNCARGO_HOSTS;
@@ -107,6 +110,66 @@ describe("getEnvVar", () => {
 		}
 	});
 
+	it("gives the primary app the bare hostname a run serves it on", () => {
+		const previousHosts = process.env.BUNCARGO_HOSTS;
+		delete process.env.BUNCARGO_HOSTS;
+		try {
+			withoutCiEnv(() => {
+				const config = defineDevConfig({
+					projectPrefix: "serpier",
+					services: {},
+					apps: {
+						api: { port: 3000, devCommand: "bun run api" },
+						web: { port: 5173, devCommand: "bun run web" },
+					},
+					options: { hosts: true, primaryApp: "web" },
+				});
+				expect(getEnvVar(config, "WEB_URL")).toMatch(
+					/^https:\/\/(?:[a-z0-9-]+\.)?serpier\.localhost$/,
+				);
+				expect(getEnvVar(config, "WEB_URL")).not.toContain("web.");
+				expect(getEnvVar(config, "API_URL")).toMatch(
+					/^https:\/\/(?:[a-z0-9-]+\.)?api\.serpier\.localhost$/,
+				);
+			});
+		} finally {
+			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
+			else process.env.BUNCARGO_HOSTS = previousHosts;
+		}
+	});
+
+	it("sees what the config's integrations add, like a run does", () => {
+		const previousHosts = process.env.BUNCARGO_HOSTS;
+		delete process.env.BUNCARGO_HOSTS;
+		try {
+			withoutCiEnv(() => {
+				const config = defineDevConfig({
+					projectPrefix: "serpier",
+					services: {},
+					apps: {
+						api: { port: 3000, devCommand: "bun run api" },
+						web: { port: 5173, devCommand: "bun run web" },
+					},
+					options: { hosts: true },
+					// Shopify's sets its frontend as the primary app this way.
+					integrations: [
+						{
+							name: "primary",
+							config: (config) => ({
+								...config,
+								options: { ...config.options, primaryApp: "web" },
+							}),
+						},
+					],
+				});
+				expect(getEnvVar(config, "WEB_URL")).not.toContain("web.");
+			});
+		} finally {
+			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
+			else process.env.BUNCARGO_HOSTS = previousHosts;
+		}
+	});
+
 	it.each([["BUNCARGO_HOSTS", "0"]])(
 		"keeps localhost URLs when %s=%s",
 		(name, value) => {
@@ -134,4 +197,72 @@ describe("getEnvVar", () => {
 			}
 		},
 	);
+
+	it("emits the Tailscale URL a live run of the checkout serves, and the plain one before", async () => {
+		const saved = {
+			HOME: process.env.HOME,
+			BUNCARGO_HOSTS: process.env.BUNCARGO_HOSTS,
+			BUNCARGO_URL_HOST: process.env.BUNCARGO_URL_HOST,
+		};
+		const home = mkdtempSync(join(tmpdir(), "buncargo-getenv-tailscale-"));
+		process.env.HOME = home;
+		process.env.BUNCARGO_HOSTS = "tailscale";
+		delete process.env.BUNCARGO_URL_HOST;
+		const config = defineDevConfig({
+			projectPrefix: "serpier",
+			services: {},
+			apps: { api: { port: 3000, devCommand: "bun run api" } },
+			options: { hosts: true },
+		});
+		try {
+			const port = Number(withoutCiEnv(() => getEnvVar(config, "API_PORT")));
+			expect(withoutCiEnv(() => getEnvVar(config, "API_URL"))).toBe(
+				`http://localhost:${port}`,
+			);
+
+			const host = "box.tail1234.ts.net";
+			await activateTailscaleServe(
+				{
+					root: findMonorepoRoot(),
+					pid: process.pid,
+					apps: [{ name: "api", port }],
+					blockPorts: [port],
+					takeover: new Set(),
+				},
+				{
+					cli: async (args) => ({
+						exitCode: 0,
+						stderr: "",
+						stdout:
+							args[0] === "status"
+								? JSON.stringify({
+										BackendState: "Running",
+										CertDomains: [host],
+										Self: {
+											DNSName: `${host}.`,
+											TailscaleIPs: ["100.64.0.9"],
+										},
+									})
+								: args[1] === "status"
+									? "{}"
+									: "",
+					}),
+					probe: async () => undefined,
+					isAlive: () => true,
+				},
+			);
+			expect(withoutCiEnv(() => getEnvVar(config, "API_URL"))).toBe(
+				`https://${host}:${port + 20_000}`,
+			);
+			expect(withoutCiEnv(() => getEnvVar(config, "API_LOOPBACK_URL"))).toBe(
+				`http://localhost:${port}`,
+			);
+		} finally {
+			for (const [name, value] of Object.entries(saved)) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
 });

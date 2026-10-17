@@ -3,7 +3,6 @@ import { sleep } from "../sleep";
 import { RELOAD_STALL_MS } from "./daemon";
 import { readDaemonConfig, readDaemonPid } from "./daemon-config";
 import {
-	isProxyHealthy,
 	LOOPBACK_HOSTNAMES,
 	loopbackAuthority,
 	type ProxyHealth,
@@ -22,13 +21,6 @@ import { describePortSquatter } from "./squatter";
  * executes.
  */
 
-export async function isHostsDaemonHealthy(port?: number): Promise<boolean> {
-	const config = readDaemonConfig();
-	return isProxyHealthy(port ?? config.httpsPort, "127.0.0.1", {
-		tls: config.tls,
-	});
-}
-
 /** What the running daemon reports it is serving, if it answers at all. */
 export async function readHostsDaemonHealth(
 	port?: number,
@@ -39,19 +31,30 @@ export async function readHostsDaemonHealth(
 	});
 }
 
+export async function isHostsDaemonHealthy(port?: number): Promise<boolean> {
+	return (await readHostsDaemonHealth(port)) !== undefined;
+}
+
 /**
  * A daemon that cannot serve, whether or not it answers.
  *
  * Health alone is not enough: the listener and the reload loop are independent,
  * so a daemon whose loop stopped keeps returning 200 while every named URL
- * 404s against a frozen map. Both cases want the same repair — reload it.
+ * 404s against a frozen map. Both cases want the same repair — reload it. So
+ * does an outdated daemon, which the reload replaces with this version's.
  */
 export async function isHostsDaemonWedged(): Promise<boolean> {
 	const health = await readHostsDaemonHealth();
-	if (!health) return true;
-	if (health.lastReloadAt === undefined) return false;
+	if (!health || health.outdated) return true;
 	return Date.now() - health.lastReloadAt > RELOAD_STALL_MS;
 }
+
+/**
+ * A daemon that answers but predates the health fields every check here reads.
+ * It is reported rather than served on trust: nothing it serves can be proven.
+ */
+export const OUTDATED_DAEMON_MESSAGE =
+	"the named-hosts daemon predates this buncargo and cannot report what it serves. Run `buncargo hosts install` to update it.";
 
 /**
  * A loopback address the browser will dial that is answered by something other
@@ -86,11 +89,7 @@ export async function describeLoopbackHijack(
 export const ROUTE_PICKUP_TIMEOUT_MS = 3000;
 const ROUTE_POLL_MS = 100;
 
-export type DaemonRouteCheck =
-	| { ok: true }
-	/** The daemon answers but does not report hostnames, so nothing can be proven. */
-	| { ok: true; unverifiable: true }
-	| { ok: false; reason: string };
+export type DaemonRouteCheck = { ok: true } | { ok: false; reason: string };
 
 /**
  * Wait until the daemon is actually serving `hostnames`.
@@ -120,12 +119,8 @@ export async function waitForDaemonRoutes(
 		const health = await readHostsDaemonHealth(options.port);
 		if (health !== undefined) {
 			everAnswered = true;
-			// A daemon from before this field cannot be checked. Reporting that
-			// as a failure would downgrade every URL on a machine whose service
-			// is simply due an upgrade, which `describeStaleHostsService`
-			// already reports.
-			if (health.hostnames === undefined) {
-				return { ok: true, unverifiable: true };
+			if (health.outdated) {
+				return { ok: false, reason: OUTDATED_DAEMON_MESSAGE };
 			}
 			const served = new Set(health.hostnames);
 			missing = hostnames.filter((hostname) => !served.has(hostname));
@@ -154,17 +149,6 @@ export async function waitForDaemonRoutes(
 const HEALTH_POLL_MS = 150;
 /** Budget after `hosts install` / doctor, while launchd/systemd cold-starts the unit. */
 export const SERVICE_START_TIMEOUT_MS = 15_000;
-
-/**
- * How long to poll an already-installed launchd/systemd unit.
- *
- * KeepAlive means a loaded unit is either answering or down. A routine
- * `buncargo dev` must not sit on {@link SERVICE_START_TIMEOUT_MS}; that budget
- * is only for the caller that just loaded the unit.
- */
-export function resolveInstalledServiceWaitMs(timeoutMs?: number): number {
-	return timeoutMs ?? 0;
-}
 
 export async function waitForDaemonHealthy(
 	port: number,
@@ -219,7 +203,7 @@ export async function ensureHostsDaemonRunning(
 	// `KeepAlive` means a loaded unit is either answering or down, so a routine
 	// `buncargo dev` must not sit on the cold-start budget. Only a caller that
 	// just loaded the unit passes `timeoutMs`.
-	const waitMs = resolveInstalledServiceWaitMs(options.timeoutMs);
+	const waitMs = options.timeoutMs ?? 0;
 	if (waitMs > 0 && (await waitForDaemonHealthy(config.httpsPort, waitMs))) {
 		return { ok: true };
 	}

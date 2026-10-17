@@ -1,3 +1,4 @@
+export { configHashFor } from "../docker-compose/interpolate";
 export {
 	type AppleContainerAdapterOptions,
 	appleContainerRuntimeAdapter,
@@ -22,7 +23,6 @@ export {
 	buildAppleRunPlan,
 	CONFIG_HASH_LABEL,
 	type ContainerRunPlan,
-	configHashFor,
 	containerNameFor,
 	orderServices,
 	PROJECT_LABEL,

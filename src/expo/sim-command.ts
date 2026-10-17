@@ -12,7 +12,7 @@ import { findRunsByRoot, type RunEntry } from "../core/run-registry";
 import { openExpoSimulator } from "./simulator";
 
 /**
- * `buncargo sim [<app>]` — this checkout's Expo app, in its own iOS simulator.
+ * `buncargo expo sim [<app>]` — this checkout's Expo app, in its own iOS simulator.
  *
  * Like `stop`, everything comes from the run registry: the Metro port, the
  * deep-link scheme and the source simulator were resolved when the run was
@@ -42,7 +42,7 @@ const FLAGS = {
 } as const satisfies Record<string, FlagSpec>;
 
 const SIM_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo sim [<app>] [options]",
+	usage: "buncargo expo sim [<app>] [options]",
 	flags: Object.values(FLAGS),
 	notes: [
 		{
@@ -52,7 +52,7 @@ const SIM_COMMAND_SPEC: CommandSpec = {
 	],
 	examples: [
 		{
-			command: "bunx buncargo sim",
+			command: "bunx buncargo expo sim",
 			description: "Boot this checkout's simulator and open the app",
 		},
 	],
@@ -94,10 +94,12 @@ export async function handleSim(args: string[] = []): Promise<number> {
 	if (candidates.length === 0) {
 		if (runs.length === 0) {
 			log.error(`No active buncargo run for ${root}.`);
-			log.hint("Start one with `buncargo dev`, then `buncargo sim`.");
+			log.hint("Start one with `buncargo dev`, then `buncargo expo sim`.");
 		} else if (name) {
 			log.error(`"${name}" is not an Expo app of this run.`);
-			log.hint(`Set \`expo: true\` on it in dev.config.ts if it should be.`);
+			log.hint(
+				`Add it to \`expo({ apps: [...] })\` in dev.config.ts if it should be.`,
+			);
 		} else {
 			log.error("This run has no Expo app.");
 		}

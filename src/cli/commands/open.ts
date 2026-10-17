@@ -1,4 +1,4 @@
-import { appEntryPath, preferredAppUrl } from "../../core/app-url";
+import { environmentOpenUrl } from "../../core/app-url";
 import { openUrl } from "../../core/open-url";
 import {
 	type CommandSpec,
@@ -71,18 +71,7 @@ export function openTargets(env: OpenSource): Record<string, string> {
 
 	// The app's own URL is the one the TUI's `o` and BuncargoBar open.
 	for (const app of Object.keys(env.apps)) {
-		add(
-			app,
-			preferredAppUrl(
-				{
-					url: env.urls[app],
-					loopbackUrl: env.loopbackUrls?.[app],
-					publicUrl: env.publicUrls[app],
-					entryPath: appEntryPath(env.apps[app]),
-				},
-				env.hosts?.active ?? true,
-			),
-		);
+		add(app, environmentOpenUrl(env, app));
 	}
 	for (const [name, value] of Object.entries(env.captured)) add(name, value);
 	for (const [label, value] of Object.entries(env.details())) add(label, value);
@@ -160,7 +149,9 @@ export async function handleOpen(args: string[]): Promise<number> {
 	if (name !== undefined && capture !== undefined) {
 		const url = (env.captured as Record<string, string | undefined>)[capture];
 		if (!(name in env.apps))
-			throw new CliError(`"${name}" is not an app of this config.`);
+			throw new CliError(`"${name}" is not an app of this config.`, [
+				`Configured apps: ${Object.keys(env.apps).join(", ") || "none"}`,
+			]);
 		if (!url)
 			throw new CliError(`${name} has not printed ${capture} yet.`, [
 				"Is `buncargo dev` running? `buncargo url` lists what is known.",

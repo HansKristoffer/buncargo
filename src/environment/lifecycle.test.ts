@@ -1,16 +1,23 @@
 import { describe, expect, it } from "bun:test";
 import { tmpdir } from "node:os";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
+import { readRemovals } from "../core/removal-log";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
 import {
 	clearScopeSecretsCache,
 	loadScopeSecrets,
+	resolveScope,
 } from "../core/secrets/infisical";
+import { isolateHome } from "../core/test-env.testing";
 import { planStart } from "../planning";
 import type { AppConfig, ServiceConfig } from "../types";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 import { createLifecycleApi } from "./lifecycle";
+
+// Starting and stopping take the project's lifecycle lock and record the
+// removal under `~/.buncargo`: a home of the test's own, never the developer's.
+isolateHome("buncargo-lifecycle-");
 
 function fixture() {
 	const events: string[] = [];
@@ -98,6 +105,7 @@ function fixture() {
 	>;
 	const runClaim = {
 		sessionId: "test-session",
+		claimedAt: undefined,
 		claimRun: async () => {
 			events.push("claim");
 		},
@@ -110,10 +118,15 @@ function fixture() {
 		ensureWatchdog: async () => {
 			events.push("watchdog");
 		},
+		claimApps: async (apps: Record<string, AppConfig>) => apps,
+		appEvents: {},
+		abandonApps: async () => {},
+		releaseApps: async () => {},
 	};
 	return {
 		events,
 		ctx,
+		envVars,
 		lifecycle: createLifecycleApi(ctx, envVars, runClaim),
 	};
 }
@@ -193,7 +206,23 @@ describe("startup modes and hooks", () => {
 		});
 		expect(events).toEqual(["claim", "artifact", "runtime", "up"]);
 	});
-	it("an explicit stop retires the claim rather than holding it", async () => {
+	it("an app-only start ensures the watchdog once its apps are up, unless told not to", async () => {
+		// The watchdog lists live runs to BuncargoBar on the tailnet, and a run
+		// without containers is in the registry for its apps alone.
+		for (const watchdog of [true, false]) {
+			const { ctx, events, lifecycle } = fixture();
+			ctx.apps.site = {
+				port: 3001,
+				devCommand: "exit 0",
+				healthEndpoint: false,
+			};
+			await lifecycle.start({ onlyApps: ["site"], verbose: false, watchdog });
+			expect(events).toEqual(
+				watchdog ? ["before", "after", "watchdog"] : ["before", "after"],
+			);
+		}
+	});
+	it("an explicit stop retires the claim rather than holding it, and records the removal", async () => {
 		const { ctx, events, lifecycle } = fixture();
 		ctx.runtime.down = async () => {
 			events.push("down");
@@ -207,6 +236,16 @@ describe("startup modes and hooks", () => {
 		await lifecycle.stop({ verbose: false });
 		// The containers are gone, so there is nothing to hold them for.
 		expect(events.slice(-2)).toEqual(["down", "retire"]);
+		// And a run that was using them can say who took them.
+		expect(readRemovals()).toMatchObject([
+			{
+				projectName: "test",
+				runtime: "docker",
+				reason: "stopped",
+				owner: { sessionId: "test-session", pid: process.pid },
+				by: { pid: process.pid },
+			},
+		]);
 	});
 	it("rejects an invalid selection before writing the artifact or starting runtime", async () => {
 		const { events, lifecycle } = fixture();
@@ -221,6 +260,73 @@ describe("startup modes and hooks", () => {
 			lifecycle.start({ signal: AbortSignal.abort(new Error("cancelled")) }),
 		).rejects.toThrow("cancelled");
 		expect(events).toEqual([]);
+	});
+});
+
+describe("production or development, in CI", () => {
+	async function withCi<T>(run: () => Promise<T>): Promise<T> {
+		const previous = process.env.CI;
+		process.env.CI = "1";
+		try {
+			return await run();
+		} finally {
+			if (previous === undefined) delete process.env.CI;
+			else process.env.CI = previous;
+		}
+	}
+
+	/** Which env (production or not) each process of a start was given. */
+	function recordModes(fixtureValue: ReturnType<typeof fixture>): string[] {
+		const modes: string[] = [];
+		const { envVars } = fixtureValue;
+		envVars.buildEnvVars = ((production?: boolean) => {
+			modes.push(`containers:${!!production}`);
+			return {};
+		}) as typeof envVars.buildEnvVars;
+		envVars.exec = (async (
+			command: string | readonly string[],
+			_options?: unknown,
+			production?: boolean,
+		) => {
+			modes.push(`${String(command)}:${!!production}`);
+			return { exitCode: 0, stdout: "", stderr: "" };
+		}) as typeof envVars.exec;
+		envVars.buildAppEnvVars = ((name: string, production?: boolean) => {
+			modes.push(`${name}:${!!production}`);
+			return {};
+		}) as typeof envVars.buildAppEnvVars;
+		return modes;
+	}
+
+	it("a start without servers prepares for development processes", async () => {
+		const value = fixture();
+		const modes = recordModes(value);
+		await withCi(() =>
+			value.lifecycle.start({
+				startServers: false,
+				wait: false,
+				verbose: false,
+				watchdog: false,
+			}),
+		);
+		// The caller's own processes (the CLI's dev servers, `exec`) are
+		// development: the containers and migrations must not be production.
+		expect(modes).toContain("containers:false");
+		expect(modes).toContain("migrate:false");
+		expect(modes.some((mode) => mode.endsWith(":true"))).toBe(false);
+	});
+
+	it("a start that runs the servers is production throughout", async () => {
+		const value = fixture();
+		const modes = recordModes(value);
+		await withCi(() =>
+			value.lifecycle.start({ wait: false, verbose: false, watchdog: false }),
+		);
+		expect(modes).toContain("containers:true");
+		expect(modes).toContain("migrate:true");
+		expect(modes).toContain("web:true");
+		expect(modes).not.toContain("migrate:false");
+		expect(modes).not.toContain("web:false");
 	});
 });
 
@@ -373,10 +479,12 @@ it("starts selected scope fetches before container preparation and skips contain
 			verbose: false,
 			watchdog: false,
 		});
-		await Promise.all([
-			loadScopeSecrets(ctx.config.secrets),
-			loadScopeSecrets(appScope),
-		]);
+		await Promise.all(
+			[ctx.config.secrets, appScope].map((scope) => {
+				const resolved = resolveScope(scope, undefined);
+				return resolved && loadScopeSecrets(resolved);
+			}),
+		);
 		expect(fake.cliCalls()).toHaveLength(1);
 	} finally {
 		ctx.runtime.ensureRunning = runtimeStart;

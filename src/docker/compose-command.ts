@@ -1,8 +1,6 @@
 export interface ComposeCommandContext {
 	projectName?: string;
 	composeFile?: string;
-	/** Path to the `docker` binary; defaults to a PATH lookup. */
-	binary?: string;
 }
 
 /**

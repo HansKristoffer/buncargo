@@ -18,7 +18,7 @@ import {
 	DEFAULT_HOSTS_DAEMON_PORT,
 	shouldSyncHostsFile,
 } from "../runtime-flags";
-import { getStateDir } from "../state-paths";
+import { chownToInvokingUser, getStateDir } from "../state-paths";
 import {
 	certificateFingerprint,
 	describeCertificateGap,
@@ -32,7 +32,6 @@ import {
 import { cleanHostsFile, syncHostsFile } from "./hosts-file";
 import {
 	CERT_FILENAME,
-	chownToInvokingUser,
 	getCertPath,
 	getCertsDir,
 	getKeyPath,
@@ -51,7 +50,6 @@ import {
 import { pruneHostRoutes } from "./registry";
 import { HOSTS_SERVICE_LOG } from "./service-files";
 
-const _DEFAULT_HTTP_PORT = 80;
 const IDLE_EXIT_MS = 30_000;
 const RELOAD_INTERVAL_MS = 1000;
 /**
@@ -73,8 +71,9 @@ const MAX_RELOAD_BACKOFF_MS = 5_000;
 export const RELOAD_STALL_MS = 45_000;
 
 /**
- * Failed in-band recoveries before the daemon gives up and lets the supervisor
- * restart it. Two is enough to tell a transient read error from a wedge.
+ * Consecutive failed in-band recoveries tolerated before the daemon gives up
+ * and lets the supervisor restart it. Two is enough to tell a transient read
+ * error from a wedge.
  */
 const MAX_STALL_RECOVERIES = 2;
 
@@ -106,10 +105,103 @@ export function nextReloadDelayMs(consecutiveFailures: number): number {
 	return Math.min(backoff, MAX_RELOAD_BACKOFF_MS);
 }
 
-export {
-	createThrottledFailureLog,
-	type ThrottledFailureLog,
-} from "../failure-log";
+/**
+ * Whether the daemon should give up after an in-band stall recovery.
+ *
+ * Only recoveries that left the map stale count, and a successful one resets
+ * the count: a daemon that stalls now and then over weeks and recovers each
+ * time is working, and exiting it drops every proxied websocket on the machine.
+ */
+export function createStallRecoveryPolicy(input: {
+	lastReloadAt: () => number | undefined;
+	now: () => number;
+	staleAfterMs?: number;
+	maxFailures?: number;
+}): { shouldExitAfterRecovery: () => boolean } {
+	const staleAfterMs = input.staleAfterMs ?? RELOAD_STALL_MS;
+	const maxFailures = input.maxFailures ?? MAX_STALL_RECOVERIES;
+	let failures = 0;
+	return {
+		shouldExitAfterRecovery: () => {
+			const at = input.lastReloadAt();
+			if (at !== undefined && input.now() - at <= staleAfterMs) {
+				failures = 0;
+				return false;
+			}
+			failures += 1;
+			return failures > maxFailures;
+		},
+	};
+}
+
+/**
+ * How long an in-band stall recovery waits for its reload. A reload is a file
+ * read and at most a rebind; one still running after this has hung.
+ */
+export const STALL_RECOVERY_TIMEOUT_MS = 10_000;
+
+/**
+ * Recover a route map that has stopped refreshing, from the request path.
+ *
+ * Reloading in-band is tried first because it fixes the common case without
+ * dropping a single connection; `policy` decides when failures add up to an
+ * exit ({@link createStallRecoveryPolicy}). A reload that hangs counts as a failed
+ * recovery once {@link STALL_RECOVERY_TIMEOUT_MS} passes: the reloader joins
+ * every caller onto the one in-flight reload, so waiting on it unbounded left
+ * recovery stuck behind the very hang it exists to repair, and the daemon never
+ * reached the exit that lets launchd/systemd `KeepAlive` restart it.
+ */
+export function createStallRecovery(input: {
+	reload: () => Promise<void>;
+	policy: { shouldExitAfterRecovery: () => boolean };
+	log: (message: string) => void;
+	exit: (code: number) => void;
+	timeoutMs?: number;
+	/** Calls `onTimeout` after `ms`; returns a function that cancels it. */
+	startTimer?: (ms: number, onTimeout: () => void) => () => void;
+}): { recover: (ageMs: number) => Promise<void> | undefined } {
+	const timeoutMs = input.timeoutMs ?? STALL_RECOVERY_TIMEOUT_MS;
+	const startTimer =
+		input.startTimer ??
+		((ms, onTimeout) => {
+			const timer = setTimeout(onTimeout, ms);
+			return () => clearTimeout(timer);
+		});
+	let recovering: Promise<void> | undefined;
+
+	async function recoverOnce(): Promise<void> {
+		let cancel = () => {};
+		const timedOut = new Promise<"timeout">((resolve) => {
+			cancel = startTimer(timeoutMs, () => resolve("timeout"));
+		});
+		const outcome = await Promise.race([input.reload(), timedOut]);
+		cancel();
+		if (outcome === "timeout") {
+			input.log(
+				`[buncargo hosts] in-band reload did not finish within ${Math.round(timeoutMs / 1000)}s`,
+			);
+		}
+		if (!input.policy.shouldExitAfterRecovery()) return;
+		input.log(
+			"[buncargo hosts] route map is still stale after in-band reloads; exiting so the service restarts",
+		);
+		input.exit(1);
+	}
+
+	return {
+		recover: (ageMs) => {
+			if (recovering) return undefined;
+			input.log(
+				`[buncargo hosts] route map has not refreshed in ${Math.round(ageMs / 1000)}s; reloading`,
+			);
+			recovering = recoverOnce().finally(() => {
+				recovering = undefined;
+			});
+			return recovering;
+		},
+	};
+}
+
 /**
  * Keep the service log from growing without bound.
  *
@@ -636,39 +728,20 @@ export async function runHostsDaemon(
 		}
 	}
 
-	/**
-	 * Recover a route map that has stopped refreshing, from the request path.
-	 *
-	 * The loop below is the only thing that reads the registry, and a loop that
-	 * stops advancing is invisible: `Bun.serve` keeps answering, so the daemon
-	 * looks healthy while every named URL 404s against a frozen map. Serving a
-	 * request is the one signal still known to work, so it drives the repair.
-	 *
-	 * Reloading in-band is tried first because it fixes the common case without
-	 * dropping a single connection. Only when that does not move the timestamp
-	 * does the daemon exit and let launchd/systemd `KeepAlive` restart it — a
-	 * rebind costs milliseconds, and a wedged daemon costs everything.
-	 */
-	let recoveries = 0;
-	let recovering: Promise<void> | undefined;
-	recoverFromStall = (ageMs) => {
-		if (recovering) return;
-		logDaemonError(
-			`[buncargo hosts] route map has not refreshed in ${Math.round(ageMs / 1000)}s; reloading`,
-		);
-		recovering = reloadOrReport("recovery")
-			.then(() => {
-				recoveries += 1;
-				if (recoveries <= MAX_STALL_RECOVERIES) return;
-				logDaemonError(
-					"[buncargo hosts] route map is still stale after in-band reloads; exiting so the service restarts",
-				);
-				process.exit(1);
-			})
-			.finally(() => {
-				recovering = undefined;
-			});
-	};
+	// The loop below is the only thing that reads the registry, and a loop that
+	// stops advancing is invisible: `Bun.serve` keeps answering, so the daemon
+	// looks healthy while every named URL 404s against a frozen map. Serving a
+	// request is the one signal still known to work, so it drives the repair.
+	const stallRecovery = createStallRecovery({
+		reload: () => reloadOrReport("recovery"),
+		policy: createStallRecoveryPolicy({
+			lastReloadAt: () => reloader.routes().lastReloadAt,
+			now: Date.now,
+		}),
+		log: logDaemonError,
+		exit: (code) => process.exit(code),
+	});
+	recoverFromStall = stallRecovery.recover;
 
 	await reloadOrReport("startup");
 	for (;;) {

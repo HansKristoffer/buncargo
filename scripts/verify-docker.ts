@@ -84,7 +84,11 @@ async function verifyContainerReuse(): Promise<void> {
 			"Warm start must skip the runtime up operation",
 		);
 		const changed = environment("two");
-		await changed.start({ startServers: false, verbose: false, watchdog: false });
+		await changed.start({
+			startServers: false,
+			verbose: false,
+			watchdog: false,
+		});
 		assert.notEqual(
 			containerId(),
 			original,

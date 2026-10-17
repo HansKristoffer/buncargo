@@ -1,5 +1,19 @@
 import { describe, expect, it } from "bun:test";
-import { parseDockerHealth, parseDockerServiceStates } from "./status";
+import { join } from "node:path";
+import {
+	assertDockerRunning,
+	parseDockerHealth,
+	parseDockerServiceStates,
+} from "./status";
+
+describe("assertDockerRunning", () => {
+	it("says once that Docker is not running, and what to do", () => {
+		const missing = join(import.meta.dir, "no-such-docker-binary");
+		expect(() => assertDockerRunning(missing)).toThrow(
+			/^Docker is not running\. Start Docker and try again\.$/,
+		);
+	});
+});
 
 /**
  * The whole project's state from one `docker ps`, replacing a listing per

@@ -1,9 +1,15 @@
 import {
+	foreignStackOf,
 	isContainerUp,
 	type SweepResult,
 	sweepOrphanedContainers,
 } from "../../../container-runtime";
+import {
+	sweepTailscaleServe,
+	tailscaleServeDeps,
+} from "../../../core/hosts/tailscale-serve";
 import { getRunsPath } from "../../../core/run-registry";
+import { describeSwept } from "../../../core/watchdog-loop";
 import * as log from "../../log";
 
 /** "held, 2m left" for a finished run, or nothing while one is live. */
@@ -19,6 +25,11 @@ function describeHold(
 }
 
 export async function handleLs(): Promise<void> {
+	// Tailscale Serve entries of runs that ended: one file read when there are none.
+	const serve = await sweepTailscaleServe(tailscaleServeDeps());
+	for (const line of serve.removed) log.info(line);
+	for (const line of serve.failures) log.warn(line);
+
 	// Sweep first, so what is listed is what is actually still in use. The
 	// sweep lists every runtime anyway, so its listing is the one shown: no
 	// probing beforehand and no second listing after.
@@ -35,8 +46,7 @@ export async function handleLs(): Promise<void> {
 			"No container runtime is running. Start Docker or Apple container and try again.",
 		);
 	}
-	for (const stack of result.swept)
-		log.info(`Removed ${stack.projectName} (${stack.root}): ${stack.reason}`);
+	for (const stack of result.swept) log.info(describeSwept(stack));
 	for (const failure of result.failed)
 		log.warn(`Could not remove ${failure.projectName}: ${failure.error}`);
 
@@ -72,6 +82,11 @@ export async function handleLs(): Promise<void> {
 			log.line(
 				`  run: ${describeHold(released.releasedAt, released.idleTimeoutMs, now)}`,
 			);
+		const foreign = foreignStackOf(result, group);
+		if (foreign) {
+			log.line(`  owner: not this user's (${foreign.reason})`);
+			log.line(`  remove by hand: ${foreign.command}`);
+		}
 		log.line(`  containers: ${up.length}/${group.containers.length} up`);
 		for (const item of group.containers) {
 			log.line(
@@ -80,4 +95,16 @@ export async function handleLs(): Promise<void> {
 		}
 		log.line();
 	}
+	if (result.foreign.length > 0) logForeignStacks();
+}
+
+/**
+ * Stacks this user's `runs.json` and `offsets.json` do not name are left alone:
+ * on a daemon several users share, the stack of another user's run looks
+ * unowned from here, however alive it is.
+ */
+function logForeignStacks(): void {
+	log.hint(
+		"Stacks marked \"not this user's\" belong to another user's buncargo, or to buncargo state that was wiped, so the sweep leaves them alone. If one really is orphaned, remove it with the command shown; its volumes stay.",
+	);
 }

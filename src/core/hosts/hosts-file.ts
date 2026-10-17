@@ -49,18 +49,6 @@ export function applyHostsBlock(contents: string, hostnames: string[]): string {
 	return `${parts.join("\n\n")}\n`;
 }
 
-export function readManagedHostnames(contents: string): string[] {
-	const { block } = extractManagedBlock(contents);
-	if (!block) return [];
-	return block
-		.split("\n")
-		.flatMap((line) => {
-			const match = line.match(/^(?:127\.0\.0\.1|::1)\s+(\S+)/);
-			return match?.[1] ? [match[1]] : [];
-		})
-		.filter((hostname, index, all) => all.indexOf(hostname) === index);
-}
-
 /** Mode to fall back to when the current file cannot be stat'd. */
 const HOSTS_FILE_MODE = 0o644;
 

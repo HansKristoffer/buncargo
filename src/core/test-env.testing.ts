@@ -1,3 +1,7 @@
+import { afterAll, beforeAll } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { CI_ENV_VARS } from "./runtime-flags";
 
 /**
@@ -29,4 +33,28 @@ export function withoutCiEnv<T>(body: () => T): T {
 			else process.env[name] = value;
 		}
 	}
+}
+
+/**
+ * Give the calling test file a temporary `HOME` for all of its tests, so the
+ * run entries, leases and port claims its library starts write never reach
+ * the developer's `~/.buncargo`.
+ *
+ * A start there still ensures a watchdog unless it passes `watchdog: false`,
+ * and one spawned from a test outlives it with this `HOME` and, once the
+ * preload's stubs are gone, the real container runtime: every real stack
+ * would look unowned to it. Pass `watchdog: false` as well.
+ */
+export function isolateHome(prefix = "buncargo-home-"): void {
+	const saved = process.env.HOME;
+	let home = "";
+	beforeAll(() => {
+		home = mkdtempSync(join(tmpdir(), prefix));
+		process.env.HOME = home;
+	});
+	afterAll(() => {
+		if (saved === undefined) delete process.env.HOME;
+		else process.env.HOME = saved;
+		rmSync(home, { recursive: true, force: true });
+	});
 }

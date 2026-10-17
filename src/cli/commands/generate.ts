@@ -1,3 +1,4 @@
+import { adoptLiveCaptures } from "../../core/run-publish";
 import { loadDevEnv } from "../../loader";
 import {
 	type CommandSpec,
@@ -9,7 +10,6 @@ import {
 } from "../command-spec";
 import { argumentsError } from "../errors";
 import * as log from "../log";
-import { adoptLiveCaptures } from "../run-publish";
 
 const HELP: FlagSpec = {
 	name: "--help",

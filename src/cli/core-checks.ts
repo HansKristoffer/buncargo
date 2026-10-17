@@ -111,7 +111,9 @@ export function checkoutFileProblem(
 		case "store-newer":
 			return `is behind the file store (\`buncargo files pull ${file.path}\`)`;
 		case "conflict":
-			return `and the file store both changed (\`buncargo files diff ${file.path}\`, then \`files save\` or \`files pull --force\`)`;
+			return file.mergeable
+				? `and the file store both changed (\`buncargo files merge ${file.path}\` keeps both, or \`files save\` keeps yours, \`files pull --force\` the store's)`
+				: `and the file store both changed (\`buncargo files save ${file.path}\` keeps yours, \`files pull --force\` the store's)`;
 		default: {
 			const exhaustive: never = file.state;
 			throw new Error(`Unhandled checkout file state: ${String(exhaustive)}`);

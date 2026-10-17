@@ -8,14 +8,18 @@ import {
 	exportBundle,
 	importBundle,
 	inspectCheckoutFiles,
+	type MergeSide,
+	mergeCheckoutFile,
 	openCheckoutFiles,
 	parseBundle,
 	resolveRepoKey,
 	saveCheckoutFiles,
+	selectSpecs,
 	storeDir,
 	syncCheckoutFiles,
 } from "../../core/checkout-files";
 import { findMonorepoRoot } from "../../core/ports";
+import { askChoice, isInteractive } from "../../core/prompt";
 import { findConfigFile } from "../../loader";
 import {
 	type CommandSpec,
@@ -24,6 +28,7 @@ import {
 	formatCommandHelp,
 	readBooleanFlag,
 	readPositionals,
+	readStringFlag,
 } from "../command-spec";
 import { checkoutFileProblem } from "../core-checks";
 import { argumentsError, CliError } from "../errors";
@@ -51,6 +56,18 @@ const FLAGS = {
 		description:
 			"pull: replace local edits, backed up to .buncargo/files-backup/",
 	},
+	checkout: {
+		name: "--checkout",
+		kind: "string",
+		valueHint: "=<KEY,...>",
+		description: "merge: keep this checkout's value of these conflicting keys",
+	},
+	store: {
+		name: "--store",
+		kind: "string",
+		valueHint: "=<KEY,...>",
+		description: "merge: take the file store's value of these conflicting keys",
+	},
 	includeMachine: {
 		name: "--include-machine",
 		kind: "boolean",
@@ -71,6 +88,11 @@ export const FILES_COMMAND_SPEC: CommandSpec = {
 			command: "pull [path...] [--force]",
 			description:
 				"File store → checkout; never over local edits without --force",
+		},
+		{
+			command: "merge <path>",
+			description:
+				"Merge a dotenv file's local edits and the store's changes key by key",
 		},
 		{
 			command: "diff [path]",
@@ -94,7 +116,15 @@ export const FILES_COMMAND_SPEC: CommandSpec = {
 	],
 };
 
-const SUBCOMMANDS = ["status", "save", "pull", "diff", "export", "import"];
+const SUBCOMMANDS = [
+	"status",
+	"save",
+	"pull",
+	"merge",
+	"diff",
+	"export",
+	"import",
+];
 
 /** `options.checkoutFiles` from the config module, without building an environment. */
 async function loadCheckoutFiles(): Promise<{
@@ -147,8 +177,23 @@ export async function handleFiles(args: string[]): Promise<number> {
 				? `Unknown files command: ${command}`
 				: `buncargo files needs a command: ${SUBCOMMANDS.join(" | ")}`,
 		);
-	if ((command === "diff" || command === "import") && paths.length > 1)
+	if (
+		(command === "diff" || command === "import" || command === "merge") &&
+		paths.length > 1
+	)
 		errors.push(`Unexpected argument: ${paths[1]}`);
+	if (command === "merge" && paths.length === 0)
+		errors.push("buncargo files merge needs a path, e.g. .env.local");
+	const take = new Map<string, MergeSide>();
+	for (const side of ["checkout", "store"] as const)
+		for (const key of (readStringFlag(args, FLAGS[side], errors) ?? "")
+			.split(",")
+			.map((key) => key.trim())
+			.filter(Boolean)) {
+			if (take.has(key) && take.get(key) !== side)
+				errors.push(`${key} is in both --checkout and --store.`);
+			take.set(key, side);
+		}
 	if ((command === "status" || command === "export") && paths.length > 0)
 		errors.push(`Unexpected argument: ${paths[0]}`);
 	if (errors.length > 0) throw argumentsError(errors, "files");
@@ -168,6 +213,8 @@ export async function handleFiles(args: string[]): Promise<number> {
 					selected,
 					readBooleanFlag(args, FLAGS.force),
 				);
+			case "merge":
+				return await merge(root, specs, paths[0] ?? "", take);
 			case "diff":
 				return diff(root, specs, selected);
 			case "export":
@@ -248,11 +295,8 @@ async function pull(
 			file.refusal || (file.state !== "in-sync" && file.state !== "missing"),
 	);
 	for (const file of behind) {
-		const edited =
-			!file.refusal &&
-			(file.state === "local-edits" || file.state === "conflict");
 		log.warn(
-			edited
+			!file.refusal && file.state === "local-edits"
 				? `${file.path} has local edits, so it was not pulled. \`buncargo files pull --force ${file.path}\` replaces them (backed up first).`
 				: `${file.path} ${checkoutFileProblem(file) ?? "was not pulled"}`,
 		);
@@ -261,21 +305,66 @@ async function pull(
 	return behind.length === 0 ? 0 : 1;
 }
 
+async function merge(
+	root: string,
+	specs: readonly CheckoutFileSpec[],
+	path: string,
+	take: Map<string, MergeSide>,
+): Promise<number> {
+	requireSpecs(specs);
+	for (let first = true; ; first = false) {
+		const result = await mergeCheckoutFile(root, specs, path, { take });
+		if (!result.base && first)
+			log.warn(
+				`There is no copy of ${path} as it was last synced (an older buncargo synced it), so a key removed on one side is kept from the other.`,
+			);
+		if (result.conflicts.length === 0) {
+			if (!result.merged) log.done(`${path} already matches the file store.`);
+			return 0;
+		}
+
+		// Ask per key, outside the store's lock; the merge reads both again.
+		if (isInteractive()) {
+			for (const key of result.conflicts) {
+				const side = await askChoice<MergeSide | undefined>(
+					[
+						`${key} changed in this checkout and in the file store (values not shown).`,
+						"  c = keep this checkout's   s = take the file store's   Enter = stop",
+					],
+					[
+						{ key: "c", value: "checkout" },
+						{ key: "s", value: "store" },
+						{ key: "", value: undefined },
+					],
+					undefined,
+				);
+				if (!side) {
+					log.warn(`Stopped; ${path} was not merged.`);
+					return 1;
+				}
+				take.set(key, side);
+			}
+			continue;
+		}
+
+		const keys = result.conflicts.join(",");
+		log.error(
+			`${path}: ${result.conflicts.join(", ")} changed in this checkout and in the file store. Nothing was written.`,
+		);
+		log.hint(
+			`Choose per key: buncargo files merge ${path} --checkout=${keys}  (or --store=${keys})`,
+		);
+		return 1;
+	}
+}
+
 function diff(
 	root: string,
 	specs: readonly CheckoutFileSpec[],
 	paths: readonly string[] | undefined,
 ): number {
 	requireSpecs(specs);
-	const unknown = paths?.find(
-		(path) => !specs.some((spec) => spec.path === path),
-	);
-	if (unknown)
-		throw new CliError(`${unknown} is not in options.checkoutFiles.`);
-	const opened = openCheckoutFiles(
-		root,
-		paths ? specs.filter((spec) => paths.includes(spec.path)) : specs,
-	);
+	const opened = openCheckoutFiles(root, selectSpecs(specs, paths));
 	for (const view of opened.views) {
 		const path = view.spec.path;
 		const local = view.local.data;

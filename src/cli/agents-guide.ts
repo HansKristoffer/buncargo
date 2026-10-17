@@ -24,10 +24,12 @@ hardcode a port. Ask buncargo instead.
 
 - \`bunx buncargo dev --detach\` starts the run in the background and returns once
   every app is up. Exit 1 names the apps that did not come up; the others keep
-  running. Do not use \`nohup\`, \`&\` or \`disown\`.
+  running. Exit 0 also when every app was already running and is reused. Do
+  not use \`nohup\`, \`&\` or \`disown\`.
 - \`bunx buncargo dev --detach --apps=api\` starts only some apps (and the apps
   they require). \`--profile=<name>\` picks a configured set.
-- \`bunx buncargo stop --all\` stops this checkout's run. A run someone started
+- \`bunx buncargo stop --all\` stops this checkout's run, and removes the
+  containers an ended run left waiting out its idle hold. A run someone started
   in a terminal (not with \`--detach\`) asks first, and without a terminal needs
   \`--force\`: only stop that one when the user asked.
   \`bunx buncargo stop <app>\` stops one app and \`bunx buncargo restart <app>\`
@@ -40,8 +42,12 @@ hardcode a port. Ask buncargo instead.
   \`--detach\` or is gone; one in someone's terminal needs \`--takeover\`.
 - An interactive app (Expo) runs in a terminal of its own when you have none.
   Press its keys with \`bunx buncargo send <app> <keys>\`, e.g.
-  \`bunx buncargo send expoApp i\` to open the iOS simulator. Do not wrap it in
+  \`bunx buncargo send expoApp r\` to reload it. Exit 3 means the app could not
+  take them (it says why), 2 that no run started it. Do not wrap it in
   \`script\` or \`tail -f /dev/null\`.
+- \`bunx buncargo expo sim\` opens this checkout's Expo app in its own iOS
+  simulator. Expo's own \`i\` key opens whichever simulator booted first, which
+  may be another worktree's.
 - Apps with a \`watch\` config restart themselves when their files change; do
   not run them under \`bun --watch\` as well.
 
@@ -54,6 +60,9 @@ hardcode a port. Ask buncargo instead.
 
 - \`bunx buncargo url <app>\` prints the URL to open. When \`BUNCARGO_URL_HOST\`
   is set, the person is on another machine: hand them that URL, not localhost.
+  With \`BUNCARGO_HOSTS=tailscale\` it is \`https://<machine>.ts.net:<port>\`,
+  served by Tailscale; a warning at startup says when an app fell back to its
+  plain URL, and \`bunx buncargo doctor\` says why.
 - \`bunx buncargo env --get DATABASE_URL\` prints any variable the apps get, and
   \`bunx buncargo env --get ports.<name>\` one port.
   \`eval "$(bunx buncargo env --export)"\` loads them all into a shell.
@@ -70,8 +79,13 @@ hardcode a port. Ask buncargo instead.
   copy them from another worktree by hand.
 - \`bunx buncargo files status\` shows each one's state. A file with local
   edits is never overwritten: \`bunx buncargo files save <path>\` shares the
-  edit with every checkout, \`bunx buncargo files pull --force <path>\` takes the
-  store's copy. Neither prints values; \`files diff\` lists differing keys.
+  edit with every checkout, and \`bunx buncargo files pull --force <path>\` takes
+  the store's copy. For a \`conflict\` (both changed), run
+  \`bunx buncargo files merge <path>\` first when the hint offers it (dotenv
+  files): it keeps both sides' changes key by key. Merge exits 1 naming keys
+  changed on both sides; rerun it with \`--checkout=KEY,...\` or
+  \`--store=KEY,...\`. None of them prints values; \`files diff\` lists
+  differing keys.
   Ask the user before saving or forcing a file you did not change on purpose.
 
 ## Checks
@@ -102,6 +116,27 @@ hardcode a port. Ask buncargo instead.
 - Do not \`docker exec\` into a database by name or read credentials from the
   generated compose file: other worktrees run databases of their own.
 
+## Sharing beyond this machine
+
+- \`bunx buncargo dev --detach --expose\` (or \`--expose=api\`) also opens a
+  public Cloudflare quick tunnel to each \`expose: true\` app or service, for a
+  webhook or a phone on another network. Anyone with the URL reaches the app:
+  only expose when the user asked. To reach an app yourself, use
+  \`bunx buncargo url <app>\`. The public URLs are in
+  \`bunx buncargo status --json\` (\`tunnels\`); the tunnels close when the run
+  stops. A target without \`expose: true\` makes \`dev\` exit 1 before starting.
+- When \`BUNCARGO_CONNECT_TOKENS\` is set (a cloud sandbox), \`dev\` shares
+  every selected app and service with the token holders on its own; there is no
+  flag, and sharing ends with the run. A sharing failure never stops the run:
+  \`bunx buncargo connect status --json\` shows it.
+- \`bunx buncargo connect tcp <target-id>\` opens a private local port to a
+  shared database another machine runs and prints it as JSON (exit 1 when it
+  cannot); \`bunx buncargo connect disconnect <target-id>\` closes it when you
+  are done. Target ids come from \`connect status --json\`. \`connect token\`
+  prints this machine's recipient token, a secret: never write it into a file.
+  \`connect token --rotate\` and \`connect revoke\` cut recipients off; run them
+  only when asked.
+
 ## Do not
 
 - \`dev --reset\` deletes this checkout's database and \`dev --down --all\` stops
@@ -117,6 +152,16 @@ hardcode a port. Ask buncargo instead.
   dependencies, generated files).
 - A port "held by an unidentified process" is usually a system service. Run
   \`dev\` again: buncargo moves the checkout to a free port block.
+- A warning that names who removed this checkout's containers (a watchdog,
+  \`stop\`, \`dev --down\`) explains a refused database connection: the
+  stack is gone, not broken. Start the run again; report the remover to the
+  user if it was another worktree's or another user's.
+- \`dev\` refusing because another checkout "already uses" its Compose project:
+  the two would share one database. Do not work around it; tell the user, who
+  gives one of them its own \`projectPrefix\`, or, when the other checkout's
+  claim is from a config it no longer runs, releases it with the
+  \`bunx buncargo ports release --root <path>\` the error names. Run that only
+  when the user asks: whoever runs under the name next gets its volumes.
 - Each checkout keeps its port offset (\`bunx buncargo ports\`). Do not set
   \`BUNCARGO_PORT_OFFSET\` or edit \`.buncargo/ports.json\`; to move a checkout,
   \`bunx buncargo ports pin <offset>\`.

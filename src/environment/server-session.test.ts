@@ -1,5 +1,7 @@
 import { expect, it } from "bun:test";
 import { abortableSleep } from "../core/deadline";
+import { stopDevServers } from "../core/process/dev-servers";
+import { RunOutput } from "../core/process/run-output";
 import { type ServerSessionSource, startServerSession } from "./server-session";
 
 function source(
@@ -119,4 +121,71 @@ it("cancels preparation when the seed fails and never reports ready", async () =
 	).rejects.toThrow("seed failed");
 	expect(cancelled).toBe(true);
 	expect(ready).toBe(false);
+});
+
+it("refuses a missing required secret before preparing or running beforeServers", async () => {
+	const events: string[] = [];
+	await expect(
+		startServerSession(
+			source({
+				prepare: async () => {
+					events.push("prepare");
+				},
+				runHook: async (phase) => {
+					events.push(phase);
+				},
+			}),
+			{
+				api: {
+					port: 1,
+					devCommand: "exit 0",
+					secrets: { required: ["BUNCARGO_TEST_REQUIRED_SECRET"] },
+				},
+			},
+			{},
+		),
+	).rejects.toThrow("api: BUNCARGO_TEST_REQUIRED_SECRET");
+	expect(events).toEqual([]);
+});
+
+it("marks each app ready as its health check passes, not with its wave", async () => {
+	const silent = "bun -e 'setInterval(() => {}, 60000)'";
+	const output = new RunOutput();
+	const ready: string[] = [];
+	let midWave: Record<string, unknown> = {};
+	const pids = await startServerSession(
+		source({
+			waitForHealth: async (_apps, _signal, onAppReady) => {
+				onAppReady?.("fast");
+				midWave = {
+					fast: output.states.get("fast")?.state,
+					slow: output.states.get("slow")?.state,
+					ready: [...ready],
+				};
+				onAppReady?.("slow");
+			},
+		}),
+		{
+			fast: { kind: "worker", devCommand: silent },
+			slow: { kind: "worker", devCommand: silent },
+		},
+		{
+			verbose: false,
+			output,
+			portDrift: false,
+			onAppReady: (name) => ready.push(name),
+		},
+	);
+	try {
+		// The registry and the rows hear about `fast` while `slow` is still
+		// being waited for.
+		expect(midWave).toEqual({
+			fast: "ready",
+			slow: "starting",
+			ready: ["fast"],
+		});
+		expect(ready).toEqual(["fast", "slow"]);
+	} finally {
+		await stopDevServers(pids);
+	}
 });

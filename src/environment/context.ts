@@ -6,6 +6,7 @@ import {
 } from "../container-runtime";
 import { loadEnvInput } from "../core/env-input";
 import { applyHostPlanToUrls, planNamedHosts } from "../core/hosts/plan";
+import { tailscaleBlockPorts } from "../core/hosts/tailscale-serve";
 import { getLocalIp } from "../core/network";
 import {
 	candidateAllocationPorts,
@@ -28,7 +29,11 @@ import {
 	type PortOwnerSnapshot,
 	withBindProbe,
 } from "../core/process";
-import { portOffsetOverride, urlHostOverride } from "../core/runtime-flags";
+import {
+	hostsMode,
+	portOffsetOverride,
+	urlHostOverride,
+} from "../core/runtime-flags";
 import { applySecretDefaults } from "../core/secrets/infisical";
 import type { PublicTunnel } from "../core/tunnel";
 import { workspaceId } from "../core/workspace-identity";
@@ -49,11 +54,18 @@ import type {
 	EnvValues,
 	HostsOptionsLike,
 	HostsRuntime,
+	NamedHostsActivation,
 	PortOffsetProvenance,
 	ServiceConfig,
 } from "../types";
 import type { EnvironmentLogSelection } from "../types/environment";
 import { logEnvironmentInfo } from "./logging";
+
+/** The apps and services a run selected, `requiredApps` and dependencies expanded. */
+export interface StartSelection {
+	readonly appNames: readonly string[];
+	readonly requiredServiceKeys: readonly string[];
+}
 
 /**
  * Everything a dev environment derives from its config once, up front: identity,
@@ -80,6 +92,11 @@ export interface DevEnvContext<
 	readonly hasSelectedServices: boolean;
 	/** Service keys the current selection starts, for the run claim. */
 	readonly selectedServiceKeys: readonly string[];
+	/**
+	 * The expanded selection `prepareStart` last allocated for, which hooks
+	 * are told about; undefined before any preparation.
+	 */
+	readonly selection: StartSelection | undefined;
 	readonly ownedServerPids: Record<string, number>;
 	/** Values apps printed (`captures`), shared by hooks, env and generated files. */
 	readonly captured: Record<string, string>;
@@ -118,7 +135,7 @@ export interface DevEnvContext<
 	 * so both views of a stack come from one build.
 	 */
 	composeModel(): ComposeDocument;
-	setNamedHostsActive(active: boolean, extras?: { caPath?: string }): void;
+	setNamedHostsActive(active: boolean, extras?: NamedHostsActivation): void;
 	/** Absent entries are skipped: only exposed targets that came up have a URL. */
 	setPublicUrls(urls: Readonly<Record<string, string | undefined>>): void;
 	clearPublicUrls(): void;
@@ -190,6 +207,7 @@ export function createDevEnvContext<
 	};
 	let hasSelectedServices = false;
 	let selectedServiceKeys: readonly string[] = [];
+	let startSelection: StartSelection | undefined;
 	let preparedSelection: string | undefined;
 
 	let portPlan = resolvePortPlan({
@@ -226,6 +244,8 @@ export function createDevEnvContext<
 				plan: hostsPlan,
 				active: false,
 				tld: resolveHostsTld(config.options.hosts),
+				mode: hostsMode() === "tailscale" ? "tailscale" : "loopback",
+				tailscaleUrls: {},
 			}
 		: null;
 
@@ -246,9 +266,9 @@ export function createDevEnvContext<
 		const urlMap = toUrlMap(urls);
 		Object.assign(urlMap, plainUrls);
 
-		if (hosts?.active) {
-			applyHostPlanToUrls(urlMap, hosts.plan);
-		}
+		if (!hosts?.active) return;
+		if (hosts.mode === "tailscale") Object.assign(urlMap, hosts.tailscaleUrls);
+		else applyHostPlanToUrls(urlMap, hosts.plan);
 	}
 
 	let model: ComposeDocument | undefined;
@@ -289,6 +309,10 @@ export function createDevEnvContext<
 		}
 		hasSelectedServices = plan.requiredServiceKeys.length > 0;
 		selectedServiceKeys = plan.requiredServiceKeys;
+		startSelection = {
+			appNames: plan.appNames,
+			requiredServiceKeys: plan.requiredServiceKeys,
+		};
 		const selectedRuntime = hasSelectedServices ? runtime() : undefined;
 
 		if (selectedRuntime) {
@@ -324,6 +348,11 @@ export function createDevEnvContext<
 				? withBindProbe((port) => snapshot.owner(port))
 				: undefined,
 			probeNames: hasSelectedServices ? undefined : plan.appNames,
+			companionPorts: tailscaleBlockPorts({
+				mode: hostsMode(),
+				hosts: Boolean(config.options?.hosts),
+				appNames: Object.keys(apps),
+			}),
 		});
 
 		// Keep object identity: env callbacks may already hold these maps.
@@ -349,6 +378,9 @@ export function createDevEnvContext<
 		},
 		get selectedServiceKeys() {
 			return selectedServiceKeys;
+		},
+		get selection() {
+			return startSelection;
 		},
 		getStartPlan,
 		prepareStart,
@@ -444,6 +476,7 @@ export function createDevEnvContext<
 			}
 			hosts.active = active;
 			hosts.caPath = extras.caPath;
+			hosts.tailscaleUrls = active ? (extras.tailscaleUrls ?? {}) : {};
 			refreshUrls();
 		},
 

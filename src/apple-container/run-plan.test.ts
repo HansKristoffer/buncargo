@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { homedir } from "node:os";
 import { buildComposeModel } from "../docker-compose";
+import { configHashFor, interpolate } from "../docker-compose/interpolate";
 import type {
 	ComposeDocument,
 	DockerComposeServiceRaw,
@@ -9,9 +10,7 @@ import type {
 import {
 	buildAppleRunPlan,
 	CONFIG_HASH_LABEL,
-	configHashFor,
 	containerNameFor,
-	interpolate,
 	orderServices,
 	projectVolumeNames,
 	sanitizeContainerName,

@@ -214,14 +214,3 @@ export function isTcpPortOpen(
 		socket.once("error", () => finish(false));
 	});
 }
-
-/**
- * Inverse of {@link isTcpPortOpen}: nothing is accepting connections on `port`.
- *
- * Note this is a reachability check. A port can look "available" here while
- * still being held by a process that is not yet listening, so prefer
- * `isPortInUse`/`getPortOwner` when deciding whether to bind or kill.
- */
-export async function isPortAvailable(port: number): Promise<boolean> {
-	return !(await isTcpPortOpen(port));
-}

@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { unreadableCheckout } from "../checkout-presence.testing";
 import {
 	type CertNameEntry,
-	forgetCertNames,
 	pruneCertNameEntries,
 	readCertNames,
 	rememberCertNames,
@@ -22,6 +22,9 @@ afterEach(() => {
 	for (const dir of dirs.splice(0))
 		rmSync(dir, { recursive: true, force: true });
 });
+
+const unreadable = unreadableCheckout();
+afterAll(() => unreadable?.cleanup());
 
 const alive = () => true;
 
@@ -111,18 +114,24 @@ describe("rememberCertNames", () => {
 		expect(await readCertNames(path)).toEqual([]);
 	});
 
-	it("forgets a project on request", async () => {
+	// This runs on every dev start, in a directory the daemon watches.
+	it("leaves the file alone when a project's names have not changed", async () => {
 		const path = tempPath();
-		await rememberCertNames({
-			root: "/repo/a",
-			names: ["a.localhost"],
-			path,
-			rootExists: alive,
-		});
-		await forgetCertNames("/repo/a", path);
-		expect(
-			await rememberCertNames({ names: [], path, rootExists: alive }),
-		).toEqual([]);
+		const remember = () =>
+			rememberCertNames({
+				root: "/repo/a",
+				names: ["a.localhost", "*.a.localhost"],
+				path,
+				rootExists: alive,
+			});
+		await remember();
+		const stored = JSON.parse(readFileSync(path, "utf8"));
+		stored.projects[0].updatedAt = "2020-01-01T00:00:00.000Z";
+		writeFileSync(path, JSON.stringify(stored));
+		const before = readFileSync(path, "utf8");
+
+		await remember();
+		expect(readFileSync(path, "utf8")).toBe(before);
 	});
 });
 
@@ -147,6 +156,21 @@ describe("pruneCertNameEntries", () => {
 		);
 		expect(kept.map((item) => item.root)).toEqual(["/here"]);
 	});
+
+	it.skipIf(!unreadable)(
+		"keeps a checkout this user cannot read, and drops a deleted one",
+		() => {
+			const root = unreadable?.root ?? "";
+			const kept = pruneCertNameEntries([
+				entry(root, "2026-01-02T00:00:00.000Z"),
+				entry(
+					join(tmpdir(), "buncargo-never-existed"),
+					"2026-01-01T00:00:00.000Z",
+				),
+			]);
+			expect(kept.map((item) => item.root)).toEqual([root]);
+		},
+	);
 
 	it("keeps the newest first, so a cap drops the stalest", () => {
 		const kept = pruneCertNameEntries(

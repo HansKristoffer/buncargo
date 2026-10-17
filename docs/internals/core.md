@@ -10,9 +10,11 @@ Cross-cutting utilities in `src/core/` that most features touch.
   `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL`), the same check for named hosts, Docker auto-start and
   readiness timeouts. `src/architecture.test.ts` enforces the single reader.
 - `child-env.ts` is the environment of every process started for the project (apps, `exec`,
-  tasks, migrations, the seed, prisma): never the connect tokens, never the config's `unsetEnv`.
-  It is module state set by `createDevEnvironment`, because every spawn point reaches here and none
-  has the config. buncargo's own tools (frpc, the Infisical CLI) keep `connectProcessEnv`.
+  `slot`, tasks, migrations, the seed, prisma): never the connect tokens, never the config's
+  `unsetEnv`. It is module state set by `createDevEnvironment`, because every spawn point reaches
+  here and none has the config. buncargo's own tools (the connect coordinator, frpc, cloudflared,
+  the Infisical CLI) get `connectProcessEnv` from the same module: no connect tokens, but the full
+  environment.
 - `state-paths.ts` owns both state directories: `~/.buncargo` (machine-wide: routes, runs,
   certificates, downloaded tools) and `<root>/.buncargo` (per-checkout: port lockfile, tunnel
   registry, typecheck artifacts), plus the `sudo`-aware home resolution and chown that make the
@@ -58,7 +60,10 @@ Cross-cutting utilities in `src/core/` that most features touch.
 - `prompt.ts` is the one prompt primitive: `askChoice`/`askConfirm`, `isInteractive`, decline
   markers, and `claimFirstRunPrompt`. That last one is why it exists: "at most one first-run setup
   question per run" cannot be enforced while each prompt owns its own gating, and a fresh machine
-  can otherwise hit both named-hosts setup and the menu bar offer in one `dev`.
+  can otherwise hit both named-hosts setup and the menu bar offer in one `dev`. Ctrl-C and Ctrl-D
+  at a prompt never pick the fallback (the hosts offer's is the password-asking setup): readline's
+  raw mode swallows the signal, so `askChoice` rejects with `PromptInterruptedError` and re-raises
+  SIGINT, which kills a command with no listener and sends `dev` into its teardown.
 - `primary-app.ts` answers "which app is this project about" once, from `options.primaryApp`.
   `resolvePrimaryApp` infers from the dependency graph when nothing is configured;
   `configuredPrimaryApp` never infers and is what named hosts use.

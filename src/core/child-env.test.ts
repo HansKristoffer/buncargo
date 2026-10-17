@@ -1,8 +1,19 @@
 import { afterEach, expect, it } from "bun:test";
-import { childProcessEnv, setUnsetEnv } from "./child-env";
+import { childProcessEnv, connectProcessEnv, setUnsetEnv } from "./child-env";
 import { execAsync } from "./process";
 
 afterEach(() => setUnsetEnv(undefined));
+
+it("gives buncargo's own tools everything but the connect tokens", () => {
+	setUnsetEnv(["CLAUDECODE"]);
+	expect(
+		connectProcessEnv({
+			CLAUDECODE: "1",
+			BUNCARGO_CONNECT_TOKENS: "secret",
+			PATH: "/bin",
+		}),
+	).toEqual({ CLAUDECODE: "1", PATH: "/bin" });
+});
 
 it("removes the config's unsetEnv and the connect tokens from a child's env", () => {
 	setUnsetEnv(["CLAUDECODE"]);

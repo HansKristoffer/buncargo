@@ -2,7 +2,10 @@ import { afterEach, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isolateHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "./create-dev-environment";
+
+isolateHome("buncargo-app-only-home-");
 
 const roots: string[] = [];
 afterEach(() => {
@@ -52,6 +55,7 @@ it("starts an HTTP app without containers or database preparation", async () => 
 		onlyApps: ["marketing"],
 		signal: controller.signal,
 		productionBuild: false,
+		watchdog: false,
 	});
 	try {
 		expect(await (await fetch(env.urls.marketing)).text()).toBe("ok");

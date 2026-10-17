@@ -226,15 +226,6 @@ export function listAppleBuncargoContainers(
 		.map(toBuncargoContainer);
 }
 
-export function projectRecords(
-	cli: AppleContainerCli,
-	projectName: string,
-): AppleContainerRecord[] {
-	return listContainerRecords(cli).filter(
-		(record) => record.labels[PROJECT_LABEL] === projectName,
-	);
-}
-
 /**
  * Which container is publishing each host port, from one `container ls`.
  *

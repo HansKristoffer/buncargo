@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { realpathSync } from "node:fs";
+import { checkoutDeleted } from "./checkout-presence";
 import { withFileLock, withFileLockSync } from "./file-lock";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
 import { stateFilePath } from "./state-paths";
@@ -21,21 +22,34 @@ import { stateFilePath } from "./state-paths";
  *
  * A suffixed environment (`withSuffix`, `buncargo ci`, an E2E stack) hashes to
  * its own offset and claims it under its own key, so it never replaces its
- * checkout's dev claim. Parallel CI jobs on one machine are the case this is
- * for: each runner's checkout has the same directory name and so the same hash,
- * and without a claim they probed together, before any of them had bound a
- * port, and all took the same block.
+ * checkout's dev claim. Parallel suffixed runs that hash alike probed together,
+ * before any of them had bound a port, and all took the same block.
+ *
+ * A claim's project name is the other half: no two existing checkouts may
+ * claim one name (see {@link projectNameClaimant}).
  */
 
 const VERSION = 1;
 
 export interface OffsetClaim {
 	offset: number;
+	/**
+	 * The block's ports when it was claimed, sorted. Two configs collide on a
+	 * port without sharing an offset: api 3000 at offset 1100 and admin 4000 at
+	 * offset 100 are both 4100. A claim written before this was recorded holds
+	 * its offset alone.
+	 */
+	ports?: number[];
 	projectName: string;
 	updatedAt: string;
 	/** Set on a suffixed claim, whose key is not the bare root. */
 	root?: string;
 	suffix?: string;
+	/**
+	 * When a sweep first found the checkout deleted. Its volumes wait for a
+	 * later pass to find it still gone (see `settleDeletedCheckouts`).
+	 */
+	deletedSeenAt?: string;
 }
 
 /**
@@ -73,13 +87,24 @@ function validate(value: unknown): OffsetClaimsDocument | undefined {
 	if (typeof document.claims !== "object" || document.claims === null)
 		return undefined;
 	const claims = Object.fromEntries(
-		Object.entries(document.claims).filter(
-			([, claim]) =>
-				Number.isInteger(claim?.offset) &&
-				typeof claim?.projectName === "string",
-		),
+		Object.entries(document.claims).flatMap(([key, claim]) => {
+			const valid = validateClaim(claim);
+			return valid ? [[key, valid]] : [];
+		}),
 	);
 	return { version: VERSION, claims };
+}
+
+function validateClaim(value: unknown): OffsetClaim | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const { ports, ...claim } = value as Partial<OffsetClaim>;
+	if (!Number.isInteger(claim.offset) || typeof claim.projectName !== "string")
+		return undefined;
+	const valid = claim as OffsetClaim;
+	// Ports this version cannot read leave the claim holding its offset alone.
+	return Array.isArray(ports) && ports.every((port) => Number.isInteger(port))
+		? { ...valid, ports }
+		: valid;
 }
 
 /** Every claim, including those of deleted checkouts the sweep has not settled. */
@@ -87,13 +112,47 @@ export function readAllOffsetClaims(): Record<string, OffsetClaim> {
 	return readJsonDocumentSync(getOffsetClaimsPath(), validate)?.claims ?? {};
 }
 
-/** Every claim whose checkout still exists, by {@link offsetClaimKey}. */
+/**
+ * Every claim whose checkout still exists, by {@link offsetClaimKey}. One this
+ * user cannot read counts as existing.
+ */
 export function readOffsetClaims(): Record<string, OffsetClaim> {
 	return Object.fromEntries(
-		Object.entries(readAllOffsetClaims()).filter(([key, claim]) =>
-			existsSync(offsetClaimRoot(key, claim)),
+		Object.entries(readAllOffsetClaims()).filter(
+			([key, claim]) => !checkoutDeleted(offsetClaimRoot(key, claim)),
 		),
 	);
+}
+
+/**
+ * Stamp `at` on the claims under `seen` whose checkouts are still gone and
+ * carry no stamp yet, and clear the stamp of those under `back`, whose
+ * checkouts are there again.
+ */
+export async function markDeletedOffsetClaims(input: {
+	seen: readonly string[];
+	back: readonly string[];
+	at: string;
+}): Promise<void> {
+	if (input.seen.length === 0 && input.back.length === 0) return;
+	await withFileLock(getOffsetClaimsPath(), async () => {
+		const claims = readAllOffsetClaims();
+		for (const key of input.seen) {
+			const claim = claims[key];
+			if (
+				claim &&
+				claim.deletedSeenAt === undefined &&
+				checkoutDeleted(offsetClaimRoot(key, claim))
+			)
+				claim.deletedSeenAt = input.at;
+		}
+		for (const key of input.back) {
+			const claim = claims[key];
+			if (claim && !checkoutDeleted(offsetClaimRoot(key, claim)))
+				delete claim.deletedSeenAt;
+		}
+		writeJsonDocumentSync(getOffsetClaimsPath(), { version: VERSION, claims });
+	});
 }
 
 /** Drop the claims under `keys` whose checkouts are still gone. */
@@ -105,49 +164,120 @@ export async function dropDeletedOffsetClaims(
 		const claims = readAllOffsetClaims();
 		for (const key of keys) {
 			const claim = claims[key];
-			if (claim && !existsSync(offsetClaimRoot(key, claim))) delete claims[key];
+			if (claim && checkoutDeleted(offsetClaimRoot(key, claim)))
+				delete claims[key];
 		}
 		writeJsonDocumentSync(getOffsetClaimsPath(), { version: VERSION, claims });
 	});
 }
 
-/**
- * Whoever else holds `offset`: another checkout, or another environment of this
- * one. `key` is the asker's own {@link offsetClaimKey}.
- */
-export function offsetClaimedBy(
-	claims: Record<string, OffsetClaim>,
-	offset: number,
-	key: string,
-): string | undefined {
-	const holder = Object.entries(claims).find(
-		([other, claim]) => other !== key && claim.offset === offset,
+/** Every claim of the checkout at `root`, its dev claim and its suffixed ones, by key. */
+export function offsetClaimsOf(root: string): Record<string, OffsetClaim> {
+	return Object.fromEntries(
+		Object.entries(readAllOffsetClaims()).filter(([key, claim]) =>
+			sameCheckout(offsetClaimRoot(key, claim), root),
+		),
 	);
-	return holder && offsetClaimHolder(...holder);
 }
 
 /**
- * Record that `root` uses `offset`.
+ * Drop the claims under `keys`, whatever their checkouts' state: what
+ * `buncargo ports release` does after checking no run holds them. A stale
+ * claim otherwise holds its project name until its checkout runs again or is
+ * deleted. The checkout's next run claims again.
+ */
+export async function releaseOffsetClaims(
+	keys: readonly string[],
+): Promise<void> {
+	if (keys.length === 0) return;
+	await withFileLock(getOffsetClaimsPath(), async () => {
+		const claims = readAllOffsetClaims();
+		for (const key of keys) delete claims[key];
+		writeJsonDocumentSync(getOffsetClaimsPath(), { version: VERSION, claims });
+	});
+}
+
+/**
+ * Why the block at `offset` with `ports` is someone else's, or undefined when
+ * it is free: another checkout, or another environment of this one, claims the
+ * offset or one of the ports. `key` is the asker's own {@link offsetClaimKey}.
+ */
+export function offsetClaimConflict(
+	claims: Record<string, OffsetClaim>,
+	block: { offset: number; ports: readonly number[] },
+	key: string,
+): string | undefined {
+	for (const [other, claim] of Object.entries(claims)) {
+		if (other === key) continue;
+		const holder = offsetClaimHolder(other, claim);
+		if (claim.offset === block.offset)
+			return `offset ${block.offset} is claimed by ${holder}`;
+		const [shared] = sharedPorts(block, claim);
+		if (shared !== undefined)
+			return `port ${shared} is in the block ${holder} claims (offset ${claim.offset})`;
+	}
+	return undefined;
+}
+
+/**
+ * Another existing checkout's claim on `projectName` (who holds it, and its
+ * checkout), or undefined when no other checkout uses it.
+ *
+ * The project name decides which containers and volumes a run uses, so two
+ * checkouts under one name share a database, and one's `ci` teardown
+ * deletes the other's. Their offsets keep them apart only on ports. Claims of
+ * this checkout under another spelling of its path are its own.
+ */
+export function projectNameClaimant(
+	claims: Record<string, OffsetClaim>,
+	input: { root: string; projectName: string },
+): { holder: string; root: string } | undefined {
+	for (const [key, claim] of Object.entries(claims)) {
+		if (claim.projectName !== input.projectName) continue;
+		const root = offsetClaimRoot(key, claim);
+		if (!sameCheckout(root, input.root))
+			return { holder: offsetClaimHolder(key, claim), root };
+	}
+	return undefined;
+}
+
+function sameCheckout(a: string, b: string): boolean {
+	if (a === b) return true;
+	try {
+		return realpathSync(a) === realpathSync(b);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Record that `root` uses the block at `offset`, made of `ports`.
  *
  * Read-modify-write: call it under {@link withOffsetClaimsLock}, together with
  * the read that chose the offset, or two checkouts starting at once can both
  * take it.
  */
-export function claimOffset(
-	root: string,
-	offset: number,
-	projectName: string,
-	suffix?: string,
-): void {
+export function claimOffset(input: {
+	root: string;
+	offset: number;
+	ports: readonly number[];
+	projectName: string;
+	suffix?: string;
+}): void {
+	const { root, offset, projectName, suffix } = input;
+	const ports = [...new Set(input.ports)].sort((a, b) => a - b);
 	const key = offsetClaimKey(root, suffix);
 	const claims = readAllOffsetClaims();
+	const current = claims[key];
 	if (
-		claims[key]?.offset === offset &&
-		claims[key]?.projectName === projectName
+		current?.offset === offset &&
+		current.projectName === projectName &&
+		current.ports?.join() === ports.join()
 	)
 		return;
 	claims[key] = {
 		offset,
+		ports,
 		projectName,
 		updatedAt: new Date().toISOString(),
 		...(suffix ? { root, suffix } : {}),
@@ -160,15 +290,78 @@ export function withOffsetClaimsLock<T>(operation: () => T): T {
 	return withFileLockSync(getOffsetClaimsPath(), operation);
 }
 
-/** Offsets more than one existing claim holds, e.g. a pre-lock race. */
-export function duplicateOffsetClaims(
+/** Two claims whose blocks collide, and the ports they share (none known when only their offsets are equal). */
+export interface OffsetClaimOverlap {
+	holders: [string, string];
+	offsets: [number, number];
+	ports: number[];
+}
+
+/**
+ * Pairs of claims that collide by the rule {@link offsetClaimConflict}
+ * allocates by: the same offset, or a shared port. A pre-lock race, a copied
+ * lockfile or two configs whose ports meet through different offsets.
+ */
+export function overlappingOffsetClaims(
 	claims: Record<string, OffsetClaim>,
-): Map<number, string[]> {
-	const byOffset = new Map<number, string[]>();
-	for (const [key, claim] of Object.entries(claims))
-		byOffset.set(claim.offset, [
-			...(byOffset.get(claim.offset) ?? []),
-			offsetClaimHolder(key, claim),
-		]);
-	return new Map([...byOffset].filter(([, roots]) => roots.length > 1));
+): OffsetClaimOverlap[] {
+	const entries = Object.entries(claims);
+	const overlaps: OffsetClaimOverlap[] = [];
+	for (const [index, [key, claim]] of entries.entries()) {
+		for (const [otherKey, other] of entries.slice(index + 1)) {
+			const ports = sharedPorts(claim, other);
+			if (claim.offset !== other.offset && ports.length === 0) continue;
+			overlaps.push({
+				holders: [
+					offsetClaimHolder(key, claim),
+					offsetClaimHolder(otherKey, other),
+				],
+				offsets: [claim.offset, other.offset],
+				ports,
+			});
+		}
+	}
+	return overlaps;
+}
+
+/** One overlap as a sentence, naming both checkouts and what they share. */
+export function describeOffsetClaimOverlap(
+	overlap: OffsetClaimOverlap,
+): string {
+	const [a, b] = overlap.holders;
+	const [offset, otherOffset] = overlap.offsets;
+	const noun = overlap.ports.length === 1 ? "port" : "ports";
+	const shared = `${noun} ${overlap.ports.join(", ")}`;
+	if (offset !== otherOffset)
+		return `${a} (offset ${offset}) and ${b} (offset ${otherOffset}) both claim ${shared}`;
+
+	const detail = overlap.ports.length > 0 ? ` (${shared})` : "";
+	return `${a} and ${b} both claim offset ${offset}${detail}`;
+}
+
+function sharedPorts(
+	a: { ports?: readonly number[] },
+	b: { ports?: readonly number[] },
+): number[] {
+	return (a.ports ?? []).filter((port) => b.ports?.includes(port));
+}
+
+/** Project names claimed by more than one existing checkout, with their holders. */
+export function sharedProjectNameClaims(
+	claims: Record<string, OffsetClaim>,
+): Map<string, string[]> {
+	const byName = new Map<string, { roots: string[]; holders: string[] }>();
+	for (const [key, claim] of Object.entries(claims)) {
+		const entry = byName.get(claim.projectName) ?? { roots: [], holders: [] };
+		const root = offsetClaimRoot(key, claim);
+		if (entry.roots.some((other) => sameCheckout(other, root))) continue;
+		entry.roots.push(root);
+		entry.holders.push(offsetClaimHolder(key, claim));
+		byName.set(claim.projectName, entry);
+	}
+	return new Map(
+		[...byName]
+			.filter(([, entry]) => entry.holders.length > 1)
+			.map(([name, entry]) => [name, entry.holders]),
+	);
 }

@@ -1,3 +1,4 @@
+import { applyIntegrations } from "../config/integrations";
 import type {
 	AppConfig,
 	ConfigEnvVarNames,
@@ -10,6 +11,7 @@ import type {
 import { buildSharedEnvValues, mergeSharedEnvWithOverlay } from "./env";
 import { loadEnvInput } from "./env-input";
 import { applyHostPlanToUrls, planNamedHosts } from "./hosts/plan";
+import { readServedTailscaleUrlsSync } from "./hosts/tailscale-serve";
 import { getLocalIp } from "./network";
 import { resolvePortPlan } from "./port-allocation";
 import {
@@ -21,7 +23,7 @@ import {
 	computeUrls,
 	findMonorepoRoot,
 } from "./ports";
-import { isHostsForcedOff, urlHostOverride } from "./runtime-flags";
+import { hostsMode, urlHostOverride } from "./runtime-flags";
 
 /**
  * Core utility functions shared across modules.
@@ -94,6 +96,7 @@ export function getEnvVar<
 			envFiles?: readonly import("../types").EnvInputFile[];
 			worktreeIsolation?: boolean;
 			hosts?: boolean | HostsOptionsLike;
+			primaryApp?: string;
 		};
 	},
 	name: TName,
@@ -101,21 +104,24 @@ export function getEnvVar<
 ): GetEnvVarValue<TEnv, TName> {
 	const { log = true } = options;
 	const root = findMonorepoRoot();
+	// What a run sees: integrations add apps, services, env and the primary
+	// app (Shopify's frontend) before anything is computed.
+	const applied = applyIntegrations(config, { root });
 	const identity = computeDevIdentity({
-		projectPrefix: config.projectPrefix,
+		projectPrefix: applied.projectPrefix,
 		root,
-		worktreeIsolation: config.options?.worktreeIsolation,
+		worktreeIsolation: applied.options?.worktreeIsolation,
 	});
-	const services = config.services;
-	const apps = config.apps as Record<string, AppConfig> | undefined;
+	const services = applied.services;
+	const apps = applied.apps as Record<string, AppConfig> | undefined;
 	const portPlan = resolvePortPlan({
-		projectPrefix: config.projectPrefix,
+		projectPrefix: applied.projectPrefix,
 		projectName: identity.projectName,
 		root,
 		services,
 		apps,
 		worktreeName: identity.worktreeSuffix,
-		worktreeIsolation: config.options?.worktreeIsolation,
+		worktreeIsolation: applied.options?.worktreeIsolation,
 		persist: false,
 		// A read, not an allocation. There is no runtime in scope here either -
 		// resolving one would import the backends that import this module back -
@@ -126,15 +132,18 @@ export function getEnvVar<
 	const localIp = getLocalIp();
 
 	const portMap = portPlan.ports;
+	const mode = hostsMode();
 	const hostPlan =
-		!isHostsForcedOff() && config.options?.hosts
+		mode === "loopback" && applied.options?.hosts
 			? planNamedHosts({
-					projectPrefix: config.projectPrefix,
+					projectPrefix: applied.projectPrefix,
 					worktreeSuffix: identity.worktreeSuffix,
 					apps,
 					services,
 					ports: portMap,
-					hosts: config.options.hosts,
+					hosts: applied.options.hosts,
+					// The bare hostname is the primary app's, as in a run.
+					primaryApp: applied.options.primaryApp,
 				})
 			: undefined;
 	const urlMap = computeUrls(
@@ -146,6 +155,10 @@ export function getEnvVar<
 	);
 	if (hostPlan && hostPlan.length > 0) {
 		applyHostPlanToUrls(urlMap, hostPlan);
+	}
+	// Tailscale URLs exist only once a run serves them: what that run recorded.
+	if (mode === "tailscale" && applied.options?.hosts) {
+		Object.assign(urlMap, readServedTailscaleUrlsSync(root, portMap));
 	}
 
 	type Apps = NonNullable<typeof apps>;
@@ -164,10 +177,10 @@ export function getEnvVar<
 		loopbackUrls,
 		publicUrls: {},
 	});
-	const inputEnv = loadEnvInput(root, config.options?.envFiles);
+	const inputEnv = loadEnvInput(root, applied.options?.envFiles);
 	const envVars = mergeSharedEnvWithOverlay(
-		{ ...(config.options?.envFiles ? inputEnv : {}), ...shared },
-		config.env as
+		{ ...(applied.options?.envFiles ? inputEnv : {}), ...shared },
+		applied.env as
 			| EnvVarsBuilder<typeof services, NonNullable<typeof apps>>
 			| undefined,
 		ports,

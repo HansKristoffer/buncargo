@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
+import { buncargoVite } from "./index";
 import {
 	buildBuncargoViteConfig,
-	buncargoVite,
 	defaultBuncargoViteHost,
 	readBuncargoViteEnvironment,
 	resolveBuncargoViteProxy,
-} from "./index";
+} from "./resolve";
 
 describe("readBuncargoViteEnvironment", () => {
 	it("reads the port buncargo injected", () => {

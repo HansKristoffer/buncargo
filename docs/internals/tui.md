@@ -8,7 +8,11 @@ into it; the supervisor reports `state` and `capture`. `startDevServers` takes i
 `options.output`; without one it prints stream mode itself, so library callers are unchanged. A
 stream-mode attached app's output is fed in marked `echoed`: logged, not printed again.
 
-`src/cli/dev-output.ts` decides where a dev run's app output goes: the TUI (`--tui` and a terminal)
+Whoever creates an output closes it, and awaits `close()` before unsubscribing a view: an app's
+last screen reaches the feed only once xterm has parsed it, so a view gone by then loses the app's
+last words.
+
+`src/cli/dev-output.ts` decides where a dev run's app output goes: the TUI (a terminal, unless `--no-tui`)
 or stream mode, never both, since two writers on one screen is the garbling the TUI exists to end.
 Both write the log files and answer `buncargo restart` (`restart-requests.ts`: a request file the
 run polls, not a signal; SIGUSR2 to a run from an older buncargo, which has no handler, would kill
@@ -40,14 +44,20 @@ and `run-tui.ts` is the controller.
   Overview as `buncargo` lines. Bun's `console.log` does not go through `process.stdout.write`, so
   patching only the stream misses it. The captured `write` honors Writable callbacks, or a hook
   awaiting one hangs.
-- It restores raw mode, the alternate screen and the cursor on `stop()` and from a process `exit`
-  handler (sync `writeSync`), which is what `run-tui.test.ts` checks under a real pty with `stty`.
+- It restores raw mode, the alternate screen and the cursor on `stop()`, which also runs from a
+  process `exit` handler (sync `writeSync`) and from `uncaughtExceptionMonitor`, before Bun prints
+  the error: restored at exit, leaving the alternate screen would erase it. Bun has no monitor
+  event for a rejection, so an `unhandledRejection` handler restores and rethrows it (still
+  printed, still exit 1). `run-tui.test.ts` checks all of it under a real pty with `stty`.
 - Input is read as keys, not chunks: a sequence cut off at a chunk's end waits for the rest, and an
   Esc nothing follows within 30ms is the Esc key (chunks split anywhere, so a one-byte chunk proves
   nothing). Interact mode forwards every key except Esc and `Ctrl-]`, either of which leaves it;
   `q`/`Ctrl-C` outside it sends the run SIGINT, the same shutdown path as a terminal Ctrl-C.
 - While the pager (`l`) runs, the TUI stops reading stdin entirely and only takes the screen back
-  if it is still active; `stop()` kills an open pager.
+  if it is still active; `stop()` kills an open pager. The pager has the terminal in cooked mode,
+  so Ctrl-C there is a SIGINT to the whole process group, run included: the run's SIGINT listeners
+  are moved aside until the pager exits, and the signal closes the pager instead (Bun calls the
+  listeners directly, so wrapping `process.emit` does not intercept it).
 - Mouse reporting (SGR with drags, `?1000`/`?1002`/`?1006`) is part of entering and leaving the
   screen, so every restore path turns it off too. The wheel scrolls the shown pane, also in
   interact mode, where mouse reports are stripped rather than typed into an app that never asked

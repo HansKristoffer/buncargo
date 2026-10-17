@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	awaitSendReply,
 	requestRestart,
 	requestSend,
 	watchRestartRequests,
@@ -32,9 +33,10 @@ it("delivers sent keys in order, every one of them, and apart from restarts", as
 	const root = mkdtempSync(join(tmpdir(), "buncargo-send-requests-"));
 	const sent: string[] = [];
 	const restarted: string[] = [];
-	const stopSends = watchSendRequests(root, "s1", (app, text) =>
-		sent.push(`${app}:${JSON.stringify(text)}`),
-	);
+	const stopSends = watchSendRequests(root, "s1", (app, text) => {
+		sent.push(`${app}:${JSON.stringify(text)}`);
+		return undefined;
+	});
 	const stopRestarts = watchRestartRequests(root, "s1", (app) =>
 		restarted.push(app),
 	);
@@ -50,4 +52,28 @@ it("delivers sent keys in order, every one of them, and apart from restarts", as
 		stopRestarts();
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+it("answers each send with whether the app took the keys", async () => {
+	const root = mkdtempSync(join(tmpdir(), "buncargo-send-replies-"));
+	const stop = watchSendRequests(root, "s1", (app) =>
+		app === "expo" ? undefined : "it reads no keys",
+	);
+	try {
+		const typed = requestSend(root, "s1", "expo", "i");
+		const refused = requestSend(root, "s1", "api", "i");
+		expect(await awaitSendReply(root, "s1", typed, 5_000)).toEqual({
+			delivered: true,
+		});
+		expect(await awaitSendReply(root, "s1", refused, 5_000)).toEqual({
+			delivered: false,
+			reason: "it reads no keys",
+		});
+	} finally {
+		stop();
+	}
+	// Nobody is listening any more: no answer, not a hang.
+	const unanswered = requestSend(root, "s1", "expo", "i");
+	expect(await awaitSendReply(root, "s1", unanswered, 100)).toBeUndefined();
+	rmSync(root, { recursive: true, force: true });
 });

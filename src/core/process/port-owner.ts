@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { platform } from "node:os";
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { containerRuntimeDisplayName } from "../../container-runtime/names";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import {
@@ -8,6 +9,7 @@ import {
 	dockerContainerPortOwnersAsync,
 	findDockerContainerOnPort,
 } from "../../docker/port-lookup";
+import { CONFIG_FILES } from "../../loader/find-config-file";
 import type { ContainerRuntimeName, PortContainerOwner } from "../../types";
 import { externalStackProjectName } from "../ports";
 import {
@@ -423,7 +425,7 @@ export function getProcessOnPort(port: number): number | null {
  * Check if a port is currently in use.
  *
  * Ownership-based: reports a listening process or published container port.
- * Compare with `isPortAvailable` in `core/network.ts`, which connect-probes.
+ * Compare with `isTcpPortOpen` in `core/network.ts`, which connect-probes.
  */
 export function isPortInUse(
 	port: number,
@@ -487,26 +489,39 @@ export function signalProcessTree(pid: number, signal: NodeJS.Signals): void {
 	}
 }
 
-export async function killPortOwner(
+type KillPortOwnerOptions = PortOwnerLookupOptions & {
+	verbose?: boolean;
+	timeout?: number;
+};
+
+export function killPortOwner(
 	port: number,
-	options: PortOwnerLookupOptions & {
-		verbose?: boolean;
-		timeout?: number;
-	} = {},
+	options: KillPortOwnerOptions = {},
+): Promise<boolean> {
+	return killPortOwnerFoundBy(getPortOwner, port, options);
+}
+
+/** `killPortOwner` with the lookup that finds the holder passed in. */
+export async function killPortOwnerFoundBy(
+	lookup: (port: number, options: PortOwnerLookupOptions) => PortOwner | null,
+	port: number,
+	options: KillPortOwnerOptions = {},
 ): Promise<boolean> {
 	const { verbose = false, timeout = 5000, runtime, skipContainers } = options;
-	const owner = getPortOwner(port, { runtime, skipContainers });
+	const owner = lookup(port, { runtime, skipContainers });
 	if (!owner) {
 		return false;
 	}
 
-	if (owner.container && owner.pids.length === 0) {
+	// The process holding a published port is the runtime's own (Docker
+	// Desktop's backend, the `container` forwarder): signalling it takes down
+	// every container on the machine, and still not this one.
+	if (owner.container) {
+		const project = owner.container.composeProject;
 		throw new Error(
 			`Port ${port} is held by container ${owner.container.name}${
-				owner.container.composeProject
-					? ` (project ${owner.container.composeProject})`
-					: ""
-			}`,
+				project ? ` (project ${project})` : ""
+			}, which buncargo does not kill. Stop the run that owns it (\`buncargo stop --all\` in its checkout), or stop the container itself.`,
 		);
 	}
 
@@ -524,7 +539,9 @@ export async function killPortOwner(
 	const startTime = Date.now();
 	while (Date.now() - startTime < timeout) {
 		await new Promise((resolve) => setTimeout(resolve, 100));
-		if (!isPortInUse(port, { runtime, skipContainers })) {
+		// Only the listeners: a full owner lookup also asks the container
+		// runtime and blocks the event loop ten times a second.
+		if (getListeningPids(port).length === 0) {
 			if (verbose) console.log(`   ✓ Port ${port} released`);
 			return true;
 		}
@@ -539,7 +556,7 @@ export async function killPortOwner(
 			signalProcessTree(pid, "SIGKILL");
 	}
 	await new Promise((resolve) => setTimeout(resolve, 500));
-	const released = !isPortInUse(port, { runtime, skipContainers });
+	const released = getListeningPids(port).length === 0;
 	if (verbose) {
 		console.log(
 			released
@@ -552,6 +569,11 @@ export async function killPortOwner(
 
 export type PortOccupantAction = "reuse" | "kill" | "fail" | "free";
 
+/** A directory that is a checkout of its own: a Git clone or worktree, or a buncargo project. */
+function isCheckoutRoot(dir: string): boolean {
+	return [".git", ...CONFIG_FILES].some((name) => existsSync(join(dir, name)));
+}
+
 export function classifyPortOccupant(
 	owner: PortOwner | null,
 	options: {
@@ -559,6 +581,8 @@ export function classifyPortOccupant(
 		projectName: string;
 		/** The backend this run will use; anything else cannot be reused. */
 		runtime?: ContainerRuntimeName;
+		/** Whether a directory under the root is a checkout of its own. Default: the file system. */
+		isCheckoutRoot?: (dir: string) => boolean;
 	},
 ): PortOccupantAction {
 	if (!owner) return "free";
@@ -591,7 +615,14 @@ export function classifyPortOccupant(
 		!localPath.startsWith("..\\") &&
 		!isAbsolute(localPath)
 	) {
-		return "kill";
+		// A worktree checked out inside this one (`.claude/worktrees/x`) is
+		// another checkout: its processes are never this run's to kill.
+		const isCheckout = options.isCheckoutRoot ?? isCheckoutRoot;
+		const segments = localPath.split(sep).filter(Boolean);
+		const nested = segments.some((_, index) =>
+			isCheckout(join(options.root, ...segments.slice(0, index + 1))),
+		);
+		return nested ? "fail" : "kill";
 	}
 	return "fail";
 }

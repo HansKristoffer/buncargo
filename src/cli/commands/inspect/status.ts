@@ -10,13 +10,13 @@ import {
 	withBindProbe,
 } from "../../../core/process";
 import { readLiveRuns } from "../../../core/run-registry";
-import { loadDevEnv } from "../../../loader";
 import { hasFlag } from "../../flags";
 import * as log from "../../log";
 import {
 	getTunnelRegistryPath,
 	readLiveTunnelRegistry,
 } from "../../tunnel-registry";
+import { loadLiveEnv } from "../runtime";
 
 /**
  * `buncargo status` — this checkout's containers, ports, hosts, tunnels and
@@ -33,7 +33,9 @@ export async function handleStatus(args: string[] = []): Promise<void> {
 }
 
 async function readStatus() {
-	const env = await loadDevEnv({ readOnly: true });
+	// As `env` and `url` see it: named URLs once the daemon serves this
+	// checkout's run, rather than a read-only load that never activates them.
+	const env = await loadLiveEnv();
 	const runtime = containerRuntimeForEnv(env);
 	const ownerOf = withBindProbe((port) => getPortOwner(port, { runtime }));
 
@@ -93,12 +95,15 @@ async function readStatus() {
 		containers,
 		hosts: env.hosts
 			? {
+					mode: env.hosts.mode,
 					tld: env.hosts.tld,
 					active: env.hosts.active,
 					plan: env.hosts.plan.map((entry) => ({
 						hostname: entry.hostname,
 						targetPort: entry.targetPort,
 					})),
+					// Tailscale mode: each app Tailscale serves, by name.
+					tailscaleUrls: env.hosts.tailscaleUrls,
 				}
 			: null,
 		tunnels,
@@ -131,10 +136,16 @@ function printStatus(status: Awaited<ReturnType<typeof readStatus>>): void {
 	if (status.hosts) {
 		log.line();
 		log.line("hosts:");
-		log.line(`  tld: ${status.hosts.tld}`);
+		log.line(`  mode: ${status.hosts.mode}`);
 		log.line(`  active: ${status.hosts.active ? "yes" : "no"}`);
-		for (const entry of status.hosts.plan)
-			log.line(`  ${entry.hostname} → :${entry.targetPort}`);
+		if (status.hosts.mode === "tailscale") {
+			for (const [app, url] of Object.entries(status.hosts.tailscaleUrls))
+				log.line(`  ${app}: ${url} → :${status.ports[app].port}`);
+		} else {
+			log.line(`  tld: ${status.hosts.tld}`);
+			for (const entry of status.hosts.plan)
+				log.line(`  ${entry.hostname} → :${entry.targetPort}`);
+		}
 	}
 	if (existsSync(getTunnelRegistryPath(status.root))) {
 		log.line();

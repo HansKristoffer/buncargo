@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execAsync } from "../core/process";
 import { getProjectStateDir, STATE_DIRNAME } from "../core/state-paths";
-import { CONFIG_FILES } from "../loader";
+import { findRootConfigFile } from "../loader/find-config-file";
 import { resolveProjectTsc } from "./project-tsc";
 
 /**
@@ -43,13 +43,6 @@ const FALLBACK_COMPILER_OPTIONS = {
 	allowImportingTsExtensions: true,
 	resolveJsonModule: true,
 } as const;
-
-function findRootConfigFile(root: string): string | null {
-	for (const file of CONFIG_FILES) {
-		if (existsSync(join(root, file))) return file;
-	}
-	return null;
-}
 
 /**
  * Write the tsconfig used to check the config file on its own.
@@ -95,8 +88,10 @@ function writeGeneratedTsconfig(root: string, configFile: string): string {
 export async function typecheckRootConfig(options: {
 	root: string;
 	verbose?: boolean;
+	/** Terminates the check's `tsc`, which then reports a failed result. */
+	signal?: AbortSignal;
 }): Promise<ConfigTypecheckResult> {
-	const { root, verbose = true } = options;
+	const { root, verbose = true, signal } = options;
 	const configFile = findRootConfigFile(root);
 
 	if (!configFile) {
@@ -131,7 +126,7 @@ export async function typecheckRootConfig(options: {
 			[process.execPath, tsc, "-p", tsconfigPath],
 			root,
 			{},
-			{ throwOnError: false },
+			{ throwOnError: false, signal },
 		);
 		success = result.exitCode === 0;
 		if (!success) {

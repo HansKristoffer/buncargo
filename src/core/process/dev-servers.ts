@@ -24,7 +24,7 @@ import {
 	killPortOwner,
 	type PortOwnerSnapshot,
 } from "./port-owner";
-import { RunInterrupted } from "./process-owner";
+import { appExitState, RunInterrupted } from "./process-owner";
 import { printStream, RunOutput } from "./run-output";
 
 export { stopDevServers } from "./app-supervision";
@@ -42,28 +42,6 @@ function toError(reason: unknown): Error {
 	return reason instanceof Error ? reason : new Error(String(reason));
 }
 
-/**
- * Did this app stop because something asked it to?
- *
- * `null` is a process killed by a signal outright. The two codes are
- * `128 + SIGINT` and `128 + SIGTERM`, which is what a shell wrapper reports
- * when the signal reached it rather than the server it spawned — `bun run dev`
- * does exactly that. Without them a Ctrl-C, or a `buncargo stop`, ends a clean
- * shutdown with "App exited with code 143" and a failed run.
- */
-export function isDeliberateExit(
-	code: number | null,
-	signal?: NodeJS.Signals | null,
-): boolean {
-	return (
-		(code === null &&
-			(signal === undefined || signal === "SIGINT" || signal === "SIGTERM")) ||
-		code === 0 ||
-		code === 130 ||
-		code === 143
-	);
-}
-
 export interface StartDevServersOptions {
 	onPhase?: (name: string, ms: number) => void;
 	/** Reports a supervised failure after a library start returned its pids. */
@@ -77,7 +55,6 @@ export interface StartDevServersOptions {
 	onAppReady?: (name: string) => void;
 	verbose?: boolean;
 	productionBuild?: boolean;
-	isCI?: boolean;
 	/** Compose/project name used to classify port occupants. */
 	projectName?: string;
 	/** App that owns the TTY. Others get prefixed pipes. Ignored by the TUI. */
@@ -85,6 +62,7 @@ export interface StartDevServersOptions {
 	/**
 	 * Where app output goes. Default: prefixed lines on stdout. The TUI passes
 	 * one with `terminalSize` set, which gives every app its own terminal.
+	 * One passed in is the caller's to close.
 	 */
 	output?: RunOutput;
 	/** Extra args appended to the attached app command. */
@@ -104,10 +82,14 @@ export interface StartDevServersOptions {
 	waitForExit?: boolean;
 	/** Called once when SIGINT/SIGTERM/SIGHUP arrives (waitForExit only). */
 	onSignal?: () => void | Promise<void>;
-	/** Override wave-1 health wait. */
+	/**
+	 * Override the health wait of each wave. Call `onAppReady` as each app
+	 * comes up, so it is marked ready then rather than with the whole wave.
+	 */
 	waitForHealth?: (
 		apps: Record<string, AppConfig>,
 		signal?: AbortSignal,
+		onAppReady?: (name: string) => void,
 	) => Promise<void>;
 	/**
 	 * A dev server was spawned, with the pid of the process group leader.
@@ -144,6 +126,12 @@ export interface StartDevServersOptions {
 	watch?: boolean;
 	/** An app was stopped because it did not become ready (see above). */
 	onAppFailed?: (name: string, error: Error) => void;
+	/**
+	 * A restart retired the app's process and could not replace it: the app
+	 * is down until restarted again. Reported once, like an exit, so the run
+	 * registry stops saying `starting`.
+	 */
+	onAppRestartFailed?: (name: string, error: Error) => void;
 	/**
 	 * How to notice an app listening on another port than its own while it
 	 * starts (see `port-drift.ts`). `false` turns it off. Default: the system.
@@ -203,6 +191,49 @@ async function prepareAppPort(
 	return "start";
 }
 
+/** The apps that have a command to run in this mode. */
+export function startableApps(
+	apps: Record<string, AppConfig>,
+	productionBuild: boolean,
+): Record<string, AppConfig> {
+	return Object.fromEntries(
+		Object.entries(apps).filter(
+			([, app]) => resolveStartCommand(app, productionBuild) !== undefined,
+		),
+	);
+}
+
+/**
+ * The apps' Infisical secrets, refusing with one error naming every missing
+ * required key per app rather than each app crashing on its own first read of
+ * one. Lowest precedence: the app's computed env (`appEnv`) is layered on top,
+ * and `loadAppSecrets` drops keys the developer already exported.
+ * Fetches are cached per scope, so a second call costs nothing, and no app
+ * declaring a scope spawns nothing.
+ */
+export async function loadStartSecrets(
+	apps: Record<string, AppConfig>,
+	appEnv: (name: string) => Record<string, string>,
+	options: { signal?: AbortSignal; onWait?: (ms: number) => void } = {},
+): Promise<Record<string, Record<string, string>>> {
+	const secrets = await loadAppSecrets(apps, options);
+	const missing = missingRequiredSecrets(apps, (name) => ({
+		...process.env,
+		...secrets[name],
+		...appEnv(name),
+	}));
+	if (Object.keys(missing).length > 0) {
+		throw new Error(
+			`Required secrets are missing:\n${Object.entries(missing)
+				.map(([name, keys]) => `  ${name}: ${keys.join(", ")}`)
+				.join(
+					"\n",
+				)}\nAdd them to the app's Infisical scope, or export them. \`buncargo secrets ls\` shows what each app gets.`,
+		);
+	}
+	return secrets;
+}
+
 /**
  * Start configured dev servers, holding `needsPublicUrls` apps for a second
  * wave when tunnels are opening (see `deferPublicUrlApps`).
@@ -232,41 +263,24 @@ export async function startDevServers(
 		onCapture,
 	} = options;
 
-	const startable = Object.fromEntries(
-		Object.entries(apps).filter(
-			([, app]) => resolveStartCommand(app, productionBuild) !== undefined,
-		),
-	);
+	const startable = startableApps(apps, productionBuild);
 	// Here rather than in the environment layer because this is the one function
 	// every spawner goes through: `startAppServers` and the CLI's own dev flow
 	// both land here, and a third caller cannot miss it. Lowest precedence — the
-	// app's computed env is layered on top, and `spawnManagedApp` puts the
-	// developer's own `process.env` in between. `loadAppSecrets` returns an empty
-	// map without spawning anything when no app declared a scope.
-	const secrets = await loadAppSecrets(startable, undefined, {
-		signal: options.signal,
-		onWait: (ms) => options.onPhase?.("secrets", ms),
-	});
+	// app's computed env is layered on top, and `loadAppSecrets` drops keys the
+	// developer already exported.
+	const secrets = await loadStartSecrets(
+		startable,
+		(name) => resolveAppEnv(envVarsByApp, name),
+		{
+			signal: options.signal,
+			onWait: (ms) => options.onPhase?.("secrets", ms),
+		},
+	);
 	const appEnv = (name: string) => ({
 		...secrets[name],
 		...resolveAppEnv(envVarsByApp, name),
 	});
-
-	// Before anything spawns: one error naming every missing key per app,
-	// rather than each app crashing on its own first read of one.
-	const missing = missingRequiredSecrets(startable, (name) => ({
-		...process.env,
-		...appEnv(name),
-	}));
-	if (Object.keys(missing).length > 0) {
-		throw new Error(
-			`Required secrets are missing:\n${Object.entries(missing)
-				.map(([name, keys]) => `  ${name}: ${keys.join(", ")}`)
-				.join(
-					"\n",
-				)}\nAdd them to the app's Infisical scope, or export them. \`buncargo secrets ls\` shows what each app gets.`,
-		);
-	}
 
 	const order = planSpawnOrder(startable, deferPublicUrlApps);
 	const nameWidth = prefixWidth(Object.keys(startable));
@@ -274,6 +288,11 @@ export async function startDevServers(
 	const stopPrinting = options.output
 		? undefined
 		: printStream(output, { width: nameWidth });
+	const closeOwnOutput = async () => {
+		if (options.output) return;
+		await output.close();
+		stopPrinting?.();
+	};
 	// In the TUI every app has a terminal of its own: none needs the real one.
 	const configuredInteractive = output.terminalSize
 		? undefined
@@ -314,14 +333,10 @@ export async function startDevServers(
 					output.state(name, {
 						state: failure
 							? "failed"
-							: isDeliberateExit(code, signal) &&
-									!(
-										code === 0 &&
-										startable[name]?.kind === "worker" &&
-										!optional.has(name)
-									)
-								? "stopped"
-								: "failed",
+							: appExitState(code, signal, {
+									worker: startable[name]?.kind === "worker",
+									optional: optional.has(name),
+								}),
 						detail: failure ?? (signal ? `signal ${signal}` : `exit ${code}`),
 						restartable: optional.has(name),
 					});
@@ -356,7 +371,21 @@ export async function startDevServers(
 		readinessFailures.delete(name);
 		sideChecks.get(name)?.abort();
 		output.state(name, { state: "starting" });
-		await session.restart(name, reason);
+		try {
+			await session.restart(name, reason);
+		} catch (error) {
+			// The old process is gone and no new one took over. A run that is
+			// ending reports its apps itself.
+			if (!owner.controller.signal.aborted) {
+				output.state(name, {
+					state: "failed",
+					detail: `restart failed: ${toError(error).message}`,
+					restartable: true,
+				});
+				options.onAppRestartFailed?.(name, toError(error));
+			}
+			throw error;
+		}
 		checkOnTheSide(name);
 	};
 	output.controls = { restart: (name) => restartApp(name, "requested") };
@@ -416,6 +445,7 @@ export async function startDevServers(
 					runPrebuild(name, config, root, appEnv(name), {
 						signal: owner.controller.signal,
 						output,
+						graceMs: options.shutdownGraceMs,
 					}),
 				),
 			),
@@ -482,7 +512,7 @@ export async function startDevServers(
 		// callers mark the whole wave ready when it returns.
 		const health = waitForPrinted(wave, signal).then(() =>
 			waitForHealth
-				? waitForHealth(wave, signal)
+				? waitForHealth(wave, signal, ready)
 				: // Workers and `healthEndpoint: false` apps are ready once the wave is.
 					waitForDevServers(wave, ports, {
 						verbose: verbose && !output.terminalSize,
@@ -733,7 +763,7 @@ export async function startDevServers(
 			await session.stop();
 		} else {
 			handedOff = true;
-			void (async () => {
+			const closing = (async () => {
 				try {
 					await owner.wait();
 				} catch (error) {
@@ -749,11 +779,11 @@ export async function startDevServers(
 						await session.stop();
 					} finally {
 						session.dispose();
-						output.close();
-						stopPrinting?.();
+						await closeOwnOutput();
 					}
 				}
 			})().catch((error) => console.error(error));
+			session.closeWith(closing);
 		}
 
 		return pids;
@@ -775,8 +805,7 @@ export async function startDevServers(
 	} finally {
 		if (!handedOff) {
 			session.dispose();
-			output.close();
-			stopPrinting?.();
+			await closeOwnOutput();
 		}
 	}
 }

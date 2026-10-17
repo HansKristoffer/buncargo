@@ -1,10 +1,19 @@
 # CLI
 
-`src/cli/bin.ts` is the executable; `src/cli/index.ts` the module entry. `run-cli.ts` is the dev
-flow; `flags.ts` (argv primitives), `dev-flags.ts` (the dev command's typed args and help),
-`dev-hosts.ts` and `dev-tunnels.ts` hold the pieces it orchestrates.
+`src/cli/bin.ts` is the executable; `src/cli/index.ts` the module entry (`buncargo/cli`: `runCli` and
+`CliOptions`, nothing else). `run-cli.ts` is the dev flow; `flags.ts` (argv primitives),
+`dev-flags.ts` (the dev command's typed args and help), `dev-hosts.ts` and `dev-tunnels.ts` hold the
+pieces it orchestrates.
 
 ## Commands, flags and errors
+
+- `version-guard.ts` runs first in `bin.ts`: inside a project whose `node_modules/buncargo` (the
+  first found from the working directory up to the repository root) is another version, it
+  `execve`s that package's `bin` with the same arguments, so the pid, stdio and signals stay the
+  run's. `BUNCARGO_REEXEC` stops a second hand-over and is removed before anything starts, so
+  apps never inherit it. A `package.json` listing buncargo with nothing installed is a
+  `CliError`. A CLI run from `src/` is never replaced: that is someone testing the source. It
+  reads files only; a matching version costs a few `stat`s.
 
 - `command-spec.ts` is the flag-spec primitive: one `CommandSpec` per command drives parsing,
   unknown-flag detection, value validation and generated help, so those four cannot drift. Add a
@@ -33,10 +42,10 @@ flow; `flags.ts` (argv primitives), `dev-flags.ts` (the dev command's typed args
   `env.releaseRun()` releases the containers to the watchdog's idle hold rather than stopping them.
   The decision is made *before* `logSelectedAppsSummary` and the banner, so both describe the run
   that actually happens and the reclaimed hostnames are the ones printed. `run-cli.ts` then calls
-  `activateNamedHosts` a second time: the first attempt was refused because the other run still
-  owned the hostnames, and `upsertHostRoutes` only rejects an owner that is still alive, so the
-  retry succeeds once that pid is gone. Without it a takeover silently downgrades every named URL
-  to `localhost:port`.
+  `activateNamedHosts` a second time with the taken-over app names. The first attempt left the
+  other run as the routes' owner (`keep`), and that `buncargo dev` is still alive after its server
+  is killed, so its exit would delete the routes and the new run's named URLs would 404. The
+  `takeover` option moves those routes, and only those, to this run's pid.
 - An app whose port is busy but fails its health check is never reused. `port-reuse.ts` stops a
   leftover of this checkout that no live run lists (a dev server that outlived a run killed hard),
   since the spawner would kill it anyway. A live sibling run's server is handed to the takeover
@@ -58,7 +67,9 @@ flow; `flags.ts` (argv primitives), `dev-flags.ts` (the dev command's typed args
   runs as does not kill it with that service's cgroup. Its output goes to
   `.buncargo/logs/detached.log`. The parent waits on the run registry entry whose `pid` is the
   child's until every app has settled; an empty `apps` list is the claim, not "done", unless the
-  config has no apps.
+  selection has no app to spawn. A child that exits 0 had nothing to keep running (every app
+  reused) and is a success, as it is for attached `dev`; its exit is checked before the entry,
+  which can outlive it.
 - `dev-flags.ts`' `destructiveModeGate`: `--reset` and `--down --all` ask in a terminal and refuse
   without one unless `--yes`. CI is exempt. An agent ran `--reset` to fix a migration and deleted a
   developer's data.
@@ -85,10 +96,14 @@ flow; `flags.ts` (argv primitives), `dev-flags.ts` (the dev command's typed args
   `setup --agents` keeps between `<!-- buncargo:start/end -->` markers. It lives in code, not
   `docs/`, so the guide an agent reads matches the installed version.
 - `commands/ports.ts` shows the offset claims and `pin`s one: it checks every port of the block
-  through `withBindProbe` and the claims before writing the lockfile and the claim.
+  through `withBindProbe` and the claims before writing the lockfile and the claim. `release`
+  drops another checkout's claims under the claims lock, refusing while that checkout has a live or
+  held run.
 - `commands/send.ts` types into an app over the same request-file channel as `restart`
   (`restart-requests.ts`, one file per kind: a line per request, renamed aside before it is read).
-  The run delivers it to `output.screens`, so only an app with a pseudo-terminal reads keys.
+  The run delivers it to `output.screens`, so only an app with a pseudo-terminal reads keys. Each
+  request carries an id, and the run answers it in `send/<session>.replies/<id>`, typed or why
+  not, so `send` can exit 3 rather than report keys that reached nothing.
 - `commands/inspect/file-table.ts` reads the machine's open-file table (`sysctl` /
   `/proc/sys/fs/file-nr`); `doctor` runs the full `lsof` for the top holders only past half full,
   because it takes seconds on a crowded machine.

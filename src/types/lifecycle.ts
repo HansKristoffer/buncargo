@@ -21,7 +21,11 @@ export interface StartOptions<
 	wait?: boolean;
 	/** Start dev servers after containers. Default: true */
 	startServers?: boolean;
-	/** Use production build for servers. Default: false (true in CI) */
+	/**
+	 * Build and run the apps' production commands, and give the containers,
+	 * migrations, seed and apps the production env (`NODE_ENV=production`).
+	 * Default: true in CI when this start runs the servers, else false.
+	 */
 	productionBuild?: boolean;
 	/** Cancel startup, including preparation commands and readiness. */
 	signal?: AbortSignal;

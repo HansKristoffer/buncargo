@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+	existsSync,
 	mkdtempSync,
 	readFileSync,
 	renameSync,
 	rmSync,
 	statSync,
-	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,7 +15,8 @@ import {
 	createDebouncedTrigger,
 	createHostsReloader,
 	createReloadWakeup,
-	createThrottledFailureLog,
+	createStallRecovery,
+	createStallRecoveryPolicy,
 	type HostsReloaderDeps,
 	nextReloadDelayMs,
 	truncateOversizedLog,
@@ -23,7 +24,6 @@ import {
 } from "./daemon";
 import {
 	describeLoopbackHijack,
-	resolveInstalledServiceWaitMs,
 	SERVICE_START_TIMEOUT_MS,
 	waitForDaemonHealthy,
 	waitForDaemonRoutes,
@@ -51,77 +51,127 @@ describe("nextReloadDelayMs", () => {
 	});
 });
 
-describe("createThrottledFailureLog", () => {
-	function harness(intervalMs = 1000) {
-		const lines: string[] = [];
-		let now = 0;
-		const log = createThrottledFailureLog({
-			log: (message) => lines.push(message),
+describe("createStallRecoveryPolicy", () => {
+	function policy() {
+		let now = 1_000_000;
+		let lastReloadAt = now;
+		const recovery = createStallRecoveryPolicy({
+			lastReloadAt: () => lastReloadAt,
 			now: () => now,
-			intervalMs,
+			staleAfterMs: 45_000,
+			maxFailures: 2,
 		});
 		return {
-			lines,
-			log,
-			advance: (ms: number) => {
-				now += ms;
+			// The map stalls; the in-band reload either refreshes it or does not.
+			stallThenRecover(refreshed: boolean): boolean {
+				now += 60_000;
+				if (refreshed) lastReloadAt = now;
+				return recovery.shouldExitAfterRecovery();
 			},
 		};
 	}
 
-	it("reports the first failure immediately", () => {
-		const { lines, log } = harness();
-		log.report("reload failed: a");
-		expect(lines).toEqual(["reload failed: a"]);
+	// The daemon used to count every recovery for its whole lifetime, so the
+	// third stall in weeks exited it even though each one had been repaired.
+	it("keeps running through any number of successful recoveries", () => {
+		const daemon = policy();
+		const exits = [1, 2, 3, 4].map(() => daemon.stallThenRecover(true));
+		expect(exits).toEqual([false, false, false, false]);
 	});
 
-	// The point of the throttle: a certificate gap names the hostnames it is
-	// missing, so identical-message filtering alone lets every route change
-	// through.
-	it("suppresses distinct causes inside the interval", () => {
-		const { lines, log, advance } = harness();
-		log.report("reload failed: missing a");
-		advance(100);
-		log.report("reload failed: missing a, b");
-		advance(100);
-		log.report("reload failed: missing a, b, c");
-		expect(lines).toEqual(["reload failed: missing a"]);
+	it("exits once in-band reloads keep leaving the map stale", () => {
+		const daemon = policy();
+		const exits = [1, 2, 3].map(() => daemon.stallThenRecover(false));
+		expect(exits).toEqual([false, false, true]);
 	});
 
-	it("reports again after the interval and counts what it dropped", () => {
-		const { lines, log, advance } = harness();
-		log.report("reload failed: a");
-		advance(400);
-		log.report("reload failed: a");
-		advance(400);
-		log.report("reload failed: a");
-		advance(400);
-		log.report("reload failed: a");
-		expect(lines).toEqual([
-			"reload failed: a",
-			"reload failed: a (2 further failures suppressed)",
-		]);
+	it("starts counting again after a recovery that worked", () => {
+		const daemon = policy();
+		daemon.stallThenRecover(false);
+		daemon.stallThenRecover(false);
+		daemon.stallThenRecover(true);
+		expect(daemon.stallThenRecover(false)).toBe(false);
+	});
+});
+
+describe("createStallRecovery", () => {
+	/** A reload that never settles, timers fired by hand, a map that stays stale. */
+	function hungDaemon() {
+		const timers: Array<() => void> = [];
+		const exits: number[] = [];
+		let reloads = 0;
+		const recovery = createStallRecovery({
+			reload: () => {
+				reloads += 1;
+				return new Promise<void>(() => {});
+			},
+			policy: createStallRecoveryPolicy({
+				lastReloadAt: () => 0,
+				now: () => 60_000,
+				staleAfterMs: 45_000,
+				maxFailures: 2,
+			}),
+			log: () => {},
+			exit: (code) => exits.push(code),
+			startTimer: (_ms, onTimeout) => {
+				timers.push(onTimeout);
+				return () => {};
+			},
+		});
+		return {
+			exits,
+			reloads: () => reloads,
+			async stallAndTimeOut(): Promise<void> {
+				const recovering = recovery.recover(60_000);
+				timers.shift()?.();
+				await recovering;
+			},
+			recover: () => recovery.recover(60_000),
+		};
+	}
+
+	// The reloader joins every caller onto its one in-flight reload, so a hung
+	// reload used to hold recovery forever and the daemon never exited.
+	it("exits after reloads that never settle keep timing out", async () => {
+		const daemon = hungDaemon();
+		await daemon.stallAndTimeOut();
+		await daemon.stallAndTimeOut();
+		expect(daemon.exits).toEqual([]);
+		await daemon.stallAndTimeOut();
+		expect(daemon.exits).toEqual([1]);
+		expect(daemon.reloads()).toBe(3);
 	});
 
-	it("singularizes a single suppressed failure", () => {
-		const { lines, log, advance } = harness();
-		log.report("reload failed: a");
-		advance(500);
-		log.report("reload failed: a");
-		advance(600);
-		log.report("reload failed: a");
-		expect(lines[1]).toBe("reload failed: a (1 further failure suppressed)");
+	it("runs one recovery at a time", () => {
+		const daemon = hungDaemon();
+		expect(daemon.recover()).toBeDefined();
+		expect(daemon.recover()).toBeUndefined();
+		expect(daemon.reloads()).toBe(1);
 	});
 
-	// A recovery is a state change worth seeing straight away, so the next
-	// failure must not be swallowed by the interval the old one started.
-	it("reports the next failure immediately after a reset", () => {
-		const { lines, log, advance } = harness();
-		log.report("reload failed: a");
-		advance(10);
-		log.reset();
-		log.report("reload failed: b");
-		expect(lines).toEqual(["reload failed: a", "reload failed: b"]);
+	it("stays up when the reload refreshes the map in time", async () => {
+		let lastReloadAt = 0;
+		const exits: number[] = [];
+		let cancelled = 0;
+		const recovery = createStallRecovery({
+			reload: async () => {
+				lastReloadAt = 60_000;
+			},
+			policy: createStallRecoveryPolicy({
+				lastReloadAt: () => lastReloadAt,
+				now: () => 60_000,
+				staleAfterMs: 45_000,
+				maxFailures: 0,
+			}),
+			log: () => {},
+			exit: (code) => exits.push(code),
+			startTimer: () => () => {
+				cancelled += 1;
+			},
+		});
+		await recovery.recover(60_000);
+		expect(exits).toEqual([]);
+		expect(cancelled).toBe(1);
 	});
 });
 
@@ -247,63 +297,52 @@ describe("watchHostsState", () => {
 });
 
 describe("hosts reload isolation", () => {
-	it("stays at the polling cadence when reloads acquire registry locks", async () => {
-		const directory = mkdtempSync(join(tmpdir(), "buncargo-idle-reload-"));
-		let filesystemWakeups = 0;
-		let reloads = 0;
-		const target = join(directory, "routes.json");
-		const reload = async () => {
-			await withFileLock(target, async () => {
-				reloads += 1;
-			});
-		};
-		const stop = watchHostsState({
-			directories: [directory],
-			onChange: () => {
-				filesystemWakeups += 1;
-				void reload();
-			},
-			log: () => {},
-		});
-		const timer = setInterval(() => {
-			void reload();
-		}, 1000);
-		try {
-			await reload();
-			await Bun.sleep(2150);
-			expect(filesystemWakeups).toBe(0);
-			expect(reloads).toBeGreaterThanOrEqual(2);
-			expect(reloads).toBeLessThanOrEqual(3);
-		} finally {
-			clearInterval(timer);
-			stop();
-			rmSync(directory, { recursive: true, force: true });
-		}
-	});
-
-	it("ignores lock churn, temporary files, and run-status writes", async () => {
+	// Every reload takes the registry lock, which creates `routes.json.lock.v2`
+	// beside the watched file. Waking on that would turn a reload into the
+	// next one; waking on temp files or run-status writes reloads for nothing.
+	//
+	// A watched sentinel goes through the same watcher after the noise, and
+	// every wakeup records what it saw, so one caused by noise shows up as a
+	// reading without the sentinel or as a repeated reading.
+	it("wakes once per registry write, not on lock churn, temp files or run status", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "buncargo-watch-feedback-"));
-		let changes = 0;
+		const routes = join(dir, "routes.json");
+		const sentinel = join(dir, "sentinel");
+		const read = (path: string) =>
+			existsSync(path) ? readFileSync(path, "utf8") : "-";
+		const seen: string[] = [];
+		let reloading = Promise.resolve();
+		let next = Promise.withResolvers<void>();
 		const stop = watchHostsState({
 			directories: [dir],
-			debounceMs: 5,
+			files: [routes, sentinel],
+			debounceMs: 0,
 			log: () => {},
 			onChange: () => {
-				changes += 1;
-				writeFileSync(join(dir, "routes.json.lock"), "lock");
-				unlinkSync(join(dir, "routes.json.lock"));
+				seen.push(`${read(routes)} ${read(sentinel)}`);
+				// What the daemon does next: reload under the real lock.
+				reloading = withFileLock(routes, async () => {});
+				next.resolve();
 			},
 		});
+		const change = async (write: () => void) => {
+			next = Promise.withResolvers<void>();
+			write();
+			await next.promise;
+			await reloading;
+		};
+		const land = (contents: string) => () => {
+			writeFileSync(`${routes}.tmp`, contents);
+			renameSync(`${routes}.tmp`, routes);
+		};
 		try {
-			writeFileSync(join(dir, "routes.json.tmp"), "{}");
 			writeFileSync(join(dir, "runs.json"), "{}");
-			await Bun.sleep(100);
-			expect(changes).toBe(0);
-			renameSync(join(dir, "routes.json.tmp"), join(dir, "routes.json"));
-			for (let i = 0; i < 100 && changes === 0; i++) await Bun.sleep(10);
-			expect(changes).toBe(1);
-			await Bun.sleep(250);
-			expect(changes).toBe(1);
+			writeFileSync(join(dir, "routes.json.tmp"), "{}");
+			await change(() => writeFileSync(sentinel, "1"));
+			await change(land("a"));
+			await change(land("b"));
+			await change(() => writeFileSync(sentinel, "2"));
+			expect(seen).toEqual(["- 1", "a 1", "b 1", "b 2"]);
 		} finally {
 			stop();
 			rmSync(dir, { recursive: true, force: true });
@@ -315,17 +354,6 @@ describe("start timeouts", () => {
 	// launchd cold-starting a unit is the only thing worth waiting seconds for.
 	it("allows enough time for the supervisor to load the unit", () => {
 		expect(SERVICE_START_TIMEOUT_MS).toBeGreaterThanOrEqual(10_000);
-	});
-
-	it("does not inherit the launchd cold-start budget on a routine probe", () => {
-		expect(resolveInstalledServiceWaitMs()).toBe(0);
-		expect(resolveInstalledServiceWaitMs(undefined)).toBe(0);
-	});
-
-	it("keeps the cold-start budget after a fresh install", () => {
-		expect(resolveInstalledServiceWaitMs(SERVICE_START_TIMEOUT_MS)).toBe(
-			SERVICE_START_TIMEOUT_MS,
-		);
 	});
 });
 
@@ -816,26 +844,27 @@ describe("waitForDaemonRoutes", () => {
 		});
 	});
 
-	// A daemon predating the field cannot be checked, and reporting that as a
-	// failure would downgrade every URL on a machine whose service is merely
-	// due an upgrade — which `describeStaleHostsService` already reports.
-	it("proceeds against a daemon that does not report hostnames", async () => {
+	// A daemon predating the health fields cannot prove what it serves. It is
+	// not served on trust: the run falls back and says how to update it.
+	it("tells the user to update a daemon that does not report hostnames", async () => {
 		const home = mkdtempSync(join(tmpdir(), "buncargo-daemon-test-"));
 		dirs.push(home);
 		process.env.HOME = home;
 
-		const legacy = Bun.serve({
+		const outdated = Bun.serve({
 			hostname: "127.0.0.1",
 			port: 0,
 			fetch: () => Response.json({ ok: true, routes: 0 }),
 		});
-		const port = legacy.port ?? 0;
-		servers.push({ httpsPort: port, stop: () => legacy.stop(true) });
+		const port = outdated.port ?? 0;
+		servers.push({ httpsPort: port, stop: () => outdated.stop(true) });
 		writeDaemonConfig({ httpsPort: port, httpPort: 0, tls: false });
 
 		expect(await waitForDaemonRoutes(["web.demo.localhost"])).toEqual({
-			ok: true,
-			unverifiable: true,
+			ok: false,
+			reason: expect.stringContaining(
+				"Run `buncargo hosts install` to update it.",
+			),
 		});
 	});
 });

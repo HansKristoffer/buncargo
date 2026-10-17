@@ -123,8 +123,10 @@ export function appleContainerRuntimeAdapter(
 			return listAppleBuncargoContainers(cli);
 		},
 
+		// Same reasoning as `list`: a down system fails the listing, which
+		// already reads as no volumes.
 		listVolumes() {
-			if (!isAppleContainerSystemRunning(cli)) return Promise.resolve([]);
+			if (!isAppleContainerSupported()) return Promise.resolve([]);
 			return listAppleVolumes(cli);
 		},
 

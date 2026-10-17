@@ -3,11 +3,30 @@
 A `dev.config.ts` becomes a `DevEnvironment`. Construction is a read: identity, ports and URLs
 are resolved once into a `DevEnvContext` (`src/environment/context.ts`) without touching a runtime.
 `start()` then claims the run in `~/.buncargo/runs.json`, prepares the selected services
-(Compose up, readiness, migrations, seed), spawns the apps in waves, activates named hosts and
-tunnels, and publishes what it started back into the run entry. The CLI (`src/cli/run-cli.ts`)
-drives the same environment and adds the terminal: prompts, the banner, the TUI or stream output,
-takeover and detach. The machine-wide watchdog and the `ls`/`doctor` commands sweep stacks whose
-run has ended. BuncargoBar reads the run registry and shells every mutation out to `buncargo stop`.
+(Compose up, readiness, migrations, seed), spawns the apps in waves, and publishes what it
+started back into the run entry; tunnels open only when the caller asks (`openPublicTunnels()`).
+The CLI (`src/cli/run-cli.ts`) drives the same environment and adds the terminal: prompts, the
+banner, the TUI or stream output, takeover and detach. The machine-wide watchdog and the
+`ls`/`doctor` commands sweep stacks whose run has ended. BuncargoBar reads the run registry and
+shells every mutation out to `buncargo stop`.
+
+## What only `buncargo dev` does
+
+`runDevFlow` does more than `start()`, by decision rather than oversight: named hosts
+(`cli/dev-hosts.ts`; `start()` leaves `env.urls` on `localhost:port`), the fast checks and
+integration `preflight` steps, connect sharing, the per-run logs and the requests `restart`,
+`send` and `logs` act on, and parking an app that never came up. Each one belongs to a long-lived
+run that a person or agent started: it asks at a terminal (preflight, takeover), claims
+machine-wide state held by that process until it exits (host routes, connect), or describes that
+process to other tools. A library `start()` runs inside a test or script buncargo does not own,
+often many sessions to one process.
+
+Two crossed the line on purpose. `exclusive` leases: without one, a `start()` and a `dev` both ran
+one exclusive app; `start()` takes them per session and answers a held one the way `dev` does
+without a terminal, never with a takeover. And the app rows `ls`, `stop` and BuncargoBar read: an
+app-only `start()` was invisible to all three. The user-facing list is in `docs/reference.md`
+(Programmatic API); keep it in step when a behavior crosses this line, and port one to `start()`
+only on purpose.
 
 ## Ownership
 

@@ -79,6 +79,21 @@ describe("runSeedIfNeeded", () => {
 		).toBe("succeeded");
 	});
 
+	it("hands each line of the seed's output to onOutputLine", async () => {
+		const { ctx, envVars } = stubSeedContext({
+			root: tmpdir(),
+			command: "echo planted; echo oops >&2",
+		});
+		const lines: string[] = [];
+
+		const outcome = await runSeedIfNeeded(ctx, envVars, {
+			onOutputLine: (line) => lines.push(line),
+		});
+
+		expect(outcome.status).toBe("succeeded");
+		expect(lines.sort()).toEqual(["oops", "planted"]);
+	});
+
 	it("returns the failed outcome without throwing", async () => {
 		const { ctx, envVars } = stubSeedContext({
 			root: tmpdir(),

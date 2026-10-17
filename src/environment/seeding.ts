@@ -4,6 +4,7 @@ import { withDeadline } from "../core/deadline";
 import { toUrlMap, type UrlMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
 import { formatDone, formatFail, formatStep, formatWarn } from "../core/style";
+import { resolvePrismaConfig } from "../prisma/config";
 import type {
 	AppConfig,
 	EnvValues,
@@ -13,7 +14,7 @@ import type {
 	SeedRunOptions,
 	ServiceConfig,
 } from "../types";
-import type { DevEnvContext } from "./context";
+import type { DevEnvContext, StartSelection } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 
 const BUN_SCRIPT_COMMAND =
@@ -32,6 +33,7 @@ export async function runSeedCommand(input: {
 	forceExit?: boolean;
 	verbose?: boolean;
 	prefixOutput?: boolean;
+	onOutputLine?: (line: string) => void;
 }): Promise<ExecResult> {
 	const specifier = resolveBunSeedSpecifier(input.command);
 	const forceExit = input.forceExit ?? Boolean(specifier);
@@ -48,6 +50,7 @@ export async function runSeedCommand(input: {
 				cwd: input.cwd,
 				verbose: input.verbose,
 				outputPrefix: input.prefixOutput ? "seed" : undefined,
+				onOutputLine: input.onOutputLine,
 				throwOnError: false,
 				signal: input.signal,
 				timeoutMs: 600_000,
@@ -59,6 +62,7 @@ export async function runSeedCommand(input: {
 		cwd: input.cwd,
 		verbose: input.verbose,
 		outputPrefix: input.prefixOutput ? "seed" : undefined,
+		onOutputLine: input.onOutputLine,
 		throwOnError: false,
 		signal: input.signal,
 		timeoutMs: 600_000,
@@ -134,7 +138,7 @@ export async function runSeedIfNeeded<
 	ctx: DevEnvContext<TServices, TApps, TEnv>,
 	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
 	options: SeedRunOptions = {},
-	selection?: { appNames: string[]; requiredServiceKeys: string[] },
+	selection?: StartSelection,
 ): Promise<SeedOutcome> {
 	const seed = ctx.config.seed;
 	if (!seed) {
@@ -150,7 +154,7 @@ export async function runSeedIfNeeded<
 					toUrlMap(ctx.urls),
 					(cmd, execOptions) =>
 						envVars.exec(cmd, { ...execOptions, signal, timeoutMs: 600_000 }),
-					ctx.config.prisma?.service ?? "postgres",
+					resolvePrismaConfig(ctx.config.prisma).service,
 				);
 				return seedCheck(
 					createSeedCheckContext(
@@ -185,12 +189,16 @@ export async function runSeedIfNeeded<
 		envVars: { ...secrets, ...computed },
 		forceExit: seed.forceExit,
 		prefixOutput: options.prefixOutput,
+		onOutputLine: options.onOutputLine,
 		verbose,
 	});
 
 	if (result.exitCode !== 0) {
 		console.error(formatFail("Seeding failed"));
-		if (!options.prefixOutput || !verbose) console.error(result.stderr);
+		// Already shown when its output was streamed.
+		const streamed =
+			verbose && (options.prefixOutput || options.onOutputLine !== undefined);
+		if (!streamed) console.error(result.stderr);
 		return { status: "failed", result };
 	}
 

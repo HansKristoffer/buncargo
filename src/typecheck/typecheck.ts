@@ -50,6 +50,11 @@ export interface WorkspaceTypecheckOptions {
 	 * lockfile, tsconfig or dev config among them checks everything.
 	 */
 	changedFiles?: readonly string[];
+	/**
+	 * Cancels the run: the checks it started are terminated, process group and
+	 * all, none is started after, and the promise rejects with the abort reason.
+	 */
+	signal?: AbortSignal;
 }
 
 /**
@@ -151,16 +156,9 @@ async function countTypeScriptFiles(
 	return files.length;
 }
 
+/** `file.ts(3,7): error` becomes `file.ts:3:7 - error`, which terminals link. */
 function formatErrorOutput(output: string): string {
-	return output
-		.split("\n")
-		.map((line) => {
-			return line
-				.replace(/\.\.\/\.\.\/packages\/modules\//g, "")
-				.replace(/\((\d+),(\d+)\):?/g, ":$1:$2 -");
-		})
-		.join("\n")
-		.trim();
+	return output.replace(/\((\d+),(\d+)\):?/g, ":$1:$2 -").trim();
 }
 
 function workspaceLabel(workspace: string, fileCount: number): string {
@@ -171,6 +169,7 @@ async function runSingleTypecheck(
 	{ path: workspace, fileCount, command }: Workspace,
 	root: string,
 	verbose: boolean,
+	signal: AbortSignal | undefined,
 	isRetry = false,
 ): Promise<WorkspaceTypecheckResult> {
 	const startTime = performance.now();
@@ -185,9 +184,7 @@ async function runSingleTypecheck(
 		command ?? [process.execPath, "run", "typecheck"],
 		workspacePath,
 		{},
-		{
-			throwOnError: false,
-		},
+		{ throwOnError: false, signal },
 	);
 
 	const duration = Number(((performance.now() - startTime) / 1000).toFixed(2));
@@ -198,12 +195,18 @@ async function runSingleTypecheck(
 		const parts = [result.stdout.trim(), result.stderr.trim()].filter(Boolean);
 		errorOutput = parts.length > 0 ? parts.join("\n") : undefined;
 
-		if (!isRetry && errorOutput && isCorruptedCacheError(errorOutput)) {
+		if (
+			!isRetry &&
+			!signal?.aborted &&
+			errorOutput &&
+			isCorruptedCacheError(errorOutput)
+		) {
 			await clearTsBuildInfo(workspacePath, verbose);
 			return runSingleTypecheck(
 				{ path: workspace, fileCount, command },
 				root,
 				verbose,
+				signal,
 				true,
 			);
 		}
@@ -431,12 +434,14 @@ export async function runWorkspaceTypecheck(
 		include,
 		exclude,
 		changedFiles,
+		signal,
 	} = options;
 	let includeRootConfig = options.includeRootConfig ?? true;
 	const concurrency = options.concurrency ?? defaultTypecheckConcurrency();
 
 	const totalStartTime = performance.now();
 
+	signal?.throwIfAborted();
 	if (!Number.isInteger(concurrency) || concurrency < 1) {
 		throw new Error("typecheck concurrency must be a positive integer");
 	}
@@ -514,8 +519,9 @@ export async function runWorkspaceTypecheck(
 
 	if (workspaces.length === 0) {
 		const rootConfig = includeRootConfig
-			? await typecheckRootConfig({ root, verbose: false })
+			? await typecheckRootConfig({ root, verbose: false, signal })
 			: undefined;
+		signal?.throwIfAborted();
 		if (verbose) {
 			if (rootConfig) logRootConfigResult(rootConfig, verbose);
 			console.log(
@@ -546,7 +552,7 @@ export async function runWorkspaceTypecheck(
 	const running = new Set<Promise<void>>();
 
 	if (includeRootConfig) {
-		const rootJob = typecheckRootConfig({ root, verbose: false }).then(
+		const rootJob = typecheckRootConfig({ root, verbose: false, signal }).then(
 			(result) => {
 				rootConfig = result;
 				running.delete(rootJob);
@@ -558,9 +564,10 @@ export async function runWorkspaceTypecheck(
 
 	for (let i = 0; i < workspaces.length; i++) {
 		while (running.size >= concurrency) await Promise.race(running);
+		if (signal?.aborted) break;
 		const workspace = workspaces[i];
 		if (!workspace) continue;
-		const promise = runSingleTypecheck(workspace, root, verbose).then(
+		const promise = runSingleTypecheck(workspace, root, verbose, signal).then(
 			(result) => {
 				results[i] = result;
 				running.delete(promise);
@@ -569,13 +576,13 @@ export async function runWorkspaceTypecheck(
 		);
 
 		running.add(promise);
-
-		if (running.size >= concurrency) {
-			await Promise.race(running);
-		}
 	}
 
+	// The checks resolve once their processes are gone, so a cancelled run
+	// rejects only after it has stopped everything it started. Its durations
+	// are not real ones and stay out of the timings.
 	await Promise.all(running);
+	signal?.throwIfAborted();
 
 	await writeTypecheckTimings(root, timings, results);
 

@@ -30,6 +30,39 @@ export function preferredAppUrl(
 	return withEntryPath(url, app.entryPath);
 }
 
+/** The parts of a live environment {@link environmentOpenUrl} reads. */
+export interface OpenUrlSource {
+	readonly urls: object;
+	readonly loopbackUrls?: object;
+	readonly publicUrls: object;
+	readonly apps?: object;
+	readonly hosts?: { readonly active: boolean } | null;
+}
+
+/**
+ * {@link preferredAppUrl} for one app of an environment. No `hosts` record
+ * means nothing is serving named hosts: opening one anyway is the silent
+ * failure the loopback fallback exists to prevent.
+ */
+export function environmentOpenUrl(
+	env: OpenUrlSource,
+	app: string,
+): string | undefined {
+	const read = (urls: object | undefined) =>
+		(urls as Record<string, string | undefined> | undefined)?.[app];
+	return preferredAppUrl(
+		{
+			url: read(env.urls),
+			loopbackUrl: read(env.loopbackUrls),
+			publicUrl: read(env.publicUrls),
+			entryPath: appEntryPath(
+				(env.apps as Record<string, unknown> | undefined)?.[app],
+			),
+		},
+		env.hosts?.active === true,
+	);
+}
+
 /** `url` with `entryPath` as its path. Only "open" URLs get it: env vars stay origins. */
 export function withEntryPath(
 	url: string | undefined,

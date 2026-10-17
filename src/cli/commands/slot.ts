@@ -1,5 +1,6 @@
 import { constants } from "node:os";
 import { formatCheckSlotHolder, withCheckSlot } from "../../core/check-slots";
+import { childProcessEnv } from "../../core/child-env";
 import {
 	type CommandSpec,
 	findUnknownFlags,
@@ -76,11 +77,12 @@ export async function handleSlot(args: string[]): Promise<number> {
 	return withCheckSlot(
 		parsed.command.join(" ").slice(0, 60),
 		async () => {
-			// process.env is inherited as is, plus BUNCARGO_CHECK_SLOT so a
-			// buncargo typecheck inside does not wait for a second slot.
+			// The shell's environment, plus BUNCARGO_CHECK_SLOT so a buncargo
+			// typecheck inside does not wait for a second slot, minus the
+			// connect tokens no project process gets.
 			const child = Bun.spawn(parsed.command, {
 				stdio: ["inherit", "inherit", "inherit"],
-				env: process.env,
+				env: childProcessEnv(),
 			});
 			const forward = (signal: NodeJS.Signals) => child.kill(signal);
 			const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;

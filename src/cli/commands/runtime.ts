@@ -1,4 +1,4 @@
-import { isHostsForcedOff } from "../../core/runtime-flags";
+import { hostsMode } from "../../core/runtime-flags";
 import { createNoopPhaseTimer, createPhaseTimer } from "../../core/timing";
 import { exitOnDevArgErrors, parseDevArgs, printDevHelp } from "../dev-flags";
 import { getFlagValue, hasFlag, splitCliArgs } from "../flags";
@@ -132,13 +132,26 @@ function parseMigrateCheckArgs(args: string[]) {
  */
 export async function loadLiveEnv() {
 	const { getCaPath, waitForDaemonRoutes } = await import("../../core/hosts");
-	const { adoptLiveCaptures } = await import("../run-publish");
+	const { readServedTailscaleUrls } = await import(
+		"../../core/hosts/tailscale-serve"
+	);
+	const { adoptLiveCaptures } = await import("../../core/run-publish");
 	const env = await loadEnv({ readOnly: true });
+	const mode = hostsMode();
+	// What the run recorded Tailscale answering for, never a request of our own.
+	if (env.hosts && mode === "tailscale") {
+		const tailscaleUrls = await readServedTailscaleUrls(
+			env.root,
+			env.ports as Record<string, number>,
+		);
+		if (Object.keys(tailscaleUrls).length > 0)
+			env.setNamedHostsActive(true, { tailscaleUrls });
+	}
 	// A healthy daemon is not the same as a daemon serving this project: a
 	// `vite.config.ts` reading `urls.web` from here must not be handed an https
 	// hostname the proxy would 404. Zero wait — this only reports state, so an
 	// unpicked-up route reads as localhost rather than blocking the command.
-	if (env.hosts && env.hosts.plan.length > 0 && !isHostsForcedOff()) {
+	if (env.hosts && env.hosts.plan.length > 0 && mode === "loopback") {
 		const serving = await waitForDaemonRoutes(
 			env.hosts.plan.map((entry) => entry.hostname),
 			{ timeoutMs: 0 },
@@ -168,8 +181,10 @@ export async function handleEnv(args: string[] = []): Promise<void> {
 		hosts: env.hosts
 			? {
 					active: env.hosts.active,
+					mode: env.hosts.mode,
 					tld: env.hosts.tld,
 					plan: env.hosts.plan,
+					tailscaleUrls: env.hosts.tailscaleUrls,
 				}
 			: null,
 		// What `exec`, tasks and the apps are given (without their secrets),
@@ -242,17 +257,31 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 	const { withCheckSlot, formatCheckSlotHolder } = await import(
 		"../../core/check-slots"
 	);
-	const result = await withCheckSlot(
+	const { runForwardingSignals } = await import("./exec");
+	const exitCode = await withCheckSlot(
 		"typecheck",
+		// Each check runs in its own process group, which the terminal's
+		// Ctrl-C does not reach: the signal is forwarded, or every `tsc` would
+		// outlive this process.
 		() =>
-			runWorkspaceTypecheck({
-				root,
-				verbose: true,
-				concurrency: parsed.concurrency,
-				only: parsed.only,
-				include: settings.config?.include,
-				exclude: settings.config?.exclude,
-				changedFiles,
+			runForwardingSignals(async (signal) => {
+				try {
+					const result = await runWorkspaceTypecheck({
+						root,
+						verbose: true,
+						concurrency: parsed.concurrency,
+						only: parsed.only,
+						include: settings.config?.include,
+						exclude: settings.config?.exclude,
+						changedFiles,
+						signal,
+					});
+					return { exitCode: result.success ? 0 : 1, stdout: "", stderr: "" };
+				} catch (error) {
+					// Interrupted: the signal's exit code says so.
+					if (signal.aborted) return { exitCode: 1, stdout: "", stderr: "" };
+					throw error;
+				}
 			}),
 		{
 			onWait: (holders) =>
@@ -261,5 +290,5 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 				),
 		},
 	);
-	process.exit(result.success ? 0 : 1);
+	process.exit(exitCode);
 }

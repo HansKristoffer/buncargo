@@ -29,7 +29,8 @@ const FLAGS = {
 	all: {
 		name: "--all",
 		kind: "boolean",
-		description: "Stop the whole run: dev servers and containers",
+		description:
+			"Stop the whole run: dev servers and containers, and an ended run's idle containers",
 	},
 	force: {
 		name: "--force",

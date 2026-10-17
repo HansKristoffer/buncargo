@@ -263,20 +263,37 @@ console.log(path);
 	// detached process that cannot reach the consumer's code-split chunks.
 	//
 	// Hermetic on purpose: an isolated HOME so it reads an empty registry,
-	// and an empty PATH so it finds no container runtime. It therefore has
-	// nothing to watch and exits at once, and cannot touch whatever Docker
-	// stacks the machine running this happens to have.
+	// and a PATH of one empty directory so it finds no container runtime. It
+	// therefore has nothing to watch and exits at once, and cannot touch
+	// whatever Docker stacks the machine running this happens to have. An
+	// empty PATH is no substitute: Bun then falls back to /usr/bin and finds
+	// the real `docker`, so DOCKER_HOST points at nothing as well. With the
+	// tailnet directory on, a machine with Tailscale would keep it serving.
 	const watchdogHome = join(consumer, "watchdog-home");
+	const emptyBin = join(consumer, "watchdog-empty-bin");
 	mkdirSync(watchdogHome, { recursive: true });
+	mkdirSync(emptyBin, { recursive: true });
 	const watchdog = join(installed, "dist/core/watchdog-runner.js");
 	const watchdogResult = Bun.spawnSync([process.execPath, watchdog], {
 		cwd: consumer,
-		env: { PATH: "", HOME: watchdogHome },
+		env: {
+			PATH: emptyBin,
+			HOME: watchdogHome,
+			DOCKER_HOST: "unix:///nonexistent/buncargo-verify-package.sock",
+			BUNCARGO_TAILNET_DIRECTORY: "0",
+		},
 		stdout: "pipe",
 		stderr: "pipe",
 	});
 	assert.equal(watchdogResult.exitCode, 0);
 	assert(watchdogResult.stdout.toString().includes("Nothing left to watch"));
+	// Its version is read from the installed package.json, through the
+	// build's chunk layout; `ensureWatchdog` replaces a runner without one.
+	assert(
+		watchdogResult.stdout
+			.toString()
+			.includes(`[watchdog ${packageJson.version} pid `),
+	);
 	for (const daemon of ["hostsd.js", "connectd.js"]) {
 		const detachedDaemon = join(consumer, "detached", daemon);
 		mkdirSync(dirname(detachedDaemon), { recursive: true });

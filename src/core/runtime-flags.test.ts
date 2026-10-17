@@ -5,12 +5,12 @@ import { join } from "node:path";
 import {
 	cloudflaredPathOverride,
 	cloudflaredVersion,
-	connectProcessEnv,
 	connectTokens,
 	exposeTunnelStaggerMs,
 	hostsDaemonPort,
+	hostsMode,
+	infisicalUniversalAuthFile,
 	isCI,
-	isHostsForcedOff,
 	mkcertPathOverride,
 	mkcertVersion,
 	portOffsetOverride,
@@ -19,6 +19,7 @@ import {
 	quickTunnelUrlTimeoutMs,
 	shouldSyncHostsFile,
 	typecheckConcurrencyOverride,
+	watchdogParent,
 } from "./runtime-flags";
 
 describe("Connection credentials", () => {
@@ -31,11 +32,6 @@ describe("Connection credentials", () => {
 		expect(() =>
 			connectTokens({ BUNCARGO_CONNECT_TOKENS: "not-a-token" }),
 		).toThrow("comma-separated");
-	});
-	it("removes tokens from child environments", () => {
-		expect(
-			connectProcessEnv({ BUNCARGO_CONNECT_TOKENS: "secret", PATH: "/bin" }),
-		).toEqual({ PATH: "/bin" });
 	});
 });
 
@@ -72,17 +68,27 @@ describe("portOffsetOverride", () => {
 	});
 });
 
-describe("isHostsForcedOff", () => {
-	it("stays enabled unless explicitly disabled or running in CI", () => {
-		expect(isHostsForcedOff({})).toBe(false);
-		expect(isHostsForcedOff({ BUNCARGO_HOSTS: "0" })).toBe(true);
-		expect(isHostsForcedOff({ CI: "1" })).toBe(true);
-		expect(isHostsForcedOff({ CI: "true" })).toBe(true);
+describe("hostsMode", () => {
+	it("serves loopback named hosts unless told otherwise", () => {
+		expect(hostsMode({})).toBe("loopback");
+		expect(hostsMode({ BUNCARGO_HOSTS: "1" })).toBe("loopback");
+	});
+
+	it("is off with BUNCARGO_HOSTS=0 and in CI", () => {
+		expect(hostsMode({ BUNCARGO_HOSTS: "0" })).toBe("off");
+		expect(hostsMode({ CI: "1" })).toBe("off");
+		expect(hostsMode({ CI: "true" })).toBe("off");
 	});
 
 	it("stays off in CI providers that do not set CI", () => {
-		expect(isHostsForcedOff({ GITLAB_CI: "true" })).toBe(true);
-		expect(isHostsForcedOff({ GITHUB_ACTIONS: "true" })).toBe(true);
+		expect(hostsMode({ GITLAB_CI: "true" })).toBe("off");
+		expect(hostsMode({ GITHUB_ACTIONS: "true" })).toBe("off");
+	});
+
+	it("serves through Tailscale with BUNCARGO_HOSTS=tailscale, outside CI", () => {
+		expect(hostsMode({ BUNCARGO_HOSTS: "tailscale" })).toBe("tailscale");
+		expect(hostsMode({ BUNCARGO_HOSTS: " tailscale " })).toBe("tailscale");
+		expect(hostsMode({ BUNCARGO_HOSTS: "tailscale", CI: "1" })).toBe("off");
 	});
 });
 
@@ -181,5 +187,48 @@ describe("typecheckConcurrencyOverride", () => {
 		expect(() =>
 			typecheckConcurrencyOverride({ BUNCARGO_TYPECHECK_CONCURRENCY: "nope" }),
 		).toThrow(/BUNCARGO_TYPECHECK_CONCURRENCY/);
+	});
+});
+
+describe("infisicalUniversalAuthFile", () => {
+	it("is the override, else the identity file under the given home", () => {
+		expect(infisicalUniversalAuthFile({}, "/home/dev")).toBe(
+			"/home/dev/.infisical/universal-auth.json",
+		);
+		expect(
+			infisicalUniversalAuthFile(
+				{ INFISICAL_UNIVERSAL_AUTH_FILE: " /etc/id.json " },
+				"/home/dev",
+			),
+		).toBe("/etc/id.json");
+	});
+
+	it("is unused while the environment names any client credential", () => {
+		expect(
+			infisicalUniversalAuthFile({ INFISICAL_CLIENT_ID: "id" }, "/home/dev"),
+		).toBeUndefined();
+		expect(
+			infisicalUniversalAuthFile({ INFISICAL_CLIENT_SECRET: "s" }, "/home/dev"),
+		).toBeUndefined();
+	});
+});
+
+describe("watchdogParent", () => {
+	it("reads the pid and the identity, which may itself hold colons", () => {
+		expect(
+			watchdogParent({ BUNCARGO_WATCHDOG_PARENT: "4242:linux:boot:123" }),
+		).toEqual({ pid: 4242, identity: "linux:boot:123" });
+		expect(watchdogParent({ BUNCARGO_WATCHDOG_PARENT: "4242:" })).toEqual({
+			pid: 4242,
+			identity: undefined,
+		});
+	});
+
+	it("names no parent for an unset or unusable value", () => {
+		expect(watchdogParent({})).toBeUndefined();
+		expect(
+			watchdogParent({ BUNCARGO_WATCHDOG_PARENT: "abc:x" }),
+		).toBeUndefined();
+		expect(watchdogParent({ BUNCARGO_WATCHDOG_PARENT: "1:x" })).toBeUndefined();
 	});
 });

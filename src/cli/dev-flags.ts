@@ -23,7 +23,8 @@ const FLAGS = {
 	all: {
 		name: "--all",
 		kind: "boolean",
-		description: "With --down, stop every buncargo environment on this machine",
+		description:
+			"With --down, stop every buncargo environment you started on this machine",
 	},
 	reset: {
 		name: "--reset",
@@ -93,17 +94,19 @@ const FLAGS = {
 		name: "--tui",
 		kind: "boolean",
 		description:
-			"Terminal UI: a sidebar of apps, each in its own terminal (needs a terminal)",
+			"Terminal UI, the default in a terminal; warns when there is none",
 	},
 	noTui: {
 		name: "--no-tui",
 		kind: "boolean",
-		description: "Prefixed lines on stdout, even in a terminal",
+		description:
+			"Prefixed lines instead of the terminal UI, even in a terminal",
 	},
 	keepContainers: {
 		name: "--keep-containers",
 		kind: "boolean",
-		description: "Do not start the idle watchdog",
+		description:
+			"Keep the containers after the run exits, as long as the checkout exists",
 	},
 	takeover: {
 		name: "--takeover",
@@ -194,9 +197,8 @@ export const DEV_COMMAND_SPEC: CommandSpec = {
 			description: "Run services on Apple container instead of Docker",
 		},
 		{
-			command: "bun dev --tui",
-			description:
-				"Every app in its own pane; full-screen apps render natively",
+			command: "bun dev --no-tui",
+			description: "Prefixed lines instead of the terminal UI",
 		},
 		{
 			command: "bun dev --takeover",
@@ -206,8 +208,6 @@ export const DEV_COMMAND_SPEC: CommandSpec = {
 };
 
 export interface DevCliArgs {
-	/** Flags before `--`, kept for error messages. */
-	flags: string[];
 	/** Args after `--`, appended to the attached app command. */
 	passthrough: string[];
 	unknownFlags: string[];
@@ -230,8 +230,11 @@ export interface DevCliArgs {
 	/** `--profile`; undefined falls back to a profile named `default`. */
 	profile: string | undefined;
 	attach: string | undefined;
-	/** `--tui`; still opt-in. Stream mode whenever stdout is not a terminal. */
-	tui: boolean;
+	/**
+	 * The TUI whenever there is a terminal (`auto`); `on` is `--tui`, which
+	 * warns when there is none; `off` is `--no-tui`.
+	 */
+	tui: "auto" | "on" | "off";
 	/** `--detach`: the run goes to the background (`dev-detach.ts`). */
 	detach: boolean;
 	/** `--no-watch`: apps' `watch` config is ignored for this run. */
@@ -281,7 +284,6 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		);
 
 	return {
-		flags,
 		passthrough,
 		unknownFlags: findUnknownFlags(DEV_COMMAND_SPEC, flags),
 		errors,
@@ -299,7 +301,7 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		appsValue: str(FLAGS.apps),
 		profile: str(FLAGS.profile),
 		attach: str(FLAGS.attach),
-		tui: bool(FLAGS.tui) && !bool(FLAGS.noTui),
+		tui: bool(FLAGS.noTui) ? "off" : bool(FLAGS.tui) ? "on" : "auto",
 		detach: bool(FLAGS.detach),
 		watch: !bool(FLAGS.noWatch),
 		keepContainers: bool(FLAGS.keepContainers),

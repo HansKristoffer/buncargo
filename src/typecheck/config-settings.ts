@@ -1,8 +1,7 @@
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { validateTypecheckShape } from "../config/validation/config-shapes";
 import { createShapeChecks } from "../config/validation/shape-checks";
-import { CONFIG_FILES } from "../loader";
+import { findRootConfigFile } from "../loader/find-config-file";
 import type { TypecheckConfig } from "../types";
 
 /**
@@ -19,7 +18,7 @@ export async function loadTypecheckConfig(root: string): Promise<{
 	warning?: string;
 	errors: string[];
 }> {
-	const file = CONFIG_FILES.find((name) => existsSync(join(root, name)));
+	const file = findRootConfigFile(root);
 	if (!file) return { errors: [] };
 
 	let value: unknown;

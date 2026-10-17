@@ -1,4 +1,9 @@
-/** Cross-entry namespace and port checks share one ownership map per validation. */
+import { isAbsolute, normalize } from "node:path";
+
+/**
+ * Cross-entry namespace and port checks share one ownership map per
+ * validation; the path check is here so every field words it the same way.
+ */
 export function createValidationContext(errors: string[]) {
 	const portOwners = new Map<number, string>();
 	const namespaceOwners = new Map<string, string>();
@@ -26,6 +31,18 @@ export function createValidationContext(errors: string[]) {
 		}
 	};
 
-	return { errors, claimName, claimPort };
+	const checkRelativePath = (path: string, value: string | undefined) => {
+		if (!value) return;
+		if (isAbsolute(value)) {
+			errors.push(`${path} must be a relative path inside the repo.`);
+		}
+
+		const normalized = normalize(value).replace(/\\/g, "/");
+		if (normalized === ".." || normalized.startsWith("../")) {
+			errors.push(`${path} cannot point outside the repository root.`);
+		}
+	};
+
+	return { errors, claimName, claimPort, checkRelativePath };
 }
 export type ValidationContext = ReturnType<typeof createValidationContext>;

@@ -59,13 +59,20 @@ describe("parseSlotArgs", () => {
 describe("buncargo slot", () => {
 	it("runs the command with the shell's environment inside a slot, and passes its exit code on", () => {
 		const result = runSlot(
-			["--", "sh", "-c", 'echo "$OWN_VAR|$BUNCARGO_CHECK_SLOT"; exit 3'],
-			{ OWN_VAR: "kept" },
+			[
+				"--",
+				"sh",
+				"-c",
+				'echo "$OWN_VAR|$BUNCARGO_CHECK_SLOT|$BUNCARGO_CONNECT_TOKENS"; exit 3',
+			],
+			{ OWN_VAR: "kept", BUNCARGO_CONNECT_TOKENS: "secret" },
 		);
 
 		expect(result.exitCode).toBe(3);
-		const [ownVar, slot] = result.stdout.trim().split("|");
+		const [ownVar, slot, tokens] = result.stdout.trim().split("|");
 		expect(ownVar).toBe("kept");
+		// Like every project process, never the connect tokens.
+		expect(tokens).toBe("");
 		expect(slot).toBe(join(result.home, ".buncargo/check-slots/0.lock"));
 		// Released once the command ended.
 		expect(readdirSync(join(result.home, ".buncargo/check-slots"))).toEqual([]);

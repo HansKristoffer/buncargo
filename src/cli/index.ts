@@ -1,1 +1,2 @@
-export * from "./run-cli";
+export type { CliOptions } from "../types/cli";
+export { runCli } from "./run-cli";

@@ -98,6 +98,28 @@ describe("buildStartPlan", () => {
 	});
 });
 
+describe("a config with services and no apps", () => {
+	it("starts every service", () => {
+		const services: Record<string, ServiceConfig> = {
+			postgres: { port: 5432 },
+			redis: { port: 6379 },
+		};
+		expect(buildStartPlan({}, services, undefined).requiredServiceKeys).toEqual(
+			["postgres", "redis"],
+		);
+	});
+
+	it("still starts nothing for apps that require nothing", () => {
+		expect(
+			buildStartPlan(
+				{ web: { port: 3000, devCommand: "bun dev" } },
+				{ postgres: { port: 5432 } },
+				undefined,
+			).requiredServiceKeys,
+		).toEqual([]);
+	});
+});
+
 describe("getComposeServiceName", () => {
 	it("uses serviceName override when present", () => {
 		expect(

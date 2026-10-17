@@ -1,10 +1,18 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDevEnvironment } from "../environment";
 import type { AnyDevEnvironment, CheckContext, DevConfig } from "../types";
 import { supabaseChecks } from "./checks";
+import { supabaseVersion } from "./cli";
 import { supabase } from "./index";
 import { supabaseKeys } from "./keys";
 import { readSupabaseProject } from "./project";
@@ -173,5 +181,50 @@ describe("supabase checks", () => {
 		const runtimeCheck = check("Supabase runs on Docker");
 		expect(await runtimeCheck.check(ctx("docker"))).toBe(true);
 		expect(await runtimeCheck.check(ctx("apple"))).toMatchObject({ ok: false });
+	});
+});
+
+describe("generated types", () => {
+	it("regenerates over a stamp it cannot read", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-supabase-types-"));
+		try {
+			const stamp = join(dir, ".buncargo", "supabase-types.json");
+			mkdirSync(join(dir, ".buncargo"));
+			writeFileSync(stamp, "{ half-written");
+			writeFileSync(join(dir, "types.ts"), "old");
+			const hook = supabase({ types: { output: "types.ts" } }).hooks
+				?.afterContainersReady;
+
+			await hook?.({
+				root: dir,
+				selectedServices: ["supabaseDb"],
+				exec: async () => ({ exitCode: 0, stdout: "new", stderr: "" }),
+			} as never);
+
+			expect(readFileSync(join(dir, "types.ts"), "utf8")).toBe("new");
+			expect(JSON.parse(readFileSync(stamp, "utf8")).output).toBeString();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("supabase CLI runs", () => {
+	it("never hands `supabase` the connect tokens", () => {
+		const bin = join(root, "fake-supabase");
+		// Answers only when it cannot see the tokens.
+		writeFileSync(
+			bin,
+			`#!/bin/sh\n[ -z "\${BUNCARGO_CONNECT_TOKENS+x}" ] && echo 2.1.0\n`,
+		);
+		chmodSync(bin, 0o755);
+		const saved = process.env.BUNCARGO_CONNECT_TOKENS;
+		process.env.BUNCARGO_CONNECT_TOKENS = "secret";
+		try {
+			expect(supabaseVersion(bin, root)).toBe("2.1.0");
+		} finally {
+			if (saved === undefined) delete process.env.BUNCARGO_CONNECT_TOKENS;
+			else process.env.BUNCARGO_CONNECT_TOKENS = saved;
+		}
 	});
 });

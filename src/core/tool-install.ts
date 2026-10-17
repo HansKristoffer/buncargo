@@ -11,12 +11,12 @@ import {
 	readFile,
 	rename,
 	rm,
-	writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { withSignal as aborted } from "./deadline";
 import { withFileLock } from "./file-lock";
+import { writeJsonDocument } from "./registry-file";
 import { chownToInvokingUser } from "./state-paths";
 import { isInstalledTool, toolBinaryFingerprint } from "./tool-binary";
 
@@ -296,21 +296,9 @@ export async function installTool(
 }
 
 async function writeReceipt(path: string, identity: string): Promise<void> {
-	const receipt = `${path}.installed.json`;
-	const temporary = `${receipt}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-	try {
-		await writeFile(
-			temporary,
-			JSON.stringify({
-				version: 1,
-				identity,
-				fingerprint: toolBinaryFingerprint(path),
-			}),
-			{ mode: 0o600, flag: "wx" },
-		);
-		chownToInvokingUser(temporary);
-		await rename(temporary, receipt);
-	} finally {
-		await rm(temporary, { force: true });
-	}
+	await writeJsonDocument(
+		`${path}.installed.json`,
+		{ version: 1, identity, fingerprint: toolBinaryFingerprint(path) },
+		{ afterWrite: chownToInvokingUser },
+	);
 }

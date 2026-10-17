@@ -20,12 +20,6 @@ import { sleep } from "../core/sleep";
 
 import type { ExpoAppIdentity } from "./app-identity";
 
-export {
-	describeExpoApp,
-	type ExpoAppIdentity,
-	isExpoApp,
-} from "./app-identity";
-
 const EXPO_GO_BUNDLE_ID = "host.exp.Exponent";
 const METRO_WAIT_MS = 60_000;
 

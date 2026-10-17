@@ -22,11 +22,12 @@ import type {
 	EnvVarsBuilder,
 	ExecOptions,
 	HookContext,
+	HostsRuntime,
 	SecretsScopeConfig,
 	ServiceConfig,
 } from "../types";
 import { capturedEnv } from "./captures";
-import type { DevEnvContext } from "./context";
+import type { DevEnvContext, StartSelection } from "./context";
 
 export interface DevEnvVarsApi<
 	TServices extends Record<string, ServiceConfig>,
@@ -46,13 +47,16 @@ export interface DevEnvVarsApi<
 		appName: Extract<keyof TApps, string>,
 		production?: boolean,
 	): string;
+	/** Without a selection, hooks see the prepared one (every name before preparation). */
 	getHookContext(
 		signal?: AbortSignal,
-		selection?: { appNames: string[]; requiredServiceKeys: string[] },
+		selection?: StartSelection,
 	): HookContext<TServices, TApps>;
+	/** `production` builds the env a production start gives its processes. */
 	exec(
 		cmd: string | readonly string[],
 		options?: ExecOptions,
+		production?: boolean,
 	): Promise<ExecResult>;
 	/**
 	 * The secrets a command gets: `explicit`, else the app's scope, else the
@@ -67,6 +71,19 @@ export interface DevEnvVarsApi<
 			computed?: Record<string, string>;
 		},
 	): Promise<Record<string, string>>;
+}
+
+/**
+ * The hosts Vite must accept for named URLs: every `.<tld>` name behind the
+ * loopback daemon, or the machine names Tailscale serves apps under.
+ */
+function namedAllowedHosts(hosts: HostsRuntime | null): string[] {
+	if (!hosts?.active) return [];
+	if (hosts.mode === "loopback") return [`.${hosts.tld}`];
+	const names = Object.values(hosts.tailscaleUrls).map(
+		(url) => new URL(url).hostname,
+	);
+	return [...new Set(names)];
 }
 
 export function createEnvVarsApi<
@@ -111,8 +128,7 @@ export function createEnvVarsApi<
 		// Vite answers 403 to a Host it does not know. Comma-separated: the
 		// buncargo Vite plugin splits the list.
 		const allowedHosts = [
-			ctx.hosts?.active ? `.${ctx.hosts.tld}` : undefined,
-			urlHostOverride(),
+			...new Set([...namedAllowedHosts(ctx.hosts), urlHostOverride()]),
 		].filter((host) => host !== undefined);
 		if (allowedHosts.length > 0) {
 			shared.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS = allowedHosts.join(",");
@@ -172,11 +188,13 @@ export function createEnvVarsApi<
 			}
 		}
 
-		const namedHost = ctx.hosts?.active
-			? ctx.hosts.plan.find(
-					(host) => host.kind === "app" && host.name === appName,
-				)
-			: undefined;
+		// The loopback daemon's; a Tailscale-served app has only its URL.
+		const namedHost =
+			ctx.hosts?.active && ctx.hosts.mode === "loopback"
+				? ctx.hosts.plan.find(
+						(host) => host.kind === "app" && host.name === appName,
+					)
+				: undefined;
 		if (namedHost) {
 			processEnv.BUNCARGO_APP_HOSTNAME = namedHost.hostname;
 			processEnv.BUNCARGO_HOSTS_PORT = String(hostsDaemonPort());
@@ -232,8 +250,7 @@ export function createEnvVarsApi<
 		const resolved = resolveScope(scope, config.secrets);
 		if (!resolved) return {};
 		try {
-			const values = await loadScopeSecrets(scope, {
-				defaults: config.secrets,
+			const values = await loadScopeSecrets(resolved, {
 				signal: options.signal,
 				onWait: (ms) => ctx.onSecretsWait?.(ms),
 			});
@@ -254,6 +271,7 @@ export function createEnvVarsApi<
 	async function exec(
 		cmd: string | readonly string[],
 		options?: ExecOptions,
+		production = false,
 	): Promise<ExecResult> {
 		if (options?.app !== undefined && !apps[options.app]) {
 			throw new Error(`Unknown app "${options.app}"`);
@@ -261,8 +279,11 @@ export function createEnvVarsApi<
 
 		const computed: Record<string, string> =
 			options?.app === undefined
-				? buildEnvVars()
-				: buildAppEnvVars(options.app as Extract<keyof TApps, string>);
+				? buildEnvVars(production)
+				: buildAppEnvVars(
+						options.app as Extract<keyof TApps, string>,
+						production,
+					);
 		// Beneath the computed env and anything passed explicitly, like an app's.
 		const secrets = await resolveSecrets(options?.secrets, {
 			app: options?.app,
@@ -288,11 +309,11 @@ export function createEnvVarsApi<
 
 	function getHookContext(
 		signal?: AbortSignal,
-		selection?: { appNames: string[]; requiredServiceKeys: string[] },
+		selection: StartSelection | undefined = ctx.selection,
 	): HookContext<TServices, TApps> {
 		if (selection) {
 			return {
-				...getHookContext(signal),
+				...scopedHookContext(signal),
 				selectedApps: selection.appNames as Extract<keyof TApps, string>[],
 				selectedServices: selection.requiredServiceKeys as Extract<
 					keyof TServices,
@@ -300,7 +321,12 @@ export function createEnvVarsApi<
 				>[],
 			};
 		}
+		return scopedHookContext(signal);
+	}
 
+	function scopedHookContext(
+		signal?: AbortSignal,
+	): HookContext<TServices, TApps> {
 		if (!hookContext) {
 			hookContext = {
 				selectedApps: Object.keys(apps) as Extract<keyof TApps, string>[],

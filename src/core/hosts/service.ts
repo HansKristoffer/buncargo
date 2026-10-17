@@ -1,7 +1,12 @@
 import { existsSync, rmSync } from "node:fs";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "../registry-file";
 import {
-	buncargoVersion,
+	chownToInvokingUser,
+	type InvokingUser,
+	invokingUserIdentity,
+} from "../state-paths";
+import { requireBuncargoPackage } from "../version";
+import {
 	currentDaemonBundleHash,
 	HOSTS_DAEMON_DIR,
 	hashDaemonBundle,
@@ -10,12 +15,7 @@ import {
 	readDaemonBundleSource,
 	supersededBundles,
 } from "./daemon-bundle";
-import {
-	chownToInvokingUser,
-	getServiceManifestPath,
-	type InvokingUser,
-	invokingUserIdentity,
-} from "./paths";
+import { getServiceManifestPath } from "./paths";
 import { type PrivilegedRunner, systemPrivilegedRunner } from "./privileged";
 import {
 	buildLaunchdPlist,
@@ -86,7 +86,7 @@ export function toHostsUserMessage(error: unknown): string {
  * it so a Bun that later moves is reported as stale rather than failing
  * silently.
  */
-export function resolveHostsDaemonCommand(version = buncargoVersion()): {
+export function resolveHostsDaemonCommand(version: string): {
 	program: string;
 	args: string[];
 } {
@@ -218,7 +218,7 @@ export function describeStaleHostsService(): string | undefined {
 	return describeStaleService({
 		installed: isHostsServiceInstalled(),
 		manifest: readHostsServiceManifest(),
-		expectedBundle: hostsDaemonBundlePath(buncargoVersion()),
+		expectedBundle: hostsDaemonBundlePath(requireBuncargoPackage().version),
 		expectedBundleHash: currentDaemonBundleHash(),
 	});
 }
@@ -226,10 +226,6 @@ export function describeStaleHostsService(): string | undefined {
 /** Matches launchd's own SIGTERM-to-SIGKILL escalation for a wedged job. */
 const UNLOAD_TIMEOUT_MS = 20_000;
 const UNLOAD_POLL_MS = 100;
-
-function sleepSync(ms: number): void {
-	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
 
 function isLaunchdJobLoaded(runner: PrivilegedRunner): boolean {
 	try {
@@ -252,7 +248,7 @@ function waitForLaunchdUnload(runner: PrivilegedRunner): void {
 	const deadline = Date.now() + UNLOAD_TIMEOUT_MS;
 	while (isLaunchdJobLoaded(runner)) {
 		if (Date.now() >= deadline) return;
-		sleepSync(UNLOAD_POLL_MS);
+		Bun.sleepSync(UNLOAD_POLL_MS);
 	}
 }
 

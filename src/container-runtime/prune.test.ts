@@ -51,6 +51,7 @@ describe("planVolumePrune", () => {
 			],
 			containers: [container("running")],
 			runs: [run("held", { releasedAt: "2026-09-22T10:00:00.000Z" })],
+			checkouts: [],
 		});
 		expect(
 			reports.map((report) => [report.volume.name, report.verdict.kind]),
@@ -63,17 +64,20 @@ describe("planVolumePrune", () => {
 		expect(orphanedVolumes(reports)).toEqual(["gone_data"]);
 	});
 
-	it("keeps a stopped project's volume, because `dev --down` is not `delete my database`", () => {
+	it("keeps an idle checkout's volume, because `dev --down` is not `delete my database`", () => {
 		// Containers removed and the entry retired: the checkout is still
 		// there and its data has to survive until somebody says otherwise.
 		const reports = planVolumePrune({
 			volumes: [volume("myapp_postgres_data", "myapp")],
 			containers: [],
 			runs: [],
+			checkouts: [{ projectName: "myapp", root: "/repo" }],
 		});
-		// Nothing mentions it, so it is proposed — and only proposed. The
-		// command confirms before removing, which is the whole safety story.
-		expect(orphanedVolumes(reports)).toEqual(["myapp_postgres_data"]);
+		expect(reports[0]?.verdict).toEqual({
+			kind: "in-use",
+			reason: "its checkout /repo still exists",
+		});
+		expect(orphanedVolumes(reports)).toEqual([]);
 	});
 
 	it("never proposes a volume the runtime would not attribute", () => {
@@ -81,6 +85,7 @@ describe("planVolumePrune", () => {
 			volumes: [volume("apple-volume-with-dashes")],
 			containers: [],
 			runs: [],
+			checkouts: [],
 		});
 		expect(reports[0]?.verdict.kind).toBe("unattributed");
 		expect(orphanedVolumes(reports)).toEqual([]);

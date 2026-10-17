@@ -101,7 +101,7 @@ interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	 * Set false to skip this app, including startup prefetch.
 	 */
 	secrets?: SecretsScopeConfig | false;
-	/** Own the TTY (stdin). Only one app may be interactive. Ignored by the TUI. */
+	/** Own the TTY (stdin) with `--no-tui`. Only one app may be interactive. Ignored by the TUI. */
 	interactive?: boolean;
 	/**
 	 * Whether the run ends when this app exits. Default: true. With `false` the

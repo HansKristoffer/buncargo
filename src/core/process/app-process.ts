@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AppConfig } from "../../types";
 import { childProcessEnv } from "../child-env";
+import { registerAbortCleanup } from "../deadline";
 import { shellQuote } from "../shell-quote";
 import { recordStartupMetric } from "../startup-metrics";
 import { type AppChild, PtyApp } from "./pty-app";
@@ -187,7 +188,7 @@ export async function runPrebuild(
 	config: AppConfig,
 	root: string,
 	envVars: Record<string, string>,
-	options: { signal: AbortSignal; output: RunOutput },
+	options: { signal: AbortSignal; output: RunOutput; graceMs?: number },
 ): Promise<void> {
 	const command = config.prebuild;
 	if (!command) return;
@@ -199,7 +200,12 @@ export async function runPrebuild(
 	options.output.pipe(name, child.stdout);
 	options.output.pipe(name, child.stderr);
 
-	const onAbort = () => void terminateOwnedProcess(child);
+	// Cancelled once the build has exited: whoever awaits the abort waits for it.
+	const onAbort = () =>
+		registerAbortCleanup(
+			options.signal,
+			terminateOwnedProcess(child, options.graceMs),
+		);
 	options.signal.addEventListener("abort", onAbort, { once: true });
 	try {
 		const code = await new Promise<number | null>((resolvePromise, reject) => {

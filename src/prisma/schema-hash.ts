@@ -60,3 +60,17 @@ export function recordGeneratedPrismaHash(
 		// Not worth failing a start over.
 	}
 }
+
+/**
+ * Run `prisma.generate` through `run` and, when it succeeds, record the
+ * schema it generated from. `cwd` is the Prisma directory, relative to `root`.
+ */
+export async function generatePrismaClient(
+	root: string,
+	cwd: string,
+	run: () => Promise<{ exitCode: number }>,
+): Promise<number> {
+	const { exitCode } = await run();
+	if (exitCode === 0) recordGeneratedPrismaHash(root, join(root, cwd));
+	return exitCode;
+}

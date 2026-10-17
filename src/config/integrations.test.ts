@@ -185,8 +185,15 @@ describe("expo()", () => {
 				mobile: { port: 8081, devCommand: "bunx expo start" },
 			},
 		});
-		expect(integration.appOptions("mobile")).toEqual({});
-		expect(integration.appOptions("api")).toBeUndefined();
+		const app = (name: string) => ({
+			name,
+			config: { port: 8081, devCommand: "bunx expo start" },
+			port: 8181,
+			root: "/nonexistent",
+			workspaceId: "ws-1",
+		});
+		expect(integration.appEnv?.(app("mobile"))).toBeDefined();
+		expect(integration.appEnv?.(app("api"))).toBeUndefined();
 	});
 
 	it("rejects an app that is not configured", () => {

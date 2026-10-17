@@ -1,6 +1,17 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import {
+	chmodSync,
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { isContainerUp } from "./inventory";
 import {
+	containerRuntimeCandidates,
 	containerRuntimeForEnv,
 	resolveContainerRuntime,
 	resolveContainerRuntimeBinary,
@@ -123,6 +134,61 @@ describe("resolveContainerRuntimeBinary", () => {
 				env: { BUNCARGO_CONTAINER_BINARY: "/nope/docker" },
 			}),
 		).toBe("/usr/local/bin/docker");
+	});
+});
+
+describe("containerRuntimeCandidates", () => {
+	const roots: string[] = [];
+	afterEach(() => {
+		for (const root of roots.splice(0))
+			rmSync(root, { recursive: true, force: true });
+	});
+
+	function recordingBinary() {
+		const root = mkdtempSync(join(tmpdir(), "buncargo-runtime-binary-"));
+		roots.push(root);
+		const binary = join(root, "container");
+		const log = join(root, "calls.log");
+		writeFileSync(binary, `#!/bin/sh\necho "$@" >> '${log}'\nexit 1\n`);
+		chmodSync(binary, 0o700);
+		return {
+			binary,
+			calls: () => (existsSync(log) ? readFileSync(log, "utf8") : ""),
+		};
+	}
+
+	/** What the Docker candidate executed while listing. */
+	function dockerListCalls(env: NodeJS.ProcessEnv, calls: () => string) {
+		const docker = containerRuntimeCandidates({ env }).find(
+			(adapter) => adapter.name === "docker",
+		);
+		expect(docker).toBeDefined();
+		try {
+			docker?.list();
+		} catch {
+			// Both stubs fail; only which binary ran matters here.
+		}
+		return calls();
+	}
+
+	it("gives the environment's binary only to the runtime the environment names", () => {
+		const { binary, calls } = recordingBinary();
+		expect(
+			dockerListCalls(
+				{
+					BUNCARGO_CONTAINER_RUNTIME: "apple",
+					BUNCARGO_CONTAINER_BINARY: binary,
+				},
+				calls,
+			),
+		).toBe("");
+	});
+
+	it("gives it to Docker when the environment names no runtime", () => {
+		const { binary, calls } = recordingBinary();
+		expect(
+			dockerListCalls({ BUNCARGO_CONTAINER_BINARY: binary }, calls),
+		).not.toBe("");
 	});
 });
 

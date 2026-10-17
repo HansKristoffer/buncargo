@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
 	chmodSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -8,7 +9,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stopContainers } from "./lifecycle";
+import { dockerRuntimeAdapter } from "./adapter";
+import { startContainers, stopContainers } from "./lifecycle";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -17,7 +19,9 @@ afterEach(() => {
 });
 
 /** A `docker` that answers every command with success and records its argv. */
-function fakeDocker(options: { downStderr?: string } = {}) {
+function fakeDocker(
+	options: { downStderr?: string; upStderr?: string; psStdout?: string } = {},
+) {
 	const dir = mkdtempSync(join(tmpdir(), "buncargo docker down "));
 	roots.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -30,9 +34,15 @@ import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
 if (args[0] === 'version') console.log('27.5.1');
+if (args[0] === 'ps') console.log(${JSON.stringify(options.psStdout ?? "")});
 const downStderr = ${JSON.stringify(options.downStderr ?? "")};
 if (downStderr && args.includes('down')) {
   process.stderr.write(downStderr);
+  process.exit(1);
+}
+const upStderr = ${JSON.stringify(options.upStderr ?? "")};
+if (upStderr && args.includes('up')) {
+  process.stderr.write(upStderr);
   process.exit(1);
 }
 `,
@@ -61,10 +71,55 @@ describe("stopContainers", () => {
 		await stopContainers(gone, "demo", {
 			binary,
 			composeFile: join(gone, ".buncargo", "compose.yml"),
-			removeVolumes: true,
 			verbose: false,
 		});
 		expect(calls().at(-1)).toEqual(["compose", "-p", "demo", "down"]);
+	});
+
+	it("fails when it could not name the volumes it was asked to remove", async () => {
+		const { dir, binary, calls } = fakeDocker();
+		const gone = join(dir, "deleted-worktree");
+		await expect(
+			stopContainers(gone, "demo", {
+				binary,
+				composeFile: ".buncargo/compose.yml",
+				removeVolumes: true,
+				verbose: false,
+			}),
+		).rejects.toThrow(/Removed demo's containers but kept its volumes/);
+		// The containers still come down.
+		expect(calls().at(-1)).toEqual(["compose", "-p", "demo", "down"]);
+	});
+
+	it("finds a compose file relative to the checkout from any working directory", async () => {
+		const { dir, binary, calls } = fakeDocker();
+		mkdirSync(join(dir, ".buncargo"));
+		writeFileSync(join(dir, ".buncargo", "compose.yml"), "services: {}\n");
+		const elsewhere = join(dir, "apps", "platform");
+		mkdirSync(elsewhere, { recursive: true });
+
+		const cwd = process.cwd();
+		process.chdir(elsewhere);
+		try {
+			await stopContainers(dir, "demo", {
+				binary,
+				composeFile: ".buncargo/compose.yml",
+				removeVolumes: true,
+				verbose: false,
+			});
+		} finally {
+			process.chdir(cwd);
+		}
+
+		expect(calls().at(-1)).toEqual([
+			"compose",
+			"-f",
+			".buncargo/compose.yml",
+			"-p",
+			"demo",
+			"down",
+			"-v",
+		]);
 	});
 
 	it("hands compose the file, and the volumes flag, while the checkout exists", async () => {
@@ -101,6 +156,23 @@ describe("stopContainers", () => {
 		expect(calls()).toEqual([["compose", "-p", "demo", "down"]]);
 	});
 
+	it("refuses to report volumes removed while the daemon is stopped", async () => {
+		const { dir, binary } = fakeDocker({
+			downStderr:
+				"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+		});
+		const composeFile = join(dir, "compose.yml");
+		writeFileSync(composeFile, "services: {}\n");
+		await expect(
+			stopContainers(dir, "demo", {
+				binary,
+				composeFile,
+				removeVolumes: true,
+				verbose: false,
+			}),
+		).rejects.toThrow(/volumes of demo were not removed/);
+	});
+
 	it("names the missing Compose plugin instead of passing Docker's words on", async () => {
 		const { dir, binary } = fakeDocker({
 			downStderr: "docker: 'compose' is not a docker command.",
@@ -115,5 +187,51 @@ describe("stopContainers", () => {
 		await expect(
 			stopContainers(dir, "demo", { binary, verbose: false }),
 		).rejects.toThrow(/permission denied/);
+	});
+});
+
+describe("startContainers", () => {
+	it("names the missing Compose plugin instead of passing Docker's words on", async () => {
+		const { dir, binary } = fakeDocker({
+			upStderr: "docker: 'compose' is not a docker command.",
+		});
+		await expect(
+			startContainers(dir, "demo", {}, { binary, verbose: false }),
+		).rejects.toThrow(/Docker Compose is not available to this process/);
+	});
+
+	it("names the container holding a port, asking the same docker that failed", async () => {
+		const port = 47913;
+		const { dir, binary } = fakeDocker({
+			upStderr: `Bind for 0.0.0.0:${port} failed: port is already allocated`,
+			psStdout: `abc123\tother-postgres-1\t0.0.0.0:${port}->5432/tcp\tother`,
+		});
+		await expect(
+			startContainers(dir, "demo", {}, { binary, verbose: false }),
+		).rejects.toThrow(
+			`port ${port} held by container other-postgres-1 (project other)`,
+		);
+	});
+
+	// Readiness is polled against the published ports afterwards, on both
+	// backends; Compose's own `--wait` would only make `up` slower.
+	it("starts the adapter's services without Compose's --wait", async () => {
+		const { dir, binary, calls } = fakeDocker();
+		await dockerRuntimeAdapter({ binary }).up({
+			root: dir,
+			projectName: "demo",
+			envVars: {},
+			model: { services: {} },
+			serviceNames: ["postgres"],
+			verbose: false,
+		});
+		expect(calls().at(-1)).toEqual([
+			"compose",
+			"-p",
+			"demo",
+			"up",
+			"-d",
+			"postgres",
+		]);
 	});
 });

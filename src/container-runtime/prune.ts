@@ -10,15 +10,15 @@
  * nothing else — buncargo cannot add a label of its own, because Compose
  * compares a volume against the file and offers to recreate it, which is the
  * data loss this exists to prevent. So the checkout a volume belongs to is
- * unknowable, and the strongest honest statement is "no container and no run
- * mentions this project".
+ * unknowable, and the strongest honest statement is "no container, no run and
+ * no existing checkout mentions this project".
  */
 
 import type { RunEntry } from "../core/run-registry";
 import type { BuncargoContainer, BuncargoVolume } from "../types";
 
 export type VolumeVerdict =
-	/** A container or a run still refers to this project. */
+	/** A container, a run or an existing checkout still refers to this project. */
 	| { kind: "in-use"; reason: string }
 	/** Nothing on this machine refers to it. */
 	| { kind: "orphaned" }
@@ -34,21 +34,29 @@ export interface PruneInput {
 	volumes: readonly BuncargoVolume[];
 	containers: readonly BuncargoContainer[];
 	runs: readonly RunEntry[];
+	/**
+	 * The checkouts that still exist, by the project their dev stack uses
+	 * (their port claims in `offsets.json`).
+	 */
+	checkouts: readonly { projectName: string; root: string }[];
 }
 
 /**
  * Classify every volume. Pure, so the rule is testable without a daemon.
  *
- * A project that merely stopped still counts as in use: `dev --down` removes
- * containers and retires the entry, and its database has to survive that.
- * Only a project nothing mentions at all is proposed, and even then the
- * caller confirms.
+ * A project that merely stopped still counts as in use while its checkout
+ * exists: `dev --down` removes containers and retires the entry, and its
+ * database has to survive that. Only a project nothing mentions at all is
+ * proposed, and even then the caller confirms.
  */
 export function planVolumePrune(input: PruneInput): VolumeReport[] {
 	const withContainers = new Set(
 		input.containers.map((container) => container.project),
 	);
 	const withRuns = new Set(input.runs.map((run) => run.projectName));
+	const checkoutRoots = new Map(
+		input.checkouts.map((checkout) => [checkout.projectName, checkout.root]),
+	);
 
 	return input.volumes.map((volume) => {
 		if (!volume.project) return { volume, verdict: { kind: "unattributed" } };
@@ -61,6 +69,15 @@ export function planVolumePrune(input: PruneInput): VolumeReport[] {
 			return {
 				volume,
 				verdict: { kind: "in-use", reason: "its project has a run on record" },
+			};
+		const root = checkoutRoots.get(volume.project);
+		if (root)
+			return {
+				volume,
+				verdict: {
+					kind: "in-use",
+					reason: `its checkout ${root} still exists`,
+				},
 			};
 		return { volume, verdict: { kind: "orphaned" } };
 	});

@@ -21,14 +21,17 @@ warns once and continues.
   `select-organization`, and the scoped token stays in memory so the CLI's own session is never
   switched.
 - The secrets are listed over HTTP (v4, imports beneath the folder's own values).
-- A universal-auth identity replaces the CLI for commands (`infisicalMachineCredentials` in
-  `runtime-flags.ts`). App processes still skip the fetch under a machine identity, because their
-  own loaders authenticate without the CLI.
+- A universal-auth identity (`infisicalMachineCredentials` in `runtime-flags.ts`, else the
+  identity file) replaces the CLI for apps and commands alike, sharing the per-scope cache.
 
 ## Where they go
 
 - `process/dev-servers.ts` injects app scopes in `startDevServers`, the one function both spawn
   paths reach, and refuses to spawn when a `secrets.required` key is missing everywhere.
+  `environment/server-session.ts` runs the same check (`loadStartSecrets`) first, so the refusal
+  comes before a production build or `beforeServers`; the second one reads the cache.
+  `buncargo secrets ls` judges the listed scope with the same `missingKeys` over the same layers,
+  computed env included, so it never disagrees with `dev` about what is missing.
 - `environment/env-vars.ts` `resolveSecrets` gives `exec` (and so migrations, hooks and tasks), the
   seed and prisma their scope: explicit, else the app's, else the config-level one, always beneath
   `process.env` and the computed env.

@@ -40,7 +40,11 @@ the services one provides.
   the Compose model (`buildComposeModel` skips them; `environment/stacks.ts` splits them out).
 - Selecting one of a stack's services selects all of them (`resolveServiceDependencies`), because
   one CLI starts them together.
-- `lifecycle.ts` runs `stack.up` beside `compose up`, and `stop()` runs every stack's `down` argv.
+- `lifecycle.ts` runs `stack.up` beside `compose up`, and `stop()` runs every stack's `down` argv,
+  both under the project lifecycle lock like Compose: otherwise a sweep's `supabase stop` could
+  finish just after a new run's `supabase start` returned against the still-running stack. A first
+  `supabase start` can hold that lock for minutes; `stop` and a second run in the checkout wait up
+  to 120s for it, and the sweep skips the project that pass.
 - The claim records that argv in the run entry's `stacks` (and gives external services `stack`
   instead of `container`), so the sweep can stop a released stack after its hold with no config:
   `sweepStacks` decides with the same `decideSweep`, counting the stack as running (its containers

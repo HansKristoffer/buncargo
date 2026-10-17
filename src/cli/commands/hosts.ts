@@ -1,6 +1,7 @@
 import {
 	describeLoopbackHijack,
 	loadHostRoutes,
+	OUTDATED_DAEMON_MESSAGE,
 	pruneHostRoutes,
 	RELOAD_STALL_MS,
 	readDaemonConfig,
@@ -21,6 +22,12 @@ import {
 	readHostsServiceManifest,
 } from "../../core/hosts/service";
 import { describePortSquatter } from "../../core/hosts/squatter";
+import {
+	describeTailscaleServeEntries,
+	sweepTailscaleServe,
+	tailscaleServeDeps,
+} from "../../core/hosts/tailscale-serve";
+import { hostsMode } from "../../core/runtime-flags";
 import * as log from "../log";
 import { hostsSubcommandList, resolveHostsSubcommand } from "./registry";
 
@@ -60,6 +67,9 @@ export async function handleHosts(args: string[]): Promise<void> {
 			const after = await pruneHostRoutes();
 			const removed = before - after.length;
 			log.done(`Pruned ${removed} stale route${removed === 1 ? "" : "s"}`);
+			const serve = await sweepTailscaleServe(tailscaleServeDeps());
+			for (const line of serve.removed) log.done(line);
+			for (const line of serve.failures) log.warn(line);
 			return;
 		}
 		case "daemon":
@@ -73,12 +83,22 @@ export async function handleHosts(args: string[]): Promise<void> {
 }
 
 async function printHostsStatus(): Promise<void> {
+	const mode = hostsMode();
+	log.line(`mode: ${mode}`);
+	if (mode === "tailscale") {
+		await printTailscaleStatus();
+		return;
+	}
 	const config = readDaemonConfig();
 	const health = await readHostsDaemonHealth(config.httpsPort);
 	const healthy = health !== undefined;
 	const mkcertPath = resolvedMkcertPath();
-	log.line(`daemon: ${healthy ? "healthy" : "down"}`);
-	if (health?.lastReloadAt !== undefined) {
+	log.line(
+		`daemon: ${!health ? "down" : health.outdated ? "outdated" : "healthy"}`,
+	);
+	if (health?.outdated) {
+		log.line(`  ${OUTDATED_DAEMON_MESSAGE}`);
+	} else if (health) {
 		const ageMs = Date.now() - health.lastReloadAt;
 		const stale = ageMs > RELOAD_STALL_MS ? "  (stale)" : "";
 		log.line(`  refreshed: ${Math.round(ageMs / 1000)}s ago${stale}`);
@@ -118,7 +138,8 @@ async function printHostsStatus(): Promise<void> {
 	// Marked per route rather than summarized: the registry and the daemon
 	// disagreeing is invisible from either side alone, and it is the difference
 	// between a working named URL and a 404 from our own proxy.
-	const served = health?.hostnames ? new Set(health.hostnames) : undefined;
+	const served =
+		health && !health.outdated ? new Set(health.hostnames) : undefined;
 	for (const route of routes) {
 		const owner = route.pid === undefined ? "static" : `pid ${route.pid}`;
 		const unserved =
@@ -129,4 +150,13 @@ async function printHostsStatus(): Promise<void> {
 			`  ${route.hostname} → :${route.port}  (${route.kind}:${route.name}, ${owner})${unserved}`,
 		);
 	}
+}
+
+/** Tailscale mode: every serve entry buncargo recorded, and whether Tailscale still has it. */
+async function printTailscaleStatus(): Promise<void> {
+	const entries = await describeTailscaleServeEntries(tailscaleServeDeps());
+	log.line();
+	log.line("tailscale serve:");
+	if (entries.length === 0) log.line("  (none)");
+	for (const entry of entries) log.line(`  ${entry}`);
 }

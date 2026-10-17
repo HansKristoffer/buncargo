@@ -1,5 +1,6 @@
-import { describe, expect, it } from "bun:test";
-import { repairStaleService } from "./onboarding";
+import { afterEach, describe, expect, it } from "bun:test";
+import { claimFirstRunPrompt, resetFirstRunPrompt } from "../prompt";
+import { promptFirstRun, repairStaleService } from "./onboarding";
 
 const REASON =
 	"Named-hosts service runs hostsd-6.1.1.js, but this buncargo installs hostsd-7.1.0.js. Run `buncargo hosts install` to update it.";
@@ -63,5 +64,26 @@ describe("repairStaleService", () => {
 		});
 		expect(result.ok).toBe(true);
 		expect(result.ok && result.notes).toEqual(["sudo: a password is required"]);
+	});
+});
+
+describe("promptFirstRun", () => {
+	afterEach(resetFirstRunPrompt);
+
+	// One first-run question per run: the menu bar offer comes next in `dev`.
+	it("takes the run's first-run prompt slot when it asks", async () => {
+		expect(await promptFirstRun(async () => "decline")).toBe("decline");
+		expect(claimFirstRunPrompt()).toBe(false);
+	});
+
+	it("skips without asking when another prompt already took the slot", async () => {
+		claimFirstRunPrompt();
+		let asked = false;
+		const choice = await promptFirstRun(async () => {
+			asked = true;
+			return "setup";
+		});
+		expect(choice).toBe("skip");
+		expect(asked).toBe(false);
 	});
 });

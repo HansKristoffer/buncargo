@@ -1,8 +1,14 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { formatPortOwner, getPortOwner } from "../core/process";
-import { formatDone, formatStep, formatWarn } from "../core/style";
-import { type DockerRunResult, runDockerAsync } from "./binary";
+import { formatDone, formatStep } from "../core/style";
+import { dockerRuntimeAdapter } from "./adapter";
+import {
+	DEFAULT_DOCKER_BINARY,
+	type DockerRunResult,
+	runDockerAsync,
+} from "./binary";
 import { getComposeArgs } from "./compose-command";
 import { isDockerDaemonRunning } from "./preflight";
 
@@ -38,7 +44,7 @@ function isDaemonDownMessage(message: string): boolean {
  *
  * Docker Desktop installs Compose under `~/.docker/cli-plugins`, found through
  * `HOME`, so a process started with a different `HOME` has Docker but not
- * Compose. Every teardown then fails the same way, and a raw "not a docker
+ * Compose. Every `up` and teardown then fails the same way, and a raw "not a docker
  * command" says nothing about why.
  */
 function isComposeMissingMessage(message: string): boolean {
@@ -49,20 +55,29 @@ const COMPOSE_MISSING =
 	"Docker Compose is not available to this process. Docker Desktop provides it through ~/.docker/cli-plugins, which is found through HOME; run buncargo with your usual HOME, or install the compose plugin system-wide.";
 
 /**
- * Turn compose's "port is already allocated" into a message naming the owner.
+ * Turn compose's failure into one that says what to do: a missing Compose
+ * plugin, or "port is already allocated" naming the owner.
  *
  * Only reachable with a captured stderr, which means the quiet path; a verbose
  * run streamed compose's own output to the terminal already.
  */
-function translateComposeFailure(result: DockerRunResult): never {
+function translateComposeFailure(
+	result: DockerRunResult,
+	binary: string | undefined,
+): never {
 	const message = result.stderr.trim();
+	if (isComposeMissingMessage(message)) throw new Error(COMPOSE_MISSING);
 	const allocated =
 		message.match(/Bind for .+:(\d+) failed: port is already allocated/i) ??
 		message.match(/address already in use/i);
 	const portMatch = message.match(/:(\d{2,5})/);
 	if (allocated && portMatch?.[1]) {
 		const port = Number.parseInt(portMatch[1], 10);
-		const owner = getPortOwner(port);
+		// Asked of the same `docker` that failed, so a pinned binary's container
+		// is found rather than one on whatever `docker` PATH names.
+		const owner = getPortOwner(port, {
+			runtime: dockerRuntimeAdapter({ binary }),
+		});
 		throw new Error(formatPortOwner(port, owner ?? { pids: [] }));
 	}
 	throw new Error(
@@ -105,7 +120,7 @@ export async function startContainers(
 			timeoutMs,
 		},
 	);
-	if (!result.ok) translateComposeFailure(result);
+	if (!result.ok) translateComposeFailure(result, binary);
 	if (verbose) console.log(formatDone("Containers started"));
 }
 
@@ -115,7 +130,8 @@ export async function startContainers(
  * Compose finds them by the project label, so the compose file is only needed
  * to name the volumes `removeVolumes` deletes, and the checkout only to host
  * that file. A stack whose worktree was deleted must still come down, which is
- * why neither is required here.
+ * why neither is required here; `removeVolumes` without the file still brings
+ * the containers down, then fails, because the volumes stay.
  */
 export async function stopContainers(
 	root: string,
@@ -132,14 +148,11 @@ export async function stopContainers(
 	} = options;
 	if (verbose) console.log(formatStep("🛑 Stopping containers..."));
 
-	const file = composeFile && existsSync(composeFile) ? composeFile : undefined;
-	if (removeVolumes && !file) {
-		console.warn(
-			formatWarn(
-				"No compose file to name the volumes; containers were removed and volumes left in place.",
-			),
-		);
-	}
+	// `composeFile` is relative to the checkout, as compose reads it from
+	// `cwd: root` below; the caller's own cwd can be anywhere (an E2E runner
+	// that changed into a package kept every volume it meant to reset).
+	const composePath = composeFile ? resolve(root, composeFile) : undefined;
+	const file = composePath && existsSync(composePath) ? composeFile : undefined;
 	const result = await runDockerAsync(
 		binary,
 		[
@@ -165,13 +178,28 @@ export async function stopContainers(
 			? isDaemonDownMessage(result.stderr)
 			: !isDockerDaemonRunning(binary);
 		if (daemonDown) {
+			// A reset that silently kept the volumes would not be one.
+			if (removeVolumes)
+				throw new Error(
+					`Docker is not running, so the volumes of ${projectName} were not removed. Start Docker, then run again.`,
+				);
 			if (verbose)
 				console.log(formatStep("ℹ Docker is not running. Nothing to stop."));
 			return;
 		}
-		if (isComposeMissingMessage(result.stderr))
-			throw new Error(COMPOSE_MISSING);
-		translateComposeFailure(result);
+		translateComposeFailure(result, binary);
+	}
+
+	// A reset that kept the database is not one: the next run reads stale data.
+	if (removeVolumes && !file) {
+		const where = composePath
+			? `no compose file at ${composePath}`
+			: "no compose file was given";
+		const docker = binary ?? DEFAULT_DOCKER_BINARY;
+		const remove = `${docker} volume rm $(${docker} volume ls -q --filter label=com.docker.compose.project=${projectName})`;
+		throw new Error(
+			`Removed ${projectName}'s containers but kept its volumes: ${where} to name them. Remove them with \`${remove}\`, or start the environment once so it writes the file, then stop it again.`,
+		);
 	}
 	if (verbose) console.log(formatDone("Containers stopped"));
 }

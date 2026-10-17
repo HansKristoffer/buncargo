@@ -13,7 +13,7 @@ import {
 const plain = (text: string) => Bun.stripANSI(text);
 
 describe("RunOutput", () => {
-	it("writes plain lines and run events to the app's log file", () => {
+	it("writes plain lines and run events to the app's log file", async () => {
 		const root = mkdtempSync(join(tmpdir(), "buncargo-run-output-"));
 		try {
 			const logs = new AppLogs(root, "session-1234");
@@ -21,13 +21,34 @@ describe("RunOutput", () => {
 			output.line("api", "\u001b[32mlistening\u001b[0m on 3000");
 			output.line("api", "   ");
 			output.state("api", { state: "failed", detail: "exit 1" });
-			output.close();
+			await output.close();
 			const lines = readFileSync(logs.file("api"), "utf8").trim().split("\n");
 			expect(lines.map((line) => line.slice(25))).toEqual([
 				"listening on 3000",
 				"[buncargo] failed (exit 1)",
 			]);
 			expect(listRunLogDirs(root)).toEqual([logs.dir]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("prints and logs an app's last words on close", async () => {
+		const root = mkdtempSync(join(tmpdir(), "buncargo-run-output-close-"));
+		try {
+			const logs = new AppLogs(root, "session-close");
+			const output = new RunOutput(logs);
+			let printed = "";
+			printStream(output, {
+				width: 3,
+				write: (text) => {
+					printed += text;
+				},
+			});
+			output.screen("api").write("a\r\nlast");
+			await output.close();
+			expect(plain(printed)).toContain("last");
+			expect(readFileSync(logs.file("api"), "utf8")).toContain("last");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

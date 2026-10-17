@@ -1,4 +1,4 @@
-import { isAbsolute, normalize } from "node:path";
+import { isAbsolute } from "node:path";
 import {
 	CONTAINER_RUNTIME_SELECTIONS,
 	isContainerRuntimeSelection,
@@ -10,7 +10,7 @@ export function validateRuntimeOptions(
 	config: AnyDevConfig,
 	context: ValidationContext,
 ): void {
-	const { errors } = context;
+	const { errors, checkRelativePath } = context;
 	if (config.docker?.writeStrategy) {
 		const writeStrategy = config.docker.writeStrategy;
 		if (writeStrategy !== "always" && writeStrategy !== "if-missing") {
@@ -41,19 +41,5 @@ export function validateRuntimeOptions(
 		);
 	}
 
-	if (config.docker?.generatedFile) {
-		const generatedFile = config.docker.generatedFile;
-		if (isAbsolute(generatedFile)) {
-			errors.push(
-				"docker.generatedFile must be a relative path inside the repo.",
-			);
-		}
-
-		const normalized = normalize(generatedFile).replace(/\\/g, "/");
-		if (normalized === ".." || normalized.startsWith("../")) {
-			errors.push(
-				"docker.generatedFile cannot point outside the repository root.",
-			);
-		}
-	}
+	checkRelativePath("docker.generatedFile", config.docker?.generatedFile);
 }

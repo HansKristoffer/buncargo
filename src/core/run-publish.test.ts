@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
 	chmodSync,
 	mkdirSync,
@@ -9,9 +9,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readProcessIdentity } from "../core/process-identity";
-import { loadRuns, readLiveRuns, releaseRun } from "../core/run-registry";
-import { handleStop, stopService } from "./commands/stop";
+import { handleStop, stopService } from "../cli/commands/stop";
+import { parseStopArgs } from "../cli/stop-flags";
+import * as identities from "./process-identity";
+import { readProcessIdentity } from "./process-identity";
 import {
 	flushRunPatches,
 	markApps,
@@ -22,7 +23,7 @@ import {
 	recordAppSpawn,
 	recordAppUrls,
 } from "./run-publish";
-import { parseStopArgs } from "./stop-flags";
+import { loadRuns, readLiveRuns, releaseRun } from "./run-registry";
 
 let root: string;
 let savedHome: string | undefined;
@@ -125,6 +126,42 @@ describe("published run ownership", () => {
 		expect(entry.captures).toEqual({ first: "a", second: "b" });
 	});
 
+	it("records a Tailscale-served app's https URL as its URL, hostname and what open opens", async () => {
+		const served = "https://box.tail1234.ts.net:23000";
+		const env: RunSource = {
+			...source("tailscale"),
+			urls: { web: served, db: "postgresql://localhost:5432/db" },
+			loopbackUrls: { web: "http://localhost:3000" },
+			hosts: {
+				active: true,
+				tld: "localhost",
+				mode: "tailscale",
+				tailscaleUrls: { web: served },
+				plan: [
+					{
+						kind: "app",
+						name: "web",
+						hostname: "fixture.localhost",
+						baseHostname: "fixture.localhost",
+						targetPort: 3000,
+					},
+				],
+			},
+		};
+		const run = await publishCurrentRun(env, {
+			apps: { web: { port: 3000, devCommand: "bun dev" } },
+			serviceNames: ["db"],
+		});
+		expect(run?.apps[0]).toMatchObject({
+			url: served,
+			loopbackUrl: "http://localhost:3000",
+			openUrl: served,
+			hostname: "box.tail1234.ts.net",
+		});
+		// Services are not served: BuncargoBar opens them on loopback.
+		expect(run?.services[0]?.hostname).toBeUndefined();
+	});
+
 	it("records an app's tunnel as what open opens once the tunnel exists", async () => {
 		const env = source("tunnel-urls");
 		await publishCurrentRun(env, {
@@ -206,7 +243,7 @@ describe("published run ownership", () => {
 			serviceNames: [],
 		});
 		if (!run) throw new Error("run not published");
-		const { patchRun } = await import("../core/run-registry");
+		const { patchRun } = await import("./run-registry");
 		await patchRun(run.sessionId, {
 			apps: [
 				{
@@ -247,6 +284,37 @@ describe("published run ownership", () => {
 			expect(await app.exited).not.toBeUndefined();
 			expect((await loadRuns())[0]?.apps[0]?.status).toBe("stopped");
 		} finally {
+			app.kill("SIGKILL");
+		}
+	});
+	it("refuses, rather than reporting it stopped, an app whose identity cannot be read", async () => {
+		const env = source("session-e");
+		const run = await publishCurrentRun(env, {
+			apps: { web: { port: 3000, devCommand: "bun dev" } },
+			serviceNames: [],
+		});
+		if (!run) throw new Error("run not published");
+		const app = Bun.spawn(
+			[process.execPath, "--eval", "setInterval(() => {}, 1000)"],
+			{ stdout: "ignore", stderr: "ignore" },
+		);
+		const read = spyOn(identities, "readProcessIdentityAsync");
+		const errors = spyOn(console, "error").mockImplementation(() => {});
+		try {
+			await recordAppSpawn(env, "web", app.pid, false);
+			// `ps` failed or timed out.
+			read.mockResolvedValue(undefined);
+			expect(
+				await handleStop(["web", "--root", root, "--run", run.sessionId]),
+			).toBe(3);
+			const printed = errors.mock.calls.map(String).join("\n");
+			expect(printed).toContain(`pid ${app.pid}'s identity could not be read`);
+			expect(printed).toContain(`ps -p ${app.pid}`);
+			expect(app.exitCode).toBeNull();
+			expect((await loadRuns())[0]?.apps[0]?.status).not.toBe("stopped");
+		} finally {
+			errors.mockRestore();
+			read.mockRestore();
 			app.kill("SIGKILL");
 		}
 	});

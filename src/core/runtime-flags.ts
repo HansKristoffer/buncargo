@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { CONNECT_ORIGIN } from "./connect/protocol";
+import { join } from "node:path";
+import { CONNECT_ORIGIN } from "./connect/origin";
 
 /**
  * Every environment variable buncargo reads, in one place.
@@ -126,6 +127,19 @@ export function isDetachedRun(env: NodeJS.ProcessEnv = process.env): boolean {
 	return env.BUNCARGO_DETACHED === "1";
 }
 
+/**
+ * `BUNCARGO_REEXEC` - set by a buncargo that handed over to the project's own
+ * installed buncargo (`cli/version-guard.ts`), so that one never hands over
+ * again. Holds the version that handed over.
+ */
+export const REEXEC_ENV = "BUNCARGO_REEXEC";
+
+export function reexecedFrom(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return readTrimmed(env, REEXEC_ENV);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Container runtime
 // ═══════════════════════════════════════════════════════════════════════════
@@ -155,11 +169,25 @@ export function containerBinaryOverride(
 
 export const DEFAULT_HOSTS_DAEMON_PORT = 443;
 
-/** Skip automatic local HTTPS/mkcert setup and use `http://localhost:port`. */
-export function isHostsForcedOff(
-	env: NodeJS.ProcessEnv = process.env,
-): boolean {
-	return env.BUNCARGO_HOSTS === "0" || isCI(env);
+/**
+ * How named hosts are served on this machine, from `BUNCARGO_HOSTS`.
+ *
+ * - `loopback` (unset): `https://*.localhost` through the root hosts daemon.
+ * - `tailscale`: each app on its own HTTPS port of the machine's MagicDNS
+ *   name, through Tailscale Serve. For a remote machine, where `*.localhost`
+ *   resolves to the viewer's own computer.
+ * - `off` (`0`, and always in CI): `http://localhost:port`.
+ *
+ * Any other value is the default, as it was before the modes existed.
+ */
+export type HostsMode = "loopback" | "tailscale" | "off";
+
+export function hostsMode(env: NodeJS.ProcessEnv = process.env): HostsMode {
+	if (isCI(env)) return "off";
+	const raw = readTrimmed(env, "BUNCARGO_HOSTS");
+	if (raw === "0") return "off";
+	if (raw === "tailscale") return "tailscale";
+	return "loopback";
 }
 
 /**
@@ -181,6 +209,23 @@ export function tailnetDirectoryEnabled(
 	env: NodeJS.ProcessEnv = process.env,
 ): boolean {
 	return env.BUNCARGO_TAILNET_DIRECTORY !== "0";
+}
+
+/**
+ * `BUNCARGO_WATCHDOG_PARENT=<pid>:<identity>` - a process the watchdog exits
+ * once it is gone. The test preload sets it, so a watchdog a test started ends
+ * with the test run; a real watchdog outlives the run that started it.
+ */
+export function watchdogParent(
+	env: NodeJS.ProcessEnv = process.env,
+): { pid: number; identity?: string } | undefined {
+	const raw = readTrimmed(env, "BUNCARGO_WATCHDOG_PARENT");
+	if (!raw) return undefined;
+	const [pidText = "", ...rest] = raw.split(":");
+	const pid = Number(pidText);
+	if (!Number.isInteger(pid) || pid <= 1) return undefined;
+	const identity = rest.join(":");
+	return { pid, identity: identity || undefined };
 }
 
 /** `BUNCARGO_LOCAL_IP` - the address `<app>Local` URLs use instead of the first network interface's. */
@@ -260,6 +305,29 @@ export function infisicalMachineCredentials(
 	const clientId = readTrimmed(env, "INFISICAL_CLIENT_ID");
 	const clientSecret = readTrimmed(env, "INFISICAL_CLIENT_SECRET");
 	return clientId && clientSecret ? { clientId, clientSecret } : undefined;
+}
+
+/**
+ * The machine identity file hanzio also reads when the environment names no
+ * identity: `INFISICAL_UNIVERSAL_AUTH_FILE`, else
+ * `<home>/.infisical/universal-auth.json`. Undefined while
+ * `INFISICAL_CLIENT_ID` or `INFISICAL_CLIENT_SECRET` is set, even alone.
+ * `home` comes from the caller (`resolveUserHome`), which keeps this module
+ * free of state-paths for the runtime entry point.
+ */
+export function infisicalUniversalAuthFile(
+	env: NodeJS.ProcessEnv,
+	home: string,
+): string | undefined {
+	if (
+		readTrimmed(env, "INFISICAL_CLIENT_ID") ||
+		readTrimmed(env, "INFISICAL_CLIENT_SECRET")
+	)
+		return undefined;
+	return (
+		readTrimmed(env, "INFISICAL_UNIVERSAL_AUTH_FILE") ??
+		join(home, ".infisical", "universal-auth.json")
+	);
 }
 
 /** `SECRETS_ENV` - Infisical environment slug, when the config does not name one. */
@@ -345,7 +413,19 @@ export function checkSlotCount(env: NodeJS.ProcessEnv = process.env): number {
 	return readInt(env, "BUNCARGO_CHECK_SLOTS", 3);
 }
 
-/** Runtime enrollment for disposable cloud sandboxes. Never include this value in diagnostics. */
+/**
+ * `BUNCARGO_CHECK_SLOT` - the slot lock file this process tree already holds.
+ * Set by `withCheckSlot` for its children, so a nested check never waits on
+ * the slot its own parent holds.
+ */
+export const CHECK_SLOT_ENV = "BUNCARGO_CHECK_SLOT";
+
+export function heldCheckSlot(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return readTrimmed(env, CHECK_SLOT_ENV);
+}
+
 /** Sharing credentials are consumed by the coordinator, never frontend processes. */
 export function connectTokens(env: NodeJS.ProcessEnv = process.env): string[] {
 	const tokens = [
@@ -396,12 +476,8 @@ export function connectOrigin(env: NodeJS.ProcessEnv = process.env): string {
 		throw new Error("BUNCARGO_CONNECT_URL must be an HTTPS origin.");
 	return url.origin;
 }
-export function connectProcessEnv(
-	env: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-	const { BUNCARGO_CONNECT_TOKENS: _tokens, ...rest } = env;
-	return rest;
-}
+/** Named here so `child-env.ts` can withhold it without reading `BUNCARGO_*` itself. */
+export const CONNECT_TOKENS_ENV = "BUNCARGO_CONNECT_TOKENS";
 export function frpTestsEnabled(env: NodeJS.ProcessEnv = process.env) {
 	return env.BUNCARGO_TEST_FRP === "1";
 }

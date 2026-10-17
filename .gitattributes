@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Parallel branches each add bullets under the same release heading: keep both
+# sides. Read the merged section once for a bullet that landed twice.
+docs/migration.md merge=union

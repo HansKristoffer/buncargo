@@ -178,14 +178,30 @@ export interface HostsRuntime {
 	active: boolean;
 	tld: string;
 	caPath?: string;
+	/**
+	 * How the names are served: `loopback` is `https://*.<tld>` through the
+	 * hosts daemon, `tailscale` (`BUNCARGO_HOSTS=tailscale`) is each app on
+	 * its own HTTPS port of the machine's Tailscale name.
+	 */
+	mode: "loopback" | "tailscale";
+	/**
+	 * In `tailscale` mode, the URL of each app Tailscale is serving, by app.
+	 * Apps missing here keep their plain URL.
+	 */
+	tailscaleUrls: Record<string, string>;
+}
+
+/** What `setNamedHostsActive` switches `urls` to, besides on or off. */
+export interface NamedHostsActivation {
+	/** The loopback daemon's CA, for `NODE_EXTRA_CA_CERTS`. */
+	caPath?: string;
+	/** Tailscale mode: the URL of each served app. */
+	tailscaleUrls?: Record<string, string>;
 }
 
 /**
- * Env values a config may declare or compute.
- *
- * `undefined` is allowed so `process.env.X` and optional public URLs can be
- * passed straight through; those entries are dropped when the environment is
- * built rather than stringified into the literal `"undefined"`.
+ * One entry of {@link DevOptions.envFiles}: a dotenv path relative to the
+ * root, or that path marked optional.
  */
 export type EnvInputFile = string | { path: string; optional?: boolean };
 
@@ -203,6 +219,13 @@ export type CheckoutFile =
 			machine?: boolean;
 	  };
 
+/**
+ * Env values a config may declare or compute.
+ *
+ * `undefined` is allowed so `process.env.X` and optional public URLs can be
+ * passed straight through; those entries are dropped when the environment is
+ * built rather than stringified into the literal `"undefined"`.
+ */
 export type EnvValues = Record<string, string | number | undefined>;
 
 /**
@@ -242,11 +265,6 @@ export type EnvVarsBuilder<
 	urls: ComputedUrls<TServices, TApps>,
 	ctx: EnvVarsContext<TServices, TApps>,
 ) => TEnv;
-
-/**
- * Object keys that are not a wide `string` index (`Record<string, …>`).
- * Used so empty-app configs and open records do not unlock every `*_URL`.
- */
 
 /**
  * Keys declared by a narrowly inferred `env` overlay.

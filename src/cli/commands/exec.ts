@@ -1,6 +1,7 @@
 import { formatCheckSlotHolder, withCheckSlot } from "../../core/check-slots";
 import { CommandSignalError, type ExecResult } from "../../core/process";
 import { loadDevEnv } from "../../loader";
+import { argumentsError } from "../errors";
 import { parseExecArgs, printExecHelp } from "../exec-flags";
 
 /**
@@ -62,7 +63,7 @@ export async function handleExec(args: string[]): Promise<number> {
 	}
 
 	if (parsed.errors.length) {
-		throw new Error(parsed.errors.join("\n"));
+		throw argumentsError(parsed.errors, "exec");
 	}
 
 	const env = await loadDevEnv({ readOnly: true });

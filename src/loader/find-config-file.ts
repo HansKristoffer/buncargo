@@ -3,6 +3,11 @@ import { dirname, join, resolve } from "node:path";
 
 export const CONFIG_FILES = ["dev.config.ts", "dev.config.js"];
 
+/** The config file's name directly in `root`, without walking up. */
+export function findRootConfigFile(root: string): string | null {
+	return CONFIG_FILES.find((file) => existsSync(join(root, file))) ?? null;
+}
+
 export function findConfigFile(startDir: string): string | null {
 	let currentDir = resolve(startDir);
 

@@ -14,6 +14,51 @@ import { createVisitors } from "./visitors";
 
 const IDLE_TIMEOUT_MS = 60_000;
 
+/** Whether a live run on this origin has written an intent the coordinator has not read yet. */
+async function hasWantedIntent(origin: string): Promise<boolean> {
+	const runs = await readLiveRuns();
+	const files = await readdir(intentsPath()).catch(() => []);
+	for (const file of files.filter((file) => file.endsWith(".json"))) {
+		const intent = await readFile(`${intentsPath()}/${file}`, "utf8")
+			.then((text) => JSON.parse(text) as SharingIntent)
+			.catch(() => undefined);
+		if (
+			intent?.origin === origin &&
+			runs.some((run) => run.sessionId === intent.sessionId)
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Decide to exit under the launch lock. A run registers its intent before it
+ * calls the launcher, and the launcher adopts only a ready coordinator, so a
+ * run either sees this one leaving and starts another, or is read here.
+ */
+export async function leaveWhenIdle(
+	origin: string,
+	markLeaving: () => Promise<void>,
+): Promise<boolean> {
+	try {
+		return await withFileLock(
+			stateFilePath("connect-launch"),
+			async () => {
+				if (await hasWantedIntent(origin)) {
+					return false;
+				}
+				await markLeaving();
+				return true;
+			},
+			{ timeoutMs: 1000 },
+		);
+	} catch {
+		// A busy launcher or an unreadable registry: stay and look again.
+		return false;
+	}
+}
+
 /** Each run owns its recipients; the shared coordinator never inherits the first run's tokens. */
 function createPublications(origin: string) {
 	const publishers = new Map<string, ReturnType<typeof createPublisher>>();
@@ -155,16 +200,23 @@ async function runCoordinator(controller: AbortController) {
 		maxRequestBodySize: 16384,
 		fetch: handleRequest,
 	});
-	const report = () =>
-		writeCoordinatorState({
-			pid: process.pid,
-			identity,
-			bundle: process.argv[1] ?? "",
-			updatedAt: Date.now(),
-			ready: true,
-			connection: { port: server.port ?? 0, token },
-			cli: { program: process.execPath, script: process.argv[1] },
-		});
+	let ready = true;
+	let writes = Promise.resolve();
+	// Serialized, so a heartbeat already in flight cannot land after the leaving write.
+	const report = () => {
+		writes = writes.then(() =>
+			writeCoordinatorState({
+				pid: process.pid,
+				identity,
+				bundle: process.argv[1] ?? "",
+				updatedAt: Date.now(),
+				ready,
+				connection: { port: server.port ?? 0, token },
+				cli: { program: process.execPath, script: process.argv[1] },
+			}),
+		);
+		return writes;
+	};
 
 	await report();
 	// Local readiness stays fresh even while a remote directory request is waiting.
@@ -172,6 +224,11 @@ async function runCoordinator(controller: AbortController) {
 		() => void report().catch(() => controller.abort()),
 		1000,
 	);
+	const markLeaving = () => {
+		clearInterval(heartbeat);
+		ready = false;
+		return report().catch(() => controller.abort());
+	};
 	let idleSince = Date.now();
 	let nextRefresh = 0;
 
@@ -180,7 +237,11 @@ async function runCoordinator(controller: AbortController) {
 			if (publications.active || visitors.connections().length) {
 				idleSince = Date.now();
 			} else if (Date.now() - idleSince > IDLE_TIMEOUT_MS) {
-				break;
+				if (await leaveWhenIdle(origin, markLeaving)) {
+					break;
+				}
+				// A run registered since the last refresh: read it now.
+				nextRefresh = 0;
 			}
 
 			if (Date.now() >= nextRefresh) {

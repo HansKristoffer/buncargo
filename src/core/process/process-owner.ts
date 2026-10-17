@@ -3,9 +3,51 @@ import { abortError, withSignal } from "../deadline";
 import { formatWarn } from "../style";
 import { DetachedApp, findDetachedApp } from "./detached-app";
 import type { AppChild } from "./pty-app";
-import { terminateOwnedProcess } from "./terminate";
+import {
+	ownedProcessAlive,
+	ownedProcessGone,
+	terminateOwnedProcess,
+} from "./terminate";
 
 export class RunInterrupted extends Error {}
+
+/**
+ * Did this app stop because something asked it to?
+ *
+ * `null` is a process killed by a signal outright. The two codes are
+ * `128 + SIGINT` and `128 + SIGTERM`, which is what a shell wrapper reports
+ * when the signal reached it rather than the server it spawned — `bun run dev`
+ * does exactly that. Without them a Ctrl-C, or a `buncargo stop`, ends a clean
+ * shutdown with "App exited with code 143" and a failed run.
+ */
+export function isDeliberateExit(
+	code: number | null,
+	signal?: NodeJS.Signals | null,
+): boolean {
+	return (
+		(code === null &&
+			(signal === undefined || signal === "SIGINT" || signal === "SIGTERM")) ||
+		code === 0 ||
+		code === 130 ||
+		code === 143
+	);
+}
+
+/**
+ * How an app's exit reads: `stopped` when something asked it to stop, else
+ * `failed`. A worker is meant to run until it is stopped, so an essential
+ * one exiting 0 failed; a non-essential one (or one parked after it never
+ * came up) only stopped. The supervisor, the stream and TUI rows and the run
+ * registry all read an exit through this.
+ */
+export function appExitState(
+	code: number | null,
+	signal: NodeJS.Signals | null | undefined,
+	app: { worker: boolean; optional: boolean },
+): "stopped" | "failed" {
+	if (code === 0 && app.worker && !app.optional) return "failed";
+	return isDeliberateExit(code, signal) ? "stopped" : "failed";
+}
 
 /** Owns only children created by one startDevServers invocation. */
 export class ProcessOwner {
@@ -90,6 +132,7 @@ export class ProcessOwner {
 					const detached = await findDetachedApp(port, child.pid);
 					if (detached) {
 						this.live.delete(child);
+						this.forgetIfGone(child);
 						this.register(
 							name,
 							detached.child,
@@ -111,17 +154,17 @@ export class ProcessOwner {
 					}
 				}
 				this.live.delete(child);
+				this.forgetIfGone(child);
 				try {
 					this.options.onAppExit?.(name, code, signal);
 				} catch {
 					/* Observers cannot break process cleanup. */
 				}
 				const deliberate =
-					(code === 0 && !worker) ||
-					code === 130 ||
-					code === 143 ||
-					signal === "SIGINT" ||
-					signal === "SIGTERM";
+					appExitState(code, signal, {
+						worker,
+						optional: this.options.optional?.has(name) ?? false,
+					}) === "stopped";
 				if (
 					this.options.optional?.has(name) &&
 					!this.controller.signal.aborted
@@ -153,6 +196,16 @@ export class ProcessOwner {
 		if (child.exitCode !== null || child.signalCode !== null)
 			queueMicrotask(() => onExit(child.exitCode, child.signalCode));
 		else (child as EventEmitter).once("exit", onExit);
+	}
+
+	/**
+	 * A child whose exit was seen and whose group is gone has nothing left to
+	 * stop, and its pid may already belong to an unrelated process. A group
+	 * that outlives its leader is forgotten once it empties.
+	 */
+	private forgetIfGone(child: AppChild | DetachedApp): void {
+		if (!ownedProcessAlive(child)) this.children.delete(child);
+		else void ownedProcessGone(child).then(() => this.children.delete(child));
 	}
 
 	/**

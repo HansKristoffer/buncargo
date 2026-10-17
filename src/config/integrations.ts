@@ -1,3 +1,4 @@
+import { findMonorepoRoot } from "../core/ports";
 import type {
 	AppConfig,
 	BuncargoIntegration,
@@ -44,9 +45,13 @@ function composeHooks(
 /**
  * Apply a config's integrations: each `config()` transform in order, then the
  * hooks, checks and preflight steps they contribute. Runs before validation, so everything an
- * integration adds is validated like the rest.
+ * integration adds is validated like the rest. `root` is the checkout the
+ * config belongs to; without it, the one around the working directory.
  */
-export function applyIntegrations<T extends object>(config: T): T {
+export function applyIntegrations<T extends object>(
+	config: T,
+	options: { root?: string } = {},
+): T {
 	const input = config as IntegrationConfig;
 	if ((input as { [APPLIED]?: true })[APPLIED]) return config;
 
@@ -54,10 +59,11 @@ export function applyIntegrations<T extends object>(config: T): T {
 	if (integrations.length === 0) return config;
 
 	let resolved = input;
+	const context = { root: options.root ?? findMonorepoRoot() };
 	for (const integration of integrations) {
 		if (!integration.config) continue;
 		try {
-			resolved = integration.config(resolved);
+			resolved = integration.config(resolved, context);
 		} catch (error) {
 			throw new Error(
 				`Integration "${integration.name}" failed to apply: ${error instanceof Error ? error.message : String(error)}`,

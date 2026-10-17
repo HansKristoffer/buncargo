@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { invokingUserIdentity, resolveUserHome } from "./paths";
+import { invokingUserIdentity, resolveUserHome } from "./state-paths";
 
 describe("resolveUserHome", () => {
 	it("uses HOME when not running as root via sudo", () => {

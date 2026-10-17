@@ -1,11 +1,10 @@
 import { basename } from "node:path";
-import type { ExpoAppIdentity } from "../expo/simulator";
+import type { ExpoAppIdentity } from "../expo/app-identity";
 import type { ContainerRuntimeName } from "../types";
 import { buncargoCli, type CliInvocation } from "./cli-entry";
 import { withFileLock } from "./file-lock";
 import { getWorktreeName } from "./ports";
 import {
-	processIdentityMatcher,
 	processIdentityMatcherAsync,
 	readCurrentProcessIdentity,
 	readCurrentProcessIdentityAsync,
@@ -49,7 +48,7 @@ import { chownToInvokingUser, stateFilePath } from "./state-paths";
  * installed bundle's `BuncargoRegistryVersion` and updates the app.
  */
 export const REGISTRY_VERSION = 1;
-export const RUNS_FILENAME = "runs.json";
+const RUNS_FILENAME = "runs.json";
 
 export type RunAppStatus =
 	| "starting"
@@ -78,7 +77,7 @@ export interface RunAppEntry {
 	/** What "open" opens for this app (`preferredAppUrl`), so every reader agrees. */
 	openUrl?: string;
 	hostname?: string;
-	/** Present on Expo apps: what `buncargo sim` needs without loading the config. */
+	/** Present on Expo apps: what `buncargo expo sim` needs without loading the config. */
 	expo?: ExpoAppIdentity;
 	/** The exclusive lease this app holds (`AppConfig.exclusive`). */
 	exclusive?: string;
@@ -209,8 +208,8 @@ export interface RunTaskEntry {
 	description?: string;
 }
 
-export function getRunsPath(home?: string): string {
-	return stateFilePath(RUNS_FILENAME, home);
+export function getRunsPath(): string {
+	return stateFilePath(RUNS_FILENAME);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -350,31 +349,18 @@ const registry = defineListRegistry<RunEntry>({
 });
 
 export async function loadRuns(
-	path = getRunsPath(),
 	options: ListRegistryReadOptions = {},
 ): Promise<RunEntry[]> {
-	return registry.read(path, options);
-}
-
-/** Whether the process that published an entry is still running. */
-export function isRunAlive(run: RunEntry): boolean {
-	return runLiveness([run])(run);
+	return registry.read(getRunsPath(), options);
 }
 
 /**
- * {@link isRunAlive} for a whole list, answered with one `ps`.
+ * Whether each entry's run is still going, answered with one `ps`.
  *
  * The sweep asks this of every entry several times a tick. Asked one entry
- * at a time, each answer was a fork on macOS.
+ * at a time, each answer was a fork on macOS. A released entry never reads
+ * as live, whatever its pid.
  */
-export function runLiveness(
-	runs: readonly RunEntry[],
-): (run: RunEntry) => boolean {
-	const matches = processIdentityMatcher(runs);
-	return (run) =>
-		run.releasedAt === undefined && matches(run.pid, run.processIdentity);
-}
-
 export async function runLivenessAsync(
 	runs: readonly RunEntry[],
 	signal?: AbortSignal,
@@ -473,11 +459,8 @@ async function updateRuns(
  * then the CLI's richer entry. The second knows neither when the first
  * happened nor which hold it was claimed with, so both carry over.
  */
-export async function publishRun(
-	run: RunEntry,
-	options: { path?: string } = {},
-): Promise<void> {
-	const path = options.path ?? getRunsPath();
+export async function publishRun(run: RunEntry): Promise<void> {
+	const path = getRunsPath();
 	await withFileLock(path, async () => {
 		const runs = await prune(path);
 		const index = runs.findIndex((entry) => entry.sessionId === run.sessionId);
@@ -509,11 +492,8 @@ export async function publishRun(
  * there is nothing for the sweep to hold, and a dead row would show to
  * anything that forgot to filter.
  */
-export async function releaseRun(
-	sessionId: string,
-	options: { path?: string } = {},
-): Promise<void> {
-	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+export async function releaseRun(sessionId: string): Promise<void> {
+	await updateRuns(getRunsPath(), (runs) => {
 		const index = runs.findIndex((entry) => entry.sessionId === sessionId);
 		const current = runs[index];
 		if (!current || current.releasedAt !== undefined) return undefined;
@@ -528,13 +508,10 @@ export async function releaseRun(
 }
 
 /** Drop entries the sweep has finished with. */
-export async function retireRuns(
-	sessionIds: readonly string[],
-	options: { path?: string } = {},
-): Promise<void> {
+export async function retireRuns(sessionIds: readonly string[]): Promise<void> {
 	if (sessionIds.length === 0) return;
 	const drop = new Set(sessionIds);
-	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+	await updateRuns(getRunsPath(), (runs) => {
 		const next = runs.filter((entry) => !drop.has(entry.sessionId));
 		return next.length === runs.length ? undefined : next;
 	});
@@ -548,11 +525,12 @@ export async function retireRuns(
  * live session in the same checkout keeps its entry — it is still somebody's
  * run, whatever just happened to the containers.
  */
-export async function retireProjectRuns(
-	target: { projectName: string; root: string; sessionId: string },
-	options: { path?: string } = {},
-): Promise<void> {
-	await updateRuns(options.path ?? getRunsPath(), async (runs) => {
+export async function retireProjectRuns(target: {
+	projectName: string;
+	root: string;
+	sessionId: string;
+}): Promise<void> {
+	await updateRuns(getRunsPath(), async (runs) => {
 		const alive = await runLivenessAsync(runs);
 		const next = runs.filter(
 			(entry) =>
@@ -569,11 +547,10 @@ export async function retireProjectRuns(
 /** Forget stacks the sweep has stopped, so the entry can retire like any other. */
 export async function clearRunStacks(
 	sessionIds: readonly string[],
-	options: { path?: string } = {},
 ): Promise<void> {
 	if (sessionIds.length === 0) return;
 	const cleared = new Set(sessionIds);
-	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+	await updateRuns(getRunsPath(), (runs) => {
 		let changed = false;
 		const next = runs.map((entry) => {
 			if (!cleared.has(entry.sessionId) || entry.stacks === undefined)
@@ -595,11 +572,10 @@ export async function clearRunStacks(
 export async function markOwnersLost(
 	sessionIds: readonly string[],
 	at: string,
-	options: { path?: string } = {},
 ): Promise<void> {
 	if (sessionIds.length === 0) return;
 	const lost = new Set(sessionIds);
-	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+	await updateRuns(getRunsPath(), (runs) => {
 		let changed = false;
 		const next = runs.map((entry) => {
 			if (!lost.has(entry.sessionId) || entry.ownerLostAt !== undefined)
@@ -666,19 +642,17 @@ function mergeByName<T extends { name: string }>(
 export async function patchRun(
 	sessionId: string,
 	patch: RunPatch,
-	options: { path?: string } = {},
 ): Promise<void> {
-	await patchRunBatch(sessionId, [patch], options);
+	await patchRunBatch(sessionId, [patch]);
 }
 
 /** Apply ordered updates under one lock, including terminal-state protections. */
 export async function patchRunBatch(
 	sessionId: string,
 	patches: readonly RunPatch[],
-	options: { path?: string } = {},
 ): Promise<void> {
 	if (patches.length === 0) return;
-	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+	await updateRuns(getRunsPath(), (runs) => {
 		const index = runs.findIndex((entry) => entry.sessionId === sessionId);
 		const current = runs[index];
 		if (!current) return undefined;
@@ -726,16 +700,31 @@ export function groupRunsByProject(runs: RunEntry[]): Map<string, RunEntry[]> {
 }
 
 /** Every independent live session using this checkout. */
-export async function findRunsByRoot(
+export async function findRunsByRoot(root: string): Promise<RunEntry[]> {
+	return (await readLiveRuns()).filter((run) => run.root === root);
+}
+
+/**
+ * A checkout's live sessions, and its finished ones whose services may still
+ * stand: released into the idle hold, or crashed. Those are what `stop` can
+ * still take down, though no reader that filters live entries shows them.
+ */
+export async function findCheckoutRuns(
 	root: string,
-	path = getRunsPath(),
-): Promise<RunEntry[]> {
-	return (await readLiveRuns(path)).filter((run) => run.root === root);
+): Promise<{ live: RunEntry[]; held: RunEntry[] }> {
+	const runs = (await loadRuns({ strict: true })).filter(
+		(run) => run.root === root,
+	);
+	const alive = await runLivenessAsync(runs);
+	return {
+		live: runs.filter(alive),
+		held: runs.filter((run) => !alive(run) && run.services.length > 0),
+	};
 }
 
 /** Inspection filters stale owners in memory without mutating persisted state. */
-export async function readLiveRuns(path = getRunsPath()): Promise<RunEntry[]> {
-	const runs = await loadRuns(path, { strict: true });
+export async function readLiveRuns(): Promise<RunEntry[]> {
+	const runs = await loadRuns({ strict: true });
 	return runs.filter(await runLivenessAsync(runs));
 }
 
@@ -747,6 +736,6 @@ export async function readLiveRuns(path = getRunsPath()): Promise<RunEntry[]> {
  * cannot be read throws rather than reading as empty — to the sweep, an empty
  * registry would make every stack on the machine look unowned.
  */
-export async function readAllRuns(path = getRunsPath()): Promise<RunEntry[]> {
-	return loadRuns(path, { strict: true });
+export async function readAllRuns(): Promise<RunEntry[]> {
+	return loadRuns({ strict: true });
 }

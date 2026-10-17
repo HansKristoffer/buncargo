@@ -1,5 +1,44 @@
 # Changelog
 
+## [14.0.0](https://github.com/HansKristoffer/buncargo/compare/v13.0.0...v14.0.0) (2026-10-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** the sweep removes only stacks your own ~/.buncargo names, stop with removeVolumes throws when it keeps the volumes, a library start() takes exclusive leases and is listed in runs.json, buncargo send has new exit codes, buncargo sim and several exports are removed, a run refuses a Compose project name another checkout uses, and a pre-12 hosts daemon is no longer used. See docs/migration.md for what to change.
+
+### Features
+
+* **cli:** make the sweep safe and library start() a full run ([#109](https://github.com/HansKristoffer/buncargo/issues/109)) ([f5c3794](https://github.com/HansKristoffer/buncargo/commit/f5c37947b1e2163be9572005918b4c2f02f4b435))
+
+
+### Bug Fixes
+
+* **sweep:** never remove another user's stacks or an unreadable checkout's ([#110](https://github.com/HansKristoffer/buncargo/issues/110)) ([ed66ef7](https://github.com/HansKristoffer/buncargo/commit/ed66ef7346ab8b2c0d4a2b7bbd9dbed19d7991e4))
+
+## [13.0.0](https://github.com/HansKristoffer/buncargo/compare/v12.7.0...v13.0.0) (2026-10-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `buncargo dev` opens the terminal UI by default in a terminal, and an app with `interactive: true` only owns the real terminal with `--no-tui`. Pass `--no-tui` to keep the old output.
+
+### Features
+
+* **cli:** open the terminal UI by default in a terminal ([#107](https://github.com/HansKristoffer/buncargo/issues/107)) ([c3d2a00](https://github.com/HansKristoffer/buncargo/commit/c3d2a00ca37be3d7fac7e4f6a44a6c8b5ec644e1))
+
+
+### Bug Fixes
+
+* **cli:** offer files merge first for checkout file conflicts ([#106](https://github.com/HansKristoffer/buncargo/issues/106)) ([38ed1d1](https://github.com/HansKristoffer/buncargo/commit/38ed1d1350c537622bf8da7168cb73ddc5b2b7a7))
+
+## [12.7.0](https://github.com/HansKristoffer/buncargo/compare/v12.6.0...v12.7.0) (2026-10-16)
+
+
+### Features
+
+* **cli:** run the project's own buncargo and merge checkout files by key ([#104](https://github.com/HansKristoffer/buncargo/issues/104)) ([d16092c](https://github.com/HansKristoffer/buncargo/commit/d16092cb67544feac26bb9872ae7f42fd0133c37))
+
 ## [12.6.0](https://github.com/HansKristoffer/buncargo/compare/v12.5.0...v12.6.0) (2026-10-15)
 
 

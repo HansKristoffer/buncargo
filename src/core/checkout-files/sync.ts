@@ -9,8 +9,9 @@ import {
 import { dirname, join, resolve, sep } from "node:path";
 import { parseEnv } from "node:util";
 import { isCI } from "../runtime-flags";
-import { projectStateFilePath } from "../state-paths";
+import { getProjectStateDir, projectStateFilePath } from "../state-paths";
 import { formatStep, formatWarn } from "../style";
+import { DotenvMergeError, type MergeSide, mergeDotenv } from "./dotenv-merge";
 import { resolveRepoKey } from "./repo-key";
 import {
 	type CheckoutFileSpec,
@@ -20,8 +21,8 @@ import {
 import {
 	MAX_FILE_BYTES,
 	type Manifest,
-	readManifest,
 	readStoreData,
+	readStoreManifest,
 	type StoreWrite,
 	sha256,
 	storeDir,
@@ -88,6 +89,8 @@ export interface CheckoutFileStatus {
 	machine: boolean;
 	/** Why buncargo will not read or write this file, when it will not. */
 	refusal?: string;
+	/** A conflict `files merge` can resolve: every copy reads as dotenv. */
+	mergeable?: boolean;
 }
 
 export interface CheckoutFilesReport {
@@ -135,6 +138,53 @@ function writeCheckoutState(root: string, files: CheckoutState): void {
 	);
 }
 
+/**
+ * The base's content, `.buncargo/files-base/<path>`, for `files merge`. Read
+ * only when its hash is still the recorded base.
+ */
+function baseCopyPath(root: string, path: string): string {
+	return join(getProjectStateDir(root), "files-base", ...path.split("/"));
+}
+
+function readBaseCopy(
+	root: string,
+	path: string,
+	base: string | undefined,
+): Buffer | undefined {
+	if (!base) return undefined;
+	try {
+		const data = readFileSync(baseCopyPath(root, path));
+		return sha256(data) === base ? data : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The bytes to write as `view`'s base copy when it is missing or stale (synced
+ * before base copies existed, or a crash between the copy and the state) and
+ * either side still holds the base, so a later `files merge` is three-way.
+ */
+function baseCopyRepair(root: string, view: View): Buffer | undefined {
+	if (!view.base || readBaseCopy(root, view.spec.path, view.base))
+		return undefined;
+	if (view.base === view.localHash) return view.local.data;
+	if (view.base === view.store?.hash) return view.store.data;
+	return undefined;
+}
+
+/** Record `data` as the base of `path`: its hash in the state, its content beside it. */
+function recordBase(
+	root: string,
+	state: CheckoutState,
+	path: string,
+	data: Uint8Array,
+	hash: string,
+): void {
+	writeFileAtomic(baseCopyPath(root, path), data);
+	state[path] = { base: hash };
+}
+
 interface Local {
 	data?: Buffer;
 	/** Exists but cannot be used: a symlink, outside the checkout, too large. */
@@ -166,6 +216,19 @@ function readLocal(root: string, path: string): Local {
 	if (!stat.isFile()) return { refusal: "is not a regular file" };
 	if (stat.size > MAX_FILE_BYTES) return { refusal: "is larger than 1 MiB" };
 	return { data: readFileSync(full) };
+}
+
+/** Keep a copy about to be replaced; returns where, relative to the checkout. */
+function backUp(
+	root: string,
+	path: string,
+	data: Uint8Array,
+	now = new Date(),
+): string {
+	const stamp = now.toISOString().replace(/[:.]/g, "-");
+	const backup = `.buncargo/files-backup/${stamp}/${path}`;
+	writeLocal(root, backup, data);
+	return backup;
 }
 
 function writeLocal(root: string, path: string, data: Uint8Array): void {
@@ -253,12 +316,7 @@ function readOpened(
 	repoKey: string,
 	dir: string,
 ): Opened {
-	const read = readManifest(dir);
-	if (read.kind === "unusable")
-		throw new Error(
-			`Left the file store ${dir} alone: ${read.reason}. Update buncargo, or move the directory aside.`,
-		);
-	const manifest = read.kind === "ok" ? read.manifest : undefined;
+	const manifest = readStoreManifest(dir);
 	const state = readCheckoutState(root);
 	const views = specs.map((spec): View => {
 		const local = readLocal(root, spec.path);
@@ -282,7 +340,25 @@ function stateOf(view: View): FileState {
 	return fileState(view.localHash, view.base, view.store?.hash);
 }
 
+/** Whether `files merge` would read the checkout's copy, the store's and the base as dotenv. */
+function isMergeable(root: string, view: View): boolean {
+	if (!view.local.data || !view.store) return false;
+	const decoder = new TextDecoder("utf-8", { fatal: true });
+	const base = readBaseCopy(root, view.spec.path, view.base);
+	try {
+		mergeDotenv(
+			decoder.decode(base ?? new Uint8Array()),
+			decoder.decode(view.local.data),
+			decoder.decode(view.store.data),
+		);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function reportOf(
+	root: string,
 	opened: Opened,
 	refusals: ReadonlyMap<string, string>,
 ): CheckoutFilesReport {
@@ -290,17 +366,22 @@ function reportOf(
 		repoKey: opened.repoKey,
 		files: opened.views.map((view) => {
 			const refusal = view.local.refusal ?? refusals.get(view.spec.path);
+			const state = stateOf(view);
 			return {
 				path: view.spec.path,
-				state: stateOf(view),
+				state,
 				machine: view.spec.machine,
 				...(refusal ? { refusal } : {}),
+				...(state === "conflict" && !refusal
+					? { mergeable: isMergeable(root, view) }
+					: {}),
 			};
 		}),
 	};
 }
 
-function selectSpecs(
+/** The configured files named in `paths`, all of them when none are named. */
+export function selectSpecs(
 	specs: readonly CheckoutFileSpec[],
 	paths: readonly string[] | undefined,
 ): CheckoutFileSpec[] {
@@ -323,6 +404,7 @@ export function inspectCheckoutFiles(
 ): CheckoutFilesReport {
 	const opened = openCheckoutFiles(root, specs, options);
 	return reportOf(
+		root,
 		opened,
 		gitignoreRefusals(
 			root,
@@ -395,25 +477,35 @@ export async function syncCheckoutFiles(
 		return action;
 	};
 	const needsWrite = (view: View) => !["none", "leave"].includes(plan(view));
+	const needsBaseCopy = (view: View) =>
+		baseCopyRepair(root, view) !== undefined;
 
 	let refusals = new Map<string, string>();
-	if (opened.views.some(needsWrite))
+	if (opened.views.some(needsWrite) || opened.views.some(needsBaseCopy))
 		await withStoreLock(opened.dir, () => {
 			opened = readOpened(root, selected, opened.repoKey, opened.dir);
-			refusals = apply(root, opened, plan, log);
-			opened = readOpened(root, selected, opened.repoKey, opened.dir);
+			if (opened.views.some(needsWrite)) {
+				refusals = apply(root, opened, plan, log);
+				opened = readOpened(root, selected, opened.repoKey, opened.dir);
+			}
+			for (const view of opened.views) {
+				const data = baseCopyRepair(root, view);
+				if (data) writeFileAtomic(baseCopyPath(root, view.spec.path), data);
+			}
 		});
 
-	for (const view of opened.views) {
-		if (stateOf(view) !== "conflict" || view.local.refusal) continue;
-		const path = view.spec.path;
+	const report = reportOf(root, opened, refusals);
+	for (const { path, state, refusal, mergeable } of report.files) {
+		if (state !== "conflict" || refusal) continue;
+		const keep = mergeable
+			? `Merge them key by key with \`buncargo files merge ${path}\`, keep`
+			: "Keep";
 		log(
 			formatWarn(
-				`${path} has local edits and the file store changed too. Keep yours with \`buncargo files save ${path}\`, or take the store's with \`buncargo files pull --force ${path}\` (yours is backed up).`,
+				`${path} has local edits and the file store changed too. ${keep} yours with \`buncargo files save ${path}\`, or take the store's with \`buncargo files pull --force ${path}\` (yours is backed up).`,
 			),
 		);
 	}
-	const report = reportOf(opened, refusals);
 	if (!options.paths) lastReports.set(root, report);
 	return report;
 }
@@ -450,15 +542,14 @@ function apply(
 		}
 		switch (action) {
 			case "record-base":
-				if (view.localHash) state[path] = { base: view.localHash };
+				if (view.local.data && view.localHash)
+					recordBase(root, state, path, view.local.data, view.localHash);
 				break;
 			case "copy":
 			case "force": {
 				if (!view.store) break;
 				if (action === "force" && view.local.data) {
-					const stamp = now.toISOString().replace(/[:.]/g, "-");
-					const backup = `.buncargo/files-backup/${stamp}/${path}`;
-					writeLocal(root, backup, view.local.data);
+					const backup = backUp(root, path, view.local.data, now);
 					log(
 						formatStep(
 							`Replaced ${path} with the file store's copy; yours is in ${backup}`,
@@ -473,13 +564,13 @@ function apply(
 						),
 					);
 				writeLocal(root, path, view.store.data);
-				state[path] = { base: view.store.hash };
+				recordBase(root, state, path, view.store.data, view.store.hash);
 				break;
 			}
 			case "adopt":
 				if (!view.local.data || !view.localHash) break;
 				storeWrites.push({ path, data: view.local.data, machine });
-				state[path] = { base: view.localHash };
+				recordBase(root, state, path, view.local.data, view.localHash);
 				log(formatStep(`Saved ${path} to the file store`));
 				break;
 			case "template": {
@@ -505,12 +596,7 @@ function apply(
 	}
 
 	if (storeWrites.length > 0)
-		writeStoreEntries(
-			opened.dir,
-			opened.manifest ?? { version: 1, files: {} },
-			storeWrites,
-			now,
-		);
+		writeStoreEntries(opened.dir, opened.manifest, storeWrites, now);
 	writeCheckoutState(root, state);
 	return refusals;
 }
@@ -549,19 +635,119 @@ export async function saveCheckoutFiles(
 				continue;
 			}
 			writes.push({ path, data: view.local.data, machine });
-			state[path] = { base: view.localHash };
+			recordBase(root, state, path, view.local.data, view.localHash);
 			if (view.store?.hash !== view.localHash)
 				log(formatStep(`Saved ${path} to the file store`));
 		}
 		if (writes.length > 0)
-			writeStoreEntries(
-				opened.dir,
-				opened.manifest ?? { version: 1, files: {} },
-				writes,
-			);
+			writeStoreEntries(opened.dir, opened.manifest, writes);
 		writeCheckoutState(root, state);
 	});
 	return { failed };
+}
+
+export interface MergeResult {
+	/** Keys changed on both sides that `take` left open; nothing was written. */
+	conflicts: string[];
+	/** The checkout's copy or the store's changed. */
+	merged: boolean;
+	/**
+	 * The last synced copy was known. Without it every difference is an
+	 * addition or a conflict, so a key removed on one side comes back.
+	 */
+	base: boolean;
+	/** Where the checkout's copy was backed up before it was replaced. */
+	backup?: string;
+}
+
+/**
+ * `files merge`: merge the checkout's dotenv copy and the store's key by key,
+ * from the last synced copy, and write the result to both. Resolves the
+ * conflicts named in `take`; any others are returned and nothing is written.
+ */
+export async function mergeCheckoutFile(
+	root: string,
+	specs: readonly CheckoutFileSpec[],
+	path: string,
+	options: CheckoutFilesOptions & {
+		take?: ReadonlyMap<string, MergeSide>;
+	} = {},
+): Promise<MergeResult> {
+	const log = options.log ?? defaultLog;
+	const selected = selectSpecs(specs, [path]);
+	const first = openCheckoutFiles(root, selected, options);
+	return withStoreLock(first.dir, () => {
+		const opened = readOpened(root, selected, first.repoKey, first.dir);
+		const view = opened.views[0];
+		const local = view?.local.data;
+		const store = view?.store;
+		if (!view || !local || !view.localHash) {
+			const refusal = view?.local.refusal;
+			throw new Error(
+				refusal
+					? `Cannot merge ${path}: it ${refusal}.`
+					: `${path} is not in this checkout. \`buncargo files pull ${path}\` copies the store's.`,
+			);
+		}
+		if (!store)
+			throw new Error(
+				`The file store has no ${path}. \`buncargo files save ${path}\` stores this checkout's.`,
+			);
+		const refusal = gitignoreRefusals(root, [path]).get(path);
+		if (refusal) throw new Error(`Cannot merge ${path}: it ${refusal}.`);
+
+		const baseData = readBaseCopy(root, path, view.base);
+		const base = baseData !== undefined;
+		if (view.localHash === store.hash)
+			return { conflicts: [], merged: false, base };
+
+		let result: ReturnType<typeof mergeDotenv>;
+		try {
+			const decoder = new TextDecoder("utf-8", { fatal: true });
+			result = mergeDotenv(
+				decoder.decode(baseData ?? new Uint8Array()),
+				decoder.decode(local),
+				decoder.decode(store.data),
+				options.take,
+			);
+		} catch (error) {
+			const reason =
+				error instanceof DotenvMergeError
+					? error.message
+					: error instanceof TypeError
+						? "It is not UTF-8 text."
+						: undefined;
+			if (!reason) throw error;
+			throw new Error(
+				`Cannot merge ${path}: only dotenv files merge key by key. ${reason} Keep yours with \`buncargo files save ${path}\`, or take the store's with \`buncargo files pull --force ${path}\`.`,
+			);
+		}
+		if (result.text === undefined)
+			return { conflicts: result.conflicts, merged: false, base };
+
+		const data = Buffer.from(result.text);
+		const hash = sha256(data);
+		let backup: string | undefined;
+		if (hash !== view.localHash) {
+			backup = backUp(root, path, local);
+			writeLocal(root, path, data);
+		}
+		if (hash !== store.hash)
+			writeStoreEntries(opened.dir, opened.manifest, [
+				{ path, data, machine: view.spec.machine },
+			]);
+		const state = { ...opened.state };
+		recordBase(root, state, path, data, hash);
+		writeCheckoutState(root, state);
+		log(
+			formatStep(
+				backup
+					? `Merged ${path} into this checkout and the file store; your copy before the merge is in ${backup}`
+					: `Merged ${path} into the file store`,
+			),
+		);
+		return { conflicts: [], merged: true, base, ...(backup ? { backup } : {}) };
+	});
 }
 
 /** Keys added, removed and changed from the store's copy to the checkout's. Never values. */

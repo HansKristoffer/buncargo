@@ -62,6 +62,25 @@ export function groupBuncargoContainers(
 	return [...groups.values()];
 }
 
+/**
+ * The command a person runs to remove a stack buncargo leaves alone: what its
+ * own teardown does, volumes kept.
+ */
+export function manualDownCommand(
+	group: Pick<ContainerGroup, "projectName" | "runtime" | "containers">,
+): string {
+	switch (group.runtime) {
+		case "docker":
+			return `docker compose -p ${group.projectName} down`;
+		case "apple":
+			return `container delete --force ${group.containers.map((container) => container.id).join(" ")}`;
+		default: {
+			const unknown: never = group.runtime;
+			return unknown;
+		}
+	}
+}
+
 /** Stop the given containers, each through the runtime that reported it. */
 export function stopBuncargoContainers(
 	containers: BuncargoContainer[],

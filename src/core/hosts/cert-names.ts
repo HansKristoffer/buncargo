@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { checkoutDeleted } from "../checkout-presence";
 import { defineListRegistry } from "../registry-file";
 import { chownToInvokingUser, getStateDir } from "../state-paths";
 
@@ -73,7 +73,7 @@ function byNewestFirst(a: CertNameEntry, b: CertNameEntry): number {
  */
 export function pruneCertNameEntries(
 	entries: CertNameEntry[],
-	rootExists: (root: string) => boolean = existsSync,
+	rootExists: (root: string) => boolean = (root) => !checkoutDeleted(root),
 ): CertNameEntry[] {
 	return entries
 		.filter((entry) => rootExists(entry.root))
@@ -99,22 +99,23 @@ export async function rememberCertNames(input: {
 
 	// An empty name list is never a recording: a caller that only wants the
 	// union must not be able to erase a project's coverage by omission.
-	// Retiring an entry goes through `forgetCertNames`.
-	const next =
-		input.root && input.names.length > 0
-			? [
-					...live.filter((entry) => entry.root !== input.root),
-					{
-						root: input.root,
-						names: [...new Set(input.names)].sort(),
-						updatedAt: new Date().toISOString(),
-					},
-				]
-			: live;
+	// An entry is retired only when its checkout is gone from disk
+	// (`pruneCertNameEntries`); `hosts uninstall` removes the whole file.
+	const { root } = input;
+	const names = [...new Set(input.names)].sort();
+	const current = live.find((entry) => entry.root === root);
+	const changed =
+		root && names.length > 0 && current?.names.join(",") !== names.join(",");
+	const next = changed
+		? [
+				...live.filter((entry) => entry.root !== root),
+				{ root, names, updatedAt: new Date().toISOString() },
+			]
+		: live;
 
 	// Only when something actually changed: this runs on every dev start, and
-	// the daemon watches this directory.
-	if (JSON.stringify(next) !== JSON.stringify(stored)) {
+	// the daemon watches this directory. Pruning only ever removes entries.
+	if (changed || live.length !== stored.length) {
 		await registry.write(path, next);
 	}
 
@@ -127,14 +128,4 @@ export async function readCertNames(
 ): Promise<string[]> {
 	const entries = pruneCertNameEntries(await registry.read(path));
 	return [...new Set(entries.flatMap((entry) => entry.names))].sort();
-}
-
-/** Forget one project, for `hosts uninstall` and teardown paths. */
-export async function forgetCertNames(
-	root: string,
-	path = getCertNamesPath(),
-): Promise<void> {
-	const stored = await registry.read(path);
-	const next = stored.filter((entry) => entry.root !== root);
-	if (next.length !== stored.length) await registry.write(path, next);
 }

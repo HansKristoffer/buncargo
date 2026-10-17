@@ -6,20 +6,30 @@ import { PassThrough } from "node:stream";
 import { RunOutput } from "../../core/process/run-output";
 import { RunTui } from "./run-tui";
 
+/** Poll a condition until it holds or the deadline passes. */
+async function until(condition: () => boolean, timeoutMs = 5_000) {
+	const deadline = performance.now() + timeoutMs;
+	while (!condition()) {
+		if (performance.now() > deadline)
+			throw new Error(`Condition not met within ${timeoutMs}ms`);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
 /**
  * A crash must never leave the user's terminal broken: raw mode off, the
  * alternate screen left, the cursor shown, whichever way the process ends.
  * The child runs under a real pseudo-terminal, and `stty` reads the same
  * terminal once it is gone.
  */
-async function runChild(how: "throw" | "exit" | "sigterm") {
+async function runChild(how: "throw" | "reject" | "exit" | "sigterm") {
 	const child = join(import.meta.dir, "tui-child.testing.ts");
 	let output = "";
 	const proc = Bun.spawn(
 		[
 			"sh",
 			"-c",
-			`${JSON.stringify(process.execPath)} ${JSON.stringify(child)} ${how}; stty -a`,
+			`${JSON.stringify(process.execPath)} ${JSON.stringify(child)} ${how}; echo "exit:$?"; stty -a`,
 		],
 		{
 			terminal: {
@@ -32,15 +42,18 @@ async function runChild(how: "throw" | "exit" | "sigterm") {
 		},
 	);
 	if (how === "sigterm") {
-		await Bun.sleep(400);
-		Bun.spawnSync(["pkill", "-TERM", "-f", "tui-child.testing.ts sigterm"]);
+		// Once it has drawn a frame; by its own pid, never by a pattern other
+		// worktrees' runs of this test share.
+		await until(() => output.includes("hello from api"));
+		const pid = Number(/pid:(\d+)/.exec(output)?.[1]);
+		process.kill(pid, "SIGTERM");
 	}
 	await proc.exited;
 	return output;
 }
 
 describe("RunTui terminal restore", () => {
-	for (const how of ["throw", "exit", "sigterm"] as const) {
+	for (const how of ["throw", "reject", "exit", "sigterm"] as const) {
 		it(`restores the terminal when the process ends by ${how}`, async () => {
 			const output = await runChild(how);
 			expect(output).toContain("\u001b[?1049h");
@@ -54,7 +67,78 @@ describe("RunTui terminal restore", () => {
 			expect(output).toMatch(/[^-]echo\b/);
 		});
 	}
+
+	// The error is printed after the screen is left, not erased with it.
+	for (const [how, message] of [
+		["throw", "boom"],
+		["reject", "rejected"],
+	] as const) {
+		it(`shows the error of a ${how} after leaving the screen`, async () => {
+			const output = await runChild(how);
+			const after = Bun.stripANSI(
+				output.slice(output.lastIndexOf("\u001b[?1049l")),
+			);
+			expect(after).toContain(`error: ${message}`);
+			expect(after).toContain("exit:1");
+		});
+	}
 });
+
+describe("RunTui pager", () => {
+	// The pager has the terminal in cooked mode, so Ctrl-C is a real SIGINT to
+	// the whole process group, the run included. Like less, the fake pager
+	// ignores it: only the TUI closing it ends it.
+	it("closes the pager on Ctrl-C and keeps the run", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-tui-pager-int-"));
+		const pager = join(dir, "pager.sh");
+		writeFileSync(
+			pager,
+			"#!/bin/sh\ntrap '' INT\necho pager-open\nexec sleep 30\n",
+		);
+		chmodSync(pager, 0o755);
+		const child = join(import.meta.dir, "tui-child.testing.ts");
+		let output = "";
+		const proc = Bun.spawn([process.execPath, child, "pager", pager], {
+			terminal: {
+				cols: 80,
+				rows: 20,
+				data: (_terminal, data) => {
+					output += new TextDecoder().decode(data);
+				},
+			},
+		});
+		try {
+			await until(() => output.includes("hello from api"));
+			proc.terminal?.write("j");
+			proc.terminal?.write("l");
+			await until(() => output.includes("pager-open"));
+			proc.terminal?.write("\u0003");
+			// The TUI takes the screen back once the pager is gone.
+			const reentered = () =>
+				output.slice(output.indexOf("pager-open")).includes("\u001b[?1049h");
+			await until(() => reentered() || output.includes("run interrupted"));
+			expect(output).not.toContain("run interrupted");
+			expect(reentered()).toBe(true);
+		} finally {
+			// By its own pid, never by a pattern other worktrees' runs share.
+			const pid = Number(/pid:(\d+)/.exec(output)?.[1]);
+			if (pid) process.kill(pid, "SIGTERM");
+			await proc.exited;
+			rmSync(dir, { recursive: true, force: true });
+		}
+		expect(proc.exitCode).toBe(143);
+	});
+});
+
+/** Keys and mouse reports as the TUI reads them from stdin, without the stream's delay. */
+function type(tui: RunTui, data: string) {
+	(tui as unknown as { input(data: string): void }).input(data);
+}
+
+/** What has been drawn so far, without escapes. */
+function drawn(terminal: { writes: string[] }) {
+	return Bun.stripANSI(terminal.writes.join(""));
+}
 
 /** A terminal that records what was written and whether raw mode is on. */
 function fakeTerminal() {
@@ -112,7 +196,7 @@ describe("RunTui", () => {
 		const dir = mkdtempSync(join(tmpdir(), "buncargo-tui-pager-"));
 		const saved = process.env.PAGER;
 		const pager = join(dir, "pager.sh");
-		writeFileSync(pager, "#!/bin/sh\nsleep 5\n");
+		writeFileSync(pager, "#!/bin/sh\nexec sleep 5\n");
 		chmodSync(pager, 0o755);
 		process.env.PAGER = pager;
 		const tui = new RunTui({
@@ -126,14 +210,16 @@ describe("RunTui", () => {
 		});
 		try {
 			tui.start();
-			terminal.stdin.write("j");
-			terminal.stdin.write("l");
-			await Bun.sleep(200);
+			type(tui, "j");
+			type(tui, "l");
 			// Suspended: the pager has the keys and the plain screen.
 			expect(terminal.stdin.raw).toBe(false);
 			expect(terminal.stdin.listenerCount("data")).toBe(0);
 			tui.stop();
-			await Bun.sleep(300);
+			// Past the pager's exit, when the TUI decides whether to take the screen back.
+			await until(
+				() => (tui as unknown as { pager?: unknown }).pager === undefined,
+			);
 			const last = terminal.writes.join("");
 			expect(last.lastIndexOf("\u001b[?1049l")).toBeGreaterThan(
 				last.lastIndexOf("\u001b[?1049h"),
@@ -150,9 +236,13 @@ describe("RunTui", () => {
 
 describe("RunTui mouse", () => {
 	const wheelUp = "\u001b[<64;40;10M";
-	const frame = async (terminal: ReturnType<typeof fakeTerminal>) => {
-		await Bun.sleep(80);
-		return Bun.stripANSI(terminal.writes.join(""));
+	/** What is drawn once it shows `text`. */
+	const frame = async (
+		terminal: ReturnType<typeof fakeTerminal>,
+		text: string,
+	) => {
+		await until(() => drawn(terminal).includes(text));
+		return drawn(terminal);
 	};
 
 	it("scrolls the Overview with the wheel, and End follows the output again", async () => {
@@ -170,11 +260,13 @@ describe("RunTui mouse", () => {
 			tui.start();
 			for (let i = 0; i < 60; i++) output.line("api", `line ${i}`);
 			expect(terminal.writes.join("")).toContain("\u001b[?1000h");
-			terminal.stdin.write(wheelUp + wheelUp);
-			expect(await frame(terminal)).toContain("↑ 6 lines · End to follow");
+			type(tui, wheelUp + wheelUp);
+			expect(await frame(terminal, "↑ 6 lines")).toContain(
+				"↑ 6 lines · End to follow",
+			);
 			terminal.writes.length = 0;
-			terminal.stdin.write("\u001b[F");
-			const after = await frame(terminal);
+			type(tui, "\u001b[F");
+			const after = await frame(terminal, "line 59");
 			expect(after).not.toContain("↑ 6 lines");
 			expect(after).toContain("line 59");
 		} finally {
@@ -200,8 +292,10 @@ describe("RunTui mouse", () => {
 		try {
 			tui.start();
 			// Row 1 header, 2 Overview, 3 the rule, 4 api, 5 web.
-			terminal.stdin.write("\u001b[<0;3;5M\u001b[<0;3;5m");
-			expect(await frame(terminal)).toContain("http://web.test");
+			type(tui, "\u001b[<0;3;5M\u001b[<0;3;5m");
+			expect(await frame(terminal, "http://web.test")).toContain(
+				"http://web.test",
+			);
 		} finally {
 			tui.stop();
 		}
@@ -262,7 +356,8 @@ describe("RunTui interact mode", () => {
 		return { tui, state, forwarded, quits: () => quits };
 	};
 	// Past the wait that tells a lone Esc from the start of a longer key.
-	const settle = () => Bun.sleep(60);
+	const left = (state: { interacting: boolean }) =>
+		until(() => !state.interacting);
 
 	it("leaves on a lone Esc or Ctrl-], and still sends escape sequences to the app", async () => {
 		const { tui, state, forwarded } = setup();
@@ -271,7 +366,7 @@ describe("RunTui interact mode", () => {
 			state.input("\u001bb");
 			state.input("\u001b");
 			expect(state.interacting).toBe(true);
-			await settle();
+			await left(state);
 			expect(state.interacting).toBe(false);
 			expect(forwarded).toEqual(["\u001b[A", "\u001bb"]);
 
@@ -293,14 +388,13 @@ describe("RunTui interact mode", () => {
 			// A mouse report split in two: the wheel, never typed into the app.
 			state.input("\u001b[<64;");
 			state.input("40;10M");
-			await settle();
 			expect(state.interacting).toBe(true);
 			expect(quits()).toBe(0);
 			expect(forwarded).toEqual(["\u001bq"]);
 
 			// A key and Esc in one chunk: the key goes to the app, Esc leaves.
 			state.input("a\u001b");
-			await settle();
+			await left(state);
 			expect(forwarded).toEqual(["\u001bq", "a"]);
 			expect(state.interacting).toBe(false);
 		} finally {
@@ -336,23 +430,20 @@ describe("RunTui selection", () => {
 			output.line("api", `second ${"x".repeat(200)} end`);
 			// 80x20 terminal: sidebar 1-18, divider 19, the pane from column 20 and rows 2..19; the two
 			// lines sit on the last two pane rows.
-			terminal.stdin.write(press(20, 18) + drag(80, 19) + release(80, 19));
-			await Bun.sleep(80);
+			type(tui, press(20, 18) + drag(80, 19) + release(80, 19));
 			expect(copied).toHaveLength(1);
 			const [first, second] = (copied[0] ?? "").split("\n");
 			expect(first).toMatch(/^\d\d:\d\d:\d\d api {7}first line$/);
 			// Dragged to the edge: the cut-off line is copied in full.
 			expect(second).toEndWith(`${"x".repeat(200)} end`);
+			await until(() => drawn(terminal).includes("Copied 2 lines"));
 
 			// Stopping mid-line copies only up to there.
-			terminal.stdin.write(press(20, 19) + drag(39, 19) + release(39, 19));
-			await Bun.sleep(80);
+			type(tui, press(20, 19) + drag(39, 19) + release(39, 19));
 			expect(copied[1]).toMatch(/^\d\d:\d\d:\d\d api {7}s$/);
 			expect(copied[1]?.length).toBe(20);
 			expect(terminal.writes.join("")).toContain("\u001b[7m");
-			expect(Bun.stripANSI(terminal.writes.join(""))).toContain(
-				"Copied 2 lines",
-			);
+			expect(drawn(terminal)).toContain("Copied 2 lines");
 		} finally {
 			tui.stop();
 		}
@@ -380,9 +471,8 @@ describe("RunTui selection", () => {
 			await new Promise<void>((resolve) =>
 				screen.term.write("alpha beta\r\ngamma delta\r\n", resolve),
 			);
-			terminal.stdin.write(press(3, 4) + release(3, 4)); // select api
-			terminal.stdin.write(press(26, 2) + drag(24, 3) + release(24, 3));
-			await Bun.sleep(80);
+			type(tui, press(3, 4) + release(3, 4)); // select api
+			type(tui, press(26, 2) + drag(24, 3) + release(24, 3));
 			expect(copied).toEqual(["beta\ngamma"]);
 		} finally {
 			tui.stop();
@@ -420,9 +510,8 @@ describe("RunTui selection", () => {
 			await new Promise<void>((resolve) =>
 				screen.term.write(`${rows.join("\r\n")}\r\n`, resolve),
 			);
-			terminal.stdin.write(press(3, 4) + release(3, 4)); // select api
-			terminal.stdin.write(press(20, 2) + drag(80, 6) + release(80, 6));
-			await Bun.sleep(80);
+			type(tui, press(3, 4) + release(3, 4)); // select api
+			type(tui, press(20, 2) + drag(80, 6) + release(80, 6));
 			expect(copied).toEqual([
 				[
 					" Your app is running. Press p to open the preview in the browser.",
@@ -430,9 +519,8 @@ describe("RunTui selection", () => {
 					" GraphiQL URL: http://localhost:3457/graphiql",
 				].join("\n"),
 			]);
-			expect(Bun.stripANSI(terminal.writes.join(""))).toContain(
-				"Copied 3 lines",
-			);
+			await until(() => drawn(terminal).includes("Copied 3 lines"));
+			expect(drawn(terminal)).toContain("Copied 3 lines");
 		} finally {
 			tui.stop();
 		}
@@ -463,9 +551,8 @@ describe("RunTui selection", () => {
 			await new Promise<void>((resolve) =>
 				screen.term.write(`${long}\r\ndone\r\n`, resolve),
 			);
-			terminal.stdin.write(press(3, 4) + release(3, 4)); // select api
-			terminal.stdin.write(press(20, 2) + drag(80, 4) + release(80, 4));
-			await Bun.sleep(80);
+			type(tui, press(3, 4) + release(3, 4)); // select api
+			type(tui, press(20, 2) + drag(80, 4) + release(80, 4));
 			expect(copied).toEqual([`${long}\ndone`]);
 		} finally {
 			tui.stop();
@@ -492,16 +579,18 @@ describe("RunTui selection", () => {
 			tui.start();
 			output.line("api", "only line");
 			// No motion report between press and release.
-			terminal.stdin.write(press(20, 19) + release(39, 19));
-			await Bun.sleep(80);
+			type(tui, press(20, 19) + release(39, 19));
 			expect(copied[0]).toMatch(/^\d\d:\d\d:\d\d api {7}o$/);
 			// The highlight is in the pane, not the sidebar's selected row.
-			const paneRows = terminal.writes
-				.join("")
-				// biome-ignore lint/suspicious/noControlCharactersInRegex: cursor moves
-				.split(/\u001b\[\d+;1H/)
-				.map((row) => row.split("│").slice(1).join("│"));
-			expect(paneRows.some((row) => row.includes("\u001b[7m"))).toBe(true);
+			const highlighted = () =>
+				terminal.writes
+					.join("")
+					// biome-ignore lint/suspicious/noControlCharactersInRegex: cursor moves
+					.split(/\u001b\[\d+;1H/)
+					.map((row) => row.split("│").slice(1).join("│"))
+					.some((row) => row.includes("\u001b[7m"));
+			await until(highlighted);
+			expect(highlighted()).toBe(true);
 		} finally {
 			tui.stop();
 		}
@@ -527,11 +616,9 @@ describe("RunTui selection", () => {
 			tui.start();
 			for (let i = 0; i < 10_000; i++) output.line("api", `line-${i}`);
 			// The last line, from the start of its text to its end.
-			terminal.stdin.write(press(39, 19) + drag(80, 19));
-			await Bun.sleep(20);
+			type(tui, press(39, 19) + drag(80, 19));
 			output.line("api", "line-new");
-			terminal.stdin.write(release(80, 19));
-			await Bun.sleep(80);
+			type(tui, release(80, 19));
 			expect(copied).toEqual(["line-9999"]);
 		} finally {
 			tui.stop();
@@ -562,25 +649,21 @@ describe("RunTui selection", () => {
 			let text = "";
 			for (let i = 0; i < 10_100; i++) text += `app-${i}\r\n`;
 			await write(text);
-			terminal.stdin.write(press(3, 4) + release(3, 4)); // select api
+			type(tui, press(3, 4) + release(3, 4)); // select api
 			// The top pane row, whole.
-			terminal.stdin.write(press(20, 2) + drag(80, 2));
-			await Bun.sleep(20);
+			type(tui, press(20, 2) + drag(80, 2));
 			const top = screen.term.buffer.active.getLine(
 				screen.term.buffer.active.baseY,
 			);
 			const selected = top?.translateToString(true);
 			await write("more\r\n");
-			terminal.stdin.write(release(80, 2));
-			await Bun.sleep(80);
+			type(tui, release(80, 2));
 			expect(copied).toEqual([selected ?? ""]);
 
 			// The app switching screens under a drag ends it: nothing is copied.
-			terminal.stdin.write(press(20, 2) + drag(80, 3));
-			await Bun.sleep(20);
+			type(tui, press(20, 2) + drag(80, 3));
 			await write("\u001b[?1049h");
-			terminal.stdin.write(release(80, 3));
-			await Bun.sleep(80);
+			type(tui, release(80, 3));
 			expect(copied).toHaveLength(1);
 		} finally {
 			tui.stop();
@@ -606,8 +689,7 @@ describe("RunTui selection", () => {
 		try {
 			tui.start();
 			output.line("api", "only line");
-			terminal.stdin.write(press(30, 19) + release(30, 19));
-			await Bun.sleep(80);
+			type(tui, press(30, 19) + release(30, 19));
 			expect(copied).toEqual([]);
 		} finally {
 			tui.stop();

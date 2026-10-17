@@ -116,7 +116,6 @@ export function mergeLinkedConfig(input: {
 export function linkShopifyApp(
 	root: string,
 	config: string,
-	options: { clientId?: string } = {},
 ): { path: string; before: string | undefined; after: string } {
 	const scratchName = `buncargo-link-${process.pid}`;
 	const scratch = join(root, shopifyConfigFile(scratchName));
@@ -129,7 +128,6 @@ export function linkShopifyApp(
 				"link",
 				"--config",
 				scratchName,
-				...(options.clientId ? ["--client-id", options.clientId] : []),
 			],
 			{
 				cwd: root,

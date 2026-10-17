@@ -50,6 +50,14 @@ export interface PromptChoice<T> {
 	readonly value: T;
 }
 
+/** Ctrl-C or Ctrl-D at a prompt: the question has no answer. */
+export class PromptInterruptedError extends Error {
+	constructor() {
+		super("Interrupted.");
+		this.name = "PromptInterruptedError";
+	}
+}
+
 /**
  * Ask a question and map the answer through `choices`.
  *
@@ -57,6 +65,13 @@ export interface PromptChoice<T> {
  * added here so every question looks the same. An answer matching no choice
  * falls back to the choice keyed `""` — bare Enter — which is why the safe
  * option is always the one keyed that way.
+ *
+ * Ctrl-C and Ctrl-D never pick the fallback: for the hosts offer that is the
+ * setup, which asks for a password. Both reject with
+ * {@link PromptInterruptedError} and raise SIGINT on the process. readline
+ * holds the terminal in raw mode, so the keypress never became a signal: a
+ * command with no SIGINT listener now dies of it as it would at any other
+ * moment, and `dev`'s listener starts its teardown.
  */
 export async function askChoice<T>(
 	lines: string[],
@@ -64,10 +79,25 @@ export async function askChoice<T>(
 	fallback: T,
 ): Promise<T> {
 	const rl = createInterface({ input: process.stdin, output: process.stdout });
-	const answer = await new Promise<string>((resolve) => {
-		rl.question(["", ...lines, "  > "].join("\n"), resolve);
+	const answer = await new Promise<string>((resolve, reject) => {
+		let settled = false;
+		const interrupt = () => {
+			if (settled) return;
+			settled = true;
+			rl.close();
+			// Off the `  > ` line, so whatever reports the exit starts clean.
+			process.stdout.write("\n");
+			reject(new PromptInterruptedError());
+			process.kill(process.pid, "SIGINT");
+		};
+		rl.on("SIGINT", interrupt);
+		rl.on("close", interrupt);
+		rl.question(["", ...lines, "  > "].join("\n"), (line) => {
+			settled = true;
+			rl.close();
+			resolve(line);
+		});
 	});
-	rl.close();
 	const normalized = answer.trim().toLowerCase();
 	const match = choices.find((choice) => choice.key === normalized);
 	return match ? match.value : fallback;

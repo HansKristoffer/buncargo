@@ -1,19 +1,22 @@
 # Testing
 
 `bun test` runs the hermetic suite. `bunfig.toml` preloads `scripts/test-runtime-isolation.ts`,
-which puts failing `docker` and `container` stubs first on `PATH`, so unit tests can never reach the
-developer's container daemons. Tests are co-located with their module as `*.test.ts`; test helpers
+which keeps unit tests off the developer's machine: failing `docker` and `container` stubs first on
+`PATH`, `DOCKER_HOST` pointed at nothing, a temporary `HOME` for the run, and
+`BUNCARGO_WATCHDOG_PARENT`, so every watchdog a test starts ends with the run. Tests are co-located with their module as `*.test.ts`; test helpers
 shared across files are `*.testing.ts` and excluded from the package.
 
 ## Opt-in suites
 
-These touch the network, real binaries or real runtimes, so the default run skips them.
+These touch the network, real binaries or real runtimes, or wait out a real timer, so the default
+run skips them.
 
 | Script                                   | Variable                                   | What it proves                                                                                                       |
 | ---------------------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
 | `bun run test:integration-cloudflared`   | `BUNCARGO_TEST_CLOUDFLARED_SMOKE=1`        | A quick tunnel returns a public HTTPS URL. Cloudflare may 429; may download `cloudflared`.                            |
 | `bun run test:integration-cloudflared-e2e` | `…_SMOKE=1 BUNCARGO_TEST_CLOUDFLARED_E2E=1` | `curl` through `*.trycloudflare.com` reaches the local server.                                                     |
 | `bun run test:integration-hosts`         | `BUNCARGO_TEST_HOSTS=1`                    | A real mkcert mint. Needs no sudo, system trust or `:443`; may download `mkcert`.                                    |
+| `bun run test:integration-proxy-idle`    | `BUNCARGO_TEST_PROXY_IDLE=1`               | The proxy keeps a quiet streamed response (SSE) open past Bun's 10s idle default. Takes ~13s: only elapsed time proves it. |
 | `bun run test:integration-hosts-soak`    | `BUNCARGO_TEST_HOSTS_SOAK=1`               | Several worktrees activate in parallel, repeatedly, and every hostname attaches every time. See below.               |
 | `bun run test:integration-apple`         | `BUNCARGO_TEST_APPLE_CONTAINER=1`          | The live Apple `container` runtime (macOS 26+, Apple silicon).                                                       |
 | `bun run test:integration-frp`           | `BUNCARGO_TEST_FRP=1`                      | frp publishing end to end.                                                                                           |
@@ -36,7 +39,8 @@ only.
   container runtime is reachable. Every real stack on the machine then looks unowned. Stub the
   adapters, or point `DOCKER_HOST` at nothing as well.
 - Write to the real `~/.buncargo`, `/etc/hosts`, the clipboard or the installed hosts service.
-  Point `HOME` at a temporary directory and inject the seams (`copy`, `privileged`, the reloader's
-  edges) the modules already take.
+  `bun test` gives the run a temporary `HOME` unless an opt-in suite's flag is set; those suites
+  keep the real one and must move `HOME` themselves before writing state. Inject the seams
+  (`copy`, `privileged`, the reloader's edges) the modules already take.
 - Wait on `sleep` for a state change. Await the event, poll the condition with a deadline, or
   inject the clock.
