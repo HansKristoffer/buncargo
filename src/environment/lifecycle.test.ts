@@ -7,11 +7,15 @@ import {
 	loadScopeSecrets,
 	resolveScope,
 } from "../core/secrets/infisical";
+import { isolateHome } from "../core/test-env.testing";
 import { planStart } from "../planning";
 import type { AppConfig, ServiceConfig } from "../types";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 import { createLifecycleApi } from "./lifecycle";
+
+// Starts take the project lifecycle lock under ~/.buncargo.
+isolateHome("buncargo-lifecycle-home-");
 
 function fixture() {
 	const events: string[] = [];

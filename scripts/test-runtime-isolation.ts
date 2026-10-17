@@ -19,4 +19,13 @@ if (
 	process.once("exit", () =>
 		rmSync(directory, { recursive: true, force: true }),
 	);
+
+	// The stubs go when this process exits, but a watchdog a test's run
+	// started may outlive it, with an isolated HOME whose registry names no
+	// stack, and then find the real `docker` further down PATH. A dead
+	// DOCKER_HOST outlives the stubs; with the tailnet directory off, such a
+	// watchdog has nothing to serve and exits.
+	process.env.DOCKER_HOST = "unix:///nonexistent/buncargo-test.sock";
+	delete process.env.DOCKER_CONTEXT;
+	process.env.BUNCARGO_TAILNET_DIRECTORY = "0";
 }
