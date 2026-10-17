@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execAsync } from "../core/process";
 import { getProjectStateDir, STATE_DIRNAME } from "../core/state-paths";
-import { CONFIG_FILES } from "../loader";
+import { findRootConfigFile } from "../loader/find-config-file";
 import { resolveProjectTsc } from "./project-tsc";
 
 /**
@@ -43,13 +43,6 @@ const FALLBACK_COMPILER_OPTIONS = {
 	allowImportingTsExtensions: true,
 	resolveJsonModule: true,
 } as const;
-
-function findRootConfigFile(root: string): string | null {
-	for (const file of CONFIG_FILES) {
-		if (existsSync(join(root, file))) return file;
-	}
-	return null;
-}
 
 /**
  * Write the tsconfig used to check the config file on its own.
