@@ -1,5 +1,21 @@
 # Changelog
 
+## [13.0.0](https://github.com/HansKristoffer/buncargo/compare/v12.7.0...v13.0.0) (2026-10-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `buncargo dev` opens the terminal UI by default in a terminal, and an app with `interactive: true` only owns the real terminal with `--no-tui`. Pass `--no-tui` to keep the old output.
+
+### Features
+
+* **cli:** open the terminal UI by default in a terminal ([#107](https://github.com/HansKristoffer/buncargo/issues/107)) ([c3d2a00](https://github.com/HansKristoffer/buncargo/commit/c3d2a00ca37be3d7fac7e4f6a44a6c8b5ec644e1))
+
+
+### Bug Fixes
+
+* **cli:** offer files merge first for checkout file conflicts ([#106](https://github.com/HansKristoffer/buncargo/issues/106)) ([38ed1d1](https://github.com/HansKristoffer/buncargo/commit/38ed1d1350c537622bf8da7168cb73ddc5b2b7a7))
+
 ## [12.7.0](https://github.com/HansKristoffer/buncargo/compare/v12.6.0...v12.7.0) (2026-10-16)
 
 
