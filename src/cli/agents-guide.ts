@@ -27,7 +27,8 @@ hardcode a port. Ask buncargo instead.
   running. Do not use \`nohup\`, \`&\` or \`disown\`.
 - \`bunx buncargo dev --detach --apps=api\` starts only some apps (and the apps
   they require). \`--profile=<name>\` picks a configured set.
-- \`bunx buncargo stop --all\` stops this checkout's run. A run someone started
+- \`bunx buncargo stop --all\` stops this checkout's run, and removes the
+  containers an ended run left waiting out its idle hold. A run someone started
   in a terminal (not with \`--detach\`) asks first, and without a terminal needs
   \`--force\`: only stop that one when the user asked.
   \`bunx buncargo stop <app>\` stops one app and \`bunx buncargo restart <app>\`

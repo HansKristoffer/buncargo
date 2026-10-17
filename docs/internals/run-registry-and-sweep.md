@@ -77,7 +77,12 @@ no config load, no Docker unless a service is the target.
 - Services are `stop`ped, never `kill`ed, so a `restart:` policy cannot undo it; the exited
   container is removed by the sweep once the run has ended. Stopping the whole run `down`s its
   containers, because the run itself only releases them to the idle hold and "stop" from the menu
-  bar means now.
+  bar means now. It downs only on the runtimes the entry records: probing every runtime for an
+  app-only run's project once took down a stack another run held. Then it retires the entry, and
+  the project's finished entries whose containers all came down with it.
+- `stop --all` also takes down what a checkout's finished runs left (released into the hold, or
+  crashed inside the grace), without asking, since nothing of theirs runs. A live run of the same
+  project keeps them, and a live run the person declined to stop keeps the whole checkout's.
 
 ## The sweep
 

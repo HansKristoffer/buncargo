@@ -13,11 +13,13 @@ import {
 } from "../../core/process/terminate";
 import { askConfirm, isInteractive } from "../../core/prompt";
 import {
+	findCheckoutRuns,
 	findRunsByRoot,
 	patchRun,
 	type RunAppEntry,
 	type RunEntry,
 	type RunServiceEntry,
+	retireRuns,
 } from "../../core/run-registry";
 
 import * as log from "../log";
@@ -55,10 +57,15 @@ export async function handleStop(args: string[] = []): Promise<number> {
 	if (parsed.errors.length > 0) return STOP_EXIT.refused;
 
 	const root = parsed.root ?? findMonorepoRoot();
-	const runs = (await findRunsByRoot(root)).filter(
-		(run) => !parsed.run || run.sessionId === parsed.run,
-	);
-	if (runs.length === 0) {
+	const selected = (run: RunEntry) =>
+		!parsed.run || run.sessionId === parsed.run;
+	const checkout = await findCheckoutRuns(root);
+	const runs = checkout.live.filter(selected);
+	// A finished run's apps are gone, so only its services are targets.
+	const held = checkout.held
+		.filter(selected)
+		.map((run) => ({ ...run, apps: [] }));
+	if (runs.length === 0 && held.length === 0) {
 		log.error(`No active buncargo run for ${root}.`);
 		log.hint("Run `buncargo runs` to see what is active.");
 		return STOP_EXIT.notFound;
@@ -68,6 +75,20 @@ export async function handleStop(args: string[] = []): Promise<number> {
 		let result: number = STOP_EXIT.ok;
 		for (const run of runs) {
 			const code = await stopWholeRun(run, parsed.force);
+			if (code !== STOP_EXIT.ok) result = code;
+		}
+		// A run left standing was declined or could not be stopped: its
+		// checkout's other leftovers are not this command's to judge then.
+		if (result !== STOP_EXIT.ok) return result;
+		// Read again: a stopped run has retired its own entry, or released it
+		// when another run keeps its containers.
+		const finished =
+			runs.length === 0
+				? held
+				: (await findCheckoutRuns(root)).held.filter(selected);
+		const byProject = Map.groupBy(finished, (run) => run.projectName);
+		for (const [projectName, entries] of byProject) {
+			const code = await stopHeldProject(root, projectName, entries);
 			if (code !== STOP_EXIT.ok) result = code;
 		}
 		return result;
@@ -84,12 +105,13 @@ export async function handleStop(args: string[] = []): Promise<number> {
 						app.status !== "stopped",
 				),
 			) ??
-			runs.find((entry) =>
+			[...runs, ...held].find((entry) =>
 				[...entry.apps, ...entry.services].some(
 					(target) => target.name === name,
 				),
 			) ??
-			runs[0];
+			runs[0] ??
+			held[0];
 		if (!run) continue;
 		const code = await stopTarget(run, name, parsed.force);
 		if (code !== STOP_EXIT.ok) exitCode = code;
@@ -353,7 +375,8 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 		// in this same registry before it starts them, so a run that is still
 		// coming up is already visible here — which is what a separate liveness
 		// record used to be needed for.
-		const others = (await findRunsByRoot(run.root)).filter(
+		const { live, held } = await findCheckoutRuns(run.root);
+		const others = live.filter(
 			(other) => other.pid !== run.pid && other.projectName === run.projectName,
 		);
 		if (others.length > 0) {
@@ -365,31 +388,91 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 		// Only what the entry records. A run with no container of its own (an
 		// app-only run) has none to take down: probing every runtime for its
 		// project used to `down` a stack another run had left in its idle hold.
-		try {
-			for (const runtime of recordedRuntimes(run))
-				await runtime.down({
-					root: run.root,
-					projectName: run.projectName,
-					verbose: false,
-				});
-			await runStackDowns(run);
-		} catch (error) {
-			log.error(
-				`Could not remove ${run.projectName}'s containers: ${error instanceof Error ? error.message : String(error)}`,
-			);
+		// The project's finished runs whose containers all come down with these
+		// hold nothing afterwards, so they retire with it.
+		const mine = new Set(containerKeys(run));
+		const sharing = held.filter(
+			(other) =>
+				mine.size > 0 &&
+				other.sessionId !== run.sessionId &&
+				other.projectName === run.projectName &&
+				containerKeys(other).every((key) => mine.has(key)),
+		);
+		if (!(await tearDown(run.root, run.projectName, [run, ...sharing])))
 			return STOP_EXIT.refused;
-		}
 		log.done(`Stopped ${run.projectName}`);
 		return STOP_EXIT.ok;
 	});
 }
 
-/** One adapter per runtime and binary the entry's containers were started through. */
-function recordedRuntimes(run: RunEntry): ContainerRuntimeAdapter[] {
+/**
+ * Take down the containers finished runs of one project left: released into
+ * the idle hold, or crashed inside the grace. Nobody is watching them, so
+ * nothing is asked; a live run of the project in this checkout keeps them,
+ * exactly as it would keep a stopped run's.
+ */
+async function stopHeldProject(
+	root: string,
+	projectName: string,
+	held: readonly RunEntry[],
+): Promise<number> {
+	return withProjectLifecycleLock(projectName, root, async () => {
+		// Read again under the lock: a run may have claimed these since.
+		const fresh = await findCheckoutRuns(root);
+		if (fresh.live.some((run) => run.projectName === projectName)) {
+			log.info(
+				`Kept ${projectName}'s containers: another run in ${root} uses them.`,
+			);
+			return STOP_EXIT.ok;
+		}
+		// An entry that records neither a container nor a stack names nothing to
+		// take down, and retiring it would hide whatever it held from the sweep.
+		const sessions = new Set(held.map((run) => run.sessionId));
+		const entries = fresh.held.filter(
+			(run) =>
+				sessions.has(run.sessionId) &&
+				(run.stacks?.length || run.services.some((s) => s.container)),
+		);
+		if (entries.length === 0) return STOP_EXIT.ok;
+		if (!(await tearDown(root, projectName, entries))) return STOP_EXIT.refused;
+		log.done(`Stopped ${projectName}'s containers, left by a finished run`);
+		return STOP_EXIT.ok;
+	});
+}
+
+/**
+ * `down` the project on every runtime the entries record, stop their
+ * integration stacks, then retire the entries: nothing is left to hold.
+ * False, retiring nothing, when a teardown failed.
+ */
+async function tearDown(
+	root: string,
+	projectName: string,
+	runs: readonly RunEntry[],
+): Promise<boolean> {
+	try {
+		for (const runtime of recordedRuntimes(runs))
+			await runtime.down({ root, projectName, verbose: false });
+		for (const run of runs) await runStackDowns(run);
+	} catch (error) {
+		log.error(
+			`Could not remove ${projectName}'s containers: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		log.hint("Fix the runtime and run `buncargo stop --all` again.");
+		return false;
+	}
+	await retireRuns(runs.map((run) => run.sessionId));
+	return true;
+}
+
+/** One adapter per runtime and binary the entries' containers were started through. */
+function recordedRuntimes(
+	runs: readonly RunEntry[],
+): ContainerRuntimeAdapter[] {
 	const runtimes = new Map<string, ContainerRuntimeAdapter>();
-	for (const { container } of run.services) {
+	for (const { container } of runs.flatMap((run) => run.services)) {
 		if (!container) continue;
-		const key = `${container.runtime}\0${container.binary ?? ""}`;
+		const key = containerKey(container);
 		if (!runtimes.has(key))
 			runtimes.set(
 				key,
@@ -399,4 +482,14 @@ function recordedRuntimes(run: RunEntry): ContainerRuntimeAdapter[] {
 			);
 	}
 	return [...runtimes.values()];
+}
+
+function containerKey(container: { runtime: string; binary?: string }) {
+	return `${container.runtime}\0${container.binary ?? ""}`;
+}
+
+function containerKeys(run: RunEntry): string[] {
+	return run.services.flatMap(({ container }) =>
+		container ? [containerKey(container)] : [],
+	);
 }

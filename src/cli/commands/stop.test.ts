@@ -122,4 +122,47 @@ describe("buncargo stop --all", () => {
 			owner.kill("SIGKILL");
 		}
 	});
+
+	it("takes down the containers a released run left in the idle hold, and retires its entry", async () => {
+		await publishRun(held("held"));
+		expect(await handleStop(["--all", "--root", root])).toBe(0);
+		expect(calls()).toContain("compose -p fixture down");
+		expect(await loadRuns()).toEqual([]);
+	});
+
+	it("takes down a live run's containers and its project's released runs together", async () => {
+		await publishRun(held("held"));
+		const owner = await live("dev", { services: held("dev").services });
+		try {
+			expect(await handleStop(["--all", "--root", root])).toBe(0);
+			expect(await owner.exited).not.toBeUndefined();
+			expect(calls()).toContain("compose -p fixture down");
+			expect(await loadRuns()).toEqual([]);
+		} finally {
+			owner.kill("SIGKILL");
+		}
+	});
+
+	it("leaves a run in another terminal, and what its project holds, without confirmation", async () => {
+		await publishRun(held("held"));
+		const owner = await live("dev", {
+			detached: false,
+			services: held("dev").services,
+		});
+		try {
+			expect(await handleStop(["--all", "--root", root])).toBe(3);
+			expect(owner.exitCode).toBeNull();
+			expect(calls().filter((call) => call.includes("down"))).toEqual([]);
+			expect((await loadRuns()).map((run) => run.sessionId).sort()).toEqual([
+				"dev",
+				"held",
+			]);
+		} finally {
+			owner.kill("SIGKILL");
+		}
+	});
+
+	it("reports nothing to stop when the checkout has no run at all", async () => {
+		expect(await handleStop(["--all", "--root", root])).toBe(2);
+	});
 });

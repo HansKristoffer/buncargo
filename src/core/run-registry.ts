@@ -700,6 +700,24 @@ export async function findRunsByRoot(root: string): Promise<RunEntry[]> {
 	return (await readLiveRuns()).filter((run) => run.root === root);
 }
 
+/**
+ * A checkout's live sessions, and its finished ones whose services may still
+ * stand: released into the idle hold, or crashed. Those are what `stop` can
+ * still take down, though no reader that filters live entries shows them.
+ */
+export async function findCheckoutRuns(
+	root: string,
+): Promise<{ live: RunEntry[]; held: RunEntry[] }> {
+	const runs = (await loadRuns({ strict: true })).filter(
+		(run) => run.root === root,
+	);
+	const alive = await runLivenessAsync(runs);
+	return {
+		live: runs.filter(alive),
+		held: runs.filter((run) => !alive(run) && run.services.length > 0),
+	};
+}
+
 /** Inspection filters stale owners in memory without mutating persisted state. */
 export async function readLiveRuns(): Promise<RunEntry[]> {
 	const runs = await loadRuns({ strict: true });

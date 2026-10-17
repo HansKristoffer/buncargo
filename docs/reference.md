@@ -912,7 +912,7 @@ with Docker stopped.
 ```bash
 bunx buncargo stop api        # SIGTERM that dev server's process group
 bunx buncargo stop postgres   # docker/container stop for that service
-bunx buncargo stop --all      # checkout sessions; retains containers another live session needs
+bunx buncargo stop --all      # checkout sessions and their idle containers; retains containers another live session needs
 bunx buncargo stop api --run=<session-id>  # select an exact run
 ```
 
@@ -928,7 +928,9 @@ such target, `3` refused.
 Services are stopped, never killed, so a `restart:` policy cannot undo it.
 Nothing in buncargo brings a stopped container back, so it stays down until the
 next `dev`; once the run itself ends, the watchdog removes it. Stopping a whole
-run removes its containers.
+run removes its containers. `stop --all` also removes the containers a finished
+run of this checkout left waiting out its idle hold (after Ctrl-C, say) and
+forgets that run; no confirmation, since nothing of it is still running.
 
 ### BuncargoBar
 
@@ -1427,7 +1429,7 @@ A running stack with a live owner is never touched. `--keep-containers`, `option
 
 On a machine on a [Tailscale](https://tailscale.com) network, the watchdog also lists the live runs at `http://<tailscale-ip>:48480/v1/runs`, on the Tailscale address only, so BuncargoBar on your other machines shows them. Who can read it is up to your tailnet's access rules; the list includes connection strings with the dev database passwords. `BUNCARGO_TAILNET_DIRECTORY=0` turns it off, and keeps Vite apps on `127.0.0.1`.
 
-A finished run keeps its registry entry until its containers are gone — that entry is what says they may still be reused, and for how long. `buncargo runs`, `stop` and the menu bar filter it out; only the sweep sees it. `dev --down` and `stop()` remove it straight away, since they have just removed the containers.
+A finished run keeps its registry entry until its containers are gone — that entry is what says they may still be reused, and for how long. `buncargo runs` and the menu bar filter it out; the sweep and `stop` see it, and `stop --all` removes its containers now. `dev --down`, `stop --all` and `stop()` remove the entry straight away, since they have just removed the containers.
 
 **Volumes are never removed automatically.** A container costs nothing to recreate; a volume is the database. `buncargo prune` lists the volumes whose project has no containers, no run and no checkout that still exists, and removes them only after you confirm. An idle checkout's database stays until its directory is deleted; a `ci` or E2E stack's volume is listed once its run is gone:
 
