@@ -239,7 +239,7 @@ export interface DevEnvironment<
 	 * there or the runtime cannot answer. Lists the runtime's containers, so
 	 * call it when something has already failed.
 	 */
-	explainMissingContainers?(): string | undefined;
+	explainMissingContainers(): string | undefined;
 	/**
 	 * Run `seed.command` through the same path `start()` uses.
 	 *

@@ -2,6 +2,7 @@ import { CONTAINER_RUNTIME_SELECTIONS } from "../../container-runtime";
 import { CI_PROJECT_SUFFIX } from "../../core/ports";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
 import { loadDevEnv } from "../../loader";
+import type { AnyDevEnvironment } from "../../types";
 import {
 	type CommandSpec,
 	enumValidator,
@@ -101,10 +102,10 @@ export function parseCiArgs(args: string[]) {
  * resource found to remove", long after the command failed on a refused
  * connection.
  */
-function reportContainerLoss(env: {
-	explainMissingContainers?: () => string | undefined;
-}): void {
-	const loss = env.explainMissingContainers?.();
+function reportContainerLoss(
+	env: Pick<AnyDevEnvironment, "explainMissingContainers">,
+): void {
+	const loss = env.explainMissingContainers();
 	if (loss) log.warn(loss);
 }
 

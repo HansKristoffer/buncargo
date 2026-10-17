@@ -735,7 +735,7 @@ async function runDevFlow<
 	let lossExplained = !hasServices;
 	const explainLoss = () => {
 		if (lossExplained) return;
-		const loss = env.explainMissingContainers?.();
+		const loss = env.explainMissingContainers();
 		if (!loss) return;
 		lossExplained = true;
 		view.output.event("buncargo", loss, "warn");
