@@ -49,6 +49,7 @@ export function stripe(options: { app: string }): BuncargoIntegration {
 | `config(config)` | before validation, in `integrations` order | Adding apps, services, `env`, `generatedFiles`, `options`. What it adds is validated like the rest. Keep it pure; read files, don't start anything |
 | `hooks` | beside the config's own hooks, after them | `beforeServers`, `afterServers`, `onCapture`, … |
 | `checks` | `dev` (fast ones), `setup`, `doctor` | Preconditions with a fix: a command, or a function (`fixDescription` says what it does) |
+| `preflight` | `dev`, with the terminal, before anything starts | Steps that may need the user, such as a login. `apps` limits a step to starts that select one of them; `ctx.interactive` is false in CI and without a terminal; a step that throws stops the start |
 | `commands` | `buncargo <name> <command>` | Operations on the running checkout. `ctx.loadEnv()` loads the config; skip it for commands that only read the run registry, as `expo sim` does |
 | `describe(ctx)` | `buncargo env`, `url` / `open`, the run registry, BuncargoBar | Labelled values that are not captures, such as a dev store link built from a config file. A captured value labels itself with `label` |
 | `appEnv(app)` | building one app's process env | Env for the integration's apps, beneath their own `envVars` (Expo's `RCT_METRO_PORT`) |
@@ -72,11 +73,12 @@ export function stripe(options: { app: string }): BuncargoIntegration {
 
 ## The Shopify integration, as a map
 
-- `config()` adds the `shopify` app (interactive worker, `startAfter` the frontend, backend and every extension, `captures` for `Using URL:`, the preview and GraphiQL URLs and the ready line, `exclusive` on the dev app). It adds the discovered extension watchers with their `prebuild`, the `SHOPIFY_*` env, the generated `.buncargo/shopify/web/shopify.web.toml`, and the frontend as primary app.
+- `config()` adds the `shopify` app (a non-essential worker, `startAfter` the frontend, backend and every extension, `captures` for `Using URL:`, the preview and GraphiQL URLs and the ready line, `exclusive` on the dev app). It adds the discovered extension watchers with their `prebuild`, the `SHOPIFY_*` env, the generated `.buncargo/shopify/web/shopify.web.toml`, and the frontend as primary app.
 - `hooks.onCapture` touches theme extension assets once the CLI is ready, because it often skips the first dev-preview push.
 - `checks`: CLI installed and in the tested version range, logged in, linked, `web_directories`, URL settings, API versions and tomls agreeing.
+- `preflight`: when the `shopify` app is selected, renews an expired CLI session with the terminal before anything starts.
 - The captures label themselves (app URL, preview, GraphiQL) and the app URL sets `SHOPIFY_APP_URL`, so `buncargo url` / `open` reach them.
-- `commands`: `env`.
+- `commands`: `login`, `link` (a toml to a dev app, keeping its scopes, webhooks and dev store) and `env`.
 - `describe`: the dev store admin link for the app, and the storefront.
 
 ## The Expo integration, as a map

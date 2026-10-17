@@ -689,7 +689,7 @@ bunx buncargo sim                  # in another terminal, or the phone button in
 
 `buncargo sim` reads the run registry, so it needs no config and no Docker. It
 
-1. finds or creates this checkout's device, named `<projectPrefix>/<worktree> · iPhone 16 Pro`, by cloning the simulator you last used in Simulator.app (or `expo.simulator`), so the development build installed there comes along;
+1. finds or creates this checkout's device, named `<projectPrefix>/<worktree> · iPhone 16 Pro`, by cloning the simulator you last used in Simulator.app (or the app's `simulator` in `expo({ apps })`), so the development build installed there comes along;
 2. boots it and brings Simulator.app to the front;
 3. waits for Metro to listen on the app's port;
 4. opens the development build when it is installed on that device, else Expo Go, on `127.0.0.1:<port>`.
@@ -714,7 +714,7 @@ integrations: [
 
 Without `integrations: [expo()]` an app is not treated as Expo, even when its `devCommand` runs `expo`. `buncargo expo sim` and `buncargo sim` are the same command.
 
-The deep-link scheme and `ios.bundleIdentifier` are read from `app.json` when the run is published. A project configured only through `app.config.ts` sets `expo.scheme`. Named HTTPS hosts are not trusted inside the simulator, so point `EXPO_PUBLIC_*` URLs at the LAN IP or `loopbackUrls`.
+The deep-link scheme and `ios.bundleIdentifier` are read from `app.json` when the run is published. A project configured only through `app.config.ts` sets the app's `scheme` in `expo({ apps })`. Named HTTPS hosts are not trusted inside the simulator, so point `EXPO_PUBLIC_*` URLs at the LAN IP or `loopbackUrls`.
 
 ## Ports and isolation
 
