@@ -99,8 +99,6 @@ import {
 	validateDevStart,
 } from "./validate-dev-start";
 
-export { getFlagValue, hasFlag, splitCliArgs } from "./flags";
-
 /** `undefined` keeps the process alive; a number is the exit code to use. */
 type DevFlowExit = number | undefined;
 
