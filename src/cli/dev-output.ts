@@ -1,6 +1,7 @@
 import { appEntryPath, preferredAppUrl } from "../core/app-url";
 import { AppLogs } from "../core/process/app-logs";
 import { printStream, RunOutput } from "../core/process/run-output";
+import { isInteractive } from "../core/prompt";
 import { prefixWidth } from "../core/style";
 import type { AppConfig } from "../types";
 import * as log from "./log";
@@ -37,7 +38,7 @@ export function openDevOutput(
 	}
 	const output = new RunOutput(logs);
 	const names = Object.keys(apps);
-	const terminal = Boolean(process.stdout.isTTY && process.stdin.isTTY);
+	const terminal = isInteractive();
 	if (options.tui === "on" && !terminal)
 		log.warn("--tui needs a terminal; printing prefixed lines instead.");
 
@@ -53,7 +54,6 @@ export function openDevOutput(
 					quit: () => process.kill(process.pid, "SIGINT"),
 				})
 			: undefined;
-	if (tui) output.terminalSize = () => tui.paneSize();
 	const stopPrinting = tui
 		? undefined
 		: printStream(output, { width: prefixWidth(names) });
@@ -113,11 +113,8 @@ export function openDevOutput(
 	};
 }
 
-/** The URL `o` and `buncargo open <app>` use, from the live environment. */
-export function appOpenUrl(
-	env: DevOutputSource,
-	app: string,
-): string | undefined {
+/** The URL the TUI's `o` opens for an app, from the live environment. */
+function appOpenUrl(env: DevOutputSource, app: string): string | undefined {
 	const read = (urls: object) =>
 		(urls as Record<string, string | undefined>)[app];
 	return preferredAppUrl(

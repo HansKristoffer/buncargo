@@ -40,7 +40,7 @@ export interface TuiAction {
 	open: string;
 }
 
-export interface RunTuiOptions {
+interface RunTuiOptions {
 	output: RunOutput;
 	apps: readonly string[];
 	/** The URL `o` opens for an app (what BuncargoBar's open does). */
