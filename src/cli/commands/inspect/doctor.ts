@@ -39,9 +39,9 @@ import {
 } from "../../../core/process";
 import { isRouteOwnerAlive } from "../../../core/registry-file";
 import {
-	loadRuns,
 	REGISTRY_VERSION,
-	readLiveRuns,
+	readAllRuns,
+	runLivenessAsync,
 } from "../../../core/run-registry";
 import { loadDevEnv } from "../../../loader";
 import type { AnyDevEnvironment } from "../../../types";
@@ -357,22 +357,21 @@ async function checkSelectedRuntime(
 }
 
 /**
- * Prune runs whose owner is gone, and say how many.
+ * Say how many runs are registered, and how many of those have ended and
+ * only hold their containers for reuse.
  *
- * The registry prunes itself on every read, so this is really a report. It is
- * here because "the menu bar shows a project that is not running" is a support
- * question, and this is where someone looks.
+ * A report, not a cleanup: the sweep retires what is finished. It is
+ * here because "the menu bar shows a project that is not running" is a
+ * support question, and this is where someone looks.
  */
 async function checkRunRegistry(report: DoctorReport): Promise<void> {
 	try {
-		const before = (await loadRuns()).length;
-		const after = (await readLiveRuns()).length;
-		if (before !== after) {
-			report.note(
-				`Found ${before - after} stale run entr${before - after === 1 ? "y" : "ies"}`,
-			);
-		}
-		report.note(`${after} active run${after === 1 ? "" : "s"} registered`);
+		const runs = await readAllRuns();
+		const active = runs.filter(await runLivenessAsync(runs)).length;
+		const held = runs.length - active;
+		report.note(
+			`${active} active run${active === 1 ? "" : "s"}, ${held} held for reuse`,
+		);
 	} catch (error) {
 		report.issue(
 			`Could not read the run registry: ${error instanceof Error ? error.message : String(error)}`,
