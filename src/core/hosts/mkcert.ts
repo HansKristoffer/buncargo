@@ -154,35 +154,62 @@ export function isCaPresent(mkcertPath?: string): boolean {
 	return getCaPath(mkcertPath) !== undefined;
 }
 
+/** The parts of a leaf certificate renewal depends on. */
+export interface CertificateLeaf {
+	names: Set<string>;
+	/** Expiry in epoch milliseconds; `NaN` when the certificate has none. */
+	validTo: number;
+}
+
+/** The leaf at `certPath`, or `undefined` when it is missing or unreadable. */
+export function readCertificateLeaf(
+	certPath: string,
+): CertificateLeaf | undefined {
+	try {
+		const cert = new X509Certificate(readFileSync(certPath));
+		const names = new Set(
+			(cert.subjectAltName ?? "")
+				.split(",")
+				.map((part) => part.trim().replace(/^DNS:/i, ""))
+				.filter(Boolean),
+		);
+		return { names, validTo: Date.parse(cert.validTo) };
+	} catch {
+		return undefined;
+	}
+}
+
+/** Why a leaf needs reminting for `hostnames`, or `undefined` when it does not. */
+export type CertificateShortfall =
+	| { kind: "uncovered"; hostnames: string[] }
+	| { kind: "expiring"; validTo: number };
+
+export function certificateShortfall(
+	leaf: CertificateLeaf,
+	hostnames: string[],
+	now = Date.now(),
+): CertificateShortfall | undefined {
+	// Wildcard-aware: a leaf carrying `*.myapp.localhost` already serves a
+	// new worktree's hostname, and treating that as a gap would remint on
+	// every fresh checkout — the churn wildcards exist to avoid.
+	const uncovered = hostnames.filter(
+		(hostname) => !certificateCovers(leaf.names, hostname),
+	);
+	if (uncovered.length > 0) return { kind: "uncovered", hostnames: uncovered };
+	if (!Number.isFinite(leaf.validTo) || leaf.validTo - now < RENEW_BEFORE_MS) {
+		return { kind: "expiring", validTo: leaf.validTo };
+	}
+	return undefined;
+}
+
 export function certNeedsRenewal(
 	certPath: string,
 	hostnames: string[],
 	now = Date.now(),
 ): boolean {
-	if (!existsSync(certPath) || hostnames.length === 0) return true;
-	try {
-		const cert = new X509Certificate(readFileSync(certPath));
-		const alt = cert.subjectAltName ?? "";
-		const covered = new Set(
-			alt
-				.split(",")
-				.map((part) => part.trim().replace(/^DNS:/i, ""))
-				.filter(Boolean),
-		);
-		// Wildcard-aware: a leaf carrying `*.myapp.localhost` already serves a
-		// new worktree's hostname, and treating that as a gap would remint on
-		// every fresh checkout — the churn wildcards exist to avoid.
-		if (hostnames.some((hostname) => !certificateCovers(covered, hostname))) {
-			return true;
-		}
-		const expires = Date.parse(cert.validTo);
-		if (!Number.isFinite(expires) || expires - now < RENEW_BEFORE_MS) {
-			return true;
-		}
-		return false;
-	} catch {
-		return true;
-	}
+	if (hostnames.length === 0) return true;
+	const leaf = readCertificateLeaf(certPath);
+	return !leaf || certificateShortfall(leaf, hostnames, now) !== undefined;
 }
 
 export function mintCert(

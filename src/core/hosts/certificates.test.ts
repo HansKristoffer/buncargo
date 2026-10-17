@@ -14,6 +14,7 @@ import { withFileLock } from "../file-lock";
 import {
 	certificateFingerprint,
 	describeCertificateGap,
+	describeCertificateShortfall,
 	hostnamesForCertificate,
 	readCertificatePair,
 	resolveMkcertForMint,
@@ -312,18 +313,53 @@ describe("describeCertificateGap", () => {
 	});
 
 	// The daemon runs as root under launchd and must not shell out to mkcert,
-	// so an uncovered hostname is reported rather than fixed in place.
-	it("reports a certificate that does not cover the hostname", () => {
+	// so a bad certificate is reported rather than fixed in place.
+	it("reports a certificate it cannot read", () => {
 		const dir = tempDir();
 		try {
 			const certPath = join(dir, "hosts.pem");
 			writeFileSync(certPath, "not a certificate");
 			const message = describeCertificateGap(["app.localhost"], certPath);
-			expect(message).toContain("app.localhost");
+			expect(message).toContain("could not be read");
 			expect(message).toContain("buncargo hosts install");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("describeCertificateShortfall", () => {
+	const now = Date.parse("2026-10-17T00:00:00Z");
+
+	it("names only the hostnames the certificate lacks", () => {
+		expect(
+			describeCertificateShortfall(
+				{ kind: "uncovered", hostnames: ["new.app.localhost"] },
+				now,
+			),
+		).toBe(
+			"Named-hosts certificate does not cover new.app.localhost. Run `buncargo hosts install`.",
+		);
+	});
+
+	// An expiring certificate covers every name; calling that "does not cover"
+	// sent people looking for a hostname problem.
+	it("says a certificate is expiring rather than uncovered", () => {
+		const message = describeCertificateShortfall(
+			{ kind: "expiring", validTo: Date.parse("2026-11-01T00:00:00Z") },
+			now,
+		);
+		expect(message).toContain("expires on 2026-11-01");
+		expect(message).not.toContain("does not cover");
+	});
+
+	it("says a certificate has already expired", () => {
+		expect(
+			describeCertificateShortfall(
+				{ kind: "expiring", validTo: Date.parse("2026-10-01T00:00:00Z") },
+				now,
+			),
+		).toContain("expired on 2026-10-01");
 	});
 });
 
