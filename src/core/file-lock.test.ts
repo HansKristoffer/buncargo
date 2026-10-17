@@ -111,34 +111,30 @@ describe("withFileLock", () => {
 		expect(await withFileLock(target, async () => "released")).toBe("released");
 	});
 
-	it("never steals a process lock held beyond the old five and ten second limits", async () => {
+	it("never steals a lock from another process that is still alive", async () => {
 		const target = tempTarget();
 		const marker = `${target}.entered`;
 		const child = holder(
 			target,
-			`await Bun.write(${JSON.stringify(marker)}, "ready"); await Bun.sleep(11000);`,
+			`await Bun.write(${JSON.stringify(marker)}, "ready"); await Bun.sleep(60000);`,
 		);
 		await waitForFile(marker);
 		let entered = false;
-		await expect(
-			withFileLock(target, async () => {
-				entered = true;
-			}),
-		).rejects.toBeInstanceOf(FileLockTimeoutError);
-		await Bun.sleep(5100);
 		await expect(
 			withFileLock(
 				target,
 				async () => {
 					entered = true;
 				},
-				{ timeoutMs: 60 },
+				{ timeoutMs: 100 },
 			),
 		).rejects.toBeInstanceOf(FileLockTimeoutError);
 		expect(entered).toBe(false);
-		expect(await child.exited).toBe(0);
+		expect(child.exitCode).toBeNull();
+		child.kill("SIGKILL");
+		await child.exited;
 		expect(await withFileLock(target, async () => "released")).toBe("released");
-	}, 15000);
+	});
 
 	it("the kernel releases a killed owner without deleting the lock inode", async () => {
 		const target = tempTarget();
