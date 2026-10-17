@@ -28,7 +28,7 @@ export function openDevOutput(
 	env: DevOutputSource,
 	apps: Record<string, AppConfig>,
 	options: { tui: "auto" | "on" | "off" },
-): { output: RunOutput; start(): void; stop(): void } {
+): { output: RunOutput; start(): void; stop(): Promise<void> } {
 	let logs: AppLogs | undefined;
 	try {
 		logs = new AppLogs(env.root, env.sessionId);
@@ -103,11 +103,12 @@ export function openDevOutput(
 	return {
 		output,
 		start: () => tui?.start(),
-		stop: () => {
+		stop: async () => {
 			tui?.stop();
+			// Before the printer goes: what the apps left on screen is printed too.
+			await output.close();
 			stopStream();
 			stopWatching();
-			output.close();
 		},
 	};
 }

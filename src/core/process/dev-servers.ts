@@ -85,6 +85,7 @@ export interface StartDevServersOptions {
 	/**
 	 * Where app output goes. Default: prefixed lines on stdout. The TUI passes
 	 * one with `terminalSize` set, which gives every app its own terminal.
+	 * One passed in is the caller's to close.
 	 */
 	output?: RunOutput;
 	/** Extra args appended to the attached app command. */
@@ -274,6 +275,11 @@ export async function startDevServers(
 	const stopPrinting = options.output
 		? undefined
 		: printStream(output, { width: nameWidth });
+	const closeOwnOutput = async () => {
+		if (options.output) return;
+		await output.close();
+		stopPrinting?.();
+	};
 	// In the TUI every app has a terminal of its own: none needs the real one.
 	const configuredInteractive = output.terminalSize
 		? undefined
@@ -744,8 +750,7 @@ export async function startDevServers(
 						await session.stop();
 					} finally {
 						session.dispose();
-						output.close();
-						stopPrinting?.();
+						await closeOwnOutput();
 					}
 				}
 			})().catch((error) => console.error(error));
@@ -770,8 +775,7 @@ export async function startDevServers(
 	} finally {
 		if (!handedOff) {
 			session.dispose();
-			output.close();
-			stopPrinting?.();
+			await closeOwnOutput();
 		}
 	}
 }

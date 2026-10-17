@@ -83,7 +83,7 @@ it("gives an attached app without a terminal one of its own: printed once, logge
 		) as EventEmitter;
 		await new Promise((resolve) => child.once("exit", resolve));
 		await Bun.sleep(50);
-		output.close();
+		await output.close();
 		expect(readFileSync(logs.file("web"), "utf8")).toContain("hello from web");
 		// Through the screen and the stream printer, never also raw.
 		expect(printed.split("hello from web")).toHaveLength(2);

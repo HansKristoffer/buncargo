@@ -8,6 +8,10 @@ into it; the supervisor reports `state` and `capture`. `startDevServers` takes i
 `options.output`; without one it prints stream mode itself, so library callers are unchanged. A
 stream-mode attached app's output is fed in marked `echoed`: logged, not printed again.
 
+Whoever creates an output closes it, and awaits `close()` before unsubscribing a view: an app's
+last screen reaches the feed only once xterm has parsed it, so a view gone by then loses the app's
+last words.
+
 `src/cli/dev-output.ts` decides where a dev run's app output goes: the TUI (a terminal, unless `--no-tui`)
 or stream mode, never both, since two writers on one screen is the garbling the TUI exists to end.
 Both write the log files and answer `buncargo restart` (`restart-requests.ts`: a request file the

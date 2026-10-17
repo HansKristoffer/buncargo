@@ -833,7 +833,7 @@ async function runDevFlow<
 		return undefined;
 	} finally {
 		// First, so teardown's messages land on the user's own screen.
-		view.stop();
+		await view.stop();
 		await teardown(env, tunnels, connect);
 	}
 }
