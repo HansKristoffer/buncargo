@@ -6,6 +6,7 @@ import { externalStackProjectName, findMonorepoRoot } from "../core/ports";
 import { configuredPrimaryApp, resolvePrimaryApp } from "../core/primary-app";
 import { isCI } from "../core/runtime-flags";
 import { shellQuote } from "../core/shell-quote";
+import { projectStateFilePath } from "../core/state-paths";
 import { formatDone, formatStep } from "../core/style";
 import { writeIfChanged } from "../environment/generated-files";
 import type {
@@ -197,6 +198,18 @@ function typesFingerprint(workdir: string, schemas: readonly string[]): string {
 	return hash.digest("hex");
 }
 
+/** The fingerprint the types were last generated for; an unreadable stamp is none. */
+function readTypesStamp(stamp: string): string | undefined {
+	try {
+		const recorded = JSON.parse(readFileSync(stamp, "utf8")) as {
+			output?: unknown;
+		};
+		return typeof recorded.output === "string" ? recorded.output : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export function supabase(
 	options: SupabaseIntegrationOptions = {},
 ): BuncargoIntegration {
@@ -379,13 +392,10 @@ export function supabase(
 					return;
 				const workdir = workdirOf(ctx.root);
 				const output = resolve(ctx.root, types.output);
-				const stamp = join(ctx.root, ".buncargo", "supabase-types.json");
+				const stamp = projectStateFilePath(ctx.root, "supabase-types.json");
 				const schemas = types.schemas ?? [];
 				const fingerprint = typesFingerprint(workdir, schemas);
-				const recorded = existsSync(stamp)
-					? (JSON.parse(readFileSync(stamp, "utf8")) as { output?: string })
-					: {};
-				if (existsSync(output) && recorded.output === fingerprint) return;
+				if (existsSync(output) && readTypesStamp(stamp) === fingerprint) return;
 
 				const { stdout } = await ctx.exec(
 					[
