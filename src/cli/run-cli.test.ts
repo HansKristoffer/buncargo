@@ -876,3 +876,39 @@ it("starts the rest of the run without an optional app whose lease another run h
 		await rm(root, { recursive: true, force: true });
 	}
 });
+
+// A config with services and no apps used to print "Nothing to start" and
+// release the containers it had just brought up.
+it("holds a services-only run until it is told to stop", async () => {
+	const root = await mkdtemp(join(tmpdir(), "buncargo-services-only-"));
+	let released = 0;
+	const env = createStubEnv({ apps: {}, root });
+	Object.assign(env, {
+		releaseRun: async () => {
+			released++;
+		},
+	});
+	const printed: string[] = [];
+	const realLog = console.log;
+	console.log = (...parts: unknown[]) => printed.push(parts.join(" "));
+	const said = (text: string) => printed.some((line) => line.includes(text));
+	const run = runCli(env, { args: ["--no-hosts"], watchdog: false });
+	try {
+		const deadline = performance.now() + 5_000;
+		while (!said("Services ready") && !said("Nothing to start")) {
+			if (performance.now() > deadline) throw new Error("The run never said");
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		expect(said("Nothing to start")).toBe(false);
+		expect(released).toBe(0);
+
+		process.emit("SIGINT");
+		await run;
+		expect(released).toBe(1);
+	} finally {
+		console.log = realLog;
+		if (released === 0) process.emit("SIGTERM");
+		await run;
+		await rm(root, { recursive: true, force: true });
+	}
+});

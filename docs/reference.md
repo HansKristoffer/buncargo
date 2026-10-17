@@ -379,6 +379,11 @@ validate selected apps, dependencies, attachment, and expose targets
 | `dev --seed` | Selected containers and preparation, including bootstrap and forced seed; no apps |
 | `dev --down` / `--reset` | Stop; reset also removes volumes |
 
+A config with services and no apps starts every service. When nothing in the
+selection is an app buncargo spawns (no apps, or only `devCommand: false` ones),
+`dev` holds the containers until Ctrl-C like any run, then releases them to the
+idle hold; `--detach` returns once they are ready.
+
 Mutually exclusive modes cannot be combined. Configuration, selection, dependency
 references and cycles are validated before startup changes host configuration or
 starts resources.

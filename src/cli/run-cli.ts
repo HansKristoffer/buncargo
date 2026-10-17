@@ -613,6 +613,12 @@ async function runDevFlow<
 		startApps: startableApps,
 		startNames: Object.keys(startableApps),
 	};
+	// Services and no app buncargo runs: the containers are the run. It holds
+	// them until Ctrl-C like any other run, rather than releasing them to the
+	// idle hold the moment they are up.
+	const servicesOnly =
+		hasServices &&
+		!Object.values(appsForDev).some((app) => app.devCommand !== false);
 
 	// Decided before the summary and the banner, so both describe what this run
 	// ends up doing rather than a reuse the takeover is about to undo.
@@ -707,7 +713,12 @@ async function runDevFlow<
 		});
 	}
 
-	if (nothingToSpawn && !tunnels.hasPendingTargets() && !connect?.active) {
+	if (
+		nothingToSpawn &&
+		!servicesOnly &&
+		!tunnels.hasPendingTargets() &&
+		!connect?.active
+	) {
 		if (overlapSeed)
 			assertSeedSucceeded(
 				await timer.measure("seed", () => env.runSeed({ signal })),
@@ -797,6 +808,8 @@ async function runDevFlow<
 					// because the TUI may own the screen.
 					if (!hasServices && options.watchdog)
 						void ensureWatchdog({ verbose: false }).catch(() => {});
+					if (servicesOnly)
+						log.success("Services ready. Press Ctrl-C to end the run.");
 				},
 				attach: args.attach,
 				extraArgs: args.passthrough,
