@@ -22,8 +22,10 @@ per port.
   probing allocation skips a block another existing checkout claims, by its offset or by any one of
   its ports, and every claiming one writes its own. Offsets alone missed collisions between
   configs: api 3000 at offset 1100 and admin 4000 at offset 100 are both 4100. The ports are an
-  optional field, so the file keeps its version and an older buncargo still reads it; a claim
-  written without them holds its offset alone until its checkout's next run rewrites it. A suffixed
+  optional field, so the file keeps its version and an older buncargo still reads it. A claim
+  written without them takes its ports from its checkout's lockfile (when the offsets match) until
+  that checkout's next run rewrites it; holding the offset alone let a newcomer take an
+  overlapping block and moved the incumbent on its next run. A suffixed
   environment claims without persisting a lockfile, under `offsetClaimKey(root, suffix)` with
   `root` and `suffix` stored in the claim (the key is never parsed), so it never replaces its
   checkout's dev claim; its claim is also the record its next run takes the offset back from.

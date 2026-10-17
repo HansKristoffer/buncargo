@@ -9,6 +9,7 @@ import type {
 import { simpleHash } from "./hash";
 import {
 	claimOffset,
+	type OffsetClaim,
 	offsetClaimConflict,
 	offsetClaimKey,
 	readOffsetClaims,
@@ -208,6 +209,38 @@ export function writePortsLockfile(root: string, lockfile: PortLockfile): void {
 }
 
 /**
+ * The claims, with a port-less claim's ports read from its checkout's lockfile.
+ *
+ * A claim written before claims carried their ports holds only its offset, so
+ * a newcomer could take a block overlapping it and the incumbent moved on its
+ * next run. Its lockfile still records the block it uses. One read per such
+ * claim, and only until that checkout's next run rewrites its claim.
+ */
+function claimsWithLockfilePorts(
+	claims: Record<string, OffsetClaim>,
+): Record<string, OffsetClaim> {
+	return Object.fromEntries(
+		Object.entries(claims).map(([key, claim]) => {
+			// A suffixed environment has no lockfile; its checkout's is dev's.
+			if (claim.ports || claim.suffix) return [key, claim];
+			const lockfile = readPortsLockfile(key);
+			const ports = lockfile ? Object.values(lockfile.ports) : [];
+			if (
+				!lockfile ||
+				lockfile.offset !== claim.offset ||
+				foreignLockfile(lockfile, {
+					projectName: claim.projectName,
+					root: key,
+				}) ||
+				ports.length === 0
+			)
+				return [key, claim];
+			return [key, { ...claim, ports: ports.sort((a, b) => a - b) }];
+		}),
+	);
+}
+
+/**
  * A clause naming who holds `port`, to embed in a sentence. `runtime` is the
  * selected backend, so a container on the other one says how to stop it.
  */
@@ -393,7 +426,7 @@ function planPorts(
 	// Other claims are skipped whether or not their runs are running; only a
 	// claiming run writes its own.
 	const claimKey = offsetClaimKey(root, suffix);
-	const claims = readOffsetClaims();
+	const claims = claimsWithLockfilePorts(readOffsetClaims());
 	const claimant = (offset: number, ports: Record<string, number>) =>
 		offsetClaimConflict(
 			claims,
@@ -440,27 +473,33 @@ function planPorts(
 	let ignored = notOurs;
 	if (ownLockfile) {
 		const ports = shiftPorts(basePorts, ownLockfile.offset);
+		// A partial start must not move the block: the containers and apps it
+		// did not select still publish the persisted ports.
+		const partial =
+			input.probeNames &&
+			Object.keys(basePorts).some((name) => !input.probeNames?.includes(name));
+		const refusePartial = (reason: string, next: string) => {
+			if (partial)
+				throw new Error(
+					`Selected app ports conflict with the persisted allocation: ${reason}. ${next}`,
+				);
+			return reason;
+		};
 		const claimed = claimant(ownLockfile.offset, ports);
-		if (claimed) ignored = claimed;
+		if (claimed)
+			ignored = refusePartial(
+				claimed,
+				"Start the full environment to move this checkout's shared port block.",
+			);
 		else if (Object.values(ports).some((port) => port > 65535))
 			ignored = `offset ${ownLockfile.offset} puts a port above 65535`;
 		else {
 			const conflict = conflictAt(ports);
 			if (!conflict) return settle(ownLockfile.offset, ports, "lockfile");
-			const reason = describePortConflict(
-				conflict.port,
-				conflict.owner,
-				runtimeName,
+			ignored = refusePartial(
+				describePortConflict(conflict.port, conflict.owner, runtimeName),
+				"Stop that port's owner, or start the full environment to reconcile its shared port block.",
 			);
-			if (
-				input.probeNames &&
-				Object.keys(basePorts).some((name) => !input.probeNames?.includes(name))
-			) {
-				throw new Error(
-					`Selected app ports conflict with the persisted allocation: ${reason}. Stop that port's owner, or start the full environment to reconcile its shared port block.`,
-				);
-			}
-			ignored = reason;
 		}
 	}
 	const settleAllocated = (
@@ -566,7 +605,11 @@ export function pinOffset(input: {
 	const ports = buildPortMap(input.services, input.apps, offset);
 	const block = { offset, ports: Object.values(ports) };
 	const claimedBy = () => {
-		const claimed = offsetClaimConflict(readOffsetClaims(), block, root);
+		const claimed = offsetClaimConflict(
+			claimsWithLockfilePorts(readOffsetClaims()),
+			block,
+			root,
+		);
 		return claimed
 			? { refused: `Offset ${offset} is not free: ${claimed}.`, claimed: true }
 			: undefined;

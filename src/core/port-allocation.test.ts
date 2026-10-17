@@ -590,6 +590,101 @@ describe("offset claims", () => {
 		}
 	});
 
+	it("keeps an incumbent whose claim has no ports in the block its lockfile records", async () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		// b holds offset 1100 (4100, 5100) under a claim from before claims had
+		// ports; a's offset 100 would be 3100 and 4100.
+		const incumbent = mkdtempSync(join(tmpdir(), "buncargo-incumbent-"));
+		const newcomer = mkdtempSync(join(tmpdir(), "buncargo-newcomer-"));
+		const services = { api: { port: 3000 }, admin: { port: 4000 } };
+		const blocks = (root: string, projectName: string) =>
+			resolvePortPlan({
+				projectPrefix: "lullu",
+				projectName,
+				root,
+				services,
+				getOwner: () => null,
+			});
+		const warn = console.warn;
+		console.warn = () => {};
+		try {
+			writePortsLockfile(incumbent, {
+				version: 1,
+				projectName: "lullu-b",
+				root: incumbent,
+				offset: 1100,
+				ports: { api: 4100, admin: 5100 },
+				provenance: "hash",
+			});
+			await Bun.write(
+				join(home, ".buncargo/offsets.json"),
+				JSON.stringify({
+					version: 1,
+					claims: {
+						[incumbent]: {
+							offset: 1100,
+							projectName: "lullu-b",
+							updatedAt: "2026-01-01T00:00:00.000Z",
+						},
+					},
+				}),
+			);
+			await Bun.write(
+				join(newcomer, ".buncargo/ports.json"),
+				JSON.stringify({ offset: 100 }),
+			);
+
+			const a = blocks(newcomer, "lullu-a");
+			expect(Object.values(a.ports)).not.toContain(4100);
+			expect(blocks(incumbent, "lullu-b").offset).toBe(1100);
+		} finally {
+			console.warn = warn;
+			rmSync(incumbent, { recursive: true, force: true });
+			rmSync(newcomer, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses a partial start whose persisted block another checkout now claims", async () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		const root = mkdtempSync(join(tmpdir(), "buncargo-partial-claim-"));
+		const other = mkdtempSync(join(tmpdir(), "buncargo-partial-other-"));
+		try {
+			writePortsLockfile(root, {
+				version: 1,
+				projectName: "lullu-a",
+				root,
+				offset: 100,
+				ports: { postgres: 5532, marketing: 3100 },
+				provenance: "hash",
+			});
+			withOffsetClaimsLock(() =>
+				claimOffset({
+					root: other,
+					offset: 1100,
+					ports: [3100],
+					projectName: "lullu-b",
+				}),
+			);
+			expect(() =>
+				resolvePortPlan({
+					root,
+					projectPrefix: "lullu",
+					projectName: "lullu-a",
+					services: { postgres: { port: 5432 } },
+					apps: { marketing: { port: 3000, devCommand: false } },
+					probeNames: ["marketing"],
+					getOwner: () => null,
+				}),
+			).toThrow(
+				`persisted allocation: port 3100 is in the block ${other} claims`,
+			);
+			expect(readPortsLockfile(root)?.offset).toBe(100);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+			rmSync(other, { recursive: true, force: true });
+		}
+	});
+
 	it("pins a checkout with an offset-only lockfile and fills in the rest", async () => {
 		delete process.env.BUNCARGO_PORT_OFFSET;
 		const root = mkdtempSync(join(tmpdir(), "buncargo-pin-"));

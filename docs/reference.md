@@ -414,9 +414,9 @@ or starting/stopping containers. Named hosts and tunnels remain available when
 configured. Explicit diagnostic and shutdown commands can inspect configured
 infrastructure.
 
-A partial app-only start refuses a port conflict that would relocate an unselected
-persisted service. Free the conflicting port or start the full environment to
-reconcile its shared allocation.
+A partial app-only start refuses a port conflict, or a block another checkout now
+claims, that would relocate an unselected persisted service. Free the conflicting
+port or start the full environment to reconcile its shared allocation.
 
 ### Portless workers
 
