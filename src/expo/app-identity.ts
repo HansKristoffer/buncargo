@@ -46,7 +46,7 @@ interface AppJson {
 	ios?: { bundleIdentifier?: unknown };
 }
 
-/** `app.json` only: `app.config.ts` needs evaluating, and `expo.scheme` covers that case. */
+/** `app.json` only: `app.config.ts` needs evaluating, and the `scheme` option covers that case. */
 function readAppJson(dir: string): AppJson {
 	try {
 		const parsed = JSON.parse(readFileSync(resolve(dir, "app.json"), "utf-8"));

@@ -97,7 +97,9 @@ export async function handleSim(args: string[] = []): Promise<number> {
 			log.hint("Start one with `buncargo dev`, then `buncargo sim`.");
 		} else if (name) {
 			log.error(`"${name}" is not an Expo app of this run.`);
-			log.hint(`Set \`expo: true\` on it in dev.config.ts if it should be.`);
+			log.hint(
+				`Add it to \`expo({ apps: [...] })\` in dev.config.ts if it should be.`,
+			);
 		} else {
 			log.error("This run has no Expo app.");
 		}
