@@ -21,6 +21,7 @@ import {
 } from "./process-identity";
 import { getStateDir, stateFilePath } from "./state-paths";
 import { formatWarn } from "./style";
+import { getWatchdogSpawnLockFile } from "./watchdog-loop";
 
 export function getWatchdogPidFile(): string {
 	return stateFilePath("watchdog.pid");
@@ -39,20 +40,6 @@ export function getWatchdogLogFile(): string {
  */
 export function getWatchdogLockFile(): string {
 	return `${getWatchdogPidFile()}.runner`;
-}
-
-/**
- * Held by a caller while it starts a watchdog, so only one ever does.
- *
- * Distinct from the runner's own lock, and it has to be: the runner holds
- * that one for its whole life, so a spawner cannot keep it across the spawn
- * without deadlocking the process it just started. Without this second file
- * two callers each spawn a runner, and the loser — which exits silently on
- * the lock it cannot get — can instead start *after* the winner has been
- * stopped, and quietly become the watchdog nobody asked for.
- */
-function getWatchdogSpawnLockFile(): string {
-	return `${getWatchdogPidFile()}.spawn`;
 }
 
 export function getWatchdogPid(): number | null {

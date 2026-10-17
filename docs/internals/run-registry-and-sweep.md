@@ -136,6 +136,13 @@ fake, and a caller holds `.spawn` across spawn-and-confirm so two `dev` runs sta
 cannot each launch one. Collapsing them looks tempting and deadlocks: the spawner would be holding
 the lock its own child must take.
 
+The runner takes `.spawn` too, once, to exit (`exitUnlessClaimed` in `watchdog-loop.ts`). A pass
+that finds nothing to watch read the registry before a run that claims after it, and that run's
+`ensureWatchdog` sees this runner and starts none. So the runner removes its pid file under
+`.spawn`, reads the registry again, and either restores the file and keeps watching or exits still
+holding `.spawn`, releasing it only after `.runner`. It never waits on `.spawn` at start, and a
+spawner holding `.spawn` only try-acquires `.runner`, so neither waits on the other.
+
 ## Volumes
 
 `prune.ts` is the volume half, and it is deliberately not automatic: a container costs nothing to

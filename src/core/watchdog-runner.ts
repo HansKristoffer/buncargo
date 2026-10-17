@@ -15,6 +15,7 @@ import { sweepOrphanedContainers } from "../container-runtime/sweep";
 import { FileLockTimeoutError, withFileLock } from "./file-lock";
 import { readCurrentProcessIdentityAsync } from "./process-identity";
 import { writeJsonDocumentSync } from "./registry-file";
+import { readAllRuns, runLivenessAsync } from "./run-registry";
 import { tailnetDirectoryEnabled } from "./runtime-flags";
 import { serveTailnetDirectory } from "./tailnet-directory";
 import {
@@ -23,7 +24,11 @@ import {
 	getWatchdogPidFile,
 } from "./watchdog";
 import { WATCHDOG_POLL_INTERVAL_MS } from "./watchdog-constants";
-import { runWatchdogLoop } from "./watchdog-loop";
+import {
+	exitUnlessClaimed,
+	getWatchdogSpawnLockFile,
+	runWatchdogLoop,
+} from "./watchdog-loop";
 
 const pidFile = getWatchdogPidFile();
 const logFile = getWatchdogLogFile();
@@ -59,12 +64,23 @@ process.on("SIGINT", () => {
 	process.exit(0);
 });
 
-function watch(): Promise<void> {
+function watch(owner: object): Promise<void> {
 	return runWatchdogLoop({
 		sweep: () => sweepOrphanedContainers(),
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		log,
 		intervalMs: WATCHDOG_POLL_INTERVAL_MS,
+		exitIfIdle: () =>
+			exitUnlessClaimed({
+				withSpawnLock: (operation) =>
+					withFileLock(getWatchdogSpawnLockFile(), operation),
+				removePidFile: cleanup,
+				restorePidFile: () => writeJsonDocumentSync(pidFile, owner),
+				hasLiveRuns: async () => {
+					const runs = await readAllRuns();
+					return runs.some(await runLivenessAsync(runs));
+				},
+			}),
 	});
 }
 
@@ -73,30 +89,36 @@ function watch(): Promise<void> {
 withFileLock(
 	getWatchdogLockFile(),
 	async () => {
-		writeJsonDocumentSync(pidFile, {
+		const owner = {
 			pid: process.pid,
 			ownerId,
 			processIdentity: await readCurrentProcessIdentityAsync(),
-		});
+		};
+		writeJsonDocumentSync(pidFile, owner);
 		log(`Started (PID: ${process.pid})`);
 		const stopDirectory = tailnetDirectoryEnabled()
 			? serveTailnetDirectory({ log, intervalMs: WATCHDOG_POLL_INTERVAL_MS })
 			: () => {};
 		try {
-			await watch();
+			await watch(owner);
 		} finally {
 			stopDirectory();
 			cleanup();
 		}
 	},
 	{ timeoutMs: 0 },
-).catch((error: unknown) => {
-	// Losing the race to another runner is the expected outcome of two `dev`
-	// runs starting at once, not a failure worth a line in the log.
-	if (error instanceof FileLockTimeoutError) return;
-	log(
-		`Watchdog failed: ${error instanceof Error ? error.message : String(error)}`,
-	);
-	cleanup();
-	process.exitCode = 1;
-});
+).then(
+	// The loop left holding the spawn lock, and only exiting releases it,
+	// after the runner lock above.
+	() => process.exit(0),
+	(error: unknown) => {
+		// Losing the race to another runner is the expected outcome of two `dev`
+		// runs starting at once, not a failure worth a line in the log.
+		if (error instanceof FileLockTimeoutError) return;
+		log(
+			`Watchdog failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		cleanup();
+		process.exitCode = 1;
+	},
+);
