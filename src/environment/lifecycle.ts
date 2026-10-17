@@ -419,46 +419,49 @@ export function createLifecycleApi<
 					return;
 				}
 
-				const composeUp = () =>
+				function composeUp() {
+					if (!artifactReady) {
+						ctx.ensureComposeFile();
+						artifactReady = true;
+					}
+
+					return ensureServicesRunning({
+						signal,
+						runtime: ctx.runtime,
+						root: ctx.root,
+						projectName: ctx.projectName,
+						envVars: envVars.buildEnvVars(productionBuild),
+						services: compose,
+						noDeps,
+						ports: targetPorts,
+						model: ctx.composeModel(),
+						composeFile: ctx.composeFile,
+						verbose,
+						wait,
+						autoStartRuntime: autoStartDocker,
+					});
+				}
+
+				// One hold over Compose and the stacks: the sweep and `stop` take the
+				// same lock, so neither can tear a stack down while it comes up. The
+				// lock is not reentrant; nothing inside may take it again.
+				await phase("containers", () =>
 					withProjectLifecycleLock(
 						ctx.projectName,
 						ctx.root,
-						() => {
-							if (!artifactReady) {
-								ctx.ensureComposeFile();
-								artifactReady = true;
-							}
-
-							return ensureServicesRunning({
-								signal,
-								runtime: ctx.runtime,
-								root: ctx.root,
-								projectName: ctx.projectName,
-								envVars: envVars.buildEnvVars(productionBuild),
-								services: compose,
-								noDeps,
-								ports: targetPorts,
-								model: ctx.composeModel(),
-								composeFile: ctx.composeFile,
-								verbose,
-								wait,
-								autoStartRuntime: autoStartDocker,
-							});
-						},
+						() =>
+							Promise.all([
+								Object.keys(compose).length > 0 ? composeUp() : undefined,
+								...stacks.map(({ stack }) =>
+									withDeadline(
+										(stackSignal) => stack.up(hookContext(stackSignal)),
+										600_000,
+										signal,
+									),
+								),
+							]),
 						{ signal },
-					);
-
-				await phase("containers", () =>
-					Promise.all([
-						Object.keys(compose).length > 0 ? composeUp() : undefined,
-						...stacks.map(({ stack }) =>
-							withDeadline(
-								(stackSignal) => stack.up(hookContext(stackSignal)),
-								600_000,
-								signal,
-							),
-						),
-					]),
+					),
 				);
 			}
 
@@ -600,37 +603,45 @@ export function createLifecycleApi<
 			return;
 		}
 
-		if (Object.keys(composeServicesOf(services)).length > 0) {
+		const hasCompose = Object.keys(composeServicesOf(services)).length > 0;
+		// Every stack, not just this run's selection: stop means the environment.
+		const stacks = configuredStacks(config as AnyDevConfig);
+		if (hasCompose || stacks.length > 0) {
 			await withProjectLifecycleLock(
 				ctx.projectName,
 				ctx.root,
 				async () => {
-					ctx.ensureComposeFile();
-					await ctx.runtime.down({
-						root: ctx.root,
-						projectName: ctx.projectName,
-						model: ctx.composeModel(),
-						composeFile: ctx.composeFile,
-						verbose,
-						removeVolumes,
-						signal: stopOptions.signal,
-					});
+					if (hasCompose) {
+						ctx.ensureComposeFile();
+						await ctx.runtime.down({
+							root: ctx.root,
+							projectName: ctx.projectName,
+							model: ctx.composeModel(),
+							composeFile: ctx.composeFile,
+							verbose,
+							removeVolumes,
+							signal: stopOptions.signal,
+						});
+					}
+
+					for (const { name, stack } of stacks) {
+						await envVars.exec(
+							stack.down({
+								projectName: ctx.projectName,
+								root: ctx.root,
+								removeVolumes,
+							}),
+							{
+								secrets: false,
+								signal: stopOptions.signal,
+								timeoutMs: 120_000,
+							},
+						);
+						if (verbose) console.log(formatDone(`Stopped ${name}`));
+					}
 				},
 				{ signal: stopOptions.signal },
 			);
-		}
-
-		// Every stack, not just this run's selection: stop means the environment.
-		for (const { name, stack } of configuredStacks(config as AnyDevConfig)) {
-			await envVars.exec(
-				stack.down({
-					projectName: ctx.projectName,
-					root: ctx.root,
-					removeVolumes,
-				}),
-				{ secrets: false, signal: stopOptions.signal, timeoutMs: 120_000 },
-			);
-			if (verbose) console.log(formatDone(`Stopped ${name}`));
 		}
 		await runClaim.retireRun();
 	}
