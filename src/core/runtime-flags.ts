@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { CONNECT_ORIGIN } from "./connect/protocol";
+import { CONNECT_ORIGIN } from "./connect/origin";
 
 /**
  * Every environment variable buncargo reads, in one place.

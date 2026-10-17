@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { readProcessIdentity } from "../process-identity";
 import type { RunEntry } from "../run-registry";
-import { CONNECT_ORIGIN, parseDirectory, parseRun } from "./protocol";
+import { CONNECT_ORIGIN } from "./origin";
+import { parseDirectory, parseRun } from "./protocol";
 import { runTargets } from "./targets";
 
 test("Swift and CLI decode the same named directory and reject redirected target URLs", () => {

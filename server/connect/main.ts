@@ -1,4 +1,4 @@
-import { CONNECT_ORIGIN } from "../../src/core/connect/protocol";
+import { CONNECT_ORIGIN } from "../../src/core/connect/origin";
 import { ConnectionDirectory } from "./directory";
 import { createAPI, frpHook } from "./http";
 import { Store } from "./store";
