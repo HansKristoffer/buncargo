@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { dockerRuntimeAdapter } from "./adapter";
 import { startContainers, stopContainers } from "./lifecycle";
 
 const roots: string[] = [];
@@ -164,5 +165,27 @@ describe("startContainers", () => {
 		).rejects.toThrow(
 			`port ${port} held by container other-postgres-1 (project other)`,
 		);
+	});
+
+	// Readiness is polled against the published ports afterwards, on both
+	// backends; Compose's own `--wait` would only make `up` slower.
+	it("starts the adapter's services without Compose's --wait", async () => {
+		const { dir, binary, calls } = fakeDocker();
+		await dockerRuntimeAdapter({ binary }).up({
+			root: dir,
+			projectName: "demo",
+			envVars: {},
+			model: { services: {} },
+			serviceNames: ["postgres"],
+			verbose: false,
+		});
+		expect(calls().at(-1)).toEqual([
+			"compose",
+			"-p",
+			"demo",
+			"up",
+			"-d",
+			"postgres",
+		]);
 	});
 });

@@ -7,7 +7,6 @@ export interface HealthCheckContext {
 	runtime: ContainerRuntimeAdapter;
 	projectName: string;
 	root?: string;
-	composeFile?: string;
 }
 
 /**
@@ -24,7 +23,7 @@ export function createBuiltInHealthCheck(
 	serviceName: string,
 	context: HealthCheckContext,
 ): HealthCheckFn {
-	const { runtime, projectName, root, composeFile } = context;
+	const { runtime, projectName, root } = context;
 
 	async function execInService(
 		command: string[],
@@ -37,7 +36,6 @@ export function createBuiltInHealthCheck(
 			serviceName,
 			command,
 			root,
-			composeFile,
 		};
 		return runtime.execInService(request);
 	}

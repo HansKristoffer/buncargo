@@ -37,8 +37,6 @@ export interface ContainerUpRequest {
 	serviceNames: string[];
 	composeFile?: string;
 	verbose?: boolean;
-	/** Block until the runtime itself reports readiness, where supported. */
-	wait?: boolean;
 }
 
 export interface ContainerDownRequest {
@@ -73,7 +71,6 @@ export interface ExecInServiceRequest {
 	 */
 	command: string[];
 	root?: string;
-	composeFile?: string;
 }
 
 export interface ServiceDiagnosisRequest {

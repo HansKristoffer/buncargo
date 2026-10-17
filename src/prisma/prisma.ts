@@ -232,7 +232,6 @@ Examples:
 			projectName: env.projectName,
 			serviceName: getComposeServiceName(env.services, service),
 			root: env.root,
-			composeFile: env.composeFile,
 			timeoutMs: 30_000,
 			// Positional parameters rather than interpolation: nothing is re-parsed.
 			command: [

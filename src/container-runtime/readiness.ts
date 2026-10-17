@@ -11,7 +11,7 @@ import {
 	SLOW_STEP_MS,
 	scheduleLog,
 } from "../core/style";
-import type { BuiltInHealthCheck, ServiceConfig } from "../types";
+import type { ServiceConfig } from "../types";
 import { createBuiltInHealthCheck } from "./health-checks";
 import type { ContainerRuntimeAdapter, ServiceDiagnosis } from "./types";
 import { isTerminalContainerState } from "./types";
@@ -249,7 +249,6 @@ export async function waitForService(
 					runtime,
 					projectName,
 					root,
-					composeFile,
 				});
 
 	await pollUntilHealthy(
@@ -364,53 +363,4 @@ export async function waitForAllServices(
 	if (showedWait) {
 		console.log(formatDone("All services healthy"));
 	}
-}
-
-/**
- * Wait for a service to be healthy using a built-in health check type.
- * Simpler API when you don't have a ServiceConfig object.
- */
-export async function waitForServiceByType(
-	serviceName: string,
-	healthCheckType: BuiltInHealthCheck,
-	port: number,
-	options: WaitForServiceOptions & { verbose?: boolean },
-): Promise<void> {
-	const {
-		maxAttempts = MAX_ATTEMPTS,
-		pollInterval = POLL_INTERVAL,
-		verbose = false,
-		runtime,
-		projectName,
-		root,
-		composeFile,
-	} = options;
-	const healthCheckFn = createBuiltInHealthCheck(healthCheckType, serviceName, {
-		runtime,
-		projectName,
-		root,
-		composeFile,
-	});
-
-	await pollUntilHealthy(
-		{
-			serviceName,
-			composeServiceName: serviceName,
-			runtime,
-			projectName,
-			probe: healthCheckType,
-			port,
-			root,
-			composeFile,
-		},
-		(signal) => healthCheckFn(port, signal),
-		maxAttempts * pollInterval,
-		pollInterval,
-		() => {
-			if (verbose) {
-				console.log(formatDone(`${serviceName} is ready`));
-			}
-		},
-		options.signal,
-	);
 }

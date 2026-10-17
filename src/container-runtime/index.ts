@@ -45,7 +45,6 @@ export {
 	type WaitForServiceOptions,
 	waitForAllServices,
 	waitForService,
-	waitForServiceByType,
 } from "./readiness";
 export {
 	availableContainerRuntimes,
