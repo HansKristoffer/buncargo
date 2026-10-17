@@ -131,7 +131,9 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   reloads in-band before falling back to `process.exit(1)` for `KeepAlive` to restart. Only
   consecutive recoveries that left the map stale count toward that exit: an exit drops every
   proxied websocket on the machine, so a stall that an in-band reload repaired must never add up
-  to one.
+  to one. A recovery whose reload has not settled after `STALL_RECOVERY_TIMEOUT_MS` counts as
+  failed: every caller joins the one in-flight reload, so a hung reload otherwise held recovery
+  forever and the exit was never reached.
 - On the CLI side `waitForDaemonRoutes` is what stands between the registry and the banner: a route
   is a file until the daemon picks it up, and advertising it earlier is how https URLs come to
   point at our own 404. It retries a probe that does not answer rather than failing on it (the

@@ -15,6 +15,7 @@ import {
 	createDebouncedTrigger,
 	createHostsReloader,
 	createReloadWakeup,
+	createStallRecovery,
 	createStallRecoveryPolicy,
 	type HostsReloaderDeps,
 	nextReloadDelayMs,
@@ -90,6 +91,87 @@ describe("createStallRecoveryPolicy", () => {
 		daemon.stallThenRecover(false);
 		daemon.stallThenRecover(true);
 		expect(daemon.stallThenRecover(false)).toBe(false);
+	});
+});
+
+describe("createStallRecovery", () => {
+	/** A reload that never settles, timers fired by hand, a map that stays stale. */
+	function hungDaemon() {
+		const timers: Array<() => void> = [];
+		const exits: number[] = [];
+		let reloads = 0;
+		const recovery = createStallRecovery({
+			reload: () => {
+				reloads += 1;
+				return new Promise<void>(() => {});
+			},
+			policy: createStallRecoveryPolicy({
+				lastReloadAt: () => 0,
+				now: () => 60_000,
+				staleAfterMs: 45_000,
+				maxFailures: 2,
+			}),
+			log: () => {},
+			exit: (code) => exits.push(code),
+			startTimer: (_ms, onTimeout) => {
+				timers.push(onTimeout);
+				return () => {};
+			},
+		});
+		return {
+			exits,
+			reloads: () => reloads,
+			async stallAndTimeOut(): Promise<void> {
+				const recovering = recovery.recover(60_000);
+				timers.shift()?.();
+				await recovering;
+			},
+			recover: () => recovery.recover(60_000),
+		};
+	}
+
+	// The reloader joins every caller onto its one in-flight reload, so a hung
+	// reload used to hold recovery forever and the daemon never exited.
+	it("exits after reloads that never settle keep timing out", async () => {
+		const daemon = hungDaemon();
+		await daemon.stallAndTimeOut();
+		await daemon.stallAndTimeOut();
+		expect(daemon.exits).toEqual([]);
+		await daemon.stallAndTimeOut();
+		expect(daemon.exits).toEqual([1]);
+		expect(daemon.reloads()).toBe(3);
+	});
+
+	it("runs one recovery at a time", () => {
+		const daemon = hungDaemon();
+		expect(daemon.recover()).toBeDefined();
+		expect(daemon.recover()).toBeUndefined();
+		expect(daemon.reloads()).toBe(1);
+	});
+
+	it("stays up when the reload refreshes the map in time", async () => {
+		let lastReloadAt = 0;
+		const exits: number[] = [];
+		let cancelled = 0;
+		const recovery = createStallRecovery({
+			reload: async () => {
+				lastReloadAt = 60_000;
+			},
+			policy: createStallRecoveryPolicy({
+				lastReloadAt: () => lastReloadAt,
+				now: () => 60_000,
+				staleAfterMs: 45_000,
+				maxFailures: 0,
+			}),
+			log: () => {},
+			exit: (code) => exits.push(code),
+			startTimer: () => () => {
+				cancelled += 1;
+			},
+		});
+		await recovery.recover(60_000);
+		expect(exits).toEqual([]);
+		expect(cancelled).toBe(1);
 	});
 });
 

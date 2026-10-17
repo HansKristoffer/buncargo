@@ -135,6 +135,74 @@ export function createStallRecoveryPolicy(input: {
 }
 
 /**
+ * How long an in-band stall recovery waits for its reload. A reload is a file
+ * read and at most a rebind; one still running after this has hung.
+ */
+export const STALL_RECOVERY_TIMEOUT_MS = 10_000;
+
+/**
+ * Recover a route map that has stopped refreshing, from the request path.
+ *
+ * Reloading in-band is tried first because it fixes the common case without
+ * dropping a single connection; `policy` decides when failures add up to an
+ * exit ({@link createStallRecoveryPolicy}). A reload that hangs counts as a failed
+ * recovery once {@link STALL_RECOVERY_TIMEOUT_MS} passes: the reloader joins
+ * every caller onto the one in-flight reload, so waiting on it unbounded left
+ * recovery stuck behind the very hang it exists to repair, and the daemon never
+ * reached the exit that lets launchd/systemd `KeepAlive` restart it.
+ */
+export function createStallRecovery(input: {
+	reload: () => Promise<void>;
+	policy: { shouldExitAfterRecovery: () => boolean };
+	log: (message: string) => void;
+	exit: (code: number) => void;
+	timeoutMs?: number;
+	/** Calls `onTimeout` after `ms`; returns a function that cancels it. */
+	startTimer?: (ms: number, onTimeout: () => void) => () => void;
+}): { recover: (ageMs: number) => Promise<void> | undefined } {
+	const timeoutMs = input.timeoutMs ?? STALL_RECOVERY_TIMEOUT_MS;
+	const startTimer =
+		input.startTimer ??
+		((ms, onTimeout) => {
+			const timer = setTimeout(onTimeout, ms);
+			return () => clearTimeout(timer);
+		});
+	let recovering: Promise<void> | undefined;
+
+	async function recoverOnce(): Promise<void> {
+		let cancel = () => {};
+		const timedOut = new Promise<"timeout">((resolve) => {
+			cancel = startTimer(timeoutMs, () => resolve("timeout"));
+		});
+		const outcome = await Promise.race([input.reload(), timedOut]);
+		cancel();
+		if (outcome === "timeout") {
+			input.log(
+				`[buncargo hosts] in-band reload did not finish within ${Math.round(timeoutMs / 1000)}s`,
+			);
+		}
+		if (!input.policy.shouldExitAfterRecovery()) return;
+		input.log(
+			"[buncargo hosts] route map is still stale after in-band reloads; exiting so the service restarts",
+		);
+		input.exit(1);
+	}
+
+	return {
+		recover: (ageMs) => {
+			if (recovering) return undefined;
+			input.log(
+				`[buncargo hosts] route map has not refreshed in ${Math.round(ageMs / 1000)}s; reloading`,
+			);
+			recovering = recoverOnce().finally(() => {
+				recovering = undefined;
+			});
+			return recovering;
+		},
+	};
+}
+
+/**
  * Keep the service log from growing without bound.
  *
  * It is append-only and the daemon runs for weeks; a version that crash-looped
@@ -660,41 +728,20 @@ export async function runHostsDaemon(
 		}
 	}
 
-	/**
-	 * Recover a route map that has stopped refreshing, from the request path.
-	 *
-	 * The loop below is the only thing that reads the registry, and a loop that
-	 * stops advancing is invisible: `Bun.serve` keeps answering, so the daemon
-	 * looks healthy while every named URL 404s against a frozen map. Serving a
-	 * request is the one signal still known to work, so it drives the repair.
-	 *
-	 * Reloading in-band is tried first because it fixes the common case without
-	 * dropping a single connection. Only when it keeps failing to move the
-	 * timestamp ({@link createStallRecoveryPolicy}) does the daemon exit and let launchd/systemd `KeepAlive` restart it — a
-	 * rebind costs milliseconds, and a wedged daemon costs everything.
-	 */
-	const stallPolicy = createStallRecoveryPolicy({
-		lastReloadAt: () => reloader.routes().lastReloadAt,
-		now: Date.now,
+	// The loop below is the only thing that reads the registry, and a loop that
+	// stops advancing is invisible: `Bun.serve` keeps answering, so the daemon
+	// looks healthy while every named URL 404s against a frozen map. Serving a
+	// request is the one signal still known to work, so it drives the repair.
+	const stallRecovery = createStallRecovery({
+		reload: () => reloadOrReport("recovery"),
+		policy: createStallRecoveryPolicy({
+			lastReloadAt: () => reloader.routes().lastReloadAt,
+			now: Date.now,
+		}),
+		log: logDaemonError,
+		exit: (code) => process.exit(code),
 	});
-	let recovering: Promise<void> | undefined;
-	recoverFromStall = (ageMs) => {
-		if (recovering) return;
-		logDaemonError(
-			`[buncargo hosts] route map has not refreshed in ${Math.round(ageMs / 1000)}s; reloading`,
-		);
-		recovering = reloadOrReport("recovery")
-			.then(() => {
-				if (!stallPolicy.shouldExitAfterRecovery()) return;
-				logDaemonError(
-					"[buncargo hosts] route map is still stale after in-band reloads; exiting so the service restarts",
-				);
-				process.exit(1);
-			})
-			.finally(() => {
-				recovering = undefined;
-			});
-	};
+	recoverFromStall = stallRecovery.recover;
 
 	await reloadOrReport("startup");
 	for (;;) {
