@@ -231,6 +231,25 @@ it("does not classify a neighboring checkout sharing a prefix as ours", () => {
 	).toBe("kill");
 });
 
+it("does not classify a worktree checked out inside the root as ours", () => {
+	const checkouts = new Set(["/repo/.claude/worktrees/x", "/repo/vendor/tool"]);
+	const classify = (cwd: string) =>
+		classifyPortOccupant(
+			{ pids: [123], cwd },
+			{
+				root: "/repo",
+				projectName: "demo",
+				isCheckoutRoot: (dir) => checkouts.has(dir),
+			},
+		);
+	expect(classify("/repo/.claude/worktrees/x")).toBe("fail");
+	expect(classify("/repo/.claude/worktrees/x/apps/web")).toBe("fail");
+	expect(classify("/repo/vendor/tool/bin")).toBe("fail");
+	expect(classify("/repo/.claude/worktrees")).toBe("kill");
+	expect(classify("/repo/apps/web")).toBe("kill");
+	expect(classify("/repo")).toBe("kill");
+});
+
 describe("bind probe", () => {
 	it("reports a port held on any address", () => {
 		// Held on 0.0.0.0 only: 127.0.0.1 still binds, so only probing every

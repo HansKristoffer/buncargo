@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { platform } from "node:os";
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { containerRuntimeDisplayName } from "../../container-runtime/names";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import {
@@ -8,6 +9,7 @@ import {
 	dockerContainerPortOwnersAsync,
 	findDockerContainerOnPort,
 } from "../../docker/port-lookup";
+import { CONFIG_FILES } from "../../loader/find-config-file";
 import type { ContainerRuntimeName, PortContainerOwner } from "../../types";
 import { externalStackProjectName } from "../ports";
 import {
@@ -552,6 +554,11 @@ export async function killPortOwner(
 
 export type PortOccupantAction = "reuse" | "kill" | "fail" | "free";
 
+/** A directory that is a checkout of its own: a Git clone or worktree, or a buncargo project. */
+function isCheckoutRoot(dir: string): boolean {
+	return [".git", ...CONFIG_FILES].some((name) => existsSync(join(dir, name)));
+}
+
 export function classifyPortOccupant(
 	owner: PortOwner | null,
 	options: {
@@ -559,6 +566,8 @@ export function classifyPortOccupant(
 		projectName: string;
 		/** The backend this run will use; anything else cannot be reused. */
 		runtime?: ContainerRuntimeName;
+		/** Whether a directory under the root is a checkout of its own. Default: the file system. */
+		isCheckoutRoot?: (dir: string) => boolean;
 	},
 ): PortOccupantAction {
 	if (!owner) return "free";
@@ -591,7 +600,14 @@ export function classifyPortOccupant(
 		!localPath.startsWith("..\\") &&
 		!isAbsolute(localPath)
 	) {
-		return "kill";
+		// A worktree checked out inside this one (`.claude/worktrees/x`) is
+		// another checkout: its processes are never this run's to kill.
+		const isCheckout = options.isCheckoutRoot ?? isCheckoutRoot;
+		const segments = localPath.split(sep).filter(Boolean);
+		const nested = segments.some((_, index) =>
+			isCheckout(join(options.root, ...segments.slice(0, index + 1))),
+		);
+		return nested ? "fail" : "kill";
 	}
 	return "fail";
 }
