@@ -53,6 +53,11 @@ The sweep and volume pruning live in `container-runtime/` too; see
 - `ExecInServiceRequest.command` is argv, not a shell command line, so neither backend has to quote
   it and the two cannot disagree about which shell runs a probe. Both backends spawn argv
   throughout.
+- `down` with the runtime stopped (Docker's daemon, Apple's system service) is a successful no-op:
+  a stopped runtime runs no containers. Each backend reads that off its own failed teardown or
+  listing and only then probes, so a normal teardown pays no extra process. `removeVolumes` is the
+  exception and fails, naming how to start the runtime: `dev --reset` reporting success over
+  volumes it never removed is a reset that did not happen.
 - `inventory.ts` backs the machine-wide commands (`ls`, `doctor`, `dev --down --all`). Those have no
   project config in scope, so they ask every available runtime rather than one.
 

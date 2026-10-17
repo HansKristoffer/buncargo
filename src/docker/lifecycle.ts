@@ -175,6 +175,11 @@ export async function stopContainers(
 			? isDaemonDownMessage(result.stderr)
 			: !isDockerDaemonRunning(binary);
 		if (daemonDown) {
+			// A reset that silently kept the volumes would not be one.
+			if (removeVolumes && file)
+				throw new Error(
+					`Docker is not running, so the volumes of ${projectName} were not removed. Start Docker, then run again.`,
+				);
 			if (verbose)
 				console.log(formatStep("ℹ Docker is not running. Nothing to stop."));
 			return;

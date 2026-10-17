@@ -109,6 +109,23 @@ describe("stopContainers", () => {
 		expect(calls()).toEqual([["compose", "-p", "demo", "down"]]);
 	});
 
+	it("refuses to report volumes removed while the daemon is stopped", async () => {
+		const { dir, binary } = fakeDocker({
+			downStderr:
+				"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+		});
+		const composeFile = join(dir, "compose.yml");
+		writeFileSync(composeFile, "services: {}\n");
+		await expect(
+			stopContainers(dir, "demo", {
+				binary,
+				composeFile,
+				removeVolumes: true,
+				verbose: false,
+			}),
+		).rejects.toThrow(/volumes of demo were not removed/);
+	});
+
 	it("names the missing Compose plugin instead of passing Docker's words on", async () => {
 		const { dir, binary } = fakeDocker({
 			downStderr: "docker: 'compose' is not a docker command.",

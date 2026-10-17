@@ -216,7 +216,23 @@ function* downSteps(request: ContainerDownRequest): AppleSteps {
 	const { verbose = true, removeVolumes = false } = request;
 
 	const inventory = yield ["ls", "--all", "--format", "json"];
-	if (!inventory.ok) failed(inventory, "read container inventory");
+	if (!inventory.ok) {
+		// A stopped system service runs no containers, so there is nothing to
+		// stop, as with Docker's daemon. Asked only after the listing failed,
+		// to keep every other teardown at one process. Volumes cannot be
+		// removed without it, and a reset that silently kept them would not be.
+		const status = yield ["system", "status"];
+		if (status.ok) failed(inventory, "read container inventory");
+		if (removeVolumes)
+			throw new Error(
+				`Apple container is not running, so the volumes of ${request.projectName} were not removed. Start it with \`container system start\`, then run again.`,
+			);
+		if (verbose)
+			console.log(
+				formatStep("ℹ Apple container is not running. Nothing to stop."),
+			);
+		return;
+	}
 	const records = parseContainerRecords(inventory.stdout).filter(
 		(record) => record.labels[PROJECT_LABEL] === request.projectName,
 	);

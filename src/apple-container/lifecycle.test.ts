@@ -394,6 +394,54 @@ describe("appleDown", () => {
 		).resolves.toBeUndefined();
 	});
 
+	it("has nothing to stop while the system service is stopped", async () => {
+		const cli = recordingCli([], {
+			ls: "Error: XPC connection error",
+			system: "apiserver is not running",
+		});
+
+		await expect(
+			appleDown(cli, {
+				root: "/repo",
+				projectName: "gey-main",
+				verbose: false,
+			}),
+		).resolves.toBeUndefined();
+		expect(subcommands(cli)).toEqual(["ls --all", "system status"]);
+	});
+
+	it("refuses to report volumes removed while the system service is stopped", async () => {
+		const cli = recordingCli([], {
+			ls: "Error: XPC connection error",
+			system: "apiserver is not running",
+		});
+
+		await expect(
+			appleDown(cli, {
+				root: "/repo",
+				projectName: "gey-main",
+				model: modelFor({ postgres: { port: 5432 } }),
+				removeVolumes: true,
+				verbose: false,
+			}),
+		).rejects.toThrow(
+			/volumes of gey-main were not removed. Start it with `container system start`/,
+		);
+		expect(subcommands(cli)).toEqual(["ls --all", "system status"]);
+	});
+
+	it("still reports a failed listing while the system service runs", async () => {
+		const cli = recordingCli([], { ls: "internal error" });
+
+		await expect(
+			appleDown(cli, {
+				root: "/repo",
+				projectName: "gey-main",
+				verbose: false,
+			}),
+		).rejects.toThrow(/read container inventory failed.*internal error/);
+	});
+
 	it("needs no model to tear a project down", async () => {
 		const cli = recordingCli([
 			record("gey-main-redis", "running", { "buncargo.project": "gey-main" }),
