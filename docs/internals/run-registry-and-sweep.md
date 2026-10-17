@@ -70,7 +70,7 @@ cannot drift between them (the recorded CLI is exactly where they once did).
 no config load, no Docker unless a service is the target.
 
 - Stopping one app must not end the run, which is why `isDeliberateExit` in
-  `process/dev-servers.ts` treats a signalled exit (and `130`/`143`, what a shell wrapper reports
+  `process/process-owner.ts` treats a signalled exit (and `130`/`143`, what a shell wrapper reports
   for SIGINT/SIGTERM) as a clean stop rather than a failure.
 - The two refusals (the attached app, and an app reused from another terminal) carry exit code 3;
   `2` is "no such target".

@@ -1,6 +1,5 @@
 export { buildApps } from "./build";
 export {
-	isDeliberateExit,
 	type StartDevServersOptions,
 	startDevServers,
 	stopDevServers,
@@ -34,3 +33,4 @@ export {
 	readListenerSnapshot,
 	readListenerSnapshotAsync,
 } from "./port-snapshot";
+export { isDeliberateExit } from "./process-owner";

@@ -24,7 +24,7 @@ import {
 	killPortOwner,
 	type PortOwnerSnapshot,
 } from "./port-owner";
-import { RunInterrupted } from "./process-owner";
+import { appExitState, RunInterrupted } from "./process-owner";
 import { printStream, RunOutput } from "./run-output";
 
 export { stopDevServers } from "./app-supervision";
@@ -40,28 +40,6 @@ import { spawnOwnedWorker } from "./worker-ownership";
 
 function toError(reason: unknown): Error {
 	return reason instanceof Error ? reason : new Error(String(reason));
-}
-
-/**
- * Did this app stop because something asked it to?
- *
- * `null` is a process killed by a signal outright. The two codes are
- * `128 + SIGINT` and `128 + SIGTERM`, which is what a shell wrapper reports
- * when the signal reached it rather than the server it spawned — `bun run dev`
- * does exactly that. Without them a Ctrl-C, or a `buncargo stop`, ends a clean
- * shutdown with "App exited with code 143" and a failed run.
- */
-export function isDeliberateExit(
-	code: number | null,
-	signal?: NodeJS.Signals | null,
-): boolean {
-	return (
-		(code === null &&
-			(signal === undefined || signal === "SIGINT" || signal === "SIGTERM")) ||
-		code === 0 ||
-		code === 130 ||
-		code === 143
-	);
 }
 
 export interface StartDevServersOptions {
@@ -341,14 +319,10 @@ export async function startDevServers(
 					output.state(name, {
 						state: failure
 							? "failed"
-							: isDeliberateExit(code, signal) &&
-									!(
-										code === 0 &&
-										startable[name]?.kind === "worker" &&
-										!optional.has(name)
-									)
-								? "stopped"
-								: "failed",
+							: appExitState(code, signal, {
+									worker: startable[name]?.kind === "worker",
+									optional: optional.has(name),
+								}),
 						detail: failure ?? (signal ? `signal ${signal}` : `exit ${code}`),
 						restartable: optional.has(name),
 					});

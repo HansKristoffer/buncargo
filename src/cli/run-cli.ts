@@ -3,7 +3,7 @@ import { containerRuntimeForEnv } from "../container-runtime";
 import { withSignal } from "../core/deadline";
 import { removeHostRoutes } from "../core/hosts";
 import { releaseLeases } from "../core/leases";
-import { isDeliberateExit } from "../core/process";
+import { appExitState } from "../core/process/process-owner";
 import { askConfirm, PromptInterruptedError } from "../core/prompt";
 import { isCI } from "../core/runtime-flags";
 import { joinColoredNames } from "../core/style";
@@ -709,6 +709,8 @@ async function runDevFlow<
 
 	const appsStartedAt = performance.now();
 	let firstSpawn = false;
+	// Parked after never coming up: the supervisor treats them as non-essential.
+	const parked = new Set<string>();
 	const view = openDevOutput(env, classifiedApps.startApps, { tui: args.tui });
 
 	try {
@@ -785,6 +787,7 @@ async function runDevFlow<
 				keepOthersOnFailure: env.onAppFailure !== "stop-run",
 				watch: args.watch,
 				onAppFailed: (name) => {
+					parked.add(name);
 					void markApps(env, [name], "failed");
 				},
 				// Deliberately not awaited: the registry is a status file, and
@@ -805,10 +808,10 @@ async function runDevFlow<
 					void markApps(
 						env,
 						[name],
-						isDeliberateExit(code, signal) &&
-							!(code === 0 && app?.kind === "worker" && app.essential !== false)
-							? "stopped"
-							: "failed",
+						appExitState(code, signal, {
+							worker: app?.kind === "worker",
+							optional: app?.essential === false || parked.has(name),
+						}),
 					);
 				},
 				onAfterWave1: async (signal) => {
