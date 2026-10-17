@@ -1,7 +1,6 @@
 import { assertValidConfig } from "../config";
 import { applyIntegrations } from "../config/integrations";
 import { setUnsetEnv } from "../core/child-env";
-import { withDeadline } from "../core/deadline";
 import { waitForServer } from "../core/network";
 import { type PrimaryAppInput, resolvePrimaryApp } from "../core/primary-app";
 import { stopProcess } from "../core/process";
@@ -22,7 +21,7 @@ import { renderGeneratedFiles } from "./generated-files";
 import { createLifecycleApi } from "./lifecycle";
 import { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { createRunClaimApi } from "./run-claim";
-import { createServersApi } from "./servers";
+import { createServerHookRunner, createServersApi } from "./servers";
 import { registerStartPlanner } from "./start-plan";
 
 /**
@@ -158,16 +157,7 @@ export function createDevEnvironment<
 				options.signal,
 				(pids) => Object.keys(pids).length > 0,
 			),
-		runServerHook: async (phase, signal) => {
-			const hook =
-				resolved.hooks?.[phase === "before" ? "beforeServers" : "afterServers"];
-			if (hook)
-				await withDeadline(
-					(hookSignal) => hook(envVars.getHookContext(hookSignal)),
-					600000,
-					signal,
-				);
-		},
+		runServerHook: createServerHookRunner(ctx, envVars),
 		stopProcess,
 		waitForServers: servers.waitForServersReady,
 

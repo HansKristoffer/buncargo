@@ -1,4 +1,3 @@
-import { withDeadline } from "../core/deadline";
 import {
 	type StartDevServersOptions,
 	startDevServers,
@@ -12,6 +11,7 @@ export interface ServerSessionSource {
 	root: string;
 	ports: Record<string, number>;
 	appEnv(name: string): Record<string, string>;
+	/** `beforeServers`/`afterServers`; bounds its own wait. */
 	runHook(phase: "before" | "after", signal?: AbortSignal): Promise<void>;
 	waitForHealth(
 		apps: Record<string, AppConfig>,
@@ -56,11 +56,7 @@ export async function startServerSession(
 			await options.stayOpen?.(signal);
 			return {};
 		}
-		await withDeadline(
-			(signal) => source.runHook("before", signal),
-			600_000,
-			signal,
-		);
+		await source.runHook("before", signal);
 		return await startDevServers(
 			apps,
 			source.root,
@@ -75,11 +71,7 @@ export async function startServerSession(
 				},
 				onReady: async (signal) => {
 					await joinSeed();
-					await withDeadline(
-						(hookSignal) => source.runHook("after", hookSignal),
-						600_000,
-						signal,
-					);
+					await source.runHook("after", signal);
 					await options.onReady?.(signal);
 				},
 				onAfterWave1: async (signal) => {

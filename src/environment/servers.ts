@@ -1,5 +1,6 @@
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
+import { withDeadline } from "../core/deadline";
 import { waitForDevServers } from "../core/network";
 import { buildApps } from "../core/process/build";
 import { isCI } from "../core/runtime-flags";
@@ -56,6 +57,30 @@ export function assertAppWorkingDirectories(
 
 function readyTimeout(): number {
 	return isCI() ? 120000 : 60000;
+}
+
+/**
+ * `beforeServers`/`afterServers` for `start()` and the CLI alike, told the
+ * prepared selection and bounded like every other hook.
+ */
+export function createServerHookRunner<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+	TEnv extends EnvValues = EnvValues,
+>(
+	ctx: DevEnvContext<TServices, TApps, TEnv>,
+	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
+): (phase: "before" | "after", signal?: AbortSignal) => Promise<void> {
+	return async (phase, signal) => {
+		const hook =
+			ctx.config.hooks?.[phase === "before" ? "beforeServers" : "afterServers"];
+		if (hook)
+			await withDeadline(
+				(hookSignal) => hook(envVars.getHookContext(hookSignal)),
+				600_000,
+				signal,
+			);
+	};
 }
 
 /**
@@ -116,13 +141,7 @@ export async function startAppServers<
 					name as Extract<keyof TApps, string>,
 					productionBuild,
 				),
-			runHook: async (phase, signal) => {
-				const hook =
-					ctx.config.hooks?.[
-						phase === "before" ? "beforeServers" : "afterServers"
-					];
-				await hook?.(envVars.getHookContext(signal));
-			},
+			runHook: createServerHookRunner(ctx, envVars),
 			recordCapture: createCaptureRecorder(ctx, envVars),
 			afterWave: () => {
 				renderGeneratedFiles(ctx, envVars);

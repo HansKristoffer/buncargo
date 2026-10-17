@@ -62,6 +62,12 @@ import { logEnvironmentInfo } from "./logging";
  * The sibling modules (`env-vars`, `lifecycle`, `servers`, `watchdog`) take this
  * as their only shared state, so `createDevEnvironment` stays a composer.
  */
+/** The apps and services a run selected, `requiredApps` and dependencies expanded. */
+export interface StartSelection {
+	readonly appNames: readonly string[];
+	readonly requiredServiceKeys: readonly string[];
+}
+
 export interface DevEnvContext<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
@@ -80,6 +86,11 @@ export interface DevEnvContext<
 	readonly hasSelectedServices: boolean;
 	/** Service keys the current selection starts, for the run claim. */
 	readonly selectedServiceKeys: readonly string[];
+	/**
+	 * The expanded selection `prepareStart` last allocated for, which hooks
+	 * are told about; undefined before any preparation.
+	 */
+	readonly selection: StartSelection | undefined;
 	readonly ownedServerPids: Record<string, number>;
 	/** Values apps printed (`captures`), shared by hooks, env and generated files. */
 	readonly captured: Record<string, string>;
@@ -190,6 +201,7 @@ export function createDevEnvContext<
 	};
 	let hasSelectedServices = false;
 	let selectedServiceKeys: readonly string[] = [];
+	let startSelection: StartSelection | undefined;
 	let preparedSelection: string | undefined;
 
 	let portPlan = resolvePortPlan({
@@ -289,6 +301,10 @@ export function createDevEnvContext<
 		}
 		hasSelectedServices = plan.requiredServiceKeys.length > 0;
 		selectedServiceKeys = plan.requiredServiceKeys;
+		startSelection = {
+			appNames: plan.appNames,
+			requiredServiceKeys: plan.requiredServiceKeys,
+		};
 		const selectedRuntime = hasSelectedServices ? runtime() : undefined;
 
 		if (selectedRuntime) {
@@ -349,6 +365,9 @@ export function createDevEnvContext<
 		},
 		get selectedServiceKeys() {
 			return selectedServiceKeys;
+		},
+		get selection() {
+			return startSelection;
 		},
 		getStartPlan,
 		prepareStart,

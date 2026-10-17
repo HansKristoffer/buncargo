@@ -26,7 +26,7 @@ import type {
 	ServiceConfig,
 } from "../types";
 import { capturedEnv } from "./captures";
-import type { DevEnvContext } from "./context";
+import type { DevEnvContext, StartSelection } from "./context";
 
 export interface DevEnvVarsApi<
 	TServices extends Record<string, ServiceConfig>,
@@ -46,9 +46,10 @@ export interface DevEnvVarsApi<
 		appName: Extract<keyof TApps, string>,
 		production?: boolean,
 	): string;
+	/** Without a selection, hooks see the prepared one (every name before preparation). */
 	getHookContext(
 		signal?: AbortSignal,
-		selection?: { appNames: string[]; requiredServiceKeys: string[] },
+		selection?: StartSelection,
 	): HookContext<TServices, TApps>;
 	exec(
 		cmd: string | readonly string[],
@@ -287,11 +288,11 @@ export function createEnvVarsApi<
 
 	function getHookContext(
 		signal?: AbortSignal,
-		selection?: { appNames: string[]; requiredServiceKeys: string[] },
+		selection: StartSelection | undefined = ctx.selection,
 	): HookContext<TServices, TApps> {
 		if (selection) {
 			return {
-				...getHookContext(signal),
+				...scopedHookContext(signal),
 				selectedApps: selection.appNames as Extract<keyof TApps, string>[],
 				selectedServices: selection.requiredServiceKeys as Extract<
 					keyof TServices,
@@ -299,7 +300,12 @@ export function createEnvVarsApi<
 				>[],
 			};
 		}
+		return scopedHookContext(signal);
+	}
 
+	function scopedHookContext(
+		signal?: AbortSignal,
+	): HookContext<TServices, TApps> {
 		if (!hookContext) {
 			hookContext = {
 				selectedApps: Object.keys(apps) as Extract<keyof TApps, string>[],

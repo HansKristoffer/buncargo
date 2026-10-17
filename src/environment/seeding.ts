@@ -14,7 +14,7 @@ import type {
 	SeedRunOptions,
 	ServiceConfig,
 } from "../types";
-import type { DevEnvContext } from "./context";
+import type { DevEnvContext, StartSelection } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 
 const BUN_SCRIPT_COMMAND =
@@ -135,7 +135,7 @@ export async function runSeedIfNeeded<
 	ctx: DevEnvContext<TServices, TApps, TEnv>,
 	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
 	options: SeedRunOptions = {},
-	selection?: { appNames: string[]; requiredServiceKeys: string[] },
+	selection?: StartSelection,
 ): Promise<SeedOutcome> {
 	const seed = ctx.config.seed;
 	if (!seed) {
