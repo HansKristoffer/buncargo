@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { defineDevConfig } from "../config";
 import { service } from "../docker-compose/services";
-import { withoutCiEnv } from "./test-env";
+import { withoutCiEnv } from "./test-env.testing";
 import { getEnvVar, sleep } from "./utils";
 
 // ═══════════════════════════════════════════════════════════════════════════
