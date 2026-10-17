@@ -66,6 +66,35 @@ describe("architecture", () => {
 		expect(offenders).toEqual([]);
 	});
 
+	it("never hides the container runtime by emptying PATH", () => {
+		// With PATH empty, Bun falls back to /usr/bin and finds the real
+		// `docker`; a watchdog or sweep run that way with an isolated HOME sees
+		// every stack on the machine as unowned. Keep the test preload's stubs
+		// on PATH, or use a directory of your own, and point DOCKER_HOST at
+		// nothing. This happened in a test and in scripts/verify-package.ts.
+		const allowed: Record<string, string> = {
+			"src/core/tool-binary.test.ts":
+				"calls lookupOnPath, a pure function, with an empty PATH; spawns nothing",
+			"src/core/process/user-scope.test.ts":
+				"calls inOwnUserScope, which only builds argv; spawns nothing",
+		};
+		const emptied = /\bPATH\s*[:=]\s*(["'`])\1/;
+		const files = [
+			...[...new Bun.Glob("**/*.ts").scanSync(SRC)].map(
+				(path) => `src/${path}`,
+			),
+			...[...new Bun.Glob("**/*.ts").scanSync(join(ROOT, "scripts"))].map(
+				(path) => `scripts/${path}`,
+			),
+		];
+
+		const offenders = files
+			.filter((file) => !(file in allowed))
+			.filter((file) => emptied.test(readFileSync(join(ROOT, file), "utf8")));
+
+		expect(offenders).toEqual([]);
+	});
+
 	it("keeps the hosts daemon bundle free of the CLI side", () => {
 		// dist/hostsd.js is the one file a root launchd job executes. The client
 		// reaches for the container runtimes to name a :443 squatter, and

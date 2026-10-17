@@ -54,7 +54,9 @@ worktrees of this repo and of the projects that use it.
    `dev --down --all` with an isolated `HOME` but a reachable container runtime sees every real
    stack on the machine as unowned and tears it down. Isolate both: stub the adapters, or point
    `DOCKER_HOST` at nothing. `bun test` already stubs `docker` and `container`
-   (`scripts/test-runtime-isolation.ts`); scripts and manual runs do not.
+   (`scripts/test-runtime-isolation.ts`); scripts and manual runs do not. An empty `PATH` hides
+   nothing: Bun falls back to `/usr/bin` and finds the real `docker` (`src/architecture.test.ts`
+   rejects it).
 2. **Volumes.** Leave volumes unlabelled and unremoved. Labelling a Compose volume makes Compose
    prompt "Recreate (data will be lost)?" and hangs every non-interactive run. Only
    `buncargo prune`, after confirmation, removes one.
