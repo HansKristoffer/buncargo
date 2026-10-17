@@ -1,14 +1,12 @@
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import {
 	availableContainerRuntimes,
 	getContainerRuntimeAdapter,
 	stopBuncargoContainers,
 	withProjectLifecycleLock,
 } from "../../container-runtime";
+import { runStackDowns } from "../../container-runtime/sweep";
 import { findMonorepoRoot } from "../../core/ports";
 import {
-	execAsync,
 	isProcessAlive,
 	killPortOwner,
 	signalProcessTree,
@@ -383,9 +381,7 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 					projectName: run.projectName,
 					verbose: false,
 				});
-			const cwd = existsSync(run.root) ? run.root : homedir();
-			for (const stack of run.stacks ?? [])
-				await execAsync(stack.down, cwd, {}, { timeoutMs: 120_000 });
+			await runStackDowns(run);
 		} catch (error) {
 			log.error(
 				`Could not remove ${run.projectName}'s containers: ${error instanceof Error ? error.message : String(error)}`,

@@ -22,6 +22,7 @@ import {
 	clearRunStacks,
 	markOwnersLost,
 	type RunEntry,
+	type RunStackEntry,
 	readAllRuns,
 	retireRuns,
 	runLivenessAsync,
@@ -261,6 +262,24 @@ export async function sweepOrphanedContainers(
 }
 
 /**
+ * Run a run's recorded stack `down` commands in order, each once the one
+ * before it has succeeded.
+ *
+ * From the checkout, or from home once the checkout is gone: a deleted
+ * worktree's stack must still come down.
+ */
+export async function runStackDowns(
+	run: Pick<RunEntry, "root" | "stacks">,
+	onDown: (stack: RunStackEntry) => void = () => {},
+): Promise<void> {
+	const cwd = existsSync(run.root) ? run.root : homedir();
+	for (const stack of run.stacks ?? []) {
+		await execAsync(stack.down, cwd, {}, { timeoutMs: 120_000 });
+		onDown(stack);
+	}
+}
+
+/**
  * Decide one stack and tear it down if it is condemned. True when removed.
  *
  * A stack condemned from the pass's snapshot is decided again from a fresh
@@ -477,16 +496,14 @@ async function sweepStacks(
 				const freshAlive = await runLivenessAsync(fresh);
 				const verdict = decide(fresh, freshAlive);
 				if (verdict.kind !== "down") return;
-				const cwd = existsSync(run.root) ? run.root : homedir();
-				for (const stack of run.stacks ?? []) {
-					await execAsync(stack.down, cwd, {}, { timeoutMs: 120_000 });
+				await runStackDowns(run, (stack) =>
 					result.swept.push({
 						projectName: run.projectName,
 						root: run.root,
 						runtime: stack.name,
 						reason: verdict.reason,
-					});
-				}
+					}),
+				);
 				await clearRunStacks([run.sessionId]);
 				// Retirable this pass, like an entry whose containers are gone.
 				run.stacks = undefined;
