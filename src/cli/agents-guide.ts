@@ -110,6 +110,27 @@ hardcode a port. Ask buncargo instead.
 - Do not \`docker exec\` into a database by name or read credentials from the
   generated compose file: other worktrees run databases of their own.
 
+## Sharing beyond this machine
+
+- \`bunx buncargo dev --detach --expose\` (or \`--expose=api\`) also opens a
+  public Cloudflare quick tunnel to each \`expose: true\` app or service, for a
+  webhook or a phone on another network. Anyone with the URL reaches the app:
+  only expose when the user asked. To reach an app yourself, use
+  \`bunx buncargo url <app>\`. The public URLs are in
+  \`bunx buncargo status --json\` (\`tunnels\`); the tunnels close when the run
+  stops. A target without \`expose: true\` makes \`dev\` exit 1 before starting.
+- When \`BUNCARGO_CONNECT_TOKENS\` is set (a cloud sandbox), \`dev\` shares
+  every selected app and service with the token holders on its own; there is no
+  flag, and sharing ends with the run. A sharing failure never stops the run:
+  \`bunx buncargo connect status --json\` shows it.
+- \`bunx buncargo connect tcp <target-id>\` opens a private local port to a
+  shared database another machine runs and prints it as JSON (exit 1 when it
+  cannot); \`bunx buncargo connect disconnect <target-id>\` closes it when you
+  are done. Target ids come from \`connect status --json\`. \`connect token\`
+  prints this machine's recipient token, a secret: never write it into a file.
+  \`connect token --rotate\` and \`connect revoke\` cut recipients off; run them
+  only when asked.
+
 ## Do not
 
 - \`dev --reset\` deletes this checkout's database and \`dev --down --all\` stops
