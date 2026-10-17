@@ -46,6 +46,7 @@ import {
 	readAllRuns,
 	runLivenessAsync,
 } from "../../../core/run-registry";
+import { isHostsForcedOff } from "../../../core/runtime-flags";
 import { describeSwept } from "../../../core/watchdog-loop";
 import { loadDevEnv } from "../../../loader";
 import type { AnyDevEnvironment } from "../../../types";
@@ -275,6 +276,14 @@ async function checkNamedHosts(
 	env: DevEnv,
 ): Promise<void> {
 	if (!env.hosts) return;
+	// Off (`BUNCARGO_HOSTS=0` or CI): the daemon and its CA are not in use,
+	// so neither is a fault.
+	if (isHostsForcedOff()) {
+		report.note(
+			"Named hosts are off (BUNCARGO_HOSTS=0 or CI): apps use http://localhost:port",
+		);
+		return;
+	}
 	const health = await readHostsDaemonHealth(readDaemonConfig().httpsPort);
 	if (health) {
 		report.note("Named-hosts daemon is healthy");
@@ -474,7 +483,8 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 	checkFileTable(report);
 	checkOffsetClaims(report);
 
-	if (hasFlag(args, "--fix")) {
+	// Named hosts that are off have no daemon or CA to repair.
+	if (hasFlag(args, "--fix") && !isHostsForcedOff()) {
 		for (const fixed of await doctorFixHosts()) {
 			report.note(fixed);
 		}
