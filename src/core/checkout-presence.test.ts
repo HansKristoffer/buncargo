@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkoutPresence } from "./checkout-presence";
@@ -28,6 +28,12 @@ describe("checkoutPresence", () => {
 			);
 		},
 	);
+
+	it("reads a checkout under a path that is now a file as deleted", () => {
+		const file = join(dir, "was-a-directory");
+		writeFileSync(file, "");
+		expect(checkoutPresence(join(file, "checkout"))).toBe("deleted");
+	});
 
 	it("reads an empty root as unknown", () => {
 		expect(checkoutPresence("")).toBe("unknown");

@@ -17,7 +17,7 @@ of these anywhere else has written a second owner: flag it and name the first.
 | Asking the user | `src/core/prompt.ts` |
 | The `docker` binary | `src/docker/binary.ts` |
 | buncargo's package root and version | `src/core/version.ts` |
-| Whether a checkout is deleted (only `ENOENT` is) | `src/core/checkout-presence.ts` |
+| Whether a checkout is deleted (only `ENOENT` or `ENOTDIR` is) | `src/core/checkout-presence.ts` |
 | Who removed a stack or volume | `src/core/removal-log.ts` |
 | Exclusive leases as a run takes and explains them | `src/core/app-leases.ts` |
 | A run's entry and app rows in `runs.json` | `src/core/run-publish.ts` |
