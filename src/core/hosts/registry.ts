@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
 import type { NamedHost } from "../../types";
+import { checkoutDeleted } from "../checkout-presence";
 import { withFileLock } from "../file-lock";
 import {
 	defineListRegistry,
@@ -64,6 +64,10 @@ export async function loadHostRoutes(
 	return registry.read(path, options);
 }
 
+function checkoutStillThere(root: string): boolean {
+	return !checkoutDeleted(root);
+}
+
 /**
  * Is this route still attached to something real?
  *
@@ -71,11 +75,12 @@ export async function loadHostRoutes(
  * that run does. A static one — a service URL — has no owner, so nothing would
  * ever retire it; a deleted worktree would keep its hostnames in the registry,
  * and in `/etc/hosts`, forever. The checkout being gone from disk is the only
- * signal that distinguishes "not running" from "no longer exists".
+ * signal that distinguishes "not running" from "no longer exists"; one this
+ * user cannot read is not gone.
  */
 export function isRouteLive(
 	route: HostsRoute,
-	directoryExists: (path: string) => boolean = existsSync,
+	directoryExists: (path: string) => boolean = checkoutStillThere,
 ): boolean {
 	if (route.pid !== undefined) return isRouteOwnerAlive(route.pid);
 	return route.root === "" || directoryExists(route.root);
@@ -96,7 +101,7 @@ async function prune(
 		directoryExists?: (path: string) => boolean;
 	} = {},
 ): Promise<HostsRoute[]> {
-	const directoryExists = options.directoryExists ?? existsSync;
+	const directoryExists = options.directoryExists ?? checkoutStillThere;
 	const routes = await registry.read(path, options);
 	const next = routes.filter((route) => isRouteLive(route, directoryExists));
 	if (next.length !== routes.length) {

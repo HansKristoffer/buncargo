@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import {
 	availableContainerRuntimes,
 	type ContainerRuntimeAdapter,
@@ -12,12 +13,13 @@ import {
 	type VolumeReport,
 	withProjectLifecycleLock,
 } from "../../container-runtime";
+import { checkoutPresence } from "../../core/checkout-presence";
 import { FileLockTimeoutError } from "../../core/file-lock";
 import { listGitCheckouts } from "../../core/git-checkouts";
 import { offsetClaimRoot, readOffsetClaims } from "../../core/offset-claims";
 import { askConfirm, isInteractive } from "../../core/prompt";
 import { readAllRuns, readLiveRuns } from "../../core/run-registry";
-import { findConfigFile, loadDevEnv } from "../../loader";
+import { CONFIG_FILES, findConfigFile, loadDevEnv } from "../../loader";
 import * as log from "../log";
 import { parsePruneArgs, printPruneHelp } from "../prune-flags";
 
@@ -127,13 +129,19 @@ export async function handlePrune(args: string[] = []): Promise<number> {
  *
  * An idle checkout has no containers and, after `dev --down`, no run either,
  * yet its volume is still its database. A suffixed claim (`buncargo ci`, E2E)
- * is left out: those stacks are leftovers once their run is gone.
+ * is left out: those stacks are leftovers once their run is gone. A checkout
+ * whose config this user cannot read is kept: it may well still be there.
  */
 function existingCheckouts(): { projectName: string; root: string }[] {
 	return Object.entries(readOffsetClaims()).flatMap(([key, claim]) => {
 		const root = offsetClaimRoot(key, claim);
-		if (claim.suffix || !findConfigFile(root)) return [];
-		return [{ projectName: claim.projectName, root }];
+		if (claim.suffix) return [];
+		const hasConfig =
+			findConfigFile(root) !== null ||
+			CONFIG_FILES.some(
+				(file) => checkoutPresence(join(root, file)) === "unknown",
+			);
+		return hasConfig ? [{ projectName: claim.projectName, root }] : [];
 	});
 }
 

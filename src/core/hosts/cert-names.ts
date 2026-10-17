@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { checkoutDeleted } from "../checkout-presence";
 import { defineListRegistry } from "../registry-file";
 import { chownToInvokingUser, getStateDir } from "../state-paths";
 
@@ -73,7 +73,7 @@ function byNewestFirst(a: CertNameEntry, b: CertNameEntry): number {
  */
 export function pruneCertNameEntries(
 	entries: CertNameEntry[],
-	rootExists: (root: string) => boolean = existsSync,
+	rootExists: (root: string) => boolean = (root) => !checkoutDeleted(root),
 ): CertNameEntry[] {
 	return entries
 		.filter((entry) => rootExists(entry.root))

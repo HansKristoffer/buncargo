@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { unreadableCheckout } from "../checkout-presence.testing";
 import {
 	type CertNameEntry,
 	pruneCertNameEntries,
@@ -21,6 +22,9 @@ afterEach(() => {
 	for (const dir of dirs.splice(0))
 		rmSync(dir, { recursive: true, force: true });
 });
+
+const unreadable = unreadableCheckout();
+afterAll(() => unreadable?.cleanup());
 
 const alive = () => true;
 
@@ -152,6 +156,21 @@ describe("pruneCertNameEntries", () => {
 		);
 		expect(kept.map((item) => item.root)).toEqual(["/here"]);
 	});
+
+	it.skipIf(!unreadable)(
+		"keeps a checkout this user cannot read, and drops a deleted one",
+		() => {
+			const root = unreadable?.root ?? "";
+			const kept = pruneCertNameEntries([
+				entry(root, "2026-01-02T00:00:00.000Z"),
+				entry(
+					join(tmpdir(), "buncargo-never-existed"),
+					"2026-01-01T00:00:00.000Z",
+				),
+			]);
+			expect(kept.map((item) => item.root)).toEqual([root]);
+		},
+	);
 
 	it("keeps the newest first, so a cap drops the stalest", () => {
 		const kept = pruneCertNameEntries(

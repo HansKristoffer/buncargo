@@ -11,6 +11,11 @@
 
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import {
+	type CheckoutPresence,
+	checkoutDeleted,
+	checkoutPresence,
+} from "../core/checkout-presence";
 import { FileLockTimeoutError } from "../core/file-lock";
 import {
 	dropDeletedOffsetClaims,
@@ -47,8 +52,12 @@ import {
 import type { ContainerRuntimeAdapter } from "./types";
 
 export interface SweepInput {
-	/** The checkout the containers were started from still exists. */
-	rootExists: boolean;
+	/**
+	 * Whether the checkout the containers were started from is still there.
+	 * Only `deleted` (confirmed missing) condemns a stack; `unknown`, a path
+	 * this user cannot read, counts as there.
+	 */
+	checkout: CheckoutPresence;
 	/** At least one container in the stack is running. */
 	anyRunning: boolean;
 	/** The run that owns them, or null when nothing on disk claims them. */
@@ -73,8 +82,9 @@ export function decideSweep(
 		ownerDeadGraceMs: WATCHDOG_OWNER_DEAD_GRACE_MS,
 	},
 ): SweepVerdict {
-	const { rootExists, anyRunning, run, ownerAlive, now } = input;
-	if (!rootExists) return { kind: "down", reason: "checkout deleted" };
+	const { checkout, anyRunning, run, ownerAlive, now } = input;
+	if (checkout === "deleted")
+		return { kind: "down", reason: "checkout deleted" };
 	if (ownerAlive) return { kind: "keep" };
 	if (!anyRunning) return { kind: "down", reason: "stopped with no owner" };
 	// Running, unowned, and nothing on record: an old CLI or a hand-started
@@ -301,7 +311,7 @@ async function sweepGroup(
 		isAlive: (run: RunEntry) => boolean,
 	) =>
 		decideSweep({
-			rootExists: group.root !== "" && existsSync(group.root),
+			checkout: checkoutPresence(group.root),
 			anyRunning: group.containers.some(isContainerUp),
 			run: owner,
 			ownerAlive: owner !== null && isAlive(owner),
@@ -371,7 +381,7 @@ export async function settleDeletedCheckouts(input: {
 		root: offsetClaimRoot(key, claim),
 		claim,
 	}));
-	const deleted = claims.filter(({ root }) => !existsSync(root));
+	const deleted = claims.filter(({ root }) => checkoutDeleted(root));
 	if (deleted.length === 0) return;
 
 	if (!pruneDeletedCheckoutVolumes()) {
@@ -405,10 +415,10 @@ export async function settleDeletedCheckouts(input: {
 	} of deleted) {
 		const claimedElsewhere = claims.some(
 			(other) =>
-				other.claim.projectName === projectName && existsSync(other.root),
+				other.claim.projectName === projectName && !checkoutDeleted(other.root),
 		);
 		const runElsewhere = runs.some(
-			(run) => run.projectName === projectName && existsSync(run.root),
+			(run) => run.projectName === projectName && !checkoutDeleted(run.root),
 		);
 		if (claimedElsewhere || runElsewhere) {
 			settled.push(key);
@@ -478,7 +488,7 @@ async function sweepStacks(
 		const owner =
 			runs.find((entry) => entry.sessionId === run.sessionId) ?? null;
 		return decideSweep({
-			rootExists: run.root !== "" && existsSync(run.root),
+			checkout: checkoutPresence(run.root),
 			anyRunning: true,
 			run: owner,
 			ownerAlive: sameCheckout.some(isAlive),
@@ -587,7 +597,7 @@ function finishedSessions(
 				!stillHasContainers(run) &&
 				// Its stacks are only recorded here; retiring would orphan them.
 				(run.stacks?.length ?? 0) === 0 &&
-				(runtimeAnswered(run) || !existsSync(run.root)),
+				(runtimeAnswered(run) || checkoutDeleted(run.root)),
 		)
 		.map((run) => run.sessionId);
 }

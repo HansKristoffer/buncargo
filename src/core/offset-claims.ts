@@ -1,4 +1,5 @@
-import { existsSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
+import { checkoutDeleted } from "./checkout-presence";
 import { withFileLock, withFileLockSync } from "./file-lock";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
 import { stateFilePath } from "./state-paths";
@@ -106,11 +107,14 @@ export function readAllOffsetClaims(): Record<string, OffsetClaim> {
 	return readJsonDocumentSync(getOffsetClaimsPath(), validate)?.claims ?? {};
 }
 
-/** Every claim whose checkout still exists, by {@link offsetClaimKey}. */
+/**
+ * Every claim whose checkout still exists, by {@link offsetClaimKey}. One this
+ * user cannot read counts as existing.
+ */
 export function readOffsetClaims(): Record<string, OffsetClaim> {
 	return Object.fromEntries(
-		Object.entries(readAllOffsetClaims()).filter(([key, claim]) =>
-			existsSync(offsetClaimRoot(key, claim)),
+		Object.entries(readAllOffsetClaims()).filter(
+			([key, claim]) => !checkoutDeleted(offsetClaimRoot(key, claim)),
 		),
 	);
 }
@@ -124,7 +128,8 @@ export async function dropDeletedOffsetClaims(
 		const claims = readAllOffsetClaims();
 		for (const key of keys) {
 			const claim = claims[key];
-			if (claim && !existsSync(offsetClaimRoot(key, claim))) delete claims[key];
+			if (claim && checkoutDeleted(offsetClaimRoot(key, claim)))
+				delete claims[key];
 		}
 		writeJsonDocumentSync(getOffsetClaimsPath(), { version: VERSION, claims });
 	});

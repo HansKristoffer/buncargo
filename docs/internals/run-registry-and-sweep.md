@@ -91,6 +91,12 @@ no config load, no Docker unless a service is the target.
 - `decideSweep` is pure: a stack nobody owns comes down when its checkout is gone, when every
   container is stopped, when its run released it longer ago than its idle hold, or when its owner
   has been gone for longer than the grace. A running stack with no entry at all is left alone.
+- "Checkout gone" means confirmed missing: `checkoutPresence` (`core/checkout-presence.ts`) says
+  `deleted` only on `ENOENT`. Any other error, typically `EACCES` on another user's home, is
+  `unknown` and counts as present wherever a root decides what to remove or forget: the sweep,
+  settling claims, `readOffsetClaims`, prune's existing checkouts, host routes and certificate
+  names. `existsSync` reads `EACCES` as missing, and a watchdog running as one user took every
+  checkout of the CI user's home for deleted and tore its stacks down, a live E2E run's included.
 - The grace counts from `ownerLostAt`, which the sweep stamps the first time it finds an unreleased
   owner gone, not from `updatedAt`, which a quiet run may not have written for hours before it
   crashed.
