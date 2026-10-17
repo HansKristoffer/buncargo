@@ -1,9 +1,15 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { readProcessIdentityAsync } from "../process-identity";
 import { DetachedApp } from "./detached-app";
 import { isProcessAlive } from "./lifecycle";
-import { terminateOwnedProcess, terminateProcessGroup } from "./terminate";
+import { ProcessOwner } from "./process-owner";
+import {
+	ownedProcessGone,
+	terminateOwnedProcess,
+	terminateProcessGroup,
+} from "./terminate";
 
 /** A live process in a group of its own, standing in for an unrelated one. */
 function spawnBystander(): number {
@@ -127,6 +133,58 @@ describe.skipIf(process.platform === "win32")("terminateOwnedProcess", () => {
 			expect(signals).toEqual([[-pid, 0]]);
 		} finally {
 			probe.mockRestore();
+		}
+	});
+});
+
+describe.skipIf(process.platform === "win32")("ProcessOwner", () => {
+	it("forgets an exited app once its group empties, before the group id can be reused", async () => {
+		// The leader exits at once; the member it started holds the group, the
+		// way a server outlives `bun run dev`.
+		const leader = spawn("sh", ["-c", "sleep 30 & echo $!; exit 0"], {
+			detached: true,
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+		const member = new Promise<number>((resolve) =>
+			leader.stdout?.once("data", (chunk) => resolve(Number(String(chunk)))),
+		);
+		// A stand-in whose pid the test can move to another group.
+		const app = Object.assign(new EventEmitter(), {
+			pid: leader.pid ?? 0,
+			exitCode: null as number | null,
+			signalCode: null as NodeJS.Signals | null,
+		});
+		leader.once("exit", (code, signal) => {
+			app.exitCode = code;
+			app.signalCode = signal;
+			app.emit("exit", code, signal);
+		});
+		const { promise: reported, resolve: exitReported } =
+			Promise.withResolvers<void>();
+		const owner = new ProcessOwner({
+			shutdownGraceMs: 0,
+			onAppExit: () => exitReported(),
+		});
+		owner.register("web", app as unknown as ChildProcess, false);
+		let bystander = 0;
+		try {
+			await reported;
+			expect(isProcessAlive(-app.pid)).toBe(true);
+
+			process.kill(await member, "SIGKILL");
+			await ownedProcessGone(app as unknown as ChildProcess);
+			// An unrelated group now holds the id.
+			bystander = spawnBystander();
+			app.pid = bystander;
+
+			await owner.stop();
+			expect(isProcessAlive(bystander)).toBe(true);
+		} finally {
+			owner.dispose();
+			const sleeper = await member;
+			if (isProcessAlive(sleeper)) process.kill(sleeper, "SIGKILL");
+			if (bystander && isProcessAlive(bystander))
+				process.kill(bystander, "SIGKILL");
 		}
 	});
 });

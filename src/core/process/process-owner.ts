@@ -3,7 +3,11 @@ import { abortError, withSignal } from "../deadline";
 import { formatWarn } from "../style";
 import { DetachedApp, findDetachedApp } from "./detached-app";
 import type { AppChild } from "./pty-app";
-import { ownedProcessAlive, terminateOwnedProcess } from "./terminate";
+import {
+	ownedProcessAlive,
+	ownedProcessGone,
+	terminateOwnedProcess,
+} from "./terminate";
 
 export class RunInterrupted extends Error {}
 
@@ -195,10 +199,12 @@ export class ProcessOwner {
 
 	/**
 	 * A child whose exit was seen and whose group is gone has nothing left to
-	 * stop, and its pid may already belong to an unrelated process.
+	 * stop, and its pid may already belong to an unrelated process. A group
+	 * that outlives its leader is forgotten once it empties.
 	 */
 	private forgetIfGone(child: AppChild | DetachedApp): void {
 		if (!ownedProcessAlive(child)) this.children.delete(child);
+		else void ownedProcessGone(child).then(() => this.children.delete(child));
 	}
 
 	/**

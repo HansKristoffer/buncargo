@@ -13,16 +13,53 @@ function groupAlive(pid: number): boolean {
 	return process.platform !== "win32" && isProcessAlive(-pid);
 }
 
+/**
+ * Exited children whose group was then seen empty. From that moment the group
+ * id can name an unrelated group, so the answer stays "gone" for good.
+ */
+const emptiedGroups = new WeakSet<AppChild | DetachedApp>();
+const groupWatches = new WeakMap<AppChild | DetachedApp, Promise<void>>();
+
 /** Whether anything of `child` (its leader, or what is left of its group) still runs. */
 export function ownedProcessAlive(child: AppChild | DetachedApp): boolean {
 	if (!child.pid) return false;
 	// Its identity stopped matching: whatever holds that pid now is not ours.
 	if (child instanceof DetachedApp && child.exitCode !== null) return false;
+	if (emptiedGroups.has(child)) return false;
 	if (groupAlive(child.pid)) return true;
 	// On macOS the group can disappear while its leader still awaits reaping,
 	// so group disappearance alone does not acknowledge process cleanup. Once
 	// the exit was seen the leader is reaped, and its pid may be reused.
-	return !exitSeen(child) && isProcessAlive(child.pid);
+	if (!exitSeen(child)) return isProcessAlive(child.pid);
+	emptiedGroups.add(child);
+	return false;
+}
+
+/**
+ * Resolves once nothing of `child` runs any more. A leader often exits while
+ * its group lives on (`bun run dev`, `sh -c` wrappers); polling the group
+ * sees it empty before an unrelated group can take its id, which
+ * {@link ownedProcessAlive} then never mistakes for ours. One unref'd poll
+ * per child, however many callers wait on it.
+ */
+export function ownedProcessGone(
+	child: AppChild | DetachedApp,
+	pollMs = 250,
+): Promise<void> {
+	let watch = groupWatches.get(child);
+	if (!watch) {
+		watch = new Promise<void>((resolve) => {
+			if (!ownedProcessAlive(child)) return resolve();
+			const timer = setInterval(() => {
+				if (ownedProcessAlive(child)) return;
+				clearInterval(timer);
+				resolve();
+			}, pollMs);
+			timer.unref();
+		});
+		groupWatches.set(child, watch);
+	}
+	return watch;
 }
 
 /**
