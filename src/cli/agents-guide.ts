@@ -118,6 +118,9 @@ hardcode a port. Ask buncargo instead.
   dependencies, generated files).
 - A port "held by an unidentified process" is usually a system service. Run
   \`dev\` again: buncargo moves the checkout to a free port block.
+- \`dev\` refusing because another checkout "already uses" its Compose project:
+  the two would share one database. Do not work around it; tell the user, who
+  gives one of them its own \`projectPrefix\`.
 - Each checkout keeps its port offset (\`bunx buncargo ports\`). Do not set
   \`BUNCARGO_PORT_OFFSET\` or edit \`.buncargo/ports.json\`; to move a checkout,
   \`bunx buncargo ports pin <offset>\`.

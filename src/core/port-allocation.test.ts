@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
@@ -8,6 +14,7 @@ import {
 	claimOffset,
 	offsetClaimKey,
 	readOffsetClaims,
+	sharedProjectNameClaims,
 	withOffsetClaimsLock,
 } from "./offset-claims";
 import {
@@ -476,13 +483,13 @@ describe("offset claims", () => {
 
 	it("gives parallel suffixed environments their own offsets and keeps them, apart from dev's claim", () => {
 		delete process.env.BUNCARGO_PORT_OFFSET;
-		// Two CI runners: same directory name, so same project name and hash.
+		// Two CI runners whose project names differ but hash the same.
 		const first = mkdtempSync(join(tmpdir(), "buncargo-runner-1-"));
 		const second = mkdtempSync(join(tmpdir(), "buncargo-runner-2-"));
 		const suffixed = (root: string, read = false) =>
 			resolvePortPlan({
 				projectPrefix: "lullu",
-				projectName: "lullu-app-ci",
+				projectName: `lullu-${root === first ? "1" : "2"}-app-ci`,
 				root,
 				suffix: "ci",
 				services: { postgres: { port: 5432 } },
@@ -506,6 +513,140 @@ describe("offset claims", () => {
 				[first]: { offset: dev.offset },
 				[offsetClaimKey(first, "ci")]: { offset: a.offset, root: first },
 			});
+		} finally {
+			rmSync(first, { recursive: true, force: true });
+			rmSync(second, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses a checkout whose project name another existing checkout claims, until that one is gone", () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		// The main clone's example/playground and a worktree's: one name.
+		const first = mkdtempSync(join(tmpdir(), "buncargo-shared-a-"));
+		const second = mkdtempSync(join(tmpdir(), "buncargo-shared-b-"));
+		try {
+			const a = plan(first, "lullu-playground");
+
+			expect(() => plan(second, "lullu-playground")).toThrow(
+				`${second} would run under Compose project lullu-playground, which ${first} already uses`,
+			);
+			// Refused before it wrote anything.
+			expect(readPortsLockfile(second)).toBeNull();
+			expect(Object.keys(readOffsetClaims())).toEqual([first]);
+
+			// The holder itself, and another name, still start.
+			expect(plan(first, "lullu-playground").offset).toBe(a.offset);
+			expect(() => plan(second, "lullu-playground-wt")).not.toThrow();
+
+			// A deleted checkout's claim does not block the name.
+			rmSync(first, { recursive: true, force: true });
+			expect(() => plan(second, "lullu-playground")).not.toThrow();
+		} finally {
+			rmSync(first, { recursive: true, force: true });
+			rmSync(second, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses a second CI runner's stack under the same project name, under any offset", () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		// Self-hosted runners: same directory name, so the same `-ci` project.
+		const first = mkdtempSync(join(tmpdir(), "buncargo-runner-1-"));
+		const second = mkdtempSync(join(tmpdir(), "buncargo-runner-2-"));
+		const ci = (root: string) =>
+			resolvePortPlan({
+				projectPrefix: "lullu",
+				projectName: "lullu-app-ci",
+				root,
+				suffix: "ci",
+				services: { postgres: { port: 5432 } },
+				persist: false,
+				claim: true,
+				getOwner: () => null,
+			});
+		try {
+			ci(first);
+			expect(() => ci(second)).toThrow(`which ${first} (ci) already uses`);
+			process.env.BUNCARGO_PORT_OFFSET = "2500";
+			expect(() => ci(second)).toThrow(`which ${first} (ci) already uses`);
+		} finally {
+			rmSync(first, { recursive: true, force: true });
+			rmSync(second, { recursive: true, force: true });
+		}
+	});
+
+	it("does not refuse a read, its own checkout through a link, or a config without worktree isolation", () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		const first = mkdtempSync(join(tmpdir(), "buncargo-shared-a-"));
+		const second = mkdtempSync(join(tmpdir(), "buncargo-shared-b-"));
+		const link = `${first}-link`;
+		symlinkSync(first, link);
+		const shared = (
+			root: string,
+			options: Partial<Parameters<typeof resolvePortPlan>[0]> = {},
+		) =>
+			resolvePortPlan({
+				projectPrefix: "lullu",
+				projectName: "lullu-shared",
+				root,
+				services: { postgres: { port: 5432 } },
+				getOwner: () => null,
+				...options,
+			});
+		try {
+			shared(first);
+			expect(() => shared(link)).not.toThrow();
+			expect(() =>
+				shared(second, { persist: false, probeConflicts: false }),
+			).not.toThrow();
+			expect(() => shared(second, { worktreeIsolation: false })).not.toThrow();
+		} finally {
+			rmSync(link, { force: true });
+			rmSync(first, { recursive: true, force: true });
+			rmSync(second, { recursive: true, force: true });
+		}
+	});
+
+	it("says when the refused config sits below the top of a Git worktree", () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		const main = mkdtempSync(join(tmpdir(), "buncargo-main-"));
+		const worktree = mkdtempSync(join(tmpdir(), "buncargo-wt-"));
+		writeFileSync(
+			join(worktree, ".git"),
+			`gitdir: ${main}/.git/worktrees/feature-x\n`,
+		);
+		const nested = join(worktree, "example", "playground");
+		const top = join(main, "example", "playground");
+		mkdirSync(nested, { recursive: true });
+		mkdirSync(top, { recursive: true });
+		try {
+			plan(top, "lullu-playground");
+			expect(() => plan(nested, "lullu-playground")).toThrow(
+				`${nested} is below the top of Git worktree feature-x`,
+			);
+		} finally {
+			rmSync(main, { recursive: true, force: true });
+			rmSync(worktree, { recursive: true, force: true });
+		}
+	});
+
+	it("lists the project names more than one existing checkout claims", () => {
+		const first = mkdtempSync(join(tmpdir(), "buncargo-shared-a-"));
+		const second = mkdtempSync(join(tmpdir(), "buncargo-shared-b-"));
+		const claim = (
+			root: string,
+			offset: number,
+			projectName: string,
+			suffix?: string,
+		) => claimOffset({ root, offset, ports: [], projectName, suffix });
+		try {
+			withOffsetClaimsLock(() => {
+				claim(first, 100, "lullu-x");
+				claim(second, 200, "lullu-x");
+				claim(second, 300, "lullu-x-ci", "ci");
+			});
+			expect(sharedProjectNameClaims(readOffsetClaims())).toEqual(
+				new Map([["lullu-x", [first, second]]]),
+			);
 		} finally {
 			rmSync(first, { recursive: true, force: true });
 			rmSync(second, { recursive: true, force: true });

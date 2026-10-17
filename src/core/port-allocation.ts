@@ -12,10 +12,11 @@ import {
 	type OffsetClaim,
 	offsetClaimConflict,
 	offsetClaimKey,
+	projectNameClaimant,
 	readOffsetClaims,
 	withOffsetClaimsLock,
 } from "./offset-claims";
-import type { PortMap } from "./ports";
+import { enclosingWorktreeName, type PortMap } from "./ports";
 import {
 	classifyPortOccupant,
 	createPortOwnerSnapshot,
@@ -360,6 +361,25 @@ export function resolvePortPlan(input: {
 	return claim ? withOffsetClaimsLock(plan) : plan();
 }
 
+/**
+ * A run refused because another checkout already uses its project name: both
+ * would run one stack, so they would share containers and the database, and
+ * one's teardown takes the other's down.
+ */
+function sharedProjectNameError(
+	root: string,
+	projectName: string,
+	holder: string,
+): Error {
+	const worktree = enclosingWorktreeName(root);
+	const below = worktree
+		? ` ${root} is below the top of Git worktree ${worktree}, so the worktree's name is not in its project name: derive projectPrefix from the worktree.`
+		: "";
+	return new Error(
+		`${root} would run under Compose project ${projectName}, which ${holder} already uses: they would share containers and volumes, the database included. Give one of them its own projectPrefix in dev.config.ts (it may be computed, e.g. from the CI runner's name) or a directory with another name. If you change the other one, start it once so it records its new name, or delete it if it is no longer used.${below}`,
+	);
+}
+
 function planPorts(
 	input: Parameters<typeof resolvePortPlan>[0] & {
 		getOwner: (port: number) => PortOwner | null;
@@ -380,6 +400,15 @@ function planPorts(
 		getOwner: lookupOwner,
 	} = input;
 	const runtimeName = runtime?.name;
+
+	// Claims of checkouts that still exist. A claiming run reads them before
+	// anything else, so a project name another checkout uses stops it before
+	// it writes a lockfile or a claim, under any offset.
+	const existingClaims = claim ? readOffsetClaims() : undefined;
+	if (existingClaims && worktreeIsolation) {
+		const holder = projectNameClaimant(existingClaims, { root, projectName });
+		if (holder) throw sharedProjectNameError(root, projectName, holder);
+	}
 
 	const envOffset = portOffsetOverride();
 	if (envOffset !== undefined) {
@@ -426,7 +455,7 @@ function planPorts(
 	// Other claims are skipped whether or not their runs are running; only a
 	// claiming run writes its own.
 	const claimKey = offsetClaimKey(root, suffix);
-	const claims = claimsWithLockfilePorts(readOffsetClaims());
+	const claims = claimsWithLockfilePorts(existingClaims ?? readOffsetClaims());
 	const claimant = (offset: number, ports: Record<string, number>) =>
 		offsetClaimConflict(
 			claims,

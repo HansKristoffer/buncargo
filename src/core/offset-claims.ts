@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { withFileLock, withFileLockSync } from "./file-lock";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
 import { stateFilePath } from "./state-paths";
@@ -21,10 +21,11 @@ import { stateFilePath } from "./state-paths";
  *
  * A suffixed environment (`withSuffix`, `buncargo ci`, an E2E stack) hashes to
  * its own offset and claims it under its own key, so it never replaces its
- * checkout's dev claim. Parallel CI jobs on one machine are the case this is
- * for: each runner's checkout has the same directory name and so the same hash,
- * and without a claim they probed together, before any of them had bound a
- * port, and all took the same block.
+ * checkout's dev claim. Parallel suffixed runs that hash alike probed together,
+ * before any of them had bound a port, and all took the same block.
+ *
+ * A claim's project name is the other half: no two existing checkouts may
+ * claim one name (see {@link projectNameClaimant}).
  */
 
 const VERSION = 1;
@@ -152,6 +153,36 @@ export function offsetClaimConflict(
 }
 
 /**
+ * The holder of another existing checkout's claim on `projectName`, or
+ * undefined when no other checkout uses it.
+ *
+ * The project name decides which containers and volumes a run uses, so two
+ * checkouts under one name share a database, and one's `ci` teardown
+ * deletes the other's. Their offsets keep them apart only on ports. Claims of
+ * this checkout under another spelling of its path are its own.
+ */
+export function projectNameClaimant(
+	claims: Record<string, OffsetClaim>,
+	input: { root: string; projectName: string },
+): string | undefined {
+	for (const [key, claim] of Object.entries(claims)) {
+		if (claim.projectName !== input.projectName) continue;
+		if (!sameCheckout(offsetClaimRoot(key, claim), input.root))
+			return offsetClaimHolder(key, claim);
+	}
+	return undefined;
+}
+
+function sameCheckout(a: string, b: string): boolean {
+	if (a === b) return true;
+	try {
+		return realpathSync(a) === realpathSync(b);
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Record that `root` uses the block at `offset`, made of `ports`.
  *
  * Read-modify-write: call it under {@link withOffsetClaimsLock}, together with
@@ -202,4 +233,24 @@ export function duplicateOffsetClaims(
 			offsetClaimHolder(key, claim),
 		]);
 	return new Map([...byOffset].filter(([, roots]) => roots.length > 1));
+}
+
+/** Project names claimed by more than one existing checkout, with their holders. */
+export function sharedProjectNameClaims(
+	claims: Record<string, OffsetClaim>,
+): Map<string, string[]> {
+	const byName = new Map<string, { roots: string[]; holders: string[] }>();
+	for (const [key, claim] of Object.entries(claims)) {
+		const entry = byName.get(claim.projectName) ?? { roots: [], holders: [] };
+		const root = offsetClaimRoot(key, claim);
+		if (entry.roots.some((other) => sameCheckout(other, root))) continue;
+		entry.roots.push(root);
+		entry.holders.push(offsetClaimHolder(key, claim));
+		byName.set(claim.projectName, entry);
+	}
+	return new Map(
+		[...byName]
+			.filter(([, entry]) => entry.holders.length > 1)
+			.map(([name, entry]) => [name, entry.holders]),
+	);
 }

@@ -26,6 +26,7 @@ import {
 import {
 	duplicateOffsetClaims,
 	readOffsetClaims,
+	sharedProjectNameClaims,
 } from "../../../core/offset-claims";
 import {
 	foreignLockfile,
@@ -189,9 +190,15 @@ function checkPortsLockfile(report: DoctorReport, env: DevEnv): void {
 
 /** Two checkouts on one offset collide whenever both run (a lost race, a copied lockfile). */
 function checkOffsetClaims(report: DoctorReport): void {
-	for (const [offset, holders] of duplicateOffsetClaims(readOffsetClaims()))
+	const claims = readOffsetClaims();
+	for (const [offset, holders] of duplicateOffsetClaims(claims))
 		report.issue(
 			`Offset ${offset} is claimed by ${holders.join(" and ")}. Move one: \`buncargo ports pin <offset>\` in that checkout.`,
+		);
+	// Claimed before runs refused a shared name: they share one database.
+	for (const [projectName, holders] of sharedProjectNameClaims(claims))
+		report.issue(
+			`Compose project ${projectName} is used by ${holders.join(" and ")}, so they share its containers and volumes. Give one its own projectPrefix and start it once.`,
 		);
 }
 

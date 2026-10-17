@@ -38,6 +38,19 @@ per port.
   allocator is synchronous), or two checkouts starting together pick the same block. The lockfile is honoured by its
   offset alone, applied to the config's current ports, so an added service or a hand-written
   `{ "offset": n }` keeps the block, and a run that sets the lockfile aside says why.
+- A claim also records the checkout's Compose project name, and a claiming run refuses to start,
+  under the same lock and before it writes anything, when another existing checkout's claim
+  carries its name. Offsets only keep two checkouts apart on ports; one name is one stack, so
+  they shared the database, and one parallel CI job's `ci` teardown deleted the other's volume.
+  Two cases produced it: CI runners whose checkouts share a directory name, and a `dev.config.ts`
+  below a worktree's top level (`example/playground`), which `getWorktreeName` does not see as a
+  worktree because it reads only the root's own `.git`. Deriving the name from the enclosing
+  worktree instead would rename every such checkout's stack and detach its volume, so the refusal
+  is the guarantee and the fix is a `projectPrefix` that differs per checkout (the playground
+  derives one from its worktree). Claims of the same checkout through another path, a deleted
+  checkout's claim, `BUNCARGO_PORT_OFFSET` (checked, though it records nothing) and
+  `worktreeIsolation: false` (sharing is what it asks for) do not refuse. `doctor` reports names
+  two existing claims already share.
 
 ## Who holds a port
 

@@ -748,9 +748,27 @@ offset two checkouts claim.
 
 A suffixed environment (`withSuffix()`, `buncargo ci`, an E2E stack) claims its
 own offset next to its checkout's dev claim, and takes it back on its next run.
-So parallel CI jobs on one machine get separate ports without
-`BUNCARGO_PORT_OFFSET`: each runner's checkout has the same directory name, and
-so the same hash, but the first job to start claims it and the next ones shift.
+
+A claim also records the checkout's Compose project name, and `dev`, `ci` and
+`start()` refuse to run under a name another existing checkout uses: the two
+would share containers and volumes, and one's `ci` teardown would delete the
+other's database. Self-hosted CI runners on one machine check their repository
+out into directories with the same name, so give each runner its own prefix:
+
+```ts
+const runner = process.env.RUNNER_NAME?.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+
+export default defineDevConfig({
+	projectPrefix: runner ? `myapp-${runner}` : "myapp",
+	// ...
+});
+```
+
+A `dev.config.ts` below the top of a Git worktree (in a subdirectory, not at the
+repository root) does not get the worktree's name in its project name, so every
+worktree shares the main clone's. Derive its prefix from the worktree:
+`getWorktreeProjectSuffix(<repository root>)` returns the worktree's name, or
+`null` in the main clone. `example/playground/dev.config.ts` does this.
 
 `buncargo ports pin <offset>` moves a checkout to a block and keeps it there:
 it checks every port of the block (binding it, so hidden holders count) and
@@ -1450,6 +1468,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `Watchdog did not start` | Missing `dist/core/watchdog-runner.js` | `bun run build` / reinstall the package |
 | Disk full of old worktree volumes | Deleted checkouts and interrupted `ci` runs leave their databases behind | `buncargo prune --project --dry-run` for this project, `buncargo prune --dry-run` for every project; then without `--dry-run` |
 | `.env.local has local edits and the file store changed too` | This checkout and another both changed a checkout file | `buncargo files merge .env.local` keeps both sides' keys (dotenv only); `files save` keeps yours, `files pull --force` takes the store's |
+| `… would run under Compose project …, which … already uses` | Another checkout with the same project name exists: CI runners in same-named directories, or a config below a worktree's top level | Give one of them its own `projectPrefix` (see [Ports and isolation](#ports-and-isolation)) and start it once, or delete the checkout no longer used |
 | `Could not allocate a free port block` | 80 shifted blocks still conflict | Set `BUNCARGO_PORT_OFFSET` or free ports (`buncargo doctor`) |
 | Named URL does not resolve / TLS warning | Daemon down or CA not trusted | `buncargo hosts status`, then `buncargo hosts install` or `doctor --fix` |
 | `Named-hosts service points at … which no longer exists` | The install ran from a `node_modules` that was since removed | `buncargo hosts install` to re-point it at the current CLI |
