@@ -3,8 +3,7 @@ import {
 	request,
 	requireReceiver,
 } from "../../core/connect/client";
-import { readCoordinatorState } from "../../core/connect/coordinator-state";
-import { ensureConnectCoordinator } from "../../core/connect/launcher";
+import { requestCoordinator } from "../../core/connect/launcher";
 import {
 	type Directory,
 	parseDirectory,
@@ -51,22 +50,8 @@ export const CONNECT_COMMAND_SPEC: CommandSpec = {
 	],
 };
 
-async function coordinator<T>(path: string, body?: unknown): Promise<T> {
-	await ensureConnectCoordinator();
-	const state = await readCoordinatorState();
-	if (!state) {
-		throw new Error("Connection coordinator unavailable");
-	}
-	return request(
-		`http://127.0.0.1:${state.connection.port}`,
-		path,
-		state.connection.token,
-		body,
-	);
-}
-
 async function connectionStatus(): Promise<Directory> {
-	return parseDirectory(await coordinator("/status"), connectOrigin());
+	return parseDirectory(await requestCoordinator("/status"), connectOrigin());
 }
 
 function formatDirectory(directory: Directory): string {
@@ -114,9 +99,9 @@ export async function handleConnect(args: string[]) {
 		const directory = await connectionStatus();
 		result = json ? directory : formatDirectory(directory);
 	} else if (command === "tcp") {
-		result = await coordinator<TCPConnection>("/tcp", { id });
+		result = await requestCoordinator<TCPConnection>("/tcp", { id });
 	} else if (command === "disconnect") {
-		result = await coordinator("/disconnect", { id });
+		result = await requestCoordinator("/disconnect", { id });
 	} else if (command === "revoke") {
 		const receiver = await requireReceiver();
 		result = await request(
