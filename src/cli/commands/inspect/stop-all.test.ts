@@ -7,6 +7,7 @@ import type {
 	ContainerRuntimeAdapter,
 } from "../../../container-runtime/types";
 import { claimOffset } from "../../../core/offset-claims";
+import { readRemovals } from "../../../core/removal-log";
 import { publishRun } from "../../../core/run-registry";
 import type { BuncargoContainer } from "../../../types";
 import { stopAllBuncargoEnvironments } from "./stop-all";
@@ -111,6 +112,14 @@ describe("dev --down --all", () => {
 			"gey-apple",
 		]);
 		expect(docker.downs[0]).toMatchObject({ verbose: false });
+		// Each recorded, so the runs that used them can say who took them.
+		expect(
+			readRemovals().map((record) => [record.projectName, record.runtime]),
+		).toEqual([
+			["gey-main", "docker"],
+			["lullu-wt", "docker"],
+			["gey-apple", "apple"],
+		]);
 	});
 
 	it("leaves stacks no run or claim of this user's names", async () => {

@@ -233,6 +233,14 @@ export interface DevEnvironment<
 	/** Check if containers are running */
 	isRunning(): Promise<boolean>;
 	/**
+	 * Why the selected services' containers are gone, when they are: who
+	 * removed them since this run claimed them, as buncargo recorded it, or
+	 * where to look when nothing here did. `undefined` while they are all
+	 * there or the runtime cannot answer. Lists the runtime's containers, so
+	 * call it when something has already failed.
+	 */
+	explainMissingContainers?(): string | undefined;
+	/**
 	 * Run `seed.command` through the same path `start()` uses.
 	 *
 	 * Pass `force: true` to skip `seed.check`. Returns the outcome rather than

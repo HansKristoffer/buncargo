@@ -16,6 +16,7 @@ import type {
 	ServiceConfig,
 } from "../types";
 import { createCaptureRecorder, labelledCaptures } from "./captures";
+import { explainMissingContainers, withLossNotice } from "./container-loss";
 import { createDevEnvContext } from "./context";
 import { createEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
@@ -72,6 +73,9 @@ export function createDevEnvironment<
 	const lifecycle = createLifecycleApi(ctx, envVars, runClaim, coordinator);
 	const recordCapture = createCaptureRecorder(ctx, envVars);
 	const servers = createServersApi(ctx, envVars, runClaim);
+	const createdAt = Date.now();
+	const missingContainers = () =>
+		explainMissingContainers(ctx, runClaim.claimedAt ?? createdAt);
 
 	const env: DevEnvironment<TServices, TApps, TEnv> = {
 		// Configuration access
@@ -144,6 +148,7 @@ export function createDevEnvironment<
 		stop: lifecycle.stop,
 		restart: lifecycle.restart,
 		isRunning: lifecycle.isRunning,
+		explainMissingContainers: missingContainers,
 		runSeed: lifecycle.runSeed,
 
 		resolvePrimaryApp: (selected) =>
@@ -155,14 +160,19 @@ export function createDevEnvironment<
 
 		// Server management
 		startServers: (options = {}) =>
-			coordinator.start(
-				(signal) => servers.startServersOnly({ ...options, signal }),
-				options.signal,
-				(pids) => Object.keys(pids).length > 0,
+			withLossNotice(missingContainers, () =>
+				coordinator.start(
+					(signal) => servers.startServersOnly({ ...options, signal }),
+					options.signal,
+					(pids) => Object.keys(pids).length > 0,
+				),
 			),
 		runServerHook: createServerHookRunner(ctx, envVars),
 		stopProcess,
-		waitForServers: servers.waitForServersReady,
+		waitForServers: (options = {}) =>
+			withLossNotice(missingContainers, () =>
+				servers.waitForServersReady(options),
+			),
 
 		// Utilities
 		buildEnvVars: envVars.buildEnvVars,

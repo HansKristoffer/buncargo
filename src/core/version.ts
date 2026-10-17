@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 /**
  * Compare two dotted release versions.
  *
@@ -31,4 +35,42 @@ export function isVersionInRange(
 	return (
 		compareVersions(version, min) >= 0 && compareVersions(version, below) < 0
 	);
+}
+
+/**
+ * The version in the `package.json` of the buncargo package containing
+ * `fromDir`, or `undefined` when there is none (buncargo bundled into someone
+ * else's build).
+ *
+ * Walked up to rather than imported: the build splits shared code into chunks
+ * at the root of `dist/`, so the relative path differs between source and
+ * build. The name check keeps a bundle from reporting its host's version.
+ */
+export function readBuncargoVersion(fromDir: string): string | undefined {
+	let dir = fromDir;
+	for (let depth = 0; depth < 6; depth++) {
+		try {
+			const pkg = JSON.parse(
+				readFileSync(join(dir, "package.json"), "utf8"),
+			) as { name?: unknown; version?: unknown };
+			if (pkg.name === "buncargo" && typeof pkg.version === "string")
+				return pkg.version;
+		} catch {
+			// No package.json at this level: keep walking.
+		}
+		const parent = dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	return undefined;
+}
+
+let ownVersion: { value: string | undefined } | undefined;
+
+/** This buncargo's own version, read once. */
+export function buncargoVersion(): string | undefined {
+	ownVersion ??= {
+		value: readBuncargoVersion(dirname(fileURLToPath(import.meta.url))),
+	};
+	return ownVersion.value;
 }

@@ -145,6 +145,10 @@ hardcode a port. Ask buncargo instead.
   dependencies, generated files).
 - A port "held by an unidentified process" is usually a system service. Run
   \`dev\` again: buncargo moves the checkout to a free port block.
+- A warning that names who removed this checkout's containers (a watchdog,
+  \`stop\`, \`dev --down\`) explains a refused database connection: the
+  stack is gone, not broken. Start the run again; report the remover to the
+  user if it was another worktree's or another user's.
 - \`dev\` refusing because another checkout "already uses" its Compose project:
   the two would share one database. Do not work around it; tell the user, who
   gives one of them its own \`projectPrefix\`, or, when the other checkout's

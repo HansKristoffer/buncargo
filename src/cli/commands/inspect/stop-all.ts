@@ -8,6 +8,11 @@ import {
 } from "../../../container-runtime";
 import { readAllOffsetClaims } from "../../../core/offset-claims";
 import {
+	recordRemovals,
+	removalActor,
+	removalOwner,
+} from "../../../core/removal-log";
+import {
 	getRunsPath,
 	type RunEntry,
 	readAllRuns,
@@ -58,6 +63,7 @@ export async function stopAllBuncargoEnvironments(
 		log.info(
 			`Removing ${ours.length} container stack${ours.length === 1 ? "" : "s"}...`,
 		);
+	const by = removalActor();
 	for (const group of ours) {
 		const runtime = runtimes.find((entry) => entry.name === group.runtime);
 		if (!runtime) continue;
@@ -66,6 +72,22 @@ export async function stopAllBuncargoEnvironments(
 			projectName: group.projectName,
 			verbose: false,
 		});
+		await recordRemovals([
+			{
+				at: new Date().toISOString(),
+				projectName: group.projectName,
+				root: group.root,
+				runtime: group.runtime,
+				reason: "dev --down --all removed every stack of this user's",
+				owner: removalOwner(
+					runs.find(
+						(run) =>
+							run.projectName === group.projectName && run.root === group.root,
+					),
+				),
+				by,
+			},
+		]);
 		log.line(`  ${group.projectName}  ${group.root}`);
 	}
 

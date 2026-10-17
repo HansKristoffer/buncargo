@@ -16,6 +16,7 @@ import {
 	readOffsetClaims,
 } from "../core/offset-claims";
 import { readProcessIdentity } from "../core/process-identity";
+import { readRemovals } from "../core/removal-log";
 import {
 	loadRuns,
 	publishRun,
@@ -327,6 +328,65 @@ describe("sweepOrphanedContainers", () => {
 		expect(result.swept).toEqual([]);
 		expect(downs).toEqual([]);
 		expect(await Bun.file(marker).exists()).toBe(false);
+	});
+
+	it("records each removal with who did it and the run it was decided against", async () => {
+		// The run that loses these reads this record to say who removed them;
+		// the containers themselves are gone and cannot carry it.
+		const now = Date.now();
+		await publishRun(
+			entry({
+				sessionId: "released",
+				projectName: "expired",
+				pid: 4242,
+				worktree: "feature",
+				branch: "feature/login",
+				releasedAt: new Date(now - 120_000).toISOString(),
+				idleTimeoutMs: 60_000,
+			}),
+		);
+		const { runtime } = stubRuntime([
+			container("expired", checkout, "running"),
+		]);
+		const actor = {
+			command: "buncargo watchdog",
+			pid: 777,
+			user: "ci",
+			version: "13.0.0",
+		};
+		const result = await sweepOrphanedContainers({
+			runtimes: [runtime],
+			actor,
+			now,
+		});
+
+		const owner = {
+			sessionId: "released",
+			pid: 4242,
+			worktree: "feature",
+			branch: "feature/login",
+		};
+		expect(result.swept).toEqual([
+			{
+				projectName: "expired",
+				root: checkout,
+				runtime: "docker",
+				reason: "released 120s ago",
+				owner,
+			},
+		]);
+		const [record] = readRemovals().filter(
+			(entry) => entry.projectName === "expired",
+		);
+		expect(record).toMatchObject({
+			projectName: "expired",
+			root: checkout,
+			runtime: "docker",
+			reason: "released 120s ago",
+			owner,
+			by: actor,
+		});
+		expect(Date.parse(record?.at ?? "")).toBeGreaterThanOrEqual(now);
 	});
 
 	it("keeps a stack whose run is live and one still inside its idle hold", async () => {

@@ -730,6 +730,16 @@ async function runDevFlow<
 	// Parked after never coming up: the supervisor treats them as non-essential.
 	const parked = new Set<string>();
 	const view = openDevOutput(env, classifiedApps.startApps, { tui: args.tui });
+	// An app that falls over is often the first sign its database was removed
+	// under it; say who did, once, rather than leave a refused connection.
+	let lossExplained = !hasServices;
+	const explainLoss = () => {
+		if (lossExplained) return;
+		const loss = env.explainMissingContainers?.();
+		if (!loss) return;
+		lossExplained = true;
+		view.output.event("buncargo", loss, "warn");
+	};
 
 	try {
 		// After every prompt and the banner, which stay in the scrollback.
@@ -848,6 +858,7 @@ async function runDevFlow<
 				// is the app falling over, which the supervisor also turns into a
 				// failed run.
 				onAppExit: (name, code, signal) => {
+					if (code !== null && code !== 0) explainLoss();
 					const app = appsForDev[name];
 					void markApps(
 						env,

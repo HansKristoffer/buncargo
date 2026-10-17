@@ -128,6 +128,22 @@ no config load, no Docker unless a service is the target.
   compose file still exists and never requires the checkout as `cwd`: a stack whose worktree was
   deleted must still come down, and that used to be the one case the watchdog could not handle.
 
+### The removal log
+
+A container cannot be relabelled after it exists, and a removed one carries nothing, so who removed
+a stack is recorded on our side: `core/removal-log.ts`, `~/.buncargo/removals.json`, the newest 500
+records, rewritten whole under its file lock. The sweep records at each `result.swept` push, with
+the run the verdict was decided against; `stop`, `dev --down --all` and the library's `stop()`
+record their own teardowns. Recording never throws: a removal that happened must not read as
+failed.
+
+It is read only on failure paths, never before startup: `explainMissingContainers` lists the
+runtime's containers, and only when a selected one is missing reads the log for a record of the
+project and root since the run's claim. The incident behind it: a CI job saw `ECONNREFUSED` and
+then Compose's "No resource found to remove", and the cause, another user's watchdog, was only in
+that user's `watchdog.log`. The log is per user like the rest of `~/.buncargo`, which is why "no
+record" points at other users' logs and `docker events` instead of guessing.
+
 **Anything that runs the sweep outside a unit test's stub runtimes must isolate the container
 runtime as well as `HOME`**: stub adapters, or `DOCKER_HOST` pointed at nothing. Isolating only the
 registry makes every real stack on the machine look unowned. Docker Desktop finds its Compose plugin

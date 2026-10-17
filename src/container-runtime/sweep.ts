@@ -26,6 +26,13 @@ import {
 } from "../core/offset-claims";
 import { execAsync } from "../core/process/exec";
 import {
+	type RemovalActor,
+	type RemovalOwner,
+	recordRemovals,
+	removalActor,
+	removalOwner,
+} from "../core/removal-log";
+import {
 	clearRunStacks,
 	markOwnersLost,
 	type RunEntry,
@@ -200,7 +207,14 @@ export interface SweptStack {
 	/** The container runtime, or the integration stack's name (`supabase`). */
 	runtime: ContainerRuntimeName | string;
 	reason: string;
+	/** The run the removal was decided against, when one is on record. */
+	owner?: RemovalOwner;
+	/** Set when volumes were removed rather than containers. */
+	volumes?: string[];
 }
+
+/** Record a removal in the result and in the removal log. */
+type NoteSwept = (stack: SweptStack) => Promise<void>;
 
 export interface SweepResult {
 	swept: SweptStack[];
@@ -232,6 +246,8 @@ export interface SweepOptions {
 	/** Defaults to every backend, unprobed: a failed listing is the probe. */
 	runtimes?: ContainerRuntimeAdapter[];
 	now?: number;
+	/** Who is sweeping, for the removal log; defaults to this process's command. */
+	actor?: RemovalActor;
 }
 
 /** The run that owns a stack: a live session if there is one, else the newest. */
@@ -318,6 +334,13 @@ export async function sweepOrphanedContainers(
 		runs,
 		liveSessions: new Set(runs.filter(alive).map((run) => run.sessionId)),
 	};
+	const actor = options.actor ?? removalActor();
+	const swept: NoteSwept = async (stack) => {
+		result.swept.push(stack);
+		await recordRemovals([
+			{ at: new Date().toISOString(), ...stack, by: actor },
+		]);
+	};
 
 	for (const group of groups) {
 		const run = owners.get(group) ?? null;
@@ -326,7 +349,16 @@ export async function sweepOrphanedContainers(
 			options.except.root === group.root;
 		const removed =
 			!excepted &&
-			(await sweepGroup(group, run, claims, alive, now, runtimes, result));
+			(await sweepGroup(
+				group,
+				run,
+				claims,
+				alive,
+				now,
+				runtimes,
+				result,
+				swept,
+			));
 		if (!removed) result.remaining.push(group);
 	}
 
@@ -334,7 +366,7 @@ export async function sweepOrphanedContainers(
 		const excepted =
 			options.except?.projectName === run.projectName &&
 			options.except.root === run.root;
-		if (!excepted) await sweepStacks(run, runs, alive, now, result);
+		if (!excepted) await sweepStacks(run, runs, alive, now, result, swept);
 	}
 	result.pendingStacks = stackRuns.filter(
 		(run) => (run.stacks?.length ?? 0) > 0,
@@ -347,6 +379,7 @@ export async function sweepOrphanedContainers(
 			stacks: result.remaining,
 			result,
 			now,
+			swept,
 		});
 	} catch (error) {
 		// A busy claims file: the deleted checkouts are still there next pass.
@@ -370,12 +403,12 @@ export async function sweepOrphanedContainers(
  */
 export async function runStackDowns(
 	run: Pick<RunEntry, "root" | "stacks">,
-	onDown: (stack: RunStackEntry) => void = () => {},
+	onDown: (stack: RunStackEntry) => void | Promise<void> = () => {},
 ): Promise<void> {
 	const cwd = existsSync(run.root) ? run.root : homedir();
 	for (const stack of run.stacks ?? []) {
 		await execAsync(stack.down, cwd, {}, { timeoutMs: 120_000 });
-		onDown(stack);
+		await onDown(stack);
 	}
 }
 
@@ -396,6 +429,7 @@ async function sweepGroup(
 	now: number,
 	runtimes: ContainerRuntimeAdapter[],
 	result: SweepResult,
+	swept: NoteSwept,
 ): Promise<boolean> {
 	const decide = (
 		owner: RunEntry | null,
@@ -425,22 +459,20 @@ async function sweepGroup(
 			async () => {
 				const fresh = await readAllRuns();
 				const freshAlive = await runLivenessAsync(fresh);
-				const verdict = decide(
-					runFor(group, fresh, freshAlive),
-					freshAlive,
-					readAllOffsetClaims(),
-				);
+				const owner = runFor(group, fresh, freshAlive);
+				const verdict = decide(owner, freshAlive, readAllOffsetClaims());
 				if (verdict.kind !== "down") return false;
 				await adapterFor(group, runtimes, run).down({
 					root: group.root,
 					projectName: group.projectName,
 					verbose: false,
 				});
-				result.swept.push({
+				await swept({
 					projectName: group.projectName,
 					root: group.root,
 					runtime: group.runtime,
 					reason: verdict.reason,
+					owner: removalOwner(owner),
 				});
 				return true;
 			},
@@ -488,8 +520,11 @@ export async function settleDeletedCheckouts(input: {
 	stacks: readonly Pick<ContainerGroup, "projectName" | "root">[];
 	result: Pick<SweepResult, "swept" | "failed">;
 	now: number;
+	swept?: NoteSwept;
 }) {
 	const { runtimes, runs, stacks, result, now } = input;
+	const swept: NoteSwept =
+		input.swept ?? (async (stack) => void result.swept.push(stack));
 	// With no runtime answering, nothing says whether its stack or its
 	// volumes are left.
 	if (runtimes.length === 0) return;
@@ -597,11 +632,12 @@ export async function settleDeletedCheckouts(input: {
 				(name) => !refused.some((entry) => entry.name === name),
 			);
 			if (removed.length > 0)
-				result.swept.push({
+				await swept({
 					projectName,
 					root,
 					runtime: runtime.name,
 					reason: `checkout deleted, removed volumes ${removed.join(", ")}`,
+					volumes: removed,
 				});
 		}
 		if (!refusedAny) settled.push(key);
@@ -625,6 +661,7 @@ async function sweepStacks(
 	alive: (run: RunEntry) => boolean,
 	now: number,
 	result: SweepResult,
+	swept: NoteSwept,
 ): Promise<void> {
 	const decide = (runs: RunEntry[], isAlive: (run: RunEntry) => boolean) => {
 		const sameCheckout = runs.filter(
@@ -655,11 +692,12 @@ async function sweepStacks(
 				const verdict = decide(fresh, freshAlive);
 				if (verdict.kind !== "down") return;
 				await runStackDowns(run, (stack) =>
-					result.swept.push({
+					swept({
 						projectName: run.projectName,
 						root: run.root,
 						runtime: stack.name,
 						reason: verdict.reason,
+						owner: removalOwner(run),
 					}),
 				);
 				await clearRunStacks([run.sessionId]);

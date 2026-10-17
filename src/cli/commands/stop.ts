@@ -13,6 +13,11 @@ import {
 } from "../../core/process/terminate";
 import { askConfirm, isInteractive } from "../../core/prompt";
 import {
+	recordRemovals,
+	removalActor,
+	removalOwner,
+} from "../../core/removal-log";
+import {
 	findCheckoutRuns,
 	findRunsByRoot,
 	patchRun,
@@ -450,16 +455,34 @@ async function tearDown(
 	projectName: string,
 	runs: readonly RunEntry[],
 ): Promise<boolean> {
+	const removed: string[] = [];
 	try {
-		for (const runtime of recordedRuntimes(runs))
+		for (const runtime of recordedRuntimes(runs)) {
 			await runtime.down({ root, projectName, verbose: false });
-		for (const run of runs) await runStackDowns(run);
+			removed.push(runtime.name);
+		}
+		for (const run of runs)
+			await runStackDowns(run, (stack) => void removed.push(stack.name));
 	} catch (error) {
 		log.error(
 			`Could not remove ${projectName}'s containers: ${error instanceof Error ? error.message : String(error)}`,
 		);
 		log.hint("Fix the runtime and run `buncargo stop --all` again.");
 		return false;
+	} finally {
+		const at = new Date().toISOString();
+		const by = removalActor();
+		await recordRemovals(
+			removed.map((runtime) => ({
+				at,
+				projectName,
+				root,
+				runtime,
+				reason: "stopped",
+				owner: removalOwner(runs[0]),
+				by,
+			})),
+		);
 	}
 	await retireRuns(runs.map((run) => run.sessionId));
 	return true;

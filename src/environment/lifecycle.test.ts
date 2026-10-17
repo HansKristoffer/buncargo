@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
+import { readRemovals } from "../core/removal-log";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
 import {
 	clearScopeSecretsCache,
@@ -103,6 +106,7 @@ function fixture() {
 	>;
 	const runClaim = {
 		sessionId: "test-session",
+		claimedAt: undefined,
 		claimRun: async () => {
 			events.push("claim");
 		},
@@ -219,20 +223,38 @@ describe("startup modes and hooks", () => {
 			);
 		}
 	});
-	it("an explicit stop retires the claim rather than holding it", async () => {
+	it("an explicit stop retires the claim rather than holding it, and records the removal", async () => {
 		const { ctx, events, lifecycle } = fixture();
 		ctx.runtime.down = async () => {
 			events.push("down");
 		};
-		await lifecycle.start({
-			prepare: "containers",
-			startServers: false,
-			verbose: false,
-			wait: false,
-		});
-		await lifecycle.stop({ verbose: false });
-		// The containers are gone, so there is nothing to hold them for.
-		expect(events.slice(-2)).toEqual(["down", "retire"]);
+		const home = process.env.HOME;
+		process.env.HOME = mkdtempSync(join(tmpdir(), "buncargo-stop-"));
+		try {
+			await lifecycle.start({
+				prepare: "containers",
+				startServers: false,
+				verbose: false,
+				wait: false,
+			});
+			await lifecycle.stop({ verbose: false });
+			// The containers are gone, so there is nothing to hold them for.
+			expect(events.slice(-2)).toEqual(["down", "retire"]);
+			// And a run that was using them can say who took them.
+			expect(readRemovals()).toMatchObject([
+				{
+					projectName: "test",
+					runtime: "docker",
+					reason: "stopped",
+					owner: { sessionId: "test-session", pid: process.pid },
+					by: { pid: process.pid },
+				},
+			]);
+		} finally {
+			rmSync(process.env.HOME, { recursive: true, force: true });
+			if (home === undefined) delete process.env.HOME;
+			else process.env.HOME = home;
+		}
 	});
 	it("rejects an invalid selection before writing the artifact or starting runtime", async () => {
 		const { events, lifecycle } = fixture();

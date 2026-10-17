@@ -177,6 +177,43 @@ describe("ci teardown", () => {
 	}
 });
 
+it("says who removed the stack when the command fails without it", async () => {
+	// The incident: tests failed on ECONNREFUSED, the teardown said "No
+	// resource found to remove", and the cause was in another process's log.
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-ci-")));
+	const home = join(root, "home");
+	const docker = join(root, "docker");
+	writeFileSync(join(root, "package.json"), JSON.stringify({ workspaces: [] }));
+	writeFileSync(
+		join(root, "dev.config.ts"),
+		"export default {projectPrefix:'cigone',services:{postgres:{port:5432}},apps:{}};",
+	);
+	// Lists nothing: the containers are gone by the time anyone looks.
+	writeFileSync(docker, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+	// The command plays the sweep that removes the stack while it runs.
+	const sweep = `require("node:fs").writeFileSync(${JSON.stringify(
+		join(home, ".buncargo", "removals.json"),
+	)}, JSON.stringify({ version: 1, removals: [{ at: new Date().toISOString(), projectName: process.env.COMPOSE_PROJECT_NAME, root: ${JSON.stringify(
+		root,
+	)}, runtime: "docker", reason: "owner gone for 16s", by: { command: "buncargo watchdog", pid: 4242, user: "ci", version: "12.4.0" } }] })); process.exit(3);`;
+
+	try {
+		const result = await execAsync(
+			[...cli, "ci", "--", process.execPath, "-e", sweep],
+			root,
+			{ HOME: home, BUNCARGO_CONTAINER_BINARY: docker },
+			{ throwOnError: false },
+		);
+		expect(result.exitCode).toBe(3);
+		expect(result.stderr).toContain(
+			"buncargo's watchdog (pid 4242, user ci, buncargo 12.4.0) removed cigone",
+		);
+		expect(result.stderr).toContain(": owner gone for 16s");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 it("claims its stack with an idle hold, so the sweep removes it after a SIGKILL", async () => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-ci-")));
 	const docker = join(root, "docker");

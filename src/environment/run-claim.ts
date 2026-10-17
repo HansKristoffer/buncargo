@@ -40,6 +40,8 @@ import { stacksForServices } from "./stacks";
 export interface DevRunClaimApi {
 	/** The session this environment publishes under. Stable for its lifetime. */
 	readonly sessionId: string;
+	/** When the current claim was published (epoch ms), or `undefined` before one. */
+	readonly claimedAt: number | undefined;
 	/**
 	 * Claim the selected services' containers for this process.
 	 *
@@ -164,6 +166,7 @@ export function createRunClaimApi<
 		if (claimed || listsApps()) return;
 		await releaseRun(sessionId);
 	}
+	let claimedAt: number | undefined;
 	// The hold of the last claim. `restart()` retires and then claims again
 	// with only a signal, and resolving that afresh dropped a hold the first
 	// claim asked for, which kept the containers forever.
@@ -210,6 +213,9 @@ export function createRunClaimApi<
 
 	return {
 		sessionId,
+		get claimedAt() {
+			return claimedAt;
+		},
 
 		async claimRun(options = {}) {
 			if (claimed || !ctx.hasSelectedServices) return;
@@ -225,6 +231,7 @@ export function createRunClaimApi<
 			// Claimed before it is published: a write that fails must not be
 			// retried on every container subset.
 			claimed = true;
+			claimedAt = Date.now();
 			await publishRun({
 				...(await buildRunEntryAsync(
 					{

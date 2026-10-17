@@ -1,5 +1,13 @@
 import { describe, expect, it } from "bun:test";
-import { compareVersions, isVersionInRange, parseVersion } from "./version";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+	compareVersions,
+	isVersionInRange,
+	parseVersion,
+	readBuncargoVersion,
+} from "./version";
 
 describe("compareVersions", () => {
 	it("compares numerically, not as strings", () => {
@@ -30,5 +38,27 @@ describe("parseVersion", () => {
 		expect(parseVersion("2.40.7\n")).toBe("2.40.7");
 		expect(parseVersion("Current Shopify CLI version: 3.93.1")).toBe("3.93.1");
 		expect(parseVersion("unknown")).toBeUndefined();
+	});
+});
+
+describe("readBuncargoVersion", () => {
+	it("reads this package's version from source", () => {
+		const pkg = JSON.parse(
+			readFileSync(join(import.meta.dir, "../../package.json"), "utf8"),
+		);
+		expect(readBuncargoVersion(import.meta.dir)).toBe(pkg.version);
+	});
+
+	it("ignores another package's version", () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-version-"));
+		try {
+			writeFileSync(
+				join(dir, "package.json"),
+				JSON.stringify({ name: "someone-else", version: "9.9.9" }),
+			);
+			expect(readBuncargoVersion(dir)).toBeUndefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

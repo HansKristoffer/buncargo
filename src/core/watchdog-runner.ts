@@ -15,6 +15,7 @@ import { sweepOrphanedContainers } from "../container-runtime/sweep";
 import { FileLockTimeoutError, withFileLock } from "./file-lock";
 import { readCurrentProcessIdentityAsync } from "./process-identity";
 import { writeJsonDocumentSync } from "./registry-file";
+import { removalActor } from "./removal-log";
 import { readAllRuns, runLivenessAsync } from "./run-registry";
 import { tailnetDirectoryEnabled } from "./runtime-flags";
 import { serveTailnetDirectory } from "./tailnet-directory";
@@ -34,6 +35,7 @@ import {
 const pidFile = getWatchdogPidFile();
 const logFile = getWatchdogLogFile();
 const ownerId = randomUUID();
+const actor = removalActor("buncargo watchdog");
 
 function log(message: string): void {
 	const line = `[watchdog] ${new Date().toISOString()} ${message}`;
@@ -67,7 +69,7 @@ process.on("SIGINT", () => {
 
 function watch(owner: object): Promise<void> {
 	return runWatchdogLoop({
-		sweep: () => sweepOrphanedContainers(),
+		sweep: () => sweepOrphanedContainers({ actor }),
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		log,
 		intervalMs: WATCHDOG_POLL_INTERVAL_MS,

@@ -24,6 +24,7 @@ import type {
 	StartOptions,
 	StopOptions,
 } from "../types";
+import { recordTeardown } from "./container-loss";
 import type { DevEnvContext } from "./context";
 import { syncEnvFile } from "./env-file";
 import type { DevEnvVarsApi } from "./env-vars";
@@ -673,6 +674,14 @@ export function createLifecycleApi<
 				},
 				{ signal: stopOptions.signal },
 			);
+			await recordTeardown(ctx, {
+				sessionId: runClaim.sessionId,
+				runtimes: [
+					...(hasCompose ? [ctx.runtime.name] : []),
+					...stacks.map(({ name }) => name),
+				],
+				removeVolumes,
+			});
 		}
 		await runClaim.retireRun();
 	}

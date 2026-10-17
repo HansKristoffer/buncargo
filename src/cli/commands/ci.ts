@@ -14,6 +14,7 @@ import {
 } from "../command-spec";
 import { argumentsError, CliError } from "../errors";
 import { splitCliArgs } from "../flags";
+import * as log from "../log";
 import { runForwardingSignals } from "./exec";
 
 const FLAGS = {
@@ -94,6 +95,20 @@ export function parseCiArgs(args: string[]) {
 }
 
 /**
+ * Say who removed the stack when a step failed because it was gone.
+ *
+ * Before the teardown, which would otherwise be the only sign: Compose's "No
+ * resource found to remove", long after the command failed on a refused
+ * connection.
+ */
+function reportContainerLoss(env: {
+	explainMissingContainers?: () => string | undefined;
+}): void {
+	const loss = env.explainMissingContainers?.();
+	if (loss) log.warn(loss);
+}
+
+/**
  * Local services in CI: start them, apply migrations and the seed with the
  * same config as local, run the command with the environment, tear down.
  *
@@ -157,12 +172,14 @@ export async function handleCi(args: string[]): Promise<number> {
 				const outcome = await env.runSeed({ force: true, signal });
 				if (outcome.status === "not-configured")
 					throw new CliError("--seed needs a seed block in your dev config.");
-				if (outcome.status === "failed")
+				if (outcome.status === "failed") {
+					reportContainerLoss(env);
 					return {
 						exitCode: outcome.result.exitCode || 1,
 						stdout: "",
 						stderr: "",
 					};
+				}
 			}
 
 			if (parsed.command.length === 0) {
@@ -172,15 +189,18 @@ export async function handleCi(args: string[]): Promise<number> {
 			// The command gets no shared scope: a CI job should not need
 			// Infisical access for its tests. Migrations and the seed still get
 			// their own scopes.
-			return await env.exec(parsed.command, {
+			const result = await env.exec(parsed.command, {
 				secrets: false,
 				verbose: true,
 				throwOnError: false,
 				signal,
 			});
+			if (result.exitCode !== 0 && !signal.aborted) reportContainerLoss(env);
+			return result;
 		} catch (error) {
 			// Interrupted before the command: the signal's exit code says so.
 			if (signal.aborted) return { exitCode: 1, stdout: "", stderr: "" };
+			reportContainerLoss(env);
 			throw error;
 		} finally {
 			await env.stop({ removeVolumes: true });
