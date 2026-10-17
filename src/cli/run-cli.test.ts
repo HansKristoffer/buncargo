@@ -301,6 +301,28 @@ describe("runCli expose routing", () => {
 		]);
 	});
 
+	it("prefetches the seed's secrets for --seed while the containers start", async () => {
+		const startCalls: unknown[] = [];
+		const env = createStubEnv({
+			start: async (startOptions) => {
+				startCalls.push(startOptions);
+				return null;
+			},
+		});
+		(env as { runSeed: unknown }).runSeed = async () => ({
+			status: "succeeded",
+			result: { exitCode: 0, stdout: "", stderr: "" },
+		});
+		const code = await withProcessExitTrap(() =>
+			runCli(env, { args: ["--seed"], watchdog: false }),
+		);
+
+		expect(code).toBe(0);
+		expect(startCalls).toMatchObject([
+			{ skipSeed: true, prefetchSeed: true, prepare: "all" },
+		]);
+	});
+
 	it("rejects unknown app names from --apps", async () => {
 		const code = await withProcessExitTrap(() =>
 			runCli(createStubEnv(), {

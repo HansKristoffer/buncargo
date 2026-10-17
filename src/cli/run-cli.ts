@@ -448,7 +448,8 @@ async function runDevFlow<
 		startServers: false,
 		wait: true,
 		skipSeed: args.seed || args.migrate || args.upOnly || overlapSeed,
-		prefetchSeed: overlapSeed,
+		// `--seed` runs the seed next: fetch its scope beside the containers.
+		prefetchSeed: overlapSeed || args.seed,
 		prepare: args.upOnly ? "containers" : args.migrate ? "migrate" : "all",
 		onPhase: timer.record,
 		skipEnvironmentLog: true,
