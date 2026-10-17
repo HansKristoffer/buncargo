@@ -38,7 +38,7 @@ function isDaemonDownMessage(message: string): boolean {
  *
  * Docker Desktop installs Compose under `~/.docker/cli-plugins`, found through
  * `HOME`, so a process started with a different `HOME` has Docker but not
- * Compose. Every teardown then fails the same way, and a raw "not a docker
+ * Compose. Every `up` and teardown then fails the same way, and a raw "not a docker
  * command" says nothing about why.
  */
 function isComposeMissingMessage(message: string): boolean {
@@ -49,13 +49,15 @@ const COMPOSE_MISSING =
 	"Docker Compose is not available to this process. Docker Desktop provides it through ~/.docker/cli-plugins, which is found through HOME; run buncargo with your usual HOME, or install the compose plugin system-wide.";
 
 /**
- * Turn compose's "port is already allocated" into a message naming the owner.
+ * Turn compose's failure into one that says what to do: a missing Compose
+ * plugin, or "port is already allocated" naming the owner.
  *
  * Only reachable with a captured stderr, which means the quiet path; a verbose
  * run streamed compose's own output to the terminal already.
  */
 function translateComposeFailure(result: DockerRunResult): never {
 	const message = result.stderr.trim();
+	if (isComposeMissingMessage(message)) throw new Error(COMPOSE_MISSING);
 	const allocated =
 		message.match(/Bind for .+:(\d+) failed: port is already allocated/i) ??
 		message.match(/address already in use/i);
@@ -169,8 +171,6 @@ export async function stopContainers(
 				console.log(formatStep("ℹ Docker is not running. Nothing to stop."));
 			return;
 		}
-		if (isComposeMissingMessage(result.stderr))
-			throw new Error(COMPOSE_MISSING);
 		translateComposeFailure(result);
 	}
 	if (verbose) console.log(formatDone("Containers stopped"));

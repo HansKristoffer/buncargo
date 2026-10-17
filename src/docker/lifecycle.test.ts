@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stopContainers } from "./lifecycle";
+import { startContainers, stopContainers } from "./lifecycle";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 /** A `docker` that answers every command with success and records its argv. */
-function fakeDocker(options: { downStderr?: string } = {}) {
+function fakeDocker(options: { downStderr?: string; upStderr?: string } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "buncargo docker down "));
 	roots.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -33,6 +33,11 @@ if (args[0] === 'version') console.log('27.5.1');
 const downStderr = ${JSON.stringify(options.downStderr ?? "")};
 if (downStderr && args.includes('down')) {
   process.stderr.write(downStderr);
+  process.exit(1);
+}
+const upStderr = ${JSON.stringify(options.upStderr ?? "")};
+if (upStderr && args.includes('up')) {
+  process.stderr.write(upStderr);
   process.exit(1);
 }
 `,
@@ -115,5 +120,16 @@ describe("stopContainers", () => {
 		await expect(
 			stopContainers(dir, "demo", { binary, verbose: false }),
 		).rejects.toThrow(/permission denied/);
+	});
+});
+
+describe("startContainers", () => {
+	it("names the missing Compose plugin instead of passing Docker's words on", async () => {
+		const { dir, binary } = fakeDocker({
+			upStderr: "docker: 'compose' is not a docker command.",
+		});
+		await expect(
+			startContainers(dir, "demo", {}, { binary, verbose: false }),
+		).rejects.toThrow(/Docker Compose is not available to this process/);
 	});
 });
