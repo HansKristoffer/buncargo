@@ -287,6 +287,13 @@ console.log(path);
 	});
 	assert.equal(watchdogResult.exitCode, 0);
 	assert(watchdogResult.stdout.toString().includes("Nothing left to watch"));
+	// Its version is read from the installed package.json, through the
+	// build's chunk layout; `ensureWatchdog` replaces a runner without one.
+	assert(
+		watchdogResult.stdout
+			.toString()
+			.includes(`[watchdog ${packageJson.version} pid `),
+	);
 	for (const daemon of ["hostsd.js", "connectd.js"]) {
 		const detachedDaemon = join(consumer, "detached", daemon);
 		mkdirSync(dirname(detachedDaemon), { recursive: true });

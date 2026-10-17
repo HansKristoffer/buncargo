@@ -16,6 +16,7 @@ import { computeBaseOffset } from "../src/core/port-allocation";
 import { terminateOwnedProcess } from "../src/core/process/terminate";
 import { readProcessIdentity } from "../src/core/process-identity";
 import { startFakeInfisical } from "../src/core/secrets/fake-infisical.testing";
+import { buncargoVersion } from "../src/core/version";
 
 const option = (name: string, fallback: string) =>
 	process.argv
@@ -472,7 +473,12 @@ try {
 	if (!identity) throw new Error("Cannot identify benchmark watchdog sentinel");
 	writeFileSync(
 		join(root, ".buncargo/watchdog.pid"),
-		JSON.stringify({ pid: sentinel.pid, processIdentity: identity }),
+		// The CLI's own version: an older or unversioned watchdog is replaced.
+		JSON.stringify({
+			pid: sentinel.pid,
+			processIdentity: identity,
+			version: buncargoVersion(),
+		}),
 	);
 
 	const sharedWorker = sameCheckout ? await prepareWorker(0) : undefined;

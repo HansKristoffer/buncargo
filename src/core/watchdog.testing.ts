@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readProcessIdentityAsync } from "./process-identity";
+import { buncargoVersion } from "./version";
 
 /**
  * Record this test process as the watchdog of the state directory under
@@ -18,6 +19,8 @@ export async function standInForWatchdog(home: string): Promise<void> {
 		JSON.stringify({
 			pid: process.pid,
 			processIdentity: await readProcessIdentityAsync(process.pid),
+			// The same code as any CLI the test starts, so none replaces it.
+			version: buncargoVersion(),
 		}),
 	);
 }

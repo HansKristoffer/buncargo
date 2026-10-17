@@ -1,17 +1,25 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withFileLock } from "./file-lock";
 import { isProcessAlive } from "./process/lifecycle";
 import { readProcessIdentity } from "./process-identity";
 import { publishRun } from "./run-registry";
+import { buncargoVersion } from "./version";
 import {
 	ensureWatchdog,
 	getWatchdogLockFile,
 	getWatchdogPid,
 	getWatchdogPidFile,
+	isOutdatedWatchdog,
 	resolveWatchdogRunnerPath,
 } from "./watchdog";
 
@@ -173,6 +181,118 @@ describe("ensureWatchdog", () => {
 		} finally {
 			release();
 			await held;
+		}
+	});
+});
+
+describe("isOutdatedWatchdog", () => {
+	it("replaces only strictly older code, and one that recorded no version", () => {
+		expect(isOutdatedWatchdog({ version: "12.4.0" }, "13.0.0")).toBe(true);
+		expect(isOutdatedWatchdog({}, "13.0.0")).toBe(true);
+		// Equal or newer is left alone, so two current versions never take
+		// turns replacing each other.
+		expect(isOutdatedWatchdog({ version: "13.0.0" }, "13.0.0")).toBe(false);
+		expect(isOutdatedWatchdog({ version: "13.1.0" }, "13.0.0")).toBe(false);
+		expect(isOutdatedWatchdog({}, undefined)).toBe(false);
+	});
+});
+
+/**
+ * A process that behaves like a runner as `ensureWatchdog` sees one: it
+ * holds the runner lock, writes the pid file with the given version, and
+ * exits on SIGTERM. Started and stopped by the test, so the only process
+ * `ensureWatchdog` can signal is one this test owns.
+ */
+async function startStubRunner(
+	version: string | undefined,
+	options: { identity?: boolean } = {},
+) {
+	const script = join(home, "stub-runner.ts");
+	writeFileSync(
+		script,
+		`import { writeFileSync } from "node:fs";
+import { withFileLock } from ${JSON.stringify(join(import.meta.dir, "file-lock.ts"))};
+import { readCurrentProcessIdentityAsync } from ${JSON.stringify(join(import.meta.dir, "process-identity.ts"))};
+const [pidFile, lockFile, identity, version, ready] = process.argv.slice(2);
+process.on("SIGTERM", () => process.exit(0));
+await withFileLock(lockFile, async () => {
+	const processIdentity = identity === "yes" ? await readCurrentProcessIdentityAsync() : undefined;
+	writeFileSync(pidFile, JSON.stringify({ pid: process.pid, processIdentity, version: version || undefined }));
+	writeFileSync(ready, "");
+	await new Promise(() => setInterval(() => {}, 60_000));
+}, { timeoutMs: 0 });
+`,
+	);
+	const ready = join(home, `stub-ready-${crypto.randomUUID()}`);
+	const stub = Bun.spawn(
+		[
+			process.execPath,
+			script,
+			getWatchdogPidFile(),
+			getWatchdogLockFile(),
+			options.identity === false ? "no" : "yes",
+			version ?? "",
+			ready,
+		],
+		{ stdio: ["ignore", "ignore", "inherit"] },
+	);
+	const deadline = Date.now() + 10_000;
+	while (!existsSync(ready)) {
+		if (stub.exitCode !== null || Date.now() > deadline)
+			throw new Error("The stub runner did not start");
+		await Bun.sleep(10);
+	}
+	return stub;
+}
+
+describe("ensureWatchdog and an older watchdog", () => {
+	for (const version of ["12.4.0", undefined]) {
+		it(`replaces a watchdog of ${version ?? "no recorded version"} with this buncargo's`, async () => {
+			// An older runner sweeps every checkout on the machine with its own
+			// rules for as long as it lives, whichever worktree started it.
+			await claimSomething();
+			const stub = await startStubRunner(version);
+			try {
+				await ensureWatchdog({ verbose: false });
+				expect(await stub.exited).toBe(0);
+				const pid = getWatchdogPid();
+				expect(pid).not.toBeNull();
+				expect(pid).not.toBe(stub.pid);
+				expect(
+					JSON.parse(readFileSync(getWatchdogPidFile(), "utf8")).version,
+				).toBe(buncargoVersion());
+			} finally {
+				stub.kill();
+				await stopWatchdog();
+			}
+		});
+	}
+
+	for (const version of [buncargoVersion(), "999.0.0"]) {
+		it(`leaves a watchdog of ${version === "999.0.0" ? "a newer" : "the same"} buncargo running`, async () => {
+			const stub = await startStubRunner(version);
+			try {
+				await ensureWatchdog({ verbose: false });
+				expect(stub.exitCode).toBeNull();
+				expect(getWatchdogPid()).toBe(stub.pid);
+			} finally {
+				stub.kill();
+				await stub.exited;
+			}
+		});
+	}
+
+	it("never signals a watchdog whose identity it cannot confirm", async () => {
+		// `stop` refuses an app without a recorded identity for the same
+		// reason: the pid may be someone else's by now.
+		const stub = await startStubRunner("1.0.0", { identity: false });
+		try {
+			await ensureWatchdog({ verbose: false });
+			expect(stub.exitCode).toBeNull();
+			expect(getWatchdogPid()).toBe(stub.pid);
+		} finally {
+			stub.kill();
+			await stub.exited;
 		}
 	});
 });

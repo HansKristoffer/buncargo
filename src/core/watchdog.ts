@@ -16,12 +16,17 @@ import { fileURLToPath } from "node:url";
 import { FileLockTimeoutError, withFileLock } from "./file-lock";
 import { inOwnUserScope } from "./process/user-scope";
 import {
+	checkProcessIdentityAsync,
 	matchesProcessIdentity,
 	matchesProcessIdentityAsync,
 } from "./process-identity";
 import { getStateDir, stateFilePath } from "./state-paths";
 import { formatWarn } from "./style";
+import { buncargoVersion, compareVersions } from "./version";
 import { getWatchdogSpawnLockFile } from "./watchdog-loop";
+
+/** How long an outdated watchdog gets to exit before it is left running. */
+const WATCHDOG_REPLACE_TIMEOUT_MS = 5000;
 
 export function getWatchdogPidFile(): string {
 	return stateFilePath("watchdog.pid");
@@ -64,23 +69,82 @@ export function getWatchdogPid(): number | null {
 	}
 }
 
-export async function getWatchdogPidAsync(): Promise<number | null> {
+/** The running watchdog as its pid file records it. */
+export interface WatchdogOwner {
+	pid: number;
+	processIdentity?: string;
+	/** The runner's own buncargo version; absent from a runner before 14.0. */
+	version?: string;
+}
+
+/** The watchdog the pid file names, when that process is still the one recorded. */
+export async function readWatchdogOwnerAsync(): Promise<WatchdogOwner | null> {
 	try {
-		const owner = JSON.parse(await readFile(getWatchdogPidFile(), "utf8")) as {
+		const raw = JSON.parse(await readFile(getWatchdogPidFile(), "utf8")) as {
 			pid?: unknown;
 			processIdentity?: unknown;
+			version?: unknown;
 		};
-		if (typeof owner.pid !== "number") return null;
-		return (await matchesProcessIdentityAsync(
-			owner.pid,
-			typeof owner.processIdentity === "string"
-				? owner.processIdentity
-				: undefined,
-		))
-			? owner.pid
+		if (typeof raw.pid !== "number") return null;
+		const owner: WatchdogOwner = {
+			pid: raw.pid,
+			...(typeof raw.processIdentity === "string"
+				? { processIdentity: raw.processIdentity }
+				: {}),
+			...(typeof raw.version === "string" ? { version: raw.version } : {}),
+		};
+		return (await matchesProcessIdentityAsync(owner.pid, owner.processIdentity))
+			? owner
 			: null;
 	} catch {
 		return null;
+	}
+}
+
+export async function getWatchdogPidAsync(): Promise<number | null> {
+	return (await readWatchdogOwnerAsync())?.pid ?? null;
+}
+
+/**
+ * Whether a running watchdog is older code than this buncargo and should
+ * make way for it.
+ *
+ * Strictly older only, so two current versions never take turns replacing
+ * each other; a runner that recorded no version predates versions being
+ * recorded, so it is older. A buncargo that does not know its own version
+ * replaces nothing.
+ */
+export function isOutdatedWatchdog(
+	running: Pick<WatchdogOwner, "version">,
+	own: string | undefined,
+): boolean {
+	if (own === undefined) return false;
+	if (running.version === undefined) return true;
+	return compareVersions(running.version, own) < 0;
+}
+
+/**
+ * Ask an outdated watchdog to exit. True when it was signalled.
+ *
+ * Only a pid whose recorded birth identity still matches, strictly: a pid
+ * file without one, or a process that cannot be read, is left alone, as
+ * `stop` leaves an app it cannot identify. Never this process: a test
+ * standing in for the watchdog (`watchdog.testing.ts`) is one.
+ */
+async function retireOutdatedWatchdog(owner: WatchdogOwner): Promise<boolean> {
+	if (owner.pid === process.pid || owner.processIdentity === undefined)
+		return false;
+	if (
+		(await checkProcessIdentityAsync(owner.pid, owner.processIdentity)) !==
+		"match"
+	)
+		return false;
+	try {
+		process.kill(owner.pid, "SIGTERM");
+		return true;
+	} catch {
+		// Gone already, or another user's: either way not ours to replace.
+		return false;
 	}
 }
 
@@ -127,19 +191,28 @@ export async function ensureWatchdog(
 	options: { verbose?: boolean } = {},
 ): Promise<void> {
 	const { verbose = true } = options;
-	if (await getWatchdogPidAsync()) return;
+	const own = buncargoVersion();
+	const running = await readWatchdogOwnerAsync();
+	if (running && !isOutdatedWatchdog(running, own)) return;
 
 	await withFileLock(getWatchdogSpawnLockFile(), async () => {
 		// Re-checked under the lock: whoever held it before us may have just
 		// started the watchdog this call was about to duplicate.
-		if (await getWatchdogPidAsync()) return;
+		const current = await readWatchdogOwnerAsync();
+		if (current && !isOutdatedWatchdog(current, own)) return;
+		// An older runner sweeps every checkout with old rules until it exits.
+		// It exits on SIGTERM without the spawn lock this call holds, so the
+		// wait for its runner lock below cannot deadlock on it.
+		const replacing = current ? await retireOutdatedWatchdog(current) : false;
+		if (current && !replacing) return;
 		try {
 			// Try-acquire the runner's own lock: a held one means a runner is
 			// alive whatever the pid file says, which is how a `kill -9` that
 			// left the file behind is told from a live process. Released at
 			// once, because the runner we spawn is what holds it from here on.
+			// When replacing, it is held until the old runner has exited.
 			await withFileLock(getWatchdogLockFile(), async () => {}, {
-				timeoutMs: 0,
+				timeoutMs: replacing ? WATCHDOG_REPLACE_TIMEOUT_MS : 0,
 			});
 		} catch (error) {
 			if (error instanceof FileLockTimeoutError) return;

@@ -166,7 +166,19 @@ across machines too. So a run without containers ensures the watchdog as well, o
 are up and not awaited, so nothing is added before they start: `runDevFlow` from `onReady`, and
 `start()` after its apps are ready unless `watchdog: false`. `startServers()` takes no options to
 opt out with, so it ensures none. The loop already stays while any entry is live, containers or
-not. A watchdog started by an older buncargo keeps running old code until it exits.
+not.
+
+One watchdog sweeps for every checkout, so whichever buncargo started it decides for all of them: a
+12.4 runner started from one worktree swept stacks of worktrees on 13. The runner records its
+version in the pid file, and `ensureWatchdog` replaces a runner whose version is strictly older, or
+missing (written before versions were recorded). It sends SIGTERM only after a strict identity
+match, never to a pid file without an identity and never to itself (`watchdog.testing.ts`'s
+stand-in is the test process), then waits for `.runner` with a bounded timeout and spawns as usual.
+Strictly older only, so two current versions never take turns, and an older CLI, which knows
+nothing of versions, leaves a newer runner alone. It runs inside the `.spawn` hold, which is safe:
+the old runner exits on SIGTERM without taking `.spawn`, and one already waiting for `.spawn` in
+`exitUnlessClaimed` is killed while it waits. A stand-in pid file must record the current version,
+or the first CLI it serves replaces it.
 
 On Linux the watchdog, like `dev --detach` and the sharing coordinator, starts in a systemd
 user scope of its own when there is a user manager (`process/user-scope.ts`; off with

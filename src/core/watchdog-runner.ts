@@ -101,6 +101,8 @@ withFileLock(
 			pid: process.pid,
 			ownerId,
 			processIdentity: await readCurrentProcessIdentityAsync(),
+			// What `ensureWatchdog` compares to replace a runner of older code.
+			version: actor.version,
 		};
 		writeJsonDocumentSync(pidFile, owner);
 		log(`Started from ${process.argv[1] ?? "an unknown path"}`);
