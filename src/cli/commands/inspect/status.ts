@@ -10,13 +10,13 @@ import {
 	withBindProbe,
 } from "../../../core/process";
 import { readLiveRuns } from "../../../core/run-registry";
-import { loadDevEnv } from "../../../loader";
 import { hasFlag } from "../../flags";
 import * as log from "../../log";
 import {
 	getTunnelRegistryPath,
 	readLiveTunnelRegistry,
 } from "../../tunnel-registry";
+import { loadLiveEnv } from "../runtime";
 
 /**
  * `buncargo status` — this checkout's containers, ports, hosts, tunnels and
@@ -33,7 +33,9 @@ export async function handleStatus(args: string[] = []): Promise<void> {
 }
 
 async function readStatus() {
-	const env = await loadDevEnv({ readOnly: true });
+	// As `env` and `url` see it: named URLs once the daemon serves this
+	// checkout's run, rather than a read-only load that never activates them.
+	const env = await loadLiveEnv();
 	const runtime = containerRuntimeForEnv(env);
 	const ownerOf = withBindProbe((port) => getPortOwner(port, { runtime }));
 
