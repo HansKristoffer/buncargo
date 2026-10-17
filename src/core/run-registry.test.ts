@@ -7,6 +7,7 @@ import {
 	setSystemTime,
 } from "bun:test";
 import {
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -14,10 +15,11 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { readProcessIdentity } from "./process-identity";
 import {
 	buildRunEntry,
+	getRunsPath,
 	groupRunsByProject,
 	loadRuns,
 	markOwnersLost,
@@ -31,15 +33,20 @@ import {
 	runLivenessAsync,
 } from "./run-registry";
 
+const realHome = process.env.HOME;
 let dir: string;
 let path: string;
 
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "buncargo-runs-"));
-	path = join(dir, "runs.json");
+	process.env.HOME = dir;
+	path = getRunsPath();
+	mkdirSync(dirname(path), { recursive: true });
 });
 
 afterEach(() => {
+	if (realHome === undefined) delete process.env.HOME;
+	else process.env.HOME = realHome;
 	rmSync(dir, { recursive: true, force: true });
 });
 
@@ -76,13 +83,13 @@ function makeRun(overrides: Partial<RunEntry> = {}): RunEntry {
 }
 
 async function sessions(): Promise<string[]> {
-	return (await loadRuns(path)).map((run) => run.sessionId);
+	return (await loadRuns()).map((run) => run.sessionId);
 }
 
 describe("publishRun", () => {
 	it("round-trips an entry", async () => {
-		await publishRun(makeRun(), { path });
-		const runs = await loadRuns(path);
+		await publishRun(makeRun());
+		const runs = await loadRuns();
 		expect(runs).toHaveLength(1);
 		expect(runs[0]?.projectName).toBe("lullu-lullu");
 		expect(runs[0]?.apps[0]?.name).toBe("api");
@@ -90,7 +97,7 @@ describe("publishRun", () => {
 
 	// The file carries the dev database password from the compose defaults.
 	it("writes the registry unreadable by other users", async () => {
-		await publishRun(makeRun(), { path });
+		await publishRun(makeRun());
 		expect(statSync(path).mode & 0o077).toBe(0);
 	});
 
@@ -98,10 +105,9 @@ describe("publishRun", () => {
 		// The claim, then the CLI's richer entry for the same session.
 		await publishRun(
 			makeRun({ startedAt: "2026-01-01T00:00:00.000Z", idleTimeoutMs: 60_000 }),
-			{ path },
 		);
-		await publishRun(makeRun({ projectName: "renamed" }), { path });
-		const runs = await loadRuns(path);
+		await publishRun(makeRun({ projectName: "renamed" }));
+		const runs = await loadRuns();
 		expect(runs).toHaveLength(1);
 		expect(runs[0]).toMatchObject({
 			projectName: "renamed",
@@ -111,49 +117,46 @@ describe("publishRun", () => {
 	});
 
 	it("keeps separate sessions side by side, in one checkout or several", async () => {
-		await publishRun(makeRun({ sessionId: "a" }), { path });
-		await publishRun(makeRun({ sessionId: "b" }), { path });
-		await publishRun(makeRun({ sessionId: "c", root: "/repos/other" }), {
-			path,
-		});
+		await publishRun(makeRun({ sessionId: "a" }));
+		await publishRun(makeRun({ sessionId: "b" }));
+		await publishRun(makeRun({ sessionId: "c", root: "/repos/other" }));
 		expect(await sessions()).toEqual(["a", "b", "c"]);
 	});
 
 	it("prunes a dead run with nothing to hold, and keeps one that owns services", async () => {
-		await publishRun(makeRun({ sessionId: "apps", pid: DEAD_PID }), { path });
+		await publishRun(makeRun({ sessionId: "apps", pid: DEAD_PID }));
 		await publishRun(
 			makeRun({ sessionId: "stack", pid: DEAD_PID, services: [DB] }),
-			{ path },
 		);
-		await publishRun(makeRun({ sessionId: "live" }), { path });
+		await publishRun(makeRun({ sessionId: "live" }));
 		expect(await sessions()).toEqual(["stack", "live"]);
 	});
 });
 
 describe("releaseRun", () => {
 	it("keeps the first release, so repeated teardown cannot push the hold later", async () => {
-		await publishRun(makeRun({ services: [DB] }), { path });
-		await releaseRun("s1", { path });
-		const first = (await loadRuns(path))[0]?.releasedAt;
+		await publishRun(makeRun({ services: [DB] }));
+		await releaseRun("s1");
+		const first = (await loadRuns())[0]?.releasedAt;
 		expect(first).toBeString();
 		setSystemTime(new Date(Date.now() + 60_000));
 		try {
-			await releaseRun("s1", { path });
+			await releaseRun("s1");
 		} finally {
 			setSystemTime();
 		}
-		expect((await loadRuns(path))[0]?.releasedAt).toBe(first);
+		expect((await loadRuns())[0]?.releasedAt).toBe(first);
 	});
 
 	it("removes a session with no services outright", async () => {
-		await publishRun(makeRun(), { path });
-		await releaseRun("s1", { path });
-		expect(await loadRuns(path)).toEqual([]);
+		await publishRun(makeRun());
+		await releaseRun("s1");
+		expect(await loadRuns()).toEqual([]);
 	});
 
 	it("leaves other sessions alone", async () => {
-		await publishRun(makeRun({ sessionId: "a" }), { path });
-		await releaseRun("b", { path });
+		await publishRun(makeRun({ sessionId: "a" }));
+		await releaseRun("b");
 		expect(await sessions()).toEqual(["a"]);
 	});
 });
@@ -161,21 +164,18 @@ describe("releaseRun", () => {
 describe("retiring entries", () => {
 	it("retireRuns drops exactly the sessions it is given", async () => {
 		for (const sessionId of ["a", "b", "c"])
-			await publishRun(makeRun({ sessionId, services: [DB] }), { path });
-		await retireRuns(["a", "c"], { path });
+			await publishRun(makeRun({ sessionId, services: [DB] }));
+		await retireRuns(["a", "c"]);
 		expect(await sessions()).toEqual(["b"]);
 	});
 
 	it("an explicit teardown drops its own session and finished ones, not a live neighbour's", async () => {
-		await publishRun(makeRun({ sessionId: "mine", services: [DB] }), { path });
+		await publishRun(makeRun({ sessionId: "mine", services: [DB] }));
 		await publishRun(
 			makeRun({ sessionId: "finished", pid: DEAD_PID, services: [DB] }),
-			{ path },
 		);
 		// Another live session in the same checkout: still somebody's run.
-		await publishRun(makeRun({ sessionId: "neighbour", services: [DB] }), {
-			path,
-		});
+		await publishRun(makeRun({ sessionId: "neighbour", services: [DB] }));
 		await publishRun(
 			makeRun({
 				sessionId: "other-project",
@@ -183,24 +183,22 @@ describe("retiring entries", () => {
 				pid: DEAD_PID,
 				services: [DB],
 			}),
-			{ path },
 		);
-		await retireProjectRuns(
-			{ projectName: "lullu-lullu", root: "/repos/lullu", sessionId: "mine" },
-			{ path },
-		);
+		await retireProjectRuns({
+			projectName: "lullu-lullu",
+			root: "/repos/lullu",
+			sessionId: "mine",
+		});
 		expect(await sessions()).toEqual(["neighbour", "other-project"]);
 	});
 });
 
 describe("markOwnersLost", () => {
 	it("stamps a session once and never moves the stamp", async () => {
-		await publishRun(makeRun({ services: [DB] }), { path });
-		await markOwnersLost(["s1"], "2026-01-01T00:00:00.000Z", { path });
-		await markOwnersLost(["s1"], "2026-06-01T00:00:00.000Z", { path });
-		expect((await loadRuns(path))[0]?.ownerLostAt).toBe(
-			"2026-01-01T00:00:00.000Z",
-		);
+		await publishRun(makeRun({ services: [DB] }));
+		await markOwnersLost(["s1"], "2026-01-01T00:00:00.000Z");
+		await markOwnersLost(["s1"], "2026-06-01T00:00:00.000Z");
+		expect((await loadRuns())[0]?.ownerLostAt).toBe("2026-01-01T00:00:00.000Z");
 	});
 });
 
@@ -225,16 +223,9 @@ describe("patchRun", () => {
 					},
 				],
 			}),
-			{ path },
 		);
-		await patchRun(
-			"s1",
-			{ apps: [{ name: "api", status: "ready", pid: 42 }] },
-			{
-				path,
-			},
-		);
-		const runs = await loadRuns(path);
+		await patchRun("s1", { apps: [{ name: "api", status: "ready", pid: 42 }] });
+		const runs = await loadRuns();
 		expect(runs[0]?.apps[0]).toMatchObject({ status: "ready", pid: 42 });
 		expect(runs[0]?.apps[1]?.status).toBe("starting");
 	});
@@ -242,16 +233,10 @@ describe("patchRun", () => {
 	// A taken-over run starts a new session, so it cannot write over its
 	// replacement: its patches address only its own entry.
 	it("writes only to the session it names", async () => {
-		await publishRun(makeRun({ sessionId: "old" }), { path });
-		await publishRun(makeRun({ sessionId: "new" }), { path });
-		await patchRun(
-			"new",
-			{ apps: [{ name: "api", status: "ready" }] },
-			{
-				path,
-			},
-		);
-		const runs = await loadRuns(path);
+		await publishRun(makeRun({ sessionId: "old" }));
+		await publishRun(makeRun({ sessionId: "new" }));
+		await patchRun("new", { apps: [{ name: "api", status: "ready" }] });
+		const runs = await loadRuns();
 		expect(runs.map((run) => run.apps[0]?.status)).toEqual([
 			"starting",
 			"ready",
@@ -259,89 +244,45 @@ describe("patchRun", () => {
 	});
 
 	it("drops an update for an app the run does not have", async () => {
-		await publishRun(makeRun(), { path });
-		await patchRun(
-			"s1",
-			{ apps: [{ name: "ghost", status: "ready" }] },
-			{
-				path,
-			},
-		);
-		const runs = await loadRuns(path);
+		await publishRun(makeRun());
+		await patchRun("s1", { apps: [{ name: "ghost", status: "ready" }] });
+		const runs = await loadRuns();
 		expect(runs[0]?.apps).toHaveLength(1);
 		expect(runs[0]?.apps[0]?.name).toBe("api");
 	});
 
 	it("does not let late readiness resurrect a stopped app", async () => {
-		await publishRun(makeRun(), { path });
-		await patchRun(
-			"s1",
-			{ apps: [{ name: "api", status: "stopped" }] },
-			{
-				path,
-			},
-		);
-		await patchRun(
-			"s1",
-			{ apps: [{ name: "api", status: "ready" }] },
-			{
-				path,
-			},
-		);
-		expect((await loadRuns(path))[0]?.apps[0]?.status).toBe("stopped");
+		await publishRun(makeRun());
+		await patchRun("s1", { apps: [{ name: "api", status: "stopped" }] });
+		await patchRun("s1", { apps: [{ name: "api", status: "ready" }] });
+		expect((await loadRuns())[0]?.apps[0]?.status).toBe("stopped");
 	});
 
 	it("lets a restarted app (a new pid) start over after it stopped", async () => {
-		await publishRun(makeRun(), { path });
-		const read = async () => (await loadRuns(path))[0]?.apps[0];
-		await patchRun(
-			"s1",
-			{ apps: [{ name: "api", status: "failed" }] },
-			{ path },
-		);
+		await publishRun(makeRun());
+		const read = async () => (await loadRuns())[0]?.apps[0];
+		await patchRun("s1", { apps: [{ name: "api", status: "failed" }] });
 		// What `recordAppSpawn` sends for the replacement: a pid, no status.
-		await patchRun(
-			"s1",
-			{ apps: [{ name: "api", pid: process.ppid }] },
-			{ path },
-		);
+		await patchRun("s1", { apps: [{ name: "api", pid: process.ppid }] });
 		expect(await read()).toMatchObject({
 			pid: process.ppid,
 			status: "starting",
 		});
-		await patchRun(
-			"s1",
-			{ apps: [{ name: "api", status: "ready" }] },
-			{ path },
-		);
+		await patchRun("s1", { apps: [{ name: "api", status: "ready" }] });
 		expect((await read())?.status).toBe("ready");
 		// The same pid again is not a restart: a stopped app stays stopped.
-		await patchRun(
-			"s1",
-			{ apps: [{ name: "api", status: "stopped" }] },
-			{ path },
-		);
-		await patchRun(
-			"s1",
-			{ apps: [{ name: "api", pid: process.ppid, status: "starting" }] },
-			{ path },
-		);
+		await patchRun("s1", { apps: [{ name: "api", status: "stopped" }] });
+		await patchRun("s1", {
+			apps: [{ name: "api", pid: process.ppid, status: "starting" }],
+		});
 		expect((await read())?.status).toBe("stopped");
 	});
 
 	it("keeps a running app's status when it adopts a detached pid", async () => {
-		await publishRun(makeRun(), { path });
-		await patchRun(
-			"s1",
-			{ apps: [{ name: "api", status: "ready" }] },
-			{ path },
-		);
-		await patchRun(
-			"s1",
-			{ apps: [{ name: "api", pid: process.ppid + 1 }] },
-			{ path },
-		);
-		expect((await loadRuns(path))[0]?.apps[0]).toMatchObject({
+		await publishRun(makeRun());
+		await patchRun("s1", { apps: [{ name: "api", status: "ready" }] });
+		await patchRun("s1", { apps: [{ name: "api", pid: process.ppid + 1 }] });
+		expect((await loadRuns())[0]?.apps[0]).toMatchObject({
 			pid: process.ppid + 1,
 			status: "ready",
 		});
@@ -363,11 +304,9 @@ describe("liveness", () => {
 	});
 
 	it("filters a reused pid without writing the registry during inspection", async () => {
-		await publishRun(makeRun({ processIdentity: "v2:another-process" }), {
-			path,
-		});
+		await publishRun(makeRun({ processIdentity: "v2:another-process" }));
 		const before = readFileSync(path, "utf8");
-		expect(await readLiveRuns(path)).toEqual([]);
+		expect(await readLiveRuns()).toEqual([]);
 		expect(readFileSync(path, "utf8")).toBe(before);
 	});
 });
@@ -404,7 +343,7 @@ describe("groupRunsByProject", () => {
 
 describe("the persisted boundary", () => {
 	it("reads a missing file as no runs", async () => {
-		expect(await loadRuns(join(dir, "absent.json"))).toEqual([]);
+		expect(await loadRuns()).toEqual([]);
 	});
 
 	it("rejects invalid target pids and ports", async () => {
@@ -419,7 +358,7 @@ describe("the persisted boundary", () => {
 				],
 			}),
 		);
-		expect(await loadRuns(path)).toEqual([]);
+		expect(await loadRuns()).toEqual([]);
 	});
 
 	it("drops an entry with no session id", async () => {

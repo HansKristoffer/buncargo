@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { loadRuns, runLivenessAsync } from "./run-registry";
+import { dirname, join } from "node:path";
+import { getRunsPath, loadRuns, runLivenessAsync } from "./run-registry";
 
 /**
  * The `runs.json` schema contract, shared with the Swift app.
@@ -24,10 +24,12 @@ const FIXTURE = join(
 describe("runs.json v1 fixture", () => {
 	it("decodes with every field the app relies on", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "buncargo-fixture-"));
-		const path = join(dir, "runs.json");
+		const realHome = process.env.HOME;
+		process.env.HOME = dir;
 		try {
-			copyFileSync(FIXTURE, path);
-			const runs = await loadRuns(path, { strict: true });
+			mkdirSync(dirname(getRunsPath()), { recursive: true });
+			copyFileSync(FIXTURE, getRunsPath());
+			const runs = await loadRuns({ strict: true });
 
 			expect(runs).toHaveLength(2);
 			const run = runs[0];
@@ -93,6 +95,8 @@ describe("runs.json v1 fixture", () => {
 			expect(released?.services[0]?.container?.runtime).toBe("docker");
 			expect(released && (await runLivenessAsync(runs))(released)).toBe(false);
 		} finally {
+			if (realHome === undefined) delete process.env.HOME;
+			else process.env.HOME = realHome;
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});

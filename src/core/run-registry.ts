@@ -206,8 +206,8 @@ export interface RunTaskEntry {
 	description?: string;
 }
 
-export function getRunsPath(home?: string): string {
-	return stateFilePath(RUNS_FILENAME, home);
+export function getRunsPath(): string {
+	return stateFilePath(RUNS_FILENAME);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -345,10 +345,9 @@ const registry = defineListRegistry<RunEntry>({
 });
 
 export async function loadRuns(
-	path = getRunsPath(),
 	options: ListRegistryReadOptions = {},
 ): Promise<RunEntry[]> {
-	return registry.read(path, options);
+	return registry.read(getRunsPath(), options);
 }
 
 /**
@@ -456,11 +455,8 @@ async function updateRuns(
  * then the CLI's richer entry. The second knows neither when the first
  * happened nor which hold it was claimed with, so both carry over.
  */
-export async function publishRun(
-	run: RunEntry,
-	options: { path?: string } = {},
-): Promise<void> {
-	const path = options.path ?? getRunsPath();
+export async function publishRun(run: RunEntry): Promise<void> {
+	const path = getRunsPath();
 	await withFileLock(path, async () => {
 		const runs = await prune(path);
 		const index = runs.findIndex((entry) => entry.sessionId === run.sessionId);
@@ -492,11 +488,8 @@ export async function publishRun(
  * there is nothing for the sweep to hold, and a dead row would show to
  * anything that forgot to filter.
  */
-export async function releaseRun(
-	sessionId: string,
-	options: { path?: string } = {},
-): Promise<void> {
-	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+export async function releaseRun(sessionId: string): Promise<void> {
+	await updateRuns(getRunsPath(), (runs) => {
 		const index = runs.findIndex((entry) => entry.sessionId === sessionId);
 		const current = runs[index];
 		if (!current || current.releasedAt !== undefined) return undefined;
@@ -511,13 +504,10 @@ export async function releaseRun(
 }
 
 /** Drop entries the sweep has finished with. */
-export async function retireRuns(
-	sessionIds: readonly string[],
-	options: { path?: string } = {},
-): Promise<void> {
+export async function retireRuns(sessionIds: readonly string[]): Promise<void> {
 	if (sessionIds.length === 0) return;
 	const drop = new Set(sessionIds);
-	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+	await updateRuns(getRunsPath(), (runs) => {
 		const next = runs.filter((entry) => !drop.has(entry.sessionId));
 		return next.length === runs.length ? undefined : next;
 	});
@@ -531,11 +521,12 @@ export async function retireRuns(
  * live session in the same checkout keeps its entry — it is still somebody's
  * run, whatever just happened to the containers.
  */
-export async function retireProjectRuns(
-	target: { projectName: string; root: string; sessionId: string },
-	options: { path?: string } = {},
-): Promise<void> {
-	await updateRuns(options.path ?? getRunsPath(), async (runs) => {
+export async function retireProjectRuns(target: {
+	projectName: string;
+	root: string;
+	sessionId: string;
+}): Promise<void> {
+	await updateRuns(getRunsPath(), async (runs) => {
 		const alive = await runLivenessAsync(runs);
 		const next = runs.filter(
 			(entry) =>
@@ -552,11 +543,10 @@ export async function retireProjectRuns(
 /** Forget stacks the sweep has stopped, so the entry can retire like any other. */
 export async function clearRunStacks(
 	sessionIds: readonly string[],
-	options: { path?: string } = {},
 ): Promise<void> {
 	if (sessionIds.length === 0) return;
 	const cleared = new Set(sessionIds);
-	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+	await updateRuns(getRunsPath(), (runs) => {
 		let changed = false;
 		const next = runs.map((entry) => {
 			if (!cleared.has(entry.sessionId) || entry.stacks === undefined)
@@ -578,11 +568,10 @@ export async function clearRunStacks(
 export async function markOwnersLost(
 	sessionIds: readonly string[],
 	at: string,
-	options: { path?: string } = {},
 ): Promise<void> {
 	if (sessionIds.length === 0) return;
 	const lost = new Set(sessionIds);
-	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+	await updateRuns(getRunsPath(), (runs) => {
 		let changed = false;
 		const next = runs.map((entry) => {
 			if (!lost.has(entry.sessionId) || entry.ownerLostAt !== undefined)
@@ -649,19 +638,17 @@ function mergeByName<T extends { name: string }>(
 export async function patchRun(
 	sessionId: string,
 	patch: RunPatch,
-	options: { path?: string } = {},
 ): Promise<void> {
-	await patchRunBatch(sessionId, [patch], options);
+	await patchRunBatch(sessionId, [patch]);
 }
 
 /** Apply ordered updates under one lock, including terminal-state protections. */
 export async function patchRunBatch(
 	sessionId: string,
 	patches: readonly RunPatch[],
-	options: { path?: string } = {},
 ): Promise<void> {
 	if (patches.length === 0) return;
-	await updateRuns(options.path ?? getRunsPath(), (runs) => {
+	await updateRuns(getRunsPath(), (runs) => {
 		const index = runs.findIndex((entry) => entry.sessionId === sessionId);
 		const current = runs[index];
 		if (!current) return undefined;
@@ -709,16 +696,13 @@ export function groupRunsByProject(runs: RunEntry[]): Map<string, RunEntry[]> {
 }
 
 /** Every independent live session using this checkout. */
-export async function findRunsByRoot(
-	root: string,
-	path = getRunsPath(),
-): Promise<RunEntry[]> {
-	return (await readLiveRuns(path)).filter((run) => run.root === root);
+export async function findRunsByRoot(root: string): Promise<RunEntry[]> {
+	return (await readLiveRuns()).filter((run) => run.root === root);
 }
 
 /** Inspection filters stale owners in memory without mutating persisted state. */
-export async function readLiveRuns(path = getRunsPath()): Promise<RunEntry[]> {
-	const runs = await loadRuns(path, { strict: true });
+export async function readLiveRuns(): Promise<RunEntry[]> {
+	const runs = await loadRuns({ strict: true });
 	return runs.filter(await runLivenessAsync(runs));
 }
 
@@ -730,6 +714,6 @@ export async function readLiveRuns(path = getRunsPath()): Promise<RunEntry[]> {
  * cannot be read throws rather than reading as empty — to the sweep, an empty
  * registry would make every stack on the machine look unowned.
  */
-export async function readAllRuns(path = getRunsPath()): Promise<RunEntry[]> {
-	return loadRuns(path, { strict: true });
+export async function readAllRuns(): Promise<RunEntry[]> {
+	return loadRuns({ strict: true });
 }
