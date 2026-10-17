@@ -29,6 +29,8 @@ describe("parseQuickTunnelUrlFromOutput", () => {
 	});
 });
 
+const LOCAL_URL = "http://localhost:3000";
+
 describe("cloudflared process ownership", () => {
 	const dirs: string[] = [];
 	const tunnels: ReturnType<typeof startCloudflaredTunnel>[] = [];
@@ -49,36 +51,52 @@ describe("cloudflared process ownership", () => {
 		return path;
 	}
 	it("terminates a child ignoring TERM before reporting URL timeout", async () => {
-		const tunnel = startCloudflaredTunnel(
-			{},
-			{ binary: fixture(), timeoutMs: 100, graceMs: 60 },
-		);
+		const tunnel = startCloudflaredTunnel(LOCAL_URL, {
+			binary: fixture(),
+			timeoutMs: 100,
+			graceMs: 60,
+		});
 		tunnels.push(tunnel);
 		await expect(tunnel.url).rejects.toThrow("timed out");
 		expect(tunnel.child.pid && isProcessAlive(tunnel.child.pid)).toBe(false);
 	});
 	it("cancels URL startup and waits for owned child termination", async () => {
 		const controller = new AbortController();
-		const tunnel = startCloudflaredTunnel(
-			{},
-			{ binary: fixture(), signal: controller.signal, graceMs: 60 },
-		);
+		const tunnel = startCloudflaredTunnel(LOCAL_URL, {
+			binary: fixture(),
+			signal: controller.signal,
+			graceMs: 60,
+		});
 		tunnels.push(tunnel);
 		setTimeout(() => controller.abort(new Error("cancelled")), 50);
 		await expect(tunnel.url).rejects.toThrow("cancelled");
 		expect(tunnel.child.pid && isProcessAlive(tunnel.child.pid)).toBe(false);
 	});
 	it("closes a ready tunnel idempotently with confirmed exit", async () => {
-		const tunnel = startCloudflaredTunnel(
-			{},
-			{
-				binary: fixture('console.log("https://fixture.trycloudflare.com");'),
-				graceMs: 60,
-			},
-		);
+		const tunnel = startCloudflaredTunnel(LOCAL_URL, {
+			binary: fixture('console.log("https://fixture.trycloudflare.com");'),
+			graceMs: 60,
+		});
 		tunnels.push(tunnel);
 		expect(await tunnel.url).toBe("https://fixture.trycloudflare.com");
 		await Promise.all([tunnel.close(), tunnel.close()]);
 		expect(tunnel.child.pid && isProcessAlive(tunnel.child.pid)).toBe(false);
+	});
+	it("keeps the connect tokens out of cloudflared's environment", async () => {
+		const saved = process.env.BUNCARGO_CONNECT_TOKENS;
+		process.env.BUNCARGO_CONNECT_TOKENS = "bc_share_secret";
+		try {
+			const tunnel = startCloudflaredTunnel(LOCAL_URL, {
+				binary: fixture(
+					'console.log("https://" + (process.env.BUNCARGO_CONNECT_TOKENS ? "leaked" : "clean") + ".trycloudflare.com");',
+				),
+				graceMs: 60,
+			});
+			tunnels.push(tunnel);
+			expect(await tunnel.url).toBe("https://clean.trycloudflare.com");
+		} finally {
+			if (saved === undefined) delete process.env.BUNCARGO_CONNECT_TOKENS;
+			else process.env.BUNCARGO_CONNECT_TOKENS = saved;
+		}
 	});
 });

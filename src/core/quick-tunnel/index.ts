@@ -29,7 +29,7 @@ export function isRetryableQuickTunnelError(message: string): boolean {
 }
 
 async function startCloudflaredTunnelWithRetry(
-	cfArgs: Record<string, string | number | null>,
+	url: string,
 	signal?: AbortSignal,
 ): Promise<ReturnType<typeof startCloudflaredTunnel>> {
 	const maxAttempts = quickTunnelMaxAttempts();
@@ -37,7 +37,7 @@ async function startCloudflaredTunnelWithRetry(
 
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		signal?.throwIfAborted();
-		const tunnel = startCloudflaredTunnel(cfArgs, { signal });
+		const tunnel = startCloudflaredTunnel(url, { signal });
 		try {
 			await tunnel.url;
 			return tunnel;
@@ -64,24 +64,13 @@ async function startCloudflaredTunnelWithRetry(
 }
 
 export interface QuickTunnelOptions {
-	url?: string;
-	port?: number | string;
-	hostname?: string;
-	protocol?: "http" | "https";
-	verifyTLS?: boolean;
+	url: string;
 	signal?: AbortSignal;
 }
 
 export interface QuickTunnel {
 	getURL: () => Promise<string>;
 	close: () => Promise<void>;
-}
-
-function resolvedLocalUrl(opts: QuickTunnelOptions): string {
-	return (
-		opts.url ??
-		`${opts.protocol || "http"}://${opts.hostname ?? "localhost"}:${opts.port ?? 3000}`
-	);
 }
 
 /**
@@ -92,7 +81,7 @@ export async function startQuickTunnel(
 	opts: QuickTunnelOptions,
 ): Promise<QuickTunnel> {
 	opts.signal?.throwIfAborted();
-	const url = resolvedLocalUrl(opts);
+	const { url } = opts;
 
 	console.log(`Starting cloudflared tunnel to ${url}`);
 
@@ -105,12 +94,7 @@ export async function startQuickTunnel(
 		});
 	}
 
-	const cfArgs: Record<string, string | number | null> = { "--url": url };
-	// Boolean flag: use `null` value so spawn does not pass a stray empty argv (see cloudflared-process).
-	if (!opts.verifyTLS) {
-		cfArgs["--no-tls-verify"] = null;
-	}
-	const tunnel = await startCloudflaredTunnelWithRetry(cfArgs, opts.signal);
+	const tunnel = await startCloudflaredTunnelWithRetry(url, opts.signal);
 
 	const cleanup = async () => {
 		await tunnel.close();

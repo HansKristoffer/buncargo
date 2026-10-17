@@ -5,7 +5,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { abortError } from "../deadline";
 import { terminateOwnedProcess } from "../process/terminate";
-import { quickTunnelUrlTimeoutMs } from "../runtime-flags";
+import { connectProcessEnv, quickTunnelUrlTimeoutMs } from "../runtime-flags";
 import { resolvedCloudflaredBinPath } from "./constants";
 
 /** Primary: ASCII box line from cloudflared (`|  https://…  |`). */
@@ -25,8 +25,9 @@ export function parseQuickTunnelUrlFromOutput(log: string): string | null {
 	return direct?.[1] ?? null;
 }
 
+/** cloudflared is buncargo's own tool: it never sees the connect tokens. */
 export function startCloudflaredTunnel(
-	options: Record<string, string | number | null>,
+	localUrl: string,
 	lifecycle: {
 		signal?: AbortSignal;
 		timeoutMs?: number;
@@ -36,34 +37,19 @@ export function startCloudflaredTunnel(
 ): {
 	url: Promise<string>;
 	child: ChildProcess;
-	stop: () => boolean;
 	close: () => Promise<void>;
 } {
 	lifecycle.signal?.throwIfAborted();
-	const args: string[] = ["tunnel"];
-	for (const [key, value] of Object.entries(options)) {
-		if (typeof value === "string") {
-			args.push(`${key}`, value);
-		} else if (typeof value === "number") {
-			args.push(`${key}`, value.toString());
-		} else if (value === null) {
-			args.push(`${key}`);
-		}
-	}
-	if (args.length === 1) {
-		args.push("--url", "localhost:8080");
-	}
-
 	const binPath = lifecycle.binary ?? resolvedCloudflaredBinPath();
-	const child = spawn(binPath, args, {
-		stdio: ["ignore", "pipe", "pipe"],
-		detached: true,
-	});
-
-	if (process.env.DEBUG) {
-		child.stdout?.pipe(process.stdout);
-		child.stderr?.pipe(process.stderr);
-	}
+	const child = spawn(
+		binPath,
+		["tunnel", "--url", localUrl, "--no-tls-verify"],
+		{
+			stdio: ["ignore", "pipe", "pipe"],
+			detached: true,
+			env: connectProcessEnv(),
+		},
+	);
 
 	let settled = false;
 	let urlResolver!: (value: string | PromiseLike<string>) => void;
@@ -168,9 +154,5 @@ export function startCloudflaredTunnel(
 	// Low-level callers may close before awaiting the URL. Keep that rejection
 	// handled while preserving the rejecting promise returned to callers.
 	void url.catch(() => {});
-	const stop = () => {
-		void close().catch(() => {});
-		return child.pid !== undefined;
-	};
-	return { url, child, stop, close };
+	return { url, child, close };
 }
