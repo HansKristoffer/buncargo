@@ -10,9 +10,10 @@ Cross-cutting utilities in `src/core/` that most features touch.
   `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL`), the same check for named hosts, Docker auto-start and
   readiness timeouts. `src/architecture.test.ts` enforces the single reader.
 - `child-env.ts` is the environment of every process started for the project (apps, `exec`,
-  tasks, migrations, the seed, prisma): never the connect tokens, never the config's `unsetEnv`.
-  It is module state set by `createDevEnvironment`, because every spawn point reaches here and none
-  has the config. buncargo's own tools (frpc, the Infisical CLI) keep `connectProcessEnv`.
+  `slot`, tasks, migrations, the seed, prisma): never the connect tokens, never the config's
+  `unsetEnv`. It is module state set by `createDevEnvironment`, because every spawn point reaches
+  here and none has the config. buncargo's own tools (frpc, the Infisical CLI) keep
+  `connectProcessEnv`.
 - `state-paths.ts` owns both state directories: `~/.buncargo` (machine-wide: routes, runs,
   certificates, downloaded tools) and `<root>/.buncargo` (per-checkout: port lockfile, tunnel
   registry, typecheck artifacts), plus the `sudo`-aware home resolution and chown that make the
