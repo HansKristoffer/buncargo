@@ -28,6 +28,7 @@ import { WATCHDOG_POLL_INTERVAL_MS } from "./watchdog-constants";
 import {
 	claimedSincePass,
 	exitUnlessClaimed,
+	formatWatchdogLine,
 	getWatchdogSpawnLockFile,
 	runWatchdogLoop,
 } from "./watchdog-loop";
@@ -38,7 +39,11 @@ const ownerId = randomUUID();
 const actor = removalActor("buncargo watchdog");
 
 function log(message: string): void {
-	const line = `[watchdog] ${new Date().toISOString()} ${message}`;
+	const line = formatWatchdogLine(
+		{ pid: process.pid, version: actor.version },
+		new Date(),
+		message,
+	);
 	console.log(line);
 	try {
 		appendFileSync(logFile, `${line}\n`);
@@ -98,7 +103,7 @@ withFileLock(
 			processIdentity: await readCurrentProcessIdentityAsync(),
 		};
 		writeJsonDocumentSync(pidFile, owner);
-		log(`Started (PID: ${process.pid})`);
+		log(`Started from ${process.argv[1] ?? "an unknown path"}`);
 		const stopDirectory = tailnetDirectoryEnabled()
 			? serveTailnetDirectory({ log, intervalMs: WATCHDOG_POLL_INTERVAL_MS })
 			: () => {};

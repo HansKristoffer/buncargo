@@ -46,6 +46,7 @@ import {
 	readAllRuns,
 	runLivenessAsync,
 } from "../../../core/run-registry";
+import { describeSwept } from "../../../core/watchdog-loop";
 import { loadDevEnv } from "../../../loader";
 import type { AnyDevEnvironment } from "../../../types";
 import { describeCheckFailures, isWarning, runChecks } from "../../checks";
@@ -215,10 +216,7 @@ async function checkOrphanedContainers(
 			runtimes: [runtime],
 			except: { projectName: env.projectName, root: env.root },
 		});
-		for (const stack of result.swept)
-			report.note(
-				`Removed ${stack.projectName} (${stack.root}): ${stack.reason}`,
-			);
+		for (const stack of result.swept) report.note(describeSwept(stack));
 		for (const failure of result.failed)
 			report.issue(
 				`Could not remove ${failure.projectName} (${failure.root}): ${failure.error}`,

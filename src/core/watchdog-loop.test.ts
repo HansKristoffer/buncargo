@@ -3,7 +3,9 @@ import type { SweepResult } from "../container-runtime/sweep";
 import type { RunEntry } from "./run-registry";
 import {
 	claimedSincePass,
+	describeSwept,
 	exitUnlessClaimed,
+	formatWatchdogLine,
 	runWatchdogLoop,
 } from "./watchdog-loop";
 
@@ -82,7 +84,7 @@ describe("runWatchdogLoop", () => {
 			pass({ containers: 0, liveRuns: 0, swept: [stopped] }),
 		]);
 		expect(logs).toEqual([
-			"Removed demo (/repo): released 200s ago",
+			"Removed demo's containers (/repo, supabase): released 200s ago; its run: none on record",
 			"Nothing left to watch; exiting",
 		]);
 	});
@@ -120,7 +122,7 @@ describe("runWatchdogLoop", () => {
 			pass({ containers: 0, liveRuns: 0 }),
 		]);
 		expect(logs).toEqual([
-			"Removed demo (/repo): checkout deleted",
+			"Removed demo's containers (/repo, docker): checkout deleted; its run: none on record",
 			"Nothing left to watch; exiting",
 		]);
 	});
@@ -140,6 +142,55 @@ describe("runWatchdogLoop", () => {
 			"A run claimed while exiting; still watching",
 			"Nothing left to watch; exiting",
 		]);
+	});
+});
+
+describe("formatWatchdogLine", () => {
+	it("names the watchdog's version and pid on every line", () => {
+		// One watchdog sweeps for every checkout, whichever buncargo started
+		// it; a line read on its own has to say which one did this.
+		const at = new Date("2026-10-17T10:00:00.000Z");
+		expect(
+			formatWatchdogLine({ pid: 4242, version: "12.4.0" }, at, "Started"),
+		).toBe("[watchdog 12.4.0 pid 4242] 2026-10-17T10:00:00.000Z Started");
+		expect(formatWatchdogLine({ pid: 7 }, at, "Started")).toBe(
+			"[watchdog unknown version pid 7] 2026-10-17T10:00:00.000Z Started",
+		);
+	});
+});
+
+describe("describeSwept", () => {
+	it("names the run a removal was decided against", () => {
+		expect(
+			describeSwept({
+				projectName: "shop",
+				root: "/work/shop-feature",
+				runtime: "docker",
+				reason: "owner gone for 16s",
+				owner: {
+					sessionId: "s1",
+					pid: 4242,
+					worktree: "feature",
+					branch: "feature/login",
+				},
+			}),
+		).toBe(
+			"Removed shop's containers (/work/shop-feature, docker): owner gone for 16s; its run: session s1, pid 4242, worktree feature, branch feature/login",
+		);
+	});
+
+	it("says when no run is on record, and names removed volumes", () => {
+		expect(
+			describeSwept({
+				projectName: "shop",
+				root: "/gone",
+				runtime: "docker",
+				reason: "checkout deleted, removed volumes shop_db",
+				volumes: ["shop_db"],
+			}),
+		).toBe(
+			"Removed shop's volumes shop_db (/gone, docker): checkout deleted, removed volumes shop_db; its run: none on record",
+		);
 	});
 });
 

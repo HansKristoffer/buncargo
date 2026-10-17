@@ -1,4 +1,4 @@
-import type { SweepResult } from "../container-runtime/sweep";
+import type { SweepResult, SweptStack } from "../container-runtime/sweep";
 import type { RunEntry } from "./run-registry";
 import { stateFilePath } from "./state-paths";
 
@@ -94,6 +94,41 @@ export function exitUnlessClaimed(deps: WatchdogExitDeps): Promise<boolean> {
 }
 
 /**
+ * One line of `watchdog.log`, saying which watchdog wrote it.
+ *
+ * Every line, not only the first: one watchdog sweeps for every checkout on
+ * the machine, whichever buncargo started it, and a line read on its own has
+ * to say that a 12.4.0 runner from another worktree did this.
+ */
+export function formatWatchdogLine(
+	self: { pid: number; version?: string },
+	at: Date,
+	message: string,
+): string {
+	return `[watchdog ${self.version ?? "unknown version"} pid ${self.pid}] ${at.toISOString()} ${message}`;
+}
+
+/**
+ * A removal, with the run it was decided against: "Removed demo's
+ * containers (/repo, docker): owner gone for 16s; its run: session s1, pid
+ * 4242, worktree feature, branch feature/login".
+ */
+export function describeSwept(stack: SweptStack): string {
+	const what = stack.volumes
+		? `volumes ${stack.volumes.join(", ")}`
+		: "containers";
+	const owner = stack.owner
+		? [
+				`session ${stack.owner.sessionId}`,
+				`pid ${stack.owner.pid}`,
+				...(stack.owner.worktree ? [`worktree ${stack.owner.worktree}`] : []),
+				...(stack.owner.branch ? [`branch ${stack.owner.branch}`] : []),
+			].join(", ")
+		: "none on record";
+	return `Removed ${stack.projectName}'s ${what} (${stack.root}, ${stack.runtime}): ${stack.reason}; its run: ${owner}`;
+}
+
+/**
  * The watchdog's loop: sweep, report, wait, until nothing is left to watch.
  *
  * Separate from the runner, which starts a process as a side effect of being
@@ -116,10 +151,7 @@ export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 		try {
 			const result = await deps.sweep();
 			reportedPassError = undefined;
-			for (const stack of result.swept)
-				deps.log(
-					`Removed ${stack.projectName} (${stack.root}): ${stack.reason}`,
-				);
+			for (const stack of result.swept) deps.log(describeSwept(stack));
 
 			const failures = new Map<string, string>();
 			for (const failure of result.failed) {

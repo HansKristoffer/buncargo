@@ -4,6 +4,7 @@ import {
 	sweepOrphanedContainers,
 } from "../../../container-runtime";
 import { getRunsPath } from "../../../core/run-registry";
+import { describeSwept } from "../../../core/watchdog-loop";
 import * as log from "../../log";
 
 /** "held, 2m left" for a finished run, or nothing while one is live. */
@@ -35,8 +36,7 @@ export async function handleLs(): Promise<void> {
 			"No container runtime is running. Start Docker or Apple container and try again.",
 		);
 	}
-	for (const stack of result.swept)
-		log.info(`Removed ${stack.projectName} (${stack.root}): ${stack.reason}`);
+	for (const stack of result.swept) log.info(describeSwept(stack));
 	for (const failure of result.failed)
 		log.warn(`Could not remove ${failure.projectName}: ${failure.error}`);
 

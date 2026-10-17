@@ -19,6 +19,7 @@ import { listGitCheckouts } from "../../core/git-checkouts";
 import { offsetClaimRoot, readOffsetClaims } from "../../core/offset-claims";
 import { askConfirm, isInteractive } from "../../core/prompt";
 import { readAllRuns, readLiveRuns } from "../../core/run-registry";
+import { describeSwept } from "../../core/watchdog-loop";
 import { CONFIG_FILES, findConfigFile, loadDevEnv } from "../../loader";
 import * as log from "../log";
 import { parsePruneArgs, printPruneHelp } from "../prune-flags";
@@ -54,8 +55,7 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 	// whose containers are removed here stops counting as in use, and its
 	// entry is retired in the same pass.
 	const swept = await sweepOrphanedContainers({ runtimes });
-	for (const stack of swept.swept)
-		log.info(`Removed ${stack.projectName} (${stack.root}): ${stack.reason}`);
+	for (const stack of swept.swept) log.info(describeSwept(stack));
 
 	const volumes = (
 		await Promise.all(runtimes.map((runtime) => runtime.listVolumes()))
