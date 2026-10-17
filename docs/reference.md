@@ -1470,7 +1470,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 
 | Error | Cause | Fix |
 | --- | --- | --- |
-| `Docker is not running (…)` | Daemon down and auto-start failed/disabled | Start OrbStack/Docker/Colima, or drop `--no-docker-autostart`. On Linux: `sudo systemctl start docker` |
+| `Docker is not running` | Daemon down and auto-start failed/disabled | Start OrbStack/Docker/Colima, or drop `--no-docker-autostart`. On Linux: `sudo systemctl start docker` |
 | `Docker is running, but this user cannot open its socket` | User not in the `docker` group, or a process started before it was added | `sudo usermod -aG docker $USER`, then log in again or restart the service you run buncargo from |
 | `port 5173 held by container gey-other-platform-1 (project gey-other)` | Foreign compose project owns the port | Stop the other env (`buncargo ls` / `dev --down --all`) or let allocation shift |
 | `port … held by process …` | Another process owns the port | Stop that process; own-repo orphans are killed automatically |

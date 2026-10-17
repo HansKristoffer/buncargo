@@ -30,11 +30,7 @@ export {
 	ensureDockerRunning,
 	isDockerDaemonRunning,
 } from "./preflight";
-export {
-	assertDockerRunning,
-	DOCKER_NOT_RUNNING_MESSAGE,
-	dockerProjectServiceStates,
-} from "./status";
+export { assertDockerRunning, dockerProjectServiceStates } from "./status";
 export {
 	listDockerVolumes,
 	parseDockerVolumeLine,

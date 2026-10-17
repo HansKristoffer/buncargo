@@ -23,7 +23,9 @@ export class DockerUnavailableError extends Error {
 	constructor(
 		runtime: DockerRuntime,
 		remediation: string,
-		problem = `Docker is not running (${runtime}).`,
+		problem = runtime === "unknown"
+			? "Docker is not running."
+			: `Docker is not running (${runtime}).`,
 	) {
 		super(`${problem} ${remediation}`);
 		this.name = "DockerUnavailableError";
@@ -81,7 +83,7 @@ export function isDockerDaemonRunning(binary?: string): boolean {
 	return runDocker(binary, ["version", "--format", "{{.Server.Version}}"]).ok;
 }
 
-function remediationFor(runtime: DockerRuntime): string {
+export function remediationFor(runtime: DockerRuntime): string {
 	switch (runtime) {
 		case "orbstack":
 			return "Start OrbStack (open -a OrbStack) and try again.";

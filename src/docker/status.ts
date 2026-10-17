@@ -1,16 +1,17 @@
 import type { ServiceRuntimeState } from "../container-runtime/types";
 import { runDockerAsync } from "./binary";
-import { DockerUnavailableError, isDockerDaemonRunning } from "./preflight";
-
-export const DOCKER_NOT_RUNNING_MESSAGE =
-	"Docker is not running. Please start Docker and try again.";
+import {
+	DockerUnavailableError,
+	isDockerDaemonRunning,
+	remediationFor,
+} from "./preflight";
 
 /**
  * Ensure Docker is running before attempting compose operations.
  */
 export function assertDockerRunning(binary?: string): void {
 	if (!isDockerDaemonRunning(binary)) {
-		throw new DockerUnavailableError("unknown", DOCKER_NOT_RUNNING_MESSAGE);
+		throw new DockerUnavailableError("unknown", remediationFor("unknown"));
 	}
 }
 
