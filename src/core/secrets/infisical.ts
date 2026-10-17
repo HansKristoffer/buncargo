@@ -547,7 +547,6 @@ export function describeSecretsError(error: unknown): string {
  */
 export async function loadAppSecrets(
 	apps: Record<string, AppConfig>,
-	defaults: SecretsScopeConfig | false | undefined,
 	options: {
 		signal?: AbortSignal;
 		env?: NodeJS.ProcessEnv;
@@ -560,7 +559,7 @@ export async function loadAppSecrets(
 	for (const [name, app] of Object.entries(apps)) {
 		// An app that declared nothing is not opted in, whatever the defaults say.
 		if (!app.secrets) continue;
-		const scope = resolveScope(app.secrets, defaults, env);
+		const scope = resolveScope(app.secrets, undefined, env);
 		if (!scope) continue;
 		const key = scopeKey(scope);
 		scopes.set(key, scope);
@@ -618,26 +617,21 @@ function withoutExported(
  * Every secret in one scope, for something that runs one command with one
  * scope (migrations, seed, `exec`, tasks). Uses the same authentication and
  * per-scope cache as app processes.
- * Throws when the scope has no project or the fetch fails.
+ * Throws when the fetch fails.
  */
 export async function loadScopeSecrets(
-	scope: SecretsScopeConfig,
+	scope: InfisicalScope,
 	options: {
 		signal?: AbortSignal;
 		env?: NodeJS.ProcessEnv;
-		defaults?: SecretsScopeConfig | false;
 		onWait?: (ms: number) => void;
 	} = {},
 ): Promise<Record<string, string>> {
 	const env = options.env ?? process.env;
-	const resolved = resolveScope(scope, options.defaults, env);
-	if (!resolved) {
-		throw new SecretsError("The secrets scope has no projectId.");
-	}
 	const began = performance.now();
 	try {
 		return withoutExported(
-			await fetchScopeSecrets(resolved, { signal: options.signal, env }),
+			await fetchScopeSecrets(scope, { signal: options.signal, env }),
 			env,
 		);
 	} finally {

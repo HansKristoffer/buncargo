@@ -94,7 +94,7 @@ export async function startAppServers<
 					// The spawn path gets its secrets inside `startDevServers`; a production
 					// build is the other process that needs them, and it runs before that.
 					// Both share one fetch per scope through the module's cache.
-					const secrets = await loadAppSecrets(appsToStart, undefined, {
+					const secrets = await loadAppSecrets(appsToStart, {
 						signal,
 						onWait: (ms) => options.onPhase?.("secrets", ms),
 					});

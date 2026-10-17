@@ -5,6 +5,7 @@ import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
 import {
 	clearScopeSecretsCache,
 	loadScopeSecrets,
+	resolveScope,
 } from "../core/secrets/infisical";
 import { planStart } from "../planning";
 import type { AppConfig, ServiceConfig } from "../types";
@@ -373,10 +374,12 @@ it("starts selected scope fetches before container preparation and skips contain
 			verbose: false,
 			watchdog: false,
 		});
-		await Promise.all([
-			loadScopeSecrets(ctx.config.secrets),
-			loadScopeSecrets(appScope),
-		]);
+		await Promise.all(
+			[ctx.config.secrets, appScope].map((scope) => {
+				const resolved = resolveScope(scope, undefined);
+				return resolved && loadScopeSecrets(resolved);
+			}),
+		);
 		expect(fake.cliCalls()).toHaveLength(1);
 	} finally {
 		ctx.runtime.ensureRunning = runtimeStart;

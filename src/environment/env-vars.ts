@@ -232,8 +232,7 @@ export function createEnvVarsApi<
 		const resolved = resolveScope(scope, config.secrets);
 		if (!resolved) return {};
 		try {
-			const values = await loadScopeSecrets(scope, {
-				defaults: config.secrets,
+			const values = await loadScopeSecrets(resolved, {
 				signal: options.signal,
 				onWait: (ms) => ctx.onSecretsWait?.(ms),
 			});

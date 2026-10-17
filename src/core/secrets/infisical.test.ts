@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AppConfig } from "../../types";
+import type { AppConfig, SecretsScopeConfig } from "../../types";
 import {
 	type FakeInfisical,
 	startFakeInfisical,
@@ -11,6 +11,7 @@ import {
 	clearScopeSecretsCache,
 	DEFAULT_INFISICAL_SITE_URL,
 	fetchScopeSecrets,
+	type InfisicalScope,
 	loadAppSecrets,
 	loadScopeSecrets,
 	missingRequiredSecrets,
@@ -30,6 +31,20 @@ function start(options: Parameters<typeof startFakeInfisical>[0] = {}) {
 	process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
 	fake.projects.p1 = { secrets: { OPENAI_API_KEY: "sk-project", BLANK: "" } };
 	return fake;
+}
+
+/** A resolved scope on the running fake, as the environment layer passes one. */
+function scopeOf(
+	projectId: string,
+	extra: SecretsScopeConfig = {},
+): InfisicalScope {
+	const scope = resolveScope(
+		{ projectId, siteUrl: fake?.siteUrl, ...extra },
+		undefined,
+		{},
+	);
+	if (!scope) throw new Error("Missing test scope");
+	return scope;
 }
 
 function app(projectId: string, extra: Partial<AppConfig> = {}): AppConfig {
@@ -68,10 +83,7 @@ describe("shared request cancellation", () => {
 			const infisical = start({ holdRequests: true });
 			const controllers = [new AbortController(), new AbortController()];
 			const pending = controllers.map((controller) =>
-				loadScopeSecrets(
-					{ projectId: "p1", siteUrl: infisical.siteUrl },
-					{ signal: controller.signal, env: {} },
-				),
+				loadScopeSecrets(scopeOf("p1"), { signal: controller.signal, env: {} }),
 			);
 			const cancelled = pending[index].then(
 				() => "fulfilled",
@@ -95,18 +107,15 @@ describe("shared request cancellation", () => {
 		const infisical = start({ holdCli: true });
 		infisical.projects.p2 = { secrets: { KEY: "second" } };
 		const controller = new AbortController();
-		const first = loadScopeSecrets(
-			{ projectId: "p1", siteUrl: infisical.siteUrl },
-			{ signal: controller.signal, env: {} },
-		);
+		const first = loadScopeSecrets(scopeOf("p1"), {
+			signal: controller.signal,
+			env: {},
+		});
 		const cancelled = first.then(
 			() => "fulfilled",
 			(error) => error,
 		);
-		const second = loadScopeSecrets(
-			{ projectId: "p2", siteUrl: infisical.siteUrl },
-			{ env: {} },
-		);
+		const second = loadScopeSecrets(scopeOf("p2"), { env: {} });
 		void second.catch(() => {});
 		await waitUntil(() => infisical.cliCalls().length > 0);
 		controller.abort(new Error("Cancelled scope"));
@@ -118,12 +127,7 @@ describe("shared request cancellation", () => {
 
 	it("applies a waiter's timeout without shortening another wait", async () => {
 		const infisical = start({ holdRequests: true });
-		const scope = resolveScope(
-			{ projectId: "p1", siteUrl: infisical.siteUrl },
-			undefined,
-			{},
-		);
-		if (!scope) throw new Error("Missing test scope");
+		const scope = scopeOf("p1");
 		const first = fetchScopeSecrets(scope, { timeoutMs: 10, env: {} });
 		const timedOut = first.then(
 			() => "fulfilled",
@@ -201,7 +205,6 @@ describe("loadAppSecrets", () => {
 		const infisical = start();
 		const secrets = await loadAppSecrets(
 			{ web: app("p1"), marketing: app("p1") },
-			undefined,
 			{ env: {} },
 		);
 		expect(secrets).toEqual({
@@ -222,7 +225,6 @@ describe("loadAppSecrets", () => {
 				a: app("p1", { secrets: { organizationId: "org-a" } }),
 				b: app("p2", { secrets: { organizationId: "org-b" } }),
 			},
-			undefined,
 			{ env: {} },
 		);
 		expect(infisical.cliCalls()).toHaveLength(1);
@@ -243,9 +245,7 @@ describe("loadAppSecrets", () => {
 			secrets: { A: "own" },
 			imports: { A: "imported", B: "imported" },
 		};
-		expect(
-			await loadAppSecrets({ api: app("p1") }, undefined, { env: {} }),
-		).toEqual({
+		expect(await loadAppSecrets({ api: app("p1") }, { env: {} })).toEqual({
 			api: { A: "own", B: "imported" },
 		});
 	});
@@ -253,26 +253,29 @@ describe("loadAppSecrets", () => {
 	it("keeps the developer's own exported value", async () => {
 		start();
 		expect(
-			await loadAppSecrets({ api: app("p1") }, undefined, {
-				env: { OPENAI_API_KEY: "sk-local" },
-			}),
+			await loadAppSecrets(
+				{ api: app("p1") },
+				{ env: { OPENAI_API_KEY: "sk-local" } },
+			),
 		).toEqual({ api: {} });
 	});
 
 	it("injects machine-auth secrets once per scope across apps and commands", async () => {
 		const infisical = start();
 		expect(
-			await loadAppSecrets({ api: app("p1"), web: app("p1") }, undefined, {
-				env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "right" },
-			}),
+			await loadAppSecrets(
+				{ api: app("p1"), web: app("p1") },
+				{
+					env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "right" },
+				},
+			),
 		).toEqual({
 			api: { OPENAI_API_KEY: "sk-project" },
 			web: { OPENAI_API_KEY: "sk-project" },
 		});
-		await loadScopeSecrets(
-			{ projectId: "p1", siteUrl: infisical.siteUrl },
-			{ env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "right" } },
-		);
+		await loadScopeSecrets(scopeOf("p1"), {
+			env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "right" },
+		});
 		expect(infisical.cliCalls()).toEqual([]);
 		expect(infisical.requests).toEqual([
 			"POST /api/v1/auth/universal-auth/login",
@@ -286,9 +289,7 @@ describe("loadAppSecrets", () => {
 		const warn = console.warn;
 		console.warn = (message: unknown) => warnings.push(String(message));
 		try {
-			expect(
-				await loadAppSecrets({ api: app("p1") }, undefined, { env: {} }),
-			).toEqual({
+			expect(await loadAppSecrets({ api: app("p1") }, { env: {} })).toEqual({
 				api: {},
 			});
 		} finally {
@@ -301,10 +302,9 @@ describe("loadAppSecrets", () => {
 	it("reports MFA instead of guessing", async () => {
 		start({ mfaOrganizations: ["org-mfa"] });
 		await expect(
-			loadScopeSecrets(
-				{ projectId: "p1", organizationId: "org-mfa", siteUrl: fake?.siteUrl },
-				{ env: {} },
-			),
+			loadScopeSecrets(scopeOf("p1", { organizationId: "org-mfa" }), {
+				env: {},
+			}),
 		).rejects.toThrow("requires MFA");
 	});
 });
@@ -313,12 +313,9 @@ describe("loadScopeSecrets with a machine identity", () => {
 	it("uses universal auth and never the CLI", async () => {
 		const infisical = start();
 		expect(
-			await loadScopeSecrets(
-				{ projectId: "p1", siteUrl: infisical.siteUrl },
-				{
-					env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "right" },
-				},
-			),
+			await loadScopeSecrets(scopeOf("p1"), {
+				env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "right" },
+			}),
 		).toEqual({ OPENAI_API_KEY: "sk-project" });
 		expect(infisical.cliCalls()).toEqual([]);
 		expect(infisical.requests).toEqual([
@@ -337,33 +334,24 @@ describe("loadScopeSecrets with a machine identity", () => {
 			);
 		};
 		write(infisical.siteUrl);
-		expect(
-			await loadScopeSecrets(
-				{ projectId: "p1", siteUrl: infisical.siteUrl },
-				{ env: {} },
-			),
-		).toEqual({ OPENAI_API_KEY: "sk-project" });
+		expect(await loadScopeSecrets(scopeOf("p1"), { env: {} })).toEqual({
+			OPENAI_API_KEY: "sk-project",
+		});
 		expect(infisical.cliCalls()).toEqual([]);
 
 		// Another instance's identity is never sent here: the CLI session is used.
 		clearScopeSecretsCache();
 		write("https://other.example.com");
-		await loadScopeSecrets(
-			{ projectId: "p1", siteUrl: infisical.siteUrl },
-			{ env: {} },
-		).catch(() => {});
+		await loadScopeSecrets(scopeOf("p1"), { env: {} }).catch(() => {});
 		expect(infisical.cliCalls().length).toBeGreaterThan(0);
 	});
 
 	it("fails with the status and no body on bad credentials", async () => {
 		const infisical = start();
 		await expect(
-			loadScopeSecrets(
-				{ projectId: "p1", siteUrl: infisical.siteUrl },
-				{
-					env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "wrong" },
-				},
-			),
+			loadScopeSecrets(scopeOf("p1"), {
+				env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "wrong" },
+			}),
 		).rejects.toThrow("universal-auth login failed (HTTP 401)");
 	});
 });
@@ -384,7 +372,7 @@ describe("missingRequiredSecrets", () => {
 
 it("retries a rejected session token after login and clears settled tokens", async () => {
 	const infisical = start({ cliFails: true });
-	const scope = { projectId: "p1", siteUrl: infisical.siteUrl };
+	const scope = scopeOf("p1");
 	await expect(loadScopeSecrets(scope, { env: {} })).rejects.toThrow(
 		"No Infisical session",
 	);
@@ -420,8 +408,16 @@ it("never loads disabled scopes, even with machine credentials and explicit app 
 
 	expect(resolveScope(false, defaults, env)).toBeUndefined();
 	expect(resolveScope(defaults, false, env)).toBeUndefined();
-	expect(await loadAppSecrets({ disabledApp }, defaults, { env })).toEqual({});
-	expect(await loadAppSecrets({ api: app("p1") }, false, { env })).toEqual({});
+	expect(
+		await loadAppSecrets(applySecretDefaults({ disabledApp }, defaults, env), {
+			env,
+		}),
+	).toEqual({});
+	expect(
+		await loadAppSecrets(applySecretDefaults({ api: app("p1") }, false, env), {
+			env,
+		}),
+	).toEqual({});
 	expect(applySecretDefaults({ api: app("p1") }, false, env).api.secrets).toBe(
 		false,
 	);
@@ -431,7 +427,7 @@ it("never loads disabled scopes, even with machine credentials and explicit app 
 
 it("does not reuse a machine-auth scope after credentials change", async () => {
 	const infisical = start();
-	const scope = { projectId: "p1", siteUrl: infisical.siteUrl };
+	const scope = scopeOf("p1");
 	await loadScopeSecrets(scope, {
 		env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "right" },
 	});

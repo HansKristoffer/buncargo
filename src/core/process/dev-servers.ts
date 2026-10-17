@@ -243,7 +243,7 @@ export async function startDevServers(
 	// app's computed env is layered on top, and `loadAppSecrets` drops keys the
 	// developer already exported. It returns an empty map without spawning
 	// anything when no app declared a scope.
-	const secrets = await loadAppSecrets(startable, undefined, {
+	const secrets = await loadAppSecrets(startable, {
 		signal: options.signal,
 		onWait: (ms) => options.onPhase?.("secrets", ms),
 	});
