@@ -51,8 +51,9 @@ export async function stopAllBuncargoEnvironments(
 	try {
 		runs = await readAllRuns();
 	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
 		throw new Error(
-			`Could not read ${getRunsPath()}, so nothing was removed: ${error instanceof Error ? error.message : String(error)}. Fix or move the file, then run again.`,
+			`Could not read ${getRunsPath()}, so nothing was removed: ${reason}. Fix or move the file, then run again.`,
 		);
 	}
 	const claims = readAllOffsetClaims();

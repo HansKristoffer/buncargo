@@ -13,7 +13,7 @@
  */
 
 import { userInfo } from "node:os";
-import { basename } from "node:path";
+import { basename, dirname } from "node:path";
 import { withFileLock } from "./file-lock";
 import { readJsonDocumentSync, writeJsonDocument } from "./registry-file";
 import type { RunEntry } from "./run-registry";
@@ -83,7 +83,7 @@ export function invocationCommand(argv: readonly string[]): string {
 	const isCli =
 		name === "buncargo" ||
 		((name === "bin.ts" || name === "bin.js") &&
-			basename(script.slice(0, -name.length - 1)) === "cli");
+			basename(dirname(script)) === "cli");
 	if (!isCli) return `${name} (library)`;
 	const command = ["buncargo", ...argv.slice(2)].join(" ");
 	return command.length > 80 ? `${command.slice(0, 79)}…` : command;

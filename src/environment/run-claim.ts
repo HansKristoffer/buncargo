@@ -129,6 +129,7 @@ export function createRunClaimApi<
 	const sessionId = crypto.randomUUID();
 	const session = { sessionId };
 	let claimed = false;
+	let claimedAt: number | undefined;
 	// Leases this session holds, and those the last `claimApps` took.
 	const heldLeases = new Set<string>();
 	let lastAcquired: string[] = [];
@@ -166,7 +167,7 @@ export function createRunClaimApi<
 		if (claimed || listsApps()) return;
 		await releaseRun(sessionId);
 	}
-	let claimedAt: number | undefined;
+
 	// The hold of the last claim. `restart()` retires and then claims again
 	// with only a signal, and resolving that afresh dropped a hold the first
 	// claim asked for, which kept the containers forever.

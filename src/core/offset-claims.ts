@@ -306,22 +306,22 @@ export function overlappingOffsetClaims(
 	claims: Record<string, OffsetClaim>,
 ): OffsetClaimOverlap[] {
 	const entries = Object.entries(claims);
-	return entries.flatMap(([key, claim], index) =>
-		entries.slice(index + 1).flatMap(([otherKey, other]) => {
+	const overlaps: OffsetClaimOverlap[] = [];
+	for (const [index, [key, claim]] of entries.entries()) {
+		for (const [otherKey, other] of entries.slice(index + 1)) {
 			const ports = sharedPorts(claim, other);
-			if (claim.offset !== other.offset && ports.length === 0) return [];
-			return [
-				{
-					holders: [
-						offsetClaimHolder(key, claim),
-						offsetClaimHolder(otherKey, other),
-					],
-					offsets: [claim.offset, other.offset],
-					ports,
-				} satisfies OffsetClaimOverlap,
-			];
-		}),
-	);
+			if (claim.offset !== other.offset && ports.length === 0) continue;
+			overlaps.push({
+				holders: [
+					offsetClaimHolder(key, claim),
+					offsetClaimHolder(otherKey, other),
+				],
+				offsets: [claim.offset, other.offset],
+				ports,
+			});
+		}
+	}
+	return overlaps;
 }
 
 /** One overlap as a sentence, naming both checkouts and what they share. */
@@ -329,10 +329,14 @@ export function describeOffsetClaimOverlap(
 	overlap: OffsetClaimOverlap,
 ): string {
 	const [a, b] = overlap.holders;
-	const shared = `port${overlap.ports.length === 1 ? "" : "s"} ${overlap.ports.join(", ")}`;
-	if (overlap.offsets[0] === overlap.offsets[1])
-		return `${a} and ${b} both claim offset ${overlap.offsets[0]}${overlap.ports.length > 0 ? ` (${shared})` : ""}`;
-	return `${a} (offset ${overlap.offsets[0]}) and ${b} (offset ${overlap.offsets[1]}) both claim ${shared}`;
+	const [offset, otherOffset] = overlap.offsets;
+	const noun = overlap.ports.length === 1 ? "port" : "ports";
+	const shared = `${noun} ${overlap.ports.join(", ")}`;
+	if (offset !== otherOffset)
+		return `${a} (offset ${offset}) and ${b} (offset ${otherOffset}) both claim ${shared}`;
+
+	const detail = overlap.ports.length > 0 ? ` (${shared})` : "";
+	return `${a} and ${b} both claim offset ${offset}${detail}`;
 }
 
 function sharedPorts(

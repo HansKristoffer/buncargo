@@ -88,10 +88,11 @@ export async function readWatchdogOwnerAsync(): Promise<WatchdogOwner | null> {
 		if (typeof raw.pid !== "number") return null;
 		const owner: WatchdogOwner = {
 			pid: raw.pid,
-			...(typeof raw.processIdentity === "string"
-				? { processIdentity: raw.processIdentity }
-				: {}),
-			...(typeof raw.version === "string" ? { version: raw.version } : {}),
+			processIdentity:
+				typeof raw.processIdentity === "string"
+					? raw.processIdentity
+					: undefined,
+			version: typeof raw.version === "string" ? raw.version : undefined,
 		};
 		return (await matchesProcessIdentityAsync(owner.pid, owner.processIdentity))
 			? owner

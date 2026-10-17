@@ -221,10 +221,14 @@ async function releaseClaims(root: string, yes: boolean): Promise<number> {
 	}
 
 	log.line(`Claims of ${root}:`);
-	for (const [key, claim] of Object.entries(claims))
+	for (const [key, claim] of Object.entries(claims)) {
+		const ports = claim.ports?.length
+			? `, ports ${claim.ports.join(", ")}`
+			: "";
 		log.line(
-			`  ${offsetClaimHolder(key, claim)}: offset ${claim.offset}, project ${claim.projectName}${claim.ports?.length ? `, ports ${claim.ports.join(", ")}` : ""}`,
+			`  ${offsetClaimHolder(key, claim)}: offset ${claim.offset}, project ${claim.projectName}${ports}`,
 		);
+	}
 	log.warn(
 		"Another checkout can then take these ports and run under these project names, using any volume left under them, its database included. No container or volume is touched, and the checkout's next run claims again.",
 	);
