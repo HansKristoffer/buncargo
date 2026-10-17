@@ -104,7 +104,8 @@ const FLAGS = {
 	keepContainers: {
 		name: "--keep-containers",
 		kind: "boolean",
-		description: "Do not start the idle watchdog",
+		description:
+			"Keep the containers after the run exits, as long as the checkout exists",
 	},
 	takeover: {
 		name: "--takeover",
