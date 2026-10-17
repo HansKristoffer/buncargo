@@ -20,6 +20,7 @@ export {
 	mergeCheckoutFile,
 	openCheckoutFiles,
 	saveCheckoutFiles,
+	selectSpecs,
 	syncCheckoutFiles,
 	syncConfiguredCheckoutFiles,
 } from "./sync";

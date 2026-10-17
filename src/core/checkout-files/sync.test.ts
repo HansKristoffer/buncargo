@@ -23,6 +23,7 @@ import {
 import {
 	MAX_FILE_BYTES,
 	readManifest,
+	readStoreManifest,
 	sha256,
 	storeDir,
 	writeStoreEntries,
@@ -109,12 +110,9 @@ function seedStore(
 	path = ENV,
 	machine = false,
 ): void {
-	const read = readManifest(repo.store);
-	writeStoreEntries(
-		repo.store,
-		read.kind === "ok" ? read.manifest : { version: 1, files: {} },
-		[{ path, data: Buffer.from(text), machine }],
-	);
+	writeStoreEntries(repo.store, readStoreManifest(repo.store), [
+		{ path, data: Buffer.from(text), machine },
+	]);
 }
 
 function readStore(repo: Repo, path = ENV): string | undefined {

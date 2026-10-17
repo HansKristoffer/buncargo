@@ -21,8 +21,8 @@ import {
 import {
 	MAX_FILE_BYTES,
 	type Manifest,
-	readManifest,
 	readStoreData,
+	readStoreManifest,
 	type StoreWrite,
 	sha256,
 	storeDir,
@@ -316,12 +316,7 @@ function readOpened(
 	repoKey: string,
 	dir: string,
 ): Opened {
-	const read = readManifest(dir);
-	if (read.kind === "unusable")
-		throw new Error(
-			`Left the file store ${dir} alone: ${read.reason}. Update buncargo, or move the directory aside.`,
-		);
-	const manifest = read.kind === "ok" ? read.manifest : undefined;
+	const manifest = readStoreManifest(dir);
 	const state = readCheckoutState(root);
 	const views = specs.map((spec): View => {
 		const local = readLocal(root, spec.path);
@@ -385,7 +380,8 @@ function reportOf(
 	};
 }
 
-function selectSpecs(
+/** The configured files named in `paths`, all of them when none are named. */
+export function selectSpecs(
 	specs: readonly CheckoutFileSpec[],
 	paths: readonly string[] | undefined,
 ): CheckoutFileSpec[] {
@@ -498,10 +494,10 @@ export async function syncCheckoutFiles(
 			}
 		});
 
-	for (const view of opened.views) {
-		if (stateOf(view) !== "conflict" || view.local.refusal) continue;
-		const path = view.spec.path;
-		const keep = isMergeable(root, view)
+	const report = reportOf(root, opened, refusals);
+	for (const { path, state, refusal, mergeable } of report.files) {
+		if (state !== "conflict" || refusal) continue;
+		const keep = mergeable
 			? `Merge them key by key with \`buncargo files merge ${path}\`, keep`
 			: "Keep";
 		log(
@@ -510,7 +506,6 @@ export async function syncCheckoutFiles(
 			),
 		);
 	}
-	const report = reportOf(root, opened, refusals);
 	if (!options.paths) lastReports.set(root, report);
 	return report;
 }
@@ -601,12 +596,7 @@ function apply(
 	}
 
 	if (storeWrites.length > 0)
-		writeStoreEntries(
-			opened.dir,
-			opened.manifest ?? { version: 1, files: {} },
-			storeWrites,
-			now,
-		);
+		writeStoreEntries(opened.dir, opened.manifest, storeWrites, now);
 	writeCheckoutState(root, state);
 	return refusals;
 }
@@ -650,11 +640,7 @@ export async function saveCheckoutFiles(
 				log(formatStep(`Saved ${path} to the file store`));
 		}
 		if (writes.length > 0)
-			writeStoreEntries(
-				opened.dir,
-				opened.manifest ?? { version: 1, files: {} },
-				writes,
-			);
+			writeStoreEntries(opened.dir, opened.manifest, writes);
 		writeCheckoutState(root, state);
 	});
 	return { failed };
@@ -747,11 +733,9 @@ export async function mergeCheckoutFile(
 			writeLocal(root, path, data);
 		}
 		if (hash !== store.hash)
-			writeStoreEntries(
-				opened.dir,
-				opened.manifest ?? { version: 1, files: {} },
-				[{ path, data, machine: view.spec.machine }],
-			);
+			writeStoreEntries(opened.dir, opened.manifest, [
+				{ path, data, machine: view.spec.machine },
+			]);
 		const state = { ...opened.state };
 		recordBase(root, state, path, data, hash);
 		writeCheckoutState(root, state);
