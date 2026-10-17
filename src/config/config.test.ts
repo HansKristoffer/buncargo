@@ -101,6 +101,20 @@ describe("validateConfig", () => {
 			).toEqual([]);
 		});
 
+		it("reports missing services as one error before checking references", () => {
+			const missing = [
+				"services must be an object (use {} for app-only configurations)",
+			];
+
+			expect(validateConfig({ projectPrefix: "myapp" })).toEqual(missing);
+			expect(
+				validateConfig({
+					projectPrefix: "myapp",
+					seed: { command: "bun run seed", requiredServices: ["db"] },
+				}),
+			).toEqual(missing);
+		});
+
 		it("accepts a service without a host port", () => {
 			const config = {
 				projectPrefix: "myapp",
