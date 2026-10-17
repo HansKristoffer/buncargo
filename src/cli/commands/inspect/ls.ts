@@ -1,4 +1,5 @@
 import {
+	foreignStackOf,
 	isContainerUp,
 	type SweepResult,
 	sweepOrphanedContainers,
@@ -72,12 +73,7 @@ export async function handleLs(): Promise<void> {
 			log.line(
 				`  run: ${describeHold(released.releasedAt, released.idleTimeoutMs, now)}`,
 			);
-		const foreign = result.foreign.find(
-			(stack) =>
-				stack.projectName === group.projectName &&
-				stack.root === group.root &&
-				stack.runtime === group.runtime,
-		);
+		const foreign = foreignStackOf(result, group);
 		if (foreign) {
 			log.line(`  owner: not this user's (${foreign.reason})`);
 			log.line(`  remove by hand: ${foreign.command}`);

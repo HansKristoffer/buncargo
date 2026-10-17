@@ -3,6 +3,7 @@ export {
 	type EnsureServicesRunningRequest,
 	ensureServicesRunning,
 } from "./ensure-services";
+export { foreignStackOf } from "./foreign-stack";
 export {
 	createBuiltInHealthCheck,
 	type HealthCheckContext,

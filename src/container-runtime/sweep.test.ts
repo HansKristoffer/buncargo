@@ -28,6 +28,7 @@ import { withProjectLifecycleLock } from "./project-lock";
 import {
 	DELETED_CHECKOUT_SETTLE_MS,
 	decideSweep,
+	type SweepResult,
 	settleDeletedCheckouts,
 	sweepOrphanedContainers,
 } from "./sweep";
@@ -708,7 +709,10 @@ describe("settleDeletedCheckouts", () => {
 				return [];
 			},
 		} as unknown as ContainerRuntimeAdapter;
-		const result = { swept: [], failed: [] };
+		const result: Pick<SweepResult, "swept" | "failed"> = {
+			swept: [],
+			failed: [],
+		};
 		/** One sweep pass's settling, at `now`. */
 		const settle = (
 			now: number,
@@ -720,6 +724,7 @@ describe("settleDeletedCheckouts", () => {
 				stacks: [],
 				result,
 				now,
+				swept: async (stack) => void result.swept.push(stack),
 				...extra,
 			});
 		return { removed, result, settle };

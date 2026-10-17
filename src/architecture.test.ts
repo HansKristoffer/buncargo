@@ -113,6 +113,14 @@ describe("architecture", () => {
 		expect(forbidden).toEqual([]);
 	});
 
+	it("keeps the sweep out of the watchdog module every run loads", () => {
+		// core/watchdog.ts is a published subpath and on every run's path to
+		// ensureWatchdog. Its loop needs only the sweep's types; a value import
+		// once tripled its graph.
+		const graph = importGraph("src/core/watchdog.ts");
+		expect(graph.has("src/container-runtime/sweep.ts")).toBe(false);
+	});
+
 	it("keeps the entry points loaded inside users' apps small", () => {
 		// vite.config.ts, browser bundles and app servers load these. Any new
 		// module here ships into every project's app; keep each one a leaf.

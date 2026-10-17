@@ -518,13 +518,11 @@ export async function settleDeletedCheckouts(input: {
 	runtimes: ContainerRuntimeAdapter[];
 	runs: RunEntry[];
 	stacks: readonly Pick<ContainerGroup, "projectName" | "root">[];
-	result: Pick<SweepResult, "swept" | "failed">;
+	result: Pick<SweepResult, "failed">;
 	now: number;
-	swept?: NoteSwept;
+	swept: NoteSwept;
 }) {
-	const { runtimes, runs, stacks, result, now } = input;
-	const swept: NoteSwept =
-		input.swept ?? (async (stack) => void result.swept.push(stack));
+	const { runtimes, runs, stacks, result, now, swept } = input;
 	// With no runtime answering, nothing says whether its stack or its
 	// volumes are left.
 	if (runtimes.length === 0) return;
@@ -550,22 +548,21 @@ export async function settleDeletedCheckouts(input: {
 	);
 	if (deleted.length === 0 && back.length === 0) return;
 
-	if (!pruneDeletedCheckoutVolumes()) {
-		await markDeletedOffsetClaims({
-			seen: [],
-			back: back.map(({ key }) => key),
-			at: new Date(now).toISOString(),
-		});
-		await dropDeletedOffsetClaims(deleted.map(({ key }) => key));
-		return;
-	}
+	// Without the opt-in a deleted checkout's claim is dropped at once, so
+	// there is no first sighting to stamp.
+	const prune = pruneDeletedCheckoutVolumes();
+	const firstSightings = prune
+		? deleted.filter(({ claim }) => claim.deletedSeenAt === undefined)
+		: [];
 	await markDeletedOffsetClaims({
-		seen: deleted
-			.filter(({ claim }) => claim.deletedSeenAt === undefined)
-			.map(({ key }) => key),
+		seen: firstSightings.map(({ key }) => key),
 		back: back.map(({ key }) => key),
 		at: new Date(now).toISOString(),
 	});
+	if (!prune) {
+		await dropDeletedOffsetClaims(deleted.map(({ key }) => key));
+		return;
+	}
 	if (deleted.length === 0) return;
 
 	const containers: BuncargoContainer[] = [];
@@ -606,10 +603,13 @@ export async function settleDeletedCheckouts(input: {
 		);
 		if (stackStillUp) continue;
 
-		// Seen deleted only on this pass, or too recently: a later one decides.
-		const deletedFor =
-			deletedSeenAt === undefined ? 0 : now - Date.parse(deletedSeenAt);
-		if (!(deletedFor >= DELETED_CHECKOUT_SETTLE_MS)) continue;
+		// Seen deleted only on this pass, too recently, or at a time that does
+		// not parse: a later pass decides.
+		const firstSeen =
+			deletedSeenAt === undefined ? Number.NaN : Date.parse(deletedSeenAt);
+		const goneLongEnough =
+			!Number.isNaN(firstSeen) && now - firstSeen >= DELETED_CHECKOUT_SETTLE_MS;
+		if (!goneLongEnough) continue;
 
 		let refusedAny = false;
 		for (const { runtime, volumes } of listings) {
