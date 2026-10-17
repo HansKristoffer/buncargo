@@ -1,5 +1,6 @@
 import { splitCommandLine } from "../../apple-container/run-plan";
 import { containerRuntimeForEnv } from "../../container-runtime";
+import { isInteractive } from "../../core/prompt";
 import {
 	type Credentials,
 	serviceCredentials,
@@ -284,10 +285,7 @@ export async function handleSql(rawArgs: string[]): Promise<number> {
 		serviceName: target.name,
 		command,
 		root: env.root,
-		tty:
-			query === undefined &&
-			scratch === undefined &&
-			Boolean(process.stdin.isTTY && process.stdout.isTTY),
+		tty: query === undefined && scratch === undefined && isInteractive(),
 	});
 	if (!argv)
 		throw new CliError(
