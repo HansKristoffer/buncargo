@@ -1,7 +1,8 @@
 import { expect, it } from "bun:test";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import { parseDevArgs } from "./dev-flags";
-import { validateDevStart } from "./validate-dev-start";
+import { CliError } from "./errors";
+import { assertConfiguredApps, validateDevStart } from "./validate-dev-start";
 
 const env = {
 	root: process.cwd(),
@@ -53,4 +54,33 @@ it("requires the attached app to have a start command", () => {
 			[],
 		),
 	).toThrow("not a startable");
+});
+
+it("names the configured apps when --apps has a typo", () => {
+	let error: unknown;
+	try {
+		assertConfiguredApps(["api", "web"], ["api", "wbe"]);
+	} catch (caught) {
+		error = caught;
+	}
+	expect(error).toBeInstanceOf(CliError);
+	expect((error as CliError).message).toBe("Unknown app in --apps: wbe.");
+	expect((error as CliError).hints).toEqual(["Configured apps: api, web"]);
+});
+
+it("says why an expose target is invalid", () => {
+	let error: unknown;
+	try {
+		validateDevStart(
+			env,
+			parseDevArgs(["--expose=wbe"]),
+			{ web: { port: 3000, devCommand: "bun dev", expose: true } },
+			[],
+		);
+	} catch (caught) {
+		error = caught;
+	}
+	expect((error as CliError).hints).toEqual([
+		"Not an app or service of this config: wbe",
+	]);
 });

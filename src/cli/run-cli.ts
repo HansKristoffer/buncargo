@@ -87,7 +87,7 @@ import {
 	type TakeoverCandidates,
 	takeoverCandidates,
 } from "./takeover";
-import { validateDevStart } from "./validate-dev-start";
+import { assertConfiguredApps, validateDevStart } from "./validate-dev-start";
 
 export { getFlagValue, hasFlag, splitCliArgs } from "./flags";
 
@@ -368,15 +368,14 @@ async function runDevFlow<
 	}
 
 	// ── App selection ────────────────────────────────────────────────────────
-	// argv only ever yields plain strings; `planStart` throws on a name that is
-	// not a configured app, so this is where the CLI crosses into its keys.
+	// argv only ever yields plain strings: every --apps name is checked against
+	// the config's app keys here, before planning trusts them.
 	let selectedAppNames: Extract<keyof TApps, string>[] | undefined =
 		selectProfileApps(env, args.profile);
 	if (args.appsRequested) {
-		selectedAppNames = parseRequiredCommaSeparatedFlag(
-			"--apps",
-			args.appsValue,
-		) as Extract<keyof TApps, string>[];
+		const names = parseRequiredCommaSeparatedFlag("--apps", args.appsValue);
+		assertConfiguredApps(Object.keys(env.apps), names);
+		selectedAppNames = names as Extract<keyof TApps, string>[];
 	}
 
 	const plan = planStart(env.apps, env.services, {

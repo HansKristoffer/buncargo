@@ -66,7 +66,9 @@ export async function handleBuild(args: string[]): Promise<number> {
 	const env = await loadDevEnv({ readOnly: true });
 	const unknown = (only ?? []).filter((name) => !env.apps[name]);
 	if (unknown.length > 0) {
-		throw new CliError(`Unknown app(s): ${unknown.join(", ")}`);
+		throw new CliError(`Unknown app(s): ${unknown.join(", ")}`, [
+			`Configured apps: ${Object.keys(env.apps).join(", ") || "none"}`,
+		]);
 	}
 
 	const discoveredOnly = readBooleanFlag(args, FLAGS.discovered);

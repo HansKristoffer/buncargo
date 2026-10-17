@@ -160,7 +160,9 @@ export async function handleOpen(args: string[]): Promise<number> {
 	if (name !== undefined && capture !== undefined) {
 		const url = (env.captured as Record<string, string | undefined>)[capture];
 		if (!(name in env.apps))
-			throw new CliError(`"${name}" is not an app of this config.`);
+			throw new CliError(`"${name}" is not an app of this config.`, [
+				`Configured apps: ${Object.keys(env.apps).join(", ") || "none"}`,
+			]);
 		if (!url)
 			throw new CliError(`${name} has not printed ${capture} yet.`, [
 				"Is `buncargo dev` running? `buncargo url` lists what is known.",

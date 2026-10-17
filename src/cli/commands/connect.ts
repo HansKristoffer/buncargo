@@ -18,6 +18,7 @@ import {
 	formatCommandHelp,
 	readBooleanFlag,
 } from "../command-spec";
+import { argumentsError } from "../errors";
 
 const flags = {
 	help: {
@@ -86,7 +87,10 @@ export async function handleConnect(args: string[]) {
 	}
 	const unknown = findUnknownFlags(CONNECT_COMMAND_SPEC, args);
 	if (unknown.length) {
-		throw new Error(`Unknown connect flag: ${unknown.join(", ")}`);
+		throw argumentsError(
+			unknown.map((flag) => `Unknown flag: ${flag}`),
+			"connect",
+		);
 	}
 	const [command = "status", id, ...extra] = args.filter(
 		(a) => !a.startsWith("-"),
@@ -99,7 +103,7 @@ export async function handleConnect(args: string[]) {
 		(["token", "status"].includes(command) ? !!id : !id) ||
 		(readBooleanFlag(args, flags.rotate) && command !== "token")
 	) {
-		throw new Error(CONNECT_COMMAND_SPEC.usage);
+		throw argumentsError([`Usage: ${CONNECT_COMMAND_SPEC.usage}`], "connect");
 	}
 	const json = readBooleanFlag(args, flags.json);
 	let result: unknown;
