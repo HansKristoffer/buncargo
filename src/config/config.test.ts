@@ -1255,6 +1255,7 @@ describe("checks, tasks and profiles", () => {
 					},
 				},
 				profiles: { default: { apps: ["api"] } },
+				preflight: [{ name: "login", apps: ["api"], run: () => {} }],
 			}),
 		).toEqual([]);
 	});
@@ -1335,6 +1336,23 @@ describe("checks, tasks and profiles", () => {
 			"tasks.seed.cwd cannot point outside the repository root.",
 			'profiles.full includes unknown app "web"',
 		]);
+	});
+
+	it("reports a preflight step naming an app that is not configured", () => {
+		expect(
+			validateConfig({
+				...base,
+				preflight: [{ name: "login", apps: ["api", "web"], run: () => {} }],
+			}),
+		).toEqual([
+			'preflight "login" includes unknown app "web" (configured apps: api)',
+		]);
+		expect(
+			validateConfig({
+				...base,
+				preflight: [{ name: "login", apps: "api", run: () => {} }],
+			}),
+		).toEqual(["preflight must be an array of { name, apps?, run }"]);
 	});
 
 	it("types task and profile keys against the config", () => {

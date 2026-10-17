@@ -655,7 +655,8 @@ of waiting out its health timeout.
 
 `preflight: [{ name, apps?, run({ root, env, interactive }) }]` runs before the
 TUI takes the screen, with the real terminal, so a step can prompt or open a
-browser. `apps` limits a step to runs that select one of them. A step that
+browser. `apps` limits a step to runs that select one of them, and must name
+configured apps. A step that
 throws stops the start with its message. Integrations contribute steps too:
 `shopify()` renews an expired Shopify CLI session here instead of failing
 inside the run.

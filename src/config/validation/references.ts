@@ -139,4 +139,17 @@ export function validateReferences(
 			}
 		}
 	}
+
+	// A step whose apps are never selected never runs, so a misspelt name would
+	// skip it without a word.
+	const configuredApps = Object.keys(config.apps ?? {}).join(", ") || "none";
+	for (const step of config.preflight ?? []) {
+		for (const appName of step.apps ?? []) {
+			if (!config.apps?.[appName]) {
+				errors.push(
+					`preflight "${step.name}" includes unknown app "${appName}" (configured apps: ${configuredApps})`,
+				);
+			}
+		}
+	}
 }
