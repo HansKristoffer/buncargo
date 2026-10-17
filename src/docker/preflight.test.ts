@@ -44,12 +44,7 @@ function fixture(
 import { appendFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
-if (args[0] === "info") {
-  // Docker info also gathers CLI plugin metadata, which can be slow even
-  // when the daemon is ready. Reproduce that independently of real Docker.
-  await Bun.sleep(6000);
-  console.log("27.5.1");
-} else if (args[0] === "version") {
+if (args[0] === "version") {
   writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
   const { readFileSync } = await import("node:fs");
   const probes = readFileSync(${JSON.stringify(log)}, "utf8").split("\\n").filter((line) => line.startsWith('["version"')).length;
@@ -178,12 +173,14 @@ describe("Docker daemon preflight", () => {
 				autoStart: false,
 				ci: false,
 				verbose: false,
-				timeoutMs: 500,
+				// Long enough for the probe to start under suite load.
+				timeoutMs: 1500,
 			}),
 		).rejects.toBeInstanceOf(DockerUnavailableError);
-		expect(() =>
-			process.kill(Number(readFileSync(pidFile, "utf8")), 0),
-		).toThrow();
+		// Read outside the assertion: a probe that never started would make
+		// the read throw and the assertion pass without testing anything.
+		const pid = Number(readFileSync(pidFile, "utf8"));
+		expect(() => process.kill(pid, 0)).toThrow();
 	});
 
 	it("cancels a stalled server probe after cleaning up its process", async () => {
