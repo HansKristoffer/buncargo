@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
 	chmodSync,
+	existsSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -140,6 +141,19 @@ describe("Docker daemon preflight", () => {
 		expect(runtimeFromContext("default", "linux")).toBe("docker-engine");
 		expect(runtimeFromContext("desktop-linux", "linux")).not.toBe(
 			"docker-engine",
+		);
+	});
+
+	// Off macOS no other runtime's app is installed to win first, so only the
+	// binary decides whether Docker Desktop is the guess.
+	it.skipIf(
+		existsSync("/Applications") ||
+			["colima", "podman"].some((tool) => Bun.which(tool)),
+	)("asks the configured docker binary, not the one on PATH", () => {
+		// `bun test` puts a stub `docker` on PATH.
+		expect(runtimeFromContext("", "darwin", "/nope/docker")).toBe("unknown");
+		expect(runtimeFromContext("", "darwin", process.execPath)).toBe(
+			"docker-desktop",
 		);
 	});
 

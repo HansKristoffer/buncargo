@@ -4,7 +4,7 @@ import { execAsync } from "../core/process/exec";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWait } from "../core/style";
 import { lookupOnPath } from "../core/tool-binary";
-import { runDocker, runDockerAsync } from "./binary";
+import { DEFAULT_DOCKER_BINARY, runDocker, runDockerAsync } from "./binary";
 
 export type DockerRuntime =
 	| "orbstack"
@@ -41,6 +41,7 @@ function commandExists(command: string): boolean {
 export function runtimeFromContext(
 	context: string,
 	platform: NodeJS.Platform = process.platform,
+	binary: string = DEFAULT_DOCKER_BINARY,
 ): DockerRuntime {
 	// On Linux the context decides, not which other tools are installed: a CI image
 	// with podman on PATH still runs Docker's own engine under the "default" context.
@@ -68,7 +69,7 @@ export function runtimeFromContext(
 	if (context.includes("podman") || commandExists("podman")) {
 		return "podman";
 	}
-	if (existsSync("/Applications/Docker.app") || commandExists("docker")) {
+	if (existsSync("/Applications/Docker.app") || commandExists(binary)) {
 		return "docker-desktop";
 	}
 	return "unknown";
@@ -153,6 +154,8 @@ export async function ensureDockerRunning(
 	});
 	const runtime = runtimeFromContext(
 		context.ok ? context.stdout.trim().toLowerCase() : "",
+		process.platform,
+		binary,
 	);
 	// A daemon that is up but refuses this user would otherwise read as "not
 	// running", and the wait below could never end differently.

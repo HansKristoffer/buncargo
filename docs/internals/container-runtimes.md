@@ -52,8 +52,7 @@ The sweep and volume pruning live in `container-runtime/` too; see
   alone would silently drop a configured `docker.binary` in `status`, `doctor` and prisma.
 - `ExecInServiceRequest.command` is argv, not a shell command line, so neither backend has to quote
   it and the two cannot disagree about which shell runs a probe. Both backends spawn argv
-  throughout; the only surviving shell is `command -v` in `src/docker/preflight.ts`, a builtin with
-  nothing to exec.
+  throughout.
 - `inventory.ts` backs the machine-wide commands (`ls`, `doctor`, `dev --down --all`). Those have no
   project config in scope, so they ask every available runtime rather than one.
 
