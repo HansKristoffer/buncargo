@@ -16,7 +16,7 @@ The sweep and volume pruning live in `container-runtime/` too; see
 - `interpolate.ts` is Compose's own `${VAR}` substitution and the fingerprints built on it. It
   lives here rather than with one backend because it is Compose semantics: `docker compose`
   interpolates the file itself and the Apple backend has to reproduce it, so a second copy would be
-  a second thing to keep in step. `apple-container/run-plan.ts` re-exports it.
+  a second thing to keep in step.
 - `computeDevIdentity` leaves the worktree name out of the project name when the directory already
   carries it.
 - `serviceFingerprint` and `buncargo.service-hash` govern reuse per service, independent of

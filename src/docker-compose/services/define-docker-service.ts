@@ -71,13 +71,7 @@ export interface DockerServicePreset<
 	TOptions extends PresetServiceSharedOptions = PresetServiceSharedOptions,
 	TServiceConfig extends ServiceConfig = ServiceConfig,
 > {
-	preset: DockerPresetName;
-	defaults: DockerServicePresetDefaults;
-	env?: TServiceConfig["env"];
 	build: DockerServiceFactory;
-	createPresetDefinition(
-		service?: DockerComposeServiceRaw,
-	): DockerPresetServiceDefinition;
 	toServiceConfig(options?: TOptions): TServiceConfig;
 }
 
@@ -135,12 +129,5 @@ export function defineDockerService<
 		return base as TServiceConfig;
 	}
 
-	return {
-		preset: input.preset,
-		defaults: input.defaults,
-		env: input.env,
-		build: input.build,
-		createPresetDefinition,
-		toServiceConfig,
-	};
+	return { build: input.build, toServiceConfig };
 }

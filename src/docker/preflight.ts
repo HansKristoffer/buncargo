@@ -37,15 +37,6 @@ function commandExists(command: string): boolean {
 	return lookupOnPath(command) !== undefined;
 }
 
-function dockerContextName(binary?: string): string | null {
-	const result = runDocker(binary, ["context", "show"]);
-	return result.ok ? result.stdout.trim() : null;
-}
-
-export function detectDockerRuntime(binary?: string): DockerRuntime {
-	return runtimeFromContext(dockerContextName(binary)?.toLowerCase() ?? "");
-}
-
 /** Exported for tests: the platform decides what a bare `docker` binary means. */
 export function runtimeFromContext(
 	context: string,
