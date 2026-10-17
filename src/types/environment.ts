@@ -253,12 +253,12 @@ export interface DevEnvironment<
 	}): Promise<DevServerPids>;
 	/** Stop a process by PID */
 	stopProcess(pid: number): void;
-	/** Wait for servers to be ready */
 	/** Run lifecycle hooks for callers that supervise servers themselves. */
 	runServerHook?(
 		phase: "before" | "after",
 		signal?: AbortSignal,
 	): Promise<void>;
+	/** Wait for servers to be ready */
 	waitForServers(options?: {
 		signal?: AbortSignal;
 		timeout?: number;
@@ -276,14 +276,6 @@ export interface DevEnvironment<
 	// ─────────────────────────────────────────────────────────────────────────
 
 	/**
-	 * Build the shared environment variables for shell commands.
-	 *
-	 * Keys are the computed names ({@link ConfigEnvVarNames}) plus whatever
-	 * `config.env` declared, so an unknown name is a compile error.
-	 *
-	 * Call **after** {@link setPublicUrls} or {@link openPublicTunnels} so `*_PUBLIC_URL` values reflect tunnel URLs.
-	 */
-	/**
 	 * The app this project is "about", optionally narrowed to a running set.
 	 *
 	 * A method rather than a field because the answer depends on which apps a
@@ -292,6 +284,14 @@ export interface DevEnvironment<
 	resolvePrimaryApp(
 		selected?: readonly string[],
 	): Extract<keyof TApps, string> | undefined;
+	/**
+	 * Build the shared environment variables for shell commands.
+	 *
+	 * Keys are the computed names ({@link ConfigEnvVarNames}) plus whatever
+	 * `config.env` declared, so an unknown name is a compile error.
+	 *
+	 * Call **after** {@link setPublicUrls} or {@link openPublicTunnels} so `*_PUBLIC_URL` values reflect tunnel URLs.
+	 */
 	buildEnvVars(production?: boolean): ComputedEnvVars<TServices, TApps, TEnv>;
 	/** Build the full environment for a specific app process (`shared env + apps[name].envVars`). */
 	buildAppEnvVars<TName extends Extract<keyof TApps, string>>(
@@ -341,10 +341,6 @@ export interface DevEnvironment<
 	openPublicTunnels(
 		options?: OpenPublicTunnelsOptions<TServices, TApps>,
 	): Promise<OpenPublicTunnelsResult<TServices, TApps>>;
-
-	// ─────────────────────────────────────────────────────────────────────────
-	// Vibe Kanban Integration
-	// ─────────────────────────────────────────────────────────────────────────
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Run claim / watchdog
