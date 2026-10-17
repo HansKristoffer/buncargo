@@ -1,5 +1,12 @@
 # Changelog
 
+## [14.1.0](https://github.com/HansKristoffer/buncargo/compare/v14.0.0...v14.1.0) (2026-10-17)
+
+
+### Features
+
+* **hosts:** serve app URLs over Tailscale with BUNCARGO_HOSTS=tailscale ([#112](https://github.com/HansKristoffer/buncargo/issues/112)) ([b2ee50c](https://github.com/HansKristoffer/buncargo/commit/b2ee50cd3e2ed430cfa1041b23b52b482ae0727c))
+
 ## [14.0.0](https://github.com/HansKristoffer/buncargo/compare/v13.0.0...v14.0.0) (2026-10-17)
 
 
