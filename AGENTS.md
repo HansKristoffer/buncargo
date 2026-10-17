@@ -66,8 +66,8 @@ worktrees of this repo and of the projects that use it.
    your own agent share these names and paths.
 4. **The developer's machine state.** `~/.buncargo`, `/etc/hosts`, the root hosts daemon and its
    certificates are live. In tests, inject the seams the modules take (`privileged`, the
-   reloader's edges, `copy`); the opt-in suites that keep the real `HOME` move it themselves. Never run `sudo`, and never
-   `dev --reset` or `dev --down --all` to "fix" something.
+   reloader's edges, `copy`); the opt-in suites that keep the real `HOME` move it themselves.
+   Never run `sudo`, and never `dev --reset` or `dev --down --all` to "fix" something.
 
 ## Hit every surface
 
@@ -135,6 +135,9 @@ How a run fits together, and the startup invariants: `docs/internals/overview.md
   (typecheck, then Biome) and `bun test`. Leave the repo with all three passing.
 - A branch of several commits: `bun scripts/check-commits.ts <base>` runs `bun run lint` on each
   commit on its own (`--test` adds `bun test`).
+- Before handing back a branch, or merging commits another agent made, review the diff with the
+  `review-buncargo` skill. It holds the diff to `CODING_STANDARDS.md`, which is worth reading
+  before you write.
 - Behavior changes ship with tests for that behavior, co-located as `*.test.ts`. Test what a
   module observably does, not how it is wired.
 - A test that needs a sleep to pass is wrong. Await the event, poll a condition against a deadline,
@@ -213,20 +216,8 @@ All library source is under `src/`; tests sit beside the module they test.
 - `menubar/` (Swift), `server/` (the connect relay), `example/` (configs and the playground),
   `scripts/` (CI, benchmarks, package verification).
 
+The owner of each shared concern (flags, state paths, child environments, the package version,
+…) is listed in `CODING_STANDARDS.md`; reach a concern through its owner.
+
 Import a directory through its `index.ts` (`./config/index`, `./environment/index`); do not add
 thin top-level files that only re-export another module.
-
-## Taste
-
-- Small, pure functions with I/O at explicit boundaries. Pure decisions (`decideSweep`,
-  `run-plan.ts`, `render.ts`) carry most of the tests.
-- One owner per concern: `runtime-flags.ts` reads environment flags, `docker/binary.ts` spells
-  `docker`, `prompt.ts` asks questions, `child-env.ts` builds child environments, `state-paths.ts`
-  places state. Use the existing owner before writing a second one.
-- Persisted files are written through a temp file and a rename, and shared read-modify-writes go
-  through `withFileLock`.
-- Separate setup, validation, side effects and cleanup with blank lines. Comments explain intent,
-  constraints and phase transitions, never every line.
-- Error messages say what to do next, and name the checkout, port or process involved.
-- Strict TypeScript. Prefer inferred types; `any` is the enemy. A `switch` over a closed union ends
-  in a `never` default.
