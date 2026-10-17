@@ -536,6 +536,10 @@ seed: {
 | `beforeMigrations` | Selected Prisma database; without Prisma configuration, any selected service |
 | `afterContainersReady` | Runs after migration/generation, before seeding, when services are selected |
 
+A selection that skips the seed is fine for `dev`, but `dev --seed` asks for it:
+there it fails before anything starts, naming the services the seed needs
+(`--seed --apps=web` when `web` does not require `postgres`).
+
 `beforeMigrations` runs after early container readiness and job completion, before
 automatic Prisma migrations and ordered custom migrations. Hooks, generation
 checks and seed checks receive expanded `selectedApps` and `selectedServices`.

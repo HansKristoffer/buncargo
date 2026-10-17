@@ -93,7 +93,11 @@ import {
 	type TakeoverCandidates,
 	takeoverCandidates,
 } from "./takeover";
-import { assertConfiguredApps, validateDevStart } from "./validate-dev-start";
+import {
+	assertConfiguredApps,
+	seedSelectionError,
+	validateDevStart,
+} from "./validate-dev-start";
 
 export { getFlagValue, hasFlag, splitCliArgs } from "./flags";
 
@@ -587,7 +591,7 @@ async function runDevFlow<
 	}
 
 	if (args.seed) {
-		return exitWith(await runCliSeed(env, signal));
+		return exitWith(await runCliSeed(env, plan.requiredServiceKeys, signal));
 	}
 
 	if (args.upOnly) {
@@ -892,13 +896,15 @@ export function selectProfileApps<TApps extends Record<string, AppConfig>>(
 
 /**
  * `--seed` runs the environment's seed path with `force`, so an explicit seed
- * request ignores `seed.check`. Exits 1 on failure, like every other flow.
+ * request ignores `seed.check` and "not needed" can only mean the selection
+ * left out its services. Exits 1 on failure, like every other flow.
  */
 async function runCliSeed<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 >(
 	env: DevEnvironment<TServices, TApps>,
+	selectedServices: readonly string[],
 	signal?: AbortSignal,
 ): Promise<number> {
 	const outcome = await env.runSeed({ force: true, signal });
@@ -908,6 +914,13 @@ async function runCliSeed<
 			"Add a seed block to your dev config:",
 			"  seed: { command: 'bun run run:seeder' }",
 		]);
+	}
+
+	if (outcome.status === "not-needed") {
+		throw (
+			seedSelectionError(env.seed, selectedServices, env) ??
+			new CliError("The seed did not run for this selection.")
+		);
 	}
 
 	if (outcome.status === "failed") {
