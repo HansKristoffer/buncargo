@@ -31,6 +31,13 @@ const VERSION = 1;
 
 export interface OffsetClaim {
 	offset: number;
+	/**
+	 * The block's ports when it was claimed, sorted. Two configs collide on a
+	 * port without sharing an offset: api 3000 at offset 1100 and admin 4000 at
+	 * offset 100 are both 4100. A claim written before this was recorded holds
+	 * its offset alone.
+	 */
+	ports?: number[];
 	projectName: string;
 	updatedAt: string;
 	/** Set on a suffixed claim, whose key is not the bare root. */
@@ -73,13 +80,24 @@ function validate(value: unknown): OffsetClaimsDocument | undefined {
 	if (typeof document.claims !== "object" || document.claims === null)
 		return undefined;
 	const claims = Object.fromEntries(
-		Object.entries(document.claims).filter(
-			([, claim]) =>
-				Number.isInteger(claim?.offset) &&
-				typeof claim?.projectName === "string",
-		),
+		Object.entries(document.claims).flatMap(([key, claim]) => {
+			const valid = validateClaim(claim);
+			return valid ? [[key, valid]] : [];
+		}),
 	);
 	return { version: VERSION, claims };
+}
+
+function validateClaim(value: unknown): OffsetClaim | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const { ports, ...claim } = value as Partial<OffsetClaim>;
+	if (!Number.isInteger(claim.offset) || typeof claim.projectName !== "string")
+		return undefined;
+	const valid = claim as OffsetClaim;
+	// Ports this version cannot read leave the claim holding its offset alone.
+	return Array.isArray(ports) && ports.every((port) => Number.isInteger(port))
+		? { ...valid, ports }
+		: valid;
 }
 
 /** Every claim, including those of deleted checkouts the sweep has not settled. */
@@ -112,42 +130,55 @@ export async function dropDeletedOffsetClaims(
 }
 
 /**
- * Whoever else holds `offset`: another checkout, or another environment of this
- * one. `key` is the asker's own {@link offsetClaimKey}.
+ * Why the block at `offset` with `ports` is someone else's, or undefined when
+ * it is free: another checkout, or another environment of this one, claims the
+ * offset or one of the ports. `key` is the asker's own {@link offsetClaimKey}.
  */
-export function offsetClaimedBy(
+export function offsetClaimConflict(
 	claims: Record<string, OffsetClaim>,
-	offset: number,
+	block: { offset: number; ports: readonly number[] },
 	key: string,
 ): string | undefined {
-	const holder = Object.entries(claims).find(
-		([other, claim]) => other !== key && claim.offset === offset,
-	);
-	return holder && offsetClaimHolder(...holder);
+	for (const [other, claim] of Object.entries(claims)) {
+		if (other === key) continue;
+		const holder = offsetClaimHolder(other, claim);
+		if (claim.offset === block.offset)
+			return `offset ${block.offset} is claimed by ${holder}`;
+		const shared = block.ports.find((port) => claim.ports?.includes(port));
+		if (shared !== undefined)
+			return `port ${shared} is in the block ${holder} claims (offset ${claim.offset})`;
+	}
+	return undefined;
 }
 
 /**
- * Record that `root` uses `offset`.
+ * Record that `root` uses the block at `offset`, made of `ports`.
  *
  * Read-modify-write: call it under {@link withOffsetClaimsLock}, together with
  * the read that chose the offset, or two checkouts starting at once can both
  * take it.
  */
-export function claimOffset(
-	root: string,
-	offset: number,
-	projectName: string,
-	suffix?: string,
-): void {
+export function claimOffset(input: {
+	root: string;
+	offset: number;
+	ports: readonly number[];
+	projectName: string;
+	suffix?: string;
+}): void {
+	const { root, offset, projectName, suffix } = input;
+	const ports = [...new Set(input.ports)].sort((a, b) => a - b);
 	const key = offsetClaimKey(root, suffix);
 	const claims = readAllOffsetClaims();
+	const current = claims[key];
 	if (
-		claims[key]?.offset === offset &&
-		claims[key]?.projectName === projectName
+		current?.offset === offset &&
+		current.projectName === projectName &&
+		current.ports?.join() === ports.join()
 	)
 		return;
 	claims[key] = {
 		offset,
+		ports,
 		projectName,
 		updatedAt: new Date().toISOString(),
 		...(suffix ? { root, suffix } : {}),

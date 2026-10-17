@@ -725,21 +725,23 @@ BUNCARGO_PORT_OFFSET set?
   yes → use it, skip probing (provenance: env)
   no  → .buncargo/ports.json of this checkout?
           yes → its offset, applied to the config's current ports, if they
-                are free or ours and no other checkout claims the offset
+                are free or ours and no other checkout claims the block
                 (provenance: lockfile)
           no / not usable → a suffixed environment's own claim, if free
                           else hash projectPrefix [+ worktree] [+ suffix]
-                          skip offsets another checkout or environment claims
+                          skip blocks another checkout or environment claims
+                          (its offset, or any one of its ports)
                           probe every service and app port
                           on a foreign owner, or a port that will not bind,
                           shift the whole block by 100
           persist { version, projectName, root, offset, ports } (dev only)
-          and claim the offset in ~/.buncargo/offsets.json
+          and claim the offset and its ports in ~/.buncargo/offsets.json
 ```
 
-Offsets are claimed machine-wide, by checkout, in `~/.buncargo/offsets.json`. A
-checkout keeps its offset whether or not it is running, and the claim goes
-when its directory does. Without claims, two worktrees whose names hash to the
+Offsets are claimed machine-wide, by checkout, in `~/.buncargo/offsets.json`,
+together with the ports of the block, so two projects whose ports differ never
+end up sharing one through different offsets. A checkout keeps its offset
+whether or not it is running, and the claim goes when its directory does. Without claims, two worktrees whose names hash to the
 same offset only collided while both ran, so which got which ports depended on
 which started first. `buncargo ports` lists the claims, and `doctor` reports an
 offset two checkouts claim.

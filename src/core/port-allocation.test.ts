@@ -464,6 +464,84 @@ describe("offset claims", () => {
 		}
 	});
 
+	it("never gives two checkouts overlapping blocks, whatever their offsets", async () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		// a 3000 and b 3100: offset 200 is 3200/3300, offset 100 is 3100/3200.
+		const first = mkdtempSync(join(tmpdir(), "buncargo-overlap-a-"));
+		const second = mkdtempSync(join(tmpdir(), "buncargo-overlap-b-"));
+		const blocks = (root: string, projectName: string) =>
+			resolvePortPlan({
+				projectPrefix: "lullu",
+				projectName,
+				root,
+				services: { a: { port: 3000 }, b: { port: 3100 } },
+				getOwner: () => null,
+			});
+		const warnings: string[] = [];
+		const warn = console.warn;
+		console.warn = (message: string) => warnings.push(String(message));
+		try {
+			await Bun.write(
+				join(first, ".buncargo/ports.json"),
+				JSON.stringify({ offset: 200 }),
+			);
+			await Bun.write(
+				join(second, ".buncargo/ports.json"),
+				JSON.stringify({ offset: 100 }),
+			);
+			const a = blocks(first, "lullu-a");
+			const b = blocks(second, "lullu-b");
+			expect(a.offset).toBe(200);
+			const taken = new Set(Object.values(a.ports));
+			expect(Object.values(b.ports).filter((port) => taken.has(port))).toEqual(
+				[],
+			);
+			expect(warnings.join("\n")).toContain(
+				`port 3200 is in the block ${first} claims`,
+			);
+			// The move sticks, whichever starts next.
+			expect(blocks(first, "lullu-a").offset).toBe(a.offset);
+			expect(blocks(second, "lullu-b").offset).toBe(b.offset);
+		} finally {
+			console.warn = warn;
+			rmSync(first, { recursive: true, force: true });
+			rmSync(second, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps honouring a claim written without its ports by its offset", async () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		const older = mkdtempSync(join(tmpdir(), "buncargo-older-"));
+		const root = mkdtempSync(join(tmpdir(), "buncargo-newer-"));
+		try {
+			const hashed = computeBaseOffset({ projectPrefix: "lullu" });
+			await Bun.write(
+				join(home, ".buncargo/offsets.json"),
+				JSON.stringify({
+					version: 1,
+					claims: {
+						[older]: {
+							offset: hashed,
+							projectName: "lullu-old",
+							updatedAt: "2026-01-01T00:00:00.000Z",
+						},
+					},
+				}),
+			);
+			expect(plan(root).offset).toBe(hashed + PORT_OFFSET_STEP);
+			expect(readOffsetClaims()).toMatchObject({
+				[older]: { offset: hashed },
+				[root]: {
+					offset: hashed + PORT_OFFSET_STEP,
+					ports: [5432 + hashed + PORT_OFFSET_STEP],
+				},
+			});
+		} finally {
+			rmSync(older, { recursive: true, force: true });
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("pins a checkout with an offset-only lockfile and fills in the rest", async () => {
 		delete process.env.BUNCARGO_PORT_OFFSET;
 		const root = mkdtempSync(join(tmpdir(), "buncargo-pin-"));

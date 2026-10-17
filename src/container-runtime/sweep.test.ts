@@ -508,7 +508,7 @@ describe("settleDeletedCheckouts", () => {
 		if (options.enabled) process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS = "1";
 		else delete process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS;
 		for (const [root, projectName] of Object.entries(options.claims))
-			claimOffset(root, 100, projectName);
+			claimOffset({ root, offset: 100, ports: [5532], projectName });
 
 		const removed: string[][] = [];
 		const runtime = {
@@ -559,7 +559,13 @@ describe("settleDeletedCheckouts", () => {
 			enabled: true,
 			claims: { [gone]: "app-gone", [checkout]: "other" },
 		});
-		claimOffset(gone, 200, "app-gone-e2e", "e2e");
+		claimOffset({
+			root: gone,
+			offset: 200,
+			ports: [5632],
+			projectName: "app-gone-e2e",
+			suffix: "e2e",
+		});
 		await settleDeletedCheckouts({ runtimes: [runtime], runs: [], result });
 		expect(removed.flat().sort()).toEqual(["app-gone-e2e_db", "app-gone_db"]);
 		expect(claimedRoots()).toEqual([checkout]);

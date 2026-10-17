@@ -2,7 +2,7 @@ import { containerRuntimeForEnv } from "../../container-runtime";
 import {
 	claimOffset,
 	duplicateOffsetClaims,
-	offsetClaimedBy,
+	offsetClaimConflict,
 	offsetClaimHolder,
 	readOffsetClaims,
 } from "../../core/offset-claims";
@@ -117,17 +117,21 @@ export async function handlePorts(args: string[]): Promise<number> {
 	}
 
 	const offset = parsePinnedOffset(value);
-	const holder = offsetClaimedBy(claims, offset, env.root);
-	if (holder)
-		throw new CliError(`Offset ${offset} is claimed by ${holder}.`, [
-			"Pick another one: `buncargo ports` lists the claimed offsets.",
-		]);
-
 	const ports = buildPortMap(
 		env.services as Parameters<typeof buildPortMap>[0],
 		env.apps as Parameters<typeof buildPortMap>[1],
 		offset,
 	);
+	const claimed = offsetClaimConflict(
+		claims,
+		{ offset, ports: Object.values(ports) },
+		env.root,
+	);
+	if (claimed)
+		throw new CliError(`Offset ${offset} is not free: ${claimed}.`, [
+			"Pick another one: `buncargo ports` lists the claimed offsets.",
+		]);
+
 	const runtime = containerRuntimeForEnv(env);
 	const ownerOf = withBindProbe((port) => getPortOwner(port, { runtime }));
 	for (const port of Object.values(ports)) {
@@ -153,7 +157,12 @@ export async function handlePorts(args: string[]): Promise<number> {
 		ports,
 		provenance: "lockfile",
 	});
-	claimOffset(env.root, offset, env.projectName);
+	claimOffset({
+		root: env.root,
+		offset,
+		ports: Object.values(ports),
+		projectName: env.projectName,
+	});
 	log.success(`Pinned ${env.projectName} to offset ${offset}.`);
 	// The services' containers are recreated on the next start: their
 	// published ports are part of what decides whether one is reused.

@@ -18,8 +18,12 @@ per port.
   generated model, which changes Apple's `buncargo.config-hash`, so every run recreated its own
   containers and alternated between two ports. A container of ours on the *other* backend must
   still shift: that port really is taken.
-- `offset-claims.ts` is `~/.buncargo/offsets.json`, root → offset. Every probing allocation skips
-  another existing checkout's offset, and every claiming one writes its own. A suffixed
+- `offset-claims.ts` is `~/.buncargo/offsets.json`, root → offset and the block's ports. Every
+  probing allocation skips a block another existing checkout claims, by its offset or by any one of
+  its ports, and every claiming one writes its own. Offsets alone missed collisions between
+  configs: api 3000 at offset 1100 and admin 4000 at offset 100 are both 4100. The ports are an
+  optional field, so the file keeps its version and an older buncargo still reads it; a claim
+  written without them holds its offset alone until its checkout's next run rewrites it. A suffixed
   environment claims without persisting a lockfile, under `offsetClaimKey(root, suffix)` with
   `root` and `suffix` stored in the claim (the key is never parsed), so it never replaces its
   checkout's dev claim; its claim is also the record its next run takes the offset back from.

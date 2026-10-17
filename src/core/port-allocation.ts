@@ -9,7 +9,7 @@ import type {
 import { simpleHash } from "./hash";
 import {
 	claimOffset,
-	offsetClaimedBy,
+	offsetClaimConflict,
 	offsetClaimKey,
 	readOffsetClaims,
 	withOffsetClaimsLock,
@@ -382,8 +382,12 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 	// claiming run writes its own.
 	const claimKey = offsetClaimKey(root, suffix);
 	const claims = readOffsetClaims();
-	const claimant = (offset: number) =>
-		offsetClaimedBy(claims, offset, claimKey);
+	const claimant = (offset: number, ports: Record<string, number>) =>
+		offsetClaimConflict(
+			claims,
+			{ offset, ports: Object.values(ports) },
+			claimKey,
+		);
 	const conflictAt = (ports: Record<string, number>) =>
 		findForeignConflict(probed(ports), {
 			root,
@@ -408,7 +412,14 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 			if (JSON.stringify(next) !== JSON.stringify(lockfile))
 				writePortsLockfile(root, next);
 		}
-		if (claim) claimOffset(root, offset, projectName, suffix);
+		if (claim)
+			claimOffset({
+				root,
+				offset,
+				ports: Object.values(ports),
+				projectName,
+				suffix,
+			});
 		return { offset, ports, provenance };
 	};
 
@@ -417,9 +428,8 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 	let ignored = notOurs;
 	if (ownLockfile) {
 		const ports = shiftPorts(basePorts, ownLockfile.offset);
-		const holder = claimant(ownLockfile.offset);
-		if (holder)
-			ignored = `offset ${ownLockfile.offset} is claimed by ${holder}`;
+		const claimed = claimant(ownLockfile.offset, ports);
+		if (claimed) ignored = claimed;
 		else if (Object.values(ports).some((port) => port > 65535))
 			ignored = `offset ${ownLockfile.offset} puts a port above 65535`;
 		else {
@@ -462,10 +472,10 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 	// from one run to the next, as a lockfile does for dev, and read-only
 	// callers find the ports its last run used.
 	const ownClaim = persist ? undefined : claims[claimKey];
-	if (ownClaim && !claimant(ownClaim.offset)) {
+	if (ownClaim) {
 		const ports = shiftPorts(basePorts, ownClaim.offset);
 		const overflow = Object.values(ports).some((port) => port > 65535);
-		if (!overflow && !conflictAt(ports))
+		if (!overflow && !claimant(ownClaim.offset, ports) && !conflictAt(ports))
 			return settle(
 				ownClaim.offset,
 				ports,
@@ -479,7 +489,7 @@ function planPorts(input: Parameters<typeof resolvePortPlan>[0]): PortPlan {
 	for (let attempt = 0; attempt < PORT_ALLOCATION_ATTEMPTS; attempt++) {
 		const ports = shiftPorts(basePorts, offset);
 		const overflow = Object.values(ports).some((port) => port > 65535);
-		if (!overflow && !claimant(offset) && !conflictAt(ports))
+		if (!overflow && !claimant(offset, ports) && !conflictAt(ports))
 			return settleAllocated(
 				offset,
 				ports,
