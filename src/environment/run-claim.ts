@@ -1,7 +1,17 @@
 import { releaseLeases } from "../core/leases";
+import type { StartDevServersOptions } from "../core/process/dev-servers";
+import { appExitState } from "../core/process/process-owner";
+import {
+	flushRunPatches,
+	markApps,
+	publishCurrentRun,
+	type RunSource,
+	recordAppSpawn,
+} from "../core/run-publish";
 import {
 	buildRunEntryAsync,
 	publishRun,
+	type RunAppStatus,
 	type RunServiceEntry,
 	type RunStackEntry,
 	releaseRun,
@@ -23,7 +33,9 @@ import { stacksForServices } from "./stacks";
  *
  * The library claims too, not just the CLI. A `dev.start()` from a script
  * owns containers exactly as a `buncargo dev` does, and used to be invisible
- * to everything that reads this registry.
+ * to everything that reads this registry. The apps it spawns are claimed the
+ * same way: their leases, and rows in the entry that `ls`, `stop` and
+ * BuncargoBar read, published as `buncargo dev` publishes them.
  */
 export interface DevRunClaimApi {
 	/** The session this environment publishes under. Stable for its lifetime. */
@@ -49,17 +61,26 @@ export interface DevRunClaimApi {
 	ensureWatchdog(): Promise<void>;
 	/**
 	 * Claim what the apps about to spawn need from the machine: each one's
-	 * `exclusive` lease. Returns the apps to spawn, without an
-	 * `essential: false` one whose lease another run holds; an essential one
-	 * throws instead.
+	 * `exclusive` lease, then this session's entry listing them, published
+	 * like `buncargo dev`'s (an app-only run has no entry until here).
+	 * Returns the apps to spawn, without an `essential: false` one whose
+	 * lease another run holds; an essential one throws instead.
 	 */
 	claimApps(
 		apps: Record<string, AppConfig>,
 		signal?: AbortSignal,
 	): Promise<Record<string, AppConfig>>;
+	/** What the spawner reports, recorded on the claimed apps' rows. */
+	readonly appEvents: Pick<
+		StartDevServersOptions,
+		"onAppSpawned" | "onAppReady" | "onAppExit" | "onAppRestartFailed"
+	>;
 	/** After a start that failed: give back what its `claimApps` newly took. */
 	abandonApps(): Promise<void>;
-	/** After the apps have stopped: give back everything they held. */
+	/**
+	 * After the apps have stopped: give back everything they held, and
+	 * withdraw an entry that only listed them.
+	 */
 	releaseApps(): Promise<void>;
 }
 
@@ -98,12 +119,51 @@ export function resolveClaimHold(
 export function createRunClaimApi<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
->(ctx: DevEnvContext<TServices, TApps>): DevRunClaimApi {
+>(
+	ctx: DevEnvContext<TServices, TApps>,
+	/** The environment, which the app rows are built from. */
+	source: () => RunSource,
+): DevRunClaimApi {
 	const sessionId = crypto.randomUUID();
+	const session = { sessionId };
 	let claimed = false;
 	// Leases this session holds, and those the last `claimApps` took.
 	const heldLeases = new Set<string>();
 	let lastAcquired: string[] = [];
+	// The apps on this session's entry, and those the last `claimApps` added.
+	const listedApps: Record<string, AppConfig> = {};
+	let lastListed: string[] = [];
+	// What each listed app's row last said, to say again when a later
+	// `claimApps` publishes the entry afresh with every row `starting`.
+	const rows = new Map<
+		string,
+		{ pid?: number; attached?: boolean; status?: RunAppStatus }
+	>();
+
+	function recordRow(
+		name: string,
+		row: { pid?: number; attached?: boolean; status?: RunAppStatus },
+	): void {
+		rows.set(name, { ...rows.get(name), ...row });
+		if (row.pid !== undefined)
+			void recordAppSpawn(session, name, row.pid, row.attached ?? false);
+		if (row.status !== undefined) void markApps(session, [name], row.status);
+	}
+
+	function listsApps(): boolean {
+		return Object.keys(listedApps).length > 0;
+	}
+
+	/**
+	 * Withdraw an entry that lists only apps, once none is left. One with
+	 * services is the containers' record: `stop()` retires it, `releaseRun()`
+	 * releases it.
+	 */
+	async function withdrawAppOnlyEntry(): Promise<void> {
+		await flushRunPatches(session);
+		if (claimed || listsApps()) return;
+		await releaseRun(sessionId);
+	}
 	// The hold of the last claim. `restart()` retires and then claims again
 	// with only a signal, and resolving that afresh dropped a hold the first
 	// claim asked for, which kept the containers forever.
@@ -217,21 +277,71 @@ export function createRunClaimApi<
 			);
 			for (const key of leases.acquired) heldLeases.add(key);
 			lastAcquired = leases.acquired;
+			lastListed = Object.keys(leases.apps).filter(
+				(name) => !(name in listedApps),
+			);
+			if (lastListed.length === 0) return leases.apps;
+
+			Object.assign(listedApps, leases.apps);
+			// Over the claim, if there is one: its services, as `dev` lists them.
+			await flushRunPatches(session);
+			await publishCurrentRun(source(), {
+				apps: listedApps,
+				serviceNames: claimed ? ctx.selectedServiceKeys : [],
+			});
+			for (const [name, row] of rows) recordRow(name, row);
 			return leases.apps;
+		},
+
+		appEvents: {
+			onAppSpawned: (name, pid, attached) => {
+				recordRow(name, { pid, attached });
+			},
+			onAppReady: (name) => {
+				recordRow(name, { status: "ready" });
+			},
+			onAppExit: (name, code, signal) => {
+				const app = listedApps[name];
+				recordRow(name, {
+					status: appExitState(code, signal, {
+						worker: app?.kind === "worker",
+						optional: app?.essential === false,
+					}),
+				});
+			},
+			onAppRestartFailed: (name) => {
+				recordRow(name, { status: "failed" });
+			},
 		},
 
 		async abandonApps() {
 			const keys = lastAcquired;
 			lastAcquired = [];
 			for (const key of keys) heldLeases.delete(key);
-			await releaseLeases(sessionId, { keys });
+			const names = lastListed;
+			lastListed = [];
+			for (const name of names) {
+				delete listedApps[name];
+				rows.delete(name);
+			}
+			await Promise.all([
+				releaseLeases(sessionId, { keys }),
+				names.length > 0 ? withdrawAppOnlyEntry() : undefined,
+			]);
 		},
 
 		async releaseApps() {
 			lastAcquired = [];
-			if (heldLeases.size === 0) return;
+			lastListed = [];
+			const listed = listsApps();
+			for (const name of Object.keys(listedApps)) delete listedApps[name];
+			rows.clear();
+			const leases = heldLeases.size > 0;
 			heldLeases.clear();
-			await releaseLeases(sessionId);
+			await Promise.all([
+				leases ? releaseLeases(sessionId) : undefined,
+				listed ? withdrawAppOnlyEntry() : undefined,
+			]);
 		},
 	};
 }

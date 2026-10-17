@@ -42,12 +42,16 @@ and time zone, and a run started from a Danish-locale terminal and a watchdog st
 
 ## Writers
 
-`core/run-publish.ts` is the CLI's writer of the run registry; `environment/run-claim.ts` is the
-library's. Both build their entry with `buildRunEntry`, so identity, worktree and the recorded CLI
-cannot drift between them (the recorded CLI is exactly where they once did).
+`environment/run-claim.ts` writes the claim; `core/run-publish.ts` writes the entry with its
+apps, for `runDevFlow` and for a library `start()`/`startServers()` that spawns apps (through the
+claim's `claimApps`, with the environment as its `RunSource`). Both build their entry with
+`buildRunEntry`, so identity, worktree and the recorded CLI cannot drift between them (the
+recorded CLI is exactly where they once did), and a script's apps get the same rows as `dev`'s.
 
-- The CLI publishes onto the session the environment already claimed (`env.sessionId`), and
-  `publishRun` keeps that claim's `startedAt` and idle hold. It takes a structural `RunSource`
+- Both publish onto the session the environment already claimed (`env.sessionId`), and
+  `publishRun` keeps that claim's `startedAt` and idle hold. An app-only run has no claim, so its
+  first entry is this one; it is withdrawn when its apps stop (`stop()`), when the start that
+  listed them fails, or by the next writer's prune once its process is gone. It takes a structural `RunSource`
   rather than `DevEnvironment` because that type's app keys appear in both parameter and return
   positions, so a widened version is not a supertype of a specific one.
 - Every function swallows its own failures: a run that started servers but could not write a
@@ -142,10 +146,11 @@ watchdog is never the last line of defence.
 It also serves the live entries, as a `runs.json` document, on the machine's Tailscale address
 (`core/tailnet-directory.ts`) to BuncargoBar on the other machines of the tailnet. That bar may be
 a different version than the CLI it reads, so the registry's old-reader compatibility now holds
-across machines too. So a CLI run without containers ensures the watchdog as well, from
-`onReady` in `runDevFlow`, after its apps are up and not awaited: nothing is added before they
-start. `start()` does not, because the library publishes no entry for an app-only run, so there is
-nothing to list. The loop already stays while any entry is live, containers or not. A watchdog started by an older buncargo keeps running old code until it exits.
+across machines too. So a run without containers ensures the watchdog as well, once its apps
+are up and not awaited, so nothing is added before they start: `runDevFlow` from `onReady`, and
+`start()` after its apps are ready unless `watchdog: false`. `startServers()` takes no options to
+opt out with, so it ensures none. The loop already stays while any entry is live, containers or
+not. A watchdog started by an older buncargo keeps running old code until it exits.
 
 On Linux the watchdog, like `dev --detach` and the sharing coordinator, starts in a systemd
 user scope of its own when there is a user manager (`process/user-scope.ts`; off with

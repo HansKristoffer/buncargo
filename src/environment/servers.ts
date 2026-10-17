@@ -107,7 +107,7 @@ export async function startAppServers<
 		verbose: boolean;
 		signal?: AbortSignal;
 		/** This environment's run claim, for what the apps hold while they run. */
-		claim: Pick<DevRunClaimApi, "claimApps" | "abandonApps">;
+		claim: Pick<DevRunClaimApi, "claimApps" | "appEvents" | "abandonApps">;
 	},
 ): Promise<DevServerPids> {
 	const { productionBuild, claim } = options;
@@ -192,8 +192,10 @@ async function spawnAppServers<
 			seed: options.seed,
 			deferPublicUrlApps: false,
 			onPhase: options.onPhase,
-			onAppSpawned: (name, pid) => {
+			...options.claim.appEvents,
+			onAppSpawned: (name, pid, attached) => {
 				if (ctx.ownedServerPids) ctx.ownedServerPids[name] = pid;
+				options.claim.appEvents.onAppSpawned?.(name, pid, attached);
 			},
 		},
 	);

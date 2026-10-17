@@ -66,7 +66,8 @@ export function createDevEnvironment<
 
 	const ctx = createDevEnvContext(resolved, { ...options, root });
 	const envVars = createEnvVarsApi(ctx);
-	const runClaim = createRunClaimApi(ctx);
+	// The entry an app run publishes is built from the environment itself.
+	const runClaim = createRunClaimApi(ctx, () => env);
 	const coordinator = new LifecycleCoordinator();
 	const lifecycle = createLifecycleApi(ctx, envVars, runClaim, coordinator);
 	const recordCapture = createCaptureRecorder(ctx, envVars);

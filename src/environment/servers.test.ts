@@ -18,6 +18,7 @@ const vars = {
 
 const claim = {
 	claimApps: async (apps: Record<string, AppConfig>) => apps,
+	appEvents: {},
 	abandonApps: async () => {},
 };
 

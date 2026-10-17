@@ -125,7 +125,11 @@ it("runs app startup, seed, migrations and exec offline without fetching disable
 
 	try {
 		expect((await env.runSeed({ verbose: false })).status).toBe("succeeded");
-		await env.start({ onlyApps: ["api"], productionBuild: false });
+		await env.start({
+			onlyApps: ["api"],
+			productionBuild: false,
+			watchdog: false,
+		});
 		expect(await (await fetch(env.urls.api)).text()).toBe("test-value");
 		expect(
 			(await env.exec(["bun", "read.ts"], { secrets: scope })).stdout.trim(),

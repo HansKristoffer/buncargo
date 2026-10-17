@@ -112,6 +112,7 @@ function fixture() {
 			events.push("watchdog");
 		},
 		claimApps: async (apps: Record<string, AppConfig>) => apps,
+		appEvents: {},
 		abandonApps: async () => {},
 		releaseApps: async () => {},
 	};
@@ -197,6 +198,22 @@ describe("startup modes and hooks", () => {
 			watchdog: false,
 		});
 		expect(events).toEqual(["claim", "artifact", "runtime", "up"]);
+	});
+	it("an app-only start ensures the watchdog once its apps are up, unless told not to", async () => {
+		// The watchdog lists live runs to BuncargoBar on the tailnet, and a run
+		// without containers is in the registry for its apps alone.
+		for (const watchdog of [true, false]) {
+			const { ctx, events, lifecycle } = fixture();
+			ctx.apps.site = {
+				port: 3001,
+				devCommand: "exit 0",
+				healthEndpoint: false,
+			};
+			await lifecycle.start({ onlyApps: ["site"], verbose: false, watchdog });
+			expect(events).toEqual(
+				watchdog ? ["before", "after", "watchdog"] : ["before", "after"],
+			);
+		}
 	});
 	it("an explicit stop retires the claim rather than holding it", async () => {
 		const { ctx, events, lifecycle } = fixture();

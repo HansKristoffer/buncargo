@@ -571,6 +571,16 @@ export function createLifecycleApi<
 							if (verbose) console.log(formatDone("All servers ready"));
 						},
 					});
+					// A run without containers is in the registry for its apps,
+					// and the watchdog is what lists live runs to BuncargoBar on
+					// the tailnet. Once they are up and not awaited, as `dev`
+					// does, so startup pays nothing for it.
+					if (
+						!hasServices &&
+						startOptions.watchdog !== false &&
+						Object.keys(pids).length > 0
+					)
+						void runClaim.ensureWatchdog().catch(() => {});
 
 					if (verbose) {
 						console.log(formatDone("Environment ready"));
