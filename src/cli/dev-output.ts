@@ -86,14 +86,13 @@ export function openDevOutput(
 	// Keys for an app under a pseudo-terminal: one in the TUI, or an
 	// interactive app with no terminal to attach to.
 	const stopSends = watchSendRequests(env.root, env.sessionId, (app, text) => {
-		const screen = output.screens.get(app);
-		if (screen) screen.input(text);
-		else
-			output.event(
-				app,
-				"buncargo send: this app reads no keys (it has no terminal of its own)",
-				"warn",
-			);
+		const refusal = sendRefusal(output, app);
+		if (refusal !== undefined) {
+			output.event(app, `buncargo send: ${refusal}`, "warn");
+			return refusal;
+		}
+		output.screens.get(app)?.input(text);
+		return undefined;
 	});
 	const stopWatching = () => {
 		stopRestarts();
@@ -111,6 +110,19 @@ export function openDevOutput(
 			stopWatching();
 		},
 	};
+}
+
+/** Why `app` cannot take keys from `buncargo send`, or `undefined` when it can. */
+export function sendRefusal(
+	output: Pick<RunOutput, "screens" | "states">,
+	app: string,
+): string | undefined {
+	if (!output.screens.has(app))
+		return "it has no terminal of its own to type into; every app in the TUI has one, and outside it an app with interactive: true";
+	const state = output.states.get(app)?.state;
+	if (state === "stopped" || state === "failed")
+		return `it is not running (${state}); start it again with \`buncargo restart ${app}\``;
+	return undefined;
 }
 
 function appActions(apps: Record<string, AppConfig>): TuiAction[] {

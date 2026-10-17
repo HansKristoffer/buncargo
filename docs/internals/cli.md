@@ -98,7 +98,9 @@ flow; `flags.ts` (argv primitives), `dev-flags.ts` (the dev command's typed args
   through `withBindProbe` and the claims before writing the lockfile and the claim.
 - `commands/send.ts` types into an app over the same request-file channel as `restart`
   (`restart-requests.ts`, one file per kind: a line per request, renamed aside before it is read).
-  The run delivers it to `output.screens`, so only an app with a pseudo-terminal reads keys.
+  The run delivers it to `output.screens`, so only an app with a pseudo-terminal reads keys. Each
+  request carries an id, and the run answers it in `send/<session>.replies/<id>`, typed or why
+  not, so `send` can exit 3 rather than report keys that reached nothing.
 - `commands/inspect/file-table.ts` reads the machine's open-file table (`sysctl` /
   `/proc/sys/fs/file-nr`); `doctor` runs the full `lsof` for the top holders only past half full,
   because it takes seconds on a crowded machine.

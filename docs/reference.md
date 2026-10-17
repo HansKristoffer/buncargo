@@ -688,7 +688,10 @@ interactive app gets a pseudo-terminal of its own instead, so Expo starts its
 dev server rather than refusing, and its output is logged like any app's.
 `buncargo send <app> <keys>` types into it (`buncargo send expoApp i` opens the
 iOS simulator; `--enter` presses Enter after the text). `send` reaches every
-app in the TUI the same way.
+app in the TUI the same way. It waits for the run to answer: exit `0` typed,
+`2` no run started that app, `3` the app cannot take keys (no terminal of its
+own, or not running; it says which), `1` when the run does not answer within
+five seconds.
 
 ## Expo and the iOS simulator
 

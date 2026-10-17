@@ -39,8 +39,9 @@ hardcode a port. Ask buncargo instead.
   \`--detach\` or is gone; one in someone's terminal needs \`--takeover\`.
 - An interactive app (Expo) runs in a terminal of its own when you have none.
   Press its keys with \`bunx buncargo send <app> <keys>\`, e.g.
-  \`bunx buncargo send expoApp i\` to open the iOS simulator. Do not wrap it in
-  \`script\` or \`tail -f /dev/null\`.
+  \`bunx buncargo send expoApp i\` to open the iOS simulator. Exit 3 means the
+  app could not take them (it says why), 2 that no run started it. Do not wrap
+  it in \`script\` or \`tail -f /dev/null\`.
 - Apps with a \`watch\` config restart themselves when their files change; do
   not run them under \`bun --watch\` as well.
 
