@@ -9,6 +9,7 @@ import {
 import {
 	applySecretDefaults,
 	clearScopeSecretsCache,
+	describeSecretsError,
 	fetchScopeSecrets,
 	type InfisicalScope,
 	loadAppSecrets,
@@ -366,8 +367,18 @@ describe("loadScopeSecrets with a machine identity", () => {
 		expect(infisical.cliCalls().length).toBeGreaterThan(0);
 	});
 
+	it("names the scope when Infisical has no such project", async () => {
+		start();
+		const error = await loadScopeSecrets(scopeOf("nope"), {
+			env: noIdentity(),
+		}).catch((caught: unknown) => caught);
+		expect(describeSecretsError(error)).toBe(
+			`Infisical list secrets failed (HTTP 404). Fix: check that project nope has environment "dev" and path "/" on ${fake?.siteUrl}; a 404 usually means one of them is misspelled or missing.`,
+		);
+	});
+
 	it("fails with the status and no body on bad credentials", async () => {
-		const infisical = start();
+		start();
 		await expect(
 			loadScopeSecrets(scopeOf("p1"), {
 				env: { INFISICAL_CLIENT_ID: "id", INFISICAL_CLIENT_SECRET: "wrong" },

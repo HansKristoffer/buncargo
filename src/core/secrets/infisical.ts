@@ -217,9 +217,7 @@ async function request(
 		// The body is not echoed: it can quote what was sent.
 		throw new SecretsError(
 			`Infisical ${operation} failed (HTTP ${response.status}).`,
-			response.status === 401 || response.status === 403
-				? `infisical login --domain=${scope.siteUrl}`
-				: undefined,
+			failureFix(scope, response.status),
 		);
 	}
 	try {
@@ -229,6 +227,14 @@ async function request(
 			`Infisical ${operation} returned something other than JSON.`,
 		);
 	}
+}
+
+function failureFix(scope: InfisicalScope, status: number): string | undefined {
+	if (status === 401 || status === 403)
+		return `infisical login --domain=${scope.siteUrl}`;
+	if (status === 404)
+		return `check that project ${scope.projectId} has environment "${scope.environment}" and path "${scope.path}" on ${scope.siteUrl}; a 404 usually means one of them is misspelled or missing.`;
+	return undefined;
 }
 
 /** The organization a session token is scoped to; routing metadata only. */
