@@ -1,7 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
 import { readRemovals } from "../core/removal-log";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
@@ -17,8 +15,9 @@ import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 import { createLifecycleApi } from "./lifecycle";
 
-// Starts take the project lifecycle lock under ~/.buncargo.
-isolateHome("buncargo-lifecycle-home-");
+// Starting and stopping take the project's lifecycle lock and record the
+// removal under `~/.buncargo`: a home of the test's own, never the developer's.
+isolateHome("buncargo-lifecycle-");
 
 function fixture() {
 	const events: string[] = [];
@@ -228,33 +227,25 @@ describe("startup modes and hooks", () => {
 		ctx.runtime.down = async () => {
 			events.push("down");
 		};
-		const home = process.env.HOME;
-		process.env.HOME = mkdtempSync(join(tmpdir(), "buncargo-stop-"));
-		try {
-			await lifecycle.start({
-				prepare: "containers",
-				startServers: false,
-				verbose: false,
-				wait: false,
-			});
-			await lifecycle.stop({ verbose: false });
-			// The containers are gone, so there is nothing to hold them for.
-			expect(events.slice(-2)).toEqual(["down", "retire"]);
-			// And a run that was using them can say who took them.
-			expect(readRemovals()).toMatchObject([
-				{
-					projectName: "test",
-					runtime: "docker",
-					reason: "stopped",
-					owner: { sessionId: "test-session", pid: process.pid },
-					by: { pid: process.pid },
-				},
-			]);
-		} finally {
-			rmSync(process.env.HOME, { recursive: true, force: true });
-			if (home === undefined) delete process.env.HOME;
-			else process.env.HOME = home;
-		}
+		await lifecycle.start({
+			prepare: "containers",
+			startServers: false,
+			verbose: false,
+			wait: false,
+		});
+		await lifecycle.stop({ verbose: false });
+		// The containers are gone, so there is nothing to hold them for.
+		expect(events.slice(-2)).toEqual(["down", "retire"]);
+		// And a run that was using them can say who took them.
+		expect(readRemovals()).toMatchObject([
+			{
+				projectName: "test",
+				runtime: "docker",
+				reason: "stopped",
+				owner: { sessionId: "test-session", pid: process.pid },
+				by: { pid: process.pid },
+			},
+		]);
 	});
 	it("rejects an invalid selection before writing the artifact or starting runtime", async () => {
 		const { events, lifecycle } = fixture();
