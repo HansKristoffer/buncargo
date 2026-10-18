@@ -108,13 +108,18 @@ it.each([
 	15000,
 );
 
-/** The run's `seed.log`, once its buffered write has landed. */
+/**
+ * The run's `seed.log`, once its buffered write has landed. The file exists
+ * before its first line does: an append creates it, then writes.
+ */
 async function seedLog(root: string, deadline: number): Promise<string> {
+	let text = "";
 	while (Date.now() < deadline) {
 		const [dir] = listRunLogDirs(root);
 		const file = dir ? Bun.file(join(dir, "seed.log")) : undefined;
-		if (file && (await file.exists())) return file.text();
+		if (file && (await file.exists())) text = await file.text();
+		if (text) return text;
 		await Bun.sleep(20);
 	}
-	return "";
+	return text;
 }
