@@ -237,6 +237,8 @@ no existing checkout claims the project and no run on record for it still has it
 container of the project still standing defers the decision to the next pass, and a runtime that
 does not answer defers everything. "Still has its checkout" includes one this user cannot read.
 
+The watchdog also reports, at most hourly and only when the set changes, the volumes `prune` would propose (`orphan-report.ts`). It never removes them: a project with no port claim has no removal record, so the sweep never sees it, and a report is the only thing that can say so. Only runtimes that answered that pass are judged, each against its own containers. The one automatic volume removal that is not an opt-in is `buncargo ci`'s own leftovers (`ciLeftoverVolumes`): at its start it removes what a killed run left in its `-ci` project, only when no container or run names that project, as its teardown would have done.
+
 Volumes need more proof than containers. A deletion counts only when confirmed (`ENOENT`) on two
 passes at least `DELETED_CHECKOUT_SETTLE_MS` (10 minutes) apart: the first sighting is stamped on
 the claim as `deletedSeenAt` under the claims lock, and cleared if the checkout is back, so an

@@ -226,6 +226,8 @@ export default defineDevConfig({
 
 `buncargo ci [--migrate] [--seed] [--services=a,b] -- <command>` starts the configured services (all of them, or `--services`), applies migrations and the seed with the same config as local, runs the command with the checkout env (but no Infisical secrets: a CI job should not need Infisical access for its tests; migrations and the seed keep their scopes), and tears everything down, volumes included. It runs as its own `<project>-ci` stack, with its own ports and compose file, so running it on a laptop never touches the checkout's dev database. A PR workflow then needs no `services: postgres` block or hand-written `DATABASE_URL`, and "migrations apply" and "the seed works" are tested exactly as they run locally. Without a command it only prepares; the exit code is the command's, or the seed's when that fails. `seed.check` is skipped, because a CI database is never warm.
 
+A run killed before its teardown (`SIGKILL`, a crashed runner) leaves its volumes behind. The next `buncargo ci` in the same checkout removes them before it starts, but only from its own `<project>-ci` project, and only when no container of that project is up and no run on record names it. A run still going is never touched.
+
 The teardown runs however the run ends: the command failing, the services failing to start, or `SIGINT`/`SIGTERM`/`SIGHUP` at any point, including one that arrives while the stack is already coming down. An interrupted run exits `130`/`143`/`129`. Only a run killed outright (`SIGKILL`) leaves its stack: the sweep (the watchdog, `ls`, `doctor`) removes its containers once it has seen the run gone for 15 seconds, and `buncargo prune --project` its volume. `ci` starts no watchdog of its own: on a machine where no other run started one, the next `ls` or `doctor` sweeps.
 
 `buncargo prisma migrate-check` wraps `prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code` against a shadow database. The shadow database (`<database>_shadow`) is created inside the configured Postgres service, so no host `psql` is needed. Prisma 6 and older get it as `--shadow-database-url` (and `--to-schema-datamodel`, their name for the flag). Prisma 7 removed that flag and reads the shadow URL from `prisma.config.ts`, so point `datasource.shadowDatabaseUrl` at `env("SHADOW_DATABASE_URL")`, which buncargo sets. `--migrations=<dir>` and `--schema=<path>` override the paths (relative to `prisma.cwd`), and arguments after `--` go to `migrate diff`. Exit code 2 means the schema has changes no migration contains.
@@ -1519,6 +1521,34 @@ bunx buncargo prune --yes       # For scripts that have already decided
 Volumes carry no buncargo labels on purpose: Compose compares a volume against the file and offers to *recreate* it when they differ, which hangs a non-interactive run and destroys the data. So prune cannot tell which checkout a volume came from, and says so rather than guessing — volumes it cannot attribute to a project are counted and left alone.
 
 A machine where worktrees come and go all day, such as a server agents work on, can opt in with `BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`: the sweep then also removes the volumes of a checkout whose directory was deleted, once a pass at least 10 minutes after the first still finds it gone. It works for checkouts whose containers are already gone, and leaves the volumes whenever another checkout or a run still uses the same project name. A checkout your user cannot read never counts as deleted.
+
+The watchdog also reports the volumes `buncargo prune --dry-run` would propose, in `~/.buncargo/watchdog.log`. It checks at most once an hour and writes only when that set changes, and it never removes anything: a project whose checkout has no port claim is invisible to the sweep, so its volumes stay until you run `prune`. Only the runtimes that answered that pass are judged, each against its own containers.
+
+The watchdog exits when nothing is left to watch, and the next `buncargo dev` starts one from its own checkout. A machine that wants a standing watchdog on a pinned release, rather than one that follows whichever worktree last ran, can run it as a systemd user service. Use `on-failure`, not `always`: the watchdog exits with status 0 when idle, and `always` would restart it every 30 seconds to find nothing to do.
+
+```bash
+mkdir -p ~/.buncargo-watchdog && cd ~/.buncargo-watchdog && bun add buncargo@<version>
+```
+
+```ini
+# ~/.config/systemd/user/buncargo-watchdog.service
+[Unit]
+Description=buncargo watchdog (pinned release)
+
+[Service]
+ExecStart=%h/.bun/bin/bun %h/.buncargo-watchdog/node_modules/buncargo/dist/core/watchdog-runner.js
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload && systemctl --user enable --now buncargo-watchdog
+```
+
+systemd's user manager reads `~/.config/environment.d/*.conf`, so the `BUNCARGO_*` settings there reach the service. A newer buncargo started from a worktree still replaces this watchdog, as it replaces any older one.
 
 `buncargo prune --project` is the same, for one project: run it in any checkout, and it removes only that project's leftovers, by name. That is every checkout's `ci` stack, and every stack of a worktree whose directory was deleted (until `git worktree prune` forgets it). It takes their stopped containers, volumes and networks:
 

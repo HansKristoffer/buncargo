@@ -1,8 +1,17 @@
-import { CONTAINER_RUNTIME_SELECTIONS } from "../../container-runtime";
+import {
+	CONTAINER_RUNTIME_SELECTIONS,
+	containerRuntimeForEnv,
+	withProjectLifecycleLock,
+} from "../../container-runtime";
 import { CI_PROJECT_SUFFIX } from "../../core/ports";
+import { type RunEntry, readAllRuns } from "../../core/run-registry";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
 import { loadDevEnv } from "../../loader";
-import type { AnyDevEnvironment } from "../../types";
+import type {
+	AnyDevEnvironment,
+	BuncargoContainer,
+	BuncargoVolume,
+} from "../../types";
 import {
 	type CommandSpec,
 	enumValidator,
@@ -110,6 +119,68 @@ function reportContainerLoss(
 }
 
 /**
+ * The volumes a killed `buncargo ci` run left in its `-ci` project.
+ *
+ * A run killed outright cannot tear down, so its volumes outlive its containers.
+ * They are this run's own: no container of the project is up and no run on
+ * record names it. Anything else belongs to a run that is still going, and is
+ * left alone.
+ */
+export function ciLeftoverVolumes(input: {
+	projectName: string;
+	volumes: readonly BuncargoVolume[];
+	containers: readonly BuncargoContainer[];
+	runs: readonly RunEntry[];
+}): string[] {
+	const { projectName } = input;
+	if (input.containers.some((container) => container.project === projectName))
+		return [];
+	if (input.runs.some((run) => run.projectName === projectName)) return [];
+	return input.volumes
+		.filter((volume) => volume.project === projectName)
+		.map((volume) => volume.name);
+}
+
+/**
+ * Remove a killed run's leftover volumes before this run starts, so its
+ * database starts empty, as every CI run's does.
+ *
+ * Only what `buncargo ci` would have removed on its own teardown, and only in
+ * its own project. A busy project lock or a runtime that cannot answer means
+ * someone else is working there, so the run goes ahead without the cleanup.
+ */
+async function removeCiLeftovers(env: AnyDevEnvironment): Promise<void> {
+	const runtime = containerRuntimeForEnv(env);
+	try {
+		await withProjectLifecycleLock(
+			env.projectName,
+			env.root,
+			async () => {
+				const names = ciLeftoverVolumes({
+					projectName: env.projectName,
+					volumes: await runtime.listVolumes(),
+					containers: runtime.list(),
+					runs: await readAllRuns(),
+				});
+				if (names.length === 0) return;
+				const refused = await runtime.removeVolumes(names);
+				for (const { name, error } of refused)
+					log.warn(`Could not remove leftover volume ${name}: ${error}`);
+				const removed = names.length - refused.length;
+				if (removed > 0)
+					log.info(
+						`Removed ${removed} leftover volume${removed === 1 ? "" : "s"} of ${env.projectName}, from a run that did not finish`,
+					);
+			},
+			{ timeoutMs: 0 },
+		);
+	} catch {
+		// A busy lock, or a runtime that is not up: the run itself reports it
+		// with a clearer message than a cleanup could.
+	}
+}
+
+/**
  * Local services in CI: start them, apply migrations and the seed with the
  * same config as local, run the command with the environment, tear down.
  *
@@ -154,6 +225,7 @@ export async function handleCi(args: string[]): Promise<number> {
 			// Explicit, so a config's `autoShutdown: false`, which is about dev
 			// containers, does not keep a ci stack. Prepared first: the claim
 			// names the selection's services.
+			await removeCiLeftovers(env);
 			await env.prepareStartAsync(undefined, services, signal);
 			await env.claimRun({ idleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS, signal });
 			await env.start({

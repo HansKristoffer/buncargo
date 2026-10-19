@@ -9,8 +9,10 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execAsync } from "../../core/process";
+import type { RunEntry } from "../../core/run-registry";
 import { startFakeInfisical } from "../../core/secrets/fake-infisical.testing";
-import { parseCiArgs } from "./ci";
+import type { BuncargoContainer, BuncargoVolume } from "../../types";
+import { ciLeftoverVolumes, parseCiArgs } from "./ci";
 import { withAppendedArgs } from "./exec";
 
 const cli = [process.execPath, resolve(import.meta.dir, "../bin.ts")];
@@ -247,4 +249,62 @@ it("claims its stack with an idle hold, so the sweep removes it after a SIGKILL"
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+describe("ciLeftoverVolumes", () => {
+	const volume = (name: string, project: string): BuncargoVolume => ({
+		name,
+		project,
+		runtime: "docker",
+	});
+	const container = (project: string): BuncargoContainer =>
+		({ id: project, project, state: "running" }) as BuncargoContainer;
+	const run = (projectName: string) => ({ projectName }) as RunEntry;
+
+	it("takes the leftover volumes of a ci project nothing is using", () => {
+		expect(
+			ciLeftoverVolumes({
+				projectName: "demo-ci",
+				volumes: [
+					volume("demo-ci_postgres_data", "demo-ci"),
+					volume("demo_postgres_data", "demo"),
+				],
+				containers: [],
+				runs: [],
+			}),
+		).toEqual(["demo-ci_postgres_data"]);
+	});
+
+	it("leaves them while a container of the project is up", () => {
+		expect(
+			ciLeftoverVolumes({
+				projectName: "demo-ci",
+				volumes: [volume("demo-ci_postgres_data", "demo-ci")],
+				containers: [container("demo-ci")],
+				runs: [],
+			}),
+		).toEqual([]);
+	});
+
+	it("leaves them while a run on record names the project", () => {
+		expect(
+			ciLeftoverVolumes({
+				projectName: "demo-ci",
+				volumes: [volume("demo-ci_postgres_data", "demo-ci")],
+				containers: [],
+				runs: [run("demo-ci")],
+			}),
+		).toEqual([]);
+	});
+
+	it("never takes an unattributed volume", () => {
+		expect(
+			ciLeftoverVolumes({
+				projectName: "demo-ci",
+				volumes: [{ name: "stray", runtime: "docker" }],
+				containers: [],
+				runs: [],
+			}),
+		).toEqual([]);
+	});
 });
