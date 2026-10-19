@@ -105,14 +105,22 @@ function currentUser(): string {
 	}
 }
 
-/** The parent process's executable name, read once when a removal is recorded. */
+/**
+ * The parent process's executable name. Never throws: a removal record
+ * without it is still a record, and without `ps` on `PATH` spawning it
+ * throws rather than failing.
+ */
 function parentCommand(): string | undefined {
-	const result = Bun.spawnSync(
-		["ps", "-p", String(process.ppid), "-o", "comm="],
-		{ stdout: "pipe", stderr: "ignore" },
-	);
-	const command = result.success ? result.stdout.toString().trim() : "";
-	return command ? basename(command) : undefined;
+	try {
+		const result = Bun.spawnSync(
+			["ps", "-p", String(process.ppid), "-o", "comm="],
+			{ stdout: "pipe", stderr: "ignore" },
+		);
+		const command = result.success ? result.stdout.toString().trim() : "";
+		return command ? basename(command) : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** This process, as the actor of a removal. */

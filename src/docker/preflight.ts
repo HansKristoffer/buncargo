@@ -150,17 +150,28 @@ export function parseDockerDesktopPids(
 	return pids;
 }
 
+/**
+ * `ps` with these arguments, or undefined when it fails or cannot be spawned
+ * (spawning throws when it is not on `PATH`): only failure paths ask.
+ */
+function readPs(args: string[]): string | undefined {
+	try {
+		const result = Bun.spawnSync(["ps", ...args], {
+			stdout: "pipe",
+			stderr: "ignore",
+		});
+		return result.success ? result.stdout.toString() : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Docker Desktop processes of this user still running; only asked once the daemon failed. */
 function runningDockerDesktopPids(): number[] {
 	const uid = process.getuid?.();
 	if (process.platform !== "darwin" || uid === undefined) return [];
-	const result = Bun.spawnSync(["ps", "-axo", "pid=,uid=,comm="], {
-		stdout: "pipe",
-		stderr: "ignore",
-	});
-	return result.success
-		? parseDockerDesktopPids(result.stdout.toString(), uid)
-		: [];
+	const output = readPs(["-axo", "pid=,uid=,comm="]);
+	return output === undefined ? [] : parseDockerDesktopPids(output, uid);
 }
 
 /**
@@ -194,13 +205,9 @@ export function parseElapsed(etime: string): number | undefined {
  * however long the app around it has run.
  */
 function youngestUptimeMs(pids: readonly number[]): number | undefined {
-	const result = Bun.spawnSync(["ps", "-o", "etime=", "-p", pids.join(",")], {
-		stdout: "pipe",
-		stderr: "ignore",
-	});
-	if (!result.success) return undefined;
-	const ages = result.stdout
-		.toString()
+	const output = readPs(["-o", "etime=", "-p", pids.join(",")]);
+	if (output === undefined) return undefined;
+	const ages = output
 		.split("\n")
 		.map(parseElapsed)
 		.filter((age) => age !== undefined);
