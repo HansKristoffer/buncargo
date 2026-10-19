@@ -334,9 +334,12 @@ export async function sweepOrphanedContainers(
 		runs,
 		liveSessions: new Set(runs.filter(alive).map((run) => run.sessionId)),
 	};
-	const actor = options.actor ?? removalActor();
+	// Read on the first removal: naming the actor forks a `ps`, which a sweep
+	// that removes nothing (most `ls`) has no reason to pay for.
+	let actor = options.actor;
 	const swept: NoteSwept = async (stack) => {
 		result.swept.push(stack);
+		actor ??= removalActor();
 		await recordRemovals([
 			{ at: new Date().toISOString(), ...stack, by: actor },
 		]);

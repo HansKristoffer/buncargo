@@ -108,6 +108,20 @@ export interface RunServiceEntry {
 		binary?: string;
 	};
 	status: RunServiceStatus;
+	/**
+	 * Set by the run when the container stopped, was removed or turned
+	 * unhealthy under it, and cleared when it recovers. A separate field rather
+	 * than a status: an older reader drops an entry whose status it does not
+	 * know, and `status` stays what the run last set.
+	 */
+	problem?: RunServiceProblem;
+}
+
+export interface RunServiceProblem {
+	state: "stopped" | "missing" | "unhealthy";
+	/** The line the run printed: "postgres stopped (exit 0)", and who did it. */
+	detail: string;
+	since: string;
 }
 
 export interface RunStackEntry {
@@ -269,6 +283,10 @@ function isRunService(value: unknown): value is RunServiceEntry {
 				typeof value.url === "string" &&
 				typeof value.loopbackUrl === "string")) &&
 		["starting", "ready", "stopped"].includes(String(value.status)) &&
+		(value.problem === undefined ||
+			(isRecord(value.problem) &&
+				typeof value.problem.state === "string" &&
+				typeof value.problem.detail === "string")) &&
 		(value.stack === undefined || typeof value.stack === "string") &&
 		(value.container === undefined ||
 			(isRecord(value.container) &&

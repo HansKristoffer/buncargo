@@ -39,10 +39,12 @@ describe("parseDockerServiceStates", () => {
 		]);
 	});
 
-	it("reports a stopped container as not running", () => {
+	it("reports a stopped container as not running, with its exit code", () => {
 		expect(
-			parseDockerServiceStates(line("redis", "exited", "Exited (0)")),
-		).toEqual([{ service: "redis", running: false }]);
+			parseDockerServiceStates(
+				line("redis", "exited", "Exited (137) 3 minutes ago"),
+			),
+		).toEqual([{ service: "redis", running: false, exitCode: 137 }]);
 	});
 
 	it("skips a container with no buncargo.service label", () => {

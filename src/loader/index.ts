@@ -2,7 +2,11 @@ import type { AnyDevConfig, DevConfigLike, DevEnvironmentFor } from "../types";
 import { getCachedDevEnv } from "./cache";
 
 export { clearDevEnvCache } from "./cache";
-export { CONFIG_FILES, findConfigFile } from "./find-config-file";
+export {
+	CONFIG_FILES,
+	findCheckoutRoot,
+	findConfigFile,
+} from "./find-config-file";
 export { loadDevEnv } from "./load-dev-env";
 
 /**

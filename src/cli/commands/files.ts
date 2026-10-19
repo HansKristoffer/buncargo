@@ -18,6 +18,11 @@ import {
 	storeDir,
 	syncCheckoutFiles,
 } from "../../core/checkout-files";
+import {
+	isDotenvPath,
+	loopbackUrlPort,
+	readDotenvFile,
+} from "../../core/loopback-env";
 import { findMonorepoRoot } from "../../core/ports";
 import { askChoice, isInteractive } from "../../core/prompt";
 import { findConfigFile } from "../../loader";
@@ -278,7 +283,39 @@ async function save(
 	const { failed } = await saveCheckoutFiles(root, specs, { paths });
 	if (failed.length === 0)
 		log.done("The file store has this checkout's copies.");
+	for (const warning of portBoundSharedValues(root, specs, paths))
+		log.warn(warning);
 	return failed.length === 0 ? 0 : 1;
+}
+
+/**
+ * A loopback URL with a port is this checkout's port: every checkout that
+ * pulls the file connects here, and to nothing once this run ends. Saved
+ * anyway, since the store is the developer's; said, because the failure it
+ * causes elsewhere is silent.
+ */
+export function portBoundSharedValues(
+	root: string,
+	specs: readonly CheckoutFileSpec[],
+	paths: readonly string[] | undefined,
+): string[] {
+	return specs
+		.filter(
+			(spec) =>
+				!spec.machine &&
+				isDotenvPath(spec.path) &&
+				(!paths || paths.includes(spec.path)),
+		)
+		.flatMap((spec) => {
+			const keys = Object.entries(readDotenvFile(root, spec.path))
+				.filter(([, value]) => loopbackUrlPort(value) !== undefined)
+				.map(([key]) => key);
+			return keys.length === 0
+				? []
+				: [
+						`${spec.path} shares loopback URLs with a fixed port (${keys.join(", ")}): every checkout that pulls it connects to this checkout's ports. Let buncargo inject them (\`env\` in dev.config.ts), or set them per checkout with \`buncargo env set\`.`,
+					];
+		});
 }
 
 async function pull(

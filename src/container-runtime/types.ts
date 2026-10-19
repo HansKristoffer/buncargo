@@ -13,6 +13,11 @@ export interface EnsureRuntimeOptions {
 	autoStart?: boolean;
 	timeoutMs?: number;
 	verbose?: boolean;
+	/**
+	 * Kill and restart a runtime that is running but does not answer
+	 * (`doctor --fix`). Docker Desktop only; other runtimes ignore it.
+	 */
+	forceRestartUnresponsive?: boolean;
 }
 
 /**
@@ -150,6 +155,8 @@ export interface ServiceRuntimeState {
 	 * tell", never "unhealthy".
 	 */
 	healthy?: boolean;
+	/** A stopped container's exit code, where the runtime reports one. */
+	exitCode?: number;
 }
 
 /** A container as `buncargo prune --project` reads it. */

@@ -6,9 +6,11 @@ import {
 	getContainerRuntimeAdapter,
 	sweepOrphanedContainers,
 } from "../../../container-runtime";
+import { inDiscardedCheckout } from "../../../core/checkout-presence";
 import {
 	describeLoopbackHijack,
 	doctorFixHosts,
+	type HostsFixIssue,
 	isRouteLive,
 	loadHostRoutes,
 	OUTDATED_DAEMON_MESSAGE,
@@ -45,8 +47,11 @@ import {
 	classifyPortOccupant,
 	formatPortOwner,
 	getPortOwner,
+	killPortOwnerFoundBy,
+	type PortOwnerLookupOptions,
 	withBindProbe,
 } from "../../../core/process";
+import { describeRemoval, readRemovals } from "../../../core/removal-log";
 import {
 	REGISTRY_VERSION,
 	readAllRuns,
@@ -156,11 +161,12 @@ class DoctorReport {
 	}
 }
 
-function checkPortOwnership(
+async function checkPortOwnership(
 	report: DoctorReport,
 	env: DevEnv,
 	runtime: ContainerRuntimeAdapter,
-): void {
+	fix: boolean,
+): Promise<void> {
 	// doctor is the command people run *because* something is wrong, so it pays
 	// the extra probe to spot a container the other backend is holding a port with.
 	const fallbackRuntimes = availableContainerRuntimes().filter(
@@ -178,10 +184,46 @@ function checkPortOwnership(
 			projectName: env.projectName,
 			runtime: runtime.name,
 		});
-		if (action === "fail") {
-			report.issue(formatPortOwner(port, owner, { runtime: runtime.name }));
-		} else if (action === "kill") {
+		if (action === "kill") {
 			report.note(`Port ${port} (${name}) is held by an orphan from this repo`);
+			continue;
+		}
+		if (action !== "fail") continue;
+		const described = formatPortOwner(port, owner, { runtime: runtime.name });
+		// A dev server whose checkout was thrown away is nobody's any more, as
+		// the sweep treats that checkout's containers.
+		const discarded =
+			!owner.container &&
+			owner.cwd !== undefined &&
+			inDiscardedCheckout(owner.cwd);
+		if (!discarded) {
+			report.issue(described);
+			continue;
+		}
+		if (!fix) {
+			report.issue(
+				`${described}, a checkout that was deleted. \`buncargo doctor --fix\` stops it.`,
+			);
+			continue;
+		}
+		// Only the process just judged: a port that changed hands since is
+		// somebody else's, and is left alone.
+		const sameHolder = (_port: number, options: PortOwnerLookupOptions) => {
+			const current = getPortOwner(port, options);
+			return current && current.pids.join() === owner.pids.join()
+				? current
+				: null;
+		};
+		try {
+			if (await killPortOwnerFoundBy(sameHolder, port, { runtime }))
+				report.note(
+					`Stopped process ${owner.pids.join(", ")} on port ${port}: its checkout ${owner.cwd} was deleted`,
+				);
+			else report.note(`Port ${port} was freed while doctor ran`);
+		} catch (error) {
+			report.issue(
+				`Could not stop process ${owner.pids.join(", ")} on port ${port}: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 	}
 }
@@ -307,8 +349,11 @@ async function namedHostsModeReport(
 async function checkNamedHosts(
 	report: DoctorReport,
 	env: DevEnv,
+	fixed: { issues: HostsFixIssue[] } | undefined,
 ): Promise<void> {
 	if (!env.hosts) return;
+	// What a fix just tried and reported is not said a second time.
+	const reported = new Set(fixed?.issues.map((issue) => issue.kind));
 	const identity = invokingUserIdentity();
 	const other = await namedHostsModeReport(hostsMode(), tailscaleServeDeps(), {
 		name: identity.user,
@@ -325,18 +370,18 @@ async function checkNamedHosts(
 		report.note("Named-hosts daemon is healthy");
 		const hijack = await describeLoopbackHijack();
 		if (hijack) report.issue(`Named-hosts: ${hijack}`);
-	} else {
+	} else if (!reported.has("daemon") && !reported.has("service")) {
 		report.issue(
 			"Named-hosts daemon is not running. Run `buncargo hosts install` or `buncargo doctor --fix`.",
 		);
 	}
-	if (!isCaPresent()) {
+	if (!isCaPresent() && !reported.has("ca")) {
 		report.issue(
 			"Named-hosts CA is not trusted. Run `buncargo hosts install`.",
 		);
 	}
 	const staleService = describeStaleHostsService();
-	if (staleService) {
+	if (staleService && !reported.has("service")) {
 		report.issue(staleService);
 	}
 	const hostRoutes = (await loadHostRoutes(undefined, { strict: true })).filter(
@@ -400,17 +445,25 @@ async function checkSelectedRuntime(
 	fix = false,
 ): Promise<void> {
 	if (available.some((item) => item.name === runtime.name)) return;
-	if (!fix) {
-		report.issue(
-			`${runtime.displayName} is not running. Run buncargo doctor --fix to start it.`,
-		);
-		return;
-	}
 	try {
-		await runtime.ensureRunning();
-		report.note(`${runtime.displayName} was down and has been started`);
+		// Without --fix only the diagnosis: not running, or running and hung.
+		await runtime.ensureRunning(
+			fix
+				? { forceRestartUnresponsive: true }
+				: { autoStart: false, verbose: false, timeoutMs: 5000 },
+		);
+		report.note(
+			fix
+				? `${runtime.displayName} was down and has been started`
+				: `${runtime.displayName} is reachable`,
+		);
 	} catch (error) {
-		report.fromError(error);
+		const message = error instanceof Error ? error.message : String(error);
+		report.issue(
+			fix || message.includes("doctor --fix")
+				? message
+				: `${message} \`buncargo doctor --fix\` starts it.`,
+		);
 	}
 }
 
@@ -422,14 +475,34 @@ async function checkSelectedRuntime(
  * here because "the menu bar shows a project that is not running" is a
  * support question, and this is where someone looks.
  */
-async function checkRunRegistry(report: DoctorReport): Promise<void> {
+async function checkRunRegistry(
+	report: DoctorReport,
+	root: string | undefined,
+): Promise<void> {
 	try {
 		const runs = await readAllRuns();
-		const active = runs.filter(await runLivenessAsync(runs)).length;
+		const live = runs.filter(await runLivenessAsync(runs));
+		const active = live.length;
 		const held = runs.length - active;
 		report.note(
 			`${active} active run${active === 1 ? "" : "s"}, ${held} held for reuse`,
 		);
+		// A service down under a live run: its apps fail on their next query.
+		// Another checkout's is said, but is not this checkout's failure.
+		for (const run of live)
+			for (const service of run.services) {
+				if (!service.problem) continue;
+				const line = `${run.projectName} (${run.root}): ${service.problem.detail}`;
+				if (run.root === root) report.issue(line);
+				else report.note(`warning: ${line}`);
+			}
+		// Who stopped this checkout's containers lately, for the shutdown
+		// nobody remembers.
+		if (root)
+			for (const record of readRemovals()
+				.filter((candidate) => candidate.root === root)
+				.slice(-3))
+				report.note(`Recent: ${describeRemoval(record)}`);
 	} catch (error) {
 		report.issue(
 			`Could not read the run registry: ${error instanceof Error ? error.message : String(error)}`,
@@ -492,39 +565,36 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 
 	// Only the runtime this project selected has to be up; another one being
 	// down is not a problem for it, and starting it would be wrong.
+	const fix = hasFlag(args, "--fix");
 	const selected = env
 		? containerRuntimeForEnv(env)
 		: getContainerRuntimeAdapter("docker");
-	await checkSelectedRuntime(
-		report,
-		selected,
-		available,
-		hasFlag(args, "--fix"),
-	);
+	await checkSelectedRuntime(report, selected, available, fix);
+
+	// Repairs run before the checks, so the report describes the machine as
+	// the fix left it: a check ahead of its own repair reported the same
+	// problem as both fixed and broken.
+	const hostsFix =
+		fix && hostsMode() === "loopback" ? await doctorFixHosts() : undefined;
+	for (const line of hostsFix?.fixed ?? []) report.note(line);
+	for (const issue of hostsFix?.issues ?? []) report.issue(issue.message);
 
 	if (env) {
 		report.note(
 			`Port offset ${env.portOffset} from ${env.portOffsetProvenance}`,
 		);
-		checkPortOwnership(report, env, selected);
+		await checkPortOwnership(report, env, selected, fix);
 		checkPortsLockfile(report, env);
 		await checkOrphanedContainers(report, env, selected);
 		await checkTunnelRegistry(report, env);
-		await checkNamedHosts(report, env);
+		await checkNamedHosts(report, env, hostsFix);
 		await checkSetupChecks(report, env);
 	}
 
-	await checkRunRegistry(report);
+	await checkRunRegistry(report, env?.root);
 	checkMenuBarApp(report);
 	checkFileTable(report);
 	checkOffsetClaims(report);
-
-	// Only loopback named hosts have a daemon and a CA to repair.
-	if (hasFlag(args, "--fix") && hostsMode() === "loopback") {
-		for (const fixed of await doctorFixHosts()) {
-			report.note(fixed);
-		}
-	}
 
 	report.print();
 	if (report.issues.length > 0) {

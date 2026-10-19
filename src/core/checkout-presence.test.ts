@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkoutPresence } from "./checkout-presence";
+import { checkoutPresence, inDiscardedCheckout } from "./checkout-presence";
 import { unreadableCheckout } from "./checkout-presence.testing";
 
 const dir = mkdtempSync(join(tmpdir(), "buncargo-presence-"));
@@ -37,5 +37,18 @@ describe("checkoutPresence", () => {
 
 	it("reads an empty root as unknown", () => {
 		expect(checkoutPresence("")).toBe("unknown");
+	});
+});
+
+describe("inDiscardedCheckout", () => {
+	it("reads a directory in the Trash or one that is gone as discarded", () => {
+		expect(
+			inDiscardedCheckout(join(dir, ".Trash", "t3-348bb4e1", "apps")),
+		).toBe(true);
+		expect(inDiscardedCheckout("/Volumes/Work/.Trashes/501/checkout")).toBe(
+			true,
+		);
+		expect(inDiscardedCheckout(join(dir, "deleted"))).toBe(true);
+		expect(inDiscardedCheckout(dir)).toBe(false);
 	});
 });

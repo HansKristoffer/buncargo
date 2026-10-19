@@ -20,6 +20,7 @@ export {
 	getProcessOnPort,
 	isPortInUse,
 	killPortOwner,
+	killPortOwnerFoundBy,
 	type PortContainerOwner,
 	type PortOccupantAction,
 	type PortOwner,

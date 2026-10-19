@@ -29,13 +29,14 @@ import type { DevEnvContext } from "./context";
 import { syncEnvFile } from "./env-file";
 import type { DevEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
-import { LifecycleCoordinator } from "./lifecycle-coordinator";
+import type { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { runMigrationsSequentially } from "./migrations";
 import { prefetchSecrets } from "./prefetch-secrets";
 import type { DevRunClaimApi } from "./run-claim";
 import { assertSeedSucceeded, seedCanOverlap } from "./seed-startup";
 import { runSeedIfNeeded } from "./seeding";
 import { assertAppWorkingDirectories, startAppServers } from "./servers";
+import type { ServiceWatchApi } from "./service-watch";
 import {
 	composeServicesOf,
 	configuredStacks,
@@ -66,7 +67,8 @@ export function createLifecycleApi<
 	ctx: DevEnvContext<TServices, TApps, TEnv>,
 	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
 	runClaim: DevRunClaimApi,
-	coordinator = new LifecycleCoordinator(),
+	coordinator: LifecycleCoordinator,
+	serviceWatch: ServiceWatchApi,
 ): DevLifecycleApi<TApps, TServices> {
 	const { config, services, ports } = ctx;
 
@@ -481,6 +483,7 @@ export function createLifecycleApi<
 
 			if (hasServices) {
 				await ensureSubset(earlyServices);
+				serviceWatch.watch(Object.keys(earlyServices));
 			}
 
 			// Before migrations, not just before servers: Prisma and friends read
@@ -548,6 +551,7 @@ export function createLifecycleApi<
 
 				// Early jobs already completed. --no-deps prevents Compose from rerunning them.
 				await ensureSubset(lateServices, true);
+				serviceWatch.watch(Object.keys(lateServices));
 
 				if (shouldStartServers && Object.keys(appsToStart).length > 0) {
 					const pids = await startAppServers(ctx, envVars, {
@@ -618,6 +622,8 @@ export function createLifecycleApi<
 	async function stopEnvironment(stopOptions: StopOptions = {}): Promise<void> {
 		const { verbose = true, removeVolumes = false } = stopOptions;
 		stopOptions.signal?.throwIfAborted();
+		// Before anything comes down: this run's own teardown is not news.
+		serviceWatch.stop();
 		const beforeStop = config.hooks?.beforeStop;
 		if (beforeStop) {
 			await withDeadline(

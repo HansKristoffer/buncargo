@@ -81,7 +81,12 @@
           "port": 8025,
           "url": "http://localhost:8025",
           "loopbackUrl": "http://localhost:8025",
-          "status": "stopped"
+          "status": "stopped",
+          "problem": {
+            "state": "stopped",
+            "detail": "mailpit stopped (exit 0). No buncargo command of this user stopped it.",
+            "since": "2026-10-19T14:16:53.000Z"
+          }
         },
         {
           "name": "init",

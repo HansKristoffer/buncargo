@@ -10,6 +10,7 @@ import type {
 } from "../types";
 import { buildSharedEnvValues, mergeSharedEnvWithOverlay } from "./env";
 import { loadEnvInput } from "./env-input";
+import { applyEnvOverrides, readEnvOverrides } from "./env-overrides";
 import { applyHostPlanToUrls, planNamedHosts } from "./hosts/plan";
 import { readServedTailscaleUrlsSync } from "./hosts/tailscale-serve";
 import { getLocalIp } from "./network";
@@ -177,7 +178,13 @@ export function getEnvVar<
 		loopbackUrls,
 		publicUrls: {},
 	});
-	const inputEnv = loadEnvInput(root, applied.options?.envFiles);
+	const overrides = readEnvOverrides(root);
+	const inputEnv = loadEnvInput(
+		root,
+		applied.options?.envFiles,
+		process.env,
+		overrides,
+	);
 	const envVars = mergeSharedEnvWithOverlay(
 		{ ...(applied.options?.envFiles ? inputEnv : {}), ...shared },
 		applied.env as
@@ -195,6 +202,7 @@ export function getEnvVar<
 		},
 	);
 
+	applyEnvOverrides(envVars as Record<string, string>, overrides, inputEnv);
 	const value = envVars[name];
 
 	// Log frontend port for Vibe Kanban detection

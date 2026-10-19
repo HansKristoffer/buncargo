@@ -9,11 +9,20 @@ import {
 	inspectCheckoutFiles,
 	lastSyncReport,
 } from "../core/checkout-files";
+import { readEnvOverrides } from "../core/env-overrides";
 import {
 	appendToGitignore,
 	gitignoreCovers,
 	isGitIgnored,
 } from "../core/gitignore";
+import {
+	describeStrayLoopbackUrl,
+	findStrayLoopbackUrls,
+	isDotenvPath,
+	readDotenvFile,
+	type StrayLoopbackUrl,
+} from "../core/loopback-env";
+import { canBindPort } from "../core/process";
 import {
 	describeSecretsError,
 	fetchScopeSecrets,
@@ -93,6 +102,34 @@ export function checkoutFileProblem(
 			throw new Error(`Unhandled checkout file state: ${String(exhaustive)}`);
 		}
 	}
+}
+
+/**
+ * Loopback URLs in this checkout's overrides, dotenv checkout files and
+ * computed environment that point outside its port block: at a port nothing
+ * serves, or at another checkout's.
+ */
+export function strayLoopbackUrls(env: AnyDevEnvironment): StrayLoopbackUrl[] {
+	const files = checkoutFileErrors(env.checkoutFiles).length
+		? []
+		: checkoutFileSpecs(env.checkoutFiles).filter((file) =>
+				isDotenvPath(file.path),
+			);
+	return findStrayLoopbackUrls({
+		sources: [
+			{ source: "buncargo env set", values: readEnvOverrides(env.root) },
+			...files.map((file) => ({
+				source: file.path,
+				values: readDotenvFile(env.root, file.path),
+			})),
+			{
+				source: "the injected environment",
+				values: env.buildEnvVars() as Record<string, string>,
+			},
+		],
+		ports: env.ports as Record<string, number>,
+		isListening: (port) => !canBindPort(port),
+	});
 }
 
 function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
@@ -219,6 +256,22 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 			fixDescription: "add them to .gitignore",
 		});
 	}
+
+	// Fast: a few files and one bind probe per stray port. Silent otherwise:
+	// the run falls back to a refused connection minutes later.
+	checks.push({
+		name: "Loopback URLs point at this checkout",
+		severity: "warning",
+		check: () => {
+			const stray = strayLoopbackUrls(env);
+			return (
+				stray.length === 0 || {
+					ok: false,
+					detail: stray.map(describeStrayLoopbackUrl).join("; "),
+				}
+			);
+		},
+	});
 
 	const ignored = (env.generatedFiles ?? []).filter((file) => file.gitignore);
 	if (ignored.length > 0) {

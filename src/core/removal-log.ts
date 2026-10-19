@@ -30,6 +30,12 @@ export interface RemovalActor {
 	pid: number;
 	user: string;
 	version?: string;
+	/**
+	 * What started the command: `BuncargoBar`, `zsh`, an agent's harness.
+	 * The menu bar shells out to `buncargo stop`, so only this tells its
+	 * buttons from a terminal.
+	 */
+	parent?: string;
 }
 
 /** The run a removal was decided against, as the registry recorded it. */
@@ -63,6 +69,8 @@ export interface RemovalRecord {
 	owner?: RemovalOwner;
 	/** Set when volumes were removed; absent for containers. */
 	volumes?: string[];
+	/** Set when only these services' containers were stopped (`buncargo stop <service>`). */
+	services?: string[];
 	by: RemovalActor;
 }
 
@@ -97,15 +105,27 @@ function currentUser(): string {
 	}
 }
 
+/** The parent process's executable name, read once when a removal is recorded. */
+function parentCommand(): string | undefined {
+	const result = Bun.spawnSync(
+		["ps", "-p", String(process.ppid), "-o", "comm="],
+		{ stdout: "pipe", stderr: "ignore" },
+	);
+	const command = result.success ? result.stdout.toString().trim() : "";
+	return command ? basename(command) : undefined;
+}
+
 /** This process, as the actor of a removal. */
 export function removalActor(
 	command = invocationCommand(process.argv),
 ): RemovalActor {
+	const parent = parentCommand();
 	return {
 		command,
 		pid: process.pid,
 		user: currentUser(),
 		version: buncargoVersion(),
+		...(parent ? { parent } : {}),
 	};
 }
 
@@ -183,15 +203,22 @@ export function describeActor(actor: RemovalActor): string {
 		`pid ${actor.pid}`,
 		`user ${actor.user}`,
 		`buncargo ${actor.version ?? "of unknown version"}`,
+		...(actor.parent ? [`run from ${actor.parent}`] : []),
 	];
 	return `${who} (${details.join(", ")})`;
 }
 
 export function describeRemoval(record: RemovalRecord): string {
+	const serviceNoun =
+		record.services?.length === 1 ? "container" : "containers";
 	const what = record.volumes
 		? `volumes ${record.volumes.join(", ")}`
-		: "containers";
-	return `${describeActor(record.by)} removed ${record.projectName}'s ${what} at ${record.at}: ${record.reason}`;
+		: record.services
+			? `${record.services.join(", ")} ${serviceNoun}`
+			: "containers";
+	// A service stop leaves its container, stopped, for the next run.
+	const verb = record.services ? "stopped" : "removed";
+	return `${describeActor(record.by)} ${verb} ${record.projectName}'s ${what} at ${record.at}: ${record.reason}`;
 }
 
 /**
@@ -216,4 +243,33 @@ export function explainContainerLoss(input: {
 			? ` and \`docker events --since ${since} --until ${until} --filter label=com.docker.compose.project=${input.projectName}\``
 			: "";
 	return `${input.projectName}'s containers were removed outside this run between ${since} and ${until}, and this user's buncargo recorded no removal. Check other users' ~/.buncargo/watchdog.log${events}.`;
+}
+
+/**
+ * Who stopped one service of a live run, for the line the run prints when
+ * it notices: the newest record since `since` of that service or of the
+ * whole stack, else where to look, since nothing here did it.
+ */
+export function explainServiceStop(input: {
+	projectName: string;
+	root: string;
+	runtime: string;
+	service: string;
+	since: number;
+	records: readonly RemovalRecord[];
+}): string {
+	const record = input.records.findLast(
+		(candidate) =>
+			candidate.projectName === input.projectName &&
+			candidate.root === input.root &&
+			Date.parse(candidate.at) >= input.since &&
+			(!candidate.services || candidate.services.includes(input.service)),
+	);
+	if (record) return describeRemoval(record);
+	const since = new Date(input.since).toISOString();
+	const events =
+		input.runtime === "docker"
+			? `: \`docker events --since ${since} --filter label=com.docker.compose.project=${input.projectName}\``
+			: "";
+	return `No buncargo command of this user stopped it, so the runtime or another tool did; Docker Desktop restarting stops every container. Check other users' ~/.buncargo/watchdog.log and the runtime's events${events}.`;
 }

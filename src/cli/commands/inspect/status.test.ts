@@ -11,6 +11,7 @@ import { dirname, join, resolve } from "node:path";
 import { getDaemonConfigPath } from "../../../core/hosts/paths";
 import { HEALTH_PATH } from "../../../core/hosts/proxy";
 import { CI_ENV_VARS } from "../../../core/runtime-flags";
+import { describePlannedOffset, runHealth } from "./status";
 
 const cli = resolve(import.meta.dir, "../../bin.ts");
 let dir: string;
@@ -96,3 +97,46 @@ it("reports named hosts as the daemon serves them, with their URLs", async () =>
 		true,
 	);
 }, 30_000);
+
+it("says where the next run moves an unclaimed block, and which port forced it", () => {
+	const ports = {
+		postgres: { port: 6032, state: "free", owner: null },
+		api: {
+			port: 8600,
+			state: "foreign",
+			owner:
+				"port 8600 held by process 74437 (bun) in /Users/x/.Trash/t3-348bb4e1/apps/backend",
+		},
+	};
+	expect(describePlannedOffset({ offset: 5600, planned: 5600, ports })).toBe(
+		undefined,
+	);
+	expect(describePlannedOffset({ offset: 5600, planned: 5700, ports })).toEqual(
+		{
+			offset: 5700,
+			reason:
+				"api: port 8600 held by process 74437 (bun) in /Users/x/.Trash/t3-348bb4e1/apps/backend",
+		},
+	);
+});
+
+it("reads a run with a service down under it as degraded", () => {
+	expect(runHealth({ services: [{ name: "postgres", status: "ready" }] })).toBe(
+		"ok",
+	);
+	expect(
+		runHealth({
+			services: [
+				{
+					name: "postgres",
+					status: "ready",
+					problem: {
+						state: "stopped",
+						detail: "postgres stopped (exit 0)",
+						since: "2026-10-19T14:16:53.000Z",
+					},
+				},
+			],
+		}),
+	).toBe("degraded");
+});

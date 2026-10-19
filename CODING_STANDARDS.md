@@ -21,7 +21,8 @@ of these anywhere else has written a second owner: flag it and name the first.
 | buncargo's package root and version | `src/core/version.ts` |
 | Reading and extending `.gitignore` | `src/core/gitignore.ts` |
 | Whether a checkout is deleted (only `ENOENT` or `ENOTDIR` is) | `src/core/checkout-presence.ts` |
-| Who removed a stack or volume | `src/core/removal-log.ts` |
+| Who removed a stack or volume, or stopped a service | `src/core/removal-log.ts` |
+| A checkout's `buncargo env set` overrides | `src/core/env-overrides.ts` |
 | Exclusive leases as a run takes and explains them | `src/core/app-leases.ts` |
 | A run's entry and app rows in `runs.json` | `src/core/run-publish.ts` |
 | What the sweep removes | `decideSweep` in `src/container-runtime/sweep.ts` |

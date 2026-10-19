@@ -327,7 +327,22 @@ async function stopServiceUnlocked(
 					container.project === run.projectName &&
 					container.service === serviceName,
 			);
-		if (containers.length > 0) stopBuncargoContainers(containers, runtimes);
+		if (containers.length > 0) {
+			stopBuncargoContainers(containers, runtimes);
+			// So the run that notices its service stopped can say who did it.
+			await recordRemovals([
+				{
+					at: new Date().toISOString(),
+					projectName: run.projectName,
+					root: run.root,
+					runtime: service.container.runtime,
+					reason: "stopped",
+					services: [serviceName ?? service.name],
+					owner: removalOwner(run),
+					by: removalActor(),
+				},
+			]);
+		}
 		// One service, one container, however many sessions are looking at it:
 		// mark it stopped in each of theirs.
 		const sharing = (await findRunsByRoot(run.root)).filter(

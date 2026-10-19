@@ -3,11 +3,15 @@ import { resolve } from "node:path";
 import { parseEnv } from "node:util";
 import type { EnvInputFile } from "../types";
 
-/** Files are defaults. No process.env mutation and no writes to credentials. */
+/**
+ * Files are defaults, then the checkout's `buncargo env set` overrides, then
+ * the shell. No process.env mutation and no writes to credentials.
+ */
 export function loadEnvInput(
 	root: string,
 	files: readonly EnvInputFile[] = [],
-	inherited: NodeJS.ProcessEnv = process.env,
+	inherited: NodeJS.ProcessEnv,
+	overrides: Readonly<Record<string, string>>,
 ): Readonly<Record<string, string>> {
 	const values: Record<string, string> = {};
 
@@ -30,6 +34,7 @@ export function loadEnvInput(
 		}
 	}
 
+	Object.assign(values, overrides);
 	// Shell values override file defaults without changing process.env.
 	for (const [name, value] of Object.entries(inherited))
 		if (value !== undefined) {

@@ -12,6 +12,7 @@ export { getCaPath } from "./mkcert";
 export {
 	doctorFixHosts,
 	ensureHostsReady,
+	type HostsFixIssue,
 	runHostsInstall,
 	runHostsUninstall,
 } from "./onboarding";

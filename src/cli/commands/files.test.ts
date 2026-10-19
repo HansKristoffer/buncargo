@@ -147,3 +147,16 @@ it("merges key by key, asking for conflicting keys by name only", () => {
 		"A=2\nSECRET=stored\nNEW=x\n",
 	);
 });
+
+it("saves a loopback URL with a fixed port, and warns that every checkout gets it", () => {
+	const root = checkout("app");
+	writeFileSync(
+		join(root, ".env.local"),
+		"UPSTASH_REDIS_REST_URL=http://localhost:8079\nREMOTE=https://api.example.com\n",
+	);
+	const { stderr } = files(root, join(dir, "home"), ["save", ".env.local"]);
+	expect(stderr).toContain(
+		".env.local shares loopback URLs with a fixed port (UPSTASH_REDIS_REST_URL)",
+	);
+	expect(stderr).not.toContain("REMOTE");
+});
