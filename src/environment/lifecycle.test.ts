@@ -14,6 +14,8 @@ import type { AppConfig, ServiceConfig } from "../types";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 import { createLifecycleApi } from "./lifecycle";
+import { LifecycleCoordinator } from "./lifecycle-coordinator";
+import { createServiceWatch } from "./service-watch";
 
 // Starting and stopping take the project's lifecycle lock and record the
 // removal under `~/.buncargo`: a home of the test's own, never the developer's.
@@ -127,7 +129,13 @@ function fixture() {
 		events,
 		ctx,
 		envVars,
-		lifecycle: createLifecycleApi(ctx, envVars, runClaim),
+		lifecycle: createLifecycleApi(
+			ctx,
+			envVars,
+			runClaim,
+			new LifecycleCoordinator(),
+			createServiceWatch(ctx, runClaim.sessionId),
+		),
 	};
 }
 

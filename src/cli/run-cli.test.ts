@@ -170,6 +170,7 @@ function createStubEnv(
 		sessionId: "test-session",
 		claimRun: async () => {},
 		releaseRun: async () => {},
+		reportServiceChanges: () => {},
 		ensureWatchdog: async () => {},
 		withSuffix: () =>
 			createStubEnv() as DevEnvironment<

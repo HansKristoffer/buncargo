@@ -10,10 +10,15 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	DESKTOP_COLD_START_MS,
 	DockerUnavailableError,
 	ensureDockerRunning,
 	isDockerDaemonRunning,
+	isDockerDesktopHung,
+	parseDockerDesktopPids,
+	parseElapsed,
 	runtimeFromContext,
+	unresponsiveDockerError,
 } from "./preflight";
 
 const roots: string[] = [];
@@ -208,5 +213,42 @@ describe("Docker daemon preflight", () => {
 			controller.abort();
 			await outcome;
 		}
+	});
+});
+
+describe("Docker Desktop process detection", () => {
+	it("finds this user's Docker Desktop processes by executable name only", () => {
+		const ps = [
+			"  101   501 /Applications/Docker.app/Contents/MacOS/Docker Desktop.app/Contents/MacOS/Docker Desktop",
+			"  102   501 /Applications/Docker.app/Contents/MacOS/com.docker.backend",
+			"  103     0 /Library/PrivilegedHelperTools/com.docker.vmnetd",
+			"  104   502 /Applications/Docker.app/Contents/MacOS/com.docker.backend",
+			"  105   501 /usr/local/bin/com.docker.backend-wrapper",
+			"  106   501 /Applications/Docker.app/Contents/MacOS/com.docker.virtualization",
+		].join("\n");
+		expect(parseDockerDesktopPids(ps, 501)).toEqual([101, 102, 106]);
+	});
+
+	it("names a hung Docker Desktop and the fix, not 'not running'", () => {
+		const error = unresponsiveDockerError([102]);
+		expect(error.message).toContain("is running (pid 102)");
+		expect(error.message).toContain("buncargo doctor --fix");
+		expect(error.message).not.toContain("is not running");
+	});
+});
+
+describe("Docker Desktop hang detection", () => {
+	it("reads ps elapsed times", () => {
+		expect(parseElapsed("  01:05")).toBe(65_000);
+		expect(parseElapsed("02:00:00")).toBe(7_200_000);
+		expect(parseElapsed("1-00:00:01")).toBe(86_401_000);
+		expect(parseElapsed("soon")).toBeUndefined();
+	});
+
+	// A Desktop still cold-starting must never be killed: that stops every
+	// checkout's containers for nothing.
+	it("calls Docker Desktop hung only once it is past a cold start", () => {
+		expect(isDockerDesktopHung(65_000)).toBe(false);
+		expect(isDockerDesktopHung(DESKTOP_COLD_START_MS)).toBe(true);
 	});
 });

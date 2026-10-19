@@ -103,6 +103,13 @@ The sweep and volume pruning live in `container-runtime/` too; see
   never cache the container ID across polls or guess it from a name. `diagnose.ts` resolves the
   same way, with `--all`: readiness polls it as the probe for jobs and port-less services.
 - `preflight.ts` detects the local Docker runtime and auto-starts it when possible.
+  Docker Desktop can hang with `com.docker.backend` alive and the socket silent, which
+  `open -a Docker` does nothing about and a quit request does not end. Its processes are
+  listed only after the daemon failed, so "running but not answering" reads apart from
+  "not running". Only `doctor --fix` (`forceRestartUnresponsive`) acts on it, after the full
+  wait and only once the newest Desktop process is older than a cold start: killing one
+  that is starting hard-stops every checkout's containers for nothing. It asks in a
+  terminal, sends SIGTERM before SIGKILL, and signals only the pids it listed.
 
 ## Apple container backend
 

@@ -1,3 +1,4 @@
+import { readEnvOverrides } from "../../core/env-overrides";
 import { hostsMode } from "../../core/runtime-flags";
 import { createNoopPhaseTimer, createPhaseTimer } from "../../core/timing";
 import { exitOnDevArgErrors, parseDevArgs, printDevHelp } from "../dev-flags";
@@ -165,6 +166,11 @@ export async function loadLiveEnv() {
 }
 
 export async function handleEnv(args: string[] = []): Promise<void> {
+	const [action, ...rest] = args;
+	if (action === "set" || action === "unset") {
+		await (await import("./env-set")).handleEnvSet(action, rest);
+		return;
+	}
 	const env = await loadLiveEnv();
 	const snapshot = {
 		projectName: env.projectName,
@@ -190,6 +196,8 @@ export async function handleEnv(args: string[] = []): Promise<void> {
 		// What `exec`, tasks and the apps are given (without their secrets),
 		// so `DATABASE_URL` can be read rather than reassembled from ports.
 		vars: env.buildEnvVars() as Record<string, string>,
+		// `buncargo env set` keys, already applied to `vars`.
+		overrides: Object.keys(readEnvOverrides(env.root)),
 	};
 	if (hasFlag(args, "--export")) {
 		log.line(formatEnvExports(snapshot.vars));

@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { claimFirstRunPrompt, resetFirstRunPrompt } from "../prompt";
-import { promptFirstRun, repairStaleService } from "./onboarding";
+import {
+	hostsServiceFix,
+	promptFirstRun,
+	repairStaleService,
+} from "./onboarding";
 
 const REASON =
 	"Named-hosts service runs hostsd-6.1.1.js, but this buncargo installs hostsd-7.1.0.js. Run `buncargo hosts install` to update it.";
@@ -85,5 +89,46 @@ describe("promptFirstRun", () => {
 		});
 		expect(choice).toBe("skip");
 		expect(asked).toBe(false);
+	});
+});
+
+describe("hostsServiceFix", () => {
+	it("reinstalls a stale service from a terminal", () => {
+		expect(
+			hostsServiceFix({
+				installed: true,
+				stale: REASON,
+				wedged: false,
+				interactive: true,
+			}),
+		).toEqual({
+			action: "install",
+			note: "Reinstalled the named-hosts service after a stale install",
+		});
+	});
+
+	// Printed as a note, the stale reason read as both fixed and broken.
+	it("reports a stale service it cannot reinstall without a terminal as an issue", () => {
+		const fix = hostsServiceFix({
+			installed: true,
+			stale: REASON,
+			wedged: false,
+			interactive: false,
+		});
+		expect(fix.action).toBe("needs-terminal");
+		expect(fix.action === "needs-terminal" && fix.issue).toContain(
+			"needs your password: run `buncargo hosts install`",
+		);
+	});
+
+	it("leaves a current, serving service alone", () => {
+		expect(
+			hostsServiceFix({
+				installed: true,
+				stale: undefined,
+				wedged: false,
+				interactive: false,
+			}),
+		).toEqual({ action: "none" });
 	});
 });

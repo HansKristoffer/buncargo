@@ -5,6 +5,7 @@ import {
 	resolveContainerRuntimeBinary,
 } from "../container-runtime";
 import { loadEnvInput } from "../core/env-input";
+import { readEnvOverrides } from "../core/env-overrides";
 import { applyHostPlanToUrls, planNamedHosts } from "../core/hosts/plan";
 import { tailscaleBlockPorts } from "../core/hosts/tailscale-serve";
 import { getLocalIp } from "../core/network";
@@ -84,6 +85,8 @@ export interface DevEnvContext<
 		onlyServices?: readonly string[],
 	): StartPlan;
 	prepareStart(onlyApps?: string[], onlyServices?: readonly string[]): void;
+	/** The full selection's allocation as a run would make it, claiming and writing nothing. */
+	planPortOffset(): { offset: number; provenance: PortOffsetProvenance };
 	prepareStartAsync(
 		onlyApps?: string[],
 		onlyServices?: readonly string[],
@@ -101,6 +104,8 @@ export interface DevEnvContext<
 	/** Values apps printed (`captures`), shared by hooks, env and generated files. */
 	readonly captured: Record<string, string>;
 	readonly inputEnv: Readonly<Record<string, string>>;
+	/** `buncargo env set` values, applied on top of every computed environment. */
+	readonly envOverrides: Readonly<Record<string, string>>;
 	readonly config: DevConfig<TServices, TApps, TEnv>;
 	readonly root: string;
 	readonly projectName: string;
@@ -165,7 +170,13 @@ export function createDevEnvContext<
 	} = {},
 ): DevEnvContext<TServices, TApps, TEnv> {
 	const root = options.root ?? findMonorepoRoot();
-	const inputEnv = loadEnvInput(root, config.options?.envFiles);
+	const envOverrides = readEnvOverrides(root);
+	const inputEnv = loadEnvInput(
+		root,
+		config.options?.envFiles,
+		process.env,
+		envOverrides,
+	);
 	const suffix = options.suffix;
 	const { worktree, worktreeSuffix, projectSuffix, projectName } =
 		computeDevIdentity({
@@ -294,6 +305,30 @@ export function createDevEnvContext<
 		return cachedPlan.plan;
 	}
 
+	/** What every allocation of a plan passes; callers add what it writes and how it probes. */
+	function allocationInput(
+		plan: StartPlan,
+		selectedRuntime: ContainerRuntimeAdapter | undefined,
+	) {
+		return {
+			projectPrefix: config.projectPrefix,
+			projectName,
+			root,
+			services,
+			apps,
+			suffix,
+			worktreeName: worktreeSuffix,
+			worktreeIsolation: config.options?.worktreeIsolation,
+			runtime: selectedRuntime,
+			probeNames: selectedRuntime ? undefined : plan.appNames,
+			companionPorts: tailscaleBlockPorts({
+				mode: hostsMode(),
+				hosts: Boolean(config.options?.hosts),
+				appNames: Object.keys(apps),
+			}),
+		};
+	}
+
 	function prepareStart(
 		onlyApps?: string[],
 		onlyServices?: readonly string[],
@@ -329,15 +364,7 @@ export function createDevEnvContext<
 				? undefined
 				: createPortOwnerSnapshot({ containers: new Map() }));
 		portPlan = resolvePortPlan({
-			projectPrefix: config.projectPrefix,
-			projectName,
-			root,
-			services,
-			apps,
-			suffix,
-			worktreeName: worktreeSuffix,
-			worktreeIsolation: config.options?.worktreeIsolation,
-			runtime: selectedRuntime,
+			...allocationInput(plan, selectedRuntime),
 			// Only dev has a lockfile; every environment claims its offset, so
 			// parallel suffixed runs (CI jobs on one machine) never share one.
 			persist: suffix === undefined,
@@ -347,12 +374,6 @@ export function createDevEnvContext<
 			getOwner: snapshot
 				? withBindProbe((port) => snapshot.owner(port))
 				: undefined,
-			probeNames: hasSelectedServices ? undefined : plan.appNames,
-			companionPorts: tailscaleBlockPorts({
-				mode: hostsMode(),
-				hosts: Boolean(config.options?.hosts),
-				appNames: Object.keys(apps),
-			}),
 		});
 
 		// Keep object identity: env callbacks may already hold these maps.
@@ -373,6 +394,7 @@ export function createDevEnvContext<
 		ownedServerPids: {},
 		captured: {},
 		inputEnv,
+		envOverrides,
 		get hasSelectedServices() {
 			return hasSelectedServices;
 		},
@@ -384,6 +406,18 @@ export function createDevEnvContext<
 		},
 		getStartPlan,
 		prepareStart,
+		planPortOffset() {
+			const plan = getStartPlan();
+			const selectedRuntime =
+				plan.requiredServiceKeys.length > 0 ? runtime() : undefined;
+			// Its own probe, bind-probed like a run's when no owner is given.
+			const { offset, provenance } = resolvePortPlan({
+				...allocationInput(plan, selectedRuntime),
+				persist: false,
+				claim: false,
+			});
+			return { offset, provenance };
+		},
 		async prepareStartAsync(onlyApps, onlyServices, signal) {
 			signal?.throwIfAborted();
 			const plan = getStartPlan(onlyApps, onlyServices);

@@ -63,6 +63,8 @@ bunx buncargo env
 bunx buncargo env --get ports.api
 bunx buncargo env --get DATABASE_URL   # Any variable the apps get
 eval "$(bunx buncargo env --export)"   # All of them, as shell exports
+bunx buncargo env set REDIS_URL=http://localhost:8779   # Override one for this checkout
+bunx buncargo env unset REDIS_URL
 bunx buncargo url                 # Every URL this run knows, by name
 bunx buncargo open                # The primary app; or `open <name>` from `url`
 bunx buncargo open shopify previewUrl  # An app's captured URL (what its action key opens)
@@ -975,6 +977,17 @@ An app gets its `stopGraceMs` (5 seconds unless set) to exit after SIGTERM
 before it is killed. Stopping a whole run waits 5 seconds plus the longest
 grace among its apps, because the run stops its apps itself.
 
+Every stop and removal buncargo makes (`stop`, `dev --down`, `--all`, the
+watchdog, the menu bar's buttons) is recorded with the command, its pid, what
+ran it and why. `buncargo status` lists this checkout's latest ones, and
+`doctor` the last three.
+
+A running `dev` (and a library `start()`) watches its own service containers.
+When one stops, is removed or fails its healthcheck, the run prints
+`postgres stopped (exit 0)` with whoever stopped it, writes it to the run's
+`buncargo.log`, and `status` shows the run as degraded. It does not restart the
+service: the cause is unknown when it fires, and a restart would hide it.
+
 Services are stopped, never killed, so a `restart:` policy cannot undo it.
 Nothing in buncargo brings a stopped container back, so it stays down until the
 next `dev`; once the run itself ends, the watchdog removes it. Stopping a whole
@@ -1121,10 +1134,23 @@ Dotenv quoting and multiline values are supported; shell expressions and
 Environment precedence, lowest to highest:
 
 1. Explicit dotenv files, in order.
-2. Inherited process environment.
-3. Generated local values and service static values, then shared `config.env`.
-4. App static values, generated server `PORT`/`HOST`, then app `envVars`.
-5. Explicit programmatic exec `options.env`, if supplied.
+2. This checkout's `buncargo env set` overrides.
+3. Inherited process environment.
+4. Generated local values and service static values, then shared `config.env`.
+5. App static values, generated server `PORT`/`HOST`, then app `envVars`.
+6. `buncargo env set` overrides again, unless the shell set that variable.
+7. Explicit programmatic exec `options.env`, if supplied.
+
+`buncargo env set KEY=VALUE` keeps an override in `.buncargo/env.json`, for a
+value a shared file gets wrong in one checkout. It applies to every run, `exec`,
+task and `env --export` of the checkout, wins over buncargo's own values and an
+app's `envVars`, and is shown by `status`. One that hides an Infisical secret
+says so when the secret is loaded. `buncargo env unset KEY` drops it.
+
+`dev`, `status` and `doctor` warn about a loopback URL (`http://localhost:8079`)
+in a dotenv checkout file or the injected environment whose port is not one of
+this checkout's and has nothing listening, and name the port it probably
+meant. `buncargo files save` warns when a saved file shares such a URL.
 
 A stale dotenv `DATABASE_URL` cannot override the allocated local URL. Deliberate
 configuration and app overrides remain authoritative. Use the shared callback for
@@ -1585,6 +1611,9 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `… would run under Compose project …, which … already uses` | Another checkout with the same project name exists: CI runners in same-named directories, or a config below a worktree's top level | Give one of them its own `projectPrefix` (see [Ports and isolation](#ports-and-isolation)) and start it once, or delete the checkout no longer used. If the other checkout's claim is from a config it no longer runs, `buncargo ports release --root <path>` (the error names the path) |
 | `Could not allocate a free port block` | 80 shifted blocks still conflict | Set `BUNCARGO_PORT_OFFSET` or free ports (`buncargo doctor`) |
 | Named URL does not resolve / TLS warning | Daemon down or CA not trusted | `buncargo hosts status`, then `buncargo hosts install` or `doctor --fix` |
+| `Docker Desktop is running (pid …) but its daemon is not answering` | Docker Desktop hung; quitting it can leave `com.docker.backend` alive | `buncargo doctor --fix`: once Docker Desktop has run past a cold start without answering, it asks (in a terminal) and force-restarts it, which stops every container on the machine and keeps volumes |
+| A port `held by process … in …/.Trash/…` | A dev server of a deleted checkout | `buncargo doctor --fix` stops it |
+| `postgres stopped (exit 0)` during a run | A service container went down under the run | The line says which buncargo command stopped it, if one did. Restart the run |
 | `Tailscale URLs unavailable` with `BUNCARGO_HOSTS=tailscale` | Tailscale down or logged out, HTTPS Certificates off, or no permission to change Serve | `buncargo doctor` names which, and the fix |
 | `Named-hosts service points at … which no longer exists` | The install ran from a `node_modules` that was since removed | `buncargo hosts install` to re-point it at the current CLI |
 | `Named-hosts service is installed but did not answer on :443` | Daemon started and crashed | `tail /var/log/buncargo-hosts.log`, then `buncargo hosts install` |

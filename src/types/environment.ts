@@ -153,6 +153,12 @@ export interface DevEnvironment<
 		onlyApps?: Extract<keyof TApps, string>[],
 		onlyServices?: readonly Extract<keyof TServices, string>[],
 	): void;
+	/**
+	 * Where the next full `start()` would put the port block, probed the way
+	 * it would probe, without claiming or writing anything. `status` compares
+	 * it with `portOffset` to warn before a run moves the ports.
+	 */
+	planPortOffset(): { offset: number; provenance: PortOffsetProvenance };
 	/** Which backend runs the containers: 'docker' or 'apple' */
 	readonly containerRuntime: ContainerRuntimeName;
 	/** Cancellable startup allocation; prefer this when preparing before host activation. */
@@ -241,6 +247,15 @@ export interface DevEnvironment<
 	 * call it when something has already failed.
 	 */
 	explainMissingContainers(): string | undefined;
+	/**
+	 * Where `start()` reports a selected service's container stopping, being
+	 * removed or turning unhealthy while the run lives, and recovering
+	 * (`problem` false). Default: stderr. The run never restarts it; the line
+	 * says who stopped it when buncargo recorded one.
+	 */
+	reportServiceChanges(
+		report: (message: string, problem: boolean) => void,
+	): void;
 	/**
 	 * Run `seed.command` through the same path `start()` uses.
 	 *

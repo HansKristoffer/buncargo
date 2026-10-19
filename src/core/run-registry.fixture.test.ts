@@ -84,9 +84,12 @@ describe("runs.json v1 fixture", () => {
 			expect(postgres?.preset).toBe("postgres");
 			expect(postgres?.tablePlusUrl).toContain("tLSMode=0");
 			expect(postgres?.container?.runtime).toBe("docker");
-			expect(
-				run?.services.find((service) => service.name === "mailpit")?.status,
-			).toBe("stopped");
+			const mailpit = run?.services.find(
+				(service) => service.name === "mailpit",
+			);
+			expect(mailpit?.status).toBe("stopped");
+			// What the run's service watch records; the app ignores it.
+			expect(mailpit?.problem?.state).toBe("stopped");
 
 			// A finished run whose containers are still held. It has to decode —
 			// the sweep is the one reader that wants it — and it must never read

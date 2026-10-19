@@ -74,7 +74,7 @@ export const CLI_COMMANDS = [
 	},
 	{
 		name: "env",
-		usage: "env [--get <path>] [--export]",
+		usage: "env [--get <path>] [--export] | env set|unset",
 		summary: "Print environment info as JSON, including injected vars",
 	},
 	{
@@ -187,6 +187,11 @@ export const COMMAND_HELP_EXTRAS: readonly CommandExample[] = [
 		command: "env --export",
 		description:
 			'Injected vars as shell exports: eval "$(buncargo env --export)"',
+	},
+	{
+		command: "env set KEY=VALUE",
+		description:
+			"Override a variable for this checkout's runs (env unset KEY drops it)",
 	},
 	{
 		command: "doctor --fix",

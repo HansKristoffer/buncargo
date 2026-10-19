@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	explainContainerLoss,
+	explainServiceStop,
 	findRemoval,
 	invocationCommand,
 	REMOVAL_LOG_LIMIT,
@@ -130,6 +131,64 @@ describe("explainContainerLoss", () => {
 	it("names the window and where to look when nothing here recorded it", () => {
 		expect(explainContainerLoss({ ...target, records: [] })).toBe(
 			"shop-ci's containers were removed outside this run between 2026-10-17T09:30:00.000Z and 2026-10-17T10:05:00.000Z, and this user's buncargo recorded no removal. Check other users' ~/.buncargo/watchdog.log and `docker events --since 2026-10-17T09:30:00.000Z --until 2026-10-17T10:05:00.000Z --filter label=com.docker.compose.project=shop-ci`.",
+		);
+	});
+});
+
+describe("explainServiceStop", () => {
+	const target = {
+		projectName: "shop-ci",
+		root: "/work/shop",
+		runtime: "docker",
+		service: "postgres",
+		since: Date.parse("2026-10-17T09:30:00.000Z"),
+	};
+	const stop = record({
+		services: ["postgres"],
+		reason: "stopped",
+		by: { command: "buncargo stop postgres", pid: 9, user: "dev" },
+	});
+
+	it("names the command that stopped that service, or the whole stack", () => {
+		expect(explainServiceStop({ ...target, records: [stop] })).toBe(
+			"`buncargo stop postgres` (pid 9, user dev, buncargo of unknown version) stopped shop-ci's postgres container at 2026-10-17T10:00:00.000Z: stopped",
+		);
+		expect(explainServiceStop({ ...target, records: [record()] })).toContain(
+			"buncargo's watchdog",
+		);
+	});
+
+	it("names what ran the command, so a menu bar button reads apart from a terminal", () => {
+		expect(
+			explainServiceStop({
+				...target,
+				records: [
+					{
+						...stop,
+						by: {
+							...stop.by,
+							command: "buncargo stop --all",
+							parent: "BuncargoBar",
+						},
+					},
+				],
+			}),
+		).toContain(
+			"(pid 9, user dev, buncargo of unknown version, run from BuncargoBar)",
+		);
+	});
+
+	it("ignores another service's stop and anything before the run, and says where to look", () => {
+		const explained = explainServiceStop({
+			...target,
+			records: [
+				{ ...stop, services: ["redis"] },
+				record({ at: "2026-10-17T09:00:00.000Z" }),
+			],
+		});
+		expect(explained).toContain("No buncargo command of this user stopped it");
+		expect(explained).toContain(
+			"docker events --since 2026-10-17T09:30:00.000Z --filter label=com.docker.compose.project=shop-ci",
 		);
 	});
 });

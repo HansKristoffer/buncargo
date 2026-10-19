@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import type { AppConfig, DevServerPids } from "../../types";
 import { abortableSleep } from "../deadline";
+import { readEnvOverrides, warnShadowedSecrets } from "../env-overrides";
 import { waitForDevServers } from "../network";
 import { loadAppSecrets, missingRequiredSecrets } from "../secrets/infisical";
 import { formatStep, formatWarn, prefixWidth } from "../style";
@@ -282,6 +283,11 @@ export async function startDevServers(
 			signal: options.signal,
 			onWait: (ms) => options.onPhase?.("secrets", ms),
 		},
+	);
+	warnShadowedSecrets(
+		root,
+		readEnvOverrides(root),
+		Object.values(secrets).flatMap((values) => Object.keys(values)),
 	);
 	const appEnv = (name: string) => ({
 		...secrets[name],

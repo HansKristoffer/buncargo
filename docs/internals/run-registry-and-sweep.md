@@ -137,12 +137,35 @@ the run the verdict was decided against; `stop`, `dev --down --all` and the libr
 record their own teardowns. Recording never throws: a removal that happened must not read as
 failed.
 
+`buncargo stop <service>` records too, with `services`, because a stopped container is
+the trace the service watch below looks for. Each actor carries its parent process's name
+(`BuncargoBar`, `zsh`): the menu bar shells out to `buncargo stop`, so the command alone
+cannot tell its buttons from a terminal.
+
 It is read only on failure paths, never before startup: `explainMissingContainers` lists the
 runtime's containers, and only when a selected one is missing reads the log for a record of the
 project and root since the run's claim. The incident behind it: a CI job saw `ECONNREFUSED` and
 then Compose's "No resource found to remove", and the cause, another user's watchdog, was only in
 that user's `watchdog.log`. The log is per user like the rest of `~/.buncargo`, which is why "no
 record" points at other users' logs and `docker events` instead of guessing.
+
+### The service watch
+
+A run watches its own service containers (`container-runtime/service-watch.ts`, wired in
+`environment/service-watch.ts`): from the moment its services are up until `stop()` or
+`releaseRun()`, which end it before anything comes down, so the run's own teardown is never
+reported. It polls `projectServiceStates` every 10 s, the one state query both backends
+have; an empty listing reads as "cannot tell", because both answer an unreachable daemon
+with nothing. A service that stops, disappears or turns unhealthy gets a line in the run's
+output and `buncargo.log`, with the removal record that explains it or where to look, and a
+`problem` on its `runs.json` entry, cleared when it recovers. A field, not a status: older
+readers drop an entry with a status they do not know.
+
+It never restarts the service. The incident behind it: postgres, redis and upstash got a
+clean shutdown mid-run with no record anywhere, the apps kept running, `status` said
+`ready`, and the run failed minutes later on Prisma errors. Whoever stopped them (a
+deliberate `buncargo stop`, Docker Desktop restarting, the runtime itself) is unknown when
+the watch fires; restarting would hide the one signal and race them.
 
 **Anything that runs the sweep outside a unit test's stub runtimes must isolate the container
 runtime as well as `HOME`**: stub adapters, or `DOCKER_HOST` pointed at nothing. Isolating only the

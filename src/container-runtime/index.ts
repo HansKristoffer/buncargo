@@ -59,6 +59,12 @@ export {
 	resolveContainerRuntimeSelection,
 } from "./resolve";
 export {
+	describeServiceCondition,
+	type ServiceChange,
+	type ServiceCondition,
+	watchServiceContainers,
+} from "./service-watch";
+export {
 	decideSweep,
 	type ForeignStack,
 	isKnownStack,

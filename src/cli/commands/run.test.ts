@@ -86,7 +86,7 @@ it("setup only reports without a terminal, and fixes with --yes", async () => {
 	expect(readFileSync(join(root, ".gitignore"), "utf8")).toContain(
 		".buncargo/",
 	);
-	expect(result.stdout).toContain("All 3 checks pass.");
+	expect(result.stdout).toContain("All 4 checks pass.");
 
 	// Idempotent: a ready checkout changes nothing.
 	expect((await buncargo(root, "setup")).exitCode).toBe(0);

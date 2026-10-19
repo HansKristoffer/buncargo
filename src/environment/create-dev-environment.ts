@@ -24,6 +24,7 @@ import { createLifecycleApi } from "./lifecycle";
 import { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { createRunClaimApi } from "./run-claim";
 import { createServerHookRunner, createServersApi } from "./servers";
+import { createServiceWatch } from "./service-watch";
 
 /**
  * Create a dev environment from a configuration.
@@ -70,7 +71,14 @@ export function createDevEnvironment<
 	// The entry an app run publishes is built from the environment itself.
 	const runClaim = createRunClaimApi(ctx, () => env);
 	const coordinator = new LifecycleCoordinator();
-	const lifecycle = createLifecycleApi(ctx, envVars, runClaim, coordinator);
+	const serviceWatch = createServiceWatch(ctx, runClaim.sessionId);
+	const lifecycle = createLifecycleApi(
+		ctx,
+		envVars,
+		runClaim,
+		coordinator,
+		serviceWatch,
+	);
 	const recordCapture = createCaptureRecorder(ctx, envVars);
 	const servers = createServersApi(ctx, envVars, runClaim);
 	const createdAt = Date.now();
@@ -89,6 +97,7 @@ export function createDevEnvironment<
 		services: ctx.services,
 		apps: ctx.apps,
 		prepareStart: ctx.prepareStart,
+		planPortOffset: ctx.planPortOffset,
 		prepareStartAsync: ctx.prepareStartAsync,
 		get portOffset() {
 			return ctx.portOffset;
@@ -192,7 +201,13 @@ export function createDevEnvironment<
 		// Run claim / watchdog
 		sessionId: runClaim.sessionId,
 		claimRun: runClaim.claimRun,
-		releaseRun: runClaim.releaseRun,
+		releaseRun: () => {
+			// Released containers are the idle hold's: whatever stops them next
+			// is no news for this run.
+			serviceWatch.stop();
+			return runClaim.releaseRun();
+		},
+		reportServiceChanges: serviceWatch.report,
 		ensureWatchdog: runClaim.ensureWatchdog,
 
 		// Prisma (created below if configured)

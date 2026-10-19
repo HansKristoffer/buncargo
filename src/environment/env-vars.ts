@@ -4,6 +4,7 @@ import {
 	stringifyEnvValues,
 } from "../core/env";
 import { portableEnvFingerprint } from "../core/env-fingerprint";
+import { applyEnvOverrides, warnShadowedSecrets } from "../core/env-overrides";
 import { toPortMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
 import { hostsDaemonPort, isCI, urlHostOverride } from "../core/runtime-flags";
@@ -135,7 +136,7 @@ export function createEnvVarsApi<
 		}
 		// buildSharedEnvValues emits every computed name; TS cannot see that
 		// through the dynamic record it returns.
-		return stringifyEnvValues(
+		const merged = stringifyEnvValues(
 			mergeSharedEnvWithOverlay(
 				{ ...(config.options?.envFiles ? ctx.inputEnv : {}), ...shared },
 				config.env,
@@ -143,7 +144,9 @@ export function createEnvVarsApi<
 				urls,
 				overlayContext(),
 			),
-		) as ComputedEnvVars<TServices, TApps, TEnv>;
+		);
+		applyEnvOverrides(merged, ctx.envOverrides, ctx.inputEnv);
+		return merged as ComputedEnvVars<TServices, TApps, TEnv>;
 	}
 
 	function buildAppEnvVars<TName extends Extract<keyof TApps, string>>(
@@ -206,6 +209,8 @@ export function createEnvVarsApi<
 				? stringifyEnvValues(appEnvBuilder(ports, urls, overlayContext()))
 				: {},
 		);
+		// Above the app's own `envVars` too: an override is the checkout's last word.
+		applyEnvOverrides(processEnv, ctx.envOverrides, ctx.inputEnv);
 
 		// The per-app keys come from `staticEnv`/`envVars`, which are opaque here
 		// because the builder is widened to run against unknown apps.
@@ -255,6 +260,7 @@ export function createEnvVarsApi<
 				onWait: (ms) => ctx.onSecretsWait?.(ms),
 			});
 			const computed = options.computed ?? {};
+			warnShadowedSecrets(ctx.root, ctx.envOverrides, Object.keys(values));
 			return Object.fromEntries(
 				Object.entries(values).filter(([key]) => computed[key] === undefined),
 			);

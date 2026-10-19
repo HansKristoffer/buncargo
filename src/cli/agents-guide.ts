@@ -67,7 +67,13 @@ hardcode a port. Ask buncargo instead.
   \`bunx buncargo env --get ports.<name>\` one port.
   \`eval "$(bunx buncargo env --export)"\` loads them all into a shell.
 - \`bunx buncargo status --json\` is ports, containers, URLs and app states as one
-  object.
+  object. A run whose service container stopped under it has \`health:
+  "degraded"\` and the service's \`problem\`; \`plannedOffset\` set means the
+  next \`dev\` moves the ports, so start the run before testing against them.
+- \`bunx buncargo env set KEY=VALUE\` overrides a variable for every run, exec
+  and task of this checkout (\`env unset KEY\` drops it). Use it when a shared
+  \`.env.local\` points at another checkout's port, instead of prefixing every
+  command with the variable.
 - \`bunx buncargo exec -- <command>\` runs a command with this checkout's
   environment. \`bunx buncargo run <task>\` runs a configured task;
   \`bunx buncargo help\` lists them.
@@ -149,6 +155,14 @@ hardcode a port. Ask buncargo instead.
 ## When something fails
 
 - \`bunx buncargo doctor\` checks Docker, ports, named hosts and leftovers.
+  \`doctor --fix\` starts Docker, force-restarts a Docker Desktop that has run
+  for minutes without answering (it stops every checkout's containers; say so
+  to the user first), and stops a process of a deleted checkout holding a port.
+- A run line "postgres stopped (exit 0)" means a service container went down
+  under the run; buncargo does not restart it. The line says which buncargo
+  command stopped it, or that none did. Restart the run
+  (\`bunx buncargo stop --all\`, then \`bunx buncargo dev --detach\`) and
+  tell the user what stopped it.
 - \`bunx buncargo setup --yes\` runs the fix of every failing check (missing
   dependencies, generated files).
 - A port "held by an unidentified process" is usually a system service. Run

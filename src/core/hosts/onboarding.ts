@@ -323,22 +323,72 @@ export async function ensureHostsReady(input: {
 	return { ok: true, caPath: getCaPath(resolvedMkcertPath()) };
 }
 
+/**
+ * What `doctor --fix` does about the named-hosts service.
+ *
+ * Installing needs a password, so without a terminal the fix is not made and
+ * the reason is an issue, never a note: printed as done, it read as both fixed
+ * and broken in one report.
+ */
+export function hostsServiceFix(input: {
+	installed: boolean;
+	stale: string | undefined;
+	wedged: boolean;
+	interactive: boolean;
+}):
+	| { action: "none" }
+	| { action: "install"; note: string }
+	| { action: "needs-terminal"; issue: string } {
+	const { installed, stale, wedged, interactive } = input;
+	if (installed && !stale && !wedged) return { action: "none" };
+	if (!interactive) {
+		const why =
+			stale ??
+			(wedged
+				? "Named-hosts service is not serving its routes."
+				: "Named-hosts service is not installed.");
+		return {
+			action: "needs-terminal",
+			issue: `${why} Fixing it needs your password: run \`buncargo hosts install\` (or \`buncargo doctor --fix\`) in a terminal.`,
+		};
+	}
+	const note = stale
+		? "Reinstalled the named-hosts service after a stale install"
+		: wedged
+			? "Reloaded the named-hosts service, which was not serving its routes"
+			: "Installed the named-hosts service";
+	return { action: "install", note };
+}
+
+/** A named-hosts problem `doctor --fix` could not repair, by what it is about. */
+export interface HostsFixIssue {
+	kind: "ca" | "service" | "daemon" | "other";
+	message: string;
+}
+
+/**
+ * What `doctor --fix` repaired (`fixed`), and what it could not (`issues`):
+ * typed, so doctor's own checks do not say the same thing a second time.
+ */
 export async function doctorFixHosts(
 	options: { interactive?: boolean } = {},
-): Promise<string[]> {
-	const notes: string[] = [];
+): Promise<{ fixed: string[]; issues: HostsFixIssue[] }> {
+	const fixed: string[] = [];
+	const issues: HostsFixIssue[] = [];
 	const interactive = options.interactive ?? isInteractive();
 	try {
 		const mkcertPath = await ensureMkcert();
 		if (!isCaPresent(mkcertPath)) {
 			if (!interactive) {
-				notes.push(
-					"Named-hosts CA is not trusted, and trusting it needs a password. Run `buncargo hosts install` from a terminal.",
-				);
-				return notes;
+				issues.push({
+					kind: "ca",
+					message:
+						"Named-hosts CA is not trusted, and trusting it needs a password. Run `buncargo hosts install` from a terminal.",
+				});
+				return { fixed, issues };
 			}
 			installTrust(mkcertPath);
-			notes.push("Trusted the local mkcert CA");
+			fixed.push("Trusted the local mkcert CA");
 		}
 		// A certificate that no longer covers the registered hostnames stops the
 		// daemon binding, and the daemon cannot repair that itself.
@@ -350,35 +400,25 @@ export async function doctorFixHosts(
 		// one that answers with a route map it has stopped refreshing: it looks
 		// healthy from the outside while every named URL 404s.
 		const wedged = installed && !stale && (await isHostsDaemonWedged());
-		if (!installed || stale || wedged) {
-			if (!interactive) {
-				notes.push(
-					stale ??
-						"Named-hosts service needs a password to install. Run `buncargo hosts install` from a terminal.",
-				);
-				return notes;
-			}
+		const fix = hostsServiceFix({ installed, stale, wedged, interactive });
+		if (fix.action === "needs-terminal") {
+			issues.push({ kind: "service", message: fix.issue });
+			return { fixed, issues };
+		}
+		if (fix.action === "install") {
 			installHostsService();
-			if (stale) {
-				notes.push("Reinstalled the named-hosts service after a stale install");
-			} else if (wedged) {
-				notes.push(
-					"Reloaded the named-hosts service, which was not serving its routes",
-				);
-			} else {
-				notes.push("Installed the named-hosts service");
-			}
+			fixed.push(fix.note);
 		}
 		const ready = await ensureHostsDaemonRunning({
 			timeoutMs: SERVICE_START_TIMEOUT_MS,
 		});
-		if (ready.ok) {
-			notes.push("Named-hosts daemon is healthy");
-		} else if (ready.message) {
-			notes.push(ready.message);
-		}
+		if (!ready.ok)
+			issues.push({
+				kind: "daemon",
+				message: ready.message ?? "Named-hosts daemon is not running.",
+			});
 	} catch (error) {
-		notes.push(toHostsUserMessage(error));
+		issues.push({ kind: "other", message: toHostsUserMessage(error) });
 	}
-	return notes;
+	return { fixed, issues };
 }

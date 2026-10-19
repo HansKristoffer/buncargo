@@ -27,3 +27,16 @@ export function checkoutPresence(root: string): CheckoutPresence {
 export function checkoutDeleted(root: string): boolean {
 	return checkoutPresence(root) === "deleted";
 }
+
+/** `~/.Trash/…`, or `/Volumes/<disk>/.Trashes/<uid>/…` on another disk. */
+const TRASH_PATH = /(^|\/)\.Trash(es)?\//;
+
+/**
+ * Whether a process's working directory belongs to a checkout that was
+ * thrown away: moved to the Trash (`lsof` then reports the Trash path), or
+ * confirmed deleted. Such a process is nobody's dev server any more, the way
+ * the sweep treats a deleted checkout's containers.
+ */
+export function inDiscardedCheckout(dir: string): boolean {
+	return TRASH_PATH.test(dir) || checkoutDeleted(dir);
+}

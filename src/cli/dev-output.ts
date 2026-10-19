@@ -29,7 +29,12 @@ export function openDevOutput(
 	env: DevOutputSource,
 	apps: Record<string, AppConfig>,
 	options: { tui: "auto" | "on" | "off" },
-): { output: RunOutput; start(): void; stop(): Promise<void> } {
+): {
+	output: RunOutput;
+	tui: boolean;
+	start(): void;
+	stop(): Promise<void>;
+} {
 	let logs: AppLogs | undefined;
 	try {
 		logs = new AppLogs(env.root, env.sessionId);
@@ -101,6 +106,8 @@ export function openDevOutput(
 
 	return {
 		output,
+		/** The TUI shows run events; stream mode only writes them to the logs. */
+		tui: tui !== undefined,
 		start: () => tui?.start(),
 		stop: async () => {
 			tui?.stop();

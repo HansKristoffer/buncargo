@@ -27,13 +27,14 @@ it("loads ordered defaults and inherited values without mutation", () => {
 			root,
 			["base.env", "local.env", { path: "missing", optional: true }],
 			inherited,
+			{},
 		),
 	).toEqual({ A: "shell", B: "two words" });
 	expect(inherited).toEqual({ A: "shell" });
 	expect(readFileSync(join(root, "base.env"), "utf8")).toContain(
 		'B="two words"',
 	);
-	expect(() => loadEnvInput(root, ["missing"], {})).toThrow(
+	expect(() => loadEnvInput(root, ["missing"], {}, {})).toThrow(
 		"Cannot load environment input",
 	);
 });

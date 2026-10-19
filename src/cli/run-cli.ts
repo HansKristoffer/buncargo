@@ -732,6 +732,12 @@ async function runDevFlow<
 	// Parked after never coming up: the supervisor treats them as non-essential.
 	const parked = new Set<string>();
 	const view = openDevOutput(env, classifiedApps.startApps, { tui: args.tui });
+	// A service container stopping under the run: in the run's log, the TUI's
+	// Overview, and on the terminal in stream mode, where events are not printed.
+	env.reportServiceChanges((message, problem) => {
+		view.output.event("buncargo", message, problem ? "error" : undefined);
+		if (!view.tui) (problem ? log.warn : log.info)(message);
+	});
 	// An app that falls over is often the first sign its database was removed
 	// under it; say who did, once, rather than leave a refused connection.
 	let lossExplained = !hasServices;

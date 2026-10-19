@@ -45,11 +45,14 @@ export function parseDockerServiceStates(
 		const [service, state, status, serviceHash] = line.split("\t");
 		if (!service) continue;
 		const healthy = parseDockerHealth(status ?? "");
+		// `Exited (137) 3 minutes ago`
+		const exited = /^Exited \((-?\d+)\)/.exec(status ?? "");
 		states.push({
 			service,
 			running: state === "running",
 			...(serviceHash ? { serviceHash } : {}),
 			...(healthy === undefined ? {} : { healthy }),
+			...(exited ? { exitCode: Number(exited[1]) } : {}),
 		});
 	}
 	return states;
