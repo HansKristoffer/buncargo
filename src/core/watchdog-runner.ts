@@ -11,6 +11,7 @@
 
 import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync, unlinkSync } from "node:fs";
+import { orphanVolumeReporter } from "../container-runtime/orphan-report";
 import { sweepOrphanedContainers } from "../container-runtime/sweep";
 import { checkoutDeleted } from "./checkout-presence";
 import { FileLockTimeoutError, withFileLock } from "./file-lock";
@@ -46,6 +47,7 @@ const pidFile = getWatchdogPidFile();
 const logFile = getWatchdogLogFile();
 const ownerId = randomUUID();
 const actor = removalActor("buncargo watchdog");
+const reportOrphanVolumes = orphanVolumeReporter({ log });
 
 function log(message: string): void {
 	const line = formatWatchdogLine(
@@ -92,7 +94,11 @@ function outlived(): string | undefined {
 
 function watch(owner: object): Promise<void> {
 	return runWatchdogLoop({
-		sweep: () => sweepOrphanedContainers({ actor }),
+		sweep: async () => {
+			const result = await sweepOrphanedContainers({ actor });
+			await reportOrphanVolumes(result.answered);
+			return result;
+		},
 		sweepServeEntries: () => sweepTailscaleServe(tailscaleServeDeps()),
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		log,
