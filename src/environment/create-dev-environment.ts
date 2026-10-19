@@ -211,6 +211,12 @@ export function createDevEnvironment<
 			env,
 			resolved.prisma,
 			(computed) => envVars.resolveSecrets(undefined, { computed }),
+			// An allocation already made stands: probing again would move the
+			// block under the run that made it and replace its selection.
+			(service) =>
+				ctx.selection
+					? Promise.resolve()
+					: ctx.prepareStartAsync(undefined, [service]),
 		);
 	}
 

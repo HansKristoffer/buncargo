@@ -159,13 +159,14 @@ Invoke a shell explicitly for shell syntax, for example `-- sh -c 'command1 && c
 Standard streams, interrupt signals and the child's exit status propagate to the
 caller. Exec does not start apps or infrastructure, migrate, generate, or seed.
 
-Exec, Prisma and environment reads reuse persisted checkout ports without probing
+Exec and environment reads reuse persisted checkout ports without probing
 running services as foreign occupants. On a cold checkout, they compute a
 deterministic allocation without starting infrastructure or writing the allocation;
 those endpoints are a preview until `dev` resolves conflicts and persists them.
 Read-only commands retain existing persisted endpoints across base-port edits;
-new keys use the persisted offset until startup reconciles. An explicit
-`BUNCARGO_PORT_OFFSET` overrides allocation.
+new keys use the persisted offset until startup reconciles. `buncargo prisma`
+starts the database, so it allocates and claims the block first, as `dev` does.
+An explicit `BUNCARGO_PORT_OFFSET` overrides allocation.
 
 Programmatically, `env.exec(["bun", "scripts/maintenance.ts"], { app: "api", cwd: "." })`
 uses the same environment and directory rules. String commands use a shell; argv
@@ -803,6 +804,11 @@ next start, since their ports are part of what decides reuse. A hand-written
 `{ "offset": 2500 }` in `.buncargo/ports.json` pins the same way, and the next
 run fills in the rest. When a run cannot use the lockfile (another checkout's,
 an offset someone else claims, a port taken), it says why before moving.
+
+Every container the daemon runs counts, not only the checkouts in this user's
+`~/.buncargo`: a CI runner's user and a developer's sharing one Docker each keep
+their own claims, so a port another user's stack publishes moves the block too.
+A checkout's own containers (its Compose project, on the runtime it uses) never move it.
 
 A port nothing visible holds but that cannot be bound (a root process `lsof` hides from this user, often a macOS service such as Screen Sharing on `:5900`) counts as foreign; `doctor` reports it as held by an unidentified process.
 

@@ -98,6 +98,12 @@ export function createPrismaRunner<
 	resolveSecrets: (
 		computed: Record<string, string>,
 	) => Promise<Record<string, string>>,
+	/**
+	 * Settle the checkout's port block before the database starts outside a
+	 * run, as `start()` does: the context's ports until then are an unprobed
+	 * preview, and may be another project's container's.
+	 */
+	allocate: (service: Extract<keyof TServices, string>) => Promise<void>,
 ): PrismaRunner {
 	const resolved = resolvePrismaConfig(config);
 	const { cwd, urlEnvVar } = resolved;
@@ -120,6 +126,7 @@ export function createPrismaRunner<
 	}
 
 	async function ensureDatabase(): Promise<void> {
+		await allocate(service);
 		const composeFile = env.ensureComposeFile();
 		const envVars = env.buildEnvVars();
 		const serviceConfig = env.services[service];
@@ -203,6 +210,7 @@ Examples:
 			return 0;
 		}
 
+		await allocate(service);
 		const port = toPortMap(env.ports)[service];
 
 		console.log(`
