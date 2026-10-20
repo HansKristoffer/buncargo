@@ -27,6 +27,10 @@ session leader so `kill(-pid)` still reaches the group, `exit` reported with Nod
 restarts. An attached app with no TTY also runs as a `PtyApp`, which is what lets Expo start under
 an agent and `send` reach it.
 
+Bun up to 1.4.3 hangs for good on macOS inside `Bun.spawn({ terminal })`, past any test timeout,
+when the child prints and exits before the call returns (oven-sh/bun#45300). `PtyApp` makes its
+child wait until the spawn has returned; spawn any terminal child that can exit at once through it.
+
 `AppScreen` turns a screen back into lines by holding back the rows a recent redraw reached (an Ink
 footer) and re-sending a rewritten row only when its text changed; the first frame of a live footer
 cannot be told from plain lines and can appear once. Row numbers move when the scrollback trims or
