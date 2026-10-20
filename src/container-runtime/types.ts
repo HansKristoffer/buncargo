@@ -11,6 +11,11 @@ export interface EnsureRuntimeOptions {
 	signal?: AbortSignal;
 
 	autoStart?: boolean;
+	/**
+	 * `docker.startCommand`: how to start a daemon this backend has no start
+	 * command for. Docker only; Apple's runtime starts its own service.
+	 */
+	startCommand?: string;
 	timeoutMs?: number;
 	verbose?: boolean;
 	/**

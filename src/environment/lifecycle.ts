@@ -450,6 +450,7 @@ export function createLifecycleApi<
 						verbose,
 						wait,
 						autoStartRuntime: autoStartDocker,
+						runtimeStartCommand: config.docker?.startCommand,
 					});
 				}
 

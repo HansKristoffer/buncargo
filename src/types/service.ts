@@ -268,6 +268,13 @@ export interface DockerComposeGenerationOptions {
 	runtime?: ContainerRuntimeSelection;
 	/** Absolute path to the runtime binary, overriding the PATH lookup */
 	binary?: string;
+	/**
+	 * Shell command that starts a Docker daemon buncargo cannot start itself:
+	 * the plain Linux engine, e.g. in a VM without a service manager. Run
+	 * when the daemon is down and auto-start applies; buncargo then waits for
+	 * it. Ignored for runtimes it starts on its own (OrbStack, Docker Desktop).
+	 */
+	startCommand?: string;
 }
 
 /**

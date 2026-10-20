@@ -49,6 +49,16 @@ describe("parseTypecheckArgs", () => {
 		).toContain("--changed and --only cannot be combined.");
 	});
 
+	it("reads --group and rejects it together with --only", () => {
+		expect(parseTypecheckArgs(["--group=web"]).group).toBe("web");
+		expect(parseTypecheckArgs(["--group"]).errors).toContain(
+			"--group requires a group name.",
+		);
+		expect(parseTypecheckArgs(["--group=web", "--only=web"]).errors).toContain(
+			"--group and --only cannot be combined.",
+		);
+	});
+
 	it("reports unknown flags without throwing", () => {
 		expect(parseTypecheckArgs(["--nope"]).unknownFlags).toEqual(["--nope"]);
 	});

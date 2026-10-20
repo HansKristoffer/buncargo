@@ -27,6 +27,11 @@ export type ChangedSelection =
 const ROOT_WIDE_FILE =
 	/^(package\.json|bun\.lockb?|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|tsconfig[^/]*\.json)$/;
 
+/** A root file that shapes every program: a manifest, lockfile, root tsconfig or the dev config. */
+export function isRootWideFile(file: string): boolean {
+	return ROOT_WIDE_FILE.test(file) || CONFIG_FILES.includes(file);
+}
+
 function containingPath(file: string, paths: readonly string[]) {
 	// Longest match first, so `packages/a/b` beats `packages/a`.
 	return [...paths]
@@ -46,9 +51,7 @@ export function selectChangedWorkspaces(
 		(path) => path !== ".",
 	);
 	const rootWide = changedFiles.some(
-		(file) =>
-			!containingPath(file, nestedPaths) &&
-			(ROOT_WIDE_FILE.test(file) || CONFIG_FILES.includes(file)),
+		(file) => !containingPath(file, nestedPaths) && isRootWideFile(file),
 	);
 	if (rootWide) return { kind: "all" };
 

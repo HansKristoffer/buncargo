@@ -1,7 +1,9 @@
 import type { IntegrationAppNames } from "./all-types";
 import type { AppConfig, SecretsScopeConfig, TypedAppDefinitions } from "./app";
 import type {
+	CheckConfig,
 	GeneratedFileConfig,
+	PredeployConfig,
 	PreflightStep,
 	ProfileConfig,
 	SetupCheck,
@@ -336,6 +338,10 @@ export interface DevConfig<
 	>;
 	/** Directories `buncargo typecheck` adds to or leaves out of discovery (optional) */
 	typecheck?: TypecheckConfig;
+	/** Gates and test settings for `buncargo check` (optional) */
+	check?: CheckConfig;
+	/** Hooks and settings for `buncargo predeploy` (optional) */
+	predeploy?: PredeployConfig;
 	/**
 	 * Named app selections for `buncargo dev --profile=<name>` (optional).
 	 * A profile named `default` is what a bare `buncargo dev` runs.

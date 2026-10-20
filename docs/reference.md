@@ -92,6 +92,12 @@ bunx buncargo setup --agents      # Keep a buncargo block in AGENTS.md
 bunx buncargo ci --migrate --seed -- bun test
 bunx buncargo typecheck
 bunx buncargo typecheck --changed  # What this branch can break
+bunx buncargo typecheck --group=web  # One typecheck.groups selection (a CI job)
+bunx buncargo check               # Biome, typecheck, gates and nearby tests for this branch
+bunx buncargo check --staged      # The pre-commit hook: staged files, no writes
+bunx buncargo check --all         # Every check but the tests (lint)
+bunx buncargo check docs          # Only Markdown links and documented commands
+bunx buncargo predeploy           # Before a deploy: migrate, seed unless production
 bunx buncargo slot -- bun test      # A heavy command in a check slot
 bunx buncargo help
 bunx buncargo help agents         # The guide for AI agents working in a checkout
@@ -130,6 +136,18 @@ typecheck: {
 ```
 
 `include` takes directories relative to the root, globs allowed: a root `scripts/` folder, a package outside `workspaces`. Each runs its own `typecheck` script when its `package.json` has one, else `tsc --noEmit -p tsconfig.json` with the project's TypeScript. An entry that matches no directory, or a directory with neither a script nor a `tsconfig.json`, fails the typecheck instead of being skipped. `exclude` removes workspaces, discovered or included, by path, glob or basename (like `--only`). Both are validated with the config; absolute paths and paths leaving the root are rejected. `buncargo typecheck` reads only this key of the config module, without building an environment; a config that fails to import is a warning there, since its own typecheck reports the problem.
+
+`typecheck.concurrency` sets the default `--concurrency`. `typecheck.groups` names selections for `--group=<name>`, so CI can split the check across runners without listing workspaces; a new workspace joins the group that excludes rather than lists:
+
+```typescript
+typecheck: {
+	concurrency: 2,
+	groups: {
+		platform: { only: ["platform"], rootConfig: false },
+		rest: { exclude: ["platform"] }, // everything else, the root config included
+	},
+},
+```
 
 From code, `runWorkspaceTypecheck(options)` (exported from `buncargo`) runs the same checks and resolves to a `TypecheckResult`; it takes the flags above as `concurrency`, `only`, `changedFiles`, `include` and `exclude`. Pass `signal` (an `AbortSignal`) to cancel a run: the checks it started are terminated with their child processes, none is started after, and the promise rejects with the abort reason. `buncargo typecheck` does this on Ctrl-C or `SIGTERM` and exits 130 or 143.
 
@@ -216,6 +234,39 @@ export default defineDevConfig({
 **Tasks** are the one-off scripts a project accumulates. `buncargo run shop:seed` is `exec` with that app's env, secrets and working directory, after starting `requiredServices` (and their Compose dependencies) if they are down. Services a task starts are held on the same idle timer as a `dev` run's. Arguments after `--` are appended to the command without being re-parsed by the shell. `buncargo run` alone lists the tasks, `buncargo help` shows them too, and BuncargoBar puts a run button next to each one.
 
 **Profiles** replace a `dev:*` script per combination of apps. `buncargo dev --profile=full` runs that profile's apps, exactly like `--apps=shopify,forecastService`. A profile named `default` is what a bare `buncargo dev` runs; without one, `dev` runs every app as before. `--profile` and `--apps` cannot be combined.
+
+## `buncargo check` and `buncargo predeploy`
+
+`buncargo check` is one check for the change in front of you. It runs `bun install` when `bun.lock` changed since the last check, Biome (`--write`) on the changed files when the root has a `biome.json`, the docs check when a Markdown file changed, `buncargo typecheck --changed`, the config's gates, and the tests beside the changed files (`a.ts` → `a.test.ts`, `a.*.test.ts`). It prints one line per step, the tail of a failing step's output, then `PASS` or `FAIL: <steps>`; the exit code is 1 when any step failed. "Changed" means since the merge base with `origin`'s default branch (or `--base=<ref>`), committed or not, plus untracked files. `--staged` checks the staged files only, writes nothing and runs no tests: the pre-commit hook. `--all` checks every file, workspace and gate, without tests: `bun run lint`.
+
+```typescript
+check: {
+	gates: [
+		{ name: "i18n", command: "bun run i18n:check", when: ["**/locales/**"] },
+		{ name: "web boundary", command: "bun run check:boundary", cwd: "apps/web", when: ["apps/web/**", "packages/**"] },
+		{ name: "codegen", command: "bun run gen --check", staged: false },
+	],
+	testCommand: "bun test --parallel=4 --isolate", // default: bun test
+	testExclude: ["**/e2e/**"],
+},
+```
+
+A gate runs when a changed file matches one of its `when` globs, or always without `when`; a change to a root manifest, lockfile, `tsconfig*.json` or `dev.config.ts` selects every gate. `staged: false` keeps a slow gate out of the pre-commit hook. `check.docs: false` turns the docs check off. `buncargo check docs` runs only that check over every Markdown file: relative links whose target does not exist (anchors, URLs, code fences and `{{...}}` placeholders are skipped), and a `bun --cwd` command with `run` after the directory, which Bun parses as a run with no script and exits 0 on (write `bun run --cwd <dir> <script>`).
+
+`buncargo predeploy` is the one-off step a host runs before each deploy (Railway's `preDeployCommand`). It applies the migrations a dev run applies (`prisma migrate deploy` in `prisma.cwd`, then `migrations`), then runs `seed.command` unless the environment is production. It reads the config module only, and runs everything with the deploy's own environment: no ports, containers or buncargo secrets. The environment is the first of `SECRETS_ENV` and `NODE_ENV` that is set (else `dev`); `prod` and `production` are never seeded. A migration refused with Postgres's "remaining connection slots are reserved" is retried every 15 s, up to 20 times: on a small instance the previous deploy's pool and a sibling service's pre-deploy can hold every slot for a few minutes.
+
+```typescript
+predeploy: {
+	environmentVars: ["APP_ENV"], // default: ["SECRETS_ENV", "NODE_ENV"]
+	production: ["live"], // default: ["prod", "production"]
+	retry: { attempts: 10, delayMs: 30_000 }, // or false
+	afterMigrate: async ({ production, exec }) => {
+		if (!production) await exec("bun scripts/backfill.ts", { cwd: "apps/api" });
+	},
+},
+```
+
+`beforeMigrate`, `afterMigrate` and `afterSeed` get `{ root, environment, production, exec }`; `seed: false` skips the seed everywhere.
 
 ## CI
 
@@ -1322,7 +1373,9 @@ The configuration reference covers the main public options; `src/types/all-types
 | `profiles` | `Record<string, { apps, description? }>` | `{}` | App selections for `dev --profile`; `default` is used by a bare `dev` |
 | `integrations` | `BuncargoIntegration[]` | `[]` | `shopify()`, `expo()`, …; applied in order before validation |
 | `generatedFiles` | `{ path, render(ctx), gitignore? }[]` | `[]` | Files rendered from ports, URLs and captures. See [captures](#captured-output-and-generated-files) |
-| `typecheck` | `{ include?: string[], exclude?: string[] }` | `undefined` | Directories `buncargo typecheck` checks beyond discovery, and workspaces it leaves out. See [typecheck](#cli-reference) |
+| `typecheck` | `{ include?, exclude?, concurrency?, groups? }` | `undefined` | Directories `buncargo typecheck` checks beyond discovery, workspaces it leaves out, and named groups. See [typecheck](#cli-reference) |
+| `check` | `{ gates?, testCommand?, testExclude?, docs? }` | `undefined` | Gates and tests for `buncargo check`. See [check](#buncargo-check-and-buncargo-predeploy) |
+| `predeploy` | `{ environmentVars?, production?, seed?, retry?, beforeMigrate?, afterMigrate?, afterSeed? }` | `undefined` | Settings and hooks for `buncargo predeploy`. See [predeploy](#buncargo-check-and-buncargo-predeploy) |
 | `unsetEnv` | `string[]` | `[]` | Variables removed from every process buncargo starts (apps, tasks, `exec`, migrations, the seed, prisma), e.g. those tools use to detect an agent's shell. buncargo's own environment is unchanged |
 
 Use the top-level `env` overlay for shared values (rewritten `WEB_URL`, `VITE_*`), and `apps.<name>.envVars` for app-only values.
@@ -1412,6 +1465,7 @@ Use `kind: "worker"` for a long-running process without a listener. Workers requ
 | `autoStart` | `boolean` | `true` (skipped in CI) | Try to start Docker if the daemon is down |
 | `runtime` | `"docker" \| "apple" \| "auto"` | `"docker"` | Which container runtime runs the services (see [Container runtime](#container-runtime)) |
 | `binary` | `string` | PATH lookup | Absolute path to the selected runtime's binary (`docker` or `container`) |
+| `startCommand` | `string` | `undefined` | Shell command that starts a Docker daemon buncargo cannot start itself (the plain Linux engine in a VM without a service manager); run when auto-start applies, then waited for |
 
 Generated compose includes `name: ${COMPOSE_PROJECT_NAME}` and labels `buncargo.project`, `buncargo.root`, `buncargo.worktree`, `buncargo.service`.
 

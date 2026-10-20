@@ -29,6 +29,12 @@ const FLAGS = {
 		description:
 			"Check only these workspaces (path or basename, comma-separated)",
 	},
+	group: {
+		name: "--group",
+		kind: "string",
+		valueHint: "=<name>",
+		description: "Check one of the config's typecheck.groups (CI runners)",
+	},
 	changed: {
 		name: "--changed",
 		kind: "string",
@@ -56,6 +62,10 @@ export const TYPECHECK_COMMAND_SPEC: CommandSpec = {
 				"Check what this branch can break, uncommitted work included",
 		},
 		{
+			command: "bunx buncargo typecheck --group=web",
+			description: "Check one typecheck.groups selection, e.g. one CI job",
+		},
+		{
 			command: "bunx buncargo typecheck --concurrency=2",
 			description: "Cap overlapping typecheck processes",
 		},
@@ -68,6 +78,7 @@ export interface TypecheckCliArgs {
 	help: boolean;
 	concurrency: number | undefined;
 	only: string[] | undefined;
+	group: string | undefined;
 	/** Set when `--changed` was passed; `ref` is undefined for the default base. */
 	changed: { ref: string | undefined } | undefined;
 }
@@ -95,6 +106,10 @@ export function parseTypecheckArgs(rawArgs: string[]): TypecheckCliArgs {
 	if (changed && only) {
 		errors.push("--changed and --only cannot be combined.");
 	}
+	const group = readStringFlag(rawArgs, FLAGS.group, errors);
+	if (readBooleanFlag(rawArgs, FLAGS.group) && !group)
+		errors.push("--group requires a group name.");
+	if (group && only) errors.push("--group and --only cannot be combined.");
 
 	return {
 		unknownFlags: findUnknownFlags(TYPECHECK_COMMAND_SPEC, rawArgs),
@@ -105,6 +120,7 @@ export function parseTypecheckArgs(rawArgs: string[]): TypecheckCliArgs {
 				? undefined
 				: Number.parseInt(concurrencyValue, 10),
 		only,
+		group,
 		changed,
 	};
 }

@@ -413,7 +413,7 @@ describe("loadTypecheckConfig", () => {
 			'export default { typecheck: { include: "scripts", workspaces: [] } };',
 		);
 		expect((await loadTypecheckConfig(root)).errors).toEqual([
-			"typecheck.workspaces is not an option (include, exclude)",
+			"typecheck.workspaces is not an option (include, exclude, concurrency, groups)",
 			"typecheck.include must be an array of paths or globs relative to the root",
 		]);
 	});

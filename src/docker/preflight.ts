@@ -279,6 +279,8 @@ const RESTART_TIMEOUT_MS = 150_000;
 export interface EnsureDockerRunningOptions {
 	signal?: AbortSignal;
 	autoStart?: boolean;
+	/** Starts a daemon `runtimeStartCommand` has no command for (`docker.startCommand`). */
+	startCommand?: string;
 	timeoutMs?: number;
 	verbose?: boolean;
 	binary?: string;
@@ -338,7 +340,10 @@ export async function ensureDockerRunning(
 		runtime === "docker-desktop" && !ci ? runningDockerDesktopPids() : [];
 	if (desktopPids.length > 0 && !autoStart)
 		throw unresponsiveDockerError(desktopPids);
-	const command = waitOnly ? undefined : runtimeStartCommand(runtime);
+	const command = waitOnly
+		? undefined
+		: (runtimeStartCommand(runtime) ??
+			(options.startCommand ? ["sh", "-c", options.startCommand] : undefined));
 	if (!waitOnly && (!autoStart || command === undefined))
 		throw new DockerUnavailableError(runtime, remediationFor(runtime));
 	if (verbose && !waitOnly)
