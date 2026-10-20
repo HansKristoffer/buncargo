@@ -1,5 +1,21 @@
 # Changelog
 
+## [14.1.0](https://github.com/HansKristoffer/buncargo/compare/v14.0.0...v14.1.0) (2026-10-20)
+
+
+### Features
+
+* **cli:** add buncargo/firebase, buncargo/next and per-app stopGraceMs ([#115](https://github.com/HansKristoffer/buncargo/issues/115)) ([398486d](https://github.com/HansKristoffer/buncargo/commit/398486d40c6c888683d2ff7e97e4e4df45a7d0cd))
+* **cli:** watch a run's service containers, and trace who stopped them ([#117](https://github.com/HansKristoffer/buncargo/issues/117)) ([75e35ab](https://github.com/HansKristoffer/buncargo/commit/75e35abb25e573b4b21de00aa4759247579678e3))
+* **hosts:** serve app URLs over Tailscale with BUNCARGO_HOSTS=tailscale ([#112](https://github.com/HansKristoffer/buncargo/issues/112)) ([b2ee50c](https://github.com/HansKristoffer/buncargo/commit/b2ee50cd3e2ed430cfa1041b23b52b482ae0727c))
+
+
+### Bug Fixes
+
+* **cli:** stop a fast-exiting terminal app freezing the run on macOS ([#118](https://github.com/HansKristoffer/buncargo/issues/118)) ([7557e46](https://github.com/HansKristoffer/buncargo/commit/7557e4617be7e51b6ddba278131a9ae69a639f62))
+* **ports:** allocate the port block before buncargo prisma starts Postgres ([#114](https://github.com/HansKristoffer/buncargo/issues/114)) ([4f1ef13](https://github.com/HansKristoffer/buncargo/commit/4f1ef137b83d1fa56f06ec3d6841ea27caf6e079))
+* **watchdog:** report orphaned volumes, and clear a killed ci run's leftovers ([#116](https://github.com/HansKristoffer/buncargo/issues/116)) ([29dfd45](https://github.com/HansKristoffer/buncargo/commit/29dfd45f6197ebb6052cba4d4bb658668b0aab1b))
+
 ## [14.0.0](https://github.com/HansKristoffer/buncargo/compare/v13.0.0...v14.0.0) (2026-10-17)
 
 
