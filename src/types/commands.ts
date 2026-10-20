@@ -140,6 +140,102 @@ export interface TypecheckConfig {
 	 * name matching a workspace's basename (like `--only`).
 	 */
 	exclude?: readonly string[];
+	/**
+	 * Default `--concurrency` for `buncargo typecheck` and `buncargo check`.
+	 * Unset: from the CPU count (cap 4 locally, 2 in CI).
+	 */
+	concurrency?: number;
+	/**
+	 * Named selections for `buncargo typecheck --group=<name>`, so CI can
+	 * split the check across runners without listing every workspace.
+	 */
+	groups?: Record<string, TypecheckGroupConfig>;
+}
+
+/** One `typecheck.groups` entry. */
+export interface TypecheckGroupConfig {
+	/** Only these workspaces (path or basename), like `--only`. */
+	only?: readonly string[];
+	/** Leave these out, on top of `typecheck.exclude`. */
+	exclude?: readonly string[];
+	/** Also check the root dev config. Default: true. */
+	rootConfig?: boolean;
+}
+
+/**
+ * A project check `buncargo check` runs beside Biome, the typecheck and the
+ * tests, such as a codegen drift check or an import-boundary lint.
+ */
+export interface CheckGateConfig {
+	/** Shown in the step line: `✓ <name> 1.2s`. */
+	name: string;
+	/** Shell command, run from `cwd`. */
+	command: string;
+	/** Relative to the monorepo root. Default: the root. */
+	cwd?: string;
+	/**
+	 * Globs of changed files that select the gate (`apps/web/**`, `**\/*.md`).
+	 * A change to a root manifest, lockfile, tsconfig or the dev config
+	 * selects every gate. Unset: always runs. `check --all` runs every gate.
+	 */
+	when?: readonly string[];
+	/** Also run in `check --staged` (the pre-commit hook). Default: true. */
+	staged?: boolean;
+}
+
+/** `buncargo check`: one command for the change in front of you. */
+export interface CheckConfig {
+	/** Project checks, in order, after the typecheck. */
+	gates?: readonly CheckGateConfig[];
+	/**
+	 * The test runner the tests next to changed files are passed to.
+	 * Default: `bun test`.
+	 */
+	testCommand?: string;
+	/** Globs of test files never run by `check` (e2e suites). */
+	testExclude?: readonly string[];
+	/** Check relative Markdown links and documented commands. Default: true. */
+	docs?: boolean;
+}
+
+/** What a {@link PredeployConfig} hook is handed. */
+export interface PredeployContext {
+	/** Monorepo root. */
+	root: string;
+	/** The deploy environment's name (`staging`, `production`, a PR branch). */
+	environment: string;
+	production: boolean;
+	/** Run a shell command from the root (or `cwd`); throws on a nonzero exit. */
+	exec: (command: string, options?: { cwd?: string }) => Promise<void>;
+}
+
+/**
+ * `buncargo predeploy`: the one-off step a host (Railway, Fly) runs before
+ * each deploy. It applies migrations (`prisma` and `migrations`) and runs
+ * `seed.command` outside production, with the deploy's own environment.
+ */
+export interface PredeployConfig {
+	/**
+	 * Variables naming the deploy environment, first set wins.
+	 * Default: `["SECRETS_ENV", "NODE_ENV"]`; neither set means `dev`.
+	 */
+	environmentVars?: readonly string[];
+	/** Environment names that are never seeded. Default: `["prod", "production"]`. */
+	production?: readonly string[];
+	/** Seed outside production. Default: true when `seed.command` is set. */
+	seed?: boolean;
+	/**
+	 * Retry a migration whose output contains `match`: a small Postgres
+	 * refuses connections while the previous deploy's pool still holds its
+	 * slots, and waiting frees them. Default: Postgres's "remaining connection
+	 * slots are reserved" (SQLSTATE 53300), 20 attempts 15 s apart. `false`
+	 * fails on the first refusal.
+	 */
+	retry?: false | { match?: string; attempts?: number; delayMs?: number };
+	beforeMigrate?: (ctx: PredeployContext) => void | Promise<void>;
+	afterMigrate?: (ctx: PredeployContext) => void | Promise<void>;
+	/** After seeding, or after migrations when nothing was seeded. */
+	afterSeed?: (ctx: PredeployContext) => void | Promise<void>;
 }
 
 /** A named app selection for `buncargo dev --profile=<name>`. */

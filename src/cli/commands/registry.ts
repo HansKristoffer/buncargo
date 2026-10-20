@@ -53,6 +53,17 @@ export const CLI_COMMANDS = [
 		summary: "Run TypeScript typecheck across workspaces",
 	},
 	{
+		name: "check",
+		usage: "check [docs] [--staged | --all]",
+		summary:
+			"Biome, typecheck, gates and nearby tests for the change in front of you",
+	},
+	{
+		name: "predeploy",
+		usage: "predeploy",
+		summary: "Before a deploy: migrate, then seed unless production",
+	},
+	{
 		name: "prisma",
 		usage: "prisma <args>",
 		summary: "Run Prisma CLI with correct DATABASE_URL",

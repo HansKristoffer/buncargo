@@ -103,6 +103,10 @@ The sweep and volume pruning live in `container-runtime/` too; see
   never cache the container ID across polls or guess it from a name. `diagnose.ts` resolves the
   same way, with `--all`: readiness polls it as the probe for jobs and port-less services.
 - `preflight.ts` detects the local Docker runtime and auto-starts it when possible.
+  The plain Linux engine has no start command of ours: buncargo does not run `sudo`. A
+  project whose agents run in a VM without a service manager (Conductor) names its own
+  in `docker.startCommand`; it is used only where no built-in command applies and is
+  passed only from the dev start, not from `setup` or `doctor --fix`.
   Docker Desktop can hang with `com.docker.backend` alive and the socket silent, which
   `open -a Docker` does nothing about and a quit request does not end. Its processes are
   listed only after the daemon failed, so "running but not answering" reads apart from

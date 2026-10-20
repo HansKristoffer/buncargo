@@ -25,7 +25,7 @@ export function validateSupplementShapes(
 		fields(
 			value.docker,
 			"docker.",
-			["binary", "generatedFile", "writeStrategy", "runtime"],
+			["binary", "generatedFile", "writeStrategy", "runtime", "startCommand"],
 			"string",
 		);
 	if (object(value.prisma))
@@ -140,6 +140,8 @@ export function validateSupplementShapes(
 			}
 	}
 	validateTypecheckShape(value.typecheck, checks);
+	validateCheckShape(value.check, checks);
+	validatePredeployShape(value.predeploy, checks);
 	for (const kind of ["tasks", "profiles"] as const) {
 		const entries = value[kind];
 		if (entries === undefined || !record(entries, kind)) continue;
@@ -216,6 +218,40 @@ export function validateSupplementShapes(
 	}
 }
 
+function rootRelative(entry: string) {
+	return !(
+		entry.startsWith("/") ||
+		/^[A-Za-z]:[\\/]/.test(entry) ||
+		entry.split(/[\\/]/).includes("..")
+	);
+}
+
+function pathList(value: unknown, path: string, checks: ShapeChecks) {
+	if (value === undefined) return;
+	if (!checks.strings(value)) {
+		checks.errors.push(
+			`${path} must be an array of paths or globs relative to the root`,
+		);
+		return;
+	}
+	for (const entry of value)
+		if (!rootRelative(entry))
+			checks.errors.push(
+				`${path}: "${entry}" must be relative to the root and stay inside it`,
+			);
+}
+
+function unknownKeys(
+	value: Record<string, unknown>,
+	path: string,
+	known: readonly string[],
+	errors: string[],
+) {
+	for (const key of Object.keys(value))
+		if (!known.includes(key))
+			errors.push(`${path}.${key} is not an option (${known.join(", ")})`);
+}
+
 /**
  * `typecheck`: lists of paths inside the root. Shared with `buncargo
  * typecheck`, which reads only this key of the config rather than building a
@@ -225,28 +261,112 @@ export function validateTypecheckShape(
 	value: unknown,
 	checks: ShapeChecks,
 ): void {
-	const { errors, record, strings } = checks;
+	const { errors, record, check, strings, fields } = checks;
 	if (value === undefined || !record(value, "typecheck")) return;
-	for (const key of Object.keys(value))
-		if (key !== "include" && key !== "exclude")
-			errors.push(`typecheck.${key} is not an option (include, exclude)`);
-	for (const key of ["include", "exclude"] as const) {
-		const entries = value[key];
-		if (entries === undefined) continue;
-		if (!strings(entries)) {
-			errors.push(
-				`typecheck.${key} must be an array of paths or globs relative to the root`,
-			);
-			continue;
-		}
-		for (const entry of entries)
-			if (
-				entry.startsWith("/") ||
-				/^[A-Za-z]:[\\/]/.test(entry) ||
-				entry.split(/[\\/]/).includes("..")
-			)
-				errors.push(
-					`typecheck.${key}: "${entry}" must be relative to the root and stay inside it`,
-				);
+	unknownKeys(
+		value,
+		"typecheck",
+		["include", "exclude", "concurrency", "groups"],
+		errors,
+	);
+	pathList(value.include, "typecheck.include", checks);
+	pathList(value.exclude, "typecheck.exclude", checks);
+	check(
+		value.concurrency,
+		"typecheck.concurrency",
+		Number.isInteger(value.concurrency) && Number(value.concurrency) > 0,
+		"a positive integer",
+	);
+	if (value.groups === undefined || !record(value.groups, "typecheck.groups"))
+		return;
+	for (const [name, group] of Object.entries(value.groups)) {
+		const path = `typecheck.groups.${name}`;
+		if (!record(group, path)) continue;
+		unknownKeys(group, path, ["only", "exclude", "rootConfig"], errors);
+		check(
+			group.only,
+			`${path}.only`,
+			strings(group.only),
+			"an array of workspaces",
+		);
+		pathList(group.exclude, `${path}.exclude`, checks);
+		fields(group, `${path}.`, ["rootConfig"], "boolean");
 	}
+}
+
+/** `check`; shared with `buncargo check`, which reads only this key. */
+export function validateCheckShape(value: unknown, checks: ShapeChecks): void {
+	const { errors, record, fields } = checks;
+	if (value === undefined || !record(value, "check")) return;
+	unknownKeys(
+		value,
+		"check",
+		["gates", "testCommand", "testExclude", "docs"],
+		errors,
+	);
+	fields(value, "check.", ["testCommand"], "string");
+	fields(value, "check.", ["docs"], "boolean");
+	pathList(value.testExclude, "check.testExclude", checks);
+	if (value.gates === undefined) return;
+	if (!Array.isArray(value.gates)) {
+		errors.push("check.gates must be an array");
+		return;
+	}
+	for (const [index, gate] of value.gates.entries()) {
+		const path = `check.gates.${index}`;
+		if (!record(gate, path)) continue;
+		unknownKeys(
+			gate,
+			path,
+			["name", "command", "cwd", "when", "staged"],
+			errors,
+		);
+		for (const key of ["name", "command"])
+			if (typeof gate[key] !== "string" || !gate[key])
+				errors.push(`${path}.${key} must be a nonempty string`);
+		fields(gate, `${path}.`, ["cwd"], "string");
+		fields(gate, `${path}.`, ["staged"], "boolean");
+		pathList(gate.when, `${path}.when`, checks);
+	}
+}
+
+/** `predeploy`; shared with `buncargo predeploy`, which reads only this key. */
+export function validatePredeployShape(
+	value: unknown,
+	checks: ShapeChecks,
+): void {
+	const { errors, record, check, strings, fields, duration } = checks;
+	if (value === undefined || !record(value, "predeploy")) return;
+	const hooks = ["beforeMigrate", "afterMigrate", "afterSeed"];
+	unknownKeys(
+		value,
+		"predeploy",
+		["environmentVars", "production", "seed", "retry", ...hooks],
+		errors,
+	);
+	for (const key of ["environmentVars", "production"])
+		check(
+			value[key],
+			`predeploy.${key}`,
+			strings(value[key]),
+			"an array of names",
+		);
+	fields(value, "predeploy.", ["seed"], "boolean");
+	fields(value, "predeploy.", hooks, "function");
+	if (value.retry === undefined || value.retry === false) return;
+	if (!record(value.retry, "predeploy.retry")) return;
+	unknownKeys(
+		value.retry,
+		"predeploy.retry",
+		["match", "attempts", "delayMs"],
+		errors,
+	);
+	fields(value.retry, "predeploy.retry.", ["match"], "string");
+	check(
+		value.retry.attempts,
+		"predeploy.retry.attempts",
+		Number.isInteger(value.retry.attempts) && Number(value.retry.attempts) > 0,
+		"a positive integer",
+	);
+	duration(value.retry.delayMs, "predeploy.retry.delayMs");
 }

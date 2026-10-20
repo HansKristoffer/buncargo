@@ -44,6 +44,16 @@ async function runCommand(
 				commandArgs,
 			);
 			return;
+		case "check":
+			process.exitCode = await (
+				await import("./commands/check/index")
+			).handleCheck(commandArgs);
+			return;
+		case "predeploy":
+			process.exitCode = await (
+				await import("./commands/predeploy")
+			).handlePredeploy(commandArgs);
+			return;
 		case "run":
 			process.exitCode = await (await import("./commands/run")).handleRun(
 				commandArgs,

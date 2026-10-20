@@ -137,6 +137,27 @@ describe("Docker daemon preflight", () => {
 		},
 	);
 
+	it.skipIf(process.platform !== "linux")(
+		"runs docker.startCommand for the Linux engine, then waits for it",
+		async () => {
+			const { binary } = fixture({ downFor: 2 });
+			const marker = join(
+				tmpdir(),
+				`buncargo-start-${process.pid}-${Date.now()}`,
+			);
+			roots.push(marker);
+			await ensureDockerRunning({
+				binary,
+				ci: false,
+				verbose: false,
+				timeoutMs: 10_000,
+				startCommand: `touch '${marker}'`,
+			});
+			expect(existsSync(marker)).toBe(true);
+		},
+		15_000,
+	);
+
 	it("treats a bare docker on Linux as the engine, not Docker Desktop", () => {
 		expect(runtimeFromContext("default", "linux")).toBe("docker-engine");
 		expect(runtimeFromContext("desktop-linux", "linux")).not.toBe(

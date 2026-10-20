@@ -63,7 +63,9 @@ export type {
 	BuncargoIntegration,
 	CaptureConfig,
 	CaptureEvent,
+	CheckConfig,
 	CheckContext,
+	CheckGateConfig,
 	CheckOutcome,
 	CheckoutFile,
 	// CLI
@@ -129,6 +131,8 @@ export type {
 	OpenPublicTunnelsResult,
 	OverlayEnvVarNames,
 	PortOffsetProvenance,
+	PredeployConfig,
+	PredeployContext,
 	// Prisma
 	PrismaConfig,
 	PrismaMigrateCheckOptions,
@@ -152,6 +156,8 @@ export type {
 	StartOptions,
 	StopOptions,
 	TaskConfig,
+	TypecheckConfig,
+	TypecheckGroupConfig,
 	TypedAppDefinitions,
 	UrlBuilderContext,
 	UrlBuilderFn,

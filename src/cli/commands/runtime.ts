@@ -249,6 +249,16 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 		]);
 	}
 	if (settings.warning) log.warn(settings.warning);
+	const groups = settings.config?.groups ?? {};
+	const group = parsed.group ? groups[parsed.group] : undefined;
+	if (parsed.group && !group) {
+		const known = Object.keys(groups);
+		log.fail(`Unknown typecheck group: ${parsed.group}`, [
+			known.length > 0
+				? `Groups in dev.config.ts: ${known.join(", ")}`
+				: "Declare one under typecheck.groups in dev.config.ts.",
+		]);
+	}
 
 	const { runWorkspaceTypecheck } = await import("../../typecheck");
 	const { changedFilesSince } = await import("../../typecheck/changed");
@@ -277,10 +287,14 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 					const result = await runWorkspaceTypecheck({
 						root,
 						verbose: true,
-						concurrency: parsed.concurrency,
-						only: parsed.only,
+						concurrency: parsed.concurrency ?? settings.config?.concurrency,
+						only: parsed.only ?? (group?.only ? [...group.only] : undefined),
 						include: settings.config?.include,
-						exclude: settings.config?.exclude,
+						exclude: [
+							...(settings.config?.exclude ?? []),
+							...(group?.exclude ?? []),
+						],
+						includeRootConfig: group?.rootConfig,
 						changedFiles,
 						signal,
 					});

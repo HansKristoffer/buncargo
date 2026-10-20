@@ -82,6 +82,8 @@ export interface EnsureServicesRunningRequest {
 	wait?: boolean;
 	/** Override the runtime's auto-start. Default: the runtime's own policy. */
 	autoStartRuntime?: boolean;
+	/** `docker.startCommand`; see {@link EnsureRuntimeOptions.startCommand}. */
+	runtimeStartCommand?: string;
 }
 
 /**
@@ -102,6 +104,7 @@ export async function ensureServicesRunning(
 		verbose = true,
 		wait = true,
 		autoStartRuntime,
+		runtimeStartCommand,
 	} = request;
 
 	request.signal?.throwIfAborted();
@@ -113,6 +116,7 @@ export async function ensureServicesRunning(
 
 	await runtime.ensureRunning({
 		autoStart: autoStartRuntime,
+		startCommand: runtimeStartCommand,
 		verbose,
 		signal: request.signal,
 	});

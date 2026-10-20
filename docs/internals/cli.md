@@ -116,6 +116,23 @@ pieces it orchestrates.
 - `src/config/discover-apps.ts`: `discoverApps` marks its apps with an enumerable symbol (it
   survives spreads) for `build --discovered`.
 
+## Check and predeploy
+
+`commands/check/` is `buncargo check`; `plan.ts` (gate and test selection) is pure apart from the
+glob scan, `docs.ts` is also `check docs`. Steps run one at a time with their output buffered: the
+point is one line per step and the tail of the failure, not a live log. The typecheck is spawned
+as `buncargo typecheck --changed` through `buncargoCli()`, so it takes a check slot and reads
+`typecheck.concurrency` the same way a typecheck run by hand does; the nearby tests take no slot
+(they are a handful). A root-wide file selects every gate for the reason it selects every
+workspace in `typecheck --changed` (`isRootWideFile`).
+
+`commands/predeploy.ts` runs on a deploy host, not in a checkout: it never builds an environment,
+so no ports, containers or secrets, and the migrations and seed see only the host's variables.
+It reuses the dev run's migration list (`prisma`, then `migrations`) without `requiredServices`
+filtering, since a deploy has no local services to select. Unlike `typecheck`, a config that
+fails to import is an error here: migrating with half a config is worse than failing the deploy.
+`typecheck/config-settings.ts` is the one loader for these config-only commands.
+
 ## Typecheck
 
 `src/typecheck/typecheck.ts` runs a real process pool (`execAsync`); `scheduling.ts` is

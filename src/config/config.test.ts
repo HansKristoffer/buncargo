@@ -1301,7 +1301,7 @@ describe("checks, tasks and profiles", () => {
 				},
 			}),
 		).toEqual([
-			"typecheck.workspaces is not an option (include, exclude)",
+			"typecheck.workspaces is not an option (include, exclude, concurrency, groups)",
 			"typecheck.include must be an array of paths or globs relative to the root",
 			"typecheck.exclude must be an array of paths or globs relative to the root",
 		]);
@@ -1313,6 +1313,60 @@ describe("checks, tasks and profiles", () => {
 		).toEqual([
 			'typecheck.include: "/abs/scripts" must be relative to the root and stay inside it',
 			'typecheck.include: "a/../../b" must be relative to the root and stay inside it',
+		]);
+	});
+
+	it("accepts typecheck groups, check gates and predeploy settings", () => {
+		expect(
+			validateConfig({
+				...base,
+				typecheck: {
+					concurrency: 2,
+					groups: {
+						web: { only: ["web"], rootConfig: false },
+						rest: { exclude: ["apps/web"] },
+					},
+				},
+				check: {
+					gates: [
+						{
+							name: "i18n",
+							command: "bun run i18n:check",
+							when: ["**/locales/**"],
+						},
+						{ name: "codegen", command: "bun run gen --check", staged: false },
+					],
+					testCommand: "bun test --isolate",
+					testExclude: ["**/e2e/**"],
+				},
+				predeploy: {
+					environmentVars: ["APP_ENV"],
+					retry: { attempts: 3, delayMs: 1000 },
+					afterMigrate: () => {},
+				},
+			}),
+		).toEqual([]);
+	});
+
+	it("reports malformed check and predeploy settings", () => {
+		expect(
+			validateConfig({
+				...base,
+				typecheck: { concurrency: 0, groups: { web: { only: "web" } } },
+				check: {
+					gates: [{ name: "", command: "x", when: ["/abs"] }],
+					tests: true,
+				},
+				predeploy: { retry: { attempts: -1 }, afterSeed: "bun seed" },
+			}),
+		).toEqual([
+			"typecheck.concurrency must be a positive integer",
+			"typecheck.groups.web.only must be an array of workspaces",
+			"check.tests is not an option (gates, testCommand, testExclude, docs)",
+			"check.gates.0.name must be a nonempty string",
+			'check.gates.0.when: "/abs" must be relative to the root and stay inside it',
+			"predeploy.afterSeed must be a function",
+			"predeploy.retry.attempts must be a positive integer",
 		]);
 	});
 
