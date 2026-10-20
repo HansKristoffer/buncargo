@@ -1,5 +1,12 @@
 # Changelog
 
+## [14.2.0](https://github.com/HansKristoffer/buncargo/compare/v14.1.0...v14.2.0) (2026-10-20)
+
+
+### Features
+
+* **cli:** add buncargo check and buncargo predeploy ([#119](https://github.com/HansKristoffer/buncargo/issues/119)) ([30ce895](https://github.com/HansKristoffer/buncargo/commit/30ce8958e4c4d0ea5895978b541f0b277e47f5cc))
+
 ## [14.1.0](https://github.com/HansKristoffer/buncargo/compare/v14.0.0...v14.1.0) (2026-10-20)
 
 
