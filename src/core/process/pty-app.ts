@@ -1,6 +1,22 @@
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { closeSync } from "node:fs";
 import { recordStartupMetric } from "../startup-metrics";
+
+/**
+ * On macOS the child runs nothing until `Bun.spawn` has returned. Bun up to
+ * 1.4.3 hangs for good when a terminal child prints and starts exiting first
+ * (oven-sh/bun#45300): `Bun.spawn` blocks in `wait4` for it, and XNU lets a
+ * terminal's session leader finish exiting only once its output is read,
+ * which the blocked thread would have done. Nothing else runs meanwhile, not
+ * even a timer, so an app that failed at once could freeze the whole run.
+ * Linux is spared: an exit there does not wait for terminal output. The gate
+ * reads fd 3 until we close our end, then `exec`s the command, keeping its
+ * pid, session and exit. Drop this once `engines.bun` is a release with the
+ * fix.
+ */
+const GATED = process.platform === "darwin";
+const GATE = 'read -r _ <&3; exec 3<&- "$@"';
 
 /**
  * An app running under its own pseudo-terminal (`Bun.spawn({ terminal })`).
@@ -29,7 +45,8 @@ export class PtyApp extends EventEmitter {
 	) {
 		super();
 		recordStartupMetric("subprocesses");
-		this.proc = Bun.spawn(argv, {
+		const command = GATED ? ["/bin/sh", "-c", GATE, "sh", ...argv] : argv;
+		this.proc = Bun.spawn(command, {
 			cwd: options.cwd,
 			env: { ...options.env, TERM: "xterm-256color" },
 			terminal: {
@@ -37,7 +54,22 @@ export class PtyApp extends EventEmitter {
 				rows: options.rows,
 				data: (_terminal, data) => options.onData(data),
 			},
+			// The terminal takes fds 0-2; the gate waits on 3.
+			stdio: GATED ? ["ignore", "ignore", "ignore", "pipe"] : undefined,
 		});
+
+		// Spawned and watched: open the gate, or fail the start rather than
+		// leave the app waiting forever.
+		if (GATED) {
+			const gate = this.proc.stdio[3];
+			if (typeof gate !== "number") {
+				this.proc.kill("SIGKILL");
+				const message = `Bun ${Bun.version} gave no fd 3 to "${argv.join(" ")}", which waits on it to start under a terminal`;
+				throw new Error(message);
+			}
+			closeSync(gate);
+		}
+
 		this.pid = this.proc.pid;
 		// Node's `spawn` event: Bun spawns synchronously, so it is already true.
 		queueMicrotask(() => this.emit("spawn"));
