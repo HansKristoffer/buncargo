@@ -1,5 +1,13 @@
 # Changelog
 
+## [6.1.0](https://github.com/HansKristoffer/buncargo/compare/bar-v6.0.0...bar-v6.1.0) (2026-10-20)
+
+
+### Features
+
+* **cli:** add buncargo/firebase, buncargo/next and per-app stopGraceMs ([#115](https://github.com/HansKristoffer/buncargo/issues/115)) ([398486d](https://github.com/HansKristoffer/buncargo/commit/398486d40c6c888683d2ff7e97e4e4df45a7d0cd))
+* **cli:** watch a run's service containers, and trace who stopped them ([#117](https://github.com/HansKristoffer/buncargo/issues/117)) ([75e35ab](https://github.com/HansKristoffer/buncargo/commit/75e35abb25e573b4b21de00aa4759247579678e3))
+
 ## [6.0.0](https://github.com/HansKristoffer/buncargo/compare/bar-v5.1.0...bar-v6.0.0) (2026-10-17)
 
 
