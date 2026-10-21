@@ -15,7 +15,12 @@ import {
 	readStringFlag,
 } from "../../command-spec";
 import { argumentsError, CliError } from "../../errors";
-import { findDocProblems, formatDocProblem, markdownFiles } from "./docs";
+import {
+	docPathsConfig,
+	findDocProblems,
+	formatDocProblem,
+	markdownFiles,
+} from "./docs";
 import { type CheckMode, selectGates, testsFor, touches } from "./plan";
 
 const FLAGS = {
@@ -173,12 +178,6 @@ export async function handleCheck(args: string[]): Promise<number> {
 	if (errors.length > 0) throw argumentsError(errors, "check");
 
 	const root = findMonorepoRoot();
-	if (docsOnly) {
-		const problems = findDocProblems(root, markdownFiles(root));
-		for (const problem of problems) console.error(formatDocProblem(problem));
-		return problems.length > 0 ? 1 : 0;
-	}
-
 	const settings = await loadCheckConfig(root);
 	if (settings.errors.length > 0)
 		throw new CliError(settings.errors[0] ?? "Invalid check config.", [
@@ -186,6 +185,13 @@ export async function handleCheck(args: string[]): Promise<number> {
 		]);
 	if (settings.warning) console.warn(settings.warning);
 	const config = settings.config ?? {};
+	const docPaths = docPathsConfig(config.docs);
+
+	if (docsOnly) {
+		const problems = findDocProblems(root, markdownFiles(root), docPaths);
+		for (const problem of problems) console.error(formatDocProblem(problem));
+		return problems.length > 0 ? 1 : 0;
+	}
 	const mode: CheckMode = all ? "all" : staged ? "staged" : "changed";
 	const steps = stepRunner(root);
 
@@ -240,7 +246,9 @@ export async function handleCheck(args: string[]): Promise<number> {
 	if (config.docs !== false && touches(files, ["**/*.md", "*.md"], mode))
 		steps.inline(
 			"docs",
-			findDocProblems(root, markdownFiles(root)).map(formatDocProblem),
+			findDocProblems(root, markdownFiles(root), docPaths).map(
+				formatDocProblem,
+			),
 		);
 
 	// The typecheck picks the changed workspaces and their dependents, and

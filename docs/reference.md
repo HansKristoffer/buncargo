@@ -122,7 +122,7 @@ Without a terminal, `dev --reset` (which deletes the checkout's volumes) and `de
 
 `buncargo help agents` prints a guide for AI agents working in a checkout, and `buncargo setup --agents` adds (or updates) a short block in the project's `AGENTS.md` that points at it.
 
-`buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own - that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and in CI at one process per 3.5 GB of memory (2 on a 7 GB runner, the CPU count on a large self-hosted machine); override with `--concurrency=N` or `BUNCARGO_TYPECHECK_CONCURRENCY`. `--only=platform` (path or basename) checks one workspace. `--changed[=<ref>]` checks only what the branch can break: the workspaces holding files changed since the merge base with `<ref>` (default `origin/HEAD`, then `origin/main`, then `main`), committed, uncommitted, untracked or deleted, plus every workspace that depends on one of them through `package.json`, transitively. A root `package.json`, lockfile, `tsconfig*.json` or `dev.config.ts` among them checks everything, the root config included; otherwise the root config is skipped.
+`buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own - that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and in CI at one process per 3.5 GB of memory (2 on a 7 GB runner, the CPU count on a large self-hosted machine); override with `--concurrency=N`, then `BUNCARGO_TYPECHECK_CONCURRENCY`, then `typecheck.concurrency` in the config, in that order, so a CI runner sizes itself over the config's local value. `--only=platform` (path or basename) checks one workspace. `--changed[=<ref>]` checks only what the branch can break: the workspaces holding files changed since the merge base with `<ref>` (default `origin/HEAD`, then `origin/main`, then `main`), committed, uncommitted, untracked or deleted, plus every workspace that depends on one of them through `package.json`, transitively. A root `package.json`, lockfile, `tsconfig*.json` or `dev.config.ts` among them checks everything, the root config included; otherwise the root config is skipped.
 
 A typecheck holds one of the machine-wide check slots while it runs (`BUNCARGO_CHECK_SLOTS`, default 3, `0` turns the cap off). Coding agents in many worktrees otherwise start several native `tsc` runs at once, each peaking at several GB, and run the machine out of memory. A typecheck that finds every slot taken prints who holds them and waits. A killed holder's slot is reclaimed. `buncargo slot -- <command>` takes a slot for any other heavy command, such as a test suite, and runs it with the shell's own environment; `exec --slot` does the same with the checkout environment added. Their children see `BUNCARGO_CHECK_SLOT`, so a `buncargo typecheck` inside does not wait for a second slot. CI takes no slot. The config run generates `.buncargo/config-typecheck.tsconfig.json` and records durations in `.buncargo/typecheck-timings.json`; keep `.buncargo/` in `.gitignore`.
 
@@ -251,14 +251,30 @@ check: {
 },
 ```
 
-A gate runs when a changed file matches one of its `when` globs, or always without `when`; a change to a root manifest, lockfile, `tsconfig*.json` or `dev.config.ts` selects every gate. `staged: false` keeps a slow gate out of the pre-commit hook. `check.docs: false` turns the docs check off. `buncargo check docs` runs only that check over every Markdown file: relative links whose target does not exist (anchors, URLs, code fences and `{{...}}` placeholders are skipped), and a `bun --cwd` command with `run` after the directory, which Bun parses as a run with no script and exits 0 on (write `bun run --cwd <dir> <script>`).
+A gate runs when a changed file matches one of its `when` globs, or always without `when`; a change to a root manifest, lockfile, `tsconfig*.json` or `dev.config.ts` selects every gate. `staged: false` keeps a slow gate out of the pre-commit hook. `check.docs: false` turns the docs check off; `check.docs: { paths: true }` adds backticked paths to it (see below). `buncargo check docs` runs only that check over every Markdown file: relative links whose target does not exist (anchors, URLs, code fences and `{{...}}` placeholders are skipped), and a `bun --cwd` command with `run` after the directory, which Bun parses as a run with no script and exits 0 on (write `bun run --cwd <dir> <script>`).
 
-`buncargo predeploy` is the one-off step a host runs before each deploy (Railway's `preDeployCommand`). It applies the migrations a dev run applies (`prisma migrate deploy` in `prisma.cwd`, then `migrations`), then runs `seed.command` unless the environment is production. It reads the config module only, and runs everything with the deploy's own environment: no ports, containers or buncargo secrets. The environment is the first of `SECRETS_ENV` and `NODE_ENV` that is set (else `dev`); `prod` and `production` are never seeded. A migration refused with Postgres's "remaining connection slots are reserved" is retried every 15 s, up to 20 times: on a small instance the previous deploy's pool and a sibling service's pre-deploy can hold every slot for a few minutes.
+With `paths`, it also reports a backticked path whose first segment is a directory at the root and that exists neither from the root nor from any folder between the root and the doc. Extensionless module paths, `:line` and `#anchor` suffixes, globs, placeholders (`<name>`, `{x}`, `...`) and gitignored outputs pass. List the paths meant to be missing:
+
+```typescript
+check: {
+	docs: {
+		paths: {
+			exempt: [
+				{ file: "docs/integrations/other-repo.md", reason: "paths in another repository" },
+				{ file: "**", path: "docs/adr", reason: "created with the first decision" },
+			],
+		},
+	},
+},
+```
+
+`buncargo predeploy` is the one-off step a host runs before each deploy (Railway's `preDeployCommand`). It applies the migrations a dev run applies (`prisma migrate deploy` in `prisma.cwd`, then `migrations`), then seeds unless the environment is production: `predeploy.seed` when it is a command (run from the root), `seed.command` when it is unset, nothing when it is `false`. It reads the config module only, and runs everything with the deploy's own environment: no ports, containers or buncargo secrets. The environment is the first of `SECRETS_ENV` and `NODE_ENV` that is set (else `dev`); `prod` and `production` are never seeded. A migration refused with Postgres's "remaining connection slots are reserved" is retried every 15 s, up to 20 times: on a small instance the previous deploy's pool and a sibling service's pre-deploy can hold every slot for a few minutes.
 
 ```typescript
 predeploy: {
 	environmentVars: ["APP_ENV"], // default: ["SECRETS_ENV", "NODE_ENV"]
 	production: ["live"], // default: ["prod", "production"]
+	seed: "bun run seed --allow-remote", // default: seed.command; false: never
 	retry: { attempts: 10, delayMs: 30_000 }, // or false
 	afterMigrate: async ({ production, exec }) => {
 		if (!production) await exec("bun scripts/backfill.ts", { cwd: "apps/api" });
@@ -266,7 +282,7 @@ predeploy: {
 },
 ```
 
-`beforeMigrate`, `afterMigrate` and `afterSeed` get `{ root, environment, production, exec }`; `seed: false` skips the seed everywhere.
+`beforeMigrate`, `afterMigrate` and `afterSeed` get `{ root, environment, production, exec }`.
 
 ## CI
 

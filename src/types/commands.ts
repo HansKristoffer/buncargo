@@ -142,7 +142,8 @@ export interface TypecheckConfig {
 	exclude?: readonly string[];
 	/**
 	 * Default `--concurrency` for `buncargo typecheck` and `buncargo check`.
-	 * Unset: from the CPU count (cap 4 locally, 2 in CI).
+	 * `BUNCARGO_TYPECHECK_CONCURRENCY` outranks it, so a CI runner can size
+	 * itself. Unset: from the CPU count (cap 4 locally, by memory in CI).
 	 */
 	concurrency?: number;
 	/**
@@ -194,8 +195,36 @@ export interface CheckConfig {
 	testCommand?: string;
 	/** Globs of test files never run by `check` (e2e suites). */
 	testExclude?: readonly string[];
-	/** Check relative Markdown links and documented commands. Default: true. */
-	docs?: boolean;
+	/**
+	 * Check relative Markdown links and documented commands. Default: true.
+	 * `{ paths: true }` also checks backticked repository paths.
+	 */
+	docs?: boolean | DocsCheckConfig;
+}
+
+/** `check.docs` as an object: the docs check with its opt-in parts. */
+export interface DocsCheckConfig {
+	/**
+	 * Report a backticked path whose first segment is a directory at the root
+	 * (`apps/api/src/index.ts`) and that exists neither from the root nor from
+	 * the doc's own folder, extensionless module paths and gitignored outputs
+	 * included. Default: false.
+	 */
+	paths?: boolean | DocPathsCheckConfig;
+}
+
+export interface DocPathsCheckConfig {
+	/** Paths meant not to exist, such as a worked example or another repo's file. */
+	exempt?: readonly DocPathExemption[];
+}
+
+export interface DocPathExemption {
+	/** Glob of the docs it applies to; `**` for every doc. */
+	file: string;
+	/** The exact backticked path. Unset: every path in those docs. */
+	path?: string;
+	/** Why the path is meant to be missing. */
+	reason: string;
 }
 
 /** What a {@link PredeployConfig} hook is handed. */
@@ -222,8 +251,12 @@ export interface PredeployConfig {
 	environmentVars?: readonly string[];
 	/** Environment names that are never seeded. Default: `["prod", "production"]`. */
 	production?: readonly string[];
-	/** Seed outside production. Default: true when `seed.command` is set. */
-	seed?: boolean;
+	/**
+	 * What to seed outside production. A command, run from the root, replaces
+	 * the dev run's `seed.command` (a deploy's database is remote, so its seeder
+	 * may need other flags); `false` never seeds. Default: `seed.command`.
+	 */
+	seed?: false | string;
 	/**
 	 * Retry a migration whose output contains `match`: a small Postgres
 	 * refuses connections while the previous deploy's pool still holds its

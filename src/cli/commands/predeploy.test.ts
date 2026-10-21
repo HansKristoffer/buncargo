@@ -141,4 +141,19 @@ describe("predeploy", () => {
 		);
 		expect(run.ran).toEqual([]);
 	});
+
+	it("seeds with predeploy.seed instead of the dev seed, from the root", async () => {
+		const run = io({ SECRETS_ENV: "staging" });
+		await runPredeploy(
+			"/repo",
+			{
+				seed: { command: "bun run seed", cwd: "apps/api" },
+				predeploy: { seed: "bun run seed --allow-remote" },
+			},
+			run.io,
+		);
+		expect(run.ran).toEqual([
+			{ command: "bun run seed --allow-remote", cwd: "/repo" },
+		]);
+	});
 });

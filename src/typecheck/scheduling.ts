@@ -60,6 +60,20 @@ export function defaultTypecheckConcurrency(
 }
 
 /**
+ * The pool size a `buncargo typecheck` run asked for, most specific first:
+ * `--concurrency`, then `BUNCARGO_TYPECHECK_CONCURRENCY` (a runner sizing
+ * itself), then `typecheck.concurrency` in dev.config.ts. Undefined leaves
+ * {@link defaultTypecheckConcurrency} to size the pool by the machine.
+ */
+export function requestedTypecheckConcurrency(
+	flag: number | undefined,
+	configured: number | undefined,
+	env: NodeJS.ProcessEnv = process.env,
+): number | undefined {
+	return flag ?? typecheckConcurrencyOverride(env) ?? configured;
+}
+
+/**
  * `--only` matches a workspace path (`apps/platform`) or its basename
  * (`platform`). Unknown names are returned so the caller can fail loudly.
  *

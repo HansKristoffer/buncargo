@@ -66,6 +66,21 @@ export function predeployEnvironment(
 }
 
 /**
+ * What predeploy seeds with outside production: `predeploy.seed` as a command
+ * from the root, the dev run's `seed.command` when it is unset, nothing when it
+ * is `false`.
+ */
+export function predeploySeed(
+	config: PredeployConfig,
+	devSeed: { command?: string; cwd?: string } | undefined,
+): { command: string; cwd?: string } | undefined {
+	if (config.seed === false) return undefined;
+	if (config.seed !== undefined) return { command: config.seed };
+	if (!devSeed?.command) return undefined;
+	return { command: devSeed.command, cwd: devSeed.cwd };
+}
+
+/**
  * The migrations a dev run applies, here against the deploy's own database:
  * `prisma migrate deploy` in `prisma.cwd`, then `migrations` in order.
  * `requiredServices` is ignored: a deploy has no local services to select.
@@ -146,9 +161,10 @@ export async function runPredeploy(
 	io: PredeployIo = defaultIo,
 ): Promise<void> {
 	const config = (rootConfig.predeploy ?? {}) as PredeployConfig;
-	const seed = rootConfig.seed as
-		| { command?: string; cwd?: string }
-		| undefined;
+	const seed = predeploySeed(
+		config,
+		rootConfig.seed as { command?: string; cwd?: string } | undefined,
+	);
 	const { environment, production } = predeployEnvironment(config, io.env);
 	const exec = async (command: string, cwd = ".") => {
 		const result = await io.run(command, join(root, cwd));
@@ -195,7 +211,7 @@ export async function runPredeploy(
 	await config.afterMigrate?.(ctx);
 
 	if (production) io.log("production: not seeding.");
-	else if (config.seed === false || !seed?.command) io.log("no seed to run.");
+	else if (!seed) io.log("no seed to run.");
 	else {
 		io.log(`seeding ${environment} (${seed.command})`);
 		await exec(seed.command, seed.cwd);

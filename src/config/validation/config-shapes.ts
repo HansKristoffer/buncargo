@@ -294,6 +294,34 @@ export function validateTypecheckShape(
 	}
 }
 
+/** `check.docs`: a boolean, or `{ paths }` with its exemptions. */
+function validateDocsCheckShape(value: unknown, checks: ShapeChecks): void {
+	const { errors, record, fields } = checks;
+	if (value === undefined || typeof value === "boolean") return;
+	if (!record(value, "check.docs")) return;
+	unknownKeys(value, "check.docs", ["paths"], errors);
+
+	const paths = value.paths;
+	if (paths === undefined || typeof paths === "boolean") return;
+	if (!record(paths, "check.docs.paths")) return;
+	unknownKeys(paths, "check.docs.paths", ["exempt"], errors);
+	if (paths.exempt === undefined) return;
+	if (!Array.isArray(paths.exempt)) {
+		errors.push("check.docs.paths.exempt must be an array");
+		return;
+	}
+
+	for (const [index, exemption] of paths.exempt.entries()) {
+		const path = `check.docs.paths.exempt.${index}`;
+		if (!record(exemption, path)) continue;
+		unknownKeys(exemption, path, ["file", "path", "reason"], errors);
+		for (const key of ["file", "reason"])
+			if (typeof exemption[key] !== "string" || !exemption[key])
+				errors.push(`${path}.${key} must be a nonempty string`);
+		fields(exemption, `${path}.`, ["path"], "string");
+	}
+}
+
 /** `check`; shared with `buncargo check`, which reads only this key. */
 export function validateCheckShape(value: unknown, checks: ShapeChecks): void {
 	const { errors, record, fields } = checks;
@@ -305,7 +333,7 @@ export function validateCheckShape(value: unknown, checks: ShapeChecks): void {
 		errors,
 	);
 	fields(value, "check.", ["testCommand"], "string");
-	fields(value, "check.", ["docs"], "boolean");
+	validateDocsCheckShape(value.docs, checks);
 	pathList(value.testExclude, "check.testExclude", checks);
 	if (value.gates === undefined) return;
 	if (!Array.isArray(value.gates)) {
@@ -351,7 +379,13 @@ export function validatePredeployShape(
 			strings(value[key]),
 			"an array of names",
 		);
-	fields(value, "predeploy.", ["seed"], "boolean");
+	check(
+		value.seed,
+		"predeploy.seed",
+		value.seed === false ||
+			(typeof value.seed === "string" && value.seed.length > 0),
+		"false or a nonempty command",
+	);
 	fields(value, "predeploy.", hooks, "function");
 	if (value.retry === undefined || value.retry === false) return;
 	if (!record(value.retry, "predeploy.retry")) return;

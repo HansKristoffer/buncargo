@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
 	defaultTypecheckConcurrency,
 	LOCAL_TYPECHECK_CONCURRENCY_CAP,
+	requestedTypecheckConcurrency,
 	selectWorkspaces,
 	sortWorkspacesByExpectedDuration,
 } from "./scheduling";
@@ -78,6 +79,19 @@ describe("defaultTypecheckConcurrency", () => {
 				8,
 			),
 		).toBe(3);
+	});
+});
+
+describe("requestedTypecheckConcurrency", () => {
+	const env = { BUNCARGO_TYPECHECK_CONCURRENCY: "1" };
+
+	it("takes the flag, then the env var, then the config", () => {
+		expect(requestedTypecheckConcurrency(3, 2, env)).toBe(3);
+		expect(requestedTypecheckConcurrency(undefined, 2, env)).toBe(1);
+		expect(requestedTypecheckConcurrency(undefined, 2, {})).toBe(2);
+		expect(requestedTypecheckConcurrency(undefined, undefined, {})).toBe(
+			undefined,
+		);
 	});
 });
 
