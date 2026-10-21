@@ -3,7 +3,7 @@
 # Release Please keeps one PR open on main proposing the next CLI and/or
 # BuncargoBar version from conventional PR titles. Merging it creates the tags
 # and GitHub releases. This run publishes the CLI and menu bar directly.
-# The relay deployment gates clients. A workflow-created tag never triggers another workflow.
+# The relay deployment gates clients. No workflow listens for the tags.
 name: Release
 
 on:
@@ -31,8 +31,11 @@ jobs:
       bar_released: ${{ steps.targets.outputs.bar_released }}
       bar_version: ${{ steps.targets.outputs.bar_version }}
     steps:
+      # With RELEASE_PLEASE_TOKEN set, the release PR starts CI itself; GITHUB_TOKEN events start no workflows.
       - uses: googleapis/release-please-action@v4
         id: rp
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
       - uses: actions/checkout@v5
       - name: Resolve releases for this commit, including retries
         id: targets

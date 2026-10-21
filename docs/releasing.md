@@ -12,7 +12,7 @@ Merging the release PR triggers `.github/workflows/release.yml`:
 2. `deploy-connect.yml` builds a checksummed Linux relay artifact, uploads it for inspection, and deploys it to Hetzner. It validates HTTP health, relay TLS, and authenticated transport before allowing clients to ship. A bar-only release verifies the running server and skips rebuilding it.
 3. The existing reusable npm and bar workflows publish their verified artifacts after the server gate succeeds.
 
-The workflow explicitly invokes downstream jobs; tags created by the workflow token do not trigger additional workflows. A deployment failure blocks client publication. The initial server launch fails closed; subsequent failed activations restore the previous release directory.
+The workflow explicitly invokes downstream jobs; no workflow listens for the tags it creates. Release Please uses the `RELEASE_PLEASE_TOKEN` secret when it exists, so its release PR starts CI; without it, close and reopen the release PR to start CI. A deployment failure blocks client publication. The initial server launch fails closed; subsequent failed activations restore the previous release directory.
 
 ## Credentials and state
 
