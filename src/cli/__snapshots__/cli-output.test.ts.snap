@@ -1,0 +1,1325 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`buncargo CLI output setup --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo setup [--yes] [--agents]
+
+Options:
+  --help    Show this help message
+  --yes     Run every fix without asking (implied in CI)
+  --agents  Add or update the buncargo block in AGENTS.md (pointing at \`help agents\`), then exit
+
+Examples:
+  bunx buncargo setup  Check the checkout and offer each fix
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output run --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo run [<task>] [-- args...]
+
+Options:
+  --help  Show this help message
+  <task>  A key of tasks in dev.config.ts
+  --      Following arguments go to the command
+
+Examples:
+  buncargo run            List the configured tasks
+  buncargo run shop:seed  Run one task
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output wait --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo wait --app=<name> [--timeout=<seconds>] [--hold]
+
+Options:
+  --help               Show this help message
+  --app=<name>         The app to wait for (required)
+  --timeout=<seconds>  Give up after this long; 0 waits forever (default: 120)
+  --hold               Once healthy, stay alive until the run stops
+
+Examples:
+  buncargo wait --app=api && bunx playwright test  Test once this checkout's API is up
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output generate --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo generate
+
+Options:
+  --help  Show this help message
+
+Examples:
+  BASE_URL=https://… bunx buncargo generate  Render generatedFiles in CI, from the environment
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output build --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo build [--discovered] [--apps=<apps>]
+
+Options:
+  --help         Show this help message
+  --discovered   Only apps found by discoverApps()
+  --apps=<apps>  Only these apps
+
+Examples:
+  buncargo build --discovered  Build every discovered extension, one at a time
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output exec --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo exec [--app=<name>] [--cwd=<path>] [--slot] -- <command> [args...]
+
+Options:
+  --help        Show this help message
+  --app=<name>  Use this app's environment and default working directory
+  --cwd=<path>  Working directory relative to the repository root
+  --slot        Hold one of the machine-wide check slots (BUNCARGO_CHECK_SLOTS, default 3) while it runs
+  --            Required separator; following arguments are passed unchanged
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output slot --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo slot -- <command> [args...]
+
+Options:
+  --help  Show this help message
+  --      Required separator; following arguments are passed unchanged
+
+Examples:
+  bunx buncargo slot -- bun test  Run a test suite once a slot is free, with the shell's own environment
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output connect --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo connect <token|status|open|tcp|disconnect|revoke> [target-id] [--json]
+
+Options:
+  --help                   Show connection help
+  --json                   Print JSON
+  --rotate                 Replace the publish-only recipient token
+  BUNCARGO_CONNECT_TOKENS  Comma-separated recipient tokens: dev automatically shares selected endpoints.
+  BUNCARGO_CONNECT_NAME    Optional remote environment group name in BuncargoBar.
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output dev --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo dev [options]
+
+Options:
+  --help                         Show this help message
+  --down                         Stop all containers
+  --all                          With --down, stop every buncargo environment you started on this machine
+  --reset                        Stop containers and remove volumes (fresh start)
+  --yes                          Confirm --reset or --down --all without a prompt (required without a terminal)
+  --migrate                      Run migrations and exit
+  --seed                         Run migrations and seeders, then exit
+  --up-only                      Start containers only, then exit (no migrations, seed, or dev servers)
+  --expose[=<targets>]           Expose configured targets via public quick tunnels
+  --apps=<apps>                  Run selected apps plus their requiredApps
+  --profile=<name>               Run a profile's apps (default: the profile named default)
+  --attach=<app>                 Give one app the TTY (overrides interactive: true)
+  --no-watch                     Do not restart apps when their watched files change
+  --detach                       Run in the background; return once the apps are up (logs: buncargo logs)
+  --tui                          Terminal UI, the default in a terminal; warns when there is none
+  --no-tui                       Prefixed lines instead of the terminal UI, even in a terminal
+  --keep-containers              Keep the containers after the run exits, as long as the checkout exists
+  --takeover                     Stop apps already running elsewhere and run them here
+  --watchdog-timeout=N           Idle backstop in minutes (default: 3)
+  --no-docker-autostart          Do not try to start Docker if it is down
+  --no-hosts                     Use localhost:port instead of named .localhost URLs
+  --runtime=<docker|apple|auto>  Container runtime backend (default: docker)
+  --timing-json                  Report startup through app readiness as JSON
+  --timing                       Print how long each startup phase took
+  --                             Extra args appended to the attached app command
+
+Examples:
+  bun dev                            Start selected apps and their services
+  bun dev --seed                     Run migrations and seed the database
+  bun dev --down                     Stop all containers
+  bun dev --reset                    Stop containers and remove all data
+  bun dev --apps=api,platform        Run only selected apps
+  bun dev --profile=full             Run the apps of profiles.full
+  bun dev --expose                   Expose all targets with expose: true
+  bun dev --expose=api,web           Expose specific targets
+  bun dev --apps=expoApp -- --clear  Pass args to the attached app
+  bun dev --runtime=apple            Run services on Apple container instead of Docker
+  bun dev --no-tui                   Prefixed lines instead of the terminal UI
+  bun dev --takeover                 Move apps running in another terminal into this one
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output typecheck --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo typecheck [options]
+
+Options:
+  --help               Show this help message
+  --concurrency=N      Max typecheck processes (default: CPUs, cap 4 local / 2 in CI)
+  --only=<workspaces>  Check only these workspaces (path or basename, comma-separated)
+  --group=<name>       Check one of the config's typecheck.groups (CI runners)
+  --changed[=<ref>]    Check only workspaces changed since the merge base with <ref> (default: origin's default branch), and their dependents
+
+Examples:
+  bunx buncargo typecheck                  Check every workspace plus the root config
+  bunx buncargo typecheck --only=platform  Check one workspace (path or basename)
+  bunx buncargo typecheck --changed        Check what this branch can break, uncommitted work included
+  bunx buncargo typecheck --group=web      Check one typecheck.groups selection, e.g. one CI job
+  bunx buncargo typecheck --concurrency=2  Cap overlapping typecheck processes
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output check --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo check [docs] [--staged | --all] [--base=<ref>]
+
+Options:
+  --help        Show this help message
+  --staged      Staged files only: no writes, no tests (pre-commit)
+  --all         Every file, workspace and gate; no tests (lint)
+  --base=<ref>  Compare with the merge base of <ref> (default: origin's default branch)
+  docs          Only check Markdown links and documented commands, in every doc
+
+Examples:
+  buncargo check           Biome, typecheck, gates and nearby tests for this branch's changes
+  buncargo check --staged  The pre-commit hook: staged files, no writes
+  buncargo check --all     Every check but the tests, e.g. as \`bun run lint\`
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output predeploy --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo predeploy
+
+Options:
+  --help  Show this help message
+
+Examples:
+  bunx buncargo predeploy  Migrate, then seed unless production (e.g. Railway's preDeployCommand)
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output files --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo files <command> [path...]
+
+Options:
+  --help                      Show this help message
+  --json                      status: machine-readable output
+  --force                     pull: replace local edits, backed up to .buncargo/files-backup/
+  --checkout=<KEY,...>        merge: keep this checkout's value of these conflicting keys
+  --store=<KEY,...>           merge: take the file store's value of these conflicting keys
+  --include-machine           export: include machine: true files
+  status [--json]             Each file's state
+  save [path...]              Checkout → file store, so other checkouts get it
+  pull [path...] [--force]    File store → checkout; never over local edits without --force
+  merge <path>                Merge a dotenv file's local edits and the store's changes key by key
+  diff [path]                 Keys added, removed and changed, never values
+  export [--include-machine]  The file store as a bundle on stdout
+  import [-|file]             Write a bundle into the file store
+
+Examples:
+  buncargo files export | ssh box 'cd app && bunx buncargo files import'  Copy them to another machine
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output secrets --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo secrets ls [--app=<name>] [--env=<slug>]
+
+Options:
+  --help        Show this help message
+  --app=<name>  This app's scope instead of the config-level one
+  --env=<slug>  This Infisical environment
+  ls            Key names and where each comes from, never values
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output ci --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo ci [options] [-- <command> [args...]]
+
+Options:
+  --help                         Show this help message
+  --migrate                      Run migrations (and Prisma generate) after services start
+  --seed                         Run migrations, then the seed command
+  --services=<names>             Start only these services (default: every configured one)
+  --runtime=<docker|apple|auto>  Container runtime backend (default: docker)
+  --                             Command to run with the checkout environment
+
+Examples:
+  buncargo ci --migrate -- bun test  Services up, migrations applied, tests, teardown
+  buncargo ci --seed                 Check that migrations and the seed apply cleanly
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output env set --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo env set KEY=VALUE... | buncargo env unset KEY...
+
+Options:
+  --help            Show this help message
+  set KEY=VALUE...  Override a variable for every run, exec and env --export of this checkout
+  unset KEY...      Drop overrides
+
+Examples:
+  bunx buncargo env set UPSTASH_REDIS_REST_URL=http://localhost:8779  Win over a shared .env.local that points at another checkout
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output env unset --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo env set KEY=VALUE... | buncargo env unset KEY...
+
+Options:
+  --help            Show this help message
+  set KEY=VALUE...  Override a variable for every run, exec and env --export of this checkout
+  unset KEY...      Drop overrides
+
+Examples:
+  bunx buncargo env set UPSTASH_REDIS_REST_URL=http://localhost:8779  Win over a shared .env.local that points at another checkout
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output url --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo url [<name>]
+
+Options:
+  --help  Show this help message
+
+Examples:
+  buncargo url      List every URL, by name
+  buncargo url api  Print one
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output open --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo open [<name>] [<capture>]
+
+Options:
+  --help  Show this help message
+
+Examples:
+  buncargo open                     Open the primary app
+  buncargo open api                 What \`o\` opens in the TUI
+  buncargo open previewUrl          Open a captured URL
+  buncargo open shopify previewUrl  An app's captured URL, as its declared action does
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output stop --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo stop [<name>...] [options]
+
+Options:
+  --help           Show this help message
+  --root=<path>    Checkout whose run to act on (default: this one)
+  --run=<session>  One run session from buncargo runs (default: matching checkout sessions)
+  --all            Stop the whole run: dev servers and containers, and an ended run's idle containers
+  --force          Skip the confirmation for a risky target
+  <name>           App or service from \`buncargo runs\` (repeatable)
+
+Examples:
+  bunx buncargo stop api       Stop one dev server
+  bunx buncargo stop postgres  Stop one service's container
+  bunx buncargo stop --all     Stop this checkout's whole run
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output restart --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo restart <app> [options]
+
+Options:
+  --help           Show this help message
+  --root=<path>    Checkout whose run to act on (default: this one)
+  --run=<session>  One run session from buncargo runs
+
+Examples:
+  bunx buncargo restart shopify  Start a stopped app of this checkout's run again
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output send --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo send <app> <keys> [options]
+
+Options:
+  --help           Show this help message
+  --enter          Press Enter after the text
+  --root=<path>    Checkout whose run to act on (default: this one)
+  --run=<session>  One run session from buncargo runs
+
+Examples:
+  bunx buncargo send expoApp i       Press i in Expo: open the iOS simulator
+  bunx buncargo send api rs --enter  Type a line into an app's prompt
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output logs --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo logs [<app>] [options]
+
+Options:
+  --help         Show this help message
+  --follow       Keep printing new lines (-f)
+  --since=<5m>   Only lines newer than this (s, m, h)
+  --errors       Only lines that read as errors
+  --root=<path>  Checkout whose logs to read (default: this one)
+
+Examples:
+  buncargo logs                    Every app, interleaved
+  buncargo logs shopify --errors   What went wrong in one app
+  buncargo logs api -f --since=5m  Tail one app
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output ports --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo ports [pin <offset> | release --root <path> [--yes]]
+
+Options:
+  --help         Show this help message
+  --root=<path>  ports release: the checkout whose claims to drop
+  --yes          ports release: skip the confirmation (for scripts)
+
+Examples:
+  buncargo ports                                 This checkout's ports, and every checkout's offset
+  buncargo ports pin 2500                        Keep this checkout on offset 2500 from now on
+  buncargo ports release --root ../old-worktree  Drop another checkout's claims on its ports and project name
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output sql --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo sql [<service>] [options]
+
+Options:
+  --help                   Show this help message
+  --command=<query>        Run one query and exit (-c); without it, an interactive shell
+  --create-scratch=<name>  (Re)create an empty Postgres database scratch_<name> and print its URL
+  --drop-scratch=<name>    Drop the database scratch_<name>
+  --json                   With --command, print the rows as JSON (Postgres, ClickHouse)
+
+Examples:
+  buncargo sql                                                     psql into this checkout's database
+  buncargo sql -c "select count(*) from users" --json              One query, rows as JSON
+  buncargo sql redis -c 'GET key'                                  redis-cli
+  DATABASE_URL=$(buncargo sql --create-scratch=migcheck) bun test  A throwaway database in this checkout's Postgres
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output prune --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo prune [options]
+
+Options:
+  --help     Show this help message
+  --dry-run  List what would be removed and stop
+  --yes      Skip the confirmation (for scripts)
+  --project  Only this project's leftovers: every checkout's ci stack and every stack of a deleted worktree (containers, volumes, networks)
+             Removes volumes whose project has no containers, no run and no existing checkout. Destroys their data.
+
+Examples:
+  bunx buncargo prune --dry-run            List reclaimable volumes without touching them
+  bunx buncargo prune                      Review the list, then confirm removal
+  bunx buncargo prune --project --dry-run  List this project's leftover ci and deleted-worktree stacks
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output buncargo 1`] = `
+"exit 0
+--- stdout
+
+buncargo - Development environment CLI
+
+USAGE:
+  bunx buncargo <command> [options]
+
+COMMANDS:
+  setup                                                            Run the fix of every failing check
+  run [<task>] [-- args]                                           Run a task from dev.config.ts (lists them without a name)
+  wait --app=<name> [--hold]                                       Block until an app of this checkout's run is healthy
+  generate                                                         Render generatedFiles without starting anything
+  build [--discovered]                                             Run apps' buildCommand one at a time
+  exec [options] -- <command>                                      Run a command with the checkout environment
+  slot -- <command>                                                Run a heavy command in a machine-wide check slot, environment untouched
+  connect status                                                   Discover private services through frp
+  dev                                                              Start the development environment
+  typecheck [options]                                              Run TypeScript typecheck across workspaces
+  check [docs] [--staged | --all]                                  Biome, typecheck, gates and nearby tests for the change in front of you
+  predeploy                                                        Before a deploy: migrate, then seed unless production
+  prisma <args>                                                    Run Prisma CLI with correct DATABASE_URL
+  files <status|save|pull|diff|export|import>                      Gitignored files every checkout needs (.env.local), per machine
+  secrets ls [--app=<name>]                                        List Infisical keys and where each comes from (never values)
+  ci [--migrate] [--seed] [-- <command>]                           Start services in CI, prepare them, run a command, tear down
+  env [--get <path>] [--export] | env set|unset                    Print environment info as JSON, including injected vars
+  url [<name>]                                                     Print an app's or a captured URL (lists them without a name)
+  open [<name>]                                                    Open the primary app, or any URL \`url\` lists
+  ls                                                               List every buncargo environment on this machine
+  runs [--json]                                                    Show the dev runs active on this machine
+  stop [<name>...] [--all]                                         Stop one app or service, or a whole run
+  restart <app>                                                    Restart one app of a running dev (e.g. a stopped non-essential one)
+  send <app> <keys> [--enter]                                      Type into an app that has a terminal (e.g. Expo's i)
+  logs [<app>] [-f] [--since=5m] [--errors]                        Read app output from the current or last run
+  ports [pin <offset> | release --root <path>]                     Show this checkout's ports and every claim; pin one, or release a stale one
+  sql [<service>] [-c <query>] [--json] [--create-scratch=<name>]  Open the database's own client in this checkout's container
+  status [--json]                                                  Show this project's containers, ports, and tunnels
+  prune [--dry-run] [--yes]                                        Remove volumes whose project is gone (destroys their data)
+  doctor                                                           Check Docker, port owners, lockfile, hosts, and orphans
+  hosts <subcommand>                                               Named .localhost URLs (install | status | sync | prune | uninstall | daemon)
+  bar <subcommand>                                                 The BuncargoBar menu bar app (install | update | status | open | uninstall | reset)
+  help [agents]                                                    Show this help message, or the guide for AI agents
+  version                                                          Show version
+  env --get <path>                                                 Print one value (e.g. ports.api, urls.web, DATABASE_URL)
+  env --export                                                     Injected vars as shell exports: eval "$(buncargo env --export)"
+  env set KEY=VALUE                                                Override a variable for this checkout's runs (env unset KEY drops it)
+  doctor --fix                                                     Repair named-hosts daemon, CA trust, and stale routes
+  typecheck --only=<workspaces>                                    Typecheck selected workspaces (path or basename)
+  typecheck --changed                                              Typecheck what this branch changed, plus its dependents
+  dev --profile=<name>                                             Run a profile's apps from dev.config.ts
+  prisma migrate-check                                             Fail when migrations and schema.prisma differ
+  runs --json                                                      Machine-readable view of every active run
+
+EXAMPLES:
+  bunx buncargo dev                     # Start everything
+  bunx buncargo dev --apps=api,platform # Start only selected apps
+  bunx buncargo dev --expose            # Public quick tunnel for expose:true targets
+  bunx buncargo dev --expose=api        # Public quick tunnel for selected target
+  bunx buncargo dev --help              # Show dev command options
+  bunx buncargo dev --down              # Stop containers
+  bunx buncargo dev --down --all        # Stop every buncargo environment you started
+  bunx buncargo ls                      # List environments
+  bunx buncargo status                  # This project's ports and containers
+  bunx buncargo doctor                  # Diagnose common local-dev problems
+  bunx buncargo hosts status            # Named-hosts daemon and routes
+  bunx buncargo hosts install           # One-time CA + :443 proxy (non-interactive)
+  bunx buncargo typecheck               # Run typecheck
+  bunx buncargo typecheck --only=platform # One workspace
+  bunx buncargo typecheck --help        # Typecheck options
+  bunx buncargo prisma studio           # Open Prisma Studio
+  bunx buncargo env                     # Get ports/urls as JSON
+  bunx buncargo env --get ports.api     # One raw value for scripts
+  bunx buncargo run db:seed             # Run a task from dev.config.ts
+  bunx buncargo ci --migrate -- bun test # Services + migrations in CI
+
+CONFIG:
+  Create a dev.config.ts with a default export:
+
+  import { defineDevConfig } from 'buncargo'
+
+  export default defineDevConfig({
+    projectPrefix: 'myapp',
+    services: { ... },
+    apps: { ... }
+  })
+
+Run "bunx buncargo dev --help" for dev command options.
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output buncargo --help 1`] = `
+"exit 0
+--- stdout
+
+buncargo - Development environment CLI
+
+USAGE:
+  bunx buncargo <command> [options]
+
+COMMANDS:
+  setup                                                            Run the fix of every failing check
+  run [<task>] [-- args]                                           Run a task from dev.config.ts (lists them without a name)
+  wait --app=<name> [--hold]                                       Block until an app of this checkout's run is healthy
+  generate                                                         Render generatedFiles without starting anything
+  build [--discovered]                                             Run apps' buildCommand one at a time
+  exec [options] -- <command>                                      Run a command with the checkout environment
+  slot -- <command>                                                Run a heavy command in a machine-wide check slot, environment untouched
+  connect status                                                   Discover private services through frp
+  dev                                                              Start the development environment
+  typecheck [options]                                              Run TypeScript typecheck across workspaces
+  check [docs] [--staged | --all]                                  Biome, typecheck, gates and nearby tests for the change in front of you
+  predeploy                                                        Before a deploy: migrate, then seed unless production
+  prisma <args>                                                    Run Prisma CLI with correct DATABASE_URL
+  files <status|save|pull|diff|export|import>                      Gitignored files every checkout needs (.env.local), per machine
+  secrets ls [--app=<name>]                                        List Infisical keys and where each comes from (never values)
+  ci [--migrate] [--seed] [-- <command>]                           Start services in CI, prepare them, run a command, tear down
+  env [--get <path>] [--export] | env set|unset                    Print environment info as JSON, including injected vars
+  url [<name>]                                                     Print an app's or a captured URL (lists them without a name)
+  open [<name>]                                                    Open the primary app, or any URL \`url\` lists
+  ls                                                               List every buncargo environment on this machine
+  runs [--json]                                                    Show the dev runs active on this machine
+  stop [<name>...] [--all]                                         Stop one app or service, or a whole run
+  restart <app>                                                    Restart one app of a running dev (e.g. a stopped non-essential one)
+  send <app> <keys> [--enter]                                      Type into an app that has a terminal (e.g. Expo's i)
+  logs [<app>] [-f] [--since=5m] [--errors]                        Read app output from the current or last run
+  ports [pin <offset> | release --root <path>]                     Show this checkout's ports and every claim; pin one, or release a stale one
+  sql [<service>] [-c <query>] [--json] [--create-scratch=<name>]  Open the database's own client in this checkout's container
+  status [--json]                                                  Show this project's containers, ports, and tunnels
+  prune [--dry-run] [--yes]                                        Remove volumes whose project is gone (destroys their data)
+  doctor                                                           Check Docker, port owners, lockfile, hosts, and orphans
+  hosts <subcommand>                                               Named .localhost URLs (install | status | sync | prune | uninstall | daemon)
+  bar <subcommand>                                                 The BuncargoBar menu bar app (install | update | status | open | uninstall | reset)
+  help [agents]                                                    Show this help message, or the guide for AI agents
+  version                                                          Show version
+  env --get <path>                                                 Print one value (e.g. ports.api, urls.web, DATABASE_URL)
+  env --export                                                     Injected vars as shell exports: eval "$(buncargo env --export)"
+  env set KEY=VALUE                                                Override a variable for this checkout's runs (env unset KEY drops it)
+  doctor --fix                                                     Repair named-hosts daemon, CA trust, and stale routes
+  typecheck --only=<workspaces>                                    Typecheck selected workspaces (path or basename)
+  typecheck --changed                                              Typecheck what this branch changed, plus its dependents
+  dev --profile=<name>                                             Run a profile's apps from dev.config.ts
+  prisma migrate-check                                             Fail when migrations and schema.prisma differ
+  runs --json                                                      Machine-readable view of every active run
+
+EXAMPLES:
+  bunx buncargo dev                     # Start everything
+  bunx buncargo dev --apps=api,platform # Start only selected apps
+  bunx buncargo dev --expose            # Public quick tunnel for expose:true targets
+  bunx buncargo dev --expose=api        # Public quick tunnel for selected target
+  bunx buncargo dev --help              # Show dev command options
+  bunx buncargo dev --down              # Stop containers
+  bunx buncargo dev --down --all        # Stop every buncargo environment you started
+  bunx buncargo ls                      # List environments
+  bunx buncargo status                  # This project's ports and containers
+  bunx buncargo doctor                  # Diagnose common local-dev problems
+  bunx buncargo hosts status            # Named-hosts daemon and routes
+  bunx buncargo hosts install           # One-time CA + :443 proxy (non-interactive)
+  bunx buncargo typecheck               # Run typecheck
+  bunx buncargo typecheck --only=platform # One workspace
+  bunx buncargo typecheck --help        # Typecheck options
+  bunx buncargo prisma studio           # Open Prisma Studio
+  bunx buncargo env                     # Get ports/urls as JSON
+  bunx buncargo env --get ports.api     # One raw value for scripts
+  bunx buncargo run db:seed             # Run a task from dev.config.ts
+  bunx buncargo ci --migrate -- bun test # Services + migrations in CI
+
+CONFIG:
+  Create a dev.config.ts with a default export:
+
+  import { defineDevConfig } from 'buncargo'
+
+  export default defineDevConfig({
+    projectPrefix: 'myapp',
+    services: { ... },
+    apps: { ... }
+  })
+
+Run "bunx buncargo dev --help" for dev command options.
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output buncargo -h 1`] = `
+"exit 0
+--- stdout
+
+buncargo - Development environment CLI
+
+USAGE:
+  bunx buncargo <command> [options]
+
+COMMANDS:
+  setup                                                            Run the fix of every failing check
+  run [<task>] [-- args]                                           Run a task from dev.config.ts (lists them without a name)
+  wait --app=<name> [--hold]                                       Block until an app of this checkout's run is healthy
+  generate                                                         Render generatedFiles without starting anything
+  build [--discovered]                                             Run apps' buildCommand one at a time
+  exec [options] -- <command>                                      Run a command with the checkout environment
+  slot -- <command>                                                Run a heavy command in a machine-wide check slot, environment untouched
+  connect status                                                   Discover private services through frp
+  dev                                                              Start the development environment
+  typecheck [options]                                              Run TypeScript typecheck across workspaces
+  check [docs] [--staged | --all]                                  Biome, typecheck, gates and nearby tests for the change in front of you
+  predeploy                                                        Before a deploy: migrate, then seed unless production
+  prisma <args>                                                    Run Prisma CLI with correct DATABASE_URL
+  files <status|save|pull|diff|export|import>                      Gitignored files every checkout needs (.env.local), per machine
+  secrets ls [--app=<name>]                                        List Infisical keys and where each comes from (never values)
+  ci [--migrate] [--seed] [-- <command>]                           Start services in CI, prepare them, run a command, tear down
+  env [--get <path>] [--export] | env set|unset                    Print environment info as JSON, including injected vars
+  url [<name>]                                                     Print an app's or a captured URL (lists them without a name)
+  open [<name>]                                                    Open the primary app, or any URL \`url\` lists
+  ls                                                               List every buncargo environment on this machine
+  runs [--json]                                                    Show the dev runs active on this machine
+  stop [<name>...] [--all]                                         Stop one app or service, or a whole run
+  restart <app>                                                    Restart one app of a running dev (e.g. a stopped non-essential one)
+  send <app> <keys> [--enter]                                      Type into an app that has a terminal (e.g. Expo's i)
+  logs [<app>] [-f] [--since=5m] [--errors]                        Read app output from the current or last run
+  ports [pin <offset> | release --root <path>]                     Show this checkout's ports and every claim; pin one, or release a stale one
+  sql [<service>] [-c <query>] [--json] [--create-scratch=<name>]  Open the database's own client in this checkout's container
+  status [--json]                                                  Show this project's containers, ports, and tunnels
+  prune [--dry-run] [--yes]                                        Remove volumes whose project is gone (destroys their data)
+  doctor                                                           Check Docker, port owners, lockfile, hosts, and orphans
+  hosts <subcommand>                                               Named .localhost URLs (install | status | sync | prune | uninstall | daemon)
+  bar <subcommand>                                                 The BuncargoBar menu bar app (install | update | status | open | uninstall | reset)
+  help [agents]                                                    Show this help message, or the guide for AI agents
+  version                                                          Show version
+  env --get <path>                                                 Print one value (e.g. ports.api, urls.web, DATABASE_URL)
+  env --export                                                     Injected vars as shell exports: eval "$(buncargo env --export)"
+  env set KEY=VALUE                                                Override a variable for this checkout's runs (env unset KEY drops it)
+  doctor --fix                                                     Repair named-hosts daemon, CA trust, and stale routes
+  typecheck --only=<workspaces>                                    Typecheck selected workspaces (path or basename)
+  typecheck --changed                                              Typecheck what this branch changed, plus its dependents
+  dev --profile=<name>                                             Run a profile's apps from dev.config.ts
+  prisma migrate-check                                             Fail when migrations and schema.prisma differ
+  runs --json                                                      Machine-readable view of every active run
+
+EXAMPLES:
+  bunx buncargo dev                     # Start everything
+  bunx buncargo dev --apps=api,platform # Start only selected apps
+  bunx buncargo dev --expose            # Public quick tunnel for expose:true targets
+  bunx buncargo dev --expose=api        # Public quick tunnel for selected target
+  bunx buncargo dev --help              # Show dev command options
+  bunx buncargo dev --down              # Stop containers
+  bunx buncargo dev --down --all        # Stop every buncargo environment you started
+  bunx buncargo ls                      # List environments
+  bunx buncargo status                  # This project's ports and containers
+  bunx buncargo doctor                  # Diagnose common local-dev problems
+  bunx buncargo hosts status            # Named-hosts daemon and routes
+  bunx buncargo hosts install           # One-time CA + :443 proxy (non-interactive)
+  bunx buncargo typecheck               # Run typecheck
+  bunx buncargo typecheck --only=platform # One workspace
+  bunx buncargo typecheck --help        # Typecheck options
+  bunx buncargo prisma studio           # Open Prisma Studio
+  bunx buncargo env                     # Get ports/urls as JSON
+  bunx buncargo env --get ports.api     # One raw value for scripts
+  bunx buncargo run db:seed             # Run a task from dev.config.ts
+  bunx buncargo ci --migrate -- bun test # Services + migrations in CI
+
+CONFIG:
+  Create a dev.config.ts with a default export:
+
+  import { defineDevConfig } from 'buncargo'
+
+  export default defineDevConfig({
+    projectPrefix: 'myapp',
+    services: { ... },
+    apps: { ... }
+  })
+
+Run "bunx buncargo dev --help" for dev command options.
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output buncargo help 1`] = `
+"exit 0
+--- stdout
+
+buncargo - Development environment CLI
+
+USAGE:
+  bunx buncargo <command> [options]
+
+COMMANDS:
+  setup                                                            Run the fix of every failing check
+  run [<task>] [-- args]                                           Run a task from dev.config.ts (lists them without a name)
+  wait --app=<name> [--hold]                                       Block until an app of this checkout's run is healthy
+  generate                                                         Render generatedFiles without starting anything
+  build [--discovered]                                             Run apps' buildCommand one at a time
+  exec [options] -- <command>                                      Run a command with the checkout environment
+  slot -- <command>                                                Run a heavy command in a machine-wide check slot, environment untouched
+  connect status                                                   Discover private services through frp
+  dev                                                              Start the development environment
+  typecheck [options]                                              Run TypeScript typecheck across workspaces
+  check [docs] [--staged | --all]                                  Biome, typecheck, gates and nearby tests for the change in front of you
+  predeploy                                                        Before a deploy: migrate, then seed unless production
+  prisma <args>                                                    Run Prisma CLI with correct DATABASE_URL
+  files <status|save|pull|diff|export|import>                      Gitignored files every checkout needs (.env.local), per machine
+  secrets ls [--app=<name>]                                        List Infisical keys and where each comes from (never values)
+  ci [--migrate] [--seed] [-- <command>]                           Start services in CI, prepare them, run a command, tear down
+  env [--get <path>] [--export] | env set|unset                    Print environment info as JSON, including injected vars
+  url [<name>]                                                     Print an app's or a captured URL (lists them without a name)
+  open [<name>]                                                    Open the primary app, or any URL \`url\` lists
+  ls                                                               List every buncargo environment on this machine
+  runs [--json]                                                    Show the dev runs active on this machine
+  stop [<name>...] [--all]                                         Stop one app or service, or a whole run
+  restart <app>                                                    Restart one app of a running dev (e.g. a stopped non-essential one)
+  send <app> <keys> [--enter]                                      Type into an app that has a terminal (e.g. Expo's i)
+  logs [<app>] [-f] [--since=5m] [--errors]                        Read app output from the current or last run
+  ports [pin <offset> | release --root <path>]                     Show this checkout's ports and every claim; pin one, or release a stale one
+  sql [<service>] [-c <query>] [--json] [--create-scratch=<name>]  Open the database's own client in this checkout's container
+  status [--json]                                                  Show this project's containers, ports, and tunnels
+  prune [--dry-run] [--yes]                                        Remove volumes whose project is gone (destroys their data)
+  doctor                                                           Check Docker, port owners, lockfile, hosts, and orphans
+  hosts <subcommand>                                               Named .localhost URLs (install | status | sync | prune | uninstall | daemon)
+  bar <subcommand>                                                 The BuncargoBar menu bar app (install | update | status | open | uninstall | reset)
+  help [agents]                                                    Show this help message, or the guide for AI agents
+  version                                                          Show version
+  env --get <path>                                                 Print one value (e.g. ports.api, urls.web, DATABASE_URL)
+  env --export                                                     Injected vars as shell exports: eval "$(buncargo env --export)"
+  env set KEY=VALUE                                                Override a variable for this checkout's runs (env unset KEY drops it)
+  doctor --fix                                                     Repair named-hosts daemon, CA trust, and stale routes
+  typecheck --only=<workspaces>                                    Typecheck selected workspaces (path or basename)
+  typecheck --changed                                              Typecheck what this branch changed, plus its dependents
+  dev --profile=<name>                                             Run a profile's apps from dev.config.ts
+  prisma migrate-check                                             Fail when migrations and schema.prisma differ
+  runs --json                                                      Machine-readable view of every active run
+
+EXAMPLES:
+  bunx buncargo dev                     # Start everything
+  bunx buncargo dev --apps=api,platform # Start only selected apps
+  bunx buncargo dev --expose            # Public quick tunnel for expose:true targets
+  bunx buncargo dev --expose=api        # Public quick tunnel for selected target
+  bunx buncargo dev --help              # Show dev command options
+  bunx buncargo dev --down              # Stop containers
+  bunx buncargo dev --down --all        # Stop every buncargo environment you started
+  bunx buncargo ls                      # List environments
+  bunx buncargo status                  # This project's ports and containers
+  bunx buncargo doctor                  # Diagnose common local-dev problems
+  bunx buncargo hosts status            # Named-hosts daemon and routes
+  bunx buncargo hosts install           # One-time CA + :443 proxy (non-interactive)
+  bunx buncargo typecheck               # Run typecheck
+  bunx buncargo typecheck --only=platform # One workspace
+  bunx buncargo typecheck --help        # Typecheck options
+  bunx buncargo prisma studio           # Open Prisma Studio
+  bunx buncargo env                     # Get ports/urls as JSON
+  bunx buncargo env --get ports.api     # One raw value for scripts
+  bunx buncargo run db:seed             # Run a task from dev.config.ts
+  bunx buncargo ci --migrate -- bun test # Services + migrations in CI
+
+CONFIG:
+  Create a dev.config.ts with a default export:
+
+  import { defineDevConfig } from 'buncargo'
+
+  export default defineDevConfig({
+    projectPrefix: 'myapp',
+    services: { ... },
+    apps: { ... }
+  })
+
+Run "bunx buncargo dev --help" for dev command options.
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output buncargo help agents 1`] = `
+"exit 0
+--- stdout
+# buncargo for agents
+
+This checkout runs its services (databases, caches) and apps (dev servers)
+through buncargo. Every worktree gets its own ports, containers and URLs: never
+reuse a port, container, database or URL from another checkout, and never
+hardcode a port. Ask buncargo instead.
+
+## Start and stop
+
+- \`bunx buncargo dev --detach\` starts the run in the background and returns once
+  every app is up. Exit 1 names the apps that did not come up; the others keep
+  running. Exit 0 also when every app was already running and is reused. Do
+  not use \`nohup\`, \`&\` or \`disown\`.
+- \`bunx buncargo dev --detach --apps=api\` starts only some apps (and the apps
+  they require). \`--profile=<name>\` picks a configured set.
+- \`bunx buncargo stop --all\` stops this checkout's run, and removes the
+  containers an ended run left waiting out its idle hold. A run someone started
+  in a terminal (not with \`--detach\`) asks first, and without a terminal needs
+  \`--force\`: only stop that one when the user asked.
+  \`bunx buncargo stop <app>\` stops one app and \`bunx buncargo restart <app>\`
+  restarts one.
+- Stopping can take as long as an app's \`stopGraceMs\`: up to a minute for
+  an app that saves data as it exits, such as the Firebase emulators. Let it
+  finish; killing it loses that data.
+- An app already running in another terminal is reused, not started twice.
+  One that fails its health check is replaced when its run was started with
+  \`--detach\` or is gone; one in someone's terminal needs \`--takeover\`.
+- An interactive app (Expo) runs in a terminal of its own when you have none.
+  Press its keys with \`bunx buncargo send <app> <keys>\`, e.g.
+  \`bunx buncargo send expoApp r\` to reload it. Exit 3 means the app could not
+  take them (it says why), 2 that no run started it. Do not wrap it in
+  \`script\` or \`tail -f /dev/null\`.
+- \`bunx buncargo expo sim\` opens this checkout's Expo app in its own iOS
+  simulator. Expo's own \`i\` key opens whichever simulator booted first, which
+  may be another worktree's.
+- Apps with a \`watch\` config restart themselves when their files change; do
+  not run them under \`bun --watch\` as well.
+
+## Readiness
+
+- \`bunx buncargo wait --app=<app>\` blocks until the app is healthy (exit 0),
+  failed (1) or timed out (2). Use it instead of \`sleep\` or \`curl\` loops.
+
+## Reading the environment
+
+- \`bunx buncargo url <app>\` prints the URL to open. When \`BUNCARGO_URL_HOST\`
+  is set, the person is on another machine: hand them that URL, not localhost.
+  With \`BUNCARGO_HOSTS=tailscale\` it is \`https://<machine>.ts.net:<port>\`,
+  served by Tailscale; a warning at startup says when an app fell back to its
+  plain URL, and \`bunx buncargo doctor\` says why.
+- \`bunx buncargo env --get DATABASE_URL\` prints any variable the apps get, and
+  \`bunx buncargo env --get ports.<name>\` one port.
+  \`eval "$(bunx buncargo env --export)"\` loads them all into a shell.
+- \`bunx buncargo status --json\` is ports, containers, URLs and app states as one
+  object. A run whose service container stopped under it has \`health:
+  "degraded"\` and the service's \`problem\`; \`plannedOffset\` set means the
+  next \`dev\` moves the ports, so start the run before testing against them.
+- \`bunx buncargo env set KEY=VALUE\` overrides a variable for every run, exec
+  and task of this checkout (\`env unset KEY\` drops it). Use it when a shared
+  \`.env.local\` points at another checkout's port, instead of prefixing every
+  command with the variable.
+- \`bunx buncargo exec -- <command>\` runs a command with this checkout's
+  environment. \`bunx buncargo run <task>\` runs a configured task;
+  \`bunx buncargo help\` lists them.
+
+## Gitignored files (.env.local)
+
+- When the config lists \`checkoutFiles\`, buncargo copies those files into this
+  checkout from the machine's file store before any command reads them. Do not
+  copy them from another worktree by hand.
+- \`bunx buncargo files status\` shows each one's state. A file with local
+  edits is never overwritten: \`bunx buncargo files save <path>\` shares the
+  edit with every checkout, and \`bunx buncargo files pull --force <path>\` takes
+  the store's copy. For a \`conflict\` (both changed), run
+  \`bunx buncargo files merge <path>\` first when the hint offers it (dotenv
+  files): it keeps both sides' changes key by key. Merge exits 1 naming keys
+  changed on both sides; rerun it with \`--checkout=KEY,...\` or
+  \`--store=KEY,...\`. None of them prints values; \`files diff\` lists
+  differing keys.
+  Ask the user before saving or forcing a file you did not change on purpose.
+
+## Checks
+
+- \`bunx buncargo check\` is the check for your change: Biome on the changed
+  files, \`typecheck --changed\`, the project's gates and the tests next to
+  the changed files. It ends with \`PASS\` or \`FAIL: <steps>\` and exits 1 on a
+  failure. \`--staged\` is the pre-commit hook; \`--all\` checks everything.
+- \`bunx buncargo typecheck --changed\` checks the workspaces this branch
+  touched and the ones depending on them.
+- Typechecks share a few slots across every checkout on the machine. One that
+  says it is waiting for a slot is not stuck; let it wait.
+- Run test suites as \`bunx buncargo slot -- <command>\` so they take a slot
+  too. \`slot\` leaves the environment alone; \`exec --slot\` adds the
+  checkout's URLs and secrets.
+
+## Logs
+
+- \`bunx buncargo logs <app> --errors\`, \`--since=5m\`, \`-f\`. App output is kept
+  per run, so it is there after the terminal scrolled or the run ended.
+
+## Databases
+
+- \`bunx buncargo sql\` opens the database's own client in this checkout's
+  container. \`bunx buncargo sql -c "select …" --json\` runs one query and prints
+  the rows as JSON. \`bunx buncargo sql redis -c "GET key"\` works for Redis.
+- For a throwaway database (a migration check, a test run), use
+  \`DATABASE_URL=$(bunx buncargo sql --create-scratch=<name>) <command>\`: an
+  empty \`scratch_<name>\` in this checkout's Postgres, recreated each time.
+  \`bunx buncargo sql --drop-scratch=<name>\` removes it. Do not \`docker run\`
+  a Postgres of your own.
+- Do not \`docker exec\` into a database by name or read credentials from the
+  generated compose file: other worktrees run databases of their own.
+
+## Sharing beyond this machine
+
+- \`bunx buncargo dev --detach --expose\` (or \`--expose=api\`) also opens a
+  public Cloudflare quick tunnel to each \`expose: true\` app or service, for a
+  webhook or a phone on another network. Anyone with the URL reaches the app:
+  only expose when the user asked. To reach an app yourself, use
+  \`bunx buncargo url <app>\`. The public URLs are in
+  \`bunx buncargo status --json\` (\`tunnels\`); the tunnels close when the run
+  stops. A target without \`expose: true\` makes \`dev\` exit 1 before starting.
+- When \`BUNCARGO_CONNECT_TOKENS\` is set (a cloud sandbox), \`dev\` shares
+  every selected app and service with the token holders on its own; there is no
+  flag, and sharing ends with the run. A sharing failure never stops the run:
+  \`bunx buncargo connect status --json\` shows it.
+- \`bunx buncargo connect tcp <target-id>\` opens a private local port to a
+  shared database another machine runs and prints it as JSON (exit 1 when it
+  cannot); \`bunx buncargo connect disconnect <target-id>\` closes it when you
+  are done. Target ids come from \`connect status --json\`. \`connect token\`
+  prints this machine's recipient token, a secret: never write it into a file.
+  \`connect token --rotate\` and \`connect revoke\` cut recipients off; run them
+  only when asked.
+
+## Do not
+
+- \`dev --reset\` deletes this checkout's database (not Firebase emulator
+  data, which lives in \`.firebase-emulator-data\`) and \`dev --down --all\` stops
+  every checkout's run. Both refuse without a terminal unless \`--yes\` is
+  passed. Pass it only when the user asked for exactly that.
+- Do not edit \`.buncargo/\`, the generated compose file or other generated
+  files such as \`firebase.buncargo.json\`.
+
+## When something fails
+
+- \`bunx buncargo doctor\` checks Docker, ports, named hosts and leftovers.
+  \`doctor --fix\` starts Docker, force-restarts a Docker Desktop that has run
+  for minutes without answering (it stops every checkout's containers; say so
+  to the user first), and stops a process of a deleted checkout holding a port.
+- A run line "postgres stopped (exit 0)" means a service container went down
+  under the run; buncargo does not restart it. The line says which buncargo
+  command stopped it, or that none did. Restart the run
+  (\`bunx buncargo stop --all\`, then \`bunx buncargo dev --detach\`) and
+  tell the user what stopped it.
+- \`bunx buncargo setup --yes\` runs the fix of every failing check (missing
+  dependencies, generated files).
+- A port "held by an unidentified process" is usually a system service. Run
+  \`dev\` again: buncargo moves the checkout to a free port block.
+- A warning that names who removed this checkout's containers (a watchdog,
+  \`stop\`, \`dev --down\`) explains a refused database connection: the
+  stack is gone, not broken. Start the run again; report the remover to the
+  user if it was another worktree's or another user's.
+- \`dev\` refusing because another checkout "already uses" its Compose project:
+  the two would share one database. Do not work around it; tell the user, who
+  gives one of them its own \`projectPrefix\`, or, when the other checkout's
+  claim is from a config it no longer runs, releases it with the
+  \`bunx buncargo ports release --root <path>\` the error names. Run that only
+  when the user asks: whoever runs under the name next gets its volumes.
+- Each checkout keeps its port offset (\`bunx buncargo ports\`). Do not set
+  \`BUNCARGO_PORT_OFFSET\` or edit \`.buncargo/ports.json\`; to move a checkout,
+  \`bunx buncargo ports pin <offset>\`.
+- Docker out of disk, or hanging: \`bunx buncargo prune --project --dry-run\`
+  lists this project's leftover \`ci\` stacks and deleted worktrees' stacks.
+  Removing them deletes their data, so ask before running it without
+  \`--dry-run\`. It never touches an existing checkout's dev database.
+
+## Changing dev.config.ts
+
+- Housekeeping that needs the database before any app starts (unlocking stale
+  jobs, resetting a queue) goes in \`hooks.afterContainersReady\`: it runs on
+  every start, after migrations and before the apps. \`preflight\` runs before
+  the containers start, so the database is not up yet there.
+- Tools that change behaviour in an agent's shell can be kept from seeing it with
+  \`unsetEnv: ["VAR", …]\`, which removes those variables from every process
+  buncargo starts.
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output buncargo version 1`] = `
+"exit 0
+--- stdout
+buncargo v<version>
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output buncargo --version 1`] = `
+"exit 0
+--- stdout
+buncargo v<version>
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output buncargo -v 1`] = `
+"exit 0
+--- stdout
+buncargo v<version>
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output buncargo nope 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ Unknown command: nope
+   Run "bunx buncargo help" for available commands.
+"
+`;
+
+exports[`buncargo CLI output buncargo --nope 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ Unknown command: --nope
+   Run "bunx buncargo help" for available commands.
+"
+`;
+
+exports[`buncargo CLI output buncargo hosts --help 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ Unknown hosts command: --help
+   Use: buncargo hosts install | status | sync | prune | uninstall | daemon
+"
+`;
+
+exports[`buncargo CLI output buncargo bar --help 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ Unknown bar command: --help
+   Use: buncargo bar install | update | status | open | uninstall | reset
+"
+`;
+
+exports[`buncargo CLI output buncargo typecheck --nope 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ Unknown flag: --nope
+   Run "bunx buncargo typecheck --help" for typecheck options.
+"
+`;
+
+exports[`buncargo CLI output buncargo stop --nope 1`] = `
+"exit 3
+--- stdout
+
+Usage: buncargo stop [<name>...] [options]
+
+Options:
+  --help           Show this help message
+  --root=<path>    Checkout whose run to act on (default: this one)
+  --run=<session>  One run session from buncargo runs (default: matching checkout sessions)
+  --all            Stop the whole run: dev servers and containers, and an ended run's idle containers
+  --force          Skip the confirmation for a risky target
+  <name>           App or service from \`buncargo runs\` (repeatable)
+
+Examples:
+  bunx buncargo stop api       Stop one dev server
+  bunx buncargo stop postgres  Stop one service's container
+  bunx buncargo stop --all     Stop this checkout's whole run
+
+
+--- stderr
+  ❌ Unknown flag(s): --nope
+"
+`;
+
+exports[`buncargo CLI output buncargo stop nope 1`] = `
+"exit 2
+--- stdout
+
+--- stderr
+  ❌ No active buncargo run for <cwd>.
+   Run \`buncargo runs\` to see what is active.
+"
+`;
+
+exports[`buncargo CLI output buncargo wait 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ --app is required
+"
+`;
+
+exports[`buncargo CLI output buncargo dev --nope 1`] = `
+"exit 1
+--- stdout
+
+
+Usage: buncargo dev [options]
+
+Options:
+  --help                         Show this help message
+  --down                         Stop all containers
+  --all                          With --down, stop every buncargo environment you started on this machine
+  --reset                        Stop containers and remove volumes (fresh start)
+  --yes                          Confirm --reset or --down --all without a prompt (required without a terminal)
+  --migrate                      Run migrations and exit
+  --seed                         Run migrations and seeders, then exit
+  --up-only                      Start containers only, then exit (no migrations, seed, or dev servers)
+  --expose[=<targets>]           Expose configured targets via public quick tunnels
+  --apps=<apps>                  Run selected apps plus their requiredApps
+  --profile=<name>               Run a profile's apps (default: the profile named default)
+  --attach=<app>                 Give one app the TTY (overrides interactive: true)
+  --no-watch                     Do not restart apps when their watched files change
+  --detach                       Run in the background; return once the apps are up (logs: buncargo logs)
+  --tui                          Terminal UI, the default in a terminal; warns when there is none
+  --no-tui                       Prefixed lines instead of the terminal UI, even in a terminal
+  --keep-containers              Keep the containers after the run exits, as long as the checkout exists
+  --takeover                     Stop apps already running elsewhere and run them here
+  --watchdog-timeout=N           Idle backstop in minutes (default: 3)
+  --no-docker-autostart          Do not try to start Docker if it is down
+  --no-hosts                     Use localhost:port instead of named .localhost URLs
+  --runtime=<docker|apple|auto>  Container runtime backend (default: docker)
+  --timing-json                  Report startup through app readiness as JSON
+  --timing                       Print how long each startup phase took
+  --                             Extra args appended to the attached app command
+
+Examples:
+  bun dev                            Start selected apps and their services
+  bun dev --seed                     Run migrations and seed the database
+  bun dev --down                     Stop all containers
+  bun dev --reset                    Stop containers and remove all data
+  bun dev --apps=api,platform        Run only selected apps
+  bun dev --profile=full             Run the apps of profiles.full
+  bun dev --expose                   Expose all targets with expose: true
+  bun dev --expose=api,web           Expose specific targets
+  bun dev --apps=expoApp -- --clear  Pass args to the attached app
+  bun dev --runtime=apple            Run services on Apple container instead of Docker
+  bun dev --no-tui                   Prefixed lines instead of the terminal UI
+  bun dev --takeover                 Move apps running in another terminal into this one
+
+
+--- stderr
+  ❌ Unknown flag: --nope
+"
+`;
+
+exports[`buncargo CLI output buncargo runs --json 1`] = `
+"exit 0
+--- stdout
+{
+  "version": 1,
+  "runs": [],
+  "leases": []
+}
+
+--- stderr
+"
+`;
