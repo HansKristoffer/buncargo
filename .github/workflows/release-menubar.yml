@@ -2,8 +2,7 @@
 #
 # Called by release.yml with the version Release Please just tagged; the
 # dispatch is the escape hatch for rebuilding a release by hand. A pushed tag
-# does not trigger this on its own any more: Release Please creates the tag with
-# the workflow token, which never fires other workflows.
+# does not trigger this on its own.
 #
 # `buncargo bar install` and `buncargo bar update` read the assets this
 # publishes, so the names here are a contract: `BuncargoBar-<version>.zip` and a
