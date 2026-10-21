@@ -24,8 +24,12 @@ per port.
   are per user (`~/.buncargo`), so the container listing is what keeps users sharing one daemon
   apart. They now allocate with `prepareStartAsync` for the database, unless this environment has
   already allocated: probing again would move a live run's block under it and replace its
-  selection. An app-only allocation never probed the database's port against containers, so that
-  case still meets a foreign one at the preflight.
+  selection. A run in another process is not an allocation of this environment: the prisma path
+  probes, finds the run's database container is this project's and keeps the block, while a
+  lockfile block another project's container now holds is set aside as `dev` sets it aside. A CI
+  runner's checkout keeps its lockfile between jobs while other stacks come and go on the daemon.
+  An app-only allocation never probed the database's port against containers, so that case still
+  meets a foreign one at the preflight.
 - `offset-claims.ts` is `~/.buncargo/offsets.json`, root → offset and the block's ports. Every
   probing allocation skips a block another existing checkout claims, by its offset or by any one of
   its ports, and every claiming one writes its own. Offsets alone missed collisions between
