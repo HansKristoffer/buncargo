@@ -23,13 +23,15 @@ pieces it orchestrates.
   by `bin.ts`'s command table and by `help.ts`) and for the `hosts` and `bar` subcommands. Every
   switch over them ends in a `never` default.
 - `bin.ts` dispatches through `hanzio/cli` (`defineCli`), and every command is `raw`: it gets its
-  arguments unparsed and keeps its own spec, help and exit codes. Scripts and CI depend on that
-  output, and a hanzio schema would change it: hanzio prints its own help layout, treats `-h` as
-  help, parses values with strict `parseArgs` and exits 2 for bad arguments. `bin.ts` answers the
-  root's help, `--version`/`-v` and unknown names itself, before calling hanzio, because an unknown
-  name may be an integration's namespace. `cli-output.test.ts` pins every command's `--help` and the
-  root. A changed or removed line in its snapshot is a breaking change; an added command or flag
-  only adds lines.
+  arguments unparsed and keeps its own spec, help and exit codes. A command with a Zod `input`
+  would load `zod` on every run, which a raw-only CLI never does, and hanzio's generated help has
+  its own layout (a description section, a `-h, --help` row). hanzio's `defaultCommand` (`help`),
+  `unknownCommand` (an integration's namespace, else `Unknown command`) and `onError` (`log.fail`)
+  keep the root's output. One check stays in `bin.ts`: buncargo reads only the first argument as
+  the command, so `--help dev` is help and `--json runs` is an unknown command, where hanzio would
+  take leading flags as globals and keep looking. `cli-output.test.ts` pins every command's
+  `--help` and the root. A changed or removed line in its snapshot is a breaking change; an added
+  command or flag only adds lines.
 - Failures inside a command flow throw `CliError` (`errors.ts`) so the flow can release tunnels,
   host routes and the terminal before exiting 1. Argv problems, which happen before anything
   starts, exit through `log.fail`.

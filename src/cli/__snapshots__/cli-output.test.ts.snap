@@ -1323,3 +1323,126 @@ exports[`buncargo CLI output buncargo runs --json 1`] = `
 --- stderr
 "
 `;
+
+exports[`buncargo CLI output buncargo --help dev 1`] = `
+"exit 0
+--- stdout
+
+buncargo - Development environment CLI
+
+USAGE:
+  bunx buncargo <command> [options]
+
+COMMANDS:
+  setup                                                            Run the fix of every failing check
+  run [<task>] [-- args]                                           Run a task from dev.config.ts (lists them without a name)
+  wait --app=<name> [--hold]                                       Block until an app of this checkout's run is healthy
+  generate                                                         Render generatedFiles without starting anything
+  build [--discovered]                                             Run apps' buildCommand one at a time
+  exec [options] -- <command>                                      Run a command with the checkout environment
+  slot -- <command>                                                Run a heavy command in a machine-wide check slot, environment untouched
+  connect status                                                   Discover private services through frp
+  dev                                                              Start the development environment
+  typecheck [options]                                              Run TypeScript typecheck across workspaces
+  check [docs] [--staged | --all]                                  Biome, typecheck, gates and nearby tests for the change in front of you
+  predeploy                                                        Before a deploy: migrate, then seed unless production
+  prisma <args>                                                    Run Prisma CLI with correct DATABASE_URL
+  files <status|save|pull|diff|export|import>                      Gitignored files every checkout needs (.env.local), per machine
+  secrets ls [--app=<name>]                                        List Infisical keys and where each comes from (never values)
+  ci [--migrate] [--seed] [-- <command>]                           Start services in CI, prepare them, run a command, tear down
+  env [--get <path>] [--export] | env set|unset                    Print environment info as JSON, including injected vars
+  url [<name>]                                                     Print an app's or a captured URL (lists them without a name)
+  open [<name>]                                                    Open the primary app, or any URL \`url\` lists
+  ls                                                               List every buncargo environment on this machine
+  runs [--json]                                                    Show the dev runs active on this machine
+  stop [<name>...] [--all]                                         Stop one app or service, or a whole run
+  restart <app>                                                    Restart one app of a running dev (e.g. a stopped non-essential one)
+  send <app> <keys> [--enter]                                      Type into an app that has a terminal (e.g. Expo's i)
+  logs [<app>] [-f] [--since=5m] [--errors]                        Read app output from the current or last run
+  ports [pin <offset> | release --root <path>]                     Show this checkout's ports and every claim; pin one, or release a stale one
+  sql [<service>] [-c <query>] [--json] [--create-scratch=<name>]  Open the database's own client in this checkout's container
+  status [--json]                                                  Show this project's containers, ports, and tunnels
+  prune [--dry-run] [--yes]                                        Remove volumes whose project is gone (destroys their data)
+  doctor                                                           Check Docker, port owners, lockfile, hosts, and orphans
+  hosts <subcommand>                                               Named .localhost URLs (install | status | sync | prune | uninstall | daemon)
+  bar <subcommand>                                                 The BuncargoBar menu bar app (install | update | status | open | uninstall | reset)
+  help [agents]                                                    Show this help message, or the guide for AI agents
+  version                                                          Show version
+  env --get <path>                                                 Print one value (e.g. ports.api, urls.web, DATABASE_URL)
+  env --export                                                     Injected vars as shell exports: eval "$(buncargo env --export)"
+  env set KEY=VALUE                                                Override a variable for this checkout's runs (env unset KEY drops it)
+  doctor --fix                                                     Repair named-hosts daemon, CA trust, and stale routes
+  typecheck --only=<workspaces>                                    Typecheck selected workspaces (path or basename)
+  typecheck --changed                                              Typecheck what this branch changed, plus its dependents
+  dev --profile=<name>                                             Run a profile's apps from dev.config.ts
+  prisma migrate-check                                             Fail when migrations and schema.prisma differ
+  runs --json                                                      Machine-readable view of every active run
+
+EXAMPLES:
+  bunx buncargo dev                     # Start everything
+  bunx buncargo dev --apps=api,platform # Start only selected apps
+  bunx buncargo dev --expose            # Public quick tunnel for expose:true targets
+  bunx buncargo dev --expose=api        # Public quick tunnel for selected target
+  bunx buncargo dev --help              # Show dev command options
+  bunx buncargo dev --down              # Stop containers
+  bunx buncargo dev --down --all        # Stop every buncargo environment you started
+  bunx buncargo ls                      # List environments
+  bunx buncargo status                  # This project's ports and containers
+  bunx buncargo doctor                  # Diagnose common local-dev problems
+  bunx buncargo hosts status            # Named-hosts daemon and routes
+  bunx buncargo hosts install           # One-time CA + :443 proxy (non-interactive)
+  bunx buncargo typecheck               # Run typecheck
+  bunx buncargo typecheck --only=platform # One workspace
+  bunx buncargo typecheck --help        # Typecheck options
+  bunx buncargo prisma studio           # Open Prisma Studio
+  bunx buncargo env                     # Get ports/urls as JSON
+  bunx buncargo env --get ports.api     # One raw value for scripts
+  bunx buncargo run db:seed             # Run a task from dev.config.ts
+  bunx buncargo ci --migrate -- bun test # Services + migrations in CI
+
+CONFIG:
+  Create a dev.config.ts with a default export:
+
+  import { defineDevConfig } from 'buncargo'
+
+  export default defineDevConfig({
+    projectPrefix: 'myapp',
+    services: { ... },
+    apps: { ... }
+  })
+
+Run "bunx buncargo dev --help" for dev command options.
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output buncargo -v dev 1`] = `
+"exit 0
+--- stdout
+buncargo v<version>
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output buncargo --json runs 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ Unknown command: --json
+   Run "bunx buncargo help" for available commands.
+"
+`;
+
+exports[`buncargo CLI output buncargo - 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ Unknown command: -
+   Run "bunx buncargo help" for available commands.
+"
+`;

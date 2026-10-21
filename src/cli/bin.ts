@@ -15,7 +15,7 @@
 import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Command, defineCli, defineCommand } from "hanzio/cli";
-import { type CliCommandName, resolveCommandName } from "./commands/registry";
+import type { CliCommandName } from "./commands/registry";
 import { CliError } from "./errors";
 import * as log from "./log";
 import { guardVersion } from "./version-guard";
@@ -31,20 +31,27 @@ function failWith(error: unknown): never {
 /**
  * Each command parses its own arguments and prints its own help, so hanzio/cli
  * only dispatches: `raw` hands over everything after the command name. A
- * returned number becomes the exit code; errors print the way they always have.
+ * returned number becomes the exit code.
  */
 function command(handler: (args: string[]) => Promise<unknown>): Command {
 	return defineCommand({
 		raw: true,
 		run: async (_input, ctx) => {
-			try {
-				const code = await handler([...ctx.argv]);
-				if (typeof code === "number") process.exitCode = code;
-			} catch (error) {
-				failWith(error);
-			}
+			const code = await handler([...ctx.argv]);
+			if (typeof code === "number") process.exitCode = code;
 		},
 	});
+}
+
+/** A name that is no command may be an integration's namespace (`buncargo shopify env`). */
+async function runUnknown(name: string, args: string[]): Promise<number> {
+	const code = await (
+		await import("./integration-commands")
+	).runIntegrationCommand(name, args);
+	if (code !== undefined) return code;
+	log.fail(`Unknown command: ${name}`, [
+		'Run "bunx buncargo help" for available commands.',
+	]);
 }
 
 /** Exit now on failure: these codes mean something to a caller. */
@@ -160,7 +167,13 @@ const COMMANDS = {
 	),
 } satisfies Record<CliCommandName, Command>;
 
-const cli = defineCli({ name: "buncargo", commands: COMMANDS });
+const cli = defineCli({
+	name: "buncargo",
+	commands: COMMANDS,
+	defaultCommand: "help",
+	unknownCommand: (name) => command((args) => runUnknown(name, args)),
+	onError: failWith,
+});
 
 async function main(): Promise<void> {
 	// `<package>/src/cli` from source, `<package>/dist/cli` when installed.
@@ -168,30 +181,22 @@ async function main(): Promise<void> {
 	guardVersion(basename(dirname(cliDir)) === "src");
 
 	const args = process.argv.slice(2);
-	const rawCommand = args[0];
+	const first = args[0];
 
-	// The root's help, version and unknown commands keep buncargo's own
-	// output: the help lists the config's tasks and integrations, and an
-	// unknown name may be an integration's namespace (`buncargo shopify env`).
-	if (!rawCommand || HELP_ALIASES.has(rawCommand)) {
-		await (await import("./commands/help")).showHelp();
-		process.exit(0);
-	}
-	if (VERSION_ALIASES.has(rawCommand)) {
-		(await import("./commands/version")).showVersion();
-		process.exit(0);
-	}
-	if (!resolveCommandName(rawCommand)) {
-		const code = await (
-			await import("./integration-commands")
-		).runIntegrationCommand(rawCommand, args.slice(1));
-		if (code !== undefined) {
-			process.exitCode = code;
-			return;
+	// buncargo reads only its first argument as the command: `--help x` is
+	// help and `--json runs` is an unknown command. hanzio would take leading
+	// flags as globals and look for a command after them.
+	if (first?.startsWith("-")) {
+		if (HELP_ALIASES.has(first)) {
+			await (await import("./commands/help")).showHelp();
+			process.exit(0);
 		}
-		log.fail(`Unknown command: ${rawCommand}`, [
-			'Run "bunx buncargo help" for available commands.',
-		]);
+		if (VERSION_ALIASES.has(first)) {
+			(await import("./commands/version")).showVersion();
+			process.exit(0);
+		}
+		process.exitCode = await runUnknown(first, args.slice(1));
+		return;
 	}
 
 	const code = await cli.run(args);
