@@ -14,9 +14,11 @@ import { stateFilePath } from "./state-paths";
  * days. A claim makes the first assignment stick: the allocator skips an
  * offset another checkout holds, running or not.
  *
- * A claim lives as long as its checkout directory: allocation ignores one
- * whose directory is gone, which is the only signal that separates "not
- * running" from "no longer exists". The sweep drops it, after removing the
+ * A developer's dev claim lives as long as its checkout directory: allocation
+ * ignores one whose directory is gone, which is the only signal that separates
+ * "not running" from "no longer exists". A throwaway environment's (suffixed,
+ * or in CI) is released when its stack is stopped: CI runners keep their
+ * directories, and their claims filled every block of the machine. The sweep drops it, after removing the
  * checkout's volumes where the machine opted in, so it is also the record of
  * which project a deleted checkout used.
  *

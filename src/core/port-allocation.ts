@@ -34,7 +34,8 @@ const PORT_OFFSET_MIN = 100;
 const PORT_OFFSET_MAX = 9000;
 const PORTS_LOCKFILE = `${STATE_DIRNAME}/ports.json`;
 const LOCKFILE_VERSION = 1;
-const PORT_ALLOCATION_ATTEMPTS = 80;
+const PORT_OFFSET_BUCKETS =
+	(PORT_OFFSET_MAX - PORT_OFFSET_MIN) / PORT_OFFSET_STEP + 1;
 
 /**
  * `.buncargo/ports.json`. Only `offset` is required: a hand-written
@@ -74,9 +75,23 @@ export function computeBaseOffset(options: {
 	if (suffix) {
 		parts.push(suffix);
 	}
-	const buckets = (PORT_OFFSET_MAX - PORT_OFFSET_MIN) / PORT_OFFSET_STEP + 1;
-	const bucket = simpleHash(parts.join(":")) % buckets;
+	const bucket = simpleHash(parts.join(":")) % PORT_OFFSET_BUCKETS;
 	return PORT_OFFSET_MIN + bucket * PORT_OFFSET_STEP;
+}
+
+/**
+ * Every block an allocation tries, in order: the hashed one, up to the last,
+ * then around from the first. Climbing from the hash alone never reached the
+ * blocks below it, which left a checkout that hashed high a few dozen.
+ */
+function candidateOffsets(hashed: number): number[] {
+	const first = (hashed - PORT_OFFSET_MIN) / PORT_OFFSET_STEP;
+	return Array.from(
+		{ length: PORT_OFFSET_BUCKETS },
+		(_, index) =>
+			PORT_OFFSET_MIN +
+			((first + index) % PORT_OFFSET_BUCKETS) * PORT_OFFSET_STEP,
+	);
 }
 
 /**
@@ -149,13 +164,9 @@ export function candidateAllocationPorts(
 	>,
 	currentOffset: number,
 ): number[] {
-	const baseOffset = computeBaseOffset(input);
 	const offsets = new Set([
 		currentOffset,
-		...Array.from(
-			{ length: PORT_ALLOCATION_ATTEMPTS },
-			(_, index) => baseOffset + index * PORT_OFFSET_STEP,
-		),
+		...candidateOffsets(computeBaseOffset(input)),
 	]);
 	const base = buildPortMap(input.services, input.apps);
 	return Object.entries({ ...base, ...extraPortMap(input.apps, base, base) })
@@ -638,29 +649,21 @@ function planPorts(
 			);
 	}
 
-	let offset = hashed;
-	let provenance: PortOffsetProvenance = "hash";
-	let lastTried = { offset, problem: "" };
-
-	for (let attempt = 0; attempt < PORT_ALLOCATION_ATTEMPTS; attempt++) {
+	let lastTried = { offset: hashed, problem: "" };
+	for (const offset of candidateOffsets(hashed)) {
 		const ports = shiftPorts(basePorts, offset);
 		const problem = problemAt(offset, ports);
 		if (!problem)
 			return settleAllocated(
 				offset,
 				ports,
-				provenance === "hash" ? "hash" : "shifted",
+				offset === hashed ? "hash" : "shifted",
 			);
 		lastTried = { offset, problem };
-		offset += PORT_OFFSET_STEP;
-		provenance = "shifted";
-		if (offset > PORT_OFFSET_MAX + PORT_OFFSET_STEP * 20) {
-			break;
-		}
 	}
 
 	throw new Error(
-		`Could not allocate a free port block for ${root} (offsets ${hashed} to ${lastTried.offset}); at ${lastTried.offset}, ${lastTried.problem}. Free the ports, or move this checkout with \`buncargo ports pin <offset>\` (\`buncargo ports\` lists the claimed offsets).`,
+		`Could not allocate a free port block for ${root} (every offset from ${PORT_OFFSET_MIN} to ${PORT_OFFSET_MAX}, starting at ${hashed}); at ${lastTried.offset}, ${lastTried.problem}. Free the ports, or move this checkout with \`buncargo ports pin <offset>\` (\`buncargo ports\` lists the claimed offsets).`,
 	);
 }
 

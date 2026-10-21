@@ -691,6 +691,10 @@ export function createLifecycleApi<
 			});
 		}
 		await runClaim.retireRun();
+		// A claim lives as long as its directory, and a CI runner's persists
+		// between jobs: its claims and every E2E stack's filled the machine's
+		// blocks. Only once the stack is down, so no running one loses its block.
+		await ctx.releaseThrowawayClaim();
 	}
 
 	function restart(): Promise<void> {

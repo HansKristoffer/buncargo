@@ -91,6 +91,7 @@ function fixture() {
 	ctx.getStartPlan = (onlyApps, onlyServices) =>
 		planStart(ctx.apps, ctx.services, { onlyApps, onlyServices });
 	ctx.prepareStartAsync = async () => {};
+	ctx.releaseThrowawayClaim = async () => {};
 
 	const envVars = {
 		getHookContext: () => ({}),

@@ -9,6 +9,7 @@ import { readEnvOverrides } from "../core/env-overrides";
 import { applyHostPlanToUrls, planNamedHosts } from "../core/hosts/plan";
 import { tailscaleBlockPorts } from "../core/hosts/tailscale-serve";
 import { getLocalIp } from "../core/network";
+import { offsetClaimKey, releaseOffsetClaims } from "../core/offset-claims";
 import {
 	candidateAllocationPorts,
 	resolvePortPlan,
@@ -32,6 +33,7 @@ import {
 } from "../core/process";
 import {
 	hostsMode,
+	isCI,
 	portOffsetOverride,
 	urlHostOverride,
 } from "../core/runtime-flags";
@@ -92,6 +94,11 @@ export interface DevEnvContext<
 		onlyServices?: readonly string[],
 		signal?: AbortSignal,
 	): Promise<void>;
+	/**
+	 * Drop this environment's offset claim if it is throwaway: suffixed, or
+	 * running in CI. A developer's dev checkout keeps its block while stopped.
+	 */
+	releaseThrowawayClaim(): Promise<void>;
 	readonly hasSelectedServices: boolean;
 	/** Service keys the current selection starts, for the run claim. */
 	readonly selectedServiceKeys: readonly string[];
@@ -417,6 +424,10 @@ export function createDevEnvContext<
 				claim: false,
 			});
 			return { offset, provenance };
+		},
+		async releaseThrowawayClaim() {
+			if (suffix !== undefined || isCI())
+				await releaseOffsetClaims([offsetClaimKey(root, suffix)]);
 		},
 		async prepareStartAsync(onlyApps, onlyServices, signal) {
 			signal?.throwIfAborted();
