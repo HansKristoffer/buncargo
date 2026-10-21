@@ -1,5 +1,12 @@
 # Changelog
 
+## [14.3.1](https://github.com/HansKristoffer/buncargo/compare/v14.3.0...v14.3.1) (2026-10-21)
+
+
+### Performance Improvements
+
+* **cli:** bump hanzio to 3.3.0 and stop runs queueing on the registry lock ([#126](https://github.com/HansKristoffer/buncargo/issues/126)) ([69eff57](https://github.com/HansKristoffer/buncargo/commit/69eff57a3f39a71160a31a9c950772cfdd48e46c))
+
 ## [14.3.0](https://github.com/HansKristoffer/buncargo/compare/v14.2.1...v14.3.0) (2026-10-21)
 
 
