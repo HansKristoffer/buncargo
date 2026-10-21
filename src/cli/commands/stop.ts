@@ -5,6 +5,7 @@ import {
 	withProjectLifecycleLock,
 } from "../../container-runtime";
 import { runStackDowns } from "../../container-runtime/sweep";
+import { releaseSuffixedClaimsOf } from "../../core/offset-claims";
 import { findMonorepoRoot } from "../../core/ports";
 import { killPortOwner } from "../../core/process";
 import {
@@ -521,6 +522,7 @@ async function tearDown(
 		);
 	}
 	await retireRuns(runs.map((run) => run.sessionId));
+	await releaseSuffixedClaimsOf({ projectName, root });
 	return true;
 }
 

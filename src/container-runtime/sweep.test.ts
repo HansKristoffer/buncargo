@@ -261,6 +261,31 @@ describe("sweepOrphanedContainers", () => {
 		expect(downs[0]).toMatchObject({ root: gone, verbose: false });
 	});
 
+	it("gives back the block of a throwaway stack it removes, and keeps a dev checkout's", async () => {
+		// A CI job killed before its teardown leaves its stack and its claim;
+		// the runner's directory stays, so nothing else would free the block.
+		claimOffset({
+			root: checkout,
+			suffix: "e2e",
+			offset: 200,
+			ports: [],
+			projectName: "demo-e2e",
+		});
+		claim("demo", checkout);
+		const { runtime } = stubRuntime([
+			container("demo-e2e", checkout, "exited"),
+			container("demo", checkout, "exited"),
+		]);
+
+		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
+
+		expect(result.swept.map((stack) => stack.projectName)).toEqual([
+			"demo-e2e",
+			"demo",
+		]);
+		expect(Object.keys(readAllOffsetClaims())).toEqual([checkout]);
+	});
+
 	it("reports a stack this user's state does not name, and leaves it alone", async () => {
 		// Another user's stack on a shared daemon: no run and no claim of ours
 		// names it, so its checkout reading deleted and its containers being

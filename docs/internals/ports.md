@@ -49,7 +49,13 @@ per port.
   any in CI) is released when a full `stop()` has taken its stack down (`releaseThrowawayClaim`):
   self-hosted runners keep their directories between jobs, and their dev, `ci` and E2E claims
   held all 90 blocks of a machine running a few dozen runners, so every new allocation failed.
-  A throwaway run killed before its teardown keeps its claim until its next run reuses the key.
+  Not on `restart()`, which needs the block back, nor while another run of the same environment
+  is on record; a `start()` after the release claims again. A suffixed stack the sweep or
+  `buncargo stop` removes loses its claim the same way (`releaseSuffixedClaimsOf`), unless its
+  checkout was deleted. A CI dev run killed before its teardown keeps its claim until that
+  directory's next job: the claim does not record that it was made in CI. Releasing a CI dev
+  claim after a `dev --down` that kept volumes also drops the project-name refusal for them;
+  in CI the next job of that directory claims the name again.
   The search for a free block wraps from 9000 to 100: climbing from the hash alone gave a
   checkout that hashed high only the few blocks above it. Allocation ignores a deleted
   checkout's claim, and the sweep drops it (after its volumes, on the opt-in in

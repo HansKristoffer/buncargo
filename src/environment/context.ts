@@ -31,6 +31,7 @@ import {
 	type PortOwnerSnapshot,
 	withBindProbe,
 } from "../core/process";
+import { readAllRuns } from "../core/run-registry";
 import {
 	hostsMode,
 	isCI,
@@ -426,8 +427,16 @@ export function createDevEnvContext<
 			return { offset, provenance };
 		},
 		async releaseThrowawayClaim() {
-			if (suffix !== undefined || isCI())
-				await releaseOffsetClaims([offsetClaimKey(root, suffix)]);
+			if (suffix === undefined && !isCI()) return;
+			// Another run of this environment on record may still use the block.
+			const runs = await readAllRuns();
+			if (
+				runs.some((run) => run.projectName === projectName && run.root === root)
+			)
+				return;
+			await releaseOffsetClaims([offsetClaimKey(root, suffix)]);
+			// A later start() on this environment allocates and claims again.
+			preparedSelection = undefined;
 		},
 		async prepareStartAsync(onlyApps, onlyServices, signal) {
 			signal?.throwIfAborted();

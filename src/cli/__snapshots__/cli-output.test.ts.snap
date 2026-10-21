@@ -1113,7 +1113,8 @@ hardcode a port. Ask buncargo instead.
   claim is from a config it no longer runs, releases it with the
   \`bunx buncargo ports release --root <path>\` the error names. Run that only
   when the user asks: whoever runs under the name next gets its volumes.
-- Each checkout keeps its port offset (\`bunx buncargo ports\`). Do not set
+- Each checkout keeps its port offset (\`bunx buncargo ports\`); \`ci\` and
+  E2E stacks, and every environment in CI, give it back when torn down. Do not set
   \`BUNCARGO_PORT_OFFSET\` or edit \`.buncargo/ports.json\`; to move a checkout,
   \`bunx buncargo ports pin <offset>\`.
 - Docker out of disk, or hanging: \`bunx buncargo prune --project --dry-run\`

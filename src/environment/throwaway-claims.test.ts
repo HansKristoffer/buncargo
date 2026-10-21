@@ -69,6 +69,9 @@ it("gives a suffixed environment's block back when it is stopped", async () => {
 	await ci.stop({ verbose: false, removeVolumes: true });
 
 	expect(readOffsetClaims()[key]).toBeUndefined();
+	// Its next start claims again.
+	await ci.prepareStartAsync();
+	expect(readOffsetClaims()[key]).toBeDefined();
 });
 
 it("gives a dev environment's block back when it is stopped in CI", async () => {

@@ -23,6 +23,7 @@ import {
 	type OffsetClaim,
 	offsetClaimRoot,
 	readAllOffsetClaims,
+	releaseSuffixedClaimsOf,
 } from "../core/offset-claims";
 import { execAsync } from "../core/process/exec";
 import {
@@ -477,6 +478,7 @@ async function sweepGroup(
 					reason: verdict.reason,
 					owner: removalOwner(owner),
 				});
+				await releaseSuffixedClaimsOf(group);
 				return true;
 			},
 			{ timeoutMs: 0 },
