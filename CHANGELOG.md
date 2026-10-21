@@ -1,5 +1,12 @@
 # Changelog
 
+## [14.3.0](https://github.com/HansKristoffer/buncargo/compare/v14.2.1...v14.3.0) (2026-10-21)
+
+
+### Features
+
+* **cli:** check.docs.paths, predeploy.seed as a command, env concurrency over config ([#123](https://github.com/HansKristoffer/buncargo/issues/123)) ([c2dd48e](https://github.com/HansKristoffer/buncargo/commit/c2dd48ec1be01a0a7cdeb1f1d7765eb7e9c559e6))
+
 ## [14.2.1](https://github.com/HansKristoffer/buncargo/compare/v14.2.0...v14.2.1) (2026-10-21)
 
 
