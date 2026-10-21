@@ -1,5 +1,12 @@
 # Changelog
 
+## [14.3.3](https://github.com/HansKristoffer/buncargo/compare/v14.3.2...v14.3.3) (2026-10-21)
+
+
+### Bug Fixes
+
+* **ports:** free throwaway environments' port blocks when they are torn down ([#132](https://github.com/HansKristoffer/buncargo/issues/132)) ([ff8ad73](https://github.com/HansKristoffer/buncargo/commit/ff8ad73a8c917ce55c5f62ed2228a696be1963ce))
+
 ## [14.3.2](https://github.com/HansKristoffer/buncargo/compare/v14.3.1...v14.3.2) (2026-10-21)
 
 
