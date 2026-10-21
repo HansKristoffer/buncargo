@@ -1,5 +1,12 @@
 # Changelog
 
+## [14.2.1](https://github.com/HansKristoffer/buncargo/compare/v14.2.0...v14.2.1) (2026-10-21)
+
+
+### Miscellaneous Chores
+
+* release 14.2.1 ([#122](https://github.com/HansKristoffer/buncargo/issues/122)) ([b72338d](https://github.com/HansKristoffer/buncargo/commit/b72338d04ec4554aa40de0a064c9b500cd478b07))
+
 ## [14.2.0](https://github.com/HansKristoffer/buncargo/compare/v14.1.0...v14.2.0) (2026-10-20)
 
 
