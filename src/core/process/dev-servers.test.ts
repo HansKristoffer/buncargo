@@ -511,6 +511,10 @@ describe("startDevServers non-essential crash under a terminal", () => {
 describe("startDevServers non-essential readiness", () => {
 	it("never reports an app ready after it has exited", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-optional-ready-"));
+		// flaky exits only once its health check has begun. Exiting at once, it
+		// can be gone before its birth identity is read (a slow `ps` on macOS),
+		// and then no check starts at all: nothing would finish after the exit.
+		const exitNow = join(root, "exit-now");
 		const output = new RunOutput();
 		const ready: string[] = [];
 		const flakyExited = Promise.withResolvers<void>();
@@ -526,7 +530,7 @@ describe("startDevServers non-essential readiness", () => {
 					flaky: {
 						kind: "worker",
 						essential: false,
-						devCommand: "bun -e 'process.exit(1)'",
+						devCommand: `bun -e ${JSON.stringify(`setInterval(() => { if (require("node:fs").existsSync(${JSON.stringify(exitNow)})) process.exit(1); }, 10)`)}`,
 					},
 				},
 				root,
@@ -544,6 +548,7 @@ describe("startDevServers non-essential readiness", () => {
 					waitForHealth: async (wave, signal) => {
 						if (!("flaky" in wave)) return;
 						try {
+							await writeFile(exitNow, "");
 							await flakyExited.promise;
 							signal?.throwIfAborted();
 						} finally {
