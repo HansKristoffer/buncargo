@@ -1,5 +1,12 @@
 # Changelog
 
+## [14.3.2](https://github.com/HansKristoffer/buncargo/compare/v14.3.1...v14.3.2) (2026-10-21)
+
+
+### Bug Fixes
+
+* **test:** stop the readiness-after-exit test hanging on macOS ([#128](https://github.com/HansKristoffer/buncargo/issues/128)) ([f3ea469](https://github.com/HansKristoffer/buncargo/commit/f3ea469ef5f5d36e79ad98d3c46dcaf2c1fe18f2))
+
 ## [14.3.1](https://github.com/HansKristoffer/buncargo/compare/v14.3.0...v14.3.1) (2026-10-21)
 
 
