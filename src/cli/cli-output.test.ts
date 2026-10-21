@@ -86,6 +86,11 @@ describe("buncargo CLI output", () => {
 		["-v"],
 		["nope"],
 		["--nope"],
+		// Only the first argument names the command; later ones are not read.
+		["--help", "dev"],
+		["-v", "dev"],
+		["--json", "runs"],
+		["-"],
 		// Subcommand namespaces answer unknown input, `--help` included.
 		["hosts", "--help"],
 		["bar", "--help"],
