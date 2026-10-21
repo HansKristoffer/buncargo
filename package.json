@@ -227,7 +227,9 @@
   "dependencies": {
     "@xterm/headless": "^6.0.0",
     "fast-glob": "^3.3.3",
-    "picocolors": "^1.1.1"
+    "hanzio": "3.1.0",
+    "picocolors": "^1.1.1",
+    "zod": "^4.3.6"
   },
   "homepage": "https://github.com/HansKristoffer/buncargo#readme",
   "bugs": {

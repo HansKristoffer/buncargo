@@ -14,203 +14,153 @@
 
 import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { type Command, defineCli, defineCommand } from "hanzio/cli";
 import { type CliCommandName, resolveCommandName } from "./commands/registry";
 import { CliError } from "./errors";
 import * as log from "./log";
 import { guardVersion } from "./version-guard";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Main
-// ═══════════════════════════════════════════════════════════════════════════
-
 const HELP_ALIASES = new Set(["--help", "-h"]);
 const VERSION_ALIASES = new Set(["--version", "-v"]);
 
-async function runCommand(
-	command: CliCommandName,
-	commandArgs: string[],
-): Promise<void> {
-	switch (command) {
-		case "connect":
-			await (await import("./commands/connect")).handleConnect(commandArgs);
-			return;
-		case "exec":
-			process.exitCode = await (await import("./commands/exec")).handleExec(
-				commandArgs,
-			);
-			return;
-		case "slot":
-			process.exitCode = await (await import("./commands/slot")).handleSlot(
-				commandArgs,
-			);
-			return;
-		case "check":
-			process.exitCode = await (
-				await import("./commands/check/index")
-			).handleCheck(commandArgs);
-			return;
-		case "predeploy":
-			process.exitCode = await (
-				await import("./commands/predeploy")
-			).handlePredeploy(commandArgs);
-			return;
-		case "run":
-			process.exitCode = await (await import("./commands/run")).handleRun(
-				commandArgs,
-			);
-			return;
-		case "ci":
-			process.exitCode = await (await import("./commands/ci")).handleCi(
-				commandArgs,
-			);
-			return;
-		case "wait":
-			process.exitCode = await (await import("./commands/wait")).handleWait(
-				commandArgs,
-			);
-			return;
-		case "url":
-			process.exitCode = await (await import("./commands/open")).handleUrl(
-				commandArgs,
-			);
-			return;
-		case "open":
-			process.exitCode = await (await import("./commands/open")).handleOpen(
-				commandArgs,
-			);
-			return;
-		case "generate":
-			process.exitCode = await (
-				await import("./commands/generate")
-			).handleGenerate(commandArgs);
-			return;
-		case "build":
-			process.exitCode = await (await import("./commands/build")).handleBuild(
-				commandArgs,
-			);
-			return;
-		case "files":
-			process.exitCode = await (await import("./commands/files")).handleFiles(
-				commandArgs,
-			);
-			return;
-		case "secrets":
-			process.exitCode = await (
-				await import("./commands/secrets")
-			).handleSecrets(commandArgs);
-			return;
-		case "setup":
-			process.exitCode = await (await import("./commands/setup")).handleSetup(
-				commandArgs,
-			);
-			return;
-		case "help":
-			if (commandArgs[0] === "agents") {
-				console.log((await import("./agents-guide")).AGENTS_GUIDE);
-				return;
-			}
-			await (await import("./commands/help")).showHelp();
-			return;
-
-		case "version":
-			(await import("./commands/version")).showVersion();
-			return;
-
-		case "dev":
-			await (await import("./commands/runtime")).handleDev(commandArgs);
-			return;
-
-		case "typecheck":
-			await (await import("./commands/runtime")).handleTypecheck(commandArgs);
-			return;
-
-		case "prisma":
-			await (await import("./commands/runtime")).handlePrisma(commandArgs);
-			return;
-
-		case "env":
-			await (await import("./commands/runtime")).handleEnv(commandArgs);
-			return;
-
-		case "ls":
-			await (await import("./commands/inspect")).handleLs();
-			return;
-
-		case "runs":
-			await (await import("./commands/runs")).handleRuns(commandArgs);
-			return;
-
-		case "stop": {
-			// The only command whose exit code carries meaning to a caller:
-			// 2 is "no such target", 3 is "refused", and the menu bar app
-			// distinguishes them.
-			const code = await (await import("./commands/stop")).handleStop(
-				commandArgs,
-			);
-			if (code !== 0) process.exit(code);
-			return;
-		}
-
-		case "restart":
-			process.exitCode = await (
-				await import("./commands/restart")
-			).handleRestart(commandArgs);
-			return;
-
-		case "send":
-			process.exitCode = await (await import("./commands/send")).handleSend(
-				commandArgs,
-			);
-			return;
-
-		case "ports":
-			process.exitCode = await (await import("./commands/ports")).handlePorts(
-				commandArgs,
-			);
-			return;
-
-		case "sql":
-			process.exitCode = await (await import("./commands/sql")).handleSql(
-				commandArgs,
-			);
-			return;
-
-		case "logs":
-			process.exitCode = await (await import("./commands/logs")).handleLogs(
-				commandArgs,
-			);
-			return;
-
-		case "prune": {
-			const code = await (await import("./commands/prune")).handlePrune(
-				commandArgs,
-			);
-			if (code !== 0) process.exit(code);
-			return;
-		}
-
-		case "status":
-			await (await import("./commands/inspect")).handleStatus(commandArgs);
-			return;
-
-		case "doctor":
-			await (await import("./commands/inspect")).handleDoctor(commandArgs);
-			return;
-
-		case "hosts":
-			await (await import("./commands/hosts")).handleHosts(commandArgs);
-			return;
-
-		case "bar":
-			await (await import("./commands/bar")).handleBar(commandArgs);
-			return;
-
-		default: {
-			const exhaustive: never = command;
-			throw new Error(`Unhandled command: ${String(exhaustive)}`);
-		}
-	}
+function failWith(error: unknown): never {
+	if (error instanceof CliError) log.fail(error.message, error.hints);
+	log.fail(error instanceof Error ? error.message : String(error));
 }
+
+/**
+ * Each command parses its own arguments and prints its own help, so hanzio/cli
+ * only dispatches: `raw` hands over everything after the command name. A
+ * returned number becomes the exit code; errors print the way they always have.
+ */
+function command(handler: (args: string[]) => Promise<unknown>): Command {
+	return defineCommand({
+		raw: true,
+		run: async (_input, ctx) => {
+			try {
+				const code = await handler([...ctx.argv]);
+				if (typeof code === "number") process.exitCode = code;
+			} catch (error) {
+				failWith(error);
+			}
+		},
+	});
+}
+
+/** Exit now on failure: these codes mean something to a caller. */
+function exitOnFailure(code: number): void {
+	if (code !== 0) process.exit(code);
+}
+
+const COMMANDS = {
+	connect: command(async (args) =>
+		(await import("./commands/connect")).handleConnect(args),
+	),
+	exec: command(async (args) =>
+		(await import("./commands/exec")).handleExec(args),
+	),
+	slot: command(async (args) =>
+		(await import("./commands/slot")).handleSlot(args),
+	),
+	check: command(async (args) =>
+		(await import("./commands/check/index")).handleCheck(args),
+	),
+	predeploy: command(async (args) =>
+		(await import("./commands/predeploy")).handlePredeploy(args),
+	),
+	run: command(async (args) =>
+		(await import("./commands/run")).handleRun(args),
+	),
+	ci: command(async (args) => (await import("./commands/ci")).handleCi(args)),
+	wait: command(async (args) =>
+		(await import("./commands/wait")).handleWait(args),
+	),
+	url: command(async (args) =>
+		(await import("./commands/open")).handleUrl(args),
+	),
+	open: command(async (args) =>
+		(await import("./commands/open")).handleOpen(args),
+	),
+	generate: command(async (args) =>
+		(await import("./commands/generate")).handleGenerate(args),
+	),
+	build: command(async (args) =>
+		(await import("./commands/build")).handleBuild(args),
+	),
+	files: command(async (args) =>
+		(await import("./commands/files")).handleFiles(args),
+	),
+	secrets: command(async (args) =>
+		(await import("./commands/secrets")).handleSecrets(args),
+	),
+	setup: command(async (args) =>
+		(await import("./commands/setup")).handleSetup(args),
+	),
+	help: command(async (args) => {
+		if (args[0] === "agents") {
+			console.log((await import("./agents-guide")).AGENTS_GUIDE);
+		} else {
+			await (await import("./commands/help")).showHelp();
+		}
+		process.exit(0);
+	}),
+	version: command(async () => {
+		(await import("./commands/version")).showVersion();
+		process.exit(0);
+	}),
+	dev: command(async (args) =>
+		(await import("./commands/runtime")).handleDev(args),
+	),
+	typecheck: command(async (args) =>
+		(await import("./commands/runtime")).handleTypecheck(args),
+	),
+	prisma: command(async (args) =>
+		(await import("./commands/runtime")).handlePrisma(args),
+	),
+	env: command(async (args) =>
+		(await import("./commands/runtime")).handleEnv(args),
+	),
+	ls: command(async () => (await import("./commands/inspect")).handleLs()),
+	runs: command(async (args) =>
+		(await import("./commands/runs")).handleRuns(args),
+	),
+	// 2 is "no such target", 3 is "refused"; the menu bar app tells them apart.
+	stop: command(async (args) =>
+		exitOnFailure(await (await import("./commands/stop")).handleStop(args)),
+	),
+	restart: command(async (args) =>
+		(await import("./commands/restart")).handleRestart(args),
+	),
+	send: command(async (args) =>
+		(await import("./commands/send")).handleSend(args),
+	),
+	ports: command(async (args) =>
+		(await import("./commands/ports")).handlePorts(args),
+	),
+	sql: command(async (args) =>
+		(await import("./commands/sql")).handleSql(args),
+	),
+	logs: command(async (args) =>
+		(await import("./commands/logs")).handleLogs(args),
+	),
+	prune: command(async (args) =>
+		exitOnFailure(await (await import("./commands/prune")).handlePrune(args)),
+	),
+	status: command(async (args) =>
+		(await import("./commands/inspect")).handleStatus(args),
+	),
+	doctor: command(async (args) =>
+		(await import("./commands/inspect")).handleDoctor(args),
+	),
+	hosts: command(async (args) =>
+		(await import("./commands/hosts")).handleHosts(args),
+	),
+	bar: command(async (args) =>
+		(await import("./commands/bar")).handleBar(args),
+	),
+} satisfies Record<CliCommandName, Command>;
+
+const cli = defineCli({ name: "buncargo", commands: COMMANDS });
 
 async function main(): Promise<void> {
 	// `<package>/src/cli` from source, `<package>/dist/cli` when installed.
@@ -219,24 +169,22 @@ async function main(): Promise<void> {
 
 	const args = process.argv.slice(2);
 	const rawCommand = args[0];
-	const commandArgs = args.slice(1);
 
+	// The root's help, version and unknown commands keep buncargo's own
+	// output: the help lists the config's tasks and integrations, and an
+	// unknown name may be an integration's namespace (`buncargo shopify env`).
 	if (!rawCommand || HELP_ALIASES.has(rawCommand)) {
 		await (await import("./commands/help")).showHelp();
 		process.exit(0);
 	}
-
 	if (VERSION_ALIASES.has(rawCommand)) {
 		(await import("./commands/version")).showVersion();
 		process.exit(0);
 	}
-
-	const command = resolveCommandName(rawCommand);
-	if (!command) {
-		// `buncargo shopify env`: an integration's own namespace.
+	if (!resolveCommandName(rawCommand)) {
 		const code = await (
 			await import("./integration-commands")
-		).runIntegrationCommand(rawCommand, commandArgs);
+		).runIntegrationCommand(rawCommand, args.slice(1));
 		if (code !== undefined) {
 			process.exitCode = code;
 			return;
@@ -246,13 +194,8 @@ async function main(): Promise<void> {
 		]);
 	}
 
-	await runCommand(command, commandArgs);
-	if (command === "help" || command === "version") {
-		process.exit(0);
-	}
+	const code = await cli.run(args);
+	if (code !== 0) process.exitCode = code;
 }
 
-main().catch((error: unknown) => {
-	if (error instanceof CliError) log.fail(error.message, error.hints);
-	log.fail(error instanceof Error ? error.message : String(error));
-});
+main().catch(failWith);
