@@ -261,6 +261,9 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 	}
 
 	const { runWorkspaceTypecheck } = await import("../../typecheck");
+	const { requestedTypecheckConcurrency } = await import(
+		"../../typecheck/scheduling"
+	);
 	const { changedFilesSince } = await import("../../typecheck/changed");
 	let changedFiles: string[] | undefined;
 	if (parsed.changed) {
@@ -287,7 +290,10 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 					const result = await runWorkspaceTypecheck({
 						root,
 						verbose: true,
-						concurrency: parsed.concurrency ?? settings.config?.concurrency,
+						concurrency: requestedTypecheckConcurrency(
+							parsed.concurrency,
+							settings.config?.concurrency,
+						),
 						only: parsed.only ?? (group?.only ? [...group.only] : undefined),
 						include: settings.config?.include,
 						exclude: [

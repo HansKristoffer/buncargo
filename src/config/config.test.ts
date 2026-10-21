@@ -1338,9 +1338,15 @@ describe("checks, tasks and profiles", () => {
 					],
 					testCommand: "bun test --isolate",
 					testExclude: ["**/e2e/**"],
+					docs: {
+						paths: {
+							exempt: [{ file: "**", path: "docs/adr", reason: "later" }],
+						},
+					},
 				},
 				predeploy: {
 					environmentVars: ["APP_ENV"],
+					seed: "bun run seed --allow-remote",
 					retry: { attempts: 3, delayMs: 1000 },
 					afterMigrate: () => {},
 				},
@@ -1356,15 +1362,22 @@ describe("checks, tasks and profiles", () => {
 				check: {
 					gates: [{ name: "", command: "x", when: ["/abs"] }],
 					tests: true,
+					docs: { paths: { exempt: [{ file: "a.md" }] } },
 				},
-				predeploy: { retry: { attempts: -1 }, afterSeed: "bun seed" },
+				predeploy: {
+					seed: true,
+					retry: { attempts: -1 },
+					afterSeed: "bun seed",
+				},
 			}),
 		).toEqual([
 			"typecheck.concurrency must be a positive integer",
 			"typecheck.groups.web.only must be an array of workspaces",
 			"check.tests is not an option (gates, testCommand, testExclude, docs)",
+			"check.docs.paths.exempt.0.reason must be a nonempty string",
 			"check.gates.0.name must be a nonempty string",
 			'check.gates.0.when: "/abs" must be relative to the root and stay inside it',
+			"predeploy.seed must be false or a nonempty command",
 			"predeploy.afterSeed must be a function",
 			"predeploy.retry.attempts must be a positive integer",
 		]);

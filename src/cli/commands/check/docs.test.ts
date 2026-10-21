@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findDocProblems, formatDocProblem } from "./docs";
+import { docPathsConfig, findDocProblems, formatDocProblem } from "./docs";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -31,7 +31,7 @@ describe("docs check", () => {
 			"docs/my file.md": "",
 		});
 		expect(
-			findDocProblems(root, ["readme.md", "docs/guide.md"]).map(
+			findDocProblems(root, ["readme.md", "docs/guide.md"], false).map(
 				formatDocProblem,
 			),
 		).toEqual([
@@ -50,7 +50,43 @@ describe("docs check", () => {
 			].join("\n"),
 		});
 		expect(
-			findDocProblems(root, ["a.md", "deleted.md"]).map(formatDocProblem),
+			findDocProblems(root, ["a.md", "deleted.md"], false).map(
+				formatDocProblem,
+			),
 		).toEqual(["a.md:4: use `bun run --cwd <dir> <script>`"]);
+	});
+
+	it("checks backticked repository paths only when check.docs.paths is set", () => {
+		const root = docs({
+			"readme.md": [
+				"`docs/guide.md` `docs/guide` `docs/guide.md:3` `docs/gone.ts`",
+				"`docs/*.md` `docs/<name>.md` `docs/...` `src/not-a-root-dir.ts`",
+				"`docs/example.ts` `docs/output/`",
+			].join("\n"),
+			"docs/guide.md": "`docs/guide.md` from the root, `guide.ts` alone",
+			"docs/guide.ts": "",
+			".gitignore": "docs/output/\n",
+		});
+		Bun.spawnSync(["git", "init", "-q"], { cwd: root });
+		const exempt = [
+			{ file: "readme.md", path: "docs/example.ts", reason: "worked example" },
+		];
+
+		expect(
+			findDocProblems(root, ["readme.md"], { exempt }).map(formatDocProblem),
+		).toEqual(["readme.md:1: `docs/gone.ts` does not exist"]);
+		expect(findDocProblems(root, ["readme.md"], false)).toEqual([]);
+		expect(
+			findDocProblems(root, ["readme.md"], {
+				exempt: [{ file: "**", reason: "another repository's paths" }],
+			}),
+		).toEqual([]);
+	});
+
+	it("reads the path check from check.docs", () => {
+		expect(docPathsConfig(undefined)).toBe(false);
+		expect(docPathsConfig(true)).toBe(false);
+		expect(docPathsConfig({ paths: true })).toEqual({});
+		expect(docPathsConfig({ paths: { exempt: [] } })).toEqual({ exempt: [] });
 	});
 });
