@@ -614,13 +614,18 @@ export function createLifecycleApi<
 	}
 
 	function stop(stopOptions: StopOptions = {}): Promise<void> {
-		return coordinator.stop(
-			() => stopEnvironment(stopOptions),
-			stopOptions.signal,
-		);
+		return coordinator.stop(async () => {
+			// A claim lives as long as its directory, and a CI runner's persists
+			// between jobs: its claims and every E2E stack's filled the machine's
+			// blocks. Only on stop, not restart, which needs the block back.
+			if (await stopEnvironment(stopOptions)) await ctx.releaseThrowawayClaim();
+		}, stopOptions.signal);
 	}
 
-	async function stopEnvironment(stopOptions: StopOptions = {}): Promise<void> {
+	/** Whether nothing of the environment is left that could use its block. */
+	async function stopEnvironment(
+		stopOptions: StopOptions = {},
+	): Promise<boolean> {
 		const { verbose = true, removeVolumes = false } = stopOptions;
 		stopOptions.signal?.throwIfAborted();
 		// Before anything comes down: this run's own teardown is not news.
@@ -639,7 +644,9 @@ export function createLifecycleApi<
 			delete ctx.ownedServerPids?.[name];
 		await runClaim.releaseApps();
 		if (appOnlyRun()) {
-			return;
+			// Another run's containers may still use the block, unless the
+			// config has none.
+			return Object.keys(services).length === 0;
 		}
 
 		const hasCompose = Object.keys(composeServicesOf(services)).length > 0;
@@ -691,11 +698,13 @@ export function createLifecycleApi<
 			});
 		}
 		await runClaim.retireRun();
+		return true;
 	}
 
 	function restart(): Promise<void> {
 		return coordinator.restart(
-			(signal) => stopEnvironment({ signal }),
+			// Keeps the claim: the start below needs the block back.
+			async (signal) => void (await stopEnvironment({ signal })),
 			(signal) => startEnvironment({ startServers: false, signal }),
 		);
 	}

@@ -91,6 +91,9 @@ function fixture() {
 	ctx.getStartPlan = (onlyApps, onlyServices) =>
 		planStart(ctx.apps, ctx.services, { onlyApps, onlyServices });
 	ctx.prepareStartAsync = async () => {};
+	ctx.releaseThrowawayClaim = async () => {
+		events.push("release claim");
+	};
 
 	const envVars = {
 		getHookContext: () => ({}),
@@ -242,8 +245,9 @@ describe("startup modes and hooks", () => {
 			wait: false,
 		});
 		await lifecycle.stop({ verbose: false });
-		// The containers are gone, so there is nothing to hold them for.
-		expect(events.slice(-2)).toEqual(["down", "retire"]);
+		// The containers are gone, so there is nothing to hold them for, and a
+		// throwaway environment's block goes back.
+		expect(events.slice(-3)).toEqual(["down", "retire", "release claim"]);
 		// And a run that was using them can say who took them.
 		expect(readRemovals()).toMatchObject([
 			{

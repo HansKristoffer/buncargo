@@ -14,11 +14,15 @@ import { stateFilePath } from "./state-paths";
  * days. A claim makes the first assignment stick: the allocator skips an
  * offset another checkout holds, running or not.
  *
- * A claim lives as long as its checkout directory: allocation ignores one
- * whose directory is gone, which is the only signal that separates "not
- * running" from "no longer exists". The sweep drops it, after removing the
- * checkout's volumes where the machine opted in, so it is also the record of
- * which project a deleted checkout used.
+ * A developer's dev claim lives as long as its checkout directory: allocation
+ * ignores one whose directory is gone, which is the only signal that separates
+ * "not running" from "no longer exists". The sweep drops a deleted checkout's
+ * claim after removing its volumes where the machine opted in, so the claim is
+ * also the record of which project a deleted checkout used.
+ *
+ * A throwaway environment's claim (suffixed, or any in CI) is released when its
+ * stack is torn down: CI runners keep their directories between jobs, and their
+ * claims filled every block of the machine.
  *
  * A suffixed environment (`withSuffix`, `buncargo ci`, an E2E stack) hashes to
  * its own offset and claims it under its own key, so it never replaces its
@@ -195,6 +199,30 @@ export async function releaseOffsetClaims(
 		for (const key of keys) delete claims[key];
 		writeJsonDocumentSync(getOffsetClaimsPath(), { version: VERSION, claims });
 	});
+}
+
+/**
+ * Drop the suffixed claims of the stack `projectName` at `root`, once its
+ * containers are gone: a throwaway environment (`ci`, an E2E stack) torn down
+ * by the sweep or `buncargo stop` rather than by its own `stop()`. A CI
+ * runner's directory never goes, so nothing else would free the block. A
+ * deleted checkout's claims stay: they are the sweep's record of its volumes.
+ */
+export async function releaseSuffixedClaimsOf(stack: {
+	projectName: string;
+	root: string;
+}): Promise<void> {
+	if (checkoutDeleted(stack.root)) return;
+	await releaseOffsetClaims(
+		Object.entries(readAllOffsetClaims())
+			.filter(
+				([key, claim]) =>
+					claim.suffix !== undefined &&
+					claim.projectName === stack.projectName &&
+					offsetClaimRoot(key, claim) === stack.root,
+			)
+			.map(([key]) => key),
+	);
 }
 
 /**

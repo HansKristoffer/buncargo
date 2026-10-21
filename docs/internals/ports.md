@@ -41,10 +41,23 @@ per port.
   overlapping claims by the same rule and the same lockfile reading. A suffixed
   environment claims without persisting a lockfile, under `offsetClaimKey(root, suffix)` with
   `root` and `suffix` stored in the claim (the key is never parsed), so it never replaces its
-  checkout's dev claim; its claim is also the record its next run takes the offset back from.
+  checkout's dev claim.
   It was unclaimed before, and parallel CI jobs on one machine all took the same block: their
-  checkouts share a directory name and so a hash, and they probed before any had bound a port. A claim lives as long
-  as its directory, which is what tells "stopped" from "deleted"; allocation ignores a deleted
+  checkouts share a directory name and so a hash, and they probed before any had bound a port.
+  A developer's dev claim lives as long as its directory, which is what tells "stopped" from
+  "deleted", and keeps a stopped worktree's URLs. A throwaway environment's claim (suffixed, or
+  any in CI) is released when a full `stop()` has taken its stack down (`releaseThrowawayClaim`):
+  self-hosted runners keep their directories between jobs, and their dev, `ci` and E2E claims
+  held all 90 blocks of a machine running a few dozen runners, so every new allocation failed.
+  Not on `restart()`, which needs the block back, nor while another run of the same environment
+  is on record; a `start()` after the release claims again. A suffixed stack the sweep or
+  `buncargo stop` removes loses its claim the same way (`releaseSuffixedClaimsOf`), unless its
+  checkout was deleted. A CI dev run killed before its teardown keeps its claim until that
+  directory's next job: the claim does not record that it was made in CI. Releasing a CI dev
+  claim after a `dev --down` that kept volumes also drops the project-name refusal for them;
+  in CI the next job of that directory claims the name again.
+  The search for a free block wraps from 9000 to 100: climbing from the hash alone gave a
+  checkout that hashed high only the few blocks above it. Allocation ignores a deleted
   checkout's claim, and the sweep drops it (after its volumes, on the opt-in in
   `run-registry-and-sweep.md`). A claiming allocation holds
   `offsets.json`'s lock from reading the claims to writing its own (`withFileLockSync`, because the

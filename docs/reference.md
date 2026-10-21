@@ -821,7 +821,8 @@ BUNCARGO_PORT_OFFSET set?
                           (its offset, or any one of its ports)
                           probe every service and app port
                           on a foreign owner, or a port that will not bind,
-                          shift the whole block by 100
+                          shift the whole block by 100, wrapping from
+                          9000 to 100 until every block was tried
           persist { version, projectName, root, offset, ports } (dev only)
           and claim the offset and its ports in ~/.buncargo/offsets.json
 ```
@@ -835,7 +836,10 @@ which started first. `buncargo ports` lists the claims, and it and `doctor` repo
 two claims whose blocks overlap, naming both checkouts and the ports they share.
 
 A suffixed environment (`withSuffix()`, `buncargo ci`, an E2E stack) claims its
-own offset next to its checkout's dev claim, and takes it back on its next run.
+own offset next to its checkout's dev claim, and gives it back when it is stopped.
+In CI the dev claim goes the same way: `dev --down` or `stop()` frees the block, so
+runners whose directories persist between jobs do not hold blocks they no longer use.
+A developer's dev checkout keeps its claim while it is stopped.
 
 A claim also records the checkout's Compose project name, and `dev`, `ci` and
 `start()` refuse to run under a name another existing checkout uses: the two

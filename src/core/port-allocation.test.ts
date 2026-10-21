@@ -331,6 +331,31 @@ describe("resolvePortPlan", () => {
 		}
 	});
 
+	it("wraps around below its hashed offset when every block above it is taken", () => {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+		const root = mkdtempSync(join(tmpdir(), "buncargo-wrap-"));
+		// A prefix that hashes high, so blocks above it run out first.
+		const projectPrefix = Array.from({ length: 200 }, (_, i) => `p${i}`).find(
+			(prefix) => computeBaseOffset({ projectPrefix: prefix }) >= 8000,
+		);
+		if (!projectPrefix) throw new Error("no prefix hashes high");
+		const hashed = computeBaseOffset({ projectPrefix });
+		const foreign: PortOwner = { pids: [99999], command: "vite", cwd: "/x" };
+		try {
+			const plan = resolvePortPlan({
+				projectPrefix,
+				projectName: `${projectPrefix}-main`,
+				root,
+				services,
+				apps,
+				getOwner: (port) => (port - 5432 >= hashed ? foreign : null),
+			});
+			expect(plan.offset).toBe(100);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("names the last block it tried, and why, when every block is taken", () => {
 		delete process.env.BUNCARGO_PORT_OFFSET;
 		const root = mkdtempSync(join(tmpdir(), "buncargo-full-"));
@@ -360,10 +385,10 @@ describe("resolvePortPlan", () => {
 			} catch (error) {
 				message = String(error);
 			}
-			const last = Number(/to (\d+)\)/.exec(message)?.[1]);
-			expect(last).toBeGreaterThan(hashed);
+			// Every block, from the hashed one around to the one below it.
+			const last = hashed === 100 ? 9000 : hashed - PORT_OFFSET_STEP;
 			expect(message).toContain(
-				`(offsets ${hashed} to ${last}); at ${last}, port ${5432 + last} held by container geysier-main-postgres-1`,
+				`(every offset from 100 to 9000, starting at ${hashed}); at ${last}, port ${5432 + last} held by container geysier-main-postgres-1`,
 			);
 			// The selected backend reaches the owner's description.
 			expect(message).toContain("running on Docker");
