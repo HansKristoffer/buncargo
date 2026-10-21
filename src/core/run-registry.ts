@@ -398,9 +398,11 @@ export async function runLivenessAsync(
  * retired entry is invisible to `runs`, `stop` and the menu bar; only the
  * sweep sees it, and only the sweep removes it.
  */
-async function prune(path: string): Promise<RunEntry[]> {
+async function prune(
+	path: string,
+	alive: (run: RunEntry) => boolean,
+): Promise<RunEntry[]> {
 	const runs = await registry.read(path);
-	const alive = await runLivenessAsync(runs);
 	const kept = runs.filter((run) => alive(run) || run.services.length > 0);
 	if (kept.length !== runs.length) {
 		await registry.write(path, kept);
@@ -457,6 +459,27 @@ export async function buildRunEntryAsync(
 	});
 }
 
+/**
+ * Liveness of the registry's entries, read before its lock is taken: it forks
+ * `ps`, and every run on the machine writes under that one lock, so a fork
+ * inside it queued four starting runs for a second. An entry that is new since
+ * this read, or now names another process, reads as alive, like a process
+ * whose identity cannot be read.
+ */
+async function livenessBeforeLock(
+	path: string,
+): Promise<(run: RunEntry) => boolean> {
+	const checked = await registry.read(path);
+	const alive = await runLivenessAsync(checked);
+	const bySession = new Map(checked.map((run) => [run.sessionId, run]));
+	return (run) => {
+		const seen = bySession.get(run.sessionId);
+		const sameProcess =
+			seen?.pid === run.pid && seen.processIdentity === run.processIdentity;
+		return !sameProcess || alive(run);
+	};
+}
+
 /** Read, change and write the registry under its lock, skipping no-op writes. */
 async function updateRuns(
 	path: string,
@@ -479,8 +502,9 @@ async function updateRuns(
  */
 export async function publishRun(run: RunEntry): Promise<void> {
 	const path = getRunsPath();
+	const alive = await livenessBeforeLock(path);
 	await withFileLock(path, async () => {
-		const runs = await prune(path);
+		const runs = await prune(path, alive);
 		const index = runs.findIndex((entry) => entry.sessionId === run.sessionId);
 		const existing = runs[index];
 		const next = [...runs];
@@ -548,8 +572,8 @@ export async function retireProjectRuns(target: {
 	root: string;
 	sessionId: string;
 }): Promise<void> {
-	await updateRuns(getRunsPath(), async (runs) => {
-		const alive = await runLivenessAsync(runs);
+	const alive = await livenessBeforeLock(getRunsPath());
+	await updateRuns(getRunsPath(), (runs) => {
 		const next = runs.filter(
 			(entry) =>
 				!(
