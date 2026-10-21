@@ -121,3 +121,46 @@ it("leaves an allocation already made where it is", async () => {
 	);
 	expect(env.portOffset).toBe(offset);
 });
+
+// A CI runner's checkout persists between jobs, so its lockfile outlives the
+// run that wrote it while other stacks come and go on the same daemon.
+function pinLockfile(offset: number) {
+	const { root } = checkout();
+	mkdirSync(join(root, ".buncargo"), { recursive: true });
+	writeFileSync(
+		join(root, ".buncargo", "ports.json"),
+		JSON.stringify({ offset }),
+	);
+}
+
+it("sets aside a lockfile whose database port another project's container now publishes", async () => {
+	const pinned = 2300;
+	pinLockfile(pinned);
+	const { root, env, prisma } = checkout({
+		port: BASE_PORT + pinned,
+		project: "gey-t3-a18cdddf-e2e",
+	});
+	expect(env.portOffset).toBe(pinned);
+
+	const failure = await prisma.ensureDatabase().catch((error) => error);
+
+	expect(String(failure)).not.toContain("held by container");
+	expect(env.portOffset).not.toBe(pinned);
+	expect(env.ports.postgres).toBe(BASE_PORT + env.portOffset);
+	expect(readPortsLockfile(root)?.offset).toBe(env.portOffset);
+});
+
+it("keeps a lockfile block whose database port is its own running container's", async () => {
+	const pinned = 2300;
+	pinLockfile(pinned);
+	const projectName = checkout().env.projectName;
+	const { env, prisma } = checkout({
+		port: BASE_PORT + pinned,
+		project: projectName,
+	});
+
+	await prisma.ensureDatabase().catch(() => {});
+
+	expect(env.portOffset).toBe(pinned);
+	expect(env.ports.postgres).toBe(BASE_PORT + pinned);
+});
