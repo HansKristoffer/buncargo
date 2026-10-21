@@ -20,8 +20,16 @@ pieces it orchestrates.
   flag to the spec, not to a parallel list. `readPositionals` finds subcommands and stray
   arguments, skipping `--flag value` pairs, so no command re-walks argv itself.
 - `commands/registry.ts` is the single source for top-level command names (`CliCommandName`, used
-  by the `bin.ts` switch and by `help.ts`) and for the `hosts` and `bar` subcommands. Every switch
-  over them ends in a `never` default.
+  by `bin.ts`'s command table and by `help.ts`) and for the `hosts` and `bar` subcommands. Every
+  switch over them ends in a `never` default.
+- `bin.ts` dispatches through `hanzio/cli` (`defineCli`), and every command is `raw`: it gets its
+  arguments unparsed and keeps its own spec, help and exit codes. Scripts and CI depend on that
+  output, and a hanzio schema would change it: hanzio prints its own help layout, treats `-h` as
+  help, parses values with strict `parseArgs` and exits 2 for bad arguments. `bin.ts` answers the
+  root's help, `--version`/`-v` and unknown names itself, before calling hanzio, because an unknown
+  name may be an integration's namespace. `cli-output.test.ts` pins every command's `--help` and the
+  root. A changed or removed line in its snapshot is a breaking change; an added command or flag
+  only adds lines.
 - Failures inside a command flow throw `CliError` (`errors.ts`) so the flow can release tunnels,
   host routes and the terminal before exiting 1. Argv problems, which happen before anything
   starts, exit through `log.fail`.
