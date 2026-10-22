@@ -1,6 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { typedSwitch, typedSwitchGroup } from "hanzio";
+import {
+	getUniqueValuesByKey,
+	isDefined,
+	typedSwitch,
+	typedSwitchGroup,
+} from "hanzio";
 import { containerRuntimeForEnv } from "../container-runtime";
 import {
 	type CheckoutFileStatus,
@@ -179,16 +184,14 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 		...Object.values(env.apps).map((app) => app.secrets),
 	]
 		.map((scope) => (scope ? resolveScope(scope, env.secrets) : undefined))
-		.filter((scope) => scope !== undefined);
+		.filter(isDefined);
 	if (scopes.length > 0) {
 		checks.push({
 			name: "Infisical secrets are readable",
 			fast: false,
 			check: async () => {
 				const failures: string[] = [];
-				for (const scope of new Map(
-					scopes.map((entry) => [scopeKey(entry), entry]),
-				).values()) {
+				for (const scope of getUniqueValuesByKey(scopes, scopeKey)) {
 					try {
 						await fetchScopeSecrets(scope);
 					} catch (error) {

@@ -1,3 +1,4 @@
+import { anySignal, isDefined, recordFromKeys } from "hanzio";
 import {
 	buildSharedEnvValues,
 	mergeSharedEnvWithOverlay,
@@ -130,7 +131,7 @@ export function createEnvVarsApi<
 		// buncargo Vite plugin splits the list.
 		const allowedHosts = [
 			...new Set([...namedAllowedHosts(ctx.hosts), urlHostOverride()]),
-		].filter((host) => host !== undefined);
+		].filter(isDefined);
 		if (allowedHosts.length > 0) {
 			shared.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS = allowedHosts.join(",");
 		}
@@ -231,11 +232,8 @@ export function createEnvVarsApi<
 		targetApps: Record<string, AppConfig>,
 		production = false,
 	): Record<string, Record<string, string>> {
-		return Object.fromEntries(
-			Object.keys(targetApps).map((appName) => [
-				appName,
-				buildAppEnvVars(appName as Extract<keyof TApps, string>, production),
-			]),
+		return recordFromKeys(Object.keys(targetApps), (appName) =>
+			buildAppEnvVars(appName as Extract<keyof TApps, string>, production),
 		);
 	}
 
@@ -367,9 +365,7 @@ export function createEnvVarsApi<
 					exec(cmd, {
 						...options,
 						timeoutMs: options?.timeoutMs ?? 600000,
-						signal: options?.signal
-							? AbortSignal.any([signal, options.signal])
-							: signal,
+						signal: anySignal(signal, options?.signal),
 					}),
 			};
 			scopedContexts.set(signal, scoped);

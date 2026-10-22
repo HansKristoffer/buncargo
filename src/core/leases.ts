@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isRecord } from "hanzio";
 import { withFileLock } from "./file-lock";
 import {
 	processIdentityMatcherAsync,
@@ -43,16 +44,15 @@ type LeaseResult = { ok: true } | { ok: false; holder: LeaseEntry };
 const FILENAME = "leases.json";
 
 function isLeaseEntry(value: unknown): value is LeaseEntry {
-	if (typeof value !== "object" || value === null) return false;
-	const entry = value as Record<string, unknown>;
 	return (
-		typeof entry.key === "string" &&
-		typeof entry.sessionId === "string" &&
-		typeof entry.pid === "number" &&
-		typeof entry.app === "string" &&
-		typeof entry.projectName === "string" &&
-		typeof entry.root === "string" &&
-		typeof entry.acquiredAt === "string"
+		isRecord(value) &&
+		typeof value.key === "string" &&
+		typeof value.sessionId === "string" &&
+		typeof value.pid === "number" &&
+		typeof value.app === "string" &&
+		typeof value.projectName === "string" &&
+		typeof value.root === "string" &&
+		typeof value.acquiredAt === "string"
 	);
 }
 

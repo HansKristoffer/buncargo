@@ -1,3 +1,4 @@
+import { isRecord } from "hanzio";
 import { withFileLock } from "../core/file-lock";
 import { defineListRegistry, isRouteOwnerAlive } from "../core/registry-file";
 import { projectStateFilePath } from "../core/state-paths";
@@ -21,7 +22,7 @@ export function getTunnelRegistryPath(root: string): string {
 }
 
 function isTunnelRegistryEntry(value: unknown): value is TunnelRegistryEntry {
-	if (typeof value !== "object" || value === null) return false;
+	if (!isRecord(value)) return false;
 	const entry = value as Partial<TunnelRegistryEntry>;
 	return (
 		(entry.kind === "app" || entry.kind === "service") &&

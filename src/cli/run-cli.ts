@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { typedSwitch } from "hanzio";
+import { startTimer, typedSwitch } from "hanzio";
 import { containerRuntimeForEnv } from "../container-runtime";
 import { describeLeaseRefusal, type SkippedLeaseApp } from "../core/app-leases";
 import { withSignal } from "../core/deadline";
@@ -731,7 +731,7 @@ async function runDevFlow<
 		return undefined;
 	}
 
-	const appsStartedAt = performance.now();
+	const appsElapsed = startTimer();
 	let firstSpawn = false;
 	const spawned = new Set<string>();
 	// Parked after never coming up: the supervisor treats them as non-essential.
@@ -818,8 +818,7 @@ async function runDevFlow<
 				skipContainers: !hasServices,
 				onPhase: timer.record,
 				onReady: async () => {
-					if (!nothingToSpawn)
-						timer.record("app readiness", performance.now() - appsStartedAt);
+					if (!nothingToSpawn) timer.record("app readiness", appsElapsed());
 					timer.report();
 					// `start()` ensures the watchdog only for a run with containers,
 					// but the watchdog is also what lists live runs to BuncargoBar

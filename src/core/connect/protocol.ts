@@ -1,4 +1,4 @@
-import { isRecord } from "hanzio";
+import { isOneOf, isRecord } from "hanzio";
 
 /** Wire contract shared by the directory, CLI, and Swift fixture tests. */
 export const LEASE_MS = 45_000;
@@ -147,10 +147,11 @@ export function parseRun(value: unknown): RunInput {
 			!text(target.id) ||
 			ids.has(target.id) ||
 			!text(target.name) ||
-			!["app", "service"].includes(String(target.kind)) ||
-			!["http", "tcp"].includes(String(target.protocol)) ||
-			!["starting", "ready", "reused", "stopped", "failed"].includes(
-				String(target.status),
+			!isOneOf(["app", "service"], target.kind) ||
+			!isOneOf(["http", "tcp"], target.protocol) ||
+			!isOneOf(
+				["starting", "ready", "reused", "stopped", "failed"],
+				target.status,
 			) ||
 			!validPort(target.port) ||
 			(target.preset !== undefined && !text(target.preset))

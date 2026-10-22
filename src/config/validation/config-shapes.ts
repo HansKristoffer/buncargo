@@ -1,3 +1,4 @@
+import { isString } from "hanzio";
 import { checkoutFileErrors } from "../../core/checkout-files/spec";
 import { SECRETS_FIELDS, type ShapeChecks } from "./shape-checks";
 
@@ -100,8 +101,7 @@ export function validateSupplementShapes(
 					typeof step.name === "string" &&
 					typeof step.run === "function" &&
 					(step.apps === undefined ||
-						(Array.isArray(step.apps) &&
-							step.apps.every((app) => typeof app === "string"))),
+						(Array.isArray(step.apps) && step.apps.every(isString))),
 			),
 		"an array of { name, apps?, run }",
 	);

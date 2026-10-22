@@ -3,6 +3,7 @@
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { connect, createServer } from "node:net";
+import { startTimer, withTimeout } from "hanzio";
 import { request } from "../src/core/connect/client";
 import { newCredential } from "../src/core/connect/credentials";
 import {
@@ -180,7 +181,7 @@ try {
 		directory.runs[0]?.targets.every((t) => t.status === "ready"),
 		"Registered proxies must appear ready in the directory",
 	);
-	const start = performance.now();
+	const elapsed = startTimer();
 	const response = await fetch(target.url, {
 		signal: AbortSignal.timeout(30000),
 	});
@@ -190,7 +191,7 @@ try {
 		"HTTP payload mismatch",
 	);
 	console.log(
-		`20 MiB HTTPS transfer: ${((performance.now() - start) / 1000).toFixed(2)} seconds`,
+		`20 MiB HTTPS transfer: ${(elapsed() / 1000).toFixed(2)} seconds`,
 	);
 	for (const encoding of ["gzip", "zstd"]) {
 		const asset = await fetch(`${target.url}source.js`, {
@@ -271,12 +272,9 @@ try {
 	socket = connect(port, "127.0.0.1");
 	await once(socket, "connect");
 	socket.write("private-probe");
-	const result = await Promise.race([
-		once(socket, "data"),
-		abortableSleep(10000).then(() => {
-			throw new Error("Private TCP timed out");
-		}),
-	]);
+	const result = await withTimeout(once(socket, "data"), 10000, {
+		message: "Private TCP timed out",
+	});
 	assert(
 		result[0].toString() === "private-probe",
 		"Private TCP payload mismatch",

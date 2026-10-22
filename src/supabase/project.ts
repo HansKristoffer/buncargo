@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { getErrorMessage, isRecord } from "hanzio";
+import { getErrorMessage, isRecord, isString } from "hanzio";
 
 /**
  * The parts of `supabase/config.toml` the integration needs: which components
@@ -98,9 +98,7 @@ export function parseSupabaseConfig(
 					? auth.jwt_secret
 					: undefined,
 			additionalRedirectUrls: Array.isArray(auth.additional_redirect_urls)
-				? auth.additional_redirect_urls.filter(
-						(url): url is string => typeof url === "string",
-					)
+				? auth.additional_redirect_urls.filter(isString)
 				: [],
 		},
 	};

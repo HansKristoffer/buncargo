@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { toError, typedSwitch } from "hanzio";
+import { anySignal, toError, typedSwitch } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import type { AppConfig, DevServerPids } from "../../types";
 import { abortableSleep } from "../deadline";
@@ -568,7 +568,7 @@ export async function startDevServers(
 		const drift = watchPortDrift(
 			targets,
 			driftProbe,
-			AbortSignal.any([signal, done.signal]),
+			anySignal(signal, done.signal),
 		);
 		try {
 			await Promise.race([health, drift.then(() => health)]);
@@ -619,14 +619,13 @@ export async function startDevServers(
 				try {
 					await Promise.race([
 						ready.promise,
-						abortableSleep(
-							timeoutMs,
-							AbortSignal.any([signal, done.signal]),
-						).then(() => {
-							throw new Error(
-								`${name} did not print ${config.readyWhen} within ${Math.round(timeoutMs / 1000)}s`,
-							);
-						}),
+						abortableSleep(timeoutMs, anySignal(signal, done.signal)).then(
+							() => {
+								throw new Error(
+									`${name} did not print ${config.readyWhen} within ${Math.round(timeoutMs / 1000)}s`,
+								);
+							},
+						),
 					]);
 				} finally {
 					done.abort();
@@ -647,7 +646,7 @@ export async function startDevServers(
 		sideChecks.set(name, controller);
 		void waitForWave(
 			{ [name]: config },
-			AbortSignal.any([owner.controller.signal, controller.signal]),
+			anySignal(owner.controller.signal, controller.signal),
 		).catch(() => {});
 	}
 

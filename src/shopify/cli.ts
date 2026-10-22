@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { safeJsonParse } from "hanzio";
 import { childProcessEnv } from "../core/child-env";
 import { isVersionInRange, parseVersion } from "../core/version";
 
@@ -118,12 +119,9 @@ export function readShopifySession(
 			store.currentSessionId.length === 0
 		)
 			return undefined;
-		let found: StoredIdentity[] = [];
-		try {
-			found = identities(JSON.parse(store.sessionStore));
-		} catch {
-			// An unreadable store is still a session: the CLI decides.
-		}
+		// An unreadable store is still a session: the CLI decides.
+		const parsedStore = safeJsonParse(store.sessionStore);
+		const found = parsedStore.ok ? identities(parsedStore.data) : [];
 		const identity =
 			found.find((entry) => entry.userId === store.currentSessionId) ??
 			found[0];

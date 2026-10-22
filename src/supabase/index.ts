@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { isDefined } from "hanzio";
 import { DEFAULT_HTTP_SERVICE_NAMES } from "../core/hosts/plan";
 import { externalStackProjectName, findMonorepoRoot } from "../core/ports";
 import { configuredPrimaryApp, resolvePrimaryApp } from "../core/primary-app";
@@ -110,9 +111,7 @@ function redirectUrls(
 	const loopback = ctx.loopbackUrls as Record<string, string>;
 	const publicUrls = ctx.publicUrls as Record<string, string>;
 	const origins = appNames.flatMap((name) =>
-		[urls[name], loopback[name], publicUrls[name]].filter(
-			(url): url is string => url !== undefined,
-		),
+		[urls[name], loopback[name], publicUrls[name]].filter(isDefined),
 	);
 	return [
 		...new Set([

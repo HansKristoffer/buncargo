@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { isRecord } from "hanzio";
+import { isOneOf, isRecord } from "hanzio";
 import type { ExpoAppIdentity } from "../expo/app-identity";
 import type { ContainerRuntimeName } from "../types";
 import { buncargoCli, type CliInvocation } from "./cli-entry";
@@ -253,8 +253,9 @@ function isRunApp(value: unknown): value is RunAppEntry {
 			(isPort(value.port) &&
 				typeof value.url === "string" &&
 				typeof value.loopbackUrl === "string")) &&
-		["starting", "ready", "reused", "failed", "stopped"].includes(
-			String(value.status),
+		isOneOf(
+			["starting", "ready", "reused", "failed", "stopped"],
+			value.status,
 		) &&
 		(value.pid === undefined || isPid(value.pid)) &&
 		(value.processIdentity === undefined ||
@@ -279,7 +280,7 @@ function isRunService(value: unknown): value is RunServiceEntry {
 			(isPort(value.port) &&
 				typeof value.url === "string" &&
 				typeof value.loopbackUrl === "string")) &&
-		["starting", "ready", "stopped"].includes(String(value.status)) &&
+		isOneOf(["starting", "ready", "stopped"], value.status) &&
 		(value.problem === undefined ||
 			(isRecord(value.problem) &&
 				typeof value.problem.state === "string" &&
@@ -287,7 +288,7 @@ function isRunService(value: unknown): value is RunServiceEntry {
 		(value.stack === undefined || typeof value.stack === "string") &&
 		(value.container === undefined ||
 			(isRecord(value.container) &&
-				["docker", "apple"].includes(String(value.container.runtime)) &&
+				isOneOf(["docker", "apple"], value.container.runtime) &&
 				typeof value.container.name === "string" &&
 				(value.container.binary === undefined ||
 					typeof value.container.binary === "string") &&

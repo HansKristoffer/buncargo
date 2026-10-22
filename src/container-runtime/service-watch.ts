@@ -1,4 +1,4 @@
-import { typedSwitch } from "hanzio";
+import { timeoutSignal, typedSwitch } from "hanzio";
 import type { ContainerRuntimeAdapter, ServiceRuntimeState } from "./types";
 
 /**
@@ -106,10 +106,7 @@ export function watchServiceContainers(input: {
 	const poll = async () => {
 		const watched = input.services();
 		if (watched.length > 0) {
-			const signal = AbortSignal.any([
-				controller.signal,
-				AbortSignal.timeout(intervalMs),
-			]);
+			const signal = timeoutSignal(intervalMs, controller.signal);
 			let states: ServiceRuntimeState[] = [];
 			try {
 				states = await input.runtime.projectServiceStates(

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { once } from "hanzio";
 
 /**
  * Compare two dotted release versions.
@@ -72,15 +73,10 @@ export function findBuncargoPackage(
 	}
 }
 
-let ownPackage: { value: BuncargoPackage | undefined } | undefined;
-
 /** This buncargo's own package, found once. */
-export function buncargoPackage(): BuncargoPackage | undefined {
-	ownPackage ??= {
-		value: findBuncargoPackage(dirname(fileURLToPath(import.meta.url))),
-	};
-	return ownPackage.value;
-}
+export const buncargoPackage: () => BuncargoPackage | undefined = once(() =>
+	findBuncargoPackage(dirname(fileURLToPath(import.meta.url))),
+);
 
 /** This buncargo's own package, for code that cannot run without its files. */
 export function requireBuncargoPackage(): BuncargoPackage {

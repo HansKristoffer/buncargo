@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { promiseTimeout } from "hanzio";
+import { must, promiseTimeout } from "hanzio";
 import { isTcpPortOpen } from "../core/network";
 
 /**
@@ -96,8 +96,7 @@ export function pickSourceDevice(
 	const fallback =
 		lastUsed ??
 		devices.find((device) => device.deviceTypeIdentifier.includes("iPhone"));
-	if (!fallback) throw new Error("No iOS simulator is available.");
-	return fallback;
+	return must(fallback, "No iOS simulator is available.");
 }
 
 function installedApps(udid: string): Set<string> {

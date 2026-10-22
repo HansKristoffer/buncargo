@@ -1,4 +1,4 @@
-import { typedSwitch } from "hanzio";
+import { isOneOf, typedSwitch } from "hanzio";
 import type { ContainerRuntimeName, ContainerRuntimeSelection } from "../types";
 
 /**
@@ -21,15 +21,13 @@ export const DEFAULT_CONTAINER_RUNTIME: ContainerRuntimeName = "docker";
 export function isContainerRuntimeName(
 	value: unknown,
 ): value is ContainerRuntimeName {
-	return CONTAINER_RUNTIME_NAMES.includes(value as ContainerRuntimeName);
+	return isOneOf(CONTAINER_RUNTIME_NAMES, value);
 }
 
 export function isContainerRuntimeSelection(
 	value: unknown,
 ): value is ContainerRuntimeSelection {
-	return CONTAINER_RUNTIME_SELECTIONS.includes(
-		value as ContainerRuntimeSelection,
-	);
+	return isOneOf(CONTAINER_RUNTIME_SELECTIONS, value);
 }
 
 /** Human-readable name used in status output and error messages. */

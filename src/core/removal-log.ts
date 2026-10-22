@@ -14,6 +14,7 @@
 
 import { userInfo } from "node:os";
 import { basename, dirname } from "node:path";
+import { truncate } from "hanzio";
 import { withFileLock } from "./file-lock";
 import { readJsonDocumentSync, writeJsonDocument } from "./registry-file";
 import type { RunEntry } from "./run-registry";
@@ -94,7 +95,7 @@ export function invocationCommand(argv: readonly string[]): string {
 			basename(dirname(script)) === "cli");
 	if (!isCli) return `${name} (library)`;
 	const command = ["buncargo", ...argv.slice(2)].join(" ");
-	return command.length > 80 ? `${command.slice(0, 79)}…` : command;
+	return truncate(command, 80);
 }
 
 function currentUser(): string {

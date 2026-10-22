@@ -1,4 +1,4 @@
-import { getErrorMessage, isDefined } from "hanzio";
+import { getErrorMessage, isDefined, recordFromKeys } from "hanzio";
 import { findMonorepoRoot } from "../core/ports";
 import type {
 	AppConfig,
@@ -28,19 +28,14 @@ function composeHooks(
 	if (sources.length <= 1) return sources[0];
 
 	const names = new Set(sources.flatMap((hooks) => Object.keys(hooks)));
-	return Object.fromEntries(
-		[...names].map((name) => [
-			name,
-			async (...args: unknown[]) => {
-				for (const hooks of sources) {
-					const hook = hooks[name as keyof AnyHooks] as
-						| ((...hookArgs: unknown[]) => unknown)
-						| undefined;
-					await hook?.(...args);
-				}
-			},
-		]),
-	) as AnyHooks;
+	return recordFromKeys([...names], (name) => async (...args: unknown[]) => {
+		for (const hooks of sources) {
+			const hook = hooks[name as keyof AnyHooks] as
+				| ((...hookArgs: unknown[]) => unknown)
+				| undefined;
+			await hook?.(...args);
+		}
+	}) as AnyHooks;
 }
 
 /**

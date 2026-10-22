@@ -1,3 +1,4 @@
+import { isOneOf } from "hanzio";
 import type { CommandExample } from "../command-spec";
 
 /**
@@ -179,13 +180,13 @@ export const CLI_COMMANDS = [
 
 export type CliCommandName = (typeof CLI_COMMANDS)[number]["name"];
 
-const COMMAND_NAMES = new Set<string>(CLI_COMMANDS.map((entry) => entry.name));
+const COMMAND_NAMES = CLI_COMMANDS.map((entry) => entry.name);
 
 export function resolveCommandName(
 	value: string | undefined,
 ): CliCommandName | undefined {
 	if (value === undefined) return undefined;
-	return COMMAND_NAMES.has(value) ? (value as CliCommandName) : undefined;
+	return isOneOf(COMMAND_NAMES, value) ? value : undefined;
 }
 
 /** Extra `<command> <flag>` forms worth showing in the root help listing. */
@@ -241,16 +242,12 @@ export const HOSTS_SUBCOMMANDS = [
 
 export type HostsSubcommand = (typeof HOSTS_SUBCOMMANDS)[number]["name"];
 
-const HOSTS_SUBCOMMAND_NAMES = new Set<string>(
-	HOSTS_SUBCOMMANDS.map((entry) => entry.name),
-);
+const HOSTS_SUBCOMMAND_NAMES = HOSTS_SUBCOMMANDS.map((entry) => entry.name);
 
 export function resolveHostsSubcommand(
 	value: string,
 ): HostsSubcommand | undefined {
-	return HOSTS_SUBCOMMAND_NAMES.has(value)
-		? (value as HostsSubcommand)
-		: undefined;
+	return isOneOf(HOSTS_SUBCOMMAND_NAMES, value) ? value : undefined;
 }
 
 export function hostsSubcommandList(): string {
@@ -268,12 +265,10 @@ export const BAR_SUBCOMMANDS = [
 
 export type BarSubcommand = (typeof BAR_SUBCOMMANDS)[number]["name"];
 
-const BAR_SUBCOMMAND_NAMES = new Set<string>(
-	BAR_SUBCOMMANDS.map((entry) => entry.name),
-);
+const BAR_SUBCOMMAND_NAMES = BAR_SUBCOMMANDS.map((entry) => entry.name);
 
 export function resolveBarSubcommand(value: string): BarSubcommand | undefined {
-	return BAR_SUBCOMMAND_NAMES.has(value) ? (value as BarSubcommand) : undefined;
+	return isOneOf(BAR_SUBCOMMAND_NAMES, value) ? value : undefined;
 }
 
 export function barSubcommandList(): string {

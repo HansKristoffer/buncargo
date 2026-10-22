@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { getErrorMessage, isRecord } from "hanzio";
+import { getErrorMessage, isRecord, safeJsonParse } from "hanzio";
 import { isProcessAlive } from "./process/lifecycle";
 
 /**
@@ -188,25 +188,18 @@ export function defineListRegistry<T>(options: {
 	const { version, key, isEntry, afterWrite, mode = 0o600 } = options;
 
 	const validate: JsonValidator<T[]> = (value) => {
-		if (typeof value !== "object" || value === null) return undefined;
-		const file = value as Record<string, unknown>;
-		if (file.version !== version) return undefined;
-		const entries = file[key];
+		if (!isRecord(value) || value.version !== version) return undefined;
+		const entries = value[key];
 		if (!Array.isArray(entries)) return undefined;
 		return entries.filter(isEntry);
 	};
 
 	function checkVersion(path: string, raw: string): unknown {
-		let value: unknown;
-		try {
-			value = JSON.parse(raw);
-		} catch {
-			return undefined;
-		}
+		const parsed = safeJsonParse(raw);
+		if (!parsed.ok) return undefined;
+		const value = parsed.data;
 		if (
-			typeof value === "object" &&
-			value !== null &&
-			"version" in value &&
+			isRecord(value) &&
 			typeof value.version === "number" &&
 			value.version > version
 		) {

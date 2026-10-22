@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isString } from "hanzio";
 
 const DEFAULT_PATTERNS = ["apps/*", "packages/*", "modules"];
 
@@ -11,11 +12,7 @@ export function workspacePatterns(root: string, override?: string[]): string[] {
 		const declared = Array.isArray(pkg.workspaces)
 			? pkg.workspaces
 			: pkg.workspaces?.packages;
-		if (
-			Array.isArray(declared) &&
-			declared.every((entry) => typeof entry === "string")
-		)
-			return declared;
+		if (Array.isArray(declared) && declared.every(isString)) return declared;
 	} catch {
 		// A standalone checkout without a package manifest: the default patterns.
 	}

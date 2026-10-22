@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { getErrorMessage, typedSwitch } from "hanzio";
+import { chunkArray, getErrorMessage, startTimer, typedSwitch } from "hanzio";
 import { childProcessEnv } from "../../../core/child-env";
 import { buncargoCli } from "../../../core/cli-entry";
 import { findMonorepoRoot } from "../../../core/ports";
@@ -93,8 +93,8 @@ interface Step {
  */
 function stepRunner(root: string) {
 	const failures: string[] = [];
-	const finish = (name: string, started: number, code: number) => {
-		const seconds = ((performance.now() - started) / 1000).toFixed(1);
+	const finish = (name: string, elapsed: () => number, code: number) => {
+		const seconds = (elapsed() / 1000).toFixed(1);
 		if (code === 0) console.log(`✓ ${name} ${seconds}s`);
 		else {
 			console.log(`✗ ${name} ${seconds}s (exit ${code})`);
@@ -104,7 +104,7 @@ function stepRunner(root: string) {
 	return {
 		failures,
 		async run({ name, command, cwd }: Step) {
-			const started = performance.now();
+			const elapsed = startTimer();
 			const child = Bun.spawn(command, {
 				cwd: cwd ? join(root, cwd) : root,
 				stdout: "pipe",
@@ -120,12 +120,12 @@ function stepRunner(root: string) {
 				const output = `${stdout}${stderr}`.trim().split("\n");
 				console.log(output.slice(-OUTPUT_TAIL_LINES).join("\n"));
 			}
-			finish(name, started, code);
+			finish(name, elapsed, code);
 		},
 		inline(name: string, problems: string[]) {
-			const started = performance.now();
+			const elapsed = startTimer();
 			for (const problem of problems) console.log(problem);
-			finish(name, started, problems.length > 0 ? 1 : 0);
+			finish(name, elapsed, problems.length > 0 ? 1 : 0);
 		},
 	};
 }
@@ -225,8 +225,7 @@ export async function handleCheck(args: string[]): Promise<number> {
 			const existing = files.filter((file) => existsSync(join(root, file)));
 			const write = mode === "staged" ? [] : ["--write"];
 			const label = mode === "staged" ? "biome" : "biome --write";
-			for (let i = 0; i < existing.length; i += BIOME_CHUNK) {
-				const chunk = existing.slice(i, i + BIOME_CHUNK);
+			for (const chunk of chunkArray(existing, BIOME_CHUNK)) {
 				await steps.run({
 					name: `${label} (${chunk.length} files)`,
 					command: [

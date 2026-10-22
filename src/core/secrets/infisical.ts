@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { getErrorMessage } from "hanzio";
+import {
+	anySignal,
+	getErrorMessage,
+	isRecord,
+	mapValues,
+	startTimer,
+	timeoutSignal,
+	trimTrailingSlash,
+} from "hanzio";
 import type { AppConfig, SecretsScopeConfig } from "../../types";
 import { connectProcessEnv } from "../child-env";
 import { registerAbortCleanup } from "../deadline";
@@ -139,11 +147,9 @@ export function resolveScope(
 			defaults?.environment ??
 			secretsEnvironment(env) ??
 			"dev",
-		siteUrl: (
-			scope?.siteUrl ??
-			defaults?.siteUrl ??
-			DEFAULT_INFISICAL_SITE_URL
-		).replace(/\/+$/, ""),
+		siteUrl: trimTrailingSlash(
+			scope?.siteUrl ?? defaults?.siteUrl ?? DEFAULT_INFISICAL_SITE_URL,
+		),
 		path: scope?.path ?? defaults?.path ?? "/",
 	};
 }
@@ -162,31 +168,21 @@ export function applySecretDefaults<TApps extends Record<string, AppConfig>>(
 	env: NodeJS.ProcessEnv = process.env,
 ): TApps {
 	if (defaults === false) {
-		return Object.fromEntries(
-			Object.entries(apps).map(([name, app]) => [
-				name,
-				{ ...app, secrets: false },
-			]),
-		) as TApps;
+		return mapValues(apps, (app) => ({ ...app, secrets: false })) as TApps;
 	}
 
 	if (!Object.values(apps).some((app) => app.secrets)) return apps;
-	return Object.fromEntries(
-		Object.entries(apps).map(([name, app]) => [
-			name,
-			app.secrets
-				? {
-						...app,
-						secrets: {
-							...(resolveScope(app.secrets, defaults, env) ?? app.secrets),
-							// Not part of the scope's identity, so resolveScope drops it.
-							...(app.secrets.required
-								? { required: app.secrets.required }
-								: {}),
-						},
-					}
-				: app,
-		]),
+	return mapValues(apps, (app) =>
+		app.secrets
+			? {
+					...app,
+					secrets: {
+						...(resolveScope(app.secrets, defaults, env) ?? app.secrets),
+						// Not part of the scope's identity, so resolveScope drops it.
+						...(app.secrets.required ? { required: app.secrets.required } : {}),
+					},
+				}
+			: app,
 	) as TApps;
 }
 
@@ -257,7 +253,7 @@ export function sessionOrganization(token: string): string | undefined {
 }
 
 function tokenFrom(value: unknown, field: string, operation: string): string {
-	const token = (value as Record<string, unknown> | null)?.[field];
+	const token = isRecord(value) ? value[field] : undefined;
 	if (typeof token !== "string" || !token) {
 		throw new SecretsError(`Infisical ${operation} returned no token.`);
 	}
@@ -279,10 +275,7 @@ function cliSessionToken(
 			readCliSessionToken(
 				scope,
 				binary,
-				AbortSignal.any([
-					sharedSignal,
-					AbortSignal.timeout(REQUEST_TIMEOUT_MS * 2),
-				]),
+				timeoutSignal(REQUEST_TIMEOUT_MS * 2, sharedSignal),
 			),
 		signal,
 	);
@@ -484,18 +477,13 @@ export async function fetchScopeSecrets(
 	const key = `${scopeKey(scope)}|${authKey}`;
 	const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS * 2;
 	const timeout = AbortSignal.timeout(timeoutMs);
-	const waitSignal = options.signal
-		? AbortSignal.any([options.signal, timeout])
-		: timeout;
+	const waitSignal = anySignal(options.signal, timeout);
 	const pending = cache.get(
 		key,
 		async (sharedSignal) => {
 			// Transport has its own ceiling. A caller's shorter wait never
 			// changes the request or authentication lifetime of another caller.
-			const signal = AbortSignal.any([
-				sharedSignal,
-				AbortSignal.timeout(REQUEST_TIMEOUT_MS * 2),
-			]);
+			const signal = timeoutSignal(REQUEST_TIMEOUT_MS * 2, sharedSignal);
 			signal.throwIfAborted();
 			const token = credentials
 				? await machineToken(scope, credentials, signal)
@@ -567,7 +555,7 @@ export async function loadAppSecrets(
 	if (scopes.size === 0) return {};
 
 	const fetched = new Map<string, Record<string, string>>();
-	const began = performance.now();
+	const elapsed = startTimer();
 	try {
 		await Promise.all(
 			[...scopes].map(async ([key, scope]) => {
@@ -594,7 +582,7 @@ export async function loadAppSecrets(
 			}),
 		);
 	} finally {
-		options.onWait?.(performance.now() - began);
+		options.onWait?.(elapsed());
 	}
 
 	return Object.fromEntries(
@@ -627,14 +615,14 @@ export async function loadScopeSecrets(
 	} = {},
 ): Promise<Record<string, string>> {
 	const env = options.env ?? process.env;
-	const began = performance.now();
+	const elapsed = startTimer();
 	try {
 		return withoutExported(
 			await fetchScopeSecrets(scope, { signal: options.signal, env }),
 			env,
 		);
 	} finally {
-		options.onWait?.(performance.now() - began);
+		options.onWait?.(elapsed());
 	}
 }
 

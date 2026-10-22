@@ -1,4 +1,4 @@
-import { isDefined, isRecord } from "hanzio";
+import { isDefined, isRecord, safeJsonParse, toArray } from "hanzio";
 import type {
 	ServiceDiagnosis,
 	ServiceDiagnosisRequest,
@@ -140,27 +140,24 @@ function readAddress(source: Record<string, unknown>): string | undefined {
 export function parseContainerRecords(stdout: string): AppleContainerRecord[] {
 	const trimmed = stdout.trim();
 	if (!trimmed) return [];
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(trimmed);
-	} catch {
-		return [];
-	}
-	const entries = Array.isArray(parsed) ? parsed : [parsed];
-	return entries.filter(isRecord).flatMap((entry) => {
-		const id = readId(entry);
-		if (!id) return [];
-		const address = readAddress(entry);
-		return [
-			{
-				id,
-				state: readState(entry),
-				labels: readLabels(entry),
-				ports: readPorts(entry),
-				...(address ? { address } : {}),
-			},
-		];
-	});
+	const parsed = safeJsonParse(trimmed);
+	if (!parsed.ok) return [];
+	return toArray(parsed.data)
+		.filter(isRecord)
+		.flatMap((entry) => {
+			const id = readId(entry);
+			if (!id) return [];
+			const address = readAddress(entry);
+			return [
+				{
+					id,
+					state: readState(entry),
+					labels: readLabels(entry),
+					ports: readPorts(entry),
+					...(address ? { address } : {}),
+				},
+			];
+		});
 }
 
 export function formatPublishedPorts(ports: PublishedPort[]): string {

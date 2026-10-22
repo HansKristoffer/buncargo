@@ -1,5 +1,6 @@
 import { existsSync, type FSWatcher, watch } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { debounce } from "hanzio";
 import type { AppWatchConfig } from "../../types";
 import { formatWarn } from "../style";
 
@@ -45,18 +46,18 @@ export function watchApp(input: {
 }): void {
 	const { dir, config, signal } = input;
 	const watchers: FSWatcher[] = [];
-	let timer: ReturnType<typeof setTimeout> | undefined;
 	let changed: string | undefined;
 
+	// Names the first file of the burst, not the last.
+	const fire = debounce(() => {
+		const reason = `${changed} changed`;
+		changed = undefined;
+		if (!signal.aborted) input.onChange(reason);
+	}, config.debounceMs ?? DEFAULT_DEBOUNCE_MS);
 	const schedule = (path: string) => {
 		if (signal.aborted || isIgnoredChange(path, config.ignore)) return;
 		changed ??= path;
-		clearTimeout(timer);
-		timer = setTimeout(() => {
-			const reason = `${changed} changed`;
-			changed = undefined;
-			if (!signal.aborted) input.onChange(reason);
-		}, config.debounceMs ?? DEFAULT_DEBOUNCE_MS);
+		fire();
 	};
 
 	for (const path of config.paths) {
@@ -83,7 +84,7 @@ export function watchApp(input: {
 	signal.addEventListener(
 		"abort",
 		() => {
-			clearTimeout(timer);
+			fire.cancel();
 			for (const watcher of watchers) watcher.close();
 		},
 		{ once: true },

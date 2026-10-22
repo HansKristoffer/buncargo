@@ -1,4 +1,5 @@
 import { relative } from "node:path";
+import { anySignal, startTimer } from "hanzio";
 import {
 	ensureServicesRunning,
 	withProjectLifecycleLock,
@@ -158,7 +159,7 @@ export function createLifecycleApi<
 				console.log(formatStep("📦 Running migrations..."));
 			}
 
-			const began = performance.now();
+			const elapsed = startTimer();
 			try {
 				await runMigrationsSequentially(
 					migrations,
@@ -194,7 +195,7 @@ export function createLifecycleApi<
 					},
 				);
 			} finally {
-				onPhase?.("migrations", performance.now() - began);
+				onPhase?.("migrations", elapsed());
 			}
 
 			if (verbose) {
@@ -218,7 +219,7 @@ export function createLifecycleApi<
 				console.log(formatStep("📦 Generating Prisma client..."));
 			}
 
-			const began = performance.now();
+			const elapsed = startTimer();
 			try {
 				const command = config.prisma.generate;
 				const { cwd } = resolvePrismaConfig(config.prisma);
@@ -226,7 +227,7 @@ export function createLifecycleApi<
 					execute(command, { cwd, verbose }),
 				);
 			} finally {
-				onPhase?.("generation", performance.now() - began);
+				onPhase?.("generation", elapsed());
 			}
 
 			if (verbose) {
@@ -287,9 +288,7 @@ export function createLifecycleApi<
 			(signal) =>
 				startEnvironment({
 					...startOptions,
-					signal: startOptions.signal
-						? AbortSignal.any([signal, startOptions.signal])
-						: signal,
+					signal: anySignal(signal, startOptions.signal),
 				}),
 			startOptions.signal,
 			(pids) => pids !== null && Object.keys(pids).length > 0,
@@ -303,12 +302,12 @@ export function createLifecycleApi<
 		signal?.throwIfAborted();
 
 		async function phase<T>(name: string, work: () => Promise<T>): Promise<T> {
-			const began = performance.now();
+			const elapsed = startTimer();
 			try {
 				signal?.throwIfAborted();
 				return await work();
 			} finally {
-				onPhase?.(name, performance.now() - began);
+				onPhase?.(name, elapsed());
 			}
 		}
 
@@ -346,9 +345,7 @@ export function createLifecycleApi<
 
 		ctx.onSecretsWait = (ms) => onPhase?.("secrets", ms);
 		const prefetchController = new AbortController();
-		const prefetchSignal = signal
-			? AbortSignal.any([signal, prefetchController.signal])
-			: prefetchController.signal;
+		const prefetchSignal = anySignal(signal, prefetchController.signal);
 		const prefetches =
 			prepare === "containers"
 				? []

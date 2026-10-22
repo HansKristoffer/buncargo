@@ -1,3 +1,4 @@
+import { isRecord, safeJsonParse, toArray } from "hanzio";
 import type { BuncargoVolume } from "../types";
 import { type AppleContainerCli, runAppleAsync } from "./cli";
 
@@ -16,20 +17,17 @@ import { type AppleContainerCli, runAppleAsync } from "./cli";
 export function parseAppleVolumeNames(stdout: string): string[] {
 	const trimmed = stdout.trim();
 	if (!trimmed) return [];
-	try {
-		const parsed: unknown = JSON.parse(trimmed);
-		const entries = Array.isArray(parsed) ? parsed : [parsed];
-		const names = entries.flatMap((entry) => {
+	const parsed = safeJsonParse(trimmed);
+	if (parsed.ok) {
+		const names = toArray(parsed.data).flatMap((entry) => {
 			if (typeof entry === "string") return [entry];
-			if (typeof entry !== "object" || entry === null) return [];
-			const record = entry as Record<string, unknown>;
-			const name = record.name ?? record.Name ?? record.id;
+			if (!isRecord(entry)) return [];
+			const name = entry.name ?? entry.Name ?? entry.id;
 			return typeof name === "string" && name ? [name] : [];
 		});
 		if (names.length > 0) return names;
-	} catch {
-		// Not JSON: fall through to the table form.
 	}
+	// Not JSON, or JSON with no names: fall through to the table form.
 	return trimmed
 		.split("\n")
 		.slice(1) // a header row

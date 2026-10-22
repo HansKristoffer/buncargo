@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
-import { isRecord } from "hanzio";
+import { isRecord, must } from "hanzio";
 import type { ComposeDocument } from "../docker-compose";
 import type { DockerComposeNode, DockerComposeServiceRaw } from "../types";
 
@@ -291,7 +291,7 @@ function environmentRecord(
 					? [text, env[text]]
 					: [text.slice(0, at), text.slice(at + 1)];
 			})
-		: typeof value === "object" && value !== null
+		: isRecord(value)
 			? Object.entries(value).map(([key, entry]) => [
 					key,
 					entry === null || entry === undefined ? env[key] : String(entry),
@@ -443,7 +443,7 @@ export function orderServices(
 		const dependsOn = services[name]?.depends_on;
 		const dependencies = Array.isArray(dependsOn)
 			? dependsOn.map(String)
-			: typeof dependsOn === "object" && dependsOn !== null
+			: isRecord(dependsOn)
 				? Object.keys(dependsOn)
 				: [];
 		for (const dependency of dependencies) {
@@ -608,10 +608,10 @@ export function buildAppleRunPlan(
 	const services = orderServices(model.services)
 		.filter((name) => !wanted || wanted.has(name))
 		.map((name) => {
-			const service = model.services[name];
-			if (!service) {
-				throw new Error(`Service "${name}" is not in the generated model`);
-			}
+			const service = must(
+				model.services[name],
+				`Service "${name}" is not in the generated model`,
+			);
 			return buildServicePlan(
 				projectName,
 				name,

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, realpathSync, writeSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
-import { typedSwitch } from "hanzio";
+import { isRecord, typedSwitch } from "hanzio";
 import { REEXEC_ENV, reexecedFrom } from "../core/runtime-flags";
 import { buncargoPackage } from "../core/version";
 import { CliError } from "./errors";
@@ -42,7 +42,7 @@ function readPackageJson(path: string): PackageJson | undefined {
 
 function listsBuncargo(pkg: PackageJson): boolean {
 	return [pkg.dependencies, pkg.devDependencies, pkg.optionalDependencies].some(
-		(deps) => typeof deps === "object" && deps !== null && "buncargo" in deps,
+		(deps) => isRecord(deps) && "buncargo" in deps,
 	);
 }
 

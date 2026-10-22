@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isRecord } from "hanzio";
 import {
 	readJsonDocumentSync,
 	writeJsonDocumentSync,
@@ -39,10 +40,8 @@ export function prismaSchemaHash(dir: string): string | undefined {
 
 export function readGeneratedPrismaHash(root: string): string | undefined {
 	return readJsonDocumentSync(projectStateFilePath(root, FILENAME), (value) =>
-		typeof value === "object" &&
-		value !== null &&
-		typeof (value as { schemaHash?: unknown }).schemaHash === "string"
-			? (value as { schemaHash: string })
+		isRecord(value) && typeof value.schemaHash === "string"
+			? { schemaHash: value.schemaHash }
 			: undefined,
 	)?.schemaHash;
 }
