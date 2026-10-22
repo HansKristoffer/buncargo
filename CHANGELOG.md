@@ -1,5 +1,12 @@
 # Changelog
 
+## [14.4.0](https://github.com/HansKristoffer/buncargo/compare/v14.3.3...v14.4.0) (2026-10-22)
+
+
+### Features
+
+* **check:** format with bun fmt through check.format ([#136](https://github.com/HansKristoffer/buncargo/issues/136)) ([eed315c](https://github.com/HansKristoffer/buncargo/commit/eed315c4d5e55c4769063730442ad3283e26f02f))
+
 ## [14.3.3](https://github.com/HansKristoffer/buncargo/compare/v14.3.2...v14.3.3) (2026-10-21)
 
 
