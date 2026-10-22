@@ -19,7 +19,7 @@ import type {
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // `bun test` runs this file but does not typecheck it: only `bun run typecheck`
-// (tsgo) evaluates the assertions below, and the `lint` script runs both. The
+// (`bun check`) evaluates the assertions below, and `lint` runs both. The
 // point is that a type silently widening back to `string` or `EnvValues` fails
 // the build instead of quietly degrading every consumer's inference.
 //

@@ -1,0 +1,37 @@
+{
+	"customLocalFormatters.formatters": [
+		{
+			"command": "bun fmt --no-script --stdin-filepath '${file}'",
+			"languages": [
+				"typescript",
+				"typescriptreact",
+				"javascript",
+				"javascriptreact",
+				"json",
+				"jsonc"
+			]
+		}
+	],
+	"editor.formatOnSave": true,
+	"[typescript]": {
+		"editor.defaultFormatter": "jkillian.custom-local-formatters"
+	},
+	"[typescriptreact]": {
+		"editor.defaultFormatter": "jkillian.custom-local-formatters"
+	},
+	"[javascript]": {
+		"editor.defaultFormatter": "jkillian.custom-local-formatters"
+	},
+	"[javascriptreact]": {
+		"editor.defaultFormatter": "jkillian.custom-local-formatters"
+	},
+	"[json]": {
+		"editor.defaultFormatter": "jkillian.custom-local-formatters"
+	},
+	"[jsonc]": {
+		"editor.defaultFormatter": "jkillian.custom-local-formatters"
+	},
+	"editor.codeActionsOnSave": {
+		"source.fixAll.biome": "explicit"
+	}
+}
