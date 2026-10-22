@@ -96,10 +96,12 @@ hardcode a port. Ask buncargo instead.
 
 ## Checks
 
-- \`bunx buncargo check\` is the check for your change: Biome on the changed
-  files, \`typecheck --changed\`, the project's gates and the tests next to
+- \`bunx buncargo check\` is the check for your change: \`bun fmt\` (when the
+  config sets \`check.format\`) and Biome on the changed files, writing their
+  fixes, \`typecheck --changed\`, the project's gates and the tests next to
   the changed files. It ends with \`PASS\` or \`FAIL: <steps>\` and exits 1 on a
-  failure. \`--staged\` is the pre-commit hook; \`--all\` checks everything.
+  failure. \`--staged\` is the pre-commit hook and writes nothing; \`--all\`
+  checks everything.
 - \`bunx buncargo typecheck --changed\` checks the workspaces this branch
   touched and the ones depending on them.
 - Typechecks share a few slots across every checkout on the machine. One that

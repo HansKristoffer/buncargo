@@ -329,10 +329,18 @@ export function validateCheckShape(value: unknown, checks: ShapeChecks): void {
 	unknownKeys(
 		value,
 		"check",
-		["gates", "testCommand", "testExclude", "docs"],
+		["gates", "testCommand", "testExclude", "docs", "format"],
 		errors,
 	);
 	fields(value, "check.", ["testCommand"], "string");
+	const format = value.format;
+	if (
+		format !== undefined &&
+		typeof format !== "boolean" &&
+		!(checks.strings(format) && format.length > 0)
+	)
+		errors.push("check.format must be a boolean or a nonempty array of globs");
+	else if (Array.isArray(format)) pathList(format, "check.format", checks);
 	validateDocsCheckShape(value.docs, checks);
 	pathList(value.testExclude, "check.testExclude", checks);
 	if (value.gates === undefined) return;

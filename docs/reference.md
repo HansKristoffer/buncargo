@@ -237,7 +237,7 @@ export default defineDevConfig({
 
 ## `buncargo check` and `buncargo predeploy`
 
-`buncargo check` is one check for the change in front of you. It runs `bun install` when `bun.lock` changed since the last check, Biome (`--write`) on the changed files when the root has a `biome.json`, the docs check when a Markdown file changed, `buncargo typecheck --changed`, the config's gates, and the tests beside the changed files (`a.ts` → `a.test.ts`, `a.*.test.ts`). It prints one line per step, the tail of a failing step's output, then `PASS` or `FAIL: <steps>`; the exit code is 1 when any step failed. "Changed" means since the merge base with `origin`'s default branch (or `--base=<ref>`), committed or not, plus untracked files. `--staged` checks the staged files only, writes nothing and runs no tests: the pre-commit hook. `--all` checks every file, workspace and gate, without tests: `bun run lint`.
+`buncargo check` is one check for the change in front of you. It runs `bun install` when `bun.lock` changed since the last check, `bun fmt` on the changed files when `check.format` is set, Biome (`--write`) on the changed files when the root has a `biome.json`, the docs check when a Markdown file changed, `buncargo typecheck --changed`, the config's gates, and the tests beside the changed files (`a.ts` → `a.test.ts`, `a.*.test.ts`). It prints one line per step, the tail of a failing step's output, then `PASS` or `FAIL: <steps>`; the exit code is 1 when any step failed. "Changed" means since the merge base with `origin`'s default branch (or `--base=<ref>`), committed or not, plus untracked files. `--staged` checks the staged files only, writes nothing and runs no tests: the pre-commit hook. `--all` checks every file, workspace and gate, without tests: `bun run lint`.
 
 ```typescript
 check: {
@@ -248,8 +248,11 @@ check: {
 	],
 	testCommand: "bun test --parallel=4 --isolate", // default: bun test
 	testExclude: ["**/e2e/**"],
+	format: ["**/*.{ts,tsx,vue}"], // bun fmt; true for every file it knows
 },
 ```
+
+`check.format` formats with Bun's own formatter (`bun fmt`, Bun 1.4.4 or newer, configured in `bunfig.toml` `[fmt]`) and leaves Biome to lint: turn Biome's formatter off (`"formatter": { "enabled": false }`). `true` formats every file `bun fmt` knows; globs limit it, as in `format: ["**/*.{ts,tsx,vue}"]`. The default mode writes the changed files that match, `--staged` only checks the staged ones, and `--all` runs `bun fmt --check` over the repo. It runs from the root, so `.prettierignore` applies even to the files passed by name.
 
 A gate runs when a changed file matches one of its `when` globs, or always without `when`; a change to a root manifest, lockfile, `tsconfig*.json` or `dev.config.ts` selects every gate. `staged: false` keeps a slow gate out of the pre-commit hook. `check.docs: false` turns the docs check off; `check.docs: { paths: true }` adds backticked paths to it (see below). `buncargo check docs` runs only that check over every Markdown file: relative links whose target does not exist (anchors, URLs, code fences and `{{...}}` placeholders are skipped), and a `bun --cwd` command with `run` after the directory, which Bun parses as a run with no script and exits 0 on (write `bun run --cwd <dir> <script>`).
 
@@ -1394,7 +1397,7 @@ The configuration reference covers the main public options; `src/types/all-types
 | `integrations` | `BuncargoIntegration[]` | `[]` | `shopify()`, `expo()`, …; applied in order before validation |
 | `generatedFiles` | `{ path, render(ctx), gitignore? }[]` | `[]` | Files rendered from ports, URLs and captures. See [captures](#captured-output-and-generated-files) |
 | `typecheck` | `{ include?, exclude?, concurrency?, groups? }` | `undefined` | Directories `buncargo typecheck` checks beyond discovery, workspaces it leaves out, and named groups. See [typecheck](#cli-reference) |
-| `check` | `{ gates?, testCommand?, testExclude?, docs? }` | `undefined` | Gates and tests for `buncargo check`. See [check](#buncargo-check-and-buncargo-predeploy) |
+| `check` | `{ gates?, testCommand?, testExclude?, docs?, format? }` | `undefined` | Gates and tests for `buncargo check`. See [check](#buncargo-check-and-buncargo-predeploy) |
 | `predeploy` | `{ environmentVars?, production?, seed?, retry?, beforeMigrate?, afterMigrate?, afterSeed? }` | `undefined` | Settings and hooks for `buncargo predeploy`. See [predeploy](#buncargo-check-and-buncargo-predeploy) |
 | `unsetEnv` | `string[]` | `[]` | Variables removed from every process buncargo starts (apps, tasks, `exec`, migrations, the seed, prisma), e.g. those tools use to detect an agent's shell. buncargo's own environment is unchanged |
 

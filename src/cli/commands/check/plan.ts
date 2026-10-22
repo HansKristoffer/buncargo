@@ -1,9 +1,46 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { chunkArray } from "hanzio";
 import { isRootWideFile } from "../../../typecheck/changed";
 import type { CheckGateConfig } from "../../../types";
 
 export type CheckMode = "changed" | "staged" | "all";
+
+// Chunked so a large change never hits the argument-length limit.
+export const FILE_CHUNK = 200;
+
+/**
+ * The `bun fmt` runs for `check.format`: write the changed files, check the
+ * staged ones, check the whole repo with `--all`. `files` are the ones that
+ * still exist. `--no-script` keeps a repo `fmt` script from running instead;
+ * the ignore flags let a list hold files bun fmt cannot format.
+ */
+export function formatCommands(
+	format: true | readonly string[],
+	files: readonly string[],
+	mode: CheckMode,
+): { name: string; command: string[] }[] {
+	const globs = format === true ? [] : format;
+	const flags = [
+		"bun",
+		"fmt",
+		"--no-script",
+		...(mode === "changed" ? [] : ["--check"]),
+		"--ignore-unknown",
+		"--no-error-on-unmatched-pattern",
+	];
+	const label = mode === "changed" ? "bun fmt" : "bun fmt --check";
+	if (mode === "all") return [{ name: label, command: [...flags, ...globs] }];
+	const matchers = globs.map((glob) => new Bun.Glob(glob));
+	const selected = files.filter(
+		(file) =>
+			matchers.length === 0 || matchers.some((glob) => glob.match(file)),
+	);
+	return chunkArray(selected, FILE_CHUNK).map((chunk) => ({
+		name: `${label} (${chunk.length} files)`,
+		command: [...flags, ...chunk],
+	}));
+}
 
 /**
  * Whether a step scoped to `patterns` applies to this change. A root-wide
