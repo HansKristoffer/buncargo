@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { selectGates, testsFor, touches } from "./plan";
+import { formatCommands, selectGates, testsFor, touches } from "./plan";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -77,5 +77,51 @@ describe("tests next to changed files", () => {
 		expect(
 			await testsFor(root, ["gone.test.ts", "e2e/flow.ts"], ["e2e/**"]),
 		).toEqual([]);
+	});
+});
+
+describe("bun fmt", () => {
+	const base = [
+		"bun",
+		"fmt",
+		"--no-script",
+		"--ignore-unknown",
+		"--no-error-on-unmatched-pattern",
+	];
+	const checkOnly = [...base.slice(0, 3), "--check", ...base.slice(3)];
+	const files = ["src/a.ts", "src/b.vue", "readme.md"];
+	const globs = ["**/*.{ts,tsx,vue}"];
+
+	it("writes the changed files and only checks the staged ones", () => {
+		expect(formatCommands(true, files, "changed")).toEqual([
+			{ name: "bun fmt (3 files)", command: [...base, ...files] },
+		]);
+		expect(formatCommands(globs, files, "staged")).toEqual([
+			{
+				name: "bun fmt --check (2 files)",
+				command: [...checkOnly, "src/a.ts", "src/b.vue"],
+			},
+		]);
+	});
+
+	it("checks the whole repo, within the globs, with --all", () => {
+		expect(formatCommands(true, [], "all")).toEqual([
+			{ name: "bun fmt --check", command: checkOnly },
+		]);
+		expect(formatCommands(globs, [], "all")).toEqual([
+			{ name: "bun fmt --check", command: [...checkOnly, ...globs] },
+		]);
+	});
+
+	it("runs nothing when no file matches, and chunks a long list", () => {
+		expect(formatCommands(globs, ["readme.md"], "changed")).toEqual([]);
+		const many = Array.from({ length: 450 }, (_, i) => `src/${i}.ts`);
+		expect(
+			formatCommands(true, many, "changed").map((step) => step.name),
+		).toEqual([
+			"bun fmt (200 files)",
+			"bun fmt (200 files)",
+			"bun fmt (50 files)",
+		]);
 	});
 });

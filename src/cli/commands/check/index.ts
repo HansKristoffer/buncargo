@@ -22,7 +22,14 @@ import {
 	formatDocProblem,
 	markdownFiles,
 } from "./docs";
-import { type CheckMode, selectGates, testsFor, touches } from "./plan";
+import {
+	type CheckMode,
+	FILE_CHUNK,
+	formatCommands,
+	selectGates,
+	testsFor,
+	touches,
+} from "./plan";
 
 const FLAGS = {
 	help: {
@@ -77,8 +84,6 @@ export const CHECK_COMMAND_SPEC: CommandSpec = {
 };
 
 const BIOME_CONFIGS = ["biome.json", "biome.jsonc"];
-// Chunked so a large change never hits the argument-length limit.
-const BIOME_CHUNK = 200;
 const OUTPUT_TAIL_LINES = 80;
 
 interface Step {
@@ -217,15 +222,22 @@ export async function handleCheck(args: string[]): Promise<number> {
 		return 0;
 	}
 
+	// Deleted paths select workspaces below; the formatters cannot read them.
+	const existing = files.filter((file) => existsSync(join(root, file)));
+
+	// Formatting before Biome, so the lint sees the formatted files. From the
+	// root: bun fmt skips `.prettierignore` entries only there.
+	if (config.format)
+		for (const step of formatCommands(config.format, existing, mode))
+			await steps.run(step);
+
 	if (BIOME_CONFIGS.some((file) => existsSync(join(root, file)))) {
 		if (mode === "all")
 			await steps.run({ name: "biome", command: ["bunx", "biome", "check"] });
 		else {
-			// Deleted paths select workspaces below; Biome cannot read them.
-			const existing = files.filter((file) => existsSync(join(root, file)));
 			const write = mode === "staged" ? [] : ["--write"];
 			const label = mode === "staged" ? "biome" : "biome --write";
-			for (const chunk of chunkArray(existing, BIOME_CHUNK)) {
+			for (const chunk of chunkArray(existing, FILE_CHUNK)) {
 				await steps.run({
 					name: `${label} (${chunk.length} files)`,
 					command: [

@@ -1338,6 +1338,7 @@ describe("checks, tasks and profiles", () => {
 					],
 					testCommand: "bun test --isolate",
 					testExclude: ["**/e2e/**"],
+					format: ["**/*.{ts,tsx,vue}"],
 					docs: {
 						paths: {
 							exempt: [{ file: "**", path: "docs/adr", reason: "later" }],
@@ -1362,6 +1363,7 @@ describe("checks, tasks and profiles", () => {
 				check: {
 					gates: [{ name: "", command: "x", when: ["/abs"] }],
 					tests: true,
+					format: "**/*.ts",
 					docs: { paths: { exempt: [{ file: "a.md" }] } },
 				},
 				predeploy: {
@@ -1373,7 +1375,8 @@ describe("checks, tasks and profiles", () => {
 		).toEqual([
 			"typecheck.concurrency must be a positive integer",
 			"typecheck.groups.web.only must be an array of workspaces",
-			"check.tests is not an option (gates, testCommand, testExclude, docs)",
+			"check.tests is not an option (gates, testCommand, testExclude, docs, format)",
+			"check.format must be a boolean or a nonempty array of globs",
 			"check.docs.paths.exempt.0.reason must be a nonempty string",
 			"check.gates.0.name must be a nonempty string",
 			'check.gates.0.when: "/abs" must be relative to the root and stay inside it',

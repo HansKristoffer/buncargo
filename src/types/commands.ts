@@ -196,6 +196,13 @@ export interface CheckConfig {
 	/** Globs of test files never run by `check` (e2e suites). */
 	testExclude?: readonly string[];
 	/**
+	 * Format with `bun fmt` before Biome: the changed files (written), the
+	 * staged ones (`--check`), the whole repo with `--all` (`--check`). `true`
+	 * formats every file bun fmt knows; globs (`["**\/*.{ts,tsx,vue}"]`) limit
+	 * it. `.prettierignore` still applies. Needs Bun 1.4.4. Default: off.
+	 */
+	format?: boolean | readonly string[];
+	/**
 	 * Check relative Markdown links and documented commands. Default: true.
 	 * `{ paths: true }` also checks backticked repository paths.
 	 */
