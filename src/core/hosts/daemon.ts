@@ -397,11 +397,7 @@ function writePidfile(pid: number): void {
 }
 
 export type HostsReloadReason =
-	| "startup"
-	| "poll"
-	| "filesystem"
-	| "recovery"
-	| "manual";
+	"startup" | "poll" | "filesystem" | "recovery" | "manual";
 
 export interface HostsReloaderDeps {
 	/** Optional diagnostics; never printed on the ordinary reload path. */

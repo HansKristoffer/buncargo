@@ -31,8 +31,7 @@ function composeHooks(
 	return recordFromKeys([...names], (name) => async (...args: unknown[]) => {
 		for (const hooks of sources) {
 			const hook = hooks[name as keyof AnyHooks] as
-				| ((...hookArgs: unknown[]) => unknown)
-				| undefined;
+				((...hookArgs: unknown[]) => unknown) | undefined;
 			await hook?.(...args);
 		}
 	}) as AnyHooks;

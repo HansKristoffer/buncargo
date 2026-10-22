@@ -14,9 +14,11 @@ import type { ConcreteStringKeys } from "./type-utils";
 type ServicesWithSecondaryPort<
 	TServices extends Record<string, ServiceConfig>,
 > = {
-	[K in keyof TServices as TServices[K] extends { secondaryPort: number }
-		? `${K & string}Secondary`
-		: never]: number;
+	[
+		K in keyof TServices as TServices[K] extends { secondaryPort: number }
+			? `${K & string}Secondary`
+			: never
+	]: number;
 };
 
 /** Keep endpoint members only when a service declares a host port. */
@@ -202,8 +204,7 @@ export type GetEnvVarValue<
  * guaranteed present in a built environment.
  */
 export type HostOnlyEnvVarNames =
-	| "NODE_EXTRA_CA_CERTS"
-	| "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS";
+	"NODE_EXTRA_CA_CERTS" | "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS";
 
 /**
  * A built shared environment.
@@ -227,8 +228,7 @@ export type ComputedEnvVars<
  * active, so they cannot be guaranteed present.
  */
 export type AppHostOnlyEnvVarNames =
-	| "BUNCARGO_APP_HOSTNAME"
-	| "BUNCARGO_HOSTS_PORT";
+	"BUNCARGO_APP_HOSTNAME" | "BUNCARGO_HOSTS_PORT";
 
 /**
  * The environment one app's own process receives: the shared surface plus that

@@ -157,8 +157,7 @@ export function createEnvVarsApi<
 		const sharedEnv: Record<string, string> = buildEnvVars(production);
 		const appConfig = apps[appName];
 		const appEnvBuilder = appConfig?.envVars as
-			| EnvVarsBuilder<TServices, TApps>
-			| undefined;
+			EnvVarsBuilder<TServices, TApps> | undefined;
 
 		const appPort = toPortMap(ports)[appName];
 		const processEnv: Record<string, string> = {

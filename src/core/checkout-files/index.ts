@@ -1,8 +1,4 @@
-export {
-	exportBundle,
-	importBundle,
-	parseBundle,
-} from "./bundle";
+export { exportBundle, importBundle, parseBundle } from "./bundle";
 export type { MergeSide } from "./dotenv-merge";
 export { resolveRepoKey } from "./repo-key";
 export {

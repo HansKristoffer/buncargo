@@ -29,7 +29,7 @@ export function planSpawnOrder(apps: Apps, defer: boolean): SpawnOrder {
 			: [],
 	);
 	// Anything that starts after a late app is late too, transitively.
-	for (let changed = late.size > 0; changed; ) {
+	for (let changed = late.size > 0; changed;) {
 		changed = false;
 		for (const [name, app] of Object.entries(apps)) {
 			if (late.has(name)) continue;

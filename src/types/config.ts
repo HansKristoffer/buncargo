@@ -384,10 +384,12 @@ type AnyPrismaConfig = Omit<PrismaConfig, "service" | "urlEnvVar"> & {
 
 /** {@link DevHooks} with the hook names kept but their context erased. */
 type AnyDevHooks = {
-	[K in keyof DevHooks<
-		Record<string, ServiceConfig>,
-		Record<string, AppConfig>
-	>]?: (...args: never[]) => void | Promise<void>;
+	[
+		K in keyof DevHooks<
+			Record<string, ServiceConfig>,
+			Record<string, AppConfig>
+		>
+	]?: (...args: never[]) => void | Promise<void>;
 };
 
 /** {@link SeedConfig} with `check`'s context erased. */

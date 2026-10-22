@@ -18,8 +18,7 @@ export interface CheckContext {
  * expired is a warning, a missing one an error.
  */
 export type CheckOutcome =
-	| boolean
-	| { ok: boolean; detail?: string; severity?: "error" | "warning" };
+	boolean | { ok: boolean; detail?: string; severity?: "error" | "warning" };
 
 /**
  * A precondition of the checkout, such as generated code that has to exist.

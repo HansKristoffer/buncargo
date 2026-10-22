@@ -415,15 +415,14 @@ export interface DevEnvironment<
  * puts app keys in a parameter position, and a concrete environment would not
  * be assignable to the widened one otherwise.
  */
-export interface AnyDevEnvironment
-	extends Omit<
-		DevEnvironment<
-			Record<string, ServiceConfig>,
-			Record<string, AppConfig>,
-			EnvValues
-		>,
-		"openPublicTunnels" | "withSuffix"
-	> {
+export interface AnyDevEnvironment extends Omit<
+	DevEnvironment<
+		Record<string, ServiceConfig>,
+		Record<string, AppConfig>,
+		EnvValues
+	>,
+	"openPublicTunnels" | "withSuffix"
+> {
 	openPublicTunnels(options?: {
 		names?: string[];
 		waitForHealthy?: string[];

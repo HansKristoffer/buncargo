@@ -36,8 +36,7 @@ export interface BuncargoNextConfigShape {
 
 /** A Next config: an object, or the function Next calls with the phase. */
 export type NextConfigInput<T extends object> =
-	| T
-	| ((phase: string, context: { defaultConfig: unknown }) => T | Promise<T>);
+	T | ((phase: string, context: { defaultConfig: unknown }) => T | Promise<T>);
 
 export interface BuncargoNextOptions {
 	/** Environment to read. Defaults to `process.env`. */

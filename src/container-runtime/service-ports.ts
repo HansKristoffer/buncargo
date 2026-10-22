@@ -34,8 +34,7 @@ export async function assertServicePortsClaimable(
 		signal,
 	});
 	let diagnosticSnapshot:
-		| Awaited<ReturnType<typeof createPortOwnerSnapshotAsync>>
-		| undefined;
+		Awaited<ReturnType<typeof createPortOwnerSnapshotAsync>> | undefined;
 
 	for (const port of targetPorts) {
 		const owner = snapshot.owner(port);

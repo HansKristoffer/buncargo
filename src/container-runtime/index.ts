@@ -24,10 +24,7 @@ export {
 	isContainerRuntimeName,
 	isContainerRuntimeSelection,
 } from "./names";
-export {
-	projectLockPath,
-	withProjectLifecycleLock,
-} from "./project-lock";
+export { projectLockPath, withProjectLifecycleLock } from "./project-lock";
 export {
 	type ProjectPruneInput,
 	type ProjectPrunePlan,

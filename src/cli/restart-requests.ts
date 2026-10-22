@@ -106,8 +106,7 @@ export function requestSend(
  * key that reached no app is an exit code rather than a line in the run's log.
  */
 export type SendReply =
-	| { delivered: true }
-	| { delivered: false; reason: string };
+	{ delivered: true } | { delivered: false; reason: string };
 
 const SEND_ID = /^[\w-]+$/;
 
