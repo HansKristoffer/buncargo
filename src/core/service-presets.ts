@@ -1,3 +1,4 @@
+import { isOneOf, typedKeys } from "hanzio";
 import type {
 	BuiltInServiceEnvVarMap,
 	DockerPresetName,
@@ -33,9 +34,9 @@ export const BUILT_IN_SERVICE_ENV_VARS = {
 	},
 } as const satisfies BuiltInServiceEnvVarMap;
 
-export const DOCKER_PRESET_NAMES = Object.keys(
+export const DOCKER_PRESET_NAMES: readonly DockerPresetName[] = typedKeys(
 	BUILT_IN_SERVICE_ENV_VARS,
-) as readonly DockerPresetName[];
+);
 
 export function isDockerPresetName(value: unknown): value is DockerPresetName {
 	return (
@@ -47,9 +48,7 @@ export function isDockerPresetName(value: unknown): value is DockerPresetName {
 export function defaultServiceProtocol(
 	preset: string | undefined,
 ): "http" | "tcp" {
-	return preset === "clickhouse" ||
-		preset === "mailpit" ||
-		preset === "typesense"
+	return isOneOf(["clickhouse", "mailpit", "typesense"], preset)
 		? "http"
 		: "tcp";
 }

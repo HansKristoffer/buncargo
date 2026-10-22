@@ -1,3 +1,4 @@
+import { must } from "hanzio";
 import type { AppConfig, DockerComposeNode, ServiceConfig } from "../types";
 import { assertOnlyAppNames, pickApps } from "./app-selection";
 
@@ -12,10 +13,10 @@ export function getComposeServiceName(
 	services: Record<string, ServiceConfig>,
 	serviceKey: string,
 ): string {
-	const service = services[serviceKey];
-	if (!service) {
-		throw new Error(`Unknown service key "${serviceKey}"`);
-	}
+	const service = must(
+		services[serviceKey],
+		`Unknown service key "${serviceKey}"`,
+	);
 
 	return service.serviceName ?? serviceKey;
 }
@@ -54,10 +55,10 @@ export function resolveSelectedApps(
 			);
 		}
 
-		const app = apps[appName];
-		if (!app) {
-			throw new Error(`Unknown app name(s) in onlyApps: ${appName}`);
-		}
+		const app = must(
+			apps[appName],
+			`Unknown app name(s) in onlyApps: ${appName}`,
+		);
 
 		visitState.set(appName, "visiting");
 		visitStack.push(appName);
@@ -110,10 +111,10 @@ function resolveRequiredServiceKeys(
 	const seenServiceKeys = new Set<string>();
 
 	for (const appName of appNames) {
-		const app = apps[appName];
-		if (!app) {
-			throw new Error(`Unknown app "${appName}" in resolved start plan`);
-		}
+		const app = must(
+			apps[appName],
+			`Unknown app "${appName}" in resolved start plan`,
+		);
 
 		for (const serviceKey of app.requiredServices ?? []) {
 			if (!services[serviceKey]) {

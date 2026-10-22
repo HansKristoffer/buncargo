@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { retry, startTimer } from "hanzio";
 import { freePort } from "../src/core/connect/frpc";
 
 const binary = resolve(process.argv[2] ?? "candidate-server/caddy");
@@ -140,15 +141,10 @@ try {
 			);
 			req.end();
 		});
-	for (let attempt = 0; ; attempt++) {
-		try {
-			await raw("/module.js", "identity");
-			break;
-		} catch (error) {
-			if (attempt === 50) throw error;
-			await Bun.sleep(100);
-		}
-	}
+	await retry(() => raw("/module.js", "identity"), {
+		retries: 50,
+		delayMs: 100,
+	});
 	for (const encoding of ["gzip", "zstd"]) {
 		for (const path of ["/module.js", "/module.map", "/page", "/style.css"]) {
 			const response = await raw(path, encoding);
@@ -178,7 +174,7 @@ try {
 		encoded.body.equals(Buffer.from(compressed)),
 		"Already encoded responses must pass through",
 	);
-	const start = performance.now();
+	const elapsed = startTimer();
 	const events = await fetch(`http://127.0.0.1:${port}/events`, {
 		headers: { ...headers, "accept-encoding": "gzip, zstd" },
 		signal: AbortSignal.timeout(5000),
@@ -189,7 +185,7 @@ try {
 	try {
 		const first = await reader.read();
 		assert.equal(new TextDecoder().decode(first.value), "data: first\n\n");
-		assert(performance.now() - start < 1500, "SSE waited for the later event");
+		assert(elapsed() < 1500, "SSE waited for the later event");
 	} finally {
 		await reader.cancel();
 	}

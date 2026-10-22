@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { parseEnv } from "node:util";
+import { getErrorMessage, typedSwitch, typedSwitchGroup } from "hanzio";
 import { isCI } from "../runtime-flags";
 import { getProjectStateDir, projectStateFilePath } from "../state-paths";
 import { formatStep, formatWarn } from "../style";
@@ -540,15 +541,14 @@ function apply(
 			warnRefusal(log, path, refusal);
 			continue;
 		}
-		switch (action) {
-			case "record-base":
+		typedSwitch(action, {
+			"record-base": () => {
 				if (view.local.data && view.localHash)
 					recordBase(root, state, path, view.local.data, view.localHash);
-				break;
-			case "copy":
-			case "force": {
-				if (!view.store) break;
-				if (action === "force" && view.local.data) {
+			},
+			...typedSwitchGroup(action, ["copy", "force"], (copying) => {
+				if (!view.store) return;
+				if (copying === "force" && view.local.data) {
 					const backup = backUp(root, path, view.local.data, now);
 					log(
 						formatStep(
@@ -565,34 +565,24 @@ function apply(
 					);
 				writeLocal(root, path, view.store.data);
 				recordBase(root, state, path, view.store.data, view.store.hash);
-				break;
-			}
-			case "adopt":
-				if (!view.local.data || !view.localHash) break;
+			}),
+			adopt: () => {
+				if (!view.local.data || !view.localHash) return;
 				storeWrites.push({ path, data: view.local.data, machine });
 				recordBase(root, state, path, view.local.data, view.localHash);
 				log(formatStep(`Saved ${path} to the file store`));
-				break;
-			case "template": {
+			},
+			template: () => {
 				const data = readTemplate(root, view.spec);
-				if (!data) break;
+				if (!data) return;
 				// Not stored: the next load adopts the copy, filled in or not.
 				writeLocal(root, path, data);
 				log(
 					formatStep(`Created ${path} from ${view.spec.template}; fill it in`),
 				);
-				break;
-			}
-			case "none":
-			case "leave":
-				break;
-			default: {
-				const exhaustive: never = action;
-				throw new Error(
-					`Unhandled checkout file action: ${String(exhaustive)}`,
-				);
-			}
-		}
+			},
+			...typedSwitchGroup(action, ["none", "leave"], () => {}),
+		});
 	}
 
 	if (storeWrites.length > 0)
@@ -787,7 +777,7 @@ export async function syncConfiguredCheckoutFiles(
 	try {
 		await syncCheckoutFiles(root, specs, { ci: isCI() });
 	} catch (error) {
-		const reason = error instanceof Error ? error.message : String(error);
+		const reason = getErrorMessage(error);
 		console.error(formatWarn(`Checkout files were not synced: ${reason}`));
 	}
 

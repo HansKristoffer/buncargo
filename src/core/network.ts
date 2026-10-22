@@ -1,5 +1,6 @@
 import net from "node:net";
 import { networkInterfaces } from "node:os";
+import { exponentialBackoff } from "hanzio";
 import type { AppConfig } from "../types";
 import { abortableSleep, remainingTime, withDeadline } from "./deadline";
 import { localIpOverride } from "./runtime-flags";
@@ -100,7 +101,8 @@ export async function waitForServer(
 			signal?.throwIfAborted();
 		}
 		const retryDelay =
-			interval ?? Math.min(200, 20 * 2 ** Math.min(attempts - 1, 4));
+			interval ??
+			exponentialBackoff(attempts, { baseMs: 20, maxMs: 200, jitter: false });
 		await abortableSleep(Math.min(retryDelay, remainingTime(deadline)), signal);
 	}
 	signal?.throwIfAborted();

@@ -1,3 +1,4 @@
+import { isDefined, isRecord, safeJsonParse, toArray } from "hanzio";
 import type {
 	ServiceDiagnosis,
 	ServiceDiagnosisRequest,
@@ -37,10 +38,6 @@ export interface PublishedPort {
 	protocol?: string;
 	/** Consecutive ports from `hostPort` a range publishes. Default 1. */
 	count?: number;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readString(value: unknown): string | undefined {
@@ -122,9 +119,7 @@ function readPorts(source: Record<string, unknown>): PublishedPort[] {
 	];
 	for (const candidate of candidates) {
 		if (!Array.isArray(candidate)) continue;
-		const ports = candidate
-			.map(readPort)
-			.filter((port): port is PublishedPort => port !== null);
+		const ports = candidate.map(readPort).filter(isDefined);
 		if (ports.length > 0) return ports;
 	}
 	return [];
@@ -145,27 +140,24 @@ function readAddress(source: Record<string, unknown>): string | undefined {
 export function parseContainerRecords(stdout: string): AppleContainerRecord[] {
 	const trimmed = stdout.trim();
 	if (!trimmed) return [];
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(trimmed);
-	} catch {
-		return [];
-	}
-	const entries = Array.isArray(parsed) ? parsed : [parsed];
-	return entries.filter(isRecord).flatMap((entry) => {
-		const id = readId(entry);
-		if (!id) return [];
-		const address = readAddress(entry);
-		return [
-			{
-				id,
-				state: readState(entry),
-				labels: readLabels(entry),
-				ports: readPorts(entry),
-				...(address ? { address } : {}),
-			},
-		];
-	});
+	const parsed = safeJsonParse(trimmed);
+	if (!parsed.ok) return [];
+	return toArray(parsed.data)
+		.filter(isRecord)
+		.flatMap((entry) => {
+			const id = readId(entry);
+			if (!id) return [];
+			const address = readAddress(entry);
+			return [
+				{
+					id,
+					state: readState(entry),
+					labels: readLabels(entry),
+					ports: readPorts(entry),
+					...(address ? { address } : {}),
+				},
+			];
+		});
 }
 
 export function formatPublishedPorts(ports: PublishedPort[]): string {

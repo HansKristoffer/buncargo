@@ -1,3 +1,4 @@
+import { anySignal } from "hanzio";
 import {
 	loadStartSecrets,
 	type StartDevServersOptions,
@@ -108,9 +109,7 @@ function startSeedTask(
 	parent?: AbortSignal,
 ) {
 	const controller = new AbortController();
-	const signal = parent
-		? AbortSignal.any([parent, controller.signal])
-		: controller.signal;
+	const signal = anySignal(parent, controller.signal);
 	let settled = false;
 	const ready = Promise.resolve()
 		.then(() => run(signal))

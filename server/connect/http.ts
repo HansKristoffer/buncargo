@@ -1,3 +1,4 @@
+import { isString } from "hanzio";
 import { readBoundedBody } from "../../src/core/connect/json";
 import { record, text } from "../../src/core/connect/protocol";
 import { type ConnectionDirectory, DirectoryError } from "./directory";
@@ -157,7 +158,7 @@ export function createAPI(directory: ConnectionDirectory) {
 						owner,
 						body.run,
 						Array.isArray(body.confirmed)
-							? body.confirmed.filter((v): v is string => typeof v === "string")
+							? body.confirmed.filter(isString)
 							: [],
 					);
 				}

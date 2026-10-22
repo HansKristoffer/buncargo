@@ -1,3 +1,4 @@
+import { recordFromKeys } from "hanzio";
 import { recordStartupMetric } from "../core/startup-metrics";
 import type { ComposeDocument } from "../docker-compose";
 import {
@@ -148,11 +149,8 @@ export async function ensureServicesRunning(
 		...envVars,
 		COMPOSE_PROJECT_NAME: projectName,
 	};
-	const hashes = Object.fromEntries(
-		Object.keys(model.services).map((name) => [
-			name,
-			serviceFingerprint(model, name, effectiveEnv),
-		]),
+	const hashes = recordFromKeys(Object.keys(model.services), (name) =>
+		serviceFingerprint(model, name, effectiveEnv),
 	);
 	const provable = new Set(
 		composeServiceNames.filter((name) =>

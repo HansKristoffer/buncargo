@@ -1,6 +1,7 @@
 import { writeSync } from "node:fs";
 import { format } from "node:util";
 import type { IMarker } from "@xterm/headless";
+import { clamp } from "hanzio";
 import pc from "picocolors";
 import { openUrl } from "../../core/open-url";
 import type { OutputLine, RunOutput } from "../../core/process/run-output";
@@ -318,7 +319,7 @@ export class RunTui {
 			0,
 			...this.options.apps.map((name) => name.length),
 		);
-		return Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, longest + 14));
+		return clamp(longest + 14, SIDEBAR_MIN, SIDEBAR_MAX);
 	}
 
 	private selectedApp(): string | undefined {
@@ -577,11 +578,8 @@ export class RunTui {
 		row: number,
 	): { row: number; col: number } | undefined {
 		const pane = this.paneSize();
-		const x = Math.min(
-			pane.cols - 1,
-			Math.max(0, column - this.sidebarWidth() - 2),
-		);
-		const y = Math.min(pane.rows - 1, Math.max(0, row - 2));
+		const x = clamp(column - this.sidebarWidth() - 2, 0, pane.cols - 1);
+		const y = clamp(row - 2, 0, pane.rows - 1);
 		const content = this.contentRow(y, true);
 		return content === undefined ? undefined : { row: content, col: x };
 	}
@@ -703,10 +701,7 @@ export class RunTui {
 		const max = app
 			? (this.options.output.screens.get(app)?.term.buffer.active.baseY ?? 0)
 			: Math.max(0, this.overviewLines().length - this.paneSize().rows);
-		this.scroll.set(
-			key,
-			Math.min(max, Math.max(0, (this.scroll.get(key) ?? 0) + lines)),
-		);
+		this.scroll.set(key, clamp((this.scroll.get(key) ?? 0) + lines, 0, max));
 	}
 
 	private open(url: string): void {

@@ -1,3 +1,4 @@
+import { typedSwitch } from "hanzio";
 import type { BuncargoContainer, ContainerRuntimeName } from "../types";
 import { availableContainerRuntimes } from "./resolve";
 import type { ContainerRuntimeAdapter } from "./types";
@@ -69,16 +70,13 @@ export function groupBuncargoContainers(
 export function manualDownCommand(
 	group: Pick<ContainerGroup, "projectName" | "runtime" | "containers">,
 ): string {
-	switch (group.runtime) {
-		case "docker":
-			return `docker compose -p ${group.projectName} down`;
-		case "apple":
-			return `container delete --force ${group.containers.map((container) => container.id).join(" ")}`;
-		default: {
-			const unknown: never = group.runtime;
-			return unknown;
-		}
-	}
+	return typedSwitch(group.runtime, {
+		docker: () => `docker compose -p ${group.projectName} down`,
+		apple: () => {
+			const ids = group.containers.map((container) => container.id).join(" ");
+			return `container delete --force ${ids}`;
+		},
+	});
 }
 
 /** Stop the given containers, each through the runtime that reported it. */

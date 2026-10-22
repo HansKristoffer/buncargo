@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isRecord, must } from "hanzio";
 import type {
 	ComposeDocument,
 	DockerComposeNode,
@@ -124,7 +125,7 @@ export function normalizeComposeLabels(
 				return at < 0 ? [text, ""] : [text.slice(0, at), text.slice(at + 1)];
 			}),
 		);
-	return typeof labels === "object" && labels !== null ? labels : {};
+	return isRecord(labels) ? labels : {};
 }
 
 function withoutHashLabels(
@@ -172,9 +173,10 @@ export function serviceFingerprint(
 	name: string,
 	env: Record<string, string>,
 ): string {
-	const service = model.services?.[name];
-	if (!service)
-		throw new Error(`Service ${name} is missing from the Compose model`);
+	const service = must(
+		model.services?.[name],
+		`Service ${name} is missing from the Compose model`,
+	);
 	const interpolated = interpolateNode(
 		service as DockerComposeNode,
 		env,
@@ -245,8 +247,7 @@ export function canProveServiceInputs(
 	}
 	function complete(node: unknown): boolean {
 		if (Array.isArray(node)) return node.every(complete);
-		if (typeof node === "object" && node !== null)
-			return Object.values(node).every(complete);
+		if (isRecord(node)) return Object.values(node).every(complete);
 		if (typeof node !== "string") return true;
 		let known = true;
 		const remainder = node.replace(

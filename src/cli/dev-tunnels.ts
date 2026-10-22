@@ -1,3 +1,4 @@
+import { anySignal } from "hanzio";
 import { toPortMap } from "../core/ports";
 import type {
 	PublicExposeTarget,
@@ -201,12 +202,7 @@ export function createTunnelCoordinator<
 
 	function openOwnedTunnels(signal?: AbortSignal): Promise<void> {
 		opening ??= performOpen(
-			AbortSignal.any([
-				openingController.signal,
-				...[signal, options.signal].filter(
-					(item): item is AbortSignal => item !== undefined,
-				),
-			]),
+			anySignal(openingController.signal, signal, options.signal),
 		);
 		return opening;
 	}

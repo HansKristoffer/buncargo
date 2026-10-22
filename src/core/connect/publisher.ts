@@ -1,4 +1,5 @@
 import { hostname } from "node:os";
+import { clamp, exponentialBackoff } from "hanzio";
 import { isTcpPortOpen } from "../network";
 import { matchesProcessIdentity } from "../process-identity";
 import type { RunEntry } from "../run-registry";
@@ -115,7 +116,7 @@ export function createPublisher(intent: SharingIntent) {
 		) {
 			throw new Error("Invalid publication lease");
 		}
-		deadline = started + Math.min(LEASE_MS, Math.max(0, lease.remainingMs));
+		deadline = started + clamp(lease.remainingMs, 0, LEASE_MS);
 
 		// Retire revoked routes and gates whose port or process identity changed before adding routes.
 		for (const [id, entry] of gates) {
@@ -223,7 +224,11 @@ export function createPublisher(intent: SharingIntent) {
 				return result;
 			} catch (error) {
 				lastError = error;
-				const delay = Math.min(30000, 1000 * 2 ** Math.min(failures++, 5));
+				const delay = exponentialBackoff(++failures, {
+					baseMs: 1000,
+					maxMs: 30000,
+					jitter: false,
+				});
 				nextAttempt = performance.now() + delay * (0.8 + Math.random() * 0.2);
 				throw error;
 			}

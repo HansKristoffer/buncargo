@@ -12,15 +12,14 @@
  */
 
 import { connect } from "node:tls";
+import { getErrorMessage, promiseTimeout } from "hanzio";
 import { withFileLock } from "../file-lock";
 import { isProcessAlive } from "../process/lifecycle";
 import { defineListRegistry, readJsonDocumentSync } from "../registry-file";
 import type { HostsMode } from "../runtime-flags";
-import { sleep } from "../sleep";
 import { chownToInvokingUser } from "../state-paths";
 import { getTailscaleServePath } from "./paths";
 import {
-	describeError,
 	describeServePermission,
 	failureLine,
 	isPermissionDenied,
@@ -444,7 +443,7 @@ async function probeTls(target: ServeProbeTarget): Promise<string | undefined> {
 		const reason = await handshake(target);
 		const refused = reason === "ECONNREFUSED";
 		if (!refused || performance.now() > deadline) return reason;
-		await sleep(PROBE_RETRY_MS);
+		await promiseTimeout(PROBE_RETRY_MS);
 	}
 }
 
@@ -724,7 +723,7 @@ export async function releaseTailscaleServe(
 		return result.failures;
 	} catch (error) {
 		return [
-			`Could not release this run's Tailscale Serve entries (${describeError(error)}); \`buncargo hosts prune\` removes them once the run has ended.`,
+			`Could not release this run's Tailscale Serve entries (${getErrorMessage(error)}); \`buncargo hosts prune\` removes them once the run has ended.`,
 		];
 	}
 }
@@ -758,7 +757,7 @@ export async function sweepTailscaleServe(
 		return {
 			removed: [],
 			failures: [
-				`Could not sweep Tailscale Serve entries (${describeError(error)}); \`buncargo hosts prune\` tries again.`,
+				`Could not sweep Tailscale Serve entries (${getErrorMessage(error)}); \`buncargo hosts prune\` tries again.`,
 			],
 		};
 	}

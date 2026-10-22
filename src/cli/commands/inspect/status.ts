@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { getErrorMessage, typedSwitch, typedSwitchGroup } from "hanzio";
 import {
 	containerRuntimeForEnv,
 	listBuncargoContainers,
@@ -56,8 +57,11 @@ async function readStatus() {
 				name,
 				{
 					port,
-					state:
-						action === "free" ? "free" : action === "fail" ? "foreign" : "ours",
+					state: typedSwitch(action, {
+						free: () => "free",
+						fail: () => "foreign",
+						...typedSwitchGroup(action, ["reuse", "kill"], () => "ours"),
+					}),
 					owner: owner ? formatPortOwner(port, owner) : null,
 				},
 			];
@@ -77,7 +81,7 @@ async function readStatus() {
 			}));
 	} catch (error) {
 		containers = {
-			error: error instanceof Error ? error.message : String(error),
+			error: getErrorMessage(error),
 		};
 	}
 

@@ -1,3 +1,4 @@
+import { getErrorMessage } from "hanzio";
 import { readEnvOverrides } from "../../core/env-overrides";
 import { hostsMode } from "../../core/runtime-flags";
 import { createNoopPhaseTimer, createPhaseTimer } from "../../core/timing";
@@ -52,7 +53,7 @@ export async function loadEnv(
 	try {
 		return await (await import("../../loader")).loadDevEnv(options);
 	} catch (error) {
-		log.fail(error instanceof Error ? error.message : String(error));
+		log.fail(getErrorMessage(error));
 	}
 }
 
@@ -270,7 +271,7 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 		try {
 			changedFiles = changedFilesSince(root, parsed.changed.ref);
 		} catch (error) {
-			log.fail(error instanceof Error ? error.message : String(error));
+			log.fail(getErrorMessage(error));
 		}
 	}
 

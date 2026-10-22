@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { mapValues } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
 import type {
 	AppConfig,
@@ -182,9 +183,7 @@ function shiftPorts(
 	basePorts: Record<string, number>,
 	offset: number,
 ): Record<string, number> {
-	return Object.fromEntries(
-		Object.entries(basePorts).map(([name, port]) => [name, port + offset]),
-	);
+	return mapValues(basePorts, (port) => port + offset);
 }
 
 export function getPortsLockfilePath(root: string): string {
@@ -272,25 +271,23 @@ export function readOffsetClaimsWithPorts(): Record<string, OffsetClaim> {
 function claimsWithLockfilePorts(
 	claims: Record<string, OffsetClaim>,
 ): Record<string, OffsetClaim> {
-	return Object.fromEntries(
-		Object.entries(claims).map(([key, claim]) => {
-			// A suffixed environment has no lockfile; its checkout's is dev's.
-			if (claim.ports || claim.suffix) return [key, claim];
-			const lockfile = readPortsLockfile(key);
-			const ports = lockfile ? Object.values(lockfile.ports) : [];
-			if (
-				!lockfile ||
-				lockfile.offset !== claim.offset ||
-				foreignLockfile(lockfile, {
-					projectName: claim.projectName,
-					root: key,
-				}) ||
-				ports.length === 0
-			)
-				return [key, claim];
-			return [key, { ...claim, ports: ports.sort((a, b) => a - b) }];
-		}),
-	);
+	return mapValues(claims, (claim, key) => {
+		// A suffixed environment has no lockfile; its checkout's is dev's.
+		if (claim.ports || claim.suffix) return claim;
+		const lockfile = readPortsLockfile(key);
+		const ports = lockfile ? Object.values(lockfile.ports) : [];
+		if (
+			!lockfile ||
+			lockfile.offset !== claim.offset ||
+			foreignLockfile(lockfile, {
+				projectName: claim.projectName,
+				root: key,
+			}) ||
+			ports.length === 0
+		)
+			return claim;
+		return { ...claim, ports: ports.sort((a, b) => a - b) };
+	});
 }
 
 /**

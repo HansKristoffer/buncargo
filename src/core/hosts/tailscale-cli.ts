@@ -6,8 +6,8 @@
  */
 
 import { existsSync } from "node:fs";
+import { getErrorMessage, promiseTimeout } from "hanzio";
 import { connectProcessEnv } from "../child-env";
-import { sleep } from "../sleep";
 import { lookupOnPath } from "../tool-binary";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -59,10 +59,6 @@ export const tailscaleCli: TailscaleCli = async (args) => {
 	return { exitCode, stdout, stderr };
 };
 
-export function describeError(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
 /** The first line `tailscale` printed about a failure. */
 export function failureLine(result: TailscaleCommandResult): string {
 	const line = `${result.stderr}\n${result.stdout}`
@@ -79,7 +75,7 @@ export async function runCli(
 	try {
 		return await cli(args);
 	} catch (error) {
-		return { exitCode: 127, stdout: "", stderr: describeError(error) };
+		return { exitCode: 127, stdout: "", stderr: getErrorMessage(error) };
 	}
 }
 
@@ -279,7 +275,7 @@ export async function runServeChange(
 		attempt < SERVE_ATTEMPTS && isEtagConflict(result);
 		attempt++
 	) {
-		await sleep(50 * attempt);
+		await promiseTimeout(50 * attempt);
 		result = await runCli(cli, args);
 	}
 	return result;

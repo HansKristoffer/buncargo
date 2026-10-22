@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { must, promiseTimeout } from "hanzio";
 import { isTcpPortOpen } from "../core/network";
-import { sleep } from "../core/sleep";
 
 /**
  * Expo apps, and the iOS simulator that shows one per checkout.
@@ -96,8 +96,7 @@ export function pickSourceDevice(
 	const fallback =
 		lastUsed ??
 		devices.find((device) => device.deviceTypeIdentifier.includes("iPhone"));
-	if (!fallback) throw new Error("No iOS simulator is available.");
-	return fallback;
+	return must(fallback, "No iOS simulator is available.");
 }
 
 function installedApps(udid: string): Set<string> {
@@ -151,7 +150,7 @@ export async function openExpoSimulator(
 		}
 		if (Date.now() > deadline)
 			throw new Error(`Metro did not start listening on :${input.port}.`);
-		await sleep(500);
+		await promiseTimeout(500);
 	}
 
 	const url = chooseLaunchUrl({

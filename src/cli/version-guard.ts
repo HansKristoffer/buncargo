@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, realpathSync, writeSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
+import { isRecord, typedSwitch } from "hanzio";
 import { REEXEC_ENV, reexecedFrom } from "../core/runtime-flags";
 import { buncargoPackage } from "../core/version";
 import { CliError } from "./errors";
@@ -41,7 +42,7 @@ function readPackageJson(path: string): PackageJson | undefined {
 
 function listsBuncargo(pkg: PackageJson): boolean {
 	return [pkg.dependencies, pkg.devDependencies, pkg.optionalDependencies].some(
-		(deps) => typeof deps === "object" && deps !== null && "buncargo" in deps,
+		(deps) => isRecord(deps) && "buncargo" in deps,
 	);
 }
 
@@ -115,33 +116,29 @@ export function guardVersion(fromSource: boolean): void {
 		root,
 	});
 
-	switch (decision.kind) {
-		case "run":
-			return;
-		case "not-installed": {
-			const where = relative(process.cwd(), decision.packageJson);
+	typedSwitch(decision, "kind", {
+		run: () => {},
+		"not-installed": (notInstalled) => {
+			const where = relative(process.cwd(), notInstalled.packageJson);
 			throw new CliError(
-				`This project's buncargo (${where}) is ${decision.reason}, so buncargo ${own.version} from ${root} will not run in its place.`,
+				`This project's buncargo (${where}) is ${notInstalled.reason}, so buncargo ${own.version} from ${root} will not run in its place.`,
 				["Run `bun install`, then run the command again."],
 			);
-		}
-		case "reexec":
+		},
+		reexec: (reexec) => {
 			// Straight to fd 2: execve drops whatever Bun still has buffered.
 			writeSync(
 				2,
-				`buncargo ${own.version} → this project's buncargo ${decision.version}\n`,
+				`buncargo ${own.version} → this project's buncargo ${reexec.version}\n`,
 			);
 			process.execve?.(
 				process.execPath,
-				[process.execPath, decision.entry, ...process.argv.slice(2)],
+				[process.execPath, reexec.entry, ...process.argv.slice(2)],
 				{ ...process.env, [REEXEC_ENV]: own.version },
 			);
 			throw new CliError(
-				`Could not start this project's buncargo ${decision.version} (${decision.entry}).`,
+				`Could not start this project's buncargo ${reexec.version} (${reexec.entry}).`,
 			);
-		default: {
-			const exhaustive: never = decision;
-			throw new Error(`Unhandled version guard: ${String(exhaustive)}`);
-		}
-	}
+		},
+	});
 }

@@ -11,6 +11,7 @@
 
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { getErrorMessage, typedSwitch } from "hanzio";
 import {
 	type CheckoutPresence,
 	checkoutDeleted,
@@ -150,9 +151,11 @@ function foreignReason({
 	checkout,
 	anyRunning,
 }: Pick<SweepInput, "checkout" | "anyRunning">): string {
-	if (checkout === "unknown") return "this user cannot read its checkout";
-	if (checkout === "deleted") return "its checkout was deleted";
-	return anyRunning ? "it is running" : "it is stopped";
+	return typedSwitch(checkout, {
+		unknown: () => "this user cannot read its checkout",
+		deleted: () => "its checkout was deleted",
+		present: () => (anyRunning ? "it is running" : "it is stopped"),
+	});
 }
 
 /**
@@ -489,7 +492,7 @@ async function sweepGroup(
 			result.failed.push({
 				projectName: group.projectName,
 				root: group.root,
-				error: error instanceof Error ? error.message : String(error),
+				error: getErrorMessage(error),
 			});
 		return false;
 	}
@@ -716,7 +719,7 @@ async function sweepStacks(
 			result.failed.push({
 				projectName: run.projectName,
 				root: run.root,
-				error: error instanceof Error ? error.message : String(error),
+				error: getErrorMessage(error),
 			});
 	}
 }

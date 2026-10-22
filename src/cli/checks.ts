@@ -1,3 +1,4 @@
+import { getErrorMessage } from "hanzio";
 import type { CheckContext, SetupCheck } from "../types";
 import { CliError } from "./errors";
 
@@ -36,7 +37,7 @@ export async function runChecks(
 				return {
 					check,
 					ok: false,
-					detail: error instanceof Error ? error.message : String(error),
+					detail: getErrorMessage(error),
 				};
 			}
 		}),

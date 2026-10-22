@@ -1,5 +1,6 @@
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
+import { mapValues } from "hanzio";
 import { withDeadline } from "../core/deadline";
 import { waitForDevServers } from "../core/network";
 import { buildApps } from "../core/process/build";
@@ -148,10 +149,9 @@ async function spawnAppServers<
 						signal,
 						onWait: (ms) => options.onPhase?.("secrets", ms),
 					});
-					const buildEnv = Object.fromEntries(
-						Object.entries(envVars.buildAppEnvVarsMap(appsToStart, true)).map(
-							([name, env]) => [name, { ...secrets[name], ...env }],
-						),
+					const buildEnv = mapValues(
+						envVars.buildAppEnvVarsMap(appsToStart, true),
+						(env, name) => ({ ...secrets[name], ...env }),
 					);
 					await buildApps(appsToStart, ctx.root, buildEnv, {
 						verbose,

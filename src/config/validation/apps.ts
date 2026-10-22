@@ -1,3 +1,4 @@
+import { isOneOf } from "hanzio";
 import { findCycle } from "../../planning";
 import type { AnyDevConfig } from "../../types";
 import type { ValidationContext } from "./context";
@@ -105,7 +106,7 @@ export function validateApps(
 			const at = `apps.${name}.actions[${index}]`;
 			if (typeof action?.key !== "string" || [...action.key].length !== 1) {
 				errors.push(`${at}.key must be one character`);
-			} else if ((BUILT_IN_KEYS as readonly string[]).includes(action.key)) {
+			} else if (isOneOf(BUILT_IN_KEYS, action.key)) {
 				errors.push(
 					`${at}.key "${action.key}" is one of buncargo's own keys (${BUILT_IN_KEYS.join(" ")})`,
 				);

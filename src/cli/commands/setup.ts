@@ -1,3 +1,4 @@
+import { getErrorMessage } from "hanzio";
 import { findMonorepoRoot } from "../../core/ports";
 import { askChoice, isInteractive } from "../../core/prompt";
 import { isCI } from "../../core/runtime-flags";
@@ -143,9 +144,7 @@ export async function handleSetup(args: string[]): Promise<number> {
 		try {
 			await applyFix(check, ctx);
 		} catch (error) {
-			log.error(
-				`Fix for "${check.name}" failed: ${error instanceof Error ? error.message : String(error)}`,
-			);
+			log.error(`Fix for "${check.name}" failed: ${getErrorMessage(error)}`);
 		}
 	}
 

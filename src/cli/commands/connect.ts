@@ -1,3 +1,4 @@
+import { isOneOf, typedSwitch } from "hanzio";
 import {
 	ensureReceiver,
 	request,
@@ -18,6 +19,15 @@ import {
 	readBooleanFlag,
 } from "../command-spec";
 import { argumentsError } from "../errors";
+
+const CONNECT_COMMANDS = [
+	"token",
+	"status",
+	"open",
+	"tcp",
+	"disconnect",
+	"revoke",
+] as const;
 
 const flags = {
 	help: {
@@ -82,47 +92,49 @@ export async function handleConnect(args: string[]) {
 	);
 	if (
 		extra.length ||
-		!["token", "status", "open", "tcp", "disconnect", "revoke"].includes(
-			command,
-		) ||
+		!isOneOf(CONNECT_COMMANDS, command) ||
 		(["token", "status"].includes(command) ? !!id : !id) ||
 		(readBooleanFlag(args, flags.rotate) && command !== "token")
 	) {
 		throw argumentsError([`Usage: ${CONNECT_COMMAND_SPEC.usage}`], "connect");
 	}
 	const json = readBooleanFlag(args, flags.json);
-	let result: unknown;
-	if (command === "token") {
-		const receiver = await ensureReceiver(readBooleanFlag(args, flags.rotate));
-		result = json ? { token: receiver.token } : receiver.token;
-	} else if (command === "status") {
-		const directory = await connectionStatus();
-		result = json ? directory : formatDirectory(directory);
-	} else if (command === "tcp") {
-		result = await requestCoordinator<TCPConnection>("/tcp", { id });
-	} else if (command === "disconnect") {
-		result = await requestCoordinator("/disconnect", { id });
-	} else if (command === "revoke") {
-		const receiver = await requireReceiver();
-		result = await request(
-			receiver.origin,
-			`/v1/receiver/grants/${encodeURIComponent(id)}`,
-			receiver.owner,
-			undefined,
-			"DELETE",
-		);
-	} else {
-		const directory = await connectionStatus();
-		const target = directory.runs
-			.flatMap((run) => run.targets)
-			.find((target) => target.id === id && target.protocol === "http");
-		if (!target) {
-			throw new Error("App is unavailable");
-		}
-		if (!openUrl(target.url)) {
-			throw new Error(`Open ${target.url} in your browser`);
-		}
-		result = { url: target.url };
-	}
+	const result: unknown = await typedSwitch(command, {
+		token: async () => {
+			const receiver = await ensureReceiver(
+				readBooleanFlag(args, flags.rotate),
+			);
+			return json ? { token: receiver.token } : receiver.token;
+		},
+		status: async () => {
+			const directory = await connectionStatus();
+			return json ? directory : formatDirectory(directory);
+		},
+		tcp: () => requestCoordinator<TCPConnection>("/tcp", { id }),
+		disconnect: () => requestCoordinator("/disconnect", { id }),
+		revoke: async () => {
+			const receiver = await requireReceiver();
+			return request(
+				receiver.origin,
+				`/v1/receiver/grants/${encodeURIComponent(id)}`,
+				receiver.owner,
+				undefined,
+				"DELETE",
+			);
+		},
+		open: async () => {
+			const directory = await connectionStatus();
+			const target = directory.runs
+				.flatMap((run) => run.targets)
+				.find((target) => target.id === id && target.protocol === "http");
+			if (!target) {
+				throw new Error("App is unavailable");
+			}
+			if (!openUrl(target.url)) {
+				throw new Error(`Open ${target.url} in your browser`);
+			}
+			return { url: target.url };
+		},
+	});
 	console.log(typeof result === "string" ? result : JSON.stringify(result));
 }

@@ -1,4 +1,5 @@
 import { normalize } from "node:path";
+import { getErrorMessage } from "hanzio";
 import { sanitizeTld } from "../../core/hosts/plan";
 import { resolvePrismaConfig } from "../../prisma/config";
 import type { AnyDevConfig } from "../../types";
@@ -88,7 +89,7 @@ export function validateReferences(
 			try {
 				sanitizeTld(hosts.tld);
 			} catch (error) {
-				errors.push(error instanceof Error ? error.message : String(error));
+				errors.push(getErrorMessage(error));
 			}
 		}
 

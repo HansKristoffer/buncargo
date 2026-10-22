@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
+import { trimTrailingSlash } from "hanzio";
 
 /**
  * Which file store a checkout uses: one per repository, the same on every
@@ -26,8 +27,7 @@ export function repoKeyFromRemote(remote: string): string | undefined {
 			? `${scp[1]}/${scp[2]}`
 			: undefined;
 	if (raw === undefined) return undefined;
-	const key = raw
-		.replace(/\/+$/, "")
+	const key = trimTrailingSlash(raw)
 		.replace(/\.git$/, "")
 		.toLowerCase();
 	return VALID_KEY.test(key) ? key : undefined;

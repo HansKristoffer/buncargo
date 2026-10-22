@@ -5,6 +5,8 @@
  * decisions are tested without the CLI.
  */
 
+import { isRecord, recordFromKeys } from "hanzio";
+
 /** Emulators `emulators:start --only` can name. */
 export type FirebaseEmulator =
 	| "auth"
@@ -60,9 +62,7 @@ const APP_SERVING: readonly FirebaseEmulator[] = ["hosting", "apphosting"];
 type Json = Record<string, unknown>;
 
 function record(value: unknown): Json {
-	return value && typeof value === "object" && !Array.isArray(value)
-		? (value as Json)
-		: {};
+	return isRecord(value) ? value : {};
 }
 
 function emulatorsBlock(raw: Json): Json {
@@ -153,11 +153,11 @@ export function emulatorPorts(
 	const dataconnect = record(block.dataconnect);
 
 	return {
-		host: Object.fromEntries(
-			selected.map((name) => [name, dialHost(record(block[name]).host)]),
+		host: recordFromKeys(selected, (name) =>
+			dialHost(record(block[name]).host),
 		),
-		port: Object.fromEntries(
-			selected.map((name) => [name, at(name, FIREBASE_DEFAULT_PORTS[name])]),
+		port: recordFromKeys(selected, (name) =>
+			at(name, FIREBASE_DEFAULT_PORTS[name]),
 		),
 		hub: at("hub", FIREBASE_DEFAULT_PORTS.hub),
 		logging: at("logging", FIREBASE_DEFAULT_PORTS.logging),

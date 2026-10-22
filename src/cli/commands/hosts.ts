@@ -1,3 +1,4 @@
+import { typedSwitch } from "hanzio";
 import {
 	describeLoopbackHijack,
 	loadHostRoutes,
@@ -40,29 +41,26 @@ export async function handleHosts(args: string[]): Promise<void> {
 		]);
 	}
 
-	switch (subcommand) {
-		case "install":
+	await typedSwitch(subcommand, {
+		install: async () => {
 			// Always reload the service: this is the command users are told to run
 			// when named hosts are broken, so it has to replace a stale daemon.
 			await runHostsInstall({ reinstallService: true });
 			log.done("Named hosts are ready");
-			return;
-		case "uninstall":
+		},
+		uninstall: async () => {
 			await runHostsUninstall();
 			log.done("Named hosts were removed from this machine");
-			return;
-		case "status":
-			await printHostsStatus();
-			return;
-		case "sync": {
+		},
+		status: () => printHostsStatus(),
+		sync: async () => {
 			const routes = await pruneHostRoutes();
 			syncHostsFile(routes.map((route) => route.hostname));
 			log.done(
 				`Synced ${routes.length} hostname${routes.length === 1 ? "" : "s"} to /etc/hosts`,
 			);
-			return;
-		}
-		case "prune": {
+		},
+		prune: async () => {
 			const before = (await loadHostRoutes()).length;
 			const after = await pruneHostRoutes();
 			const removed = before - after.length;
@@ -70,16 +68,9 @@ export async function handleHosts(args: string[]): Promise<void> {
 			const serve = await sweepTailscaleServe(tailscaleServeDeps());
 			for (const line of serve.removed) log.done(line);
 			for (const line of serve.failures) log.warn(line);
-			return;
-		}
-		case "daemon":
-			await runHostsDaemon({ service: args.includes("--service") });
-			return;
-		default: {
-			const exhaustive: never = subcommand;
-			throw new Error(`Unhandled hosts subcommand: ${String(exhaustive)}`);
-		}
-	}
+		},
+		daemon: () => runHostsDaemon({ service: args.includes("--service") }),
+	});
 }
 
 async function printHostsStatus(): Promise<void> {

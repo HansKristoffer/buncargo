@@ -1,3 +1,4 @@
+import { getErrorMessage, isDefined, recordFromKeys } from "hanzio";
 import { findMonorepoRoot } from "../core/ports";
 import type {
 	AppConfig,
@@ -23,23 +24,18 @@ function composeHooks(
 	const sources = [
 		own,
 		...integrations.map((integration) => integration.hooks),
-	].filter((hooks): hooks is AnyHooks => hooks !== undefined);
+	].filter(isDefined);
 	if (sources.length <= 1) return sources[0];
 
 	const names = new Set(sources.flatMap((hooks) => Object.keys(hooks)));
-	return Object.fromEntries(
-		[...names].map((name) => [
-			name,
-			async (...args: unknown[]) => {
-				for (const hooks of sources) {
-					const hook = hooks[name as keyof AnyHooks] as
-						| ((...hookArgs: unknown[]) => unknown)
-						| undefined;
-					await hook?.(...args);
-				}
-			},
-		]),
-	) as AnyHooks;
+	return recordFromKeys([...names], (name) => async (...args: unknown[]) => {
+		for (const hooks of sources) {
+			const hook = hooks[name as keyof AnyHooks] as
+				| ((...hookArgs: unknown[]) => unknown)
+				| undefined;
+			await hook?.(...args);
+		}
+	}) as AnyHooks;
 }
 
 /**
@@ -66,7 +62,7 @@ export function applyIntegrations<T extends object>(
 			resolved = integration.config(resolved, context);
 		} catch (error) {
 			throw new Error(
-				`Integration "${integration.name}" failed to apply: ${error instanceof Error ? error.message : String(error)}`,
+				`Integration "${integration.name}" failed to apply: ${getErrorMessage(error)}`,
 			);
 		}
 	}

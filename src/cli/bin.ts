@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { getErrorMessage } from "hanzio";
 
 /**
  * CLI Entry Point for buncargo
@@ -25,7 +26,7 @@ const VERSION_ALIASES = new Set(["--version", "-v"]);
 
 function failWith(error: unknown): never {
 	if (error instanceof CliError) log.fail(error.message, error.hints);
-	log.fail(error instanceof Error ? error.message : String(error));
+	log.fail(getErrorMessage(error));
 }
 
 /**

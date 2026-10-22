@@ -1,3 +1,4 @@
+import { typedSwitch } from "hanzio";
 import {
 	appleContainerRuntimeAdapter,
 	isAppleContainerInstalled,
@@ -103,16 +104,10 @@ export function getContainerRuntimeAdapter(
 	name: ContainerRuntimeName,
 	options: ContainerRuntimeAdapterOptions = {},
 ): ContainerRuntimeAdapter {
-	switch (name) {
-		case "docker":
-			return dockerRuntimeAdapter(options);
-		case "apple":
-			return appleContainerRuntimeAdapter(options);
-		default: {
-			const _exhaustive: never = name;
-			return _exhaustive;
-		}
-	}
+	return typedSwitch(name, {
+		docker: () => dockerRuntimeAdapter(options),
+		apple: () => appleContainerRuntimeAdapter(options),
+	});
 }
 
 /**

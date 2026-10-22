@@ -1,3 +1,4 @@
+import { must } from "hanzio";
 import type { AnyDevConfig, DevConfigLike, DevEnvironmentFor } from "../types";
 import { getCachedDevEnv } from "./cache";
 
@@ -18,9 +19,9 @@ export { loadDevEnv } from "./load-dev-env";
 export function getDevEnv<
 	TConfig extends DevConfigLike = AnyDevConfig,
 >(): DevEnvironmentFor<TConfig> {
-	const env = getCachedDevEnv();
-	if (!env) {
-		throw new Error("Dev environment not loaded. Call loadDevEnv() first.");
-	}
+	const env = must(
+		getCachedDevEnv(),
+		"Dev environment not loaded. Call loadDevEnv() first.",
+	);
 	return env as DevEnvironmentFor<TConfig>;
 }

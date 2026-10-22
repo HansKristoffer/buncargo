@@ -9,7 +9,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { sleep } from "../core/sleep";
+import { promiseTimeout } from "hanzio";
 import { getProjectStateDir } from "../core/state-paths";
 
 /**
@@ -191,6 +191,6 @@ export async function awaitSendReply(
 			// Not answered yet.
 		}
 		if (Date.now() >= deadline) return undefined;
-		await sleep(50);
+		await promiseTimeout(50);
 	}
 }

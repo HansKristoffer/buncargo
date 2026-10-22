@@ -1,4 +1,5 @@
 /** Isolated end-to-end dev benchmark: real CLI/apps, deterministic fake runtime. */
+
 import { type ChildProcess, spawn } from "node:child_process";
 import {
 	chmodSync,
@@ -12,6 +13,7 @@ import {
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { isOneOf, promiseTimeout, startTimer } from "hanzio";
 import { computeBaseOffset } from "../src/core/port-allocation";
 import { terminateOwnedProcess } from "../src/core/process/terminate";
 import { readProcessIdentity } from "../src/core/process-identity";
@@ -39,18 +41,21 @@ const maxSubprocesses = Number(option("max-subprocesses", "Infinity"));
 for (const budget of [maxP95, maxColdP95, maxSubprocesses])
 	if (!(budget > 0)) throw new Error("Performance budgets must be positive");
 if (
-	![
-		"services",
-		"apps",
-		"allocation",
-		"workers",
-		"preparation",
-		"secrets",
-		"seed-serial",
-		"seed-parallel",
-		"reuse",
-		"cancel",
-	].includes(scenario)
+	!isOneOf(
+		[
+			"services",
+			"apps",
+			"allocation",
+			"workers",
+			"preparation",
+			"secrets",
+			"seed-serial",
+			"seed-parallel",
+			"reuse",
+			"cancel",
+		],
+		scenario,
+	)
 )
 	throw new Error(`Unknown scenario: ${scenario}`);
 const legacy = process.argv.includes("--legacy");
@@ -64,7 +69,6 @@ for (const [name, value] of Object.entries({
 		throw new Error(`Invalid ${name}`);
 const root = mkdtempSync(join(tmpdir(), "buncargo startup benchmark "));
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const children = new Set<ChildProcess>();
 const cold: Result[] = [];
 const cleanups: (() => void)[] = [];
@@ -270,7 +274,7 @@ console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
 			} catch {}
 			if (performance.now() > deadline)
 				throw new Error("Reuse fixture never started");
-			await sleep(10);
+			await promiseTimeout(10);
 		}
 	}
 
@@ -290,10 +294,10 @@ console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
 			let report: Result["cli"] | undefined;
 			const ownedAppPids = new Set<number>();
 			let readyResponseMs: number | undefined;
-			let cancelledAt: number | undefined;
+			let sinceCancel: (() => number) | undefined;
 			let cleanupMs: number | undefined;
 			rmSync(readyFile, { force: true });
-			const began = performance.now();
+			const elapsed = startTimer();
 			const child = spawn(
 				process.execPath,
 				[
@@ -345,7 +349,7 @@ console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
 				output += data;
 			});
 			try {
-				while (performance.now() - began < 30000) {
+				while (elapsed() < 30000) {
 					interruption.signal.throwIfAborted();
 					if (
 						child.exitCode !== null &&
@@ -354,14 +358,14 @@ console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
 						throw new Error(`CLI exited ${child.exitCode}: ${output}`);
 					if (
 						scenario === "cancel" &&
-						cancelledAt === undefined &&
+						sinceCancel === undefined &&
 						ownedAppPids.size > 0
 					) {
-						cancelledAt = performance.now();
+						sinceCancel = startTimer();
 						child.kill("SIGINT");
 					}
-					if (cancelledAt !== undefined && child.exitCode !== null)
-						cleanupMs = performance.now() - cancelledAt;
+					if (sinceCancel !== undefined && child.exitCode !== null)
+						cleanupMs = sinceCancel();
 					try {
 						const effectivePort =
 							scenario === "allocation" &&
@@ -378,7 +382,7 @@ console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
 						);
 						await response.text();
 						if (response.ok && readyResponseMs === undefined)
-							readyResponseMs = performance.now() - began;
+							readyResponseMs = elapsed();
 					} catch {
 						/* Still starting. */
 					}
@@ -399,7 +403,7 @@ console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
 								: readyResponseMs !== undefined))
 					)
 						break;
-					await sleep(10);
+					await promiseTimeout(10);
 				}
 				if (
 					!report ||
@@ -409,7 +413,7 @@ console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
 				)
 					throw new Error(`Startup timed out: ${output}`);
 				const result = {
-					wallMs: performance.now() - began,
+					wallMs: elapsed(),
 					readyResponseMs,
 					cleanupMs,
 					cli: report,

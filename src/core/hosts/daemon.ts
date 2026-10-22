@@ -9,6 +9,7 @@ import {
 	writeSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import { debounce, exponentialBackoff, getErrorMessage } from "hanzio";
 import { createThrottledFailureLog } from "../failure-log";
 // The leaf module, not `../process`: its index re-exports the port-ownership
 // helpers, which reach into the container backends. The root daemon spawns
@@ -100,9 +101,11 @@ function logDaemonError(message: string): void {
  * respawned forever. The daemon stays up and retries on a widening interval.
  */
 export function nextReloadDelayMs(consecutiveFailures: number): number {
-	if (consecutiveFailures <= 0) return RELOAD_INTERVAL_MS;
-	const backoff = RELOAD_INTERVAL_MS * 2 ** (consecutiveFailures - 1);
-	return Math.min(backoff, MAX_RELOAD_BACKOFF_MS);
+	return exponentialBackoff(consecutiveFailures, {
+		baseMs: RELOAD_INTERVAL_MS,
+		maxMs: MAX_RELOAD_BACKOFF_MS,
+		jitter: false,
+	});
 }
 
 /**
@@ -289,20 +292,8 @@ export function createDebouncedTrigger(deps: {
 	onTrigger: () => void;
 	debounceMs: number;
 }): { fire: () => void; cancel: () => void } {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	return {
-		fire() {
-			if (timer) clearTimeout(timer);
-			timer = setTimeout(() => {
-				timer = undefined;
-				deps.onTrigger();
-			}, deps.debounceMs);
-		},
-		cancel() {
-			if (timer) clearTimeout(timer);
-			timer = undefined;
-		},
-	};
+	const fire = debounce(() => deps.onTrigger(), deps.debounceMs);
+	return { fire, cancel: fire.cancel };
 }
 
 /** How long to coalesce filesystem events before reloading. */
@@ -379,10 +370,9 @@ export function watchHostsState(deps: {
 			watcher.on("error", () => {});
 			watchers.push(watcher);
 		} catch (error) {
+			const message = getErrorMessage(error);
 			deps.log(
-				`[buncargo hosts] could not watch ${directory}, falling back to polling: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
+				`[buncargo hosts] could not watch ${directory}, falling back to polling: ${message}`,
 			);
 		}
 	}
@@ -478,7 +468,7 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	 * it is reported once per distinct cause.
 	 */
 	function reportHostsFileFailure(action: string, error: unknown): void {
-		const message = error instanceof Error ? error.message : String(error);
+		const message = getErrorMessage(error);
 		if (message === lastHostsFileFailure) return;
 		lastHostsFileFailure = message;
 		deps.log(`[buncargo hosts] could not ${action} /etc/hosts: ${message}`);
@@ -723,7 +713,7 @@ export async function runHostsDaemon(
 			failureLog.reset();
 		} catch (error) {
 			consecutiveFailures += 1;
-			const message = error instanceof Error ? error.message : String(error);
+			const message = getErrorMessage(error);
 			failureLog.report(`[buncargo hosts] reload failed: ${message}`);
 		}
 	}

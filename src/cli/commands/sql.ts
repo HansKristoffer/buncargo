@@ -1,3 +1,4 @@
+import { typedSwitch } from "hanzio";
 import { splitCommandLine } from "../../apple-container/run-plan";
 import { containerRuntimeForEnv } from "../../container-runtime";
 import { isInteractive } from "../../core/prompt";
@@ -146,64 +147,69 @@ export function sqlClientCommand(
 	if (json && query === undefined)
 		throw new CliError("--json needs a query: pass --command.");
 
-	switch (preset) {
-		case "postgres": {
-			const { user, password, database } = credentials ?? {
-				user: "postgres",
-				password: "postgres",
-				database: "postgres",
-			};
-			const psql = [
-				"env",
-				`PGPASSWORD=${password}`,
-				"psql",
-				"-X",
-				"-U",
-				user,
-				"-d",
-				database,
-			];
-			if (query === undefined) return psql;
-			const statement = json
-				? `select coalesce(json_agg(q), '[]'::json) from (${query.trim().replace(/;+$/, "")}) q`
-				: query;
-			return [
-				...psql,
-				"-v",
-				"ON_ERROR_STOP=1",
-				...(json ? ["-A", "-t"] : []),
-				"-c",
-				statement,
-			];
-		}
-		case "clickhouse": {
-			const client = [
-				"clickhouse-client",
-				...(credentials
-					? [
-							"--user",
-							credentials.user,
-							"--password",
-							credentials.password,
-							"--database",
-							credentials.database,
-						]
-					: []),
-			];
-			if (query === undefined) return client;
-			return [
-				...client,
-				"--query",
-				query,
-				...(json ? ["--format", "JSONEachRow"] : []),
-			];
-		}
-		case "redis":
-			if (json) throw new CliError("--json is not supported for redis.");
-			return ["redis-cli", ...(query ? splitCommandLine(query) : [])];
-		default:
-			throw new CliError(`buncargo sql has no client for ${preset} services.`);
-	}
+	return typedSwitch(
+		preset,
+		{
+			postgres: () => {
+				const { user, password, database } = credentials ?? {
+					user: "postgres",
+					password: "postgres",
+					database: "postgres",
+				};
+				const psql = [
+					"env",
+					`PGPASSWORD=${password}`,
+					"psql",
+					"-X",
+					"-U",
+					user,
+					"-d",
+					database,
+				];
+				if (query === undefined) return psql;
+				const statement = json
+					? `select coalesce(json_agg(q), '[]'::json) from (${query.trim().replace(/;+$/, "")}) q`
+					: query;
+				return [
+					...psql,
+					"-v",
+					"ON_ERROR_STOP=1",
+					...(json ? ["-A", "-t"] : []),
+					"-c",
+					statement,
+				];
+			},
+			clickhouse: () => {
+				const client = [
+					"clickhouse-client",
+					...(credentials
+						? [
+								"--user",
+								credentials.user,
+								"--password",
+								credentials.password,
+								"--database",
+								credentials.database,
+							]
+						: []),
+				];
+				if (query === undefined) return client;
+				return [
+					...client,
+					"--query",
+					query,
+					...(json ? ["--format", "JSONEachRow"] : []),
+				];
+			},
+			redis: () => {
+				if (json) throw new CliError("--json is not supported for redis.");
+				return ["redis-cli", ...(query ? splitCommandLine(query) : [])];
+			},
+		},
+		(other) => {
+			throw new CliError(`buncargo sql has no client for ${other} services.`);
+		},
+	);
 }
 
 /** The named service, or the first SQL database in the config. */

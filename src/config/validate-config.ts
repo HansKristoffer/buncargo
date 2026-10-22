@@ -1,3 +1,4 @@
+import { getErrorMessage } from "hanzio";
 import type { AnyDevConfig, DevConfigLike } from "../types";
 import { applyIntegrations } from "./integrations";
 import { validateConfigShape } from "./validate-shape";
@@ -25,7 +26,7 @@ export function validateConfig(value: unknown): string[] {
 	try {
 		applied = applyIntegrations(value as object);
 	} catch (error) {
-		return [error instanceof Error ? error.message : String(error)];
+		return [getErrorMessage(error)];
 	}
 	errors = validateConfigShape(applied);
 	if (errors.length > 0) {

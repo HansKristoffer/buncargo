@@ -1,3 +1,4 @@
+import { typedSwitch } from "hanzio";
 import type {
 	AppConfig,
 	ComputedPorts,
@@ -19,16 +20,16 @@ function getServiceEnvValue(
 	ports: PortMap,
 	urls: UrlMap,
 ): string | number | undefined {
-	switch (source) {
-		case "url":
-			return urls[serviceKey];
-		case "port":
-			return ports[serviceKey];
-		case "secondaryPort":
-			return ports[`${serviceKey}Secondary`];
-		default:
-			return undefined;
-	}
+	// A config that skipped validation can name another source: it yields nothing.
+	return typedSwitch(
+		source,
+		{
+			url: () => urls[serviceKey],
+			port: () => ports[serviceKey],
+			secondaryPort: () => ports[`${serviceKey}Secondary`],
+		},
+		() => undefined,
+	);
 }
 
 export function buildSharedEnvValues<

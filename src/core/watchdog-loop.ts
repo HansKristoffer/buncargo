@@ -1,3 +1,4 @@
+import { getErrorMessage } from "hanzio";
 import { foreignStackOf } from "../container-runtime/foreign-stack";
 import type { SweepResult, SweptStack } from "../container-runtime/sweep";
 import type { RunEntry } from "./run-registry";
@@ -210,7 +211,7 @@ export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 				deps.log("A run claimed while exiting; still watching");
 			}
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const message = getErrorMessage(error);
 			if (message !== reportedPassError)
 				deps.log(`Sweep failed, retrying next pass: ${message}`);
 			reportedPassError = message;

@@ -1,3 +1,4 @@
+import { typedSwitch } from "hanzio";
 import { withDeadline } from "../core/deadline";
 import { isTcpPortOpen } from "../core/network";
 import type { BuiltInHealthCheck, HealthCheckFn } from "../types";
@@ -40,57 +41,45 @@ export function createBuiltInHealthCheck(
 		return runtime.execInService(request);
 	}
 
-	switch (type) {
-		case "pg_isready":
-			// Ignore the socket-only bootstrap server used while the image initializes.
-			return async (_port, signal) =>
-				execInService(
-					["pg_isready", "-h", "127.0.0.1", "-U", "postgres"],
+	return typedSwitch(type, {
+		// Ignore the socket-only bootstrap server used while the image initializes.
+		pg_isready: () => async (_port, signal) =>
+			execInService(
+				["pg_isready", "-h", "127.0.0.1", "-U", "postgres"],
+				signal,
+			),
+
+		"redis-cli": () => async (_port, signal) =>
+			execInService(["redis-cli", "ping"], signal),
+
+		http: () => async (port, signal) => {
+			try {
+				return await withDeadline(
+					async (probeSignal) => {
+						const response = await fetch(`http://localhost:${port}/`, {
+							signal: probeSignal,
+						});
+						const ready = response.ok || response.status === 404;
+						await response.body?.cancel();
+						return ready;
+					},
+					2000,
 					signal,
 				);
+			} catch {
+				return false;
+			}
+		},
 
-		case "redis-cli":
-			return async (_port, signal) =>
-				execInService(["redis-cli", "ping"], signal);
-
-		case "http":
-			return async (port, signal) => {
-				try {
-					return await withDeadline(
-						async (probeSignal) => {
-							const response = await fetch(`http://localhost:${port}/`, {
-								signal: probeSignal,
-							});
-							const ready = response.ok || response.status === 404;
-							await response.body?.cancel();
-							return ready;
-						},
-						2000,
+		tcp: () => async (port, signal) =>
+			runtime.probeServicePort
+				? runtime.probeServicePort({
 						signal,
-					);
-				} catch {
-					return false;
-				}
-			};
-
-		case "tcp":
-			return async (port, signal) =>
-				runtime.probeServicePort
-					? runtime.probeServicePort({
-							signal,
-							timeoutMs: 1000,
-							projectName,
-							serviceName,
-							hostPort: port,
-						})
-					: isTcpPortOpen(port, "127.0.0.1", 1000, signal);
-
-		default: {
-			const _exhaustive: never = type;
-			return async () => {
-				void _exhaustive;
-				return true;
-			};
-		}
-	}
+						timeoutMs: 1000,
+						projectName,
+						serviceName,
+						hostPort: port,
+					})
+				: isTcpPortOpen(port, "127.0.0.1", 1000, signal),
+	});
 }

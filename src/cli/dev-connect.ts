@@ -1,5 +1,6 @@
 import { rm } from "node:fs/promises";
 import { hostname } from "node:os";
+import { getErrorMessage } from "hanzio";
 import { intentsPath } from "../core/connect/coordinator-state";
 import { newCredential } from "../core/connect/credentials";
 import { ensureConnectCoordinator } from "../core/connect/launcher";
@@ -60,9 +61,11 @@ export function createDevConnect() {
 				)
 				.catch((error) => {
 					if (!controller.signal.aborted) {
-						log.warn(
-							`Remote sharing unavailable: ${error instanceof Error ? error.message : "run buncargo connect status"}`,
+						const reason = getErrorMessage(
+							error,
+							"run buncargo connect status",
 						);
+						log.warn(`Remote sharing unavailable: ${reason}`);
 					}
 				});
 		},

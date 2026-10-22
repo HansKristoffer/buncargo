@@ -1,3 +1,4 @@
+import { getErrorMessage } from "hanzio";
 import {
 	DOCKER_PRESET_NAMES,
 	inferDockerPreset,
@@ -128,7 +129,7 @@ export function validateServices(
 	try {
 		resolveServiceDependencies(config.services, Object.keys(config.services));
 	} catch (error) {
-		errors.push(error instanceof Error ? error.message : String(error));
+		errors.push(getErrorMessage(error));
 	}
 }
 

@@ -1,3 +1,5 @@
+import { isRecord } from "hanzio";
+
 /**
  * `options.checkoutFiles`, normalized. Pure, so config validation can use it
  * without pulling in the store.
@@ -39,10 +41,7 @@ export function checkoutFileErrors(value: unknown): string[] {
 	const seen = new Set<string>();
 	for (const [index, entry] of value.entries()) {
 		const at = `options.checkoutFiles.${index}`;
-		const object =
-			typeof entry === "object" && entry !== null
-				? (entry as Record<string, unknown>)
-				: undefined;
+		const object = isRecord(entry) ? entry : undefined;
 		const path = typeof entry === "string" ? entry : object?.path;
 		const badTemplate =
 			object?.template !== undefined && typeof object.template !== "string";

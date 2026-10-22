@@ -11,6 +11,7 @@
 
 import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync, unlinkSync } from "node:fs";
+import { getErrorMessage, promiseTimeout } from "hanzio";
 import { orphanVolumeReporter } from "../container-runtime/orphan-report";
 import { sweepOrphanedContainers } from "../container-runtime/sweep";
 import { checkoutDeleted } from "./checkout-presence";
@@ -100,7 +101,7 @@ function watch(owner: object): Promise<void> {
 			return result;
 		},
 		sweepServeEntries: () => sweepTailscaleServe(tailscaleServeDeps()),
-		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+		sleep: (ms) => promiseTimeout(ms),
 		log,
 		intervalMs: WATCHDOG_POLL_INTERVAL_MS,
 		outlived,
@@ -151,9 +152,7 @@ withFileLock(
 		// Losing the race to another runner is the expected outcome of two `dev`
 		// runs starting at once, not a failure worth a line in the log.
 		if (error instanceof FileLockTimeoutError) return;
-		log(
-			`Watchdog failed: ${error instanceof Error ? error.message : String(error)}`,
-		);
+		log(`Watchdog failed: ${getErrorMessage(error)}`);
 		cleanup();
 		process.exitCode = 1;
 	},

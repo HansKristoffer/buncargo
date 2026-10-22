@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { basename, join } from "node:path";
 import fg from "fast-glob";
+import { getErrorMessage, startTimer, sumBy } from "hanzio";
 import { execAsync } from "../core/process";
 import { readWorkspaceGraph, selectChangedWorkspaces } from "./changed";
 import {
@@ -172,7 +173,7 @@ async function runSingleTypecheck(
 	signal: AbortSignal | undefined,
 	isRetry = false,
 ): Promise<WorkspaceTypecheckResult> {
-	const startTime = performance.now();
+	const elapsed = startTimer();
 	if (verbose) {
 		console.log(
 			`Running typecheck in ${workspaceLabel(workspace, fileCount)}${isRetry ? " (retry)" : ""}...`,
@@ -187,7 +188,7 @@ async function runSingleTypecheck(
 		{ throwOnError: false, signal },
 	);
 
-	const duration = Number(((performance.now() - startTime) / 1000).toFixed(2));
+	const duration = Number((elapsed() / 1000).toFixed(2));
 	const success = result.exitCode === 0;
 
 	let errorOutput: string | undefined;
@@ -276,7 +277,7 @@ async function resolveIncludedWorkspaces(
 				} catch (error) {
 					problems.push({
 						workspace: path,
-						message: error instanceof Error ? error.message : String(error),
+						message: getErrorMessage(error),
 					});
 					continue;
 				}
@@ -439,7 +440,7 @@ export async function runWorkspaceTypecheck(
 	let includeRootConfig = options.includeRootConfig ?? true;
 	const concurrency = options.concurrency ?? defaultTypecheckConcurrency();
 
-	const totalStartTime = performance.now();
+	const totalElapsed = startTimer();
 
 	signal?.throwIfAborted();
 	if (!Number.isInteger(concurrency) || concurrency < 1) {
@@ -484,9 +485,7 @@ export async function runWorkspaceTypecheck(
 			}
 			return {
 				success: false,
-				totalDuration: Number(
-					((performance.now() - totalStartTime) / 1000).toFixed(2),
-				),
+				totalDuration: Number((totalElapsed() / 1000).toFixed(2)),
 				totalFiles: 0,
 				workspaceCount: 0,
 				results: [],
@@ -532,9 +531,7 @@ export async function runWorkspaceTypecheck(
 		}
 		return {
 			success: (rootConfig?.success ?? true) && problemResults.length === 0,
-			totalDuration: Number(
-				((performance.now() - totalStartTime) / 1000).toFixed(2),
-			),
+			totalDuration: Number((totalElapsed() / 1000).toFixed(2)),
 			totalFiles: 0,
 			workspaceCount: 0,
 			results: problemResults,
@@ -586,10 +583,8 @@ export async function runWorkspaceTypecheck(
 
 	await writeTypecheckTimings(root, timings, results);
 
-	const totalDuration = Number(
-		((performance.now() - totalStartTime) / 1000).toFixed(2),
-	);
-	const totalFiles = workspaces.reduce((sum, w) => sum + w.fileCount, 0);
+	const totalDuration = Number((totalElapsed() / 1000).toFixed(2));
+	const totalFiles = sumBy(workspaces, "fileCount");
 	results.push(...problemResults);
 	const success =
 		results.every((r) => r.success) && (rootConfig?.success ?? true);

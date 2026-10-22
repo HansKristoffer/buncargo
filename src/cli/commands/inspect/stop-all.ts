@@ -1,3 +1,4 @@
+import { getErrorMessage } from "hanzio";
 import {
 	availableContainerRuntimes,
 	type ContainerRuntimeAdapter,
@@ -51,7 +52,7 @@ export async function stopAllBuncargoEnvironments(
 	try {
 		runs = await readAllRuns();
 	} catch (error) {
-		const reason = error instanceof Error ? error.message : String(error);
+		const reason = getErrorMessage(error);
 		throw new Error(
 			`Could not read ${getRunsPath()}, so nothing was removed: ${reason}. Fix or move the file, then run again.`,
 		);

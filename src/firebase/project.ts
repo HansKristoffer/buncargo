@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { getErrorMessage, isRecord } from "hanzio";
 
 /** The Firebase CLI's config file. */
 export const FIREBASE_CONFIG_FILE = "firebase.json";
@@ -26,9 +27,7 @@ export interface FirebaseProject {
 }
 
 function record(value: unknown): Record<string, unknown> {
-	return value && typeof value === "object" && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: {};
+	return isRecord(value) ? value : {};
 }
 
 function readDefaultProject(workdir: string): string | undefined {
@@ -67,7 +66,7 @@ export function readFirebaseProject(workdir: string): FirebaseProject {
 			exists: true,
 			raw: {},
 			defaultProject,
-			error: error instanceof Error ? error.message : String(error),
+			error: getErrorMessage(error),
 		};
 	}
 }

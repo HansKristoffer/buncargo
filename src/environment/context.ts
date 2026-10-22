@@ -1,3 +1,4 @@
+import { pick } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
 import {
 	assertServiceCapabilities,
@@ -359,9 +360,7 @@ export function createDevEnvContext<
 		const selectedRuntime = hasSelectedServices ? runtime() : undefined;
 
 		if (selectedRuntime) {
-			const selectedServices = Object.fromEntries(
-				plan.requiredServiceKeys.map((name) => [name, services[name]]),
-			);
+			const selectedServices = pick(services, plan.requiredServiceKeys);
 			assertServiceCapabilities(selectedRuntime.name, selectedServices);
 		}
 
@@ -451,9 +450,7 @@ export function createDevEnvContext<
 			if (selectedRuntime)
 				assertServiceCapabilities(
 					selectedRuntime.name,
-					Object.fromEntries(
-						plan.requiredServiceKeys.map((name) => [name, services[name]]),
-					),
+					pick(services, plan.requiredServiceKeys),
 				);
 			const candidatePorts = candidateAllocationPorts(
 				{

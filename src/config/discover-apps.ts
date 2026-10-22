@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { trimTrailingSlash } from "hanzio";
 import { findMonorepoRoot } from "../core/ports";
 import { shellQuote } from "../core/shell-quote";
 import type { AppConfig } from "../types";
@@ -48,7 +49,7 @@ function findWorkspaces(
 ): WorkspaceManifest[] {
 	const found = new Map<string, WorkspaceManifest>();
 	for (const glob of globs) {
-		const pattern = `${glob.replace(/\/+$/, "")}/package.json`;
+		const pattern = `${trimTrailingSlash(glob)}/package.json`;
 		for (const path of new Bun.Glob(pattern).scanSync({
 			cwd: root,
 			onlyFiles: true,

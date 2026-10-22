@@ -1,5 +1,6 @@
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { promiseTimeout } from "hanzio";
 import { logsRoot } from "../core/process/app-logs";
 import { inOwnUserScope } from "../core/process/user-scope";
 import {
@@ -7,7 +8,6 @@ import {
 	type RunAppEntry,
 	type RunEntry,
 } from "../core/run-registry";
-import { sleep } from "../core/sleep";
 import * as log from "./log";
 
 /**
@@ -164,6 +164,6 @@ export async function runDetached(input: {
 			log.hint(`Follow it: buncargo logs -f · output: ${logPath}`);
 			return 1;
 		}
-		await sleep(POLL_MS);
+		await promiseTimeout(POLL_MS);
 	}
 }

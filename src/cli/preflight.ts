@@ -1,3 +1,4 @@
+import { getErrorMessage } from "hanzio";
 import { isInteractive } from "../core/prompt";
 import { isCI } from "../core/runtime-flags";
 import type { AnyDevEnvironment } from "../types";
@@ -22,7 +23,7 @@ export async function runPreflight(
 		try {
 			await step.run({ root: env.root, env, interactive });
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const message = getErrorMessage(error);
 			throw new CliError(`${step.name}: ${message}`);
 		}
 		log.done(step.name);

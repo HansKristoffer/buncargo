@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { getErrorMessage, typedSwitch } from "hanzio";
 import {
 	availableContainerRuntimes,
 	type ContainerRuntimeAdapter,
@@ -142,7 +143,7 @@ class DoctorReport {
 	}
 
 	fromError(error: unknown): void {
-		this.issue(error instanceof Error ? error.message : String(error));
+		this.issue(getErrorMessage(error));
 	}
 
 	print(): void {
@@ -222,7 +223,7 @@ async function checkPortOwnership(
 			else report.note(`Port ${port} was freed while doctor ran`);
 		} catch (error) {
 			report.issue(
-				`Could not stop process ${owner.pids.join(", ")} on port ${port}: ${error instanceof Error ? error.message : String(error)}`,
+				`Could not stop process ${owner.pids.join(", ")} on port ${port}: ${getErrorMessage(error)}`,
 			);
 		}
 	}
@@ -330,20 +331,23 @@ async function namedHostsModeReport(
 	deps: TailscaleServeDeps,
 	user: { name: string; uid: number; platform: NodeJS.Platform },
 ): Promise<{ notes: string[]; issues: string[] } | undefined> {
-	if (mode === "loopback") return undefined;
-	if (mode === "off")
-		return {
+	return typedSwitch(mode, {
+		loopback: () => undefined,
+		off: () => ({
 			notes: [
 				"Named hosts are off (BUNCARGO_HOSTS=0 or CI): apps use http://localhost:port",
 			],
 			issues: [],
-		};
-	const sweep = await sweepTailscaleServe(deps);
-	const diagnosis = await diagnoseTailscaleHosts(deps, user);
-	return {
-		notes: [...sweep.removed, ...diagnosis.notes],
-		issues: [...sweep.failures, ...diagnosis.issues],
-	};
+		}),
+		tailscale: async () => {
+			const sweep = await sweepTailscaleServe(deps);
+			const diagnosis = await diagnoseTailscaleHosts(deps, user);
+			return {
+				notes: [...sweep.removed, ...diagnosis.notes],
+				issues: [...sweep.failures, ...diagnosis.issues],
+			};
+		},
+	});
 }
 
 async function checkNamedHosts(
@@ -458,7 +462,7 @@ async function checkSelectedRuntime(
 				: `${runtime.displayName} is reachable`,
 		);
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		const message = getErrorMessage(error);
 		report.issue(
 			fix || message.includes("doctor --fix")
 				? message
@@ -504,9 +508,7 @@ async function checkRunRegistry(
 				.slice(-3))
 				report.note(`Recent: ${describeRemoval(record)}`);
 	} catch (error) {
-		report.issue(
-			`Could not read the run registry: ${error instanceof Error ? error.message : String(error)}`,
-		);
+		report.issue(`Could not read the run registry: ${getErrorMessage(error)}`);
 	}
 }
 
@@ -550,9 +552,7 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 		// Inspect-only: the checkout files check reports their state instead.
 		env = await loadDevEnv({ readOnly: true, syncCheckoutFiles: false });
 	} catch (error) {
-		report.issue(
-			`Could not load dev config: ${error instanceof Error ? error.message : String(error)}`,
-		);
+		report.issue(`Could not load dev config: ${getErrorMessage(error)}`);
 	}
 
 	const available = availableContainerRuntimes({

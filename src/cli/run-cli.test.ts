@@ -124,6 +124,7 @@ function createStubEnv(
 			(selected ?? Object.keys(apps))[0],
 		root: options.root ?? "/tmp/buncargo-cli-stub",
 		composeFile: ".buncargo/docker-compose.generated.yml",
+		containerRuntime: "docker",
 		portOffset: 0,
 		portOffsetProvenance: "hash",
 		isWorktree: false,

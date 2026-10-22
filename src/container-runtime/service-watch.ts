@@ -1,3 +1,4 @@
+import { timeoutSignal, typedSwitch } from "hanzio";
 import type { ContainerRuntimeAdapter, ServiceRuntimeState } from "./types";
 
 /**
@@ -70,22 +71,15 @@ export function serviceChanges(
 /** "postgres stopped (exit 0)", "redis is unhealthy", "postgres is running again". */
 export function describeServiceCondition(change: ServiceChange): string {
 	const { service, condition } = change;
-	switch (condition.state) {
-		case "up":
-			return `${service} is running again`;
-		case "unhealthy":
-			return `${service} is unhealthy: its healthcheck fails`;
-		case "stopped":
-			return condition.exitCode === undefined
+	return typedSwitch(condition, "state", {
+		up: () => `${service} is running again`,
+		unhealthy: () => `${service} is unhealthy: its healthcheck fails`,
+		stopped: ({ exitCode }) =>
+			exitCode === undefined
 				? `${service} stopped`
-				: `${service} stopped (exit ${condition.exitCode})`;
-		case "missing":
-			return `${service}'s container was removed`;
-		default: {
-			const exhaustive: never = condition;
-			throw new Error(`Unhandled service condition: ${String(exhaustive)}`);
-		}
-	}
+				: `${service} stopped (exit ${exitCode})`,
+		missing: () => `${service}'s container was removed`,
+	});
 }
 
 /** Long enough that a run does not notice the poll; short next to "minutes later, a Prisma error". */
@@ -112,10 +106,7 @@ export function watchServiceContainers(input: {
 	const poll = async () => {
 		const watched = input.services();
 		if (watched.length > 0) {
-			const signal = AbortSignal.any([
-				controller.signal,
-				AbortSignal.timeout(intervalMs),
-			]);
+			const signal = timeoutSignal(intervalMs, controller.signal);
 			let states: ServiceRuntimeState[] = [];
 			try {
 				states = await input.runtime.projectServiceStates(

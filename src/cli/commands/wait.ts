@@ -1,6 +1,6 @@
+import { promiseTimeout } from "hanzio";
 import { findMonorepoRoot } from "../../core/ports";
 import { findRunsByRoot, type RunAppEntry } from "../../core/run-registry";
-import { sleep } from "../../core/sleep";
 import {
 	type CommandSpec,
 	type FlagSpec,
@@ -136,7 +136,7 @@ export async function handleWait(args: string[]): Promise<number> {
 				);
 				return WAIT_EXIT.timeout;
 			}
-			await sleep(POLL_MS);
+			await promiseTimeout(POLL_MS);
 		}
 
 		if (!readBooleanFlag(args, FLAGS.hold)) return WAIT_EXIT.ok;
@@ -145,7 +145,7 @@ export async function handleWait(args: string[]): Promise<number> {
 		while (!stopping) {
 			const found = await findApp(root, name);
 			if (!found || isDown(found.app)) break;
-			await sleep(POLL_MS * 2);
+			await promiseTimeout(POLL_MS * 2);
 		}
 		return WAIT_EXIT.ok;
 	} finally {

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { getErrorMessage, typedSwitch } from "hanzio";
 import type {
 	AppConfig,
 	BuncargoIntegration,
@@ -80,7 +81,7 @@ export interface RunSource {
 }
 
 function reportFailure(action: string, error: unknown): void {
-	const message = error instanceof Error ? error.message : String(error);
+	const message = getErrorMessage(error);
 	console.warn(formatWarn(`Could not ${action} the run registry: ${message}`));
 }
 
@@ -507,17 +508,17 @@ export async function recordRunCapture(
 	captured: CapturedValue,
 ): Promise<void> {
 	const { details } = runDetails(env);
+	const captures = { [captured.name]: captured.value };
+	const recorded: RunPatch = typedSwitch(captured.as, {
+		event: () => ({}),
+		value: () => ({ captures }),
+		publicUrl: () => ({
+			captures,
+			apps: [{ name: app, publicUrl: captured.value, openUrl: captured.value }],
+		}),
+	});
 	await patchCurrentRun(env, {
-		...(captured.as === "event"
-			? {}
-			: { captures: { [captured.name]: captured.value } }),
-		...(captured.as === "publicUrl"
-			? {
-					apps: [
-						{ name: app, publicUrl: captured.value, openUrl: captured.value },
-					],
-				}
-			: {}),
+		...recorded,
 		...(details ? { details } : {}),
 	});
 }
