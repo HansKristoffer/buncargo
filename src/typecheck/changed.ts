@@ -21,8 +21,7 @@ export interface WorkspaceNode {
 }
 
 export type ChangedSelection =
-	| { kind: "all" }
-	| { kind: "workspaces"; paths: string[] };
+	{ kind: "all" } | { kind: "workspaces"; paths: string[] };
 
 const ROOT_WIDE_FILE =
 	/^(package\.json|bun\.lockb?|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|tsconfig[^/]*\.json)$/;

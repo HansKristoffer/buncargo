@@ -75,8 +75,7 @@ export function serviceCredentials(
 	const defaults = PRESET_CREDENTIALS[preset];
 	if (!defaults) return undefined;
 	const config = service as
-		| { database?: string; user?: string; password?: string }
-		| undefined;
+		{ database?: string; user?: string; password?: string } | undefined;
 	return {
 		user: config?.user ?? defaults.user,
 		password: config?.password ?? defaults.password,

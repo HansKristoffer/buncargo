@@ -38,8 +38,7 @@ export async function readAppliedConfig(): Promise<
 	if (!path) return undefined;
 	try {
 		const config = (await import(path)).default as
-			| IntegrationConfig
-			| undefined;
+			IntegrationConfig | undefined;
 		// The config's checkout, as `loadDevEnv` resolves it.
 		return config
 			? applyIntegrations(config, { root: findMonorepoRoot(dirname(path)) })

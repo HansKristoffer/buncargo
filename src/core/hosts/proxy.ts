@@ -253,7 +253,7 @@ interface ProxyWsData {
 	protocol?: string;
 	socket?: WebSocket;
 	/** Frames the client sent before the upstream handshake completed. */
-	pending: (string | Buffer)[];
+	pending: (string | Buffer<ArrayBuffer>)[];
 	/** Set by `close` so an in-flight upstream dial does not outlive the client. */
 	closed?: boolean;
 }
@@ -266,7 +266,7 @@ interface ProxyWs {
 
 export interface ProxyWebsocketHandlers {
 	open: (ws: ProxyWs) => void;
-	message: (ws: ProxyWs, message: string | Buffer) => void;
+	message: (ws: ProxyWs, message: string | Buffer<ArrayBuffer>) => void;
 	close: (ws: ProxyWs) => void;
 	/** Hand every bridged upstream a close frame before the proxy goes away. */
 	closeAll: () => void;

@@ -6,11 +6,7 @@ export const LEASE_MS = 45_000;
 export const HEARTBEAT_MS = 10_000;
 
 export type TargetStatus =
-	| "starting"
-	| "ready"
-	| "reused"
-	| "stopped"
-	| "failed";
+	"starting" | "ready" | "reused" | "stopped" | "failed";
 
 export interface TargetInput {
 	id: string;

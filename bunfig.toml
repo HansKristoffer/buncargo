@@ -1,2 +1,8 @@
 [test]
 preload = ["./scripts/test-runtime-isolation.ts"]
+
+# `bun fmt` formats; Biome only lints. These keep Biome's formatter defaults
+# (tabs, 80 columns, double quotes, semicolons, trailing commas).
+[fmt]
+useTabs = true
+printWidth = 80

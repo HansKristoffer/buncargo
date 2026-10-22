@@ -211,12 +211,7 @@ export {
 	startPublicTunnels,
 	stopPublicTunnels,
 } from "./core/tunnel";
-export {
-	getEnvVar,
-	logApiUrl,
-	logFrontendPort,
-	sleep,
-} from "./core/utils";
+export { getEnvVar, logApiUrl, logFrontendPort, sleep } from "./core/utils";
 export {
 	ensureWatchdog,
 	getWatchdogLogFile,

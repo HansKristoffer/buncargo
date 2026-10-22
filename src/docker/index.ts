@@ -6,10 +6,7 @@ export {
 	runDocker,
 	runDockerAsync,
 } from "./binary";
-export {
-	type ComposeCommandContext,
-	getComposeArgs,
-} from "./compose-command";
+export { type ComposeCommandContext, getComposeArgs } from "./compose-command";
 export {
 	listDockerBuncargoContainers,
 	parseDockerContainerLine,

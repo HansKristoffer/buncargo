@@ -92,7 +92,7 @@ async function stopWatchdog(): Promise<void> {
 /** The parent pids of `pid`, nearest first, up to init. */
 function ancestorsOf(pid: number): number[] {
 	const chain: number[] = [];
-	for (let current = pid; chain.length < 64; ) {
+	for (let current = pid; chain.length < 64;) {
 		const parent = Number(
 			execFileSync("ps", ["-p", String(current), "-o", "ppid="], {
 				encoding: "utf8",

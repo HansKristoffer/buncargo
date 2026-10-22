@@ -39,11 +39,7 @@ import {
  */
 
 export type FileState =
-	| "in-sync"
-	| "store-newer"
-	| "local-edits"
-	| "conflict"
-	| "missing";
+	"in-sync" | "store-newer" | "local-edits" | "conflict" | "missing";
 
 /** A file's state from three hashes: the checkout's copy, its base, the store's. */
 export function fileState(

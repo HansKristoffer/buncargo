@@ -134,9 +134,8 @@ function parseMigrateCheckArgs(args: string[]) {
  */
 export async function loadLiveEnv() {
 	const { getCaPath, waitForDaemonRoutes } = await import("../../core/hosts");
-	const { readServedTailscaleUrls } = await import(
-		"../../core/hosts/tailscale-serve"
-	);
+	const { readServedTailscaleUrls } =
+		await import("../../core/hosts/tailscale-serve");
 	const { adoptLiveCaptures } = await import("../../core/run-publish");
 	const env = await loadEnv({ readOnly: true });
 	const mode = hostsMode();
@@ -262,9 +261,8 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 	}
 
 	const { runWorkspaceTypecheck } = await import("../../typecheck");
-	const { requestedTypecheckConcurrency } = await import(
-		"../../typecheck/scheduling"
-	);
+	const { requestedTypecheckConcurrency } =
+		await import("../../typecheck/scheduling");
 	const { changedFilesSince } = await import("../../typecheck/changed");
 	let changedFiles: string[] | undefined;
 	if (parsed.changed) {
@@ -276,9 +274,8 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 	}
 
 	// A machine-wide slot: typechecks from many checkouts at once exhaust memory.
-	const { withCheckSlot, formatCheckSlotHolder } = await import(
-		"../../core/check-slots"
-	);
+	const { withCheckSlot, formatCheckSlotHolder } =
+		await import("../../core/check-slots");
 	const { runForwardingSignals } = await import("./exec");
 	const exitCode = await withCheckSlot(
 		"typecheck",

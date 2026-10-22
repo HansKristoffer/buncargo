@@ -186,8 +186,7 @@ export function getEnvVar<
 	const envVars = mergeSharedEnvWithOverlay(
 		{ ...(applied.options?.envFiles ? inputEnv : {}), ...shared },
 		applied.env as
-			| EnvVarsBuilder<typeof services, NonNullable<typeof apps>>
-			| undefined,
+			EnvVarsBuilder<typeof services, NonNullable<typeof apps>> | undefined,
 		ports,
 		urls,
 		{

@@ -69,8 +69,7 @@ async function readStatus() {
 	);
 
 	let containers:
-		| { service: string; name: string; status: string }[]
-		| { error: string };
+		{ service: string; name: string; status: string }[] | { error: string };
 	try {
 		containers = listBuncargoContainers([runtime])
 			.filter((item) => item.project === env.projectName)

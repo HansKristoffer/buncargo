@@ -8,8 +8,7 @@ import { join } from "node:path";
  * through any mode.
  */
 export function unreadableCheckout():
-	| { root: string; cleanup: () => void }
-	| undefined {
+	{ root: string; cleanup: () => void } | undefined {
 	if (process.getuid?.() === 0) return undefined;
 	const parent = mkdtempSync(join(tmpdir(), "buncargo-unreadable-"));
 	const root = join(parent, "checkout");

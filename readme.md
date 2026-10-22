@@ -27,7 +27,7 @@ Local development environments are fragile: hand-written compose files, scattere
 - **Run registry + menu bar app** - every active run in `~/.buncargo/runs.json`, surfaced by `buncargo runs` and BuncargoBar
 - **Works under AI agents** - `dev --detach` returns once the apps are up, `wait`, `logs`, `status --json`, `env --get DATABASE_URL` and `sql` answer what agents otherwise dig out of logs and `docker ps`; `buncargo help agents` is their guide
 
-Buncargo requires Bun 1.4.2 or newer on macOS or Linux (WSL on Windows).
+Buncargo requires Bun 1.4.4 or newer on macOS or Linux (WSL on Windows).
 
 ## Quick Start
 
@@ -289,7 +289,7 @@ bunx buncargo stop --all               # Stop this checkout's run
 - [Container lifecycle and cleanup](docs/runtime-maintenance.md)
 - [Release and recovery instructions](docs/releasing.md)
 
-Requires Bun 1.4.2+ on macOS or Linux (Windows through WSL). Docker Compose is needed for Docker services; Apple container is an optional backend on supported Macs. App-only configurations can run without a container runtime.
+Requires Bun 1.4.4+ on macOS or Linux (Windows through WSL). Docker Compose is needed for Docker services; Apple container is an optional backend on supported Macs. App-only configurations can run without a container runtime.
 
 ## Upgrading
 

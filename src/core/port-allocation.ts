@@ -666,8 +666,7 @@ function planPorts(
 
 /** What `buncargo ports pin` did: the block's ports, or why it is not free. */
 export type PinResult =
-	| { pinned: Record<string, number> }
-	| { refused: string; claimed: boolean };
+	{ pinned: Record<string, number> } | { refused: string; claimed: boolean };
 
 /**
  * `buncargo ports pin`: move `root` to the block at `offset` and keep it there.

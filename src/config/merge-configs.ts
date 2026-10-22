@@ -43,11 +43,10 @@ type Overlay<TBase, TOverride> = Omit<TBase, keyof TOverride> & TOverride;
 // An unspecified overlay contributes no known names; a concrete override still does.
 type KnownEnv<T> = string extends keyof T ? Record<never, never> : T;
 type BaseApps<T extends AnyDevConfig> = NonNullable<T["apps"]>;
-type BaseEnv<T extends AnyDevConfig> = NonNullable<T["env"]> extends (
-	...args: never[]
-) => infer R
-	? Extract<R, EnvValues>
-	: Record<never, never>;
+type BaseEnv<T extends AnyDevConfig> =
+	NonNullable<T["env"]> extends (...args: never[]) => infer R
+		? Extract<R, EnvValues>
+		: Record<never, never>;
 
 /** Merge reusable configs without losing added app, service or environment keys. */
 export function mergeConfigs<

@@ -50,8 +50,7 @@ for (const stop of ["command", "SIGINT"] as const) {
 		try {
 			const deadline = Date.now() + 10000;
 			let app:
-				| { pid: number; status: string; processIdentity: string }
-				| undefined;
+				{ pid: number; status: string; processIdentity: string } | undefined;
 			while (Date.now() < deadline) {
 				if (await Bun.file(marker).exists())
 					detachedPid = Number(await Bun.file(marker).text());

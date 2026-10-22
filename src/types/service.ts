@@ -173,8 +173,7 @@ export interface DockerPresetServiceDefinition {
  * `kind`. Narrow with `docker.kind === "preset"`.
  */
 export type DockerServiceDefinition =
-	| DockerComposeServiceRaw
-	| DockerPresetServiceDefinition;
+	DockerComposeServiceRaw | DockerPresetServiceDefinition;
 
 /**
  * One buncargo-labeled container, as reported by whichever runtime owns it.
