@@ -2,6 +2,10 @@
 
 Each section lists what a consumer of `buncargo` has to change when crossing one major version, newest first. Breaking changes that shipped inside a minor release are listed under the major you cross when you pick them up. If you are several majors behind, work through the sections from the bottom up.
 
+## 14.0 → 15.0
+
+- **Bun 1.4.4 or newer is required** (`engines.bun`, previously `>=1.4.2`). Upgrade with `bun upgrade`, and update any `.bun-version`, `packageManager` or CI `bun-version` pin that names an older release. `check.format` already needed it, because older Bun has no `bun fmt`.
+
 ## 13.0 → 14.0
 
 - **A run refuses a Compose project name another checkout uses.** `dev`, `ci` and `start()` used to share the other checkout's containers and database silently; they now stop with an error naming both checkouts. Self-hosted CI runners whose checkouts share a directory name, which used to start on separate ports under one project, need a `projectPrefix` that differs per runner, and a `dev.config.ts` below a worktree's top level needs one that differs per worktree; [Ports and isolation](./reference.md#ports-and-isolation) shows both. Start the checkout once after changing it so its claim records the new name.
