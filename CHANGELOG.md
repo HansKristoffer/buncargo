@@ -1,5 +1,16 @@
 # Changelog
 
+## [15.0.0](https://github.com/HansKristoffer/buncargo/compare/v14.4.0...v15.0.0) (2026-10-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** buncargo now requires Bun 1.4.4 or newer. Upgrade Bun and any pinned Bun version before updating buncargo.
+
+### Features
+
+* **cli:** require Bun 1.4.4 and move to bun check and bun fmt ([#138](https://github.com/HansKristoffer/buncargo/issues/138)) ([df931d8](https://github.com/HansKristoffer/buncargo/commit/df931d8ed304689683b847751f3e84d08c0d68fc))
+
 ## [14.4.0](https://github.com/HansKristoffer/buncargo/compare/v14.3.3...v14.4.0) (2026-10-22)
 
 
