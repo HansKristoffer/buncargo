@@ -8,6 +8,7 @@ import {
 	writeSync,
 } from "node:fs";
 import { basename, join } from "node:path";
+import { getErrorMessage } from "hanzio";
 import {
 	CHECK_SLOT_ENV,
 	checkSlotCount,
@@ -169,9 +170,7 @@ export async function withCheckSlot<T>(
 			}
 		}
 	} catch (error) {
-		console.warn(
-			`Running without a check slot: ${error instanceof Error ? error.message : String(error)}`,
-		);
+		console.warn(`Running without a check slot: ${getErrorMessage(error)}`);
 		return run();
 	}
 

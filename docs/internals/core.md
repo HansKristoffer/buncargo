@@ -45,11 +45,11 @@ Cross-cutting utilities in `src/core/` that most features touch.
   `PATH` with `access` rather than shelling out to `command -v`. That is a builtin, so it looked
   free, but it is still a fork and an exec, reached for `docker`, `container` and `mkcert` before a
   run starts anything.
-- `sleep.ts` is a leaf on its own rather than part of `utils.ts`, which also holds `getEnvVar` and
-  therefore imports port allocation, the host plan and the network helpers. The hosts daemon needs
-  nothing but `sleep`, and taking it from `utils` pulled that whole graph into the single file a
-  root launchd job executes. `utils.ts` re-exports it, because `buncargo/core/utils` is a published
-  entry point.
+- `utils.ts` re-exports hanzio's `promiseTimeout` as `sleep`, because `buncargo/core/utils` is a
+  published entry point. Internal code imports `promiseTimeout` from `hanzio` directly: `utils.ts`
+  also holds `getEnvVar` and so imports port allocation, the host plan and the network helpers, and
+  taking `sleep` from it once pulled that whole graph into the single file a root launchd job
+  executes.
 - `timing.ts` measures CLI entry through actual app readiness (or startup failure), including
   config/ports, preparation, tunnels and both waves. `--timing-json` includes numeric-only startup
   metrics. Keep diagnostics free of commands, secrets and environment values; counters are dormant

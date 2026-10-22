@@ -1,3 +1,4 @@
+import { isDefined } from "hanzio";
 import {
 	classifyPortOccupant,
 	createPortOwnerSnapshotAsync,
@@ -22,7 +23,7 @@ export async function assertServicePortsClaimable(
 			ports[serviceKey],
 			ports[`${serviceKey}Secondary`],
 		])
-		.filter((port): port is number => port !== undefined);
+		.filter(isDefined);
 	if (targetPorts.length === 0) {
 		return;
 	}

@@ -1,3 +1,4 @@
+import { getErrorMessage } from "hanzio";
 import {
 	type CommandSpec,
 	type FlagSpec,
@@ -131,7 +132,7 @@ export async function handleSim(args: string[] = []): Promise<number> {
 		log.done(`Opened ${opened.url} on "${opened.device}"`);
 		return SIM_EXIT.ok;
 	} catch (error) {
-		log.error(error instanceof Error ? error.message : String(error));
+		log.error(getErrorMessage(error));
 		return SIM_EXIT.failed;
 	}
 }

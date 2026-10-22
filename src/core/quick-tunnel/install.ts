@@ -2,6 +2,7 @@
  * Download cloudflared from GitHub releases.
  * Derived from unjs/untun (MIT), originally forked from node-cloudflared.
  */
+import { escapeRegExp, typedSwitch } from "hanzio";
 import { cloudflaredVersion } from "../runtime-flags";
 import { installTool } from "../tool-install";
 import { cloudflaredBinPath, RELEASE_BASE } from "./constants";
@@ -35,20 +36,21 @@ export async function installCloudflared(
 	version = cloudflaredVersion(),
 	options: { signal?: AbortSignal } = {},
 ): Promise<string> {
-	const assets =
-		process.platform === "linux"
-			? LINUX_URL
-			: process.platform === "darwin"
-				? MACOS_URL
-				: process.platform === "win32"
-					? WINDOWS_URL
-					: undefined;
+	const assets = typedSwitch(
+		process.platform,
+		{
+			linux: () => LINUX_URL,
+			darwin: () => MACOS_URL,
+			win32: () => WINDOWS_URL,
+		},
+		() => undefined,
+	);
 	const file = assets?.[process.arch];
 	if (!file)
 		throw new Error(
 			`Unsupported cloudflared platform: ${process.platform}/${process.arch}`,
 		);
-	const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const escaped = escapeRegExp(version);
 	return installTool({
 		to,
 		signal: options.signal,

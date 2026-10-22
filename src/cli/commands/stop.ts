@@ -1,3 +1,4 @@
+import { getErrorMessage } from "hanzio";
 import {
 	type ContainerRuntimeAdapter,
 	getContainerRuntimeAdapter,
@@ -361,9 +362,7 @@ async function stopServiceUnlocked(
 		log.done(`Stopped ${service.name}`);
 		return STOP_EXIT.ok;
 	} catch (error) {
-		log.error(
-			`Could not stop ${service.name}: ${error instanceof Error ? error.message : String(error)}`,
-		);
+		log.error(`Could not stop ${service.name}: ${getErrorMessage(error)}`);
 		return STOP_EXIT.refused;
 	}
 }
@@ -502,7 +501,7 @@ async function tearDown(
 			await runStackDowns(run, (stack) => void removed.push(stack.name));
 	} catch (error) {
 		log.error(
-			`Could not remove ${projectName}'s containers: ${error instanceof Error ? error.message : String(error)}`,
+			`Could not remove ${projectName}'s containers: ${getErrorMessage(error)}`,
 		);
 		log.hint("Fix the runtime and run `buncargo stop --all` again.");
 		return false;

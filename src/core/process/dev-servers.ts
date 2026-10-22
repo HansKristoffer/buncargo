@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { toError, typedSwitch } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import type { AppConfig, DevServerPids } from "../../types";
 import { abortableSleep } from "../deadline";
@@ -38,10 +39,6 @@ import {
 } from "./port-drift";
 import { planSpawnOrder } from "./start-order";
 import { spawnOwnedWorker } from "./worker-ownership";
-
-function toError(reason: unknown): Error {
-	return reason instanceof Error ? reason : new Error(String(reason));
-}
 
 export interface StartDevServersOptions {
 	onPhase?: (name: string, ms: number) => void;
@@ -172,30 +169,34 @@ async function prepareAppPort(
 		projectName,
 		runtime: runtime?.name,
 	});
-	if (action === "reuse") {
-		if (verbose) {
-			console.log(
-				formatStep(`♻️  Reusing existing process on port ${port} (${name})`),
-			);
-		}
-
-		return "reuse";
-	}
-
-	if (action === "fail" && owner) {
-		throw new Error(formatPortOwner(port, owner, { runtime: runtime?.name }));
-	}
-
-	if (action === "kill") {
-		await killPortOwner(port, {
-			verbose,
-			runtime,
-			skipContainers,
-			timeout: graceMs,
-		});
-	}
-
-	return "start";
+	return typedSwitch(action, {
+		reuse: () => {
+			if (verbose) {
+				console.log(
+					formatStep(`♻️  Reusing existing process on port ${port} (${name})`),
+				);
+			}
+			return "reuse";
+		},
+		fail: () => {
+			if (owner) {
+				throw new Error(
+					formatPortOwner(port, owner, { runtime: runtime?.name }),
+				);
+			}
+			return "start";
+		},
+		kill: async (): Promise<"start"> => {
+			await killPortOwner(port, {
+				verbose,
+				runtime,
+				skipContainers,
+				timeout: graceMs,
+			});
+			return "start";
+		},
+		free: () => "start",
+	});
 }
 
 /** The apps that have a command to run in this mode. */

@@ -1,9 +1,9 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
+import { promiseTimeout } from "hanzio";
 import { findMonorepoRoot } from "../../core/ports";
 import { listRunLogDirs } from "../../core/process/app-logs";
 import { lineLevel } from "../../core/process/run-output";
-import { sleep } from "../../core/sleep";
 import { colorizeName } from "../../core/style";
 import {
 	type CommandSpec,
@@ -153,7 +153,7 @@ export async function handleLogs(rawArgs: string[]): Promise<number> {
 
 	if (!readBooleanFlag(args, FLAGS.follow)) return 0;
 	for (;;) {
-		await sleep(300);
+		await promiseTimeout(300);
 		for (const name of app === undefined ? readdirApps(dir) : selected) {
 			const file = join(dir, `${name}.log`);
 			if (!existsSync(file)) continue;

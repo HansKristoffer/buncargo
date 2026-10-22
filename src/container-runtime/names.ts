@@ -1,3 +1,4 @@
+import { typedSwitch } from "hanzio";
 import type { ContainerRuntimeName, ContainerRuntimeSelection } from "../types";
 
 /**
@@ -35,14 +36,8 @@ export function isContainerRuntimeSelection(
 export function containerRuntimeDisplayName(
 	name: ContainerRuntimeName,
 ): string {
-	switch (name) {
-		case "docker":
-			return "Docker";
-		case "apple":
-			return "Apple container";
-		default: {
-			const _exhaustive: never = name;
-			return _exhaustive;
-		}
-	}
+	return typedSwitch(name, {
+		docker: () => "Docker",
+		apple: () => "Apple container",
+	});
 }

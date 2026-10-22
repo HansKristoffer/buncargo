@@ -1,3 +1,5 @@
+import { isRecord } from "hanzio";
+
 /** Wire contract shared by the directory, CLI, and Swift fixture tests. */
 export const LEASE_MS = 45_000;
 
@@ -99,9 +101,7 @@ export interface TCPConnection {
 }
 
 export function record(value: unknown): Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: {};
+	return isRecord(value) ? value : {};
 }
 
 export function validPort(value: unknown): value is number {

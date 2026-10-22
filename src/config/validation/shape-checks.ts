@@ -1,11 +1,11 @@
+import { isRecord } from "hanzio";
+
 export function createShapeChecks(errors: string[]) {
-	const object = (input: unknown): input is Record<string, unknown> =>
-		typeof input === "object" && input !== null && !Array.isArray(input);
 	const record = (
 		input: unknown,
 		path: string,
 	): input is Record<string, unknown> => {
-		if (object(input)) return true;
+		if (isRecord(input)) return true;
 		errors.push(`${path} must be an object`);
 		return false;
 	};
@@ -55,7 +55,7 @@ export function createShapeChecks(errors: string[]) {
 	};
 	return {
 		errors,
-		object,
+		object: isRecord,
 		record,
 		check,
 		strings,

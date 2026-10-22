@@ -1,3 +1,4 @@
+import { getErrorMessage, typedSwitch } from "hanzio";
 import {
 	type BarUpdateDecision,
 	decideBarUpdate,
@@ -61,28 +62,30 @@ export async function offerMenuBarApp(): Promise<void> {
 		"install",
 	);
 
-	if (choice === "skip") return;
-	if (choice === "decline") {
-		barDecline.persist();
-		log.info(
-			`Skipping ${BAR_APP_NAME}. \`buncargo bar install\` adds it later.`,
-		);
-		return;
-	}
-
-	// A failed install is one warning and nothing else: this is an optional app
-	// and the dev run behind it is already starting.
-	try {
-		log.info(`Downloading ${BAR_APP_NAME}…`);
-		const result = await installBar();
-		openBar(result.path);
-		log.done(`Installed ${BAR_APP_NAME} ${result.version}`);
-	} catch (error) {
-		log.warn(
-			`Could not install ${BAR_APP_NAME}: ${error instanceof Error ? error.message : String(error)}`,
-		);
-		log.hint("Run `buncargo bar install` to try again.");
-	}
+	await typedSwitch(choice, {
+		skip: () => {},
+		decline: () => {
+			barDecline.persist();
+			log.info(
+				`Skipping ${BAR_APP_NAME}. \`buncargo bar install\` adds it later.`,
+			);
+		},
+		install: async () => {
+			// A failed install is one warning and nothing else: this is an optional
+			// app and the dev run behind it is already starting.
+			try {
+				log.info(`Downloading ${BAR_APP_NAME}…`);
+				const result = await installBar();
+				openBar(result.path);
+				log.done(`Installed ${BAR_APP_NAME} ${result.version}`);
+			} catch (error) {
+				log.warn(
+					`Could not install ${BAR_APP_NAME}: ${getErrorMessage(error)}`,
+				);
+				log.hint("Run `buncargo bar install` to try again.");
+			}
+		},
+	});
 }
 
 /**
@@ -134,36 +137,38 @@ async function applyDecision(
 	decision: BarUpdateDecision,
 	installedVersion: string | undefined,
 ): Promise<void> {
-	if (decision.action === "none") return;
-
-	if (decision.action === "hint") {
-		log.hint(
-			`${BAR_APP_NAME} ${decision.version} is available — \`buncargo bar update\``,
-		);
-		// Remembered even though nothing was installed: the point of the hint is
-		// to be seen once, not on every run until it is acted on.
-		const cache = readBarCheckCache();
-		writeBarCheckCache({
-			checkedAt: cache?.checkedAt ?? new Date().toISOString(),
-			latest: cache?.latest,
-			hintedVersion: decision.version,
-		});
-		return;
-	}
-
-	// Required: the installed app cannot read this CLI's registry, so its menu
-	// is empty right now. Not a question — the user already said yes to the app.
-	const label = installedVersion
-		? `${BAR_APP_NAME} ${installedVersion}`
-		: BAR_APP_NAME;
-	log.info(`${label} cannot read this buncargo's runs.json — updating…`);
-	try {
-		const result = await installBar({ minRegistryVersion: REGISTRY_VERSION });
-		log.done(`Updated ${BAR_APP_NAME} to ${result.version}`);
-	} catch (error) {
-		log.warn(
-			`Could not update ${BAR_APP_NAME}: ${error instanceof Error ? error.message : String(error)}`,
-		);
-		log.hint("The menu will stay empty until it is updated.");
-	}
+	await typedSwitch(decision, "action", {
+		none: () => {},
+		hint: (hint) => {
+			log.hint(
+				`${BAR_APP_NAME} ${hint.version} is available — \`buncargo bar update\``,
+			);
+			// Remembered even though nothing was installed: the point of the hint
+			// is to be seen once, not on every run until it is acted on.
+			const cache = readBarCheckCache();
+			writeBarCheckCache({
+				checkedAt: cache?.checkedAt ?? new Date().toISOString(),
+				latest: cache?.latest,
+				hintedVersion: hint.version,
+			});
+		},
+		update: async () => {
+			// The installed app cannot read this CLI's registry, so its menu is
+			// empty right now. Not a question — the user already said yes to the
+			// app.
+			const label = installedVersion
+				? `${BAR_APP_NAME} ${installedVersion}`
+				: BAR_APP_NAME;
+			log.info(`${label} cannot read this buncargo's runs.json — updating…`);
+			try {
+				const result = await installBar({
+					minRegistryVersion: REGISTRY_VERSION,
+				});
+				log.done(`Updated ${BAR_APP_NAME} to ${result.version}`);
+			} catch (error) {
+				log.warn(`Could not update ${BAR_APP_NAME}: ${getErrorMessage(error)}`);
+				log.hint("The menu will stay empty until it is updated.");
+			}
+		},
+	});
 }

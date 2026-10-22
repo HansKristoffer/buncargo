@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promiseTimeout } from "hanzio";
 import { FileLockTimeoutError, withFileLock } from "./file-lock";
 import { inOwnUserScope } from "./process/user-scope";
 import {
@@ -255,7 +256,7 @@ export async function ensureWatchdog(
 		// spawn a second one into the gap.
 		const startedAt = Date.now();
 		while (Date.now() - startedAt < 2000) {
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			await promiseTimeout(100);
 			if (spawnError) throw spawnError;
 			if (await getWatchdogPidAsync()) return;
 		}

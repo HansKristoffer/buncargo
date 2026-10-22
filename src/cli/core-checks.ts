@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { typedSwitch, typedSwitchGroup } from "hanzio";
 import { containerRuntimeForEnv } from "../container-runtime";
 import {
 	type CheckoutFileStatus,
@@ -85,23 +86,17 @@ export function checkoutFileProblem(
 	file: CheckoutFileStatus,
 ): string | undefined {
 	if (file.refusal) return `${file.refusal}, so it is not synced`;
-	switch (file.state) {
-		case "in-sync":
-		case "missing":
-			return undefined;
-		case "local-edits":
-			return `has local edits (\`buncargo files save ${file.path}\` shares them)`;
-		case "store-newer":
-			return `is behind the file store (\`buncargo files pull ${file.path}\`)`;
-		case "conflict":
-			return file.mergeable
+	return typedSwitch(file.state, {
+		...typedSwitchGroup(file.state, ["in-sync", "missing"], () => undefined),
+		"local-edits": () =>
+			`has local edits (\`buncargo files save ${file.path}\` shares them)`,
+		"store-newer": () =>
+			`is behind the file store (\`buncargo files pull ${file.path}\`)`,
+		conflict: () =>
+			file.mergeable
 				? `and the file store both changed (\`buncargo files merge ${file.path}\` keeps both, or \`files save\` keeps yours, \`files pull --force\` the store's)`
-				: `and the file store both changed (\`buncargo files save ${file.path}\` keeps yours, \`files pull --force\` the store's)`;
-		default: {
-			const exhaustive: never = file.state;
-			throw new Error(`Unhandled checkout file state: ${String(exhaustive)}`);
-		}
-	}
+				: `and the file store both changed (\`buncargo files save ${file.path}\` keeps yours, \`files pull --force\` the store's)`,
+	});
 }
 
 /**

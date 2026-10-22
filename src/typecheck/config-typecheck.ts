@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { getErrorMessage } from "hanzio";
 import { execAsync } from "../core/process";
 import { getProjectStateDir, STATE_DIRNAME } from "../core/state-paths";
 import { findRootConfigFile } from "../loader/find-config-file";
@@ -111,9 +112,7 @@ export async function typecheckRootConfig(options: {
 			configFile,
 			success: false,
 			duration: 0,
-			errorOutput: `Could not write ${GENERATED_TSCONFIG}: ${
-				error instanceof Error ? error.message : String(error)
-			}`,
+			errorOutput: `Could not write ${GENERATED_TSCONFIG}: ${getErrorMessage(error)}`,
 		};
 	}
 
@@ -136,7 +135,7 @@ export async function typecheckRootConfig(options: {
 			errorOutput = parts.length > 0 ? parts.join("\n") : undefined;
 		}
 	} catch (error) {
-		errorOutput = error instanceof Error ? error.message : String(error);
+		errorOutput = getErrorMessage(error);
 	}
 
 	const duration = Number(((performance.now() - startTime) / 1000).toFixed(2));

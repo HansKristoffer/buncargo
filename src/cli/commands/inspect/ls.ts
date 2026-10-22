@@ -1,3 +1,4 @@
+import { getErrorMessage } from "hanzio";
 import {
 	foreignStackOf,
 	isContainerUp,
@@ -37,9 +38,7 @@ export async function handleLs(): Promise<void> {
 	try {
 		result = await sweepOrphanedContainers();
 	} catch (error) {
-		log.fail(
-			`Could not read ${getRunsPath()}: ${error instanceof Error ? error.message : String(error)}`,
-		);
+		log.fail(`Could not read ${getRunsPath()}: ${getErrorMessage(error)}`);
 	}
 	if (result.answered.length === 0) {
 		log.fail(

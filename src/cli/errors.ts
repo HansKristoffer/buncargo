@@ -1,3 +1,4 @@
+import { getErrorMessage } from "hanzio";
 /**
  * A user-facing CLI failure: printed as `❌ message` plus optional hint lines,
  * then exit 1. Throw this instead of calling `process.exit` mid-flow so the
@@ -17,7 +18,7 @@ export function toCliError(error: unknown): CliError {
 	if (error instanceof CliError) {
 		return error;
 	}
-	return new CliError(error instanceof Error ? error.message : String(error));
+	return new CliError(getErrorMessage(error));
 }
 
 /** Argv problems: the first as the message, the rest as hints, then where help is. */

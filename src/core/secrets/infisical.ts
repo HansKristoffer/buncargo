@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { getErrorMessage } from "hanzio";
 import type { AppConfig, SecretsScopeConfig } from "../../types";
 import { connectProcessEnv } from "../child-env";
 import { registerAbortCleanup } from "../deadline";
@@ -533,7 +534,7 @@ export function describeSecretsError(error: unknown): string {
 	if (error instanceof SecretsError) {
 		return error.fix ? `${error.message} Fix: ${error.fix}` : error.message;
 	}
-	return error instanceof Error ? error.message : String(error);
+	return getErrorMessage(error);
 }
 
 /**

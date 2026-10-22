@@ -1,4 +1,5 @@
 import { rmSync } from "node:fs";
+import { typedSwitch } from "hanzio";
 import type { HostsOptions } from "../../types";
 import {
 	askChoice,
@@ -281,23 +282,28 @@ export async function ensureHostsReady(input: {
 		}
 
 		if (firstRun) {
-			const choice = await promptFirstRun();
-			if (choice === "skip") {
-				return {
-					ok: false,
-					reason: "skipped",
-					message: "Skipped named-hosts setup for this run.",
-				};
-			}
-			if (choice === "decline") {
-				persistHostsDecline();
-				return {
-					ok: false,
-					reason: "declined",
-					message:
-						"Using localhost:port. Run `buncargo hosts install` to enable named URLs later.",
-				};
-			}
+			// Undefined when the developer chose to set up now.
+			const notNow: HostsEnableResult | undefined = typedSwitch(
+				await promptFirstRun(),
+				{
+					setup: () => undefined,
+					skip: () => ({
+						ok: false,
+						reason: "skipped",
+						message: "Skipped named-hosts setup for this run.",
+					}),
+					decline: () => {
+						persistHostsDecline();
+						return {
+							ok: false,
+							reason: "declined",
+							message:
+								"Using localhost:port. Run `buncargo hosts install` to enable named URLs later.",
+						};
+					},
+				},
+			);
+			if (notNow) return notNow;
 		}
 
 		try {
@@ -401,14 +407,19 @@ export async function doctorFixHosts(
 		// healthy from the outside while every named URL 404s.
 		const wedged = installed && !stale && (await isHostsDaemonWedged());
 		const fix = hostsServiceFix({ installed, stale, wedged, interactive });
-		if (fix.action === "needs-terminal") {
-			issues.push({ kind: "service", message: fix.issue });
-			return { fixed, issues };
-		}
-		if (fix.action === "install") {
-			installHostsService();
-			fixed.push(fix.note);
-		}
+		const needsTerminal = typedSwitch(fix, "action", {
+			none: () => false,
+			install: ({ note }) => {
+				installHostsService();
+				fixed.push(note);
+				return false;
+			},
+			"needs-terminal": ({ issue }) => {
+				issues.push({ kind: "service", message: issue });
+				return true;
+			},
+		});
+		if (needsTerminal) return { fixed, issues };
 		const ready = await ensureHostsDaemonRunning({
 			timeoutMs: SERVICE_START_TIMEOUT_MS,
 		});

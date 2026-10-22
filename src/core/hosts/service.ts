@@ -1,4 +1,5 @@
 import { existsSync, rmSync } from "node:fs";
+import { getErrorMessage, typedSwitch } from "hanzio";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "../registry-file";
 import {
 	chownToInvokingUser,
@@ -68,7 +69,7 @@ export const HOSTS_SERVICE_START_MESSAGE =
 
 /** Turn a raw sudo/launchctl/systemctl failure into a line the CLI can print. */
 export function toHostsUserMessage(error: unknown): string {
-	const message = error instanceof Error ? error.message : String(error);
+	const message = getErrorMessage(error);
 	if (
 		message.startsWith("Command failed:") ||
 		/Bootstrap failed/i.test(message) ||
@@ -101,9 +102,11 @@ export function resolveHostsDaemonCommand(version: string): {
  * are unsupported.
  */
 export function hostsServicePath(): string | undefined {
-	if (process.platform === "darwin") return LAUNCHD_PLIST;
-	if (process.platform === "linux") return SYSTEMD_PATH;
-	return undefined;
+	return typedSwitch(
+		process.platform,
+		{ darwin: () => LAUNCHD_PLIST, linux: () => SYSTEMD_PATH },
+		() => undefined,
+	);
 }
 
 export function isHostsServiceInstalled(): boolean {

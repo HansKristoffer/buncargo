@@ -1,3 +1,4 @@
+import { isDefined, isRecord } from "hanzio";
 import type {
 	ServiceDiagnosis,
 	ServiceDiagnosisRequest,
@@ -37,10 +38,6 @@ export interface PublishedPort {
 	protocol?: string;
 	/** Consecutive ports from `hostPort` a range publishes. Default 1. */
 	count?: number;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readString(value: unknown): string | undefined {
@@ -122,9 +119,7 @@ function readPorts(source: Record<string, unknown>): PublishedPort[] {
 	];
 	for (const candidate of candidates) {
 		if (!Array.isArray(candidate)) continue;
-		const ports = candidate
-			.map(readPort)
-			.filter((port): port is PublishedPort => port !== null);
+		const ports = candidate.map(readPort).filter(isDefined);
 		if (ports.length > 0) return ports;
 	}
 	return [];

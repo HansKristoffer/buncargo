@@ -1,5 +1,5 @@
+import { promiseTimeout } from "hanzio";
 import { isTcpPortOpen } from "../network";
-import { sleep } from "../sleep";
 import { RELOAD_STALL_MS } from "./daemon";
 import { readDaemonConfig, readDaemonPid } from "./daemon-config";
 import {
@@ -132,7 +132,7 @@ export async function waitForDaemonRoutes(
 
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) break;
-		await sleep(Math.min(ROUTE_POLL_MS, remaining));
+		await promiseTimeout(Math.min(ROUTE_POLL_MS, remaining));
 	}
 
 	// Which failure it is matters: a daemon that never answered needs a
@@ -162,7 +162,7 @@ export async function waitForDaemonHealthy(
 		if (await isHostsDaemonHealthy(port)) return true;
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) return false;
-		await sleep(Math.min(HEALTH_POLL_MS, remaining));
+		await promiseTimeout(Math.min(HEALTH_POLL_MS, remaining));
 	}
 }
 

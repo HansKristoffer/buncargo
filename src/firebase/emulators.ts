@@ -5,6 +5,8 @@
  * decisions are tested without the CLI.
  */
 
+import { isRecord } from "hanzio";
+
 /** Emulators `emulators:start --only` can name. */
 export type FirebaseEmulator =
 	| "auth"
@@ -60,9 +62,7 @@ const APP_SERVING: readonly FirebaseEmulator[] = ["hosting", "apphosting"];
 type Json = Record<string, unknown>;
 
 function record(value: unknown): Json {
-	return value && typeof value === "object" && !Array.isArray(value)
-		? (value as Json)
-		: {};
+	return isRecord(value) ? value : {};
 }
 
 function emulatorsBlock(raw: Json): Json {

@@ -1,3 +1,4 @@
+import { getErrorMessage, typedSwitch } from "hanzio";
 import {
 	BAR_APP_NAME,
 	BAR_SOURCE_VERSION,
@@ -40,17 +41,11 @@ export async function handleBar(args: string[]): Promise<void> {
 		log.fail(`${BAR_APP_NAME} is macOS only.`);
 	}
 
-	switch (subcommand) {
-		case "install":
-			await runInstall(hasFlag(args, "--source"));
-			return;
-		case "update":
-			await runUpdate();
-			return;
-		case "status":
-			await printStatus();
-			return;
-		case "open": {
+	await typedSwitch(subcommand, {
+		install: () => runInstall(hasFlag(args, "--source")),
+		update: () => runUpdate(),
+		status: () => printStatus(),
+		open: async () => {
 			const installed = findInstalledBar();
 			if (!installed) {
 				log.info(`${BAR_APP_NAME} is not installed yet — installing it now.`);
@@ -59,9 +54,8 @@ export async function handleBar(args: string[]): Promise<void> {
 			}
 			await rememberBarCli();
 			openBar(installed);
-			return;
-		}
-		case "uninstall": {
+		},
+		uninstall: async () => {
 			// Deliberately does not persist a decline: removing the app is not
 			// the same as never wanting to be asked, and the next `dev` offering
 			// it again is the honest reading of an uninstall.
@@ -71,17 +65,12 @@ export async function handleBar(args: string[]): Promise<void> {
 					? `Removed ${BAR_APP_NAME}`
 					: `${BAR_APP_NAME} was not installed`,
 			);
-			return;
-		}
-		case "reset":
+		},
+		reset: () => {
 			barDecline.clear();
 			log.done(`buncargo dev will offer ${BAR_APP_NAME} again`);
-			return;
-		default: {
-			const exhaustive: never = subcommand;
-			throw new Error(`Unhandled bar subcommand: ${String(exhaustive)}`);
-		}
-	}
+		},
+	});
 }
 
 async function runInstall(fromSource: boolean): Promise<void> {
@@ -170,8 +159,6 @@ async function printStatus(): Promise<void> {
 			`latest: ${release ? release.version : "none published"}${behind ? " — `buncargo bar update`" : ""}`,
 		);
 	} catch (error) {
-		log.line(
-			`latest: unknown (${error instanceof Error ? error.message : String(error)})`,
-		);
+		log.line(`latest: unknown (${getErrorMessage(error)})`);
 	}
 }

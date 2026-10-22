@@ -1,3 +1,4 @@
+import { typedSwitch, typedSwitchGroup } from "hanzio";
 import {
 	CONTAINER_RUNTIME_SELECTIONS,
 	containerRuntimeForEnv,
@@ -243,12 +244,22 @@ export async function handleCi(args: string[]): Promise<number> {
 
 			if (parsed.seed) {
 				const outcome = await env.runSeed({ force: true, signal });
-				if (outcome.status === "not-configured")
-					throw new CliError("--seed needs a seed block in your dev config.");
-				if (outcome.status === "failed") {
+				const failedSeed = typedSwitch(outcome, "status", {
+					"not-configured": () => {
+						throw new CliError("--seed needs a seed block in your dev config.");
+					},
+					...typedSwitchGroup(
+						outcome,
+						"status",
+						["not-needed", "succeeded"],
+						() => undefined,
+					),
+					failed: (failed) => failed.result,
+				});
+				if (failedSeed) {
 					reportContainerLoss(env);
 					return {
-						exitCode: outcome.result.exitCode || 1,
+						exitCode: failedSeed.exitCode || 1,
 						stdout: "",
 						stderr: "",
 					};

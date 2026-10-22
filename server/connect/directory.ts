@@ -1,3 +1,4 @@
+import { isTruthy } from "hanzio";
 import { newCredential } from "../../src/core/connect/credentials";
 import {
 	type Assignment,
@@ -139,7 +140,7 @@ export class ConnectionDirectory {
 							receivers.find((receiver) => receiver.tokenHash === hash(token))
 								?.id,
 					)
-					.filter((id): id is string => !!id),
+					.filter(isTruthy),
 			),
 		];
 		requireValue(recipients.length, "No recipient tokens were accepted");

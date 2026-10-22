@@ -10,8 +10,8 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
+import { promiseTimeout, typedSwitch } from "hanzio";
 import { isProcessAlive } from "../process/lifecycle";
-import { sleep } from "../sleep";
 import { getStateDir } from "../state-paths";
 import { checkoutPathError } from "./spec";
 
@@ -102,12 +102,15 @@ export function readManifest(dir: string): StoreRead {
  * exist. A store another program owns is left alone: this throws naming the fix.
  */
 export function readStoreManifest(dir: string): Manifest | undefined {
-	const read = readManifest(dir);
-	if (read.kind === "unusable")
-		throw new Error(
-			`Left the file store ${dir} alone: ${read.reason}. Update buncargo, or move the directory aside.`,
-		);
-	return read.kind === "ok" ? read.manifest : undefined;
+	return typedSwitch(readManifest(dir), "kind", {
+		absent: () => undefined,
+		unusable: ({ reason }) => {
+			throw new Error(
+				`Left the file store ${dir} alone: ${reason}. Update buncargo, or move the directory aside.`,
+			);
+		},
+		ok: ({ manifest }) => manifest,
+	});
 }
 
 /**
@@ -271,7 +274,7 @@ export async function withStoreLock<T>(
 				`The file store ${dir} is locked by pid ${who?.pid ?? "?"} on ${who?.host ?? "?"} since ${who?.createdAt ?? "?"}. If that process is gone, remove ${lockDir}.`,
 			);
 		}
-		await sleep(20);
+		await promiseTimeout(20);
 	}
 	const owner: LockOwner = {
 		pid: process.pid,

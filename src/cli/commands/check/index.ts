@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { getErrorMessage, typedSwitch } from "hanzio";
 import { childProcessEnv } from "../../../core/child-env";
 import { buncargoCli } from "../../../core/cli-entry";
 import { findMonorepoRoot } from "../../../core/ports";
@@ -197,21 +198,20 @@ export async function handleCheck(args: string[]): Promise<number> {
 
 	await ensureInstalled(root, steps.run);
 
-	let files: string[] = [];
-	if (mode === "staged") files = stagedFiles(root);
-	else if (mode === "changed") {
-		try {
-			files = changedFilesSince(root, base);
-		} catch (error) {
-			throw new CliError(
-				(error instanceof Error ? error.message : String(error)).replace(
-					"--changed",
-					"check",
-				),
-				["Pass --base=<ref>, or --all to check everything."],
-			);
-		}
-	}
+	const files: string[] = typedSwitch(mode, {
+		all: () => [],
+		staged: () => stagedFiles(root),
+		changed: () => {
+			try {
+				return changedFilesSince(root, base);
+			} catch (error) {
+				throw new CliError(
+					getErrorMessage(error).replace("--changed", "check"),
+					["Pass --base=<ref>, or --all to check everything."],
+				);
+			}
+		},
+	});
 	if (mode !== "all" && files.length === 0) {
 		console.log("nothing changed: PASS");
 		return 0;

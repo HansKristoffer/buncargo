@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import { isRecord } from "hanzio";
 import type { ExpoAppIdentity } from "../expo/app-identity";
 import type { ContainerRuntimeName } from "../types";
 import { buncargoCli, type CliInvocation } from "./cli-entry";
@@ -224,10 +225,6 @@ export interface RunTaskEntry {
 
 export function getRunsPath(): string {
 	return stateFilePath(RUNS_FILENAME);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isPort(value: unknown): boolean {

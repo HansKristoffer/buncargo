@@ -1,5 +1,6 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
+import { getErrorMessage, isOneOf, typedSwitch } from "hanzio";
 import {
 	type CheckoutFileSpec,
 	checkoutFileErrors,
@@ -129,7 +130,7 @@ const SUBCOMMANDS = [
 	"diff",
 	"export",
 	"import",
-];
+] as const;
 
 /** `options.checkoutFiles` from the config module, without building an environment. */
 async function loadCheckoutFiles(): Promise<{
@@ -176,7 +177,7 @@ export async function handleFiles(args: string[]): Promise<number> {
 	const errors = findUnknownFlags(FILES_COMMAND_SPEC, args).map(
 		(flag) => `Unknown flag: ${flag}`,
 	);
-	if (!command || !SUBCOMMANDS.includes(command))
+	if (!command || !isOneOf(SUBCOMMANDS, command))
 		errors.push(
 			command
 				? `Unknown files command: ${command}`
@@ -201,41 +202,27 @@ export async function handleFiles(args: string[]): Promise<number> {
 		}
 	if ((command === "status" || command === "export") && paths.length > 0)
 		errors.push(`Unexpected argument: ${paths[0]}`);
-	if (errors.length > 0) throw argumentsError(errors, "files");
+	// An unknown command has already added an error; the check narrows it.
+	if (errors.length > 0 || !isOneOf(SUBCOMMANDS, command))
+		throw argumentsError(errors, "files");
 
 	const { root, specs } = await loadCheckoutFiles();
 	const selected = paths.length > 0 && command !== "import" ? paths : undefined;
 	try {
-		switch (command) {
-			case "status":
-				return status(root, specs, readBooleanFlag(args, FLAGS.json));
-			case "save":
-				return await save(root, specs, selected);
-			case "pull":
-				return await pull(
-					root,
-					specs,
-					selected,
-					readBooleanFlag(args, FLAGS.force),
-				);
-			case "merge":
-				return await merge(root, specs, paths[0] ?? "", take);
-			case "diff":
-				return diff(root, specs, selected);
-			case "export":
-				return await exportFiles(
-					root,
-					specs,
-					readBooleanFlag(args, FLAGS.includeMachine),
-				);
-			case "import":
-				return await importFiles(root, specs, paths[0]);
-			default:
-				throw new CliError(`Unknown files command: ${command}`);
-		}
+		return await typedSwitch(command, {
+			status: () => status(root, specs, readBooleanFlag(args, FLAGS.json)),
+			save: () => save(root, specs, selected),
+			pull: () =>
+				pull(root, specs, selected, readBooleanFlag(args, FLAGS.force)),
+			merge: () => merge(root, specs, paths[0] ?? "", take),
+			diff: () => diff(root, specs, selected),
+			export: () =>
+				exportFiles(root, specs, readBooleanFlag(args, FLAGS.includeMachine)),
+			import: () => importFiles(root, specs, paths[0]),
+		});
 	} catch (error) {
 		if (error instanceof CliError) throw error;
-		throw new CliError(error instanceof Error ? error.message : String(error));
+		throw new CliError(getErrorMessage(error));
 	}
 }
 

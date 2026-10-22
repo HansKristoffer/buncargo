@@ -1,3 +1,4 @@
+import { getErrorMessage } from "hanzio";
 import type { AppConfig } from "../../types";
 import { withSignal } from "../deadline";
 import { formatWarn } from "../style";
@@ -49,7 +50,7 @@ export function createCaptureRestarts(
 						if (!options.signal.aborted)
 							console.warn(
 								formatWarn(
-									`Handling ${name}'s ${captured.name} failed: ${error instanceof Error ? error.message : String(error)}`,
+									`Handling ${name}'s ${captured.name} failed: ${getErrorMessage(error)}`,
 								),
 							);
 					});

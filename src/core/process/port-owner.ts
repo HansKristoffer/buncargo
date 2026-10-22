@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { platform } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
+import { promiseTimeout } from "hanzio";
 import { containerRuntimeDisplayName } from "../../container-runtime/names";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import {
@@ -538,7 +539,7 @@ export async function killPortOwnerFoundBy(
 
 	const startTime = Date.now();
 	while (Date.now() - startTime < timeout) {
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await promiseTimeout(100);
 		// Only the listeners: a full owner lookup also asks the container
 		// runtime and blocks the event loop ten times a second.
 		if (getListeningPids(port).length === 0) {
@@ -555,7 +556,7 @@ export async function killPortOwnerFoundBy(
 		if (identity && (await matchesProcessIdentityAsync(pid, identity)))
 			signalProcessTree(pid, "SIGKILL");
 	}
-	await new Promise((resolve) => setTimeout(resolve, 500));
+	await promiseTimeout(500);
 	const released = getListeningPids(port).length === 0;
 	if (verbose) {
 		console.log(

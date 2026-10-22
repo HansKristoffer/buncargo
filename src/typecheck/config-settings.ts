@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { getErrorMessage } from "hanzio";
 import {
 	validateCheckShape,
 	validatePredeployShape,
@@ -43,7 +44,7 @@ async function loadRootConfigKey<T>(
 		config = mod.default as Record<string, unknown> | undefined;
 	} catch (error) {
 		return {
-			warning: `Could not load ${file}, so its ${key} settings are not applied: ${error instanceof Error ? error.message : String(error)}`,
+			warning: `Could not load ${file}, so its ${key} settings are not applied: ${getErrorMessage(error)}`,
 			errors: [],
 		};
 	}

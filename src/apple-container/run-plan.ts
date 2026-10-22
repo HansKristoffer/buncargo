@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
+import { isRecord } from "hanzio";
 import type { ComposeDocument } from "../docker-compose";
 import type { DockerComposeNode, DockerComposeServiceRaw } from "../types";
 
@@ -174,9 +175,7 @@ function asStringArray(value: DockerComposeNode | undefined): string[] {
 function asRecord(
 	value: DockerComposeNode | undefined,
 ): Record<string, string> {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) {
-		return {};
-	}
+	if (!isRecord(value)) return {};
 	const record: Record<string, string> = {};
 	for (const [key, entry] of Object.entries(value)) {
 		if (entry === undefined || entry === null) continue;
@@ -306,8 +305,7 @@ function environmentRecord(
 }
 
 function field(node: DockerComposeNode, key: string): string | undefined {
-	if (typeof node !== "object" || node === null || Array.isArray(node))
-		return undefined;
+	if (!isRecord(node)) return undefined;
 	const value = node[key];
 	return value === undefined || value === null || value === ""
 		? undefined
@@ -413,9 +411,8 @@ function ulimitArgs(value: DockerComposeNode | undefined): string[] {
 			args.push("--ulimit", `${name}=${limit}`);
 			continue;
 		}
-		if (typeof limit === "object" && limit !== null && !Array.isArray(limit)) {
-			const soft = (limit as Record<string, unknown>).soft;
-			const hard = (limit as Record<string, unknown>).hard;
+		if (isRecord(limit)) {
+			const { soft, hard } = limit;
 			if (soft !== undefined && hard !== undefined) {
 				args.push("--ulimit", `${name}=${soft}:${hard}`);
 			}

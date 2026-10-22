@@ -1,4 +1,5 @@
 import { readdir, readFile, rm } from "node:fs/promises";
+import { getErrorMessage } from "hanzio";
 import { abortableSleep } from "../deadline";
 import { withFileLock } from "../file-lock";
 import { readCurrentProcessIdentityAsync } from "../process-identity";
@@ -108,8 +109,7 @@ function createPublications(origin: string) {
 								notice = `${result.rejectedRecipients} recipient token(s) rejected; update the sandbox secrets.`;
 							}
 						} catch (error) {
-							notice =
-								error instanceof Error ? error.message : "Publication failed";
+							notice = getErrorMessage(error, "Publication failed");
 						}
 					}),
 			);
@@ -187,7 +187,7 @@ async function runCoordinator(controller: AbortController) {
 		} catch (error) {
 			return Response.json(
 				{
-					error: error instanceof Error ? error.message : "Connection failed",
+					error: getErrorMessage(error, "Connection failed"),
 				},
 				{ status: 502 },
 			);
@@ -255,10 +255,7 @@ async function runCoordinator(controller: AbortController) {
 				} catch (error) {
 					// Never keep actionable rows from an unreachable directory.
 					snapshot = { ...snapshot, runs: [], generatedAt: Date.now() };
-					notice =
-						error instanceof Error
-							? error.message
-							: "Connection directory unavailable";
+					notice = getErrorMessage(error, "Connection directory unavailable");
 				}
 			}
 

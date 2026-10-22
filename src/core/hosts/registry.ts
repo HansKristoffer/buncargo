@@ -1,3 +1,4 @@
+import { typedSwitch } from "hanzio";
 import type { NamedHost } from "../../types";
 import { checkoutDeleted } from "../checkout-presence";
 import { withFileLock } from "../file-lock";
@@ -187,10 +188,14 @@ export async function upsertHostRoutes(
 				const claim = classifyRouteClaim(existing, route, {
 					takeover: options.takeover?.has(route.name),
 				});
-				if (claim === "conflict") {
-					throw new HostsRouteConflictError(route.hostname, existing.pid);
-				}
-				if (claim === "keep") continue;
+				const take = typedSwitch(claim, {
+					take: () => true,
+					keep: () => false,
+					conflict: () => {
+						throw new HostsRouteConflictError(route.hostname, existing.pid);
+					},
+				});
+				if (!take) continue;
 			}
 			byHost.set(route.hostname, route);
 		}

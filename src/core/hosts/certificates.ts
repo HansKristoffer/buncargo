@@ -1,4 +1,5 @@
 import { existsSync, statSync } from "node:fs";
+import { getErrorMessage, typedSwitch } from "hanzio";
 import { withFileLock } from "../file-lock";
 import { readCertNames, rememberCertNames } from "./cert-names";
 import {
@@ -73,7 +74,7 @@ export async function resolveMkcertForMint(
 	try {
 		return await (deps.download ?? ensureMkcert)();
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		const message = getErrorMessage(error);
 		throw new Error(
 			`mkcert is not available and could not be downloaded (${message}). Run \`buncargo hosts install\`.`,
 		);
@@ -202,25 +203,21 @@ export function describeCertificateShortfall(
 	shortfall: CertificateShortfall,
 	now = Date.now(),
 ): string {
-	switch (shortfall.kind) {
-		case "uncovered":
-			return `Named-hosts certificate does not cover ${shortfall.hostnames.join(", ")}. Run \`buncargo hosts install\`.`;
-		case "expiring": {
-			const day = Number.isFinite(shortfall.validTo)
-				? new Date(shortfall.validTo).toISOString().slice(0, 10)
+	return typedSwitch(shortfall, "kind", {
+		uncovered: ({ hostnames }) =>
+			`Named-hosts certificate does not cover ${hostnames.join(", ")}. Run \`buncargo hosts install\`.`,
+		expiring: ({ validTo }) => {
+			const day = Number.isFinite(validTo)
+				? new Date(validTo).toISOString().slice(0, 10)
 				: undefined;
 			const when = !day
 				? "has no readable expiry date"
-				: shortfall.validTo <= now
+				: validTo <= now
 					? `expired on ${day}`
 					: `expires on ${day}`;
 			return `Named-hosts certificate ${when}. The next \`buncargo dev\` renews it, or run \`buncargo hosts install\`.`;
-		}
-		default: {
-			const unhandled: never = shortfall;
-			return unhandled;
-		}
-	}
+		},
+	});
 }
 
 /**

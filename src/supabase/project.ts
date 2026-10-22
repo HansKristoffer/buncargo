@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { getErrorMessage, isRecord } from "hanzio";
 
 /**
  * The parts of `supabase/config.toml` the integration needs: which components
@@ -44,9 +45,7 @@ export const SUPABASE_DEFAULT_PORTS = {
 type Table = Record<string, unknown>;
 
 function table(value: unknown): Table {
-	return value && typeof value === "object" && !Array.isArray(value)
-		? (value as Table)
-		: {};
+	return isRecord(value) ? value : {};
 }
 
 function port(value: unknown, fallback: number): number {
@@ -122,7 +121,7 @@ export function readSupabaseProject(workdir: string): SupabaseProject {
 	} catch (error) {
 		return {
 			...parseSupabaseConfig("", path),
-			error: error instanceof Error ? error.message : String(error),
+			error: getErrorMessage(error),
 		};
 	}
 }

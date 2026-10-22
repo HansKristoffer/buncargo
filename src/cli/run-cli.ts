@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { typedSwitch } from "hanzio";
 import { containerRuntimeForEnv } from "../container-runtime";
 import { describeLeaseRefusal, type SkippedLeaseApp } from "../core/app-leases";
 import { withSignal } from "../core/deadline";
@@ -325,13 +326,17 @@ async function confirmDestructiveMode(
 	const what = args.reset
 		? `--reset removes ${env.projectName}'s volumes, including its database.`
 		: "--down --all stops every buncargo environment you started on this machine, including other checkouts' runs.";
-	if (gate === "refuse") {
-		throw new CliError(`${what} Refusing without a terminal.`, [
-			"Pass --yes if that is really what you want.",
-		]);
-	}
-	if (!(await askConfirm([`  ${what}`, "  Continue? [y/N]"])))
-		throw new CliError("Cancelled.");
+	await typedSwitch(gate, {
+		refuse: () => {
+			throw new CliError(`${what} Refusing without a terminal.`, [
+				"Pass --yes if that is really what you want.",
+			]);
+		},
+		confirm: async () => {
+			if (!(await askConfirm([`  ${what}`, "  Continue? [y/N]"])))
+				throw new CliError("Cancelled.");
+		},
+	});
 }
 
 /**
@@ -957,26 +962,27 @@ async function runCliSeed<
 ): Promise<number> {
 	const outcome = await env.runSeed({ force: true, signal });
 
-	if (outcome.status === "not-configured") {
-		throw new CliError("No seed command is configured.", [
-			"Add a seed block to your dev config:",
-			"  seed: { command: 'bun run run:seeder' }",
-		]);
-	}
-
-	if (outcome.status === "not-needed") {
-		throw (
-			seedSelectionError(env.seed, selectedServices, env) ??
-			new CliError("The seed did not run for this selection.")
-		);
-	}
-
-	if (outcome.status === "failed") {
-		if (outcome.result.stdout) log.hint(outcome.result.stdout);
-		return 1;
-	}
-
-	log.line();
-	log.success("Seeding complete");
-	return 0;
+	return typedSwitch(outcome, "status", {
+		"not-configured": () => {
+			throw new CliError("No seed command is configured.", [
+				"Add a seed block to your dev config:",
+				"  seed: { command: 'bun run run:seeder' }",
+			]);
+		},
+		"not-needed": () => {
+			throw (
+				seedSelectionError(env.seed, selectedServices, env) ??
+				new CliError("The seed did not run for this selection.")
+			);
+		},
+		failed: (failed) => {
+			if (failed.result.stdout) log.hint(failed.result.stdout);
+			return 1;
+		},
+		succeeded: () => {
+			log.line();
+			log.success("Seeding complete");
+			return 0;
+		},
+	});
 }

@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import { chownSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getErrorMessage } from "hanzio";
 
 /**
  * Where buncargo keeps state on disk, in one place.
@@ -191,7 +192,7 @@ export function chownToInvokingUser(
 	try {
 		chownSync(path, uid, Number.isInteger(gid) ? gid : uid);
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		const message = getErrorMessage(error);
 		const key = `${path}:${message}`;
 		if (reportedChownFailures.has(key)) return;
 		reportedChownFailures.add(key);

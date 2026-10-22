@@ -30,10 +30,8 @@ import { hostsMode, urlHostOverride } from "./runtime-flags";
  * Core utility functions shared across modules.
  */
 
-// Defined in its own leaf so the hosts daemon can wait without importing this
-// module's config machinery. Re-exported because `buncargo/core/utils` is a
-// published entry point.
-export { sleep } from "./sleep";
+// Re-exported because `buncargo/core/utils` is a published entry point.
+export { promiseTimeout as sleep } from "hanzio";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Vibe Kanban Integration

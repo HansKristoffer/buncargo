@@ -1,4 +1,5 @@
 /** Isolated end-to-end dev benchmark: real CLI/apps, deterministic fake runtime. */
+
 import { type ChildProcess, spawn } from "node:child_process";
 import {
 	chmodSync,
@@ -12,6 +13,7 @@ import {
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { promiseTimeout } from "hanzio";
 import { computeBaseOffset } from "../src/core/port-allocation";
 import { terminateOwnedProcess } from "../src/core/process/terminate";
 import { readProcessIdentity } from "../src/core/process-identity";
@@ -64,7 +66,6 @@ for (const [name, value] of Object.entries({
 		throw new Error(`Invalid ${name}`);
 const root = mkdtempSync(join(tmpdir(), "buncargo startup benchmark "));
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const children = new Set<ChildProcess>();
 const cold: Result[] = [];
 const cleanups: (() => void)[] = [];
@@ -270,7 +271,7 @@ console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
 			} catch {}
 			if (performance.now() > deadline)
 				throw new Error("Reuse fixture never started");
-			await sleep(10);
+			await promiseTimeout(10);
 		}
 	}
 
@@ -399,7 +400,7 @@ console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
 								: readyResponseMs !== undefined))
 					)
 						break;
-					await sleep(10);
+					await promiseTimeout(10);
 				}
 				if (
 					!report ||

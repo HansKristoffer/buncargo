@@ -42,8 +42,9 @@ A member that is always set is required in its type and called directly. A `?.`,
 value the type guarantees hides the next real optional among the noise. The repo compiles without
 `noUncheckedIndexedAccess`, so `list[i]` is typed as the element: a guard on it is a decision
 about an empty list, made in plain sight, never a `!`, a cast or a `?? fallback` that a budget
-check then reads as a number. Types are inferred unless another module needs the name. A `switch`
-over a closed union ends in a `never` default; `any` and a cast that silences the compiler get
+check then reads as a number. Types are inferred unless another module needs the name. A branch
+over a closed union is a hanzio `typedSwitch` (or a `switch` ending in `assertNever` where
+control flow leaves the switch); `any` and a cast that silences the compiler get
 fixed at the type's source.
 
 ## Pure decisions, I/O at the edges

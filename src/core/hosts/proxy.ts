@@ -1,4 +1,5 @@
 import type { Server } from "bun";
+import { getErrorMessage } from "hanzio";
 import {
 	createUpstreamResolver,
 	describeUpstreamFamilies,
@@ -234,7 +235,7 @@ export function createProxyFetch(input: {
 		} catch (error) {
 			// Re-probe next time: the family we remembered just stopped serving.
 			upstream.forget(port);
-			const message = error instanceof Error ? error.message : String(error);
+			const message = getErrorMessage(error);
 			return new Response(
 				`Upstream ${hostname} (${port}) is not reachable: ${message}\n`,
 				{

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { basename, join } from "node:path";
 import fg from "fast-glob";
+import { getErrorMessage } from "hanzio";
 import { execAsync } from "../core/process";
 import { readWorkspaceGraph, selectChangedWorkspaces } from "./changed";
 import {
@@ -276,7 +277,7 @@ async function resolveIncludedWorkspaces(
 				} catch (error) {
 					problems.push({
 						workspace: path,
-						message: error instanceof Error ? error.message : String(error),
+						message: getErrorMessage(error),
 					});
 					continue;
 				}

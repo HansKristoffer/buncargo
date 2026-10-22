@@ -1,4 +1,5 @@
 import type { IBufferCell, IBufferLine } from "@xterm/headless";
+import { typedSwitch } from "hanzio";
 import pc from "picocolors";
 import type { AppState, OutputLine } from "../../core/process/run-output";
 import { colorizeName } from "../../core/style";
@@ -192,14 +193,11 @@ export function renderOverview(
 	const rows = visible.map((line) => {
 		const time = pc.dim(line.time.toTimeString().slice(0, 8));
 		const name = `${colorizeName(line.app)}${" ".repeat(Math.max(0, options.nameWidth - line.app.length))}`;
-		const text =
-			line.level === "error"
-				? pc.red(line.text)
-				: line.level === "warn"
-					? pc.yellow(line.text)
-					: line.event
-						? pc.dim(line.text)
-						: line.text;
+		const text = typedSwitch(line.level ?? "output", {
+			error: () => pc.red(line.text),
+			warn: () => pc.yellow(line.text),
+			output: () => (line.event ? pc.dim(line.text) : line.text),
+		});
 		return fit(`${time} ${name}  ${text}`, options.width);
 	});
 	while (rows.length < options.height) rows.unshift(" ".repeat(options.width));

@@ -8,6 +8,7 @@ import {
 	rmSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { escapeRegExp, typedSwitch } from "hanzio";
 import { mkcertPathOverride, mkcertVersion } from "../runtime-flags";
 import { chownToInvokingUser, resolveUserHome } from "../state-paths";
 import {
@@ -54,17 +55,15 @@ export function resolvedMkcertPath(): string | undefined {
 function mkcertAssetName(version: string): string {
 	if (process.arch !== "arm64" && process.arch !== "x64")
 		throw new Error(`mkcert download is not supported on ${process.arch}`);
-	if (process.platform === "darwin") {
-		return process.arch === "arm64"
-			? `mkcert-${version}-darwin-arm64`
-			: `mkcert-${version}-darwin-amd64`;
-	}
-	if (process.platform === "linux") {
-		return process.arch === "arm64"
-			? `mkcert-${version}-linux-arm64`
-			: `mkcert-${version}-linux-amd64`;
-	}
-	throw new Error(`mkcert download is not supported on ${process.platform}`);
+	const os = typedSwitch(
+		process.platform,
+		{ darwin: () => "darwin", linux: () => "linux" },
+		(platform) => {
+			throw new Error(`mkcert download is not supported on ${platform}`);
+		},
+	);
+	const arch = process.arch === "arm64" ? "arm64" : "amd64";
+	return `mkcert-${version}-${os}-${arch}`;
 }
 
 export async function ensureMkcert(): Promise<string> {
@@ -79,7 +78,7 @@ export async function ensureMkcert(): Promise<string> {
 			: cachedMkcertBinPath(version);
 	const asset = mkcertAssetName(version);
 	const { installTool } = await import("../tool-install");
-	const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const escaped = escapeRegExp(version);
 	return installTool({
 		to: dest,
 		url: `${MKCERT_RELEASE_BASE}download/${version}/${asset}`,
@@ -106,18 +105,23 @@ export function caRootCandidates(
 	const explicit = env.CAROOT?.trim();
 	if (explicit) return [explicit];
 
-	if (process.platform === "darwin") {
-		return [join(home, "Library", "Application Support", "mkcert")];
-	}
-	if (process.platform === "win32") {
-		const localAppData = env.LOCALAPPDATA?.trim();
-		return localAppData ? [join(localAppData, "mkcert")] : [];
-	}
-	const xdg = env.XDG_DATA_HOME?.trim();
-	return [
-		...(xdg ? [join(xdg, "mkcert")] : []),
-		join(home, ".local", "share", "mkcert"),
-	];
+	return typedSwitch(
+		process.platform,
+		{
+			darwin: () => [join(home, "Library", "Application Support", "mkcert")],
+			win32: () => {
+				const localAppData = env.LOCALAPPDATA?.trim();
+				return localAppData ? [join(localAppData, "mkcert")] : [];
+			},
+		},
+		() => {
+			const xdg = env.XDG_DATA_HOME?.trim();
+			return [
+				...(xdg ? [join(xdg, "mkcert")] : []),
+				join(home, ".local", "share", "mkcert"),
+			];
+		},
+	);
 }
 
 /** Ask mkcert itself. Only reached when the CA is not where it should be. */

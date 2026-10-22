@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { promiseTimeout } from "hanzio";
 import { isTcpPortOpen } from "../core/network";
-import { sleep } from "../core/sleep";
 
 /**
  * Expo apps, and the iOS simulator that shows one per checkout.
@@ -151,7 +151,7 @@ export async function openExpoSimulator(
 		}
 		if (Date.now() > deadline)
 			throw new Error(`Metro did not start listening on :${input.port}.`);
-		await sleep(500);
+		await promiseTimeout(500);
 	}
 
 	const url = chooseLaunchUrl({

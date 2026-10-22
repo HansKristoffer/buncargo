@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { typedSwitch, typedSwitchGroup } from "hanzio";
 import { abortableSleep, remainingTime } from "../core/deadline";
 import { execAsync } from "../core/process/exec";
 import { askConfirm, isInteractive } from "../core/prompt";
@@ -85,39 +86,30 @@ export function isDockerDaemonRunning(binary?: string): boolean {
 }
 
 export function remediationFor(runtime: DockerRuntime): string {
-	switch (runtime) {
-		case "orbstack":
-			return "Start OrbStack (open -a OrbStack) and try again.";
-		case "docker-desktop":
-			return "Start Docker Desktop (open -a Docker) and try again.";
-		case "docker-engine":
-			return "Start the Docker service (sudo systemctl start docker) and try again.";
-		case "colima":
-			return "Run `colima start` and try again.";
-		case "rancher":
-			return 'Start Rancher Desktop (open -a "Rancher Desktop") and try again.';
-		case "podman":
-			return "Start the Podman machine (`podman machine start`) and try again.";
-		default:
-			return "Start Docker and try again.";
-	}
+	return typedSwitch(runtime, {
+		orbstack: () => "Start OrbStack (open -a OrbStack) and try again.",
+		"docker-desktop": () =>
+			"Start Docker Desktop (open -a Docker) and try again.",
+		"docker-engine": () =>
+			"Start the Docker service (sudo systemctl start docker) and try again.",
+		colima: () => "Run `colima start` and try again.",
+		rancher: () =>
+			'Start Rancher Desktop (open -a "Rancher Desktop") and try again.',
+		podman: () =>
+			"Start the Podman machine (`podman machine start`) and try again.",
+		unknown: () => "Start Docker and try again.",
+	});
 }
 
 function runtimeStartCommand(runtime: DockerRuntime): string[] | undefined {
-	switch (runtime) {
-		case "orbstack":
-			return ["open", "-a", "OrbStack"];
-		case "docker-desktop":
-			return ["open", "-a", "Docker"];
-		case "colima":
-			return ["colima", "start"];
-		case "rancher":
-			return ["open", "-a", "Rancher Desktop"];
-		case "podman":
-			return ["podman", "machine", "start"];
-		default:
-			return undefined;
-	}
+	return typedSwitch(runtime, {
+		orbstack: () => ["open", "-a", "OrbStack"],
+		"docker-desktop": () => ["open", "-a", "Docker"],
+		colima: () => ["colima", "start"],
+		rancher: () => ["open", "-a", "Rancher Desktop"],
+		podman: () => ["podman", "machine", "start"],
+		...typedSwitchGroup(runtime, ["docker-engine", "unknown"], () => undefined),
+	});
 }
 
 /**

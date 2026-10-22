@@ -21,7 +21,7 @@ pieces it orchestrates.
   arguments, skipping `--flag value` pairs, so no command re-walks argv itself.
 - `commands/registry.ts` is the single source for top-level command names (`CliCommandName`, used
   by `bin.ts`'s command table and by `help.ts`) and for the `hosts` and `bar` subcommands. Every
-  switch over them ends in a `never` default.
+  dispatch over them is an exhaustive hanzio `typedSwitch`.
 - `bin.ts` dispatches through `hanzio/cli` (`defineCli`), and every command is `raw`: it gets its
   arguments unparsed and keeps its own spec, help and exit codes. A command with a Zod `input`
   would load `zod` on every run, which a raw-only CLI never does, and hanzio's generated help has

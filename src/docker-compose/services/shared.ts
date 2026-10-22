@@ -1,3 +1,4 @@
+import { typedSwitch, typedSwitchGroup } from "hanzio";
 import type {
 	DockerComposeHealthcheckRaw,
 	DockerPresetName,
@@ -19,22 +20,13 @@ function resolveInternalPort(
 	fallback: number,
 ): number {
 	if (!preset) return fallback;
-	switch (preset) {
-		case "postgres":
-			return 5432;
-		case "redis":
-			return 6379;
-		case "clickhouse":
-			return 8123;
-		case "mailpit":
-			return 8025;
-		case "typesense":
-			return 8108;
-		default: {
-			const _exhaustive: never = preset;
-			return _exhaustive;
-		}
-	}
+	return typedSwitch(preset, {
+		postgres: () => 5432,
+		redis: () => 6379,
+		clickhouse: () => 8123,
+		mailpit: () => 8025,
+		typesense: () => 8108,
+	});
 }
 
 function resolveSecondaryInternalPort(
@@ -42,20 +34,15 @@ function resolveSecondaryInternalPort(
 	fallback: number,
 ): number {
 	if (!preset) return fallback;
-	switch (preset) {
-		case "clickhouse":
-			return 9000;
-		case "mailpit":
-			return 1025;
-		case "postgres":
-		case "redis":
-		case "typesense":
-			return fallback;
-		default: {
-			const _exhaustive: never = preset;
-			return _exhaustive;
-		}
-	}
+	return typedSwitch(preset, {
+		clickhouse: () => 9000,
+		mailpit: () => 1025,
+		...typedSwitchGroup(
+			preset,
+			["postgres", "redis", "typesense"],
+			() => fallback,
+		),
+	});
 }
 
 export function getDefaultPortBindings(
@@ -94,39 +81,30 @@ export function resolveHealthcheck(
 	if (typeof healthCheck === "function") return fallback;
 	if (!healthCheck) return fallback;
 
-	switch (healthCheck) {
-		case "pg_isready":
-			// The image's bootstrap server accepts Unix sockets before TCP is ready.
-			return {
-				test: [
-					"CMD-SHELL",
-					`pg_isready -h 127.0.0.1 -U ${options.user ?? "postgres"}`,
-				],
-				...DEFAULT_HEALTHCHECK_SETTINGS,
-			};
-		case "redis-cli":
-			return {
-				test: ["CMD", "redis-cli", "ping"],
-				...DEFAULT_HEALTHCHECK_SETTINGS,
-			};
-		case "http":
-			return {
-				test: [
-					"CMD-SHELL",
-					`wget -qO- http://127.0.0.1:${options.internalPort}/ping || exit 1`,
-				],
-				...DEFAULT_HEALTHCHECK_SETTINGS,
-			};
-		case "tcp":
-			// A TCP connect is what buncargo's own readiness poll does from the host
-			// (`isTcpPortOpen`). There is no portable in-container equivalent - `nc`
-			// and `/dev/tcp` are both missing from common base images - so emit no
-			// compose healthcheck rather than the preset's, which the caller opted out of.
-			return undefined;
-		default: {
-			const _exhaustive: never = healthCheck;
-			void _exhaustive;
-			return fallback;
-		}
-	}
+	return typedSwitch(healthCheck, {
+		// The image's bootstrap server accepts Unix sockets before TCP is ready.
+		pg_isready: () => ({
+			test: [
+				"CMD-SHELL",
+				`pg_isready -h 127.0.0.1 -U ${options.user ?? "postgres"}`,
+			],
+			...DEFAULT_HEALTHCHECK_SETTINGS,
+		}),
+		"redis-cli": () => ({
+			test: ["CMD", "redis-cli", "ping"],
+			...DEFAULT_HEALTHCHECK_SETTINGS,
+		}),
+		http: () => ({
+			test: [
+				"CMD-SHELL",
+				`wget -qO- http://127.0.0.1:${options.internalPort}/ping || exit 1`,
+			],
+			...DEFAULT_HEALTHCHECK_SETTINGS,
+		}),
+		// A TCP connect is what buncargo's own readiness poll does from the host
+		// (`isTcpPortOpen`). There is no portable in-container equivalent - `nc`
+		// and `/dev/tcp` are both missing from common base images - so emit no
+		// compose healthcheck rather than the preset's, which the caller opted out of.
+		tcp: () => undefined,
+	});
 }

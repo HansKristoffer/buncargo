@@ -1,3 +1,4 @@
+import { isRecord } from "hanzio";
 import { inferDockerPreset, isExternalService } from "../core/service-presets";
 import type {
 	ComposeDocument,
@@ -20,12 +21,6 @@ import { getDefaultPortBindings } from "./services/shared";
 
 export type { ComposeDocument, ComposeIdentity };
 
-function isObject(
-	value: DockerComposeNode,
-): value is Record<string, DockerComposeNode | undefined> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function deepMergeNode(
 	base: DockerComposeNode,
 	override: DockerComposeNode,
@@ -33,7 +28,7 @@ function deepMergeNode(
 	if (Array.isArray(base) || Array.isArray(override)) {
 		return override;
 	}
-	if (!isObject(base) || !isObject(override)) {
+	if (!isRecord(base) || !isRecord(override)) {
 		return override;
 	}
 

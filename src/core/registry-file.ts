@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { getErrorMessage, isRecord } from "hanzio";
 import { isProcessAlive } from "./process/lifecycle";
 
 /**
@@ -36,10 +37,6 @@ function serialize(document: unknown): string {
 
 /** Narrow parsed JSON to `T`, or return `undefined` to treat the file as absent. */
 export type JsonValidator<T> = (value: unknown) => T | undefined;
-
-function describeError(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
 
 function parse<T>(raw: string, validate: JsonValidator<T>): T | undefined {
 	try {
@@ -226,7 +223,7 @@ export function defineListRegistry<T>(options: {
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
 				if (!readOptions.strict) return [];
-				throw new StateFileUnreadableError(path, describeError(error));
+				throw new StateFileUnreadableError(path, getErrorMessage(error));
 			}
 			checkVersion(path, raw);
 			const entries = parse(raw, validate);
@@ -247,10 +244,7 @@ export function defineListRegistry<T>(options: {
 			if (raw !== undefined) {
 				const value = checkVersion(path, raw);
 				const valid = validate(value);
-				const payload =
-					typeof value === "object" && value !== null
-						? (value as Record<string, unknown>)[key]
-						: undefined;
+				const payload = isRecord(value) ? value[key] : undefined;
 				if (
 					!valid ||
 					!Array.isArray(payload) ||

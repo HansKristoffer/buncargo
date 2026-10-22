@@ -1,11 +1,6 @@
+import { isRecord } from "hanzio";
 import type { DockerComposeNode } from "../types";
 import type { ComposeDocument } from "./model";
-
-function isObject(
-	value: DockerComposeNode,
-): value is Record<string, DockerComposeNode | undefined> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function formatScalar(value: string | number | boolean | null): string {
 	if (value === null) return "null";
@@ -23,7 +18,7 @@ function sortNode(node: DockerComposeNode): DockerComposeNode {
 	if (Array.isArray(node)) {
 		return node.map(sortNode);
 	}
-	if (isObject(node)) {
+	if (isRecord(node)) {
 		const sorted: Record<string, DockerComposeNode | undefined> = {};
 		for (const key of Object.keys(node).sort()) {
 			const value = node[key];

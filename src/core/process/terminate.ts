@@ -1,3 +1,4 @@
+import { typedSwitch } from "hanzio";
 import { abortableSleep } from "../deadline";
 import {
 	checkProcessIdentityAsync,
@@ -97,6 +98,24 @@ export class ProcessIdentityUnreadable extends Error {
 	}
 }
 
+/**
+ * Whether to go on and send `signal`: false when `pid` is no longer ours.
+ * Throws {@link ProcessIdentityUnreadable} when that cannot be read.
+ */
+function confirmedOurs(
+	check: ProcessIdentityCheck,
+	pid: number,
+	signal: NodeJS.Signals,
+): boolean {
+	return typedSwitch(check, {
+		match: () => true,
+		mismatch: () => false,
+		unreadable: () => {
+			throw new ProcessIdentityUnreadable(pid, signal);
+		},
+	});
+}
+
 function signalGroup(
 	child: AppChild | DetachedApp,
 	signal: NodeJS.Signals,
@@ -127,9 +146,7 @@ async function signalUntilGone(
 		await abortableSleep(25);
 	if (!ownedProcessAlive(child)) return;
 	const ours = await stillOurs(child);
-	if (ours === "unreadable")
-		throw new ProcessIdentityUnreadable(child.pid ?? 0, "SIGKILL");
-	if (ours === "mismatch") return;
+	if (!confirmedOurs(ours, child.pid ?? 0, "SIGKILL")) return;
 	signalGroup(child, "SIGKILL");
 	const killDeadline = performance.now() + 1000;
 	while (ownedProcessAlive(child) && performance.now() < killDeadline)
@@ -156,9 +173,7 @@ export async function terminateOwnedProcess(
 	try {
 		if (!ownedProcessAlive(child)) return;
 		const ours = await stillOurs(child);
-		if (ours === "unreadable")
-			throw new ProcessIdentityUnreadable(child.pid ?? 0, initialSignal);
-		if (ours === "mismatch") return;
+		if (!confirmedOurs(ours, child.pid ?? 0, initialSignal)) return;
 		await signalUntilGone(child, graceMs, initialSignal);
 	} catch (error) {
 		if (!(error instanceof ProcessIdentityUnreadable)) throw error;
@@ -187,9 +202,7 @@ export async function terminateProcessGroup(
 	graceMs = DEFAULT_STOP_GRACE_MS,
 ): Promise<boolean> {
 	const check = await checkProcessIdentityAsync(pid, identity);
-	if (check === "unreadable")
-		throw new ProcessIdentityUnreadable(pid, "SIGTERM");
-	if (check === "mismatch") return false;
+	if (!confirmedOurs(check, pid, "SIGTERM")) return false;
 	await signalUntilGone(new DetachedApp(pid, identity), graceMs, "SIGTERM");
 	return true;
 }

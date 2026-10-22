@@ -7,6 +7,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { getErrorMessage } from "hanzio";
 import { toPortMap, toUrlMap } from "../core/ports";
 import type {
 	AppConfig,
@@ -78,7 +79,7 @@ export function renderGeneratedFiles<
 			content = file.render(renderCtx);
 		} catch (error) {
 			throw new Error(
-				`Rendering ${file.path} failed: ${error instanceof Error ? error.message : String(error)}`,
+				`Rendering ${file.path} failed: ${getErrorMessage(error)}`,
 			);
 		}
 		return writeIfChanged(resolve(ctx.root, file.path), content)
