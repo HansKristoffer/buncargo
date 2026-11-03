@@ -1,5 +1,5 @@
 import { withDeadline, withSignal } from "../../core/deadline";
-import { serviceCredentials } from "../../core/service-identity";
+import { postgresCredentials } from "../../core/service-identity";
 import type { AnyDevEnvironment } from "../../types";
 import { CliError } from "../errors";
 import {
@@ -64,9 +64,11 @@ export async function databaseOverrides(
 		);
 	const port = (env.ports as Record<string, number | undefined>)[postgres.name];
 	if (port === undefined)
-		throw new CliError(`${postgres.name} has no port in ${env.projectName}.`);
-	const credentials = serviceCredentials("postgres", postgres.service);
-	const ownDatabase = credentials?.database ?? "postgres";
+		throw new CliError(`${postgres.name} has no port in ${env.projectName}.`, [
+			"Give the service a port in dev.config.ts, as service.postgres() does.",
+		]);
+	const credentials = postgresCredentials(postgres.service);
+	const ownDatabase = credentials.database;
 
 	const exists = await deps.exists(
 		databaseUrl(credentials, port, ownDatabase),

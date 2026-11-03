@@ -119,9 +119,10 @@ pieces it orchestrates.
   because it takes seconds on a crowded machine.
 - `commands/sql.ts` runs the preset's own client inside the service's container through
   `interactiveExecArgv` (the one adapter method that hands back argv for inherited stdio). The
-  client runs in the container, so a host file (`-- -f file`) and stdin are read by `sql` and fed
-  to the client's stdin; stdin is read only when no query or client option gives it work, because
-  reading it is what an interactive shell would block on. `--json` for Postgres wraps the query in
+  client runs in the container, so psql's `-- -f file` is read on the host and fed to its stdin
+  as bytes. Piped stdin goes to psql unread (`-f -`, so a dump of any size or encoding passes
+  through as it did); `sql` reads it only for `--json`, which has to see the SQL to decide whether
+  to wrap it. Grouped psql options that do their own work (`-lqt`, `-tAc`) leave stdin alone. `--json` for Postgres wraps the query in
   `json_agg` only when `sql-statements.ts` reads it, outside strings, quoted identifiers and
   comments, as one `SELECT`/`WITH` that writes nothing; anything else, or anything it cannot read
   with certainty, runs plain with a note. Wrapped, an `UPDATE` or a second statement was a syntax

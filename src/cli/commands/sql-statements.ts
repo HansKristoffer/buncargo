@@ -186,6 +186,18 @@ export function planJsonQuery(text: string): JsonQueryPlan {
 }
 
 /**
+ * Whether the `LINE` at `index` belongs to a query a function ran: psql
+ * prints that query as `QUERY:` in the same error, and its lines are its own.
+ */
+function quotesInnerQuery(lines: readonly string[], index: number): boolean {
+	for (const line of lines.slice(index + 1)) {
+		if (line.startsWith("ERROR:")) return false;
+		if (line.startsWith("QUERY:")) return true;
+	}
+	return false;
+}
+
+/**
  * psql's error output for a wrapped query, numbered as the user wrote it.
  *
  * The wrapper's first line shifts every `LINE n:` by one; the caret line
@@ -195,7 +207,7 @@ export function unwrapJsonErrors(stderr: string): string {
 	const lines = stderr.split("\n");
 	for (let index = 0; index < lines.length; index++) {
 		const match = /^LINE (\d+):/.exec(lines[index] as string);
-		if (!match) continue;
+		if (!match || quotesInnerQuery(lines, index)) continue;
 		const wrapped = Number(match[1]);
 		const own = String(wrapped - 1);
 		const shrink = String(wrapped).length - own.length;

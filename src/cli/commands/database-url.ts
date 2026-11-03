@@ -19,13 +19,13 @@ export function assertDatabaseName(name: string, flag: string): void {
 
 /** The host-side URL of one database in this checkout's Postgres. */
 export function databaseUrl(
-	credentials: Credentials | undefined,
+	credentials: Credentials,
 	port: number,
 	database: string,
 ): string {
 	const url = new URL(`postgresql://localhost:${port}`);
-	url.username = credentials?.user ?? "postgres";
-	url.password = credentials?.password ?? "postgres";
+	url.username = credentials.user;
+	url.password = credentials.password;
 	url.pathname = `/${encodeURIComponent(database)}`;
 	return url.toString();
 }
@@ -65,8 +65,14 @@ function pointsAt(value: string, target: DatabaseTarget): URL | undefined {
 	const url = new URL(value);
 	const samePlace =
 		target.hosts.has(url.hostname) && url.port === String(target.port);
-	const database = decodeURIComponent(url.pathname.slice(1));
-	return samePlace && database === target.database ? url : undefined;
+	if (!samePlace) return undefined;
+	try {
+		const database = decodeURIComponent(url.pathname.slice(1));
+		return database === target.database ? url : undefined;
+	} catch {
+		// A malformed escape names no database of ours.
+		return undefined;
+	}
 }
 
 /**

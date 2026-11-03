@@ -2,13 +2,14 @@ import { resolve } from "node:path";
 import { typedSwitch } from "hanzio";
 import { splitCommandLine } from "../../apple-container/run-plan";
 import { containerRuntimeForEnv } from "../../container-runtime";
+import { CommandSignalError } from "../../core/process";
 import { isInteractive } from "../../core/prompt";
 import {
 	type Credentials,
+	postgresCredentials,
 	serviceCredentials,
 } from "../../core/service-identity";
 import { inferDockerPreset } from "../../core/service-presets";
-import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
 import { loadDevEnv } from "../../loader";
 import type {
 	AnyDevEnvironment,
@@ -126,7 +127,7 @@ const SCRATCH_NAME = /^[a-z][a-z0-9_]{0,40}$/;
  * create: a migration check wants an empty database, not last run's.
  */
 export function scratchCommand(
-	credentials: Credentials | undefined,
+	credentials: Credentials,
 	name: string,
 	action: "create" | "drop",
 ): string[] {
@@ -134,21 +135,17 @@ export function scratchCommand(
 		throw new CliError(
 			`Scratch database names are lowercase letters, digits and _, starting with a letter: got "${name}".`,
 		);
-	const { user, password } = credentials ?? {
-		user: "postgres",
-		password: "postgres",
-	};
 	const database = `scratch_${name}`;
 	return [
 		"env",
-		`PGPASSWORD=${password}`,
+		`PGPASSWORD=${credentials.password}`,
 		// "does not exist, skipping" is the expected first run, not news.
 		"PGOPTIONS=-c client_min_messages=warning",
 		"psql",
 		"-X",
 		"-q",
 		"-U",
-		user,
+		credentials.user,
 		"-d",
 		"postgres",
 		"-v",
@@ -161,7 +158,7 @@ export function scratchCommand(
 
 /** The host-side URL of a scratch database, for the caller's own tools. */
 export function scratchUrl(
-	credentials: Credentials | undefined,
+	credentials: Credentials,
 	port: number,
 	name: string,
 ): string {
@@ -171,15 +168,21 @@ export function scratchUrl(
 /** Presets picked when no service is named: the SQL databases. */
 const DEFAULT_PRESETS: readonly DockerPresetName[] = ["postgres", "clickhouse"];
 
-/** SQL for the client: one `-c` query, or a script fed on its stdin. */
+/**
+ * SQL for the client: one `-c` query, or a script on its stdin. A script's
+ * `bytes` are fed as they are (a host file); without them the client reads
+ * the caller's own stdin, unread. `text` is there only when `--json` had to
+ * read the script to decide whether to wrap it.
+ */
 export type SqlInput =
-	{ kind: "query"; text: string } | { kind: "script"; text: string };
+	| { kind: "query"; text: string }
+	| { kind: "script"; bytes?: Uint8Array; text?: string };
 
 export interface SqlClientInvocation {
 	/** Argv inside the service's container. */
 	command: string[];
-	/** Text for the client's stdin; inherited when undefined. */
-	stdin?: string;
+	/** Bytes for the client's stdin; inherited when undefined. */
+	stdin?: Uint8Array;
 	/** `--json` wrapped the query in `json_agg`. */
 	jsonWrapped: boolean;
 	/** Why `--json` ran the SQL plain instead. */
@@ -208,7 +211,7 @@ export function sqlClientCommand(
 		throw new CliError(
 			"--json needs SQL: pass --command, -- -f <file>, or pipe it on stdin.",
 		);
-	const script = input?.kind === "script" ? input.text : undefined;
+	const script = input?.kind === "script" ? input : undefined;
 
 	return typedSwitch(
 		preset,
@@ -232,7 +235,10 @@ export function sqlClientCommand(
 				if (input === undefined)
 					return { command: [...psql, ...clientArgs], jsonWrapped: false };
 
-				const plan = json ? planJsonQuery(input.text) : undefined;
+				const plan =
+					json && input.text !== undefined
+						? planJsonQuery(input.text)
+						: undefined;
 				const stopOnError = ["-v", "ON_ERROR_STOP=1"];
 				if (plan?.wrap)
 					return {
@@ -251,10 +257,11 @@ export function sqlClientCommand(
 				const plainReason = plan?.wrap === false ? plan.reason : undefined;
 				// `-f -` rather than a bare stdin: psql then names the line of
 				// an error (`psql:<stdin>:3: ERROR`).
-				const source = script === undefined ? ["-c", input.text] : ["-f", "-"];
+				const source =
+					input.kind === "query" ? ["-c", input.text] : ["-f", "-"];
 				return {
 					command: [...psql, ...stopOnError, ...clientArgs, ...source],
-					stdin: script,
+					stdin: script?.bytes,
 					jsonWrapped: false,
 					plainReason,
 				};
@@ -277,7 +284,7 @@ export function sqlClientCommand(
 				const format = json ? ["--format", "JSONEachRow"] : [];
 				return {
 					command: [...client, ...query, ...format, ...clientArgs],
-					stdin: script,
+					stdin: script?.bytes,
 					jsonWrapped: false,
 				};
 			},
@@ -287,7 +294,7 @@ export function sqlClientCommand(
 					input?.kind === "query" ? splitCommandLine(input.text) : [];
 				return {
 					command: ["redis-cli", ...clientArgs, ...words],
-					stdin: script,
+					stdin: script?.bytes,
 					jsonWrapped: false,
 				};
 			},
@@ -299,9 +306,9 @@ export function sqlClientCommand(
 }
 
 /**
- * Pull psql's `-f <file>` out of the client arguments: the client runs in the
- * container and cannot see a host path, so the files are read here and fed on
- * its stdin instead. `-f -` is stdin itself.
+ * Pull psql's `-f <file>` out of the client arguments: psql runs in the
+ * container and cannot see a host path, so the files are read here and fed
+ * on its stdin instead. `-f -` is stdin itself.
  */
 export function extractScriptFiles(clientArgs: readonly string[]): {
 	files: string[];
@@ -327,17 +334,28 @@ export function extractScriptFiles(clientArgs: readonly string[]): {
 	return { files, rest };
 }
 
-/** Client arguments that give it its own work, so stdin is not read for it. */
-function clientHasOwnInput(clientArgs: readonly string[]): boolean {
-	return clientArgs.some(
-		(arg) =>
-			arg === "-c" ||
-			arg === "-l" ||
-			arg === "--list" ||
-			arg.startsWith("--command") ||
-			arg === "--help" ||
-			arg === "--version",
-	);
+/** psql short options that take a value: the rest of their group is it. */
+const PSQL_VALUE_OPTIONS = new Set("cdfFhLopPRTUv");
+/** psql short options that do their own work instead of reading a script. */
+const PSQL_OWN_WORK = new Set("clV?");
+
+/**
+ * Client arguments that give psql its own work (`-c`, `-l`, `--version`), so
+ * stdin is left to it rather than run as a script. Short options may be
+ * grouped (`-lqt`, `-tAc "…"`).
+ */
+export function psqlHasOwnInput(clientArgs: readonly string[]): boolean {
+	return clientArgs.some((arg) => {
+		const long = ["--command", "--list", "--help", "--version"];
+		if (arg.startsWith("--"))
+			return long.some((name) => arg === name || arg.startsWith(`${name}=`));
+		if (!arg.startsWith("-")) return false;
+		for (const letter of arg.slice(1)) {
+			if (PSQL_OWN_WORK.has(letter)) return true;
+			if (PSQL_VALUE_OPTIONS.has(letter)) return false;
+		}
+		return false;
+	});
 }
 
 /** The named service, or the first SQL database in the config. */
@@ -459,15 +477,16 @@ export interface SqlDeps {
 	): Promise<string[] | undefined>;
 	/** Start one service, claimed like `dev --up-only` and held the same way. */
 	startService(env: AnyDevEnvironment, serviceName: string): Promise<void>;
-	/** All of stdin, or undefined when it is a terminal. */
-	readStdin(): Promise<string | undefined>;
-	readFile(path: string): Promise<string>;
+	stdinIsTerminal(): boolean;
+	/** All of stdin; only called when it is not a terminal. */
+	readStdin(): Promise<Uint8Array>;
+	readFile(path: string): Promise<Uint8Array>;
 	isInteractive(): boolean;
 	spawn(
 		argv: string[],
 		io: {
 			cwd: string;
-			stdin?: string;
+			stdin?: Uint8Array;
 			stdout: "inherit" | "ignore";
 			/** Hand stderr to this instead of the terminal. */
 			onStderr?: (text: string) => void;
@@ -477,11 +496,37 @@ export interface SqlDeps {
 	warn(line: string): void;
 }
 
-async function readInput(
+async function readScriptFile(
+	deps: SqlDeps,
+	file: string,
+): Promise<Uint8Array> {
+	if (file === "-") return deps.readStdin();
+	const path = resolve(file);
+	try {
+		return await deps.readFile(path);
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		throw new CliError(`Could not read ${path}: ${reason}`, [
+			"-f reads a file on this machine, relative to the current directory.",
+		]);
+	}
+}
+
+/**
+ * Where the SQL comes from. Stdin is read only when `--json` needs the text
+ * to decide whether to wrap it; otherwise psql reads it unread, byte for
+ * byte, however large. Host files are fed as bytes. Clients other than psql
+ * get their arguments and stdin as they are.
+ */
+async function resolveInput(
 	request: SqlRequest,
+	preset: DockerPresetName,
 	deps: SqlDeps,
 ): Promise<{ input?: SqlInput; clientArgs: string[] }> {
-	const { files, rest } = extractScriptFiles(request.clientArgs);
+	const psql = preset === "postgres";
+	const { files, rest } = psql
+		? extractScriptFiles(request.clientArgs)
+		: { files: [], rest: request.clientArgs };
 	if (request.query !== undefined && files.length > 0)
 		throw argumentsError(
 			["Pass SQL one way: --command or -f, not both."],
@@ -490,29 +535,29 @@ async function readInput(
 	if (request.query !== undefined)
 		return { input: { kind: "query", text: request.query }, clientArgs: rest };
 
-	if (files.length > 0) {
-		const texts: string[] = [];
-		for (const file of files) {
-			const text =
-				file === "-"
-					? await deps.readStdin()
-					: await deps.readFile(resolve(file));
-			texts.push(text ?? "");
-		}
+	const decode = (bytes: Uint8Array) =>
+		request.json ? new TextDecoder().decode(bytes) : undefined;
+	const stdinOnly = files.length === 1 && files[0] === "-";
+	if (files.length > 0 && !(stdinOnly && !request.json)) {
+		const parts: Uint8Array[] = [];
+		for (const file of files) parts.push(await readScriptFile(deps, file));
+		const bytes = Buffer.concat(parts);
 		return {
-			input: { kind: "script", text: texts.join("\n") },
+			input: { kind: "script", bytes, text: decode(bytes) },
 			clientArgs: rest,
 		};
 	}
+	if (stdinOnly) return { input: { kind: "script" }, clientArgs: rest };
 
-	if (clientHasOwnInput(rest)) return { clientArgs: rest };
-	const piped = await deps.readStdin();
-	if (piped === undefined) return { clientArgs: rest };
-	if (piped.trim() === "")
-		throw new CliError("No SQL on stdin.", [
-			'Pass a query: buncargo sql -c "select 1", or pipe a script in.',
-		]);
-	return { input: { kind: "script", text: piped }, clientArgs: rest };
+	const ownInput = psql ? psqlHasOwnInput(rest) : rest.length > 0;
+	if (ownInput || deps.stdinIsTerminal()) return { clientArgs: rest };
+	if (!(psql && request.json))
+		return { input: { kind: "script" }, clientArgs: rest };
+	const bytes = await deps.readStdin();
+	return {
+		input: { kind: "script", bytes, text: decode(bytes) },
+		clientArgs: rest,
+	};
 }
 
 /**
@@ -535,36 +580,40 @@ export async function runSql(
 
 	let env = await deps.loadEnv(true);
 	const target = pickService(env.services, request.service);
-	const credentials = serviceCredentials(target.preset, target.service);
 	const postgresOnly = scratch !== undefined || db !== undefined || request.url;
 	if (postgresOnly && target.preset !== "postgres")
-		throw new CliError("Scratch databases, --db and --url are Postgres only.");
+		throw new CliError(
+			`Scratch databases, --db and --url are Postgres only, and ${target.name} is ${target.preset}.`,
+			["Name a Postgres service: buncargo sql <service> …"],
+		);
 	const portOf = (current: AnyDevEnvironment) =>
 		(current.ports as Record<string, number | undefined>)[target.name];
 
 	if (request.url && createScratch === undefined) {
+		const credentials = postgresCredentials(target.service);
 		const port = portOf(env);
 		if (port === undefined)
-			throw new CliError(`${target.name} has no port in ${env.projectName}.`);
-		deps.print(
-			databaseUrl(credentials, port, db ?? credentials?.database ?? "postgres"),
-		);
+			throw new CliError(`${target.name} has no port in ${env.projectName}.`, [
+				"Give the service a port in dev.config.ts, as service.postgres() does.",
+			]);
+		deps.print(databaseUrl(credentials, port, db ?? credentials.database));
 		return 0;
 	}
 
 	const { input, clientArgs } =
-		scratch === undefined ? await readInput(request, deps) : { clientArgs: [] };
+		scratch === undefined
+			? await resolveInput(request, target.preset, deps)
+			: { clientArgs: [] };
 	const invocation =
 		scratch === undefined
-			? sqlClientCommand(target.preset, credentials, {
-					input,
-					json: request.json,
-					database: db,
-					clientArgs,
-				})
+			? sqlClientCommand(
+					target.preset,
+					serviceCredentials(target.preset, target.service),
+					{ input, json: request.json, database: db, clientArgs },
+				)
 			: {
 					command: scratchCommand(
-						credentials,
+						postgresCredentials(target.service),
 						scratch,
 						createScratch !== undefined ? "create" : "drop",
 					),
@@ -603,7 +652,9 @@ export async function runSql(
 	});
 	const port = portOf(env);
 	if (code === 0 && createScratch !== undefined && port !== undefined)
-		deps.print(scratchUrl(credentials, port, createScratch));
+		deps.print(
+			scratchUrl(postgresCredentials(target.service), port, createScratch),
+		);
 	return code;
 }
 
@@ -611,19 +662,24 @@ export async function runSql(
  * Start one service outside `dev`, with the claim `dev --up-only` makes: the
  * block is allocated first, the run is claimed before the container exists,
  * and released with no idle hold, so the service stays up for the command
- * that uses it.
+ * that uses it. Ctrl-C cancels the start and still releases the claim, so
+ * the sweep never reads a half-started service as a crash.
  */
 async function startOneService(
 	env: AnyDevEnvironment,
 	serviceName: string,
 ): Promise<void> {
+	const controller = new AbortController();
+	const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+	const cancel = (signal: NodeJS.Signals) =>
+		controller.abort(new CommandSignalError(signal));
+	for (const signal of signals) process.on(signal, cancel);
+	const { signal } = controller;
+
 	console.error(`Starting ${serviceName} for ${env.projectName}…`);
-	await env.prepareStartAsync(undefined, [serviceName]);
-	await env.claimRun({
-		idleTimeoutMs: false,
-		defaultIdleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS,
-	});
 	try {
+		await env.prepareStartAsync(undefined, [serviceName], signal);
+		await env.claimRun({ idleTimeoutMs: false, signal });
 		await env.start({
 			onlyServices: [serviceName],
 			startServers: false,
@@ -631,9 +687,11 @@ async function startOneService(
 			skipEnvironmentLog: true,
 			// stdout carries the URL alone.
 			verbose: false,
+			signal,
 		});
 	} finally {
 		await env.releaseRun();
+		for (const name of signals) process.off(name, cancel);
 	}
 }
 
@@ -646,14 +704,14 @@ const PRODUCTION_SQL_DEPS: SqlDeps = {
 			...request,
 		}),
 	startService: startOneService,
-	readStdin: async () =>
-		process.stdin.isTTY ? undefined : await Bun.stdin.text(),
-	readFile: (path) => Bun.file(path).text(),
+	stdinIsTerminal: () => Boolean(process.stdin.isTTY),
+	readStdin: async () => new Uint8Array(await Bun.stdin.arrayBuffer()),
+	readFile: async (path) => new Uint8Array(await Bun.file(path).arrayBuffer()),
 	isInteractive,
 	spawn: async (argv, io) => {
 		const child = Bun.spawn(argv, {
 			cwd: io.cwd,
-			stdin: io.stdin === undefined ? "inherit" : Buffer.from(io.stdin),
+			stdin: io.stdin ?? "inherit",
 			stdout: io.stdout,
 			stderr: io.onStderr ? "pipe" : "inherit",
 		});

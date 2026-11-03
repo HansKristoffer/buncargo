@@ -6,6 +6,7 @@ import { loadDevEnv } from "../../loader";
 import { CliError } from "../errors";
 import {
 	extractScriptFiles,
+	psqlHasOwnInput,
 	runSql,
 	type SqlDeps,
 	scratchCommand,
@@ -59,9 +60,10 @@ describe("sqlClientCommand", () => {
 	});
 
 	it("feeds a script on stdin and passes client arguments through", () => {
+		const bytes = new TextEncoder().encode("\\timing on\nselect 1;");
 		expect(
 			sqlClientCommand("postgres", credentials, {
-				input: { kind: "script", text: "\\timing on\nselect 1;" },
+				input: { kind: "script", bytes },
 				database: "scratch_perf",
 				clientArgs: ["-tA"],
 			}),
@@ -75,7 +77,7 @@ describe("sqlClientCommand", () => {
 				"-f",
 				"-",
 			],
-			stdin: "\\timing on\nselect 1;",
+			stdin: bytes,
 			jsonWrapped: false,
 			plainReason: undefined,
 		});
@@ -123,6 +125,27 @@ describe("extractScriptFiles", () => {
 			files: ["a.sql", "b.sql", "c.sql", "-"],
 			rest: ["-tA", "-v", "x=1"],
 		});
+	});
+});
+
+describe("psqlHasOwnInput", () => {
+	it("finds psql's own work in grouped and long options, not in values", () => {
+		for (const args of [
+			["-c", "select 1"],
+			["-tAc", "select 1"],
+			["-lqt"],
+			["--list"],
+			["-V"],
+			["--command=select 1"],
+		])
+			expect(psqlHasOwnInput(args)).toBe(true);
+		for (const args of [
+			["-tA"],
+			["-vclear=1"],
+			["-v", "ON_ERROR_STOP=0"],
+			["-dlocal"],
+		])
+			expect(psqlHasOwnInput(args)).toBe(false);
 	});
 });
 
@@ -177,6 +200,7 @@ describe("runSql", () => {
 		loads: boolean[];
 		started: string[];
 		spawned: { argv: string[]; stdin?: string; stdout: string }[];
+		stdinReads: number;
 		printed: string[];
 		warned: string[];
 	}
@@ -196,6 +220,7 @@ describe("runSql", () => {
 			started: [],
 			spawned: [],
 			printed: [],
+			stdinReads: 0,
 			warned: [],
 		};
 		const deps: SqlDeps = {
@@ -209,15 +234,23 @@ describe("runSql", () => {
 				recorded.started.push(serviceName);
 				running = true;
 			},
-			readStdin: async () => options.piped,
+			stdinIsTerminal: () => options.piped === undefined,
+			readStdin: async () => {
+				recorded.stdinReads++;
+				return new TextEncoder().encode(options.piped);
+			},
 			readFile: async (path) => {
 				const text = options.files?.[path];
-				if (text === undefined) throw new Error(`no file ${path}`);
-				return text;
+				if (text === undefined) throw new Error(`ENOENT: ${path}`);
+				return new TextEncoder().encode(text);
 			},
 			isInteractive: () => false,
 			spawn: async (argv, io) => {
-				recorded.spawned.push({ argv, stdin: io.stdin, stdout: io.stdout });
+				recorded.spawned.push({
+					argv,
+					stdin: io.stdin && new TextDecoder().decode(io.stdin),
+					stdout: io.stdout,
+				});
 				if (options.stderr) io.onStderr?.(options.stderr);
 				return options.exitCode ?? 0;
 			},
@@ -282,19 +315,39 @@ describe("runSql", () => {
 		expect(recorded.spawned).toHaveLength(1);
 	});
 
-	it("reads SQL from stdin when no query is given", async () => {
+	it("runs piped SQL as a script, leaving stdin to psql unread", async () => {
 		const { deps, recorded } = harness({ piped: "\\timing on\nselect 1;\n" });
 
 		expect(await runSql([], deps)).toBe(0);
 
 		const [spawned] = recorded.spawned;
-		expect(spawned?.stdin).toBe("\\timing on\nselect 1;\n");
+		expect(spawned?.stdin).toBeUndefined();
+		expect(recorded.stdinReads).toBe(0);
 		expect(spawned?.argv.slice(-4)).toEqual([
 			"-v",
 			"ON_ERROR_STOP=1",
 			"-f",
 			"-",
 		]);
+	});
+
+	it("reads piped SQL only when --json must look at it", async () => {
+		const { deps, recorded } = harness({ piped: "select 1 as n\n" });
+
+		expect(await runSql(["--json"], deps)).toBe(0);
+
+		expect(recorded.stdinReads).toBe(1);
+		expect(recorded.spawned[0]?.argv.at(-1)).toContain(
+			"json_agg(_buncargo_rows.*)",
+		);
+	});
+
+	it("leaves stdin alone when psql or another client has its own work", async () => {
+		const { deps, recorded } = harness({ piped: "" });
+
+		expect(await runSql(["--", "-lqt"], deps)).toBe(0);
+		expect(recorded.spawned[0]?.argv).not.toContain("-f");
+		expect(recorded.stdinReads).toBe(0);
 	});
 
 	it("passes arguments after -- to psql and reads -f files on the host", async () => {
@@ -319,6 +372,14 @@ describe("runSql", () => {
 		expect(spawned?.stdin).toBe("select 2;");
 		expect(spawned?.argv.slice(-3)).toEqual(["-tA", "-f", "-"]);
 		expect(spawned?.argv).not.toContain(file);
+	});
+
+	it("names a -f file it cannot read", async () => {
+		const { deps } = harness({});
+
+		await expect(
+			runSql(["--", "-f", "/nonexistent/q.sql"], deps),
+		).rejects.toThrow("Could not read /nonexistent/q.sql");
 	});
 
 	it("runs an UPDATE and two statements plain under --json", async () => {

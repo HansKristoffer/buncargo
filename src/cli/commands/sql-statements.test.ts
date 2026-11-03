@@ -71,6 +71,12 @@ describe("unwrapJsonErrors", () => {
 		);
 	});
 
+	it("leaves the lines of a query a function ran alone", () => {
+		const inner =
+			'ERROR:  column "nope" does not exist\nLINE 1: select nope\n               ^\nQUERY:  select nope\nCONTEXT:  PL/pgSQL function f() line 3 at PERFORM';
+		expect(unwrapJsonErrors(inner)).toBe(inner);
+	});
+
 	it("keeps the caret under the error when the number loses a digit", () => {
 		expect(unwrapJsonErrors("LINE 10: from nope\n               ^")).toBe(
 			"LINE 9: from nope\n              ^",

@@ -24,6 +24,7 @@ describe("pointEnvAtDatabase", () => {
 					OTHER_PORT: "postgresql://u:p@localhost:5432/app",
 					REMOTE: "postgresql://u:p@db.example.com:8732/app",
 					NOT_A_URL: "app",
+					MALFORMED: "postgresql://u:p@localhost:8732/%E0%A4%A",
 					UNSET: undefined,
 				},
 				target,
