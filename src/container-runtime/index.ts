@@ -61,6 +61,7 @@ export {
 	type ServiceCondition,
 	watchServiceContainers,
 } from "./service-watch";
+export { replaceStaleStacksOn } from "./stale-stacks";
 export {
 	decideSweep,
 	type ForeignStack,

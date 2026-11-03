@@ -7,6 +7,7 @@ export {
 export { CommandSignalError, type ExecResult, exec, execAsync } from "./exec";
 export { isProcessAlive, stopProcess } from "./lifecycle";
 export {
+	type CheckoutStacks,
 	canBindPort,
 	classifyPortOccupant,
 	collectProcessTree,
@@ -27,6 +28,7 @@ export {
 	type PortOwnerLookupOptions,
 	type PortOwnerSnapshot,
 	signalProcessTree,
+	staleStackProject,
 	withBindProbe,
 } from "./port-owner";
 export {

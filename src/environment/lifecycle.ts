@@ -2,6 +2,7 @@ import { relative } from "node:path";
 import { anySignal, startTimer } from "hanzio";
 import {
 	ensureServicesRunning,
+	replaceStaleStacksOn,
 	withProjectLifecycleLock,
 } from "../container-runtime";
 import { registerAbortCleanup, withDeadline } from "../core/deadline";
@@ -338,6 +339,13 @@ export function createLifecycleApi<
 				(serviceKey) => [serviceKey, services[serviceKey]] as const,
 			),
 		);
+		if (startOptions.replaceStaleStacks)
+			await replaceStaleStacksOn(
+				ctx.runtime,
+				{ root: ctx.root, projectPrefix: config.projectPrefix },
+				Object.values(ctx.ports),
+				{ signal, verbose },
+			);
 		await ctx.prepareStartAsync(onlyApps, onlyServices, signal);
 		selectedServices = startPlan.requiredServiceKeys;
 		selectedApps = startPlan.appNames;
@@ -438,6 +446,7 @@ export function createLifecycleApi<
 						runtime: ctx.runtime,
 						root: ctx.root,
 						projectName: ctx.projectName,
+						projectPrefix: config.projectPrefix,
 						envVars: envVars.buildEnvVars(productionBuild),
 						services: compose,
 						noDeps,

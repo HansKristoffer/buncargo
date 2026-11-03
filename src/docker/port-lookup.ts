@@ -4,7 +4,7 @@ import { runDocker, runDockerAsync } from "./binary";
 const LIST_ARGS = [
 	"ps",
 	"--format",
-	'{{.ID}}\t{{.Names}}\t{{.Ports}}\t{{.Label "com.docker.compose.project"}}',
+	'{{.ID}}\t{{.Names}}\t{{.Ports}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "buncargo.root"}}',
 ];
 
 export function parseDockerPublishedPort(
@@ -47,7 +47,7 @@ export function dockerContainerPortOwners(
 	binary?: string,
 ): Map<number, PortContainerOwner> {
 	const result = runDocker(binary, LIST_ARGS);
-	return parsePortOwners(result.ok ? result.stdout : "");
+	return parseDockerPortOwners(result.ok ? result.stdout : "");
 }
 
 export async function dockerContainerPortOwnersAsync(
@@ -55,19 +55,23 @@ export async function dockerContainerPortOwnersAsync(
 	signal?: AbortSignal,
 ): Promise<Map<number, PortContainerOwner>> {
 	const result = await runDockerAsync(binary, LIST_ARGS, { signal });
-	return parsePortOwners(result.ok ? result.stdout : "");
+	return parseDockerPortOwners(result.ok ? result.stdout : "");
 }
 
-function parsePortOwners(output: string): Map<number, PortContainerOwner> {
+/** The port owners in `docker ps` output in the `LIST_ARGS` format. */
+export function parseDockerPortOwners(
+	output: string,
+): Map<number, PortContainerOwner> {
 	const owners = new Map<number, PortContainerOwner>();
 	for (const line of output.trim().split("\n")) {
 		if (!line) continue;
-		const [id, name, portsField, composeProject] = line.split("\t");
+		const [id, name, portsField, composeProject, root] = line.split("\t");
 		if (!id || !portsField) continue;
 		const owner: PortContainerOwner = {
 			id,
 			name: name ?? id,
 			composeProject: composeProject || undefined,
+			root: root || undefined,
 		};
 		for (const port of parseDockerPublishedPorts(portsField)) {
 			// First writer wins, matching the old scan, which returned the first

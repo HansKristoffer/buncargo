@@ -2,9 +2,10 @@ import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { platform } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
-import { promiseTimeout } from "hanzio";
+import { promiseTimeout, typedSwitch } from "hanzio";
 import { containerRuntimeDisplayName } from "../../container-runtime/names";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
+import { manualComposeDownCommand } from "../../docker/binary";
 import {
 	dockerContainerPortOwners,
 	dockerContainerPortOwnersAsync,
@@ -12,7 +13,7 @@ import {
 } from "../../docker/port-lookup";
 import { CONFIG_FILES } from "../../loader/find-config-file";
 import type { ContainerRuntimeName, PortContainerOwner } from "../../types";
-import { externalStackProjectName } from "../ports";
+import { externalStackProjectName, getProjectName } from "../ports";
 import {
 	matchesProcessIdentityAsync,
 	readProcessIdentitiesAsync,
@@ -628,10 +629,67 @@ export function classifyPortOccupant(
 	return "fail";
 }
 
+/** What tells a checkout's stale stacks from its current ones and from other checkouts'. */
+export interface CheckoutStacks {
+	root: string;
+	/** The configured `projectPrefix`. */
+	projectPrefix: string;
+}
+
+/**
+ * The Compose project of a stack this checkout left under a name it no longer
+ * runs under, or undefined.
+ *
+ * Renaming `projectPrefix` renames every stack of the checkout, and the old
+ * stack keeps publishing the ports the new one is given. Every name the
+ * checkout runs under now (dev, `ci`, any suffix, a worktree suffix) starts
+ * with `<projectPrefix>-<directory>`, so a stack labelled with this root whose
+ * name does not is from an older config. A suffixed environment of the
+ * current config (an E2E stack) does, and is never stale. Only buncargo's own
+ * `buncargo.root` label counts: a stack of another root, or one buncargo did
+ * not create, is never this checkout's to remove.
+ */
+export function staleStackProject(
+	container: PortContainerOwner,
+	checkout: CheckoutStacks,
+): string | undefined {
+	const project = container.composeProject;
+	if (!project || container.root !== checkout.root) return undefined;
+
+	const current = getProjectName(
+		checkout.projectPrefix,
+		undefined,
+		checkout.root,
+	);
+	const isCurrent = project === current || project.startsWith(`${current}-`);
+	return isCurrent ? undefined : project;
+}
+
+function describeStaleStack(
+	project: string,
+	runtime: ContainerRuntimeName,
+): string {
+	const what =
+		"a stale stack of this checkout, left under the project name its config used before";
+	// Apple's CLI removes containers by id, not a project by name, and only
+	// the one holding this port is known here.
+	const remove = typedSwitch(runtime, {
+		docker: () =>
+			`Remove it with \`${manualComposeDownCommand(project)}\` (its volumes are kept), or start with \`buncargo dev --replace-stale\`, which does that first.`,
+		apple: () =>
+			`Start with \`buncargo dev --replace-stale\` to remove it first (its volumes are kept); ${containerRuntimeDisplayName(runtime)} removes containers by id, not a project by name.`,
+	});
+	return `${what}. ${remove}`;
+}
+
 export function formatPortOwner(
 	port: number,
 	owner: PortOwner,
-	options: { runtime?: ContainerRuntimeName } = {},
+	options: {
+		runtime?: ContainerRuntimeName;
+		/** This run's checkout, so a stale stack of it is named as one. */
+		checkout?: CheckoutStacks;
+	} = {},
 ): string {
 	if (owner.container) {
 		const { container } = owner;
@@ -640,14 +698,24 @@ export function formatPortOwner(
 			: "";
 
 		const base = `port ${port} held by container ${container.name}${project}`;
+		const selected = options.runtime;
+		const holder = container.runtime;
+
+		// Checked before the runtime mismatch: its advice, `dev --down` on the
+		// other runtime, stops this checkout's current name, not the old one.
+		const stale = options.checkout
+			? staleStackProject(container, options.checkout)
+			: undefined;
+		if (stale) {
+			const staleRuntime = holder ?? selected ?? "docker";
+			return `${base}, ${describeStaleStack(stale, staleRuntime)}`;
+		}
 
 		// Name the backend only when it is not the one this run selected.
 		// Saying "on Docker" to someone who only has Docker is noise; saying it
 		// to someone running Apple is the whole answer. The runtime is a product
 		// name rather than an adjective, so it goes after the noun: "Apple
 		// container" cannot qualify "container".
-		const selected = options.runtime;
-		const holder = container.runtime;
 		if (selected !== undefined && holder !== undefined && holder !== selected) {
 			return `${base}, running on ${containerRuntimeDisplayName(holder)} while this project is configured for ${containerRuntimeDisplayName(selected)}. Stop it with \`buncargo dev --down --runtime=${holder}\`, or set docker.runtime to "${holder}".`;
 		}

@@ -149,6 +149,7 @@ export function createPrismaRunner<
 			runtime: containerRuntimeForEnv(env),
 			root: env.root,
 			projectName: env.projectName,
+			projectPrefix: env.projectPrefix,
 			envVars,
 			services: { [service]: healthCheckedServiceConfig },
 			ports: { [service]: port },

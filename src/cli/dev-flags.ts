@@ -113,6 +113,12 @@ const FLAGS = {
 		kind: "boolean",
 		description: "Stop apps already running elsewhere and run them here",
 	},
+	replaceStale: {
+		name: "--replace-stale",
+		kind: "boolean",
+		description:
+			"First remove this checkout's stacks under an old project name (keeps volumes)",
+	},
 	watchdogTimeout: {
 		name: "--watchdog-timeout",
 		kind: "string",
@@ -242,6 +248,8 @@ export interface DevCliArgs {
 	keepContainers: boolean;
 	/** Skip the prompt and stop apps already running elsewhere. */
 	takeover: boolean;
+	/** `--replace-stale`: remove this checkout's stacks under an old project name first. */
+	replaceStale: boolean;
 	watchdogTimeoutMinutes: number | undefined;
 	dockerAutostart: boolean;
 	hosts: boolean;
@@ -271,6 +279,10 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		);
 	if (bool(FLAGS.all) && !bool(FLAGS.down))
 		errors.push("--all requires --down.");
+	if (bool(FLAGS.replaceStale) && (bool(FLAGS.down) || bool(FLAGS.reset)))
+		errors.push(
+			"--replace-stale clears the way for a start; it cannot be combined with --down or --reset.",
+		);
 	if (bool(FLAGS.tui) && bool(FLAGS.noTui))
 		errors.push("Choose either --tui or --no-tui, not both.");
 	if (bool(FLAGS.apps) && bool(FLAGS.profile))
@@ -306,6 +318,7 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		watch: !bool(FLAGS.noWatch),
 		keepContainers: bool(FLAGS.keepContainers),
 		takeover: bool(FLAGS.takeover),
+		replaceStale: bool(FLAGS.replaceStale),
 		watchdogTimeoutMinutes:
 			watchdogTimeout === undefined
 				? undefined

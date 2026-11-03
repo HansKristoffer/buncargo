@@ -1,4 +1,5 @@
 import { typedSwitch } from "hanzio";
+import { manualComposeDownCommand } from "../docker/binary";
 import type { BuncargoContainer, ContainerRuntimeName } from "../types";
 import { availableContainerRuntimes } from "./resolve";
 import type { ContainerRuntimeAdapter } from "./types";
@@ -71,7 +72,7 @@ export function manualDownCommand(
 	group: Pick<ContainerGroup, "projectName" | "runtime" | "containers">,
 ): string {
 	return typedSwitch(group.runtime, {
-		docker: () => `docker compose -p ${group.projectName} down`,
+		docker: () => manualComposeDownCommand(group.projectName),
 		apple: () => {
 			const ids = group.containers.map((container) => container.id).join(" ");
 			return `container delete --force ${ids}`;

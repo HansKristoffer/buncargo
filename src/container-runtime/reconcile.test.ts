@@ -37,6 +37,7 @@ function harness() {
 				runtime,
 				root: "/repo",
 				projectName: "demo",
+				projectPrefix: "demo",
 				model,
 				ports: {},
 				envVars,
