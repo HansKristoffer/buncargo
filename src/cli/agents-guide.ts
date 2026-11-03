@@ -78,7 +78,8 @@ const TOPICS: readonly Topic[] = [
   not run \`dev\` again to find the cause.
 - \`bunx buncargo dev --detach --apps=api\` starts only some apps (and the apps
   they require). \`--profile=<name>\` picks a configured set.
-  \`bunx buncargo dev --detach --up-only\` starts the services alone.
+  \`bunx buncargo dev --up-only\` starts the services alone and returns once
+  they are up (no \`--detach\`).
 - \`bunx buncargo stop --all\` stops this checkout's run, and removes the
   containers an ended run left waiting out its idle hold. A run someone started
   in a terminal (not with \`--detach\`) asks first, and without a terminal needs
@@ -170,11 +171,22 @@ const TOPICS: readonly Topic[] = [
 - \`bunx buncargo sql\` opens the database's own client in this checkout's
   container. \`bunx buncargo sql -c "select …" --json\` runs one query and prints
   the rows as JSON. \`bunx buncargo sql redis -c "GET key"\` works for Redis.
-- For a throwaway database (a migration check, a test run), use
-  \`DATABASE_URL=$(bunx buncargo sql --create-scratch=<name>) <command>\`: an
-  empty \`scratch_<name>\` in this checkout's Postgres, recreated each time.
+- SQL in a heredoc or a pipe runs as a script and stops at the first error.
+  Pass psql flags after \`--\` (\`-- -tA\`, \`-- -v name=value\`);
+  \`-- -f file.sql\` reads a file on this machine. \`--json\` prints the rows of
+  one SELECT or WITH; anything else runs as plain SQL, with a note on stderr.
+- For a throwaway database (a migration check, a test run),
+  \`bunx buncargo sql --create-scratch=<name>\` creates an empty
+  \`scratch_<name>\` in this checkout's Postgres (recreated each time) and
+  prints only its URL. It starts the Postgres service alone when it is down.
   \`bunx buncargo sql --drop-scratch=<name>\` removes it. Do not \`docker run\`
   a Postgres of your own.
+- To use one that exists as it is: \`bunx buncargo sql --db=scratch_<name> -c
+  "…"\`, and \`--db=scratch_<name> --url\` prints its URL.
+- \`bunx buncargo exec --db=scratch_<name> -- <command>\` points every variable
+  whose URL names this checkout's database (\`DATABASE_URL\`, direct and pooled
+  ones) at that database. Do not rewrite \`DATABASE_URL\` by hand. It exits 1
+  when the database does not exist or nothing points at it.
 - Do not \`docker exec\` into a database by name or read credentials from the
   generated compose file: other worktrees run databases of their own.`,
 	},
