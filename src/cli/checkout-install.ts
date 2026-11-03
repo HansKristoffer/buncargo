@@ -23,18 +23,17 @@ const INSTALL_COMMAND = "bun install --frozen-lockfile";
  * others wait on the checkout's lock and find it done.
  */
 export function installCheckout(need: InstallNeed): void {
-	const where = relative(process.cwd(), need.dir) || ".";
-	writeSync(
-		2,
-		`buncargo: ${need.reason} in ${where}; running ${INSTALL_COMMAND}\n`,
-	);
-
 	withFileLockSync(
 		projectStateFilePath(need.dir, "install"),
 		() => {
 			// Another buncargo may have installed while this one waited.
 			if (!installNeed(need.dir)) return;
 			const hash = lockfileHash(need.dir);
+			const where = relative(process.cwd(), need.dir) || ".";
+			writeSync(
+				2,
+				`buncargo: ${need.reason} in ${where}; running ${INSTALL_COMMAND}\n`,
+			);
 
 			const result = Bun.spawnSync(
 				[process.execPath, "install", "--frozen-lockfile"],

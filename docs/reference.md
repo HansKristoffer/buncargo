@@ -108,10 +108,12 @@ bunx buncargo version
 Inside a project, the CLI runs the project's own buncargo. When `bunx buncargo` reaches a
 different version (a global install, because the checkout has no `node_modules/.bin`), it prints
 one line and hands over to the version in the project's `node_modules`, with the same arguments.
-A checkout whose `bun.lock` is newer than its `node_modules`, or that has none (a fresh worktree,
-a branch switch), installs itself first: the CLI prints one line, runs
-`bun install --frozen-lockfile` (the project's postinstall scripts included, its output on stderr
-so `--json` stays clean), and then runs the command. When that install fails, it stops with the
+A checkout without `node_modules` (a fresh worktree) installs itself before any command, and one
+whose `bun.lock` changed since its last install (a branch switch) before a command that runs the
+project (`dev`, `run`, `exec`, `slot`, `prisma`, `build`, `generate`, `typecheck`, `check`, `ci`,
+`predeploy`, `setup`; never `stop`, `status`, `logs` or the menu bar's buttons): the CLI prints one
+line, runs `bun install --frozen-lockfile` (the project's postinstall scripts included, its
+output on stderr so `--json` stays clean), and then runs the command. When that install fails, it stops with the
 install's output and asks for `bun install`. A project without `bun.lock` whose `package.json`
 lists buncargo but has none installed stops and asks for `bun install` instead of running a
 version the project did not choose.
@@ -1292,7 +1294,7 @@ It fetches the way `hanzio/secrets` does, with the same defaults. The CLI is ask
 
 **Where secrets go.** Apps get their own scope. Migrations, the seed, `buncargo exec`, `buncargo prisma`, tasks and hooks' `ctx.exec` get theirs too: `migrations[].secrets`, `seed.secrets`, `exec --app=<name>` (that app's scope), otherwise the config-level `secrets`. `secrets: false` turns them off for one app or command, including startup prefetch. Set config-level `secrets: false` to disable all buncargo secret requests for that environment, even when apps, seeders or migrations declare explicit scopes. This is useful when a reusable config is overridden for offline CI. `mergeConfigs(base, { secrets: false })` preserves the opt-out; an explicit scope override can re-enable it. The opt-out controls buncargo fetching; applications still validate their own configuration and must receive synthetic test inputs. Precedence, lowest first: the secrets, then the developer's own exported environment, then the computed env. So `export OPENAI_API_KEY=sk-local` still wins in that shell. Apps without a `secrets` block are untouched by the app injection.
 
-**An expired session stops the run.** Without an Infisical CLI session for a `siteUrl` (none, an expired one, or a CLI that starts its interactive login), `buncargo dev`, `run`, `exec` and library `start()` stop before anything starts, within a few seconds, and name the one fix: `infisical login --domain=<siteUrl>`. buncargo's own call to the CLI never logs in: its stdin is closed, a login prompt ends it at once, and it gets 2 seconds. `dev` checks every scope in the config (`--up-only` skips it), `run` and `exec` the scope of the command, `start()` the scopes of what it starts. A machine identity needs no session and skips the check. The check is the session token the fetches use anyway, so it adds no CLI process.
+**An expired session stops the run.** Without an Infisical CLI session for a `siteUrl` (none, an expired one, or a CLI that starts its interactive login), `buncargo dev`, `run`, `exec` and library `start()` stop before anything starts, within a few seconds, and name the one fix: `infisical login --domain=<siteUrl>` (in the error's message for `start()`). buncargo's own call to the CLI never logs in: its stdin is closed, a login prompt ends it at once, and it gets 2 seconds. `dev` checks the selected apps' scopes and the config-level one (`--up-only` skips it), `run` and `exec` the scope of the command, `start()` the scopes of what it starts. A machine identity needs no session and skips the check. In CI, and in a shell that exports `INFISICAL_TOKEN` or `INFISICAL_UNIVERSAL_AUTH_ACCESS_TOKEN` for the apps' own loaders, a missing session only warns, as before. The check is the session token the fetches use anyway, so it adds no CLI process.
 
 **Other fetch failures.** A signed-in fetch that fails (a missing project or environment, no access, the network) warns once per scope and continues with environment/computed values. Apps can fall back to their own loader; `secrets.required` prevents startup when declared required keys are still absent. Commands retain responsibility for validating their inputs. Machine HTTP failures never switch to CLI authentication.
 

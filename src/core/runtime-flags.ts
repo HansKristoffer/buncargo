@@ -308,6 +308,21 @@ export function infisicalPathOverride(
 }
 
 /**
+ * Whether the shell exports an Infisical token of its own (`INFISICAL_TOKEN`,
+ * `INFISICAL_UNIVERSAL_AUTH_ACCESS_TOKEN`). buncargo's CLI call ignores it,
+ * but the apps' own loaders use it, so a missing CLI session is no reason to
+ * stop their run.
+ */
+export function infisicalExportedToken(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return Boolean(
+		readTrimmed(env, "INFISICAL_TOKEN") ??
+		readTrimmed(env, "INFISICAL_UNIVERSAL_AUTH_ACCESS_TOKEN"),
+	);
+}
+
+/**
  * An Infisical universal-auth identity (`INFISICAL_CLIENT_ID` +
  * `INFISICAL_CLIENT_SECRET`), for commands that fetch secrets themselves
  * (apps, `exec`, migrations, the seed) where no CLI session exists, such as CI.

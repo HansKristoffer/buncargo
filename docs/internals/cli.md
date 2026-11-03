@@ -18,7 +18,10 @@ pieces it orchestrates.
   from the working directory up lists buncargo and the first `bun.lock` above it has no
   `node_modules` beside it, or one installed from another lockfile, the guard runs
   `bun install --frozen-lockfile` there and decides again, so the fresh install can still hand
-  over. "Installed from" is `install-stamp.ts`'s hash of `bun.lock`, shared with `check`: Bun
+  over. A missing `node_modules` installs for every command (none of the project's buncargo runs
+  without it); a stale one only for the commands that run the project's code
+  (`refreshesStaleInstall`). `stop`, `status` and BuncargoBar's buttons must neither reinstall
+  under a running run nor fail on a broken lockfile. "Installed from" is `install-stamp.ts`'s hash of `bun.lock`, shared with `check`: Bun
   1.4 writes nothing into `node_modules` on a no-op install, so no file of its own can say, and
   `git checkout` rewrites the lockfile's time without its content. A checkout with no stamp
   falls back to `node_modules` being newer than `bun.lock`, so one installed by hand is left

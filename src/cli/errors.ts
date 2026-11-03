@@ -1,5 +1,5 @@
 import { getErrorMessage } from "hanzio";
-import { SecretsError } from "../core/secrets/errors";
+import { InfisicalLoginError, SecretsError } from "../core/secrets/errors";
 /**
  * A user-facing CLI failure: printed as `❌ message` plus optional hint lines,
  * then exit 1. Throw this instead of calling `process.exit` mid-flow so the
@@ -20,6 +20,9 @@ export function toCliError(error: unknown): CliError {
 		return error;
 	}
 	// The fix is the point: an expired Infisical session names its login.
+	if (error instanceof InfisicalLoginError) {
+		return new CliError(error.reason, [`Fix: ${error.login}`]);
+	}
 	if (error instanceof SecretsError) {
 		return new CliError(error.message, error.fix ? [`Fix: ${error.fix}`] : []);
 	}

@@ -314,6 +314,30 @@ describe("loadAppSecrets", () => {
 		expect(describeSecretsError(failure)).not.toContain("secret-looking");
 	});
 
+	for (const [where, extra] of [
+		["in CI", { CI: "true" }],
+		["with an exported token", { INFISICAL_TOKEN: "st.exported" }],
+	] as const) {
+		it(`only warns about a missing session ${where}`, async () => {
+			start({ cliFails: true });
+			const warnings: string[] = [];
+			const warn = console.warn;
+			console.warn = (message: unknown) => warnings.push(String(message));
+			try {
+				expect(
+					await loadAppSecrets(
+						{ api: app("p1") },
+						{ env: { ...noIdentity(), ...extra } },
+					),
+				).toEqual({ api: {} });
+			} finally {
+				console.warn = warn;
+			}
+			expect(warnings[0]).toContain("infisical login --domain=");
+			expect(warnings[0]).not.toContain("secret-looking");
+		});
+	}
+
 	it("warns and goes on when a signed-in scope cannot be read", async () => {
 		start();
 		const warnings: string[] = [];
@@ -505,7 +529,7 @@ describe("an expired session", () => {
 
 		expect(failure).toBeInstanceOf(InfisicalLoginError);
 		expect(describeSecretsError(failure)).toBe(
-			`The Infisical session for ${infisical.siteUrl} has expired: the CLI asked for a login. Fix: infisical login --domain=${infisical.siteUrl}`,
+			`The Infisical session for ${infisical.siteUrl} has expired: the CLI asked for a login. Run \`infisical login --domain=${infisical.siteUrl}\`.`,
 		);
 		expect(ms).toBeLessThan(1_000);
 		expect(infisical.requests).toEqual([]);

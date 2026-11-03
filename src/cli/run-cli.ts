@@ -399,12 +399,16 @@ async function runDevFlow<
 
 	// Fired now, awaited before named hosts and the claim: an expired
 	// Infisical session stops the run before it changes anything, with the
-	// login to run, instead of hanging inside every app's own loader. It
-	// overlaps the checks and preflight; `start()` and the apps reuse its token.
+	// login to run, instead of hanging inside every app's own loader. The
+	// selected apps' scopes and the config-level one (migrations, the seed).
+	// It overlaps the checks and preflight; `start()` and the apps reuse its
+	// token.
 	const secretsSession = args.upOnly
 		? Promise.resolve()
 		: ensureSecretsSession(
-				configSecretScopes(env).map(({ scope }) => scope),
+				configSecretScopes({ secrets: env.secrets, apps: appsForDev }).map(
+					({ scope }) => scope,
+				),
 				{ signal },
 			);
 	void secretsSession.catch(() => {});

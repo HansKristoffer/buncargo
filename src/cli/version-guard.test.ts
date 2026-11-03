@@ -9,7 +9,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { lockfileHash, writeInstallStamp } from "./install-stamp";
-import { decideInstall, decideVersionGuard } from "./version-guard";
+import {
+	decideInstall,
+	decideVersionGuard,
+	refreshesStaleInstall,
+} from "./version-guard";
 
 const dirs: string[] = [];
 
@@ -131,8 +135,9 @@ describe("decideInstall", () => {
 
 	it("installs at the lockfile's directory when node_modules is missing", () => {
 		const { root, api } = monorepo();
-		expect(decideInstall(api)).toEqual({
+		expect(decideInstall(api, ["status", "--json"])).toEqual({
 			dir: root,
+			missing: true,
 			reason: "node_modules is missing",
 		});
 	});
@@ -142,34 +147,49 @@ describe("decideInstall", () => {
 		mkdirSync(join(root, "node_modules"));
 		writeInstallStamp(root, "an older lockfile");
 
-		expect(decideInstall(api)?.reason).toBe(
-			"node_modules is older than bun.lock",
+		expect(decideInstall(api, ["dev"])?.reason).toBe(
+			"bun.lock changed since node_modules was installed",
 		);
 
 		writeInstallStamp(root, lockfileHash(root) ?? "");
 		at(join(root, "node_modules"), 60);
-		expect(decideInstall(api)).toBeUndefined();
+		expect(decideInstall(api, ["dev"])).toBeUndefined();
 	});
 
 	it("trusts a hand-made install until bun.lock changes after it", () => {
 		const { root, api } = monorepo();
 		at(join(root, "bun.lock"), 60);
 		mkdirSync(join(root, "node_modules"));
-		expect(decideInstall(api)).toBeUndefined();
+		expect(decideInstall(api, ["dev"])).toBeUndefined();
 
 		at(join(root, "node_modules"), 120);
-		expect(decideInstall(api)?.reason).toBe(
-			"node_modules is older than bun.lock",
+		expect(decideInstall(api, ["dev"])?.reason).toBe(
+			"bun.lock changed since node_modules was installed",
 		);
+	});
+
+	it("refreshes stale dependencies only for commands that run the project", () => {
+		const { root, api } = monorepo();
+		mkdirSync(join(root, "node_modules"));
+		writeInstallStamp(root, "an older lockfile");
+
+		expect(decideInstall(api, ["stop", "--all"])).toBeUndefined();
+		expect(decideInstall(api, ["status", "--json"])).toBeUndefined();
+		expect(decideInstall(api, ["exec", "--", "bun", "test"])?.missing).toBe(
+			false,
+		);
+		expect(refreshesStaleInstall(["dev", "--down"])).toBe(false);
+		expect(refreshesStaleInstall(["dev", "--help"])).toBe(false);
+		expect(refreshesStaleInstall([])).toBe(false);
 	});
 
 	it("leaves a project that does not list buncargo alone", () => {
 		const { root } = monorepo();
-		expect(decideInstall(root)).toBeUndefined();
+		expect(decideInstall(root, ["dev"])).toBeUndefined();
 	});
 
 	it("leaves a project without bun.lock to the not-installed error", () => {
 		const { root } = project();
-		expect(decideInstall(root)).toBeUndefined();
+		expect(decideInstall(root, ["dev"])).toBeUndefined();
 	});
 });

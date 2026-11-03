@@ -31,11 +31,16 @@ context. `secrets ls` prints key names, `secrets check` key counts.
   `InfisicalLoginError` (`errors.ts`) whose fix is `infisical login --domain=<siteUrl>`. 2 s is
   tight for the CLI's `checkAuth` round trip on a slow network; a printed prompt, the observed
   case, does not wait for it.
-- An `InfisicalLoginError` stops the run instead of warning: every app's own loader and every
-  command would wait on the same login. `ensureSecretsSession` awaits the token for each CLI
+- An `InfisicalLoginError` stops the run instead of warning (`stopsTheRun`): every app's own
+  loader and every command would wait on the same login. Not in CI, where nobody can log in, and
+  not when the shell exports its own Infisical token, which the apps' loaders use while
+  buncargo's CLI call strips it: both warned before this existed and still do. Its message
+  carries the login command, for a library caller that prints only the message; the CLI prints
+  `reason` and `login` on two lines. `ensureSecretsSession` awaits the token for each CLI
   site among a set of scopes; it is the token the fetches use (cached per site), so it costs no
   extra process. `start()` awaits it for the scopes it prefetches, before the claim; `dev` fires
-  it for every config scope right after selection and awaits it before named hosts, so it
+  it for the selected apps' and the config-level scopes right after selection and awaits it
+  before named hosts, so it
   overlaps the checks and preflight; `run` awaits it before a task's services. `exec` and a task
   without services need nothing extra: their own first fetch throws the same error just as fast.
   `loadAppSecrets` and `resolveSecrets` rethrow it rather than warn. `toCliError` turns any

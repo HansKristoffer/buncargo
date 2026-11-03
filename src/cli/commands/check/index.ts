@@ -155,10 +155,11 @@ async function ensureInstalled(
 	root: string,
 	run: (step: Step) => Promise<void>,
 ) {
-	const hash = lockfileHash(root);
-	if (hash === undefined || readInstallStamp(root) === hash) return;
+	const before = lockfileHash(root);
+	if (before === undefined || readInstallStamp(root) === before) return;
 	await run({ name: "bun install", command: ["bun", "install"] });
-	writeInstallStamp(root, hash);
+	// The hash of what was installed: a plain install can rewrite bun.lock.
+	writeInstallStamp(root, lockfileHash(root) ?? before);
 }
 
 export async function handleCheck(args: string[]): Promise<number> {

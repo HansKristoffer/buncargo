@@ -14,9 +14,11 @@ import { connectProcessEnv } from "../child-env";
 import { registerAbortCleanup } from "../deadline";
 import { withFileLock } from "../file-lock";
 import {
+	infisicalExportedToken,
 	infisicalMachineCredentials,
 	infisicalPathOverride,
 	infisicalUniversalAuthFile,
+	isCI,
 	secretsEnvironment,
 } from "../runtime-flags";
 import { recordStartupMetric } from "../startup-metrics";
@@ -378,7 +380,7 @@ async function runCliSessionToken(
 		);
 	if (deadline.aborted)
 		throw new InfisicalLoginError(
-			`The Infisical CLI did not answer within ${CLI_TIMEOUT_MS / 1000}s for ${scope.siteUrl}; an expired session waits on a login.`,
+			`The Infisical CLI did not answer within ${CLI_TIMEOUT_MS / 1000}s for ${scope.siteUrl}; an expired session waits there on a login (or a keychain prompt).`,
 			scope.siteUrl,
 		);
 	const token = exitCode === 0 ? (await stdout).trim() : "";
@@ -578,13 +580,30 @@ function signsInWithCli(env: NodeJS.ProcessEnv, siteUrl: string): boolean {
 }
 
 /**
+ * Whether `error` stops a run rather than warning: a missing CLI session on a
+ * developer's machine. In CI nobody can log in, and a shell that exports its
+ * own token hands it to the apps' loaders, so both keep warning as before.
+ */
+export function stopsTheRun(
+	error: unknown,
+	env: NodeJS.ProcessEnv = process.env,
+): error is InfisicalLoginError {
+	return (
+		error instanceof InfisicalLoginError &&
+		!isCI(env) &&
+		!infisicalExportedToken(env)
+	);
+}
+
+/**
  * Resolve once every site the scopes sign in to through the CLI has a
  * session, or throw the {@link InfisicalLoginError} of one that has none.
  *
  * The token is the one those scopes' fetches use, cached per site, so a run
  * that awaits this before its first container pays no extra CLI process.
- * Other failures (no CLI, a queue on its lock) are left to the fetches, which
- * warn about them as before.
+ * Other failures (no CLI, a queue on its lock), and a missing session that
+ * does not {@link stopsTheRun}, are left to the fetches, which warn about them
+ * as before.
  */
 export async function ensureSecretsSession(
 	scopes: Iterable<InfisicalScope>,
@@ -604,7 +623,7 @@ export async function ensureSecretsSession(
 			try {
 				await cliSessionToken(scope, wait);
 			} catch (error) {
-				if (error instanceof InfisicalLoginError) throw error;
+				if (stopsTheRun(error, env)) throw error;
 				options.signal?.throwIfAborted();
 			}
 		}),
@@ -680,7 +699,7 @@ export async function loadAppSecrets(
 				} catch (error) {
 					options.signal?.throwIfAborted();
 					// Every app's own loader would wait on the same login.
-					if (error instanceof InfisicalLoginError) throw error;
+					if (stopsTheRun(error, env)) throw error;
 					const affected = [...appScopes]
 						.filter(([, appKey]) => appKey === key)
 						.map(([name]) => name)

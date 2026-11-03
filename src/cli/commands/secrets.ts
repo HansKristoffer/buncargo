@@ -206,6 +206,20 @@ interface ScopeCheck extends ConfigSecretScope {
 	login: boolean;
 }
 
+/** Why a scope could not be read, and its fix. Never a value or the CLI's output. */
+function describeFailure(
+	error: unknown,
+): Pick<ScopeCheck, "error" | "fix" | "login"> {
+	if (error instanceof InfisicalLoginError)
+		return { error: error.reason, fix: error.login, login: true };
+	const fix = error instanceof SecretsError ? error.fix : undefined;
+	return {
+		error: getErrorMessage(error),
+		...(fix ? { fix } : {}),
+		login: false,
+	};
+}
+
 /** `buncargo secrets check [--json]`. */
 async function checkSecrets(json: boolean): Promise<number> {
 	const env = await loadDevEnv({ readOnly: true });
@@ -215,28 +229,18 @@ async function checkSecrets(json: boolean): Promise<number> {
 				const keys = Object.keys(await fetchScopeSecrets(entry.scope)).length;
 				return { ...entry, keys, login: false };
 			} catch (error) {
-				return {
-					...entry,
-					// A SecretsError never carries a value or the CLI's output.
-					error: getErrorMessage(error),
-					...(error instanceof SecretsError && error.fix
-						? { fix: error.fix }
-						: {}),
-					login: error instanceof InfisicalLoginError,
-				};
+				return { ...entry, ...describeFailure(error) };
 			}
 		}),
 	);
 
-	const logins = [
-		...new Set(checks.flatMap((check) => (check.login && check.fix) || [])),
-	];
-	const code =
-		logins.length > 0
-			? SECRETS_CHECK_EXIT.login
-			: checks.some((check) => check.error !== undefined)
-				? SECRETS_CHECK_EXIT.unreadable
-				: SECRETS_CHECK_EXIT.ok;
+	const loginChecks = checks.filter((check) => check.login);
+	const logins = [...new Set(loginChecks.flatMap((check) => check.fix ?? []))];
+	const unreadable = checks.some((check) => check.error !== undefined);
+	let code: number = SECRETS_CHECK_EXIT.ok;
+	if (unreadable) code = SECRETS_CHECK_EXIT.unreadable;
+	// A login may fix the rest, so it is the one thing to do first.
+	if (logins.length > 0) code = SECRETS_CHECK_EXIT.login;
 
 	if (json) {
 		const scopes = checks.map(({ scope, usedBy, keys, error, fix }) => ({

@@ -72,6 +72,8 @@ function binEntry(pkg: PackageJson): string | undefined {
 export interface InstallNeed {
 	/** The directory holding `bun.lock`: the workspace root. */
 	dir: string;
+	/** No `node_modules` at all, rather than one installed from another lockfile. */
+	missing: boolean;
 	reason: string;
 }
 
@@ -89,37 +91,80 @@ function statOrUndefined(path: string): Stats | undefined {
  *
  * Without that stamp, the `node_modules` directory's own time stands in: a
  * checkout installed by hand is not reinstalled until `bun.lock` changes after
- * it.
+ * it. Stats only, unless a stamp exists to compare the lockfile against.
  */
 export function installNeed(dir: string): InstallNeed | undefined {
-	const hash = lockfileHash(dir);
-	if (hash === undefined) return undefined;
+	const lock = statOrUndefined(join(dir, "bun.lock"));
+	if (!lock) return undefined;
 	const modules = statOrUndefined(join(dir, "node_modules"));
-	if (!modules) return { dir, reason: "node_modules is missing" };
+	if (!modules)
+		return { dir, missing: true, reason: "node_modules is missing" };
+
 	const stamp = readInstallStamp(dir);
 	const stale =
 		stamp === undefined
-			? statSync(join(dir, "bun.lock")).mtimeMs > modules.mtimeMs
-			: stamp !== hash;
+			? lock.mtimeMs > modules.mtimeMs
+			: stamp !== lockfileHash(dir);
 	return stale
-		? { dir, reason: "node_modules is older than bun.lock" }
+		? {
+				dir,
+				missing: false,
+				reason: "bun.lock changed since node_modules was installed",
+			}
 		: undefined;
 }
 
 /**
- * The install a buncargo project needs before any command runs: from `cwd` up
- * to the repository root, the first directory with a `bun.lock`, when a
- * `package.json` on the way lists buncargo. Anything else is not buncargo's to
- * install.
+ * The commands that run the project's own code, so stale dependencies give
+ * them phantom errors. Everything else (`stop`, `status`, `logs`, BuncargoBar's
+ * buttons) never reinstalls under a running run, and never fails on an
+ * install it did not need.
  */
-export function decideInstall(cwd: string): InstallNeed | undefined {
+const PROJECT_COMMANDS = new Set([
+	"dev",
+	"run",
+	"exec",
+	"slot",
+	"prisma",
+	"build",
+	"generate",
+	"typecheck",
+	"check",
+	"ci",
+	"predeploy",
+	"setup",
+]);
+
+/** Whether `args` (after `buncargo`) is worth bringing stale dependencies up to date for. */
+export function refreshesStaleInstall(args: readonly string[]): boolean {
+	const [command = ""] = args;
+	const asksForHelp = args.includes("--help") || args.includes("-h");
+	return (
+		PROJECT_COMMANDS.has(command) && !asksForHelp && !args.includes("--down")
+	);
+}
+
+/**
+ * The install a buncargo project needs before `args` runs: from `cwd` up to
+ * the repository root, the first directory with a `bun.lock`, when a
+ * `package.json` on the way lists buncargo. Anything else is not buncargo's to
+ * install. Missing dependencies install for every command, since no command
+ * of the project's buncargo runs without them; stale ones only for
+ * {@link refreshesStaleInstall}.
+ */
+export function decideInstall(
+	cwd: string,
+	args: readonly string[],
+): InstallNeed | undefined {
 	let declared = false;
 	for (let dir = cwd; ; dir = dirname(dir)) {
 		const project = readPackageJson(join(dir, "package.json"));
 		if (project && project.name !== "buncargo" && listsBuncargo(project))
 			declared = true;
-		if (project && existsSync(join(dir, "bun.lock")))
-			return declared ? installNeed(dir) : undefined;
+		if (project && existsSync(join(dir, "bun.lock"))) {
+			const need = declared ? installNeed(dir) : undefined;
+			return need?.missing || refreshesStaleInstall(args) ? need : undefined;
+		}
 		if (existsSync(join(dir, ".git")) || dirname(dir) === dir) return undefined;
 	}
 }
@@ -189,7 +234,7 @@ export async function guardVersion(fromSource: boolean): Promise<void> {
 
 	const install = isInstallingCheckout()
 		? undefined
-		: decideInstall(process.cwd());
+		: decideInstall(process.cwd(), process.argv.slice(2));
 	if (install) {
 		(await import("./checkout-install")).installCheckout(install);
 		// The install may have replaced the very package this process runs

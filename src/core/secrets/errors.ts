@@ -20,14 +20,21 @@ export class SecretsError extends Error {
  * for an interactive login. Every fetch on that site fails the same way, so a
  * run stops on it instead of starting apps whose own loaders would hang on the
  * same login.
+ *
+ * The login command is in the message itself, for a library caller that
+ * prints only that; the CLI shows `reason` and `login` on two lines.
  */
 export class InfisicalLoginError extends SecretsError {
+	readonly login: string;
+
 	constructor(
-		message: string,
+		readonly reason: string,
 		readonly siteUrl: string,
 	) {
-		super(message, infisicalLoginCommand(siteUrl));
+		const login = infisicalLoginCommand(siteUrl);
+		super(`${reason} Run \`${login}\`.`);
 		this.name = "InfisicalLoginError";
+		this.login = login;
 	}
 }
 

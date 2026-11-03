@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { tmpdir } from "node:os";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
 import { readRemovals } from "../core/removal-log";
+import { CI_ENV_VARS } from "../core/runtime-flags";
 import { InfisicalLoginError } from "../core/secrets/errors";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
 import {
@@ -514,6 +515,11 @@ it("stops on an expired Infisical session before the claim or any container", as
 	const fake = startFakeInfisical({ cliLogin: "prompt" });
 	const home = process.env.HOME;
 	const binary = process.env.BUNCARGO_INFISICAL_PATH;
+	// A developer's machine: CI and an exported token only warn.
+	const ambient = [...CI_ENV_VARS, "INFISICAL_TOKEN"].map(
+		(name) => [name, process.env[name]] as const,
+	);
+	for (const [name] of ambient) delete process.env[name];
 	process.env.HOME = fake.home;
 	process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
 	clearScopeSecretsCache();
@@ -525,12 +531,14 @@ it("stops on an expired Infisical session before the claim or any container", as
 			.catch((error: unknown) => error);
 
 		expect(failure).toBeInstanceOf(InfisicalLoginError);
-		expect((failure as InfisicalLoginError).fix).toBe(
+		expect((failure as InfisicalLoginError).message).toContain(
 			`infisical login --domain=${fake.siteUrl}`,
 		);
 		expect(events).not.toContain("claim");
 		expect(events).not.toContain("runtime");
 	} finally {
+		for (const [name, value] of ambient)
+			if (value !== undefined) process.env[name] = value;
 		clearScopeSecretsCache();
 		fake.stop();
 		if (home === undefined) delete process.env.HOME;

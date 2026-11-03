@@ -19,8 +19,8 @@ export interface ConfigSecretScope {
 
 /**
  * Every Infisical scope dev.config.ts names, distinct: the config-level one
- * (migrations, the seed, `exec`) and each app's. What `secrets check`,
- * `doctor` and `dev`'s session check look at.
+ * (migrations, the seed, `exec`) and each app's. What `secrets check` and
+ * `doctor` read; `dev` passes only its selected apps.
  */
 export function configSecretScopes(env: SecretsConfig): ConfigSecretScope[] {
 	const scopes = new Map<string, ConfigSecretScope>();
@@ -42,14 +42,17 @@ export function configSecretScopes(env: SecretsConfig): ConfigSecretScope[] {
 }
 
 /**
- * The scope a command run for `app` (or for the checkout) reads, as
- * `exec` resolves it: the app's, else the config-level one.
+ * The scope a command reads, as `exec` resolves it: for an app, the app's own
+ * `secrets` (none when it has none); for the checkout, the config-level one.
+ * An unknown app has none here; the command itself reports it.
  */
 export function commandSecretScopes(
 	env: SecretsConfig,
 	app: string | undefined,
 ): InfisicalScope[] {
-	const config = app === undefined ? env.secrets : env.apps[app]?.secrets;
+	let config = env.secrets;
+	if (app !== undefined)
+		config = Object.hasOwn(env.apps, app) ? env.apps[app].secrets : undefined;
 	const scope = config ? resolveScope(config, env.secrets) : undefined;
 	return scope ? [scope] : [];
 }

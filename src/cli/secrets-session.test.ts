@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CI_ENV_VARS } from "../core/runtime-flags";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
 import { standInForWatchdog } from "../core/watchdog.testing";
 
@@ -43,6 +44,17 @@ async function project(login: "prompt" | "hang" | undefined) {
 	);
 	await standInForWatchdog(root);
 
+	// A developer's machine: CI and an exported token only warn.
+	const env: Record<string, string | undefined> = {
+		...process.env,
+		HOME: root,
+		NO_COLOR: "1",
+		BUNCARGO_HOSTS: "0",
+		BUNCARGO_SYSTEMD_SCOPE: "0",
+		BUNCARGO_INFISICAL_PATH: infisical.cliPath,
+	};
+	for (const name of [...CI_ENV_VARS, "INFISICAL_TOKEN"]) delete env[name];
+
 	const run = async (...args: string[]) => {
 		const startedAt = performance.now();
 		const child = Bun.spawn([process.execPath, BIN, ...args], {
@@ -50,14 +62,7 @@ async function project(login: "prompt" | "hang" | undefined) {
 			stdin: "ignore",
 			stdout: "pipe",
 			stderr: "pipe",
-			env: {
-				...process.env,
-				HOME: root,
-				NO_COLOR: "1",
-				BUNCARGO_HOSTS: "0",
-				BUNCARGO_SYSTEMD_SCOPE: "0",
-				BUNCARGO_INFISICAL_PATH: infisical.cliPath,
-			},
+			env,
 		});
 		const [stdout, stderr, exitCode] = await Promise.all([
 			new Response(child.stdout).text(),
