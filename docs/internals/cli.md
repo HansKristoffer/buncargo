@@ -104,7 +104,10 @@ pieces it orchestrates.
   `run-cli.ts` turns it (or a `default` profile) into the same selection `--apps` makes.
 - `agents-guide.ts` is the one copy of the agent guide (`help agents`) and the `AGENTS.md` block
   `setup --agents` keeps between `<!-- buncargo:start/end -->` markers. It lives in code, not
-  `docs/`, so the guide an agent reads matches the installed version.
+  `docs/`, so the guide an agent reads matches the installed version. The core stays under 40
+  lines with the never-rules and failure recipes first, and the rest is `help agents <topic>`:
+  agents read it through `| head -60` or a grep, and the 12 KB single page they cut that way
+  never showed them the database and port-block recipes.
 - `commands/ports.ts` shows the offset claims and `pin`s one: it checks every port of the block
   through `withBindProbe` and the claims before writing the lockfile and the claim. `release`
   drops another checkout's claims under the claims lock, refusing while that checkout has a live or

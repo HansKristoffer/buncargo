@@ -278,7 +278,7 @@ bunx buncargo check                    # Biome, typecheck, gates and tests for t
 bunx buncargo stop --all               # Stop this checkout's run
 ```
 
-`bunx buncargo setup --agents` adds a short block to the project's `AGENTS.md` that points agents at `bunx buncargo help agents`. Without a terminal, `dev --reset` and `dev --down --all` refuse unless passed `--yes`.
+`bunx buncargo setup --agents` adds a short block to the project's `AGENTS.md` with the rules agents most often miss, pointing at `bunx buncargo help agents` (a short guide; `help agents <topic>` for the rest). Without a terminal, `dev --reset` and `dev --down --all` refuse unless passed `--yes`.
 
 ## Documentation
 

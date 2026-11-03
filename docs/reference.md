@@ -101,6 +101,7 @@ bunx buncargo predeploy           # Before a deploy: migrate, seed unless produc
 bunx buncargo slot -- bun test      # A heavy command in a check slot
 bunx buncargo help
 bunx buncargo help agents         # The guide for AI agents working in a checkout
+bunx buncargo help agents db      # One topic of it (`all` prints every topic)
 bunx buncargo version
 ```
 
@@ -120,7 +121,7 @@ When the project's `package.json` lists buncargo but it is not installed, it sto
 
 Without a terminal, `dev --reset` (which deletes the checkout's volumes) and `dev --down --all` (which stops every checkout's run) refuse unless `--yes` is passed; in a terminal they ask first. CI is exempt.
 
-`buncargo help agents` prints a guide for AI agents working in a checkout, and `buncargo setup --agents` adds (or updates) a short block in the project's `AGENTS.md` that points at it.
+`buncargo help agents` prints a short guide for AI agents working in a checkout: the rules, the commands to use and what to do when something fails, under 40 lines. `buncargo help agents <topic>` prints one topic in full (`start`, `runs`, `env`, `db`, `ports`, `logs`, `check`, `files`, `share`, `fail`, `config`), and `help agents all` all of them. `buncargo setup --agents` adds (or updates) a short block in the project's `AGENTS.md` that states the rules agents most often miss and points at the guide.
 
 `buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own - that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and in CI at one process per 3.5 GB of memory (2 on a 7 GB runner, the CPU count on a large self-hosted machine); override with `--concurrency=N`, then `BUNCARGO_TYPECHECK_CONCURRENCY`, then `typecheck.concurrency` in the config, in that order, so a CI runner sizes itself over the config's local value. `--only=platform` (path or basename) checks one workspace. `--changed[=<ref>]` checks only what the branch can break: the workspaces holding files changed since the merge base with `<ref>` (default `origin/HEAD`, then `origin/main`, then `main`), committed, uncommitted, untracked or deleted, plus every workspace that depends on one of them through `package.json`, transitively. A root `package.json`, lockfile, `tsconfig*.json` or `dev.config.ts` among them checks everything, the root config included; otherwise the root config is skipped.
 

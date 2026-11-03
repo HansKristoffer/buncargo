@@ -106,7 +106,7 @@ const COMMANDS = {
 	),
 	help: command(async (args) => {
 		if (args[0] === "agents") {
-			console.log((await import("./agents-guide")).AGENTS_GUIDE);
+			console.log((await import("./agents-guide")).agentsGuide(args[1]));
 		} else {
 			await (await import("./commands/help")).showHelp();
 		}
