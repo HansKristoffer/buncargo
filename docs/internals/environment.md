@@ -22,8 +22,9 @@ and log it to `seed.log`.
 ## Secrets prefetch
 
 `prefetch-secrets.ts` starts the distinct selected scopes immediately after startup preparation,
-except in containers-only mode. Consumers await the shared cache and own their warn-once
-messages. Prefetch cancellation releases the CLI lock; failed startup drains fetches. The
+except in containers-only mode, and the start then awaits only their CLI session before the
+claim, so an expired session stops it before any container (see [secrets](./secrets.md)).
+Consumers await the shared cache and own their warn-once messages. Prefetch cancellation releases the CLI lock; failed startup drains fetches. The
 `secrets` timing measures consumer waits, which can overlap other phases. See
 [secrets](./secrets.md).
 

@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-import { getErrorMessage } from "hanzio";
 
 /**
  * CLI Entry Point for buncargo
@@ -19,7 +18,7 @@ import { type Command, defineCli, defineCommand } from "hanzio/cli";
 import { noteCheckoutCommand } from "../core/run-activity";
 import { findCheckoutRoot } from "../loader/find-config-file";
 import type { CliCommandName } from "./commands/registry";
-import { CliError } from "./errors";
+import { toCliError } from "./errors";
 import * as log from "./log";
 import { guardVersion } from "./version-guard";
 
@@ -27,8 +26,8 @@ const HELP_ALIASES = new Set(["--help", "-h"]);
 const VERSION_ALIASES = new Set(["--version", "-v"]);
 
 function failWith(error: unknown): never {
-	if (error instanceof CliError) log.fail(error.message, error.hints);
-	log.fail(getErrorMessage(error));
+	const failure = toCliError(error);
+	log.fail(failure.message, failure.hints);
 }
 
 /**
@@ -188,7 +187,7 @@ const cli = defineCli({
 async function main(): Promise<void> {
 	// `<package>/src/cli` from source, `<package>/dist/cli` when installed.
 	const cliDir = dirname(fileURLToPath(import.meta.url));
-	guardVersion(basename(dirname(cliDir)) === "src");
+	await guardVersion(basename(dirname(cliDir)) === "src");
 
 	const args = process.argv.slice(2);
 	const first = args[0];

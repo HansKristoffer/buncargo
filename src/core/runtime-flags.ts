@@ -154,6 +154,19 @@ export function reexecedFrom(
 	return readTrimmed(env, REEXEC_ENV);
 }
 
+/**
+ * `BUNCARGO_INSTALLING=1` - set on the `bun install` a buncargo runs for a
+ * checkout whose `node_modules` is missing or stale (`cli/checkout-install.ts`),
+ * so a buncargo that a postinstall script runs never starts a second one.
+ */
+export const INSTALLING_ENV = "BUNCARGO_INSTALLING";
+
+export function isInstallingCheckout(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return env[INSTALLING_ENV] === "1";
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Container runtime
 // ═══════════════════════════════════════════════════════════════════════════
@@ -306,6 +319,21 @@ export function infisicalPathOverride(
 	env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
 	return readBinaryOverride(env, "BUNCARGO_INFISICAL_PATH");
+}
+
+/**
+ * Whether the shell exports an Infisical token of its own (`INFISICAL_TOKEN`,
+ * `INFISICAL_UNIVERSAL_AUTH_ACCESS_TOKEN`). buncargo's CLI call ignores it,
+ * but the apps' own loaders use it, so a missing CLI session is no reason to
+ * stop their run.
+ */
+export function infisicalExportedToken(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return Boolean(
+		readTrimmed(env, "INFISICAL_TOKEN") ??
+		readTrimmed(env, "INFISICAL_UNIVERSAL_AUTH_ACCESS_TOKEN"),
+	);
 }
 
 /**

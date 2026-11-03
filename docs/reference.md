@@ -85,6 +85,7 @@ bunx buncargo wait --app=api --hold   # Block until an app is healthy (and stay)
 bunx buncargo generate            # Render generatedFiles without starting anything
 bunx buncargo build --discovered  # Every discovered app's build, in order
 bunx buncargo secrets ls --app=api   # Key names and their source, never values
+bunx buncargo secrets check --json   # Is every Infisical scope readable? Exit 2: log in
 bunx buncargo files status        # Each checkout file: in sync, local edits, ...
 bunx buncargo files save          # This checkout's copies to the file store
 bunx buncargo files pull --force  # The file store to this checkout, over local edits
@@ -117,8 +118,15 @@ bunx buncargo version
 Inside a project, the CLI runs the project's own buncargo. When `bunx buncargo` reaches a
 different version (a global install, because the checkout has no `node_modules/.bin`), it prints
 one line and hands over to the version in the project's `node_modules`, with the same arguments.
-When the project's `package.json` lists buncargo but it is not installed, it stops and asks for
-`bun install` instead of running a version the project did not choose.
+A checkout without `node_modules` (a fresh worktree) installs itself before any command, and one
+whose `bun.lock` changed since its last install (a branch switch) before a command that runs the
+project (`dev`, `run`, `exec`, `slot`, `prisma`, `build`, `generate`, `typecheck`, `check`, `ci`,
+`predeploy`, `setup`; never `stop`, `status`, `logs` or the menu bar's buttons): the CLI prints one
+line, runs `bun install --frozen-lockfile` (the project's postinstall scripts included, its
+output on stderr so `--json` stays clean), and then runs the command. When that install fails, it stops with the
+install's output and asks for `bun install`. A project without `bun.lock` whose `package.json`
+lists buncargo but has none installed stops and asks for `bun install` instead of running a
+version the project did not choose.
 
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`), including `vars`: the variables `exec`, tasks and the apps are given, without their Infisical secrets. `--get ports.api` prints one raw value for scripts, and a bare name (`--get DATABASE_URL`) reads from `vars`. `--export` prints `vars` as quoted `export` lines.
 
@@ -1336,13 +1344,15 @@ It fetches the way `hanzio/secrets` does, with the same defaults. The CLI is ask
 
 **Where secrets go.** Apps get their own scope. Migrations, the seed, `buncargo exec`, `buncargo prisma`, tasks and hooks' `ctx.exec` get theirs too: `migrations[].secrets`, `seed.secrets`, `exec --app=<name>` (that app's scope), otherwise the config-level `secrets`. `secrets: false` turns them off for one app or command, including startup prefetch. Set config-level `secrets: false` to disable all buncargo secret requests for that environment, even when apps, seeders or migrations declare explicit scopes. This is useful when a reusable config is overridden for offline CI. `mergeConfigs(base, { secrets: false })` preserves the opt-out; an explicit scope override can re-enable it. The opt-out controls buncargo fetching; applications still validate their own configuration and must receive synthetic test inputs. Precedence, lowest first: the secrets, then the developer's own exported environment, then the computed env. So `export OPENAI_API_KEY=sk-local` still wins in that shell. Apps without a `secrets` block are untouched by the app injection.
 
-**Fetch failures.** The compatibility behavior remains: warn once per scope and continue with environment/computed values. Apps can fall back to their own loader; `secrets.required` prevents startup when declared required keys are still absent. Commands retain responsibility for validating their inputs. Machine HTTP failures never switch to CLI authentication.
+**An expired session stops the run.** Without an Infisical CLI session for a `siteUrl` (none, an expired one, or a CLI that starts its interactive login), `buncargo dev`, `run`, `exec` and library `start()` stop before anything starts, within a few seconds, and name the one fix: `infisical login --domain=<siteUrl>` (in the error's message for `start()`). buncargo's own call to the CLI never logs in: its stdin is closed, a login prompt ends it at once, and it gets 2 seconds. `dev` checks the selected apps' scopes and the config-level one (`--up-only` skips it), `run` and `exec` the scope of the command, `start()` the scopes of what it starts. A machine identity needs no session and skips the check. In CI, and in a shell that exports `INFISICAL_TOKEN` or `INFISICAL_UNIVERSAL_AUTH_ACCESS_TOKEN` for the apps' own loaders, a missing session only warns, as before. The check is the session token the fetches use anyway, so it adds no CLI process.
+
+**Other fetch failures.** A signed-in fetch that fails (a missing project or environment, no access, the network) warns once per scope and continues with environment/computed values. Apps can fall back to their own loader; `secrets.required` prevents startup when declared required keys are still absent. Commands retain responsibility for validating their inputs. Machine HTTP failures never switch to CLI authentication.
 
 **Required keys.** `secrets.required` names keys an app cannot start without. A run with any of them missing (from Infisical, the environment and the computed env alike) stops before anything spawns, naming each app's missing keys.
 
-**Commands.** `buncargo secrets ls [--app=api] [--env=prod]` lists key names, never values, each with the source of the value the app gets: Infisical, env override, computed (buncargo's own env, which wins) or missing. It exits 1 when a required key is missing by the same rule `dev` refuses to start on, so an exported empty value counts as missing. `buncargo setup` and `buncargo doctor` check that every scope is readable and print the fix (`infisical login --domain=…`, MFA).
+**Commands.** `buncargo secrets ls [--app=api] [--env=prod]` lists key names, never values, each with the source of the value the app gets: Infisical, env override, computed (buncargo's own env, which wins) or missing. It exits 1 when a required key is missing by the same rule `dev` refuses to start on, so an exported empty value counts as missing. `buncargo secrets check [--json]` reads every scope the config uses (the config-level one and each app's) and prints one line per scope with its key count, never a key or value. Its exit code means one thing each: 0 every scope is readable (or the config uses none), 2 there is no usable session (run the printed `infisical login --domain=…`), 3 signed in but a scope cannot be read (the line says why), 1 the command itself could not run. `--json` prints `{ ok, exitCode, logins, scopes: [{ projectId, environment, path, siteUrl, organizationId?, usedBy, ok, keys?, error?, fix? }] }`. There is no command that prints a secret value. `buncargo setup` and `buncargo doctor` check that every scope is readable and print the fix (`infisical login --domain=…`, MFA).
 
-A failed fetch warns once and continues; an app's own loader then does what it does today. Values are never logged, never written to a state file, and never included in an error: neither the CLI's output nor a response body is echoed. An empty value is never injected, since a blank variable would read as "already set".
+Apart from a missing session, a failed fetch warns once and continues; an app's own loader then does what it does today. Values are never logged, never written to a state file, and never included in an error: neither the CLI's output nor a response body is echoed. An empty value is never injected, since a blank variable would read as "already set".
 
 Defaults: `siteUrl` is `https://eu.infisical.com` (like hanzio; it was `app.infisical.com` before the next major), `environment` is `SECRETS_ENV` or `dev`, `path` is `/`.
 
@@ -1731,6 +1741,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `--reset removes …'s volumes … Refusing without a terminal` | `--reset` / `--down --all` from a script or agent | Pass `--yes` if that is really meant |
 | `Dependencies are installed (no node_modules)` | Fresh worktree | `bun install`, or `buncargo setup --yes` |
 | `This project's buncargo (package.json) is not installed` | `bunx buncargo` found a different buncargo than the project lists, and the project's is not installed | `bun install` |
+| `bun install --frozen-lockfile failed in <dir>` | The checkout installed itself and `bun.lock` does not match `package.json`, or a postinstall script failed | Fix what the install printed, then `bun install` |
 | `Worker "…" is already running` | Library startup encountered an owned worker | Reuse it through the CLI or use `dev --takeover` |
 | `Apple container cannot verify finite job exit codes yet` | A job was selected with Apple | Use `--runtime=docker` |
 | `already listening on port … but failed health check` | Port busy, `healthEndpoint` failed, and the server runs in another terminal of this checkout or is not from this checkout | `dev --takeover` replaces another run's server; otherwise free the port. A leftover no run owns and a `--detach` run's server are replaced without asking |

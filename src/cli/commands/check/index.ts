@@ -17,6 +17,11 @@ import {
 } from "../../command-spec";
 import { argumentsError, CliError } from "../../errors";
 import {
+	lockfileHash,
+	readInstallStamp,
+	writeInstallStamp,
+} from "../../install-stamp";
+import {
 	docPathsConfig,
 	findDocProblems,
 	formatDocProblem,
@@ -228,14 +233,12 @@ async function ensureInstalled(
 	root: string,
 	run: (step: Step) => Promise<number>,
 ) {
-	const lock = Bun.file(join(root, "bun.lock"));
-	if (!(await lock.exists())) return;
-	const hash = Bun.hash(await lock.text()).toString();
-	const stamp = Bun.file(join(root, "node_modules", ".buncargo-lock-hash"));
-	if ((await stamp.exists()) && (await stamp.text()) === hash) return;
-	// Stamped only on success, or a failed install is never retried.
+	const before = lockfileHash(root);
+	if (before === undefined || readInstallStamp(root) === before) return;
 	const code = await run({ name: "bun install", command: ["bun", "install"] });
-	if (code === 0) await Bun.write(stamp, hash);
+	// Stamped only on success, or a failed install is never retried. The hash
+	// of what was installed: a plain install can rewrite bun.lock.
+	if (code === 0) writeInstallStamp(root, lockfileHash(root) ?? before);
 }
 
 export async function handleCheck(args: string[]): Promise<number> {

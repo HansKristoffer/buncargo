@@ -14,6 +14,7 @@ import {
 	describeSecretsError,
 	loadScopeSecrets,
 	resolveScope,
+	stopsTheRun,
 	warnSecretsOnce,
 } from "../core/secrets/infisical";
 import type {
@@ -264,6 +265,8 @@ export function createEnvVarsApi<
 			);
 		} catch (error) {
 			options.signal?.throwIfAborted();
+			// The command's own loader would wait on the same login.
+			if (stopsTheRun(error)) throw error;
 			warnSecretsOnce(
 				resolved,
 				`Could not load Infisical secrets: ${describeSecretsError(error)}`,

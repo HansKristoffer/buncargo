@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AppConfig, SecretsScopeConfig } from "../../types";
+import { InfisicalLoginError } from "./errors";
 import {
 	type FakeInfisical,
 	startFakeInfisical,
@@ -10,6 +11,7 @@ import {
 	applySecretDefaults,
 	clearScopeSecretsCache,
 	describeSecretsError,
+	ensureSecretsSession,
 	fetchScopeSecrets,
 	type InfisicalScope,
 	loadAppSecrets,
@@ -298,22 +300,57 @@ describe("loadAppSecrets", () => {
 		]);
 	});
 
-	it("warns with the fix, never the CLI's output, when the CLI fails", async () => {
+	it("stops on a missing session with the login, never the CLI's output", async () => {
 		start({ cliFails: true });
+		const failure = await loadAppSecrets(
+			{ api: app("p1") },
+			{ env: noIdentity() },
+		).catch((error: unknown) => error);
+
+		expect(failure).toBeInstanceOf(InfisicalLoginError);
+		expect(describeSecretsError(failure)).toContain(
+			`infisical login --domain=${fake?.siteUrl}`,
+		);
+		expect(describeSecretsError(failure)).not.toContain("secret-looking");
+	});
+
+	for (const [where, extra] of [
+		["in CI", { CI: "true" }],
+		["with an exported token", { INFISICAL_TOKEN: "st.exported" }],
+	] as const) {
+		it(`only warns about a missing session ${where}`, async () => {
+			start({ cliFails: true });
+			const warnings: string[] = [];
+			const warn = console.warn;
+			console.warn = (message: unknown) => warnings.push(String(message));
+			try {
+				expect(
+					await loadAppSecrets(
+						{ api: app("p1") },
+						{ env: { ...noIdentity(), ...extra } },
+					),
+				).toEqual({ api: {} });
+			} finally {
+				console.warn = warn;
+			}
+			expect(warnings[0]).toContain("infisical login --domain=");
+			expect(warnings[0]).not.toContain("secret-looking");
+		});
+	}
+
+	it("warns and goes on when a signed-in scope cannot be read", async () => {
+		start();
 		const warnings: string[] = [];
 		const warn = console.warn;
 		console.warn = (message: unknown) => warnings.push(String(message));
 		try {
 			expect(
-				await loadAppSecrets({ api: app("p1") }, { env: noIdentity() }),
-			).toEqual({
-				api: {},
-			});
+				await loadAppSecrets({ api: app("missing") }, { env: noIdentity() }),
+			).toEqual({ api: {} });
 		} finally {
 			console.warn = warn;
 		}
-		expect(warnings[0]).toContain("infisical login --domain=");
-		expect(warnings[0]).not.toContain("secret-looking");
+		expect(warnings[0]).toContain("HTTP 404");
 	});
 
 	it("reports MFA instead of guessing", async () => {
@@ -474,4 +511,84 @@ it("does not reuse a machine-auth scope after credentials change", async () => {
 		"GET /api/v4/secrets",
 		"POST /api/v1/auth/universal-auth/login",
 	]);
+});
+
+describe("an expired session", () => {
+	async function timedFailure(work: Promise<unknown>) {
+		const startedAt = performance.now();
+		const failure = await work.catch((error: unknown) => error);
+		return { failure, ms: performance.now() - startedAt };
+	}
+
+	it("stops the CLI's login flow at once and names the login", async () => {
+		const infisical = start({ cliLogin: "prompt" });
+
+		const { failure, ms } = await timedFailure(
+			loadScopeSecrets(scopeOf("p1"), { env: noIdentity() }),
+		);
+
+		expect(failure).toBeInstanceOf(InfisicalLoginError);
+		expect(describeSecretsError(failure)).toBe(
+			`The Infisical session for ${infisical.siteUrl} has expired: the CLI asked for a login. Run \`infisical login --domain=${infisical.siteUrl}\`.`,
+		);
+		expect(ms).toBeLessThan(1_000);
+		expect(infisical.requests).toEqual([]);
+	});
+
+	it("bounds a CLI that waits on a login without a word", async () => {
+		const infisical = start({ cliLogin: "hang" });
+
+		const { failure, ms } = await timedFailure(
+			loadScopeSecrets(scopeOf("p1"), { env: noIdentity() }),
+		);
+
+		expect(failure).toBeInstanceOf(InfisicalLoginError);
+		expect(describeSecretsError(failure)).toContain(
+			`did not answer within 2s for ${infisical.siteUrl}`,
+		);
+		expect(ms).toBeLessThan(3_000);
+	});
+});
+
+describe("ensureSecretsSession", () => {
+	it("shares its one CLI run with the fetches that follow", async () => {
+		const infisical = start();
+		const scope = scopeOf("p1");
+
+		await ensureSecretsSession([scope, scopeOf("p2")], { env: noIdentity() });
+		await loadScopeSecrets(scope, { env: noIdentity() });
+
+		expect(infisical.cliCalls()).toHaveLength(1);
+	});
+
+	it("throws the login for a site without a session", async () => {
+		const infisical = start({ cliFails: true });
+		await expect(
+			ensureSecretsSession([scopeOf("p1")], { env: noIdentity() }),
+		).rejects.toThrow(`No Infisical session for ${infisical.siteUrl}.`);
+	});
+
+	it("needs no CLI for a machine identity", async () => {
+		const infisical = start({ cliFails: true });
+		await ensureSecretsSession([scopeOf("p1")], {
+			env: {
+				...noIdentity(),
+				INFISICAL_CLIENT_ID: "id",
+				INFISICAL_CLIENT_SECRET: "right",
+			},
+		});
+		expect(infisical.cliCalls()).toEqual([]);
+	});
+
+	it("leaves a CLI that cannot start to the fetch's warning", async () => {
+		const infisical = start();
+		const notExecutable = join(infisical.home, "not-executable");
+		writeFileSync(notExecutable, "");
+		process.env.BUNCARGO_INFISICAL_PATH = notExecutable;
+
+		await ensureSecretsSession([scopeOf("p1")], { env: noIdentity() });
+		await expect(
+			loadScopeSecrets(scopeOf("p1"), { env: noIdentity() }),
+		).rejects.toThrow("The Infisical CLI is not installed.");
+	});
 });

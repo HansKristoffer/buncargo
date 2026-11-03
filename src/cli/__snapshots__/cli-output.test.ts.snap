@@ -303,12 +303,15 @@ exports[`buncargo CLI output secrets --help 1`] = `
 --- stdout
 
 Usage: buncargo secrets ls [--app=<name>] [--env=<slug>]
+       buncargo secrets check [--json]
 
 Options:
   --help        Show this help message
   --app=<name>  This app's scope instead of the config-level one
   --env=<slug>  This Infisical environment
+  --json        check: one JSON document on stdout
   ls            Key names and where each comes from, never values
+  check         Whether every scope is readable; exit 2 needs a login, 3 another fix
 
 
 --- stderr

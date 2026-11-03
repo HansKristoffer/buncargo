@@ -6,7 +6,9 @@ named keys, so it is ported here rather than depended on; sharing code needs han
 all-keys fetch.
 
 **Never log a value, and never echo the CLI's output or a response body in an error.** A failure
-warns once and continues.
+warns once and continues, except a missing session (below). There is deliberately no command that
+prints a value: agents run these commands, and production credentials must stay out of their
+context. `secrets ls` prints key names, `secrets check` key counts.
 
 ## Fetching
 
@@ -20,6 +22,29 @@ warns once and continues.
   `organizationId` differs from the token's claim, the token is exchanged with
   `select-organization`, and the scoped token stays in memory so the CLI's own session is never
   switched.
+- `user get token` can never become an interactive login. With an expired session the CLI starts
+  its login flow ("triggering login flow", a browser callback, an email prompt) and waits for a
+  person forever: agents' runs and tests hung on it until an outer `timeout`. So its stdin is
+  closed, its output is matched (never kept) against the login flow's wording, which kills it at
+  once, and the process gets `CLI_TIMEOUT_MS` (2 s) once it holds the lock; the lock wait is not
+  counted, since worktrees queue there. Each of those, and a failed or empty answer, is an
+  `InfisicalLoginError` (`errors.ts`) whose fix is `infisical login --domain=<siteUrl>`. 2 s is
+  tight for the CLI's `checkAuth` round trip on a slow network; a printed prompt, the observed
+  case, does not wait for it.
+- An `InfisicalLoginError` stops the run instead of warning (`stopsTheRun`): every app's own
+  loader and every command would wait on the same login. Not in CI, where nobody can log in, and
+  not when the shell exports its own Infisical token, which the apps' loaders use while
+  buncargo's CLI call strips it: both warned before this existed and still do. Its message
+  carries the login command, for a library caller that prints only the message; the CLI prints
+  `reason` and `login` on two lines. `ensureSecretsSession` awaits the token for each CLI
+  site among a set of scopes; it is the token the fetches use (cached per site), so it costs no
+  extra process. `start()` awaits it for the scopes it prefetches, before the claim; `dev` fires
+  it for the selected apps' and the config-level scopes right after selection and awaits it
+  before named hosts, so it
+  overlaps the checks and preflight; `run` awaits it before a task's services. `exec` and a task
+  without services need nothing extra: their own first fetch throws the same error just as fast.
+  `loadAppSecrets` and `resolveSecrets` rethrow it rather than warn. `toCliError` turns any
+  `SecretsError` into its message and `Fix:` line, which is why `errors.ts` imports nothing.
 - The secrets are listed over HTTP (v4, imports beneath the folder's own values).
 - A universal-auth identity (`infisicalMachineCredentials` in `runtime-flags.ts`, else the
   identity file) replaces the CLI for apps and commands alike, sharing the per-scope cache.

@@ -1,8 +1,9 @@
+import { getErrorMessage } from "hanzio";
+import { InfisicalLoginError, SecretsError } from "../../core/secrets/errors";
 import {
 	fetchScopeSecrets,
 	missingKeys,
 	resolveScope,
-	SecretsError,
 } from "../../core/secrets/infisical";
 import { loadDevEnv } from "../../loader";
 import type { SecretsScopeConfig } from "../../types";
@@ -17,11 +18,18 @@ import {
 } from "../command-spec";
 import { argumentsError, CliError } from "../errors";
 import * as log from "../log";
+import {
+	type ConfigSecretScope,
+	configSecretScopes,
+	describeScope,
+} from "../secrets-scopes";
 
 /**
  * `buncargo secrets ls`: which keys a scope provides and where each value
- * comes from. Never prints a value. Whether every scope is readable at all is
- * `setup`'s and `doctor`'s Infisical check.
+ * comes from. `buncargo secrets check`: whether every scope the config uses is
+ * readable, for an agent to run before tests. Neither prints a value, and
+ * there is deliberately no command that does: secret values, production
+ * credentials among them, stay out of an agent's context.
  */
 
 const FLAGS = {
@@ -44,15 +52,41 @@ const FLAGS = {
 		description: "This Infisical environment",
 		validate: (value: string) => (value ? undefined : "--env requires a slug"),
 	},
+	json: {
+		name: "--json",
+		kind: "boolean",
+		description: "check: one JSON document on stdout",
+	},
 } as const satisfies Record<string, FlagSpec>;
 
+/**
+ * `secrets check`'s exit codes, one meaning each. 1 is any failure to run the
+ * command itself (arguments, dev.config.ts).
+ */
+export const SECRETS_CHECK_EXIT = {
+	ok: 0,
+	/** No usable session on a site: run the printed `infisical login`. */
+	login: 2,
+	/** Signed in, but a scope could not be read (project, environment, access, network). */
+	unreadable: 3,
+} as const;
+
 export const SECRETS_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo secrets ls [--app=<name>] [--env=<slug>]",
+	// One line per subcommand: the `ls` line predates `check` and stays as it was.
+	usage: [
+		"buncargo secrets ls [--app=<name>] [--env=<slug>]",
+		"       buncargo secrets check [--json]",
+	].join("\n"),
 	flags: Object.values(FLAGS),
 	notes: [
 		{
 			command: "ls",
 			description: "Key names and where each comes from, never values",
+		},
+		{
+			command: "check",
+			description:
+				"Whether every scope is readable; exit 2 needs a login, 3 another fix",
 		},
 	],
 };
@@ -65,6 +99,7 @@ export async function handleSecrets(args: string[]): Promise<number> {
 	const errors: string[] = [];
 	const app = readStringFlag(args, FLAGS.app, errors);
 	const environment = readStringFlag(args, FLAGS.env, errors);
+	const json = readBooleanFlag(args, FLAGS.json);
 	const [command, ...extra] = readPositionals(SECRETS_COMMAND_SPEC, args);
 	errors.push(
 		...findUnknownFlags(SECRETS_COMMAND_SPEC, args).map(
@@ -72,14 +107,18 @@ export async function handleSecrets(args: string[]): Promise<number> {
 		),
 		...extra.map((arg) => `Unexpected argument: ${arg}`),
 	);
-	if (command !== "ls") {
+	if (command === "check" && (app !== undefined || environment !== undefined))
+		errors.push("--app and --env apply to secrets ls.");
+	if (command === "ls" && json) errors.push("--json applies to secrets check.");
+	if (command !== "ls" && command !== "check") {
 		errors.push(
 			command
 				? `Unknown secrets command: ${command}`
-				: "buncargo secrets needs a command: ls",
+				: "buncargo secrets needs a command: ls or check",
 		);
 	}
 	if (errors.length > 0) throw argumentsError(errors, "secrets");
+	if (command === "check") return checkSecrets(json);
 
 	const env = await loadDevEnv({ readOnly: true });
 	if (app !== undefined && !env.apps[app]) {
@@ -107,15 +146,8 @@ export async function handleSecrets(args: string[]): Promise<number> {
 				]);
 	}
 
-	let values: Record<string, string>;
-	try {
-		values = await fetchScopeSecrets(scope);
-	} catch (error) {
-		if (error instanceof SecretsError) {
-			throw new CliError(error.message, error.fix ? [`Fix: ${error.fix}`] : []);
-		}
-		throw error;
-	}
+	// A SecretsError is reported with its fix (`toCliError`).
+	const values = await fetchScopeSecrets(scope);
 
 	// What the app is given, in `dev`'s precedence: the secrets, then the
 	// developer's exported environment, then the computed env.
@@ -125,10 +157,7 @@ export async function handleSecrets(args: string[]): Promise<number> {
 	const required = config ? (config.required ?? []) : [];
 	const keys = [...new Set([...Object.keys(values), ...required])].sort();
 	const width = Math.max(0, ...keys.map((key) => key.length));
-	const org = scope.organizationId ? ` org ${scope.organizationId}` : "";
-	log.line(
-		`${app ?? "config"}: ${scope.projectId} ${scope.environment}${scope.path === "/" ? "" : scope.path} @ ${scope.siteUrl}${org}`,
-	);
+	log.line(`${app ?? "config"}: ${describeScope(scope)}`);
 	for (const key of keys)
 		log.line(
 			`  ${key.padEnd(width)}  ${secretSource(key, values, computed, effective)}`,
@@ -167,4 +196,85 @@ function noAppScopeFix(
 	if (own === undefined && config?.projectId)
 		return `Add apps.${app}.secrets: {} to dev.config.ts to use the config-level scope, or { projectId: "…" } for its own.`;
 	return `Set apps.${app}.secrets.projectId, or secrets.projectId for every app, in dev.config.ts.`;
+}
+
+interface ScopeCheck extends ConfigSecretScope {
+	/** Keys the scope holds; never their values. */
+	keys?: number;
+	error?: string;
+	fix?: string;
+	login: boolean;
+}
+
+/** Why a scope could not be read, and its fix. Never a value or the CLI's output. */
+function describeFailure(
+	error: unknown,
+): Pick<ScopeCheck, "error" | "fix" | "login"> {
+	if (error instanceof InfisicalLoginError)
+		return { error: error.reason, fix: error.login, login: true };
+	const fix = error instanceof SecretsError ? error.fix : undefined;
+	return {
+		error: getErrorMessage(error),
+		...(fix ? { fix } : {}),
+		login: false,
+	};
+}
+
+/** `buncargo secrets check [--json]`. */
+async function checkSecrets(json: boolean): Promise<number> {
+	const env = await loadDevEnv({ readOnly: true });
+	const checks = await Promise.all(
+		configSecretScopes(env).map(async (entry): Promise<ScopeCheck> => {
+			try {
+				const keys = Object.keys(await fetchScopeSecrets(entry.scope)).length;
+				return { ...entry, keys, login: false };
+			} catch (error) {
+				return { ...entry, ...describeFailure(error) };
+			}
+		}),
+	);
+
+	const loginChecks = checks.filter((check) => check.login);
+	const logins = [...new Set(loginChecks.flatMap((check) => check.fix ?? []))];
+	const unreadable = checks.some((check) => check.error !== undefined);
+	let code: number = SECRETS_CHECK_EXIT.ok;
+	if (unreadable) code = SECRETS_CHECK_EXIT.unreadable;
+	// A login may fix the rest, so it is the one thing to do first.
+	if (logins.length > 0) code = SECRETS_CHECK_EXIT.login;
+
+	if (json) {
+		const scopes = checks.map(({ scope, usedBy, keys, error, fix }) => ({
+			...scope,
+			usedBy,
+			ok: error === undefined,
+			...(keys === undefined ? {} : { keys }),
+			...(error === undefined ? {} : { error }),
+			...(fix === undefined ? {} : { fix }),
+		}));
+		log.line(
+			JSON.stringify(
+				{ ok: code === SECRETS_CHECK_EXIT.ok, exitCode: code, logins, scopes },
+				null,
+				2,
+			),
+		);
+		return code;
+	}
+
+	if (checks.length === 0) {
+		log.line("dev.config.ts uses no Infisical scope; nothing to check.");
+		return code;
+	}
+	for (const check of checks) {
+		const who = check.usedBy.join(", ");
+		if (check.error === undefined) {
+			const keys = `${check.keys} key${check.keys === 1 ? "" : "s"}`;
+			log.success(`${who}: ${describeScope(check.scope)} (${keys})`);
+			continue;
+		}
+		log.error(`${who}: ${describeScope(check.scope)}: ${check.error}`);
+		if (check.fix && !check.login) log.hint(`Fix: ${check.fix}`);
+	}
+	for (const login of logins) log.hint(`Log in, then run this again: ${login}`);
+	return code;
 }

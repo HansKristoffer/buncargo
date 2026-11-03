@@ -1,3 +1,4 @@
+import { ensureSecretsSession } from "../../core/secrets/infisical";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
 import { loadDevEnv } from "../../loader";
 import type { AnyDevEnvironment, TaskConfig } from "../../types";
@@ -10,6 +11,7 @@ import {
 import { CliError } from "../errors";
 import { splitCliArgs } from "../flags";
 import * as log from "../log";
+import { commandSecretScopes } from "../secrets-scopes";
 import { runForwardingSignals, withAppendedArgs } from "./exec";
 
 export const RUN_COMMAND_SPEC: CommandSpec = {
@@ -103,6 +105,11 @@ async function runTask(
 	try {
 		return await runForwardingSignals(async (signal) => {
 			if (services.length > 0) {
+				// Before the services: an expired Infisical session stops here, not
+				// once they are up. The task's own fetch reuses this token.
+				await ensureSecretsSession(commandSecretScopes(env, task.app), {
+					signal,
+				});
 				// Prepared before claiming: the claim names the selection's
 				// services. The CLI's idle hold, not the library's keep-forever
 				// default, so a task that started a database leaves it on the

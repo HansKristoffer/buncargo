@@ -19,6 +19,7 @@ import {
 	recordRunCapture,
 } from "../core/run-publish";
 import { detachedRunMode, isCI } from "../core/runtime-flags";
+import { ensureSecretsSession } from "../core/secrets/infisical";
 import { joinColoredNames } from "../core/style";
 import {
 	createNoopPhaseTimer,
@@ -89,6 +90,7 @@ import {
 	unhealthyAppMessage,
 } from "./port-reuse";
 import { runPreflight } from "./preflight";
+import { configSecretScopes } from "./secrets-scopes";
 import {
 	type DevFailureContext,
 	describeAppFailure,
@@ -423,6 +425,22 @@ async function runDevFlow<
 	const appsForDev = plan.apps;
 	validateDevStart(env, args, appsForDev, plan.requiredServiceKeys);
 
+	// Fired now, awaited before named hosts and the claim: an expired
+	// Infisical session stops the run before it changes anything, with the
+	// login to run, instead of hanging inside every app's own loader. The
+	// selected apps' scopes and the config-level one (migrations, the seed).
+	// It overlaps the checks and preflight; `start()` and the apps reuse its
+	// token.
+	const secretsSession = args.upOnly
+		? Promise.resolve()
+		: ensureSecretsSession(
+				configSecretScopes({ secrets: env.secrets, apps: appsForDev }).map(
+					({ scope }) => scope,
+				),
+				{ signal },
+			);
+	void secretsSession.catch(() => {});
+
 	// Before anything is started: a missing generated file fails here with its
 	// fix, instead of deep inside whichever app imports it first. Only the fast
 	// checks: this runs on every start in every worktree.
@@ -468,6 +486,8 @@ async function runDevFlow<
 		!args.oneShot &&
 		Object.keys(appsForDev).length > 0 &&
 		seedCanOverlap(env.seed, env.services, plan.requiredServiceKeys);
+
+	await timer.measure("secrets session", () => secretsSession);
 
 	// ── Containers ───────────────────────────────────────────────────────────
 	// Held rather than printed: a run that takes over another one activates a

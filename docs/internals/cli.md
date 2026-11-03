@@ -14,6 +14,22 @@ pieces it orchestrates.
   apps never inherit it. A `package.json` listing buncargo with nothing installed is a
   `CliError`. A CLI run from `src/` is never replaced: that is someone testing the source. It
   reads files only; a matching version costs a few `stat`s.
+- Before that decision, a checkout installs itself (`checkout-install.ts`): when a `package.json`
+  from the working directory up lists buncargo and the first `bun.lock` above it has no
+  `node_modules` beside it, or one installed from another lockfile, the guard runs
+  `bun install --frozen-lockfile` there and decides again, so the fresh install can still hand
+  over. A missing `node_modules` installs for every command (none of the project's buncargo runs
+  without it); a stale one only for the commands that run the project's code
+  (`refreshesStaleInstall`). `stop`, `status` and BuncargoBar's buttons must neither reinstall
+  under a running run nor fail on a broken lockfile. "Installed from" is `install-stamp.ts`'s hash of `bun.lock`, shared with `check`: Bun
+  1.4 writes nothing into `node_modules` on a no-op install, so no file of its own can say, and
+  `git checkout` rewrites the lockfile's time without its content. A checkout with no stamp
+  falls back to `node_modules` being newer than `bun.lock`, so one installed by hand is left
+  alone. The install's stdout goes to stderr (a `--json` command's stdout stays one document),
+  waits on a per-checkout lock (several agents in one fresh worktree install once), and runs
+  with `BUNCARGO_INSTALLING=1`, so a buncargo in a postinstall script does not start another.
+  The guard never installs from source or after a hand-over. An install that replaces the
+  package this process runs from re-executes it, since the rest of its modules load lazily.
 
 - `command-spec.ts` is the flag-spec primitive: one `CommandSpec` per command drives parsing,
   unknown-flag detection, value validation and generated help, so those four cannot drift. Add a
@@ -132,6 +148,12 @@ pieces it orchestrates.
 - `commands/inspect/file-table.ts` reads the machine's open-file table (`sysctl` /
   `/proc/sys/fs/file-nr`); `doctor` runs the full `lsof` for the top holders only past half full,
   because it takes seconds on a crowded machine.
+- `commands/secrets.ts` is `ls` (key names and their source) and `check` (each config scope
+  readable or not, with its key count). `check`'s exit codes are `SECRETS_CHECK_EXIT`, a
+  contract for agents: 2 always means "log in" and wins over 3 (a scope unreadable for another
+  reason), because a login may fix the rest. No subcommand prints a value, on purpose
+  ([secrets](./secrets.md)). Its help keeps one usage line per subcommand, so adding `check`
+  only added lines.
 - `commands/sql.ts` runs the preset's own client inside the service's container through
   `interactiveExecArgv` (the one adapter method that hands back argv for inherited stdio). The
   client runs in the container, so psql's `-- -f file` is read on the host and fed to its stdin
