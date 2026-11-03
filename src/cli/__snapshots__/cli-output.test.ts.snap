@@ -982,9 +982,9 @@ Use:
 
 When something fails:
 - The cause and the next command are at the end of the output: \`| tail\`.
-- "Could not allocate a free port block": \`bunx buncargo ports\` lists the
-  holders; the error names the command that frees one. \`status\`, \`env\`,
-  \`url\` and \`ports pin <offset>\` still work.
+- "Could not allocate a free port block": every holder is in use. The error
+  lists them; tell the user, who may free some (\`help agents ports\`).
+  \`"unallocated"\` in \`status --json\` means the ports shown are not yours.
 - "a stale stack of this checkout": \`bunx buncargo dev --detach --replace-stale\`.
 - Infisical: run the \`infisical login --domain=…\` it prints.
 - Anything else: \`bunx buncargo doctor\`, then \`help agents fail\`.

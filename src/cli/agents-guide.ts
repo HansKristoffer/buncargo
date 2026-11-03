@@ -46,9 +46,9 @@ Use:
 
 When something fails:
 - The cause and the next command are at the end of the output: \`| tail\`.
-- "Could not allocate a free port block": \`bunx buncargo ports\` lists the
-  holders; the error names the command that frees one. \`status\`, \`env\`,
-  \`url\` and \`ports pin <offset>\` still work.
+- "Could not allocate a free port block": every holder is in use. The error
+  lists them; tell the user, who may free some (\`help agents ports\`).
+  \`"unallocated"\` in \`status --json\` means the ports shown are not yours.
 - "a stale stack of this checkout": \`bunx buncargo dev --detach --replace-stale\`.
 - Infisical: run the \`infisical login --domain=…\` it prints.
 - Anything else: \`bunx buncargo doctor\`, then \`help agents fail\`.
@@ -199,6 +199,19 @@ const TOPICS: readonly Topic[] = [
   in CI, give theirs back when torn down. Do not set \`BUNCARGO_PORT_OFFSET\` or
   edit \`.buncargo/ports.json\`; to move a checkout,
   \`bunx buncargo ports pin <offset>\`.
+- A checkout with no block of its own while every block is claimed reads as
+  \`portOffsetProvenance: "unallocated"\` (\`status --json\`, \`env\`,
+  \`ports\`): the ports shown belong to another checkout. Do not test against
+  them, start a database of your own or write \`.buncargo/ports.json\`. Run
+  \`bunx buncargo dev --detach\`: when the range is full it takes back the
+  block of the checkout used least recently that has no run and no
+  containers, and says whose. That checkout keeps its containers, volumes and
+  project name and gets new ports on its next start.
+- If \`dev\` still fails with "Could not allocate a free port block", the
+  error lists every holder with its state and age and the offset to pin. Only
+  when the user asks, free blocks with
+  \`bunx buncargo ports release --idle=7d --yes\` (checkouts unused for a
+  week, with no run and no containers) or \`bunx buncargo ports pin <offset>\`.
 - A port held by "a stale stack of this checkout" is this checkout's stack from
   before its \`projectPrefix\` changed, still up under the old name. Run
   \`bunx buncargo dev --detach --replace-stale\`; it needs no asking. It removes
@@ -357,8 +370,8 @@ guide (40 lines; \`help agents <topic>\` for more). The rules:
   throwaway one \`bunx buncargo sql --create-scratch=<name>\`.
 - Start: \`bunx buncargo dev --detach\`. Stop: \`bunx buncargo stop --all\`, before
   you finish a task too, unless the person is still using the app.
-- "Could not allocate a free port block": \`bunx buncargo ports\` shows the
-  holders, and the error names the command that frees one.
+- "Could not allocate a free port block": \`dev\` already took back every idle
+  block. Tell the user, with the holders the error lists; do not work around it.
 - Values: \`bunx buncargo env --get DATABASE_URL\`, \`bunx buncargo url <app>\`,
   \`bunx buncargo status --json\`. Wait: \`bunx buncargo wait --app=<app>\`.
 - Never \`dev --reset\` or \`dev --down --all\` unless asked.
