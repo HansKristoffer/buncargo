@@ -71,6 +71,10 @@ const TOPICS: readonly Topic[] = [
   every app is up. Exit 1 names the apps that did not come up; the others keep
   running. Exit 0 also when every app was already running and is reused. Do
   not use \`nohup\`, \`&\` or \`disown\`.
+- When it fails, the last block of its output names what failed (an app, the
+  seed or a step), shows its last 20 lines and the setup checks that warned,
+  and says what to run next: \`dev --detach 2>&1 | tail -40\` is enough. Do
+  not run \`dev\` again to find the cause.
 - \`bunx buncargo dev --detach --apps=api\` starts only some apps (and the apps
   they require). \`--profile=<name>\` picks a configured set.
   \`bunx buncargo dev --detach --up-only\` starts the services alone.
@@ -135,7 +139,7 @@ const TOPICS: readonly Topic[] = [
 		body: `## Reading the environment
 
 - \`bunx buncargo url <app>\` prints the URL to open, and \`url <service>\` a
-  service's. When \`BUNCARGO_URL_HOST\` is set, the person is on another
+  service's (its connection URL, \`postgres://…\`, when it has no HTTP one). When \`BUNCARGO_URL_HOST\` is set, the person is on another
   machine: hand them that URL, not localhost. With \`BUNCARGO_HOSTS=tailscale\`
   it is \`https://<machine>.ts.net:<port>\`, served by Tailscale; a warning at
   startup says when an app fell back to its plain URL, and
@@ -143,8 +147,9 @@ const TOPICS: readonly Topic[] = [
 - \`bunx buncargo env --get DATABASE_URL\` prints any variable the apps get, and
   \`bunx buncargo env --get ports.<name>\` one port.
   \`eval "$(bunx buncargo env --export)"\` loads them all into a shell.
-- \`bunx buncargo status --json\` is app states, ports, containers, URLs as one
-  object, app states first. A run whose service container stopped under it has
+- \`bunx buncargo status\` starts with one line per app (\`name  status  url\`).
+  \`status --json\` is app states (\`runs\`, first), ports, containers and URLs
+  as one object. A run whose service container stopped under it has
   \`health: "degraded"\` and the service's \`problem\`; \`plannedOffset\` set
   means the next \`dev\` moves the ports, so start the run before testing
   against them.
@@ -195,7 +200,11 @@ const TOPICS: readonly Topic[] = [
 		body: `## Logs
 
 - \`bunx buncargo logs <app> --errors\`, \`--since=5m\`, \`-f\`. App output is kept
-  per run, so it is there after the terminal scrolled or the run ended.`,
+  per run, so it is there after the terminal scrolled or the run ended.
+- \`--errors\` keeps the lines that read as errors (a logger's own INFO or WARN
+  level wins over a word like "failed"), with the \`{ … }\` block that follows
+  one. It can hide a line such as \`MISSING_SECRETS: X\`: when an app will not
+  start, read \`bunx buncargo logs <app>\` whole.`,
 	},
 	{
 		name: "check",
@@ -204,7 +213,8 @@ const TOPICS: readonly Topic[] = [
 - \`bunx buncargo check\` is the check for your change: \`bun fmt\` (when the
   config sets \`check.format\`) and Biome on the changed files, writing their
   fixes, \`typecheck --changed\`, the project's gates and the tests next to
-  the changed files. It ends with \`PASS\` or \`FAIL: <steps>\` and exits 1 on a
+  the changed files. It ends with \`PASS\`, or \`FAIL:\` and one line per failed
+  step with its exit code and the command that reruns it, and exits 1 on a
   failure. \`--staged\` is the pre-commit hook and writes nothing; \`--all\`
   checks everything.
 - \`bunx buncargo typecheck --changed\` checks the workspaces this branch
