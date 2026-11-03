@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppLogs, listRunLogDirs } from "./app-logs";
 import {
+	createErrorFilter,
 	lastErrorLines,
 	lineLevel,
 	printStream,
@@ -117,5 +118,49 @@ describe("RunOutput", () => {
 		expect(lineLevel("GET / 200")).toBeUndefined();
 		expect(lastErrorLines(["a", "Error: x", "b"])).toEqual(["Error: x"]);
 		expect(lastErrorLines(["a", "b"])).toEqual(["a", "b"]);
+	});
+
+	// `logs --errors` listed a cron notice as an error because it said "Failed".
+	it("takes the level a logger wrote over the words of the line", () => {
+		expect(
+			lineLevel(
+				"[core] INFO: Failed to read crontab /etc/crontab, cron is disabled",
+			),
+		).toBeUndefined();
+		expect(lineLevel("2026-11-03T10:00:00Z DEBUG retry failed, again")).toBe(
+			undefined,
+		);
+		expect(lineLevel("[WARN] upload failed, retrying")).toBe("warn");
+		expect(lineLevel('level=info msg="health check failed once"')).toBe(
+			undefined,
+		);
+		expect(lineLevel('{"level":30,"msg":"request failed"}')).toBeUndefined();
+		expect(lineLevel('{"level":50,"msg":"boom"}')).toBe("error");
+		expect(lineLevel("[ERROR] job.completed {")).toBe("error");
+		expect(lineLevel("Error: connect ECONNREFUSED")).toBe("error");
+		expect(lineLevel("TypeError: x is not a function")).toBe("error");
+		// Prose that starts with a level word is not a level.
+		expect(lineLevel("info about the failed job")).toBe("error");
+	});
+
+	it("keeps the structured block an error line opens, and drops an INFO block's", () => {
+		const lines = [
+			"[INFO] job.started {",
+			'  error_type: "none",',
+			"}",
+			"[ERROR] job.completed {",
+			"  id: 7,",
+			'  error_type: "Error",',
+			"  details: { attempt: 2 },",
+			"}",
+			"GET / 200",
+		];
+		expect(lines.filter(createErrorFilter())).toEqual([
+			"[ERROR] job.completed {",
+			"  id: 7,",
+			'  error_type: "Error",',
+			"  details: { attempt: 2 },",
+			"}",
+		]);
 	});
 });

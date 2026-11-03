@@ -50,12 +50,115 @@ const TAIL_LINES = 50;
 
 const ERROR =
 	/\b(error|errors|failed|failure|exception|fatal|panic)\b|✗|✖|ERR!/i;
+/** `TypeError: …`, `PrismaClientKnownRequestError`: one word, so not caught above. */
+const NAMED_ERROR = /\b[A-Z]\w*(?:Error|Exception)\b/;
 const WARN = /\bwarn(ing)?s?\b|⚠/i;
 
+/** Level words a logger writes, by what `logs --errors` makes of them. */
+const LEVEL_WORDS: Record<string, OutputLine["level"] | "info"> = {
+	trace: "info",
+	debug: "info",
+	info: "info",
+	notice: "info",
+	warn: "warn",
+	warning: "warn",
+	error: "error",
+	err: "error",
+	fatal: "error",
+	crit: "error",
+	critical: "error",
+	panic: "error",
+};
+
+/** Pino's numeric levels: 40 is warn, 50 error, 60 fatal. */
+function numericLevel(value: number): OutputLine["level"] | "info" {
+	if (value >= 50) return "error";
+	if (value >= 40) return "warn";
+	return "info";
+}
+
+/** `level=info`, `"level":"warn"`, `"level":30`: logfmt and JSON loggers. */
+const KEYED_LEVEL = /\blevel["']?\s*[=:]\s*["']?([a-z]+|\d{2})\b/i;
+
+/** How many leading words may come before the level: a timestamp, a `[scope]`, a pid. */
+const LEVEL_SEARCH_WORDS = 4;
+
+/**
+ * The level a logger wrote at the head of the line (`INFO:`, `[WARN]`,
+ * `[core] INFO:`, `2026-… ERROR …`) or as a key (`level=info`), or undefined
+ * when it wrote none. A word counts when it is bracketed, ends in a colon or
+ * is in capitals, so prose that starts with "info" is not a level.
+ */
+function explicitLevel(text: string): OutputLine["level"] | "info" | undefined {
+	const keyed = KEYED_LEVEL.exec(text)?.[1];
+	if (keyed !== undefined) {
+		const asNumber = Number(keyed);
+		if (!Number.isNaN(asNumber)) return numericLevel(asNumber);
+		const level = LEVEL_WORDS[keyed.toLowerCase()];
+		if (level !== undefined) return level;
+	}
+	const words = text.trim().split(/\s+/).slice(0, LEVEL_SEARCH_WORDS);
+	for (const word of words) {
+		const bare = word.replace(/^[[(<]+|[\])>:,]+$/g, "");
+		const marked = bare !== word || /^[A-Z]+$/.test(bare);
+		const level = LEVEL_WORDS[bare.toLowerCase()];
+		if (marked && level !== undefined) return level;
+	}
+	return undefined;
+}
+
+/**
+ * How a line reads: the level its logger wrote when there is one, so
+ * `[core] INFO: Failed to read crontab` is not an error; otherwise by its
+ * words.
+ */
 export function lineLevel(text: string): OutputLine["level"] {
-	if (ERROR.test(text)) return "error";
+	const explicit = explicitLevel(text);
+	if (explicit !== undefined) return explicit === "info" ? undefined : explicit;
+	if (ERROR.test(text) || NAMED_ERROR.test(text)) return "error";
 	if (WARN.test(text)) return "warn";
 	return undefined;
+}
+
+/** Past this, an unclosed `{` is not a block any more: the filter starts over. */
+const MAX_BLOCK_LINES = 200;
+
+function bracketBalance(text: string): number {
+	let balance = 0;
+	for (const char of text) {
+		if (char === "{" || char === "[") balance++;
+		else if (char === "}" || char === "]") balance--;
+	}
+	return balance;
+}
+
+/**
+ * A filter for one app's lines, in order, that keeps its errors. A line that
+ * opens a structured block (`[ERROR] job.completed {`) keeps the block with
+ * it, and the block's lines take the level of the line that opened it:
+ * `error_type: "Error",` alone is a fragment, and inside an INFO block it is
+ * no error at all.
+ */
+export function createErrorFilter(): (text: string) => boolean {
+	let depth = 0;
+	let blockLines = 0;
+	let keepBlock = false;
+	return (text) => {
+		if (depth > 0 && blockLines < MAX_BLOCK_LINES) {
+			depth += bracketBalance(text);
+			blockLines++;
+			return keepBlock;
+		}
+		depth = 0;
+		const keep = lineLevel(text) === "error";
+		const opensBlock = /[{[]$/.test(text.trimEnd());
+		if (opensBlock) {
+			depth = Math.max(bracketBalance(text), 1);
+			blockLines = 0;
+			keepBlock = keep;
+		}
+		return keep;
+	};
 }
 
 export class RunOutput {
@@ -220,6 +323,6 @@ export function printStream(
 
 /** The lines worth showing for a stopped app: its errors, else its last words. */
 export function lastErrorLines(tail: readonly string[], max = 8): string[] {
-	const errors = tail.filter((line) => lineLevel(line) === "error");
+	const errors = tail.filter(createErrorFilter());
 	return (errors.length > 0 ? errors : tail).slice(-max);
 }
