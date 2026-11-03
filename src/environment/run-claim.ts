@@ -232,12 +232,11 @@ export function createRunClaimApi<
 					: resolveClaimHold(options, ctx.config.options?.autoShutdown);
 			// Asked for no hold at all (a library `start()`): a stack another
 			// run left in its hold keeps that hold after this run ends.
-			const inherited =
-				lastHold && !namesHold
+			let inherited: number | undefined;
+			if (!namesHold)
+				inherited = lastHold
 					? lastHold.inherited
-					: namesHold
-						? undefined
-						: holdToInherit(await loadRuns(), ctx);
+					: holdToInherit(await loadRuns(), ctx);
 			lastHold = { value: hold, inherited };
 			const stacks = stackEntries();
 			// Claimed before it is published: a write that fails must not be

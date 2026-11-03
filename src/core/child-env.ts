@@ -1,4 +1,4 @@
-import { CONNECT_TOKENS_ENV } from "./runtime-flags";
+import { CONNECT_TOKENS_ENV, DETACHED_ENV } from "./runtime-flags";
 
 /**
  * The environment of buncargo's own tools: the connect coordinator, frpc,
@@ -15,7 +15,8 @@ export function connectProcessEnv(
  * The environment of a process buncargo starts for the project: an app, a
  * task, `exec`, a migration, the seed, prisma.
  *
- * Never the connect tokens, and never the config's `unsetEnv`: a tool that
+ * Never the connect tokens, never the detached run's mark, and never the
+ * config's `unsetEnv`: a tool that
  * changes behaviour when it sees an agent's shell (Astro detaches) is spared
  * the variables it reads, without the project deleting them from buncargo's
  * own `process.env` in `dev.config.ts`. Module state because the config is
@@ -31,6 +32,8 @@ export function childProcessEnv(
 	env: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
 	const child = connectProcessEnv(env);
+	// A detached run's own mark: a `buncargo dev` an app starts is not that run.
+	delete child[DETACHED_ENV];
 	for (const name of unset) delete child[name];
 	return child;
 }

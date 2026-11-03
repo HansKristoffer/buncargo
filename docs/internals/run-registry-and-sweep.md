@@ -248,7 +248,9 @@ spawner holding `.spawn` only try-acquires `.runner`, so neither waits on the ot
 A `dev --detach` run sits in its own session and systemd scope, so nothing that started it can
 end it: 13 were found on one machine 1 to 16 days old, several serving deleted worktrees.
 `core/run-limits.ts` is the watchdog's pass for them, before each sweep. `decideRunLimit` is pure;
-only an entry marked `detached` and live is a candidate, so a run in a terminal is never stopped.
+only an entry marked `detached` and live is a candidate, so a run in a terminal is never stopped,
+and a detached run is left alone while a live terminal run shares its checkout, since that run may
+be serving from the detached run's apps (`port-reuse.ts`) on `localhost`, out of the proxy's sight.
 Stopping is `terminateRun`: SIGTERM to the run's group by recorded pid after an identity match,
 what `stop --all` sends, so the run tears itself down and releases into the hold. The sweep takes
 the containers from there; nothing here removes a container or a volume.
@@ -262,14 +264,19 @@ the containers from there; nothing here removes a container or a volume.
   entry without `idleLimitMs` (an older buncargo's run) is never stopped for idling.
 - Requests: the hosts daemon counts each route lookup (every request and WebSocket upgrade, not
   the health path) by the route's checkout in memory and merges them into
-  `~/.buncargo/proxy-activity.json` at most once a minute (`hosts/proxy-activity.ts`). It writes
-  the file once at start, so a missing file means an older daemon: a run with named hosts is then
-  `unknown`, never stopped, because "no requests on record" would be no evidence.
+  `~/.buncargo/proxy-activity.json` at most once a minute (`hosts/proxy-activity.ts`), and
+  rewrites it every five minutes as a heartbeat. A missing file, or one silent for three beats,
+  means no daemon counts requests (an older one put back by `hosts install` from a checkout on an
+  older buncargo leaves the file frozen): a run with named hosts is then `unknown`, never
+  stopped, because "no requests on record" would be no evidence.
 - Commands: `bin.ts` sets the mtime of `<root>/.buncargo/last-command` on every command except
-  `help` and `version` (`run-activity.ts`). One `utimes`, no fork and no lock, since every command
-  pays it; a directory without `.buncargo/` is left alone.
+  `help` and `version` (`run-activity.ts`), with the root found as a run records it
+  (`findCheckoutRoot`: the config's repository root, not the working directory). One `utimes`, no
+  fork and no lock, since every command pays it; a directory without `.buncargo/` is left alone.
+  `childProcessEnv` drops `BUNCARGO_DETACHED`, so a `buncargo dev` an app starts is not detached.
 - `~/.buncargo/run-stops.json` (`run-stops.ts`, newest 200) records each stop with its reason,
-  because the entry is gone soon after: `stop` and `ls` print it for a checkout with no newer run.
+  because the entry is gone soon after: `recentRunStops` picks what `stop` and `ls` print, the last
+  day's newest per checkout with no run started there since.
 
 ## Volumes
 

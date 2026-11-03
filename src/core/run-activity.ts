@@ -9,15 +9,16 @@
  */
 
 import { existsSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { findMonorepoRoot } from "./ports";
 import { getProjectStateDir, projectStateFilePath } from "./state-paths";
 
 const COMMAND_FILE = "last-command";
 
-/** Mark that a buncargo command ran in the checkout around `cwd`. Never throws. */
-export function noteCheckoutCommand(cwd = process.cwd()): void {
+/**
+ * Mark that a buncargo command ran in a checkout, given as its run records
+ * it (`findCheckoutRoot`). Never throws.
+ */
+export function noteCheckoutCommand(root: string): void {
 	try {
-		const root = findMonorepoRoot(cwd);
 		const file = projectStateFilePath(root, COMMAND_FILE);
 		const now = new Date();
 		try {

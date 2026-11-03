@@ -9,7 +9,7 @@ import {
 	type RunAppEntry,
 	type RunEntry,
 } from "../core/run-registry";
-import { detachedRunEnv } from "../core/runtime-flags";
+import { DETACHED_ENV, detachedRunEnv } from "../core/runtime-flags";
 import { DETACHED_IDLE_LIMIT_MS } from "../core/watchdog-constants";
 import * as log from "./log";
 
@@ -121,7 +121,7 @@ export async function runDetached(input: {
 		detached: true,
 		env: {
 			...process.env,
-			BUNCARGO_DETACHED: detachedRunEnv(input.keep ? "keep" : "idle-limit"),
+			[DETACHED_ENV]: detachedRunEnv(input.keep ? "keep" : "idle-limit"),
 		},
 	});
 	closeSync(out);

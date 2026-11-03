@@ -1,17 +1,17 @@
-import { afterAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { afterEach, describe, expect, it } from "bun:test";
+import { rmSync } from "node:fs";
 import {
 	createProxyActivityRecorder,
+	getProxyActivityPath,
+	PROXY_ACTIVITY_HEARTBEAT_MS,
 	PROXY_ACTIVITY_WRITE_MS,
 	type ProxyActivity,
 	readProxyActivity,
 	writeProxyActivity,
 } from "./proxy-activity";
 
-const dir = mkdtempSync(join(tmpdir(), "buncargo-proxy-activity-"));
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+// The test preload gives the run a temporary HOME, so this is not the real file.
+afterEach(() => rmSync(getProxyActivityPath(), { force: true }));
 
 describe("createProxyActivityRecorder", () => {
 	function harness() {
@@ -38,7 +38,7 @@ describe("createProxyActivityRecorder", () => {
 		expect(writes).toEqual([{}]);
 	});
 
-	it("writes requests at most once a minute, and nothing when none came", async () => {
+	it("writes requests at most once a minute, and a heartbeat when none came", async () => {
 		const { recorder, writes, advance } = harness();
 		await recorder.flush();
 		recorder.note("/repo");
@@ -52,28 +52,40 @@ describe("createProxyActivityRecorder", () => {
 		advance(PROXY_ACTIVITY_WRITE_MS);
 		await recorder.flush();
 		expect(writes).toHaveLength(2);
+
+		advance(PROXY_ACTIVITY_HEARTBEAT_MS);
+		await recorder.flush();
+		expect(writes).toEqual([{}, { "/repo": 1_000_000 }, {}]);
 	});
 });
 
-describe("writeProxyActivity", () => {
+describe("proxy-activity.json", () => {
+	const now = Date.parse("2026-11-03T12:00:00.000Z");
+
 	it("merges with what an earlier daemon wrote, keeping the newest time per checkout", async () => {
-		const path = join(dir, "merge.json");
-		expect(readProxyActivity(path)).toBeUndefined();
-		const now = Date.parse("2026-11-03T12:00:00.000Z");
+		expect(readProxyActivity(now)).toBeUndefined();
 		await writeProxyActivity(
 			new Map([
 				["/a", now - 5_000],
 				["/b", now - 5_000],
 			]),
 			now,
-			path,
 		);
-		await writeProxyActivity(new Map([["/a", now]]), now, path);
-		expect(readProxyActivity(path)).toEqual(
+		await writeProxyActivity(new Map([["/a", now]]), now);
+		expect(readProxyActivity(now)).toEqual(
 			new Map([
 				["/a", now],
 				["/b", now - 5_000],
 			]),
 		);
+	});
+
+	it("reads a file no daemon has rewritten for three heartbeats as nothing counting", async () => {
+		// An older daemon put back by `hosts install` leaves the file as it
+		// was; its old times would make a run in use look idle.
+		await writeProxyActivity(new Map([["/a", now]]), now);
+		const later = now + 3 * PROXY_ACTIVITY_HEARTBEAT_MS;
+		expect(readProxyActivity(later - 1)).toBeDefined();
+		expect(readProxyActivity(later)).toBeUndefined();
 	});
 });

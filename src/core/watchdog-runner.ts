@@ -58,7 +58,7 @@ const stopRuns = createRunLimiter({
 	liveness: (runs) => runLivenessAsync(runs),
 	checkoutPresence,
 	lastCommandAt: lastCheckoutCommandAt,
-	readProxyActivity: () => readProxyActivity(),
+	readProxyActivity,
 	stopRun: terminateRun,
 	recordStops: (records) => recordRunStops(records),
 	now: Date.now,

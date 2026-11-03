@@ -12,7 +12,11 @@ import {
 } from "../../../core/hosts/tailscale-serve";
 import { describeIdleState, readIdleState } from "../../../core/run-limits";
 import { getRunsPath } from "../../../core/run-registry";
-import { describeRunStop, readRunStops } from "../../../core/run-stops";
+import {
+	describeRunStop,
+	readRunStops,
+	recentRunStops,
+} from "../../../core/run-stops";
 import { describeSwept } from "../../../core/watchdog-loop";
 import * as log from "../../log";
 
@@ -58,7 +62,7 @@ export async function handleLs(): Promise<void> {
 		return;
 	}
 	const now = Date.now();
-	const proxy = readProxyActivity();
+	const proxy = readProxyActivity(now);
 	const multipleRuntimes = result.answered.length > 1;
 
 	for (const group of result.remaining) {
@@ -83,7 +87,8 @@ export async function handleLs(): Promise<void> {
 		if (multipleRuntimes) log.line(`  runtime: ${group.runtime}`);
 		if (live) {
 			const idle = describeIdleState(readIdleState(live, proxy), now);
-			log.line(`  run: active, pid ${live.pid}${idle ? `; ${idle}` : ""}`);
+			const limit = idle ? `; ${idle}` : "";
+			log.line(`  run: active, pid ${live.pid}${limit}`);
 		} else if (released?.releasedAt)
 			log.line(
 				`  run: ${describeHold(released.releasedAt, released.idleTimeoutMs ?? released.inheritedIdleTimeoutMs, now)}`,
@@ -104,26 +109,13 @@ export async function handleLs(): Promise<void> {
 	if (result.foreign.length > 0) logForeignStacks();
 }
 
-/** How far back `ls` reports the detached runs the watchdog stopped. */
-const RECENT_STOPS_MS = 24 * 60 * 60_000;
-
 /**
- * The detached runs the watchdog stopped in the last day, for checkouts with
- * no live run since: "where did my run go" has no other answer once its
- * entry is gone.
+ * The detached runs the watchdog stopped lately: "where did my run go" has
+ * no other answer once its entry is gone.
  */
 function logRecentRunStops(result: SweepResult): void {
-	const since = Date.now() - RECENT_STOPS_MS;
-	const restarted = (root: string, at: string) =>
-		result.runs.some(
-			(run) =>
-				run.root === root &&
-				result.liveSessions.has(run.sessionId) &&
-				run.startedAt > at,
-		);
-	for (const record of readRunStops())
-		if (Date.parse(record.at) >= since && !restarted(record.root, record.at))
-			log.info(describeRunStop(record));
+	for (const record of recentRunStops(readRunStops(), result.runs, Date.now()))
+		log.info(describeRunStop(record));
 }
 
 /**

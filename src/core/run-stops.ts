@@ -16,6 +16,9 @@ import { chownToInvokingUser, stateFilePath } from "./state-paths";
 
 export const RUN_STOPS_LIMIT = 200;
 
+/** How far back `stop` and `ls` report a stop. */
+const RECENT_MS = 24 * 60 * 60_000;
+
 export type RunStopReason = "idle" | "checkout deleted";
 
 export interface RunStopRecord {
@@ -69,8 +72,8 @@ function validate(value: unknown): RunStopRecord[] | undefined {
 	return Array.isArray(stops) ? stops.filter(isRunStopRecord) : undefined;
 }
 
-export function readRunStops(file = getRunStopsFile()): RunStopRecord[] {
-	return readJsonDocumentSync(file, validate) ?? [];
+export function readRunStops(): RunStopRecord[] {
+	return readJsonDocumentSync(getRunStopsFile(), validate) ?? [];
 }
 
 /**
@@ -79,12 +82,12 @@ export function readRunStops(file = getRunStopsFile()): RunStopRecord[] {
  */
 export async function recordRunStops(
 	records: readonly RunStopRecord[],
-	file = getRunStopsFile(),
 ): Promise<void> {
 	if (records.length === 0) return;
+	const file = getRunStopsFile();
 	try {
 		await withFileLock(file, async () => {
-			const stops = [...readRunStops(file), ...records].slice(-RUN_STOPS_LIMIT);
+			const stops = [...readRunStops(), ...records].slice(-RUN_STOPS_LIMIT);
 			await writeJsonDocument(
 				file,
 				{ version: 1, stops },
@@ -96,15 +99,27 @@ export async function recordRunStops(
 	}
 }
 
-/** The newest stop of a checkout's run at or after `since` (epoch ms). */
-export function latestRunStop(
+/**
+ * The stops still worth reporting: of the last day, the newest per
+ * checkout, and only where no run on record has started since (that run is
+ * the news now).
+ */
+export function recentRunStops(
 	records: readonly RunStopRecord[],
-	target: { root: string; since: number },
-): RunStopRecord | undefined {
-	return records.findLast(
-		(record) =>
-			record.root === target.root && Date.parse(record.at) >= target.since,
-	);
+	runs: readonly Pick<RunEntry, "root" | "startedAt">[],
+	now: number,
+): RunStopRecord[] {
+	const newest = new Map<string, RunStopRecord>();
+	for (const record of records) {
+		const at = Date.parse(record.at);
+		const recent = !Number.isNaN(at) && now - at < RECENT_MS;
+		const restarted = runs.some(
+			(run) => run.root === record.root && Date.parse(run.startedAt) > at,
+		);
+		if (recent && !restarted) newest.set(record.root, record);
+		else if (restarted) newest.delete(record.root);
+	}
+	return [...newest.values()];
 }
 
 /** "The watchdog stopped demo's detached run at …: idle for 2h 0m (…)." */

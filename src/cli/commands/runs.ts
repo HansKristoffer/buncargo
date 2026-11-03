@@ -22,8 +22,8 @@ import * as log from "../log";
 export async function handleRuns(args: string[] = []): Promise<void> {
 	const runs = await readLiveRuns();
 	const leases = await readLeases().catch(() => []);
-	const proxy = readProxyActivity();
 	const now = Date.now();
+	const proxy = readProxyActivity(now);
 
 	if (hasFlag(args, "--json")) {
 		// `idleStopsAt`: when a detached run stops if nothing uses it first.

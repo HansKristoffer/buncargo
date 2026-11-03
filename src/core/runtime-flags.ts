@@ -126,11 +126,13 @@ export function isTimingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
  */
 export type DetachedRunMode = "idle-limit" | "keep";
 
+export const DETACHED_ENV = "BUNCARGO_DETACHED";
+
 export function detachedRunMode(
 	env: NodeJS.ProcessEnv = process.env,
 ): DetachedRunMode | undefined {
-	if (env.BUNCARGO_DETACHED === "1") return "idle-limit";
-	if (env.BUNCARGO_DETACHED === "keep") return "keep";
+	if (env[DETACHED_ENV] === "1") return "idle-limit";
+	if (env[DETACHED_ENV] === "keep") return "keep";
 	return undefined;
 }
 

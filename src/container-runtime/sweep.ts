@@ -128,7 +128,9 @@ export function decideSweep(
 		const endedAt = run.releasedAt ?? run.ownerLostAt;
 		if (run.inheritedIdleTimeoutMs === undefined || endedAt === undefined)
 			return { kind: "keep" };
+		// An end time that does not parse is no end: keep, as with no hold.
 		const endedFor = now - Date.parse(endedAt);
+		if (Number.isNaN(endedFor)) return { kind: "keep" };
 		return endedFor >= run.inheritedIdleTimeoutMs
 			? {
 					kind: "down",

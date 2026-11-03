@@ -54,6 +54,7 @@ function verdictAt(run: RunEntry, activity: RunActivity, now: number) {
 	return decideRunLimit({
 		run,
 		alive: true,
+		sharedWithTerminalRun: false,
 		checkout: "present",
 		deletedSince: undefined,
 		idle: idleState(run, activity),
@@ -129,6 +130,7 @@ describe("a detached run whose checkout was deleted", () => {
 		decideRunLimit({
 			run: input.run ?? entry({ idleLimitMs: undefined }),
 			alive: input.alive ?? true,
+			sharedWithTerminalRun: false,
 			checkout: input.checkout ?? "deleted",
 			deletedSince: input.deletedSince,
 			idle: { kind: "off" },
@@ -216,13 +218,28 @@ describe("createRunLimiter", () => {
 	it("stops an idle run at its limit, and leaves a --keep run and a terminal run alone", async () => {
 		const { state, pass } = harness([
 			entry({ sessionId: "idle" }),
-			entry({ sessionId: "kept", idleLimitMs: undefined }),
-			entry({ sessionId: "terminal", detached: undefined }),
+			entry({ sessionId: "kept", idleLimitMs: undefined, root: "/kept" }),
+			entry({ sessionId: "terminal", detached: undefined, root: "/other" }),
 		]);
 		state.clock = START + DETACHED_IDLE_LIMIT_MS;
 		await pass();
 		expect(state.stopped).toEqual(["idle"]);
 		expect(state.records[0]?.reason).toBe("idle");
+	});
+
+	it("leaves a detached run alone while a run in a terminal uses its checkout", async () => {
+		// That run may serve from the detached run's apps (a reused port),
+		// with its traffic on localhost where the proxy never sees it.
+		const { state, pass } = harness([
+			entry({ sessionId: "idle" }),
+			entry({ sessionId: "terminal", detached: undefined }),
+		]);
+		state.clock = START + 10 * DETACHED_IDLE_LIMIT_MS;
+		state.presence = "deleted";
+		await pass();
+		state.clock += DELETED_CHECKOUT_SETTLE_MS;
+		await pass();
+		expect(state.stopped).toEqual([]);
 	});
 });
 

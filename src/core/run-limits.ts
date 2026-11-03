@@ -91,7 +91,9 @@ export function describeIdleState(
 		off: () => undefined,
 		unknown: ({ why }) => `idle limit not enforced: ${why}`,
 		counting: ({ stopsAt }) =>
-			`stops after ${formatDuration(stopsAt - now)} more with no request or buncargo command`,
+			now < stopsAt
+				? `stops after ${formatDuration(stopsAt - now)} more with no request or buncargo command`
+				: "idle past its limit; the watchdog stops it on its next pass",
 	});
 }
 
@@ -112,6 +114,11 @@ export function formatDuration(ms: number): string {
 export function decideRunLimit(input: {
 	run: Pick<RunEntry, "detached" | "root">;
 	alive: boolean;
+	/**
+	 * A live run in a terminal uses the same checkout: it may be serving
+	 * from this run's apps (`port-reuse.ts`), whatever reaches the proxy.
+	 */
+	sharedWithTerminalRun: boolean;
 	checkout: CheckoutPresence;
 	/** When the watchdog first found the checkout deleted, this time round. */
 	deletedSince: number | undefined;
@@ -120,6 +127,8 @@ export function decideRunLimit(input: {
 }): RunLimitVerdict {
 	const { run, alive, checkout, deletedSince, idle, now } = input;
 	if (!alive || !run.detached) return { kind: "keep" };
+	// Stopping this run would take apps from under the other one.
+	if (input.sharedWithTerminalRun) return { kind: "keep" };
 
 	// Seen deleted on two passes this far apart, like a deleted checkout's
 	// volumes: a worktree being recreated, or a disk briefly gone, costs
@@ -164,7 +173,7 @@ export interface RunLimiterDeps {
 	liveness: (runs: readonly RunEntry[]) => Promise<(run: RunEntry) => boolean>;
 	checkoutPresence: (root: string) => CheckoutPresence;
 	lastCommandAt: (root: string) => number | undefined;
-	readProxyActivity: () => ProxyActivity | undefined;
+	readProxyActivity: (now: number) => ProxyActivity | undefined;
 	/**
 	 * End the run's process by its recorded pid and identity; false when it
 	 * was already gone or is no longer that process. Throws when it could not
@@ -193,9 +202,10 @@ export function createRunLimiter(
 	const deletedSince = new Map<string, number>();
 
 	return async () => {
-		const runs = (await deps.readRuns()).filter(
-			(run) => run.detached && run.releasedAt === undefined,
+		const all = (await deps.readRuns()).filter(
+			(run) => run.releasedAt === undefined,
 		);
+		const runs = all.filter((run) => run.detached);
 		const now = deps.now();
 		for (const session of deletedSince.keys())
 			if (!runs.some((run) => run.sessionId === session))
@@ -203,8 +213,13 @@ export function createRunLimiter(
 		// Without a detached run, nothing to fork `ps` for.
 		if (runs.length === 0) return { stopped: [], failures: [] };
 
-		const alive = await deps.liveness(runs);
-		const proxy = deps.readProxyActivity();
+		// The detached runs, and the terminal runs in their checkouts.
+		const roots = new Set(runs.map((run) => run.root));
+		const terminalRuns = all.filter(
+			(run) => !run.detached && roots.has(run.root),
+		);
+		const alive = await deps.liveness([...runs, ...terminalRuns]);
+		const proxy = deps.readProxyActivity(now);
 		const due: Array<{ run: RunEntry; reason: RunStopReason; detail: string }> =
 			[];
 		for (const run of runs) {
@@ -215,6 +230,9 @@ export function createRunLimiter(
 			const verdict = decideRunLimit({
 				run,
 				alive: alive(run),
+				sharedWithTerminalRun: terminalRuns.some(
+					(other) => other.root === run.root && alive(other),
+				),
 				checkout,
 				deletedSince: deletedSince.get(run.sessionId),
 				idle: idleState(run, {

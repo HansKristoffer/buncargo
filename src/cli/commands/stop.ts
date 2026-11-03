@@ -32,8 +32,8 @@ import {
 } from "../../core/run-registry";
 import {
 	describeRunStop,
-	latestRunStop,
 	readRunStops,
+	recentRunStops,
 } from "../../core/run-stops";
 
 import * as log from "../log";
@@ -50,9 +50,6 @@ import { parseStopArgs, printStopHelp } from "../stop-flags";
  * child supervisor with a null exit code, which is the one case it does not
  * treat as failure, so the other apps and the containers keep going.
  */
-
-/** How far back `stop` names the watchdog's stop of this checkout's run. */
-const RECENT_STOP_MS = 24 * 60 * 60_000;
 
 /** 0 stopped · 2 nothing matched · 3 refused. */
 export const STOP_EXIT = { ok: 0, notFound: 2, refused: 3 } as const;
@@ -85,14 +82,9 @@ export async function handleStop(args: string[] = []): Promise<number> {
 	// With no live run, the watchdog may have stopped it: say so either way.
 	const stoppedByWatchdog =
 		runs.length === 0
-			? latestRunStop(readRunStops(), {
-					root,
-					// Not one from before a run that has started since.
-					since: Math.max(
-						Date.now() - RECENT_STOP_MS,
-						...held.map((run) => Date.parse(run.startedAt)),
-					),
-				})
+			? recentRunStops(readRunStops(), held, Date.now()).find(
+					(record) => record.root === root,
+				)
 			: undefined;
 	if (runs.length === 0 && held.length === 0) {
 		log.error(`No active buncargo run for ${root}.`);
