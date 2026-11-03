@@ -86,36 +86,106 @@ export const CHECK_COMMAND_SPEC: CommandSpec = {
 const BIOME_CONFIGS = ["biome.json", "biome.jsonc"];
 const OUTPUT_TAIL_LINES = 80;
 
-interface Step {
+export interface Step {
 	name: string;
 	command: string[];
 	cwd?: string;
 }
 
+/** A step that failed: what the digest at the end of `check` names. */
+export interface StepFailure {
+	name: string;
+	/** The exit code, or why the command could not start (`E2BIG: …`). */
+	reason: string;
+	/** How to run it again by hand, from the repository root. */
+	rerun: string;
+}
+
+/** Past this a rerun command shows its first arguments and a count. */
+const RERUN_MAX_CHARS = 160;
+
+function shellQuote(arg: string): string {
+	return /^[\w@%+=:,./-]+$/.test(arg)
+		? arg
+		: `'${arg.replaceAll("'", "'\\''")}'`;
+}
+
+/** The command to rerun one step, cut short when it lists many files. */
+export function rerunCommand(step: Step): string {
+	const prefix = step.cwd ? `cd ${shellQuote(step.cwd)} && ` : "";
+	const words = step.command.map(shellQuote);
+	let shown = prefix;
+	for (const [index, word] of words.entries()) {
+		const next = shown === prefix ? `${shown}${word}` : `${shown} ${word}`;
+		if (next.length > RERUN_MAX_CHARS) {
+			const rest = words.length - index;
+			return `${shown} … (${rest} more arguments)`;
+		}
+		shown = next;
+	}
+	return shown;
+}
+
+/**
+ * The last lines `check` prints when a step failed: each failure with its
+ * exit code and the command to rerun it, so `buncargo check | tail` has the
+ * whole verdict.
+ */
+export function formatFailureDigest(
+	failures: readonly StepFailure[],
+): string[] {
+	if (failures.length === 0) return ["PASS"];
+	return [
+		`FAIL: ${failures.map((failure) => failure.name).join(", ")}`,
+		...failures.map(
+			(failure) =>
+				`  ✗ ${failure.name} (${failure.reason}) · rerun: ${failure.rerun}`,
+		),
+	];
+}
+
 /**
  * Runs steps one at a time: one line per step, the tail of a failing step's
- * output, and the names of the failures for the verdict.
+ * output, and the failures for the digest. A step passes on exit code 0 and
+ * nothing else: a command that cannot even start (`E2BIG`, not installed)
+ * fails, and so does one killed by a signal.
  */
-function stepRunner(root: string) {
-	const failures: string[] = [];
-	const finish = (name: string, elapsed: () => number, code: number) => {
+export function stepRunner(root: string, print: (line: string) => void) {
+	const failures: StepFailure[] = [];
+	const finish = (
+		name: string,
+		elapsed: () => number,
+		failure: Omit<StepFailure, "name"> | undefined,
+	) => {
 		const seconds = (elapsed() / 1000).toFixed(1);
-		if (code === 0) console.log(`✓ ${name} ${seconds}s`);
-		else {
-			console.log(`✗ ${name} ${seconds}s (exit ${code})`);
-			failures.push(name);
+		if (!failure) {
+			print(`✓ ${name} ${seconds}s`);
+			return;
 		}
+		print(`✗ ${name} ${seconds}s (${failure.reason})`);
+		failures.push({ name, ...failure });
 	};
 	return {
 		failures,
-		async run({ name, command, cwd }: Step) {
+		/** Resolves to the step's exit code; a command that could not start is 127. */
+		async run(step: Step): Promise<number> {
+			const { name, command, cwd } = step;
+			const rerun = rerunCommand(step);
 			const elapsed = startTimer();
-			const child = Bun.spawn(command, {
-				cwd: cwd ? join(root, cwd) : root,
-				stdout: "pipe",
-				stderr: "pipe",
-				env: childProcessEnv(),
-			});
+			let child: ReturnType<typeof Bun.spawn<"ignore", "pipe", "pipe">>;
+			try {
+				child = Bun.spawn(command, {
+					cwd: cwd ? join(root, cwd) : root,
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+					env: childProcessEnv(),
+				});
+			} catch (error) {
+				const reason = `could not start: ${getErrorMessage(error)}`;
+				finish(name, elapsed, { reason, rerun });
+				return 127;
+			}
 			const [stdout, stderr, code] = await Promise.all([
 				new Response(child.stdout).text(),
 				new Response(child.stderr).text(),
@@ -123,14 +193,22 @@ function stepRunner(root: string) {
 			]);
 			if (code !== 0) {
 				const output = `${stdout}${stderr}`.trim().split("\n");
-				console.log(output.slice(-OUTPUT_TAIL_LINES).join("\n"));
+				print(output.slice(-OUTPUT_TAIL_LINES).join("\n"));
 			}
-			finish(name, elapsed, code);
+			const reason = child.signalCode
+				? `killed by ${child.signalCode}`
+				: `exit ${code}`;
+			finish(name, elapsed, code === 0 ? undefined : { reason, rerun });
+			return code;
 		},
-		inline(name: string, problems: string[]) {
+		inline(name: string, problems: string[], rerun: string) {
 			const elapsed = startTimer();
-			for (const problem of problems) console.log(problem);
-			finish(name, elapsed, problems.length > 0 ? 1 : 0);
+			for (const problem of problems) print(problem);
+			const failure =
+				problems.length > 0
+					? { reason: `${problems.length} problems`, rerun }
+					: undefined;
+			finish(name, elapsed, failure);
 		},
 	};
 }
@@ -148,15 +226,16 @@ function stagedFiles(root: string): string[] {
 /** `bun install` when `bun.lock` changed since the last one this ran. */
 async function ensureInstalled(
 	root: string,
-	run: (step: Step) => Promise<void>,
+	run: (step: Step) => Promise<number>,
 ) {
 	const lock = Bun.file(join(root, "bun.lock"));
 	if (!(await lock.exists())) return;
 	const hash = Bun.hash(await lock.text()).toString();
 	const stamp = Bun.file(join(root, "node_modules", ".buncargo-lock-hash"));
 	if ((await stamp.exists()) && (await stamp.text()) === hash) return;
-	await run({ name: "bun install", command: ["bun", "install"] });
-	await Bun.write(stamp, hash);
+	// Stamped only on success, or a failed install is never retried.
+	const code = await run({ name: "bun install", command: ["bun", "install"] });
+	if (code === 0) await Bun.write(stamp, hash);
 }
 
 export async function handleCheck(args: string[]): Promise<number> {
@@ -199,7 +278,7 @@ export async function handleCheck(args: string[]): Promise<number> {
 		return problems.length > 0 ? 1 : 0;
 	}
 	const mode: CheckMode = all ? "all" : staged ? "staged" : "changed";
-	const steps = stepRunner(root);
+	const steps = stepRunner(root, console.log);
 
 	await ensureInstalled(root, steps.run);
 
@@ -260,6 +339,7 @@ export async function handleCheck(args: string[]): Promise<number> {
 			findDocProblems(root, markdownFiles(root), docPaths).map(
 				formatDocProblem,
 			),
+			"buncargo check docs",
 		);
 
 	// The typecheck picks the changed workspaces and their dependents, and
@@ -304,8 +384,6 @@ export async function handleCheck(args: string[]): Promise<number> {
 		else console.log("- no tests next to the changed files");
 	}
 
-	console.log(
-		steps.failures.length > 0 ? `FAIL: ${steps.failures.join(", ")}` : "PASS",
-	);
+	for (const line of formatFailureDigest(steps.failures)) console.log(line);
 	return steps.failures.length > 0 ? 1 : 0;
 }

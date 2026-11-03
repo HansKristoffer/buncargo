@@ -130,7 +130,9 @@ pieces it orchestrates.
 
 `commands/check/` is `buncargo check`; `plan.ts` (gate and test selection) is pure apart from the
 glob scan, `docs.ts` is also `check docs`. Steps run one at a time with their output buffered: the
-point is one line per step and the tail of the failure, not a live log. The typecheck is spawned
+point is one line per step and the tail of the failure, not a live log. The verdict is the exit
+code alone and comes last, with each failure's rerun command: agents read `check | tail`, and a
+format step once printed ✓ over a command that never ran. The typecheck is spawned
 as `buncargo typecheck --changed` through `buncargoCli()`, so it takes a check slot and reads
 `typecheck.concurrency` the same way a typecheck run by hand does; the nearby tests take no slot
 (they are a handful). A root-wide file selects every gate for the reason it selects every
