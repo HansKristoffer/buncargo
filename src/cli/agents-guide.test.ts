@@ -38,6 +38,8 @@ describe("agentsGuide", () => {
 		const all = agentsGuide("all");
 		for (const topic of AGENTS_GUIDE_TOPICS)
 			expect(all).toContain(agentsGuide(topic));
-		expect(() => agentsGuide("nope")).toThrow('No agents guide topic named "nope"');
+		expect(() => agentsGuide("nope")).toThrow(
+			'No agents guide topic named "nope"',
+		);
 	});
 });
