@@ -48,6 +48,7 @@ bunx buncargo sql --drop-scratch=migcheck
 bunx buncargo ports               # This checkout's ports, and every checkout's offset
 bunx buncargo ports pin 2500      # Keep this checkout on offset 2500
 bunx buncargo ports release --root ../old-worktree   # Drop another checkout's claims
+bunx buncargo ports release --idle=7d   # Drop claims of checkouts not started for a week
 bunx buncargo send expoApp i      # Type into an app that has a terminal of its own
 bunx buncargo doctor
 bunx buncargo doctor --fix
@@ -824,8 +825,13 @@ BUNCARGO_PORT_OFFSET set?
                           (its offset, or any one of its ports)
                           probe every service and app port
                           on a foreign owner, or a port that will not bind,
-                          shift the whole block by 100, wrapping from
-                          9000 to 100 until every block was tried
+                          shift the whole block by 100, up to the highest
+                          offset that keeps every port below 32768 (never
+                          below 9000), then from 100 until every block was tried
+                          every block taken? reclaim the least recently used
+                          block of checkouts with no run and no containers, and
+                          try again (dev and start(); a read answers
+                          provenance: unallocated instead)
           persist { version, projectName, root, offset, ports } (dev only)
           and claim the offset and its ports in ~/.buncargo/offsets.json
 ```
@@ -865,7 +871,23 @@ worktree shares the main clone's. Derive its prefix from the worktree:
 `getWorktreeProjectSuffix(<repository root>)` returns the worktree's name, or
 `null` in the main clone. `example/playground/dev.config.ts` does this.
 
-A claim stays until its checkout runs again or is deleted, so a checkout that
+When every block is claimed, `dev` and `start()` reclaim the block of the
+checkout started least recently that has no run and no containers (running or
+in the idle hold), say whose, and allocate again. That checkout keeps its
+containers and volumes and gets a new block on its next start. When nothing can
+be reclaimed, the error lists every checkout in the way with its state and when
+it last started, and the commands that free one. A checkout that has never run
+reads as `unallocated` in that state (`status`, `env`, `ports`): its ports are
+another checkout's until `dev` or `ports pin` gives it a block, and `exec`
+refuses to run on them.
+
+`buncargo ports release --idle=7d` (a bare number is days; `12h` and `30m`
+work too) drops the claims of every checkout not started for longer than that,
+with no run and no containers. It lists them and asks first, like `--root`, and
+touches no container or volume. A deleted checkout's claim is left to the
+sweep, which uses it to find that checkout's volumes.
+
+A claim otherwise stays until its checkout runs again or is deleted, so a checkout that
 last ran an older config keeps that config's project name, and the refusal
 names it. When it no longer uses that name, release its claims:
 `buncargo ports release --root <path>`. It lists the claims and asks first
@@ -890,7 +912,7 @@ A checkout's own containers (its Compose project, on the runtime it uses) never 
 
 A port nothing visible holds but that cannot be bound (a root process `lsof` hides from this user, often a macOS service such as Screen Sharing on `:5900`) counts as foreign; `doctor` reports it as held by an unidentified process.
 
-Offsets use a step of 100 in the 100–9000 range so `5432` becomes `5532` / `5632` instead of overlapping nearby defaults.
+Offsets use a step of 100 so `5432` becomes `5532` / `5632` instead of overlapping nearby defaults. A checkout's first offset is hashed into 100–9000; when that block is taken, the search goes as high as the config's highest port allows while staying below 32768, where Linux starts handing ports to outgoing connections.
 
 `worktreeIsolation: false` shares the compose project name **and** the offset across worktrees.
 
@@ -1686,7 +1708,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | Disk full of old worktree volumes | Deleted checkouts and interrupted `ci` runs leave their databases behind | `buncargo prune --project --dry-run` for this project, `buncargo prune --dry-run` for every project; then without `--dry-run` |
 | `.env.local has local edits and the file store changed too` | This checkout and another both changed a checkout file | `buncargo files merge .env.local` keeps both sides' keys (dotenv only); `files save` keeps yours, `files pull --force` takes the store's |
 | `… would run under Compose project …, which … already uses` | Another checkout with the same project name exists: CI runners in same-named directories, or a config below a worktree's top level | Give one of them its own `projectPrefix` (see [Ports and isolation](#ports-and-isolation)) and start it once, or delete the checkout no longer used. If the other checkout's claim is from a config it no longer runs, `buncargo ports release --root <path>` (the error names the path) |
-| `Could not allocate a free port block` | 80 shifted blocks still conflict | Set `BUNCARGO_PORT_OFFSET` or free ports (`buncargo doctor`) |
+| `Could not allocate a free port block` | Every block is claimed by checkouts that are running or hold containers, or held by other processes | The error lists each holder. Stop one you no longer need (`buncargo stop --all --root <path>`) and `buncargo ports release --root <path>`, release idle claims (`buncargo ports release --idle=7d`), or `buncargo ports pin <offset>` with the offset it suggests |
 | Named URL does not resolve / TLS warning | Daemon down or CA not trusted | `buncargo hosts status`, then `buncargo hosts install` or `doctor --fix` |
 | `Docker Desktop is running (pid …) but its daemon is not answering` | Docker Desktop hung; quitting it can leave `com.docker.backend` alive | `buncargo doctor --fix`: once Docker Desktop has run past a cold start without answering, it asks (in a terminal) and force-restarts it, which stops every container on the machine and keeps volumes |
 | A port `held by process … in …/.Trash/…` | A dev server of a deleted checkout | `buncargo doctor --fix` stops it |

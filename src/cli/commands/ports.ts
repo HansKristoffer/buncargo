@@ -1,5 +1,8 @@
 import { resolve } from "node:path";
-import { containerRuntimeForEnv } from "../../container-runtime";
+import {
+	containerRuntimeForEnv,
+	readClaimStates,
+} from "../../container-runtime";
 import { tailscaleBlockPorts } from "../../core/hosts/tailscale-serve";
 import {
 	describeOffsetClaimOverlap,
@@ -7,13 +10,21 @@ import {
 	offsetClaimRoot,
 	offsetClaimsOf,
 	overlappingOffsetClaims,
+	readOffsetClaims,
 	releaseOffsetClaims,
+	releaseOffsetClaimsIfUnchanged,
 } from "../../core/offset-claims";
 import {
 	PORT_OFFSET_STEP,
 	pinOffset,
 	readOffsetClaimsWithPorts,
 } from "../../core/port-allocation";
+import {
+	CLAIM_STATE_LABELS,
+	formatClaimAge,
+	idleClaims,
+	unallocatedPortsMessage,
+} from "../../core/port-exhaustion";
 import { getPortOwner, withBindProbe } from "../../core/process";
 import { askConfirm, isInteractive } from "../../core/prompt";
 import { findCheckoutRuns, findRunsByRoot } from "../../core/run-registry";
@@ -42,6 +53,13 @@ const FLAGS = {
 		valueHint: "=<path>",
 		description: "ports release: the checkout whose claims to drop",
 	},
+	idle: {
+		name: "--idle",
+		kind: "string",
+		valueHint: "=<duration>",
+		description:
+			"ports release: drop the claims of checkouts idle longer than this (7d, 12h; a bare number is days) with no run and no containers. Deleted checkouts' claims are left to the sweep",
+	},
 	yes: {
 		name: "--yes",
 		kind: "boolean",
@@ -50,7 +68,8 @@ const FLAGS = {
 } as const;
 
 export const PORTS_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo ports [pin <offset> | release --root <path> [--yes]]",
+	usage:
+		"buncargo ports [pin <offset> | release (--root <path> | --idle=<duration>) [--yes]]",
 	flags: Object.values(FLAGS),
 	examples: [
 		{
@@ -66,8 +85,23 @@ export const PORTS_COMMAND_SPEC: CommandSpec = {
 			description:
 				"Drop another checkout's claims on its ports and project name",
 		},
+		{
+			command: "buncargo ports release --idle=7d",
+			description:
+				"Drop the claims of every checkout not started for a week, with no run and no containers",
+		},
 	],
 };
+
+/** `7d`, `12h`, `30m`, or a bare number of days, in milliseconds. */
+export function parseIdleDuration(value: string): number | undefined {
+	const match = /^(\d+(?:\.\d+)?)(d|h|m)?$/.exec(value.trim());
+	if (!match) return undefined;
+	const unit = { d: 86_400_000, h: 3_600_000, m: 60_000 }[
+		(match[2] ?? "d") as "d" | "h" | "m"
+	];
+	return Number(match[1]) * unit;
+}
 
 /** A whole number of steps, so pinned blocks line up with allocated ones. */
 export function parsePinnedOffset(value: string | undefined): number {
@@ -113,21 +147,36 @@ export async function handlePorts(args: string[]): Promise<number> {
 	)
 		problems.push(`Unknown subcommand: ${subcommand}`);
 	const root = readStringFlag(args, FLAGS.root, problems);
+	const idle = readStringFlag(args, FLAGS.idle, problems);
+	const idleMs = idle === undefined ? undefined : parseIdleDuration(idle);
 	const yes = readBooleanFlag(args, FLAGS.yes);
 	if (subcommand === "release") {
 		if (value !== undefined) problems.push(`Unexpected argument: ${value}`);
-		if (root === undefined)
-			problems.push("ports release needs the checkout: --root <path>.");
-	} else if (root !== undefined || yes)
-		problems.push("--root and --yes are only for ports release.");
+		if ((root === undefined) === (idle === undefined))
+			problems.push(
+				"ports release needs either the checkout (--root <path>) or an idle time (--idle=7d).",
+			);
+		if (idle !== undefined && idleMs === undefined)
+			problems.push(
+				`--idle takes a duration such as 7d, 12h or 30m (a bare number is days): got "${idle}".`,
+			);
+	} else if (root !== undefined || idle !== undefined || yes)
+		problems.push("--root, --idle and --yes are only for ports release.");
 	if (problems.length > 0) throw argumentsError(problems, "ports");
 	if (subcommand === "release" && root !== undefined)
 		return releaseClaims(resolve(root), yes);
+	if (subcommand === "release" && idle !== undefined && idleMs !== undefined)
+		return releaseIdleClaims(
+			/^[\d.]+$/.test(idle) ? `${idle}d` : idle,
+			idleMs,
+			yes,
+		);
 
 	const env = await loadDevEnv({ readOnly: true });
 
 	if (subcommand === undefined) {
 		const claims = readOffsetClaimsWithPorts();
+		const unallocated = env.portOffsetProvenance === "unallocated";
 		log.line(
 			`${env.projectName}: offset ${env.portOffset} (${env.portOffsetProvenance})`,
 		);
@@ -135,13 +184,26 @@ export async function handlePorts(args: string[]): Promise<number> {
 			env.ports as Record<string, number>,
 		))
 			log.line(`  ${name}: ${port}`);
+		if (unallocated) log.warn(unallocatedPortsMessage(env.root));
+		// Which holder could give a block up is worth a runtime listing only
+		// when this checkout needs one.
+		const states = unallocated
+			? await readClaimStates(claims).catch(() => undefined)
+			: undefined;
+		const now = Date.now();
 		log.line();
-		log.line("Offsets claimed on this machine:");
+		log.line("Offsets claimed on this machine (last used):");
 		for (const [key, claim] of Object.entries(claims).sort(
 			([, a], [, b]) => a.offset - b.offset,
-		))
+		)) {
+			const state = states ? `, ${CLAIM_STATE_LABELS[states[key]]}` : "";
 			log.line(
-				`  ${String(claim.offset).padStart(5)}  ${offsetClaimHolder(key, claim)}`,
+				`  ${String(claim.offset).padStart(5)}  ${offsetClaimHolder(key, claim)} (${formatClaimAge(claim, now)} ago${state})`,
+			);
+		}
+		if (unallocated)
+			log.hint(
+				"`buncargo ports release --idle=7d` drops the claims of checkouts not started for a week that have no run and no containers.",
 			);
 		const overlaps = overlappingOffsetClaims(claims);
 		if (overlaps.length > 0) {
@@ -195,7 +257,7 @@ export async function handlePorts(args: string[]): Promise<number> {
  * `buncargo ports release --root <path>`: drop another checkout's claims.
  *
  * A claim protects an idle checkout's ports and project name, so none is
- * dropped by age. One left by a config its checkout no longer runs (a
+ * dropped by age unless asked (`--idle`) or the range is full. One left by a config its checkout no longer runs (a
  * renamed projectPrefix, not started since) refuses every other checkout
  * under that name until it runs again or is deleted; this is the way out.
  * It refuses while the checkout has a run or standing containers, and
@@ -261,5 +323,69 @@ async function releaseClaims(root: string, yes: boolean): Promise<number> {
 	log.success(
 		`Released ${keys.length} claim${keys.length === 1 ? "" : "s"} of ${root}.`,
 	);
+	return 0;
+}
+
+/**
+ * `buncargo ports release --idle=<duration>`: drop the claims of every
+ * checkout not started for longer than `idleMs` that has no run and no
+ * containers, the ones a full range would reclaim first.
+ *
+ * A deleted checkout's claim is not among them: allocation already ignores
+ * it, and it is the sweep's record of its volumes. A claim a run refreshed
+ * between the listing and the confirmation stays.
+ */
+async function releaseIdleClaims(
+	label: string,
+	idleMs: number,
+	yes: boolean,
+): Promise<number> {
+	const claims = readOffsetClaims();
+	const states = await readClaimStates(claims);
+	const now = Date.now();
+	const stale = idleClaims(claims, states, idleMs, now);
+	const keys = Object.keys(stale);
+	if (keys.length === 0) {
+		log.info(
+			`No claim is idle for longer than ${label} with no run and no containers. Nothing to release.`,
+		);
+		return 0;
+	}
+
+	log.line(`Claims idle for longer than ${label}:`);
+	for (const [key, claim] of Object.entries(stale))
+		log.line(
+			`  ${String(claim.offset).padStart(5)}  ${offsetClaimHolder(key, claim)}: project ${claim.projectName}, last used ${formatClaimAge(claim, now)} ago`,
+		);
+	log.warn(
+		"Another checkout can then take these ports and run under these project names, using any volume left under them, its database included. No container or volume is touched, and each checkout's next run claims again, on new ports if its block was taken.",
+	);
+
+	const count = `${keys.length} claim${keys.length === 1 ? "" : "s"}`;
+	if (!yes) {
+		if (!isInteractive())
+			throw new CliError(`Refusing to release ${count} without a terminal.`, [
+				"Pass --yes if that is really meant.",
+			]);
+		const accepted = await askConfirm([
+			`  Release ${count} idle for longer than ${label}?`,
+			"",
+			"  y to release  ·  Enter to keep them",
+		]);
+		if (!accepted) {
+			log.info("Kept. Nothing was released.");
+			return 0;
+		}
+	}
+
+	const released = await releaseOffsetClaimsIfUnchanged(stale);
+	log.success(
+		`Released ${released.length} claim${released.length === 1 ? "" : "s"}.`,
+	);
+	const kept = keys.length - released.length;
+	if (kept > 0)
+		log.hint(
+			`${kept} changed since they were listed (a run started) and ${kept === 1 ? "was" : "were"} kept.`,
+		);
 	return 0;
 }

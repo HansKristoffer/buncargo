@@ -6,6 +6,7 @@ import {
 } from "../core/env";
 import { portableEnvFingerprint } from "../core/env-fingerprint";
 import { applyEnvOverrides, warnShadowedSecrets } from "../core/env-overrides";
+import { unallocatedPortsMessage } from "../core/port-exhaustion";
 import { toPortMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
 import { hostsDaemonPort, isCI, urlHostOverride } from "../core/runtime-flags";
@@ -279,6 +280,10 @@ export function createEnvVarsApi<
 		if (options?.app !== undefined && !apps[options.app]) {
 			throw new Error(`Unknown app "${options.app}"`);
 		}
+		// Its ports would be another checkout's: a command would reach that
+		// checkout's database.
+		if (ctx.portOffsetProvenance === "unallocated")
+			throw new Error(unallocatedPortsMessage(ctx.root));
 
 		const computed: Record<string, string> =
 			options?.app === undefined

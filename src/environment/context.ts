@@ -65,6 +65,7 @@ import type {
 } from "../types";
 import type { EnvironmentLogSelection } from "../types/environment";
 import { logEnvironmentInfo } from "./logging";
+import { allocateReclaiming } from "./port-reclaim";
 
 /** The apps and services a run selected, `requiredApps` and dependencies expanded. */
 export interface StartSelection {
@@ -474,7 +475,13 @@ export function createDevEnvContext<
 						})
 					: { owner: () => null, isBusy: () => false };
 			signal?.throwIfAborted();
-			prepareStart(onlyApps, onlyServices, snapshot);
+			// The synchronous `prepareStart` does not reclaim: telling an idle
+			// checkout from a running one needs the registry's liveness and a
+			// container listing, so it throws the exhaustion with the holders.
+			await allocateReclaiming(
+				() => prepareStart(onlyApps, onlyServices, snapshot),
+				signal,
+			);
 		},
 		config,
 		root,

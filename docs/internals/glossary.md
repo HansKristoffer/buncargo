@@ -44,6 +44,7 @@ Terms whose meaning matters across buncargo. Use them this way in code, comments
 | Sweep             | The one cleanup policy (`container-runtime/sweep.ts`): decides which unowned stacks come down. Never removes volumes.          |
 | Watchdog          | One background process per machine that runs the sweep on a loop.                                                             |
 | Offset / port block | A checkout's ports are the config's base ports plus its offset. Offsets are claimed per checkout in `~/.buncargo/offsets.json`. |
+| Reclaim | A claiming start that finds every block taken drops the port claim of the checkout started least recently with no run and no containers, and takes its block. Never touches containers or volumes. Not the same as releasing a run. |
 | Named host        | An `https://<name>.localhost` URL served by the root hosts daemon's proxy, backed by a route in `~/.buncargo/routes.json`.     |
 | Process identity  | A pid plus its birth time (`v2:` prefixed). Liveness reads an unreadable identity as alive; signalling requires a strict match. |
 | BuncargoBar       | The macOS menu bar app. It only reads the run registry and calls `buncargo stop`.                                             |

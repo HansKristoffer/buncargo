@@ -502,17 +502,19 @@ exports[`buncargo CLI output ports --help 1`] = `
 "exit 0
 --- stdout
 
-Usage: buncargo ports [pin <offset> | release --root <path> [--yes]]
+Usage: buncargo ports [pin <offset> | release (--root <path> | --idle=<duration>) [--yes]]
 
 Options:
-  --help         Show this help message
-  --root=<path>  ports release: the checkout whose claims to drop
-  --yes          ports release: skip the confirmation (for scripts)
+  --help             Show this help message
+  --root=<path>      ports release: the checkout whose claims to drop
+  --idle=<duration>  ports release: drop the claims of checkouts idle longer than this (7d, 12h; a bare number is days) with no run and no containers. Deleted checkouts' claims are left to the sweep
+  --yes              ports release: skip the confirmation (for scripts)
 
 Examples:
   buncargo ports                                 This checkout's ports, and every checkout's offset
   buncargo ports pin 2500                        Keep this checkout on offset 2500 from now on
   buncargo ports release --root ../old-worktree  Drop another checkout's claims on its ports and project name
+  buncargo ports release --idle=7d               Drop the claims of every checkout not started for a week, with no run and no containers
 
 
 --- stderr
