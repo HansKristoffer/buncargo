@@ -120,11 +120,23 @@ export function isTimingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 /**
- * `BUNCARGO_DETACHED=1` - set by `dev --detach` on the run it starts in the
- * background, so the run registry can say no terminal is watching it.
+ * `BUNCARGO_DETACHED` - set by `dev --detach` on the run it starts in the
+ * background, so the run registry can say no terminal is watching it: `1`
+ * for a run with the idle limit, `keep` for `--detach --keep`.
  */
-export function isDetachedRun(env: NodeJS.ProcessEnv = process.env): boolean {
-	return env.BUNCARGO_DETACHED === "1";
+export type DetachedRunMode = "idle-limit" | "keep";
+
+export function detachedRunMode(
+	env: NodeJS.ProcessEnv = process.env,
+): DetachedRunMode | undefined {
+	if (env.BUNCARGO_DETACHED === "1") return "idle-limit";
+	if (env.BUNCARGO_DETACHED === "keep") return "keep";
+	return undefined;
+}
+
+/** The value of `BUNCARGO_DETACHED` for a run `dev --detach` starts. */
+export function detachedRunEnv(mode: DetachedRunMode): string {
+	return mode === "keep" ? "keep" : "1";
 }
 
 /**

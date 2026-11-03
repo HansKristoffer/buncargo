@@ -26,6 +26,17 @@ describe("parseDevArgs", () => {
 		expect(parseDevArgs([]).oneShot).toBe(false);
 	});
 
+	it("takes --keep only with --detach", () => {
+		expect(parseDevArgs(["--detach", "--keep"])).toMatchObject({
+			detach: true,
+			keep: true,
+			errors: [],
+		});
+		expect(parseDevArgs(["--keep"]).errors).toEqual([
+			"--keep only applies to --detach: a run in a terminal never stops for idling.",
+		]);
+	});
+
 	it("inverts the negated flags", () => {
 		const args = parseDevArgs(["--no-hosts", "--no-docker-autostart"]);
 		expect(args.hosts).toBe(false);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { SweepResult } from "../container-runtime/sweep";
+import type { RunLimitPass } from "./run-limits";
 import type { RunEntry } from "./run-registry";
 import {
 	claimedSincePass,
@@ -34,12 +35,15 @@ async function loop(
 	script: Array<SweepResult | string>,
 	exits: boolean[] = [],
 	serve: Array<{ removed: string[]; failures: string[] }> = [],
+	runStops: RunLimitPass[] = [],
 ): Promise<string[]> {
 	const logs: string[] = [];
 	const passes = [...script];
 	const answers = [...exits];
 	const servePasses = [...serve];
+	const stopPasses = [...runStops];
 	await runWatchdogLoop({
+		stopRuns: async () => stopPasses.shift() ?? { stopped: [], failures: [] },
 		sweep: async () => {
 			const next = passes.shift();
 			if (next === undefined) throw new Error("script ran out");
@@ -67,6 +71,7 @@ describe("runWatchdogLoop", () => {
 		const logs: string[] = [];
 		let sweeps = 0;
 		await runWatchdogLoop({
+			stopRuns: async () => ({ stopped: [], failures: [] }),
 			sweep: async () => {
 				sweeps += 1;
 				return sweeps < 3 ? pass() : pass({ containers: 0, liveRuns: 0 });
@@ -133,6 +138,28 @@ describe("runWatchdogLoop", () => {
 		expect(logs).toEqual([
 			tailscaleDown,
 			"Removed https://box.ts.net:23000 (web, /repo)",
+			"Nothing left to watch; exiting",
+		]);
+	});
+
+	it("logs the detached runs it stopped, and a failure to stop one once", async () => {
+		const refused = "Could not stop demo's detached run (/repo, pid 7): EPERM";
+		const logs = await loop(
+			[pass(), pass(), pass(), pass({ containers: 0, liveRuns: 0 })],
+			[],
+			[],
+			[
+				{ stopped: [], failures: [refused] },
+				{ stopped: [], failures: [refused] },
+				{
+					stopped: ["Stopped demo's detached run (/repo, pid 7): idle"],
+					failures: [],
+				},
+			],
+		);
+		expect(logs).toEqual([
+			refused,
+			"Stopped demo's detached run (/repo, pid 7): idle",
 			"Nothing left to watch; exiting",
 		]);
 	});

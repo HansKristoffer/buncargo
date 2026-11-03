@@ -16,6 +16,7 @@ import { getErrorMessage } from "hanzio";
 import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Command, defineCli, defineCommand } from "hanzio/cli";
+import { noteCheckoutCommand } from "../core/run-activity";
 import type { CliCommandName } from "./commands/registry";
 import { CliError } from "./errors";
 import * as log from "./log";
@@ -206,6 +207,12 @@ async function main(): Promise<void> {
 		process.exitCode = await runUnknown(first, args.slice(1));
 		return;
 	}
+
+	// A command in a checkout is the checkout in use: a detached run's idle
+	// limit counts from it (`core/run-activity.ts`). One `utimes`, no fork.
+	const usesCheckout =
+		first !== undefined && first !== "help" && first !== "version";
+	if (usesCheckout) noteCheckoutCommand();
 
 	const code = await cli.run(args);
 	if (code !== 0) process.exitCode = code;

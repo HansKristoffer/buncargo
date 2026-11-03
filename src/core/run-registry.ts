@@ -196,6 +196,13 @@ export interface RunEntry {
 	 * kills nothing anyone is watching and `stop` does not ask first.
 	 */
 	detached?: boolean;
+	/**
+	 * A detached run's idle limit: the watchdog stops it after this long with
+	 * no request through buncargo's proxy and no buncargo command in its
+	 * checkout (`core/run-limits.ts`). Absent for a run in a terminal, for
+	 * `dev --detach --keep`, and for runs of a buncargo that had no limit.
+	 */
+	idleLimitMs?: number;
 	hosts: { active: boolean; tld: string } | null;
 	/**
 	 * How to invoke this same buncargo again.
@@ -321,6 +328,8 @@ function isRunEntry(value: unknown): value is RunEntry {
 		(value.ownerLostAt === undefined ||
 			typeof value.ownerLostAt === "string") &&
 		(value.detached === undefined || typeof value.detached === "boolean") &&
+		(value.idleLimitMs === undefined ||
+			(typeof value.idleLimitMs === "number" && value.idleLimitMs > 0)) &&
 		(value.idleTimeoutMs === undefined ||
 			(typeof value.idleTimeoutMs === "number" &&
 				Number.isFinite(value.idleTimeoutMs))) &&

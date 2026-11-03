@@ -219,6 +219,7 @@ export async function runCli<
 		process.exit(
 			await runDetached({
 				root: env.root,
+				keep: args.keep,
 				expectApps: Object.values(plan.apps).some(
 					(app) => app.devCommand !== false,
 				),

@@ -22,3 +22,17 @@ export const WATCHDOG_OWNER_DEAD_GRACE_MS = 15_000;
  * otherwise idle machine.
  */
 export const WATCHDOG_POLL_INTERVAL_MS = 30_000;
+
+/**
+ * How long a checkout must stay deleted, from the watchdog's first sighting
+ * to a later pass, before `BUNCARGO_PRUNE_DELETED_CHECKOUTS` removes its
+ * volumes, and before the watchdog stops a detached run still serving it.
+ */
+export const DELETED_CHECKOUT_SETTLE_MS = 10 * 60_000;
+
+/**
+ * How long a `dev --detach` run may go with no request through buncargo's
+ * proxy and no buncargo command in its checkout before the watchdog stops
+ * it. `dev --detach --keep` opts out.
+ */
+export const DETACHED_IDLE_LIMIT_MS = 2 * 60 * 60_000;

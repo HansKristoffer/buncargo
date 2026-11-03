@@ -44,7 +44,10 @@ import {
 	runLivenessAsync,
 } from "../core/run-registry";
 import { pruneDeletedCheckoutVolumes } from "../core/runtime-flags";
-import { WATCHDOG_OWNER_DEAD_GRACE_MS } from "../core/watchdog-constants";
+import {
+	DELETED_CHECKOUT_SETTLE_MS,
+	WATCHDOG_OWNER_DEAD_GRACE_MS,
+} from "../core/watchdog-constants";
 import type {
 	BuncargoContainer,
 	BuncargoVolume,
@@ -62,12 +65,6 @@ import {
 	getContainerRuntimeAdapter,
 } from "./resolve";
 import type { ContainerRuntimeAdapter } from "./types";
-
-/**
- * How long a checkout must stay deleted, from the sweep's first sighting to a
- * later pass, before `BUNCARGO_PRUNE_DELETED_CHECKOUTS` removes its volumes.
- */
-export const DELETED_CHECKOUT_SETTLE_MS = 10 * 60_000;
 
 export interface SweepInput {
 	/**

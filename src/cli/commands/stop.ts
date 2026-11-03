@@ -12,6 +12,7 @@ import { killPortOwner } from "../../core/process";
 import {
 	DEFAULT_STOP_GRACE_MS,
 	ProcessIdentityUnreadable,
+	runStopGraceMs,
 	terminateProcessGroup,
 } from "../../core/process/terminate";
 import { askConfirm, isInteractive } from "../../core/prompt";
@@ -29,6 +30,11 @@ import {
 	type RunServiceEntry,
 	retireRuns,
 } from "../../core/run-registry";
+import {
+	describeRunStop,
+	latestRunStop,
+	readRunStops,
+} from "../../core/run-stops";
 
 import * as log from "../log";
 import { parseStopArgs, printStopHelp } from "../stop-flags";
@@ -44,6 +50,9 @@ import { parseStopArgs, printStopHelp } from "../stop-flags";
  * child supervisor with a null exit code, which is the one case it does not
  * treat as failure, so the other apps and the containers keep going.
  */
+
+/** How far back `stop` names the watchdog's stop of this checkout's run. */
+const RECENT_STOP_MS = 24 * 60 * 60_000;
 
 /** 0 stopped · 2 nothing matched · 3 refused. */
 export const STOP_EXIT = { ok: 0, notFound: 2, refused: 3 } as const;
@@ -75,7 +84,14 @@ export async function handleStop(args: string[] = []): Promise<number> {
 		.map((run) => ({ ...run, apps: [] }));
 	if (runs.length === 0 && held.length === 0) {
 		log.error(`No active buncargo run for ${root}.`);
-		log.hint("Run `buncargo runs` to see what is active.");
+		const stopped = latestRunStop(readRunStops(), {
+			root,
+			since: Date.now() - RECENT_STOP_MS,
+		});
+		if (stopped) {
+			log.hint(describeRunStop(stopped));
+			log.hint("Start it again with `buncargo dev --detach`.");
+		} else log.hint("Run `buncargo runs` to see what is active.");
 		return STOP_EXIT.notFound;
 	}
 
@@ -199,20 +215,6 @@ async function stopApp(app: RunAppEntry, force: boolean): Promise<number> {
 	}
 	log.done(`Stopped ${app.name}`);
 	return STOP_EXIT.ok;
-}
-
-/**
- * How long a whole run gets before its `dev` process is killed.
- *
- * That process stops its apps itself, each with its own `stopGraceMs`, so it
- * needs the longest of them on top of its own teardown. Killing it sooner
- * leaves an app that is still saving data with no one to finish stopping it.
- */
-export function runStopGraceMs(run: Pick<RunEntry, "apps">): number {
-	return (
-		DEFAULT_STOP_GRACE_MS +
-		Math.max(0, ...run.apps.map((app) => app.stopGraceMs ?? 0))
-	);
 }
 
 /**

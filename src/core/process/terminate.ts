@@ -4,6 +4,7 @@ import {
 	checkProcessIdentityAsync,
 	type ProcessIdentityCheck,
 } from "../process-identity";
+import type { RunEntry } from "../run-registry";
 import { formatWarn } from "../style";
 import { DetachedApp } from "./detached-app";
 import { isProcessAlive } from "./lifecycle";
@@ -157,6 +158,20 @@ async function signalUntilGone(
 
 /** How long a process gets after SIGTERM before SIGKILL, unless it sets `stopGraceMs`. */
 export const DEFAULT_STOP_GRACE_MS = 5000;
+
+/**
+ * How long a whole run gets before its `dev` process is killed.
+ *
+ * That process stops its apps itself, each with its own `stopGraceMs`, so it
+ * needs the longest of them on top of its own teardown. Killing it sooner
+ * leaves an app that is still saving data with no one to finish stopping it.
+ */
+export function runStopGraceMs(run: Pick<RunEntry, "apps">): number {
+	return (
+		DEFAULT_STOP_GRACE_MS +
+		Math.max(0, ...run.apps.map((app) => app.stopGraceMs ?? 0))
+	);
+}
 
 /**
  * Only for children spawned detached by this invocation, never reused ports.

@@ -170,6 +170,7 @@ Options:
   --attach=<app>                 Give one app the TTY (overrides interactive: true)
   --no-watch                     Do not restart apps when their watched files change
   --detach                       Run in the background; return once the apps are up (logs: buncargo logs)
+  --keep                         With --detach: never stop for idling (default: stops after 2h with no request or buncargo command)
   --tui                          Terminal UI, the default in a terminal; warns when there is none
   --no-tui                       Prefixed lines instead of the terminal UI, even in a terminal
   --keep-containers              Keep the containers after the run exits, as long as the checkout exists
@@ -1443,6 +1444,7 @@ Options:
   --attach=<app>                 Give one app the TTY (overrides interactive: true)
   --no-watch                     Do not restart apps when their watched files change
   --detach                       Run in the background; return once the apps are up (logs: buncargo logs)
+  --keep                         With --detach: never stop for idling (default: stops after 2h with no request or buncargo command)
   --tui                          Terminal UI, the default in a terminal; warns when there is none
   --no-tui                       Prefixed lines instead of the terminal UI, even in a terminal
   --keep-containers              Keep the containers after the run exits, as long as the checkout exists

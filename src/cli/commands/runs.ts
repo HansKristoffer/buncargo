@@ -1,4 +1,6 @@
+import { readProxyActivity } from "../../core/hosts/proxy-activity";
 import { describeLeaseHolder, readLeases } from "../../core/leases";
+import { describeIdleState, readIdleState } from "../../core/run-limits";
 import {
 	groupRunsByProject,
 	type RunEntry,
@@ -20,9 +22,18 @@ import * as log from "../log";
 export async function handleRuns(args: string[] = []): Promise<void> {
 	const runs = await readLiveRuns();
 	const leases = await readLeases().catch(() => []);
+	const proxy = readProxyActivity();
+	const now = Date.now();
 
 	if (hasFlag(args, "--json")) {
-		log.line(JSON.stringify({ version: 1, runs, leases }, null, 2));
+		// `idleStopsAt`: when a detached run stops if nothing uses it first.
+		const withLimits = runs.map((run) => {
+			const idle = readIdleState(run, proxy);
+			return idle.kind === "counting"
+				? { ...run, idleStopsAt: new Date(idle.stopsAt).toISOString() }
+				: run;
+		});
+		log.line(JSON.stringify({ version: 1, runs: withLimits, leases }, null, 2));
 		return;
 	}
 
@@ -34,7 +45,7 @@ export async function handleRuns(args: string[] = []): Promise<void> {
 	for (const [project, entries] of groupRunsByProject(runs)) {
 		log.line(project);
 		for (const run of entries) {
-			printRun(run);
+			printRun(run, describeIdleState(readIdleState(run, proxy), now));
 		}
 		log.line();
 	}
@@ -47,12 +58,13 @@ export async function handleRuns(args: string[] = []): Promise<void> {
 	}
 }
 
-function printRun(run: RunEntry): void {
+function printRun(run: RunEntry, idle: string | undefined): void {
 	const label = run.worktree ?? "main";
 	const branch = run.branch ? `  (${run.branch})` : "";
 	log.line(`  ${label}${branch}  pid ${run.pid}`);
 	log.line(`    root: ${run.root}`);
 	if (run.sessionId) log.line(`    run: ${run.sessionId}`);
+	if (idle) log.line(`    detached: ${idle}`);
 
 	for (const app of run.apps) {
 		const primary = app.name === run.primaryApp ? " ←" : "";

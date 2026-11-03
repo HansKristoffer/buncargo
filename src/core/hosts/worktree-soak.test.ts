@@ -103,6 +103,7 @@ describeSoak("named hosts under worktree churn", () => {
 			log: () => {},
 			now: Date.now,
 			onIdleExit: () => {},
+			onRequest: () => {},
 			service: true,
 		});
 

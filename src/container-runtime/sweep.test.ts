@@ -24,10 +24,10 @@ import {
 	type RunEntry,
 	releaseRun,
 } from "../core/run-registry";
+import { DELETED_CHECKOUT_SETTLE_MS } from "../core/watchdog-constants";
 import type { BuncargoContainer } from "../types";
 import { withProjectLifecycleLock } from "./project-lock";
 import {
-	DELETED_CHECKOUT_SETTLE_MS,
 	decideSweep,
 	type SweepResult,
 	settleDeletedCheckouts,

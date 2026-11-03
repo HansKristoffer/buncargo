@@ -5,11 +5,14 @@ import {
 	type SweepResult,
 	sweepOrphanedContainers,
 } from "../../../container-runtime";
+import { readProxyActivity } from "../../../core/hosts/proxy-activity";
 import {
 	sweepTailscaleServe,
 	tailscaleServeDeps,
 } from "../../../core/hosts/tailscale-serve";
+import { describeIdleState, readIdleState } from "../../../core/run-limits";
 import { getRunsPath } from "../../../core/run-registry";
+import { describeRunStop, readRunStops } from "../../../core/run-stops";
 import { describeSwept } from "../../../core/watchdog-loop";
 import * as log from "../../log";
 
@@ -46,6 +49,7 @@ export async function handleLs(): Promise<void> {
 		);
 	}
 	for (const stack of result.swept) log.info(describeSwept(stack));
+	logRecentRunStops(result);
 	for (const failure of result.failed)
 		log.warn(`Could not remove ${failure.projectName}: ${failure.error}`);
 
@@ -54,6 +58,7 @@ export async function handleLs(): Promise<void> {
 		return;
 	}
 	const now = Date.now();
+	const proxy = readProxyActivity();
 	const multipleRuntimes = result.answered.length > 1;
 
 	for (const group of result.remaining) {
@@ -76,8 +81,10 @@ export async function handleLs(): Promise<void> {
 		log.line(`  root: ${group.root || "(unknown)"}`);
 		if (first.worktree) log.line(`  worktree: ${first.worktree}`);
 		if (multipleRuntimes) log.line(`  runtime: ${group.runtime}`);
-		if (live) log.line(`  run: active, pid ${live.pid}`);
-		else if (released?.releasedAt)
+		if (live) {
+			const idle = describeIdleState(readIdleState(live, proxy), now);
+			log.line(`  run: active, pid ${live.pid}${idle ? `; ${idle}` : ""}`);
+		} else if (released?.releasedAt)
 			log.line(
 				`  run: ${describeHold(released.releasedAt, released.idleTimeoutMs ?? released.inheritedIdleTimeoutMs, now)}`,
 			);
@@ -95,6 +102,28 @@ export async function handleLs(): Promise<void> {
 		log.line();
 	}
 	if (result.foreign.length > 0) logForeignStacks();
+}
+
+/** How far back `ls` reports the detached runs the watchdog stopped. */
+const RECENT_STOPS_MS = 24 * 60 * 60_000;
+
+/**
+ * The detached runs the watchdog stopped in the last day, for checkouts with
+ * no live run since: "where did my run go" has no other answer once its
+ * entry is gone.
+ */
+function logRecentRunStops(result: SweepResult): void {
+	const since = Date.now() - RECENT_STOPS_MS;
+	const restarted = (root: string, at: string) =>
+		result.runs.some(
+			(run) =>
+				run.root === root &&
+				result.liveSessions.has(run.sessionId) &&
+				run.startedAt > at,
+		);
+	for (const record of readRunStops())
+		if (Date.parse(record.at) >= since && !restarted(record.root, record.at))
+			log.info(describeRunStop(record));
 }
 
 /**

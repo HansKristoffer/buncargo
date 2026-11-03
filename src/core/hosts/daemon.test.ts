@@ -360,7 +360,8 @@ describe("start timeouts", () => {
 /** A reloader whose every edge is observable and nothing binds a port. */
 function reloaderHarness(overrides: Partial<HostsReloaderDeps> = {}) {
 	const state = {
-		routes: [] as Array<{ hostname: string; port: number }>,
+		routes: [] as Array<{ hostname: string; port: number; root: string }>,
+		requests: [] as string[],
 		fingerprint: "cert-v1",
 		gap: undefined as string | undefined,
 		binds: 0,
@@ -397,6 +398,7 @@ function reloaderHarness(overrides: Partial<HostsReloaderDeps> = {}) {
 		onIdleExit: () => {
 			state.idleExits += 1;
 		},
+		onRequest: (root) => state.requests.push(root),
 		service: false,
 		...overrides,
 	};
@@ -404,7 +406,11 @@ function reloaderHarness(overrides: Partial<HostsReloaderDeps> = {}) {
 	return { state, reloader: createHostsReloader(deps) };
 }
 
-const route = (hostname: string, port: number) => ({ hostname, port });
+const route = (hostname: string, port: number) => ({
+	hostname,
+	port,
+	root: `/checkouts/${hostname}`,
+});
 
 describe("createHostsReloader", () => {
 	it("coalesces overlapping recovery and normal reloads into one replacement", async () => {
@@ -589,6 +595,24 @@ describe("createHostsReloader", () => {
 		state.fingerprint = "cert-v2";
 		await reloader.reload();
 		expect(state.logs.join("\n")).toContain("covers every registered hostname");
+	});
+
+	it("counts a proxied request against its route's checkout, and nothing for an unknown host", async () => {
+		// What a detached run's idle limit reads: a request through the proxy
+		// is the run being used.
+		let lookup: ((hostname: string) => number | undefined) | undefined;
+		const { state, reloader } = reloaderHarness({
+			startProxy: async (input) => {
+				lookup = input.lookup;
+				return { httpsPort: 443, stop: () => {} } satisfies LocalProxy;
+			},
+		});
+		state.routes = [route("web.demo.localhost", 5173)];
+		await reloader.reload();
+
+		expect(lookup?.("web.demo.localhost")).toBe(5173);
+		expect(lookup?.("nope.demo.localhost")).toBeUndefined();
+		expect(state.requests).toEqual(["/checkouts/web.demo.localhost"]);
 	});
 
 	it("keeps serving the previous routes when the registry cannot be read", async () => {
