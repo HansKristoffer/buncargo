@@ -167,6 +167,36 @@ describe("buncargo stop --all", () => {
 	});
 });
 
+describe("buncargo stop with no target", () => {
+	// Agents and project docs write a bare `buncargo stop` meaning "stop my
+	// run"; it used to fail with "Name at least one app or service".
+	it("stops this checkout's detached run, containers included", async () => {
+		const owner = await live("dev", { services: held("dev").services });
+		try {
+			expect(await handleStop(["--root", root])).toBe(0);
+			expect(await owner.exited).not.toBeUndefined();
+			expect(calls()).toContain("compose -p fixture down");
+			expect(await loadRuns()).toEqual([]);
+		} finally {
+			owner.kill("SIGKILL");
+		}
+	});
+
+	it("leaves a run in another terminal running without a terminal to ask in", async () => {
+		const owner = await live("dev", {
+			detached: false,
+			services: held("dev").services,
+		});
+		try {
+			expect(await handleStop(["--root", root])).toBe(3);
+			expect(owner.exitCode).toBeNull();
+			expect(calls().filter((call) => call.includes("down"))).toEqual([]);
+		} finally {
+			owner.kill("SIGKILL");
+		}
+	});
+});
+
 describe("runStopGraceMs", () => {
 	it("gives a run its own teardown time on top of its slowest app", () => {
 		expect(runStopGraceMs({ apps: [] })).toBe(5000);

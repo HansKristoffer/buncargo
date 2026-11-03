@@ -426,6 +426,7 @@ Options:
   <name>           App or service from \`buncargo runs\` (repeatable)
 
 Examples:
+  bunx buncargo stop           Same as --all: stop this checkout's run (one in another terminal asks first)
   bunx buncargo stop api       Stop one dev server
   bunx buncargo stop postgres  Stop one service's container
   bunx buncargo stop --all     Stop this checkout's whole run
@@ -1186,147 +1187,6 @@ exports[`buncargo CLI output buncargo --nope 1`] = `
 "
 `;
 
-exports[`buncargo CLI output buncargo hosts --help 1`] = `
-"exit 1
---- stdout
-
---- stderr
-  ❌ Unknown hosts command: --help
-   Use: buncargo hosts install | status | sync | prune | uninstall | daemon
-"
-`;
-
-exports[`buncargo CLI output buncargo bar --help 1`] = `
-"exit 1
---- stdout
-
---- stderr
-  ❌ Unknown bar command: --help
-   Use: buncargo bar install | update | status | open | uninstall | reset
-"
-`;
-
-exports[`buncargo CLI output buncargo typecheck --nope 1`] = `
-"exit 1
---- stdout
-
---- stderr
-  ❌ Unknown flag: --nope
-   Run "bunx buncargo typecheck --help" for typecheck options.
-"
-`;
-
-exports[`buncargo CLI output buncargo stop --nope 1`] = `
-"exit 3
---- stdout
-
-Usage: buncargo stop [<name>...] [options]
-
-Options:
-  --help           Show this help message
-  --root=<path>    Checkout whose run to act on (default: this one)
-  --run=<session>  One run session from buncargo runs (default: matching checkout sessions)
-  --all            Stop the whole run: dev servers and containers, and an ended run's idle containers
-  --force          Skip the confirmation for a risky target
-  <name>           App or service from \`buncargo runs\` (repeatable)
-
-Examples:
-  bunx buncargo stop api       Stop one dev server
-  bunx buncargo stop postgres  Stop one service's container
-  bunx buncargo stop --all     Stop this checkout's whole run
-
-
---- stderr
-  ❌ Unknown flag(s): --nope
-"
-`;
-
-exports[`buncargo CLI output buncargo stop nope 1`] = `
-"exit 2
---- stdout
-
---- stderr
-  ❌ No active buncargo run for <cwd>.
-   Run \`buncargo runs\` to see what is active.
-"
-`;
-
-exports[`buncargo CLI output buncargo wait 1`] = `
-"exit 1
---- stdout
-
---- stderr
-  ❌ --app is required
-"
-`;
-
-exports[`buncargo CLI output buncargo dev --nope 1`] = `
-"exit 1
---- stdout
-
-
-Usage: buncargo dev [options]
-
-Options:
-  --help                         Show this help message
-  --down                         Stop all containers
-  --all                          With --down, stop every buncargo environment you started on this machine
-  --reset                        Stop containers and remove volumes (fresh start)
-  --yes                          Confirm --reset or --down --all without a prompt (required without a terminal)
-  --migrate                      Run migrations and exit
-  --seed                         Run migrations and seeders, then exit
-  --up-only                      Start containers only, then exit (no migrations, seed, or dev servers)
-  --expose[=<targets>]           Expose configured targets via public quick tunnels
-  --apps=<apps>                  Run selected apps plus their requiredApps
-  --profile=<name>               Run a profile's apps (default: the profile named default)
-  --attach=<app>                 Give one app the TTY (overrides interactive: true)
-  --no-watch                     Do not restart apps when their watched files change
-  --detach                       Run in the background; return once the apps are up (logs: buncargo logs)
-  --tui                          Terminal UI, the default in a terminal; warns when there is none
-  --no-tui                       Prefixed lines instead of the terminal UI, even in a terminal
-  --keep-containers              Keep the containers after the run exits, as long as the checkout exists
-  --takeover                     Stop apps already running elsewhere and run them here
-  --watchdog-timeout=N           Idle backstop in minutes (default: 3)
-  --no-docker-autostart          Do not try to start Docker if it is down
-  --no-hosts                     Use localhost:port instead of named .localhost URLs
-  --runtime=<docker|apple|auto>  Container runtime backend (default: docker)
-  --timing-json                  Report startup through app readiness as JSON
-  --timing                       Print how long each startup phase took
-  --                             Extra args appended to the attached app command
-
-Examples:
-  bun dev                            Start selected apps and their services
-  bun dev --seed                     Run migrations and seed the database
-  bun dev --down                     Stop all containers
-  bun dev --reset                    Stop containers and remove all data
-  bun dev --apps=api,platform        Run only selected apps
-  bun dev --profile=full             Run the apps of profiles.full
-  bun dev --expose                   Expose all targets with expose: true
-  bun dev --expose=api,web           Expose specific targets
-  bun dev --apps=expoApp -- --clear  Pass args to the attached app
-  bun dev --runtime=apple            Run services on Apple container instead of Docker
-  bun dev --no-tui                   Prefixed lines instead of the terminal UI
-  bun dev --takeover                 Move apps running in another terminal into this one
-
-
---- stderr
-  ❌ Unknown flag: --nope
-"
-`;
-
-exports[`buncargo CLI output buncargo runs --json 1`] = `
-"exit 0
---- stdout
-{
-  "version": 1,
-  "runs": [],
-  "leases": []
-}
-
---- stderr
-"
-`;
-
 exports[`buncargo CLI output buncargo --help dev 1`] = `
 "exit 0
 --- stdout
@@ -1447,5 +1307,183 @@ exports[`buncargo CLI output buncargo - 1`] = `
 --- stderr
   ❌ Unknown command: -
    Run "bunx buncargo help" for available commands.
+"
+`;
+
+exports[`buncargo CLI output buncargo hosts --help 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ Unknown hosts command: --help
+   Use: buncargo hosts install | status | sync | prune | uninstall | daemon
+"
+`;
+
+exports[`buncargo CLI output buncargo bar --help 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ Unknown bar command: --help
+   Use: buncargo bar install | update | status | open | uninstall | reset
+"
+`;
+
+exports[`buncargo CLI output buncargo typecheck --nope 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ Unknown flag: --nope
+   Run "bunx buncargo typecheck --help" for typecheck options.
+"
+`;
+
+exports[`buncargo CLI output buncargo stop --nope 1`] = `
+"exit 3
+--- stdout
+
+Usage: buncargo stop [<name>...] [options]
+
+Options:
+  --help           Show this help message
+  --root=<path>    Checkout whose run to act on (default: this one)
+  --run=<session>  One run session from buncargo runs (default: matching checkout sessions)
+  --all            Stop the whole run: dev servers and containers, and an ended run's idle containers
+  --force          Skip the confirmation for a risky target
+  <name>           App or service from \`buncargo runs\` (repeatable)
+
+Examples:
+  bunx buncargo stop           Same as --all: stop this checkout's run (one in another terminal asks first)
+  bunx buncargo stop api       Stop one dev server
+  bunx buncargo stop postgres  Stop one service's container
+  bunx buncargo stop --all     Stop this checkout's whole run
+
+
+--- stderr
+  ❌ Unknown flag(s): --nope
+"
+`;
+
+exports[`buncargo CLI output buncargo stop nope 1`] = `
+"exit 2
+--- stdout
+
+--- stderr
+  ❌ No active buncargo run for <cwd>.
+   Run \`buncargo runs\` to see what is active.
+"
+`;
+
+exports[`buncargo CLI output buncargo stop 1`] = `
+"exit 2
+--- stdout
+
+--- stderr
+  ❌ No active buncargo run for <cwd>.
+   Run \`buncargo runs\` to see what is active.
+"
+`;
+
+exports[`buncargo CLI output buncargo down --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo stop [<name>...] [options]
+
+Options:
+  --help           Show this help message
+  --root=<path>    Checkout whose run to act on (default: this one)
+  --run=<session>  One run session from buncargo runs (default: matching checkout sessions)
+  --all            Stop the whole run: dev servers and containers, and an ended run's idle containers
+  --force          Skip the confirmation for a risky target
+  <name>           App or service from \`buncargo runs\` (repeatable)
+
+Examples:
+  bunx buncargo stop           Same as --all: stop this checkout's run (one in another terminal asks first)
+  bunx buncargo stop api       Stop one dev server
+  bunx buncargo stop postgres  Stop one service's container
+  bunx buncargo stop --all     Stop this checkout's whole run
+
+
+--- stderr
+   \`buncargo down\` is \`buncargo stop\`; use \`buncargo stop\`.
+"
+`;
+
+exports[`buncargo CLI output buncargo wait 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ --app is required
+"
+`;
+
+exports[`buncargo CLI output buncargo dev --nope 1`] = `
+"exit 1
+--- stdout
+
+
+Usage: buncargo dev [options]
+
+Options:
+  --help                         Show this help message
+  --down                         Stop all containers
+  --all                          With --down, stop every buncargo environment you started on this machine
+  --reset                        Stop containers and remove volumes (fresh start)
+  --yes                          Confirm --reset or --down --all without a prompt (required without a terminal)
+  --migrate                      Run migrations and exit
+  --seed                         Run migrations and seeders, then exit
+  --up-only                      Start containers only, then exit (no migrations, seed, or dev servers)
+  --expose[=<targets>]           Expose configured targets via public quick tunnels
+  --apps=<apps>                  Run selected apps plus their requiredApps
+  --profile=<name>               Run a profile's apps (default: the profile named default)
+  --attach=<app>                 Give one app the TTY (overrides interactive: true)
+  --no-watch                     Do not restart apps when their watched files change
+  --detach                       Run in the background; return once the apps are up (logs: buncargo logs)
+  --tui                          Terminal UI, the default in a terminal; warns when there is none
+  --no-tui                       Prefixed lines instead of the terminal UI, even in a terminal
+  --keep-containers              Keep the containers after the run exits, as long as the checkout exists
+  --takeover                     Stop apps already running elsewhere and run them here
+  --watchdog-timeout=N           Idle backstop in minutes (default: 3)
+  --no-docker-autostart          Do not try to start Docker if it is down
+  --no-hosts                     Use localhost:port instead of named .localhost URLs
+  --runtime=<docker|apple|auto>  Container runtime backend (default: docker)
+  --timing-json                  Report startup through app readiness as JSON
+  --timing                       Print how long each startup phase took
+  --                             Extra args appended to the attached app command
+
+Examples:
+  bun dev                            Start selected apps and their services
+  bun dev --seed                     Run migrations and seed the database
+  bun dev --down                     Stop all containers
+  bun dev --reset                    Stop containers and remove all data
+  bun dev --apps=api,platform        Run only selected apps
+  bun dev --profile=full             Run the apps of profiles.full
+  bun dev --expose                   Expose all targets with expose: true
+  bun dev --expose=api,web           Expose specific targets
+  bun dev --apps=expoApp -- --clear  Pass args to the attached app
+  bun dev --runtime=apple            Run services on Apple container instead of Docker
+  bun dev --no-tui                   Prefixed lines instead of the terminal UI
+  bun dev --takeover                 Move apps running in another terminal into this one
+
+
+--- stderr
+  ❌ Unknown flag: --nope
+"
+`;
+
+exports[`buncargo CLI output buncargo runs --json 1`] = `
+"exit 0
+--- stdout
+{
+  "version": 1,
+  "runs": [],
+  "leases": []
+}
+
+--- stderr
 "
 `;

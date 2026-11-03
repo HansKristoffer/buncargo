@@ -46,6 +46,13 @@ function command(handler: (args: string[]) => Promise<unknown>): Command {
 
 /** A name that is no command may be an integration's namespace (`buncargo shopify env`). */
 async function runUnknown(name: string, args: string[]): Promise<number> {
+	const alias = (await import("./commands/registry")).resolveCommandAlias(name);
+	if (alias) {
+		log.hint(
+			`\`buncargo ${name}\` is \`buncargo ${alias}\`; use \`buncargo ${alias}\`.`,
+		);
+		return cli.run([alias, ...args]);
+	}
 	const code = await (
 		await import("./integration-commands")
 	).runIntegrationCommand(name, args);
