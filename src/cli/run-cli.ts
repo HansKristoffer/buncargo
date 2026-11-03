@@ -90,13 +90,13 @@ import {
 	unhealthyAppMessage,
 } from "./port-reuse";
 import { runPreflight } from "./preflight";
-import { configSecretScopes } from "./secrets-scopes";
 import {
 	type DevFailureContext,
 	describeAppFailure,
 	describeDevFailure,
 	formatRunFailure,
 } from "./run-failure";
+import { configSecretScopes } from "./secrets-scopes";
 import {
 	isInteractive,
 	promptTakeover,
@@ -390,7 +390,8 @@ async function runDevFlow<
 ): Promise<DevFlowExit> {
 	const { timer, signal, connect, failureContext } = options;
 	// Loaded only in the background run that reports to `dev --detach`.
-	const detached = detachedRunMode() !== undefined ? await import("./dev-detach") : undefined;
+	const detached =
+		detachedRunMode() !== undefined ? await import("./dev-detach") : undefined;
 	async function exitWith(code: number): Promise<number> {
 		// The one-shot modes end here, and `--up-only` is exactly the kind of
 		// run someone times.

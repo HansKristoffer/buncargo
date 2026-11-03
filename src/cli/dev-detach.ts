@@ -3,11 +3,11 @@ import { join } from "node:path";
 import { promiseTimeout } from "hanzio";
 import { logsRoot } from "../core/process/app-logs";
 import { inOwnUserScope } from "../core/process/user-scope";
-import { formatDuration } from "../core/run-limits";
 import {
 	readJsonDocumentSync,
 	writeJsonDocumentSync,
 } from "../core/registry-file";
+import { formatDuration } from "../core/run-limits";
 import {
 	findRunsByRoot,
 	type RunAppEntry,
