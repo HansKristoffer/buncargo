@@ -16,7 +16,9 @@ import { stateFilePath } from "./state-paths";
  *
  * A developer's dev claim lives as long as its checkout directory: allocation
  * ignores one whose directory is gone, which is the only signal that separates
- * "not running" from "no longer exists". The sweep drops a deleted checkout's
+ * "not running" from "no longer exists". When every block is claimed, a
+ * claiming start reclaims the block of the checkout started least recently
+ * that has no run and no containers ({@link offsetClaimLastUsed}). The sweep drops a deleted checkout's
  * claim after removing its volumes where the machine opted in, so the claim is
  * also the record of which project a deleted checkout used.
  *
@@ -45,7 +47,22 @@ export interface OffsetClaim {
 	 */
 	ports?: number[];
 	projectName: string;
+	/** When the claim last changed: its offset, ports or project name. */
 	updatedAt: string;
+	/**
+	 * When a claiming run last started on the block. What "least recently
+	 * used" means when a full range reclaims an idle claim, and what
+	 * `ports release --idle` measures. A claim written before this was
+	 * recorded was last used at its `updatedAt`.
+	 */
+	usedAt?: string;
+	/**
+	 * When a full range or `ports release --idle` gave this claim's block to
+	 * other checkouts. The claim stays, holding no block: it still keeps the
+	 * checkout's project name to itself and its volumes known to `prune` and
+	 * the sweep. The checkout's next claiming run claims a block again.
+	 */
+	reclaimedAt?: string;
 	/** Set on a suffixed claim, whose key is not the bare root. */
 	root?: string;
 	suffix?: string;
@@ -235,16 +252,39 @@ export function offsetClaimConflict(
 	block: { offset: number; ports: readonly number[] },
 	key: string,
 ): string | undefined {
-	for (const [other, claim] of Object.entries(claims)) {
-		if (other === key) continue;
+	return offsetClaimConflicts(claims, block, key)[0]?.reason;
+}
+
+/**
+ * Every claim that keeps `key` off the block, by its key, with the reason
+ * {@link offsetClaimConflict} gives for it. A full range reclaims a block only
+ * when every claim on it can go.
+ */
+export function offsetClaimConflicts(
+	claims: Record<string, OffsetClaim>,
+	block: { offset: number; ports: readonly number[] },
+	key: string,
+): { key: string; reason: string }[] {
+	return Object.entries(claims).flatMap(([other, claim]) => {
+		if (other === key) return [];
 		const holder = offsetClaimHolder(other, claim);
 		if (claim.offset === block.offset)
-			return `offset ${block.offset} is claimed by ${holder}`;
+			return [
+				{
+					key: other,
+					reason: `offset ${block.offset} is claimed by ${holder}`,
+				},
+			];
 		const [shared] = sharedPorts(block, claim);
-		if (shared !== undefined)
-			return `port ${shared} is in the block ${holder} claims (offset ${claim.offset})`;
-	}
-	return undefined;
+		return shared === undefined
+			? []
+			: [
+					{
+						key: other,
+						reason: `port ${shared} is in the block ${holder} claims (offset ${claim.offset})`,
+					},
+				];
+	});
 }
 
 /**
@@ -297,20 +337,77 @@ export function claimOffset(input: {
 	const key = offsetClaimKey(root, suffix);
 	const claims = readAllOffsetClaims();
 	const current = claims[key];
-	if (
+	const now = new Date().toISOString();
+	const unchanged =
 		current?.offset === offset &&
 		current.projectName === projectName &&
-		current.ports?.join() === ports.join()
-	)
-		return;
-	claims[key] = {
-		offset,
-		ports,
-		projectName,
-		updatedAt: new Date().toISOString(),
-		...(suffix ? { root, suffix } : {}),
-	};
+		current.ports?.join() === ports.join() &&
+		current.reclaimedAt === undefined;
+	// Written on every claiming run, even when nothing else changed: a reclaim
+	// that read this claim as idle compares it before marking it
+	// (`markOffsetClaimsReclaimed`), so a run that started in between keeps
+	// its block. One file write, under the lock the caller already holds.
+	claims[key] = unchanged
+		? { ...current, usedAt: now }
+		: {
+				offset,
+				ports,
+				projectName,
+				updatedAt: now,
+				usedAt: now,
+				...(suffix ? { root, suffix } : {}),
+			};
 	writeJsonDocumentSync(getOffsetClaimsPath(), { version: VERSION, claims });
+}
+
+/** When a claim's block was last started on. */
+export function offsetClaimLastUsed(claim: OffsetClaim): string {
+	return claim.usedAt ?? claim.updatedAt;
+}
+
+/** Whether a claim holds its block: every claim does until it is reclaimed. */
+export function offsetClaimHoldsBlock(claim: OffsetClaim): boolean {
+	return claim.reclaimedAt === undefined;
+}
+
+/**
+ * Mark each claim of `expected` reclaimed if no run has used it since it was
+ * read, and its checkout still exists. A claim a run refreshed or rewrote in
+ * the meantime keeps its block, and a deleted checkout's is the sweep's. The
+ * claim itself stays (see {@link OffsetClaim.reclaimedAt}). Returns the keys
+ * it marked.
+ */
+export async function markOffsetClaimsReclaimed(
+	expected: Record<string, OffsetClaim>,
+	at: string,
+): Promise<string[]> {
+	const keys = Object.keys(expected);
+	if (keys.length === 0) return [];
+	return withFileLock(getOffsetClaimsPath(), async () => {
+		const claims = readAllOffsetClaims();
+		const marked = keys.filter((key) => {
+			const current = claims[key];
+			const read = expected[key];
+			// Compared by what a run changes, not whole: a reader may have
+			// filled in a port-less claim's ports from its lockfile.
+			return (
+				current !== undefined &&
+				offsetClaimHoldsBlock(current) &&
+				current.offset === read.offset &&
+				current.projectName === read.projectName &&
+				current.updatedAt === read.updatedAt &&
+				current.usedAt === read.usedAt &&
+				!checkoutDeleted(offsetClaimRoot(key, current))
+			);
+		});
+		for (const key of marked) claims[key].reclaimedAt = at;
+		if (marked.length > 0)
+			writeJsonDocumentSync(getOffsetClaimsPath(), {
+				version: VERSION,
+				claims,
+			});
+		return marked;
+	});
 }
 
 /** Hold the machine-wide claims file across choosing an offset and claiming it. */

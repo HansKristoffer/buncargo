@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
 	existsSync,
 	mkdtempSync,
@@ -8,9 +8,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runStopGraceMs } from "../../core/process/terminate";
 import { readProcessIdentityAsync } from "../../core/process-identity";
 import { loadRuns, publishRun, type RunEntry } from "../../core/run-registry";
-import { handleStop, runStopGraceMs } from "./stop";
+import { recordRunStops, runStopRecord } from "../../core/run-stops";
+import { handleStop } from "./stop";
 
 /**
  * `HOME` is a temporary directory and the only runtime is a fake `docker`
@@ -164,6 +166,61 @@ describe("buncargo stop --all", () => {
 
 	it("reports nothing to stop when the checkout has no run at all", async () => {
 		expect(await handleStop(["--all", "--root", root])).toBe(2);
+	});
+});
+
+describe("buncargo stop with no target", () => {
+	// Agents and project docs write a bare `buncargo stop` meaning "stop my
+	// run"; it used to fail with "Name at least one app or service".
+	it("stops this checkout's detached run, containers included", async () => {
+		const owner = await live("dev", { services: held("dev").services });
+		try {
+			expect(await handleStop(["--root", root])).toBe(0);
+			expect(await owner.exited).not.toBeUndefined();
+			expect(calls()).toContain("compose -p fixture down");
+			expect(await loadRuns()).toEqual([]);
+		} finally {
+			owner.kill("SIGKILL");
+		}
+	});
+
+	it("leaves a run in another terminal running without a terminal to ask in", async () => {
+		const owner = await live("dev", {
+			detached: false,
+			services: held("dev").services,
+		});
+		try {
+			expect(await handleStop(["--root", root])).toBe(3);
+			expect(owner.exitCode).toBeNull();
+			expect(calls().filter((call) => call.includes("down"))).toEqual([]);
+		} finally {
+			owner.kill("SIGKILL");
+		}
+	});
+});
+
+describe("buncargo stop after the watchdog stopped the run", () => {
+	it("says why the run is gone", async () => {
+		await recordRunStops([
+			runStopRecord(entry("idle", { detached: true }), {
+				at: new Date().toISOString(),
+				reason: "idle",
+				detail: "idle for 2h 0m",
+			}),
+		]);
+		const printed: string[] = [];
+		const error = spyOn(console, "error").mockImplementation((line) => {
+			printed.push(Bun.stripANSI(String(line)));
+		});
+		try {
+			expect(await handleStop(["--root", root])).toBe(2);
+		} finally {
+			error.mockRestore();
+		}
+		expect(printed.join("\n")).toContain(
+			"buncargo's watchdog stopped fixture's detached run (pid 4194305)",
+		);
+		expect(printed.join("\n")).toContain("idle for 2h 0m");
 	});
 });
 

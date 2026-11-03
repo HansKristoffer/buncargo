@@ -45,8 +45,10 @@ import {
  * holds. A fixed shift keeps the HTTPS port a pure function of the app port,
  * so the allocator can claim it with the block before any run serves it, and
  * no other checkout's port lands on it. 20000 puts the usual dev ports
- * (3000-9000, plus an offset of up to 11000) clear of the range other
- * checkouts' ports occupy.
+ * (3000-9000, plus a hashed offset of up to 9000) clear of the range most
+ * checkouts' ports occupy. A block the search placed higher, up to 32767,
+ * can meet another checkout's HTTPS port; the claims, which hold both, keep
+ * them apart.
  */
 export const TAILSCALE_HTTPS_PORT_SHIFT = 20_000;
 

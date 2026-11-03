@@ -3,7 +3,7 @@ import { basename, join } from "node:path";
 import { promiseTimeout } from "hanzio";
 import { findMonorepoRoot } from "../../core/ports";
 import { listRunLogDirs } from "../../core/process/app-logs";
-import { lineLevel } from "../../core/process/run-output";
+import { createErrorFilter } from "../../core/process/run-output";
 import { colorizeName } from "../../core/style";
 import {
 	type CommandSpec,
@@ -127,9 +127,20 @@ export async function handleLogs(rawArgs: string[]): Promise<number> {
 			? undefined
 			: new Date(Date.now() - (parseDuration(since) ?? 0)).toISOString();
 	const errorsOnly = readBooleanFlag(args, FLAGS.errors);
+	// One filter per app: an error's structured block follows it in its own
+	// file, and the apps' lines are merged only after.
+	const errorFilters = new Map<string, (text: string) => boolean>();
+	const isError = (line: LogLine) => {
+		let filter = errorFilters.get(line.app);
+		if (!filter) {
+			filter = createErrorFilter();
+			errorFilters.set(line.app, filter);
+		}
+		return filter(line.text);
+	};
 	const keep = (line: LogLine) =>
-		(after === undefined || line.time >= after) &&
-		(!errorsOnly || lineLevel(line.text) === "error");
+		(!errorsOnly || isError(line)) &&
+		(after === undefined || line.time >= after);
 	const print = (line: LogLine) => {
 		const time = line.time.slice(11, 19);
 		console.log(

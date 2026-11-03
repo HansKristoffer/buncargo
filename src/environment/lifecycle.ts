@@ -2,12 +2,14 @@ import { relative } from "node:path";
 import { anySignal, startTimer } from "hanzio";
 import {
 	ensureServicesRunning,
+	replaceStaleStacksOn,
 	withProjectLifecycleLock,
 } from "../container-runtime";
 import { registerAbortCleanup, withDeadline } from "../core/deadline";
 import { toPortMap, toUrlMap } from "../core/ports";
 import { stopDevServers } from "../core/process/dev-servers";
 import { isCI } from "../core/runtime-flags";
+import { ensureSecretsSession } from "../core/secrets/infisical";
 import { formatDone, formatStep, formatWarn } from "../core/style";
 import { resolveComposeServiceNames } from "../planning";
 import { resolvePrismaConfig } from "../prisma/config";
@@ -32,7 +34,11 @@ import type { DevEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
 import type { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { runMigrationsSequentially } from "./migrations";
-import { prefetchSecrets } from "./prefetch-secrets";
+import {
+	prefetchSecrets,
+	type StartSecretsSelection,
+	startSecretScopes,
+} from "./prefetch-secrets";
 import type { DevRunClaimApi } from "./run-claim";
 import { assertSeedSucceeded, seedCanOverlap } from "./seed-startup";
 import { runSeedIfNeeded } from "./seeding";
@@ -338,18 +344,18 @@ export function createLifecycleApi<
 				(serviceKey) => [serviceKey, services[serviceKey]] as const,
 			),
 		);
-		await ctx.prepareStartAsync(onlyApps, onlyServices, signal);
+		// From the plan, before the secrets selection: migrations and the seed
+		// are chosen by the services selected.
 		selectedServices = startPlan.requiredServiceKeys;
 		selectedApps = startPlan.appNames;
-		started = true;
 
 		ctx.onSecretsWait = (ms) => onPhase?.("secrets", ms);
 		const prefetchController = new AbortController();
 		const prefetchSignal = anySignal(signal, prefetchController.signal);
-		const prefetches =
+		const secretsSelection: StartSecretsSelection | undefined =
 			prepare === "containers"
-				? []
-				: prefetchSecrets({
+				? undefined
+				: {
 						apps: prepare === "all" ? appsToStart : {},
 						defaults: config.secrets,
 						seed: config.seed?.secrets,
@@ -359,10 +365,29 @@ export function createLifecycleApi<
 							!!config.seed &&
 							preparationSelected(config.seed.requiredServices),
 						migrations: collectMigrations(),
-						signal: prefetchSignal,
-					});
+					};
+		const prefetches = secretsSelection
+			? prefetchSecrets({ ...secretsSelection, signal: prefetchSignal })
+			: [];
 		if (signal) registerAbortCleanup(signal, Promise.allSettled(prefetches));
 		try {
+			// Before the port block, the claim and the first container: an
+			// expired Infisical session stops the start here, not after the containers inside
+			// every app's own loader. The prefetch's own token, so no extra CLI.
+			if (secretsSelection)
+				await ensureSecretsSession(startSecretScopes(secretsSelection), {
+					signal: prefetchSignal,
+				});
+			// After the session: an expired one changes nothing on the way out.
+			if (startOptions.replaceStaleStacks)
+				await replaceStaleStacksOn(
+					ctx.runtime,
+					{ root: ctx.root, projectPrefix: config.projectPrefix },
+					Object.values(ctx.ports),
+					{ signal, verbose },
+				);
+			await ctx.prepareStartAsync(onlyApps, onlyServices, signal);
+			started = true;
 			const hasServices = selectedServices.length > 0;
 			const portMap = toPortMap(ports);
 			const targetPorts: Record<string, number> = {};
@@ -438,6 +463,7 @@ export function createLifecycleApi<
 						runtime: ctx.runtime,
 						root: ctx.root,
 						projectName: ctx.projectName,
+						projectPrefix: config.projectPrefix,
 						envVars: envVars.buildEnvVars(productionBuild),
 						services: compose,
 						noDeps,
@@ -668,7 +694,7 @@ export function createLifecycleApi<
 					}
 
 					for (const { name, stack } of stacks) {
-						await envVars.exec(
+						await envVars.execTeardown(
 							stack.down({
 								projectName: ctx.projectName,
 								root: ctx.root,

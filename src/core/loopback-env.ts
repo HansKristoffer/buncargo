@@ -81,15 +81,16 @@ export function findStrayLoopbackUrls(input: {
 	return stray;
 }
 
+/** One line: the variable, where it came from, why it is stray, and the fix. */
 export function describeStrayLoopbackUrl(stray: StrayLoopbackUrl): string {
-	const where = `${stray.key} (${stray.source}) is ${stray.url}`;
+	const where = `${stray.key} (${stray.source}) uses :${stray.port}`;
 	if (!stray.meant)
-		return `${where}, but nothing listens on ${stray.port} and it is not one of this checkout's ports. Point it at this checkout, or override it here: \`buncargo env set ${stray.key}=<url>\`.`;
+		return `${where}, not this checkout's and with nothing listening: \`buncargo env set ${stray.key}=<url>\``;
 	const { name, port, url } = stray.meant;
-	const why = stray.listening
-		? `${stray.port} is another checkout's ${name}, which this checkout would share`
-		: `nothing listens on ${stray.port}, another checkout's ${name} port`;
-	return `${where}, but ${why}; this checkout's ${name} is ${port}. Fix the file, or override it for this checkout: \`buncargo env set ${stray.key}=${url}\`.`;
+	const whose = stray.listening
+		? `another checkout's running ${name}`
+		: `another checkout's ${name} port, with nothing listening`;
+	return `${where}, ${whose}; here ${name} is :${port}: \`buncargo env set ${stray.key}=${url}\``;
 }
 
 /** Checkout files that hold dotenv lines: `.env`, `.env.local`, `apps/api/.env.development`. */

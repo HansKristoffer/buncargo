@@ -72,6 +72,11 @@ describe("runs.json v1 fixture", () => {
 			expect(run?.apps.find((app) => app.name === "jobs")?.stopGraceMs).toBe(
 				60_000,
 			);
+			// A detached run's idle limit, and a hold taken over from a run
+			// whose containers it reused; the app ignores both.
+			expect(run?.detached).toBe(true);
+			expect(run?.idleLimitMs).toBe(7_200_000);
+			expect(run?.inheritedIdleTimeoutMs).toBe(180_000);
 			// Tasks get a run button; a description is optional.
 			expect(run?.tasks).toEqual([
 				{ name: "db:seed", description: "Seed the dev database" },

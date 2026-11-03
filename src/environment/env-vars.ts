@@ -6,6 +6,7 @@ import {
 } from "../core/env";
 import { portableEnvFingerprint } from "../core/env-fingerprint";
 import { applyEnvOverrides, warnShadowedSecrets } from "../core/env-overrides";
+import { unallocatedPortsMessage } from "../core/port-exhaustion";
 import { toPortMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
 import { hostsDaemonPort, isCI, urlHostOverride } from "../core/runtime-flags";
@@ -13,6 +14,7 @@ import {
 	describeSecretsError,
 	loadScopeSecrets,
 	resolveScope,
+	stopsTheRun,
 	warnSecretsOnce,
 } from "../core/secrets/infisical";
 import type {
@@ -59,6 +61,11 @@ export interface DevEnvVarsApi<
 		cmd: string | readonly string[],
 		options?: ExecOptions,
 		production?: boolean,
+	): Promise<ExecResult>;
+	/** `exec` for an integration stack's `down`, which reaches no port: allowed without a port block. */
+	execTeardown(
+		cmd: string | readonly string[],
+		options?: ExecOptions,
 	): Promise<ExecResult>;
 	/**
 	 * The secrets a command gets: `explicit`, else the app's scope, else the
@@ -263,6 +270,8 @@ export function createEnvVarsApi<
 			);
 		} catch (error) {
 			options.signal?.throwIfAborted();
+			// The command's own loader would wait on the same login.
+			if (stopsTheRun(error)) throw error;
 			warnSecretsOnce(
 				resolved,
 				`Could not load Infisical secrets: ${describeSecretsError(error)}`,
@@ -272,6 +281,23 @@ export function createEnvVarsApi<
 	}
 
 	async function exec(
+		cmd: string | readonly string[],
+		options?: ExecOptions,
+		production = false,
+	): Promise<ExecResult> {
+		// Its ports would be another checkout's: a command would reach that
+		// checkout's database.
+		if (ctx.portOffsetProvenance === "unallocated")
+			throw new Error(unallocatedPortsMessage(ctx.root));
+		return execTeardown(cmd, options, production);
+	}
+
+	/**
+	 * {@link exec} without the unallocated-ports refusal, for an integration
+	 * stack's `down`: it stops this checkout's stack by its project name and
+	 * reaches no port, and refusing left the stack running.
+	 */
+	async function execTeardown(
 		cmd: string | readonly string[],
 		options?: ExecOptions,
 		production = false,
@@ -380,6 +406,7 @@ export function createEnvVarsApi<
 		buildEnvFingerprint,
 		getHookContext,
 		exec,
+		execTeardown,
 		resolveSecrets,
 	};
 }

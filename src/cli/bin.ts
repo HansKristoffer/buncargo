@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-import { getErrorMessage } from "hanzio";
 
 /**
  * CLI Entry Point for buncargo
@@ -16,8 +15,10 @@ import { getErrorMessage } from "hanzio";
 import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Command, defineCli, defineCommand } from "hanzio/cli";
+import { noteCheckoutCommand } from "../core/run-activity";
+import { findCheckoutRoot } from "../loader/find-config-file";
 import type { CliCommandName } from "./commands/registry";
-import { CliError } from "./errors";
+import { toCliError } from "./errors";
 import * as log from "./log";
 import { guardVersion } from "./version-guard";
 
@@ -25,8 +26,8 @@ const HELP_ALIASES = new Set(["--help", "-h"]);
 const VERSION_ALIASES = new Set(["--version", "-v"]);
 
 function failWith(error: unknown): never {
-	if (error instanceof CliError) log.fail(error.message, error.hints);
-	log.fail(getErrorMessage(error));
+	const failure = toCliError(error);
+	log.fail(failure.message, failure.hints);
 }
 
 /**
@@ -46,6 +47,13 @@ function command(handler: (args: string[]) => Promise<unknown>): Command {
 
 /** A name that is no command may be an integration's namespace (`buncargo shopify env`). */
 async function runUnknown(name: string, args: string[]): Promise<number> {
+	const alias = (await import("./commands/registry")).resolveCommandAlias(name);
+	if (alias) {
+		log.hint(
+			`\`buncargo ${name}\` is \`buncargo ${alias}\`; use \`buncargo ${alias}\`.`,
+		);
+		return cli.run([alias, ...args]);
+	}
 	const code = await (
 		await import("./integration-commands")
 	).runIntegrationCommand(name, args);
@@ -106,7 +114,7 @@ const COMMANDS = {
 	),
 	help: command(async (args) => {
 		if (args[0] === "agents") {
-			console.log((await import("./agents-guide")).AGENTS_GUIDE);
+			console.log((await import("./agents-guide")).agentsGuide(args[1]));
 		} else {
 			await (await import("./commands/help")).showHelp();
 		}
@@ -179,7 +187,7 @@ const cli = defineCli({
 async function main(): Promise<void> {
 	// `<package>/src/cli` from source, `<package>/dist/cli` when installed.
 	const cliDir = dirname(fileURLToPath(import.meta.url));
-	guardVersion(basename(dirname(cliDir)) === "src");
+	await guardVersion(basename(dirname(cliDir)) === "src");
 
 	const args = process.argv.slice(2);
 	const first = args[0];
@@ -199,6 +207,13 @@ async function main(): Promise<void> {
 		process.exitCode = await runUnknown(first, args.slice(1));
 		return;
 	}
+
+	// A command in a checkout is the checkout in use: a detached run's idle
+	// limit counts from it (`core/run-activity.ts`). One `utimes`, no fork.
+	const usesCheckout =
+		first !== undefined && first !== "help" && first !== "version";
+	const root = usesCheckout ? findCheckoutRoot(process.cwd()) : undefined;
+	if (root !== undefined) noteCheckoutCommand(root);
 
 	const code = await cli.run(args);
 	if (code !== 0) process.exitCode = code;

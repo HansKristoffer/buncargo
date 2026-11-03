@@ -105,11 +105,17 @@ async function readStatus() {
 					})
 				: undefined;
 	} catch {
-		// No free block at all: `dev` refuses with the fix.
+		// No free block at all: `dev` takes back an idle one, or names the holders.
 		plannedOffset = undefined;
 	}
 
 	return {
+		// First: what an agent reads `status` for, and `| head` keeps the top.
+		// The live runs of this checkout, with each app's status, pid and URL,
+		// and `degraded` while a service container is down under it.
+		runs: (await readLiveRuns().catch(() => []))
+			.filter((run) => run.root === env.root)
+			.map((run) => ({ ...run, health: runHealth(run) })),
 		project: env.projectName,
 		root: env.root,
 		portOffset: env.portOffset,
@@ -134,11 +140,6 @@ async function readStatus() {
 				}
 			: null,
 		tunnels,
-		// The live runs of this checkout, with each app's status, pid and URL,
-		// and `degraded` while a service container is down under it.
-		runs: (await readLiveRuns().catch(() => []))
-			.filter((run) => run.root === env.root)
-			.map((run) => ({ ...run, health: runHealth(run) })),
 		// Who stopped or removed this checkout's containers lately: the trace
 		// for a service that went away with no error.
 		recentStops: readRemovals()
@@ -182,7 +183,31 @@ export function describePlannedOffset(input: {
 	return { offset: input.planned, reason };
 }
 
+/**
+ * One line per app of this checkout's live runs, `name  status  url`, aligned:
+ * the first thing `status` prints, so `| head` shows it.
+ */
+export function appStatusLines(
+	runs: readonly Pick<RunEntry, "apps">[],
+): string[] {
+	const apps = runs.flatMap((run) => run.apps);
+	if (apps.length === 0)
+		return ["apps: no live run (start one with `buncargo dev --detach`)"];
+	const nameWidth = Math.max(...apps.map((app) => app.name.length));
+	const statusWidth = Math.max(...apps.map((app) => app.status.length));
+	return [
+		"apps:",
+		...apps.map((app) => {
+			const name = app.name.padEnd(nameWidth);
+			const status = app.status.padEnd(statusWidth);
+			return `  ${name}  ${status}  ${app.openUrl ?? ""}`.trimEnd();
+		}),
+	];
+}
+
 function printStatus(status: Awaited<ReturnType<typeof readStatus>>): void {
+	for (const line of appStatusLines(status.runs)) log.line(line);
+	log.line();
 	log.line(`project: ${status.project}`);
 	log.line(`root: ${status.root}`);
 	log.line(`portOffset: ${status.portOffset} (${status.portOffsetProvenance})`);
@@ -237,11 +262,8 @@ function printStatus(status: Awaited<ReturnType<typeof readStatus>>): void {
 	for (const run of status.runs) {
 		log.line();
 		const health = run.health === "degraded" ? " (degraded)" : "";
-		log.line(`run ${run.sessionId}${health}:`);
-		for (const app of run.apps ?? [])
-			log.line(
-				`  ${app.name}: ${app.status}${app.openUrl ? `  ${app.openUrl}` : ""}`,
-			);
+		// Its apps are at the top.
+		log.line(`run ${run.sessionId}${health}: ${run.apps.length} apps`);
 		for (const service of run.services)
 			if (service.problem)
 				log.line(`  ${service.name}: ${service.problem.detail}`);

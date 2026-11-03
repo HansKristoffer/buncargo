@@ -14,6 +14,22 @@ pieces it orchestrates.
   apps never inherit it. A `package.json` listing buncargo with nothing installed is a
   `CliError`. A CLI run from `src/` is never replaced: that is someone testing the source. It
   reads files only; a matching version costs a few `stat`s.
+- Before that decision, a checkout installs itself (`checkout-install.ts`): when a `package.json`
+  from the working directory up lists buncargo and the first `bun.lock` above it has no
+  `node_modules` beside it, or one installed from another lockfile, the guard runs
+  `bun install --frozen-lockfile` there and decides again, so the fresh install can still hand
+  over. A missing `node_modules` installs for every command (none of the project's buncargo runs
+  without it); a stale one only for the commands that run the project's code
+  (`refreshesStaleInstall`). `stop`, `status` and BuncargoBar's buttons must neither reinstall
+  under a running run nor fail on a broken lockfile. "Installed from" is `install-stamp.ts`'s hash of `bun.lock`, shared with `check`: Bun
+  1.4 writes nothing into `node_modules` on a no-op install, so no file of its own can say, and
+  `git checkout` rewrites the lockfile's time without its content. A checkout with no stamp
+  falls back to `node_modules` being newer than `bun.lock`, so one installed by hand is left
+  alone. The install's stdout goes to stderr (a `--json` command's stdout stays one document),
+  waits on a per-checkout lock (several agents in one fresh worktree install once), and runs
+  with `BUNCARGO_INSTALLING=1`, so a buncargo in a postinstall script does not start another.
+  The guard never installs from source or after a hand-over. An install that replaces the
+  package this process runs from re-executes it, since the rest of its modules load lazily.
 
 - `command-spec.ts` is the flag-spec primitive: one `CommandSpec` per command drives parsing,
   unknown-flag detection, value validation and generated help, so those four cannot drift. Add a
@@ -79,7 +95,19 @@ pieces it orchestrates.
   child's until every app has settled; an empty `apps` list is the claim, not "done", unless the
   selection has no app to spawn. A child that exits 0 had nothing to keep running (every app
   reused) and is a success, as it is for attached `dev`; its exit is checked before the entry,
-  which can outlive it.
+  which can outlive it. The run hands the parent its failures in
+  `.buncargo/logs/detached-report.json` (`run-failure.ts`: the cause, the step's last lines, the
+  setup warnings, what to run next), and the parent prints them last. Parsing the log for the
+  cause failed: agents read `dev | tail`, and the tail was a warning of kilobytes. A parked app's
+  failure is written before the registry marks it failed, which is what the parent waits on.
+  `--keep` is not passed on: the child learns it from `BUNCARGO_DETACHED`
+  (`1` or `keep`), and records the idle limit the watchdog enforces
+  ([run registry](./run-registry-and-sweep.md#detached-runs-that-end)).
+- A bare `stop` is `stop --all`: agents and project docs wrote `buncargo stop` meaning "stop my
+  run" and got an error 26 times. The terminal-run confirmation still applies, so it stops a
+  detached run without asking and refuses (exit 3) one in another terminal when there is no
+  terminal to ask in. `down` is an alias (`resolveCommandAlias` in `commands/registry.ts`, kept out
+  of help) that prints a hint naming `stop`.
 - `dev-flags.ts`' `destructiveModeGate`: `--reset` and `--down --all` ask in a terminal and refuse
   without one unless `--yes`. CI is exempt. An agent ran `--reset` to fix a migration and deleted a
   developer's data.
@@ -104,7 +132,10 @@ pieces it orchestrates.
   `run-cli.ts` turns it (or a `default` profile) into the same selection `--apps` makes.
 - `agents-guide.ts` is the one copy of the agent guide (`help agents`) and the `AGENTS.md` block
   `setup --agents` keeps between `<!-- buncargo:start/end -->` markers. It lives in code, not
-  `docs/`, so the guide an agent reads matches the installed version.
+  `docs/`, so the guide an agent reads matches the installed version. The core stays under 40
+  lines with the never-rules and failure recipes first, and the rest is `help agents <topic>`:
+  agents read it through `| head -60` or a grep, and the 12 KB single page they cut that way
+  never showed them the database and port-block recipes.
 - `commands/ports.ts` shows the offset claims and `pin`s one: it checks every port of the block
   through `withBindProbe` and the claims before writing the lockfile and the claim. `release`
   drops another checkout's claims under the claims lock, refusing while that checkout has a live or
@@ -117,12 +148,34 @@ pieces it orchestrates.
 - `commands/inspect/file-table.ts` reads the machine's open-file table (`sysctl` /
   `/proc/sys/fs/file-nr`); `doctor` runs the full `lsof` for the top holders only past half full,
   because it takes seconds on a crowded machine.
+- `commands/secrets.ts` is `ls` (key names and their source) and `check` (each config scope
+  readable or not, with its key count). `check`'s exit codes are `SECRETS_CHECK_EXIT`, a
+  contract for agents: 2 always means "log in" and wins over 3 (a scope unreadable for another
+  reason), because a login may fix the rest. No subcommand prints a value, on purpose
+  ([secrets](./secrets.md)). Its help keeps one usage line per subcommand, so adding `check`
+  only added lines.
 - `commands/sql.ts` runs the preset's own client inside the service's container through
-  `interactiveExecArgv` (the one adapter method that hands back argv for inherited stdio). `--json`
-  for Postgres wraps the query in `json_agg`, so it only fits row-returning statements.
+  `interactiveExecArgv` (the one adapter method that hands back argv for inherited stdio). The
+  client runs in the container, so psql's `-- -f file` is read on the host and fed to its stdin
+  as bytes. Piped stdin goes to psql unread (`-f -`, so a dump of any size or encoding passes
+  through as it did); `sql` reads it only for `--json`, which has to see the SQL to decide whether
+  to wrap it. Grouped psql options that do their own work (`-lqt`, `-tAc`) leave stdin alone. `--json` for Postgres wraps the query in
+  `json_agg` only when `sql-statements.ts` reads it, outside strings, quoted identifiers and
+  comments, as one `SELECT`/`WITH` that writes nothing; anything else, or anything it cannot read
+  with certainty, runs plain with a note. Wrapped, an `UPDATE` or a second statement was a syntax
+  error quoting the wrapper. The user's text sits on lines of its own inside the wrapper (a
+  trailing `--` comment would swallow the closing parenthesis), and psql's `LINE n:` is shifted
+  back on stderr. The alias is read as `alias.*`, because a bare `json_agg(q)` aggregated a column
+  named `q` instead of the row.
   `--create-scratch` always prefixes `scratch_`, so `--drop-scratch` cannot reach a database the
   project uses, and uses two `-c`s because `CREATE DATABASE` refuses the transaction one
-  multi-statement `-c` becomes.
+  multi-statement `-c` becomes. It starts the database service when it is down, through the
+  `run` task path (allocate, claim, `start({ onlyServices, prepare: "containers" })`, release)
+  with no idle hold, as `dev --up-only` leaves its containers: the command that uses the scratch
+  database runs after `sql` exits, and a three-minute hold would stop it under a test suite.
+  `exec --db` (`exec-database.ts`) checks the database exists with one Bun SQL query, and refuses
+  when nothing points at the service's database, rather than run the command against the
+  checkout's own data.
 - `src/config/discover-apps.ts`: `discoverApps` marks its apps with an enumerable symbol (it
   survives spreads) for `build --discovered`.
 
@@ -130,7 +183,9 @@ pieces it orchestrates.
 
 `commands/check/` is `buncargo check`; `plan.ts` (gate and test selection) is pure apart from the
 glob scan, `docs.ts` is also `check docs`. Steps run one at a time with their output buffered: the
-point is one line per step and the tail of the failure, not a live log. The typecheck is spawned
+point is one line per step and the tail of the failure, not a live log. The verdict is the exit
+code alone and comes last, with each failure's rerun command: agents read `check | tail`, and a
+format step once printed ✓ over a command that never ran. The typecheck is spawned
 as `buncargo typecheck --changed` through `buncargoCli()`, so it takes a check slot and reads
 `typecheck.concurrency` the same way a typecheck run by hand does; the nearby tests take no slot
 (they are a handful). A root-wide file selects every gate for the reason it selects every

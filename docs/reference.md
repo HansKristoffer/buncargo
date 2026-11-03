@@ -8,6 +8,7 @@ bunx buncargo dev --apps=api,web  # Named apps plus transitive requiredApps
 bunx buncargo dev --profile=full  # The apps of profiles.full
 bunx buncargo dev --no-tui        # Prefixed lines instead of the terminal UI
 bunx buncargo dev --detach        # In the background; returns once the apps are up
+bunx buncargo dev --detach --keep # Same, without the 2-hour idle limit
 bunx buncargo dev --no-watch      # Ignore the apps' watch config for this run
 bunx buncargo dev --attach=expoApp
 bunx buncargo dev --expose
@@ -21,6 +22,7 @@ bunx buncargo dev --reset
 bunx buncargo dev --reset --yes   # Without a terminal, --reset and --down --all need --yes
 bunx buncargo dev --takeover        # Stop apps running elsewhere, run them here
 bunx buncargo dev --keep-containers
+bunx buncargo dev --replace-stale   # First remove this checkout's stacks under an old projectPrefix (keeps volumes)
 bunx buncargo dev --watchdog-timeout=5
 bunx buncargo dev --no-docker-autostart
 bunx buncargo dev --no-hosts
@@ -34,20 +36,25 @@ bunx buncargo runs --json         # Same, machine-readable
 bunx buncargo stop api            # Stop one dev server
 bunx buncargo stop postgres       # Stop one service's container
 bunx buncargo stop --all          # Stop this checkout's whole run
+bunx buncargo stop                # Same as stop --all
 bunx buncargo restart shopify     # Start a stopped app of a running dev again
 bunx buncargo logs                # Every app's output from the current or last run
 bunx buncargo logs shopify --errors -f --since=5m
 bunx buncargo expo sim            # Open the Expo app in this checkout's own simulator
-bunx buncargo status
-bunx buncargo status --json       # Ports, containers, URLs and app states as one object
+bunx buncargo status              # One line per app first, then ports, containers and hosts
+bunx buncargo status --json       # The same as one object, its live runs (app states) first
 bunx buncargo sql                 # psql (or clickhouse-client) in this checkout's container
 bunx buncargo sql -c "select count(*) from users" --json
 bunx buncargo sql redis -c "GET key"
 bunx buncargo sql --create-scratch=migcheck   # Empty scratch_migcheck; prints its URL
 bunx buncargo sql --drop-scratch=migcheck
+bunx buncargo sql --db=scratch_migcheck -c "select 1"   # An existing database, as it is
+bunx buncargo sql --db=scratch_migcheck --url  # Its URL
+bunx buncargo sql -- -tA -f query.sql          # psql flags after --; -f reads a host file
 bunx buncargo ports               # This checkout's ports, and every checkout's offset
 bunx buncargo ports pin 2500      # Keep this checkout on offset 2500
 bunx buncargo ports release --root ../old-worktree   # Drop another checkout's claims
+bunx buncargo ports release --idle=7d   # Free the blocks of checkouts not started for a week
 bunx buncargo send expoApp i      # Type into an app that has a terminal of its own
 bunx buncargo doctor
 bunx buncargo doctor --fix
@@ -65,17 +72,20 @@ bunx buncargo env --get DATABASE_URL   # Any variable the apps get
 eval "$(bunx buncargo env --export)"   # All of them, as shell exports
 bunx buncargo env set REDIS_URL=http://localhost:8779   # Override one for this checkout
 bunx buncargo env unset REDIS_URL
-bunx buncargo url                 # Every URL this run knows, by name
+bunx buncargo url                 # Every URL this run knows, by name: apps, services, captures
+bunx buncargo url postgres        # A service's URL; its connection URL when it has no HTTP one
 bunx buncargo open                # The primary app; or `open <name>` from `url`
 bunx buncargo open shopify previewUrl  # An app's captured URL (what its action key opens)
 bunx buncargo exec -- bun scripts/maintenance.ts
 bunx buncargo exec --app=api -- bun scripts/inspect-runtime.ts
+bunx buncargo exec --db=scratch_migcheck -- bun test   # Database URLs point at another database
 bunx buncargo prisma <args>
 bunx buncargo prisma migrate-check  # Fail when migrations and schema differ
 bunx buncargo wait --app=api --hold   # Block until an app is healthy (and stay)
 bunx buncargo generate            # Render generatedFiles without starting anything
 bunx buncargo build --discovered  # Every discovered app's build, in order
 bunx buncargo secrets ls --app=api   # Key names and their source, never values
+bunx buncargo secrets check --json   # Is every Infisical scope readable? Exit 2: log in
 bunx buncargo files status        # Each checkout file: in sync, local edits, ...
 bunx buncargo files save          # This checkout's copies to the file store
 bunx buncargo files pull --force  # The file store to this checkout, over local edits
@@ -101,26 +111,40 @@ bunx buncargo predeploy           # Before a deploy: migrate, seed unless produc
 bunx buncargo slot -- bun test      # A heavy command in a check slot
 bunx buncargo help
 bunx buncargo help agents         # The guide for AI agents working in a checkout
+bunx buncargo help agents db      # One topic of it (`all` prints every topic)
 bunx buncargo version
 ```
 
 Inside a project, the CLI runs the project's own buncargo. When `bunx buncargo` reaches a
 different version (a global install, because the checkout has no `node_modules/.bin`), it prints
 one line and hands over to the version in the project's `node_modules`, with the same arguments.
-When the project's `package.json` lists buncargo but it is not installed, it stops and asks for
-`bun install` instead of running a version the project did not choose.
+A checkout without `node_modules` (a fresh worktree) installs itself before any command, and one
+whose `bun.lock` changed since its last install (a branch switch) before a command that runs the
+project (`dev`, `run`, `exec`, `slot`, `prisma`, `build`, `generate`, `typecheck`, `check`, `ci`,
+`predeploy`, `setup`; never `stop`, `status`, `logs` or the menu bar's buttons): the CLI prints one
+line, runs `bun install --frozen-lockfile` (the project's postinstall scripts included, its
+output on stderr so `--json` stays clean), and then runs the command. When that install fails, it stops with the
+install's output and asks for `bun install`. A project without `bun.lock` whose `package.json`
+lists buncargo but has none installed stops and asks for `bun install` instead of running a
+version the project did not choose.
 
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`), including `vars`: the variables `exec`, tasks and the apps are given, without their Infisical secrets. `--get ports.api` prints one raw value for scripts, and a bare name (`--get DATABASE_URL`) reads from `vars`. `--export` prints `vars` as quoted `export` lines.
 
-`buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached.log` and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed. Stop it with `buncargo stop --all`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
+`buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached.log` and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed. A failure ends the output with one block: what failed in one line (the app, the seed or the step), its last 20 lines of output, the setup checks that warned before the start, and what to run next (`buncargo logs <app>`), so `dev --detach | tail` shows the cause. Attached `dev` ends a failed start with the same block. Stop it with `buncargo stop`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
 
-`buncargo sql --create-scratch=<name>` drops and recreates an empty Postgres database `scratch_<name>` in this checkout's container and prints its URL alone on stdout, so `DATABASE_URL=$(buncargo sql --create-scratch=migcheck) bun test` works. `--drop-scratch=<name>` drops it. The prefix is always added, so neither can touch a database the project uses. A scratch database lives in the checkout's volume: `dev --reset` and `prune` remove it with the rest.
+A detached run stops by itself after 2 hours idle: no request through buncargo's named-hosts proxy to this checkout and no `buncargo` command run in it. `buncargo runs` and `ls` show the time left (`runs --json` gives it as `idleStopsAt`), and once the watchdog has stopped a run, `stop` and `ls` say so and why. While a `dev` in a terminal runs in the same checkout, the detached run is left alone, since that run may be serving from its apps. `dev --detach --keep` turns the limit off. Traffic that does not pass the proxy does not count: `localhost:port`, a public tunnel, and Tailscale mode (`BUNCARGO_HOSTS=tailscale`, where detached runs get no limit). With named hosts on and a hosts daemon that does not count requests (one older than the limit, or none running), the limit is not enforced; `buncargo hosts install` updates the daemon. A detached run whose checkout has been deleted for 10 minutes is stopped too, `--keep` or not. A run in a terminal is never stopped either way.
 
-`buncargo sql [service]` runs the service's own client inside this checkout's container, with the credentials from the config: `psql` for Postgres, `clickhouse-client` for ClickHouse, `redis-cli` for Redis. Without a service it picks the first Postgres or ClickHouse one. `-c <query>` runs one query, and `--json` prints its rows as a JSON array (Postgres) or JSON lines (ClickHouse).
+`buncargo sql --create-scratch=<name>` drops and recreates an empty Postgres database `scratch_<name>` in this checkout's container and prints its URL alone on stdout, so `DATABASE_URL=$(buncargo sql --create-scratch=migcheck) bun test` works. When the database service is down, it starts that one service first (no apps, no other services), and leaves it running as `dev --up-only` does. `--drop-scratch=<name>` drops it. The prefix is always added, so neither can touch a database the project uses. A scratch database lives in the checkout's volume: `dev --reset` and `prune` remove it with the rest.
+
+`buncargo sql [service]` runs the service's own client inside this checkout's container, with the credentials from the config: `psql` for Postgres, `clickhouse-client` for ClickHouse, `redis-cli` for Redis. Without a service it picks the first Postgres or ClickHouse one. `-c <query>` runs one query. Without `-c`, SQL piped on stdin or in a heredoc runs as a script that stops at the first error, with a non-zero exit. Arguments after `--` go to the client (`-- -tA`, `-- -v ON_ERROR_STOP=0`); psql's `-f <file>` reads the file on the host and feeds it in, since the client runs in the container (an `-o` file or `\i` would be the container's). `--db=<database>` connects to another database of this checkout's Postgres without touching it (a scratch database is `scratch_<name>`), and `--url` prints the URL of that database, or of the service's own, without connecting.
+
+`--json` prints the rows of one `SELECT` or `WITH` query as a JSON array (Postgres) or JSON lines (ClickHouse), from `-c`, `-f` or stdin. Postgres SQL that is not a single row-returning query (an `UPDATE`, several statements, a psql meta-command) runs as plain SQL instead, with a note on stderr. Errors quote your own SQL and line numbers.
+
+When the database is not running, `sql` exits 1 and says to start it with `buncargo dev --up-only`, which returns once the containers are up and needs no `--detach`.
 
 Without a terminal, `dev --reset` (which deletes the checkout's volumes) and `dev --down --all` (which stops every checkout's run) refuse unless `--yes` is passed; in a terminal they ask first. CI is exempt.
 
-`buncargo help agents` prints a guide for AI agents working in a checkout, and `buncargo setup --agents` adds (or updates) a short block in the project's `AGENTS.md` that points at it.
+`buncargo help agents` prints a short guide for AI agents working in a checkout: the rules, the commands to use and what to do when something fails, under 40 lines. `buncargo help agents <topic>` prints one topic in full (`start`, `runs`, `env`, `db`, `ports`, `logs`, `check`, `files`, `share`, `fail`, `config`), and `help agents all` all of them. `buncargo setup --agents` adds (or updates) a short block in the project's `AGENTS.md` that states the rules agents most often miss and points at the guide.
 
 `buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own - that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and in CI at one process per 3.5 GB of memory (2 on a 7 GB runner, the CPU count on a large self-hosted machine); override with `--concurrency=N`, then `BUNCARGO_TYPECHECK_CONCURRENCY`, then `typecheck.concurrency` in the config, in that order, so a CI runner sizes itself over the config's local value. `--only=platform` (path or basename) checks one workspace. `--changed[=<ref>]` checks only what the branch can break: the workspaces holding files changed since the merge base with `<ref>` (default `origin/HEAD`, then `origin/main`, then `main`), committed, uncommitted, untracked or deleted, plus every workspace that depends on one of them through `package.json`, transitively. A root `package.json`, lockfile, `tsconfig*.json` or `dev.config.ts` among them checks everything, the root config included; otherwise the root config is skipped.
 
@@ -166,6 +190,14 @@ Shared generated values are always available. `--app` adds that app's environmen
 overlay and uses its configured directory; otherwise the working directory is the
 repository root. An explicit relative `--cwd` resolves from that root, including
 when the command is launched inside a workspace.
+
+`--db=<name>` points every variable whose URL names this checkout's Postgres
+database (same host, port and database, such as `DATABASE_URL` and a
+`DATABASE_URL_DIRECT`) at database `<name>` on the same server, keeping the
+user, password and query string; a shadow database's URL keeps its own. The
+database must exist: `buncargo sql --create-scratch=<name>` makes one, as
+`scratch_<name>`. The rewritten names go to stderr. With nothing to rewrite, or
+the database missing, `exec` exits 1 without running the command.
 
 `--slot` runs the command inside one of the machine-wide check slots (see
 [typecheck](#cli-reference)), for checks heavy enough to crowd out other
@@ -237,7 +269,7 @@ export default defineDevConfig({
 
 ## `buncargo check` and `buncargo predeploy`
 
-`buncargo check` is one check for the change in front of you. It runs `bun install` when `bun.lock` changed since the last check, `bun fmt` on the changed files when `check.format` is set, Biome (`--write`) on the changed files when the root has a `biome.json`, the docs check when a Markdown file changed, `buncargo typecheck --changed`, the config's gates, and the tests beside the changed files (`a.ts` → `a.test.ts`, `a.*.test.ts`). It prints one line per step, the tail of a failing step's output, then `PASS` or `FAIL: <steps>`; the exit code is 1 when any step failed. "Changed" means since the merge base with `origin`'s default branch (or `--base=<ref>`), committed or not, plus untracked files. `--staged` checks the staged files only, writes nothing and runs no tests: the pre-commit hook. `--all` checks every file, workspace and gate, without tests: `bun run lint`.
+`buncargo check` is one check for the change in front of you. It runs `bun install` when `bun.lock` changed since the last check, `bun fmt` on the changed files when `check.format` is set, Biome (`--write`) on the changed files when the root has a `biome.json`, the docs check when a Markdown file changed, `buncargo typecheck --changed`, the config's gates, and the tests beside the changed files (`a.ts` → `a.test.ts`, `a.*.test.ts`). It prints one line per step and the tail of a failing step's output, then `PASS`, or `FAIL: <steps>` followed by one line per failed step with its exit code and the command to rerun it, so the end of the output (`| tail`) holds the whole verdict. A step passes only on exit code 0: one killed by a signal, or that cannot start at all (`E2BIG`, a missing binary), fails. The exit code is 1 when any step failed. "Changed" means since the merge base with `origin`'s default branch (or `--base=<ref>`), committed or not, plus untracked files. `--staged` checks the staged files only, writes nothing and runs no tests: the pre-commit hook. `--all` checks every file, workspace and gate, without tests: `bun run lint`.
 
 ```typescript
 check: {
@@ -696,7 +728,9 @@ else the named `https://` host while the hosts daemon serves it, else loopback.
 Both modes write each app's output, plain, to `.buncargo/logs/<run>/<app>.log`
 (the last ten runs, 5 MB per file), and a seed that runs beside the apps
 (`seed.beforeApps: false`) to `seed.log`. `buncargo logs [app] [-f] [--since=5m]
-[--errors]` reads the current or last run.
+[--errors]` reads the current or last run. `--errors` keeps the lines that read as errors: a level
+the logger wrote (`INFO:`, `[WARN]`, `level=info`) wins over words like "failed", and a structured
+block an error line opens (`[ERROR] job.completed {` … `}`) is kept whole.
 
 ### Non-essential apps
 
@@ -824,8 +858,13 @@ BUNCARGO_PORT_OFFSET set?
                           (its offset, or any one of its ports)
                           probe every service and app port
                           on a foreign owner, or a port that will not bind,
-                          shift the whole block by 100, wrapping from
-                          9000 to 100 until every block was tried
+                          shift the whole block by 100, up to the highest
+                          offset that keeps every port below 32768 (never
+                          below 9000), then from 100 until every block was tried
+                          every block taken? reclaim the least recently used
+                          block of checkouts with no run and no containers, and
+                          try again (dev and start(); a read answers
+                          provenance: unallocated instead)
           persist { version, projectName, root, offset, ports } (dev only)
           and claim the offset and its ports in ~/.buncargo/offsets.json
 ```
@@ -865,7 +904,25 @@ worktree shares the main clone's. Derive its prefix from the worktree:
 `getWorktreeProjectSuffix(<repository root>)` returns the worktree's name, or
 `null` in the main clone. `example/playground/dev.config.ts` does this.
 
-A claim stays until its checkout runs again or is deleted, so a checkout that
+When every block is claimed, `dev` and `start()` reclaim the block of the
+checkout started least recently that has no run and no containers (running or
+in the idle hold) and was not started in the last hour, say whose, and
+allocate again. That checkout keeps its containers, volumes and project name,
+and gets a new block on its next start. When nothing can
+be reclaimed, the error lists every checkout in the way with its state and when
+it last started, and the commands that free one. A checkout that has never run
+reads as `unallocated` in that state (`status`, `env`, `ports`): its ports are
+another checkout's until `dev` or `ports pin` gives it a block, and `exec`
+refuses to run on them.
+
+`buncargo ports release --idle=7d` (a bare number is days; `12h` and `30m`
+work too) frees the blocks of every checkout not started for longer than that,
+with no run and no containers, the way a full range does. It lists them and
+asks first, like `--root`, and touches no container or volume; each checkout
+keeps its project name. A deleted checkout's claim is left to the sweep, which
+uses it to find that checkout's volumes.
+
+A claim otherwise stays until its checkout runs again or is deleted, so a checkout that
 last ran an older config keeps that config's project name, and the refusal
 names it. When it no longer uses that name, release its claims:
 `buncargo ports release --root <path>`. It lists the claims and asks first
@@ -890,7 +947,7 @@ A checkout's own containers (its Compose project, on the runtime it uses) never 
 
 A port nothing visible holds but that cannot be bound (a root process `lsof` hides from this user, often a macOS service such as Screen Sharing on `:5900`) counts as foreign; `doctor` reports it as held by an unidentified process.
 
-Offsets use a step of 100 in the 100–9000 range so `5432` becomes `5532` / `5632` instead of overlapping nearby defaults.
+Offsets use a step of 100 so `5432` becomes `5532` / `5632` instead of overlapping nearby defaults. A checkout's first offset is hashed into 100–9000; when that block is taken, the search goes as high as the config's highest port allows while staying below 32768, where Linux starts handing ports to outgoing connections.
 
 `worktreeIsolation: false` shares the compose project name **and** the offset across worktrees.
 
@@ -1035,6 +1092,7 @@ with Docker stopped.
 bunx buncargo stop api        # SIGTERM that dev server's process group
 bunx buncargo stop postgres   # docker/container stop for that service
 bunx buncargo stop --all      # checkout sessions and their idle containers; retains containers another live session needs
+bunx buncargo stop            # the same as --all (`buncargo down` runs it too, with a hint)
 bunx buncargo stop api --run=<session-id>  # select an exact run
 ```
 
@@ -1286,13 +1344,15 @@ It fetches the way `hanzio/secrets` does, with the same defaults. The CLI is ask
 
 **Where secrets go.** Apps get their own scope. Migrations, the seed, `buncargo exec`, `buncargo prisma`, tasks and hooks' `ctx.exec` get theirs too: `migrations[].secrets`, `seed.secrets`, `exec --app=<name>` (that app's scope), otherwise the config-level `secrets`. `secrets: false` turns them off for one app or command, including startup prefetch. Set config-level `secrets: false` to disable all buncargo secret requests for that environment, even when apps, seeders or migrations declare explicit scopes. This is useful when a reusable config is overridden for offline CI. `mergeConfigs(base, { secrets: false })` preserves the opt-out; an explicit scope override can re-enable it. The opt-out controls buncargo fetching; applications still validate their own configuration and must receive synthetic test inputs. Precedence, lowest first: the secrets, then the developer's own exported environment, then the computed env. So `export OPENAI_API_KEY=sk-local` still wins in that shell. Apps without a `secrets` block are untouched by the app injection.
 
-**Fetch failures.** The compatibility behavior remains: warn once per scope and continue with environment/computed values. Apps can fall back to their own loader; `secrets.required` prevents startup when declared required keys are still absent. Commands retain responsibility for validating their inputs. Machine HTTP failures never switch to CLI authentication.
+**An expired session stops the run.** Without an Infisical CLI session for a `siteUrl` (none, an expired one, or a CLI that starts its interactive login), `buncargo dev`, `run`, `exec` and library `start()` stop before anything starts, within a few seconds, and name the one fix: `infisical login --domain=<siteUrl>` (in the error's message for `start()`). buncargo's own call to the CLI never logs in: its stdin is closed, a login prompt ends it at once, and it gets 2 seconds. `dev` checks the selected apps' scopes and the config-level one (`--up-only` skips it), `run` and `exec` the scope of the command, `start()` the scopes of what it starts. A machine identity needs no session and skips the check. In CI, and in a shell that exports `INFISICAL_TOKEN` or `INFISICAL_UNIVERSAL_AUTH_ACCESS_TOKEN` for the apps' own loaders, a missing session only warns, as before. The check is the session token the fetches use anyway, so it adds no CLI process.
+
+**Other fetch failures.** A signed-in fetch that fails (a missing project or environment, no access, the network) warns once per scope and continues with environment/computed values. Apps can fall back to their own loader; `secrets.required` prevents startup when declared required keys are still absent. Commands retain responsibility for validating their inputs. Machine HTTP failures never switch to CLI authentication.
 
 **Required keys.** `secrets.required` names keys an app cannot start without. A run with any of them missing (from Infisical, the environment and the computed env alike) stops before anything spawns, naming each app's missing keys.
 
-**Commands.** `buncargo secrets ls [--app=api] [--env=prod]` lists key names, never values, each with the source of the value the app gets: Infisical, env override, computed (buncargo's own env, which wins) or missing. It exits 1 when a required key is missing by the same rule `dev` refuses to start on, so an exported empty value counts as missing. `buncargo setup` and `buncargo doctor` check that every scope is readable and print the fix (`infisical login --domain=…`, MFA).
+**Commands.** `buncargo secrets ls [--app=api] [--env=prod]` lists key names, never values, each with the source of the value the app gets: Infisical, env override, computed (buncargo's own env, which wins) or missing. It exits 1 when a required key is missing by the same rule `dev` refuses to start on, so an exported empty value counts as missing. `buncargo secrets check [--json]` reads every scope the config uses (the config-level one and each app's) and prints one line per scope with its key count, never a key or value. Its exit code means one thing each: 0 every scope is readable (or the config uses none), 2 there is no usable session (run the printed `infisical login --domain=…`), 3 signed in but a scope cannot be read (the line says why), 1 the command itself could not run. `--json` prints `{ ok, exitCode, logins, scopes: [{ projectId, environment, path, siteUrl, organizationId?, usedBy, ok, keys?, error?, fix? }] }`. There is no command that prints a secret value. `buncargo setup` and `buncargo doctor` check that every scope is readable and print the fix (`infisical login --domain=…`, MFA).
 
-A failed fetch warns once and continues; an app's own loader then does what it does today. Values are never logged, never written to a state file, and never included in an error: neither the CLI's output nor a response body is echoed. An empty value is never injected, since a blank variable would read as "already set".
+Apart from a missing session, a failed fetch warns once and continues; an app's own loader then does what it does today. Values are never logged, never written to a state file, and never included in an error: neither the CLI's output nor a response body is echoed. An empty value is never injected, since a blank variable would read as "already set".
 
 Defaults: `siteUrl` is `https://eu.infisical.com` (like hanzio; it was `app.infisical.com` before the next major), `environment` is `SECRETS_ENV` or `dev`, `path` is `/`.
 
@@ -1546,7 +1606,9 @@ Set `seed.beforeApps: false` to overlap the seed and app startup. `afterServers`
 
 ### `StartOptions` / `StopOptions`
 
-`start({ verbose, wait, startServers, productionBuild, skipSeed, skipEnvironmentLog, onlyApps, onlyServices, autoStartDocker, signal, prepare, onPhase })`
+`start({ verbose, wait, startServers, productionBuild, skipSeed, skipEnvironmentLog, onlyApps, onlyServices, autoStartDocker, replaceStaleStacks, signal, prepare, onPhase })`
+
+`replaceStaleStacks` is `dev --replace-stale`: before the ports are allocated, it removes the containers and networks of stacks this checkout left under a project name it no longer uses and that hold this run's ports. That happens after `projectPrefix` changes: the old stack keeps running under the old name. Its volumes are kept. A stack with containers of another checkout, or one a live run still uses, is never touched. A checkout with two configs of different `projectPrefix` would see each other's stacks as stale; give each its own directory.
 
 `onlyServices` starts those services (plus Compose dependencies) and no apps; it is what `buncargo run` and `buncargo ci` use.
 
@@ -1594,12 +1656,13 @@ Programmatic: `openPublicTunnels({ names?, waitForHealthy? })` then `buildAppEnv
 
 ## Watchdog
 
-Every run that owns containers claims them in `~/.buncargo/runs.json` before it starts them, and one watchdog per machine (`dist/core/watchdog-runner.js`, log in `~/.buncargo/watchdog.log`) sweeps every buncargo container against that registry every 30s. Runs started from a script with `dev.start()` get it too; pass `start({ watchdog: false })` to skip starting the process. A script's containers stay up after it exits — `options.autoShutdown` and the three-minute default are `buncargo dev`'s — unless it asks for a hold with `claimRun({ idleTimeoutMs })` before `start()`. `buncargo ls` and `doctor` run the same sweep inline, so a killed watchdog is never the last line of defence. The sweep only removes a stack your own buncargo state names: a run in your `~/.buncargo/runs.json` or a port claim in your `~/.buncargo/offsets.json` for its project and checkout. Such a stack is removed when:
+Every run that owns containers claims them in `~/.buncargo/runs.json` before it starts them, and one watchdog per machine (`dist/core/watchdog-runner.js`, log in `~/.buncargo/watchdog.log`) sweeps every buncargo container against that registry every 30s. Runs started from a script with `dev.start()` get it too; pass `start({ watchdog: false })` to skip starting the process. A script's containers stay up after it exits — `options.autoShutdown` and the three-minute default are `buncargo dev`'s — unless it asks for a hold with `claimRun({ idleTimeoutMs })` before `start()`, or it reused the containers a `dev` run left in its idle hold, whose hold then still applies. The watchdog also stops [detached runs](#cli-reference) that sat idle for 2 hours or whose checkout was deleted. `buncargo ls` and `doctor` run the same sweep inline, so a killed watchdog is never the last line of defence. The sweep only removes a stack your own buncargo state names: a run in your `~/.buncargo/runs.json` or a port claim in your `~/.buncargo/offsets.json` for its project and checkout. Such a stack is removed when:
 
 - **its checkout is gone** - the worktree was deleted and no live run holds the stack. A checkout this user cannot read (another user's home) is not gone
 - **it is stopped and nobody owns it** - a daemon restart or `buncargo stop <service>` left it exited and the run has ended
 - **its run exited cleanly** (Ctrl-C leaves a `released` marker) and the idle hold has passed - 3 minutes by default, so a quick restart reuses the containers rather than recreating them
 - **its run crashed** (the PID is gone without releasing) and ~15s have passed since a sweep first noticed
+- **a script reused it from a held run** - a `dev.start()` that asked for no hold reused containers a `dev` run had left in its idle hold: they come down that hold after the script ends, as they would have after the `dev` run
 
 Any other stack is left alone, however it looks: on a machine where several users share one Docker daemon, another user's stacks are listed too, and from your account their checkouts look unowned or deleted. `buncargo ls` and `doctor` mark each as not yours, with the command that removes it by hand (`docker compose -p <project> down`, or `container delete --force <ids>` for Apple container) if it really is orphaned, for example after `~/.buncargo` was wiped. Volumes stay either way. `dev --down --all` follows the same rule: it removes your stacks and lists the others with those commands.
 
@@ -1671,12 +1734,14 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `Docker is not running` | Daemon down and auto-start failed/disabled | Start OrbStack/Docker/Colima, or drop `--no-docker-autostart`. On Linux: `sudo systemctl start docker` |
 | `Docker is running, but this user cannot open its socket` | User not in the `docker` group, or a process started before it was added | `sudo usermod -aG docker $USER`, then log in again or restart the service you run buncargo from |
 | `port 5173 held by container gey-other-platform-1 (project gey-other)` | Foreign compose project owns the port | Stop the other env (`buncargo ls` / `dev --down --all`) or let allocation shift |
+| `port … held by container bliss-main-redis-1 (project bliss-main), a stale stack of this checkout` | This checkout's stack from before its `projectPrefix` changed still runs under the old name | Run the `docker compose -p <old> down` the message names, or `dev --replace-stale`. Both keep the old stack's volumes |
 | `port … held by process …` | Another process owns the port | Stop that process; own-repo orphans are killed automatically |
 | `port … is held by an unidentified process` | A process this user cannot list (often a macOS service) holds it | Run `dev` again: allocation moves to a free block |
 | `… listens on :8022, not its assigned :8021` | The app moved to the next port because its own was taken | Run `dev` again; set `strictPort` (Vite, Astro's `vite.server`) so it fails instead of moving |
 | `--reset removes …'s volumes … Refusing without a terminal` | `--reset` / `--down --all` from a script or agent | Pass `--yes` if that is really meant |
 | `Dependencies are installed (no node_modules)` | Fresh worktree | `bun install`, or `buncargo setup --yes` |
 | `This project's buncargo (package.json) is not installed` | `bunx buncargo` found a different buncargo than the project lists, and the project's is not installed | `bun install` |
+| `bun install --frozen-lockfile failed in <dir>` | The checkout installed itself and `bun.lock` does not match `package.json`, or a postinstall script failed | Fix what the install printed, then `bun install` |
 | `Worker "…" is already running` | Library startup encountered an owned worker | Reuse it through the CLI or use `dev --takeover` |
 | `Apple container cannot verify finite job exit codes yet` | A job was selected with Apple | Use `--runtime=docker` |
 | `already listening on port … but failed health check` | Port busy, `healthEndpoint` failed, and the server runs in another terminal of this checkout or is not from this checkout | `dev --takeover` replaces another run's server; otherwise free the port. A leftover no run owns and a `--detach` run's server are replaced without asking |
@@ -1686,7 +1751,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | Disk full of old worktree volumes | Deleted checkouts and interrupted `ci` runs leave their databases behind | `buncargo prune --project --dry-run` for this project, `buncargo prune --dry-run` for every project; then without `--dry-run` |
 | `.env.local has local edits and the file store changed too` | This checkout and another both changed a checkout file | `buncargo files merge .env.local` keeps both sides' keys (dotenv only); `files save` keeps yours, `files pull --force` takes the store's |
 | `… would run under Compose project …, which … already uses` | Another checkout with the same project name exists: CI runners in same-named directories, or a config below a worktree's top level | Give one of them its own `projectPrefix` (see [Ports and isolation](#ports-and-isolation)) and start it once, or delete the checkout no longer used. If the other checkout's claim is from a config it no longer runs, `buncargo ports release --root <path>` (the error names the path) |
-| `Could not allocate a free port block` | 80 shifted blocks still conflict | Set `BUNCARGO_PORT_OFFSET` or free ports (`buncargo doctor`) |
+| `Could not allocate a free port block` | Every block is claimed by checkouts that are running or hold containers, or held by other processes | The error lists each holder. Stop one you no longer need (`buncargo stop --all --root <path>`) and `buncargo ports release --root <path>`, release idle claims (`buncargo ports release --idle=7d`), or `buncargo ports pin <offset>` with the offset it suggests |
 | Named URL does not resolve / TLS warning | Daemon down or CA not trusted | `buncargo hosts status`, then `buncargo hosts install` or `doctor --fix` |
 | `Docker Desktop is running (pid …) but its daemon is not answering` | Docker Desktop hung; quitting it can leave `com.docker.backend` alive | `buncargo doctor --fix`: once Docker Desktop has run past a cold start without answering, it asks (in a terminal) and force-restarts it, which stops every container on the machine and keeps volumes |
 | A port `held by process … in …/.Trash/…` | A dev server of a deleted checkout | `buncargo doctor --fix` stops it |

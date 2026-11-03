@@ -120,11 +120,25 @@ export function isTimingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 /**
- * `BUNCARGO_DETACHED=1` - set by `dev --detach` on the run it starts in the
- * background, so the run registry can say no terminal is watching it.
+ * `BUNCARGO_DETACHED` - set by `dev --detach` on the run it starts in the
+ * background, so the run registry can say no terminal is watching it: `1`
+ * for a run with the idle limit, `keep` for `--detach --keep`.
  */
-export function isDetachedRun(env: NodeJS.ProcessEnv = process.env): boolean {
-	return env.BUNCARGO_DETACHED === "1";
+export type DetachedRunMode = "idle-limit" | "keep";
+
+export const DETACHED_ENV = "BUNCARGO_DETACHED";
+
+export function detachedRunMode(
+	env: NodeJS.ProcessEnv = process.env,
+): DetachedRunMode | undefined {
+	if (env[DETACHED_ENV] === "1") return "idle-limit";
+	if (env[DETACHED_ENV] === "keep") return "keep";
+	return undefined;
+}
+
+/** The value of `BUNCARGO_DETACHED` for a run `dev --detach` starts. */
+export function detachedRunEnv(mode: DetachedRunMode): string {
+	return mode === "keep" ? "keep" : "1";
 }
 
 /**
@@ -138,6 +152,19 @@ export function reexecedFrom(
 	env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
 	return readTrimmed(env, REEXEC_ENV);
+}
+
+/**
+ * `BUNCARGO_INSTALLING=1` - set on the `bun install` a buncargo runs for a
+ * checkout whose `node_modules` is missing or stale (`cli/checkout-install.ts`),
+ * so a buncargo that a postinstall script runs never starts a second one.
+ */
+export const INSTALLING_ENV = "BUNCARGO_INSTALLING";
+
+export function isInstallingCheckout(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return env[INSTALLING_ENV] === "1";
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -292,6 +319,21 @@ export function infisicalPathOverride(
 	env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
 	return readBinaryOverride(env, "BUNCARGO_INFISICAL_PATH");
+}
+
+/**
+ * Whether the shell exports an Infisical token of its own (`INFISICAL_TOKEN`,
+ * `INFISICAL_UNIVERSAL_AUTH_ACCESS_TOKEN`). buncargo's CLI call ignores it,
+ * but the apps' own loaders use it, so a missing CLI session is no reason to
+ * stop their run.
+ */
+export function infisicalExportedToken(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return Boolean(
+		readTrimmed(env, "INFISICAL_TOKEN") ??
+		readTrimmed(env, "INFISICAL_UNIVERSAL_AUTH_ACCESS_TOKEN"),
+	);
 }
 
 /**

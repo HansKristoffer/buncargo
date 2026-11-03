@@ -1,4 +1,5 @@
 export { assertServiceCapabilities } from "./capabilities";
+export { readClaimStates } from "./claim-states";
 export {
 	type EnsureServicesRunningRequest,
 	ensureServicesRunning,
@@ -61,6 +62,7 @@ export {
 	type ServiceCondition,
 	watchServiceContainers,
 } from "./service-watch";
+export { replaceStaleStacksOn } from "./stale-stacks";
 export {
 	decideSweep,
 	type ForeignStack,

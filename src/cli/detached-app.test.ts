@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { signalProcessTree } from "../core/process/port-owner";
@@ -54,12 +54,16 @@ for (const stop of ["command", "SIGINT"] as const) {
 			while (Date.now() < deadline) {
 				if (await Bun.file(marker).exists())
 					detachedPid = Number(await Bun.file(marker).text());
-				const file = Bun.file(join(root, ".buncargo", "runs.json"));
-				if (await file.exists()) {
-					const registry = await file.json();
-					app = registry.runs?.[0]?.apps?.[0];
-					if (app?.pid === detachedPid && app?.status === "ready") break;
-				}
+				// A fresh read each time: a `Bun.file` stat taken before the run
+				// renames a newer registry into place reads that one cut short.
+				const registry = await readFile(
+					join(root, ".buncargo", "runs.json"),
+					"utf8",
+				)
+					.then(JSON.parse)
+					.catch(() => undefined);
+				app = registry?.runs?.[0]?.apps?.[0];
+				if (app?.pid === detachedPid && app?.status === "ready") break;
 				if (child.exitCode !== null)
 					throw new Error((await output) + (await errors));
 				await Bun.sleep(25);

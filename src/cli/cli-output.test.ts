@@ -98,6 +98,10 @@ describe("buncargo CLI output", () => {
 		["stop", "--nope"],
 		// 2 is "no such target"; the menu bar app tells it from 3.
 		["stop", "nope"],
+		// A bare stop is the whole run: here there is none.
+		["stop"],
+		// `down` is not a command, but agents type it: it is `stop`, with a hint.
+		["down", "--help"],
 		// A handler that returns its exit code.
 		["wait"],
 		["dev", "--nope"],

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+	parseDockerPortOwners,
 	parseDockerPublishedPort,
 	parseDockerPublishedPorts,
 } from "./port-lookup";
@@ -31,5 +32,23 @@ describe("parseDockerPublishedPorts", () => {
 
 	it("does not confuse the container port with the host port", () => {
 		expect(parseDockerPublishedPorts("0.0.0.0:5532->5432/tcp")).toEqual([5532]);
+	});
+});
+
+describe("parseDockerPortOwners", () => {
+	it("reads the checkout root buncargo labels its containers with", () => {
+		const owners = parseDockerPortOwners(
+			[
+				"a1\tbliss-t3-e144b332-redis-1\t0.0.0.0:13379->6379/tcp\tbliss-t3-e144b332\t/work/t3-e144b332",
+				"b2\tsomeone-else\t0.0.0.0:8080->80/tcp\t\t",
+			].join("\n"),
+		);
+		expect(owners.get(13379)).toEqual({
+			id: "a1",
+			name: "bliss-t3-e144b332-redis-1",
+			composeProject: "bliss-t3-e144b332",
+			root: "/work/t3-e144b332",
+		});
+		expect(owners.get(8080)?.root).toBeUndefined();
 	});
 });

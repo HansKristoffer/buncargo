@@ -26,6 +26,17 @@ describe("parseDevArgs", () => {
 		expect(parseDevArgs([]).oneShot).toBe(false);
 	});
 
+	it("takes --keep only with --detach", () => {
+		expect(parseDevArgs(["--detach", "--keep"])).toMatchObject({
+			detach: true,
+			keep: true,
+			errors: [],
+		});
+		expect(parseDevArgs(["--keep"]).errors).toEqual([
+			"--keep only applies to --detach: a run in a terminal never stops for idling.",
+		]);
+	});
+
 	it("inverts the negated flags", () => {
 		const args = parseDevArgs(["--no-hosts", "--no-docker-autostart"]);
 		expect(args.hosts).toBe(false);
@@ -36,6 +47,14 @@ describe("parseDevArgs", () => {
 		expect(parseDevArgs([]).tui).toBe("auto");
 		expect(parseDevArgs(["--tui"]).tui).toBe("on");
 		expect(parseDevArgs(["--no-tui"]).tui).toBe("off");
+	});
+
+	it("reads --replace-stale, which only a start can use", () => {
+		expect(parseDevArgs(["--replace-stale"]).replaceStale).toBe(true);
+		expect(parseDevArgs([]).replaceStale).toBe(false);
+		expect(parseDevArgs(["--replace-stale", "--down"]).errors).toEqual([
+			"--replace-stale clears the way for a start; it cannot be combined with --down or --reset.",
+		]);
 	});
 
 	it("reports unknown flags without throwing", () => {

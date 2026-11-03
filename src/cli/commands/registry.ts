@@ -189,6 +189,17 @@ export function resolveCommandName(
 	return isOneOf(COMMAND_NAMES, value) ? value : undefined;
 }
 
+/**
+ * Names agents reach for that mean another command. Not listed in help: each
+ * runs its command after a one-line hint naming the real one, so the habit
+ * does not spread into docs.
+ */
+const COMMAND_ALIASES = new Map<string, CliCommandName>([["down", "stop"]]);
+
+export function resolveCommandAlias(value: string): CliCommandName | undefined {
+	return COMMAND_ALIASES.get(value);
+}
+
 /** Extra `<command> <flag>` forms worth showing in the root help listing. */
 export const COMMAND_HELP_EXTRAS: readonly CommandExample[] = [
 	{

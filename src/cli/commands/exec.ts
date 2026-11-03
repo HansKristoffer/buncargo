@@ -3,6 +3,7 @@ import { CommandSignalError, type ExecResult } from "../../core/process";
 import { loadDevEnv } from "../../loader";
 import { argumentsError } from "../errors";
 import { parseExecArgs, printExecHelp } from "../exec-flags";
+import { databaseExists, databaseOverrides } from "./exec-database";
 
 /**
  * Run a foreground command, forwarding SIGINT/SIGTERM/SIGHUP to it.
@@ -67,6 +68,17 @@ export async function handleExec(args: string[]): Promise<number> {
 	}
 
 	const env = await loadDevEnv({ readOnly: true });
+	const databaseEnv =
+		parsed.db === undefined
+			? undefined
+			: await databaseOverrides(env, parsed.app, parsed.db, {
+					exists: databaseExists,
+					inherited: process.env,
+				});
+	if (databaseEnv)
+		console.error(
+			`${Object.keys(databaseEnv).join(", ")} → database ${parsed.db}`,
+		);
 	const run = () =>
 		runForwardingSignals((signal) =>
 			env.exec(parsed.command, {
@@ -75,6 +87,7 @@ export async function handleExec(args: string[]): Promise<number> {
 				verbose: true,
 				throwOnError: false,
 				signal,
+				env: databaseEnv,
 			}),
 		);
 	if (!parsed.slot) return run();

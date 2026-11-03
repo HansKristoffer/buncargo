@@ -121,7 +121,8 @@ it("aborts the CLI fetch and releases its machine lock", async () => {
 });
 
 it("reports a failed prefetched scope only once when consumers retry", async () => {
-	const fake = startFakeInfisical({ cliFails: true });
+	// Signed in, but the project does not exist: a warning, not a stop.
+	const fake = startFakeInfisical();
 	const home = process.env.HOME;
 	const binary = process.env.BUNCARGO_INFISICAL_PATH;
 	const warn = console.warn;

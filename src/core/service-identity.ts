@@ -34,8 +34,14 @@ export interface Credentials {
 	database: string;
 }
 
+const POSTGRES_CREDENTIALS: Credentials = {
+	user: "postgres",
+	password: "postgres",
+	database: "postgres",
+};
+
 const PRESET_CREDENTIALS: Partial<Record<DockerPresetName, Credentials>> = {
-	postgres: { user: "postgres", password: "postgres", database: "postgres" },
+	postgres: POSTGRES_CREDENTIALS,
 	clickhouse: { user: "default", password: "clickhouse", database: "default" },
 };
 
@@ -73,7 +79,20 @@ export function serviceCredentials(
 	service: ServiceConfig | undefined,
 ): Credentials | undefined {
 	const defaults = PRESET_CREDENTIALS[preset];
-	if (!defaults) return undefined;
+	return defaults && withServiceOverrides(defaults, service);
+}
+
+/** A Postgres-preset service's credentials, which are always known. */
+export function postgresCredentials(
+	service: ServiceConfig | undefined,
+): Credentials {
+	return withServiceOverrides(POSTGRES_CREDENTIALS, service);
+}
+
+function withServiceOverrides(
+	defaults: Credentials,
+	service: ServiceConfig | undefined,
+): Credentials {
 	const config = service as
 		{ database?: string; user?: string; password?: string } | undefined;
 	return {

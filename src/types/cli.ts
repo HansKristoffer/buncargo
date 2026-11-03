@@ -3,9 +3,13 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * How the port offset was chosen.
+ * How the port offset was chosen. `unallocated`: a read of a checkout that has
+ * no block yet found every block of the range claimed; the offset is the
+ * hashed one and its ports are another checkout's. The next `buncargo dev`
+ * allocates, reclaiming an idle checkout's block if it has to.
  */
-export type PortOffsetProvenance = "hash" | "lockfile" | "env" | "shifted";
+export type PortOffsetProvenance =
+	"hash" | "lockfile" | "env" | "shifted" | "unallocated";
 
 /**
  * Options for the CLI runner.

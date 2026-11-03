@@ -49,6 +49,11 @@ export const STOP_COMMAND_SPEC: CommandSpec = {
 		},
 	],
 	examples: [
+		{
+			command: "bunx buncargo stop",
+			description:
+				"Same as --all: stop this checkout's run (one in another terminal asks first)",
+		},
 		{ command: "bunx buncargo stop api", description: "Stop one dev server" },
 		{
 			command: "bunx buncargo stop postgres",
@@ -68,6 +73,7 @@ export interface StopCliArgs {
 	names: string[];
 	root: string | undefined;
 	run: string | undefined;
+	/** `--all`, or no target named: the whole run. */
 	all: boolean;
 	force: boolean;
 }
@@ -91,11 +97,6 @@ export function parseStopArgs(rawArgs: string[]): StopCliArgs {
 		names.push(arg);
 	}
 
-	if (names.length === 0 && !all) {
-		errors.push(
-			"Name at least one app or service, or pass --all to stop the run.",
-		);
-	}
 	if (names.length > 0 && all) {
 		errors.push("--all stops everything; do not also name targets.");
 	}
@@ -107,7 +108,10 @@ export function parseStopArgs(rawArgs: string[]): StopCliArgs {
 		names,
 		root,
 		run,
-		all,
+		// Agents and project docs say `buncargo stop` meaning "stop my run":
+		// that is what a bare stop does. A run in another terminal still asks
+		// (or, without a terminal, refuses and names --force), as --all does.
+		all: all || names.length === 0,
 		force: readBooleanFlag(rawArgs, FLAGS.force),
 	};
 }

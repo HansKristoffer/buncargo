@@ -22,6 +22,7 @@ import {
 import {
 	buildPortMap,
 	computeBaseOffset,
+	maxPortOffset,
 	PORT_OFFSET_STEP,
 	pinOffset,
 	readOffsetClaimsWithPorts,
@@ -356,7 +357,7 @@ describe("resolvePortPlan", () => {
 		}
 	});
 
-	it("names the last block it tried, and why, when every block is taken", () => {
+	it("names a block it tried, and why, when every block is taken", () => {
 		delete process.env.BUNCARGO_PORT_OFFSET;
 		const root = mkdtempSync(join(tmpdir(), "buncargo-full-"));
 		const hashed = computeBaseOffset({ projectPrefix: "geysier" });
@@ -385,10 +386,11 @@ describe("resolvePortPlan", () => {
 			} catch (error) {
 				message = String(error);
 			}
-			// Every block, from the hashed one around to the one below it.
-			const last = hashed === 100 ? 9000 : hashed - PORT_OFFSET_STEP;
 			expect(message).toContain(
-				`(every offset from 100 to 9000, starting at ${hashed}); at ${last}, port ${5432 + last} held by container geysier-main-postgres-1`,
+				`every offset from 100 to ${maxPortOffset(Object.values(buildPortMap(services, apps)))} (starting at ${hashed}) is taken.`,
+			);
+			expect(message).toContain(
+				`at ${hashed}: port ${5432 + hashed} held by container geysier-main-postgres-1`,
 			);
 			// The selected backend reaches the owner's description.
 			expect(message).toContain("running on Docker");

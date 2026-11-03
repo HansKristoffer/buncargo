@@ -18,15 +18,16 @@ import {
 import { readProcessIdentity } from "../core/process-identity";
 import { readRemovals } from "../core/removal-log";
 import {
+	holdToInherit,
 	loadRuns,
 	publishRun,
 	type RunEntry,
 	releaseRun,
 } from "../core/run-registry";
+import { DELETED_CHECKOUT_SETTLE_MS } from "../core/watchdog-constants";
 import type { BuncargoContainer } from "../types";
 import { withProjectLifecycleLock } from "./project-lock";
 import {
-	DELETED_CHECKOUT_SETTLE_MS,
 	decideSweep,
 	type SweepResult,
 	settleDeletedCheckouts,
@@ -186,6 +187,27 @@ describe("decideSweep", () => {
 		expect(decideSweep({ ...base, run: quiet }, limits)).toEqual({
 			kind: "keep",
 		});
+	});
+
+	it("applies a hold a run without one reused, counted from when that run ended", () => {
+		const script = entry({
+			inheritedIdleTimeoutMs: 180_000,
+			ownerLostAt: new Date(NOW - 60_000).toISOString(),
+		});
+		expect(decideSweep({ ...base, run: script }, limits)).toEqual({
+			kind: "keep",
+		});
+		expect(
+			decideSweep({ ...base, run: script, now: NOW + 120_000 }, limits),
+		).toEqual({
+			kind: "down",
+			reason: "ended 180s ago, past the hold it reused",
+		});
+		// Still running: nothing has ended yet.
+		const running = entry({ inheritedIdleTimeoutMs: 180_000 });
+		expect(
+			decideSweep({ ...base, run: running, now: NOW + 10_000_000 }, limits),
+		).toEqual({ kind: "keep" });
 	});
 
 	it("keeps a stack with no hold however its run ended, crash included", () => {
@@ -440,6 +462,59 @@ describe("sweepOrphanedContainers", () => {
 		expect(result.swept).toEqual([]);
 		expect(result.liveRuns).toBe(1);
 		expect(downs).toEqual([]);
+	});
+
+	it("takes down a held stack a hold-less library run reused, once the hold is over after it ends", async () => {
+		// hellu: a detached run released with a three-minute hold; a library
+		// `start()` reused its containers four minutes later and exited after
+		// a second. Its entry, the newest, asked for no hold, and the sweep
+		// kept the stack for 13 days.
+		const released = Date.now();
+		await publishRun(
+			entry({
+				sessionId: "cli",
+				projectName: "reused",
+				detached: true,
+				idleTimeoutMs: 180_000,
+				startedAt: new Date(released - 600_000).toISOString(),
+				updatedAt: new Date(released - 600_000).toISOString(),
+			}),
+		);
+		await releaseRun("cli");
+		const claimedAt = new Date(released + 240_000).toISOString();
+		await publishRun(
+			entry({
+				sessionId: "library",
+				projectName: "reused",
+				startedAt: claimedAt,
+				updatedAt: claimedAt,
+				inheritedIdleTimeoutMs: holdToInherit(await loadRuns(), {
+					projectName: "reused",
+					root: checkout,
+				}),
+			}),
+		);
+		const { runtime, downs } = stubRuntime([
+			container("reused", checkout, "running"),
+		]);
+
+		// The library run has exited: the first pass notices, the hold starts.
+		const noticed = released + 241_000;
+		const first = await sweepOrphanedContainers({
+			runtimes: [runtime],
+			now: noticed,
+		});
+		expect(first.swept).toEqual([]);
+		expect(downs).toEqual([]);
+
+		const later = await sweepOrphanedContainers({
+			runtimes: [runtime],
+			now: noticed + 180_000,
+		});
+		expect(later.swept.map((stack) => stack.reason)).toEqual([
+			"ended 180s ago, past the hold it reused",
+		]);
+		expect(downs.map((down) => down.projectName)).toEqual(["reused"]);
 	});
 
 	it("tears down through the binary the run pinned", async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
+import { describePortConflict } from "../port-allocation";
 import { externalStackProjectName } from "../ports";
 import { isProcessAlive } from "./lifecycle";
 import {
@@ -9,6 +10,7 @@ import {
 	killPortOwnerFoundBy,
 	type PortOwner,
 	signalProcessTree,
+	staleStackProject,
 	withBindProbe,
 } from "./port-owner";
 
@@ -197,6 +199,75 @@ describe("formatPortOwner", () => {
 		expect(message).toContain("running on Apple container while");
 		expect(message).not.toContain("Apple container container");
 		expect(message).toContain("buncargo dev --down --runtime=apple");
+	});
+});
+
+describe("stale stacks of this checkout", () => {
+	const root = "/work/t3-e144b332";
+	const checkout = { root, projectPrefix: "budget-app" };
+	const stale = {
+		id: "a1",
+		name: "bliss-t3-e144b332-redis-1",
+		composeProject: "bliss-t3-e144b332",
+		root,
+	};
+
+	it("is a stack of this root under a name the config no longer gives it", () => {
+		expect(staleStackProject(stale, checkout)).toBe("bliss-t3-e144b332");
+	});
+
+	it("is never a current name, a suffixed one, another root's or an unlabelled stack", () => {
+		const current = { ...stale, composeProject: "budget-app-t3-e144b332" };
+		const suffixed = { ...stale, composeProject: "budget-app-t3-e144b332-e2e" };
+		const elsewhere = { ...stale, root: "/work/t3-other" };
+		const unlabelled = { ...stale, root: undefined };
+		for (const container of [current, suffixed, elsewhere, unlabelled])
+			expect(staleStackProject(container, checkout)).toBeUndefined();
+	});
+
+	it("names the Docker command that removes it, before any runtime mismatch", () => {
+		const message = formatPortOwner(
+			13379,
+			{ pids: [], container: { ...stale, runtime: "docker" } },
+			{ runtime: "apple", checkout },
+		);
+		expect(message).toBe(
+			"port 13379 held by container bliss-t3-e144b332-redis-1 (project bliss-t3-e144b332), a stale stack of this checkout, left under the project name its config used before. Remove it with `docker compose -p bliss-t3-e144b332 down` (its volumes are kept), or start with `buncargo dev --replace-stale`, which does that first.",
+		);
+	});
+
+	it("has no command to name on Apple container, only --replace-stale", () => {
+		const message = formatPortOwner(
+			13379,
+			{ pids: [], container: { ...stale, runtime: "apple" } },
+			{ runtime: "apple", checkout },
+		);
+		expect(message).toContain("`buncargo dev --replace-stale`");
+		expect(message).toContain(
+			"Apple container removes containers by id, not a project by name",
+		);
+		expect(message).not.toContain("docker compose");
+	});
+
+	it("reaches the allocator's conflict message", () => {
+		expect(
+			describePortConflict(
+				13379,
+				{ pids: [], container: stale },
+				"docker",
+				checkout,
+			),
+		).toContain("`docker compose -p bliss-t3-e144b332 down`");
+		expect(
+			describePortConflict(
+				13379,
+				{ pids: [], container: { ...stale, root: "/work/t3-other" } },
+				"docker",
+				checkout,
+			),
+		).toBe(
+			"port 13379 held by container bliss-t3-e144b332-redis-1 (project bliss-t3-e144b332)",
+		);
 	});
 });
 

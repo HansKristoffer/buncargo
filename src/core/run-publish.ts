@@ -24,10 +24,11 @@ import {
 	type RunServiceEntry,
 	type RunServiceStatus,
 } from "./run-registry";
-import { isDetachedRun } from "./runtime-flags";
+import { detachedRunMode, hostsMode } from "./runtime-flags";
 import { describeService } from "./service-identity";
 import { defaultServiceProtocol } from "./service-presets";
 import { formatWarn } from "./style";
+import { DETACHED_IDLE_LIMIT_MS } from "./watchdog-constants";
 
 /**
  * Publishing a run and its apps into the run registry.
@@ -291,6 +292,21 @@ export interface PublishRunInput {
 	serviceStatus?: RunServiceStatus;
 }
 
+/**
+ * A detached run's marks: `detached`, and its idle limit unless it was
+ * started with `--keep`. Not in Tailscale mode, where named hosts are served
+ * by Tailscale and no request passes buncargo's proxy to be counted.
+ */
+function detachedFields(): Pick<RunEntry, "detached" | "idleLimitMs"> {
+	const mode = detachedRunMode();
+	if (mode === undefined) return {};
+	const limited = mode === "idle-limit" && hostsMode() !== "tailscale";
+	return {
+		detached: true,
+		...(limited ? { idleLimitMs: DETACHED_IDLE_LIMIT_MS } : {}),
+	};
+}
+
 /** Write this run into the registry. Returns the entry, or `undefined` on failure. */
 export async function publishCurrentRun(
 	env: RunSource,
@@ -327,7 +343,7 @@ async function writeRun(
 			isWorktree: env.isWorktree,
 		})),
 		branch: readGitBranch(env.root),
-		...(isDetachedRun() ? { detached: true } : {}),
+		...detachedFields(),
 		primaryApp: env.resolvePrimaryApp(Object.keys(input.apps)),
 		hosts: env.hosts ? { active: env.hosts.active, tld: env.hosts.tld } : null,
 		apps: appEntries(env, {

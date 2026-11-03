@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { tmpdir } from "node:os";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
 import { readRemovals } from "../core/removal-log";
+import { CI_ENV_VARS } from "../core/runtime-flags";
+import { InfisicalLoginError } from "../core/secrets/errors";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
 import {
 	clearScopeSecretsCache,
@@ -500,6 +502,43 @@ it("starts selected scope fetches before container preparation and skips contain
 		expect(fake.cliCalls()).toHaveLength(1);
 	} finally {
 		ctx.runtime.ensureRunning = runtimeStart;
+		clearScopeSecretsCache();
+		fake.stop();
+		if (home === undefined) delete process.env.HOME;
+		else process.env.HOME = home;
+		if (binary === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
+		else process.env.BUNCARGO_INFISICAL_PATH = binary;
+	}
+});
+
+it("stops on an expired Infisical session before the claim or any container", async () => {
+	const fake = startFakeInfisical({ cliLogin: "prompt" });
+	const home = process.env.HOME;
+	const binary = process.env.BUNCARGO_INFISICAL_PATH;
+	// A developer's machine: CI and an exported token only warn.
+	const ambient = [...CI_ENV_VARS, "INFISICAL_TOKEN"].map(
+		(name) => [name, process.env[name]] as const,
+	);
+	for (const [name] of ambient) delete process.env[name];
+	process.env.HOME = fake.home;
+	process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
+	clearScopeSecretsCache();
+	const { ctx, events, lifecycle } = fixture();
+	ctx.config.secrets = { projectId: "p1", siteUrl: fake.siteUrl };
+	try {
+		const failure = await lifecycle
+			.start({ startServers: false, verbose: false, watchdog: false })
+			.catch((error: unknown) => error);
+
+		expect(failure).toBeInstanceOf(InfisicalLoginError);
+		expect((failure as InfisicalLoginError).message).toContain(
+			`infisical login --domain=${fake.siteUrl}`,
+		);
+		expect(events).not.toContain("claim");
+		expect(events).not.toContain("runtime");
+	} finally {
+		for (const [name, value] of ambient)
+			if (value !== undefined) process.env[name] = value;
 		clearScopeSecretsCache();
 		fake.stop();
 		if (home === undefined) delete process.env.HOME;

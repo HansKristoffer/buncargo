@@ -15,6 +15,7 @@ import { applyHostPlanToUrls, planNamedHosts } from "./hosts/plan";
 import { readServedTailscaleUrlsSync } from "./hosts/tailscale-serve";
 import { getLocalIp } from "./network";
 import { resolvePortPlan } from "./port-allocation";
+import { unallocatedPortsMessage } from "./port-exhaustion";
 import {
 	asComputedLoopbackUrls,
 	asComputedPorts,
@@ -128,6 +129,10 @@ export function getEnvVar<
 		// stranger, and would answer with a shifted port nothing is listening on.
 		probeConflicts: false,
 	});
+	// Read before this checkout's first run, with every block claimed: the
+	// value points at another checkout's block. Said, not thrown, as for `env`.
+	if (portPlan.provenance === "unallocated")
+		console.warn(unallocatedPortsMessage(root));
 	const localIp = getLocalIp();
 
 	const portMap = portPlan.ports;

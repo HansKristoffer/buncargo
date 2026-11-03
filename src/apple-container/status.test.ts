@@ -162,6 +162,7 @@ describe("findAppleContainerOnPort", () => {
 			id: "gey-main-postgres",
 			name: "gey-main-postgres",
 			composeProject: "gey-main",
+			root: "/repo",
 		});
 	});
 

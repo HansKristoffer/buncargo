@@ -24,6 +24,16 @@ export function resolveBunSeedSpecifier(command: string): string | undefined {
 	return command.trim().match(BUN_SCRIPT_COMMAND)?.[1];
 }
 
+/** How many of a failed seed's last lines it reports. */
+export const SEED_TAIL_LINES = 20;
+
+function lastLines(text: string): string[] {
+	return text
+		.split("\n")
+		.filter((line) => line.trim() !== "")
+		.slice(-SEED_TAIL_LINES);
+}
+
 export async function runSeedCommand(input: {
 	command: string;
 	signal?: AbortSignal;
@@ -180,6 +190,27 @@ export async function runSeedIfNeeded<
 		signal: options.signal,
 		computed,
 	});
+	// The last lines, in order, for a failure to show at the end. Read line by
+	// line unless they go straight to a terminal, where they stay visible and
+	// keep their colours and redraws.
+	const tail: string[] = [];
+	const keep = (line: string) => {
+		tail.push(line);
+		if (tail.length > SEED_TAIL_LINES) tail.shift();
+	};
+	const toTerminal =
+		verbose && !options.prefixOutput && process.stdout.isTTY === true;
+	const printLine =
+		verbose && !options.prefixOutput && !toTerminal
+			? (line: string) => console.log(line)
+			: undefined;
+	const sink = options.onOutputLine ?? printLine;
+	const onOutputLine =
+		sink &&
+		((line: string) => {
+			sink(line);
+			keep(line);
+		});
 	const result = await runSeedCommand({
 		command: seed.command,
 		signal: options.signal,
@@ -189,7 +220,7 @@ export async function runSeedIfNeeded<
 		envVars: { ...secrets, ...computed },
 		forceExit: seed.forceExit,
 		prefixOutput: options.prefixOutput,
-		onOutputLine: options.onOutputLine,
+		onOutputLine,
 		verbose,
 	});
 
@@ -197,9 +228,12 @@ export async function runSeedIfNeeded<
 		console.error(formatFail("Seeding failed"));
 		// Already shown when its output was streamed.
 		const streamed =
-			verbose && (options.prefixOutput || options.onOutputLine !== undefined);
+			verbose && (options.prefixOutput || onOutputLine !== undefined);
 		if (!streamed) console.error(result.stderr);
-		return { status: "failed", result };
+		// Prefixed or quiet output was collected whole rather than line by line.
+		if (tail.length === 0)
+			tail.push(...lastLines(`${result.stdout}${result.stderr}`));
+		return { status: "failed", result, command: seed.command, tail };
 	}
 
 	if (verbose) console.log(formatDone("Seeding complete"));

@@ -106,6 +106,36 @@ describe("runSeedIfNeeded", () => {
 			expect(outcome.result.exitCode).toBe(3);
 		}
 	});
+
+	// An agent re-ran a 200-second `dev` twice with `grep -B5 -A25` to find
+	// which seeder failed: the failure now carries the seed's last lines.
+	it("keeps the last lines of a failed seed, in order", async () => {
+		const { ctx, envVars } = stubSeedContext({
+			root: tmpdir(),
+			command:
+				"for i in $(seq 1 30); do echo step $i; done; echo 'dataQualityDuplicatesSeeder: MISSING_SECRETS'; exit 1",
+		});
+		const lines: string[] = [];
+
+		const outcome = await runSeedIfNeeded(ctx, envVars, {
+			onOutputLine: (line) => lines.push(line),
+		});
+
+		if (outcome.status !== "failed") throw new Error(outcome.status);
+		expect(outcome.command).toContain("seq 1 30");
+		expect(outcome.tail).toHaveLength(20);
+		expect(outcome.tail.at(-1)).toBe(
+			"dataQualityDuplicatesSeeder: MISSING_SECRETS",
+		);
+		expect(outcome.tail[0]).toBe("step 12");
+		expect(lines).toHaveLength(31);
+
+		const quiet = await runSeedIfNeeded(ctx, envVars, { verbose: false });
+		if (quiet.status !== "failed") throw new Error(quiet.status);
+		expect(quiet.tail.at(-1)).toBe(
+			"dataQualityDuplicatesSeeder: MISSING_SECRETS",
+		);
+	});
 });
 
 describe("runSeedCommand", () => {

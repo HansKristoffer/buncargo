@@ -56,8 +56,13 @@ per port.
   directory's next job: the claim does not record that it was made in CI. Releasing a CI dev
   claim after a `dev --down` that kept volumes also drops the project-name refusal for them;
   in CI the next job of that directory claims the name again.
-  The search for a free block wraps from 9000 to 100: climbing from the hash alone gave a
-  checkout that hashed high only the few blocks above it. Allocation ignores a deleted
+  The hash spreads checkouts over 100 to 9000, and stays there: widening it would move every
+  checkout without a lockfile. The search for a free block climbs from the hash to
+  `maxPortOffset`, the highest offset that keeps the config's highest port below 32768 (Linux's
+  ephemeral range, where outgoing connections take ports at random; macOS's starts higher),
+  never below 9000, then wraps to 100: climbing from the hash alone gave a checkout that hashed
+  high only the few blocks above it, and 90 blocks were full on a machine with 80 claims of
+  which two were running. Allocation ignores a deleted
   checkout's claim, and the sweep drops it (after its volumes, on the opt-in in
   `run-registry-and-sweep.md`). A claiming allocation holds
   `offsets.json`'s lock from reading the claims to writing its own (`withFileLockSync`, because the
@@ -80,11 +85,44 @@ per port.
   two existing claims already share.
 - A claim can outlive the config that wrote it: worktrees that last ran an older playground
   config held `buncargo-playground-playground`, and the main clone's playground was refused until
-  each ran once or was deleted. Claims are not dropped by age, because an idle checkout's claim is
-  what keeps its database to itself. `buncargo ports release --root <path>` is the one way to drop
-  another checkout's claims, and the refusal names it with the holder's root. It confirms first
-  (`--yes` without a terminal), refuses while that checkout has a live run or containers in the
-  idle hold, and touches no container or volume: whoever runs under the name next uses its volume.
+  each ran once or was deleted. `buncargo ports release --root <path>` drops one checkout's
+  claims, and the refusal names it with the holder's root. It confirms first (`--yes` without a
+  terminal), refuses while that checkout has a live run or containers in the idle hold, and
+  touches no container or volume: whoever runs under the name next uses its volume.
+- Claims are not dropped by age on a timer, because an idle checkout's claim is what keeps its
+  ports and URLs. Their blocks are taken back when the range is full: a claiming allocation that
+  finds every block taken throws `PortBlockExhaustedError` with what blocks each offset, and
+  `prepareStartAsync` (`allocateReclaiming`, so `dev`, `start()`, `ci` and the prisma path)
+  reads which holders are idle, marks the claims of the block whose holders were all started
+  least recently `reclaimedAt`, logs whose, and allocates again. Idle means no live run and no
+  finished run with services on record for the checkout, no running container of the claim's
+  project (a runtime that is up and fails to list makes every claim unreadable, not idle), and
+  not used in the last hour: a start allocates before it records its run, and the named-hosts
+  prompt or `buncargo prisma`, which records none, sits in between. All of it is paid only on a
+  full range. A block a process holds is probed then and never reclaimed, since freeing its
+  claim would not free it.
+- A reclaimed claim is marked, not deleted. It holds no block (`claimsWithLockfilePorts`, and so
+  allocation, `pin`, `ports` and `doctor`'s overlaps, skip it) but stays for everything else:
+  the project-name refusal, `prune`'s existing checkouts, the orphan report and the sweep's
+  `isKnownStack`. Deleting it made an idle checkout's database look like an orphan to `prune`,
+  freed its project name for another checkout to run on its volume, and made its exited
+  containers foreign to the sweep. The checkout's next claiming run rewrites the claim without
+  the mark, on a new block once its lockfile's block is another checkout's. Until then a read in
+  it sets the lockfile aside when its own claim holds no block and another claim covers the
+  lockfile's block; a live run always holds its claim, so a pre-lock overlap still reads as the
+  run serving it does. Marking compares each claim's offset, name, `updatedAt` and `usedAt`
+  with what the scan read, under the claims lock, so a run that started in between keeps its
+  block; that is why `claimOffset` rewrites `usedAt` on every claiming run (one file write, no
+  fork). Not the whole claim: a reader fills a port-less claim's ports from its lockfile, and
+  the oldest claims, the ones a full range reaches first, are port-less. The synchronous
+  `prepareStart` does not reclaim: it has no liveness to read. `ports release --idle` marks the
+  same idle claims by age on request; `ports release --root` still deletes, since freeing the
+  name is its purpose. None touches a deleted checkout's claim, a container or a volume.
+- A read (`claim: false`) never throws on a full range: a checkout with no lockfile gets the
+  hashed block with provenance `unallocated`. `status`, `env`, `url` and `ports` are what an agent
+  reaches for in exactly that state, and every one of them failed with the allocation error, so
+  agents started their own databases and hand-wrote lockfiles. Those ports are another checkout's,
+  so `exec` (the environment's, which the CLI and tasks use) refuses on an unallocated plan.
 
 ## Who holds a port
 
@@ -120,5 +158,25 @@ per port.
 - An app's `extraPorts` (`extraPortMap`) are claimed *and* probed, keyed `<app>#<n>` so a
   selection that names the app probes them and one that does not leaves them alone. They are not in
   the port map, so they never reach the env or the lockfile: the lockfile's offset brings them back.
+- A stack is **stale** when its `buncargo.root` label is this checkout and its project name does
+  not start with `<projectPrefix>-<directory>` (`staleStackProject`). Renaming `projectPrefix`
+  renames every stack of the checkout, and the old one kept publishing the ports the new name was
+  given: "held by container bliss-…" in a checkout now called budget-app, with no hint that the
+  holder was its own. Every name the checkout runs under now, dev, `ci`, any suffix and worktree
+  suffix included, starts with that base, so a suffixed environment's stack is never stale. The
+  rule assumes one config per checkout root: a second config with another prefix at the same root
+  reads as stale to the first. Compose's `com.docker.compose.project.working_dir` is not read: an
+  integration's stack or the user's own Compose file run from the checkout carries it too.
+- `formatPortOwner` names a stale stack, for callers that pass the checkout (the allocator's
+  conflict message, the service preflight, `doctor`), with `manualComposeDownCommand` on Docker.
+  Apple's CLI removes containers by id, and the message knows only the one on the port, so there
+  it names `dev --replace-stale` alone. `ports pin` and the backends' `up` collision messages do
+  not pass the checkout.
+- `dev --replace-stale` (`start()`'s `replaceStaleStacks`) runs before allocation, because the
+  allocator would otherwise move the block off the stale stack's ports. It removes only stale
+  stacks holding a port of the block the run would take, through the adapter's `down` (volumes
+  kept), and under the project's lifecycle lock it first checks again that every container of the
+  project carries this root and that no live run, from any checkout, uses the name: `down` acts
+  on the name alone, and `worktreeIsolation: false` shares one name across checkouts.
 - An integration stack's containers are recognized as this run's by their Compose project label;
   see [integrations](./integrations.md#stacks).

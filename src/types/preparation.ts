@@ -207,4 +207,14 @@ export type SeedOutcome =
 	| { status: "not-configured" }
 	| { status: "not-needed" }
 	| { status: "succeeded"; result: ExecResult }
-	| { status: "failed"; result: ExecResult };
+	| {
+			status: "failed";
+			result: ExecResult;
+			/** The seed command, as configured. */
+			command: string;
+			/**
+			 * Its last lines of output, in the order printed. Empty when it wrote
+			 * straight to a terminal, where they are already on screen.
+			 */
+			tail: string[];
+	  };

@@ -14,8 +14,9 @@ import { appendFileSync, readFileSync, unlinkSync } from "node:fs";
 import { getErrorMessage, promiseTimeout } from "hanzio";
 import { orphanVolumeReporter } from "../container-runtime/orphan-report";
 import { sweepOrphanedContainers } from "../container-runtime/sweep";
-import { checkoutDeleted } from "./checkout-presence";
+import { checkoutDeleted, checkoutPresence } from "./checkout-presence";
 import { FileLockTimeoutError, withFileLock } from "./file-lock";
+import { readProxyActivity } from "./hosts/proxy-activity";
 import {
 	sweepTailscaleServe,
 	tailscaleServeDeps,
@@ -26,7 +27,10 @@ import {
 } from "./process-identity";
 import { writeJsonDocumentSync } from "./registry-file";
 import { removalActor } from "./removal-log";
+import { lastCheckoutCommandAt } from "./run-activity";
+import { createRunLimiter, terminateRun } from "./run-limits";
 import { readAllRuns, runLivenessAsync } from "./run-registry";
+import { recordRunStops } from "./run-stops";
 import { tailnetDirectoryEnabled, watchdogParent } from "./runtime-flags";
 import { getStateDir } from "./state-paths";
 import { serveTailnetDirectory } from "./tailnet-directory";
@@ -49,6 +53,16 @@ const logFile = getWatchdogLogFile();
 const ownerId = randomUUID();
 const actor = removalActor("buncargo watchdog");
 const reportOrphanVolumes = orphanVolumeReporter({ log });
+const stopRuns = createRunLimiter({
+	readRuns: readAllRuns,
+	liveness: (runs) => runLivenessAsync(runs),
+	checkoutPresence,
+	lastCommandAt: lastCheckoutCommandAt,
+	readProxyActivity,
+	stopRun: terminateRun,
+	recordStops: (records) => recordRunStops(records),
+	now: Date.now,
+});
 
 function log(message: string): void {
 	const line = formatWatchdogLine(
@@ -95,6 +109,7 @@ function outlived(): string | undefined {
 
 function watch(owner: object): Promise<void> {
 	return runWatchdogLoop({
+		stopRuns,
 		sweep: async () => {
 			const result = await sweepOrphanedContainers({ actor });
 			await reportOrphanVolumes(result.answered);

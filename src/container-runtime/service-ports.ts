@@ -15,7 +15,7 @@ export async function assertServicePortsClaimable(
 	runtime: ContainerRuntimeAdapter,
 	services: Record<string, ServiceConfig>,
 	ports: Record<string, number>,
-	context: { root: string; projectName: string },
+	context: { root: string; projectName: string; projectPrefix?: string },
 	signal?: AbortSignal,
 ): Promise<void> {
 	const targetPorts = Object.keys(services)
@@ -39,7 +39,8 @@ export async function assertServicePortsClaimable(
 	for (const port of targetPorts) {
 		const owner = snapshot.owner(port);
 		const classification = classifyPortOccupant(owner, {
-			...context,
+			root: context.root,
+			projectName: context.projectName,
 			runtime: runtime.name,
 		});
 		if (classification === "fail" && owner) {
@@ -54,6 +55,10 @@ export async function assertServicePortsClaimable(
 			throw new Error(
 				formatPortOwner(port, diagnosticSnapshot.owner(port) ?? owner, {
 					runtime: runtime.name,
+					checkout:
+						context.projectPrefix === undefined
+							? undefined
+							: { root: context.root, projectPrefix: context.projectPrefix },
 				}),
 			);
 		}

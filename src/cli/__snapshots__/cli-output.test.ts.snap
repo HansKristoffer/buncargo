@@ -105,6 +105,7 @@ Options:
   --help        Show this help message
   --app=<name>  Use this app's environment and default working directory
   --cwd=<path>  Working directory relative to the repository root
+  --db=<name>   Point the variables that name this checkout's Postgres database at database <name>
   --slot        Hold one of the machine-wide check slots (BUNCARGO_CHECK_SLOTS, default 3) while it runs
   --            Required separator; following arguments are passed unchanged
 
@@ -170,10 +171,12 @@ Options:
   --attach=<app>                 Give one app the TTY (overrides interactive: true)
   --no-watch                     Do not restart apps when their watched files change
   --detach                       Run in the background; return once the apps are up (logs: buncargo logs)
+  --keep                         With --detach: never stop for idling (default: stops after 2h with no request or buncargo command)
   --tui                          Terminal UI, the default in a terminal; warns when there is none
   --no-tui                       Prefixed lines instead of the terminal UI, even in a terminal
   --keep-containers              Keep the containers after the run exits, as long as the checkout exists
   --takeover                     Stop apps already running elsewhere and run them here
+  --replace-stale                First remove this checkout's stacks under an old project name (keeps volumes)
   --watchdog-timeout=N           Idle backstop in minutes (default: 3)
   --no-docker-autostart          Do not try to start Docker if it is down
   --no-hosts                     Use localhost:port instead of named .localhost URLs
@@ -300,12 +303,15 @@ exports[`buncargo CLI output secrets --help 1`] = `
 --- stdout
 
 Usage: buncargo secrets ls [--app=<name>] [--env=<slug>]
+       buncargo secrets check [--json]
 
 Options:
   --help        Show this help message
   --app=<name>  This app's scope instead of the config-level one
   --env=<slug>  This Infisical environment
+  --json        check: one JSON document on stdout
   ls            Key names and where each comes from, never values
+  check         Whether every scope is readable; exit 2 needs a login, 3 another fix
 
 
 --- stderr
@@ -383,8 +389,9 @@ Options:
   --help  Show this help message
 
 Examples:
-  buncargo url      List every URL, by name
-  buncargo url api  Print one
+  buncargo url           List every URL, by name
+  buncargo url api       Print one
+  buncargo url postgres  A service's URL, or its connection URL
 
 
 --- stderr
@@ -426,6 +433,7 @@ Options:
   <name>           App or service from \`buncargo runs\` (repeatable)
 
 Examples:
+  bunx buncargo stop           Same as --all: stop this checkout's run (one in another terminal asks first)
   bunx buncargo stop api       Stop one dev server
   bunx buncargo stop postgres  Stop one service's container
   bunx buncargo stop --all     Stop this checkout's whole run
@@ -502,17 +510,19 @@ exports[`buncargo CLI output ports --help 1`] = `
 "exit 0
 --- stdout
 
-Usage: buncargo ports [pin <offset> | release --root <path> [--yes]]
+Usage: buncargo ports [pin <offset> | release (--root <path> | --idle=<duration>) [--yes]]
 
 Options:
-  --help         Show this help message
-  --root=<path>  ports release: the checkout whose claims to drop
-  --yes          ports release: skip the confirmation (for scripts)
+  --help             Show this help message
+  --root=<path>      ports release: the checkout whose claims to drop
+  --idle=<duration>  ports release: free the blocks of checkouts idle longer than this (7d, 12h; a bare number is days) with no run and no containers; each keeps its project name. Deleted checkouts' claims are left to the sweep
+  --yes              ports release: skip the confirmation (for scripts)
 
 Examples:
   buncargo ports                                 This checkout's ports, and every checkout's offset
   buncargo ports pin 2500                        Keep this checkout on offset 2500 from now on
   buncargo ports release --root ../old-worktree  Drop another checkout's claims on its ports and project name
+  buncargo ports release --idle=7d               Free the blocks of every checkout not started for a week, with no run and no containers
 
 
 --- stderr
@@ -531,12 +541,18 @@ Options:
   --create-scratch=<name>  (Re)create an empty Postgres database scratch_<name> and print its URL
   --drop-scratch=<name>    Drop the database scratch_<name>
   --json                   With --command, print the rows as JSON (Postgres, ClickHouse)
+  --db=<database>          Use another database of this checkout's Postgres, as it is (e.g. scratch_<name>)
+  --url                    Print the Postgres database's URL instead of connecting
+  -- <args>                Passed to the client (psql -tA, -v ON_ERROR_STOP=0, -f <host file>)
+  stdin                    Without -c, SQL piped or in a heredoc runs as a script; it stops at the first error
 
 Examples:
   buncargo sql                                                     psql into this checkout's database
   buncargo sql -c "select count(*) from users" --json              One query, rows as JSON
   buncargo sql redis -c 'GET key'                                  redis-cli
   DATABASE_URL=$(buncargo sql --create-scratch=migcheck) bun test  A throwaway database in this checkout's Postgres
+  buncargo sql --db=scratch_migcheck -- -tA -f query.sql           A file against an existing database, psql flags after --
+  buncargo sql <<'SQL' ... SQL                                     A script from a heredoc
 
 
 --- stderr
@@ -948,192 +964,43 @@ exports[`buncargo CLI output buncargo help agents 1`] = `
 # buncargo for agents
 
 This checkout runs its services (databases, caches) and apps (dev servers)
-through buncargo. Every worktree gets its own ports, containers and URLs: never
-reuse a port, container, database or URL from another checkout, and never
-hardcode a port. Ask buncargo instead.
+through buncargo, with ports, containers, URLs and a database of its own.
+Ask buncargo for them; never reuse another checkout's or hardcode a port.
 
-## Start and stop
+Never:
+- \`docker run\` a database or \`docker exec\` into one by name: other worktrees
+  run their own. Use \`bunx buncargo sql\` (\`help agents db\`).
+- \`nohup\`, \`&\`, \`disown\` or \`sleep\` loops: \`dev --detach\` and \`wait\` do it.
+- \`dev --reset\` (deletes this checkout's database) or \`dev --down --all\`
+  (stops every checkout), unless the user asked for exactly that.
+- Edit \`.buncargo/\`, \`~/.buncargo/\` or generated files, set
+  \`BUNCARGO_PORT_OFFSET\`, or kill processes and containers by name.
 
-- \`bunx buncargo dev --detach\` starts the run in the background and returns once
-  every app is up. Exit 1 names the apps that did not come up; the others keep
-  running. Exit 0 also when every app was already running and is reused. Do
-  not use \`nohup\`, \`&\` or \`disown\`.
-- \`bunx buncargo dev --detach --apps=api\` starts only some apps (and the apps
-  they require). \`--profile=<name>\` picks a configured set.
-- \`bunx buncargo stop --all\` stops this checkout's run, and removes the
-  containers an ended run left waiting out its idle hold. A run someone started
-  in a terminal (not with \`--detach\`) asks first, and without a terminal needs
-  \`--force\`: only stop that one when the user asked.
-  \`bunx buncargo stop <app>\` stops one app and \`bunx buncargo restart <app>\`
-  restarts one.
-- Stopping can take as long as an app's \`stopGraceMs\`: up to a minute for
-  an app that saves data as it exits, such as the Firebase emulators. Let it
-  finish; killing it loses that data.
-- An app already running in another terminal is reused, not started twice.
-  One that fails its health check is replaced when its run was started with
-  \`--detach\` or is gone; one in someone's terminal needs \`--takeover\`.
-- An interactive app (Expo) runs in a terminal of its own when you have none.
-  Press its keys with \`bunx buncargo send <app> <keys>\`, e.g.
-  \`bunx buncargo send expoApp r\` to reload it. Exit 3 means the app could not
-  take them (it says why), 2 that no run started it. Do not wrap it in
-  \`script\` or \`tail -f /dev/null\`.
-- \`bunx buncargo expo sim\` opens this checkout's Expo app in its own iOS
-  simulator. Expo's own \`i\` key opens whichever simulator booted first, which
-  may be another worktree's.
-- Apps with a \`watch\` config restart themselves when their files change; do
-  not run them under \`bun --watch\` as well.
+Use:
+- \`bunx buncargo dev --detach\`: starts the run, returns once apps are up.
+- \`bunx buncargo wait --app=<app>\`, \`bunx buncargo status --json\`.
+- \`bunx buncargo url <app|service>\`, \`bunx buncargo env --get DATABASE_URL\`.
+- \`bunx buncargo exec -- <command>\` runs a command with this checkout's env.
+- \`bunx buncargo sql -c "<sql>"\`, \`bunx buncargo logs <app> --errors\`.
+- \`bunx buncargo stop\` stops this checkout's run. Before you finish a task,
+  run it unless the person is still using the app. A run in their own
+  terminal is left running (exit 3): leave it.
 
-## Readiness
+When something fails:
+- The cause and the next command are at the end of the output: \`| tail\`.
+- "Could not allocate a free port block": \`dev\` takes back an idle block on
+  its own, so this lists holders still in use. Tell the user (\`help agents ports\`).
+  \`"unallocated"\` in \`status --json\` means the ports shown are not yours.
+- "a stale stack of this checkout": \`bunx buncargo dev --detach --replace-stale\`.
+- Infisical session expired (\`bunx buncargo secrets check\` exits 2): ask the
+  user to run the \`infisical login --domain=…\` it prints. Never call
+  \`infisical\` yourself; no buncargo command prints a secret's value.
+- Anything else: \`bunx buncargo doctor\`, then \`help agents fail\`.
 
-- \`bunx buncargo wait --app=<app>\` blocks until the app is healthy (exit 0),
-  failed (1) or timed out (2). Use it instead of \`sleep\` or \`curl\` loops.
-
-## Reading the environment
-
-- \`bunx buncargo url <app>\` prints the URL to open. When \`BUNCARGO_URL_HOST\`
-  is set, the person is on another machine: hand them that URL, not localhost.
-  With \`BUNCARGO_HOSTS=tailscale\` it is \`https://<machine>.ts.net:<port>\`,
-  served by Tailscale; a warning at startup says when an app fell back to its
-  plain URL, and \`bunx buncargo doctor\` says why.
-- \`bunx buncargo env --get DATABASE_URL\` prints any variable the apps get, and
-  \`bunx buncargo env --get ports.<name>\` one port.
-  \`eval "$(bunx buncargo env --export)"\` loads them all into a shell.
-- \`bunx buncargo status --json\` is ports, containers, URLs and app states as one
-  object. A run whose service container stopped under it has \`health:
-  "degraded"\` and the service's \`problem\`; \`plannedOffset\` set means the
-  next \`dev\` moves the ports, so start the run before testing against them.
-- \`bunx buncargo env set KEY=VALUE\` overrides a variable for every run, exec
-  and task of this checkout (\`env unset KEY\` drops it). Use it when a shared
-  \`.env.local\` points at another checkout's port, instead of prefixing every
-  command with the variable.
-- \`bunx buncargo exec -- <command>\` runs a command with this checkout's
-  environment. \`bunx buncargo run <task>\` runs a configured task;
-  \`bunx buncargo help\` lists them.
-
-## Gitignored files (.env.local)
-
-- When the config lists \`checkoutFiles\`, buncargo copies those files into this
-  checkout from the machine's file store before any command reads them. Do not
-  copy them from another worktree by hand.
-- \`bunx buncargo files status\` shows each one's state. A file with local
-  edits is never overwritten: \`bunx buncargo files save <path>\` shares the
-  edit with every checkout, and \`bunx buncargo files pull --force <path>\` takes
-  the store's copy. For a \`conflict\` (both changed), run
-  \`bunx buncargo files merge <path>\` first when the hint offers it (dotenv
-  files): it keeps both sides' changes key by key. Merge exits 1 naming keys
-  changed on both sides; rerun it with \`--checkout=KEY,...\` or
-  \`--store=KEY,...\`. None of them prints values; \`files diff\` lists
-  differing keys.
-  Ask the user before saving or forcing a file you did not change on purpose.
-
-## Checks
-
-- \`bunx buncargo check\` is the check for your change: \`bun fmt\` (when the
-  config sets \`check.format\`) and Biome on the changed files, writing their
-  fixes, \`typecheck --changed\`, the project's gates and the tests next to
-  the changed files. It ends with \`PASS\` or \`FAIL: <steps>\` and exits 1 on a
-  failure. \`--staged\` is the pre-commit hook and writes nothing; \`--all\`
-  checks everything.
-- \`bunx buncargo typecheck --changed\` checks the workspaces this branch
-  touched and the ones depending on them.
-- Typechecks share a few slots across every checkout on the machine. One that
-  says it is waiting for a slot is not stuck; let it wait.
-- Run test suites as \`bunx buncargo slot -- <command>\` so they take a slot
-  too. \`slot\` leaves the environment alone; \`exec --slot\` adds the
-  checkout's URLs and secrets.
-
-## Logs
-
-- \`bunx buncargo logs <app> --errors\`, \`--since=5m\`, \`-f\`. App output is kept
-  per run, so it is there after the terminal scrolled or the run ended.
-
-## Databases
-
-- \`bunx buncargo sql\` opens the database's own client in this checkout's
-  container. \`bunx buncargo sql -c "select …" --json\` runs one query and prints
-  the rows as JSON. \`bunx buncargo sql redis -c "GET key"\` works for Redis.
-- For a throwaway database (a migration check, a test run), use
-  \`DATABASE_URL=$(bunx buncargo sql --create-scratch=<name>) <command>\`: an
-  empty \`scratch_<name>\` in this checkout's Postgres, recreated each time.
-  \`bunx buncargo sql --drop-scratch=<name>\` removes it. Do not \`docker run\`
-  a Postgres of your own.
-- Do not \`docker exec\` into a database by name or read credentials from the
-  generated compose file: other worktrees run databases of their own.
-
-## Sharing beyond this machine
-
-- \`bunx buncargo dev --detach --expose\` (or \`--expose=api\`) also opens a
-  public Cloudflare quick tunnel to each \`expose: true\` app or service, for a
-  webhook or a phone on another network. Anyone with the URL reaches the app:
-  only expose when the user asked. To reach an app yourself, use
-  \`bunx buncargo url <app>\`. The public URLs are in
-  \`bunx buncargo status --json\` (\`tunnels\`); the tunnels close when the run
-  stops. A target without \`expose: true\` makes \`dev\` exit 1 before starting.
-- When \`BUNCARGO_CONNECT_TOKENS\` is set (a cloud sandbox), \`dev\` shares
-  every selected app and service with the token holders on its own; there is no
-  flag, and sharing ends with the run. A sharing failure never stops the run:
-  \`bunx buncargo connect status --json\` shows it.
-- \`bunx buncargo connect tcp <target-id>\` opens a private local port to a
-  shared database another machine runs and prints it as JSON (exit 1 when it
-  cannot); \`bunx buncargo connect disconnect <target-id>\` closes it when you
-  are done. Target ids come from \`connect status --json\`. \`connect token\`
-  prints this machine's recipient token, a secret: never write it into a file.
-  \`connect token --rotate\` and \`connect revoke\` cut recipients off; run them
-  only when asked.
-
-## Do not
-
-- \`dev --reset\` deletes this checkout's database (not Firebase emulator
-  data, which lives in \`.firebase-emulator-data\`) and \`dev --down --all\` stops
-  every checkout's run. Both refuse without a terminal unless \`--yes\` is
-  passed. Pass it only when the user asked for exactly that.
-- Do not edit \`.buncargo/\`, the generated compose file or other generated
-  files such as \`firebase.buncargo.json\`.
-
-## When something fails
-
-- \`bunx buncargo doctor\` checks Docker, ports, named hosts and leftovers.
-  \`doctor --fix\` starts Docker, force-restarts a Docker Desktop that has run
-  for minutes without answering (it stops every checkout's containers; say so
-  to the user first), and stops a process of a deleted checkout holding a port.
-- A run line "postgres stopped (exit 0)" means a service container went down
-  under the run; buncargo does not restart it. The line says which buncargo
-  command stopped it, or that none did. Restart the run
-  (\`bunx buncargo stop --all\`, then \`bunx buncargo dev --detach\`) and
-  tell the user what stopped it.
-- \`bunx buncargo setup --yes\` runs the fix of every failing check (missing
-  dependencies, generated files).
-- A port "held by an unidentified process" is usually a system service. Run
-  \`dev\` again: buncargo moves the checkout to a free port block.
-- A warning that names who removed this checkout's containers (a watchdog,
-  \`stop\`, \`dev --down\`) explains a refused database connection: the
-  stack is gone, not broken. Start the run again; report the remover to the
-  user if it was another worktree's or another user's.
-- \`dev\` refusing because another checkout "already uses" its Compose project:
-  the two would share one database. Do not work around it; tell the user, who
-  gives one of them its own \`projectPrefix\`, or, when the other checkout's
-  claim is from a config it no longer runs, releases it with the
-  \`bunx buncargo ports release --root <path>\` the error names. Run that only
-  when the user asks: whoever runs under the name next gets its volumes.
-- Each checkout keeps its port offset (\`bunx buncargo ports\`); \`ci\` and
-  E2E stacks, and every environment in CI, give it back when torn down. Do not set
-  \`BUNCARGO_PORT_OFFSET\` or edit \`.buncargo/ports.json\`; to move a checkout,
-  \`bunx buncargo ports pin <offset>\`.
-- Docker out of disk, or hanging: \`bunx buncargo prune --project --dry-run\`
-  lists this project's leftover \`ci\` stacks and deleted worktrees' stacks.
-  Removing them deletes their data, so ask before running it without
-  \`--dry-run\`. It never touches an existing checkout's dev database.
-
-## Changing dev.config.ts
-
-- Housekeeping that needs the database before any app starts (unlocking stale
-  jobs, resetting a queue) goes in \`hooks.afterContainersReady\`: it runs on
-  every start, after migrations and before the apps. \`preflight\` runs before
-  the containers start, so the database is not up yet there.
-- Tools that change behaviour in an agent's shell can be kept from seeing it with
-  \`unsetEnv: ["VAR", …]\`, which removes those variables from every process
-  buncargo starts.
-
+More: \`bunx buncargo help agents <topic>\` (or \`all\`), topics:
+start, runs, env, db, ports, logs, check, files, share, fail, config.
+Source: https://github.com/HansKristoffer/buncargo; the package ships it in
+node_modules/buncargo/src, and dist/*.js.map map the bundles back to it.
 
 --- stderr
 "
@@ -1183,147 +1050,6 @@ exports[`buncargo CLI output buncargo --nope 1`] = `
 --- stderr
   ❌ Unknown command: --nope
    Run "bunx buncargo help" for available commands.
-"
-`;
-
-exports[`buncargo CLI output buncargo hosts --help 1`] = `
-"exit 1
---- stdout
-
---- stderr
-  ❌ Unknown hosts command: --help
-   Use: buncargo hosts install | status | sync | prune | uninstall | daemon
-"
-`;
-
-exports[`buncargo CLI output buncargo bar --help 1`] = `
-"exit 1
---- stdout
-
---- stderr
-  ❌ Unknown bar command: --help
-   Use: buncargo bar install | update | status | open | uninstall | reset
-"
-`;
-
-exports[`buncargo CLI output buncargo typecheck --nope 1`] = `
-"exit 1
---- stdout
-
---- stderr
-  ❌ Unknown flag: --nope
-   Run "bunx buncargo typecheck --help" for typecheck options.
-"
-`;
-
-exports[`buncargo CLI output buncargo stop --nope 1`] = `
-"exit 3
---- stdout
-
-Usage: buncargo stop [<name>...] [options]
-
-Options:
-  --help           Show this help message
-  --root=<path>    Checkout whose run to act on (default: this one)
-  --run=<session>  One run session from buncargo runs (default: matching checkout sessions)
-  --all            Stop the whole run: dev servers and containers, and an ended run's idle containers
-  --force          Skip the confirmation for a risky target
-  <name>           App or service from \`buncargo runs\` (repeatable)
-
-Examples:
-  bunx buncargo stop api       Stop one dev server
-  bunx buncargo stop postgres  Stop one service's container
-  bunx buncargo stop --all     Stop this checkout's whole run
-
-
---- stderr
-  ❌ Unknown flag(s): --nope
-"
-`;
-
-exports[`buncargo CLI output buncargo stop nope 1`] = `
-"exit 2
---- stdout
-
---- stderr
-  ❌ No active buncargo run for <cwd>.
-   Run \`buncargo runs\` to see what is active.
-"
-`;
-
-exports[`buncargo CLI output buncargo wait 1`] = `
-"exit 1
---- stdout
-
---- stderr
-  ❌ --app is required
-"
-`;
-
-exports[`buncargo CLI output buncargo dev --nope 1`] = `
-"exit 1
---- stdout
-
-
-Usage: buncargo dev [options]
-
-Options:
-  --help                         Show this help message
-  --down                         Stop all containers
-  --all                          With --down, stop every buncargo environment you started on this machine
-  --reset                        Stop containers and remove volumes (fresh start)
-  --yes                          Confirm --reset or --down --all without a prompt (required without a terminal)
-  --migrate                      Run migrations and exit
-  --seed                         Run migrations and seeders, then exit
-  --up-only                      Start containers only, then exit (no migrations, seed, or dev servers)
-  --expose[=<targets>]           Expose configured targets via public quick tunnels
-  --apps=<apps>                  Run selected apps plus their requiredApps
-  --profile=<name>               Run a profile's apps (default: the profile named default)
-  --attach=<app>                 Give one app the TTY (overrides interactive: true)
-  --no-watch                     Do not restart apps when their watched files change
-  --detach                       Run in the background; return once the apps are up (logs: buncargo logs)
-  --tui                          Terminal UI, the default in a terminal; warns when there is none
-  --no-tui                       Prefixed lines instead of the terminal UI, even in a terminal
-  --keep-containers              Keep the containers after the run exits, as long as the checkout exists
-  --takeover                     Stop apps already running elsewhere and run them here
-  --watchdog-timeout=N           Idle backstop in minutes (default: 3)
-  --no-docker-autostart          Do not try to start Docker if it is down
-  --no-hosts                     Use localhost:port instead of named .localhost URLs
-  --runtime=<docker|apple|auto>  Container runtime backend (default: docker)
-  --timing-json                  Report startup through app readiness as JSON
-  --timing                       Print how long each startup phase took
-  --                             Extra args appended to the attached app command
-
-Examples:
-  bun dev                            Start selected apps and their services
-  bun dev --seed                     Run migrations and seed the database
-  bun dev --down                     Stop all containers
-  bun dev --reset                    Stop containers and remove all data
-  bun dev --apps=api,platform        Run only selected apps
-  bun dev --profile=full             Run the apps of profiles.full
-  bun dev --expose                   Expose all targets with expose: true
-  bun dev --expose=api,web           Expose specific targets
-  bun dev --apps=expoApp -- --clear  Pass args to the attached app
-  bun dev --runtime=apple            Run services on Apple container instead of Docker
-  bun dev --no-tui                   Prefixed lines instead of the terminal UI
-  bun dev --takeover                 Move apps running in another terminal into this one
-
-
---- stderr
-  ❌ Unknown flag: --nope
-"
-`;
-
-exports[`buncargo CLI output buncargo runs --json 1`] = `
-"exit 0
---- stdout
-{
-  "version": 1,
-  "runs": [],
-  "leases": []
-}
-
---- stderr
 "
 `;
 
@@ -1447,5 +1173,185 @@ exports[`buncargo CLI output buncargo - 1`] = `
 --- stderr
   ❌ Unknown command: -
    Run "bunx buncargo help" for available commands.
+"
+`;
+
+exports[`buncargo CLI output buncargo hosts --help 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ Unknown hosts command: --help
+   Use: buncargo hosts install | status | sync | prune | uninstall | daemon
+"
+`;
+
+exports[`buncargo CLI output buncargo bar --help 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ Unknown bar command: --help
+   Use: buncargo bar install | update | status | open | uninstall | reset
+"
+`;
+
+exports[`buncargo CLI output buncargo typecheck --nope 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ Unknown flag: --nope
+   Run "bunx buncargo typecheck --help" for typecheck options.
+"
+`;
+
+exports[`buncargo CLI output buncargo stop --nope 1`] = `
+"exit 3
+--- stdout
+
+Usage: buncargo stop [<name>...] [options]
+
+Options:
+  --help           Show this help message
+  --root=<path>    Checkout whose run to act on (default: this one)
+  --run=<session>  One run session from buncargo runs (default: matching checkout sessions)
+  --all            Stop the whole run: dev servers and containers, and an ended run's idle containers
+  --force          Skip the confirmation for a risky target
+  <name>           App or service from \`buncargo runs\` (repeatable)
+
+Examples:
+  bunx buncargo stop           Same as --all: stop this checkout's run (one in another terminal asks first)
+  bunx buncargo stop api       Stop one dev server
+  bunx buncargo stop postgres  Stop one service's container
+  bunx buncargo stop --all     Stop this checkout's whole run
+
+
+--- stderr
+  ❌ Unknown flag(s): --nope
+"
+`;
+
+exports[`buncargo CLI output buncargo stop nope 1`] = `
+"exit 2
+--- stdout
+
+--- stderr
+  ❌ No active buncargo run for <cwd>.
+   Run \`buncargo runs\` to see what is active.
+"
+`;
+
+exports[`buncargo CLI output buncargo stop 1`] = `
+"exit 2
+--- stdout
+
+--- stderr
+  ❌ No active buncargo run for <cwd>.
+   Run \`buncargo runs\` to see what is active.
+"
+`;
+
+exports[`buncargo CLI output buncargo down --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo stop [<name>...] [options]
+
+Options:
+  --help           Show this help message
+  --root=<path>    Checkout whose run to act on (default: this one)
+  --run=<session>  One run session from buncargo runs (default: matching checkout sessions)
+  --all            Stop the whole run: dev servers and containers, and an ended run's idle containers
+  --force          Skip the confirmation for a risky target
+  <name>           App or service from \`buncargo runs\` (repeatable)
+
+Examples:
+  bunx buncargo stop           Same as --all: stop this checkout's run (one in another terminal asks first)
+  bunx buncargo stop api       Stop one dev server
+  bunx buncargo stop postgres  Stop one service's container
+  bunx buncargo stop --all     Stop this checkout's whole run
+
+
+--- stderr
+   \`buncargo down\` is \`buncargo stop\`; use \`buncargo stop\`.
+"
+`;
+
+exports[`buncargo CLI output buncargo wait 1`] = `
+"exit 1
+--- stdout
+
+--- stderr
+  ❌ --app is required
+"
+`;
+
+exports[`buncargo CLI output buncargo dev --nope 1`] = `
+"exit 1
+--- stdout
+
+
+Usage: buncargo dev [options]
+
+Options:
+  --help                         Show this help message
+  --down                         Stop all containers
+  --all                          With --down, stop every buncargo environment you started on this machine
+  --reset                        Stop containers and remove volumes (fresh start)
+  --yes                          Confirm --reset or --down --all without a prompt (required without a terminal)
+  --migrate                      Run migrations and exit
+  --seed                         Run migrations and seeders, then exit
+  --up-only                      Start containers only, then exit (no migrations, seed, or dev servers)
+  --expose[=<targets>]           Expose configured targets via public quick tunnels
+  --apps=<apps>                  Run selected apps plus their requiredApps
+  --profile=<name>               Run a profile's apps (default: the profile named default)
+  --attach=<app>                 Give one app the TTY (overrides interactive: true)
+  --no-watch                     Do not restart apps when their watched files change
+  --detach                       Run in the background; return once the apps are up (logs: buncargo logs)
+  --keep                         With --detach: never stop for idling (default: stops after 2h with no request or buncargo command)
+  --tui                          Terminal UI, the default in a terminal; warns when there is none
+  --no-tui                       Prefixed lines instead of the terminal UI, even in a terminal
+  --keep-containers              Keep the containers after the run exits, as long as the checkout exists
+  --takeover                     Stop apps already running elsewhere and run them here
+  --replace-stale                First remove this checkout's stacks under an old project name (keeps volumes)
+  --watchdog-timeout=N           Idle backstop in minutes (default: 3)
+  --no-docker-autostart          Do not try to start Docker if it is down
+  --no-hosts                     Use localhost:port instead of named .localhost URLs
+  --runtime=<docker|apple|auto>  Container runtime backend (default: docker)
+  --timing-json                  Report startup through app readiness as JSON
+  --timing                       Print how long each startup phase took
+  --                             Extra args appended to the attached app command
+
+Examples:
+  bun dev                            Start selected apps and their services
+  bun dev --seed                     Run migrations and seed the database
+  bun dev --down                     Stop all containers
+  bun dev --reset                    Stop containers and remove all data
+  bun dev --apps=api,platform        Run only selected apps
+  bun dev --profile=full             Run the apps of profiles.full
+  bun dev --expose                   Expose all targets with expose: true
+  bun dev --expose=api,web           Expose specific targets
+  bun dev --apps=expoApp -- --clear  Pass args to the attached app
+  bun dev --runtime=apple            Run services on Apple container instead of Docker
+  bun dev --no-tui                   Prefixed lines instead of the terminal UI
+  bun dev --takeover                 Move apps running in another terminal into this one
+
+
+--- stderr
+  ❌ Unknown flag: --nope
+"
+`;
+
+exports[`buncargo CLI output buncargo runs --json 1`] = `
+"exit 0
+--- stdout
+{
+  "version": 1,
+  "runs": [],
+  "leases": []
+}
+
+--- stderr
 "
 `;

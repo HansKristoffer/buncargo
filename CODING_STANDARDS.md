@@ -26,6 +26,9 @@ of these anywhere else has written a second owner: flag it and name the first.
 | Exclusive leases as a run takes and explains them | `src/core/app-leases.ts` |
 | A run's entry and app rows in `runs.json` | `src/core/run-publish.ts` |
 | What the sweep removes | `decideSweep` in `src/container-runtime/sweep.ts` |
+| Which detached runs the watchdog stops | `decideRunLimit` in `src/core/run-limits.ts` |
+| Runs the watchdog stopped, and why | `src/core/run-stops.ts` |
+| When a checkout was last used (commands, proxied requests) | `src/core/run-activity.ts`, `src/core/hosts/proxy-activity.ts` |
 | JSON state on disk | `src/core/registry-file.ts` (temp file and rename), `src/core/file-lock.ts` (`withFileLock` around a read-modify-write) |
 
 A new shared concern gets one owner and a row here.

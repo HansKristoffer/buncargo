@@ -43,3 +43,38 @@ it("prints one app's errors from the latest run", async () => {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+it("keeps an error's structured block together, and skips a notice that says failed", async () => {
+	const root = mkdtempSync(join(tmpdir(), "buncargo-logs-block-"));
+	try {
+		const logs = new AppLogs(root, "run");
+		for (const line of [
+			"[core] INFO: Failed to read crontab, cron is disabled",
+			"[ERROR] job.completed {",
+			"  name: 'sync',",
+			'  error_type: "Error",',
+			"}",
+			"GET / 200",
+		])
+			logs.write("worker", line);
+		logs.write("api", "listening");
+		logs.flush();
+
+		const result = Bun.spawnSync(
+			[process.execPath, cli, "logs", "--errors", `--root=${root}`],
+			{ env: { ...process.env, NO_COLOR: "1" } },
+		);
+		const printed = Bun.stripANSI(result.stdout.toString())
+			.trimEnd()
+			.split("\n")
+			.map((line) => line.slice("00:00:00 ".length));
+		expect(printed).toEqual([
+			"worker [ERROR] job.completed {",
+			"worker   name: 'sync',",
+			'worker   error_type: "Error",',
+			"worker }",
+		]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
