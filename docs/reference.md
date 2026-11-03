@@ -107,8 +107,13 @@ bunx buncargo version
 Inside a project, the CLI runs the project's own buncargo. When `bunx buncargo` reaches a
 different version (a global install, because the checkout has no `node_modules/.bin`), it prints
 one line and hands over to the version in the project's `node_modules`, with the same arguments.
-When the project's `package.json` lists buncargo but it is not installed, it stops and asks for
-`bun install` instead of running a version the project did not choose.
+A checkout whose `bun.lock` is newer than its `node_modules`, or that has none (a fresh worktree,
+a branch switch), installs itself first: the CLI prints one line, runs
+`bun install --frozen-lockfile` (the project's postinstall scripts included, its output on stderr
+so `--json` stays clean), and then runs the command. When that install fails, it stops with the
+install's output and asks for `bun install`. A project without `bun.lock` whose `package.json`
+lists buncargo but has none installed stops and asks for `bun install` instead of running a
+version the project did not choose.
 
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`), including `vars`: the variables `exec`, tasks and the apps are given, without their Infisical secrets. `--get ports.api` prints one raw value for scripts, and a bare name (`--get DATABASE_URL`) reads from `vars`. `--export` prints `vars` as quoted `export` lines.
 
@@ -1677,6 +1682,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `--reset removes …'s volumes … Refusing without a terminal` | `--reset` / `--down --all` from a script or agent | Pass `--yes` if that is really meant |
 | `Dependencies are installed (no node_modules)` | Fresh worktree | `bun install`, or `buncargo setup --yes` |
 | `This project's buncargo (package.json) is not installed` | `bunx buncargo` found a different buncargo than the project lists, and the project's is not installed | `bun install` |
+| `bun install --frozen-lockfile failed in <dir>` | The checkout installed itself and `bun.lock` does not match `package.json`, or a postinstall script failed | Fix what the install printed, then `bun install` |
 | `Worker "…" is already running` | Library startup encountered an owned worker | Reuse it through the CLI or use `dev --takeover` |
 | `Apple container cannot verify finite job exit codes yet` | A job was selected with Apple | Use `--runtime=docker` |
 | `already listening on port … but failed health check` | Port busy, `healthEndpoint` failed, and the server runs in another terminal of this checkout or is not from this checkout | `dev --takeover` replaces another run's server; otherwise free the port. A leftover no run owns and a `--detach` run's server are replaced without asking |

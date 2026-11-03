@@ -179,7 +179,7 @@ const cli = defineCli({
 async function main(): Promise<void> {
 	// `<package>/src/cli` from source, `<package>/dist/cli` when installed.
 	const cliDir = dirname(fileURLToPath(import.meta.url));
-	guardVersion(basename(dirname(cliDir)) === "src");
+	await guardVersion(basename(dirname(cliDir)) === "src");
 
 	const args = process.argv.slice(2);
 	const first = args[0];

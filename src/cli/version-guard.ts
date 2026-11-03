@@ -1,9 +1,21 @@
-import { existsSync, readFileSync, realpathSync, writeSync } from "node:fs";
+import {
+	existsSync,
+	readFileSync,
+	realpathSync,
+	type Stats,
+	statSync,
+	writeSync,
+} from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { isRecord, typedSwitch } from "hanzio";
-import { REEXEC_ENV, reexecedFrom } from "../core/runtime-flags";
-import { buncargoPackage } from "../core/version";
+import {
+	isInstallingCheckout,
+	REEXEC_ENV,
+	reexecedFrom,
+} from "../core/runtime-flags";
+import { buncargoPackage, findBuncargoPackage } from "../core/version";
 import { CliError } from "./errors";
+import { lockfileHash, readInstallStamp } from "./install-stamp";
 
 /**
  * Run the project's own buncargo, never whichever one is on `PATH`.
@@ -14,8 +26,12 @@ import { CliError } from "./errors";
  * So the CLI looks for the project's install first, the way module resolution
  * would, and hands over to it when the versions differ.
  *
- * It reads a few files and forks nothing; a matching version costs nothing
- * more.
+ * Before that, a checkout whose `node_modules` is missing or older than its
+ * `bun.lock` installs itself (`checkout-install.ts`): a fresh worktree or a
+ * branch switch used to stop every command on "Run `bun install`".
+ *
+ * It reads a few files and forks nothing; a matching version and an installed
+ * checkout cost nothing more.
  */
 
 export type VersionGuard =
@@ -50,6 +66,62 @@ function binEntry(pkg: PackageJson): string | undefined {
 	if (typeof pkg.bin === "string") return pkg.bin;
 	const bin = pkg.bin as Record<string, unknown> | undefined;
 	return typeof bin?.buncargo === "string" ? bin.buncargo : undefined;
+}
+
+/** A checkout whose dependencies `bun install` has to bring up to date first. */
+export interface InstallNeed {
+	/** The directory holding `bun.lock`: the workspace root. */
+	dir: string;
+	reason: string;
+}
+
+function statOrUndefined(path: string): Stats | undefined {
+	try {
+		return statSync(path);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Whether the dependencies in `dir` (which holds `bun.lock`) predate it: the
+ * lockfile's hash against the one buncargo last installed from.
+ *
+ * Without that stamp, the `node_modules` directory's own time stands in: a
+ * checkout installed by hand is not reinstalled until `bun.lock` changes after
+ * it.
+ */
+export function installNeed(dir: string): InstallNeed | undefined {
+	const hash = lockfileHash(dir);
+	if (hash === undefined) return undefined;
+	const modules = statOrUndefined(join(dir, "node_modules"));
+	if (!modules) return { dir, reason: "node_modules is missing" };
+	const stamp = readInstallStamp(dir);
+	const stale =
+		stamp === undefined
+			? statSync(join(dir, "bun.lock")).mtimeMs > modules.mtimeMs
+			: stamp !== hash;
+	return stale
+		? { dir, reason: "node_modules is older than bun.lock" }
+		: undefined;
+}
+
+/**
+ * The install a buncargo project needs before any command runs: from `cwd` up
+ * to the repository root, the first directory with a `bun.lock`, when a
+ * `package.json` on the way lists buncargo. Anything else is not buncargo's to
+ * install.
+ */
+export function decideInstall(cwd: string): InstallNeed | undefined {
+	let declared = false;
+	for (let dir = cwd; ; dir = dirname(dir)) {
+		const project = readPackageJson(join(dir, "package.json"));
+		if (project && project.name !== "buncargo" && listsBuncargo(project))
+			declared = true;
+		if (project && existsSync(join(dir, "bun.lock")))
+			return declared ? installNeed(dir) : undefined;
+		if (existsSync(join(dir, ".git")) || dirname(dir) === dir) return undefined;
+	}
 }
 
 /**
@@ -96,13 +168,16 @@ export function decideVersionGuard(
 }
 
 /**
- * Hand over to the project's buncargo, or stop when it is listed but not
- * installed. Returns when this CLI is the one to run.
+ * Install a checkout that needs it, then hand over to the project's buncargo,
+ * or stop when it is listed but not installed. Returns when this CLI is the
+ * one to run.
  *
  * A CLI run from a source checkout (`bun src/cli/bin.ts`) is never
- * replaced: that is someone testing the source on purpose.
+ * replaced: that is someone testing the source on purpose. Neither installs:
+ * a hand-over already ran this, and an install's own postinstall must not
+ * start a second one.
  */
-export function guardVersion(fromSource: boolean): void {
+export async function guardVersion(fromSource: boolean): Promise<void> {
 	const handedOver = reexecedFrom();
 	// Not inherited by the apps and tools this run starts.
 	delete process.env[REEXEC_ENV];
@@ -111,6 +186,19 @@ export function guardVersion(fromSource: boolean): void {
 	const own = buncargoPackage();
 	if (!own) return;
 	const root = own.dir;
+
+	const install = isInstallingCheckout()
+		? undefined
+		: decideInstall(process.cwd());
+	if (install) {
+		(await import("./checkout-install")).installCheckout(install);
+		// The install may have replaced the very package this process runs
+		// from; its remaining modules load lazily, so start over on the new one.
+		const onDisk = findBuncargoPackage(root)?.version;
+		if (onDisk && onDisk !== own.version)
+			handOver(process.argv[1] ?? "", onDisk, own.version);
+	}
+
 	const decision = decideVersionGuard(process.cwd(), {
 		version: own.version,
 		root,
@@ -125,20 +213,20 @@ export function guardVersion(fromSource: boolean): void {
 				["Run `bun install`, then run the command again."],
 			);
 		},
-		reexec: (reexec) => {
-			// Straight to fd 2: execve drops whatever Bun still has buffered.
-			writeSync(
-				2,
-				`buncargo ${own.version} → this project's buncargo ${reexec.version}\n`,
-			);
-			process.execve?.(
-				process.execPath,
-				[process.execPath, reexec.entry, ...process.argv.slice(2)],
-				{ ...process.env, [REEXEC_ENV]: own.version },
-			);
-			throw new CliError(
-				`Could not start this project's buncargo ${reexec.version} (${reexec.entry}).`,
-			);
-		},
+		reexec: (reexec) => handOver(reexec.entry, reexec.version, own.version),
 	});
+}
+
+/** Become `entry` with the same arguments, pid and stdio. */
+function handOver(entry: string, version: string, from: string): never {
+	// Straight to fd 2: execve drops whatever Bun still has buffered.
+	writeSync(2, `buncargo ${from} → this project's buncargo ${version}\n`);
+	process.execve?.(
+		process.execPath,
+		[process.execPath, entry, ...process.argv.slice(2)],
+		{ ...process.env, [REEXEC_ENV]: from },
+	);
+	throw new CliError(
+		`Could not start this project's buncargo ${version} (${entry}).`,
+	);
 }

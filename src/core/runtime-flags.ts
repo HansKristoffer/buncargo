@@ -140,6 +140,19 @@ export function reexecedFrom(
 	return readTrimmed(env, REEXEC_ENV);
 }
 
+/**
+ * `BUNCARGO_INSTALLING=1` - set on the `bun install` a buncargo runs for a
+ * checkout whose `node_modules` is missing or stale (`cli/checkout-install.ts`),
+ * so a buncargo that a postinstall script runs never starts a second one.
+ */
+export const INSTALLING_ENV = "BUNCARGO_INSTALLING";
+
+export function isInstallingCheckout(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return env[INSTALLING_ENV] === "1";
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Container runtime
 // ═══════════════════════════════════════════════════════════════════════════

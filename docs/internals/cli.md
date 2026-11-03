@@ -14,6 +14,19 @@ pieces it orchestrates.
   apps never inherit it. A `package.json` listing buncargo with nothing installed is a
   `CliError`. A CLI run from `src/` is never replaced: that is someone testing the source. It
   reads files only; a matching version costs a few `stat`s.
+- Before that decision, a checkout installs itself (`checkout-install.ts`): when a `package.json`
+  from the working directory up lists buncargo and the first `bun.lock` above it has no
+  `node_modules` beside it, or one installed from another lockfile, the guard runs
+  `bun install --frozen-lockfile` there and decides again, so the fresh install can still hand
+  over. "Installed from" is `install-stamp.ts`'s hash of `bun.lock`, shared with `check`: Bun
+  1.4 writes nothing into `node_modules` on a no-op install, so no file of its own can say, and
+  `git checkout` rewrites the lockfile's time without its content. A checkout with no stamp
+  falls back to `node_modules` being newer than `bun.lock`, so one installed by hand is left
+  alone. The install's stdout goes to stderr (a `--json` command's stdout stays one document),
+  waits on a per-checkout lock (several agents in one fresh worktree install once), and runs
+  with `BUNCARGO_INSTALLING=1`, so a buncargo in a postinstall script does not start another.
+  The guard never installs from source or after a hand-over. An install that replaces the
+  package this process runs from re-executes it, since the rest of its modules load lazily.
 
 - `command-spec.ts` is the flag-spec primitive: one `CommandSpec` per command drives parsing,
   unknown-flag detection, value validation and generated help, so those four cannot drift. Add a

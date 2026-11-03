@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decideVersionGuard } from "./version-guard";
+import { lockfileHash, writeInstallStamp } from "./install-stamp";
+import { decideInstall, decideVersionGuard } from "./version-guard";
 
 const dirs: string[] = [];
 
@@ -97,5 +104,72 @@ describe("decideVersionGuard", () => {
 		expect(
 			decideVersionGuard(root, { version: "7.10.0", root: "/nowhere" }),
 		).toEqual({ kind: "run" });
+	});
+});
+
+describe("decideInstall", () => {
+	function at(path: string, secondsAgo: number) {
+		const time = new Date(Date.now() - secondsAgo * 1000);
+		utimesSync(path, time, time);
+	}
+
+	/** A monorepo root with bun.lock; buncargo is listed by one workspace. */
+	function monorepo() {
+		const root = mkdtempSync(join(tmpdir(), "buncargo-install-"));
+		dirs.push(root);
+		mkdirSync(join(root, ".git"));
+		writeFileSync(join(root, "package.json"), JSON.stringify({ name: "mono" }));
+		writeFileSync(join(root, "bun.lock"), "{}");
+		const api = join(root, "apps", "api");
+		mkdirSync(api, { recursive: true });
+		writeFileSync(
+			join(api, "package.json"),
+			JSON.stringify({ devDependencies: { buncargo: "^15.0.0" } }),
+		);
+		return { root, api };
+	}
+
+	it("installs at the lockfile's directory when node_modules is missing", () => {
+		const { root, api } = monorepo();
+		expect(decideInstall(api)).toEqual({
+			dir: root,
+			reason: "node_modules is missing",
+		});
+	});
+
+	it("installs when bun.lock changed after the last install", () => {
+		const { root, api } = monorepo();
+		mkdirSync(join(root, "node_modules"));
+		writeInstallStamp(root, "an older lockfile");
+
+		expect(decideInstall(api)?.reason).toBe(
+			"node_modules is older than bun.lock",
+		);
+
+		writeInstallStamp(root, lockfileHash(root) ?? "");
+		at(join(root, "node_modules"), 60);
+		expect(decideInstall(api)).toBeUndefined();
+	});
+
+	it("trusts a hand-made install until bun.lock changes after it", () => {
+		const { root, api } = monorepo();
+		at(join(root, "bun.lock"), 60);
+		mkdirSync(join(root, "node_modules"));
+		expect(decideInstall(api)).toBeUndefined();
+
+		at(join(root, "node_modules"), 120);
+		expect(decideInstall(api)?.reason).toBe(
+			"node_modules is older than bun.lock",
+		);
+	});
+
+	it("leaves a project that does not list buncargo alone", () => {
+		const { root } = monorepo();
+		expect(decideInstall(root)).toBeUndefined();
+	});
+
+	it("leaves a project without bun.lock to the not-installed error", () => {
+		const { root } = project();
+		expect(decideInstall(root)).toBeUndefined();
 	});
 });
