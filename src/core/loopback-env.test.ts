@@ -71,8 +71,8 @@ describe("findStrayLoopbackUrls", () => {
 			isListening: () => true,
 		});
 		expect(stray.map((entry) => entry.key)).toEqual(["UPSTASH_REDIS_REST_URL"]);
-		expect(describeStrayLoopbackUrl(stray[0] as (typeof stray)[0])).toContain(
-			"8079 is another checkout's upstash, which this checkout would share",
+		expect(describeStrayLoopbackUrl(stray[0] as (typeof stray)[0])).toBe(
+			"UPSTASH_REDIS_REST_URL (.env) uses :8079, another checkout's running upstash; here upstash is :8779: `buncargo env set UPSTASH_REDIS_REST_URL=http://localhost:8779`",
 		);
 	});
 

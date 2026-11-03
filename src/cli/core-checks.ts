@@ -256,16 +256,20 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 	}
 
 	// Fast: a few files and one bind probe per stray port. Silent otherwise:
-	// the run falls back to a refused connection minutes later.
+	// the run falls back to a refused connection minutes later. Not before the
+	// checkout has ever allocated its ports: the block is an unprobed preview
+	// then, and every URL a shared file carries would read as stray. One line
+	// per variable: joined, they made a warning of kilobytes on one line.
 	checks.push({
 		name: "Loopback URLs point at this checkout",
 		severity: "warning",
 		check: () => {
+			if (env.portOffsetProvenance === "hash") return true;
 			const stray = strayLoopbackUrls(env);
 			return (
 				stray.length === 0 || {
 					ok: false,
-					detail: stray.map(describeStrayLoopbackUrl).join("; "),
+					detail: stray.map(describeStrayLoopbackUrl).join("\n"),
 				}
 			);
 		},

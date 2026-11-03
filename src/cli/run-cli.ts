@@ -15,7 +15,7 @@ import {
 	recordAppUrls,
 	recordRunCapture,
 } from "../core/run-publish";
-import { isCI } from "../core/runtime-flags";
+import { isCI, isDetachedRun } from "../core/runtime-flags";
 import { joinColoredNames } from "../core/style";
 import {
 	createNoopPhaseTimer,
@@ -31,6 +31,7 @@ import { ensureWatchdog } from "../core/watchdog";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../core/watchdog-constants";
 import {
 	assertSeedSucceeded,
+	SeedFailedError,
 	seedCanOverlap,
 } from "../environment/seed-startup";
 import { startServerSession } from "../environment/server-session";
@@ -76,7 +77,7 @@ import {
 	type DevTunnelCoordinator,
 	type TunnelApi,
 } from "./dev-tunnels";
-import { CliError, toCliError } from "./errors";
+import { CliError } from "./errors";
 import * as log from "./log";
 import {
 	classifyCliApps,
@@ -85,6 +86,12 @@ import {
 	unhealthyAppMessage,
 } from "./port-reuse";
 import { runPreflight } from "./preflight";
+import {
+	type DevFailureContext,
+	describeAppFailure,
+	describeDevFailure,
+	formatRunFailure,
+} from "./run-failure";
 import {
 	isInteractive,
 	promptTakeover,
@@ -110,13 +117,6 @@ function restoreTerminal(): void {
 		execSync("stty sane", { stdio: "ignore" });
 	} catch {
 		// Missing stty or not a real terminal.
-	}
-}
-
-function reportCliError(error: CliError): void {
-	log.error(error.message);
-	for (const item of error.hints) {
-		log.hint(item);
 	}
 }
 
@@ -255,6 +255,7 @@ export async function runCli<
 
 	let connect: DevConnect | undefined;
 	let exitCode: DevFlowExit;
+	const failureContext: DevFailureContext = { setupHints: [] };
 	try {
 		if (!args.oneShot && !args.down && !args.reset)
 			connect = createDevConnect();
@@ -263,14 +264,33 @@ export async function runCli<
 			connect,
 			timer,
 			signal: controller.signal,
+			failureContext,
 		});
 	} catch (error) {
 		controller.abort(error);
 		timer.report();
 		// The prompt re-raises SIGINT, but the listener above runs after this.
 		if (error instanceof PromptInterruptedError) interruptCode ??= 130;
-		if (interruptCode === undefined) reportCliError(toCliError(error));
-		await teardown(env, tunnels, connect);
+		const failure =
+			interruptCode === undefined
+				? describeDevFailure(error, failureContext)
+				: undefined;
+		if (failure && isDetachedRun()) {
+			const { recordDetachedReport } = await import("./dev-detach");
+			recordDetachedReport(env.root, (report) => ({
+				...report,
+				failures: [...report.failures, failure],
+			}));
+		}
+		try {
+			await teardown(env, tunnels, connect);
+		} finally {
+			// Last, after teardown's own messages: agents read `dev | tail`.
+			if (failure) {
+				const { message, hints } = formatRunFailure(failure);
+				log.errorNow(message, hints);
+			}
+		}
 		process.exit(interruptCode ?? 1);
 	} finally {
 		for (const { signal, listener } of listeners) process.off(signal, listener);
@@ -358,9 +378,13 @@ async function runDevFlow<
 		timer: PhaseTimer;
 		signal: AbortSignal;
 		connect?: DevConnect;
+		/** Filled in as the run goes, for the block a failure ends on. */
+		failureContext: DevFailureContext;
 	},
 ): Promise<DevFlowExit> {
-	const { timer, signal, connect } = options;
+	const { timer, signal, connect, failureContext } = options;
+	// Loaded only in the background run that reports to `dev --detach`.
+	const detached = isDetachedRun() ? await import("./dev-detach") : undefined;
 	async function exitWith(code: number): Promise<number> {
 		// The one-shot modes end here, and `--up-only` is exactly the kind of
 		// run someone times.
@@ -406,9 +430,14 @@ async function runDevFlow<
 				runChecks(checks, { root: env.root, env: anyEnv }),
 			)
 		).filter((result) => !result.ok);
-		for (const line of describeCheckFailures(failed.filter(isWarning))) {
-			log.warn(line);
-		}
+		const warnings = describeCheckFailures(failed.filter(isWarning));
+		for (const line of warnings) log.warn(line);
+		// Repeated with a failure, at the end, which is where it is read.
+		failureContext.setupHints = warnings;
+		detached?.recordDetachedReport(env.root, (report) => ({
+			...report,
+			setupHints: warnings,
+		}));
 		const errors = failed.filter((result) => !isWarning(result));
 		if (errors.length > 0) throw checkFailureError(errors);
 		await timer.measure("preflight", () =>
@@ -737,6 +766,7 @@ async function runDevFlow<
 	// Parked after never coming up: the supervisor treats them as non-essential.
 	const parked = new Set<string>();
 	const view = openDevOutput(env, classifiedApps.startApps, { tui: args.tui });
+	failureContext.output = view.output;
 	// A service container stopping under the run: in the run's log, the TUI's
 	// Overview, and on the terminal in stream mode, where events are not printed.
 	env.reportServiceChanges((message, problem) => {
@@ -845,8 +875,21 @@ async function runDevFlow<
 				// never came up; `ci` and library starts keep failing the run.
 				keepOthersOnFailure: env.onAppFailure !== "stop-run",
 				watch: args.watch,
-				onAppFailed: (name) => {
+				onAppFailed: (name, error) => {
 					parked.add(name);
+					// Before the registry says it failed, which `dev --detach` waits on.
+					detached?.recordDetachedReport(env.root, (report) => ({
+						...report,
+						failures: [
+							...report.failures,
+							describeAppFailure({
+								app: name,
+								reason: error.message,
+								tail: view.output.tail(name),
+								setupHints: failureContext.setupHints,
+							}),
+						],
+					}));
 					void markApps(env, [name], "failed");
 				},
 				onAppRestartFailed: (name) => {
@@ -974,9 +1017,9 @@ async function runCliSeed<
 				new CliError("The seed did not run for this selection.")
 			);
 		},
+		// The run's failure block shows the seed's last lines.
 		failed: (failed) => {
-			if (failed.result.stdout) log.hint(failed.result.stdout);
-			return 1;
+			throw new SeedFailedError(failed);
 		},
 		succeeded: () => {
 			log.line();

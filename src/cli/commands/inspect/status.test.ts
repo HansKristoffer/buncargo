@@ -11,7 +11,7 @@ import { dirname, join, resolve } from "node:path";
 import { getDaemonConfigPath } from "../../../core/hosts/paths";
 import { HEALTH_PATH } from "../../../core/hosts/proxy";
 import { CI_ENV_VARS } from "../../../core/runtime-flags";
-import { describePlannedOffset, runHealth } from "./status";
+import { appStatusLines, describePlannedOffset, runHealth } from "./status";
 
 const cli = resolve(import.meta.dir, "../../bin.ts");
 let dir: string;
@@ -85,6 +85,8 @@ async function status(): Promise<StatusJson> {
 
 it("reports named hosts as the daemon serves them, with their URLs", async () => {
 	const before = await status();
+	// `status --json | head -40` cut the runs off when they came last.
+	expect(Object.keys(before)[0]).toBe("runs");
 	expect(before.hosts?.active).toBe(false);
 	expect(before.urls.web).toMatch(/^http:\/\/localhost:\d+$/);
 
@@ -139,4 +141,28 @@ it("reads a run with a service down under it as degraded", () => {
 			],
 		}),
 	).toBe("degraded");
+});
+
+it("starts the plain status with one aligned line per app", () => {
+	expect(
+		appStatusLines([
+			{
+				apps: [
+					{
+						name: "api",
+						status: "ready",
+						openUrl: "https://api.app.localhost",
+					},
+					{ name: "worker", status: "failed" },
+				],
+			},
+		]),
+	).toEqual([
+		"apps:",
+		"  api     ready   https://api.app.localhost",
+		"  worker  failed",
+	]);
+	expect(appStatusLines([])).toEqual([
+		"apps: no live run (start one with `buncargo dev --detach`)",
+	]);
 });

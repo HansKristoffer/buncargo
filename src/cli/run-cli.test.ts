@@ -9,7 +9,9 @@ import { acquireLease, releaseLeases } from "../core/leases";
 import { buildRunEntry, publishRun, retireRuns } from "../core/run-registry";
 import { resolveExposeTargets, stopPublicTunnels } from "../core/tunnel";
 import * as watchdog from "../core/watchdog";
+import { SeedFailedError } from "../environment/seed-startup";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
+import { type DetachedReport, readDetachedReport } from "./dev-detach";
 import { runCli } from "./run-cli";
 import { upsertTunnelRegistryEntries } from "./tunnel-registry";
 
@@ -916,4 +918,79 @@ it("holds a services-only run until it is told to stop", async () => {
 		await run;
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+// `dev --detach` printed the exit code first and the cause somewhere above it:
+// the background run now hands its parent the failure, named, with the
+// failing step's last lines and the setup checks that warned.
+describe("a failed detached run's report", () => {
+	async function failedRun(
+		options: Parameters<typeof createStubEnv>[0],
+	): Promise<{ code: number; report: DetachedReport | undefined }> {
+		const root = await realpath(
+			await mkdtemp(join(tmpdir(), "buncargo-failure-")),
+		);
+		const saved = process.env.BUNCARGO_DETACHED;
+		process.env.BUNCARGO_DETACHED = "1";
+		try {
+			const env = createStubEnv({ ...options, root });
+			const code = await withProcessExitTrap(() =>
+				runCli(env, { args: [], watchdog: false }),
+			);
+			return { code, report: readDetachedReport(root) };
+		} finally {
+			if (saved === undefined) delete process.env.BUNCARGO_DETACHED;
+			else process.env.BUNCARGO_DETACHED = saved;
+			await rm(root, { recursive: true, force: true });
+		}
+	}
+
+	it("names a failed seed and keeps its last lines", async () => {
+		const { code, report } = await failedRun({
+			services: {},
+			start: async () => {
+				throw new SeedFailedError({
+					status: "failed",
+					result: { exitCode: 1, stdout: "", stderr: "" },
+					command: "bun run seed.ts",
+					tail: ["dataQualityDuplicatesSeeder: MISSING_SECRETS"],
+				});
+			},
+		});
+		expect(code).toBe(1);
+		expect(report?.failures).toHaveLength(1);
+		expect(report?.failures[0]).toMatchObject({
+			cause: "The seed failed with exit code 1: `bun run seed.ts`",
+			step: "seed",
+			output: ["dataQualityDuplicatesSeeder: MISSING_SECRETS"],
+		});
+		// The temp checkout has no .gitignore: that warning comes along.
+		expect(report?.setupHints.join("\n")).toContain(".buncargo/ is gitignored");
+		expect(report?.failures[0]?.hints).toContain(
+			"Setup checks that warned before the start:",
+		);
+	});
+
+	it("names the app that exited during start and shows what it printed", async () => {
+		const port = 44410 + Math.floor(Math.random() * 200);
+		const { code, report } = await failedRun({
+			services: {},
+			apps: {
+				api: {
+					port,
+					devCommand:
+						"bun -e 'console.log(\"MISSING_SECRETS: STRIPE_KEY\"); process.exit(1)'",
+					healthEndpoint: false,
+					requiredServices: [],
+				},
+			},
+			waitForServers: () => new Promise(() => {}),
+		});
+		expect(code).toBe(1);
+		const failure = report?.failures.at(-1);
+		expect(failure?.cause).toContain('"api"');
+		expect(failure?.step).toBe("api");
+		expect(failure?.output).toContain("MISSING_SECRETS: STRIPE_KEY");
+		expect(failure?.next).toEqual(["`buncargo logs api` has its whole output"]);
+	});
 });

@@ -61,7 +61,7 @@ it.each([
 				await expect(
 					fetch(`http://localhost:${fixture.port}`),
 				).rejects.toThrow();
-				expect(await errors).toContain("Seeding failed with exit code 17");
+				expect(await errors).toContain("The seed failed with exit code 17");
 			} else {
 				while (
 					!output.includes('"type":"buncargo.startup"') &&

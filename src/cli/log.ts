@@ -57,11 +57,19 @@ function writeStderrSync(message: string): void {
 	}
 }
 
-/** Report a message and exit; nothing is torn down. */
-export function fail(message: string, hints: string[] = []): never {
+/**
+ * An {@link error} with its {@link hint}s, written past Bun's buffer: for the
+ * last thing a process prints before it exits.
+ */
+export function errorNow(message: string, hints: readonly string[]): void {
 	writeStderrSync(formatFail(message));
 	for (const item of hints) {
 		writeStderrSync(`   ${pc.dim(item)}`);
 	}
+}
+
+/** Report a message and exit; nothing is torn down. */
+export function fail(message: string, hints: string[] = []): never {
+	errorNow(message, hints);
 	process.exit(1);
 }

@@ -56,14 +56,27 @@ function describeFix(check: SetupCheck): string | undefined {
 	return undefined;
 }
 
-/** Hint lines naming what failed and how to fix it. */
+/** Under a check's name, one detail line each; aligned with a warning's text. */
+const DETAIL_INDENT = "     ";
+
+/**
+ * Hint lines naming what failed and how to fix it, one per check. A detail
+ * of several lines (one per variable, file, …) follows the name on lines of
+ * its own rather than in parentheses.
+ */
 export function describeCheckFailures(
 	results: readonly CheckResult[],
 ): string[] {
 	return results.map((result) => {
-		const reason = result.detail ? ` (${result.detail})` : "";
 		const fix = describeFix(result.check);
-		return `${result.check.name}${reason}${fix ? `: ${fix}` : ""}`;
+		const fixed = fix ? `: ${fix}` : "";
+		const details = result.detail?.split("\n") ?? [];
+		if (details.length > 1) {
+			const indented = details.map((line) => `${DETAIL_INDENT}${line}`);
+			return [`${result.check.name}${fixed}:`, ...indented].join("\n");
+		}
+		const reason = result.detail ? ` (${result.detail})` : "";
+		return `${result.check.name}${reason}${fixed}`;
 	});
 }
 
