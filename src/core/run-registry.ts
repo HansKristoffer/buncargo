@@ -182,6 +182,14 @@ export interface RunEntry {
 	 * `--keep-containers` and the one-shot modes ask for.
 	 */
 	idleTimeoutMs?: number;
+	/**
+	 * The hold of an earlier run whose containers were held when this run,
+	 * which asked for none (a library `start()`), claimed them. They come down
+	 * this long after this run ends, released or exited, as they would have
+	 * after the earlier one: without it the newest entry said "keep forever"
+	 * and a one-second script pinned a CLI run's stack for days.
+	 */
+	inheritedIdleTimeoutMs?: number;
 	primaryApp?: string;
 	/**
 	 * Started by `dev --detach`: no terminal shows its servers, so stopping it
@@ -316,6 +324,9 @@ function isRunEntry(value: unknown): value is RunEntry {
 		(value.idleTimeoutMs === undefined ||
 			(typeof value.idleTimeoutMs === "number" &&
 				Number.isFinite(value.idleTimeoutMs))) &&
+		(value.inheritedIdleTimeoutMs === undefined ||
+			(typeof value.inheritedIdleTimeoutMs === "number" &&
+				Number.isFinite(value.inheritedIdleTimeoutMs))) &&
 		isRecord(value.cli) &&
 		typeof value.cli.program === "string" &&
 		Array.isArray(value.apps) &&
@@ -517,6 +528,10 @@ export async function publishRun(run: RunEntry): Promise<void> {
 				existing.idleTimeoutMs !== undefined
 					? { idleTimeoutMs: existing.idleTimeoutMs }
 					: {}),
+				...(run.inheritedIdleTimeoutMs === undefined &&
+				existing.inheritedIdleTimeoutMs !== undefined
+					? { inheritedIdleTimeoutMs: existing.inheritedIdleTimeoutMs }
+					: {}),
 			};
 		} else next.push(run);
 		await registry.write(path, next);
@@ -545,6 +560,30 @@ export async function releaseRun(sessionId: string): Promise<void> {
 		else next[index] = { ...current, releasedAt: now, updatedAt: now };
 		return next;
 	});
+}
+
+/**
+ * The hold a run that asks for none takes over, when it is about to reuse a
+ * stack another run left in its hold: the newest finished entry for the same
+ * project and checkout that has one. Finished means released or found gone,
+ * so the answer needs no liveness read (and no `ps`) on the start path.
+ */
+export function holdToInherit(
+	runs: readonly RunEntry[],
+	target: { projectName: string; root: string },
+): number | undefined {
+	// The newest decides: one that kept its containers on purpose
+	// (`--keep-containers`) is not overruled by an older hold.
+	const [newest] = runs
+		.filter(
+			(run) =>
+				run.projectName === target.projectName &&
+				run.root === target.root &&
+				(run.releasedAt !== undefined || run.ownerLostAt !== undefined) &&
+				run.services.length > 0,
+		)
+		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+	return newest?.idleTimeoutMs ?? newest?.inheritedIdleTimeoutMs;
 }
 
 /** Drop entries the sweep has finished with. */

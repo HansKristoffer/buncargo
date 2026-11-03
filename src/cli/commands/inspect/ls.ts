@@ -79,7 +79,7 @@ export async function handleLs(): Promise<void> {
 		if (live) log.line(`  run: active, pid ${live.pid}`);
 		else if (released?.releasedAt)
 			log.line(
-				`  run: ${describeHold(released.releasedAt, released.idleTimeoutMs, now)}`,
+				`  run: ${describeHold(released.releasedAt, released.idleTimeoutMs ?? released.inheritedIdleTimeoutMs, now)}`,
 			);
 		const foreign = foreignStackOf(result, group);
 		if (foreign) {

@@ -125,7 +125,20 @@ export function decideSweep(
 	// No hold at all means "as long as the checkout exists", however the run
 	// ended: `--keep-containers`, a one-shot mode, or a script that brought a
 	// stack up and exited, which to the sweep looks exactly like a crash.
-	if (run.idleTimeoutMs === undefined) return { kind: "keep" };
+	// Unless the run reused a stack another run had left in its hold: that
+	// hold still applies, counted from when this run ended, either way.
+	if (run.idleTimeoutMs === undefined) {
+		const endedAt = run.releasedAt ?? run.ownerLostAt;
+		if (run.inheritedIdleTimeoutMs === undefined || endedAt === undefined)
+			return { kind: "keep" };
+		const endedFor = now - Date.parse(endedAt);
+		return endedFor >= run.inheritedIdleTimeoutMs
+			? {
+					kind: "down",
+					reason: `ended ${seconds(endedFor)} ago, past the hold it reused`,
+				}
+			: { kind: "keep" };
+	}
 
 	if (run.releasedAt !== undefined) {
 		// A deliberate exit. Held so the next run reuses the containers rather

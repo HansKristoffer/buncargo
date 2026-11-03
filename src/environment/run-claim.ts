@@ -10,6 +10,8 @@ import {
 } from "../core/run-publish";
 import {
 	buildRunEntryAsync,
+	holdToInherit,
+	loadRuns,
 	publishRun,
 	type RunAppStatus,
 	type RunServiceEntry,
@@ -171,7 +173,8 @@ export function createRunClaimApi<
 	// The hold of the last claim. `restart()` retires and then claims again
 	// with only a signal, and resolving that afresh dropped a hold the first
 	// claim asked for, which kept the containers forever.
-	let lastHold: { value: number | undefined } | undefined;
+	let lastHold:
+		{ value: number | undefined; inherited: number | undefined } | undefined;
 
 	function serviceEntries(): RunServiceEntry[] {
 		return ctx.selectedServiceKeys.map((name) => {
@@ -227,7 +230,15 @@ export function createRunClaimApi<
 				lastHold && !namesHold
 					? lastHold.value
 					: resolveClaimHold(options, ctx.config.options?.autoShutdown);
-			lastHold = { value: hold };
+			// Asked for no hold at all (a library `start()`): a stack another
+			// run left in its hold keeps that hold after this run ends.
+			const inherited =
+				lastHold && !namesHold
+					? lastHold.inherited
+					: namesHold
+						? undefined
+						: holdToInherit(await loadRuns(), ctx);
+			lastHold = { value: hold, inherited };
 			const stacks = stackEntries();
 			// Claimed before it is published: a write that fails must not be
 			// retried on every container subset.
@@ -245,6 +256,9 @@ export function createRunClaimApi<
 					options.signal,
 				)),
 				...(hold === undefined ? {} : { idleTimeoutMs: hold }),
+				...(hold === undefined && inherited !== undefined
+					? { inheritedIdleTimeoutMs: inherited }
+					: {}),
 				services: serviceEntries(),
 				...(stacks.length > 0 ? { stacks } : {}),
 			});
