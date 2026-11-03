@@ -118,11 +118,26 @@ pieces it orchestrates.
   `/proc/sys/fs/file-nr`); `doctor` runs the full `lsof` for the top holders only past half full,
   because it takes seconds on a crowded machine.
 - `commands/sql.ts` runs the preset's own client inside the service's container through
-  `interactiveExecArgv` (the one adapter method that hands back argv for inherited stdio). `--json`
-  for Postgres wraps the query in `json_agg`, so it only fits row-returning statements.
+  `interactiveExecArgv` (the one adapter method that hands back argv for inherited stdio). The
+  client runs in the container, so a host file (`-- -f file`) and stdin are read by `sql` and fed
+  to the client's stdin; stdin is read only when no query or client option gives it work, because
+  reading it is what an interactive shell would block on. `--json` for Postgres wraps the query in
+  `json_agg` only when `sql-statements.ts` reads it, outside strings, quoted identifiers and
+  comments, as one `SELECT`/`WITH` that writes nothing; anything else, or anything it cannot read
+  with certainty, runs plain with a note. Wrapped, an `UPDATE` or a second statement was a syntax
+  error quoting the wrapper. The user's text sits on lines of its own inside the wrapper (a
+  trailing `--` comment would swallow the closing parenthesis), and psql's `LINE n:` is shifted
+  back on stderr. The alias is read as `alias.*`, because a bare `json_agg(q)` aggregated a column
+  named `q` instead of the row.
   `--create-scratch` always prefixes `scratch_`, so `--drop-scratch` cannot reach a database the
   project uses, and uses two `-c`s because `CREATE DATABASE` refuses the transaction one
-  multi-statement `-c` becomes.
+  multi-statement `-c` becomes. It starts the database service when it is down, through the
+  `run` task path (allocate, claim, `start({ onlyServices, prepare: "containers" })`, release)
+  with no idle hold, as `dev --up-only` leaves its containers: the command that uses the scratch
+  database runs after `sql` exits, and a three-minute hold would stop it under a test suite.
+  `exec --db` (`exec-database.ts`) checks the database exists with one Bun SQL query, and refuses
+  when nothing points at the service's database, rather than run the command against the
+  checkout's own data.
 - `src/config/discover-apps.ts`: `discoverApps` marks its apps with an enumerable symbol (it
   survives spreads) for `build --discovered`.
 

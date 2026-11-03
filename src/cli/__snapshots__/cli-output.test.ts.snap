@@ -105,6 +105,7 @@ Options:
   --help        Show this help message
   --app=<name>  Use this app's environment and default working directory
   --cwd=<path>  Working directory relative to the repository root
+  --db=<name>   Point the variables that name this checkout's Postgres database at database <name>
   --slot        Hold one of the machine-wide check slots (BUNCARGO_CHECK_SLOTS, default 3) while it runs
   --            Required separator; following arguments are passed unchanged
 
@@ -531,12 +532,18 @@ Options:
   --create-scratch=<name>  (Re)create an empty Postgres database scratch_<name> and print its URL
   --drop-scratch=<name>    Drop the database scratch_<name>
   --json                   With --command, print the rows as JSON (Postgres, ClickHouse)
+  --db=<database>          Use another database of this checkout's Postgres, as it is (e.g. scratch_<name>)
+  --url                    Print the Postgres database's URL instead of connecting
+  -- <args>                Passed to the client (psql -tA, -v ON_ERROR_STOP=0, -f <host file>)
+  stdin                    Without -c, SQL piped or in a heredoc runs as a script; it stops at the first error
 
 Examples:
   buncargo sql                                                     psql into this checkout's database
   buncargo sql -c "select count(*) from users" --json              One query, rows as JSON
   buncargo sql redis -c 'GET key'                                  redis-cli
   DATABASE_URL=$(buncargo sql --create-scratch=migcheck) bun test  A throwaway database in this checkout's Postgres
+  buncargo sql --db=scratch_migcheck -- -tA -f query.sql           A file against an existing database, psql flags after --
+  buncargo sql <<'SQL' ... SQL                                     A script from a heredoc
 
 
 --- stderr
