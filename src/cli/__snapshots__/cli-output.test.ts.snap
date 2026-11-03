@@ -979,8 +979,8 @@ Use:
 - \`bunx buncargo url <app|service>\`, \`bunx buncargo env --get DATABASE_URL\`.
 - \`bunx buncargo exec -- <command>\` runs a command with this checkout's env.
 - \`bunx buncargo sql -c "<sql>"\`, \`bunx buncargo logs <app> --errors\`.
-- \`bunx buncargo stop --all\` stops this checkout's run. Before you finish a
-  task, run it unless the person is still using the app.
+- \`bunx buncargo stop\` stops this checkout's run. Before you finish a task,
+  run it unless the person is still using the app.
 
 When something fails:
 - The cause and the next command are at the end of the output: \`| tail\`.

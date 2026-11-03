@@ -41,8 +41,8 @@ Use:
 - \`bunx buncargo url <app|service>\`, \`bunx buncargo env --get DATABASE_URL\`.
 - \`bunx buncargo exec -- <command>\` runs a command with this checkout's env.
 - \`bunx buncargo sql -c "<sql>"\`, \`bunx buncargo logs <app> --errors\`.
-- \`bunx buncargo stop --all\` stops this checkout's run. Before you finish a
-  task, run it unless the person is still using the app.
+- \`bunx buncargo stop\` stops this checkout's run. Before you finish a task,
+  run it unless the person is still using the app.
 
 When something fails:
 - The cause and the next command are at the end of the output: \`| tail\`.
@@ -80,8 +80,9 @@ const TOPICS: readonly Topic[] = [
   they require). \`--profile=<name>\` picks a configured set.
   \`bunx buncargo dev --up-only\` starts the services alone and returns once
   they are up (no \`--detach\`).
-- \`bunx buncargo stop --all\` stops this checkout's run, and removes the
-  containers an ended run left waiting out its idle hold. A run someone started
+- \`bunx buncargo stop\` (the same as \`stop --all\`; \`down\` runs it too) stops
+  this checkout's run, and removes the containers an ended run left waiting
+  out its idle hold. A run someone started
   in a terminal (not with \`--detach\`) asks first, and without a terminal needs
   \`--force\`: only stop that one when the user asked.
   \`bunx buncargo stop <app>\` stops one app and \`bunx buncargo restart <app>\`
@@ -120,10 +121,20 @@ const TOPICS: readonly Topic[] = [
   watchdog removes them.
 - \`dev --detach\`: the run is a background process of its own (its own systemd
   scope on Linux), not a child of your shell, so your session or harness
-  ending does not stop it. \`bunx buncargo stop --all\` does.
+  ending does not stop it. \`bunx buncargo stop\` does, and so does the
+  watchdog: after 2 hours with no request through its named URLs and no
+  \`buncargo\` command in the checkout (any command, \`status\` included,
+  resets the clock), and once its checkout has been deleted.
+  \`dev --detach --keep\` turns the idle limit off, for a long job or for
+  traffic that goes to \`localhost:port\` only. \`bunx buncargo runs\` shows
+  the time left (\`idleStopsAt\` in \`runs --json\`); when a run is gone,
+  \`stop\` and \`ls\` say whether the watchdog stopped it and why. Start it
+  again with \`dev --detach\`.
 - A script that calls \`start()\` (a setup script, a test helper) and exits
   keeps its containers for as long as the checkout exists, unless it asked for
   a hold with \`claimRun({ idleTimeoutMs })\`. Its exit does not stop them.
+  When it reused containers an ended CLI run was holding, it takes over that
+  run's hold, and they go when the hold runs out after it ends.
 - A run whose process dies without stopping (a crash, \`kill -9\`) loses its
   containers about 15 seconds after the watchdog notices.
 - The watchdog is one background process per machine. Every 30 seconds it
@@ -308,7 +319,7 @@ const TOPICS: readonly Topic[] = [
 - A run line "postgres stopped (exit 0)" means a service container went down
   under the run; buncargo does not restart it. The line says which buncargo
   command stopped it, or that none did. Restart the run
-  (\`bunx buncargo stop --all\`, then \`bunx buncargo dev --detach\`) and
+  (\`bunx buncargo stop\`, then \`bunx buncargo dev --detach\`) and
   tell the user what stopped it.
 - \`bunx buncargo setup --yes\` runs the fix of every failing check (missing
   dependencies, generated files).
@@ -368,7 +379,7 @@ guide (40 lines; \`help agents <topic>\` for more). The rules:
 
 - Never \`docker run\` a database of your own: use \`bunx buncargo sql\`, and for a
   throwaway one \`bunx buncargo sql --create-scratch=<name>\`.
-- Start: \`bunx buncargo dev --detach\`. Stop: \`bunx buncargo stop --all\`, before
+- Start: \`bunx buncargo dev --detach\`. Stop: \`bunx buncargo stop\`, before
   you finish a task too, unless the person is still using the app.
 - "Could not allocate a free port block": \`dev\` already took back every idle
   block. Tell the user, with the holders the error lists; do not work around it.
