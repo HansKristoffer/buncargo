@@ -1,7 +1,6 @@
-import { getErrorMessage } from "hanzio";
 import type { AppStateDetail } from "../core/process/run-output";
 import { SeedFailedError } from "../environment/seed-startup";
-import { CliError } from "./errors";
+import { toCliError } from "./errors";
 
 /**
  * Why a dev run failed, as one block at the end of its output.
@@ -78,9 +77,9 @@ export function describeDevFailure(
 		};
 	}
 
-	const message = getErrorMessage(error);
+	// As `bin.ts` prints any other failure: a secrets error carries its fix.
+	const { message, hints: ownHints } = toCliError(error);
 	const [cause = "The run failed.", ...rest] = message.split("\n");
-	const ownHints = error instanceof CliError ? error.hints : [];
 	const { output } = context;
 	const app = output && failedApp(message, output.states);
 	if (!output || app === undefined)

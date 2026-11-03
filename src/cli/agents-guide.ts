@@ -50,7 +50,9 @@ When something fails:
   lists them; tell the user, who may free some (\`help agents ports\`).
   \`"unallocated"\` in \`status --json\` means the ports shown are not yours.
 - "a stale stack of this checkout": \`bunx buncargo dev --detach --replace-stale\`.
-- Infisical: run the \`infisical login --domain=…\` it prints.
+- Infisical session expired (\`bunx buncargo secrets check\` exits 2): ask the
+  user to run the \`infisical login --domain=…\` it prints. Never call
+  \`infisical\` yourself; no buncargo command prints a secret's value.
 - Anything else: \`bunx buncargo doctor\`, then \`help agents fail\`.
 
 More: \`bunx buncargo help agents <topic>\` (or \`all\`), topics:
@@ -321,6 +323,17 @@ const TOPICS: readonly Topic[] = [
   command stopped it, or that none did. Restart the run
   (\`bunx buncargo stop\`, then \`bunx buncargo dev --detach\`) and
   tell the user what stopped it.
+- No \`bun install\` first: in a fresh worktree, or after \`bun.lock\` changed,
+  buncargo runs \`bun install --frozen-lockfile\` itself (postinstall scripts
+  included) and then your command, with the install's output on stderr so
+  \`--json\` stays clean. If that install fails, fix what it printed and run
+  \`bun install\`.
+- \`bunx buncargo secrets check --json\` before tests or a run that needs
+  secrets: exit 0 when every Infisical scope is readable, 2 when the session is
+  missing or expired (the user runs the \`infisical login --domain=…\` it
+  prints), 3 when signed in but a scope cannot be read (\`error\` says why).
+  \`dev\`, \`run\` and \`exec\` stop within seconds on an expired session
+  instead of hanging.
 - \`bunx buncargo setup --yes\` runs the fix of every failing check (missing
   dependencies, generated files).
 - Docker out of disk, or hanging: \`bunx buncargo prune --project --dry-run\`
@@ -342,7 +355,6 @@ const TOPICS: readonly Topic[] = [
 	},
 ];
 
-/** The core, with its list of topics filled in. */
 /** The core, naming its topics. */
 export const AGENTS_GUIDE = CORE.replace(
 	"TOPICS",
