@@ -6,12 +6,17 @@ import {
 	FULL_RANGE_BASE_PORT,
 	fillPortRange,
 } from "../core/full-port-range.testing";
-import { claimOffset, readAllOffsetClaims } from "../core/offset-claims";
+import {
+	claimOffset,
+	getOffsetClaimsPath,
+	readAllOffsetClaims,
+} from "../core/offset-claims";
 import {
 	computeBaseOffset,
 	resolvePortPlan,
 	writePortsLockfile,
 } from "../core/port-allocation";
+import { writeJsonDocumentSync } from "../core/registry-file";
 import { buildRunEntry, publishRun } from "../core/run-registry";
 import { createDevEnvironment } from "./create-dev-environment";
 import { allocateReclaiming } from "./port-reclaim";
@@ -65,9 +70,12 @@ it("reclaims the least recently used block of stopped checkouts when every block
 		// holder-1 (offsets 3100 to 6000) was used longest ago.
 		expect(plan.offset).toBeGreaterThanOrEqual(3100);
 		expect(plan.offset).toBeLessThanOrEqual(6000);
-		expect(Object.keys(readAllOffsetClaims()).sort()).toEqual(
-			[roots[0], roots[2], newRoot].sort(),
-		);
+		// The claim stays, without its block: the checkout keeps its project
+		// name, and `prune` still counts it as an existing checkout.
+		const after = readAllOffsetClaims();
+		expect(Object.keys(after).sort()).toEqual([...roots, newRoot].sort());
+		expect(after[reclaimed]?.reclaimedAt).toBeString();
+		expect(after[roots[0]]?.reclaimedAt).toBeUndefined();
 		expect(String(warn.mock.calls[0]?.[0])).toContain(
 			`reclaimed offset 3100 from ${reclaimed} (idle, last used 30d ago)`,
 		);
@@ -95,6 +103,60 @@ it("reclaims the least recently used block of stopped checkouts when every block
 	});
 	expect(read.provenance).not.toBe("lockfile");
 	expect(read.offset).not.toBe(taken);
+
+	// Another checkout still may not run under its project name.
+	const twin = join(dir, "twin");
+	mkdirSync(twin);
+	expect(() =>
+		resolvePortPlan({
+			projectPrefix: "holder",
+			projectName: "holder-1",
+			root: twin,
+			services,
+			getOwner: () => null,
+		}),
+	).toThrow(`which ${reclaimed} already uses`);
+});
+
+it("reclaims a claim written before claims recorded their ports, by its lockfile's block", async () => {
+	const { roots, claims } = fillPortRange(dir, [2, 30, 10]);
+	// A legacy checkout at 3100, used longest ago; holder-1 keeps the rest.
+	const legacy = join(dir, "legacy");
+	mkdirSync(legacy);
+	writePortsLockfile(legacy, {
+		version: 1,
+		projectName: "legacy",
+		root: legacy,
+		offset: 3100,
+		ports: { db: FULL_RANGE_BASE_PORT + 3100 },
+		provenance: "hash",
+	});
+	const holder = claims[roots[1]];
+	writeJsonDocumentSync(getOffsetClaimsPath(), {
+		version: 1,
+		claims: {
+			...claims,
+			[roots[1]]: {
+				...holder,
+				offset: 3200,
+				ports: holder.ports?.filter(
+					(port) => port !== FULL_RANGE_BASE_PORT + 3100,
+				),
+			},
+			[legacy]: {
+				offset: 3100,
+				projectName: "legacy",
+				updatedAt: new Date(Date.now() - 60 * 86_400_000).toISOString(),
+			},
+		},
+	});
+	const warn = spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		expect((await allocate()).offset).toBe(3100);
+		expect(readAllOffsetClaims()[legacy]?.reclaimedAt).toBeString();
+	} finally {
+		warn.mockRestore();
+	}
 });
 
 it("fails with every holder and its state when every block is claimed by checkouts in use", async () => {

@@ -1,10 +1,11 @@
 import { pick } from "hanzio";
 import { readClaimStates } from "../container-runtime";
 import {
+	markOffsetClaimsReclaimed,
 	offsetClaimHolder,
-	releaseOffsetClaimsIfUnchanged,
 } from "../core/offset-claims";
 import {
+	type ClaimState,
 	chooseReclaim,
 	formatClaimAge,
 	PortBlockExhaustedError,
@@ -19,9 +20,14 @@ import { formatWarn } from "../core/style";
 const MAX_PORT_RECLAIMS = 3;
 
 /**
- * Run a claiming allocation; when the range is full, reclaim an idle
- * checkout's block and run it again. What `prepareStartAsync` allocates
- * through, so `dev`, `start()`, `ci` and the prisma path all reclaim.
+ * Run a claiming allocation; when the range is full, reclaim the block of
+ * the checkout started least recently that has no run and no containers, say
+ * whose, and run it again. What `prepareStartAsync` allocates through, so
+ * `dev`, `start()`, `ci` and the prisma path all reclaim.
+ *
+ * Reclaiming marks the claim (`reclaimedAt`) rather than dropping it, and
+ * touches no container or volume: the checkout keeps its project name and its
+ * database, and its next start allocates a new block.
  */
 export async function allocateReclaiming<T>(
 	allocate: () => T,
@@ -31,42 +37,42 @@ export async function allocateReclaiming<T>(
 		try {
 			return allocate();
 		} catch (error) {
-			const reclaimable =
-				error instanceof PortBlockExhaustedError &&
-				reclaims < MAX_PORT_RECLAIMS;
-			if (!reclaimable) throw error;
-			await reclaimPortBlock(error);
+			if (!(error instanceof PortBlockExhaustedError)) throw error;
+			const states = await readClaimStates(error.claims).catch(() => undefined);
+			if (!states)
+				throw new PortBlockExhaustedError(error, { reclaim: "unreadable" });
+			if (reclaims >= MAX_PORT_RECLAIMS)
+				throw new PortBlockExhaustedError(error, {
+					reclaim: "taken-meanwhile",
+					states,
+				});
+			await reclaimPortBlock(error, states);
 			signal?.throwIfAborted();
 		}
 	}
 }
 
-/**
- * A full range on a claiming start: drop the claims of the least recently
- * used block whose checkouts have no run and no containers, and say whose.
- * The caller allocates again. Throws the exhaustion again, now with every
- * holder's state, when no claim is idle or the states cannot be read.
- *
- * Never touches a container or a volume: the checkout keeps its data, and its
- * next start allocates a new block.
- */
-async function reclaimPortBlock(error: PortBlockExhaustedError): Promise<void> {
-	const states = await readClaimStates(error.claims).catch(() => undefined);
-	if (!states) throw error;
-	const choice = chooseReclaim(error.blocked, error.claims, states);
-	if (!choice) throw new PortBlockExhaustedError(error, states);
-
-	const released = await releaseOffsetClaimsIfUnchanged(
-		pick(error.claims, choice.keys),
-	);
-	// A claim that changed since the scan read it is back in use; the next
-	// attempt reads the claims afresh.
+async function reclaimPortBlock(
+	error: PortBlockExhaustedError,
+	states: Record<string, ClaimState>,
+): Promise<void> {
 	const now = Date.now();
-	for (const key of released) {
+	const choice = chooseReclaim(error.blocked, error.claims, states, now);
+	if (!choice)
+		throw new PortBlockExhaustedError(error, { reclaim: "none-idle", states });
+
+	// A claim a run used since the scan read it keeps its block; the next
+	// attempt reads the claims afresh, and that run's claim is too recent to
+	// choose again.
+	const marked = await markOffsetClaimsReclaimed(
+		pick(error.claims, choice.keys),
+		new Date(now).toISOString(),
+	);
+	for (const key of marked) {
 		const claim = error.claims[key];
 		console.warn(
 			formatWarn(
-				`Every port block was claimed: reclaimed offset ${claim.offset} from ${offsetClaimHolder(key, claim)} (idle, last used ${formatClaimAge(claim, now)} ago). That checkout gets new ports on its next start; its containers and volumes are untouched.`,
+				`Every port block was claimed: reclaimed offset ${claim.offset} from ${offsetClaimHolder(key, claim)} (idle, last used ${formatClaimAge(claim, now)} ago). That checkout gets new ports on its next start; its containers, volumes and project name are untouched.`,
 			),
 		);
 	}

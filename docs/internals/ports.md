@@ -90,21 +90,34 @@ per port.
   terminal), refuses while that checkout has a live run or containers in the idle hold, and
   touches no container or volume: whoever runs under the name next uses its volume.
 - Claims are not dropped by age on a timer, because an idle checkout's claim is what keeps its
-  ports and URLs. They are dropped when the range is full: a claiming allocation that finds
-  every block taken throws `PortBlockExhaustedError` with what blocks each offset, and
+  ports and URLs. Their blocks are taken back when the range is full: a claiming allocation that
+  finds every block taken throws `PortBlockExhaustedError` with what blocks each offset, and
   `prepareStartAsync` (`allocateReclaiming`, so `dev`, `start()`, `ci` and the prisma path)
-  reads which holders are idle, drops the claims of the block whose holders were all started
-  least recently, logs whose, and allocates again. Idle means no live run and no finished run
-  with services on record for the checkout, and no running container of the claim's project:
-  the registry's liveness and a container listing, paid only on a full range. A block a process
-  holds is probed then and never reclaimed, since its claim going would not free it. The
-  release compares each claim with what the scan read under the claims lock, so a run that
-  started in between keeps its block; that is why `claimOffset` rewrites `usedAt` on every
-  claiming run (one file write, no fork) rather than only when the claim changes. The
-  synchronous `prepareStart` does not reclaim: it has no liveness to read. The reclaimed
-  checkout's containers and volumes are untouched; its next start allocates a new block, and
-  its lockfile's offset is set aside as another checkout's claim. `ports release --idle`
-  drops the same idle claims by age on request. Neither touches a deleted checkout's claim.
+  reads which holders are idle, marks the claims of the block whose holders were all started
+  least recently `reclaimedAt`, logs whose, and allocates again. Idle means no live run and no
+  finished run with services on record for the checkout, no running container of the claim's
+  project (a runtime that is up and fails to list makes every claim unreadable, not idle), and
+  not used in the last hour: a start allocates before it records its run, and the named-hosts
+  prompt or `buncargo prisma`, which records none, sits in between. All of it is paid only on a
+  full range. A block a process holds is probed then and never reclaimed, since freeing its
+  claim would not free it.
+- A reclaimed claim is marked, not deleted. It holds no block (`claimsWithLockfilePorts`, and so
+  allocation, `pin`, `ports` and `doctor`'s overlaps, skip it) but stays for everything else:
+  the project-name refusal, `prune`'s existing checkouts, the orphan report and the sweep's
+  `isKnownStack`. Deleting it made an idle checkout's database look like an orphan to `prune`,
+  freed its project name for another checkout to run on its volume, and made its exited
+  containers foreign to the sweep. The checkout's next claiming run rewrites the claim without
+  the mark, on a new block once its lockfile's block is another checkout's. Until then a read in
+  it sets the lockfile aside when its own claim holds no block and another claim covers the
+  lockfile's block; a live run always holds its claim, so a pre-lock overlap still reads as the
+  run serving it does. Marking compares each claim's offset, name, `updatedAt` and `usedAt`
+  with what the scan read, under the claims lock, so a run that started in between keeps its
+  block; that is why `claimOffset` rewrites `usedAt` on every claiming run (one file write, no
+  fork). Not the whole claim: a reader fills a port-less claim's ports from its lockfile, and
+  the oldest claims, the ones a full range reaches first, are port-less. The synchronous
+  `prepareStart` does not reclaim: it has no liveness to read. `ports release --idle` marks the
+  same idle claims by age on request; `ports release --root` still deletes, since freeing the
+  name is its purpose. None touches a deleted checkout's claim, a container or a volume.
 - A read (`claim: false`) never throws on a full range: a checkout with no lockfile gets the
   hashed block with provenance `unallocated`. `status`, `env`, `url` and `ports` are what an agent
   reaches for in exactly that state, and every one of them failed with the allocation error, so

@@ -13,8 +13,10 @@ import {
 	type OffsetClaim,
 	offsetClaimConflict,
 	offsetClaimConflicts,
+	offsetClaimHoldsBlock,
 	offsetClaimKey,
 	projectNameClaimant,
+	readAllOffsetClaims,
 	readOffsetClaims,
 	withOffsetClaimsLock,
 } from "./offset-claims";
@@ -179,7 +181,12 @@ function portOwnerName(key: string): string {
 	return key.split("#")[0] ?? key;
 }
 
-/** Ports an allocation can inspect, for one scoped asynchronous cwd reading. */
+/**
+ * Ports an allocation can inspect, for one scoped asynchronous cwd reading.
+ * Only the hashed range's blocks: the search goes higher only when every one
+ * of them is taken, and a block there costs one lookup of its own then,
+ * rather than every run reading the processes on every port up to 32767.
+ */
 export function candidateAllocationPorts(
 	input: Pick<
 		Parameters<typeof resolvePortPlan>[0],
@@ -197,10 +204,7 @@ export function candidateAllocationPorts(
 	const block = { ...base, ...extraPortMap(input.apps, base, base) };
 	const offsets = new Set([
 		currentOffset,
-		...candidateOffsets(
-			computeBaseOffset(input),
-			maxPortOffset(Object.values(block)),
-		),
+		...candidateOffsets(computeBaseOffset(input), HASHED_OFFSET_MAX),
 	]);
 	return Object.entries(block)
 		.filter(
@@ -293,7 +297,9 @@ export function readOffsetClaimsWithPorts(): Record<string, OffsetClaim> {
 }
 
 /**
- * The claims, with a port-less claim's ports read from its checkout's lockfile.
+ * The claims that hold a block, with a port-less claim's ports read from its
+ * checkout's lockfile. A reclaimed claim holds none: it keeps its project
+ * name, but its block is another checkout's to take.
  *
  * A claim written before claims carried their ports holds only its offset, so
  * a newcomer could take a block overlapping it and the incumbent moved on its
@@ -303,7 +309,10 @@ export function readOffsetClaimsWithPorts(): Record<string, OffsetClaim> {
 function claimsWithLockfilePorts(
 	claims: Record<string, OffsetClaim>,
 ): Record<string, OffsetClaim> {
-	return mapValues(claims, (claim, key) => {
+	const holding = Object.fromEntries(
+		Object.entries(claims).filter(([, claim]) => offsetClaimHoldsBlock(claim)),
+	);
+	return mapValues(holding, (claim, key) => {
 		// A suffixed environment has no lockfile; its checkout's is dev's.
 		if (claim.ports || claim.suffix) return claim;
 		const lockfile = readPortsLockfile(key);
@@ -532,26 +541,42 @@ function planPorts(
 	// Other claims are skipped whether or not their runs are running; only a
 	// claiming run writes its own.
 	const claimKey = offsetClaimKey(root, suffix);
-	const claims = claimsWithLockfilePorts(existingClaims ?? readOffsetClaims());
 	const blockPorts = (ports: Record<string, number>) => [
 		...Object.values(withExtras(ports)),
 		...(input.companionPorts?.(ports) ?? []),
 	];
+	// Every other claim is read only past the read's fast path: a lockfile
+	// whose own claim holds its block answers from one read of the file.
+	let readClaims: Record<string, OffsetClaim> | undefined;
+	const allClaims = () => {
+		readClaims ??= claimsWithLockfilePorts(
+			existingClaims ?? readOffsetClaims(),
+		);
+		return readClaims;
+	};
 	const claimant = (offset: number, ports: Record<string, number>) =>
-		offsetClaimConflict(claims, { offset, ports: blockPorts(ports) }, claimKey);
+		offsetClaimConflict(
+			allClaims(),
+			{ offset, ports: blockPorts(ports) },
+			claimKey,
+		);
 	const lockfile = readPortsLockfile(root);
 	const notOurs = lockfile && foreignLockfile(lockfile, { projectName, root });
 	const ownLockfile = lockfile && !notOurs ? lockfile : undefined;
 	// A full range reclaimed this checkout's block for another one: its
-	// lockfile still names the block, and its claim is gone. A live run always
-	// holds its claim, so a block two claims share (a pre-lock race) still
-	// reads as the lockfile says, as the run serving it does.
-	const reclaimed =
+	// lockfile still names the block, and its claim holds none. A live run
+	// always holds its claim, so a block two claims share (a pre-lock race)
+	// still reads as the lockfile says, as the run serving it does.
+	const ownClaimHolds = () => {
+		const own = readAllOffsetClaims()[claimKey];
+		return own !== undefined && offsetClaimHoldsBlock(own);
+	};
+	const reclaimed = () =>
 		ownLockfile !== undefined &&
-		claims[claimKey] === undefined &&
+		!ownClaimHolds() &&
 		claimant(ownLockfile.offset, shiftPorts(basePorts, ownLockfile.offset)) !==
 			undefined;
-	if (!probeConflicts && ownLockfile && !reclaimed) {
+	if (!probeConflicts && ownLockfile && !reclaimed()) {
 		// A config edit must not make a maintenance command switch away from
 		// the endpoints the last startup published. New keys use the same offset.
 		const ports = Object.fromEntries(
@@ -567,6 +592,7 @@ function planPorts(
 		return { offset: ownLockfile.offset, ports, provenance: "lockfile" };
 	}
 
+	const claims = allClaims();
 	const conflictAt = (ports: Record<string, number>) =>
 		findForeignConflict(probed(withExtras(ports)), {
 			root,

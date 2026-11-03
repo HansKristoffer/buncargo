@@ -48,7 +48,7 @@ bunx buncargo sql --drop-scratch=migcheck
 bunx buncargo ports               # This checkout's ports, and every checkout's offset
 bunx buncargo ports pin 2500      # Keep this checkout on offset 2500
 bunx buncargo ports release --root ../old-worktree   # Drop another checkout's claims
-bunx buncargo ports release --idle=7d   # Drop claims of checkouts not started for a week
+bunx buncargo ports release --idle=7d   # Free the blocks of checkouts not started for a week
 bunx buncargo send expoApp i      # Type into an app that has a terminal of its own
 bunx buncargo doctor
 bunx buncargo doctor --fix
@@ -873,8 +873,9 @@ worktree shares the main clone's. Derive its prefix from the worktree:
 
 When every block is claimed, `dev` and `start()` reclaim the block of the
 checkout started least recently that has no run and no containers (running or
-in the idle hold), say whose, and allocate again. That checkout keeps its
-containers and volumes and gets a new block on its next start. When nothing can
+in the idle hold) and was not started in the last hour, say whose, and
+allocate again. That checkout keeps its containers, volumes and project name,
+and gets a new block on its next start. When nothing can
 be reclaimed, the error lists every checkout in the way with its state and when
 it last started, and the commands that free one. A checkout that has never run
 reads as `unallocated` in that state (`status`, `env`, `ports`): its ports are
@@ -882,10 +883,11 @@ another checkout's until `dev` or `ports pin` gives it a block, and `exec`
 refuses to run on them.
 
 `buncargo ports release --idle=7d` (a bare number is days; `12h` and `30m`
-work too) drops the claims of every checkout not started for longer than that,
-with no run and no containers. It lists them and asks first, like `--root`, and
-touches no container or volume. A deleted checkout's claim is left to the
-sweep, which uses it to find that checkout's volumes.
+work too) frees the blocks of every checkout not started for longer than that,
+with no run and no containers, the way a full range does. It lists them and
+asks first, like `--root`, and touches no container or volume; each checkout
+keeps its project name. A deleted checkout's claim is left to the sweep, which
+uses it to find that checkout's volumes.
 
 A claim otherwise stays until its checkout runs again or is deleted, so a checkout that
 last ran an older config keeps that config's project name, and the refusal

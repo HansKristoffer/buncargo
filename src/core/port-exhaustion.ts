@@ -1,6 +1,8 @@
+import { typedSwitch } from "hanzio";
 import {
 	type OffsetClaim,
 	offsetClaimHolder,
+	offsetClaimHoldsBlock,
 	offsetClaimLastUsed,
 	offsetClaimRoot,
 } from "./offset-claims";
@@ -11,6 +13,22 @@ import {
  * (`held`), or neither (`idle`). Only an idle claim may be reclaimed.
  */
 export type ClaimState = "running" | "held" | "idle";
+
+/**
+ * A claim used this recently is never reclaimed, whatever its state: a start
+ * allocates before it records its run, and in between (the named-hosts
+ * prompt, the menu bar offer, a `prisma` command that records none) it has a
+ * fresh claim, no run and no container yet.
+ */
+export const RECLAIM_MIN_IDLE_MS = 3_600_000;
+
+/**
+ * What became of reclaiming when the error was thrown: not tried (the
+ * synchronous path), nothing idle to reclaim, the states could not be read,
+ * or the blocks it reclaimed were taken by other starts first.
+ */
+export type ReclaimOutcome =
+	"not-tried" | "none-idle" | "unreadable" | "taken-meanwhile";
 
 /** One offset a full scan could not use, and what is in the way. */
 export interface BlockedOffset {
@@ -34,10 +52,13 @@ export class PortBlockExhaustedError extends Error {
 
 	constructor(
 		input: Omit<PortBlockExhaustedError, keyof Error>,
-		states?: Record<string, ClaimState>,
+		outcome: {
+			reclaim: ReclaimOutcome;
+			states?: Record<string, ClaimState>;
+		} = { reclaim: "not-tried" },
 		now = Date.now(),
 	) {
-		super(describePortExhaustion(input, states, now));
+		super(describePortExhaustion(input, outcome, now));
 		this.name = "PortBlockExhaustedError";
 		this.root = input.root;
 		this.range = input.range;
@@ -73,23 +94,35 @@ export function claimStates(
 	);
 }
 
+/** Whether a claim may give its block up: idle, and not used in the last {@link RECLAIM_MIN_IDLE_MS}. */
+function reclaimable(
+	claim: OffsetClaim,
+	state: ClaimState | undefined,
+	now: number,
+): boolean {
+	return state === "idle" && now - lastUsedMs(claim) >= RECLAIM_MIN_IDLE_MS;
+}
+
 /**
- * Which claims a full range drops, or undefined when none can go: those of the
- * block whose claims are all idle and were used least recently, judged by the
- * most recent of them. Ties go to the scan order, so the choice is the same
- * on every machine with the same claims.
+ * Which claims a full range reclaims, or undefined when none can go: those of
+ * the block whose claims are all reclaimable and were used least recently,
+ * judged by the most recent of them. Ties go to the scan order, so the choice
+ * is the same on every machine with the same claims.
  */
 export function chooseReclaim(
 	blocked: readonly BlockedOffset[],
 	claims: Record<string, OffsetClaim>,
 	states: Record<string, ClaimState>,
+	now: number,
 ): { offset: number; keys: string[] } | undefined {
 	let best: { offset: number; keys: string[]; usedAt: number } | undefined;
 	for (const block of blocked) {
 		const freeable =
 			!block.unusable &&
 			block.claimKeys.length > 0 &&
-			block.claimKeys.every((key) => states[key] === "idle");
+			block.claimKeys.every((key) =>
+				reclaimable(claims[key], states[key], now),
+			);
 		if (!freeable) continue;
 		const usedAt = Math.max(
 			...block.claimKeys.map((key) => lastUsedMs(claims[key])),
@@ -100,7 +133,10 @@ export function chooseReclaim(
 	return best && { offset: best.offset, keys: best.keys };
 }
 
-/** Claims idle for longer than `idleMs`, for `ports release --idle`. */
+/**
+ * The claims holding a block that are reclaimable and were last used longer
+ * than `idleMs` ago, for `ports release --idle`.
+ */
 export function idleClaims(
 	claims: Record<string, OffsetClaim>,
 	states: Record<string, ClaimState>,
@@ -110,7 +146,9 @@ export function idleClaims(
 	return Object.fromEntries(
 		Object.entries(claims).filter(
 			([key, claim]) =>
-				states[key] === "idle" && now - lastUsedMs(claim) > idleMs,
+				offsetClaimHoldsBlock(claim) &&
+				reclaimable(claim, states[key], now) &&
+				now - lastUsedMs(claim) > idleMs,
 		),
 	);
 }
@@ -143,10 +181,14 @@ export const CLAIM_STATE_LABELS: Record<ClaimState, string> = {
  */
 export function describePortExhaustion(
 	input: Omit<PortBlockExhaustedError, keyof Error>,
-	states: Record<string, ClaimState> | undefined,
+	outcome: {
+		reclaim: ReclaimOutcome;
+		states?: Record<string, ClaimState>;
+	},
 	now: number,
 ): string {
 	const { root, range, blocked, claims } = input;
+	const { states } = outcome;
 	const keys = [...new Set(blocked.flatMap((block) => block.claimKeys))].sort(
 		(a, b) => lastUsedMs(claims[a]) - lastUsedMs(claims[b]),
 	);
@@ -169,9 +211,19 @@ export function describePortExhaustion(
 				`${otherCount} taken by processes or out of range, e.g. at ${firstOther.offset}: ${firstOther.problem}.`,
 			]
 		: [];
-	const nothingIdle = states
-		? " No block could be reclaimed: every claim on one is running or holds containers, or a process holds one of its ports."
-		: "";
+	const reclaimed = typedSwitch(outcome.reclaim, {
+		"not-tried": () => "",
+		"none-idle": () =>
+			" No block could be reclaimed: every claim on one is running, holds containers or was used in the last hour, or a process holds one of its ports.",
+		unreadable: () =>
+			" Which holders are idle could not be read (the run registry or a container runtime did not answer), so no block was reclaimed.",
+		"taken-meanwhile": () =>
+			" The idle blocks reclaimed for it were taken by other starts first.",
+	});
+	const selfReclaim =
+		outcome.reclaim === "not-tried"
+			? " `buncargo dev` and `prepareStartAsync()` reclaim an idle checkout's block by themselves."
+			: "";
 	const pin =
 		input.pinnable === undefined
 			? []
@@ -179,12 +231,13 @@ export function describePortExhaustion(
 					`Or move this checkout above the range: \`buncargo ports pin ${input.pinnable}\`.`,
 				];
 	return [
-		`Could not allocate a free port block for ${root}: every offset from ${range.min} to ${range.max} (starting at ${range.hashed}) is taken.${nothingIdle}`,
+		`Could not allocate a free port block for ${root}: every offset from ${range.min} to ${range.max} (starting at ${range.hashed}) is taken.${reclaimed}`,
 		...(holderLines.length > 0
 			? ["Claims in the way, least recently used first:", ...holderLines]
 			: []),
 		...otherLine,
-		"Free one: stop a checkout you no longer need (`buncargo stop --all --root <path>`) and drop its claims (`buncargo ports release --root <path>`), or drop every claim idle for a week (`buncargo ports release --idle=7d`). `buncargo dev` reclaims an idle checkout's block by itself.",
+		"Free one: stop a checkout you no longer need (`buncargo stop --all --root <path>`) and drop its claims (`buncargo ports release --root <path>`), or free the blocks of checkouts idle for a week (`buncargo ports release --idle=7d`)." +
+			selfReclaim,
 		...pin,
 	].join("\n");
 }

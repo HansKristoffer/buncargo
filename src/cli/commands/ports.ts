@@ -6,13 +6,13 @@ import {
 import { tailscaleBlockPorts } from "../../core/hosts/tailscale-serve";
 import {
 	describeOffsetClaimOverlap,
+	markOffsetClaimsReclaimed,
 	offsetClaimHolder,
 	offsetClaimRoot,
 	offsetClaimsOf,
 	overlappingOffsetClaims,
 	readOffsetClaims,
 	releaseOffsetClaims,
-	releaseOffsetClaimsIfUnchanged,
 } from "../../core/offset-claims";
 import {
 	PORT_OFFSET_STEP,
@@ -58,7 +58,7 @@ const FLAGS = {
 		kind: "string",
 		valueHint: "=<duration>",
 		description:
-			"ports release: drop the claims of checkouts idle longer than this (7d, 12h; a bare number is days) with no run and no containers. Deleted checkouts' claims are left to the sweep",
+			"ports release: free the blocks of checkouts idle longer than this (7d, 12h; a bare number is days) with no run and no containers; each keeps its project name. Deleted checkouts' claims are left to the sweep",
 	},
 	yes: {
 		name: "--yes",
@@ -88,19 +88,29 @@ export const PORTS_COMMAND_SPEC: CommandSpec = {
 		{
 			command: "buncargo ports release --idle=7d",
 			description:
-				"Drop the claims of every checkout not started for a week, with no run and no containers",
+				"Free the blocks of every checkout not started for a week, with no run and no containers",
 		},
 	],
 };
 
-/** `7d`, `12h`, `30m`, or a bare number of days, in milliseconds. */
-export function parseIdleDuration(value: string): number | undefined {
+const DURATION_UNIT_MS: Record<string, number> = {
+	d: 86_400_000,
+	h: 3_600_000,
+	m: 60_000,
+};
+
+/**
+ * `7d`, `12h`, `30m`, or a bare number of days: in milliseconds, and as the
+ * messages spell it. Undefined for anything else, zero included.
+ */
+export function parseIdleDuration(
+	value: string,
+): { ms: number; label: string } | undefined {
 	const match = /^(\d+(?:\.\d+)?)(d|h|m)?$/.exec(value.trim());
 	if (!match) return undefined;
-	const unit = { d: 86_400_000, h: 3_600_000, m: 60_000 }[
-		(match[2] ?? "d") as "d" | "h" | "m"
-	];
-	return Number(match[1]) * unit;
+	const unit = match[2] ?? "d";
+	const ms = Number(match[1]) * DURATION_UNIT_MS[unit];
+	return ms > 0 ? { ms, label: `${match[1]}${unit}` } : undefined;
 }
 
 /** A whole number of steps, so pinned blocks line up with allocated ones. */
@@ -148,7 +158,7 @@ export async function handlePorts(args: string[]): Promise<number> {
 		problems.push(`Unknown subcommand: ${subcommand}`);
 	const root = readStringFlag(args, FLAGS.root, problems);
 	const idle = readStringFlag(args, FLAGS.idle, problems);
-	const idleMs = idle === undefined ? undefined : parseIdleDuration(idle);
+	const idleFor = idle === undefined ? undefined : parseIdleDuration(idle);
 	const yes = readBooleanFlag(args, FLAGS.yes);
 	if (subcommand === "release") {
 		if (value !== undefined) problems.push(`Unexpected argument: ${value}`);
@@ -156,7 +166,7 @@ export async function handlePorts(args: string[]): Promise<number> {
 			problems.push(
 				"ports release needs either the checkout (--root <path>) or an idle time (--idle=7d).",
 			);
-		if (idle !== undefined && idleMs === undefined)
+		if (idle !== undefined && idleFor === undefined)
 			problems.push(
 				`--idle takes a duration such as 7d, 12h or 30m (a bare number is days): got "${idle}".`,
 			);
@@ -165,12 +175,8 @@ export async function handlePorts(args: string[]): Promise<number> {
 	if (problems.length > 0) throw argumentsError(problems, "ports");
 	if (subcommand === "release" && root !== undefined)
 		return releaseClaims(resolve(root), yes);
-	if (subcommand === "release" && idle !== undefined && idleMs !== undefined)
-		return releaseIdleClaims(
-			/^[\d.]+$/.test(idle) ? `${idle}d` : idle,
-			idleMs,
-			yes,
-		);
+	if (subcommand === "release" && idleFor !== undefined)
+		return releaseIdleClaims(idleFor, yes);
 
 	const env = await loadDevEnv({ readOnly: true });
 
@@ -203,7 +209,7 @@ export async function handlePorts(args: string[]): Promise<number> {
 		}
 		if (unallocated)
 			log.hint(
-				"`buncargo ports release --idle=7d` drops the claims of checkouts not started for a week that have no run and no containers.",
+				"`buncargo ports release --idle=7d` frees the blocks of checkouts not started for a week that have no run and no containers.",
 			);
 		const overlaps = overlappingOffsetClaims(claims);
 		if (overlaps.length > 0) {
@@ -327,23 +333,25 @@ async function releaseClaims(root: string, yes: boolean): Promise<number> {
 }
 
 /**
- * `buncargo ports release --idle=<duration>`: drop the claims of every
- * checkout not started for longer than `idleMs` that has no run and no
- * containers, the ones a full range would reclaim first.
+ * `buncargo ports release --idle=<duration>`: free the blocks of every
+ * checkout not started for that long that has no run and no containers, the
+ * ones a full range would reclaim first, the same way: each claim is marked
+ * reclaimed and stays, so its checkout keeps its project name and its
+ * volumes stay known to `prune`.
  *
  * A deleted checkout's claim is not among them: allocation already ignores
- * it, and it is the sweep's record of its volumes. A claim a run refreshed
- * between the listing and the confirmation stays.
+ * it, and it is the sweep's record of its volumes. A claim a run used
+ * between the listing and the confirmation keeps its block.
  */
 async function releaseIdleClaims(
-	label: string,
-	idleMs: number,
+	idleFor: { ms: number; label: string },
 	yes: boolean,
 ): Promise<number> {
+	const { label } = idleFor;
 	const claims = readOffsetClaims();
 	const states = await readClaimStates(claims);
 	const now = Date.now();
-	const stale = idleClaims(claims, states, idleMs, now);
+	const stale = idleClaims(claims, states, idleFor.ms, now);
 	const keys = Object.keys(stale);
 	if (keys.length === 0) {
 		log.info(
@@ -358,7 +366,7 @@ async function releaseIdleClaims(
 			`  ${String(claim.offset).padStart(5)}  ${offsetClaimHolder(key, claim)}: project ${claim.projectName}, last used ${formatClaimAge(claim, now)} ago`,
 		);
 	log.warn(
-		"Another checkout can then take these ports and run under these project names, using any volume left under them, its database included. No container or volume is touched, and each checkout's next run claims again, on new ports if its block was taken.",
+		"Other checkouts can then take these ports. Each claim stays without its block, so its checkout keeps its project name and its database; its next run claims a block again, on new ports if this one was taken. No container or volume is touched.",
 	);
 
 	const count = `${keys.length} claim${keys.length === 1 ? "" : "s"}`;
@@ -378,9 +386,12 @@ async function releaseIdleClaims(
 		}
 	}
 
-	const released = await releaseOffsetClaimsIfUnchanged(stale);
+	const released = await markOffsetClaimsReclaimed(
+		stale,
+		new Date(now).toISOString(),
+	);
 	log.success(
-		`Released ${released.length} claim${released.length === 1 ? "" : "s"}.`,
+		`Freed the blocks of ${released.length} claim${released.length === 1 ? "" : "s"}.`,
 	);
 	const kept = keys.length - released.length;
 	if (kept > 0)

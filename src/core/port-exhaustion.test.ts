@@ -44,7 +44,7 @@ it("reclaims the block whose claims were all used least recently", () => {
 		"/w/older": "idle",
 	} as const;
 
-	expect(chooseReclaim(blocked, claims, allIdle)).toEqual({
+	expect(chooseReclaim(blocked, claims, allIdle, now)).toEqual({
 		offset: 200,
 		keys: ["/w/oldest"],
 	});
@@ -54,6 +54,7 @@ it("reclaims the block whose claims were all used least recently", () => {
 			[blockedBy(200, "/w/oldest", "/w/recent"), blockedBy(300, "/w/older")],
 			claims,
 			allIdle,
+			now,
 		),
 	).toEqual({ offset: 300, keys: ["/w/older"] });
 });
@@ -69,6 +70,7 @@ it("never reclaims a block a running or held checkout claims, or one a process h
 			[blockedBy(200, "/w/oldest"), blockedBy(300, "/w/older")],
 			claims,
 			states,
+			now,
 		),
 	).toBeUndefined();
 	expect(
@@ -76,8 +78,27 @@ it("never reclaims a block a running or held checkout claims, or one a process h
 			[{ ...blockedBy(100, "/w/recent"), unusable: true }],
 			claims,
 			states,
+			now,
 		),
 	).toBeUndefined();
+});
+
+it("never reclaims a claim used in the last hour: a start allocates before it records its run", () => {
+	const starting: OffsetClaim = {
+		...claim(600, 0),
+		usedAt: new Date(now - 10 * 60_000).toISOString(),
+	};
+	expect(
+		chooseReclaim(
+			[blockedBy(600, "/w/starting")],
+			{ "/w/starting": starting },
+			{ "/w/starting": "idle" },
+			now,
+		),
+	).toBeUndefined();
+	expect(
+		idleClaims({ "/w/starting": starting }, { "/w/starting": "idle" }, 0, now),
+	).toEqual({});
 });
 
 it("reads a checkout with a live run as running, one with a finished run or a running container as held", () => {
@@ -109,12 +130,14 @@ it("finds the idle claims not used for longer than a duration, an old claim by i
 		projectName: "legacy",
 		updatedAt: daysAgo(20),
 	};
-	const all = { ...claims, "/w/legacy": legacy };
+	const reclaimed: OffsetClaim = { ...claim(700, 50), reclaimedAt: daysAgo(1) };
+	const all = { ...claims, "/w/legacy": legacy, "/w/reclaimed": reclaimed };
 	const states = {
 		"/w/recent": "idle",
 		"/w/oldest": "held",
 		"/w/older": "idle",
 		"/w/legacy": "idle",
+		"/w/reclaimed": "idle",
 	} as const;
 	expect(Object.keys(idleClaims(all, states, 7 * DAY, now))).toEqual([
 		"/w/older",
@@ -135,7 +158,14 @@ it("lists every holder in the way with its state and age, and the commands that 
 			claims,
 			pinnable: 400,
 		},
-		{ "/w/recent": "running", "/w/oldest": "held", "/w/older": "idle" },
+		{
+			reclaim: "none-idle",
+			states: {
+				"/w/recent": "running",
+				"/w/oldest": "held",
+				"/w/older": "idle",
+			},
+		},
 		now,
 	);
 	expect(message).toStartWith(

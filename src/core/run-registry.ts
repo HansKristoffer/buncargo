@@ -752,9 +752,17 @@ export async function findRunsByRoot(root: string): Promise<RunEntry[]> {
 export async function findCheckoutRuns(
 	root: string,
 ): Promise<{ live: RunEntry[]; held: RunEntry[] }> {
-	const runs = (await loadRuns({ strict: true })).filter(
-		(run) => run.root === root,
-	);
+	return readCheckoutRuns((run) => run.root === root);
+}
+
+/**
+ * {@link findCheckoutRuns} for every entry `select` keeps, with one liveness
+ * read: what a full port range asks of every claim's checkout at once.
+ */
+export async function readCheckoutRuns(
+	select: (run: RunEntry) => boolean,
+): Promise<{ live: RunEntry[]; held: RunEntry[] }> {
+	const runs = (await loadRuns({ strict: true })).filter(select);
 	const alive = await runLivenessAsync(runs);
 	return {
 		live: runs.filter(alive),

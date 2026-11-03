@@ -154,7 +154,14 @@ it("releases only the claims idle for longer than the duration, of checkouts wit
 		"Refusing to release 1 claim without a terminal.",
 	);
 	expect(await handlePorts(["release", "--idle", "7", "--yes"])).toBe(0);
-	expect(Object.keys(readAllOffsetClaims())).toEqual([roots[0], roots[2]]);
+	const reclaimed = Object.entries(readAllOffsetClaims())
+		.filter(([, claim]) => claim.reclaimedAt !== undefined)
+		.map(([key]) => key);
+	expect(reclaimed).toEqual([roots[1]]);
+	for (const value of ["soon", "0"])
+		await expect(handlePorts(["release", `--idle=${value}`])).rejects.toThrow(
+			`got "${value}"`,
+		);
 	await expect(handlePorts(["release", "--idle=soon"])).rejects.toThrow(
 		'--idle takes a duration such as 7d, 12h or 30m (a bare number is days): got "soon".',
 	);

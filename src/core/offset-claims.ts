@@ -56,6 +56,13 @@ export interface OffsetClaim {
 	 * recorded was last used at its `updatedAt`.
 	 */
 	usedAt?: string;
+	/**
+	 * When a full range or `ports release --idle` gave this claim's block to
+	 * other checkouts. The claim stays, holding no block: it still keeps the
+	 * checkout's project name to itself and its volumes known to `prune` and
+	 * the sweep. The checkout's next claiming run claims a block again.
+	 */
+	reclaimedAt?: string;
 	/** Set on a suffixed claim, whose key is not the bare root. */
 	root?: string;
 	suffix?: string;
@@ -334,11 +341,12 @@ export function claimOffset(input: {
 	const unchanged =
 		current?.offset === offset &&
 		current.projectName === projectName &&
-		current.ports?.join() === ports.join();
+		current.ports?.join() === ports.join() &&
+		current.reclaimedAt === undefined;
 	// Written on every claiming run, even when nothing else changed: a reclaim
-	// that read this claim as idle compares it before dropping it
-	// (`releaseOffsetClaimsIfUnchanged`), so a run that started in between
-	// keeps its block. One file write, under the lock the caller already holds.
+	// that read this claim as idle compares it before marking it
+	// (`markOffsetClaimsReclaimed`), so a run that started in between keeps
+	// its block. One file write, under the lock the caller already holds.
 	claims[key] = unchanged
 		? { ...current, usedAt: now }
 		: {
@@ -357,34 +365,48 @@ export function offsetClaimLastUsed(claim: OffsetClaim): string {
 	return claim.usedAt ?? claim.updatedAt;
 }
 
+/** Whether a claim holds its block: every claim does until it is reclaimed. */
+export function offsetClaimHoldsBlock(claim: OffsetClaim): boolean {
+	return claim.reclaimedAt === undefined;
+}
+
 /**
- * Drop each claim of `expected` that is still exactly as it was read, and
- * whose checkout still exists. A claim a run refreshed or rewrote in the
- * meantime stays, and so does a deleted checkout's: it is the sweep's record
- * of its volumes. Returns the keys it dropped.
+ * Mark each claim of `expected` reclaimed if no run has used it since it was
+ * read, and its checkout still exists. A claim a run refreshed or rewrote in
+ * the meantime keeps its block, and a deleted checkout's is the sweep's. The
+ * claim itself stays (see {@link OffsetClaim.reclaimedAt}). Returns the keys
+ * it marked.
  */
-export async function releaseOffsetClaimsIfUnchanged(
+export async function markOffsetClaimsReclaimed(
 	expected: Record<string, OffsetClaim>,
+	at: string,
 ): Promise<string[]> {
 	const keys = Object.keys(expected);
 	if (keys.length === 0) return [];
 	return withFileLock(getOffsetClaimsPath(), async () => {
 		const claims = readAllOffsetClaims();
-		const released = keys.filter((key) => {
+		const marked = keys.filter((key) => {
 			const current = claims[key];
+			const read = expected[key];
+			// Compared by what a run changes, not whole: a reader may have
+			// filled in a port-less claim's ports from its lockfile.
 			return (
 				current !== undefined &&
-				JSON.stringify(current) === JSON.stringify(expected[key]) &&
+				offsetClaimHoldsBlock(current) &&
+				current.offset === read.offset &&
+				current.projectName === read.projectName &&
+				current.updatedAt === read.updatedAt &&
+				current.usedAt === read.usedAt &&
 				!checkoutDeleted(offsetClaimRoot(key, current))
 			);
 		});
-		for (const key of released) delete claims[key];
-		if (released.length > 0)
+		for (const key of marked) claims[key].reclaimedAt = at;
+		if (marked.length > 0)
 			writeJsonDocumentSync(getOffsetClaimsPath(), {
 				version: VERSION,
 				claims,
 			});
-		return released;
+		return marked;
 	});
 }
 
