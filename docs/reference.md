@@ -8,6 +8,7 @@ bunx buncargo dev --apps=api,web  # Named apps plus transitive requiredApps
 bunx buncargo dev --profile=full  # The apps of profiles.full
 bunx buncargo dev --no-tui        # Prefixed lines instead of the terminal UI
 bunx buncargo dev --detach        # In the background; returns once the apps are up
+bunx buncargo dev --detach --keep # Same, without the 2-hour idle limit
 bunx buncargo dev --no-watch      # Ignore the apps' watch config for this run
 bunx buncargo dev --attach=expoApp
 bunx buncargo dev --expose
@@ -35,6 +36,7 @@ bunx buncargo runs --json         # Same, machine-readable
 bunx buncargo stop api            # Stop one dev server
 bunx buncargo stop postgres       # Stop one service's container
 bunx buncargo stop --all          # Stop this checkout's whole run
+bunx buncargo stop                # Same as stop --all
 bunx buncargo restart shopify     # Start a stopped app of a running dev again
 bunx buncargo logs                # Every app's output from the current or last run
 bunx buncargo logs shopify --errors -f --since=5m
@@ -120,7 +122,9 @@ When the project's `package.json` lists buncargo but it is not installed, it sto
 
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`), including `vars`: the variables `exec`, tasks and the apps are given, without their Infisical secrets. `--get ports.api` prints one raw value for scripts, and a bare name (`--get DATABASE_URL`) reads from `vars`. `--export` prints `vars` as quoted `export` lines.
 
-`buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached.log` and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed. A failure ends the output with one block: what failed in one line (the app, the seed or the step), its last 20 lines of output, the setup checks that warned before the start, and what to run next (`buncargo logs <app>`), so `dev --detach | tail` shows the cause. Attached `dev` ends a failed start with the same block. Stop it with `buncargo stop --all`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
+`buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached.log` and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed. A failure ends the output with one block: what failed in one line (the app, the seed or the step), its last 20 lines of output, the setup checks that warned before the start, and what to run next (`buncargo logs <app>`), so `dev --detach | tail` shows the cause. Attached `dev` ends a failed start with the same block. Stop it with `buncargo stop`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
+
+A detached run stops by itself after 2 hours idle: no request through buncargo's named-hosts proxy to this checkout and no `buncargo` command run in it. `buncargo runs` and `ls` show the time left (`runs --json` gives it as `idleStopsAt`), and once the watchdog has stopped a run, `stop` and `ls` say so and why. While a `dev` in a terminal runs in the same checkout, the detached run is left alone, since that run may be serving from its apps. `dev --detach --keep` turns the limit off. Traffic that does not pass the proxy does not count: `localhost:port`, a public tunnel, and Tailscale mode (`BUNCARGO_HOSTS=tailscale`, where detached runs get no limit). With named hosts on and a hosts daemon that does not count requests (one older than the limit, or none running), the limit is not enforced; `buncargo hosts install` updates the daemon. A detached run whose checkout has been deleted for 10 minutes is stopped too, `--keep` or not. A run in a terminal is never stopped either way.
 
 `buncargo sql --create-scratch=<name>` drops and recreates an empty Postgres database `scratch_<name>` in this checkout's container and prints its URL alone on stdout, so `DATABASE_URL=$(buncargo sql --create-scratch=migcheck) bun test` works. When the database service is down, it starts that one service first (no apps, no other services), and leaves it running as `dev --up-only` does. `--drop-scratch=<name>` drops it. The prefix is always added, so neither can touch a database the project uses. A scratch database lives in the checkout's volume: `dev --reset` and `prune` remove it with the rest.
 
@@ -1080,6 +1084,7 @@ with Docker stopped.
 bunx buncargo stop api        # SIGTERM that dev server's process group
 bunx buncargo stop postgres   # docker/container stop for that service
 bunx buncargo stop --all      # checkout sessions and their idle containers; retains containers another live session needs
+bunx buncargo stop            # the same as --all (`buncargo down` runs it too, with a hint)
 bunx buncargo stop api --run=<session-id>  # select an exact run
 ```
 
@@ -1641,12 +1646,13 @@ Programmatic: `openPublicTunnels({ names?, waitForHealthy? })` then `buildAppEnv
 
 ## Watchdog
 
-Every run that owns containers claims them in `~/.buncargo/runs.json` before it starts them, and one watchdog per machine (`dist/core/watchdog-runner.js`, log in `~/.buncargo/watchdog.log`) sweeps every buncargo container against that registry every 30s. Runs started from a script with `dev.start()` get it too; pass `start({ watchdog: false })` to skip starting the process. A script's containers stay up after it exits — `options.autoShutdown` and the three-minute default are `buncargo dev`'s — unless it asks for a hold with `claimRun({ idleTimeoutMs })` before `start()`. `buncargo ls` and `doctor` run the same sweep inline, so a killed watchdog is never the last line of defence. The sweep only removes a stack your own buncargo state names: a run in your `~/.buncargo/runs.json` or a port claim in your `~/.buncargo/offsets.json` for its project and checkout. Such a stack is removed when:
+Every run that owns containers claims them in `~/.buncargo/runs.json` before it starts them, and one watchdog per machine (`dist/core/watchdog-runner.js`, log in `~/.buncargo/watchdog.log`) sweeps every buncargo container against that registry every 30s. Runs started from a script with `dev.start()` get it too; pass `start({ watchdog: false })` to skip starting the process. A script's containers stay up after it exits — `options.autoShutdown` and the three-minute default are `buncargo dev`'s — unless it asks for a hold with `claimRun({ idleTimeoutMs })` before `start()`, or it reused the containers a `dev` run left in its idle hold, whose hold then still applies. The watchdog also stops [detached runs](#cli-reference) that sat idle for 2 hours or whose checkout was deleted. `buncargo ls` and `doctor` run the same sweep inline, so a killed watchdog is never the last line of defence. The sweep only removes a stack your own buncargo state names: a run in your `~/.buncargo/runs.json` or a port claim in your `~/.buncargo/offsets.json` for its project and checkout. Such a stack is removed when:
 
 - **its checkout is gone** - the worktree was deleted and no live run holds the stack. A checkout this user cannot read (another user's home) is not gone
 - **it is stopped and nobody owns it** - a daemon restart or `buncargo stop <service>` left it exited and the run has ended
 - **its run exited cleanly** (Ctrl-C leaves a `released` marker) and the idle hold has passed - 3 minutes by default, so a quick restart reuses the containers rather than recreating them
 - **its run crashed** (the PID is gone without releasing) and ~15s have passed since a sweep first noticed
+- **a script reused it from a held run** - a `dev.start()` that asked for no hold reused containers a `dev` run had left in its idle hold: they come down that hold after the script ends, as they would have after the `dev` run
 
 Any other stack is left alone, however it looks: on a machine where several users share one Docker daemon, another user's stacks are listed too, and from your account their checkouts look unowned or deleted. `buncargo ls` and `doctor` mark each as not yours, with the command that removes it by hand (`docker compose -p <project> down`, or `container delete --force <ids>` for Apple container) if it really is orphaned, for example after `~/.buncargo` was wiped. Volumes stay either way. `dev --down --all` follows the same rule: it removes your stacks and lists the others with those commands.
 

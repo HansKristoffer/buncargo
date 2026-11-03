@@ -1,10 +1,16 @@
 import { getErrorMessage } from "hanzio";
 import { foreignStackOf } from "../container-runtime/foreign-stack";
 import type { SweepResult, SweptStack } from "../container-runtime/sweep";
+import type { RunLimitPass } from "./run-limits";
 import type { RunEntry } from "./run-registry";
 import { stateFilePath } from "./state-paths";
 
 export interface WatchdogLoopDeps {
+	/**
+	 * Stop the detached runs past their idle limit or serving a deleted
+	 * checkout (`run-limits.ts`), before the sweep. Reports rather than throws.
+	 */
+	stopRuns: () => Promise<RunLimitPass>;
 	sweep: () => Promise<SweepResult>;
 	/**
 	 * Take out the Tailscale Serve entries of runs that have ended, before the
@@ -176,6 +182,7 @@ export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 	let reportedFailures = new Map<string, string>();
 	let reportedPassError: string | undefined;
 	let reportedServeFailures = new Set<string>();
+	let reportedStopFailures = new Set<string>();
 
 	while (true) {
 		const outlived = deps.outlived?.();
@@ -184,6 +191,12 @@ export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 			return;
 		}
 		try {
+			const runs = await deps.stopRuns();
+			for (const line of runs.stopped) deps.log(line);
+			for (const failure of runs.failures)
+				if (!reportedStopFailures.has(failure)) deps.log(failure);
+			reportedStopFailures = new Set(runs.failures);
+
 			const serve = await deps.sweepServeEntries();
 			for (const line of serve.removed) deps.log(line);
 			for (const failure of serve.failures)

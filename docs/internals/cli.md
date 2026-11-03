@@ -84,6 +84,14 @@ pieces it orchestrates.
   setup warnings, what to run next), and the parent prints them last. Parsing the log for the
   cause failed: agents read `dev | tail`, and the tail was a warning of kilobytes. A parked app's
   failure is written before the registry marks it failed, which is what the parent waits on.
+  `--keep` is not passed on: the child learns it from `BUNCARGO_DETACHED`
+  (`1` or `keep`), and records the idle limit the watchdog enforces
+  ([run registry](./run-registry-and-sweep.md#detached-runs-that-end)).
+- A bare `stop` is `stop --all`: agents and project docs wrote `buncargo stop` meaning "stop my
+  run" and got an error 26 times. The terminal-run confirmation still applies, so it stops a
+  detached run without asking and refuses (exit 3) one in another terminal when there is no
+  terminal to ask in. `down` is an alias (`resolveCommandAlias` in `commands/registry.ts`, kept out
+  of help) that prints a hint naming `stop`.
 - `dev-flags.ts`' `destructiveModeGate`: `--reset` and `--down --all` ask in a terminal and refuse
   without one unless `--yes`. CI is exempt. An agent ran `--reset` to fix a migration and deleted a
   developer's data.

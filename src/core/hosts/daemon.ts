@@ -48,6 +48,10 @@ import {
 	readProxyHealth,
 	startLocalProxy,
 } from "./proxy";
+import {
+	createProxyActivityRecorder,
+	writeProxyActivity,
+} from "./proxy-activity";
 import { pruneHostRoutes } from "./registry";
 import { HOSTS_SERVICE_LOG } from "./service-files";
 
@@ -402,7 +406,14 @@ export type HostsReloadReason =
 export interface HostsReloaderDeps {
 	/** Optional diagnostics; never printed on the ordinary reload path. */
 	onReload?: (event: { reason: HostsReloadReason; count: number }) => void;
-	pruneRoutes: () => Promise<Array<{ hostname: string; port: number }>>;
+	pruneRoutes: () => Promise<
+		Array<{ hostname: string; port: number; root: string }>
+	>;
+	/**
+	 * A request was proxied to a route of this checkout: what a detached
+	 * run's idle limit counts (`proxy-activity.ts`).
+	 */
+	onRequest: (root: string) => void;
 	certificateFingerprint: () => string;
 	describeCertificateGap: (hostnames: string[]) => string | undefined;
 	readCertificatePair: () => Promise<{ cert: string; key: string }>;
@@ -438,7 +449,7 @@ export interface HostsReloader {
  * without binding a port, minting a certificate or waiting on real time.
  */
 export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
-	const routeMap = new Map<string, number>();
+	const routeMap = new Map<string, { port: number; root: string }>();
 	let proxy: LocalProxy | undefined;
 	let inFlight: Promise<void> | undefined;
 	let stopped = false;
@@ -452,7 +463,13 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	// first reload is starting up, not frozen.
 	let lastReloadAt = deps.now();
 
-	const lookup: ProxyRouteLookup = (hostname) => routeMap.get(hostname);
+	// Every proxied request and WebSocket upgrade looks its route up here,
+	// and the health path does not, so this is where a request is counted.
+	const lookup: ProxyRouteLookup = (hostname) => {
+		const route = routeMap.get(hostname);
+		if (route) deps.onRequest(route.root);
+		return route?.port;
+	};
 	const routes = (): ProxyRoutesView => ({
 		hostnames: [...routeMap.keys()],
 		lastReloadAt,
@@ -496,7 +513,7 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		if (stopped) return;
 		routeMap.clear();
 		for (const route of loaded) {
-			routeMap.set(route.hostname, route.port);
+			routeMap.set(route.hostname, { port: route.port, root: route.root });
 		}
 		lastReloadAt = deps.now();
 		const hostnames = [...routeMap.keys()].sort();
@@ -631,6 +648,10 @@ export async function runHostsDaemon(
 	writePidfile(process.pid);
 
 	const syncHosts = shouldSyncHostsFile();
+	const activity = createProxyActivityRecorder({
+		write: (seen, now) => writeProxyActivity(seen, now),
+		now: Date.now,
+	});
 	// Assigned by the reloader's own startProxy callback, which runs before any
 	// request can arrive.
 	let recoverFromStall: (ageMs: number) => void = () => {};
@@ -657,6 +678,7 @@ export async function runHostsDaemon(
 		log: logDaemonError,
 		now: Date.now,
 		onIdleExit: () => process.exit(0),
+		onRequest: activity.note,
 		service,
 	});
 
@@ -730,6 +752,7 @@ export async function runHostsDaemon(
 	recoverFromStall = stallRecovery.recover;
 
 	await reloadOrReport("startup");
+	await activity.flush();
 	for (;;) {
 		// Whichever comes first: a change on disk, or the poll. The poll is the
 		// backstop — it is also what prunes routes whose owner died, which no
@@ -738,5 +761,6 @@ export async function runHostsDaemon(
 		const reason = filesystemChanged ? "filesystem" : "poll";
 		filesystemChanged = false;
 		await reloadOrReport(reason);
+		await activity.flush();
 	}
 }

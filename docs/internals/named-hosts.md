@@ -22,6 +22,8 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
 - The daemon runs as root under launchd/systemd, which give it a minimal `PATH` and no `HOME`.
   `privilegedDaemonEnv` injects `HOME` and `SUDO_*` so it reads the installing user's `~/.buncargo`
   and chowns what it writes back to them.
+- The daemon counts proxied requests by the route's checkout for detached runs' idle limit
+  (`proxy-activity.ts`): a map write per request, a file merge at most once a minute.
 - The daemon spawns nothing. `certificates.ts` mints the leaf in the CLI, where `mkcert` resolves
   the way it does interactively; the daemon polls `certificateFingerprint()`, rebinds when the CLI
   reminted underneath it, and reports `describeCertificateGap()` rather than shelling out as root.

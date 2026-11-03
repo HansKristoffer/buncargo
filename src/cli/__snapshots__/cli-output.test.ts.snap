@@ -171,6 +171,7 @@ Options:
   --attach=<app>                 Give one app the TTY (overrides interactive: true)
   --no-watch                     Do not restart apps when their watched files change
   --detach                       Run in the background; return once the apps are up (logs: buncargo logs)
+  --keep                         With --detach: never stop for idling (default: stops after 2h with no request or buncargo command)
   --tui                          Terminal UI, the default in a terminal; warns when there is none
   --no-tui                       Prefixed lines instead of the terminal UI, even in a terminal
   --keep-containers              Keep the containers after the run exits, as long as the checkout exists
@@ -429,6 +430,7 @@ Options:
   <name>           App or service from \`buncargo runs\` (repeatable)
 
 Examples:
+  bunx buncargo stop           Same as --all: stop this checkout's run (one in another terminal asks first)
   bunx buncargo stop api       Stop one dev server
   bunx buncargo stop postgres  Stop one service's container
   bunx buncargo stop --all     Stop this checkout's whole run
@@ -1213,6 +1215,7 @@ Options:
   <name>           App or service from \`buncargo runs\` (repeatable)
 
 Examples:
+  bunx buncargo stop           Same as --all: stop this checkout's run (one in another terminal asks first)
   bunx buncargo stop api       Stop one dev server
   bunx buncargo stop postgres  Stop one service's container
   bunx buncargo stop --all     Stop this checkout's whole run
@@ -1230,6 +1233,42 @@ exports[`buncargo CLI output buncargo stop nope 1`] = `
 --- stderr
   ❌ No active buncargo run for <cwd>.
    Run \`buncargo runs\` to see what is active.
+"
+`;
+
+exports[`buncargo CLI output buncargo stop 1`] = `
+"exit 2
+--- stdout
+
+--- stderr
+  ❌ No active buncargo run for <cwd>.
+   Run \`buncargo runs\` to see what is active.
+"
+`;
+
+exports[`buncargo CLI output buncargo down --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo stop [<name>...] [options]
+
+Options:
+  --help           Show this help message
+  --root=<path>    Checkout whose run to act on (default: this one)
+  --run=<session>  One run session from buncargo runs (default: matching checkout sessions)
+  --all            Stop the whole run: dev servers and containers, and an ended run's idle containers
+  --force          Skip the confirmation for a risky target
+  <name>           App or service from \`buncargo runs\` (repeatable)
+
+Examples:
+  bunx buncargo stop           Same as --all: stop this checkout's run (one in another terminal asks first)
+  bunx buncargo stop api       Stop one dev server
+  bunx buncargo stop postgres  Stop one service's container
+  bunx buncargo stop --all     Stop this checkout's whole run
+
+
+--- stderr
+   \`buncargo down\` is \`buncargo stop\`; use \`buncargo stop\`.
 "
 `;
 
@@ -1264,6 +1303,7 @@ Options:
   --attach=<app>                 Give one app the TTY (overrides interactive: true)
   --no-watch                     Do not restart apps when their watched files change
   --detach                       Run in the background; return once the apps are up (logs: buncargo logs)
+  --keep                         With --detach: never stop for idling (default: stops after 2h with no request or buncargo command)
   --tui                          Terminal UI, the default in a terminal; warns when there is none
   --no-tui                       Prefixed lines instead of the terminal UI, even in a terminal
   --keep-containers              Keep the containers after the run exits, as long as the checkout exists

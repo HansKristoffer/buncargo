@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { promiseTimeout } from "hanzio";
 import { logsRoot } from "../core/process/app-logs";
 import { inOwnUserScope } from "../core/process/user-scope";
+import { formatDuration } from "../core/run-limits";
 import {
 	readJsonDocumentSync,
 	writeJsonDocumentSync,
@@ -12,6 +13,8 @@ import {
 	type RunAppEntry,
 	type RunEntry,
 } from "../core/run-registry";
+import { DETACHED_ENV, detachedRunEnv } from "../core/runtime-flags";
+import { DETACHED_IDLE_LIMIT_MS } from "../core/watchdog-constants";
 import * as log from "./log";
 import {
 	describeAppFailure,
@@ -95,14 +98,18 @@ function printFailure(failure: RunFailure): void {
 }
 
 /**
- * Argv for the background run: this same invocation without `--detach`, so a
- * script wrapping `runCli` is re-run the same way `buncargo dev` is.
+ * Argv for the background run: this same invocation without `--detach` and
+ * `--keep`, so a script wrapping `runCli` is re-run the same way `buncargo
+ * dev` is. `--keep` reaches the run through `BUNCARGO_DETACHED` instead.
  */
 export function detachedArgv(
 	argv: readonly string[],
 	execPath = process.execPath,
 ): string[] {
-	return [execPath, ...argv.slice(1).filter((arg) => arg !== "--detach")];
+	return [
+		execPath,
+		...argv.slice(1).filter((arg) => arg !== "--detach" && arg !== "--keep"),
+	];
 }
 
 /**
@@ -161,6 +168,8 @@ export async function runDetached(input: {
 	root: string;
 	/** Whether the selection has apps to spawn and wait for (see {@link settledRun}). */
 	expectApps: boolean;
+	/** `--keep`: no idle limit. */
+	keep: boolean;
 	argv?: readonly string[];
 	timeoutMs?: number;
 }): Promise<number> {
@@ -177,7 +186,10 @@ export async function runDetached(input: {
 		cwd: process.cwd(),
 		stdio: ["ignore", out, out],
 		detached: true,
-		env: { ...process.env, BUNCARGO_DETACHED: "1" },
+		env: {
+			...process.env,
+			[DETACHED_ENV]: detachedRunEnv(input.keep ? "keep" : "idle-limit"),
+		},
 	});
 	closeSync(out);
 	child.unref();
@@ -226,7 +238,9 @@ export async function runDetached(input: {
 				log.warn(warning);
 			if (down.length === 0) {
 				log.success(
-					"Running in the background. Stop it with `buncargo stop --all`.",
+					input.keep
+						? "Running in the background until you stop it with `buncargo stop`."
+						: `Running in the background; it stops after ${formatDuration(DETACHED_IDLE_LIMIT_MS)} with no request or buncargo command (\`dev --detach --keep\` keeps it). Stop it now with \`buncargo stop\`.`,
 				);
 				return 0;
 			}

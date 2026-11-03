@@ -18,7 +18,7 @@ import {
 	recordAppUrls,
 	recordRunCapture,
 } from "../core/run-publish";
-import { isCI, isDetachedRun } from "../core/runtime-flags";
+import { detachedRunMode, isCI } from "../core/runtime-flags";
 import { joinColoredNames } from "../core/style";
 import {
 	createNoopPhaseTimer,
@@ -222,6 +222,7 @@ export async function runCli<
 		process.exit(
 			await runDetached({
 				root: env.root,
+				keep: args.keep,
 				expectApps: Object.values(plan.apps).some(
 					(app) => app.devCommand !== false,
 				),
@@ -278,7 +279,7 @@ export async function runCli<
 			interruptCode === undefined
 				? describeDevFailure(error, failureContext)
 				: undefined;
-		if (failure && isDetachedRun()) {
+		if (failure && detachedRunMode() !== undefined) {
 			const { recordDetachedReport } = await import("./dev-detach");
 			recordDetachedReport(env.root, (report) => ({
 				...report,
@@ -387,7 +388,7 @@ async function runDevFlow<
 ): Promise<DevFlowExit> {
 	const { timer, signal, connect, failureContext } = options;
 	// Loaded only in the background run that reports to `dev --detach`.
-	const detached = isDetachedRun() ? await import("./dev-detach") : undefined;
+	const detached = detachedRunMode() !== undefined ? await import("./dev-detach") : undefined;
 	async function exitWith(code: number): Promise<number> {
 		// The one-shot modes end here, and `--up-only` is exactly the kind of
 		// run someone times.

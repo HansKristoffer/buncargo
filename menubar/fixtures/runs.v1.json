@@ -12,6 +12,9 @@
       "startedAt": "2026-09-03T10:47:56.971Z",
       "updatedAt": "2026-09-03T10:48:12.101Z",
       "primaryApp": "platform",
+      "detached": true,
+      "idleLimitMs": 7200000,
+      "inheritedIdleTimeoutMs": 180000,
       "hosts": {
         "active": true,
         "tld": "localhost"

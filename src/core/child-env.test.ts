@@ -26,6 +26,12 @@ it("removes the config's unsetEnv and the connect tokens from a child's env", ()
 	).toEqual({ PATH: "/bin" });
 });
 
+it("keeps a detached run's mark from its apps, so a buncargo they start is not detached", () => {
+	expect(childProcessEnv({ BUNCARGO_DETACHED: "1", PATH: "/bin" })).toEqual({
+		PATH: "/bin",
+	});
+});
+
 it("reaches commands buncargo runs", async () => {
 	process.env.BUNCARGO_TEST_AGENT = "1";
 	setUnsetEnv(["BUNCARGO_TEST_AGENT"]);

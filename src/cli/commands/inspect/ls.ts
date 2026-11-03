@@ -5,11 +5,18 @@ import {
 	type SweepResult,
 	sweepOrphanedContainers,
 } from "../../../container-runtime";
+import { readProxyActivity } from "../../../core/hosts/proxy-activity";
 import {
 	sweepTailscaleServe,
 	tailscaleServeDeps,
 } from "../../../core/hosts/tailscale-serve";
+import { describeIdleState, readIdleState } from "../../../core/run-limits";
 import { getRunsPath } from "../../../core/run-registry";
+import {
+	describeRunStop,
+	readRunStops,
+	recentRunStops,
+} from "../../../core/run-stops";
 import { describeSwept } from "../../../core/watchdog-loop";
 import * as log from "../../log";
 
@@ -46,6 +53,7 @@ export async function handleLs(): Promise<void> {
 		);
 	}
 	for (const stack of result.swept) log.info(describeSwept(stack));
+	logRecentRunStops(result);
 	for (const failure of result.failed)
 		log.warn(`Could not remove ${failure.projectName}: ${failure.error}`);
 
@@ -54,6 +62,7 @@ export async function handleLs(): Promise<void> {
 		return;
 	}
 	const now = Date.now();
+	const proxy = readProxyActivity(now);
 	const multipleRuntimes = result.answered.length > 1;
 
 	for (const group of result.remaining) {
@@ -76,10 +85,13 @@ export async function handleLs(): Promise<void> {
 		log.line(`  root: ${group.root || "(unknown)"}`);
 		if (first.worktree) log.line(`  worktree: ${first.worktree}`);
 		if (multipleRuntimes) log.line(`  runtime: ${group.runtime}`);
-		if (live) log.line(`  run: active, pid ${live.pid}`);
-		else if (released?.releasedAt)
+		if (live) {
+			const idle = describeIdleState(readIdleState(live, proxy), now);
+			const limit = idle ? `; ${idle}` : "";
+			log.line(`  run: active, pid ${live.pid}${limit}`);
+		} else if (released?.releasedAt)
 			log.line(
-				`  run: ${describeHold(released.releasedAt, released.idleTimeoutMs, now)}`,
+				`  run: ${describeHold(released.releasedAt, released.idleTimeoutMs ?? released.inheritedIdleTimeoutMs, now)}`,
 			);
 		const foreign = foreignStackOf(result, group);
 		if (foreign) {
@@ -95,6 +107,15 @@ export async function handleLs(): Promise<void> {
 		log.line();
 	}
 	if (result.foreign.length > 0) logForeignStacks();
+}
+
+/**
+ * The detached runs the watchdog stopped lately: "where did my run go" has
+ * no other answer once its entry is gone.
+ */
+function logRecentRunStops(result: SweepResult): void {
+	for (const record of recentRunStops(readRunStops(), result.runs, Date.now()))
+		log.info(describeRunStop(record));
 }
 
 /**

@@ -16,6 +16,8 @@ import { getErrorMessage } from "hanzio";
 import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Command, defineCli, defineCommand } from "hanzio/cli";
+import { noteCheckoutCommand } from "../core/run-activity";
+import { findCheckoutRoot } from "../loader/find-config-file";
 import type { CliCommandName } from "./commands/registry";
 import { CliError } from "./errors";
 import * as log from "./log";
@@ -46,6 +48,13 @@ function command(handler: (args: string[]) => Promise<unknown>): Command {
 
 /** A name that is no command may be an integration's namespace (`buncargo shopify env`). */
 async function runUnknown(name: string, args: string[]): Promise<number> {
+	const alias = (await import("./commands/registry")).resolveCommandAlias(name);
+	if (alias) {
+		log.hint(
+			`\`buncargo ${name}\` is \`buncargo ${alias}\`; use \`buncargo ${alias}\`.`,
+		);
+		return cli.run([alias, ...args]);
+	}
 	const code = await (
 		await import("./integration-commands")
 	).runIntegrationCommand(name, args);
@@ -199,6 +208,13 @@ async function main(): Promise<void> {
 		process.exitCode = await runUnknown(first, args.slice(1));
 		return;
 	}
+
+	// A command in a checkout is the checkout in use: a detached run's idle
+	// limit counts from it (`core/run-activity.ts`). One `utimes`, no fork.
+	const usesCheckout =
+		first !== undefined && first !== "help" && first !== "version";
+	const root = usesCheckout ? findCheckoutRoot(process.cwd()) : undefined;
+	if (root !== undefined) noteCheckoutCommand(root);
 
 	const code = await cli.run(args);
 	if (code !== 0) process.exitCode = code;

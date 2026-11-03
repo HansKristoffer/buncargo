@@ -90,6 +90,12 @@ const FLAGS = {
 		description:
 			"Run in the background; return once the apps are up (logs: buncargo logs)",
 	},
+	keep: {
+		name: "--keep",
+		kind: "boolean",
+		description:
+			"With --detach: never stop for idling (default: stops after 2h with no request or buncargo command)",
+	},
 	tui: {
 		name: "--tui",
 		kind: "boolean",
@@ -243,6 +249,8 @@ export interface DevCliArgs {
 	tui: "auto" | "on" | "off";
 	/** `--detach`: the run goes to the background (`dev-detach.ts`). */
 	detach: boolean;
+	/** `--keep`: the detached run has no idle limit. */
+	keep: boolean;
 	/** `--no-watch`: apps' `watch` config is ignored for this run. */
 	watch: boolean;
 	keepContainers: boolean;
@@ -285,6 +293,10 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		);
 	if (bool(FLAGS.tui) && bool(FLAGS.noTui))
 		errors.push("Choose either --tui or --no-tui, not both.");
+	if (bool(FLAGS.keep) && !bool(FLAGS.detach))
+		errors.push(
+			"--keep only applies to --detach: a run in a terminal never stops for idling.",
+		);
 	if (bool(FLAGS.apps) && bool(FLAGS.profile))
 		errors.push("Choose either --apps or --profile, not both.");
 	if (
@@ -315,6 +327,7 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		attach: str(FLAGS.attach),
 		tui: bool(FLAGS.noTui) ? "off" : bool(FLAGS.tui) ? "on" : "auto",
 		detach: bool(FLAGS.detach),
+		keep: bool(FLAGS.keep),
 		watch: !bool(FLAGS.noWatch),
 		keepContainers: bool(FLAGS.keepContainers),
 		takeover: bool(FLAGS.takeover),

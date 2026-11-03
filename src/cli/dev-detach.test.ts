@@ -40,6 +40,15 @@ describe("detachedArgv", () => {
 			),
 		).toEqual(["/bin/bun", "/x/bin.js", "dev", "--apps=api"]);
 	});
+
+	it("leaves --keep out too: the run reads it from its environment", () => {
+		expect(
+			detachedArgv(
+				["bun", "/x/bin.js", "dev", "--detach", "--keep"],
+				"/bin/bun",
+			),
+		).toEqual(["/bin/bun", "/x/bin.js", "dev"]);
+	});
 });
 
 describe("settledRun", () => {
@@ -102,6 +111,7 @@ describe("runDetached", () => {
 			const code = await runDetached({
 				root,
 				expectApps: true,
+				keep: false,
 				argv: ["bun", join(root, "run.ts")],
 				timeoutMs: 10_000,
 			});

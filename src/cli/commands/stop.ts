@@ -12,6 +12,7 @@ import { killPortOwner } from "../../core/process";
 import {
 	DEFAULT_STOP_GRACE_MS,
 	ProcessIdentityUnreadable,
+	runStopGraceMs,
 	terminateProcessGroup,
 } from "../../core/process/terminate";
 import { askConfirm, isInteractive } from "../../core/prompt";
@@ -29,6 +30,11 @@ import {
 	type RunServiceEntry,
 	retireRuns,
 } from "../../core/run-registry";
+import {
+	describeRunStop,
+	readRunStops,
+	recentRunStops,
+} from "../../core/run-stops";
 
 import * as log from "../log";
 import { parseStopArgs, printStopHelp } from "../stop-flags";
@@ -73,11 +79,22 @@ export async function handleStop(args: string[] = []): Promise<number> {
 	const held = checkout.held
 		.filter(selected)
 		.map((run) => ({ ...run, apps: [] }));
+	// With no live run, the watchdog may have stopped it: say so either way.
+	const stoppedByWatchdog =
+		runs.length === 0
+			? recentRunStops(readRunStops(), held, Date.now()).find(
+					(record) => record.root === root,
+				)
+			: undefined;
 	if (runs.length === 0 && held.length === 0) {
 		log.error(`No active buncargo run for ${root}.`);
-		log.hint("Run `buncargo runs` to see what is active.");
+		if (stoppedByWatchdog) {
+			log.hint(describeRunStop(stoppedByWatchdog));
+			log.hint("Start it again with `buncargo dev --detach`.");
+		} else log.hint("Run `buncargo runs` to see what is active.");
 		return STOP_EXIT.notFound;
 	}
+	if (stoppedByWatchdog) log.info(describeRunStop(stoppedByWatchdog));
 
 	if (parsed.all) {
 		let result: number = STOP_EXIT.ok;
@@ -199,20 +216,6 @@ async function stopApp(app: RunAppEntry, force: boolean): Promise<number> {
 	}
 	log.done(`Stopped ${app.name}`);
 	return STOP_EXIT.ok;
-}
-
-/**
- * How long a whole run gets before its `dev` process is killed.
- *
- * That process stops its apps itself, each with its own `stopGraceMs`, so it
- * needs the longest of them on top of its own teardown. Killing it sooner
- * leaves an app that is still saving data with no one to finish stopping it.
- */
-export function runStopGraceMs(run: Pick<RunEntry, "apps">): number {
-	return (
-		DEFAULT_STOP_GRACE_MS +
-		Math.max(0, ...run.apps.map((app) => app.stopGraceMs ?? 0))
-	);
 }
 
 /**

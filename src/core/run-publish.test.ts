@@ -24,6 +24,8 @@ import {
 	recordAppUrls,
 } from "./run-publish";
 import { loadRuns, readLiveRuns, releaseRun } from "./run-registry";
+import { detachedRunEnv } from "./runtime-flags";
+import { DETACHED_IDLE_LIMIT_MS } from "./watchdog-constants";
 
 let root: string;
 let savedHome: string | undefined;
@@ -199,6 +201,31 @@ describe("published run ownership", () => {
 			serviceNames: [],
 		});
 		expect(attached?.detached).toBeUndefined();
+		expect(attached?.idleLimitMs).toBeUndefined();
+	});
+
+	it("gives a detached run the idle limit, and none with --keep", async () => {
+		const saved = process.env.BUNCARGO_HOSTS;
+		delete process.env.BUNCARGO_HOSTS;
+		try {
+			process.env.BUNCARGO_DETACHED = detachedRunEnv("idle-limit");
+			const limited = await publishCurrentRun(source("session-limited"), {
+				apps: {},
+				serviceNames: [],
+			});
+			expect(limited?.idleLimitMs).toBe(DETACHED_IDLE_LIMIT_MS);
+
+			process.env.BUNCARGO_DETACHED = detachedRunEnv("keep");
+			const kept = await publishCurrentRun(source("session-kept"), {
+				apps: {},
+				serviceNames: [],
+			});
+			expect(kept?.detached).toBe(true);
+			expect(kept?.idleLimitMs).toBeUndefined();
+		} finally {
+			delete process.env.BUNCARGO_DETACHED;
+			if (saved !== undefined) process.env.BUNCARGO_HOSTS = saved;
+		}
 	});
 
 	it("publishes the config's tasks for the menu bar's run button", async () => {

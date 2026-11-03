@@ -105,6 +105,32 @@ describe("createRunClaimApi", () => {
 		expect(await holdOf(claim.sessionId)).toBeUndefined();
 		await claim.retireRun();
 	});
+	it("takes over the hold of a stack another run left in its hold, unless it asked for a hold itself", async () => {
+		// A detached run released with three minutes; a one-second library
+		// `start()` reused its containers, and its "keep forever" entry, the
+		// newest, pinned the stack for 13 days.
+		const cli = claimApi();
+		await cli.claimRun({ defaultIdleTimeoutMs: 180_000 });
+		await cli.releaseRun();
+
+		const script = claimApi();
+		await script.claimRun();
+		const entry = (await loadRuns()).find(
+			(run) => run.sessionId === script.sessionId,
+		);
+		expect(entry?.idleTimeoutMs).toBeUndefined();
+		expect(entry?.inheritedIdleTimeoutMs).toBe(180_000);
+
+		// `--keep-containers` asks for no hold on purpose: nothing to inherit.
+		const kept = claimApi();
+		await kept.claimRun({ idleTimeoutMs: false });
+		expect(
+			(await loadRuns()).find((run) => run.sessionId === kept.sessionId)
+				?.inheritedIdleTimeoutMs,
+		).toBeUndefined();
+
+		for (const claim of [cli, script, kept]) await claim.retireRun();
+	});
 });
 
 describe("a library start's apps", () => {
