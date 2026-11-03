@@ -1,5 +1,12 @@
 # Changelog
 
+## [14.3.0](https://github.com/HansKristoffer/buncargo/compare/bar-v14.2.1...bar-v14.3.0) (2026-11-03)
+
+
+### Features
+
+* **cli:** recover from a full port range and other agent dead ends ([#140](https://github.com/HansKristoffer/buncargo/issues/140)) ([68e0a31](https://github.com/HansKristoffer/buncargo/commit/68e0a31d40141b169f7e8103972c4fc841ac143e))
+
 ## [14.2.1](https://github.com/HansKristoffer/buncargo/compare/bar-v6.1.0...bar-v14.2.1) (2026-10-21)
 
 
