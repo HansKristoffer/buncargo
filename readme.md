@@ -271,6 +271,7 @@ bunx buncargo wait --app=api            # Block until one app is healthy
 bunx buncargo env --get DATABASE_URL    # Any variable the apps get
 bunx buncargo sql -c "select 1" --json  # This checkout's database, nobody else's
 DATABASE_URL=$(bunx buncargo sql --create-scratch=check) bun test  # A throwaway one
+bunx buncargo exec --db=scratch_check -- bun test  # Every database URL pointed at it
 bunx buncargo send expoApp i            # Press a key in Expo, which runs in its own terminal
 bunx buncargo status --json             # Ports, containers, URLs and app states
 bunx buncargo logs api --errors

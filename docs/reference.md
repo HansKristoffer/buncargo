@@ -46,6 +46,9 @@ bunx buncargo sql -c "select count(*) from users" --json
 bunx buncargo sql redis -c "GET key"
 bunx buncargo sql --create-scratch=migcheck   # Empty scratch_migcheck; prints its URL
 bunx buncargo sql --drop-scratch=migcheck
+bunx buncargo sql --db=scratch_migcheck -c "select 1"   # An existing database, as it is
+bunx buncargo sql --db=scratch_migcheck --url  # Its URL
+bunx buncargo sql -- -tA -f query.sql          # psql flags after --; -f reads a host file
 bunx buncargo ports               # This checkout's ports, and every checkout's offset
 bunx buncargo ports pin 2500      # Keep this checkout on offset 2500
 bunx buncargo ports release --root ../old-worktree   # Drop another checkout's claims
@@ -72,6 +75,7 @@ bunx buncargo open                # The primary app; or `open <name>` from `url`
 bunx buncargo open shopify previewUrl  # An app's captured URL (what its action key opens)
 bunx buncargo exec -- bun scripts/maintenance.ts
 bunx buncargo exec --app=api -- bun scripts/inspect-runtime.ts
+bunx buncargo exec --db=scratch_migcheck -- bun test   # Database URLs point at another database
 bunx buncargo prisma <args>
 bunx buncargo prisma migrate-check  # Fail when migrations and schema differ
 bunx buncargo wait --app=api --hold   # Block until an app is healthy (and stay)
@@ -117,9 +121,13 @@ When the project's `package.json` lists buncargo but it is not installed, it sto
 
 `buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached.log` and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed. A failure ends the output with one block: what failed in one line (the app, the seed or the step), its last 20 lines of output, the setup checks that warned before the start, and what to run next (`buncargo logs <app>`), so `dev --detach | tail` shows the cause. Attached `dev` ends a failed start with the same block. Stop it with `buncargo stop --all`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
 
-`buncargo sql --create-scratch=<name>` drops and recreates an empty Postgres database `scratch_<name>` in this checkout's container and prints its URL alone on stdout, so `DATABASE_URL=$(buncargo sql --create-scratch=migcheck) bun test` works. `--drop-scratch=<name>` drops it. The prefix is always added, so neither can touch a database the project uses. A scratch database lives in the checkout's volume: `dev --reset` and `prune` remove it with the rest.
+`buncargo sql --create-scratch=<name>` drops and recreates an empty Postgres database `scratch_<name>` in this checkout's container and prints its URL alone on stdout, so `DATABASE_URL=$(buncargo sql --create-scratch=migcheck) bun test` works. When the database service is down, it starts that one service first (no apps, no other services), and leaves it running as `dev --up-only` does. `--drop-scratch=<name>` drops it. The prefix is always added, so neither can touch a database the project uses. A scratch database lives in the checkout's volume: `dev --reset` and `prune` remove it with the rest.
 
-`buncargo sql [service]` runs the service's own client inside this checkout's container, with the credentials from the config: `psql` for Postgres, `clickhouse-client` for ClickHouse, `redis-cli` for Redis. Without a service it picks the first Postgres or ClickHouse one. `-c <query>` runs one query, and `--json` prints its rows as a JSON array (Postgres) or JSON lines (ClickHouse).
+`buncargo sql [service]` runs the service's own client inside this checkout's container, with the credentials from the config: `psql` for Postgres, `clickhouse-client` for ClickHouse, `redis-cli` for Redis. Without a service it picks the first Postgres or ClickHouse one. `-c <query>` runs one query. Without `-c`, SQL piped on stdin or in a heredoc runs as a script that stops at the first error, with a non-zero exit. Arguments after `--` go to the client (`-- -tA`, `-- -v ON_ERROR_STOP=0`); psql's `-f <file>` reads the file on the host and feeds it in, since the client runs in the container (an `-o` file or `\i` would be the container's). `--db=<database>` connects to another database of this checkout's Postgres without touching it (a scratch database is `scratch_<name>`), and `--url` prints the URL of that database, or of the service's own, without connecting.
+
+`--json` prints the rows of one `SELECT` or `WITH` query as a JSON array (Postgres) or JSON lines (ClickHouse), from `-c`, `-f` or stdin. Postgres SQL that is not a single row-returning query (an `UPDATE`, several statements, a psql meta-command) runs as plain SQL instead, with a note on stderr. Errors quote your own SQL and line numbers.
+
+When the database is not running, `sql` exits 1 and says to start it with `buncargo dev --up-only`, which returns once the containers are up and needs no `--detach`.
 
 Without a terminal, `dev --reset` (which deletes the checkout's volumes) and `dev --down --all` (which stops every checkout's run) refuse unless `--yes` is passed; in a terminal they ask first. CI is exempt.
 
@@ -169,6 +177,14 @@ Shared generated values are always available. `--app` adds that app's environmen
 overlay and uses its configured directory; otherwise the working directory is the
 repository root. An explicit relative `--cwd` resolves from that root, including
 when the command is launched inside a workspace.
+
+`--db=<name>` points every variable whose URL names this checkout's Postgres
+database (same host, port and database, such as `DATABASE_URL` and a
+`DATABASE_URL_DIRECT`) at database `<name>` on the same server, keeping the
+user, password and query string; a shadow database's URL keeps its own. The
+database must exist: `buncargo sql --create-scratch=<name>` makes one, as
+`scratch_<name>`. The rewritten names go to stderr. With nothing to rewrite, or
+the database missing, `exec` exits 1 without running the command.
 
 `--slot` runs the command inside one of the machine-wide check slots (see
 [typecheck](#cli-reference)), for checks heavy enough to crowd out other

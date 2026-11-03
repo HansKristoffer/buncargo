@@ -29,6 +29,15 @@ const FLAGS = {
 		description: "Working directory relative to the repository root",
 		validate: (value: string) => (value ? undefined : "--cwd requires a path"),
 	},
+	db: {
+		name: "--db",
+		kind: "string",
+		valueHint: "=<name>",
+		description:
+			"Point the variables that name this checkout's Postgres database at database <name>",
+		validate: (value: string) =>
+			value ? undefined : "--db requires a database name",
+	},
 	slot: {
 		name: "--slot",
 		kind: "boolean",
@@ -67,6 +76,7 @@ export function parseExecArgs(args: string[]) {
 
 	const app = readOption(FLAGS.app);
 	const cwd = readOption(FLAGS.cwd);
+	const db = readOption(FLAGS.db);
 	const help = readBooleanFlag(optionArgs, FLAGS.help);
 	const slot = readBooleanFlag(optionArgs, FLAGS.slot);
 
@@ -81,6 +91,7 @@ export function parseExecArgs(args: string[]) {
 	return {
 		app,
 		cwd,
+		db,
 		help,
 		slot,
 		command,
