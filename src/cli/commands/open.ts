@@ -31,6 +31,10 @@ export const URL_COMMAND_SPEC: CommandSpec = {
 	examples: [
 		{ command: "buncargo url", description: "List every URL, by name" },
 		{ command: "buncargo url api", description: "Print one" },
+		{
+			command: "buncargo url postgres",
+			description: "A service's URL, or its connection URL",
+		},
 	],
 };
 

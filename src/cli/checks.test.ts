@@ -131,3 +131,44 @@ describe("dependencies check", () => {
 		}
 	});
 });
+
+describe("loopback URLs check", () => {
+	// Joined with "; " the warning was kilobytes on one line, and it fired in a
+	// fresh worktree whose ports were never allocated.
+	async function loopbackWarning(provenance: "hash" | "lockfile") {
+		const { allChecks } = await import("./core-checks");
+		const env = {
+			root: "/nonexistent-buncargo-checkout",
+			services: {},
+			apps: {},
+			ports: { api: 3000, web: 5173 },
+			portOffsetProvenance: provenance,
+			buildEnvVars: () => ({
+				API_URL: "http://localhost:3100",
+				WEB_URL: "http://localhost:5273/app",
+			}),
+		} as unknown as AnyDevEnvironment;
+		const checks = allChecks(env).filter(
+			(check) => check.name === "Loopback URLs point at this checkout",
+		);
+		const results = await runChecks(checks, { root: env.root, env });
+		return describeCheckFailures(results.filter((result) => !result.ok));
+	}
+
+	it("lists each stray variable on a line of its own", async () => {
+		const [warning] = await loopbackWarning("lockfile");
+		const lines = warning?.split("\n") ?? [];
+		expect(lines[0]).toBe("Loopback URLs point at this checkout:");
+		expect(lines.slice(1).map((line) => line.trim().split(" ")[0])).toEqual([
+			"API_URL",
+			"WEB_URL",
+		]);
+		expect(lines[1]).toContain(
+			"`buncargo env set API_URL=http://localhost:3000`",
+		);
+	});
+
+	it("says nothing before the checkout has allocated its ports", async () => {
+		expect(await loopbackWarning("hash")).toEqual([]);
+	});
+});

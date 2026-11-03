@@ -383,8 +383,9 @@ Options:
   --help  Show this help message
 
 Examples:
-  buncargo url      List every URL, by name
-  buncargo url api  Print one
+  buncargo url           List every URL, by name
+  buncargo url api       Print one
+  buncargo url postgres  A service's URL, or its connection URL
 
 
 --- stderr

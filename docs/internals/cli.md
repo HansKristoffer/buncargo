@@ -79,7 +79,11 @@ pieces it orchestrates.
   child's until every app has settled; an empty `apps` list is the claim, not "done", unless the
   selection has no app to spawn. A child that exits 0 had nothing to keep running (every app
   reused) and is a success, as it is for attached `dev`; its exit is checked before the entry,
-  which can outlive it.
+  which can outlive it. The run hands the parent its failures in
+  `.buncargo/logs/detached-report.json` (`run-failure.ts`: the cause, the step's last lines, the
+  setup warnings, what to run next), and the parent prints them last. Parsing the log for the
+  cause failed: agents read `dev | tail`, and the tail was a warning of kilobytes. A parked app's
+  failure is written before the registry marks it failed, which is what the parent waits on.
 - `dev-flags.ts`' `destructiveModeGate`: `--reset` and `--down --all` ask in a terminal and refuse
   without one unless `--yes`. CI is exempt. An agent ran `--reset` to fix a migration and deleted a
   developer's data.

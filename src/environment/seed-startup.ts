@@ -19,9 +19,27 @@ export function seedCanOverlap(
 	);
 }
 
-export function assertSeedSucceeded(outcome: SeedOutcome): void {
-	if (outcome.status === "failed")
-		throw new Error(
-			`Seeding failed with exit code ${outcome.result.exitCode}. Fix the seed command or start with \`--up-only\` to skip it.`,
+/**
+ * A seed that exited non-zero. Carries the command and its last lines, so the
+ * CLI can say which step failed and show why at the end of its output.
+ */
+export class SeedFailedError extends Error {
+	readonly exitCode: number;
+	readonly command: string;
+	readonly tail: readonly string[];
+
+	constructor(outcome: Extract<SeedOutcome, { status: "failed" }>) {
+		const { exitCode } = outcome.result;
+		super(
+			`Seeding failed with exit code ${exitCode}. Fix the seed command or start with \`--up-only\` to skip it.`,
 		);
+		this.name = "SeedFailedError";
+		this.exitCode = exitCode;
+		this.command = outcome.command;
+		this.tail = outcome.tail;
+	}
+}
+
+export function assertSeedSucceeded(outcome: SeedOutcome): void {
+	if (outcome.status === "failed") throw new SeedFailedError(outcome);
 }

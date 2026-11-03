@@ -38,8 +38,8 @@ bunx buncargo restart shopify     # Start a stopped app of a running dev again
 bunx buncargo logs                # Every app's output from the current or last run
 bunx buncargo logs shopify --errors -f --since=5m
 bunx buncargo expo sim            # Open the Expo app in this checkout's own simulator
-bunx buncargo status
-bunx buncargo status --json       # Ports, containers, URLs and app states as one object
+bunx buncargo status              # One line per app first, then ports, containers and hosts
+bunx buncargo status --json       # The same as one object, its live runs (app states) first
 bunx buncargo sql                 # psql (or clickhouse-client) in this checkout's container
 bunx buncargo sql -c "select count(*) from users" --json
 bunx buncargo sql redis -c "GET key"
@@ -65,7 +65,8 @@ bunx buncargo env --get DATABASE_URL   # Any variable the apps get
 eval "$(bunx buncargo env --export)"   # All of them, as shell exports
 bunx buncargo env set REDIS_URL=http://localhost:8779   # Override one for this checkout
 bunx buncargo env unset REDIS_URL
-bunx buncargo url                 # Every URL this run knows, by name
+bunx buncargo url                 # Every URL this run knows, by name: apps, services, captures
+bunx buncargo url postgres        # A service's URL; its connection URL when it has no HTTP one
 bunx buncargo open                # The primary app; or `open <name>` from `url`
 bunx buncargo open shopify previewUrl  # An app's captured URL (what its action key opens)
 bunx buncargo exec -- bun scripts/maintenance.ts
@@ -112,7 +113,7 @@ When the project's `package.json` lists buncargo but it is not installed, it sto
 
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`), including `vars`: the variables `exec`, tasks and the apps are given, without their Infisical secrets. `--get ports.api` prints one raw value for scripts, and a bare name (`--get DATABASE_URL`) reads from `vars`. `--export` prints `vars` as quoted `export` lines.
 
-`buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached.log` and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed. Stop it with `buncargo stop --all`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
+`buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached.log` and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed. A failure ends the output with one block: what failed in one line (the app, the seed or the step), its last 20 lines of output, the setup checks that warned before the start, and what to run next (`buncargo logs <app>`), so `dev --detach | tail` shows the cause. Attached `dev` ends a failed start with the same block. Stop it with `buncargo stop --all`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
 
 `buncargo sql --create-scratch=<name>` drops and recreates an empty Postgres database `scratch_<name>` in this checkout's container and prints its URL alone on stdout, so `DATABASE_URL=$(buncargo sql --create-scratch=migcheck) bun test` works. `--drop-scratch=<name>` drops it. The prefix is always added, so neither can touch a database the project uses. A scratch database lives in the checkout's volume: `dev --reset` and `prune` remove it with the rest.
 
@@ -696,7 +697,9 @@ else the named `https://` host while the hosts daemon serves it, else loopback.
 Both modes write each app's output, plain, to `.buncargo/logs/<run>/<app>.log`
 (the last ten runs, 5 MB per file), and a seed that runs beside the apps
 (`seed.beforeApps: false`) to `seed.log`. `buncargo logs [app] [-f] [--since=5m]
-[--errors]` reads the current or last run.
+[--errors]` reads the current or last run. `--errors` keeps the lines that read as errors: a level
+the logger wrote (`INFO:`, `[WARN]`, `level=info`) wins over words like "failed", and a structured
+block an error line opens (`[ERROR] job.completed {` … `}`) is kept whole.
 
 ### Non-essential apps
 

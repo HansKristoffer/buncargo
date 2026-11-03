@@ -1,14 +1,23 @@
-import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { promiseTimeout } from "hanzio";
 import { logsRoot } from "../core/process/app-logs";
 import { inOwnUserScope } from "../core/process/user-scope";
+import {
+	readJsonDocumentSync,
+	writeJsonDocumentSync,
+} from "../core/registry-file";
 import {
 	findRunsByRoot,
 	type RunAppEntry,
 	type RunEntry,
 } from "../core/run-registry";
 import * as log from "./log";
+import {
+	describeAppFailure,
+	formatRunFailure,
+	type RunFailure,
+} from "./run-failure";
 
 /**
  * `buncargo dev --detach`: the run in the background, the terminal back once
@@ -27,6 +36,61 @@ const POLL_MS = 250;
 /** Where a detached run's own output goes; app output is in its run directory. */
 export function detachedLogPath(root: string): string {
 	return join(logsRoot(root), "detached.log");
+}
+
+/**
+ * What the background run tells the `dev --detach` waiting on it, which would
+ * otherwise have to dig the cause out of the log: the setup checks that
+ * warned, and each failure, an app that never came up or the error that ended
+ * the run. Written by the run, read once by the parent.
+ */
+export interface DetachedReport {
+	setupHints: string[];
+	failures: RunFailure[];
+}
+
+export function detachedReportPath(root: string): string {
+	return join(logsRoot(root), "detached-report.json");
+}
+
+function validateReport(value: unknown): DetachedReport | undefined {
+	const report = value as Partial<DetachedReport> | null;
+	const valid =
+		typeof report === "object" &&
+		report !== null &&
+		Array.isArray(report.setupHints) &&
+		Array.isArray(report.failures);
+	return valid ? (report as DetachedReport) : undefined;
+}
+
+export function readDetachedReport(root: string): DetachedReport | undefined {
+	return readJsonDocumentSync(detachedReportPath(root), validateReport);
+}
+
+/**
+ * Update the report of the detached run in `root`. Synchronous, so it is on
+ * disk before the registry says the app failed, which is what the parent
+ * waits for. A report that cannot be written loses only the explanation.
+ */
+export function recordDetachedReport(
+	root: string,
+	update: (report: DetachedReport) => DetachedReport,
+): void {
+	const current = readDetachedReport(root) ?? {
+		setupHints: [],
+		failures: [],
+	};
+	try {
+		writeJsonDocumentSync(detachedReportPath(root), update(current));
+	} catch {
+		// The parent falls back to the log.
+	}
+}
+
+/** Print a failure block, past Bun's buffer: the parent exits right after. */
+function printFailure(failure: RunFailure): void {
+	const { message, hints } = formatRunFailure(failure);
+	log.errorNow(message, hints);
 }
 
 /**
@@ -103,6 +167,8 @@ export async function runDetached(input: {
 	const argv = detachedArgv(input.argv ?? process.argv);
 	const logPath = detachedLogPath(root);
 	mkdirSync(logsRoot(root), { recursive: true });
+	// A previous run's report would explain this run's failure.
+	rmSync(detachedReportPath(root), { force: true });
 	const out = openSync(logPath, "w");
 	// Its own scope on Linux: the run outlives a restart of the service that
 	// started it. The pid stays the run's own, which the wait below matches.
@@ -130,8 +196,20 @@ export async function runDetached(input: {
 				log.success("The run had nothing to keep running in the background.");
 				return 0;
 			}
-			log.error(`The run exited with code ${exited} before its apps came up.`);
-			if (output) log.line(output);
+			// The cause last, where `| tail` reads it.
+			const failure = readDetachedReport(root)?.failures.at(-1);
+			if (!failure) {
+				if (output) log.line(output);
+				log.errorNow(
+					`The run exited with code ${exited} before its apps came up.`,
+					[`Full output: ${logPath}`],
+				);
+				return 1;
+			}
+			log.line(
+				`  The run exited with code ${exited} before its apps came up. Full output: ${logPath}`,
+			);
+			printFailure(failure);
 			return 1;
 		}
 		const run = (await findRunsByRoot(root).catch(() => [])).find(
@@ -151,10 +229,20 @@ export async function runDetached(input: {
 				);
 				return 0;
 			}
-			log.error(
-				`${down.map((app) => app.name).join(", ")} did not come up; the other apps keep running.`,
+			log.line(
+				`  ${down.map((app) => app.name).join(", ")} did not come up; the other apps keep running.`,
 			);
-			for (const app of down) log.hint(`buncargo logs ${app.name} --errors`);
+			const report = readDetachedReport(root);
+			for (const app of down)
+				printFailure(
+					report?.failures.find((failure) => failure.step === app.name) ??
+						describeAppFailure({
+							app: app.name,
+							reason: app.status,
+							tail: [],
+							setupHints: report?.setupHints ?? [],
+						}),
+				);
 			return 1;
 		}
 		if (Date.now() >= deadline) {
