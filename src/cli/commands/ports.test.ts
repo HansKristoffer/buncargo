@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import {
+	FULL_RANGE_BASE_PORT,
+	fillPortRange,
+} from "../../core/full-port-range.testing";
 import {
 	claimOffset,
 	readAllOffsetClaims,
@@ -9,7 +19,10 @@ import {
 } from "../../core/offset-claims";
 import { resolvePortPlan } from "../../core/port-allocation";
 import { buildRunEntry, publishRun } from "../../core/run-registry";
+import { CI_ENV_VARS } from "../../core/runtime-flags";
 import { handlePorts, parsePinnedOffset } from "./ports";
+
+const CLI = resolve(import.meta.dir, "../bin.ts");
 
 // The claims and the run registry live under HOME: the test's own, never the
 // developer's. Releasing a claim asks no container runtime anything.
@@ -113,10 +126,91 @@ it("pins whole steps only, so a pinned block lines up with allocated ones", () =
 
 it("takes the checkout only through --root, and --root only for release", async () => {
 	await expect(handlePorts(["release"])).rejects.toThrow(
-		"ports release needs the checkout: --root <path>.",
+		"ports release needs either the checkout (--root <path>) or an idle time (--idle=7d).",
 	);
 	await expect(handlePorts(["--root", stale])).rejects.toThrow(
-		"--root and --yes are only for ports release.",
+		"--root, --idle and --yes are only for ports release.",
 	);
 	expect(claimedNames()).toHaveLength(3);
+});
+
+it("releases only the claims idle for longer than the duration, of checkouts with no run and no containers", async () => {
+	const { roots } = fillPortRange(dir, [2, 30, 10]);
+	// holder-2 was last used ten days ago, but its finished run's database
+	// waits out the idle hold.
+	await publishRun({
+		...buildRunEntry({
+			sessionId: "held",
+			projectPrefix: "holder",
+			projectName: "holder-2",
+			root: roots[2],
+			isWorktree: false,
+		}),
+		processIdentity: "v2:a run that has ended",
+		services: [{ name: "db", status: "ready" }],
+	});
+
+	await expect(handlePorts(["release", "--idle=7d"])).rejects.toThrow(
+		"Refusing to release 1 claim without a terminal.",
+	);
+	expect(await handlePorts(["release", "--idle", "7", "--yes"])).toBe(0);
+	const reclaimed = Object.entries(readAllOffsetClaims())
+		.filter(([, claim]) => claim.reclaimedAt !== undefined)
+		.map(([key]) => key);
+	expect(reclaimed).toEqual([roots[1]]);
+	for (const value of ["soon", "0"])
+		await expect(handlePorts(["release", `--idle=${value}`])).rejects.toThrow(
+			`got "${value}"`,
+		);
+	await expect(handlePorts(["release", "--idle=soon"])).rejects.toThrow(
+		'--idle takes a duration such as 7d, 12h or 30m (a bare number is days): got "soon".',
+	);
+	await expect(
+		handlePorts(["release", "--idle=7d", "--root", stale]),
+	).rejects.toThrow("ports release needs either the checkout");
+});
+
+it("answers status --json and ports in a checkout with no block while every block is claimed, and pins it", async () => {
+	fillPortRange(dir, [2, 30, 10]);
+	const checkout = join(dir, "fresh");
+	mkdirSync(checkout);
+	writeFileSync(
+		join(checkout, "dev.config.ts"),
+		`export default { projectPrefix: "fresh", services: { postgres: { port: ${FULL_RANGE_BASE_PORT} } } };`,
+	);
+	const cli = async (...args: string[]) => {
+		const env: Record<string, string | undefined> = { ...process.env };
+		for (const name of CI_ENV_VARS) delete env[name];
+		const proc = Bun.spawn([process.execPath, CLI, ...args], {
+			cwd: checkout,
+			env,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, code] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		return { stdout, stderr, code };
+	};
+
+	const status = await cli("status", "--json");
+	expect(status.code).toBe(0);
+	expect(JSON.parse(status.stdout).portOffsetProvenance).toBe("unallocated");
+	expect(status.stderr).toContain(`${checkout} has no port block yet`);
+
+	const ports = await cli("ports");
+	expect(ports.code).toBe(0);
+	expect(ports.stdout).toContain("fresh-fresh: offset");
+	expect(ports.stdout).toContain("(unallocated)");
+	expect(ports.stdout).toContain(`${join(dir, "holder-1")} (30d ago, idle)`);
+
+	const pin = await cli("ports", "pin", "9100");
+	expect(pin.code).toBe(0);
+	const pinned = await cli("status", "--json");
+	expect(JSON.parse(pinned.stdout)).toMatchObject({
+		portOffset: 9100,
+		portOffsetProvenance: "lockfile",
+	});
 });

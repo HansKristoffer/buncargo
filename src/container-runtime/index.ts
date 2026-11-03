@@ -1,4 +1,5 @@
 export { assertServiceCapabilities } from "./capabilities";
+export { readClaimStates } from "./claim-states";
 export {
 	type EnsureServicesRunningRequest,
 	ensureServicesRunning,

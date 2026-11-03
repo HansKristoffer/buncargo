@@ -12,11 +12,15 @@ import {
 	claimOffset,
 	type OffsetClaim,
 	offsetClaimConflict,
+	offsetClaimConflicts,
+	offsetClaimHoldsBlock,
 	offsetClaimKey,
 	projectNameClaimant,
+	readAllOffsetClaims,
 	readOffsetClaims,
 	withOffsetClaimsLock,
 } from "./offset-claims";
+import { type BlockedOffset, PortBlockExhaustedError } from "./port-exhaustion";
 import { enclosingWorktreeName, type PortMap } from "./ports";
 import {
 	type CheckoutStacks,
@@ -33,11 +37,37 @@ import { formatWarn } from "./style";
 
 export const PORT_OFFSET_STEP = 100;
 const PORT_OFFSET_MIN = 100;
-const PORT_OFFSET_MAX = 9000;
+/**
+ * The last offset the hash spreads checkouts over. Fixed: changing it would
+ * move every checkout's hashed block, and the URLs of every one without a
+ * lockfile. The search for a free block goes further ({@link maxPortOffset}).
+ */
+const HASHED_OFFSET_MAX = 9000;
 const PORTS_LOCKFILE = `${STATE_DIRNAME}/ports.json`;
 const LOCKFILE_VERSION = 1;
 const PORT_OFFSET_BUCKETS =
-	(PORT_OFFSET_MAX - PORT_OFFSET_MIN) / PORT_OFFSET_STEP + 1;
+	(HASHED_OFFSET_MAX - PORT_OFFSET_MIN) / PORT_OFFSET_STEP + 1;
+/**
+ * The first port of Linux's ephemeral range (32768-60999); macOS's starts
+ * higher, at 49152. The kernel hands these to outgoing connections, so a block
+ * in it would now and then find a port taken by a browser's or a database
+ * client's socket and move. Allocated ports stay below the lower of the two.
+ */
+const EPHEMERAL_PORT_FLOOR = 32768;
+
+/**
+ * The highest offset a search for a free block tries: as far as the config's
+ * highest port can go and stay below {@link EPHEMERAL_PORT_FLOOR}, and never
+ * below the hashed range. A machine with dozens of worktrees filled the 90
+ * blocks up to 9000 while a config whose ports end near 8000 has room for 240.
+ */
+export function maxPortOffset(ports: readonly number[]): number {
+	const highest = Math.max(0, ...ports);
+	const fits =
+		Math.floor((EPHEMERAL_PORT_FLOOR - 1 - highest) / PORT_OFFSET_STEP) *
+		PORT_OFFSET_STEP;
+	return Math.max(HASHED_OFFSET_MAX, fits);
+}
 
 /**
  * `.buncargo/ports.json`. Only `offset` is required: a hand-written
@@ -49,7 +79,7 @@ export interface PortLockfile {
 	root?: string;
 	offset: number;
 	ports: Record<string, number>;
-	provenance: Exclude<PortOffsetProvenance, "env">;
+	provenance: Exclude<PortOffsetProvenance, "env" | "unallocated">;
 }
 
 export interface PortPlan {
@@ -82,17 +112,17 @@ export function computeBaseOffset(options: {
 }
 
 /**
- * Every block an allocation tries, in order: the hashed one, up to the last,
+ * Every block an allocation tries, in order: the hashed one, up to `max`,
  * then around from the first. Climbing from the hash alone never reached the
  * blocks below it, which left a checkout that hashed high a few dozen.
  */
-function candidateOffsets(hashed: number): number[] {
+function candidateOffsets(hashed: number, max: number): number[] {
+	const count = (max - PORT_OFFSET_MIN) / PORT_OFFSET_STEP + 1;
 	const first = (hashed - PORT_OFFSET_MIN) / PORT_OFFSET_STEP;
 	return Array.from(
-		{ length: PORT_OFFSET_BUCKETS },
+		{ length: count },
 		(_, index) =>
-			PORT_OFFSET_MIN +
-			((first + index) % PORT_OFFSET_BUCKETS) * PORT_OFFSET_STEP,
+			PORT_OFFSET_MIN + ((first + index) % count) * PORT_OFFSET_STEP,
 	);
 }
 
@@ -152,7 +182,12 @@ function portOwnerName(key: string): string {
 	return key.split("#")[0] ?? key;
 }
 
-/** Ports an allocation can inspect, for one scoped asynchronous cwd reading. */
+/**
+ * Ports an allocation can inspect, for one scoped asynchronous cwd reading.
+ * Only the hashed range's blocks: the search goes higher only when every one
+ * of them is taken, and a block there costs one lookup of its own then,
+ * rather than every run reading the processes on every port up to 32767.
+ */
 export function candidateAllocationPorts(
 	input: Pick<
 		Parameters<typeof resolvePortPlan>[0],
@@ -166,12 +201,13 @@ export function candidateAllocationPorts(
 	>,
 	currentOffset: number,
 ): number[] {
+	const base = buildPortMap(input.services, input.apps);
+	const block = { ...base, ...extraPortMap(input.apps, base, base) };
 	const offsets = new Set([
 		currentOffset,
-		...candidateOffsets(computeBaseOffset(input)),
+		...candidateOffsets(computeBaseOffset(input), HASHED_OFFSET_MAX),
 	]);
-	const base = buildPortMap(input.services, input.apps);
-	return Object.entries({ ...base, ...extraPortMap(input.apps, base, base) })
+	return Object.entries(block)
 		.filter(
 			([name]) =>
 				!input.probeNames || input.probeNames.includes(portOwnerName(name)),
@@ -262,7 +298,9 @@ export function readOffsetClaimsWithPorts(): Record<string, OffsetClaim> {
 }
 
 /**
- * The claims, with a port-less claim's ports read from its checkout's lockfile.
+ * The claims that hold a block, with a port-less claim's ports read from its
+ * checkout's lockfile. A reclaimed claim holds none: it keeps its project
+ * name, but its block is another checkout's to take.
  *
  * A claim written before claims carried their ports holds only its offset, so
  * a newcomer could take a block overlapping it and the incumbent moved on its
@@ -272,7 +310,10 @@ export function readOffsetClaimsWithPorts(): Record<string, OffsetClaim> {
 function claimsWithLockfilePorts(
 	claims: Record<string, OffsetClaim>,
 ): Record<string, OffsetClaim> {
-	return mapValues(claims, (claim, key) => {
+	const holding = Object.fromEntries(
+		Object.entries(claims).filter(([, claim]) => offsetClaimHoldsBlock(claim)),
+	);
+	return mapValues(holding, (claim, key) => {
 		// A suffixed environment has no lockfile; its checkout's is dev's.
 		if (claim.ports || claim.suffix) return claim;
 		const lockfile = readPortsLockfile(key);
@@ -500,10 +541,45 @@ function planPorts(
 					),
 				)
 			: ports;
+	// Other claims are skipped whether or not their runs are running; only a
+	// claiming run writes its own.
+	const claimKey = offsetClaimKey(root, suffix);
+	const blockPorts = (ports: Record<string, number>) => [
+		...Object.values(withExtras(ports)),
+		...(input.companionPorts?.(ports) ?? []),
+	];
+	// Every other claim is read only past the read's fast path: a lockfile
+	// whose own claim holds its block answers from one read of the file.
+	let readClaims: Record<string, OffsetClaim> | undefined;
+	const allClaims = () => {
+		readClaims ??= claimsWithLockfilePorts(
+			existingClaims ?? readOffsetClaims(),
+		);
+		return readClaims;
+	};
+	const claimant = (offset: number, ports: Record<string, number>) =>
+		offsetClaimConflict(
+			allClaims(),
+			{ offset, ports: blockPorts(ports) },
+			claimKey,
+		);
 	const lockfile = readPortsLockfile(root);
 	const notOurs = lockfile && foreignLockfile(lockfile, { projectName, root });
 	const ownLockfile = lockfile && !notOurs ? lockfile : undefined;
-	if (!probeConflicts && ownLockfile) {
+	// A full range reclaimed this checkout's block for another one: its
+	// lockfile still names the block, and its claim holds none. A live run
+	// always holds its claim, so a block two claims share (a pre-lock race)
+	// still reads as the lockfile says, as the run serving it does.
+	const ownClaimHolds = () => {
+		const own = readAllOffsetClaims()[claimKey];
+		return own !== undefined && offsetClaimHoldsBlock(own);
+	};
+	const reclaimed = () =>
+		ownLockfile !== undefined &&
+		!ownClaimHolds() &&
+		claimant(ownLockfile.offset, shiftPorts(basePorts, ownLockfile.offset)) !==
+			undefined;
+	if (!probeConflicts && ownLockfile && !reclaimed()) {
 		// A config edit must not make a maintenance command switch away from
 		// the endpoints the last startup published. New keys use the same offset.
 		const ports = Object.fromEntries(
@@ -519,16 +595,7 @@ function planPorts(
 		return { offset: ownLockfile.offset, ports, provenance: "lockfile" };
 	}
 
-	// Other claims are skipped whether or not their runs are running; only a
-	// claiming run writes its own.
-	const claimKey = offsetClaimKey(root, suffix);
-	const claims = claimsWithLockfilePorts(existingClaims ?? readOffsetClaims());
-	const blockPorts = (ports: Record<string, number>) => [
-		...Object.values(withExtras(ports)),
-		...(input.companionPorts?.(ports) ?? []),
-	];
-	const claimant = (offset: number, ports: Record<string, number>) =>
-		offsetClaimConflict(claims, { offset, ports: blockPorts(ports) }, claimKey);
+	const claims = allClaims();
 	const conflictAt = (ports: Record<string, number>) =>
 		findForeignConflict(probed(withExtras(ports)), {
 			root,
@@ -539,7 +606,7 @@ function planPorts(
 	const settle = (
 		offset: number,
 		ports: Record<string, number>,
-		provenance: PortOffsetProvenance,
+		provenance: PortLockfile["provenance"],
 	): PortPlan => {
 		if (persist) {
 			const next: PortLockfile = {
@@ -548,7 +615,7 @@ function planPorts(
 				root,
 				offset,
 				ports,
-				provenance: provenance === "env" ? "lockfile" : provenance,
+				provenance,
 			};
 			if (JSON.stringify(next) !== JSON.stringify(lockfile))
 				writePortsLockfile(root, next);
@@ -606,7 +673,7 @@ function planPorts(
 	const settleAllocated = (
 		offset: number,
 		ports: Record<string, number>,
-		provenance: PortOffsetProvenance,
+		provenance: PortLockfile["provenance"],
 	): PortPlan => {
 		// Moving off a lockfile changes every URL of the checkout: say why.
 		if (persist && lockfile && ignored && lockfile.offset !== offset)
@@ -626,24 +693,48 @@ function planPorts(
 	});
 
 	// Why the block at `offset` cannot be used, or undefined when it can.
-	const problemAt = (
+	// Claims are read before the probe, which a claimed block never pays for.
+	const blockedAt = (
 		offset: number,
 		ports: Record<string, number>,
-	): string | undefined => {
+	): BlockedOffset | undefined => {
 		if (Object.values(withExtras(ports)).some((port) => port > 65535))
-			return `offset ${offset} puts a port above 65535`;
-		const claimed = claimant(offset, ports);
-		if (claimed) return claimed;
+			return {
+				offset,
+				problem: `offset ${offset} puts a port above 65535`,
+				claimKeys: [],
+				unusable: true,
+			};
+		const claimed = offsetClaimConflicts(
+			claims,
+			{ offset, ports: blockPorts(ports) },
+			claimKey,
+		);
+		const [first] = claimed;
+		if (first)
+			return {
+				offset,
+				problem: first.reason,
+				claimKeys: claimed.map((conflict) => conflict.key),
+				unusable: false,
+			};
 		const conflict = conflictAt(ports);
 		return conflict
-			? describePortConflict(
-					conflict.port,
-					conflict.owner,
-					runtimeName,
-					checkout,
-				)
+			? {
+					offset,
+					problem: describePortConflict(
+						conflict.port,
+						conflict.owner,
+						runtimeName,
+						checkout,
+					),
+					claimKeys: [],
+					unusable: true,
+				}
 			: undefined;
 	};
+	const problemAt = (offset: number, ports: Record<string, number>) =>
+		blockedAt(offset, ports)?.problem;
 
 	// A suffixed environment has no lockfile; its own claim keeps its ports
 	// from one run to the next, as a lockfile does for dev, and read-only
@@ -659,22 +750,65 @@ function planPorts(
 			);
 	}
 
-	let lastTried = { offset: hashed, problem: "" };
-	for (const offset of candidateOffsets(hashed)) {
+	const maxOffset = maxPortOffset(Object.values(withExtras(basePorts)));
+	const blocked: BlockedOffset[] = [];
+	for (const offset of candidateOffsets(hashed, maxOffset)) {
 		const ports = shiftPorts(basePorts, offset);
-		const problem = problemAt(offset, ports);
-		if (!problem)
+		const block = blockedAt(offset, ports);
+		if (!block)
 			return settleAllocated(
 				offset,
 				ports,
 				offset === hashed ? "hash" : "shifted",
 			);
-		lastTried = { offset, problem };
+		blocked.push(block);
 	}
 
-	throw new Error(
-		`Could not allocate a free port block for ${root} (every offset from ${PORT_OFFSET_MIN} to ${PORT_OFFSET_MAX}, starting at ${hashed}); at ${lastTried.offset}, ${lastTried.problem}. Free the ports, or move this checkout with \`buncargo ports pin <offset>\` (\`buncargo ports\` lists the claimed offsets).`,
-	);
+	// A read answers where the hash puts the block, and says it is not this
+	// checkout's: `status`, `env`, `url` and `ports` must work in exactly the
+	// state they are needed to get out of, and `ports pin` with them.
+	if (!claim)
+		return {
+			offset: hashed,
+			ports: shiftPorts(basePorts, hashed),
+			provenance: "unallocated",
+		};
+
+	// Only now, with nothing free, does a claimed block pay for a probe: one a
+	// process holds stays taken when its claim goes, so it is not worth
+	// reclaiming.
+	for (const block of blocked)
+		if (!block.unusable && conflictAt(shiftPorts(basePorts, block.offset)))
+			block.unusable = true;
+	throw new PortBlockExhaustedError({
+		root,
+		range: { min: PORT_OFFSET_MIN, max: maxOffset, hashed },
+		blocked,
+		claims,
+		pinnable: pinnableOffsetAbove(maxOffset, (offset) => {
+			const ports = shiftPorts(basePorts, offset);
+			return Object.values(withExtras(ports)).some((port) => port > 65535)
+				? "overflow"
+				: claimant(offset, ports);
+		}),
+	});
+}
+
+/**
+ * The first offset above the searched range whose block no claim touches, or
+ * undefined when every one up to 65535 is taken. Its ports are in the
+ * ephemeral range on Linux, which is why the search stops below it; pinned
+ * by hand, it is a way out, not a default.
+ */
+function pinnableOffsetAbove(
+	max: number,
+	problemAt: (offset: number) => string | undefined,
+): number | undefined {
+	for (let offset = max + PORT_OFFSET_STEP; ; offset += PORT_OFFSET_STEP) {
+		const problem = problemAt(offset);
+		if (problem === "overflow") return undefined;
+		if (!problem) return offset;
+	}
 }
 
 /** What `buncargo ports pin` did: the block's ports, or why it is not free. */

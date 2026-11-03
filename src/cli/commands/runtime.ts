@@ -1,5 +1,6 @@
 import { getErrorMessage } from "hanzio";
 import { readEnvOverrides } from "../../core/env-overrides";
+import { unallocatedPortsMessage } from "../../core/port-exhaustion";
 import { hostsMode } from "../../core/runtime-flags";
 import { createNoopPhaseTimer, createPhaseTimer } from "../../core/timing";
 import { exitOnDevArgErrors, parseDevArgs, printDevHelp } from "../dev-flags";
@@ -138,6 +139,10 @@ export async function loadLiveEnv() {
 		await import("../../core/hosts/tailscale-serve");
 	const { adoptLiveCaptures } = await import("../../core/run-publish");
 	const env = await loadEnv({ readOnly: true });
+	// Answered all the same (`portOffsetProvenance: "unallocated"`): these
+	// commands are how an agent finds its way out of a full range.
+	if (env.portOffsetProvenance === "unallocated")
+		log.warn(unallocatedPortsMessage(env.root));
 	const mode = hostsMode();
 	// What the run recorded Tailscale answering for, never a request of our own.
 	if (env.hosts && mode === "tailscale") {

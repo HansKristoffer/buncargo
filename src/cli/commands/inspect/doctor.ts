@@ -44,6 +44,7 @@ import {
 	readOffsetClaimsWithPorts,
 	readPortsLockfile,
 } from "../../../core/port-allocation";
+import { unallocatedPortsMessage } from "../../../core/port-exhaustion";
 import {
 	classifyPortOccupant,
 	formatPortOwner,
@@ -586,7 +587,10 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 		report.note(
 			`Port offset ${env.portOffset} from ${env.portOffsetProvenance}`,
 		);
-		await checkPortOwnership(report, env, selected, fix);
+		// Its ports are another checkout's: their owners say nothing about it.
+		if (env.portOffsetProvenance === "unallocated")
+			report.note(`warning: ${unallocatedPortsMessage(env.root)}`);
+		else await checkPortOwnership(report, env, selected, fix);
 		checkPortsLockfile(report, env);
 		await checkOrphanedContainers(report, env, selected);
 		await checkTunnelRegistry(report, env);
