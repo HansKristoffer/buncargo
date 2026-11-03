@@ -196,7 +196,7 @@ export async function guardVersion(fromSource: boolean): Promise<void> {
 		// from; its remaining modules load lazily, so start over on the new one.
 		const onDisk = findBuncargoPackage(root)?.version;
 		if (onDisk && onDisk !== own.version)
-			handOver(process.argv[1] ?? "", onDisk, own.version);
+			handOver(process.argv[1], onDisk, own.version);
 	}
 
 	const decision = decideVersionGuard(process.cwd(), {

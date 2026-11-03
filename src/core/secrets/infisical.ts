@@ -22,6 +22,11 @@ import {
 import { recordStartupMetric } from "../startup-metrics";
 import { resolveUserHome, stateFilePath } from "../state-paths";
 import { formatWarn } from "../style";
+import {
+	InfisicalLoginError,
+	infisicalLoginCommand,
+	SecretsError,
+} from "./errors";
 import { SharedRequestCache } from "./shared-request";
 
 /**
@@ -58,6 +63,12 @@ const DEFAULT_INFISICAL_SITE_URL = "https://eu.infisical.com";
 
 /** One HTTP call or CLI run; only has to outlast a stalled network call. */
 const REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * `infisical user get token` once it holds the lock: a local read and one
+ * `checkAuth` round trip, well under a second. Bounds a CLI waiting silently
+ * on a login nobody will finish; a login prompt it prints ends it at once.
+ */
+const CLI_TIMEOUT_MS = 2_000;
 /** Every worktree on the machine queues on one lock, so allow a real queue. */
 const LOCK_TIMEOUT_MS = 120_000;
 
@@ -103,16 +114,6 @@ function identityFile(
 	return new URL(own).origin === new URL(siteUrl).origin
 		? { clientId, clientSecret }
 		: undefined;
-}
-
-export class SecretsError extends Error {
-	constructor(
-		message: string,
-		readonly fix?: string,
-	) {
-		super(message);
-		this.name = "SecretsError";
-	}
 }
 
 const cache = new SharedRequestCache<Record<string, string>>();
@@ -228,7 +229,7 @@ async function request(
 
 function failureFix(scope: InfisicalScope, status: number): string | undefined {
 	if (status === 401 || status === 403)
-		return `infisical login --domain=${scope.siteUrl}`;
+		return infisicalLoginCommand(scope.siteUrl);
 	if (status === 404)
 		return `check that project ${scope.projectId} has environment "${scope.environment}" and path "${scope.path}" on ${scope.siteUrl}; a 404 usually means one of them is misspelled or missing.`;
 	return undefined;
@@ -288,58 +289,122 @@ async function readCliSessionToken(
 ): Promise<string> {
 	return withFileLock(
 		stateFilePath("infisical-cli"),
-		async () => {
-			recordStartupMetric("subprocesses");
-			// Inherited machine tokens would override the signed-in user session.
-			const {
-				INFISICAL_TOKEN: _token,
-				INFISICAL_UNIVERSAL_AUTH_ACCESS_TOKEN: _access,
-				...env
-			} = connectProcessEnv();
-			let child: ReturnType<typeof Bun.spawn>;
-			try {
-				child = Bun.spawn(
-					[
-						binary,
-						"user",
-						"get",
-						"token",
-						"--plain",
-						"--silent",
-						`--domain=${scope.siteUrl}`,
-					],
-					{
-						// A CLI that decides to prompt must fail, not hold the lock.
-						stdin: "ignore",
-						stdout: "pipe",
-						stderr: "ignore",
-						env: { ...env, INFISICAL_DISABLE_UPDATE_CHECK: "true" },
-						signal,
-					},
-				);
-			} catch {
-				throw new SecretsError(
-					"The Infisical CLI is not installed.",
-					"brew install infisical/get-cli/infisical",
-				);
-			}
-			const [stdout, exitCode] = await Promise.all([
-				new Response(child.stdout as ReadableStream).text(),
-				child.exited,
-			]);
-			signal.throwIfAborted();
-			const token = stdout.trim();
-			if (exitCode !== 0 || !/^[\w-]+\.[\w-]+\.[\w-]+$/.test(token)) {
-				// Deliberately without the CLI's stderr, which can contain secrets.
-				throw new SecretsError(
-					`No Infisical session for ${scope.siteUrl}.`,
-					`infisical login --domain=${scope.siteUrl}`,
-				);
-			}
-			return token;
-		},
+		() => runCliSessionToken(scope, binary, signal),
 		{ timeoutMs: LOCK_TIMEOUT_MS, signal },
 	);
+}
+
+/**
+ * One `infisical user get token`, which can never become an interactive login.
+ *
+ * With an expired session the CLI starts its login flow ("triggering login
+ * flow", a browser callback or an email prompt) and waits for a person
+ * forever. Its stdin is closed, its output is watched for that flow and the
+ * whole run is bounded, so each of those ends in an {@link InfisicalLoginError}
+ * within seconds. The output is only matched, never kept or echoed.
+ */
+async function runCliSessionToken(
+	scope: InfisicalScope,
+	binary: string,
+	signal: AbortSignal,
+): Promise<string> {
+	recordStartupMetric("subprocesses");
+	// Inherited machine tokens would override the signed-in user session.
+	const {
+		INFISICAL_TOKEN: _token,
+		INFISICAL_UNIVERSAL_AUTH_ACCESS_TOKEN: _access,
+		...env
+	} = connectProcessEnv();
+	const deadline = AbortSignal.timeout(CLI_TIMEOUT_MS);
+	let child: Bun.Subprocess<"ignore", "pipe", "pipe">;
+	try {
+		child = Bun.spawn(
+			[
+				binary,
+				"user",
+				"get",
+				"token",
+				"--plain",
+				"--silent",
+				`--domain=${scope.siteUrl}`,
+			],
+			{
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+				env: {
+					...env,
+					INFISICAL_DISABLE_UPDATE_CHECK: "true",
+					INFISICAL_DISABLE_MIGRATION_NOTICES: "true",
+				},
+				signal: anySignal(signal, deadline),
+				killSignal: "SIGKILL",
+			},
+		);
+	} catch {
+		throw new SecretsError(
+			"The Infisical CLI is not installed.",
+			"brew install infisical/get-cli/infisical",
+		);
+	}
+
+	let loginFlow = false;
+	const watch = async (stream: ReadableStream<Uint8Array>) => {
+		const decoder = new TextDecoder();
+		const reader = stream.getReader();
+		let text = "";
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			text += decoder.decode(value, { stream: true });
+			if (!loginFlow && startsLoginFlow(text)) {
+				loginFlow = true;
+				// Nothing of its own to clean up: it was waiting for a person.
+				child.kill("SIGKILL");
+			}
+		}
+		return text;
+	};
+	const stdout = watch(child.stdout);
+	void stdout.catch(() => {});
+	void watch(child.stderr).catch(() => {});
+	const exitCode = await child.exited;
+	signal.throwIfAborted();
+
+	if (loginFlow)
+		throw new InfisicalLoginError(
+			`The Infisical session for ${scope.siteUrl} has expired: the CLI asked for a login.`,
+			scope.siteUrl,
+		);
+	if (deadline.aborted)
+		throw new InfisicalLoginError(
+			`The Infisical CLI did not answer within ${CLI_TIMEOUT_MS / 1000}s for ${scope.siteUrl}; an expired session waits on a login.`,
+			scope.siteUrl,
+		);
+	const token = exitCode === 0 ? (await stdout).trim() : "";
+	if (!/^[\w-]+\.[\w-]+\.[\w-]+$/.test(token)) {
+		// Deliberately without the CLI's output, which can contain secrets.
+		throw new InfisicalLoginError(
+			`No Infisical session for ${scope.siteUrl}.`,
+			scope.siteUrl,
+		);
+	}
+	return token;
+}
+
+/**
+ * The CLI's login flow, in any of the shapes it prints: "No valid login
+ * session found, triggering login flow", "Your login session has expired.
+ * Please run [infisical login]", an email or browser prompt. A token line has
+ * no spaces, so only text with one is matched.
+ */
+function startsLoginFlow(output: string): boolean {
+	return output
+		.split("\n")
+		.some(
+			(line) =>
+				line.includes(" ") && /login|log in|email|browser|expired/i.test(line),
+		);
 }
 
 /**
@@ -502,6 +567,50 @@ export async function fetchScopeSecrets(
 	}
 }
 
+/** Whether `siteUrl` is reached with the user's CLI session, not an identity. */
+function signsInWithCli(env: NodeJS.ProcessEnv, siteUrl: string): boolean {
+	try {
+		return !(infisicalMachineCredentials(env) ?? identityFile(env, siteUrl));
+	} catch {
+		// A broken identity file is the fetch's to report.
+		return false;
+	}
+}
+
+/**
+ * Resolve once every site the scopes sign in to through the CLI has a
+ * session, or throw the {@link InfisicalLoginError} of one that has none.
+ *
+ * The token is the one those scopes' fetches use, cached per site, so a run
+ * that awaits this before its first container pays no extra CLI process.
+ * Other failures (no CLI, a queue on its lock) are left to the fetches, which
+ * warn about them as before.
+ */
+export async function ensureSecretsSession(
+	scopes: Iterable<InfisicalScope>,
+	options: { signal?: AbortSignal; env?: NodeJS.ProcessEnv } = {},
+): Promise<void> {
+	const env = options.env ?? process.env;
+	const sites = new Map<string, InfisicalScope>();
+	for (const scope of scopes)
+		if (signsInWithCli(env, scope.siteUrl)) sites.set(scope.siteUrl, scope);
+
+	const wait = anySignal(
+		options.signal,
+		AbortSignal.timeout(REQUEST_TIMEOUT_MS * 2),
+	);
+	await Promise.all(
+		[...sites.values()].map(async (scope) => {
+			try {
+				await cliSessionToken(scope, wait);
+			} catch (error) {
+				if (error instanceof InfisicalLoginError) throw error;
+				options.signal?.throwIfAborted();
+			}
+		}),
+	);
+}
+
 /** Forget every fetched scope. Tests only: a run wants exactly one fetch. */
 export function clearScopeSecretsCache(): void {
 	cache.clear();
@@ -530,7 +639,8 @@ export function describeSecretsError(error: unknown): string {
  *
  * Lowest precedence: keys the developer already exported are dropped here, and
  * the caller layers the computed env on top. A failed scope warns once and
- * yields nothing, leaving that app's own loader to do what it does today.
+ * yields nothing, leaving that app's own loader to do what it does today; a
+ * missing or expired session throws instead.
  */
 export async function loadAppSecrets(
 	apps: Record<string, AppConfig>,
@@ -569,6 +679,8 @@ export async function loadAppSecrets(
 					);
 				} catch (error) {
 					options.signal?.throwIfAborted();
+					// Every app's own loader would wait on the same login.
+					if (error instanceof InfisicalLoginError) throw error;
 					const affected = [...appScopes]
 						.filter(([, appKey]) => appKey === key)
 						.map(([name]) => name)

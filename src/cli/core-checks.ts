@@ -1,11 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import {
-	getUniqueValuesByKey,
-	isDefined,
-	typedSwitch,
-	typedSwitchGroup,
-} from "hanzio";
+import { typedSwitch, typedSwitchGroup } from "hanzio";
 import { containerRuntimeForEnv } from "../container-runtime";
 import {
 	type CheckoutFileStatus,
@@ -32,14 +27,13 @@ import { canBindPort } from "../core/process";
 import {
 	describeSecretsError,
 	fetchScopeSecrets,
-	resolveScope,
-	scopeKey,
 } from "../core/secrets/infisical";
 import {
 	prismaSchemaHash,
 	readGeneratedPrismaHash,
 } from "../prisma/schema-hash";
 import type { AnyDevEnvironment, SetupCheck } from "../types";
+import { configSecretScopes } from "./secrets-scopes";
 
 /**
  * The checks every checkout gets, before the config's and its integrations'.
@@ -179,19 +173,14 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 		});
 	}
 
-	const scopes = [
-		env.secrets,
-		...Object.values(env.apps).map((app) => app.secrets),
-	]
-		.map((scope) => (scope ? resolveScope(scope, env.secrets) : undefined))
-		.filter(isDefined);
+	const scopes = configSecretScopes(env).map(({ scope }) => scope);
 	if (scopes.length > 0) {
 		checks.push({
 			name: "Infisical secrets are readable",
 			fast: false,
 			check: async () => {
 				const failures: string[] = [];
-				for (const scope of getUniqueValuesByKey(scopes, scopeKey)) {
+				for (const scope of scopes) {
 					try {
 						await fetchScopeSecrets(scope);
 					} catch (error) {

@@ -130,6 +130,12 @@ pieces it orchestrates.
 - `commands/inspect/file-table.ts` reads the machine's open-file table (`sysctl` /
   `/proc/sys/fs/file-nr`); `doctor` runs the full `lsof` for the top holders only past half full,
   because it takes seconds on a crowded machine.
+- `commands/secrets.ts` is `ls` (key names and their source) and `check` (each config scope
+  readable or not, with its key count). `check`'s exit codes are `SECRETS_CHECK_EXIT`, a
+  contract for agents: 2 always means "log in" and wins over 3 (a scope unreadable for another
+  reason), because a login may fix the rest. No subcommand prints a value, on purpose
+  ([secrets](./secrets.md)). Its help keeps one usage line per subcommand, so adding `check`
+  only added lines.
 - `commands/sql.ts` runs the preset's own client inside the service's container through
   `interactiveExecArgv` (the one adapter method that hands back argv for inherited stdio). `--json`
   for Postgres wraps the query in `json_agg`, so it only fits row-returning statements.

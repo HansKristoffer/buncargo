@@ -42,6 +42,11 @@ export function startFakeInfisical(
 	options: {
 		cliOrganization?: string;
 		cliFails?: boolean;
+		/**
+		 * An expired session: the CLI announces its login flow and waits on
+		 * it (`prompt`), or waits without a word (`hang`).
+		 */
+		cliLogin?: "prompt" | "hang";
 		/** CLI runs wait for {@link FakeInfisical.release} before answering. */
 		holdCli?: boolean;
 		/** List requests wait for {@link FakeInfisical.release} before answering. */
@@ -55,11 +60,17 @@ export function startFakeInfisical(
 	const log = join(dir, "cli.log");
 	const releaseFile = join(dir, "released");
 	const cliPath = join(dir, "infisical");
+	const loginFlow =
+		options.cliLogin === "prompt"
+			? 'echo "No valid login session found, triggering login flow" >&2\n'
+			: "";
 	writeFileSync(
 		cliPath,
-		options.cliFails
-			? `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\necho "secret-looking stderr" >&2\nexit 1\n`
-			: `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\n${options.holdCli ? `while [ ! -e ${JSON.stringify(releaseFile)} ]; do sleep 0.01; done\n` : ""}echo ${JSON.stringify(sessionToken(options.cliOrganization ?? "org-a"))}\n`,
+		options.cliLogin
+			? `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\n${loginFlow}exec sleep 30\n`
+			: options.cliFails
+				? `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\necho "secret-looking stderr" >&2\nexit 1\n`
+				: `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\n${options.holdCli ? `while [ ! -e ${JSON.stringify(releaseFile)} ]; do sleep 0.01; done\n` : ""}echo ${JSON.stringify(sessionToken(options.cliOrganization ?? "org-a"))}\n`,
 	);
 	chmodSync(cliPath, 0o755);
 

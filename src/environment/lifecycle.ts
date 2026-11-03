@@ -8,6 +8,7 @@ import { registerAbortCleanup, withDeadline } from "../core/deadline";
 import { toPortMap, toUrlMap } from "../core/ports";
 import { stopDevServers } from "../core/process/dev-servers";
 import { isCI } from "../core/runtime-flags";
+import { ensureSecretsSession } from "../core/secrets/infisical";
 import { formatDone, formatStep, formatWarn } from "../core/style";
 import { resolveComposeServiceNames } from "../planning";
 import { resolvePrismaConfig } from "../prisma/config";
@@ -32,7 +33,11 @@ import type { DevEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
 import type { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { runMigrationsSequentially } from "./migrations";
-import { prefetchSecrets } from "./prefetch-secrets";
+import {
+	prefetchSecrets,
+	type StartSecretsSelection,
+	startSecretScopes,
+} from "./prefetch-secrets";
 import type { DevRunClaimApi } from "./run-claim";
 import { assertSeedSucceeded, seedCanOverlap } from "./seed-startup";
 import { runSeedIfNeeded } from "./seeding";
@@ -346,10 +351,10 @@ export function createLifecycleApi<
 		ctx.onSecretsWait = (ms) => onPhase?.("secrets", ms);
 		const prefetchController = new AbortController();
 		const prefetchSignal = anySignal(signal, prefetchController.signal);
-		const prefetches =
+		const secretsSelection: StartSecretsSelection | undefined =
 			prepare === "containers"
-				? []
-				: prefetchSecrets({
+				? undefined
+				: {
 						apps: prepare === "all" ? appsToStart : {},
 						defaults: config.secrets,
 						seed: config.seed?.secrets,
@@ -359,10 +364,19 @@ export function createLifecycleApi<
 							!!config.seed &&
 							preparationSelected(config.seed.requiredServices),
 						migrations: collectMigrations(),
-						signal: prefetchSignal,
-					});
+					};
+		const prefetches = secretsSelection
+			? prefetchSecrets({ ...secretsSelection, signal: prefetchSignal })
+			: [];
 		if (signal) registerAbortCleanup(signal, Promise.allSettled(prefetches));
 		try {
+			// Before the claim and the first container: an expired Infisical
+			// session stops the start here, not after the containers inside
+			// every app's own loader. The prefetch's own token, so no extra CLI.
+			if (secretsSelection)
+				await ensureSecretsSession(startSecretScopes(secretsSelection), {
+					signal: prefetchSignal,
+				});
 			const hasServices = selectedServices.length > 0;
 			const portMap = toPortMap(ports);
 			const targetPorts: Record<string, number> = {};

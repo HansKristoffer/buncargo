@@ -9,6 +9,7 @@ import { applyEnvOverrides, warnShadowedSecrets } from "../core/env-overrides";
 import { toPortMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
 import { hostsDaemonPort, isCI, urlHostOverride } from "../core/runtime-flags";
+import { InfisicalLoginError } from "../core/secrets/errors";
 import {
 	describeSecretsError,
 	loadScopeSecrets,
@@ -263,6 +264,8 @@ export function createEnvVarsApi<
 			);
 		} catch (error) {
 			options.signal?.throwIfAborted();
+			// The command's own loader would wait on the same login.
+			if (error instanceof InfisicalLoginError) throw error;
 			warnSecretsOnce(
 				resolved,
 				`Could not load Infisical secrets: ${describeSecretsError(error)}`,
