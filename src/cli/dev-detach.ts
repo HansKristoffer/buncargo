@@ -70,7 +70,8 @@ export function readDetachedReport(root: string): DetachedReport | undefined {
 /**
  * Update the report of the detached run in `root`. Synchronous, so it is on
  * disk before the registry says the app failed, which is what the parent
- * waits for. A report that cannot be written loses only the explanation.
+ * waits for. No lock: the run itself is the one writer, on one thread. A
+ * report that cannot be written loses only the explanation.
  */
 export function recordDetachedReport(
 	root: string,

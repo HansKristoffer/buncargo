@@ -82,6 +82,8 @@ const KEYED_LEVEL = /\blevel["']?\s*[=:]\s*["']?([a-z]+|\d{2})\b/i;
 
 /** How many leading words may come before the level: a timestamp, a `[scope]`, a pid. */
 const LEVEL_SEARCH_WORDS = 4;
+/** The head of a line the level is looked for in: every output line passes here. */
+const LEVEL_SEARCH_CHARS = 120;
 
 /**
  * The level a logger wrote at the head of the line (`INFO:`, `[WARN]`,
@@ -97,7 +99,8 @@ function explicitLevel(text: string): OutputLine["level"] | "info" | undefined {
 		const level = LEVEL_WORDS[keyed.toLowerCase()];
 		if (level !== undefined) return level;
 	}
-	const words = text.trim().split(/\s+/).slice(0, LEVEL_SEARCH_WORDS);
+	const head = text.trimStart().slice(0, LEVEL_SEARCH_CHARS);
+	const words = head.split(/\s+/, LEVEL_SEARCH_WORDS);
 	for (const word of words) {
 		const bare = word.replace(/^[[(<]+|[\])>:,]+$/g, "");
 		const marked = bare !== word || /^[A-Z]+$/.test(bare);

@@ -81,10 +81,9 @@ export function describeDevFailure(
 	const message = getErrorMessage(error);
 	const [cause = "The run failed.", ...rest] = message.split("\n");
 	const ownHints = error instanceof CliError ? error.hints : [];
-	const app = context.output
-		? failedApp(message, context.output.states)
-		: undefined;
-	if (app === undefined || !context.output)
+	const { output } = context;
+	const app = output && failedApp(message, output.states);
+	if (!output || app === undefined)
 		return {
 			cause,
 			output: rest,
@@ -94,7 +93,7 @@ export function describeDevFailure(
 	return {
 		cause,
 		step: app,
-		output: [...rest, ...context.output.tail(app)].slice(-FAILURE_OUTPUT_LINES),
+		output: [...rest, ...output.tail(app)].slice(-FAILURE_OUTPUT_LINES),
 		hints: [...ownHints, ...setup],
 		next: [`\`buncargo logs ${app}\` has its whole output`],
 	};
