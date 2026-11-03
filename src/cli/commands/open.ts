@@ -13,8 +13,10 @@ import { loadLiveEnv } from "./runtime";
 
 /**
  * `buncargo url` / `buncargo open`: every URL this checkout's run knows, under
- * the name `url` lists it by. App names first, then capture names, then the
- * labels of captures and integrations, which is what BuncargoBar shows.
+ * the name `url` lists it by. App names first, then services, then capture
+ * names, then the labels of captures and integrations, which is what
+ * BuncargoBar shows. `url` also prints a service's connection URL
+ * (`postgres://…`); `open` takes only what a browser can open.
  */
 
 const HELP = {
@@ -48,6 +50,7 @@ export const OPEN_COMMAND_SPEC: CommandSpec = {
 
 export interface OpenSource {
 	apps: Readonly<Record<string, unknown>>;
+	services: Readonly<Record<string, unknown>>;
 	urls: Readonly<Record<string, string | undefined>>;
 	loopbackUrls?: Readonly<Record<string, string | undefined>>;
 	publicUrls: Readonly<Record<string, string | undefined>>;
@@ -56,15 +59,30 @@ export interface OpenSource {
 	details(): Record<string, string>;
 }
 
-const isUrl = (value: string | undefined): value is string =>
+const isHttpUrl = (value: string | undefined): value is string =>
 	value !== undefined && /^https?:\/\//.test(value);
 
-/** Name → URL, each URL once, under the first name that reaches it. */
-export function openTargets(env: OpenSource): Record<string, string> {
+const isAnyUrl = (value: string | undefined): value is string =>
+	value !== undefined && /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+
+/**
+ * Name → URL, each URL once, under the first name that reaches it. `open`
+ * takes browser URLs only; `url` also takes a service's connection URL
+ * (`postgres://…`, `redis://…`), which is what an agent asking for
+ * `url postgres` wants.
+ */
+export function openTargets(
+	env: OpenSource,
+	options: { connectionUrls: boolean },
+): Record<string, string> {
 	const targets: Record<string, string> = {};
 	const seen = new Set<string>();
-	const add = (name: string, url: string | undefined) => {
-		if (!isUrl(url) || seen.has(url) || name in targets) return;
+	const add = (
+		name: string,
+		url: string | undefined,
+		accepts: (value: string | undefined) => value is string = isHttpUrl,
+	) => {
+		if (!accepts(url) || seen.has(url) || name in targets) return;
 		seen.add(url);
 		targets[name] = url;
 	};
@@ -73,6 +91,9 @@ export function openTargets(env: OpenSource): Record<string, string> {
 	for (const app of Object.keys(env.apps)) {
 		add(app, environmentOpenUrl(env, app));
 	}
+	const serviceAccepts = options.connectionUrls ? isAnyUrl : isHttpUrl;
+	for (const service of Object.keys(env.services))
+		add(service, environmentOpenUrl(env, service), serviceAccepts);
 	for (const [name, value] of Object.entries(env.captured)) add(name, value);
 	for (const [label, value] of Object.entries(env.details())) add(label, value);
 	return targets;
@@ -105,16 +126,27 @@ function parseNames(
 	return names;
 }
 
-function resolveTarget(targets: Record<string, string>, name: string): string {
+export function resolveTarget(
+	env: Pick<OpenSource, "services">,
+	targets: Record<string, string>,
+	name: string,
+	command: "url" | "open",
+): string {
 	const url = findTarget(targets, name);
 	if (url) return url;
 	const names = Object.keys(targets);
-	throw new CliError(
-		`No URL named "${name}".`,
+	const available =
 		names.length > 0
-			? [`Available: ${names.join(", ")}`]
-			: ["Nothing has a URL yet: is `buncargo dev` running?"],
-	);
+			? `Available: ${names.join(", ")}`
+			: "Nothing has a URL yet: is `buncargo dev` running?";
+	if (!(name in env.services))
+		throw new CliError(`No URL named "${name}".`, [available]);
+	const connect = `\`buncargo url ${name}\` prints how to connect`;
+	const why =
+		command === "open"
+			? `no URL a browser opens; ${connect}`
+			: "no URL: it publishes no port; `buncargo status` lists its container";
+	throw new CliError(`The service "${name}" has ${why}.`, [available]);
 }
 
 export async function handleUrl(args: string[]): Promise<number> {
@@ -123,10 +155,11 @@ export async function handleUrl(args: string[]): Promise<number> {
 		return 0;
 	}
 	const [name] = parseNames(URL_COMMAND_SPEC, args, "url", 1);
-	const targets = openTargets(await loadLiveEnv());
+	const env = await loadLiveEnv();
+	const targets = openTargets(env, { connectionUrls: true });
 
 	if (name !== undefined) {
-		log.line(resolveTarget(targets, name));
+		log.line(resolveTarget(env, targets, name, "url"));
 		return 0;
 	}
 	const entries = Object.entries(targets);
@@ -158,13 +191,13 @@ export async function handleOpen(args: string[]): Promise<number> {
 			]);
 		return openOrFail(url);
 	}
-	const targets = openTargets(env);
+	const targets = openTargets(env, { connectionUrls: false });
 
 	const target = name ?? env.resolvePrimaryApp();
 	if (target === undefined) {
 		throw new CliError("No apps to open: name a URL from `buncargo url`.");
 	}
-	return openOrFail(resolveTarget(targets, target));
+	return openOrFail(resolveTarget(env, targets, target, "open"));
 }
 
 /**
