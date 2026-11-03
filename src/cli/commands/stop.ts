@@ -82,18 +82,27 @@ export async function handleStop(args: string[] = []): Promise<number> {
 	const held = checkout.held
 		.filter(selected)
 		.map((run) => ({ ...run, apps: [] }));
+	// With no live run, the watchdog may have stopped it: say so either way.
+	const stoppedByWatchdog =
+		runs.length === 0
+			? latestRunStop(readRunStops(), {
+					root,
+					// Not one from before a run that has started since.
+					since: Math.max(
+						Date.now() - RECENT_STOP_MS,
+						...held.map((run) => Date.parse(run.startedAt)),
+					),
+				})
+			: undefined;
 	if (runs.length === 0 && held.length === 0) {
 		log.error(`No active buncargo run for ${root}.`);
-		const stopped = latestRunStop(readRunStops(), {
-			root,
-			since: Date.now() - RECENT_STOP_MS,
-		});
-		if (stopped) {
-			log.hint(describeRunStop(stopped));
+		if (stoppedByWatchdog) {
+			log.hint(describeRunStop(stoppedByWatchdog));
 			log.hint("Start it again with `buncargo dev --detach`.");
 		} else log.hint("Run `buncargo runs` to see what is active.");
 		return STOP_EXIT.notFound;
 	}
+	if (stoppedByWatchdog) log.info(describeRunStop(stoppedByWatchdog));
 
 	if (parsed.all) {
 		let result: number = STOP_EXIT.ok;

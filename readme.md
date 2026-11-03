@@ -266,7 +266,7 @@ rabbitmq: service.custom({
 Agents get the same isolated environment per worktree as people do, and a few commands that keep them from guessing:
 
 ```bash
-bunx buncargo dev --detach              # Background run; returns once the apps are up
+bunx buncargo dev --detach              # Background run; returns once the apps are up, stops after 2h idle
 bunx buncargo wait --app=api            # Block until one app is healthy
 bunx buncargo env --get DATABASE_URL    # Any variable the apps get
 bunx buncargo sql -c "select 1" --json  # This checkout's database, nobody else's
@@ -275,7 +275,7 @@ bunx buncargo send expoApp i            # Press a key in Expo, which runs in its
 bunx buncargo status --json             # Ports, containers, URLs and app states
 bunx buncargo logs api --errors
 bunx buncargo check                    # Biome, typecheck, gates and tests for the change
-bunx buncargo stop --all               # Stop this checkout's run
+bunx buncargo stop                     # Stop this checkout's run
 ```
 
 `bunx buncargo setup --agents` adds a short block to the project's `AGENTS.md` that points agents at `bunx buncargo help agents`. Without a terminal, `dev --reset` and `dev --down --all` refuse unless passed `--yes`.

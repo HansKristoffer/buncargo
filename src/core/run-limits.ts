@@ -226,32 +226,25 @@ export function createRunLimiter(
 			if (verdict.kind === "stop") due.push({ run, ...verdict });
 		}
 
-		const results = await Promise.all(
+		const pass: RunLimitPass = { stopped: [], failures: [] };
+		const records: RunStopRecord[] = [];
+		await Promise.all(
 			due.map(async ({ run, reason, detail }) => {
 				const what = `${run.projectName}'s detached run (${run.root}, pid ${run.pid})`;
 				try {
-					if (!(await deps.stopRun(run))) return undefined;
+					if (!(await deps.stopRun(run))) return;
 				} catch (error) {
-					return {
-						failure: `Could not stop ${what}: ${getErrorMessage(error)}`,
-					};
+					pass.failures.push(
+						`Could not stop ${what}: ${getErrorMessage(error)}`,
+					);
+					return;
 				}
 				const at = new Date(deps.now()).toISOString();
-				return {
-					line: `Stopped ${what}: ${detail}`,
-					record: runStopRecord(run, { at, reason, detail }),
-				};
+				pass.stopped.push(`Stopped ${what}: ${detail}`);
+				records.push(runStopRecord(run, { at, reason, detail }));
 			}),
 		);
-		const records = results.flatMap((result) =>
-			result?.record ? [result.record] : [],
-		);
 		await deps.recordStops(records);
-		return {
-			stopped: results.flatMap((result) => (result?.line ? [result.line] : [])),
-			failures: results.flatMap((result) =>
-				result?.failure ? [result.failure] : [],
-			),
-		};
+		return pass;
 	};
 }

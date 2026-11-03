@@ -25,6 +25,13 @@ writers prune. `stop --run` selects an exact session.
   `options.autoShutdown` is the CLI's, applied only on top of the default the CLI passes: a script
   that brings a stack up and ends is indistinguishable from a crash, and "no hold" means "as long
   as the checkout" however the run ended. The CLI passes its three-minute default explicitly.
+- Except when that claim reuses a stack another run left in its hold: `holdToInherit` copies the
+  newest finished entry's hold into `inheritedIdleTimeoutMs`, and the sweep applies it from when
+  the script's run ends, released or found gone. The sweep decides from the newest entry only, so
+  a one-second `start()` that reused a released detached run's containers pinned them for 13 days.
+  It reads the registry file without liveness (finished means `releasedAt` or `ownerLostAt`), so
+  the start path forks nothing for it. An explicit `idleTimeoutMs: false` (`--keep-containers`)
+  inherits nothing, and neither does a claim whose newest finished entry kept its containers.
 
 ## Process identity
 
@@ -95,7 +102,9 @@ no config load, no Docker unless a service is the target.
 - `decideSweep` is pure: a stack nobody owns comes down when its checkout is gone, when every
   container is stopped, when its run released it longer ago than its idle hold, or when its owner
   has been gone for longer than the grace. A live owner keeps its stack before the checkout is
-  even looked at. A running stack with only a claim is left alone.
+  even looked at: a run between `start()` and `startServers()` is using it. A detached owner of a
+  deleted checkout is ended by the watchdog instead ([below](#detached-runs-that-end)), and its
+  stack then follows the ordinary rule. A running stack with only a claim is left alone.
 - Only a stack this `HOME`'s state names is a candidate (`isKnownStack`): a `runs.json` entry
   (any session, live or not) or an `offsets.json` claim with its project and root. Several users
   can share one daemon, and from another account a live run's stack has no entry and a checkout
@@ -233,6 +242,34 @@ holding `.spawn`, releasing it only after `.runner`. It stays for a live run, an
 the pass did not see: one that claimed after the pass and already released or crashed is no longer
 live, but its containers are still to be swept (`claimedSincePass`). It never waits on `.spawn` at start, and a
 spawner holding `.spawn` only try-acquires `.runner`, so neither waits on the other.
+
+## Detached runs that end
+
+A `dev --detach` run sits in its own session and systemd scope, so nothing that started it can
+end it: 13 were found on one machine 1 to 16 days old, several serving deleted worktrees.
+`core/run-limits.ts` is the watchdog's pass for them, before each sweep. `decideRunLimit` is pure;
+only an entry marked `detached` and live is a candidate, so a run in a terminal is never stopped.
+Stopping is `terminateRun`: SIGTERM to the run's group by recorded pid after an identity match,
+what `stop --all` sends, so the run tears itself down and releases into the hold. The sweep takes
+the containers from there; nothing here removes a container or a volume.
+
+- A checkout confirmed deleted on two passes `DELETED_CHECKOUT_SETTLE_MS` apart stops its run,
+  `--keep` or not. The first sighting is kept in the watchdog's memory, not on disk: a replaced
+  watchdog only waits one more period.
+- The idle limit (`idleLimitMs`, two hours, written by the detached run unless `--keep` or
+  Tailscale mode, whose traffic never reaches the proxy) counts from the latest of the run's start,
+  the last request through the proxy to its checkout, and the last buncargo command in it. An
+  entry without `idleLimitMs` (an older buncargo's run) is never stopped for idling.
+- Requests: the hosts daemon counts each route lookup (every request and WebSocket upgrade, not
+  the health path) by the route's checkout in memory and merges them into
+  `~/.buncargo/proxy-activity.json` at most once a minute (`hosts/proxy-activity.ts`). It writes
+  the file once at start, so a missing file means an older daemon: a run with named hosts is then
+  `unknown`, never stopped, because "no requests on record" would be no evidence.
+- Commands: `bin.ts` sets the mtime of `<root>/.buncargo/last-command` on every command except
+  `help` and `version` (`run-activity.ts`). One `utimes`, no fork and no lock, since every command
+  pays it; a directory without `.buncargo/` is left alone.
+- `~/.buncargo/run-stops.json` (`run-stops.ts`, newest 200) records each stop with its reason,
+  because the entry is gone soon after: `stop` and `ls` print it for a checkout with no newer run.
 
 ## Volumes
 

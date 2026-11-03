@@ -79,7 +79,14 @@ pieces it orchestrates.
   child's until every app has settled; an empty `apps` list is the claim, not "done", unless the
   selection has no app to spawn. A child that exits 0 had nothing to keep running (every app
   reused) and is a success, as it is for attached `dev`; its exit is checked before the entry,
-  which can outlive it.
+  which can outlive it. `--keep` is not passed on: the child learns it from `BUNCARGO_DETACHED`
+  (`1` or `keep`), and records the idle limit the watchdog enforces
+  ([run registry](./run-registry-and-sweep.md#detached-runs-that-end)).
+- A bare `stop` is `stop --all`: agents and project docs wrote `buncargo stop` meaning "stop my
+  run" and got an error 26 times. The terminal-run confirmation still applies, so it stops a
+  detached run without asking and refuses (exit 3) one in another terminal when there is no
+  terminal to ask in. `down` is an alias (`resolveCommandAlias` in `commands/registry.ts`, kept out
+  of help) that prints a hint naming `stop`.
 - `dev-flags.ts`' `destructiveModeGate`: `--reset` and `--down --all` ask in a terminal and refuse
   without one unless `--yes`. CI is exempt. An agent ran `--reset` to fix a migration and deleted a
   developer's data.
