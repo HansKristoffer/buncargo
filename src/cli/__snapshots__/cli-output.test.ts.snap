@@ -976,6 +976,7 @@ When something fails:
 - "Could not allocate a free port block": \`bunx buncargo ports\` lists the
   holders; the error names the command that frees one. \`status\`, \`env\`,
   \`url\` and \`ports pin <offset>\` still work.
+- "a stale stack of this checkout": \`bunx buncargo dev --detach --replace-stale\`.
 - Infisical: run the \`infisical login --domain=…\` it prints.
 - Anything else: \`bunx buncargo doctor\`, then \`help agents fail\`.
 

@@ -49,6 +49,7 @@ When something fails:
 - "Could not allocate a free port block": \`bunx buncargo ports\` lists the
   holders; the error names the command that frees one. \`status\`, \`env\`,
   \`url\` and \`ports pin <offset>\` still work.
+- "a stale stack of this checkout": \`bunx buncargo dev --detach --replace-stale\`.
 - Infisical: run the \`infisical login --domain=…\` it prints.
 - Anything else: \`bunx buncargo doctor\`, then \`help agents fail\`.
 
@@ -186,6 +187,11 @@ const TOPICS: readonly Topic[] = [
   in CI, give theirs back when torn down. Do not set \`BUNCARGO_PORT_OFFSET\` or
   edit \`.buncargo/ports.json\`; to move a checkout,
   \`bunx buncargo ports pin <offset>\`.
+- A port held by "a stale stack of this checkout" is this checkout's stack from
+  before its \`projectPrefix\` changed, still up under the old name. Run
+  \`bunx buncargo dev --detach --replace-stale\`; it needs no asking. It removes
+  only this checkout's stale stacks that hold the run's ports, keeps their
+  volumes, and leaves any stack another checkout or a live run uses.
 - A port "held by an unidentified process" is usually a system service. Run
   \`dev\` again: buncargo moves the checkout to a free port block.
 - \`dev\` refusing because another checkout "already uses" its Compose project:
