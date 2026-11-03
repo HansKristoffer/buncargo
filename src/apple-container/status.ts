@@ -248,6 +248,7 @@ function portOwnersFromRecords(
 			id: record.id,
 			name: record.id,
 			composeProject: record.labels[PROJECT_LABEL] || undefined,
+			root: record.labels["buncargo.root"] || undefined,
 		};
 		for (const published of record.ports) {
 			for (let offset = 0; offset < (published.count ?? 1); offset++) {

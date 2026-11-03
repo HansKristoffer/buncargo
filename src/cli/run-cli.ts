@@ -1,6 +1,9 @@
 import { execSync } from "node:child_process";
 import { startTimer, typedSwitch } from "hanzio";
-import { containerRuntimeForEnv } from "../container-runtime";
+import {
+	containerRuntimeForEnv,
+	replaceStaleStacksOn,
+} from "../container-runtime";
 import { describeLeaseRefusal, type SkippedLeaseApp } from "../core/app-leases";
 import { withSignal } from "../core/deadline";
 import { removeHostRoutes } from "../core/hosts";
@@ -447,6 +450,17 @@ async function runDevFlow<
 	connect?.plan(appsForDev, plan.requiredServiceKeys, env.services);
 	if (connect && !connect.active)
 		log.info("No selected endpoints to share through frp.");
+	// Before the ports are allocated: a stale stack still holding them would
+	// move this checkout's block, or fail the service preflight.
+	if (args.replaceStale)
+		await timer.measure("stale stacks", () =>
+			replaceStaleStacksOn(
+				containerRuntimeForEnv(env),
+				{ root: env.root, projectPrefix: env.projectPrefix },
+				Object.values(env.ports),
+				{ signal },
+			),
+		);
 	await env.prepareStartAsync(selectedAppNames, undefined, signal);
 	const hasServices = plan.requiredServiceKeys.length > 0;
 	const overlapSeed =

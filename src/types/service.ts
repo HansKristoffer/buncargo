@@ -226,6 +226,15 @@ export interface PortContainerOwner {
 	name: string;
 	composeProject?: string;
 	/**
+	 * The checkout that created it, from buncargo's `buncargo.root` label.
+	 *
+	 * Absent on containers buncargo did not create. Compose's own
+	 * `com.docker.compose.project.working_dir` is not read: any stack run from
+	 * the checkout carries it, an integration's or the user's own included,
+	 * and those are not buncargo's to remove.
+	 */
+	root?: string;
+	/**
 	 * Which backend reported it.
 	 *
 	 * Set when the owner was found outside the runtime this project selected,

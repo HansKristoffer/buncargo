@@ -12,6 +12,14 @@ import { recordStartupMetric } from "../core/startup-metrics";
 
 export const DEFAULT_DOCKER_BINARY = "docker";
 
+/**
+ * What a person runs to remove a Compose project's containers and networks by
+ * name, volumes kept: what buncargo's own teardown does.
+ */
+export function manualComposeDownCommand(projectName: string): string {
+	return `${DEFAULT_DOCKER_BINARY} compose -p ${projectName} down`;
+}
+
 export interface DockerRunResult {
 	ok: boolean;
 	exitCode: number;

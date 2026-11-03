@@ -190,7 +190,10 @@ async function checkPortOwnership(
 			continue;
 		}
 		if (action !== "fail") continue;
-		const described = formatPortOwner(port, owner, { runtime: runtime.name });
+		const described = formatPortOwner(port, owner, {
+			runtime: runtime.name,
+			checkout: { root: env.root, projectPrefix: env.projectPrefix },
+		});
 		// A dev server whose checkout was thrown away is nobody's any more, as
 		// the sweep treats that checkout's containers.
 		const discarded =

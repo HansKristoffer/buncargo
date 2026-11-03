@@ -21,6 +21,7 @@ bunx buncargo dev --reset
 bunx buncargo dev --reset --yes   # Without a terminal, --reset and --down --all need --yes
 bunx buncargo dev --takeover        # Stop apps running elsewhere, run them here
 bunx buncargo dev --keep-containers
+bunx buncargo dev --replace-stale   # First remove this checkout's stacks under an old projectPrefix (keeps volumes)
 bunx buncargo dev --watchdog-timeout=5
 bunx buncargo dev --no-docker-autostart
 bunx buncargo dev --no-hosts
@@ -1550,7 +1551,9 @@ Set `seed.beforeApps: false` to overlap the seed and app startup. `afterServers`
 
 ### `StartOptions` / `StopOptions`
 
-`start({ verbose, wait, startServers, productionBuild, skipSeed, skipEnvironmentLog, onlyApps, onlyServices, autoStartDocker, signal, prepare, onPhase })`
+`start({ verbose, wait, startServers, productionBuild, skipSeed, skipEnvironmentLog, onlyApps, onlyServices, autoStartDocker, replaceStaleStacks, signal, prepare, onPhase })`
+
+`replaceStaleStacks` is `dev --replace-stale`: before the ports are allocated, it removes the containers and networks of stacks this checkout left under a project name it no longer uses and that hold this run's ports. That happens after `projectPrefix` changes: the old stack keeps running under the old name. Its volumes are kept. A stack with containers of another checkout, or one a live run still uses, is never touched. A checkout with two configs of different `projectPrefix` would see each other's stacks as stale; give each its own directory.
 
 `onlyServices` starts those services (plus Compose dependencies) and no apps; it is what `buncargo run` and `buncargo ci` use.
 
@@ -1675,6 +1678,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `Docker is not running` | Daemon down and auto-start failed/disabled | Start OrbStack/Docker/Colima, or drop `--no-docker-autostart`. On Linux: `sudo systemctl start docker` |
 | `Docker is running, but this user cannot open its socket` | User not in the `docker` group, or a process started before it was added | `sudo usermod -aG docker $USER`, then log in again or restart the service you run buncargo from |
 | `port 5173 held by container gey-other-platform-1 (project gey-other)` | Foreign compose project owns the port | Stop the other env (`buncargo ls` / `dev --down --all`) or let allocation shift |
+| `port … held by container bliss-main-redis-1 (project bliss-main), a stale stack of this checkout` | This checkout's stack from before its `projectPrefix` changed still runs under the old name | Run the `docker compose -p <old> down` the message names, or `dev --replace-stale`. Both keep the old stack's volumes |
 | `port … held by process …` | Another process owns the port | Stop that process; own-repo orphans are killed automatically |
 | `port … is held by an unidentified process` | A process this user cannot list (often a macOS service) holds it | Run `dev` again: allocation moves to a free block |
 | `… listens on :8022, not its assigned :8021` | The app moved to the next port because its own was taken | Run `dev` again; set `strictPort` (Vite, Astro's `vite.server`) so it fails instead of moving |

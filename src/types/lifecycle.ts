@@ -49,6 +49,13 @@ export interface StartOptions<
 	/** Override Docker auto-start. Default: config.docker.autoStart (true, skipped in CI). */
 	autoStartDocker?: boolean;
 	/**
+	 * Before allocating ports, remove the containers of stacks this checkout
+	 * left under a project name it no longer uses (its `projectPrefix`
+	 * changed), so they stop holding its ports. Volumes are kept, and a stack
+	 * of another checkout or of a live run is never touched. Default: false.
+	 */
+	replaceStaleStacks?: boolean;
+	/**
 	 * Start the machine-wide watchdog that removes these containers once this
 	 * process is gone. Default: true. The run claims its containers either
 	 * way; `false` only skips starting the process, for tests that must not

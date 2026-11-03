@@ -120,5 +120,25 @@ per port.
 - An app's `extraPorts` (`extraPortMap`) are claimed *and* probed, keyed `<app>#<n>` so a
   selection that names the app probes them and one that does not leaves them alone. They are not in
   the port map, so they never reach the env or the lockfile: the lockfile's offset brings them back.
+- A stack is **stale** when its `buncargo.root` label is this checkout and its project name does
+  not start with `<projectPrefix>-<directory>` (`staleStackProject`). Renaming `projectPrefix`
+  renames every stack of the checkout, and the old one kept publishing the ports the new name was
+  given: "held by container bliss-…" in a checkout now called budget-app, with no hint that the
+  holder was its own. Every name the checkout runs under now, dev, `ci`, any suffix and worktree
+  suffix included, starts with that base, so a suffixed environment's stack is never stale. The
+  rule assumes one config per checkout root: a second config with another prefix at the same root
+  reads as stale to the first. Compose's `com.docker.compose.project.working_dir` is not read: an
+  integration's stack or the user's own Compose file run from the checkout carries it too.
+- `formatPortOwner` names a stale stack, for callers that pass the checkout (the allocator's
+  conflict message, the service preflight, `doctor`), with `manualComposeDownCommand` on Docker.
+  Apple's CLI removes containers by id, and the message knows only the one on the port, so there
+  it names `dev --replace-stale` alone. `ports pin` and the backends' `up` collision messages do
+  not pass the checkout.
+- `dev --replace-stale` (`start()`'s `replaceStaleStacks`) runs before allocation, because the
+  allocator would otherwise move the block off the stale stack's ports. It removes only stale
+  stacks holding a port of the block the run would take, through the adapter's `down` (volumes
+  kept), and under the project's lifecycle lock it first checks again that every container of the
+  project carries this root and that no live run, from any checkout, uses the name: `down` acts
+  on the name alone, and `worktreeIsolation: false` shares one name across checkouts.
 - An integration stack's containers are recognized as this run's by their Compose project label;
   see [integrations](./integrations.md#stacks).

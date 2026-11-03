@@ -79,6 +79,7 @@ it("rejects unsupported Apple completion before invoking its daemon", async () =
 			runtime: adapter,
 			root: "/tmp",
 			projectName: "fixture",
+			projectPrefix: "fixture",
 			services: { init: job },
 			ports: {},
 			envVars: {},

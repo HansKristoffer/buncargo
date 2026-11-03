@@ -19,6 +19,7 @@ import {
 } from "./offset-claims";
 import { enclosingWorktreeName, type PortMap } from "./ports";
 import {
+	type CheckoutStacks,
 	classifyPortOccupant,
 	createPortOwnerSnapshot,
 	formatPortOwner,
@@ -298,9 +299,10 @@ export function describePortConflict(
 	port: number,
 	owner: PortOwner | null,
 	runtime?: ContainerRuntimeName,
+	checkout?: CheckoutStacks,
 ): string {
 	if (!owner) return `port ${port} is in use`;
-	return formatPortOwner(port, owner, { runtime }).replace(/\.$/, "");
+	return formatPortOwner(port, owner, { runtime, checkout }).replace(/\.$/, "");
 }
 
 function findForeignConflict(
@@ -457,6 +459,7 @@ function planPorts(
 		getOwner: lookupOwner,
 	} = input;
 	const runtimeName = runtime?.name;
+	const checkout = { root, projectPrefix };
 	const withExtras = (ports: Record<string, number>) => ({
 		...ports,
 		...extraPortMap(input.apps, ports, basePorts),
@@ -590,7 +593,12 @@ function planPorts(
 			const conflict = conflictAt(ports);
 			if (!conflict) return settle(ownLockfile.offset, ports, "lockfile");
 			ignored = refusePartial(
-				describePortConflict(conflict.port, conflict.owner, runtimeName),
+				describePortConflict(
+					conflict.port,
+					conflict.owner,
+					runtimeName,
+					checkout,
+				),
 				"Stop that port's owner, or start the full environment to reconcile its shared port block.",
 			);
 		}
@@ -628,7 +636,12 @@ function planPorts(
 		if (claimed) return claimed;
 		const conflict = conflictAt(ports);
 		return conflict
-			? describePortConflict(conflict.port, conflict.owner, runtimeName)
+			? describePortConflict(
+					conflict.port,
+					conflict.owner,
+					runtimeName,
+					checkout,
+				)
 			: undefined;
 	};
 

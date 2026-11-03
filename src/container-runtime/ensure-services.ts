@@ -74,6 +74,12 @@ export interface EnsureServicesRunningRequest {
 	runtime: ContainerRuntimeAdapter;
 	root: string;
 	projectName: string;
+	/**
+	 * The configured `projectPrefix`, so a port conflict with a stack this
+	 * checkout left under an old name says so. Without it the conflict names
+	 * the holder only.
+	 */
+	projectPrefix?: string;
 	envVars: Record<string, string>;
 	services: Record<string, ServiceConfig>;
 	ports: Record<string, number>;
@@ -97,6 +103,7 @@ export async function ensureServicesRunning(
 		runtime,
 		root,
 		projectName,
+		projectPrefix,
 		envVars,
 		services,
 		ports,
@@ -129,7 +136,7 @@ export async function ensureServicesRunning(
 			runtime,
 			services,
 			ports,
-			{ root, projectName },
+			{ root, projectName, projectPrefix },
 			request.signal,
 		),
 	]);
