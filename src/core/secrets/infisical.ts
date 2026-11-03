@@ -380,7 +380,7 @@ async function runCliSessionToken(
 		);
 	if (deadline.aborted)
 		throw new InfisicalLoginError(
-			`The Infisical CLI did not answer within ${CLI_TIMEOUT_MS / 1000}s for ${scope.siteUrl}; an expired session waits there on a login (or a keychain prompt).`,
+			`The Infisical CLI did not answer within ${CLI_TIMEOUT_MS / 1000}s for ${scope.siteUrl}: an expired session waits there on a login. If you are logged in, it was slow (the network, or a keychain prompt to allow): run the command again.`,
 			scope.siteUrl,
 		);
 	const token = exitCode === 0 ? (await stdout).trim() : "";

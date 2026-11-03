@@ -62,6 +62,11 @@ export interface DevEnvVarsApi<
 		options?: ExecOptions,
 		production?: boolean,
 	): Promise<ExecResult>;
+	/** `exec` for an integration stack's `down`, which reaches no port: allowed without a port block. */
+	execTeardown(
+		cmd: string | readonly string[],
+		options?: ExecOptions,
+	): Promise<ExecResult>;
 	/**
 	 * The secrets a command gets: `explicit`, else the app's scope, else the
 	 * config-level one, minus every key the computed env already sets. A
@@ -280,13 +285,26 @@ export function createEnvVarsApi<
 		options?: ExecOptions,
 		production = false,
 	): Promise<ExecResult> {
-		if (options?.app !== undefined && !apps[options.app]) {
-			throw new Error(`Unknown app "${options.app}"`);
-		}
 		// Its ports would be another checkout's: a command would reach that
 		// checkout's database.
 		if (ctx.portOffsetProvenance === "unallocated")
 			throw new Error(unallocatedPortsMessage(ctx.root));
+		return execTeardown(cmd, options, production);
+	}
+
+	/**
+	 * {@link exec} without the unallocated-ports refusal, for an integration
+	 * stack's `down`: it stops this checkout's stack by its project name and
+	 * reaches no port, and refusing left the stack running.
+	 */
+	async function execTeardown(
+		cmd: string | readonly string[],
+		options?: ExecOptions,
+		production = false,
+	): Promise<ExecResult> {
+		if (options?.app !== undefined && !apps[options.app]) {
+			throw new Error(`Unknown app "${options.app}"`);
+		}
 
 		const computed: Record<string, string> =
 			options?.app === undefined
@@ -388,6 +406,7 @@ export function createEnvVarsApi<
 		buildEnvFingerprint,
 		getHookContext,
 		exec,
+		execTeardown,
 		resolveSecrets,
 	};
 }

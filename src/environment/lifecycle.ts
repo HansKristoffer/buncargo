@@ -344,17 +344,10 @@ export function createLifecycleApi<
 				(serviceKey) => [serviceKey, services[serviceKey]] as const,
 			),
 		);
-		if (startOptions.replaceStaleStacks)
-			await replaceStaleStacksOn(
-				ctx.runtime,
-				{ root: ctx.root, projectPrefix: config.projectPrefix },
-				Object.values(ctx.ports),
-				{ signal, verbose },
-			);
-		await ctx.prepareStartAsync(onlyApps, onlyServices, signal);
+		// From the plan, before the secrets selection: migrations and the seed
+		// are chosen by the services selected.
 		selectedServices = startPlan.requiredServiceKeys;
 		selectedApps = startPlan.appNames;
-		started = true;
 
 		ctx.onSecretsWait = (ms) => onPhase?.("secrets", ms);
 		const prefetchController = new AbortController();
@@ -378,13 +371,23 @@ export function createLifecycleApi<
 			: [];
 		if (signal) registerAbortCleanup(signal, Promise.allSettled(prefetches));
 		try {
-			// Before the claim and the first container: an expired Infisical
-			// session stops the start here, not after the containers inside
+			// Before the port block, the claim and the first container: an
+			// expired Infisical session stops the start here, not after the containers inside
 			// every app's own loader. The prefetch's own token, so no extra CLI.
 			if (secretsSelection)
 				await ensureSecretsSession(startSecretScopes(secretsSelection), {
 					signal: prefetchSignal,
 				});
+			// After the session: an expired one changes nothing on the way out.
+			if (startOptions.replaceStaleStacks)
+				await replaceStaleStacksOn(
+					ctx.runtime,
+					{ root: ctx.root, projectPrefix: config.projectPrefix },
+					Object.values(ctx.ports),
+					{ signal, verbose },
+				);
+			await ctx.prepareStartAsync(onlyApps, onlyServices, signal);
+			started = true;
 			const hasServices = selectedServices.length > 0;
 			const portMap = toPortMap(ports);
 			const targetPorts: Record<string, number> = {};
@@ -691,7 +694,7 @@ export function createLifecycleApi<
 					}
 
 					for (const { name, stack } of stacks) {
-						await envVars.exec(
+						await envVars.execTeardown(
 							stack.down({
 								projectName: ctx.projectName,
 								root: ctx.root,

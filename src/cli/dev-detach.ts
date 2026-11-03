@@ -14,7 +14,6 @@ import {
 	type RunEntry,
 } from "../core/run-registry";
 import { DETACHED_ENV, detachedRunEnv } from "../core/runtime-flags";
-import { DETACHED_IDLE_LIMIT_MS } from "../core/watchdog-constants";
 import * as log from "./log";
 import {
 	describeAppFailure,
@@ -238,9 +237,11 @@ export async function runDetached(input: {
 				log.warn(warning);
 			if (down.length === 0) {
 				log.success(
-					input.keep
+					// What the run recorded: Tailscale mode records no limit, whatever
+					// `--keep` said.
+					run.idleLimitMs === undefined
 						? "Running in the background until you stop it with `buncargo stop`."
-						: `Running in the background; it stops after ${formatDuration(DETACHED_IDLE_LIMIT_MS)} with no request or buncargo command (\`dev --detach --keep\` keeps it). Stop it now with \`buncargo stop\`.`,
+						: `Running in the background; it stops after ${formatDuration(run.idleLimitMs)} with no request or buncargo command (\`dev --detach --keep\` keeps it). Stop it now with \`buncargo stop\`.`,
 				);
 				return 0;
 			}

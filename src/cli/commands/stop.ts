@@ -393,7 +393,13 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 			]));
 		if (!accepted) {
 			log.error(`Refusing to stop ${run.projectName} without confirmation.`);
-			log.hint("Pass --force to stop it anyway.");
+			// Without a terminal this is an agent's `stop` before it finishes:
+			// the run is the person's own, and a bare "--force" hint got followed.
+			log.hint(
+				isInteractive()
+					? "Pass --force to stop it anyway."
+					: "It runs in someone's terminal: leave it running. Pass --force only when the user asked to stop it.",
+			);
 			return STOP_EXIT.refused;
 		}
 	}

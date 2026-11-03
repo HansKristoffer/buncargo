@@ -1,4 +1,7 @@
 import { expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { OffsetClaim } from "./offset-claims";
 import {
 	type BlockedOffset,
@@ -7,6 +10,7 @@ import {
 	describePortExhaustion,
 	idleClaims,
 } from "./port-exhaustion";
+import { noteCheckoutCommand } from "./run-activity";
 
 const DAY = 86_400_000;
 const now = Date.parse("2026-11-03T12:00:00Z");
@@ -181,4 +185,27 @@ it("lists every holder in the way with its state and age, and the commands that 
 	);
 	expect(message).toContain("`buncargo ports release --idle=7d`");
 	expect(message).toContain("`buncargo ports pin 400`");
+});
+
+it("counts a buncargo command in the checkout as use, not only the run's start", () => {
+	const root = mkdtempSync(join(tmpdir(), "buncargo-reclaim-"));
+	try {
+		// Started 40 days ago, but a command ran there two days ago.
+		mkdirSync(join(root, ".buncargo"));
+		noteCheckoutCommand(root);
+		const twoDaysAgo = new Date(now - 2 * DAY);
+		utimesSync(join(root, ".buncargo", "last-command"), twoDaysAgo, twoDaysAgo);
+
+		const withCommand = { [root]: claim(200, 40), "/w/older": claim(300, 9) };
+		expect(
+			chooseReclaim(
+				[blockedBy(200, root), blockedBy(300, "/w/older")],
+				withCommand,
+				{ [root]: "idle", "/w/older": "idle" },
+				now,
+			),
+		).toEqual({ offset: 300, keys: ["/w/older"] });
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });

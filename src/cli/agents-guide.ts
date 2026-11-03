@@ -42,12 +42,13 @@ Use:
 - \`bunx buncargo exec -- <command>\` runs a command with this checkout's env.
 - \`bunx buncargo sql -c "<sql>"\`, \`bunx buncargo logs <app> --errors\`.
 - \`bunx buncargo stop\` stops this checkout's run. Before you finish a task,
-  run it unless the person is still using the app.
+  run it unless the person is still using the app. A run in their own
+  terminal is left running (exit 3): leave it.
 
 When something fails:
 - The cause and the next command are at the end of the output: \`| tail\`.
-- "Could not allocate a free port block": every holder is in use. The error
-  lists them; tell the user, who may free some (\`help agents ports\`).
+- "Could not allocate a free port block": \`dev\` takes back an idle block on
+  its own, so this lists holders still in use. Tell the user (\`help agents ports\`).
   \`"unallocated"\` in \`status --json\` means the ports shown are not yours.
 - "a stale stack of this checkout": \`bunx buncargo dev --detach --replace-stale\`.
 - Infisical session expired (\`bunx buncargo secrets check\` exits 2): ask the
@@ -128,7 +129,9 @@ const TOPICS: readonly Topic[] = [
   \`buncargo\` command in the checkout (any command, \`status\` included,
   resets the clock), and once its checkout has been deleted.
   \`dev --detach --keep\` turns the idle limit off, for a long job or for
-  traffic that goes to \`localhost:port\` only. \`bunx buncargo runs\` shows
+  traffic that goes to \`localhost:port\` only. With
+  \`BUNCARGO_HOSTS=tailscale\` there is no idle limit; \`dev --detach\` says
+  which applies. \`bunx buncargo runs\` shows
   the time left (\`idleStopsAt\` in \`runs --json\`); when a run is gone,
   \`stop\` and \`ls\` say whether the watchdog stopped it and why. Start it
   again with \`dev --detach\`.
@@ -393,8 +396,9 @@ guide (40 lines; \`help agents <topic>\` for more). The rules:
   throwaway one \`bunx buncargo sql --create-scratch=<name>\`.
 - Start: \`bunx buncargo dev --detach\`. Stop: \`bunx buncargo stop\`, before
   you finish a task too, unless the person is still using the app.
-- "Could not allocate a free port block": \`dev\` already took back every idle
-  block. Tell the user, with the holders the error lists; do not work around it.
+- "Could not allocate a free port block": \`dev\` takes back an idle block on
+  its own, so the holders the error lists are in use. Tell the user; do not
+  work around it.
 - Values: \`bunx buncargo env --get DATABASE_URL\`, \`bunx buncargo url <app>\`,
   \`bunx buncargo status --json\`. Wait: \`bunx buncargo wait --app=<app>\`.
 - Never \`dev --reset\` or \`dev --down --all\` unless asked.

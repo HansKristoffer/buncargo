@@ -253,7 +253,13 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 		name: "Loopback URLs point at this checkout",
 		severity: "warning",
 		check: () => {
-			if (env.portOffsetProvenance === "hash") return true;
+			// A preview (hashed, shifted past a claim, or unallocated) is no
+			// block of this checkout's yet; a lockfile or BUNCARGO_PORT_OFFSET is.
+			if (
+				env.portOffsetProvenance !== "lockfile" &&
+				env.portOffsetProvenance !== "env"
+			)
+				return true;
 			const stray = strayLoopbackUrls(env);
 			return (
 				stray.length === 0 || {

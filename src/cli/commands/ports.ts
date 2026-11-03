@@ -204,7 +204,7 @@ export async function handlePorts(args: string[]): Promise<number> {
 		)) {
 			const state = states ? `, ${CLAIM_STATE_LABELS[states[key]]}` : "";
 			log.line(
-				`  ${String(claim.offset).padStart(5)}  ${offsetClaimHolder(key, claim)} (${formatClaimAge(claim, now)} ago${state})`,
+				`  ${String(claim.offset).padStart(5)}  ${offsetClaimHolder(key, claim)} (${formatClaimAge(key, claim, now)} ago${state})`,
 			);
 		}
 		if (unallocated)
@@ -363,7 +363,7 @@ async function releaseIdleClaims(
 	log.line(`Claims idle for longer than ${label}:`);
 	for (const [key, claim] of Object.entries(stale))
 		log.line(
-			`  ${String(claim.offset).padStart(5)}  ${offsetClaimHolder(key, claim)}: project ${claim.projectName}, last used ${formatClaimAge(claim, now)} ago`,
+			`  ${String(claim.offset).padStart(5)}  ${offsetClaimHolder(key, claim)}: project ${claim.projectName}, last used ${formatClaimAge(key, claim, now)} ago`,
 		);
 	log.warn(
 		"Other checkouts can then take these ports. Each claim stays without its block, so its checkout keeps its project name and its database; its next run claims a block again, on new ports if this one was taken. No container or volume is touched.",

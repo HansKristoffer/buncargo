@@ -983,12 +983,13 @@ Use:
 - \`bunx buncargo exec -- <command>\` runs a command with this checkout's env.
 - \`bunx buncargo sql -c "<sql>"\`, \`bunx buncargo logs <app> --errors\`.
 - \`bunx buncargo stop\` stops this checkout's run. Before you finish a task,
-  run it unless the person is still using the app.
+  run it unless the person is still using the app. A run in their own
+  terminal is left running (exit 3): leave it.
 
 When something fails:
 - The cause and the next command are at the end of the output: \`| tail\`.
-- "Could not allocate a free port block": every holder is in use. The error
-  lists them; tell the user, who may free some (\`help agents ports\`).
+- "Could not allocate a free port block": \`dev\` takes back an idle block on
+  its own, so this lists holders still in use. Tell the user (\`help agents ports\`).
   \`"unallocated"\` in \`status --json\` means the ports shown are not yours.
 - "a stale stack of this checkout": \`bunx buncargo dev --detach --replace-stale\`.
 - Infisical session expired (\`bunx buncargo secrets check\` exits 2): ask the

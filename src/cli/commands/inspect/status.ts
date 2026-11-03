@@ -105,7 +105,7 @@ async function readStatus() {
 					})
 				: undefined;
 	} catch {
-		// No free block at all: `dev` refuses with the fix.
+		// No free block at all: `dev` takes back an idle one, or names the holders.
 		plannedOffset = undefined;
 	}
 

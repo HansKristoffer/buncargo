@@ -6,6 +6,7 @@ import {
 	offsetClaimLastUsed,
 	offsetClaimRoot,
 } from "./offset-claims";
+import { lastCheckoutCommandAt } from "./run-activity";
 
 /**
  * Whether a claim's checkout uses its block now: a live run (`running`), a
@@ -96,11 +97,14 @@ export function claimStates(
 
 /** Whether a claim may give its block up: idle, and not used in the last {@link RECLAIM_MIN_IDLE_MS}. */
 function reclaimable(
+	key: string,
 	claim: OffsetClaim,
 	state: ClaimState | undefined,
 	now: number,
 ): boolean {
-	return state === "idle" && now - lastUsedMs(claim) >= RECLAIM_MIN_IDLE_MS;
+	return (
+		state === "idle" && now - lastUsedMs(key, claim) >= RECLAIM_MIN_IDLE_MS
+	);
 }
 
 /**
@@ -121,11 +125,11 @@ export function chooseReclaim(
 			!block.unusable &&
 			block.claimKeys.length > 0 &&
 			block.claimKeys.every((key) =>
-				reclaimable(claims[key], states[key], now),
+				reclaimable(key, claims[key], states[key], now),
 			);
 		if (!freeable) continue;
 		const usedAt = Math.max(
-			...block.claimKeys.map((key) => lastUsedMs(claims[key])),
+			...block.claimKeys.map((key) => lastUsedMs(key, claims[key])),
 		);
 		if (!best || usedAt < best.usedAt)
 			best = { offset: block.offset, keys: block.claimKeys, usedAt };
@@ -147,21 +151,33 @@ export function idleClaims(
 		Object.entries(claims).filter(
 			([key, claim]) =>
 				offsetClaimHoldsBlock(claim) &&
-				reclaimable(claim, states[key], now) &&
-				now - lastUsedMs(claim) > idleMs,
+				reclaimable(key, claim, states[key], now) &&
+				now - lastUsedMs(key, claim) > idleMs,
 		),
 	);
 }
 
-/** A claim with no readable timestamp counts as never used. */
-function lastUsedMs(claim: OffsetClaim): number {
-	const time = Date.parse(offsetClaimLastUsed(claim));
-	return Number.isNaN(time) ? 0 : time;
+/**
+ * When a claim's checkout was last used: a run claiming its block, or a
+ * buncargo command in it. A run that started long ago and was released a
+ * minute ago is in use; its start alone made it the first to go. No readable
+ * time counts as never used.
+ */
+function lastUsedMs(key: string, claim: OffsetClaim): number {
+	const claimed = Date.parse(offsetClaimLastUsed(claim));
+	return Math.max(
+		Number.isNaN(claimed) ? 0 : claimed,
+		lastCheckoutCommandAt(offsetClaimRoot(key, claim)) ?? 0,
+	);
 }
 
-/** `3d`, `5h`, `12m`: how long ago a claim's block was last started on. */
-export function formatClaimAge(claim: OffsetClaim, now: number): string {
-	const time = lastUsedMs(claim);
+/** `3d`, `5h`, `12m`: how long ago a claim's checkout was last used. */
+export function formatClaimAge(
+	key: string,
+	claim: OffsetClaim,
+	now: number,
+): string {
+	const time = lastUsedMs(key, claim);
 	if (time === 0) return "unknown";
 	const minutes = Math.max(0, Math.round((now - time) / 60_000));
 	if (minutes < 60) return `${minutes}m`;
@@ -190,14 +206,14 @@ export function describePortExhaustion(
 	const { root, range, blocked, claims } = input;
 	const { states } = outcome;
 	const keys = [...new Set(blocked.flatMap((block) => block.claimKeys))].sort(
-		(a, b) => lastUsedMs(claims[a]) - lastUsedMs(claims[b]),
+		(a, b) => lastUsedMs(a, claims[a]) - lastUsedMs(b, claims[b]),
 	);
 	const holderLines = keys.map((key) => {
 		const claim = claims[key];
 		const state = states?.[key];
 		const label = state ? `${CLAIM_STATE_LABELS[state]}, ` : "";
 		const offset = String(claim.offset).padStart(5);
-		return `  ${offset}  ${offsetClaimHolder(key, claim)} (${label}last used ${formatClaimAge(claim, now)} ago)`;
+		return `  ${offset}  ${offsetClaimHolder(key, claim)} (${label}last used ${formatClaimAge(key, claim, now)} ago)`;
 	});
 	const others = blocked.filter((block) => block.claimKeys.length === 0);
 	const [firstOther] = others;

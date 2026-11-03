@@ -427,8 +427,8 @@ async function runDevFlow<
 	validateDevStart(env, args, appsForDev, plan.requiredServiceKeys);
 
 	// Fired now, awaited before named hosts and the claim: an expired
-	// Infisical session stops the run before it changes anything, with the
-	// login to run, instead of hanging inside every app's own loader. The
+	// Infisical session stops the run before any container or app starts, with
+	// the login to run, instead of hanging inside every app's own loader. The
 	// selected apps' scopes and the config-level one (migrations, the seed).
 	// It overlaps the checks and preflight; `start()` and the apps reuse its
 	// token.
@@ -472,7 +472,10 @@ async function runDevFlow<
 		log.info("No selected endpoints to share through frp.");
 	// Before the ports are allocated: a stale stack still holding them would
 	// move this checkout's block, or fail the service preflight.
-	if (args.replaceStale)
+	// Removing a stack is not undone by a retry: the session first. Allocating
+	// below overlaps it, and only does what the next run would do again.
+	if (args.replaceStale) {
+		await timer.measure("secrets session", () => secretsSession);
 		await timer.measure("stale stacks", () =>
 			replaceStaleStacksOn(
 				containerRuntimeForEnv(env),
@@ -481,6 +484,7 @@ async function runDevFlow<
 				{ signal },
 			),
 		);
+	}
 	await env.prepareStartAsync(selectedAppNames, undefined, signal);
 	const hasServices = plan.requiredServiceKeys.length > 0;
 	const overlapSeed =

@@ -72,7 +72,7 @@ async function reclaimPortBlock(
 		const claim = error.claims[key];
 		console.warn(
 			formatWarn(
-				`Every port block was claimed: reclaimed offset ${claim.offset} from ${offsetClaimHolder(key, claim)} (idle, last used ${formatClaimAge(claim, now)} ago). That checkout gets new ports on its next start; its containers, volumes and project name are untouched.`,
+				`Every port block was claimed: reclaimed offset ${claim.offset} from ${offsetClaimHolder(key, claim)} (idle, last used ${formatClaimAge(key, claim, now)} ago). That checkout gets new ports on its next start; its containers, volumes and project name are untouched.`,
 			),
 		);
 	}
