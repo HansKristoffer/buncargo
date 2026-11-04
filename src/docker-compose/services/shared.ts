@@ -19,8 +19,8 @@ function resolveInternalPort(
 	preset: DockerPresetName | undefined,
 	fallback: number,
 ): number {
-	if (!preset) return fallback;
 	return typedSwitch(preset, {
+		undefined: () => fallback,
 		postgres: () => 5432,
 		redis: () => 6379,
 		clickhouse: () => 8123,
@@ -33,13 +33,12 @@ function resolveSecondaryInternalPort(
 	preset: DockerPresetName | undefined,
 	fallback: number,
 ): number {
-	if (!preset) return fallback;
 	return typedSwitch(preset, {
 		clickhouse: () => 9000,
 		mailpit: () => 1025,
 		...typedSwitchGroup(
 			preset,
-			["postgres", "redis", "typesense"],
+			[undefined, "postgres", "redis", "typesense"],
 			() => fallback,
 		),
 	});
@@ -79,9 +78,8 @@ export function resolveHealthcheck(
 ): DockerComposeHealthcheckRaw | undefined {
 	if (healthCheck === false) return undefined;
 	if (typeof healthCheck === "function") return fallback;
-	if (!healthCheck) return fallback;
-
 	return typedSwitch(healthCheck, {
+		undefined: () => fallback,
 		// The image's bootstrap server accepts Unix sockets before TCP is ready.
 		pg_isready: () => ({
 			test: [
