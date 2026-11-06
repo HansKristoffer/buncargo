@@ -109,8 +109,9 @@ export interface StartDevServersOptions {
 	/**
 	 * A dev server exited. `code` is `null` when it was signalled, which is what
 	 * a `buncargo stop <app>` or a Ctrl-C looks like from here. `state` is how
-	 * it ended, as the run registry records it: `failed` for an app stopped
-	 * because it never came up, whatever the signal.
+	 * it ended, as the run registry records it: `failed` for an app that never
+	 * came up (stopped for it, or exited while spared before it), whatever the
+	 * code or signal.
 	 */
 	onAppExit?: (
 		name: string,
@@ -422,12 +423,17 @@ export async function startDevServers(
 			}
 			// The registry's verdict, decided now rather than after the screen:
 			// an app stopped for never coming up was reported failed already.
-			const state = readinessFailures.has(name)
-				? "failed"
-				: appExitState(code, signal, {
-						worker: startable[name]?.kind === "worker",
-						optional: restartable(name),
-					});
+			// One on probation never came up either, whatever its code, unless
+			// the run is ending: `failed` would then outlive a deliberate stop.
+			const diedOnProbation =
+				probation.has(name) && !owner.controller.signal.aborted;
+			const state =
+				readinessFailures.has(name) || diedOnProbation
+					? "failed"
+					: appExitState(code, signal, {
+							worker: startable[name]?.kind === "worker",
+							optional: restartable(name),
+						});
 			onAppExit?.(name, code, signal, state);
 		},
 		onAppSpawned: (name, pid, attached) => {

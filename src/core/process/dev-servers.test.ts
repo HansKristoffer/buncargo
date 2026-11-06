@@ -880,6 +880,39 @@ describe("startDevServers keepOthersOnFailure", () => {
 		}
 	}, 15000);
 
+	it("records an app that exits cleanly before it came up failed, not stopped", async () => {
+		// Its exit read as a deliberate stop while it was on probation, and the
+		// run registry keeps `stopped` over the `failed` that parking it reports.
+		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-exit0-"));
+		const [api, web] = await freePorts(2);
+		const events: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					api: { port: api, devCommand: serve(api) },
+					web: { port: web, devCommand: "exit 0" },
+				},
+				root,
+				{},
+				{ api, web },
+				{
+					verbose: false,
+					waitForExit: false,
+					keepOthersOnFailure: true,
+					onAppFailed: (name) => events.push(`failed:${name}`),
+					onAppExit: (name, _code, _signal, state) =>
+						events.push(`exit:${name}:${state}`),
+				},
+			);
+			await eventually(() => events.length === 2);
+			expect(events).toEqual(["exit:web:failed", "failed:web"]);
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 15000);
+
 	it("still fails the run when nothing came up, or a later app waits on it", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-"));
 		const port = await freePort();
