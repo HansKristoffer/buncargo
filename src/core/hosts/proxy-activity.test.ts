@@ -57,6 +57,29 @@ describe("createProxyActivityRecorder", () => {
 		await recorder.flush();
 		expect(writes).toEqual([{}, { "/repo": 1_000_000 }, {}]);
 	});
+
+	// Only the reload loop flushed. A loop that stalled lost every request
+	// the proxy still served, and the file went stale for readers.
+	it("writes a due request from the request path, without the reload loop", async () => {
+		let clock = 1_000_000;
+		const { promise: written, resolve } =
+			Promise.withResolvers<Record<string, number>>();
+		const writes: Array<Record<string, number>> = [];
+		const recorder = createProxyActivityRecorder({
+			write: async (seen: ProxyActivity) => {
+				writes.push(Object.fromEntries(seen));
+				if (seen.size > 0) resolve(Object.fromEntries(seen));
+			},
+			now: () => clock,
+		});
+		await recorder.flush();
+
+		clock += PROXY_ACTIVITY_WRITE_MS;
+		recorder.note("/repo");
+
+		expect(await written).toEqual({ "/repo": clock });
+		expect(writes).toHaveLength(2);
+	});
 });
 
 describe("proxy-activity.json", () => {
