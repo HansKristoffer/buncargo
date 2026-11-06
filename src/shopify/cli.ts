@@ -149,6 +149,20 @@ export function isShopifySessionExpired(
 	);
 }
 
+/**
+ * Whether the stored session can be trusted without asking the CLI: its
+ * expiry is known and still ahead. One with no readable expiry is not
+ * expired, but nothing says it is current either.
+ */
+export function isShopifySessionCurrent(
+	session: ShopifySession,
+	now = Date.now(),
+): boolean {
+	return (
+		session.expiresAt !== undefined && !isShopifySessionExpired(session, now)
+	);
+}
+
 /** Whether `.shopify/project.json` records this app: how CLIs before 4.8 linked. */
 export function isShopifyAppLinked(root: string, clientId: string): boolean {
 	try {

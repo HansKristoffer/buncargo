@@ -1,5 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDevEnvironment } from "../environment";
@@ -184,6 +190,26 @@ describe("firebase()", () => {
 			`fire_emu_${"0".repeat(16)}.sock`,
 		);
 		expect(socket.length).toBeLessThan(104);
+	});
+
+	it("removes a hub locator a killed suite left, and keeps a live one's", async () => {
+		const checkout = join(root, "hub-locator-checkout");
+		const dir = emulatorTmpDir(checkout);
+		mkdirSync(dir, { recursive: true });
+		try {
+			const dead = Bun.spawnSync(["true"]).pid;
+			const stale = join(dir, "hub-demo.json");
+			const live = join(dir, "hub-live.json");
+			writeFileSync(stale, JSON.stringify({ port: 4400, pid: dead }));
+			writeFileSync(live, JSON.stringify({ port: 4401, pid: process.pid }));
+
+			await firebase().hooks?.beforeServers?.({ root: checkout } as never);
+
+			expect(existsSync(stale)).toBe(false);
+			expect(existsSync(live)).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("claims every port the suite listens on with the checkout's block", () => {

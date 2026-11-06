@@ -27,6 +27,9 @@ import type { ContainerRuntimeAdapter } from "./types";
  */
 export const ORPHAN_VOLUME_REPORT_INTERVAL_MS = 60 * 60_000;
 
+/** How soon a pass that could not read a runtime or the registry is made again. */
+export const ORPHAN_VOLUME_REPORT_RETRY_MS = 5 * 60_000;
+
 export interface OrphanVolumeReportDeps {
 	log: (message: string) => void;
 	/** The runtimes to ask. Defaults to every backend. */
@@ -56,12 +59,16 @@ export function orphanVolumeReporter(deps: OrphanVolumeReportDeps) {
 	return async function report(
 		answered: readonly ContainerRuntimeName[],
 	): Promise<void> {
-		if (now() < nextAt) return;
-		nextAt = now() + ORPHAN_VOLUME_REPORT_INTERVAL_MS;
+		const startedAt = now();
+		if (startedAt < nextAt) return;
 
 		const active = runtimes().filter((runtime) =>
 			answered.includes(runtime.name),
 		);
+		// Nothing listed is no pass: the hour starts when one is made.
+		if (active.length === 0) return;
+		// A pass that fails tries again soon, not an hour later.
+		nextAt = startedAt + ORPHAN_VOLUME_REPORT_RETRY_MS;
 		try {
 			const containers = active.flatMap((runtime) => runtime.list());
 			const volumes = (
@@ -83,6 +90,7 @@ export function orphanVolumeReporter(deps: OrphanVolumeReportDeps) {
 					checkouts,
 				}),
 			);
+			nextAt = startedAt + ORPHAN_VOLUME_REPORT_INTERVAL_MS;
 			const key = names.join("\n");
 			if (key === reported) return;
 			reported = key;

@@ -21,6 +21,7 @@ function harness() {
 			for (const service of request.serviceNames)
 				states.set(service, {
 					service,
+					state: "running",
 					running: true,
 					serviceHash: request.envVars[serviceHashEnv(service)],
 				});
@@ -91,6 +92,17 @@ describe("warm per-service reconciliation", () => {
 		);
 		expect(requests).toHaveLength(3);
 	});
+	it("reports a recreate of running containers as a start, and a reuse as none", async () => {
+		const { run } = harness();
+		const model = (tag: string) => ({
+			services: { db: { image: `postgres:${tag}` } },
+		});
+		expect((await run(model("16"), ["db"])).started).toBe(true);
+		expect((await run(model("16"), ["db"])).started).toBe(false);
+		// Running, from another config: `up` recreates it.
+		expect((await run(model("17"), ["db"])).started).toBe(true);
+	});
+
 	it("never claims an unknown dotenv or external build input is unchanged", async () => {
 		for (const service of [
 			{

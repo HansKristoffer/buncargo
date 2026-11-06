@@ -10,7 +10,6 @@ import type {
 	ServiceDiagnosis,
 	ServiceRuntimeState,
 } from "./types";
-import { isTerminalContainerState } from "./types";
 
 /**
  * A runtime whose containers never become healthy, so every test here exercises
@@ -24,6 +23,7 @@ function stubRuntime(
 		name: "apple",
 		displayName: "Apple container",
 		isAvailable: () => true,
+		availability: () => ({ state: "up" }),
 		ensureRunning: async () => {},
 		up: async () => {},
 		down: async () => {},
@@ -49,22 +49,6 @@ const NEVER_READY: ServiceConfig = {
 	healthCheck: async () => false,
 };
 
-describe("isTerminalContainerState", () => {
-	it("recognizes both runtimes' words for a container that is gone", () => {
-		expect(isTerminalContainerState("exited")).toBe(true);
-		expect(isTerminalContainerState("stopped")).toBe(true);
-		expect(isTerminalContainerState("Dead")).toBe(true);
-	});
-
-	it("keeps polling for a state that has not been seen before", () => {
-		// The safe direction: an unfamiliar state must not abort a startup that
-		// would have succeeded.
-		expect(isTerminalContainerState("running")).toBe(false);
-		expect(isTerminalContainerState("created")).toBe(false);
-		expect(isTerminalContainerState("initializing")).toBe(false);
-	});
-});
-
 describe("waitForService failure reporting", () => {
 	it("aborts as soon as the container is reported gone", async () => {
 		const runtime = stubRuntime({
@@ -88,6 +72,45 @@ describe("waitForService failure reporting", () => {
 		expect((error as Error).message).toContain("directory is not empty");
 		// 200 attempts would have been a full second; it gives up after ~8.
 		expect(Date.now() - startedAt).toBeLessThan(400);
+	});
+
+	it("fails a crash-looping service before its timeout, saying it keeps crashing", async () => {
+		const runtime = stubRuntime({
+			state: "restarting",
+			exitCode: 1,
+			logTail: "typesense: bad api key",
+		});
+
+		const error = await waitForService("search", NEVER_READY, 8108, {
+			runtime,
+			projectName: "app-main",
+			maxAttempts: 2000,
+			pollInterval: 1,
+		}).catch((thrown: Error) => thrown);
+
+		const message = (error as Error).message;
+		expect(message).toContain("keeps crashing");
+		expect(message).toContain("restarting");
+		expect(message).toContain("exit code 1");
+		expect(message).toContain("bad api key");
+	});
+
+	it("gives a service that restarted once the chance to come up", async () => {
+		let diagnoses = 0;
+		let ready = false;
+		const runtime = stubRuntime({ state: "restarting", logTail: "" }, () => {
+			diagnoses++;
+			ready = true;
+		});
+
+		await waitForService(
+			"search",
+			{ port: 8108, healthCheck: async () => ready },
+			8108,
+			{ runtime, projectName: "app-main", maxAttempts: 2000, pollInterval: 1 },
+		);
+
+		expect(diagnoses).toBe(1);
 	});
 
 	it("names the runtime, port and probe when it times out instead", async () => {
@@ -216,7 +239,12 @@ describe("ensureServicesRunning reconcile", () => {
 	it("skips the reconcile when the running stack already matches", async () => {
 		const hash = await hashFromRun();
 		const harness = reconcileHarness([
-			{ service: "postgres", running: true, serviceHash: hash },
+			{
+				service: "postgres",
+				state: "running",
+				running: true,
+				serviceHash: hash,
+			},
 		]);
 		expect(await harness.run()).toHaveLength(0);
 	});
@@ -225,7 +253,12 @@ describe("ensureServicesRunning reconcile", () => {
 	// port has to take effect without a manual `--down`.
 	it("reconciles when the running stack was created from other config", async () => {
 		const harness = reconcileHarness([
-			{ service: "postgres", running: true, serviceHash: "0000000000000000" },
+			{
+				service: "postgres",
+				state: "running",
+				running: true,
+				serviceHash: "0000000000000000",
+			},
 		]);
 		expect(await harness.run()).toHaveLength(1);
 	});
@@ -233,14 +266,21 @@ describe("ensureServicesRunning reconcile", () => {
 	// "Cannot compare" must mean reconcile, or an upgrade would leave a project
 	// running yesterday's config forever.
 	it("reconciles a container created before the label existed", async () => {
-		const harness = reconcileHarness([{ service: "postgres", running: true }]);
+		const harness = reconcileHarness([
+			{ service: "postgres", state: "running", running: true },
+		]);
 		expect(await harness.run()).toHaveLength(1);
 	});
 
 	it("reconciles a matching container that is not running", async () => {
 		const hash = await hashFromRun();
 		const harness = reconcileHarness([
-			{ service: "postgres", running: false, serviceHash: hash },
+			{
+				service: "postgres",
+				state: "stopped",
+				running: false,
+				serviceHash: hash,
+			},
 		]);
 		expect(await harness.run()).toHaveLength(1);
 	});

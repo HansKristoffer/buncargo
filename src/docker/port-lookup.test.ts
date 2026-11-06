@@ -51,4 +51,15 @@ describe("parseDockerPortOwners", () => {
 		});
 		expect(owners.get(8080)?.root).toBeUndefined();
 	});
+
+	it("counts a paused or restarting container as holding its ports, an exited one not", () => {
+		const owners = parseDockerPortOwners(
+			[
+				"a1\tpaused\t0.0.0.0:5432->5432/tcp\tapp\t/work\tpaused",
+				"b2\trestarting\t0.0.0.0:6379->6379/tcp\tapp\t/work\trestarting",
+				"c3\texited\t0.0.0.0:8025->8025/tcp\tapp\t/work\texited",
+			].join("\n"),
+		);
+		expect([...owners.keys()]).toEqual([5432, 6379]);
+	});
 });

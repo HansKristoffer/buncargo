@@ -105,6 +105,8 @@ held between runs. What it depends on in `firebase-tools` (checked against 15.34
   100 ms later skips the export. The CLI is run directly, not through `npx`/`bunx`, which forward
   the signal again, and the app has a long `stopGraceMs` for the single SIGTERM.
 - The JVM emulators are spawned `detached`, in their own process groups. A clean stop ends them; a
-  SIGKILL after the grace runs out leaves them holding their ports.
+  SIGKILL after the grace runs out leaves them holding their ports, and leaves the hub's locator in
+  the checkout's `TMPDIR`. The next start removes a locator whose pid no longer runs; the JVMs'
+  pids are the CLI's own and recorded nowhere, so nothing here can end them.
 - The data directory defaults to `.firebase-emulator-data` beside `firebase.json`, not under the
   per-checkout `.buncargo/`, which is disposable state; nothing in buncargo removes it.

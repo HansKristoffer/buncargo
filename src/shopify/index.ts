@@ -231,7 +231,9 @@ export function shopify(
 					...Object.keys(discovered),
 				],
 				captures: SHOPIFY_CAPTURES,
-				...(options.lease !== false && appToml
+				// Keyed only by a real client_id: a placeholder every unlinked
+				// checkout shares would make them wait on each other's lease.
+				...(options.lease !== false && appToml && isClientId(appToml.clientId)
 					? { exclusive: `shopify-app:${appToml.clientId}` }
 					: {}),
 			};
@@ -274,6 +276,14 @@ export function shopify(
 
 		hooks: {
 			onCapture: (event, ctx) => {
+				// One nudge per CLI run: touching the assets rebuilds them, and
+				// a ready line after that must not touch them again. "Using URL"
+				// is printed as `app dev` starts, so it re-arms the nudge for a
+				// CLI the run restarted.
+				if (event.name === "appUrl") {
+					nudged = false;
+					return;
+				}
 				if (
 					event.name !== "shopifyReady" ||
 					options.nudgeThemeAssets === false ||

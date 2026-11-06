@@ -158,6 +158,63 @@ describe("appleUp", () => {
 		expect(cli.calls.some((call) => call[0] === "run")).toBe(false);
 	});
 
+	it("does not fail over a matching container whose state it cannot read", async () => {
+		const plan = buildAppleRunPlan({
+			projectName: "gey-main",
+			model: modelFor({ postgres: { port: 5432 } }),
+			root: "/repo",
+		});
+		const hash = plan.services[0]?.configHash ?? "";
+		const cli = recordingCli(
+			[record("gey-main-postgres", "", { [CONFIG_HASH_LABEL]: hash })],
+			{ start: "container gey-main-postgres is already running" },
+		);
+
+		await appleUp(
+			cli,
+			upRequest(modelFor({ postgres: { port: 5432 } }), ["postgres"]),
+		);
+
+		expect(subcommands(cli)).not.toContain("run --detach");
+		expect(subcommands(cli)).not.toContain("delete --force");
+	});
+
+	it("fails a start that failed for its image instead of running over the container", async () => {
+		const plan = buildAppleRunPlan({
+			projectName: "gey-main",
+			model: modelFor({ postgres: { port: 5432 } }),
+			root: "/repo",
+		});
+		const hash = plan.services[0]?.configHash ?? "";
+		const cli = recordingCli(
+			[record("gey-main-postgres", "stopped", { [CONFIG_HASH_LABEL]: hash })],
+			{ start: "Error: image not found: postgres:17" },
+		);
+
+		await expect(
+			appleUp(
+				cli,
+				upRequest(modelFor({ postgres: { port: 5432 } }), ["postgres"]),
+			),
+		).rejects.toThrow(/start container gey-main-postgres failed/);
+		expect(subcommands(cli)).not.toContain("run --detach");
+	});
+
+	it("takes a volume that is there already, and no other failure, as created", async () => {
+		const model = modelFor({ postgres: { port: 5432 } });
+		const there = recordingCli([], {
+			volume: 'Error: exists: "volume gey-main-postgres_data already exists"',
+		});
+		await appleUp(there, upRequest(model, ["postgres"]));
+
+		const broken = recordingCli([], {
+			volume: "Error: internalError: mkfs failed: file exists in the way",
+		});
+		await expect(
+			appleUp(broken, upRequest(model, ["postgres"])),
+		).rejects.toThrow(/create volume gey-main-postgres_data failed/);
+	});
+
 	it("recreates a container whose config hash drifted", async () => {
 		const cli = recordingCli([
 			record("gey-main-postgres", "running", {
@@ -353,6 +410,34 @@ describe("appleDown", () => {
 			"--force",
 			"gey-main-postgres",
 			"gey-main-redis",
+		]);
+	});
+
+	it("stops a container whose state it cannot read before deleting it", async () => {
+		// A JSON shape that moved the state somewhere else: the container may be
+		// a database that is running, and `delete --force` kills.
+		const cli = recordingCli(
+			[
+				{
+					configuration: {
+						id: "gey-main-postgres",
+						labels: { "buncargo.project": "gey-main" },
+					},
+				},
+			],
+			{ stop: "container is not running" },
+		);
+
+		await appleDown(cli, {
+			root: "/repo",
+			projectName: "gey-main",
+			verbose: false,
+		});
+
+		expect(subcommands(cli)).toEqual([
+			"ls --all",
+			"stop gey-main-postgres",
+			"delete --force",
 		]);
 	});
 

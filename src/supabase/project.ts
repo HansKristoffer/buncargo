@@ -6,12 +6,20 @@ import { getErrorMessage, isRecord, isString } from "hanzio";
  * The parts of `supabase/config.toml` the integration needs: which components
  * run and on which base ports, and the auth settings it extends per worktree.
  */
-export interface SupabaseProject {
+export type SupabaseProject = SupabaseProjectSettings &
+	(
+		| {
+				exists: true;
+				/** Why the toml could not be read; its defaults are used meanwhile. */
+				error?: string;
+		  }
+		/** No toml: nothing to have failed reading. */
+		| { exists: false; error?: never }
+	);
+
+export interface SupabaseProjectSettings {
 	/** Absolute path of the toml, whether or not it exists. */
 	path: string;
-	exists: boolean;
-	/** Why an existing toml could not be read; its defaults are used meanwhile. */
-	error?: string;
 	api: { enabled: boolean; port: number };
 	db: {
 		port: number;
@@ -62,7 +70,7 @@ function enabled(section: Table): boolean {
 export function parseSupabaseConfig(
 	text: string,
 	path: string,
-): SupabaseProject {
+): SupabaseProjectSettings & { exists: true } {
 	const raw = Bun.TOML.parse(text) as Table;
 	const api = table(raw.api);
 	const db = table(raw.db);
@@ -111,15 +119,11 @@ export function parseSupabaseConfig(
  */
 export function readSupabaseProject(workdir: string): SupabaseProject {
 	const path = join(workdir, "supabase", "config.toml");
-	if (!existsSync(path)) {
-		return { ...parseSupabaseConfig("", path), exists: false };
-	}
+	const { exists: _, ...defaults } = parseSupabaseConfig("", path);
+	if (!existsSync(path)) return { ...defaults, exists: false };
 	try {
 		return parseSupabaseConfig(readFileSync(path, "utf8"), path);
 	} catch (error) {
-		return {
-			...parseSupabaseConfig("", path),
-			error: getErrorMessage(error),
-		};
+		return { ...defaults, exists: true, error: getErrorMessage(error) };
 	}
 }

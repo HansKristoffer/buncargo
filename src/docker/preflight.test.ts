@@ -9,10 +9,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ContainerRuntimeUnavailableError } from "../container-runtime/types";
 import {
 	DESKTOP_COLD_START_MS,
 	DockerUnavailableError,
+	dockerDaemonStateFrom,
 	ensureDockerRunning,
+	installedDockerRuntime,
 	isDockerDaemonRunning,
 	isDockerDesktopHung,
 	parseDockerDesktopPids,
@@ -159,10 +162,29 @@ describe("Docker daemon preflight", () => {
 	);
 
 	it("treats a bare docker on Linux as the engine, not Docker Desktop", () => {
-		expect(runtimeFromContext("default", "linux")).toBe("docker-engine");
-		expect(runtimeFromContext("desktop-linux", "linux")).not.toBe(
+		const everything = () => true;
+		expect(runtimeFromContext("default", "linux", everything)).toBe(
 			"docker-engine",
 		);
+		expect(runtimeFromContext("desktop-linux", "linux", everything)).toBe(
+			"docker-desktop",
+		);
+	});
+
+	it("lets the context name the runtime over whichever apps are installed", () => {
+		// OrbStack installed, Docker Desktop selected: opening OrbStack would
+		// wait out the timeout and skip Desktop's hang detection.
+		const orbstackInstalled = (runtime: string) => runtime === "orbstack";
+		expect(
+			runtimeFromContext("desktop-linux", "darwin", orbstackInstalled),
+		).toBe("docker-desktop");
+		expect(runtimeFromContext("colima", "darwin", orbstackInstalled)).toBe(
+			"colima",
+		);
+		expect(runtimeFromContext("default", "darwin", orbstackInstalled)).toBe(
+			"orbstack",
+		);
+		expect(runtimeFromContext("", "darwin", () => false)).toBe("unknown");
 	});
 
 	// Off macOS no other runtime's app is installed to win first, so only the
@@ -172,10 +194,34 @@ describe("Docker daemon preflight", () => {
 			["colima", "podman"].some((tool) => Bun.which(tool)),
 	)("asks the configured docker binary, not the one on PATH", () => {
 		// `bun test` puts a stub `docker` on PATH.
-		expect(runtimeFromContext("", "darwin", "/nope/docker")).toBe("unknown");
-		expect(runtimeFromContext("", "darwin", process.execPath)).toBe(
-			"docker-desktop",
-		);
+		const guess = (binary: string) =>
+			runtimeFromContext("", "darwin", installedDockerRuntime(binary));
+		expect(guess("/nope/docker")).toBe("unknown");
+		expect(guess(process.execPath)).toBe("docker-desktop");
+	});
+
+	it("reads only Docker's own 'cannot connect' as a daemon that is down", () => {
+		const failed = (stderr: string, spawnErrorCode?: string) =>
+			dockerDaemonStateFrom({
+				ok: false,
+				exitCode: 1,
+				stdout: "",
+				stderr,
+				...(spawnErrorCode ? { spawnErrorCode } : {}),
+			}).state;
+		expect(
+			failed(
+				"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+			),
+		).toBe("down");
+		expect(failed("spawnSync docker ENOENT", "ENOENT")).toBe("down");
+		expect(
+			failed(
+				"permission denied while trying to connect to the Docker daemon socket",
+			),
+		).toBe("denied");
+		expect(failed("spawnSync docker ETIMEDOUT", "ETIMEDOUT")).toBe("silent");
+		expect(failed('context "gone" does not exist')).toBe("failed");
 	});
 
 	it("rejects an unavailable server even if the CLI prints a version", async () => {
@@ -248,6 +294,14 @@ describe("Docker Desktop process detection", () => {
 			"  106   501 /Applications/Docker.app/Contents/MacOS/com.docker.virtualization",
 		].join("\n");
 		expect(parseDockerDesktopPids(ps, 501)).toEqual([101, 102, 106]);
+	});
+
+	it("is a ContainerRuntimeUnavailableError, so one catch covers both runtimes", () => {
+		const error = unresponsiveDockerError([102]);
+		expect(error).toBeInstanceOf(ContainerRuntimeUnavailableError);
+		expect(error.runtime).toBe("docker");
+		expect(error.dockerRuntime).toBe("docker-desktop");
+		expect(error.message).toStartWith("Docker Desktop is running (pid 102)");
 	});
 
 	it("names a hung Docker Desktop and the fix, not 'not running'", () => {

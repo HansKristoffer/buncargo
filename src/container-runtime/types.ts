@@ -5,6 +5,7 @@ import type {
 	ContainerRuntimeName,
 	PortContainerOwner,
 } from "../types";
+import type { ContainerState } from "./container-state";
 
 /** Options for bringing the runtime's own daemon/services up. */
 export interface EnsureRuntimeOptions {
@@ -118,25 +119,6 @@ export interface ServiceDiagnosis {
 }
 
 /**
- * States that mean the container is gone rather than still coming up.
- *
- * Matched positively, so a state neither backend has shown us yet keeps the
- * readiness loop polling instead of aborting a startup that would have worked.
- */
-const TERMINAL_STATES = new Set([
-	"exited",
-	"dead",
-	"stopped",
-	"removing",
-	"error",
-	"failed",
-]);
-
-export function isTerminalContainerState(state: string): boolean {
-	return TERMINAL_STATES.has(state.trim().toLowerCase());
-}
-
-/**
  * What a runtime knows about one of a project's service containers.
  *
  * Read in a single call for the whole project, because the questions a startup
@@ -146,6 +128,8 @@ export function isTerminalContainerState(state: string): boolean {
 export interface ServiceRuntimeState {
 	/** Compose service name, from the `buncargo.service` label. */
 	service: string;
+	state: ContainerState;
+	/** `isContainerServing(state)`, for readers that ask only that. */
 	running: boolean;
 	/**
 	 * Fingerprint of this service and its referenced top-level definitions.
@@ -169,7 +153,7 @@ export interface ComposeProjectContainer {
 	id: string;
 	/** Compose's `com.docker.compose.project` label. */
 	project: string;
-	/** Anything but stopped: running, paused, restarting. */
+	/** `isContainerLive`: anything but stopped, so running, paused, restarting. */
 	running: boolean;
 	/** The `buncargo.root` label: the checkout that started it, or empty. */
 	root: string;
@@ -191,6 +175,20 @@ export interface ComposeProjectResources {
 export type ComposeProjectResourceKind = "container" | "volume" | "network";
 
 /**
+ * What asking a runtime's daemon told us.
+ *
+ * `down` and `unreachable` both mean "cannot use it now", but only `down`
+ * means no container is running: a stopped daemon, or no runtime installed.
+ * A daemon that refuses this user, or does not answer in time, may be
+ * running every container a checkout has, so nothing may be read as stopped,
+ * idle or torn down on its word.
+ */
+export type RuntimeAvailability =
+	| { state: "up" }
+	| { state: "down" }
+	| { state: "unreachable"; detail: string };
+
+/**
  * The single seam between buncargo and a container backend.
  *
  * Everything above this line (readiness polling, health checks, the CLI
@@ -202,6 +200,11 @@ export interface ContainerRuntimeAdapter {
 	readonly displayName: string;
 	/** The binary exists and its daemon answers. Never throws. */
 	isAvailable(): boolean;
+	/**
+	 * Whether the daemon answers, and if not, whether that means nothing
+	 * runs. `isAvailable()` is `availability().state === "up"`. Never throws.
+	 */
+	availability(): RuntimeAvailability;
 	/** Start the runtime's daemon when allowed, or throw with remediation. */
 	ensureRunning(options?: EnsureRuntimeOptions): Promise<void>;
 	up(request: ContainerUpRequest): Promise<void>;
@@ -281,9 +284,11 @@ export interface ContainerRuntimeAdapter {
 	/**
 	 * State of every container this runtime has for the project, in one call.
 	 *
-	 * Never throws: a runtime that cannot answer returns nothing, which reads
-	 * as "reconcile", so a failure here costs a redundant `up` rather than a
-	 * skipped one.
+	 * Throws when the runtime cannot answer, so an empty list means the
+	 * project has no containers: the service watch reports that as removed,
+	 * and must never report it over a daemon that did not answer. A startup
+	 * reads a throw as "reconcile", so a failure costs a redundant `up` rather
+	 * than a skipped one.
 	 */
 	projectServiceStates(
 		projectName: string,
@@ -300,8 +305,10 @@ export class ContainerRuntimeUnavailableError extends Error {
 		runtime: ContainerRuntimeName,
 		displayName: string,
 		remediation: string,
+		/** What is wrong, when it is more than "not running". */
+		problem = `${displayName} is not running.`,
 	) {
-		super(`${displayName} is not running. ${remediation}`);
+		super(`${problem} ${remediation}`);
 		this.name = "ContainerRuntimeUnavailableError";
 		this.runtime = runtime;
 		this.remediation = remediation;

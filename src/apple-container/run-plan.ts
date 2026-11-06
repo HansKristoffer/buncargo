@@ -22,10 +22,10 @@ export const CONFIG_HASH_LABEL = "buncargo.config-hash";
 // itself and this backend has to reproduce it, so a second copy here is a
 // second thing to keep in step.
 import {
-	configHashFor,
 	interpolateNode,
 	normalizeComposeLabels,
 	SERVICE_HASH_LABEL,
+	serviceFingerprint,
 } from "../docker-compose/interpolate";
 export const PROJECT_LABEL = "buncargo.project";
 export const SERVICE_LABEL = "buncargo.service";
@@ -464,6 +464,7 @@ function buildServicePlan(
 	root: string,
 	env: Record<string, string>,
 	unsupportedKeys: Set<string>,
+	configHash: string,
 ): ContainerRunPlan {
 	const service = interpolateNode(raw, env) as DockerComposeServiceRaw;
 	const image = service.image;
@@ -479,8 +480,15 @@ function buildServicePlan(
 	const userLabels = asRecord(
 		normalizeComposeLabels(service.labels) as DockerComposeNode,
 	);
-	const configHash = userLabels[SERVICE_HASH_LABEL] || configHashFor(service);
-	const labels = { ...userLabels, [CONFIG_HASH_LABEL]: configHash };
+	// One hash for both questions: the service fingerprint `ensureServicesRunning`
+	// compares to skip `up`, computed here rather than read off the label so a
+	// caller that did not interpolate it gets the same value, not a second hash
+	// that disagrees and recreates the container on the next run.
+	const labels = {
+		...userLabels,
+		[SERVICE_HASH_LABEL]: configHash,
+		[CONFIG_HASH_LABEL]: configHash,
+	};
 	const namedVolumes: string[] = [];
 	// `--progress none` keeps the pull and boot progress lines out of the
 	// stderr that ends up in an error message.
@@ -619,6 +627,7 @@ export function buildAppleRunPlan(
 				root,
 				env,
 				unsupportedKeys,
+				serviceFingerprint(model, name, env),
 			);
 		});
 

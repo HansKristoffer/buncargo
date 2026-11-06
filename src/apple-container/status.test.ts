@@ -138,6 +138,12 @@ describe("listAppleBuncargoContainers", () => {
 		// must never look like "empty".
 		expect(() => listAppleBuncargoContainers(stubCli("", false))).toThrow();
 	});
+
+	it("throws on output that is not JSON, rather than reporting no containers", () => {
+		expect(() =>
+			listAppleBuncargoContainers(stubCli("Error: XPC timeout")),
+		).toThrow(/not JSON/);
+	});
 });
 
 describe("appleProjectServiceStates", () => {
@@ -151,6 +157,18 @@ describe("appleProjectServiceStates", () => {
 			["redis", false],
 		]);
 		expect(await appleProjectServiceStates(stubCli(LS_JSON), "other")).toEqual(
+			[],
+		);
+	});
+
+	it("throws when the runtime cannot answer: an empty project is a removal the watch reports", async () => {
+		await expect(
+			appleProjectServiceStates(stubCli("", false), "gey-main"),
+		).rejects.toThrow();
+		await expect(
+			appleProjectServiceStates(stubCli("not json"), "gey-main"),
+		).rejects.toThrow(/not JSON/);
+		expect(await appleProjectServiceStates(stubCli("[]"), "gey-main")).toEqual(
 			[],
 		);
 	});

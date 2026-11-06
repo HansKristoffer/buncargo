@@ -1,10 +1,21 @@
+import {
+	isContainerLive,
+	parseContainerState,
+} from "../container-runtime/container-state";
 import type { PortContainerOwner } from "../types";
 import { runDocker, runDockerAsync } from "./binary";
 
+/**
+ * `--all` with the state, so whether a container holds its ports is decided
+ * by `isContainerLive` like everywhere else rather than by `docker ps`'s own
+ * default filter: a paused or restarting container keeps, or takes back, its
+ * ports.
+ */
 const LIST_ARGS = [
 	"ps",
+	"--all",
 	"--format",
-	'{{.ID}}\t{{.Names}}\t{{.Ports}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "buncargo.root"}}',
+	'{{.ID}}\t{{.Names}}\t{{.Ports}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "buncargo.root"}}\t{{.State}}',
 ];
 
 export function parseDockerPublishedPort(
@@ -65,8 +76,10 @@ export function parseDockerPortOwners(
 	const owners = new Map<number, PortContainerOwner>();
 	for (const line of output.trim().split("\n")) {
 		if (!line) continue;
-		const [id, name, portsField, composeProject, root] = line.split("\t");
+		const [id, name, portsField, composeProject, root, state = ""] =
+			line.split("\t");
 		if (!id || !portsField) continue;
+		if (!isContainerLive(parseContainerState(state))) continue;
 		const owner: PortContainerOwner = {
 			id,
 			name: name ?? id,

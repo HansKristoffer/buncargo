@@ -5,6 +5,7 @@ import type {
 import { remainingTime } from "../core/deadline";
 import { runDockerAsync } from "./binary";
 import { serviceContainerFilters } from "./exec";
+import { parseDockerExitCode } from "./status";
 
 /**
  * Why a compose service is not answering.
@@ -24,8 +25,7 @@ export function parseDockerPsState(
 ): { id: string; state: string; exitCode?: number } | undefined {
 	const [id, state, status = ""] = line.trim().split("\t");
 	if (!id || !state) return undefined;
-	const exit = /^Exited \((\d+)\)/i.exec(status)?.[1];
-	return { id, state, exitCode: exit === undefined ? undefined : Number(exit) };
+	return { id, state, exitCode: parseDockerExitCode(status) };
 }
 
 export async function diagnoseDockerService(

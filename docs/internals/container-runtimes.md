@@ -53,6 +53,11 @@ The sweep and volume pruning live in `container-runtime/` too; see
 - `ExecInServiceRequest.command` is argv, not a shell command line, so neither backend has to quote
   it and the two cannot disagree about which shell runs a probe. Both backends spawn argv
   throughout.
+- `availability()` tells `down` (a stopped daemon or system service, or no runtime installed) from
+  `unreachable` (a socket this user may not open, a probe cut off at its timeout, a failure nobody
+  has classified). Only `down` means no container runs: an unreachable runtime may hold every
+  container a checkout has, so claim states still list it and a teardown fails rather than
+  reporting nothing to stop. Docker reads `down` only off its own "cannot connect".
 - `down` with the runtime stopped (Docker's daemon, Apple's system service) is a successful no-op:
   a stopped runtime runs no containers. Each backend reads that off its own failed teardown or
   listing and only then probes, so a normal teardown pays no extra process. `removeVolumes` is the
@@ -72,11 +77,18 @@ The sweep and volume pruning live in `container-runtime/` too; see
   holds it open, so a host-side connect passed the moment the VM booted. Apple answers from the
   container's own address instead. `http` needs no such help, since the forwarder resets the
   connection once the request is written.
+- `container-state.ts` is the one reading of both runtimes' state words. Paused and restarting
+  containers are *live* (they hold their ports and their stack, so prune, the sweep, `ls`, claim
+  states and the allocator count them) but not *serving* (reuse, readiness and the watch's "up"
+  require `running`). A word neither runtime has shown us is `unknown`: live, never stopped, so
+  Apple's `down` still stops it gracefully before `delete --force`.
 - `diagnoseService` is why a dead container fails in about two seconds instead of after the full
-  readiness timeout. `readiness.ts` calls it every eighth poll, and only a state in
-  `isTerminalContainerState` aborts, matched positively so a state neither backend has shown us yet
-  keeps polling rather than killing a startup that would have worked. `logTail` is enrichment: a
-  backend that cannot produce it returns empty and the state alone still fails fast.
+  readiness timeout. `readiness.ts` calls it every eighth poll and asks `startupVerdict`: a stopped
+  container aborts, and so does one seen restarting on two diagnoses, the crash loop a preset's
+  restart policy (typesense, mailpit) would otherwise keep up until the timeout. Matched
+  positively, so a state neither backend has shown us yet keeps polling rather than killing a
+  startup that would have worked. `logTail` is enrichment: a backend that cannot produce it
+  returns empty and the state alone still fails fast. Apple drops `restart`, so only Docker loops.
 - `ensureServicesRunning` skips `up` only when each selected service is running with a matching
   service fingerprint and every relevant input can be proven unchanged. Old unlabeled containers
   reconcile once. Every adapter operation that talks to the daemon is async and cancellable; the
@@ -151,7 +163,9 @@ command prefix.
   emit.
 - Each container carries a `buncargo.config-hash` label, so `up` can tell "mine and still matching"
   (start it) from "config changed underneath it" (recreate) rather than throwing away a warm data
-  volume on every run.
+  volume on every run. Its value is the service fingerprint, computed by the plan and written to
+  `buncargo.service-hash` too: a second hash that disagreed with the one `ensureServicesRunning`
+  compares recreated containers nothing had changed.
 - New named volumes are created at 256G. Apple formats each as a sparse ext4 image, and formatting
   its 512G default took about a second against ~0.4s, paid by every new checkout's database. The
   CLI cannot grow one later.
@@ -170,4 +184,6 @@ command prefix.
   rather than against a fixed schema.
 - `preflight.ts` auto-starts via `container system start` but never passes
   `--enable-kernel-install`: with it, a first run would install a kernel without asking; without
-  it, the command prompts and would hang a non-interactive spawn.
+  it, the command prompts and would hang a non-interactive spawn. A start that stops there is
+  reported as the missing kernel, with the command to run once in a terminal. In CI, as with
+  Docker, a stopped service is waited for and never started.

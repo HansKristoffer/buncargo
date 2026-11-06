@@ -1,4 +1,4 @@
-import { timeoutSignal, typedSwitch } from "hanzio";
+import { timeoutSignal, typedSwitch, typedSwitchGroup } from "hanzio";
 import type { ContainerRuntimeAdapter, ServiceRuntimeState } from "./types";
 
 /**
@@ -14,7 +14,11 @@ import type { ContainerRuntimeAdapter, ServiceRuntimeState } from "./types";
 export type ServiceCondition =
 	| { state: "up" }
 	| { state: "unhealthy" }
-	| { state: "stopped"; exitCode?: number }
+	/**
+	 * Serving nothing. `why` says when the container is still there: between
+	 * restarts under its restart policy, or paused.
+	 */
+	| { state: "stopped"; exitCode?: number; why?: "restarting" | "paused" }
 	| { state: "missing" };
 
 export interface ServiceChange {
@@ -23,35 +27,76 @@ export interface ServiceChange {
 	condition: ServiceCondition;
 }
 
+function conditionOf(state: ServiceRuntimeState): ServiceCondition | undefined {
+	const exit = state.exitCode === undefined ? {} : { exitCode: state.exitCode };
+	return typedSwitch(state.state, {
+		running: (): ServiceCondition => ({
+			state: state.healthy === false ? "unhealthy" : "up",
+		}),
+		restarting: (): ServiceCondition => ({
+			state: "stopped",
+			...exit,
+			why: "restarting",
+		}),
+		paused: (): ServiceCondition => ({ state: "stopped", why: "paused" }),
+		...typedSwitchGroup(
+			state.state,
+			["created", "stopping", "stopped"],
+			(): ServiceCondition => ({ state: "stopped", ...exit }),
+		),
+		// Nothing to say about a state we cannot read; the last word stands.
+		unknown: () => undefined,
+	});
+}
+
 /**
- * What each watched service is doing, or undefined when the runtime listed
- * nothing: both backends answer an unreachable daemon with an empty list, so
- * an empty listing cannot tell "all removed" from "cannot ask".
+ * What each watched service is doing, from a listing the runtime answered.
+ * An empty one means every watched container is gone. A service whose state
+ * the runtime did not say is left out, so what was last reported stands.
  */
 export function observeServices(
 	watched: readonly string[],
 	states: readonly ServiceRuntimeState[],
-): Map<string, ServiceCondition> | undefined {
-	if (states.length === 0) return undefined;
+): Map<string, ServiceCondition> {
 	// A running container of a service wins over a stale stopped one.
 	const byService = new Map<string, ServiceRuntimeState>();
 	for (const state of states)
 		if (!byService.get(state.service)?.running)
 			byService.set(state.service, state);
-	return new Map(
-		watched.map((service): [string, ServiceCondition] => {
-			const state = byService.get(service);
-			if (!state) return [service, { state: "missing" }];
-			if (!state.running)
-				return [
-					service,
-					state.exitCode === undefined
-						? { state: "stopped" }
-						: { state: "stopped", exitCode: state.exitCode },
-				];
-			return [service, { state: state.healthy === false ? "unhealthy" : "up" }];
-		}),
-	);
+	const observed = new Map<string, ServiceCondition>();
+	for (const service of watched) {
+		const state = byService.get(service);
+		const condition = state
+			? conditionOf(state)
+			: { state: "missing" as const };
+		if (condition) observed.set(service, condition);
+	}
+	return observed;
+}
+
+const isRestarting = (condition: ServiceCondition | undefined) =>
+	condition?.state === "stopped" && condition.why === "restarting";
+
+/**
+ * What to report next, from what was reported and the last two observations.
+ * A crash-looping container is up between restarts, and a poll that lands
+ * there must not announce it running again: after a restart, "up" counts
+ * once two polls in a row see it.
+ */
+export function settleConditions(
+	reported: ReadonlyMap<string, ServiceCondition>,
+	previouslyObserved: ReadonlyMap<string, ServiceCondition>,
+	observed: ReadonlyMap<string, ServiceCondition>,
+): Map<string, ServiceCondition> {
+	const settled = new Map(reported);
+	for (const [service, condition] of observed) {
+		const unconfirmed =
+			condition.state === "up" &&
+			isRestarting(reported.get(service)) &&
+			previouslyObserved.get(service)?.state !== "up";
+		if (!unconfirmed) settled.set(service, condition);
+	}
+	return settled;
 }
 
 /** The services whose condition changed; a service seen for the first time counts as up before. */
@@ -74,10 +119,12 @@ export function describeServiceCondition(change: ServiceChange): string {
 	return typedSwitch(condition, "state", {
 		up: () => `${service} is running again`,
 		unhealthy: () => `${service} is unhealthy: its healthcheck fails`,
-		stopped: ({ exitCode }) =>
-			exitCode === undefined
-				? `${service} stopped`
-				: `${service} stopped (exit ${exitCode})`,
+		stopped: ({ exitCode, why }) => {
+			const exit = exitCode === undefined ? "" : ` (exit ${exitCode})`;
+			if (why === "restarting") return `${service} keeps restarting${exit}`;
+			if (why === "paused") return `${service} is paused`;
+			return `${service} stopped${exit}`;
+		},
 		missing: () => `${service}'s container was removed`,
 	});
 }
@@ -101,26 +148,29 @@ export function watchServiceContainers(input: {
 	const controller = new AbortController();
 	const intervalMs = input.intervalMs ?? SERVICE_WATCH_INTERVAL_MS;
 	let known = new Map<string, ServiceCondition>();
+	let lastObserved = new Map<string, ServiceCondition>();
 	let timer: ReturnType<typeof setTimeout> | undefined;
 
 	const poll = async () => {
 		const watched = input.services();
 		if (watched.length > 0) {
 			const signal = timeoutSignal(intervalMs, controller.signal);
-			let states: ServiceRuntimeState[] = [];
+			let states: ServiceRuntimeState[] | undefined;
 			try {
 				states = await input.runtime.projectServiceStates(
 					input.projectName,
 					signal,
 				);
 			} catch {
-				// Unanswered: the same as an empty listing.
+				// Unanswered: nothing is known to have changed.
 			}
 			if (controller.signal.aborted) return;
-			const next = observeServices(watched, states);
-			if (next) {
+			if (states) {
+				const observed = observeServices(watched, states);
+				const next = settleConditions(known, lastObserved, observed);
 				const changes = serviceChanges(known, next);
 				known = next;
+				lastObserved = observed;
 				try {
 					if (changes.length > 0) input.onChange(changes);
 				} catch {

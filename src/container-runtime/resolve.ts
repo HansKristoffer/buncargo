@@ -154,6 +154,19 @@ export function availableContainerRuntimes(
 	);
 }
 
+/**
+ * Every backend that may be running containers: up, or not answering. Only
+ * one that is down runs nothing, so a caller that must not read containers
+ * as absent lists these and lets a listing that fails say so.
+ */
+export function containerRuntimesNotDown(
+	options: ContainerRuntimeCandidateOptions = {},
+): ContainerRuntimeAdapter[] {
+	return containerRuntimeCandidates(options).filter(
+		(adapter) => adapter.availability().state !== "down",
+	);
+}
+
 export type ContainerRuntimeCandidateOptions =
 	ContainerRuntimeAdapterOptions & {
 		/** The backend `binary` belongs to. Defaults to the environment's selection. */

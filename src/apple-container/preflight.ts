@@ -1,9 +1,12 @@
 import { arch, platform } from "node:os";
-import { ContainerRuntimeUnavailableError } from "../container-runtime/types";
+import {
+	ContainerRuntimeUnavailableError,
+	type RuntimeAvailability,
+} from "../container-runtime/types";
 import { abortableSleep, remainingTime } from "../core/deadline";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWait } from "../core/style";
-import type { AppleContainerCli } from "./cli";
+import type { AppleCliResult, AppleContainerCli } from "./cli";
 import {
 	APPLE_CONTAINER_COMMAND,
 	createAppleContainerCli,
@@ -15,6 +18,8 @@ const DISPLAY_NAME = "Apple container";
 export interface EnsureAppleContainerOptions {
 	signal?: AbortSignal;
 	autoStart?: boolean;
+	/** Whether this is CI, where a stopped service is waited for rather than started. */
+	ci?: boolean;
 	timeoutMs?: number;
 	verbose?: boolean;
 }
@@ -39,9 +44,57 @@ export function isAppleContainerInstalled(
 	return isAppleContainerSupported() && cli.found;
 }
 
+/**
+ * What `container system status` says. A stopped system service, an
+ * unsupported machine or a missing binary runs nothing; a status that did not
+ * come back in time may be a service running every container we have.
+ */
+export function appleContainerAvailability(
+	cli: AppleContainerCli,
+): RuntimeAvailability {
+	if (!isAppleContainerSupported() || !cli.found) return { state: "down" };
+	const status = cli.run(["system", "status"]);
+	if (status.ok) return { state: "up" };
+	if (status.timedOut)
+		return {
+			state: "unreachable",
+			detail: "Apple container did not answer in time",
+		};
+	return { state: "down" };
+}
+
 export function isAppleContainerSystemRunning(cli: AppleContainerCli): boolean {
-	if (!isAppleContainerSupported()) return false;
-	return cli.run(["system", "status"]).ok;
+	return appleContainerAvailability(cli).state === "up";
+}
+
+/**
+ * What a run does about a system service that is down, as Docker does with
+ * its daemon: CI never starts one but waits for one a runner is still
+ * bringing up; locally it is started unless the caller said not to.
+ */
+export function appleStartAction(
+	autoStart: boolean,
+	ci: boolean,
+): "start" | "wait" | "refuse" {
+	if (autoStart) return "start";
+	return ci ? "wait" : "refuse";
+}
+
+const START_REMEDIATION = `Run \`${APPLE_CONTAINER_COMMAND} system start\` and try again, or set docker.runtime: "docker".`;
+
+/**
+ * What fixes a `container system start` that failed. A machine that never
+ * ran the runtime has no kernel, and the start stops at the prompt that
+ * offers one: that needs the command run once in a terminal, which no retry
+ * of ours replaces.
+ */
+export function appleStartFailureRemediation(started: AppleCliResult): string {
+	const detail = started.stderr.trim();
+	const lastError = detail ? ` Last error: ${detail}` : "";
+	const noKernel = /kernel/i.test(`${started.stderr}\n${started.stdout}`);
+	if (noKernel)
+		return `Apple container has no kernel installed yet. Run \`${APPLE_CONTAINER_COMMAND} system start\` once in a terminal, which asks before installing one, then try again; or set docker.runtime: "docker".${lastError}`;
+	return `${START_REMEDIATION}${lastError}`;
 }
 
 /**
@@ -56,7 +109,12 @@ export async function ensureAppleContainerRunning(
 	cli: AppleContainerCli,
 	options: EnsureAppleContainerOptions = {},
 ): Promise<void> {
-	const { autoStart = !isCI(), timeoutMs = 60_000, verbose = true } = options;
+	const {
+		ci = isCI(),
+		autoStart = !ci,
+		timeoutMs = 60_000,
+		verbose = true,
+	} = options;
 
 	if (!isAppleContainerSupported()) {
 		throw new ContainerRuntimeUnavailableError(
@@ -85,33 +143,36 @@ export async function ensureAppleContainerRunning(
 		);
 	}
 
-	const remediation = `Run \`${APPLE_CONTAINER_COMMAND} system start\` and try again, or set docker.runtime: "docker".`;
-	if (!autoStart) {
+	const action = appleStartAction(autoStart, ci);
+	if (action === "refuse") {
 		throw new ContainerRuntimeUnavailableError(
 			"apple",
 			DISPLAY_NAME,
-			remediation,
+			START_REMEDIATION,
 		);
 	}
 
-	if (verbose) {
-		console.log(
-			formatStep("📦 Apple container is not running. Starting services..."),
-		);
-	}
-	const started = await runAppleAsync(
-		cli,
-		["system", "start", "--timeout", "30"],
-		{ signal, timeoutMs: Math.min(30000, remainingTime(deadline)) },
-	);
-	// A start that failed (on a machine never set up, it stops at the kernel
-	// prompt) will not come up by waiting: say so now, not after the timeout.
-	if (!started.ok && !(await running())) {
-		throw new ContainerRuntimeUnavailableError(
-			"apple",
-			DISPLAY_NAME,
-			`${remediation}${started.stderr.trim() ? ` Last error: ${started.stderr.trim()}` : ""}`,
-		);
+	let started: AppleCliResult | undefined;
+	if (action === "start") {
+		if (verbose) {
+			console.log(
+				formatStep("📦 Apple container is not running. Starting services..."),
+			);
+		}
+		started = await runAppleAsync(cli, ["system", "start", "--timeout", "30"], {
+			signal,
+			timeoutMs: Math.min(30000, remainingTime(deadline)),
+		});
+		// A start that failed (on a machine never set up, it stops at the
+		// kernel prompt) will not come up by waiting: say so now, not after
+		// the timeout.
+		if (!started.ok && !(await running())) {
+			throw new ContainerRuntimeUnavailableError(
+				"apple",
+				DISPLAY_NAME,
+				appleStartFailureRemediation(started),
+			);
+		}
 	}
 
 	while (remainingTime(deadline) > 0) {
@@ -129,8 +190,6 @@ export async function ensureAppleContainerRunning(
 	throw new ContainerRuntimeUnavailableError(
 		"apple",
 		DISPLAY_NAME,
-		started.stderr.trim()
-			? `${remediation} Last error: ${started.stderr.trim()}`
-			: remediation,
+		started ? appleStartFailureRemediation(started) : START_REMEDIATION,
 	);
 }
