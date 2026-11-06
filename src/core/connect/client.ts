@@ -121,7 +121,7 @@ export async function readDirectory(): Promise<Directory> {
 		receiver.owner,
 	).catch((error) => {
 		if (!isForgotten(error)) throw error;
-		const message = `${receiver.origin} no longer knows this machine's receiver. Run \`buncargo connect token --rotate\` and give the new token to whoever shares with you.`;
+		const message = `${receiver.origin} no longer knows this machine's receiver. Run buncargo connect token --rotate and give the new token to whoever shares with you.`;
 		throw new Error(message);
 	});
 	return parseDirectory(value, receiver.origin);

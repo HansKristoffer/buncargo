@@ -6,10 +6,11 @@ import type { RunEntry } from "../run-registry";
 import { newCredential } from "./credentials";
 import { createPublisher } from "./publisher";
 
-const cleanups: (() => void)[] = [];
+const cleanups: (() => void | Promise<void>)[] = [];
 
-afterEach(() => {
-	for (const cleanup of cleanups.splice(0)) cleanup();
+// Last started, first ended: the publisher retires its publication before the relay stops.
+afterEach(async () => {
+	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
 /** The relay's directory behind its real API, on loopback. */
@@ -61,7 +62,7 @@ test("a publication the relay forgot is registered again on the next refresh", a
 		origin,
 		credential: newCredential("pub"),
 	});
-	cleanups.push(() => void publisher.close());
+	cleanups.push(() => publisher.close());
 
 	await publisher.refresh(run);
 	expect(directory.list(receiver.owner).runs).toHaveLength(1);

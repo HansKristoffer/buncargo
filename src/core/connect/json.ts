@@ -54,9 +54,16 @@ export class ConnectRequestError extends Error {
 	}
 }
 
-/** The directory answered that it does not know the credential: it forgot it. */
+/**
+ * The directory answered that it does not know the credential: it forgot it.
+ * Its own refusal, not a 403 from something in front of it.
+ */
 export function isForgotten(error: unknown): boolean {
-	return error instanceof ConnectRequestError && error.status === 403;
+	return (
+		error instanceof ConnectRequestError &&
+		error.status === 403 &&
+		error.message === "Not authorized"
+	);
 }
 
 export async function readJSON(response: Response): Promise<unknown> {
