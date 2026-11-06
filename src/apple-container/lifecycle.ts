@@ -13,6 +13,7 @@ import { appleContainerRuntimeAdapter } from "./adapter";
 import type { AppleCliOptions, AppleCliResult, AppleContainerCli } from "./cli";
 import {
 	isAlreadyExistsMessage,
+	isAlreadyRunningMessage,
 	isMissingResourceMessage,
 	runAppleAsync,
 } from "./cli";
@@ -129,11 +130,14 @@ function* startService(
 			if (isContainerServing(state)) return;
 			const started = yield ["start", plan.containerName];
 			if (started.ok) return;
-			const missing = isMissingResourceMessage(started.stderr);
 			// A container whose state Apple did not say may be running already,
-			// which `start` refuses; readiness tells whether it serves.
-			if (!missing && state === "unknown") return;
-			if (!missing) failed(started, `start container ${plan.containerName}`);
+			// which `start` refuses; readiness tells whether it serves. Any other
+			// refusal (a port taken, a broken image) is this start's failure.
+			const runsAlready =
+				state === "unknown" && isAlreadyRunningMessage(started.stderr);
+			if (runsAlready) return;
+			if (!isMissingResourceMessage(started.stderr))
+				failed(started, `start container ${plan.containerName}`);
 		} else {
 			// Announced even on a quiet reconcile pass: a container being thrown
 			// away and rebuilt is the one thing here worth interrupting for.

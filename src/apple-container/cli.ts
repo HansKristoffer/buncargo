@@ -140,6 +140,11 @@ export function isMissingResourceMessage(message: string): boolean {
 	return missing && !aboutImage;
 }
 
+/** `start` refused because the container runs already. */
+export function isAlreadyRunningMessage(message: string): boolean {
+	return /already (running|started)/i.test(message);
+}
+
 /**
  * The resource being created is there already. Apple prefixes the error
  * with its code (`Error: exists: "volume … already exists"`); a bare

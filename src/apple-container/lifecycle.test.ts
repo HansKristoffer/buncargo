@@ -179,6 +179,29 @@ describe("appleUp", () => {
 		expect(subcommands(cli)).not.toContain("delete --force");
 	});
 
+	it("fails a start refused for another reason over a container whose state it cannot read", async () => {
+		const plan = buildAppleRunPlan({
+			projectName: "gey-main",
+			model: modelFor({ postgres: { port: 5432 } }),
+			root: "/repo",
+		});
+		const hash = plan.services[0]?.configHash ?? "";
+		const cli = recordingCli(
+			[record("gey-main-postgres", "", { [CONFIG_HASH_LABEL]: hash })],
+			{ start: "bind(...): Address already in use (errno: 48)" },
+		);
+
+		await expect(
+			appleUp(
+				cli,
+				upRequest(modelFor({ postgres: { port: 5432 } }), ["postgres"]),
+			),
+		).rejects.toThrow(
+			/start container gey-main-postgres failed.*Address already in use/,
+		);
+		expect(subcommands(cli)).not.toContain("run --detach");
+	});
+
 	it("fails a start that failed for its image instead of running over the container", async () => {
 		const plan = buildAppleRunPlan({
 			projectName: "gey-main",
