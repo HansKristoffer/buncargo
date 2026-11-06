@@ -607,7 +607,6 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 
 		try {
 			await rebind(certKey);
-			bindError = undefined;
 		} catch (error) {
 			// Health says so: the routes it lists are only those the previous
 			// leaf covers, and the CLI names this as the reason the rest are not.
@@ -649,6 +648,9 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		previous?.stop();
 		lastCertKey = certKey;
 		serves = deps.certificateServes(cert);
+		// Only a bind that succeeded clears it: a pass that found a mint in
+		// progress bound nothing, and the failure it would hide still stands.
+		bindError = undefined;
 	}
 
 	return {

@@ -609,6 +609,38 @@ describe("createHostsReloader", () => {
 		expect(reloader.routes().bindError).toBeUndefined();
 	});
 
+	// A pass that finds a mint holding the pair binds nothing, and used to
+	// clear the failure all the same, so health dropped a bind failure that
+	// still stood every time a mint was in progress.
+	it("keeps reporting a failed bind while a mint holds the pair", async () => {
+		let failBind = false;
+		let minting = false;
+		const { state, reloader } = reloaderHarness({
+			readCertificatePair: async () =>
+				minting ? undefined : { cert: state.fingerprint, key: "K" },
+			startProxy: async () => {
+				if (failBind) throw new Error("EADDRINUSE");
+				return { httpsPort: 443, stop: () => {} } satisfies LocalProxy;
+			},
+		});
+		state.routes = [route("web.demo.localhost", 5173)];
+		await reloader.reload();
+
+		state.fingerprint = "cert-v2";
+		failBind = true;
+		await expect(reloader.reload()).rejects.toThrow("EADDRINUSE");
+
+		minting = true;
+		state.fingerprint = "cert-v3";
+		await reloader.reload();
+		expect(reloader.routes().bindError).toBe("EADDRINUSE");
+
+		minting = false;
+		failBind = false;
+		await reloader.reload();
+		expect(reloader.routes().bindError).toBeUndefined();
+	});
+
 	it("serves nothing once the bound certificate has expired", async () => {
 		const expiresAt = 10_000;
 		const { state, reloader } = reloaderHarness({
