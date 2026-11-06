@@ -197,6 +197,37 @@ it("fails with every holder and its state when every block is claimed by checkou
 	expect(readAllOffsetClaims()).toEqual(claims);
 });
 
+it("leaves nothing selected when a start finds every block claimed", async () => {
+	const { roots } = fillPortRange(dir, [2, 30, 10]);
+	for (const [index, root] of roots.entries())
+		await publishRun(
+			buildRunEntry({
+				sessionId: `holder-${index}`,
+				projectPrefix: "holder",
+				projectName: `holder-${index}`,
+				root,
+				isWorktree: false,
+			}),
+		);
+	const env = createDevEnvironment(
+		{
+			projectPrefix: "fresh",
+			services: { postgres: { port: FULL_RANGE_BASE_PORT } },
+			prisma: {},
+			options: { verbose: false },
+		},
+		{ root: newRoot },
+	);
+
+	await expect(env.prepareStartAsync()).rejects.toThrow(
+		"No block could be reclaimed",
+	);
+	// Prisma allocates for itself rather than run on the unprobed preview.
+	await expect(env.prisma?.ensureDatabase()).rejects.toThrow(
+		"No block could be reclaimed",
+	);
+});
+
 it("moves past one block another checkout claims without reclaiming it", async () => {
 	const hashed = computeBaseOffset({ projectPrefix: "fresh" });
 	const other = join(dir, "other");

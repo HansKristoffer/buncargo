@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { AppConfig, ServiceConfig } from "../types";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
-import { startAppServers } from "./servers";
+import { startAppServers, withoutPublicUrls } from "./servers";
 
 const vars = {
 	getHookContext: (signal?: AbortSignal) => ({ signal }),
@@ -96,4 +96,21 @@ it("cleans up spawned servers when the afterServers hook fails", async () => {
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+it("closing tunnels clears only their URLs, not the ones apps printed", () => {
+	const current = {
+		api: "https://api.trycloudflare.com",
+		web: "https://web.example",
+		admin: "https://admin-now.example",
+	};
+	// The tunnels opened api and admin; admin has since printed its own URL.
+	const opened = {
+		api: "https://api.trycloudflare.com",
+		admin: "https://admin.trycloudflare.com",
+	};
+	expect(withoutPublicUrls(current, opened)).toEqual({
+		web: "https://web.example",
+		admin: "https://admin-now.example",
+	});
 });
