@@ -843,6 +843,43 @@ describe("startDevServers keepOthersOnFailure", () => {
 		}
 	}, 15000);
 
+	it("reports an app that never came up failed before its stop's exit, which says failed too", async () => {
+		// The exit came first and said `stopped`, which the run registry keeps
+		// over the `failed` reported after it.
+		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-order-"));
+		const [api, marketing] = await freePorts(2);
+		const events: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					api: { port: api, devCommand: serve(api) },
+					marketing: {
+						port: marketing,
+						healthTimeout: 300,
+						devCommand: silent,
+					},
+				},
+				root,
+				{},
+				{ api, marketing },
+				{
+					verbose: false,
+					waitForExit: false,
+					keepOthersOnFailure: true,
+					onAppFailed: (name) => events.push(`failed:${name}`),
+					onAppExit: (name, _code, _signal, state) =>
+						events.push(`exit:${name}:${state}`),
+				},
+			);
+			await eventually(() => events.length === 2);
+			expect(events).toEqual(["failed:marketing", "exit:marketing:failed"]);
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 15000);
+
 	it("still fails the run when nothing came up, or a later app waits on it", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-"));
 		const port = await freePort();

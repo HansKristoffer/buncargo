@@ -101,9 +101,9 @@ pieces it orchestrates.
   `.buncargo/logs/detached-report-<pid>.json`, one per run for the same reason
   (`run-failure.ts`: the cause, the step's last lines, the
   setup warnings, what to run next), and the parent prints them last. Parsing the log for the
-  cause failed: agents read `dev | tail`, and the tail was a warning of kilobytes. A parked app is
-  stopped before it is reported failed, so its row can read `stopped` before its report exists:
-  the parent gives a settled run's down apps `REPORT_GRACE_MS` for their reports before printing.
+  cause failed: agents read `dev | tail`, and the tail was a warning of kilobytes. An app that
+  crashed while it started reads `failed` from its exit before it is parked and reported, so the
+  parent gives a settled run's down apps `REPORT_GRACE_MS` for their reports before printing.
   Still starting at the timeout exits 2, as `wait` does, apart from a failure's 1.
   `--keep` is not passed on: the child learns it from `BUNCARGO_DETACHED`
   (`1` or `keep`), and records the idle limit the watchdog enforces

@@ -228,7 +228,7 @@ describe("a claim's lifecycle and its apps", () => {
 				?.apps[0];
 		await claim.claimApps({ first: worker() });
 		claim.appEvents.onAppSpawned?.("first", 1_000_001, false);
-		claim.appEvents.onAppExit?.("first", 1, null);
+		claim.appEvents.onAppExit?.("first", 1, null, "failed");
 		await flushRunPatches(session);
 		expect((await row())?.status).toBe("failed");
 		claim.appEvents.onAppSpawned?.("first", 1_000_002, false);

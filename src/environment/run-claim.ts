@@ -1,6 +1,5 @@
 import { releaseLeases } from "../core/leases";
 import type { StartDevServersOptions } from "../core/process/dev-servers";
-import { appExitState } from "../core/process/process-owner";
 import {
 	flushRunPatches,
 	markApps,
@@ -331,13 +330,8 @@ export function createRunClaimApi<
 			onAppReady: (name) => {
 				void markApps(session, [name], "ready");
 			},
-			onAppExit: (name, code, signal) => {
-				const app = listedApps[name];
-				const status = appExitState(code, signal, {
-					worker: app?.kind === "worker",
-					optional: app?.essential === false,
-				});
-				void markApps(session, [name], status);
+			onAppExit: (name, _code, _signal, state) => {
+				void markApps(session, [name], state);
 			},
 			onAppRestartFailed: (name) => {
 				void markApps(session, [name], "failed");

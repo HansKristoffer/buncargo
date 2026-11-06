@@ -108,12 +108,15 @@ export interface StartDevServersOptions {
 	) => readonly string[] | Promise<readonly string[]>;
 	/**
 	 * A dev server exited. `code` is `null` when it was signalled, which is what
-	 * a `buncargo stop <app>` or a Ctrl-C looks like from here.
+	 * a `buncargo stop <app>` or a Ctrl-C looks like from here. `state` is how
+	 * it ended, as the run registry records it: `failed` for an app stopped
+	 * because it never came up, whatever the signal.
 	 */
 	onAppExit?: (
 		name: string,
 		code: number | null,
-		signal?: NodeJS.Signals | null,
+		signal: NodeJS.Signals | null | undefined,
+		state: "stopped" | "failed",
 	) => void;
 	/**
 	 * An app that does not become ready is stopped and the others keep
@@ -123,7 +126,10 @@ export interface StartDevServersOptions {
 	keepOthersOnFailure?: boolean;
 	/** Start the apps' `watch` watchers. Default: true; `dev --no-watch` passes false. */
 	watch?: boolean;
-	/** An app was stopped because it did not become ready (see above). */
+	/**
+	 * An app did not become ready and is stopped (see above). Reported before
+	 * the stop, so its exit is never the first word on it.
+	 */
 	onAppFailed?: (name: string, error: Error) => void;
 	/**
 	 * A restart retired the app's process and could not replace it: the app
@@ -409,7 +415,15 @@ export async function startDevServers(
 				if (screen) void screen.flush().then(report);
 				else report();
 			}
-			onAppExit?.(name, code, signal);
+			// The registry's verdict, decided now rather than after the screen:
+			// an app stopped for never coming up was reported failed already.
+			const state = readinessFailures.has(name)
+				? "failed"
+				: appExitState(code, signal, {
+						worker: startable[name]?.kind === "worker",
+						optional: restartable(name),
+					});
+			onAppExit?.(name, code, signal, state);
 		},
 		onAppSpawned: (name, pid, attached) => {
 			exited.delete(name);
@@ -834,6 +848,9 @@ export async function startDevServers(
 		readinessFailures.set(name, error.message);
 		probation.delete(name);
 		parked.add(name);
+		// Before the stop below, whose exit then says it failed too: the run
+		// registry keeps an app's `stopped` over a later `failed`.
+		options.onAppFailed?.(name, error);
 		if (reused.has(name)) {
 			// Neither stopped nor restartable from here: say so rather than
 			// report a process that keeps running as failed and parked.
@@ -856,7 +873,6 @@ export async function startDevServers(
 			// Its exit reports it, with the reason above.
 			await session.stopApp(name);
 		}
-		options.onAppFailed?.(name, error);
 	}
 	try {
 		// Each layer is healthy before the next spawns: that is `startAfter`.

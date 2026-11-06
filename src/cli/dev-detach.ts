@@ -173,10 +173,11 @@ export function settledRun(run: RunEntry, expectApps: boolean): boolean {
 
 /**
  * How long a settled run's down apps get for their failure reports. An app
- * that never came up is stopped before it is reported failed, and its exit
- * reaches the registry as `stopped` first: settling on that printed a
- * generic failure with no output. An app that stopped on its own (an
- * `essential: false` one that exited) never gets a report, so the wait ends.
+ * that crashed while it started reaches the registry as `failed` with its
+ * exit, before the supervisor has parked it and reported why: settling on
+ * that printed a generic failure with no output. An app that stopped on its
+ * own (an `essential: false` one that exited) never gets a report, so the
+ * wait ends.
  */
 export const REPORT_GRACE_MS = 2_000;
 

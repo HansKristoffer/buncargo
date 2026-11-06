@@ -1080,6 +1080,84 @@ it("marks a restarted app starting in the registry until it is ready again", asy
 	}
 });
 
+it("records a parked app failed, and a recovered one's exit as an essential app's", async () => {
+	// A parked app's stop reached the registry as `stopped`, which outranks
+	// the `failed` reported after it. And once a restart brought it up, the
+	// run still read it as parked: an essential worker that then exited 0
+	// was recorded `stopped` too.
+	const root = await realpath(
+		await mkdtemp(join(tmpdir(), "buncargo-recovered-row-")),
+	);
+	const marker = join(root, "ran-once");
+	const go = join(root, "go");
+	// Silent the first time, so it is parked; the second says it is ready,
+	// then exits 0 once told to.
+	const script = join(root, "jobs.ts");
+	await Bun.write(
+		script,
+		`const marker = ${JSON.stringify(marker)};
+if (!(await Bun.file(marker).exists())) await Bun.write(marker, "1");
+else {
+	console.log("jobs ready");
+	setInterval(async () => {
+		if (await Bun.file(${JSON.stringify(go)}).exists()) process.exit(0);
+	}, 20);
+}
+setInterval(() => {}, 60_000);
+`,
+	);
+	const env = createStubEnv({
+		root,
+		services: {},
+		// Workers have none.
+		ports: {},
+		apps: {
+			keeper: {
+				kind: "worker",
+				devCommand: "bun -e 'setInterval(() => {}, 60000)'",
+				requiredServices: [],
+			},
+			jobs: {
+				kind: "worker",
+				devCommand: `bun ${script}`,
+				readyWhen: /jobs ready/,
+				healthTimeout: 500,
+				requiredServices: [],
+			},
+		},
+	});
+	const status = async () =>
+		(await findRunsByRoot(root))
+			.find((run) => run.sessionId === env.sessionId)
+			?.apps.find((app) => app.name === "jobs")?.status;
+	const until = async (want: string) => {
+		const deadline = performance.now() + 8_000;
+		while ((await status()) !== want) {
+			if (performance.now() > deadline)
+				throw new Error(`jobs never became ${want}`);
+			await Bun.sleep(20);
+		}
+	};
+	let ended = false;
+	const run = withProcessExitTrap(() =>
+		runCli(env, { args: ["--no-hosts", "--no-tui"], watchdog: false }),
+	).finally(() => {
+		ended = true;
+	});
+	try {
+		await until("failed");
+		requestRestart(root, env.sessionId, "jobs");
+		await until("ready");
+		await Bun.write(go, "1");
+		expect(await run).toBe(1);
+		expect(await status()).toBe("failed");
+	} finally {
+		if (!ended) process.emit("SIGINT");
+		await run.catch(() => {});
+		await rm(root, { recursive: true, force: true });
+	}
+}, 20_000);
+
 describe("how a run ends", () => {
 	it("tears down once when an app fails during start", async () => {
 		const port = 44610 + Math.floor(Math.random() * 200);

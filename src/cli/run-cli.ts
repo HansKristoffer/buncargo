@@ -8,7 +8,6 @@ import { describeLeaseRefusal, type SkippedLeaseApp } from "../core/app-leases";
 import { withSignal } from "../core/deadline";
 import { removeHostRoutes, routesDownRemoves } from "../core/hosts";
 import { releaseLeases } from "../core/leases";
-import { appExitState } from "../core/process/process-owner";
 import { askConfirm, PromptInterruptedError } from "../core/prompt";
 import {
 	flushRunPatches,
@@ -843,8 +842,6 @@ async function runDevFlow<
 	const appsElapsed = startTimer();
 	let firstSpawn = false;
 	const spawned = new Set<string>();
-	// Parked after never coming up: the supervisor treats them as non-essential.
-	const parked = new Set<string>();
 	const view = openDevOutput(env, classifiedApps.startApps, { tui: args.tui });
 	failureContext.output = view.output;
 	// A restart (`r`, `buncargo restart`, a watch, a capture's `restartOn`)
@@ -967,7 +964,6 @@ async function runDevFlow<
 				keepOthersOnFailure: env.onAppFailure !== "stop-run",
 				watch: args.watch,
 				onAppFailed: (name, error) => {
-					parked.add(name);
 					// Before the registry says it failed, which `dev --detach` waits on.
 					detached?.recordDetachedReport(env.root, (report) => ({
 						...report,
@@ -999,21 +995,12 @@ async function runDevFlow<
 					if (spawned.has(name)) void reclaimAppRoute(env, name);
 					spawned.add(name);
 				},
-				// A signalled exit (`code === null`) is a deliberate stop — Ctrl-C,
-				// or `buncargo stop <app>` — and reads as `stopped`. A non-zero code
-				// is the app falling over, which the supervisor also turns into a
-				// failed run.
-				onAppExit: (name, code, signal) => {
+				// A non-zero code is the app falling over: the run's end for an
+				// essential app that was up, a parked row for one that never came
+				// up while the others are spared.
+				onAppExit: (name, code, _signal, state) => {
 					if (code !== null && code !== 0) explainLoss();
-					const app = appsForDev[name];
-					void markApps(
-						env,
-						[name],
-						appExitState(code, signal, {
-							worker: app?.kind === "worker",
-							optional: app?.essential === false || parked.has(name),
-						}),
-					);
+					void markApps(env, [name], state);
 				},
 				onAfterWave1: async (signal) => {
 					await timer.measure("tunnels", () =>
