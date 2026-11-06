@@ -28,6 +28,13 @@ private func fixtureRuns() throws -> [Run] {
     #expect(probe == .running(identity: ProcessIdentity.encode(startSeconds: born)))
 }
 
+/// The CLI never reads pid 1 or less as a run; `launchd` is always alive.
+@Test func pidOneOrLessIsNeverAnOwner() {
+    #expect(OwnerProbe.read(pid: 1, identity: true) == .gone)
+    #expect(OwnerProbe.read(pid: 0, identity: false) == .gone)
+    #expect(OwnerProbe.read(pid: -1, identity: false) == .gone)
+}
+
 /// A reused pid showed a finished run as live, and its Stop downed the
 /// containers that run had left in the idle hold.
 @Test func liveOnlyWhileThePidIsStillTheRecordedProcess() throws {

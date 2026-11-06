@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { getRunsPath, loadRuns, runLivenessAsync } from "./run-registry";
@@ -28,8 +34,15 @@ describe("runs.json v1 fixture", () => {
 		process.env.HOME = dir;
 		try {
 			mkdirSync(dirname(getRunsPath()), { recursive: true });
-			copyFileSync(FIXTURE, getRunsPath());
+			// The fixture's pids are 1, which neither side reads as a run. This
+			// process stands in for them, as the smoke test's shell does.
+			const fixture = readFileSync(FIXTURE, "utf8").replaceAll(
+				'"pid": 1,',
+				`"pid": ${process.pid},`,
+			);
+			writeFileSync(getRunsPath(), fixture);
 			const runs = await loadRuns({ strict: true });
+			const alive = await runLivenessAsync(runs);
 
 			expect(runs).toHaveLength(3);
 			const run = runs[0];
@@ -39,6 +52,8 @@ describe("runs.json v1 fixture", () => {
 			expect(run?.primaryApp).toBe("platform");
 			expect(run?.hosts).toEqual({ active: true, tld: "localhost" });
 			expect(run?.cli.program).toBe("/bin/echo");
+			// Its pid is alive and it records no identity.
+			expect(run && alive(run)).toBe(true);
 
 			// Every app state the UI renders differently.
 			expect(run?.apps.map((app) => app.status)).toEqual([
@@ -99,21 +114,21 @@ describe("runs.json v1 fixture", () => {
 			// A finished run whose containers are still held. It has to decode —
 			// the sweep is the one reader that wants it — and it must never read
 			// as live. `menubar/scripts/smoke-test.sh` asserts the Swift side
-			// hides it too, which matters because `pid: 1` is always alive: only
+			// hides it too, which matters because its pid is alive: only
 			// `releasedAt` can hide this one.
 			const released = runs[1];
 			expect(released?.releasedAt).toBe("2026-09-03T09:30:00.000Z");
 			expect(released?.idleTimeoutMs).toBe(180_000);
 			expect(released?.services[0]?.container?.runtime).toBe("docker");
-			expect(released && (await runLivenessAsync(runs))(released)).toBe(false);
+			expect(released && alive(released)).toBe(false);
 
-			// A crashed run whose pid now belongs to another process: its
-			// recorded identity no longer matches. The smoke test asserts the
-			// Swift side hides it as the CLI does, from the identity.
+			// A crashed run whose pid now belongs to another process (the stand-in,
+			// alive): its recorded identity no longer matches. The smoke test
+			// asserts the Swift side hides it as the CLI does, from the identity.
 			const crashed = runs[2];
 			expect(crashed?.processIdentity).toStartWith("v2:");
 			expect(crashed?.ownerLostAt).toBe("2026-09-03T08:20:00.000Z");
-			expect(crashed && (await runLivenessAsync(runs))(crashed)).toBe(false);
+			expect(crashed && alive(crashed)).toBe(false);
 		} finally {
 			if (realHome === undefined) delete process.env.HOME;
 			else process.env.HOME = realHome;
