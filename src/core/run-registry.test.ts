@@ -19,6 +19,7 @@ import { dirname, join } from "node:path";
 import { readProcessIdentity } from "./process-identity";
 import {
 	buildRunEntry,
+	describeRun,
 	getRunsPath,
 	groupRunsByProject,
 	loadRuns,
@@ -54,6 +55,11 @@ afterEach(() => {
 const DEAD_PID = 2 ** 22;
 
 const DB = { name: "db", status: "ready" as const };
+const CONTAINER = {
+	runtime: "docker" as const,
+	name: "lullu-lullu-db",
+	service: "db",
+};
 
 function makeRun(overrides: Partial<RunEntry> = {}): RunEntry {
 	const now = new Date().toISOString();
@@ -106,7 +112,7 @@ describe("publishRun", () => {
 		await publishRun(
 			makeRun({ startedAt: "2026-01-01T00:00:00.000Z", idleTimeoutMs: 60_000 }),
 		);
-		await publishRun(makeRun({ projectName: "renamed" }));
+		await describeRun(makeRun({ projectName: "renamed" }));
 		const runs = await loadRuns();
 		expect(runs).toHaveLength(1);
 		expect(runs[0]).toMatchObject({
@@ -114,6 +120,81 @@ describe("publishRun", () => {
 			startedAt: "2026-01-01T00:00:00.000Z",
 			idleTimeoutMs: 60_000,
 		});
+	});
+
+	it("never lets a describe undo a release or drop what other writers recorded", async () => {
+		// `claimApps` describes the entry again; it used to replace it whole,
+		// reopening a released run and dropping captures, details and problems.
+		const problem = {
+			state: "stopped" as const,
+			detail: "db stopped (exit 0)",
+			since: "2026-01-01T00:00:00.000Z",
+		};
+		await publishRun(
+			makeRun({
+				services: [{ ...DB, container: CONTAINER }],
+				idleTimeoutMs: 1,
+			}),
+		);
+		await patchRun("s1", {
+			captures: { appUrl: "https://preview.example" },
+			details: [{ label: "Preview", value: "https://preview.example" }],
+			services: [{ name: "db", problem }],
+		});
+		await releaseRun("s1");
+		await markOwnersLost(["s1"], "2026-01-01T00:00:00.000Z");
+		const released = (await loadRuns())[0]?.releasedAt;
+
+		const described = { port: 5432, url: "u", loopbackUrl: "u" };
+		await describeRun(makeRun({ services: [{ ...DB, ...described }] }));
+		const [entry] = await loadRuns();
+		expect(entry?.releasedAt).toBe(released);
+		// The owner wrote it, so it is not lost.
+		expect(entry?.ownerLostAt).toBeUndefined();
+		expect(entry?.idleTimeoutMs).toBe(1);
+		expect(entry?.captures).toEqual({ appUrl: "https://preview.example" });
+		expect(entry?.details).toHaveLength(1);
+		expect(entry?.services[0]).toMatchObject({
+			...described,
+			container: CONTAINER,
+			problem,
+		});
+	});
+
+	it("keeps the claimed services when a describe lists none, so a release still holds them", async () => {
+		// A library `claimApps` after `releaseRun()` describes no services. The
+		// entry lost its services record, and the next release withdrew it.
+		await publishRun(makeRun({ services: [DB] }));
+		await describeRun(makeRun({ services: [] }));
+		await releaseRun("s1");
+		const [entry] = await loadRuns();
+		expect(entry?.services.map((service) => service.name)).toEqual(["db"]);
+		expect(entry?.releasedAt).toBeString();
+	});
+
+	it("keeps each app's process and state through a describe", async () => {
+		await publishRun(makeRun());
+		await patchRun("s1", {
+			apps: [
+				{ name: "api", pid: 42, processIdentity: "v2:x", status: "ready" },
+			],
+		});
+		await describeRun(makeRun());
+		expect((await loadRuns())[0]?.apps[0]).toMatchObject({
+			pid: 42,
+			processIdentity: "v2:x",
+			status: "ready",
+		});
+	});
+
+	it("gives a claim exactly the hold it names, and reopens a released entry", async () => {
+		await publishRun(makeRun({ services: [DB], inheritedIdleTimeoutMs: 5 }));
+		await releaseRun("s1");
+		await publishRun(makeRun({ services: [DB], idleTimeoutMs: 60_000 }));
+		const [entry] = await loadRuns();
+		expect(entry?.idleTimeoutMs).toBe(60_000);
+		expect(entry?.inheritedIdleTimeoutMs).toBeUndefined();
+		expect(entry?.releasedAt).toBeUndefined();
 	});
 
 	it("keeps separate sessions side by side, in one checkout or several", async () => {

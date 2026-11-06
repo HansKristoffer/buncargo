@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { isOneOf, isRecord } from "hanzio";
+import { isOneOf, isRecord, typedSwitch } from "hanzio";
 import type { ExpoAppIdentity } from "../expo/app-identity";
 import type { ContainerRuntimeName } from "../types";
 import { buncargoCli, type CliInvocation } from "./cli-entry";
@@ -512,37 +512,167 @@ async function updateRuns(
 }
 
 /**
- * Insert or update a session's entry.
+ * The two ways a session's own process writes its whole entry.
  *
- * A session is published twice: the claim, before its containers start, and
- * then the CLI's richer entry. The second knows neither when the first
- * happened nor which hold it was claimed with, so both carry over.
+ * - `claim`: the containers are this run's from now (`run-claim.ts`). It
+ *   decides the lifecycle: the selected services, their stacks, the hold, and
+ *   that the run is live again (no `releasedAt`, no `ownerLostAt`).
+ * - `describe`: what the run serves (`run-publish.ts`): apps, hosts, URLs,
+ *   tasks. It never touches the lifecycle, so a describe that lands after a
+ *   release cannot reopen it, and it never drops what other writers recorded:
+ *   app rows' processes and states, captures, a service's `problem`.
+ */
+export type RunPublishKind = "claim" | "describe";
+
+/**
+ * The entry a publish leaves, from the one it lands on.
+ *
+ * Every write of an entry is its owner's, so a publish clears `ownerLostAt`:
+ * the owner is demonstrably alive.
+ */
+export function mergePublishedRun(
+	existing: RunEntry | undefined,
+	run: RunEntry,
+	kind: RunPublishKind,
+): RunEntry {
+	if (!existing) return run;
+	const { ownerLostAt: _lost, ...current } = existing;
+	return typedSwitch(kind, {
+		claim: (): RunEntry => {
+			const {
+				releasedAt: _released,
+				idleTimeoutMs: _hold,
+				inheritedIdleTimeoutMs: _inherited,
+				stacks: _stacks,
+				...kept
+			} = current;
+			return {
+				...kept,
+				sessionId: run.sessionId,
+				processIdentity: run.processIdentity,
+				projectPrefix: run.projectPrefix,
+				projectName: run.projectName,
+				root: run.root,
+				worktree: run.worktree,
+				pid: run.pid,
+				updatedAt: run.updatedAt,
+				cli: run.cli,
+				// Exactly the claim's: one hold, or none.
+				...holdFields(run),
+				...(run.stacks === undefined ? {} : { stacks: run.stacks }),
+				// The claim's selection, over what a describe said about each.
+				services: run.services.map((service) => {
+					const described = existing.services.find(
+						(entry) => entry.name === service.name,
+					);
+					const { problem: _problem, ...rest } = described ?? service;
+					return { ...rest, ...service };
+				}),
+			};
+		},
+		describe: (): RunEntry => ({
+			...run,
+			startedAt: current.startedAt,
+			...holdFields(current),
+			...(current.releasedAt === undefined
+				? {}
+				: { releasedAt: current.releasedAt }),
+			...(current.stacks === undefined ? {} : { stacks: current.stacks }),
+			...(current.captures === undefined ? {} : { captures: current.captures }),
+			...(run.details === undefined && current.details !== undefined
+				? { details: current.details }
+				: {}),
+			apps: run.apps.map((app) => describedApp(current.apps, app)),
+			services: describedServices(current.services, run.services),
+		}),
+	});
+}
+
+function holdFields(
+	run: Pick<RunEntry, "idleTimeoutMs" | "inheritedIdleTimeoutMs">,
+): Pick<RunEntry, "idleTimeoutMs" | "inheritedIdleTimeoutMs"> {
+	if (run.idleTimeoutMs !== undefined)
+		return { idleTimeoutMs: run.idleTimeoutMs };
+	if (run.inheritedIdleTimeoutMs !== undefined)
+		return { inheritedIdleTimeoutMs: run.inheritedIdleTimeoutMs };
+	return {};
+}
+
+/**
+ * A described app row over the one already there: the description is fresh,
+ * the process and its state are what the spawner last reported. A reused app
+ * has no process of this run's to keep.
+ */
+function describedApp(
+	current: readonly RunAppEntry[],
+	app: RunAppEntry,
+): RunAppEntry {
+	const previous = current.find((entry) => entry.name === app.name);
+	if (!previous || app.status === "reused" || previous.status === "reused")
+		return app;
+	const keepsPublicUrl =
+		app.publicUrl === undefined && previous.publicUrl !== undefined;
+	return {
+		...app,
+		...(keepsPublicUrl
+			? { publicUrl: previous.publicUrl, openUrl: previous.openUrl }
+			: {}),
+		...(previous.pid === undefined
+			? {}
+			: { pid: previous.pid, processIdentity: previous.processIdentity }),
+		attached: app.attached ?? previous.attached,
+		status: previous.status,
+	};
+}
+
+/**
+ * Described services over the claimed ones. Only a claim chooses which
+ * services the entry holds, so a describe that lists fewer (an app-only
+ * describe after the claim was released) keeps the rest: they are the
+ * containers' record. A `problem` stays until the service watch clears it.
+ */
+function describedServices(
+	current: readonly RunServiceEntry[],
+	described: readonly RunServiceEntry[],
+): RunServiceEntry[] {
+	const merged = current.map((service) => {
+		const update = described.find((entry) => entry.name === service.name);
+		if (!update) return service;
+		return {
+			...service,
+			...update,
+			...(service.problem === undefined ? {} : { problem: service.problem }),
+		};
+	});
+	const added = described.filter(
+		(entry) => !current.some((service) => service.name === entry.name),
+	);
+	return [...merged, ...added];
+}
+
+/**
+ * Claim a session's entry: insert it, or make it the claim's over the one
+ * already there (see {@link RunPublishKind}).
  */
 export async function publishRun(run: RunEntry): Promise<void> {
+	await publish(run, "claim");
+}
+
+/** Describe what a session serves, over its claim (see {@link RunPublishKind}). */
+export async function describeRun(run: RunEntry): Promise<void> {
+	await publish(run, "describe");
+}
+
+async function publish(run: RunEntry, kind: RunPublishKind): Promise<void> {
 	const path = getRunsPath();
 	const alive = await livenessBeforeLock(path);
 	await withFileLock(path, async () => {
 		const runs = await prune(path, alive);
 		const index = runs.findIndex((entry) => entry.sessionId === run.sessionId);
-		const existing = runs[index];
 		const next = [...runs];
-		if (existing) {
-			next[index] = {
-				...run,
-				startedAt: existing.startedAt,
-				...(run.stacks === undefined && existing.stacks !== undefined
-					? { stacks: existing.stacks }
-					: {}),
-				...(run.idleTimeoutMs === undefined &&
-				existing.idleTimeoutMs !== undefined
-					? { idleTimeoutMs: existing.idleTimeoutMs }
-					: {}),
-				...(run.inheritedIdleTimeoutMs === undefined &&
-				existing.inheritedIdleTimeoutMs !== undefined
-					? { inheritedIdleTimeoutMs: existing.inheritedIdleTimeoutMs }
-					: {}),
-			};
-		} else next.push(run);
+		const merged = mergePublishedRun(runs[index], run, kind);
+		if (index === -1) next.push(merged);
+		else next[index] = merged;
 		await registry.write(path, next);
 	});
 }

@@ -13,9 +13,9 @@ import type { CapturedValue } from "./process/output-capture";
 import { readProcessIdentitiesAsync } from "./process-identity";
 import {
 	buildRunEntryAsync,
+	describeRun,
 	findRunsByRoot,
 	patchRunBatch,
-	publishRun,
 	type RunAppEntry,
 	type RunAppStatus,
 	type RunDetailEntry,
@@ -367,7 +367,7 @@ async function writeRun(
 			: {}),
 	};
 
-	await publishRun(entry);
+	await describeRun(entry);
 	return entry;
 }
 

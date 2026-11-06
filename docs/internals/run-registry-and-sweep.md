@@ -55,8 +55,14 @@ claim's `claimApps`, with the environment as its `RunSource`). Both build their 
 `buildRunEntry`, so identity, worktree and the recorded CLI cannot drift between them (the
 recorded CLI is exactly where they once did), and a script's apps get the same rows as `dev`'s.
 
-- Both publish onto the session the environment already claimed (`env.sessionId`), and
-  `publishRun` keeps that claim's `startedAt` and idle hold. An app-only run has no claim, so its
+- Both publish onto the session the environment already claimed (`env.sessionId`), as two kinds
+  of write (`mergePublishedRun`). The claim (`publishRun`) owns the lifecycle: the selected
+  services, their stacks, exactly one hold, and reopening a released entry. The describe
+  (`describeRun`) owns what the run serves and keeps everything else: `startedAt`, the hold,
+  `releasedAt`, captures, each app row's process and state, and a service's `problem`; it adds
+  services but never removes one. It used to replace the entry whole, so a library `claimApps`
+  reopened a released run, and after `releaseRun()` erased its services record, so the next
+  release withdrew the held stack's only owner. An app-only run has no claim, so its
   first entry is this one; it is withdrawn when its apps stop (`stop()`), when the start that
   listed them fails, or by the next writer's prune once its process is gone. It takes a structural `RunSource`
   rather than `DevEnvironment` because that type's app keys appear in both parameter and return
