@@ -716,6 +716,25 @@ describe("createHostsReloader", () => {
 		expect(reloader.routes().lastReloadAt).toBe(2_000);
 	});
 
+	// mkcert runs under the certificate lock. A slow mint used to read as a
+	// failed reload and back the daemon off.
+	it("waits out a mint in progress without failing the reload", async () => {
+		let minting = true;
+		const { state, reloader } = reloaderHarness({
+			readCertificatePair: async () =>
+				minting ? undefined : { cert: "CERT", key: "KEY" },
+		});
+		state.routes = [route("web.demo.localhost", 5173)];
+
+		await reloader.reload();
+		expect(reloader.isBound()).toBe(false);
+		expect(reloader.routes().bindError).toBeUndefined();
+
+		minting = false;
+		await reloader.reload();
+		expect(reloader.isBound()).toBe(true);
+	});
+
 	it("retries the rebind after startProxy fails", async () => {
 		let attempts = 0;
 		const { state, reloader } = reloaderHarness({

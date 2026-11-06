@@ -3,7 +3,6 @@ import {
 	mkdirSync,
 	statSync,
 	truncateSync,
-	unlinkSync,
 	watch,
 	writeFileSync,
 	writeSync,
@@ -30,6 +29,7 @@ import {
 	daemonConfigFromFlags,
 	readDaemonConfig,
 	readDaemonPid,
+	releaseDaemonState,
 	writeDaemonConfig,
 } from "./daemon-config";
 import { cleanHostsFile, syncHostsFile } from "./hosts-file";
@@ -403,6 +403,16 @@ export function watchHostsState(deps: {
 	};
 }
 
+/** Every way the daemon ends on purpose: leave no state naming this process. */
+function exitDaemon(code: number): never {
+	try {
+		releaseDaemonState(process.pid);
+	} catch {
+		// best-effort: readers check the pid is alive before trusting it
+	}
+	process.exit(code);
+}
+
 function writePidfile(pid: number): void {
 	mkdirSync(getStateDir(), { recursive: true });
 	const path = getPidfilePath();
@@ -426,7 +436,8 @@ export interface HostsReloaderDeps {
 	onRequest: (root: string) => void;
 	certificateFingerprint: () => string;
 	describeCertificateGap: (hostnames: string[]) => string | undefined;
-	readCertificatePair: () => Promise<{ cert: string; key: string }>;
+	/** `undefined` while a mint holds the pair: try again on a later pass. */
+	readCertificatePair: () => Promise<{ cert: string; key: string } | undefined>;
 	/** Which hostnames a bound certificate answers for ({@link certificateServes}). */
 	certificateServes: (
 		cert: string,
@@ -608,8 +619,11 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	async function rebind(certKey: string): Promise<void> {
 		// Read before stopping: an unreadable pair should leave the running
 		// listener alone rather than take every named URL down first.
-		const { cert, key } = await deps.readCertificatePair();
-		if (stopped) return;
+		const pair = await deps.readCertificatePair();
+		// A mint in progress. `lastCertKey` stays put, so the next pass, or the
+		// rename that lands the mint, rebinds.
+		if (!pair || stopped) return;
+		const { cert, key } = pair;
 
 		// Bind the replacement *before* dropping the old listener. Both hold
 		// the port at once under SO_REUSEPORT and the kernel hands new
@@ -727,7 +741,10 @@ export async function runHostsDaemon(
 		cleanHostsFile: syncHosts ? cleanHostsFile : undefined,
 		log: logDaemonError,
 		now: Date.now,
-		onIdleExit: () => process.exit(0),
+		onIdleExit: () => {
+			stopWatching();
+			exitDaemon(0);
+		},
 		onRequest: activity.note,
 		service,
 	});
@@ -748,15 +765,7 @@ export async function runHostsDaemon(
 	const onStop = () => {
 		stopWatching();
 		reloader.stop();
-		const pid = readDaemonPid();
-		if (pid === process.pid) {
-			try {
-				unlinkSync(getPidfilePath());
-			} catch {
-				// already gone
-			}
-		}
-		process.exit(0);
+		exitDaemon(0);
 	};
 	process.on("SIGINT", onStop);
 	process.on("SIGTERM", onStop);
@@ -797,7 +806,7 @@ export async function runHostsDaemon(
 			now: Date.now,
 		}),
 		log: logDaemonError,
-		exit: (code) => process.exit(code),
+		exit: exitDaemon,
 	});
 	recoverFromStall = stallRecovery.recover;
 

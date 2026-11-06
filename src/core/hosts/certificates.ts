@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { getErrorMessage, typedSwitch } from "hanzio";
-import { withFileLock } from "../file-lock";
+import { FileLockTimeoutError, withFileLock } from "../file-lock";
 import { readCertNames, rememberCertNames } from "./cert-names";
 import {
 	type CertificateShortfall,
@@ -153,22 +153,41 @@ export async function syncCertificateForRoutes(
 }
 
 /**
- * Read the pair the proxy binds, under the same lock minting takes.
+ * How long the daemon waits on a mint before trying again on a later pass.
+ * Short, because every other project's route changes queue behind it.
+ */
+const PAIR_READ_LOCK_MS = 1000;
+
+/**
+ * Read the pair the proxy binds, under the same lock minting takes, or
+ * `undefined` while a mint holds it.
  *
  * Landing a new certificate is two renames, not one. An unlocked reader can
  * fall between them and pair a fresh certificate with the previous key, which
  * fails the TLS bind and takes every named URL down until the next reload.
+ *
+ * A held lock is a mint in progress, not a failure: `mkcert` runs under it,
+ * and treating a slow one as a failed reload backed the daemon off. The mint
+ * ends in a rename the daemon watches, which brings it straight back here.
  */
-export async function readCertificatePair(): Promise<{
-	cert: string;
-	key: string;
-}> {
+export async function readCertificatePair(): Promise<
+	{ cert: string; key: string } | undefined
+> {
 	const certPath = getCertPath();
 	const keyPath = getKeyPath();
-	return withFileLock(certPath, async () => ({
-		cert: await Bun.file(certPath).text(),
-		key: await Bun.file(keyPath).text(),
-	}));
+	try {
+		return await withFileLock(
+			certPath,
+			async () => ({
+				cert: await Bun.file(certPath).text(),
+				key: await Bun.file(keyPath).text(),
+			}),
+			{ timeoutMs: PAIR_READ_LOCK_MS },
+		);
+	} catch (error) {
+		if (error instanceof FileLockTimeoutError) return undefined;
+		throw error;
+	}
 }
 
 /**
@@ -244,7 +263,9 @@ export function describeCertificateShortfall(
  * A cheap identity for the certificate on disk.
  *
  * The daemon polls this to notice a certificate the CLI reminted underneath it
- * and rebind with the new leaf, without parsing the file every second.
+ * and rebind with the new leaf, without parsing the file every second. The
+ * inode is part of it: a mint lands by rename, so it always changes, where two
+ * mints of one size within the filesystem's mtime granularity look alike.
  */
 export function certificateFingerprint(
 	certPath = getCertPath(),
@@ -254,7 +275,7 @@ export function certificateFingerprint(
 		.map((path) => {
 			try {
 				const stat = statSync(path);
-				return `${stat.mtimeMs}:${stat.size}`;
+				return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
 			} catch {
 				return "missing";
 			}

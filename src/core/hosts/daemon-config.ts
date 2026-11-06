@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "../registry-file";
 import { hostsDaemonPort } from "../runtime-flags";
 import { chownToInvokingUser } from "../state-paths";
@@ -58,6 +58,19 @@ export function writeDaemonConfig(config: HostsDaemonConfig): void {
 	writeJsonDocumentSync(getDaemonConfigPath(), config, {
 		afterWrite: chownToInvokingUser,
 	});
+}
+
+/**
+ * Forget the running daemon as it exits, when that daemon is this process.
+ *
+ * Every exit, not just a signal: an idle exit that left the pidfile behind
+ * named a dead pid, and a leftover config pointed every reader at the port a
+ * foreground daemon had chosen. A daemon that started since owns both.
+ */
+export function releaseDaemonState(pid: number): void {
+	if (readDaemonPid() !== pid) return;
+	rmSync(getPidfilePath(), { force: true });
+	rmSync(getDaemonConfigPath(), { force: true });
 }
 
 export function readDaemonPid(): number | undefined {

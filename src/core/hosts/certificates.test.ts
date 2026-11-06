@@ -4,6 +4,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	utimesSync,
 	writeFileSync,
@@ -155,9 +156,9 @@ describe("syncCertificateForRoutes", () => {
 			include: ["a.demo.localhost", "b.demo.localhost"],
 		});
 
-		const { cert, key } = await readCertificatePair();
-		expect(cert).toBe(key);
-		expect(cert).toContain("b.demo.localhost");
+		const pair = await readCertificatePair();
+		expect(pair?.cert).toBe(pair?.key);
+		expect(pair?.cert).toContain("b.demo.localhost");
 	});
 });
 
@@ -269,8 +270,7 @@ describe("readCertificatePair", () => {
 		await held;
 		const pair = await readCertificatePair();
 		expect(released).toBe(true);
-		expect(pair.cert).toBe("cert");
-		expect(pair.key).toBe("key");
+		expect(pair).toEqual({ cert: "cert", key: "key" });
 		await minting;
 	});
 });
@@ -390,6 +390,30 @@ describe("certificateFingerprint", () => {
 		}
 	});
 
+	// A mint lands by rename. Two of one size inside the mtime granularity
+	// looked identical, and the daemon kept the previous leaf.
+	it("changes when a same-size certificate is renamed in at the same mtime", () => {
+		const dir = tempDir();
+		try {
+			const certPath = join(dir, "hosts.pem");
+			const keyPath = join(dir, "hosts-key.pem");
+			writeFileSync(certPath, "cert-a");
+			writeFileSync(keyPath, "key");
+			const stamp = new Date(1_700_000_000_000);
+			utimesSync(certPath, stamp, stamp);
+			const before = certificateFingerprint(certPath, keyPath);
+
+			const pending = join(dir, "hosts.pem.tmp");
+			writeFileSync(pending, "cert-b");
+			utimesSync(pending, stamp, stamp);
+			renameSync(pending, certPath);
+
+			expect(certificateFingerprint(certPath, keyPath)).not.toBe(before);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("is stable while nothing changes", () => {
 		const dir = tempDir();
 		try {
@@ -417,6 +441,47 @@ describe("certificateFingerprint", () => {
 			).toBe("missing|missing");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("readCertificatePair", () => {
+	const originalHome = process.env.HOME;
+	afterEach(() => {
+		process.env.HOME = originalHome;
+	});
+
+	// The daemon reads while a CLI mints under the lock: that is a mint in
+	// progress to retry, not a failed reload.
+	it("reads as undefined while a mint holds the certificate lock", async () => {
+		const home = tempDir();
+		process.env.HOME = home;
+		try {
+			mkdirSync(dirname(getCertPath()), { recursive: true });
+			writeFileSync(getCertPath(), "cert");
+			writeFileSync(getKeyPath(), "key");
+			let release!: () => void;
+			let held!: () => void;
+			const locked = new Promise<void>((resolve) => {
+				held = resolve;
+			});
+			const holder = withFileLock(getCertPath(), async () => {
+				held();
+				await new Promise<void>((resolve) => {
+					release = resolve;
+				});
+			});
+			await locked;
+
+			expect(await readCertificatePair()).toBeUndefined();
+			release();
+			await holder;
+			expect(await readCertificatePair()).toEqual({
+				cert: "cert",
+				key: "key",
+			});
+		} finally {
+			rmSync(home, { recursive: true, force: true });
 		}
 	});
 });
