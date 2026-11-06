@@ -322,8 +322,9 @@ const TOPICS: readonly Topic[] = [
   for minutes without answering (it stops every checkout's containers; say so
   to the user first), and stops a process of a deleted checkout holding a port.
 - A run line "postgres stopped (exit 0)" means a service container went down
-  under the run; buncargo does not restart it. The line says which buncargo
-  command stopped it, or that none did. Restart the run
+  under the run ("keeps restarting" and "is paused" likewise); buncargo does
+  not restart it. The line says which buncargo command stopped it, or that
+  none did. Restart the run
   (\`bunx buncargo stop\`, then \`bunx buncargo dev --detach\`) and
   tell the user what stopped it.
 - No \`bun install\` first: in a fresh worktree, or after \`bun.lock\` changed,

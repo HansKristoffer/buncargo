@@ -1115,7 +1115,7 @@ ran it and why. `buncargo status` lists this checkout's latest ones, and
 `doctor` the last three.
 
 A running `dev` (and a library `start()`) watches its own service containers.
-When one stops, is removed or fails its healthcheck, the run prints
+When one stops, is removed, keeps restarting, is paused or fails its healthcheck, the run prints
 `postgres stopped (exit 0)` with whoever stopped it, writes it to the run's
 `buncargo.log`, and `status` shows the run as degraded. It does not restart the
 service: the cause is unknown when it fires, and a restart would hide it.
@@ -1756,6 +1756,8 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `Docker Desktop is running (pid …) but its daemon is not answering` | Docker Desktop hung; quitting it can leave `com.docker.backend` alive | `buncargo doctor --fix`: once Docker Desktop has run past a cold start without answering, it asks (in a terminal) and force-restarts it, which stops every container on the machine and keeps volumes |
 | A port `held by process … in …/.Trash/…` | A dev server of a deleted checkout | `buncargo doctor --fix` stops it |
 | `postgres stopped (exit 0)` during a run | A service container went down under the run | The line says which buncargo command stopped it, if one did. Restart the run |
+| `search keeps restarting (exit 1)` during a run, or `Service search keeps crashing while starting up` | The container exits and its restart policy brings it back, again and again | Read the container output the message shows (`docker logs <container>`), fix the service's config, then restart the run |
+| `Could not stop …'s containers. Docker did not answer` | The daemon refused this user or did not answer, so the containers may still run | Check `docker version`; once it answers, stop again |
 | `Tailscale URLs unavailable` with `BUNCARGO_HOSTS=tailscale` | Tailscale down or logged out, HTTPS Certificates off, or no permission to change Serve | `buncargo doctor` names which, and the fix |
 | `Named-hosts service points at … which no longer exists` | The install ran from a `node_modules` that was since removed | `buncargo hosts install` to re-point it at the current CLI |
 | `Named-hosts service is installed but did not answer on :443` | Daemon started and crashed | `tail /var/log/buncargo-hosts.log`, then `buncargo hosts install` |
