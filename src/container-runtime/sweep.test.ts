@@ -285,6 +285,26 @@ describe("sweepOrphanedContainers", () => {
 		expect(downs[0]).toMatchObject({ root: gone, verbose: false });
 	});
 
+	it("downs a crash-looping stack nobody owns, and keeps one whose state it cannot read", async () => {
+		// Counting `restarting` as up kept a stack known only by its claim
+		// forever: nothing owns it to stop it, and it serves nothing.
+		const other = join(checkout, "other-worktree");
+		mkdirSync(other, { recursive: true });
+		claim("looping", checkout);
+		claim("unreadable", other);
+		const { runtime, downs } = stubRuntime([
+			container("looping", checkout, "restarting"),
+			container("unreadable", other, "some-new-state"),
+		]);
+
+		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
+
+		expect(
+			result.swept.map((stack) => [stack.projectName, stack.reason]),
+		).toEqual([["looping", "stopped with no owner"]]);
+		expect(downs.map((request) => request.projectName)).toEqual(["looping"]);
+	});
+
 	it("gives back the block of a throwaway stack it removes, and keeps a dev checkout's", async () => {
 		// A CI job killed before its teardown leaves its stack and its claim;
 		// the runner's directory stays, so nothing else would free the block.

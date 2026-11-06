@@ -117,7 +117,12 @@ no config load, no Docker unless a service is the target.
 - `decideSweep` is pure: a stack nobody owns comes down when its checkout is gone, when every
   container is stopped, when its run released it longer ago than its idle hold, or when its owner
   has been gone for longer than the grace. A live owner keeps its stack before the checkout is
-  even looked at: a run between `start()` and `startServers()` is using it. A detached owner of a
+  even looked at: a run between `start()` and `startServers()` is using it. "Stopped" means no
+  container keeps the stack up (`keepsUnownedStack` in `container-state.ts`): live in
+  `isContainerLive`'s sense, except `restarting`. A crash-looping stack known only by its claim
+  has no owner to stop it and serves nothing, and counting it as up kept it for good; an
+  `unknown` state still keeps a stack, since misreading a live database is the costly
+  mistake. A detached owner of a
   deleted checkout is ended by the watchdog instead ([below](#detached-runs-that-end)), and its
   stack then follows the ordinary rule. A running stack with only a claim is left alone.
 - Only a stack this `HOME`'s state names is a candidate (`isKnownStack`): a `runs.json` entry
