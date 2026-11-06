@@ -356,7 +356,7 @@ bun run benchmark:startup --samples=10 --baseline=.buncargo/benchmarks/baseline.
 
 `startAfter: ["api"]` spawns an app only once `api` is healthy (a worker: spawned and alive). Unlike `requiredApps`, which only adds apps to the selection, this orders them in every mode, not just around `--expose` tunnels. It selects its targets too, and a cycle is a config error. `prebuild` runs a command to completion before an app's `devCommand` starts, beside the prebuilds of its wave; the app spawns only after it succeeds.
 
-`buncargo wait --app=<name> [--timeout=<seconds>] [--hold]` blocks until an app of this checkout's run is healthy, then exits 0. With `--hold` it stays alive until the app or its run stops. That is what a script or Playwright needs ("wait for the stack, then test"), and what the Shopify integration's generated web runs.
+`buncargo wait --app=<name> [--timeout=<seconds>] [--hold]` blocks until an app of this checkout's run is healthy, then exits 0; it exits 1 when the app failed or stopped, 2 at the timeout, and 130 or 143 when interrupted. With `--hold` it stays alive until the app or its run stops. That is what a script or Playwright needs ("wait for the stack, then test"), and what the Shopify integration's generated web runs.
 
 ## Discovered workspaces
 

@@ -3,6 +3,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildRunEntry, patchRun, publishRun } from "../../core/run-registry";
+import { waitVerdict } from "./wait";
 
 const cli = resolve(import.meta.dir, "../bin.ts");
 let home: string;
@@ -72,6 +73,25 @@ it("holds until the app stops", async () => {
 	});
 	expect(await child.exited).toBe(0);
 }, 10_000);
+
+// A signal that arrived while a poll read the registry was answered from
+// that poll: "healthy" (exit 0) when the app came up in it.
+it("reports an interrupted wait as interrupted, whatever its last poll read", () => {
+	const ready = { name: "platform", status: "ready" } as const;
+	expect(
+		waitVerdict({ app: ready, interrupted: "SIGTERM", pastDeadline: false }),
+	).toEqual({ kind: "interrupted", code: 143 });
+	expect(
+		waitVerdict({
+			app: { name: "platform", status: "starting" },
+			interrupted: "SIGINT",
+			pastDeadline: true,
+		}),
+	).toEqual({ kind: "interrupted", code: 130 });
+	expect(
+		waitVerdict({ app: ready, interrupted: undefined, pastDeadline: false }),
+	).toEqual({ kind: "healthy" });
+});
 
 it("times out, naming a missing app", async () => {
 	const child = wait("--app=nope", "--timeout=1");
