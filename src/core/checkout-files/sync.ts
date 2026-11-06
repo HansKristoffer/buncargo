@@ -678,12 +678,22 @@ export interface MergeResult {
 	base: boolean;
 	/** Where the checkout's copy was backed up before it was replaced. */
 	backup?: string;
+	/** The checkout's copy, the store's and the base this merge read, as one hash. */
+	inputs: string;
+}
+
+/** Answers to the conflicts of the merge that read `inputs`. */
+export interface MergeAnswers {
+	take: ReadonlyMap<string, MergeSide>;
+	inputs: string;
 }
 
 /**
  * `files merge`: merge the checkout's dotenv copy and the store's key by key,
  * from the last synced copy, and write the result to both. Resolves the
- * conflicts named in `take`; any others are returned and nothing is written.
+ * conflicts named in `take`, and in `answered` while the copies are still
+ * the ones they were answered for (the questions are asked outside the
+ * lock); any others are returned and nothing is written.
  */
 export async function mergeCheckoutFile(
 	root: string,
@@ -691,6 +701,7 @@ export async function mergeCheckoutFile(
 	path: string,
 	options: CheckoutFilesOptions & {
 		take?: ReadonlyMap<string, MergeSide>;
+		answered?: MergeAnswers;
 	} = {},
 ): Promise<MergeResult> {
 	const log = options.log ?? defaultLog;
@@ -718,9 +729,14 @@ export async function mergeCheckoutFile(
 
 		const baseData = readBaseCopy(root, path, view.base);
 		const base = baseData !== undefined;
+		const read = `${view.localHash}:${store.hash}:${base ? view.base : ""}`;
+		const inputs = sha256(Buffer.from(read));
 		if (view.localHash === store.hash)
-			return { conflicts: [], merged: false, base };
+			return { conflicts: [], merged: false, base, inputs };
 
+		const answered =
+			options.answered?.inputs === inputs ? options.answered.take : [];
+		const take = new Map([...(options.take ?? []), ...answered]);
 		let result: ReturnType<typeof mergeDotenv>;
 		try {
 			const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -728,7 +744,7 @@ export async function mergeCheckoutFile(
 				decoder.decode(baseData ?? new Uint8Array()),
 				decoder.decode(local),
 				decoder.decode(store.data),
-				options.take,
+				take,
 			);
 		} catch (error) {
 			const reason =
@@ -743,7 +759,7 @@ export async function mergeCheckoutFile(
 			);
 		}
 		if (result.text === undefined)
-			return { conflicts: result.conflicts, merged: false, base };
+			return { conflicts: result.conflicts, merged: false, base, inputs };
 
 		const data = Buffer.from(result.text);
 		const hash = sha256(data);
@@ -766,7 +782,13 @@ export async function mergeCheckoutFile(
 					: `Merged ${path} into the file store`,
 			),
 		);
-		return { conflicts: [], merged: true, base, ...(backup ? { backup } : {}) };
+		return {
+			conflicts: [],
+			merged: true,
+			base,
+			inputs,
+			...(backup ? { backup } : {}),
+		};
 	});
 }
 

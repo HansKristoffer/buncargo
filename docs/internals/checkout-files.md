@@ -34,7 +34,9 @@ agentgate syncs file stores between machines without buncargo's code. Everything
   is refused. The checkout's copy is the skeleton, so its comments and order survive; a key taken
   from the store brings its line(s) and the comment right above it. Conflicts are computed under
   the store's lock but asked about outside it (a prompt would outlive the 30 s stale-lock
-  window), so the merge is computed again, under the lock, with the answers.
+  window), so the merge is computed again, under the lock, with the answers. They apply only while
+  both copies and the base are the ones they were given for; when either changed meanwhile, it
+  asks again rather than take a value nobody saw.
 - **Synced in the loader.** `loadDevEnv` syncs after importing the config and before
   `createDevEnvironment`, which reads required `envFiles` (`environment/context.ts`) and would
   throw on a fresh worktree before any fix ran. Every command syncs, `exec` included; `doctor`

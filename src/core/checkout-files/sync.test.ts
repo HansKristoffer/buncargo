@@ -490,6 +490,35 @@ describe("mergeCheckoutFile", () => {
 		return repo;
 	}
 
+	const answer = (repo: Repo, inputs: string, side: "checkout" | "store") =>
+		mergeCheckoutFile(repo.root, spec(), ENV, {
+			home: repo.home,
+			log: (line) => repo.lines.push(line),
+			answered: { take: new Map([["A", side]]), inputs },
+		});
+
+	it("applies answers to the copies they were given for", async () => {
+		const repo = await diverged("A=1\n", "A=mine\n", "A=theirs\n");
+		const { inputs } = await merge(repo);
+
+		const result = await answer(repo, inputs, "store");
+
+		expect(result).toMatchObject({ conflicts: [], merged: true });
+		expect(readLocal(repo)).toBe("A=theirs\n");
+	});
+
+	it("drops answers when a copy changed while they were asked for", async () => {
+		const repo = await diverged("A=1\n", "A=mine\n", "A=theirs\n");
+		const { inputs } = await merge(repo);
+		seedStore(repo, "A=newer\n");
+
+		const result = await answer(repo, inputs, "store");
+
+		expect(result).toMatchObject({ conflicts: ["A"], merged: false });
+		expect(result.inputs).not.toBe(inputs);
+		expect(readLocal(repo)).toBe("A=mine\n");
+	});
+
 	it("merges both sides' changes from the last synced copy into the checkout and the store", async () => {
 		const repo = await diverged(
 			"A=1\nB=1\n",
@@ -510,7 +539,12 @@ describe("mergeCheckoutFile", () => {
 	it("writes nothing while a key changed on both sides is unresolved, and names only the key", async () => {
 		const repo = await diverged("A=1\n", "A=mine\n", "A=theirs\n");
 		const result = await merge(repo);
-		expect(result).toEqual({ conflicts: ["A"], merged: false, base: true });
+		expect(result).toMatchObject({
+			conflicts: ["A"],
+			merged: false,
+			base: true,
+		});
+		expect(result).not.toHaveProperty("backup");
 		expect(readLocal(repo)).toBe("A=mine\n");
 		expect(readStore(repo)).toBe("A=theirs\n");
 		expect(repo.lines.join("\n")).not.toMatch(/mine|theirs/);
