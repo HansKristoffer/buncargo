@@ -14,7 +14,7 @@ import {
 } from "../../core/hosts";
 import {
 	getCaPath,
-	isCaPresent,
+	isCaTrusted,
 	resolvedMkcertPath,
 } from "../../core/hosts/mkcert";
 import {
@@ -105,9 +105,13 @@ async function printHostsStatus(): Promise<void> {
 	if (stale) {
 		log.line(`  stale: ${stale}`);
 	}
-	log.line(
-		`ca: ${isCaPresent(mkcertPath) ? getCaPath(mkcertPath) : "missing"}`,
-	);
+	const caPath = getCaPath(mkcertPath);
+	const ca = !caPath
+		? "missing"
+		: isCaTrusted(mkcertPath)
+			? caPath
+			: `${caPath} (not trusted)`;
+	log.line(`ca: ${ca}`);
 	if (!healthy) {
 		const squatter = describePortSquatter(config.httpsPort);
 		if (squatter) {
