@@ -57,6 +57,32 @@ test("an adopted coordinator that starts leaving is reported gone, to be replace
 	expect(coordinatorWentAway(error)).toBe(true);
 });
 
+// A launcher that replaced it within the grace failed this run as
+// "wedged", naming a pid that was no longer the coordinator.
+test("an adopted coordinator another launcher replaced is reported gone, to be adopted again", async () => {
+	const adopted = liveCoordinator(60_000);
+	await writeCoordinatorState({
+		...liveCoordinator(0),
+		identity: "the replacement",
+	});
+
+	const error = await awaitCoordinator(adopted, true).catch(
+		(caught: unknown) => caught,
+	);
+
+	expect(coordinatorWentAway(error)).toBe(true);
+});
+
+test("an adopted coordinator that exited with no state left is reported gone, not named", async () => {
+	const exited = { ...liveCoordinator(60_000), identity: "exited" };
+
+	const error = await awaitCoordinator(exited, true).catch(
+		(caught: unknown) => caught,
+	);
+
+	expect(coordinatorWentAway(error)).toBe(true);
+});
+
 test("an adopted coordinator that reports again is used", async () => {
 	const waking = liveCoordinator(60_000);
 	await writeCoordinatorState(waking);

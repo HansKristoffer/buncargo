@@ -70,8 +70,9 @@ export async function ensureConnectCoordinator(
 	try {
 		await awaitCoordinator(owner, adopted, signal);
 	} catch (error) {
-		if (!(adopted && error instanceof CoordinatorUnavailableError)) throw error;
-		// It decided to leave idle meanwhile: launching again replaces it.
+		if (!(error instanceof CoordinatorUnavailableError)) throw error;
+		// It decided to leave idle, or another launcher replaced it, meanwhile:
+		// launching again adopts or replaces it.
 		await ensureConnectCoordinator(signal);
 	}
 }
@@ -84,7 +85,9 @@ const WEDGED_GRACE_MS = 3000;
  * its saved ready flag: it gets a few heartbeats to report (one that just
  * woke from sleep does), and one that does not is wedged, named with its pid,
  * rather than holding every run that adopts it for the whole startup wait.
- * One that reports it is leaving throws {@link CoordinatorUnavailableError}.
+ * One that reports it is leaving, or that another launcher has replaced
+ * (the state names another process), throws
+ * {@link CoordinatorUnavailableError}: ensuring again adopts the one there is.
  */
 export async function awaitCoordinator(
 	owner: CoordinatorState,
@@ -95,7 +98,8 @@ export async function awaitCoordinator(
 	while (Date.now() < deadline) {
 		signal?.throwIfAborted();
 		const state = await readCoordinatorState(false);
-		if (state?.pid === owner.pid && state.identity === owner.identity) {
+		const named = state?.pid === owner.pid && state.identity === owner.identity;
+		if (named) {
 			if (isCoordinatorReady(state)) {
 				return;
 			}
@@ -105,13 +109,25 @@ export async function awaitCoordinator(
 			if (adopted && !state.ready) {
 				throw new CoordinatorUnavailableError();
 			}
+		} else if (
+			state !== undefined ||
+			!matchesProcessIdentity(owner.pid, owner.identity)
+		) {
+			throw new CoordinatorUnavailableError();
 		}
 		await abortableSleep(250, signal);
 	}
-	const timedOut = adopted
-		? `The connection coordinator (pid ${owner.pid}) stopped reporting. End it with \`kill ${owner.pid}\` and start the run again; that starts a new coordinator.`
-		: "Connection startup timed out. Check relay connectivity and run buncargo connect status.";
-	throw new Error(timedOut);
+	if (!adopted)
+		throw new Error(
+			"Connection startup timed out. Check relay connectivity and run buncargo connect status.",
+		);
+	// Its pid may belong to another process by now: name it only while it is
+	// still the coordinator.
+	if (!matchesProcessIdentity(owner.pid, owner.identity))
+		throw new CoordinatorUnavailableError();
+	throw new Error(
+		`The connection coordinator (pid ${owner.pid}) stopped reporting. End it with \`kill ${owner.pid}\` and start the run again; that starts a new coordinator.`,
+	);
 }
 
 class CoordinatorUnavailableError extends Error {
