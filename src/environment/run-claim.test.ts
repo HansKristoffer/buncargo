@@ -96,14 +96,14 @@ describe("createRunClaimApi", () => {
 		await claim.claimRun({ idleTimeoutMs: 5_000 });
 		expect(await holdOf(claim.sessionId)).toBe(5_000);
 
-		await claim.retireRun();
+		await claim.retireRun({ containersDown: true });
 		await claim.claimRun({});
 		expect(await holdOf(claim.sessionId)).toBe(5_000);
 
-		await claim.retireRun();
+		await claim.retireRun({ containersDown: true });
 		await claim.claimRun({ idleTimeoutMs: false });
 		expect(await holdOf(claim.sessionId)).toBeUndefined();
-		await claim.retireRun();
+		await claim.retireRun({ containersDown: true });
 	});
 	it("takes over the hold of a stack another run left in its hold, unless it asked for a hold itself", async () => {
 		// A detached run released with three minutes; a one-second library
@@ -129,7 +129,8 @@ describe("createRunClaimApi", () => {
 				?.inheritedIdleTimeoutMs,
 		).toBeUndefined();
 
-		for (const claim of [cli, script, kept]) await claim.retireRun();
+		for (const claim of [cli, script, kept])
+			await claim.retireRun({ containersDown: true });
 	});
 
 	it("marks the claimed services ready once they were waited for", async () => {
@@ -147,7 +148,7 @@ describe("createRunClaimApi", () => {
 		while ((await status()) !== "ready" && performance.now() < deadline)
 			await Bun.sleep(10);
 		expect(await status()).toBe("ready");
-		await claim.retireRun();
+		await claim.retireRun({ containersDown: true });
 	});
 });
 

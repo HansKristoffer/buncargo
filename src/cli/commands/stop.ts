@@ -24,10 +24,12 @@ import {
 import {
 	findCheckoutRuns,
 	findRunsByRoot,
+	heldOnlyOn,
 	patchRun,
 	type RunAppEntry,
 	type RunEntry,
 	type RunServiceEntry,
+	recordedContainerRuntimes,
 	retireRuns,
 } from "../../core/run-registry";
 import {
@@ -440,13 +442,12 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 		// project used to `down` a stack another run had left in its idle hold.
 		// The project's finished runs whose containers all come down with these
 		// hold nothing afterwards, so they retire with it.
-		const mine = new Set(containerKeys(run));
+		const downed = recordedContainerRuntimes(run);
 		const sharing = held.filter(
 			(other) =>
-				mine.size > 0 &&
 				other.sessionId !== run.sessionId &&
 				other.projectName === run.projectName &&
-				containerKeys(other).every((key) => mine.has(key)),
+				heldOnlyOn(other, downed),
 		);
 		if (!(await tearDown(run.root, run.projectName, [run, ...sharing])))
 			return STOP_EXIT.refused;
@@ -538,27 +539,10 @@ async function tearDown(
 function recordedRuntimes(
 	runs: readonly RunEntry[],
 ): ContainerRuntimeAdapter[] {
-	const runtimes = new Map<string, ContainerRuntimeAdapter>();
-	for (const { container } of runs.flatMap((run) => run.services)) {
-		if (!container) continue;
-		const key = containerKey(container);
-		if (!runtimes.has(key))
-			runtimes.set(
-				key,
-				getContainerRuntimeAdapter(container.runtime, {
-					binary: container.binary,
-				}),
-			);
-	}
-	return [...runtimes.values()];
-}
-
-function containerKey(container: { runtime: string; binary?: string }) {
-	return `${container.runtime}\0${container.binary ?? ""}`;
-}
-
-function containerKeys(run: RunEntry): string[] {
-	return run.services.flatMap(({ container }) =>
-		container ? [containerKey(container)] : [],
+	const services = runs.flatMap((run) => run.services);
+	return recordedContainerRuntimes({ services }).map((container) =>
+		getContainerRuntimeAdapter(container.runtime, {
+			binary: container.binary,
+		}),
 	);
 }

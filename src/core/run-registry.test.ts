@@ -269,8 +269,50 @@ describe("retiring entries", () => {
 			projectName: "lullu-lullu",
 			root: "/repos/lullu",
 			sessionId: "mine",
+			downed: [{ runtime: "docker" }],
 		});
 		expect(await sessions()).toEqual(["neighbour", "other-project"]);
+	});
+
+	it("keeps a finished entry whose containers are on a runtime the teardown did not down", async () => {
+		// A library `stop()` on Docker retired the entry of a stack held on
+		// Apple's runtime, which `stop` keeps: one rule now decides both.
+		const on = (runtime: "docker" | "apple") => ({
+			...DB,
+			container: { runtime, name: `lullu-lullu-db-${runtime}` },
+		});
+		await publishRun(makeRun({ sessionId: "mine", services: [on("docker")] }));
+		await publishRun(
+			makeRun({
+				sessionId: "apple",
+				pid: DEAD_PID,
+				services: [on("apple")],
+			}),
+		);
+		await publishRun(
+			makeRun({
+				sessionId: "docker",
+				pid: DEAD_PID,
+				services: [on("docker")],
+			}),
+		);
+		await retireProjectRuns({
+			projectName: "lullu-lullu",
+			root: "/repos/lullu",
+			sessionId: "mine",
+			downed: [{ runtime: "docker" }],
+		});
+		expect(await sessions()).toEqual(["apple"]);
+
+		// A teardown that downed nothing retires only its own session.
+		await publishRun(makeRun({ sessionId: "mine", services: [on("docker")] }));
+		await retireProjectRuns({
+			projectName: "lullu-lullu",
+			root: "/repos/lullu",
+			sessionId: "mine",
+			downed: [],
+		});
+		expect(await sessions()).toEqual(["apple"]);
 	});
 });
 

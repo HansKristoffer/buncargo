@@ -735,29 +735,65 @@ export async function retireRuns(sessionIds: readonly string[]): Promise<void> {
 	});
 }
 
+/** A runtime, and the binary, a teardown took a project's containers down through. */
+export type ContainerRuntimeRef = NonNullable<RunServiceEntry["container"]>;
+
+function runtimeKey(ref: Pick<ContainerRuntimeRef, "runtime" | "binary">) {
+	return `${ref.runtime}\0${ref.binary ?? ""}`;
+}
+
+/** Every runtime and binary an entry's containers were started through. */
+export function recordedContainerRuntimes(
+	run: Pick<RunEntry, "services">,
+): ContainerRuntimeRef[] {
+	const byKey = new Map<string, ContainerRuntimeRef>();
+	for (const { container } of run.services)
+		if (container && !byKey.has(runtimeKey(container)))
+			byKey.set(runtimeKey(container), container);
+	return [...byKey.values()];
+}
+
 /**
- * Drop every entry for a checkout's project that has nothing left to hold.
+ * Whether a finished entry of a project holds nothing once a teardown of the
+ * project came down on `downed`: every container it records was on one of
+ * them. The one rule for retiring other sessions after a teardown, for
+ * `stop` and a library `stop()` alike. A teardown that downed no runtime
+ * (an app-only run's) retires nothing of anyone else's, and an entry of a
+ * stack another runtime holds keeps it: retiring that would leave the stack
+ * no owner record.
+ */
+export function heldOnlyOn(
+	run: Pick<RunEntry, "services">,
+	downed: readonly Pick<ContainerRuntimeRef, "runtime" | "binary">[],
+): boolean {
+	const keys = new Set(downed.map(runtimeKey));
+	return (
+		keys.size > 0 &&
+		recordedContainerRuntimes(run).every((ref) => keys.has(runtimeKey(ref)))
+	);
+}
+
+/**
+ * Drop a session's entry after its explicit teardown, with the project's
+ * finished entries that hold nothing afterwards ({@link heldOnlyOn}).
  *
- * Called after an explicit teardown, which knows the containers are gone:
- * the caller's own session goes, and so does any whose owner has exited. A
- * live session in the same checkout keeps its entry — it is still somebody's
- * run, whatever just happened to the containers.
+ * A live session in the same checkout keeps its entry — it is still
+ * somebody's run, whatever just happened to the containers.
  */
 export async function retireProjectRuns(target: {
 	projectName: string;
 	root: string;
 	sessionId: string;
+	downed: readonly Pick<ContainerRuntimeRef, "runtime" | "binary">[];
 }): Promise<void> {
 	const alive = await livenessBeforeLock(getRunsPath());
 	await updateRuns(getRunsPath(), (runs) => {
-		const next = runs.filter(
-			(entry) =>
-				!(
-					entry.projectName === target.projectName &&
-					entry.root === target.root &&
-					(entry.sessionId === target.sessionId || !alive(entry))
-				),
-		);
+		const retired = (entry: RunEntry) =>
+			entry.projectName === target.projectName &&
+			entry.root === target.root &&
+			(entry.sessionId === target.sessionId ||
+				(!alive(entry) && heldOnlyOn(entry, target.downed)));
+		const next = runs.filter((entry) => !retired(entry));
 		return next.length === runs.length ? undefined : next;
 	});
 }

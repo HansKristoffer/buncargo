@@ -58,10 +58,12 @@ export interface DevRunClaimApi {
 	 * Drop the claim outright, after an explicit teardown.
 	 *
 	 * The containers are gone, so there is nothing to hold: this session's
-	 * entry goes, and so does any finished session for the same checkout.
-	 * Releasing instead left entries for a later sweep to find empty.
+	 * entry goes, and so does any finished session for the same checkout
+	 * whose containers were all on this runtime (`heldOnlyOn`). Releasing
+	 * instead left entries for a later sweep to find empty. `containersDown`
+	 * says whether the teardown downed this runtime's containers at all.
 	 */
-	retireRun(): Promise<void>;
+	retireRun(options: { containersDown: boolean }): Promise<void>;
 	/**
 	 * The named services came up and were waited for: their rows read `ready`.
 	 * The CLI's describe says so too; a library `start()` that spawns no apps
@@ -279,12 +281,15 @@ export function createRunClaimApi<
 			await releaseRun(sessionId);
 		},
 
-		async retireRun() {
+		async retireRun({ containersDown }) {
 			claimed = false;
 			await retireProjectRuns({
 				projectName: ctx.projectName,
 				root: ctx.root,
 				sessionId,
+				downed: containersDown
+					? [{ runtime: ctx.runtime.name, binary: ctx.runtimeBinary }]
+					: [],
 			});
 		},
 

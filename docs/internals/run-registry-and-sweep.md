@@ -17,8 +17,10 @@ writers prune. `stop --run` selects an exact session.
   out, for tests; the claim happens either way).
 - Releasing sets `releasedAt` once (the first release wins, however many teardown paths reach it)
   and keeps the entry; a run with no services is withdrawn instead. An explicit `stop()` *retires*
-  instead of releasing, because it has just torn the containers down: its own session and any
-  finished session for the same checkout go.
+  instead of releasing, because it has just torn the containers down: its own session goes, and
+  so does each finished session of the project whose containers were all on the runtimes it
+  downed (`heldOnlyOn`, the rule `stop` applies too). It used to retire every finished session,
+  so a library `stop()` on Docker dropped the only record of a stack held on Apple's runtime.
 - Every write addresses an entry by `sessionId`, which is required; entries without one are dropped
   on read.
 - A library run with no hold asked for through `claimRun` keeps its containers after it exits.

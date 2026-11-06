@@ -722,7 +722,7 @@ export function createLifecycleApi<
 				removeVolumes,
 			});
 		}
-		await runClaim.retireRun();
+		await runClaim.retireRun({ containersDown: hasCompose });
 		return true;
 	}
 
