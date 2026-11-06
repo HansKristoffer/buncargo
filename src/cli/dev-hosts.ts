@@ -167,6 +167,7 @@ async function activateTailscaleHosts(
 			{
 				root: env.root,
 				pid: process.pid,
+				processIdentity: await readCurrentProcessIdentityAsync(),
 				apps,
 				blockPorts: Object.values(env.ports as Record<string, number>),
 				takeover: new Set(options.takeover),
@@ -237,6 +238,7 @@ async function reclaimTailscaleApp(
 			{
 				root,
 				pid: process.pid,
+				processIdentity: await readCurrentProcessIdentityAsync(),
 				apps: [{ name, port: app.targetPort }],
 				blockPorts: [],
 				takeover: new Set(),

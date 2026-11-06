@@ -208,5 +208,7 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   buncargo did not record is never written. A refused change stays recorded, because one that
   timed out may have applied. `--bg` entries survive reboots, so the watchdog, `ls`, `doctor` and
   `hosts prune` take out entries whose run has ended, without taking the lock when there are none.
+  An entry records its run's process identity as well as its pid: after a reboot the pid belongs
+  to someone else, and by pid alone the entry stayed, and readers advertised its URL.
 - The hostname is `Self.DNSName`, never `BUNCARGO_URL_HOST`: the certificate covers that name
   only.
