@@ -5,6 +5,7 @@ Each section lists what a consumer of `buncargo` has to change when crossing one
 ## 15.x → 16.0
 
 - **`DockerUnavailableError` is a `ContainerRuntimeUnavailableError`** (`buncargo/docker`, `buncargo`). Code catching `ContainerRuntimeUnavailableError` now catches Docker's too. Its `runtime` is now `"docker"`, as on the base class; read which Docker runs the daemon (`"orbstack"`, `"docker-desktop"`, …) from `dockerRuntime`.
+- **Named URLs need a run that serves them.** `getEnvVar`, `env`, `status` and `url` return an app's or service's `https://*.localhost` URL only while a run of the checkout serves it (its route is registered by a live run and, for the CLI commands, the daemon answers for it), and `localhost:<port>` otherwise. They used to return the named URL whenever `options.hosts` was on. Code that needs the plain address whatever runs reads the `*_LOOPBACK_URL` variables or `loopbackUrls`.
 - **Custom container runtime adapters** must implement `availability()`, returning `{ state: "up" }`, `{ state: "down" }` (nothing can be running) or `{ state: "unreachable", detail }`, and `projectServiceStates` must throw when the runtime cannot answer rather than return nothing: an empty list now means the project has no containers, which the service watch reports as removed. Each `ServiceRuntimeState` carries a `state` (`"running"`, `"paused"`, `"restarting"`, `"created"`, `"stopping"`, `"stopped"` or `"unknown"`).
 
 ## 14.0 → 15.0

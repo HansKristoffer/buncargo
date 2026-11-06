@@ -83,6 +83,17 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   over another one activates twice, and only the second attempt describes the URLs the banner
   prints. A failed attempt reverts `env.urls` to `localhost:port`, so a retry that fails never
   leaves the first attempt's named URLs beside its warning.
+- A run that falls back to `localhost:port` also withdraws what it registered
+  (`withdrawHostRoutes`): its own routes, and the checkout's service routes unless another live run
+  of the checkout holds routes there. Left registered, they read as live named URLs to everything
+  but the run itself.
+- `liveNamedHosts` (`registry.ts`) is the one answer to which of a checkout's named URLs are live:
+  `getEnvVar`, `env`, `status`, `url` and `open` all ask it, and name nothing from the plan alone.
+  A route is live when it is registered for the checkout at the plan's port by an owner still
+  running. `getEnvVar` asks it from inside users' configs, synchronously, and judges owners by
+  process identity (`readLiveNamedHostsSync`), reading each pid's identity once per process
+  (`readProcessIdentitiesCached`): on macOS a read is a `ps`, and a config is loaded several times
+  per start and on every reload.
 - `upsertHostRoutes` answers a second `buncargo dev` in the same checkout, pointing at the same
   port, with `keep` rather than a conflict: it is reusing the servers the first run started, not
   competing for the hostname. The live owner stays the owner, because `releaseNamedHosts` filters
@@ -94,8 +105,7 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   restarts in a run serving named hosts claims its route again (`reclaimAppRoute`), or its named
   URL 404s once the run that took it over has exited. It does so in `onAppRestarting`, which the
   restart awaits before it spawns: the app's config reads its URL from the registry as it loads.
-- Whether a named URL is live is decided per plan entry (`liveNamedHosts`), never for the plan
-  as a whole. A takeover that ends takes one app's route with it, and when one missing route
+- That answer is per plan entry, never for the plan as a whole. A takeover that ends takes one app's route with it, and when one missing route
   turned the whole plan to `localhost:port`, every other app of the run, still served on its named
   URL, read `localhost:port` from its own config.
 - App routes record the run's process identity: a pid alone survives a reboot, and a reused one kept
