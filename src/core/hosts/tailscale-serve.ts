@@ -15,6 +15,7 @@ import { connect } from "node:tls";
 import { getErrorMessage, promiseTimeout } from "hanzio";
 import { withFileLock } from "../file-lock";
 import { isProcessAlive } from "../process/lifecycle";
+import { readProcessIdentity } from "../process-identity";
 import { defineListRegistry, readJsonDocumentSync } from "../registry-file";
 import type { HostsMode } from "../runtime-flags";
 import { chownToInvokingUser } from "../state-paths";
@@ -90,6 +91,12 @@ export interface TailscaleServeEntry {
 	app: string;
 	/** The run that owns the entry; its exit removes it. */
 	pid: number;
+	/**
+	 * Birth identity of `pid`. `--bg` entries survive a reboot and pids are
+	 * reused, so a pid alone kept an ended run's entry live: the sweep left
+	 * it, and readers advertised its URL.
+	 */
+	processIdentity?: string;
 	httpsPort: number;
 	/** `http://127.0.0.1:<app port>`. */
 	target: string;
@@ -109,8 +116,25 @@ function isServeEntry(value: unknown): value is TailscaleServeEntry {
 		typeof entry.httpsPort === "number" &&
 		typeof entry.target === "string" &&
 		typeof entry.hostname === "string" &&
-		(entry.servedAt === undefined || typeof entry.servedAt === "string")
+		(entry.servedAt === undefined || typeof entry.servedAt === "string") &&
+		(entry.processIdentity === undefined ||
+			typeof entry.processIdentity === "string")
 	);
+}
+
+/** The run an entry belongs to, as liveness judges it. */
+export type ServeOwner = Pick<TailscaleServeEntry, "pid" | "processIdentity">;
+
+/**
+ * Whether the run that added an entry is still running: its pid is alive and
+ * is still the process it recorded. Identity that cannot be read keeps the
+ * entry, as liveness does everywhere: only a mismatch ends it.
+ */
+export function isServeOwnerAlive(owner: ServeOwner): boolean {
+	if (!isProcessAlive(owner.pid)) return false;
+	if (owner.processIdentity === undefined) return true;
+	const actual = readProcessIdentity(owner.pid);
+	return actual === undefined || actual === owner.processIdentity;
 }
 
 const REGISTRY_VERSION = 1;
@@ -182,7 +206,7 @@ export function servedTailscaleUrls(
 	input: {
 		root: string;
 		ports: Readonly<Record<string, number>>;
-		isAlive: (pid: number) => boolean;
+		isAlive: (owner: ServeOwner) => boolean;
 	},
 ): Record<string, string> {
 	const urls: Record<string, string> = {};
@@ -193,7 +217,7 @@ export function servedTailscaleUrls(
 			entry.servedAt !== undefined &&
 			port !== undefined &&
 			entry.target === serveTarget(port);
-		if (current && input.isAlive(entry.pid))
+		if (current && input.isAlive(entry))
 			urls[entry.app] = tailscaleServeUrl(entry);
 	}
 	return urls;
@@ -206,7 +230,7 @@ export async function readServedTailscaleUrls(
 	return servedTailscaleUrls(await loadTailscaleServeEntries(), {
 		root,
 		ports,
-		isAlive: isProcessAlive,
+		isAlive: isServeOwnerAlive,
 	});
 }
 
@@ -222,7 +246,11 @@ export function readServedTailscaleUrlsSync(
 				? file.entries.filter(isServeEntry)
 				: undefined;
 		}) ?? [];
-	return servedTailscaleUrls(entries, { root, ports, isAlive: isProcessAlive });
+	return servedTailscaleUrls(entries, {
+		root,
+		ports,
+		isAlive: isServeOwnerAlive,
+	});
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -287,12 +315,20 @@ export function planServeChanges(input: {
 	config: ServeConfig;
 	root: string;
 	pid: number;
+	/** This run's birth identity, recorded with every entry it owns. */
+	processIdentity?: string;
 	hostname: string;
 	wants: readonly ServeWant[];
 	takeover: ReadonlySet<string>;
-	isAlive: (pid: number) => boolean;
+	isAlive: (owner: ServeOwner) => boolean;
 }): ServePlan {
 	const { root, pid, hostname, config } = input;
+	const ownedHere = {
+		pid,
+		...(input.processIdentity === undefined
+			? {}
+			: { processIdentity: input.processIdentity }),
+	};
 	const wantByApp = new Map(input.wants.map((want) => [want.app, want]));
 	const records: TailscaleServeEntry[] = [];
 	const off: TailscaleServeEntry[] = [];
@@ -308,7 +344,7 @@ export function planServeChanges(input: {
 			!handled.has(want.app) &&
 			entry.hostname === hostname &&
 			wantedAs(entry, want);
-		const alive = input.isAlive(entry.pid);
+		const alive = input.isAlive(entry);
 
 		if (!wanted) {
 			// Dead, or this run's own entry for a port the app no longer has.
@@ -321,10 +357,13 @@ export function planServeChanges(input: {
 
 		handled.add(want.app);
 		const takenOver = input.takeover.has(entry.app);
-		const owner = !alive || entry.pid === pid || takenOver ? pid : entry.pid;
+		const ours = !alive || entry.pid === pid || takenOver;
 		// What answered for a run that ended says nothing about this one.
 		const servedAt = alive ? entry.servedAt : undefined;
-		const kept = { ...entry, pid: owner, servedAt };
+		const { processIdentity: _previous, ...recorded } = entry;
+		const kept = ours
+			? { ...recorded, ...ownedHere, servedAt }
+			: { ...entry, servedAt };
 		const served = config.get(entry.httpsPort);
 		if (matchesConfig(entry, served)) {
 			records.push(kept);
@@ -356,7 +395,7 @@ export function planServeChanges(input: {
 		const entry: TailscaleServeEntry = {
 			root,
 			app: want.app,
-			pid,
+			...ownedHere,
 			httpsPort: want.httpsPort,
 			target: want.target,
 			hostname,
@@ -401,7 +440,7 @@ export interface TailscaleServeDeps {
 	 * certificate, so the handshake proves Tailscale is listening there.
 	 */
 	probe: (target: ServeProbeTarget) => Promise<string | undefined>;
-	isAlive: (pid: number) => boolean;
+	isAlive: (owner: ServeOwner) => boolean;
 }
 
 /** Until the listener is up, connections are refused: retry them this long. */
@@ -449,9 +488,9 @@ async function probeTls(target: ServeProbeTarget): Promise<string | undefined> {
 	}
 }
 
-/** The real seams: the `tailscale` CLI, TLS handshakes and `kill(pid, 0)`. */
+/** The real seams: the `tailscale` CLI, TLS handshakes and process identity. */
 export function tailscaleServeDeps(): TailscaleServeDeps {
-	return { cli: tailscaleCli, probe: probeTls, isAlive: isProcessAlive };
+	return { cli: tailscaleCli, probe: probeTls, isAlive: isServeOwnerAlive };
 }
 
 /** Undefined once the entry is gone, the reason it is still there otherwise. */
@@ -555,6 +594,8 @@ export async function activateTailscaleServe(
 	input: {
 		root: string;
 		pid: number;
+		/** Recorded with this run's entries; see {@link TailscaleServeEntry}. */
+		processIdentity?: string;
 		apps: readonly TailscaleServeApp[];
 		/** Every port of the block: an HTTPS port landing on one is skipped. */
 		blockPorts: readonly number[];
@@ -600,6 +641,7 @@ export async function activateTailscaleServe(
 			config: read.config,
 			root: input.root,
 			pid: input.pid,
+			processIdentity: input.processIdentity,
 			hostname: self.hostname,
 			wants,
 			takeover: input.takeover,
@@ -745,7 +787,7 @@ export async function sweepTailscaleServe(
 ): Promise<TailscaleServeSweep> {
 	try {
 		const result = await removeMatching(
-			(entry) => !deps.isAlive(entry.pid),
+			(entry) => !deps.isAlive(entry),
 			deps.cli,
 		);
 		return {
@@ -808,7 +850,7 @@ export async function diagnoseTailscaleHosts(
 		return { notes, issues };
 	}
 	const live = (await loadTailscaleServeEntries()).filter((entry) =>
-		deps.isAlive(entry.pid),
+		deps.isAlive(entry),
 	);
 	const count = live.length === 1 ? "1 entry" : `${live.length} entries`;
 	notes.push(`Tailscale Serve: ${count} recorded by buncargo`);
@@ -844,7 +886,7 @@ export async function describeTailscaleServeEntries(
 		!("reason" in read) &&
 		!matchesConfig(entry, read.config.get(entry.httpsPort));
 	return entries.map((entry) => {
-		const ended = deps.isAlive(entry.pid) ? "" : ", ended";
+		const ended = deps.isAlive(entry) ? "" : ", ended";
 		const state = missing(entry) ? "  ← not in the Tailscale Serve config" : "";
 		return `${tailscaleServeUrl(entry)} → ${entry.target}  (app:${entry.app}, ${entry.root}, pid ${entry.pid}${ended})${state}`;
 	});

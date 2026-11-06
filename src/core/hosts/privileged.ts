@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -28,6 +28,12 @@ export interface PrivilegedRunner {
 	writeFile: (path: string, contents: string) => void;
 	/** Remove a root-owned path; a missing file is not an error. */
 	removeFile: (path: string) => void;
+	/**
+	 * A root-owned file's contents, or `undefined` when it does not exist.
+	 * Needs no privilege (the files are world-readable); it is here so an
+	 * install can put back what it replaced.
+	 */
+	readFile: (path: string) => string | undefined;
 }
 
 export function systemPrivilegedRunner(): PrivilegedRunner {
@@ -69,6 +75,15 @@ export function systemPrivilegedRunner(): PrivilegedRunner {
 		},
 		removeFile(path) {
 			run("rm", ["-f", path]);
+		},
+		readFile(path) {
+			try {
+				return readFileSync(path, "utf-8");
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT")
+					return undefined;
+				throw error;
+			}
 		},
 	};
 }

@@ -7,6 +7,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import type { PrivilegedRunner } from "./privileged";
 
 export const HOSTS_BLOCK_START = "# buncargo-start";
 export const HOSTS_BLOCK_END = "# buncargo-end";
@@ -21,16 +22,43 @@ export function buildHostsBlock(hostnames: string[]): string {
 	return [HOSTS_BLOCK_START, ...lines, HOSTS_BLOCK_END].join("\n");
 }
 
+/**
+ * Where the managed block is: the first end marker, and the start marker
+ * closest before it.
+ *
+ * A start whose end was lost (a hand edit, a torn write) is not part of any
+ * block. Pairing the first start with the first end instead reached from that
+ * orphan to the end of the block appended after it, and deleted every line
+ * the user had between the two.
+ */
+function findManagedBlock(
+	contents: string,
+): { start: number; end: number } | undefined {
+	let start = contents.indexOf(HOSTS_BLOCK_START);
+	while (start !== -1) {
+		const end = contents.indexOf(HOSTS_BLOCK_END, start);
+		if (end === -1) return undefined;
+		const next = contents.indexOf(
+			HOSTS_BLOCK_START,
+			start + HOSTS_BLOCK_START.length,
+		);
+		const orphan = next !== -1 && next < end;
+		if (!orphan) return { start, end };
+		start = next;
+	}
+	return undefined;
+}
+
 export function extractManagedBlock(contents: string): {
 	before: string;
 	block: string | null;
 	after: string;
 } {
-	const start = contents.indexOf(HOSTS_BLOCK_START);
-	const end = contents.indexOf(HOSTS_BLOCK_END);
-	if (start === -1 || end === -1 || end < start) {
+	const found = findManagedBlock(contents);
+	if (!found) {
 		return { before: contents.replace(/\s*$/, ""), block: null, after: "" };
 	}
+	const { start, end } = found;
 	return {
 		before: contents.slice(0, start).replace(/\s*$/, ""),
 		block: contents.slice(start, end + HOSTS_BLOCK_END.length),
@@ -106,4 +134,31 @@ export function syncHostsFile(
 
 export function cleanHostsFile(filePath = DEFAULT_HOSTS_FILE): void {
 	syncHostsFile([], filePath);
+}
+
+function isPermissionError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === "EACCES" || code === "EPERM";
+}
+
+/**
+ * Remove the managed block, through `sudo` when this user cannot write it.
+ *
+ * The root daemon wrote the block, and `hosts uninstall` has stopped it by
+ * the time it gets here, so a plain user write fails with EACCES. Swallowed,
+ * that left every hostname pointing at a proxy that no longer exists.
+ */
+export function cleanHostsFileAsRoot(
+	runner: Pick<PrivilegedRunner, "writeFile">,
+	filePath = DEFAULT_HOSTS_FILE,
+): void {
+	try {
+		cleanHostsFile(filePath);
+		return;
+	} catch (error) {
+		if (!isPermissionError(error)) throw error;
+	}
+	const current = readFileSync(filePath, "utf-8");
+	const next = applyHostsBlock(current, []);
+	if (next !== current) runner.writeFile(filePath, next);
 }

@@ -158,6 +158,73 @@ export function isCaPresent(mkcertPath?: string): boolean {
 	return getCaPath(mkcertPath) !== undefined;
 }
 
+/**
+ * Where `mkcert -install` puts the CA on Linux, by its own rules: the first
+ * anchor directory this distribution has, and a name carrying the serial.
+ * `undefined` when none of them exists, so trust cannot be read from disk.
+ */
+export function linuxTrustAnchorPath(
+	serial: string,
+	dirExists: (path: string) => boolean,
+): string | undefined {
+	const name = `mkcert_development_CA_${serial}`;
+	const anchors = [
+		["/etc/pki/ca-trust/source/anchors", "pem"],
+		["/usr/local/share/ca-certificates", "crt"],
+		["/etc/ca-certificates/trust-source/anchors", "crt"],
+		["/usr/share/pki/trust/anchors", "pem"],
+	] as const;
+	const found = anchors.find(([dir]) => dirExists(dir));
+	return found && `${found[0]}/${name}.${found[1]}`;
+}
+
+/** `unknown`: this platform's trust could not be read, so presence decides. */
+export type CaTrust = "trusted" | "untrusted" | "unknown";
+
+/**
+ * Whether the system trusts the CA at `caPath`, not merely whether it exists.
+ *
+ * `mkcert -uninstall` removes the trust and keeps the CA files, so a check
+ * on `rootCA.pem` alone passed while every named URL failed TLS.
+ */
+export function readCaTrust(caPath: string): CaTrust {
+	return typedSwitch(
+		process.platform,
+		{
+			linux: (): CaTrust => {
+				let serial: string;
+				try {
+					const ca = new X509Certificate(readFileSync(caPath));
+					serial = BigInt(`0x${ca.serialNumber}`).toString();
+				} catch {
+					return "unknown";
+				}
+				const anchor = linuxTrustAnchorPath(serial, existsSync);
+				if (!anchor) return "unknown";
+				return existsSync(anchor) ? "trusted" : "untrusted";
+			},
+			darwin: (): CaTrust => {
+				try {
+					execFileSync("security", ["verify-cert", "-c", caPath], {
+						stdio: "ignore",
+					});
+					return "trusted";
+				} catch (error) {
+					const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
+					return missing ? "unknown" : "untrusted";
+				}
+			},
+		},
+		(): CaTrust => "unknown",
+	);
+}
+
+/** The CA exists and nothing says the system has stopped trusting it. */
+export function isCaTrusted(mkcertPath?: string): boolean {
+	const caPath = getCaPath(mkcertPath);
+	return caPath !== undefined && readCaTrust(caPath) !== "untrusted";
+}
+
 /** The parts of a leaf certificate renewal depends on. */
 export interface CertificateLeaf {
 	names: Set<string>;
@@ -165,12 +232,12 @@ export interface CertificateLeaf {
 	validTo: number;
 }
 
-/** The leaf at `certPath`, or `undefined` when it is missing or unreadable. */
-export function readCertificateLeaf(
-	certPath: string,
+/** The leaf in a PEM, or `undefined` when it is not one. */
+export function parseCertificateLeaf(
+	pem: string | Buffer,
 ): CertificateLeaf | undefined {
 	try {
-		const cert = new X509Certificate(readFileSync(certPath));
+		const cert = new X509Certificate(pem);
 		const names = new Set(
 			(cert.subjectAltName ?? "")
 				.split(",")
@@ -178,6 +245,17 @@ export function readCertificateLeaf(
 				.filter(Boolean),
 		);
 		return { names, validTo: Date.parse(cert.validTo) };
+	} catch {
+		return undefined;
+	}
+}
+
+/** The leaf at `certPath`, or `undefined` when it is missing or unreadable. */
+export function readCertificateLeaf(
+	certPath: string,
+): CertificateLeaf | undefined {
+	try {
+		return parseCertificateLeaf(readFileSync(certPath));
 	} catch {
 		return undefined;
 	}

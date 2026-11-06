@@ -3,7 +3,6 @@ import {
 	mkdirSync,
 	statSync,
 	truncateSync,
-	unlinkSync,
 	watch,
 	writeFileSync,
 	writeSync,
@@ -22,12 +21,15 @@ import {
 import { chownToInvokingUser, getStateDir } from "../state-paths";
 import {
 	certificateFingerprint,
+	certificateServes,
 	describeCertificateGap,
 	readCertificatePair,
 } from "./certificates";
 import {
+	daemonConfigFromFlags,
 	readDaemonConfig,
 	readDaemonPid,
+	releaseDaemonState,
 	writeDaemonConfig,
 } from "./daemon-config";
 import { cleanHostsFile, syncHostsFile } from "./hosts-file";
@@ -57,6 +59,14 @@ import { HOSTS_SERVICE_LOG } from "./service-files";
 
 const IDLE_EXIT_MS = 30_000;
 const RELOAD_INTERVAL_MS = 1000;
+/**
+ * How often the certificate is checked again while nothing changes.
+ *
+ * Coverage only changes with a route or a remint, both of which trigger a
+ * check, but expiry arrives on its own: without this a daemon up for months
+ * never said its leaf was running out.
+ */
+export const CERTIFICATE_RECHECK_MS = 60 * 60_000;
 /**
  * Ceiling on the retry interval after repeated reload failures.
  *
@@ -393,6 +403,16 @@ export function watchHostsState(deps: {
 	};
 }
 
+/** Every way the daemon ends on purpose: leave no state naming this process. */
+function exitDaemon(code: number): never {
+	try {
+		releaseDaemonState(process.pid);
+	} catch {
+		// best-effort: readers check the pid is alive before trusting it
+	}
+	process.exit(code);
+}
+
 function writePidfile(pid: number): void {
 	mkdirSync(getStateDir(), { recursive: true });
 	const path = getPidfilePath();
@@ -416,7 +436,12 @@ export interface HostsReloaderDeps {
 	onRequest: (root: string) => void;
 	certificateFingerprint: () => string;
 	describeCertificateGap: (hostnames: string[]) => string | undefined;
-	readCertificatePair: () => Promise<{ cert: string; key: string }>;
+	/** `undefined` while a mint holds the pair: try again on a later pass. */
+	readCertificatePair: () => Promise<{ cert: string; key: string } | undefined>;
+	/** Which hostnames a bound certificate answers for ({@link certificateServes}). */
+	certificateServes: (
+		cert: string,
+	) => (hostname: string, now: number) => boolean;
 	startProxy: (input: {
 		lookup: ProxyRouteLookup;
 		routes: () => ProxyRoutesView;
@@ -438,7 +463,10 @@ export interface HostsReloader {
 	stop: () => void;
 	/** Whether a listener is currently bound. */
 	isBound: () => boolean;
-	/** What the proxy reports: served hostnames and the last refresh time. */
+	/**
+	 * What the proxy reports: the hostnames the bound listener answers for, the
+	 * last refresh time, and why a rebind is failing.
+	 */
 	routes: () => ProxyRoutesView;
 }
 
@@ -459,6 +487,12 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	let idleSince: number | undefined;
 	let lastHostsFileFailure: string | undefined;
 	let lastCertificateGap: string | undefined;
+	let lastGapCheckAt = Number.NEGATIVE_INFINITY;
+	// What the listener actually serves. Nothing until the first bind, and
+	// only advanced by a bind that succeeded: a route in the map that the
+	// bound leaf does not cover is not served, whatever the map says.
+	let serves: (hostname: string, now: number) => boolean = () => false;
+	let bindError: string | undefined;
 	// Seeded rather than left undefined: a daemon that has not finished its
 	// first reload is starting up, not frozen.
 	let lastReloadAt = deps.now();
@@ -470,10 +504,16 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		if (route) deps.onRequest(route.root);
 		return route?.port;
 	};
-	const routes = (): ProxyRoutesView => ({
-		hostnames: [...routeMap.keys()],
-		lastReloadAt,
-	});
+	const routes = (): ProxyRoutesView => {
+		const now = deps.now();
+		return {
+			hostnames: [...routeMap.keys()].filter((hostname) =>
+				serves(hostname, now),
+			),
+			lastReloadAt,
+			...(bindError === undefined ? {} : { bindError }),
+		};
+	};
 
 	/**
 	 * An unwritable `/etc/hosts` stops named hostnames resolving, so it cannot
@@ -549,7 +589,8 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		// server whose HMR socket is reset mid-session usually dies with it.
 		const certKey = deps.certificateFingerprint();
 		const mustBind = !proxy || certKey !== lastCertKey;
-		if (!mustBind && hostKey === lastHostKey) {
+		const recheckDue = deps.now() - lastGapCheckAt >= CERTIFICATE_RECHECK_MS;
+		if (!mustBind && hostKey === lastHostKey && !recheckDue) {
 			return;
 		}
 
@@ -559,14 +600,30 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		// reload put the daemon into a widening backoff, which delayed picking
 		// up every *other* project's routes because one worktree was uncovered.
 		reportCertificateGap(deps.describeCertificateGap(hostnames));
+		lastGapCheckAt = deps.now();
 
 		lastHostKey = hostKey;
 		if (!mustBind) return;
 
+		try {
+			await rebind(certKey);
+			bindError = undefined;
+		} catch (error) {
+			// Health says so: the routes it lists are only those the previous
+			// leaf covers, and the CLI names this as the reason the rest are not.
+			bindError = getErrorMessage(error);
+			throw error;
+		}
+	}
+
+	async function rebind(certKey: string): Promise<void> {
 		// Read before stopping: an unreadable pair should leave the running
 		// listener alone rather than take every named URL down first.
-		const { cert, key } = await deps.readCertificatePair();
-		if (stopped) return;
+		const pair = await deps.readCertificatePair();
+		// A mint in progress. `lastCertKey` stays put, so the next pass, or the
+		// rename that lands the mint, rebinds.
+		if (!pair || stopped) return;
+		const { cert, key } = pair;
 
 		// Bind the replacement *before* dropping the old listener. Both hold
 		// the port at once under SO_REUSEPORT and the kernel hands new
@@ -591,6 +648,7 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		proxy = next;
 		previous?.stop();
 		lastCertKey = certKey;
+		serves = deps.certificateServes(cert);
 	}
 
 	return {
@@ -614,7 +672,11 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 export async function runHostsDaemon(
 	options: { service?: boolean } = {},
 ): Promise<void> {
-	const config = readDaemonConfig();
+	// What this daemon binds comes from its own environment. The stored file
+	// is what the *running* daemon bound, for readers: binding from it made a
+	// port one foreground `BUNCARGO_HOSTS_PORT` run chose stick for the service.
+	const config = daemonConfigFromFlags();
+	const running = readDaemonConfig();
 	const service = options.service ?? false;
 
 	// The listener sets SO_REUSEPORT so a reload can bind its replacement before
@@ -631,12 +693,12 @@ export async function runHostsDaemon(
 			other !== undefined &&
 			other !== process.pid &&
 			isProcessAlive(other) &&
-			(await readProxyHealth(config.httpsPort, "127.0.0.1", {
-				tls: config.tls,
+			(await readProxyHealth(running.httpsPort, "127.0.0.1", {
+				tls: running.tls,
 			})) !== undefined
 		) {
 			logDaemonError(
-				`[buncargo hosts] a daemon is already serving :${config.httpsPort} (pid ${other}); nothing to do`,
+				`[buncargo hosts] a daemon is already serving :${running.httpsPort} (pid ${other}); nothing to do`,
 			);
 			return;
 		}
@@ -662,9 +724,11 @@ export async function runHostsDaemon(
 		certificateFingerprint,
 		describeCertificateGap,
 		readCertificatePair,
-		startProxy: (input) =>
+		certificateServes,
+		startProxy: ({ cert, key, ...input }) =>
 			startLocalProxy({
 				...input,
+				tls: { cert, key },
 				httpsPort: config.httpsPort,
 				httpPort:
 					config.httpsPort === DEFAULT_HOSTS_DAEMON_PORT
@@ -677,7 +741,10 @@ export async function runHostsDaemon(
 		cleanHostsFile: syncHosts ? cleanHostsFile : undefined,
 		log: logDaemonError,
 		now: Date.now,
-		onIdleExit: () => process.exit(0),
+		onIdleExit: () => {
+			stopWatching();
+			exitDaemon(0);
+		},
 		onRequest: activity.note,
 		service,
 	});
@@ -698,15 +765,7 @@ export async function runHostsDaemon(
 	const onStop = () => {
 		stopWatching();
 		reloader.stop();
-		const pid = readDaemonPid();
-		if (pid === process.pid) {
-			try {
-				unlinkSync(getPidfilePath());
-			} catch {
-				// already gone
-			}
-		}
-		process.exit(0);
+		exitDaemon(0);
 	};
 	process.on("SIGINT", onStop);
 	process.on("SIGTERM", onStop);
@@ -747,7 +806,7 @@ export async function runHostsDaemon(
 			now: Date.now,
 		}),
 		log: logDaemonError,
-		exit: (code) => process.exit(code),
+		exit: exitDaemon,
 	});
 	recoverFromStall = stallRecovery.recover;
 

@@ -20,7 +20,8 @@ import {
 	readDaemonConfig,
 	readHostsDaemonHealth,
 } from "../../../core/hosts";
-import { isCaPresent } from "../../../core/hosts/mkcert";
+import { isCaTrusted } from "../../../core/hosts/mkcert";
+import { hasDeclinedHosts } from "../../../core/hosts/onboarding";
 import { describeStaleHostsService } from "../../../core/hosts/service";
 import {
 	diagnoseTailscaleHosts,
@@ -373,6 +374,13 @@ async function checkNamedHosts(
 		for (const issue of other.issues) report.issue(issue);
 		return;
 	}
+	// Every run checks this before anything else, so nothing below reaches it.
+	if (hasDeclinedHosts()) {
+		report.note(
+			"Named hosts were declined on this machine: apps use http://localhost:port. Run `buncargo hosts install` to enable them.",
+		);
+		return;
+	}
 	const health = await readHostsDaemonHealth(readDaemonConfig().httpsPort);
 	if (health) {
 		report.note("Named-hosts daemon is healthy");
@@ -383,7 +391,7 @@ async function checkNamedHosts(
 			"Named-hosts daemon is not running. Run `buncargo hosts install` or `buncargo doctor --fix`.",
 		);
 	}
-	if (!isCaPresent() && !reported.has("ca")) {
+	if (!isCaTrusted() && !reported.has("ca")) {
 		report.issue(
 			"Named-hosts CA is not trusted. Run `buncargo hosts install`.",
 		);

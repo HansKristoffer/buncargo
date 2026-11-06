@@ -1,6 +1,7 @@
 import { typedSwitch } from "hanzio";
 import {
 	describeLoopbackHijack,
+	identityRouteOwners,
 	loadHostRoutes,
 	OUTDATED_DAEMON_MESSAGE,
 	pruneHostRoutes,
@@ -14,7 +15,7 @@ import {
 } from "../../core/hosts";
 import {
 	getCaPath,
-	isCaPresent,
+	isCaTrusted,
 	resolvedMkcertPath,
 } from "../../core/hosts/mkcert";
 import {
@@ -62,7 +63,11 @@ export async function handleHosts(args: string[]): Promise<void> {
 		},
 		prune: async () => {
 			const before = (await loadHostRoutes()).length;
-			const after = await pruneHostRoutes();
+			// By identity: this is what retires a route whose pid a reboot
+			// handed to another process.
+			const after = await pruneHostRoutes(undefined, {
+				owners: identityRouteOwners,
+			});
 			const removed = before - after.length;
 			log.done(`Pruned ${removed} stale route${removed === 1 ? "" : "s"}`);
 			const serve = await sweepTailscaleServe(tailscaleServeDeps());
@@ -93,6 +98,9 @@ async function printHostsStatus(): Promise<void> {
 		const ageMs = Date.now() - health.lastReloadAt;
 		const stale = ageMs > RELOAD_STALL_MS ? "  (stale)" : "";
 		log.line(`  refreshed: ${Math.round(ageMs / 1000)}s ago${stale}`);
+		// Routes the previous leaf misses show below as not served; this is why.
+		if (health.bindError)
+			log.line(`  certificate: cannot load the new one (${health.bindError})`);
 	}
 	log.line(`httpsPort: ${config.httpsPort}`);
 	log.line(`service: ${isHostsServiceInstalled() ? "installed" : "missing"}`);
@@ -105,9 +113,13 @@ async function printHostsStatus(): Promise<void> {
 	if (stale) {
 		log.line(`  stale: ${stale}`);
 	}
-	log.line(
-		`ca: ${isCaPresent(mkcertPath) ? getCaPath(mkcertPath) : "missing"}`,
-	);
+	const caPath = getCaPath(mkcertPath);
+	const ca = !caPath
+		? "missing"
+		: isCaTrusted(mkcertPath)
+			? caPath
+			: `${caPath} (not trusted)`;
+	log.line(`ca: ${ca}`);
 	if (!healthy) {
 		const squatter = describePortSquatter(config.httpsPort);
 		if (squatter) {

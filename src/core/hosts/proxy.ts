@@ -18,9 +18,15 @@ export const HEALTH_PATH = "/_buncargo/health";
  * identical from a 404, which is how a stalled daemon went unnoticed for days.
  */
 export interface ProxyRoutesView {
+	/** Hostnames the bound listener answers for: routed, and its leaf covers them. */
 	hostnames: string[];
 	/** Epoch ms of the last successful refresh. */
 	lastReloadAt: number;
+	/**
+	 * Why the listener could not move to the certificate on disk. It keeps the
+	 * previous leaf meanwhile, so `hostnames` lacks whatever that leaf misses.
+	 */
+	bindError?: string;
 }
 
 const LOOP_MESSAGE =
@@ -138,6 +144,7 @@ export function createProxyFetch(input: {
 				routes: view.hostnames.length,
 				hostnames: view.hostnames,
 				lastReloadAt: view.lastReloadAt,
+				...(view.bindError === undefined ? {} : { bindError: view.bindError }),
 			});
 		}
 
@@ -293,7 +300,9 @@ export function createWebsocketHandlers(
 		);
 		ws.data.socket = socket;
 		upstreams.add(socket);
+		let opened = false;
 		socket.addEventListener("open", () => {
+			opened = true;
 			// The client is upgraded before this handshake finishes, so
 			// anything it sent in between is only queued, never dropped.
 			for (const frame of ws.data.pending) socket.send(frame);
@@ -312,6 +321,10 @@ export function createWebsocketHandlers(
 		});
 		socket.addEventListener("error", () => {
 			upstreams.delete(socket);
+			// Re-probe next time, as the HTTP path does: an app that restarted
+			// on the other loopback family otherwise has its HMR socket dialed
+			// at the old one for as long as the daemon runs.
+			if (!opened) upstream.forget(ws.data.targetPort);
 			ws.close();
 		});
 	}
@@ -414,8 +427,12 @@ function serveOnEach(
 export async function startLocalProxy(options: {
 	lookup: ProxyRouteLookup;
 	routes: () => ProxyRoutesView;
-	cert?: string;
-	key?: string;
+	/**
+	 * The pair to serve HTTPS with; absent serves plain HTTP. Given but empty
+	 * is refused: it used to bind plain HTTP on :443 while every client spoke
+	 * HTTPS to it.
+	 */
+	tls?: { cert: string; key: string };
 	httpsPort: number;
 	httpPort?: number;
 	hostname?: string;
@@ -423,7 +440,15 @@ export async function startLocalProxy(options: {
 	onStale?: (ageMs: number) => void;
 }): Promise<LocalProxy> {
 	const hostnames = options.hostname ? [options.hostname] : LOOPBACK_HOSTNAMES;
-	const https = Boolean(options.cert && options.key);
+	const { tls } = options;
+	const emptyPair =
+		tls !== undefined && (tls.cert.trim() === "" || tls.key.trim() === "");
+	if (emptyPair) {
+		throw new Error(
+			"Named-hosts certificate or key is empty. Run `buncargo hosts install`.",
+		);
+	}
+	const https = tls !== undefined;
 	// One resolver for both paths so an HMR upgrade reuses the family the first
 	// HTTP request already probed.
 	const upstream = createUpstreamResolver();
@@ -450,12 +475,9 @@ export async function startLocalProxy(options: {
 		reusePort: true,
 		fetch: fetchHandler,
 		websocket: websocket as never,
-		...(https
+		...(tls
 			? {
-					tls: {
-						cert: options.cert,
-						key: options.key,
-					},
+					tls: { cert: tls.cert, key: tls.key },
 					// Negotiated via ALPN; HTTP/1.1 clients are still served, and a
 					// browser opens its WebSocket over a separate HTTP/1.1 connection
 					// since Bun does not do RFC 8441 upgrades over h2.
@@ -539,6 +561,7 @@ export type ProxyHealth =
 			routeCount: number;
 			hostnames: string[];
 			lastReloadAt: number;
+			bindError?: string;
 	  }
 	| { outdated: true };
 
@@ -548,6 +571,7 @@ function parseProxyHealth(value: unknown): ProxyHealth | undefined {
 		routes?: unknown;
 		hostnames?: unknown;
 		lastReloadAt?: unknown;
+		bindError?: unknown;
 	};
 	if (
 		!Array.isArray(body.hostnames) ||
@@ -560,6 +584,9 @@ function parseProxyHealth(value: unknown): ProxyHealth | undefined {
 		routeCount: typeof body.routes === "number" ? body.routes : 0,
 		hostnames: body.hostnames as string[],
 		lastReloadAt: body.lastReloadAt,
+		...(typeof body.bindError === "string"
+			? { bindError: body.bindError }
+			: {}),
 	};
 }
 

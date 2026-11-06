@@ -13,7 +13,12 @@ import { writeDaemonConfig } from "./daemon-config";
 import { resolvedMkcertPath } from "./mkcert";
 import { certificateHostnames } from "./plan";
 import { type LocalProxy, startLocalProxy } from "./proxy";
-import { pruneHostRoutes, routesFromPlan, upsertHostRoutes } from "./registry";
+import {
+	pidRouteOwners,
+	pruneHostRoutes,
+	routesFromPlan,
+	upsertHostRoutes,
+} from "./registry";
 
 /**
  * The failure the user reported: a hostname that "sometimes" does not attach in
@@ -85,6 +90,8 @@ describeSoak("named hosts under worktree churn", () => {
 			certificateFingerprint,
 			describeCertificateGap: () => undefined,
 			readCertificatePair: async () => ({ cert: "", key: "" }),
+			// Plain HTTP here: every route the map holds is served.
+			certificateServes: () => () => true,
 			startProxy: async (input) => {
 				const started = await startLocalProxy({
 					lookup: input.lookup,
@@ -146,6 +153,7 @@ describeSoak("named hosts under worktree churn", () => {
 
 		await upsertHostRoutes(
 			routesFromPlan(plan, { root, pid: process.pid, kinds: ["app"] }),
+			{ owners: pidRouteOwners },
 		);
 
 		await syncCertificateForRoutes({

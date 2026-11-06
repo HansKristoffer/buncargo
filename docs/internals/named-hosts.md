@@ -40,7 +40,12 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   installs, removes and validates the service.
 - Installs are all-or-nothing: a unit file left behind by a failed load would make
   `isHostsServiceInstalled()` report success and every later run would skip setup. On failure
-  `service.ts` removes the file it wrote.
+  `service.ts` removes what it added and puts back what it replaced, reloading a previous unit:
+  macOS has booted the old job out by then, and a same-version reinstall writes over the very
+  bundle the old service runs, so deleting both left no service at all.
+- Activation restarts the unit. `launchctl bootstrap` after `bootout` does on macOS; on Linux
+  `enable --now` and `start` are no-ops on an active unit, which left a reinstall (and doctor's
+  repair of a wedged daemon) running the old code under a manifest naming the new.
 - `hosts-service.json` records what the service was installed with. The bundle path carries the
   version it was built from, so `describeStaleHostsService()` catches both a vanished path and an
   upgraded CLI still pointing at the previous bundle, instead of silently degrading to
@@ -88,6 +93,14 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   can outlive the new one too (the app was `essential: false`, so it only parked): an app that
   restarts in a run serving named hosts claims its route again (`reclaimAppRoute`), or its named
   URL 404s once the run that took it over has exited.
+- App routes record the run's process identity: a pid alone survives a reboot, and a reused one kept
+  a dead run's route holding its hostname against the next run of the checkout. The CLI's writers
+  (`upsertHostRoutes`, `hosts prune`) judge owners by identity (`identityRouteOwners`), asking only
+  about routes in the way so a run with none forks nothing; the daemon judges by pid, since it
+  forks nothing and identity costs a `ps` on macOS.
+- Writers read `routes.json` strictly. Every project's routes are in it, and a lenient read turned
+  a corrupt file into `[]` that the writer replaced with its own routes alone. `hosts uninstall`
+  clears it anyway, keeping a recovery copy.
 - `prune` drops a static (pid-less) route whose `root` no longer exists. Nothing else retires one,
   so a deleted worktree kept its hostnames in the registry, and in `/etc/hosts`, forever.
 - `syncHostsFile` writes through a temp file and a rename. `writeFileSync` truncates in place, and
@@ -111,6 +124,12 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   reported the daemon as down, which the remint for a new worktree's hostnames makes likely. A
   failed bind therefore leaves the previous listener serving and `lastCertKey` unadvanced, so the
   next reload retries.
+- Health lists the hostnames the *bound* leaf serves (`certificateServes`: covered and unexpired),
+  not the route map, and carries `bindError` while a rebind fails. Listing the map let a run whose
+  remint never bound pass `waitForDaemonRoutes` and advertise https URLs that failed TLS.
+- The certificate gap is reported on a route change, a remint, and at least hourly
+  (`CERTIFICATE_RECHECK_MS`): expiry arrives with neither, and the daemon cannot renew. The next
+  `buncargo dev` remints a leaf within 30 days of expiry.
 - `watchHostsState` reloads on a filesystem event instead of waiting for the next poll, which is
   0-1000ms of pure waiting on every run in every worktree. It watches the *directories*, because
   writes land through a temp file and a rename, so a file watch would hold an inode that never
@@ -189,5 +208,7 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   buncargo did not record is never written. A refused change stays recorded, because one that
   timed out may have applied. `--bg` entries survive reboots, so the watchdog, `ls`, `doctor` and
   `hosts prune` take out entries whose run has ended, without taking the lock when there are none.
+  An entry records its run's process identity as well as its pid: after a reboot the pid belongs
+  to someone else, and by pid alone the entry stayed, and readers advertised its URL.
 - The hostname is `Self.DNSName`, never `BUNCARGO_URL_HOST`: the certificate covers that name
   only.
