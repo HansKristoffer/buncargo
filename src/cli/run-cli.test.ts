@@ -114,7 +114,7 @@ function createStubEnv(
 			Record<string, ServiceConfig>,
 			Record<string, AppConfig>
 		>["urls"],
-		publicUrls: {},
+		publicUrls,
 		loopbackUrls: Object.fromEntries(
 			Object.entries(ports).map(([name, port]) => [
 				name,
@@ -160,7 +160,9 @@ function createStubEnv(
 			}
 			return vars;
 		},
+		// Replaces the map in place, as the environment's does.
 		setPublicUrls: (urls: Record<string, string>) => {
+			for (const key of Object.keys(publicUrls)) delete publicUrls[key];
 			Object.assign(publicUrls, urls);
 			options.setPublicUrls?.(urls as Record<string, string>);
 		},
@@ -521,10 +523,12 @@ describe("runCli expose routing", () => {
 
 			expect(code).toBe(130);
 			expect(startTargets).toEqual([["web"]]);
-			expect(setPublicUrlsCalls.at(-1)).toEqual({
+			// Opened beside the inherited one; closing removed both.
+			expect(setPublicUrlsCalls.at(-2)).toEqual({
 				api: "https://api.example.com",
 				web: "https://web.example.com",
 			});
+			expect(setPublicUrlsCalls.at(-1)).toEqual({});
 		} finally {
 			server.closeAllConnections();
 			await new Promise<void>((resolve) => server.close(() => resolve()));

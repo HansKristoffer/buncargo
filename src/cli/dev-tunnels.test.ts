@@ -14,6 +14,7 @@ it("closes a tunnel acquired while startup is being cancelled", async () => {
 		apps: {},
 		ports: { db: 5432 },
 		root: process.cwd(),
+		publicUrls: {},
 		setPublicUrls: () => {},
 		clearPublicUrls: () => {},
 		logInfo: () => {},
@@ -72,6 +73,7 @@ it("opens the tunnels again after an attempt that failed", async () => {
 		apps: {},
 		ports: { db: 5432 },
 		root: process.cwd(),
+		publicUrls: {},
 		setPublicUrls: () => {},
 		clearPublicUrls: () => {},
 		logInfo: () => {},
@@ -149,4 +151,63 @@ it("refuses an expose target outside --apps", async () => {
 			reusedAppNames: new Set(),
 		}),
 	).rejects.toThrow("Expose target not included in --apps: api");
+});
+
+it("keeps the URLs apps printed when its tunnels open and close", async () => {
+	// Opening replaced the whole map and closing cleared it, so `dev --expose`
+	// lost the URL an app printed (`captures`) before the tunnels opened.
+	const publicUrls: Record<string, string> = {};
+	const env = {
+		services: { db: { port: 5432, expose: true } },
+		apps: {},
+		ports: { db: 5432 },
+		root: process.cwd(),
+		publicUrls,
+		// Replaces the map in place, as the environment's does.
+		setPublicUrls: (next: Record<string, string>) => {
+			for (const key of Object.keys(publicUrls)) delete publicUrls[key];
+			Object.assign(publicUrls, next);
+		},
+		clearPublicUrls: () => {},
+		logInfo: () => {},
+	} as unknown as DevEnvironment<
+		Record<string, ServiceConfig>,
+		Record<string, AppConfig>
+	>;
+	const coordinator = createTunnelCoordinator(
+		env,
+		{
+			resolveExposeTargets,
+			stopPublicTunnels,
+			startPublicTunnels: async () => [
+				{
+					kind: "service",
+					name: "db",
+					localUrl: "http://localhost:5432",
+					publicUrl: "https://db.trycloudflare.com",
+					close: async () => {},
+				},
+			],
+		},
+		{ exposeRequested: true },
+	);
+	await coordinator.planExpose({
+		exposeValue: undefined,
+		appsRequested: false,
+		selectedAppNames: new Set(),
+		selectedServiceNames: new Set(["db"]),
+		startAppNames: new Set(),
+		reusedAppNames: new Set(),
+	});
+	// A wave-1 app printed its own public URL.
+	env.setPublicUrls({ ...publicUrls, mobile: "https://mobile.exp.direct" });
+
+	await coordinator.openOwnedTunnels();
+	expect(publicUrls).toEqual({
+		db: "https://db.trycloudflare.com",
+		mobile: "https://mobile.exp.direct",
+	});
+
+	await coordinator.stop();
+	expect(publicUrls).toEqual({ mobile: "https://mobile.exp.direct" });
 });

@@ -1,11 +1,12 @@
 import { anySignal } from "hanzio";
 import { toPortMap } from "../core/ports";
-import type {
-	PublicExposeTarget,
-	PublicTunnel,
-	resolveExposeTargets,
-	startPublicTunnels,
-	stopPublicTunnels,
+import {
+	type PublicExposeTarget,
+	type PublicTunnel,
+	type resolveExposeTargets,
+	type startPublicTunnels,
+	type stopPublicTunnels,
+	withoutPublicUrls,
 } from "../core/tunnel";
 import type {
 	AppConfig,
@@ -72,6 +73,9 @@ export function createTunnelCoordinator<
 	const inheritedPublicUrls: Record<string, string> = {};
 	let pendingTargets: PublicExposeTarget[] = [];
 	let tunnels: PublicTunnel[] = [];
+	// The URLs this run's tunnels set: closing them removes only these, never
+	// a URL an app printed (`captures`) beside them.
+	let openedPublicUrls: Record<string, string> = {};
 	let ownedRegistryEntries: TunnelRegistryEntry[] = [];
 	const openingController = new AbortController();
 	let opening: Promise<void> | undefined;
@@ -86,6 +90,11 @@ export function createTunnelCoordinator<
 		urls: Record<string, string>,
 	): ComputedPublicUrls<TServices, TApps> {
 		return urls as ComputedPublicUrls<TServices, TApps>;
+	}
+	/** `env.setPublicUrls` replaces the map: keep what apps printed. */
+	function addPublicUrls(urls: Record<string, string>): void {
+		const current = env.publicUrls as Record<string, string>;
+		env.setPublicUrls(asPublicUrls({ ...current, ...urls }));
 	}
 
 	async function inheritReusedPublicUrls(appNames: string[]): Promise<void> {
@@ -192,7 +201,7 @@ export function createTunnelCoordinator<
 				...(selectedServiceNames ?? Object.keys(env.services)),
 			],
 		};
-		env.setPublicUrls(asPublicUrls(inheritedPublicUrls));
+		addPublicUrls(inheritedPublicUrls);
 		pendingTargets = liveTargets.filter(
 			(target) =>
 				!(
@@ -233,14 +242,10 @@ export function createTunnelCoordinator<
 			signal.throwIfAborted();
 		}
 		tunnels = started;
-		env.setPublicUrls(
-			asPublicUrls({
-				...inheritedPublicUrls,
-				...Object.fromEntries(
-					tunnels.map((tunnel) => [tunnel.name, tunnel.publicUrl] as const),
-				),
-			}),
+		openedPublicUrls = Object.fromEntries(
+			tunnels.map((tunnel) => [tunnel.name, tunnel.publicUrl] as const),
 		);
+		addPublicUrls(openedPublicUrls);
 
 		ownedRegistryEntries = tunnels
 			.filter((tunnel) => tunnel.kind === "app")
@@ -265,7 +270,16 @@ export function createTunnelCoordinator<
 	async function stop(): Promise<void> {
 		openingController.abort(new Error("Tunnel startup stopped"));
 		await opening?.catch(() => {});
-		env.clearPublicUrls();
+		const current = env.publicUrls as Record<string, string>;
+		env.setPublicUrls(
+			asPublicUrls(
+				withoutPublicUrls(current, {
+					...inheritedPublicUrls,
+					...openedPublicUrls,
+				}),
+			),
+		);
+		openedPublicUrls = {};
 		const tunnelsToStop = tunnels;
 		const entriesToRemove = ownedRegistryEntries.map((entry) => ({
 			kind: entry.kind,

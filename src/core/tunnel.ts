@@ -190,3 +190,16 @@ export async function stopPublicTunnels(
 ): Promise<void> {
 	await Promise.allSettled(tunnels.map((tunnel) => tunnel.close()));
 }
+
+/**
+ * `current` without the URLs `removed` set: a key whose value has changed
+ * since (an app printed a new one) is someone else's and stays.
+ */
+export function withoutPublicUrls(
+	current: Readonly<Record<string, string>>,
+	removed: Readonly<Record<string, string>>,
+): Record<string, string> {
+	return Object.fromEntries(
+		Object.entries(current).filter(([key, url]) => removed[key] !== url),
+	);
+}

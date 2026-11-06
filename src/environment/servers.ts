@@ -10,6 +10,7 @@ import {
 	resolveExposeTargets,
 	startPublicTunnels,
 	stopPublicTunnels,
+	withoutPublicUrls,
 } from "../core/tunnel";
 import { assertOnlyAppNames, pickApps, resolveSelectedApps } from "../planning";
 import type {
@@ -358,17 +359,4 @@ export function createServersApi<
 	}
 
 	return { startServersOnly, waitForServersReady, openPublicTunnels };
-}
-
-/**
- * `current` without the URLs `removed` set: a key whose value has changed
- * since (an app printed a new one) is someone else's and stays.
- */
-export function withoutPublicUrls(
-	current: Readonly<Record<string, string>>,
-	removed: Readonly<Record<string, string>>,
-): Record<string, string> {
-	return Object.fromEntries(
-		Object.entries(current).filter(([key, url]) => removed[key] !== url),
-	);
 }
