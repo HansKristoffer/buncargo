@@ -13,8 +13,8 @@ import { getComposeArgs } from "./compose-command";
 import {
 	type DockerDaemonState,
 	dockerDaemonState,
+	dockerDaemonStateFrom,
 	dockerUnavailableError,
-	isDaemonDownMessage,
 } from "./preflight";
 
 export interface StartContainersOptions {
@@ -123,6 +123,16 @@ export async function startContainers(
 }
 
 /**
+ * What a failed teardown said about the daemon. A failure nobody has
+ * classified came from a daemon that answered, so it reads as up and the
+ * teardown's own failure is reported.
+ */
+function daemonStateFromTeardown(result: DockerRunResult): DockerDaemonState {
+	const said = dockerDaemonStateFrom(result);
+	return said.state === "failed" ? { state: "up" } : said;
+}
+
+/**
  * Stop and remove Docker Compose containers.
  *
  * Compose finds them by the project label, so the compose file is only needed
@@ -173,27 +183,21 @@ export async function stopContainers(
 		// A verbose run streamed that failure to the terminal instead of
 		// capturing it, so only then is the probe worth its fork.
 		// Only a daemon that is really down has nothing running: one that
-		// refuses this user or does not answer may hold every container. A
-		// captured failure that is not "cannot connect" came from a daemon
-		// that answered.
-		const captured = result.stderr.trim();
-		const daemon: DockerDaemonState = captured
-			? isDaemonDownMessage(captured)
-				? { state: "down" }
-				: { state: "up" }
+		// refuses this user or does not answer may hold every container.
+		const captured =
+			result.stderr.trim() !== "" || result.spawnErrorCode !== undefined;
+		const daemon = captured
+			? daemonStateFromTeardown(result)
 			: dockerDaemonState(binary);
 		if (daemon.state !== "up" && daemon.state !== "down") {
-			const unavailable = dockerUnavailableError(daemon, binary);
-			throw new Error(
-				`Could not stop ${projectName}'s containers. ${unavailable.message}`,
-			);
+			const unavailable = dockerUnavailableError(daemon, binary).message;
+			const message = `Could not stop ${projectName}'s containers. ${unavailable}`;
+			throw new Error(message);
 		}
 		if (daemon.state === "down") {
 			// A reset that silently kept the volumes would not be one.
-			if (removeVolumes)
-				throw new Error(
-					`Docker is not running, so the volumes of ${projectName} were not removed. Start Docker, then run again.`,
-				);
+			const keptVolumes = `Docker is not running, so the volumes of ${projectName} were not removed. Start Docker, then run again.`;
+			if (removeVolumes) throw new Error(keptVolumes);
 			if (verbose)
 				console.log(formatStep("ℹ Docker is not running. Nothing to stop."));
 			return;
