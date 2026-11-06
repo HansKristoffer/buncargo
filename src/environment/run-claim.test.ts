@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readLeases } from "../core/leases";
 import { flushRunPatches, type RunSource } from "../core/run-publish";
-import { findRunsByRoot, loadRuns, type RunEntry } from "../core/run-registry";
+import {
+	findRunsByRoot,
+	loadRuns,
+	patchRun,
+	type RunEntry,
+} from "../core/run-registry";
 import type { AppConfig } from "../types";
 import type { DevEnvContext } from "./context";
 import { createDevEnvironment } from "./create-dev-environment";
@@ -155,7 +160,7 @@ describe("createRunClaimApi", () => {
 });
 
 describe("a claim's lifecycle and its apps", () => {
-	function appClaimApi(root: string) {
+	function appClaimApi(root: string, services: RunSource["services"] = {}) {
 		const ctx = {
 			config: { projectPrefix: "demo", services: {}, apps: {} },
 			projectName: "demo-apps",
@@ -177,7 +182,7 @@ describe("a claim's lifecycle and its apps", () => {
 			urls: {},
 			loopbackUrls: {},
 			publicUrls: {},
-			services: {},
+			services,
 			hosts: null,
 			resolvePrimaryApp: () => undefined,
 		});
@@ -240,6 +245,36 @@ describe("a claim's lifecycle and its apps", () => {
 		expect(await status("web")).toBe("starting");
 		expect(await status("jobs")).toBe("failed");
 		await claim.releaseApps();
+	});
+
+	it("never reads a service `buncargo stop` stopped as ready, until a start ensures it again", async () => {
+		// A library `claimApps` describes every service `ready`, and the run's
+		// readiness report is queued: either landing after the stop resurrected
+		// the service.
+		const root = mkdtempSync(join(home, "stopped-service-"));
+		const claim = appClaimApi(root, { postgres: {} });
+		const session = { sessionId: claim.sessionId };
+		const status = async () =>
+			(await loadRuns()).find((run) => run.sessionId === claim.sessionId)
+				?.services[0]?.status;
+		await claim.claimRun();
+		await patchRun(claim.sessionId, {
+			services: [{ name: "postgres", status: "stopped" }],
+		});
+		claim.servicesReady(["postgres"]);
+		await flushRunPatches(session);
+		expect(await status()).toBe("stopped");
+
+		await claim.claimApps({ jobs: worker() });
+		expect(await status()).toBe("stopped");
+
+		// A second `start()` under the same claim brings it up again.
+		await claim.claimRun();
+		claim.servicesReady(["postgres"]);
+		await flushRunPatches(session);
+		expect(await status()).toBe("ready");
+		await claim.releaseApps();
+		await claim.retireRun({ containersDown: true });
 	});
 
 	it("leaves a restarted app starting when a later start lists another", async () => {

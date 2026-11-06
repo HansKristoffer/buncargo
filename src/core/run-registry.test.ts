@@ -487,13 +487,23 @@ describe("patchRun", () => {
 		}
 	});
 
-	it("lets a service come back after it was stopped", async () => {
-		// Its states are written after the fact, never reported late: a run
-		// that starts it again marks it ready, and it used to stay `stopped`.
+	it("lets a service come back after it was stopped, through starting", async () => {
+		// A run that starts it again marks it `starting` and then `ready`; it
+		// used to stay `stopped`.
+		await publishRun(makeRun({ services: [DB] }));
+		await patchRun("s1", { services: [{ name: "db", status: "stopped" }] });
+		await patchRun("s1", { services: [{ name: "db", status: "starting" }] });
+		await patchRun("s1", { services: [{ name: "db", status: "ready" }] });
+		expect((await loadRuns())[0]?.services[0]?.status).toBe("ready");
+	});
+
+	it("never lets a late readiness report or a describe undo a stop", async () => {
+		// Both say `ready` without having started anything since the stop.
 		await publishRun(makeRun({ services: [DB] }));
 		await patchRun("s1", { services: [{ name: "db", status: "stopped" }] });
 		await patchRun("s1", { services: [{ name: "db", status: "ready" }] });
-		expect((await loadRuns())[0]?.services[0]?.status).toBe("ready");
+		await describeRun(makeRun({ services: [DB] }));
+		expect((await loadRuns())[0]?.services[0]?.status).toBe("stopped");
 	});
 
 	it("keeps a running app's status when it adopts a detached pid", async () => {
