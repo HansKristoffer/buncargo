@@ -49,6 +49,12 @@ export function appExitState(
 	return isDeliberateExit(code, signal) ? "stopped" : "failed";
 }
 
+/** What a run ended by a restart that could not replace the app says. */
+export function restartFailure(name: string, error: Error): Error {
+	const message = `App "${name}" could not be restarted: ${error.message}`;
+	return new Error(message, { cause: error });
+}
+
 /** Owns only children created by one startDevServers invocation. */
 export class ProcessOwner {
 	readonly controller = new AbortController();
@@ -253,8 +259,7 @@ export class ProcessOwner {
 			this.park(name);
 			return;
 		}
-		const message = `App "${name}" could not be restarted: ${error.message}`;
-		this.controller.abort(new Error(message, { cause: error }));
+		this.controller.abort(restartFailure(name, error));
 	}
 
 	private isOptional(name: string): boolean {

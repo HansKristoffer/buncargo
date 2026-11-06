@@ -122,9 +122,8 @@ export async function spawnOwnedWorker(
 					unreadable: () =>
 						"may still be running: its process could not be inspected",
 				});
-				throw new Error(
-					`Worker "${name}" (pid ${pid}) ${reason}. Reuse it through the CLI, or use dev --takeover to move it here.`,
-				);
+				const refusal = `Worker "${name}" (pid ${pid}) ${reason}. Reuse it through the CLI, or use dev --takeover to move it here.`;
+				throw new Error(refusal);
 			}
 			const entries = decision.standing;
 
@@ -149,8 +148,14 @@ export async function spawnOwnedWorker(
 					? await readProcessIdentityAsync(child.pid, signal)
 					: undefined;
 				if (exited() && options.allowEarlyExit) return await handBack();
-				if (!child.pid || !identity || exited()) {
+				if (!child.pid || exited()) {
 					throw new Error(`Worker "${name}" exited before process startup`);
+				}
+				// Running, but a claim without its identity could never be told
+				// apart from a later process reusing the pid.
+				if (!identity) {
+					const refusal = `Worker "${name}" (pid ${child.pid}) could not be inspected to claim it, so it was stopped. Check that \`ps -p ${child.pid}\` works, then start again.`;
+					throw new Error(refusal);
 				}
 
 				await registry.write(path, [

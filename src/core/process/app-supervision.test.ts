@@ -335,6 +335,13 @@ it("stops a detached server whose launcher a restart retires mid-adoption", asyn
 		expect(session.pids.web).not.toBe(listener);
 	} finally {
 		await session.stop();
+		// Detached and unref'd: if the session missed it, it holds the port
+		// past this test. Stopped by the pid it recorded, and nothing else.
+		if (await Bun.file(marker).exists()) {
+			const listener = Number(await Bun.file(marker).text());
+			if (listener > 1 && isProcessAlive(listener))
+				process.kill(listener, "SIGKILL");
+		}
 		await rm(root, { recursive: true, force: true });
 	}
 }, 15000);
