@@ -148,8 +148,14 @@ export async function spawnOwnedWorker(
 					? await readProcessIdentityAsync(child.pid, signal)
 					: undefined;
 				if (exited() && options.allowEarlyExit) return await handBack();
-				if (!child.pid || !identity || exited()) {
+				if (!child.pid || exited()) {
 					throw new Error(`Worker "${name}" exited before process startup`);
+				}
+				// Running, but a claim without its identity could never be told
+				// apart from a later process reusing the pid.
+				if (!identity) {
+					const refusal = `Worker "${name}" (pid ${child.pid}) could not be inspected to claim it, so it was stopped. Check that \`ps -p ${child.pid}\` works, then start again.`;
+					throw new Error(refusal);
 				}
 
 				await registry.write(path, [

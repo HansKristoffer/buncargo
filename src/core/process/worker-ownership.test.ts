@@ -205,6 +205,29 @@ it("hands a non-essential worker that died while being claimed to the supervisor
 	}
 });
 
+it("says a running worker whose identity cannot be read was not claimed, not that it exited", async () => {
+	const root = fixture();
+	// Still running, by every account the claim has, but no process by that
+	// pid can be inspected: it is above any pid the system hands out.
+	const unreadable = () => {
+		const child = Object.assign(new EventEmitter(), {
+			pid: 2 ** 22,
+			exitCode: null,
+			signalCode: null,
+		});
+		queueMicrotask(() => child.emit("spawn"));
+		return child as unknown as AppChild;
+	};
+	const refusal = await spawnOwnedWorker(root, "jobs", unreadable).then(
+		() => "",
+		(error: Error) => error.message,
+	);
+	expect(refusal).not.toContain("exited");
+	expect(refusal).toContain(`Worker "jobs" (pid ${2 ** 22})`);
+	expect(refusal).toContain("could not be inspected");
+	expect(await findWorker(root, "jobs")).toBeUndefined();
+});
+
 const alive = (pid: number) => {
 	try {
 		process.kill(pid, 0);
