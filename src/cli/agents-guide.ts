@@ -73,8 +73,9 @@ const TOPICS: readonly Topic[] = [
 
 - \`bunx buncargo dev --detach\` starts the run in the background and returns once
   every app is up. Exit 1 names the apps that did not come up; the others keep
-  running. Exit 0 also when every app was already running and is reused. Do
-  not use \`nohup\`, \`&\` or \`disown\`.
+  running. Exit 0 also when every app was already running and is reused. Exit
+  2: still starting after 10 minutes; the run goes on, so wait with
+  \`bunx buncargo wait --app=<app>\`. Do not use \`nohup\`, \`&\` or \`disown\`.
 - When it fails, the last block of its output names what failed (an app, the
   seed or a step), shows its last 20 lines and the setup checks that warned,
   and says what to run next: \`dev --detach 2>&1 | tail -40\` is enough. Do

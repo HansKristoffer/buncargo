@@ -1166,7 +1166,7 @@ describe("a failed detached run's report", () => {
 			const code = await withProcessExitTrap(() =>
 				runCli(env, { args: [], watchdog: false }),
 			);
-			return { code, report: readDetachedReport(root) };
+			return { code, report: readDetachedReport(root, process.pid) };
 		} finally {
 			if (saved === undefined) delete process.env.BUNCARGO_DETACHED;
 			else process.env.BUNCARGO_DETACHED = saved;
