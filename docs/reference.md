@@ -130,7 +130,7 @@ version the project did not choose.
 
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`), including `vars`: the variables `exec`, tasks and the apps are given, without their Infisical secrets. `--get ports.api` prints one raw value for scripts, and a bare name (`--get DATABASE_URL`) reads from `vars`. `--export` prints `vars` as quoted `export` lines.
 
-`buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached.log` and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed; 2 when apps are still starting after 10 minutes (the run keeps going; `buncargo wait --app=<app>` waits on). The previous detached run's output is kept in `.buncargo/logs/detached.previous.log`. A failure ends the output with one block: what failed in one line (the app, the seed or the step), its last 20 lines of output, the setup checks that warned before the start, and what to run next (`buncargo logs <app>`), so `dev --detach | tail` shows the cause. Attached `dev` ends a failed start with the same block. Stop it with `buncargo stop`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
+`buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached-<pid>.log` (`.buncargo/logs/detached.log` links to the newest run's) and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed; 2 when apps are still starting after 10 minutes (the run keeps going; `buncargo wait --app=<app>` waits on). The log of the last detached run that ended is kept until a later one has ended too. A failure ends the output with one block: what failed in one line (the app, the seed or the step), its last 20 lines of output, the setup checks that warned before the start, and what to run next (`buncargo logs <app>`), so `dev --detach | tail` shows the cause. Attached `dev` ends a failed start with the same block. Stop it with `buncargo stop`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
 
 A detached run stops by itself after 2 hours idle: no request through buncargo's named-hosts proxy to this checkout and no `buncargo` command run in it. `buncargo runs` and `ls` show the time left (`runs --json` gives it as `idleStopsAt`), and once the watchdog has stopped a run, `stop` and `ls` say so and why. While a `dev` in a terminal runs in the same checkout, the detached run is left alone, since that run may be serving from its apps. `dev --detach --keep` turns the limit off. Traffic that does not pass the proxy does not count: `localhost:port`, a public tunnel, and Tailscale mode (`BUNCARGO_HOSTS=tailscale`, where detached runs get no limit). With named hosts on and a hosts daemon that does not count requests (one older than the limit, or none running), the limit is not enforced; `buncargo hosts install` updates the daemon. A detached run whose checkout has been deleted for 10 minutes is stopped too, `--keep` or not. A run in a terminal is never stopped either way.
 
@@ -356,7 +356,7 @@ bun run benchmark:startup --samples=10 --baseline=.buncargo/benchmarks/baseline.
 
 `startAfter: ["api"]` spawns an app only once `api` is healthy (a worker: spawned and alive). Unlike `requiredApps`, which only adds apps to the selection, this orders them in every mode, not just around `--expose` tunnels. It selects its targets too, and a cycle is a config error. `prebuild` runs a command to completion before an app's `devCommand` starts, beside the prebuilds of its wave; the app spawns only after it succeeds.
 
-`buncargo wait --app=<name> [--timeout=<seconds>] [--hold]` blocks until an app of this checkout's run is healthy, then exits 0; it exits 1 when the app failed or stopped, 2 at the timeout, and 130 or 143 when interrupted. With `--hold` it stays alive until the app or its run stops. That is what a script or Playwright needs ("wait for the stack, then test"), and what the Shopify integration's generated web runs.
+`buncargo wait --app=<name> [--timeout=<seconds>] [--hold]` blocks until an app of this checkout's run is healthy, then exits 0; it exits 1 when the app failed or stopped, 2 at the timeout, and 130 or 143 when interrupted before the app is healthy. With `--hold` it stays alive until the app or its run stops, and a signal after the app is healthy exits 0. That is what a script or Playwright needs ("wait for the stack, then test"), and what the Shopify integration's generated web runs.
 
 ## Discovered workspaces
 
@@ -493,8 +493,12 @@ idle hold; `--detach` returns once they are ready.
 
 Ctrl-C (or `SIGTERM`, `SIGHUP`) ends a `dev` run wherever it is: the apps stop,
 its named hosts and tunnels are released, the containers wait out the idle hold,
-and `dev` exits 130 (143, 129). A second Ctrl-C while that is under way exits at
-once; the next `dev` in the checkout replaces whatever was left running.
+and `dev` exits 130 (143, 129). A second Ctrl-C while apps are still stopping names
+them instead of exiting: an app can take its `stopGraceMs` to save data, such
+as the Firebase emulators' export, and a third Ctrl-C exits without waiting for
+it, which can lose that data. Once the apps are down, a second Ctrl-C exits at
+once and skips the rest of the cleanup; the next `dev` in the checkout replaces
+whatever was left running.
 
 Mutually exclusive modes cannot be combined. Configuration, selection, dependency
 references and cycles are validated before startup changes host configuration or

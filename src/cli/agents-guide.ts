@@ -113,7 +113,8 @@ const TOPICS: readonly Topic[] = [
 ## Readiness
 
 - \`bunx buncargo wait --app=<app>\` blocks until the app is healthy (exit 0),
-  failed (1), timed out (2) or was interrupted (130, 143). Use it instead of
+  failed (1), timed out (2) or was interrupted before it was healthy (130,
+  143). With \`--hold\`, a signal after that exits 0. Use it instead of
   \`sleep\` or \`curl\` loops.`,
 	},
 	{

@@ -7,47 +7,81 @@ import { RunInterrupted } from "../core/process/process-owner";
  * The first one interrupts: the run's signal aborts with `RunInterrupted`
  * (the reason the supervisor reads as "stop the apps, this is no failure"),
  * the run tears down, and it exits 128 + the signal's number whichever way it
- * got there. A second one exits at once: a teardown step that hangs used to
- * leave SIGKILL as the only way out. The sweep reads a run that died without
- * releasing as a crash, and its containers wait out the idle hold, so nothing
- * of the developer's is lost by leaving early. `ci` does the opposite on
- * purpose: its teardown removes a volume and must finish.
+ * got there.
+ *
+ * While the apps are still stopping, a second one only says which: an app
+ * can take its `stopGraceMs` to save data (the Firebase emulators export for
+ * up to a minute), and exiting closes the pseudo-terminal a TUI or
+ * terminal-less app runs in, which ends it mid-save. A third one exits.
+ * Once the apps are down, a second one exits at once: a teardown step that
+ * hangs used to leave SIGKILL as the only way out. The sweep reads a run that
+ * died without releasing as a crash, and its containers wait out the idle
+ * hold. `ci` does the opposite on purpose: its teardown removes a volume and
+ * must finish.
  */
 
 export const SIGNAL_EXIT = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
 export type RunSignal = keyof typeof SIGNAL_EXIT;
 
 /**
- * The same signal this soon after the first is the first one again, not a
- * second Ctrl-C: `bun run dev` forwards the terminal's Ctrl-C to a child the
+ * The same signal this soon after the one before is that one again, not
+ * another Ctrl-C: `bun run dev` forwards the terminal's Ctrl-C to a child the
  * terminal already sent it to, and a prompt raises the SIGINT it read.
  */
 export const SIGNAL_ECHO_MS = 100;
 
 export type InterruptState =
-	{ kind: "running" } | { kind: "interrupted"; signal: RunSignal; at: number };
+	| { kind: "running" }
+	| {
+			kind: "interrupted";
+			/** The first signal, whose exit code the run ends with. */
+			signal: RunSignal;
+			/** The last signal taken, and when, for the echo filter. */
+			last: RunSignal;
+			at: number;
+			/** Whether a signal has already been answered with the apps still stopping. */
+			warned: boolean;
+	  };
 
 export type SignalDecision =
 	| { action: "interrupt"; next: InterruptState }
 	| { action: "ignore" }
+	| { action: "warn"; apps: readonly string[]; next: InterruptState }
 	| { action: "force-exit"; code: number };
 
-/** What a signal arriving at `now` does to a run in `state`. */
+/**
+ * What a signal arriving at `now` does to a run in `state`, with `stopping`
+ * the apps whose processes have not exited yet.
+ */
 export function decideSignal(
 	state: InterruptState,
 	signal: RunSignal,
 	now: number,
+	stopping: readonly string[],
 ): SignalDecision {
 	return typedSwitch(state, "kind", {
 		running: (): SignalDecision => ({
 			action: "interrupt",
-			next: { kind: "interrupted", signal, at: now },
+			next: {
+				kind: "interrupted",
+				signal,
+				last: signal,
+				at: now,
+				warned: false,
+			},
 		}),
-		interrupted: (first): SignalDecision => {
-			const echo = signal === first.signal && now - first.at < SIGNAL_ECHO_MS;
-			return echo
-				? { action: "ignore" }
-				: { action: "force-exit", code: SIGNAL_EXIT[first.signal] };
+		interrupted: (previous): SignalDecision => {
+			const echo =
+				signal === previous.last && now - previous.at < SIGNAL_ECHO_MS;
+			if (echo) return { action: "ignore" };
+			const firstWhileStopping = !previous.warned && stopping.length > 0;
+			if (firstWhileStopping)
+				return {
+					action: "warn",
+					apps: stopping,
+					next: { ...previous, last: signal, at: now, warned: true },
+				};
+			return { action: "force-exit", code: SIGNAL_EXIT[previous.signal] };
 		},
 	});
 }
@@ -63,23 +97,37 @@ export interface RunInterrupts {
 }
 
 /**
- * Listen for the run's signals until `dispose()`. `forceExit` is called on a
- * second signal, with the first one's exit code, and must not return.
+ * Listen for the run's signals until `dispose()`. `stopping` names the apps
+ * whose processes are still running; `warn` is called with them on a second
+ * signal while there are any, and `forceExit` on the signal after that (or a
+ * second one once there are none), with the first one's exit code. It must
+ * not return.
  */
 export function listenForInterrupts(options: {
 	clock: () => number;
+	stopping: () => readonly string[];
+	warn: (apps: readonly string[]) => void;
 	forceExit: (code: number) => never;
 }): RunInterrupts {
 	const controller = new AbortController();
 	let state: InterruptState = { kind: "running" };
 	const receive = (signal: RunSignal) => {
-		const decision = decideSignal(state, signal, options.clock());
+		const decision = decideSignal(
+			state,
+			signal,
+			options.clock(),
+			options.stopping(),
+		);
 		typedSwitch(decision, "action", {
 			interrupt: ({ next }) => {
 				state = next;
 				controller.abort(new RunInterrupted(`Run interrupted (${signal})`));
 			},
 			ignore: () => {},
+			warn: ({ apps, next }) => {
+				state = next;
+				options.warn(apps);
+			},
 			"force-exit": ({ code }) => options.forceExit(code),
 		});
 	};
