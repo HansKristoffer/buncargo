@@ -84,7 +84,7 @@ The sweep and volume pruning live in `container-runtime/` too; see
   Apple's `down` still stops it gracefully before `delete --force`.
 - `diagnoseService` is why a dead container fails in about two seconds instead of after the full
   readiness timeout. `readiness.ts` calls it every eighth poll and asks `startupVerdict`: a stopped
-  container aborts, and so does one seen restarting on two diagnoses, the crash loop a preset's
+  container aborts, and so does one seen restarting on two diagnoses in a row, the crash loop a preset's
   restart policy (typesense, mailpit) would otherwise keep up until the timeout. Matched
   positively, so a state neither backend has shown us yet keeps polling rather than killing a
   startup that would have worked. `logTail` is enrichment: a backend that cannot produce it

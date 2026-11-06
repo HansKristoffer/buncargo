@@ -102,7 +102,7 @@ async function pollUntilHealthy(
 ): Promise<void> {
 	const { serviceName, runtime, probe, port } = context;
 	let lastDiagnosis: ServiceDiagnosis | undefined;
-	let restartsSeen = 0;
+	let restartsInARow = 0;
 
 	const deadline = performance.now() + timeoutMs;
 	for (let i = 0; remainingTime(deadline) > 0; i++) {
@@ -136,9 +136,12 @@ async function pollUntilHealthy(
 		if (i > 0 && i % DIAGNOSIS_EVERY_ATTEMPTS === 0) {
 			lastDiagnosis = await diagnose(context, remainingTime(deadline), signal);
 			if (lastDiagnosis) {
-				if (parseContainerState(lastDiagnosis.state) === "restarting")
-					restartsSeen++;
-				const verdict = startupVerdict(lastDiagnosis, restartsSeen);
+				// In a row: a service that exits while its dependency comes up,
+				// then runs, is a restart policy doing its job, not a crash loop.
+				const restarting =
+					parseContainerState(lastDiagnosis.state) === "restarting";
+				restartsInARow = restarting ? restartsInARow + 1 : 0;
+				const verdict = startupVerdict(lastDiagnosis, restartsInARow);
 				if (verdict.kind !== "pending") {
 					const exit =
 						lastDiagnosis.exitCode !== undefined
