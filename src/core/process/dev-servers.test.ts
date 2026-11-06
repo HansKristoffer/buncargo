@@ -230,11 +230,11 @@ describe("startDevServers ordering, prebuild and captures", () => {
 				(await Bun.file(log).exists())
 					? (await Bun.file(log).text()).split("\n")
 					: [];
-			while (
-				Date.now() < deadline &&
-				(await events()).filter((line) => line === "dependent spawned").length <
-					2
-			) {
+			// The restart and web's own fetch race each other: wait for both.
+			const settled = (lines: string[]) =>
+				lines.filter((line) => line === "dependent spawned").length >= 2 &&
+				(lines.includes("web saw api") || lines.includes("api down"));
+			while (Date.now() < deadline && !settled(await events())) {
 				await Bun.sleep(50);
 			}
 			const lines = await events();
