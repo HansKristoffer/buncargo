@@ -116,23 +116,47 @@ interface SelectionEnd {
  * directly, so they have to be moved aside rather than filtered.
  */
 function holdInterrupts(onInterrupt: () => void): () => void {
-	const held = process.listeners("SIGINT");
+	const held = new Set(process.listeners("SIGINT"));
 	process.removeAllListeners("SIGINT");
 	process.on("SIGINT", onInterrupt);
+	// A listener its owner removes meanwhile (the run ended while the pager
+	// was open) is not put back: removing one that is held aside would
+	// otherwise do nothing, and the release would revive it.
+	const { off, removeListener } = process;
+	const forget = function (
+		this: NodeJS.Process,
+		event: string | symbol,
+		listener: (...args: unknown[]) => void,
+	) {
+		if (event === "SIGINT") held.delete(listener);
+		return removeListener.call(this, event, listener);
+	} as typeof process.removeListener;
+	process.off = forget;
+	process.removeListener = forget;
 	let released = false;
 	return () => {
 		if (released) return;
 		released = true;
+		process.off = off;
+		process.removeListener = removeListener;
 		process.off("SIGINT", onInterrupt);
 		for (const listener of held) process.on("SIGINT", listener);
 	};
 }
 
+/**
+ * Where keys go: buncargo's own bindings, the selected app (interact mode),
+ * or the "open which app?" list. One value, so no two can be on at once.
+ */
+type InputMode =
+	| { kind: "navigate" }
+	| { kind: "interact" }
+	| { kind: "picker"; index: number };
+
 export class RunTui {
 	private selected = 0;
-	private interacting = false;
+	private mode: InputMode = { kind: "navigate" };
 	private errorsOnly = false;
-	private picker: number | undefined;
 	/** Text selected in a pane, in display columns. */
 	private selection?: {
 		pane: string;
@@ -148,7 +172,13 @@ export class RunTui {
 	private pending = "";
 	private escTimer?: ReturnType<typeof setTimeout>;
 	private message: string | undefined;
+	/** How far each pane is scrolled back: the Overview's ("") in lines. */
 	private scroll = new Map<string, number>();
+	/**
+	 * An app pane scrolled back is held by a marker on its top row, so new
+	 * output (and a trimmed scrollback) does not move what it shows.
+	 */
+	private anchors = new Map<string, IMarker>();
 	private unread = new Set<string>();
 	private lines: OutputLine[] = [];
 	private frame: string[] = [];
@@ -194,14 +224,21 @@ export class RunTui {
 	}
 
 	start(): void {
+		// Twice would subscribe twice, and capture the captured writes as the
+		// terminal's own.
+		if (this.active) return;
 		const { output } = this.options;
 		output.terminalSize = () => this.paneSize();
 		this.unsubscribe = output.subscribe({
 			line: (line) => {
 				this.lines.push(line);
 				if (this.lines.length > OVERVIEW_LINES) this.lines.shift();
-				if (line.level === "error" && this.selectedApp() !== line.app)
-					this.unread.add(line.app);
+				// Only an app has a sidebar row to mark; buncargo's own lines do not.
+				const unread =
+					line.level === "error" &&
+					this.selectedApp() !== line.app &&
+					this.options.apps.includes(line.app);
+				if (unread) this.unread.add(line.app);
 				// Keep a scrolled-back view where it is.
 				const overview = this.scroll.get("") ?? 0;
 				if (overview > 0 && (!this.errorsOnly || line.level !== undefined))
@@ -233,6 +270,10 @@ export class RunTui {
 		clearTimeout(this.timer);
 		clearTimeout(this.escTimer);
 		this.unsubscribe?.();
+		// Apps restarted from here on have no pane to be sized to.
+		this.options.output.terminalSize = undefined;
+		for (const anchor of this.anchors.values()) anchor.dispose();
+		this.anchors.clear();
 		this.stdin.off("data", this.onInput);
 		this.stdout.off("resize", this.onResize);
 		process.off("exit", this.onExit);
@@ -368,7 +409,12 @@ export class RunTui {
 		let typed = "";
 		const send = () => {
 			const app = this.selectedApp();
-			if (typed && app) this.options.output.screens.get(app)?.input(typed);
+			if (typed && app) {
+				// Typing answers what is live: back to the bottom, where the
+				// app's cursor is.
+				this.scrollTo(app, 0);
+				this.options.output.screens.get(app)?.input(typed);
+			}
 			typed = "";
 		};
 		for (const key of keys) {
@@ -376,11 +422,16 @@ export class RunTui {
 			// Mouse reports are ours (the wheel scrolls the pane): an app that
 			// never asked for them must not receive them as typed input.
 			if (mouse) {
-				if (this.picker === undefined) this.mouse(mouse);
-			} else if (!this.interacting) this.key(key);
+				if (this.mode.kind !== "picker") this.mouse(mouse);
+				continue;
+			}
+			// Any key, in any mode, ends what the last one left on screen.
+			this.message = undefined;
+			this.clearSelection();
+			if (this.mode.kind !== "interact") this.key(key);
 			else if (key === ESC || key === LEAVE) {
 				send();
-				this.interacting = false;
+				this.mode = { kind: "navigate" };
 			} else typed += key;
 		}
 		send();
@@ -388,22 +439,24 @@ export class RunTui {
 	}
 
 	private key(key: string): void {
-		this.message = undefined;
-		this.clearSelection();
 		const app = this.selectedApp();
 		const count = this.options.apps.length + 1;
 
-		if (this.picker !== undefined) {
+		if (this.mode.kind === "picker") {
 			const targets = this.urlTargets();
+			const { index } = this.mode;
 			if (key === "\u001b[A" || key === "k")
-				this.picker = Math.max(0, this.picker - 1);
+				this.mode = { kind: "picker", index: Math.max(0, index - 1) };
 			else if (key === "\u001b[B" || key === "j")
-				this.picker = Math.min(targets.length - 1, this.picker + 1);
-			else if (key === "\r") {
-				const target = targets[this.picker];
+				this.mode = {
+					kind: "picker",
+					index: Math.min(targets.length - 1, index + 1),
+				};
+			else {
+				const target = key === "\r" ? targets[index] : undefined;
+				this.mode = { kind: "navigate" };
 				if (target) this.open(target[1]);
-				this.picker = undefined;
-			} else this.picker = undefined;
+			}
 			return;
 		}
 
@@ -421,7 +474,7 @@ export class RunTui {
 				return;
 			case "\r":
 				if (app && this.options.output.screens.has(app))
-					this.interacting = true;
+					this.mode = { kind: "interact" };
 				return;
 			case "\u001b[5~":
 				this.scrollBy(this.paneSize().rows - 1);
@@ -433,7 +486,7 @@ export class RunTui {
 			case "\u001b[F":
 			case "\u001bOF":
 			case "\u001b[4~":
-				this.scroll.set(app ?? "", 0);
+				this.scrollTo(app ?? "", 0);
 				return;
 			case "\u001b[H":
 			case "\u001bOH":
@@ -451,14 +504,17 @@ export class RunTui {
 					const url = this.options.urlFor(app);
 					if (url) this.open(url);
 					else this.message = `${app} has no URL`;
-				} else if (this.urlTargets().length > 0) this.picker = 0;
+				} else if (this.urlTargets().length > 0)
+					this.mode = { kind: "picker", index: 0 };
 				else this.message = "No app has a URL yet";
 				return;
 			case "r":
 				if (app) {
 					const restart = this.options.output.controls?.restart;
 					if (restart) void restart(app).catch(() => {});
-					this.message = `Restarting ${app}…`;
+					this.message = restart
+						? `Restarting ${app}…`
+						: `${app} cannot restart until the run has started its apps`;
 				}
 				return;
 			case "l":
@@ -490,7 +546,7 @@ export class RunTui {
 		else if (button === 0 && pressed) {
 			this.clearSelection();
 			if (column <= this.sidebarWidth()) {
-				if (this.interacting) return;
+				if (this.mode.kind === "interact") return;
 				// Row 1 is the header; then Overview, the rule, and the apps.
 				const entry = row - 2;
 				if (entry === 0) this.select(0);
@@ -604,7 +660,7 @@ export class RunTui {
 		const screen = this.options.output.screens.get(app);
 		if (!screen) return undefined;
 		const buffer = screen.term.buffer.active;
-		return Math.max(0, buffer.baseY - (this.scroll.get(app) ?? 0)) + y;
+		return Math.max(0, buffer.baseY - this.scrollOf(app)) + y;
 	}
 
 	/**
@@ -701,7 +757,34 @@ export class RunTui {
 		const max = app
 			? (this.options.output.screens.get(app)?.term.buffer.active.baseY ?? 0)
 			: Math.max(0, this.overviewLines().length - this.paneSize().rows);
-		this.scroll.set(key, clamp((this.scroll.get(key) ?? 0) + lines, 0, max));
+		this.scrollTo(key, clamp(this.scrollOf(key) + lines, 0, max));
+	}
+
+	/** How many lines pane `key` ("" the Overview) is scrolled back now. */
+	private scrollOf(key: string): number {
+		const anchor = this.anchors.get(key);
+		const buffer = this.options.output.screens.get(key)?.term.buffer.active;
+		if (!anchor || !buffer) return this.scroll.get(key) ?? 0;
+		// Its row was trimmed away: the oldest one kept is the closest.
+		if (anchor.isDisposed) return buffer.baseY;
+		return Math.max(0, buffer.baseY - anchor.line);
+	}
+
+	/**
+	 * Scroll pane `key` to `lines` back. An app's pane is held by a marker on
+	 * its top row, so it stays on the same text while the app prints; the
+	 * Overview's lines are counted as they arrive instead (`start()`).
+	 */
+	private scrollTo(key: string, lines: number): void {
+		this.anchors.get(key)?.dispose();
+		this.anchors.delete(key);
+		this.scroll.set(key, lines);
+		const term = this.options.output.screens.get(key)?.term;
+		const buffer = term?.buffer.active;
+		if (!term || !buffer || lines === 0 || buffer.type === "alternate") return;
+		const top = buffer.baseY - lines;
+		const anchor = term.registerMarker(top - (buffer.baseY + buffer.cursorY));
+		if (anchor) this.anchors.set(key, anchor);
 	}
 
 	private open(url: string): void {
@@ -831,9 +914,9 @@ export class RunTui {
 		// The app's own cursor, where it is, while keys go to it.
 		const screen = app ? output.screens.get(app) : undefined;
 		if (
-			this.interacting &&
+			this.mode.kind === "interact" &&
 			screen?.cursorVisible &&
-			(this.scroll.get(app ?? "") ?? 0) === 0
+			this.scrollOf(app ?? "") === 0
 		) {
 			const buffer = screen.term.buffer.active;
 			out += `\u001b[${buffer.cursorY + 2};${side + 2 + buffer.cursorX}H\u001b[?25h`;
@@ -846,13 +929,14 @@ export class RunTui {
 		pane: { cols: number; rows: number },
 	): string[] {
 		const { output } = this.options;
-		if (this.picker !== undefined) {
+		if (this.mode.kind === "picker") {
 			const targets = this.urlTargets();
+			const picked = this.mode.index;
 			const rows = [
 				fit(pc.bold(" Open which app?"), pane.cols),
 				...targets.map(([name, url], index) =>
 					fit(
-						`${index === this.picker ? pc.inverse(` ${name} `) : ` ${colorizeName(name)} `} ${pc.dim(url)}`,
+						`${index === picked ? pc.inverse(` ${name} `) : ` ${colorizeName(name)} `} ${pc.dim(url)}`,
 						pane.cols,
 					),
 				),
@@ -878,7 +962,7 @@ export class RunTui {
 			return rows;
 		}
 		const buffer = screen.term.buffer.active;
-		const start = Math.max(0, buffer.baseY - (this.scroll.get(app) ?? 0));
+		const start = Math.max(0, buffer.baseY - this.scrollOf(app));
 		const cell = buffer.getNullCell();
 		return this.highlight(
 			Array.from({ length: pane.rows }, (_, y) =>
@@ -915,15 +999,15 @@ export class RunTui {
 			title = ` Overview${this.errorsOnly ? pc.yellow("  errors and warnings only") : ""}${scroll > 0 ? pc.yellow(`  ↑ ${scroll} lines · End to follow`) : ""}`;
 		} else {
 			const url = this.options.urlFor(app);
-			const scroll = this.scroll.get(app) ?? 0;
-			title = ` ${colorizeName(app)}${url ? `  ${pc.cyan(url)}` : ""}${scroll > 0 ? pc.yellow(`  ↑ ${scroll} lines · End to follow`) : ""}${this.interacting ? pc.green("  keys go to the app · Esc to leave") : ""}`;
+			const scroll = this.scrollOf(app);
+			title = ` ${colorizeName(app)}${url ? `  ${pc.cyan(url)}` : ""}${scroll > 0 ? pc.yellow(`  ↑ ${scroll} lines · End to follow`) : ""}${this.mode.kind === "interact" ? pc.green("  keys go to the app · Esc to leave") : ""}`;
 		}
 		return `${left}${pc.dim("│")}${fit(title, cols - side - 1)}`;
 	}
 
 	private footer(app: string | undefined, cols: number): string {
 		if (this.message) return fit(` ${this.message}`, cols);
-		if (this.interacting)
+		if (this.mode.kind === "interact")
 			return fit(
 				` ${pc.green("●")} interacting with ${app} · ${pc.bold("Esc")} back to buncargo`,
 				cols,

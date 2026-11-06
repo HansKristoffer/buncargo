@@ -13,6 +13,7 @@ import { askConfirm, PromptInterruptedError } from "../core/prompt";
 import {
 	flushRunPatches,
 	markApps,
+	markAppsRestarting,
 	publishCurrentRun,
 	recordAppSpawn,
 	recordAppUrls,
@@ -69,6 +70,7 @@ import {
 	reclaimAppRoute,
 	releaseNamedHosts,
 } from "./dev-hosts";
+import { listenForInterrupts } from "./dev-interrupts";
 import {
 	acquireAppLeases,
 	leaseSkipLines,
@@ -76,6 +78,11 @@ import {
 	warnSkippedLeaseApps,
 } from "./dev-leases";
 import { openDevOutput } from "./dev-output";
+import {
+	acceptTakeover,
+	initialTakeover,
+	shouldOfferTakeover,
+} from "./dev-takeover";
 import {
 	createTunnelCoordinator,
 	type DevTunnelCoordinator,
@@ -215,6 +222,7 @@ export async function runCli<
 	}
 
 	exitOnDevArgErrors(args);
+	for (const warning of args.ignoredFlags) log.warn(warning);
 
 	if (args.detach) {
 		const { runDetached } = await import("./dev-detach");
@@ -232,17 +240,27 @@ export async function runCli<
 		);
 	}
 
-	const controller = new AbortController();
-	let interruptCode: number | undefined;
-	const signals = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
-	const listeners = Object.entries(signals).map(([signal, code]) => {
-		const listener = () => {
-			interruptCode = code;
-			controller.abort(new Error("Startup interrupted"));
-		};
-		process.on(signal, listener);
-		return { signal, listener };
+	// The first SIGINT/SIGTERM/SIGHUP aborts the run with `RunInterrupted`, a
+	// second exits at once (`dev-interrupts.ts`).
+	const interrupts = listenForInterrupts({
+		clock: () => performance.now(),
+		forceExit: (code) => {
+			// After the TUI's own `exit` handler, which leaves its screen.
+			process.once("exit", () => {
+				restoreTerminal();
+				log.errorNow("Interrupted again: exiting before cleanup finished.", [
+					"The next `buncargo dev` here replaces anything left running; the containers wait out their idle hold.",
+				]);
+			});
+			process.exit(code);
+		},
 	});
+	const controller = new AbortController();
+	interrupts.signal.addEventListener(
+		"abort",
+		() => controller.abort(interrupts.signal.reason),
+		{ once: true },
+	);
 	const tunnels = createTunnelCoordinator(
 		env,
 		cliTestTunnel ?? {
@@ -260,6 +278,13 @@ export async function runCli<
 			: createNoopPhaseTimer());
 
 	let connect: DevConnect | undefined;
+	// Every path ends here once, whichever reaches it first: the one-shot
+	// modes, "nothing to start", the end of the run, and a failure.
+	let tearingDown: Promise<void> | undefined;
+	const teardownOnce = () => {
+		tearingDown ??= teardown(env, tunnels, connect);
+		return tearingDown;
+	};
 	let exitCode: DevFlowExit;
 	const failureContext: DevFailureContext = { setupHints: [] };
 	try {
@@ -271,14 +296,15 @@ export async function runCli<
 			timer,
 			signal: controller.signal,
 			failureContext,
+			teardown: teardownOnce,
 		});
 	} catch (error) {
 		controller.abort(error);
 		timer.report();
-		// The prompt re-raises SIGINT, but the listener above runs after this.
-		if (error instanceof PromptInterruptedError) interruptCode ??= 130;
+		// The prompt re-raises SIGINT, which arrives after this.
+		if (error instanceof PromptInterruptedError) interrupts.promptInterrupted();
 		const failure =
-			interruptCode === undefined
+			interrupts.exitCode() === undefined
 				? describeDevFailure(error, failureContext)
 				: undefined;
 		if (failure && detachedRunMode() !== undefined) {
@@ -289,7 +315,7 @@ export async function runCli<
 			}));
 		}
 		try {
-			await teardown(env, tunnels, connect);
+			await teardownOnce();
 		} finally {
 			// Last, after teardown's own messages: agents read `dev | tail`.
 			if (failure) {
@@ -297,11 +323,15 @@ export async function runCli<
 				log.errorNow(message, hints);
 			}
 		}
-		process.exit(interruptCode ?? 1);
+		process.exit(interrupts.exitCode() ?? 1);
 	} finally {
-		for (const { signal, listener } of listeners) process.off(signal, listener);
+		interrupts.dispose();
 	}
 
+	// 128 + the signal however an interrupted run ended: one that only held
+	// services or tunnels returns normally from the signal.
+	const interrupted = interrupts.exitCode();
+	if (interrupted !== undefined) process.exit(interrupted);
 	if (exitCode !== undefined) {
 		process.exit(exitCode);
 	}
@@ -386,9 +416,11 @@ async function runDevFlow<
 		connect?: DevConnect;
 		/** Filled in as the run goes, for the block a failure ends on. */
 		failureContext: DevFailureContext;
+		/** The run's one teardown; every path calls it, it runs once. */
+		teardown: () => Promise<void>;
 	},
 ): Promise<DevFlowExit> {
-	const { timer, signal, connect, failureContext } = options;
+	const { timer, signal, connect, failureContext, teardown } = options;
 	// Loaded only in the background run that reports to `dev --detach`.
 	const detached =
 		detachedRunMode() !== undefined ? await import("./dev-detach") : undefined;
@@ -396,7 +428,7 @@ async function runDevFlow<
 		// The one-shot modes end here, and `--up-only` is exactly the kind of
 		// run someone times.
 		timer.report();
-		await teardown(env, tunnels, connect);
+		await teardown();
 		return code;
 	}
 
@@ -405,16 +437,14 @@ async function runDevFlow<
 	if (args.down && args.all) {
 		const { stopAllBuncargoEnvironments } = await import("./commands/inspect");
 		await stopAllBuncargoEnvironments();
-		return 0;
+		return exitWith(0);
 	}
 
 	if (args.down || args.reset) {
 		env.logInfo();
-		await tunnels.stop();
 		await removeHostRoutes(routesDownRemoves(env.root));
 		await env.stop({ removeVolumes: args.reset, signal });
-		restoreTerminal();
-		return 0;
+		return exitWith(0);
 	}
 
 	// ── App selection ────────────────────────────────────────────────────────
@@ -453,6 +483,9 @@ async function runDevFlow<
 				runChecks(checks, { root: env.root, env: anyEnv }),
 			)
 		).filter((result) => !result.ok);
+		// The steps below take no signal: a Ctrl-C during one is seen at the
+		// next boundary, before anything else starts.
+		signal.throwIfAborted();
 		const warnings = describeCheckFailures(failed.filter(isWarning));
 		for (const line of warnings) log.warn(line);
 		// Repeated with a failure, at the end, which is where it is read.
@@ -466,6 +499,7 @@ async function runDevFlow<
 		await timer.measure("preflight", () =>
 			runPreflight(anyEnv, Object.keys(appsForDev)),
 		);
+		signal.throwIfAborted();
 	}
 	connect?.plan(appsForDev, plan.requiredServiceKeys, env.services);
 	if (connect && !connect.active)
@@ -505,7 +539,10 @@ async function runDevFlow<
 	// After named hosts, which owns the first-run prompt slot on a fresh
 	// machine, and before the containers, so a question cannot land in the
 	// middle of startup output.
-	if (!args.oneShot) await offerMenuBarApp();
+	if (!args.oneShot) {
+		signal.throwIfAborted();
+		await offerMenuBarApp();
+	}
 	// Kept for the TUI, which covers the scrollback they were printed in.
 	const printedHostsWarnings: string[] = [];
 	const flushHostsWarnings = (): void => {
@@ -517,6 +554,7 @@ async function runDevFlow<
 	// the hold its flags ask for; `start()` claims too, and keeps this one.
 	// Claimed whether or not a watchdog is wanted: the claim is what says the
 	// containers are somebody's, and the registry has to say so either way.
+	signal.throwIfAborted();
 	if (hasServices)
 		await env.claimRun({
 			idleTimeoutMs: resolveIdleTimeout(args),
@@ -539,30 +577,35 @@ async function runDevFlow<
 		productionBuild: false,
 	});
 
-	let classifiedApps =
-		args.oneShot && !args.exposeRequested
-			? {
-					startApps: {},
-					reusedApps: {},
-					startNames: [],
-					reusedNames: [],
-					inferredReuseNames: [],
-					unhealthy: [],
-				}
-			: await timer.measure("app ports", () =>
-					classifyCliApps(appsForDev, env.ports, {
-						signal,
-						// No `isPortBusy` override: the default reads every app port from
-						// one snapshot rather than probing each of them separately.
-						waitForServer: (url, timeout) =>
-							withSignal(env.waitForServer(url, timeout), signal),
-						context: { root: env.root, projectName: env.projectName },
-						runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
-						skipContainers: !hasServices,
-					}),
-				);
+	let classifiedApps = args.oneShot
+		? {
+				startApps: {},
+				reusedApps: {},
+				startNames: [],
+				reusedNames: [],
+				inferredReuseNames: [],
+				unhealthy: [],
+			}
+		: await timer.measure("app ports", () =>
+				classifyCliApps(appsForDev, env.ports, {
+					signal,
+					// No `isPortBusy` override: the default reads every app port from
+					// one snapshot rather than probing each of them separately.
+					waitForServer: (url, timeout) =>
+						withSignal(env.waitForServer(url, timeout), signal),
+					context: { root: env.root, projectName: env.projectName },
+					runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
+					skipContainers: !hasServices,
+				}),
+			);
 
+	// Whatever is taken over below, by whichever rule: its lease follows.
+	let takeover = initialTakeover(args.takeover);
 	async function takeOver(candidates: TakeoverCandidates) {
+		// Never begun once interrupted: it kills the other run's servers, and
+		// an interrupted run would not start them here.
+		signal.throwIfAborted();
+		takeover = acceptTakeover(takeover, candidates.names);
 		log.line();
 		await stopRunningApps(candidates.names, env.ports, {
 			root: env.root,
@@ -595,7 +638,7 @@ async function runDevFlow<
 		};
 	}
 	// Explicit takeover precedes public URL inheritance as well as private URL acquisition.
-	if (args.takeover && !args.oneShot) {
+	if (takeover.kind === "all") {
 		const candidates = takeoverCandidates(classifiedApps.reusedApps, env.ports);
 		if (candidates.names.length) await takeOver(candidates);
 	}
@@ -632,6 +675,7 @@ async function runDevFlow<
 	}
 
 	// ── Expose planning ──────────────────────────────────────────────────────
+	// Never in a one-shot mode (`DevCliArgs.ignoredFlags`).
 	if (args.exposeRequested) {
 		await tunnels.planExpose({
 			exposeValue: args.exposeValue,
@@ -641,9 +685,6 @@ async function runDevFlow<
 			startAppNames: new Set(Object.keys(classifiedApps.startApps)),
 			reusedAppNames: new Set(Object.keys(classifiedApps.reusedApps)),
 		});
-		if (args.oneShot) {
-			await tunnels.openOwnedTunnels();
-		}
 	}
 
 	// The modes below exit before the takeover, so nothing is going to retry
@@ -691,21 +732,19 @@ async function runDevFlow<
 	// Decided before the summary and the banner, so both describe what this run
 	// ends up doing rather than a reuse the takeover is about to undo.
 	let nothingToSpawn = classifiedApps.startNames.length === 0;
-	const takeover =
-		!args.takeover &&
-		nothingToSpawn &&
-		!tunnels.hasPendingTargets() &&
-		!connect?.active
-			? takeoverCandidates(classifiedApps.reusedApps, env.ports)
-			: undefined;
-
-	if (takeover && takeover.names.length > 0) {
-		const accepted = isInteractive() && (await promptTakeover(takeover.names));
-
-		if (accepted) {
-			await takeOver(takeover);
-			nothingToSpawn = false;
-		}
+	const running = takeoverCandidates(classifiedApps.reusedApps, env.ports);
+	const offerTakeover = shouldOfferTakeover({
+		decision: takeover,
+		nothingToSpawn,
+		candidates: running.names.length,
+		pendingTunnels: tunnels.hasPendingTargets(),
+		inheritsPublicUrls: tunnels.inheritsPublicUrls(),
+		sharing: connect?.active === true,
+	});
+	const askTakeover = offerTakeover && isInteractive();
+	if (askTakeover && (await promptTakeover(running.names))) {
+		await takeOver(running);
+		nothingToSpawn = false;
 	}
 
 	flushHostsWarnings();
@@ -718,7 +757,7 @@ async function runDevFlow<
 	const { skipped: leaseSkips } = await acquireAppLeases(
 		env,
 		classifiedApps.startApps,
-		{ signal, takeover: args.takeover },
+		{ signal, takeover },
 	);
 	if (leaseSkips.length > 0) {
 		const skippedNames = new Set(leaseSkips.map((skip) => skip.app));
@@ -752,6 +791,7 @@ async function runDevFlow<
 	// classification still describes a reuse the takeover is about to undo, and
 	// `env.urls` may still hold the localhost fallback from the refused first
 	// activation. It lands on the entry the environment claimed, by session.
+	signal.throwIfAborted();
 	await publishCurrentRun(env, {
 		apps: { ...classifiedApps.startApps, ...classifiedApps.reusedApps },
 		reusedNames: classifiedApps.reusedNames,
@@ -793,10 +833,10 @@ async function runDevFlow<
 			);
 		timer.report();
 		log.success("Selected apps are already running. Nothing to start.");
-		if (takeover && takeover.names.length > 0 && !isInteractive()) {
+		if (running.names.length > 0 && !askTakeover) {
 			log.hint("Pass --takeover to stop them and run here instead.");
 		}
-		await teardown(env, tunnels, connect);
+		await teardown();
 		return undefined;
 	}
 
@@ -807,6 +847,15 @@ async function runDevFlow<
 	const parked = new Set<string>();
 	const view = openDevOutput(env, classifiedApps.startApps, { tui: args.tui });
 	failureContext.output = view.output;
+	// A restart (`r`, `buncargo restart`, a watch, a capture's `restartOn`)
+	// says `starting` before its new process spawns. The registry says so too,
+	// or `buncargo wait` answers from the process being replaced.
+	view.output.subscribe({
+		state: (app, { state }) => {
+			if (state === "starting" && spawned.has(app))
+				void markAppsRestarting(env, [app]);
+		},
+	});
 	// A service container stopping under the run: in the run's log, the TUI's
 	// Overview, and on the terminal in stream mode, where events are not printed.
 	env.reportServiceChanges((message, problem) => {
@@ -825,7 +874,9 @@ async function runDevFlow<
 	};
 
 	try {
-		// After every prompt and the banner, which stay in the scrollback.
+		// After every prompt and the banner, which stay in the scrollback, and
+		// never for a run already interrupted.
+		signal.throwIfAborted();
 		view.start();
 		// The TUI covers that scrollback: repeat why an app is missing, and why
 		// the URLs are `localhost:port`, in its Overview (events are not
@@ -982,7 +1033,7 @@ async function runDevFlow<
 	} finally {
 		// First, so teardown's messages land on the user's own screen.
 		await view.stop();
-		await teardown(env, tunnels, connect);
+		await teardown();
 	}
 }
 

@@ -347,17 +347,17 @@ describe("RunTui interact mode", () => {
 		});
 		const state = tui as unknown as {
 			input(data: string): void;
-			interacting: boolean;
+			mode: { kind: string };
 		};
 		tui.start();
 		state.input("j");
 		state.input("\r");
-		expect(state.interacting).toBe(true);
+		expect(state.mode.kind === "interact").toBe(true);
 		return { tui, state, forwarded, quits: () => quits };
 	};
 	// Past the wait that tells a lone Esc from the start of a longer key.
-	const left = (state: { interacting: boolean }) =>
-		until(() => !state.interacting);
+	const left = (state: { mode: { kind: string } }) =>
+		until(() => state.mode.kind !== "interact");
 
 	it("leaves on a lone Esc or Ctrl-], and still sends escape sequences to the app", async () => {
 		const { tui, state, forwarded } = setup();
@@ -365,14 +365,14 @@ describe("RunTui interact mode", () => {
 			state.input("\u001b[A");
 			state.input("\u001bb");
 			state.input("\u001b");
-			expect(state.interacting).toBe(true);
+			expect(state.mode.kind === "interact").toBe(true);
 			await left(state);
-			expect(state.interacting).toBe(false);
+			expect(state.mode.kind === "interact").toBe(false);
 			expect(forwarded).toEqual(["\u001b[A", "\u001bb"]);
 
 			state.input("\r");
 			state.input("x\u001d");
-			expect(state.interacting).toBe(false);
+			expect(state.mode.kind === "interact").toBe(false);
 			expect(forwarded).toEqual(["\u001b[A", "\u001bb", "x"]);
 		} finally {
 			tui.stop();
@@ -388,7 +388,7 @@ describe("RunTui interact mode", () => {
 			// A mouse report split in two: the wheel, never typed into the app.
 			state.input("\u001b[<64;");
 			state.input("40;10M");
-			expect(state.interacting).toBe(true);
+			expect(state.mode.kind === "interact").toBe(true);
 			expect(quits()).toBe(0);
 			expect(forwarded).toEqual(["\u001bq"]);
 
@@ -396,7 +396,7 @@ describe("RunTui interact mode", () => {
 			state.input("a\u001b");
 			await left(state);
 			expect(forwarded).toEqual(["\u001bq", "a"]);
-			expect(state.interacting).toBe(false);
+			expect(state.mode.kind === "interact").toBe(false);
 		} finally {
 			tui.stop();
 		}
@@ -693,6 +693,226 @@ describe("RunTui selection", () => {
 			expect(copied).toEqual([]);
 		} finally {
 			tui.stop();
+		}
+	});
+
+	it("ends a selection begun in interact mode when a key is typed", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const screen = output.screen("api");
+		const tui = new RunTui({
+			output,
+			apps: ["api"],
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		try {
+			tui.start();
+			await new Promise<void>((resolve) =>
+				screen.term.write("alpha beta\r\ngamma delta\r\n", resolve),
+			);
+			screen.input = () => {};
+			type(tui, "j\r");
+			type(tui, press(26, 2) + drag(24, 3));
+			type(tui, "x");
+			type(tui, release(24, 3));
+			expect(copied).toEqual([]);
+		} finally {
+			tui.stop();
+		}
+	});
+});
+
+describe("RunTui state", () => {
+	const wheelUp = "\u001b[<64;40;10M";
+	const setup = (apps = ["api"]) => {
+		const terminal = fakeTerminal();
+		const output = new RunOutput();
+		const tui = new RunTui({
+			output,
+			apps,
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: () => "clipboard",
+		});
+		/** The frame drawn once it shows `text`, from the writes after `since`. */
+		const frame = async (text: string, since = 0) => {
+			const after = () => Bun.stripANSI(terminal.writes.slice(since).join(""));
+			await until(() => after().includes(text));
+			return after();
+		};
+		return { terminal, output, tui, frame };
+	};
+	const write = (output: RunOutput, text: string) =>
+		new Promise<void>((resolve) =>
+			output.screen("api").term.write(text, resolve),
+		);
+	const lines = (from: number, count: number) =>
+		Array.from({ length: count }, (_, i) => `row-${from + i}\r\n`).join("");
+
+	it("gives the terminal its own writes back after a second start", () => {
+		const { tui } = setup();
+		const write = process.stdout.write;
+		tui.start();
+		tui.start();
+		tui.stop();
+		expect(process.stdout.write).toBe(write);
+	});
+
+	it("stops sizing app terminals to its pane once stopped", () => {
+		const { tui, output } = setup();
+		tui.start();
+		expect(output.terminalSize).toBeDefined();
+		tui.stop();
+		expect(output.terminalSize).toBeUndefined();
+	});
+
+	// `r` before the spawner has bound its controls restarts nothing.
+	it("says an app cannot restart yet rather than that it is restarting", async () => {
+		const { tui, frame } = setup();
+		try {
+			tui.start();
+			type(tui, "j");
+			type(tui, "r");
+			expect(await frame("cannot restart")).not.toContain("Restarting api");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("shows the interact footer again once a key is typed after a copy", async () => {
+		const { tui, output, terminal, frame } = setup();
+		output.screen("api").input = () => {};
+		try {
+			tui.start();
+			await write(output, "alpha beta\r\ngamma delta\r\n");
+			type(tui, "j\r");
+			type(
+				tui,
+				"\u001b[<0;26;2M\u001b[<32;24;3M\u001b[<0;24;3m", // drag to copy
+			);
+			await frame("Copied");
+			const since = terminal.writes.length;
+			type(tui, "x");
+			expect(await frame("interacting with api", since)).toContain(
+				"interacting with api",
+			);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("goes back to the live bottom when keys are typed into an app scrolled back", async () => {
+		const { tui, output, terminal, frame } = setup();
+		const typed: string[] = [];
+		output.screen("api").input = (data: string) => void typed.push(data);
+		try {
+			tui.start();
+			await write(output, lines(0, 100));
+			type(tui, "j");
+			type(tui, wheelUp);
+			await frame("↑ 3 lines");
+			type(tui, "\r");
+			const since = terminal.writes.length;
+			type(tui, "x");
+			expect(typed).toEqual(["x"]);
+			expect(await frame("keys go to the app", since)).not.toContain("↑");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	// The Overview already kept its place; an app's pane slid with each line.
+	it("keeps a scrolled-back app pane on the same text as the app prints", async () => {
+		const { tui, output, terminal, frame } = setup();
+		/** The text on the pane's top row as last drawn. */
+		const topRow = () =>
+			/row-\d+/.exec(
+				Bun.stripANSI((tui as unknown as { frame: string[] }).frame[1] ?? ""),
+			)?.[0];
+		try {
+			tui.start();
+			await write(output, lines(0, 100));
+			type(tui, "j");
+			type(tui, wheelUp);
+			await frame("↑ 3 lines");
+			const top = topRow();
+			expect(top).toBeDefined();
+			const since = terminal.writes.length;
+			await write(output, lines(100, 5));
+			await frame("↑ 8 lines", since);
+			expect(topRow()).toBe(top);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("marks only apps unread, never buncargo's own lines", () => {
+		const { tui, output } = setup();
+		try {
+			tui.start();
+			output.line("buncargo", "error: something buncargo said");
+			output.line("api", "error: the api failed");
+			const { unread } = tui as unknown as { unread: Set<string> };
+			expect([...unread]).toEqual(["api"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	// The pager holds the run's SIGINT listeners aside: one removed meanwhile
+	// (the run ended while it was open) must not come back when it closes.
+	it("does not put back a SIGINT listener removed while the pager was open", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-tui-pager-held-"));
+		const saved = process.env.PAGER;
+		const pager = join(dir, "pager.sh");
+		writeFileSync(pager, "#!/bin/sh\nexec sleep 5\n");
+		chmodSync(pager, 0o755);
+		process.env.PAGER = pager;
+		const terminal = fakeTerminal();
+		const tui = new RunTui({
+			output: new RunOutput(),
+			apps: ["api"],
+			urlFor: () => undefined,
+			logPath: () => join(dir, "api.log"),
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+		});
+		const ended = () => {};
+		const kept = () => {};
+		process.on("SIGINT", ended);
+		process.on("SIGINT", kept);
+		try {
+			tui.start();
+			type(tui, "j");
+			type(tui, "l");
+			await until(
+				() => (tui as unknown as { pager?: unknown }).pager !== undefined,
+			);
+			process.off("SIGINT", ended);
+			tui.stop();
+			await until(
+				() => (tui as unknown as { pager?: unknown }).pager === undefined,
+			);
+			expect(process.listeners("SIGINT")).not.toContain(ended);
+			expect(process.listeners("SIGINT")).toContain(kept);
+		} finally {
+			tui.stop();
+			process.off("SIGINT", ended);
+			process.off("SIGINT", kept);
+			if (saved === undefined) delete process.env.PAGER;
+			else process.env.PAGER = saved;
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });

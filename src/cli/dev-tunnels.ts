@@ -53,6 +53,8 @@ export interface DevTunnelCoordinator<
 	/** Open the planned tunnels, register them, and log the environment. */
 	openOwnedTunnels(signal?: AbortSignal): Promise<void>;
 	hasPendingTargets(): boolean;
+	/** Whether a reused app's public URL is another run's tunnel. */
+	inheritsPublicUrls(): boolean;
 	/** Stop owned tunnels and drop their registry entries. */
 	stop(): Promise<void>;
 	readonly env: DevEnvironment<TServices, TApps>;
@@ -201,9 +203,14 @@ export function createTunnelCoordinator<
 	}
 
 	function openOwnedTunnels(signal?: AbortSignal): Promise<void> {
+		// Shared while it is under way; a failed or cancelled open is
+		// forgotten, its targets still pending, so the next call tries again.
 		opening ??= performOpen(
 			anySignal(openingController.signal, signal, options.signal),
-		);
+		).catch((error: unknown) => {
+			opening = undefined;
+			throw error;
+		});
 		return opening;
 	}
 
@@ -216,10 +223,16 @@ export function createTunnelCoordinator<
 			return;
 		}
 
-		tunnels = await tunnelApi.startPublicTunnels(pendingTargets, {
+		const started = await tunnelApi.startPublicTunnels(pendingTargets, {
 			signal,
 		});
-		signal.throwIfAborted();
+		if (signal.aborted) {
+			// Opened while being cancelled: closed here, never left for a
+			// retry to replace.
+			await tunnelApi.stopPublicTunnels(started);
+			signal.throwIfAborted();
+		}
+		tunnels = started;
 		env.setPublicUrls(
 			asPublicUrls({
 				...inheritedPublicUrls,
@@ -277,6 +290,7 @@ export function createTunnelCoordinator<
 		planExpose,
 		openOwnedTunnels,
 		hasPendingTargets: () => pendingTargets.length > 0,
+		inheritsPublicUrls: () => Object.keys(inheritedPublicUrls).length > 0,
 		stop,
 	};
 }

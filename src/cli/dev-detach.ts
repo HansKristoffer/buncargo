@@ -1,7 +1,16 @@
-import { closeSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
+import {
+	closeSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+} from "node:fs";
 import { join } from "node:path";
 import { promiseTimeout } from "hanzio";
 import { logsRoot } from "../core/process/app-logs";
+import { isProcessAlive } from "../core/process/lifecycle";
 import { inOwnUserScope } from "../core/process/user-scope";
 import {
 	readJsonDocumentSync,
@@ -41,6 +50,15 @@ export function detachedLogPath(root: string): string {
 }
 
 /**
+ * The log of the detached run before, moved aside rather than truncated: an
+ * earlier run may still be writing it, and a rename leaves its descriptor
+ * writing there.
+ */
+function previousDetachedLogPath(root: string): string {
+	return join(logsRoot(root), "detached.previous.log");
+}
+
+/**
  * What the background run tells the `dev --detach` waiting on it, which would
  * otherwise have to dig the cause out of the log: the setup checks that
  * warned, and each failure, an app that never came up or the error that ended
@@ -51,8 +69,30 @@ export interface DetachedReport {
 	failures: RunFailure[];
 }
 
-export function detachedReportPath(root: string): string {
-	return join(logsRoot(root), "detached-report.json");
+/**
+ * One per background run, by its pid: a second `dev --detach` in the same
+ * checkout must neither delete nor overwrite the report the first run is
+ * still writing.
+ */
+export function detachedReportPath(root: string, pid: number): string {
+	return join(logsRoot(root), `detached-report-${pid}.json`);
+}
+
+const REPORT_FILE = /^detached-report-(\d+)\.json$/;
+
+/** Drop the reports of runs that have exited; the parent read what it needed. */
+function pruneDetachedReports(root: string): void {
+	let names: string[] = [];
+	try {
+		names = readdirSync(logsRoot(root));
+	} catch {
+		return;
+	}
+	for (const name of names) {
+		const pid = Number(REPORT_FILE.exec(name)?.[1]);
+		if (pid && !isProcessAlive(pid))
+			rmSync(join(logsRoot(root), name), { force: true });
+	}
 }
 
 function validateReport(value: unknown): DetachedReport | undefined {
@@ -65,26 +105,32 @@ function validateReport(value: unknown): DetachedReport | undefined {
 	return valid ? (report as DetachedReport) : undefined;
 }
 
-export function readDetachedReport(root: string): DetachedReport | undefined {
-	return readJsonDocumentSync(detachedReportPath(root), validateReport);
+export function readDetachedReport(
+	root: string,
+	pid: number,
+): DetachedReport | undefined {
+	return readJsonDocumentSync(detachedReportPath(root, pid), validateReport);
 }
 
 /**
- * Update the report of the detached run in `root`. Synchronous, so it is on
- * disk before the registry says the app failed, which is what the parent
- * waits for. No lock: the run itself is the one writer, on one thread. A
- * report that cannot be written loses only the explanation.
+ * Update this process's report as the detached run in `root`. Synchronous,
+ * so it is on disk before the registry says the app failed, which is what
+ * the parent waits for. No lock: the run itself is the one writer, on one
+ * thread. A report that cannot be written loses only the explanation.
  */
 export function recordDetachedReport(
 	root: string,
 	update: (report: DetachedReport) => DetachedReport,
 ): void {
-	const current = readDetachedReport(root) ?? {
+	const current = readDetachedReport(root, process.pid) ?? {
 		setupHints: [],
 		failures: [],
 	};
 	try {
-		writeJsonDocumentSync(detachedReportPath(root), update(current));
+		writeJsonDocumentSync(
+			detachedReportPath(root, process.pid),
+			update(current),
+		);
 	} catch {
 		// The parent falls back to the log.
 	}
@@ -125,6 +171,34 @@ export function settledRun(run: RunEntry, expectApps: boolean): boolean {
 	return run.services.every((service) => service.status === "ready");
 }
 
+/**
+ * How long a settled run's down apps get for their failure reports. An app
+ * that never came up is stopped before it is reported failed, and its exit
+ * reaches the registry as `stopped` first: settling on that printed a
+ * generic failure with no output. An app that stopped on its own (an
+ * `essential: false` one that exited) never gets a report, so the wait ends.
+ */
+export const REPORT_GRACE_MS = 2_000;
+
+/** The down apps of a settled run whose failure is not in the report yet. */
+export function unreportedApps(
+	down: readonly RunAppEntry[],
+	report: DetachedReport | undefined,
+): string[] {
+	return down
+		.filter(
+			(app) => !report?.failures.some((failure) => failure.step === app.name),
+		)
+		.map((app) => app.name);
+}
+
+/**
+ * `dev --detach`'s exit codes: 0 every app up, 1 the run failed or an app did
+ * not come up, 2 still starting at the timeout (the run keeps going), as
+ * `buncargo wait` exits.
+ */
+export const DETACH_EXIT = { ok: 0, failed: 1, timeout: 2 } as const;
+
 function describeApp(app: RunAppEntry): string {
 	return `${app.name}: ${app.status}${app.openUrl ? `  ${app.openUrl}` : ""}`;
 }
@@ -161,7 +235,8 @@ export function namedHostsFallbacks(output: string): string[] {
  * Start the run in the background and wait for it. 0 when every app came up,
  * or when the run finished cleanly with nothing left to run (every selected
  * app already running elsewhere, as attached `dev` exits 0 on); 1 when the run
- * failed or an app did not come up (the others keep running).
+ * failed or an app did not come up (the others keep running); 2 when apps are
+ * still starting at the timeout ({@link DETACH_EXIT}).
  */
 export async function runDetached(input: {
 	root: string;
@@ -176,8 +251,12 @@ export async function runDetached(input: {
 	const argv = detachedArgv(input.argv ?? process.argv);
 	const logPath = detachedLogPath(root);
 	mkdirSync(logsRoot(root), { recursive: true });
-	// A previous run's report would explain this run's failure.
-	rmSync(detachedReportPath(root), { force: true });
+	pruneDetachedReports(root);
+	try {
+		renameSync(logPath, previousDetachedLogPath(root));
+	} catch {
+		// No run before this one.
+	}
 	const out = openSync(logPath, "w");
 	// Its own scope on Linux: the run outlives a restart of the service that
 	// started it. The pid stays the run's own, which the wait below matches.
@@ -192,8 +271,12 @@ export async function runDetached(input: {
 	});
 	closeSync(out);
 	child.unref();
+	// A report left by an earlier process with this pid would explain this
+	// run's failure. Removed before the run has loaded anything to report.
+	rmSync(detachedReportPath(root, child.pid), { force: true });
 
 	let exited: number | undefined;
+	let settledAt: number | undefined;
 	void child.exited.then((code) => {
 		exited = code;
 	});
@@ -206,31 +289,39 @@ export async function runDetached(input: {
 			if (exited === 0) {
 				if (output) log.line(output);
 				log.success("The run had nothing to keep running in the background.");
-				return 0;
+				return DETACH_EXIT.ok;
 			}
 			// The cause last, where `| tail` reads it.
-			const failure = readDetachedReport(root)?.failures.at(-1);
+			const failure = readDetachedReport(root, child.pid)?.failures.at(-1);
 			if (!failure) {
 				if (output) log.line(output);
 				log.errorNow(
 					`The run exited with code ${exited} before its apps came up.`,
 					[`Full output: ${logPath}`],
 				);
-				return 1;
+				return DETACH_EXIT.failed;
 			}
 			log.line(
 				`  The run exited with code ${exited} before its apps came up. Full output: ${logPath}`,
 			);
 			printFailure(failure);
-			return 1;
+			return DETACH_EXIT.failed;
 		}
 		const run = (await findRunsByRoot(root).catch(() => [])).find(
 			(entry) => entry.pid === child.pid,
 		);
-		if (run && settledRun(run, expectApps)) {
-			const down = run.apps.filter(
-				(app) => app.status === "failed" || app.status === "stopped",
-			);
+		const settled = run !== undefined && settledRun(run, expectApps);
+		const down = (run?.apps ?? []).filter(
+			(app) => app.status === "failed" || app.status === "stopped",
+		);
+		const report = readDetachedReport(root, child.pid);
+		if (settled) settledAt ??= Date.now();
+		else settledAt = undefined;
+		const awaitingReport =
+			settledAt !== undefined &&
+			unreportedApps(down, report).length > 0 &&
+			Date.now() - settledAt < REPORT_GRACE_MS;
+		if (run && settled && !awaitingReport) {
 			for (const app of run.apps) log.line(`  ${describeApp(app)}`);
 			log.line(`  pid ${child.pid} · output: ${logPath}`);
 			for (const warning of namedHostsFallbacks(readLog(logPath)))
@@ -243,12 +334,11 @@ export async function runDetached(input: {
 						? "Running in the background until you stop it with `buncargo stop`."
 						: `Running in the background; it stops after ${formatDuration(run.idleLimitMs)} with no request or buncargo command (\`dev --detach --keep\` keeps it). Stop it now with \`buncargo stop\`.`,
 				);
-				return 0;
+				return DETACH_EXIT.ok;
 			}
 			log.line(
 				`  ${down.map((app) => app.name).join(", ")} did not come up; the other apps keep running.`,
 			);
-			const report = readDetachedReport(root);
 			for (const app of down)
 				printFailure(
 					report?.failures.find((failure) => failure.step === app.name) ??
@@ -259,14 +349,14 @@ export async function runDetached(input: {
 							setupHints: report?.setupHints ?? [],
 						}),
 				);
-			return 1;
+			return DETACH_EXIT.failed;
 		}
 		if (Date.now() >= deadline) {
 			log.error(
 				`Apps still starting after ${Math.round(timeoutMs / 1000)}s; the run keeps going (pid ${child.pid}).`,
 			);
 			log.hint(`Follow it: buncargo logs -f · output: ${logPath}`);
-			return 1;
+			return DETACH_EXIT.timeout;
 		}
 		await promiseTimeout(POLL_MS);
 	}

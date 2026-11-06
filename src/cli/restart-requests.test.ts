@@ -13,16 +13,52 @@ import {
 it("restarts each requested app once, including one asked for while draining", async () => {
 	const root = mkdtempSync(join(tmpdir(), "buncargo-restart-requests-"));
 	const restarted: string[] = [];
-	const stop = watchRestartRequests(root, "s1", (app) => {
-		restarted.push(app);
-		// Asked again while the previous batch is being handled.
-		if (app === "api") requestRestart(root, "s1", "shopify");
-	});
+	const stop = watchRestartRequests(
+		root,
+		"s1",
+		(app) => {
+			restarted.push(app);
+			// Asked again while the previous batch is being handled.
+			if (app === "api") requestRestart(root, "s1", "shopify");
+		},
+		() => true,
+	);
 	try {
 		requestRestart(root, "s1", "api");
 		requestRestart(root, "s1", "api");
 		for (let i = 0; i < 40 && restarted.length < 2; i++) await Bun.sleep(50);
 		expect(restarted).toEqual(["api", "shopify"]);
+	} finally {
+		stop();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+// Asked before the run's apps had spawned: the request used to be read and
+// dropped, and `restart` had already said it was asked.
+it("keeps a restart request until the run can act on it", async () => {
+	const root = mkdtempSync(join(tmpdir(), "buncargo-restart-pending-"));
+	const restarted: string[] = [];
+	let ready = false;
+	let polls = 0;
+	const stop = watchRestartRequests(
+		root,
+		"s1",
+		(app) => restarted.push(app),
+		() => {
+			polls++;
+			return ready;
+		},
+	);
+	try {
+		requestRestart(root, "s1", "api");
+		const deadline = performance.now() + 5_000;
+		while (polls < 2 && performance.now() < deadline) await Bun.sleep(20);
+		expect(restarted).toEqual([]);
+		ready = true;
+		while (restarted.length === 0 && performance.now() < deadline)
+			await Bun.sleep(20);
+		expect(restarted).toEqual(["api"]);
 	} finally {
 		stop();
 		rmSync(root, { recursive: true, force: true });
@@ -37,8 +73,11 @@ it("delivers sent keys in order, every one of them, and apart from restarts", as
 		sent.push(`${app}:${JSON.stringify(text)}`);
 		return undefined;
 	});
-	const stopRestarts = watchRestartRequests(root, "s1", (app) =>
-		restarted.push(app),
+	const stopRestarts = watchRestartRequests(
+		root,
+		"s1",
+		(app) => restarted.push(app),
+		() => true,
 	);
 	try {
 		requestSend(root, "s1", "expo", "r");

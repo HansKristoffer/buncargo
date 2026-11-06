@@ -2,14 +2,19 @@ import { getErrorMessage } from "hanzio";
 import type { CheckContext, SetupCheck } from "../types";
 import { CliError } from "./errors";
 
-export interface CheckResult {
-	check: SetupCheck;
-	ok: boolean;
-	/** Why it failed: the check's own detail, or what it threw. */
-	detail?: string;
-	/** This result's severity, when the check set one for it. */
-	severity?: "error" | "warning";
-}
+/**
+ * One check's result. Only a failure has a severity, resolved from the
+ * result's own and then the check's: a passing check is no warning.
+ */
+export type CheckResult =
+	| { check: SetupCheck; ok: true; detail?: string }
+	| {
+			check: SetupCheck;
+			ok: false;
+			/** Why it failed: the check's own detail, or what it threw. */
+			detail?: string;
+			severity: "error" | "warning";
+	  };
 
 /**
  * Run checks at once and return every result, in the order given.
@@ -23,29 +28,28 @@ export async function runChecks(
 ): Promise<CheckResult[]> {
 	return Promise.all(
 		checks.map(async (check): Promise<CheckResult> => {
+			const failed = (detail?: string, severity?: "error" | "warning") => ({
+				check,
+				ok: false as const,
+				detail,
+				severity: severity ?? check.severity ?? "error",
+			});
 			try {
 				const outcome = await check.check(ctx);
-				return typeof outcome === "boolean"
-					? { check, ok: outcome }
-					: {
-							check,
-							ok: outcome.ok,
-							detail: outcome.detail,
-							severity: outcome.severity,
-						};
+				if (typeof outcome === "boolean")
+					return outcome ? { check, ok: true } : failed();
+				return outcome.ok
+					? { check, ok: true, detail: outcome.detail }
+					: failed(outcome.detail, outcome.severity);
 			} catch (error) {
-				return {
-					check,
-					ok: false,
-					detail: getErrorMessage(error),
-				};
+				return failed(getErrorMessage(error));
 			}
 		}),
 	);
 }
 
 export function isWarning(result: CheckResult): boolean {
-	return (result.severity ?? result.check.severity) === "warning";
+	return !result.ok && result.severity === "warning";
 }
 
 /** How to fix a failed check, as one line. */

@@ -61,11 +61,14 @@ and `run-tui.ts` is the controller.
   if it is still active; `stop()` kills an open pager. The pager has the terminal in cooked mode,
   so Ctrl-C there is a SIGINT to the whole process group, run included: the run's SIGINT listeners
   are moved aside until the pager exits, and the signal closes the pager instead (Bun calls the
-  listeners directly, so wrapping `process.emit` does not intercept it).
+  listeners directly, so wrapping `process.emit` does not intercept it). `process.off` is
+  wrapped meanwhile: a listener removed while held aside (the run ended under the pager) would
+  otherwise be put back when the pager closes.
 - Mouse reporting (SGR with drags, `?1000`/`?1002`/`?1006`) is part of entering and leaving the
   screen, so every restore path turns it off too. The wheel scrolls the shown pane, also in
   interact mode, where mouse reports are stripped rather than typed into an app that never asked
-  for them.
+  for them. A scrolled-back app pane is held by a marker on its top row, so it stays on its text
+  while the app prints; a key typed into the app returns it to the bottom.
 
 ## Selection
 

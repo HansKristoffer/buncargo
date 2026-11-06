@@ -268,6 +268,44 @@ export interface DevCliArgs {
 	timingJson: boolean;
 	/** `--migrate`, `--seed` and `--up-only` exit before dev servers start. */
 	oneShot: boolean;
+	/**
+	 * Why each flag given that has no effect in this mode is ignored, to warn
+	 * with. `exposeRequested` and `takeover` read false for them.
+	 */
+	ignoredFlags: string[];
+}
+
+function oneShotModeFlag(modes: {
+	migrate: boolean;
+	seed: boolean;
+	upOnly: boolean;
+}): string | undefined {
+	if (modes.migrate) return "--migrate";
+	if (modes.seed) return "--seed";
+	if (modes.upOnly) return "--up-only";
+	return undefined;
+}
+
+/**
+ * Flags a one-shot mode ignores, with why. `--expose` would open a tunnel
+ * that closes as the command exits, printing a URL that is already dead;
+ * `--takeover` has no app to move here.
+ */
+function oneShotIgnoredFlags(
+	mode: string | undefined,
+	given: { expose: boolean; takeover: boolean },
+): string[] {
+	if (mode === undefined) return [];
+	const ignored: string[] = [];
+	if (given.expose)
+		ignored.push(
+			`--expose is ignored with ${mode}: its tunnels would close as the command exits. Share a running app with \`buncargo dev --detach --expose\`.`,
+		);
+	if (given.takeover)
+		ignored.push(
+			`--takeover is ignored with ${mode}: it starts no app to take over.`,
+		);
+	return ignored;
 }
 
 export function parseDevArgs(rawArgs: string[]): DevCliArgs {
@@ -306,6 +344,12 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		errors.push(
 			"--detach runs the dev servers in the background; it cannot be combined with --tui, --attach or a one-shot mode.",
 		);
+	const oneShotMode = oneShotModeFlag({ migrate, seed, upOnly });
+	const ignoredFlags = oneShotIgnoredFlags(oneShotMode, {
+		expose: bool(FLAGS.expose),
+		takeover: bool(FLAGS.takeover),
+	});
+	const oneShot = oneShotMode !== undefined;
 
 	return {
 		passthrough,
@@ -319,8 +363,8 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		migrate,
 		seed,
 		upOnly,
-		exposeRequested: bool(FLAGS.expose),
-		exposeValue: str(FLAGS.expose),
+		exposeRequested: bool(FLAGS.expose) && !oneShot,
+		exposeValue: oneShot ? undefined : str(FLAGS.expose),
 		appsRequested: bool(FLAGS.apps),
 		appsValue: str(FLAGS.apps),
 		profile: str(FLAGS.profile),
@@ -330,7 +374,7 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		keep: bool(FLAGS.keep),
 		watch: !bool(FLAGS.noWatch),
 		keepContainers: bool(FLAGS.keepContainers),
-		takeover: bool(FLAGS.takeover),
+		takeover: bool(FLAGS.takeover) && !oneShot,
 		replaceStale: bool(FLAGS.replaceStale),
 		watchdogTimeoutMinutes:
 			watchdogTimeout === undefined
@@ -343,7 +387,8 @@ export function parseDevArgs(rawArgs: string[]): DevCliArgs {
 		// for a shell or an agent that wants it on every run.
 		timing: bool(FLAGS.timing) || bool(FLAGS.timingJson) || isTimingEnabled(),
 		timingJson: bool(FLAGS.timingJson),
-		oneShot: migrate || seed || upOnly,
+		oneShot,
+		ignoredFlags,
 	};
 }
 

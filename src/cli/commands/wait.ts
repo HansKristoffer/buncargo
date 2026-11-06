@@ -52,8 +52,13 @@ export const WAIT_COMMAND_SPEC: CommandSpec = {
 	],
 };
 
-/** 0 healthy · 1 failed or stopped · 2 timed out waiting. */
+/**
+ * 0 healthy · 1 failed or stopped · 2 timed out waiting · 128 + the signal
+ * when interrupted (130 Ctrl-C, 143 SIGTERM).
+ */
 const WAIT_EXIT = { ok: 0, failed: 1, timeout: 2 } as const;
+const SIGNAL_EXIT = { SIGINT: 130, SIGTERM: 143 } as const;
+export type WaitSignal = keyof typeof SIGNAL_EXIT;
 
 const POLL_MS = 500;
 
@@ -63,6 +68,31 @@ function isUp(app: RunAppEntry | undefined): boolean {
 
 function isDown(app: RunAppEntry | undefined): boolean {
 	return app?.status === "failed" || app?.status === "stopped";
+}
+
+export type WaitVerdict =
+	| { kind: "healthy" }
+	| { kind: "down" }
+	| { kind: "interrupted"; code: number }
+	| { kind: "timed-out" }
+	| { kind: "poll-again" };
+
+/**
+ * What one poll of the registry means. A signal wins over what the poll
+ * read: one that arrived while it read was answered "healthy" when the app
+ * came up in that same poll, and "failed" otherwise.
+ */
+export function waitVerdict(input: {
+	app: RunAppEntry | undefined;
+	interrupted: WaitSignal | undefined;
+	pastDeadline: boolean;
+}): WaitVerdict {
+	if (input.interrupted !== undefined)
+		return { kind: "interrupted", code: SIGNAL_EXIT[input.interrupted] };
+	if (isUp(input.app)) return { kind: "healthy" };
+	if (isDown(input.app)) return { kind: "down" };
+	if (input.pastDeadline) return { kind: "timed-out" };
+	return { kind: "poll-again" };
 }
 
 async function findApp(root: string, name: string) {
@@ -112,23 +142,38 @@ export async function handleWait(args: string[]): Promise<number> {
 		timeoutSeconds === 0
 			? Number.POSITIVE_INFINITY
 			: Date.now() + timeoutSeconds * 1000;
-	let stopping = false;
-	const stop = () => {
-		stopping = true;
-	};
-	process.on("SIGTERM", stop);
-	process.on("SIGINT", stop);
+	// The first signal; it also cuts the sleep between polls short.
+	let interrupted: WaitSignal | undefined;
+	const stopped = new AbortController();
+	const listeners = (Object.keys(SIGNAL_EXIT) as WaitSignal[]).map((signal) => {
+		const listener = () => {
+			interrupted ??= signal;
+			stopped.abort();
+		};
+		process.on(signal, listener);
+		return { signal, listener };
+	});
+	const pause = (ms: number) =>
+		promiseTimeout(ms, { signal: stopped.signal }).catch(() => {});
 
 	try {
 		for (;;) {
 			const found = await findApp(root, name);
-			if (isUp(found?.app)) break;
-			if (isDown(found?.app)) {
+			const verdict = waitVerdict({
+				app: found?.app,
+				interrupted,
+				pastDeadline: Date.now() >= deadline,
+			});
+			if (verdict.kind === "healthy") break;
+			if (verdict.kind === "interrupted") {
+				log.error(`Interrupted while waiting for ${name}.`);
+				return verdict.code;
+			}
+			if (verdict.kind === "down") {
 				log.error(`${name} is ${found?.app.status}.`);
 				return WAIT_EXIT.failed;
 			}
-			if (stopping) return WAIT_EXIT.failed;
-			if (Date.now() >= deadline) {
+			if (verdict.kind === "timed-out") {
 				log.error(
 					found
 						? `${name} did not become healthy within ${timeoutSeconds}s.`
@@ -136,20 +181,20 @@ export async function handleWait(args: string[]): Promise<number> {
 				);
 				return WAIT_EXIT.timeout;
 			}
-			await promiseTimeout(POLL_MS);
+			await pause(POLL_MS);
 		}
 
 		if (!readBooleanFlag(args, FLAGS.hold)) return WAIT_EXIT.ok;
 
-		// Held until the app or its whole run goes away, or we are told to stop.
-		while (!stopping) {
+		// Held until the app or its whole run goes away, or we are told to
+		// stop: the way the Shopify CLI ends the web process it runs, so 0.
+		while (interrupted === undefined) {
 			const found = await findApp(root, name);
 			if (!found || isDown(found.app)) break;
-			await promiseTimeout(POLL_MS * 2);
+			await pause(POLL_MS * 2);
 		}
 		return WAIT_EXIT.ok;
 	} finally {
-		process.off("SIGTERM", stop);
-		process.off("SIGINT", stop);
+		for (const { signal, listener } of listeners) process.off(signal, listener);
 	}
 }
