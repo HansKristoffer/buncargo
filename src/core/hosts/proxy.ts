@@ -18,9 +18,15 @@ export const HEALTH_PATH = "/_buncargo/health";
  * identical from a 404, which is how a stalled daemon went unnoticed for days.
  */
 export interface ProxyRoutesView {
+	/** Hostnames the bound listener answers for: routed, and its leaf covers them. */
 	hostnames: string[];
 	/** Epoch ms of the last successful refresh. */
 	lastReloadAt: number;
+	/**
+	 * Why the listener could not move to the certificate on disk. It keeps the
+	 * previous leaf meanwhile, so `hostnames` lacks whatever that leaf misses.
+	 */
+	bindError?: string;
 }
 
 const LOOP_MESSAGE =
@@ -138,6 +144,7 @@ export function createProxyFetch(input: {
 				routes: view.hostnames.length,
 				hostnames: view.hostnames,
 				lastReloadAt: view.lastReloadAt,
+				...(view.bindError === undefined ? {} : { bindError: view.bindError }),
 			});
 		}
 
@@ -539,6 +546,7 @@ export type ProxyHealth =
 			routeCount: number;
 			hostnames: string[];
 			lastReloadAt: number;
+			bindError?: string;
 	  }
 	| { outdated: true };
 
@@ -548,6 +556,7 @@ function parseProxyHealth(value: unknown): ProxyHealth | undefined {
 		routes?: unknown;
 		hostnames?: unknown;
 		lastReloadAt?: unknown;
+		bindError?: unknown;
 	};
 	if (
 		!Array.isArray(body.hostnames) ||
@@ -560,6 +569,9 @@ function parseProxyHealth(value: unknown): ProxyHealth | undefined {
 		routeCount: typeof body.routes === "number" ? body.routes : 0,
 		hostnames: body.hostnames as string[],
 		lastReloadAt: body.lastReloadAt,
+		...(typeof body.bindError === "string"
+			? { bindError: body.bindError }
+			: {}),
 	};
 }
 

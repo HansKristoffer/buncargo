@@ -165,12 +165,12 @@ export interface CertificateLeaf {
 	validTo: number;
 }
 
-/** The leaf at `certPath`, or `undefined` when it is missing or unreadable. */
-export function readCertificateLeaf(
-	certPath: string,
+/** The leaf in a PEM, or `undefined` when it is not one. */
+export function parseCertificateLeaf(
+	pem: string | Buffer,
 ): CertificateLeaf | undefined {
 	try {
-		const cert = new X509Certificate(readFileSync(certPath));
+		const cert = new X509Certificate(pem);
 		const names = new Set(
 			(cert.subjectAltName ?? "")
 				.split(",")
@@ -178,6 +178,17 @@ export function readCertificateLeaf(
 				.filter(Boolean),
 		);
 		return { names, validTo: Date.parse(cert.validTo) };
+	} catch {
+		return undefined;
+	}
+}
+
+/** The leaf at `certPath`, or `undefined` when it is missing or unreadable. */
+export function readCertificateLeaf(
+	certPath: string,
+): CertificateLeaf | undefined {
+	try {
+		return parseCertificateLeaf(readFileSync(certPath));
 	} catch {
 		return undefined;
 	}

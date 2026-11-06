@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { withFileLock } from "../file-lock";
 import {
 	certificateFingerprint,
+	certificateServes,
 	describeCertificateGap,
 	describeCertificateShortfall,
 	hostnamesForCertificate,
@@ -417,5 +418,15 @@ describe("certificateFingerprint", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("certificateServes", () => {
+	// What the daemon lists in health: a leaf it cannot read serves nothing,
+	// rather than everything the route map holds.
+	it("serves nothing for a certificate it cannot parse", () => {
+		expect(certificateServes("not a certificate")("app.localhost", 0)).toBe(
+			false,
+		);
 	});
 });

@@ -85,6 +85,8 @@ describeSoak("named hosts under worktree churn", () => {
 			certificateFingerprint,
 			describeCertificateGap: () => undefined,
 			readCertificatePair: async () => ({ cert: "", key: "" }),
+			// Plain HTTP here: every route the map holds is served.
+			certificateServes: () => () => true,
 			startProxy: async (input) => {
 				const started = await startLocalProxy({
 					lookup: input.lookup,

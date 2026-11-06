@@ -8,10 +8,12 @@ import {
 	certNeedsRenewal,
 	ensureMkcert,
 	mintCert,
+	parseCertificateLeaf,
 	readCertificateLeaf,
 	resolvedMkcertPath,
 } from "./mkcert";
 import { getCertPath, getKeyPath } from "./paths";
+import { certificateCovers } from "./plan";
 import { loadHostRoutes } from "./registry";
 
 /**
@@ -167,6 +169,24 @@ export async function readCertificatePair(): Promise<{
 		cert: await Bun.file(certPath).text(),
 		key: await Bun.file(keyPath).text(),
 	}));
+}
+
+/**
+ * Which hostnames a bound certificate answers for, at a given moment.
+ *
+ * What the daemon reports as served. A route the listener's own leaf does not
+ * cover, or any route once that leaf has expired, fails TLS in the browser
+ * however complete the route map is, and a health body that listed it anyway
+ * let a run advertise https URLs that could not load.
+ */
+export function certificateServes(
+	certPem: string,
+): (hostname: string, now: number) => boolean {
+	const leaf = parseCertificateLeaf(certPem);
+	return (hostname, now) =>
+		leaf !== undefined &&
+		leaf.validTo > now &&
+		certificateCovers(leaf.names, hostname);
 }
 
 /**

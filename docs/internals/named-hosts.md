@@ -111,6 +111,12 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   reported the daemon as down, which the remint for a new worktree's hostnames makes likely. A
   failed bind therefore leaves the previous listener serving and `lastCertKey` unadvanced, so the
   next reload retries.
+- Health lists the hostnames the *bound* leaf serves (`certificateServes`: covered and unexpired),
+  not the route map, and carries `bindError` while a rebind fails. Listing the map let a run whose
+  remint never bound pass `waitForDaemonRoutes` and advertise https URLs that failed TLS.
+- The certificate gap is reported on a route change, a remint, and at least hourly
+  (`CERTIFICATE_RECHECK_MS`): expiry arrives with neither, and the daemon cannot renew. The next
+  `buncargo dev` remints a leaf within 30 days of expiry.
 - `watchHostsState` reloads on a filesystem event instead of waiting for the next poll, which is
   0-1000ms of pure waiting on every run in every worktree. It watches the *directories*, because
   writes land through a temp file and a rename, so a file watch would hold an inode that never

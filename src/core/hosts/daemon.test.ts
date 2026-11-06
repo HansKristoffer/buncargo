@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withFileLock } from "../file-lock";
 import {
+	CERTIFICATE_RECHECK_MS,
 	createDebouncedTrigger,
 	createHostsReloader,
 	createReloadWakeup,
@@ -378,6 +379,7 @@ function reloaderHarness(overrides: Partial<HostsReloaderDeps> = {}) {
 		certificateFingerprint: () => state.fingerprint,
 		describeCertificateGap: () => state.gap,
 		readCertificatePair: async () => ({ cert: "CERT", key: "KEY" }),
+		certificateServes: () => () => true,
 		startProxy: async () => {
 			state.binds += 1;
 			return {
@@ -567,6 +569,74 @@ describe("createHostsReloader", () => {
 		await reloader.reload();
 		expect(state.binds).toBe(2);
 		expect(state.stops).toBe(1);
+	});
+
+	// The failure this pins: health listed the new hostnames while the old
+	// listener kept the old leaf, so `waitForDaemonRoutes` passed and the run
+	// advertised https URLs that failed TLS.
+	it("reports only what the bound certificate serves while a rebind fails", async () => {
+		const covers: Record<string, string[]> = {
+			"cert-v1": ["web.demo.localhost"],
+			"cert-v2": ["web.demo.localhost", "api.demo.localhost"],
+		};
+		let failBind = false;
+		const { state, reloader } = reloaderHarness({
+			readCertificatePair: async () => ({ cert: state.fingerprint, key: "K" }),
+			certificateServes: (cert) => (hostname) =>
+				covers[cert]?.includes(hostname) ?? false,
+			startProxy: async () => {
+				if (failBind) throw new Error("EADDRINUSE");
+				return { httpsPort: 443, stop: () => {} } satisfies LocalProxy;
+			},
+		});
+		state.routes = [route("web.demo.localhost", 5173)];
+		await reloader.reload();
+		expect(reloader.routes().hostnames).toEqual(["web.demo.localhost"]);
+
+		state.routes = [...state.routes, route("api.demo.localhost", 3000)];
+		state.fingerprint = "cert-v2";
+		failBind = true;
+		await expect(reloader.reload()).rejects.toThrow("EADDRINUSE");
+		expect(reloader.routes().hostnames).toEqual(["web.demo.localhost"]);
+		expect(reloader.routes().bindError).toBe("EADDRINUSE");
+
+		failBind = false;
+		await reloader.reload();
+		expect(reloader.routes().hostnames.sort()).toEqual([
+			"api.demo.localhost",
+			"web.demo.localhost",
+		]);
+		expect(reloader.routes().bindError).toBeUndefined();
+	});
+
+	it("serves nothing once the bound certificate has expired", async () => {
+		const expiresAt = 10_000;
+		const { state, reloader } = reloaderHarness({
+			certificateServes: () => (_hostname, now) => now < expiresAt,
+		});
+		state.routes = [route("web.demo.localhost", 5173)];
+		await reloader.reload();
+		expect(reloader.routes().hostnames).toEqual(["web.demo.localhost"]);
+
+		state.clock = expiresAt;
+		expect(reloader.routes().hostnames).toEqual([]);
+	});
+
+	// Expiry arrives with no route change or remint, which is all that used
+	// to trigger a check, so a daemon up for months never reported it.
+	it("checks the certificate again while nothing changes", async () => {
+		const { state, reloader } = reloaderHarness();
+		state.routes = [route("web.demo.localhost", 5173)];
+		await reloader.reload();
+
+		state.gap = "Named-hosts certificate expires on 2026-12-01.";
+		await reloader.reload();
+		expect(state.logs.join("\n")).not.toContain("expires on");
+
+		state.clock += CERTIFICATE_RECHECK_MS;
+		await reloader.reload();
+		expect(state.logs.join("\n")).toContain("expires on 2026-12-01");
+		expect(state.binds).toBe(1);
 	});
 
 	it("serves what the certificate covers and only logs the gap", async () => {
@@ -828,6 +898,34 @@ describe("waitForDaemonRoutes", () => {
 		servers.push(proxy);
 
 		expect(await check).toEqual({ ok: true });
+	});
+
+	it("names a certificate the daemon cannot load as the reason", async () => {
+		const home = mkdtempSync(join(tmpdir(), "buncargo-daemon-test-"));
+		dirs.push(home);
+		process.env.HOME = home;
+		const proxy = await startLocalProxy({
+			lookup: () => undefined,
+			routes: () => ({
+				hostnames: ["other.demo.localhost"],
+				lastReloadAt: Date.now(),
+				bindError: "key values mismatch",
+			}),
+			httpsPort: 0,
+			hostname: "127.0.0.1",
+		});
+		servers.push(proxy);
+		writeDaemonConfig({ httpsPort: proxy.httpsPort, httpPort: 0, tls: false });
+
+		const result = await waitForDaemonRoutes(["web.demo.localhost"], {
+			timeoutMs: 0,
+		});
+		expect(result).toEqual({
+			ok: false,
+			reason: expect.stringContaining(
+				"could not load the certificate covering web.demo.localhost (key values mismatch)",
+			),
+		});
 	});
 
 	// Still distinguishable: a daemon that answers without the hostname has a

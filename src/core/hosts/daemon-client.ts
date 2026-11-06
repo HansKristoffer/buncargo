@@ -114,6 +114,7 @@ export async function waitForDaemonRoutes(
 	const deadline = Date.now() + (options.timeoutMs ?? ROUTE_PICKUP_TIMEOUT_MS);
 	let missing: string[] = [...hostnames];
 	let everAnswered = false;
+	let bindError: string | undefined;
 
 	for (;;) {
 		const health = await readHostsDaemonHealth(options.port);
@@ -122,6 +123,7 @@ export async function waitForDaemonRoutes(
 			if (health.outdated) {
 				return { ok: false, reason: OUTDATED_DAEMON_MESSAGE };
 			}
+			bindError = health.bindError;
 			const served = new Set(health.hostnames);
 			missing = hostnames.filter((hostname) => !served.has(hostname));
 			if (missing.length === 0) {
@@ -135,15 +137,35 @@ export async function waitForDaemonRoutes(
 		await promiseTimeout(Math.min(ROUTE_POLL_MS, remaining));
 	}
 
-	// Which failure it is matters: a daemon that never answered needs a
-	// restart, while one that answered without these hostnames has a registry
-	// it is not picking up.
 	return {
 		ok: false,
-		reason: everAnswered
-			? `the daemon is not serving ${missing.join(", ")}. Run \`buncargo hosts install\`.`
-			: `the daemon on :${readDaemonConfig().httpsPort} stopped answering. Run \`buncargo hosts install\`.`,
+		reason: describeRouteGap({
+			missing,
+			everAnswered,
+			bindError,
+			port: readDaemonConfig().httpsPort,
+		}),
 	};
+}
+
+/**
+ * Which failure it is matters: a daemon that never answered needs a restart,
+ * one that cannot load the certificate covering these hostnames is still
+ * serving the previous one, and one that answered without them has a registry
+ * it is not picking up.
+ */
+function describeRouteGap(input: {
+	missing: string[];
+	everAnswered: boolean;
+	bindError: string | undefined;
+	port: number;
+}): string {
+	const names = input.missing.join(", ");
+	if (!input.everAnswered)
+		return `the daemon on :${input.port} stopped answering. Run \`buncargo hosts install\`.`;
+	if (input.bindError !== undefined)
+		return `the daemon could not load the certificate covering ${names} (${input.bindError}). Check ${hostsServiceLogHint()}, then run \`buncargo hosts install\`.`;
+	return `the daemon is not serving ${names}. Run \`buncargo hosts install\`.`;
 }
 
 const HEALTH_POLL_MS = 150;

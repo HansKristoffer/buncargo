@@ -22,6 +22,7 @@ import {
 import { chownToInvokingUser, getStateDir } from "../state-paths";
 import {
 	certificateFingerprint,
+	certificateServes,
 	describeCertificateGap,
 	readCertificatePair,
 } from "./certificates";
@@ -57,6 +58,14 @@ import { HOSTS_SERVICE_LOG } from "./service-files";
 
 const IDLE_EXIT_MS = 30_000;
 const RELOAD_INTERVAL_MS = 1000;
+/**
+ * How often the certificate is checked again while nothing changes.
+ *
+ * Coverage only changes with a route or a remint, both of which trigger a
+ * check, but expiry arrives on its own: without this a daemon up for months
+ * never said its leaf was running out.
+ */
+export const CERTIFICATE_RECHECK_MS = 60 * 60_000;
 /**
  * Ceiling on the retry interval after repeated reload failures.
  *
@@ -417,6 +426,10 @@ export interface HostsReloaderDeps {
 	certificateFingerprint: () => string;
 	describeCertificateGap: (hostnames: string[]) => string | undefined;
 	readCertificatePair: () => Promise<{ cert: string; key: string }>;
+	/** Which hostnames a bound certificate answers for ({@link certificateServes}). */
+	certificateServes: (
+		cert: string,
+	) => (hostname: string, now: number) => boolean;
 	startProxy: (input: {
 		lookup: ProxyRouteLookup;
 		routes: () => ProxyRoutesView;
@@ -438,7 +451,10 @@ export interface HostsReloader {
 	stop: () => void;
 	/** Whether a listener is currently bound. */
 	isBound: () => boolean;
-	/** What the proxy reports: served hostnames and the last refresh time. */
+	/**
+	 * What the proxy reports: the hostnames the bound listener answers for, the
+	 * last refresh time, and why a rebind is failing.
+	 */
 	routes: () => ProxyRoutesView;
 }
 
@@ -459,6 +475,12 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	let idleSince: number | undefined;
 	let lastHostsFileFailure: string | undefined;
 	let lastCertificateGap: string | undefined;
+	let lastGapCheckAt = Number.NEGATIVE_INFINITY;
+	// What the listener actually serves. Nothing until the first bind, and
+	// only advanced by a bind that succeeded: a route in the map that the
+	// bound leaf does not cover is not served, whatever the map says.
+	let serves: (hostname: string, now: number) => boolean = () => false;
+	let bindError: string | undefined;
 	// Seeded rather than left undefined: a daemon that has not finished its
 	// first reload is starting up, not frozen.
 	let lastReloadAt = deps.now();
@@ -470,10 +492,16 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		if (route) deps.onRequest(route.root);
 		return route?.port;
 	};
-	const routes = (): ProxyRoutesView => ({
-		hostnames: [...routeMap.keys()],
-		lastReloadAt,
-	});
+	const routes = (): ProxyRoutesView => {
+		const now = deps.now();
+		return {
+			hostnames: [...routeMap.keys()].filter((hostname) =>
+				serves(hostname, now),
+			),
+			lastReloadAt,
+			...(bindError === undefined ? {} : { bindError }),
+		};
+	};
 
 	/**
 	 * An unwritable `/etc/hosts` stops named hostnames resolving, so it cannot
@@ -549,7 +577,8 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		// server whose HMR socket is reset mid-session usually dies with it.
 		const certKey = deps.certificateFingerprint();
 		const mustBind = !proxy || certKey !== lastCertKey;
-		if (!mustBind && hostKey === lastHostKey) {
+		const recheckDue = deps.now() - lastGapCheckAt >= CERTIFICATE_RECHECK_MS;
+		if (!mustBind && hostKey === lastHostKey && !recheckDue) {
 			return;
 		}
 
@@ -559,10 +588,23 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		// reload put the daemon into a widening backoff, which delayed picking
 		// up every *other* project's routes because one worktree was uncovered.
 		reportCertificateGap(deps.describeCertificateGap(hostnames));
+		lastGapCheckAt = deps.now();
 
 		lastHostKey = hostKey;
 		if (!mustBind) return;
 
+		try {
+			await rebind(certKey);
+			bindError = undefined;
+		} catch (error) {
+			// Health says so: the routes it lists are only those the previous
+			// leaf covers, and the CLI names this as the reason the rest are not.
+			bindError = getErrorMessage(error);
+			throw error;
+		}
+	}
+
+	async function rebind(certKey: string): Promise<void> {
 		// Read before stopping: an unreadable pair should leave the running
 		// listener alone rather than take every named URL down first.
 		const { cert, key } = await deps.readCertificatePair();
@@ -591,6 +633,7 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		proxy = next;
 		previous?.stop();
 		lastCertKey = certKey;
+		serves = deps.certificateServes(cert);
 	}
 
 	return {
@@ -662,6 +705,7 @@ export async function runHostsDaemon(
 		certificateFingerprint,
 		describeCertificateGap,
 		readCertificatePair,
+		certificateServes,
 		startProxy: (input) =>
 			startLocalProxy({
 				...input,
