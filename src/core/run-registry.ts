@@ -818,24 +818,35 @@ export async function clearRunStacks(
 }
 
 /**
- * Record when the sweep first found each session's owner gone.
+ * Record when the sweep first found each session's owner gone, and forget it
+ * for those whose owner it found running again.
  *
  * Only ever stamps an entry that has no stamp yet, so the grace keeps
- * counting from the first time it was noticed however many sweeps see it.
+ * counting from the first time it was noticed however many sweeps see it. A
+ * stamp is cleared as soon as the owner reads as itself again: one wrong
+ * "gone" (a `ps` that timed out) otherwise stayed for good, and
+ * `holdToInherit` counted the live run as finished.
  */
-export async function markOwnersLost(
-	sessionIds: readonly string[],
-	at: string,
-): Promise<void> {
-	if (sessionIds.length === 0) return;
-	const lost = new Set(sessionIds);
+export async function markOwnersLost(input: {
+	lost: readonly string[];
+	back: readonly string[];
+	at: string;
+}): Promise<void> {
+	if (input.lost.length === 0 && input.back.length === 0) return;
+	const lost = new Set(input.lost);
+	const back = new Set(input.back);
 	await updateRuns(getRunsPath(), (runs) => {
 		let changed = false;
 		const next = runs.map((entry) => {
+			if (back.has(entry.sessionId) && entry.ownerLostAt !== undefined) {
+				changed = true;
+				const { ownerLostAt: _lost, ...rest } = entry;
+				return rest;
+			}
 			if (!lost.has(entry.sessionId) || entry.ownerLostAt !== undefined)
 				return entry;
 			changed = true;
-			return { ...entry, ownerLostAt: at };
+			return { ...entry, ownerLostAt: input.at };
 		});
 		return changed ? next : undefined;
 	});

@@ -129,7 +129,9 @@ no config load, no Docker unless a service is the target.
   checkout of the CI user's home for deleted and tore its stacks down, a live E2E run's included.
 - The grace counts from `ownerLostAt`, which the sweep stamps the first time it finds an unreleased
   owner gone, not from `updatedAt`, which a quiet run may not have written for hours before it
-  crashed.
+  crashed. The sweep clears it when the owner reads as itself again, and so does the owner's own
+  publish: one wrong reading used to stamp a live run for good, and `holdToInherit` counted it as
+  finished.
 - `sweepOrphanedContainers` lists every runtime without probing first (a failed `list()` is the
   probe, and records which runtimes *answered*), reads liveness once for the whole registry,
   decides each stack under its project's lifecycle lock (`project-lock.ts`; a busy lock is

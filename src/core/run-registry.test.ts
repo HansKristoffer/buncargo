@@ -142,7 +142,11 @@ describe("publishRun", () => {
 			services: [{ name: "db", problem }],
 		});
 		await releaseRun("s1");
-		await markOwnersLost(["s1"], "2026-01-01T00:00:00.000Z");
+		await markOwnersLost({
+			lost: ["s1"],
+			back: [],
+			at: "2026-01-01T00:00:00.000Z",
+		});
 		const released = (await loadRuns())[0]?.releasedAt;
 
 		const described = { port: 5432, url: "u", loopbackUrl: "u" };
@@ -319,9 +323,25 @@ describe("retiring entries", () => {
 describe("markOwnersLost", () => {
 	it("stamps a session once and never moves the stamp", async () => {
 		await publishRun(makeRun({ services: [DB] }));
-		await markOwnersLost(["s1"], "2026-01-01T00:00:00.000Z");
-		await markOwnersLost(["s1"], "2026-06-01T00:00:00.000Z");
+		const mark = (at: string) => markOwnersLost({ lost: ["s1"], back: [], at });
+		await mark("2026-01-01T00:00:00.000Z");
+		await mark("2026-06-01T00:00:00.000Z");
 		expect((await loadRuns())[0]?.ownerLostAt).toBe("2026-01-01T00:00:00.000Z");
+	});
+
+	it("forgets the stamp of an owner found running again", async () => {
+		await publishRun(makeRun({ services: [DB] }));
+		await markOwnersLost({
+			lost: ["s1"],
+			back: [],
+			at: "2026-01-01T00:00:00.000Z",
+		});
+		await markOwnersLost({
+			lost: [],
+			back: ["s1"],
+			at: "2026-06-01T00:00:00.000Z",
+		});
+		expect((await loadRuns())[0]?.ownerLostAt).toBeUndefined();
 	});
 });
 

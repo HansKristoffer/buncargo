@@ -336,7 +336,7 @@ export async function sweepOrphanedContainers(
 		groups.map((group) => [group, runFor(group, runs, alive)]),
 	);
 	const stackRuns = runs.filter((run) => (run.stacks?.length ?? 0) > 0);
-	await stampLostOwners([...owners.values(), ...stackRuns], alive, now);
+	await stampLostOwners([...owners.values(), ...stackRuns], runs, alive, now);
 
 	const result: SweepResult = {
 		swept: [],
@@ -746,6 +746,7 @@ async function sweepStacks(
  */
 async function stampLostOwners(
 	owners: readonly (RunEntry | null)[],
+	runs: readonly RunEntry[],
 	alive: (run: RunEntry) => boolean,
 	now: number,
 ): Promise<void> {
@@ -756,17 +757,23 @@ async function stampLostOwners(
 			run.ownerLostAt === undefined &&
 			!alive(run),
 	);
-	if (lost.length === 0) return;
+	// Found gone once, running now: that reading was wrong.
+	const back = runs.filter(
+		(run) => run.ownerLostAt !== undefined && alive(run),
+	);
+	if (lost.length === 0 && back.length === 0) return;
 	const at = new Date(now).toISOString();
 	try {
-		await markOwnersLost(
-			lost.map((run) => run.sessionId),
+		await markOwnersLost({
+			lost: lost.map((run) => run.sessionId),
+			back: back.map((run) => run.sessionId),
 			at,
-		);
+		});
 	} catch {
 		return;
 	}
 	for (const run of lost) run.ownerLostAt = at;
+	for (const run of back) run.ownerLostAt = undefined;
 }
 
 /**

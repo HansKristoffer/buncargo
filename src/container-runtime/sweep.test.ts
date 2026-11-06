@@ -20,6 +20,7 @@ import { readRemovals } from "../core/removal-log";
 import {
 	holdToInherit,
 	loadRuns,
+	markOwnersLost,
 	publishRun,
 	type RunEntry,
 	releaseRun,
@@ -679,6 +680,30 @@ describe("sweepOrphanedContainers", () => {
 		});
 		expect((await loadRuns())[0]?.ownerLostAt).toBe(stamped);
 		expect(downs.map((request) => request.projectName)).toEqual(["crashed"]);
+	});
+
+	it("forgets a lost-owner stamp once the owner reads as itself again", async () => {
+		// One wrong "gone" reading stamped a live run for good, and
+		// `holdToInherit` counted it as finished.
+		await publishRun(
+			entry({
+				sessionId: "live",
+				projectName: "live",
+				pid: process.pid,
+				processIdentity: readProcessIdentity(process.pid),
+				idleTimeoutMs: 180_000,
+				services: [DB],
+			}),
+		);
+		await markOwnersLost({ lost: ["live"], back: [], at: AGES_AGO });
+		const { runtime, downs } = stubRuntime([
+			container("live", checkout, "running"),
+		]);
+
+		await sweepOrphanedContainers({ runtimes: [runtime], now: NOW });
+
+		expect(downs).toEqual([]);
+		expect((await loadRuns())[0]?.ownerLostAt).toBeUndefined();
 	});
 
 	it("touches nothing when the registry cannot be read", async () => {
