@@ -575,7 +575,7 @@ export async function startDevServers(
 			const spawnApp = () =>
 				config.kind === "worker"
 					? spawnOwnedWorker(root, name, spawnOnce, owner.controller.signal, {
-							allowEarlyExit: optional.has(name),
+							allowEarlyExit: isOptional(name),
 						})
 					: Promise.resolve(spawnOnce());
 			session.setSpawner(

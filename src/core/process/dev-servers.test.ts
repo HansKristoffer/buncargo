@@ -964,6 +964,41 @@ describe("startDevServers keepOthersOnFailure", () => {
 		}
 	}, 20_000);
 
+	it("parks an essential worker that crashes at boot, like any app on probation", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-worker-"));
+		const [api] = await freePorts(1);
+		const output = new RunOutput();
+		const failed: string[] = [];
+		const runFailures: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					api: { port: api, devCommand: serve(api) },
+					queue: { kind: "worker", devCommand: "exit 3" },
+				},
+				root,
+				{},
+				{ api },
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					keepOthersOnFailure: true,
+					onAppFailed: (name) => failed.push(name),
+					onFailure: (error) => runFailures.push(toError(error).message),
+				},
+			);
+			await eventually(() => output.states.get("queue")?.state === "failed");
+			expect(failed).toEqual(["queue"]);
+			expect(runFailures).toEqual([]);
+			expect(processExists(pids.api)).toBe(true);
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 20_000);
+
 	it("makes an app parked for never answering essential again once a restart brings it up", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-unpark-"));
 		const [api, web] = await freePorts(2);
