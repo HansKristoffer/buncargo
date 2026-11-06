@@ -294,7 +294,8 @@ export async function checkProcessIdentitiesAsync(
 		const read = actual.get(pid);
 		if (read === identity) return "match";
 		// Linux reads nothing for a pid that exited during the read.
-		if (read === undefined) return "unreadable";
+		if (read === undefined)
+			return isProcessAlive(pid) ? "unreadable" : "mismatch";
 		return "mismatch";
 	});
 }

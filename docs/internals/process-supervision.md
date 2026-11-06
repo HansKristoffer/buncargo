@@ -40,7 +40,7 @@ it. The attached app is teed through `script` when stdin is a TTY, else through 
 `keepOthersOnFailure` (on in `dev` unless `options.onAppFailure: "stop-run"`) waits for each app of
 a wave on its own, then stops and parks the ones that never came up, crashed at boot included:
 until it is ready, each essential app of the wave is on probation, so its exit parks it in the
-owner instead of ending the run. Whether the run fails is decided before anything is parked (when a
+owner instead of ending the run. The attached app is never on probation: quitting it ends the run. Whether the run fails is decided before anything is parked (when a
 later app `startAfter`s a failed one, or nothing else is left), and a row on probation offers no
 restart until then. A parked app is spared through `ProcessOwner.isOptional` like an
 `essential: false` one, so restart, the TUI and the registry need nothing new, and only until a

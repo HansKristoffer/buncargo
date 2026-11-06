@@ -143,9 +143,11 @@ export class AppSupervision {
 		if (!current || !spawner || this.owner.controller.signal.aborted)
 			return false;
 		this.options.onRestart(name, reason);
-		await this.owner.retire(current);
-		this.owner.controller.signal.throwIfAborted();
+		// From here the app's row says it is restarting: every way this ends
+		// moves it on, a retire that fails included.
 		try {
+			await this.owner.retire(current);
+			this.owner.controller.signal.throwIfAborted();
 			const child = await spawner.spawn();
 			await this.register(
 				name,

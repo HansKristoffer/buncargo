@@ -432,6 +432,9 @@ export async function startDevServers(
 				console.log(formatStep(`🔁 Restarting ${name}: ${reason}`));
 		},
 		onRestartFailed: (name, error) => {
+			// Gone like an app that exited, so no wait for it holds on.
+			exited.add(name);
+			exits.get(name)?.abort(error);
 			// Down like one that never came up: parked when the others are spared.
 			if (options.keepOthersOnFailure) parked.add(name);
 			output.state(name, {
@@ -732,16 +735,22 @@ export async function startDevServers(
 		let essential = Object.fromEntries(
 			Object.entries(wave).filter(([name]) => !optional.has(name)),
 		);
-		// Before any spawns: one that crashes at boot is parked, not the run's end.
+		// Before any spawns: one that crashes at boot is parked, not the run's
+		// end. Not the attached app: quitting it ends the run, booted or not.
 		if (options.keepOthersOnFailure)
-			for (const name of Object.keys(essential)) probation.add(name);
+			for (const name of Object.keys(essential))
+				if (name !== attachedName) probation.add(name);
 		await spawnWave(wave);
 		// A non-essential app never holds the run up: it is health-checked on
 		// the side, and its failing to come up is its own problem.
 		for (const name of Object.keys(wave).filter((name) => optional.has(name)))
 			checkOnTheSide(name);
-		if (options.keepOthersOnFailure)
+		if (options.keepOthersOnFailure) {
 			essential = await spareHealthyApps(essential);
+			// Up: a crash from here ends the run at once, rather than leaving
+			// the wave's readiness wait to time out on a parked app.
+			for (const name of Object.keys(essential)) probation.delete(name);
+		}
 		await owner.race(waitForWave(essential));
 	}
 
