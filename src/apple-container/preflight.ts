@@ -68,14 +68,6 @@ export function isAppleContainerSystemRunning(cli: AppleContainerCli): boolean {
 }
 
 /**
- * Bring the Apple container services up, or explain how to.
- *
- * Auto-start deliberately does not pass `--enable-kernel-install`: on a host
- * that has never run the runtime, that flag would install a kernel without
- * asking, and without it the command prompts and would hang a non-interactive
- * spawn. Both are worse than telling the user to run the one-time setup.
- */
-/**
  * What a run does about a system service that is down, as Docker does with
  * its daemon: CI never starts one but waits for one a runner is still
  * bringing up; locally it is started unless the caller said not to.
@@ -105,6 +97,14 @@ export function appleStartFailureRemediation(started: AppleCliResult): string {
 	return `${START_REMEDIATION}${lastError}`;
 }
 
+/**
+ * Bring the Apple container services up, or explain how to.
+ *
+ * Auto-start deliberately does not pass `--enable-kernel-install`: on a host
+ * that has never run the runtime, that flag would install a kernel without
+ * asking, and without it the command prompts and would hang a non-interactive
+ * spawn. Both are worse than telling the user to run the one-time setup.
+ */
 export async function ensureAppleContainerRunning(
 	cli: AppleContainerCli,
 	options: EnsureAppleContainerOptions = {},
