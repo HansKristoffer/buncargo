@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import {
 	closestHostname,
 	createProxyFetch,
+	createWebsocketHandlers,
 	HEALTH_PATH,
 	HOPS_HEADER,
 	hostnameFromHostHeader,
@@ -635,6 +636,30 @@ describe("proxy fetch", () => {
 		// 1001 (going away) is the close frame; a bare reset reports otherwise.
 		expect(await closed.promise).toBe(1001);
 		client.close();
+	});
+});
+
+describe("createWebsocketHandlers", () => {
+	// The HTTP path forgot a failed family; the WebSocket path did not, so HMR
+	// kept dialing 127.0.0.1 after Vite came back on ::1.
+	it("forgets the remembered family when the upstream dial fails", async () => {
+		const port = await findClosedPort();
+		const { promise: forgotten, resolve: forget } =
+			Promise.withResolvers<number>();
+		const handlers = createWebsocketHandlers({
+			resolve: async () => ({ host: "127.0.0.1", authority: "127.0.0.1" }),
+			forget,
+		});
+		const { promise: closed, resolve: close } = Promise.withResolvers<void>();
+
+		handlers.open({
+			data: { targetPort: port, path: "/", pending: [] },
+			send: () => {},
+			close: () => close(),
+		});
+
+		expect(await forgotten).toBe(port);
+		await closed;
 	});
 });
 

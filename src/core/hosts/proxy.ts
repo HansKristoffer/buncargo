@@ -300,7 +300,9 @@ export function createWebsocketHandlers(
 		);
 		ws.data.socket = socket;
 		upstreams.add(socket);
+		let opened = false;
 		socket.addEventListener("open", () => {
+			opened = true;
 			// The client is upgraded before this handshake finishes, so
 			// anything it sent in between is only queued, never dropped.
 			for (const frame of ws.data.pending) socket.send(frame);
@@ -319,6 +321,10 @@ export function createWebsocketHandlers(
 		});
 		socket.addEventListener("error", () => {
 			upstreams.delete(socket);
+			// Re-probe next time, as the HTTP path does: an app that restarted
+			// on the other loopback family otherwise has its HMR socket dialed
+			// at the old one for as long as the daemon runs.
+			if (!opened) upstream.forget(ws.data.targetPort);
 			ws.close();
 		});
 	}
