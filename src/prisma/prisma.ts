@@ -1,6 +1,3 @@
-import { childProcessEnv } from "../core/child-env";
-import { toPortMap } from "../core/ports";
-import { shellExitCode } from "../core/process/exec";
 /**
  * Prisma integration for buncargo.
  *
@@ -33,6 +30,9 @@ import {
 	containerRuntimeForEnv,
 	ensureServicesRunning,
 } from "../container-runtime";
+import { childProcessEnv } from "../core/child-env";
+import { toPortMap } from "../core/ports";
+import { shellExitCode } from "../core/process/exec";
 import { inferDockerPreset } from "../core/service-presets";
 import { getComposeServiceName } from "../planning";
 import type {
