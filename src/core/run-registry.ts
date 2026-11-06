@@ -546,8 +546,15 @@ export function mergePublishedRun(
 				stacks: _stacks,
 				...kept
 			} = current;
+			// A claim reopening a finished entry (`releaseRun()`, then `start()`
+			// again) starts a new run: ranking (`newestLifecycleFirst`) and the
+			// claims a teardown releases date from it.
+			const reopens =
+				existing.releasedAt !== undefined || existing.ownerLostAt !== undefined;
+			const stacks = mergedStacks(existing.stacks, run.stacks);
 			return {
 				...kept,
+				...(reopens ? { startedAt: run.startedAt } : {}),
 				sessionId: run.sessionId,
 				processIdentity: run.processIdentity,
 				projectPrefix: run.projectPrefix,
@@ -559,7 +566,7 @@ export function mergePublishedRun(
 				cli: run.cli,
 				// Exactly the claim's: one hold, or none.
 				...holdFields(run),
-				...(run.stacks === undefined ? {} : { stacks: run.stacks }),
+				...(stacks === undefined ? {} : { stacks }),
 				// The claim's selection, over what a describe said about each.
 				services: run.services.map((service) => {
 					const described = existing.services.find(
@@ -586,6 +593,21 @@ export function mergePublishedRun(
 			services: describedServices(current.services, run.services),
 		}),
 	});
+}
+
+/**
+ * The stacks a claim leaves on its entry: every stack already recorded, which
+ * may be standing in the idle hold, with the claim's own over any of the same
+ * name. A claim that selects no stack must not drop one only this entry names.
+ */
+function mergedStacks(
+	recorded: RunStackEntry[] | undefined,
+	claimed: RunStackEntry[] | undefined,
+): RunStackEntry[] | undefined {
+	if (recorded === undefined) return claimed;
+	if (claimed === undefined) return recorded;
+	const names = new Set(claimed.map((stack) => stack.name));
+	return [...recorded.filter((stack) => !names.has(stack.name)), ...claimed];
 }
 
 function holdFields(

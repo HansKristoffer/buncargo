@@ -62,7 +62,9 @@ recorded CLI is exactly where they once did), and a script's apps get the same r
 
 - Both publish onto the session the environment already claimed (`env.sessionId`), as two kinds
   of write (`mergePublishedRun`). The claim (`publishRun`) owns the lifecycle: the selected
-  services, their stacks, exactly one hold, and reopening a released entry. The describe
+  services, their stacks (merged by name, so a re-claim selecting none keeps a held one), exactly
+  one hold, and reopening a released entry, which takes the new claim's `startedAt`: ranking and
+  the claims a teardown releases date from it. The describe
   (`describeRun`) owns what the run serves and keeps everything else: `startedAt`, the hold,
   `releasedAt`, captures, each app row's process and state, and a service's `problem`; it adds
   services but never removes one. It used to replace the entry whole, so a library `claimApps`

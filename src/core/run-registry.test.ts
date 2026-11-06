@@ -201,6 +201,37 @@ describe("publishRun", () => {
 		expect(entry?.releasedAt).toBeUndefined();
 	});
 
+	it("dates a reopened entry from the new claim and keeps the stacks it held", async () => {
+		// `releaseRun()` then `start()` on one session. Keeping the first
+		// claim's start ranked the reopened run below older ones, and made a
+		// teardown keep the claims it had used since.
+		const stack = { name: "supabase", down: ["supabase", "stop"] };
+		await publishRun(
+			makeRun({
+				services: [DB],
+				startedAt: "2026-01-01T00:00:00.000Z",
+				stacks: [stack],
+			}),
+		);
+		await releaseRun("s1");
+		await publishRun(
+			makeRun({ services: [DB], startedAt: "2026-01-02T00:00:00.000Z" }),
+		);
+		const [entry] = await loadRuns();
+		expect(entry?.startedAt).toBe("2026-01-02T00:00:00.000Z");
+		expect(entry?.stacks).toEqual([stack]);
+	});
+
+	it("keeps when a live entry started through another claim", async () => {
+		await publishRun(
+			makeRun({ services: [DB], startedAt: "2026-01-01T00:00:00.000Z" }),
+		);
+		await publishRun(
+			makeRun({ services: [DB], startedAt: "2026-01-02T00:00:00.000Z" }),
+		);
+		expect((await loadRuns())[0]?.startedAt).toBe("2026-01-01T00:00:00.000Z");
+	});
+
 	it("keeps separate sessions side by side, in one checkout or several", async () => {
 		await publishRun(makeRun({ sessionId: "a" }));
 		await publishRun(makeRun({ sessionId: "b" }));
