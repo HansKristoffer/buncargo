@@ -216,10 +216,10 @@ export async function waitForService(
 					signal,
 				);
 				if (state && startupVerdict(state, 0).kind === "stopped") {
-					const completed =
-						config.kind === "job" &&
-						state.state.toLowerCase() === "exited" &&
+					const exitedCleanly =
+						parseContainerState(state.state) === "stopped" &&
 						state.exitCode === 0;
+					const completed = config.kind === "job" && exitedCleanly;
 					if (completed) {
 						if (options.verbose) {
 							console.log(
