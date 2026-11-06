@@ -179,6 +179,29 @@ describe("appleUp", () => {
 		expect(subcommands(cli)).not.toContain("delete --force");
 	});
 
+	it("fails a start refused for another reason over a container whose state it cannot read", async () => {
+		const plan = buildAppleRunPlan({
+			projectName: "gey-main",
+			model: modelFor({ postgres: { port: 5432 } }),
+			root: "/repo",
+		});
+		const hash = plan.services[0]?.configHash ?? "";
+		const cli = recordingCli(
+			[record("gey-main-postgres", "", { [CONFIG_HASH_LABEL]: hash })],
+			{ start: "bind(...): Address already in use (errno: 48)" },
+		);
+
+		await expect(
+			appleUp(
+				cli,
+				upRequest(modelFor({ postgres: { port: 5432 } }), ["postgres"]),
+			),
+		).rejects.toThrow(
+			/start container gey-main-postgres failed.*Address already in use/,
+		);
+		expect(subcommands(cli)).not.toContain("run --detach");
+	});
+
 	it("fails a start that failed for its image instead of running over the container", async () => {
 		const plan = buildAppleRunPlan({
 			projectName: "gey-main",
@@ -512,6 +535,32 @@ describe("appleDown", () => {
 		).rejects.toThrow(
 			/volumes of gey-main were not removed. Start it with `container system start`/,
 		);
+		expect(subcommands(cli)).toEqual(["ls --all", "system status"]);
+	});
+
+	it("fails rather than reporting nothing to stop when the status did not answer", async () => {
+		const cli = recordingCli([], { ls: "Error: XPC connection error" });
+		const answer = cli.run;
+		cli.run = (args, options) => {
+			if (args[0] !== "system") return answer(args, options);
+			cli.calls.push(args);
+			const killed = "Command timed out after 5000ms: container system status";
+			return {
+				ok: false,
+				exitCode: 1,
+				stdout: "",
+				stderr: killed,
+				timedOut: true,
+			};
+		};
+
+		await expect(
+			appleDown(cli, {
+				root: "/repo",
+				projectName: "gey-main",
+				verbose: false,
+			}),
+		).rejects.toThrow(/read container inventory failed.*XPC connection error/);
 		expect(subcommands(cli)).toEqual(["ls --all", "system status"]);
 	});
 

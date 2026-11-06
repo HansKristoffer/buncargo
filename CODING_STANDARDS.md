@@ -26,6 +26,7 @@ of these anywhere else has written a second owner: flag it and name the first.
 | Exclusive leases as a run takes and explains them | `src/core/app-leases.ts` |
 | A run's entry and app rows in `runs.json` | `src/core/run-publish.ts` |
 | Whether a checkout's named URLs are live | `liveNamedHosts` in `src/core/hosts/registry.ts` |
+| A container's state (running, paused, …) and whether it is live or serving | `src/container-runtime/container-state.ts` |
 | What the sweep removes | `decideSweep` in `src/container-runtime/sweep.ts` |
 | Which detached runs the watchdog stops | `decideRunLimit` in `src/core/run-limits.ts` |
 | Runs the watchdog stopped, and why | `src/core/run-stops.ts` |

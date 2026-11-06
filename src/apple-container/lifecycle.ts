@@ -13,9 +13,11 @@ import { appleContainerRuntimeAdapter } from "./adapter";
 import type { AppleCliOptions, AppleCliResult, AppleContainerCli } from "./cli";
 import {
 	isAlreadyExistsMessage,
+	isAlreadyRunningMessage,
 	isMissingResourceMessage,
 	runAppleAsync,
 } from "./cli";
+import { appleAvailabilityFromStatus } from "./preflight";
 import {
 	buildAppleRunPlan,
 	CONFIG_HASH_LABEL,
@@ -128,11 +130,14 @@ function* startService(
 			if (isContainerServing(state)) return;
 			const started = yield ["start", plan.containerName];
 			if (started.ok) return;
-			const missing = isMissingResourceMessage(started.stderr);
 			// A container whose state Apple did not say may be running already,
-			// which `start` refuses; readiness tells whether it serves.
-			if (!missing && state === "unknown") return;
-			if (!missing) failed(started, `start container ${plan.containerName}`);
+			// which `start` refuses; readiness tells whether it serves. Any other
+			// refusal (a port taken, a broken image) is this start's failure.
+			const runsAlready =
+				state === "unknown" && isAlreadyRunningMessage(started.stderr);
+			if (runsAlready) return;
+			if (!isMissingResourceMessage(started.stderr))
+				failed(started, `start container ${plan.containerName}`);
 		} else {
 			// Announced even on a quiet reconcile pass: a container being thrown
 			// away and rebuilt is the one thing here worth interrupting for.
@@ -232,10 +237,13 @@ function* downSteps(request: ContainerDownRequest): AppleSteps {
 	if (!inventory.ok) {
 		// A stopped system service runs no containers, so there is nothing to
 		// stop, as with Docker's daemon. Asked only after the listing failed,
-		// to keep every other teardown at one process. Volumes cannot be
-		// removed without it, and a reset that silently kept them would not be.
+		// to keep every other teardown at one process. A status that did not
+		// answer may be a service holding every container and port here.
+		// Volumes cannot be removed without it, and a reset that silently kept
+		// them would not be.
 		const status = yield ["system", "status"];
-		if (status.ok) failed(inventory, "read container inventory");
+		if (appleAvailabilityFromStatus(status).state !== "down")
+			failed(inventory, "read container inventory");
 		if (removeVolumes)
 			throw new Error(
 				`Apple container is not running, so the volumes of ${request.projectName} were not removed. Start it with \`container system start\`, then run again.`,

@@ -17,7 +17,7 @@ export interface AppleCliResult {
 	exitCode: number;
 	stdout: string;
 	stderr: string;
-	/** Killed at its timeout rather than answering. Set by `run` only. */
+	/** Killed at its timeout rather than answering. */
 	timedOut?: boolean;
 }
 
@@ -87,9 +87,14 @@ export function createAppleContainerCli(
 					: ["pipe", "pipe", "pipe"],
 			});
 
+			// Bun reports a kill at the timeout as `ETIMEDOUT` with the kill
+			// signal; a signal or a missing exit code alone is read the same
+			// way, so a probe that was cut off never reads as an answer.
+			const killed = result.signal !== null;
 			if (result.error) {
 				const { error } = result;
-				const timedOut = "code" in error && error.code === "ETIMEDOUT";
+				const timedOut =
+					killed || ("code" in error && error.code === "ETIMEDOUT");
 				return {
 					ok: false,
 					exitCode: 1,
@@ -98,8 +103,17 @@ export function createAppleContainerCli(
 					...(timedOut ? { timedOut } : {}),
 				};
 			}
+			if (killed || result.status === null) {
+				return {
+					ok: false,
+					exitCode: 1,
+					stdout: result.stdout ?? "",
+					stderr: result.stderr ?? "",
+					timedOut: true,
+				};
+			}
 
-			const exitCode = result.status ?? 1;
+			const exitCode = result.status;
 			return {
 				ok: exitCode === 0,
 				exitCode,
@@ -124,6 +138,11 @@ export function isMissingResourceMessage(message: string): boolean {
 	const aboutImage =
 		/\bimage\b[^\n]*not ?found|no such image|manifest unknown/i.test(message);
 	return missing && !aboutImage;
+}
+
+/** `start` refused because the container runs already. */
+export function isAlreadyRunningMessage(message: string): boolean {
+	return /already (running|started)/i.test(message);
 }
 
 /**

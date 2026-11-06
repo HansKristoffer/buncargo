@@ -1126,7 +1126,10 @@ attached app, because closing it tears the run down by design, and an app this
 run reused from another terminal, because that process is not ours. A process
 whose identity cannot be read (`ps` failed or timed out) is refused too, rather
 than reported stopped while it may still run. Exit codes are `0` stopped, `2` no
-such target, `3` refused.
+such target, `3` refused or not removed. A stopped Docker daemon or Apple system
+service has nothing to stop, but one that refuses this user or does not answer
+may still run the containers, so `stop` exits `3` and `dev --down` exits `1`
+rather than reporting nothing to stop.
 
 `buncargo restart <app>` asks the `buncargo dev` run that started the app to
 replace it, and returns once that run has begun, so

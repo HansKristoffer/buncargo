@@ -113,6 +113,31 @@ describe("waitForService failure reporting", () => {
 		expect(diagnoses).toBe(1);
 	});
 
+	it("gives a service that restarted between runs the chance to come up", async () => {
+		// An on-failure service waiting for its dependency: it exits, comes
+		// back and runs a while, more than once, before it serves.
+		const seen = ["restarting", "running", "restarting", "running"];
+		let ready = false;
+		const runtime = stubRuntime(undefined);
+		runtime.diagnoseService = async () => {
+			const state = seen.shift();
+			if (state === undefined) {
+				ready = true;
+				return { state: "running", logTail: "" };
+			}
+			return { state, exitCode: 1, logTail: "" };
+		};
+
+		await waitForService(
+			"api",
+			{ port: 8080, healthCheck: async () => ready },
+			8080,
+			{ runtime, projectName: "app-main", maxAttempts: 2000, pollInterval: 1 },
+		);
+
+		expect(seen).toEqual([]);
+	});
+
 	it("names the runtime, port and probe when it times out instead", async () => {
 		const runtime = stubRuntime({ state: "running", logTail: "" });
 

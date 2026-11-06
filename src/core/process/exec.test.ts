@@ -59,6 +59,24 @@ describe("execAsync", () => {
 		expect(performance.now() - start).toBeLessThan(1800);
 	});
 
+	it("says a command it killed at the timeout timed out, and one that failed did not", async () => {
+		const killed = await execAsync(
+			[process.execPath, "-e", "setInterval(() => {}, 1000)"],
+			process.cwd(),
+			{},
+			{ timeoutMs: 100, killGraceMs: 0, throwOnError: false },
+		);
+		const failed = await execAsync(
+			[process.execPath, "-e", "process.exit(3)"],
+			process.cwd(),
+			{},
+			{ timeoutMs: 5000, throwOnError: false },
+		);
+
+		expect(killed).toMatchObject({ exitCode: 1, timedOut: true });
+		expect(failed).toMatchObject({ exitCode: 3, timedOut: false });
+	});
+
 	it("rejects missing executables without an unhandled error", async () => {
 		await expect(
 			execAsync(["/does-not-exist/buncargo"], process.cwd(), {}),

@@ -224,6 +224,40 @@ describe("Docker daemon preflight", () => {
 		expect(failed('context "gone" does not exist')).toBe("failed");
 	});
 
+	// Docker prefixes every failure that is not a refused connection with
+	// "error during connect", so the prefix alone says nothing about the
+	// daemon. Strings as the Docker CLI prints them.
+	it("reads 'error during connect' as down only when the daemon is not there", () => {
+		const failed = (stderr: string) =>
+			dockerDaemonStateFrom({ ok: false, exitCode: 1, stdout: "", stderr })
+				.state;
+		expect(
+			failed(
+				'error during connect: this error may indicate that the docker daemon is not running: Get "http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.24/version": open //./pipe/docker_engine: The system cannot find the file specified.',
+			),
+		).toBe("down");
+		expect(
+			failed(
+				'error during connect: Get "http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.40/version": open //./pipe/docker_engine: The system cannot find the file specified. In the default daemon configuration on Windows, the docker client must be run with elevated privileges to connect.',
+			),
+		).toBe("down");
+		expect(
+			failed(
+				'error during connect: Get "https://192.168.99.100:2376/v1.47/version": dial tcp 192.168.99.100:2376: i/o timeout',
+			),
+		).toBe("failed");
+		expect(
+			failed(
+				'error during connect: Get "http://docker.internal:2375/v1.47/version": context deadline exceeded',
+			),
+		).toBe("failed");
+		expect(
+			failed(
+				'error during connect: Get "http://%2F%2F.%2Fpipe%2FdockerDesktopLinuxEngine/v1.47/version": open //./pipe/dockerDesktopLinuxEngine: Access is denied.',
+			),
+		).toBe("failed");
+	});
+
 	it("rejects an unavailable server even if the CLI prints a version", async () => {
 		const { binary } = fixture({ versionExit: 1 });
 		expect(isDockerDaemonRunning(binary)).toBe(false);

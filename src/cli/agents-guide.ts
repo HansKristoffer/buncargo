@@ -89,6 +89,9 @@ const TOPICS: readonly Topic[] = [
   out its idle hold. A run someone started
   in a terminal (not with \`--detach\`) asks first, and without a terminal needs
   \`--force\`: only stop that one when the user asked.
+  A container runtime that refuses this user or does not answer may still
+  run the containers, so \`stop\` exits 3 and \`dev --down\` exits 1 rather
+  than reporting nothing to stop: once \`docker version\` answers, stop again.
   \`bunx buncargo stop <app>\` stops one app and \`bunx buncargo restart <app>\`
   restarts one; \`restart <app> && wait --app=<app>\` waits for the new process.
   \`restart\` exits 3 when the run is a script's \`start()\`, which takes no

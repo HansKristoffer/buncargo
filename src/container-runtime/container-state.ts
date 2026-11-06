@@ -99,10 +99,10 @@ export interface ContainerObservation {
 }
 
 /**
- * How many times readiness may see a service between restarts before it
- * calls it a crash loop. One is a restart policy doing its job (a service
- * that lost a race with its dependency); two, seconds apart, is a container
- * that keeps dying.
+ * How many diagnoses in a row may find a service between restarts before
+ * readiness calls it a crash loop. One is a restart policy doing its job (a
+ * service that lost a race with its dependency); two, seconds apart and with
+ * no run between them, is a container that keeps dying.
  */
 export const CRASH_LOOP_RESTARTS = 2;
 
@@ -115,17 +115,17 @@ export type StartupVerdict =
 
 /**
  * Whether a starting service has failed, from what readiness has seen of it.
- * `restartsSeen` counts the observations so far, this one included, that
- * found it restarting. Matched positively: a state nobody has shown us keeps
+ * `restartsInARow` counts the observations up to this one, included, that
+ * found it restarting with no other state between them. Matched positively: a state nobody has shown us keeps
  * polling rather than aborting a startup that would have worked.
  */
 export function startupVerdict(
 	observation: ContainerObservation,
-	restartsSeen: number,
+	restartsInARow: number,
 ): StartupVerdict {
 	const state = parseContainerState(observation.state);
 	if (state === "stopped" || state === "stopping") return { kind: "stopped" };
-	if (state === "restarting" && restartsSeen >= CRASH_LOOP_RESTARTS)
+	if (state === "restarting" && restartsInARow >= CRASH_LOOP_RESTARTS)
 		return { kind: "crash-loop" };
 	return { kind: "pending" };
 }
