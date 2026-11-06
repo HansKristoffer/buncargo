@@ -42,7 +42,9 @@ a wave on its own, then stops and parks the ones that never came up, crashed at 
 until it is ready, each essential app of the wave is on probation, so its exit parks it in the
 owner instead of ending the run. The attached app is never on probation: quitting it ends the run.
 Whether the run fails is decided before anything is parked (when a later app `startAfter`s a failed
-one, or nothing else is left), and a row on probation offers no restart until then. A parked app
+one, or nothing else is left), and a row on probation offers no restart until then. `runFailure`
+holds those two rules, and a restart that cannot spawn or the check after one asks it too: the
+user-facing promise is that they hold whenever an app goes down, not only at start. A parked app
 is spared through `ProcessOwner.isOptional` like an `essential: false` one, so restart, the TUI and
 the registry need nothing new, and only until a restart brings it up: from then its crash ends the
 run again. A reused app (another process serves its port) that fails its check is reported failed

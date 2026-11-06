@@ -27,7 +27,7 @@ import {
 	killPortOwner,
 	type PortOwnerSnapshot,
 } from "./port-owner";
-import { appExitState, RunInterrupted } from "./process-owner";
+import { appExitState, RunInterrupted, restartFailure } from "./process-owner";
 import { type AppStateDetail, printStream, RunOutput } from "./run-output";
 
 export { stopDevServers } from "./app-supervision";
@@ -461,8 +461,15 @@ export async function startDevServers(
 			// Gone like an app that exited, so no wait for it holds on.
 			exited.add(name);
 			exits.get(name)?.abort(error);
-			// Down like one that never came up: parked when the others are spared.
-			if (options.keepOthersOnFailure) parked.add(name);
+			// Down like one that never came up: parked when the others are
+			// spared, unless that fails the run as it would have at start.
+			if (options.keepOthersOnFailure) {
+				const failure = optional.has(name)
+					? undefined
+					: runFailure([[name, restartFailure(name, error)]]);
+				if (failure) owner.controller.abort(failure);
+				else parked.add(name);
+			}
 			output.state(name, {
 				state: "failed",
 				detail: `restart failed: ${error.message}`,
@@ -743,14 +750,45 @@ export async function startDevServers(
 	}
 
 	/**
-	 * A process checked on the side never came up. An optional app, or any
-	 * app when the others are spared, is stopped and parked like one that
-	 * never came up at start; otherwise the run fails, as it would have then.
+	 * A process checked on the side never came up. A non-essential app is
+	 * stopped and parked like one that never came up at start, and so is an
+	 * essential one when the others are spared, unless the run would have
+	 * failed without it at start; otherwise the run fails, as it would then.
 	 */
 	async function sideCheckFailed(name: string, error: Error): Promise<void> {
-		if (isOptional(name) || options.keepOthersOnFailure)
-			await parkFailedApp(name, error);
-		else owner.controller.abort(error);
+		if (optional.has(name)) return parkFailedApp(name, error);
+		const failure = options.keepOthersOnFailure
+			? runFailure([[name, error]])
+			: error;
+		if (failure) owner.controller.abort(failure);
+		else await parkFailedApp(name, error);
+	}
+
+	/**
+	 * Why the run fails rather than sparing these essential apps, which are
+	 * down or never came up, or `undefined` when the rest keeps going. Asked
+	 * at start, and again when a restart or the check after it fails.
+	 */
+	function runFailure(failed: readonly [string, Error][]): Error | undefined {
+		for (const [name, error] of failed) {
+			// Something waiting for it to be healthy cannot run without it.
+			const dependents = Object.entries(startable)
+				.filter(([, app]) => app.startAfter?.includes(name))
+				.map(([dependent]) => dependent);
+			if (dependents.length === 0) continue;
+			const verb = dependents.length === 1 ? "starts" : "start";
+			const waiting = `${dependents.join(", ")} ${verb} after ${name}`;
+			return new Error(`${error.message} (${waiting})`, { cause: error });
+		}
+		// Nothing left running is a failed run, not one quietly waiting on
+		// restarts nobody will ask for.
+		const down = new Set([
+			...readinessFailures.keys(),
+			...exited,
+			...failed.map(([name]) => name),
+		]);
+		const nothingLeft = Object.keys(startable).every((name) => down.has(name));
+		return nothingLeft ? failed[0]?.[1] : undefined;
 	}
 
 	async function startWave(wave: Record<string, AppConfig>): Promise<void> {
@@ -828,25 +866,8 @@ export async function startDevServers(
 
 		// Decided before anything is parked, so a run that is about to fail
 		// never reports that "the rest keeps going".
-		for (const [name, error] of failed) {
-			// Something waiting for it to be healthy cannot start without it.
-			const dependents = Object.entries(startable)
-				.filter(([, app]) => app.startAfter?.includes(name))
-				.map(([dependent]) => dependent);
-			if (dependents.length > 0)
-				throw new Error(
-					`${error.message} (${dependents.join(", ")} start${dependents.length === 1 ? "s" : ""} after ${name})`,
-				);
-		}
-		// Nothing left running is a failed run, not one quietly waiting on
-		// restarts nobody will ask for.
-		const down = new Set([
-			...readinessFailures.keys(),
-			...exited,
-			...failed.map(([name]) => name),
-		]);
-		if (Object.keys(startable).every((name) => down.has(name)))
-			throw failed[0]?.[1];
+		const failure = runFailure(failed);
+		if (failure) throw failure;
 
 		for (const [name, error] of failed) await parkFailedApp(name, error);
 		return healthy;

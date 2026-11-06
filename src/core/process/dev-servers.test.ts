@@ -715,6 +715,107 @@ describe("startDevServers restart", () => {
 		}
 	});
 
+	it("fails a run that spares its apps when a failed restart leaves nothing running", async () => {
+		// Startup fails a run with nothing left; a restart failing later parked
+		// the only app, and the run sat waiting for a restart nobody would ask for.
+		const root = await mkdtemp(join(tmpdir(), "buncargo-restart-alone-"));
+		await mkdir(join(root, "api"));
+		const output = new RunOutput();
+		const failures: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{ api: { kind: "worker", cwd: "api", devCommand: silent } },
+				root,
+				{},
+				{},
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					keepOthersOnFailure: true,
+					onFailure: (error) => failures.push(toError(error).message),
+				},
+			);
+			await rm(join(root, "api"), { recursive: true });
+			await expect(output.controls?.restart("api")).rejects.toThrow();
+			await eventually(() => failures.length > 0);
+			expect(failures[0]).toContain('App "api" could not be restarted');
+			expect(output.states.get("api")?.restartable).toBe(false);
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("fails a run that spares its apps when its only app does not come back up after a restart", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-restart-silent-"));
+		const marker = join(root, "ran-once");
+		const port = await freePort();
+		// Serves the first time, is silent the second.
+		const serveOnce = `bun -e ${JSON.stringify(
+			`const f = ${JSON.stringify(marker)}; if (!(await Bun.file(f).exists())) { await Bun.write(f, "1"); Bun.serve({ port: ${port}, fetch: () => new Response("ok") }); } setInterval(() => {}, 60000);`,
+		)}`;
+		const output = new RunOutput();
+		const failures: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{ api: { port, healthTimeout: 300, devCommand: serveOnce } },
+				root,
+				{},
+				{ api: port },
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					keepOthersOnFailure: true,
+					onFailure: (error) => failures.push(toError(error).message),
+				},
+			);
+			await output.controls?.restart("api");
+			await eventually(() => failures.length > 0);
+			expect(failures[0]).toContain("did not respond");
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 15_000);
+
+	it("fails a run that spares its apps when an app another starts after cannot be restarted", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-restart-dependent-"));
+		await mkdir(join(root, "api"));
+		const output = new RunOutput();
+		const failures: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					api: { kind: "worker", cwd: "api", devCommand: silent },
+					web: { kind: "worker", startAfter: ["api"], devCommand: silent },
+				},
+				root,
+				{},
+				{},
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					keepOthersOnFailure: true,
+					onFailure: (error) => failures.push(toError(error).message),
+				},
+			);
+			await rm(join(root, "api"), { recursive: true });
+			await expect(output.controls?.restart("api")).rejects.toThrow();
+			await eventually(() => failures.length > 0);
+			expect(failures[0]).toContain("web starts after api");
+			await eventually(() => !processExists(pids.web));
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
 	it("leaves the row of an app as it was when the run has ended", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-restart-ended-"));
 		const output = new RunOutput();
