@@ -4,8 +4,11 @@ Each section lists what a consumer of `buncargo` has to change when crossing one
 
 ## 15.x → 16.0
 
-- **`DockerUnavailableError` is a `ContainerRuntimeUnavailableError`** (`buncargo/docker`, `buncargo`). Code catching `ContainerRuntimeUnavailableError` now catches Docker's too. Its `runtime` is now `"docker"`, as on the base class; read which Docker runs the daemon (`"orbstack"`, `"docker-desktop"`, …) from `dockerRuntime`.
+- **`DockerUnavailableError` is a `ContainerRuntimeUnavailableError`** (`buncargo/docker`; the `buncargo` root exports only `ContainerRuntimeUnavailableError`). Code catching `ContainerRuntimeUnavailableError` now catches Docker's too. Its `runtime` is now `"docker"`, as on the base class; read which Docker runs the daemon (`"orbstack"`, `"docker-desktop"`, …) from `dockerRuntime`.
 - **Custom container runtime adapters** must implement `availability()`, returning `{ state: "up" }`, `{ state: "down" }` (nothing can be running) or `{ state: "unreachable", detail }`, and `projectServiceStates` must throw when the runtime cannot answer rather than return nothing: an empty list now means the project has no containers, which the service watch reports as removed. Each `ServiceRuntimeState` carries a `state` (`"running"`, `"paused"`, `"restarting"`, `"created"`, `"stopping"`, `"stopped"` or `"unknown"`).
+- **`dockerProjectServiceStates` throws when Docker cannot answer** (`buncargo/docker`). It returned `[]`, which now means the project has no containers. Catch the error where "could not ask" should be handled apart from "nothing there".
+- **`isContainerUp` counts every live container** (`buncargo/container-runtime`): paused, restarting, stopping and unrecognised states are up, as they still hold their ports. Only `"running"` was before. To ask whether a container serves, compare its lower-cased `state` to `"running"`.
+- **`ensureAppleContainerRunning` with `autoStart: false` waits in CI** (`buncargo/apple-container`): it waits up to `timeoutMs` (60 seconds by default) for a system service that is still coming up, as Docker does, instead of throwing at once. Outside CI it still throws. Pass `ci: false` to keep the old behaviour in CI.
 
 ## 14.0 → 15.0
 
