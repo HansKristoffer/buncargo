@@ -1,12 +1,16 @@
 import { execSync } from "node:child_process";
-import { startTimer, typedSwitch } from "hanzio";
+import { getErrorMessage, startTimer, typedSwitch } from "hanzio";
 import {
 	containerRuntimeForEnv,
 	replaceStaleStacksOn,
 } from "../container-runtime";
 import { describeLeaseRefusal, type SkippedLeaseApp } from "../core/app-leases";
 import { withSignal } from "../core/deadline";
-import { removeHostRoutes, routesDownRemoves } from "../core/hosts";
+import {
+	getRoutesPath,
+	removeHostRoutes,
+	routesDownRemoves,
+} from "../core/hosts";
 import { releaseLeases } from "../core/leases";
 import { askConfirm, PromptInterruptedError } from "../core/prompt";
 import {
@@ -439,7 +443,14 @@ async function runDevFlow<
 
 	if (args.down || args.reset) {
 		env.logInfo();
-		await removeHostRoutes(routesDownRemoves(env.root));
+		// The containers come first: a registry that cannot be rewritten must
+		// not leave them running, and its own message says how to fix it.
+		try {
+			await removeHostRoutes(routesDownRemoves(env.root));
+		} catch (error) {
+			const message = `Left this checkout's service routes in ${getRoutesPath()}: ${getErrorMessage(error)}`;
+			log.warn(message);
+		}
 		await env.stop({ removeVolumes: args.reset, signal });
 		return exitWith(0);
 	}

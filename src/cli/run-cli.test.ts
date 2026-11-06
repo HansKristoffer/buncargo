@@ -1,10 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { getRoutesPath } from "../core/hosts";
 import { acquireLease, releaseLeases } from "../core/leases";
 import {
 	buildRunEntry,
@@ -1208,6 +1209,36 @@ describe("how a run ends", () => {
 		expect(code).toBe(0);
 		expect(stopped).toBe(1);
 		expect(released).toBe(1);
+	});
+
+	// The registry is read strictly now, so a corrupt one threw before the
+	// containers were stopped, and `--down` left them all running.
+	it("stops the containers on --down when the routes registry is corrupt", async () => {
+		const routesPath = getRoutesPath();
+		mkdirSync(dirname(routesPath), { recursive: true });
+		writeFileSync(routesPath, "{ not json");
+		let stopped = 0;
+		const warnings: string[] = [];
+		const warn = spyOn(console, "warn").mockImplementation((...parts) => {
+			warnings.push(parts.join(" "));
+		});
+		const env = createStubEnv();
+		Object.assign(env, {
+			stop: async () => {
+				stopped++;
+			},
+		});
+		try {
+			const code = await withProcessExitTrap(() =>
+				runCli(env, { args: ["--down"], watchdog: false }),
+			);
+			expect(code).toBe(0);
+			expect(stopped).toBe(1);
+			expect(warnings.join("\n")).toContain(routesPath);
+		} finally {
+			warn.mockRestore();
+			rmSync(routesPath, { force: true });
+		}
 	});
 
 	// A step that takes no signal finishes, and the run stops at the next
