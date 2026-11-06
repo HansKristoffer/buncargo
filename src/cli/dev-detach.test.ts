@@ -3,6 +3,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
@@ -111,6 +112,8 @@ describe("runDetached", () => {
 			before?: (root: string) => void;
 			after?: (root: string) => void;
 			timeoutMs?: number;
+			/** `dev --detach` again in the same checkout, once the first returned. */
+			again?: string;
 		} = {},
 	) {
 		const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-detach-")));
@@ -127,14 +130,19 @@ describe("runDetached", () => {
 		console.log = (...parts: unknown[]) => printed.push(parts.join(" "));
 		console.error = (...parts: unknown[]) => printed.push(parts.join(" "));
 		try {
-			writeFileSync(join(root, "run.ts"), script);
-			const code = await runDetached({
-				root,
-				expectApps: true,
-				keep: false,
-				argv: ["bun", join(root, "run.ts")],
-				timeoutMs: options.timeoutMs ?? 10_000,
-			});
+			let code = 0;
+			for (const [index, body] of [script, options.again].entries()) {
+				if (body === undefined) continue;
+				const runScript = join(root, `run-${index}.ts`);
+				writeFileSync(runScript, body);
+				code = await runDetached({
+					root,
+					expectApps: true,
+					keep: false,
+					argv: ["bun", runScript],
+					timeoutMs: options.timeoutMs ?? 10_000,
+				});
+			}
 			options.after?.(root);
 			return { code, printed: Bun.stripANSI(printed.join("\n")) };
 		} finally {
@@ -159,28 +167,44 @@ describe("runDetached", () => {
 	});
 
 	// A second `dev --detach` in the same checkout truncated the log and
-	// deleted the report of the first, which was still writing both.
+	// deleted the report of the first, which was still writing both. Then a
+	// shared log rotated aside lost it: the third run's rotation renamed over
+	// the file the first still wrote.
 	it("leaves the log and report of a run still going alone", async () => {
-		let previousLog = "";
-		let report = "";
-		const firstReport = (root: string) =>
-			join(root, ".buncargo", "logs", `detached-report-${process.pid}.json`);
-		await detach("process.exit(0);", {
+		const logs = (root: string) => join(root, ".buncargo", "logs");
+		const files: Record<string, string> = {};
+		await detach('console.log("the second run");', {
+			again: 'console.log("the third run");',
 			before: (root) => {
-				mkdirSync(join(root, ".buncargo", "logs"), { recursive: true });
-				writeFileSync(detachedLogPath(root), "the first run's output\n");
-				writeFileSync(firstReport(root), '{"setupHints":[],"failures":[]}');
+				mkdirSync(logs(root), { recursive: true });
+				writeFileSync(
+					detachedLogPath(root, process.pid),
+					"the first run's output\n",
+				);
+				writeFileSync(
+					join(logs(root), `detached-report-${process.pid}.json`),
+					'{"setupHints":[],"failures":[]}',
+				);
 			},
 			after: (root) => {
-				previousLog = readFileSync(
-					join(root, ".buncargo", "logs", "detached.previous.log"),
-					"utf8",
-				);
-				report = readFileSync(firstReport(root), "utf8");
+				for (const name of readdirSync(logs(root)))
+					files[name] = readFileSync(join(logs(root), name), "utf8");
 			},
 		});
-		expect(previousLog).toBe("the first run's output\n");
-		expect(report).toContain("failures");
+		expect(files[`detached-${process.pid}.log`]).toBe(
+			"the first run's output\n",
+		);
+		expect(files[`detached-report-${process.pid}.json`]).toContain("failures");
+		const runLogs = Object.entries(files).filter(([name]) =>
+			/^detached-\d+\.log$/.test(name),
+		);
+		expect(runLogs.map(([, text]) => text).sort()).toEqual([
+			"the first run's output\n",
+			"the second run\n",
+			"the third run\n",
+		]);
+		// The one path to name: the newest run's log.
+		expect(files["detached.log"]).toBe("the third run\n");
 	});
 
 	// Agents tell "still starting" from "failed" by the code, as with `wait`.
@@ -246,6 +270,27 @@ describe("pruneDetachedFiles", () => {
 			);
 			const legacy = file(logs, "detached-report.json", now - 3_600_000);
 			pruneDetachedFiles(root, now);
+			expect(existsSync(live)).toBe(true);
+			expect(existsSync(legacy)).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	// Each run's log is its own; the newest ended one stays, as the log of the
+	// run before did.
+	it("keeps the newest ended run's log and drops the older ones", async () => {
+		const { root, logs } = logsDir();
+		try {
+			const now = Date.now();
+			const [older, newer] = [await deadPid(), await deadPid()];
+			const olderLog = file(logs, `detached-${older}.log`, now - 7_200_000);
+			const newerLog = file(logs, `detached-${newer}.log`, now - 3_600_000);
+			const live = file(logs, `detached-${process.pid}.log`, now - 9_000_000);
+			const legacy = file(logs, "detached.previous.log", now - 3_600_000);
+			pruneDetachedFiles(root, now);
+			expect(existsSync(olderLog)).toBe(false);
+			expect(existsSync(newerLog)).toBe(true);
 			expect(existsSync(live)).toBe(true);
 			expect(existsSync(legacy)).toBe(false);
 		} finally {

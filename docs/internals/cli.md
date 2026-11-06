@@ -91,8 +91,10 @@ pieces it orchestrates.
   (its own session, so a harness's SIGTERM does not reach it) and, on Linux with a user manager,
   in a systemd scope of its own (`process/user-scope.ts`), so restarting the service the harness
   runs as does not kill it with that service's cgroup. Its output goes to
-  `.buncargo/logs/detached.log`; the one before is renamed to `detached.previous.log`, never
-  truncated, since a second `dev --detach` in the checkout starts while the first still writes it.
+  `.buncargo/logs/detached-<pid>.log`, one per run, with `detached.log` a link to the newest: a
+  second `dev --detach` in the checkout starts while the first still writes its log, and a shared
+  log rotated aside was renamed over by the third. A run's log and report are pruned once it is
+  dead and they are a minute old, keeping the newest ended run's log.
   The parent waits on the run registry entry whose `pid` is the
   child's until every app has settled; an empty `apps` list is the claim, not "done", unless the
   selection has no app to spawn. A child that exits 0 had nothing to keep running (every app

@@ -7,8 +7,9 @@ import {
 	renameSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promiseTimeout } from "hanzio";
 import { logsRoot } from "../core/process/app-logs";
 import { isProcessAlive } from "../core/process/lifecycle";
@@ -45,18 +46,36 @@ import {
 
 const POLL_MS = 250;
 
-/** Where a detached run's own output goes; app output is in its run directory. */
-export function detachedLogPath(root: string): string {
+/**
+ * Where a detached run's own output goes, one log per run by its pid; app
+ * output is in its run directory. A shared `detached.log` rotated aside lost
+ * a live run's log: the second rotation renamed over the file the first run
+ * still wrote.
+ */
+export function detachedLogPath(root: string, pid: number): string {
+	return join(logsRoot(root), `detached-${pid}.log`);
+}
+
+/** A link to the newest run's log, the one path docs and agents can name. */
+function newestDetachedLogPath(root: string): string {
 	return join(logsRoot(root), "detached.log");
 }
 
 /**
- * The log of the detached run before, moved aside rather than truncated: an
- * earlier run may still be writing it, and a rename leaves its descriptor
- * writing there.
+ * Point `detached.log` at `logPath`, replacing the link (or an earlier
+ * version's file) in one rename. Only a convenience: the parent reads the
+ * run's own log.
  */
-function previousDetachedLogPath(root: string): string {
-	return join(logsRoot(root), "detached.previous.log");
+function linkNewestDetachedLog(root: string, logPath: string): void {
+	const link = newestDetachedLogPath(root);
+	const staging = `${link}.${process.pid}.tmp`;
+	try {
+		rmSync(staging, { force: true });
+		symlinkSync(basename(logPath), staging);
+		renameSync(staging, link);
+	} catch {
+		rmSync(staging, { force: true });
+	}
 }
 
 /**
@@ -80,12 +99,13 @@ export function detachedReportPath(root: string, pid: number): string {
 }
 
 const REPORT_FILE = /^detached-report-(\d+)\.json$/;
-/** The one report every run shared before reports were per pid. */
-const LEGACY_REPORT = "detached-report.json";
+const LOG_FILE = /^detached-(\d+)\.log$/;
+/** What earlier versions shared between runs, before reports and logs were per pid. */
+const LEGACY_FILES = new Set(["detached-report.json", "detached.previous.log"]);
 
 /**
- * How long a run's report outlives the run: its parent polls every
- * {@link POLL_MS} and reads it only after the run has exited.
+ * How long a run's report and log outlive the run: its parent polls every
+ * {@link POLL_MS} and reads both only after the run has exited.
  */
 const DETACHED_FILE_GRACE_MS = 60_000;
 
@@ -97,10 +117,16 @@ function modifiedAt(path: string): number | undefined {
 	}
 }
 
+function runPid(name: string): number | undefined {
+	const pid = Number((REPORT_FILE.exec(name) ?? LOG_FILE.exec(name))?.[1]);
+	return pid > 0 ? pid : undefined;
+}
+
 /**
- * Drop the reports of runs that exited over a minute ago (`now`): their
- * parents have read them. A pid that is alive keeps its report, even when it
- * is reused.
+ * Drop the reports and logs of runs that exited over a minute ago (`now`):
+ * their parents have read them. The newest ended run's log stays, for a look
+ * at why the run before this one ended. A pid that is alive keeps its files,
+ * even when it is reused.
  */
 export function pruneDetachedFiles(root: string, now: number): void {
 	let names: string[] = [];
@@ -109,16 +135,21 @@ export function pruneDetachedFiles(root: string, now: number): void {
 	} catch {
 		return;
 	}
-	for (const name of names) {
+	const ended = names.flatMap((name) => {
+		const pid = runPid(name);
+		const candidate =
+			LEGACY_FILES.has(name) || (pid !== undefined && !isProcessAlive(pid));
 		const path = join(logsRoot(root), name);
-		const pid = Number(REPORT_FILE.exec(name)?.[1]);
-		const perRun = pid > 0;
-		if (!perRun && name !== LEGACY_REPORT) continue;
-		if (perRun && isProcessAlive(pid)) continue;
-		const modified = modifiedAt(path);
-		if (modified === undefined || now - modified < DETACHED_FILE_GRACE_MS)
-			continue;
-		rmSync(path, { force: true });
+		const modified = candidate ? modifiedAt(path) : undefined;
+		return modified === undefined ? [] : [{ name, path, modified }];
+	});
+	const previousLog = ended
+		.filter((file) => LOG_FILE.test(file.name))
+		.sort((a, b) => b.modified - a.modified)[0];
+	for (const file of ended) {
+		const recent = now - file.modified < DETACHED_FILE_GRACE_MS;
+		if (recent || file === previousLog) continue;
+		rmSync(file.path, { force: true });
 	}
 }
 
@@ -282,28 +313,39 @@ export async function runDetached(input: {
 }): Promise<number> {
 	const { root, expectApps, timeoutMs } = input;
 	const argv = detachedArgv(input.argv);
-	const logPath = detachedLogPath(root);
 	mkdirSync(logsRoot(root), { recursive: true });
 	pruneDetachedFiles(root, Date.now());
+	// Named by this process until the run has a pid; the rename after the
+	// spawn leaves the run's descriptor writing the same file.
+	const startingPath = join(
+		logsRoot(root),
+		`detached-starting-${process.pid}.log`,
+	);
+	const out = openSync(startingPath, "w");
+	let child: Bun.Subprocess;
 	try {
-		renameSync(logPath, previousDetachedLogPath(root));
-	} catch {
-		// No run before this one.
+		// Its own scope on Linux: the run outlives a restart of the service
+		// that started it. The pid stays the run's own, which the wait below
+		// matches.
+		child = Bun.spawn(inOwnUserScope(argv, `buncargo dev ${root}`), {
+			cwd: process.cwd(),
+			stdio: ["ignore", out, out],
+			detached: true,
+			env: {
+				...process.env,
+				[DETACHED_ENV]: detachedRunEnv(input.keep ? "keep" : "idle-limit"),
+			},
+		});
+	} catch (error) {
+		rmSync(startingPath, { force: true });
+		throw error;
+	} finally {
+		closeSync(out);
 	}
-	const out = openSync(logPath, "w");
-	// Its own scope on Linux: the run outlives a restart of the service that
-	// started it. The pid stays the run's own, which the wait below matches.
-	const child = Bun.spawn(inOwnUserScope(argv, `buncargo dev ${root}`), {
-		cwd: process.cwd(),
-		stdio: ["ignore", out, out],
-		detached: true,
-		env: {
-			...process.env,
-			[DETACHED_ENV]: detachedRunEnv(input.keep ? "keep" : "idle-limit"),
-		},
-	});
-	closeSync(out);
 	child.unref();
+	const logPath = detachedLogPath(root, child.pid);
+	renameSync(startingPath, logPath);
+	linkNewestDetachedLog(root, logPath);
 	// A report left by an earlier process with this pid would explain this
 	// run's failure. Removed before the run has loaded anything to report.
 	rmSync(detachedReportPath(root, child.pid), { force: true });
