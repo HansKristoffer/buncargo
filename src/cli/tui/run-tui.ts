@@ -108,6 +108,8 @@ interface SelectionEnd {
 	row?: number;
 }
 
+type SigintListener = (signal: "SIGINT") => void;
+
 /**
  * Route SIGINT to `onInterrupt` alone until the returned release, which puts
  * the process's own listeners back. The pager gets the terminal in cooked
@@ -116,31 +118,62 @@ interface SelectionEnd {
  * directly, so they have to be moved aside rather than filtered.
  */
 function holdInterrupts(onInterrupt: () => void): () => void {
-	const held = new Set(process.listeners("SIGINT"));
+	// Each held listener, and whether it was added with `once`.
+	const held = new Map<SigintListener, boolean>(
+		process.listeners("SIGINT").map((listener) => [listener, false]),
+	);
 	process.removeAllListeners("SIGINT");
 	process.on("SIGINT", onInterrupt);
+	const real = {
+		on: process.on,
+		addListener: process.addListener,
+		prependListener: process.prependListener,
+		once: process.once,
+		prependOnceListener: process.prependOnceListener,
+		off: process.off,
+		removeListener: process.removeListener,
+	};
+	// A listener added meanwhile is held too: it would otherwise fire on the
+	// Ctrl-C that closes the pager.
+	const hold = (method: keyof typeof real, once: boolean) =>
+		function (
+			this: NodeJS.Process,
+			event: string | symbol,
+			listener: SigintListener,
+		) {
+			if (event !== "SIGINT") return real[method].call(this, event, listener);
+			held.set(listener, once);
+			return this;
+		} as typeof process.on;
 	// A listener its owner removes meanwhile (the run ended while the pager
 	// was open) is not put back: removing one that is held aside would
 	// otherwise do nothing, and the release would revive it.
-	const { off, removeListener } = process;
 	const forget = function (
 		this: NodeJS.Process,
 		event: string | symbol,
-		listener: (...args: unknown[]) => void,
+		listener: SigintListener,
 	) {
 		if (event === "SIGINT") held.delete(listener);
-		return removeListener.call(this, event, listener);
+		return real.removeListener.call(this, event, listener);
 	} as typeof process.removeListener;
-	process.off = forget;
-	process.removeListener = forget;
+	Object.assign(process, {
+		on: hold("on", false),
+		addListener: hold("addListener", false),
+		prependListener: hold("prependListener", false),
+		once: hold("once", true),
+		prependOnceListener: hold("prependOnceListener", true),
+		off: forget,
+		removeListener: forget,
+	});
 	let released = false;
 	return () => {
 		if (released) return;
 		released = true;
-		process.off = off;
-		process.removeListener = removeListener;
+		Object.assign(process, real);
 		process.off("SIGINT", onInterrupt);
-		for (const listener of held) process.on("SIGINT", listener);
+		for (const [listener, once] of held)
+			if (once) process.once("SIGINT", listener);
+			else process.on("SIGINT", listener);
 	};
 }
 

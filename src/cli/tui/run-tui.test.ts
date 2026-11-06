@@ -869,6 +869,59 @@ describe("RunTui state", () => {
 		}
 	});
 
+	// A SIGINT listener added while the pager was open sat next to the
+	// pager's own, and the Ctrl-C that closes the pager fired it.
+	it("holds a SIGINT listener added while the pager is open until it closes", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-tui-pager-added-"));
+		const saved = process.env.PAGER;
+		const pager = join(dir, "pager.sh");
+		writeFileSync(pager, "#!/bin/sh\nexec sleep 5\n");
+		chmodSync(pager, 0o755);
+		process.env.PAGER = pager;
+		const terminal = fakeTerminal();
+		const tui = new RunTui({
+			output: new RunOutput(),
+			apps: ["api"],
+			urlFor: () => undefined,
+			logPath: () => join(dir, "api.log"),
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+		});
+		const added = () => {};
+		const addedOnce = () => {};
+		const addedAndRemoved = () => {};
+		try {
+			tui.start();
+			type(tui, "j");
+			type(tui, "l");
+			await until(
+				() => (tui as unknown as { pager?: unknown }).pager !== undefined,
+			);
+			process.on("SIGINT", added);
+			process.once("SIGINT", addedOnce);
+			process.on("SIGINT", addedAndRemoved);
+			process.off("SIGINT", addedAndRemoved);
+			expect(process.listeners("SIGINT")).not.toContain(added);
+			expect(process.listeners("SIGINT")).not.toContain(addedOnce);
+			tui.stop();
+			await until(
+				() => (tui as unknown as { pager?: unknown }).pager === undefined,
+			);
+			expect(process.listeners("SIGINT")).toContain(added);
+			expect(process.listeners("SIGINT")).toContain(addedOnce);
+			expect(process.listeners("SIGINT")).not.toContain(addedAndRemoved);
+		} finally {
+			tui.stop();
+			process.off("SIGINT", added);
+			process.off("SIGINT", addedOnce);
+			process.off("SIGINT", addedAndRemoved);
+			if (saved === undefined) delete process.env.PAGER;
+			else process.env.PAGER = saved;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	// The pager holds the run's SIGINT listeners aside: one removed meanwhile
 	// (the run ended while it was open) must not come back when it closes.
 	it("does not put back a SIGINT listener removed while the pager was open", async () => {
