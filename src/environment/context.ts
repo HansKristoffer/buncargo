@@ -352,13 +352,8 @@ export function createDevEnvContext<
 		if (selection === preparedSelection) {
 			return;
 		}
-		hasSelectedServices = plan.requiredServiceKeys.length > 0;
-		selectedServiceKeys = plan.requiredServiceKeys;
-		startSelection = {
-			appNames: plan.appNames,
-			requiredServiceKeys: plan.requiredServiceKeys,
-		};
-		const selectedRuntime = hasSelectedServices ? runtime() : undefined;
+		const withServices = plan.requiredServiceKeys.length > 0;
+		const selectedRuntime = withServices ? runtime() : undefined;
 
 		if (selectedRuntime) {
 			const selectedServices = pick(services, plan.requiredServiceKeys);
@@ -368,7 +363,7 @@ export function createDevEnvContext<
 		// App-only selection still checks host processes, without asking any runtime.
 		const snapshot =
 			suppliedSnapshot ??
-			(hasSelectedServices
+			(withServices
 				? undefined
 				: createPortOwnerSnapshot({ containers: new Map() }));
 		portPlan = resolvePortPlan({
@@ -395,6 +390,14 @@ export function createDevEnvContext<
 			host.targetPort = portMap[host.name] ?? host.targetPort;
 		}
 		refreshUrls();
+		// Published only with its block: an allocation that threw (the range
+		// is full) selected nothing that a caller could read as allocated.
+		hasSelectedServices = withServices;
+		selectedServiceKeys = plan.requiredServiceKeys;
+		startSelection = {
+			appNames: plan.appNames,
+			requiredServiceKeys: plan.requiredServiceKeys,
+		};
 		preparedSelection = selection;
 	}
 
@@ -435,8 +438,10 @@ export function createDevEnvContext<
 			)
 				return;
 			await releaseOffsetClaims([offsetClaimKey(root, suffix)]);
-			// A later start() on this environment allocates and claims again.
+			// A later start() on this environment allocates and claims again, and
+			// nothing (Prisma's `allocate`) reads the released block as its own.
 			preparedSelection = undefined;
+			startSelection = undefined;
 		},
 		async prepareStartAsync(onlyApps, onlyServices, signal) {
 			signal?.throwIfAborted();

@@ -262,6 +262,28 @@ describe("startup modes and hooks", () => {
 			},
 		]);
 	});
+	it("stop tears down the containers a start brought up, whatever a later start selected", async () => {
+		const { ctx, events, lifecycle } = fixture();
+		ctx.runtime.down = async () => {
+			events.push("down");
+		};
+		const containersOnly = {
+			prepare: "containers",
+			startServers: false,
+			verbose: false,
+			wait: false,
+		} as const;
+		await lifecycle.start(containersOnly);
+		await lifecycle.start({ ...containersOnly, onlyServices: [] });
+		await lifecycle.stop({ verbose: false });
+		expect(events.slice(-3)).toEqual(["down", "retire", "release claim"]);
+
+		// Once torn down, a start of no services leaves containers alone.
+		events.length = 0;
+		await lifecycle.start({ ...containersOnly, onlyServices: [] });
+		await lifecycle.stop({ verbose: false });
+		expect(events).not.toContain("down");
+	});
 	it("rejects an invalid selection before writing the artifact or starting runtime", async () => {
 		const { events, lifecycle } = fixture();
 		await expect(lifecycle.start({ onlyApps: ["missing"] })).rejects.toThrow(

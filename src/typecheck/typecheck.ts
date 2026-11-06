@@ -11,6 +11,7 @@ import {
 import { resolveProjectTsc } from "./project-tsc";
 import {
 	defaultTypecheckConcurrency,
+	runBounded,
 	selectWorkspaces,
 	sortWorkspacesByExpectedDuration,
 } from "./scheduling";
@@ -546,40 +547,23 @@ export async function runWorkspaceTypecheck(
 	}
 
 	const results: WorkspaceTypecheckResult[] = [];
-	const running = new Set<Promise<void>>();
+	const jobs: (() => Promise<void>)[] = [];
+	if (includeRootConfig)
+		jobs.push(async () => {
+			rootConfig = await typecheckRootConfig({ root, verbose: false, signal });
+			logRootConfigResult(rootConfig, verbose);
+		});
+	for (const [i, workspace] of workspaces.entries())
+		jobs.push(async () => {
+			const result = await runSingleTypecheck(workspace, root, verbose, signal);
+			results[i] = result;
+			logWorkspaceResult(result, verbose);
+		});
 
-	if (includeRootConfig) {
-		const rootJob = typecheckRootConfig({ root, verbose: false, signal }).then(
-			(result) => {
-				rootConfig = result;
-				running.delete(rootJob);
-				logRootConfigResult(result, verbose);
-			},
-		);
-		running.add(rootJob);
-	}
-
-	for (let i = 0; i < workspaces.length; i++) {
-		while (running.size >= concurrency) await Promise.race(running);
-		if (signal?.aborted) break;
-		const workspace = workspaces[i];
-		if (!workspace) continue;
-		const promise = runSingleTypecheck(workspace, root, verbose, signal).then(
-			(result) => {
-				results[i] = result;
-				running.delete(promise);
-				logWorkspaceResult(result, verbose);
-			},
-		);
-
-		running.add(promise);
-	}
-
-	// The checks resolve once their processes are gone, so a cancelled run
-	// rejects only after it has stopped everything it started. Its durations
-	// are not real ones and stay out of the timings.
-	await Promise.all(running);
-	signal?.throwIfAborted();
+	// The checks resolve once their processes are gone, so a cancelled or
+	// failed run rejects only after it has stopped everything it started. Its
+	// durations are not real ones and stay out of the timings.
+	await runBounded(jobs, concurrency, signal);
 
 	await writeTypecheckTimings(root, timings, results);
 

@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AppSupervision } from "./app-supervision";
+import { AppSupervision, stopDevServers } from "./app-supervision";
 import { isProcessAlive } from "./lifecycle";
 
 function child() {
@@ -222,3 +222,119 @@ it("replaces an app after its own grace on restart", async () => {
 		await session.stop();
 	}
 });
+
+it("ends the run when a restart cannot replace an essential app", async () => {
+	const failures: string[] = [];
+	const session = new AppSupervision({
+		width: 1,
+		onRestart: () => {},
+		onRestartFailed: (name) => failures.push(name),
+	});
+	try {
+		await session.register("web", child(), true, false, false);
+		const watching = session.owner.wait().then(
+			() => undefined,
+			(error: Error) => error.message,
+		);
+		session.setSpawner(
+			"web",
+			async () => {
+				throw new Error("spawn failed");
+			},
+			true,
+			false,
+		);
+		await expect(session.restart("web")).rejects.toThrow("spawn failed");
+		expect(failures).toEqual(["web"]);
+		expect(await watching).toBe(
+			'App "web" could not be restarted: spawn failed',
+		);
+	} finally {
+		await session.stop();
+	}
+});
+
+it("parks an optional app whose replacement failed, and still stops by its pids", async () => {
+	const session = new AppSupervision({
+		width: 1,
+		onRestart: () => {},
+		isOptional: () => true,
+	});
+	try {
+		await session.register("web", child(), true, false, false);
+		const watching = session.owner.wait().then(
+			() => "ended",
+			() => "ended",
+		);
+		session.setSpawner(
+			"web",
+			async () => {
+				throw new Error("spawn failed");
+			},
+			true,
+			false,
+		);
+		await expect(session.restart("web")).rejects.toThrow("spawn failed");
+		// Parked: the run waits for a restart rather than ending.
+		expect(session.owner.controller.signal.aborted).toBe(false);
+		// What a library caller holds is how the session is found and stopped.
+		await stopDevServers({ ...session.pids });
+		expect(
+			await Promise.race([watching, Bun.sleep(5000).then(() => "running")]),
+		).toBe("ended");
+	} finally {
+		await session.stop();
+	}
+});
+
+it("stops a detached server whose launcher a restart retires mid-adoption", async () => {
+	const root = await mkdtemp(join(tmpdir(), "buncargo-adopt-restart-"));
+	const probe = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+	const port = Number(probe.port);
+	probe.stop(true);
+	const marker = join(root, "listener.pid");
+	const adopted: number[] = [];
+	const session = new AppSupervision({
+		width: 1,
+		onRestart: () => {},
+		onAppAdopted: (_name, app) => adopted.push(app.pid),
+	});
+	try {
+		await Bun.write(
+			join(root, "listener.ts"),
+			`Bun.serve({ port: ${port}, fetch: () => new Response("ok") }); await Bun.write(${JSON.stringify(marker)}, String(process.pid));`,
+		);
+		await Bun.write(
+			join(root, "launcher.ts"),
+			`import { spawn } from "node:child_process"; const app = spawn(process.execPath, ["listener.ts"], { detached: true, stdio: "ignore" }); app.unref(); while (!(await Bun.file(${JSON.stringify(marker)}).exists())) await Bun.sleep(10);`,
+		);
+		const launcher = spawn(process.execPath, ["launcher.ts"], {
+			cwd: root,
+			detached: true,
+			stdio: "ignore",
+		});
+		await session.register("web", launcher, false, false, false, port);
+		session.setSpawner("web", async () => child(), false, false, port);
+		// Right after the supervisor starts looking for the server it left.
+		const restarted = new Promise<boolean>((resolve, reject) =>
+			launcher.once("exit", () => {
+				session.restart("web").then(resolve, reject);
+			}),
+		);
+		expect(await restarted).toBe(true);
+		const listener = Number(await Bun.file(marker).text());
+		const deadline = Date.now() + 5000;
+		while (
+			adopted.length === 0 &&
+			isProcessAlive(listener) &&
+			Date.now() < deadline
+		)
+			await Bun.sleep(20);
+		expect(adopted).toEqual([]);
+		expect(isProcessAlive(listener)).toBe(false);
+		expect(session.pids.web).not.toBe(listener);
+	} finally {
+		await session.stop();
+		await rm(root, { recursive: true, force: true });
+	}
+}, 15000);

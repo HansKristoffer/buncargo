@@ -8,6 +8,7 @@ import {
 	mkdir,
 	mkdtemp,
 	open,
+	readdir,
 	readFile,
 	rename,
 	rm,
@@ -276,7 +277,10 @@ export async function installTool(
 				chownToInvokingUser(executable);
 				options.signal?.throwIfAborted();
 				if (existsSync(to)) {
-					const quarantine = `${to}.invalid-${Date.now()}-${process.pid}`;
+					// Only the copy being replaced now is kept to look at: one per
+					// replacement piled up beside the tool forever.
+					await removeQuarantines(to);
+					const quarantine = `${to}${QUARANTINE_INFIX}${Date.now()}-${process.pid}`;
 					await copyFile(to, quarantine, constants.COPYFILE_EXCL);
 					await chmod(quarantine, 0o600);
 					chownToInvokingUser(quarantine);
@@ -292,6 +296,19 @@ export async function installTool(
 			timeoutMs: (options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS) + 60_000,
 			signal: options.signal,
 		},
+	);
+}
+
+/** A replaced executable, kept beside the tool as `<tool>.invalid-<time>-<pid>`. */
+const QUARANTINE_INFIX = ".invalid-";
+
+async function removeQuarantines(to: string): Promise<void> {
+	const prefix = `${basename(to)}${QUARANTINE_INFIX}`;
+	const names = await readdir(dirname(to));
+	await Promise.all(
+		names
+			.filter((name) => name.startsWith(prefix))
+			.map((name) => rm(join(dirname(to), name), { force: true })),
 	);
 }
 

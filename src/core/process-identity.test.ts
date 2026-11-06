@@ -4,6 +4,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import {
+	checkProcessIdentitiesAsync,
 	matchesProcessIdentityAsync,
 	processIdentityMatcherAsync,
 	readProcessIdentities,
@@ -205,6 +206,27 @@ describe("processIdentityMatcherAsync", () => {
 		expect((await processIdentityMatcherAsync([{ pid }]))(pid, undefined)).toBe(
 			false,
 		);
+	});
+});
+
+describe("checkProcessIdentitiesAsync", () => {
+	it("checks a list in its order, telling a gone process from a reused pid", async () => {
+		const child = Bun.spawn([process.execPath, "--eval", ""], {
+			stdout: "ignore",
+			stderr: "ignore",
+		});
+		const gone = child.pid;
+		await child.exited;
+		const identity = readProcessIdentity(process.pid);
+		expect(
+			await checkProcessIdentitiesAsync([
+				{ pid: process.pid, identity },
+				{ pid: gone, identity: "v2:gone" },
+				{ pid: process.pid, identity: "v2:not-this-process" },
+				{ pid: process.pid },
+				{ pid: 1.5, identity: "v2:not-a-pid" },
+			]),
+		).toEqual(["match", "mismatch", "mismatch", "match", "mismatch"]);
 	});
 });
 

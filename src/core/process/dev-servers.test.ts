@@ -2,11 +2,20 @@ import { describe, expect, it, spyOn } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { toError } from "hanzio";
+import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import { startFakeInfisical } from "../secrets/fake-infisical.testing";
 import { clearScopeSecretsCache } from "../secrets/infisical";
 import { startDevServers, stopDevServers } from "./dev-servers";
 import { signalProcessTree } from "./port-owner";
 import { RunOutput } from "./run-output";
+
+/** Poll `check` until it holds, failing the test after `timeoutMs`. */
+async function eventually(check: () => boolean, timeoutMs = 10_000) {
+	const deadline = Date.now() + timeoutMs;
+	while (!check() && Date.now() < deadline) await Bun.sleep(20);
+	expect(check()).toBe(true);
+}
 
 // Ports the OS hands out, held together so they differ. A random port in a
 // fixed range collided with another test's app still letting go of it.
@@ -624,12 +633,14 @@ describe("startDevServers prebuild", () => {
 });
 
 describe("startDevServers restart", () => {
-	it("reports a restart that could not replace the app as failed", async () => {
+	const silent = "bun -e 'setInterval(() => {}, 60000)'";
+
+	it("parks an app a restart could not replace, until a restart brings it back", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-restart-failed-"));
 		await mkdir(join(root, "api"));
 		const output = new RunOutput();
-		const silent = "bun -e 'setInterval(() => {}, 60000)'";
 		const restartFailures: string[] = [];
+		const failures: unknown[] = [];
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
@@ -644,7 +655,9 @@ describe("startDevServers restart", () => {
 					verbose: false,
 					waitForExit: false,
 					output,
+					keepOthersOnFailure: true,
 					onAppRestartFailed: (name) => restartFailures.push(name),
+					onFailure: (error) => failures.push(error),
 				},
 			);
 			// Its working directory is gone: the replacement cannot spawn.
@@ -656,11 +669,128 @@ describe("startDevServers restart", () => {
 			});
 			// What the CLI marks `failed` in the run registry.
 			expect(restartFailures).toEqual(["api"]);
+
+			await mkdir(join(root, "api"));
+			await output.controls?.restart("api");
+			await eventually(() => output.states.get("api")?.state === "ready");
+			expect(processExists(pids.keeper)).toBe(true);
+			expect(failures).toEqual([]);
 		} finally {
 			await stopDevServers(pids);
 			await rm(root, { recursive: true, force: true });
 		}
 	});
+
+	it("fails the run when a restart cannot replace an essential app", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-restart-ends-"));
+		await mkdir(join(root, "api"));
+		const failures: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			const output = new RunOutput();
+			pids = await startDevServers(
+				{
+					keeper: { kind: "worker", devCommand: silent },
+					api: { kind: "worker", cwd: "api", devCommand: silent },
+				},
+				root,
+				{},
+				{},
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					onFailure: (error) => failures.push(toError(error).message),
+				},
+			);
+			await rm(join(root, "api"), { recursive: true });
+			await expect(output.controls?.restart("api")).rejects.toThrow();
+			// Not a run left waiting on an app that is gone.
+			await eventually(() => failures.length > 0);
+			expect(failures[0]).toContain('App "api" could not be restarted');
+			await eventually(() => !processExists(pids.keeper));
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("leaves the row of an app as it was when the run has ended", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-restart-ended-"));
+		const output = new RunOutput();
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{ api: { kind: "worker", devCommand: silent } },
+				root,
+				{},
+				{},
+				{ verbose: false, waitForExit: false, output },
+			);
+			expect(output.states.get("api")?.state).toBe("ready");
+			await stopDevServers(pids);
+			await output.controls?.restart("api");
+			expect(output.states.get("api")?.state).toBe("ready");
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("never lets a late exit report land on the process that replaced it", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-restart-late-"));
+		const marker = join(root, "ran-once");
+		const output = new RunOutput();
+		// An exit is shown once the app's screen has drawn its last words.
+		// This one takes until the replacement has spawned.
+		const replaced = Promise.withResolvers<void>();
+		const screen = output.screen("flaky");
+		const drawn = screen.flush.bind(screen);
+		screen.flush = () => replaced.promise.then(drawn);
+		const flaky = `bun -e ${JSON.stringify(
+			`const f = ${JSON.stringify(marker)}; if (!(await Bun.file(f).exists())) { await Bun.write(f, "1"); process.exit(1); } setInterval(() => {}, 60000);`,
+		)}`;
+		const port = await freePort();
+		let spawns = 0;
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					keeper: { kind: "worker", devCommand: silent },
+					flaky: {
+						port,
+						essential: false,
+						healthEndpoint: false,
+						devCommand: flaky,
+					},
+				},
+				root,
+				{},
+				{ flaky: port },
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					// Restarted the moment its exit is seen, before it is shown.
+					onAppExit: (name) => {
+						if (name === "flaky") void output.controls?.restart("flaky");
+					},
+					onAppSpawned: (name) => {
+						if (name === "flaky" && ++spawns === 2) replaced.resolve();
+					},
+				},
+			);
+			await replaced.promise;
+			// The old process's exit has been shown, or dropped, by now.
+			await screen.flush();
+			await eventually(() => output.states.get("flaky")?.state === "ready");
+			await screen.flush();
+			expect(output.states.get("flaky")?.state).toBe("ready");
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 20_000);
 });
 
 describe("startDevServers keepOthersOnFailure", () => {
@@ -747,6 +877,249 @@ describe("startDevServers keepOthersOnFailure", () => {
 			await rm(root, { recursive: true, force: true });
 		}
 	}, 15000);
+
+	it("parks an app that crashes at boot, and a restart that brings it up makes it essential again", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-crash-"));
+		const [api, web] = await freePorts(2);
+		const marker = join(root, "ran-once");
+		// Crashes the first time, serves the second.
+		const crashOnce = `bun -e ${JSON.stringify(
+			`const f = ${JSON.stringify(marker)}; if (!(await Bun.file(f).exists())) { await Bun.write(f, "1"); process.exit(1); } Bun.serve({ port: ${web}, fetch: () => new Response("ok") }); setInterval(() => {}, 60000);`,
+		)}`;
+		const output = new RunOutput();
+		const failed: string[] = [];
+		const runFailures: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					api: { port: api, devCommand: serve(api) },
+					web: { port: web, devCommand: crashOnce },
+				},
+				root,
+				{},
+				{ api, web },
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					keepOthersOnFailure: true,
+					onAppFailed: (name) => failed.push(name),
+					onFailure: (error) => runFailures.push(toError(error).message),
+				},
+			);
+			expect(failed).toEqual(["web"]);
+			expect(processExists(pids.api)).toBe(true);
+			await eventually(() => output.states.get("web")?.restartable === true);
+			expect(output.states.get("web")?.state).toBe("failed");
+
+			await output.controls?.restart("web");
+			await eventually(() => output.states.get("web")?.state === "ready");
+			expect(runFailures).toEqual([]);
+
+			// Up again, so its falling over is the run's end like any essential app's.
+			signalProcessTree(pids.web, "SIGKILL");
+			await eventually(() => runFailures.length > 0);
+			expect(runFailures[0]).toContain('App "web" exited');
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 20_000);
+
+	it("makes an app parked for never answering essential again once a restart brings it up", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-unpark-"));
+		const [api, web] = await freePorts(2);
+		const marker = join(root, "ran-once");
+		// Silent the first time, serves the second.
+		const silentOnce = `bun -e ${JSON.stringify(
+			`const f = ${JSON.stringify(marker)}; if (!(await Bun.file(f).exists())) { await Bun.write(f, "1"); } else Bun.serve({ port: ${web}, fetch: () => new Response("ok") }); setInterval(() => {}, 60000);`,
+		)}`;
+		const output = new RunOutput();
+		const runFailures: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					api: { port: api, devCommand: serve(api) },
+					web: { port: web, healthTimeout: 300, devCommand: silentOnce },
+				},
+				root,
+				{},
+				{ api, web },
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					keepOthersOnFailure: true,
+					onFailure: (error) => runFailures.push(toError(error).message),
+				},
+			);
+			await eventually(() => output.states.get("web")?.state === "failed");
+			await output.controls?.restart("web");
+			await eventually(() => output.states.get("web")?.state === "ready");
+
+			signalProcessTree(pids.web, "SIGKILL");
+			await eventually(() => runFailures.length > 0);
+			expect(runFailures[0]).toContain('App "web" exited');
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 20_000);
+});
+
+describe("startDevServers apps that never come up", () => {
+	const serve = (port: number) =>
+		`bun -e 'Bun.serve({ port: ${port}, fetch: () => new Response("ok") }); setInterval(() => {}, 60000)'`;
+	const silent = "bun -e 'setInterval(() => {}, 60000)'";
+
+	it("stops a non-essential app that never answers and says why", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-side-failed-"));
+		const port = await freePort();
+		const output = new RunOutput();
+		const failed: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					keeper: { kind: "worker", devCommand: silent },
+					side: {
+						port,
+						essential: false,
+						healthTimeout: 300,
+						devCommand: silent,
+					},
+				},
+				root,
+				{},
+				{ side: port },
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					onAppFailed: (name) => failed.push(name),
+				},
+			);
+			const side = pids.side;
+			await eventually(() => output.states.get("side")?.state === "failed");
+			expect(output.states.get("side")).toMatchObject({
+				detail: expect.stringContaining("did not respond"),
+				restartable: true,
+			});
+			await eventually(() => failed.includes("side"));
+			expect(failed).toEqual(["side"]);
+			expect(processExists(side)).toBe(false);
+			expect(processExists(pids.keeper)).toBe(true);
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 15_000);
+
+	it("brings a reused app's row up, and leaves it running when it fails its check", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-reused-"));
+		const [api, web, admin] = await freePorts(3);
+		// This project's containers serve web and admin; only web answers.
+		const container = Bun.serve({ port: web, fetch: () => new Response("ok") });
+		const runtime = {
+			name: "docker",
+			containerPortOwnersAsync: async () =>
+				new Map([
+					[web, { id: "w", name: "proj-web-1", composeProject: "proj" }],
+					[admin, { id: "a", name: "proj-admin-1", composeProject: "proj" }],
+				]),
+		} as unknown as ContainerRuntimeAdapter;
+		const output = new RunOutput();
+		const failed: string[] = [];
+		const ready: string[] = [];
+		let pids: Record<string, number> = {};
+		try {
+			pids = await startDevServers(
+				{
+					api: { port: api, devCommand: serve(api) },
+					web: { port: web, devCommand: serve(web) },
+					admin: { port: admin, healthTimeout: 300, devCommand: serve(admin) },
+				},
+				root,
+				{},
+				{ api, web, admin },
+				{
+					verbose: false,
+					waitForExit: false,
+					output,
+					runtime,
+					projectName: "proj",
+					portDrift: false,
+					keepOthersOnFailure: true,
+					onAppFailed: (name) => failed.push(name),
+					onAppReady: (name) => ready.push(name),
+				},
+			);
+			expect(pids.web).toBeUndefined();
+			expect(output.states.get("web")?.state).toBe("ready");
+			expect(ready).toContain("web");
+			expect(failed).toEqual(["admin"]);
+			expect(output.states.get("admin")).toMatchObject({
+				state: "failed",
+				restartable: false,
+				detail: expect.stringContaining("left running"),
+			});
+		} finally {
+			await stopDevServers(pids);
+			container.stop(true);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 15_000);
+
+	it("refuses to start an app whose leftover process will not let go of its port", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-port-held-"));
+		const port = await freePort();
+		const leftoverPid = join(root, "leftover.pid");
+		const successorPid = join(root, "successor.pid");
+		// A leftover of this checkout that, asked to stop, hands its port to a
+		// successor no SIGKILL of the leftover reaches.
+		await Bun.write(
+			join(root, "successor.ts"),
+			`Bun.serve({ port: ${port}, reusePort: true, fetch: () => new Response("successor") }); await Bun.write(${JSON.stringify(successorPid)}, String(process.pid)); setInterval(() => {}, 60000);`,
+		);
+		await Bun.write(
+			join(root, "leftover.ts"),
+			`import { spawn } from "node:child_process"; Bun.serve({ port: ${port}, reusePort: true, fetch: () => new Response("leftover") }); process.on("SIGTERM", async () => { spawn(process.execPath, ["successor.ts"], { cwd: ${JSON.stringify(root)}, detached: true, stdio: "ignore" }).unref(); while (!(await Bun.file(${JSON.stringify(successorPid)}).exists())) await Bun.sleep(10); process.exit(0); }); await Bun.write(${JSON.stringify(leftoverPid)}, String(process.pid)); setInterval(() => {}, 60000);`,
+		);
+		const leftover = Bun.spawn([process.execPath, "leftover.ts"], {
+			cwd: root,
+			stdio: ["ignore", "ignore", "ignore"],
+		});
+		const spawned: string[] = [];
+		try {
+			const deadline = Date.now() + 5000;
+			while (!(await Bun.file(leftoverPid).exists()) && Date.now() < deadline)
+				await Bun.sleep(20);
+			await expect(
+				startDevServers(
+					{ web: { port, stopGraceMs: 300, devCommand: serve(port) } },
+					root,
+					{},
+					{ web: port },
+					{
+						verbose: false,
+						waitForExit: false,
+						skipContainers: true,
+						onAppSpawned: (name) => spawned.push(name),
+					},
+				),
+			).rejects.toThrow("did not stop");
+			expect(spawned).toEqual([]);
+		} finally {
+			leftover.kill("SIGKILL");
+			if (await Bun.file(successorPid).exists()) {
+				const successor = Number(await Bun.file(successorPid).text());
+				if (processExists(successor)) process.kill(successor, "SIGKILL");
+			}
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 15_000);
 });
 
 describe("startDevServers readyWhen and interactive apps without a terminal", () => {

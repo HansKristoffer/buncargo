@@ -38,27 +38,42 @@ it. The attached app is teed through `script` when stdin is a TTY, else through 
 ## Failure and non-essential apps
 
 `keepOthersOnFailure` (on in `dev` unless `options.onAppFailure: "stop-run"`) waits for each app of
-a wave on its own, then stops and parks the ones that never came up by adding them to the same
-`optional` set an `essential: false` app is in, so restart, the TUI and the registry need nothing
-new. Whether the run fails is decided before anything is parked: when a later app `startAfter`s a
-failed one, or nothing else is left.
+a wave on its own, then stops and parks the ones that never came up, crashed at boot included:
+until it is ready, each essential app of the wave is on probation, so its exit parks it in the
+owner instead of ending the run. The attached app is never on probation: quitting it ends the run. Whether the run fails is decided before anything is parked (when a
+later app `startAfter`s a failed one, or nothing else is left), and a row on probation offers no
+restart until then. A parked app is spared through `ProcessOwner.isOptional` like an
+`essential: false` one, so restart, the TUI and the registry need nothing new, and only until a
+restart brings it up: from then its crash ends the run again. A reused app (another process serves
+its port) that fails its check is reported failed and left running, since this run can neither stop
+nor restart it.
 
 `port-drift.ts` races every wave's readiness: an app whose process tree listens on another port
 while its own is held by something else fails at once. It connects to the assigned port and never
 binds it, because a probe that bound it could push the booting app off.
 
-`essential: false` is `ProcessOwner.optional`: the app's exit parks it instead of aborting,
+`essential: false` is `ProcessOwner.isOptional`: the app's exit parks it instead of aborting,
 `owner.wait()` keeps waiting while anything is parked, and its readiness never gates a wave (it is
 health-checked on the side, also after every restart). Each side check belongs to one process:
 exit or replacement aborts it, and `markReady` only promotes a `starting` app, so a late check
-cannot report a dead or replaced app ready.
+cannot report a dead or replaced app ready. A side check that fails stops and parks the app (an
+essential one only under `keepOthersOnFailure`; otherwise the run fails as it would have at start),
+so no row stays `starting`. The same holds for what an exit shows: every spawn and restart starts a
+new generation of the app's row, and an exit's verdict, shown after the app's last screen flushes,
+is dropped once a newer generation exists.
 
 `AppSupervision.restart` runs restarts of one app one after another (a request before the first
 has begun joins it): two at once would both retire the same child and the second replacement fails
 on the port. In the run registry a new pid is a new process generation, the one update allowed to
 take a `stopped`/`failed` app back to `starting`. A restart that retires the old process and cannot spawn
 its replacement reports `onAppRestartFailed`: a retired process's exit is never reported, so
-nothing else would move the app's output row and registry entry off its old state.
+nothing else would move the app's output row and registry entry off its old state. The owner then
+treats the app as one that exited (`replacementFailed`): parked when it is spared, otherwise the end
+of the run, which would else wait on an app that is gone. The session keeps the app's last pid, so
+`stopDevServers` with the caller's pids still finds it. A row only says `starting` once a restart
+has begun, so a restart asked for after the run ended changes nothing. A restart that retires a
+launcher while its exit is still looking for the server it detached waits for that lookup and stops
+the server, which would otherwise be adopted beside the replacement.
 
 A non-essential worker that dies while its ownership is being claimed (before or while the claim
 is written) is handed to the supervisor anyway (`spawnOwnedWorker`'s `allowEarlyExit`), with no

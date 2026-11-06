@@ -336,24 +336,39 @@ export function createServersApi<
 		const tunnels = await startPublicTunnels(targets, {
 			signal: options.signal,
 		});
-		ctx.setPublicUrls(
-			Object.fromEntries(tunnels.map((t) => [t.name, t.publicUrl])),
+		const opened: Record<string, string> = Object.fromEntries(
+			tunnels.map((t) => [t.name, t.publicUrl]),
 		);
+		// Beside the URLs apps printed (`captures`), which are not the tunnels'.
+		ctx.setPublicUrls({ ...ctx.publicUrls, ...opened });
 
 		let closed = false;
 		async function close(): Promise<void> {
 			if (closed) return;
 			closed = true;
 			await stopPublicTunnels(tunnels);
-			ctx.clearPublicUrls();
+			ctx.setPublicUrls(withoutPublicUrls(ctx.publicUrls, opened));
 		}
 
 		return {
-			publicUrls: { ...ctx.publicUrls } as ComputedPublicUrls<TServices, TApps>,
+			publicUrls: { ...opened } as ComputedPublicUrls<TServices, TApps>,
 			tunnels,
 			close,
 		};
 	}
 
 	return { startServersOnly, waitForServersReady, openPublicTunnels };
+}
+
+/**
+ * `current` without the URLs `removed` set: a key whose value has changed
+ * since (an app printed a new one) is someone else's and stays.
+ */
+export function withoutPublicUrls(
+	current: Readonly<Record<string, string>>,
+	removed: Readonly<Record<string, string>>,
+): Record<string, string> {
+	return Object.fromEntries(
+		Object.entries(current).filter(([key, url]) => removed[key] !== url),
+	);
 }

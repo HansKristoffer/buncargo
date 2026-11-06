@@ -85,6 +85,29 @@ it("gives a dev environment's block back when it is stopped in CI", async () => 
 	expect(readOffsetClaims()[root]).toBeUndefined();
 });
 
+it("claims a block again for Prisma once a stop gave the last one back", async () => {
+	const root = join(scratch, "runner-9", "app");
+	mkdirSync(root, { recursive: true });
+	const ci = createDevEnvironment(
+		{
+			projectPrefix: "gey",
+			services: { postgres: { port: 5432, healthCheck: false } },
+			docker: { runtime: "docker", binary: fakeDocker() },
+			prisma: {},
+			options: { verbose: false },
+		},
+		{ root },
+	).withSuffix(CI_PROJECT_SUFFIX);
+	const key = offsetClaimKey(root, CI_PROJECT_SUFFIX);
+	await ci.prepareStartAsync();
+	await ci.stop({ verbose: false, removeVolumes: true });
+	expect(readOffsetClaims()[key]).toBeUndefined();
+
+	// Not the released block, which another environment may have claimed since.
+	await ci.prisma?.ensureDatabase();
+	expect(readOffsetClaims()[key]).toBeDefined();
+});
+
 it("keeps a developer's dev block claimed while it is stopped", async () => {
 	const { root, env } = checkout();
 	await env.prepareStartAsync();
