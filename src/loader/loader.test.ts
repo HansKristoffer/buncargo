@@ -249,6 +249,55 @@ describe("loadDevEnv", () => {
 		expect(await loadDevEnv({ cwd: testDir })).toBe(cached);
 	});
 
+	it("builds one environment for loads of the same identity that overlap", async () => {
+		// A config whose import takes a moment, so both loads resume from it
+		// together and race through the rest of the load.
+		writeFileSync(
+			join(testDir, "dev.config.ts"),
+			`await Bun.sleep(20); export default ${JSON.stringify(typedConfig)}`,
+		);
+		const [first, second] = await Promise.all([
+			loadDevEnv({ cwd: testDir, readOnly: true }),
+			loadDevEnv({ cwd: testDir, readOnly: true }),
+		]);
+		expect(second).toBe(first);
+		expect(second.sessionId).toBe(first.sessionId);
+	});
+
+	it("caches a config again once a reload dropped its envFiles", async () => {
+		const entry = join(testDir, "dev.config.ts");
+		writeFileSync(
+			entry,
+			`export default { ...${JSON.stringify(typedConfig)}, options: { envFiles: [{ path: ".env.local", optional: true }] } };`,
+		);
+		const withFiles = await loadDevEnv({ cwd: testDir, readOnly: true });
+		expect(await loadDevEnv({ cwd: testDir, readOnly: true })).not.toBe(
+			withFiles,
+		);
+
+		writeFileSync(entry, `export default ${JSON.stringify(typedConfig)}`);
+		const reloaded = await loadDevEnv({
+			cwd: testDir,
+			readOnly: true,
+			reload: true,
+		});
+		expect(await loadDevEnv({ cwd: testDir, readOnly: true })).toBe(reloaded);
+	});
+
+	it("does not answer getDevEnv with the config from before a reload that failed", async () => {
+		const entry = join(testDir, "dev.config.ts");
+		writeFileSync(entry, `export default ${JSON.stringify(typedConfig)}`);
+		await loadDevEnv({ cwd: testDir, readOnly: true });
+		writeFileSync(
+			entry,
+			`export default { projectPrefix: "broken", services: {}, apps: { web: { devCommand: false } }, env: () => { throw new Error("broken config"); } };`,
+		);
+		await loadDevEnv({ cwd: testDir, readOnly: true, reload: true }).catch(
+			() => undefined,
+		);
+		expect(() => getDevEnv()).toThrow("Dev environment not loaded");
+	});
+
 	it("throws when no config file exists", async () => {
 		await expect(loadDevEnv({ cwd: testDir })).rejects.toThrow(
 			"No config file found",
