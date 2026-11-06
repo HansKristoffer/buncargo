@@ -40,7 +40,12 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   installs, removes and validates the service.
 - Installs are all-or-nothing: a unit file left behind by a failed load would make
   `isHostsServiceInstalled()` report success and every later run would skip setup. On failure
-  `service.ts` removes the file it wrote.
+  `service.ts` removes what it added and puts back what it replaced, reloading a previous unit:
+  macOS has booted the old job out by then, and a same-version reinstall writes over the very
+  bundle the old service runs, so deleting both left no service at all.
+- Activation restarts the unit. `launchctl bootstrap` after `bootout` does on macOS; on Linux
+  `enable --now` and `start` are no-ops on an active unit, which left a reinstall (and doctor's
+  repair of a wedged daemon) running the old code under a manifest naming the new.
 - `hosts-service.json` records what the service was installed with. The bundle path carries the
   version it was built from, so `describeStaleHostsService()` catches both a vanished path and an
   upgraded CLI still pointing at the previous bundle, instead of silently degrading to
