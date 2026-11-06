@@ -899,8 +899,8 @@ export type RunAppUpdate = Partial<RunAppEntry> & { name: string };
 
 export interface RunPatch {
 	/**
-	 * Apps a restart was asked of: back to `starting` whatever their rows
-	 * said, before the run replaces them. No status update can say it: a new
+	 * Apps whose restart the run began: back to `starting` whatever their
+	 * rows said, before the run replaces them. No status update can say it: a new
 	 * pid on a running app is that app adopting its detached server, so a
 	 * restarted app kept reading `ready`, and `restart && wait` returned on
 	 * the process it had just replaced.

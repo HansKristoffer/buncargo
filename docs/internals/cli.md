@@ -150,6 +150,13 @@ pieces it orchestrates.
   The run delivers it to `output.screens`, so only an app with a pseudo-terminal reads keys. Each
   request carries an id, and the run answers it in `send/<session>.replies/<id>`, typed or why
   not, so `send` can exit 3 rather than report keys that reached nothing.
+- `commands/restart.ts` never writes the app's row: only the run knows a restart began, and it
+  marks the row `starting` itself (`onAppRestarting`, on both entry points). A library `start()`
+  records pids but reads no requests, so a row the command marked stayed `starting` and
+  `restart && wait --app` hung. The command waits for the request file to be taken (`dev` reads
+  it from before its first app spawns, so a pid means a reader if there is one), then for the
+  row to move on, so the `wait` that follows sees the new process; a request nobody takes is
+  withdrawn and the command exits 3.
 - `commands/inspect/file-table.ts` reads the machine's open-file table (`sysctl` /
   `/proc/sys/fs/file-nr`); `doctor` runs the full `lsof` for the top holders only past half full,
   because it takes seconds on a crowded machine.

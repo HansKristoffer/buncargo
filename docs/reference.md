@@ -1114,6 +1114,12 @@ whose identity cannot be read (`ps` failed or timed out) is refused too, rather
 than reported stopped while it may still run. Exit codes are `0` stopped, `2` no
 such target, `3` refused.
 
+`buncargo restart <app>` asks the `buncargo dev` run that started the app to
+replace it, and returns once that run has begun, so
+`buncargo restart api && buncargo wait --app=api` waits for the new process. A
+script's `start()` takes no restart requests: the command then restarts nothing
+and exits `3`; restart the app from that script instead.
+
 An app gets its `stopGraceMs` (5 seconds unless set) to exit after SIGTERM
 before it is killed. Stopping a whole run waits 5 seconds plus the longest
 grace among its apps, because the run stops its apps itself.
