@@ -40,13 +40,13 @@ it. The attached app is teed through `script` when stdin is a TTY, else through 
 `keepOthersOnFailure` (on in `dev` unless `options.onAppFailure: "stop-run"`) waits for each app of
 a wave on its own, then stops and parks the ones that never came up, crashed at boot included:
 until it is ready, each essential app of the wave is on probation, so its exit parks it in the
-owner instead of ending the run. The attached app is never on probation: quitting it ends the run. Whether the run fails is decided before anything is parked (when a
-later app `startAfter`s a failed one, or nothing else is left), and a row on probation offers no
-restart until then. A parked app is spared through `ProcessOwner.isOptional` like an
-`essential: false` one, so restart, the TUI and the registry need nothing new, and only until a
-restart brings it up: from then its crash ends the run again. A reused app (another process serves
-its port) that fails its check is reported failed and left running, since this run can neither stop
-nor restart it.
+owner instead of ending the run. The attached app is never on probation: quitting it ends the run.
+Whether the run fails is decided before anything is parked (when a later app `startAfter`s a failed
+one, or nothing else is left), and a row on probation offers no restart until then. A parked app
+is spared through `ProcessOwner.isOptional` like an `essential: false` one, so restart, the TUI and
+the registry need nothing new, and only until a restart brings it up: from then its crash ends the
+run again. A reused app (another process serves its port) that fails its check is reported failed
+and left running, since this run can neither stop nor restart it.
 
 `port-drift.ts` races every wave's readiness: an app whose process tree listens on another port
 while its own is held by something else fails at once. It connects to the assigned port and never
@@ -65,8 +65,8 @@ is dropped once a newer generation exists.
 `AppSupervision.restart` runs restarts of one app one after another (a request before the first
 has begun joins it): two at once would both retire the same child and the second replacement fails
 on the port. In the run registry a new pid is a new process generation, the one update allowed to
-take a `stopped`/`failed` app back to `starting`. A restart that retires the old process and cannot spawn
-its replacement reports `onAppRestartFailed`: a retired process's exit is never reported, so
+take a `stopped`/`failed` app back to `starting`. A restart that retires the old process and cannot
+spawn its replacement reports `onAppRestartFailed`: a retired process's exit is never reported, so
 nothing else would move the app's output row and registry entry off its old state. The owner then
 treats the app as one that exited (`replacementFailed`): parked when it is spared, otherwise the end
 of the run, which would else wait on an app that is gone. The session keeps the app's last pid, so
