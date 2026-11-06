@@ -105,7 +105,8 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   so a deleted worktree kept its hostnames in the registry, and in `/etc/hosts`, forever.
 - `syncHostsFile` writes through a temp file and a rename. `writeFileSync` truncates in place, and
   every name resolution on the machine reads this file, including the `localhost` entry the
-  system itself depends on.
+  system itself depends on. The privileged runner's `writeFile` (`hosts uninstall` through `sudo`)
+  does the same: `sudo cp` onto the file truncated it too.
 - `primary-app.ts`: named hosts use `configuredPrimaryApp`, which never infers, because inferring
   an owner for the bare `myapp.localhost` would silently move a name people have bookmarked.
 
