@@ -69,6 +69,7 @@ import {
 	reclaimAppRoute,
 	releaseNamedHosts,
 } from "./dev-hosts";
+import { listenForInterrupts } from "./dev-interrupts";
 import {
 	acquireAppLeases,
 	leaseSkipLines,
@@ -232,17 +233,27 @@ export async function runCli<
 		);
 	}
 
-	const controller = new AbortController();
-	let interruptCode: number | undefined;
-	const signals = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
-	const listeners = Object.entries(signals).map(([signal, code]) => {
-		const listener = () => {
-			interruptCode = code;
-			controller.abort(new Error("Startup interrupted"));
-		};
-		process.on(signal, listener);
-		return { signal, listener };
+	// The first SIGINT/SIGTERM/SIGHUP aborts the run with `RunInterrupted`, a
+	// second exits at once (`dev-interrupts.ts`).
+	const interrupts = listenForInterrupts({
+		clock: () => performance.now(),
+		forceExit: (code) => {
+			// After the TUI's own `exit` handler, which leaves its screen.
+			process.once("exit", () => {
+				restoreTerminal();
+				log.errorNow("Interrupted again: exiting before cleanup finished.", [
+					"The next `buncargo dev` here replaces anything left running; the containers wait out their idle hold.",
+				]);
+			});
+			process.exit(code);
+		},
 	});
+	const controller = new AbortController();
+	interrupts.signal.addEventListener(
+		"abort",
+		() => controller.abort(interrupts.signal.reason),
+		{ once: true },
+	);
 	const tunnels = createTunnelCoordinator(
 		env,
 		cliTestTunnel ?? {
@@ -260,6 +271,13 @@ export async function runCli<
 			: createNoopPhaseTimer());
 
 	let connect: DevConnect | undefined;
+	// Every path ends here once, whichever reaches it first: the one-shot
+	// modes, "nothing to start", the end of the run, and a failure.
+	let tearingDown: Promise<void> | undefined;
+	const teardownOnce = () => {
+		tearingDown ??= teardown(env, tunnels, connect);
+		return tearingDown;
+	};
 	let exitCode: DevFlowExit;
 	const failureContext: DevFailureContext = { setupHints: [] };
 	try {
@@ -271,14 +289,15 @@ export async function runCli<
 			timer,
 			signal: controller.signal,
 			failureContext,
+			teardown: teardownOnce,
 		});
 	} catch (error) {
 		controller.abort(error);
 		timer.report();
-		// The prompt re-raises SIGINT, but the listener above runs after this.
-		if (error instanceof PromptInterruptedError) interruptCode ??= 130;
+		// The prompt re-raises SIGINT, which arrives after this.
+		if (error instanceof PromptInterruptedError) interrupts.promptInterrupted();
 		const failure =
-			interruptCode === undefined
+			interrupts.exitCode() === undefined
 				? describeDevFailure(error, failureContext)
 				: undefined;
 		if (failure && detachedRunMode() !== undefined) {
@@ -289,7 +308,7 @@ export async function runCli<
 			}));
 		}
 		try {
-			await teardown(env, tunnels, connect);
+			await teardownOnce();
 		} finally {
 			// Last, after teardown's own messages: agents read `dev | tail`.
 			if (failure) {
@@ -297,11 +316,15 @@ export async function runCli<
 				log.errorNow(message, hints);
 			}
 		}
-		process.exit(interruptCode ?? 1);
+		process.exit(interrupts.exitCode() ?? 1);
 	} finally {
-		for (const { signal, listener } of listeners) process.off(signal, listener);
+		interrupts.dispose();
 	}
 
+	// 128 + the signal however an interrupted run ended: one that only held
+	// services or tunnels returns normally from the signal.
+	const interrupted = interrupts.exitCode();
+	if (interrupted !== undefined) process.exit(interrupted);
 	if (exitCode !== undefined) {
 		process.exit(exitCode);
 	}
@@ -386,9 +409,11 @@ async function runDevFlow<
 		connect?: DevConnect;
 		/** Filled in as the run goes, for the block a failure ends on. */
 		failureContext: DevFailureContext;
+		/** The run's one teardown; every path calls it, it runs once. */
+		teardown: () => Promise<void>;
 	},
 ): Promise<DevFlowExit> {
-	const { timer, signal, connect, failureContext } = options;
+	const { timer, signal, connect, failureContext, teardown } = options;
 	// Loaded only in the background run that reports to `dev --detach`.
 	const detached =
 		detachedRunMode() !== undefined ? await import("./dev-detach") : undefined;
@@ -396,7 +421,7 @@ async function runDevFlow<
 		// The one-shot modes end here, and `--up-only` is exactly the kind of
 		// run someone times.
 		timer.report();
-		await teardown(env, tunnels, connect);
+		await teardown();
 		return code;
 	}
 
@@ -405,16 +430,15 @@ async function runDevFlow<
 	if (args.down && args.all) {
 		const { stopAllBuncargoEnvironments } = await import("./commands/inspect");
 		await stopAllBuncargoEnvironments();
-		return 0;
+		return exitWith(0);
 	}
 
 	if (args.down || args.reset) {
 		env.logInfo();
-		await tunnels.stop();
+		// Every route of this checkout, not only this run's own.
 		await removeHostRoutes((route) => route.root === env.root);
 		await env.stop({ removeVolumes: args.reset, signal });
-		restoreTerminal();
-		return 0;
+		return exitWith(0);
 	}
 
 	// ── App selection ────────────────────────────────────────────────────────
@@ -453,6 +477,9 @@ async function runDevFlow<
 				runChecks(checks, { root: env.root, env: anyEnv }),
 			)
 		).filter((result) => !result.ok);
+		// The steps below take no signal: a Ctrl-C during one is seen at the
+		// next boundary, before anything else starts.
+		signal.throwIfAborted();
 		const warnings = describeCheckFailures(failed.filter(isWarning));
 		for (const line of warnings) log.warn(line);
 		// Repeated with a failure, at the end, which is where it is read.
@@ -466,6 +493,7 @@ async function runDevFlow<
 		await timer.measure("preflight", () =>
 			runPreflight(anyEnv, Object.keys(appsForDev)),
 		);
+		signal.throwIfAborted();
 	}
 	connect?.plan(appsForDev, plan.requiredServiceKeys, env.services);
 	if (connect && !connect.active)
@@ -505,7 +533,10 @@ async function runDevFlow<
 	// After named hosts, which owns the first-run prompt slot on a fresh
 	// machine, and before the containers, so a question cannot land in the
 	// middle of startup output.
-	if (!args.oneShot) await offerMenuBarApp();
+	if (!args.oneShot) {
+		signal.throwIfAborted();
+		await offerMenuBarApp();
+	}
 	// Kept for the TUI, which covers the scrollback they were printed in.
 	const printedHostsWarnings: string[] = [];
 	const flushHostsWarnings = (): void => {
@@ -517,6 +548,7 @@ async function runDevFlow<
 	// the hold its flags ask for; `start()` claims too, and keeps this one.
 	// Claimed whether or not a watchdog is wanted: the claim is what says the
 	// containers are somebody's, and the registry has to say so either way.
+	signal.throwIfAborted();
 	if (hasServices)
 		await env.claimRun({
 			idleTimeoutMs: resolveIdleTimeout(args),
@@ -563,6 +595,9 @@ async function runDevFlow<
 				);
 
 	async function takeOver(candidates: TakeoverCandidates) {
+		// Never begun once interrupted: it kills the other run's servers, and
+		// an interrupted run would not start them here.
+		signal.throwIfAborted();
 		log.line();
 		await stopRunningApps(candidates.names, env.ports, {
 			root: env.root,
@@ -752,6 +787,7 @@ async function runDevFlow<
 	// classification still describes a reuse the takeover is about to undo, and
 	// `env.urls` may still hold the localhost fallback from the refused first
 	// activation. It lands on the entry the environment claimed, by session.
+	signal.throwIfAborted();
 	await publishCurrentRun(env, {
 		apps: { ...classifiedApps.startApps, ...classifiedApps.reusedApps },
 		reusedNames: classifiedApps.reusedNames,
@@ -796,7 +832,7 @@ async function runDevFlow<
 		if (takeover && takeover.names.length > 0 && !isInteractive()) {
 			log.hint("Pass --takeover to stop them and run here instead.");
 		}
-		await teardown(env, tunnels, connect);
+		await teardown();
 		return undefined;
 	}
 
@@ -825,7 +861,9 @@ async function runDevFlow<
 	};
 
 	try {
-		// After every prompt and the banner, which stay in the scrollback.
+		// After every prompt and the banner, which stay in the scrollback, and
+		// never for a run already interrupted.
+		signal.throwIfAborted();
 		view.start();
 		// The TUI covers that scrollback: repeat why an app is missing, and why
 		// the URLs are `localhost:port`, in its Overview (events are not
@@ -982,7 +1020,7 @@ async function runDevFlow<
 	} finally {
 		// First, so teardown's messages land on the user's own screen.
 		await view.stop();
-		await teardown(env, tunnels, connect);
+		await teardown();
 	}
 }
 

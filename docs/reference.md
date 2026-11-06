@@ -491,6 +491,11 @@ selection is an app buncargo spawns (no apps, or only `devCommand: false` ones),
 `dev` holds the containers until Ctrl-C like any run, then releases them to the
 idle hold; `--detach` returns once they are ready.
 
+Ctrl-C (or `SIGTERM`, `SIGHUP`) ends a `dev` run wherever it is: the apps stop,
+its named hosts and tunnels are released, the containers wait out the idle hold,
+and `dev` exits 130 (143, 129). A second Ctrl-C while that is under way exits at
+once; the next `dev` in the checkout replaces whatever was left running.
+
 Mutually exclusive modes cannot be combined. Configuration, selection, dependency
 references and cycles are validated before startup changes host configuration or
 starts resources.

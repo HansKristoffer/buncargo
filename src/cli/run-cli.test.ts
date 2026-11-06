@@ -899,7 +899,9 @@ it("holds a services-only run until it is told to stop", async () => {
 	const realLog = console.log;
 	console.log = (...parts: unknown[]) => printed.push(parts.join(" "));
 	const said = (text: string) => printed.some((line) => line.includes(text));
-	const run = runCli(env, { args: ["--no-hosts"], watchdog: false });
+	const run = withProcessExitTrap(() =>
+		runCli(env, { args: ["--no-hosts"], watchdog: false }),
+	);
 	try {
 		const deadline = performance.now() + 5_000;
 		while (!said("Services ready") && !said("Nothing to start")) {
@@ -910,14 +912,84 @@ it("holds a services-only run until it is told to stop", async () => {
 		expect(released).toBe(0);
 
 		process.emit("SIGINT");
-		await run;
+		// Interrupted, like a run of apps: not a clean 0.
+		expect(await run).toBe(130);
 		expect(released).toBe(1);
 	} finally {
 		console.log = realLog;
 		if (released === 0) process.emit("SIGTERM");
-		await run;
+		await run.catch(() => {});
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+describe("how a run ends", () => {
+	it("tears down once when an app fails during start", async () => {
+		const port = 44610 + Math.floor(Math.random() * 200);
+		let released = 0;
+		const env = createStubEnv({
+			services: {},
+			apps: {
+				api: {
+					port,
+					devCommand: "bun -e 'process.exit(1)'",
+					healthEndpoint: false,
+					requiredServices: [],
+				},
+			},
+			waitForServers: () => new Promise(() => {}),
+		});
+		Object.assign(env, {
+			releaseRun: async () => {
+				released++;
+			},
+		});
+		const code = await withProcessExitTrap(() =>
+			runCli(env, { args: ["--no-hosts"], watchdog: false }),
+		);
+		expect(code).toBe(1);
+		expect(released).toBe(1);
+	});
+
+	it("ends --down with the same teardown as every other run", async () => {
+		let stopped = 0;
+		let released = 0;
+		const env = createStubEnv();
+		Object.assign(env, {
+			stop: async () => {
+				stopped++;
+			},
+			releaseRun: async () => {
+				released++;
+			},
+		});
+		const code = await withProcessExitTrap(() =>
+			runCli(env, { args: ["--down"], watchdog: false }),
+		);
+		expect(code).toBe(0);
+		expect(stopped).toBe(1);
+		expect(released).toBe(1);
+	});
+
+	// A step that takes no signal finishes, and the run stops at the next
+	// boundary instead of claiming containers and starting them.
+	it("claims nothing once interrupted, and exits 130", async () => {
+		let claims = 0;
+		const env = createStubEnv();
+		Object.assign(env, {
+			prepareStartAsync: async () => {
+				process.emit("SIGINT");
+			},
+			claimRun: async () => {
+				claims++;
+			},
+		});
+		const code = await withProcessExitTrap(() =>
+			runCli(env, { args: ["--no-hosts", "--no-tui"], watchdog: false }),
+		);
+		expect(code).toBe(130);
+		expect(claims).toBe(0);
+	});
 });
 
 // `dev --detach` printed the exit code first and the cause somewhere above it:
