@@ -117,9 +117,10 @@ export function openDevOutput(
 		tui: tui !== undefined,
 		start: () => tui?.start(),
 		stop: async () => {
-			tui?.stop();
-			// Before the printer goes: what the apps left on screen is printed too.
+			// Before either view goes: what the apps left on screen reaches it,
+			// as it does the log files.
 			await output.close();
+			tui?.stop();
 			stopStream();
 			stopWatching();
 		},
