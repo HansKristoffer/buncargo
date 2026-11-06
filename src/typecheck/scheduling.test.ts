@@ -3,6 +3,7 @@ import {
 	defaultTypecheckConcurrency,
 	LOCAL_TYPECHECK_CONCURRENCY_CAP,
 	requestedTypecheckConcurrency,
+	runBounded,
 	selectWorkspaces,
 	sortWorkspacesByExpectedDuration,
 } from "./scheduling";
@@ -123,5 +124,53 @@ describe("selectWorkspaces", () => {
 		expect(selected.map((workspace) => workspace.path)).toEqual([
 			"apps/platform",
 		]);
+	});
+});
+
+describe("runBounded", () => {
+	it("rejects with a failed job's error only after the others have ended, and starts no more", async () => {
+		const failed = Promise.withResolvers<void>();
+		const gate = Promise.withResolvers<void>();
+		let slowEnded = false;
+		let thirdStarted = false;
+		const pool = runBounded(
+			[
+				async () => {
+					failed.resolve();
+					throw new Error("boom");
+				},
+				async () => {
+					await gate.promise;
+					slowEnded = true;
+				},
+				async () => {
+					thirdStarted = true;
+				},
+			],
+			2,
+		);
+		const outcome = pool.then(
+			() => "resolved",
+			(error: Error) => ({ message: error.message, slowEnded }),
+		);
+		await failed.promise;
+		// Every pending reaction has run: a pool that gave up early has settled.
+		await new Promise((resolve) => setImmediate(resolve));
+		gate.resolve();
+		expect(await outcome).toEqual({ message: "boom", slowEnded: true });
+		expect(thirdStarted).toBe(false);
+	});
+
+	it("starts nothing more once aborted, and rejects with the abort after the running jobs", async () => {
+		const controller = new AbortController();
+		const started: number[] = [];
+		const jobs = [0, 1, 2].map((index) => async () => {
+			started.push(index);
+			if (index === 0) controller.abort(new Error("interrupted"));
+		});
+		await expect(runBounded(jobs, 1, controller.signal)).rejects.toThrow(
+			"interrupted",
+		);
+		expect(started).toEqual([0]);
 	});
 });

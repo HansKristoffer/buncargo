@@ -103,3 +103,33 @@ export function selectWorkspaces<T extends { path: string }>(
 		unknown,
 	};
 }
+
+/**
+ * Run `jobs` in order, at most `concurrency` at a time, starting none once
+ * `signal` aborts or a job has failed. Settles only once every job it started
+ * has: a failed job's error (or the abort) is thrown after the others end, so
+ * no `tsc` a job started outlives the call.
+ */
+export async function runBounded(
+	jobs: readonly (() => Promise<void>)[],
+	concurrency: number,
+	signal?: AbortSignal,
+): Promise<void> {
+	const running = new Set<Promise<void>>();
+	const errors: unknown[] = [];
+	for (const job of jobs) {
+		while (running.size >= concurrency) await Promise.race(running);
+		if (signal?.aborted || errors.length > 0) break;
+		const settled: Promise<void> = Promise.resolve()
+			.then(job)
+			.catch((error: unknown) => {
+				errors.push(error);
+			})
+			.finally(() => running.delete(settled));
+		running.add(settled);
+	}
+
+	await Promise.all(running);
+	signal?.throwIfAborted();
+	if (errors.length > 0) throw errors[0];
+}
