@@ -17,7 +17,7 @@ import {
 	SERVICE_START_TIMEOUT_MS,
 } from "./daemon-client";
 import { readDaemonConfig } from "./daemon-config";
-import { cleanHostsFile } from "./hosts-file";
+import { cleanHostsFileAsRoot } from "./hosts-file";
 import {
 	ensureMkcert,
 	getCaPath,
@@ -28,6 +28,7 @@ import {
 } from "./mkcert";
 import { DECLINE_FILENAME } from "./paths";
 import { isHostsPlatformSupported } from "./plan";
+import { systemPrivilegedRunner } from "./privileged";
 import { removeHostRoutes } from "./registry";
 import {
 	describeStaleHostsService,
@@ -186,13 +187,12 @@ export async function runHostsInstall(
 }
 
 export async function runHostsUninstall(): Promise<void> {
-	uninstallHostsService();
+	const runner = systemPrivilegedRunner();
+	uninstallHostsService({ runner });
 	uninstallTrust();
-	try {
-		cleanHostsFile();
-	} catch {
-		// may need sudo; best-effort
-	}
+	// As root when needed: the daemon that wrote the block is stopped now, and
+	// the block left behind points every hostname at a proxy that is gone.
+	cleanHostsFileAsRoot(runner);
 	await removeHostRoutes(() => true);
 	try {
 		rmSync(getCertNamesPath(), { force: true });
