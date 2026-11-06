@@ -66,6 +66,60 @@ it("closes a tunnel acquired while startup is being cancelled", async () => {
 	expect(closed).toBe(1);
 });
 
+it("opens the tunnels again after an attempt that failed", async () => {
+	const env = {
+		services: { db: { port: 5432, expose: true } },
+		apps: {},
+		ports: { db: 5432 },
+		root: process.cwd(),
+		setPublicUrls: () => {},
+		clearPublicUrls: () => {},
+		logInfo: () => {},
+	} as unknown as DevEnvironment<
+		Record<string, ServiceConfig>,
+		Record<string, AppConfig>
+	>;
+	let attempts = 0;
+	const coordinator = createTunnelCoordinator(
+		env,
+		{
+			resolveExposeTargets,
+			stopPublicTunnels,
+			startPublicTunnels: async () => {
+				attempts++;
+				if (attempts === 1) throw new Error("cloudflared is not reachable");
+				return [
+					{
+						kind: "service",
+						name: "db",
+						localUrl: "http://localhost:5432",
+						publicUrl: "https://example.com",
+						close: async () => {},
+					},
+				];
+			},
+		},
+		{ exposeRequested: true },
+	);
+	await coordinator.planExpose({
+		exposeValue: undefined,
+		appsRequested: false,
+		selectedAppNames: new Set(),
+		selectedServiceNames: new Set(["db"]),
+		startAppNames: new Set(),
+		reusedAppNames: new Set(),
+	});
+
+	await expect(coordinator.openOwnedTunnels()).rejects.toThrow(
+		"cloudflared is not reachable",
+	);
+	expect(coordinator.hasPendingTargets()).toBe(true);
+	await coordinator.openOwnedTunnels();
+	expect(attempts).toBe(2);
+	expect(coordinator.hasPendingTargets()).toBe(false);
+	await coordinator.stop();
+});
+
 it("refuses an expose target outside --apps", async () => {
 	const env = {
 		services: { db: { port: 5432, expose: true } },
