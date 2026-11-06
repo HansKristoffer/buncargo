@@ -191,6 +191,25 @@ describe("replaceBundle", () => {
 		]);
 	});
 
+	it("puts the installed app back when the swap fails", () => {
+		// A copy that reports success with nothing staged: the swap's rename
+		// throws after the installed app was moved aside, which left no app.
+		const target = writeBundle(join(home, "Applications", "BuncargoBar.app"), {
+			version: "1.0.0",
+		});
+		const source = writeBundle(join(home, "incoming", "BuncargoBar.app"), {
+			version: "2.0.0",
+		});
+
+		expect(() => replaceBundle(source, target, () => ({ ok: true }))).toThrow(
+			"ENOENT",
+		);
+		expect(readBundleInfo(target).version).toBe("1.0.0");
+		expect(readdirSync(join(home, "Applications"))).toEqual([
+			"BuncargoBar.app",
+		]);
+	});
+
 	it("swaps the new app in and leaves nothing beside it", () => {
 		const target = writeBundle(join(home, "Applications", "BuncargoBar.app"), {
 			version: "1.0.0",
