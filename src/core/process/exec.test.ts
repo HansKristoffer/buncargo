@@ -1,9 +1,31 @@
 import { describe, expect, it } from "bun:test";
+import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withDeadline } from "../deadline";
-import { execAsync } from "./exec";
+import { execAsync, shellExitCode } from "./exec";
+
+describe("shellExitCode", () => {
+	it("reads a child killed by a signal as a failure, not as success", async () => {
+		const child = spawn(
+			process.execPath,
+			["-e", "setInterval(() => {}, 1000)"],
+			{
+				stdio: "ignore",
+			},
+		);
+		const closed = new Promise<[number | null, NodeJS.Signals | null]>(
+			(resolve) =>
+				child.once("close", (code, signal) => resolve([code, signal])),
+		);
+		child.kill("SIGKILL");
+		const [code, signal] = await closed;
+		expect(shellExitCode(code, signal)).toBe(137);
+		expect(shellExitCode(0, null)).toBe(0);
+		expect(shellExitCode(2, null)).toBe(2);
+	});
+});
 
 describe("execAsync", () => {
 	it("passes argv literally without shell expansion", async () => {

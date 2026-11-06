@@ -16,6 +16,19 @@ export class CommandSignalError extends Error {
 	}
 }
 
+/**
+ * A child's exit as a shell reports it: its code, or 128 plus the signal
+ * that killed it. A signalled child has no code, and reading that as 0 made
+ * a killed command look like it succeeded.
+ */
+export function shellExitCode(
+	code: number | null,
+	signal: NodeJS.Signals | null,
+): number {
+	if (code !== null) return code;
+	return signal ? 128 + constants.signals[signal] : 1;
+}
+
 function resolveCommandEnv(
 	envVars: Record<string, string>,
 	env: Record<string, string>,
@@ -179,7 +192,7 @@ export async function execAsync(
 		child.on("close", (code, signal) => {
 			if (!cancelling)
 				finish({
-					exitCode: code ?? (signal ? 128 + constants.signals[signal] : 1),
+					exitCode: shellExitCode(code, signal),
 					stdout,
 					stderr,
 				});

@@ -1,5 +1,6 @@
 import { childProcessEnv } from "../core/child-env";
 import { toPortMap } from "../core/ports";
+import { shellExitCode } from "../core/process/exec";
 /**
  * Prisma integration for buncargo.
  *
@@ -184,8 +185,8 @@ export function createPrismaRunner<
 				stdio: "inherit",
 			});
 
-			proc.on("close", (code) => {
-				resolve(code ?? 0);
+			proc.on("close", (code, signal) => {
+				resolve(shellExitCode(code, signal));
 			});
 
 			proc.on("error", (error) => {
