@@ -5,6 +5,8 @@ interface SharedRequest<T> {
 	pending: Promise<T>;
 	waiters: number;
 	settled: boolean;
+	/** Set once it succeeded; what {@link SharedRequestCache.forget} compares. */
+	value?: T;
 }
 
 /** Successful requests are cached; each caller owns only its wait. */
@@ -25,8 +27,9 @@ export class SharedRequestCache<T> {
 			this.entries.set(key, entry);
 			const created = entry;
 			void pending.then(
-				() => {
+				(value) => {
 					created.settled = true;
+					created.value = value;
 				},
 				() => {
 					created.settled = true;
@@ -75,6 +78,15 @@ export class SharedRequestCache<T> {
 				},
 			);
 		});
+	}
+
+	/**
+	 * Drop `key`'s cached `value`, which turned out to be no good, so the next
+	 * `get` loads again. A newer load another caller already started is kept.
+	 */
+	forget(key: string, value: T): void {
+		const entry = this.entries.get(key);
+		if (entry?.settled && entry.value === value) this.entries.delete(key);
 	}
 
 	clear(): void {
