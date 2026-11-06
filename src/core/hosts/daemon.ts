@@ -27,6 +27,7 @@ import {
 	readCertificatePair,
 } from "./certificates";
 import {
+	daemonConfigFromFlags,
 	readDaemonConfig,
 	readDaemonPid,
 	writeDaemonConfig,
@@ -657,7 +658,11 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 export async function runHostsDaemon(
 	options: { service?: boolean } = {},
 ): Promise<void> {
-	const config = readDaemonConfig();
+	// What this daemon binds comes from its own environment. The stored file
+	// is what the *running* daemon bound, for readers: binding from it made a
+	// port one foreground `BUNCARGO_HOSTS_PORT` run chose stick for the service.
+	const config = daemonConfigFromFlags();
+	const running = readDaemonConfig();
 	const service = options.service ?? false;
 
 	// The listener sets SO_REUSEPORT so a reload can bind its replacement before
@@ -674,12 +679,12 @@ export async function runHostsDaemon(
 			other !== undefined &&
 			other !== process.pid &&
 			isProcessAlive(other) &&
-			(await readProxyHealth(config.httpsPort, "127.0.0.1", {
-				tls: config.tls,
+			(await readProxyHealth(running.httpsPort, "127.0.0.1", {
+				tls: running.tls,
 			})) !== undefined
 		) {
 			logDaemonError(
-				`[buncargo hosts] a daemon is already serving :${config.httpsPort} (pid ${other}); nothing to do`,
+				`[buncargo hosts] a daemon is already serving :${running.httpsPort} (pid ${other}); nothing to do`,
 			);
 			return;
 		}
@@ -706,9 +711,10 @@ export async function runHostsDaemon(
 		describeCertificateGap,
 		readCertificatePair,
 		certificateServes,
-		startProxy: (input) =>
+		startProxy: ({ cert, key, ...input }) =>
 			startLocalProxy({
 				...input,
+				tls: { cert, key },
 				httpsPort: config.httpsPort,
 				httpPort:
 					config.httpsPort === DEFAULT_HOSTS_DAEMON_PORT

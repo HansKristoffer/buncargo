@@ -33,13 +33,24 @@ function validateDaemonConfig(
 	};
 }
 
+/** What a daemon starting now binds: its environment, never the stored file. */
+export function daemonConfigFromFlags(): HostsDaemonConfig {
+	return {
+		httpsPort: hostsDaemonPort(),
+		httpPort: DEFAULT_HTTP_PORT,
+		tls: true,
+	};
+}
+
+/** What the running daemon bound, as it recorded it; the flags when none did. */
 export function readDaemonConfig(): HostsDaemonConfig {
 	const stored =
 		readJsonDocumentSync(getDaemonConfigPath(), validateDaemonConfig) ?? {};
+	const flags = daemonConfigFromFlags();
 	return {
-		httpsPort: stored.httpsPort ?? hostsDaemonPort(),
-		httpPort: stored.httpPort ?? DEFAULT_HTTP_PORT,
-		tls: stored.tls ?? true,
+		httpsPort: stored.httpsPort ?? flags.httpsPort,
+		httpPort: stored.httpPort ?? flags.httpPort,
+		tls: stored.tls ?? flags.tls,
 	};
 }
 

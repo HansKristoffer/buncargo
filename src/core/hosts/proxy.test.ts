@@ -136,6 +136,20 @@ describe("proxy fetch", () => {
 		},
 	);
 
+	// An empty pair once bound plain HTTP on :443 while the CLI probed HTTPS
+	// and reported the daemon down.
+	it("refuses to serve TLS from an empty certificate", async () => {
+		await expect(
+			startLocalProxy({
+				lookup: () => undefined,
+				routes: () => ({ hostnames: [], lastReloadAt: Date.now() }),
+				tls: { cert: "", key: "" },
+				httpsPort: 0,
+				hostname: "127.0.0.1",
+			}),
+		).rejects.toThrow("is empty");
+	});
+
 	it("returns 508 when hop limit is exceeded", async () => {
 		const fetchHandler = createProxyFetch({
 			lookup: () => 9,

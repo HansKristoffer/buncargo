@@ -421,8 +421,12 @@ function serveOnEach(
 export async function startLocalProxy(options: {
 	lookup: ProxyRouteLookup;
 	routes: () => ProxyRoutesView;
-	cert?: string;
-	key?: string;
+	/**
+	 * The pair to serve HTTPS with; absent serves plain HTTP. Given but empty
+	 * is refused: it used to bind plain HTTP on :443 while every client spoke
+	 * HTTPS to it.
+	 */
+	tls?: { cert: string; key: string };
 	httpsPort: number;
 	httpPort?: number;
 	hostname?: string;
@@ -430,7 +434,15 @@ export async function startLocalProxy(options: {
 	onStale?: (ageMs: number) => void;
 }): Promise<LocalProxy> {
 	const hostnames = options.hostname ? [options.hostname] : LOOPBACK_HOSTNAMES;
-	const https = Boolean(options.cert && options.key);
+	const { tls } = options;
+	const emptyPair =
+		tls !== undefined && (tls.cert.trim() === "" || tls.key.trim() === "");
+	if (emptyPair) {
+		throw new Error(
+			"Named-hosts certificate or key is empty. Run `buncargo hosts install`.",
+		);
+	}
+	const https = tls !== undefined;
 	// One resolver for both paths so an HMR upgrade reuses the family the first
 	// HTTP request already probed.
 	const upstream = createUpstreamResolver();
@@ -457,12 +469,9 @@ export async function startLocalProxy(options: {
 		reusePort: true,
 		fetch: fetchHandler,
 		websocket: websocket as never,
-		...(https
+		...(tls
 			? {
-					tls: {
-						cert: options.cert,
-						key: options.key,
-					},
+					tls: { cert: tls.cert, key: tls.key },
 					// Negotiated via ALPN; HTTP/1.1 clients are still served, and a
 					// browser opens its WebSocket over a separate HTTP/1.1 connection
 					// since Bun does not do RFC 8441 upgrades over h2.
