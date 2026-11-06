@@ -805,8 +805,18 @@ export async function markOwnersLost(
 	});
 }
 
+export type RunAppUpdate = Partial<RunAppEntry> & { name: string };
+
 export interface RunPatch {
-	apps?: Array<Partial<RunAppEntry> & { name: string }>;
+	/**
+	 * Apps a restart was asked of: back to `starting` whatever their rows
+	 * said, before the run replaces them. No status update can say it: a new
+	 * pid on a running app is that app adopting its detached server, so a
+	 * restarted app kept reading `ready`, and `restart && wait` returned on
+	 * the process it had just replaced.
+	 */
+	restarting?: string[];
+	apps?: RunAppUpdate[];
 	services?: Array<Partial<RunServiceEntry> & { name: string }>;
 	hosts?: { active: boolean; tld: string } | null;
 	primaryApp?: string;
@@ -815,39 +825,77 @@ export interface RunPatch {
 	details?: RunDetailEntry[];
 }
 
-function mergeByName<T extends { name: string }>(
-	current: T[],
-	updates: Array<Partial<T> & { name: string }>,
-): T[] {
-	const byName = new Map(current.map((entry) => [entry.name, entry]));
-	for (const update of updates) {
-		const existing = byName.get(update.name);
-		// An update for something not in the run is dropped rather than
-		// inserted: a half-populated entry would show in the UI as a real app.
-		if (!existing) continue;
-		// Delayed readiness/PID publication must never resurrect a stopped app.
-		// A new pid on a stopped app is a new process (a restart): it starts
-		// over. On a running one it is the same app adopting a detached pid.
-		const prior = existing as T & { status?: string; pid?: number };
-		const incoming = update as Partial<T> & { status?: string; pid?: number };
-		const ended = prior.status === "stopped" || prior.status === "failed";
-		const restarted =
-			ended && incoming.pid !== undefined && incoming.pid !== prior.pid;
-		if (
-			!restarted &&
-			ended &&
-			(incoming.status === "ready" || incoming.status === "starting")
-		)
-			continue;
-		byName.set(update.name, {
-			...existing,
-			...update,
-			...(restarted && incoming.status === undefined
-				? { status: "starting" }
-				: {}),
-		});
+/**
+ * An app row after one update from its run, or from `stop`.
+ *
+ * A new pid is a new process. On an ended row that is a restart, which starts
+ * over; on a running one it is the app adopting a detached pid, which keeps
+ * its state. Otherwise an ended row keeps how it ended: readiness reported
+ * late never resurrects it, and `stopped` outranks `failed`, because `stop`
+ * and the run both record an app's end after SIGTERM, and an app that exits
+ * non-zero on SIGTERM was still stopped on purpose.
+ */
+export function nextAppRow(
+	row: RunAppEntry,
+	update: RunAppUpdate,
+): RunAppEntry {
+	const ended = row.status === "stopped" || row.status === "failed";
+	const newProcess = update.pid !== undefined && update.pid !== row.pid;
+	if (newProcess) {
+		const fresh = ended ? "starting" : row.status;
+		return { ...row, ...update, status: update.status ?? fresh };
 	}
-	return current.map((entry) => byName.get(entry.name) ?? entry);
+	return { ...row, ...update, status: nextAppStatus(row.status, update) };
+}
+
+function nextAppStatus(
+	current: RunAppStatus,
+	update: RunAppUpdate,
+): RunAppStatus {
+	const incoming = update.status;
+	if (incoming === undefined) return current;
+	return typedSwitch(current, {
+		stopped: () => current,
+		failed: () => (incoming === "stopped" ? incoming : current),
+		starting: () => incoming,
+		ready: () => incoming,
+		reused: () => incoming,
+	});
+}
+
+function mergeApps(
+	current: RunAppEntry[],
+	patch: Pick<RunPatch, "apps" | "restarting">,
+): RunAppEntry[] {
+	const restarting = new Set(patch.restarting);
+	return current.map((row) => {
+		const restarted =
+			restarting.has(row.name) && row.status !== "reused"
+				? { ...row, status: "starting" as const }
+				: row;
+		// An update for an app not in the run is dropped rather than inserted:
+		// a half-populated entry would show in the UI as a real app.
+		return (patch.apps ?? [])
+			.filter((update) => update.name === row.name)
+			.reduce(nextAppRow, restarted);
+	});
+}
+
+/**
+ * Services take every update: their states are written after the fact
+ * (`ready` once the containers were waited for, `stopped` once `stop` did
+ * it), never by a process reporting late.
+ */
+function mergeServices(
+	current: RunServiceEntry[],
+	updates: Array<Partial<RunServiceEntry> & { name: string }>,
+): RunServiceEntry[] {
+	return current.map((service) => {
+		let row = service;
+		for (const update of updates)
+			if (update.name === service.name) row = { ...row, ...update };
+		return row;
+	});
 }
 
 /**
@@ -890,9 +938,9 @@ function applyRunPatch(current: RunEntry, patch: RunPatch): RunEntry {
 			? { captures: { ...current.captures, ...patch.captures } }
 			: {}),
 		...(patch.details ? { details: patch.details } : {}),
-		apps: patch.apps ? mergeByName(current.apps, patch.apps) : current.apps,
+		apps: mergeApps(current.apps, patch),
 		services: patch.services
-			? mergeByName(current.services, patch.services)
+			? mergeServices(current.services, patch.services)
 			: current.services,
 	};
 }

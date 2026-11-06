@@ -464,6 +464,31 @@ export async function markApps(
 }
 
 /**
+ * Put each named app's row back to `starting` for a restart about to replace
+ * its process, whatever the row says (see {@link RunPatch.restarting}).
+ * Before the restart is asked for, so its readiness can only come after.
+ */
+export async function markAppsRestarting(
+	run: RunSession,
+	names: readonly string[],
+): Promise<void> {
+	if (names.length === 0) return;
+	await patchCurrentRun(run, { restarting: [...names] });
+}
+
+/** Mark the named services with one status, e.g. `ready` once they were waited for. */
+export async function markServices(
+	run: RunSession,
+	names: readonly string[],
+	status: RunServiceStatus,
+): Promise<void> {
+	if (names.length === 0) return;
+	await patchCurrentRun(run, {
+		services: names.map((name) => ({ name, status })),
+	});
+}
+
+/**
  * Record a spawned app's pid together with its birth identity.
  *
  * `stop` refuses to signal an app whose entry has no identity, since a bare

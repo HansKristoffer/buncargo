@@ -359,6 +359,50 @@ describe("patchRun", () => {
 		expect((await read())?.status).toBe("stopped");
 	});
 
+	it("keeps an app stopped when its run reports the exit as a failure, in either order", async () => {
+		// `stop` and the owning run both record the end after SIGTERM; an app
+		// that exits non-zero on it was still stopped on purpose.
+		const read = async () => (await loadRuns())[0]?.apps[0]?.status;
+		await publishRun(makeRun());
+		await patchRun("s1", { apps: [{ name: "api", status: "stopped" }] });
+		await patchRun("s1", { apps: [{ name: "api", status: "failed" }] });
+		expect(await read()).toBe("stopped");
+
+		await retireRuns(["s1"]);
+		await publishRun(makeRun());
+		await patchRun("s1", { apps: [{ name: "api", status: "failed" }] });
+		await patchRun("s1", { apps: [{ name: "api", status: "stopped" }] });
+		expect(await read()).toBe("stopped");
+	});
+
+	it("puts a restarting app back to starting until its new process is ready", async () => {
+		// A new pid on a running app reads as adoption, so a restarted app kept
+		// `ready` and `restart && wait` returned on the replaced process.
+		const read = async () => (await loadRuns())[0]?.apps[0];
+		for (const before of ["ready", "failed", "stopped"] as const) {
+			await retireRuns(["s1"]);
+			await publishRun(makeRun());
+			await patchRun("s1", {
+				apps: [{ name: "api", pid: 41, status: before }],
+			});
+			await patchRun("s1", { restarting: ["api"] });
+			expect((await read())?.status).toBe("starting");
+			await patchRun("s1", { apps: [{ name: "api", pid: 42 }] });
+			expect(await read()).toMatchObject({ pid: 42, status: "starting" });
+			await patchRun("s1", { apps: [{ name: "api", status: "ready" }] });
+			expect((await read())?.status).toBe("ready");
+		}
+	});
+
+	it("lets a service come back after it was stopped", async () => {
+		// Its states are written after the fact, never reported late: a run
+		// that starts it again marks it ready, and it used to stay `stopped`.
+		await publishRun(makeRun({ services: [DB] }));
+		await patchRun("s1", { services: [{ name: "db", status: "stopped" }] });
+		await patchRun("s1", { services: [{ name: "db", status: "ready" }] });
+		expect((await loadRuns())[0]?.services[0]?.status).toBe("ready");
+	});
+
 	it("keeps a running app's status when it adopts a detached pid", async () => {
 		await publishRun(makeRun());
 		await patchRun("s1", { apps: [{ name: "api", status: "ready" }] });

@@ -131,6 +131,24 @@ describe("createRunClaimApi", () => {
 
 		for (const claim of [cli, script, kept]) await claim.retireRun();
 	});
+
+	it("marks the claimed services ready once they were waited for", async () => {
+		// A library `start()` with no apps describes nothing, and the claim
+		// lists its services as `starting`: they read so for the whole run.
+		const claim = claimApi();
+		await claim.claimRun();
+		const status = async () =>
+			(await loadRuns()).find((run) => run.sessionId === claim.sessionId)
+				?.services[0]?.status;
+		expect(await status()).toBe("starting");
+
+		claim.servicesReady(["postgres"]);
+		const deadline = performance.now() + 5_000;
+		while ((await status()) !== "ready" && performance.now() < deadline)
+			await Bun.sleep(10);
+		expect(await status()).toBe("ready");
+		await claim.retireRun();
+	});
 });
 
 describe("a library start's apps", () => {

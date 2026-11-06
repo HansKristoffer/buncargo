@@ -4,6 +4,7 @@ import { appExitState } from "../core/process/process-owner";
 import {
 	flushRunPatches,
 	markApps,
+	markServices,
 	publishCurrentRun,
 	type RunSource,
 	recordAppSpawn,
@@ -61,6 +62,12 @@ export interface DevRunClaimApi {
 	 * Releasing instead left entries for a later sweep to find empty.
 	 */
 	retireRun(): Promise<void>;
+	/**
+	 * The named services came up and were waited for: their rows read `ready`.
+	 * The CLI's describe says so too; a library `start()` that spawns no apps
+	 * describes nothing, and its services read `starting` for the whole run.
+	 */
+	servicesReady(serviceKeys: readonly string[]): void;
 	/** Start the machine-wide watchdog unless it is already running. */
 	ensureWatchdog(): Promise<void>;
 	/**
@@ -279,6 +286,10 @@ export function createRunClaimApi<
 				root: ctx.root,
 				sessionId,
 			});
+		},
+
+		servicesReady(serviceKeys) {
+			void markServices(session, serviceKeys, "ready");
 		},
 
 		ensureWatchdog() {
