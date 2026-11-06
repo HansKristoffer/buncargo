@@ -191,6 +191,23 @@ describe("installTool", () => {
 		expect(isInstalledTool(to)).toBe(true);
 		expect(readFileSync(to, "utf8")).toBe(executable);
 	});
+	it("keeps only the last replaced executable beside the tool", async () => {
+		const dir = directory();
+		const to = join(dir, "fixture");
+		const options = installOptions(to, async () => new Response(executable));
+		await installTool(options);
+		for (const bad of ["<html>one</html>", "<html>two</html>"]) {
+			writeFileSync(to, bad);
+			await installTool(options);
+		}
+		const quarantined = readdirSync(dir).filter((name) =>
+			name.startsWith("fixture.invalid-"),
+		);
+		expect(quarantined).toHaveLength(1);
+		expect(readFileSync(join(dir, quarantined[0]), "utf8")).toBe(
+			"<html>two</html>",
+		);
+	});
 	it("extracts one named archive entry in a private directory with shell-sensitive paths", async () => {
 		const root = directory();
 		const source = join(root, "fixture");
