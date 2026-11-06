@@ -126,7 +126,9 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   next reload retries.
 - Health lists the hostnames the *bound* leaf serves (`certificateServes`: covered and unexpired),
   not the route map, and carries `bindError` while a rebind fails. Listing the map let a run whose
-  remint never bound pass `waitForDaemonRoutes` and advertise https URLs that failed TLS.
+  remint never bound pass `waitForDaemonRoutes` and advertise https URLs that failed TLS. A leaf
+  whose names or expiry cannot be read lists the route map instead, and says so in the daemon log:
+  `Bun.serve` accepted it, and listing nothing put every run on the machine on `localhost:port`.
 - The certificate gap is reported on a route change, a remint, and at least hourly
   (`CERTIFICATE_RECHECK_MS`): expiry arrives with neither, and the daemon cannot renew. The next
   `buncargo dev` remints a leaf within 30 days of expiry.

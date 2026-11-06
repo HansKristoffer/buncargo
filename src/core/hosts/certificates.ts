@@ -191,21 +191,25 @@ export async function readCertificatePair(): Promise<
 }
 
 /**
- * Which hostnames a bound certificate answers for, at a given moment.
+ * Which hostnames a bound certificate answers for, at a given moment, or
+ * `undefined` when its names or expiry cannot be read.
  *
  * What the daemon reports as served. A route the listener's own leaf does not
  * cover, or any route once that leaf has expired, fails TLS in the browser
  * however complete the route map is, and a health body that listed it anyway
  * let a run advertise https URLs that could not load.
+ *
+ * Unreadable is not "serves nothing": `Bun.serve` accepted the certificate,
+ * and answering nothing would send every run on the machine to
+ * `localhost:port` without a word. The daemon falls back to the route map.
  */
 export function certificateServes(
 	certPem: string,
-): (hostname: string, now: number) => boolean {
+): ((hostname: string, now: number) => boolean) | undefined {
 	const leaf = parseCertificateLeaf(certPem);
+	if (leaf === undefined || Number.isNaN(leaf.validTo)) return undefined;
 	return (hostname, now) =>
-		leaf !== undefined &&
-		leaf.validTo > now &&
-		certificateCovers(leaf.names, hostname);
+		leaf.validTo > now && certificateCovers(leaf.names, hostname);
 }
 
 /**

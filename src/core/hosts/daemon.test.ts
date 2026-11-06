@@ -641,6 +641,26 @@ describe("createHostsReloader", () => {
 		expect(reloader.routes().bindError).toBeUndefined();
 	});
 
+	// Bun.serve bound it, so it serves something; listing nothing put every
+	// run on the machine on localhost:port without a word.
+	it("lists the route map, and says so once, when the bound leaf cannot be read", async () => {
+		const { state, reloader } = reloaderHarness({
+			certificateServes: () => undefined,
+		});
+		state.routes = [route("web.demo.localhost", 5173)];
+		await reloader.reload();
+		expect(reloader.routes().hostnames).toEqual(["web.demo.localhost"]);
+
+		state.routes = [...state.routes, route("api.demo.localhost", 3000)];
+		await reloader.reload();
+		expect(reloader.routes().hostnames.sort()).toEqual([
+			"api.demo.localhost",
+			"web.demo.localhost",
+		]);
+		const said = state.logs.filter((line) => line.includes("could not read"));
+		expect(said).toHaveLength(1);
+	});
+
 	it("serves nothing once the bound certificate has expired", async () => {
 		const expiresAt = 10_000;
 		const { state, reloader } = reloaderHarness({
