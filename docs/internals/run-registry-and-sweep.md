@@ -229,6 +229,9 @@ version in the pid file, and `ensureWatchdog` replaces a runner whose version is
 missing (written before versions were recorded). It sends SIGTERM only after a strict identity
 match, never to a pid file without an identity and never to itself (`watchdog.testing.ts`'s
 stand-in is the test process), then waits for `.runner` with a bounded timeout and spawns as usual.
+A runner that does not let go in time gets SIGKILL after the same identity match, and one more
+bounded wait: JavaScript handles SIGTERM only between calls, so a runner stuck in a synchronous
+`docker` that hangs never exited, and every later run signalled it and gave up again.
 Strictly older only, so two current versions never take turns, and an older CLI, which knows
 nothing of versions, leaves a newer runner alone. It runs inside the `.spawn` hold, which is safe:
 the old runner exits on SIGTERM without taking `.spawn`, and one already waiting for `.spawn` in

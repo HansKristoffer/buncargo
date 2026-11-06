@@ -26,7 +26,7 @@ import { formatWarn } from "./style";
 import { buncargoVersion, compareVersions } from "./version";
 import { getWatchdogSpawnLockFile } from "./watchdog-loop";
 
-/** How long an outdated watchdog gets to exit before it is left running. */
+/** How long an outdated watchdog gets to exit after each signal. */
 const WATCHDOG_REPLACE_TIMEOUT_MS = 5000;
 
 export function getWatchdogPidFile(): string {
@@ -133,7 +133,10 @@ export function isOutdatedWatchdog(
  * `stop` leaves an app it cannot identify. Never this process: a test
  * standing in for the watchdog (`watchdog.testing.ts`) is one.
  */
-async function retireOutdatedWatchdog(owner: WatchdogOwner): Promise<boolean> {
+async function retireOutdatedWatchdog(
+	owner: WatchdogOwner,
+	signal: "SIGTERM" | "SIGKILL",
+): Promise<boolean> {
 	if (owner.pid === process.pid || owner.processIdentity === undefined)
 		return false;
 	if (
@@ -142,12 +145,45 @@ async function retireOutdatedWatchdog(owner: WatchdogOwner): Promise<boolean> {
 	)
 		return false;
 	try {
-		process.kill(owner.pid, "SIGTERM");
+		process.kill(owner.pid, signal);
 		return true;
 	} catch {
 		// Gone already, or another user's: either way not ours to replace.
 		return false;
 	}
+}
+
+/**
+ * Whether no runner holds its lock, waiting up to `timeoutMs` for one to
+ * let go. Released at once: the runner about to be spawned takes it.
+ */
+async function runnerLockFree(timeoutMs: number): Promise<boolean> {
+	try {
+		await withFileLock(getWatchdogLockFile(), async () => {}, { timeoutMs });
+		return true;
+	} catch (error) {
+		if (error instanceof FileLockTimeoutError) return false;
+		throw error;
+	}
+}
+
+/**
+ * Whether the runner `current` names is out of the way, after asking an
+ * outdated one to exit. SIGTERM first, which it handles by exiting at once,
+ * but only between calls: one stuck in a synchronous `docker` that hangs
+ * never got to it, kept sweeping with its old rules, and every later run
+ * signalled it and gave up again. So once the wait runs out, SIGKILL, after
+ * the same strict identity match. A held lock with no outdated runner to
+ * replace means a runner is alive whatever the pid file says.
+ */
+async function runnerOutOfTheWay(
+	current: WatchdogOwner | null,
+): Promise<boolean> {
+	if (!current) return runnerLockFree(0);
+	if (!(await retireOutdatedWatchdog(current, "SIGTERM"))) return false;
+	if (await runnerLockFree(WATCHDOG_REPLACE_TIMEOUT_MS)) return true;
+	if (!(await retireOutdatedWatchdog(current, "SIGKILL"))) return false;
+	return runnerLockFree(WATCHDOG_REPLACE_TIMEOUT_MS);
 }
 
 export function resolveWatchdogRunnerPath(): string {
@@ -203,23 +239,11 @@ export async function ensureWatchdog(
 		const current = await readWatchdogOwnerAsync();
 		if (current && !isOutdatedWatchdog(current, own)) return;
 		// An older runner sweeps every checkout with old rules until it exits.
-		// It exits on SIGTERM without the spawn lock this call holds, so the
-		// wait for its runner lock below cannot deadlock on it.
-		const replacing = current ? await retireOutdatedWatchdog(current) : false;
-		if (current && !replacing) return;
-		try {
-			// Try-acquire the runner's own lock: a held one means a runner is
-			// alive whatever the pid file says, which is how a `kill -9` that
-			// left the file behind is told from a live process. Released at
-			// once, because the runner we spawn is what holds it from here on.
-			// When replacing, it is held until the old runner has exited.
-			await withFileLock(getWatchdogLockFile(), async () => {}, {
-				timeoutMs: replacing ? WATCHDOG_REPLACE_TIMEOUT_MS : 0,
-			});
-		} catch (error) {
-			if (error instanceof FileLockTimeoutError) return;
-			throw error;
-		}
+		// It exits on a signal without the spawn lock this call holds, so the
+		// wait for its runner lock cannot deadlock on it. With no runner on
+		// record, the try-acquire is how a `kill -9` that left the pid file
+		// behind is told from a live process.
+		if (!(await runnerOutOfTheWay(current))) return;
 
 		const logFile = getWatchdogLogFile();
 		const stateDir = getStateDir();
