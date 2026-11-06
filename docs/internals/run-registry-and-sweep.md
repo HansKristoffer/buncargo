@@ -181,8 +181,10 @@ A run watches its own service containers (`container-runtime/service-watch.ts`, 
 `environment/service-watch.ts`): from the moment its services are up until `stop()` or
 `releaseRun()`, which end it before anything comes down, so the run's own teardown is never
 reported. It polls `projectServiceStates` every 10 s, the one state query both backends
-have; an empty listing reads as "cannot tell", because both answer an unreachable daemon
-with nothing. A service that stops, disappears or turns unhealthy gets a line in the run's
+have. Both backends throw when the runtime does not answer, and a poll that throws changes
+nothing; so an answered empty listing means the project has no containers, and every watched
+service is reported removed. A state the runtime reports as `unknown` leaves what was last
+reported standing. A service that stops, disappears or turns unhealthy gets a line in the run's
 output and `buncargo.log`, with the removal record that explains it or where to look, and a
 `problem` on its `runs.json` entry, cleared when it recovers. A field, not a status: older
 readers drop an entry with a status they do not know.
