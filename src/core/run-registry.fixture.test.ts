@@ -31,7 +31,7 @@ describe("runs.json v1 fixture", () => {
 			copyFileSync(FIXTURE, getRunsPath());
 			const runs = await loadRuns({ strict: true });
 
-			expect(runs).toHaveLength(2);
+			expect(runs).toHaveLength(3);
 			const run = runs[0];
 			expect(run?.projectPrefix).toBe("lullu");
 			expect(run?.worktree).toBe("t3code-f003056f");
@@ -93,7 +93,7 @@ describe("runs.json v1 fixture", () => {
 				(service) => service.name === "mailpit",
 			);
 			expect(mailpit?.status).toBe("stopped");
-			// What the run's service watch records; the app ignores it.
+			// What the run's service watch records; the app shows it as failed.
 			expect(mailpit?.problem?.state).toBe("stopped");
 
 			// A finished run whose containers are still held. It has to decode —
@@ -106,6 +106,14 @@ describe("runs.json v1 fixture", () => {
 			expect(released?.idleTimeoutMs).toBe(180_000);
 			expect(released?.services[0]?.container?.runtime).toBe("docker");
 			expect(released && (await runLivenessAsync(runs))(released)).toBe(false);
+
+			// A crashed run whose pid now belongs to another process: its
+			// recorded identity no longer matches. The smoke test asserts the
+			// Swift side hides it as the CLI does, from the identity.
+			const crashed = runs[2];
+			expect(crashed?.processIdentity).toStartWith("v2:");
+			expect(crashed?.ownerLostAt).toBe("2026-09-03T08:20:00.000Z");
+			expect(crashed && (await runLivenessAsync(runs))(crashed)).toBe(false);
 		} finally {
 			if (realHome === undefined) delete process.env.HOME;
 			else process.env.HOME = realHome;

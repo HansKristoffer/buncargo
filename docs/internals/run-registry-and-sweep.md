@@ -359,6 +359,12 @@ It is not shipped in the npm package and not built by `bun run build`; it releas
 - `menubar/fixtures/runs.v1.json` is the schema contract. `menubar/scripts/smoke-test.sh` runs the
   app's `--status` mode against it and `src/core/run-registry.fixture.test.ts` decodes the same
   file, so a field one side drops fails a test on both.
+- It decides liveness by the CLI's rule, not by the pid alone: `ProcessIdentity` reads the start
+  time from `sysctl` and encodes it as `process-identity.ts` does (`v2:` and the SHA-256 of `ps`'s
+  C-locale UTC `lstart`), so the two cannot drift without `RunRegistryTests` failing. With the pid
+  alone, a reused pid showed a crashed run, and its Stop took down the containers it held. An
+  identity it cannot read keeps the row unless the sweep stamped `ownerLostAt`.
+- A run's dot rolls up its apps and its services, and a service with a `problem` reads failed.
 - `RunRegistry.stateDirectory` reads `HOME` before `homeDirectoryForCurrentUser`, which ignores the
   environment. Without that the smoke test is silently handed the developer's real registry.
 - `src/core/menubar.ts` is the app from the CLI side: detection, GitHub release download with

@@ -46,6 +46,14 @@ if [[ "$OUTPUT" == *"t3code-released"* ]]; then
   exit 1
 fi
 
+# The third run crashed and its pid now belongs to another process (pid 1,
+# alive, with another birth identity). Showing it would mean the app is
+# reading the pid alone, and its Stop would take down the held containers.
+if [[ "$OUTPUT" == *"t3code-crashed"* ]]; then
+  echo "Expected --status to hide a run whose pid was reused" >&2
+  exit 1
+fi
+
 HOME="$FAKE_HOME" "$BINARY" --selftest
 
 # A registry from a newer CLI must fail loudly rather than read as "nothing

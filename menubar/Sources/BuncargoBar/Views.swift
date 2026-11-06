@@ -67,6 +67,8 @@ struct LocalTargetRow: View {
     let openable: Bool
     let publicUrl: String?
     let tablePlusUrl: String?
+    /// Shown instead of the address: what went wrong with the service.
+    var problem: String? = nil
     var onStop: (() -> Void)? = nil
     var onSimulator: (() -> Void)? = nil
 
@@ -74,7 +76,7 @@ struct LocalTargetRow: View {
         TargetRow(
             name: name,
             status: status,
-            detail: url.isEmpty ? "process" : url,
+            detail: problem ?? (url.isEmpty ? "process" : url),
             publicUrl: publicUrl,
             onOpen: openable ? { Actions.open(url) } : nil,
             onCopy: url.isEmpty ? nil : { Actions.copy(url) },
@@ -182,6 +184,7 @@ struct RunDetailView: View {
                         openable: service.isHTTP,
                         publicUrl: service.publicUrl,
                         tablePlusUrl: service.tablePlusUrl,
+                        problem: service.problem?.detail,
                         onStop: { onStop(service.name) }
                     )
                 }
@@ -231,7 +234,7 @@ struct RunRow: View {
         EnvironmentRow(
             title: run.title,
             subtitle: run.subtitle,
-            status: .rollup(run.apps.map(\.state))
+            status: run.state
         ) {
             if let primary = run.primary, primary.state != .stopped {
                 Button("Open") {
