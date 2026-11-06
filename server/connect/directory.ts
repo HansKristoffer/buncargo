@@ -184,6 +184,11 @@ export class ConnectionDirectory {
 		);
 	}
 
+	/**
+	 * Renew a publication, expired or not: a restart expires every lease
+	 * (`invalidateLeases`), and the publisher's next renewal is what revives it.
+	 * Its credential is the authority; `collect` forgets it a day after expiry.
+	 */
 	update(
 		id: string,
 		credential: string,
