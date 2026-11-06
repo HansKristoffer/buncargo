@@ -1,3 +1,7 @@
+import {
+	isContainerServing,
+	isContainerStopped,
+} from "../container-runtime/container-state";
 import type {
 	ContainerDownRequest,
 	ContainerUpRequest,
@@ -20,7 +24,7 @@ import {
 	projectVolumeNames,
 } from "./run-plan";
 import type { AppleContainerRecord } from "./status";
-import { isRunningState, parseContainerRecords } from "./status";
+import { parseContainerRecords, recordState } from "./status";
 
 /** A `container` argv, or one whose output streams to the terminal. */
 type AppleStep = string[] | { args: string[]; stream: true };
@@ -119,13 +123,16 @@ function* startService(
 	ownerOf: PortOwnerLookup,
 ): AppleSteps {
 	if (existing) {
+		const state = recordState(existing);
 		if (existing.labels[CONFIG_HASH_LABEL] === plan.configHash) {
-			if (isRunningState(existing.state)) return;
+			if (isContainerServing(state)) return;
 			const started = yield ["start", plan.containerName];
 			if (started.ok) return;
-			if (!isMissingResourceMessage(started.stderr)) {
-				failed(started, `start container ${plan.containerName}`);
-			}
+			const missing = isMissingResourceMessage(started.stderr);
+			// A container whose state Apple did not say may be running already,
+			// which `start` refuses; readiness tells whether it serves.
+			if (!missing && state === "unknown") return;
+			if (!missing) failed(started, `start container ${plan.containerName}`);
 		} else {
 			// Announced even on a quiet reconcile pass: a container being thrown
 			// away and rebuilt is the one thing here worth interrupting for.
@@ -134,9 +141,14 @@ function* startService(
 			);
 			// Stopped first: `delete --force` kills, and the container being
 			// replaced is usually a database with a volume to keep consistent.
-			if (isRunningState(existing.state)) {
+			// Only a container known to be stopped skips it. One in a state
+			// Apple did not say may refuse the stop for being stopped already,
+			// which is no reason to fail.
+			if (!isContainerStopped(state)) {
 				const stopped = yield ["stop", plan.containerName];
-				if (!stopped.ok && !isMissingResourceMessage(stopped.stderr)) {
+				const refused =
+					!stopped.ok && !isMissingResourceMessage(stopped.stderr);
+				if (refused && isContainerServing(state)) {
 					failed(stopped, `stop container ${plan.containerName}`);
 				}
 			}
@@ -253,8 +265,17 @@ function* downSteps(request: ContainerDownRequest): AppleSteps {
 
 	const ids = records.map((record) => record.id);
 	if (ids.length > 0) {
+		// `delete --force` kills, so everything not known to be stopped gets a
+		// graceful stop first: a container whose state Apple did not say may
+		// be a database that is running.
 		const running = records
-			.filter((record) => isRunningState(record.state))
+			.filter((record) => isContainerServing(recordState(record)))
+			.map((record) => record.id);
+		const unsure = records
+			.filter((record) => {
+				const state = recordState(record);
+				return !isContainerServing(state) && !isContainerStopped(state);
+			})
 			.map((record) => record.id);
 		// Reporting "Containers stopped" over a failed stop would send the caller
 		// away believing the ports are free.
@@ -264,6 +285,9 @@ function* downSteps(request: ContainerDownRequest): AppleSteps {
 				failed(stopped, `stop containers ${running.join(", ")}`);
 			}
 		}
+		// Asked apart: one that was stopped already may fail the stop, and the
+		// delete below still removes it.
+		if (unsure.length > 0) yield ["stop", ...unsure];
 		const removed = yield ["delete", "--force", ...ids];
 		if (!removed.ok && !isMissingResourceMessage(removed.stderr)) {
 			failed(removed, `delete containers ${ids.join(", ")}`);

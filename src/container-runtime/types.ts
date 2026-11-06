@@ -5,6 +5,7 @@ import type {
 	ContainerRuntimeName,
 	PortContainerOwner,
 } from "../types";
+import type { ContainerState } from "./container-state";
 
 /** Options for bringing the runtime's own daemon/services up. */
 export interface EnsureRuntimeOptions {
@@ -118,25 +119,6 @@ export interface ServiceDiagnosis {
 }
 
 /**
- * States that mean the container is gone rather than still coming up.
- *
- * Matched positively, so a state neither backend has shown us yet keeps the
- * readiness loop polling instead of aborting a startup that would have worked.
- */
-const TERMINAL_STATES = new Set([
-	"exited",
-	"dead",
-	"stopped",
-	"removing",
-	"error",
-	"failed",
-]);
-
-export function isTerminalContainerState(state: string): boolean {
-	return TERMINAL_STATES.has(state.trim().toLowerCase());
-}
-
-/**
  * What a runtime knows about one of a project's service containers.
  *
  * Read in a single call for the whole project, because the questions a startup
@@ -146,6 +128,8 @@ export function isTerminalContainerState(state: string): boolean {
 export interface ServiceRuntimeState {
 	/** Compose service name, from the `buncargo.service` label. */
 	service: string;
+	state: ContainerState;
+	/** `isContainerServing(state)`, for readers that ask only that. */
 	running: boolean;
 	/**
 	 * Fingerprint of this service and its referenced top-level definitions.
@@ -169,7 +153,7 @@ export interface ComposeProjectContainer {
 	id: string;
 	/** Compose's `com.docker.compose.project` label. */
 	project: string;
-	/** Anything but stopped: running, paused, restarting. */
+	/** `isContainerLive`: anything but stopped, so running, paused, restarting. */
 	running: boolean;
 	/** The `buncargo.root` label: the checkout that started it, or empty. */
 	root: string;

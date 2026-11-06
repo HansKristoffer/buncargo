@@ -10,9 +10,9 @@ import type { ServiceRuntimeState } from "./types";
 describe("observeServices", () => {
 	it("reads stopped, removed and unhealthy containers apart from running ones", () => {
 		const states: ServiceRuntimeState[] = [
-			{ service: "postgres", running: false, exitCode: 0 },
-			{ service: "redis", running: true, healthy: false },
-			{ service: "upstash", running: true },
+			{ service: "postgres", state: "stopped", running: false, exitCode: 0 },
+			{ service: "redis", state: "running", running: true, healthy: false },
+			{ service: "upstash", state: "running", running: true },
 		];
 		expect(
 			observeServices(["postgres", "redis", "upstash", "mailpit"], states),
@@ -60,7 +60,14 @@ describe("watchServiceContainers", () => {
 		const stop = watchServiceContainers({
 			runtime: {
 				projectServiceStates: async () => {
-					return [{ service: "postgres", running, exitCode: 0 }];
+					return [
+						{
+							service: "postgres",
+							state: running ? "running" : "stopped",
+							running,
+							exitCode: 0,
+						},
+					];
 				},
 			},
 			projectName: "app",

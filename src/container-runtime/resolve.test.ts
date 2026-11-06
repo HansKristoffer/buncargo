@@ -234,8 +234,18 @@ describe("isContainerUp", () => {
 		expect(
 			isContainerUp({ ...base, state: "stopped", status: "stopped" }),
 		).toBe(false);
+		// A paused or restarting container still holds its ports and its stack:
+		// reading it as stopped would let the sweep call the stack abandoned and
+		// the allocator hand its ports to another checkout.
 		expect(isContainerUp({ ...base, state: "paused", status: "Paused" })).toBe(
-			false,
+			true,
 		);
+		expect(
+			isContainerUp({
+				...base,
+				state: "restarting",
+				status: "Restarting (1) 2 seconds ago",
+			}),
+		).toBe(true);
 	});
 });

@@ -1,3 +1,7 @@
+import {
+	isContainerServing,
+	parseContainerState,
+} from "../container-runtime/container-state";
 import type { ServiceRuntimeState } from "../container-runtime/types";
 import { runDockerAsync } from "./binary";
 import {
@@ -32,6 +36,17 @@ export function parseDockerHealth(status: string): boolean | undefined {
 	return undefined;
 }
 
+/**
+ * The exit code Docker's human-readable status carries for a container that
+ * stopped or is between restarts: `Exited (137) 3 minutes ago`,
+ * `Restarting (1) 2 seconds ago`. Negative when Docker could not collect one
+ * (`Exited (-1)`).
+ */
+export function parseDockerExitCode(status: string): number | undefined {
+	const code = /^(?:exited|restarting) \((-?\d+)\)/i.exec(status.trim())?.[1];
+	return code === undefined ? undefined : Number(code);
+}
+
 export function parseDockerServiceStates(
 	stdout: string,
 ): ServiceRuntimeState[] {
@@ -45,14 +60,15 @@ export function parseDockerServiceStates(
 		const [service, state, status, serviceHash] = line.split("\t");
 		if (!service) continue;
 		const healthy = parseDockerHealth(status ?? "");
-		// `Exited (137) 3 minutes ago`
-		const exited = /^Exited \((-?\d+)\)/.exec(status ?? "");
+		const exitCode = parseDockerExitCode(status ?? "");
+		const containerState = parseContainerState(state ?? "");
 		states.push({
 			service,
-			running: state === "running",
+			state: containerState,
+			running: isContainerServing(containerState),
 			...(serviceHash ? { serviceHash } : {}),
 			...(healthy === undefined ? {} : { healthy }),
-			...(exited ? { exitCode: Number(exited[1]) } : {}),
+			...(exitCode === undefined ? {} : { exitCode }),
 		});
 	}
 	return states;

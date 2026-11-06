@@ -21,6 +21,7 @@ function harness() {
 			for (const service of request.serviceNames)
 				states.set(service, {
 					service,
+					state: "running",
 					running: true,
 					serviceHash: request.envVars[serviceHashEnv(service)],
 				});

@@ -72,11 +72,18 @@ The sweep and volume pruning live in `container-runtime/` too; see
   holds it open, so a host-side connect passed the moment the VM booted. Apple answers from the
   container's own address instead. `http` needs no such help, since the forwarder resets the
   connection once the request is written.
+- `container-state.ts` is the one reading of both runtimes' state words. Paused and restarting
+  containers are *live* (they hold their ports and their stack, so prune, the sweep, `ls`, claim
+  states and the allocator count them) but not *serving* (reuse, readiness and the watch's "up"
+  require `running`). A word neither runtime has shown us is `unknown`: live, never stopped, so
+  Apple's `down` still stops it gracefully before `delete --force`.
 - `diagnoseService` is why a dead container fails in about two seconds instead of after the full
-  readiness timeout. `readiness.ts` calls it every eighth poll, and only a state in
-  `isTerminalContainerState` aborts, matched positively so a state neither backend has shown us yet
-  keeps polling rather than killing a startup that would have worked. `logTail` is enrichment: a
-  backend that cannot produce it returns empty and the state alone still fails fast.
+  readiness timeout. `readiness.ts` calls it every eighth poll and asks `startupVerdict`: a stopped
+  container aborts, and so does one seen restarting on two diagnoses, the crash loop a preset's
+  restart policy (typesense, mailpit) would otherwise keep up until the timeout. Matched
+  positively, so a state neither backend has shown us yet keeps polling rather than killing a
+  startup that would have worked. `logTail` is enrichment: a backend that cannot produce it
+  returns empty and the state alone still fails fast. Apple drops `restart`, so only Docker loops.
 - `ensureServicesRunning` skips `up` only when each selected service is running with a matching
   service fingerprint and every relevant input can be proven unchanged. Old unlabeled containers
   reconcile once. Every adapter operation that talks to the daemon is async and cancellable; the

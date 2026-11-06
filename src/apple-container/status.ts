@@ -1,4 +1,10 @@
 import { isDefined, isRecord, safeJsonParse, toArray } from "hanzio";
+import {
+	type ContainerState,
+	isContainerLive,
+	isContainerServing,
+	parseContainerState,
+} from "../container-runtime/container-state";
 import type {
 	ServiceDiagnosis,
 	ServiceDiagnosisRequest,
@@ -171,8 +177,9 @@ export function formatPublishedPorts(ports: PublishedPort[]): string {
 		.join(", ");
 }
 
-export function isRunningState(state: string): boolean {
-	return state.toLowerCase() === "running";
+/** The record's state in buncargo's words; see `container-state.ts`. */
+export function recordState(record: AppleContainerRecord): ContainerState {
+	return parseContainerState(record.state);
 }
 
 export function listContainerRecords(
@@ -243,7 +250,8 @@ function portOwnersFromRecords(
 ): Map<number, PortContainerOwner> {
 	const owners = new Map<number, PortContainerOwner>();
 	for (const record of records) {
-		if (!isRunningState(record.state)) continue;
+		// Apple lists a stopped container's configured ports too.
+		if (!isContainerLive(recordState(record))) continue;
 		const owner: PortContainerOwner = {
 			id: record.id,
 			name: record.id,
@@ -292,10 +300,12 @@ export async function appleProjectServiceStates(
 			const service = record.labels[SERVICE_LABEL];
 			if (!service) return [];
 			const serviceHash = record.labels[SERVICE_HASH_LABEL];
+			const state = recordState(record);
 			return [
 				{
 					service,
-					running: isRunningState(record.state),
+					state,
+					running: isContainerServing(state),
 					...(serviceHash ? { serviceHash } : {}),
 				},
 			];
@@ -359,7 +369,8 @@ export async function probeAppleServicePort(
 			remainingTime(deadline),
 		)
 	).find((candidate) => candidate.id === name);
-	if (!record?.address || !isRunningState(record.state)) return false;
+	if (!record?.address || !isContainerServing(recordState(record)))
+		return false;
 	const published = record.ports.find(
 		(port) =>
 			request.hostPort >= port.hostPort &&
@@ -388,5 +399,5 @@ export async function isAppleServiceRunning(
 	const record = (await listContainerRecordsAsync(cli, signal)).find(
 		(candidate) => candidate.id === name,
 	);
-	return record !== undefined && isRunningState(record.state);
+	return record !== undefined && isContainerServing(recordState(record));
 }

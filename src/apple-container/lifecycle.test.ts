@@ -158,6 +158,27 @@ describe("appleUp", () => {
 		expect(cli.calls.some((call) => call[0] === "run")).toBe(false);
 	});
 
+	it("does not fail over a matching container whose state it cannot read", async () => {
+		const plan = buildAppleRunPlan({
+			projectName: "gey-main",
+			model: modelFor({ postgres: { port: 5432 } }),
+			root: "/repo",
+		});
+		const hash = plan.services[0]?.configHash ?? "";
+		const cli = recordingCli(
+			[record("gey-main-postgres", "", { [CONFIG_HASH_LABEL]: hash })],
+			{ start: "container gey-main-postgres is already running" },
+		);
+
+		await appleUp(
+			cli,
+			upRequest(modelFor({ postgres: { port: 5432 } }), ["postgres"]),
+		);
+
+		expect(subcommands(cli)).not.toContain("run --detach");
+		expect(subcommands(cli)).not.toContain("delete --force");
+	});
+
 	it("recreates a container whose config hash drifted", async () => {
 		const cli = recordingCli([
 			record("gey-main-postgres", "running", {
@@ -353,6 +374,34 @@ describe("appleDown", () => {
 			"--force",
 			"gey-main-postgres",
 			"gey-main-redis",
+		]);
+	});
+
+	it("stops a container whose state it cannot read before deleting it", async () => {
+		// A JSON shape that moved the state somewhere else: the container may be
+		// a database that is running, and `delete --force` kills.
+		const cli = recordingCli(
+			[
+				{
+					configuration: {
+						id: "gey-main-postgres",
+						labels: { "buncargo.project": "gey-main" },
+					},
+				},
+			],
+			{ stop: "container is not running" },
+		);
+
+		await appleDown(cli, {
+			root: "/repo",
+			projectName: "gey-main",
+			verbose: false,
+		});
+
+		expect(subcommands(cli)).toEqual([
+			"ls --all",
+			"stop gey-main-postgres",
+			"delete --force",
 		]);
 	});
 
