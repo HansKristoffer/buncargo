@@ -8,12 +8,13 @@ import type { ServeConfig, TailscaleCommandResult } from "./tailscale-cli";
 import {
 	activateTailscaleServe,
 	diagnoseTailscaleHosts,
-	isServeOwnerAlive,
 	loadTailscaleServeEntries,
 	planServeChanges,
 	readServedTailscaleUrls,
 	releaseTailscaleServe,
+	type ServeOwner,
 	servedTailscaleUrls,
+	serveOwnersAlive,
 	sweepTailscaleServe,
 	type TailscaleServeDeps,
 	type TailscaleServeEntry,
@@ -119,7 +120,10 @@ function deps(
 	return {
 		cli,
 		probe: options.probe ?? (async () => undefined),
-		isAlive: ({ pid }) => alive.has(pid),
+		ownersAlive:
+			() =>
+			({ pid }) =>
+				alive.has(pid),
 	};
 }
 
@@ -191,7 +195,10 @@ describe("tailscaleBlockPorts", () => {
 	});
 });
 
-describe("isServeOwnerAlive", () => {
+describe("serveOwnersAlive", () => {
+	const isServeOwnerAlive = (owner: ServeOwner) =>
+		serveOwnersAlive([owner])(owner);
+
 	// `--bg` entries survive a reboot and the pid goes to another process:
 	// the sweep kept the entry and readers advertised its URL.
 	it("ends an entry whose pid now belongs to another process", () => {

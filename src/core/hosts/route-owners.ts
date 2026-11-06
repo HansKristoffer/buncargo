@@ -2,7 +2,7 @@ import type { NamedHost } from "../../types";
 import { isProcessAlive } from "../process/lifecycle";
 import {
 	processIdentityMatcherAsync,
-	readProcessIdentities,
+	readProcessIdentitiesCached,
 } from "../process-identity";
 import { isRouteOwnerAlive } from "../registry-file";
 import {
@@ -41,7 +41,9 @@ export const identityRouteOwners: RouteOwners = async (routes) => {
 
 /**
  * {@link identityRouteOwners} for a synchronous reader: one identity read for
- * every live owner that recorded one, nothing at all when none is alive.
+ * the live owners it has not seen before, nothing at all when none is new.
+ * `getEnvVar` runs this inside users' configs on every load and reload, so
+ * a run's identity is read once per process, not once per call.
  */
 function identityRouteOwnersSync(
 	routes: readonly HostsRoute[],
@@ -53,7 +55,7 @@ function identityRouteOwnersSync(
 			? [route.pid]
 			: [],
 	);
-	const identities = readProcessIdentities(recordedLive);
+	const identities = readProcessIdentitiesCached(recordedLive);
 	return ({ pid, processIdentity }) => {
 		if (!isRouteOwnerAlive(pid)) return false;
 		if (pid === undefined || processIdentity === undefined) return true;

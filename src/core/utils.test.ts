@@ -349,7 +349,7 @@ describe("getEnvVar", () => {
 									: "",
 					}),
 					probe: async () => undefined,
-					isAlive: () => true,
+					ownersAlive: () => () => true,
 				},
 			);
 			expect(withoutCiEnv(() => getEnvVar(config, "API_URL"))).toBe(
