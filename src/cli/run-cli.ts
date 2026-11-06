@@ -239,10 +239,19 @@ export async function runCli<
 		);
 	}
 
-	// The first SIGINT/SIGTERM/SIGHUP aborts the run with `RunInterrupted`, a
-	// second exits at once (`dev-interrupts.ts`).
+	// The apps whose processes are running: a second signal waits for them.
+	const runningApps = new Set<string>();
+	// The first SIGINT/SIGTERM/SIGHUP aborts the run with `RunInterrupted`; a
+	// second exits, unless apps are still stopping (`dev-interrupts.ts`).
 	const interrupts = listenForInterrupts({
 		clock: () => performance.now(),
+		stopping: () => [...runningApps],
+		warn: (apps) => {
+			const names = apps.join(", ");
+			log.warn(
+				`Still stopping ${names}: an app can take its stopGraceMs to save data. Ctrl-C again to exit without waiting, which can lose that data.`,
+			);
+		},
 		forceExit: (code) => {
 			// After the TUI's own `exit` handler, which leaves its screen.
 			process.once("exit", () => {
@@ -296,6 +305,7 @@ export async function runCli<
 			signal: controller.signal,
 			failureContext,
 			teardown: teardownOnce,
+			runningApps,
 		});
 	} catch (error) {
 		controller.abort(error);
@@ -417,6 +427,8 @@ async function runDevFlow<
 		failureContext: DevFailureContext;
 		/** The run's one teardown; every path calls it, it runs once. */
 		teardown: () => Promise<void>;
+		/** Kept to the apps whose processes are running, for the run's signals. */
+		runningApps: Set<string>;
 	},
 ): Promise<DevFlowExit> {
 	const { timer, signal, connect, failureContext, teardown } = options;
@@ -973,6 +985,7 @@ async function runDevFlow<
 					rows.onAppFailed(name, error);
 				},
 				onAppSpawned: (name, pid, attached) => {
+					options.runningApps.add(name);
 					if (!firstSpawn) {
 						firstSpawn = true;
 						timer.record("entry to first app spawn", timer.elapsedMs());
@@ -987,6 +1000,7 @@ async function runDevFlow<
 				// essential app that was up, a parked row for one that never came
 				// up while the others are spared.
 				onAppExit: (name, code, signal, state) => {
+					options.runningApps.delete(name);
 					if (code !== null && code !== 0) explainLoss();
 					rows.onAppExit(name, code, signal, state);
 				},

@@ -1210,6 +1210,57 @@ describe("how a run ends", () => {
 		expect(released).toBe(1);
 	});
 
+	// A second signal used to exit at once, closing the terminal of an app
+	// still saving its data within its stopGraceMs. It names the app now.
+	it("waits for an app still stopping on a second signal", async () => {
+		const root = await realpath(
+			await mkdtemp(join(tmpdir(), "buncargo-second-signal-")),
+		);
+		const port = 44910 + Math.floor(Math.random() * 100);
+		const env = createStubEnv({
+			root,
+			services: {},
+			apps: {
+				api: {
+					port,
+					// Takes SIGTERM and keeps going, as an app saving data does.
+					devCommand:
+						"bun -e 'process.on(\"SIGTERM\", () => {}); setInterval(() => {}, 1000)'",
+					healthEndpoint: false,
+					requiredServices: [],
+					stopGraceMs: 1_000,
+				},
+			},
+		});
+		const status = async () =>
+			(await findRunsByRoot(root))
+				.find((run) => run.sessionId === env.sessionId)
+				?.apps.find((app) => app.name === "api")?.status;
+		const warn = spyOn(console, "warn");
+		const run = withProcessExitTrap(() =>
+			runCli(env, { args: ["--no-hosts", "--no-tui"], watchdog: false }),
+		);
+		try {
+			const deadline = performance.now() + 4_000;
+			while ((await status()) !== "ready") {
+				if (performance.now() > deadline) throw new Error("api never ready");
+				await Bun.sleep(20);
+			}
+			process.emit("SIGINT");
+			// Another signal than the first, so no echo filter decides it.
+			process.emit("SIGTERM");
+			const warned = warn.mock.calls.map((call) => String(call[0]));
+			expect(warned.some((line) => line.includes("Still stopping api"))).toBe(
+				true,
+			);
+			// The app's grace ran out and the run ended with the first signal.
+			expect(await run).toBe(130);
+		} finally {
+			warn.mockRestore();
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
 	// A step that takes no signal finishes, and the run stops at the next
 	// boundary instead of claiming containers and starting them.
 	it("claims nothing once interrupted, and exits 130", async () => {

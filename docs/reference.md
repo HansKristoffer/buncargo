@@ -493,8 +493,12 @@ idle hold; `--detach` returns once they are ready.
 
 Ctrl-C (or `SIGTERM`, `SIGHUP`) ends a `dev` run wherever it is: the apps stop,
 its named hosts and tunnels are released, the containers wait out the idle hold,
-and `dev` exits 130 (143, 129). A second Ctrl-C while that is under way exits at
-once; the next `dev` in the checkout replaces whatever was left running.
+and `dev` exits 130 (143, 129). A second Ctrl-C while apps are still stopping names
+them instead of exiting: an app can take its `stopGraceMs` to save data, such
+as the Firebase emulators' export, and a third Ctrl-C exits without waiting for
+it, which can lose that data. Once the apps are down, a second Ctrl-C exits at
+once and skips the rest of the cleanup; the next `dev` in the checkout replaces
+whatever was left running.
 
 Mutually exclusive modes cannot be combined. Configuration, selection, dependency
 references and cycles are validated before startup changes host configuration or
