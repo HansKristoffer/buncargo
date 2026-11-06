@@ -15,6 +15,7 @@ import { askConfirm, isInteractive } from "../core/prompt";
 import { readLiveRuns } from "../core/run-registry";
 import type { AppConfig } from "../types";
 import { STOP_EXIT, stopTarget } from "./commands/stop";
+import { type TakeoverDecision, takesOver } from "./dev-takeover";
 import { CliError } from "./errors";
 import * as log from "./log";
 
@@ -54,8 +55,9 @@ export function leaseSkipLines(skip: SkippedLeaseApp): string[] {
 /**
  * Take the lease of every app about to spawn that declares `exclusive`.
  *
- * A lease held by another live run is taken over (`--takeover`, or a `y` to
- * the prompt: stop the holder's app, move the lease here), or left alone. Left
+ * A lease held by another live run is taken over (an app the run's takeover
+ * decision covers, or a `y` to the prompt: stop the holder's app, move the
+ * lease here), or left alone. Left
  * alone, an `essential: false` app — the Shopify CLI — is skipped, and
  * returned so the caller can drop it and say so; the rest of the run is still
  * worth having. An essential one refuses the run, as before. Either way the
@@ -66,7 +68,7 @@ export async function acquireAppLeases(
 	owner: LeaseOwner,
 	apps: Record<string, AppConfig>,
 	options: {
-		takeover: boolean;
+		takeover: TakeoverDecision;
 		signal?: AbortSignal;
 		/** Test seams; default to the real terminal. */
 		interactive?: boolean;
@@ -86,7 +88,7 @@ export async function acquireAppLeases(
 		const skip = { app: name, key: app.exclusive, holder: result.holder };
 		const optional = app.essential === false;
 		const takeOver =
-			options.takeover ||
+			takesOver(options.takeover, name) ||
 			(interactive &&
 				(await confirm([
 					`  ${app.exclusive} is in use by another run, so ${name} cannot start here.`,

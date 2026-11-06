@@ -78,6 +78,11 @@ import {
 } from "./dev-leases";
 import { openDevOutput } from "./dev-output";
 import {
+	acceptTakeover,
+	initialTakeover,
+	shouldOfferTakeover,
+} from "./dev-takeover";
+import {
 	createTunnelCoordinator,
 	type DevTunnelCoordinator,
 	type TunnelApi,
@@ -594,10 +599,13 @@ async function runDevFlow<
 					}),
 				);
 
+	// Whatever is taken over below, by whichever rule: its lease follows.
+	let takeover = initialTakeover(args.takeover && !args.oneShot);
 	async function takeOver(candidates: TakeoverCandidates) {
 		// Never begun once interrupted: it kills the other run's servers, and
 		// an interrupted run would not start them here.
 		signal.throwIfAborted();
+		takeover = acceptTakeover(takeover, candidates.names);
 		log.line();
 		await stopRunningApps(candidates.names, env.ports, {
 			root: env.root,
@@ -630,7 +638,7 @@ async function runDevFlow<
 		};
 	}
 	// Explicit takeover precedes public URL inheritance as well as private URL acquisition.
-	if (args.takeover && !args.oneShot) {
+	if (takeover.kind === "all") {
 		const candidates = takeoverCandidates(classifiedApps.reusedApps, env.ports);
 		if (candidates.names.length) await takeOver(candidates);
 	}
@@ -726,21 +734,19 @@ async function runDevFlow<
 	// Decided before the summary and the banner, so both describe what this run
 	// ends up doing rather than a reuse the takeover is about to undo.
 	let nothingToSpawn = classifiedApps.startNames.length === 0;
-	const takeover =
-		!args.takeover &&
-		nothingToSpawn &&
-		!tunnels.hasPendingTargets() &&
-		!connect?.active
-			? takeoverCandidates(classifiedApps.reusedApps, env.ports)
-			: undefined;
-
-	if (takeover && takeover.names.length > 0) {
-		const accepted = isInteractive() && (await promptTakeover(takeover.names));
-
-		if (accepted) {
-			await takeOver(takeover);
-			nothingToSpawn = false;
-		}
+	const running = takeoverCandidates(classifiedApps.reusedApps, env.ports);
+	const offerTakeover = shouldOfferTakeover({
+		decision: takeover,
+		nothingToSpawn,
+		candidates: running.names.length,
+		pendingTunnels: tunnels.hasPendingTargets(),
+		inheritsPublicUrls: tunnels.inheritsPublicUrls(),
+		sharing: connect?.active === true,
+	});
+	const askTakeover = offerTakeover && isInteractive();
+	if (askTakeover && (await promptTakeover(running.names))) {
+		await takeOver(running);
+		nothingToSpawn = false;
 	}
 
 	flushHostsWarnings();
@@ -753,7 +759,7 @@ async function runDevFlow<
 	const { skipped: leaseSkips } = await acquireAppLeases(
 		env,
 		classifiedApps.startApps,
-		{ signal, takeover: args.takeover },
+		{ signal, takeover },
 	);
 	if (leaseSkips.length > 0) {
 		const skippedNames = new Set(leaseSkips.map((skip) => skip.app));
@@ -829,7 +835,7 @@ async function runDevFlow<
 			);
 		timer.report();
 		log.success("Selected apps are already running. Nothing to start.");
-		if (takeover && takeover.names.length > 0 && !isInteractive()) {
+		if (running.names.length > 0 && !askTakeover) {
 			log.hint("Pass --takeover to stop them and run here instead.");
 		}
 		await teardown();

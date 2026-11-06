@@ -13,6 +13,7 @@ import { SeedFailedError } from "../environment/seed-startup";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import { type DetachedReport, readDetachedReport } from "./dev-detach";
 import { runCli } from "./run-cli";
+import * as takeover from "./takeover";
 import { upsertTunnelRegistryEntries } from "./tunnel-registry";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -488,6 +489,69 @@ describe("runCli expose routing", () => {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
+});
+
+// Every exposed app reused, its public URL the other run's tunnel: a `y` used
+// to stop that run, tunnels and all, and leave this one advertising its URL.
+it("does not offer to take over a run whose tunnels it inherited", async () => {
+	const root = await mkdtemp(join(tmpdir(), "buncargo-inherit-takeover-"));
+	const apiPort = 43030 + Math.floor(Math.random() * 200);
+	const server = await listenServer(apiPort);
+	const prompt = spyOn(takeover, "promptTakeover").mockImplementation(
+		async () => false,
+	);
+	const tty = { stdin: process.stdin.isTTY, stdout: process.stdout.isTTY };
+	const ci = process.env.CI;
+	try {
+		await upsertTunnelRegistryEntries(root, [
+			{
+				kind: "app",
+				name: "api",
+				publicUrl: "https://api.example.com",
+				localUrl: `http://localhost:${apiPort}`,
+				port: apiPort,
+				pid: process.pid,
+				updatedAt: new Date().toISOString(),
+			},
+		]);
+		const env = createStubEnv({
+			root,
+			services: {},
+			apps: {
+				api: {
+					port: apiPort,
+					devCommand: "bun run api",
+					expose: true,
+					healthEndpoint: "/",
+					requiredServices: [],
+				},
+			},
+			ports: { api: apiPort },
+		});
+		process.stdin.isTTY = true;
+		process.stdout.isTTY = true;
+		// No menu bar offer in the way of the question under test.
+		process.env.CI = "1";
+		await runCli(env, {
+			args: ["--expose", "--no-hosts"],
+			watchdog: false,
+			cliTestTunnel: {
+				resolveExposeTargets,
+				startPublicTunnels: async () => [],
+				stopPublicTunnels,
+			},
+		});
+		expect(prompt).not.toHaveBeenCalled();
+	} finally {
+		process.stdin.isTTY = tty.stdin;
+		process.stdout.isTTY = tty.stdout;
+		if (ci === undefined) delete process.env.CI;
+		else process.env.CI = ci;
+		prompt.mockRestore();
+		server.closeAllConnections();
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+		await rm(root, { recursive: true, force: true });
+	}
 });
 
 describe("runCli phased tunnels and attach", () => {

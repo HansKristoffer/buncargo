@@ -53,6 +53,8 @@ export interface DevTunnelCoordinator<
 	/** Open the planned tunnels, register them, and log the environment. */
 	openOwnedTunnels(signal?: AbortSignal): Promise<void>;
 	hasPendingTargets(): boolean;
+	/** Whether a reused app's public URL is another run's tunnel. */
+	inheritsPublicUrls(): boolean;
 	/** Stop owned tunnels and drop their registry entries. */
 	stop(): Promise<void>;
 	readonly env: DevEnvironment<TServices, TApps>;
@@ -277,6 +279,7 @@ export function createTunnelCoordinator<
 		planExpose,
 		openOwnedTunnels,
 		hasPendingTargets: () => pendingTargets.length > 0,
+		inheritsPublicUrls: () => Object.keys(inheritedPublicUrls).length > 0,
 		stop,
 	};
 }

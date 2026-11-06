@@ -47,7 +47,7 @@ it.each(["starting", "identity-refused"])(
 	"retains an exclusive lease when its holder is %s",
 	async (state) => {
 		const owner = source("owner");
-		await acquireAppLeases(owner, apps, { takeover: false });
+		await acquireAppLeases(owner, apps, { takeover: { kind: "none" } });
 		await publishCurrentRun(owner, { apps, serviceNames: [] });
 		if (state === "identity-refused") {
 			// Deliberately mismatched: this test must never signal the test process.
@@ -63,13 +63,41 @@ it.each(["starting", "identity-refused"])(
 			});
 		}
 		await expect(
-			acquireAppLeases(source("contender"), apps, { takeover: true }),
+			acquireAppLeases(source("contender"), apps, {
+				takeover: { kind: "all" },
+			}),
 		).rejects.toThrow("Could not stop fixture:exclusive");
 		expect((await readLeases()).map((lease) => lease.sessionId)).toEqual([
 			"owner",
 		]);
 	},
 );
+
+// The run already took the app over (a `y`, or an unhealthy detached app):
+// its lease follows without a second question, and without a terminal it is
+// not refused after the other run's server was stopped.
+it("moves the lease of an app this run already took over without asking", async () => {
+	const owner = source("owner");
+	await acquireAppLeases(owner, apps, { takeover: { kind: "none" } });
+	await publishCurrentRun(owner, { apps, serviceNames: [] });
+	await expect(
+		acquireAppLeases(source("contender"), apps, {
+			takeover: { kind: "apps", names: new Set(["web"]) },
+			interactive: false,
+			confirm: () => {
+				throw new Error("must not ask");
+			},
+		}),
+		// Its holder is still starting, so the transfer is what refuses.
+	).rejects.toThrow("Could not stop fixture:exclusive");
+	// Another app taken over is no answer for this one.
+	await expect(
+		acquireAppLeases(source("contender"), apps, {
+			takeover: { kind: "apps", names: new Set(["api"]) },
+			interactive: false,
+		}),
+	).rejects.toThrow("fixture:exclusive is in use by another run.");
+});
 
 describe("a lease held by another run", () => {
 	const optionalApps = {
@@ -82,11 +110,13 @@ describe("a lease held by another run", () => {
 	};
 
 	it("skips an essential: false app without a terminal, naming the holder", async () => {
-		await acquireAppLeases(source("owner"), optionalApps, { takeover: false });
+		await acquireAppLeases(source("owner"), optionalApps, {
+			takeover: { kind: "none" },
+		});
 		const { skipped } = await acquireAppLeases(
 			source("contender"),
 			optionalApps,
-			{ takeover: false, interactive: false },
+			{ takeover: { kind: "none" }, interactive: false },
 		);
 
 		expect(skipped.map((skip) => [skip.app, skip.key])).toEqual([
@@ -108,13 +138,15 @@ describe("a lease held by another run", () => {
 	});
 
 	it("asks in a terminal, and Enter starts the run without the app", async () => {
-		await acquireAppLeases(source("owner"), optionalApps, { takeover: false });
+		await acquireAppLeases(source("owner"), optionalApps, {
+			takeover: { kind: "none" },
+		});
 		const asked: string[][] = [];
 		const { skipped } = await acquireAppLeases(
 			source("contender"),
 			optionalApps,
 			{
-				takeover: false,
+				takeover: { kind: "none" },
 				interactive: true,
 				confirm: async (lines) => {
 					asked.push(lines);
@@ -131,9 +163,11 @@ describe("a lease held by another run", () => {
 	});
 
 	it("refuses the run for an essential app, with the takeover flag", async () => {
-		await acquireAppLeases(source("owner"), apps, { takeover: false });
+		await acquireAppLeases(source("owner"), apps, {
+			takeover: { kind: "none" },
+		});
 		const refusal = acquireAppLeases(source("contender"), apps, {
-			takeover: false,
+			takeover: { kind: "none" },
 			interactive: false,
 		});
 		await expect(refusal).rejects.toBeInstanceOf(CliError);
@@ -147,7 +181,7 @@ describe("a lease held by another run", () => {
 
 	it("does not prompt or skip when the lease is free", async () => {
 		const { skipped } = await acquireAppLeases(source("solo"), optionalApps, {
-			takeover: false,
+			takeover: { kind: "none" },
 			interactive: true,
 			confirm: () => {
 				throw new Error("must not ask");
