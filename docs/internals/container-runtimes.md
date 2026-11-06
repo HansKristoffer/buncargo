@@ -182,4 +182,6 @@ command prefix.
   rather than against a fixed schema.
 - `preflight.ts` auto-starts via `container system start` but never passes
   `--enable-kernel-install`: with it, a first run would install a kernel without asking; without
-  it, the command prompts and would hang a non-interactive spawn.
+  it, the command prompts and would hang a non-interactive spawn. A start that stops there is
+  reported as the missing kernel, with the command to run once in a terminal. In CI, as with
+  Docker, a stopped service is waited for and never started.
