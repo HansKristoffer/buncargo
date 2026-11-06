@@ -110,15 +110,29 @@ export function createAppleContainerCli(
 	};
 }
 
-/** Apple phrases "no such container" several ways depending on the subcommand. */
+/**
+ * Apple phrases "no such container" (or volume) several ways depending on
+ * the subcommand. A missing image is not one: read as a missing container, a
+ * `start` that failed for its image fell through to a `run` that collides
+ * with the container still there.
+ */
 export function isMissingResourceMessage(message: string): boolean {
-	return /not found|no such|does not exist|unknown container|not exist/i.test(
-		message,
-	);
+	const missing =
+		/not ?found|no such|does not exist|unknown container|not exist/i.test(
+			message,
+		);
+	const aboutImage =
+		/\bimage\b[^\n]*not ?found|no such image|manifest unknown/i.test(message);
+	return missing && !aboutImage;
 }
 
+/**
+ * The resource being created is there already. Apple prefixes the error
+ * with its code (`Error: exists: "volume … already exists"`); a bare
+ * "exists" elsewhere in a failure is no such answer.
+ */
 export function isAlreadyExistsMessage(message: string): boolean {
-	return /already exists|already in use|exists/i.test(message);
+	return /already exists|already in use|\bexists:/i.test(message);
 }
 
 export async function runAppleAsync(
