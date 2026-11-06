@@ -1,3 +1,5 @@
+import CryptoKit
+import Darwin
 import Foundation
 
 /// The `~/.buncargo/runs.json` contract, version 1.
@@ -54,6 +56,15 @@ struct RunContainer: Codable, Hashable {
     let name: String
 }
 
+/// Set by the run when a container stopped, was removed or turned unhealthy
+/// under it; cleared when it recovers. A field rather than a status, so the
+/// status stays what the run last set.
+struct RunServiceProblem: Codable, Hashable {
+    let state: String
+    let detail: String
+    var since: String?
+}
+
 struct RunService: Codable, Identifiable, Hashable {
     let name: String
     var preset: String?
@@ -65,9 +76,12 @@ struct RunService: Codable, Identifiable, Hashable {
     var tablePlusUrl: String?
     var container: RunContainer?
     var status: RunStatus?
+    var problem: RunServiceProblem?
 
     var id: String { name }
-    var state: RunStatus { status ?? .starting }
+    /// A service with a problem is not ready, whatever its status says: the
+    /// CLI's `status` calls such a run degraded.
+    var state: RunStatus { problem != nil ? .failed : (status ?? .starting) }
     /// Only a browser-openable service gets an "open" action.
     var isHTTP: Bool { url?.hasPrefix("http://") == true || url?.hasPrefix("https://") == true }
 }
@@ -117,6 +131,12 @@ struct Run: Codable, Identifiable, Hashable {
     /// because these entries outlive their process and a reused pid would
     /// otherwise put a finished run back in the menu.
     var releasedAt: String?
+    /// When the CLI's sweep found this run's owner gone without releasing.
+    var ownerLostAt: String?
+    /// The owner's birth identity (`v2:` + SHA-256 of its start time), which
+    /// tells the process that published this entry from a later one that
+    /// reused its pid.
+    var processIdentity: String?
     var primaryApp: String?
     var hosts: RunHosts?
     var cli: RunCLI?
@@ -148,15 +168,93 @@ struct Run: Codable, Identifiable, Hashable {
         return live.count == 1 ? live.first : nil
     }
 
+    /// The run's dot: its apps and its services together, so a run with
+    /// containers only is green once they are ready, not yellow for good.
+    var state: RunStatus { .rollup(apps.map(\.state) + services.map(\.state)) }
+
     /// Is this a run the menu should show?
     ///
-    /// Is the process that published this entry still alive?
-    ///
-    /// Signal 0 checks for existence without delivering anything. The registry
-    /// is pruned by the CLI, but only when a CLI runs; between runs this is the
-    /// only thing that retires a crashed run from the menu.
+    /// The CLI's rule (`runLivenessAsync`): not released, and the pid still
+    /// the process that published the entry. A pid alone is not enough: a
+    /// reused one showed a finished run as live, and its Stop then took down
+    /// the containers it had left in the idle hold. The registry is pruned by
+    /// the CLI, but only when a CLI runs; between runs this is the only thing
+    /// that retires a crashed run from the menu.
     var isAlive: Bool {
-        releasedAt == nil && (kill(pid_t(pid), 0) == 0 || errno == EPERM)
+        guard releasedAt == nil else { return false }
+        return isLive(owner: OwnerProbe.read(pid: pid, identity: processIdentity != nil))
+    }
+
+    /// ``isAlive`` for an owner already probed. Pure, so it is tested
+    /// without processes.
+    ///
+    /// Like the CLI, an identity that cannot be read does not make a live run
+    /// dead, unless the sweep has found the owner gone: then this reader has
+    /// no better evidence than that. The sweep clears the stamp once the owner
+    /// reads as itself again.
+    func isLive(owner: OwnerProbe) -> Bool {
+        guard releasedAt == nil else { return false }
+        switch owner {
+        case .gone:
+            return false
+        case .running(let identity):
+            guard let recorded = processIdentity, let identity else { return ownerLostAt == nil }
+            return identity == recorded
+        }
+    }
+}
+
+/// What the system says about a recorded pid.
+enum OwnerProbe: Equatable {
+    case gone
+    /// Running, with its birth identity, or `nil` when it was not asked for
+    /// or could not be read.
+    case running(identity: String?)
+
+    /// Signal 0 checks for existence without delivering anything; `EPERM` is
+    /// another user's process, which exists.
+    static func read(pid: Int, identity wanted: Bool) -> OwnerProbe {
+        guard kill(pid_t(pid), 0) == 0 || errno == EPERM else { return .gone }
+        guard wanted, let born = ProcessIdentity.startSeconds(pid: pid_t(pid)) else {
+            return .running(identity: nil)
+        }
+        return .running(identity: ProcessIdentity.encode(startSeconds: born))
+    }
+}
+
+/// A process's birth identity, encoded exactly as `src/core/process-identity.ts`
+/// encodes it on macOS: `v2:` and the SHA-256 hex of what `ps -o lstart=`
+/// prints in the C locale and UTC (`strftime` `%c`, "Thu Jan  1 00:00:00 1970").
+/// `ps` reads the same start time from the same `sysctl`.
+enum ProcessIdentity {
+    /// The process's start time in whole seconds, from `KERN_PROC_PID`.
+    static func startSeconds(pid: pid_t) -> Int? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size > 0 else {
+            return nil
+        }
+        return Int(info.kp_proc.p_un.__p_starttime.tv_sec)
+    }
+
+    static func encode(startSeconds: Int) -> String {
+        let digest = SHA256.hash(data: Data(lstart(startSeconds).utf8))
+        return "v2:" + digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// `%a %b %e %H:%M:%S %Y` in UTC, spelled out rather than left to a
+    /// locale: the C locale's `%c`, which is what the CLI hashes.
+    static func lstart(_ seconds: Int) -> String {
+        var time = time_t(seconds)
+        var parts = tm()
+        gmtime_r(&time, &parts)
+        let weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        func twoDigits(_ value: Int32) -> String { value < 10 ? "0\(value)" : "\(value)" }
+        let day = parts.tm_mday < 10 ? " \(parts.tm_mday)" : "\(parts.tm_mday)"
+        let clock = "\(twoDigits(parts.tm_hour)):\(twoDigits(parts.tm_min)):\(twoDigits(parts.tm_sec))"
+        return "\(weekdays[Int(parts.tm_wday)]) \(months[Int(parts.tm_mon)]) \(day) \(clock) \(parts.tm_year + 1900)"
     }
 }
 

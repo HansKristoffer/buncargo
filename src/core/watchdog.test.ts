@@ -232,7 +232,7 @@ describe("isOutdatedWatchdog", () => {
  */
 async function startStubRunner(
 	version: string | undefined,
-	options: { identity?: boolean } = {},
+	options: { identity?: boolean; ignoresTerm?: boolean } = {},
 ) {
 	const script = join(home, "stub-runner.ts");
 	writeFileSync(
@@ -240,13 +240,15 @@ async function startStubRunner(
 		`import { writeFileSync } from "node:fs";
 import { withFileLock } from ${JSON.stringify(join(import.meta.dir, "file-lock.ts"))};
 import { readCurrentProcessIdentityAsync } from ${JSON.stringify(join(import.meta.dir, "process-identity.ts"))};
-const [pidFile, lockFile, identity, version, ready] = process.argv.slice(2);
-process.on("SIGTERM", () => process.exit(0));
+const [pidFile, lockFile, identity, version, ready, onTerm] = process.argv.slice(2);
+process.on("SIGTERM", () => { if (onTerm !== "ignore") process.exit(0); });
 await withFileLock(lockFile, async () => {
 	const processIdentity = identity === "yes" ? await readCurrentProcessIdentityAsync() : undefined;
 	writeFileSync(pidFile, JSON.stringify({ pid: process.pid, processIdentity, version: version || undefined }));
 	writeFileSync(ready, "");
-	await new Promise(() => setInterval(() => {}, 60_000));
+	// A pending timer holds this frame, and with it the lock's handle: with a
+	// promise nothing could resolve, GC closed the handle and freed the lock.
+	for (;;) await new Promise((resolve) => setTimeout(resolve, 60_000));
 }, { timeoutMs: 0 });
 `,
 	);
@@ -260,6 +262,7 @@ await withFileLock(lockFile, async () => {
 			options.identity === false ? "no" : "yes",
 			version ?? "",
 			ready,
+			options.ignoresTerm ? "ignore" : "exit",
 		],
 		{ stdio: ["ignore", "ignore", "inherit"] },
 	);
@@ -308,6 +311,24 @@ describe("ensureWatchdog and an older watchdog", () => {
 			}
 		});
 	}
+
+	it("kills an outdated watchdog that does not exit on SIGTERM, and replaces it", async () => {
+		// A runner stuck in a synchronous call never handles SIGTERM. It was
+		// left running with its old rules, and every later run signalled it,
+		// waited, and gave up again.
+		await claimSomething();
+		const stub = await startStubRunner("12.4.0", { ignoresTerm: true });
+		try {
+			await ensureWatchdog({ verbose: false });
+			const pid = getWatchdogPid();
+			expect(pid).not.toBeNull();
+			expect(pid).not.toBe(stub.pid);
+		} finally {
+			stub.kill("SIGKILL");
+			await stub.exited;
+			await stopWatchdog();
+		}
+	}, 30_000);
 
 	it("never signals a watchdog whose identity it cannot confirm", async () => {
 		// `stop` refuses an app without a recorded identity for the same

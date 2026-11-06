@@ -155,6 +155,40 @@
           }
         }
       ]
+    },
+    {
+      "sessionId": "reused-pid-session",
+      "processIdentity": "v2:0000000000000000000000000000000000000000000000000000000000000000",
+      "projectPrefix": "lullu",
+      "projectName": "lullu-t3code-crashed",
+      "root": "/tmp/buncargo-fixture/lullu-crashed",
+      "worktree": "t3code-crashed",
+      "pid": 1,
+      "startedAt": "2026-09-03T08:00:00.000Z",
+      "updatedAt": "2026-09-03T08:10:00.000Z",
+      "ownerLostAt": "2026-09-03T08:20:00.000Z",
+      "idleTimeoutMs": 180000,
+      "hosts": null,
+      "cli": {
+        "program": "/bin/echo",
+        "script": "buncargo"
+      },
+      "apps": [],
+      "services": [
+        {
+          "name": "postgres",
+          "preset": "postgres",
+          "port": 5598,
+          "url": "http://localhost:5598",
+          "loopbackUrl": "http://localhost:5598",
+          "status": "ready",
+          "container": {
+            "runtime": "docker",
+            "name": "lullu-t3code-crashed-postgres",
+            "service": "postgres"
+          }
+        }
+      ]
     }
   ]
 }

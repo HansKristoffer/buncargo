@@ -12,7 +12,7 @@ import {
 	offsetClaimsOf,
 	overlappingOffsetClaims,
 	readOffsetClaims,
-	releaseOffsetClaims,
+	releaseOffsetClaimsIfUnchanged,
 } from "../../core/offset-claims";
 import {
 	PORT_OFFSET_STEP,
@@ -325,10 +325,17 @@ async function releaseClaims(root: string, yes: boolean): Promise<number> {
 		}
 	}
 
-	await releaseOffsetClaims(keys);
+	// Only what was listed and checked: a run that started since the check
+	// rewrote its claim, and keeps it.
+	const released = await releaseOffsetClaimsIfUnchanged(claims);
 	log.success(
-		`Released ${keys.length} claim${keys.length === 1 ? "" : "s"} of ${root}.`,
+		`Released ${released.length} claim${released.length === 1 ? "" : "s"} of ${root}.`,
 	);
+	const kept = keys.length - released.length;
+	if (kept > 0)
+		log.warn(
+			`Kept ${kept}: a run used them after they were listed. Run \`buncargo ports release --root ${root}\` again once it has stopped.`,
+		);
 	return 0;
 }
 

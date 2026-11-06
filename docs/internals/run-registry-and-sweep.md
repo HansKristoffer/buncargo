@@ -17,8 +17,10 @@ writers prune. `stop --run` selects an exact session.
   out, for tests; the claim happens either way).
 - Releasing sets `releasedAt` once (the first release wins, however many teardown paths reach it)
   and keeps the entry; a run with no services is withdrawn instead. An explicit `stop()` *retires*
-  instead of releasing, because it has just torn the containers down: its own session and any
-  finished session for the same checkout go.
+  instead of releasing, because it has just torn the containers down: its own session goes, and
+  so does each finished session of the project whose containers were all on the runtimes it
+  downed (`heldOnlyOn`, the rule `stop` applies too). It used to retire every finished session,
+  so a library `stop()` on Docker dropped the only record of a stack held on Apple's runtime.
 - Every write addresses an entry by `sessionId`, which is required; entries without one are dropped
   on read.
 - A library run with no hold asked for through `claimRun` keeps its containers after it exits.
@@ -29,6 +31,9 @@ writers prune. `stop --run` selects an exact session.
   newest finished entry's hold into `inheritedIdleTimeoutMs`, and the sweep applies it from when
   the script's run ends, released or found gone. The sweep decides from the newest entry only, so
   a one-second `start()` that reused a released detached run's containers pinned them for 13 days.
+  Newest means ended last, by `releasedAt`, then `ownerLostAt`, then `startedAt`
+  (`newestLifecycleFirst`), never `updatedAt`: every patch moves that, and a dead session's
+  service watch writing a `problem` made its hold the stack's.
   It reads the registry file without liveness (finished means `releasedAt` or `ownerLostAt`), so
   the start path forks nothing for it. An explicit `idleTimeoutMs: false` (`--keep-containers`)
   inherits nothing, and neither does a claim whose newest finished entry kept its containers.
@@ -55,8 +60,14 @@ claim's `claimApps`, with the environment as its `RunSource`). Both build their 
 `buildRunEntry`, so identity, worktree and the recorded CLI cannot drift between them (the
 recorded CLI is exactly where they once did), and a script's apps get the same rows as `dev`'s.
 
-- Both publish onto the session the environment already claimed (`env.sessionId`), and
-  `publishRun` keeps that claim's `startedAt` and idle hold. An app-only run has no claim, so its
+- Both publish onto the session the environment already claimed (`env.sessionId`), as two kinds
+  of write (`mergePublishedRun`). The claim (`publishRun`) owns the lifecycle: the selected
+  services, their stacks, exactly one hold, and reopening a released entry. The describe
+  (`describeRun`) owns what the run serves and keeps everything else: `startedAt`, the hold,
+  `releasedAt`, captures, each app row's process and state, and a service's `problem`; it adds
+  services but never removes one. It used to replace the entry whole, so a library `claimApps`
+  reopened a released run, and after `releaseRun()` erased its services record, so the next
+  release withdrew the held stack's only owner. An app-only run has no claim, so its
   first entry is this one; it is withdrawn when its apps stop (`stop()`), when the start that
   listed them fails, or by the next writer's prune once its process is gone. It takes a structural `RunSource`
   rather than `DevEnvironment` because that type's app keys appear in both parameter and return
@@ -121,7 +132,9 @@ no config load, no Docker unless a service is the target.
   checkout of the CI user's home for deleted and tore its stacks down, a live E2E run's included.
 - The grace counts from `ownerLostAt`, which the sweep stamps the first time it finds an unreleased
   owner gone, not from `updatedAt`, which a quiet run may not have written for hours before it
-  crashed.
+  crashed. The sweep clears it when the owner reads as itself again, and so does the owner's own
+  publish: one wrong reading used to stamp a live run for good, and `holdToInherit` counted it as
+  finished.
 - `sweepOrphanedContainers` lists every runtime without probing first (a failed `list()` is the
   probe, and records which runtimes *answered*), reads liveness once for the whole registry,
   decides each stack under its project's lifecycle lock (`project-lock.ts`; a busy lock is
@@ -216,6 +229,9 @@ version in the pid file, and `ensureWatchdog` replaces a runner whose version is
 missing (written before versions were recorded). It sends SIGTERM only after a strict identity
 match, never to a pid file without an identity and never to itself (`watchdog.testing.ts`'s
 stand-in is the test process), then waits for `.runner` with a bounded timeout and spawns as usual.
+A runner that does not let go in time gets SIGKILL after the same identity match, and one more
+bounded wait: JavaScript handles SIGTERM only between calls, so a runner stuck in a synchronous
+`docker` that hangs never exited, and every later run signalled it and gave up again.
 Strictly older only, so two current versions never take turns, and an older CLI, which knows
 nothing of versions, leaves a newer runner alone. It runs inside the `.spawn` hold, which is safe:
 the old runner exits on SIGTERM without taking `.spawn`, and one already waiting for `.spawn` in
@@ -343,6 +359,12 @@ It is not shipped in the npm package and not built by `bun run build`; it releas
 - `menubar/fixtures/runs.v1.json` is the schema contract. `menubar/scripts/smoke-test.sh` runs the
   app's `--status` mode against it and `src/core/run-registry.fixture.test.ts` decodes the same
   file, so a field one side drops fails a test on both.
+- It decides liveness by the CLI's rule, not by the pid alone: `ProcessIdentity` reads the start
+  time from `sysctl` and encodes it as `process-identity.ts` does (`v2:` and the SHA-256 of `ps`'s
+  C-locale UTC `lstart`), so the two cannot drift without `RunRegistryTests` failing. With the pid
+  alone, a reused pid showed a crashed run, and its Stop took down the containers it held. An
+  identity it cannot read keeps the row unless the sweep stamped `ownerLostAt`.
+- A run's dot rolls up its apps and its services, and a service with a `problem` reads failed.
 - `RunRegistry.stateDirectory` reads `HOME` before `homeDirectoryForCurrentUser`, which ignores the
   environment. Without that the smoke test is silently handed the developer's real registry.
 - `src/core/menubar.ts` is the app from the CLI side: detection, GitHub release download with

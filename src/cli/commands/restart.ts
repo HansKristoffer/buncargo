@@ -1,4 +1,5 @@
 import { findMonorepoRoot } from "../../core/ports";
+import { markAppsRestarting } from "../../core/run-publish";
 import { findRunsByRoot } from "../../core/run-registry";
 import {
 	type CommandSpec,
@@ -76,6 +77,9 @@ export async function handleRestart(args: string[]): Promise<number> {
 			throw new CliError(`No run of ${root} started "${name}".`, [
 				"`buncargo runs` shows what is active.",
 			]);
+		// First, so `buncargo restart api && buncargo wait --app=api` waits for
+		// the new process rather than returning on the one being replaced.
+		await markAppsRestarting(run, [name]);
 		requestRestart(run.root, run.sessionId, name);
 		log.success(`Asked the run to restart ${name}.`);
 	}

@@ -508,6 +508,7 @@ export function createLifecycleApi<
 			if (hasServices) {
 				await ensureSubset(earlyServices);
 				serviceWatch.watch(Object.keys(earlyServices));
+				if (wait) runClaim.servicesReady(Object.keys(earlyServices));
 			}
 
 			// Before migrations, not just before servers: Prisma and friends read
@@ -576,6 +577,7 @@ export function createLifecycleApi<
 				// Early jobs already completed. --no-deps prevents Compose from rerunning them.
 				await ensureSubset(lateServices, true);
 				serviceWatch.watch(Object.keys(lateServices));
+				if (wait) runClaim.servicesReady(Object.keys(lateServices));
 
 				if (shouldStartServers && Object.keys(appsToStart).length > 0) {
 					const pids = await startAppServers(ctx, envVars, {
@@ -720,7 +722,7 @@ export function createLifecycleApi<
 				removeVolumes,
 			});
 		}
-		await runClaim.retireRun();
+		await runClaim.retireRun({ containersDown: hasCompose });
 		return true;
 	}
 

@@ -4,6 +4,7 @@ import { appExitState } from "../core/process/process-owner";
 import {
 	flushRunPatches,
 	markApps,
+	markServices,
 	publishCurrentRun,
 	type RunSource,
 	recordAppSpawn,
@@ -13,7 +14,6 @@ import {
 	holdToInherit,
 	loadRuns,
 	publishRun,
-	type RunAppStatus,
 	type RunServiceEntry,
 	type RunStackEntry,
 	releaseRun,
@@ -57,10 +57,18 @@ export interface DevRunClaimApi {
 	 * Drop the claim outright, after an explicit teardown.
 	 *
 	 * The containers are gone, so there is nothing to hold: this session's
-	 * entry goes, and so does any finished session for the same checkout.
-	 * Releasing instead left entries for a later sweep to find empty.
+	 * entry goes, and so does any finished session for the same checkout
+	 * whose containers were all on this runtime (`heldOnlyOn`). Releasing
+	 * instead left entries for a later sweep to find empty. `containersDown`
+	 * says whether the teardown downed this runtime's containers at all.
 	 */
-	retireRun(): Promise<void>;
+	retireRun(options: { containersDown: boolean }): Promise<void>;
+	/**
+	 * The named services came up and were waited for: their rows read `ready`.
+	 * The CLI's describe says so too; a library `start()` that spawns no apps
+	 * describes nothing, and its services read `starting` for the whole run.
+	 */
+	servicesReady(serviceKeys: readonly string[]): void;
 	/** Start the machine-wide watchdog unless it is already running. */
 	ensureWatchdog(): Promise<void>;
 	/**
@@ -79,14 +87,20 @@ export interface DevRunClaimApi {
 		StartDevServersOptions,
 		"onAppSpawned" | "onAppReady" | "onAppExit" | "onAppRestartFailed"
 	>;
-	/** After a start that failed: give back what its `claimApps` newly took. */
-	abandonApps(): Promise<void>;
+	/**
+	 * After a start that failed: give back what its `claimApps` newly took,
+	 * named by the apps that call returned. Concurrent starts each give back
+	 * their own.
+	 */
+	abandonApps(apps: Record<string, AppConfig>): Promise<void>;
 	/**
 	 * After the apps have stopped: give back everything they held, and
 	 * withdraw an entry that only listed them.
 	 */
 	releaseApps(): Promise<void>;
 }
+
+type ClaimState = { kind: "unclaimed" } | { kind: "claimed"; at: number };
 
 export interface ClaimOptions {
 	signal?: AbortSignal;
@@ -130,30 +144,20 @@ export function createRunClaimApi<
 ): DevRunClaimApi {
 	const sessionId = crypto.randomUUID();
 	const session = { sessionId };
-	let claimed = false;
-	let claimedAt: number | undefined;
-	// Leases this session holds, and those the last `claimApps` took.
+	// The containers' claim. Released and retired alike end it: a later
+	// `claimRun` claims afresh, and `claimedAt` is the current claim's.
+	let claim: ClaimState = { kind: "unclaimed" };
+	const claimed = () => claim.kind === "claimed";
+	// Leases this session holds.
 	const heldLeases = new Set<string>();
-	let lastAcquired: string[] = [];
-	// The apps on this session's entry, and those the last `claimApps` added.
+	// The apps on this session's entry.
 	const listedApps: Record<string, AppConfig> = {};
-	let lastListed: string[] = [];
-	// What each listed app's row last said, to say again when a later
-	// `claimApps` publishes the entry afresh with every row `starting`.
-	const rows = new Map<
-		string,
-		{ pid?: number; attached?: boolean; status?: RunAppStatus }
+	// What each `claimApps` call newly took, by the record it returned, so a
+	// failed start gives back its own and not a concurrent one's.
+	const newlyClaimed = new WeakMap<
+		Record<string, AppConfig>,
+		{ leases: string[]; apps: string[] }
 	>();
-
-	function recordRow(
-		name: string,
-		row: { pid?: number; attached?: boolean; status?: RunAppStatus },
-	): void {
-		rows.set(name, { ...rows.get(name), ...row });
-		if (row.pid !== undefined)
-			void recordAppSpawn(session, name, row.pid, row.attached ?? false);
-		if (row.status !== undefined) void markApps(session, [name], row.status);
-	}
 
 	function listsApps(): boolean {
 		return Object.keys(listedApps).length > 0;
@@ -166,7 +170,7 @@ export function createRunClaimApi<
 	 */
 	async function withdrawAppOnlyEntry(): Promise<void> {
 		await flushRunPatches(session);
-		if (claimed || listsApps()) return;
+		if (claimed() || listsApps()) return;
 		await releaseRun(sessionId);
 	}
 
@@ -218,11 +222,11 @@ export function createRunClaimApi<
 	return {
 		sessionId,
 		get claimedAt() {
-			return claimedAt;
+			return claim.kind === "claimed" ? claim.at : undefined;
 		},
 
 		async claimRun(options = {}) {
-			if (claimed || !ctx.hasSelectedServices) return;
+			if (claimed() || !ctx.hasSelectedServices) return;
 			const namesHold =
 				options.idleTimeoutMs !== undefined ||
 				options.defaultIdleTimeoutMs !== undefined;
@@ -241,8 +245,7 @@ export function createRunClaimApi<
 			const stacks = stackEntries();
 			// Claimed before it is published: a write that fails must not be
 			// retried on every container subset.
-			claimed = true;
-			claimedAt = Date.now();
+			claim = { kind: "claimed", at: Date.now() };
 			await publishRun({
 				...(await buildRunEntryAsync(
 					{
@@ -268,17 +271,24 @@ export function createRunClaimApi<
 			// library never claimed, and those entries have to be withdrawn by
 			// the same call. The registry decides which of the two this is, from
 			// whether the entry owns services.
-			claimed = false;
+			claim = { kind: "unclaimed" };
 			await releaseRun(sessionId);
 		},
 
-		async retireRun() {
-			claimed = false;
+		async retireRun({ containersDown }) {
+			claim = { kind: "unclaimed" };
 			await retireProjectRuns({
 				projectName: ctx.projectName,
 				root: ctx.root,
 				sessionId,
+				downed: containersDown
+					? [{ runtime: ctx.runtime.name, binary: ctx.runtimeBinary }]
+					: [],
 			});
+		},
+
+		servicesReady(serviceKeys) {
+			void markServices(session, serviceKeys, "ready");
 		},
 
 		ensureWatchdog() {
@@ -297,66 +307,58 @@ export function createRunClaimApi<
 				{ held: heldLeases, signal },
 			);
 			for (const key of leases.acquired) heldLeases.add(key);
-			lastAcquired = leases.acquired;
-			lastListed = Object.keys(leases.apps).filter(
+			const added = Object.keys(leases.apps).filter(
 				(name) => !(name in listedApps),
 			);
-			if (lastListed.length === 0) return leases.apps;
+			newlyClaimed.set(leases.apps, { leases: leases.acquired, apps: added });
+			if (added.length === 0) return leases.apps;
 
 			Object.assign(listedApps, leases.apps);
 			// Over the claim, if there is one: its services, as `dev` lists them.
+			// The describe keeps each listed row's process and state.
 			await flushRunPatches(session);
 			await publishCurrentRun(source(), {
 				apps: listedApps,
-				serviceNames: claimed ? ctx.selectedServiceKeys : [],
+				serviceNames: claimed() ? ctx.selectedServiceKeys : [],
 			});
-			for (const [name, row] of rows) recordRow(name, row);
 			return leases.apps;
 		},
 
 		appEvents: {
 			onAppSpawned: (name, pid, attached) => {
-				recordRow(name, { pid, attached });
+				void recordAppSpawn(session, name, pid, attached);
 			},
 			onAppReady: (name) => {
-				recordRow(name, { status: "ready" });
+				void markApps(session, [name], "ready");
 			},
 			onAppExit: (name, code, signal) => {
 				const app = listedApps[name];
-				recordRow(name, {
-					status: appExitState(code, signal, {
-						worker: app?.kind === "worker",
-						optional: app?.essential === false,
-					}),
+				const status = appExitState(code, signal, {
+					worker: app?.kind === "worker",
+					optional: app?.essential === false,
 				});
+				void markApps(session, [name], status);
 			},
 			onAppRestartFailed: (name) => {
-				recordRow(name, { status: "failed" });
+				void markApps(session, [name], "failed");
 			},
 		},
 
-		async abandonApps() {
-			const keys = lastAcquired;
-			lastAcquired = [];
-			for (const key of keys) heldLeases.delete(key);
-			const names = lastListed;
-			lastListed = [];
-			for (const name of names) {
-				delete listedApps[name];
-				rows.delete(name);
-			}
+		async abandonApps(apps) {
+			const taken = newlyClaimed.get(apps);
+			if (!taken) return;
+			newlyClaimed.delete(apps);
+			for (const key of taken.leases) heldLeases.delete(key);
+			for (const name of taken.apps) delete listedApps[name];
 			await Promise.all([
-				releaseLeases(sessionId, { keys }),
-				names.length > 0 ? withdrawAppOnlyEntry() : undefined,
+				releaseLeases(sessionId, { keys: taken.leases }),
+				taken.apps.length > 0 ? withdrawAppOnlyEntry() : undefined,
 			]);
 		},
 
 		async releaseApps() {
-			lastAcquired = [];
-			lastListed = [];
 			const listed = listsApps();
 			for (const name of Object.keys(listedApps)) delete listedApps[name];
-			rows.clear();
 			const leases = heldLeases.size > 0;
 			heldLeases.clear();
 			await Promise.all([

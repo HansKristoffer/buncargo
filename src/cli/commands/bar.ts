@@ -75,7 +75,7 @@ export async function handleBar(args: string[]): Promise<void> {
 
 async function runInstall(fromSource: boolean): Promise<void> {
 	if (fromSource) {
-		const result = installBarFromSource(findMonorepoRoot());
+		const result = await installBarFromSource(findMonorepoRoot());
 		log.done(`Installed ${BAR_APP_NAME} to ${result.path}`);
 		return;
 	}

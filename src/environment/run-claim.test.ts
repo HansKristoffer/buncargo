@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readLeases } from "../core/leases";
+import { flushRunPatches, type RunSource } from "../core/run-publish";
 import { findRunsByRoot, loadRuns, type RunEntry } from "../core/run-registry";
+import type { AppConfig } from "../types";
 import type { DevEnvContext } from "./context";
 import { createDevEnvironment } from "./create-dev-environment";
 import { createRunClaimApi, resolveClaimHold } from "./run-claim";
@@ -96,14 +98,14 @@ describe("createRunClaimApi", () => {
 		await claim.claimRun({ idleTimeoutMs: 5_000 });
 		expect(await holdOf(claim.sessionId)).toBe(5_000);
 
-		await claim.retireRun();
+		await claim.retireRun({ containersDown: true });
 		await claim.claimRun({});
 		expect(await holdOf(claim.sessionId)).toBe(5_000);
 
-		await claim.retireRun();
+		await claim.retireRun({ containersDown: true });
 		await claim.claimRun({ idleTimeoutMs: false });
 		expect(await holdOf(claim.sessionId)).toBeUndefined();
-		await claim.retireRun();
+		await claim.retireRun({ containersDown: true });
 	});
 	it("takes over the hold of a stack another run left in its hold, unless it asked for a hold itself", async () => {
 		// A detached run released with three minutes; a one-second library
@@ -129,7 +131,113 @@ describe("createRunClaimApi", () => {
 				?.inheritedIdleTimeoutMs,
 		).toBeUndefined();
 
-		for (const claim of [cli, script, kept]) await claim.retireRun();
+		for (const claim of [cli, script, kept])
+			await claim.retireRun({ containersDown: true });
+	});
+
+	it("marks the claimed services ready once they were waited for", async () => {
+		// A library `start()` with no apps describes nothing, and the claim
+		// lists its services as `starting`: they read so for the whole run.
+		const claim = claimApi();
+		await claim.claimRun();
+		const status = async () =>
+			(await loadRuns()).find((run) => run.sessionId === claim.sessionId)
+				?.services[0]?.status;
+		expect(await status()).toBe("starting");
+
+		claim.servicesReady(["postgres"]);
+		const deadline = performance.now() + 5_000;
+		while ((await status()) !== "ready" && performance.now() < deadline)
+			await Bun.sleep(10);
+		expect(await status()).toBe("ready");
+		await claim.retireRun({ containersDown: true });
+	});
+});
+
+describe("a claim's lifecycle and its apps", () => {
+	function appClaimApi(root: string) {
+		const ctx = {
+			config: { projectPrefix: "demo", services: {}, apps: {} },
+			projectName: "demo-apps",
+			root,
+			worktree: false,
+			services: { postgres: {} },
+			selectedServiceKeys: ["postgres"],
+			hasSelectedServices: true,
+			runtime: { name: "docker" },
+			runtimeBinary: "docker",
+		} as unknown as DevEnvContext<Record<string, never>, Record<string, never>>;
+		const source = (): RunSource => ({
+			sessionId: api.sessionId,
+			projectPrefix: "demo",
+			projectName: "demo-apps",
+			root,
+			isWorktree: false,
+			ports: {},
+			urls: {},
+			loopbackUrls: {},
+			publicUrls: {},
+			services: {},
+			hosts: null,
+			resolvePrimaryApp: () => undefined,
+		});
+		const api = createRunClaimApi(ctx, source);
+		return api;
+	}
+	const worker = (exclusive?: string): AppConfig => ({
+		kind: "worker",
+		devCommand: "true",
+		...(exclusive ? { exclusive } : {}),
+	});
+
+	it("has no claim time once released or retired", async () => {
+		// `explainMissingContainers` reads removals since the claim; a released
+		// claim's time is no claim's.
+		const claim = appClaimApi(mkdtempSync(join(home, "claimed-at-")));
+		expect(claim.claimedAt).toBeUndefined();
+		await claim.claimRun();
+		expect(claim.claimedAt).toBeNumber();
+		await claim.releaseRun();
+		expect(claim.claimedAt).toBeUndefined();
+		await claim.claimRun();
+		await claim.retireRun({ containersDown: true });
+		expect(claim.claimedAt).toBeUndefined();
+	});
+
+	it("gives back only what the failed start took, when starts overlap", async () => {
+		// `abandonApps` knew only the last `claimApps`, so a failed start gave
+		// back the leases of the one that ran beside it.
+		const claim = appClaimApi(mkdtempSync(join(home, "overlap-")));
+		const first = await claim.claimApps({ a: worker("demo:a") });
+		await claim.claimApps({ b: worker("demo:b") });
+
+		await claim.abandonApps(first);
+
+		const held = (await readLeases()).map((lease) => lease.key);
+		expect(held).toEqual(["demo:b"]);
+		await claim.releaseApps();
+	});
+
+	it("leaves a restarted app starting when a later start lists another", async () => {
+		// The rows replay put the old `failed` back over the new process.
+		const root = mkdtempSync(join(home, "replay-"));
+		const claim = appClaimApi(root);
+		const session = { sessionId: claim.sessionId };
+		const row = async () =>
+			(await loadRuns()).find((run) => run.sessionId === claim.sessionId)
+				?.apps[0];
+		await claim.claimApps({ first: worker() });
+		claim.appEvents.onAppSpawned?.("first", 1_000_001, false);
+		claim.appEvents.onAppExit?.("first", 1, null);
+		await flushRunPatches(session);
+		expect((await row())?.status).toBe("failed");
+		claim.appEvents.onAppSpawned?.("first", 1_000_002, false);
+
+		await claim.claimApps({ second: worker() });
+		await flushRunPatches(session);
+
+		expect(await row()).toMatchObject({ pid: 1_000_002, status: "starting" });
+		await claim.releaseApps();
 	});
 });
 

@@ -122,6 +122,7 @@ function fixture() {
 		retireRun: async () => {
 			events.push("retire");
 		},
+		servicesReady: () => {},
 		ensureWatchdog: async () => {
 			events.push("watchdog");
 		},

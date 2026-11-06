@@ -52,7 +52,11 @@ per port.
   Not on `restart()`, which needs the block back, nor while another run of the same environment
   is on record; a `start()` after the release claims again. A suffixed stack the sweep or
   `buncargo stop` removes loses its claim the same way (`releaseSuffixedClaimsOf`), unless its
-  checkout was deleted. A CI dev run killed before its teardown keeps its claim until that
+  checkout was deleted. Every release decided from an earlier read is compare-and-set
+  (`releaseOffsetClaimsIfUnchanged`, by the fields `markOffsetClaimsReclaimed` compares), and a
+  stack's teardown releases only claims last used before its run started: a job allocates before
+  it publishes its run, and the last job's stack coming down in that window took the new job's
+  claim with it. A CI dev run killed before its teardown keeps its claim until that
   directory's next job: the claim does not record that it was made in CI. Releasing a CI dev
   claim after a `dev --down` that kept volumes also drops the project-name refusal for them;
   in CI the next job of that directory claims the name again.
