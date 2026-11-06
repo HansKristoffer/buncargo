@@ -16,6 +16,7 @@ export {
 	runHostsInstall,
 	runHostsUninstall,
 } from "./onboarding";
+export { getRoutesPath } from "./paths";
 export type { ProxyHealth } from "./proxy";
 export {
 	isRouteLive,

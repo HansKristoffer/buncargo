@@ -438,10 +438,13 @@ export interface HostsReloaderDeps {
 	describeCertificateGap: (hostnames: string[]) => string | undefined;
 	/** `undefined` while a mint holds the pair: try again on a later pass. */
 	readCertificatePair: () => Promise<{ cert: string; key: string } | undefined>;
-	/** Which hostnames a bound certificate answers for ({@link certificateServes}). */
+	/**
+	 * Which hostnames a bound certificate answers for
+	 * ({@link certificateServes}); `undefined` when it cannot be read.
+	 */
 	certificateServes: (
 		cert: string,
-	) => (hostname: string, now: number) => boolean;
+	) => ((hostname: string, now: number) => boolean) | undefined;
 	startProxy: (input: {
 		lookup: ProxyRouteLookup;
 		routes: () => ProxyRoutesView;
@@ -607,7 +610,6 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 
 		try {
 			await rebind(certKey);
-			bindError = undefined;
 		} catch (error) {
 			// Health says so: the routes it lists are only those the previous
 			// leaf covers, and the CLI names this as the reason the rest are not.
@@ -648,7 +650,18 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		proxy = next;
 		previous?.stop();
 		lastCertKey = certKey;
-		serves = deps.certificateServes(cert);
+		const leafServes = deps.certificateServes(cert);
+		// The listener took it, so it serves something: list the route map
+		// rather than nothing, which would put every run on `localhost:port`.
+		// Logged once per bind, which is once per certificate.
+		if (leafServes === undefined) {
+			const message = `[buncargo hosts] could not read the names or expiry of the certificate the listener bound (${getCertPath()}); health lists every route. If named URLs fail TLS, run \`buncargo hosts install\`.`;
+			deps.log(message);
+		}
+		serves = leafServes ?? (() => true);
+		// Only a bind that succeeded clears it: a pass that found a mint in
+		// progress bound nothing, and the failure it would hide still stands.
+		bindError = undefined;
 	}
 
 	return {

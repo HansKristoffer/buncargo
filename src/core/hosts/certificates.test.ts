@@ -487,11 +487,31 @@ describe("readCertificatePair", () => {
 });
 
 describe("certificateServes", () => {
-	// What the daemon lists in health: a leaf it cannot read serves nothing,
-	// rather than everything the route map holds.
-	it("serves nothing for a certificate it cannot parse", () => {
-		expect(certificateServes("not a certificate")("app.localhost", 0)).toBe(
-			false,
-		);
+	// A real leaf for demo.localhost, web.demo.localhost and *.demo.localhost,
+	// minted once with openssl; expiring Oct 13 18:34:34 2126 GMT.
+	const leaf = readFileSync(
+		join(import.meta.dir, "fixtures", "leaf.pem"),
+		"utf8",
+	);
+	const validTo = Date.parse("2126-10-13T18:34:34Z");
+	const serves = certificateServes(leaf);
+
+	it("serves the names the leaf carries, and one label under its wildcard", () => {
+		const now = validTo - 1;
+		expect(serves?.("demo.localhost", now)).toBe(true);
+		expect(serves?.("web.demo.localhost", now)).toBe(true);
+		expect(serves?.("fix-ui.demo.localhost", now)).toBe(true);
+		expect(serves?.("a.b.demo.localhost", now)).toBe(false);
+		expect(serves?.("other.localhost", now)).toBe(false);
+	});
+
+	it("serves nothing once the leaf has expired", () => {
+		expect(serves?.("web.demo.localhost", validTo)).toBe(false);
+	});
+
+	// Reading nothing from a certificate `Bun.serve` accepted is not "serves
+	// nothing": that sent every run on the machine to localhost:port.
+	it("cannot say for a certificate it cannot read", () => {
+		expect(certificateServes("not a certificate")).toBeUndefined();
 	});
 });

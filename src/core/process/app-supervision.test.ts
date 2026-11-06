@@ -165,6 +165,52 @@ it("runs concurrent restarts of one app one after another, coalescing a waiting 
 	}
 });
 
+// A restarted app reads its named URL from the routes registry as its config
+// loads, so the route `onRestart` claims back has to be there before it spawns.
+it("spawns the replacement only once what onRestart returned has settled", async () => {
+	let release = () => {};
+	let released = false;
+	const reclaimed = new Promise<void>((resolve) => {
+		release = () => {
+			released = true;
+			resolve();
+		};
+	});
+	const session = new AppSupervision({
+		width: 1,
+		onRestart: () => reclaimed,
+	});
+	const spawnedBeforeRelease: boolean[] = [];
+	try {
+		const original = child();
+		await session.register("web", original, true, false, false);
+		const watching = session.owner.wait().catch(() => {});
+		session.setSpawner(
+			"web",
+			async () => {
+				spawnedBeforeRelease.push(!released);
+				return child();
+			},
+			true,
+			false,
+		);
+		// Released on the task after the retire ends. A spawn that does not
+		// wait for it follows the retire within the same task, before it.
+		const retire = session.owner.retire.bind(session.owner);
+		session.owner.retire = async (app) => {
+			await retire(app);
+			setTimeout(release, 0);
+		};
+		await session.restart("web");
+		expect(isProcessAlive(original.pid ?? 0)).toBe(false);
+		expect(spawnedBeforeRelease).toEqual([false]);
+		await session.stop();
+		await watching;
+	} finally {
+		await session.stop();
+	}
+});
+
 /**
  * A child that ignores SIGTERM, so only the SIGKILL after its grace stops it.
  * Resolves once the handler is installed: a SIGTERM before that still kills.

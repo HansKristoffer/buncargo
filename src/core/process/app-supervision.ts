@@ -35,8 +35,12 @@ export class AppSupervision {
 			verbose?: boolean;
 			width: number;
 			onAppSpawned?: (name: string, pid: number, attached: boolean) => void;
-			/** A restart is beginning: where it is announced. */
-			onRestart: (name: string, reason: string) => void;
+			/**
+			 * A restart is beginning: where it is announced. A promise it
+			 * returns is awaited before the replacement spawns, alongside the
+			 * retire; its rejection does not stop the restart.
+			 */
+			onRestart: (name: string, reason: string) => void | Promise<void>;
 			/**
 			 * A restart retired the app's process and could not start another.
 			 * Called before the owner parks the app or ends the run, so the
@@ -142,11 +146,14 @@ export class AppSupervision {
 		const spawner = this.spawners.get(name);
 		if (!current || !spawner || this.owner.controller.signal.aborted)
 			return false;
-		this.options.onRestart(name, reason);
+		const beforeSpawn = Promise.resolve(
+			this.options.onRestart(name, reason),
+		).catch(() => {});
 		// From here the app's row says it is restarting: every way this ends
 		// moves it on, a retire that fails included.
 		try {
 			await this.owner.retire(current);
+			await beforeSpawn;
 			this.owner.controller.signal.throwIfAborted();
 			const child = await spawner.spawn();
 			await this.register(

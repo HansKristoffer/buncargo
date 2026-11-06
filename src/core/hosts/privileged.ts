@@ -1,7 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdtempSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 /**
  * Running the handful of root operations named hosts needs: writing a unit
@@ -36,39 +42,84 @@ export interface PrivilegedRunner {
 	readFile: (path: string) => string | undefined;
 }
 
+/** Runs one command, throwing when it fails: `execFileSync`, in production. */
+export type PrivilegedExec = (
+	command: string,
+	args: string[],
+	options: { stdio: "inherit" | "ignore" },
+) => void;
+
 export function systemPrivilegedRunner(): PrivilegedRunner {
-	const isRoot = () => process.getuid?.() === 0;
+	return createPrivilegedRunner({
+		isRoot: () => process.getuid?.() === 0,
+		exec: (command, args, options) => {
+			execFileSync(command, args, options);
+		},
+	});
+}
+
+/**
+ * The runner over one way of executing a command, so the commands it issues
+ * can be checked without `sudo`.
+ */
+export function createPrivilegedRunner(deps: {
+	isRoot: () => boolean;
+	exec: PrivilegedExec;
+}): PrivilegedRunner {
+	const { isRoot, exec } = deps;
 
 	const run: PrivilegedRunner["run"] = (command, args, options = {}) => {
 		const stdio = options.stdio ?? "ignore";
 		if (isRoot()) {
-			execFileSync(command, args, { stdio });
+			exec(command, args, { stdio });
 			return;
 		}
-		execFileSync("sudo", [command, ...args], { stdio });
+		exec("sudo", [command, ...args], { stdio });
 	};
 
 	return {
 		isRoot,
 		authorize() {
 			if (isRoot()) return;
-			execFileSync("sudo", ["-v"], { stdio: "inherit" });
+			exec("sudo", ["-v"], { stdio: "inherit" });
 		},
 		run,
 		writeFile(path, contents) {
+			// Lands by a rename from a sibling: a reader sees the old file or the
+			// new one, never a truncated one. `/etc/hosts` goes through here, and
+			// every name resolution on the machine reads it.
+			const sibling = join(
+				dirname(path),
+				`.${basename(path)}.buncargo-${process.pid}.tmp`,
+			);
 			if (isRoot()) {
-				writeFileSync(path, contents, { mode: 0o644 });
+				try {
+					writeFileSync(sibling, contents, { mode: 0o644 });
+					renameSync(sibling, path);
+				} catch (error) {
+					rmSync(sibling, { force: true });
+					throw error;
+				}
 				return;
 			}
 			// Stage inside a 0700 directory. A predictable path in a shared /tmp
 			// would let a local user plant a symlink and steer what root copies
-			// into a file it later executes.
+			// into a file it later executes. The sibling sits in a root-owned
+			// directory, where no other user can plant anything.
 			const dir = mkdtempSync(join(tmpdir(), "buncargo-service-"));
 			const staged = join(dir, basename(path));
 			try {
 				writeFileSync(staged, contents, { mode: 0o644 });
-				run("cp", [staged, path]);
-				run("chmod", ["644", path]);
+				run("cp", [staged, sibling]);
+				run("chmod", ["644", sibling]);
+				run("mv", ["-f", sibling, path]);
+			} catch (error) {
+				try {
+					run("rm", ["-f", sibling]);
+				} catch {
+					// Report the failure that explains why.
+				}
+				throw error;
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
 			}

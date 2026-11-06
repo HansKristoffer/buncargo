@@ -2,12 +2,12 @@ import type { NamedHost } from "../../types";
 import { isProcessAlive } from "../process/lifecycle";
 import {
 	processIdentityMatcherAsync,
-	readProcessIdentities,
+	readProcessIdentitiesCached,
 } from "../process-identity";
 import { isRouteOwnerAlive } from "../registry-file";
 import {
 	type HostsRoute,
-	isNamedHostPlanLive,
+	liveNamedHosts,
 	loadHostRoutesSync,
 	type RouteOwnerCheck,
 	type RouteOwners,
@@ -41,7 +41,9 @@ export const identityRouteOwners: RouteOwners = async (routes) => {
 
 /**
  * {@link identityRouteOwners} for a synchronous reader: one identity read for
- * every live owner that recorded one, nothing at all when none is alive.
+ * the live owners it has not seen before, nothing at all when none is new.
+ * `getEnvVar` runs this inside users' configs on every load and reload, so
+ * a run's identity is read once per process, not once per call.
  */
 function identityRouteOwnersSync(
 	routes: readonly HostsRoute[],
@@ -53,7 +55,7 @@ function identityRouteOwnersSync(
 			? [route.pid]
 			: [],
 	);
-	const identities = readProcessIdentities(recordedLive);
+	const identities = readProcessIdentitiesCached(recordedLive);
 	return ({ pid, processIdentity }) => {
 		if (!isRouteOwnerAlive(pid)) return false;
 		if (pid === undefined || processIdentity === undefined) return true;
@@ -63,17 +65,17 @@ function identityRouteOwnersSync(
 }
 
 /**
- * Whether `root`'s named URLs are live ({@link isNamedHostPlanLive}), read
- * the way a `vite.config.ts` calling `getEnvVar` can: synchronously, from
- * the registry alone.
+ * The entries of `root`'s plan whose named URL is live
+ * ({@link liveNamedHosts}), read the way a `vite.config.ts` calling
+ * `getEnvVar` can: synchronously, from the registry alone.
  */
-export function readNamedHostsLiveSync(
+export function readLiveNamedHostsSync(
 	root: string,
 	plan: readonly NamedHost[],
-): boolean {
-	if (plan.length === 0) return false;
+): NamedHost[] {
+	if (plan.length === 0) return [];
 	const routes = loadHostRoutesSync().filter((route) => route.root === root);
-	return isNamedHostPlanLive({
+	return liveNamedHosts({
 		root,
 		plan,
 		routes,

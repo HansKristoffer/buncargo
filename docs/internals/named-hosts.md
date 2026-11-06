@@ -83,6 +83,17 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   over another one activates twice, and only the second attempt describes the URLs the banner
   prints. A failed attempt reverts `env.urls` to `localhost:port`, so a retry that fails never
   leaves the first attempt's named URLs beside its warning.
+- A run that falls back to `localhost:port` also withdraws what it registered
+  (`withdrawHostRoutes`): its own routes, and the checkout's service routes unless another live run
+  of the checkout holds routes there. Left registered, they read as live named URLs to everything
+  but the run itself.
+- `liveNamedHosts` (`registry.ts`) is the one answer to which of a checkout's named URLs are live:
+  `getEnvVar`, `env`, `status`, `url` and `open` all ask it, and name nothing from the plan alone.
+  A route is live when it is registered for the checkout at the plan's port by an owner still
+  running. `getEnvVar` asks it from inside users' configs, synchronously, and judges owners by
+  process identity (`readLiveNamedHostsSync`), reading each pid's identity once per process
+  (`readProcessIdentitiesCached`): on macOS a read is a `ps`, and a config is loaded several times
+  per start and on every reload.
 - `upsertHostRoutes` answers a second `buncargo dev` in the same checkout, pointing at the same
   port, with `keep` rather than a conflict: it is reusing the servers the first run started, not
   competing for the hostname. The live owner stays the owner, because `releaseNamedHosts` filters
@@ -92,7 +103,11 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   the old `buncargo dev` outlives its killed server and would delete them on exit. The old run
   can outlive the new one too (the app was `essential: false`, so it only parked): an app that
   restarts in a run serving named hosts claims its route again (`reclaimAppRoute`), or its named
-  URL 404s once the run that took it over has exited.
+  URL 404s once the run that took it over has exited. It does so in `onAppRestarting`, which the
+  restart awaits before it spawns: the app's config reads its URL from the registry as it loads.
+- That answer is per plan entry, never for the plan as a whole. A takeover that ends takes one app's route with it, and when one missing route
+  turned the whole plan to `localhost:port`, every other app of the run, still served on its named
+  URL, read `localhost:port` from its own config.
 - App routes record the run's process identity: a pid alone survives a reboot, and a reused one kept
   a dead run's route holding its hostname against the next run of the checkout. The CLI's writers
   (`upsertHostRoutes`, `hosts prune`) judge owners by identity (`identityRouteOwners`), asking only
@@ -105,7 +120,8 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   so a deleted worktree kept its hostnames in the registry, and in `/etc/hosts`, forever.
 - `syncHostsFile` writes through a temp file and a rename. `writeFileSync` truncates in place, and
   every name resolution on the machine reads this file, including the `localhost` entry the
-  system itself depends on.
+  system itself depends on. The privileged runner's `writeFile` (`hosts uninstall` through `sudo`)
+  does the same: `sudo cp` onto the file truncated it too.
 - `primary-app.ts`: named hosts use `configuredPrimaryApp`, which never infers, because inferring
   an owner for the bare `myapp.localhost` would silently move a name people have bookmarked.
 
@@ -126,7 +142,9 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   next reload retries.
 - Health lists the hostnames the *bound* leaf serves (`certificateServes`: covered and unexpired),
   not the route map, and carries `bindError` while a rebind fails. Listing the map let a run whose
-  remint never bound pass `waitForDaemonRoutes` and advertise https URLs that failed TLS.
+  remint never bound pass `waitForDaemonRoutes` and advertise https URLs that failed TLS. A leaf
+  whose names or expiry cannot be read lists the route map instead, and says so in the daemon log:
+  `Bun.serve` accepted it, and listing nothing put every run on the machine on `localhost:port`.
 - The certificate gap is reported on a route change, a remint, and at least hourly
   (`CERTIFICATE_RECHECK_MS`): expiry arrives with neither, and the daemon cannot renew. The next
   `buncargo dev` remints a leaf within 30 days of expiry.

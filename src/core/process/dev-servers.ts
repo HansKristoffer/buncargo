@@ -134,9 +134,10 @@ export interface StartDevServersOptions {
 	onAppFailed?: (name: string, error: Error) => void;
 	/**
 	 * A restart of the app has begun: its row says `starting` until the new
-	 * process is ready. Never for a restart asked for after the run ended.
+	 * process is ready. Never for a restart asked for after the run ended. A
+	 * promise it returns is awaited before the new process spawns.
 	 */
-	onAppRestarting?: (name: string) => void;
+	onAppRestarting?: (name: string) => void | Promise<void>;
 	/**
 	 * A restart retired the app's process and could not replace it: the app
 	 * is down until restarted again. Reported once, like an exit, so the run
@@ -455,10 +456,11 @@ export async function startDevServers(
 			readinessFailures.delete(name);
 			sideChecks.get(name)?.abort();
 			output.state(name, { state: "starting" });
-			options.onAppRestarting?.(name);
+			const beforeSpawn = options.onAppRestarting?.(name);
 			output.event(name, `restarting: ${reason}`);
 			if (!output.terminalSize)
 				console.log(formatStep(`🔁 Restarting ${name}: ${reason}`));
+			return beforeSpawn;
 		},
 		onRestartFailed: (name, error) => {
 			// Gone like an app that exited, so no wait for it holds on.

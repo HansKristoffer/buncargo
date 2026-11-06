@@ -8,7 +8,7 @@ import {
 	clearHostRoutes,
 	type HostsRoute,
 	HostsRouteConflictError,
-	isNamedHostPlanLive,
+	liveNamedHosts,
 	loadHostRoutes,
 	pidRouteOwners,
 	pruneHostRoutes,
@@ -575,16 +575,15 @@ describe("registry writers", () => {
 	});
 });
 
-describe("isNamedHostPlanLive", () => {
-	const plan = [
-		{
-			kind: "app" as const,
-			name: "web",
-			hostname: "web.demo.localhost",
-			baseHostname: "web.demo.localhost",
-			targetPort: 3000,
-		},
-	];
+describe("liveNamedHosts", () => {
+	const web = {
+		kind: "app" as const,
+		name: "web",
+		hostname: "web.demo.localhost",
+		baseHostname: "web.demo.localhost",
+		targetPort: 3000,
+	};
+	const plan = [web];
 	const registered = (overrides: Partial<HostsRoute> = {}): HostsRoute => ({
 		hostname: "web.demo.localhost",
 		port: 3000,
@@ -595,16 +594,17 @@ describe("isNamedHostPlanLive", () => {
 		updatedAt: new Date().toISOString(),
 		...overrides,
 	});
+	const ownerAlive = (alive: number[]) => (route: HostsRoute) =>
+		route.pid === undefined || alive.includes(route.pid);
 	const live = (routes: HostsRoute[], alive = [10]) =>
-		isNamedHostPlanLive({
+		liveNamedHosts({
 			root: "/repo",
 			plan,
 			routes,
-			ownerAlive: (route) =>
-				route.pid === undefined || alive.includes(route.pid),
-		});
+			ownerAlive: ownerAlive(alive),
+		}).length > 0;
 
-	it("is live while a running owner registered every hostname for this checkout", () => {
+	it("is live while a running owner registered the hostname for this checkout", () => {
 		expect(live([registered()])).toBe(true);
 	});
 
@@ -615,6 +615,25 @@ describe("isNamedHostPlanLive", () => {
 		expect(live([registered()], [])).toBe(false);
 		expect(live([registered({ port: 4000 })])).toBe(false);
 		expect(live([registered({ root: "/other" })])).toBe(false);
+	});
+
+	// A takeover that ended removed api's route; web's was still served and
+	// getEnvVar handed web localhost all the same.
+	it("answers per entry, so one missing route leaves the others named", () => {
+		const api = {
+			...web,
+			name: "api",
+			hostname: "api.demo.localhost",
+			baseHostname: "api.demo.localhost",
+			targetPort: 4000,
+		};
+		const result = liveNamedHosts({
+			root: "/repo",
+			plan: [web, api],
+			routes: [registered()],
+			ownerAlive: ownerAlive([10]),
+		});
+		expect(result.map((entry) => entry.name)).toEqual(["web"]);
 	});
 });
 

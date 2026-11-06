@@ -10,6 +10,7 @@ import {
 	promptFirstRun,
 	repairStaleService,
 	setupNeedsConsent,
+	uninstallHosts,
 } from "./onboarding";
 
 const REASON =
@@ -178,5 +179,36 @@ describe("doctorFixHosts", () => {
 		} finally {
 			rmSync(home, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("uninstallHosts", () => {
+	// With no terminal, the `sudo cp` behind cleaning /etc/hosts fails. Thrown,
+	// it stopped uninstall after the trust was gone and before the routes were
+	// cleared or the decline written, so the next run set everything up again.
+	it("finishes and says how to clean /etc/hosts when it cannot", async () => {
+		const steps: string[] = [];
+		const warnings = await uninstallHosts({
+			removeService: () => steps.push("service"),
+			removeTrust: () => steps.push("trust"),
+			cleanHostsFile: () => {
+				throw new Error("sudo: a terminal is required to read the password");
+			},
+			clearRoutes: async () => {
+				steps.push("routes");
+			},
+			removeCertNames: () => steps.push("cert names"),
+			persistDecline: () => steps.push("decline"),
+		});
+		expect(steps).toEqual([
+			"service",
+			"trust",
+			"routes",
+			"cert names",
+			"decline",
+		]);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("/etc/hosts");
+		expect(warnings[0]).toContain("buncargo hosts uninstall");
 	});
 });

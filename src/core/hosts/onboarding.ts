@@ -1,5 +1,5 @@
 import { rmSync } from "node:fs";
-import { typedSwitch } from "hanzio";
+import { getErrorMessage, typedSwitch } from "hanzio";
 import type { HostsOptions } from "../../types";
 import {
 	askChoice,
@@ -17,7 +17,12 @@ import {
 	SERVICE_START_TIMEOUT_MS,
 } from "./daemon-client";
 import { readDaemonConfig } from "./daemon-config";
-import { cleanHostsFileAsRoot } from "./hosts-file";
+import {
+	cleanHostsFileAsRoot,
+	DEFAULT_HOSTS_FILE,
+	HOSTS_BLOCK_END,
+	HOSTS_BLOCK_START,
+} from "./hosts-file";
 import {
 	ensureMkcert,
 	getCaPath,
@@ -188,20 +193,60 @@ export async function runHostsInstall(
 	}
 }
 
-export async function runHostsUninstall(): Promise<void> {
-	const runner = systemPrivilegedRunner();
-	uninstallHostsService({ runner });
-	uninstallTrust();
+/** The steps of `hosts uninstall`, injected so the order can be tested without root. */
+export interface HostsUninstallDeps {
+	removeService: () => void;
+	removeTrust: () => void;
+	cleanHostsFile: () => void;
+	clearRoutes: () => Promise<void>;
+	removeCertNames: () => void;
+	persistDecline: () => void;
+}
+
+/**
+ * Take named hosts off this machine, returning what it could not do.
+ *
+ * Cleaning `/etc/hosts` needs `sudo` once the root daemon that wrote the block
+ * is gone, and with no terminal to ask for a password it fails. Thrown, that
+ * stopped here with the trust already removed and the routes and the decline
+ * never written, so the next `buncargo dev` set everything up again.
+ */
+export async function uninstallHosts(
+	deps: HostsUninstallDeps,
+): Promise<string[]> {
+	const warnings: string[] = [];
+	deps.removeService();
+	deps.removeTrust();
 	// As root when needed: the daemon that wrote the block is stopped now, and
 	// the block left behind points every hostname at a proxy that is gone.
-	cleanHostsFileAsRoot(runner);
-	await clearHostRoutes();
 	try {
-		rmSync(getCertNamesPath(), { force: true });
-	} catch {
-		// best-effort: an orphaned name list only widens a certificate
+		deps.cleanHostsFile();
+	} catch (error) {
+		const message = `Could not remove buncargo's block from ${DEFAULT_HOSTS_FILE} (${getErrorMessage(error)}); its hostnames still point at 127.0.0.1. Run \`buncargo hosts uninstall\` again from a terminal, or delete the lines from \`${HOSTS_BLOCK_START}\` to \`${HOSTS_BLOCK_END}\` with \`sudo $EDITOR ${DEFAULT_HOSTS_FILE}\`.`;
+		warnings.push(message);
 	}
-	persistHostsDecline();
+	await deps.clearRoutes();
+	deps.removeCertNames();
+	deps.persistDecline();
+	return warnings;
+}
+
+export function runHostsUninstall(): Promise<string[]> {
+	const runner = systemPrivilegedRunner();
+	return uninstallHosts({
+		removeService: () => uninstallHostsService({ runner }),
+		removeTrust: () => uninstallTrust(),
+		cleanHostsFile: () => cleanHostsFileAsRoot(runner),
+		clearRoutes: () => clearHostRoutes(),
+		removeCertNames: () => {
+			try {
+				rmSync(getCertNamesPath(), { force: true });
+			} catch {
+				// best-effort: an orphaned name list only widens a certificate
+			}
+		},
+		persistDecline: persistHostsDecline,
+	});
 }
 
 /**

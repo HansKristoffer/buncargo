@@ -135,7 +135,7 @@ function parseMigrateCheckArgs(args: string[]) {
  */
 export async function loadLiveEnv() {
 	const { getCaPath, waitForDaemonRoutes } = await import("../../core/hosts");
-	const { readNamedHostsLiveSync } =
+	const { readLiveNamedHostsSync } =
 		await import("../../core/hosts/route-owners");
 	const { readServedTailscaleUrls } =
 		await import("../../core/hosts/tailscale-serve");
@@ -161,17 +161,14 @@ export async function loadLiveEnv() {
 	// daemon serving this project. Zero wait — this only reports state, so an
 	// unpicked-up route reads as localhost rather than blocking the command.
 	if (env.hosts && mode === "loopback") {
-		const registered = readNamedHostsLiveSync(env.root, env.hosts.plan);
+		const hostnames = readLiveNamedHostsSync(env.root, env.hosts.plan).map(
+			(entry) => entry.hostname,
+		);
 		const serving =
-			registered &&
-			(
-				await waitForDaemonRoutes(
-					env.hosts.plan.map((entry) => entry.hostname),
-					{ timeoutMs: 0 },
-				)
-			).ok;
+			hostnames.length > 0 &&
+			(await waitForDaemonRoutes(hostnames, { timeoutMs: 0 })).ok;
 		if (serving) {
-			env.setNamedHostsActive(true, { caPath: getCaPath() });
+			env.setNamedHostsActive(true, { caPath: getCaPath(), hostnames });
 		}
 	}
 	await adoptLiveCaptures(env);

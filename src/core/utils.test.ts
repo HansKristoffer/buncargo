@@ -50,16 +50,20 @@ describe("sleep", () => {
 async function withServingRun(
 	config: HostsTestConfig,
 	check: () => void,
+	/** Only these plan entries' routes, by name; all of them when absent. */
+	only?: string[],
 ): Promise<void> {
 	const savedHome = process.env.HOME;
 	const home = mkdtempSync(join(tmpdir(), "buncargo-getenv-hosts-"));
 	process.env.HOME = home;
 	try {
 		await upsertHostRoutes(
-			routesFromPlan(planFor(config), {
-				root: findMonorepoRoot(),
-				pid: process.pid,
-			}),
+			routesFromPlan(
+				planFor(config).filter(
+					(entry) => only === undefined || only.includes(entry.name),
+				),
+				{ root: findMonorepoRoot(), pid: process.pid },
+			),
 			{ owners: pidRouteOwners },
 		);
 		withoutCiEnv(check);
@@ -176,6 +180,35 @@ describe("getEnvVar", () => {
 					/^postgresql:\/\/postgres:postgres@localhost:\d+\/typed$/,
 				);
 			});
+		} finally {
+			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
+			else process.env.BUNCARGO_HOSTS = previousHosts;
+		}
+	});
+
+	// A takeover that ended took one app's route with it, and every other app
+	// of the run, still on its named URL, read localhost from its own config.
+	it("names each app whose route is live, whatever the others' are", async () => {
+		const previousHosts = process.env.BUNCARGO_HOSTS;
+		delete process.env.BUNCARGO_HOSTS;
+		try {
+			const config = defineDevConfig({
+				projectPrefix: "serpier",
+				services: {},
+				apps: {
+					api: { port: 3000, devCommand: "bun run api" },
+					web: { port: 5173, devCommand: "bun run web" },
+				},
+				options: { hosts: true },
+			});
+			await withServingRun(config, () => {
+				expect(getEnvVar(config, "WEB_URL")).toMatch(
+					/^https:\/\/(?:[a-z0-9-]+\.)?web\.serpier\.localhost$/,
+				);
+				expect(getEnvVar(config, "API_URL")).toMatch(
+					/^http:\/\/localhost:\d+$/,
+				);
+			}, ["web"]);
 		} finally {
 			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
 			else process.env.BUNCARGO_HOSTS = previousHosts;
@@ -349,7 +382,7 @@ describe("getEnvVar", () => {
 									: "",
 					}),
 					probe: async () => undefined,
-					isAlive: () => true,
+					ownersAlive: () => () => true,
 				},
 			);
 			expect(withoutCiEnv(() => getEnvVar(config, "API_URL"))).toBe(

@@ -15,7 +15,7 @@ import { connect } from "node:tls";
 import { getErrorMessage, promiseTimeout } from "hanzio";
 import { withFileLock } from "../file-lock";
 import { isProcessAlive } from "../process/lifecycle";
-import { readProcessIdentity } from "../process-identity";
+import { readProcessIdentitiesCached } from "../process-identity";
 import { defineListRegistry, readJsonDocumentSync } from "../registry-file";
 import type { HostsMode } from "../runtime-flags";
 import { chownToInvokingUser } from "../state-paths";
@@ -126,15 +126,27 @@ function isServeEntry(value: unknown): value is TailscaleServeEntry {
 export type ServeOwner = Pick<TailscaleServeEntry, "pid" | "processIdentity">;
 
 /**
- * Whether the run that added an entry is still running: its pid is alive and
- * is still the process it recorded. Identity that cannot be read keeps the
- * entry, as liveness does everywhere: only a mismatch ends it.
+ * Whether the run that added each entry is still running: its pid is alive
+ * and is still the process it recorded. Identity that cannot be read keeps
+ * the entry, as liveness does everywhere: only a mismatch ends it.
+ *
+ * For the owners it is built from, with one identity read between them, and
+ * none for a pid this process has read before: `getEnvVar` asks this inside
+ * users' configs on every load and reload, the watchdog on every pass.
  */
-export function isServeOwnerAlive(owner: ServeOwner): boolean {
-	if (!isProcessAlive(owner.pid)) return false;
-	if (owner.processIdentity === undefined) return true;
-	const actual = readProcessIdentity(owner.pid);
-	return actual === undefined || actual === owner.processIdentity;
+export function serveOwnersAlive(
+	owners: readonly ServeOwner[],
+): (owner: ServeOwner) => boolean {
+	const recorded = owners.flatMap((owner) =>
+		owner.processIdentity === undefined ? [] : [owner.pid],
+	);
+	const identities = readProcessIdentitiesCached(recorded);
+	return (owner) => {
+		if (!isProcessAlive(owner.pid)) return false;
+		if (owner.processIdentity === undefined) return true;
+		const actual = identities.get(owner.pid);
+		return actual === undefined || actual === owner.processIdentity;
+	};
 }
 
 const REGISTRY_VERSION = 1;
@@ -227,10 +239,11 @@ export async function readServedTailscaleUrls(
 	root: string,
 	ports: Readonly<Record<string, number>>,
 ): Promise<Record<string, string>> {
-	return servedTailscaleUrls(await loadTailscaleServeEntries(), {
+	const entries = await loadTailscaleServeEntries();
+	return servedTailscaleUrls(entries, {
 		root,
 		ports,
-		isAlive: isServeOwnerAlive,
+		isAlive: serveOwnersAlive(entries),
 	});
 }
 
@@ -249,7 +262,7 @@ export function readServedTailscaleUrlsSync(
 	return servedTailscaleUrls(entries, {
 		root,
 		ports,
-		isAlive: isServeOwnerAlive,
+		isAlive: serveOwnersAlive(entries),
 	});
 }
 
@@ -440,7 +453,10 @@ export interface TailscaleServeDeps {
 	 * certificate, so the handshake proves Tailscale is listening there.
 	 */
 	probe: (target: ServeProbeTarget) => Promise<string | undefined>;
-	isAlive: (owner: ServeOwner) => boolean;
+	/** Liveness of the owners it is given ({@link serveOwnersAlive}). */
+	ownersAlive: (
+		owners: readonly ServeOwner[],
+	) => (owner: ServeOwner) => boolean;
 }
 
 /** Until the listener is up, connections are refused: retry them this long. */
@@ -490,7 +506,11 @@ async function probeTls(target: ServeProbeTarget): Promise<string | undefined> {
 
 /** The real seams: the `tailscale` CLI, TLS handshakes and process identity. */
 export function tailscaleServeDeps(): TailscaleServeDeps {
-	return { cli: tailscaleCli, probe: probeTls, isAlive: isServeOwnerAlive };
+	return {
+		cli: tailscaleCli,
+		probe: probeTls,
+		ownersAlive: serveOwnersAlive,
+	};
 }
 
 /** Undefined once the entry is gone, the reason it is still there otherwise. */
@@ -636,8 +656,9 @@ export async function activateTailscaleServe(
 		if ("reason" in read) return { unavailable: `${read.reason}.` };
 
 		const path = getTailscaleServePath();
+		const entries = await registry.read(path);
 		const plan = planServeChanges({
-			entries: await registry.read(path),
+			entries,
 			config: read.config,
 			root: input.root,
 			pid: input.pid,
@@ -645,7 +666,7 @@ export async function activateTailscaleServe(
 			hostname: self.hostname,
 			wants,
 			takeover: input.takeover,
-			isAlive: deps.isAlive,
+			isAlive: deps.ownersAlive(entries),
 		});
 		fallbacks.push(...plan.refused);
 		// Recorded before any command runs: a crash from here on leaves a
@@ -716,15 +737,18 @@ async function markServed(
  * nothing to do, with one file read and no lock.
  */
 async function removeMatching(
-	match: (entry: TailscaleServeEntry) => boolean,
+	/** Built per read of the record, so liveness reads every owner at once. */
+	matcher: (
+		entries: readonly TailscaleServeEntry[],
+	) => (entry: TailscaleServeEntry) => boolean,
 	cli: TailscaleCli,
 ): Promise<{ removed: TailscaleServeEntry[]; failures: string[] }> {
-	if (!(await loadTailscaleServeEntries()).some(match))
-		return { removed: [], failures: [] };
+	const unlocked = await loadTailscaleServeEntries();
+	if (!unlocked.some(matcher(unlocked))) return { removed: [], failures: [] };
 	const path = getTailscaleServePath();
 	return withServeLock(async () => {
 		const entries = await registry.read(path);
-		const doomed = entries.filter(match);
+		const doomed = entries.filter(matcher(entries));
 		if (doomed.length === 0) return { removed: [], failures: [] };
 		const read = await readServeConfig(cli);
 		if ("reason" in read)
@@ -761,7 +785,7 @@ export async function releaseTailscaleServe(
 ): Promise<string[]> {
 	try {
 		const result = await removeMatching(
-			(entry) => entry.root === input.root && entry.pid === input.pid,
+			() => (entry) => entry.root === input.root && entry.pid === input.pid,
 			deps.cli,
 		);
 		return result.failures;
@@ -783,13 +807,13 @@ export interface TailscaleServeSweep {
  * and `hosts prune` once; nothing to remove costs one file read.
  */
 export async function sweepTailscaleServe(
-	deps: Pick<TailscaleServeDeps, "cli" | "isAlive">,
+	deps: Pick<TailscaleServeDeps, "cli" | "ownersAlive">,
 ): Promise<TailscaleServeSweep> {
 	try {
-		const result = await removeMatching(
-			(entry) => !deps.isAlive(entry),
-			deps.cli,
-		);
+		const result = await removeMatching((entries) => {
+			const alive = deps.ownersAlive(entries);
+			return (entry) => !alive(entry);
+		}, deps.cli);
 		return {
 			removed: result.removed.map(
 				(entry) =>
@@ -849,9 +873,8 @@ export async function diagnoseTailscaleHosts(
 		issues.push(`Tailscale: ${read.reason}`);
 		return { notes, issues };
 	}
-	const live = (await loadTailscaleServeEntries()).filter((entry) =>
-		deps.isAlive(entry),
-	);
+	const entries = await loadTailscaleServeEntries();
+	const live = entries.filter(deps.ownersAlive(entries));
 	const count = live.length === 1 ? "1 entry" : `${live.length} entries`;
 	notes.push(`Tailscale Serve: ${count} recorded by buncargo`);
 	for (const entry of live) {
@@ -877,16 +900,17 @@ export async function diagnoseTailscaleHosts(
 
 /** Each recorded entry with whether Tailscale still serves it, for `hosts status`. */
 export async function describeTailscaleServeEntries(
-	deps: Pick<TailscaleServeDeps, "cli" | "isAlive">,
+	deps: Pick<TailscaleServeDeps, "cli" | "ownersAlive">,
 ): Promise<string[]> {
 	const entries = await loadTailscaleServeEntries();
 	if (entries.length === 0) return [];
+	const alive = deps.ownersAlive(entries);
 	const read = await readServeConfig(deps.cli);
 	const missing = (entry: TailscaleServeEntry) =>
 		!("reason" in read) &&
 		!matchesConfig(entry, read.config.get(entry.httpsPort));
 	return entries.map((entry) => {
-		const ended = deps.isAlive(entry) ? "" : ", ended";
+		const ended = alive(entry) ? "" : ", ended";
 		const state = missing(entry) ? "  ← not in the Tailscale Serve config" : "";
 		return `${tailscaleServeUrl(entry)} → ${entry.target}  (app:${entry.app}, ${entry.root}, pid ${entry.pid}${ended})${state}`;
 	});

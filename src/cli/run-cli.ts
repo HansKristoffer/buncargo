@@ -1,12 +1,16 @@
 import { execSync } from "node:child_process";
-import { startTimer, typedSwitch } from "hanzio";
+import { getErrorMessage, startTimer, typedSwitch } from "hanzio";
 import {
 	containerRuntimeForEnv,
 	replaceStaleStacksOn,
 } from "../container-runtime";
 import { describeLeaseRefusal, type SkippedLeaseApp } from "../core/app-leases";
 import { withSignal } from "../core/deadline";
-import { removeHostRoutes, routesDownRemoves } from "../core/hosts";
+import {
+	getRoutesPath,
+	removeHostRoutes,
+	routesDownRemoves,
+} from "../core/hosts";
 import { releaseLeases } from "../core/leases";
 import { askConfirm, PromptInterruptedError } from "../core/prompt";
 import {
@@ -439,7 +443,14 @@ async function runDevFlow<
 
 	if (args.down || args.reset) {
 		env.logInfo();
-		await removeHostRoutes(routesDownRemoves(env.root));
+		// The containers come first: a registry that cannot be rewritten must
+		// not leave them running, and its own message says how to fix it.
+		try {
+			await removeHostRoutes(routesDownRemoves(env.root));
+		} catch (error) {
+			const message = `Left this checkout's service routes in ${getRoutesPath()}: ${getErrorMessage(error)}`;
+			log.warn(message);
+		}
 		await env.stop({ removeVolumes: args.reset, signal });
 		return exitWith(0);
 	}
@@ -839,7 +850,6 @@ async function runDevFlow<
 
 	const appsElapsed = startTimer();
 	let firstSpawn = false;
-	const spawned = new Set<string>();
 	const view = openDevOutput(env, classifiedApps.startApps, { tui: args.tui });
 	failureContext.output = view.output;
 	// The app rows, recorded by the rule a library `start()` uses too.
@@ -950,6 +960,14 @@ async function runDevFlow<
 				// restart (`r`, `buncargo restart`, a watch, a capture's
 				// `restartOn`) says `starting` before its new process spawns.
 				...rows,
+				// Activation claimed the first spawn's route; a restart claims it
+				// again in case a takeover moved it away and its run ended. Done
+				// before the new process spawns: its config reads its URL from
+				// the registry as it loads (`getEnvVar`).
+				onAppRestarting: (name) => {
+					rows.onAppRestarting(name);
+					return reclaimAppRoute(env, name);
+				},
 				// A developer's other apps should not go down with one that
 				// never came up; `ci` and library starts keep failing the run.
 				keepOthersOnFailure: env.onAppFailure !== "stop-run",
@@ -976,10 +994,6 @@ async function runDevFlow<
 						timer.record("entry to first app spawn", timer.elapsedMs());
 					}
 					rows.onAppSpawned(name, pid, attached);
-					// Activation claimed the first spawn's route; a restart claims it
-					// again in case a takeover moved it away and its run ended.
-					if (spawned.has(name)) void reclaimAppRoute(env, name);
-					spawned.add(name);
 				},
 				// A non-zero code is the app falling over: the run's end for an
 				// essential app that was up, a parked row for one that never came

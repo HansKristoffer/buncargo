@@ -197,6 +197,11 @@ export interface HostsRuntime {
 export interface NamedHostsActivation {
 	/** The loopback daemon's CA, for `NODE_EXTRA_CA_CERTS`. */
 	caPath?: string;
+	/**
+	 * Loopback mode: the plan's hostnames that are served. The others keep
+	 * their plain URL. Every hostname of the plan when absent.
+	 */
+	hostnames?: readonly string[];
 	/** Tailscale mode: the URL of each served app. */
 	tailscaleUrls?: Record<string, string>;
 }
