@@ -50,9 +50,18 @@ if (
 	const directory = mkdtempSync(join(tmpdir(), "buncargo-test-runtimes-"));
 	// `tailscale` too: a serve entry is machine state that outlives the test
 	// run, and the tests inject their own CLI.
-	for (const name of ["docker", "container", "tailscale"]) {
+	// `docker` says what the real one says with no daemon: only Docker's own
+	// "cannot connect" reads as down, and a silent failure as a daemon that
+	// may be running.
+	const stubs = {
+		docker:
+			'echo "Cannot connect to the Docker daemon at unix:///nonexistent/buncargo-test.sock. Is the docker daemon running?" >&2\n',
+		container: "",
+		tailscale: "",
+	};
+	for (const [name, say] of Object.entries(stubs)) {
 		const path = join(directory, name);
-		writeFileSync(path, "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+		writeFileSync(path, `#!/bin/sh\n${say}exit 1\n`, { mode: 0o700 });
 		chmodSync(path, 0o700);
 	}
 	process.env.PATH = `${directory}${delimiter}${process.env.PATH ?? ""}`;

@@ -10,7 +10,12 @@ import {
 	runDockerAsync,
 } from "./binary";
 import { getComposeArgs } from "./compose-command";
-import { isDockerDaemonRunning } from "./preflight";
+import {
+	type DockerDaemonState,
+	dockerDaemonState,
+	dockerUnavailableError,
+	isDaemonDownMessage,
+} from "./preflight";
 
 export interface StartContainersOptions {
 	noDeps?: boolean;
@@ -30,13 +35,6 @@ export interface StopContainersOptions {
 	removeVolumes?: boolean;
 	composeFile?: string;
 	binary?: string;
-}
-
-/** Compose's own words for "the daemon is not there". */
-function isDaemonDownMessage(message: string): boolean {
-	return /cannot connect to the docker daemon|is the docker daemon running|docker daemon is not running|error during connect/i.test(
-		message,
-	);
 }
 
 /**
@@ -174,10 +172,23 @@ export async function stopContainers(
 		// the watchdog performs; compose's own failure says the same thing.
 		// A verbose run streamed that failure to the terminal instead of
 		// capturing it, so only then is the probe worth its fork.
-		const daemonDown = result.stderr.trim()
-			? isDaemonDownMessage(result.stderr)
-			: !isDockerDaemonRunning(binary);
-		if (daemonDown) {
+		// Only a daemon that is really down has nothing running: one that
+		// refuses this user or does not answer may hold every container. A
+		// captured failure that is not "cannot connect" came from a daemon
+		// that answered.
+		const captured = result.stderr.trim();
+		const daemon: DockerDaemonState = captured
+			? isDaemonDownMessage(captured)
+				? { state: "down" }
+				: { state: "up" }
+			: dockerDaemonState(binary);
+		if (daemon.state !== "up" && daemon.state !== "down") {
+			const unavailable = dockerUnavailableError(daemon, binary);
+			throw new Error(
+				`Could not stop ${projectName}'s containers. ${unavailable.message}`,
+			);
+		}
+		if (daemon.state === "down") {
 			// A reset that silently kept the volumes would not be one.
 			if (removeVolumes)
 				throw new Error(

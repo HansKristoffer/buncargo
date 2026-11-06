@@ -16,6 +16,7 @@ import {
 } from "./cli";
 import { appleDown, appleStopByIds, appleUp } from "./lifecycle";
 import {
+	appleContainerAvailability,
 	ensureAppleContainerRunning,
 	isAppleContainerSupported,
 	isAppleContainerSystemRunning,
@@ -52,6 +53,10 @@ export function appleContainerRuntimeAdapter(
 
 		isAvailable() {
 			return isAppleContainerSystemRunning(cli);
+		},
+
+		availability() {
+			return appleContainerAvailability(cli);
 		},
 
 		ensureRunning(ensureOptions: EnsureRuntimeOptions = {}) {

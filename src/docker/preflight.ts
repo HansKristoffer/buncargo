@@ -1,12 +1,18 @@
 import { existsSync } from "node:fs";
 import { isDefined, startTimer, typedSwitch, typedSwitchGroup } from "hanzio";
+import type { RuntimeAvailability } from "../container-runtime/types";
 import { abortableSleep, remainingTime } from "../core/deadline";
 import { execAsync } from "../core/process/exec";
 import { askConfirm, isInteractive } from "../core/prompt";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWait } from "../core/style";
 import { lookupOnPath } from "../core/tool-binary";
-import { DEFAULT_DOCKER_BINARY, runDocker, runDockerAsync } from "./binary";
+import {
+	DEFAULT_DOCKER_BINARY,
+	type DockerRunResult,
+	runDocker,
+	runDockerAsync,
+} from "./binary";
 
 export type DockerRuntime =
 	| "orbstack"
@@ -41,48 +47,163 @@ function commandExists(command: string): boolean {
 	return lookupOnPath(command) !== undefined;
 }
 
-/** Exported for tests: the platform decides what a bare `docker` binary means. */
+/** The runtimes a machine can have installed, in the order they are guessed. */
+const INSTALLABLE_RUNTIMES = [
+	"orbstack",
+	"colima",
+	"rancher",
+	"podman",
+	"docker-desktop",
+] as const;
+type InstallableRuntime = (typeof INSTALLABLE_RUNTIMES)[number];
+
+/** Whether a runtime is installed here, asked of the machine itself. */
+export function installedDockerRuntime(
+	binary: string = DEFAULT_DOCKER_BINARY,
+): (runtime: InstallableRuntime) => boolean {
+	return (runtime) =>
+		typedSwitch(runtime, {
+			orbstack: () => existsSync("/Applications/OrbStack.app"),
+			colima: () => commandExists("colima"),
+			rancher: () => existsSync("/Applications/Rancher Desktop.app"),
+			podman: () => commandExists("podman"),
+			"docker-desktop": () =>
+				existsSync("/Applications/Docker.app") || commandExists(binary),
+		});
+}
+
+/**
+ * Which runtime the current `docker context` talks to.
+ *
+ * The context names the daemon the CLI uses, so it wins over which apps are
+ * installed: a Mac with OrbStack installed but `desktop-linux` selected runs
+ * Docker Desktop, and guessing OrbStack opened the wrong app and skipped
+ * Desktop's hang detection. Installed apps only guess for a context that
+ * names nothing (`default`, or one that could not be read). On Linux that
+ * context is Docker's own engine whatever else is on PATH: a CI image with
+ * podman installed still runs the engine, which nothing here can or should
+ * start.
+ */
 export function runtimeFromContext(
 	context: string,
-	platform: NodeJS.Platform = process.platform,
-	binary: string = DEFAULT_DOCKER_BINARY,
+	platform: NodeJS.Platform,
+	installed: (runtime: InstallableRuntime) => boolean,
 ): DockerRuntime {
-	// On Linux the context decides, not which other tools are installed: a CI image
-	// with podman on PATH still runs Docker's own engine under the "default" context.
-	// Anything not named for another runtime (or Docker Desktop) is that engine,
-	// which nothing here can or should start.
-	const otherRuntime = /colima|rancher|podman|desktop-linux/.test(context);
-	if (platform === "linux" && !otherRuntime) {
-		return "docker-engine";
-	}
-	if (
-		context.includes("orbstack") ||
-		existsSync("/Applications/OrbStack.app")
-	) {
-		return "orbstack";
-	}
-	if (context.includes("colima") || commandExists("colima")) {
-		return "colima";
-	}
-	if (
-		context.includes("rancher") ||
-		existsSync("/Applications/Rancher Desktop.app")
-	) {
-		return "rancher";
-	}
-	if (context.includes("podman") || commandExists("podman")) {
-		return "podman";
-	}
-	if (existsSync("/Applications/Docker.app") || commandExists(binary)) {
-		return "docker-desktop";
-	}
-	return "unknown";
+	if (context.includes("orbstack")) return "orbstack";
+	if (context.includes("colima")) return "colima";
+	if (context.includes("rancher")) return "rancher";
+	if (context.includes("podman")) return "podman";
+	if (context.startsWith("desktop-")) return "docker-desktop";
+	if (platform === "linux") return "docker-engine";
+	return INSTALLABLE_RUNTIMES.find(installed) ?? "unknown";
+}
+
+/** The flavour behind this `docker`, from its context: only failure paths ask. */
+function detectDockerRuntime(binary?: string): DockerRuntime {
+	const context = runDocker(binary, ["context", "show"], { timeoutMs: 5000 });
+	return runtimeFromContext(
+		context.ok ? context.stdout.trim().toLowerCase() : "",
+		process.platform,
+		installedDockerRuntime(binary),
+	);
+}
+
+/** Docker's own words for "the daemon is not there". */
+export function isDaemonDownMessage(message: string): boolean {
+	return /cannot connect to the docker daemon|is the docker daemon running|docker daemon is not running|error during connect/i.test(
+		message,
+	);
+}
+
+/** What one `docker version` said about the daemon. */
+export type DockerDaemonState =
+	| { state: "up" }
+	/** Docker's own "cannot connect", or no `docker` at all: nothing runs. */
+	| { state: "down" }
+	/** Up, but this user may not open its socket. */
+	| { state: "denied" }
+	/** Cut off at the probe's timeout: a hung daemon, or a slow one. */
+	| { state: "silent" }
+	/** A failure nobody has classified yet. */
+	| { state: "failed"; detail: string };
+
+/**
+ * Only Docker's own "cannot connect", or no `docker` at all, reads as down:
+ * the other failures may be a daemon running every container we have.
+ */
+export function dockerDaemonStateFrom(
+	result: DockerRunResult,
+): DockerDaemonState {
+	if (result.ok) return { state: "up" };
+	if (result.spawnErrorCode === "ENOENT") return { state: "down" };
+	if (result.spawnErrorCode === "ETIMEDOUT") return { state: "silent" };
+	if (/permission denied/i.test(result.stderr)) return { state: "denied" };
+	if (isDaemonDownMessage(result.stderr)) return { state: "down" };
+	const detail =
+		result.stderr.trim() || `docker version exited ${result.exitCode}`;
+	return { state: "failed", detail };
+}
+
+export function dockerDaemonState(binary?: string): DockerDaemonState {
+	// `info` also inspects CLI plugins, whose metadata can stall a healthy
+	// daemon's probe. `version` asks the server without that extra discovery.
+	return dockerDaemonStateFrom(
+		runDocker(binary, ["version", "--format", "{{.Server.Version}}"]),
+	);
+}
+
+export function dockerAvailability(
+	daemon: DockerDaemonState,
+): RuntimeAvailability {
+	return typedSwitch(daemon, "state", {
+		up: () => ({ state: "up" }),
+		down: () => ({ state: "down" }),
+		denied: () => ({
+			state: "unreachable",
+			detail: "this user cannot open Docker's socket",
+		}),
+		silent: () => ({
+			state: "unreachable",
+			detail: "Docker did not answer in time",
+		}),
+		failed: ({ detail }) => ({ state: "unreachable", detail }),
+	});
 }
 
 export function isDockerDaemonRunning(binary?: string): boolean {
-	// `info` also inspects CLI plugins, whose metadata can stall a healthy
-	// daemon's probe. `version` asks the server without that extra discovery.
-	return runDocker(binary, ["version", "--format", "{{.Server.Version}}"]).ok;
+	return dockerDaemonState(binary).state === "up";
+}
+
+function socketPermissionError(runtime: DockerRuntime): DockerUnavailableError {
+	return new DockerUnavailableError(
+		runtime,
+		"Add your user to the docker group (sudo usermod -aG docker $USER), then log in again or restart the service you run buncargo from: running processes keep their old groups.",
+		"Docker is running, but this user cannot open its socket.",
+	);
+}
+
+/** Why Docker cannot be used and what to do, for a caller that does not wait for it. */
+export function dockerUnavailableError(
+	daemon: Exclude<DockerDaemonState, { state: "up" }>,
+	binary?: string,
+): DockerUnavailableError {
+	const runtime = detectDockerRuntime(binary);
+	return typedSwitch(daemon, "state", {
+		down: () => new DockerUnavailableError(runtime, remediationFor(runtime)),
+		denied: () => socketPermissionError(runtime),
+		silent: () =>
+			new DockerUnavailableError(
+				runtime,
+				"It may be hung; `buncargo doctor --fix` restarts a hung Docker Desktop.",
+				"Docker did not answer in time.",
+			),
+		failed: ({ detail }) =>
+			new DockerUnavailableError(
+				runtime,
+				"Run `docker version` to see why, then try again.",
+				`Docker did not answer: ${detail}.`,
+			),
+	});
 }
 
 export function remediationFor(runtime: DockerRuntime): string {
@@ -307,16 +428,12 @@ export async function ensureDockerRunning(
 	const runtime = runtimeFromContext(
 		context.ok ? context.stdout.trim().toLowerCase() : "",
 		process.platform,
-		binary,
+		installedDockerRuntime(binary),
 	);
 	// A daemon that is up but refuses this user would otherwise read as "not
 	// running", and the wait below could never end differently.
-	if (/permission denied/i.test(first.stderr))
-		throw new DockerUnavailableError(
-			runtime,
-			"Add your user to the docker group (sudo usermod -aG docker $USER), then log in again or restart the service you run buncargo from: running processes keep their old groups.",
-			"Docker is running, but this user cannot open its socket.",
-		);
+	if (dockerDaemonStateFrom(first).state === "denied")
+		throw socketPermissionError(runtime);
 	// CI never starts Docker itself, but a runner's daemon is often still
 	// coming up when the job starts: keep asking until the deadline. Locally,
 	// `--no-docker-autostart` wants the answer now, not in 90 seconds, and so

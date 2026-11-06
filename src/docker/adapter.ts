@@ -19,7 +19,12 @@ import {
 	dockerContainerPortOwnersAsync,
 	findDockerContainerOnPort,
 } from "./port-lookup";
-import { ensureDockerRunning, isDockerDaemonRunning } from "./preflight";
+import {
+	dockerAvailability,
+	dockerDaemonState,
+	ensureDockerRunning,
+	isDockerDaemonRunning,
+} from "./preflight";
 import {
 	listDockerComposeProjectResources,
 	removeDockerComposeProjectResource,
@@ -49,6 +54,10 @@ export function dockerRuntimeAdapter(
 
 		isAvailable() {
 			return isDockerDaemonRunning(binary);
+		},
+
+		availability() {
+			return dockerAvailability(dockerDaemonState(binary));
 		},
 
 		ensureRunning(ensureOptions: EnsureRuntimeOptions = {}) {

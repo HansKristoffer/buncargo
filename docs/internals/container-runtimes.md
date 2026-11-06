@@ -53,6 +53,11 @@ The sweep and volume pruning live in `container-runtime/` too; see
 - `ExecInServiceRequest.command` is argv, not a shell command line, so neither backend has to quote
   it and the two cannot disagree about which shell runs a probe. Both backends spawn argv
   throughout.
+- `availability()` tells `down` (a stopped daemon or system service, or no runtime installed) from
+  `unreachable` (a socket this user may not open, a probe cut off at its timeout, a failure nobody
+  has classified). Only `down` means no container runs: an unreachable runtime may hold every
+  container a checkout has, so claim states still list it and a teardown fails rather than
+  reporting nothing to stop. Docker reads `down` only off its own "cannot connect".
 - `down` with the runtime stopped (Docker's daemon, Apple's system service) is a successful no-op:
   a stopped runtime runs no containers. Each backend reads that off its own failed teardown or
   listing and only then probes, so a normal teardown pays no extra process. `removeVolumes` is the

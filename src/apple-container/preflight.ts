@@ -1,5 +1,8 @@
 import { arch, platform } from "node:os";
-import { ContainerRuntimeUnavailableError } from "../container-runtime/types";
+import {
+	ContainerRuntimeUnavailableError,
+	type RuntimeAvailability,
+} from "../container-runtime/types";
 import { abortableSleep, remainingTime } from "../core/deadline";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWait } from "../core/style";
@@ -39,9 +42,27 @@ export function isAppleContainerInstalled(
 	return isAppleContainerSupported() && cli.found;
 }
 
+/**
+ * What `container system status` says. A stopped system service, an
+ * unsupported machine or a missing binary runs nothing; a status that did not
+ * come back in time may be a service running every container we have.
+ */
+export function appleContainerAvailability(
+	cli: AppleContainerCli,
+): RuntimeAvailability {
+	if (!isAppleContainerSupported() || !cli.found) return { state: "down" };
+	const status = cli.run(["system", "status"]);
+	if (status.ok) return { state: "up" };
+	if (status.timedOut)
+		return {
+			state: "unreachable",
+			detail: "Apple container did not answer in time",
+		};
+	return { state: "down" };
+}
+
 export function isAppleContainerSystemRunning(cli: AppleContainerCli): boolean {
-	if (!isAppleContainerSupported()) return false;
-	return cli.run(["system", "status"]).ok;
+	return appleContainerAvailability(cli).state === "up";
 }
 
 /**

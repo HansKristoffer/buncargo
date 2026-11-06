@@ -175,6 +175,20 @@ export interface ComposeProjectResources {
 export type ComposeProjectResourceKind = "container" | "volume" | "network";
 
 /**
+ * What asking a runtime's daemon told us.
+ *
+ * `down` and `unreachable` both mean "cannot use it now", but only `down`
+ * means no container is running: a stopped daemon, or no runtime installed.
+ * A daemon that refuses this user, or does not answer in time, may be
+ * running every container a checkout has, so nothing may be read as stopped,
+ * idle or torn down on its word.
+ */
+export type RuntimeAvailability =
+	| { state: "up" }
+	| { state: "down" }
+	| { state: "unreachable"; detail: string };
+
+/**
  * The single seam between buncargo and a container backend.
  *
  * Everything above this line (readiness polling, health checks, the CLI
@@ -186,6 +200,11 @@ export interface ContainerRuntimeAdapter {
 	readonly displayName: string;
 	/** The binary exists and its daemon answers. Never throws. */
 	isAvailable(): boolean;
+	/**
+	 * Whether the daemon answers, and if not, whether that means nothing
+	 * runs. `isAvailable()` is `availability().state === "up"`. Never throws.
+	 */
+	availability(): RuntimeAvailability;
 	/** Start the runtime's daemon when allowed, or throw with remediation. */
 	ensureRunning(options?: EnsureRuntimeOptions): Promise<void>;
 	up(request: ContainerUpRequest): Promise<void>;

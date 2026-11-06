@@ -17,6 +17,8 @@ export interface AppleCliResult {
 	exitCode: number;
 	stdout: string;
 	stderr: string;
+	/** Killed at its timeout rather than answering. Set by `run` only. */
+	timedOut?: boolean;
 }
 
 export interface AppleCliOptions {
@@ -86,11 +88,14 @@ export function createAppleContainerCli(
 			});
 
 			if (result.error) {
+				const { error } = result;
+				const timedOut = "code" in error && error.code === "ETIMEDOUT";
 				return {
 					ok: false,
 					exitCode: 1,
 					stdout: "",
-					stderr: result.error.message,
+					stderr: error.message,
+					...(timedOut ? { timedOut } : {}),
 				};
 			}
 

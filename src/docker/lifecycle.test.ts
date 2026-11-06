@@ -20,7 +20,13 @@ afterEach(() => {
 
 /** A `docker` that answers every command with success and records its argv. */
 function fakeDocker(
-	options: { downStderr?: string; upStderr?: string; psStdout?: string } = {},
+	options: {
+		downStderr?: string;
+		upStderr?: string;
+		psStdout?: string;
+		/** Refuse `docker version` with this on stderr. */
+		versionStderr?: string;
+	} = {},
 ) {
 	const dir = mkdtempSync(join(tmpdir(), "buncargo docker down "));
 	roots.push(dir);
@@ -33,6 +39,11 @@ function fakeDocker(
 import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+const versionStderr = ${JSON.stringify(options.versionStderr ?? "")};
+if (args[0] === 'version' && versionStderr) {
+  process.stderr.write(versionStderr);
+  process.exit(1);
+}
 if (args[0] === 'version') console.log('27.5.1');
 if (args[0] === 'ps') console.log(${JSON.stringify(options.psStdout ?? "")});
 const downStderr = ${JSON.stringify(options.downStderr ?? "")};
@@ -154,6 +165,32 @@ describe("stopContainers", () => {
 		// One call: the `docker info` probe this used to pay on every teardown
 		// is gone, because the failure itself carried the answer.
 		expect(calls()).toEqual([["compose", "-p", "demo", "down"]]);
+	});
+
+	it("does not call a daemon that refuses this user stopped after a streamed teardown failed", async () => {
+		// Verbose streams compose's stderr to the terminal, so only the probe
+		// is left to say why: a daemon this user may not open may still run
+		// every container, and "Nothing to stop" would be a lie.
+		const { dir, binary } = fakeDocker({
+			downStderr: "permission denied",
+			versionStderr:
+				"permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock",
+		});
+		await expect(
+			stopContainers(dir, "demo", { binary, verbose: true }),
+		).rejects.toThrow(
+			/Could not stop demo's containers.*cannot open its socket/,
+		);
+	});
+
+	it("has nothing to stop when the probe after a streamed failure finds the daemon down", async () => {
+		const down =
+			"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?";
+		const { dir, binary } = fakeDocker({
+			downStderr: down,
+			versionStderr: down,
+		});
+		await stopContainers(dir, "demo", { binary, verbose: true });
 	});
 
 	it("refuses to report volumes removed while the daemon is stopped", async () => {

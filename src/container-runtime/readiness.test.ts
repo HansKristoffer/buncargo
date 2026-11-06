@@ -23,6 +23,7 @@ function stubRuntime(
 		name: "apple",
 		displayName: "Apple container",
 		isAvailable: () => true,
+		availability: () => ({ state: "up" }),
 		ensureRunning: async () => {},
 		up: async () => {},
 		down: async () => {},

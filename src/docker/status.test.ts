@@ -11,9 +11,19 @@ describe("assertDockerRunning", () => {
 	it("says once that Docker is not running, and what to do", () => {
 		const missing = join(import.meta.dir, "no-such-docker-binary");
 		expect(() => assertDockerRunning(missing)).toThrow(
-			/^Docker is not running\. Start Docker and try again\.$/,
+			/^Docker is not running.*try again\.$/,
 		);
 	});
+
+	it.skipIf(process.platform !== "linux")(
+		"names the runtime behind docker rather than 'unknown'",
+		() => {
+			const missing = join(import.meta.dir, "no-such-docker-binary");
+			expect(() => assertDockerRunning(missing)).toThrow(
+				/^Docker is not running \(docker-engine\)\. Start the Docker service/,
+			);
+		},
+	);
 });
 
 /**
