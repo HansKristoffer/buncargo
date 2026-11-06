@@ -286,14 +286,23 @@ export function createDevEnvContext<
 		computeLoopbackUrls(services, apps, portMap),
 	);
 	const publicUrls: UrlMap = {};
+	// Loopback: the plan's hostnames being served, when only some are.
+	let servedHostnames: ReadonlySet<string> | undefined;
 
 	function refreshUrls() {
 		const urlMap = toUrlMap(urls);
 		Object.assign(urlMap, plainUrls);
 
 		if (!hosts?.active) return;
-		if (hosts.mode === "tailscale") Object.assign(urlMap, hosts.tailscaleUrls);
-		else applyHostPlanToUrls(urlMap, hosts.plan);
+		if (hosts.mode === "tailscale") {
+			Object.assign(urlMap, hosts.tailscaleUrls);
+			return;
+		}
+		const served = servedHostnames;
+		const plan = served
+			? hosts.plan.filter((entry) => served.has(entry.hostname))
+			: hosts.plan;
+		applyHostPlanToUrls(urlMap, plan);
 	}
 
 	let model: ComposeDocument | undefined;
@@ -550,6 +559,8 @@ export function createDevEnvContext<
 			hosts.active = active;
 			hosts.caPath = extras.caPath;
 			hosts.tailscaleUrls = active ? (extras.tailscaleUrls ?? {}) : {};
+			servedHostnames =
+				active && extras.hostnames ? new Set(extras.hostnames) : undefined;
 			refreshUrls();
 		},
 

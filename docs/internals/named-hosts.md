@@ -92,7 +92,12 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   the old `buncargo dev` outlives its killed server and would delete them on exit. The old run
   can outlive the new one too (the app was `essential: false`, so it only parked): an app that
   restarts in a run serving named hosts claims its route again (`reclaimAppRoute`), or its named
-  URL 404s once the run that took it over has exited.
+  URL 404s once the run that took it over has exited. It does so in `onAppRestarting`, which the
+  restart awaits before it spawns: the app's config reads its URL from the registry as it loads.
+- Whether a named URL is live is decided per plan entry (`liveNamedHosts`), never for the plan
+  as a whole. A takeover that ends takes one app's route with it, and when one missing route
+  turned the whole plan to `localhost:port`, every other app of the run, still served on its named
+  URL, read `localhost:port` from its own config.
 - App routes record the run's process identity: a pid alone survives a reboot, and a reused one kept
   a dead run's route holding its hostname against the next run of the checkout. The CLI's writers
   (`upsertHostRoutes`, `hosts prune`) judge owners by identity (`identityRouteOwners`), asking only

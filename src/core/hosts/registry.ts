@@ -108,23 +108,28 @@ export function loadHostRoutesSync(path = getRoutesPath()): HostsRoute[] {
 }
 
 /**
- * Whether a checkout's named URLs are live: every hostname of its plan is
- * registered for it, at the plan's port, by an owner still running.
+ * The entries of a checkout's plan whose named URL is live: its hostname is
+ * registered for the checkout, at the plan's port, by an owner still running.
+ * The others stay on `localhost:port`.
  *
  * The one answer `buncargo env`, `status`, `open` and `getEnvVar` give. A run
  * that falls back to `localhost:port` withdraws what it registered, so a live
- * registration is a run that confirmed the daemon serves it. Planning alone used to hand a `vite.config.ts` https
- * URLs while the run was on `localhost:port`, or with no run at all.
+ * registration is a run that confirmed the daemon serves it. Planning alone
+ * used to hand a `vite.config.ts` https URLs while the run was on
+ * `localhost:port`, or with no run at all.
+ *
+ * Per entry, not all or nothing: a takeover that ends removes the one app's
+ * route it took, and every other app of the run, still on its named URL,
+ * read `localhost:port` from `getEnvVar`.
  */
-export function isNamedHostPlanLive(input: {
+export function liveNamedHosts(input: {
 	root: string;
 	plan: readonly NamedHost[];
 	routes: readonly HostsRoute[];
 	ownerAlive: RouteOwnerCheck;
-}): boolean {
+}): NamedHost[] {
 	const { root, plan, routes, ownerAlive } = input;
-	if (plan.length === 0) return false;
-	return plan.every((entry) =>
+	return plan.filter((entry) =>
 		routes.some(
 			(route) =>
 				route.root === root &&

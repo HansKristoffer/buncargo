@@ -7,7 +7,7 @@ import {
 import { isRouteOwnerAlive } from "../registry-file";
 import {
 	type HostsRoute,
-	isNamedHostPlanLive,
+	liveNamedHosts,
 	loadHostRoutesSync,
 	type RouteOwnerCheck,
 	type RouteOwners,
@@ -65,17 +65,17 @@ function identityRouteOwnersSync(
 }
 
 /**
- * Whether `root`'s named URLs are live ({@link isNamedHostPlanLive}), read
- * the way a `vite.config.ts` calling `getEnvVar` can: synchronously, from
- * the registry alone.
+ * The entries of `root`'s plan whose named URL is live
+ * ({@link liveNamedHosts}), read the way a `vite.config.ts` calling
+ * `getEnvVar` can: synchronously, from the registry alone.
  */
-export function readNamedHostsLiveSync(
+export function readLiveNamedHostsSync(
 	root: string,
 	plan: readonly NamedHost[],
-): boolean {
-	if (plan.length === 0) return false;
+): NamedHost[] {
+	if (plan.length === 0) return [];
 	const routes = loadHostRoutesSync().filter((route) => route.root === root);
-	return isNamedHostPlanLive({
+	return liveNamedHosts({
 		root,
 		plan,
 		routes,
