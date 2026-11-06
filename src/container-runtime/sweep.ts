@@ -480,7 +480,8 @@ async function sweepGroup(
 				const fresh = await readAllRuns();
 				const freshAlive = await runLivenessAsync(fresh);
 				const owner = runFor(group, fresh, freshAlive);
-				const verdict = decide(owner, freshAlive, readAllOffsetClaims());
+				const freshClaims = readAllOffsetClaims();
+				const verdict = decide(owner, freshAlive, freshClaims);
 				if (verdict.kind !== "down") return false;
 				await adapterFor(group, runtimes, run).down({
 					root: group.root,
@@ -494,7 +495,7 @@ async function sweepGroup(
 					reason: verdict.reason,
 					owner: removalOwner(owner),
 				});
-				await releaseSuffixedClaimsOf(group);
+				await releaseSuffixedClaimsOf(group, freshClaims, owner);
 				return true;
 			},
 			{ timeoutMs: 0 },

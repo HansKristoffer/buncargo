@@ -202,10 +202,10 @@ export function offsetClaimsOf(root: string): Record<string, OffsetClaim> {
 }
 
 /**
- * Drop the claims under `keys`, whatever their checkouts' state: what
- * `buncargo ports release` does after checking no run holds them. A stale
- * claim otherwise holds its project name until its checkout runs again or is
- * deleted. The checkout's next run claims again.
+ * Drop the claims under `keys`, whatever they say now. A release decided from
+ * an earlier read (no run on record, a confirmation) is
+ * {@link releaseOffsetClaimsIfUnchanged}, or a run that allocated in between
+ * loses the claim it just wrote.
  */
 export async function releaseOffsetClaims(
 	keys: readonly string[],
@@ -219,27 +219,88 @@ export async function releaseOffsetClaims(
 }
 
 /**
- * Drop the suffixed claims of the stack `projectName` at `root`, once its
- * containers are gone: a throwaway environment (`ci`, an E2E stack) torn down
- * by the sweep or `buncargo stop` rather than by its own `stop()`. A CI
- * runner's directory never goes, so nothing else would free the block. A
- * deleted checkout's claims stay: they are the sweep's record of its volumes.
+ * Whether a claim is still the one that was read: no run has rewritten or
+ * used it since. Compared by what a run changes, not whole: a reader may have
+ * filled in a port-less claim's ports from its lockfile.
  */
-export async function releaseSuffixedClaimsOf(stack: {
-	projectName: string;
-	root: string;
-}): Promise<void> {
-	if (checkoutDeleted(stack.root)) return;
-	await releaseOffsetClaims(
-		Object.entries(readAllOffsetClaims())
-			.filter(
-				([key, claim]) =>
-					claim.suffix !== undefined &&
-					claim.projectName === stack.projectName &&
-					offsetClaimRoot(key, claim) === stack.root,
-			)
-			.map(([key]) => key),
+function unchangedSince(
+	current: OffsetClaim | undefined,
+	read: OffsetClaim,
+): current is OffsetClaim {
+	return (
+		current !== undefined &&
+		current.offset === read.offset &&
+		current.projectName === read.projectName &&
+		current.updatedAt === read.updatedAt &&
+		current.usedAt === read.usedAt
 	);
+}
+
+/**
+ * Drop each claim of `expected` that no run has claimed or used since it was
+ * read, under the claims lock. What every release that decides from an
+ * earlier read uses: a run that allocates in between rewrites the claim's
+ * `usedAt` (`claimOffset`), and so keeps it. Returns the keys it dropped.
+ */
+export async function releaseOffsetClaimsIfUnchanged(
+	expected: Record<string, OffsetClaim>,
+): Promise<string[]> {
+	const keys = Object.keys(expected);
+	if (keys.length === 0) return [];
+	return withFileLock(getOffsetClaimsPath(), async () => {
+		const claims = readAllOffsetClaims();
+		const released = keys.filter((key) =>
+			unchangedSince(claims[key], expected[key]),
+		);
+		for (const key of released) delete claims[key];
+		if (released.length > 0)
+			writeJsonDocumentSync(getOffsetClaimsPath(), {
+				version: VERSION,
+				claims,
+			});
+		return released;
+	});
+}
+
+/**
+ * The suffixed claims of the stack `projectName` at `root`, as `claims` holds
+ * them, that its run on record used: a claim used after `owner` started was
+ * allocated by a later job, which has not published its run yet.
+ */
+function suffixedClaimsOf(
+	claims: Record<string, OffsetClaim>,
+	stack: { projectName: string; root: string },
+	owner: { startedAt: string } | null,
+): Record<string, OffsetClaim> {
+	return Object.fromEntries(
+		Object.entries(claims).filter(
+			([key, claim]) =>
+				claim.suffix !== undefined &&
+				claim.projectName === stack.projectName &&
+				offsetClaimRoot(key, claim) === stack.root &&
+				(owner === null || offsetClaimLastUsed(claim) <= owner.startedAt),
+		),
+	);
+}
+
+/**
+ * Drop the suffixed claims of a stack whose containers are gone: a throwaway
+ * environment (`ci`, an E2E stack) torn down by the sweep or `buncargo stop`
+ * rather than by its own `stop()`. A CI runner's directory never goes, so
+ * nothing else would free the block. A deleted checkout's claims stay: they
+ * are the sweep's record of its volumes.
+ *
+ * `read` is the claims as they were before the teardown was decided (see
+ * {@link suffixedClaimsOf}); a claim a new job of the same directory wrote or
+ * used since is its block, and stays.
+ */
+export async function releaseSuffixedClaimsOf(
+	stack: { projectName: string; root: string },
+	read: Record<string, OffsetClaim>,
+	owner: { startedAt: string } | null,
+): Promise<void> {
+	if (checkoutDeleted(stack.root)) return;
+	await releaseOffsetClaimsIfUnchanged(suffixedClaimsOf(read, stack, owner));
 }
 
 /**
@@ -387,16 +448,9 @@ export async function markOffsetClaimsReclaimed(
 		const claims = readAllOffsetClaims();
 		const marked = keys.filter((key) => {
 			const current = claims[key];
-			const read = expected[key];
-			// Compared by what a run changes, not whole: a reader may have
-			// filled in a port-less claim's ports from its lockfile.
 			return (
-				current !== undefined &&
+				unchangedSince(current, expected[key]) &&
 				offsetClaimHoldsBlock(current) &&
-				current.offset === read.offset &&
-				current.projectName === read.projectName &&
-				current.updatedAt === read.updatedAt &&
-				current.usedAt === read.usedAt &&
 				!checkoutDeleted(offsetClaimRoot(key, current))
 			);
 		});

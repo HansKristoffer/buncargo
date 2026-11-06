@@ -12,6 +12,7 @@ import { unreadableCheckout } from "../core/checkout-presence.testing";
 import {
 	claimOffset,
 	getOffsetClaimsPath,
+	offsetClaimKey,
 	readAllOffsetClaims,
 	readOffsetClaims,
 } from "../core/offset-claims";
@@ -307,6 +308,38 @@ describe("sweepOrphanedContainers", () => {
 			"demo",
 		]);
 		expect(Object.keys(readAllOffsetClaims())).toEqual([checkout]);
+	});
+
+	it("keeps the block a new job of the directory claimed before publishing its run", async () => {
+		// The job allocates before it claims its run; the last job's stack
+		// coming down in that window took the new job's claim with it.
+		await publishRun(
+			entry({
+				sessionId: "last-job",
+				projectName: "demo-e2e",
+				releasedAt: AGES_AGO,
+				idleTimeoutMs: 1_000,
+			}),
+		);
+		claimOffset({
+			root: checkout,
+			suffix: "e2e",
+			offset: 200,
+			ports: [],
+			projectName: "demo-e2e",
+		});
+		const { runtime } = stubRuntime([
+			container("demo-e2e", checkout, "running"),
+		]);
+
+		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
+
+		expect(result.swept.map((stack) => stack.projectName)).toEqual([
+			"demo-e2e",
+		]);
+		expect(Object.keys(readAllOffsetClaims())).toEqual([
+			offsetClaimKey(checkout, "e2e"),
+		]);
 	});
 
 	it("reports a stack this user's state does not name, and leaves it alone", async () => {
