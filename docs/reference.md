@@ -936,7 +936,8 @@ names it. When it no longer uses that name, release its claims:
 `buncargo ports release --root <path>`. It lists the claims and asks first
 (`--yes` from a script or agent), refuses while that checkout is running or its
 containers are still up (`buncargo stop --all --root <path>`), and touches no
-container or volume. The checkout claims again on its next run. Whoever runs
+container or volume. A claim a run used after the listing is kept, and the
+command then exits `3`. The checkout claims again on its next run. Whoever runs
 under the released name next uses the volumes left under it.
 
 `buncargo ports pin <offset>` moves a checkout to a block and keeps it there:

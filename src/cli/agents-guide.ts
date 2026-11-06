@@ -242,7 +242,8 @@ const TOPICS: readonly Topic[] = [
   gives one of them its own \`projectPrefix\`, or, when the other checkout's
   claim is from a config it no longer runs, releases it with the
   \`bunx buncargo ports release --root <path>\` the error names. Run that only
-  when the user asks: whoever runs under the name next gets its volumes.`,
+  when the user asks: whoever runs under the name next gets its volumes. It
+  exits 3 when a run started there meanwhile kept a claim; tell the user.`,
 	},
 	{
 		name: "logs",
