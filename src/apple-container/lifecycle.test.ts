@@ -515,6 +515,32 @@ describe("appleDown", () => {
 		expect(subcommands(cli)).toEqual(["ls --all", "system status"]);
 	});
 
+	it("fails rather than reporting nothing to stop when the status did not answer", async () => {
+		const cli = recordingCli([], { ls: "Error: XPC connection error" });
+		const answer = cli.run;
+		cli.run = (args, options) => {
+			if (args[0] !== "system") return answer(args, options);
+			cli.calls.push(args);
+			const killed = "Command timed out after 5000ms: container system status";
+			return {
+				ok: false,
+				exitCode: 1,
+				stdout: "",
+				stderr: killed,
+				timedOut: true,
+			};
+		};
+
+		await expect(
+			appleDown(cli, {
+				root: "/repo",
+				projectName: "gey-main",
+				verbose: false,
+			}),
+		).rejects.toThrow(/read container inventory failed.*XPC connection error/);
+		expect(subcommands(cli)).toEqual(["ls --all", "system status"]);
+	});
+
 	it("still reports a failed listing while the system service runs", async () => {
 		const cli = recordingCli([], { ls: "internal error" });
 

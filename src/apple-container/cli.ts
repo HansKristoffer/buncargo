@@ -17,7 +17,7 @@ export interface AppleCliResult {
 	exitCode: number;
 	stdout: string;
 	stderr: string;
-	/** Killed at its timeout rather than answering. Set by `run` only. */
+	/** Killed at its timeout rather than answering. */
 	timedOut?: boolean;
 }
 

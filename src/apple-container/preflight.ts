@@ -53,7 +53,17 @@ export function appleContainerAvailability(
 	cli: AppleContainerCli,
 ): RuntimeAvailability {
 	if (!isAppleContainerSupported() || !cli.found) return { state: "down" };
-	const status = cli.run(["system", "status"]);
+	return appleAvailabilityFromStatus(cli.run(["system", "status"]));
+}
+
+/**
+ * What one `container system status` said. Only a status that answered
+ * reads as down; one cut off at its timeout may be a service running every
+ * container a checkout has.
+ */
+export function appleAvailabilityFromStatus(
+	status: AppleCliResult,
+): RuntimeAvailability {
 	if (status.ok) return { state: "up" };
 	if (status.timedOut)
 		return {
