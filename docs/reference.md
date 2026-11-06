@@ -770,6 +770,12 @@ until the machine's file table fills. `node_modules`, `.git` and `.buncargo`
 are always ignored; changes within `debounceMs` (150) restart once. Watching
 starts once the run is up. `dev --no-watch` turns it off for one run.
 
+A restarted app, by `watch`, `restartOn` or by hand, has to become ready again
+within its `healthTimeout`, like it did at start. If it does not, `buncargo dev`
+stops it and shows it failed, while `ci`, a library `start()` and
+`options.onAppFailure: "stop-run"` end the run. Raise `healthTimeout` for an app
+whose restart takes longer.
+
 ### Ready by output
 
 `readyWhen: /Logs for your project/` makes an app ready when its output
