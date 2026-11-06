@@ -8,6 +8,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	claimOffset,
+	offsetClaimKey,
+	readAllOffsetClaims,
+	withOffsetClaimsLock,
+} from "../../core/offset-claims";
 import { runStopGraceMs } from "../../core/process/terminate";
 import { readProcessIdentityAsync } from "../../core/process-identity";
 import { loadRuns, publishRun, type RunEntry } from "../../core/run-registry";
@@ -125,11 +131,47 @@ describe("buncargo stop --all", () => {
 		}
 	});
 
-	it("takes down the containers a released run left in the idle hold, and retires its entry", async () => {
+	it("keeps the block of a stack still in another run's hold when it downs nothing", async () => {
+		// An app-only run's stop downed nothing, yet released the suffixed
+		// claim the held run's stack was using.
+		withOffsetClaimsLock(() =>
+			claimOffset({
+				root,
+				offset: 300,
+				ports: [5732],
+				projectName: "fixture",
+				suffix: "e2e",
+			}),
+		);
+		await publishRun(held("held"));
+		const owner = await live("app-only");
+		try {
+			expect(
+				await handleStop(["--all", "--root", root, "--run", "app-only"]),
+			).toBe(0);
+			expect(Object.keys(readAllOffsetClaims())).toEqual([
+				offsetClaimKey(root, "e2e"),
+			]);
+		} finally {
+			owner.kill("SIGKILL");
+		}
+	});
+
+	it("takes down the containers a released run left in the idle hold, retires its entry and gives back its block", async () => {
+		withOffsetClaimsLock(() =>
+			claimOffset({
+				root,
+				offset: 300,
+				ports: [5732],
+				projectName: "fixture",
+				suffix: "e2e",
+			}),
+		);
 		await publishRun(held("held"));
 		expect(await handleStop(["--all", "--root", root])).toBe(0);
 		expect(calls()).toContain("compose -p fixture down");
 		expect(await loadRuns()).toEqual([]);
+		expect(readAllOffsetClaims()).toEqual({});
 	});
 
 	it("takes down a live run's containers and its project's released runs together", async () => {

@@ -52,7 +52,8 @@ per port.
   Not on `restart()`, which needs the block back, nor while another run of the same environment
   is on record; a `start()` after the release claims again. A suffixed stack the sweep or
   `buncargo stop` removes loses its claim the same way (`releaseSuffixedClaimsOf`), unless its
-  checkout was deleted. Every release decided from an earlier read is compare-and-set
+  checkout was deleted; `stop` releases nothing when it removed nothing (an app-only run) or
+  another entry of the project still holds containers, whose stack the claim may be. Every release decided from an earlier read is compare-and-set
   (`releaseOffsetClaimsIfUnchanged`, by the fields `markOffsetClaimsReclaimed` compares), and a
   stack's teardown releases only claims last used before its run started: a job allocates before
   it publishes its run, and the last job's stack coming down in that window took the new job's

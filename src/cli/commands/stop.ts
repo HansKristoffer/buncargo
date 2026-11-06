@@ -536,6 +536,16 @@ async function tearDown(
 		);
 	}
 	await retireRuns(runs.map((run) => run.sessionId));
+	// The claims belong to whichever stack used them. Nothing removed (an
+	// app-only run), or an entry of the project still holding containers,
+	// means that stack is still standing, and so is its claim.
+	if (removed.length === 0) return true;
+	const remaining = await findCheckoutRuns(root).catch(() => undefined);
+	if (remaining === undefined) return true;
+	const standing = [...remaining.live, ...remaining.held].some(
+		(run) => run.projectName === projectName,
+	);
+	if (standing) return true;
 	// The run on record whose claims these are: the one that started last.
 	const owner = runs.reduce((newest, run) =>
 		run.startedAt > newest.startedAt ? run : newest,
