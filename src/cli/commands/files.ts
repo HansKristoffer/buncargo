@@ -345,12 +345,12 @@ async function merge(
 			take,
 			answered,
 		});
-		if (answered && answered.inputs !== result.inputs) {
+		const stale = answered !== undefined && answered.inputs !== result.inputs;
+		if (stale && result.conflicts.length > 0)
 			log.warn(
 				`${path} changed in this checkout or the file store while you chose; asking again.`,
 			);
-			answered = undefined;
-		}
+		if (stale) answered = undefined;
 		if (!result.base && first)
 			log.warn(
 				`There is no copy of ${path} as it was last synced (an older buncargo synced it), so a key removed on one side is kept from the other.`,
