@@ -9,6 +9,7 @@ import {
 	readBooleanFlag,
 	readStringFlag,
 } from "../command-spec";
+import { SIGNAL_EXIT } from "../dev-interrupts";
 import * as log from "../log";
 
 const FLAGS = {
@@ -57,8 +58,8 @@ export const WAIT_COMMAND_SPEC: CommandSpec = {
  * when interrupted (130 Ctrl-C, 143 SIGTERM).
  */
 const WAIT_EXIT = { ok: 0, failed: 1, timeout: 2 } as const;
-const SIGNAL_EXIT = { SIGINT: 130, SIGTERM: 143 } as const;
-export type WaitSignal = keyof typeof SIGNAL_EXIT;
+const WAIT_SIGNALS = ["SIGINT", "SIGTERM"] as const;
+export type WaitSignal = (typeof WAIT_SIGNALS)[number];
 
 const POLL_MS = 500;
 
@@ -145,7 +146,7 @@ export async function handleWait(args: string[]): Promise<number> {
 	// The first signal; it also cuts the sleep between polls short.
 	let interrupted: WaitSignal | undefined;
 	const stopped = new AbortController();
-	const listeners = (Object.keys(SIGNAL_EXIT) as WaitSignal[]).map((signal) => {
+	const listeners = WAIT_SIGNALS.map((signal) => {
 		const listener = () => {
 			interrupted ??= signal;
 			stopped.abort();
