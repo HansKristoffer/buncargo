@@ -144,9 +144,12 @@ const COMMANDS = {
 	stop: command(async (args) =>
 		exitOnFailure(await (await import("./commands/stop")).handleStop(args)),
 	),
-	restart: command(async (args) =>
-		(await import("./commands/restart")).handleRestart(args),
-	),
+	// 3 is "the run takes no restart requests" (a library `start()`).
+	restart: command(async (args) => {
+		const { handleRestart, RESTART_TIMEOUTS } =
+			await import("./commands/restart");
+		return handleRestart(args, RESTART_TIMEOUTS);
+	}),
 	send: command(async (args) =>
 		(await import("./commands/send")).handleSend(args),
 	),

@@ -36,6 +36,7 @@ afterEach(() => {
 });
 
 const T0 = Date.parse("2026-01-01T00:00:00.000Z");
+const HOUR = 3_600_000;
 
 /** What a claiming run does at `at`: allocate the block and claim it. */
 function claimAt(at: number, suffix = "ci"): void {
@@ -81,7 +82,12 @@ describe("releaseSuffixedClaimsOf", () => {
 	it("releases the claim the torn-down run used", async () => {
 		claimAt(T0);
 		const owner = { startedAt: new Date(T0 + 1_000).toISOString() };
-		await releaseSuffixedClaimsOf(stack(), readAllOffsetClaims(), owner);
+		await releaseSuffixedClaimsOf(
+			stack(),
+			readAllOffsetClaims(),
+			owner,
+			T0 + 1_000,
+		);
 		expect(readAllOffsetClaims()).toEqual({});
 	});
 
@@ -92,7 +98,7 @@ describe("releaseSuffixedClaimsOf", () => {
 		const owner = { startedAt: new Date(T0).toISOString() };
 		claimAt(T0 + 60_000);
 		const read = readAllOffsetClaims();
-		await releaseSuffixedClaimsOf(stack(), read, owner);
+		await releaseSuffixedClaimsOf(stack(), read, owner, T0 + 60_000);
 		expect(Object.keys(readAllOffsetClaims())).toEqual([
 			offsetClaimKey(root, "ci"),
 		]);
@@ -102,7 +108,25 @@ describe("releaseSuffixedClaimsOf", () => {
 		claimAt(T0);
 		const read = readAllOffsetClaims();
 		claimAt(T0 + 60_000);
-		await releaseSuffixedClaimsOf(stack(), read, null);
+		await releaseSuffixedClaimsOf(stack(), read, null, T0 + 3 * HOUR);
 		expect(Object.keys(readAllOffsetClaims())).toHaveLength(1);
+	});
+
+	it("keeps a recent claim of a stack with no run on record", async () => {
+		// The sweep downs a stack nobody owns. A new job of the directory that
+		// has allocated but not yet published its run has only this claim.
+		claimAt(T0);
+		const read = readAllOffsetClaims();
+		await releaseSuffixedClaimsOf(stack(), read, null, T0 + 60_000);
+		expect(Object.keys(readAllOffsetClaims())).toEqual([
+			offsetClaimKey(root, "ci"),
+		]);
+	});
+
+	it("releases an hour-old claim of a stack with no run on record", async () => {
+		claimAt(T0);
+		const read = readAllOffsetClaims();
+		await releaseSuffixedClaimsOf(stack(), read, null, T0 + HOUR);
+		expect(readAllOffsetClaims()).toEqual({});
 	});
 });

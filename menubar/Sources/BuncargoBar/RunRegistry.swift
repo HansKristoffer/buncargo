@@ -213,7 +213,11 @@ enum OwnerProbe: Equatable {
 
     /// Signal 0 checks for existence without delivering anything; `EPERM` is
     /// another user's process, which exists.
+    ///
+    /// A pid of 1 or less is never a run, as in the CLI (`livePids`): `launchd`
+    /// is always alive, and `kill` treats 0 and negative pids as groups.
     static func read(pid: Int, identity wanted: Bool) -> OwnerProbe {
+        guard pid > 1, pid <= Int(Int32.max) else { return .gone }
         guard kill(pid_t(pid), 0) == 0 || errno == EPERM else { return .gone }
         guard wanted, let born = ProcessIdentity.startSeconds(pid: pid_t(pid)) else {
             return .running(identity: nil)

@@ -73,6 +73,17 @@ export function isContainerLive(state: ContainerState): boolean {
 }
 
 /**
+ * Keeps a stack nobody owns standing: live, except `restarting`. A stack
+ * whose containers only exit and come back under a restart policy serves
+ * nothing, and with no owner to stop it would be kept forever, so the sweep
+ * downs it as stopped (volumes kept). `unknown` still keeps it: reading a live
+ * database as stopped is the costly mistake.
+ */
+export function keepsUnownedStack(state: ContainerState): boolean {
+	return state !== "restarting" && isContainerLive(state);
+}
+
+/**
  * Known to have stopped. Only this may skip a graceful stop before a forced
  * delete: an `unknown` container may be a database that is running.
  */

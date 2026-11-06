@@ -54,10 +54,10 @@ import type {
 	BuncargoVolume,
 	ContainerRuntimeName,
 } from "../types";
+import { keepsUnownedStack, parseContainerState } from "./container-state";
 import {
 	type ContainerGroup,
 	groupBuncargoContainers,
-	isContainerUp,
 	manualDownCommand,
 } from "./inventory";
 import { withProjectLifecycleLock } from "./project-lock";
@@ -80,7 +80,10 @@ export interface SweepInput {
 	 * this user cannot read, counts as there.
 	 */
 	checkout: CheckoutPresence;
-	/** At least one container in the stack is running. */
+	/**
+	 * At least one container keeps the stack up ({@link keepsUnownedStack}):
+	 * live, and not only restarting.
+	 */
 	anyRunning: boolean;
 	/** The run that owns them, or null when nothing on disk claims them. */
 	run: RunEntry | null;
@@ -460,7 +463,9 @@ async function sweepGroup(
 			// `runFor` finds an owner exactly when a run on record names the stack.
 			known: owner !== null || isKnownStack(group, [], claims),
 			checkout: checkoutPresence(group.root),
-			anyRunning: group.containers.some(isContainerUp),
+			anyRunning: group.containers.some((container) =>
+				keepsUnownedStack(parseContainerState(container.state)),
+			),
 			run: owner,
 			ownerAlive: owner !== null && isAlive(owner),
 			now,
@@ -495,7 +500,7 @@ async function sweepGroup(
 					reason: verdict.reason,
 					owner: removalOwner(owner),
 				});
-				await releaseSuffixedClaimsOf(group, freshClaims, owner);
+				await releaseSuffixedClaimsOf(group, freshClaims, owner, now);
 				return true;
 			},
 			{ timeoutMs: 0 },

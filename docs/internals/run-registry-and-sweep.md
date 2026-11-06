@@ -62,10 +62,14 @@ recorded CLI is exactly where they once did), and a script's apps get the same r
 
 - Both publish onto the session the environment already claimed (`env.sessionId`), as two kinds
   of write (`mergePublishedRun`). The claim (`publishRun`) owns the lifecycle: the selected
-  services, their stacks, exactly one hold, and reopening a released entry. The describe
+  services, their stacks (merged by name, so a re-claim selecting none keeps a held one), exactly
+  one hold, and reopening a released entry, which takes the new claim's `startedAt`: ranking and
+  the claims a teardown releases date from it. The describe
   (`describeRun`) owns what the run serves and keeps everything else: `startedAt`, the hold,
   `releasedAt`, captures, each app row's process and state, and a service's `problem`; it adds
-  services but never removes one. It used to replace the entry whole, so a library `claimApps`
+  services but never removes one. Neither it nor a queued `servicesReady` turns a `stopped`
+  service `ready` (`nextServiceStatus`): only a claim, or another `start()` under the claim, which
+  marks it `starting` first, brings one back. It used to replace the entry whole, so a library `claimApps`
   reopened a released run, and after `releaseRun()` erased its services record, so the next
   release withdrew the held stack's only owner. An app-only run has no claim, so its
   first entry is this one; it is withdrawn when its apps stop (`stop()`), when the start that
@@ -113,7 +117,12 @@ no config load, no Docker unless a service is the target.
 - `decideSweep` is pure: a stack nobody owns comes down when its checkout is gone, when every
   container is stopped, when its run released it longer ago than its idle hold, or when its owner
   has been gone for longer than the grace. A live owner keeps its stack before the checkout is
-  even looked at: a run between `start()` and `startServers()` is using it. A detached owner of a
+  even looked at: a run between `start()` and `startServers()` is using it. "Stopped" means no
+  container keeps the stack up (`keepsUnownedStack` in `container-state.ts`): live in
+  `isContainerLive`'s sense, except `restarting`. A crash-looping stack known only by its claim
+  has no owner to stop it and serves nothing, and counting it as up kept it for good; an
+  `unknown` state still keeps a stack, since misreading a live database is the costly
+  mistake. A detached owner of a
   deleted checkout is ended by the watchdog instead ([below](#detached-runs-that-end)), and its
   stack then follows the ordinary rule. A running stack with only a claim is left alone.
 - Only a stack this `HOME`'s state names is a candidate (`isKnownStack`): a `runs.json` entry
@@ -177,8 +186,10 @@ A run watches its own service containers (`container-runtime/service-watch.ts`, 
 `environment/service-watch.ts`): from the moment its services are up until `stop()` or
 `releaseRun()`, which end it before anything comes down, so the run's own teardown is never
 reported. It polls `projectServiceStates` every 10 s, the one state query both backends
-have; an empty listing reads as "cannot tell", because both answer an unreachable daemon
-with nothing. A service that stops, disappears or turns unhealthy gets a line in the run's
+have. Both backends throw when the runtime does not answer, and a poll that throws changes
+nothing; so an answered empty listing means the project has no containers, and every watched
+service is reported removed. A state the runtime reports as `unknown` leaves what was last
+reported standing. A service that stops, disappears or turns unhealthy gets a line in the run's
 output and `buncargo.log`, with the removal record that explains it or where to look, and a
 `problem` on its `runs.json` entry, cleared when it recovers. A field, not a status: older
 readers drop an entry with a status they do not know.

@@ -84,6 +84,52 @@ export function requestRestart(
 }
 
 /**
+ * Whether a run took this session's restart requests within `timeoutMs`:
+ * their file is gone. Only `buncargo dev` reads them, and it does from the
+ * moment its first app spawns, so an app with a pid whose requests stay put
+ * belongs to a run that never will (a library `start()`).
+ */
+export async function awaitRestartTaken(
+	root: string,
+	sessionId: string,
+	timeoutMs: number,
+): Promise<boolean> {
+	const file = requestFile(root, sessionId, "restart");
+	const deadline = Date.now() + timeoutMs;
+	while (existsSync(file)) {
+		if (Date.now() >= deadline) return false;
+		await promiseTimeout(50);
+	}
+	return true;
+}
+
+/**
+ * Take back one request for `app` nobody took, leaving any other request in
+ * the file. Moved aside first, as the run does, so a request appended
+ * meanwhile is not lost.
+ */
+export function withdrawRestartRequest(
+	root: string,
+	sessionId: string,
+	app: string,
+): void {
+	const file = requestFile(root, sessionId, "restart");
+	const aside = `${file}.withdrawn-${randomUUID()}`;
+	let lines: string[];
+	try {
+		renameSync(file, aside);
+		lines = readFileSync(aside, "utf8").split("\n").filter(Boolean);
+		rmSync(aside, { force: true });
+	} catch {
+		// Taken after all, or already withdrawn.
+		return;
+	}
+	const index = lines.indexOf(app);
+	if (index !== -1) lines.splice(index, 1);
+	if (lines.length > 0) appendFileSync(file, `${lines.join("\n")}\n`);
+}
+
+/**
  * Restart each requested app as it is asked for, until the returned stop.
  * Requests wait until `ready()`: the run can restart nothing before its
  * apps have spawned.

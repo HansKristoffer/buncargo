@@ -37,6 +37,15 @@ import { stateFilePath } from "./state-paths";
 
 const VERSION = 1;
 
+/**
+ * A claim used this recently is never reclaimed or released by a stack's
+ * teardown with no run on record, whatever its state: a start allocates
+ * before it records its run, and in between (the named-hosts prompt, the menu
+ * bar offer, a `prisma` command that records none, a CI job's setup) it has a
+ * fresh claim, no run and no container yet.
+ */
+export const RECLAIM_MIN_IDLE_MS = 3_600_000;
+
 export interface OffsetClaim {
 	offset: number;
 	/**
@@ -248,20 +257,30 @@ export async function releaseOffsetClaimsIfUnchanged(
 /**
  * The suffixed claims of the stack `projectName` at `root`, as `claims` holds
  * them, that its run on record used: a claim used after `owner` started was
- * allocated by a later job, which has not published its run yet.
+ * allocated by a later job, which has not published its run yet. With no run
+ * on record nothing dates the stack, so a claim used in the last
+ * {@link RECLAIM_MIN_IDLE_MS} is taken for such a job's and stays.
  */
 function suffixedClaimsOf(
 	claims: Record<string, OffsetClaim>,
 	stack: { projectName: string; root: string },
 	owner: { startedAt: string } | null,
+	now: number,
 ): Record<string, OffsetClaim> {
+	const usedByOwner = (claim: OffsetClaim) => {
+		const lastUsed = offsetClaimLastUsed(claim);
+		if (owner !== null) return lastUsed <= owner.startedAt;
+		const lastUsedMs = Date.parse(lastUsed);
+		if (Number.isNaN(lastUsedMs)) return false;
+		return now - lastUsedMs >= RECLAIM_MIN_IDLE_MS;
+	};
 	return Object.fromEntries(
 		Object.entries(claims).filter(
 			([key, claim]) =>
 				claim.suffix !== undefined &&
 				claim.projectName === stack.projectName &&
 				offsetClaimRoot(key, claim) === stack.root &&
-				(owner === null || offsetClaimLastUsed(claim) <= owner.startedAt),
+				usedByOwner(claim),
 		),
 	);
 }
@@ -281,9 +300,12 @@ export async function releaseSuffixedClaimsOf(
 	stack: { projectName: string; root: string },
 	read: Record<string, OffsetClaim>,
 	owner: { startedAt: string } | null,
+	now: number,
 ): Promise<void> {
 	if (checkoutDeleted(stack.root)) return;
-	await releaseOffsetClaimsIfUnchanged(suffixedClaimsOf(read, stack, owner));
+	await releaseOffsetClaimsIfUnchanged(
+		suffixedClaimsOf(read, stack, owner, now),
+	);
 }
 
 /**

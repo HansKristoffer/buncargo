@@ -146,6 +146,8 @@ export function createRunClaimApi<
 	// `claimRun` claims afresh, and `claimedAt` is the current claim's.
 	let claim: ClaimState = { kind: "unclaimed" };
 	const claimed = () => claim.kind === "claimed";
+	// The services this claim has reported `ready`.
+	const reportedReady = new Set<string>();
 	// Leases this session holds.
 	const heldLeases = new Set<string>();
 	// The apps on this session's entry.
@@ -224,7 +226,17 @@ export function createRunClaimApi<
 		},
 
 		async claimRun(options = {}) {
-			if (claimed() || !ctx.hasSelectedServices) return;
+			if (claimed()) {
+				// Another `start()` under this claim ensures its services again:
+				// `starting` first, so a service `buncargo stop` stopped meanwhile
+				// can read `ready` again (the registry never lets `ready` undo
+				// `stopped` on its own).
+				if (reportedReady.size > 0)
+					void markServices(session, [...reportedReady], "starting");
+				reportedReady.clear();
+				return;
+			}
+			if (!ctx.hasSelectedServices) return;
 			const namesHold =
 				options.idleTimeoutMs !== undefined ||
 				options.defaultIdleTimeoutMs !== undefined;
@@ -270,11 +282,13 @@ export function createRunClaimApi<
 			// the same call. The registry decides which of the two this is, from
 			// whether the entry owns services.
 			claim = { kind: "unclaimed" };
+			reportedReady.clear();
 			await releaseRun(sessionId);
 		},
 
 		async retireRun({ containersDown }) {
 			claim = { kind: "unclaimed" };
+			reportedReady.clear();
 			await retireProjectRuns({
 				projectName: ctx.projectName,
 				root: ctx.root,
@@ -286,6 +300,7 @@ export function createRunClaimApi<
 		},
 
 		servicesReady(serviceKeys) {
+			for (const key of serviceKeys) reportedReady.add(key);
 			void markServices(session, serviceKeys, "ready");
 		},
 

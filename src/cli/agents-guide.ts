@@ -91,6 +91,8 @@ const TOPICS: readonly Topic[] = [
   \`--force\`: only stop that one when the user asked.
   \`bunx buncargo stop <app>\` stops one app and \`bunx buncargo restart <app>\`
   restarts one; \`restart <app> && wait --app=<app>\` waits for the new process.
+  \`restart\` exits 3 when the run is a script's \`start()\`, which takes no
+  restart requests: nothing was restarted.
 - Stopping can take as long as an app's \`stopGraceMs\`: up to a minute for
   an app that saves data as it exits, such as the Firebase emulators. Let it
   finish; killing it loses that data.
@@ -242,7 +244,8 @@ const TOPICS: readonly Topic[] = [
   gives one of them its own \`projectPrefix\`, or, when the other checkout's
   claim is from a config it no longer runs, releases it with the
   \`bunx buncargo ports release --root <path>\` the error names. Run that only
-  when the user asks: whoever runs under the name next gets its volumes.`,
+  when the user asks: whoever runs under the name next gets its volumes. It
+  exits 3 when a run started there meanwhile kept a claim; tell the user.`,
 	},
 	{
 		name: "logs",

@@ -546,8 +546,15 @@ export function mergePublishedRun(
 				stacks: _stacks,
 				...kept
 			} = current;
+			// A claim reopening a finished entry (`releaseRun()`, then `start()`
+			// again) starts a new run: ranking (`newestLifecycleFirst`) and the
+			// claims a teardown releases date from it.
+			const reopens =
+				existing.releasedAt !== undefined || existing.ownerLostAt !== undefined;
+			const stacks = mergedStacks(existing.stacks, run.stacks);
 			return {
 				...kept,
+				...(reopens ? { startedAt: run.startedAt } : {}),
 				sessionId: run.sessionId,
 				processIdentity: run.processIdentity,
 				projectPrefix: run.projectPrefix,
@@ -559,7 +566,7 @@ export function mergePublishedRun(
 				cli: run.cli,
 				// Exactly the claim's: one hold, or none.
 				...holdFields(run),
-				...(run.stacks === undefined ? {} : { stacks: run.stacks }),
+				...(stacks === undefined ? {} : { stacks }),
 				// The claim's selection, over what a describe said about each.
 				services: run.services.map((service) => {
 					const described = existing.services.find(
@@ -586,6 +593,21 @@ export function mergePublishedRun(
 			services: describedServices(current.services, run.services),
 		}),
 	});
+}
+
+/**
+ * The stacks a claim leaves on its entry: every stack already recorded, which
+ * may be standing in the idle hold, with the claim's own over any of the same
+ * name. A claim that selects no stack must not drop one only this entry names.
+ */
+function mergedStacks(
+	recorded: RunStackEntry[] | undefined,
+	claimed: RunStackEntry[] | undefined,
+): RunStackEntry[] | undefined {
+	if (recorded === undefined) return claimed;
+	if (claimed === undefined) return recorded;
+	const names = new Set(claimed.map((stack) => stack.name));
+	return [...recorded.filter((stack) => !names.has(stack.name)), ...claimed];
 }
 
 function holdFields(
@@ -641,6 +663,7 @@ function describedServices(
 		return {
 			...service,
 			...update,
+			status: nextServiceStatus(service.status, update.status),
 			...(service.problem === undefined ? {} : { problem: service.problem }),
 		};
 	});
@@ -876,8 +899,8 @@ export type RunAppUpdate = Partial<RunAppEntry> & { name: string };
 
 export interface RunPatch {
 	/**
-	 * Apps a restart was asked of: back to `starting` whatever their rows
-	 * said, before the run replaces them. No status update can say it: a new
+	 * Apps whose restart the run began: back to `starting` whatever their
+	 * rows said, before the run replaces them. No status update can say it: a new
 	 * pid on a running app is that app adopting its detached server, so a
 	 * restarted app kept reading `ready`, and `restart && wait` returned on
 	 * the process it had just replaced.
@@ -949,10 +972,22 @@ function mergeApps(
 }
 
 /**
- * Services take every update: their states are written after the fact
- * (`ready` once the containers were waited for, `stopped` once `stop` did
- * it), never by a process reporting late.
+ * A service row's status after an update. Its states are written after the
+ * fact (`ready` once the containers were waited for, `stopped` once `stop` did
+ * it), except that `ready` never undoes `stopped`: a describe defaults every
+ * row to `ready`, and the run's readiness report is queued, so either could
+ * land after `buncargo stop <service>`. A run that starts the service again
+ * marks it `starting` first (or claims afresh), which leaves `stopped`.
  */
+function nextServiceStatus(
+	current: RunServiceStatus,
+	incoming: RunServiceStatus | undefined,
+): RunServiceStatus {
+	if (incoming === undefined) return current;
+	if (current === "stopped" && incoming === "ready") return current;
+	return incoming;
+}
+
 function mergeServices(
 	current: RunServiceEntry[],
 	updates: Array<Partial<RunServiceEntry> & { name: string }>,
@@ -960,7 +995,12 @@ function mergeServices(
 	return current.map((service) => {
 		let row = service;
 		for (const update of updates)
-			if (update.name === service.name) row = { ...row, ...update };
+			if (update.name === service.name)
+				row = {
+					...row,
+					...update,
+					status: nextServiceStatus(row.status, update.status),
+				};
 		return row;
 	});
 }

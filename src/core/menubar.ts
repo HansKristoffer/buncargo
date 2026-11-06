@@ -501,8 +501,16 @@ export function replaceBundle(
 	}
 
 	rmSync(previous, { recursive: true, force: true });
-	if (existsSync(target)) renameSync(target, previous);
-	renameSync(staged, target);
+	const installed = existsSync(target);
+	if (installed) renameSync(target, previous);
+	try {
+		renameSync(staged, target);
+	} catch (error) {
+		// Put the installed app back rather than leave none.
+		if (installed) renameSync(previous, target);
+		rmSync(staged, { recursive: true, force: true });
+		throw error;
+	}
 	rmSync(previous, { recursive: true, force: true });
 }
 

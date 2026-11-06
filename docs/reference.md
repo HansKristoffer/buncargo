@@ -936,7 +936,8 @@ names it. When it no longer uses that name, release its claims:
 `buncargo ports release --root <path>`. It lists the claims and asks first
 (`--yes` from a script or agent), refuses while that checkout is running or its
 containers are still up (`buncargo stop --all --root <path>`), and touches no
-container or volume. The checkout claims again on its next run. Whoever runs
+container or volume. A claim a run used after the listing is kept, and the
+command then exits `3`. The checkout claims again on its next run. Whoever runs
 under the released name next uses the volumes left under it.
 
 `buncargo ports pin <offset>` moves a checkout to a block and keeps it there:
@@ -1112,6 +1113,12 @@ run reused from another terminal, because that process is not ours. A process
 whose identity cannot be read (`ps` failed or timed out) is refused too, rather
 than reported stopped while it may still run. Exit codes are `0` stopped, `2` no
 such target, `3` refused.
+
+`buncargo restart <app>` asks the `buncargo dev` run that started the app to
+replace it, and returns once that run has begun, so
+`buncargo restart api && buncargo wait --app=api` waits for the new process. A
+script's `start()` takes no restart requests: the command then restarts nothing
+and exits `3`; restart the app from that script instead.
 
 An app gets its `stopGraceMs` (5 seconds unless set) to exit after SIGTERM
 before it is killed. Stopping a whole run waits 5 seconds plus the longest

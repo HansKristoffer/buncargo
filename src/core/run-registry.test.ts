@@ -201,6 +201,37 @@ describe("publishRun", () => {
 		expect(entry?.releasedAt).toBeUndefined();
 	});
 
+	it("dates a reopened entry from the new claim and keeps the stacks it held", async () => {
+		// `releaseRun()` then `start()` on one session. Keeping the first
+		// claim's start ranked the reopened run below older ones, and made a
+		// teardown keep the claims it had used since.
+		const stack = { name: "supabase", down: ["supabase", "stop"] };
+		await publishRun(
+			makeRun({
+				services: [DB],
+				startedAt: "2026-01-01T00:00:00.000Z",
+				stacks: [stack],
+			}),
+		);
+		await releaseRun("s1");
+		await publishRun(
+			makeRun({ services: [DB], startedAt: "2026-01-02T00:00:00.000Z" }),
+		);
+		const [entry] = await loadRuns();
+		expect(entry?.startedAt).toBe("2026-01-02T00:00:00.000Z");
+		expect(entry?.stacks).toEqual([stack]);
+	});
+
+	it("keeps when a live entry started through another claim", async () => {
+		await publishRun(
+			makeRun({ services: [DB], startedAt: "2026-01-01T00:00:00.000Z" }),
+		);
+		await publishRun(
+			makeRun({ services: [DB], startedAt: "2026-01-02T00:00:00.000Z" }),
+		);
+		expect((await loadRuns())[0]?.startedAt).toBe("2026-01-01T00:00:00.000Z");
+	});
+
 	it("keeps separate sessions side by side, in one checkout or several", async () => {
 		await publishRun(makeRun({ sessionId: "a" }));
 		await publishRun(makeRun({ sessionId: "b" }));
@@ -456,13 +487,23 @@ describe("patchRun", () => {
 		}
 	});
 
-	it("lets a service come back after it was stopped", async () => {
-		// Its states are written after the fact, never reported late: a run
-		// that starts it again marks it ready, and it used to stay `stopped`.
+	it("lets a service come back after it was stopped, through starting", async () => {
+		// A run that starts it again marks it `starting` and then `ready`; it
+		// used to stay `stopped`.
+		await publishRun(makeRun({ services: [DB] }));
+		await patchRun("s1", { services: [{ name: "db", status: "stopped" }] });
+		await patchRun("s1", { services: [{ name: "db", status: "starting" }] });
+		await patchRun("s1", { services: [{ name: "db", status: "ready" }] });
+		expect((await loadRuns())[0]?.services[0]?.status).toBe("ready");
+	});
+
+	it("never lets a late readiness report or a describe undo a stop", async () => {
+		// Both say `ready` without having started anything since the stop.
 		await publishRun(makeRun({ services: [DB] }));
 		await patchRun("s1", { services: [{ name: "db", status: "stopped" }] });
 		await patchRun("s1", { services: [{ name: "db", status: "ready" }] });
-		expect((await loadRuns())[0]?.services[0]?.status).toBe("ready");
+		await describeRun(makeRun({ services: [DB] }));
+		expect((await loadRuns())[0]?.services[0]?.status).toBe("stopped");
 	});
 
 	it("keeps a running app's status when it adopts a detached pid", async () => {

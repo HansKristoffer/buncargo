@@ -467,7 +467,9 @@ export async function markApps(
 /**
  * Put each named app's row back to `starting` for a restart about to replace
  * its process, whatever the row says (see {@link RunPatch.restarting}).
- * Before the restart is asked for, so its readiness can only come after.
+ * Written by the run as the restart begins, before the old process is
+ * retired, so its readiness can only come after; `buncargo restart` waits
+ * for this rather than writing it.
  */
 export async function markAppsRestarting(
 	run: RunSession,
