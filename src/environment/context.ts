@@ -10,7 +10,11 @@ import { readEnvOverrides } from "../core/env-overrides";
 import { applyHostPlanToUrls, planNamedHosts } from "../core/hosts/plan";
 import { tailscaleBlockPorts } from "../core/hosts/tailscale-serve";
 import { getLocalIp } from "../core/network";
-import { offsetClaimKey, releaseOffsetClaims } from "../core/offset-claims";
+import {
+	offsetClaimKey,
+	readAllOffsetClaims,
+	releaseOffsetClaimsIfUnchanged,
+} from "../core/offset-claims";
 import {
 	candidateAllocationPorts,
 	resolvePortPlan,
@@ -431,13 +435,19 @@ export function createDevEnvContext<
 		},
 		async releaseThrowawayClaim() {
 			if (suffix === undefined && !isCI()) return;
-			// Another run of this environment on record may still use the block.
+			const key = offsetClaimKey(root, suffix);
+			const read = readAllOffsetClaims()[key];
+
+			// Another run of this environment on record may still use the block,
+			// and one that starts after this check claims it again: released
+			// only if no run has used it since it was read.
 			const runs = await readAllRuns();
 			if (
 				runs.some((run) => run.projectName === projectName && run.root === root)
 			)
 				return;
-			await releaseOffsetClaims([offsetClaimKey(root, suffix)]);
+			if (read !== undefined)
+				await releaseOffsetClaimsIfUnchanged({ [key]: read });
 			// A later start() on this environment allocates and claims again, and
 			// nothing (Prisma's `allocate`) reads the released block as its own.
 			preparedSelection = undefined;

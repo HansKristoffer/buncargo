@@ -202,23 +202,6 @@ export function offsetClaimsOf(root: string): Record<string, OffsetClaim> {
 }
 
 /**
- * Drop the claims under `keys`, whatever they say now. A release decided from
- * an earlier read (no run on record, a confirmation) is
- * {@link releaseOffsetClaimsIfUnchanged}, or a run that allocated in between
- * loses the claim it just wrote.
- */
-export async function releaseOffsetClaims(
-	keys: readonly string[],
-): Promise<void> {
-	if (keys.length === 0) return;
-	await withFileLock(getOffsetClaimsPath(), async () => {
-		const claims = readAllOffsetClaims();
-		for (const key of keys) delete claims[key];
-		writeJsonDocumentSync(getOffsetClaimsPath(), { version: VERSION, claims });
-	});
-}
-
-/**
  * Whether a claim is still the one that was read: no run has rewritten or
  * used it since. Compared by what a run changes, not whole: a reader may have
  * filled in a port-less claim's ports from its lockfile.
