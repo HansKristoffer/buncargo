@@ -55,7 +55,8 @@ export const WAIT_COMMAND_SPEC: CommandSpec = {
 
 /**
  * 0 healthy · 1 failed or stopped · 2 timed out waiting · 128 + the signal
- * when interrupted (130 Ctrl-C, 143 SIGTERM).
+ * when interrupted before the app is healthy (130 Ctrl-C, 143 SIGTERM). A
+ * signal while `--hold` holds a healthy app exits 0.
  */
 const WAIT_EXIT = { ok: 0, failed: 1, timeout: 2 } as const;
 const WAIT_SIGNALS = ["SIGINT", "SIGTERM"] as const;
