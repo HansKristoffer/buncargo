@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { homedir } from "node:os";
 import { buildComposeModel } from "../docker-compose";
-import { configHashFor, interpolate } from "../docker-compose/interpolate";
+import {
+	configHashFor,
+	interpolate,
+	serviceFingerprint,
+	serviceHashEnv,
+} from "../docker-compose/interpolate";
 import type {
 	ComposeDocument,
 	DockerComposeServiceRaw,
@@ -263,6 +268,33 @@ describe("buildAppleRunPlan", () => {
 		expect(labels).toContain("buncargo.service=postgres");
 		expect(labels).toContain("buncargo.root=/repo");
 		expect(labels).toContain(`${CONFIG_HASH_LABEL}=${service.configHash}`);
+	});
+
+	it("labels the service fingerprint reuse compares, whether or not the caller passed it", () => {
+		const model = modelFor({ postgres: { port: 5432 } });
+		const env = { POSTGRES_PORT: "5433" };
+		const fingerprint = serviceFingerprint(model, "postgres", env);
+		const direct = buildAppleRunPlan({
+			projectName: "gey-main",
+			model,
+			root: "/repo",
+			env,
+		});
+		const viaEnsure = buildAppleRunPlan({
+			projectName: "gey-main",
+			model,
+			root: "/repo",
+			env: { ...env, [serviceHashEnv("postgres")]: fingerprint },
+		});
+
+		for (const plan of [direct, viaEnsure]) {
+			const service = plan.services[0];
+			if (!service) throw new Error("expected a postgres plan");
+			expect(service.configHash).toBe(fingerprint);
+			expect(valuesOf(service.runArgs, "--label")).toContain(
+				`buncargo.service-hash=${fingerprint}`,
+			);
+		}
 	});
 
 	it("drops the compose healthcheck without warning about it", () => {
