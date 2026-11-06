@@ -120,7 +120,7 @@ export async function startAppServers<
 	try {
 		return await spawnAppServers(ctx, envVars, appsToStart, options);
 	} catch (error) {
-		await claim.abandonApps();
+		await claim.abandonApps(appsToStart);
 		throw error;
 	}
 }
