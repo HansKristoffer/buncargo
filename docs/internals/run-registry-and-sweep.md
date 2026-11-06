@@ -31,6 +31,9 @@ writers prune. `stop --run` selects an exact session.
   newest finished entry's hold into `inheritedIdleTimeoutMs`, and the sweep applies it from when
   the script's run ends, released or found gone. The sweep decides from the newest entry only, so
   a one-second `start()` that reused a released detached run's containers pinned them for 13 days.
+  Newest means ended last, by `releasedAt`, then `ownerLostAt`, then `startedAt`
+  (`newestLifecycleFirst`), never `updatedAt`: every patch moves that, and a dead session's
+  service watch writing a `problem` made its hold the stack's.
   It reads the registry file without liveness (finished means `releasedAt` or `ownerLostAt`), so
   the start path forks nothing for it. An explicit `idleTimeoutMs: false` (`--keep-containers`)
   inherits nothing, and neither does a claim whose newest finished entry kept its containers.

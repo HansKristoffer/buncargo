@@ -37,6 +37,7 @@ import {
 import {
 	clearRunStacks,
 	markOwnersLost,
+	newestLifecycleFirst,
 	type RunEntry,
 	type RunStackEntry,
 	readAllRuns,
@@ -266,7 +267,7 @@ export interface SweepOptions {
 	actor?: RemovalActor;
 }
 
-/** The run that owns a stack: a live session if there is one, else the newest. */
+/** The run that owns a stack: a live session if there is one, else the one that ended last. */
 function runFor(
 	group: ContainerGroup,
 	runs: RunEntry[],
@@ -276,7 +277,7 @@ function runFor(
 		.filter(
 			(run) => run.projectName === group.projectName && run.root === group.root,
 		)
-		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+		.sort(newestLifecycleFirst);
 	// A live owner speaks for the stack even when a released entry is newer:
 	// a second session in the same checkout keeps the containers alive.
 	return candidates.find(alive) ?? candidates[0] ?? null;

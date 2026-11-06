@@ -694,11 +694,31 @@ export async function releaseRun(sessionId: string): Promise<void> {
 		const next = [...runs];
 		const now = new Date().toISOString();
 		if (current.services.length === 0) next.splice(index, 1);
-		// `updatedAt` too: the sweep takes the most recently active session as a
-		// stack's owner, and a release is the latest thing this one did.
 		else next[index] = { ...current, releasedAt: now, updatedAt: now };
 		return next;
 	});
+}
+
+/**
+ * When a session last changed state: released, found gone, or started.
+ *
+ * What "newest" means wherever one session has to speak for a stack (the
+ * sweep's owner, {@link holdToInherit}). Not `updatedAt`, which every patch
+ * moves: a dead session's service watch writing a `problem`, or an app
+ * reporting ready, made it the stack's owner and its hold the stack's.
+ */
+function runLifecycleAt(
+	run: Pick<RunEntry, "releasedAt" | "ownerLostAt" | "startedAt">,
+): string {
+	return run.releasedAt ?? run.ownerLostAt ?? run.startedAt;
+}
+
+/** Sort order for {@link runLifecycleAt}, newest first. */
+export function newestLifecycleFirst(
+	a: Pick<RunEntry, "releasedAt" | "ownerLostAt" | "startedAt">,
+	b: Pick<RunEntry, "releasedAt" | "ownerLostAt" | "startedAt">,
+): number {
+	return runLifecycleAt(b).localeCompare(runLifecycleAt(a));
 }
 
 /**
@@ -721,7 +741,7 @@ export function holdToInherit(
 				(run.releasedAt !== undefined || run.ownerLostAt !== undefined) &&
 				run.services.length > 0,
 		)
-		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+		.sort(newestLifecycleFirst);
 	return newest?.idleTimeoutMs ?? newest?.inheritedIdleTimeoutMs;
 }
 

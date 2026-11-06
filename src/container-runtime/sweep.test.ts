@@ -682,6 +682,40 @@ describe("sweepOrphanedContainers", () => {
 		expect(downs.map((request) => request.projectName)).toEqual(["crashed"]);
 	});
 
+	it("lets the session that ended last decide, however recently another was patched", async () => {
+		// A finished session's service watch writes a `problem`, which moves
+		// its `updatedAt`. Ordered by that, its one-second hold decided for a
+		// stack a later run had released into a three-minute hold.
+		const released = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+		await publishRun(
+			entry({
+				sessionId: "earlier",
+				projectName: "shared",
+				releasedAt: released(600_000),
+				updatedAt: released(1_000),
+				idleTimeoutMs: 1_000,
+			}),
+		);
+		await publishRun(
+			entry({
+				sessionId: "later",
+				projectName: "shared",
+				releasedAt: released(60_000),
+				updatedAt: released(60_000),
+				idleTimeoutMs: 180_000,
+			}),
+		);
+		const { runtime, downs } = stubRuntime([
+			container("shared", checkout, "running"),
+		]);
+
+		await sweepOrphanedContainers({ runtimes: [runtime], now: NOW });
+
+		expect(downs).toEqual([]);
+		const target = { projectName: "shared", root: checkout };
+		expect(holdToInherit(await loadRuns(), target)).toBe(180_000);
+	});
+
 	it("forgets a lost-owner stamp once the owner reads as itself again", async () => {
 		// One wrong "gone" reading stamped a live run for good, and
 		// `holdToInherit` counted it as finished.
