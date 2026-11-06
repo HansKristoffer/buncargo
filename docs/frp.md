@@ -25,7 +25,7 @@ bunx buncargo connect revoke <publication-id>
 bunx buncargo connect token --rotate
 ```
 
-Rotation prevents new publications with the old token. Revoke existing grants separately. The private receiver credential and sharing state live under `~/.buncargo`; never bake these into a sandbox image. Every dev invocation supplies its own recipients, even when several worktrees share one coordinator.
+Rotation prevents new publications with the old token. Revoke existing grants separately. When the relay no longer knows this computer (its directory was reset), `connect status` says so, and `connect token --rotate` registers it again with a new token to hand out. The private receiver credential and sharing state live under `~/.buncargo`; never bake these into a sandbox image. Every dev invocation supplies its own recipients, even when several worktrees share one coordinator.
 
 ## Vite and streaming
 

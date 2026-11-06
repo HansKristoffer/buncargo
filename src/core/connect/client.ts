@@ -2,7 +2,7 @@ import { withFileLock } from "../file-lock";
 import { readJsonDocument, writeJsonDocument } from "../registry-file";
 import { connectOrigin } from "../runtime-flags";
 import { stateFilePath } from "../state-paths";
-import { readJSON } from "./json";
+import { isForgotten, readJSON } from "./json";
 import {
 	type Directory,
 	parseDirectory,
@@ -59,25 +59,33 @@ export async function requireReceiver(): Promise<Receiver> {
 	return receiver;
 }
 
-/** Serialize registration/rotation so concurrent bar and CLI actions keep one owner identity. */
+const registerReceiver = () =>
+	request<Receiver>(connectOrigin(), "/v1/receivers", undefined, {});
+
+/**
+ * Serialize registration/rotation so concurrent bar and CLI actions keep one
+ * owner identity. Rotating a receiver the relay forgot registers a new one:
+ * either way, senders need the new token.
+ */
 export async function ensureReceiver(rotate = false): Promise<Receiver> {
 	return withFileLock(receiverPath(), async () => {
 		let receiver = await readReceiver();
 		if (!receiver) {
-			receiver = await request<Receiver>(
-				connectOrigin(),
-				"/v1/receivers",
-				undefined,
-				{},
-			);
+			receiver = await registerReceiver();
 		} else if (rotate) {
-			const result = await request<{ token: string }>(
-				receiver.origin,
+			const current = receiver;
+			receiver = await request<{ token: string }>(
+				current.origin,
 				"/v1/receiver/token",
-				receiver.owner,
+				current.owner,
 				{},
+			).then(
+				({ token }) => ({ ...current, token }),
+				(error) => {
+					if (!isForgotten(error)) throw error;
+					return registerReceiver();
+				},
 			);
-			receiver.token = result.token;
 		}
 
 		if (!hasReceiverCredentials(record(receiver))) {
@@ -111,6 +119,10 @@ export async function readDirectory(): Promise<Directory> {
 		receiver.origin,
 		"/v1/receiver/runs",
 		receiver.owner,
-	);
+	).catch((error) => {
+		if (!isForgotten(error)) throw error;
+		const message = `${receiver.origin} no longer knows this machine's receiver. Run \`buncargo connect token --rotate\` and give the new token to whoever shares with you.`;
+		throw new Error(message);
+	});
 	return parseDirectory(value, receiver.origin);
 }
