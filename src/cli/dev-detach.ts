@@ -200,6 +200,9 @@ export function unreportedApps(
  */
 export const DETACH_EXIT = { ok: 0, failed: 1, timeout: 2 } as const;
 
+/** How long `dev --detach` waits for apps to settle before exiting 2. */
+export const DETACH_TIMEOUT_MS = 10 * 60_000;
+
 function describeApp(app: RunAppEntry): string {
 	return `${app.name}: ${app.status}${app.openUrl ? `  ${app.openUrl}` : ""}`;
 }
@@ -245,11 +248,13 @@ export async function runDetached(input: {
 	expectApps: boolean;
 	/** `--keep`: no idle limit. */
 	keep: boolean;
-	argv?: readonly string[];
-	timeoutMs?: number;
+	/** The `dev --detach` invocation, re-run without the flag ({@link detachedArgv}). */
+	argv: readonly string[];
+	/** How long apps may take to settle before this exits 2. */
+	timeoutMs: number;
 }): Promise<number> {
-	const { root, expectApps, timeoutMs = 10 * 60_000 } = input;
-	const argv = detachedArgv(input.argv ?? process.argv);
+	const { root, expectApps, timeoutMs } = input;
+	const argv = detachedArgv(input.argv);
 	const logPath = detachedLogPath(root);
 	mkdirSync(logsRoot(root), { recursive: true });
 	pruneDetachedReports(root);

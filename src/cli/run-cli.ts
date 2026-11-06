@@ -222,7 +222,7 @@ export async function runCli<
 	for (const warning of args.ignoredFlags) log.warn(warning);
 
 	if (args.detach) {
-		const { runDetached } = await import("./dev-detach");
+		const { DETACH_TIMEOUT_MS, runDetached } = await import("./dev-detach");
 		const plan = planStart(env.apps, env.services, {
 			onlyApps: selectDevApps(env, args),
 		});
@@ -233,6 +233,8 @@ export async function runCli<
 				expectApps: Object.values(plan.apps).some(
 					(app) => app.devCommand !== false,
 				),
+				argv: process.argv,
+				timeoutMs: DETACH_TIMEOUT_MS,
 			}),
 		);
 	}

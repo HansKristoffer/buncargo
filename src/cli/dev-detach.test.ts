@@ -224,6 +224,7 @@ function detachInProcess(script: (root: string) => string) {
 process.exitCode = await runDetached({
 	root: ${JSON.stringify(root)},
 	expectApps: true,
+	keep: false,
 	argv: ["bun", ${JSON.stringify(join(root, "run.ts"))}],
 	timeoutMs: 10_000,
 });
