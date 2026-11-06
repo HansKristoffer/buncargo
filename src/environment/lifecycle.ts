@@ -81,7 +81,17 @@ export function createLifecycleApi<
 
 	let selectedServices: string[] = [];
 	let selectedApps: string[] = [];
+	/** A start has prepared its selection: what `runSeed` seeds for. */
 	let started = false;
+	/**
+	 * What this environment's starts have brought up since its last teardown,
+	 * whatever the latest one selected. `unknown` until a start gets that far:
+	 * a stop then means the whole environment (`dev --down`). `none`: only
+	 * starts that selected no service, whose stop leaves the containers to
+	 * the run using them. `services`: a start claimed the run for containers,
+	 * which stop tears down.
+	 */
+	let broughtUp: "unknown" | "none" | "services" = "unknown";
 
 	function preparationSelected(prerequisites?: readonly string[]): boolean {
 		// Omitted prerequisites prepare whenever any service is selected; an
@@ -92,10 +102,7 @@ export function createLifecycleApi<
 	}
 
 	function appOnlyRun(): boolean {
-		return (
-			(started && selectedServices.length === 0) ||
-			Object.keys(services).length === 0
-		);
+		return broughtUp === "none" || Object.keys(services).length === 0;
 	}
 
 	function currentSelection() {
@@ -389,6 +396,8 @@ export function createLifecycleApi<
 			await ctx.prepareStartAsync(onlyApps, onlyServices, signal);
 			started = true;
 			const hasServices = selectedServices.length > 0;
+			if (hasServices) broughtUp = "services";
+			else if (broughtUp === "unknown") broughtUp = "none";
 			const portMap = toPortMap(ports);
 			const targetPorts: Record<string, number> = {};
 			for (const serviceKey of selectedServices) {
@@ -721,6 +730,7 @@ export function createLifecycleApi<
 			});
 		}
 		await runClaim.retireRun();
+		broughtUp = "unknown";
 		return true;
 	}
 
