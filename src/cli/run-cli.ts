@@ -847,6 +847,15 @@ async function runDevFlow<
 	const parked = new Set<string>();
 	const view = openDevOutput(env, classifiedApps.startApps, { tui: args.tui });
 	failureContext.output = view.output;
+	// A restart (`r`, `buncargo restart`, a watch, a capture's `restartOn`)
+	// says `starting` before its new process spawns. The registry says so too,
+	// or `buncargo wait` answers from the process being replaced.
+	view.output.subscribe({
+		state: (app, { state }) => {
+			if (state === "starting" && spawned.has(app))
+				void markApps(env, [app], "starting");
+		},
+	});
 	// A service container stopping under the run: in the run's log, the TUI's
 	// Overview, and on the terminal in stream mode, where events are not printed.
 	env.reportServiceChanges((message, problem) => {

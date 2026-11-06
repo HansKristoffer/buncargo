@@ -89,7 +89,7 @@ const TOPICS: readonly Topic[] = [
   in a terminal (not with \`--detach\`) asks first, and without a terminal needs
   \`--force\`: only stop that one when the user asked.
   \`bunx buncargo stop <app>\` stops one app and \`bunx buncargo restart <app>\`
-  restarts one.
+  restarts one; \`wait --app=<app>\` after it waits for the new process.
 - Stopping can take as long as an app's \`stopGraceMs\`: up to a minute for
   an app that saves data as it exits, such as the Firebase emulators. Let it
   finish; killing it loses that data.

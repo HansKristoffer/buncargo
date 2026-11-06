@@ -40,17 +40,22 @@ function appendRequest(
 	appendFileSync(file, `${line}\n`);
 }
 
-/** Hand each batch of requests to `handle` as it arrives, until the returned stop. */
+/**
+ * Hand each batch of requests to `handle` as it arrives, until the returned
+ * stop. Requests wait in their file until `ready()`: one read before the run
+ * can act on it would be lost.
+ */
 function watchRequests(
 	root: string,
 	sessionId: string,
 	kind: RequestKind,
 	handle: (lines: string[]) => void,
+	ready: () => boolean,
 ): () => void {
 	const file = requestFile(root, sessionId, kind);
 	const taken = `${file}.taken`;
 	const timer = setInterval(() => {
-		if (!existsSync(file)) return;
+		if (!existsSync(file) || !ready()) return;
 		let lines: string[] = [];
 		try {
 			// Moved aside before it is read: a request appended meanwhile lands
@@ -78,15 +83,26 @@ export function requestRestart(
 	appendRequest(root, sessionId, "restart", app);
 }
 
-/** Restart each requested app as it is asked for, until the returned stop. */
+/**
+ * Restart each requested app as it is asked for, until the returned stop.
+ * Requests wait until `ready()`: the run can restart nothing before its
+ * apps have spawned.
+ */
 export function watchRestartRequests(
 	root: string,
 	sessionId: string,
 	restart: (app: string) => void,
+	ready: () => boolean,
 ): () => void {
-	return watchRequests(root, sessionId, "restart", (names) => {
-		for (const name of new Set(names)) restart(name);
-	});
+	return watchRequests(
+		root,
+		sessionId,
+		"restart",
+		(names) => {
+			for (const name of new Set(names)) restart(name);
+		},
+		ready,
+	);
 }
 
 /** Ask the run to type `text` into `app`; the id its answer is filed under. */
@@ -142,30 +158,37 @@ export function watchSendRequests(
 	sessionId: string,
 	send: (app: string, text: string) => string | undefined,
 ): () => void {
-	const stop = watchRequests(root, sessionId, "send", (lines) => {
-		for (const line of lines) {
-			try {
-				const { id, app, text } = JSON.parse(line) as {
-					id?: unknown;
-					app: string;
-					text: string;
-				};
-				if (typeof app !== "string" || typeof text !== "string") continue;
-				const refusal = send(app, text);
-				if (typeof id === "string")
-					writeSendReply(
-						root,
-						sessionId,
-						id,
-						refusal === undefined
-							? { delivered: true }
-							: { delivered: false, reason: refusal },
-					);
-			} catch {
-				// A torn line: the request is lost, not the run.
+	const stop = watchRequests(
+		root,
+		sessionId,
+		"send",
+		(lines) => {
+			for (const line of lines) {
+				try {
+					const { id, app, text } = JSON.parse(line) as {
+						id?: unknown;
+						app: string;
+						text: string;
+					};
+					if (typeof app !== "string" || typeof text !== "string") continue;
+					const refusal = send(app, text);
+					if (typeof id === "string")
+						writeSendReply(
+							root,
+							sessionId,
+							id,
+							refusal === undefined
+								? { delivered: true }
+								: { delivered: false, reason: refusal },
+						);
+				} catch {
+					// A torn line: the request is lost, not the run.
+				}
 			}
-		}
-	});
+			// Always: a send the run cannot deliver is answered with why.
+		},
+		() => true,
+	);
 	return () => {
 		stop();
 		rmSync(repliesDir(root, sessionId), { recursive: true, force: true });

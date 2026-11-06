@@ -6,12 +6,18 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireLease, releaseLeases } from "../core/leases";
-import { buildRunEntry, publishRun, retireRuns } from "../core/run-registry";
+import {
+	buildRunEntry,
+	findRunsByRoot,
+	publishRun,
+	retireRuns,
+} from "../core/run-registry";
 import { resolveExposeTargets, stopPublicTunnels } from "../core/tunnel";
 import * as watchdog from "../core/watchdog";
 import { SeedFailedError } from "../environment/seed-startup";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import { type DetachedReport, readDetachedReport } from "./dev-detach";
+import { requestRestart } from "./restart-requests";
 import { runCli } from "./run-cli";
 import * as takeover from "./takeover";
 import { upsertTunnelRegistryEntries } from "./tunnel-registry";
@@ -1019,6 +1025,57 @@ it("holds a services-only run until it is told to stop", async () => {
 		console.log = realLog;
 		if (released === 0) process.emit("SIGTERM");
 		await run.catch(() => {});
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+// `buncargo wait` reads the registry: a restarted app's row has to go back
+// to `starting`, or it answers from the process being replaced.
+it("marks a restarted app starting in the registry until it is ready again", async () => {
+	const root = await realpath(
+		await mkdtemp(join(tmpdir(), "buncargo-restart-row-")),
+	);
+	const port = 44810 + Math.floor(Math.random() * 100);
+	let healthChecks = 0;
+	const env = createStubEnv({
+		root,
+		services: {},
+		apps: {
+			api: {
+				port,
+				devCommand: "bun -e 'setInterval(() => {}, 1000)'",
+				healthEndpoint: false,
+				requiredServices: [],
+			},
+		},
+		// The restarted process never answers: its row stays `starting`.
+		waitForServers: () => {
+			healthChecks++;
+			return healthChecks === 1 ? undefined : new Promise(() => {});
+		},
+	});
+	const status = async () =>
+		(await findRunsByRoot(root))
+			.find((run) => run.sessionId === env.sessionId)
+			?.apps.find((app) => app.name === "api")?.status;
+	const until = async (want: string) => {
+		const deadline = performance.now() + 4_000;
+		while ((await status()) !== want) {
+			if (performance.now() > deadline)
+				throw new Error(`api never became ${want}`);
+			await Bun.sleep(20);
+		}
+	};
+	const run = withProcessExitTrap(() =>
+		runCli(env, { args: ["--no-hosts", "--no-tui"], watchdog: false }),
+	);
+	try {
+		await until("ready");
+		requestRestart(root, env.sessionId, "api");
+		await until("starting");
+	} finally {
+		process.emit("SIGINT");
+		expect(await run).toBe(130);
 		await rm(root, { recursive: true, force: true });
 	}
 });
