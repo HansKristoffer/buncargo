@@ -202,7 +202,36 @@ describe("generated types", () => {
 			} as never);
 
 			expect(readFileSync(join(dir, "types.ts"), "utf8")).toBe("new");
-			expect(JSON.parse(readFileSync(stamp, "utf8")).output).toBeString();
+			expect(JSON.parse(readFileSync(stamp, "utf8")).inputs).toBeString();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("regenerates an output edited by hand, and skips one left as written", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-supabase-types-"));
+		try {
+			const output = join(dir, "types.ts");
+			let generations = 0;
+			const ctx = {
+				root: dir,
+				selectedServices: ["supabaseDb"],
+				exec: async () => {
+					generations++;
+					return { exitCode: 0, stdout: "generated", stderr: "" };
+				},
+			} as never;
+			const hook = supabase({ types: { output: "types.ts" } }).hooks
+				?.afterContainersReady;
+
+			await hook?.(ctx);
+			await hook?.(ctx);
+			expect(generations).toBe(1);
+
+			writeFileSync(output, "hand edit");
+			await hook?.(ctx);
+			expect(generations).toBe(2);
+			expect(readFileSync(output, "utf8")).toBe("generated");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
