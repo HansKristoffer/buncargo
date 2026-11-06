@@ -190,6 +190,30 @@ function createStubEnv(
 	>;
 }
 
+/**
+ * Ends the run with a Ctrl-C once its tunnels have opened and it has printed
+ * their URLs: what is left to check about `--expose` has happened by then.
+ */
+function endsOnceTunnelsOpen<T extends { logInfo: unknown }>(env: T): T {
+	return Object.assign(env, {
+		logInfo: (title?: string) => {
+			if (title === "Dev Environment") process.emit("SIGINT");
+		},
+	});
+}
+
+function mockTunnels(
+	targets: readonly { kind: "app" | "service"; name: string; port: number }[],
+) {
+	return targets.map((target) => ({
+		kind: target.kind,
+		name: target.name,
+		localUrl: `http://localhost:${target.port}`,
+		publicUrl: `https://${target.name}.example.com`,
+		close: async () => {},
+	}));
+}
+
 async function listenServer(port: number): Promise<Server> {
 	const server = createServer((_req, res) => {
 		res.statusCode = 200;
@@ -226,31 +250,36 @@ describe("runCli expose routing", () => {
 		expect(startCalls).toBe(0);
 	});
 
-	it("calls startPublicTunnels when --expose is set", async () => {
+	// The tunnel closed as the command exited, so the URL it printed was dead.
+	it("ignores --expose and --takeover in a one-shot mode, saying why", async () => {
 		let startCalls = 0;
-		const code = await withProcessExitTrap(() =>
-			runCli(createStubEnv(), {
-				args: ["--migrate", "--expose"],
-				watchdog: false,
-				cliTestTunnel: {
-					resolveExposeTargets,
-					startPublicTunnels: async (targets) => {
-						startCalls += 1;
-						expect(targets.length).toBeGreaterThan(0);
-						return targets.map((t) => ({
-							kind: t.kind,
-							name: t.name,
-							localUrl: `http://localhost:${t.port}`,
-							publicUrl: "https://mock.example.com",
-							close: async () => {},
-						}));
+		const warned: string[] = [];
+		const realWarn = console.warn;
+		console.warn = (...parts: unknown[]) => warned.push(parts.join(" "));
+		try {
+			const code = await withProcessExitTrap(() =>
+				runCli(createStubEnv(), {
+					args: ["--up-only", "--expose", "--takeover"],
+					watchdog: false,
+					cliTestTunnel: {
+						resolveExposeTargets,
+						startPublicTunnels: async () => {
+							startCalls += 1;
+							return [];
+						},
+						stopPublicTunnels,
 					},
-					stopPublicTunnels,
-				},
-			}),
-		);
-		expect(code).toBe(0);
-		expect(startCalls).toBe(1);
+				}),
+			);
+			expect(code).toBe(0);
+		} finally {
+			console.warn = realWarn;
+		}
+		expect(startCalls).toBe(0);
+		const said = Bun.stripANSI(warned.join("\n"));
+		expect(said).toContain("--expose is ignored with --up-only");
+		expect(said).toContain("buncargo dev --detach --expose");
+		expect(said).toContain("--takeover is ignored with --up-only");
 	});
 
 	it("accepts --apps during migrate flow", async () => {
@@ -363,7 +392,7 @@ describe("runCli expose routing", () => {
 		});
 		const code = await withProcessExitTrap(() =>
 			runCli(env, {
-				args: ["--migrate", "--apps=api", "--expose=web"],
+				args: ["--no-hosts", "--apps=api", "--expose=web"],
 				watchdog: false,
 				cliTestTunnel: {
 					resolveExposeTargets,
@@ -376,39 +405,49 @@ describe("runCli expose routing", () => {
 	});
 
 	it("allows --expose to target apps included via requiredApps", async () => {
-		const env = createStubEnv({
-			services: {
-				postgres: { port: 5432 },
-			},
-			apps: {
-				api: {
-					port: 43010,
-					devCommand: "bun run api",
-					expose: true,
-					requiredServices: ["postgres"],
+		const port = 43810 + Math.floor(Math.random() * 100) * 2;
+		const env = endsOnceTunnelsOpen(
+			createStubEnv({
+				services: {
+					postgres: { port: 5432 },
 				},
-				expo: {
-					port: 43011,
-					devCommand: "bun run expo",
-					expose: true,
-					requiredApps: ["api"],
-					requiredServices: ["postgres"],
+				apps: {
+					api: {
+						port,
+						devCommand: "bun -e 'setInterval(() => {}, 1000)'",
+						healthEndpoint: false,
+						expose: true,
+						requiredServices: ["postgres"],
+					},
+					expo: {
+						port: port + 1,
+						devCommand: "bun -e 'setInterval(() => {}, 1000)'",
+						healthEndpoint: false,
+						expose: true,
+						requiredApps: ["api"],
+						requiredServices: ["postgres"],
+					},
 				},
-			},
-		});
+			}),
+		);
+		const opened: string[][] = [];
 		const code = await withProcessExitTrap(() =>
 			runCli(env, {
-				args: ["--migrate", "--apps=expo", "--expose=api"],
+				args: ["--no-hosts", "--no-tui", "--apps=expo", "--expose=api"],
 				watchdog: false,
 				cliTestTunnel: {
 					resolveExposeTargets,
-					startPublicTunnels: async () => [],
+					startPublicTunnels: async (targets) => {
+						opened.push(targets.map((target) => target.name));
+						return mockTunnels(targets);
+					},
 					stopPublicTunnels,
 				},
 			}),
 		);
 
-		expect(code).toBe(0);
+		expect(code).toBe(130);
+		expect(opened).toEqual([["api"]]);
 	});
 
 	it("reuses a busy exposed app and inherits its public URL", async () => {
@@ -432,52 +471,49 @@ describe("runCli expose routing", () => {
 				},
 			]);
 
-			const env = createStubEnv({
-				root,
-				apps: {
-					api: {
-						port: apiPort,
-						devCommand: "bun run api",
-						expose: true,
-						healthEndpoint: "/",
+			const env = endsOnceTunnelsOpen(
+				createStubEnv({
+					root,
+					apps: {
+						api: {
+							port: apiPort,
+							devCommand: "bun run api",
+							expose: true,
+							healthEndpoint: "/",
+						},
+						web: {
+							port: webPort,
+							devCommand: "bun -e 'setInterval(() => {}, 1000)'",
+							healthEndpoint: false,
+							expose: true,
+						},
 					},
-					web: {
-						port: webPort,
-						devCommand: "bun run web",
-						expose: true,
+					ports: { api: apiPort, web: webPort },
+					waitForServer: async (url) => {
+						expect(url).toBe(`http://localhost:${apiPort}/`);
 					},
-				},
-				ports: { api: apiPort, web: webPort },
-				waitForServer: async (url) => {
-					expect(url).toBe(`http://localhost:${apiPort}/`);
-				},
-				setPublicUrls: (urls) => {
-					setPublicUrlsCalls.push({ ...urls });
-				},
-			});
+					setPublicUrls: (urls) => {
+						setPublicUrlsCalls.push({ ...urls });
+					},
+				}),
+			);
 
 			const code = await withProcessExitTrap(() =>
 				runCli(env, {
-					args: ["--migrate", "--apps=api,web", "--expose"],
+					args: ["--no-hosts", "--no-tui", "--apps=api,web", "--expose"],
 					watchdog: false,
 					cliTestTunnel: {
 						resolveExposeTargets,
 						startPublicTunnels: async (targets) => {
 							startTargets.push(targets.map((target) => target.name));
-							return targets.map((target) => ({
-								kind: target.kind,
-								name: target.name,
-								localUrl: `http://localhost:${target.port}`,
-								publicUrl: `https://${target.name}.example.com`,
-								close: async () => {},
-							}));
+							return mockTunnels(targets);
 						},
 						stopPublicTunnels,
 					},
 				}),
 			);
 
-			expect(code).toBe(0);
+			expect(code).toBe(130);
 			expect(startTargets).toEqual([["web"]]);
 			expect(setPublicUrlsCalls.at(-1)).toEqual({
 				api: "https://api.example.com",

@@ -221,6 +221,7 @@ export async function runCli<
 	}
 
 	exitOnDevArgErrors(args);
+	for (const warning of args.ignoredFlags) log.warn(warning);
 
 	if (args.detach) {
 		const { runDetached } = await import("./dev-detach");
@@ -576,31 +577,30 @@ async function runDevFlow<
 		productionBuild: false,
 	});
 
-	let classifiedApps =
-		args.oneShot && !args.exposeRequested
-			? {
-					startApps: {},
-					reusedApps: {},
-					startNames: [],
-					reusedNames: [],
-					inferredReuseNames: [],
-					unhealthy: [],
-				}
-			: await timer.measure("app ports", () =>
-					classifyCliApps(appsForDev, env.ports, {
-						signal,
-						// No `isPortBusy` override: the default reads every app port from
-						// one snapshot rather than probing each of them separately.
-						waitForServer: (url, timeout) =>
-							withSignal(env.waitForServer(url, timeout), signal),
-						context: { root: env.root, projectName: env.projectName },
-						runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
-						skipContainers: !hasServices,
-					}),
-				);
+	let classifiedApps = args.oneShot
+		? {
+				startApps: {},
+				reusedApps: {},
+				startNames: [],
+				reusedNames: [],
+				inferredReuseNames: [],
+				unhealthy: [],
+			}
+		: await timer.measure("app ports", () =>
+				classifyCliApps(appsForDev, env.ports, {
+					signal,
+					// No `isPortBusy` override: the default reads every app port from
+					// one snapshot rather than probing each of them separately.
+					waitForServer: (url, timeout) =>
+						withSignal(env.waitForServer(url, timeout), signal),
+					context: { root: env.root, projectName: env.projectName },
+					runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
+					skipContainers: !hasServices,
+				}),
+			);
 
 	// Whatever is taken over below, by whichever rule: its lease follows.
-	let takeover = initialTakeover(args.takeover && !args.oneShot);
+	let takeover = initialTakeover(args.takeover);
 	async function takeOver(candidates: TakeoverCandidates) {
 		// Never begun once interrupted: it kills the other run's servers, and
 		// an interrupted run would not start them here.
@@ -675,6 +675,7 @@ async function runDevFlow<
 	}
 
 	// ── Expose planning ──────────────────────────────────────────────────────
+	// Never in a one-shot mode (`DevCliArgs.ignoredFlags`).
 	if (args.exposeRequested) {
 		await tunnels.planExpose({
 			exposeValue: args.exposeValue,
@@ -684,9 +685,6 @@ async function runDevFlow<
 			startAppNames: new Set(Object.keys(classifiedApps.startApps)),
 			reusedAppNames: new Set(Object.keys(classifiedApps.reusedApps)),
 		});
-		if (args.oneShot) {
-			await tunnels.openOwnedTunnels();
-		}
 	}
 
 	// The modes below exit before the takeover, so nothing is going to retry

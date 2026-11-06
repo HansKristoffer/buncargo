@@ -1648,6 +1648,8 @@ HTTP app health checks probe `http://localhost:<port>`, including when the app h
 ## Public tunnels
 
 Mark targets with `expose: true`, then `bunx buncargo dev --expose` or `--expose=api,web`.
+A tunnel lives as long as the run: `--migrate`, `--seed` and `--up-only` ignore
+`--expose` (and `--takeover`) with a warning, since their tunnels would close as they exit.
 
 `expose` only governs these public tunnels: remote sharing includes every selected app and service with a host port.
 

@@ -26,6 +26,20 @@ describe("parseDevArgs", () => {
 		expect(parseDevArgs([]).oneShot).toBe(false);
 	});
 
+	it("ignores --expose and --takeover in a one-shot mode and says which", () => {
+		const args = parseDevArgs(["--seed", "--expose=api", "--takeover"]);
+		expect(args).toMatchObject({
+			exposeRequested: false,
+			exposeValue: undefined,
+			takeover: false,
+		});
+		expect(args.ignoredFlags.map((line) => line.split(" ")[0])).toEqual([
+			"--expose",
+			"--takeover",
+		]);
+		expect(parseDevArgs(["--expose", "--takeover"]).ignoredFlags).toEqual([]);
+	});
+
 	it("takes --keep only with --detach", () => {
 		expect(parseDevArgs(["--detach", "--keep"])).toMatchObject({
 			detach: true,
