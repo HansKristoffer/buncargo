@@ -1,4 +1,4 @@
-import { typedSwitch } from "hanzio";
+import { isRecord, typedSwitch } from "hanzio";
 import type { NamedHost } from "../../types";
 import { checkoutDeleted } from "../checkout-presence";
 import { withFileLock } from "../file-lock";
@@ -6,6 +6,7 @@ import {
 	defineListRegistry,
 	isRouteOwnerAlive,
 	type ListRegistryReadOptions,
+	readJsonDocumentSync,
 	StateFileUnreadableError,
 	StateFileVersionError,
 } from "../registry-file";
@@ -92,6 +93,46 @@ export async function loadHostRoutes(
 	options: ListRegistryReadOptions = {},
 ): Promise<HostsRoute[]> {
 	return registry.read(path, options);
+}
+
+/** {@link loadHostRoutes} for `getEnvVar`, which is synchronous; lenient. */
+export function loadHostRoutesSync(path = getRoutesPath()): HostsRoute[] {
+	const routes = readJsonDocumentSync(path, (value) =>
+		isRecord(value) &&
+		value.version === REGISTRY_VERSION &&
+		Array.isArray(value.routes)
+			? value.routes.filter(isHostsRoute)
+			: undefined,
+	);
+	return routes ?? [];
+}
+
+/**
+ * Whether a checkout's named URLs are live: every hostname of its plan is
+ * registered for it, at the plan's port, by an owner still running.
+ *
+ * The one answer `buncargo env`, `status`, `open` and `getEnvVar` give. A run
+ * that falls back to `localhost:port` withdraws what it registered, so a live
+ * registration is a run that confirmed the daemon serves it. Planning alone used to hand a `vite.config.ts` https
+ * URLs while the run was on `localhost:port`, or with no run at all.
+ */
+export function isNamedHostPlanLive(input: {
+	root: string;
+	plan: readonly NamedHost[];
+	routes: readonly HostsRoute[];
+	ownerAlive: RouteOwnerCheck;
+}): boolean {
+	const { root, plan, routes, ownerAlive } = input;
+	if (plan.length === 0) return false;
+	return plan.every((entry) =>
+		routes.some(
+			(route) =>
+				route.root === root &&
+				route.hostname === entry.hostname &&
+				route.port === entry.targetPort &&
+				isRouteLive(route, checkoutStillThere, ownerAlive),
+		),
+	);
 }
 
 function checkoutStillThere(root: string): boolean {
@@ -285,6 +326,40 @@ export async function removeHostRoutes(
 			path,
 			routes.filter((route) => !match(route)),
 		);
+	});
+}
+
+/**
+ * The routes left once a run that fell back to `localhost:port` withdraws:
+ * its own, and the checkout's service routes unless another live run of the
+ * checkout still holds routes there. Left registered, they read as named URLs
+ * being live to everything but the run itself.
+ */
+export function routesAfterWithdraw(
+	routes: readonly HostsRoute[],
+	run: { root: string; pid: number },
+): HostsRoute[] {
+	const otherRunLive = routes.some(
+		(route) =>
+			route.root === run.root &&
+			route.pid !== undefined &&
+			route.pid !== run.pid &&
+			isRouteOwnerAlive(route.pid),
+	);
+	return routes.filter((route) => {
+		if (route.root !== run.root) return true;
+		if (route.pid === run.pid) return false;
+		return route.pid !== undefined || otherRunLive;
+	});
+}
+
+export async function withdrawHostRoutes(
+	run: { root: string; pid: number },
+	path = getRoutesPath(),
+): Promise<void> {
+	await withFileLock(path, async () => {
+		const routes = await readForRewrite(path);
+		await registry.write(path, routesAfterWithdraw(routes, run));
 	});
 }
 

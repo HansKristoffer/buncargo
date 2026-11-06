@@ -7,6 +7,7 @@ import {
 	toHostsUserMessage,
 	upsertHostRoutes,
 	waitForDaemonRoutes,
+	withdrawHostRoutes,
 } from "../core/hosts";
 import { certificateHostnames } from "../core/hosts/plan";
 import {
@@ -61,6 +62,17 @@ export async function activateNamedHosts<
 		env.setNamedHostsActive(false);
 		return [...notes, `Named URLs unavailable: ${reason}`];
 	};
+	// After registering: what is left in the registry is what `env` and
+	// `getEnvVar` read as this checkout's named URLs being live.
+	const withdraw = async (reason: string): Promise<string[]> => {
+		try {
+			await withdrawHostRoutes({ root: env.root, pid: process.pid });
+		} catch {
+			// the registry's own failure is the one already being reported
+		}
+		return unavailable(reason);
+	};
+	let registered = false;
 
 	options.signal?.throwIfAborted();
 	const result = await ensureHostsReady({ hosts: true });
@@ -96,6 +108,7 @@ export async function activateNamedHosts<
 				owners: identityRouteOwners,
 			},
 		);
+		registered = true;
 		options.signal?.throwIfAborted();
 		await upsertHostRoutes(
 			routesFromPlan(env.hosts.plan, {
@@ -128,13 +141,14 @@ export async function activateNamedHosts<
 		const serving = await waitForDaemonRoutes(
 			env.hosts.plan.map((entry) => entry.hostname),
 		);
-		if (!serving.ok) return unavailable(serving.reason);
+		if (!serving.ok) return withdraw(serving.reason);
 
 		options.signal?.throwIfAborted();
 		env.setNamedHostsActive(true, { caPath: result.caPath });
 	} catch (error) {
 		options.signal?.throwIfAborted();
-		return unavailable(toHostsUserMessage(error));
+		const reason = toHostsUserMessage(error);
+		return registered ? withdraw(reason) : unavailable(reason);
 	}
 	return notes;
 }

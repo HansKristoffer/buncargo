@@ -8,10 +8,12 @@ import {
 	clearHostRoutes,
 	type HostsRoute,
 	HostsRouteConflictError,
+	isNamedHostPlanLive,
 	loadHostRoutes,
 	pidRouteOwners,
 	pruneHostRoutes,
 	removeHostRoutes,
+	routesAfterWithdraw,
 	routesDownRemoves,
 	routesFromPlan,
 	upsertHostRoutes,
@@ -570,5 +572,84 @@ describe("registry writers", () => {
 		expect(removes(route({ kind: "service", pid: undefined }))).toBe(true);
 		expect(removes(route())).toBe(false);
 		expect(removes(route({ kind: "service", root: "/other" }))).toBe(false);
+	});
+});
+
+describe("isNamedHostPlanLive", () => {
+	const plan = [
+		{
+			kind: "app" as const,
+			name: "web",
+			hostname: "web.demo.localhost",
+			baseHostname: "web.demo.localhost",
+			targetPort: 3000,
+		},
+	];
+	const registered = (overrides: Partial<HostsRoute> = {}): HostsRoute => ({
+		hostname: "web.demo.localhost",
+		port: 3000,
+		kind: "app",
+		name: "web",
+		root: "/repo",
+		pid: 10,
+		updatedAt: new Date().toISOString(),
+		...overrides,
+	});
+	const live = (routes: HostsRoute[], alive = [10]) =>
+		isNamedHostPlanLive({
+			root: "/repo",
+			plan,
+			routes,
+			ownerAlive: (route) =>
+				route.pid === undefined || alive.includes(route.pid),
+		});
+
+	it("is live while a running owner registered every hostname for this checkout", () => {
+		expect(live([registered()])).toBe(true);
+	});
+
+	// A plan alone handed a vite.config https URLs while the run was on
+	// localhost:port, or with no run at all.
+	it("is not live from the plan alone", () => {
+		expect(live([])).toBe(false);
+		expect(live([registered()], [])).toBe(false);
+		expect(live([registered({ port: 4000 })])).toBe(false);
+		expect(live([registered({ root: "/other" })])).toBe(false);
+	});
+});
+
+describe("routesAfterWithdraw", () => {
+	const at = (overrides: Partial<HostsRoute>): HostsRoute => ({
+		hostname: "web.demo.localhost",
+		port: 3000,
+		kind: "app",
+		name: "web",
+		root: "/repo",
+		updatedAt: new Date().toISOString(),
+		...overrides,
+	});
+	const own = at({ pid: process.pid });
+	const service = at({ hostname: "mail.demo.localhost", kind: "service" });
+	const elsewhere = at({ root: "/other", pid: process.pid });
+
+	// Left behind, a fallen-back run's routes read as live named URLs to
+	// `env` and `getEnvVar` while the run printed localhost:port.
+	it("takes out the run's own routes and its checkout's service routes", () => {
+		expect(
+			routesAfterWithdraw([own, service, elsewhere], {
+				root: "/repo",
+				pid: process.pid,
+			}),
+		).toEqual([elsewhere]);
+	});
+
+	it("leaves the service routes to another live run of the checkout", () => {
+		const other = at({ hostname: "api.demo.localhost", pid: process.ppid });
+		expect(
+			routesAfterWithdraw([own, service, other], {
+				root: "/repo",
+				pid: process.pid,
+			}),
+		).toEqual([service, other]);
 	});
 });

@@ -995,7 +995,7 @@ The daemon logs to `/var/log/buncargo-hosts.log` (on Linux, also `journalctl -u 
 
 `buncargo hosts daemon` runs that same proxy in the foreground instead of under launchd/systemd, which is how you watch its output while debugging. It re-reads `~/.buncargo/routes.json` every second, so apps starting and stopping need no restart, and it exits on its own once no routes have been registered for a while. `--service` is what the installed unit passes: it keeps the daemon alive through idle periods and is not meant to be typed by hand. Binding `:443` still needs root, so run it under `sudo` or set `BUNCARGO_HOSTS_PORT` to an unprivileged port.
 
-Failure degrades to `http://localhost:<port>` and never blocks the dev run. Named hosts stay off on Windows, in CI (`CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL`), when `BUNCARGO_HOSTS=0`, or with `--no-hosts`.
+Failure degrades to `http://localhost:<port>` and never blocks the dev run. `buncargo env`, `status`, `open` and `getEnvVar` report a named URL only while a run of the checkout serves it, and `http://localhost:<port>` otherwise, so a `vite.config.ts` gets the URL the run is actually on. Named hosts stay off on Windows, in CI (`CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL`), when `BUNCARGO_HOSTS=0`, or with `--no-hosts`.
 
 Set `BUNCARGO_HOSTS=0` in cloud workspace secrets/environment to skip automatic local HTTPS setup, including the mkcert prompt. Local URLs use `http://localhost:<port>`; Remote sharing still works.
 

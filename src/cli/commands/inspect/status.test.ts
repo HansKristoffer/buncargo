@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { getDaemonConfigPath } from "../../../core/hosts/paths";
+import { getDaemonConfigPath, getRoutesPath } from "../../../core/hosts/paths";
 import { HEALTH_PATH } from "../../../core/hosts/proxy";
 import { CI_ENV_VARS } from "../../../core/runtime-flags";
 import { appStatusLines, describePlannedOffset, runHealth } from "./status";
@@ -57,7 +57,10 @@ afterEach(() => {
 
 interface StatusJson {
 	urls: Record<string, string>;
-	hosts: { active: boolean; plan: { hostname: string }[] } | null;
+	hosts: {
+		active: boolean;
+		plan: { hostname: string; targetPort: number }[];
+	} | null;
 }
 
 /** `buncargo status --json` without blocking the daemon this process serves. */
@@ -90,8 +93,30 @@ it("reports named hosts as the daemon serves them, with their URLs", async () =>
 	expect(before.hosts?.active).toBe(false);
 	expect(before.urls.web).toMatch(/^http:\/\/localhost:\d+$/);
 
-	served = before.hosts?.plan.map((entry) => entry.hostname) ?? [];
+	// Served by the daemon, but no run of this checkout registered them: a
+	// healthy daemon alone is not one serving this project.
+	const plan = before.hosts?.plan ?? [];
+	served = plan.map((entry) => entry.hostname);
 	expect(served.length).toBeGreaterThan(0);
+	expect((await status()).hosts?.active).toBe(false);
+
+	// A live run (this process) registered them, as `buncargo dev` does.
+	const routesPath = getRoutesPath(join(dir, "home"));
+	writeFileSync(
+		routesPath,
+		JSON.stringify({
+			version: 1,
+			routes: plan.map((entry) => ({
+				hostname: entry.hostname,
+				port: entry.targetPort,
+				kind: "app",
+				name: "web",
+				root: dir,
+				pid: process.pid,
+				updatedAt: new Date().toISOString(),
+			})),
+		}),
+	);
 	const after = await status();
 	expect(after.hosts?.active).toBe(true);
 	expect(after.urls.web).toStartWith("https://");
