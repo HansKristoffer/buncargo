@@ -540,7 +540,12 @@ async function tearDown(
 	const owner = runs.reduce((newest, run) =>
 		run.startedAt > newest.startedAt ? run : newest,
 	);
-	await releaseSuffixedClaimsOf({ projectName, root }, claims, owner);
+	await releaseSuffixedClaimsOf(
+		{ projectName, root },
+		claims,
+		owner,
+		Date.now(),
+	);
 	return true;
 }
 

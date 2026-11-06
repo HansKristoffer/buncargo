@@ -495,7 +495,7 @@ async function sweepGroup(
 					reason: verdict.reason,
 					owner: removalOwner(owner),
 				});
-				await releaseSuffixedClaimsOf(group, freshClaims, owner);
+				await releaseSuffixedClaimsOf(group, freshClaims, owner, now);
 				return true;
 			},
 			{ timeoutMs: 0 },

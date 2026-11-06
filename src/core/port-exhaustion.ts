@@ -5,6 +5,7 @@ import {
 	offsetClaimHoldsBlock,
 	offsetClaimLastUsed,
 	offsetClaimRoot,
+	RECLAIM_MIN_IDLE_MS,
 } from "./offset-claims";
 import { lastCheckoutCommandAt } from "./run-activity";
 
@@ -14,14 +15,6 @@ import { lastCheckoutCommandAt } from "./run-activity";
  * (`held`), or neither (`idle`). Only an idle claim may be reclaimed.
  */
 export type ClaimState = "running" | "held" | "idle";
-
-/**
- * A claim used this recently is never reclaimed, whatever its state: a start
- * allocates before it records its run, and in between (the named-hosts
- * prompt, the menu bar offer, a `prisma` command that records none) it has a
- * fresh claim, no run and no container yet.
- */
-export const RECLAIM_MIN_IDLE_MS = 3_600_000;
 
 /**
  * What became of reclaiming when the error was thrown: not tried (the
