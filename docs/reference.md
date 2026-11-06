@@ -756,6 +756,10 @@ is left, or when another app `startAfter`s the failed one.
 `options.onAppFailure: "stop-run"` ends the run instead, which is what `ci` and a
 library `start()` always do.
 
+A worker, or an app with `healthEndpoint: false`, has started once it is spawned
+and the rest of its wave is up, so its crash after that ends the run. Give it a
+`readyWhen` line, and a crash before that line counts as crashing while it starts.
+
 ### Watching files
 
 `watch: { paths: ["src"], ignore: ["dist/**"] }` restarts the app with a fresh

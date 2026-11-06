@@ -41,6 +41,10 @@ it. The attached app is teed through `script` when stdin is a TTY, else through 
 a wave on its own, then stops and parks the ones that never came up, crashed at boot included:
 until it is ready, each essential app of the wave is on probation, so its exit parks it in the
 owner instead of ending the run. The attached app is never on probation: quitting it ends the run.
+Probation ends when the wave's waits settle, not at a deadline: a worker or `healthEndpoint: false`
+app without `readyWhen` is ready once spawned, so it is spared only while the rest of its wave
+comes up, and its crash after that ends the run. A boot window was left out on purpose: either
+every wave with a worker waits it out, or a crash inside it needs a verdict after the wave moved on.
 Whether the run fails is decided before anything is parked (when a later app `startAfter`s a failed
 one, or nothing else is left), and a row on probation offers no restart until then. `runFailure`
 holds those two rules, and a restart that cannot spawn or the check after one asks it too: the
