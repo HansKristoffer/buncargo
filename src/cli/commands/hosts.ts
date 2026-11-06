@@ -98,6 +98,9 @@ async function printHostsStatus(): Promise<void> {
 		const ageMs = Date.now() - health.lastReloadAt;
 		const stale = ageMs > RELOAD_STALL_MS ? "  (stale)" : "";
 		log.line(`  refreshed: ${Math.round(ageMs / 1000)}s ago${stale}`);
+		// Routes the previous leaf misses show below as not served; this is why.
+		if (health.bindError)
+			log.line(`  certificate: cannot load the new one (${health.bindError})`);
 	}
 	log.line(`httpsPort: ${config.httpsPort}`);
 	log.line(`service: ${isHostsServiceInstalled() ? "installed" : "missing"}`);
