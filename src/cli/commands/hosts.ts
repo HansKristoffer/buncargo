@@ -50,7 +50,8 @@ export async function handleHosts(args: string[]): Promise<void> {
 			log.done("Named hosts are ready");
 		},
 		uninstall: async () => {
-			await runHostsUninstall();
+			const warnings = await runHostsUninstall();
+			for (const warning of warnings) log.warn(warning);
 			log.done("Named hosts were removed from this machine");
 		},
 		status: () => printHostsStatus(),
