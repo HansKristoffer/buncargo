@@ -1,19 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+	cpSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	type BundleCopy,
 	getBarManifestPath,
 	installDirectory,
 	readBundleInfo,
 	readInstalledBarInfo,
 	removeInstalledBars,
+	replaceBundle,
 } from "./menubar";
 
 /**
@@ -155,5 +159,51 @@ describe("removeInstalledBars", () => {
 		expect(existsSync(userCopy)).toBe(false);
 		expect(existsSync(getBarManifestPath())).toBe(false);
 		expect(removeInstalledBars(home, system)).toBe(false);
+	});
+});
+
+describe("replaceBundle", () => {
+	/** A copy that does what `ditto` does, or fails as a full disk would. */
+	const copy =
+		(fails: boolean): BundleCopy =>
+		(from, to) => {
+			if (fails) return { ok: false, error: "No space left on device" };
+			cpSync(from, to, { recursive: true });
+			return { ok: true };
+		};
+
+	it("keeps the installed app when the new one cannot be copied", () => {
+		// The installed copy was removed before the copy, so a failed one left
+		// no app at all.
+		const target = writeBundle(join(home, "Applications", "BuncargoBar.app"), {
+			version: "1.0.0",
+		});
+		const source = writeBundle(join(home, "incoming", "BuncargoBar.app"), {
+			version: "2.0.0",
+		});
+
+		expect(() => replaceBundle(source, target, copy(true))).toThrow(
+			"No space left on device",
+		);
+		expect(readBundleInfo(target).version).toBe("1.0.0");
+		expect(readdirSync(join(home, "Applications"))).toEqual([
+			"BuncargoBar.app",
+		]);
+	});
+
+	it("swaps the new app in and leaves nothing beside it", () => {
+		const target = writeBundle(join(home, "Applications", "BuncargoBar.app"), {
+			version: "1.0.0",
+		});
+		const source = writeBundle(join(home, "incoming", "BuncargoBar.app"), {
+			version: "2.0.0",
+		});
+
+		replaceBundle(source, target, copy(false));
+
+		expect(readBundleInfo(target).version).toBe("2.0.0");
+		expect(readdirSync(join(home, "Applications"))).toEqual([
+			"BuncargoBar.app",
+		]);
 	});
 });
