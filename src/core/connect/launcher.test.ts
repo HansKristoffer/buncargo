@@ -7,7 +7,11 @@ import {
 	coordinatorStatePath,
 	writeCoordinatorState,
 } from "./coordinator-state";
-import { awaitCoordinator, requestCoordinator } from "./launcher";
+import {
+	awaitCoordinator,
+	coordinatorWentAway,
+	requestCoordinator,
+} from "./launcher";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
 
@@ -36,6 +40,21 @@ test("an adopted coordinator whose heartbeat stopped is named, not waited on", a
 	await expect(awaitCoordinator(wedged, true)).rejects.toThrow(
 		`kill ${process.pid}`,
 	);
+});
+
+test("an adopted coordinator that starts leaving is reported gone, to be replaced", async () => {
+	const adopted = liveCoordinator(60_000);
+	await writeCoordinatorState({
+		...adopted,
+		ready: false,
+		updatedAt: Date.now(),
+	});
+
+	const error = await awaitCoordinator(adopted, true).catch(
+		(caught: unknown) => caught,
+	);
+
+	expect(coordinatorWentAway(error)).toBe(true);
 });
 
 test("an adopted coordinator that reports again is used", async () => {

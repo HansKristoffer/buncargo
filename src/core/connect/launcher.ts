@@ -67,10 +67,16 @@ export async function ensureConnectCoordinator(
 		},
 		{ timeoutMs: 5000 },
 	);
-	await awaitCoordinator(owner, adopted, signal);
+	try {
+		await awaitCoordinator(owner, adopted, signal);
+	} catch (error) {
+		if (!(adopted && error instanceof CoordinatorUnavailableError)) throw error;
+		// It decided to leave idle meanwhile: launching again replaces it.
+		await ensureConnectCoordinator(signal);
+	}
 }
 
-/** A running coordinator heartbeats every second; three missed in a row mean it is wedged. */
+/** A running coordinator heartbeats every second; one silent for this long after adoption is wedged. */
 const WEDGED_GRACE_MS = 3000;
 
 /**
@@ -78,6 +84,7 @@ const WEDGED_GRACE_MS = 3000;
  * its saved ready flag: it gets a few heartbeats to report (one that just
  * woke from sleep does), and one that does not is wedged, named with its pid,
  * rather than holding every run that adopts it for the whole startup wait.
+ * One that reports it is leaving throws {@link CoordinatorUnavailableError}.
  */
 export async function awaitCoordinator(
 	owner: CoordinatorState,
@@ -94,6 +101,9 @@ export async function awaitCoordinator(
 			}
 			if (!matchesProcessIdentity(state.pid, state.identity)) {
 				throw new Error("Connection coordinator stopped during startup");
+			}
+			if (adopted && !state.ready) {
+				throw new CoordinatorUnavailableError();
 			}
 		}
 		await abortableSleep(250, signal);
