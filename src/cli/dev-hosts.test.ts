@@ -7,6 +7,7 @@ import {
 	removeHostRoutes,
 	upsertHostRoutes,
 } from "../core/hosts";
+import { pidRouteOwners } from "../core/hosts/registry";
 import { lookupOnPath } from "../core/tool-binary";
 import type {
 	AppConfig,
@@ -60,17 +61,20 @@ describe("reclaimAppRoute", () => {
 	// and released it, and `web` restarted here.
 	it("claims a restarted app's route back after the run that took it over ended", async () => {
 		const other = process.ppid;
-		await upsertHostRoutes([
-			{
-				hostname: "web.fixture.localhost",
-				port: 3100,
-				kind: "app",
-				name: "web",
-				root,
-				pid: other,
-				updatedAt: new Date().toISOString(),
-			},
-		]);
+		await upsertHostRoutes(
+			[
+				{
+					hostname: "web.fixture.localhost",
+					port: 3100,
+					kind: "app",
+					name: "web",
+					root,
+					pid: other,
+					updatedAt: new Date().toISOString(),
+				},
+			],
+			{ owners: pidRouteOwners },
+		);
 
 		// While that run lives, the route stays its own.
 		await reclaimAppRoute({ root, hosts: hosts(true) }, "web");

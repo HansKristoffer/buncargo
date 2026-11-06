@@ -1,6 +1,7 @@
 import { typedSwitch } from "hanzio";
 import {
 	describeLoopbackHijack,
+	identityRouteOwners,
 	loadHostRoutes,
 	OUTDATED_DAEMON_MESSAGE,
 	pruneHostRoutes,
@@ -62,7 +63,11 @@ export async function handleHosts(args: string[]): Promise<void> {
 		},
 		prune: async () => {
 			const before = (await loadHostRoutes()).length;
-			const after = await pruneHostRoutes();
+			// By identity: this is what retires a route whose pid a reboot
+			// handed to another process.
+			const after = await pruneHostRoutes(undefined, {
+				owners: identityRouteOwners,
+			});
 			const removed = before - after.length;
 			log.done(`Pruned ${removed} stale route${removed === 1 ? "" : "s"}`);
 			const serve = await sweepTailscaleServe(tailscaleServeDeps());

@@ -6,6 +6,8 @@ import {
 	defineListRegistry,
 	isRouteOwnerAlive,
 	type ListRegistryReadOptions,
+	StateFileUnreadableError,
+	StateFileVersionError,
 } from "../registry-file";
 import { chownToInvokingUser } from "../state-paths";
 import { getRoutesPath } from "./paths";
@@ -19,8 +21,33 @@ export interface HostsRoute {
 	name: string;
 	root: string;
 	pid?: number;
+	/**
+	 * Birth identity of `pid` (`process-identity.ts`). A pid alone outlives a
+	 * reboot: reused by another process, it kept a dead run's route live and
+	 * held its hostname against the next run of that checkout.
+	 */
+	processIdentity?: string;
 	updatedAt: string;
 }
+
+/** Whether a route's owner is still the run that registered it. */
+export type RouteOwnerCheck = (route: HostsRoute) => boolean;
+
+/**
+ * Builds the owner check for the routes about to be judged, so a check that
+ * reads process identity can read them all at once.
+ */
+export type RouteOwners = (
+	routes: readonly HostsRoute[],
+) => Promise<RouteOwnerCheck>;
+
+/**
+ * Owner liveness by pid alone. The daemon's check: it forks nothing, and
+ * reading identity takes a `ps` on macOS. CLI writers pass
+ * `identityRouteOwners` and retire a reused pid's routes for it.
+ */
+export const pidRouteOwners: RouteOwners = async () => (route) =>
+	isRouteOwnerAlive(route.pid);
 
 export class HostsRouteConflictError extends Error {
 	readonly hostname: string;
@@ -47,7 +74,9 @@ function isHostsRoute(value: unknown): value is HostsRoute {
 		(route.kind === "app" || route.kind === "service") &&
 		typeof route.name === "string" &&
 		typeof route.root === "string" &&
-		(route.pid === undefined || typeof route.pid === "number")
+		(route.pid === undefined || typeof route.pid === "number") &&
+		(route.processIdentity === undefined ||
+			typeof route.processIdentity === "string")
 	);
 }
 
@@ -82,9 +111,30 @@ function checkoutStillThere(root: string): boolean {
 export function isRouteLive(
 	route: HostsRoute,
 	directoryExists: (path: string) => boolean = checkoutStillThere,
+	ownerAlive: RouteOwnerCheck = (owned) => isRouteOwnerAlive(owned.pid),
 ): boolean {
-	if (route.pid !== undefined) return isRouteOwnerAlive(route.pid);
+	if (route.pid !== undefined) return ownerAlive(route);
 	return route.root === "" || directoryExists(route.root);
+}
+
+/**
+ * Read the registry to rewrite it, refusing one that cannot be read.
+ *
+ * Every project's routes are in this one file. Read leniently, a corrupt file
+ * came back empty and the writer replaced it with only its own routes, so
+ * every other project's named URLs went with no error at all.
+ */
+async function readForRewrite(path: string): Promise<HostsRoute[]> {
+	try {
+		return await registry.read(path, { strict: true });
+	} catch (error) {
+		const unreadable =
+			error instanceof StateFileUnreadableError &&
+			!(error instanceof StateFileVersionError);
+		if (!unreadable) throw error;
+		const message = `${error.message}. Rewriting it would drop every other project's named routes: fix or delete it, then restart this run.`;
+		throw new Error(message, { cause: error });
+	}
 }
 
 /**
@@ -98,24 +148,33 @@ export function isRouteLive(
  */
 async function prune(
 	path: string,
-	options: ListRegistryReadOptions & {
-		directoryExists?: (path: string) => boolean;
-	} = {},
+	options: PruneOptions = {},
 ): Promise<HostsRoute[]> {
 	const directoryExists = options.directoryExists ?? checkoutStillThere;
-	const routes = await registry.read(path, options);
-	const next = routes.filter((route) => isRouteLive(route, directoryExists));
+	const routes = options.strict
+		? await readForRewrite(path)
+		: await registry.read(path);
+	const ownerAlive = await (options.owners ?? pidRouteOwners)(
+		routes.filter((route) => route.pid !== undefined),
+	);
+	const next = routes.filter((route) =>
+		isRouteLive(route, directoryExists, ownerAlive),
+	);
 	if (next.length !== routes.length) {
 		await registry.write(path, next);
 	}
 	return next;
 }
 
+interface PruneOptions extends ListRegistryReadOptions {
+	directoryExists?: (path: string) => boolean;
+	/** Defaults to {@link pidRouteOwners}. */
+	owners?: RouteOwners;
+}
+
 export async function pruneHostRoutes(
 	path = getRoutesPath(),
-	options: ListRegistryReadOptions & {
-		directoryExists?: (path: string) => boolean;
-	} = {},
+	options: PruneOptions = {},
 ): Promise<HostsRoute[]> {
 	return withFileLock(path, () => prune(path, options));
 }
@@ -175,16 +234,28 @@ export async function upsertHostRoutes(
 		 * checkout. Only those change owner: the other run still serves the rest.
 		 */
 		takeover?: ReadonlySet<string>;
-	} = {},
+		/**
+		 * Who still owns the routes holding these hostnames. Asked only about
+		 * those, so a run with nobody in its way forks nothing.
+		 */
+		owners: RouteOwners;
+	},
 ): Promise<void> {
 	const path = options.path ?? getRoutesPath();
 	await withFileLock(path, async () => {
-		const routes = await prune(path);
+		const routes = await prune(path, { strict: true });
 		const byHost = new Map(routes.map((route) => [route.hostname, route]));
+		const held = routesToSave.flatMap((route) => {
+			const existing = byHost.get(route.hostname);
+			return existing?.pid !== undefined && existing.pid !== route.pid
+				? [existing]
+				: [];
+		});
+		const ownerAlive = await options.owners(held);
 
 		for (const route of routesToSave) {
 			const existing = byHost.get(route.hostname);
-			if (existing && isRouteOwnerAlive(existing.pid)) {
+			if (existing && isRouteLive(existing, checkoutStillThere, ownerAlive)) {
 				const claim = classifyRouteClaim(existing, route, {
 					takeover: options.takeover?.has(route.name),
 				});
@@ -209,7 +280,7 @@ export async function removeHostRoutes(
 	path = getRoutesPath(),
 ): Promise<void> {
 	await withFileLock(path, async () => {
-		const routes = await registry.read(path);
+		const routes = await readForRewrite(path);
 		await registry.write(
 			path,
 			routes.filter((route) => !match(route)),
@@ -217,9 +288,33 @@ export async function removeHostRoutes(
 	});
 }
 
+/**
+ * Drop every route, readable or not: `hosts uninstall`. A file that cannot
+ * be read is kept beside it as a recovery copy, never just deleted.
+ */
+export async function clearHostRoutes(path = getRoutesPath()): Promise<void> {
+	await withFileLock(path, () => registry.write(path, []));
+}
+
+/**
+ * What `dev --down` takes out of the registry: this checkout's service
+ * routes, whose containers it stops. Not app routes: another live run of the
+ * checkout still serves those, and removing them 404'd its named URLs.
+ */
+export function routesDownRemoves(
+	root: string,
+): (route: HostsRoute) => boolean {
+	return (route) => route.root === root && route.kind === "service";
+}
+
 export function routesFromPlan(
 	plan: NamedHost[],
-	input: { root: string; pid?: number; kinds?: Array<NamedHost["kind"]> },
+	input: {
+		root: string;
+		pid?: number;
+		processIdentity?: string;
+		kinds?: Array<NamedHost["kind"]>;
+	},
 ): HostsRoute[] {
 	const now = new Date().toISOString();
 	return plan
@@ -231,6 +326,9 @@ export function routesFromPlan(
 			name: entry.name,
 			root: input.root,
 			pid: input.pid,
+			...(input.pid !== undefined && input.processIdentity !== undefined
+				? { processIdentity: input.processIdentity }
+				: {}),
 			updatedAt: now,
 		}));
 }

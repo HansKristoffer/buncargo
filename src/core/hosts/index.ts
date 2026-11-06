@@ -22,7 +22,9 @@ export {
 	loadHostRoutes,
 	pruneHostRoutes,
 	removeHostRoutes,
+	routesDownRemoves,
 	routesFromPlan,
 	upsertHostRoutes,
 } from "./registry";
+export { identityRouteOwners } from "./route-owners";
 export { toHostsUserMessage } from "./service";

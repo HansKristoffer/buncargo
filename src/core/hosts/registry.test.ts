@@ -1,16 +1,22 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readCurrentProcessIdentity } from "../process-identity";
 import {
 	classifyRouteClaim,
+	clearHostRoutes,
 	type HostsRoute,
 	HostsRouteConflictError,
 	loadHostRoutes,
+	pidRouteOwners,
 	pruneHostRoutes,
 	removeHostRoutes,
+	routesDownRemoves,
+	routesFromPlan,
 	upsertHostRoutes,
 } from "./registry";
+import { identityRouteOwners } from "./route-owners";
 
 async function tempRegistry(): Promise<{ path: string; dir: string }> {
 	const dir = await mkdtemp(join(tmpdir(), "buncargo-hosts-"));
@@ -37,7 +43,7 @@ describe("hosts registry", () => {
 						updatedAt: new Date().toISOString(),
 					},
 				],
-				{ path },
+				{ path, owners: pidRouteOwners },
 			);
 			const routes = await loadHostRoutes(path);
 			expect(routes).toHaveLength(1);
@@ -62,7 +68,7 @@ describe("hosts registry", () => {
 						updatedAt: new Date().toISOString(),
 					},
 				],
-				{ path },
+				{ path, owners: pidRouteOwners },
 			);
 			await upsertHostRoutes(
 				[
@@ -76,7 +82,7 @@ describe("hosts registry", () => {
 						updatedAt: new Date().toISOString(),
 					},
 				],
-				{ path },
+				{ path, owners: pidRouteOwners },
 			);
 			const routes = await loadHostRoutes(path);
 			expect(routes[0]?.port).toBe(3100);
@@ -101,7 +107,7 @@ describe("hosts registry", () => {
 						updatedAt: new Date().toISOString(),
 					},
 				],
-				{ path },
+				{ path, owners: pidRouteOwners },
 			);
 			await expect(
 				upsertHostRoutes(
@@ -117,7 +123,7 @@ describe("hosts registry", () => {
 						},
 					],
 					// A takeover is within one checkout; it never crosses projects.
-					{ path, takeover: new Set(["api"]) },
+					{ path, takeover: new Set(["api"]), owners: pidRouteOwners },
 				),
 			).rejects.toBeInstanceOf(HostsRouteConflictError);
 		} finally {
@@ -148,7 +154,7 @@ describe("hosts registry", () => {
 						updatedAt: new Date().toISOString(),
 					},
 				],
-				{ path },
+				{ path, owners: pidRouteOwners },
 			);
 			const pruned = await pruneHostRoutes(path, {
 				// The checkout is fictional here; its existence is a separate rule.
@@ -177,8 +183,11 @@ describe("hosts registry", () => {
 				pid: process.pid,
 				updatedAt: new Date().toISOString(),
 			};
-			await upsertHostRoutes([route], { path });
-			await upsertHostRoutes([{ ...route, pid: process.pid + 1 }], { path });
+			await upsertHostRoutes([route], { path, owners: pidRouteOwners });
+			await upsertHostRoutes([{ ...route, pid: process.pid + 1 }], {
+				path,
+				owners: pidRouteOwners,
+			});
 
 			const saved = await loadHostRoutes(path);
 			expect(saved).toHaveLength(1);
@@ -211,13 +220,13 @@ describe("hosts registry", () => {
 				port: 3001,
 				name: "web",
 			};
-			await upsertHostRoutes([api, web], { path });
+			await upsertHostRoutes([api, web], { path, owners: pidRouteOwners });
 			await upsertHostRoutes(
 				[
 					{ ...api, pid: second },
 					{ ...web, pid: second },
 				],
-				{ path, takeover: new Set(["api"]) },
+				{ path, takeover: new Set(["api"]), owners: pidRouteOwners },
 			);
 			await removeHostRoutes((route) => route.pid === first, path);
 
@@ -246,7 +255,7 @@ describe("hosts registry", () => {
 						updatedAt: new Date().toISOString(),
 					},
 				],
-				{ path },
+				{ path, owners: pidRouteOwners },
 			);
 			const pruned = await pruneHostRoutes(path, {
 				directoryExists: () => false,
@@ -271,7 +280,7 @@ describe("hosts registry", () => {
 						updatedAt: new Date().toISOString(),
 					},
 				],
-				{ path },
+				{ path, owners: pidRouteOwners },
 			);
 			expect(await pruneHostRoutes(path)).toHaveLength(1);
 		} finally {
@@ -294,7 +303,7 @@ describe("hosts registry", () => {
 						updatedAt: new Date().toISOString(),
 					},
 				],
-				{ path },
+				{ path, owners: pidRouteOwners },
 			);
 			await removeHostRoutes(
 				(route) => route.root === "/repo" && route.kind === "app",
@@ -383,7 +392,9 @@ describe("concurrent registration", () => {
 		try {
 			const routes = Array.from({ length: 8 }, (_, i) => routeFor(i));
 			await Promise.all(
-				routes.map((route) => upsertHostRoutes([route], { path })),
+				routes.map((route) =>
+					upsertHostRoutes([route], { path, owners: pidRouteOwners }),
+				),
 			);
 
 			const saved = await loadHostRoutes(path);
@@ -402,7 +413,7 @@ describe("concurrent registration", () => {
 		try {
 			const modulePath = join(import.meta.dir, "registry.ts");
 			const script = `
-				const { upsertHostRoutes } = await import(${JSON.stringify(modulePath)});
+				const { pidRouteOwners, upsertHostRoutes } = await import(${JSON.stringify(modulePath)});
 				const index = Number(process.env.ROUTE_INDEX);
 				await upsertHostRoutes(
 					[{
@@ -413,7 +424,7 @@ describe("concurrent registration", () => {
 						root: process.env.ROUTES_ROOT,
 						updatedAt: new Date().toISOString(),
 					}],
-					{ path: process.env.ROUTES_PATH },
+					{ path: process.env.ROUTES_PATH, owners: pidRouteOwners },
 				);
 			`;
 
@@ -443,5 +454,121 @@ describe("concurrent registration", () => {
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("registry writers", () => {
+	const route = (overrides: Partial<HostsRoute> = {}): HostsRoute => ({
+		hostname: "web.demo.localhost",
+		port: 3000,
+		kind: "app",
+		name: "web",
+		root: "/repo",
+		pid: process.pid,
+		updatedAt: new Date().toISOString(),
+		...overrides,
+	});
+
+	// Read leniently, a corrupt file came back as [] and the writer replaced
+	// it with its own routes alone: every other project's named URLs gone.
+	it("refuses to rewrite a registry it cannot read", async () => {
+		const { dir, path } = await tempRegistry();
+		try {
+			await writeFile(path, "{ not json");
+			await expect(
+				upsertHostRoutes([route()], { path, owners: pidRouteOwners }),
+			).rejects.toThrow("fix or delete it");
+			await expect(removeHostRoutes(() => true, path)).rejects.toThrow(
+				"fix or delete it",
+			);
+			expect(await readFile(path, "utf-8")).toBe("{ not json");
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("clears an unreadable registry on uninstall, keeping a recovery copy", async () => {
+		const { dir, path } = await tempRegistry();
+		try {
+			await writeFile(path, "{ not json");
+			await clearHostRoutes(path);
+			expect(await loadHostRoutes(path)).toEqual([]);
+			const { readdir } = await import("node:fs/promises");
+			expect(
+				(await readdir(dir)).some((name) => name.includes(".recovery-")),
+			).toBe(true);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	// After a reboot the pid belongs to some other process: the route held
+	// its hostname against the next run of the checkout.
+	it("takes a hostname whose owner's pid now belongs to another process", async () => {
+		const { dir, path } = await tempRegistry();
+		try {
+			await upsertHostRoutes(
+				[route({ pid: process.ppid, processIdentity: "v2:a-dead-run" })],
+				{ path, owners: pidRouteOwners },
+			);
+			await upsertHostRoutes([route({ port: 4000 })], {
+				path,
+				owners: identityRouteOwners,
+			});
+			expect(await loadHostRoutes(path)).toMatchObject([
+				{ hostname: "web.demo.localhost", port: 4000, pid: process.pid },
+			]);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("still refuses a live owner whose identity matches", async () => {
+		const { dir, path } = await tempRegistry();
+		try {
+			await upsertHostRoutes(
+				[
+					route({
+						pid: process.pid,
+						processIdentity: readCurrentProcessIdentity(),
+						root: "/other",
+					}),
+				],
+				{ path, owners: pidRouteOwners },
+			);
+			await expect(
+				upsertHostRoutes([route({ pid: process.ppid })], {
+					path,
+					owners: identityRouteOwners,
+				}),
+			).rejects.toThrow(HostsRouteConflictError);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("records the owner's identity with an app route", () => {
+		const [app] = routesFromPlan(
+			[
+				{
+					kind: "app",
+					name: "web",
+					hostname: "web.demo.localhost",
+					baseHostname: "web.demo.localhost",
+					targetPort: 3000,
+				},
+			],
+			{ root: "/repo", pid: process.pid, processIdentity: "v2:abc" },
+		);
+		expect(app?.processIdentity).toBe("v2:abc");
+	});
+
+	// `dev --down` stops this checkout's containers. Another live run of the
+	// checkout still serves its apps, and removing every route 404'd them.
+	it("takes only the checkout's service routes down with dev --down", () => {
+		const removes = routesDownRemoves("/repo");
+		expect(removes(route({ kind: "service", pid: undefined }))).toBe(true);
+		expect(removes(route())).toBe(false);
+		expect(removes(route({ kind: "service", root: "/other" }))).toBe(false);
 	});
 });

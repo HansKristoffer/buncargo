@@ -29,7 +29,7 @@ import {
 import { DECLINE_FILENAME } from "./paths";
 import { isHostsPlatformSupported } from "./plan";
 import { systemPrivilegedRunner } from "./privileged";
-import { removeHostRoutes } from "./registry";
+import { clearHostRoutes } from "./registry";
 import {
 	describeStaleHostsService,
 	installHostsService,
@@ -195,7 +195,7 @@ export async function runHostsUninstall(): Promise<void> {
 	// As root when needed: the daemon that wrote the block is stopped now, and
 	// the block left behind points every hostname at a proxy that is gone.
 	cleanHostsFileAsRoot(runner);
-	await removeHostRoutes(() => true);
+	await clearHostRoutes();
 	try {
 		rmSync(getCertNamesPath(), { force: true });
 	} catch {

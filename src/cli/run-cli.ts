@@ -6,7 +6,7 @@ import {
 } from "../container-runtime";
 import { describeLeaseRefusal, type SkippedLeaseApp } from "../core/app-leases";
 import { withSignal } from "../core/deadline";
-import { removeHostRoutes } from "../core/hosts";
+import { removeHostRoutes, routesDownRemoves } from "../core/hosts";
 import { releaseLeases } from "../core/leases";
 import { appExitState } from "../core/process/process-owner";
 import { askConfirm, PromptInterruptedError } from "../core/prompt";
@@ -411,7 +411,7 @@ async function runDevFlow<
 	if (args.down || args.reset) {
 		env.logInfo();
 		await tunnels.stop();
-		await removeHostRoutes((route) => route.root === env.root);
+		await removeHostRoutes(routesDownRemoves(env.root));
 		await env.stop({ removeVolumes: args.reset, signal });
 		restoreTerminal();
 		return 0;

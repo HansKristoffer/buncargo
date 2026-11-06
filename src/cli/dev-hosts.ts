@@ -1,5 +1,6 @@
 import {
 	ensureHostsReady,
+	identityRouteOwners,
 	removeHostRoutes,
 	routesFromPlan,
 	syncCertificateForRoutes,
@@ -13,6 +14,7 @@ import {
 	releaseTailscaleServe,
 	tailscaleServeDeps,
 } from "../core/hosts/tailscale-serve";
+import { readCurrentProcessIdentityAsync } from "../core/process-identity";
 import type {
 	AppConfig,
 	DevEnvironment,
@@ -86,9 +88,13 @@ export async function activateNamedHosts<
 			routesFromPlan(env.hosts.plan, {
 				root: env.root,
 				pid: process.pid,
+				processIdentity: await readCurrentProcessIdentityAsync(),
 				kinds: ["app"],
 			}),
-			{ takeover: new Set(options.takeover) },
+			{
+				takeover: new Set(options.takeover),
+				owners: identityRouteOwners,
+			},
 		);
 		options.signal?.throwIfAborted();
 		await upsertHostRoutes(
@@ -96,6 +102,7 @@ export async function activateNamedHosts<
 				root: env.root,
 				kinds: ["service"],
 			}),
+			{ owners: identityRouteOwners },
 		);
 
 		// Mint again now that this run's routes are on disk.
@@ -200,11 +207,12 @@ export async function reclaimAppRoute(
 	const routes = routesFromPlan(env.hosts.plan, {
 		root: env.root,
 		pid: process.pid,
+		processIdentity: await readCurrentProcessIdentityAsync(),
 		kinds: ["app"],
 	}).filter((route) => route.name === name);
 	if (routes.length === 0) return;
 	try {
-		await upsertHostRoutes(routes);
+		await upsertHostRoutes(routes, { owners: identityRouteOwners });
 	} catch {
 		// A conflict is another project's hostname: activation already said so.
 	}

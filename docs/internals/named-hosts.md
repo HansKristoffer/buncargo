@@ -93,6 +93,14 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   can outlive the new one too (the app was `essential: false`, so it only parked): an app that
   restarts in a run serving named hosts claims its route again (`reclaimAppRoute`), or its named
   URL 404s once the run that took it over has exited.
+- App routes record the run's process identity: a pid alone survives a reboot, and a reused one kept
+  a dead run's route holding its hostname against the next run of the checkout. The CLI's writers
+  (`upsertHostRoutes`, `hosts prune`) judge owners by identity (`identityRouteOwners`), asking only
+  about routes in the way so a run with none forks nothing; the daemon judges by pid, since it
+  forks nothing and identity costs a `ps` on macOS.
+- Writers read `routes.json` strictly. Every project's routes are in it, and a lenient read turned
+  a corrupt file into `[]` that the writer replaced with its own routes alone. `hosts uninstall`
+  clears it anyway, keeping a recovery copy.
 - `prune` drops a static (pid-less) route whose `root` no longer exists. Nothing else retires one,
   so a deleted worktree kept its hostnames in the registry, and in `/etc/hosts`, forever.
 - `syncHostsFile` writes through a temp file and a rename. `writeFileSync` truncates in place, and
