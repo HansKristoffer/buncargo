@@ -114,11 +114,17 @@ function detectDockerRuntime(binary?: string): DockerRuntime {
 	);
 }
 
-/** Docker's own words for "the daemon is not there". */
+/**
+ * Docker's own words for "the daemon is not there". Its "error during
+ * connect" prefixes every failure that is not a refused connection (a
+ * transport timeout, a pipe this user may not open), so only a Windows pipe
+ * that does not exist counts among them.
+ */
 export function isDaemonDownMessage(message: string): boolean {
-	return /cannot connect to the docker daemon|is the docker daemon running|docker daemon is not running|error during connect/i.test(
-		message,
-	);
+	const cannotConnect =
+		/cannot connect to the docker daemon|is the docker daemon running|docker daemon is not running/i;
+	const noPipe = /error during connect:.*pipe.*cannot find the file specified/i;
+	return cannotConnect.test(message) || noPipe.test(message);
 }
 
 /** What one `docker version` said about the daemon. */
