@@ -212,9 +212,12 @@ async function prepareAppPort(
 				: getPortOwner(port, { runtime, skipContainers });
 			if (holder) {
 				const held = formatPortOwner(port, holder, { runtime: runtime?.name });
-				throw new Error(
-					`${name} cannot start: ${held}, which did not stop when buncargo stopped the leftover process on it. Stop it yourself, then start again.`,
-				);
+				const stopIt =
+					holder.pids.length > 0
+						? `Stop it with \`kill ${holder.pids.join(" ")}\``
+						: "Stop it";
+				const refusal = `${name} cannot start: ${held}, which did not stop when buncargo stopped the leftover process on it. ${stopIt}, then start again.`;
+				throw new Error(refusal);
 			}
 			return "start";
 		},

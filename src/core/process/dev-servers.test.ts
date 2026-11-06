@@ -1302,20 +1302,25 @@ describe("startDevServers apps that never come up", () => {
 			const deadline = Date.now() + 5000;
 			while (!(await Bun.file(leftoverPid).exists()) && Date.now() < deadline)
 				await Bun.sleep(20);
-			await expect(
-				startDevServers(
-					{ web: { port, stopGraceMs: 300, devCommand: serve(port) } },
-					root,
-					{},
-					{ web: port },
-					{
-						verbose: false,
-						waitForExit: false,
-						skipContainers: true,
-						onAppSpawned: (name) => spawned.push(name),
-					},
-				),
-			).rejects.toThrow("did not stop");
+			const refusal = await startDevServers(
+				{ web: { port, stopGraceMs: 300, devCommand: serve(port) } },
+				root,
+				{},
+				{ web: port },
+				{
+					verbose: false,
+					waitForExit: false,
+					skipContainers: true,
+					onAppSpawned: (name) => spawned.push(name),
+				},
+			).then(
+				() => "",
+				(error) => toError(error).message,
+			);
+			expect(refusal).toContain("did not stop");
+			// The process that holds it now, and the command that stops it.
+			const successor = Number(await Bun.file(successorPid).text());
+			expect(refusal).toContain(`\`kill ${successor}\``);
 			expect(spawned).toEqual([]);
 		} finally {
 			leftover.kill("SIGKILL");

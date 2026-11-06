@@ -122,9 +122,8 @@ export async function spawnOwnedWorker(
 					unreadable: () =>
 						"may still be running: its process could not be inspected",
 				});
-				throw new Error(
-					`Worker "${name}" (pid ${pid}) ${reason}. Reuse it through the CLI, or use dev --takeover to move it here.`,
-				);
+				const refusal = `Worker "${name}" (pid ${pid}) ${reason}. Reuse it through the CLI, or use dev --takeover to move it here.`;
+				throw new Error(refusal);
 			}
 			const entries = decision.standing;
 
