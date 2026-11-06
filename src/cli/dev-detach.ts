@@ -6,6 +6,7 @@ import {
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
 } from "node:fs";
 import { join } from "node:path";
 import { promiseTimeout } from "hanzio";
@@ -79,9 +80,29 @@ export function detachedReportPath(root: string, pid: number): string {
 }
 
 const REPORT_FILE = /^detached-report-(\d+)\.json$/;
+/** The one report every run shared before reports were per pid. */
+const LEGACY_REPORT = "detached-report.json";
 
-/** Drop the reports of runs that have exited; the parent read what it needed. */
-function pruneDetachedReports(root: string): void {
+/**
+ * How long a run's report outlives the run: its parent polls every
+ * {@link POLL_MS} and reads it only after the run has exited.
+ */
+const DETACHED_FILE_GRACE_MS = 60_000;
+
+function modifiedAt(path: string): number | undefined {
+	try {
+		return statSync(path).mtimeMs;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Drop the reports of runs that exited over a minute ago (`now`): their
+ * parents have read them. A pid that is alive keeps its report, even when it
+ * is reused.
+ */
+export function pruneDetachedFiles(root: string, now: number): void {
 	let names: string[] = [];
 	try {
 		names = readdirSync(logsRoot(root));
@@ -89,9 +110,15 @@ function pruneDetachedReports(root: string): void {
 		return;
 	}
 	for (const name of names) {
+		const path = join(logsRoot(root), name);
 		const pid = Number(REPORT_FILE.exec(name)?.[1]);
-		if (pid && !isProcessAlive(pid))
-			rmSync(join(logsRoot(root), name), { force: true });
+		const perRun = pid > 0;
+		if (!perRun && name !== LEGACY_REPORT) continue;
+		if (perRun && isProcessAlive(pid)) continue;
+		const modified = modifiedAt(path);
+		if (modified === undefined || now - modified < DETACHED_FILE_GRACE_MS)
+			continue;
+		rmSync(path, { force: true });
 	}
 }
 
@@ -257,7 +284,7 @@ export async function runDetached(input: {
 	const argv = detachedArgv(input.argv);
 	const logPath = detachedLogPath(root);
 	mkdirSync(logsRoot(root), { recursive: true });
-	pruneDetachedReports(root);
+	pruneDetachedFiles(root, Date.now());
 	try {
 		renameSync(logPath, previousDetachedLogPath(root));
 	} catch {

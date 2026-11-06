@@ -1,10 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +16,7 @@ import {
 	detachedArgv,
 	detachedLogPath,
 	namedHostsFallbacks,
+	pruneDetachedFiles,
 	runDetached,
 	settledRun,
 	unreportedApps,
@@ -189,6 +192,65 @@ describe("runDetached", () => {
 		const pid = Number(/the run keeps going \(pid (\d+)\)/.exec(printed)?.[1]);
 		if (pid) process.kill(pid, "SIGTERM");
 		expect(code).toBe(2);
+	});
+});
+
+describe("pruneDetachedFiles", () => {
+	/** A pid that has exited: its run is over. */
+	async function deadPid(): Promise<number> {
+		const child = Bun.spawn(["true"]);
+		await child.exited;
+		return child.pid;
+	}
+
+	function logsDir() {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-prune-")));
+		const logs = join(root, ".buncargo", "logs");
+		mkdirSync(logs, { recursive: true });
+		return { root, logs };
+	}
+
+	/** Write `name` last modified at `mtimeMs`. */
+	function file(logs: string, name: string, mtimeMs: number): string {
+		const path = join(logs, name);
+		writeFileSync(path, "{}");
+		utimesSync(path, mtimeMs / 1000, mtimeMs / 1000);
+		return path;
+	}
+
+	// The parent polls every 250ms: a child that wrote its report and died
+	// lost it to a second `dev --detach` pruning in between.
+	it("keeps a dead run's report for a minute, for its parent to read", async () => {
+		const { root, logs } = logsDir();
+		try {
+			const now = Date.now();
+			const pid = await deadPid();
+			const fresh = file(logs, `detached-report-${pid}.json`, now - 1_000);
+			pruneDetachedFiles(root, now);
+			expect(existsSync(fresh)).toBe(true);
+			pruneDetachedFiles(root, now + 60_000);
+			expect(existsSync(fresh)).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps a live run's report however old, and drops the unsuffixed one", async () => {
+		const { root, logs } = logsDir();
+		try {
+			const now = Date.now();
+			const live = file(
+				logs,
+				`detached-report-${process.pid}.json`,
+				now - 3_600_000,
+			);
+			const legacy = file(logs, "detached-report.json", now - 3_600_000);
+			pruneDetachedFiles(root, now);
+			expect(existsSync(live)).toBe(true);
+			expect(existsSync(legacy)).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
 
