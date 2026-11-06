@@ -10,7 +10,12 @@ import { isolateHome } from "../test-env.testing";
 import { startDevServers } from "./dev-servers";
 import { ProcessOwner } from "./process-owner";
 import type { AppChild } from "./pty-app";
-import { findWorker, spawnOwnedWorker, stopWorker } from "./worker-ownership";
+import {
+	decideWorkerClaim,
+	findWorker,
+	spawnOwnedWorker,
+	stopWorker,
+} from "./worker-ownership";
 
 isolateHome("buncargo-worker-home-");
 
@@ -274,4 +279,27 @@ it("hands back a non-essential worker that died while its claim was written", as
 		expect(readFileSync(registryFile, "utf8")).not.toContain('"jobs"');
 	for (let i = 0; i < 40 && alive(real.pid ?? 0); i++) await Bun.sleep(25);
 	expect(real.exitCode !== null || real.signalCode !== null).toBe(true);
+});
+
+// macOS reads identities through a `ps` that can time out: a worker it cannot
+// read may still run, and dropping its claim started a second copy.
+it("keeps a claim whose identity cannot be read, and refuses its name", () => {
+	const jobs = { name: "jobs", pid: 101, identity: "v2:jobs" };
+	const mail = { name: "mail", pid: 102, identity: "v2:mail" };
+	const gone = { name: "gone", pid: 103, identity: "v2:gone" };
+	const checks = ["unreadable", "match", "mismatch"] as const;
+
+	expect(decideWorkerClaim([jobs, mail, gone], checks, "other")).toEqual({
+		kind: "claim",
+		standing: [jobs, mail],
+	});
+	expect(decideWorkerClaim([jobs, mail, gone], checks, "jobs")).toEqual({
+		kind: "held",
+		holder: jobs,
+		check: "unreadable",
+	});
+	expect(decideWorkerClaim([jobs, mail, gone], checks, "gone")).toEqual({
+		kind: "claim",
+		standing: [jobs, mail],
+	});
 });

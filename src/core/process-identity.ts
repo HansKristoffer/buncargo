@@ -269,6 +269,36 @@ export async function checkProcessIdentityAsync(
 	return "mismatch";
 }
 
+/**
+ * {@link checkProcessIdentityAsync} for a whole list, with one `ps` between
+ * them, in the list's order. The caller decides what `unreadable` means for
+ * it, in plain sight.
+ */
+export async function checkProcessIdentitiesAsync(
+	entries: readonly { pid: number; identity?: string }[],
+	signal?: AbortSignal,
+): Promise<ProcessIdentityCheck[]> {
+	signal?.throwIfAborted();
+	const alive = (pid: number) =>
+		Number.isInteger(pid) && pid > 1 && isProcessAlive(pid);
+	const asked = entries.filter(
+		(entry) => entry.identity !== undefined && alive(entry.pid),
+	);
+	const actual = await readProcessIdentitiesAsync(
+		asked.map((entry) => entry.pid),
+		signal,
+	);
+	return entries.map(({ pid, identity }): ProcessIdentityCheck => {
+		if (!alive(pid)) return "mismatch";
+		if (identity === undefined) return "match";
+		const read = actual.get(pid);
+		if (read === identity) return "match";
+		// Linux reads nothing for a pid that exited during the read.
+		if (read === undefined) return "unreadable";
+		return "mismatch";
+	});
+}
+
 type IdentityEntry = { pid: number; processIdentity?: string };
 function livePids(entries: readonly IdentityEntry[]): Set<number> {
 	return new Set(
