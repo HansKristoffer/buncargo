@@ -218,6 +218,30 @@ describe("a claim's lifecycle and its apps", () => {
 		await claim.releaseApps();
 	});
 
+	it("records a restart and a parked app on the rows, as `dev` does", async () => {
+		// A library start left a restarted app `ready`, so `buncargo wait`
+		// answered from the process being replaced, and a parked one as it was.
+		const root = mkdtempSync(join(home, "restart-park-"));
+		const claim = appClaimApi(root);
+		const session = { sessionId: claim.sessionId };
+		const status = async (name: string) =>
+			(await loadRuns())
+				.find((run) => run.sessionId === claim.sessionId)
+				?.apps.find((app) => app.name === name)?.status;
+		await claim.claimApps({ web: worker(), jobs: worker() });
+		claim.appEvents.onAppSpawned?.("web", 1_000_011, false);
+		claim.appEvents.onAppSpawned?.("jobs", 1_000_012, false);
+		claim.appEvents.onAppReady?.("web");
+
+		claim.appEvents.onAppRestarting?.("web");
+		claim.appEvents.onAppFailed?.("jobs", new Error("did not respond"));
+		await flushRunPatches(session);
+
+		expect(await status("web")).toBe("starting");
+		expect(await status("jobs")).toBe("failed");
+		await claim.releaseApps();
+	});
+
 	it("leaves a restarted app starting when a later start lists another", async () => {
 		// The rows replay put the old `failed` back over the new process.
 		const root = mkdtempSync(join(home, "replay-"));

@@ -1,12 +1,11 @@
 import { releaseLeases } from "../core/leases";
 import type { StartDevServersOptions } from "../core/process/dev-servers";
 import {
+	appRowEvents,
 	flushRunPatches,
-	markApps,
 	markServices,
 	publishCurrentRun,
 	type RunSource,
-	recordAppSpawn,
 } from "../core/run-publish";
 import {
 	buildRunEntryAsync,
@@ -84,7 +83,7 @@ export interface DevRunClaimApi {
 	/** What the spawner reports, recorded on the claimed apps' rows. */
 	readonly appEvents: Pick<
 		StartDevServersOptions,
-		"onAppSpawned" | "onAppReady" | "onAppExit" | "onAppRestartFailed"
+		keyof ReturnType<typeof appRowEvents>
 	>;
 	/**
 	 * After a start that failed: give back what its `claimApps` newly took,
@@ -323,20 +322,7 @@ export function createRunClaimApi<
 			return leases.apps;
 		},
 
-		appEvents: {
-			onAppSpawned: (name, pid, attached) => {
-				void recordAppSpawn(session, name, pid, attached);
-			},
-			onAppReady: (name) => {
-				void markApps(session, [name], "ready");
-			},
-			onAppExit: (name, _code, _signal, state) => {
-				void markApps(session, [name], state);
-			},
-			onAppRestartFailed: (name) => {
-				void markApps(session, [name], "failed");
-			},
-		},
+		appEvents: appRowEvents(session),
 
 		async abandonApps(apps) {
 			const taken = newlyClaimed.get(apps);

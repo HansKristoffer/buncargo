@@ -10,11 +10,9 @@ import { removeHostRoutes, routesDownRemoves } from "../core/hosts";
 import { releaseLeases } from "../core/leases";
 import { askConfirm, PromptInterruptedError } from "../core/prompt";
 import {
+	appRowEvents,
 	flushRunPatches,
-	markApps,
-	markAppsRestarting,
 	publishCurrentRun,
-	recordAppSpawn,
 	recordAppUrls,
 	recordRunCapture,
 } from "../core/run-publish";
@@ -844,15 +842,8 @@ async function runDevFlow<
 	const spawned = new Set<string>();
 	const view = openDevOutput(env, classifiedApps.startApps, { tui: args.tui });
 	failureContext.output = view.output;
-	// A restart (`r`, `buncargo restart`, a watch, a capture's `restartOn`)
-	// says `starting` before its new process spawns. The registry says so too,
-	// or `buncargo wait` answers from the process being replaced.
-	view.output.subscribe({
-		state: (app, { state }) => {
-			if (state === "starting" && spawned.has(app))
-				void markAppsRestarting(env, [app]);
-		},
-	});
+	// The app rows, recorded by the rule a library `start()` uses too.
+	const rows = appRowEvents(env);
 	// A service container stopping under the run: in the run's log, the TUI's
 	// Overview, and on the terminal in stream mode, where events are not printed.
 	env.reportServiceChanges((message, problem) => {
@@ -955,10 +946,10 @@ async function runDevFlow<
 				onSignal: () => {
 					void env.releaseRun();
 				},
-				// As each app comes up, not when its whole wave has.
-				onAppReady: (name) => {
-					void markApps(env, [name], "ready");
-				},
+				// Ready as each app comes up, not when its whole wave has; a
+				// restart (`r`, `buncargo restart`, a watch, a capture's
+				// `restartOn`) says `starting` before its new process spawns.
+				...rows,
 				// A developer's other apps should not go down with one that
 				// never came up; `ci` and library starts keep failing the run.
 				keepOthersOnFailure: env.onAppFailure !== "stop-run",
@@ -977,19 +968,14 @@ async function runDevFlow<
 							}),
 						],
 					}));
-					void markApps(env, [name], "failed");
+					rows.onAppFailed(name, error);
 				},
-				onAppRestartFailed: (name) => {
-					void markApps(env, [name], "failed");
-				},
-				// Deliberately not awaited: the registry is a status file, and
-				// nothing about starting servers may wait on it.
 				onAppSpawned: (name, pid, attached) => {
 					if (!firstSpawn) {
 						firstSpawn = true;
 						timer.record("entry to first app spawn", timer.elapsedMs());
 					}
-					void recordAppSpawn(env, name, pid, attached);
+					rows.onAppSpawned(name, pid, attached);
 					// Activation claimed the first spawn's route; a restart claims it
 					// again in case a takeover moved it away and its run ended.
 					if (spawned.has(name)) void reclaimAppRoute(env, name);
@@ -998,9 +984,9 @@ async function runDevFlow<
 				// A non-zero code is the app falling over: the run's end for an
 				// essential app that was up, a parked row for one that never came
 				// up while the others are spared.
-				onAppExit: (name, code, _signal, state) => {
+				onAppExit: (name, code, signal, state) => {
 					if (code !== null && code !== 0) explainLoss();
-					void markApps(env, [name], state);
+					rows.onAppExit(name, code, signal, state);
 				},
 				onAfterWave1: async (signal) => {
 					await timer.measure("tunnels", () =>

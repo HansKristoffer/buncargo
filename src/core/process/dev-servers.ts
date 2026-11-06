@@ -132,6 +132,11 @@ export interface StartDevServersOptions {
 	 */
 	onAppFailed?: (name: string, error: Error) => void;
 	/**
+	 * A restart of the app has begun: its row says `starting` until the new
+	 * process is ready. Never for a restart asked for after the run ended.
+	 */
+	onAppRestarting?: (name: string) => void;
+	/**
 	 * A restart retired the app's process and could not replace it: the app
 	 * is down until restarted again. Reported once, like an exit, so the run
 	 * registry stops saying `starting`.
@@ -441,6 +446,7 @@ export async function startDevServers(
 			readinessFailures.delete(name);
 			sideChecks.get(name)?.abort();
 			output.state(name, { state: "starting" });
+			options.onAppRestarting?.(name);
 			output.event(name, `restarting: ${reason}`);
 			if (!output.terminalSize)
 				console.log(formatStep(`🔁 Restarting ${name}: ${reason}`));

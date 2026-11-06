@@ -9,6 +9,7 @@ import type {
 	ServiceConfig,
 } from "../types";
 import { environmentOpenUrl, preferredAppUrl } from "./app-url";
+import type { StartDevServersOptions } from "./process/dev-servers";
 import type { CapturedValue } from "./process/output-capture";
 import { readProcessIdentitiesAsync } from "./process-identity";
 import {
@@ -514,6 +515,48 @@ export async function recordAppSpawn(
 		},
 		true,
 	);
+}
+
+/**
+ * What the spawner reports, recorded on the run's app rows: one rule for
+ * `buncargo dev` and a library `start()`. Each write is queued, never
+ * awaited: nothing about starting servers may wait on a status file.
+ */
+export function appRowEvents(
+	run: RunSession,
+): Required<
+	Pick<
+		StartDevServersOptions,
+		| "onAppSpawned"
+		| "onAppReady"
+		| "onAppRestarting"
+		| "onAppExit"
+		| "onAppFailed"
+		| "onAppRestartFailed"
+	>
+> {
+	return {
+		onAppSpawned: (name, pid, attached) => {
+			void recordAppSpawn(run, name, pid, attached);
+		},
+		onAppReady: (name) => {
+			void markApps(run, [name], "ready");
+		},
+		// Before the new process spawns, or `buncargo wait` answers from the
+		// process being replaced.
+		onAppRestarting: (name) => {
+			void markAppsRestarting(run, [name]);
+		},
+		onAppExit: (name, _code, _signal, state) => {
+			void markApps(run, [name], state);
+		},
+		onAppFailed: (name) => {
+			void markApps(run, [name], "failed");
+		},
+		onAppRestartFailed: (name) => {
+			void markApps(run, [name], "failed");
+		},
+	};
 }
 
 /**
