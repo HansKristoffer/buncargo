@@ -87,9 +87,14 @@ export function createAppleContainerCli(
 					: ["pipe", "pipe", "pipe"],
 			});
 
+			// Bun reports a kill at the timeout as `ETIMEDOUT` with the kill
+			// signal; a signal or a missing exit code alone is read the same
+			// way, so a probe that was cut off never reads as an answer.
+			const killed = result.signal !== null;
 			if (result.error) {
 				const { error } = result;
-				const timedOut = "code" in error && error.code === "ETIMEDOUT";
+				const timedOut =
+					killed || ("code" in error && error.code === "ETIMEDOUT");
 				return {
 					ok: false,
 					exitCode: 1,
@@ -98,8 +103,17 @@ export function createAppleContainerCli(
 					...(timedOut ? { timedOut } : {}),
 				};
 			}
+			if (killed || result.status === null) {
+				return {
+					ok: false,
+					exitCode: 1,
+					stdout: result.stdout ?? "",
+					stderr: result.stderr ?? "",
+					timedOut: true,
+				};
+			}
 
-			const exitCode = result.status ?? 1;
+			const exitCode = result.status;
 			return {
 				ok: exitCode === 0,
 				exitCode,
