@@ -9,6 +9,7 @@ import {
 	exportBundle,
 	importBundle,
 	inspectCheckoutFiles,
+	type MergeAnswers,
 	type MergeSide,
 	mergeCheckoutFile,
 	openCheckoutFiles,
@@ -336,8 +337,20 @@ async function merge(
 	take: Map<string, MergeSide>,
 ): Promise<number> {
 	requireSpecs(specs);
+	// Answers hold only for the copies they were given for: the merge reads
+	// both again under the lock, and drops them when either changed meanwhile.
+	let answered: MergeAnswers | undefined;
 	for (let first = true; ; first = false) {
-		const result = await mergeCheckoutFile(root, specs, path, { take });
+		const result = await mergeCheckoutFile(root, specs, path, {
+			take,
+			answered,
+		});
+		const stale = answered !== undefined && answered.inputs !== result.inputs;
+		if (stale && result.conflicts.length > 0)
+			log.warn(
+				`${path} changed in this checkout or the file store while you chose; asking again.`,
+			);
+		if (stale) answered = undefined;
 		if (!result.base && first)
 			log.warn(
 				`There is no copy of ${path} as it was last synced (an older buncargo synced it), so a key removed on one side is kept from the other.`,
@@ -349,6 +362,7 @@ async function merge(
 
 		// Ask per key, outside the store's lock; the merge reads both again.
 		if (isInteractive()) {
+			const asked = new Map(answered?.take);
 			for (const key of result.conflicts) {
 				const side = await askChoice<MergeSide | undefined>(
 					[
@@ -366,8 +380,9 @@ async function merge(
 					log.warn(`Stopped; ${path} was not merged.`);
 					return 1;
 				}
-				take.set(key, side);
+				asked.set(key, side);
 			}
+			answered = { take: asked, inputs: result.inputs };
 			continue;
 		}
 

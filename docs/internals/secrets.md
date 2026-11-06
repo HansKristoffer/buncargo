@@ -15,8 +15,10 @@ context. `secrets ls` prints key names, `secrets check` key counts.
 - `shared-request.ts` caches successful requests and gives each caller its own cancellation and
   timeout wait; the final waiter cancels and drains the underlying work before rejecting. CLI
   authentication shares the same lifetime across different scopes.
-- The CLI session token is cached per site and binary alongside scope fetches, evicted on
-  rejection, and cleared by `clearScopeSecretsCache`; organization exchanges stay per scope.
+- The CLI session token is cached per site and binary alongside scope fetches, and cleared by
+  `clearScopeSecretsCache`; organization exchanges stay per scope. A failed `user get token` is
+  not cached. A token Infisical answers 401 to (expired, or a logout elsewhere) is forgotten and
+  the CLI asked once more, so a long run's later scopes do not fail on what its first one cached.
 - The Infisical CLI is only asked for `infisical user get token`, under a `withFileLock` on
   `~/.buncargo/infisical-cli`, because concurrent Infisical CLI processes hang. When
   `organizationId` differs from the token's claim, the token is exchanged with

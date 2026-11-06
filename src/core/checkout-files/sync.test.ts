@@ -163,8 +163,21 @@ describe("the sync table", () => {
 	] as const)(
 		"checkout %s, store %s",
 		(_local, _store, local, base, store, action, state) => {
-			expect(syncAction(local, base, store)).toBe(action);
-			expect(fileState(local, base, store)).toBe(state);
+			expect(syncAction(local, base, store, x)).toBe(action);
+			expect(fileState(local, base, store, x)).toBe(state);
+		},
+	);
+
+	it.each([
+		["missing", undefined, undefined, "none", "missing"],
+		["present", undefined, s, "copy", "store-newer"],
+		["present, after a base", l, s, "copy", "store-newer"],
+		["the same template", undefined, l, "record-base", "in-sync"],
+	] as const)(
+		"checkout an unfilled template copy, store %s",
+		(_store, base, store, action, state) => {
+			expect(syncAction(l, base, store, l)).toBe(action);
+			expect(fileState(l, base, store, l)).toBe(state);
 		},
 	);
 });
@@ -196,6 +209,32 @@ describe("syncCheckoutFiles", () => {
 		writeLocal(repo, "A=filled\n");
 		await sync(repo, specs);
 		expect(readStore(repo)).toBe("A=filled\n");
+	});
+
+	it("never stores a template copy nobody filled in", async () => {
+		const repo = makeRepo();
+		writeFileSync(join(repo.root, ".env.example"), "A=\n");
+		const specs = spec(ENV, { template: ".env.example" });
+		await sync(repo, specs);
+
+		const report = await sync(repo, specs);
+
+		expect(readManifest(repo.store).kind).toBe("absent");
+		expect(report.files[0]?.state).toBe("missing");
+	});
+
+	it("replaces an unfilled template copy with the store's", async () => {
+		const repo = makeRepo();
+		writeFileSync(join(repo.root, ".env.example"), "A=\n");
+		const specs = spec(ENV, { template: ".env.example" });
+		await sync(repo, specs);
+		seedStore(repo, "A=filled\n");
+
+		const report = await sync(repo, specs);
+
+		expect(readLocal(repo)).toBe("A=filled\n");
+		expect(readBase(repo)).toBe(hash("A=filled\n"));
+		expect(report.files[0]?.state).toBe("in-sync");
 	});
 
 	it("leaves a file nobody has missing and writes nothing", async () => {
@@ -451,6 +490,35 @@ describe("mergeCheckoutFile", () => {
 		return repo;
 	}
 
+	const answer = (repo: Repo, inputs: string, side: "checkout" | "store") =>
+		mergeCheckoutFile(repo.root, spec(), ENV, {
+			home: repo.home,
+			log: (line) => repo.lines.push(line),
+			answered: { take: new Map([["A", side]]), inputs },
+		});
+
+	it("applies answers to the copies they were given for", async () => {
+		const repo = await diverged("A=1\n", "A=mine\n", "A=theirs\n");
+		const { inputs } = await merge(repo);
+
+		const result = await answer(repo, inputs, "store");
+
+		expect(result).toMatchObject({ conflicts: [], merged: true });
+		expect(readLocal(repo)).toBe("A=theirs\n");
+	});
+
+	it("drops answers when a copy changed while they were asked for", async () => {
+		const repo = await diverged("A=1\n", "A=mine\n", "A=theirs\n");
+		const { inputs } = await merge(repo);
+		seedStore(repo, "A=newer\n");
+
+		const result = await answer(repo, inputs, "store");
+
+		expect(result).toMatchObject({ conflicts: ["A"], merged: false });
+		expect(result.inputs).not.toBe(inputs);
+		expect(readLocal(repo)).toBe("A=mine\n");
+	});
+
 	it("merges both sides' changes from the last synced copy into the checkout and the store", async () => {
 		const repo = await diverged(
 			"A=1\nB=1\n",
@@ -471,7 +539,12 @@ describe("mergeCheckoutFile", () => {
 	it("writes nothing while a key changed on both sides is unresolved, and names only the key", async () => {
 		const repo = await diverged("A=1\n", "A=mine\n", "A=theirs\n");
 		const result = await merge(repo);
-		expect(result).toEqual({ conflicts: ["A"], merged: false, base: true });
+		expect(result).toMatchObject({
+			conflicts: ["A"],
+			merged: false,
+			base: true,
+		});
+		expect(result).not.toHaveProperty("backup");
 		expect(readLocal(repo)).toBe("A=mine\n");
 		expect(readStore(repo)).toBe("A=theirs\n");
 		expect(repo.lines.join("\n")).not.toMatch(/mine|theirs/);

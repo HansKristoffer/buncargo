@@ -71,8 +71,14 @@ const REQUEST_TIMEOUT_MS = 30_000;
  * on a login nobody will finish; a login prompt it prints ends it at once.
  */
 const CLI_TIMEOUT_MS = 2_000;
-/** Every worktree on the machine queues on one lock, so allow a real queue. */
-const LOCK_TIMEOUT_MS = 120_000;
+/** A shared load's ceiling, and every caller's default wait for one. */
+const LOAD_TIMEOUT_MS = REQUEST_TIMEOUT_MS * 2;
+/**
+ * Every worktree on the machine queues on one lock, so allow a real queue:
+ * all of the load's ceiling but the CLI run, so a long queue ends in the
+ * lock's own error, which names it, rather than a generic "did not answer".
+ */
+const LOCK_TIMEOUT_MS = LOAD_TIMEOUT_MS - CLI_TIMEOUT_MS;
 
 /**
  * The machine identity hanzio also reads when the environment names none:
@@ -191,6 +197,17 @@ export function applySecretDefaults<TApps extends Record<string, AppConfig>>(
 
 // ─── HTTP ────────────────────────────────────────────────────────────────────
 
+/** A refusal Infisical answered, with its status; never its body. */
+class InfisicalRequestError extends SecretsError {
+	constructor(
+		message: string,
+		fix: string | undefined,
+		readonly status: number,
+	) {
+		super(message, fix);
+	}
+}
+
 async function request(
 	scope: InfisicalScope,
 	operation: string,
@@ -215,9 +232,10 @@ async function request(
 	}
 	if (!response.ok) {
 		// The body is not echoed: it can quote what was sent.
-		throw new SecretsError(
+		throw new InfisicalRequestError(
 			`Infisical ${operation} failed (HTTP ${response.status}).`,
 			failureFix(scope, response.status),
+			response.status,
 		);
 	}
 	try {
@@ -265,20 +283,24 @@ function tokenFrom(value: unknown, field: string, operation: string): string {
 
 // ─── Authentication ──────────────────────────────────────────────────────────
 
+const cliBinary = () => infisicalPathOverride() ?? "infisical";
+
+const cliSessionKey = (scope: InfisicalScope) =>
+	`${scope.siteUrl}|${cliBinary()}`;
+
 /** `infisical user get token`, under the machine-wide CLI lock. */
 function cliSessionToken(
 	scope: InfisicalScope,
 	signal: AbortSignal,
 ): Promise<string> {
-	const binary = infisicalPathOverride() ?? "infisical";
-	const key = `${scope.siteUrl}|${binary}`;
+	const binary = cliBinary();
 	return sessionTokens.get(
-		key,
+		cliSessionKey(scope),
 		(sharedSignal) =>
 			readCliSessionToken(
 				scope,
 				binary,
-				timeoutSignal(REQUEST_TIMEOUT_MS * 2, sharedSignal),
+				timeoutSignal(LOAD_TIMEOUT_MS, sharedSignal),
 			),
 		signal,
 	);
@@ -416,9 +438,9 @@ function startsLoginFlow(output: string): boolean {
  */
 async function scopedSessionToken(
 	scope: InfisicalScope,
+	token: string,
 	signal: AbortSignal,
 ): Promise<string> {
-	const token = await cliSessionToken(scope, signal);
 	if (
 		!scope.organizationId ||
 		sessionOrganization(token) === scope.organizationId
@@ -524,6 +546,30 @@ async function listSecrets(
 	return values;
 }
 
+/**
+ * The scope's secrets with the user's CLI session. The session token is
+ * cached for the process, so a long run's later scopes would keep sending one
+ * Infisical stopped accepting (expired, or a logout elsewhere): on its 401
+ * the token is forgotten and the CLI asked once more.
+ */
+async function listWithCliSession(
+	scope: InfisicalScope,
+	signal: AbortSignal,
+): Promise<Record<string, string>> {
+	const list = async (token: string) =>
+		listSecrets(scope, await scopedSessionToken(scope, token, signal), signal);
+	const token = await cliSessionToken(scope, signal);
+	try {
+		return await list(token);
+	} catch (error) {
+		const refused =
+			error instanceof InfisicalRequestError && error.status === 401;
+		if (!refused) throw error;
+		sessionTokens.forget(cliSessionKey(scope), token);
+	}
+	return list(await cliSessionToken(scope, signal));
+}
+
 export async function fetchScopeSecrets(
 	scope: InfisicalScope,
 	options: {
@@ -542,7 +588,7 @@ export async function fetchScopeSecrets(
 		? createHash("sha256").update(JSON.stringify(credentials)).digest("hex")
 		: "session";
 	const key = `${scopeKey(scope)}|${authKey}`;
-	const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS * 2;
+	const timeoutMs = options.timeoutMs ?? LOAD_TIMEOUT_MS;
 	const timeout = AbortSignal.timeout(timeoutMs);
 	const waitSignal = anySignal(options.signal, timeout);
 	const pending = cache.get(
@@ -550,11 +596,10 @@ export async function fetchScopeSecrets(
 		async (sharedSignal) => {
 			// Transport has its own ceiling. A caller's shorter wait never
 			// changes the request or authentication lifetime of another caller.
-			const signal = timeoutSignal(REQUEST_TIMEOUT_MS * 2, sharedSignal);
+			const signal = timeoutSignal(LOAD_TIMEOUT_MS, sharedSignal);
 			signal.throwIfAborted();
-			const token = credentials
-				? await machineToken(scope, credentials, signal)
-				: await scopedSessionToken(scope, signal);
+			if (!credentials) return await listWithCliSession(scope, signal);
+			const token = await machineToken(scope, credentials, signal);
 			return await listSecrets(scope, token, signal);
 		},
 		waitSignal,
@@ -614,10 +659,7 @@ export async function ensureSecretsSession(
 	for (const scope of scopes)
 		if (signsInWithCli(env, scope.siteUrl)) sites.set(scope.siteUrl, scope);
 
-	const wait = anySignal(
-		options.signal,
-		AbortSignal.timeout(REQUEST_TIMEOUT_MS * 2),
-	);
+	const wait = anySignal(options.signal, AbortSignal.timeout(LOAD_TIMEOUT_MS));
 	await Promise.all(
 		[...sites.values()].map(async (scope) => {
 			try {

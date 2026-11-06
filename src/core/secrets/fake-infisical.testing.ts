@@ -15,11 +15,27 @@ import { join } from "node:path";
  * observable.
  */
 
-/** A session token whose claims name an organization; the signature is fake. */
-export function sessionToken(organizationId: string): string {
+/**
+ * A session token whose claims name an organization; the signature is fake.
+ * `session` tells apart the tokens of successive logins.
+ */
+export function sessionToken(organizationId: string, session = 0): string {
 	const encode = (value: object) =>
 		Buffer.from(JSON.stringify(value)).toString("base64url");
-	return `${encode({ alg: "none" })}.${encode({ organizationId })}.sig`;
+	const claims = session ? { organizationId, session } : { organizationId };
+	return `${encode({ alg: "none" })}.${encode(claims)}.sig`;
+}
+
+/** The login a token, or an organization token exchanged from it, belongs to. */
+function sessionOf(auth: string): number {
+	try {
+		const claims = JSON.parse(
+			Buffer.from(auth.split(".")[1] ?? "", "base64url").toString(),
+		) as { session?: unknown };
+		return typeof claims.session === "number" ? claims.session : 0;
+	} catch {
+		return 0;
+	}
 }
 
 export interface FakeInfisical {
@@ -30,6 +46,13 @@ export interface FakeInfisical {
 	cliCalls(): string[];
 	/** Let held list requests and CLI runs answer. */
 	release(): void;
+	/**
+	 * Revoke the CLI's session token, as an expiry or a logout elsewhere does:
+	 * requests with it get 401, and the CLI hands out a new one.
+	 */
+	rotateSession(): void;
+	/** Revoke the CLI's session token while the CLI keeps handing it out. */
+	revokeSession(): void;
 	/** Secrets per project; `imports` are listed as imported folders. */
 	projects: Record<
 		string,
@@ -59,7 +82,12 @@ export function startFakeInfisical(
 	const dir = mkdtempSync(join(tmpdir(), "buncargo-fake-infisical-"));
 	const log = join(dir, "cli.log");
 	const releaseFile = join(dir, "released");
+	const tokenFile = join(dir, "session");
 	const cliPath = join(dir, "infisical");
+	const organization = options.cliOrganization ?? "org-a";
+	let session = 0;
+	const revoked = new Set<string>();
+	writeFileSync(tokenFile, sessionToken(organization));
 	const loginFlow =
 		options.cliLogin === "prompt"
 			? 'echo "No valid login session found, triggering login flow" >&2\n'
@@ -70,7 +98,7 @@ export function startFakeInfisical(
 			? `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\n${loginFlow}exec sleep 30\n`
 			: options.cliFails
 				? `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\necho "secret-looking stderr" >&2\nexit 1\n`
-				: `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\n${options.holdCli ? `while [ ! -e ${JSON.stringify(releaseFile)} ]; do sleep 0.01; done\n` : ""}echo ${JSON.stringify(sessionToken(options.cliOrganization ?? "org-a"))}\n`,
+				: `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\n${options.holdCli ? `while [ ! -e ${JSON.stringify(releaseFile)} ]; do sleep 0.01; done\n` : ""}cat ${JSON.stringify(tokenFile)}\n`,
 	);
 	chmodSync(cliPath, 0o755);
 
@@ -95,6 +123,8 @@ export function startFakeInfisical(
 			requests.push(`${request.method} ${url.pathname}`);
 			const body = request.method === "POST" ? await request.json() : undefined;
 			const auth = request.headers.get("authorization") ?? "";
+			if (revoked.has(auth.replace(/^Bearer /, "")))
+				return new Response("{}", { status: 401 });
 
 			if (url.pathname === "/api/v3/auth/select-organization") {
 				const organizationId = (body as { organizationId: string })
@@ -102,7 +132,9 @@ export function startFakeInfisical(
 				if (options.mfaOrganizations?.includes(organizationId)) {
 					return Response.json({ token: "x", isMfaEnabled: true });
 				}
-				return Response.json({ token: sessionToken(organizationId) });
+				return Response.json({
+					token: sessionToken(organizationId, sessionOf(auth)),
+				});
 			}
 			if (url.pathname === "/api/v1/auth/universal-auth/login") {
 				const { clientSecret } = body as { clientSecret: string };
@@ -135,6 +167,14 @@ export function startFakeInfisical(
 		cliPath,
 		home: dir,
 		release,
+		rotateSession: () => {
+			revoked.add(sessionToken(organization, session));
+			session++;
+			writeFileSync(tokenFile, sessionToken(organization, session));
+		},
+		revokeSession: () => {
+			revoked.add(sessionToken(organization, session));
+		},
 		cliCalls: () => {
 			try {
 				return readFileSync(log, "utf8").trim().split("\n").filter(Boolean);

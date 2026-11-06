@@ -41,13 +41,31 @@ import {
 export type FileState =
 	"in-sync" | "store-newer" | "local-edits" | "conflict" | "missing";
 
-/** A file's state from three hashes: the checkout's copy, its base, the store's. */
+/**
+ * Whether the checkout's copy is still its template as copied, which counts
+ * as no copy until the store has the same: an unfilled template is never
+ * stored (from there agentgate would carry it over real values on other
+ * machines), and the store's copy replaces it.
+ */
+function isUnfilledTemplate(
+	local: string | undefined,
+	store: string | undefined,
+	template: string | undefined,
+): boolean {
+	return local !== undefined && local === template && local !== store;
+}
+
+/**
+ * A file's state from the hashes of the checkout's copy, its base, the
+ * store's and the configured template's.
+ */
 export function fileState(
 	local: string | undefined,
 	base: string | undefined,
 	store: string | undefined,
+	template: string | undefined,
 ): FileState {
-	if (local === undefined)
+	if (local === undefined || isUnfilledTemplate(local, store, template))
 		return store === undefined ? "missing" : "store-newer";
 	if (store === undefined) return "local-edits";
 	if (local === store) return "in-sync";
@@ -72,8 +90,11 @@ export function syncAction(
 	local: string | undefined,
 	base: string | undefined,
 	store: string | undefined,
+	template: string | undefined,
 ): SyncAction {
 	if (local === undefined) return store === undefined ? "template" : "copy";
+	if (isUnfilledTemplate(local, store, template))
+		return store === undefined ? "none" : "copy";
 	if (store === undefined) return "adopt";
 	if (local === store) return base === local ? "none" : "record-base";
 	if (base === local) return "copy";
@@ -282,6 +303,7 @@ interface View {
 	localHash?: string;
 	base?: string;
 	store?: { hash: string; data: Buffer; machine: boolean };
+	templateHash?: string;
 }
 
 interface Opened {
@@ -319,6 +341,7 @@ function readOpened(
 		const local = readLocal(root, spec.path);
 		const entry = manifest?.files[spec.path];
 		const data = entry ? readStoreData(dir, spec.path, entry) : undefined;
+		const template = readTemplate(root, spec);
 		return {
 			spec,
 			local,
@@ -328,13 +351,19 @@ function readOpened(
 				entry && data
 					? { hash: entry.sha256, data, machine: entry.machine }
 					: undefined,
+			templateHash: template ? sha256(template) : undefined,
 		};
 	});
 	return { repoKey, dir, manifest, state, views };
 }
 
 function stateOf(view: View): FileState {
-	return fileState(view.localHash, view.base, view.store?.hash);
+	return fileState(
+		view.localHash,
+		view.base,
+		view.store?.hash,
+		view.templateHash,
+	);
 }
 
 /** Whether `files merge` would read the checkout's copy, the store's and the base as dotenv. */
@@ -468,9 +497,14 @@ export async function syncCheckoutFiles(
 	}
 
 	const plan = (view: View): Planned => {
-		const action = syncAction(view.localHash, view.base, view.store?.hash);
+		const action = syncAction(
+			view.localHash,
+			view.base,
+			view.store?.hash,
+			view.templateHash,
+		);
 		if (action === "leave" && options.force && view.store) return "force";
-		if (action === "template" && !readTemplate(root, view.spec)) return "none";
+		if (action === "template" && !view.templateHash) return "none";
 		return action;
 	};
 	const needsWrite = (view: View) => !["none", "leave"].includes(plan(view));
@@ -571,7 +605,7 @@ function apply(
 			template: () => {
 				const data = readTemplate(root, view.spec);
 				if (!data) return;
-				// Not stored: the next load adopts the copy, filled in or not.
+				// Not stored: a load adopts the copy once it is filled in.
 				writeLocal(root, path, data);
 				log(
 					formatStep(`Created ${path} from ${view.spec.template}; fill it in`),
@@ -644,12 +678,22 @@ export interface MergeResult {
 	base: boolean;
 	/** Where the checkout's copy was backed up before it was replaced. */
 	backup?: string;
+	/** The checkout's copy, the store's and the base this merge read, as one hash. */
+	inputs: string;
+}
+
+/** Answers to the conflicts of the merge that read `inputs`. */
+export interface MergeAnswers {
+	take: ReadonlyMap<string, MergeSide>;
+	inputs: string;
 }
 
 /**
  * `files merge`: merge the checkout's dotenv copy and the store's key by key,
  * from the last synced copy, and write the result to both. Resolves the
- * conflicts named in `take`; any others are returned and nothing is written.
+ * conflicts named in `take`, and in `answered` while the copies are still
+ * the ones they were answered for (the questions are asked outside the
+ * lock); any others are returned and nothing is written.
  */
 export async function mergeCheckoutFile(
 	root: string,
@@ -657,6 +701,7 @@ export async function mergeCheckoutFile(
 	path: string,
 	options: CheckoutFilesOptions & {
 		take?: ReadonlyMap<string, MergeSide>;
+		answered?: MergeAnswers;
 	} = {},
 ): Promise<MergeResult> {
 	const log = options.log ?? defaultLog;
@@ -684,9 +729,14 @@ export async function mergeCheckoutFile(
 
 		const baseData = readBaseCopy(root, path, view.base);
 		const base = baseData !== undefined;
+		const read = `${view.localHash}:${store.hash}:${base ? view.base : ""}`;
+		const inputs = sha256(Buffer.from(read));
 		if (view.localHash === store.hash)
-			return { conflicts: [], merged: false, base };
+			return { conflicts: [], merged: false, base, inputs };
 
+		const answered =
+			options.answered?.inputs === inputs ? options.answered.take : [];
+		const take = new Map([...(options.take ?? []), ...answered]);
 		let result: ReturnType<typeof mergeDotenv>;
 		try {
 			const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -694,7 +744,7 @@ export async function mergeCheckoutFile(
 				decoder.decode(baseData ?? new Uint8Array()),
 				decoder.decode(local),
 				decoder.decode(store.data),
-				options.take,
+				take,
 			);
 		} catch (error) {
 			const reason =
@@ -709,7 +759,7 @@ export async function mergeCheckoutFile(
 			);
 		}
 		if (result.text === undefined)
-			return { conflicts: result.conflicts, merged: false, base };
+			return { conflicts: result.conflicts, merged: false, base, inputs };
 
 		const data = Buffer.from(result.text);
 		const hash = sha256(data);
@@ -732,7 +782,13 @@ export async function mergeCheckoutFile(
 					: `Merged ${path} into the file store`,
 			),
 		);
-		return { conflicts: [], merged: true, base, ...(backup ? { backup } : {}) };
+		return {
+			conflicts: [],
+			merged: true,
+			base,
+			inputs,
+			...(backup ? { backup } : {}),
+		};
 	});
 }
 

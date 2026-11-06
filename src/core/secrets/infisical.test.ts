@@ -464,6 +464,49 @@ it("retries a rejected session token after login and clears settled tokens", asy
 	expect(infisical.cliCalls()).toHaveLength(3);
 });
 
+describe("a session token Infisical stopped accepting", () => {
+	it("is asked for again once, for the next scope of a long run", async () => {
+		const infisical = start();
+		infisical.projects.p2 = { secrets: { B: "2" } };
+		await loadScopeSecrets(scopeOf("p1"), { env: noIdentity() });
+		infisical.rotateSession();
+
+		expect(
+			await loadScopeSecrets(scopeOf("p2"), { env: noIdentity() }),
+		).toEqual({ B: "2" });
+		expect(infisical.cliCalls()).toHaveLength(2);
+	});
+
+	it("is asked for again when the organization exchange refuses it", async () => {
+		const infisical = start({ cliOrganization: "org-a" });
+		infisical.projects.p2 = { secrets: { B: "2" } };
+		await loadScopeSecrets(scopeOf("p1"), { env: noIdentity() });
+		infisical.rotateSession();
+
+		expect(
+			await loadScopeSecrets(scopeOf("p2", { organizationId: "org-b" }), {
+				env: noIdentity(),
+			}),
+		).toEqual({ B: "2" });
+		expect(infisical.cliCalls()).toHaveLength(2);
+	});
+
+	it("asks once, and fails with the login when the CLI hands back the same one", async () => {
+		const infisical = start();
+		infisical.projects.p2 = { secrets: { B: "2" } };
+		await loadScopeSecrets(scopeOf("p1"), { env: noIdentity() });
+		infisical.revokeSession();
+
+		const error = await loadScopeSecrets(scopeOf("p2"), {
+			env: noIdentity(),
+		}).catch((caught: unknown) => caught);
+
+		expect(describeSecretsError(error)).toContain("HTTP 401");
+		expect(describeSecretsError(error)).toContain("infisical login");
+		expect(infisical.cliCalls()).toHaveLength(2);
+	});
+});
+
 it("never loads disabled scopes, even with machine credentials and explicit app scopes", async () => {
 	const infisical = start();
 	const disabledApp: AppConfig = {
