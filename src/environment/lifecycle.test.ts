@@ -284,6 +284,27 @@ describe("startup modes and hooks", () => {
 		await lifecycle.stop({ verbose: false });
 		expect(events).not.toContain("down");
 	});
+	it("reads as running with every service up, a finished job included", async () => {
+		// A job's container exits once it has run, which read as not running.
+		const { ctx, lifecycle } = fixture();
+		ctx.services.schema = { kind: "job", rerun: "always" };
+		ctx.runtime.projectServiceStates = async () => [
+			{ service: "db", state: "running", running: true },
+			{ service: "schema", state: "stopped", running: false },
+		];
+		await lifecycle.start({
+			prepare: "containers",
+			startServers: false,
+			verbose: false,
+			wait: false,
+		});
+		expect(await lifecycle.isRunning()).toBe(true);
+
+		ctx.runtime.projectServiceStates = async () => [
+			{ service: "db", state: "stopped", running: false },
+		];
+		expect(await lifecycle.isRunning()).toBe(false);
+	});
 	it("rejects an invalid selection before writing the artifact or starting runtime", async () => {
 		const { events, lifecycle } = fixture();
 		await expect(lifecycle.start({ onlyApps: ["missing"] })).rejects.toThrow(

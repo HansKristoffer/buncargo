@@ -92,6 +92,11 @@ export function createLifecycleApi<
 	 * which stop tears down.
 	 */
 	let broughtUp: "unknown" | "none" | "services" = "unknown";
+	/**
+	 * The stacks those starts brought up. A stack has no state to ask its CLI
+	 * for, so this is what `isRunning` knows of it.
+	 */
+	const stacksUp = new Set<string>();
 
 	function preparationSelected(prerequisites?: readonly string[]): boolean {
 		// Omitted prerequisites prepare whenever any service is selected; an
@@ -498,13 +503,14 @@ export function createLifecycleApi<
 						async () => {
 							const results = await Promise.allSettled([
 								Object.keys(compose).length > 0 ? composeUp() : undefined,
-								...stacks.map(({ stack }) =>
-									withDeadline(
+								...stacks.map(async ({ name, stack }) => {
+									await withDeadline(
 										(stackSignal) => stack.up(hookContext(stackSignal)),
 										600_000,
 										signal,
-									),
-								),
+									);
+									stacksUp.add(name);
+								}),
 							]);
 							for (const result of results)
 								if (result.status === "rejected") throw result.reason;
@@ -733,6 +739,7 @@ export function createLifecycleApi<
 		}
 		await runClaim.retireRun({ containersDown: hasCompose });
 		broughtUp = "unknown";
+		stacksUp.clear();
 		return true;
 	}
 
@@ -749,9 +756,16 @@ export function createLifecycleApi<
 			return false;
 		}
 
-		const compose = composeServicesOf(services);
-		const names = resolveComposeServiceNames(compose, Object.keys(compose));
-		if (names.length === 0) return false;
+		const stacks = configuredStacks(config as AnyDevConfig);
+		if (!stacks.every(({ name }) => stacksUp.has(name))) return false;
+		// A job's container has exited once it did its work.
+		const compose = Object.fromEntries(
+			Object.entries(composeServicesOf(services)).filter(
+				([, service]) => service.kind !== "job",
+			),
+		);
+		const names = resolveComposeServiceNames(services, Object.keys(compose));
+		if (names.length === 0) return stacks.length > 0;
 		// Throws when the runtime cannot answer, which is not running either.
 		const states = await ctx.runtime
 			.projectServiceStates(ctx.projectName)
