@@ -187,7 +187,7 @@ it("hands a non-essential worker that died while being claimed to the supervisor
 	// The supervisor reports its exit although it never sees an `exit` event.
 	const exits: (number | null)[] = [];
 	const owner = new ProcessOwner({
-		optional: new Set(["jobs"]),
+		isOptional: (name) => name === "jobs",
 		onAppExit: (_name, code) => exits.push(code),
 	});
 	try {

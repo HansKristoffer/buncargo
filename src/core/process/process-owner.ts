@@ -56,8 +56,11 @@ export class ProcessOwner {
 	private names = new Map<AppChild | DetachedApp, string>();
 	private live = new Set<AppChild | DetachedApp>();
 	private retired = new Set<AppChild | DetachedApp>();
+	/** Every child a restart retired, also once its exit has been handled. */
+	private replaced = new WeakSet<AppChild | DetachedApp>();
 	private sealed = false;
-	private exits = new Set<Promise<void>>();
+	/** The handling of each child's exit, while it runs. */
+	private exits = new Map<AppChild | DetachedApp, Promise<void>>();
 	private pendingReadiness = new Set<string>();
 	/** Non-essential apps that exited: the run waits for a restart, not for them. */
 	private parked = new Set<string>();
@@ -79,8 +82,12 @@ export class ProcessOwner {
 			/** Apps that set `stopGraceMs`: their own grace instead of the default. */
 			appGraceMs?: ReadonlyMap<string, number>;
 			attachedName?: string;
-			/** Apps with `essential: false`: their exit never ends the run. */
-			optional?: ReadonlySet<string>;
+			/**
+			 * Apps whose exit parks them instead of ending the run: `essential:
+			 * false`, and whatever else the caller spares (see `startDevServers`).
+			 * Asked at each exit, so an app can move in and out.
+			 */
+			isOptional?: (name: string) => boolean;
 			onAppAdopted?: (name: string, child: DetachedApp) => void;
 			onAppExit?: (
 				name: string,
@@ -130,6 +137,16 @@ export class ProcessOwner {
 					!(child instanceof DetachedApp)
 				) {
 					const detached = await findDetachedApp(port, child.pid);
+					// A restart retired it while its listener was being looked for:
+					// that listener is the old server, and the replacement needs the
+					// port. `retire` waits for this.
+					if (this.replaced.has(child)) {
+						this.retired.delete(child);
+						this.live.delete(child);
+						if (detached)
+							await terminateOwnedProcess(detached.child, this.graceFor(name));
+						return;
+					}
 					if (detached) {
 						this.live.delete(child);
 						this.forgetIfGone(child);
@@ -160,17 +177,11 @@ export class ProcessOwner {
 				} catch {
 					/* Observers cannot break process cleanup. */
 				}
+				const optional = this.isOptional(name);
 				const deliberate =
-					appExitState(code, signal, {
-						worker,
-						optional: this.options.optional?.has(name) ?? false,
-					}) === "stopped";
-				if (
-					this.options.optional?.has(name) &&
-					!this.controller.signal.aborted
-				) {
-					this.pendingReadiness.delete(name);
-					this.parked.add(name);
+					appExitState(code, signal, { worker, optional }) === "stopped";
+				if (optional && !this.controller.signal.aborted) {
+					this.park(name);
 				} else if (!this.controller.signal.aborted) {
 					if (!deliberate || this.pendingReadiness.has(name))
 						this.controller.abort(
@@ -186,10 +197,10 @@ export class ProcessOwner {
 				if (this.sealed && this.live.size === 0 && this.parked.size === 0)
 					this.resolveDone();
 			})();
-			this.exits.add(operation);
+			this.exits.set(child, operation);
 			void operation
 				.catch((error) => this.controller.abort(error))
-				.finally(() => this.exits.delete(operation));
+				.finally(() => this.exits.delete(child));
 		};
 		// A child can be gone before it is registered: a worker that crashed
 		// while its ownership was being claimed. Its exit counts all the same.
@@ -214,6 +225,10 @@ export class ProcessOwner {
 	 */
 	async retire(child: AppChild | DetachedApp): Promise<void> {
 		this.retired.add(child);
+		this.replaced.add(child);
+		// An exit already being handled may be adopting the server it left
+		// behind: settled first, so that server is stopped too.
+		await this.exits.get(child)?.catch(() => {});
 		await terminateOwnedProcess(child, this.graceOf(child));
 		if (child instanceof DetachedApp) {
 			child.dispose();
@@ -224,6 +239,31 @@ export class ProcessOwner {
 		this.names.delete(child);
 		if (child.exitCode !== null || child.signalCode !== null)
 			this.retired.delete(child);
+	}
+
+	/**
+	 * A restart retired the app's process and could not start another: the
+	 * app is down as if it had exited. An optional app is parked until a later
+	 * restart; any other app ends the run, which would otherwise wait on an
+	 * app that is gone.
+	 */
+	replacementFailed(name: string, error: Error): void {
+		if (this.controller.signal.aborted) return;
+		if (this.isOptional(name)) {
+			this.park(name);
+			return;
+		}
+		const message = `App "${name}" could not be restarted: ${error.message}`;
+		this.controller.abort(new Error(message, { cause: error }));
+	}
+
+	private isOptional(name: string): boolean {
+		return this.options.isOptional?.(name) ?? false;
+	}
+
+	private park(name: string): void {
+		this.pendingReadiness.delete(name);
+		this.parked.add(name);
 	}
 
 	/** How long one app gets between SIGTERM and SIGKILL. */
@@ -255,13 +295,13 @@ export class ProcessOwner {
 	stop(): Promise<void> {
 		this.cleanup ??= (async () => {
 			this.controller.abort(new RunInterrupted("Run stopped"));
-			await Promise.allSettled([...this.exits]);
+			await Promise.allSettled([...this.exits.values()]);
 			const results = await Promise.allSettled(
 				[...this.children].map((child) =>
 					terminateOwnedProcess(child, this.graceOf(child)),
 				),
 			);
-			await Promise.allSettled([...this.exits]);
+			await Promise.allSettled([...this.exits.values()]);
 			const errors = results.flatMap((result) =>
 				result.status === "rejected" ? [result.reason] : [],
 			);

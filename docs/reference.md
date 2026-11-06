@@ -737,16 +737,19 @@ block an error line opens (`[ERROR] job.completed {` … `}`) is kept whole.
 `essential: false` keeps the run going when that app exits. It shows as stopped
 (or failed) with its exit code, its pane keeps its last output, and `r` in the
 TUI or `buncargo restart <app>` starts it again without re-running anything
-else. It never holds startup up: it is health-checked on the side. In stream
-mode the run prints the app's last error lines and the restart command.
+else. It never holds startup up: it is health-checked on the side, and one that
+never answers is stopped and shown as failed. In stream mode the run prints the
+app's last error lines and the restart command.
 
 ### When an app does not come up
 
-In `buncargo dev`, an app that does not become ready is stopped and shown as
-failed, and the other apps keep running; `buncargo restart <app>` tries it
-again. The run still fails when nothing else is left, or when another app
-`startAfter`s the failed one. `options.onAppFailure: "stop-run"` ends the run
-instead, which is what `ci` and a library `start()` always do.
+In `buncargo dev`, an app that does not become ready, crashes while it starts,
+or cannot be started again by a restart is stopped and shown as failed, and the
+other apps keep running; `buncargo restart <app>` tries it again, and once it is
+up its exit ends the run like any app's. The run still fails when nothing else
+is left, or when another app `startAfter`s the failed one.
+`options.onAppFailure: "stop-run"` ends the run instead, which is what `ci` and a
+library `start()` always do.
 
 ### Watching files
 

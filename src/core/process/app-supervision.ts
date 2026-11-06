@@ -1,3 +1,4 @@
+import { toError } from "hanzio";
 import type { DevServerPids } from "../../types";
 import { formatPidLine } from "../style";
 import type { DetachedApp } from "./detached-app";
@@ -21,10 +22,10 @@ export class AppSupervision {
 			port?: number;
 		}
 	>();
-	private restarts = new Set<Promise<void>>();
+	private restarts = new Set<Promise<boolean>>();
 	/** Per app: the restart in flight, and one waiting behind it. */
-	private running = new Map<string, Promise<void>>();
-	private queued = new Map<string, Promise<void>>();
+	private running = new Map<string, Promise<boolean>>();
+	private queued = new Map<string, Promise<boolean>>();
 	private cleanup?: Promise<void>;
 	/** What a handed-off session still does once stopped: its output's last flush. */
 	private closing: Promise<void> = Promise.resolve();
@@ -36,16 +37,19 @@ export class AppSupervision {
 			onAppSpawned?: (name: string, pid: number, attached: boolean) => void;
 			/** A restart is beginning: where it is announced. */
 			onRestart: (name: string, reason: string) => void;
+			/**
+			 * A restart retired the app's process and could not start another.
+			 * Called before the owner parks the app or ends the run, so the
+			 * caller can still decide the app is spared (`isOptional`).
+			 */
+			onRestartFailed?: (name: string, error: Error) => void;
 		},
 	) {
 		this.owner = new ProcessOwner({
 			...options,
 			onAppAdopted: (name, child) => {
-				const old = this.pids[name];
-				if (old) activeSessions.delete(old);
 				this.children.set(name, child);
-				this.pids[name] = child.pid;
-				activeSessions.set(child.pid, this);
+				this.track(name, child.pid);
 				options.onAppSpawned?.(name, child.pid, false);
 				options.onAppAdopted?.(name, child);
 			},
@@ -78,23 +82,38 @@ export class AppSupervision {
 		this.owner.register(name, child, needsReadiness, worker, port);
 		this.children.set(name, child);
 		if (!child.pid) return;
-		this.pids[name] = child.pid;
-		activeSessions.set(child.pid, this);
+		this.track(name, child.pid);
 		this.options.onAppSpawned?.(name, child.pid, attached);
 		if (this.options.verbose)
 			console.log(formatPidLine(name, child.pid, this.options.width));
 	}
 
 	/**
+	 * The app's current pid, and the one {@link stopDevServers} finds this
+	 * session by. An app's last pid stays until another replaces it, also once
+	 * the process is gone: a session whose apps are all parked or failed to
+	 * restart is still running, and its caller's pids are how it is stopped.
+	 */
+	private track(name: string, pid: number): void {
+		const previous = this.pids[name];
+		if (previous !== undefined && activeSessions.get(previous) === this)
+			activeSessions.delete(previous);
+		this.pids[name] = pid;
+		activeSessions.set(pid, this);
+	}
+
+	/**
 	 * Replace one app. Restarts of the same app run one after another: two at
 	 * once would both retire the same child and both spawn a replacement, and
 	 * the second fails on the port the first just bound. A request arriving
-	 * while one is still waiting its turn joins that one.
+	 * while one is still waiting its turn joins that one. Resolves to whether
+	 * the app was replaced: not when it has no process of this session's (a
+	 * reused one) or the run is ending.
 	 */
 	restart(
 		name: string,
 		reason = "a value it restarts on changed",
-	): Promise<void> {
+	): Promise<boolean> {
 		const queued = this.queued.get(name);
 		if (queued) return queued;
 		const previous = this.running.get(name) ?? Promise.resolve();
@@ -118,23 +137,33 @@ export class AppSupervision {
 		return operation;
 	}
 
-	private async replace(name: string, reason: string): Promise<void> {
+	private async replace(name: string, reason: string): Promise<boolean> {
 		const current = this.children.get(name);
 		const spawner = this.spawners.get(name);
-		if (!current || !spawner || this.owner.controller.signal.aborted) return;
+		if (!current || !spawner || this.owner.controller.signal.aborted)
+			return false;
 		this.options.onRestart(name, reason);
 		await this.owner.retire(current);
-		if (current.pid) activeSessions.delete(current.pid);
 		this.owner.controller.signal.throwIfAborted();
-		const child = await spawner.spawn();
-		await this.register(
-			name,
-			child,
-			spawner.worker,
-			spawner.attached,
-			false,
-			spawner.port,
-		);
+		try {
+			const child = await spawner.spawn();
+			await this.register(
+				name,
+				child,
+				spawner.worker,
+				spawner.attached,
+				false,
+				spawner.port,
+			);
+		} catch (error) {
+			// A run that is ending reports its apps itself.
+			if (!this.owner.controller.signal.aborted) {
+				this.options.onRestartFailed?.(name, toError(error));
+				this.owner.replacementFailed(name, toError(error));
+			}
+			throw error;
+		}
+		return true;
 	}
 
 	/**
@@ -169,7 +198,8 @@ export class AppSupervision {
 	}
 
 	dispose(): void {
-		for (const pid of Object.values(this.pids)) activeSessions.delete(pid);
+		for (const pid of Object.values(this.pids))
+			if (activeSessions.get(pid) === this) activeSessions.delete(pid);
 		this.children.clear();
 		this.spawners.clear();
 		this.owner.dispose();
