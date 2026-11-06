@@ -1,6 +1,9 @@
 import { existsSync } from "node:fs";
 import { isDefined, startTimer, typedSwitch, typedSwitchGroup } from "hanzio";
-import type { RuntimeAvailability } from "../container-runtime/types";
+import {
+	ContainerRuntimeUnavailableError,
+	type RuntimeAvailability,
+} from "../container-runtime/types";
 import { abortableSleep, remainingTime } from "../core/deadline";
 import { execAsync } from "../core/process/exec";
 import { askConfirm, isInteractive } from "../core/prompt";
@@ -24,21 +27,24 @@ export type DockerRuntime =
 	| "podman"
 	| "unknown";
 
-export class DockerUnavailableError extends Error {
-	readonly runtime: DockerRuntime;
-	readonly remediation: string;
+/**
+ * Docker cannot be used. A `ContainerRuntimeUnavailableError` like Apple's,
+ * so a caller catching that one catches both; `runtime` is `"docker"` and
+ * `dockerRuntime` names what runs the daemon.
+ */
+export class DockerUnavailableError extends ContainerRuntimeUnavailableError {
+	readonly dockerRuntime: DockerRuntime;
 
 	constructor(
-		runtime: DockerRuntime,
+		dockerRuntime: DockerRuntime,
 		remediation: string,
-		problem = runtime === "unknown"
+		problem = dockerRuntime === "unknown"
 			? "Docker is not running."
-			: `Docker is not running (${runtime}).`,
+			: `Docker is not running (${dockerRuntime}).`,
 	) {
-		super(`${problem} ${remediation}`);
+		super("docker", "Docker", remediation, problem);
 		this.name = "DockerUnavailableError";
-		this.runtime = runtime;
-		this.remediation = remediation;
+		this.dockerRuntime = dockerRuntime;
 	}
 }
 

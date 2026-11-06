@@ -2,6 +2,11 @@
 
 Each section lists what a consumer of `buncargo` has to change when crossing one major version, newest first. Breaking changes that shipped inside a minor release are listed under the major you cross when you pick them up. If you are several majors behind, work through the sections from the bottom up.
 
+## 15.x → 16.0
+
+- **`DockerUnavailableError` is a `ContainerRuntimeUnavailableError`** (`buncargo/docker`, `buncargo`). Code catching `ContainerRuntimeUnavailableError` now catches Docker's too. Its `runtime` is now `"docker"`, as on the base class; read which Docker runs the daemon (`"orbstack"`, `"docker-desktop"`, …) from `dockerRuntime`.
+- **Custom container runtime adapters** must implement `availability()`, returning `{ state: "up" }`, `{ state: "down" }` (nothing can be running) or `{ state: "unreachable", detail }`. Each `ServiceRuntimeState` carries a `state` (`"running"`, `"paused"`, `"restarting"`, `"created"`, `"stopping"`, `"stopped"` or `"unknown"`).
+
 ## 14.0 → 15.0
 
 - **Bun 1.4.4 or newer is required** (`engines.bun`, previously `>=1.4.2`). Upgrade with `bun upgrade`, and update any `.bun-version`, `packageManager` or CI `bun-version` pin that names an older release. `check.format` already needed it, because older Bun has no `bun fmt`.

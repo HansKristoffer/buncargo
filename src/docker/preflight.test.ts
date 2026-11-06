@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ContainerRuntimeUnavailableError } from "../container-runtime/types";
 import {
 	DESKTOP_COLD_START_MS,
 	DockerUnavailableError,
@@ -293,6 +294,14 @@ describe("Docker Desktop process detection", () => {
 			"  106   501 /Applications/Docker.app/Contents/MacOS/com.docker.virtualization",
 		].join("\n");
 		expect(parseDockerDesktopPids(ps, 501)).toEqual([101, 102, 106]);
+	});
+
+	it("is a ContainerRuntimeUnavailableError, so one catch covers both runtimes", () => {
+		const error = unresponsiveDockerError([102]);
+		expect(error).toBeInstanceOf(ContainerRuntimeUnavailableError);
+		expect(error.runtime).toBe("docker");
+		expect(error.dockerRuntime).toBe("docker-desktop");
+		expect(error.message).toStartWith("Docker Desktop is running (pid 102)");
 	});
 
 	it("names a hung Docker Desktop and the fix, not 'not running'", () => {

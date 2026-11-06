@@ -303,8 +303,10 @@ export class ContainerRuntimeUnavailableError extends Error {
 		runtime: ContainerRuntimeName,
 		displayName: string,
 		remediation: string,
+		/** What is wrong, when it is more than "not running". */
+		problem = `${displayName} is not running.`,
 	) {
-		super(`${displayName} is not running. ${remediation}`);
+		super(`${problem} ${remediation}`);
 		this.name = "ContainerRuntimeUnavailableError";
 		this.runtime = runtime;
 		this.remediation = remediation;
