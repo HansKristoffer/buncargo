@@ -163,8 +163,21 @@ describe("the sync table", () => {
 	] as const)(
 		"checkout %s, store %s",
 		(_local, _store, local, base, store, action, state) => {
-			expect(syncAction(local, base, store)).toBe(action);
-			expect(fileState(local, base, store)).toBe(state);
+			expect(syncAction(local, base, store, x)).toBe(action);
+			expect(fileState(local, base, store, x)).toBe(state);
+		},
+	);
+
+	it.each([
+		["missing", undefined, undefined, "none", "missing"],
+		["present", undefined, s, "copy", "store-newer"],
+		["present, after a base", l, s, "copy", "store-newer"],
+		["the same template", undefined, l, "record-base", "in-sync"],
+	] as const)(
+		"checkout an unfilled template copy, store %s",
+		(_store, base, store, action, state) => {
+			expect(syncAction(l, base, store, l)).toBe(action);
+			expect(fileState(l, base, store, l)).toBe(state);
 		},
 	);
 });
@@ -196,6 +209,32 @@ describe("syncCheckoutFiles", () => {
 		writeLocal(repo, "A=filled\n");
 		await sync(repo, specs);
 		expect(readStore(repo)).toBe("A=filled\n");
+	});
+
+	it("never stores a template copy nobody filled in", async () => {
+		const repo = makeRepo();
+		writeFileSync(join(repo.root, ".env.example"), "A=\n");
+		const specs = spec(ENV, { template: ".env.example" });
+		await sync(repo, specs);
+
+		const report = await sync(repo, specs);
+
+		expect(readManifest(repo.store).kind).toBe("absent");
+		expect(report.files[0]?.state).toBe("missing");
+	});
+
+	it("replaces an unfilled template copy with the store's", async () => {
+		const repo = makeRepo();
+		writeFileSync(join(repo.root, ".env.example"), "A=\n");
+		const specs = spec(ENV, { template: ".env.example" });
+		await sync(repo, specs);
+		seedStore(repo, "A=filled\n");
+
+		const report = await sync(repo, specs);
+
+		expect(readLocal(repo)).toBe("A=filled\n");
+		expect(readBase(repo)).toBe(hash("A=filled\n"));
+		expect(report.files[0]?.state).toBe("in-sync");
 	});
 
 	it("leaves a file nobody has missing and writes nothing", async () => {

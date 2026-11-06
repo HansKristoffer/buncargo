@@ -41,13 +41,31 @@ import {
 export type FileState =
 	"in-sync" | "store-newer" | "local-edits" | "conflict" | "missing";
 
-/** A file's state from three hashes: the checkout's copy, its base, the store's. */
+/**
+ * Whether the checkout's copy is still its template as copied, which counts
+ * as no copy until the store has the same: an unfilled template is never
+ * stored (from there agentgate would carry it over real values on other
+ * machines), and the store's copy replaces it.
+ */
+function isUnfilledTemplate(
+	local: string | undefined,
+	store: string | undefined,
+	template: string | undefined,
+): boolean {
+	return local !== undefined && local === template && local !== store;
+}
+
+/**
+ * A file's state from the hashes of the checkout's copy, its base, the
+ * store's and the configured template's.
+ */
 export function fileState(
 	local: string | undefined,
 	base: string | undefined,
 	store: string | undefined,
+	template: string | undefined,
 ): FileState {
-	if (local === undefined)
+	if (local === undefined || isUnfilledTemplate(local, store, template))
 		return store === undefined ? "missing" : "store-newer";
 	if (store === undefined) return "local-edits";
 	if (local === store) return "in-sync";
@@ -72,8 +90,11 @@ export function syncAction(
 	local: string | undefined,
 	base: string | undefined,
 	store: string | undefined,
+	template: string | undefined,
 ): SyncAction {
 	if (local === undefined) return store === undefined ? "template" : "copy";
+	if (isUnfilledTemplate(local, store, template))
+		return store === undefined ? "none" : "copy";
 	if (store === undefined) return "adopt";
 	if (local === store) return base === local ? "none" : "record-base";
 	if (base === local) return "copy";
@@ -282,6 +303,7 @@ interface View {
 	localHash?: string;
 	base?: string;
 	store?: { hash: string; data: Buffer; machine: boolean };
+	templateHash?: string;
 }
 
 interface Opened {
@@ -319,6 +341,7 @@ function readOpened(
 		const local = readLocal(root, spec.path);
 		const entry = manifest?.files[spec.path];
 		const data = entry ? readStoreData(dir, spec.path, entry) : undefined;
+		const template = readTemplate(root, spec);
 		return {
 			spec,
 			local,
@@ -328,13 +351,19 @@ function readOpened(
 				entry && data
 					? { hash: entry.sha256, data, machine: entry.machine }
 					: undefined,
+			templateHash: template ? sha256(template) : undefined,
 		};
 	});
 	return { repoKey, dir, manifest, state, views };
 }
 
 function stateOf(view: View): FileState {
-	return fileState(view.localHash, view.base, view.store?.hash);
+	return fileState(
+		view.localHash,
+		view.base,
+		view.store?.hash,
+		view.templateHash,
+	);
 }
 
 /** Whether `files merge` would read the checkout's copy, the store's and the base as dotenv. */
@@ -468,9 +497,14 @@ export async function syncCheckoutFiles(
 	}
 
 	const plan = (view: View): Planned => {
-		const action = syncAction(view.localHash, view.base, view.store?.hash);
+		const action = syncAction(
+			view.localHash,
+			view.base,
+			view.store?.hash,
+			view.templateHash,
+		);
 		if (action === "leave" && options.force && view.store) return "force";
-		if (action === "template" && !readTemplate(root, view.spec)) return "none";
+		if (action === "template" && !view.templateHash) return "none";
 		return action;
 	};
 	const needsWrite = (view: View) => !["none", "leave"].includes(plan(view));
@@ -571,7 +605,7 @@ function apply(
 			template: () => {
 				const data = readTemplate(root, view.spec);
 				if (!data) return;
-				// Not stored: the next load adopts the copy, filled in or not.
+				// Not stored: a load adopts the copy once it is filled in.
 				writeLocal(root, path, data);
 				log(
 					formatStep(`Created ${path} from ${view.spec.template}; fill it in`),
