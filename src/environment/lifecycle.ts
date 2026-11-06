@@ -740,7 +740,10 @@ export function createLifecycleApi<
 		const compose = composeServicesOf(services);
 		const names = resolveComposeServiceNames(compose, Object.keys(compose));
 		if (names.length === 0) return false;
-		const states = await ctx.runtime.projectServiceStates(ctx.projectName);
+		// Throws when the runtime cannot answer, which is not running either.
+		const states = await ctx.runtime
+			.projectServiceStates(ctx.projectName)
+			.catch(() => []);
 		const running = new Set(
 			states.filter((state) => state.running).map((state) => state.service),
 		);

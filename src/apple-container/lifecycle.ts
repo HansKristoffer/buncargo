@@ -24,7 +24,7 @@ import {
 	projectVolumeNames,
 } from "./run-plan";
 import type { AppleContainerRecord } from "./status";
-import { parseContainerRecords, recordState } from "./status";
+import { LIST_ARGS, readContainerListing, recordState } from "./status";
 
 /** A `container` argv, or one whose output streams to the terminal. */
 type AppleStep = string[] | { args: string[]; stream: true };
@@ -203,13 +203,13 @@ function* upSteps(
 
 	// Read the inventory once so every service in this run decides reuse against
 	// the same snapshot rather than re-listing per service.
-	const inventory = yield ["ls", "--all", "--format", "json"];
-	if (!inventory.ok) failed(inventory, "read container inventory");
+	// Output that is not JSON is no inventory: read as empty, every `run`
+	// below would collide with a container that is there.
+	const inventory = yield LIST_ARGS;
+	const listing = readContainerListing(inventory);
+	if (!listing.listed) failed(inventory, "read container inventory");
 	const existing = new Map(
-		parseContainerRecords(inventory.stdout).map((record) => [
-			record.id,
-			record,
-		]),
+		listing.records.map((record) => [record.id, record]),
 	);
 
 	for (const service of plan.services) {
@@ -227,7 +227,8 @@ function* upSteps(
 function* downSteps(request: ContainerDownRequest): AppleSteps {
 	const { verbose = true, removeVolumes = false } = request;
 
-	const inventory = yield ["ls", "--all", "--format", "json"];
+	const inventory = yield LIST_ARGS;
+	const listing = readContainerListing(inventory);
 	if (!inventory.ok) {
 		// A stopped system service runs no containers, so there is nothing to
 		// stop, as with Docker's daemon. Asked only after the listing failed,
@@ -245,7 +246,9 @@ function* downSteps(request: ContainerDownRequest): AppleSteps {
 			);
 		return;
 	}
-	const records = parseContainerRecords(inventory.stdout).filter(
+	// Answered, but not with JSON: nothing here says the project is empty.
+	if (!listing.listed) failed(inventory, "read container inventory");
+	const records = listing.records.filter(
 		(record) => record.labels[PROJECT_LABEL] === request.projectName,
 	);
 	if (records.length === 0 && !removeVolumes) {

@@ -93,5 +93,11 @@ export async function dockerProjectServiceStates(
 		],
 		{ signal },
 	);
-	return result.ok ? parseDockerServiceStates(result.stdout) : [];
+	// A daemon that cannot answer throws: an empty project is something the
+	// service watch reports, and "could not ask" must not read as one.
+	if (!result.ok)
+		throw new Error(
+			result.stderr.trim() || `docker ps exited ${result.exitCode}`,
+		);
+	return parseDockerServiceStates(result.stdout);
 }

@@ -284,9 +284,11 @@ export interface ContainerRuntimeAdapter {
 	/**
 	 * State of every container this runtime has for the project, in one call.
 	 *
-	 * Never throws: a runtime that cannot answer returns nothing, which reads
-	 * as "reconcile", so a failure here costs a redundant `up` rather than a
-	 * skipped one.
+	 * Throws when the runtime cannot answer, so an empty list means the
+	 * project has no containers: the service watch reports that as removed,
+	 * and must never report it over a daemon that did not answer. A startup
+	 * reads a throw as "reconcile", so a failure costs a redundant `up` rather
+	 * than a skipped one.
 	 */
 	projectServiceStates(
 		projectName: string,

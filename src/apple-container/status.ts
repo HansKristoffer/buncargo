@@ -15,7 +15,7 @@ import { remainingTime } from "../core/deadline";
 import { isTcpPortOpen } from "../core/network";
 import { SERVICE_HASH_LABEL } from "../docker-compose/interpolate";
 import type { BuncargoContainer, PortContainerOwner } from "../types";
-import type { AppleContainerCli } from "./cli";
+import type { AppleCliResult, AppleContainerCli } from "./cli";
 import { runAppleAsync } from "./cli";
 import { containerNameFor, PROJECT_LABEL, SERVICE_LABEL } from "./run-plan";
 
@@ -143,11 +143,14 @@ function readAddress(source: Record<string, unknown>): string | undefined {
 	return undefined;
 }
 
-export function parseContainerRecords(stdout: string): AppleContainerRecord[] {
+/** `parseContainerRecords`, or undefined for output that is not JSON at all. */
+function tryParseContainerRecords(
+	stdout: string,
+): AppleContainerRecord[] | undefined {
 	const trimmed = stdout.trim();
 	if (!trimmed) return [];
 	const parsed = safeJsonParse(trimmed);
-	if (!parsed.ok) return [];
+	if (!parsed.ok) return undefined;
 	return toArray(parsed.data)
 		.filter(isRecord)
 		.flatMap((entry) => {
@@ -166,6 +169,40 @@ export function parseContainerRecords(stdout: string): AppleContainerRecord[] {
 		});
 }
 
+/** Records from `container ls --format json`; output that is not JSON reads as none. */
+export function parseContainerRecords(stdout: string): AppleContainerRecord[] {
+	return tryParseContainerRecords(stdout) ?? [];
+}
+
+/**
+ * One `container ls --all`: what is there, or that it could not be asked.
+ * Kept apart because callers act on the difference: "nothing there" lets the
+ * watch report a removed container and `up` create one, while "could not
+ * ask" must change nothing.
+ */
+export type AppleListing =
+	| { listed: true; records: AppleContainerRecord[] }
+	| { listed: false; error: string };
+
+export const LIST_ARGS = ["ls", "--all", "--format", "json"];
+
+export function readContainerListing(result: AppleCliResult): AppleListing {
+	if (!result.ok)
+		return {
+			listed: false,
+			error: result.stderr.trim() || `container ls exited ${result.exitCode}`,
+		};
+	const records = tryParseContainerRecords(result.stdout);
+	if (!records)
+		return { listed: false, error: "container ls printed something not JSON" };
+	return { listed: true, records };
+}
+
+/** The records, or none where the runtime could not answer. */
+function recordsOrNone(listing: AppleListing): AppleContainerRecord[] {
+	return listing.listed ? listing.records : [];
+}
+
 export function formatPublishedPorts(ports: PublishedPort[]): string {
 	return ports
 		.map((port) => {
@@ -182,12 +219,8 @@ export function recordState(record: AppleContainerRecord): ContainerState {
 	return parseContainerState(record.state);
 }
 
-export function listContainerRecords(
-	cli: AppleContainerCli,
-): AppleContainerRecord[] {
-	const result = cli.run(["ls", "--all", "--format", "json"]);
-	if (!result.ok) return [];
-	return parseContainerRecords(result.stdout);
+export function listContainerRecords(cli: AppleContainerCli): AppleListing {
+	return readContainerListing(cli.run(LIST_ARGS));
 }
 
 export function toBuncargoContainer(
@@ -217,10 +250,9 @@ export function toBuncargoContainer(
 export function listAppleBuncargoContainers(
 	cli: AppleContainerCli,
 ): BuncargoContainer[] {
-	const result = cli.run(["ls", "--all", "--format", "json"]);
-	if (!result.ok)
-		throw new Error(result.stderr.trim() || "container ls failed");
-	return parseContainerRecords(result.stdout)
+	const listing = listContainerRecords(cli);
+	if (!listing.listed) throw new Error(listing.error);
+	return listing.records
 		.filter((record) => record.labels[PROJECT_LABEL])
 		.map(toBuncargoContainer);
 }
@@ -235,14 +267,18 @@ export function listAppleBuncargoContainers(
 export function appleContainerPortOwners(
 	cli: AppleContainerCli,
 ): Map<number, PortContainerOwner> {
-	return portOwnersFromRecords(listContainerRecords(cli));
+	// A runtime that cannot answer names no container; the port's process
+	// owner still does, as with Docker.
+	return portOwnersFromRecords(recordsOrNone(listContainerRecords(cli)));
 }
 
 export async function appleContainerPortOwnersAsync(
 	cli: AppleContainerCli,
 	signal?: AbortSignal,
 ): Promise<Map<number, PortContainerOwner>> {
-	return portOwnersFromRecords(await listContainerRecordsAsync(cli, signal));
+	return portOwnersFromRecords(
+		recordsOrNone(await listContainerRecordsAsync(cli, signal)),
+	);
 }
 
 function portOwnersFromRecords(
@@ -279,22 +315,24 @@ export async function listContainerRecordsAsync(
 	cli: AppleContainerCli,
 	signal?: AbortSignal,
 	timeoutMs = 10000,
-): Promise<AppleContainerRecord[]> {
-	const result = await runAppleAsync(cli, ["ls", "--all", "--format", "json"], {
-		signal,
-		timeoutMs,
-	});
-	return result.ok ? parseContainerRecords(result.stdout) : [];
+): Promise<AppleListing> {
+	return readContainerListing(
+		await runAppleAsync(cli, LIST_ARGS, { signal, timeoutMs }),
+	);
 }
 
-/** Every container this project has, from one `container ls`. */
+/**
+ * Every container this project has, from one `container ls`. Throws when the
+ * runtime cannot answer: an empty project is something the watch reports.
+ */
 export async function appleProjectServiceStates(
 	cli: AppleContainerCli,
 	projectName: string,
 	signal?: AbortSignal,
 ): Promise<ServiceRuntimeState[]> {
-	const records = await listContainerRecordsAsync(cli, signal);
-	return records
+	const listing = await listContainerRecordsAsync(cli, signal);
+	if (!listing.listed) throw new Error(listing.error);
+	return listing.records
 		.filter((record) => record.labels[PROJECT_LABEL] === projectName)
 		.flatMap((record) => {
 			const service = record.labels[SERVICE_LABEL];
@@ -326,13 +364,15 @@ export async function diagnoseAppleService(
 	const deadline = performance.now() + (request.timeoutMs ?? 2000);
 	try {
 		const name = containerNameFor(request.projectName, request.serviceName);
-		const record = (
-			await listContainerRecordsAsync(
-				cli,
-				request.signal,
-				remainingTime(deadline),
-			)
-		).find((candidate) => candidate.id === name);
+		const listing = await listContainerRecordsAsync(
+			cli,
+			request.signal,
+			remainingTime(deadline),
+		);
+		// Unanswered reads as "no container": this only enriches a message.
+		const record = recordsOrNone(listing).find(
+			(candidate) => candidate.id === name,
+		);
 		if (!record) return undefined;
 		if (remainingTime(deadline) === 0)
 			return { state: record.state, logTail: "" };
@@ -362,13 +402,15 @@ export async function probeAppleServicePort(
 ): Promise<boolean> {
 	const deadline = performance.now() + (request.timeoutMs ?? 1000);
 	const name = containerNameFor(request.projectName, request.serviceName);
-	const record = (
-		await listContainerRecordsAsync(
-			cli,
-			request.signal,
-			remainingTime(deadline),
-		)
-	).find((candidate) => candidate.id === name);
+	const listing = await listContainerRecordsAsync(
+		cli,
+		request.signal,
+		remainingTime(deadline),
+	);
+	// Unanswered fails the probe, which the next poll asks again.
+	const record = recordsOrNone(listing).find(
+		(candidate) => candidate.id === name,
+	);
 	if (!record?.address || !isContainerServing(recordState(record)))
 		return false;
 	const published = record.ports.find(
@@ -396,7 +438,8 @@ export async function isAppleServiceRunning(
 	signal?: AbortSignal,
 ): Promise<boolean> {
 	const name = containerNameFor(projectName, serviceName);
-	const record = (await listContainerRecordsAsync(cli, signal)).find(
+	const listing = await listContainerRecordsAsync(cli, signal);
+	const record = recordsOrNone(listing).find(
 		(candidate) => candidate.id === name,
 	);
 	return record !== undefined && isContainerServing(recordState(record));
