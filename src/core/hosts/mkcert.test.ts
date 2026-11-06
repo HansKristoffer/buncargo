@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { certificateShortfall, linuxTrustAnchorPath } from "./mkcert";
+import { execFileSync } from "node:child_process";
+import {
+	certificateShortfall,
+	linuxTrustAnchorPath,
+	verifyCertFailureTrust,
+} from "./mkcert";
 
 describe("certificateShortfall", () => {
 	const now = Date.parse("2026-10-17T00:00:00Z");
@@ -60,5 +65,36 @@ describe("linuxTrustAnchorPath", () => {
 
 	it("cannot tell when the system has none of them", () => {
 		expect(linuxTrustAnchorPath("12345", () => false)).toBeUndefined();
+	});
+});
+
+describe("verifyCertFailureTrust", () => {
+	function failureOf(run: () => void): unknown {
+		try {
+			run();
+		} catch (error) {
+			return error;
+		}
+		throw new Error("expected the command to fail");
+	}
+
+	// A `security verify-cert` stuck on the keychain is no answer, and calling
+	// it untrusted would send every run to localhost:port.
+	it("reads a check that timed out as unknown", () => {
+		const timedOut = failureOf(() =>
+			execFileSync("sleep", ["5"], { stdio: "ignore", timeout: 50 }),
+		);
+		expect(verifyCertFailureTrust(timedOut)).toBe("unknown");
+	});
+
+	it("reads a missing binary as unknown and a refusal as untrusted", () => {
+		const missing = failureOf(() =>
+			execFileSync("buncargo-no-such-binary", [], { stdio: "ignore" }),
+		);
+		const refused = failureOf(() =>
+			execFileSync("false", [], { stdio: "ignore" }),
+		);
+		expect(verifyCertFailureTrust(missing)).toBe("unknown");
+		expect(verifyCertFailureTrust(refused)).toBe("untrusted");
 	});
 });

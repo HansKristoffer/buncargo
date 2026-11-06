@@ -182,6 +182,24 @@ export function linuxTrustAnchorPath(
 export type CaTrust = "trusted" | "untrusted" | "unknown";
 
 /**
+ * How long `security verify-cert` may take. It can block on a keychain or a
+ * network revocation check, and it runs on the path every `buncargo dev`
+ * takes to named hosts.
+ */
+const VERIFY_CERT_TIMEOUT_MS = 5000;
+
+/**
+ * What a failed `security verify-cert` says about trust. Only the check
+ * running and answering no is `untrusted`: a missing binary or one that timed
+ * out says nothing either way.
+ */
+export function verifyCertFailureTrust(error: unknown): CaTrust {
+	const code = (error as NodeJS.ErrnoException).code;
+	const unanswered = code === "ENOENT" || code === "ETIMEDOUT";
+	return unanswered ? "unknown" : "untrusted";
+}
+
+/**
  * Whether the system trusts the CA at `caPath`, not merely whether it exists.
  *
  * `mkcert -uninstall` removes the trust and keeps the CA files, so a check
@@ -207,11 +225,11 @@ export function readCaTrust(caPath: string): CaTrust {
 				try {
 					execFileSync("security", ["verify-cert", "-c", caPath], {
 						stdio: "ignore",
+						timeout: VERIFY_CERT_TIMEOUT_MS,
 					});
 					return "trusted";
 				} catch (error) {
-					const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
-					return missing ? "unknown" : "untrusted";
+					return verifyCertFailureTrust(error);
 				}
 			},
 		},
