@@ -13,6 +13,7 @@ import {
 	publishRun,
 	retireRuns,
 } from "../core/run-registry";
+import { createPhaseTimer } from "../core/timing";
 import { resolveExposeTargets, stopPublicTunnels } from "../core/tunnel";
 import * as watchdog from "../core/watchdog";
 import { SeedFailedError } from "../environment/seed-startup";
@@ -1034,6 +1035,59 @@ it("holds a services-only run until it is told to stop", async () => {
 	} finally {
 		console.log = realLog;
 		if (released === 0) process.emit("SIGTERM");
+		await run.catch(() => {});
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+// The startup benchmark times exactly this: a Ctrl-C while apps come up.
+it("prints the --timing report for a run interrupted before its apps were ready", async () => {
+	const root = await realpath(
+		await mkdtemp(join(tmpdir(), "buncargo-interrupted-timing-")),
+	);
+	const reports: string[] = [];
+	const env = createStubEnv({
+		root,
+		services: {},
+		apps: {
+			api: {
+				port: 44910 + Math.floor(Math.random() * 100),
+				devCommand: "bun -e 'setInterval(() => {}, 1000)'",
+				healthEndpoint: false,
+				requiredServices: [],
+			},
+		},
+		// Never ready: the interrupt lands during app readiness.
+		waitForServers: () => new Promise(() => {}),
+	});
+	const status = async () =>
+		(await findRunsByRoot(root))
+			.find((run) => run.sessionId === env.sessionId)
+			?.apps.find((app) => app.name === "api")?.status;
+	const run = withProcessExitTrap(() =>
+		runCli(env, {
+			args: ["--no-hosts", "--no-tui"],
+			watchdog: false,
+			timer: createPhaseTimer({
+				json: true,
+				log: (line) => reports.push(line),
+			}),
+		}),
+	);
+	try {
+		const deadline = performance.now() + 4_000;
+		while ((await status()) !== "starting") {
+			if (performance.now() > deadline) throw new Error("api never spawned");
+			await Bun.sleep(20);
+		}
+		expect(reports).toEqual([]);
+		process.emit("SIGINT");
+		expect(await run).toBe(130);
+		expect(reports).toHaveLength(1);
+		expect(JSON.parse(reports[0] ?? "")).toMatchObject({
+			type: "buncargo.startup",
+		});
+	} finally {
 		await run.catch(() => {});
 		await rm(root, { recursive: true, force: true });
 	}

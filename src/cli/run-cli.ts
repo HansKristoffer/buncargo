@@ -1036,6 +1036,9 @@ async function runDevFlow<
 	} finally {
 		// First, so teardown's messages land on the user's own screen.
 		await view.stop();
+		// A run interrupted before it was ready returns here rather than
+		// throwing; its breakdown is the one `--timing` was asked for.
+		timer.report();
 		await teardown();
 	}
 }
