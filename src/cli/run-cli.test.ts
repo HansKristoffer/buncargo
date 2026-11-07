@@ -32,6 +32,10 @@ import { upsertTunnelRegistryEntries } from "./tunnel-registry";
 // afterwards: the whole suite shares one process.
 let stateHome: string;
 const realHome = process.env.HOME;
+// The stub's checkout when a test names none. A full run checks that each
+// app's cwd exists, so it must be a real directory, made fresh on every
+// machine: a fixed path only exists where some earlier run left it.
+const stubRoot = mkdtempSync(join(tmpdir(), "buncargo-cli-stub-"));
 
 beforeAll(() => {
 	stateHome = mkdtempSync(join(tmpdir(), "buncargo-cli-state-"));
@@ -42,6 +46,7 @@ afterAll(() => {
 	if (realHome === undefined) delete process.env.HOME;
 	else process.env.HOME = realHome;
 	rmSync(stateHome, { recursive: true, force: true });
+	rmSync(stubRoot, { recursive: true, force: true });
 });
 
 class ProcessExit extends Error {
@@ -132,7 +137,7 @@ function createStubEnv(
 		prepareStartAsync: async () => {},
 		resolvePrimaryApp: (selected?: readonly string[]) =>
 			(selected ?? Object.keys(apps))[0],
-		root: options.root ?? "/tmp/buncargo-cli-stub",
+		root: options.root ?? stubRoot,
 		composeFile: ".buncargo/docker-compose.generated.yml",
 		containerRuntime: "docker",
 		portOffset: 0,
