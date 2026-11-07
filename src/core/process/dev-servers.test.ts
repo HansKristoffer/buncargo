@@ -1,5 +1,5 @@
 import { describe, expect, it, spyOn } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toError } from "hanzio";
@@ -1279,7 +1279,11 @@ describe("startDevServers apps that never come up", () => {
 	}, 15_000);
 
 	it("refuses to start an app whose leftover process will not let go of its port", async () => {
-		const root = await mkdtemp(join(tmpdir(), "buncargo-port-held-"));
+		// The real path, as the loader gives a run: the leftover's cwd comes back
+		// resolved (macOS reports /private/var for $TMPDIR's /var).
+		const root = await realpath(
+			await mkdtemp(join(tmpdir(), "buncargo-port-held-")),
+		);
 		const port = await freePort();
 		const leftoverPid = join(root, "leftover.pid");
 		const successorPid = join(root, "successor.pid");
