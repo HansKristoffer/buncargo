@@ -158,6 +158,86 @@ describe("appleUp", () => {
 		expect(cli.calls.some((call) => call[0] === "run")).toBe(false);
 	});
 
+	it("does not fail over a matching container whose state it cannot read", async () => {
+		const plan = buildAppleRunPlan({
+			projectName: "gey-main",
+			model: modelFor({ postgres: { port: 5432 } }),
+			root: "/repo",
+		});
+		const hash = plan.services[0]?.configHash ?? "";
+		const cli = recordingCli(
+			[record("gey-main-postgres", "", { [CONFIG_HASH_LABEL]: hash })],
+			{ start: "container gey-main-postgres is already running" },
+		);
+
+		await appleUp(
+			cli,
+			upRequest(modelFor({ postgres: { port: 5432 } }), ["postgres"]),
+		);
+
+		expect(subcommands(cli)).not.toContain("run --detach");
+		expect(subcommands(cli)).not.toContain("delete --force");
+	});
+
+	it("fails a start refused for another reason over a container whose state it cannot read", async () => {
+		const plan = buildAppleRunPlan({
+			projectName: "gey-main",
+			model: modelFor({ postgres: { port: 5432 } }),
+			root: "/repo",
+		});
+		const hash = plan.services[0]?.configHash ?? "";
+		const cli = recordingCli(
+			[record("gey-main-postgres", "", { [CONFIG_HASH_LABEL]: hash })],
+			{ start: "bind(...): Address already in use (errno: 48)" },
+		);
+
+		await expect(
+			appleUp(
+				cli,
+				upRequest(modelFor({ postgres: { port: 5432 } }), ["postgres"]),
+			),
+		).rejects.toThrow(
+			/start container gey-main-postgres failed.*Address already in use/,
+		);
+		expect(subcommands(cli)).not.toContain("run --detach");
+	});
+
+	it("fails a start that failed for its image instead of running over the container", async () => {
+		const plan = buildAppleRunPlan({
+			projectName: "gey-main",
+			model: modelFor({ postgres: { port: 5432 } }),
+			root: "/repo",
+		});
+		const hash = plan.services[0]?.configHash ?? "";
+		const cli = recordingCli(
+			[record("gey-main-postgres", "stopped", { [CONFIG_HASH_LABEL]: hash })],
+			{ start: "Error: image not found: postgres:17" },
+		);
+
+		await expect(
+			appleUp(
+				cli,
+				upRequest(modelFor({ postgres: { port: 5432 } }), ["postgres"]),
+			),
+		).rejects.toThrow(/start container gey-main-postgres failed/);
+		expect(subcommands(cli)).not.toContain("run --detach");
+	});
+
+	it("takes a volume that is there already, and no other failure, as created", async () => {
+		const model = modelFor({ postgres: { port: 5432 } });
+		const there = recordingCli([], {
+			volume: 'Error: exists: "volume gey-main-postgres_data already exists"',
+		});
+		await appleUp(there, upRequest(model, ["postgres"]));
+
+		const broken = recordingCli([], {
+			volume: "Error: internalError: mkfs failed: file exists in the way",
+		});
+		await expect(
+			appleUp(broken, upRequest(model, ["postgres"])),
+		).rejects.toThrow(/create volume gey-main-postgres_data failed/);
+	});
+
 	it("recreates a container whose config hash drifted", async () => {
 		const cli = recordingCli([
 			record("gey-main-postgres", "running", {
@@ -356,6 +436,34 @@ describe("appleDown", () => {
 		]);
 	});
 
+	it("stops a container whose state it cannot read before deleting it", async () => {
+		// A JSON shape that moved the state somewhere else: the container may be
+		// a database that is running, and `delete --force` kills.
+		const cli = recordingCli(
+			[
+				{
+					configuration: {
+						id: "gey-main-postgres",
+						labels: { "buncargo.project": "gey-main" },
+					},
+				},
+			],
+			{ stop: "container is not running" },
+		);
+
+		await appleDown(cli, {
+			root: "/repo",
+			projectName: "gey-main",
+			verbose: false,
+		});
+
+		expect(subcommands(cli)).toEqual([
+			"ls --all",
+			"stop gey-main-postgres",
+			"delete --force",
+		]);
+	});
+
 	it("throws rather than reporting success when a stop fails", async () => {
 		const cli = recordingCli(
 			[
@@ -427,6 +535,32 @@ describe("appleDown", () => {
 		).rejects.toThrow(
 			/volumes of gey-main were not removed. Start it with `container system start`/,
 		);
+		expect(subcommands(cli)).toEqual(["ls --all", "system status"]);
+	});
+
+	it("fails rather than reporting nothing to stop when the status did not answer", async () => {
+		const cli = recordingCli([], { ls: "Error: XPC connection error" });
+		const answer = cli.run;
+		cli.run = (args, options) => {
+			if (args[0] !== "system") return answer(args, options);
+			cli.calls.push(args);
+			const killed = "Command timed out after 5000ms: container system status";
+			return {
+				ok: false,
+				exitCode: 1,
+				stdout: "",
+				stderr: killed,
+				timedOut: true,
+			};
+		};
+
+		await expect(
+			appleDown(cli, {
+				root: "/repo",
+				projectName: "gey-main",
+				verbose: false,
+			}),
+		).rejects.toThrow(/read container inventory failed.*XPC connection error/);
 		expect(subcommands(cli)).toEqual(["ls --all", "system status"]);
 	});
 

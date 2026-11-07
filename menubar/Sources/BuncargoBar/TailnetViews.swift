@@ -34,7 +34,7 @@ private struct TailnetRunRow: View {
     }
 
     var body: some View {
-        EnvironmentRow(title: run.title, subtitle: run.subtitle, status: .rollup(run.apps.map(\.state))) {
+        EnvironmentRow(title: run.title, subtitle: run.subtitle, status: run.state) {
             if let primary = run.primary, primary.state != .stopped, let url = appURL(primary) {
                 Button("Open") { Actions.open(url) }
                     .font(.system(size: 11))

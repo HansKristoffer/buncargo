@@ -2,6 +2,16 @@
 
 Each section lists what a consumer of `buncargo` has to change when crossing one major version, newest first. Breaking changes that shipped inside a minor release are listed under the major you cross when you pick them up. If you are several majors behind, work through the sections from the bottom up.
 
+## 15.x → 16.0
+
+- **`DockerUnavailableError` is a `ContainerRuntimeUnavailableError`** (`buncargo/docker`, `buncargo`). Code catching `ContainerRuntimeUnavailableError` now catches Docker's too. Its `runtime` is now `"docker"`, as on the base class; read which Docker runs the daemon (`"orbstack"`, `"docker-desktop"`, …) from `dockerRuntime`.
+- **Named URLs need a run that serves them.** `getEnvVar`, `env`, `status` and `url` return an app's or service's `https://*.localhost` URL only while a run of the checkout serves it (its route is registered by a live run and, for the CLI commands, the daemon answers for it), and `localhost:<port>` otherwise. They used to return the named URL whenever `options.hosts` was on. Code that needs the plain address whatever runs reads the `*_LOOPBACK_URL` variables or `loopbackUrls`.
+- **`DockerUnavailableError` is a `ContainerRuntimeUnavailableError`** (`buncargo/docker`; the `buncargo` root exports only `ContainerRuntimeUnavailableError`). Code catching `ContainerRuntimeUnavailableError` now catches Docker's too. Its `runtime` is now `"docker"`, as on the base class; read which Docker runs the daemon (`"orbstack"`, `"docker-desktop"`, …) from `dockerRuntime`.
+- **Custom container runtime adapters** must implement `availability()`, returning `{ state: "up" }`, `{ state: "down" }` (nothing can be running) or `{ state: "unreachable", detail }`, and `projectServiceStates` must throw when the runtime cannot answer rather than return nothing: an empty list now means the project has no containers, which the service watch reports as removed. Each `ServiceRuntimeState` carries a `state` (`"running"`, `"paused"`, `"restarting"`, `"created"`, `"stopping"`, `"stopped"` or `"unknown"`).
+- **`dockerProjectServiceStates` throws when Docker cannot answer** (`buncargo/docker`). It returned `[]`, which now means the project has no containers. Catch the error where "could not ask" should be handled apart from "nothing there".
+- **`isContainerUp` counts every live container** (`buncargo/container-runtime`): paused, restarting, stopping and unrecognised states are up, as they still hold their ports. Only `"running"` was before. To ask whether a container serves, compare its lower-cased `state` to `"running"`.
+- **`ensureAppleContainerRunning` with `autoStart: false` waits in CI** (`buncargo/apple-container`): it waits up to `timeoutMs` (60 seconds by default) for a system service that is still coming up, as Docker does, instead of throwing at once. Outside CI it still throws. Pass `ci: false` to keep the old behaviour in CI.
+
 ## 14.0 → 15.0
 
 - **Bun 1.4.4 or newer is required** (`engines.bun`, previously `>=1.4.2`). Upgrade with `bun upgrade`, and update any `.bun-version`, `packageManager` or CI `bun-version` pin that names an older release. `check.format` already needed it, because older Bun has no `bun fmt`.

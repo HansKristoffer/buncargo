@@ -16,12 +16,37 @@ import type {
 import {
 	getCachedDevEnv,
 	invalidateConfigEnvironments,
+	isConfigCacheable,
 	setCachedDevEnv,
+	setConfigCacheable,
 } from "./cache";
 import { findConfigFile } from "./find-config-file";
 
-const inputFileConfigs = new Set<string>();
+/**
+ * Each config's module URL and reload revision. Not part of the environment
+ * cache, so `clearDevEnvCache()` keeps it: dropping it would import the
+ * module from before the last reload again.
+ */
 const configModules = new Map<string, { url: string; revision: number }>();
+/** Shared loads under way, by identity. */
+const inflight = new Map<string, Promise<AnyDevEnvironment>>();
+
+interface LoadDevEnvOptions {
+	cwd?: string;
+	/** Re-import the config entry and rebuild state. Imported dependencies remain cached. */
+	reload?: boolean;
+	/** Create independent session state while reusing the imported config. */
+	fresh?: boolean;
+	/** Read persisted ports without probing conflicts or writing allocation state. */
+	readOnly?: boolean;
+	/** `--runtime`, taking precedence over env and config. */
+	containerRuntime?: string;
+	/**
+	 * Bring `options.checkoutFiles` up to date before `envFiles` are read.
+	 * Default true; false for commands that only inspect (`doctor`).
+	 */
+	syncCheckoutFiles?: boolean;
+}
 
 /**
  * Load `dev.config.ts` from disk and build its dev environment.
@@ -38,24 +63,9 @@ const configModules = new Map<string, { url: string; revision: number }>();
  * Callers that do not know the config statically (the CLI) can omit it and get
  * the widened {@link AnyDevEnvironment} shape.
  */
-export async function loadDevEnv<
-	TConfig extends DevConfigLike = AnyDevConfig,
->(options?: {
-	cwd?: string;
-	/** Re-import the config entry and rebuild state. Imported dependencies remain cached. */
-	reload?: boolean;
-	/** Create independent session state while reusing the imported config. */
-	fresh?: boolean;
-	/** Read persisted ports without probing conflicts or writing allocation state. */
-	readOnly?: boolean;
-	/** `--runtime`, taking precedence over env and config. */
-	containerRuntime?: string;
-	/**
-	 * Bring `options.checkoutFiles` up to date before `envFiles` are read.
-	 * Default true; false for commands that only inspect (`doctor`).
-	 */
-	syncCheckoutFiles?: boolean;
-}): Promise<DevEnvironmentFor<TConfig>> {
+export async function loadDevEnv<TConfig extends DevConfigLike = AnyDevConfig>(
+	options?: LoadDevEnvOptions,
+): Promise<DevEnvironmentFor<TConfig>> {
 	const requested = options?.containerRuntime;
 
 	const cwd = resolve(options?.cwd ?? process.cwd());
@@ -85,18 +95,37 @@ export async function loadDevEnv<
 		options?.readOnly ?? false,
 		environmentHash,
 	]);
-	if (
-		!options?.reload &&
-		!options?.fresh &&
-		!inputFileConfigs.has(configPath)
-	) {
+	const shared =
+		!options?.reload && !options?.fresh && isConfigCacheable(configPath);
+	if (shared) {
 		const cached = getCachedDevEnv(identity);
 		if (cached) {
-			setCachedDevEnv(cached);
+			setCachedDevEnv(cached, configPath);
 			return cached as DevEnvironmentFor<TConfig>;
 		}
+		// A load of this identity already under way builds the one environment
+		// both callers get: two would each claim a session of their own.
+		const pending = inflight.get(identity);
+		if (pending) return (await pending) as DevEnvironmentFor<TConfig>;
 	}
 
+	const loading = importAndBuild(configPath, root, identity, options);
+	if (!shared) return (await loading) as DevEnvironmentFor<TConfig>;
+	inflight.set(identity, loading);
+	try {
+		return (await loading) as DevEnvironmentFor<TConfig>;
+	} finally {
+		if (inflight.get(identity) === loading) inflight.delete(identity);
+	}
+}
+
+async function importAndBuild(
+	configPath: string,
+	root: string,
+	identity: string,
+	options: LoadDevEnvOptions | undefined,
+): Promise<AnyDevEnvironment> {
+	const requested = options?.containerRuntime;
 	// Bun canonicalizes file: URLs before considering their query string.
 	// An absolute path specifier preserves the revision and refreshes the entry.
 	let moduleState = configModules.get(configPath);
@@ -128,21 +157,17 @@ export async function loadDevEnv<
 
 	// Concurrent consumers can finish the same import together. The first one
 	// resolves the environment; subsequent consumers reuse that exact object.
-	if (
-		!options?.reload &&
-		!options?.fresh &&
-		!inputFileConfigs.has(configPath)
-	) {
+	if (!options?.reload && !options?.fresh && isConfigCacheable(configPath)) {
 		const cached = getCachedDevEnv(identity);
 		if (cached) {
-			setCachedDevEnv(cached);
-			return cached as DevEnvironmentFor<TConfig>;
+			setCachedDevEnv(cached, configPath);
+			return cached;
 		}
 	}
 
 	const loaded: unknown = mod.default;
-	if (isCurrentRevision && mod.default?.options?.envFiles)
-		inputFileConfigs.add(configPath);
+	if (isCurrentRevision)
+		setConfigCacheable(configPath, !mod.default?.options?.envFiles);
 
 	// Before the environment is built: it reads required `envFiles`, which a
 	// fresh checkout only has once they are copied in.
@@ -163,6 +188,6 @@ export async function loadDevEnv<
 		{ containerRuntime: requested, root, readOnly: options?.readOnly },
 	);
 	if (isCurrentRevision)
-		setCachedDevEnv(env, options?.fresh ? undefined : identity);
-	return env as DevEnvironmentFor<TConfig>;
+		setCachedDevEnv(env, configPath, options?.fresh ? undefined : identity);
+	return env;
 }

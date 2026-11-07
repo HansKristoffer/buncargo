@@ -1,9 +1,22 @@
-import { afterEach, beforeEach, expect, it } from "bun:test";
+import {
+	afterEach,
+	beforeEach,
+	expect,
+	it,
+	setSystemTime,
+	spyOn,
+} from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { offsetClaimKey, readOffsetClaims } from "../core/offset-claims";
+import {
+	claimOffset,
+	offsetClaimKey,
+	readOffsetClaims,
+	withOffsetClaimsLock,
+} from "../core/offset-claims";
 import { CI_PROJECT_SUFFIX } from "../core/ports";
+import * as runRegistry from "../core/run-registry";
 import { CI_ENV_VARS } from "../core/runtime-flags";
 import { createDevEnvironment } from "./create-dev-environment";
 
@@ -85,6 +98,29 @@ it("gives a dev environment's block back when it is stopped in CI", async () => 
 	expect(readOffsetClaims()[root]).toBeUndefined();
 });
 
+it("claims a block again for Prisma once a stop gave the last one back", async () => {
+	const root = join(scratch, "runner-9", "app");
+	mkdirSync(root, { recursive: true });
+	const ci = createDevEnvironment(
+		{
+			projectPrefix: "gey",
+			services: { postgres: { port: 5432, healthCheck: false } },
+			docker: { runtime: "docker", binary: fakeDocker() },
+			prisma: {},
+			options: { verbose: false },
+		},
+		{ root },
+	).withSuffix(CI_PROJECT_SUFFIX);
+	const key = offsetClaimKey(root, CI_PROJECT_SUFFIX);
+	await ci.prepareStartAsync();
+	await ci.stop({ verbose: false, removeVolumes: true });
+	expect(readOffsetClaims()[key]).toBeUndefined();
+
+	// Not the released block, which another environment may have claimed since.
+	await ci.prisma?.ensureDatabase();
+	expect(readOffsetClaims()[key]).toBeDefined();
+});
+
 it("keeps a developer's dev block claimed while it is stopped", async () => {
 	const { root, env } = checkout();
 	await env.prepareStartAsync();
@@ -93,4 +129,39 @@ it("keeps a developer's dev block claimed while it is stopped", async () => {
 	await env.stop({ verbose: false });
 
 	expect(readOffsetClaims()[root]?.offset).toBe(offset);
+});
+
+it("keeps the block a run claimed while the stop checked for runs", async () => {
+	const { root, env } = checkout();
+	const ci = env.withSuffix(CI_PROJECT_SUFFIX);
+	await ci.prepareStartAsync();
+	const key = offsetClaimKey(root, CI_PROJECT_SUFFIX);
+	const claimed = readOffsetClaims()[key];
+	if (!claimed) throw new Error("no claim");
+
+	// Another job of this directory allocates the block after the stop read
+	// the runs, before it has published its own run.
+	const readRuns = spyOn(runRegistry, "readAllRuns").mockImplementation(
+		async () => {
+			setSystemTime(new Date(Date.now() + 60_000));
+			withOffsetClaimsLock(() =>
+				claimOffset({
+					root,
+					suffix: CI_PROJECT_SUFFIX,
+					offset: claimed.offset,
+					ports: claimed.ports ?? [],
+					projectName: claimed.projectName,
+				}),
+			);
+			setSystemTime();
+			return [];
+		},
+	);
+	try {
+		await ci.stop({ verbose: false, removeVolumes: true });
+	} finally {
+		readRuns.mockRestore();
+	}
+
+	expect(readOffsetClaims()[key]?.offset).toBe(claimed.offset);
 });

@@ -1,8 +1,10 @@
 import type { EventEmitter } from "node:events";
+import { typedSwitch } from "hanzio";
 import { withFileLock } from "../file-lock";
 import {
-	matchesProcessIdentityAsync,
-	readProcessIdentitiesAsync,
+	checkProcessIdentitiesAsync,
+	checkProcessIdentityAsync,
+	type ProcessIdentityCheck,
 	readProcessIdentityAsync,
 } from "../process-identity";
 import { defineListRegistry } from "../registry-file";
@@ -36,6 +38,10 @@ const registry = defineListRegistry<WorkerOwner>({
 
 const pathFor = (root: string) => projectStateFilePath(root, "workers.json");
 
+/**
+ * The recorded worker of this name that may still run. One whose identity
+ * cannot be read counts: reading it as gone starts a second copy.
+ */
 export async function findWorker(
 	root: string,
 	name: string,
@@ -43,10 +49,42 @@ export async function findWorker(
 ): Promise<WorkerOwner | undefined> {
 	const entries = await registry.read(pathFor(root), { strict: true });
 	const entry = entries.find((entry) => entry.name === name);
-	return entry &&
-		(await matchesProcessIdentityAsync(entry.pid, entry.identity, signal))
-		? entry
-		: undefined;
+	if (!entry) return undefined;
+	const check = await checkProcessIdentityAsync(
+		entry.pid,
+		entry.identity,
+		signal,
+	);
+	return check === "mismatch" ? undefined : entry;
+}
+
+export type WorkerClaimDecision =
+	| { kind: "claim"; standing: WorkerOwner[] }
+	| {
+			kind: "held";
+			holder: WorkerOwner;
+			check: Exclude<ProcessIdentityCheck, "mismatch">;
+	  };
+
+/**
+ * Whether `name` may be claimed, given each recorded claim's identity check
+ * (in the same order), and the claims that stand beside it. Ownership is
+ * strict both ways: only a claim whose process is gone is dropped, and one
+ * that cannot be read stands, since erasing it could start a second copy of
+ * a worker that still runs.
+ */
+export function decideWorkerClaim(
+	recorded: readonly WorkerOwner[],
+	checks: readonly ProcessIdentityCheck[],
+	name: string,
+): WorkerClaimDecision {
+	const standing = recorded.flatMap((entry, index) => {
+		const check = checks[index];
+		return check === "mismatch" ? [] : [{ entry, check }];
+	});
+	const held = standing.find(({ entry }) => entry.name === name);
+	if (held) return { kind: "held", holder: held.entry, check: held.check };
+	return { kind: "claim", standing: standing.map(({ entry }) => entry) };
 }
 
 /**
@@ -72,20 +110,22 @@ export async function spawnOwnedWorker(
 		path,
 		async () => {
 			const recorded = await registry.read(path, { strict: true });
-			// Ownership is strict: an unreadable birth identity cannot grant a claim.
-			const identities = await readProcessIdentitiesAsync(
-				recorded.map((entry) => entry.pid),
-				signal,
+			const decision = decideWorkerClaim(
+				recorded,
+				await checkProcessIdentitiesAsync(recorded, signal),
+				name,
 			);
-			const entries = recorded.filter(
-				(entry) => identities.get(entry.pid) === entry.identity,
-			);
-
-			if (entries.some((entry) => entry.name === name)) {
-				throw new Error(
-					`Worker "${name}" is already running. Reuse it through the CLI, or use dev --takeover to move it here.`,
-				);
+			if (decision.kind === "held") {
+				const { pid } = decision.holder;
+				const reason = typedSwitch(decision.check, {
+					match: () => "is already running",
+					unreadable: () =>
+						"may still be running: its process could not be inspected",
+				});
+				const refusal = `Worker "${name}" (pid ${pid}) ${reason}. Reuse it through the CLI, or use dev --takeover to move it here.`;
+				throw new Error(refusal);
 			}
+			const entries = decision.standing;
 
 			signal?.throwIfAborted();
 			const child = spawn();
@@ -108,8 +148,14 @@ export async function spawnOwnedWorker(
 					? await readProcessIdentityAsync(child.pid, signal)
 					: undefined;
 				if (exited() && options.allowEarlyExit) return await handBack();
-				if (!child.pid || !identity || exited()) {
+				if (!child.pid || exited()) {
 					throw new Error(`Worker "${name}" exited before process startup`);
+				}
+				// Running, but a claim without its identity could never be told
+				// apart from a later process reusing the pid.
+				if (!identity) {
+					const refusal = `Worker "${name}" (pid ${child.pid}) could not be inspected to claim it, so it was stopped. Check that \`ps -p ${child.pid}\` works, then start again.`;
+					throw new Error(refusal);
 				}
 
 				await registry.write(path, [

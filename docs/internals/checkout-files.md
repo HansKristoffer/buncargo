@@ -34,7 +34,9 @@ agentgate syncs file stores between machines without buncargo's code. Everything
   is refused. The checkout's copy is the skeleton, so its comments and order survive; a key taken
   from the store brings its line(s) and the comment right above it. Conflicts are computed under
   the store's lock but asked about outside it (a prompt would outlive the 30 s stale-lock
-  window), so the merge is computed again, under the lock, with the answers.
+  window), so the merge is computed again, under the lock, with the answers. They apply only while
+  both copies and the base are the ones they were given for; when either changed meanwhile, it
+  asks again rather than take a value nobody saw.
 - **Synced in the loader.** `loadDevEnv` syncs after importing the config and before
   `createDevEnvironment`, which reads required `envFiles` (`environment/context.ts`) and would
   throw on a fresh worktree before any fix ran. Every command syncs, `exec` included; `doctor`
@@ -59,7 +61,9 @@ agentgate syncs file stores between machines without buncargo's code. Everything
 | Checkout copy | Store | Action |
 | --- | --- | --- |
 | missing | present | copy, record base |
-| missing | missing | copy `template` and record no base, so the next load adopts it filled in; else leave missing |
+| missing | missing | copy `template` and record no base, so a load adopts it once it is filled in; else leave missing |
+| equal to `template` | missing | leave, reported `missing`: an unfilled template is never stored, or agentgate would carry it over real values on other machines |
+| equal to `template` | different | copy, record base: the template is in git, so nothing is lost |
 | present, no base | missing | adopt into the store, record base |
 | present, base | missing | the same: the store was emptied, refill it |
 | present, no base | equal | record base |
@@ -137,7 +141,8 @@ It is not buncargo's `withFileLock`: that is a kernel lock only buncargo's code 
 
 `state` is `in-sync`, `store-newer` (pull would update or create the copy), `local-edits` (the
 checkout's copy differs and the store did not change since it was written, or the store has no
-copy), `conflict` (both changed) or `missing` (neither has it).
+copy), `conflict` (both changed) or `missing` (neither has it). A checkout's copy that is still
+byte for byte its configured `template` counts as no copy.
 
 `buncargo files pull [path…]`, after writing the store: applies the sync rules and never
 overwrites local edits without `--force`. Exit 0 when every file matches the store or neither has

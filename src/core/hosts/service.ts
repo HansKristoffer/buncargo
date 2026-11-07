@@ -188,6 +188,12 @@ export function describeStaleService(input: {
 }): string | undefined {
 	const { installed, manifest, expectedBundle, expectedBundleHash } = input;
 	const fileExists = input.fileExists ?? existsSync;
+	// Installed once and the unit is gone (removed by hand, or a failed
+	// reinstall that had nothing to put back): not a machine that never had
+	// it, which is what saying nothing here made it look like.
+	if (!installed && manifest) {
+		return "Named-hosts service was installed, but its unit file is gone. Run `buncargo hosts install` to repair it.";
+	}
 	if (!installed) return undefined;
 	if (!manifest) {
 		return "Named-hosts service is installed but its manifest is missing. Run `buncargo hosts install` to repair it.";
@@ -271,9 +277,37 @@ function activateService(runner: PrivilegedRunner): void {
 		return;
 	}
 	runner.run("systemctl", ["daemon-reload"], { stdio: "ignore" });
-	runner.run("systemctl", ["enable", "--now", SYSTEMD_UNIT], {
-		stdio: "ignore",
-	});
+	runner.run("systemctl", ["enable", SYSTEMD_UNIT], { stdio: "ignore" });
+	// Restart, not `start` or `enable --now`: both are no-ops on an active
+	// unit, so a reinstall left the old code running while the manifest and
+	// its hash said the new code was.
+	runner.run("systemctl", ["restart", SYSTEMD_UNIT], { stdio: "ignore" });
+}
+
+/** A root-owned file an install writes, and what was there before it. */
+interface ReplacedFile {
+	path: string;
+	previous: string | undefined;
+}
+
+/**
+ * Put back what an install replaced, and remove what it added.
+ *
+ * On a same-version reinstall the bundle path is the one the old service ran,
+ * so deleting what the install wrote deleted the old service's code too.
+ */
+function restoreReplaced(
+	runner: PrivilegedRunner,
+	files: readonly ReplacedFile[],
+): void {
+	for (const { path, previous } of files) {
+		try {
+			if (previous === undefined) runner.removeFile(path);
+			else runner.writeFile(path, previous);
+		} catch {
+			// leave it; staleness reporting covers what is left
+		}
+	}
 }
 
 /**
@@ -318,12 +352,25 @@ export function installHostsService(
 			? buildLaunchdPlist(input)
 			: buildSystemdUnit(input);
 
+	const unit: ReplacedFile = { path, previous: runner.readFile(path) };
+	const replaced: ReplacedFile[] = [
+		{ path: bundlePath, previous: runner.readFile(bundlePath) },
+		unit,
+	];
+
 	try {
 		runner.authorize();
+	} catch {
+		throw privilegeError("install the :443 proxy service");
+	}
+	try {
 		runner.run("mkdir", ["-p", HOSTS_DAEMON_DIR]);
 		runner.writeFile(bundlePath, bundle.contents);
 		runner.writeFile(path, contents);
 	} catch {
+		// A bundle written before the unit failed would otherwise be left
+		// with nothing pointing at it.
+		restoreReplaced(runner, replaced);
 		throw privilegeError("install the :443 proxy service");
 	}
 
@@ -331,12 +378,17 @@ export function installHostsService(
 		activateService(runner);
 	} catch (error) {
 		// Roll back, or isHostsServiceInstalled() would report a service that
-		// never loaded and every later run would skip setup.
-		try {
-			runner.removeFile(path);
-			runner.removeFile(bundlePath);
-		} catch {
-			// leave it; the manifest is not written, so staleness reporting covers it
+		// never loaded and every later run would skip setup. A unit that was
+		// there before is put back and loaded again: on macOS activation has
+		// already booted it out, and leaving it down left no service at all.
+		// Its manifest was never rewritten, so it still describes it.
+		restoreReplaced(runner, replaced);
+		if (unit.previous !== undefined) {
+			try {
+				activateService(runner);
+			} catch {
+				// the previous unit is on disk; `hosts install` loads it
+			}
 		}
 		throw new Error(toHostsUserMessage(error));
 	}

@@ -327,6 +327,12 @@ describe("createDevEnvironment env builders", () => {
 			expect(env.buildAppEnvVars("api").BUNCARGO_APP_HOSTNAME).toBe(
 				"feature-hosts.api.serpier.localhost",
 			);
+			// `env` and `status` name only the entries whose route is live.
+			env.setNamedHostsActive(true, {
+				hostnames: ["feature-hosts.serpier.localhost"],
+			});
+			expect(env.urls.web).toBe("https://feature-hosts.serpier.localhost");
+			expect(env.urls.api).toBe(`http://localhost:${env.ports.api}`);
 			env.setNamedHostsActive(false);
 			expect(env.urls.api).toBe(`http://localhost:${env.ports.api}`);
 			// No named host means the browser reaches the dev server directly, so

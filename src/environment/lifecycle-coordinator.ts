@@ -90,7 +90,9 @@ export class LifecycleCoordinator {
 
 	stop(work: () => Promise<void>, signal?: AbortSignal): Promise<void> {
 		if (signal?.aborted) return Promise.reject(abortError(signal));
+		// Cancelled, it is no restart for a later request to join.
 		this.restarting?.controller.abort(new Error("Restart cancelled by stop"));
+		this.restarting = undefined;
 		const startup = this.cancelStartup();
 		return this.schedule(async () => {
 			await startup;
@@ -116,9 +118,10 @@ export class LifecycleCoordinator {
 			controller.signal.throwIfAborted();
 			await this.runStart(start, controller.signal, () => false);
 		}).finally(() => {
-			this.restarting = undefined;
+			if (this.restarting === restarting) this.restarting = undefined;
 		});
-		this.restarting = { controller, promise };
+		const restarting = { controller, promise };
+		this.restarting = restarting;
 		return promise;
 	}
 }

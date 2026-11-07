@@ -43,9 +43,32 @@ async function readError(response: Response): Promise<string> {
 	}
 }
 
+/** A refusal the directory or the coordinator answered, with its HTTP status. */
+export class ConnectRequestError extends Error {
+	constructor(
+		message: string,
+		readonly status: number,
+	) {
+		super(message);
+		this.name = "ConnectRequestError";
+	}
+}
+
+/**
+ * The directory answered that it does not know the credential: it forgot it.
+ * Its own refusal, not a 403 from something in front of it.
+ */
+export function isForgotten(error: unknown): boolean {
+	return (
+		error instanceof ConnectRequestError &&
+		error.status === 403 &&
+		error.message === "Not authorized"
+	);
+}
+
 export async function readJSON(response: Response): Promise<unknown> {
 	if (!response.ok) {
-		throw new Error(await readError(response));
+		throw new ConnectRequestError(await readError(response), response.status);
 	}
 	if (!response.body) {
 		throw new Error("Empty directory response");

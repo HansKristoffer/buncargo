@@ -1,9 +1,31 @@
 import { describe, expect, it } from "bun:test";
+import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withDeadline } from "../deadline";
-import { execAsync } from "./exec";
+import { execAsync, shellExitCode } from "./exec";
+
+describe("shellExitCode", () => {
+	it("reads a child killed by a signal as a failure, not as success", async () => {
+		const child = spawn(
+			process.execPath,
+			["-e", "setInterval(() => {}, 1000)"],
+			{
+				stdio: "ignore",
+			},
+		);
+		const closed = new Promise<[number | null, NodeJS.Signals | null]>(
+			(resolve) =>
+				child.once("close", (code, signal) => resolve([code, signal])),
+		);
+		child.kill("SIGKILL");
+		const [code, signal] = await closed;
+		expect(shellExitCode(code, signal)).toBe(137);
+		expect(shellExitCode(0, null)).toBe(0);
+		expect(shellExitCode(2, null)).toBe(2);
+	});
+});
 
 describe("execAsync", () => {
 	it("passes argv literally without shell expansion", async () => {
@@ -35,6 +57,24 @@ describe("execAsync", () => {
 			),
 		).rejects.toThrow("timed out");
 		expect(performance.now() - start).toBeLessThan(1800);
+	});
+
+	it("says a command it killed at the timeout timed out, and one that failed did not", async () => {
+		const killed = await execAsync(
+			[process.execPath, "-e", "setInterval(() => {}, 1000)"],
+			process.cwd(),
+			{},
+			{ timeoutMs: 100, killGraceMs: 0, throwOnError: false },
+		);
+		const failed = await execAsync(
+			[process.execPath, "-e", "process.exit(3)"],
+			process.cwd(),
+			{},
+			{ timeoutMs: 5000, throwOnError: false },
+		);
+
+		expect(killed).toMatchObject({ exitCode: 1, timedOut: true });
+		expect(failed).toMatchObject({ exitCode: 3, timedOut: false });
 	});
 
 	it("rejects missing executables without an unhandled error", async () => {

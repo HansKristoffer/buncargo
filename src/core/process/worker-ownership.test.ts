@@ -10,7 +10,12 @@ import { isolateHome } from "../test-env.testing";
 import { startDevServers } from "./dev-servers";
 import { ProcessOwner } from "./process-owner";
 import type { AppChild } from "./pty-app";
-import { findWorker, spawnOwnedWorker, stopWorker } from "./worker-ownership";
+import {
+	decideWorkerClaim,
+	findWorker,
+	spawnOwnedWorker,
+	stopWorker,
+} from "./worker-ownership";
 
 isolateHome("buncargo-worker-home-");
 
@@ -187,7 +192,7 @@ it("hands a non-essential worker that died while being claimed to the supervisor
 	// The supervisor reports its exit although it never sees an `exit` event.
 	const exits: (number | null)[] = [];
 	const owner = new ProcessOwner({
-		optional: new Set(["jobs"]),
+		isOptional: (name) => name === "jobs",
 		onAppExit: (_name, code) => exits.push(code),
 	});
 	try {
@@ -198,6 +203,29 @@ it("hands a non-essential worker that died while being claimed to the supervisor
 	} finally {
 		owner.dispose();
 	}
+});
+
+it("says a running worker whose identity cannot be read was not claimed, not that it exited", async () => {
+	const root = fixture();
+	// Still running, by every account the claim has, but no process by that
+	// pid can be inspected: it is above any pid the system hands out.
+	const unreadable = () => {
+		const child = Object.assign(new EventEmitter(), {
+			pid: 2 ** 22,
+			exitCode: null,
+			signalCode: null,
+		});
+		queueMicrotask(() => child.emit("spawn"));
+		return child as unknown as AppChild;
+	};
+	const refusal = await spawnOwnedWorker(root, "jobs", unreadable).then(
+		() => "",
+		(error: Error) => error.message,
+	);
+	expect(refusal).not.toContain("exited");
+	expect(refusal).toContain(`Worker "jobs" (pid ${2 ** 22})`);
+	expect(refusal).toContain("could not be inspected");
+	expect(await findWorker(root, "jobs")).toBeUndefined();
 });
 
 const alive = (pid: number) => {
@@ -274,4 +302,27 @@ it("hands back a non-essential worker that died while its claim was written", as
 		expect(readFileSync(registryFile, "utf8")).not.toContain('"jobs"');
 	for (let i = 0; i < 40 && alive(real.pid ?? 0); i++) await Bun.sleep(25);
 	expect(real.exitCode !== null || real.signalCode !== null).toBe(true);
+});
+
+// macOS reads identities through a `ps` that can time out: a worker it cannot
+// read may still run, and dropping its claim started a second copy.
+it("keeps a claim whose identity cannot be read, and refuses its name", () => {
+	const jobs = { name: "jobs", pid: 101, identity: "v2:jobs" };
+	const mail = { name: "mail", pid: 102, identity: "v2:mail" };
+	const gone = { name: "gone", pid: 103, identity: "v2:gone" };
+	const checks = ["unreadable", "match", "mismatch"] as const;
+
+	expect(decideWorkerClaim([jobs, mail, gone], checks, "other")).toEqual({
+		kind: "claim",
+		standing: [jobs, mail],
+	});
+	expect(decideWorkerClaim([jobs, mail, gone], checks, "jobs")).toEqual({
+		kind: "held",
+		holder: jobs,
+		check: "unreadable",
+	});
+	expect(decideWorkerClaim([jobs, mail, gone], checks, "gone")).toEqual({
+		kind: "claim",
+		standing: [jobs, mail],
+	});
 });

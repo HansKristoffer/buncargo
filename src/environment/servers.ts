@@ -10,6 +10,7 @@ import {
 	resolveExposeTargets,
 	startPublicTunnels,
 	stopPublicTunnels,
+	withoutPublicUrls,
 } from "../core/tunnel";
 import { assertOnlyAppNames, pickApps, resolveSelectedApps } from "../planning";
 import type {
@@ -120,7 +121,7 @@ export async function startAppServers<
 	try {
 		return await spawnAppServers(ctx, envVars, appsToStart, options);
 	} catch (error) {
-		await claim.abandonApps();
+		await claim.abandonApps(appsToStart);
 		throw error;
 	}
 }
@@ -336,20 +337,22 @@ export function createServersApi<
 		const tunnels = await startPublicTunnels(targets, {
 			signal: options.signal,
 		});
-		ctx.setPublicUrls(
-			Object.fromEntries(tunnels.map((t) => [t.name, t.publicUrl])),
+		const opened: Record<string, string> = Object.fromEntries(
+			tunnels.map((t) => [t.name, t.publicUrl]),
 		);
+		// Beside the URLs apps printed (`captures`), which are not the tunnels'.
+		ctx.setPublicUrls({ ...ctx.publicUrls, ...opened });
 
 		let closed = false;
 		async function close(): Promise<void> {
 			if (closed) return;
 			closed = true;
 			await stopPublicTunnels(tunnels);
-			ctx.clearPublicUrls();
+			ctx.setPublicUrls(withoutPublicUrls(ctx.publicUrls, opened));
 		}
 
 		return {
-			publicUrls: { ...ctx.publicUrls } as ComputedPublicUrls<TServices, TApps>,
+			publicUrls: { ...opened } as ComputedPublicUrls<TServices, TApps>,
 			tunnels,
 			close,
 		};

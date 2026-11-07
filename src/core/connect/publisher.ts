@@ -6,6 +6,7 @@ import type { RunEntry } from "../run-registry";
 import { request } from "./client";
 import { type Frpc, runningProxies, startFrpc } from "./frpc";
 import { createGate } from "./gate";
+import { isForgotten } from "./json";
 import {
 	LEASE_MS,
 	type PublicationLease,
@@ -27,6 +28,7 @@ export function createPublisher(intent: SharingIntent) {
 	let lease: PublicationLease | undefined;
 	let deadline = 0;
 	let frpc: Frpc | undefined;
+	let frpcUser = "";
 	let signature = "";
 	let current: RunEntry | undefined;
 	const gates = new Map<
@@ -90,6 +92,15 @@ export function createPublisher(intent: SharingIntent) {
 			? runningProxies(await frpc.status().catch(() => ({})))
 			: [];
 		const started = performance.now();
+		const register = () =>
+			request<PublicationLease>(intent.origin, "/v1/publications", undefined, {
+				tokens: intent.tokens,
+				run: input,
+				credential: intent.credential,
+			});
+		// A relay that forgot the publication (collected a day after it expired,
+		// or a reset directory) refuses the renewal for good; registration is
+		// idempotent by credential, so registering again recovers.
 		lease = lease
 			? await request<PublicationLease>(
 					intent.origin,
@@ -97,17 +108,11 @@ export function createPublisher(intent: SharingIntent) {
 					intent.credential,
 					{ run: input, confirmed },
 					"PUT",
-				)
-			: await request<PublicationLease>(
-					intent.origin,
-					"/v1/publications",
-					undefined,
-					{
-						tokens: intent.tokens,
-						run: input,
-						credential: intent.credential,
-					},
-				);
+				).catch((error) => {
+					if (!isForgotten(error)) throw error;
+					return register();
+				})
+			: await register();
 		if (
 			!Array.isArray(lease.assignments) ||
 			lease.assignments.length > 1024 ||
@@ -117,6 +122,13 @@ export function createPublisher(intent: SharingIntent) {
 			throw new Error("Invalid publication lease");
 		}
 		deadline = started + clamp(lease.remainingMs, 0, LEASE_MS);
+
+		// frpc logs in as the publication: a new one needs a new login, not a reload.
+		if (frpc && frpcUser !== lease.user) {
+			await frpc.close();
+			frpc = undefined;
+			signature = "";
+		}
 
 		// Retire revoked routes and gates whose port or process identity changed before adding routes.
 		for (const [id, entry] of gates) {
@@ -192,6 +204,7 @@ export function createPublisher(intent: SharingIntent) {
 				frpc = undefined;
 				signature = "";
 				if (proxies.length) {
+					frpcUser = lease.user;
 					frpc = await startFrpc({
 						relay: lease.relay,
 						user: lease.user,

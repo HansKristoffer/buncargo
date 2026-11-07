@@ -20,7 +20,15 @@ afterEach(() => {
 
 /** A `docker` that answers every command with success and records its argv. */
 function fakeDocker(
-	options: { downStderr?: string; upStderr?: string; psStdout?: string } = {},
+	options: {
+		downStderr?: string;
+		upStderr?: string;
+		psStdout?: string;
+		/** Refuse `docker version` with this on stderr. */
+		versionStderr?: string;
+		/** Never answer `down`, as a hung daemon does. */
+		downHangs?: boolean;
+	} = {},
 ) {
 	const dir = mkdtempSync(join(tmpdir(), "buncargo docker down "));
 	roots.push(dir);
@@ -33,8 +41,14 @@ function fakeDocker(
 import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+const versionStderr = ${JSON.stringify(options.versionStderr ?? "")};
+if (args[0] === 'version' && versionStderr) {
+  process.stderr.write(versionStderr);
+  process.exit(1);
+}
 if (args[0] === 'version') console.log('27.5.1');
 if (args[0] === 'ps') console.log(${JSON.stringify(options.psStdout ?? "")});
+if (${options.downHangs === true} && args.includes('down')) setInterval(() => {}, 1000);
 const downStderr = ${JSON.stringify(options.downStderr ?? "")};
 if (downStderr && args.includes('down')) {
   process.stderr.write(downStderr);
@@ -156,6 +170,32 @@ describe("stopContainers", () => {
 		expect(calls()).toEqual([["compose", "-p", "demo", "down"]]);
 	});
 
+	it("does not call a daemon that refuses this user stopped after a streamed teardown failed", async () => {
+		// Verbose streams compose's stderr to the terminal, so only the probe
+		// is left to say why: a daemon this user may not open may still run
+		// every container, and "Nothing to stop" would be a lie.
+		const { dir, binary } = fakeDocker({
+			downStderr: "permission denied",
+			versionStderr:
+				"permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock",
+		});
+		await expect(
+			stopContainers(dir, "demo", { binary, verbose: true }),
+		).rejects.toThrow(
+			/Could not stop demo's containers.*cannot open its socket/,
+		);
+	});
+
+	it("has nothing to stop when the probe after a streamed failure finds the daemon down", async () => {
+		const down =
+			"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?";
+		const { dir, binary } = fakeDocker({
+			downStderr: down,
+			versionStderr: down,
+		});
+		await stopContainers(dir, "demo", { binary, verbose: true });
+	});
+
 	it("refuses to report volumes removed while the daemon is stopped", async () => {
 		const { dir, binary } = fakeDocker({
 			downStderr:
@@ -183,10 +223,34 @@ describe("stopContainers", () => {
 	});
 
 	it("still reports a teardown that failed for any other reason", async () => {
-		const { dir, binary } = fakeDocker({ downStderr: "permission denied" });
+		const { dir, binary } = fakeDocker({
+			downStderr:
+				"Error response from daemon: error while removing network: network demo_default has active endpoints",
+		});
 		await expect(
 			stopContainers(dir, "demo", { binary, verbose: false }),
-		).rejects.toThrow(/permission denied/);
+		).rejects.toThrow(/network demo_default has active endpoints/);
+	});
+
+	it("does not call a daemon that refuses this user stopped off compose's own failure", async () => {
+		const { dir, binary } = fakeDocker({
+			downStderr:
+				'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.47/containers/json": dial unix /var/run/docker.sock: connect: permission denied',
+		});
+		await expect(
+			stopContainers(dir, "demo", { binary, verbose: false }),
+		).rejects.toThrow(
+			/Could not stop demo's containers.*cannot open its socket/,
+		);
+	});
+
+	it("fails a teardown the daemon did not answer in time, rather than reporting nothing to stop", async () => {
+		const { dir, binary } = fakeDocker({ downHangs: true });
+		await expect(
+			stopContainers(dir, "demo", { binary, verbose: false, timeoutMs: 300 }),
+		).rejects.toThrow(
+			/Could not stop demo's containers.*did not answer in time/,
+		);
 	});
 });
 

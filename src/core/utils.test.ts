@@ -3,9 +3,17 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineDevConfig } from "../config";
+import { applyIntegrations } from "../config/integrations";
 import { service } from "../docker-compose/services";
+import type { AppConfig, HostsOptionsLike, ServiceConfig } from "../types";
+import { planNamedHosts } from "./hosts/plan";
+import {
+	pidRouteOwners,
+	routesFromPlan,
+	upsertHostRoutes,
+} from "./hosts/registry";
 import { activateTailscaleServe } from "./hosts/tailscale-serve";
-import { findMonorepoRoot } from "./ports";
+import { computeDevIdentity, findMonorepoRoot } from "./ports";
 import { withoutCiEnv } from "./test-env.testing";
 import { getEnvVar, sleep } from "./utils";
 
@@ -34,6 +42,74 @@ describe("sleep", () => {
 		expect(elapsed).toBeLessThan(50);
 	});
 });
+
+/**
+ * A run of this checkout serving named hosts, as the registry records it, in
+ * a temporary HOME: what `getEnvVar` reads as the named URLs being live.
+ */
+async function withServingRun(
+	config: HostsTestConfig,
+	check: () => void,
+	/** Only these plan entries' routes, by name; all of them when absent. */
+	only?: string[],
+): Promise<void> {
+	const savedHome = process.env.HOME;
+	const home = mkdtempSync(join(tmpdir(), "buncargo-getenv-hosts-"));
+	process.env.HOME = home;
+	try {
+		await upsertHostRoutes(
+			routesFromPlan(
+				planFor(config).filter(
+					(entry) => only === undefined || only.includes(entry.name),
+				),
+				{ root: findMonorepoRoot(), pid: process.pid },
+			),
+			{ owners: pidRouteOwners },
+		);
+		withoutCiEnv(check);
+	} finally {
+		process.env.HOME = savedHome;
+		rmSync(home, { recursive: true, force: true });
+	}
+}
+
+/** The plan a run of this checkout serves, from the ports `getEnvVar` reports. */
+interface HostsTestConfig {
+	projectPrefix: string;
+	services: Record<string, ServiceConfig>;
+	apps?: Record<string, AppConfig>;
+	options?: {
+		hosts?: boolean | HostsOptionsLike;
+		primaryApp?: string;
+		worktreeIsolation?: boolean;
+	};
+}
+
+function planFor(config: HostsTestConfig) {
+	const root = findMonorepoRoot();
+	const applied = applyIntegrations(config, { root });
+	const identity = computeDevIdentity({
+		projectPrefix: applied.projectPrefix,
+		root,
+		worktreeIsolation: applied.options?.worktreeIsolation,
+	});
+	const apps = (applied.apps ?? {}) as Record<string, AppConfig>;
+	const ports = Object.fromEntries(
+		Object.keys(apps).map((name) => [
+			name,
+			Number(getEnvVar(config as never, `${name.toUpperCase()}_PORT` as never)),
+		]),
+	);
+	return planNamedHosts({
+		projectPrefix: applied.projectPrefix,
+		worktreeSuffix: identity.worktreeSuffix,
+		apps,
+		services: applied.services,
+		ports,
+		hosts: applied.options?.hosts ?? true,
+		primaryApp: applied.options?.primaryApp,
+	});
+}
 
 describe("getEnvVar", () => {
 	it("returns shared computed env values and service-derived aliases", () => {
@@ -77,21 +153,21 @@ describe("getEnvVar", () => {
 		expect(getEnvVar(config, "WEBLOCAL_URL")).toMatch(/^http:\/\//);
 	});
 
-	it("emits named HTTPS URLs when hosts are enabled", () => {
+	it("emits named HTTPS URLs when hosts are enabled", async () => {
 		const previousHosts = process.env.BUNCARGO_HOSTS;
 		delete process.env.BUNCARGO_HOSTS;
 		try {
-			withoutCiEnv(() => {
-				const config = defineDevConfig({
-					projectPrefix: "serpier",
-					services: {
-						postgres: service.postgres({ database: "typed" }),
-					},
-					apps: {
-						api: { port: 3000, devCommand: "bun run api" },
-					},
-					options: { hosts: true },
-				});
+			const config = defineDevConfig({
+				projectPrefix: "serpier",
+				services: {
+					postgres: service.postgres({ database: "typed" }),
+				},
+				apps: {
+					api: { port: 3000, devCommand: "bun run api" },
+				},
+				options: { hosts: true },
+			});
+			await withServingRun(config, () => {
 				expect(getEnvVar(config, "API_URL")).toMatch(
 					/^https:\/\/(?:[a-z0-9-]+\.)?api\.serpier\.localhost$/,
 				);
@@ -110,20 +186,78 @@ describe("getEnvVar", () => {
 		}
 	});
 
-	it("gives the primary app the bare hostname a run serves it on", () => {
+	// A takeover that ended took one app's route with it, and every other app
+	// of the run, still on its named URL, read localhost from its own config.
+	it("names each app whose route is live, whatever the others' are", async () => {
 		const previousHosts = process.env.BUNCARGO_HOSTS;
 		delete process.env.BUNCARGO_HOSTS;
 		try {
-			withoutCiEnv(() => {
-				const config = defineDevConfig({
-					projectPrefix: "serpier",
-					services: {},
-					apps: {
-						api: { port: 3000, devCommand: "bun run api" },
-						web: { port: 5173, devCommand: "bun run web" },
-					},
-					options: { hosts: true, primaryApp: "web" },
-				});
+			const config = defineDevConfig({
+				projectPrefix: "serpier",
+				services: {},
+				apps: {
+					api: { port: 3000, devCommand: "bun run api" },
+					web: { port: 5173, devCommand: "bun run web" },
+				},
+				options: { hosts: true },
+			});
+			await withServingRun(config, () => {
+				expect(getEnvVar(config, "WEB_URL")).toMatch(
+					/^https:\/\/(?:[a-z0-9-]+\.)?web\.serpier\.localhost$/,
+				);
+				expect(getEnvVar(config, "API_URL")).toMatch(
+					/^http:\/\/localhost:\d+$/,
+				);
+			}, ["web"]);
+		} finally {
+			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
+			else process.env.BUNCARGO_HOSTS = previousHosts;
+		}
+	});
+
+	// The plan alone handed a vite.config an https URL while the run was on
+	// localhost:port, or with no run at all; `env` said localhost meanwhile.
+	it("keeps localhost URLs while no run of the checkout serves its named hosts", () => {
+		const saved = {
+			HOME: process.env.HOME,
+			BUNCARGO_HOSTS: process.env.BUNCARGO_HOSTS,
+		};
+		const home = mkdtempSync(join(tmpdir(), "buncargo-getenv-hosts-"));
+		process.env.HOME = home;
+		delete process.env.BUNCARGO_HOSTS;
+		try {
+			const config = defineDevConfig({
+				projectPrefix: "serpier",
+				services: {},
+				apps: { api: { port: 3000, devCommand: "bun run api" } },
+				options: { hosts: true },
+			});
+			expect(withoutCiEnv(() => getEnvVar(config, "API_URL"))).toMatch(
+				/^http:\/\/localhost:\d+$/,
+			);
+		} finally {
+			for (const [name, value] of Object.entries(saved)) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
+
+	it("gives the primary app the bare hostname a run serves it on", async () => {
+		const previousHosts = process.env.BUNCARGO_HOSTS;
+		delete process.env.BUNCARGO_HOSTS;
+		try {
+			const config = defineDevConfig({
+				projectPrefix: "serpier",
+				services: {},
+				apps: {
+					api: { port: 3000, devCommand: "bun run api" },
+					web: { port: 5173, devCommand: "bun run web" },
+				},
+				options: { hosts: true, primaryApp: "web" },
+			});
+			await withServingRun(config, () => {
 				expect(getEnvVar(config, "WEB_URL")).toMatch(
 					/^https:\/\/(?:[a-z0-9-]+\.)?serpier\.localhost$/,
 				);
@@ -138,30 +272,30 @@ describe("getEnvVar", () => {
 		}
 	});
 
-	it("sees what the config's integrations add, like a run does", () => {
+	it("sees what the config's integrations add, like a run does", async () => {
 		const previousHosts = process.env.BUNCARGO_HOSTS;
 		delete process.env.BUNCARGO_HOSTS;
 		try {
-			withoutCiEnv(() => {
-				const config = defineDevConfig({
-					projectPrefix: "serpier",
-					services: {},
-					apps: {
-						api: { port: 3000, devCommand: "bun run api" },
-						web: { port: 5173, devCommand: "bun run web" },
+			const config = defineDevConfig({
+				projectPrefix: "serpier",
+				services: {},
+				apps: {
+					api: { port: 3000, devCommand: "bun run api" },
+					web: { port: 5173, devCommand: "bun run web" },
+				},
+				options: { hosts: true },
+				// Shopify's sets its frontend as the primary app this way.
+				integrations: [
+					{
+						name: "primary",
+						config: (config) => ({
+							...config,
+							options: { ...config.options, primaryApp: "web" },
+						}),
 					},
-					options: { hosts: true },
-					// Shopify's sets its frontend as the primary app this way.
-					integrations: [
-						{
-							name: "primary",
-							config: (config) => ({
-								...config,
-								options: { ...config.options, primaryApp: "web" },
-							}),
-						},
-					],
-				});
+				],
+			});
+			await withServingRun(config, () => {
 				expect(getEnvVar(config, "WEB_URL")).not.toContain("web.");
 			});
 		} finally {
@@ -248,7 +382,7 @@ describe("getEnvVar", () => {
 									: "",
 					}),
 					probe: async () => undefined,
-					isAlive: () => true,
+					ownersAlive: () => () => true,
 				},
 			);
 			expect(withoutCiEnv(() => getEnvVar(config, "API_URL"))).toBe(

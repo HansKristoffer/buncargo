@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readCurrentProcessIdentity } from "../process-identity";
 import { getTailscaleServePath } from "./paths";
 import type { ServeConfig, TailscaleCommandResult } from "./tailscale-cli";
 import {
@@ -11,7 +12,9 @@ import {
 	planServeChanges,
 	readServedTailscaleUrls,
 	releaseTailscaleServe,
+	type ServeOwner,
 	servedTailscaleUrls,
+	serveOwnersAlive,
 	sweepTailscaleServe,
 	type TailscaleServeDeps,
 	type TailscaleServeEntry,
@@ -117,7 +120,10 @@ function deps(
 	return {
 		cli,
 		probe: options.probe ?? (async () => undefined),
-		isAlive: (pid) => alive.has(pid),
+		ownersAlive:
+			() =>
+			({ pid }) =>
+				alive.has(pid),
 	};
 }
 
@@ -155,7 +161,7 @@ function plan(input: {
 		hostname: HOST,
 		wants: [{ app: "web", httpsPort: 25173, target: "http://127.0.0.1:5173" }],
 		takeover: new Set(input.takeover),
-		isAlive: (pid) => alive.has(pid),
+		isAlive: ({ pid }) => alive.has(pid),
 	});
 }
 
@@ -189,7 +195,54 @@ describe("tailscaleBlockPorts", () => {
 	});
 });
 
+describe("serveOwnersAlive", () => {
+	const isServeOwnerAlive = (owner: ServeOwner) =>
+		serveOwnersAlive([owner])(owner);
+
+	// `--bg` entries survive a reboot and the pid goes to another process:
+	// the sweep kept the entry and readers advertised its URL.
+	it("ends an entry whose pid now belongs to another process", () => {
+		expect(
+			isServeOwnerAlive({ pid: process.ppid, processIdentity: "v2:ended" }),
+		).toBe(false);
+	});
+
+	it("keeps an entry whose run is still the process it recorded", () => {
+		expect(
+			isServeOwnerAlive({
+				pid: process.pid,
+				processIdentity: readCurrentProcessIdentity(),
+			}),
+		).toBe(true);
+		expect(isServeOwnerAlive({ pid: process.pid })).toBe(true);
+	});
+});
+
 describe("planServeChanges", () => {
+	it("records this run's identity with the entries it owns", () => {
+		const ended = entry({ pid: DEAD, processIdentity: "v2:ended" });
+		const result = planServeChanges({
+			entries: [ended],
+			config: configOf(ended),
+			root: ROOT,
+			pid: SELF,
+			processIdentity: "v2:self",
+			hostname: HOST,
+			wants: [
+				{ app: "web", httpsPort: 25173, target: "http://127.0.0.1:5173" },
+				{ app: "api", httpsPort: 23000, target: "http://127.0.0.1:3000" },
+			],
+			takeover: new Set(),
+			isAlive: ({ pid }) => pid !== DEAD,
+		});
+		expect(
+			result.records.map((item) => [item.app, item.pid, item.processIdentity]),
+		).toEqual([
+			["web", SELF, "v2:self"],
+			["api", SELF, "v2:self"],
+		]);
+	});
+
 	it("adds what is wanted on a free port", () => {
 		const result = plan({});
 		expect(result.register.map((item) => [item.app, item.pid])).toEqual([
@@ -582,7 +635,7 @@ describe("servedTailscaleUrls", () => {
 			{
 				root: ROOT,
 				ports: { web: 5173, api: 3010, admin: 4000, docs: 4200 },
-				isAlive: (pid) => pid !== DEAD,
+				isAlive: ({ pid }) => pid !== DEAD,
 			},
 		);
 		expect(urls).toEqual({ web: `https://${HOST}:25173` });

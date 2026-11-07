@@ -13,6 +13,7 @@ export {
 	gitignoreRefusals,
 	inspectCheckoutFiles,
 	lastSyncReport,
+	type MergeAnswers,
 	mergeCheckoutFile,
 	openCheckoutFiles,
 	saveCheckoutFiles,

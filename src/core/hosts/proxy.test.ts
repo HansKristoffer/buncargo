@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import {
 	closestHostname,
 	createProxyFetch,
+	createWebsocketHandlers,
 	HEALTH_PATH,
 	HOPS_HEADER,
 	hostnameFromHostHeader,
@@ -135,6 +136,20 @@ describe("proxy fetch", () => {
 			}
 		},
 	);
+
+	// An empty pair once bound plain HTTP on :443 while the CLI probed HTTPS
+	// and reported the daemon down.
+	it("refuses to serve TLS from an empty certificate", async () => {
+		await expect(
+			startLocalProxy({
+				lookup: () => undefined,
+				routes: () => ({ hostnames: [], lastReloadAt: Date.now() }),
+				tls: { cert: "", key: "" },
+				httpsPort: 0,
+				hostname: "127.0.0.1",
+			}),
+		).rejects.toThrow("is empty");
+	});
 
 	it("returns 508 when hop limit is exceeded", async () => {
 		const fetchHandler = createProxyFetch({
@@ -621,6 +636,30 @@ describe("proxy fetch", () => {
 		// 1001 (going away) is the close frame; a bare reset reports otherwise.
 		expect(await closed.promise).toBe(1001);
 		client.close();
+	});
+});
+
+describe("createWebsocketHandlers", () => {
+	// The HTTP path forgot a failed family; the WebSocket path did not, so HMR
+	// kept dialing 127.0.0.1 after Vite came back on ::1.
+	it("forgets the remembered family when the upstream dial fails", async () => {
+		const port = await findClosedPort();
+		const { promise: forgotten, resolve: forget } =
+			Promise.withResolvers<number>();
+		const handlers = createWebsocketHandlers({
+			resolve: async () => ({ host: "127.0.0.1", authority: "127.0.0.1" }),
+			forget,
+		});
+		const { promise: closed, resolve: close } = Promise.withResolvers<void>();
+
+		handlers.open({
+			data: { targetPort: port, path: "/", pending: [] },
+			send: () => {},
+			close: () => close(),
+		});
+
+		expect(await forgotten).toBe(port);
+		await closed;
 	});
 });
 

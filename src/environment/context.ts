@@ -10,7 +10,11 @@ import { readEnvOverrides } from "../core/env-overrides";
 import { applyHostPlanToUrls, planNamedHosts } from "../core/hosts/plan";
 import { tailscaleBlockPorts } from "../core/hosts/tailscale-serve";
 import { getLocalIp } from "../core/network";
-import { offsetClaimKey, releaseOffsetClaims } from "../core/offset-claims";
+import {
+	offsetClaimKey,
+	readAllOffsetClaims,
+	releaseOffsetClaimsIfUnchanged,
+} from "../core/offset-claims";
 import {
 	candidateAllocationPorts,
 	resolvePortPlan,
@@ -282,14 +286,23 @@ export function createDevEnvContext<
 		computeLoopbackUrls(services, apps, portMap),
 	);
 	const publicUrls: UrlMap = {};
+	// Loopback: the plan's hostnames being served, when only some are.
+	let servedHostnames: ReadonlySet<string> | undefined;
 
 	function refreshUrls() {
 		const urlMap = toUrlMap(urls);
 		Object.assign(urlMap, plainUrls);
 
 		if (!hosts?.active) return;
-		if (hosts.mode === "tailscale") Object.assign(urlMap, hosts.tailscaleUrls);
-		else applyHostPlanToUrls(urlMap, hosts.plan);
+		if (hosts.mode === "tailscale") {
+			Object.assign(urlMap, hosts.tailscaleUrls);
+			return;
+		}
+		const served = servedHostnames;
+		const plan = served
+			? hosts.plan.filter((entry) => served.has(entry.hostname))
+			: hosts.plan;
+		applyHostPlanToUrls(urlMap, plan);
 	}
 
 	let model: ComposeDocument | undefined;
@@ -352,13 +365,8 @@ export function createDevEnvContext<
 		if (selection === preparedSelection) {
 			return;
 		}
-		hasSelectedServices = plan.requiredServiceKeys.length > 0;
-		selectedServiceKeys = plan.requiredServiceKeys;
-		startSelection = {
-			appNames: plan.appNames,
-			requiredServiceKeys: plan.requiredServiceKeys,
-		};
-		const selectedRuntime = hasSelectedServices ? runtime() : undefined;
+		const withServices = plan.requiredServiceKeys.length > 0;
+		const selectedRuntime = withServices ? runtime() : undefined;
 
 		if (selectedRuntime) {
 			const selectedServices = pick(services, plan.requiredServiceKeys);
@@ -368,7 +376,7 @@ export function createDevEnvContext<
 		// App-only selection still checks host processes, without asking any runtime.
 		const snapshot =
 			suppliedSnapshot ??
-			(hasSelectedServices
+			(withServices
 				? undefined
 				: createPortOwnerSnapshot({ containers: new Map() }));
 		portPlan = resolvePortPlan({
@@ -395,6 +403,14 @@ export function createDevEnvContext<
 			host.targetPort = portMap[host.name] ?? host.targetPort;
 		}
 		refreshUrls();
+		// Published only with its block: an allocation that threw (the range
+		// is full) selected nothing that a caller could read as allocated.
+		hasSelectedServices = withServices;
+		selectedServiceKeys = plan.requiredServiceKeys;
+		startSelection = {
+			appNames: plan.appNames,
+			requiredServiceKeys: plan.requiredServiceKeys,
+		};
 		preparedSelection = selection;
 	}
 
@@ -428,15 +444,23 @@ export function createDevEnvContext<
 		},
 		async releaseThrowawayClaim() {
 			if (suffix === undefined && !isCI()) return;
-			// Another run of this environment on record may still use the block.
+			const key = offsetClaimKey(root, suffix);
+			const read = readAllOffsetClaims()[key];
+
+			// Another run of this environment on record may still use the block,
+			// and one that starts after this check claims it again: released
+			// only if no run has used it since it was read.
 			const runs = await readAllRuns();
 			if (
 				runs.some((run) => run.projectName === projectName && run.root === root)
 			)
 				return;
-			await releaseOffsetClaims([offsetClaimKey(root, suffix)]);
-			// A later start() on this environment allocates and claims again.
+			if (read !== undefined)
+				await releaseOffsetClaimsIfUnchanged({ [key]: read });
+			// A later start() on this environment allocates and claims again, and
+			// nothing (Prisma's `allocate`) reads the released block as its own.
 			preparedSelection = undefined;
+			startSelection = undefined;
 		},
 		async prepareStartAsync(onlyApps, onlyServices, signal) {
 			signal?.throwIfAborted();
@@ -535,6 +559,8 @@ export function createDevEnvContext<
 			hosts.active = active;
 			hosts.caPath = extras.caPath;
 			hosts.tailscaleUrls = active ? (extras.tailscaleUrls ?? {}) : {};
+			servedHostnames =
+				active && extras.hostnames ? new Set(extras.hostnames) : undefined;
 			refreshUrls();
 		},
 

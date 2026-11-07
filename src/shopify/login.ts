@@ -1,5 +1,5 @@
 import {
-	isShopifySessionExpired,
+	isShopifySessionCurrent,
 	readShopifySession,
 	shopifyAppInfo,
 	shopifyLogin,
@@ -29,18 +29,22 @@ export function ensureShopifyLogin(input: {
 	// the CLI uses the token itself.
 	if ((input.env ?? process.env).SHOPIFY_CLI_PARTNERS_TOKEN) return;
 	const session = readShopifySession(input.sessionFile);
-	if (session && !isShopifySessionExpired(session)) return;
+	// Trusted only with an expiry that is known and ahead; any other session
+	// is asked about below.
+	if (session && isShopifySessionCurrent(session)) return;
 	if (
 		session &&
 		input.linked &&
 		shopifyAppInfo(input.root, input.config, { terminal: input.interactive }).ok
 	)
 		return;
-	if (!input.interactive)
-		throw new Error(
-			session
-				? "the Shopify CLI session has expired and cannot be renewed without a terminal. Run `buncargo shopify login`."
-				: "not logged in to the Shopify CLI. Run `buncargo shopify login`.",
-		);
+	if (!input.interactive) {
+		const state = !session
+			? "not logged in to the Shopify CLI."
+			: session.expiresAt
+				? "the Shopify CLI session has expired and cannot be renewed without a terminal."
+				: "the Shopify CLI session could not be confirmed (its expiry is unreadable) and cannot be renewed without a terminal.";
+		throw new Error(`${state} Run \`buncargo shopify login\`.`);
+	}
 	shopifyLogin(input.root);
 }

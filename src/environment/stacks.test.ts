@@ -120,6 +120,20 @@ describe("integration stacks", () => {
 		expect(await loadRuns()).toEqual([]);
 	});
 
+	it("reads as running once a start brought its stack up, until a stop", async () => {
+		// With no Compose service to ask the runtime about, a stack-only
+		// config always read as not running.
+		const log = join(root, "running.log");
+		const env = createDevEnvironment(stackConfig(log), { root });
+		expect(await env.isRunning()).toBe(false);
+
+		await env.start({ startServers: false, watchdog: false, verbose: false });
+		expect(await env.isRunning()).toBe(true);
+
+		await env.stop({ verbose: false });
+		expect(await env.isRunning()).toBe(false);
+	});
+
 	it("starts and stops the stack under the project lifecycle lock", async () => {
 		const log = join(root, "locked.log");
 		const probe = join(root, "lock-probe.ts");

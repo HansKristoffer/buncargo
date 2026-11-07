@@ -116,28 +116,49 @@ export function createProxyActivityRecorder(deps: {
 	let dirty = false;
 	// Never written: the first flush is a heartbeat, which creates the file.
 	let lastWrite = Number.NEGATIVE_INFINITY;
+	// Throttles the request path's attempts, which a failing write would
+	// otherwise repeat on every request.
+	let lastAttempt = Number.NEGATIVE_INFINITY;
+	let flushing: Promise<void> | undefined;
+
+	async function flush(): Promise<void> {
+		const now = deps.now();
+		const sinceWrite = now - lastWrite;
+		const changed = dirty && sinceWrite >= PROXY_ACTIVITY_WRITE_MS;
+		const beat = sinceWrite >= PROXY_ACTIVITY_HEARTBEAT_MS;
+		if (!changed && !beat) return;
+		lastAttempt = now;
+		const batch = new Map(seen);
+		try {
+			await deps.write(batch, now);
+		} catch {
+			// Kept for the next flush; a request time a minute late is harmless.
+			return;
+		}
+		lastWrite = now;
+		for (const [root, at] of batch)
+			if (seen.get(root) === at) seen.delete(root);
+		dirty = seen.size > 0;
+	}
+
+	// The reload loop and the request path share one write at a time.
+	const flushOnce = (): Promise<void> => {
+		flushing ??= flush().finally(() => {
+			flushing = undefined;
+		});
+		return flushing;
+	};
+
 	return {
 		note: (root) => {
 			seen.set(root, deps.now());
 			dirty = true;
+			// From the request path too: the reload loop is the other caller,
+			// and a loop that stalls would otherwise lose every request it saw
+			// and let the file go stale, which readers take as no daemon.
+			const since = deps.now() - Math.max(lastWrite, lastAttempt);
+			if (since >= PROXY_ACTIVITY_WRITE_MS) void flushOnce();
 		},
-		flush: async () => {
-			const now = deps.now();
-			const sinceWrite = now - lastWrite;
-			const changed = dirty && sinceWrite >= PROXY_ACTIVITY_WRITE_MS;
-			const beat = sinceWrite >= PROXY_ACTIVITY_HEARTBEAT_MS;
-			if (!changed && !beat) return;
-			const batch = new Map(seen);
-			try {
-				await deps.write(batch, now);
-			} catch {
-				// Kept for the next flush; a request time a minute late is harmless.
-				return;
-			}
-			lastWrite = now;
-			for (const [root, at] of batch)
-				if (seen.get(root) === at) seen.delete(root);
-			dirty = seen.size > 0;
-		},
+		flush: flushOnce,
 	};
 }

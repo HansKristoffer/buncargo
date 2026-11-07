@@ -16,13 +16,17 @@ export {
 	runHostsInstall,
 	runHostsUninstall,
 } from "./onboarding";
+export { getRoutesPath } from "./paths";
 export type { ProxyHealth } from "./proxy";
 export {
 	isRouteLive,
 	loadHostRoutes,
 	pruneHostRoutes,
 	removeHostRoutes,
+	routesDownRemoves,
 	routesFromPlan,
 	upsertHostRoutes,
+	withdrawHostRoutes,
 } from "./registry";
+export { identityRouteOwners } from "./route-owners";
 export { toHostsUserMessage } from "./service";

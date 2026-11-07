@@ -5,6 +5,7 @@ import {
 	resolveExposeTargets,
 	startPublicTunnels,
 	stopPublicTunnels,
+	withoutPublicUrls,
 } from "./tunnel";
 
 function createEnv(): DevEnvironment<
@@ -193,5 +194,22 @@ describe("tunnel cancellation ownership", () => {
 		setTimeout(() => controller.abort(new Error("cancelled")), 20);
 		await expect(pending).rejects.toThrow("cancelled");
 		expect(closes).toBe(1);
+	});
+});
+
+it("closing tunnels clears only their URLs, not the ones apps printed", () => {
+	const current = {
+		api: "https://api.trycloudflare.com",
+		web: "https://web.example",
+		admin: "https://admin-now.example",
+	};
+	// The tunnels opened api and admin; admin has since printed its own URL.
+	const opened = {
+		api: "https://api.trycloudflare.com",
+		admin: "https://admin.trycloudflare.com",
+	};
+	expect(withoutPublicUrls(current, opened)).toEqual({
+		web: "https://web.example",
+		admin: "https://admin-now.example",
 	});
 });

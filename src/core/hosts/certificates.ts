@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { getErrorMessage, typedSwitch } from "hanzio";
-import { withFileLock } from "../file-lock";
+import { FileLockTimeoutError, withFileLock } from "../file-lock";
 import { readCertNames, rememberCertNames } from "./cert-names";
 import {
 	type CertificateShortfall,
@@ -8,10 +8,12 @@ import {
 	certNeedsRenewal,
 	ensureMkcert,
 	mintCert,
+	parseCertificateLeaf,
 	readCertificateLeaf,
 	resolvedMkcertPath,
 } from "./mkcert";
 import { getCertPath, getKeyPath } from "./paths";
+import { certificateCovers } from "./plan";
 import { loadHostRoutes } from "./registry";
 
 /**
@@ -151,22 +153,63 @@ export async function syncCertificateForRoutes(
 }
 
 /**
- * Read the pair the proxy binds, under the same lock minting takes.
+ * How long the daemon waits on a mint before trying again on a later pass.
+ * Short, because every other project's route changes queue behind it.
+ */
+const PAIR_READ_LOCK_MS = 1000;
+
+/**
+ * Read the pair the proxy binds, under the same lock minting takes, or
+ * `undefined` while a mint holds it.
  *
  * Landing a new certificate is two renames, not one. An unlocked reader can
  * fall between them and pair a fresh certificate with the previous key, which
  * fails the TLS bind and takes every named URL down until the next reload.
+ *
+ * A held lock is a mint in progress, not a failure: `mkcert` runs under it,
+ * and treating a slow one as a failed reload backed the daemon off. The mint
+ * ends in a rename the daemon watches, which brings it straight back here.
  */
-export async function readCertificatePair(): Promise<{
-	cert: string;
-	key: string;
-}> {
+export async function readCertificatePair(): Promise<
+	{ cert: string; key: string } | undefined
+> {
 	const certPath = getCertPath();
 	const keyPath = getKeyPath();
-	return withFileLock(certPath, async () => ({
-		cert: await Bun.file(certPath).text(),
-		key: await Bun.file(keyPath).text(),
-	}));
+	try {
+		return await withFileLock(
+			certPath,
+			async () => ({
+				cert: await Bun.file(certPath).text(),
+				key: await Bun.file(keyPath).text(),
+			}),
+			{ timeoutMs: PAIR_READ_LOCK_MS },
+		);
+	} catch (error) {
+		if (error instanceof FileLockTimeoutError) return undefined;
+		throw error;
+	}
+}
+
+/**
+ * Which hostnames a bound certificate answers for, at a given moment, or
+ * `undefined` when its names or expiry cannot be read.
+ *
+ * What the daemon reports as served. A route the listener's own leaf does not
+ * cover, or any route once that leaf has expired, fails TLS in the browser
+ * however complete the route map is, and a health body that listed it anyway
+ * let a run advertise https URLs that could not load.
+ *
+ * Unreadable is not "serves nothing": `Bun.serve` accepted the certificate,
+ * and answering nothing would send every run on the machine to
+ * `localhost:port` without a word. The daemon falls back to the route map.
+ */
+export function certificateServes(
+	certPem: string,
+): ((hostname: string, now: number) => boolean) | undefined {
+	const leaf = parseCertificateLeaf(certPem);
+	if (leaf === undefined || Number.isNaN(leaf.validTo)) return undefined;
+	return (hostname, now) =>
+		leaf.validTo > now && certificateCovers(leaf.names, hostname);
 }
 
 /**
@@ -224,7 +267,9 @@ export function describeCertificateShortfall(
  * A cheap identity for the certificate on disk.
  *
  * The daemon polls this to notice a certificate the CLI reminted underneath it
- * and rebind with the new leaf, without parsing the file every second.
+ * and rebind with the new leaf, without parsing the file every second. The
+ * inode is part of it: a mint lands by rename, so it always changes, where two
+ * mints of one size within the filesystem's mtime granularity look alike.
  */
 export function certificateFingerprint(
 	certPath = getCertPath(),
@@ -234,7 +279,7 @@ export function certificateFingerprint(
 		.map((path) => {
 			try {
 				const stat = statSync(path);
-				return `${stat.mtimeMs}:${stat.size}`;
+				return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
 			} catch {
 				return "missing";
 			}

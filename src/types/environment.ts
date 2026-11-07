@@ -237,7 +237,12 @@ export interface DevEnvironment<
 	stop(options?: StopOptions): Promise<void>;
 	/** Restart containers only */
 	restart(): Promise<void>;
-	/** Check if containers are running */
+	/**
+	 * Whether the services are up: every Compose service's container running
+	 * (a `kind: "job"` one has done its work and exited), and every
+	 * integration stack brought up by a start of this environment since its
+	 * last stop.
+	 */
 	isRunning(): Promise<boolean>;
 	/**
 	 * Why the selected services' containers are gone, when they are: who

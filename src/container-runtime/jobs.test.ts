@@ -38,6 +38,16 @@ it("waits for successful completion, not merely a running job", async () => {
 	expect(model.services.init?.restart).toBe("no");
 });
 
+it("reads completion through the shared state words, not Docker's alone", async () => {
+	for (const state of ["Exited", "stopped"]) {
+		await waitForService("init", job, undefined, {
+			runtime: runtime([{ state, exitCode: 0, logTail: "" }]),
+			projectName: "fixture",
+			pollInterval: 1,
+		});
+	}
+});
+
 it("fails with job exit details and log output", async () => {
 	await expect(
 		waitForService("init", job, undefined, {

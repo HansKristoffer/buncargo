@@ -13,6 +13,7 @@ import {
 	isHostsServiceInstalled,
 	missingServiceTargets,
 	readHostsServiceManifest,
+	SYSTEMD_UNIT,
 	toHostsUserMessage,
 	uninstallHostsService,
 	writeHostsServiceManifest,
@@ -35,10 +36,17 @@ function recordingRunner(
 		failOn?: (command: string, args: string[]) => boolean;
 		/** `launchctl print` succeeds only while the job is still loaded. */
 		stillLoaded?: () => boolean;
+		/** Root-owned files already on disk, by path. */
+		files?: Iterable<[string, string]>;
+		failWrite?: (path: string) => boolean;
 	} = {},
-): { runner: PrivilegedRunner; calls: RecordedCall[]; files: Set<string> } {
+): {
+	runner: PrivilegedRunner;
+	calls: RecordedCall[];
+	files: Map<string, string>;
+} {
 	const calls: RecordedCall[] = [];
-	const files = new Set<string>();
+	const files = new Map<string, string>(options.files);
 	const runner: PrivilegedRunner = {
 		isRoot: () => false,
 		authorize() {
@@ -53,14 +61,16 @@ function recordingRunner(
 				throw new Error(`${command} ${args.join(" ")} failed`);
 			}
 		},
-		writeFile(path) {
+		writeFile(path, contents) {
 			calls.push({ command: "writeFile", args: [path] });
-			files.add(path);
+			if (options.failWrite?.(path)) throw new Error(`cp ${path}: EACCES`);
+			files.set(path, contents);
 		},
 		removeFile(path) {
 			calls.push({ command: "removeFile", args: [path] });
 			files.delete(path);
 		},
+		readFile: (path) => files.get(path),
 	};
 	return { runner, calls, files };
 }
@@ -187,13 +197,6 @@ describe("describeStaleService", () => {
 		expect(
 			describeStaleService({ installed: false, manifest: undefined }),
 		).toBeUndefined();
-		expect(
-			describeStaleService({
-				installed: false,
-				manifest,
-				fileExists: () => false,
-			}),
-		).toBeUndefined();
 	});
 
 	it("says nothing while every recorded path is present", () => {
@@ -204,6 +207,18 @@ describe("describeStaleService", () => {
 				fileExists: () => true,
 			}),
 		).toBeUndefined();
+	});
+
+	// A unit removed by hand, or a reinstall that failed with nothing to put
+	// back, read as a machine that never had the service.
+	it("flags a manifest whose unit file is gone", () => {
+		expect(
+			describeStaleService({
+				installed: false,
+				manifest,
+				fileExists: () => true,
+			}),
+		).toContain("unit file is gone");
 	});
 
 	it("flags an install with no manifest as needing repair", () => {
@@ -395,6 +410,60 @@ describe.skipIf(!hostsServicePath())("installHostsService", () => {
 			expect(launchctl.filter((arg) => arg === "print").length).toBe(3);
 		},
 	);
+
+	// `start` and `enable --now` are no-ops on an active unit, so a reinstall
+	// left the old code running while the manifest said the new code was.
+	it.skipIf(isDarwin)(
+		"restarts the unit so a reinstall runs the new code",
+		() => {
+			const { runner, calls } = recordingRunner();
+			installHostsService({ user, runner, bundle });
+
+			const systemctl = calls
+				.filter((call) => call.command === "systemctl")
+				.map((call) => call.args.join(" "));
+			expect(systemctl).toContain(`restart ${SYSTEMD_UNIT}`);
+			expect(systemctl).not.toContain(`enable --now ${SYSTEMD_UNIT}`);
+		},
+	);
+
+	// On a same-version reinstall the bundle path is the old service's own;
+	// deleting it, and the unit, left the machine with no service at all.
+	it("puts the previous unit and bundle back when a reinstall fails to load", () => {
+		let activations = 0;
+		const { runner, files } = recordingRunner({
+			files: [
+				[servicePath, "old unit"],
+				[bundlePath, "// old daemon\n"],
+			],
+			failOn: (command, args) => {
+				if (!activateFails(command, args)) return false;
+				activations += 1;
+				return activations === 1;
+			},
+		});
+
+		expect(() => installHostsService({ user, runner, bundle })).toThrow(
+			HOSTS_SERVICE_START_MESSAGE,
+		);
+
+		expect(files.get(servicePath)).toBe("old unit");
+		expect(files.get(bundlePath)).toBe("// old daemon\n");
+		expect(activations).toBe(2);
+	});
+
+	it("removes the bundle it wrote when the unit cannot be written", () => {
+		const { runner, files } = recordingRunner({
+			failWrite: (path) => path === servicePath,
+		});
+
+		expect(() => installHostsService({ user, runner, bundle })).toThrow(
+			"admin rights",
+		);
+
+		expect(files.has(bundlePath)).toBe(false);
+		expect(files.has(servicePath)).toBe(false);
+	});
 
 	it("rolls back the unit file when it fails to load", () => {
 		const { runner, calls, files } = recordingRunner({ failOn: activateFails });

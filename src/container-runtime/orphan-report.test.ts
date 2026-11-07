@@ -4,6 +4,7 @@ import type { RunEntry } from "../core/run-registry";
 import type { BuncargoContainer, BuncargoVolume } from "../types";
 import {
 	ORPHAN_VOLUME_REPORT_INTERVAL_MS,
+	ORPHAN_VOLUME_REPORT_RETRY_MS,
 	orphanVolumeReporter,
 } from "./orphan-report";
 import type { ContainerRuntimeAdapter } from "./types";
@@ -130,6 +131,54 @@ describe("orphanVolumeReporter", () => {
 		});
 		await report(["docker"]);
 		clock += ORPHAN_VOLUME_REPORT_INTERVAL_MS - 1;
+		await report(["docker"]);
+		expect(logged).toHaveLength(1);
+	});
+
+	it("tries a failed pass again after a short wait, not a whole interval", async () => {
+		let clock = 0;
+		let fail = true;
+		const runtime = {
+			name: "docker",
+			list: () => {
+				if (fail) throw new Error("docker ps failed");
+				return [];
+			},
+			listVolumes: async () => [volume("a_db", "a")],
+		} as unknown as ContainerRuntimeAdapter;
+		const logged: string[] = [];
+		const report = orphanVolumeReporter({
+			log: (message) => logged.push(message),
+			runtimes: () => [runtime],
+			readRuns: async () => [],
+			claims: () => ({}),
+			now: () => clock,
+		});
+		await report(["docker"]);
+		fail = false;
+		clock += ORPHAN_VOLUME_REPORT_RETRY_MS;
+		await report(["docker"]);
+		expect(logged).toHaveLength(1);
+		expect(logged[0]).toContain("a_db");
+	});
+
+	it("does not start the interval on a pass no runtime answered", async () => {
+		let clock = 0;
+		const runtime = {
+			name: "docker",
+			list: () => [],
+			listVolumes: async () => [volume("a_db", "a")],
+		} as unknown as ContainerRuntimeAdapter;
+		const logged: string[] = [];
+		const report = orphanVolumeReporter({
+			log: (message) => logged.push(message),
+			runtimes: () => [runtime],
+			readRuns: async () => [],
+			claims: () => ({}),
+			now: () => clock,
+		});
+		await report([]);
+		clock += 1;
 		await report(["docker"]);
 		expect(logged).toHaveLength(1);
 	});

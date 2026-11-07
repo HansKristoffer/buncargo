@@ -4,6 +4,8 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import {
+	checkProcessIdentitiesAsync,
+	createProcessIdentityCache,
 	matchesProcessIdentityAsync,
 	processIdentityMatcherAsync,
 	readProcessIdentities,
@@ -208,6 +210,27 @@ describe("processIdentityMatcherAsync", () => {
 	});
 });
 
+describe("checkProcessIdentitiesAsync", () => {
+	it("checks a list in its order, telling a gone process from a reused pid", async () => {
+		const child = Bun.spawn([process.execPath, "--eval", ""], {
+			stdout: "ignore",
+			stderr: "ignore",
+		});
+		const gone = child.pid;
+		await child.exited;
+		const identity = readProcessIdentity(process.pid);
+		expect(
+			await checkProcessIdentitiesAsync([
+				{ pid: process.pid, identity },
+				{ pid: gone, identity: "v2:gone" },
+				{ pid: process.pid, identity: "v2:not-this-process" },
+				{ pid: process.pid },
+				{ pid: 1.5, identity: "v2:not-a-pid" },
+			]),
+		).toEqual(["match", "mismatch", "mismatch", "match", "mismatch"]);
+	});
+});
+
 describe("liveness over a list that contains a bad pid", () => {
 	// The registry keeps the pids of finished runs, and one pid `ps` rejects
 	// made it refuse the whole batch. Every live run then read as dead, which
@@ -259,5 +282,55 @@ describe("identity across environments", () => {
 		});
 		expect(foreign.stdout).toBe(readProcessIdentity(process.pid) ?? "");
 		expect(foreign.stdout).toStartWith("v2:");
+	});
+});
+
+describe("createProcessIdentityCache", () => {
+	// getEnvVar runs inside users' vite and next configs, several times per
+	// load and on every reload; on macOS each identity read is a `ps`.
+	it("reads a live pid once, and again only after it was seen dead", () => {
+		const reads: number[][] = [];
+		const alive = new Set([101, 202]);
+		const identities = createProcessIdentityCache({
+			read: (pids) => {
+				reads.push([...pids]);
+				return new Map(pids.map((pid) => [pid, `v2:${pid}`]));
+			},
+			isAlive: (pid) => alive.has(pid),
+		});
+
+		expect(identities([101, 202])).toEqual(
+			new Map([
+				[101, "v2:101"],
+				[202, "v2:202"],
+			]),
+		);
+		expect(identities([101, 202])).toEqual(
+			new Map([
+				[101, "v2:101"],
+				[202, "v2:202"],
+			]),
+		);
+		expect(reads).toEqual([[101, 202]]);
+
+		alive.delete(101);
+		expect(identities([101, 202])).toEqual(new Map([[202, "v2:202"]]));
+		alive.add(101);
+		identities([101, 202]);
+		expect(reads).toEqual([[101, 202], [101]]);
+	});
+
+	it("asks again for a pid whose identity could not be read", () => {
+		const reads: number[][] = [];
+		const identities = createProcessIdentityCache({
+			read: (pids) => {
+				reads.push([...pids]);
+				return new Map();
+			},
+			isAlive: () => true,
+		});
+		identities([303]);
+		identities([303]);
+		expect(reads).toEqual([[303], [303]]);
 	});
 });

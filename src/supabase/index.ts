@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import { isDefined } from "hanzio";
+import { isDefined, isRecord } from "hanzio";
 import { DEFAULT_HTTP_SERVICE_NAMES } from "../core/hosts/plan";
 import { externalStackProjectName, findMonorepoRoot } from "../core/ports";
 import { configuredPrimaryApp, resolvePrimaryApp } from "../core/primary-app";
@@ -197,16 +197,40 @@ function typesFingerprint(workdir: string, schemas: readonly string[]): string {
 	return hash.digest("hex");
 }
 
-/** The fingerprint the types were last generated for; an unreadable stamp is none. */
-function readTypesStamp(stamp: string): string | undefined {
+/**
+ * What the types were last generated for (`inputs`) and what was written
+ * (`written`, a hash of the file), so a hand-edited or half-written output
+ * is generated again rather than trusted.
+ */
+interface TypesStamp {
+	inputs: string;
+	written: string;
+}
+
+function contentHash(text: string): string {
+	return createHash("sha256").update(text).digest("hex");
+}
+
+/** An unreadable stamp, or one in another shape, is none. */
+function readTypesStamp(stamp: string): TypesStamp | undefined {
 	try {
-		const recorded = JSON.parse(readFileSync(stamp, "utf8")) as {
-			output?: unknown;
-		};
-		return typeof recorded.output === "string" ? recorded.output : undefined;
+		const recorded: unknown = JSON.parse(readFileSync(stamp, "utf8"));
+		if (!isRecord(recorded)) return undefined;
+		const { inputs, written } = recorded;
+		return typeof inputs === "string" && typeof written === "string"
+			? { inputs, written }
+			: undefined;
 	} catch {
 		return undefined;
 	}
+}
+
+/** Whether `output` is what was generated for these inputs, untouched since. */
+function typesUpToDate(output: string, stamp: string, inputs: string): boolean {
+	const recorded = readTypesStamp(stamp);
+	if (!recorded || recorded.inputs !== inputs || !existsSync(output))
+		return false;
+	return contentHash(readFileSync(output, "utf8")) === recorded.written;
 }
 
 export function supabase(
@@ -394,7 +418,7 @@ export function supabase(
 				const stamp = projectStateFilePath(ctx.root, "supabase-types.json");
 				const schemas = types.schemas ?? [];
 				const fingerprint = typesFingerprint(workdir, schemas);
-				if (existsSync(output) && readTypesStamp(stamp) === fingerprint) return;
+				if (typesUpToDate(output, stamp, fingerprint)) return;
 
 				const { stdout } = await ctx.exec(
 					[
@@ -409,7 +433,11 @@ export function supabase(
 				);
 				if (writeIfChanged(output, stdout))
 					console.log(formatDone(`Generated ${relative(ctx.root, output)}`));
-				writeIfChanged(stamp, JSON.stringify({ output: fingerprint }));
+				const recorded: TypesStamp = {
+					inputs: fingerprint,
+					written: contentHash(stdout),
+				};
+				writeIfChanged(stamp, JSON.stringify(recorded));
 			},
 		},
 

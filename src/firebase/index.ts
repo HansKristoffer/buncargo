@@ -1,7 +1,9 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, normalize, resolve } from "node:path";
+import { isRecord, safeJsonParse } from "hanzio";
 import { findMonorepoRoot } from "../core/ports";
+import { isProcessAlive } from "../core/process/lifecycle";
 import { shellQuote } from "../core/shell-quote";
 import { workspaceId } from "../core/workspace-identity";
 import type {
@@ -127,6 +129,36 @@ export function emulatorTmpDir(root: string): string {
 	return join(tmpdir(), `bcfb-${workspaceId(root).slice(0, 8)}`);
 }
 
+/**
+ * A hub locator whose suite is gone. A suite removes its own on a clean
+ * stop; one killed after the stop grace leaves it naming a pid that no
+ * longer runs, and the next suite in the checkout reads it as a hub already
+ * running. One without a pid cannot be checked and is left to the CLI.
+ */
+export function isStaleHubLocator(
+	content: string,
+	isAlive: (pid: number) => boolean,
+): boolean {
+	const parsed = safeJsonParse(content);
+	const pid = parsed.ok && isRecord(parsed.data) ? parsed.data.pid : undefined;
+	const known = typeof pid === "number" && Number.isInteger(pid) && pid > 0;
+	return known && !isAlive(pid);
+}
+
+/** Remove the checkout's stale `hub-<project id>.json` before its suite starts. */
+function removeStaleHubLocators(dir: string): void {
+	for (const name of readdirSync(dir)) {
+		if (!/^hub-.+\.json$/.test(name)) continue;
+		const path = join(dir, name);
+		try {
+			if (isStaleHubLocator(readFileSync(path, "utf8"), isProcessAlive))
+				rmSync(path, { force: true });
+		} catch {
+			// Gone already, or unreadable: the CLI reports what it makes of it.
+		}
+	}
+}
+
 export function firebase(
 	options: FirebaseIntegrationOptions = {},
 ): BuncargoIntegration {
@@ -247,7 +279,9 @@ export function firebase(
 
 		hooks: {
 			async beforeServers(ctx) {
-				mkdirSync(emulatorTmpDir(ctx.root), { recursive: true });
+				const dir = emulatorTmpDir(ctx.root);
+				mkdirSync(dir, { recursive: true });
+				removeStaleHubLocators(dir);
 			},
 		},
 

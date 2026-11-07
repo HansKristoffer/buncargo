@@ -5,6 +5,8 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -245,6 +247,33 @@ describe("shopify CLI runs", () => {
 	});
 });
 
+describe("shopify() theme asset nudge", () => {
+	it("nudges once per CLI run, and again once a restarted CLI prints its URL", () => {
+		const root = repo({ "extensions/theme/assets/app.css": "a{}" });
+		const asset = join(root, "extensions/theme/assets/app.css");
+		const old = new Date(0);
+		const nudged = () => statSync(asset).mtimeMs > 0;
+		const onCapture = shopify().hooks?.onCapture;
+		const fire = (name: string) =>
+			onCapture?.({ app: "shopify", name, value: "" }, { root } as never);
+		const reset = () => utimesSync(asset, old, old);
+
+		reset();
+		fire("appUrl");
+		fire("shopifyReady");
+		expect(nudged()).toBe(true);
+
+		reset();
+		fire("shopifyReady");
+		expect(nudged()).toBe(false);
+
+		// The app was restarted: a new CLI prints its URL, then ready.
+		fire("appUrl");
+		fire("shopifyReady");
+		expect(nudged()).toBe(true);
+	});
+});
+
 describe("shopify()", () => {
 	it("reads the app toml from the checkout it is given, not the working directory", () => {
 		const root = repo({ "shopify.app.toml": TOML });
@@ -261,6 +290,19 @@ describe("shopify()", () => {
 		expect(config.apps?.shopify?.exclusive).toBe(
 			"shopify-app:0123456789abcdef0123456789abcdef",
 		);
+	});
+
+	it("takes no lease on a placeholder client_id every unlinked checkout shares", () => {
+		const root = repo({ "shopify.app.toml": 'client_id = "x"\n' });
+		const base: IntegrationConfig = {
+			projectPrefix: "shop",
+			services: {},
+			apps: { platform: { port: 5173, devCommand: "bun dev" } },
+		};
+		const config = shopify({ frontend: "platform" }).config?.(base, {
+			root,
+		}) as IntegrationConfig;
+		expect(config.apps?.shopify?.exclusive).toBeUndefined();
 	});
 
 	it("adds the CLI app, extension watchers, env and the web toml", () => {
@@ -394,6 +436,21 @@ describe("Shopify session", () => {
 		).toThrow(
 			"not logged in to the Shopify CLI. Run `buncargo shopify login`.",
 		);
+		// A session whose expiry does not parse is not trusted unasked.
+		const garbled = repo({
+			"session.json": store("not a date"),
+			"node_modules/.bin/shopify": "#!/bin/sh\nexit 1\n",
+		});
+		chmodSync(join(garbled, "node_modules/.bin/shopify"), 0o755);
+		expect(() =>
+			ensureShopifyLogin({
+				root: garbled,
+				config: "shopify.app.toml",
+				linked: true,
+				interactive: false,
+				sessionFile: join(garbled, "session.json"),
+			}),
+		).toThrow("its expiry is unreadable");
 		// A Partners token is how CI authenticates: nothing to check or prompt.
 		expect(() =>
 			ensureShopifyLogin({

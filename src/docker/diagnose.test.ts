@@ -58,6 +58,15 @@ describe("parseDockerPsState", () => {
 		).toEqual({ id: "abc123", state: "exited", exitCode: 1 });
 	});
 
+	it("reads the exit code a restarting container comes back from", () => {
+		expect(
+			parseDockerPsState("abc123\trestarting\tRestarting (1) 2 seconds ago"),
+		).toEqual({ id: "abc123", state: "restarting", exitCode: 1 });
+		expect(
+			parseDockerPsState("abc123\texited\tExited (-1) 2 seconds ago"),
+		).toEqual({ id: "abc123", state: "exited", exitCode: -1 });
+	});
+
 	it("leaves the exit code out while the container runs", () => {
 		expect(
 			parseDockerPsState("abc123\trunning\tUp 2 seconds (health: starting)"),

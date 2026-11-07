@@ -1,18 +1,27 @@
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { getRoutesPath } from "../core/hosts";
 import { acquireLease, releaseLeases } from "../core/leases";
-import { buildRunEntry, publishRun, retireRuns } from "../core/run-registry";
+import {
+	buildRunEntry,
+	findRunsByRoot,
+	publishRun,
+	retireRuns,
+} from "../core/run-registry";
+import { createPhaseTimer } from "../core/timing";
 import { resolveExposeTargets, stopPublicTunnels } from "../core/tunnel";
 import * as watchdog from "../core/watchdog";
 import { SeedFailedError } from "../environment/seed-startup";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import { type DetachedReport, readDetachedReport } from "./dev-detach";
+import { requestRestart } from "./restart-requests";
 import { runCli } from "./run-cli";
+import * as takeover from "./takeover";
 import { upsertTunnelRegistryEntries } from "./tunnel-registry";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -24,6 +33,10 @@ import { upsertTunnelRegistryEntries } from "./tunnel-registry";
 // afterwards: the whole suite shares one process.
 let stateHome: string;
 const realHome = process.env.HOME;
+// The stub's checkout when a test names none. A full run checks that each
+// app's cwd exists, so it must be a real directory, made fresh on every
+// machine: a fixed path only exists where some earlier run left it.
+const stubRoot = mkdtempSync(join(tmpdir(), "buncargo-cli-stub-"));
 
 beforeAll(() => {
 	stateHome = mkdtempSync(join(tmpdir(), "buncargo-cli-state-"));
@@ -34,6 +47,7 @@ afterAll(() => {
 	if (realHome === undefined) delete process.env.HOME;
 	else process.env.HOME = realHome;
 	rmSync(stateHome, { recursive: true, force: true });
+	rmSync(stubRoot, { recursive: true, force: true });
 });
 
 class ProcessExit extends Error {
@@ -107,7 +121,7 @@ function createStubEnv(
 			Record<string, ServiceConfig>,
 			Record<string, AppConfig>
 		>["urls"],
-		publicUrls: {},
+		publicUrls,
 		loopbackUrls: Object.fromEntries(
 			Object.entries(ports).map(([name, port]) => [
 				name,
@@ -124,7 +138,7 @@ function createStubEnv(
 		prepareStartAsync: async () => {},
 		resolvePrimaryApp: (selected?: readonly string[]) =>
 			(selected ?? Object.keys(apps))[0],
-		root: options.root ?? "/tmp/buncargo-cli-stub",
+		root: options.root ?? stubRoot,
 		composeFile: ".buncargo/docker-compose.generated.yml",
 		containerRuntime: "docker",
 		portOffset: 0,
@@ -153,7 +167,9 @@ function createStubEnv(
 			}
 			return vars;
 		},
+		// Replaces the map in place, as the environment's does.
 		setPublicUrls: (urls: Record<string, string>) => {
+			for (const key of Object.keys(publicUrls)) delete publicUrls[key];
 			Object.assign(publicUrls, urls);
 			options.setPublicUrls?.(urls as Record<string, string>);
 		},
@@ -187,6 +203,30 @@ function createStubEnv(
 		Record<string, ServiceConfig>,
 		Record<string, AppConfig>
 	>;
+}
+
+/**
+ * Ends the run with a Ctrl-C once its tunnels have opened and it has printed
+ * their URLs: what is left to check about `--expose` has happened by then.
+ */
+function endsOnceTunnelsOpen<T extends { logInfo: unknown }>(env: T): T {
+	return Object.assign(env, {
+		logInfo: (title?: string) => {
+			if (title === "Dev Environment") process.emit("SIGINT");
+		},
+	});
+}
+
+function mockTunnels(
+	targets: readonly { kind: "app" | "service"; name: string; port: number }[],
+) {
+	return targets.map((target) => ({
+		kind: target.kind,
+		name: target.name,
+		localUrl: `http://localhost:${target.port}`,
+		publicUrl: `https://${target.name}.example.com`,
+		close: async () => {},
+	}));
 }
 
 async function listenServer(port: number): Promise<Server> {
@@ -225,31 +265,36 @@ describe("runCli expose routing", () => {
 		expect(startCalls).toBe(0);
 	});
 
-	it("calls startPublicTunnels when --expose is set", async () => {
+	// The tunnel closed as the command exited, so the URL it printed was dead.
+	it("ignores --expose and --takeover in a one-shot mode, saying why", async () => {
 		let startCalls = 0;
-		const code = await withProcessExitTrap(() =>
-			runCli(createStubEnv(), {
-				args: ["--migrate", "--expose"],
-				watchdog: false,
-				cliTestTunnel: {
-					resolveExposeTargets,
-					startPublicTunnels: async (targets) => {
-						startCalls += 1;
-						expect(targets.length).toBeGreaterThan(0);
-						return targets.map((t) => ({
-							kind: t.kind,
-							name: t.name,
-							localUrl: `http://localhost:${t.port}`,
-							publicUrl: "https://mock.example.com",
-							close: async () => {},
-						}));
+		const warned: string[] = [];
+		const realWarn = console.warn;
+		console.warn = (...parts: unknown[]) => warned.push(parts.join(" "));
+		try {
+			const code = await withProcessExitTrap(() =>
+				runCli(createStubEnv(), {
+					args: ["--up-only", "--expose", "--takeover"],
+					watchdog: false,
+					cliTestTunnel: {
+						resolveExposeTargets,
+						startPublicTunnels: async () => {
+							startCalls += 1;
+							return [];
+						},
+						stopPublicTunnels,
 					},
-					stopPublicTunnels,
-				},
-			}),
-		);
-		expect(code).toBe(0);
-		expect(startCalls).toBe(1);
+				}),
+			);
+			expect(code).toBe(0);
+		} finally {
+			console.warn = realWarn;
+		}
+		expect(startCalls).toBe(0);
+		const said = Bun.stripANSI(warned.join("\n"));
+		expect(said).toContain("--expose is ignored with --up-only");
+		expect(said).toContain("buncargo dev --detach --expose");
+		expect(said).toContain("--takeover is ignored with --up-only");
 	});
 
 	it("accepts --apps during migrate flow", async () => {
@@ -362,7 +407,7 @@ describe("runCli expose routing", () => {
 		});
 		const code = await withProcessExitTrap(() =>
 			runCli(env, {
-				args: ["--migrate", "--apps=api", "--expose=web"],
+				args: ["--no-hosts", "--apps=api", "--expose=web"],
 				watchdog: false,
 				cliTestTunnel: {
 					resolveExposeTargets,
@@ -375,39 +420,49 @@ describe("runCli expose routing", () => {
 	});
 
 	it("allows --expose to target apps included via requiredApps", async () => {
-		const env = createStubEnv({
-			services: {
-				postgres: { port: 5432 },
-			},
-			apps: {
-				api: {
-					port: 43010,
-					devCommand: "bun run api",
-					expose: true,
-					requiredServices: ["postgres"],
+		const port = 43810 + Math.floor(Math.random() * 100) * 2;
+		const env = endsOnceTunnelsOpen(
+			createStubEnv({
+				services: {
+					postgres: { port: 5432 },
 				},
-				expo: {
-					port: 43011,
-					devCommand: "bun run expo",
-					expose: true,
-					requiredApps: ["api"],
-					requiredServices: ["postgres"],
+				apps: {
+					api: {
+						port,
+						devCommand: "bun -e 'setInterval(() => {}, 1000)'",
+						healthEndpoint: false,
+						expose: true,
+						requiredServices: ["postgres"],
+					},
+					expo: {
+						port: port + 1,
+						devCommand: "bun -e 'setInterval(() => {}, 1000)'",
+						healthEndpoint: false,
+						expose: true,
+						requiredApps: ["api"],
+						requiredServices: ["postgres"],
+					},
 				},
-			},
-		});
+			}),
+		);
+		const opened: string[][] = [];
 		const code = await withProcessExitTrap(() =>
 			runCli(env, {
-				args: ["--migrate", "--apps=expo", "--expose=api"],
+				args: ["--no-hosts", "--no-tui", "--apps=expo", "--expose=api"],
 				watchdog: false,
 				cliTestTunnel: {
 					resolveExposeTargets,
-					startPublicTunnels: async () => [],
+					startPublicTunnels: async (targets) => {
+						opened.push(targets.map((target) => target.name));
+						return mockTunnels(targets);
+					},
 					stopPublicTunnels,
 				},
 			}),
 		);
 
-		expect(code).toBe(0);
+		expect(code).toBe(130);
+		expect(opened).toEqual([["api"]]);
 	});
 
 	it("reuses a busy exposed app and inherits its public URL", async () => {
@@ -431,63 +486,125 @@ describe("runCli expose routing", () => {
 				},
 			]);
 
-			const env = createStubEnv({
-				root,
-				apps: {
-					api: {
-						port: apiPort,
-						devCommand: "bun run api",
-						expose: true,
-						healthEndpoint: "/",
+			const env = endsOnceTunnelsOpen(
+				createStubEnv({
+					root,
+					apps: {
+						api: {
+							port: apiPort,
+							devCommand: "bun run api",
+							expose: true,
+							healthEndpoint: "/",
+						},
+						web: {
+							port: webPort,
+							devCommand: "bun -e 'setInterval(() => {}, 1000)'",
+							healthEndpoint: false,
+							expose: true,
+						},
 					},
-					web: {
-						port: webPort,
-						devCommand: "bun run web",
-						expose: true,
+					ports: { api: apiPort, web: webPort },
+					waitForServer: async (url) => {
+						expect(url).toBe(`http://localhost:${apiPort}/`);
 					},
-				},
-				ports: { api: apiPort, web: webPort },
-				waitForServer: async (url) => {
-					expect(url).toBe(`http://localhost:${apiPort}/`);
-				},
-				setPublicUrls: (urls) => {
-					setPublicUrlsCalls.push({ ...urls });
-				},
-			});
+					setPublicUrls: (urls) => {
+						setPublicUrlsCalls.push({ ...urls });
+					},
+				}),
+			);
 
 			const code = await withProcessExitTrap(() =>
 				runCli(env, {
-					args: ["--migrate", "--apps=api,web", "--expose"],
+					args: ["--no-hosts", "--no-tui", "--apps=api,web", "--expose"],
 					watchdog: false,
 					cliTestTunnel: {
 						resolveExposeTargets,
 						startPublicTunnels: async (targets) => {
 							startTargets.push(targets.map((target) => target.name));
-							return targets.map((target) => ({
-								kind: target.kind,
-								name: target.name,
-								localUrl: `http://localhost:${target.port}`,
-								publicUrl: `https://${target.name}.example.com`,
-								close: async () => {},
-							}));
+							return mockTunnels(targets);
 						},
 						stopPublicTunnels,
 					},
 				}),
 			);
 
-			expect(code).toBe(0);
+			expect(code).toBe(130);
 			expect(startTargets).toEqual([["web"]]);
-			expect(setPublicUrlsCalls.at(-1)).toEqual({
+			// Opened beside the inherited one; closing removed both.
+			expect(setPublicUrlsCalls.at(-2)).toEqual({
 				api: "https://api.example.com",
 				web: "https://web.example.com",
 			});
+			expect(setPublicUrlsCalls.at(-1)).toEqual({});
 		} finally {
 			server.closeAllConnections();
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 			await rm(root, { recursive: true, force: true });
 		}
 	});
+});
+
+// Every exposed app reused, its public URL the other run's tunnel: a `y` used
+// to stop that run, tunnels and all, and leave this one advertising its URL.
+it("does not offer to take over a run whose tunnels it inherited", async () => {
+	const root = await mkdtemp(join(tmpdir(), "buncargo-inherit-takeover-"));
+	const apiPort = 43030 + Math.floor(Math.random() * 200);
+	const server = await listenServer(apiPort);
+	const prompt = spyOn(takeover, "promptTakeover").mockImplementation(
+		async () => false,
+	);
+	const tty = { stdin: process.stdin.isTTY, stdout: process.stdout.isTTY };
+	const ci = process.env.CI;
+	try {
+		await upsertTunnelRegistryEntries(root, [
+			{
+				kind: "app",
+				name: "api",
+				publicUrl: "https://api.example.com",
+				localUrl: `http://localhost:${apiPort}`,
+				port: apiPort,
+				pid: process.pid,
+				updatedAt: new Date().toISOString(),
+			},
+		]);
+		const env = createStubEnv({
+			root,
+			services: {},
+			apps: {
+				api: {
+					port: apiPort,
+					devCommand: "bun run api",
+					expose: true,
+					healthEndpoint: "/",
+					requiredServices: [],
+				},
+			},
+			ports: { api: apiPort },
+		});
+		process.stdin.isTTY = true;
+		process.stdout.isTTY = true;
+		// No menu bar offer in the way of the question under test.
+		process.env.CI = "1";
+		await runCli(env, {
+			args: ["--expose", "--no-hosts"],
+			watchdog: false,
+			cliTestTunnel: {
+				resolveExposeTargets,
+				startPublicTunnels: async () => [],
+				stopPublicTunnels,
+			},
+		});
+		expect(prompt).not.toHaveBeenCalled();
+	} finally {
+		process.stdin.isTTY = tty.stdin;
+		process.stdout.isTTY = tty.stdout;
+		if (ci === undefined) delete process.env.CI;
+		else process.env.CI = ci;
+		prompt.mockRestore();
+		server.closeAllConnections();
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+		await rm(root, { recursive: true, force: true });
+	}
 });
 
 describe("runCli phased tunnels and attach", () => {
@@ -899,7 +1016,9 @@ it("holds a services-only run until it is told to stop", async () => {
 	const realLog = console.log;
 	console.log = (...parts: unknown[]) => printed.push(parts.join(" "));
 	const said = (text: string) => printed.some((line) => line.includes(text));
-	const run = runCli(env, { args: ["--no-hosts"], watchdog: false });
+	const run = withProcessExitTrap(() =>
+		runCli(env, { args: ["--no-hosts"], watchdog: false }),
+	);
 	try {
 		const deadline = performance.now() + 5_000;
 		while (!said("Services ready") && !said("Nothing to start")) {
@@ -910,14 +1029,347 @@ it("holds a services-only run until it is told to stop", async () => {
 		expect(released).toBe(0);
 
 		process.emit("SIGINT");
-		await run;
+		// Interrupted, like a run of apps: not a clean 0.
+		expect(await run).toBe(130);
 		expect(released).toBe(1);
 	} finally {
 		console.log = realLog;
 		if (released === 0) process.emit("SIGTERM");
-		await run;
+		await run.catch(() => {});
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+// The startup benchmark times exactly this: a Ctrl-C while apps come up.
+it("prints the --timing report for a run interrupted before its apps were ready", async () => {
+	const root = await realpath(
+		await mkdtemp(join(tmpdir(), "buncargo-interrupted-timing-")),
+	);
+	const reports: string[] = [];
+	const env = createStubEnv({
+		root,
+		services: {},
+		apps: {
+			api: {
+				port: 44910 + Math.floor(Math.random() * 100),
+				devCommand: "bun -e 'setInterval(() => {}, 1000)'",
+				healthEndpoint: false,
+				requiredServices: [],
+			},
+		},
+		// Never ready: the interrupt lands during app readiness.
+		waitForServers: () => new Promise(() => {}),
+	});
+	const status = async () =>
+		(await findRunsByRoot(root))
+			.find((run) => run.sessionId === env.sessionId)
+			?.apps.find((app) => app.name === "api")?.status;
+	const run = withProcessExitTrap(() =>
+		runCli(env, {
+			args: ["--no-hosts", "--no-tui"],
+			watchdog: false,
+			timer: createPhaseTimer({
+				json: true,
+				log: (line) => reports.push(line),
+			}),
+		}),
+	);
+	try {
+		const deadline = performance.now() + 4_000;
+		while ((await status()) !== "starting") {
+			if (performance.now() > deadline) throw new Error("api never spawned");
+			await Bun.sleep(20);
+		}
+		expect(reports).toEqual([]);
+		process.emit("SIGINT");
+		expect(await run).toBe(130);
+		expect(reports).toHaveLength(1);
+		expect(JSON.parse(reports[0] ?? "")).toMatchObject({
+			type: "buncargo.startup",
+		});
+	} finally {
+		await run.catch(() => {});
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+// `buncargo wait` reads the registry: a restarted app's row has to go back
+// to `starting`, or it answers from the process being replaced.
+it("marks a restarted app starting in the registry until it is ready again", async () => {
+	const root = await realpath(
+		await mkdtemp(join(tmpdir(), "buncargo-restart-row-")),
+	);
+	const port = 44810 + Math.floor(Math.random() * 100);
+	let healthChecks = 0;
+	const env = createStubEnv({
+		root,
+		services: {},
+		apps: {
+			api: {
+				port,
+				devCommand: "bun -e 'setInterval(() => {}, 1000)'",
+				healthEndpoint: false,
+				requiredServices: [],
+			},
+		},
+		// The restarted process never answers: its row stays `starting`.
+		waitForServers: () => {
+			healthChecks++;
+			return healthChecks === 1 ? undefined : new Promise(() => {});
+		},
+	});
+	const status = async () =>
+		(await findRunsByRoot(root))
+			.find((run) => run.sessionId === env.sessionId)
+			?.apps.find((app) => app.name === "api")?.status;
+	const until = async (want: string) => {
+		const deadline = performance.now() + 4_000;
+		while ((await status()) !== want) {
+			if (performance.now() > deadline)
+				throw new Error(`api never became ${want}`);
+			await Bun.sleep(20);
+		}
+	};
+	const run = withProcessExitTrap(() =>
+		runCli(env, { args: ["--no-hosts", "--no-tui"], watchdog: false }),
+	);
+	try {
+		await until("ready");
+		requestRestart(root, env.sessionId, "api");
+		await until("starting");
+	} finally {
+		process.emit("SIGINT");
+		expect(await run).toBe(130);
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+it("records a parked app failed, and a recovered one's exit as an essential app's", async () => {
+	// A parked app's stop reached the registry as `stopped`, which outranks
+	// the `failed` reported after it. And once a restart brought it up, the
+	// run still read it as parked: an essential worker that then exited 0
+	// was recorded `stopped` too.
+	const root = await realpath(
+		await mkdtemp(join(tmpdir(), "buncargo-recovered-row-")),
+	);
+	const marker = join(root, "ran-once");
+	const go = join(root, "go");
+	// Silent the first time, so it is parked; the second says it is ready,
+	// then exits 0 once told to.
+	const script = join(root, "jobs.ts");
+	await Bun.write(
+		script,
+		`const marker = ${JSON.stringify(marker)};
+if (!(await Bun.file(marker).exists())) await Bun.write(marker, "1");
+else {
+	console.log("jobs ready");
+	setInterval(async () => {
+		if (await Bun.file(${JSON.stringify(go)}).exists()) process.exit(0);
+	}, 20);
+}
+setInterval(() => {}, 60_000);
+`,
+	);
+	const env = createStubEnv({
+		root,
+		services: {},
+		// Workers have none.
+		ports: {},
+		apps: {
+			keeper: {
+				kind: "worker",
+				devCommand: "bun -e 'setInterval(() => {}, 60000)'",
+				requiredServices: [],
+			},
+			jobs: {
+				kind: "worker",
+				devCommand: `bun ${script}`,
+				readyWhen: /jobs ready/,
+				healthTimeout: 500,
+				requiredServices: [],
+			},
+		},
+	});
+	const status = async () =>
+		(await findRunsByRoot(root))
+			.find((run) => run.sessionId === env.sessionId)
+			?.apps.find((app) => app.name === "jobs")?.status;
+	const until = async (want: string) => {
+		const deadline = performance.now() + 8_000;
+		while ((await status()) !== want) {
+			if (performance.now() > deadline)
+				throw new Error(`jobs never became ${want}`);
+			await Bun.sleep(20);
+		}
+	};
+	let ended = false;
+	const run = withProcessExitTrap(() =>
+		runCli(env, { args: ["--no-hosts", "--no-tui"], watchdog: false }),
+	).finally(() => {
+		ended = true;
+	});
+	try {
+		await until("failed");
+		requestRestart(root, env.sessionId, "jobs");
+		await until("ready");
+		await Bun.write(go, "1");
+		expect(await run).toBe(1);
+		expect(await status()).toBe("failed");
+	} finally {
+		if (!ended) process.emit("SIGINT");
+		await run.catch(() => {});
+		await rm(root, { recursive: true, force: true });
+	}
+}, 20_000);
+
+describe("how a run ends", () => {
+	it("tears down once when an app fails during start", async () => {
+		const port = 44610 + Math.floor(Math.random() * 200);
+		let released = 0;
+		const env = createStubEnv({
+			services: {},
+			apps: {
+				api: {
+					port,
+					devCommand: "bun -e 'process.exit(1)'",
+					healthEndpoint: false,
+					requiredServices: [],
+				},
+			},
+			waitForServers: () => new Promise(() => {}),
+		});
+		Object.assign(env, {
+			releaseRun: async () => {
+				released++;
+			},
+		});
+		const code = await withProcessExitTrap(() =>
+			runCli(env, { args: ["--no-hosts"], watchdog: false }),
+		);
+		expect(code).toBe(1);
+		expect(released).toBe(1);
+	});
+
+	it("ends --down with the same teardown as every other run", async () => {
+		let stopped = 0;
+		let released = 0;
+		const env = createStubEnv();
+		Object.assign(env, {
+			stop: async () => {
+				stopped++;
+			},
+			releaseRun: async () => {
+				released++;
+			},
+		});
+		const code = await withProcessExitTrap(() =>
+			runCli(env, { args: ["--down"], watchdog: false }),
+		);
+		expect(code).toBe(0);
+		expect(stopped).toBe(1);
+		expect(released).toBe(1);
+	});
+
+	// The registry is read strictly now, so a corrupt one threw before the
+	// containers were stopped, and `--down` left them all running.
+	it("stops the containers on --down when the routes registry is corrupt", async () => {
+		const routesPath = getRoutesPath();
+		mkdirSync(dirname(routesPath), { recursive: true });
+		writeFileSync(routesPath, "{ not json");
+		let stopped = 0;
+		const warnings: string[] = [];
+		const warn = spyOn(console, "warn").mockImplementation((...parts) => {
+			warnings.push(parts.join(" "));
+		});
+		const env = createStubEnv();
+		Object.assign(env, {
+			stop: async () => {
+				stopped++;
+			},
+		});
+		try {
+			const code = await withProcessExitTrap(() =>
+				runCli(env, { args: ["--down"], watchdog: false }),
+			);
+			expect(code).toBe(0);
+			expect(stopped).toBe(1);
+			expect(warnings.join("\n")).toContain(routesPath);
+		} finally {
+			warn.mockRestore();
+			rmSync(routesPath, { force: true });
+		}
+	});
+
+	// A second signal used to exit at once, closing the terminal of an app
+	// still saving its data within its stopGraceMs. It names the app now.
+	it("waits for an app still stopping on a second signal", async () => {
+		const root = await realpath(
+			await mkdtemp(join(tmpdir(), "buncargo-second-signal-")),
+		);
+		const port = 44910 + Math.floor(Math.random() * 100);
+		const env = createStubEnv({
+			root,
+			services: {},
+			apps: {
+				api: {
+					port,
+					// Takes SIGTERM and keeps going, as an app saving data does.
+					devCommand:
+						"bun -e 'process.on(\"SIGTERM\", () => {}); setInterval(() => {}, 1000)'",
+					healthEndpoint: false,
+					requiredServices: [],
+					stopGraceMs: 1_000,
+				},
+			},
+		});
+		const status = async () =>
+			(await findRunsByRoot(root))
+				.find((run) => run.sessionId === env.sessionId)
+				?.apps.find((app) => app.name === "api")?.status;
+		const warn = spyOn(console, "warn");
+		const run = withProcessExitTrap(() =>
+			runCli(env, { args: ["--no-hosts", "--no-tui"], watchdog: false }),
+		);
+		try {
+			const deadline = performance.now() + 4_000;
+			while ((await status()) !== "ready") {
+				if (performance.now() > deadline) throw new Error("api never ready");
+				await Bun.sleep(20);
+			}
+			process.emit("SIGINT");
+			// Another signal than the first, so no echo filter decides it.
+			process.emit("SIGTERM");
+			const warned = warn.mock.calls.map((call) => String(call[0]));
+			expect(warned.some((line) => line.includes("Still stopping api"))).toBe(
+				true,
+			);
+			// The app's grace ran out and the run ended with the first signal.
+			expect(await run).toBe(130);
+		} finally {
+			warn.mockRestore();
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	// A step that takes no signal finishes, and the run stops at the next
+	// boundary instead of claiming containers and starting them.
+	it("claims nothing once interrupted, and exits 130", async () => {
+		let claims = 0;
+		const env = createStubEnv();
+		Object.assign(env, {
+			prepareStartAsync: async () => {
+				process.emit("SIGINT");
+			},
+			claimRun: async () => {
+				claims++;
+			},
+		});
+		const code = await withProcessExitTrap(() =>
+			runCli(env, { args: ["--no-hosts", "--no-tui"], watchdog: false }),
+		);
+		expect(code).toBe(130);
+		expect(claims).toBe(0);
+	});
 });
 
 // `dev --detach` printed the exit code first and the cause somewhere above it:
@@ -937,7 +1389,7 @@ describe("a failed detached run's report", () => {
 			const code = await withProcessExitTrap(() =>
 				runCli(env, { args: [], watchdog: false }),
 			);
-			return { code, report: readDetachedReport(root) };
+			return { code, report: readDetachedReport(root, process.pid) };
 		} finally {
 			if (saved === undefined) delete process.env.BUNCARGO_DETACHED;
 			else process.env.BUNCARGO_DETACHED = saved;

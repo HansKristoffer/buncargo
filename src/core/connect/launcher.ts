@@ -18,7 +18,7 @@ export async function ensureConnectCoordinator(
 	signal?: AbortSignal,
 ): Promise<void> {
 	const bundle = installConnectBundle();
-	const owner = await withFileLock(
+	const { owner, adopted } = await withFileLock(
 		stateFilePath("connect-launch"),
 		async () => {
 			const existing = await readCoordinatorState();
@@ -28,7 +28,7 @@ export async function ensureConnectCoordinator(
 						"A different Buncargo build is sharing services. Stop its dev sessions before starting this build.",
 					);
 				}
-				return existing;
+				return { owner: existing, adopted: true };
 			}
 			if (existing) {
 				// It found nothing to share and is exiting; it never reads this run's intent. Its replacement needs its lifetime lock.
@@ -56,7 +56,7 @@ export async function ensureConnectCoordinator(
 			for (let i = 0; i < 100; i++) {
 				const state = await readCoordinatorState(false);
 				if (state && state.pid === child.pid) {
-					return state;
+					return { owner: state, adopted: false };
 				}
 				if (child.exitCode !== null) {
 					throw new Error("Connection coordinator exited during startup");
@@ -67,22 +67,66 @@ export async function ensureConnectCoordinator(
 		},
 		{ timeoutMs: 5000 },
 	);
-	const deadline = Date.now() + 180000;
+	try {
+		await awaitCoordinator(owner, adopted, signal);
+	} catch (error) {
+		if (!(error instanceof CoordinatorUnavailableError)) throw error;
+		// It decided to leave idle, or another launcher replaced it, meanwhile:
+		// launching again adopts or replaces it.
+		await ensureConnectCoordinator(signal);
+	}
+}
+
+/** A running coordinator heartbeats every second; one silent for this long after adoption is wedged. */
+const WEDGED_GRACE_MS = 3000;
+
+/**
+ * Wait for `owner`'s fresh heartbeat. An adopted coordinator was adopted on
+ * its saved ready flag: it gets a few heartbeats to report (one that just
+ * woke from sleep does), and one that does not is wedged, named with its pid,
+ * rather than holding every run that adopts it for the whole startup wait.
+ * One that reports it is leaving, or that another launcher has replaced
+ * (the state names another process), throws
+ * {@link CoordinatorUnavailableError}: ensuring again adopts the one there is.
+ */
+export async function awaitCoordinator(
+	owner: CoordinatorState,
+	adopted: boolean,
+	signal?: AbortSignal,
+): Promise<void> {
+	const deadline = Date.now() + (adopted ? WEDGED_GRACE_MS : 180000);
 	while (Date.now() < deadline) {
 		signal?.throwIfAborted();
 		const state = await readCoordinatorState(false);
-		if (state?.pid === owner.pid && state.identity === owner.identity) {
+		const named = state?.pid === owner.pid && state.identity === owner.identity;
+		if (named) {
 			if (isCoordinatorReady(state)) {
 				return;
 			}
 			if (!matchesProcessIdentity(state.pid, state.identity)) {
 				throw new Error("Connection coordinator stopped during startup");
 			}
+			if (adopted && !state.ready) {
+				throw new CoordinatorUnavailableError();
+			}
+		} else if (
+			state !== undefined ||
+			!matchesProcessIdentity(owner.pid, owner.identity)
+		) {
+			throw new CoordinatorUnavailableError();
 		}
 		await abortableSleep(250, signal);
 	}
+	if (!adopted)
+		throw new Error(
+			"Connection startup timed out. Check relay connectivity and run buncargo connect status.",
+		);
+	// Its pid may belong to another process by now: name it only while it is
+	// still the coordinator.
+	if (!matchesProcessIdentity(owner.pid, owner.identity))
+		throw new CoordinatorUnavailableError();
 	throw new Error(
-		"Connection startup timed out. Check relay connectivity and run buncargo connect status.",
+		`The connection coordinator (pid ${owner.pid}) stopped reporting. End it with \`kill ${owner.pid}\` and start the run again; that starts a new coordinator.`,
 	);
 }
 

@@ -85,9 +85,16 @@ export function openDevOutput(
 		stopPrinting?.();
 		stopHints?.();
 	};
-	const stopRestarts = watchRestartRequests(env.root, env.sessionId, (app) => {
-		void output.controls?.restart(app).catch(() => {});
-	});
+	// Left waiting until the spawner binds `controls`, rather than read and
+	// dropped by a run still starting.
+	const stopRestarts = watchRestartRequests(
+		env.root,
+		env.sessionId,
+		(app) => {
+			void output.controls?.restart(app).catch(() => {});
+		},
+		() => output.controls !== undefined,
+	);
 	// Keys for an app under a pseudo-terminal: one in the TUI, or an
 	// interactive app with no terminal to attach to.
 	const stopSends = watchSendRequests(env.root, env.sessionId, (app, text) => {
@@ -110,9 +117,10 @@ export function openDevOutput(
 		tui: tui !== undefined,
 		start: () => tui?.start(),
 		stop: async () => {
-			tui?.stop();
-			// Before the printer goes: what the apps left on screen is printed too.
+			// Before either view goes: what the apps left on screen reaches it,
+			// as it does the log files.
 			await output.close();
+			tui?.stop();
 			stopStream();
 			stopWatching();
 		},

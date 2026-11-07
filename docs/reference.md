@@ -130,7 +130,7 @@ version the project did not choose.
 
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`), including `vars`: the variables `exec`, tasks and the apps are given, without their Infisical secrets. `--get ports.api` prints one raw value for scripts, and a bare name (`--get DATABASE_URL`) reads from `vars`. `--export` prints `vars` as quoted `export` lines.
 
-`buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached.log` and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed. A failure ends the output with one block: what failed in one line (the app, the seed or the step), its last 20 lines of output, the setup checks that warned before the start, and what to run next (`buncargo logs <app>`), so `dev --detach | tail` shows the cause. Attached `dev` ends a failed start with the same block. Stop it with `buncargo stop`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
+`buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached-<pid>.log` (`.buncargo/logs/detached.log` links to the newest run's) and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed; 2 when apps are still starting after 10 minutes (the run keeps going; `buncargo wait --app=<app>` waits on). The log of the last detached run that ended is kept until a later one has ended too. A failure ends the output with one block: what failed in one line (the app, the seed or the step), its last 20 lines of output, the setup checks that warned before the start, and what to run next (`buncargo logs <app>`), so `dev --detach | tail` shows the cause. Attached `dev` ends a failed start with the same block. Stop it with `buncargo stop`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
 
 A detached run stops by itself after 2 hours idle: no request through buncargo's named-hosts proxy to this checkout and no `buncargo` command run in it. `buncargo runs` and `ls` show the time left (`runs --json` gives it as `idleStopsAt`), and once the watchdog has stopped a run, `stop` and `ls` say so and why. While a `dev` in a terminal runs in the same checkout, the detached run is left alone, since that run may be serving from its apps. `dev --detach --keep` turns the limit off. Traffic that does not pass the proxy does not count: `localhost:port`, a public tunnel, and Tailscale mode (`BUNCARGO_HOSTS=tailscale`, where detached runs get no limit). With named hosts on and a hosts daemon that does not count requests (one older than the limit, or none running), the limit is not enforced; `buncargo hosts install` updates the daemon. A detached run whose checkout has been deleted for 10 minutes is stopped too, `--keep` or not. A run in a terminal is never stopped either way.
 
@@ -356,7 +356,7 @@ bun run benchmark:startup --samples=10 --baseline=.buncargo/benchmarks/baseline.
 
 `startAfter: ["api"]` spawns an app only once `api` is healthy (a worker: spawned and alive). Unlike `requiredApps`, which only adds apps to the selection, this orders them in every mode, not just around `--expose` tunnels. It selects its targets too, and a cycle is a config error. `prebuild` runs a command to completion before an app's `devCommand` starts, beside the prebuilds of its wave; the app spawns only after it succeeds.
 
-`buncargo wait --app=<name> [--timeout=<seconds>] [--hold]` blocks until an app of this checkout's run is healthy, then exits 0. With `--hold` it stays alive until the app or its run stops. That is what a script or Playwright needs ("wait for the stack, then test"), and what the Shopify integration's generated web runs.
+`buncargo wait --app=<name> [--timeout=<seconds>] [--hold]` blocks until an app of this checkout's run is healthy, then exits 0; it exits 1 when the app failed or stopped, 2 at the timeout, and 130 or 143 when interrupted before the app is healthy. With `--hold` it stays alive until the app or its run stops, and a signal after the app is healthy exits 0. That is what a script or Playwright needs ("wait for the stack, then test"), and what the Shopify integration's generated web runs.
 
 ## Discovered workspaces
 
@@ -490,6 +490,15 @@ A config with services and no apps starts every service. When nothing in the
 selection is an app buncargo spawns (no apps, or only `devCommand: false` ones),
 `dev` holds the containers until Ctrl-C like any run, then releases them to the
 idle hold; `--detach` returns once they are ready.
+
+Ctrl-C (or `SIGTERM`, `SIGHUP`) ends a `dev` run wherever it is: the apps stop,
+its named hosts and tunnels are released, the containers wait out the idle hold,
+and `dev` exits 130 (143, 129). A second Ctrl-C while apps are still stopping names
+them instead of exiting: an app can take its `stopGraceMs` to save data, such
+as the Firebase emulators' export, and a third Ctrl-C exits without waiting for
+it, which can lose that data. Once the apps are down, a second Ctrl-C exits at
+once and skips the rest of the cleanup; the next `dev` in the checkout replaces
+whatever was left running.
 
 Mutually exclusive modes cannot be combined. Configuration, selection, dependency
 references and cycles are validated before startup changes host configuration or
@@ -737,16 +746,23 @@ block an error line opens (`[ERROR] job.completed {` … `}`) is kept whole.
 `essential: false` keeps the run going when that app exits. It shows as stopped
 (or failed) with its exit code, its pane keeps its last output, and `r` in the
 TUI or `buncargo restart <app>` starts it again without re-running anything
-else. It never holds startup up: it is health-checked on the side. In stream
-mode the run prints the app's last error lines and the restart command.
+else. It never holds startup up: it is health-checked on the side, and one that
+never answers is stopped and shown as failed. In stream mode the run prints the
+app's last error lines and the restart command.
 
 ### When an app does not come up
 
-In `buncargo dev`, an app that does not become ready is stopped and shown as
-failed, and the other apps keep running; `buncargo restart <app>` tries it
-again. The run still fails when nothing else is left, or when another app
-`startAfter`s the failed one. `options.onAppFailure: "stop-run"` ends the run
-instead, which is what `ci` and a library `start()` always do.
+In `buncargo dev`, an app that does not become ready, crashes while it starts,
+or cannot be started again by a restart is stopped and shown as failed, and the
+other apps keep running; `buncargo restart <app>` tries it again, and once it is
+up its exit ends the run like any app's. The run still fails when nothing else
+is left, or when another app `startAfter`s the failed one.
+`options.onAppFailure: "stop-run"` ends the run instead, which is what `ci` and a
+library `start()` always do.
+
+A worker, or an app with `healthEndpoint: false`, has started once it is spawned
+and the rest of its wave is up, so its crash after that ends the run. Give it a
+`readyWhen` line, and a crash before that line counts as crashing while it starts.
 
 ### Watching files
 
@@ -757,6 +773,12 @@ of `bun --watch`, which on macOS keeps about 3,000 file descriptors per reload
 until the machine's file table fills. `node_modules`, `.git` and `.buncargo`
 are always ignored; changes within `debounceMs` (150) restart once. Watching
 starts once the run is up. `dev --no-watch` turns it off for one run.
+
+A restarted app, by `watch`, `restartOn` or by hand, has to become ready again
+within its `healthTimeout`, like it did at start. If it does not, `buncargo dev`
+stops it and shows it failed, while `ci`, a library `start()` and
+`options.onAppFailure: "stop-run"` end the run. Raise `healthTimeout` for an app
+whose restart takes longer.
 
 ### Ready by output
 
@@ -928,7 +950,8 @@ names it. When it no longer uses that name, release its claims:
 `buncargo ports release --root <path>`. It lists the claims and asks first
 (`--yes` from a script or agent), refuses while that checkout is running or its
 containers are still up (`buncargo stop --all --root <path>`), and touches no
-container or volume. The checkout claims again on its next run. Whoever runs
+container or volume. A claim a run used after the listing is kept, and the
+command then exits `3`. The checkout claims again on its next run. Whoever runs
 under the released name next uses the volumes left under it.
 
 `buncargo ports pin <offset>` moves a checkout to a block and keeps it there:
@@ -981,9 +1004,9 @@ Opt-in HTTPS names on loopback. Buncargo still allocates ports and starts proces
 
 Enable with `options.hosts: true` (or `{ tld?, services? }`). Postgres, Redis, and other TCP services stay as connection strings on `localhost:<port>`. Default named HTTP services are Mailpit and Typesense.
 
-The first `buncargo dev` in a repo with `hosts` on prompts for one-time machine setup (trust a local CA, bind `:443`). Enter accepts, `s` skips once, `n` persists a decline. `buncargo hosts install` is the non-interactive path. Setup is per machine: later repos and worktrees reuse it.
+The first `buncargo dev` in a repo with `hosts` on prompts for one-time machine setup (trust a local CA, bind `:443`). Enter accepts, `s` skips once, `n` persists a decline, which `doctor --fix` leaves alone and `buncargo hosts install` undoes. `buncargo hosts install` is the non-interactive path, and trusts the CA again even when its files are already there. Setup is per machine: later repos and worktrees reuse it.
 
-Both steps need your password: the CA goes into the system trust store, and only root may bind `:443` or write the launchd/systemd unit. Setup is all-or-nothing - if the service fails to load, buncargo removes the unit file rather than leave a half-installed machine that skips setup on the next run. Setup is skipped without a TTY, since the password prompt would hang.
+Both steps need your password: the CA goes into the system trust store, and only root may bind `:443` or write the launchd/systemd unit. Setup is all-or-nothing - if the service fails to load, buncargo puts back the service that was there before (or removes the one it added) rather than leave a half-installed machine that skips setup on the next run. Setup is skipped without a TTY, since the password prompt would hang.
 
 Certificates cover wildcards, not just the exact hostnames: a project serving `api.myapp.localhost` also gets `*.api.myapp.localhost` and `*.myapp.localhost`, so the *next* worktree of that project needs no new certificate. That matters because minting one makes the daemon rebind, which drops every proxied websocket on the machine - including HMR sockets belonging to projects that had nothing to do with the new worktree. The names each checkout wants are remembered in `~/.buncargo/cert-names.json` so a project stopping does not drop its coverage; an entry is retired once its checkout is gone from disk.
 
@@ -995,7 +1018,7 @@ The daemon logs to `/var/log/buncargo-hosts.log` (on Linux, also `journalctl -u 
 
 `buncargo hosts daemon` runs that same proxy in the foreground instead of under launchd/systemd, which is how you watch its output while debugging. It re-reads `~/.buncargo/routes.json` every second, so apps starting and stopping need no restart, and it exits on its own once no routes have been registered for a while. `--service` is what the installed unit passes: it keeps the daemon alive through idle periods and is not meant to be typed by hand. Binding `:443` still needs root, so run it under `sudo` or set `BUNCARGO_HOSTS_PORT` to an unprivileged port.
 
-Failure degrades to `http://localhost:<port>` and never blocks the dev run. Named hosts stay off on Windows, in CI (`CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL`), when `BUNCARGO_HOSTS=0`, or with `--no-hosts`.
+Failure degrades to `http://localhost:<port>` and never blocks the dev run. `buncargo env`, `status`, `open` and `getEnvVar` report a named URL only while a run of the checkout serves it, and `http://localhost:<port>` otherwise, so a `vite.config.ts` gets the URL the run is actually on. Named hosts stay off on Windows, in CI (`CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL`), when `BUNCARGO_HOSTS=0`, or with `--no-hosts`.
 
 Set `BUNCARGO_HOSTS=0` in cloud workspace secrets/environment to skip automatic local HTTPS setup, including the mkcert prompt. Local URLs use `http://localhost:<port>`; Remote sharing still works.
 
@@ -1103,7 +1126,16 @@ attached app, because closing it tears the run down by design, and an app this
 run reused from another terminal, because that process is not ours. A process
 whose identity cannot be read (`ps` failed or timed out) is refused too, rather
 than reported stopped while it may still run. Exit codes are `0` stopped, `2` no
-such target, `3` refused.
+such target, `3` refused or not removed. A stopped Docker daemon or Apple system
+service has nothing to stop, but one that refuses this user or does not answer
+may still run the containers, so `stop` exits `3` and `dev --down` exits `1`
+rather than reporting nothing to stop.
+
+`buncargo restart <app>` asks the `buncargo dev` run that started the app to
+replace it, and returns once that run has begun, so
+`buncargo restart api && buncargo wait --app=api` waits for the new process. A
+script's `start()` takes no restart requests: the command then restarts nothing
+and exits `3`; restart the app from that script instead.
 
 An app gets its `stopGraceMs` (5 seconds unless set) to exit after SIGTERM
 before it is killed. Stopping a whole run waits 5 seconds plus the longest
@@ -1115,7 +1147,7 @@ ran it and why. `buncargo status` lists this checkout's latest ones, and
 `doctor` the last three.
 
 A running `dev` (and a library `start()`) watches its own service containers.
-When one stops, is removed or fails its healthcheck, the run prints
+When one stops, is removed, keeps restarting, is paused or fails its healthcheck, the run prints
 `postgres stopped (exit 0)` with whoever stopped it, writes it to the run's
 `buncargo.log`, and `status` shows the run as degraded. It does not restart the
 service: the cause is unknown when it fires, and a restart would hide it.
@@ -1210,7 +1242,8 @@ Buncargo keeps one copy of each per machine, the file store (`~/.buncargo/files/
 any command reads `envFiles` it brings the checkout's copy up to date:
 
 - A checkout without the file gets the store's copy. When the store has none either, buncargo
-  copies `template` for you to fill in.
+  copies `template` for you to fill in. It is stored once you have filled it in; until then, a
+  copy that arrives in the store replaces it.
 - A checkout that has a file the store lacks puts it in the store, so other checkouts get it.
   Existing setups need no migration.
 - When the store's copy changes, every checkout whose copy is untouched gets the new one, with
@@ -1643,6 +1676,8 @@ HTTP app health checks probe `http://localhost:<port>`, including when the app h
 ## Public tunnels
 
 Mark targets with `expose: true`, then `bunx buncargo dev --expose` or `--expose=api,web`.
+A tunnel lives as long as the run: `--migrate`, `--seed` and `--up-only` ignore
+`--expose` (and `--takeover`) with a warning, since their tunnels would close as they exit.
 
 `expose` only governs these public tunnels: remote sharing includes every selected app and service with a host port.
 
@@ -1756,6 +1791,8 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `Docker Desktop is running (pid …) but its daemon is not answering` | Docker Desktop hung; quitting it can leave `com.docker.backend` alive | `buncargo doctor --fix`: once Docker Desktop has run past a cold start without answering, it asks (in a terminal) and force-restarts it, which stops every container on the machine and keeps volumes |
 | A port `held by process … in …/.Trash/…` | A dev server of a deleted checkout | `buncargo doctor --fix` stops it |
 | `postgres stopped (exit 0)` during a run | A service container went down under the run | The line says which buncargo command stopped it, if one did. Restart the run |
+| `search keeps restarting (exit 1)` during a run, or `Service search keeps crashing while starting up` | The container exits and its restart policy brings it back, again and again | Read the container output the message shows (`docker logs <container>`), fix the service's config, then restart the run |
+| `Could not stop …'s containers. Docker did not answer` | The daemon refused this user or did not answer, so the containers may still run | Check `docker version`; once it answers, stop again |
 | `Tailscale URLs unavailable` with `BUNCARGO_HOSTS=tailscale` | Tailscale down or logged out, HTTPS Certificates off, or no permission to change Serve | `buncargo doctor` names which, and the fix |
 | `Named-hosts service points at … which no longer exists` | The install ran from a `node_modules` that was since removed | `buncargo hosts install` to re-point it at the current CLI |
 | `Named-hosts service is installed but did not answer on :443` | Daemon started and crashed | `tail /var/log/buncargo-hosts.log`, then `buncargo hosts install` |

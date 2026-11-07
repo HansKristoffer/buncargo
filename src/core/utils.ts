@@ -12,6 +12,7 @@ import { buildSharedEnvValues, mergeSharedEnvWithOverlay } from "./env";
 import { loadEnvInput } from "./env-input";
 import { applyEnvOverrides, readEnvOverrides } from "./env-overrides";
 import { applyHostPlanToUrls, planNamedHosts } from "./hosts/plan";
+import { readLiveNamedHostsSync } from "./hosts/route-owners";
 import { readServedTailscaleUrlsSync } from "./hosts/tailscale-serve";
 import { getLocalIp } from "./network";
 import { resolvePortPlan } from "./port-allocation";
@@ -157,8 +158,11 @@ export function getEnvVar<
 		localIp,
 		urlHostOverride(),
 	);
-	if (hostPlan && hostPlan.length > 0) {
-		applyHostPlanToUrls(urlMap, hostPlan);
+	// Named only while a run of this checkout serves them, entry by entry,
+	// the answer `env` and the run give: a plan alone is not a URL anything
+	// answers.
+	if (hostPlan) {
+		applyHostPlanToUrls(urlMap, readLiveNamedHostsSync(root, hostPlan));
 	}
 	// Tailscale URLs exist only once a run serves them: what that run recorded.
 	if (mode === "tailscale" && applied.options?.hosts) {

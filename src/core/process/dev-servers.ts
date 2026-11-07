@@ -23,11 +23,12 @@ import {
 	classifyPortOccupant,
 	createPortOwnerSnapshotAsync,
 	formatPortOwner,
+	getPortOwner,
 	killPortOwner,
 	type PortOwnerSnapshot,
 } from "./port-owner";
-import { appExitState, RunInterrupted } from "./process-owner";
-import { printStream, RunOutput } from "./run-output";
+import { appExitState, RunInterrupted, restartFailure } from "./process-owner";
+import { type AppStateDetail, printStream, RunOutput } from "./run-output";
 
 export { stopDevServers } from "./app-supervision";
 
@@ -107,12 +108,16 @@ export interface StartDevServersOptions {
 	) => readonly string[] | Promise<readonly string[]>;
 	/**
 	 * A dev server exited. `code` is `null` when it was signalled, which is what
-	 * a `buncargo stop <app>` or a Ctrl-C looks like from here.
+	 * a `buncargo stop <app>` or a Ctrl-C looks like from here. `state` is how
+	 * it ended, as the run registry records it: `failed` for an app that never
+	 * came up (stopped for it, or exited while spared before it), whatever the
+	 * code or signal.
 	 */
 	onAppExit?: (
 		name: string,
 		code: number | null,
-		signal?: NodeJS.Signals | null,
+		signal: NodeJS.Signals | null | undefined,
+		state: "stopped" | "failed",
 	) => void;
 	/**
 	 * An app that does not become ready is stopped and the others keep
@@ -122,8 +127,17 @@ export interface StartDevServersOptions {
 	keepOthersOnFailure?: boolean;
 	/** Start the apps' `watch` watchers. Default: true; `dev --no-watch` passes false. */
 	watch?: boolean;
-	/** An app was stopped because it did not become ready (see above). */
+	/**
+	 * An app did not become ready and is stopped (see above). Reported before
+	 * the stop, so its exit is never the first word on it.
+	 */
 	onAppFailed?: (name: string, error: Error) => void;
+	/**
+	 * A restart of the app has begun: its row says `starting` until the new
+	 * process is ready. Never for a restart asked for after the run ended. A
+	 * promise it returns is awaited before the new process spawns.
+	 */
+	onAppRestarting?: (name: string) => void | Promise<void>;
 	/**
 	 * A restart retired the app's process and could not replace it: the app
 	 * is down until restarted again. Reported once, like an exit, so the run
@@ -187,12 +201,25 @@ async function prepareAppPort(
 			return "start";
 		},
 		kill: async (): Promise<"start"> => {
-			await killPortOwner(port, {
+			const released = await killPortOwner(port, {
 				verbose,
 				runtime,
 				skipContainers,
 				timeout: graceMs,
 			});
+			// `false` is also "it was gone before it could be stopped".
+			const holder = released
+				? null
+				: getPortOwner(port, { runtime, skipContainers });
+			if (holder) {
+				const held = formatPortOwner(port, holder, { runtime: runtime?.name });
+				const stopIt =
+					holder.pids.length > 0
+						? `Stop it with \`kill ${holder.pids.join(" ")}\``
+						: "Stop it";
+				const refusal = `${name} cannot start: ${held}, which did not stop when buncargo stopped the leftover process on it. ${stopIt}, then start again.`;
+				throw new Error(refusal);
+			}
 			return "start";
 		},
 		free: () => "start",
@@ -314,17 +341,50 @@ export async function startDevServers(
 	if (attachOverride && !startable[attachOverride]) {
 		throw new Error(`--attach=${attachOverride} is not in the start set`);
 	}
-	const optional = new Set(
+	// Whose exit ends the run. Never an `essential: false` app's. An essential
+	// app is spared while on probation (it has not come up yet, in a wave
+	// that spares the others) and once parked (it never came up), until it is
+	// ready again: restart, the TUI and the registry need nothing new.
+	const optional: ReadonlySet<string> = new Set(
 		Object.entries(startable)
 			.filter(([, app]) => app.essential === false)
 			.map(([name]) => name),
 	);
+	const probation = new Set<string>();
+	const parked = new Set<string>();
+	const isOptional = (name: string) =>
+		optional.has(name) || probation.has(name) || parked.has(name);
+	// What its row offers. Probation is undecided: a run about to fail must
+	// not say that the rest keeps going.
+	const restartable = (name: string) => optional.has(name) || parked.has(name);
 	// Apps whose current process has exited. Recorded the moment the exit is
 	// seen, not when it is shown (that waits for the app's last screen), so
 	// no readiness check can report a dead process ready in between.
 	const exited = new Set<string>();
+	// Per process: aborted, with how, when it exits.
+	const exits = new Map<string, AbortController>();
 	// Apps stopped because they never became ready, and why.
 	const readinessFailures = new Map<string, string>();
+	// Apps another process serves (`prepareAppPort` reused it): nothing of
+	// this run's to stop or restart.
+	const reused = new Set<string>();
+	// Bumped by every spawn and restart: what is shown about one process
+	// never lands on the next. `endShown` is the generation whose end is.
+	const generations = new Map<string, number>();
+	const endShown = new Map<string, number>();
+	function showEnd(
+		name: string,
+		generation: number | undefined,
+		end: AppStateDetail,
+		again = false,
+	): void {
+		if (generations.get(name) !== generation) return;
+		if (!again && endShown.get(name) === generation) return;
+		if (generation !== undefined) endShown.set(name, generation);
+		output.state(name, end);
+	}
+	const nextGeneration = (name: string) =>
+		generations.set(name, (generations.get(name) ?? 0) + 1);
 
 	const session = new AppSupervision({
 		signal: options.signal,
@@ -335,42 +395,92 @@ export async function startDevServers(
 			),
 		),
 		attachedName,
-		optional,
+		isOptional,
 		onAppExit: (name, code, signal) => {
 			exited.add(name);
 			sideChecks.get(name)?.abort();
+			const how = signal ? `signal ${signal}` : `code ${code}`;
+			exits.get(name)?.abort(new Error(`App "${name}" exited with ${how}`));
 			if (!owner.controller.signal.aborted) {
-				// After the app's last screen, so its final words precede the verdict.
-				const failure = readinessFailures.get(name);
-				const report = () =>
-					output.state(name, {
-						state: failure
-							? "failed"
-							: appExitState(code, signal, {
-									worker: startable[name]?.kind === "worker",
-									optional: optional.has(name),
-								}),
-						detail: failure ?? (signal ? `signal ${signal}` : `exit ${code}`),
-						restartable: optional.has(name),
+				const generation = generations.get(name);
+				// After the app's last screen, so its final words precede the
+				// verdict, which is read then: parking may have decided it since.
+				const report = () => {
+					const failure = readinessFailures.get(name);
+					const state = failure
+						? "failed"
+						: appExitState(code, signal, {
+								worker: startable[name]?.kind === "worker",
+								optional: isOptional(name),
+							});
+					const detail =
+						failure ?? (signal ? `signal ${signal}` : `exit ${code}`);
+					showEnd(name, generation, {
+						state,
+						detail,
+						restartable: restartable(name),
 					});
+				};
 				const screen = output.screens.get(name);
 				if (screen) void screen.flush().then(report);
 				else report();
 			}
-			onAppExit?.(name, code, signal);
+			// The registry's verdict, decided now rather than after the screen:
+			// an app stopped for never coming up was reported failed already.
+			// One on probation never came up either, whatever its code, unless
+			// the run is ending: `failed` would then outlive a deliberate stop.
+			const diedOnProbation =
+				probation.has(name) && !owner.controller.signal.aborted;
+			const state =
+				readinessFailures.has(name) || diedOnProbation
+					? "failed"
+					: appExitState(code, signal, {
+							worker: startable[name]?.kind === "worker",
+							optional: restartable(name),
+						});
+			onAppExit?.(name, code, signal, state);
 		},
 		onAppSpawned: (name, pid, attached) => {
 			exited.delete(name);
-			// A ready app reporting a new pid adopted its detached server;
-			// a restart says "starting" itself.
+			exits.set(name, new AbortController());
+			nextGeneration(name);
+			// A ready app reporting a new pid adopted its detached server.
 			if (output.states.get(name)?.state !== "ready")
 				output.state(name, { state: "starting" });
 			onAppSpawned?.(name, pid, attached);
 		},
+		// Only once the restart begins: one that never does (the run is
+		// ending) leaves the row as it was.
 		onRestart: (name, reason) => {
+			nextGeneration(name);
+			readinessFailures.delete(name);
+			sideChecks.get(name)?.abort();
+			output.state(name, { state: "starting" });
+			const beforeSpawn = options.onAppRestarting?.(name);
 			output.event(name, `restarting: ${reason}`);
 			if (!output.terminalSize)
 				console.log(formatStep(`🔁 Restarting ${name}: ${reason}`));
+			return beforeSpawn;
+		},
+		onRestartFailed: (name, error) => {
+			// Gone like an app that exited, so no wait for it holds on.
+			exited.add(name);
+			exits.get(name)?.abort(error);
+			// Down like one that never came up: parked when the others are
+			// spared, unless that fails the run as it would have at start.
+			if (options.keepOthersOnFailure) {
+				const failure = optional.has(name)
+					? undefined
+					: runFailure([[name, restartFailure(name, error)]]);
+				if (failure) owner.controller.abort(failure);
+				else parked.add(name);
+			}
+			output.state(name, {
+				state: "failed",
+				detail: `restart failed: ${error.message}`,
+				restartable: restartable(name),
+			});
+			options.onAppRestartFailed?.(name, error);
 		},
 		verbose: verbose && !output.terminalSize,
 		width: nameWidth,
@@ -381,25 +491,7 @@ export async function startDevServers(
 	// A replaced app is ready again the way it was the first time: health-
 	// checked on the side, so a failing restart never stalls the others.
 	const restartApp = async (name: string, reason?: string) => {
-		readinessFailures.delete(name);
-		sideChecks.get(name)?.abort();
-		output.state(name, { state: "starting" });
-		try {
-			await session.restart(name, reason);
-		} catch (error) {
-			// The old process is gone and no new one took over. A run that is
-			// ending reports its apps itself.
-			if (!owner.controller.signal.aborted) {
-				output.state(name, {
-					state: "failed",
-					detail: `restart failed: ${toError(error).message}`,
-					restartable: true,
-				});
-				options.onAppRestartFailed?.(name, toError(error));
-			}
-			throw error;
-		}
-		checkOnTheSide(name);
+		if (await session.restart(name, reason)) checkOnTheSide(name);
 	};
 	output.controls = { restart: (name) => restartApp(name, "requested") };
 	const markReady = (name: string) => {
@@ -407,6 +499,9 @@ export async function startDevServers(
 		owner.ready(name);
 		// Only a starting app becomes ready; an exited one stays as it ended.
 		if (output.states.get(name)?.state !== "starting") return;
+		// Up: from here its exit is an essential app falling over again.
+		probation.delete(name);
+		parked.delete(name);
 		output.state(name, { state: "ready" });
 		options.onAppReady?.(name);
 	};
@@ -448,7 +543,12 @@ export async function startDevServers(
 				options.skipContainers,
 			);
 			owner.controller.signal.throwIfAborted();
-			if (prepared !== "reuse") toStart.push([name, config]);
+			if (prepared === "start") toStart.push([name, config]);
+			else {
+				// Its row comes up like a spawned app's: readiness promotes it.
+				reused.add(name);
+				output.state(name, { state: "starting" });
+			}
 		}
 
 		// A wave's prebuilds run side by side, and all finish before any of its
@@ -493,7 +593,7 @@ export async function startDevServers(
 			const spawnApp = () =>
 				config.kind === "worker"
 					? spawnOwnedWorker(root, name, spawnOnce, owner.controller.signal, {
-							allowEarlyExit: optional.has(name),
+							allowEarlyExit: isOptional(name),
 						})
 					: Promise.resolve(spawnOnce());
 			session.setSpawner(
@@ -644,10 +744,56 @@ export async function startDevServers(
 		sideChecks.get(name)?.abort();
 		const controller = new AbortController();
 		sideChecks.set(name, controller);
-		void waitForWave(
-			{ [name]: config },
-			anySignal(owner.controller.signal, controller.signal),
-		).catch(() => {});
+		const signal = anySignal(owner.controller.signal, controller.signal);
+		void waitForWave({ [name]: config }, signal)
+			.catch((error) => {
+				// Its process ended or was replaced, or the run is ending.
+				if (signal.aborted) return;
+				return sideCheckFailed(name, toError(error));
+			})
+			.catch((error) => owner.controller.abort(error));
+	}
+
+	/**
+	 * A process checked on the side never came up. A non-essential app is
+	 * stopped and parked like one that never came up at start, and so is an
+	 * essential one when the others are spared, unless the run would have
+	 * failed without it at start; otherwise the run fails, as it would then.
+	 */
+	async function sideCheckFailed(name: string, error: Error): Promise<void> {
+		if (optional.has(name)) return parkFailedApp(name, error);
+		const failure = options.keepOthersOnFailure
+			? runFailure([[name, error]])
+			: error;
+		if (failure) owner.controller.abort(failure);
+		else await parkFailedApp(name, error);
+	}
+
+	/**
+	 * Why the run fails rather than sparing these essential apps, which are
+	 * down or never came up, or `undefined` when the rest keeps going. Asked
+	 * at start, and again when a restart or the check after it fails.
+	 */
+	function runFailure(failed: readonly [string, Error][]): Error | undefined {
+		for (const [name, error] of failed) {
+			// Something waiting for it to be healthy cannot run without it.
+			const dependents = Object.entries(startable)
+				.filter(([, app]) => app.startAfter?.includes(name))
+				.map(([dependent]) => dependent);
+			if (dependents.length === 0) continue;
+			const verb = dependents.length === 1 ? "starts" : "start";
+			const waiting = `${dependents.join(", ")} ${verb} after ${name}`;
+			return new Error(`${error.message} (${waiting})`, { cause: error });
+		}
+		// Nothing left running is a failed run, not one quietly waiting on
+		// restarts nobody will ask for.
+		const down = new Set([
+			...readinessFailures.keys(),
+			...exited,
+			...failed.map(([name]) => name),
+		]);
+		const nothingLeft = Object.keys(startable).every((name) => down.has(name));
+		return nothingLeft ? failed[0]?.[1] : undefined;
 	}
 
 	async function startWave(wave: Record<string, AppConfig>): Promise<void> {
@@ -655,16 +801,25 @@ export async function startDevServers(
 			return;
 		}
 
+		let essential = Object.fromEntries(
+			Object.entries(wave).filter(([name]) => !optional.has(name)),
+		);
+		// Before any spawns: one that crashes at boot is parked, not the run's
+		// end. Not the attached app: quitting it ends the run, booted or not.
+		if (options.keepOthersOnFailure)
+			for (const name of Object.keys(essential))
+				if (name !== attachedName) probation.add(name);
 		await spawnWave(wave);
 		// A non-essential app never holds the run up: it is health-checked on
 		// the side, and its failing to come up is its own problem.
 		for (const name of Object.keys(wave).filter((name) => optional.has(name)))
 			checkOnTheSide(name);
-		let essential = Object.fromEntries(
-			Object.entries(wave).filter(([name]) => !optional.has(name)),
-		);
-		if (options.keepOthersOnFailure)
+		if (options.keepOthersOnFailure) {
 			essential = await spareHealthyApps(essential);
+			// Up: a crash from here ends the run at once, rather than leaving
+			// the wave's readiness wait to time out on a parked app.
+			for (const name of Object.keys(essential)) probation.delete(name);
+		}
 		await owner.race(waitForWave(essential));
 	}
 
@@ -676,11 +831,16 @@ export async function startDevServers(
 	async function spareHealthyApps(
 		wave: Record<string, AppConfig>,
 	): Promise<Record<string, AppConfig>> {
-		const signal = owner.controller.signal;
 		const results = await owner.race(
 			Promise.allSettled(
-				Object.entries(wave).map(([name, config]) =>
-					raceDrift(
+				Object.entries(wave).map(([name, config]) => {
+					// Ends the moment its process exits: a crash at boot is not
+					// waited out to its health timeout.
+					const signal = anySignal(
+						owner.controller.signal,
+						exits.get(name)?.signal,
+					);
+					return raceDrift(
 						{ [name]: config },
 						waitForPrinted({ [name]: config }, signal).then(() =>
 							waitForDevServers({ [name]: config }, ports, {
@@ -691,53 +851,66 @@ export async function startDevServers(
 							}),
 						),
 						signal,
-					),
-				),
+					);
+				}),
 			),
 		);
-		signal.throwIfAborted();
+		owner.controller.signal.throwIfAborted();
 
 		const healthy: Record<string, AppConfig> = {};
 		const failed: [string, Error][] = [];
 		for (const [index, [name, config]] of Object.entries(wave).entries()) {
 			const result = results[index];
-			if (result?.status === "fulfilled") healthy[name] = config;
+			// A worker is ready once spawned, so only its exit says it failed.
+			const exit = exited.has(name) ? exits.get(name)?.signal : undefined;
+			if (exit) failed.push([name, toError(exit.reason)]);
+			else if (result?.status === "fulfilled") healthy[name] = config;
 			else failed.push([name, toError(result?.reason)]);
 		}
 		if (failed.length === 0) return healthy;
 
 		// Decided before anything is parked, so a run that is about to fail
 		// never reports that "the rest keeps going".
-		for (const [name, error] of failed) {
-			// Something waiting for it to be healthy cannot start without it.
-			const dependents = Object.entries(startable)
-				.filter(([, app]) => app.startAfter?.includes(name))
-				.map(([dependent]) => dependent);
-			if (dependents.length > 0)
-				throw new Error(
-					`${error.message} (${dependents.join(", ")} start${dependents.length === 1 ? "s" : ""} after ${name})`,
-				);
-		}
-		// Nothing left running is a failed run, not one quietly waiting on
-		// restarts nobody will ask for.
-		const down = new Set([
-			...readinessFailures.keys(),
-			...exited,
-			...failed.map(([name]) => name),
-		]);
-		if (Object.keys(startable).every((name) => down.has(name)))
-			throw failed[0]?.[1];
+		const failure = runFailure(failed);
+		if (failure) throw failure;
 
 		for (const [name, error] of failed) await parkFailedApp(name, error);
 		return healthy;
 	}
 
-	/** Its row (stream or TUI) says it failed and how to restart it. */
+	/**
+	 * Stop an app that never came up, and spare it until a restart brings it
+	 * up. Its row (stream or TUI) says it failed and how to restart it.
+	 */
 	async function parkFailedApp(name: string, error: Error): Promise<void> {
 		readinessFailures.set(name, error.message);
-		optional.add(name);
-		await session.stopApp(name);
+		probation.delete(name);
+		parked.add(name);
+		// Before the stop below, whose exit then says it failed too: the run
+		// registry keeps an app's `stopped` over a later `failed`.
 		options.onAppFailed?.(name, error);
+		if (reused.has(name)) {
+			// Neither stopped nor restartable from here: say so rather than
+			// report a process that keeps running as failed and parked.
+			const detail = `${error.message}; served by a process this run did not start, which is left running`;
+			output.state(name, { state: "failed", detail, restartable: false });
+			if (!output.terminalSize) console.warn(formatWarn(`${name}: ${detail}`));
+		} else if (exited.has(name)) {
+			// Its exit may be on screen already, read before it was parked.
+			showEnd(
+				name,
+				generations.get(name),
+				{
+					state: "failed",
+					detail: error.message,
+					restartable: restartable(name),
+				},
+				true,
+			);
+		} else {
+			// Its exit reports it, with the reason above.
+			await session.stopApp(name);
+		}
 	}
 	try {
 		// Each layer is healthy before the next spawns: that is `startAfter`.

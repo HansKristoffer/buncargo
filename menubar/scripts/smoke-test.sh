@@ -24,13 +24,16 @@ fi
 FAKE_HOME="$(mktemp -d)"
 trap 'rm -rf "$FAKE_HOME"' EXIT
 mkdir -p "$FAKE_HOME/.buncargo"
-cp "$FIXTURE" "$FAKE_HOME/.buncargo/runs.json"
+# The fixture's pids are 1, which neither side reads as a run; this script's
+# own pid stands in for them, alive for as long as the checks run.
+# `src/core/run-registry.fixture.test.ts` does the same with its own.
+sed "s/\"pid\": 1,/\"pid\": $$,/" "$FIXTURE" > "$FAKE_HOME/.buncargo/runs.json"
 
 OUTPUT="$(HOME="$FAKE_HOME" "$BINARY" --status)"
 echo "$OUTPUT"
 
-# pid 1 is always alive, so the fixture's run must survive the liveness filter
-# and every app state must decode.
+# The stand-in pid is alive and the run records no identity, so the fixture's
+# run must survive the liveness filter and every app state must decode.
 for expected in "lullu/fix-login" "platform=ready" "api=starting" "worker=reused" "jobs=ready" "tasks=db:seed,reindex" "details=2" "leases=1"; do
   if [[ "$OUTPUT" != *"$expected"* ]]; then
     echo "Expected --status output to contain '$expected'" >&2
@@ -43,6 +46,14 @@ done
 # `releasedAt` — a finished run back in the menu.
 if [[ "$OUTPUT" == *"t3code-released"* ]]; then
   echo "Expected --status to hide the released run" >&2
+  exit 1
+fi
+
+# The third run crashed and its pid now belongs to another process (the
+# stand-in, alive, with another birth identity). Showing it would mean the app is
+# reading the pid alone, and its Stop would take down the held containers.
+if [[ "$OUTPUT" == *"t3code-crashed"* ]]; then
+  echo "Expected --status to hide a run whose pid was reused" >&2
   exit 1
 fi
 

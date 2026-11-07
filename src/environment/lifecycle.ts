@@ -81,7 +81,22 @@ export function createLifecycleApi<
 
 	let selectedServices: string[] = [];
 	let selectedApps: string[] = [];
+	/** A start has prepared its selection: what `runSeed` seeds for. */
 	let started = false;
+	/**
+	 * What this environment's starts have brought up since its last teardown,
+	 * whatever the latest one selected. `unknown` until a start gets that far:
+	 * a stop then means the whole environment (`dev --down`). `none`: only
+	 * starts that selected no service, whose stop leaves the containers to
+	 * the run using them. `services`: a start claimed the run for containers,
+	 * which stop tears down.
+	 */
+	let broughtUp: "unknown" | "none" | "services" = "unknown";
+	/**
+	 * The stacks those starts brought up. A stack has no state to ask its CLI
+	 * for, so this is what `isRunning` knows of it.
+	 */
+	const stacksUp = new Set<string>();
 
 	function preparationSelected(prerequisites?: readonly string[]): boolean {
 		// Omitted prerequisites prepare whenever any service is selected; an
@@ -92,10 +107,7 @@ export function createLifecycleApi<
 	}
 
 	function appOnlyRun(): boolean {
-		return (
-			(started && selectedServices.length === 0) ||
-			Object.keys(services).length === 0
-		);
+		return broughtUp === "none" || Object.keys(services).length === 0;
 	}
 
 	function currentSelection() {
@@ -389,6 +401,8 @@ export function createLifecycleApi<
 			await ctx.prepareStartAsync(onlyApps, onlyServices, signal);
 			started = true;
 			const hasServices = selectedServices.length > 0;
+			if (hasServices) broughtUp = "services";
+			else if (broughtUp === "unknown") broughtUp = "none";
 			const portMap = toPortMap(ports);
 			const targetPorts: Record<string, number> = {};
 			for (const serviceKey of selectedServices) {
@@ -489,13 +503,14 @@ export function createLifecycleApi<
 						async () => {
 							const results = await Promise.allSettled([
 								Object.keys(compose).length > 0 ? composeUp() : undefined,
-								...stacks.map(({ stack }) =>
-									withDeadline(
+								...stacks.map(async ({ name, stack }) => {
+									await withDeadline(
 										(stackSignal) => stack.up(hookContext(stackSignal)),
 										600_000,
 										signal,
-									),
-								),
+									);
+									stacksUp.add(name);
+								}),
 							]);
 							for (const result of results)
 								if (result.status === "rejected") throw result.reason;
@@ -508,6 +523,7 @@ export function createLifecycleApi<
 			if (hasServices) {
 				await ensureSubset(earlyServices);
 				serviceWatch.watch(Object.keys(earlyServices));
+				if (wait) runClaim.servicesReady(Object.keys(earlyServices));
 			}
 
 			// Before migrations, not just before servers: Prisma and friends read
@@ -576,6 +592,7 @@ export function createLifecycleApi<
 				// Early jobs already completed. --no-deps prevents Compose from rerunning them.
 				await ensureSubset(lateServices, true);
 				serviceWatch.watch(Object.keys(lateServices));
+				if (wait) runClaim.servicesReady(Object.keys(lateServices));
 
 				if (shouldStartServers && Object.keys(appsToStart).length > 0) {
 					const pids = await startAppServers(ctx, envVars, {
@@ -720,7 +737,9 @@ export function createLifecycleApi<
 				removeVolumes,
 			});
 		}
-		await runClaim.retireRun();
+		await runClaim.retireRun({ containersDown: hasCompose });
+		broughtUp = "unknown";
+		stacksUp.clear();
 		return true;
 	}
 
@@ -737,10 +756,20 @@ export function createLifecycleApi<
 			return false;
 		}
 
-		const compose = composeServicesOf(services);
-		const names = resolveComposeServiceNames(compose, Object.keys(compose));
-		if (names.length === 0) return false;
-		const states = await ctx.runtime.projectServiceStates(ctx.projectName);
+		const stacks = configuredStacks(config as AnyDevConfig);
+		if (!stacks.every(({ name }) => stacksUp.has(name))) return false;
+		// A job's container has exited once it did its work.
+		const compose = Object.fromEntries(
+			Object.entries(composeServicesOf(services)).filter(
+				([, service]) => service.kind !== "job",
+			),
+		);
+		const names = resolveComposeServiceNames(services, Object.keys(compose));
+		if (names.length === 0) return stacks.length > 0;
+		// Throws when the runtime cannot answer, which is not running either.
+		const states = await ctx.runtime
+			.projectServiceStates(ctx.projectName)
+			.catch(() => []);
 		const running = new Set(
 			states.filter((state) => state.running).map((state) => state.service),
 		);

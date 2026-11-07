@@ -1,5 +1,5 @@
 import { rmSync } from "node:fs";
-import { typedSwitch } from "hanzio";
+import { getErrorMessage, typedSwitch } from "hanzio";
 import type { HostsOptions } from "../../types";
 import {
 	askChoice,
@@ -17,22 +17,29 @@ import {
 	SERVICE_START_TIMEOUT_MS,
 } from "./daemon-client";
 import { readDaemonConfig } from "./daemon-config";
-import { cleanHostsFile } from "./hosts-file";
+import {
+	cleanHostsFileAsRoot,
+	DEFAULT_HOSTS_FILE,
+	HOSTS_BLOCK_END,
+	HOSTS_BLOCK_START,
+} from "./hosts-file";
 import {
 	ensureMkcert,
 	getCaPath,
 	installTrust,
-	isCaPresent,
+	isCaTrusted,
 	resolvedMkcertPath,
 	uninstallTrust,
 } from "./mkcert";
 import { DECLINE_FILENAME } from "./paths";
 import { isHostsPlatformSupported } from "./plan";
-import { removeHostRoutes } from "./registry";
+import { systemPrivilegedRunner } from "./privileged";
+import { clearHostRoutes } from "./registry";
 import {
 	describeStaleHostsService,
 	installHostsService,
 	isHostsServiceInstalled,
+	readHostsServiceManifest,
 	toHostsUserMessage,
 	uninstallHostsService,
 } from "./service";
@@ -164,9 +171,10 @@ export async function runHostsInstall(
 ): Promise<void> {
 	clearHostsDecline();
 	const mkcertPath = await ensureMkcert();
-	if (!isCaPresent(mkcertPath)) {
-		installTrust(mkcertPath);
-	}
+	// Unconditionally: `hosts uninstall` removes the trust and keeps the CA
+	// files, so "the CA exists" skipped this on the reinstall that needed it.
+	// `mkcert -install` asks for nothing when the CA is already trusted.
+	installTrust(mkcertPath);
 	// Mint before the service starts. The daemon cannot bind :443 without a
 	// leaf, and it will not mint one itself.
 	await syncCertificateForRoutes({ mkcertPath });
@@ -185,21 +193,77 @@ export async function runHostsInstall(
 	}
 }
 
-export async function runHostsUninstall(): Promise<void> {
-	uninstallHostsService();
-	uninstallTrust();
+/** The steps of `hosts uninstall`, injected so the order can be tested without root. */
+export interface HostsUninstallDeps {
+	removeService: () => void;
+	removeTrust: () => void;
+	cleanHostsFile: () => void;
+	clearRoutes: () => Promise<void>;
+	removeCertNames: () => void;
+	persistDecline: () => void;
+}
+
+/**
+ * Take named hosts off this machine, returning what it could not do.
+ *
+ * Cleaning `/etc/hosts` needs `sudo` once the root daemon that wrote the block
+ * is gone, and with no terminal to ask for a password it fails. Thrown, that
+ * stopped here with the trust already removed and the routes and the decline
+ * never written, so the next `buncargo dev` set everything up again.
+ */
+export async function uninstallHosts(
+	deps: HostsUninstallDeps,
+): Promise<string[]> {
+	const warnings: string[] = [];
+	deps.removeService();
+	deps.removeTrust();
+	// As root when needed: the daemon that wrote the block is stopped now, and
+	// the block left behind points every hostname at a proxy that is gone.
 	try {
-		cleanHostsFile();
-	} catch {
-		// may need sudo; best-effort
+		deps.cleanHostsFile();
+	} catch (error) {
+		const message = `Could not remove buncargo's block from ${DEFAULT_HOSTS_FILE} (${getErrorMessage(error)}); its hostnames still point at 127.0.0.1. Run \`buncargo hosts uninstall\` again from a terminal, or delete the lines from \`${HOSTS_BLOCK_START}\` to \`${HOSTS_BLOCK_END}\` with \`sudo $EDITOR ${DEFAULT_HOSTS_FILE}\`.`;
+		warnings.push(message);
 	}
-	await removeHostRoutes(() => true);
-	try {
-		rmSync(getCertNamesPath(), { force: true });
-	} catch {
-		// best-effort: an orphaned name list only widens a certificate
-	}
-	persistHostsDecline();
+	await deps.clearRoutes();
+	deps.removeCertNames();
+	deps.persistDecline();
+	return warnings;
+}
+
+export function runHostsUninstall(): Promise<string[]> {
+	const runner = systemPrivilegedRunner();
+	return uninstallHosts({
+		removeService: () => uninstallHostsService({ runner }),
+		removeTrust: () => uninstallTrust(),
+		cleanHostsFile: () => cleanHostsFileAsRoot(runner),
+		clearRoutes: () => clearHostRoutes(),
+		removeCertNames: () => {
+			try {
+				rmSync(getCertNamesPath(), { force: true });
+			} catch {
+				// best-effort: an orphaned name list only widens a certificate
+			}
+		},
+		persistDecline: persistHostsDecline,
+	});
+}
+
+/**
+ * Whether setting up named hosts asks first.
+ *
+ * A machine buncargo never installed the service on is the one case: it is a
+ * password prompt nobody agreed to. A CA that exists says nothing about that,
+ * since mkcert is used by other tools, and counting it skipped the question.
+ * Repairing a half-installed or stale setup does not ask, because the
+ * developer already agreed and is now looking at named URLs that do not work.
+ */
+export function setupNeedsConsent(input: {
+	serviceInstalled: boolean;
+	/** A service manifest exists: buncargo installed it here before. */
+	everInstalled: boolean;
+}): boolean {
+	return !input.serviceInstalled && !input.everInstalled;
 }
 
 export async function ensureHostsReady(input: {
@@ -256,14 +320,13 @@ export async function ensureHostsReady(input: {
 
 	const staleService = describeStaleHostsService();
 	const serviceInstalled = isHostsServiceInstalled();
-	const caPresent = isCaPresent();
-	// Nothing installed at all is the one case that asks first: it is a
-	// password prompt on a machine that has never seen buncargo. Repairing a
-	// half-installed or stale setup does not, because the developer already
-	// agreed to it and is now looking at named URLs that do not work.
-	const firstRun = !serviceInstalled && !caPresent;
+	const caTrusted = isCaTrusted();
+	const firstRun = setupNeedsConsent({
+		serviceInstalled,
+		everInstalled: readHostsServiceManifest() !== undefined,
+	});
 
-	if (!serviceInstalled || !caPresent || staleService) {
+	if (!serviceInstalled || !caTrusted || staleService) {
 		// Installing prompts for a password. Without a TTY that would hang, so
 		// report instead and let the run continue on localhost:port.
 		//
@@ -382,9 +445,13 @@ export async function doctorFixHosts(
 	const fixed: string[] = [];
 	const issues: HostsFixIssue[] = [];
 	const interactive = options.interactive ?? isInteractive();
+	// A choice, not a fault: `buncargo hosts install` is how it is undone, and
+	// doctor says so rather than asking for a password to set up something
+	// every run would go on ignoring.
+	if (hasDeclinedHosts()) return { fixed, issues };
 	try {
 		const mkcertPath = await ensureMkcert();
-		if (!isCaPresent(mkcertPath)) {
+		if (!isCaTrusted(mkcertPath)) {
 			if (!interactive) {
 				issues.push({
 					kind: "ca",

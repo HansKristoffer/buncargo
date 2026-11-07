@@ -1,18 +1,18 @@
+import {
+	isContainerServing,
+	parseContainerState,
+} from "../container-runtime/container-state";
 import type { ServiceRuntimeState } from "../container-runtime/types";
 import { runDockerAsync } from "./binary";
-import {
-	DockerUnavailableError,
-	isDockerDaemonRunning,
-	remediationFor,
-} from "./preflight";
+import { dockerDaemonState, dockerUnavailableError } from "./preflight";
 
 /**
- * Ensure Docker is running before attempting compose operations.
+ * Ensure Docker is running before attempting compose operations, or throw
+ * naming the runtime behind `docker` and what to do about it.
  */
 export function assertDockerRunning(binary?: string): void {
-	if (!isDockerDaemonRunning(binary)) {
-		throw new DockerUnavailableError("unknown", remediationFor("unknown"));
-	}
+	const daemon = dockerDaemonState(binary);
+	if (daemon.state !== "up") throw dockerUnavailableError(daemon, binary);
 }
 
 const SERVICE_STATE_FORMAT =
@@ -32,6 +32,17 @@ export function parseDockerHealth(status: string): boolean | undefined {
 	return undefined;
 }
 
+/**
+ * The exit code Docker's human-readable status carries for a container that
+ * stopped or is between restarts: `Exited (137) 3 minutes ago`,
+ * `Restarting (1) 2 seconds ago`. Negative when Docker could not collect one
+ * (`Exited (-1)`).
+ */
+export function parseDockerExitCode(status: string): number | undefined {
+	const code = /^(?:exited|restarting) \((-?\d+)\)/i.exec(status.trim())?.[1];
+	return code === undefined ? undefined : Number(code);
+}
+
 export function parseDockerServiceStates(
 	stdout: string,
 ): ServiceRuntimeState[] {
@@ -45,14 +56,15 @@ export function parseDockerServiceStates(
 		const [service, state, status, serviceHash] = line.split("\t");
 		if (!service) continue;
 		const healthy = parseDockerHealth(status ?? "");
-		// `Exited (137) 3 minutes ago`
-		const exited = /^Exited \((-?\d+)\)/.exec(status ?? "");
+		const exitCode = parseDockerExitCode(status ?? "");
+		const containerState = parseContainerState(state ?? "");
 		states.push({
 			service,
-			running: state === "running",
+			state: containerState,
+			running: isContainerServing(containerState),
 			...(serviceHash ? { serviceHash } : {}),
 			...(healthy === undefined ? {} : { healthy }),
-			...(exited ? { exitCode: Number(exited[1]) } : {}),
+			...(exitCode === undefined ? {} : { exitCode }),
 		});
 	}
 	return states;
@@ -81,5 +93,11 @@ export async function dockerProjectServiceStates(
 		],
 		{ signal },
 	);
-	return result.ok ? parseDockerServiceStates(result.stdout) : [];
+	// A daemon that cannot answer throws: an empty project is something the
+	// service watch reports, and "could not ask" must not read as one.
+	if (!result.ok)
+		throw new Error(
+			result.stderr.trim() || `docker ps exited ${result.exitCode}`,
+		);
+	return parseDockerServiceStates(result.stdout);
 }

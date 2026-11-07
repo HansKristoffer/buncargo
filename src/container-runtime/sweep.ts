@@ -37,6 +37,7 @@ import {
 import {
 	clearRunStacks,
 	markOwnersLost,
+	newestLifecycleFirst,
 	type RunEntry,
 	type RunStackEntry,
 	readAllRuns,
@@ -53,10 +54,10 @@ import type {
 	BuncargoVolume,
 	ContainerRuntimeName,
 } from "../types";
+import { keepsUnownedStack, parseContainerState } from "./container-state";
 import {
 	type ContainerGroup,
 	groupBuncargoContainers,
-	isContainerUp,
 	manualDownCommand,
 } from "./inventory";
 import { withProjectLifecycleLock } from "./project-lock";
@@ -79,7 +80,10 @@ export interface SweepInput {
 	 * this user cannot read, counts as there.
 	 */
 	checkout: CheckoutPresence;
-	/** At least one container in the stack is running. */
+	/**
+	 * At least one container keeps the stack up ({@link keepsUnownedStack}):
+	 * live, and not only restarting.
+	 */
 	anyRunning: boolean;
 	/** The run that owns them, or null when nothing on disk claims them. */
 	run: RunEntry | null;
@@ -266,7 +270,7 @@ export interface SweepOptions {
 	actor?: RemovalActor;
 }
 
-/** The run that owns a stack: a live session if there is one, else the newest. */
+/** The run that owns a stack: a live session if there is one, else the one that ended last. */
 function runFor(
 	group: ContainerGroup,
 	runs: RunEntry[],
@@ -276,7 +280,7 @@ function runFor(
 		.filter(
 			(run) => run.projectName === group.projectName && run.root === group.root,
 		)
-		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+		.sort(newestLifecycleFirst);
 	// A live owner speaks for the stack even when a released entry is newer:
 	// a second session in the same checkout keeps the containers alive.
 	return candidates.find(alive) ?? candidates[0] ?? null;
@@ -336,7 +340,7 @@ export async function sweepOrphanedContainers(
 		groups.map((group) => [group, runFor(group, runs, alive)]),
 	);
 	const stackRuns = runs.filter((run) => (run.stacks?.length ?? 0) > 0);
-	await stampLostOwners([...owners.values(), ...stackRuns], alive, now);
+	await stampLostOwners([...owners.values(), ...stackRuns], runs, alive, now);
 
 	const result: SweepResult = {
 		swept: [],
@@ -459,7 +463,9 @@ async function sweepGroup(
 			// `runFor` finds an owner exactly when a run on record names the stack.
 			known: owner !== null || isKnownStack(group, [], claims),
 			checkout: checkoutPresence(group.root),
-			anyRunning: group.containers.some(isContainerUp),
+			anyRunning: group.containers.some((container) =>
+				keepsUnownedStack(parseContainerState(container.state)),
+			),
 			run: owner,
 			ownerAlive: owner !== null && isAlive(owner),
 			now,
@@ -479,7 +485,8 @@ async function sweepGroup(
 				const fresh = await readAllRuns();
 				const freshAlive = await runLivenessAsync(fresh);
 				const owner = runFor(group, fresh, freshAlive);
-				const verdict = decide(owner, freshAlive, readAllOffsetClaims());
+				const freshClaims = readAllOffsetClaims();
+				const verdict = decide(owner, freshAlive, freshClaims);
 				if (verdict.kind !== "down") return false;
 				await adapterFor(group, runtimes, run).down({
 					root: group.root,
@@ -493,7 +500,7 @@ async function sweepGroup(
 					reason: verdict.reason,
 					owner: removalOwner(owner),
 				});
-				await releaseSuffixedClaimsOf(group);
+				await releaseSuffixedClaimsOf(group, freshClaims, owner, now);
 				return true;
 			},
 			{ timeoutMs: 0 },
@@ -746,6 +753,7 @@ async function sweepStacks(
  */
 async function stampLostOwners(
 	owners: readonly (RunEntry | null)[],
+	runs: readonly RunEntry[],
 	alive: (run: RunEntry) => boolean,
 	now: number,
 ): Promise<void> {
@@ -756,17 +764,23 @@ async function stampLostOwners(
 			run.ownerLostAt === undefined &&
 			!alive(run),
 	);
-	if (lost.length === 0) return;
+	// Found gone once, running now: that reading was wrong.
+	const back = runs.filter(
+		(run) => run.ownerLostAt !== undefined && alive(run),
+	);
+	if (lost.length === 0 && back.length === 0) return;
 	const at = new Date(now).toISOString();
 	try {
-		await markOwnersLost(
-			lost.map((run) => run.sessionId),
+		await markOwnersLost({
+			lost: lost.map((run) => run.sessionId),
+			back: back.map((run) => run.sessionId),
 			at,
-		);
+		});
 	} catch {
 		return;
 	}
 	for (const run of lost) run.ownerLostAt = at;
+	for (const run of back) run.ownerLostAt = undefined;
 }
 
 /**

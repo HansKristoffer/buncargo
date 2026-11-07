@@ -95,6 +95,9 @@ export interface EnsureServicesRunningRequest {
 
 /**
  * Ensure the requested service subset is running and healthy.
+ *
+ * `started` is whether this call brought containers up, created, started or
+ * recreated them, rather than finding every one running from this config.
  */
 export async function ensureServicesRunning(
 	request: EnsureServicesRunningRequest,
@@ -239,5 +242,7 @@ export async function ensureServicesRunning(
 		);
 	}
 
-	return { started: !alreadyRunning, composeServiceNames };
+	// Not `!alreadyRunning`: a config change recreates containers that were
+	// all running, and that start is still one.
+	return { started: !upToDate, composeServiceNames };
 }

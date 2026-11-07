@@ -12,9 +12,13 @@ import {
 	scheduleLog,
 } from "../core/style";
 import type { ServiceConfig } from "../types";
+import {
+	isContainerServing,
+	parseContainerState,
+	startupVerdict,
+} from "./container-state";
 import { createBuiltInHealthCheck } from "./health-checks";
 import type { ContainerRuntimeAdapter, ServiceDiagnosis } from "./types";
-import { isTerminalContainerState } from "./types";
 
 const POLL_INTERVAL = 250; // Fast polling for quicker startup
 
@@ -98,6 +102,7 @@ async function pollUntilHealthy(
 ): Promise<void> {
 	const { serviceName, runtime, probe, port } = context;
 	let lastDiagnosis: ServiceDiagnosis | undefined;
+	let restartsInARow = 0;
 
 	const deadline = performance.now() + timeoutMs;
 	for (let i = 0; remainingTime(deadline) > 0; i++) {
@@ -130,17 +135,25 @@ async function pollUntilHealthy(
 
 		if (i > 0 && i % DIAGNOSIS_EVERY_ATTEMPTS === 0) {
 			lastDiagnosis = await diagnose(context, remainingTime(deadline), signal);
-			if (lastDiagnosis && isTerminalContainerState(lastDiagnosis.state)) {
-				const exit =
-					lastDiagnosis.exitCode !== undefined
-						? ` (exit code ${lastDiagnosis.exitCode})`
-						: "";
-				throw new Error(
-					withLogTail(
-						`Service ${serviceName} stopped while starting up: ${runtime.displayName} reports state "${lastDiagnosis.state}"${exit}.`,
-						lastDiagnosis,
-					),
-				);
+			if (lastDiagnosis) {
+				// In a row: a service that exits while its dependency comes up,
+				// then runs, is a restart policy doing its job, not a crash loop.
+				const restarting =
+					parseContainerState(lastDiagnosis.state) === "restarting";
+				restartsInARow = restarting ? restartsInARow + 1 : 0;
+				const verdict = startupVerdict(lastDiagnosis, restartsInARow);
+				if (verdict.kind !== "pending") {
+					const exit =
+						lastDiagnosis.exitCode !== undefined
+							? ` (exit code ${lastDiagnosis.exitCode})`
+							: "";
+					const reported = `${runtime.displayName} reports state "${lastDiagnosis.state}"${exit}`;
+					const problem =
+						verdict.kind === "crash-loop"
+							? `Service ${serviceName} keeps crashing while starting up: ${reported} again and again.`
+							: `Service ${serviceName} stopped while starting up: ${reported}.`;
+					throw new Error(withLogTail(problem, lastDiagnosis));
+				}
 			}
 		}
 
@@ -202,12 +215,12 @@ export async function waitForService(
 					Math.min(timeoutMs, 2000),
 					signal,
 				);
-				if (state && isTerminalContainerState(state.state)) {
-					if (
-						config.kind === "job" &&
-						state.state.toLowerCase() === "exited" &&
-						state.exitCode === 0
-					) {
+				if (state && startupVerdict(state, 0).kind === "stopped") {
+					const exitedCleanly =
+						parseContainerState(state.state) === "stopped" &&
+						state.exitCode === 0;
+					const completed = config.kind === "job" && exitedCleanly;
+					if (completed) {
 						if (options.verbose) {
 							console.log(
 								withLogTail(formatDone(`Job ${serviceName} completed`), state),
@@ -224,9 +237,10 @@ export async function waitForService(
 					);
 				}
 
-				return (
-					config.kind !== "job" && state?.state.toLowerCase() === "running"
-				);
+				const serving =
+					state !== undefined &&
+					isContainerServing(parseContainerState(state.state));
+				return config.kind !== "job" && serving;
 			},
 			timeoutMs,
 			pollInterval,

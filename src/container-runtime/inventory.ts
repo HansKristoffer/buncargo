@@ -1,18 +1,20 @@
 import { typedSwitch } from "hanzio";
 import { manualComposeDownCommand } from "../docker/binary";
 import type { BuncargoContainer, ContainerRuntimeName } from "../types";
+import { isContainerLive, parseContainerState } from "./container-state";
 import { availableContainerRuntimes } from "./resolve";
 import type { ContainerRuntimeAdapter } from "./types";
 
 /**
- * Whether a container is up.
+ * Whether a container is up: live in `isContainerLive`'s sense, so a paused
+ * or restarting container still holds its stack, its ports and its claim.
  *
- * Both runtimes spell the live state `running`, so this reads the state
- * rather than searching the human status line: `Up 3 minutes` and
- * `Exited (0) 2 hours ago` both contain a word this used to match.
+ * Reads the state rather than searching the human status line: `Up 3
+ * minutes` and `Exited (0) 2 hours ago` both contain a word this used to
+ * match.
  */
 export function isContainerUp(container: BuncargoContainer): boolean {
-	return container.state.toLowerCase() === "running";
+	return isContainerLive(parseContainerState(container.state));
 }
 
 /**

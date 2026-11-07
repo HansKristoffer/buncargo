@@ -135,6 +135,8 @@ function parseMigrateCheckArgs(args: string[]) {
  */
 export async function loadLiveEnv() {
 	const { getCaPath, waitForDaemonRoutes } = await import("../../core/hosts");
+	const { readLiveNamedHostsSync } =
+		await import("../../core/hosts/route-owners");
 	const { readServedTailscaleUrls } =
 		await import("../../core/hosts/tailscale-serve");
 	const { adoptLiveCaptures } = await import("../../core/run-publish");
@@ -153,17 +155,20 @@ export async function loadLiveEnv() {
 		if (Object.keys(tailscaleUrls).length > 0)
 			env.setNamedHostsActive(true, { tailscaleUrls });
 	}
-	// A healthy daemon is not the same as a daemon serving this project: a
-	// `vite.config.ts` reading `urls.web` from here must not be handed an https
-	// hostname the proxy would 404. Zero wait — this only reports state, so an
+	// Named while a run of this checkout serves them: registered by a live
+	// run, as `getEnvVar` reads it, and the daemon answering for them, which
+	// only an async reader can also confirm. A healthy daemon alone is not a
+	// daemon serving this project. Zero wait — this only reports state, so an
 	// unpicked-up route reads as localhost rather than blocking the command.
-	if (env.hosts && env.hosts.plan.length > 0 && mode === "loopback") {
-		const serving = await waitForDaemonRoutes(
-			env.hosts.plan.map((entry) => entry.hostname),
-			{ timeoutMs: 0 },
+	if (env.hosts && mode === "loopback") {
+		const hostnames = readLiveNamedHostsSync(env.root, env.hosts.plan).map(
+			(entry) => entry.hostname,
 		);
-		if (serving.ok) {
-			env.setNamedHostsActive(true, { caPath: getCaPath() });
+		const serving =
+			hostnames.length > 0 &&
+			(await waitForDaemonRoutes(hostnames, { timeoutMs: 0 })).ok;
+		if (serving) {
+			env.setNamedHostsActive(true, { caPath: getCaPath(), hostnames });
 		}
 	}
 	await adoptLiveCaptures(env);

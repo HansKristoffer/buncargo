@@ -1,12 +1,96 @@
 import { afterEach, expect, test } from "bun:test";
+import { rm } from "node:fs/promises";
+import { readCurrentProcessIdentity } from "../process-identity";
 import { request } from "./client";
-import type { CoordinatorState } from "./coordinator-state";
-import { requestCoordinator } from "./launcher";
+import {
+	type CoordinatorState,
+	coordinatorStatePath,
+	writeCoordinatorState,
+} from "./coordinator-state";
+import {
+	awaitCoordinator,
+	coordinatorWentAway,
+	requestCoordinator,
+} from "./launcher";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
 
-afterEach(() => {
+afterEach(async () => {
 	for (const server of servers.splice(0)) server.stop(true);
+	await rm(coordinatorStatePath(), { force: true });
+});
+
+/** A live coordinator (this process) whose last heartbeat landed `ageMs` ago. */
+function liveCoordinator(ageMs: number): CoordinatorState {
+	return {
+		pid: process.pid,
+		identity: readCurrentProcessIdentity() ?? "",
+		bundle: "bundle",
+		updatedAt: Date.now() - ageMs,
+		ready: true,
+		connection: { port: 1, token: "local" },
+		cli: { program: process.execPath },
+	};
+}
+
+test("an adopted coordinator whose heartbeat stopped is named, not waited on", async () => {
+	const wedged = liveCoordinator(60_000);
+	await writeCoordinatorState(wedged);
+
+	await expect(awaitCoordinator(wedged, true)).rejects.toThrow(
+		`kill ${process.pid}`,
+	);
+});
+
+test("an adopted coordinator that starts leaving is reported gone, to be replaced", async () => {
+	const adopted = liveCoordinator(60_000);
+	await writeCoordinatorState({
+		...adopted,
+		ready: false,
+		updatedAt: Date.now(),
+	});
+
+	const error = await awaitCoordinator(adopted, true).catch(
+		(caught: unknown) => caught,
+	);
+
+	expect(coordinatorWentAway(error)).toBe(true);
+});
+
+// A launcher that replaced it within the grace failed this run as
+// "wedged", naming a pid that was no longer the coordinator.
+test("an adopted coordinator another launcher replaced is reported gone, to be adopted again", async () => {
+	const adopted = liveCoordinator(60_000);
+	await writeCoordinatorState({
+		...liveCoordinator(0),
+		identity: "the replacement",
+	});
+
+	const error = await awaitCoordinator(adopted, true).catch(
+		(caught: unknown) => caught,
+	);
+
+	expect(coordinatorWentAway(error)).toBe(true);
+});
+
+test("an adopted coordinator that exited with no state left is reported gone, not named", async () => {
+	const exited = { ...liveCoordinator(60_000), identity: "exited" };
+
+	const error = await awaitCoordinator(exited, true).catch(
+		(caught: unknown) => caught,
+	);
+
+	expect(coordinatorWentAway(error)).toBe(true);
+});
+
+test("an adopted coordinator that reports again is used", async () => {
+	const waking = liveCoordinator(60_000);
+	await writeCoordinatorState(waking);
+
+	const waited = awaitCoordinator(waking, true);
+	await writeCoordinatorState({ ...waking, updatedAt: Date.now() });
+
+	await waited;
 });
 
 function coordinatorAt(port: number): CoordinatorState {

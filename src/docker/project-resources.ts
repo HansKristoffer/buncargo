@@ -1,3 +1,7 @@
+import {
+	isContainerLive,
+	parseContainerState,
+} from "../container-runtime/container-state";
 import type {
 	ComposeProjectResource,
 	ComposeProjectResourceKind,
@@ -16,7 +20,6 @@ import { runDocker, runDockerAsync } from "./binary";
 
 const PROJECT = '{{.Label "com.docker.compose.project"}}';
 const FILTER = ["--filter", "label=com.docker.compose.project"];
-const STOPPED = new Set(["exited", "created", "dead"]);
 
 function rows(args: string[], binary?: string): string[][] {
 	const result = runDocker(binary, args, { timeoutMs: 30_000 });
@@ -56,7 +59,14 @@ export function listDockerComposeProjectResources(
 			binary,
 		).flatMap(([id, project, state = "", root = ""]) =>
 			id && project
-				? [{ id, project, running: !STOPPED.has(state.trim()), root }]
+				? [
+						{
+							id,
+							project,
+							running: isContainerLive(parseContainerState(state)),
+							root,
+						},
+					]
 				: [],
 		),
 		volumes: resources("volume", binary),

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from "bun:test";
+import { afterEach, beforeEach, expect, it, setSystemTime } from "bun:test";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -100,6 +100,29 @@ it("releases a stale claim that refuses another checkout, only once confirmed", 
 	expect(claimedNames()).toEqual(["lullu-other"]);
 	expect(run().offset).toBeGreaterThan(0);
 	expect(await handlePorts(["release", `--root=${stale}`, "--yes"])).toBe(0);
+});
+
+it("exits 3 when a run used a claim after it was listed, and keeps that claim", async () => {
+	// The listing is read before the first await, so the run's claim lands
+	// between the listing and the release, as a start racing the command does.
+	const release = handlePorts(["release", "--root", stale, "--yes"]);
+	setSystemTime(new Date(Date.now() + 60_000));
+	try {
+		withOffsetClaimsLock(() =>
+			claimOffset({
+				root: stale,
+				offset: 1200,
+				ports: [6632],
+				projectName: "lullu-playground-ci",
+				suffix: "ci",
+			}),
+		);
+	} finally {
+		setSystemTime();
+	}
+
+	expect(await release).toBe(3);
+	expect(claimedNames()).toEqual(["lullu-playground-ci", "lullu-other"]);
 });
 
 it("refuses to release the claims of a checkout that is running", async () => {

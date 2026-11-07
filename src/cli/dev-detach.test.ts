@@ -1,13 +1,26 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunEntry } from "../core/run-registry";
 import {
 	detachedArgv,
+	detachedLogPath,
 	namedHostsFallbacks,
+	pruneDetachedFiles,
 	runDetached,
 	settledRun,
+	unreportedApps,
 } from "./dev-detach";
 
 describe("namedHostsFallbacks", () => {
@@ -93,8 +106,18 @@ describe("runDetached", () => {
 	 * and exits. HOME and the systemd scope are the test's own, so it reads an
 	 * empty registry and starts no scope on the machine.
 	 */
-	async function detach(script: string) {
+	async function detach(
+		script: string,
+		options: {
+			before?: (root: string) => void;
+			after?: (root: string) => void;
+			timeoutMs?: number;
+			/** `dev --detach` again in the same checkout, once the first returned. */
+			again?: string;
+		} = {},
+	) {
 		const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-detach-")));
+		options.before?.(root);
 		const saved = {
 			HOME: process.env.HOME,
 			BUNCARGO_SYSTEMD_SCOPE: process.env.BUNCARGO_SYSTEMD_SCOPE,
@@ -107,14 +130,20 @@ describe("runDetached", () => {
 		console.log = (...parts: unknown[]) => printed.push(parts.join(" "));
 		console.error = (...parts: unknown[]) => printed.push(parts.join(" "));
 		try {
-			writeFileSync(join(root, "run.ts"), script);
-			const code = await runDetached({
-				root,
-				expectApps: true,
-				keep: false,
-				argv: ["bun", join(root, "run.ts")],
-				timeoutMs: 10_000,
-			});
+			let code = 0;
+			for (const [index, body] of [script, options.again].entries()) {
+				if (body === undefined) continue;
+				const runScript = join(root, `run-${index}.ts`);
+				writeFileSync(runScript, body);
+				code = await runDetached({
+					root,
+					expectApps: true,
+					keep: false,
+					argv: ["bun", runScript],
+					timeoutMs: options.timeoutMs ?? 10_000,
+				});
+			}
+			options.after?.(root);
 			return { code, printed: Bun.stripANSI(printed.join("\n")) };
 		} finally {
 			console.log = realLog;
@@ -136,6 +165,154 @@ describe("runDetached", () => {
 		expect(code).toBe(0);
 		expect(printed).toContain("Nothing to start.");
 	});
+
+	// A second `dev --detach` in the same checkout truncated the log and
+	// deleted the report of the first, which was still writing both. Then a
+	// shared log rotated aside lost it: the third run's rotation renamed over
+	// the file the first still wrote.
+	it("leaves the log and report of a run still going alone", async () => {
+		const logs = (root: string) => join(root, ".buncargo", "logs");
+		const files: Record<string, string> = {};
+		await detach('console.log("the second run");', {
+			again: 'console.log("the third run");',
+			before: (root) => {
+				mkdirSync(logs(root), { recursive: true });
+				writeFileSync(
+					detachedLogPath(root, process.pid),
+					"the first run's output\n",
+				);
+				writeFileSync(
+					join(logs(root), `detached-report-${process.pid}.json`),
+					'{"setupHints":[],"failures":[]}',
+				);
+			},
+			after: (root) => {
+				for (const name of readdirSync(logs(root)))
+					files[name] = readFileSync(join(logs(root), name), "utf8");
+			},
+		});
+		expect(files[`detached-${process.pid}.log`]).toBe(
+			"the first run's output\n",
+		);
+		expect(files[`detached-report-${process.pid}.json`]).toContain("failures");
+		const runLogs = Object.entries(files).filter(([name]) =>
+			/^detached-\d+\.log$/.test(name),
+		);
+		expect(runLogs.map(([, text]) => text).sort()).toEqual([
+			"the first run's output\n",
+			"the second run\n",
+			"the third run\n",
+		]);
+		// The one path to name: the newest run's log.
+		expect(files["detached.log"]).toBe("the third run\n");
+	});
+
+	// Agents tell "still starting" from "failed" by the code, as with `wait`.
+	it("exits 2 when the apps are still starting at the timeout", async () => {
+		const { code, printed } = await detach("setTimeout(() => {}, 30_000);", {
+			timeoutMs: 300,
+		});
+		// By the pid it printed, never by a pattern.
+		const pid = Number(/the run keeps going \(pid (\d+)\)/.exec(printed)?.[1]);
+		if (pid) process.kill(pid, "SIGTERM");
+		expect(code).toBe(2);
+	});
+});
+
+describe("pruneDetachedFiles", () => {
+	/** A pid that has exited: its run is over. */
+	async function deadPid(): Promise<number> {
+		const child = Bun.spawn(["true"]);
+		await child.exited;
+		return child.pid;
+	}
+
+	function logsDir() {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-prune-")));
+		const logs = join(root, ".buncargo", "logs");
+		mkdirSync(logs, { recursive: true });
+		return { root, logs };
+	}
+
+	/** Write `name` last modified at `mtimeMs`. */
+	function file(logs: string, name: string, mtimeMs: number): string {
+		const path = join(logs, name);
+		writeFileSync(path, "{}");
+		utimesSync(path, mtimeMs / 1000, mtimeMs / 1000);
+		return path;
+	}
+
+	// The parent polls every 250ms: a child that wrote its report and died
+	// lost it to a second `dev --detach` pruning in between.
+	it("keeps a dead run's report for a minute, for its parent to read", async () => {
+		const { root, logs } = logsDir();
+		try {
+			const now = Date.now();
+			const pid = await deadPid();
+			const fresh = file(logs, `detached-report-${pid}.json`, now - 1_000);
+			pruneDetachedFiles(root, now);
+			expect(existsSync(fresh)).toBe(true);
+			pruneDetachedFiles(root, now + 60_000);
+			expect(existsSync(fresh)).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps a live run's report however old, and drops the unsuffixed one", async () => {
+		const { root, logs } = logsDir();
+		try {
+			const now = Date.now();
+			const live = file(
+				logs,
+				`detached-report-${process.pid}.json`,
+				now - 3_600_000,
+			);
+			const legacy = file(logs, "detached-report.json", now - 3_600_000);
+			pruneDetachedFiles(root, now);
+			expect(existsSync(live)).toBe(true);
+			expect(existsSync(legacy)).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	// Each run's log is its own; the newest ended one stays, as the log of the
+	// run before did.
+	it("keeps the newest ended run's log and drops the older ones", async () => {
+		const { root, logs } = logsDir();
+		try {
+			const now = Date.now();
+			const [older, newer] = [await deadPid(), await deadPid()];
+			const olderLog = file(logs, `detached-${older}.log`, now - 7_200_000);
+			const newerLog = file(logs, `detached-${newer}.log`, now - 3_600_000);
+			const live = file(logs, `detached-${process.pid}.log`, now - 9_000_000);
+			const legacy = file(logs, "detached.previous.log", now - 3_600_000);
+			pruneDetachedFiles(root, now);
+			expect(existsSync(olderLog)).toBe(false);
+			expect(existsSync(newerLog)).toBe(true);
+			expect(existsSync(live)).toBe(true);
+			expect(existsSync(legacy)).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("unreportedApps", () => {
+	it("names the down apps the report does not explain yet", () => {
+		const down = [
+			{ name: "api", status: "stopped" },
+			{ name: "web", status: "failed" },
+		] as RunEntry["apps"];
+		expect(
+			unreportedApps(down, {
+				setupHints: [],
+				failures: [{ cause: "", step: "web", output: [], hints: [], next: [] }],
+			}),
+		).toEqual(["api"]);
+		expect(unreportedApps(down, undefined)).toEqual(["api", "web"]);
+	});
 });
 
 /**
@@ -154,6 +331,7 @@ function detachInProcess(script: (root: string) => string) {
 process.exitCode = await runDetached({
 	root: ${JSON.stringify(root)},
 	expectApps: true,
+	keep: false,
 	argv: ["bun", ${JSON.stringify(join(root, "run.ts"))}],
 	timeoutMs: 10_000,
 });
@@ -223,4 +401,46 @@ process.exit(1);
 		"dataQualityDuplicatesSeeder: MISSING_SECRETS",
 		"Next: fix it, then `buncargo dev --seed` runs only the seed again",
 	]);
+});
+
+// An app that never came up is stopped before it is reported failed, so the
+// registry said `stopped` first, and the parent printed a generic failure
+// with no output before the run had written why.
+it("waits for the report of an app the registry says stopped", () => {
+	const detach = join(import.meta.dir, "dev-detach.ts");
+	const registry = join(import.meta.dir, "..", "core", "run-registry.ts");
+	const { code, stdout, stderr } = detachInProcess(
+		(root) => `import { recordDetachedReport } from ${JSON.stringify(detach)};
+import { buildRunEntry, patchRun, publishRun } from ${JSON.stringify(registry)};
+const entry = buildRunEntry({
+	sessionId: "parked",
+	projectPrefix: "stub",
+	projectName: "stub-detach",
+	root: ${JSON.stringify(root)},
+	isWorktree: false,
+});
+await publishRun({
+	...entry,
+	apps: [{ name: "api", port: 3000, url: "", loopbackUrl: "", status: "stopped" }],
+});
+await Bun.sleep(400);
+recordDetachedReport(${JSON.stringify(root)}, (report) => ({
+	...report,
+	failures: [{
+		cause: 'App "api" did not become ready',
+		step: "api",
+		output: ["the real cause"],
+		hints: [],
+		next: [],
+	}],
+}));
+await patchRun("parked", { apps: [{ name: "api", status: "failed" }] });
+setTimeout(() => {}, 30_000);
+`,
+	);
+	// The stand-in run waits to be stopped: by the pid it printed.
+	const pid = Number(/pid (\d+) · output/.exec(stdout)?.[1]);
+	if (pid) process.kill(pid, "SIGTERM");
+	expect(code).toBe(1);
+	expect(stderr).toContain("the real cause");
 });

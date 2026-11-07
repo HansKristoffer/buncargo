@@ -17,6 +17,8 @@ export interface AppleCliResult {
 	exitCode: number;
 	stdout: string;
 	stderr: string;
+	/** Killed at its timeout rather than answering. */
+	timedOut?: boolean;
 }
 
 export interface AppleCliOptions {
@@ -85,16 +87,33 @@ export function createAppleContainerCli(
 					: ["pipe", "pipe", "pipe"],
 			});
 
+			// Bun reports a kill at the timeout as `ETIMEDOUT` with the kill
+			// signal; a signal or a missing exit code alone is read the same
+			// way, so a probe that was cut off never reads as an answer.
+			const killed = result.signal !== null;
 			if (result.error) {
+				const { error } = result;
+				const timedOut =
+					killed || ("code" in error && error.code === "ETIMEDOUT");
 				return {
 					ok: false,
 					exitCode: 1,
 					stdout: "",
-					stderr: result.error.message,
+					stderr: error.message,
+					...(timedOut ? { timedOut } : {}),
+				};
+			}
+			if (killed || result.status === null) {
+				return {
+					ok: false,
+					exitCode: 1,
+					stdout: result.stdout ?? "",
+					stderr: result.stderr ?? "",
+					timedOut: true,
 				};
 			}
 
-			const exitCode = result.status ?? 1;
+			const exitCode = result.status;
 			return {
 				ok: exitCode === 0,
 				exitCode,
@@ -105,15 +124,34 @@ export function createAppleContainerCli(
 	};
 }
 
-/** Apple phrases "no such container" several ways depending on the subcommand. */
+/**
+ * Apple phrases "no such container" (or volume) several ways depending on
+ * the subcommand. A missing image is not one: read as a missing container, a
+ * `start` that failed for its image fell through to a `run` that collides
+ * with the container still there.
+ */
 export function isMissingResourceMessage(message: string): boolean {
-	return /not found|no such|does not exist|unknown container|not exist/i.test(
-		message,
-	);
+	const missing =
+		/not ?found|no such|does not exist|unknown container|not exist/i.test(
+			message,
+		);
+	const aboutImage =
+		/\bimage\b[^\n]*not ?found|no such image|manifest unknown/i.test(message);
+	return missing && !aboutImage;
 }
 
+/** `start` refused because the container runs already. */
+export function isAlreadyRunningMessage(message: string): boolean {
+	return /already (running|started)/i.test(message);
+}
+
+/**
+ * The resource being created is there already. Apple prefixes the error
+ * with its code (`Error: exists: "volume … already exists"`); a bare
+ * "exists" elsewhere in a failure is no such answer.
+ */
 export function isAlreadyExistsMessage(message: string): boolean {
-	return /already exists|already in use|exists/i.test(message);
+	return /already exists|already in use|\bexists:/i.test(message);
 }
 
 export async function runAppleAsync(

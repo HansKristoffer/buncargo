@@ -19,6 +19,7 @@ import { dirname, join } from "node:path";
 import { readProcessIdentity } from "./process-identity";
 import {
 	buildRunEntry,
+	describeRun,
 	getRunsPath,
 	groupRunsByProject,
 	loadRuns,
@@ -54,6 +55,11 @@ afterEach(() => {
 const DEAD_PID = 2 ** 22;
 
 const DB = { name: "db", status: "ready" as const };
+const CONTAINER = {
+	runtime: "docker" as const,
+	name: "lullu-lullu-db",
+	service: "db",
+};
 
 function makeRun(overrides: Partial<RunEntry> = {}): RunEntry {
 	const now = new Date().toISOString();
@@ -106,7 +112,7 @@ describe("publishRun", () => {
 		await publishRun(
 			makeRun({ startedAt: "2026-01-01T00:00:00.000Z", idleTimeoutMs: 60_000 }),
 		);
-		await publishRun(makeRun({ projectName: "renamed" }));
+		await describeRun(makeRun({ projectName: "renamed" }));
 		const runs = await loadRuns();
 		expect(runs).toHaveLength(1);
 		expect(runs[0]).toMatchObject({
@@ -114,6 +120,116 @@ describe("publishRun", () => {
 			startedAt: "2026-01-01T00:00:00.000Z",
 			idleTimeoutMs: 60_000,
 		});
+	});
+
+	it("never lets a describe undo a release or drop what other writers recorded", async () => {
+		// `claimApps` describes the entry again; it used to replace it whole,
+		// reopening a released run and dropping captures, details and problems.
+		const problem = {
+			state: "stopped" as const,
+			detail: "db stopped (exit 0)",
+			since: "2026-01-01T00:00:00.000Z",
+		};
+		await publishRun(
+			makeRun({
+				services: [{ ...DB, container: CONTAINER }],
+				idleTimeoutMs: 1,
+			}),
+		);
+		await patchRun("s1", {
+			captures: { appUrl: "https://preview.example" },
+			details: [{ label: "Preview", value: "https://preview.example" }],
+			services: [{ name: "db", problem }],
+		});
+		await releaseRun("s1");
+		await markOwnersLost({
+			lost: ["s1"],
+			back: [],
+			at: "2026-01-01T00:00:00.000Z",
+		});
+		const released = (await loadRuns())[0]?.releasedAt;
+
+		const described = { port: 5432, url: "u", loopbackUrl: "u" };
+		await describeRun(makeRun({ services: [{ ...DB, ...described }] }));
+		const [entry] = await loadRuns();
+		expect(entry?.releasedAt).toBe(released);
+		// The owner wrote it, so it is not lost.
+		expect(entry?.ownerLostAt).toBeUndefined();
+		expect(entry?.idleTimeoutMs).toBe(1);
+		expect(entry?.captures).toEqual({ appUrl: "https://preview.example" });
+		expect(entry?.details).toHaveLength(1);
+		expect(entry?.services[0]).toMatchObject({
+			...described,
+			container: CONTAINER,
+			problem,
+		});
+	});
+
+	it("keeps the claimed services when a describe lists none, so a release still holds them", async () => {
+		// A library `claimApps` after `releaseRun()` describes no services. The
+		// entry lost its services record, and the next release withdrew it.
+		await publishRun(makeRun({ services: [DB] }));
+		await describeRun(makeRun({ services: [] }));
+		await releaseRun("s1");
+		const [entry] = await loadRuns();
+		expect(entry?.services.map((service) => service.name)).toEqual(["db"]);
+		expect(entry?.releasedAt).toBeString();
+	});
+
+	it("keeps each app's process and state through a describe", async () => {
+		await publishRun(makeRun());
+		await patchRun("s1", {
+			apps: [
+				{ name: "api", pid: 42, processIdentity: "v2:x", status: "ready" },
+			],
+		});
+		await describeRun(makeRun());
+		expect((await loadRuns())[0]?.apps[0]).toMatchObject({
+			pid: 42,
+			processIdentity: "v2:x",
+			status: "ready",
+		});
+	});
+
+	it("gives a claim exactly the hold it names, and reopens a released entry", async () => {
+		await publishRun(makeRun({ services: [DB], inheritedIdleTimeoutMs: 5 }));
+		await releaseRun("s1");
+		await publishRun(makeRun({ services: [DB], idleTimeoutMs: 60_000 }));
+		const [entry] = await loadRuns();
+		expect(entry?.idleTimeoutMs).toBe(60_000);
+		expect(entry?.inheritedIdleTimeoutMs).toBeUndefined();
+		expect(entry?.releasedAt).toBeUndefined();
+	});
+
+	it("dates a reopened entry from the new claim and keeps the stacks it held", async () => {
+		// `releaseRun()` then `start()` on one session. Keeping the first
+		// claim's start ranked the reopened run below older ones, and made a
+		// teardown keep the claims it had used since.
+		const stack = { name: "supabase", down: ["supabase", "stop"] };
+		await publishRun(
+			makeRun({
+				services: [DB],
+				startedAt: "2026-01-01T00:00:00.000Z",
+				stacks: [stack],
+			}),
+		);
+		await releaseRun("s1");
+		await publishRun(
+			makeRun({ services: [DB], startedAt: "2026-01-02T00:00:00.000Z" }),
+		);
+		const [entry] = await loadRuns();
+		expect(entry?.startedAt).toBe("2026-01-02T00:00:00.000Z");
+		expect(entry?.stacks).toEqual([stack]);
+	});
+
+	it("keeps when a live entry started through another claim", async () => {
+		await publishRun(
+			makeRun({ services: [DB], startedAt: "2026-01-01T00:00:00.000Z" }),
+		);
+		await publishRun(
+			makeRun({ services: [DB], startedAt: "2026-01-02T00:00:00.000Z" }),
+		);
+		expect((await loadRuns())[0]?.startedAt).toBe("2026-01-01T00:00:00.000Z");
 	});
 
 	it("keeps separate sessions side by side, in one checkout or several", async () => {
@@ -188,17 +304,75 @@ describe("retiring entries", () => {
 			projectName: "lullu-lullu",
 			root: "/repos/lullu",
 			sessionId: "mine",
+			downed: [{ runtime: "docker" }],
 		});
 		expect(await sessions()).toEqual(["neighbour", "other-project"]);
+	});
+
+	it("keeps a finished entry whose containers are on a runtime the teardown did not down", async () => {
+		// A library `stop()` on Docker retired the entry of a stack held on
+		// Apple's runtime, which `stop` keeps: one rule now decides both.
+		const on = (runtime: "docker" | "apple") => ({
+			...DB,
+			container: { runtime, name: `lullu-lullu-db-${runtime}` },
+		});
+		await publishRun(makeRun({ sessionId: "mine", services: [on("docker")] }));
+		await publishRun(
+			makeRun({
+				sessionId: "apple",
+				pid: DEAD_PID,
+				services: [on("apple")],
+			}),
+		);
+		await publishRun(
+			makeRun({
+				sessionId: "docker",
+				pid: DEAD_PID,
+				services: [on("docker")],
+			}),
+		);
+		await retireProjectRuns({
+			projectName: "lullu-lullu",
+			root: "/repos/lullu",
+			sessionId: "mine",
+			downed: [{ runtime: "docker" }],
+		});
+		expect(await sessions()).toEqual(["apple"]);
+
+		// A teardown that downed nothing retires only its own session.
+		await publishRun(makeRun({ sessionId: "mine", services: [on("docker")] }));
+		await retireProjectRuns({
+			projectName: "lullu-lullu",
+			root: "/repos/lullu",
+			sessionId: "mine",
+			downed: [],
+		});
+		expect(await sessions()).toEqual(["apple"]);
 	});
 });
 
 describe("markOwnersLost", () => {
 	it("stamps a session once and never moves the stamp", async () => {
 		await publishRun(makeRun({ services: [DB] }));
-		await markOwnersLost(["s1"], "2026-01-01T00:00:00.000Z");
-		await markOwnersLost(["s1"], "2026-06-01T00:00:00.000Z");
+		const mark = (at: string) => markOwnersLost({ lost: ["s1"], back: [], at });
+		await mark("2026-01-01T00:00:00.000Z");
+		await mark("2026-06-01T00:00:00.000Z");
 		expect((await loadRuns())[0]?.ownerLostAt).toBe("2026-01-01T00:00:00.000Z");
+	});
+
+	it("forgets the stamp of an owner found running again", async () => {
+		await publishRun(makeRun({ services: [DB] }));
+		await markOwnersLost({
+			lost: ["s1"],
+			back: [],
+			at: "2026-01-01T00:00:00.000Z",
+		});
+		await markOwnersLost({
+			lost: [],
+			back: ["s1"],
+			at: "2026-06-01T00:00:00.000Z",
+		});
+		expect((await loadRuns())[0]?.ownerLostAt).toBeUndefined();
 	});
 });
 
@@ -276,6 +450,60 @@ describe("patchRun", () => {
 			apps: [{ name: "api", pid: process.ppid, status: "starting" }],
 		});
 		expect((await read())?.status).toBe("stopped");
+	});
+
+	it("keeps an app stopped when its run reports the exit as a failure, in either order", async () => {
+		// `stop` and the owning run both record the end after SIGTERM; an app
+		// that exits non-zero on it was still stopped on purpose.
+		const read = async () => (await loadRuns())[0]?.apps[0]?.status;
+		await publishRun(makeRun());
+		await patchRun("s1", { apps: [{ name: "api", status: "stopped" }] });
+		await patchRun("s1", { apps: [{ name: "api", status: "failed" }] });
+		expect(await read()).toBe("stopped");
+
+		await retireRuns(["s1"]);
+		await publishRun(makeRun());
+		await patchRun("s1", { apps: [{ name: "api", status: "failed" }] });
+		await patchRun("s1", { apps: [{ name: "api", status: "stopped" }] });
+		expect(await read()).toBe("stopped");
+	});
+
+	it("puts a restarting app back to starting until its new process is ready", async () => {
+		// A new pid on a running app reads as adoption, so a restarted app kept
+		// `ready` and `restart && wait` returned on the replaced process.
+		const read = async () => (await loadRuns())[0]?.apps[0];
+		for (const before of ["ready", "failed", "stopped"] as const) {
+			await retireRuns(["s1"]);
+			await publishRun(makeRun());
+			await patchRun("s1", {
+				apps: [{ name: "api", pid: 41, status: before }],
+			});
+			await patchRun("s1", { restarting: ["api"] });
+			expect((await read())?.status).toBe("starting");
+			await patchRun("s1", { apps: [{ name: "api", pid: 42 }] });
+			expect(await read()).toMatchObject({ pid: 42, status: "starting" });
+			await patchRun("s1", { apps: [{ name: "api", status: "ready" }] });
+			expect((await read())?.status).toBe("ready");
+		}
+	});
+
+	it("lets a service come back after it was stopped, through starting", async () => {
+		// A run that starts it again marks it `starting` and then `ready`; it
+		// used to stay `stopped`.
+		await publishRun(makeRun({ services: [DB] }));
+		await patchRun("s1", { services: [{ name: "db", status: "stopped" }] });
+		await patchRun("s1", { services: [{ name: "db", status: "starting" }] });
+		await patchRun("s1", { services: [{ name: "db", status: "ready" }] });
+		expect((await loadRuns())[0]?.services[0]?.status).toBe("ready");
+	});
+
+	it("never lets a late readiness report or a describe undo a stop", async () => {
+		// Both say `ready` without having started anything since the stop.
+		await publishRun(makeRun({ services: [DB] }));
+		await patchRun("s1", { services: [{ name: "db", status: "stopped" }] });
+		await patchRun("s1", { services: [{ name: "db", status: "ready" }] });
+		await describeRun(makeRun({ services: [DB] }));
+		expect((await loadRuns())[0]?.services[0]?.status).toBe("stopped");
 	});
 
 	it("keeps a running app's status when it adopts a detached pid", async () => {

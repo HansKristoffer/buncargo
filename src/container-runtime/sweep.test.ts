@@ -12,6 +12,7 @@ import { unreadableCheckout } from "../core/checkout-presence.testing";
 import {
 	claimOffset,
 	getOffsetClaimsPath,
+	offsetClaimKey,
 	readAllOffsetClaims,
 	readOffsetClaims,
 } from "../core/offset-claims";
@@ -20,6 +21,7 @@ import { readRemovals } from "../core/removal-log";
 import {
 	holdToInherit,
 	loadRuns,
+	markOwnersLost,
 	publishRun,
 	type RunEntry,
 	releaseRun,
@@ -283,6 +285,26 @@ describe("sweepOrphanedContainers", () => {
 		expect(downs[0]).toMatchObject({ root: gone, verbose: false });
 	});
 
+	it("downs a crash-looping stack nobody owns, and keeps one whose state it cannot read", async () => {
+		// Counting `restarting` as up kept a stack known only by its claim
+		// forever: nothing owns it to stop it, and it serves nothing.
+		const other = join(checkout, "other-worktree");
+		mkdirSync(other, { recursive: true });
+		claim("looping", checkout);
+		claim("unreadable", other);
+		const { runtime, downs } = stubRuntime([
+			container("looping", checkout, "restarting"),
+			container("unreadable", other, "some-new-state"),
+		]);
+
+		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
+
+		expect(
+			result.swept.map((stack) => [stack.projectName, stack.reason]),
+		).toEqual([["looping", "stopped with no owner"]]);
+		expect(downs.map((request) => request.projectName)).toEqual(["looping"]);
+	});
+
 	it("gives back the block of a throwaway stack it removes, and keeps a dev checkout's", async () => {
 		// A CI job killed before its teardown leaves its stack and its claim;
 		// the runner's directory stays, so nothing else would free the block.
@@ -299,13 +321,74 @@ describe("sweepOrphanedContainers", () => {
 			container("demo", checkout, "exited"),
 		]);
 
-		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
+		// Hours later: a claim used within the hour may be a new job's that
+		// has not published its run yet.
+		const result = await sweepOrphanedContainers({
+			runtimes: [runtime],
+			now: Date.now() + 2 * 3_600_000,
+		});
 
 		expect(result.swept.map((stack) => stack.projectName)).toEqual([
 			"demo-e2e",
 			"demo",
 		]);
 		expect(Object.keys(readAllOffsetClaims())).toEqual([checkout]);
+	});
+
+	it("keeps a recent claim of a stack with no run on record", async () => {
+		// The last job's run is gone from the registry, and a new job of the
+		// directory has allocated but not yet published its run.
+		claimOffset({
+			root: checkout,
+			suffix: "e2e",
+			offset: 200,
+			ports: [],
+			projectName: "demo-e2e",
+		});
+		const { runtime } = stubRuntime([
+			container("demo-e2e", checkout, "exited"),
+		]);
+
+		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
+
+		expect(result.swept.map((stack) => stack.projectName)).toEqual([
+			"demo-e2e",
+		]);
+		expect(Object.keys(readAllOffsetClaims())).toEqual([
+			offsetClaimKey(checkout, "e2e"),
+		]);
+	});
+
+	it("keeps the block a new job of the directory claimed before publishing its run", async () => {
+		// The job allocates before it claims its run; the last job's stack
+		// coming down in that window took the new job's claim with it.
+		await publishRun(
+			entry({
+				sessionId: "last-job",
+				projectName: "demo-e2e",
+				releasedAt: AGES_AGO,
+				idleTimeoutMs: 1_000,
+			}),
+		);
+		claimOffset({
+			root: checkout,
+			suffix: "e2e",
+			offset: 200,
+			ports: [],
+			projectName: "demo-e2e",
+		});
+		const { runtime } = stubRuntime([
+			container("demo-e2e", checkout, "running"),
+		]);
+
+		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
+
+		expect(result.swept.map((stack) => stack.projectName)).toEqual([
+			"demo-e2e",
+		]);
+		expect(Object.keys(readAllOffsetClaims())).toEqual([
+			offsetClaimKey(checkout, "e2e"),
+		]);
 	});
 
 	it("reports a stack this user's state does not name, and leaves it alone", async () => {
@@ -679,6 +762,64 @@ describe("sweepOrphanedContainers", () => {
 		});
 		expect((await loadRuns())[0]?.ownerLostAt).toBe(stamped);
 		expect(downs.map((request) => request.projectName)).toEqual(["crashed"]);
+	});
+
+	it("lets the session that ended last decide, however recently another was patched", async () => {
+		// A finished session's service watch writes a `problem`, which moves
+		// its `updatedAt`. Ordered by that, its one-second hold decided for a
+		// stack a later run had released into a three-minute hold.
+		const released = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+		await publishRun(
+			entry({
+				sessionId: "earlier",
+				projectName: "shared",
+				releasedAt: released(600_000),
+				updatedAt: released(1_000),
+				idleTimeoutMs: 1_000,
+			}),
+		);
+		await publishRun(
+			entry({
+				sessionId: "later",
+				projectName: "shared",
+				releasedAt: released(60_000),
+				updatedAt: released(60_000),
+				idleTimeoutMs: 180_000,
+			}),
+		);
+		const { runtime, downs } = stubRuntime([
+			container("shared", checkout, "running"),
+		]);
+
+		await sweepOrphanedContainers({ runtimes: [runtime], now: NOW });
+
+		expect(downs).toEqual([]);
+		const target = { projectName: "shared", root: checkout };
+		expect(holdToInherit(await loadRuns(), target)).toBe(180_000);
+	});
+
+	it("forgets a lost-owner stamp once the owner reads as itself again", async () => {
+		// One wrong "gone" reading stamped a live run for good, and
+		// `holdToInherit` counted it as finished.
+		await publishRun(
+			entry({
+				sessionId: "live",
+				projectName: "live",
+				pid: process.pid,
+				processIdentity: readProcessIdentity(process.pid),
+				idleTimeoutMs: 180_000,
+				services: [DB],
+			}),
+		);
+		await markOwnersLost({ lost: ["live"], back: [], at: AGES_AGO });
+		const { runtime, downs } = stubRuntime([
+			container("live", checkout, "running"),
+		]);
+
+		await sweepOrphanedContainers({ runtimes: [runtime], now: NOW });
+
+		expect(downs).toEqual([]);
+		expect((await loadRuns())[0]?.ownerLostAt).toBeUndefined();
 	});
 
 	it("touches nothing when the registry cannot be read", async () => {

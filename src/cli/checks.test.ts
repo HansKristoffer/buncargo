@@ -38,6 +38,24 @@ describe("runChecks", () => {
 		).toEqual(["bun"]);
 	});
 
+	// A warning check that passes is no warning; one result's severity wins
+	// over its check's.
+	it("gives only a failure a severity", async () => {
+		const results = await runChecks(
+			[
+				{ name: "bun", severity: "warning", check: () => true },
+				{
+					name: "login",
+					check: () => ({ ok: false, severity: "warning" }),
+				},
+				{ name: "types", check: () => false },
+			],
+			ctx,
+		);
+		expect(results.map(isWarning)).toEqual([false, true, false]);
+		expect(results[2]).toMatchObject({ ok: false, severity: "error" });
+	});
+
 	// A precondition that cannot even be evaluated is not met.
 	it("counts a check that throws as failed", async () => {
 		const [result] = await runChecks(
@@ -78,8 +96,13 @@ describe("checkFailureError", () => {
 			{
 				check: { name: "types", check: () => false, fix: "bun run codegen" },
 				ok: false,
+				severity: "error",
 			},
-			{ check: { name: "env", check: () => false }, ok: false },
+			{
+				check: { name: "env", check: () => false },
+				ok: false,
+				severity: "error",
+			},
 			{
 				check: {
 					name: "toml",
@@ -89,6 +112,7 @@ describe("checkFailureError", () => {
 				},
 				ok: false,
 				detail: "web_directories is empty",
+				severity: "error",
 			},
 		]);
 		expect(error.message).toBe("3 checks failed before starting:");

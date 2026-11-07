@@ -2,17 +2,38 @@ import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
 import {
 	assertDockerRunning,
+	dockerProjectServiceStates,
+	parseDockerExitCode,
 	parseDockerHealth,
 	parseDockerServiceStates,
 } from "./status";
+
+describe("dockerProjectServiceStates", () => {
+	it("throws when Docker cannot answer, rather than listing an empty project", async () => {
+		// The test preload's `docker` answers as one with no daemon does.
+		await expect(dockerProjectServiceStates("demo")).rejects.toThrow(
+			/Cannot connect to the Docker daemon/,
+		);
+	});
+});
 
 describe("assertDockerRunning", () => {
 	it("says once that Docker is not running, and what to do", () => {
 		const missing = join(import.meta.dir, "no-such-docker-binary");
 		expect(() => assertDockerRunning(missing)).toThrow(
-			/^Docker is not running\. Start Docker and try again\.$/,
+			/^Docker is not running.*try again\.$/,
 		);
 	});
+
+	it.skipIf(process.platform !== "linux")(
+		"names the runtime behind docker rather than 'unknown'",
+		() => {
+			const missing = join(import.meta.dir, "no-such-docker-binary");
+			expect(() => assertDockerRunning(missing)).toThrow(
+				/^Docker is not running \(docker-engine\)\. Start the Docker service/,
+			);
+		},
+	);
 });
 
 /**
@@ -32,6 +53,7 @@ describe("parseDockerServiceStates", () => {
 		).toEqual([
 			{
 				service: "postgres",
+				state: "running",
 				running: true,
 				serviceHash: "abc123",
 				healthy: true,
@@ -44,7 +66,19 @@ describe("parseDockerServiceStates", () => {
 			parseDockerServiceStates(
 				line("redis", "exited", "Exited (137) 3 minutes ago"),
 			),
-		).toEqual([{ service: "redis", running: false, exitCode: 137 }]);
+		).toEqual([
+			{ service: "redis", state: "stopped", running: false, exitCode: 137 },
+		]);
+	});
+
+	it("reads a restarting container as not serving, with the exit code it restarts from", () => {
+		expect(
+			parseDockerServiceStates(
+				line("search", "restarting", "Restarting (1) 2 seconds ago"),
+			),
+		).toEqual([
+			{ service: "search", state: "restarting", running: false, exitCode: 1 },
+		]);
 	});
 
 	it("skips a container with no buncargo.service label", () => {
@@ -65,6 +99,15 @@ describe("parseDockerServiceStates", () => {
 
 	it("survives empty output", () => {
 		expect(parseDockerServiceStates("")).toEqual([]);
+	});
+});
+
+describe("parseDockerExitCode", () => {
+	it("reads the code of a stopped or restarting container, negative ones too", () => {
+		expect(parseDockerExitCode("Exited (137) 3 minutes ago")).toBe(137);
+		expect(parseDockerExitCode("exited (-1) 1 second ago")).toBe(-1);
+		expect(parseDockerExitCode("Restarting (2) 1 second ago")).toBe(2);
+		expect(parseDockerExitCode("Up 3 minutes")).toBeUndefined();
 	});
 });
 

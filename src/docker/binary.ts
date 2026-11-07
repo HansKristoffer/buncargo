@@ -25,6 +25,12 @@ export interface DockerRunResult {
 	exitCode: number;
 	stdout: string;
 	stderr: string;
+	/**
+	 * Node's code when the process could not run or was cut off: `ENOENT` for
+	 * a binary that is not there, `ETIMEDOUT` for one killed at its timeout.
+	 * `runDockerAsync` sets only `ETIMEDOUT`.
+	 */
+	spawnErrorCode?: string;
 }
 
 export interface DockerRunOptions {
@@ -61,11 +67,17 @@ export function runDocker(
 	});
 
 	if (result.error) {
+		const { error } = result;
+		const code =
+			"code" in error && typeof error.code === "string"
+				? error.code
+				: undefined;
 		return {
 			ok: false,
 			exitCode: 1,
 			stdout: "",
 			stderr: result.error.message,
+			...(code ? { spawnErrorCode: code } : {}),
 		};
 	}
 
@@ -97,5 +109,10 @@ export async function runDockerAsync(
 		},
 	);
 	options.signal?.throwIfAborted();
-	return { ...result, ok: result.exitCode === 0 };
+	const { timedOut, ...answer } = result;
+	return {
+		...answer,
+		ok: result.exitCode === 0,
+		...(timedOut ? { spawnErrorCode: "ETIMEDOUT" } : {}),
+	};
 }

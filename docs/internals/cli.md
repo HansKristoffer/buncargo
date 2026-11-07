@@ -91,15 +91,22 @@ pieces it orchestrates.
   (its own session, so a harness's SIGTERM does not reach it) and, on Linux with a user manager,
   in a systemd scope of its own (`process/user-scope.ts`), so restarting the service the harness
   runs as does not kill it with that service's cgroup. Its output goes to
-  `.buncargo/logs/detached.log`. The parent waits on the run registry entry whose `pid` is the
+  `.buncargo/logs/detached-<pid>.log`, one per run, with `detached.log` a link to the newest: a
+  second `dev --detach` in the checkout starts while the first still writes its log, and a shared
+  log rotated aside was renamed over by the third. A run's log and report are pruned once it is
+  dead and they are a minute old, keeping the newest ended run's log.
+  The parent waits on the run registry entry whose `pid` is the
   child's until every app has settled; an empty `apps` list is the claim, not "done", unless the
   selection has no app to spawn. A child that exits 0 had nothing to keep running (every app
   reused) and is a success, as it is for attached `dev`; its exit is checked before the entry,
   which can outlive it. The run hands the parent its failures in
-  `.buncargo/logs/detached-report.json` (`run-failure.ts`: the cause, the step's last lines, the
+  `.buncargo/logs/detached-report-<pid>.json`, one per run for the same reason
+  (`run-failure.ts`: the cause, the step's last lines, the
   setup warnings, what to run next), and the parent prints them last. Parsing the log for the
-  cause failed: agents read `dev | tail`, and the tail was a warning of kilobytes. A parked app's
-  failure is written before the registry marks it failed, which is what the parent waits on.
+  cause failed: agents read `dev | tail`, and the tail was a warning of kilobytes. An app that
+  crashed while it started reads `failed` from its exit before it is parked and reported, so the
+  parent gives a settled run's down apps `REPORT_GRACE_MS` for their reports before printing.
+  Still starting at the timeout exits 2, as `wait` does, apart from a failure's 1.
   `--keep` is not passed on: the child learns it from `BUNCARGO_DETACHED`
   (`1` or `keep`), and records the idle limit the watchdog enforces
   ([run registry](./run-registry-and-sweep.md#detached-runs-that-end)).
@@ -145,6 +152,13 @@ pieces it orchestrates.
   The run delivers it to `output.screens`, so only an app with a pseudo-terminal reads keys. Each
   request carries an id, and the run answers it in `send/<session>.replies/<id>`, typed or why
   not, so `send` can exit 3 rather than report keys that reached nothing.
+- `commands/restart.ts` never writes the app's row: only the run knows a restart began, and it
+  marks the row `starting` itself (`onAppRestarting`, on both entry points). A library `start()`
+  records pids but reads no requests, so a row the command marked stayed `starting` and
+  `restart && wait --app` hung. The command waits for the request file to be taken (`dev` reads
+  it from before its first app spawns, so a pid means a reader if there is one), then for the
+  row to move on, so the `wait` that follows sees the new process; a request nobody takes is
+  withdrawn and the command exits 3.
 - `commands/inspect/file-table.ts` reads the machine's open-file table (`sysctl` /
   `/proc/sys/fs/file-nr`); `doctor` runs the full `lsof` for the top holders only past half full,
   because it takes seconds on a crowded machine.

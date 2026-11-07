@@ -73,8 +73,9 @@ const TOPICS: readonly Topic[] = [
 
 - \`bunx buncargo dev --detach\` starts the run in the background and returns once
   every app is up. Exit 1 names the apps that did not come up; the others keep
-  running. Exit 0 also when every app was already running and is reused. Do
-  not use \`nohup\`, \`&\` or \`disown\`.
+  running. Exit 0 also when every app was already running and is reused. Exit
+  2: still starting after 10 minutes; the run goes on, so wait with
+  \`bunx buncargo wait --app=<app>\`. Do not use \`nohup\`, \`&\` or \`disown\`.
 - When it fails, the last block of its output names what failed (an app, the
   seed or a step), shows its last 20 lines and the setup checks that warned,
   and says what to run next: \`dev --detach 2>&1 | tail -40\` is enough. Do
@@ -88,8 +89,13 @@ const TOPICS: readonly Topic[] = [
   out its idle hold. A run someone started
   in a terminal (not with \`--detach\`) asks first, and without a terminal needs
   \`--force\`: only stop that one when the user asked.
+  A container runtime that refuses this user or does not answer may still
+  run the containers, so \`stop\` exits 3 and \`dev --down\` exits 1 rather
+  than reporting nothing to stop: once \`docker version\` answers, stop again.
   \`bunx buncargo stop <app>\` stops one app and \`bunx buncargo restart <app>\`
-  restarts one.
+  restarts one; \`restart <app> && wait --app=<app>\` waits for the new process.
+  \`restart\` exits 3 when the run is a script's \`start()\`, which takes no
+  restart requests: nothing was restarted.
 - Stopping can take as long as an app's \`stopGraceMs\`: up to a minute for
   an app that saves data as it exits, such as the Firebase emulators. Let it
   finish; killing it loses that data.
@@ -110,7 +116,9 @@ const TOPICS: readonly Topic[] = [
 ## Readiness
 
 - \`bunx buncargo wait --app=<app>\` blocks until the app is healthy (exit 0),
-  failed (1) or timed out (2). Use it instead of \`sleep\` or \`curl\` loops.`,
+  failed (1), timed out (2) or was interrupted before it was healthy (130,
+  143). With \`--hold\`, a signal after that exits 0. Use it instead of
+  \`sleep\` or \`curl\` loops.`,
 	},
 	{
 		name: "runs",
@@ -240,7 +248,8 @@ const TOPICS: readonly Topic[] = [
   gives one of them its own \`projectPrefix\`, or, when the other checkout's
   claim is from a config it no longer runs, releases it with the
   \`bunx buncargo ports release --root <path>\` the error names. Run that only
-  when the user asks: whoever runs under the name next gets its volumes.`,
+  when the user asks: whoever runs under the name next gets its volumes. It
+  exits 3 when a run started there meanwhile kept a claim; tell the user.`,
 	},
 	{
 		name: "logs",
@@ -322,8 +331,9 @@ const TOPICS: readonly Topic[] = [
   for minutes without answering (it stops every checkout's containers; say so
   to the user first), and stops a process of a deleted checkout holding a port.
 - A run line "postgres stopped (exit 0)" means a service container went down
-  under the run; buncargo does not restart it. The line says which buncargo
-  command stopped it, or that none did. Restart the run
+  under the run ("keeps restarting" and "is paused" likewise); buncargo does
+  not restart it. The line says which buncargo command stopped it, or that
+  none did. Restart the run
   (\`bunx buncargo stop\`, then \`bunx buncargo dev --detach\`) and
   tell the user what stopped it.
 - No \`bun install\` first: in a fresh worktree, or after \`bun.lock\` changed,

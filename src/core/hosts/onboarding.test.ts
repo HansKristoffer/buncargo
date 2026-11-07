@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { claimFirstRunPrompt, resetFirstRunPrompt } from "../prompt";
 import {
+	doctorFixHosts,
 	hostsServiceFix,
+	persistHostsDecline,
 	promptFirstRun,
 	repairStaleService,
+	setupNeedsConsent,
+	uninstallHosts,
 } from "./onboarding";
 
 const REASON =
@@ -92,6 +99,25 @@ describe("promptFirstRun", () => {
 	});
 });
 
+describe("setupNeedsConsent", () => {
+	// mkcert is used by other tools. Its CA on disk made setup go straight
+	// to the password prompt without the first-run question.
+	it("asks on a machine buncargo never installed on, whatever CA it has", () => {
+		expect(
+			setupNeedsConsent({ serviceInstalled: false, everInstalled: false }),
+		).toBe(true);
+	});
+
+	it("repairs a service buncargo installed before without asking", () => {
+		expect(
+			setupNeedsConsent({ serviceInstalled: false, everInstalled: true }),
+		).toBe(false);
+		expect(
+			setupNeedsConsent({ serviceInstalled: true, everInstalled: true }),
+		).toBe(false);
+	});
+});
+
 describe("hostsServiceFix", () => {
 	it("reinstalls a stale service from a terminal", () => {
 		expect(
@@ -130,5 +156,59 @@ describe("hostsServiceFix", () => {
 				interactive: false,
 			}),
 		).toEqual({ action: "none" });
+	});
+});
+
+describe("doctorFixHosts", () => {
+	const originalHome = process.env.HOME;
+	afterEach(() => {
+		process.env.HOME = originalHome;
+	});
+
+	// It installed and trusted for a machine that had declined, and every run
+	// then ignored the result: the decline is checked before anything else.
+	it("leaves a machine that declined named hosts alone", async () => {
+		const home = mkdtempSync(join(tmpdir(), "buncargo-onboarding-test-"));
+		process.env.HOME = home;
+		try {
+			persistHostsDecline();
+			expect(await doctorFixHosts({ interactive: false })).toEqual({
+				fixed: [],
+				issues: [],
+			});
+		} finally {
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("uninstallHosts", () => {
+	// With no terminal, the `sudo cp` behind cleaning /etc/hosts fails. Thrown,
+	// it stopped uninstall after the trust was gone and before the routes were
+	// cleared or the decline written, so the next run set everything up again.
+	it("finishes and says how to clean /etc/hosts when it cannot", async () => {
+		const steps: string[] = [];
+		const warnings = await uninstallHosts({
+			removeService: () => steps.push("service"),
+			removeTrust: () => steps.push("trust"),
+			cleanHostsFile: () => {
+				throw new Error("sudo: a terminal is required to read the password");
+			},
+			clearRoutes: async () => {
+				steps.push("routes");
+			},
+			removeCertNames: () => steps.push("cert names"),
+			persistDecline: () => steps.push("decline"),
+		});
+		expect(steps).toEqual([
+			"service",
+			"trust",
+			"routes",
+			"cert names",
+			"decline",
+		]);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("/etc/hosts");
+		expect(warnings[0]).toContain("buncargo hosts uninstall");
 	});
 });

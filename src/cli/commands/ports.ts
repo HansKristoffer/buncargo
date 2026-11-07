@@ -12,7 +12,7 @@ import {
 	offsetClaimsOf,
 	overlappingOffsetClaims,
 	readOffsetClaims,
-	releaseOffsetClaims,
+	releaseOffsetClaimsIfUnchanged,
 } from "../../core/offset-claims";
 import {
 	PORT_OFFSET_STEP,
@@ -259,6 +259,9 @@ export async function handlePorts(args: string[]): Promise<number> {
 	return 0;
 }
 
+/** `ports release --root` kept a claim a run used after it was listed. */
+const PORTS_RELEASE_REFUSED = 3;
+
 /**
  * `buncargo ports release --root <path>`: drop another checkout's claims.
  *
@@ -267,7 +270,8 @@ export async function handlePorts(args: string[]): Promise<number> {
  * renamed projectPrefix, not started since) refuses every other checkout
  * under that name until it runs again or is deleted; this is the way out.
  * It refuses while the checkout has a run or standing containers, and
- * touches no container or volume.
+ * touches no container or volume. Exits 3 when a run used a claim between
+ * the listing and the release, which keeps that claim.
  */
 async function releaseClaims(root: string, yes: boolean): Promise<number> {
 	const claims = offsetClaimsOf(root);
@@ -325,11 +329,18 @@ async function releaseClaims(root: string, yes: boolean): Promise<number> {
 		}
 	}
 
-	await releaseOffsetClaims(keys);
+	// Only what was listed and checked: a run that started since the check
+	// rewrote its claim, and keeps it.
+	const released = await releaseOffsetClaimsIfUnchanged(claims);
 	log.success(
-		`Released ${keys.length} claim${keys.length === 1 ? "" : "s"} of ${root}.`,
+		`Released ${released.length} claim${released.length === 1 ? "" : "s"} of ${root}.`,
 	);
-	return 0;
+	const kept = keys.length - released.length;
+	if (kept === 0) return 0;
+	log.warn(
+		`Kept ${kept}: a run used them after they were listed. Run \`buncargo ports release --root ${root}\` again once it has stopped.`,
+	);
+	return PORTS_RELEASE_REFUSED;
 }
 
 /**

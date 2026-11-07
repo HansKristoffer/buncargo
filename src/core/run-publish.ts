@@ -9,13 +9,14 @@ import type {
 	ServiceConfig,
 } from "../types";
 import { environmentOpenUrl, preferredAppUrl } from "./app-url";
+import type { StartDevServersOptions } from "./process/dev-servers";
 import type { CapturedValue } from "./process/output-capture";
 import { readProcessIdentitiesAsync } from "./process-identity";
 import {
 	buildRunEntryAsync,
+	describeRun,
 	findRunsByRoot,
 	patchRunBatch,
-	publishRun,
 	type RunAppEntry,
 	type RunAppStatus,
 	type RunDetailEntry,
@@ -367,7 +368,7 @@ async function writeRun(
 			: {}),
 	};
 
-	await publishRun(entry);
+	await describeRun(entry);
 	return entry;
 }
 
@@ -464,6 +465,33 @@ export async function markApps(
 }
 
 /**
+ * Put each named app's row back to `starting` for a restart about to replace
+ * its process, whatever the row says (see {@link RunPatch.restarting}).
+ * Written by the run as the restart begins, before the old process is
+ * retired, so its readiness can only come after; `buncargo restart` waits
+ * for this rather than writing it.
+ */
+export async function markAppsRestarting(
+	run: RunSession,
+	names: readonly string[],
+): Promise<void> {
+	if (names.length === 0) return;
+	await patchCurrentRun(run, { restarting: [...names] });
+}
+
+/** Mark the named services with one status, e.g. `ready` once they were waited for. */
+export async function markServices(
+	run: RunSession,
+	names: readonly string[],
+	status: RunServiceStatus,
+): Promise<void> {
+	if (names.length === 0) return;
+	await patchCurrentRun(run, {
+		services: names.map((name) => ({ name, status })),
+	});
+}
+
+/**
  * Record a spawned app's pid together with its birth identity.
  *
  * `stop` refuses to signal an app whose entry has no identity, since a bare
@@ -489,6 +517,48 @@ export async function recordAppSpawn(
 		},
 		true,
 	);
+}
+
+/**
+ * What the spawner reports, recorded on the run's app rows: one rule for
+ * `buncargo dev` and a library `start()`. Each write is queued, never
+ * awaited: nothing about starting servers may wait on a status file.
+ */
+export function appRowEvents(
+	run: RunSession,
+): Required<
+	Pick<
+		StartDevServersOptions,
+		| "onAppSpawned"
+		| "onAppReady"
+		| "onAppRestarting"
+		| "onAppExit"
+		| "onAppFailed"
+		| "onAppRestartFailed"
+	>
+> {
+	return {
+		onAppSpawned: (name, pid, attached) => {
+			void recordAppSpawn(run, name, pid, attached);
+		},
+		onAppReady: (name) => {
+			void markApps(run, [name], "ready");
+		},
+		// Before the new process spawns, or `buncargo wait` answers from the
+		// process being replaced.
+		onAppRestarting: (name) => {
+			void markAppsRestarting(run, [name]);
+		},
+		onAppExit: (name, _code, _signal, state) => {
+			void markApps(run, [name], state);
+		},
+		onAppFailed: (name) => {
+			void markApps(run, [name], "failed");
+		},
+		onAppRestartFailed: (name) => {
+			void markApps(run, [name], "failed");
+		},
+	};
 }
 
 /**

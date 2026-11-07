@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { isOneOf, isRecord } from "hanzio";
+import { isOneOf, isRecord, typedSwitch } from "hanzio";
 import type { ExpoAppIdentity } from "../expo/app-identity";
 import type { ContainerRuntimeName } from "../types";
 import { buncargoCli, type CliInvocation } from "./cli-entry";
@@ -512,37 +512,190 @@ async function updateRuns(
 }
 
 /**
- * Insert or update a session's entry.
+ * The two ways a session's own process writes its whole entry.
  *
- * A session is published twice: the claim, before its containers start, and
- * then the CLI's richer entry. The second knows neither when the first
- * happened nor which hold it was claimed with, so both carry over.
+ * - `claim`: the containers are this run's from now (`run-claim.ts`). It
+ *   decides the lifecycle: the selected services, their stacks, the hold, and
+ *   that the run is live again (no `releasedAt`, no `ownerLostAt`).
+ * - `describe`: what the run serves (`run-publish.ts`): apps, hosts, URLs,
+ *   tasks. It never touches the lifecycle, so a describe that lands after a
+ *   release cannot reopen it, and it never drops what other writers recorded:
+ *   app rows' processes and states, captures, a service's `problem`.
+ */
+export type RunPublishKind = "claim" | "describe";
+
+/**
+ * The entry a publish leaves, from the one it lands on.
+ *
+ * Every write of an entry is its owner's, so a publish clears `ownerLostAt`:
+ * the owner is demonstrably alive.
+ */
+export function mergePublishedRun(
+	existing: RunEntry | undefined,
+	run: RunEntry,
+	kind: RunPublishKind,
+): RunEntry {
+	if (!existing) return run;
+	const { ownerLostAt: _lost, ...current } = existing;
+	return typedSwitch(kind, {
+		claim: (): RunEntry => {
+			const {
+				releasedAt: _released,
+				idleTimeoutMs: _hold,
+				inheritedIdleTimeoutMs: _inherited,
+				stacks: _stacks,
+				...kept
+			} = current;
+			// A claim reopening a finished entry (`releaseRun()`, then `start()`
+			// again) starts a new run: ranking (`newestLifecycleFirst`) and the
+			// claims a teardown releases date from it.
+			const reopens =
+				existing.releasedAt !== undefined || existing.ownerLostAt !== undefined;
+			const stacks = mergedStacks(existing.stacks, run.stacks);
+			return {
+				...kept,
+				...(reopens ? { startedAt: run.startedAt } : {}),
+				sessionId: run.sessionId,
+				processIdentity: run.processIdentity,
+				projectPrefix: run.projectPrefix,
+				projectName: run.projectName,
+				root: run.root,
+				worktree: run.worktree,
+				pid: run.pid,
+				updatedAt: run.updatedAt,
+				cli: run.cli,
+				// Exactly the claim's: one hold, or none.
+				...holdFields(run),
+				...(stacks === undefined ? {} : { stacks }),
+				// The claim's selection, over what a describe said about each.
+				services: run.services.map((service) => {
+					const described = existing.services.find(
+						(entry) => entry.name === service.name,
+					);
+					const { problem: _problem, ...rest } = described ?? service;
+					return { ...rest, ...service };
+				}),
+			};
+		},
+		describe: (): RunEntry => ({
+			...run,
+			startedAt: current.startedAt,
+			...holdFields(current),
+			...(current.releasedAt === undefined
+				? {}
+				: { releasedAt: current.releasedAt }),
+			...(current.stacks === undefined ? {} : { stacks: current.stacks }),
+			...(current.captures === undefined ? {} : { captures: current.captures }),
+			...(run.details === undefined && current.details !== undefined
+				? { details: current.details }
+				: {}),
+			apps: run.apps.map((app) => describedApp(current.apps, app)),
+			services: describedServices(current.services, run.services),
+		}),
+	});
+}
+
+/**
+ * The stacks a claim leaves on its entry: every stack already recorded, which
+ * may be standing in the idle hold, with the claim's own over any of the same
+ * name. A claim that selects no stack must not drop one only this entry names.
+ */
+function mergedStacks(
+	recorded: RunStackEntry[] | undefined,
+	claimed: RunStackEntry[] | undefined,
+): RunStackEntry[] | undefined {
+	if (recorded === undefined) return claimed;
+	if (claimed === undefined) return recorded;
+	const names = new Set(claimed.map((stack) => stack.name));
+	return [...recorded.filter((stack) => !names.has(stack.name)), ...claimed];
+}
+
+function holdFields(
+	run: Pick<RunEntry, "idleTimeoutMs" | "inheritedIdleTimeoutMs">,
+): Pick<RunEntry, "idleTimeoutMs" | "inheritedIdleTimeoutMs"> {
+	if (run.idleTimeoutMs !== undefined)
+		return { idleTimeoutMs: run.idleTimeoutMs };
+	if (run.inheritedIdleTimeoutMs !== undefined)
+		return { inheritedIdleTimeoutMs: run.inheritedIdleTimeoutMs };
+	return {};
+}
+
+/**
+ * A described app row over the one already there: the description is fresh,
+ * the process and its state are what the spawner last reported. A reused app
+ * has no process of this run's to keep.
+ */
+function describedApp(
+	current: readonly RunAppEntry[],
+	app: RunAppEntry,
+): RunAppEntry {
+	const previous = current.find((entry) => entry.name === app.name);
+	if (!previous || app.status === "reused" || previous.status === "reused")
+		return app;
+	const keepsPublicUrl =
+		app.publicUrl === undefined && previous.publicUrl !== undefined;
+	return {
+		...app,
+		...(keepsPublicUrl
+			? { publicUrl: previous.publicUrl, openUrl: previous.openUrl }
+			: {}),
+		...(previous.pid === undefined
+			? {}
+			: { pid: previous.pid, processIdentity: previous.processIdentity }),
+		attached: app.attached ?? previous.attached,
+		status: previous.status,
+	};
+}
+
+/**
+ * Described services over the claimed ones. Only a claim chooses which
+ * services the entry holds, so a describe that lists fewer (an app-only
+ * describe after the claim was released) keeps the rest: they are the
+ * containers' record. A `problem` stays until the service watch clears it.
+ */
+function describedServices(
+	current: readonly RunServiceEntry[],
+	described: readonly RunServiceEntry[],
+): RunServiceEntry[] {
+	const merged = current.map((service) => {
+		const update = described.find((entry) => entry.name === service.name);
+		if (!update) return service;
+		return {
+			...service,
+			...update,
+			status: nextServiceStatus(service.status, update.status),
+			...(service.problem === undefined ? {} : { problem: service.problem }),
+		};
+	});
+	const added = described.filter(
+		(entry) => !current.some((service) => service.name === entry.name),
+	);
+	return [...merged, ...added];
+}
+
+/**
+ * Claim a session's entry: insert it, or make it the claim's over the one
+ * already there (see {@link RunPublishKind}).
  */
 export async function publishRun(run: RunEntry): Promise<void> {
+	await publish(run, "claim");
+}
+
+/** Describe what a session serves, over its claim (see {@link RunPublishKind}). */
+export async function describeRun(run: RunEntry): Promise<void> {
+	await publish(run, "describe");
+}
+
+async function publish(run: RunEntry, kind: RunPublishKind): Promise<void> {
 	const path = getRunsPath();
 	const alive = await livenessBeforeLock(path);
 	await withFileLock(path, async () => {
 		const runs = await prune(path, alive);
 		const index = runs.findIndex((entry) => entry.sessionId === run.sessionId);
-		const existing = runs[index];
 		const next = [...runs];
-		if (existing) {
-			next[index] = {
-				...run,
-				startedAt: existing.startedAt,
-				...(run.stacks === undefined && existing.stacks !== undefined
-					? { stacks: existing.stacks }
-					: {}),
-				...(run.idleTimeoutMs === undefined &&
-				existing.idleTimeoutMs !== undefined
-					? { idleTimeoutMs: existing.idleTimeoutMs }
-					: {}),
-				...(run.inheritedIdleTimeoutMs === undefined &&
-				existing.inheritedIdleTimeoutMs !== undefined
-					? { inheritedIdleTimeoutMs: existing.inheritedIdleTimeoutMs }
-					: {}),
-			};
-		} else next.push(run);
+		const merged = mergePublishedRun(runs[index], run, kind);
+		if (index === -1) next.push(merged);
+		else next[index] = merged;
 		await registry.write(path, next);
 	});
 }
@@ -564,11 +717,31 @@ export async function releaseRun(sessionId: string): Promise<void> {
 		const next = [...runs];
 		const now = new Date().toISOString();
 		if (current.services.length === 0) next.splice(index, 1);
-		// `updatedAt` too: the sweep takes the most recently active session as a
-		// stack's owner, and a release is the latest thing this one did.
 		else next[index] = { ...current, releasedAt: now, updatedAt: now };
 		return next;
 	});
+}
+
+/**
+ * When a session last changed state: released, found gone, or started.
+ *
+ * What "newest" means wherever one session has to speak for a stack (the
+ * sweep's owner, {@link holdToInherit}). Not `updatedAt`, which every patch
+ * moves: a dead session's service watch writing a `problem`, or an app
+ * reporting ready, made it the stack's owner and its hold the stack's.
+ */
+function runLifecycleAt(
+	run: Pick<RunEntry, "releasedAt" | "ownerLostAt" | "startedAt">,
+): string {
+	return run.releasedAt ?? run.ownerLostAt ?? run.startedAt;
+}
+
+/** Sort order for {@link runLifecycleAt}, newest first. */
+export function newestLifecycleFirst(
+	a: Pick<RunEntry, "releasedAt" | "ownerLostAt" | "startedAt">,
+	b: Pick<RunEntry, "releasedAt" | "ownerLostAt" | "startedAt">,
+): number {
+	return runLifecycleAt(b).localeCompare(runLifecycleAt(a));
 }
 
 /**
@@ -591,7 +764,7 @@ export function holdToInherit(
 				(run.releasedAt !== undefined || run.ownerLostAt !== undefined) &&
 				run.services.length > 0,
 		)
-		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+		.sort(newestLifecycleFirst);
 	return newest?.idleTimeoutMs ?? newest?.inheritedIdleTimeoutMs;
 }
 
@@ -605,29 +778,65 @@ export async function retireRuns(sessionIds: readonly string[]): Promise<void> {
 	});
 }
 
+/** A runtime, and the binary, a teardown took a project's containers down through. */
+export type ContainerRuntimeRef = NonNullable<RunServiceEntry["container"]>;
+
+function runtimeKey(ref: Pick<ContainerRuntimeRef, "runtime" | "binary">) {
+	return `${ref.runtime}\0${ref.binary ?? ""}`;
+}
+
+/** Every runtime and binary an entry's containers were started through. */
+export function recordedContainerRuntimes(
+	run: Pick<RunEntry, "services">,
+): ContainerRuntimeRef[] {
+	const byKey = new Map<string, ContainerRuntimeRef>();
+	for (const { container } of run.services)
+		if (container && !byKey.has(runtimeKey(container)))
+			byKey.set(runtimeKey(container), container);
+	return [...byKey.values()];
+}
+
 /**
- * Drop every entry for a checkout's project that has nothing left to hold.
+ * Whether a finished entry of a project holds nothing once a teardown of the
+ * project came down on `downed`: every container it records was on one of
+ * them. The one rule for retiring other sessions after a teardown, for
+ * `stop` and a library `stop()` alike. A teardown that downed no runtime
+ * (an app-only run's) retires nothing of anyone else's, and an entry of a
+ * stack another runtime holds keeps it: retiring that would leave the stack
+ * no owner record.
+ */
+export function heldOnlyOn(
+	run: Pick<RunEntry, "services">,
+	downed: readonly Pick<ContainerRuntimeRef, "runtime" | "binary">[],
+): boolean {
+	const keys = new Set(downed.map(runtimeKey));
+	return (
+		keys.size > 0 &&
+		recordedContainerRuntimes(run).every((ref) => keys.has(runtimeKey(ref)))
+	);
+}
+
+/**
+ * Drop a session's entry after its explicit teardown, with the project's
+ * finished entries that hold nothing afterwards ({@link heldOnlyOn}).
  *
- * Called after an explicit teardown, which knows the containers are gone:
- * the caller's own session goes, and so does any whose owner has exited. A
- * live session in the same checkout keeps its entry — it is still somebody's
- * run, whatever just happened to the containers.
+ * A live session in the same checkout keeps its entry — it is still
+ * somebody's run, whatever just happened to the containers.
  */
 export async function retireProjectRuns(target: {
 	projectName: string;
 	root: string;
 	sessionId: string;
+	downed: readonly Pick<ContainerRuntimeRef, "runtime" | "binary">[];
 }): Promise<void> {
 	const alive = await livenessBeforeLock(getRunsPath());
 	await updateRuns(getRunsPath(), (runs) => {
-		const next = runs.filter(
-			(entry) =>
-				!(
-					entry.projectName === target.projectName &&
-					entry.root === target.root &&
-					(entry.sessionId === target.sessionId || !alive(entry))
-				),
-		);
+		const retired = (entry: RunEntry) =>
+			entry.projectName === target.projectName &&
+			entry.root === target.root &&
+			(entry.sessionId === target.sessionId ||
+				(!alive(entry) && heldOnlyOn(entry, target.downed)));
+		const next = runs.filter((entry) => !retired(entry));
 		return next.length === runs.length ? undefined : next;
 	});
 }
@@ -652,31 +861,52 @@ export async function clearRunStacks(
 }
 
 /**
- * Record when the sweep first found each session's owner gone.
+ * Record when the sweep first found each session's owner gone, and forget it
+ * for those whose owner it found running again.
  *
  * Only ever stamps an entry that has no stamp yet, so the grace keeps
- * counting from the first time it was noticed however many sweeps see it.
+ * counting from the first time it was noticed however many sweeps see it. A
+ * stamp is cleared as soon as the owner reads as itself again: one wrong
+ * "gone" (a `ps` that timed out) otherwise stayed for good, and
+ * `holdToInherit` counted the live run as finished.
  */
-export async function markOwnersLost(
-	sessionIds: readonly string[],
-	at: string,
-): Promise<void> {
-	if (sessionIds.length === 0) return;
-	const lost = new Set(sessionIds);
+export async function markOwnersLost(input: {
+	lost: readonly string[];
+	back: readonly string[];
+	at: string;
+}): Promise<void> {
+	if (input.lost.length === 0 && input.back.length === 0) return;
+	const lost = new Set(input.lost);
+	const back = new Set(input.back);
 	await updateRuns(getRunsPath(), (runs) => {
 		let changed = false;
 		const next = runs.map((entry) => {
+			if (back.has(entry.sessionId) && entry.ownerLostAt !== undefined) {
+				changed = true;
+				const { ownerLostAt: _lost, ...rest } = entry;
+				return rest;
+			}
 			if (!lost.has(entry.sessionId) || entry.ownerLostAt !== undefined)
 				return entry;
 			changed = true;
-			return { ...entry, ownerLostAt: at };
+			return { ...entry, ownerLostAt: input.at };
 		});
 		return changed ? next : undefined;
 	});
 }
 
+export type RunAppUpdate = Partial<RunAppEntry> & { name: string };
+
 export interface RunPatch {
-	apps?: Array<Partial<RunAppEntry> & { name: string }>;
+	/**
+	 * Apps whose restart the run began: back to `starting` whatever their
+	 * rows said, before the run replaces them. No status update can say it: a new
+	 * pid on a running app is that app adopting its detached server, so a
+	 * restarted app kept reading `ready`, and `restart && wait` returned on
+	 * the process it had just replaced.
+	 */
+	restarting?: string[];
+	apps?: RunAppUpdate[];
 	services?: Array<Partial<RunServiceEntry> & { name: string }>;
 	hosts?: { active: boolean; tld: string } | null;
 	primaryApp?: string;
@@ -685,39 +915,94 @@ export interface RunPatch {
 	details?: RunDetailEntry[];
 }
 
-function mergeByName<T extends { name: string }>(
-	current: T[],
-	updates: Array<Partial<T> & { name: string }>,
-): T[] {
-	const byName = new Map(current.map((entry) => [entry.name, entry]));
-	for (const update of updates) {
-		const existing = byName.get(update.name);
-		// An update for something not in the run is dropped rather than
-		// inserted: a half-populated entry would show in the UI as a real app.
-		if (!existing) continue;
-		// Delayed readiness/PID publication must never resurrect a stopped app.
-		// A new pid on a stopped app is a new process (a restart): it starts
-		// over. On a running one it is the same app adopting a detached pid.
-		const prior = existing as T & { status?: string; pid?: number };
-		const incoming = update as Partial<T> & { status?: string; pid?: number };
-		const ended = prior.status === "stopped" || prior.status === "failed";
-		const restarted =
-			ended && incoming.pid !== undefined && incoming.pid !== prior.pid;
-		if (
-			!restarted &&
-			ended &&
-			(incoming.status === "ready" || incoming.status === "starting")
-		)
-			continue;
-		byName.set(update.name, {
-			...existing,
-			...update,
-			...(restarted && incoming.status === undefined
-				? { status: "starting" }
-				: {}),
-		});
+/**
+ * An app row after one update from its run, or from `stop`.
+ *
+ * A new pid is a new process. On an ended row that is a restart, which starts
+ * over; on a running one it is the app adopting a detached pid, which keeps
+ * its state. Otherwise an ended row keeps how it ended: readiness reported
+ * late never resurrects it, and `stopped` outranks `failed`, because `stop`
+ * and the run both record an app's end after SIGTERM, and an app that exits
+ * non-zero on SIGTERM was still stopped on purpose.
+ */
+export function nextAppRow(
+	row: RunAppEntry,
+	update: RunAppUpdate,
+): RunAppEntry {
+	const ended = row.status === "stopped" || row.status === "failed";
+	const newProcess = update.pid !== undefined && update.pid !== row.pid;
+	if (newProcess) {
+		const fresh = ended ? "starting" : row.status;
+		return { ...row, ...update, status: update.status ?? fresh };
 	}
-	return current.map((entry) => byName.get(entry.name) ?? entry);
+	return { ...row, ...update, status: nextAppStatus(row.status, update) };
+}
+
+function nextAppStatus(
+	current: RunAppStatus,
+	update: RunAppUpdate,
+): RunAppStatus {
+	const incoming = update.status;
+	if (incoming === undefined) return current;
+	return typedSwitch(current, {
+		stopped: () => current,
+		failed: () => (incoming === "stopped" ? incoming : current),
+		starting: () => incoming,
+		ready: () => incoming,
+		reused: () => incoming,
+	});
+}
+
+function mergeApps(
+	current: RunAppEntry[],
+	patch: Pick<RunPatch, "apps" | "restarting">,
+): RunAppEntry[] {
+	const restarting = new Set(patch.restarting);
+	return current.map((row) => {
+		const restarted =
+			restarting.has(row.name) && row.status !== "reused"
+				? { ...row, status: "starting" as const }
+				: row;
+		// An update for an app not in the run is dropped rather than inserted:
+		// a half-populated entry would show in the UI as a real app.
+		return (patch.apps ?? [])
+			.filter((update) => update.name === row.name)
+			.reduce(nextAppRow, restarted);
+	});
+}
+
+/**
+ * A service row's status after an update. Its states are written after the
+ * fact (`ready` once the containers were waited for, `stopped` once `stop` did
+ * it), except that `ready` never undoes `stopped`: a describe defaults every
+ * row to `ready`, and the run's readiness report is queued, so either could
+ * land after `buncargo stop <service>`. A run that starts the service again
+ * marks it `starting` first (or claims afresh), which leaves `stopped`.
+ */
+function nextServiceStatus(
+	current: RunServiceStatus,
+	incoming: RunServiceStatus | undefined,
+): RunServiceStatus {
+	if (incoming === undefined) return current;
+	if (current === "stopped" && incoming === "ready") return current;
+	return incoming;
+}
+
+function mergeServices(
+	current: RunServiceEntry[],
+	updates: Array<Partial<RunServiceEntry> & { name: string }>,
+): RunServiceEntry[] {
+	return current.map((service) => {
+		let row = service;
+		for (const update of updates)
+			if (update.name === service.name)
+				row = {
+					...row,
+					...update,
+					status: nextServiceStatus(row.status, update.status),
+				};
+		return row;
+	});
 }
 
 /**
@@ -760,9 +1045,9 @@ function applyRunPatch(current: RunEntry, patch: RunPatch): RunEntry {
 			? { captures: { ...current.captures, ...patch.captures } }
 			: {}),
 		...(patch.details ? { details: patch.details } : {}),
-		apps: patch.apps ? mergeByName(current.apps, patch.apps) : current.apps,
+		apps: mergeApps(current.apps, patch),
 		services: patch.services
-			? mergeByName(current.services, patch.services)
+			? mergeServices(current.services, patch.services)
 			: current.services,
 	};
 }

@@ -4,6 +4,7 @@ import {
 	existsSync,
 	mkdtempSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -443,10 +444,12 @@ async function applyRelease(
 			installDirectory(undefined, undefined, findInstalledBar()),
 			BAR_BUNDLE_NAME,
 		);
-		rmSync(target, { recursive: true, force: true });
-		const copy = run(`ditto ${shellQuote(source)} ${shellQuote(target)}`);
-		if (copy.exitCode !== 0) {
-			throw new Error(copy.stderr.trim() || `could not install to ${target}`);
+		try {
+			replaceBundle(source, target, dittoCopy);
+		} catch (error) {
+			// The installed app is untouched: put it back as it was.
+			if (wasRunning) openBar(target);
+			throw error;
 		}
 
 		// The bundle is ad-hoc signed, so Gatekeeper would otherwise refuse a
@@ -462,24 +465,81 @@ async function applyRelease(
 	}
 }
 
-/** Build and install from `menubar/` in a checkout of this repo. */
-export function installBarFromSource(repoRoot: string): BarInstallResult {
-	const discoveryScript = installConnectBundle();
-	const script = join(repoRoot, "menubar", "scripts", "install.sh");
-	if (!existsSync(script)) {
-		throw new Error(`No menubar sources at ${script}.`);
+/** Copies a bundle from one path to another; whether it did, and why not. */
+export type BundleCopy = (
+	from: string,
+	to: string,
+) => { ok: true } | { ok: false; error: string };
+
+const dittoCopy: BundleCopy = (from, to) => {
+	const copy = run(`ditto ${shellQuote(from)} ${shellQuote(to)}`);
+	return copy.exitCode === 0
+		? { ok: true }
+		: { ok: false, error: copy.stderr.trim() };
+};
+
+/**
+ * Put the bundle at `source` where `target` is, swapping only once it is
+ * fully copied beside it. Removing the installed copy first left no app at
+ * all when the copy failed (a full disk, a revoked permission). Throws with
+ * the installed bundle as it was.
+ */
+export function replaceBundle(
+	source: string,
+	target: string,
+	copy: BundleCopy,
+): void {
+	// Beside the target, so the swap is a rename on one volume. Not `.app`:
+	// LaunchServices would register a half-copied bundle.
+	const staged = `${target}.incoming`;
+	const previous = `${target}.previous`;
+	rmSync(staged, { recursive: true, force: true });
+	const copied = copy(source, staged);
+	if (!copied.ok) {
+		rmSync(staged, { recursive: true, force: true });
+		throw new Error(copied.error || `could not install to ${target}`);
 	}
-	const result = run(`bash ${shellQuote(script)}`, { verbose: true });
-	if (result.exitCode !== 0) {
-		throw new Error("Building the app from source failed.");
+
+	rmSync(previous, { recursive: true, force: true });
+	const installed = existsSync(target);
+	if (installed) renameSync(target, previous);
+	try {
+		renameSync(staged, target);
+	} catch (error) {
+		// Put the installed app back rather than leave none.
+		if (installed) renameSync(previous, target);
+		rmSync(staged, { recursive: true, force: true });
+		throw error;
 	}
-	const path = findInstalledBar();
-	if (!path) {
-		throw new Error("The build finished but no app bundle was installed.");
-	}
-	writeBarManifest(path, "source", discoveryScript);
-	barDecline.clear();
-	return { path, version: "source" };
+	rmSync(previous, { recursive: true, force: true });
+}
+
+/**
+ * Build and install from `menubar/` in a checkout of this repo, under the
+ * manifest lock `installBar` takes, so a `dev` updating the app meanwhile
+ * waits rather than writing over the same bundle.
+ */
+export async function installBarFromSource(
+	repoRoot: string,
+): Promise<BarInstallResult> {
+	return withFileLock(getBarManifestPath(), async () => {
+		const discoveryScript = installConnectBundle();
+		const script = join(repoRoot, "menubar", "scripts", "install.sh");
+		if (!existsSync(script)) {
+			throw new Error(`No menubar sources at ${script}.`);
+		}
+		const result = run(`bash ${shellQuote(script)}`, { verbose: true });
+		if (result.exitCode !== 0) {
+			throw new Error("Building the app from source failed.");
+		}
+		const path = findInstalledBar();
+		if (!path) {
+			throw new Error("The build finished but no app bundle was installed.");
+		}
+		writeBarManifest(path, "source", discoveryScript);
+		barDecline.clear();
+		return { path, version: "source" };
+	});
 }
 
 export function openBar(path?: string): void {
@@ -515,9 +575,12 @@ export async function quitBar(): Promise<boolean> {
 	return true;
 }
 
+/** Under the manifest lock, so an update in flight cannot reinstall behind it. */
 export async function uninstallBar(): Promise<boolean> {
-	await quitBar();
-	return removeInstalledBars();
+	return withFileLock(getBarManifestPath(), async () => {
+		await quitBar();
+		return removeInstalledBars();
+	});
 }
 
 /**

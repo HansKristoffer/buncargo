@@ -122,6 +122,59 @@ export function readProcessIdentities(
 	return encodeBirths(births);
 }
 
+/** Identities of live pids, as {@link readProcessIdentities} returns them. */
+export type ProcessIdentityReader = (
+	pids: readonly number[],
+) => Map<number, string>;
+
+/**
+ * Identity reads remembered per pid, for a long-lived reader that asks about
+ * the same owners again and again: `getEnvVar` inside a `vite.config.ts` is
+ * read several times per load and on every reload, and on macOS each read is
+ * a `ps`.
+ *
+ * Liveness is still checked on every call, and a pid seen dead is forgotten,
+ * so only a pid not seen before is read. What it gives up: a pid that dies
+ * and is reused between two calls keeps the identity first read. For liveness
+ * readers only; never for deciding to signal a pid.
+ */
+export function createProcessIdentityCache(deps: {
+	read: ProcessIdentityReader;
+	isAlive: (pid: number) => boolean;
+}): ProcessIdentityReader {
+	const known = new Map<number, string>();
+	return (pids) => {
+		const identities = new Map<number, string>();
+		const unseen: number[] = [];
+		for (const pid of wantedPids(pids)) {
+			if (!deps.isAlive(pid)) {
+				known.delete(pid);
+				continue;
+			}
+			const identity = known.get(pid);
+			if (identity === undefined) unseen.push(pid);
+			else identities.set(pid, identity);
+		}
+		if (unseen.length === 0) return identities;
+
+		for (const [pid, identity] of deps.read(unseen)) {
+			known.set(pid, identity);
+			identities.set(pid, identity);
+		}
+		return identities;
+	};
+}
+
+/**
+ * {@link readProcessIdentities} through this process's one
+ * {@link createProcessIdentityCache}: what the synchronous liveness readers
+ * that run inside users' configs use.
+ */
+export const readProcessIdentitiesCached = createProcessIdentityCache({
+	read: readProcessIdentities,
+	isAlive: isProcessAlive,
+});
+
 async function linuxBirthAsync(
 	pid: number,
 	signal?: AbortSignal,
@@ -267,6 +320,37 @@ export async function checkProcessIdentityAsync(
 	if (actual === undefined)
 		return isProcessAlive(pid) ? "unreadable" : "mismatch";
 	return "mismatch";
+}
+
+/**
+ * {@link checkProcessIdentityAsync} for a whole list, with one `ps` between
+ * them, in the list's order. The caller decides what `unreadable` means for
+ * it, in plain sight.
+ */
+export async function checkProcessIdentitiesAsync(
+	entries: readonly { pid: number; identity?: string }[],
+	signal?: AbortSignal,
+): Promise<ProcessIdentityCheck[]> {
+	signal?.throwIfAborted();
+	const alive = (pid: number) =>
+		Number.isInteger(pid) && pid > 1 && isProcessAlive(pid);
+	const asked = entries.filter(
+		(entry) => entry.identity !== undefined && alive(entry.pid),
+	);
+	const actual = await readProcessIdentitiesAsync(
+		asked.map((entry) => entry.pid),
+		signal,
+	);
+	return entries.map(({ pid, identity }): ProcessIdentityCheck => {
+		if (!alive(pid)) return "mismatch";
+		if (identity === undefined) return "match";
+		const read = actual.get(pid);
+		if (read === identity) return "match";
+		// Linux reads nothing for a pid that exited during the read.
+		if (read === undefined)
+			return isProcessAlive(pid) ? "unreadable" : "mismatch";
+		return "mismatch";
+	});
 }
 
 type IdentityEntry = { pid: number; processIdentity?: string };
