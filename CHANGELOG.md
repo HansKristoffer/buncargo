@@ -1,5 +1,17 @@
 # Changelog
 
+## [16.0.0](https://github.com/HansKristoffer/buncargo/compare/v15.1.0...v16.0.0) (2026-11-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** DockerUnavailableError now extends ContainerRuntimeUnavailableError, its runtime is "docker" and the Docker flavour moved to dockerRuntime. Custom ContainerRuntimeAdapter implementations must add availability(), and projectServiceStates and dockerProjectServiceStates throw when the runtime cannot answer instead of returning an empty list. ServiceRuntimeState requires state. isContainerUp counts paused, restarting, stopping and unknown containers as up. getEnvVar, env, status and url return localhost unless a run of the checkout serves the named URLs. docs/migration.md lists each change and what to do.
+
+### Bug Fixes
+
+* **cli:** fix bugs in buncargo's implicit state machines ([#144](https://github.com/HansKristoffer/buncargo/issues/144)) ([3fbff7d](https://github.com/HansKristoffer/buncargo/commit/3fbff7d659b62078e8bcff2459c22be9fe341c93))
+* **deps:** depend on hanzio ^3.4.0 so projects share one copy ([#142](https://github.com/HansKristoffer/buncargo/issues/142)) ([2687b28](https://github.com/HansKristoffer/buncargo/commit/2687b28002b113c5e4a1883c253931dc90d484d8))
+
 ## [15.1.0](https://github.com/HansKristoffer/buncargo/compare/v15.0.0...v15.1.0) (2026-11-03)
 
 
