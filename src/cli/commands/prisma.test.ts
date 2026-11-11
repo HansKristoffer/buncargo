@@ -13,6 +13,8 @@ import { join, resolve } from "node:path";
 import type { RunEntry } from "../../core/run-registry";
 import { CI_ENV_VARS } from "../../core/runtime-flags";
 import { standInForWatchdog } from "../../core/watchdog.testing";
+import { PRISMA_SQUASHED_CHAIN_EXIT } from "../../prisma/migration-chain";
+import type { MigrationRow } from "../../prisma/migrations-applied";
 
 describe("buncargo prisma", () => {
 	const cli = [process.execPath, resolve(import.meta.dir, "../bin.ts")];
@@ -57,11 +59,39 @@ describe("buncargo prisma", () => {
 		return root;
 	}
 
+	/**
+	 * A preload for the CLI under test: its applied-migrations reader returns
+	 * `rows` instead of querying the database, which no test here runs.
+	 */
+	function stubMigrationRows(root: string, rows: MigrationRow[]): string {
+		const preload = join(root, "stub-migration-rows.ts");
+		writeFileSync(
+			preload,
+			`import { plugin } from "bun";
+const rows = ${JSON.stringify(rows)};
+const real = "export async function readMigrationRows(";
+const stub = "export async function readMigrationRows() { return " + JSON.stringify(rows) + "; }\\n";
+plugin({
+	name: "stub-migration-rows",
+	setup(build) {
+		build.onLoad({ filter: /prisma\\/migrations-applied\\.ts$/ }, async ({ path }) => {
+			const source = await Bun.file(path).text();
+			if (!source.includes(real)) throw new Error("readMigrationRows moved: update the stub");
+			return { loader: "ts", contents: source.replace(real, stub + "async function realReadMigrationRows(") };
+		});
+	},
+});
+`,
+		);
+		return preload;
+	}
+
 	/** The CLI as an agent runs it: no terminal, not CI. */
 	async function prisma(
 		root: string,
 		args: string[],
 		extraEnv: Record<string, string> = {},
+		preload?: string,
 	) {
 		const env: Record<string, string | undefined> = {
 			...process.env,
@@ -71,7 +101,9 @@ describe("buncargo prisma", () => {
 		};
 		for (const name of CI_ENV_VARS) delete env[name];
 		Object.assign(env, extraEnv);
-		const child = Bun.spawn([...cli, "prisma", ...args], {
+		const [bun, bin] = cli;
+		const argv = preload ? [bun, "--preload", preload, bin] : cli;
+		const child = Bun.spawn([...argv, "prisma", ...args], {
 			cwd: root,
 			env,
 			stdin: "ignore",
@@ -226,6 +258,37 @@ describe("buncargo prisma", () => {
 		expect(readFileSync(join(root, "direct-url"), "utf-8")).toMatch(
 			/^postgres(ql)?:\/\/[^@]*@localhost:\d+\//,
 		);
+	});
+
+	it("stops with exit 4 when the database applied migrations the checkout lacks", async () => {
+		const root = await checkout();
+		const migration = join(
+			root,
+			"packages/prisma/prisma/migrations/20250101000000_squashed",
+		);
+		mkdirSync(migration, { recursive: true });
+		writeFileSync(join(migration, "migration.sql"), "");
+		const applied = (migration_name: string): MigrationRow => ({
+			migration_name,
+			finished_at: "2025-01-01T00:00:00Z",
+			rolled_back_at: null,
+		});
+		const preload = stubMigrationRows(root, [
+			applied("20240101000000_init"),
+			applied("20240201000000_users"),
+		]);
+
+		const result = await prisma(root, ["migrate", "deploy"], {}, preload);
+
+		expect(result.exitCode).toBe(PRISMA_SQUASHED_CHAIN_EXIT);
+		expect(result.stderr).toContain(
+			"applied 2 migrations this checkout no longer has (20240101000000_init, 20240201000000_users): the chain was squashed or rewritten.",
+		);
+		expect(result.stderr).toContain(
+			"Only recreating the database gets past it, and that drops its data: bunx buncargo dev --reset --yes. Ask before running it.",
+		);
+		// Prisma never ran against the database.
+		expect(existsSync(join(root, "runs.during.json"))).toBe(false);
 	});
 
 	describe("migration check", () => {
