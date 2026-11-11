@@ -271,58 +271,12 @@ function commandWords(value: DockerComposeNode | undefined): string[] {
 	return asStringArray(value);
 }
 
-/**
- * Compose's two `environment` forms as one record.
- *
- * In the list form a bare `KEY`, and in the map form a `KEY:` with no value,
- * take the value from the environment and are left out when it is unset.
- */
-function environmentRecord(
-	value: DockerComposeNode | undefined,
-	env: Record<string, string>,
-): Record<string, string> {
-	const entries: [string, string | undefined][] = Array.isArray(value)
-		? value.map((entry) => {
-				const text = String(entry);
-				const at = text.indexOf("=");
-				return at < 0
-					? [text, env[text]]
-					: [text.slice(0, at), text.slice(at + 1)];
-			})
-		: isRecord(value)
-			? Object.entries(value).map(([key, entry]) => [
-					key,
-					entry === null || entry === undefined ? env[key] : String(entry),
-				])
-			: [];
-	return Object.fromEntries(
-		entries.filter(
-			(entry): entry is [string, string] => entry[1] !== undefined,
-		),
-	);
-}
-
 function field(node: DockerComposeNode, key: string): string | undefined {
 	if (!isRecord(node)) return undefined;
 	const value = node[key];
 	return value === undefined || value === null || value === ""
 		? undefined
 		: String(value);
-}
-
-/** One `ports` entry as a `--publish` spec, from either compose form. */
-function publishSpec(entry: DockerComposeNode, serviceName: string): string {
-	if (typeof entry !== "object" || entry === null) return String(entry);
-	const target = field(entry, "target");
-	const published = field(entry, "published");
-	if (!target || !published) {
-		throw new Error(
-			`Service "${serviceName}" publishes a port without both "target" and "published". Apple container cannot pick a host port; set "published".`,
-		);
-	}
-	const hostIp = field(entry, "host_ip");
-	const protocol = field(entry, "protocol");
-	return `${hostIp ? `${hostIp}:` : ""}${published}:${target}${protocol ? `/${protocol}` : ""}`;
 }
 
 /** The host port of a `--publish` spec: `[ip:]host:container[/proto]`. */
@@ -335,53 +289,22 @@ function hostPortOf(spec: string): number | undefined {
 
 type MountArgs = { args: string[]; namedVolume?: string };
 
-/** One `volumes` entry as `container run` flags, from either compose form. */
+/** One short-form `volumes` entry as `container run` flags. */
 function mountArgs(
-	entry: DockerComposeNode,
-	context: { projectName: string; serviceName: string; root: string },
+	volume: string,
+	context: { projectName: string; root: string },
 ): MountArgs {
-	const { projectName, serviceName, root } = context;
-	const named = (source: string, rest: string): MountArgs => {
-		const namedVolume = volumeNameFor(projectName, source);
-		return { args: ["--volume", `${namedVolume}:${rest}`], namedVolume };
-	};
-
-	if (typeof entry !== "object" || entry === null) {
-		const volume = String(entry);
-		const separator = volume.indexOf(":");
-		// An anonymous volume: Apple creates it implicitly from the target.
-		if (separator === -1) return { args: ["--volume", volume] };
-		const source = volume.slice(0, separator);
-		const rest = volume.slice(separator + 1);
-		return isPathSource(source)
-			? { args: ["--volume", `${resolvePathSource(source, root)}:${rest}`] }
-			: named(source, rest);
-	}
-
-	const type = field(entry, "type") ?? "volume";
-	const source = field(entry, "source");
-	const target = field(entry, "target");
-	if (!target) {
-		throw new Error(
-			`Service "${serviceName}" has a volume with no "target"; Apple container needs to know where to mount it.`,
-		);
-	}
-	const readOnly = !Array.isArray(entry) && entry.read_only === true;
-	const rest = readOnly ? `${target}:ro` : target;
-	switch (type) {
-		case "bind":
-			if (!source) break;
-			return {
-				args: ["--volume", `${resolvePathSource(source, root)}:${rest}`],
-			};
-		case "volume":
-			return source ? named(source, rest) : { args: ["--volume", target] };
-		case "tmpfs":
-			return { args: ["--tmpfs", target] };
-	}
-	throw new Error(
-		`Service "${serviceName}" has a "${type}" volume${source ? "" : " with no source"}, which Apple container cannot mount. Use docker.runtime: "docker" for it.`,
-	);
+	const separator = volume.indexOf(":");
+	// An anonymous volume: Apple creates it implicitly from the target.
+	if (separator === -1) return { args: ["--volume", volume] };
+	const source = volume.slice(0, separator);
+	const rest = volume.slice(separator + 1);
+	if (isPathSource(source))
+		return {
+			args: ["--volume", `${resolvePathSource(source, context.root)}:${rest}`],
+		};
+	const namedVolume = volumeNameFor(context.projectName, source);
+	return { args: ["--volume", `${namedVolume}:${rest}`], namedVolume };
 }
 
 /**
@@ -503,20 +426,13 @@ function buildServicePlan(
 		containerName,
 	];
 
-	const publish = Array.isArray(service.ports)
-		? service.ports.map((entry) => publishSpec(entry, serviceName))
-		: asStringArray(service.ports);
+	const publish = service.ports ?? [];
 	for (const spec of publish) {
 		args.push("--publish", spec);
 	}
 
-	const volumeEntries = Array.isArray(service.volumes)
-		? service.volumes
-		: service.volumes === undefined
-			? []
-			: [service.volumes];
-	for (const entry of volumeEntries) {
-		const mount = mountArgs(entry, { projectName, serviceName, root });
+	for (const volume of service.volumes ?? []) {
+		const mount = mountArgs(volume, { projectName, root });
 		args.push(...mount.args);
 		if (mount.namedVolume) namedVolumes.push(mount.namedVolume);
 	}
@@ -538,9 +454,7 @@ function buildServicePlan(
 		args.push("--env-file", resolvePathSource(path, root));
 	}
 
-	for (const [key, value] of Object.entries(
-		environmentRecord(service.environment, env),
-	)) {
+	for (const [key, value] of Object.entries(service.environment ?? {})) {
 		args.push("--env", `${key}=${value}`);
 	}
 

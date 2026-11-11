@@ -33,7 +33,7 @@ exec ${quote(process.execPath)} -e 'process.on("SIGTERM", () => {}); setInterval
 			const { root, runtime, pidFile } = await fixture();
 			try {
 				const start = performance.now();
-				const ready = await runtime.execInService({
+				const ready = await runtime.exec({
 					projectName: "demo",
 					serviceName: "db",
 					command: ["probe", "literal argument"],

@@ -6,6 +6,7 @@ import { resolveServices } from "../config/resolve";
 import { readRemovals } from "../core/removal-log";
 import { buildRunEntry, publishRun } from "../core/run-registry";
 import type { PortContainerOwner } from "../types";
+import { fakeRuntime, runtimeContainer } from "./fake-runtime.testing";
 import { assertServicePortsClaimable } from "./service-ports";
 import {
 	decideStaleStack,
@@ -32,10 +33,10 @@ const otherCheckout: PortContainerOwner = {
 };
 
 /**
- * A runtime whose port owners are `owners` and whose container listing is
- * built from them, plus `extra` containers that publish none of the ports.
+ * A runtime listing a container for each of `owners`, publishing its port,
+ * plus `extra` containers that publish none.
  */
-function fakeRuntime(
+function stackRuntime(
 	owners: Map<number, PortContainerOwner>,
 	options: {
 		name?: ContainerRuntimeAdapter["name"];
@@ -44,20 +45,31 @@ function fakeRuntime(
 ): { runtime: ContainerRuntimeAdapter; downs: ContainerDownRequest[] } {
 	const downs: ContainerDownRequest[] = [];
 	const listed = [
-		...[...owners.values()].map((owner) => ({
-			project: owner.composeProject ?? "",
-			root: owner.root ?? "",
-		})),
-		...(options.extra ?? []),
+		...[...owners].map(([port, owner]) =>
+			runtimeContainer({
+				id: owner.id,
+				name: owner.name,
+				ports: [port],
+				labels: {
+					composeProject: owner.composeProject,
+					project: owner.composeProject,
+					root: owner.root,
+				},
+			}),
+		),
+		...(options.extra ?? []).map(({ project, root }) =>
+			runtimeContainer({
+				labels: { composeProject: project, project, root },
+			}),
+		),
 	];
-	const runtime = {
+	const runtime = fakeRuntime({
 		name: options.name ?? "docker",
-		containerPortOwnersAsync: async () => owners,
-		list: () => listed,
+		containers: async () => listed,
 		down: async (request: ContainerDownRequest) => {
 			downs.push(request);
 		},
-	} as unknown as ContainerRuntimeAdapter;
+	});
 	return { runtime, downs };
 }
 
@@ -156,7 +168,7 @@ describe("replaceStaleStacks", () => {
 	const wanted = [13379];
 
 	it("downs a stale stack of this checkout, keeping its volumes, and records it", async () => {
-		const { runtime, downs } = fakeRuntime(new Map([[13379, staleRedis]]));
+		const { runtime, downs } = stackRuntime(new Map([[13379, staleRedis]]));
 
 		const result = await replaceStaleStacks(checkout, wanted, [runtime], {
 			verbose: false,
@@ -180,7 +192,7 @@ describe("replaceStaleStacks", () => {
 	});
 
 	it("never touches a stack of another checkout root", async () => {
-		const { runtime, downs } = fakeRuntime(new Map([[13379, otherCheckout]]));
+		const { runtime, downs } = stackRuntime(new Map([[13379, otherCheckout]]));
 
 		const result = await replaceStaleStacks(checkout, wanted, [runtime], {
 			verbose: false,
@@ -191,7 +203,7 @@ describe("replaceStaleStacks", () => {
 	});
 
 	it("never touches a project another checkout's containers share", async () => {
-		const { runtime, downs } = fakeRuntime(new Map([[13379, staleRedis]]), {
+		const { runtime, downs } = stackRuntime(new Map([[13379, staleRedis]]), {
 			extra: [{ project: "bliss-t3-e144b332", root: "/work/main" }],
 		});
 
@@ -216,7 +228,7 @@ describe("replaceStaleStacks", () => {
 				isWorktree: true,
 			}),
 		);
-		const { runtime, downs } = fakeRuntime(new Map([[13379, staleRedis]]));
+		const { runtime, downs } = stackRuntime(new Map([[13379, staleRedis]]));
 
 		const result = await replaceStaleStacks(checkout, wanted, [runtime], {
 			verbose: false,
@@ -229,8 +241,8 @@ describe("replaceStaleStacks", () => {
 	});
 
 	it("downs each stale stack through the runtime that reported it", async () => {
-		const docker = fakeRuntime(new Map());
-		const apple = fakeRuntime(new Map([[13379, staleRedis]]), {
+		const docker = stackRuntime(new Map());
+		const apple = stackRuntime(new Map([[13379, staleRedis]]), {
 			name: "apple",
 		});
 
@@ -253,7 +265,7 @@ describe("assertServicePortsClaimable", () => {
 	const port = 1;
 
 	it("names a stale stack of this checkout and the command that removes it", async () => {
-		const { runtime } = fakeRuntime(new Map([[port, staleRedis]]));
+		const { runtime } = stackRuntime(new Map([[port, staleRedis]]));
 
 		const failure = assertServicePortsClaimable(
 			runtime,
@@ -268,7 +280,7 @@ describe("assertServicePortsClaimable", () => {
 	});
 
 	it("reports a stack of another checkout as a plain conflict", async () => {
-		const { runtime } = fakeRuntime(new Map([[port, otherCheckout]]));
+		const { runtime } = stackRuntime(new Map([[port, otherCheckout]]));
 
 		const failure = assertServicePortsClaimable(
 			runtime,

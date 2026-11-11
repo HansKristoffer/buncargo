@@ -14,7 +14,6 @@ import {
 } from "../core/process";
 import { formatDone, formatStep, formatWarn } from "../core/style";
 import { SERVICE_HASH_LABEL } from "../docker-compose/interpolate";
-import { appleContainerRuntimeAdapter } from "./adapter";
 import type { AppleCliResult, AppleContainerCli } from "./cli";
 import {
 	isAlreadyExistsMessage,
@@ -30,7 +29,12 @@ import {
 	projectVolumeNames,
 } from "./run-plan";
 import type { AppleContainerRecord } from "./status";
-import { LIST_ARGS, readContainerListing, recordState } from "./status";
+import {
+	appleContainers,
+	LIST_ARGS,
+	readContainerListing,
+	recordState,
+} from "./status";
 
 /**
  * Run one `container` argv against the operation's shared deadline; `stream`
@@ -355,9 +359,15 @@ async function down(
 	if (verbose) console.log(formatDone("Containers stopped"));
 }
 
-export function appleStopByIds(cli: AppleContainerCli, ids: string[]): void {
+export async function appleStopByIds(
+	cli: AppleContainerCli,
+	ids: string[],
+): Promise<void> {
 	if (ids.length === 0) return;
-	const result = cli.run(["stop", ...ids], { inherit: true });
+	const result = await runAppleAsync(cli, ["stop", ...ids], {
+		inherit: true,
+		timeoutMs: 60_000,
+	});
 	// Same reason as in `appleDown`: reporting success over a failed stop tells
 	// the caller the ports are free when they are not.
 	if (!result.ok && !isMissingResourceMessage(result.stderr)) {
@@ -389,7 +399,10 @@ export function appleUp(
 ): Promise<void> {
 	// Asked of Apple itself: its port forwarder holds the socket, so the host
 	// lookup alone names the forwarder rather than the container behind it.
-	const runtime = appleContainerRuntimeAdapter({ cli });
+	const runtime = {
+		name: "apple" as const,
+		containers: (signal?: AbortSignal) => appleContainers(cli, signal),
+	};
 	const ownersOf = (ports: number[]) =>
 		createPortOwnerSnapshotAsync({ runtime, ports, signal: request.signal });
 	const run = appleRunner(cli, {

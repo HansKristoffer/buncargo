@@ -4,6 +4,7 @@ import {
 	type ContainerRuntimeAdapter,
 	containerRuntimeForEnv,
 	getContainerRuntimeAdapter,
+	isRuntimeUp,
 	sweepOrphanedContainers,
 } from "../../../container-runtime";
 import { inDiscardedCheckout } from "../../../core/checkout-presence";
@@ -16,6 +17,7 @@ import {
 	OUTDATED_DAEMON_MESSAGE,
 	type ProxyHealth,
 	RELOAD_STALL_MS,
+	readDaemonConfig,
 	readHostsDaemonHealth,
 } from "../../../core/hosts";
 import { isCaTrusted } from "../../../core/hosts/mkcert";
@@ -48,7 +50,7 @@ import {
 	classifyPortOccupant,
 	createPortOwnerSnapshotAsync,
 	formatPortOwner,
-	getPortOwner,
+	getPortOwnerAsync,
 	killPortOwnerFoundBy,
 	type PortOwnerLookupOptions,
 	withBindProbe,
@@ -212,8 +214,11 @@ async function checkPortOwnership(
 		}
 		// Only the process just judged: a port that changed hands since is
 		// somebody else's, and is left alone.
-		const sameHolder = (_port: number, options: PortOwnerLookupOptions) => {
-			const current = getPortOwner(port, options);
+		const sameHolder = async (
+			_port: number,
+			options: PortOwnerLookupOptions,
+		) => {
+			const current = await getPortOwnerAsync(port, options);
 			return current && current.pids.join() === owner.pids.join()
 				? current
 				: null;
@@ -264,7 +269,7 @@ async function checkOrphanedContainers(
 	env: DevEnv,
 	runtime: ContainerRuntimeAdapter,
 ): Promise<void> {
-	if (!runtime.isAvailable()) return;
+	if (!isRuntimeUp(runtime)) return;
 	try {
 		const result = await sweepOrphanedContainers({
 			runtimes: [runtime],
@@ -366,7 +371,7 @@ async function checkNamedHosts(
 		);
 		return;
 	}
-	const health = await readHostsDaemonHealth();
+	const health = await readHostsDaemonHealth(readDaemonConfig().httpsPort);
 	if (health) {
 		report.note("Named-hosts daemon is healthy");
 		const hijack = await describeLoopbackHijack();

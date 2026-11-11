@@ -1,36 +1,22 @@
 import { containerRuntimeDisplayName } from "../container-runtime/names";
 import type {
-	ContainerDownRequest,
 	ContainerRuntimeAdapter,
-	ContainerUpRequest,
 	EnsureRuntimeOptions,
-	ExecInServiceRequest,
-	ServiceDiagnosisRequest,
 } from "../container-runtime/types";
 import { listDockerContainersAsync } from "./containers";
-import { diagnoseDockerService } from "./diagnose";
 import { dockerInteractiveExecArgv, execInDockerService } from "./exec";
-import {
-	listDockerBuncargoContainers,
-	stopDockerContainersByIds,
-} from "./inventory";
+import { stopDockerContainersByIds } from "./inventory";
 import { startContainers, stopContainers } from "./lifecycle";
-import {
-	dockerContainerPortOwners,
-	dockerContainerPortOwnersAsync,
-	findDockerContainerOnPort,
-} from "./port-lookup";
+import { dockerContainerLogs } from "./logs";
 import {
 	dockerAvailability,
 	dockerDaemonState,
 	ensureDockerRunning,
-	isDockerDaemonRunning,
 } from "./preflight";
 import {
 	listDockerComposeProjectResources,
 	removeDockerComposeProjectResource,
 } from "./project-resources";
-import { dockerProjectServiceStates } from "./status";
 import { listDockerVolumes, removeDockerVolumes } from "./volumes";
 
 export interface DockerAdapterOptions {
@@ -52,9 +38,10 @@ export function dockerRuntimeAdapter(
 	return {
 		name: "docker",
 		displayName: containerRuntimeDisplayName("docker"),
-
-		isAvailable() {
-			return isDockerDaemonRunning(binary);
+		capabilities: {
+			jobExitCodes: true,
+			hostPortProbe: true,
+			composeProjectResources: true,
 		},
 
 		availability() {
@@ -65,7 +52,15 @@ export function dockerRuntimeAdapter(
 			return ensureDockerRunning({ ...ensureOptions, binary });
 		},
 
-		up(request: ContainerUpRequest) {
+		containers(signal) {
+			return listDockerContainersAsync(binary, { signal });
+		},
+
+		logs(request) {
+			return dockerContainerLogs(request, binary);
+		},
+
+		up(request) {
 			return startContainers(
 				request.root,
 				request.projectName,
@@ -77,69 +72,39 @@ export function dockerRuntimeAdapter(
 			);
 		},
 
-		down(request: ContainerDownRequest) {
+		down(request) {
 			return stopContainers(request.root, request.projectName, {
 				...request,
 				binary,
 			});
 		},
 
-		execInService(request: ExecInServiceRequest) {
+		stop(ids) {
+			return stopDockerContainersByIds(ids, binary);
+		},
+
+		exec(request) {
 			return execInDockerService(request, binary);
 		},
 
-		interactiveExecArgv(request) {
+		execArgv(request) {
 			return dockerInteractiveExecArgv(request, binary);
-		},
-
-		diagnoseService(request: ServiceDiagnosisRequest) {
-			return diagnoseDockerService(request, binary);
-		},
-
-		containers(signal?: AbortSignal) {
-			return listDockerContainersAsync(binary, { signal });
-		},
-
-		// No daemon probe: the only caller that lists without knowing the daemon
-		// is up is container-runtime/inventory.ts, which catches.
-		list() {
-			return listDockerBuncargoContainers(binary);
 		},
 
 		listVolumes() {
 			return listDockerVolumes(binary);
 		},
 
-		removeVolumes(names: string[]) {
+		removeVolumes(names) {
 			return removeDockerVolumes(names, binary);
 		},
 
-		listComposeProjectResources() {
+		async listComposeProjectResources() {
 			return listDockerComposeProjectResources(binary);
 		},
 
 		removeComposeProjectResource(kind, name) {
 			return removeDockerComposeProjectResource(kind, name, binary);
-		},
-
-		stopByIds(ids: string[]) {
-			stopDockerContainersByIds(ids, binary);
-		},
-
-		findContainerOnPort(port: number) {
-			return findDockerContainerOnPort(port, binary);
-		},
-
-		containerPortOwners() {
-			return dockerContainerPortOwners(binary);
-		},
-
-		containerPortOwnersAsync(signal?: AbortSignal) {
-			return dockerContainerPortOwnersAsync(binary, signal);
-		},
-
-		projectServiceStates(projectName: string, signal?: AbortSignal) {
-			return dockerProjectServiceStates(projectName, binary, signal);
 		},
 	};
 }

@@ -8,7 +8,6 @@ export {
 } from "./binary";
 export { type ComposeCommandContext, getComposeArgs } from "./compose-command";
 export {
-	listDockerBuncargoContainers,
 	parseDockerContainerLine,
 	stopDockerContainersByIds,
 } from "./inventory";
@@ -18,16 +17,13 @@ export {
 	startContainers,
 	stopContainers,
 } from "./lifecycle";
-export {
-	findDockerContainerOnPort,
-	parseDockerPublishedPort,
-} from "./port-lookup";
+export { parseDockerPublishedPort } from "./port-lookup";
 export {
 	DockerUnavailableError,
 	ensureDockerRunning,
 	isDockerDaemonRunning,
 } from "./preflight";
-export { assertDockerRunning, dockerProjectServiceStates } from "./status";
+export { assertDockerRunning } from "./status";
 export {
 	listDockerVolumes,
 	parseDockerVolumeLine,

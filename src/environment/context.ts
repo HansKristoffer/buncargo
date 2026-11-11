@@ -321,7 +321,7 @@ export function createDevEnvContext<
 
 		if (selectedRuntime) {
 			const selectedServices = pick(services, plan.requiredServiceKeys);
-			assertServiceCapabilities(selectedRuntime.name, selectedServices);
+			assertServiceCapabilities(selectedRuntime, selectedServices);
 		}
 
 		// App-only selection still checks host processes, without asking any runtime.
@@ -433,7 +433,7 @@ export function createDevEnvContext<
 				plan.requiredServiceKeys.length > 0 ? runtime() : undefined;
 			if (selectedRuntime)
 				assertServiceCapabilities(
-					selectedRuntime.name,
+					selectedRuntime,
 					pick(services, plan.requiredServiceKeys),
 				);
 			const candidatePorts = candidateAllocationPorts(

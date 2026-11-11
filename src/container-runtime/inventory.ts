@@ -2,6 +2,7 @@ import { typedSwitch } from "hanzio";
 import { manualComposeDownCommand } from "../docker/binary";
 import type { BuncargoContainer, ContainerRuntimeName } from "../types";
 import { isContainerLive, parseContainerState } from "./container-state";
+import { buncargoContainersOn } from "./containers";
 import { availableContainerRuntimes } from "./resolve";
 import type { ContainerRuntimeAdapter } from "./types";
 
@@ -24,16 +25,13 @@ export function isContainerUp(container: BuncargoContainer): boolean {
  * scope, so scoping them to one backend would hide containers the user started
  * from a project configured for the other.
  */
-export function listBuncargoContainers(
+export async function listBuncargoContainers(
 	runtimes: ContainerRuntimeAdapter[] = availableContainerRuntimes(),
-): BuncargoContainer[] {
-	return runtimes.flatMap((runtime) => {
-		try {
-			return runtime.list();
-		} catch {
-			return [];
-		}
-	});
+): Promise<BuncargoContainer[]> {
+	const listings = await Promise.all(
+		runtimes.map((runtime) => buncargoContainersOn(runtime).catch(() => [])),
+	);
+	return listings.flat();
 }
 
 /** One project's containers on one runtime: the unit `down` works on. */
@@ -83,14 +81,14 @@ export function manualDownCommand(
 }
 
 /** Stop the given containers, each through the runtime that reported it. */
-export function stopBuncargoContainers(
+export async function stopBuncargoContainers(
 	containers: BuncargoContainer[],
 	runtimes: ContainerRuntimeAdapter[] = availableContainerRuntimes(),
-): void {
+): Promise<void> {
 	for (const runtime of runtimes) {
 		const ids = containers
 			.filter((container) => (container.runtime ?? "docker") === runtime.name)
 			.map((container) => container.id);
-		if (ids.length > 0) runtime.stopByIds(ids);
+		await runtime.stop(ids);
 	}
 }

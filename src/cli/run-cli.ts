@@ -915,12 +915,18 @@ async function runDevFlow<
 	// An app that falls over is often the first sign its database was removed
 	// under it; say who did, once, rather than leave a refused connection.
 	let lossExplained = !hasServices;
-	const explainLoss = () => {
-		if (lossExplained) return;
-		const loss = env.explainMissingContainers();
-		if (!loss) return;
-		lossExplained = true;
-		view.output.event("buncargo", loss, "warn");
+	let explaining = false;
+	const explainLoss = async () => {
+		if (lossExplained || explaining) return;
+		explaining = true;
+		try {
+			const loss = await env.explainMissingContainers();
+			if (!loss) return;
+			lossExplained = true;
+			view.output.event("buncargo", loss, "warn");
+		} finally {
+			explaining = false;
+		}
 	};
 
 	try {
@@ -1007,7 +1013,7 @@ async function runDevFlow<
 				const exit = life.end?.exit;
 				if (life.phase === "down" && exit !== previous.end?.exit) {
 					options.runningApps.delete(name);
-					if (exit && exit.code !== null && exit.code !== 0) explainLoss();
+					if (exit && exit.code !== null && exit.code !== 0) void explainLoss();
 				}
 				// Activation claimed the first spawn's route; a restart claims
 				// it again in case a takeover moved it away and its run ended.

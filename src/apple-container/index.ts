@@ -32,9 +32,7 @@ export {
 } from "./run-plan";
 export {
 	type AppleContainerRecord,
-	findAppleContainerOnPort,
 	formatPublishedPorts,
-	listAppleBuncargoContainers,
 	type PublishedPort,
 	parseContainerRecords,
 } from "./status";

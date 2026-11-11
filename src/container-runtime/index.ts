@@ -1,6 +1,12 @@
 export { assertServiceCapabilities } from "./capabilities";
 export { readClaimStates } from "./claim-states";
 export {
+	buncargoContainersOn,
+	containerPortOwners,
+	isRuntimeUp,
+	projectServiceStates,
+} from "./containers";
+export {
 	type EnsureServicesRunningRequest,
 	ensureServicesRunning,
 } from "./ensure-services";
@@ -85,6 +91,8 @@ export {
 	type ContainerUpRequest,
 	type EnsureRuntimeOptions,
 	type ExecInServiceRequest,
+	type RuntimeCapabilities,
+	type RuntimeContainer,
 } from "./types";
 export {
 	type ClaimedCheckout,

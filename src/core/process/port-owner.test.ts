@@ -330,7 +330,7 @@ describe("killPortOwner", () => {
 		try {
 			await expect(
 				killPortOwnerFoundBy(
-					() => ({
+					async () => ({
 						pids: [pid],
 						command: "com.docker.backend",
 						container: { id: "abc", name: "web-1", composeProject: "shop" },

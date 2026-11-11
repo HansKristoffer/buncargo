@@ -202,6 +202,8 @@ export function containerBinaryOverride(
 // Named hosts
 // ═══════════════════════════════════════════════════════════════════════════
 
+export const DEFAULT_HOSTS_DAEMON_PORT = 443;
+
 /**
  * How named hosts are served on this machine, from `BUNCARGO_HOSTS`.
  *
@@ -287,6 +289,14 @@ export function systemdScopeEnabled(
 	env: NodeJS.ProcessEnv = process.env,
 ): boolean {
 	return env.BUNCARGO_SYSTEMD_SCOPE !== "0";
+}
+
+/** `BUNCARGO_HOSTS_PORT` - port the loopback proxy daemon listens on. */
+export function hostsDaemonPort(
+	env: NodeJS.ProcessEnv = process.env,
+	fallback = DEFAULT_HOSTS_DAEMON_PORT,
+): number {
+	return readInt(env, "BUNCARGO_HOSTS_PORT", fallback, 1);
 }
 
 /** `BUNCARGO_SYNC_HOSTS=0` - skip writing the managed `/etc/hosts` block. */

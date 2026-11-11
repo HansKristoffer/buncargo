@@ -16,10 +16,11 @@ import {
 } from "node:fs/promises";
 import { dirname } from "node:path";
 import { getErrorMessage, isRecord, safeJsonParse } from "hanzio";
+import { isProcessAlive } from "./process/lifecycle";
 
 /**
  * Reading and writing buncargo's persisted state files (`routes.json`,
- * `hosts-service.json`, `ports.json`), and the text
+ * `hosts-daemon.json`, `hosts-service.json`, `ports.json`), and the text
  * writer the dotenv rewrite shares.
  *
  * Every read goes through a validator, so a hand-edited or half-written file
@@ -141,6 +142,16 @@ export async function writeTextFile(
 		throw error;
 	}
 	options.afterWrite?.(path);
+}
+
+/**
+ * Is the process that registered an entry still around?
+ *
+ * A missing pid means the entry was registered without an owner (a static
+ * route the user installed by hand), so it outlives any single dev run.
+ */
+export function isRouteOwnerAlive(pid: number | undefined): boolean {
+	return pid === undefined || isProcessAlive(pid);
 }
 
 /**

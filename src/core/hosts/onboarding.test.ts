@@ -14,7 +14,7 @@ import {
 } from "./onboarding";
 
 const REASON =
-	"Named-hosts service runs buncargo 15.1.0 (protocol 1), older than this buncargo needs (protocol 2). Run `buncargo hosts install` to update it.";
+	"Named-hosts service runs hostsd-6.1.1.js, but this buncargo installs hostsd-7.1.0.js. Run `buncargo hosts install` to update it.";
 
 describe("repairStaleService", () => {
 	// The stale daemon is still serving, so this path must never fail the run —
@@ -24,7 +24,6 @@ describe("repairStaleService", () => {
 		const result = await repairStaleService(REASON, {
 			reinstall: async () => {
 				reinstalls += 1;
-				return [];
 			},
 			caPath: () => "/ca.pem",
 		});
@@ -42,7 +41,6 @@ describe("repairStaleService", () => {
 			},
 			reinstall: async () => {
 				reinstalls += 1;
-				return [];
 			},
 			caPath: () => "/ca.pem",
 		});
@@ -57,25 +55,12 @@ describe("repairStaleService", () => {
 			prompt: async () => "skip",
 			reinstall: async () => {
 				reinstalls += 1;
-				return [];
 			},
 			caPath: () => "/ca.pem",
 		});
 		expect(reinstalls).toBe(0);
 		expect(result.ok).toBe(true);
 		expect(result.ok && result.notes).toEqual([REASON]);
-	});
-
-	// The update found a newer service another project installed and kept
-	// it: the run goes on, and says so.
-	it("carries what the reinstall kept as its note", async () => {
-		const kept = "Kept the named-hosts service from buncargo 17.0.0";
-		const result = await repairStaleService(REASON, {
-			prompt: async () => "update",
-			reinstall: async () => [kept],
-			caPath: () => "/ca.pem",
-		});
-		expect(result).toEqual({ ok: true, caPath: "/ca.pem", notes: [kept] });
 	});
 
 	// A failed reinstall leaves the old daemon serving, so the run continues

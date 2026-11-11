@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { runtimeContainer } from "./fake-runtime.testing";
 import {
 	describeServiceCondition,
 	observeServices,
@@ -7,7 +8,7 @@ import {
 	settleConditions,
 	watchServiceContainers,
 } from "./service-watch";
-import type { ServiceRuntimeState } from "./types";
+import type { RuntimeContainer, ServiceRuntimeState } from "./types";
 
 describe("observeServices", () => {
 	it("reads stopped, removed and unhealthy containers apart from running ones", () => {
@@ -117,16 +118,13 @@ describe("watchServiceContainers", () => {
 		const { promise, resolve } = Promise.withResolvers<void>();
 		const stop = watchServiceContainers({
 			runtime: {
-				projectServiceStates: async () => {
-					return [
-						{
-							service: "postgres",
-							state: running ? "running" : "stopped",
-							running,
-							exitCode: 0,
-						},
-					];
-				},
+				containers: async () => [
+					runtimeContainer({
+						state: running ? "running" : "exited",
+						exitCode: 0,
+						labels: { project: "app", service: "postgres" },
+					}),
+				],
 			},
 			projectName: "app",
 			services: () => ["postgres"],
@@ -143,8 +141,10 @@ describe("watchServiceContainers", () => {
 	});
 
 	it("reports every container removed, but nothing while the runtime cannot answer", async () => {
-		const answers: (() => ServiceRuntimeState[])[] = [
-			() => [{ service: "postgres", state: "running", running: true }],
+		const answers: (() => RuntimeContainer[])[] = [
+			() => [
+				runtimeContainer({ labels: { project: "app", service: "postgres" } }),
+			],
 			() => {
 				throw new Error("Cannot connect to the Docker daemon");
 			},
@@ -155,7 +155,7 @@ describe("watchServiceContainers", () => {
 		const { promise, resolve } = Promise.withResolvers<void>();
 		const stop = watchServiceContainers({
 			runtime: {
-				projectServiceStates: async () => {
+				containers: async () => {
 					const answer = answers[Math.min(polls++, answers.length - 1)];
 					return answer();
 				},

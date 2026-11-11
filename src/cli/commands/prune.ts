@@ -3,6 +3,7 @@ import {
 	type ContainerRuntimeAdapter,
 	claimedCheckouts,
 	containerRuntimeForEnv,
+	isRuntimeUp,
 	listBuncargoContainers,
 	type ProjectPrunePlan,
 	type ProjectPruneStack,
@@ -72,7 +73,7 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 		if (!claims) return undefined;
 		return planVolumePrune({
 			volumes,
-			containers: listBuncargoContainers(runtimes),
+			containers: await listBuncargoContainers(runtimes),
 			runs: await readAllRuns(),
 			// A claim read now wins: a checkout that is back counts as existing.
 			checkouts: claimedCheckouts({ ...before, ...claims }),
@@ -228,14 +229,13 @@ async function pruneProject(parsed: {
 }): Promise<number> {
 	const env = await loadDevEnv({ readOnly: true });
 	const runtime = containerRuntimeForEnv(env);
-	const list = runtime.listComposeProjectResources;
-	if (!list || !runtime.removeComposeProjectResource) {
+	if (!runtime.capabilities.composeProjectResources) {
 		log.error(
 			`prune --project needs Docker. ${runtime.displayName} records no Compose project on its volumes, so none can be traced to a checkout.`,
 		);
 		return 1;
 	}
-	if (!runtime.isAvailable()) {
+	if (!isRuntimeUp(runtime)) {
 		log.info(`${runtime.displayName} is not running. Nothing to prune.`);
 		return 0;
 	}
@@ -249,7 +249,7 @@ async function pruneProject(parsed: {
 				projectPrefix: env.projectPrefix,
 				worktreeIsolation: env.worktreeIsolation,
 				checkouts,
-				resources: list.call(runtime),
+				resources: await runtime.listComposeProjectResources(),
 				liveProjects: new Set(
 					(await readLiveRuns()).map((run) => run.projectName),
 				),
@@ -327,8 +327,7 @@ async function removeStack(
 	listed: ProjectPruneStack,
 	inventory: () => Promise<{ plan: ProjectPrunePlan }>,
 ): Promise<boolean> {
-	const remove = runtime.removeComposeProjectResource?.bind(runtime);
-	if (!remove) return false;
+	const remove = runtime.removeComposeProjectResource.bind(runtime);
 	try {
 		return await withProjectLifecycleLock(
 			listed.projectName,

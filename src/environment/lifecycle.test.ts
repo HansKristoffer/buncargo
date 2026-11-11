@@ -8,7 +8,10 @@ import {
 	resolveService,
 	resolveServices,
 } from "../config/resolve";
-import type { ContainerRuntimeAdapter } from "../container-runtime";
+import {
+	fakeRuntime,
+	runtimeContainer,
+} from "../container-runtime/fake-runtime.testing";
 import { waitForDevServers } from "../core/network";
 import { readRemovals } from "../core/removal-log";
 import { buildRunEntry, publishRun, retireRuns } from "../core/run-registry";
@@ -46,18 +49,18 @@ function fixture() {
 			healthEndpoint: false,
 		},
 	});
-	const runtime = {
-		name: "docker",
-		displayName: "Docker",
+	// Not started: the first listing fails, so a start asks it to start.
+	const runtime = fakeRuntime({
+		containers: async () => {
+			throw new Error("Cannot connect to the Docker daemon");
+		},
 		ensureRunning: async () => {
 			events.push("runtime");
 		},
-		up: () => {
+		up: async () => {
 			events.push("up");
 		},
-		projectServiceStates: () => [],
-		containerPortOwners: () => new Map(),
-	} as unknown as ContainerRuntimeAdapter;
+	});
 	const config = {
 		services,
 		apps,
@@ -437,9 +440,12 @@ describe("startup modes and hooks", () => {
 			kind: "job",
 			rerun: "always",
 		});
-		ctx.runtime.projectServiceStates = async () => [
-			{ service: "db", state: "running", running: true },
-			{ service: "schema", state: "stopped", running: false },
+		ctx.runtime.containers = async () => [
+			runtimeContainer({ labels: { project: ctx.projectName, service: "db" } }),
+			runtimeContainer({
+				state: "exited",
+				labels: { project: ctx.projectName, service: "schema" },
+			}),
 		];
 		await lifecycle.start({
 			prepare: "containers",
@@ -449,8 +455,11 @@ describe("startup modes and hooks", () => {
 		});
 		expect(await lifecycle.isRunning()).toBe(true);
 
-		ctx.runtime.projectServiceStates = async () => [
-			{ service: "db", state: "stopped", running: false },
+		ctx.runtime.containers = async () => [
+			runtimeContainer({
+				state: "exited",
+				labels: { project: ctx.projectName, service: "db" },
+			}),
 		];
 		expect(await lifecycle.isRunning()).toBe(false);
 	});

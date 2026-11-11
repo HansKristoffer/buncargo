@@ -4,22 +4,11 @@ import {
 	isContainerServing,
 	parseContainerState,
 } from "../container-runtime/container-state";
-import {
-	buncargoContainersOf,
-	portOwnersOf,
-	serviceStatesOf,
-} from "../container-runtime/containers";
 import type {
+	ContainerLogsRequest,
 	RuntimeContainer,
-	ServiceDiagnosis,
-	ServiceDiagnosisRequest,
-	ServicePortProbeRequest,
-	ServiceRuntimeState,
 } from "../container-runtime/types";
-import { remainingTime } from "../core/deadline";
-import { isTcpPortOpen } from "../core/network";
 import { SERVICE_HASH_LABEL } from "../docker-compose/interpolate";
-import type { BuncargoContainer, PortContainerOwner } from "../types";
 import type { AppleCliResult, AppleContainerCli } from "./cli";
 import { runAppleAsync } from "./cli";
 import { containerNameFor, PROJECT_LABEL, SERVICE_LABEL } from "./run-plan";
@@ -224,10 +213,6 @@ export function recordState(record: AppleContainerRecord): ContainerState {
 	return parseContainerState(record.state);
 }
 
-export function listContainerRecords(cli: AppleContainerCli): AppleListing {
-	return readContainerListing(cli.run(LIST_ARGS));
-}
-
 /** A record in buncargo's words, as every runtime-neutral reader takes it. */
 export function toRuntimeContainer(
 	record: AppleContainerRecord,
@@ -242,18 +227,29 @@ export function toRuntimeContainer(
 		service: label(SERVICE_LABEL),
 		serviceHash: label(SERVICE_HASH_LABEL),
 	};
+	const published = record.ports.flatMap((port) =>
+		Array.from({ length: port.count ?? 1 }, (_, offset) => ({
+			host: port.hostPort + offset,
+			target:
+				port.containerPort === undefined
+					? undefined
+					: port.containerPort + offset,
+		})),
+	);
+	const targetPorts = published.flatMap(({ host, target }) =>
+		target === undefined || target === host ? [] : [[host, target] as const],
+	);
 	return {
 		id: record.id,
 		name: record.id,
 		state: recordState(record),
 		runtimeState: record.state,
 		status: record.state,
-		ports: record.ports.flatMap((published) =>
-			Array.from(
-				{ length: published.count ?? 1 },
-				(_, offset) => published.hostPort + offset,
-			),
-		),
+		ports: published.map(({ host }) => host),
+		...(targetPorts.length > 0
+			? { targetPorts: Object.fromEntries(targetPorts) }
+			: {}),
+		...(record.address ? { address: record.address } : {}),
 		portsText: formatPublishedPorts(record.ports),
 		labels: Object.fromEntries(
 			Object.entries(labels).filter(([, value]) => value !== undefined),
@@ -271,52 +267,6 @@ export async function appleContainers(
 	return listing.records.map(toRuntimeContainer);
 }
 
-/**
- * Every buncargo container, or a throw when the runtime cannot answer.
- *
- * Throws rather than returning nothing, the way the Docker listing does, so a
- * machine-wide reader can tell "no containers" from "could not ask" — the
- * sweep must never retire a record because a stopped daemon listed nothing.
- */
-export function listAppleBuncargoContainers(
-	cli: AppleContainerCli,
-): BuncargoContainer[] {
-	const listing = listContainerRecords(cli);
-	if (!listing.listed) throw new Error(listing.error);
-	return buncargoContainersOf(listing.records.map(toRuntimeContainer), "apple");
-}
-
-/**
- * Which container is publishing each host port, from one `container ls`. A
- * runtime that cannot answer names no container; the port's process owner
- * still does, as with Docker.
- */
-export function appleContainerPortOwners(
-	cli: AppleContainerCli,
-): Map<number, PortContainerOwner> {
-	return portOwnersOf(
-		recordsOrNone(listContainerRecords(cli)).map(toRuntimeContainer),
-	);
-}
-
-export async function appleContainerPortOwnersAsync(
-	cli: AppleContainerCli,
-	signal?: AbortSignal,
-): Promise<Map<number, PortContainerOwner>> {
-	return portOwnersOf(
-		recordsOrNone(await listContainerRecordsAsync(cli, signal)).map(
-			toRuntimeContainer,
-		),
-	);
-}
-
-export function findAppleContainerOnPort(
-	cli: AppleContainerCli,
-	port: number,
-): PortContainerOwner | undefined {
-	return appleContainerPortOwners(cli).get(port);
-}
-
 export async function listContainerRecordsAsync(
 	cli: AppleContainerCli,
 	signal?: AbortSignal,
@@ -324,98 +274,6 @@ export async function listContainerRecordsAsync(
 ): Promise<AppleListing> {
 	return readContainerListing(
 		await runAppleAsync(cli, LIST_ARGS, { signal, timeoutMs }),
-	);
-}
-
-/**
- * Every container this project has, from one `container ls`. Throws when the
- * runtime cannot answer: an empty project is something the watch reports.
- */
-export async function appleProjectServiceStates(
-	cli: AppleContainerCli,
-	projectName: string,
-	signal?: AbortSignal,
-): Promise<ServiceRuntimeState[]> {
-	return serviceStatesOf(await appleContainers(cli, signal), projectName);
-}
-
-/**
- * State and recent output for one service.
- *
- * The state comes from the same `container ls --all` read every other question
- * here uses; the log tail is a best effort on top, because a runtime that
- * cannot produce it should still fail fast on the state alone.
- */
-export async function diagnoseAppleService(
-	cli: AppleContainerCli,
-	request: ServiceDiagnosisRequest,
-): Promise<ServiceDiagnosis | undefined> {
-	const deadline = performance.now() + (request.timeoutMs ?? 2000);
-	try {
-		const name = containerNameFor(request.projectName, request.serviceName);
-		const listing = await listContainerRecordsAsync(
-			cli,
-			request.signal,
-			remainingTime(deadline),
-		);
-		// Unanswered reads as "no container": this only enriches a message.
-		const record = recordsOrNone(listing).find(
-			(candidate) => candidate.id === name,
-		);
-		if (!record) return undefined;
-		if (remainingTime(deadline) === 0)
-			return { state: record.state, logTail: "" };
-		const logs = await runAppleAsync(
-			cli,
-			["logs", "-n", String(request.tail ?? 20), name],
-			{ signal: request.signal, timeoutMs: remainingTime(deadline) },
-		);
-		return { state: record.state, logTail: logs.ok ? logs.stdout.trim() : "" };
-	} catch {
-		return undefined;
-	}
-}
-
-/**
- * Whether the service listens on the container port behind `hostPort`.
- *
- * Asked of the container's own address because the host side cannot answer:
- * Apple's port forwarder accepts a connection on the published port whether or
- * not anything listens inside, so a host-side connect passes the moment the VM
- * boots. The container address refuses or drops instead, so the connect is
- * bounded short to keep the poll cadence.
- */
-export async function probeAppleServicePort(
-	cli: AppleContainerCli,
-	request: ServicePortProbeRequest,
-): Promise<boolean> {
-	const deadline = performance.now() + (request.timeoutMs ?? 1000);
-	const name = containerNameFor(request.projectName, request.serviceName);
-	const listing = await listContainerRecordsAsync(
-		cli,
-		request.signal,
-		remainingTime(deadline),
-	);
-	// Unanswered fails the probe, which the next poll asks again.
-	const record = recordsOrNone(listing).find(
-		(candidate) => candidate.id === name,
-	);
-	if (!record?.address || !isContainerServing(recordState(record)))
-		return false;
-	const published = record.ports.find(
-		(port) =>
-			request.hostPort >= port.hostPort &&
-			request.hostPort < port.hostPort + (port.count ?? 1),
-	);
-	const containerPort =
-		published?.containerPort === undefined
-			? request.hostPort
-			: published.containerPort + (request.hostPort - published.hostPort);
-	return isTcpPortOpen(
-		containerPort,
-		record.address,
-		Math.min(250, remainingTime(deadline)),
-		request.signal,
 	);
 }
 
@@ -432,4 +290,21 @@ export async function isAppleServiceRunning(
 		(candidate) => candidate.id === name,
 	);
 	return record !== undefined && isContainerServing(recordState(record));
+}
+
+/** `container logs` of one container, or empty when Apple won't say. */
+export async function appleContainerLogs(
+	cli: AppleContainerCli,
+	request: ContainerLogsRequest,
+): Promise<string> {
+	try {
+		const logs = await runAppleAsync(
+			cli,
+			["logs", "-n", String(request.tail), request.id],
+			{ signal: request.signal, timeoutMs: request.timeoutMs },
+		);
+		return logs.ok ? logs.stdout.trim() : "";
+	} catch {
+		return "";
+	}
 }
