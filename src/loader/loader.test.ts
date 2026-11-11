@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import * as childProcess from "node:child_process";
 import { spawnSync } from "node:child_process";
 import {
 	existsSync,
@@ -487,6 +488,23 @@ describe("loadDevEnv", () => {
 			).rejects.toThrow("Cannot load environment input");
 			const env = await loadDevEnv({ cwd: testDir, readOnly: true });
 			expect((env.buildEnvVars() as Record<string, string>).TOKEN).toBe("abc");
+
+			// In step with the store, a load forks no git at all.
+			const nodeSpawns = spyOn(childProcess, "spawnSync");
+			const bunSpawns = spyOn(Bun, "spawnSync");
+			try {
+				await loadDevEnv({ cwd: testDir, readOnly: true, reload: true });
+				const gitCalls = [
+					...nodeSpawns.mock.calls.map(([command]) => command),
+					...bunSpawns.mock.calls.map(([command]) =>
+						Array.isArray(command) ? command[0] : command,
+					),
+				].filter((command) => command === "git");
+				expect(gitCalls).toEqual([]);
+			} finally {
+				nodeSpawns.mockRestore();
+				bunSpawns.mockRestore();
+			}
 		} finally {
 			for (const [name, value] of saved) {
 				if (value === undefined) delete process.env[name];

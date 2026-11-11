@@ -201,6 +201,15 @@ export interface ListRegistry<T> {
 	read(path: string, options?: ListRegistryReadOptions): Promise<T[]>;
 	/** Persist entries, removing the file when none are left. */
 	write(path: string, entries: T[]): Promise<void>;
+	/**
+	 * Read the entries, change them and write the result, reading the file
+	 * once. `change` returns `undefined` to leave the file as it is. Reads
+	 * like a lenient {@link read}; serializing writers is the caller's lock.
+	 */
+	update(
+		path: string,
+		change: (entries: T[]) => T[] | undefined | Promise<T[] | undefined>,
+	): Promise<void>;
 }
 
 /**
@@ -240,16 +249,62 @@ export function defineListRegistry<T>(options: {
 		return value;
 	}
 
+	/** The file's text, or `undefined` when it does not exist. */
+	async function readRaw(path: string): Promise<string | undefined> {
+		try {
+			return await readFile(path, "utf-8");
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+			throw error;
+		}
+	}
+
+	/** Write `entries` over the file that read as `raw`. */
+	async function store(
+		path: string,
+		raw: string | undefined,
+		entries: T[],
+	): Promise<void> {
+		if (raw !== undefined) {
+			const value = checkVersion(path, raw);
+			const valid = validate(value);
+			const payload = isRecord(value) ? value[key] : undefined;
+			if (
+				!valid ||
+				!Array.isArray(payload) ||
+				valid.length !== payload.length
+			) {
+				// Preserve precisely the bytes being repaired, before destructive
+				// replacement (including an empty-list deletion). The caller's
+				// mutation lock covers this check and publication together.
+				const backup = `${path}.recovery-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`;
+				await writeFile(backup, raw, { encoding: "utf-8", mode, flag: "wx" });
+				afterWrite?.(backup);
+			}
+		}
+		if (entries.length > 0 && raw === serialize({ version, [key]: entries }))
+			return;
+		if (entries.length === 0) {
+			await rm(path, { force: true });
+			return;
+		}
+		await writeJsonDocument(
+			path,
+			{ version, [key]: entries },
+			{ afterWrite, mode },
+		);
+	}
+
 	return {
 		async read(path, readOptions = {}) {
-			let raw: string;
+			let raw: string | undefined;
 			try {
-				raw = await readFile(path, "utf-8");
+				raw = await readRaw(path);
 			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
 				if (!readOptions.strict) return [];
 				throw new StateFileUnreadableError(path, getErrorMessage(error));
 			}
+			if (raw === undefined) return [];
 			checkVersion(path, raw);
 			const entries = parse(raw, validate);
 			if (entries) return entries;
@@ -260,40 +315,14 @@ export function defineListRegistry<T>(options: {
 			);
 		},
 		async write(path, entries) {
-			let raw: string | undefined;
-			try {
-				raw = await readFile(path, "utf-8");
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			}
-			if (raw !== undefined) {
-				const value = checkVersion(path, raw);
-				const valid = validate(value);
-				const payload = isRecord(value) ? value[key] : undefined;
-				if (
-					!valid ||
-					!Array.isArray(payload) ||
-					valid.length !== payload.length
-				) {
-					// Preserve precisely the bytes being repaired, before destructive
-					// replacement (including an empty-list deletion). The caller's
-					// mutation lock covers this check and publication together.
-					const backup = `${path}.recovery-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`;
-					await writeFile(backup, raw, { encoding: "utf-8", mode, flag: "wx" });
-					afterWrite?.(backup);
-				}
-			}
-			if (entries.length > 0 && raw === serialize({ version, [key]: entries }))
-				return;
-			if (entries.length === 0) {
-				await rm(path, { force: true });
-				return;
-			}
-			await writeJsonDocument(
-				path,
-				{ version, [key]: entries },
-				{ afterWrite, mode },
-			);
+			await store(path, await readRaw(path), entries);
+		},
+		async update(path, change) {
+			const raw = await readRaw(path);
+			if (raw !== undefined) checkVersion(path, raw);
+			const entries = raw === undefined ? [] : (parse(raw, validate) ?? []);
+			const next = await change(entries);
+			if (next) await store(path, raw, next);
 		},
 	};
 }

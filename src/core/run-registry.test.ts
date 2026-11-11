@@ -5,6 +5,7 @@ import {
 	expect,
 	it,
 	setSystemTime,
+	spyOn,
 } from "bun:test";
 import {
 	mkdirSync,
@@ -14,6 +15,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { readProcessIdentity } from "./process-identity";
@@ -247,6 +249,39 @@ describe("publishRun", () => {
 		);
 		await publishRun(makeRun({ sessionId: "live" }));
 		expect(await sessions()).toEqual(["stack", "live"]);
+	});
+
+	it("reads runs.json once per write through a four-app start", async () => {
+		const names = ["web", "api", "admin", "docs"];
+		const reads = spyOn(fsPromises, "readFile");
+		try {
+			const writes = [
+				() => publishRun(makeRun({ services: [DB] })),
+				() =>
+					describeRun(
+						makeRun({
+							services: [DB],
+							apps: names.map((name) => ({
+								name,
+								kind: "worker",
+								status: "starting",
+							})),
+						}),
+					),
+				...names.flatMap((name, index) => [
+					() => patchRun("s1", { apps: [{ name, pid: 1000 + index }] }),
+					() => patchRun("s1", { apps: [{ name, status: "ready" }] }),
+				]),
+			];
+			for (const write of writes) await write();
+			const runsReads = reads.mock.calls.filter(([file]) => file === path);
+			expect(runsReads).toHaveLength(writes.length);
+		} finally {
+			reads.mockRestore();
+		}
+		expect((await loadRuns())[0]?.apps.map((app) => app.status)).toEqual(
+			names.map(() => "ready"),
+		);
 	});
 });
 
