@@ -263,6 +263,7 @@ function createEnvironment(
 				...options,
 				suffix: newSuffix,
 				data: suffixed?.data,
+				ports: suffixed?.ports,
 			}),
 	};
 
@@ -272,6 +273,9 @@ function createEnvironment(
 		claimApps: appPipeline.claimApps,
 		spawn: appPipeline.spawn,
 		notify: serviceWatch.report,
+		reportTo: (output) => {
+			ctx.output = output;
+		},
 		renderGeneratedFiles: () => renderGeneratedFiles(ctx, envVars),
 		recordCapture,
 	});

@@ -1,4 +1,5 @@
 import { anySignal } from "hanzio";
+import { patchCurrentRun } from "../core/run-publish";
 import { findRunsByRoot, type RunEntry } from "../core/run-registry";
 import {
 	type PublicExposeTarget,
@@ -84,6 +85,21 @@ export function createTunnelCoordinator<
 	): ComputedPublicUrls<TServices, TApps> {
 		return urls as ComputedPublicUrls<TServices, TApps>;
 	}
+	/**
+	 * Mark the apps' public URLs that are tunnels on this run's entry: a run
+	 * that reuses one of these apps inherits only those.
+	 */
+	async function recordTunnelUrls(
+		tunnelUrls: readonly { name: string; publicUrl: string }[],
+	): Promise<void> {
+		if (tunnelUrls.length === 0) return;
+		await patchCurrentRun(env, {
+			apps: tunnelUrls.map(({ name, publicUrl }) => ({
+				name,
+				tunnelUrl: publicUrl,
+			})),
+		});
+	}
 	/** `env.setPublicUrls` replaces the map: keep what apps printed. */
 	function addPublicUrls(urls: Record<string, string>): void {
 		const current = env.publicUrls as Record<string, string>;
@@ -101,6 +117,7 @@ export function createTunnelCoordinator<
 		for (const tunnel of reused)
 			inheritedPublicUrls[tunnel.name] = tunnel.publicUrl;
 		combinedTunnelLogs.push(...reused);
+		await recordTunnelUrls(reused);
 		if (reused.length > 0) {
 			const plural = reused.length > 1 ? "s" : "";
 			log.info(`ℹ Reusing public URL${plural} for: ${names.join(", ")}`);
@@ -238,6 +255,7 @@ export function createTunnelCoordinator<
 			tunnels.map((tunnel) => [tunnel.name, tunnel.publicUrl] as const),
 		);
 		addPublicUrls(openedPublicUrls);
+		await recordTunnelUrls(tunnels.filter((tunnel) => tunnel.kind === "app"));
 
 		combinedTunnelLogs.push(...tunnels);
 		env.logInfo("Dev Environment", combinedTunnelLogs, selection);
@@ -275,11 +293,12 @@ export function createTunnelCoordinator<
 }
 
 /**
- * The public URLs live runs of this checkout publish for apps this run
+ * The tunnel URLs live runs of this checkout record for apps this run
  * reuses. The run serving a reused app is the one whose tunnel reaches it,
  * and its entry is live only while that process (by pid and identity) is,
  * so a URL from a run that ended is never inherited. The port must match:
- * the URL reaches the app on the port it was opened for.
+ * the URL reaches the app on the port it was opened for. A `publicUrl` that
+ * is no tunnel's (one the app printed) belongs to that run's process.
  */
 function reusablePublicUrls(
 	runs: readonly RunEntry[],
@@ -291,8 +310,8 @@ function reusablePublicUrls(
 		const port = ports[name];
 		const publicUrl = rows.find(
 			(row) =>
-				row.name === name && row.port === port && row.publicUrl !== undefined,
-		)?.publicUrl;
+				row.name === name && row.port === port && row.tunnelUrl !== undefined,
+		)?.tunnelUrl;
 		if (publicUrl === undefined) return [];
 		return [
 			{

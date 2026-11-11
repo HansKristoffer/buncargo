@@ -42,6 +42,7 @@ export function dockerRuntimeAdapter(
 			jobExitCodes: true,
 			hostPortProbe: true,
 			composeProjectResources: true,
+			assignedHostPorts: true,
 		},
 
 		availability() {

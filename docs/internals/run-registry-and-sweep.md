@@ -6,7 +6,8 @@ User-facing summary: [runtime maintenance](../runtime-maintenance.md).
 
 There is **one** liveness record: `~/.buncargo/runs.json` (`src/core/run-registry.ts`). It holds
 per-session identity, process birth identity, the selected services, runtime, binary and aliases,
-and owned versus reused apps. Several sessions in one root coexist. Updates are serialized and
+and owned versus reused apps. An app row's `publicUrl` is a tunnel's or one the app printed
+(`captures`); `tunnelUrl` marks the tunnel's, and a run reusing that app inherits only it. Several sessions in one root coexist. Updates are serialized and
 terminal states cannot regress to ready. Read-only consumers filter live entries without writing;
 writers prune. `stop --run` selects an exact session.
 

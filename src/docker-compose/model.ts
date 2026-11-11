@@ -17,7 +17,7 @@ import {
 	serviceHashEnv,
 } from "./interpolate";
 import { presetDefinition } from "./services";
-import { getDefaultPortBindings } from "./services/shared";
+import { getDefaultPortBindings, portBindings } from "./services/shared";
 
 export type { ComposeDocument, ComposeIdentity };
 
@@ -78,6 +78,60 @@ function resolveServiceDefinition(
 export interface ComposeModelOptions {
 	/** `"tmpfs"` also declares none of the volumes it no longer mounts. */
 	data?: SuffixedEnvironmentOptions["data"];
+	/**
+	 * `"assigned"` publishes each port buncargo generates on a host port the
+	 * runtime picks (`127.0.0.1::5432`), read back after `up` with
+	 * {@link assignedPortTargets}. A port the config spells out stays.
+	 */
+	ports?: "claimed" | "assigned";
+}
+
+/** Where a port key's assigned host port is read back from. */
+export interface AssignedPortTarget {
+	/** The Compose service name. */
+	service: string;
+	containerPort: number;
+}
+
+function presetOf(config: ResolvedComposeService) {
+	return config.docker.kind === "preset" ? config.docker.preset : undefined;
+}
+
+/** The service with each generated port binding on a runtime-assigned host port. */
+function withAssignedPorts(
+	service: DockerComposeServiceRaw,
+	name: string,
+	config: ResolvedComposeService,
+): DockerComposeServiceRaw {
+	const bindings = portBindings(name, config, presetOf(config));
+	if (!service.ports || bindings.length === 0) return service;
+	const assigned = new Map(bindings.map((b) => [b.claimed, b.assigned]));
+	return {
+		...service,
+		ports: service.ports.map((entry) => assigned.get(entry) ?? entry),
+	};
+}
+
+/**
+ * Each port key the model publishes on a runtime-assigned host port: the
+ * ports `ports: "assigned"` rewrote, and no other.
+ */
+export function assignedPortTargets(
+	services: Readonly<Record<string, ResolvedService>>,
+	model: ComposeDocument,
+): Record<string, AssignedPortTarget> {
+	const targets: Record<string, AssignedPortTarget> = {};
+	for (const [name, config] of Object.entries(services)) {
+		if (config.kind === "external") continue;
+		const published = model.services[config.serviceName]?.ports ?? [];
+		for (const binding of portBindings(name, config, presetOf(config)))
+			if (published.includes(binding.assigned))
+				targets[binding.portKey] = {
+					service: config.serviceName,
+					containerPort: binding.containerPort,
+				};
+	}
+	return targets;
 }
 
 /** A short-syntax source that names a host path rather than a volume. */
@@ -149,9 +203,13 @@ export function buildComposeModel(
 		const resolved = resolveServiceDefinition(name, serviceConfig, runtime);
 		const { serviceName } = serviceConfig;
 		const { volume } = resolved;
-		const service = inMemory
+		const stored = inMemory
 			? withDataInMemory(resolved.service, external)
 			: resolved.service;
+		const service =
+			options.ports === "assigned"
+				? withAssignedPorts(stored, name, serviceConfig)
+				: stored;
 		if (identity) {
 			const identityLabels = {
 				"buncargo.project": identity.projectName,

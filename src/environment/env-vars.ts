@@ -31,6 +31,9 @@ import type {
 	StartSelection,
 } from "./context";
 
+/** {@link ExecOptions}, plus where a verbose command's lines go. */
+type CommandOptions = ExecOptions & { onOutputLine?: (line: string) => void };
+
 export interface DevEnvVarsApi {
 	buildEnvVars(production?: boolean): Record<string, string>;
 	buildAppEnvVars(
@@ -47,10 +50,13 @@ export interface DevEnvVarsApi {
 		signal?: AbortSignal,
 		selection?: StartSelection,
 	): HookContext<AnyServices, AnyApps>;
-	/** `production` builds the env a production start gives its processes. */
+	/**
+	 * `production` builds the env a production start gives its processes.
+	 * With `verbose`, `onOutputLine` takes each line instead of the terminal.
+	 */
 	exec(
 		cmd: string | readonly string[],
-		options?: ExecOptions,
+		options?: CommandOptions,
 		production?: boolean,
 	): Promise<ExecResult>;
 	/** `exec` for an integration stack's `down`, which reaches no port: allowed without a port block. */
@@ -215,7 +221,7 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 
 	async function exec(
 		cmd: string | readonly string[],
-		options?: ExecOptions,
+		options?: CommandOptions,
 		production = false,
 	): Promise<ExecResult> {
 		// Its ports would be another checkout's: a command would reach that
@@ -232,7 +238,7 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 	 */
 	async function execTeardown(
 		cmd: string | readonly string[],
-		options?: ExecOptions,
+		options?: CommandOptions,
 		production = false,
 	): Promise<ExecResult> {
 		if (options?.app !== undefined && !apps[options.app]) {

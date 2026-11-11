@@ -10,6 +10,7 @@ import {
 } from "../../core/check-slots";
 import { CI_PROJECT_SUFFIX } from "../../core/ports";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
+import { internalsOf, STDERR_OUTPUT } from "../../environment";
 import { loadDevEnv } from "../../loader";
 import type { AnyDevEnvironment, ExecResult, SeedOutcome } from "../../types";
 import {
@@ -184,10 +185,10 @@ export const ciCommand = defineCommand({
 });
 
 /**
- * Run `work` with `console.log` writing to stderr. A wrapper's stdout is the
- * wrapped command's alone, and the environment it starts and stops reports
- * its progress with `console.log`. The command itself writes to the
- * inherited file descriptor, past this.
+ * Run `work` with `console.log` writing to stderr: a wrapper's stdout is the
+ * wrapped command's alone. The environment reports to its own output (see
+ * `runCi`); this covers what reports past it, the container runtime and
+ * Prisma. The command itself writes to the inherited file descriptor.
  */
 async function withStatusOnStderr<T>(work: () => Promise<T>): Promise<T> {
 	const { log, info } = console;
@@ -205,7 +206,13 @@ async function runCi(parsed: CiRequest): Promise<number> {
 	// memory: tearing it down never reaches the checkout's dev database or
 	// another `ci` run's services, and a run killed outright leaves no volume.
 	const checkout = await loadDevEnv({ containerRuntime: parsed.runtime });
-	const env = checkout.withSuffix(ciSuffix(), { data: "tmpfs" });
+	const env = checkout.withSuffix(ciSuffix(), {
+		data: "tmpfs",
+		ports: "assigned",
+	});
+	// Its progress, and the output of the commands it runs for itself (Prisma
+	// generate, the seed), on stderr.
+	internalsOf(env).reportTo(STDERR_OUTPUT);
 	const prisma = env.prisma;
 	const services = parsed.services ?? Object.keys(env.services);
 	const unknown = services.filter((name) => !env.services[name]);
