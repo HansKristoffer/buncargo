@@ -193,13 +193,13 @@ export function getEnvVar<
 		overrides,
 	);
 	const envVars = mergeSharedEnvWithOverlay(
-		{ ...(applied.options?.envFiles ? inputEnv : {}), ...shared },
+		{ ...inputEnv.declared, ...shared },
 		applied.env as
 			EnvVarsBuilder<typeof services, NonNullable<typeof apps>> | undefined,
 		ports,
 		urls,
 		{
-			env: inputEnv,
+			env: inputEnv.merged,
 			projectName: identity.projectName,
 			localIp,
 			portOffset: portPlan.offset,
@@ -208,7 +208,11 @@ export function getEnvVar<
 		},
 	);
 
-	applyEnvOverrides(envVars as Record<string, string>, overrides, inputEnv);
+	applyEnvOverrides(
+		envVars as Record<string, string>,
+		overrides,
+		inputEnv.declared,
+	);
 	const value = envVars[name];
 
 	// Log frontend port for Vibe Kanban detection

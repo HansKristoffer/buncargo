@@ -96,8 +96,11 @@ describe("an expired Infisical session", () => {
 			);
 			expect(result.output).not.toContain("never-printed");
 			expect(result.ms).toBeLessThan(3_000);
-			// Stopped before the secrets were listed or any app started.
-			expect(infisical.requests).toEqual([]);
+			// Stopped before the secrets were listed or any app started; a
+			// silent CLI only probes that the site answers.
+			expect(infisical.requests).toEqual(
+				login === "hang" ? ["GET /api/status"] : [],
+			);
 		}, 15_000);
 	}
 

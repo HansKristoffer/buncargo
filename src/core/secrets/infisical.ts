@@ -248,11 +248,19 @@ async function request(
 }
 
 function failureFix(scope: InfisicalScope, status: number): string | undefined {
-	if (status === 401 || status === 403)
-		return infisicalLoginCommand(scope.siteUrl);
+	if (status === 401) return infisicalLoginCommand(scope.siteUrl);
+	if (status === 403) return organizationFix(scope);
 	if (status === 404)
 		return `check that project ${scope.projectId} has environment "${scope.environment}" and path "${scope.path}" on ${scope.siteUrl}; a 404 usually means one of them is misspelled or missing.`;
 	return undefined;
+}
+
+/**
+ * A 403 is a session that cannot see the project, most often one scoped to
+ * another organization: logging in again changes nothing.
+ */
+function organizationFix(scope: InfisicalScope): string {
+	return `set secrets.organizationId to the organization project ${scope.projectId} belongs to, or check that this session can access it.`;
 }
 
 /** The organization a session token is scoped to; routing metadata only. */
@@ -306,16 +314,45 @@ function cliSessionToken(
 	);
 }
 
+/**
+ * A CLI that timed out or failed without asking for a login: an expired
+ * session, or a network that never let it check. {@link readCliSessionToken}
+ * tells the two apart.
+ */
+class UnconfirmedLoginError extends InfisicalLoginError {}
+
+/** Whether `siteUrl` answers at all; any HTTP status counts. No credentials. */
+async function reachable(scope: InfisicalScope): Promise<boolean> {
+	try {
+		await fetch(`${scope.siteUrl}/api/status`, {
+			headers: { "user-agent": "buncargo" },
+			signal: AbortSignal.timeout(CLI_TIMEOUT_MS),
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 async function readCliSessionToken(
 	scope: InfisicalScope,
 	binary: string,
 	signal: AbortSignal,
 ): Promise<string> {
-	return withFileLock(
-		stateFilePath("infisical-cli"),
-		() => runCliSessionToken(scope, binary, signal),
-		{ timeoutMs: LOCK_TIMEOUT_MS, signal },
-	);
+	try {
+		return await withFileLock(
+			stateFilePath("infisical-cli"),
+			() => runCliSessionToken(scope, binary, signal),
+			{ timeoutMs: LOCK_TIMEOUT_MS, signal },
+		);
+	} catch (error) {
+		// Probed after the lock is released: other worktrees queue on it.
+		if (error instanceof UnconfirmedLoginError && !(await reachable(scope)))
+			throw new SecretsError(
+				`Infisical at ${scope.siteUrl} is unreachable (offline, or an outage), so the CLI could not check its session.`,
+			);
+		throw error;
+	}
 }
 
 /**
@@ -401,18 +438,22 @@ async function runCliSessionToken(
 			scope.siteUrl,
 		);
 	if (deadline.aborted)
-		throw new InfisicalLoginError(
+		throw new UnconfirmedLoginError(
 			`The Infisical CLI did not answer within ${CLI_TIMEOUT_MS / 1000}s for ${scope.siteUrl}: an expired session waits there on a login. If you are logged in, it was slow (the network, or a keychain prompt to allow): run the command again.`,
 			scope.siteUrl,
 		);
-	const token = exitCode === 0 ? (await stdout).trim() : "";
-	if (!/^[\w-]+\.[\w-]+\.[\w-]+$/.test(token)) {
-		// Deliberately without the CLI's output, which can contain secrets.
+	// Deliberately without the CLI's output, which can contain secrets.
+	if (exitCode !== 0)
+		throw new UnconfirmedLoginError(
+			`No Infisical session for ${scope.siteUrl}.`,
+			scope.siteUrl,
+		);
+	const token = (await stdout).trim();
+	if (!/^[\w-]+\.[\w-]+\.[\w-]+$/.test(token))
 		throw new InfisicalLoginError(
 			`No Infisical session for ${scope.siteUrl}.`,
 			scope.siteUrl,
 		);
-	}
 	return token;
 }
 
@@ -524,7 +565,19 @@ async function listSecrets(
 			headers: { authorization: `Bearer ${token}` },
 			signal,
 		},
-	)) as { secrets?: ListedSecret[]; imports?: { secrets?: ListedSecret[] }[] };
+	).catch((error: unknown) => {
+		if (!(error instanceof InfisicalRequestError) || error.status !== 403)
+			throw error;
+		const organization = sessionOrganization(token) ?? "unknown";
+		throw new InfisicalRequestError(
+			`Infisical refused a session in organization ${organization} access to project ${scope.projectId} (HTTP 403).`,
+			organizationFix(scope),
+			403,
+		);
+	})) as {
+		secrets?: ListedSecret[];
+		imports?: { secrets?: ListedSecret[] }[];
+	};
 
 	const values: Record<string, string> = {};
 	const add = (entries: ListedSecret[] | undefined) => {

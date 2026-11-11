@@ -77,6 +77,8 @@ export function startFakeInfisical(
 		/** Simulated network latency for the startup benchmark; tests hold instead. */
 		requestDelayMs?: number;
 		mfaOrganizations?: string[];
+		/** Projects whose secrets every session is refused (HTTP 403). */
+		forbiddenProjects?: string[];
 	} = {},
 ): FakeInfisical & { cliPath: string; home: string } {
 	const dir = mkdtempSync(join(tmpdir(), "buncargo-fake-infisical-"));
@@ -147,7 +149,10 @@ export function startFakeInfisical(
 				if (options.requestDelayMs) await Bun.sleep(options.requestDelayMs);
 				if (!auth.startsWith("Bearer "))
 					return new Response("{}", { status: 401 });
-				const project = projects[url.searchParams.get("projectId") ?? ""];
+				const projectId = url.searchParams.get("projectId") ?? "";
+				if (options.forbiddenProjects?.includes(projectId))
+					return new Response("{}", { status: 403 });
+				const project = projects[projectId];
 				if (!project) return new Response("{}", { status: 404 });
 				return Response.json({
 					secrets: listed(project.secrets),

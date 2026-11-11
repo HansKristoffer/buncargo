@@ -586,13 +586,18 @@ export async function recordAppUrls(
 /**
  * Record a captured value: in `captures`, and as the app's `publicUrl` when
  * it is one, so BuncargoBar shows the preview URL like a tunnel's. Refreshes
- * the labelled rows too, since those are mostly captures.
+ * the labelled rows too, since those are mostly captures. A `secret` capture
+ * is not recorded at all.
  */
 export async function recordRunCapture(
-	env: RunSession & Pick<RunSource, "details">,
+	env: RunSession &
+		Pick<RunSource, "details"> & {
+			readonly apps: Readonly<Record<string, AppConfig>>;
+		},
 	app: string,
 	captured: CapturedValue,
 ): Promise<void> {
+	if (env.apps[app]?.captures?.[captured.name]?.secret) return;
 	const { details } = runDetails(env);
 	const captures = { [captured.name]: captured.value };
 	const recorded: RunPatch = typedSwitch(captured.as, {

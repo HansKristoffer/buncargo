@@ -5,7 +5,7 @@ import {
 	resolveContainerRuntime,
 	resolveContainerRuntimeBinary,
 } from "../container-runtime";
-import { loadEnvInput } from "../core/env-input";
+import { type EnvInput, loadEnvInput } from "../core/env-input";
 import { readEnvOverrides } from "../core/env-overrides";
 import { applyHostPlanToUrls, planNamedHosts } from "../core/hosts/plan";
 import { tailscaleBlockPorts } from "../core/hosts/tailscale-serve";
@@ -117,7 +117,7 @@ export interface DevEnvContext<
 	readonly ownedServerPids: Record<string, number>;
 	/** Values apps printed (`captures`), shared by hooks, env and generated files. */
 	readonly captured: Record<string, string>;
-	readonly inputEnv: Readonly<Record<string, string>>;
+	readonly inputEnv: EnvInput;
 	/** `buncargo env set` values, applied on top of every computed environment. */
 	readonly envOverrides: Readonly<Record<string, string>>;
 	readonly config: DevConfig<TServices, TApps, TEnv>;

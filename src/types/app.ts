@@ -159,7 +159,7 @@ export interface AppAction {
  * tunnel URL (normalized to its origin). `value` is `captured.<name>` in hooks,
  * `envVars`, generated files and `buncargo env --get captured.<name>`. `event`
  * only fires `onCapture`. Every kind fires `onCapture` and lands in the run
- * registry.
+ * registry, unless it is `secret`.
  */
 export interface CaptureConfig {
 	/** The first capture group is the value; without one, the whole match. */
@@ -172,6 +172,14 @@ export interface CaptureConfig {
 	label?: string;
 	/** Also set this env var to the value, beneath the config's own `env`. */
 	env?: string;
+	/**
+	 * Keep the value in this run's environment only (`env`, `captured.<name>`
+	 * in hooks and generated files): never in the run registry, so neither
+	 * BuncargoBar nor another process's `buncargo env` sees it, and never
+	 * shown under its `label`. For a credential such as a webhook signing
+	 * secret.
+	 */
+	secret?: boolean;
 }
 
 /**

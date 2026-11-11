@@ -106,7 +106,7 @@ export function createEnvVarsApi<
 
 	function overlayContext() {
 		return {
-			env: ctx.inputEnv,
+			env: ctx.inputEnv.merged,
 			projectName: ctx.projectName,
 			workspaceId: ctx.workspaceId,
 			localIp: ctx.localIp,
@@ -146,14 +146,14 @@ export function createEnvVarsApi<
 		// through the dynamic record it returns.
 		const merged = stringifyEnvValues(
 			mergeSharedEnvWithOverlay(
-				{ ...(config.options?.envFiles ? ctx.inputEnv : {}), ...shared },
+				{ ...ctx.inputEnv.declared, ...shared },
 				config.env,
 				ports,
 				urls,
 				overlayContext(),
 			),
 		);
-		applyEnvOverrides(merged, ctx.envOverrides, ctx.inputEnv);
+		applyEnvOverrides(merged, ctx.envOverrides, ctx.inputEnv.declared);
 		return merged as ComputedEnvVars<TServices, TApps, TEnv>;
 	}
 
@@ -217,7 +217,7 @@ export function createEnvVarsApi<
 				: {},
 		);
 		// Above the app's own `envVars` too: an override is the checkout's last word.
-		applyEnvOverrides(processEnv, ctx.envOverrides, ctx.inputEnv);
+		applyEnvOverrides(processEnv, ctx.envOverrides, ctx.inputEnv.declared);
 
 		// The per-app keys come from `staticEnv`/`envVars`, which are opaque here
 		// because the builder is widened to run against unknown apps.

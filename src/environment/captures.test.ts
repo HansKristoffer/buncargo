@@ -8,6 +8,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	adoptLiveCaptures,
+	flushRunPatches,
+	publishCurrentRun,
+	recordRunCapture,
+} from "../core/run-publish";
+import { loadRuns } from "../core/run-registry";
 import type { CaptureEvent, IntegrationConfig } from "../types";
 import { createDevEnvironment } from "./create-dev-environment";
 import { writeIfChanged } from "./generated-files";
@@ -169,4 +176,46 @@ it("shows labelled captures in details and sets their env var", async () => {
 	expect(vars.APP_URL).toBe("https://abc.trycloudflare.com");
 	// The config's own env wins over a capture's.
 	expect(vars.SECRET).toBe("from config");
+});
+
+it("keeps a secret capture in the run's environment and out of the registry", async () => {
+	const { env } = fixture({
+		apps: {
+			stripeListen: {
+				kind: "worker",
+				devCommand: "x",
+				captures: {
+					webhookSecret: {
+						pattern: /secret is (\S+)/,
+						as: "value",
+						label: "Webhook secret",
+						env: "STRIPE_WEBHOOK_SECRET",
+						secret: true,
+					},
+					dashboard: { pattern: /dashboard (\S+)/, as: "value" },
+				},
+			},
+		},
+	});
+	await publishCurrentRun(env, { apps: env.apps, serviceNames: [] });
+	for (const captured of [
+		{ name: "webhookSecret", value: "whsec_1", as: "value" },
+		{ name: "dashboard", value: "https://dash.example", as: "value" },
+	] as const) {
+		await env.recordCapture("stripeListen", captured);
+		await recordRunCapture(env, "stripeListen", captured);
+	}
+	await flushRunPatches(env);
+
+	const vars = env.buildAppEnvVars("stripeListen") as Record<string, string>;
+	expect(vars.STRIPE_WEBHOOK_SECRET).toBe("whsec_1");
+	expect(env.details()).toEqual({});
+	const [run] = await loadRuns();
+	expect(run?.captures).toEqual({ dashboard: "https://dash.example" });
+	expect(JSON.stringify(run)).not.toContain("whsec_1");
+	// What `buncargo env --get captured.*` reads in another process.
+	const elsewhere = { root: env.root, captured: {} };
+	expect(await adoptLiveCaptures(elsewhere)).toEqual({
+		dashboard: "https://dash.example",
+	});
 });

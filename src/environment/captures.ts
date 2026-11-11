@@ -68,12 +68,13 @@ function capturedWith(
 		Object.entries(app.captures ?? {}).flatMap(([name, capture]) => {
 			const target = capture[key];
 			const value = captured[name];
+			if (key === "label" && capture.secret) return [];
 			return target && value ? [[target, value] as [string, string]] : [];
 		}),
 	);
 }
 
-/** Captured values under their `label`. */
+/** Captured values under their `label`; a `secret` one is never shown. */
 export function labelledCaptures(
 	apps: Readonly<Record<string, AppConfig>>,
 	captured: Readonly<Record<string, string>>,

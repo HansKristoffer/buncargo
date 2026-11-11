@@ -23,6 +23,8 @@ export function stripe(options: { app: string }): BuncargoIntegration {
 							pattern: /webhook signing secret is (whsec_\w+)/,
 							as: "value",
 							env: "STRIPE_WEBHOOK_SECRET",
+							// A credential: in the run's env only, never the run registry.
+							secret: true,
 						},
 					},
 					exclusive: "stripe-listen",
@@ -60,7 +62,7 @@ export function stripe(options: { app: string }): BuncargoIntegration {
 ## Guidelines
 
 - **Merge, don't replace.** `mergeConfigs(config, { apps, env })` composes `env` builders and merges groups; spreading `config.apps` keeps the user's apps. An app the user defines should win over one you add under the same name.
-- **Use the primitives.** Ordering is `startAfter`, values from output are `captures` (with `label` to show them and `env` to export them), files other tools read are `generatedFiles`, one-at-a-time resources are `exclusive`, one-off builds are `prebuild`, workspaces are `discoverApps`. The Shopify integration is almost entirely these.
+- **Use the primitives.** Ordering is `startAfter`, values from output are `captures` (with `label` to show them, `env` to export them and `secret` to keep a credential out of the run registry), files other tools read are `generatedFiles`, one-at-a-time resources are `exclusive`, one-off builds are `prebuild`, workspaces are `discoverApps`. The Shopify integration is almost entirely these.
 - **Be lenient in `config()`.** A missing file (a toml in CI, a fresh clone) should leave a working config and a failing check, not a config error that breaks every command.
 - **Keep checks honest about cost.** Anything that spawns a process or calls a network is `fast: false`; `dev` runs the fast ones on every start in every worktree.
 - **Name apps for profiles.** An app your integration adds can be named in `profiles` by augmenting `IntegrationAppNames`:
