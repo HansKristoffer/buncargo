@@ -8,9 +8,10 @@ import {
 	keysChecked,
 	OPTIONS_KEYS,
 	PRISMA_KEYS,
+	PROFILE_KEYS,
 	RENAMED_KEYS,
-	SECRETS_KEYS,
 	SEED_KEYS,
+	TASK_KEYS,
 	unknownKeyErrors,
 } from "./key-tables";
 import type { ShapeChecks } from "./shape-checks";
@@ -19,23 +20,20 @@ export function validateSupplementShapes(
 	value: Record<string, unknown>,
 	checks: ShapeChecks,
 ): void {
-	const { errors, object, record, check, strings, fields, duration } = checks;
+	const {
+		errors,
+		object,
+		record,
+		check,
+		strings,
+		fields,
+		duration,
+		secretsScope,
+	} = checks;
 	errors.push(
 		...unknownKeyErrors(value, "config", CONFIG_KEYS, RENAMED_KEYS.config),
 	);
-	if (
-		value.secrets !== undefined &&
-		value.secrets !== false &&
-		record(value.secrets, "secrets")
-	) {
-		errors.push(...unknownKeyErrors(value.secrets, "secrets", SECRETS_KEYS));
-		fields(
-			value.secrets,
-			"secrets.",
-			keysChecked(SECRETS_KEYS, "string"),
-			"string",
-		);
-	}
+	secretsScope(value.secrets, "secrets");
 	check(
 		value.unsetEnv,
 		"unsetEnv",
@@ -188,6 +186,13 @@ export function validateSupplementShapes(
 			if (!/^[A-Za-z0-9][A-Za-z0-9:._-]*$/.test(name))
 				errors.push(`${path} has an invalid name`);
 			if (!record(entry, path)) continue;
+			errors.push(
+				...unknownKeyErrors(
+					entry,
+					path,
+					kind === "profiles" ? PROFILE_KEYS : TASK_KEYS,
+				),
+			);
 			fields(entry, `${path}.`, ["description"], "string");
 			if (kind === "profiles") {
 				if (!strings(entry.apps) || entry.apps.length === 0)

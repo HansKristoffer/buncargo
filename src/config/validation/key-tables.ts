@@ -1,16 +1,20 @@
 import type {
 	AppConfig,
 	AppOptions,
+	AppWatchConfig,
+	CaptureConfig,
 	DevConfig,
 	DevOptions,
 	DockerComposeGenerationOptions,
 	EnvFileOptions,
 	HostsOptions,
 	PrismaConfig,
+	ProfileConfig,
 	SecretsScopeConfig,
 	SeedConfig,
 	ServiceConfig,
 	ServiceConfigBase,
+	TaskConfig,
 } from "../../types";
 
 /**
@@ -176,6 +180,33 @@ export const SECRETS_KEYS = {
 	exclude: "shape",
 	required: "shape",
 } as const satisfies Record<keyof SecretsScopeConfig, FieldCheck>;
+
+export const CAPTURE_KEYS = {
+	pattern: "shape",
+	as: "shape",
+	label: "string",
+	env: "shape",
+	secret: "boolean",
+} as const satisfies Record<keyof CaptureConfig, FieldCheck>;
+
+export const WATCH_KEYS = {
+	paths: "shape",
+	ignore: "shape",
+	debounceMs: "shape",
+} as const satisfies Record<keyof AppWatchConfig, FieldCheck>;
+
+export const TASK_KEYS = {
+	command: "shape",
+	description: "string",
+	app: "string",
+	cwd: "string",
+	requiredServices: "shape",
+} as const satisfies Record<keyof TaskConfig, FieldCheck>;
+
+export const PROFILE_KEYS = {
+	apps: "shape",
+	description: "string",
+} as const satisfies Record<keyof ProfileConfig, FieldCheck>;
 
 /**
  * Keys a section used to take, with what replaces each, so the error for an
