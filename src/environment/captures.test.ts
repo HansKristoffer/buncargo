@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, onTestFinished } from "bun:test";
 import {
 	mkdtempSync,
 	readFileSync,
@@ -14,7 +14,7 @@ import {
 	publishCurrentRun,
 	recordRunCapture,
 } from "../core/run-publish";
-import { loadRuns } from "../core/run-registry";
+import { getRunsPath, loadRuns } from "../core/run-registry";
 import type { CaptureEvent, IntegrationConfig } from "../types";
 import { createDevEnvironment } from "./create-dev-environment";
 import { writeIfChanged } from "./generated-files";
@@ -197,6 +197,8 @@ it("keeps a secret capture in the run's environment and out of the registry", as
 			},
 		},
 	});
+	// The preload's HOME is shared by the whole suite; leave no run behind.
+	onTestFinished(() => rmSync(getRunsPath(), { force: true }));
 	await publishCurrentRun(env, { apps: env.apps, serviceNames: [] });
 	for (const captured of [
 		{ name: "webhookSecret", value: "whsec_1", as: "value" },
