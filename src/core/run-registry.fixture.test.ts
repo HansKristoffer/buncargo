@@ -8,20 +8,25 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { getRunsPath, loadRuns, runLivenessAsync } from "./run-registry";
+import {
+	getRunsPath,
+	loadRuns,
+	runLivenessAsync,
+	runPhase,
+} from "./run-registry";
 
 /**
  * The `runs.json` schema contract, shared with the Swift app.
  *
- * `menubar/fixtures/runs.v1.json` is read by this test and by
+ * `menubar/fixtures/runs.v2.json` is read by this test and by
  * `menubar/scripts/smoke-test.sh`, which runs the app's `--status` mode against
  * it. A field one side stops writing or starts requiring breaks a test on both,
  * rather than shipping an app that decodes nothing.
  */
 const FIXTURES = join(import.meta.dir, "..", "..", "menubar", "fixtures");
-const FIXTURE = join(FIXTURES, "runs.v1.json");
+const FIXTURE = join(FIXTURES, "runs.v2.json");
 
-describe("runs.json v1 fixture", () => {
+describe("runs.json v2 fixture", () => {
 	it("decodes with every field the app relies on", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "buncargo-fixture-"));
 		const realHome = process.env.HOME;
@@ -72,7 +77,7 @@ describe("runs.json v1 fixture", () => {
 			expect(run?.apps[1]?.publicUrl).toContain("trycloudflare");
 			expect(run?.apps[1]?.openUrl).toBe(run?.apps[1]?.publicUrl);
 			// The Expo app is the one the app offers a simulator button for.
-			expect(run?.apps[1]?.expo?.scheme).toBe("lullu");
+			expect(run?.apps[1]?.integrations?.expo?.scheme).toBe("lullu");
 			// Integration rows and captures, and the lease an app holds.
 			expect(run?.details?.[0]?.label).toBe("Shopify preview");
 			expect(run?.captures?.appUrl).toBe("https://example.trycloudflare.com");
@@ -85,7 +90,12 @@ describe("runs.json v1 fixture", () => {
 			// whose containers it reused; the app ignores both.
 			expect(run?.detached).toBe(true);
 			expect(run?.idleLimitMs).toBe(7_200_000);
-			expect(run?.inheritedIdleTimeoutMs).toBe(180_000);
+			expect(run?.lifecycle).toEqual({ state: "live" });
+			expect(run?.hold).toEqual({
+				kind: "timed",
+				ms: 180_000,
+				inherited: true,
+			});
 			// Tasks get a run button; a description is optional.
 			expect(run?.tasks).toEqual([
 				{ name: "db:seed", description: "Seed the dev database" },
@@ -108,11 +118,15 @@ describe("runs.json v1 fixture", () => {
 			// A finished run whose containers are still held. It has to decode —
 			// the sweep is the one reader that wants it — and it must never read
 			// as live. `menubar/scripts/smoke-test.sh` asserts the Swift side
-			// hides it too, which matters because its pid is alive: only
-			// `releasedAt` can hide this one.
+			// hides it too, which matters because its pid is alive: only its
+			// lifecycle can hide this one.
 			const released = runs[1];
-			expect(released?.releasedAt).toBe("2026-09-03T09:30:00.000Z");
-			expect(released?.idleTimeoutMs).toBe(180_000);
+			expect(released && runPhase(released, true)).toBe("released");
+			expect(released?.hold).toEqual({
+				kind: "timed",
+				ms: 180_000,
+				inherited: false,
+			});
 			expect(released?.services[0]?.container?.runtime).toBe("docker");
 			// What the sweep stops once the checkout's own CLI is gone.
 			expect(released?.stacks?.[0]?.composeProject).toBe(
@@ -125,7 +139,10 @@ describe("runs.json v1 fixture", () => {
 			// asserts the Swift side hides it as the CLI does, from the identity.
 			const crashed = runs[2];
 			expect(crashed?.processIdentity).toStartWith("v2:");
-			expect(crashed?.ownerLostAt).toBe("2026-09-03T08:20:00.000Z");
+			expect(crashed?.lifecycle).toEqual({
+				state: "lost",
+				at: "2026-09-03T08:20:00.000Z",
+			});
 			expect(crashed && alive(crashed)).toBe(false);
 		} finally {
 			if (realHome === undefined) delete process.env.HOME;
@@ -136,11 +153,11 @@ describe("runs.json v1 fixture", () => {
 });
 
 /**
- * `menubar/fixtures/runs.v1.lossy.json`, which the app's
+ * `menubar/fixtures/runs.v2.lossy.json`, which the app's
  * `RunRegistryTests.swift` decodes too: entries a reader cannot read are
  * dropped one at a time, never the whole list.
  */
-describe("runs.json v1 lossy fixture", () => {
+describe("runs.json v2 lossy fixture", () => {
 	it("drops the entries it cannot read and keeps the rest", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "buncargo-fixture-"));
 		const realHome = process.env.HOME;
@@ -149,13 +166,14 @@ describe("runs.json v1 lossy fixture", () => {
 			mkdirSync(dirname(getRunsPath()), { recursive: true });
 			writeFileSync(
 				getRunsPath(),
-				readFileSync(join(FIXTURES, "runs.v1.lossy.json"), "utf8"),
+				readFileSync(join(FIXTURES, "runs.v2.lossy.json"), "utf8"),
 			);
 			const runs = await loadRuns({ strict: true });
 
 			// The app keeps `unknown-status-session` and shows its unknown
 			// statuses as starting; the CLI drops an entry with a status it does
-			// not know, as it drops one without `apps`.
+			// not know, as it drops one without `apps`. Both drop an entry
+			// without a lifecycle and one whose worktree is not a string.
 			expect(runs.map((run) => run.sessionId)).toEqual([
 				"first-valid-session",
 				"last-valid-session",

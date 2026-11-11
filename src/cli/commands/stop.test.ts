@@ -23,13 +23,15 @@ import {
 import * as terminate from "../../core/process/terminate";
 import { runStopGraceMs } from "../../core/process/terminate";
 import { readProcessIdentityAsync } from "../../core/process-identity";
+import { recordEvents, runStopRecord } from "../../core/removal-log";
 import {
+	CHECKOUT_HOLD,
+	LIVE,
 	loadRuns,
 	publishRun,
 	type RunEntry,
 	releaseRun,
 } from "../../core/run-registry";
-import { recordRunStops, runStopRecord } from "../../core/run-stops";
 import { runCommand } from "../command-spec";
 import { stopCommand } from "./stop";
 
@@ -98,6 +100,8 @@ function entry(sessionId: string, extra: Partial<RunEntry> = {}): RunEntry {
 		pid: 2 ** 22 + 1,
 		startedAt: now,
 		updatedAt: now,
+		lifecycle: LIVE,
+		hold: CHECKOUT_HOLD,
 		hosts: null,
 		cli: { program: "bun" },
 		apps: [],
@@ -109,8 +113,8 @@ function entry(sessionId: string, extra: Partial<RunEntry> = {}): RunEntry {
 /** A run released into the idle hold: its owner has exited, its container waits. */
 function held(sessionId: string): RunEntry {
 	return entry(sessionId, {
-		releasedAt: new Date().toISOString(),
-		idleTimeoutMs: 180_000,
+		lifecycle: { state: "released", at: new Date().toISOString() },
+		hold: { kind: "timed", ms: 180_000, inherited: false },
 		services: [
 			{
 				name: "db",
@@ -351,7 +355,7 @@ describe("buncargo stop with no target", () => {
 
 describe("buncargo stop after the watchdog stopped the run", () => {
 	it("says why the run is gone", async () => {
-		await recordRunStops([
+		await recordEvents([
 			runStopRecord(entry("idle", { detached: true }), {
 				at: new Date().toISOString(),
 				reason: "idle",

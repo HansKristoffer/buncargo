@@ -5,7 +5,7 @@ export const WATCHDOG_IDLE_TIMEOUT_MS = 3 * 60 * 1000;
  * How long a crashed run's containers are kept before they are reclaimed.
  *
  * Reached only once the owning process is gone without releasing, so it
- * covers a crash rather than a clean exit. Counted from `ownerLostAt`, which
+ * covers a crash rather than a clean exit. Counted from a `lost` lifecycle's `at`, which
  * the sweep stamps the first time it notices — one write per crash, and none
  * while runs are healthy. It used to be counted from `updatedAt`, which a
  * quiet run may not have written for hours, so such a run lost its

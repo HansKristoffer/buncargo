@@ -1641,7 +1641,7 @@ exports[`buncargo CLI output buncargo runs --json 1`] = `
 "exit 0
 --- stdout
 {
-  "version": 1,
+  "version": 2,
   "runs": [],
   "leases": []
 }

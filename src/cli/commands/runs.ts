@@ -7,6 +7,7 @@ import {
 } from "../../core/run-limits";
 import {
 	groupRunsByProject,
+	REGISTRY_VERSION,
 	type RunEntry,
 	readLiveRuns,
 } from "../../core/run-registry";
@@ -41,7 +42,11 @@ async function showRuns(json: boolean): Promise<void> {
 		});
 		log.line(
 			JSON.stringify(
-				{ version: 1, runs: withLimits, leases } satisfies RunsJson,
+				{
+					version: REGISTRY_VERSION,
+					runs: withLimits,
+					leases,
+				} satisfies RunsJson,
 				null,
 				2,
 			),
@@ -90,7 +95,7 @@ function printRun(run: RunEntry, idle: string | undefined): void {
 		if (app.publicUrl) {
 			log.line(`      public: ${app.publicUrl}`);
 		}
-		if (app.expo) {
+		if (app.integrations?.expo) {
 			log.line(`      simulator: bunx buncargo expo sim ${app.name}`);
 		}
 		if (app.exclusive) {

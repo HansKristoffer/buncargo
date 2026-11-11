@@ -6,7 +6,7 @@ import {
 	explainContainerLoss,
 	type RemovalRecord,
 	readRemovals,
-	recordRemovals,
+	recordEvents,
 	removalActor,
 } from "../core/removal-log";
 import { formatWarn } from "../core/style";
@@ -79,8 +79,9 @@ export function recordTeardown(
 ): Promise<void> {
 	const at = new Date().toISOString();
 	const by = removalActor();
-	return recordRemovals(
+	return recordEvents(
 		input.runtimes.map((runtime) => ({
+			kind: "containers" as const,
 			at,
 			projectName: target.projectName,
 			root: target.root,

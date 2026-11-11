@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { CheckoutPresence } from "./checkout-presence";
 import type { ProxyActivity } from "./hosts/proxy-activity";
 import { readProcessIdentityAsync } from "./process-identity";
+import type { RunStopRecord } from "./removal-log";
 import { lastCheckoutCommandAt, noteCheckoutCommand } from "./run-activity";
 import {
 	createRunLimiter,
@@ -16,8 +17,7 @@ import {
 	readConnectionActivity,
 	terminateRun,
 } from "./run-limits";
-import type { RunEntry } from "./run-registry";
-import type { RunStopRecord } from "./run-stops";
+import { CHECKOUT_HOLD, LIVE, type RunEntry, runPhase } from "./run-registry";
 import {
 	DELETED_CHECKOUT_SETTLE_MS,
 	DETACHED_IDLE_LIMIT_MS,
@@ -37,6 +37,8 @@ function entry(extra: Partial<RunEntry> = {}): RunEntry {
 		processIdentity: "v2:4242",
 		startedAt: new Date(START).toISOString(),
 		updatedAt: new Date(START).toISOString(),
+		lifecycle: LIVE,
+		hold: CHECKOUT_HOLD,
 		detached: true,
 		idleLimitMs: DETACHED_IDLE_LIMIT_MS,
 		hosts: { active: true, tld: "localhost" },
@@ -252,7 +254,7 @@ describe("createRunLimiter", () => {
 		};
 		const pass = createRunLimiter({
 			readRuns: async () => runs,
-			liveness: async () => (run) => run.releasedAt === undefined,
+			liveness: async () => (run) => runPhase(run, true) === "live",
 			checkoutPresence: () => state.presence,
 			lastCommandAt: () => undefined,
 			readProxyActivity: (): ProxyActivity => new Map(),

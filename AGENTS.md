@@ -83,7 +83,7 @@ others. Before calling work done, walk this list and say which entries applied:
 - **Output modes.** Stream mode and the TUI both render app output, answer `restart` and `send`,
   and write the per-run logs.
 - **Run registry readers.** `runs.json` is read by `stop`, `ls`, `status`, the sweep, `dev --detach`
-  and BuncargoBar. A field change updates `menubar/fixtures/runs.v1.json`, which both sides test
+  and BuncargoBar. A field change updates `menubar/fixtures/runs.v2.json`, which both sides test
   against.
 - **Machine-readable output.** `--json`, exit codes and `buncargo help agents` are contracts agents
   depend on.

@@ -31,7 +31,7 @@ of these anywhere else has written a second owner: flag it and name the first.
 | A container's state (running, paused, …) and whether it is live or serving | `src/container-runtime/container-state.ts` |
 | What the sweep removes | `decideSweep` in `src/container-runtime/sweep.ts` |
 | Which detached runs the watchdog stops | `decideRunLimit` in `src/core/run-limits.ts` |
-| Runs the watchdog stopped, and why | `src/core/run-stops.ts` |
+| Runs the watchdog stopped, and why | `src/core/removal-log.ts` (`kind: "run-stopped"`) |
 | When a checkout was last used (commands, proxied requests) | `src/core/run-activity.ts`, `src/core/hosts/proxy-activity.ts` |
 | JSON state on disk | `src/core/registry-file.ts` (temp file and rename), `src/core/file-lock.ts` (`withFileLock` around a read-modify-write) |
 

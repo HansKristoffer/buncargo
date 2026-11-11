@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execAsync } from "../../core/process";
+import type { RunEntry } from "../../core/run-registry";
 import { CI_ENV_VARS } from "../../core/runtime-flags";
 import { startFakeInfisical } from "../../core/secrets/fake-infisical.testing";
 import { withAppendedArgs } from "./exec";
@@ -166,8 +167,8 @@ it("says who removed the stack when the command fails without it", async () => {
 	writeFileSync(docker, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 	// The command plays the sweep that removes the stack while it runs.
 	const sweep = `require("node:fs").writeFileSync(${JSON.stringify(
-		join(home, ".buncargo", "removals.json"),
-	)}, JSON.stringify({ version: 1, removals: [{ at: new Date().toISOString(), projectName: process.env.COMPOSE_PROJECT_NAME, root: ${JSON.stringify(
+		join(home, ".buncargo", "events.json"),
+	)}, JSON.stringify({ version: 1, events: [{ kind: "containers", at: new Date().toISOString(), projectName: process.env.COMPOSE_PROJECT_NAME, root: ${JSON.stringify(
 		root,
 	)}, runtime: "docker", reason: "owner gone for 16s", by: { command: "buncargo watchdog", pid: 4242, user: "ci", version: "12.4.0" } }] })); process.exit(3);`;
 
@@ -215,9 +216,11 @@ it("claims its stack with an idle hold, so the sweep removes it after a SIGKILL"
 		);
 		expect(result.exitCode).toBe(0);
 		const { runs } = JSON.parse(readFileSync(snapshot, "utf-8")) as {
-			runs: { idleTimeoutMs?: number }[];
+			runs: RunEntry[];
 		};
-		expect(runs.map((run) => run.idleTimeoutMs)).toEqual([3 * 60 * 1000]);
+		expect(runs.map((run) => run.hold)).toEqual([
+			{ kind: "timed", ms: 3 * 60 * 1000, inherited: false },
+		]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

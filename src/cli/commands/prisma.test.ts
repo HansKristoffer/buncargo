@@ -95,10 +95,10 @@ describe("buncargo prisma", () => {
 		expect(during?.services?.map((service) => service.name)).toEqual([
 			"postgres",
 		]);
-		expect(during?.releasedAt).toBeUndefined();
+		expect(during?.lifecycle.state).toBe("live");
 		const [after] = readRuns(join(root, "home/.buncargo/runs.json"));
 		expect(after?.sessionId).toBe(during?.sessionId);
-		expect(after?.releasedAt).toBeDefined();
+		expect(after?.lifecycle.state).toBe("released");
 	});
 
 	it("leaves stdout to Prisma, byte for byte", async () => {

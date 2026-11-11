@@ -36,15 +36,18 @@ import { execAsync } from "../core/process/exec";
 import {
 	type RemovalActor,
 	type RemovalOwner,
-	recordRemovals,
+	recordEvents,
 	removalActor,
 	removalOwner,
 } from "../core/removal-log";
 import {
 	clearRunStacks,
 	findCheckoutRuns,
+	type HoldExpiry,
+	holdExpiry,
 	markOwnersLost,
 	newestLifecycleFirst,
+	ownerChange,
 	type RunEntry,
 	type RunStackEntry,
 	readAllRuns,
@@ -134,43 +137,23 @@ export function decideSweep(
 	// stack. Only the two rules above may touch it.
 	if (!run) return { kind: "keep" };
 
-	// No hold at all means "as long as the checkout exists", however the run
-	// ended: `--keep-containers`, a one-shot mode, or a script that brought a
-	// stack up and exited, which to the sweep looks exactly like a crash.
-	// Unless the run reused a stack another run had left in its hold: that
-	// hold still applies, counted from when this run ended, either way.
-	if (run.idleTimeoutMs === undefined) {
-		const endedAt = run.releasedAt ?? run.ownerLostAt;
-		if (run.inheritedIdleTimeoutMs === undefined || endedAt === undefined)
-			return { kind: "keep" };
-		// An end time that does not parse is no end: keep, as with no hold.
-		const endedFor = now - Date.parse(endedAt);
-		if (Number.isNaN(endedFor)) return { kind: "keep" };
-		return endedFor >= run.inheritedIdleTimeoutMs
-			? {
-					kind: "down",
-					reason: `ended ${seconds(endedFor)} ago, past the hold it reused`,
-				}
-			: { kind: "keep" };
-	}
+	// A hold of the checkout keeps the stack however the run ended:
+	// `--keep-containers`, a one-shot mode, or a script that brought a stack
+	// up and exited, which to the sweep looks exactly like a crash. An owner
+	// gone but not yet stamped lost was only just noticed.
+	const expiry = holdExpiry(run, limits.ownerDeadGraceMs);
+	if (!expiry) return { kind: "keep" };
+	const endedFor = now - expiry.endedAt;
+	if (endedFor < expiry.holdMs) return { kind: "keep" };
+	return { kind: "down", reason: expiryReason(expiry, seconds(endedFor)) };
+}
 
-	if (run.releasedAt !== undefined) {
-		// A deliberate exit. Held so the next run reuses the containers rather
-		// than recreating them.
-		const idleFor = now - Date.parse(run.releasedAt);
-		return idleFor >= run.idleTimeoutMs
-			? { kind: "down", reason: `released ${seconds(idleFor)} ago` }
-			: { kind: "keep" };
-	}
-
-	// The owner died without releasing: a crash, which leaves nobody to come
-	// back for these. The grace counts from when a sweep first noticed; an
-	// entry nobody has stamped yet was only just noticed.
-	if (run.ownerLostAt === undefined) return { kind: "keep" };
-	const lostFor = now - Date.parse(run.ownerLostAt);
-	return lostFor >= limits.ownerDeadGraceMs
-		? { kind: "down", reason: `owner gone for ${seconds(lostFor)}` }
-		: { kind: "keep" };
+function expiryReason(expiry: HoldExpiry, endedFor: string): string {
+	if (expiry.inherited) return `ended ${endedFor} ago, past the hold it reused`;
+	return typedSwitch(expiry.ended, {
+		released: () => `released ${endedFor} ago`,
+		lost: () => `owner gone for ${endedFor}`,
+	});
 }
 
 /** Why a stack nobody here knows is still worth a look. */
@@ -371,8 +354,12 @@ export async function sweepOrphanedContainers(
 	const swept: NoteSwept = async (stack) => {
 		result.swept.push(stack);
 		actor ??= removalActor();
-		await recordRemovals([
-			{ at: new Date().toISOString(), ...stack, by: actor },
+		const { volumes, ...removed } = stack;
+		const at = new Date().toISOString();
+		await recordEvents([
+			volumes
+				? { kind: "volumes", at, ...removed, volumes, by: actor }
+				: { kind: "containers", at, ...removed, by: actor },
 		]);
 	};
 
@@ -981,28 +968,13 @@ async function stampLostOwners(
 ): Promise<void> {
 	const lost = [...new Set(owners)].filter(
 		(run): run is RunEntry =>
-			run !== null &&
-			run.releasedAt === undefined &&
-			run.ownerLostAt === undefined &&
-			!alive(run),
+			run !== null && ownerChange(run, alive(run)) === "lost",
 	);
 	// Found gone once, running now: that reading was wrong.
-	const back = runs.filter(
-		(run) => run.ownerLostAt !== undefined && alive(run),
+	const back = runs.filter((run) => ownerChange(run, alive(run)) === "back");
+	await markOwnersLost({ lost, back, at: new Date(now).toISOString() }).catch(
+		() => {},
 	);
-	if (lost.length === 0 && back.length === 0) return;
-	const at = new Date(now).toISOString();
-	try {
-		await markOwnersLost({
-			lost: lost.map((run) => run.sessionId),
-			back: back.map((run) => run.sessionId),
-			at,
-		});
-	} catch {
-		return;
-	}
-	for (const run of lost) run.ownerLostAt = at;
-	for (const run of back) run.ownerLostAt = undefined;
 }
 
 /**

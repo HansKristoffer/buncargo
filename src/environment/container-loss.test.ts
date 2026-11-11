@@ -9,6 +9,7 @@ const SINCE = Date.parse("2026-10-17T09:30:00.000Z");
 const NOW = Date.parse("2026-10-17T10:05:00.000Z");
 
 const SWEPT: RemovalRecord = {
+	kind: "containers",
 	at: "2026-10-17T10:00:00.000Z",
 	projectName: "shop-ci",
 	root: "/work/shop",

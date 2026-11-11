@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { readProcessIdentity } from "../process-identity";
-import type { RunEntry } from "../run-registry";
+import { CHECKOUT_HOLD, LIVE, type RunEntry } from "../run-registry";
 import { CONNECT_ORIGIN } from "./origin";
 import { parseDirectory, parseRun } from "./protocol";
 import { runTargets } from "./targets";
@@ -42,6 +42,8 @@ test("projecting a selected run omits workers/jobs and retains process identity"
 		hosts: null,
 		startedAt: new Date().toISOString(),
 		updatedAt: new Date().toISOString(),
+		lifecycle: LIVE,
+		hold: CHECKOUT_HOLD,
 		apps: [
 			{
 				name: "api",

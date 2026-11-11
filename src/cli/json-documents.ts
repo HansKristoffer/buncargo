@@ -3,7 +3,7 @@ import type { FileState } from "../core/checkout-files/sync";
 import type { LeaseEntry } from "../core/leases";
 import type { StrayLoopbackUrl } from "../core/loopback-env";
 import type { RemovalRecord } from "../core/removal-log";
-import type { RunEntry } from "../core/run-registry";
+import type { REGISTRY_VERSION, RunEntry } from "../core/run-registry";
 import type { InfisicalScope } from "../core/secrets/scope";
 import type { HostsRuntime, PortOffsetProvenance } from "../types";
 import type { CheckMode, DeferredTests } from "./commands/check/plan";
@@ -38,7 +38,8 @@ export interface DetachedResultJson {
 
 /** `buncargo runs --json`: every live run on this machine and the leases. */
 export interface RunsJson {
-	version: 1;
+	/** The `runs.json` schema its entries follow. */
+	version: typeof REGISTRY_VERSION;
 	/** `idleStopsAt`: when a detached run stops if nothing uses it first. */
 	runs: (RunEntry & { idleStopsAt?: string })[];
 	leases: LeaseEntry[];

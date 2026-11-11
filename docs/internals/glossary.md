@@ -11,11 +11,11 @@ Terms whose meaning matters across buncargo. Use them this way in code, comments
 | Run               | One `buncargo dev` (or library `start()`) for a checkout: its services, apps, hosts and tunnels.                                        |
 | Session           | A run's entry in `~/.buncargo/runs.json`, addressed by `sessionId`. Several sessions can coexist for one root.                           |
 | Claim             | Writing a run's entry before its first container exists, so the sweep never sees a fresh stack as unowned.                             |
-| Release           | The run ended on purpose; `releasedAt` is set and its containers wait out the idle hold for the next run to reuse.                       |
+| Release           | The run ended on purpose; its `lifecycle` is `released` and its containers wait out the idle hold for the next run to reuse.            |
 | Retire            | Remove an entry because nothing is left to hold: an explicit `stop()` tore the containers down, or the sweep did.                       |
 | Stop              | Tear down now. `stop()` and `buncargo stop` stop or `down` containers instead of releasing them.                                        |
-| Idle hold         | How long a released run's containers are kept (`idleTimeoutMs`). The CLI passes three minutes; absent means "as long as the checkout". |
-| Owner lost        | The sweep found an unreleased owner dead (`ownerLostAt`). The short crash grace counts from here.                                       |
+| Idle hold         | How long a released run's containers are kept (`hold`). The CLI passes three minutes; `checkout` means "as long as the checkout".     |
+| Owner lost        | The sweep found an unreleased owner dead (`lifecycle` `lost`). The short crash grace counts from here.                                  |
 | Takeover          | Stopping another run's servers for the selected apps and spawning them here instead of reusing them.                                   |
 | Reuse             | An app or service already up for this checkout is used as-is instead of started twice.                                                |
 
