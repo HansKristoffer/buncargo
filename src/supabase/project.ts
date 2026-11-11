@@ -17,7 +17,7 @@ export type SupabaseProject = SupabaseProjectSettings &
 		| { exists: false; error?: never }
 	);
 
-export interface SupabaseProjectSettings {
+interface SupabaseProjectSettings {
 	/** Absolute path of the toml, whether or not it exists. */
 	path: string;
 	api: { enabled: boolean; port: number };

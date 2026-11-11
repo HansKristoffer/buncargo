@@ -207,7 +207,7 @@ export const DETACH_ONLY_FLAGS: readonly string[] = [
 ];
 
 /** `--migrate`, `--seed` or `--up-only`, which exit before dev servers start. */
-export function oneShotMode(values: DevValues): string | undefined {
+function oneShotMode(values: DevValues): string | undefined {
 	if (values.migrate) return "--migrate";
 	if (values.seed) return "--seed";
 	if (values["up-only"]) return "--up-only";

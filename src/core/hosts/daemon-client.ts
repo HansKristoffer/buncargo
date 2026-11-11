@@ -91,7 +91,7 @@ export async function describeLoopbackHijack(
 }
 
 /** How long the CLI waits for the daemon to serve a route it registered. */
-export const ROUTE_PICKUP_TIMEOUT_MS = 3000;
+const ROUTE_PICKUP_TIMEOUT_MS = 3000;
 /**
  * Between probes that did not settle it. Each probe already reloads, so a
  * second one is for a probe a rebind cut off, or a mint still in progress.

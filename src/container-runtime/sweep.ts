@@ -491,7 +491,7 @@ async function settleThrowawayClaims(input: {
  * deleted checkout's claim is the sweep's record of its volumes
  * ({@link settleDeletedCheckouts}).
  */
-export function abandonedThrowawayClaims(input: {
+function abandonedThrowawayClaims(input: {
 	claims: Record<string, OffsetClaim>;
 	runs: readonly RunEntry[];
 	finished: readonly RunEntry[];
@@ -533,7 +533,7 @@ export function abandonedThrowawayClaims(input: {
  * those volumes are this checkout's, which the sweep needs once the checkout
  * is deleted ({@link settleDeletedCheckouts}).
  */
-export function spentThrowawayClaims(input: {
+function spentThrowawayClaims(input: {
 	claims: Record<string, OffsetClaim>;
 	runs: readonly Pick<RunEntry, "projectName" | "root">[];
 	stacks: readonly Pick<ContainerGroup, "projectName" | "root">[];

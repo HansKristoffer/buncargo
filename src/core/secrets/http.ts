@@ -3,7 +3,7 @@ import { infisicalLoginCommand, SecretsError } from "./errors";
 import type { InfisicalScope } from "./scope";
 
 /** One HTTP call or CLI run; only has to outlast a stalled network call. */
-export const REQUEST_TIMEOUT_MS = 30_000;
+const REQUEST_TIMEOUT_MS = 30_000;
 /** A shared load's ceiling, and every caller's default wait for one. */
 export const LOAD_TIMEOUT_MS = REQUEST_TIMEOUT_MS * 2;
 

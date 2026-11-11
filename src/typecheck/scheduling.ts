@@ -8,7 +8,7 @@ export const LOCAL_TYPECHECK_CONCURRENCY_CAP = 4;
  * machine: two on a 7 GB hosted runner, four on a 16 GB one, and the CPU count
  * on a self-hosted server with the memory for it.
  */
-export const CI_TYPECHECK_BYTES_PER_PROCESS = 3.5 * 1024 ** 3;
+const CI_TYPECHECK_BYTES_PER_PROCESS = 3.5 * 1024 ** 3;
 
 export interface RankedWorkspace {
 	path: string;

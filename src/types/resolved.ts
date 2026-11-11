@@ -20,7 +20,7 @@ import type {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** How a resolved app shows it is ready. */
-export type AppReadiness =
+type AppReadiness =
 	/**
 	 * Its port answers HTTP at `path`. `declared`: the config named the path,
 	 * so any status but a 2xx/3xx fails it and a port already held by another
@@ -62,14 +62,14 @@ interface ResolvedEndpoint {
 }
 
 /** An app with a port and a dev process. */
-export interface ResolvedServerApp extends ResolvedAppBase, ResolvedEndpoint {
+interface ResolvedServerApp extends ResolvedAppBase, ResolvedEndpoint {
 	kind: "server";
 	devCommand: string;
 	readiness: Exclude<AppReadiness, { kind: "alive" }>;
 }
 
 /** An app with a dev process and no port. */
-export interface ResolvedWorkerApp extends ResolvedAppBase {
+interface ResolvedWorkerApp extends ResolvedAppBase {
 	kind: "worker";
 	port?: undefined;
 	extraPorts?: undefined;
@@ -83,7 +83,7 @@ export interface ResolvedWorkerApp extends ResolvedAppBase {
  * anything in dev: `devCommand: false`. Its readiness applies to a
  * production build's `prodCommand`.
  */
-export interface ResolvedPortOnlyApp extends ResolvedAppBase, ResolvedEndpoint {
+interface ResolvedPortOnlyApp extends ResolvedAppBase, ResolvedEndpoint {
 	kind: "portOnly";
 	devCommand: false;
 	readiness: Exclude<AppReadiness, { kind: "alive" }>;
@@ -141,7 +141,7 @@ interface ResolvedServiceEndpoint {
 }
 
 /** A container this config's Compose file runs, with a host port. */
-export interface ResolvedContainerService
+interface ResolvedContainerService
 	extends ResolvedServiceBase, ResolvedServiceEndpoint {
 	kind: "container";
 	docker: ResolvedDocker;
@@ -149,7 +149,7 @@ export interface ResolvedContainerService
 }
 
 /** A container with no host endpoint: ready when its process is up. */
-export interface ResolvedPortlessService extends ResolvedServiceBase {
+interface ResolvedPortlessService extends ResolvedServiceBase {
 	kind: "portless";
 	port?: undefined;
 	secondaryPort?: undefined;
@@ -162,7 +162,7 @@ export interface ResolvedPortlessService extends ResolvedServiceBase {
 }
 
 /** A container run to completion on every start. */
-export interface ResolvedJobService extends ResolvedServiceBase {
+interface ResolvedJobService extends ResolvedServiceBase {
 	kind: "job";
 	port?: undefined;
 	secondaryPort?: undefined;
@@ -175,7 +175,7 @@ export interface ResolvedJobService extends ResolvedServiceBase {
 }
 
 /** Run by an integration's stack; buncargo only allocates its port. */
-export interface ResolvedExternalService
+interface ResolvedExternalService
 	extends ResolvedServiceBase, ResolvedServiceEndpoint {
 	kind: "external";
 	/** The stack's key in its integration's `stacks`. */

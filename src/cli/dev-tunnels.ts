@@ -26,7 +26,7 @@ export interface TunnelApi {
 	stopPublicTunnels: typeof stopPublicTunnels;
 }
 
-export interface PlanExposeInput {
+interface PlanExposeInput {
 	/** Raw `--expose[=a,b]` value; undefined means "everything exposable". */
 	exposeValue: string | undefined;
 	appsRequested: boolean;

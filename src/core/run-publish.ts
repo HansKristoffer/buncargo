@@ -475,7 +475,7 @@ export async function markApps(
  * retired, so its readiness can only come after; `buncargo restart` waits
  * for this rather than writing it.
  */
-export async function markAppsRestarting(
+async function markAppsRestarting(
 	run: RunSession,
 	names: readonly string[],
 ): Promise<void> {

@@ -1,0 +1,26 @@
+{
+	"$schema": "https://unpkg.com/knip@6/schema.json",
+	"entry": [
+		"src/index.ts",
+		"src/api/index.ts",
+		"src/{vite,next,client,runtime,expo,shopify,supabase,firebase}/index.ts",
+		"src/cli/bin.ts",
+		"src/cli/hostsd.ts",
+		"src/cli/connectd.ts",
+		"src/core/watchdog-runner.ts",
+		"src/**/*.testing.ts",
+		"scripts/*.{ts,js,cjs}",
+		"server/connect/main.ts",
+		"example/**/*.ts"
+	],
+	"project": [
+		"src/**/*.ts",
+		"scripts/**/*.{ts,js,cjs}",
+		"server/connect/**/*.ts",
+		"example/**/*.ts"
+	],
+	"ignoreBinaries": [
+		"netstat",
+		"buncargo-no-such-binary"
+	]
+}

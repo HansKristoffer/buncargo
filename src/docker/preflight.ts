@@ -120,7 +120,7 @@ function detectDockerRuntime(binary?: string): DockerRuntime {
  * transport timeout, a pipe this user may not open), so only a Windows pipe
  * that does not exist counts among them.
  */
-export function isDaemonDownMessage(message: string): boolean {
+function isDaemonDownMessage(message: string): boolean {
 	const cannotConnect =
 		/cannot connect to the docker daemon|is the docker daemon running|docker daemon is not running/i;
 	const noPipe = /error during connect:.*pipe.*cannot find the file specified/i;
@@ -233,7 +233,7 @@ export function dockerUnavailableError(
 	});
 }
 
-export function remediationFor(runtime: DockerRuntime): string {
+function remediationFor(runtime: DockerRuntime): string {
 	return typedSwitch(runtime, {
 		orbstack: () => "Start OrbStack (open -a OrbStack) and try again.",
 		"docker-desktop": () =>

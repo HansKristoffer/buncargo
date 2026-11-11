@@ -15,7 +15,7 @@ import { readJsonDocumentSync, writeJsonDocument } from "./registry-file";
 import { projectStateFilePath } from "./state-paths";
 import { formatWarn } from "./style";
 
-export function getEnvOverridesPath(root: string): string {
+function getEnvOverridesPath(root: string): string {
 	return projectStateFilePath(root, "env.json");
 }
 

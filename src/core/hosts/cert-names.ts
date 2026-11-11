@@ -37,7 +37,7 @@ export interface CertNameEntry {
 	updatedAt: string;
 }
 
-export const CERT_NAMES_FILENAME = "cert-names.json";
+const CERT_NAMES_FILENAME = "cert-names.json";
 
 export function getCertNamesPath(): string {
 	return join(getStateDir(), CERT_NAMES_FILENAME);

@@ -33,7 +33,7 @@ export function emptyListenerSnapshot(): ListenerSnapshot {
  * port separator in all three, which is why an IPv6 address does not need
  * unwrapping first.
  */
-export function portFromLsofName(name: string): number | undefined {
+function portFromLsofName(name: string): number | undefined {
 	const colon = name.lastIndexOf(":");
 	if (colon === -1) return undefined;
 	const port = Number.parseInt(name.slice(colon + 1), 10);
@@ -47,7 +47,7 @@ export function portFromLsofName(name: string): number | undefined {
  * block, `c` names it, and each `n` is one of its files — here, one listening
  * socket, because the caller filtered on `-sTCP:LISTEN`.
  */
-export function parseListenerSnapshot(output: string): ListenerSnapshot {
+function parseListenerSnapshot(output: string): ListenerSnapshot {
 	const snapshot = emptyListenerSnapshot();
 	let pid: number | undefined;
 
@@ -81,7 +81,7 @@ export function parseListenerSnapshot(output: string): ListenerSnapshot {
 }
 
 /** Parse `lsof -d cwd -F pn` output into `pid -> working directory`. */
-export function parseProcessCwds(output: string): Map<number, string> {
+function parseProcessCwds(output: string): Map<number, string> {
 	const cwds = new Map<number, string>();
 	let pid: number | undefined;
 

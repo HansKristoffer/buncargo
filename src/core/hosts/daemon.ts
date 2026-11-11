@@ -172,8 +172,7 @@ function exitDaemon(code: number): never {
 	process.exit(code);
 }
 
-export type HostsReloadReason =
-	"startup" | "poll" | "refresh" | "recovery" | "manual";
+type HostsReloadReason = "startup" | "poll" | "refresh" | "recovery" | "manual";
 
 export interface HostsReloaderDeps {
 	/** Optional diagnostics; never printed on the ordinary reload path. */

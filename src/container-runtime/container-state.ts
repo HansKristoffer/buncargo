@@ -104,7 +104,7 @@ export interface ContainerObservation {
  * service that lost a race with its dependency); two, seconds apart and with
  * no run between them, is a container that keeps dying.
  */
-export const CRASH_LOOP_RESTARTS = 2;
+const CRASH_LOOP_RESTARTS = 2;
 
 export type StartupVerdict =
 	| { kind: "pending" }

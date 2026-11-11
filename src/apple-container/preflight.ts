@@ -29,7 +29,7 @@ export function isAppleContainerSupported(): boolean {
 	return platform() === "darwin" && arch() === "arm64";
 }
 
-export function unsupportedPlatformMessage(): string {
+function unsupportedPlatformMessage(): string {
 	return `Apple container requires macOS on Apple silicon (this host is ${platform()}/${arch()}). Use docker.runtime: "docker".`;
 }
 
@@ -71,10 +71,6 @@ export function appleAvailabilityFromStatus(
 			detail: "Apple container did not answer in time",
 		};
 	return { state: "down" };
-}
-
-export function isAppleContainerSystemRunning(cli: AppleContainerCli): boolean {
-	return appleContainerAvailability(cli).state === "up";
 }
 
 /**

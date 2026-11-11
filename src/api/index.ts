@@ -2,6 +2,16 @@
 // environment, the config loader, the CLI runner and the machine helpers a
 // test harness or a script reaches for. A `dev.config.ts` imports `buncargo`.
 
+// The documents `--json` prints, so a script can type what it parses.
+export type {
+	CheckPlanJson,
+	DetachedResultJson,
+	EnvJson,
+	FilesStatusJson,
+	RunsJson,
+	SecretsCheckJson,
+	StatusJson,
+} from "../cli/json-documents";
 export { runCli } from "../cli/run-cli";
 export {
 	assertValidConfig,

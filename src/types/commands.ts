@@ -46,7 +46,7 @@ export interface SetupCheck {
 }
 
 /** What a {@link PreflightStep} is handed. */
-export interface PreflightContext extends CheckContext {
+interface PreflightContext extends CheckContext {
 	/**
 	 * Whether a person is at the terminal: the step may prompt, open a browser
 	 * or run an interactive login. False in CI, agents and piped output.

@@ -146,7 +146,7 @@ export function runStopRecord(
 	};
 }
 
-export function getEventLogFile(): string {
+function getEventLogFile(): string {
 	return stateFilePath("events.json");
 }
 
@@ -218,7 +218,7 @@ function validateLog(value: unknown): LogEvent[] | undefined {
 		: undefined;
 }
 
-export function readEvents(): LogEvent[] {
+function readEvents(): LogEvent[] {
 	return readJsonDocumentSync(getEventLogFile(), validateLog) ?? [];
 }
 
@@ -273,7 +273,7 @@ export function findRemoval(
 }
 
 /** "buncargo's watchdog (pid 4242, user ci, buncargo 12.4.0)" */
-export function describeActor(actor: RemovalActor): string {
+function describeActor(actor: RemovalActor): string {
 	const who =
 		actor.command === "buncargo watchdog"
 			? "buncargo's watchdog"

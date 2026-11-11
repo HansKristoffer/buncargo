@@ -23,7 +23,7 @@ export function composeLiteral(value: string): string {
 	return value.replaceAll("$", () => "$$");
 }
 
-export function getPortEnvName(portKey: string): string {
+function getPortEnvName(portKey: string): string {
 	return `${envName(portKey)}_PORT`;
 }
 

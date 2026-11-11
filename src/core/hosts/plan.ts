@@ -1,6 +1,6 @@
 import type { HostsOptionsLike, NamedHost, ResolvedService } from "../../types";
 
-export const RESERVED_HOST_LABELS = new Set([
+const RESERVED_HOST_LABELS = new Set([
 	"dev",
 	"typecheck",
 	"prisma",
@@ -19,7 +19,7 @@ export const DEFAULT_HTTP_SERVICE_NAMES = new Set(["mailpit", "typesense"]);
 const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const MAX_HOSTNAME = 253;
 
-export interface ResolvedHostsOptions {
+interface ResolvedHostsOptions {
 	tld: string;
 	primaryApp?: string;
 	services: readonly string[] | true;
@@ -83,7 +83,7 @@ export function sanitizeTld(tld: string): string {
 	return normalized;
 }
 
-export function resolveHostsOptions(
+function resolveHostsOptions(
 	hosts: boolean | HostsOptionsLike | undefined,
 	/** `options.primaryApp`: its hostname is the bare one. */
 	primaryApp?: string,
@@ -102,7 +102,7 @@ export function isHttpService(service: ResolvedService): boolean {
 	return service.port !== undefined && service.browsable;
 }
 
-export function selectNamedServiceKeys(
+function selectNamedServiceKeys(
 	services: Readonly<Record<string, ResolvedService>>,
 	selection: readonly string[] | true,
 ): string[] {
@@ -114,7 +114,7 @@ export function selectNamedServiceKeys(
 	return selection.filter((name) => services[name] !== undefined);
 }
 
-export function joinHostname(labels: string[]): string {
+function joinHostname(labels: string[]): string {
 	const hostname = labels.join(".");
 	if (hostname.length > MAX_HOSTNAME) {
 		throw new Error(

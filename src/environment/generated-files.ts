@@ -34,7 +34,7 @@ export function writeIfChanged(path: string, content: string): boolean {
 	return true;
 }
 
-export function generatedFileContext(
+function generatedFileContext(
 	ctx: DevEnvContext,
 	envVars: DevEnvVarsApi,
 ): GeneratedFileContext {

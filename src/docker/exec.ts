@@ -3,7 +3,7 @@ import { remainingTime } from "../core/deadline";
 import { DEFAULT_DOCKER_BINARY, runDockerAsync } from "./binary";
 
 /** Match Compose exec's default replica, excluding one-off run containers. */
-export function serviceContainerFilters(request: {
+function serviceContainerFilters(request: {
 	projectName: string;
 	serviceName: string;
 }): string[] {

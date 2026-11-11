@@ -186,7 +186,7 @@ export type SharedEnvVarNames<
 	| `${EnvNameOf<Extract<ExposedKeys<TServices, TApps>, string>>}_PUBLIC_URL`;
 
 /** The `env` names apps' `captures` export, once a value is captured. */
-export type CaptureEnvVarNames<TApps> = {
+type CaptureEnvVarNames<TApps> = {
 	[K in keyof TApps]: TApps[K] extends { captures?: infer TCaptures }
 		? {
 				[C in keyof TCaptures]: TCaptures[C] extends { env?: infer TName }

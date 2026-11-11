@@ -27,7 +27,7 @@ export function manualComposeDownCommand(projectName: string): string {
  * timeout. A missing binary is not a daemon that refused, and the two paths
  * that run `docker` must say so the same way.
  */
-export type DockerRunStatus = "ok" | "exit" | "notFound" | "timedOut";
+type DockerRunStatus = "ok" | "exit" | "notFound" | "timedOut";
 
 export interface DockerRunResult {
 	status: DockerRunStatus;

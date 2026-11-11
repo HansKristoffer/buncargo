@@ -432,7 +432,7 @@ const TOPICS: readonly Topic[] = [
 const EXITS_TOPIC = "exits";
 
 /** The core, naming its topics. */
-export const AGENTS_GUIDE = CORE.replace(
+const AGENTS_GUIDE = CORE.replace(
 	"TOPICS",
 	[...TOPICS.map((topic) => topic.name), EXITS_TOPIC].join(", "),
 );

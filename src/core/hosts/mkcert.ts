@@ -19,12 +19,11 @@ import {
 import { getCertPath, getKeyPath } from "./paths";
 import { certificateCovers } from "./plan";
 
-export const MKCERT_RELEASE_BASE =
-	"https://github.com/FiloSottile/mkcert/releases/";
+const MKCERT_RELEASE_BASE = "https://github.com/FiloSottile/mkcert/releases/";
 
 const RENEW_BEFORE_MS = 1000 * 60 * 60 * 24 * 30;
 
-export function cachedMkcertBinPath(version = mkcertVersion()): string {
+function cachedMkcertBinPath(version = mkcertVersion()): string {
 	return toolCachePath(`mkcert.${version}.${process.platform}-${process.arch}`);
 }
 
@@ -104,7 +103,7 @@ export async function ensureMkcert(): Promise<string> {
 	});
 }
 
-export const CA_FILENAME = "rootCA.pem";
+const CA_FILENAME = "rootCA.pem";
 
 /**
  * Where mkcert keeps its CA, by its own documented rules, without asking it.
@@ -148,7 +147,7 @@ function caRootFromBinary(mkcertPath?: string): string | undefined {
 	}
 }
 
-export function getCaRoot(mkcertPath?: string): string | undefined {
+function getCaRoot(mkcertPath?: string): string | undefined {
 	for (const candidate of caRootCandidates()) {
 		if (existsSync(join(candidate, CA_FILENAME))) return candidate;
 	}
@@ -162,10 +161,6 @@ export function getCaPath(mkcertPath?: string): string | undefined {
 	if (!root) return undefined;
 	const pem = join(root, CA_FILENAME);
 	return existsSync(pem) ? pem : undefined;
-}
-
-export function isCaPresent(mkcertPath?: string): boolean {
-	return getCaPath(mkcertPath) !== undefined;
 }
 
 /**
@@ -215,7 +210,7 @@ export function verifyCertFailureTrust(error: unknown): CaTrust {
  * `mkcert -uninstall` removes the trust and keeps the CA files, so a check
  * on `rootCA.pem` alone passed while every named URL failed TLS.
  */
-export function readCaTrust(caPath: string): CaTrust {
+function readCaTrust(caPath: string): CaTrust {
 	return typedSwitch(
 		process.platform,
 		{

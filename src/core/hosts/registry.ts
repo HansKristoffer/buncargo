@@ -37,7 +37,7 @@ export interface AppHostsRoute extends HostsRouteTarget {
  * A service's route: no owner, since its container outlives the run. It goes
  * when its checkout does, or with `dev --down`.
  */
-export interface ServiceHostsRoute extends HostsRouteTarget {
+interface ServiceHostsRoute extends HostsRouteTarget {
 	kind: "service";
 }
 

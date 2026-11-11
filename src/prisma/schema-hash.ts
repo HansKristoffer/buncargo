@@ -47,10 +47,7 @@ export function readGeneratedPrismaHash(root: string): string | undefined {
 }
 
 /** Best-effort: a checkout that cannot write its state dir just re-checks. */
-export function recordGeneratedPrismaHash(
-	root: string,
-	prismaDir: string,
-): void {
+function recordGeneratedPrismaHash(root: string, prismaDir: string): void {
 	const schemaHash = prismaSchemaHash(prismaDir);
 	if (!schemaHash) return;
 	try {

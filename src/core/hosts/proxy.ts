@@ -68,7 +68,7 @@ const HOP_BY_HOP_HEADERS = [
  * anything else leaves the socket in its HTTP server with no `error` listener,
  * and the next reset takes the dev server down with an unhandled ECONNRESET.
  */
-export function requestedSubprotocol(request: Request): string | undefined {
+function requestedSubprotocol(request: Request): string | undefined {
 	const offered = request.headers.get("sec-websocket-protocol");
 	if (!offered) return undefined;
 	return offered.split(",")[0]?.trim() || undefined;

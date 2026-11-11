@@ -107,7 +107,7 @@ export interface DevRunClaimApi {
 
 type ClaimState = { kind: "unclaimed" } | { kind: "claimed"; at: number };
 
-export interface AppClaimOptions {
+interface AppClaimOptions {
 	policy: LeasePolicy;
 	/** The services the entry lists, with the apps. */
 	serviceNames: readonly string[];
