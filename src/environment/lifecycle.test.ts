@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
 import { readRemovals } from "../core/removal-log";
 import { CI_ENV_VARS } from "../core/runtime-flags";
@@ -212,6 +214,32 @@ describe("startup modes and hooks", () => {
 		await lifecycle.start({ startServers: false, verbose: false, wait: false });
 		expect(events).toContain("migrate");
 		expect(events).not.toContain("generate");
+	});
+	it('generateCheck "schema-hash" generates only when the schema changed since the last generate', async () => {
+		const root = mkdtempSync(join(tmpdir(), "buncargo-generate-check-"));
+		const schema = join(root, "packages/prisma/prisma/schema.prisma");
+		mkdirSync(dirname(schema), { recursive: true });
+		writeFileSync(schema, "model User { id Int @id }");
+		const startIn = async () => {
+			const { ctx, events, lifecycle } = fixture();
+			if (!ctx.config.prisma) throw new Error("fixture needs prisma");
+			Object.assign(ctx, { root });
+			Object.assign(ctx.config.prisma, { generateCheck: "schema-hash" });
+			await lifecycle.start({
+				startServers: false,
+				verbose: false,
+				wait: false,
+			});
+			return events.includes("generate");
+		};
+		try {
+			expect(await startIn()).toBe(true);
+			expect(await startIn()).toBe(false);
+			writeFileSync(schema, "model User { id Int @id\n name String }");
+			expect(await startIn()).toBe(true);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 	it("a library start ensures the watchdog unless told not to", async () => {
 		// Only the CLI used to start one, so a script that started containers

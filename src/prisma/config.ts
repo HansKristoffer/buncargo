@@ -4,9 +4,14 @@ export interface ResolvedPrismaConfig {
 	cwd: string;
 	/** Relative to {@link cwd}. */
 	migrations: string;
+	/** Relative to {@link cwd}. */
+	schema: string;
 	/** The database's service key. */
 	service: string;
+	/** Where Prisma reads the database URL: the first of {@link urlEnvVars}. */
 	urlEnvVar: string;
+	/** Every variable set to the checkout's database URL; never empty. */
+	urlEnvVars: readonly string[];
 }
 
 /**
@@ -18,15 +23,21 @@ export function resolvePrismaConfig(
 		| {
 				cwd?: string;
 				migrations?: string;
+				schema?: string;
 				service?: string;
-				urlEnvVar?: string;
+				urlEnvVar?: string | readonly string[];
 		  }
 		| undefined,
 ): ResolvedPrismaConfig {
+	const named = prisma?.urlEnvVar ?? "DATABASE_URL";
+	const urlEnvVars = typeof named === "string" ? [named] : named;
+	const [urlEnvVar = "DATABASE_URL"] = urlEnvVars;
 	return {
 		cwd: prisma?.cwd ?? "packages/prisma",
 		migrations: prisma?.migrations ?? "prisma/migrations",
+		schema: prisma?.schema ?? "prisma/schema.prisma",
 		service: prisma?.service ?? "postgres",
-		urlEnvVar: prisma?.urlEnvVar ?? "DATABASE_URL",
+		urlEnvVar,
+		urlEnvVars: urlEnvVars.length > 0 ? urlEnvVars : [urlEnvVar],
 	};
 }

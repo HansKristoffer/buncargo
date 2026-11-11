@@ -84,6 +84,14 @@ export function isCI(env: NodeJS.ProcessEnv = process.env): boolean {
 	);
 }
 
+/**
+ * GitHub Actions in particular: its log reads `::group::` and `::error::`
+ * workflow commands.
+ */
+export function isGitHubActions(env: NodeJS.ProcessEnv = process.env): boolean {
+	return env.GITHUB_ACTIONS === "true";
+}
+
 /** `BUNCARGO_BAR=0` - turn the menu bar offer off without persisting a decline. */
 export function barOfferOptedOut(
 	env: NodeJS.ProcessEnv = process.env,

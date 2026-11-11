@@ -150,6 +150,13 @@ export interface TypecheckConfig {
 	 * split the check across runners without listing every workspace.
 	 */
 	groups?: Record<string, TypecheckGroupConfig>;
+	/**
+	 * The `package.json` scripts that check a workspace, each its own job in
+	 * the pool (`["typecheck", "typecheck:e2e"]`). A workspace is discovered
+	 * when it has any of them and runs the ones it has. Default:
+	 * `["typecheck"]`.
+	 */
+	scripts?: readonly string[];
 }
 
 /** One `typecheck.groups` entry. */
@@ -181,6 +188,45 @@ export interface CheckGateConfig {
 	when?: readonly string[];
 	/** Also run in `check --staged` (the pre-commit hook). Default: true. */
 	staged?: boolean;
+	/**
+	 * Selected by a change to a root manifest, lockfile, tsconfig or the dev
+	 * config, as well as by `when`. Default: true.
+	 */
+	rootWide?: boolean;
+	/**
+	 * Shell command that repairs what the gate reports (`bun run gen`). In
+	 * the default changed-files mode a failing gate runs it from `cwd` and
+	 * checks again; `--staged` and `--all` only report.
+	 */
+	fix?: string;
+}
+
+/**
+ * One `check.testAlso` entry: tests that guard files they do not sit next
+ * to, such as an integration test over a whole folder.
+ */
+export interface CheckTestAlsoConfig {
+	/** Globs of changed files that select the tests. */
+	when: readonly string[];
+	/** The test files to run: paths or globs relative to the root. */
+	tests: readonly string[];
+}
+
+/**
+ * `check.testDeferred`: tests `check` selects but does not run, because
+ * they need services (a database, a queue). They are listed with the
+ * command that runs them, and the verdict counts them.
+ */
+export interface CheckTestDeferredConfig {
+	/** Globs of the test files to leave out (`**\/*.database.test.ts`). */
+	files: readonly string[];
+	/**
+	 * The command the files are passed to, shown for running them by hand or
+	 * in CI (`bunx buncargo ci -- bun test`). Default: `check.testCommand`.
+	 */
+	command?: string;
+	/** Fail the check when it leaves a test out. Default: false. */
+	strict?: boolean;
 }
 
 /** `buncargo check`: one command for the change in front of you. */
@@ -194,6 +240,10 @@ export interface CheckConfig {
 	testCommand?: string;
 	/** Globs of test files never run by `check` (e2e suites). */
 	testExclude?: readonly string[];
+	/** Tests a change selects beyond the ones next to the changed files. */
+	testAlso?: readonly CheckTestAlsoConfig[];
+	/** Selected tests that need services: listed, not run. */
+	testDeferred?: CheckTestDeferredConfig;
 	/**
 	 * Format with `bun fmt` before Biome: the changed files (written), the
 	 * staged ones (`--check`), the whole repo with `--all` (`--check`). `true`

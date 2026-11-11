@@ -36,6 +36,7 @@ function resolveInternalPort(
 		clickhouse: () => 8123,
 		mailpit: () => 8025,
 		typesense: () => 8108,
+		minio: () => 9000,
 	});
 }
 
@@ -48,7 +49,7 @@ function resolveSecondaryInternalPort(
 		mailpit: () => 1025,
 		...typedSwitchGroup(
 			preset,
-			[undefined, "postgres", "redis", "typesense"],
+			[undefined, "postgres", "redis", "typesense", "minio"],
 			() => fallback,
 		),
 	});

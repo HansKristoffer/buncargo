@@ -1292,7 +1292,7 @@ describe("checks, tasks and profiles", () => {
 				},
 			}),
 		).toEqual([
-			"typecheck.workspaces is not an option (include, exclude, concurrency, groups)",
+			"typecheck.workspaces is not an option (include, exclude, concurrency, groups, scripts)",
 			"typecheck.include must be an array of paths or globs relative to the root",
 			"typecheck.exclude must be an array of paths or globs relative to the root",
 		]);
@@ -1366,7 +1366,7 @@ describe("checks, tasks and profiles", () => {
 		).toEqual([
 			"typecheck.concurrency must be a positive integer",
 			"typecheck.groups.web.only must be an array of workspaces",
-			"check.tests is not an option (gates, testCommand, testExclude, docs, format)",
+			"check.tests is not an option (gates, testCommand, testExclude, testAlso, testDeferred, docs, format)",
 			"check.format must be a boolean or a nonempty array of globs",
 			"check.docs.paths.exempt.0.reason must be a nonempty string",
 			"check.gates.0.name must be a nonempty string",

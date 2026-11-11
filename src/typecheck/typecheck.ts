@@ -47,6 +47,11 @@ export interface WorkspaceTypecheckOptions {
 	/** Workspaces to leave out: paths, globs or basenames (`typecheck.exclude`) */
 	exclude?: readonly string[];
 	/**
+	 * The `package.json` scripts that check a workspace, each run as its own
+	 * job (`typecheck.scripts`). Default: `["typecheck"]`.
+	 */
+	scripts?: readonly string[];
+	/**
 	 * Check only what these files can break (paths relative to `root`): their
 	 * workspaces and the workspaces depending on those. A root manifest,
 	 * lockfile, tsconfig or dev config among them checks everything.
@@ -63,6 +68,7 @@ export interface WorkspaceTypecheckOptions {
  * Result of a single workspace typecheck.
  */
 export interface WorkspaceTypecheckResult {
+	/** The workspace path, with `#<script>` for a script other than the first. */
 	workspace: string;
 	duration: number;
 	success: boolean;
@@ -85,11 +91,33 @@ export interface TypecheckResult {
 	selectionError?: string;
 }
 
+/** One job of the pool: a workspace and one way to check it. */
 interface Workspace {
 	path: string;
+	/** What results and timings call it: the path, or `<path>#<script>`. */
+	job: string;
 	fileCount: number;
-	/** How to check it, run in the workspace. Default: its `typecheck` script. */
-	command?: string[];
+	/** How to check it, run in the workspace. */
+	command: string[];
+}
+
+const DEFAULT_SCRIPTS = ["typecheck"];
+
+/**
+ * The jobs for a workspace's scripts. The first configured script keeps the
+ * bare path, so a project that adds a script keeps its timings and output.
+ */
+function scriptJobs(
+	path: string,
+	present: readonly string[],
+	scripts: readonly string[],
+): Workspace[] {
+	return present.map((script) => ({
+		path,
+		job: script === scripts[0] ? path : `${path}#${script}`,
+		fileCount: 0,
+		command: [process.execPath, "run", script],
+	}));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -106,7 +134,7 @@ function workspaceLabel(workspace: string, fileCount: number): string {
 }
 
 async function runSingleTypecheck(
-	{ path: workspace, fileCount, command }: Workspace,
+	{ path, job: workspace, fileCount, command }: Workspace,
 	root: string,
 	verbose: boolean,
 	signal: AbortSignal | undefined,
@@ -119,8 +147,8 @@ async function runSingleTypecheck(
 	}
 
 	const result = await execAsync(
-		command ?? [process.execPath, "run", "typecheck"],
-		join(root, workspace),
+		command,
+		join(root, path),
 		{},
 		{ throwOnError: false, signal },
 	);
@@ -135,15 +163,20 @@ async function runSingleTypecheck(
 	return { workspace, duration, success, fileCount, errorOutput };
 }
 
-function hasTypecheckScript(root: string, path: string): boolean {
+/** Which of `scripts` the workspace's `package.json` defines, in that order. */
+function presentScripts(
+	root: string,
+	path: string,
+	scripts: readonly string[],
+): string[] {
 	try {
 		const pkgJson = JSON.parse(
 			readFileSync(join(root, path, "package.json"), "utf-8"),
-		) as { scripts?: { typecheck?: string } };
-		return Boolean(pkgJson.scripts?.typecheck);
+		) as { scripts?: Record<string, unknown> };
+		return scripts.filter((script) => Boolean(pkgJson.scripts?.[script]));
 	} catch {
 		// No package.json, or an invalid one.
-		return false;
+		return [];
 	}
 }
 
@@ -162,6 +195,7 @@ interface IncludeProblem {
 async function resolveIncludedWorkspaces(
 	include: readonly string[],
 	root: string,
+	scripts: readonly string[],
 ): Promise<{ workspaces: Workspace[]; problems: IncludeProblem[] }> {
 	const workspaces: Workspace[] = [];
 	const problems: IncludeProblem[] = [];
@@ -184,8 +218,9 @@ async function resolveIncludedWorkspaces(
 		for (const path of directories.sort()) {
 			if (seen.has(path)) continue;
 			seen.add(path);
-			if (hasTypecheckScript(root, path)) {
-				workspaces.push({ path, fileCount: 0 });
+			const present = presentScripts(root, path, scripts);
+			if (present.length > 0) {
+				workspaces.push(...scriptJobs(path, present, scripts));
 			} else if (existsSync(join(root, path, "tsconfig.json"))) {
 				try {
 					tsc ??= await resolveProjectTsc(root);
@@ -198,13 +233,14 @@ async function resolveIncludedWorkspaces(
 				}
 				workspaces.push({
 					path,
+					job: path,
 					fileCount: 0,
 					command: [process.execPath, tsc, "--noEmit", "-p", "tsconfig.json"],
 				});
 			} else {
 				problems.push({
 					workspace: path,
-					message: `typecheck.include: ${path} has no "typecheck" script in a package.json and no tsconfig.json to check.`,
+					message: `typecheck.include: ${path} has no ${scripts.map((script) => `"${script}"`).join(" or ")} script in a package.json and no tsconfig.json to check.`,
 				});
 			}
 		}
@@ -237,7 +273,11 @@ function excludedPaths(
 async function discoverWorkspaces(
 	patterns: string[],
 	root: string,
-	selection: { include?: readonly string[]; exclude?: readonly string[] } = {},
+	selection: {
+		include?: readonly string[];
+		exclude?: readonly string[];
+		scripts: readonly string[];
+	},
 ): Promise<{ workspaces: Workspace[]; problems: IncludeProblem[] }> {
 	const matches = globPaths(
 		patterns.map((pattern) => `${pattern.replace(/\/$/, "")}/package.json`),
@@ -250,8 +290,13 @@ async function discoverWorkspaces(
 		const pkgPath = match.replace("/package.json", "");
 		if (seen.has(pkgPath)) continue;
 		seen.add(pkgPath);
-		if (hasTypecheckScript(root, pkgPath))
-			candidates.push({ path: pkgPath, fileCount: 0 });
+		candidates.push(
+			...scriptJobs(
+				pkgPath,
+				presentScripts(root, pkgPath, selection.scripts),
+				selection.scripts,
+			),
+		);
 	}
 
 	// The config's own entries, after discovery: a directory both found and
@@ -259,12 +304,13 @@ async function discoverWorkspaces(
 	const included = await resolveIncludedWorkspaces(
 		selection.include ?? [],
 		root,
+		selection.scripts,
 	);
 	for (const workspace of included.workspaces) {
 		if (seen.has(workspace.path)) continue;
-		seen.add(workspace.path);
 		candidates.push(workspace);
 	}
+	for (const workspace of included.workspaces) seen.add(workspace.path);
 
 	const excluded = excludedPaths(selection.exclude ?? [], root, candidates);
 	return {
@@ -333,6 +379,7 @@ export async function runWorkspaceTypecheck(
 		exclude,
 		changedFiles,
 		signal,
+		scripts = DEFAULT_SCRIPTS,
 	} = options;
 	let includeRootConfig = options.includeRootConfig ?? true;
 	const concurrency = options.concurrency ?? defaultTypecheckConcurrency();
@@ -350,6 +397,7 @@ export async function runWorkspaceTypecheck(
 	const discovered = await discoverWorkspaces(patterns, root, {
 		include,
 		exclude,
+		scripts,
 	});
 	let workspaces = discovered.workspaces;
 	// An `include` entry with nothing to check fails like a workspace would,
@@ -414,14 +462,27 @@ export async function runWorkspaceTypecheck(
 	}
 
 	// Counted after `--only` and `--changed` narrow the set, so only the
-	// workspaces that get checked are walked.
+	// workspaces that get checked are walked, each once however many scripts
+	// check it. Sorted by job, since each script has its own duration.
+	const fileCounts = new Map<string, number>();
+	const countFiles = (path: string) => {
+		const count =
+			fileCounts.get(path) ?? countTypeScriptFiles(join(root, path));
+		fileCounts.set(path, count);
+		return count;
+	};
 	workspaces = sortWorkspacesByExpectedDuration(
-		workspaces.map((workspace) => ({
-			...workspace,
-			fileCount: countTypeScriptFiles(join(root, workspace.path)),
-		})),
+		workspaces.map((workspace) => {
+			const fileCount = countFiles(workspace.path);
+			return {
+				path: workspace.job,
+				fileCount,
+				workspace: { ...workspace, fileCount },
+			};
+		}),
 		timings,
-	);
+	).map((ranked) => ranked.workspace);
+	const workspaceCount = fileCounts.size;
 
 	if (workspaces.length === 0) {
 		const rootConfig = includeRootConfig
@@ -448,7 +509,7 @@ export async function runWorkspaceTypecheck(
 
 	if (verbose) {
 		console.log(
-			`Running typecheck across ${workspaces.length} workspaces with concurrency limit of ${concurrency}...\n`,
+			`Running typecheck across ${workspaceCount} workspaces with concurrency limit of ${concurrency}...\n`,
 		);
 	}
 
@@ -474,7 +535,7 @@ export async function runWorkspaceTypecheck(
 	await writeTypecheckTimings(root, timings, results);
 
 	const totalDuration = Number((totalElapsed() / 1000).toFixed(2));
-	const totalFiles = sumBy(workspaces, "fileCount");
+	const totalFiles = sumBy([...fileCounts.values()], (count) => count);
 	results.push(...problemResults);
 	const success =
 		results.every((r) => r.success) && (rootConfig?.success ?? true);
@@ -493,7 +554,7 @@ export async function runWorkspaceTypecheck(
 		success,
 		totalDuration,
 		totalFiles,
-		workspaceCount: workspaces.length,
+		workspaceCount,
 		results,
 		...(rootConfig ? { rootConfig } : {}),
 	};

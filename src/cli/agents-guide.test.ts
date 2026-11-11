@@ -33,11 +33,13 @@ describe("agentsGuide", () => {
 		for (const topic of AGENTS_GUIDE_TOPICS) expect(core).toContain(topic);
 	});
 
-	it("prints one topic, or all of them, and names the topics for an unknown one", () => {
+	it("prints one topic by its name or an alias, or all of them, and names the topics for an unknown one", () => {
 		expect(agentsGuide("runs")).toContain("watchdog");
 		const all = agentsGuide("all");
 		for (const topic of AGENTS_GUIDE_TOPICS)
 			expect(all).toContain(agentsGuide(topic));
+		expect(agentsGuide("sql")).toBe(agentsGuide("db"));
+		expect(agentsGuide("prisma")).toBe(agentsGuide("db"));
 		expect(() => agentsGuide("nope")).toThrow(
 			'No agents guide topic named "nope"',
 		);

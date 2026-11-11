@@ -51,3 +51,9 @@ Postgres URL to skip the automatic deploy only when every local migration is app
 failed or rolled-back attempt exists. Uncertainty runs deploy. `prisma.migrations` is relative to
 `prisma.cwd` and also defaults `migrateCheck`; an overridden database URL never skips based on the
 local service.
+
+`PrismaRunner.run` guards what Prisma is pointed at, so the library and `buncargo prisma` share
+it. Only inherited variables (the shell's, the secrets') count as foreign: whatever the config
+computes or `prisma.urlEnvVar` names is buncargo's own. The squashed-chain check reads
+`_prisma_migrations` the same bounded way as the deploy shortcut, and an unreadable database
+lets Prisma run: a false exit 4 tells an agent to reset data it should keep.

@@ -1,3 +1,4 @@
+import { join, relative } from "node:path";
 import { getErrorMessage } from "hanzio";
 import { readEnvOverrides } from "../../core/env-overrides";
 import { unallocatedPortsMessage } from "../../core/port-exhaustion";
@@ -6,7 +7,7 @@ import { isInteractive } from "../../core/prompt";
 import { hostsMode, isCI } from "../../core/runtime-flags";
 import { createNoopPhaseTimer, createPhaseTimer } from "../../core/timing";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
-import type { AnyDevEnvironment } from "../../types";
+import type { AnyDevEnvironment, PrismaRunner } from "../../types";
 import { exitOnDevArgErrors, parseDevArgs, printDevHelp } from "../dev-flags";
 import { CliError } from "../errors";
 import { getFlagValue, hasFlag, splitCliArgs } from "../flags";
@@ -90,21 +91,31 @@ export async function handleDev(args: string[]): Promise<void> {
 }
 
 export async function handlePrisma(rawArgs: string[]): Promise<void> {
-	// `--yes` is buncargo's, not Prisma's.
+	// `--yes` and `--db` are buncargo's, not Prisma's.
 	const yes = rawArgs.includes("--yes");
-	const args = rawArgs.filter((arg) => arg !== "--yes");
+	const db = getFlagValue(rawArgs, "--db");
+	const args = rawArgs.filter(
+		(arg) => arg !== "--yes" && arg !== "--db" && !arg.startsWith("--db="),
+	);
+	if (db === "") log.fail("--db takes a database name: --db=scratch_<name>");
 	// Parsed before the config loads, so a typo is not answered with a config error.
 	const migrateCheck =
 		args[0] === "migrate-check"
 			? parseMigrateCheckArgs(args.slice(1))
 			: undefined;
+	const migration =
+		args[0] === "migration" ? parseMigrationArgs(args.slice(1)) : undefined;
+	if (migration && db !== undefined)
+		log.fail("--db cannot be combined with prisma migration.");
 	const { destructivePrismaAction } = await import("../../prisma");
 	refuseDestructivePrisma(destructivePrismaAction(args), args, {
 		yes,
 		interactive: isInteractive(),
 		ci: isCI(),
+		// What a scratch database holds is the caller's own throwaway.
+		scratch: db?.startsWith("scratch_") ?? false,
 	});
-	const env = await loadEnv();
+	const env = await loadEnv({ readOnly: migration?.action === "check" });
 
 	if (!env.prisma) {
 		log.fail("Prisma is not configured in your dev config.", [
@@ -118,11 +129,128 @@ export async function handlePrisma(rawArgs: string[]): Promise<void> {
 	}
 	const { prisma } = env;
 	if (args.length === 0) process.exit(await prisma.run(args));
+	if (migration?.action === "check")
+		process.exit(await checkMigrationChain(env.root, prisma, migration.base));
 
-	const exitCode = await withClaimedDatabase(env, prisma.service, () =>
-		migrateCheck ? prisma.migrateCheck(migrateCheck) : prisma.run(args),
-	);
+	const exitCode = await withClaimedDatabase(env, prisma.service, async () => {
+		if (migrateCheck) return prisma.migrateCheck(migrateCheck);
+		if (migration?.action === "new")
+			return createMigration(prisma, migration.name, migration.empty);
+		if (db === undefined) return prisma.run(args);
+		const { databaseExists, databaseOverrides } =
+			await import("./exec-database");
+		const overrides = await databaseOverrides(env, undefined, db, {
+			exists: databaseExists,
+			inherited: process.env,
+		});
+		return prisma.run(args, { env: overrides });
+	});
 	process.exit(exitCode);
+}
+
+/** `migration new <name> [--empty]`, `migration check [--base=<ref>]` */
+function parseMigrationArgs(args: string[]) {
+	const [action, ...rest] = args;
+	const usage = [
+		"Usage: buncargo prisma migration new <name> [--empty]",
+		"       buncargo prisma migration check [--base=<ref>]",
+	];
+	const flags = rest.filter((arg) => arg.startsWith("-"));
+	const positional = rest.filter((arg) => !arg.startsWith("-"));
+	if (action === "new") {
+		const unknown = flags.filter((flag) => flag !== "--empty");
+		const [name, ...extra] = positional;
+		if (name === undefined || extra.length > 0 || unknown.length > 0)
+			log.fail(
+				name === undefined
+					? "prisma migration new needs a name."
+					: `Unexpected argument: ${[...extra, ...unknown].join(" ")}`,
+				usage,
+			);
+		return { action, name, empty: flags.includes("--empty") } as const;
+	}
+	if (action === "check") {
+		const unknown = flags.filter((flag) => !flag.startsWith("--base="));
+		if (positional.length > 0 || unknown.length > 0)
+			log.fail(
+				`Unexpected argument: ${[...positional, ...unknown].join(" ")}`,
+				usage,
+			);
+		const base = getFlagValue(flags, "--base");
+		if (base === "") log.fail("--base takes a git ref.", usage);
+		return { action, base } as const;
+	}
+	return log.fail(
+		action === undefined
+			? "prisma migration needs new or check."
+			: `Unknown prisma migration command: ${action}`,
+		usage,
+	);
+}
+
+/** Print the new migration's path, alone on stdout. */
+async function createMigration(
+	prisma: PrismaRunner,
+	name: string,
+	empty: boolean,
+): Promise<number> {
+	const result = await prisma.newMigration(name, { empty });
+	if (result.status === "failed") return result.exitCode;
+	if (result.status === "unchanged") {
+		console.error(
+			"❌ The schema has nothing the migrations lack, so no migration was written. Pass --empty for one you write by hand.",
+		);
+		return 1;
+	}
+	console.error("✅ Wrote the migration:");
+	log.line(result.path);
+	return 0;
+}
+
+/**
+ * Fail when two migrations share a timestamp, or one the base branch lacks
+ * sorts before the base's newest: parallel branches produce both, and a
+ * database at the base's tip would skip or misorder them.
+ */
+async function checkMigrationChain(
+	root: string,
+	prisma: PrismaRunner,
+	requestedBase: string | undefined,
+): Promise<number> {
+	const {
+		defaultBaseRef,
+		listMigrationFolders,
+		migrationChainProblems,
+		migrationFoldersAtRef,
+	} = await import("../../prisma");
+	const dir = join(root, prisma.cwd, prisma.migrations);
+	const local = await listMigrationFolders(dir);
+	if (local.length === 0) {
+		console.error(`✅ No migrations in ${relative(root, dir)}.`);
+		return 0;
+	}
+	const base = requestedBase ?? defaultBaseRef(dir);
+	if (base === undefined)
+		throw new CliError("Found no base branch to compare the migrations with.", [
+			"Name one: buncargo prisma migration check --base=<ref>",
+		]);
+	const onBase = migrationFoldersAtRef(dir, base);
+	if (onBase === undefined)
+		throw new CliError(`git cannot read ${base}.`, [
+			"Fetch it, or name another: buncargo prisma migration check --base=<ref>",
+		]);
+	const problems = migrationChainProblems(local, onBase, base);
+	if (problems.length === 0) {
+		console.error(
+			`✅ ${local.length} migration${local.length === 1 ? "" : "s"} in order with ${base}.`,
+		);
+		return 0;
+	}
+	for (const problem of problems) console.error(`❌ ${problem}`);
+	console.error(
+		"   Rename the folder with a timestamp after the newest on the base branch (prisma migration new picks one).",
+	);
+	return 1;
 }
 
 /**
@@ -133,9 +261,15 @@ export async function handlePrisma(rawArgs: string[]): Promise<void> {
 function refuseDestructivePrisma(
 	action: string | undefined,
 	args: readonly string[],
-	context: { yes: boolean; interactive: boolean; ci: boolean },
+	context: {
+		yes: boolean;
+		interactive: boolean;
+		ci: boolean;
+		scratch: boolean;
+	},
 ): void {
-	const asked = context.yes || context.interactive || context.ci;
+	const asked =
+		context.yes || context.interactive || context.ci || context.scratch;
 	if (action === undefined || asked) return;
 	throw new CliError(`${action}. Refusing without a terminal.`, [
 		`Pass --yes if that is really what you want: buncargo prisma ${args.join(" ")} --yes`,
@@ -385,6 +519,7 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 						),
 						only: parsed.only ?? (group?.only ? [...group.only] : undefined),
 						include: settings.config?.include,
+						scripts: settings.config?.scripts,
 						exclude: [
 							...(settings.config?.exclude ?? []),
 							...(group?.exclude ?? []),
