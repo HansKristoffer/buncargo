@@ -139,7 +139,6 @@ function createEnvironment(
 		workspaceId: ctx.workspaceId,
 		services: ctx.services,
 		apps: ctx.apps,
-		planPortOffset: ctx.planPortOffset,
 		prepareStartAsync: ctx.prepareStartAsync,
 		get portOffset() {
 			return ctx.portOffset;
@@ -272,6 +271,7 @@ function createEnvironment(
 		setNamedHostsActive: ctx.setNamedHostsActive,
 		ensureComposeFile: ctx.ensureComposeFile,
 		composeModel: ctx.composeModel,
+		planPortOffset: ctx.planPortOffset,
 	});
 
 	if (resolved.prisma) {

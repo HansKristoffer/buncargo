@@ -1,7 +1,9 @@
+import type { PortOwner } from "../core/process";
 import type { CapturedValue } from "../core/process/output-capture";
 import type {
 	ComposeDocument,
 	NamedHostsActivation,
+	PortOffsetProvenance,
 	PreflightStep,
 	SeedConfig,
 	SetupCheck,
@@ -53,6 +55,16 @@ export interface EnvironmentInternals extends AppPipeline {
 	ensureComposeFile(): string;
 	/** The service model the compose file is rendered from. */
 	composeModel(): ComposeDocument;
+	/**
+	 * Where the next full `start()` would put the port block, without
+	 * claiming or writing anything, asking `getOwner` who holds each port.
+	 * `status` passes the reading it already took and compares the answer
+	 * with `portOffset`, to warn before a run moves the ports.
+	 */
+	planPortOffset(getOwner: (port: number) => PortOwner | null): {
+		offset: number;
+		provenance: PortOffsetProvenance;
+	};
 }
 
 const internals = new WeakMap<object, EnvironmentInternals>();

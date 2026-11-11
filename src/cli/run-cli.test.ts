@@ -304,6 +304,7 @@ function registerStubInternals(
 		setNamedHostsActive: () => {},
 		ensureComposeFile: () => ".buncargo/docker-compose.generated.yml",
 		composeModel: () => ({ services: {} }),
+		planPortOffset: () => ({ offset: 0, provenance: "hash" }),
 	});
 }
 

@@ -32,6 +32,7 @@ import {
 import {
 	createPortOwnerSnapshot,
 	createPortOwnerSnapshotAsync,
+	type PortOwner,
 	type PortOwnerSnapshot,
 	withBindProbe,
 } from "../core/process";
@@ -93,7 +94,10 @@ export interface DevEnvContext {
 	): StartPlan;
 	prepareStart(onlyApps?: string[], onlyServices?: readonly string[]): void;
 	/** The full selection's allocation as a run would make it, claiming and writing nothing. */
-	planPortOffset(): { offset: number; provenance: PortOffsetProvenance };
+	planPortOffset(getOwner: (port: number) => PortOwner | null): {
+		offset: number;
+		provenance: PortOffsetProvenance;
+	};
 	prepareStartAsync(
 		onlyApps?: string[],
 		onlyServices?: readonly string[],
@@ -374,13 +378,13 @@ export function createDevEnvContext(
 		},
 		getStartPlan,
 		prepareStart,
-		planPortOffset() {
+		planPortOffset(getOwner) {
 			const plan = getStartPlan();
 			const selectedRuntime =
 				plan.requiredServiceKeys.length > 0 ? runtime() : undefined;
-			// Its own probe, bind-probed like a run's when no owner is given.
 			const { offset, provenance } = allocatePortBlock({
 				...allocationInput(plan, selectedRuntime),
+				getOwner,
 				claim: false,
 			});
 			return { offset, provenance };

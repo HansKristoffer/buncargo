@@ -138,12 +138,6 @@ export interface DevEnvironment<
 	readonly root: string;
 	/** Path passed to docker compose -f */
 	readonly composeFile: string;
-	/**
-	 * Where the next full `start()` would put the port block, probed the way
-	 * it would probe, without claiming or writing anything. `status` compares
-	 * it with `portOffset` to warn before a run moves the ports.
-	 */
-	planPortOffset(): { offset: number; provenance: PortOffsetProvenance };
 	/** Which backend runs the containers: 'docker' or 'apple' */
 	readonly containerRuntime: ContainerRuntimeName;
 	/** Validate the selection and allocate for it before activating hosts; cancellable. */
