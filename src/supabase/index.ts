@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { isDefined, isRecord } from "hanzio";
 import { DEFAULT_HTTP_SERVICE_NAMES } from "../core/hosts/plan";
+import { publicEnvCopies } from "../core/integration-cli";
 import { externalStackProjectName } from "../core/ports";
 import { configuredPrimaryApp, resolvePrimaryApp } from "../core/primary-app";
 import { isCI } from "../core/runtime-flags";
@@ -21,7 +22,7 @@ import type {
 	ServiceConfig,
 } from "../types";
 import { supabaseChecks } from "./checks";
-import { resolveSupabaseBin } from "./cli";
+import { supabaseCli } from "./cli";
 import { supabaseKeys } from "./keys";
 import { readSupabaseProject, type SupabaseProject } from "./project";
 
@@ -249,7 +250,7 @@ export function supabase(
 		config(config, ctx: IntegrationConfigContext) {
 			const root = ctx.root;
 			const toml = readSupabaseProject(workdirOf(root));
-			bin = resolveSupabaseBin(root);
+			bin = supabaseCli.resolve([root]);
 			exclude = options.exclude ?? (isCI() ? CI_EXCLUDE : []);
 
 			const services = supabaseServices(toml, exclude);
@@ -277,10 +278,6 @@ export function supabase(
 				};
 			}
 
-			const prefixes =
-				typeof options.publicEnvPrefix === "string"
-					? [options.publicEnvPrefix]
-					: (options.publicEnvPrefix ?? []);
 			const keys = supabaseKeys(toml.auth.jwtSecret);
 			const userEnv = config.env;
 
@@ -331,14 +328,7 @@ export function supabase(
 					SUPABASE_SERVICE_ROLE_KEY: keys.serviceRoleKey,
 					SUPABASE_SECRET_KEY: keys.secretKey,
 					SUPABASE_DB_URL: urls[SUPABASE_SERVICES.db],
-					...Object.fromEntries(
-						prefixes.flatMap((prefix) =>
-							Object.entries(browser).map(([name, value]) => [
-								`${prefix}${name}`,
-								value,
-							]),
-						),
-					),
+					...publicEnvCopies(browser, options.publicEnvPrefix),
 				};
 			};
 

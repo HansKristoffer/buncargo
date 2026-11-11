@@ -13,7 +13,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runChecks } from "../cli/checks";
 import { validateConfig } from "../config";
-import { parseVersion } from "../core/version";
 import type { AnyDevEnvironment, IntegrationConfig } from "../types";
 import {
 	parseShopifyAppConfig,
@@ -23,9 +22,9 @@ import {
 import { shopifyChecks } from "./checks";
 import {
 	isShopifySessionExpired,
-	isTestedShopifyVersion,
 	readShopifySession,
 	shopifyAppInfo,
+	shopifyCli,
 	shopifyLogin,
 } from "./cli";
 import { shopify, storeLinks } from "./index";
@@ -377,10 +376,10 @@ describe("helpers", () => {
 	});
 
 	it("checks the tested CLI range", () => {
-		expect(isTestedShopifyVersion(parseVersion("3.93.1") as never)).toBe(true);
-		expect(isTestedShopifyVersion(parseVersion("4.8.2") as never)).toBe(true);
-		expect(isTestedShopifyVersion(parseVersion("3.80.0") as never)).toBe(false);
-		expect(isTestedShopifyVersion(parseVersion("5.0.0") as never)).toBe(false);
+		expect(shopifyCli.isTested("3.93.1")).toBe(true);
+		expect(shopifyCli.isTested("4.8.2")).toBe(true);
+		expect(shopifyCli.isTested("3.80.0")).toBe(false);
+		expect(shopifyCli.isTested("5.0.0")).toBe(false);
 	});
 });
 

@@ -1,10 +1,12 @@
 import { getErrorMessage } from "hanzio";
 import { InfisicalLoginError, SecretsError } from "../../core/secrets/errors";
 import {
+	type CollectedScope,
+	describeScope,
 	fetchScopeSecrets,
 	missingKeys,
 	resolveScope,
-} from "../../core/secrets/infisical";
+} from "../../core/secrets/index";
 import { loadDevEnv } from "../../loader";
 import type { SecretsScopeConfig } from "../../types";
 import {
@@ -18,11 +20,7 @@ import {
 } from "../command-spec";
 import { argumentsError, CliError } from "../errors";
 import * as log from "../log";
-import {
-	type ConfigSecretScope,
-	configSecretScopes,
-	describeScope,
-} from "../secrets-scopes";
+import { configSecretScopes } from "../secrets-scopes";
 
 /**
  * `buncargo secrets ls`: which keys a scope provides and where each value
@@ -198,7 +196,7 @@ function noAppScopeFix(
 	return `Set apps.${app}.secrets.projectId, or secrets.projectId for every app, in dev.config.ts.`;
 }
 
-interface ScopeCheck extends ConfigSecretScope {
+interface ScopeCheck extends CollectedScope {
 	/** Keys the scope holds; never their values. */
 	keys?: number;
 	error?: string;

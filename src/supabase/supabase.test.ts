@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { createDevEnvironment } from "../environment";
 import type { AnyDevEnvironment, CheckContext, DevConfig } from "../types";
 import { supabaseChecks } from "./checks";
-import { supabaseVersion } from "./cli";
+import { supabaseCli } from "./cli";
 import { supabase } from "./index";
 import { supabaseKeys } from "./keys";
 import { readSupabaseProject } from "./project";
@@ -277,7 +277,7 @@ describe("supabase CLI runs", () => {
 		const saved = process.env.BUNCARGO_CONNECT_TOKENS;
 		process.env.BUNCARGO_CONNECT_TOKENS = "secret";
 		try {
-			expect(supabaseVersion(bin, root)).toBe("2.1.0");
+			expect(supabaseCli.version(bin, root)).toBe("2.1.0");
 		} finally {
 			if (saved === undefined) delete process.env.BUNCARGO_CONNECT_TOKENS;
 			else process.env.BUNCARGO_CONNECT_TOKENS = saved;

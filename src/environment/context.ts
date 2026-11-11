@@ -43,7 +43,7 @@ import {
 	portOffsetOverride,
 	urlHostOverride,
 } from "../core/runtime-flags";
-import { applySecretDefaults } from "../core/secrets/infisical";
+import { applySecretDefaults } from "../core/secrets/index";
 import type { PublicTunnel } from "../core/tunnel";
 import { workspaceId } from "../core/workspace-identity";
 import {

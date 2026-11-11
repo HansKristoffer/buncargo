@@ -16,7 +16,7 @@ import {
 	resolveScope,
 	stopsTheRun,
 	warnSecretsOnce,
-} from "../core/secrets/infisical";
+} from "../core/secrets/index";
 import type {
 	AppConfig,
 	AppEnvVars,

@@ -8,7 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { shopifyConfigFile } from "./app-config";
-import { resolveShopifyBin, shopifyEnv } from "./cli";
+import { shopifyCli } from "./cli";
 
 /**
  * `buncargo shopify link`: point a toml at a Shopify app without letting the
@@ -122,7 +122,7 @@ export function linkShopifyApp(
 	try {
 		const result = Bun.spawnSync(
 			[
-				resolveShopifyBin(root),
+				shopifyCli.resolve([root]),
 				"app",
 				"config",
 				"link",
@@ -132,7 +132,7 @@ export function linkShopifyApp(
 			{
 				cwd: root,
 				stdio: ["inherit", "inherit", "inherit"],
-				env: shopifyEnv(),
+				env: shopifyCli.env(),
 			},
 		);
 		if (result.exitCode !== 0 || !existsSync(scratch))

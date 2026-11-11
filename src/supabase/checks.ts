@@ -1,12 +1,7 @@
 import { relative } from "node:path";
 import { childProcessEnv } from "../core/child-env";
 import type { SetupCheck } from "../types";
-import {
-	isSupabaseInstalled,
-	isTestedSupabaseVersion,
-	resolveSupabaseBin,
-	supabaseVersion,
-} from "./cli";
+import { supabaseCli } from "./cli";
 import type { SupabaseProject } from "./project";
 
 export function supabaseChecks(state: {
@@ -16,7 +11,7 @@ export function supabaseChecks(state: {
 	return [
 		{
 			name: "Supabase CLI is installed",
-			check: ({ root }) => isSupabaseInstalled(root),
+			check: ({ root }) => supabaseCli.installed([root]),
 			fix: "bun add -d supabase",
 		},
 		{
@@ -38,7 +33,7 @@ export function supabaseChecks(state: {
 			},
 			fix: ({ root }) => {
 				const result = Bun.spawnSync(
-					[resolveSupabaseBin(root), "init", "--yes"],
+					[supabaseCli.resolve([root]), "init", "--yes"],
 					{
 						cwd: state.workdir(root),
 						stdout: "inherit",
@@ -66,11 +61,11 @@ export function supabaseChecks(state: {
 			fast: false,
 			severity: "warning",
 			check: ({ root }) => {
-				const version = supabaseVersion(resolveSupabaseBin(root), root);
+				const version = supabaseCli.version(supabaseCli.resolve([root]), root);
 				if (!version)
 					return { ok: false, detail: "`supabase --version` failed" };
 				return (
-					isTestedSupabaseVersion(version) || {
+					supabaseCli.isTested(version) || {
 						ok: false,
 						detail: `Supabase CLI ${version} is outside the tested 2.x range`,
 					}

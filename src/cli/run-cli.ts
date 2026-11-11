@@ -21,7 +21,7 @@ import {
 	recordRunCapture,
 } from "../core/run-publish";
 import { detachedRunMode, isCI } from "../core/runtime-flags";
-import { ensureSecretsSession } from "../core/secrets/infisical";
+import { ensureSecretsSession } from "../core/secrets/index";
 import { joinColoredNames } from "../core/style";
 import {
 	createNoopPhaseTimer,

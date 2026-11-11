@@ -1,4 +1,4 @@
-import { ensureSecretsSession } from "../../core/secrets/infisical";
+import { ensureSecretsSession } from "../../core/secrets/index";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
 import { loadDevEnv } from "../../loader";
 import type { AnyDevEnvironment, TaskConfig } from "../../types";
