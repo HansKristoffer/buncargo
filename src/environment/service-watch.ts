@@ -11,7 +11,7 @@ import { getComposeServiceName } from "../planning";
 import type { ResolvedService } from "../types";
 
 /** Where a service change is said: `problem` is false for a recovery. */
-export type ServiceChangeReport = (message: string, problem: boolean) => void;
+type ServiceChangeReport = (message: string, problem: boolean) => void;
 
 export interface ServiceWatchApi {
 	/** Watch these service keys too, from now until {@link stop}. */

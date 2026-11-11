@@ -44,14 +44,14 @@ export interface Prepared {
 }
 
 /** The apps a start is about to spawn, their leases taken and their rows published. */
-export interface Claimed {
+interface Claimed {
 	readonly prepared: Prepared;
 	readonly apps: Record<string, ResolvedApp>;
 	/** `essential: false` apps left out: another run holds their lease. */
 	readonly skipped: readonly SkippedLeaseApp[];
 }
 
-export interface ClaimAppsOptions {
+interface ClaimAppsOptions {
 	/** The apps to spawn. Default: every prepared app. */
 	apps?: Record<string, ResolvedApp>;
 	/** Apps another process runs, which this run uses. */
@@ -63,7 +63,7 @@ export interface ClaimAppsOptions {
 }
 
 /** What `spawn()` passes on to the supervisor; the rest it owns. */
-export type SpawnOptions = Omit<
+type SpawnOptions = Omit<
 	StartDevServersOptions,
 	| "onCapture"
 	| "verbose"

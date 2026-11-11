@@ -33,19 +33,14 @@ import {
  * skip setup and silently fall back to `localhost:port`.
  */
 
-export {
-	LAUNCHD_LABEL,
-	LAUNCHD_PLIST,
-	SYSTEMD_PATH,
-	SYSTEMD_UNIT,
-} from "./service-files";
+export { SYSTEMD_UNIT } from "./service-files";
 
 /**
  * The manifest's format. A later format keeps every field below and reads as
  * this one, so a project on an older buncargo still sees what is installed
  * rather than "no manifest", which it would repair by downgrading.
  */
-export const HOSTS_SERVICE_MANIFEST_VERSION = 2;
+const HOSTS_SERVICE_MANIFEST_VERSION = 2;
 
 export interface HostsServiceManifest {
 	version: number;
@@ -89,7 +84,7 @@ export function toHostsUserMessage(error: unknown): string {
  * it so a Bun that later moves is reported as stale rather than failing
  * silently.
  */
-export function resolveHostsDaemonCommand(version: string): {
+function resolveHostsDaemonCommand(version: string): {
 	program: string;
 	args: string[];
 } {

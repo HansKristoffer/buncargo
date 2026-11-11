@@ -1922,6 +1922,8 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 
 A config imports `buncargo`; code that drives an environment imports `buncargo/api`.
 
+`buncargo/api` also exports a type for each document the CLI prints with `--json`, so a script can type what it parses: `DetachedResultJson` (`dev --detach --json`), `RunsJson`, `StatusJson`, `EnvJson`, `SecretsCheckJson` (`secrets check --json`), `FilesStatusJson` and `CheckPlanJson` (`check --list --json`).
+
 ```typescript
 import { loadDevEnv } from "buncargo/api";
 import type devConfig from "./dev.config";

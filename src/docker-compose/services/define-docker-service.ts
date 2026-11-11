@@ -10,7 +10,7 @@ import type {
 	UrlBuilderContext,
 } from "../../types";
 
-export interface DockerServiceFactoryInput {
+interface DockerServiceFactoryInput {
 	serviceKey: string;
 	config: ResolvedComposeService;
 	/**
@@ -23,12 +23,12 @@ export interface DockerServiceFactoryInput {
 	runtime?: ContainerRuntimeName;
 }
 
-export interface DockerServiceFactoryOutput {
+interface DockerServiceFactoryOutput {
 	service: DockerComposeServiceRaw;
 	volume?: string;
 }
 
-export type DockerServiceFactory = (
+type DockerServiceFactory = (
 	input: DockerServiceFactoryInput,
 ) => DockerServiceFactoryOutput;
 
@@ -59,19 +59,21 @@ export type PresetServiceSecondaryPortOptions = PresetServiceSharedOptions & {
  * to the preset's own env map. `enhanceServiceConfig` receives this and adds
  * whatever else its preset understands.
  */
-export type PresetServiceConfigBase<TServiceConfig extends ServiceConfig> =
-	Omit<Extract<ServiceConfig, { kind?: "service" }>, "env"> & {
-		port: number;
-	} & Partial<Pick<TServiceConfig, "env">>;
+type PresetServiceConfigBase<TServiceConfig extends ServiceConfig> = Omit<
+	Extract<ServiceConfig, { kind?: "service" }>,
+	"env"
+> & {
+	port: number;
+} & Partial<Pick<TServiceConfig, "env">>;
 
-export interface DockerServicePresetDefaults {
+interface DockerServicePresetDefaults {
 	port: number;
 	healthCheck: BuiltInHealthCheck;
 	secondaryPort?: number;
 }
 
 /** What a preset's connection URL is built from. */
-export interface PresetUrlContext extends UrlBuilderContext {
+interface PresetUrlContext extends UrlBuilderContext {
 	/** Set for presets that declare {@link DefineDockerServiceInput.credentials}. */
 	credentials?: ServiceCredentials;
 }

@@ -34,9 +34,9 @@ import { downloadToolAsset, type ToolFetch } from "./tool-install";
  */
 
 export const BAR_APP_NAME = "BuncargoBar";
-export const BAR_BUNDLE_NAME = `${BAR_APP_NAME}.app`;
-export const BAR_DECLINE_FILENAME = "bar-declined";
-export const BAR_MANIFEST_FILENAME = "bar.json";
+const BAR_BUNDLE_NAME = `${BAR_APP_NAME}.app`;
+const BAR_DECLINE_FILENAME = "bar-declined";
+const BAR_MANIFEST_FILENAME = "bar.json";
 const MANIFEST_VERSION = 1;
 
 /**
@@ -62,7 +62,7 @@ export const BAR_SOURCE_VERSION = "source";
 const RELEASES_ENDPOINT =
 	"https://api.github.com/repos/HansKristoffer/buncargo/releases?per_page=100";
 /** Tags for the app, kept apart from the CLI's own `v*` tags. */
-export const BAR_TAG_PREFIX = "bar-v";
+const BAR_TAG_PREFIX = "bar-v";
 
 export const barDecline = declineMarker(BAR_DECLINE_FILENAME);
 
@@ -147,7 +147,7 @@ export interface BarFolders {
 	user: string;
 }
 
-export function machineBarFolders(): BarFolders {
+function machineBarFolders(): BarFolders {
 	return { system: "/Applications", user: join(homedir(), "Applications") };
 }
 
@@ -581,7 +581,7 @@ export function isBarRunning(): boolean {
  *
  * Returns whether it was running, which is what decides a relaunch.
  */
-export async function quitBar(): Promise<boolean> {
+async function quitBar(): Promise<boolean> {
 	if (!isBarRunning()) return false;
 	run(`osascript -e 'quit app "${BAR_APP_NAME}"'`);
 

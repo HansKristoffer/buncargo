@@ -6,7 +6,7 @@ import { recordStartupMetric } from "./startup-metrics";
 import { chownToInvokingUser } from "./state-paths";
 
 const LOCK_POLL_MS = 20;
-export const LOCK_TIMEOUT_MS = 5000;
+const LOCK_TIMEOUT_MS = 5000;
 
 export class FileLockTimeoutError extends Error {
 	readonly code = "BUNCARGO_LOCK_TIMEOUT";

@@ -96,7 +96,7 @@ export function interpolateNode(
 	return node;
 }
 
-export function stableStringify(value: unknown): string {
+function stableStringify(value: unknown): string {
 	if (Array.isArray(value)) {
 		return `[${value.map(stableStringify).join(",")}]`;
 	}

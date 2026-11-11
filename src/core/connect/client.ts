@@ -49,7 +49,7 @@ function parseReceiver(value: unknown): Receiver | undefined {
 	return { id, origin, owner, token };
 }
 
-export function readReceiver() {
+function readReceiver() {
 	return readJsonDocument(receiverPath(), parseReceiver);
 }
 

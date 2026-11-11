@@ -26,7 +26,7 @@ import { compareVersions } from "./version";
  * callers, and a rate-limited check must not become a failed one.
  */
 
-export const BAR_CHECK_FILENAME = "bar-check.json";
+const BAR_CHECK_FILENAME = "bar-check.json";
 const CACHE_VERSION = 1;
 
 /** Normal cadence. The app being one release behind is not urgent. */
@@ -42,7 +42,7 @@ export interface BarCheckCache {
 	hintedVersion?: string;
 }
 
-export function getBarCheckPath(home?: string): string {
+function getBarCheckPath(home?: string): string {
 	return stateFilePath(BAR_CHECK_FILENAME, home);
 }
 

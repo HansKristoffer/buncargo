@@ -44,7 +44,7 @@ async function readError(response: Response): Promise<string> {
 }
 
 /** A refusal the directory or the coordinator answered, with its HTTP status. */
-export class ConnectRequestError extends Error {
+class ConnectRequestError extends Error {
 	constructor(
 		message: string,
 		readonly status: number,

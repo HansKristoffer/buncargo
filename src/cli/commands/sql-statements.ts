@@ -60,7 +60,7 @@ function blockCommentEnd(text: string, start: number): number {
 }
 
 /** Split SQL into top-level statements, skipping strings and comments. */
-export function scanSql(text: string): ScannedSql {
+function scanSql(text: string): ScannedSql {
 	const statements: ScannedStatement[] = [];
 	let start = 0;
 	let words: string[] = [];

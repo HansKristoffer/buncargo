@@ -27,7 +27,7 @@ export function resolveBunSeedSpecifier(command: string): string | undefined {
 }
 
 /** How many of a failed seed's last lines it reports. */
-export const SEED_TAIL_LINES = 20;
+const SEED_TAIL_LINES = 20;
 
 function lastLines(text: string): string[] {
 	return text
@@ -85,7 +85,7 @@ export async function runSeedCommand(input: {
 	});
 }
 
-export function createCheckTableHelper(
+function createCheckTableHelper(
 	urls: UrlMap,
 	exec: (
 		cmd: string,
@@ -120,7 +120,7 @@ export function createCheckTableHelper(
 	};
 }
 
-export function createSeedCheckContext(
+function createSeedCheckContext(
 	baseContext: HookContext<AnyServices, AnyApps>,
 	checkTable: SeedCheckContext<AnyServices, AnyApps>["checkTable"],
 ): SeedCheckContext<AnyServices, AnyApps> {

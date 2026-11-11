@@ -3,7 +3,7 @@ import { readJsonDocument, writeJsonDocument } from "../registry-file";
 import { stateFilePath } from "../state-paths";
 import { record } from "./protocol";
 
-export const COORDINATOR_MAX_AGE_MS = 10000;
+const COORDINATOR_MAX_AGE_MS = 10000;
 
 export interface CoordinatorState {
 	pid: number;

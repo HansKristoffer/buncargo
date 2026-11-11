@@ -158,7 +158,7 @@ async function verifyBinary(
  * A release asset whose digest GitHub publishes, for a version the user chose
  * and buncargo has no pin for. No published digest means no install.
  */
-export interface PublishedDigest {
+interface PublishedDigest {
 	repository: string;
 	version: string;
 	name: string;

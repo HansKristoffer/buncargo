@@ -16,7 +16,7 @@ function loadXterm(): typeof import("@xterm/headless") {
 }
 
 /** Scrollback each app's virtual screen keeps. */
-export const SCREEN_SCROLLBACK = 10_000;
+const SCREEN_SCROLLBACK = 10_000;
 
 /**
  * Output written but not yet parsed past which an app's chunks are dropped.

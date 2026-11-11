@@ -214,9 +214,7 @@ export function recordState(record: AppleContainerRecord): ContainerState {
 }
 
 /** A record in buncargo's words, as every runtime-neutral reader takes it. */
-export function toRuntimeContainer(
-	record: AppleContainerRecord,
-): RuntimeContainer {
+function toRuntimeContainer(record: AppleContainerRecord): RuntimeContainer {
 	const label = (name: string) => record.labels[name] || undefined;
 	const labels = {
 		// Apple has no Compose: its project label is the project both ways.
@@ -267,7 +265,7 @@ export async function appleContainers(
 	return listing.records.map(toRuntimeContainer);
 }
 
-export async function listContainerRecordsAsync(
+async function listContainerRecordsAsync(
 	cli: AppleContainerCli,
 	signal?: AbortSignal,
 	timeoutMs = 10000,

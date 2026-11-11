@@ -77,7 +77,7 @@ const UNFINISHED_ESCAPE =
 	/\u001b(?:\][^\u0007\u001b]*\u001b?|\[[0-9;?]*[ -/]*)?$/;
 
 /** Where an escape sequence the chunk did not finish starts, or -1. */
-export function openEscapeAt(raw: string): number {
+function openEscapeAt(raw: string): number {
 	const link = raw.search(UNCLOSED_LINK);
 	if (link !== -1) return link;
 	return raw.search(UNFINISHED_ESCAPE);

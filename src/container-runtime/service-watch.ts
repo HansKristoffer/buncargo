@@ -131,7 +131,7 @@ export function describeServiceCondition(change: ServiceChange): string {
 }
 
 /** Long enough that a run does not notice the poll; short next to "minutes later, a Prisma error". */
-export const SERVICE_WATCH_INTERVAL_MS = 10_000;
+const SERVICE_WATCH_INTERVAL_MS = 10_000;
 
 /**
  * Poll the services until the returned function is called. Never keeps the

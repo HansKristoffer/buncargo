@@ -1,7 +1,7 @@
 import { toolCachePath } from "../tool-binary";
 import { installTool } from "../tool-install";
 
-export const FRP_VERSION = "0.71.0";
+const FRP_VERSION = "0.71.0";
 
 const checksums: Record<string, string> = {
 	linux_amd64:

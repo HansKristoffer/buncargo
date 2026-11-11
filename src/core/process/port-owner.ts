@@ -41,10 +41,7 @@ export interface SyncPortOwnerOptions {
 }
 
 /** What a lookup reads of a runtime: its name and its one listing. */
-export type PortOwnerRuntime = Pick<
-	ContainerRuntimeAdapter,
-	"name" | "containers"
->;
+type PortOwnerRuntime = Pick<ContainerRuntimeAdapter, "name" | "containers">;
 
 export interface PortOwnerLookupOptions extends SyncPortOwnerOptions {
 	/**
@@ -137,7 +134,7 @@ function parsePids(output: string): number[] {
 	return Array.from(pids);
 }
 
-export function getListeningPids(port: number): number[] {
+function getListeningPids(port: number): number[] {
 	try {
 		const output = execSync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`, {
 			encoding: "utf-8",

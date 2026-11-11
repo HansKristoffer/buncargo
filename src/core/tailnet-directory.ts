@@ -16,7 +16,7 @@ import { REGISTRY_VERSION, readLiveRuns } from "./run-registry";
 import { tailscaleAddress } from "./tailscale";
 
 /** BuncargoBar asks every peer on this port. */
-export const TAILNET_DIRECTORY_PORT = 48480;
+const TAILNET_DIRECTORY_PORT = 48480;
 
 function createDirectoryServer(readRuns: typeof readLiveRuns): Server {
 	return createServer(async (request, response) => {

@@ -59,7 +59,7 @@ export function driftedPorts(
 	return ports.sort((a, b) => a - b);
 }
 
-export function formatDrift(
+function formatDrift(
 	target: DriftTarget,
 	listening: number[],
 	holder: PortOwner,

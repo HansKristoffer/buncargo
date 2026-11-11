@@ -10,13 +10,13 @@ import { stateFilePath } from "../state-paths";
  */
 
 export const ROUTES_FILENAME = "routes.json";
-export const PIDFILE_FILENAME = "hosts.pid";
-export const SERVICE_MANIFEST_FILENAME = "hosts-service.json";
+const PIDFILE_FILENAME = "hosts.pid";
+const SERVICE_MANIFEST_FILENAME = "hosts-service.json";
 export const DECLINE_FILENAME = "hosts-declined";
-export const CERTS_DIRNAME = "certs";
-export const CERT_FILENAME = "hosts.pem";
-export const KEY_FILENAME = "hosts-key.pem";
-export const TAILSCALE_SERVE_FILENAME = "tailscale-serve.json";
+const CERTS_DIRNAME = "certs";
+const CERT_FILENAME = "hosts.pem";
+const KEY_FILENAME = "hosts-key.pem";
+const TAILSCALE_SERVE_FILENAME = "tailscale-serve.json";
 
 export function getRoutesPath(): string {
 	return stateFilePath(ROUTES_FILENAME);
@@ -35,7 +35,7 @@ export function getServiceManifestPath(): string {
 	return stateFilePath(SERVICE_MANIFEST_FILENAME);
 }
 
-export function getCertsDir(): string {
+function getCertsDir(): string {
 	return stateFilePath(CERTS_DIRNAME);
 }
 

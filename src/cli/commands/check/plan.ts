@@ -13,9 +13,9 @@ import type {
 export type CheckMode = "changed" | "staged" | "all";
 
 // Chunked so a large change never hits the argument-length limit.
-export const FILE_CHUNK = 200;
+const FILE_CHUNK = 200;
 
-export type CheckStepName = (typeof BUILT_IN_CHECK_STEPS)[number];
+type CheckStepName = (typeof BUILT_IN_CHECK_STEPS)[number];
 
 /** A step that runs a command. */
 export interface CommandStep {

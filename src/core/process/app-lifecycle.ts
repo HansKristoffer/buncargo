@@ -8,7 +8,7 @@ import type { AppStateDetail } from "./run-output";
  * one exit has one verdict everywhere.
  */
 
-export type AppPhase = "starting" | "ready" | "restarting" | "reused" | "down";
+type AppPhase = "starting" | "ready" | "restarting" | "reused" | "down";
 
 /**
  * How the run treats the app going down.
@@ -20,15 +20,15 @@ export type AppPhase = "starting" | "ready" | "restarting" | "reused" | "down";
  * - `parked`: an essential app that never came up, spared until a restart
  *   brings it up.
  */
-export type AppStanding = "essential" | "optional" | "probation" | "parked";
+type AppStanding = "essential" | "optional" | "probation" | "parked";
 
-export interface AppExit {
+interface AppExit {
 	/** `null` when it was signalled. */
 	code: number | null;
 	signal: NodeJS.Signals | null;
 }
 
-export interface AppEnd {
+interface AppEnd {
 	verdict: "stopped" | "failed";
 	/** "exit 1", "signal SIGTERM", or why it never came up. */
 	detail: string;
@@ -115,7 +115,7 @@ export function initialLife(app: {
  * does exactly that. Without them a Ctrl-C, or a `buncargo stop`, ends a clean
  * shutdown with "App exited with code 143" and a failed run.
  */
-export function isDeliberateExit(
+function isDeliberateExit(
 	code: number | null,
 	signal?: NodeJS.Signals | null,
 ): boolean {

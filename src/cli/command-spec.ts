@@ -8,7 +8,7 @@ import * as log from "./log";
  * can drift from what the command accepts.
  */
 
-export interface FlagSpec {
+interface FlagSpec {
 	/**
 	 * `boolean` takes no value; `string` requires one (`--profile=full` or
 	 * `--profile full`); `optional` is `--expose` alone or `--expose=api`, never
@@ -24,7 +24,7 @@ export interface FlagSpec {
 	readonly validate?: (value: string) => string | undefined;
 }
 
-export interface ArgSpec {
+interface ArgSpec {
 	/** As help shows it, e.g. `<app>`. */
 	readonly name: string;
 	readonly description: string;
@@ -38,7 +38,7 @@ export interface HelpRow {
 	readonly description?: string;
 }
 
-export type Flags = Readonly<Record<string, FlagSpec>>;
+type Flags = Readonly<Record<string, FlagSpec>>;
 
 export interface CommandSpec {
 	/** The words after `buncargo`, e.g. `stop` or `hosts install`. */
@@ -68,7 +68,7 @@ type FlagValue<F extends FlagSpec> = F["kind"] extends "boolean"
 		? string | undefined
 		: string | true | undefined;
 
-export type FlagValues<F extends Flags> = {
+type FlagValues<F extends Flags> = {
 	readonly [K in keyof F]: FlagValue<F[K]>;
 };
 

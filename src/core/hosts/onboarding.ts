@@ -70,7 +70,7 @@ export function persistHostsDecline(): void {
 	hostsDecline.persist();
 }
 
-export function clearHostsDecline(): void {
+function clearHostsDecline(): void {
 	hostsDecline.clear();
 }
 

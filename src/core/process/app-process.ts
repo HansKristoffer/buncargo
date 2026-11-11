@@ -40,10 +40,7 @@ function resolveShell(): string {
 const SHELL = resolveShell();
 
 /** Execute configured shell syntax consistently across every app spawn path. */
-export function spawnAppCommand(
-	command: string,
-	options: SpawnOptions,
-): ChildProcess {
+function spawnAppCommand(command: string, options: SpawnOptions): ChildProcess {
 	if (!command.trim()) throw new Error("Command cannot be empty");
 	recordStartupMetric("subprocesses");
 	return spawn(command, [], { ...options, shell: SHELL });

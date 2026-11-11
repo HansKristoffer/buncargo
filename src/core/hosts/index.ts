@@ -7,7 +7,6 @@ export {
 	waitForDaemonRoutes,
 } from "./daemon-client";
 export { syncHostsFile } from "./hosts-file";
-export { getCaPath } from "./mkcert";
 export {
 	doctorFixHosts,
 	ensureHostsReady,

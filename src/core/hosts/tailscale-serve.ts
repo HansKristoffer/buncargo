@@ -51,7 +51,7 @@ import {
  * can meet another checkout's HTTPS port; the claims, which hold both, keep
  * them apart.
  */
-export const TAILSCALE_HTTPS_PORT_SHIFT = 20_000;
+const TAILSCALE_HTTPS_PORT_SHIFT = 20_000;
 
 /** The HTTPS port Tailscale serves `appPort` on, or undefined above 65535. */
 export function tailscaleHttpsPort(appPort: number): number | undefined {
@@ -175,14 +175,14 @@ export function loadTailscaleServeEntries(): Promise<TailscaleServeEntry[]> {
 	return registry.read(getTailscaleServePath());
 }
 
-export function tailscaleServeUrl(entry: {
+function tailscaleServeUrl(entry: {
 	hostname: string;
 	httpsPort: number;
 }): string {
 	return `https://${entry.hostname}:${entry.httpsPort}`;
 }
 
-export function serveTarget(appPort: number): string {
+function serveTarget(appPort: number): string {
 	return `http://127.0.0.1:${appPort}`;
 }
 
@@ -295,7 +295,7 @@ export interface ServePlan {
  * `"off"` when the live config is exactly what was recorded, `"forget"` when
  * it is gone or has changed, which makes it someone else's.
  */
-export function decideRemoval(
+function decideRemoval(
 	entry: TailscaleServeEntry,
 	config: ServeConfig,
 ): "off" | "forget" {
@@ -438,7 +438,7 @@ function recordedPortMessage(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** Where a probe connects: the machine's Tailscale address, asking for the name. */
-export interface ServeProbeTarget {
+interface ServeProbeTarget {
 	hostname: string;
 	address: string;
 	httpsPort: number;

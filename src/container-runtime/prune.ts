@@ -25,7 +25,7 @@ import {
 	type VolumeState,
 } from "./volume-decision";
 
-export type VolumeVerdict =
+type VolumeVerdict =
 	/** Kept: something refers to its project, or nothing shows its checkout is gone. */
 	| { kind: "in-use"; reason: string }
 	/** Its checkout, at `root`, was deleted, and nothing else refers to its project. */

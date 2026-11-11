@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { getErrorMessage, isRecord } from "hanzio";
 
 /** The Firebase CLI's config file. */
-export const FIREBASE_CONFIG_FILE = "firebase.json";
+const FIREBASE_CONFIG_FILE = "firebase.json";
 
 /**
  * Where this checkout's copy of `firebase.json`, with its own ports, is

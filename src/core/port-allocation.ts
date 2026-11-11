@@ -148,7 +148,7 @@ export function buildPortMap(
  * `<app>#<index>`: they are claimed and probed with the block, but are no
  * port of the config's, so they never reach the env.
  */
-export function extraPortMap(
+function extraPortMap(
 	apps: Readonly<Record<string, PortedApp>> | undefined,
 	ports: Record<string, number>,
 	basePorts: Record<string, number>,

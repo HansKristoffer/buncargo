@@ -144,7 +144,7 @@ export interface AppWatchConfig {
 }
 
 /** A key that opens a captured URL: `{ key: "p", label: "open preview", open: "previewUrl" }`. */
-export interface AppAction {
+interface AppAction {
 	/** One character. */
 	key: string;
 	label: string;

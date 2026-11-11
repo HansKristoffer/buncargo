@@ -7,7 +7,7 @@ import type { ValidationContext } from "./context";
  * Keys the TUI keeps for itself, besides arrows, Enter and Esc (`run-tui.ts`).
  * A declared action may not use one.
  */
-export const BUILT_IN_KEYS = ["o", "e", "r", "l", "q", "j", "k"] as const;
+const BUILT_IN_KEYS = ["o", "e", "r", "l", "q", "j", "k"] as const;
 
 export function validateApps(
 	config: AnyDevConfig,
