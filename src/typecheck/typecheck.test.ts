@@ -186,6 +186,50 @@ describe("runWorkspaceTypecheck pool", () => {
 		expect(result.selectionError).toContain("mobile");
 		expect(result.selectionError).toContain("apps/platform");
 	});
+	it("checks and counts only the workspaces --only names", async () => {
+		const root = makeFixture();
+		writeSleepingWorkspace(root, "apps/one", 0);
+		writeSleepingWorkspace(root, "apps/two", 0);
+		writeFileSync(join(root, "apps/one/index.ts"), "export {};");
+		writeFileSync(join(root, "apps/two/index.ts"), "export {};");
+		writeFileSync(join(root, "apps/two/view.tsx"), "export {};");
+
+		const result = await runWorkspaceTypecheck({
+			root,
+			verbose: false,
+			includeRootConfig: false,
+			only: ["two"],
+		});
+
+		expect(result.results.map((entry) => entry.workspace)).toEqual([
+			"apps/two",
+		]);
+		expect(result.totalFiles).toBe(2);
+	});
+
+	it("counts a workspace's sources without node_modules or dot directories", async () => {
+		const root = makeFixture();
+		writeSleepingWorkspace(root, "apps/one", 0);
+		for (const file of [
+			"src/index.ts",
+			"src/nested/view.tsx",
+			"src/readme.md",
+			"node_modules/dep/index.ts",
+			".cache/generated.ts",
+		]) {
+			mkdirSync(join(root, "apps/one", file, ".."), { recursive: true });
+			writeFileSync(join(root, "apps/one", file), "export {};");
+		}
+
+		const result = await runWorkspaceTypecheck({
+			root,
+			verbose: false,
+			includeRootConfig: false,
+		});
+
+		expect(result.totalFiles).toBe(2);
+	});
+
 	it("discovers declared workspaces and preserves warm file totals", async () => {
 		const root = makeFixture();
 		writeFileSync(

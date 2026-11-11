@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import fg from "fast-glob";
 import { CONFIG_FILES } from "../loader/find-config-file";
+import { globPaths } from "./glob";
 
 /**
  * `typecheck --changed`: which workspaces a change can break.
@@ -88,9 +88,9 @@ export async function readWorkspaceGraph(
 	root: string,
 	patterns: readonly string[],
 ): Promise<WorkspaceNode[]> {
-	const manifests = await fg(
+	const manifests = globPaths(
 		patterns.map((pattern) => `${pattern.replace(/\/$/, "")}/package.json`),
-		{ cwd: root, ignore: ["**/node_modules/**"] },
+		root,
 	);
 
 	const nodes: WorkspaceNode[] = [];

@@ -95,6 +95,22 @@ describe("createRunClaimApi", () => {
 		return entry?.idleTimeoutMs;
 	}
 
+	it("claims again after a claim that never reached the registry", async () => {
+		// An aborted claim used to count as made: the next start skipped it and
+		// created containers no entry owned, which `stop` and the sweep missed.
+		const claim = claimApi();
+		await expect(
+			claim.claimRun({ signal: AbortSignal.abort() }),
+		).rejects.toThrow();
+		expect(claim.claimedAt).toBeUndefined();
+
+		await claim.claimRun();
+		expect(
+			(await loadRuns()).some((run) => run.sessionId === claim.sessionId),
+		).toBe(true);
+		await claim.retireRun({ containersDown: true });
+	});
+
 	it("keeps the hold it was first claimed with when `restart()` claims again", async () => {
 		// `restart()` retires the claim and claims again with only a signal.
 		// Resolving that afresh lost the hold, so the containers were kept

@@ -24,6 +24,30 @@ const WINDOWS_URL: Partial<Record<NodeJS.Architecture, string>> = {
 	ia32: "cloudflared-windows-386.exe",
 };
 
+/**
+ * sha256 of each asset for the default version, from the digests GitHub
+ * records on the 2026.3.0 release assets. The release notes' list hashes the
+ * binary inside each macOS `.tgz`, not the `.tgz` downloaded here.
+ */
+const PINNED_SHA256: Record<string, string> = {
+	"2026.3.0/cloudflared-linux-arm64":
+		"0755ba4cbab59980e6148367fcf53a8f3ec85a97deefd63c2420cf7850769bee",
+	"2026.3.0/cloudflared-linux-arm":
+		"ca16ed5253373846f7d366d591669d0e868e0724e35599abad2c8b2bc2340cfa",
+	"2026.3.0/cloudflared-linux-amd64":
+		"4a9e50e6d6d798e90fcd01933151a90bf7edd99a0a55c28ad18f2e16263a5c30",
+	"2026.3.0/cloudflared-linux-386":
+		"7d59f6ef7b4c255edd88187c74d2b4ecd895b6f5c4aca2cae0c4411eacebcbbd",
+	"2026.3.0/cloudflared-darwin-arm64.tgz":
+		"2aae4f69b0fc1c671b8353b4f594cbd902cd1e360c8eed2b8cad4602cb1546fb",
+	"2026.3.0/cloudflared-darwin-amd64.tgz":
+		"0f30140c4a5e213d22f951ef4c964cac5fb6a5f061ba6eba5ea932999f7c0394",
+	"2026.3.0/cloudflared-windows-amd64.exe":
+		"59b12880b24af581cf5b1013db601c7d843b9b097e9c78aa5957c7f39f741885",
+	"2026.3.0/cloudflared-windows-386.exe":
+		"e00a9e9fed12f8a8f5703539c4662750dd5472d35c16dcbbdc5869f3fe5e238b",
+};
+
 function resolveBase(version: string): string {
 	if (version === "latest") {
 		return `${RELEASE_BASE}latest/download/`;
@@ -60,6 +84,14 @@ export async function installCloudflared(
 			`cloudflared version ${version === "latest" ? "[0-9]+\\.[0-9]+" : escaped}`,
 		),
 		archiveEntry: process.platform === "darwin" ? "cloudflared" : undefined,
-		githubAsset: { repository: "cloudflare/cloudflared", version, name: file },
+		sha256: PINNED_SHA256[`${version}/${file}`] ?? {
+			repository: "cloudflare/cloudflared",
+			version,
+			name: file,
+			settings: {
+				version: "CLOUDFLARED_VERSION",
+				path: "BUNCARGO_CLOUDFLARED_PATH",
+			},
+		},
 	});
 }

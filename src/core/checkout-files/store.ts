@@ -114,21 +114,24 @@ export function readStoreManifest(dir: string): Manifest | undefined {
 }
 
 /**
- * An entry's bytes, or undefined when they are not there yet.
- *
- * A data file whose hash differs from its entry is mid-write (data is written
- * before the manifest) and reads as absent until a later read.
+ * An entry's bytes as read from the store. `unreadable`: the data file does
+ * not match its entry, because a write is in progress (data is written before
+ * the manifest) or it was torn. Nothing is decided from it until a later read.
  */
+export type StoreData = { kind: "ok"; data: Buffer } | { kind: "unreadable" };
+
 export function readStoreData(
 	dir: string,
 	path: string,
 	entry: ManifestEntry,
-): Buffer | undefined {
+): StoreData {
 	try {
 		const data = readFileSync(dataPath(dir, path));
-		return sha256(data) === entry.sha256 ? data : undefined;
+		return sha256(data) === entry.sha256
+			? { kind: "ok", data }
+			: { kind: "unreadable" };
 	} catch {
-		return undefined;
+		return { kind: "unreadable" };
 	}
 }
 

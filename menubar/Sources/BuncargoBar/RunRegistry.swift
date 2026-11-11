@@ -11,6 +11,14 @@ import Foundation
 enum RunStatus: String, Codable {
     case starting, ready, reused, failed, stopped
 
+    /// A status this build does not know, from a newer CLI, reads as
+    /// `starting`, as a missing one does: not ready, and not a failure the
+    /// app cannot explain.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = RunStatus(rawValue: raw) ?? .starting
+    }
+
     /// Rendered as a filled dot. `reused` counts: something is serving it.
     var isUp: Bool { self == .ready || self == .reused }
 }
@@ -262,9 +270,35 @@ enum ProcessIdentity {
     }
 }
 
-struct RunsFile: Codable {
+struct RunsFile: Decodable {
     let version: Int
     let runs: [Run]
+
+    private enum CodingKeys: String, CodingKey { case version, runs }
+
+    /// Each run decodes on its own, and one this build cannot read is
+    /// dropped, as the CLI drops it: decoded as one array, a single entry
+    /// from a newer CLI emptied the menu.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        var entries = try container.nestedUnkeyedContainer(forKey: .runs)
+        var runs: [Run] = []
+        while !entries.isAtEnd {
+            if let run = try entries.decode(Skippable<Run>.self).value { runs.append(run) }
+        }
+        self.runs = runs
+    }
+}
+
+/// Decodes `T` or nothing, never throwing, so an unkeyed container moves
+/// past an element that is not a `T`.
+private struct Skippable<T: Decodable>: Decodable {
+    let value: T?
+
+    init(from decoder: Decoder) throws {
+        value = try? T(from: decoder)
+    }
 }
 
 /// The app cannot read this registry, and no amount of retrying will change

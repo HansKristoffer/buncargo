@@ -66,6 +66,22 @@ function mkcertAssetName(version: string): string {
 	return `mkcert-${version}-${os}-${arch}`;
 }
 
+/**
+ * sha256 of each release asset buncargo downloads by default. mkcert publishes
+ * no checksums and GitHub records no digest for v1.4.4's assets, so these were
+ * hashed from the assets downloaded over HTTPS from the GitHub release.
+ */
+const PINNED_SHA256: Record<string, string> = {
+	"mkcert-v1.4.4-darwin-amd64":
+		"a32dfab51f1845d51e810db8e47dcf0e6b51ae3422426514bf5a2b8302e97d4e",
+	"mkcert-v1.4.4-darwin-arm64":
+		"c8af0df44bce04359794dad8ea28d750437411d632748049d08644ffb66a60c6",
+	"mkcert-v1.4.4-linux-amd64":
+		"6d31c65b03972c6dc4a14ab429f2928300518b26503f58723e532d1b0a3bbb52",
+	"mkcert-v1.4.4-linux-arm64":
+		"b98f2cc69fd9147fe4d405d859c57504571adec0d3611c3eefd04107c7ac00d0",
+};
+
 export async function ensureMkcert(): Promise<string> {
 	const existing = resolvedMkcertPath();
 	if (existing) return existing;
@@ -84,7 +100,15 @@ export async function ensureMkcert(): Promise<string> {
 		url: `${MKCERT_RELEASE_BASE}download/${version}/${asset}`,
 		versionArgs: ["-version"],
 		expectedVersion: new RegExp(`^${escaped}\\s*$`, "m"),
-		githubAsset: { repository: "FiloSottile/mkcert", version, name: asset },
+		sha256: PINNED_SHA256[asset] ?? {
+			repository: "FiloSottile/mkcert",
+			version,
+			name: asset,
+			settings: {
+				version: "BUNCARGO_MKCERT_VERSION",
+				path: "BUNCARGO_MKCERT_PATH",
+			},
+		},
 	});
 }
 
@@ -312,9 +336,20 @@ export function certNeedsRenewal(
 	return !leaf || certificateShortfall(leaf, hostnames, now) !== undefined;
 }
 
+/**
+ * How long one mint may take. It runs under the certificate lock, which every
+ * other run's named hosts wait on, so a hung mkcert must not hold it.
+ */
+const MINT_TIMEOUT_MS = 30_000;
+
 export function mintCert(
 	hostnames: string[],
-	options: { mkcertPath?: string; certPath?: string; keyPath?: string } = {},
+	options: {
+		mkcertPath?: string;
+		certPath?: string;
+		keyPath?: string;
+		timeoutMs?: number;
+	} = {},
 ): { certPath: string; keyPath: string; minted: boolean } {
 	const unique = [...new Set(hostnames)].sort();
 	const certPath = options.certPath ?? getCertPath();
@@ -341,6 +376,8 @@ export function mintCert(
 			["-cert-file", pendingCert, "-key-file", pendingKey, ...unique],
 			{
 				stdio: ["pipe", "pipe", "pipe"],
+				timeout: options.timeoutMs ?? MINT_TIMEOUT_MS,
+				killSignal: "SIGKILL",
 			},
 		);
 		// Key first. Two renames are two steps, and the certificate is what

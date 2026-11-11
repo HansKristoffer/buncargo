@@ -407,7 +407,7 @@ function diff(
 	for (const view of opened.views) {
 		const path = view.spec.path;
 		const local = view.local.data;
-		const store = view.store?.data;
+		const store = view.store?.kind === "ok" ? view.store.data : undefined;
 		if (!local || !store) {
 			const where = local
 				? "only in this checkout"

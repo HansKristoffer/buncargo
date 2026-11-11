@@ -188,6 +188,13 @@ const cli = defineCli({
 });
 
 async function main(): Promise<void> {
+	// The file locks, process groups and port lookups are POSIX-only, so fail
+	// here once instead of deep inside a command.
+	if (process.platform === "win32")
+		log.fail("buncargo runs on macOS and Linux.", [
+			"On Windows, run buncargo in WSL.",
+		]);
+
 	// `<package>/src/cli` from source, `<package>/dist/cli` when installed.
 	const cliDir = dirname(fileURLToPath(import.meta.url));
 	await guardVersion(basename(dirname(cliDir)) === "src");
