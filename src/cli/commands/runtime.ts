@@ -385,6 +385,7 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 						),
 						only: parsed.only ?? (group?.only ? [...group.only] : undefined),
 						include: settings.config?.include,
+						scripts: settings.config?.scripts,
 						exclude: [
 							...(settings.config?.exclude ?? []),
 							...(group?.exclude ?? []),

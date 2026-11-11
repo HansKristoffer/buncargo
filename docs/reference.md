@@ -109,6 +109,8 @@ bunx buncargo check               # Biome, typecheck, gates and nearby tests for
 bunx buncargo check --staged      # The pre-commit hook: staged files, no writes
 bunx buncargo check --all         # Every check but the tests (lint)
 bunx buncargo check docs          # Only Markdown links and documented commands
+bunx buncargo check --list --json # The steps this change would run, by name
+bunx buncargo check --skip=typecheck  # Every step but these (--only=<names> for just these)
 bunx buncargo predeploy           # Before a deploy: migrate, seed a named environment outside production
 bunx buncargo slot -- bun test      # A heavy command in a check slot
 bunx buncargo help
@@ -162,6 +164,8 @@ typecheck: {
 ```
 
 `include` takes directories relative to the root, globs allowed: a root `scripts/` folder, a package outside `workspaces`. Each runs its own `typecheck` script when its `package.json` has one, else `tsc --noEmit -p tsconfig.json` with the project's TypeScript. An entry that matches no directory, or a directory with neither a script nor a `tsconfig.json`, fails the typecheck instead of being skipped. `exclude` removes workspaces, discovered or included, by path, glob or basename (like `--only`). Both are validated with the config; absolute paths and paths leaving the root are rejected. `buncargo typecheck` reads only this key of the config module, without building an environment; a config that fails to import is a warning there, since its own typecheck reports the problem.
+
+`typecheck.scripts` names the `package.json` scripts that check a workspace, as in `scripts: ["typecheck", "typecheck:e2e", "typecheck:node"]` (default `["typecheck"]`). A workspace with any of them is discovered, and each one it has is its own job in the pool, `--changed` and the check slot, reported as `apps/web#typecheck:e2e` after the first script.
 
 `typecheck.concurrency` sets the default `--concurrency`. `typecheck.groups` names selections for `--group=<name>`, so CI can split the check across runners without listing workspaces; a new workspace joins the group that excludes rather than lists:
 
@@ -273,6 +277,10 @@ export default defineDevConfig({
 
 `buncargo check` is one check for the change in front of you. It runs `bun fmt` on the changed files when `check.format` is set, Biome (`--write`) on the changed files when the root has a `biome.json`, the docs check when a Markdown file changed, `buncargo typecheck --changed`, the config's gates, and the tests beside the changed files (`a.ts` → `a.test.ts`, `a.*.test.ts`). It prints one line per step and the tail of a failing step's output, then `PASS`, or `FAIL: <steps>` followed by one line per failed step with its exit code and the command to rerun it, so the end of the output (`| tail`) holds the whole verdict. A step passes only on exit code 0: one killed by a signal, or that cannot start at all (`E2BIG`, a missing binary), fails. The exit code is 1 when any step failed. "Changed" means since the merge base with `origin`'s default branch (or `--base=<ref>`), committed or not, plus untracked files. `--staged` checks the staged files only, writes nothing and runs no tests: the pre-commit hook. `--all` checks every file, workspace and gate, without tests: `bun run lint`.
 
+Each step has a name: `bun-version`, `format`, `biome`, `docs`, `typecheck`, a gate's `name`, and `tests`. `--list` prints the steps the change selects without running them (`--json` for one document with each step's name, label and command, and the deferred tests); `--only=<names>` and `--skip=<names>` (comma-separated) run a subset, so a CI job can run the typecheck on its own runner and `check --skip=typecheck` on another. A name that is neither built in nor a gate is an error. Under GitHub Actions each step is a collapsed `::group::`, a failed step prints its whole output, and an `::error` annotation names the step and the command to rerun it. Elsewhere a failed step prints its last 80 lines, and a failed `bun test` prints each failed test with its error and the totals.
+
+When the checkout has a `.bun-version`, a different Bun fails the check with `check.format` set (`bun fmt` formats differently across versions) and is a warning otherwise.
+
 ```typescript
 check: {
 	gates: [
@@ -283,12 +291,16 @@ check: {
 	testCommand: "bun test --parallel=4 --isolate", // default: bun test
 	testExclude: ["**/e2e/**"],
 	format: ["**/*.{ts,tsx,vue}"], // bun fmt; true for every file it knows
+	testAlso: [{ when: ["apps/api/src/routes/**"], tests: ["apps/api/test/routes.test.ts"] }],
+	testDeferred: { files: ["**/*.database.test.ts"], command: "bunx buncargo ci -- bun test" },
 },
 ```
 
+`testAlso` runs tests that guard files they do not sit next to: a changed file matching `when` adds the `tests` (paths or globs). `testDeferred` names tests that need services, such as a database: `check` selects them as usual but does not run them, and ends with `PASS, 1 test file not run` and the command that runs them (`command`, default `testCommand`, followed by the files). The exit code stays 0; `strict: true` makes it `FAIL` and 1.
+
 `check.format` formats with Bun's own formatter (`bun fmt`, Bun 1.4.4 or newer, configured in `bunfig.toml` `[fmt]`) and leaves Biome to lint: turn Biome's formatter off (`"formatter": { "enabled": false }`). `true` formats every file `bun fmt` knows; globs limit it, as in `format: ["**/*.{ts,tsx,vue}"]`. The default mode writes the changed files that match, `--staged` only checks the staged ones, and `--all` runs `bun fmt --check` over the repo. It runs from the root, so `.prettierignore` applies even to the files passed by name.
 
-A gate runs when a changed file matches one of its `when` globs, or always without `when`; a change to a root manifest, lockfile, `tsconfig*.json` or `dev.config.ts` selects every gate. `staged: false` keeps a slow gate out of the pre-commit hook. `check.docs: false` turns the docs check off; `check.docs: { paths: true }` adds backticked paths to it (see below). `buncargo check docs` runs only that check over every Markdown file: relative links whose target does not exist (anchors, URLs, code fences and `{{...}}` placeholders are skipped), and a `bun --cwd` command with `run` after the directory, which Bun parses as a run with no script and exits 0 on (write `bun run --cwd <dir> <script>`).
+A gate runs when a changed file matches one of its `when` globs, or always without `when`; a change to a root manifest, lockfile, `tsconfig*.json` or `dev.config.ts` selects every gate. `staged: false` keeps a slow gate out of the pre-commit hook, and `rootWide: false` keeps a gate with `when` from running on a root file change. A gate's `fix` (a shell command, as in `{ name: "codegen", command: "bun run gen --check", fix: "bun run gen" }`) runs when the gate fails in the default mode, and the gate is checked again; `--staged` and `--all` only report. `check.docs: false` turns the docs check off; `check.docs: { paths: true }` adds backticked paths to it (see below). `buncargo check docs` runs only that check over every Markdown file, and ends with `✓ docs: <n> files, 0 problems`: relative links whose target does not exist (anchors, URLs, code fences and `{{...}}` placeholders are skipped), and a `bun --cwd` command with `run` after the directory, which Bun parses as a run with no script and exits 0 on (write `bun run --cwd <dir> <script>`).
 
 With `paths`, it also reports a backticked path whose first segment is a directory at the root and that exists neither from the root nor from any folder between the root and the doc. Extensionless module paths, `:line` and `#anchor` suffixes, globs, placeholders (`<name>`, `{x}`, `...`) and gitignored outputs pass. List the paths meant to be missing:
 
@@ -1521,8 +1533,8 @@ The configuration reference covers the main public options; `src/types/all-types
 | `profiles` | `Record<string, { apps, description? }>` | `{}` | App selections for `dev --profile`; `default` is used by a bare `dev` |
 | `integrations` | `BuncargoIntegration[]` | `[]` | `shopify()`, `expo()`, …; applied in order before validation |
 | `generatedFiles` | `{ path, render(ctx), gitignore? }[]` | `[]` | Files rendered from ports, URLs and captures. See [captures](#captured-output-and-generated-files) |
-| `typecheck` | `{ include?, exclude?, concurrency?, groups? }` | `undefined` | Directories `buncargo typecheck` checks beyond discovery, workspaces it leaves out, and named groups. See [typecheck](#cli-reference) |
-| `check` | `{ gates?, testCommand?, testExclude?, docs?, format? }` | `undefined` | Gates and tests for `buncargo check`. See [check](#buncargo-check-and-buncargo-predeploy) |
+| `typecheck` | `{ include?, exclude?, concurrency?, groups?, scripts? }` | `undefined` | Directories `buncargo typecheck` checks beyond discovery, workspaces it leaves out, and named groups. See [typecheck](#cli-reference) |
+| `check` | `{ gates?, testCommand?, testExclude?, testAlso?, testDeferred?, docs?, format? }` | `undefined` | Gates and tests for `buncargo check`. See [check](#buncargo-check-and-buncargo-predeploy) |
 | `predeploy` | `{ environmentVars?, production?, seedIn?, seed?, retry?, beforeMigrate?, afterMigrate?, afterSeed?, onFailure? }` | `undefined` | Settings and hooks for `buncargo predeploy`. See [predeploy](#buncargo-check-and-buncargo-predeploy) |
 | `unsetEnv` | `string[]` | `[]` | Variables removed from every process buncargo starts (apps, tasks, `exec`, migrations, the seed), e.g. those tools use to detect an agent's shell; a tool run through `exec` loses its own agent detection. The Prisma CLI `buncargo prisma` runs keeps them. buncargo's own environment is unchanged |
 

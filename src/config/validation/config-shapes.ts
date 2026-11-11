@@ -266,10 +266,15 @@ export function validateTypecheckShape(
 	unknownKeys(
 		value,
 		"typecheck",
-		["include", "exclude", "concurrency", "groups"],
+		["include", "exclude", "concurrency", "groups", "scripts"],
 		errors,
 	);
 	pathList(value.include, "typecheck.include", checks);
+	if (
+		value.scripts !== undefined &&
+		!(strings(value.scripts) && value.scripts.length > 0)
+	)
+		errors.push("typecheck.scripts must be a nonempty array of script names");
 	pathList(value.exclude, "typecheck.exclude", checks);
 	check(
 		value.concurrency,
@@ -322,6 +327,91 @@ function validateDocsCheckShape(value: unknown, checks: ShapeChecks): void {
 	}
 }
 
+/**
+ * Step names `check` gives its own steps; a gate with one of them could not
+ * be told apart in `--only` and `--skip`.
+ */
+export const BUILT_IN_CHECK_STEPS = [
+	"bun-version",
+	"format",
+	"biome",
+	"docs",
+	"typecheck",
+	"tests",
+] as const;
+
+function validateGatesShape(value: unknown, checks: ShapeChecks): void {
+	const { errors, record, fields } = checks;
+	if (value === undefined) return;
+	if (!Array.isArray(value)) {
+		errors.push("check.gates must be an array");
+		return;
+	}
+	const names = new Set<string>();
+	for (const [index, gate] of value.entries()) {
+		const path = `check.gates.${index}`;
+		if (!record(gate, path)) continue;
+		unknownKeys(
+			gate,
+			path,
+			["name", "command", "cwd", "when", "staged", "rootWide", "fix"],
+			errors,
+		);
+		for (const key of ["name", "command"])
+			if (typeof gate[key] !== "string" || !gate[key])
+				errors.push(`${path}.${key} must be a nonempty string`);
+		fields(gate, `${path}.`, ["cwd", "fix"], "string");
+		fields(gate, `${path}.`, ["staged", "rootWide"], "boolean");
+		pathList(gate.when, `${path}.when`, checks);
+
+		const name = gate.name;
+		if (typeof name !== "string" || !name) continue;
+		const builtIn = (BUILT_IN_CHECK_STEPS as readonly string[]).includes(name);
+		if (builtIn)
+			errors.push(
+				`${path}.name: "${name}" is a built-in check step; name the gate something else`,
+			);
+		else if (names.has(name))
+			errors.push(`${path}.name: "${name}" is used by an earlier gate`);
+		names.add(name);
+	}
+}
+
+function validateTestAlsoShape(value: unknown, checks: ShapeChecks): void {
+	const { errors, record } = checks;
+	if (value === undefined) return;
+	if (!Array.isArray(value)) {
+		errors.push("check.testAlso must be an array");
+		return;
+	}
+	for (const [index, entry] of value.entries()) {
+		const path = `check.testAlso.${index}`;
+		if (!record(entry, path)) continue;
+		unknownKeys(entry, path, ["when", "tests"], errors);
+		for (const key of ["when", "tests"]) {
+			if (entry[key] === undefined)
+				errors.push(`${path}.${key} must be an array of globs`);
+			pathList(entry[key], `${path}.${key}`, checks);
+		}
+	}
+}
+
+function validateTestDeferredShape(value: unknown, checks: ShapeChecks): void {
+	const { errors, record, fields } = checks;
+	if (value === undefined || !record(value, "check.testDeferred")) return;
+	unknownKeys(
+		value,
+		"check.testDeferred",
+		["files", "command", "strict"],
+		errors,
+	);
+	if (value.files === undefined)
+		errors.push("check.testDeferred.files must be an array of globs");
+	pathList(value.files, "check.testDeferred.files", checks);
+	fields(value, "check.testDeferred.", ["command"], "string");
+	fields(value, "check.testDeferred.", ["strict"], "boolean");
+}
+
 /** `check`; shared with `buncargo check`, which reads only this key. */
 export function validateCheckShape(value: unknown, checks: ShapeChecks): void {
 	const { errors, record, fields } = checks;
@@ -329,7 +419,15 @@ export function validateCheckShape(value: unknown, checks: ShapeChecks): void {
 	unknownKeys(
 		value,
 		"check",
-		["gates", "testCommand", "testExclude", "docs", "format"],
+		[
+			"gates",
+			"testCommand",
+			"testExclude",
+			"testAlso",
+			"testDeferred",
+			"docs",
+			"format",
+		],
 		errors,
 	);
 	fields(value, "check.", ["testCommand"], "string");
@@ -343,27 +441,9 @@ export function validateCheckShape(value: unknown, checks: ShapeChecks): void {
 	else if (Array.isArray(format)) pathList(format, "check.format", checks);
 	validateDocsCheckShape(value.docs, checks);
 	pathList(value.testExclude, "check.testExclude", checks);
-	if (value.gates === undefined) return;
-	if (!Array.isArray(value.gates)) {
-		errors.push("check.gates must be an array");
-		return;
-	}
-	for (const [index, gate] of value.gates.entries()) {
-		const path = `check.gates.${index}`;
-		if (!record(gate, path)) continue;
-		unknownKeys(
-			gate,
-			path,
-			["name", "command", "cwd", "when", "staged"],
-			errors,
-		);
-		for (const key of ["name", "command"])
-			if (typeof gate[key] !== "string" || !gate[key])
-				errors.push(`${path}.${key} must be a nonempty string`);
-		fields(gate, `${path}.`, ["cwd"], "string");
-		fields(gate, `${path}.`, ["staged"], "boolean");
-		pathList(gate.when, `${path}.when`, checks);
-	}
+	validateTestAlsoShape(value.testAlso, checks);
+	validateTestDeferredShape(value.testDeferred, checks);
+	validateGatesShape(value.gates, checks);
 }
 
 /** `predeploy`; shared with `buncargo predeploy`, which reads only this key. */

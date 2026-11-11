@@ -68,6 +68,8 @@ export type {
 	CheckGateConfig,
 	CheckOutcome,
 	CheckoutFile,
+	CheckTestAlsoConfig,
+	CheckTestDeferredConfig,
 	// CLI
 	CliOptions,
 	// Computed types
