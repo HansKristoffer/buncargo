@@ -1084,49 +1084,40 @@ describe("defineDevConfig app dependency typing", () => {
 		expect(config.projectPrefix).toBe("typed");
 	});
 
+	// Each rejected config sits in a variable so the error lands on the call's
+	// line: tsc reports a failed overload at the call, `bun check` at the
+	// property, and one directive has to satisfy both.
 	it("rejects unknown requiredApps at compile time", () => {
-		defineDevConfig({
+		const config = {
 			projectPrefix: "typed",
-			services: {
-				postgres: {
-					port: 5432,
-				},
-			},
+			services: { postgres: { port: 5432 } },
 			apps: {
-				api: {
-					port: 3000,
-					devCommand: "bun run api",
-				},
+				api: { port: 3000, devCommand: "bun run api" },
 				web: {
 					port: 5173,
 					devCommand: "bun run web",
-					// @ts-expect-error - "missing" is not a configured app
 					requiredApps: ["missing"],
 				},
 			},
-		});
+		} as const;
+		// @ts-expect-error - "missing" is not a configured app
+		defineDevConfig(config);
 	});
 
 	it("rejects unknown requiredServices at compile time", () => {
-		defineDevConfig({
+		const config = {
 			projectPrefix: "typed",
-			services: {
-				postgres: {
-					port: 5432,
-				},
-				redis: {
-					port: 6379,
-				},
-			},
+			services: { postgres: { port: 5432 }, redis: { port: 6379 } },
 			apps: {
 				worker: {
 					port: 3001,
 					devCommand: "bun run worker",
-					// @ts-expect-error - "nats" is not a configured service
 					requiredServices: ["nats"],
 				},
 			},
-		});
+		} as const;
+		// @ts-expect-error - "nats" is not a configured service
+		defineDevConfig(config);
 	});
 });
 
@@ -1426,16 +1417,18 @@ describe("checks, tasks and profiles", () => {
 	});
 
 	it("types task and profile keys against the config", () => {
-		defineDevConfig({
+		const withTask = {
 			...base,
-			// @ts-expect-error - "web" is not a configured app
 			tasks: { seed: { command: "x", app: "web" } },
-		});
-		defineDevConfig({
+		} as const;
+		// @ts-expect-error - "web" is not a configured app
+		defineDevConfig(withTask);
+		const withProfile = {
 			...base,
-			// @ts-expect-error - "web" is not a configured app
 			profiles: { full: { apps: ["web"] } },
-		});
+		} as const;
+		// @ts-expect-error - "web" is not a configured app
+		defineDevConfig(withProfile);
 	});
 });
 

@@ -1046,6 +1046,7 @@ it("prints the --timing report for a run interrupted before its apps were ready"
 		await mkdtemp(join(tmpdir(), "buncargo-interrupted-timing-")),
 	);
 	const reports: string[] = [];
+	const awaitingReadiness = Promise.withResolvers<void>();
 	const env = createStubEnv({
 		root,
 		services: {},
@@ -1058,12 +1059,11 @@ it("prints the --timing report for a run interrupted before its apps were ready"
 			},
 		},
 		// Never ready: the interrupt lands during app readiness.
-		waitForServers: () => new Promise(() => {}),
+		waitForServers: () => {
+			awaitingReadiness.resolve();
+			return new Promise(() => {});
+		},
 	});
-	const status = async () =>
-		(await findRunsByRoot(root))
-			.find((run) => run.sessionId === env.sessionId)
-			?.apps.find((app) => app.name === "api")?.status;
 	const run = withProcessExitTrap(() =>
 		runCli(env, {
 			args: ["--no-hosts", "--no-tui"],
@@ -1075,11 +1075,7 @@ it("prints the --timing report for a run interrupted before its apps were ready"
 		}),
 	);
 	try {
-		const deadline = performance.now() + 4_000;
-		while ((await status()) !== "starting") {
-			if (performance.now() > deadline) throw new Error("api never spawned");
-			await Bun.sleep(20);
-		}
+		await awaitingReadiness.promise;
 		expect(reports).toEqual([]);
 		process.emit("SIGINT");
 		expect(await run).toBe(130);

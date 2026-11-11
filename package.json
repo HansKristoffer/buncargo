@@ -204,7 +204,7 @@
     "fmt": "bun fmt --no-script '{src,scripts,example,server/connect}/**/*.{ts,tsx,js,jsx,mjs,cjs,json,jsonc}'",
     "lint": "bun run typecheck && biome check src scripts example server/connect && bun fmt --no-script --check '{src,scripts,example,server/connect}/**/*.{ts,tsx,js,jsx,mjs,cjs,json,jsonc}'",
     "lint:write": "bun run typecheck && biome check --fix src scripts example server/connect && bun run fmt",
-    "typecheck": "bun check",
+    "typecheck": "bun check && tsc --noEmit -p tsconfig.json",
     "test": "bun test",
     "test:integration-cloudflared": "BUNCARGO_TEST_CLOUDFLARED_SMOKE=1 bun test src/core/quick-tunnel/quick-tunnel.test.ts",
     "test:integration-cloudflared-e2e": "BUNCARGO_TEST_CLOUDFLARED_SMOKE=1 BUNCARGO_TEST_CLOUDFLARED_E2E=1 bun test src/core/quick-tunnel/quick-tunnel.test.ts",
