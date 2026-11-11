@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { isString } from "hanzio";
 import { checkoutDeleted } from "../checkout-presence";
-import { arrayOf, type Guard, object } from "../json-shape";
+import { arrayOf, type Guarded, object } from "../json-shape";
 import { defineListRegistry } from "../registry-file";
 import { chownToInvokingUser, getStateDir } from "../state-paths";
 
@@ -31,25 +31,21 @@ const REGISTRY_VERSION = 1;
  */
 const MAX_ROOTS = 200;
 
-export interface CertNameEntry {
-	/** Repo root the names belong to. */
-	root: string;
-	/** Hostnames and wildcards, as `certificateHostnames` produced them. */
-	names: string[];
-	updatedAt: string;
-}
-
 const CERT_NAMES_FILENAME = "cert-names.json";
 
 export function getCertNamesPath(): string {
 	return join(getStateDir(), CERT_NAMES_FILENAME);
 }
 
-const isCertNameEntry: Guard<CertNameEntry> = object({
+const isCertNameEntry = object({
+	/** Repo root the names belong to. */
 	root: isString,
+	/** Hostnames and wildcards, as `certificateHostnames` produced them. */
 	names: arrayOf(isString),
 	updatedAt: isString,
 });
+
+export type CertNameEntry = Guarded<typeof isCertNameEntry>;
 
 const registry = defineListRegistry<CertNameEntry>({
 	version: REGISTRY_VERSION,
