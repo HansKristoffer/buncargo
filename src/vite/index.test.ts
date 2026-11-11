@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { buildSharedEnvValues, stringifyEnvValues } from "../core/env";
 import { buncargoVite } from "./index";
 import {
 	buildBuncargoViteConfig,
@@ -163,6 +164,28 @@ describe("Shopify CLI and strict ports", () => {
 });
 
 describe("resolveBuncargoViteProxy", () => {
+	// The plugin cannot import buncargo's env naming, so it is held to it here.
+	it("finds a hyphenated app under the names buncargo gives it", () => {
+		const env = stringifyEnvValues(
+			buildSharedEnvValues({
+				projectName: "shop",
+				services: {},
+				ports: { "web-admin": 4902 },
+				urls: { "web-admin": "http://localhost:4902" },
+				loopbackUrls: { "web-admin": "http://127.0.0.1:4902" },
+				publicUrls: {},
+			}),
+		);
+		expect(resolveBuncargoViteProxy(env, { "/admin": "web-admin" })).toEqual({
+			"/admin": {
+				target: "http://127.0.0.1:4902",
+				changeOrigin: false,
+				ws: true,
+			},
+		});
+		expect(readBuncargoViteEnvironment(env, "web-admin").port).toBe(4902);
+	});
+
 	// The named https URL would route the kept Host back to this Vite: 508.
 	it("targets the app's loopback URL and keeps the Host", () => {
 		expect(

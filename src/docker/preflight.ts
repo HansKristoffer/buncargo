@@ -147,8 +147,8 @@ export function dockerDaemonStateFrom(
 	result: DockerRunResult,
 ): DockerDaemonState {
 	if (result.ok) return { state: "up" };
-	if (result.spawnErrorCode === "ENOENT") return { state: "down" };
-	if (result.spawnErrorCode === "ETIMEDOUT") return { state: "silent" };
+	if (result.status === "notFound") return { state: "down" };
+	if (result.status === "timedOut") return { state: "silent" };
 	if (/permission denied/i.test(result.stderr)) return { state: "denied" };
 	if (isDaemonDownMessage(result.stderr)) return { state: "down" };
 	const detail =
@@ -191,6 +191,21 @@ function socketPermissionError(runtime: DockerRuntime): DockerUnavailableError {
 		runtime,
 		"Add your user to the docker group (sudo usermod -aG docker $USER), then log in again or restart the service you run buncargo from: running processes keep their old groups.",
 		"Docker is running, but this user cannot open its socket.",
+	);
+}
+
+function dockerBinaryMissingError(
+	binary = DEFAULT_DOCKER_BINARY,
+): DockerUnavailableError {
+	const runtime = runtimeFromContext(
+		"",
+		process.platform,
+		installedDockerRuntime(binary),
+	);
+	return new DockerUnavailableError(
+		runtime,
+		"Install Docker, or put your runtime's `docker` on PATH (OrbStack: ~/.orbstack/bin), or point `docker.binary` in dev.config.ts at it.",
+		`The Docker CLI (\`${binary}\`) was not found.`,
 	);
 }
 
@@ -433,6 +448,10 @@ export async function ensureDockerRunning(
 	const daemonRunning = async () => (await probe()).ok;
 	const first = await probe();
 	if (first.ok) return;
+	// No binary to run: starting a runtime or polling cannot change that, and
+	// a Mac with OrbStack installed but its `docker` off PATH would otherwise
+	// open OrbStack and wait out the whole deadline.
+	if (first.status === "notFound") throw dockerBinaryMissingError(binary);
 	const context = await runDockerAsync(binary, ["context", "show"], {
 		signal,
 		timeoutMs: Math.min(5000, remainingTime(deadline)),

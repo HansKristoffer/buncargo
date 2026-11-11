@@ -4,7 +4,11 @@ import {
 	type PresetServiceCredentialOptions,
 	type PresetServiceSecondaryPortOptions,
 } from "./define-docker-service";
-import { getDefaultPortBindings, resolveHealthcheck } from "./shared";
+import {
+	composeLiteral,
+	getDefaultPortBindings,
+	resolveHealthcheck,
+} from "./shared";
 
 export type ClickhouseServiceOptions = PresetServiceCredentialOptions &
 	PresetServiceSecondaryPortOptions;
@@ -38,9 +42,9 @@ export const clickhouseDockerService = defineDockerService<
 		password: options?.password,
 	}),
 	build: ({ serviceKey, config }) => {
-		const user = config.user ?? "default";
-		const password = config.password ?? "clickhouse";
-		const database = config.database ?? "default";
+		const user = composeLiteral(config.user ?? "default");
+		const password = composeLiteral(config.password ?? "clickhouse");
+		const database = composeLiteral(config.database ?? "default");
 		const defaultHealthcheck: DockerComposeHealthcheckRaw = {
 			test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping || exit 1"],
 			interval: "250ms",

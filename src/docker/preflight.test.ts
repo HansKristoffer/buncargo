@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ContainerRuntimeUnavailableError } from "../container-runtime/types";
+import { type DockerRunResult, runDocker, runDockerAsync } from "./binary";
 import {
 	DESKTOP_COLD_START_MS,
 	DockerUnavailableError,
@@ -201,26 +202,29 @@ describe("Docker daemon preflight", () => {
 	});
 
 	it("reads only Docker's own 'cannot connect' as a daemon that is down", () => {
-		const failed = (stderr: string, spawnErrorCode?: string) =>
+		const failed = (
+			stderr: string,
+			status: DockerRunResult["status"] = "exit",
+		) =>
 			dockerDaemonStateFrom({
+				status,
 				ok: false,
 				exitCode: 1,
 				stdout: "",
 				stderr,
-				...(spawnErrorCode ? { spawnErrorCode } : {}),
 			}).state;
 		expect(
 			failed(
 				"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
 			),
 		).toBe("down");
-		expect(failed("spawnSync docker ENOENT", "ENOENT")).toBe("down");
+		expect(failed("spawnSync docker ENOENT", "notFound")).toBe("down");
 		expect(
 			failed(
 				"permission denied while trying to connect to the Docker daemon socket",
 			),
 		).toBe("denied");
-		expect(failed("spawnSync docker ETIMEDOUT", "ETIMEDOUT")).toBe("silent");
+		expect(failed("spawnSync docker ETIMEDOUT", "timedOut")).toBe("silent");
 		expect(failed('context "gone" does not exist')).toBe("failed");
 	});
 
@@ -229,8 +233,13 @@ describe("Docker daemon preflight", () => {
 	// daemon. Strings as the Docker CLI prints them.
 	it("reads 'error during connect' as down only when the daemon is not there", () => {
 		const failed = (stderr: string) =>
-			dockerDaemonStateFrom({ ok: false, exitCode: 1, stdout: "", stderr })
-				.state;
+			dockerDaemonStateFrom({
+				status: "exit",
+				ok: false,
+				exitCode: 1,
+				stdout: "",
+				stderr,
+			}).state;
 		expect(
 			failed(
 				'error during connect: this error may indicate that the docker daemon is not running: Get "http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.24/version": open //./pipe/docker_engine: The system cannot find the file specified.',
@@ -256,6 +265,32 @@ describe("Docker daemon preflight", () => {
 				'error during connect: Get "http://%2F%2F.%2Fpipe%2FdockerDesktopLinuxEngine/v1.47/version": open //./pipe/dockerDesktopLinuxEngine: Access is denied.',
 			),
 		).toBe("failed");
+	});
+
+	it("reports a docker binary that is not there as notFound on both runners", async () => {
+		const missing = join(
+			tmpdir(),
+			`buncargo-no-docker-${process.pid}`,
+			"docker",
+		);
+		expect(runDocker(missing, ["version"]).status).toBe("notFound");
+		expect((await runDockerAsync(missing, ["version"])).status).toBe(
+			"notFound",
+		);
+		const { binary } = fixture({ versionExit: 1 });
+		expect((await runDockerAsync(binary, ["version"])).status).toBe("exit");
+	});
+
+	// CI waits for a daemon until the deadline; a missing binary must not.
+	it("fails at once without a docker binary instead of waiting for a daemon", async () => {
+		const missing = join(
+			tmpdir(),
+			`buncargo-no-docker-${process.pid}`,
+			"docker",
+		);
+		await expect(
+			ensureDockerRunning({ binary: missing, ci: true, verbose: false }),
+		).rejects.toThrow(/was not found/);
 	});
 
 	it("rejects an unavailable server even if the CLI prints a version", async () => {

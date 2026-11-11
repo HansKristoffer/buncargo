@@ -14,14 +14,12 @@ import type { DockerComposeNode, DockerComposeServiceRaw } from "../types";
  * container runtime present.
  */
 
-/** Label carrying the immutable part of a service's config. */
-export const CONFIG_HASH_LABEL = "buncargo.config-hash";
-
 // Compose's substitution rules and the service fingerprint live with the
 // compose model, not with one backend: `docker compose` interpolates the file
 // itself and this backend has to reproduce it, so a second copy here is a
 // second thing to keep in step.
 import {
+	findUninterpolable,
 	interpolateNode,
 	normalizeComposeLabels,
 	SERVICE_HASH_LABEL,
@@ -466,6 +464,13 @@ function buildServicePlan(
 	unsupportedKeys: Set<string>,
 	configHash: string,
 ): ContainerRunPlan {
+	// Passing what `interpolate` cannot read on as literal text would start a
+	// container with `${VAR:+x}` in its environment and no error.
+	const uninterpolable = findUninterpolable(raw);
+	if (uninterpolable !== undefined) {
+		const message = `Service "${serviceName}" uses ${JSON.stringify(uninterpolable)}, which Apple container cannot interpolate: it understands \${VAR}, \${VAR:-default}, \${VAR-default}, \${VAR:?error} and $$. Rewrite the value, or set docker.runtime: "docker".`;
+		throw new Error(message);
+	}
 	const service = interpolateNode(raw, env) as DockerComposeServiceRaw;
 	const image = service.image;
 	if (!image) {
@@ -481,14 +486,11 @@ function buildServicePlan(
 		normalizeComposeLabels(service.labels) as DockerComposeNode,
 	);
 	// One hash for both questions: the service fingerprint `ensureServicesRunning`
-	// compares to skip `up`, computed here rather than read off the label so a
-	// caller that did not interpolate it gets the same value, not a second hash
-	// that disagrees and recreates the container on the next run.
-	const labels = {
-		...userLabels,
-		[SERVICE_HASH_LABEL]: configHash,
-		[CONFIG_HASH_LABEL]: configHash,
-	};
+	// compares to skip `up`, and whether an existing container still matches.
+	// Computed here rather than read off the label so a caller that did not
+	// interpolate it gets the same value, not a second hash that disagrees and
+	// recreates the container on the next run.
+	const labels = { ...userLabels, [SERVICE_HASH_LABEL]: configHash };
 	const namedVolumes: string[] = [];
 	// `--progress none` keeps the pull and boot progress lines out of the
 	// stderr that ends up in an error message.

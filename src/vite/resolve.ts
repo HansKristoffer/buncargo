@@ -13,6 +13,14 @@ export interface BuncargoViteEnvironment {
 	proxy?: Record<string, BuncargoViteProxyRule>;
 }
 
+/**
+ * `envName` in `core/ports.ts`, copied because this file's import graph is
+ * pinned; `index.test.ts` holds the two to one answer.
+ */
+function viteEnvName(key: string): string {
+	return key.toUpperCase().replaceAll("-", "_");
+}
+
 function parsePort(value: string | undefined): number | undefined {
 	if (!value) return undefined;
 	const port = Number.parseInt(value, 10);
@@ -31,7 +39,7 @@ export function readBuncargoViteEnvironment(
 	const port =
 		parsePort(env.FRONTEND_PORT) ??
 		parsePort(env.PORT) ??
-		(appName ? parsePort(env[`${appName.toUpperCase()}_PORT`]) : undefined);
+		(appName ? parsePort(env[`${viteEnvName(appName)}_PORT`]) : undefined);
 
 	const allowedHosts = (env.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS ?? "")
 		.split(",")
@@ -58,7 +66,7 @@ export function resolveBuncargoViteProxy(
 ): Record<string, BuncargoViteProxyRule> {
 	return Object.fromEntries(
 		Object.entries(proxy).map(([path, app]) => {
-			const name = app.toUpperCase();
+			const name = viteEnvName(app);
 			const port = parsePort(env[`${name}_PORT`]);
 			const target =
 				env[`${name}_LOOPBACK_URL`] ??

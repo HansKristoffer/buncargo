@@ -9,8 +9,9 @@ import type {
 import { remainingTime } from "../core/deadline";
 import { formatPortOwner, getPortOwner, type PortOwner } from "../core/process";
 import { formatDone, formatStep, formatWarn } from "../core/style";
+import { SERVICE_HASH_LABEL } from "../docker-compose/interpolate";
 import { appleContainerRuntimeAdapter } from "./adapter";
-import type { AppleCliOptions, AppleCliResult, AppleContainerCli } from "./cli";
+import type { AppleCliResult, AppleContainerCli } from "./cli";
 import {
 	isAlreadyExistsMessage,
 	isAlreadyRunningMessage,
@@ -20,7 +21,6 @@ import {
 import { appleAvailabilityFromStatus } from "./preflight";
 import {
 	buildAppleRunPlan,
-	CONFIG_HASH_LABEL,
 	type ContainerRunPlan,
 	PROJECT_LABEL,
 	projectVolumeNames,
@@ -28,9 +28,14 @@ import {
 import type { AppleContainerRecord } from "./status";
 import { LIST_ARGS, readContainerListing, recordState } from "./status";
 
-/** A `container` argv, or one whose output streams to the terminal. */
-type AppleStep = string[] | { args: string[]; stream: true };
-type AppleSteps = Generator<AppleStep, void, AppleCliResult>;
+/**
+ * Run one `container` argv against the operation's shared deadline; `stream`
+ * sends its output to the terminal instead of capturing it.
+ */
+type AppleRun = (
+	args: string[],
+	options?: { stream?: true },
+) => Promise<AppleCliResult>;
 type PortOwnerLookup = (port: number) => PortOwner | null;
 
 /**
@@ -90,14 +95,17 @@ function isTransientRunFailure(result: AppleCliResult): boolean {
  */
 const VOLUME_SIZE = "256G";
 
-function* ensureVolume(name: string): AppleSteps {
-	const result = yield ["volume", "create", "-s", VOLUME_SIZE, name];
+async function ensureVolume(run: AppleRun, name: string): Promise<void> {
+	const result = await run(["volume", "create", "-s", VOLUME_SIZE, name]);
 	if (result.ok || isAlreadyExistsMessage(result.stderr)) return;
 	failed(result, `create volume ${name}`);
 }
 
-function* removeContainer(containerName: string): AppleSteps {
-	const result = yield ["delete", "--force", containerName];
+async function removeContainer(
+	run: AppleRun,
+	containerName: string,
+): Promise<void> {
+	const result = await run(["delete", "--force", containerName]);
 	if (result.ok || isMissingResourceMessage(result.stderr)) return;
 	failed(result, `delete container ${containerName}`);
 }
@@ -107,28 +115,32 @@ function* removeContainer(containerName: string): AppleSteps {
  * silent, and a first pull of a database image takes minutes. The platform is
  * explicit because `image pull` otherwise fetches every platform the image has.
  */
-function* pullIfMissing(plan: ContainerRunPlan): AppleSteps {
-	const present = yield ["image", "inspect", plan.image];
+async function pullIfMissing(
+	run: AppleRun,
+	plan: ContainerRunPlan,
+): Promise<void> {
+	const present = await run(["image", "inspect", plan.image]);
 	if (present.ok) return;
 	console.log(formatStep(`⬇️  Pulling ${plan.image}...`));
-	const pulled = yield {
-		args: ["image", "pull", "--platform", plan.platform, plan.image],
-		stream: true,
-	};
+	const pulled = await run(
+		["image", "pull", "--platform", plan.platform, plan.image],
+		{ stream: true },
+	);
 	if (!pulled.ok) failed(pulled, `pull image ${plan.image}`);
 }
 
-function* startService(
+async function startService(
+	run: AppleRun,
 	plan: ContainerRunPlan,
 	existing: AppleContainerRecord | undefined,
 	verbose: boolean,
 	ownerOf: PortOwnerLookup,
-): AppleSteps {
+): Promise<void> {
 	if (existing) {
 		const state = recordState(existing);
-		if (existing.labels[CONFIG_HASH_LABEL] === plan.configHash) {
+		if (existing.labels[SERVICE_HASH_LABEL] === plan.configHash) {
 			if (isContainerServing(state)) return;
-			const started = yield ["start", plan.containerName];
+			const started = await run(["start", plan.containerName]);
 			if (started.ok) return;
 			// A container whose state Apple did not say may be running already,
 			// which `start` refuses; readiness tells whether it serves. Any other
@@ -150,23 +162,24 @@ function* startService(
 			// Apple did not say may refuse the stop for being stopped already,
 			// which is no reason to fail.
 			if (!isContainerStopped(state)) {
-				const stopped = yield ["stop", plan.containerName];
+				const stopped = await run(["stop", plan.containerName]);
 				const refused =
 					!stopped.ok && !isMissingResourceMessage(stopped.stderr);
 				if (refused && isContainerServing(state)) {
 					failed(stopped, `stop container ${plan.containerName}`);
 				}
 			}
-			yield* removeContainer(plan.containerName);
+			await removeContainer(run, plan.containerName);
 		}
 	}
 
-	if (verbose) yield* pullIfMissing(plan);
+	if (verbose) await pullIfMissing(run, plan);
 
 	// The plan already carries interpolated values, so nothing depends on the
 	// child's own environment.
-	let result = yield plan.runArgs;
-	if (!result.ok && isTransientRunFailure(result)) result = yield plan.runArgs;
+	let result = await run(plan.runArgs);
+	if (!result.ok && isTransientRunFailure(result))
+		result = await run(plan.runArgs);
 	if (!result.ok) {
 		translatePortError(
 			result,
@@ -177,10 +190,11 @@ function* startService(
 	}
 }
 
-function* upSteps(
+async function up(
+	run: AppleRun,
 	request: ContainerUpRequest,
 	ownerOf: PortOwnerLookup,
-): AppleSteps {
+): Promise<void> {
 	const { verbose = true } = request;
 	const plan = buildAppleRunPlan({
 		projectName: request.projectName,
@@ -203,14 +217,14 @@ function* upSteps(
 	}
 
 	for (const volume of plan.volumes) {
-		yield* ensureVolume(volume);
+		await ensureVolume(run, volume);
 	}
 
 	// Read the inventory once so every service in this run decides reuse against
 	// the same snapshot rather than re-listing per service.
 	// Output that is not JSON is no inventory: read as empty, every `run`
 	// below would collide with a container that is there.
-	const inventory = yield LIST_ARGS;
+	const inventory = await run(LIST_ARGS);
 	const listing = readContainerListing(inventory);
 	if (!listing.listed) failed(inventory, "read container inventory");
 	const existing = new Map(
@@ -218,7 +232,8 @@ function* upSteps(
 	);
 
 	for (const service of plan.services) {
-		yield* startService(
+		await startService(
+			run,
 			service,
 			existing.get(service.containerName),
 			verbose,
@@ -229,10 +244,13 @@ function* upSteps(
 	if (verbose) console.log(formatDone("Containers started"));
 }
 
-function* downSteps(request: ContainerDownRequest): AppleSteps {
+async function down(
+	run: AppleRun,
+	request: ContainerDownRequest,
+): Promise<void> {
 	const { verbose = true, removeVolumes = false } = request;
 
-	const inventory = yield LIST_ARGS;
+	const inventory = await run(LIST_ARGS);
 	const listing = readContainerListing(inventory);
 	if (!inventory.ok) {
 		// A stopped system service runs no containers, so there is nothing to
@@ -241,7 +259,7 @@ function* downSteps(request: ContainerDownRequest): AppleSteps {
 		// answer may be a service holding every container and port here.
 		// Volumes cannot be removed without it, and a reset that silently kept
 		// them would not be.
-		const status = yield ["system", "status"];
+		const status = await run(["system", "status"]);
 		if (appleAvailabilityFromStatus(status).state !== "down")
 			failed(inventory, "read container inventory");
 		if (removeVolumes)
@@ -291,15 +309,15 @@ function* downSteps(request: ContainerDownRequest): AppleSteps {
 		// Reporting "Containers stopped" over a failed stop would send the caller
 		// away believing the ports are free.
 		if (running.length > 0) {
-			const stopped = yield ["stop", ...running];
+			const stopped = await run(["stop", ...running]);
 			if (!stopped.ok && !isMissingResourceMessage(stopped.stderr)) {
 				failed(stopped, `stop containers ${running.join(", ")}`);
 			}
 		}
 		// Asked apart: one that was stopped already may fail the stop, and the
 		// delete below still removes it.
-		if (unsure.length > 0) yield ["stop", ...unsure];
-		const removed = yield ["delete", "--force", ...ids];
+		if (unsure.length > 0) await run(["stop", ...unsure]);
+		const removed = await run(["delete", "--force", ...ids]);
 		if (!removed.ok && !isMissingResourceMessage(removed.stderr)) {
 			failed(removed, `delete containers ${ids.join(", ")}`);
 		}
@@ -311,18 +329,20 @@ function* downSteps(request: ContainerDownRequest): AppleSteps {
 				"Cannot remove volumes without the compose model: their names are derived from it.",
 			);
 		}
+		// Every volume is tried, then the run fails: a reset that reported
+		// success over a kept volume hands the next run the old database.
+		const kept: string[] = [];
 		for (const volume of projectVolumeNames(
 			request.projectName,
 			request.model,
 		)) {
-			const result = yield ["volume", "delete", volume];
-			if (!result.ok && !isMissingResourceMessage(result.stderr)) {
-				console.warn(
-					formatWarn(
-						`Could not remove volume ${volume}: ${result.stderr.trim()}`,
-					),
-				);
-			}
+			const result = await run(["volume", "delete", volume]);
+			if (!result.ok && !isMissingResourceMessage(result.stderr))
+				kept.push(`${volume}: ${result.stderr.trim()}`);
+		}
+		if (kept.length > 0) {
+			const message = `Could not remove the volumes of ${request.projectName}:\n  ${kept.join("\n  ")}\nRemove them with \`container volume delete <name>\`, or run the reset again.`;
+			throw new Error(message);
 		}
 	}
 
@@ -339,26 +359,22 @@ export function appleStopByIds(cli: AppleContainerCli, ids: string[]): void {
 	}
 }
 
-async function runSteps(
+/** One runner per operation, so every step it takes shares one deadline. */
+function appleRunner(
 	cli: AppleContainerCli,
-	steps: AppleSteps,
-	options: AppleCliOptions,
-): Promise<void> {
-	const deadline = performance.now() + (options.timeoutMs ?? 600000);
-	let step = steps.next();
-	while (!step.done) {
+	options: { signal?: AbortSignal; timeoutMs: number },
+): AppleRun {
+	const deadline = performance.now() + options.timeoutMs;
+	return (args, { stream } = {}) => {
 		options.signal?.throwIfAborted();
 		if (remainingTime(deadline) === 0)
 			throw new Error("Apple container operation timed out");
-		const streamed = !Array.isArray(step.value);
-		const args = Array.isArray(step.value) ? step.value : step.value.args;
-		const result = await runAppleAsync(cli, args, {
-			...options,
-			inherit: streamed,
+		return runAppleAsync(cli, args, {
+			signal: options.signal,
+			inherit: stream === true,
 			timeoutMs: remainingTime(deadline),
 		});
-		step = steps.next(result);
-	}
+	};
 }
 
 export function appleUp(
@@ -369,17 +385,19 @@ export function appleUp(
 	// lookup alone names the forwarder rather than the container behind it.
 	const runtime = appleContainerRuntimeAdapter({ cli });
 	const ownerOf = (port: number) => getPortOwner(port, { runtime });
-	return runSteps(cli, upSteps(request, ownerOf), {
+	const run = appleRunner(cli, {
 		signal: request.signal,
 		timeoutMs: request.timeoutMs ?? 600000,
 	});
+	return up(run, request, ownerOf);
 }
 export function appleDown(
 	cli: AppleContainerCli,
 	request: ContainerDownRequest,
 ): Promise<void> {
-	return runSteps(cli, downSteps(request), {
+	const run = appleRunner(cli, {
 		signal: request.signal,
 		timeoutMs: request.timeoutMs ?? 120000,
 	});
+	return down(run, request);
 }

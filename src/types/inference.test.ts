@@ -99,6 +99,12 @@ type _PortKeys = Expect<
 type _OverlayKeyIsPresent = Expect<Equal<SharedEnv["VITE_PORT"], string>>;
 type _DerivedPortIsPresent = Expect<Equal<SharedEnv["WEB_PORT"], string>>;
 type _DerivedUrlIsPresent = Expect<Equal<SharedEnv["POSTGRES_URL"], string>>;
+// A hyphenated key's names carry an underscore, as `envName` writes them.
+type HyphenEnv = ComputedEnvVars<
+	{ "my-db": ServiceConfig & { port: number } },
+	Record<never, AppConfig>
+>;
+type _HyphenStemIsUnderscored = Expect<Equal<HyphenEnv["MY_DB_PORT"], string>>;
 
 // A service preset's `staticEnv` reaches the shared surface.
 type _ServiceStaticEnv = Expect<Equal<SharedEnv["SMTP_HOST"], string>>;
