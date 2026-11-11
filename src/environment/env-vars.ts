@@ -9,7 +9,7 @@ import { portableEnvFingerprint } from "../core/env-fingerprint";
 import { applyEnvOverrides, warnShadowedSecrets } from "../core/env-overrides";
 import { unallocatedPortsMessage } from "../core/port-exhaustion";
 import { type ExecResult, execAsync } from "../core/process";
-import { hostsDaemonPort, isCI } from "../core/runtime-flags";
+import { isCI } from "../core/runtime-flags";
 import {
 	describeSecretsError,
 	loadScopeSecrets,
@@ -141,7 +141,6 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 				: undefined;
 		if (namedHost) {
 			processEnv.BUNCARGO_APP_HOSTNAME = namedHost.hostname;
-			processEnv.BUNCARGO_HOSTS_PORT = String(hostsDaemonPort());
 		}
 		// Last writer wins: an app's own `envVars` may override PORT/HOST.
 		Object.assign(

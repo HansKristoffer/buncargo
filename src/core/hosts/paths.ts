@@ -11,7 +11,6 @@ import { stateFilePath } from "../state-paths";
 
 export const ROUTES_FILENAME = "routes.json";
 export const PIDFILE_FILENAME = "hosts.pid";
-export const DAEMON_CONFIG_FILENAME = "hosts-daemon.json";
 export const SERVICE_MANIFEST_FILENAME = "hosts-service.json";
 export const DECLINE_FILENAME = "hosts-declined";
 export const CERTS_DIRNAME = "certs";
@@ -30,10 +29,6 @@ export function getTailscaleServePath(): string {
 
 export function getPidfilePath(): string {
 	return stateFilePath(PIDFILE_FILENAME);
-}
-
-export function getDaemonConfigPath(): string {
-	return stateFilePath(DAEMON_CONFIG_FILENAME);
 }
 
 export function getServiceManifestPath(): string {

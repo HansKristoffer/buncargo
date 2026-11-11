@@ -6,11 +6,8 @@ import {
 	type InvokingUser,
 	invokingUserIdentity,
 } from "../state-paths";
-import { requireBuncargoPackage } from "../version";
 import {
-	currentDaemonBundleHash,
 	HOSTS_DAEMON_DIR,
-	hashDaemonBundle,
 	hostsDaemonBundlePath,
 	isManagedBundlePath,
 	readDaemonBundleSource,
@@ -18,6 +15,7 @@ import {
 } from "./daemon-bundle";
 import { getServiceManifestPath } from "./paths";
 import { type PrivilegedRunner, systemPrivilegedRunner } from "./privileged";
+import { HOSTS_PROTOCOL, MIN_HOSTS_PROTOCOL } from "./protocol";
 import {
 	buildLaunchdPlist,
 	buildSystemdUnit,
@@ -42,19 +40,23 @@ export {
 	SYSTEMD_UNIT,
 } from "./service-files";
 
-export const HOSTS_SERVICE_MANIFEST_VERSION = 1;
+/**
+ * The manifest's format. A later format keeps every field below and reads as
+ * this one, so a project on an older buncargo still sees what is installed
+ * rather than "no manifest", which it would repair by downgrading.
+ */
+export const HOSTS_SERVICE_MANIFEST_VERSION = 2;
 
 export interface HostsServiceManifest {
 	version: number;
+	/** What the installed daemon speaks (`protocol.ts`). */
+	protocol: number;
+	/** The buncargo the installed bundle was built from. */
+	buncargoVersion: string;
 	/** Interpreter the service runs, normally the Bun binary. */
 	program: string;
 	/** Arguments, the first of which is the installed daemon bundle. */
 	args: string[];
-	/**
-	 * Contents of the bundle that was installed. Absent in manifests written
-	 * before the field existed, which read as "cannot compare".
-	 */
-	bundleHash?: string;
 	installedAt: string;
 }
 
@@ -117,17 +119,22 @@ export function isHostsServiceInstalled(): boolean {
 function validateManifest(value: unknown): HostsServiceManifest | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
 	const manifest = value as Partial<HostsServiceManifest>;
-	if (manifest.version !== HOSTS_SERVICE_MANIFEST_VERSION) return undefined;
+	if (
+		typeof manifest.version !== "number" ||
+		manifest.version < HOSTS_SERVICE_MANIFEST_VERSION
+	)
+		return undefined;
+	if (typeof manifest.protocol !== "number") return undefined;
+	if (typeof manifest.buncargoVersion !== "string") return undefined;
 	if (typeof manifest.program !== "string") return undefined;
 	if (!Array.isArray(manifest.args)) return undefined;
 	if (!manifest.args.every((arg) => typeof arg === "string")) return undefined;
 	return {
 		version: manifest.version,
+		protocol: manifest.protocol,
+		buncargoVersion: manifest.buncargoVersion,
 		program: manifest.program,
 		args: manifest.args,
-		...(typeof manifest.bundleHash === "string"
-			? { bundleHash: manifest.bundleHash }
-			: {}),
 		installedAt:
 			typeof manifest.installedAt === "string" ? manifest.installedAt : "",
 	};
@@ -140,13 +147,14 @@ export function readHostsServiceManifest(): HostsServiceManifest | undefined {
 export function writeHostsServiceManifest(input: {
 	program: string;
 	args: string[];
-	bundleHash?: string;
+	buncargoVersion: string;
 }): void {
 	const manifest: HostsServiceManifest = {
 		version: HOSTS_SERVICE_MANIFEST_VERSION,
+		protocol: HOSTS_PROTOCOL,
+		buncargoVersion: input.buncargoVersion,
 		program: input.program,
 		args: input.args,
-		...(input.bundleHash ? { bundleHash: input.bundleHash } : {}),
 		installedAt: new Date().toISOString(),
 	};
 	writeJsonDocumentSync(getServiceManifestPath(), manifest, {
@@ -172,7 +180,12 @@ export function missingServiceTargets(
 }
 
 /**
- * A human-readable reason the installed service cannot work, if any.
+ * A human-readable reason the installed service cannot work for this CLI, if
+ * any: broken, or below {@link MIN_HOSTS_PROTOCOL}.
+ *
+ * A different version is not a reason. Two projects on two releases share the
+ * one daemon, and calling "different" stale had each reinstall over the
+ * other. A newer daemon serves an older CLI.
  *
  * Split from `describeStaleHostsService` so the wording and the staleness rules
  * can be tested without a real unit file on the machine running the tests.
@@ -180,19 +193,9 @@ export function missingServiceTargets(
 export function describeStaleService(input: {
 	installed: boolean;
 	manifest: HostsServiceManifest | undefined;
-	/** Bundle path the running CLI would install; a mismatch means an upgrade. */
-	expectedBundle?: string;
-	/** Contents of that bundle; a mismatch means a rebuild at the same version. */
-	expectedBundleHash?: string;
 	fileExists: (path: string) => boolean;
 }): string | undefined {
-	const {
-		installed,
-		manifest,
-		expectedBundle,
-		expectedBundleHash,
-		fileExists,
-	} = input;
+	const { installed, manifest, fileExists } = input;
 	// Installed once and the unit is gone (removed by hand, or a failed
 	// reinstall that had nothing to put back): not a machine that never had
 	// it, which is what saying nothing here made it look like.
@@ -200,8 +203,9 @@ export function describeStaleService(input: {
 		return "Named-hosts service was installed, but its unit file is gone. Run `buncargo hosts install` to repair it.";
 	}
 	if (!installed) return undefined;
+	// Also what a manifest from before the protocol reads as.
 	if (!manifest) {
-		return "Named-hosts service is installed but its manifest is missing. Run `buncargo hosts install` to repair it.";
+		return "Named-hosts service was installed by an older buncargo, or its manifest is missing. Run `buncargo hosts install` to update it.";
 	}
 
 	const missing = missingServiceTargets(manifest, fileExists);
@@ -209,21 +213,8 @@ export function describeStaleService(input: {
 		return `Named-hosts service points at ${missing.join(", ")}, which no longer exists. Run \`buncargo hosts install\` to repair it.`;
 	}
 
-	// The bundle path carries the version it was built from, so an upgraded CLI
-	// would otherwise keep talking to a daemon running the old code.
-	if (expectedBundle && manifest.args[0] !== expectedBundle) {
-		return `Named-hosts service runs ${manifest.args[0]}, but this buncargo installs ${expectedBundle}. Run \`buncargo hosts install\` to update it.`;
-	}
-
-	// The path stops at the version, so a daemon rebuilt during development —
-	// or shipped in a patch that reuses the version — passes every check above
-	// while running code that no longer matches this CLI.
-	if (
-		expectedBundleHash &&
-		manifest.bundleHash &&
-		manifest.bundleHash !== expectedBundleHash
-	) {
-		return "Named-hosts service runs a daemon built from different code than this buncargo. Run `buncargo hosts install` to update it.";
+	if (manifest.protocol < MIN_HOSTS_PROTOCOL) {
+		return `Named-hosts service runs buncargo ${manifest.buncargoVersion} (protocol ${manifest.protocol}), older than this buncargo needs (protocol ${MIN_HOSTS_PROTOCOL}). Run \`buncargo hosts install\` to update it.`;
 	}
 	return undefined;
 }
@@ -232,10 +223,27 @@ export function describeStaleHostsService(): string | undefined {
 	return describeStaleService({
 		installed: isHostsServiceInstalled(),
 		manifest: readHostsServiceManifest(),
-		expectedBundle: hostsDaemonBundlePath(requireBuncargoPackage().version),
-		expectedBundleHash: currentDaemonBundleHash(),
 		fileExists: existsSync,
 	});
+}
+
+/**
+ * Why installing `bundleVersion` would downgrade the service, if it would: the
+ * installed daemon speaks a newer protocol, or the same one from a later
+ * release. Accepting that from an older project took the newer project's
+ * daemon away and dropped every proxied websocket on the machine.
+ */
+function describeNewerService(
+	manifest: HostsServiceManifest | undefined,
+	bundleVersion: string,
+): string | undefined {
+	if (!manifest) return undefined;
+	const newer =
+		manifest.protocol > HOSTS_PROTOCOL ||
+		(manifest.protocol === HOSTS_PROTOCOL &&
+			Bun.semver.order(manifest.buncargoVersion, bundleVersion) > 0);
+	if (!newer) return undefined;
+	return `Kept the named-hosts service from buncargo ${manifest.buncargoVersion}, newer than this buncargo ${bundleVersion}. \`buncargo hosts install --force\` replaces it.`;
 }
 
 /** Matches launchd's own SIGTERM-to-SIGKILL escalation for a wedged job. */
@@ -285,8 +293,8 @@ function activateService(runner: PrivilegedRunner): void {
 	runner.run("systemctl", ["daemon-reload"], { stdio: "ignore" });
 	runner.run("systemctl", ["enable", SYSTEMD_UNIT], { stdio: "ignore" });
 	// Restart, not `start` or `enable --now`: both are no-ops on an active
-	// unit, so a reinstall left the old code running while the manifest and
-	// its hash said the new code was.
+	// unit, so a reinstall left the old code running while the manifest
+	// said the new code was.
 	runner.run("systemctl", ["restart", SYSTEMD_UNIT], { stdio: "ignore" });
 }
 
@@ -338,6 +346,8 @@ export interface HostsServiceInstall {
 	runner: PrivilegedRunner;
 	/** The daemon bundle, which the build writes to `dist/`. */
 	bundle: { contents: string; version: string };
+	/** Install over a newer service too. */
+	force?: boolean;
 }
 
 /** This machine's install: the invoking user, `sudo`, and the built bundle. */
@@ -349,7 +359,13 @@ export function machineServiceInstall(): HostsServiceInstall {
 	};
 }
 
-export function installHostsService(install: HostsServiceInstall): void {
+/**
+ * Install the service, unless a newer one is installed
+ * ({@link describeNewerService}): that one is kept, and why is returned.
+ */
+export function installHostsService(install: HostsServiceInstall): {
+	kept?: string;
+} {
 	const path = hostsServicePath();
 	if (!path) {
 		throw new Error(
@@ -358,6 +374,13 @@ export function installHostsService(install: HostsServiceInstall): void {
 	}
 
 	const { user, runner, bundle } = install;
+	if (!install.force) {
+		const newer = describeNewerService(
+			readHostsServiceManifest(),
+			bundle.version,
+		);
+		if (newer) return { kept: newer };
+	}
 	const { program, args } = resolveHostsDaemonCommand(bundle.version);
 	const bundlePath = args[0] as string;
 	const input = { program, args, user };
@@ -410,9 +433,10 @@ export function installHostsService(install: HostsServiceInstall): void {
 	writeHostsServiceManifest({
 		program,
 		args,
-		bundleHash: hashDaemonBundle(bundle.contents),
+		buncargoVersion: bundle.version,
 	});
 	removeSupersededBundles(runner, bundlePath);
+	return {};
 }
 
 export function uninstallHostsService(runner: PrivilegedRunner): void {

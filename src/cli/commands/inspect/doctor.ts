@@ -21,7 +21,6 @@ import {
 	OUTDATED_DAEMON_MESSAGE,
 	type ProxyHealth,
 	RELOAD_STALL_MS,
-	readDaemonConfig,
 	readHostsDaemonHealth,
 } from "../../../core/hosts";
 import { isCaTrusted } from "../../../core/hosts/mkcert";
@@ -395,7 +394,7 @@ async function checkNamedHosts(
 		);
 		return;
 	}
-	const health = await readHostsDaemonHealth(readDaemonConfig().httpsPort);
+	const health = await readHostsDaemonHealth();
 	if (health) {
 		report.note("Named-hosts daemon is healthy");
 		const hijack = await describeLoopbackHijack();
