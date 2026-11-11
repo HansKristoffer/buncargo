@@ -184,10 +184,15 @@ export function describeStaleService(input: {
 	expectedBundle?: string;
 	/** Contents of that bundle; a mismatch means a rebuild at the same version. */
 	expectedBundleHash?: string;
-	fileExists?: (path: string) => boolean;
+	fileExists: (path: string) => boolean;
 }): string | undefined {
-	const { installed, manifest, expectedBundle, expectedBundleHash } = input;
-	const fileExists = input.fileExists ?? existsSync;
+	const {
+		installed,
+		manifest,
+		expectedBundle,
+		expectedBundleHash,
+		fileExists,
+	} = input;
 	// Installed once and the unit is gone (removed by hand, or a failed
 	// reinstall that had nothing to put back): not a machine that never had
 	// it, which is what saying nothing here made it look like.
@@ -229,6 +234,7 @@ export function describeStaleHostsService(): string | undefined {
 		manifest: readHostsServiceManifest(),
 		expectedBundle: hostsDaemonBundlePath(requireBuncargoPackage().version),
 		expectedBundleHash: currentDaemonBundleHash(),
+		fileExists: existsSync,
 	});
 }
 
@@ -326,14 +332,24 @@ function removeSupersededBundles(runner: PrivilegedRunner, keep: string): void {
 	}
 }
 
-export function installHostsService(
-	options: {
-		user?: InvokingUser;
-		runner?: PrivilegedRunner;
-		/** Injected by tests so install can run without a built `dist/`. */
-		bundle?: { contents: string; version: string };
-	} = {},
-): void {
+/** What {@link installHostsService} installs, for whom, and with what. */
+export interface HostsServiceInstall {
+	user: InvokingUser;
+	runner: PrivilegedRunner;
+	/** The daemon bundle, which the build writes to `dist/`. */
+	bundle: { contents: string; version: string };
+}
+
+/** This machine's install: the invoking user, `sudo`, and the built bundle. */
+export function machineServiceInstall(): HostsServiceInstall {
+	return {
+		user: invokingUserIdentity(),
+		runner: systemPrivilegedRunner(),
+		bundle: readDaemonBundleSource(),
+	};
+}
+
+export function installHostsService(install: HostsServiceInstall): void {
 	const path = hostsServicePath();
 	if (!path) {
 		throw new Error(
@@ -341,9 +357,7 @@ export function installHostsService(
 		);
 	}
 
-	const user = options.user ?? invokingUserIdentity();
-	const runner = options.runner ?? systemPrivilegedRunner();
-	const bundle = options.bundle ?? readDaemonBundleSource();
+	const { user, runner, bundle } = install;
 	const { program, args } = resolveHostsDaemonCommand(bundle.version);
 	const bundlePath = args[0] as string;
 	const input = { program, args, user };
@@ -401,9 +415,7 @@ export function installHostsService(
 	removeSupersededBundles(runner, bundlePath);
 }
 
-export function uninstallHostsService(
-	options: { runner?: PrivilegedRunner } = {},
-): void {
+export function uninstallHostsService(runner: PrivilegedRunner): void {
 	const path = hostsServicePath();
 	if (!path) return;
 
@@ -411,7 +423,6 @@ export function uninstallHostsService(
 	const manifest = readHostsServiceManifest();
 	if (!installed && !manifest) return;
 
-	const runner = options.runner ?? systemPrivilegedRunner();
 	try {
 		runner.authorize();
 	} catch {

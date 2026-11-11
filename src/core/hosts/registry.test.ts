@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	rm,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { readCurrentProcessIdentity } from "../process-identity";
+import { getRoutesPath } from "./paths";
 import {
 	classifyRouteClaim,
 	clearHostRoutes,
@@ -19,18 +27,24 @@ import {
 } from "./registry";
 import { identityRouteOwners } from "./route-owners";
 
+const savedHome = process.env.HOME;
+
+/** A `HOME` of the test's own, and the `routes.json` inside it. */
 async function tempRegistry(): Promise<{ path: string; dir: string }> {
 	const dir = await mkdtemp(join(tmpdir(), "buncargo-hosts-"));
-	return { dir, path: join(dir, "routes.json") };
+	process.env.HOME = dir;
+	const path = getRoutesPath();
+	await mkdir(dirname(path), { recursive: true });
+	return { dir, path };
 }
 
-afterEach(async () => {
-	// temp dirs cleaned per test
+afterEach(() => {
+	process.env.HOME = savedHome;
 });
 
 describe("hosts registry", () => {
 	it("upserts routes and loads them back", async () => {
-		const { dir, path } = await tempRegistry();
+		const { dir } = await tempRegistry();
 		try {
 			await upsertHostRoutes(
 				[
@@ -43,9 +57,9 @@ describe("hosts registry", () => {
 						pid: process.pid,
 					},
 				],
-				{ path, owners: pidRouteOwners },
+				{ owners: pidRouteOwners },
 			);
-			const routes = await loadHostRoutes(path);
+			const routes = await loadHostRoutes();
 			expect(routes).toHaveLength(1);
 			expect(routes[0]?.hostname).toBe("api.serpier.localhost");
 		} finally {
@@ -54,7 +68,7 @@ describe("hosts registry", () => {
 	});
 
 	it("takes over a route whose owner pid is dead", async () => {
-		const { dir, path } = await tempRegistry();
+		const { dir } = await tempRegistry();
 		try {
 			await upsertHostRoutes(
 				[
@@ -67,7 +81,7 @@ describe("hosts registry", () => {
 						pid: 99999999,
 					},
 				],
-				{ path, owners: pidRouteOwners },
+				{ owners: pidRouteOwners },
 			);
 			await upsertHostRoutes(
 				[
@@ -80,9 +94,9 @@ describe("hosts registry", () => {
 						pid: process.pid,
 					},
 				],
-				{ path, owners: pidRouteOwners },
+				{ owners: pidRouteOwners },
 			);
-			const routes = await loadHostRoutes(path);
+			const routes = await loadHostRoutes();
 			expect(routes[0]?.port).toBe(3100);
 			expect(routes[0]?.root).toBe("/new");
 		} finally {
@@ -93,7 +107,7 @@ describe("hosts registry", () => {
 	// One name another checkout holds used to throw, and the run dropped its
 	// whole plan to localhost:port; the message named a pid and nothing else.
 	it("registers the rest of the plan and names the checkout holding a hostname", async () => {
-		const { dir, path } = await tempRegistry();
+		const { dir } = await tempRegistry();
 		const at = (hostname: string, root: string): HostsRoute => ({
 			hostname,
 			port: 3000,
@@ -104,20 +118,19 @@ describe("hosts registry", () => {
 		});
 		try {
 			await upsertHostRoutes([at("api.serpier.localhost", "/a")], {
-				path,
 				owners: pidRouteOwners,
 			});
 
 			const conflicts = await upsertHostRoutes(
 				[at("api.serpier.localhost", "/b"), at("web.serpier.localhost", "/b")],
 				// A takeover is within one checkout; it never crosses projects.
-				{ path, takeover: new Set(["api"]), owners: pidRouteOwners },
+				{ takeover: new Set(["api"]), owners: pidRouteOwners },
 			);
 
 			expect(conflicts.map((conflict) => conflict.message)).toEqual([
 				`api.serpier.localhost is already registered by /a (pid ${process.pid}). Run \`buncargo stop\` in that checkout, or give one of the projects a different \`projectPrefix\`.`,
 			]);
-			const routes = await loadHostRoutes(path);
+			const routes = await loadHostRoutes();
 			expect(
 				routes.map((route) => [route.hostname, route.root]).sort(),
 			).toEqual([
@@ -130,7 +143,7 @@ describe("hosts registry", () => {
 	});
 
 	it("prunes dead-pid routes and keeps static service routes", async () => {
-		const { dir, path } = await tempRegistry();
+		const { dir } = await tempRegistry();
 		try {
 			await upsertHostRoutes(
 				[
@@ -147,15 +160,12 @@ describe("hosts registry", () => {
 						port: 8025,
 						kind: "service",
 						name: "mailpit",
-						root: "/repo",
+						root: dir,
 					},
 				],
-				{ path, owners: pidRouteOwners },
+				{ owners: pidRouteOwners },
 			);
-			const pruned = await pruneHostRoutes(path, {
-				// The checkout is fictional here; its existence is a separate rule.
-				directoryExists: () => true,
-			});
+			const pruned = await pruneHostRoutes();
 			expect(pruned.map((route) => route.hostname)).toEqual([
 				"mailpit.serpier.localhost",
 			]);
@@ -168,7 +178,7 @@ describe("hosts registry", () => {
 	// pid, so the route has to disappear when the run that owns the servers
 	// exits, not when the reusing run does.
 	it("keeps the first run as owner when a second run registers the same route", async () => {
-		const { dir, path } = await tempRegistry();
+		const { dir } = await tempRegistry();
 		try {
 			const route: HostsRoute = {
 				hostname: "api.serpier.localhost",
@@ -178,13 +188,12 @@ describe("hosts registry", () => {
 				root: "/repo",
 				pid: process.pid,
 			};
-			await upsertHostRoutes([route], { path, owners: pidRouteOwners });
+			await upsertHostRoutes([route], { owners: pidRouteOwners });
 			await upsertHostRoutes([{ ...route, pid: process.pid + 1 }], {
-				path,
 				owners: pidRouteOwners,
 			});
 
-			const saved = await loadHostRoutes(path);
+			const saved = await loadHostRoutes();
 			expect(saved).toHaveLength(1);
 			expect(saved[0]?.pid).toBe(process.pid);
 		} finally {
@@ -196,7 +205,7 @@ describe("hosts registry", () => {
 	// which goes on to release the routes carrying its pid. Left as owner, it
 	// deleted the named URLs of the run that took over.
 	it("moves a taken-over route to the new run and leaves the rest", async () => {
-		const { dir, path } = await tempRegistry();
+		const { dir } = await tempRegistry();
 		try {
 			const first = process.pid;
 			const second = process.pid + 1;
@@ -214,17 +223,17 @@ describe("hosts registry", () => {
 				port: 3001,
 				name: "web",
 			};
-			await upsertHostRoutes([api, web], { path, owners: pidRouteOwners });
+			await upsertHostRoutes([api, web], { owners: pidRouteOwners });
 			await upsertHostRoutes(
 				[
 					{ ...api, pid: second },
 					{ ...web, pid: second },
 				],
-				{ path, takeover: new Set(["api"]), owners: pidRouteOwners },
+				{ takeover: new Set(["api"]), owners: pidRouteOwners },
 			);
-			await removeHostRoutes((route) => route.pid === first, path);
+			await removeHostRoutes((route) => route.pid === first);
 
-			const saved = await loadHostRoutes(path);
+			const saved = await loadHostRoutes();
 			expect(saved.map((route) => [route.name, route.pid])).toEqual([
 				["api", second],
 			]);
@@ -236,7 +245,7 @@ describe("hosts registry", () => {
 	// Nothing retires a static route on its own, so a deleted worktree would
 	// keep its hostnames in the registry — and in /etc/hosts — forever.
 	it("drops a static route whose checkout has been deleted", async () => {
-		const { dir, path } = await tempRegistry();
+		const { dir } = await tempRegistry();
 		try {
 			await upsertHostRoutes(
 				[
@@ -248,11 +257,9 @@ describe("hosts registry", () => {
 						root: "/repo/worktrees/gone",
 					},
 				],
-				{ path, owners: pidRouteOwners },
+				{ owners: pidRouteOwners },
 			);
-			const pruned = await pruneHostRoutes(path, {
-				directoryExists: () => false,
-			});
+			const pruned = await pruneHostRoutes();
 			expect(pruned).toEqual([]);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
@@ -260,7 +267,7 @@ describe("hosts registry", () => {
 	});
 
 	it("keeps a static route whose checkout is still there", async () => {
-		const { dir, path } = await tempRegistry();
+		const { dir } = await tempRegistry();
 		try {
 			await upsertHostRoutes(
 				[
@@ -272,16 +279,16 @@ describe("hosts registry", () => {
 						root: dir,
 					},
 				],
-				{ path, owners: pidRouteOwners },
+				{ owners: pidRouteOwners },
 			);
-			expect(await pruneHostRoutes(path)).toHaveLength(1);
+			expect(await pruneHostRoutes()).toHaveLength(1);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
 	});
 
 	it("removes routes by predicate", async () => {
-		const { dir, path } = await tempRegistry();
+		const { dir } = await tempRegistry();
 		try {
 			await upsertHostRoutes(
 				[
@@ -294,13 +301,12 @@ describe("hosts registry", () => {
 						pid: process.pid,
 					},
 				],
-				{ path, owners: pidRouteOwners },
+				{ owners: pidRouteOwners },
 			);
 			await removeHostRoutes(
 				(route) => route.root === "/repo" && route.kind === "app",
-				path,
 			);
-			expect(await loadHostRoutes(path)).toEqual([]);
+			expect(await loadHostRoutes()).toEqual([]);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
@@ -377,16 +383,16 @@ describe("concurrent registration", () => {
 	}
 
 	it("keeps every route when registrations overlap", async () => {
-		const { dir, path } = await tempRegistry();
+		const { dir } = await tempRegistry();
 		try {
 			const routes = Array.from({ length: 8 }, (_, i) => routeFor(i));
 			await Promise.all(
 				routes.map((route) =>
-					upsertHostRoutes([route], { path, owners: pidRouteOwners }),
+					upsertHostRoutes([route], { owners: pidRouteOwners }),
 				),
 			);
 
-			const saved = await loadHostRoutes(path);
+			const saved = await loadHostRoutes();
 			expect(saved.map((route) => route.hostname).sort()).toEqual(
 				routes.map((route) => route.hostname).sort(),
 			);
@@ -398,7 +404,7 @@ describe("concurrent registration", () => {
 	// Static (pid-less) routes, so the assertion measures only the lock: a child
 	// that registered with its own pid would be pruned as soon as it exited.
 	it("keeps every route when separate processes register at once", async () => {
-		const { dir, path } = await tempRegistry();
+		const { dir } = await tempRegistry();
 		try {
 			const modulePath = join(import.meta.dir, "registry.ts");
 			const script = `
@@ -412,7 +418,7 @@ describe("concurrent registration", () => {
 						name: "mailpit",
 						root: process.env.ROUTES_ROOT,
 					}],
-					{ path: process.env.ROUTES_PATH, owners: pidRouteOwners },
+					{ owners: pidRouteOwners },
 				);
 			`;
 
@@ -424,7 +430,6 @@ describe("concurrent registration", () => {
 							env: {
 								...process.env,
 								ROUTE_INDEX: String(index),
-								ROUTES_PATH: path,
 								// A real directory: a static route whose checkout is
 								// gone is pruned, which would hide the lock this
 								// test is measuring.
@@ -437,7 +442,7 @@ describe("concurrent registration", () => {
 			);
 			expect(exits).toEqual([0, 0, 0, 0, 0, 0]);
 
-			const saved = await loadHostRoutes(path);
+			const saved = await loadHostRoutes();
 			expect(saved).toHaveLength(6);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
@@ -463,9 +468,9 @@ describe("registry writers", () => {
 		try {
 			await writeFile(path, "{ not json");
 			await expect(
-				upsertHostRoutes([route()], { path, owners: pidRouteOwners }),
+				upsertHostRoutes([route()], { owners: pidRouteOwners }),
 			).rejects.toThrow("fix or delete it");
-			await expect(removeHostRoutes(() => true, path)).rejects.toThrow(
+			await expect(removeHostRoutes(() => true)).rejects.toThrow(
 				"fix or delete it",
 			);
 			expect(await readFile(path, "utf-8")).toBe("{ not json");
@@ -478,11 +483,12 @@ describe("registry writers", () => {
 		const { dir, path } = await tempRegistry();
 		try {
 			await writeFile(path, "{ not json");
-			await clearHostRoutes(path);
-			expect(await loadHostRoutes(path)).toEqual([]);
-			const { readdir } = await import("node:fs/promises");
+			await clearHostRoutes();
+			expect(await loadHostRoutes()).toEqual([]);
 			expect(
-				(await readdir(dir)).some((name) => name.includes(".recovery-")),
+				(await readdir(dirname(path))).some((name) =>
+					name.includes(".recovery-"),
+				),
 			).toBe(true);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
@@ -492,17 +498,16 @@ describe("registry writers", () => {
 	// After a reboot the pid belongs to some other process: the route held
 	// its hostname against the next run of the checkout.
 	it("takes a hostname whose owner's pid now belongs to another process", async () => {
-		const { dir, path } = await tempRegistry();
+		const { dir } = await tempRegistry();
 		try {
 			await upsertHostRoutes(
 				[route({ pid: process.ppid, processIdentity: "v2:a-dead-run" })],
-				{ path, owners: pidRouteOwners },
+				{ owners: pidRouteOwners },
 			);
 			await upsertHostRoutes([route({ port: 4000 })], {
-				path,
 				owners: identityRouteOwners,
 			});
-			expect(await loadHostRoutes(path)).toMatchObject([
+			expect(await loadHostRoutes()).toMatchObject([
 				{ hostname: "web.demo.localhost", port: 4000, pid: process.pid },
 			]);
 		} finally {
@@ -511,7 +516,7 @@ describe("registry writers", () => {
 	});
 
 	it("still refuses a live owner whose identity matches", async () => {
-		const { dir, path } = await tempRegistry();
+		const { dir } = await tempRegistry();
 		try {
 			await upsertHostRoutes(
 				[
@@ -521,14 +526,13 @@ describe("registry writers", () => {
 						root: "/other",
 					}),
 				],
-				{ path, owners: pidRouteOwners },
+				{ owners: pidRouteOwners },
 			);
 			const conflicts = await upsertHostRoutes([route({ pid: process.ppid })], {
-				path,
 				owners: identityRouteOwners,
 			});
 			expect(conflicts).toMatchObject([{ ownerRoot: "/other" }]);
-			expect(await loadHostRoutes(path)).toMatchObject([{ root: "/other" }]);
+			expect(await loadHostRoutes()).toMatchObject([{ root: "/other" }]);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}

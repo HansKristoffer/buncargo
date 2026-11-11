@@ -9,9 +9,10 @@ import {
 } from "../prompt";
 import { hostsMode } from "../runtime-flags";
 import { getCertNamesPath } from "./cert-names";
-import { syncCertificateForRoutes } from "./certificates";
+import { machineMkcert, syncCertificateForRoutes } from "./certificates";
 import {
 	ensureHostsDaemonRunning,
+	hostsDaemonProbe,
 	isHostsDaemonHealthy,
 	isHostsDaemonWedged,
 	SERVICE_START_TIMEOUT_MS,
@@ -39,6 +40,7 @@ import {
 	describeStaleHostsService,
 	installHostsService,
 	isHostsServiceInstalled,
+	machineServiceInstall,
 	readHostsServiceManifest,
 	toHostsUserMessage,
 	uninstallHostsService,
@@ -177,15 +179,15 @@ export async function runHostsInstall(
 	installTrust(mkcertPath);
 	// Mint before the service starts. The daemon cannot bind :443 without a
 	// leaf, and it will not mint one itself.
-	await syncCertificateForRoutes({ mkcertPath });
+	await syncCertificateForRoutes(machineMkcert);
 	if (
 		options.reinstallService ||
 		!isHostsServiceInstalled() ||
 		describeStaleHostsService()
 	) {
-		installHostsService();
+		installHostsService(machineServiceInstall());
 	}
-	const ready = await ensureHostsDaemonRunning({
+	const ready = await ensureHostsDaemonRunning(hostsDaemonProbe(), {
 		timeoutMs: SERVICE_START_TIMEOUT_MS,
 	});
 	if (!ready.ok) {
@@ -234,7 +236,7 @@ export async function uninstallHosts(
 export function runHostsUninstall(): Promise<string[]> {
 	const runner = systemPrivilegedRunner();
 	return uninstallHosts({
-		removeService: () => uninstallHostsService({ runner }),
+		removeService: () => uninstallHostsService(runner),
 		removeTrust: () => uninstallTrust(),
 		cleanHostsFile: () => cleanHostsFileAsRoot(runner),
 		clearRoutes: () => clearHostRoutes(),
@@ -381,7 +383,7 @@ export async function ensureHostsReady(input: {
 		}
 	}
 
-	const ready = await ensureHostsDaemonRunning();
+	const ready = await ensureHostsDaemonRunning(hostsDaemonProbe());
 	if (!ready.ok) {
 		return {
 			ok: false,
@@ -465,7 +467,7 @@ export async function doctorFixHosts(
 		}
 		// A certificate that no longer covers the registered hostnames stops the
 		// daemon binding, and the daemon cannot repair that itself.
-		await syncCertificateForRoutes({ mkcertPath });
+		await syncCertificateForRoutes(machineMkcert);
 		const stale = describeStaleHostsService();
 		const installed = isHostsServiceInstalled();
 		// An installed service that is not answering is exactly the case doctor
@@ -477,7 +479,7 @@ export async function doctorFixHosts(
 		const needsTerminal = typedSwitch(fix, "action", {
 			none: () => false,
 			install: ({ note }) => {
-				installHostsService();
+				installHostsService(machineServiceInstall());
 				fixed.push(note);
 				return false;
 			},
@@ -487,7 +489,7 @@ export async function doctorFixHosts(
 			},
 		});
 		if (needsTerminal) return { fixed, issues };
-		const ready = await ensureHostsDaemonRunning({
+		const ready = await ensureHostsDaemonRunning(hostsDaemonProbe(), {
 			timeoutMs: SERVICE_START_TIMEOUT_MS,
 		});
 		if (!ready.ok)

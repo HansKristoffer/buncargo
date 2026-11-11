@@ -1,4 +1,4 @@
-export { syncCertificateForRoutes } from "./certificates";
+export { machineMkcert, syncCertificateForRoutes } from "./certificates";
 export { RELOAD_STALL_MS, runHostsDaemon } from "./daemon";
 export {
 	describeLoopbackHijack,

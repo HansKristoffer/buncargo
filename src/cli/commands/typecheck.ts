@@ -123,7 +123,7 @@ export const typecheckCommand = defineCommand({
 		}
 
 		// A machine-wide slot: typechecks from many checkouts at once exhaust memory.
-		const { withCheckSlot, formatCheckSlotWait } =
+		const { withCheckSlot, formatCheckSlotWait, processCheckSlot } =
 			await import("../../core/check-slots");
 		const { runForwardingSignals } = await import("./exec");
 		const exitCode = await withCheckSlot(
@@ -160,6 +160,7 @@ export const typecheckCommand = defineCommand({
 					}
 				}),
 			{
+				...processCheckSlot,
 				onWait: (wait) => log.info(formatCheckSlotWait(wait)),
 			},
 		);

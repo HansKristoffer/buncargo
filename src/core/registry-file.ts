@@ -199,6 +199,11 @@ export interface ListRegistryReadOptions {
 export interface ListRegistry<T> {
 	/** Entries on disk, or `[]` when the file is missing (see `strict`). */
 	read(path: string, options?: ListRegistryReadOptions): Promise<T[]>;
+	/**
+	 * {@link read} for a synchronous caller, always lenient: an unreadable
+	 * file or a newer version reads as `[]`.
+	 */
+	readSync(path: string): T[];
 	/** Persist entries, removing the file when none are left. */
 	write(path: string, entries: T[]): Promise<void>;
 	/**
@@ -313,6 +318,9 @@ export function defineListRegistry<T>(options: {
 				path,
 				`not a valid version ${version} ${key} document`,
 			);
+		},
+		readSync(path) {
+			return readJsonDocumentSync(path, validate) ?? [];
 		},
 		async write(path, entries) {
 			await store(path, await readRaw(path), entries);

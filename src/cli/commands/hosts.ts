@@ -91,7 +91,7 @@ export const hostsCommand = defineGroup({
 				const before = (await loadHostRoutes()).length;
 				// By identity: this is what retires a route whose pid a reboot
 				// handed to another process.
-				const after = await pruneHostRoutes(undefined, {
+				const after = await pruneHostRoutes({
 					owners: identityRouteOwners,
 				});
 				const removed = before - after.length;

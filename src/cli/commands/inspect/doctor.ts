@@ -413,8 +413,8 @@ async function checkNamedHosts(
 	if (staleService && !reported.has("service")) {
 		report.issue(staleService);
 	}
-	const hostRoutes = (await loadHostRoutes(undefined, { strict: true })).filter(
-		(route) => isRouteLive(route),
+	const hostRoutes = (await loadHostRoutes({ strict: true })).filter((route) =>
+		isRouteLive(route),
 	);
 	report.note(
 		hostRoutes.length === 0

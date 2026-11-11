@@ -19,7 +19,7 @@ import {
 	heldCheckSlot,
 	isCI,
 } from "./runtime-flags";
-import { getStateDir } from "./state-paths";
+import { getStateDir, resolveUserHome } from "./state-paths";
 
 /**
  * A cap on heavy checks (typechecks, test suites) across every checkout of
@@ -46,6 +46,7 @@ const SLOT_DIRNAME = "check-slots";
  */
 const CHECK_SLOT_WAIT_MS = 15 * 60_000;
 const REPEAT_WAIT_MS = 30_000;
+const POLL_MS = 500;
 /**
  * A waiter's file found unlocked is one whose waiter died, unless it was
  * created a moment ago and is about to be locked.
@@ -68,21 +69,35 @@ export interface CheckSlotWait {
 	waiting: number;
 }
 
+/** What a waiting check reads the time from and sleeps on. */
+export interface CheckSlotClock {
+	now: () => number;
+	sleep: (ms: number) => Promise<void>;
+}
+
 export interface CheckSlotOptions {
-	/** Defaults to `BUNCARGO_CHECK_SLOTS`, else 3. 0 disables the cap. */
-	slots?: number;
-	dir?: string;
-	env?: NodeJS.ProcessEnv;
-	pollMs?: number;
-	/** How long to wait for a slot before running without one. */
-	waitMs?: number;
 	/**
-	 * Called when every slot is taken, before waiting, and again every
-	 * `repeatWaitMs` while the check still waits.
+	 * The environment the check runs in. Its `HOME` locates the slots and its
+	 * `BUNCARGO_CHECK_SLOTS` sets the cap (3 by default, 0 disables it), and
+	 * the slot it takes is exported in it to the check's children.
 	 */
-	onWait?: (wait: CheckSlotWait) => void;
-	/** How often `onWait` repeats. Default 30 s. */
-	repeatWaitMs?: number;
+	env: NodeJS.ProcessEnv;
+	clock: CheckSlotClock;
+	/**
+	 * Called when every slot is taken, before waiting, and again every 30 s
+	 * while the check still waits.
+	 */
+	onWait: (wait: CheckSlotWait) => void;
+}
+
+/** A command's check: this process's environment and the wall clock. */
+export const processCheckSlot: Omit<CheckSlotOptions, "onWait"> = {
+	env: process.env,
+	clock: { now: Date.now, sleep: (ms) => Bun.sleep(ms) },
+};
+
+function slotDirectory(env: NodeJS.ProcessEnv): string {
+	return join(getStateDir(resolveUserHome(env)), SLOT_DIRNAME);
 }
 
 interface HeldSlot {
@@ -169,10 +184,7 @@ function isLockedByOther(file: string): boolean {
  * The holders of the slots that are taken now. A slot file is only current
  * while its lock is held: a killed holder leaves its file behind.
  */
-export function checkSlotHolders(
-	dir = join(getStateDir(), SLOT_DIRNAME),
-	slots = checkSlotCount(),
-): CheckSlotHolder[] {
+function checkSlotHolders(dir: string, slots: number): CheckSlotHolder[] {
 	const holders: CheckSlotHolder[] = [];
 	for (let slot = 0; slot < slots; slot++) {
 		const file = join(dir, `${slot}.lock`);
@@ -246,12 +258,9 @@ export interface CheckSlotStatus {
 	waiting: number;
 }
 
-export function checkSlotStatus(
-	options: Pick<CheckSlotOptions, "slots" | "dir" | "env"> = {},
-): CheckSlotStatus {
-	const env = options.env ?? process.env;
-	const capacity = options.slots ?? checkSlotCount(env);
-	const dir = options.dir ?? join(getStateDir(), SLOT_DIRNAME);
+export function checkSlotStatus(env: NodeJS.ProcessEnv): CheckSlotStatus {
+	const capacity = checkSlotCount(env);
+	const dir = slotDirectory(env);
 	let waiting = 0;
 	try {
 		waiting = liveWaiters(dir).length;
@@ -290,8 +299,7 @@ async function acquireSlot(
 	holder: CheckSlotHolder,
 	options: CheckSlotOptions,
 ): Promise<HeldSlot | undefined> {
-	const waitMs = options.waitMs ?? CHECK_SLOT_WAIT_MS;
-	const pollMs = options.pollMs ?? 500;
+	const { clock, onWait } = options;
 	try {
 		mkdirSync(dir, { recursive: true });
 		let slot = tryAcquire(dir, slots, holder);
@@ -299,16 +307,15 @@ async function acquireSlot(
 
 		const queued = joinQueue(dir, holder.pid);
 		try {
-			const repeatMs = options.repeatWaitMs ?? REPEAT_WAIT_MS;
-			options.onWait?.(waitState(dir, slots, queued));
-			let reportAt = Date.now() + repeatMs;
-			const deadline = Date.now() + waitMs;
-			while (!slot && Date.now() < deadline) {
-				await Bun.sleep(Math.min(pollMs, deadline - Date.now()));
+			onWait(waitState(dir, slots, queued));
+			let reportAt = clock.now() + REPEAT_WAIT_MS;
+			const deadline = clock.now() + CHECK_SLOT_WAIT_MS;
+			while (!slot && clock.now() < deadline) {
+				await clock.sleep(Math.min(POLL_MS, deadline - clock.now()));
 				slot = tryAcquire(dir, slots, holder);
-				if (!slot && Date.now() >= reportAt) {
-					options.onWait?.(waitState(dir, slots, queued));
-					reportAt = Date.now() + repeatMs;
+				if (!slot && clock.now() >= reportAt) {
+					onWait(waitState(dir, slots, queued));
+					reportAt = clock.now() + REPEAT_WAIT_MS;
 				}
 			}
 		} finally {
@@ -317,7 +324,7 @@ async function acquireSlot(
 		if (slot) return slot;
 
 		const holders = checkSlotHolders(dir, slots).map(formatCheckSlotHolder);
-		const minutes = Math.round(waitMs / 60_000);
+		const minutes = Math.round(CHECK_SLOT_WAIT_MS / 60_000);
 		console.warn(
 			`Waited ${minutes}m for a check slot in ${dir}, held by ${holders.join(", ")}; running without one.`,
 		);
@@ -335,13 +342,13 @@ async function acquireSlot(
 export async function withCheckSlot<T>(
 	label: string,
 	run: () => Promise<T>,
-	options: CheckSlotOptions = {},
+	options: CheckSlotOptions,
 ): Promise<T> {
-	const env = options.env ?? process.env;
-	const slots = options.slots ?? checkSlotCount(env);
+	const { env } = options;
+	const slots = checkSlotCount(env);
 	if (isCI(env) || slots === 0 || heldCheckSlot(env)) return run();
 
-	const dir = options.dir ?? join(getStateDir(), SLOT_DIRNAME);
+	const dir = slotDirectory(env);
 	const holder: CheckSlotHolder = {
 		pid: process.pid,
 		cwd: process.cwd(),

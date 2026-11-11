@@ -124,18 +124,18 @@ describe("reclaimAppRoute", () => {
 	});
 });
 
-describe("activateNamedHosts", () => {
-	/** A machine whose daemon is ready and serves whatever it is asked to. */
-	const readyMachine = (
-		overrides: Partial<NamedHostsDeps> = {},
-	): NamedHostsDeps => ({
-		ensureHostsReady: async () => ({ ok: true, caPath: "/ca.pem" }),
-		syncCertificateForRoutes: async () => {},
-		waitForDaemonRoutes: async () => ({ ok: true }),
-		owners: pidRouteOwners,
-		...overrides,
-	});
+/** A machine whose daemon is ready and serves whatever it is asked to. */
+const readyMachine = (
+	overrides: Partial<NamedHostsDeps> = {},
+): NamedHostsDeps => ({
+	ensureHostsReady: async () => ({ ok: true, caPath: "/ca.pem" }),
+	syncCertificateForRoutes: async () => {},
+	waitForDaemonRoutes: async () => ({ ok: true }),
+	owners: pidRouteOwners,
+	...overrides,
+});
 
+describe("activateNamedHosts", () => {
 	function loopbackEnv() {
 		const switches: Array<{ active: boolean; hostnames?: readonly string[] }> =
 			[];
@@ -275,7 +275,11 @@ describe("activateNamedHosts in tailscale mode", () => {
 				Record<string, AppConfig>
 			>;
 
-			const warnings = await activateNamedHosts(env, { enabled: true });
+			const warnings = await activateNamedHosts(
+				env,
+				{ enabled: true },
+				readyMachine(),
+			);
 
 			expect(switches).toEqual([false]);
 			expect(namedHostsFallbacks(warnings.join("\n"))).toEqual([

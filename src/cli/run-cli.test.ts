@@ -1,4 +1,13 @@
-import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	spyOn,
+} from "bun:test";
 import { spawn } from "node:child_process";
 import {
 	mkdirSync,
@@ -25,7 +34,7 @@ import {
 	retireRuns,
 } from "../core/run-registry";
 import { createPhaseTimer } from "../core/timing";
-import { resolveExposeTargets, stopPublicTunnels } from "../core/tunnel";
+import { type FakeCloudflared, fakeCloudflared } from "../core/tunnel.testing";
 import { createDevEnvironment, type PrepareOptions } from "../environment";
 import type { DevEnvContext } from "../environment/context";
 import { registerInternals } from "../environment/internals";
@@ -323,18 +332,6 @@ function endsOnceTunnelsOpen<T extends { logInfo: unknown }>(env: T): T {
 	});
 }
 
-function mockTunnels(
-	targets: readonly { kind: "app" | "service"; name: string; port: number }[],
-) {
-	return targets.map((target) => ({
-		kind: target.kind,
-		name: target.name,
-		localUrl: `http://localhost:${target.port}`,
-		publicUrl: `https://${target.name}.example.com`,
-		close: async () => {},
-	}));
-}
-
 async function listenServer(port: number): Promise<Server> {
 	const server = createServer((_req, res) => {
 		res.statusCode = 200;
@@ -363,30 +360,27 @@ function exitsOnceChecked(root: string) {
 	};
 }
 
+/** Every `--expose` here opens its tunnels through this stand-in. */
+let cloudflared: FakeCloudflared;
+beforeEach(() => {
+	cloudflared = fakeCloudflared();
+});
+afterEach(() => cloudflared.restore());
+
 describe("runCli expose routing", () => {
-	it("does not call startPublicTunnels when --expose is absent", async () => {
-		let startCalls = 0;
+	it("opens no tunnel when --expose is absent", async () => {
 		const code = await withProcessExitTrap(() =>
 			runCli(createStubEnv(), {
 				args: ["--migrate"],
 				watchdog: false,
-				cliTestTunnel: {
-					resolveExposeTargets,
-					startPublicTunnels: async (_targets) => {
-						startCalls += 1;
-						return [];
-					},
-					stopPublicTunnels,
-				},
 			}),
 		);
 		expect(code).toBe(0);
-		expect(startCalls).toBe(0);
+		expect(cloudflared.opened()).toEqual([]);
 	});
 
 	// The tunnel closed as the command exited, so the URL it printed was dead.
 	it("ignores --expose and --takeover in a one-shot mode, saying why", async () => {
-		let startCalls = 0;
 		const warned: string[] = [];
 		const realWarn = console.warn;
 		console.warn = (...parts: unknown[]) => warned.push(parts.join(" "));
@@ -395,21 +389,13 @@ describe("runCli expose routing", () => {
 				runCli(createStubEnv(), {
 					args: ["--up-only", "--expose", "--takeover"],
 					watchdog: false,
-					cliTestTunnel: {
-						resolveExposeTargets,
-						startPublicTunnels: async () => {
-							startCalls += 1;
-							return [];
-						},
-						stopPublicTunnels,
-					},
 				}),
 			);
 			expect(code).toBe(0);
 		} finally {
 			console.warn = realWarn;
 		}
-		expect(startCalls).toBe(0);
+		expect(cloudflared.opened()).toEqual([]);
 		const said = Bun.stripANSI(warned.join("\n"));
 		expect(said).toContain("--expose is ignored with --up-only");
 		expect(said).toContain("buncargo dev --detach --expose");
@@ -527,11 +513,6 @@ describe("runCli expose routing", () => {
 			runCli(env, {
 				args: ["--no-hosts", "--apps=api", "--expose=web"],
 				watchdog: false,
-				cliTestTunnel: {
-					resolveExposeTargets,
-					startPublicTunnels: async () => [],
-					stopPublicTunnels,
-				},
 			}),
 		);
 		expect(code).toBe(1);
@@ -563,24 +544,15 @@ describe("runCli expose routing", () => {
 				},
 			}),
 		);
-		const opened: string[][] = [];
 		const code = await withProcessExitTrap(() =>
 			runCli(env, {
 				args: ["--no-hosts", "--no-tui", "--apps=expo", "--expose=api"],
 				watchdog: false,
-				cliTestTunnel: {
-					resolveExposeTargets,
-					startPublicTunnels: async (targets) => {
-						opened.push(targets.map((target) => target.name));
-						return mockTunnels(targets);
-					},
-					stopPublicTunnels,
-				},
 			}),
 		);
 
 		expect(code).toBe(130);
-		expect(opened).toEqual([["api"]]);
+		expect(cloudflared.opened()).toEqual([`http://localhost:${port}`]);
 	});
 
 	it("reuses a busy exposed app and inherits its public URL", async () => {
@@ -589,7 +561,6 @@ describe("runCli expose routing", () => {
 		const webPort = 43021;
 		const server = await listenServer(apiPort);
 		const setPublicUrlsCalls: Record<string, string>[] = [];
-		const startTargets: string[][] = [];
 
 		try {
 			await publishTunnelOwner(root, "tunnel-owner", apiPort);
@@ -625,23 +596,15 @@ describe("runCli expose routing", () => {
 				runCli(env, {
 					args: ["--no-hosts", "--no-tui", "--apps=api,web", "--expose"],
 					watchdog: false,
-					cliTestTunnel: {
-						resolveExposeTargets,
-						startPublicTunnels: async (targets) => {
-							startTargets.push(targets.map((target) => target.name));
-							return mockTunnels(targets);
-						},
-						stopPublicTunnels,
-					},
 				}),
 			);
 
 			expect(code).toBe(130);
-			expect(startTargets).toEqual([["web"]]);
+			expect(cloudflared.opened()).toEqual([`http://localhost:${webPort}`]);
 			// Opened beside the inherited one; closing removed both.
 			expect(setPublicUrlsCalls.at(-2)).toEqual({
 				api: "https://api.example.com",
-				web: "https://web.example.com",
+				web: `https://p${webPort}.trycloudflare.com`,
 			});
 			expect(setPublicUrlsCalls.at(-1)).toEqual({});
 		} finally {
@@ -721,11 +684,6 @@ it("does not offer to take over a run whose tunnels it inherited", async () => {
 		await runCli(env, {
 			args: ["--expose", "--no-hosts"],
 			watchdog: false,
-			cliTestTunnel: {
-				resolveExposeTargets,
-				startPublicTunnels: async () => [],
-				stopPublicTunnels,
-			},
 		});
 		expect(prompt).not.toHaveBeenCalled();
 	} finally {
@@ -749,7 +707,6 @@ describe("runCli phased tunnels and attach", () => {
 	it("starts needsPublicUrls apps after tunnels and injects *_PUBLIC_URL", async () => {
 		const apiPort = 43210 + Math.floor(Math.random() * 200);
 		const expoPort = apiPort + 1;
-		const tunnelOrder: string[] = [];
 		const env = createStubEnv({
 			apps: {
 				api: {
@@ -773,23 +730,9 @@ describe("runCli phased tunnels and attach", () => {
 		await runCli(env, {
 			args: ["--apps=expoApp", "--expose"],
 			watchdog: false,
-			cliTestTunnel: {
-				resolveExposeTargets,
-				startPublicTunnels: async (targets) => {
-					tunnelOrder.push("tunnels");
-					return targets.map((target) => ({
-						kind: target.kind,
-						name: target.name,
-						localUrl: `http://localhost:${target.port}`,
-						publicUrl: `https://${target.name}.example.com`,
-						close: async () => {},
-					}));
-				},
-				stopPublicTunnels,
-			},
 		});
 
-		expect(tunnelOrder).toEqual(["tunnels"]);
+		expect(cloudflared.opened()).toEqual([`http://localhost:${apiPort}`]);
 	});
 
 	// Without --expose there is no tunnel to wait for, so holding the app back

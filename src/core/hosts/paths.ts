@@ -19,8 +19,8 @@ export const CERT_FILENAME = "hosts.pem";
 export const KEY_FILENAME = "hosts-key.pem";
 export const TAILSCALE_SERVE_FILENAME = "tailscale-serve.json";
 
-export function getRoutesPath(home?: string): string {
-	return stateFilePath(ROUTES_FILENAME, home);
+export function getRoutesPath(): string {
+	return stateFilePath(ROUTES_FILENAME);
 }
 
 /** Every Tailscale Serve entry buncargo added (`BUNCARGO_HOSTS=tailscale`). */
@@ -28,26 +28,26 @@ export function getTailscaleServePath(): string {
 	return stateFilePath(TAILSCALE_SERVE_FILENAME);
 }
 
-export function getPidfilePath(home?: string): string {
-	return stateFilePath(PIDFILE_FILENAME, home);
+export function getPidfilePath(): string {
+	return stateFilePath(PIDFILE_FILENAME);
 }
 
-export function getDaemonConfigPath(home?: string): string {
-	return stateFilePath(DAEMON_CONFIG_FILENAME, home);
+export function getDaemonConfigPath(): string {
+	return stateFilePath(DAEMON_CONFIG_FILENAME);
 }
 
-export function getServiceManifestPath(home?: string): string {
-	return stateFilePath(SERVICE_MANIFEST_FILENAME, home);
+export function getServiceManifestPath(): string {
+	return stateFilePath(SERVICE_MANIFEST_FILENAME);
 }
 
-export function getCertsDir(home?: string): string {
-	return stateFilePath(CERTS_DIRNAME, home);
+export function getCertsDir(): string {
+	return stateFilePath(CERTS_DIRNAME);
 }
 
-export function getCertPath(home?: string): string {
-	return join(getCertsDir(home), CERT_FILENAME);
+export function getCertPath(): string {
+	return join(getCertsDir(), CERT_FILENAME);
 }
 
-export function getKeyPath(home?: string): string {
-	return join(getCertsDir(home), KEY_FILENAME);
+export function getKeyPath(): string {
+	return join(getCertsDir(), KEY_FILENAME);
 }

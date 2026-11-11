@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { NamedHost } from "../../types";
 import {
 	certificateFingerprint,
+	machineMkcert,
 	syncCertificateForRoutes,
 } from "./certificates";
 import { createHostsReloader } from "./daemon";
@@ -146,7 +147,7 @@ describeSoak("named hosts under worktree churn", () => {
 		const root = join(home, "checkouts", worktree);
 		mkdirSync(root, { recursive: true });
 
-		await syncCertificateForRoutes({
+		await syncCertificateForRoutes(machineMkcert, {
 			include: certificateHostnames(plan, "localhost"),
 			root,
 		});
@@ -156,7 +157,7 @@ describeSoak("named hosts under worktree churn", () => {
 			{ owners: pidRouteOwners },
 		);
 
-		await syncCertificateForRoutes({
+		await syncCertificateForRoutes(machineMkcert, {
 			include: certificateHostnames(plan, "localhost"),
 			root,
 		});

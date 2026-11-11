@@ -122,12 +122,10 @@ export const CA_FILENAME = "rootCA.pem";
  * answers the same question — one this can answer from the environment for
  * every machine that has not moved it.
  */
-export function caRootCandidates(
-	env: NodeJS.ProcessEnv = process.env,
-	home = resolveUserHome(env),
-): string[] {
+function caRootCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
 	const explicit = env.CAROOT?.trim();
 	if (explicit) return [explicit];
+	const home = resolveUserHome(env);
 
 	return typedSwitch(
 		process.platform,
@@ -337,27 +335,20 @@ export function certNeedsRenewal(
 }
 
 /**
- * How long one mint may take. It runs under the certificate lock, which every
- * other run's named hosts wait on, so a hung mkcert must not hold it.
+ * Mint the proxy's pair for `hostnames`, unless the certificate already
+ * covers them. A mint that runs past `timeoutMs` is killed.
  */
-const MINT_TIMEOUT_MS = 30_000;
-
 export function mintCert(
 	hostnames: string[],
-	options: {
-		mkcertPath?: string;
-		certPath?: string;
-		keyPath?: string;
-		timeoutMs?: number;
-	} = {},
+	options: { mkcertPath: string | undefined; timeoutMs: number },
 ): { certPath: string; keyPath: string; minted: boolean } {
 	const unique = [...new Set(hostnames)].sort();
-	const certPath = options.certPath ?? getCertPath();
-	const keyPath = options.keyPath ?? getKeyPath();
+	const certPath = getCertPath();
+	const keyPath = getKeyPath();
 	if (!certNeedsRenewal(certPath, unique)) {
 		return { certPath, keyPath, minted: false };
 	}
-	const mkcertPath = options.mkcertPath ?? resolvedMkcertPath();
+	const { mkcertPath } = options;
 	if (!mkcertPath) {
 		throw new Error("mkcert is not available. Run buncargo hosts install.");
 	}
@@ -376,7 +367,7 @@ export function mintCert(
 			["-cert-file", pendingCert, "-key-file", pendingKey, ...unique],
 			{
 				stdio: ["pipe", "pipe", "pipe"],
-				timeout: options.timeoutMs ?? MINT_TIMEOUT_MS,
+				timeout: options.timeoutMs,
 				killSignal: "SIGKILL",
 			},
 		);

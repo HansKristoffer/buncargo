@@ -75,6 +75,7 @@ import {
 } from "./dev-flags";
 import {
 	activateNamedHosts,
+	machineNamedHostsDeps,
 	reclaimAppRoute,
 	releaseNamedHosts,
 } from "./dev-hosts";
@@ -94,7 +95,6 @@ import {
 import {
 	createTunnelCoordinator,
 	type DevTunnelCoordinator,
-	type TunnelApi,
 } from "./dev-tunnels";
 import { CliError } from "./errors";
 import * as log from "./log";
@@ -212,8 +212,6 @@ export async function runCli<
 >(
 	env: DevEnvironment<TServices, TApps>,
 	options: CliOptions & {
-		/** Test-only tunnel substitutes. */
-		cliTestTunnel?: TunnelApi;
 		timer?: PhaseTimer;
 		/** `args` already parsed, by `buncargo dev`. */
 		parsed?: DevArgs;
@@ -255,12 +253,11 @@ async function runDevCommand<
 >(
 	env: DevEnvironment<TServices, TApps>,
 	options: CliOptions & {
-		cliTestTunnel?: TunnelApi;
 		timer?: PhaseTimer;
 		parsed?: DevArgs;
 	},
 ): Promise<DevFlowExit> {
-	const { watchdog = true, cliTestTunnel } = options;
+	const { watchdog = true } = options;
 	const args = devArgsOf(options);
 	if (typeof args === "number") return args;
 	for (const warning of ignoredFlagWarnings(args.values)) log.warn(warning);
@@ -325,11 +322,7 @@ async function runDevCommand<
 	process.on("unhandledRejection", onCrash);
 	const tunnels = createTunnelCoordinator(
 		env,
-		cliTestTunnel ?? {
-			resolveExposeTargets,
-			startPublicTunnels,
-			stopPublicTunnels,
-		},
+		{ resolveExposeTargets, startPublicTunnels, stopPublicTunnels },
 		{
 			exposeRequested: exposeRequested(args.values),
 			signal: controller.signal,
@@ -676,7 +669,11 @@ async function runDevFlow<
 	let hostsWarnings = isOneShot(args.values)
 		? []
 		: await timer.measure("hosts", () =>
-				activateNamedHosts(env, { enabled: !args.values["no-hosts"], signal }),
+				activateNamedHosts(
+					env,
+					{ enabled: !args.values["no-hosts"], signal },
+					machineNamedHostsDeps,
+				),
 			);
 	// After named hosts, which owns the first-run prompt slot on a fresh
 	// machine, and before the containers, so a question cannot land in the
@@ -750,11 +747,15 @@ async function runDevFlow<
 			runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
 			skipContainers: !hasServices,
 		});
-		hostsWarnings = await activateNamedHosts(env, {
-			enabled: !args.values["no-hosts"],
-			signal,
-			takeover: candidates.names,
-		});
+		hostsWarnings = await activateNamedHosts(
+			env,
+			{
+				enabled: !args.values["no-hosts"],
+				signal,
+				takeover: candidates.names,
+			},
+			machineNamedHostsDeps,
+		);
 		classifiedApps = withTakenOver(classifiedApps, candidates);
 	}
 	// Explicit takeover precedes public URL inheritance as well as private URL acquisition.

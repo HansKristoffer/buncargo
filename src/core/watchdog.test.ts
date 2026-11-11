@@ -18,7 +18,7 @@ import {
 	ensureWatchdog,
 	getWatchdogLockFile,
 	getWatchdogLogFile,
-	getWatchdogPid,
+	getWatchdogPidAsync,
 	getWatchdogPidFile,
 	isOutdatedWatchdog,
 	resolveWatchdogRunnerPath,
@@ -85,9 +85,10 @@ async function claimSomething(): Promise<void> {
  * held, so nothing started, and read no pid.
  */
 async function stopWatchdog(): Promise<void> {
-	const pid = getWatchdogPid();
+	const pid = await getWatchdogPidAsync();
 	if (pid) process.kill(pid, "SIGTERM");
-	for (let i = 0; i < 200 && getWatchdogPid(); i++) await Bun.sleep(10);
+	for (let i = 0; i < 200 && (await getWatchdogPidAsync()); i++)
+		await Bun.sleep(10);
 	for (let i = 0; pid && i < 200 && isProcessAlive(pid); i++)
 		await Bun.sleep(10);
 }
@@ -128,16 +129,16 @@ describe("ensureWatchdog", () => {
 				ensureWatchdog({ verbose: false }),
 				ensureWatchdog({ verbose: false }),
 			]);
-			const pid = getWatchdogPid();
+			const pid = await getWatchdogPidAsync();
 			expect(pid).not.toBeNull();
 			expect(JSON.parse(readFileSync(getWatchdogPidFile(), "utf8")).pid).toBe(
 				pid,
 			);
 			await ensureWatchdog({ verbose: false });
-			expect(getWatchdogPid()).toBe(pid);
+			expect(await getWatchdogPidAsync()).toBe(pid);
 		} finally {
 			await stopWatchdog();
-			expect(getWatchdogPid()).toBeNull();
+			expect(await getWatchdogPidAsync()).toBeNull();
 		}
 	});
 
@@ -149,7 +150,7 @@ describe("ensureWatchdog", () => {
 		try {
 			await claimSomething();
 			await ensureWatchdog({ verbose: false });
-			const pid = getWatchdogPid();
+			const pid = await getWatchdogPidAsync();
 			expect(pid).not.toBeNull();
 			const ancestors = ancestorsOf(pid as number);
 			expect(ancestors[0]).not.toBe(process.pid);
@@ -203,7 +204,7 @@ describe("ensureWatchdog", () => {
 		await isHeld;
 		try {
 			await ensureWatchdog({ verbose: false });
-			expect(getWatchdogPid()).toBeNull();
+			expect(await getWatchdogPidAsync()).toBeNull();
 		} finally {
 			release();
 			await held;
@@ -311,7 +312,7 @@ describe("ensureWatchdog and an older watchdog", () => {
 			try {
 				await ensureWatchdog({ verbose: false });
 				expect(await stub.exited).toBe(0);
-				const pid = getWatchdogPid();
+				const pid = await getWatchdogPidAsync();
 				expect(pid).not.toBeNull();
 				expect(pid).not.toBe(stub.pid);
 				expect(
@@ -330,7 +331,7 @@ describe("ensureWatchdog and an older watchdog", () => {
 			try {
 				await ensureWatchdog({ verbose: false });
 				expect(stub.exitCode).toBeNull();
-				expect(getWatchdogPid()).toBe(stub.pid);
+				expect(await getWatchdogPidAsync()).toBe(stub.pid);
 			} finally {
 				stub.kill();
 				await stub.exited;
@@ -346,7 +347,7 @@ describe("ensureWatchdog and an older watchdog", () => {
 		const stub = await startStubRunner("12.4.0", { ignoresTerm: true });
 		try {
 			await ensureWatchdog({ verbose: false });
-			const pid = getWatchdogPid();
+			const pid = await getWatchdogPidAsync();
 			expect(pid).not.toBeNull();
 			expect(pid).not.toBe(stub.pid);
 		} finally {
@@ -363,7 +364,7 @@ describe("ensureWatchdog and an older watchdog", () => {
 		try {
 			await ensureWatchdog({ verbose: false });
 			expect(stub.exitCode).toBeNull();
-			expect(getWatchdogPid()).toBe(stub.pid);
+			expect(await getWatchdogPidAsync()).toBe(stub.pid);
 		} finally {
 			stub.kill();
 			await stub.exited;

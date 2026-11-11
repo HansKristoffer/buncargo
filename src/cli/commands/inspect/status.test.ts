@@ -9,7 +9,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { getDaemonConfigPath, getRoutesPath } from "../../../core/hosts/paths";
+import {
+	DAEMON_CONFIG_FILENAME,
+	ROUTES_FILENAME,
+} from "../../../core/hosts/paths";
 import { HEALTH_PATH } from "../../../core/hosts/proxy";
 import { CI_ENV_VARS } from "../../../core/runtime-flags";
 import {
@@ -44,7 +47,7 @@ beforeEach(() => {
 				: new Response("not found", { status: 404 }),
 	});
 	const home = join(dir, "home");
-	const configPath = getDaemonConfigPath(home);
+	const configPath = join(home, ".buncargo", DAEMON_CONFIG_FILENAME);
 	mkdirSync(dirname(configPath), { recursive: true });
 	writeFileSync(
 		configPath,
@@ -117,7 +120,7 @@ it("reports named hosts as the daemon serves them, with their URLs", async () =>
 	expect((await status()).hosts?.active).toBe(false);
 
 	// A live run (this process) registered them, as `buncargo dev` does.
-	const routesPath = getRoutesPath(join(dir, "home"));
+	const routesPath = join(dir, "home", ".buncargo", ROUTES_FILENAME);
 	writeFileSync(
 		routesPath,
 		JSON.stringify({

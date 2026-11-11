@@ -195,7 +195,11 @@ describe("describeStaleService", () => {
 
 	it("says nothing when no service is installed", () => {
 		expect(
-			describeStaleService({ installed: false, manifest: undefined }),
+			describeStaleService({
+				installed: false,
+				manifest: undefined,
+				fileExists: () => true,
+			}),
 		).toBeUndefined();
 	});
 
@@ -223,7 +227,11 @@ describe("describeStaleService", () => {
 
 	it("flags an install with no manifest as needing repair", () => {
 		expect(
-			describeStaleService({ installed: true, manifest: undefined }),
+			describeStaleService({
+				installed: true,
+				manifest: undefined,
+				fileExists: () => true,
+			}),
 		).toContain("buncargo hosts install");
 	});
 
@@ -372,7 +380,7 @@ describe.skipIf(!hostsServicePath())("installHostsService", () => {
 		writeHostsServiceManifest({ program: "/bin/bun", args: [bundlePath] });
 		const { runner, calls } = recordingRunner();
 
-		uninstallHostsService({ runner });
+		uninstallHostsService(runner);
 
 		expect(calls).toContainEqual({ command: "removeFile", args: [bundlePath] });
 	});
@@ -383,7 +391,7 @@ describe.skipIf(!hostsServicePath())("installHostsService", () => {
 		writeHostsServiceManifest({ program: "/bin/bun", args: ["/etc/passwd"] });
 		const { runner, calls } = recordingRunner();
 
-		uninstallHostsService({ runner });
+		uninstallHostsService(runner);
 
 		expect(
 			calls.filter((call) => call.command === "removeFile"),
@@ -483,7 +491,7 @@ describe.skipIf(!hostsServicePath())("installHostsService", () => {
 		writeHostsServiceManifest({ program: "/bin/bun", args: ["/x/bin.js"] });
 		const { runner, calls } = recordingRunner();
 
-		uninstallHostsService({ runner });
+		uninstallHostsService(runner);
 
 		expect(commandNames(calls)).toContain(isDarwin ? "launchctl" : "systemctl");
 		expect(readHostsServiceManifest()).toBeUndefined();
@@ -495,7 +503,7 @@ describe.skipIf(!hostsServicePath())("installHostsService", () => {
 		"does nothing when neither a unit file nor a manifest exists",
 		() => {
 			const { runner, calls } = recordingRunner();
-			uninstallHostsService({ runner });
+			uninstallHostsService(runner);
 			expect(calls).toEqual([]);
 		},
 	);

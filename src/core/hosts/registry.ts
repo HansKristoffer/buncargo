@@ -1,4 +1,4 @@
-import { isRecord, typedSwitch } from "hanzio";
+import { typedSwitch } from "hanzio";
 import type { NamedHost } from "../../types";
 import { checkoutDeleted } from "../checkout-presence";
 import { withFileLock } from "../file-lock";
@@ -6,7 +6,6 @@ import {
 	defineListRegistry,
 	isRouteOwnerAlive,
 	type ListRegistryReadOptions,
-	readJsonDocumentSync,
 	StateFileUnreadableError,
 	StateFileVersionError,
 } from "../registry-file";
@@ -91,22 +90,14 @@ const registry = defineListRegistry<HostsRoute>({
 });
 
 export async function loadHostRoutes(
-	path = getRoutesPath(),
 	options: ListRegistryReadOptions = {},
 ): Promise<HostsRoute[]> {
-	return registry.read(path, options);
+	return registry.read(getRoutesPath(), options);
 }
 
 /** {@link loadHostRoutes} for `getEnvVar`, which is synchronous; lenient. */
-export function loadHostRoutesSync(path = getRoutesPath()): HostsRoute[] {
-	const routes = readJsonDocumentSync(path, (value) =>
-		isRecord(value) &&
-		value.version === REGISTRY_VERSION &&
-		Array.isArray(value.routes)
-			? value.routes.filter(isHostsRoute)
-			: undefined,
-	);
-	return routes ?? [];
+export function loadHostRoutesSync(): HostsRoute[] {
+	return registry.readSync(getRoutesPath());
 }
 
 /**
@@ -194,16 +185,11 @@ async function liveRoutes(
 		routes.filter((route) => route.pid !== undefined),
 	);
 	return routes.filter((route) =>
-		isRouteLive(
-			route,
-			options.directoryExists ?? checkoutStillThere,
-			ownerAlive,
-		),
+		isRouteLive(route, checkoutStillThere, ownerAlive),
 	);
 }
 
 interface PruneOptions extends ListRegistryReadOptions {
-	directoryExists?: (path: string) => boolean;
 	/** Defaults to {@link pidRouteOwners}. */
 	owners?: RouteOwners;
 }
@@ -215,9 +201,9 @@ interface PruneOptions extends ListRegistryReadOptions {
  * first one's routes, leaving that project's named URL 404ing with no error.
  */
 export async function pruneHostRoutes(
-	path = getRoutesPath(),
 	options: PruneOptions = {},
 ): Promise<HostsRoute[]> {
+	const path = getRoutesPath();
 	return withFileLock(path, async () => {
 		const routes = options.strict
 			? await readForRewrite(path)
@@ -285,7 +271,6 @@ export function classifyRouteClaim(
 export async function upsertHostRoutes(
 	routesToSave: HostsRoute[],
 	options: {
-		path?: string;
 		/**
 		 * Route names (apps) this run took over from another run of the same
 		 * checkout. Only those change owner: the other run still serves the rest.
@@ -298,7 +283,7 @@ export async function upsertHostRoutes(
 		owners: RouteOwners;
 	},
 ): Promise<HostsRouteConflictError[]> {
-	const path = options.path ?? getRoutesPath();
+	const path = getRoutesPath();
 	return withFileLock(path, async () => {
 		const stored = await readForRewrite(path);
 		const routes = await liveRoutes(stored);
@@ -343,8 +328,8 @@ export async function upsertHostRoutes(
 
 export async function removeHostRoutes(
 	match: (route: HostsRoute) => boolean,
-	path = getRoutesPath(),
 ): Promise<void> {
+	const path = getRoutesPath();
 	await withFileLock(path, async () => {
 		const routes = await readForRewrite(path);
 		await registry.write(
@@ -378,10 +363,11 @@ export function routesAfterWithdraw(
 	});
 }
 
-export async function withdrawHostRoutes(
-	run: { root: string; pid: number },
-	path = getRoutesPath(),
-): Promise<void> {
+export async function withdrawHostRoutes(run: {
+	root: string;
+	pid: number;
+}): Promise<void> {
+	const path = getRoutesPath();
 	await withFileLock(path, async () => {
 		const routes = await readForRewrite(path);
 		const next = routesAfterWithdraw(routes, run);
@@ -395,7 +381,8 @@ export async function withdrawHostRoutes(
  * Drop every route, readable or not: `hosts uninstall`. A file that cannot
  * be read is kept beside it as a recovery copy, never just deleted.
  */
-export async function clearHostRoutes(path = getRoutesPath()): Promise<void> {
+export async function clearHostRoutes(): Promise<void> {
+	const path = getRoutesPath();
 	await withFileLock(path, () => registry.write(path, []));
 }
 

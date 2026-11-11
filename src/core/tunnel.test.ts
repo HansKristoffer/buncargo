@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import {
 	type PublicTunnel,
@@ -7,6 +7,7 @@ import {
 	stopPublicTunnels,
 	withoutPublicUrls,
 } from "./tunnel";
+import { type FakeCloudflared, fakeCloudflared } from "./tunnel.testing";
 
 function createEnv(): DevEnvironment<
 	Record<string, ServiceConfig>,
@@ -57,78 +58,51 @@ describe("resolveExposeTargets", () => {
 });
 
 describe("public tunnel lifecycle", () => {
-	it("starts tunnels and returns public URLs", async () => {
-		const tunnels = await startPublicTunnels(
-			[{ kind: "app", name: "api", port: 3000 }],
-			{
-				start: async ({ url }) => ({
-					url: `https://public.example.com?target=${encodeURIComponent(url)}`,
-					close: async () => {},
-				}),
-			},
-		);
+	let cloudflared: FakeCloudflared | undefined;
+	afterEach(() => cloudflared?.restore());
 
-		expect(tunnels).toHaveLength(1);
-		expect(tunnels[0]?.name).toBe("api");
-		expect(tunnels[0]?.localUrl).toBe("http://localhost:3000");
-		expect(tunnels[0]?.publicUrl).toContain("https://public.example.com");
-	});
-
-	it("resolves public URL from getURL when present", async () => {
-		const tunnels = await startPublicTunnels(
-			[{ kind: "app", name: "api", port: 3000 }],
-			{
-				start: async ({ url }) => ({
-					getURL: async () =>
-						`https://geturl.example.com?t=${encodeURIComponent(url)}`,
-					close: async () => {},
-				}),
-			},
-		);
-
-		expect(tunnels).toHaveLength(1);
-		expect(tunnels[0]?.publicUrl).toContain("https://geturl.example.com");
-		expect(tunnels[0]?.publicUrl).toContain(
-			encodeURIComponent("http://localhost:3000"),
-		);
-	});
-
-	it("rejects empty getURL result", async () => {
-		await expect(
-			startPublicTunnels([{ kind: "app", name: "api", port: 3000 }], {
-				start: async () => ({
-					getURL: async () => "",
-					close: async () => {},
-				}),
-			}),
-		).rejects.toThrow("did not provide a public URL");
-	});
-
-	it("closes already-started tunnels when a later start fails", async () => {
-		let closeCalls = 0;
-		await expect(
-			startPublicTunnels(
-				[
-					{ kind: "app", name: "api", port: 3000 },
-					{ kind: "service", name: "postgres", port: 5432 },
-				],
+	it("opens a tunnel per target and returns its public URL", async () => {
+		cloudflared = fakeCloudflared();
+		const tunnels = await startPublicTunnels([
+			{ kind: "app", name: "api", port: 3000 },
+			{ kind: "service", name: "postgres", port: 5432 },
+		]);
+		try {
+			expect(
+				tunnels.map(({ name, localUrl, publicUrl }) => ({
+					name,
+					localUrl,
+					publicUrl,
+				})),
+			).toEqual([
 				{
-					start: async ({ url }) => {
-						if (url.includes("5432")) {
-							throw new Error("failed to start");
-						}
-						return {
-							url: "https://ok.example.com",
-							close: async () => {
-								closeCalls += 1;
-							},
-						};
-					},
+					name: "api",
+					localUrl: "http://localhost:3000",
+					publicUrl: "https://p3000.trycloudflare.com",
 				},
-			),
-		).rejects.toThrow("failed to start");
+				{
+					name: "postgres",
+					localUrl: "http://localhost:5432",
+					publicUrl: "https://p5432.trycloudflare.com",
+				},
+			]);
+		} finally {
+			await stopPublicTunnels(tunnels);
+		}
+		expect(cloudflared.running(3000)).toBe(false);
+		expect(cloudflared.running(5432)).toBe(false);
+	});
 
-		expect(closeCalls).toBe(1);
+	it("closes the tunnels already open when a later one fails", async () => {
+		cloudflared = fakeCloudflared({ failPorts: [5432] });
+		await expect(
+			startPublicTunnels([
+				{ kind: "app", name: "api", port: 3000 },
+				{ kind: "service", name: "postgres", port: 5432 },
+			]),
+		).rejects.toThrow("cloudflared exited before a tunnel URL was parsed");
+		expect(cloudflared.started(3000)).toBe(true);
+		expect(cloudflared.running(3000)).toBe(false);
 	});
 
 	it("stops all tunnels", async () => {
@@ -157,43 +131,22 @@ describe("public tunnel lifecycle", () => {
 		await stopPublicTunnels(tunnels);
 		expect(closeCalls).toBe(2);
 	});
-});
 
-describe("tunnel cancellation ownership", () => {
-	it("closes a returned backend whose URL rejects", async () => {
-		let closes = 0;
-		await expect(
-			startPublicTunnels([{ kind: "app", name: "web", port: 3000 }], {
-				start: async () => ({
-					getURL: async () => {
-						throw new Error("URL failed");
-					},
-					close: () => {
-						closes += 1;
-					},
-				}),
-			}),
-		).rejects.toThrow("URL failed");
-		expect(closes).toBe(1);
-	});
-	it("cancels a hung URL wait and closes the backend", async () => {
+	it("cancels a tunnel still waiting for its URL and stops cloudflared", async () => {
+		const live = fakeCloudflared({ hangPorts: [3000] });
+		cloudflared = live;
 		const controller = new AbortController();
-		let closes = 0;
 		const pending = startPublicTunnels(
 			[{ kind: "app", name: "web", port: 3000 }],
-			{
-				signal: controller.signal,
-				start: async () => ({
-					getURL: () => new Promise(() => {}),
-					close: () => {
-						closes += 1;
-					},
-				}),
-			},
+			{ signal: controller.signal },
 		);
-		setTimeout(() => controller.abort(new Error("cancelled")), 20);
+		const deadline = Date.now() + 5000;
+		while (!live.started(3000) && Date.now() < deadline) await Bun.sleep(10);
+		controller.abort(new Error("cancelled"));
 		await expect(pending).rejects.toThrow("cancelled");
-		expect(closes).toBe(1);
+		const stopped = Date.now() + 5000;
+		while (live.running(3000) && Date.now() < stopped) await Bun.sleep(10);
+		expect(live.running(3000)).toBe(false);
 	});
 });
 

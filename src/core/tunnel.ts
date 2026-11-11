@@ -4,7 +4,7 @@ import type {
 	PublicTunnelHandle,
 	ServiceConfig,
 } from "../types";
-import { abortableSleep, withSignal } from "./deadline";
+import { abortableSleep } from "./deadline";
 import { toPortMap } from "./ports";
 import { startQuickTunnel } from "./quick-tunnel";
 import { exposeTunnelStaggerMs } from "./runtime-flags";
@@ -17,16 +17,6 @@ export interface PublicExposeTarget {
 
 export type PublicTunnel = PublicTunnelHandle;
 
-interface TunnelBackendResult {
-	getURL?: () => Promise<string>;
-	url?: string;
-	publicUrl?: string;
-	tunnelUrl?: string;
-	close?: () => void | Promise<void>;
-	stop?: () => void | Promise<void>;
-	destroy?: () => void | Promise<void>;
-}
-
 function parseExposeNames(exposeValue?: string): Set<string> | null {
 	if (exposeValue === undefined) return null;
 	const names = exposeValue
@@ -34,24 +24,6 @@ function parseExposeNames(exposeValue?: string): Set<string> | null {
 		.map((name) => name.trim())
 		.filter(Boolean);
 	return new Set(names);
-}
-
-/** Resolves public origin from tunnel backends (sync fields or untun-style async getURL). */
-async function resolvePublicUrl(
-	tunnel: TunnelBackendResult,
-): Promise<string | null> {
-	if (typeof tunnel.getURL === "function") {
-		return await tunnel.getURL();
-	}
-	return tunnel.url ?? tunnel.publicUrl ?? tunnel.tunnelUrl ?? null;
-}
-
-function toCloseFn(tunnel: TunnelBackendResult): () => Promise<void> {
-	const close = tunnel.close ?? tunnel.stop ?? tunnel.destroy;
-	if (!close) return async () => {};
-	return async () => {
-		await close();
-	};
 }
 
 export function resolveExposeTargets<
@@ -117,67 +89,34 @@ export function resolveExposeTargets<
 	return { targets, unknownNames, notEnabledNames };
 }
 
+/**
+ * Open a Cloudflare quick tunnel to each target, one after another with a
+ * pause between them: trycloudflare.com rate-limits a burst. Any failure, or
+ * `signal` firing, closes the tunnels already open.
+ */
 export async function startPublicTunnels(
 	targets: PublicExposeTarget[],
-	options: {
-		signal?: AbortSignal;
-		start?: (input: {
-			url: string;
-			signal?: AbortSignal;
-		}) => Promise<TunnelBackendResult | undefined>;
-	} = {},
+	options: { signal?: AbortSignal } = {},
 ): Promise<PublicTunnel[]> {
-	const start: NonNullable<typeof options.start> =
-		options.start ?? ((input) => startQuickTunnel(input));
+	const { signal } = options;
 	const staggerMs = exposeTunnelStaggerMs();
-
 	const tunnels: PublicTunnel[] = [];
 	try {
-		let index = 0;
-		for (const target of targets) {
-			options.signal?.throwIfAborted();
-			if (index > 0 && staggerMs > 0) {
-				await abortableSleep(staggerMs, options.signal);
-			}
-			index += 1;
+		for (const [index, target] of targets.entries()) {
+			signal?.throwIfAborted();
+			if (index > 0 && staggerMs > 0) await abortableSleep(staggerMs, signal);
 			const localUrl = `http://localhost:${target.port}`;
-			const starting = start({ url: localUrl, signal: options.signal });
-			// A custom callback may ignore cancellation. Stop any late result
-			// without letting it resurrect a cancelled startup.
-			void starting
-				.then((late) => {
-					if (late && options.signal?.aborted) return toCloseFn(late)();
-				})
-				.catch(() => {});
-			const tunnel = options.signal
-				? await withSignal(starting, options.signal)
-				: await starting;
-			if (tunnel === undefined) {
-				throw new Error(
-					`Tunnel for "${target.name}" could not be started (tunnel backend returned no instance)`,
-				);
-			}
-			// Own the returned backend before awaiting its URL; a URL rejection
-			// otherwise skips this tunnel when the outer catch cleans up.
-			const owned: PublicTunnel = {
+			// Resolves once cloudflared has printed the public URL.
+			const tunnel = await startQuickTunnel({ url: localUrl, signal });
+			tunnels.push({
 				kind: target.kind,
 				name: target.name,
 				localUrl,
-				publicUrl: "",
-				close: toCloseFn(tunnel),
-			};
-			tunnels.push(owned);
-			const pendingUrl = resolvePublicUrl(tunnel);
-			const rawPublicUrl = options.signal
-				? await withSignal(pendingUrl, options.signal)
-				: await pendingUrl;
-			if (!rawPublicUrl) {
-				throw new Error(
-					`Tunnel for "${target.name}" did not provide a public URL`,
-				);
-			}
-			owned.publicUrl = rawPublicUrl.replace(/\/$/, "");
+				publicUrl: (await tunnel.getURL()).replace(/\/$/, ""),
+				close: tunnel.close,
+			});
 		}
+		signal?.throwIfAborted();
 		return tunnels;
 	} catch (e) {
 		await stopPublicTunnels(tunnels);

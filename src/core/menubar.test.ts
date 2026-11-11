@@ -12,11 +12,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	type BarFolders,
 	type BarRelease,
 	type BundleCopy,
 	downloadBarRelease,
 	getBarManifestPath,
 	installDirectory,
+	readBarManifest,
 	readBundleInfo,
 	readInstalledBarInfo,
 	removeInstalledBars,
@@ -32,6 +34,11 @@ import {
  */
 let home: string;
 const realHome = process.env.HOME;
+
+/** The install folders, with `system` standing in for `/Applications`. */
+function folders(system: string): BarFolders {
+	return { system, user: join(home, "Applications") };
+}
 
 function writeBundle(
 	path: string,
@@ -110,7 +117,7 @@ describe("readInstalledBarInfo", () => {
 				installedAt: new Date().toISOString(),
 			}),
 		);
-		expect(readInstalledBarInfo(home)).toEqual({
+		expect(readInstalledBarInfo()).toEqual({
 			path: bundle,
 			version: "1.2.3",
 			registryVersion: 7,
@@ -118,9 +125,28 @@ describe("readInstalledBarInfo", () => {
 	});
 });
 
+describe("readBarManifest", () => {
+	// The manifest is a file in the user's home: what it says is read, not
+	// trusted, and a field of the wrong shape is left out.
+	it("keeps only the fields that check out", () => {
+		mkdirSync(join(home, ".buncargo"), { recursive: true });
+		const manifest = {
+			version: 1,
+			path: "/Applications/BuncargoBar.app",
+			appVersion: "1.2.3",
+			installedAt: "2026-11-11T00:00:00.000Z",
+		};
+		writeFileSync(
+			getBarManifestPath(),
+			JSON.stringify({ ...manifest, cli: { program: 1 }, extra: true }),
+		);
+		expect(readBarManifest()).toEqual(manifest);
+	});
+});
+
 describe("installDirectory", () => {
 	it("installs into the system directory when it is writable", () => {
-		expect(installDirectory(home, home)).toBe(home);
+		expect(installDirectory(folders(home))).toBe(home);
 	});
 
 	it.skipIf(process.getuid?.() === 0)(
@@ -128,14 +154,16 @@ describe("installDirectory", () => {
 		() => {
 			const system = join(home, "system");
 			mkdirSync(system, { mode: 0o555 });
-			expect(installDirectory(home, system)).toBe(join(home, "Applications"));
+			expect(installDirectory(folders(system))).toBe(
+				join(home, "Applications"),
+			);
 		},
 	);
 
 	it("updates a copy in place where its folder is writable", () => {
 		// Installed to ~/Applications earlier; /Applications became writable since.
 		const existing = writeBundle(join(home, "Applications", "BuncargoBar.app"));
-		expect(installDirectory(home, home, existing)).toBe(
+		expect(installDirectory(folders(home), existing)).toBe(
 			join(home, "Applications"),
 		);
 	});
@@ -157,11 +185,11 @@ describe("removeInstalledBars", () => {
 			}),
 		);
 
-		expect(removeInstalledBars(home, system)).toBe(true);
+		expect(removeInstalledBars(folders(system))).toBe(true);
 		expect(existsSync(systemCopy)).toBe(false);
 		expect(existsSync(userCopy)).toBe(false);
 		expect(existsSync(getBarManifestPath())).toBe(false);
-		expect(removeInstalledBars(home, system)).toBe(false);
+		expect(removeInstalledBars(folders(system))).toBe(false);
 	});
 });
 

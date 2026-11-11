@@ -1,6 +1,7 @@
 import {
 	ensureHostsReady,
 	identityRouteOwners,
+	machineMkcert,
 	removeHostRoutes,
 	routesFromPlan,
 	syncCertificateForRoutes,
@@ -39,9 +40,10 @@ export interface NamedHostsDeps {
 	owners: RouteOwners;
 }
 
-const machineNamedHostsDeps: NamedHostsDeps = {
+export const machineNamedHostsDeps: NamedHostsDeps = {
 	ensureHostsReady: () => ensureHostsReady({ hosts: true }),
-	syncCertificateForRoutes,
+	syncCertificateForRoutes: (options) =>
+		syncCertificateForRoutes(machineMkcert, options),
 	waitForDaemonRoutes,
 	owners: identityRouteOwners,
 };
@@ -70,7 +72,7 @@ export async function activateNamedHosts<
 		signal?: AbortSignal;
 		takeover?: readonly string[];
 	},
-	deps: NamedHostsDeps = machineNamedHostsDeps,
+	deps: NamedHostsDeps,
 ): Promise<string[]> {
 	if (!env.hosts) {
 		return [];
