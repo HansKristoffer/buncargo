@@ -322,7 +322,12 @@ const TOPICS: readonly Topic[] = [
 - Run test suites as \`bunx buncargo slot -- <command>\` so they take a slot
   too. \`slot\` leaves the environment alone; \`exec --slot\` adds the
   checkout's URLs and secrets; \`ci --slot -- <command>\` runs it against a
-  throwaway stack of its own.`,
+  throwaway stack of its own.
+- \`bunx buncargo ci --apps=<names> --build -- <command>\` also builds and
+  starts those apps and waits until they are healthy before the command (an
+  E2E run); exit 1 means a build, a start or a health check failed. \`ci
+  --migrate-check\` exits 2 when the Prisma schema has changes no migration
+  contains: create one with \`prisma migration new <name>\`.`,
 	},
 	{
 		name: "files",

@@ -401,3 +401,102 @@ it("pushes the Prisma schema instead of migrating with --schema=push", async () 
 		"db push\n",
 	);
 });
+
+/** A `prisma` on the checkout's `prisma.cwd` that records its args and exits `exitCode`. */
+function stubPrisma(root: string, exitCode: number) {
+	const bin = join(root, "packages/prisma/node_modules/.bin");
+	mkdirSync(bin, { recursive: true });
+	writeFileSync(
+		join(bin, "prisma"),
+		`#!/bin/sh\necho "$*" >> "${root}/prisma.log"\nexit ${exitCode}\n`,
+		{ mode: 0o755 },
+	);
+}
+
+describe("ci --migrate-check", () => {
+	const cases = [
+		{ name: "runs the command when they match", prisma: 0, exitCode: 0 },
+		{
+			name: "exits 2 before the command when they differ",
+			prisma: 2,
+			exitCode: 2,
+		},
+	];
+
+	for (const { name, prisma, exitCode } of cases) {
+		it(`checks the migrations inside its own stack and ${name}`, async () => {
+			// Lists one container for the service, where the shadow database
+			// is created.
+			using checkout = stubbedCheckout(
+				"cimc",
+				`case "$*" in "ps "*) echo cid1 ;; esac`,
+				",prisma:{}",
+			);
+			stubPrisma(checkout.root, prisma);
+			const marker = join(checkout.root, "command-ran");
+
+			const result = await checkout.run([
+				"--migrate-check",
+				"--",
+				"touch",
+				marker,
+			]);
+
+			expect(result.exitCode).toBe(exitCode);
+			expect(existsSync(marker)).toBe(exitCode === 0);
+			expect(readFileSync(join(checkout.root, "prisma.log"), "utf-8")).toBe(
+				"migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code\n",
+			);
+			// Every container call, the shadow database's included, is the ci
+			// stack's, and it comes down: no dev stack is started or left.
+			const calls = checkout.calls();
+			const projects = new Set(
+				Array.from(
+					calls.join("\n").matchAll(/(?: -p |compose\.project=)(\S+)/g),
+					(match) => match[1],
+				),
+			);
+			expect([...projects]).toHaveLength(1);
+			expect([...projects][0]).toMatch(/-ci-[0-9a-f]{6}$/);
+			expect(calls.some((line) => / exec cid1 .*createdb/.test(line))).toBe(
+				true,
+			);
+			expect(calls.findLast((line) => line.includes(" compose "))).toEndWith(
+				" down -v",
+			);
+		});
+	}
+});
+
+it("builds, starts and health-checks --apps with --build, runs the command, and stops them", async () => {
+	// The server refuses to start unless the build ran first, and records its
+	// pid so the test can see it gone after the teardown.
+	using checkout = stubbedCheckout(
+		"ciapps",
+		"",
+		`,apps:{api:{port:3000,devCommand:'exit 1',buildCommand:'touch built',prodCommand:'bun server.ts',healthEndpoint:'/health'}}`,
+	);
+	writeFileSync(
+		join(checkout.root, "server.ts"),
+		`import { existsSync, writeFileSync } from "node:fs";
+if (!existsSync("built")) process.exit(1);
+writeFileSync("server.pid", String(process.pid));
+Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("prod") });
+`,
+	);
+	const fetched = join(checkout.root, "fetched");
+
+	const result = await checkout.run([
+		"--apps=api",
+		"--build",
+		"--",
+		process.execPath,
+		"-e",
+		`require("node:fs").writeFileSync(${JSON.stringify(fetched)}, await (await fetch(process.env.API_URL)).text())`,
+	]);
+
+	expect(result.exitCode).toBe(0);
+	expect(readFileSync(fetched, "utf-8")).toBe("prod");
+	const pid = Number(readFileSync(join(checkout.root, "server.pid"), "utf-8"));
+	expect(() => process.kill(pid, 0)).toThrow();
+});

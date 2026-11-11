@@ -359,14 +359,18 @@ predeploy: {
 - uses: actions/checkout@v5
 - uses: HansKristoffer/buncargo/actions/setup@main
 - run: bunx buncargo ci --migrate --seed -- bun test
-- run: bunx buncargo prisma migrate-check
+- run: bunx buncargo ci --migrate-check
 ```
 
-`buncargo ci [--migrate] [--seed] [--schema=push] [--services=a,b] [--slot] -- <command>` starts the configured services (all of them, or `--services`), applies migrations and the seed with the same config as local, runs the command with the checkout env (but no Infisical secrets: a CI job should not need Infisical access for its tests; migrations and the seed keep their scopes), and tears everything down. A PR workflow then needs no `services: postgres` block or hand-written `DATABASE_URL`, and "migrations apply" and "the seed works" are tested exactly as they run locally. Without a command it only prepares; the exit code is the command's, or the seed's when that fails. Its own progress goes to stderr, so stdout is the command's. `seed.check` is skipped, because a CI database is never warm.
+`buncargo ci [--migrate] [--seed] [--schema=push] [--migrate-check] [--services=a,b] [--apps=a,b [--build]] [--slot] -- <command>` starts the configured services (all of them, or `--services`), applies migrations and the seed with the same config as local, runs the command with the checkout env (but no Infisical secrets: a CI job should not need Infisical access for its tests; migrations and the seed keep their scopes), and tears everything down. A PR workflow then needs no `services: postgres` block or hand-written `DATABASE_URL`, and "migrations apply" and "the seed works" are tested exactly as they run locally. Without a command it only prepares; the exit code is the command's, or the seed's when that fails. Its own progress goes to stderr, so stdout is the command's. `seed.check` is skipped, because a CI database is never warm.
 
 Every run is a stack of its own: `<project>-ci-<id>`, with a new id each run, and on a self-hosted GitHub Actions runner (`RUNNER_ENVIRONMENT=self-hosted`) the runner's name after it, `<project>-ci-<id>-<runner>`. It has its own ports and compose file, so two runs in one checkout never share a container or a database, and running it on a laptop never touches the checkout's dev database. Services keep their data in memory (tmpfs) instead of volumes, so a run leaves no database behind however it ends. Bind mounts and `external` volumes stay as configured.
 
 `--schema=push` applies the Prisma schema with `prisma db push` instead of replaying the migrations, for a test shard that needs the tables and not their history. It implies `--migrate`: the push takes the place of `migrate deploy`, and the other `migrations` entries, `prisma.generate` and the `beforeMigrations` and `afterContainersReady` hooks run as they do with `--migrate`. A failed push fails the run with exit 1. Keep `--migrate` in the job that checks the migrations apply.
+
+`--migrate-check` runs `buncargo prisma migrate-check` (below) inside the run's own stack, after the services start and before the command: the shadow database lives in that stack and goes with it, and the checkout's dev database is never started. It exits 2, without running the command, when the schema has changes no migration contains, and 1 when the check itself fails.
+
+`--apps=api,web` starts those apps (and their `requiredApps`) once the services are prepared, waits until each passes its health check, then runs the command; the apps stop with the stack. With `--build`, each app's `buildCommand` runs first and the app starts with its `prodCommand` (its `devCommand` when it has none) and the production env, which is what an E2E job tests against. A build that fails, or an app that exits or misses its health check, fails the run with exit 1 before the command runs. `--build` needs `--apps`.
 
 `--slot` takes one of the machine's check slots, as `buncargo slot` does, before the services start, and holds it until the stack is down, so agents running test suites in many worktrees wait their turn instead of each starting a database at once. Like every slot, it does nothing in CI.
 
