@@ -39,7 +39,10 @@ export async function listAppleVolumes(
 	cli: AppleContainerCli,
 ): Promise<BuncargoVolume[]> {
 	const result = await runAppleAsync(cli, ["volume", "ls", "--format", "json"]);
-	if (!result.ok) return [];
+	if (!result.ok)
+		throw new Error(
+			result.stderr.trim() || `container volume ls exited ${result.exitCode}`,
+		);
 	return parseAppleVolumeNames(result.stdout).map((name) => ({
 		name,
 		runtime: "apple" as const,

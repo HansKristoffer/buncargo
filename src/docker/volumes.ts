@@ -43,7 +43,10 @@ export async function listDockerVolumes(
 	binary?: string,
 ): Promise<BuncargoVolume[]> {
 	const result = await runDockerAsync(binary, LIST_ARGS);
-	if (!result.ok) return [];
+	if (!result.ok)
+		throw new Error(
+			result.stderr.trim() || `docker volume ls exited ${result.exitCode}`,
+		);
 	return result.stdout
 		.trim()
 		.split("\n")

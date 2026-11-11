@@ -554,6 +554,31 @@ describe("sweepOrphanedContainers", () => {
 		});
 	});
 
+	it("keeps a throwaway claim that gave its block up while the runtime cannot list volumes", async () => {
+		claimOffset({
+			root: checkout,
+			offset: 200,
+			ports: [],
+			projectName: "demo-e2e",
+			suffix: "e2e",
+			throwaway: true,
+		});
+		const runtime = fakeRuntime({
+			containers: async () => [],
+			listVolumes: async () => {
+				throw new Error("docker volume ls exited 1");
+			},
+		});
+		const hourLater = Date.now() + 3_600_000;
+
+		await sweepOrphanedContainers({ runtimes: [runtime], now: hourLater });
+		await sweepOrphanedContainers({ runtimes: [runtime], now: hourLater });
+
+		expect(claimStates()).toEqual({
+			[offsetClaimKey(checkout, "e2e")]: "released",
+		});
+	});
+
 	it("reports a stack this user's state does not name, and leaves it alone", async () => {
 		// Another user's stack on a shared daemon: no run and no claim of ours
 		// names it, so its checkout reading deleted and its containers being

@@ -306,8 +306,8 @@ export interface ContainerRuntimeAdapter {
 	 * Every volume this runtime holds, for `buncargo prune`.
 	 *
 	 * Not scoped to buncargo: a volume carries no marker of ours, so the
-	 * caller attributes them by Compose project instead. Never throws; a
-	 * runtime that cannot answer returns nothing.
+	 * caller attributes them by Compose project instead. Throws when the
+	 * runtime cannot answer: an empty list means it holds none.
 	 */
 	listVolumes(): Promise<BuncargoVolume[]>;
 	/** Remove volumes by name. Returns what could not be removed, and why. */

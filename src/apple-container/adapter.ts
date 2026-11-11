@@ -123,8 +123,8 @@ export function appleContainerRuntimeAdapter(
 			];
 		},
 
-		// Same reasoning as `containers`: a down system fails the listing, which
-		// already reads as no volumes.
+		// A machine that cannot run Apple container holds none of its volumes;
+		// a listing that fails throws, as `containers` does.
 		listVolumes() {
 			if (!isAppleContainerSupported()) return Promise.resolve([]);
 			return listAppleVolumes(cli);
