@@ -288,7 +288,8 @@ const TOPICS: readonly Topic[] = [
   says it is waiting for a slot is not stuck; let it wait.
 - Run test suites as \`bunx buncargo slot -- <command>\` so they take a slot
   too. \`slot\` leaves the environment alone; \`exec --slot\` adds the
-  checkout's URLs and secrets.`,
+  checkout's URLs and secrets; \`ci --slot -- <command>\` runs it against a
+  throwaway stack of its own.`,
 	},
 	{
 		name: "files",

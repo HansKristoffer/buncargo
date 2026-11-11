@@ -131,11 +131,15 @@ pieces it orchestrates.
   (`sh -c '<cmd> "$@"'`), so nothing is re-parsed. Tasks are published into the run entry for
   BuncargoBar's run button, which calls `buncargo run` *unscoped*: `--root`/`--run` name a run, and
   a task only needs the checkout (the working directory).
-- `commands/ci.ts` runs on `env.withSuffix("ci")`, starts services with `onlyServices`, forces the
-  seed (a CI database is never warm), runs the command and always `stop({ removeVolumes: true })`s.
-  The suffix is not optional: on the shared project that teardown deletes a developer's dev
-  database. A suffixed environment writes its own compose file and never persists `ports.json`, or
-  it would overwrite the dev run's. `--profile` lives in `dev-flags.ts`; `selectProfileApps` in
+- `commands/ci.ts` runs on `env.withSuffix("ci-<id>", { data: "tmpfs" })`, starts services with
+  `onlyServices`, forces the seed (a CI database is never warm), runs the command and always
+  `stop({ removeVolumes: true })`s. The suffix is not optional: on the shared project that teardown
+  deletes a developer's dev database. The id is per run because two runs on one `-ci` project took
+  each other's stack down mid-test (lasauna), and tmpfs because a killed run's volume was nobody's to
+  remove. A suffixed environment writes its own compose file and never persists `ports.json`, or it
+  would overwrite the dev run's; `ci` deletes its file after the teardown. Ports are still a claimed
+  block: Docker-assigned ports (`127.0.0.1::5432`, read back from the listing) need the environment
+  to adopt the ports after `up` and before readiness, which it cannot yet. `--profile` lives in `dev-flags.ts`; `selectProfileApps` in
   `run-cli.ts` turns it (or a `default` profile) into the same selection `--apps` makes.
 - `agents-guide.ts` is the one copy of the agent guide (`help agents`) and the `AGENTS.md` block
   `setup --agents` keeps between `<!-- buncargo:start/end -->` markers. It lives in code, not
