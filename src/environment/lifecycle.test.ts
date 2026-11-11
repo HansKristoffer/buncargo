@@ -26,9 +26,8 @@ import {
 import { useTempHome } from "../core/test-env.testing";
 import { planStart } from "../planning";
 import type { ResolvedApp } from "../types";
-import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
-import { createLifecycleApi } from "./lifecycle";
+import { createLifecycleApi, type LifecycleContext } from "./lifecycle";
 import { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { createAppPipeline } from "./pipeline";
 import { createServerHookRunner } from "./servers";
@@ -87,7 +86,7 @@ function fixture() {
 			},
 		},
 	};
-	const ctx = {
+	const ctx: LifecycleContext & { apps: Record<string, ResolvedApp> } = {
 		config,
 		services,
 		apps,
@@ -98,16 +97,22 @@ function fixture() {
 		ports: {},
 		urls: {},
 		loopbackUrls: {},
+		publicUrls: {},
+		captured: {},
+		composeFile: "compose.yml",
 		ensureComposeFile: () => {
 			events.push("artifact");
+			return "compose.yml";
 		},
 		composeModel: () => ({ services: { db: { image: "postgres:16" } } }),
-	} as unknown as DevEnvContext;
-	ctx.getStartPlan = (onlyApps, onlyServices) =>
-		planStart(ctx.apps, ctx.services, { onlyApps, onlyServices });
-	ctx.prepareStartAsync = async () => {};
-	ctx.captureThrowawayClaim = () => async () => {
-		events.push("release claim");
+		getStartPlan: (onlyApps, onlyServices) =>
+			planStart(ctx.apps, ctx.services, { onlyApps, onlyServices }),
+		prepareStartAsync: async () => {},
+		captureThrowawayClaim: () => async () => {
+			events.push("release claim");
+		},
+		logInfo: () => {},
+		onSecretsWait: undefined,
 	};
 
 	const envVars = {

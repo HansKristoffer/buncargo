@@ -34,7 +34,10 @@ import { recordTeardown } from "./container-loss";
 import type { DevEnvContext } from "./context";
 import { syncEnvFile } from "./env-file";
 import type { DevEnvVarsApi } from "./env-vars";
-import { renderGeneratedFiles } from "./generated-files";
+import {
+	type GeneratedFilesContext,
+	renderGeneratedFiles,
+} from "./generated-files";
 import type { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { runMigrationsSequentially } from "./migrations";
 import type { AppPipeline, Prepared, PreparedSeed } from "./pipeline";
@@ -43,7 +46,7 @@ import { prefetchSecrets, startSecretScopes } from "./prefetch-secrets";
 import type { DevRunClaimApi } from "./run-claim";
 import { readRunsKeepingServices } from "./run-keep";
 import { assertSeedSucceeded } from "./seed-startup";
-import { runSeedIfNeeded } from "./seeding";
+import { runSeedIfNeeded, type SeedContext } from "./seeding";
 import { assertAppWorkingDirectories } from "./servers";
 import type { ServiceWatchApi } from "./service-watch";
 import {
@@ -86,8 +89,27 @@ export interface DevLifecycleApi {
 	ensureWatchdog(): void;
 }
 
+/** What starting and stopping read of the environment. */
+export type LifecycleContext = Pick<
+	DevEnvContext,
+	| "config"
+	| "services"
+	| "runtime"
+	| "getStartPlan"
+	| "prepareStartAsync"
+	| "captureThrowawayClaim"
+	| "composeFile"
+	| "composeModel"
+	| "ensureComposeFile"
+	| "logInfo"
+	| "onSecretsWait"
+	| "ownedServerPids"
+> &
+	SeedContext &
+	GeneratedFilesContext;
+
 export function createLifecycleApi(
-	ctx: DevEnvContext,
+	ctx: LifecycleContext,
 	envVars: DevEnvVarsApi,
 	runClaim: DevRunClaimApi,
 	coordinator: LifecycleCoordinator,

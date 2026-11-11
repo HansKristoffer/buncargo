@@ -20,14 +20,20 @@ import {
 } from "../core/run-registry";
 import { useTempHome } from "../core/test-env.testing";
 import { libraryLeasePolicy } from "./app-leases";
-import type { DevEnvContext } from "./context";
 import { createDevEnvironment } from "./create-dev-environment";
-import { createRunClaimApi, resolveClaimHold } from "./run-claim";
+import {
+	createRunClaimApi,
+	type RunClaimContext,
+	resolveClaimHold,
+} from "./run-claim";
 
 /** How a library start claims its apps: no reused ones, no services listed. */
 const appsOnly = { policy: libraryLeasePolicy, serviceNames: [] };
 
 const home = useTempHome();
+
+/** The one service the claims below select. */
+const postgres = resolveServices({ postgres: { port: 5432 } });
 
 /** Walk an app through its lifecycle as the spawner does, reporting each step. */
 function stepper(
@@ -90,16 +96,16 @@ describe("createRunClaimApi", () => {
 	function claimApi() {
 		return createRunClaimApi(
 			{
-				config: { projectPrefix: "demo", services: {}, apps: {} },
+				config: { projectPrefix: "demo", services: {} },
 				projectName: "demo-claim",
 				root: home(),
 				worktree: false,
-				services: { postgres: {} },
+				services: postgres,
 				selectedServiceKeys: ["postgres"],
 				hasSelectedServices: true,
 				runtime: { name: "docker" },
 				runtimeBinary: "docker",
-			} as unknown as DevEnvContext,
+			},
 			() => {
 				throw new Error("a services claim builds no app rows");
 			},
@@ -192,17 +198,17 @@ describe("createRunClaimApi", () => {
 
 describe("a claim's lifecycle and its apps", () => {
 	function appClaimApi(root: string, services: RunSource["services"] = {}) {
-		const ctx = {
-			config: { projectPrefix: "demo", services: {}, apps: {} },
+		const ctx: RunClaimContext = {
+			config: { projectPrefix: "demo", services: {} },
 			projectName: "demo-apps",
 			root,
 			worktree: false,
-			services: { postgres: {} },
+			services: postgres,
 			selectedServiceKeys: ["postgres"],
 			hasSelectedServices: true,
 			runtime: { name: "docker" },
 			runtimeBinary: "docker",
-		} as unknown as DevEnvContext;
+		};
 		const source = (): RunSource => ({
 			sessionId: api.sessionId,
 			projectPrefix: "demo",

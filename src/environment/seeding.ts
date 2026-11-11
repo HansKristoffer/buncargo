@@ -130,6 +130,14 @@ function createSeedCheckContext(
 	};
 }
 
+/** What seeding reads of its environment. */
+export type SeedContext = Pick<DevEnvContext, "root" | "urls"> & {
+	readonly config: Pick<
+		DevEnvContext["config"],
+		"seed" | "prisma" | "unsetEnv"
+	>;
+};
+
 /**
  * The single seed path, used by both `start()` and `buncargo dev --seed`:
  * consult `seed.check`, then run `seed.command`.
@@ -138,7 +146,7 @@ function createSeedCheckContext(
  * how a failed seed should affect it.
  */
 export async function runSeedIfNeeded(
-	ctx: DevEnvContext,
+	ctx: SeedContext,
 	envVars: DevEnvVarsApi,
 	options: SeedRunOptions = {},
 	selection?: StartSelection,

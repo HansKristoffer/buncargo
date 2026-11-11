@@ -36,7 +36,6 @@ import { freePorts, useTempHome } from "../core/test-env.testing";
 import { createPhaseTimer } from "../core/timing";
 import { type FakeCloudflared, fakeCloudflared } from "../core/tunnel.testing";
 import { createDevEnvironment, type PrepareOptions } from "../environment";
-import type { DevEnvContext } from "../environment/context";
 import { registerInternals } from "../environment/internals";
 import { createAppPipeline } from "../environment/pipeline";
 import { createRunClaimApi } from "../environment/run-claim";
@@ -246,7 +245,8 @@ function registerStubInternals(
 			selectedServiceKeys: [],
 			hasSelectedServices: false,
 			runtime: { name: "docker" },
-		} as unknown as DevEnvContext,
+			runtimeBinary: undefined,
+		},
 		() => env,
 	);
 	Object.assign(env, { sessionId: claim.sessionId });

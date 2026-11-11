@@ -52,7 +52,7 @@ export function assertAppWorkingDirectories(
  * prepared selection and bounded like every other hook.
  */
 export function createServerHookRunner(
-	ctx: DevEnvContext,
+	ctx: { readonly config: Pick<DevEnvContext["config"], "hooks"> },
 	envVars: DevEnvVarsApi,
 ): (phase: "before" | "after", signal?: AbortSignal) => Promise<void> {
 	return async (phase, signal) => {

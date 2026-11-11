@@ -150,8 +150,26 @@ export function resolveClaimHold(
 	return hold === false ? undefined : hold;
 }
 
+/** What a run's claim reads of its environment. */
+export type RunClaimContext = Pick<
+	DevEnvContext,
+	| "projectName"
+	| "root"
+	| "worktree"
+	| "services"
+	| "selectedServiceKeys"
+	| "hasSelectedServices"
+	| "runtimeBinary"
+> & {
+	readonly runtime: Pick<DevEnvContext["runtime"], "name">;
+	readonly config: Pick<
+		DevEnvContext["config"],
+		"projectPrefix" | "options" | "tasks" | "services" | "integrations"
+	>;
+};
+
 export function createRunClaimApi(
-	ctx: DevEnvContext,
+	ctx: RunClaimContext,
 	/** The environment, which the app rows are built from. */
 	source: () => RunSource,
 ): DevRunClaimApi {
