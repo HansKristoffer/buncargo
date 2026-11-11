@@ -195,8 +195,16 @@ pieces it orchestrates.
 
 ## Check and predeploy
 
-`commands/check/` is `buncargo check`; `plan.ts` (gate and test selection) is pure apart from the
-glob scan, `docs.ts` is also `check docs`. Steps run one at a time with their output buffered: the
+`commands/check/` is `buncargo check`. `planCheck` (`plan.ts`) is a pure function from the config,
+the files and the mode to a list of named steps; the command reads the files and the repository
+first, then filters the list (`--only`, `--skip`), prints it (`--list`) or runs it (`runner.ts`).
+Step names are the filter's contract, so a chunked step (`biome --write (200 files)`) keeps one
+name, and validation refuses a gate named like a built-in step or an earlier gate. `docs.ts` is
+also `check docs`. Deferred tests (`check.testDeferred`) are a pass with a count by default:
+a non-zero default fails every check in every repo with database tests. They used to run with no
+database, every test skipped, and `check` printed `PASS`.
+
+Steps run one at a time with their output buffered: the
 point is one line per step and the tail of the failure, not a live log. The verdict is the exit
 code alone and comes last, with each failure's rerun command: agents read `check | tail`, and a
 format step once printed ✓ over a command that never ran. The typecheck is spawned
