@@ -33,6 +33,14 @@ context. `secrets ls` prints key names, `secrets check` key counts.
   `InfisicalLoginError` (`errors.ts`) whose fix is `infisical login --domain=<siteUrl>`. 2 s is
   tight for the CLI's `checkAuth` round trip on a slow network; a printed prompt, the observed
   case, does not wait for it.
+- A timeout and a non-zero exit cannot tell an expired session from no network, and offline
+  `dev` refused to start with advice that could not help. So after the lock is released, those
+  two probe `siteUrl` once without credentials (any HTTP answer counts): unreachable becomes a
+  plain `SecretsError`, which warns and continues. Only a printed login prompt, an empty answer
+  or a reachable site stays a login error.
+- A 403 is never a login problem. In one project the scope lacked `organizationId`; the old
+  `infisical login` advice was wrong, and every app's loader then went to the CLI at once. The
+  error names the project and the token's organization and points at `secrets.organizationId`.
 - An `InfisicalLoginError` stops the run instead of warning (`stopsTheRun`): every app's own
   loader and every command would wait on the same login. Not in CI, where nobody can log in, and
   not when the shell exports its own Infisical token, which the apps' loaders use while

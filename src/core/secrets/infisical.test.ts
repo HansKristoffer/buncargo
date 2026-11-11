@@ -593,6 +593,62 @@ describe("an expired session", () => {
 	});
 });
 
+describe("a failure that no login fixes", () => {
+	async function warningsOf(work: () => Promise<unknown>) {
+		const warnings: string[] = [];
+		const warn = console.warn;
+		console.warn = (message: unknown) => warnings.push(String(message));
+		try {
+			return { result: await work(), warnings };
+		} finally {
+			console.warn = warn;
+		}
+	}
+
+	/** A site that refuses connections: a server that has stopped. */
+	function unreachableSite(): string {
+		const server = Bun.serve({ port: 0, fetch: () => new Response() });
+		const siteUrl = `http://localhost:${server.port}`;
+		server.stop(true);
+		return siteUrl;
+	}
+
+	for (const cli of [{ cliLogin: "hang" }, { cliFails: true }] as const) {
+		it(`warns and goes on when the CLI ${"cliLogin" in cli ? "times out" : "fails"} and the site is unreachable`, async () => {
+			start(cli);
+			const siteUrl = unreachableSite();
+			const apps = { api: app("p1", { secrets: { siteUrl } }) };
+
+			await ensureSecretsSession([scopeOf("p1", { siteUrl })], {
+				env: noIdentity(),
+			});
+			const { result, warnings } = await warningsOf(() =>
+				loadAppSecrets(apps, { env: noIdentity() }),
+			);
+
+			expect(result).toEqual({ api: {} });
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain(`Infisical at ${siteUrl} is unreachable`);
+			expect(warnings[0]).not.toContain("infisical login");
+		});
+	}
+
+	it("names the project and the session's organization on a 403", async () => {
+		start({ cliOrganization: "org-a", forbiddenProjects: ["p1"] });
+
+		const { result, warnings } = await warningsOf(() =>
+			loadAppSecrets({ api: app("p1") }, { env: noIdentity() }),
+		);
+
+		expect(result).toEqual({ api: {} });
+		expect(warnings[0]).toContain(
+			"Infisical refused a session in organization org-a access to project p1 (HTTP 403).",
+		);
+		expect(warnings[0]).toContain("Fix: set secrets.organizationId");
+		expect(warnings[0]).not.toContain("infisical login");
+	});
+});
+
 describe("ensureSecretsSession", () => {
 	it("shares its one CLI run with the fetches that follow", async () => {
 		const infisical = start();

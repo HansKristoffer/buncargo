@@ -348,9 +348,10 @@ const TOPICS: readonly Topic[] = [
 - \`bunx buncargo secrets check --json\` before tests or a run that needs
   secrets: exit 0 when every Infisical scope is readable, 2 when the session is
   missing or expired (the user runs the \`infisical login --domain=…\` it
-  prints), 3 when signed in but a scope cannot be read (\`error\` says why).
-  \`dev\`, \`run\` and \`exec\` stop within seconds on an expired session
-  instead of hanging.
+  prints), 3 when a scope cannot be read: Infisical unreachable, or a 403
+  (set \`secrets.organizationId\`); \`error\` says which. \`dev\`, \`run\`
+  and \`exec\` stop within seconds on an expired session instead of hanging,
+  and only warn when Infisical is unreachable.
 - \`bunx buncargo setup --yes\` runs the fix of every failing check (missing
   dependencies, generated files).
 - Docker out of disk, or hanging: \`bunx buncargo prune --project --dry-run\`
