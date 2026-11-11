@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { isDefined, isRecord } from "hanzio";
 import { DEFAULT_HTTP_SERVICE_NAMES } from "../core/hosts/plan";
-import { externalStackProjectName, findMonorepoRoot } from "../core/ports";
+import { externalStackProjectName } from "../core/ports";
 import { configuredPrimaryApp, resolvePrimaryApp } from "../core/primary-app";
 import { isCI } from "../core/runtime-flags";
 import { shellQuote } from "../core/shell-quote";
@@ -17,6 +17,7 @@ import type {
 	EnvVarsContext,
 	HostsOptionsLike,
 	IntegrationConfig,
+	IntegrationConfigContext,
 	ServiceConfig,
 } from "../types";
 import { supabaseChecks } from "./checks";
@@ -239,17 +240,15 @@ export function supabase(
 	const workdirOption = options.workdir;
 	const workdirOf = (root: string) => resolve(root, workdirOption ?? ".");
 	// Set in `config()`, which runs before anything below is called.
-	let project: SupabaseProject | undefined;
 	let bin = "supabase";
 	let exclude: readonly string[] = [];
 
 	return {
 		name: "supabase",
 
-		config(config, ctx) {
-			const root = ctx?.root ?? findMonorepoRoot();
+		config(config, ctx: IntegrationConfigContext) {
+			const root = ctx.root;
 			const toml = readSupabaseProject(workdirOf(root));
-			project = toml;
 			bin = resolveSupabaseBin(root);
 			exclude = options.exclude ?? (isCI() ? CI_EXCLUDE : []);
 
@@ -442,10 +441,8 @@ export function supabase(
 		},
 
 		checks: supabaseChecks({
-			project: (root) => {
-				project ??= readSupabaseProject(workdirOf(root));
-				return project;
-			},
+			// Read fresh: `setup` runs `supabase init` and then checks again.
+			project: (root) => readSupabaseProject(workdirOf(root)),
 			workdir: workdirOf,
 		}),
 
