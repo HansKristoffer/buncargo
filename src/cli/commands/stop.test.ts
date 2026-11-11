@@ -266,7 +266,6 @@ describe("buncargo stop --all", () => {
 	});
 
 	it("removes the checkout's service routes, and no other checkout's", async () => {
-		const updatedAt = new Date().toISOString();
 		await upsertHostRoutes(
 			[
 				{
@@ -275,7 +274,6 @@ describe("buncargo stop --all", () => {
 					kind: "service",
 					name: "typesense",
 					root,
-					updatedAt,
 				},
 				{
 					hostname: "typesense.other.localhost",
@@ -283,7 +281,6 @@ describe("buncargo stop --all", () => {
 					kind: "service",
 					name: "typesense",
 					root: tmpdir(),
-					updatedAt,
 				},
 			],
 			{ owners: pidRouteOwners },

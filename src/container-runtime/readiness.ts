@@ -11,12 +11,18 @@ import {
 	SLOW_STEP_MS,
 	scheduleLog,
 } from "../core/style";
-import type { ServiceConfig } from "../types";
+import type {
+	BuiltInHealthCheck,
+	HealthCheckFn,
+	ServiceConfig,
+} from "../types";
 import {
+	type ContainerObservation,
 	isContainerServing,
 	parseContainerState,
 	startupVerdict,
 } from "./container-state";
+import { serviceContainerOf } from "./containers";
 import { createBuiltInHealthCheck } from "./health-checks";
 import type { ContainerRuntimeAdapter, ServiceDiagnosis } from "./types";
 
@@ -34,11 +40,44 @@ export interface WaitForServiceOptions {
 }
 
 /**
- * How often, in poll attempts, to ask the runtime whether the container is
- * still alive. Every attempt would mean a CLI call four times a second for a
- * question that only changes once.
+ * How often, in poll attempts, a probed service's poll asks the runtime
+ * whether the container is still alive. Every attempt would mean a listing
+ * four times a second for a question that only changes once.
  */
-const DIAGNOSIS_EVERY_ATTEMPTS = 8;
+const STATE_CHECK_EVERY_ATTEMPTS = 8;
+
+/**
+ * How one service proves it is ready, decided from its config alone.
+ *
+ * - `runtimeHealth`: the runtime already ran this probe and it passed.
+ * - `completion`: a job, ready when its container exits 0.
+ * - `process`: no port to probe, ready while its container runs.
+ * - `none`: nothing configured to wait for.
+ * - `probe` and `custom`: a built-in or the config's own check on the port.
+ */
+export type ReadinessPlan =
+	| { kind: "runtimeHealth" }
+	| { kind: "completion" }
+	| { kind: "process" }
+	| { kind: "none" }
+	| { kind: "probe"; probe: BuiltInHealthCheck; port: number }
+	| { kind: "custom"; check: HealthCheckFn; port: number };
+
+export function readinessPlan(
+	config: ServiceConfig,
+	port: number | undefined,
+	runtimeHealthy?: boolean,
+): ReadinessPlan {
+	if (runtimeAnsweredReadiness(config, runtimeHealthy))
+		return { kind: "runtimeHealth" };
+	if (config.kind === "job") return { kind: "completion" };
+	if (port === undefined) return { kind: "process" };
+	const check = config.healthCheck;
+	if (check === false || check === undefined) return { kind: "none" };
+	return typeof check === "function"
+		? { kind: "custom", check, port }
+		: { kind: "probe", probe: check, port };
+}
 
 interface HealthPollContext {
 	/** The key the user wrote in dev.config. */
@@ -53,7 +92,13 @@ interface HealthPollContext {
 	composeFile?: string;
 }
 
-/** Never throws: a diagnosis that fails must not break the poll it decorates. */
+/** What a poll saw of the container; `logTail` only once it was fetched. */
+type Observation = ContainerObservation & { logTail?: string };
+
+/**
+ * The container's state and recent output. Never throws: a diagnosis that
+ * fails must not break the poll it decorates.
+ */
 async function diagnose(
 	context: HealthPollContext,
 	timeoutMs: number,
@@ -79,8 +124,49 @@ async function diagnose(
 	}
 }
 
-function withLogTail(message: string, diagnosis?: ServiceDiagnosis): string {
-	const tail = diagnosis?.logTail?.trim();
+/**
+ * The container's state from the runtime's listing, without its logs: what
+ * every poll asks. A runtime without a listing answers with a diagnosis,
+ * logs and all. Never throws.
+ */
+async function observe(
+	context: HealthPollContext,
+	timeoutMs: number,
+	signal?: AbortSignal,
+): Promise<Observation | undefined> {
+	const list = context.runtime.containers?.bind(context.runtime);
+	if (!list) return diagnose(context, timeoutMs, signal);
+	try {
+		const container = serviceContainerOf(
+			await withDeadline((probeSignal) => list(probeSignal), timeoutMs, signal),
+			context.projectName,
+			context.composeServiceName,
+		);
+		if (!container) return undefined;
+		return {
+			state: container.runtimeState,
+			...(container.exitCode === undefined
+				? {}
+				: { exitCode: container.exitCode }),
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+/** The observation with the container's output, fetched now if it was not. */
+async function withLogs(
+	context: HealthPollContext,
+	observation: Observation,
+	signal?: AbortSignal,
+): Promise<Observation> {
+	if (observation.logTail !== undefined) return observation;
+	const diagnosis = await diagnose(context, 2000, signal);
+	return diagnosis ?? observation;
+}
+
+function withLogTail(message: string, observation?: Observation): string {
+	const tail = observation?.logTail?.trim();
 	if (!tail) {
 		return message;
 	}
@@ -92,16 +178,31 @@ function withLogTail(message: string, diagnosis?: ServiceDiagnosis): string {
 	return `${message}\n  Last output from the container:\n${indented}`;
 }
 
-async function pollUntilHealthy(
+/**
+ * The one poll loop every plan runs.
+ *
+ * A plan that is decided by the container's state (`completion`, `process`)
+ * reads the listing every tick; a probed one reads it every few ticks to
+ * catch a container that died. Either way the logs are fetched once, when
+ * the wait fails, rather than with every reading.
+ */
+async function pollUntilReady(
 	context: HealthPollContext,
-	check: (signal?: AbortSignal) => Promise<boolean>,
-	timeoutMs: number,
-	pollInterval: number,
-	onReady?: () => void,
-	signal?: AbortSignal,
+	options: {
+		/** Read the container's state every tick rather than every few. */
+		everyTick: boolean;
+		check: (
+			observation: Observation | undefined,
+			signal?: AbortSignal,
+		) => Promise<boolean>;
+		timeoutMs: number;
+		pollInterval: number;
+		signal?: AbortSignal;
+	},
 ): Promise<void> {
 	const { serviceName, runtime, probe, port } = context;
-	let lastDiagnosis: ServiceDiagnosis | undefined;
+	const { timeoutMs, pollInterval, signal } = options;
+	let lastObservation: Observation | undefined;
 	let restartsInARow = 0;
 
 	const deadline = performance.now() + timeoutMs;
@@ -110,10 +211,30 @@ async function pollUntilHealthy(
 			recordStartupMetric("healthRetries");
 		}
 		signal?.throwIfAborted();
-		let healthy = false;
+
+		const observed =
+			options.everyTick || (i > 0 && i % STATE_CHECK_EVERY_ATTEMPTS === 0);
+		let observation: Observation | undefined;
+		if (observed) {
+			observation = await observe(
+				context,
+				Math.min(2000, remainingTime(deadline)),
+				signal,
+			);
+			lastObservation = observation ?? lastObservation;
+			if (observation) {
+				// In a row: a service that exits while its dependency comes up,
+				// then runs, is a restart policy doing its job, not a crash loop.
+				const restarting =
+					parseContainerState(observation.state) === "restarting";
+				restartsInARow = restarting ? restartsInARow + 1 : 0;
+			}
+		}
+
+		let ready = false;
 		try {
-			healthy = await withDeadline(
-				(probeSignal) => check(probeSignal),
+			ready = await withDeadline(
+				(probeSignal) => options.check(observation, probeSignal),
 				remainingTime(deadline),
 				signal,
 			);
@@ -128,32 +249,31 @@ async function pollUntilHealthy(
 			}
 		}
 
-		if (healthy) {
-			onReady?.();
-			return;
-		}
+		if (ready) return;
 
-		if (i > 0 && i % DIAGNOSIS_EVERY_ATTEMPTS === 0) {
-			lastDiagnosis = await diagnose(context, remainingTime(deadline), signal);
-			if (lastDiagnosis) {
-				// In a row: a service that exits while its dependency comes up,
-				// then runs, is a restart policy doing its job, not a crash loop.
-				const restarting =
-					parseContainerState(lastDiagnosis.state) === "restarting";
-				restartsInARow = restarting ? restartsInARow + 1 : 0;
-				const verdict = startupVerdict(lastDiagnosis, restartsInARow);
-				if (verdict.kind !== "pending") {
-					const exit =
-						lastDiagnosis.exitCode !== undefined
-							? ` (exit code ${lastDiagnosis.exitCode})`
-							: "";
-					const reported = `${runtime.displayName} reports state "${lastDiagnosis.state}"${exit}`;
-					const problem =
-						verdict.kind === "crash-loop"
-							? `Service ${serviceName} keeps crashing while starting up: ${reported} again and again.`
+		// Not on the first look: a container that has not appeared yet is
+		// still being created, and a probe that is not ready yet is normal.
+		if (observation && (options.everyTick || i > 0)) {
+			// Restarts are counted only on the slower cadence: two readings a
+			// tick apart are usually the same restart.
+			const verdict = startupVerdict(
+				observation,
+				options.everyTick ? 0 : restartsInARow,
+			);
+			if (verdict.kind !== "pending") {
+				const failed = await withLogs(context, observation, signal);
+				const exit =
+					failed.exitCode !== undefined
+						? ` (exit code ${failed.exitCode})`
+						: "";
+				const reported = `${runtime.displayName} reports state "${failed.state}"${exit}`;
+				const problem =
+					verdict.kind === "crash-loop"
+						? `Service ${serviceName} keeps crashing while starting up: ${reported} again and again.`
+						: options.everyTick
+							? `Service ${serviceName} stopped in state ${failed.state} (exit code ${failed.exitCode ?? "unknown"})`
 							: `Service ${serviceName} stopped while starting up: ${reported}.`;
-					throw new Error(withLogTail(problem, lastDiagnosis));
-				}
+				throw new Error(withLogTail(problem, failed));
 			}
 		}
 
@@ -166,16 +286,16 @@ async function pollUntilHealthy(
 	signal?.throwIfAborted();
 	// One last look, on its own small budget: the state of a container that
 	// died in the final seconds is the whole explanation.
-	lastDiagnosis = (await diagnose(context, 2000, signal)) ?? lastDiagnosis;
+	const final = (await diagnose(context, 2000, signal)) ?? lastObservation;
 
 	const seconds = timeoutMs / 1000;
-	const state = lastDiagnosis
-		? ` Container state: ${lastDiagnosis.state}.`
+	const state = final
+		? ` Container state: ${final.state}.`
 		: " No container was found for it.";
 	throw new Error(
 		withLogTail(
 			`Service ${serviceName} did not become ready within ${seconds}s (${runtime.displayName}, ${probe} probe${port === undefined ? "" : ` on port ${port}`}).${state}`,
-			lastDiagnosis,
+			final,
 		),
 	);
 }
@@ -188,7 +308,12 @@ export async function waitForService(
 	config: ServiceConfig,
 	port: number | undefined,
 	options: WaitForServiceOptions,
+	/** The runtime's own healthcheck verdict, when it reported one. */
+	runtimeHealthy?: boolean,
 ): Promise<void> {
+	const plan = readinessPlan(config, port, runtimeHealthy);
+	if (plan.kind === "none" || plan.kind === "runtimeHealth") return;
+
 	const pollInterval = options.pollInterval ?? POLL_INTERVAL;
 	const { runtime, projectName, root, composeFile } = options;
 	const timeoutMs =
@@ -196,94 +321,60 @@ export async function waitForService(
 		(options.maxAttempts !== undefined
 			? options.maxAttempts * pollInterval
 			: 30_000);
-
-	if (config.kind === "job" || port === undefined) {
-		const context = {
-			serviceName,
-			composeServiceName: config.serviceName ?? serviceName,
-			runtime,
-			projectName,
-			probe: config.kind === "job" ? "completion" : "process",
-			root,
-			composeFile,
-		};
-		await pollUntilHealthy(
-			context,
-			async (signal) => {
-				const state = await diagnose(
-					context,
-					Math.min(timeoutMs, 2000),
-					signal,
-				);
-				if (state && startupVerdict(state, 0).kind === "stopped") {
-					const exitedCleanly =
-						parseContainerState(state.state) === "stopped" &&
-						state.exitCode === 0;
-					const completed = config.kind === "job" && exitedCleanly;
-					if (completed) {
-						if (options.verbose) {
-							console.log(
-								withLogTail(formatDone(`Job ${serviceName} completed`), state),
-							);
-						}
-
-						return true;
-					}
-					throw new Error(
-						withLogTail(
-							`Service ${serviceName} stopped in state ${state.state} (exit code ${state.exitCode ?? "unknown"})`,
-							state,
-						),
-					);
-				}
-
-				const serving =
-					state !== undefined &&
-					isContainerServing(parseContainerState(state.state));
-				return config.kind !== "job" && serving;
-			},
-			timeoutMs,
-			pollInterval,
-			undefined,
-			options.signal,
-		);
-		return;
-	}
-
-	if (config.healthCheck === false || config.healthCheck === undefined) {
-		return;
-	}
-
 	const composeServiceName = config.serviceName ?? serviceName;
-	const healthCheckFn =
-		typeof config.healthCheck === "function"
-			? config.healthCheck
-			: createBuiltInHealthCheck(config.healthCheck, composeServiceName, {
+	const context: HealthPollContext = {
+		serviceName,
+		composeServiceName,
+		runtime,
+		projectName,
+		probe: plan.kind === "probe" ? plan.probe : plan.kind,
+		port:
+			plan.kind === "probe" || plan.kind === "custom" ? plan.port : undefined,
+		root,
+		composeFile,
+	};
+	const poll = { timeoutMs, pollInterval, signal: options.signal };
+
+	if (plan.kind === "completion" || plan.kind === "process") {
+		await pollUntilReady(context, {
+			...poll,
+			everyTick: true,
+			check: async (observation, signal) => {
+				if (!observation) return false;
+				const state = parseContainerState(observation.state);
+				if (
+					plan.kind === "completion" &&
+					state === "stopped" &&
+					observation.exitCode === 0
+				) {
+					if (options.verbose)
+						console.log(
+							withLogTail(
+								formatDone(`Job ${serviceName} completed`),
+								await withLogs(context, observation, signal),
+							),
+						);
+					return true;
+				}
+				return plan.kind === "process" && isContainerServing(state);
+			},
+		});
+		return;
+	}
+
+	const check =
+		plan.kind === "custom"
+			? plan.check
+			: createBuiltInHealthCheck(plan.probe, composeServiceName, {
 					runtime,
 					projectName,
 					root,
 				});
-
-	await pollUntilHealthy(
-		{
-			serviceName,
-			composeServiceName,
-			runtime,
-			projectName,
-			probe:
-				typeof config.healthCheck === "function"
-					? "custom"
-					: config.healthCheck,
-			port,
-			root,
-			composeFile,
-		},
-		(signal) => healthCheckFn(port, signal),
-		timeoutMs,
-		pollInterval,
-		undefined,
-		options.signal,
-	);
+	await pollUntilReady(context, {
+		...poll,
+		everyTick: false,
+		check: (_observation, signal) => check(plan.port, signal),
+	});
 }
 
 /**
@@ -355,16 +446,13 @@ export async function waitForAllServices(
 	try {
 		await Promise.all(
 			Object.entries(services).map(([name, config]) => {
-				const port = ports[name];
-
-				if (
-					healthyServices?.has(config.serviceName ?? name) &&
-					runtimeAnsweredReadiness(config, true)
-				) {
-					return Promise.resolve();
-				}
-
-				return waitForService(name, config, port, { ...waitOptions, verbose });
+				return waitForService(
+					name,
+					config,
+					ports[name],
+					{ ...waitOptions, verbose },
+					healthyServices?.has(config.serviceName ?? name),
+				);
 			}),
 		);
 	} finally {

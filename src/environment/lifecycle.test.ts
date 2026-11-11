@@ -11,7 +11,7 @@ import {
 	clearScopeSecretsCache,
 	loadScopeSecrets,
 	resolveScope,
-} from "../core/secrets/infisical";
+} from "../core/secrets/index";
 import { isolateHome } from "../core/test-env.testing";
 import { planStart } from "../planning";
 import type { AppConfig, ServiceConfig } from "../types";

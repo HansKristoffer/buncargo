@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { toError } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import { startFakeInfisical } from "../secrets/fake-infisical.testing";
-import { clearScopeSecretsCache } from "../secrets/infisical";
+import { clearScopeSecretsCache } from "../secrets/index";
 import { startDevServers, stopDevServers } from "./dev-servers";
 import { signalProcessTree } from "./port-owner";
 import { RunOutput } from "./run-output";

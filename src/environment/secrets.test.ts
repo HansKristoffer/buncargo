@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
-import { clearScopeSecretsCache } from "../core/secrets/infisical";
+import { clearScopeSecretsCache } from "../core/secrets/index";
 import { createDevEnvironment } from "./create-dev-environment";
 import { runMigrationsSequentially } from "./migrations";
 

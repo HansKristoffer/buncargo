@@ -9,7 +9,7 @@ import { registerAbortCleanup, withDeadline } from "../core/deadline";
 import { toPortMap, toUrlMap } from "../core/ports";
 import { stopDevServers } from "../core/process/dev-servers";
 import { isCI } from "../core/runtime-flags";
-import { ensureSecretsSession } from "../core/secrets/infisical";
+import { ensureSecretsSession } from "../core/secrets/index";
 import { formatDone, formatStep, formatWarn } from "../core/style";
 import { resolveComposeServiceNames } from "../planning";
 import { resolvePrismaConfig } from "../prisma/config";

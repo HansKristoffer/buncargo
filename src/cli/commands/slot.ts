@@ -1,5 +1,5 @@
 import { constants } from "node:os";
-import { formatCheckSlotHolder, withCheckSlot } from "../../core/check-slots";
+import { formatCheckSlotWait, withCheckSlot } from "../../core/check-slots";
 import { childProcessEnv } from "../../core/child-env";
 import {
 	type CommandSpec,
@@ -99,10 +99,7 @@ export async function handleSlot(args: string[]): Promise<number> {
 			}
 		},
 		{
-			onWait: (holders) =>
-				console.error(
-					`Waiting for a check slot: ${holders.map(formatCheckSlotHolder).join(", ")}`,
-				),
+			onWait: (wait) => console.error(formatCheckSlotWait(wait)),
 		},
 	);
 }

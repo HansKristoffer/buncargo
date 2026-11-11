@@ -35,7 +35,7 @@ const BASE_PORT = 15432;
 function fakeDocker(container?: { port: number; project: string }): string {
 	const docker = join(scratch, "docker");
 	const ps = container
-		? `printf '%s\\t%s\\t%s\\t%s\\n' f00 ${container.project}-postgres-1 '0.0.0.0:${container.port}->5432/tcp' ${container.project}`
+		? `printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' f00 ${container.project}-postgres-1 running Up '0.0.0.0:${container.port}->5432/tcp' ${container.project}`
 		: "true";
 	writeFileSync(
 		docker,

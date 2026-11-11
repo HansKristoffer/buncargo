@@ -5,7 +5,7 @@ import type { AppConfig, DevServerPids } from "../../types";
 import { abortableSleep } from "../deadline";
 import { readEnvOverrides, warnShadowedSecrets } from "../env-overrides";
 import { waitForDevServers } from "../network";
-import { loadAppSecrets, missingRequiredSecrets } from "../secrets/infisical";
+import { loadAppSecrets, missingRequiredSecrets } from "../secrets/index";
 import { formatStep, formatWarn, prefixWidth } from "../style";
 import {
 	ptyTeeArgv,

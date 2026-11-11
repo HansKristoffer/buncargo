@@ -158,7 +158,10 @@ if(args.includes('up')) {writeFileSync(${JSON.stringify(state)}, JSON.stringify(
 if(args[0]==='version') {console.log('benchmark'); process.exit(0);}
 if(args[0]==='ps' && args.join(' ').includes('buncargo.service') && existsSync(${JSON.stringify(state)})) {
 const env=JSON.parse(readFileSync(${JSON.stringify(state)},'utf8')); const hash=Object.entries(env).find(([key])=>key.startsWith('BUNCARGO_SERVICE_HASH_'))?.[1]??'';
-console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
+// The one listing (id, name, state, status, ports, labels), or the per-question formats older CLIs ask for.
+const listing=args.join(' ').includes('com.docker.compose.oneoff');
+const project=env.COMPOSE_PROJECT_NAME??'';
+console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'False',project,'','','postgres',hash]:['postgres','running','Up (healthy)',hash]).join('\\t'));}
 `,
 	);
 	writeFileSync(

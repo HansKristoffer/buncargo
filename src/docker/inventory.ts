@@ -1,51 +1,23 @@
+import { buncargoContainersOf } from "../container-runtime/containers";
 import type { BuncargoContainer } from "../types";
 import { runDocker } from "./binary";
+import { listDockerContainers, parseDockerContainer } from "./containers";
 
-const LIST_ARGS = [
-	"ps",
-	"-a",
-	"--filter",
-	"label=buncargo.project",
-	"--format",
-	'{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}\t{{.Label "buncargo.project"}}\t{{.Label "buncargo.root"}}\t{{.Label "buncargo.worktree"}}\t{{.Label "buncargo.service"}}',
-];
-
+/** One line of the Docker listing, or null for a container buncargo did not create. */
 export function parseDockerContainerLine(
 	line: string,
 ): BuncargoContainer | null {
-	const [id, name, state, status, ports, project, root, worktree, service] =
-		line.split("\t");
-	if (!id || !project) return null;
-	return {
-		id,
-		name: name ?? id,
-		state: state ?? "",
-		status: status ?? "",
-		ports: ports ?? "",
-		project,
-		root: root ?? "",
-		worktree: worktree ?? "",
-		service: service ?? "",
-		runtime: "docker",
-	};
+	const container = parseDockerContainer(line);
+	return container
+		? (buncargoContainersOf([container], "docker")[0] ?? null)
+		: null;
 }
 
 /** Every container (running or not) labeled by buncargo on this machine. */
 export function listDockerBuncargoContainers(
 	binary?: string,
 ): BuncargoContainer[] {
-	const result = runDocker(binary, LIST_ARGS);
-	if (!result.ok) {
-		throw new Error(result.stderr.trim() || "docker ps failed");
-	}
-	return result.stdout
-		.trim()
-		.split("\n")
-		.filter(Boolean)
-		.flatMap((line) => {
-			const parsed = parseDockerContainerLine(line);
-			return parsed ? [parsed] : [];
-		});
+	return buncargoContainersOf(listDockerContainers(binary), "docker");
 }
 
 export function stopDockerContainersByIds(

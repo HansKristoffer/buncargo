@@ -206,6 +206,13 @@ export interface SecretsScopeConfig {
 	/** Folder, matching the app's own secret path. Default: `"/"`. */
 	path?: string;
 	/**
+	 * Inject only these keys from the scope. A key someone adds to the shared
+	 * Infisical environment then reaches no checkout until it is listed here.
+	 */
+	only?: readonly string[];
+	/** Never inject these keys, such as a mail provider's key that sends real mail. */
+	exclude?: readonly string[];
+	/**
 	 * Keys that must be present after the fetch. A missing one stops the app
 	 * before it spawns, naming the key, instead of the app crashing on it.
 	 */

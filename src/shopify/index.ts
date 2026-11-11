@@ -22,7 +22,7 @@ import {
 	shopifyConfigName,
 } from "./app-config";
 import { isClientId, shopifyChecks } from "./checks";
-import { resolveShopifyBin } from "./cli";
+import { shopifyCli } from "./cli";
 import { shopifyCommands } from "./commands";
 import { ensureShopifyLogin } from "./login";
 import { renderShopifyWebToml, SHOPIFY_WEB_DIR } from "./web";
@@ -204,7 +204,7 @@ export function shopify(
 
 			const store = options.store;
 			const devCommand = [
-				shellQuote(resolveShopifyBin(root)),
+				shellQuote(shopifyCli.resolve([root])),
 				"app",
 				"dev",
 				"--config",

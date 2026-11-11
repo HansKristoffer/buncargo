@@ -4,6 +4,7 @@ import {
 	ftruncateSync,
 	mkdirSync,
 	openSync,
+	readdirSync,
 	readFileSync,
 	statSync,
 	unlinkSync,
@@ -21,8 +22,8 @@ import {
 import { getStateDir } from "./state-paths";
 
 /**
- * A machine-wide cap on heavy checks (typechecks, test suites) across every
- * checkout.
+ * A cap on heavy checks (typechecks, test suites) across every checkout of
+ * one user on the machine: the slots live in that user's `~/.buncargo`.
  *
  * Coding agents run checks in many worktrees at once, and one native `tsc`
  * peaks at several GB. Unbounded, they run the machine out of memory and slow
@@ -44,12 +45,27 @@ const SLOT_DIRNAME = "check-slots";
  * hang every check on the machine behind it.
  */
 const CHECK_SLOT_WAIT_MS = 15 * 60_000;
+const REPEAT_WAIT_MS = 30_000;
+/**
+ * A waiter's file found unlocked is one whose waiter died, unless it was
+ * created a moment ago and is about to be locked.
+ */
+const STALE_WAITER_MS = 5000;
 
 export interface CheckSlotHolder {
 	pid: number;
 	cwd: string;
 	label: string;
 	startedAt: number;
+}
+
+/** What a waiting check is told, first when it starts waiting and again while it waits. */
+export interface CheckSlotWait {
+	holders: CheckSlotHolder[];
+	/** This check's place among the checks waiting, from 1. */
+	position: number;
+	/** How many checks are waiting, this one included. */
+	waiting: number;
 }
 
 export interface CheckSlotOptions {
@@ -60,8 +76,13 @@ export interface CheckSlotOptions {
 	pollMs?: number;
 	/** How long to wait for a slot before running without one. */
 	waitMs?: number;
-	/** Called once when every slot is taken, before waiting. */
-	onWait?: (holders: CheckSlotHolder[]) => void;
+	/**
+	 * Called when every slot is taken, before waiting, and again every
+	 * `repeatWaitMs` while the check still waits.
+	 */
+	onWait?: (wait: CheckSlotWait) => void;
+	/** How often `onWait` repeats. Default 30 s. */
+	repeatWaitMs?: number;
 }
 
 interface HeldSlot {
@@ -127,8 +148,26 @@ function release(slot: HeldSlot): void {
 }
 
 /**
- * The holders recorded in the slot files, for the waiting message. Current
- * while every slot is taken: each holder rewrote its file when it took it.
+ * Whether another descriptor holds the kernel lock on `file`. Taking it to
+ * find out releases it at once; a file that does not exist is not held.
+ */
+function isLockedByOther(file: string): boolean {
+	let fd: number;
+	try {
+		fd = openSync(file, "r");
+	} catch {
+		return false;
+	}
+	try {
+		return !tryLockDescriptor(fd);
+	} finally {
+		closeSync(fd);
+	}
+}
+
+/**
+ * The holders of the slots that are taken now. A slot file is only current
+ * while its lock is held: a killed holder leaves its file behind.
  */
 export function checkSlotHolders(
 	dir = join(getStateDir(), SLOT_DIRNAME),
@@ -136,15 +175,108 @@ export function checkSlotHolders(
 ): CheckSlotHolder[] {
 	const holders: CheckSlotHolder[] = [];
 	for (let slot = 0; slot < slots; slot++) {
-		const holder = readHolder(join(dir, `${slot}.lock`));
-		if (holder) holders.push(holder);
+		const file = join(dir, `${slot}.lock`);
+		const holder = readHolder(file);
+		if (holder && isLockedByOther(file)) holders.push(holder);
 	}
 	return holders;
+}
+
+/**
+ * A waiting check's file, locked while it waits so a dead waiter is told
+ * apart from a live one. Named by when it joined, so the names sort into the
+ * order the checks queued in.
+ */
+function joinQueue(dir: string, pid: number): HeldSlot {
+	// In microseconds: checks often start waiting within one millisecond.
+	const joinedAt = Math.round(
+		(performance.timeOrigin + performance.now()) * 1000,
+	);
+	const unique = Math.random().toString(36).slice(2, 8);
+	const file = join(
+		dir,
+		`wait-${String(joinedAt).padStart(19, "0")}-${pid}-${unique}`,
+	);
+	const fd = openSync(file, "a+", 0o600);
+	tryLockDescriptor(fd);
+	return { file, fd };
+}
+
+/** The live waiters' files, oldest first; a dead waiter's file is removed. */
+function liveWaiters(dir: string): string[] {
+	const now = Date.now();
+	return readdirSync(dir)
+		.filter((name) => name.startsWith("wait-"))
+		.sort()
+		.filter((name) => {
+			const file = join(dir, name);
+			if (isLockedByOther(file)) return true;
+			try {
+				if (now - statSync(file).mtimeMs > STALE_WAITER_MS) unlinkSync(file);
+			} catch {}
+			return false;
+		});
+}
+
+function waitState(
+	dir: string,
+	slots: number,
+	queued: HeldSlot,
+): CheckSlotWait {
+	// This process holds its own file's lock, so it reads as live too.
+	const waiters = [
+		...new Set([...liveWaiters(dir), basename(queued.file)]),
+	].sort();
+	return {
+		holders: checkSlotHolders(dir, slots),
+		position: waiters.indexOf(basename(queued.file)) + 1,
+		waiting: waiters.length,
+	};
+}
+
+/** The slots as `buncargo status` reports them. */
+export interface CheckSlotStatus {
+	/** Where this user's slots live: they are per user, not per machine. */
+	dir: string;
+	capacity: number;
+	/** False in CI and with a cap of 0, where checks take no slot. */
+	enabled: boolean;
+	holders: CheckSlotHolder[];
+	/** Checks waiting for a slot now. */
+	waiting: number;
+}
+
+export function checkSlotStatus(
+	options: Pick<CheckSlotOptions, "slots" | "dir" | "env"> = {},
+): CheckSlotStatus {
+	const env = options.env ?? process.env;
+	const capacity = options.slots ?? checkSlotCount(env);
+	const dir = options.dir ?? join(getStateDir(), SLOT_DIRNAME);
+	let waiting = 0;
+	try {
+		waiting = liveWaiters(dir).length;
+	} catch {
+		// No directory: nothing has waited yet.
+	}
+	return {
+		dir,
+		capacity,
+		enabled: !isCI(env) && capacity > 0,
+		holders: checkSlotHolders(dir, capacity),
+		waiting,
+	};
 }
 
 export function formatCheckSlotHolder(holder: CheckSlotHolder): string {
 	const seconds = Math.round((Date.now() - holder.startedAt) / 1000);
 	return `${basename(holder.cwd)} ${holder.label} (${seconds}s)`;
+}
+
+/** The line a waiting check prints, each time `onWait` is called. */
+export function formatCheckSlotWait(wait: CheckSlotWait): string {
+	const line =
+		wait.waiting > 1 ? `, ${wait.position} of ${wait.waiting} waiting` : "";
+	return `Waiting for a check slot${line}: ${wait.holders.map(formatCheckSlotHolder).join(", ")}`;
 }
 
 /**
@@ -165,11 +297,22 @@ async function acquireSlot(
 		let slot = tryAcquire(dir, slots, holder);
 		if (slot) return slot;
 
-		options.onWait?.(checkSlotHolders(dir, slots));
-		const deadline = Date.now() + waitMs;
-		while (!slot && Date.now() < deadline) {
-			await Bun.sleep(Math.min(pollMs, deadline - Date.now()));
-			slot = tryAcquire(dir, slots, holder);
+		const queued = joinQueue(dir, holder.pid);
+		try {
+			const repeatMs = options.repeatWaitMs ?? REPEAT_WAIT_MS;
+			options.onWait?.(waitState(dir, slots, queued));
+			let reportAt = Date.now() + repeatMs;
+			const deadline = Date.now() + waitMs;
+			while (!slot && Date.now() < deadline) {
+				await Bun.sleep(Math.min(pollMs, deadline - Date.now()));
+				slot = tryAcquire(dir, slots, holder);
+				if (!slot && Date.now() >= reportAt) {
+					options.onWait?.(waitState(dir, slots, queued));
+					reportAt = Date.now() + repeatMs;
+				}
+			}
+		} finally {
+			release(queued);
 		}
 		if (slot) return slot;
 

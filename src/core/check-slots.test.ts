@@ -8,7 +8,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type CheckSlotHolder, withCheckSlot } from "./check-slots";
+import {
+	type CheckSlotHolder,
+	type CheckSlotWait,
+	checkSlotStatus,
+	withCheckSlot,
+} from "./check-slots";
 import { CHECK_SLOT_ENV } from "./runtime-flags";
 
 const dirs: string[] = [];
@@ -55,7 +60,7 @@ describe("withCheckSlot", () => {
 				...options,
 				env: {},
 				onWait: (current) => {
-					waitedOn = current;
+					waitedOn = current.holders;
 					waiting.resolve();
 				},
 			},
@@ -230,5 +235,85 @@ describe("withCheckSlot", () => {
 
 		await expect(failing).rejects.toThrow("boom");
 		expect(readdirSync(dir)).toEqual([]);
+	});
+
+	it("tells each waiting check its place in line, and repeats it while it waits", async () => {
+		const dir = slotDir();
+		const options = { dir, slots: 1, env: {}, pollMs: 5 };
+		const held = deferred();
+		const holding = withCheckSlot("long", () => held.promise, options);
+
+		const firstWaits: CheckSlotWait[] = [];
+		const secondWaits: CheckSlotWait[] = [];
+		const firstWaiting = deferred();
+		const secondRepeated = deferred();
+		const first = withCheckSlot("first", async () => {}, {
+			...options,
+			env: {},
+			onWait: (wait) => {
+				firstWaits.push(wait);
+				firstWaiting.resolve();
+			},
+		});
+		await firstWaiting.promise;
+		const second = withCheckSlot("second", async () => {}, {
+			...options,
+			env: {},
+			repeatWaitMs: 10,
+			onWait: (wait) => {
+				secondWaits.push(wait);
+				if (secondWaits.length === 2) secondRepeated.resolve();
+			},
+		});
+		await secondRepeated.promise;
+
+		expect(firstWaits[0]).toMatchObject({ position: 1, waiting: 1 });
+		expect(secondWaits.slice(0, 2)).toMatchObject([
+			{ position: 2, waiting: 2 },
+			{ position: 2, waiting: 2 },
+		]);
+		expect(secondWaits[0]?.holders.map((holder) => holder.label)).toEqual([
+			"long",
+		]);
+		expect(checkSlotStatus({ dir, slots: 1, env: {} })).toMatchObject({
+			capacity: 1,
+			enabled: true,
+			waiting: 2,
+		});
+
+		held.resolve();
+		await Promise.all([holding, first, second]);
+		expect(readdirSync(dir)).toEqual([]);
+	});
+});
+
+describe("checkSlotStatus", () => {
+	it("lists only the holders whose lock is held, not a killed holder's file", async () => {
+		const dir = slotDir();
+		writeFileSync(
+			join(dir, "1.lock"),
+			JSON.stringify({ pid: 1, cwd: "/gone", label: "killed", startedAt: 0 }),
+		);
+		const held = deferred();
+		const running = deferred();
+		const holding = withCheckSlot(
+			"typecheck",
+			async () => {
+				running.resolve();
+				await held.promise;
+			},
+			{ dir, slots: 2, env: {} },
+		);
+		await running.promise;
+
+		const status = checkSlotStatus({ dir, slots: 2, env: {} });
+		expect(status.holders.map((holder) => holder.label)).toEqual(["typecheck"]);
+		expect(status).toMatchObject({ capacity: 2, enabled: true, waiting: 0 });
+		expect(
+			checkSlotStatus({ dir, slots: 2, env: { CI: "true" } }).enabled,
+		).toBe(false);
+
+		held.resolve();
+		await holding;
 	});
 });

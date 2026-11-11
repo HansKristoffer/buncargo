@@ -124,21 +124,18 @@ export async function activateNamedHosts<
 		// hostname a live owner elsewhere holds stays on `localhost:port`
 		// alone, with a warning naming that owner.
 		options.signal?.throwIfAborted();
-		const appConflicts = await upsertHostRoutes(
-			routesFromPlan(hosts.plan, {
-				root: env.root,
-				pid: process.pid,
-				processIdentity: await readCurrentProcessIdentityAsync(),
-				kinds: ["app"],
-			}),
+		const conflicts = await upsertHostRoutes(
+			[
+				...routesFromPlan(hosts.plan, {
+					root: env.root,
+					pid: process.pid,
+					processIdentity: await readCurrentProcessIdentityAsync(),
+					kinds: ["app"],
+				}),
+				...routesFromPlan(hosts.plan, { root: env.root, kinds: ["service"] }),
+			],
 			{ takeover: new Set(options.takeover), owners: deps.owners },
 		);
-		options.signal?.throwIfAborted();
-		const serviceConflicts = await upsertHostRoutes(
-			routesFromPlan(hosts.plan, { root: env.root, kinds: ["service"] }),
-			{ owners: deps.owners },
-		);
-		const conflicts = [...appConflicts, ...serviceConflicts];
 		const held = new Set(conflicts.map((conflict) => conflict.hostname));
 		notes.push(
 			...conflicts.map((conflict) => `${HOSTS_FALLBACK} ${conflict.message}`),

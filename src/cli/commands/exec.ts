@@ -1,4 +1,4 @@
-import { formatCheckSlotHolder, withCheckSlot } from "../../core/check-slots";
+import { formatCheckSlotWait, withCheckSlot } from "../../core/check-slots";
 import { CommandSignalError, type ExecResult } from "../../core/process";
 import { loadDevEnv } from "../../loader";
 import { argumentsError } from "../errors";
@@ -93,9 +93,6 @@ export async function handleExec(args: string[]): Promise<number> {
 	if (!parsed.slot) return run();
 
 	return withCheckSlot(parsed.command.join(" ").slice(0, 60), run, {
-		onWait: (holders) =>
-			console.error(
-				`Waiting for a check slot: ${holders.map(formatCheckSlotHolder).join(", ")}`,
-			),
+		onWait: (wait) => console.error(formatCheckSlotWait(wait)),
 	});
 }

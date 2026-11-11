@@ -34,7 +34,13 @@ import {
 	waitForDaemonRoutes,
 } from "./daemon-client";
 import { writeDaemonConfig } from "./daemon-config";
-import { type LocalProxy, startLocalProxy } from "./proxy";
+import {
+	createProxyFetch,
+	HEALTH_PATH,
+	type LocalProxy,
+	type ProxyRouteLookup,
+	startLocalProxy,
+} from "./proxy";
 
 describe("nextReloadDelayMs", () => {
 	it("polls every second while reloads succeed", () => {
@@ -573,6 +579,50 @@ describe("createHostsReloader", () => {
 		await reloader.reload();
 		expect(state.binds).toBe(2);
 		expect(state.stops).toBe(1);
+	});
+
+	// The proxy reads this view on every request, for its age. Building the
+	// list there cost each proxied request a certificate check per route.
+	it("builds the served hostname list for health, not for a proxied request", async () => {
+		let certificateChecks = 0;
+		let lookup: ProxyRouteLookup = () => undefined;
+		const { state, reloader } = reloaderHarness({
+			certificateServes: () => () => {
+				certificateChecks += 1;
+				return true;
+			},
+			startProxy: async (input) => {
+				lookup = input.lookup;
+				return { httpsPort: 443, stop: () => {} } satisfies LocalProxy;
+			},
+		});
+		state.routes = [route("web.demo.localhost", 5173)];
+		await reloader.reload();
+		const fetchHandler = createProxyFetch({
+			lookup,
+			routes: reloader.routes,
+			https: true,
+			upstream: { resolve: async () => undefined, forget: () => {} },
+		});
+
+		certificateChecks = 0;
+		const proxied = await fetchHandler(
+			new Request("https://web.demo.localhost/", {
+				headers: { host: "web.demo.localhost" },
+			}),
+			{} as never,
+		);
+		expect(proxied.status).toBe(502);
+		expect(certificateChecks).toBe(0);
+
+		const health = await fetchHandler(
+			new Request(`https://127.0.0.1${HEALTH_PATH}`),
+			{} as never,
+		);
+		expect(await health.json()).toMatchObject({
+			hostnames: ["web.demo.localhost"],
+		});
+		expect(certificateChecks).toBe(1);
 	});
 
 	// The failure this pins: health listed the new hostnames while the old
