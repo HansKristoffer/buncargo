@@ -25,7 +25,7 @@ import {
 } from "../core/secrets/index";
 import { isolateHome } from "../core/test-env.testing";
 import { planStart } from "../planning";
-import type { AppConfig, ResolvedApp, ServiceConfig } from "../types";
+import type { ResolvedApp } from "../types";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 import { createLifecycleApi } from "./lifecycle";
@@ -102,10 +102,7 @@ function fixture() {
 			events.push("artifact");
 		},
 		composeModel: () => ({ services: { db: { image: "postgres:16" } } }),
-	} as unknown as DevEnvContext<
-		Record<string, ServiceConfig>,
-		Record<string, AppConfig>
-	>;
+	} as unknown as DevEnvContext;
 	ctx.getStartPlan = (onlyApps, onlyServices) =>
 		planStart(ctx.apps, ctx.services, { onlyApps, onlyServices });
 	ctx.prepareStartAsync = async () => {};
@@ -122,10 +119,7 @@ function fixture() {
 			events.push(command);
 			return { exitCode: 0, stdout: "", stderr: "" };
 		},
-	} as unknown as DevEnvVarsApi<
-		Record<string, ServiceConfig>,
-		Record<string, AppConfig>
-	>;
+	} as unknown as DevEnvVarsApi;
 	const runClaim = {
 		sessionId: "test-session",
 		claimedAt: undefined,

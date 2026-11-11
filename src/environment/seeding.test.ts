@@ -25,38 +25,32 @@ describe("resolveBunSeedSpecifier", () => {
 	});
 });
 
-type AnyServices = Record<string, never>;
-type AnyApps = Record<string, never>;
-
 function stubSeedContext(input: {
 	root: string;
 	command: string;
 	check?: () => Promise<boolean>;
 }): {
-	ctx: DevEnvContext<AnyServices, AnyApps>;
-	envVars: DevEnvVarsApi<AnyServices, AnyApps>;
+	ctx: DevEnvContext;
+	envVars: DevEnvVarsApi;
 } {
 	const ctx = {
 		root: input.root,
 		urls: {},
 		config: { seed: { command: input.command, check: input.check } },
-	} as unknown as DevEnvContext<AnyServices, AnyApps>;
+	} as unknown as DevEnvContext;
 	const envVars = {
 		buildEnvVars: () => ({}),
 		resolveSecrets: async () => ({}),
 		getHookContext: () => ({}),
 		exec: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
-	} as unknown as DevEnvVarsApi<AnyServices, AnyApps>;
+	} as unknown as DevEnvVarsApi;
 	return { ctx, envVars };
 }
 
 describe("runSeedIfNeeded", () => {
 	it("reports a missing seed block instead of guessing a command", async () => {
-		const ctx = { config: {} } as unknown as DevEnvContext<
-			AnyServices,
-			AnyApps
-		>;
-		const envVars = {} as unknown as DevEnvVarsApi<AnyServices, AnyApps>;
+		const ctx = { config: {} } as unknown as DevEnvContext;
+		const envVars = {} as unknown as DevEnvVarsApi;
 
 		expect(await runSeedIfNeeded(ctx, envVars)).toEqual({
 			status: "not-configured",

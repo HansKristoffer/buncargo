@@ -1,7 +1,6 @@
 import { withDeadline } from "../core/deadline";
 import type { CapturedValue } from "../core/process/output-capture";
 import { formatDone } from "../core/style";
-import type { AppConfig, EnvValues, ServiceConfig } from "../types";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
@@ -13,13 +12,9 @@ import { renderGeneratedFiles } from "./generated-files";
  * `value` becomes `captured.<name>`. Hooks see every capture, events included.
  * Generated files re-render only when something they read actually changed.
  */
-export function createCaptureRecorder<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues,
->(
-	ctx: DevEnvContext<TServices, TApps, TEnv>,
-	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
+export function createCaptureRecorder(
+	ctx: DevEnvContext,
+	envVars: DevEnvVarsApi,
 ) {
 	return async function recordCapture(
 		app: string,

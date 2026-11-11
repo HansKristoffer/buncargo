@@ -8,7 +8,6 @@ import { stringifyEnvValues } from "../core/env";
 import { portableEnvFingerprint } from "../core/env-fingerprint";
 import { applyEnvOverrides, warnShadowedSecrets } from "../core/env-overrides";
 import { unallocatedPortsMessage } from "../core/port-exhaustion";
-import { toPortMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
 import { hostsDaemonPort, isCI } from "../core/runtime-flags";
 import {
@@ -19,43 +18,35 @@ import {
 	warnSecretsOnce,
 } from "../core/secrets/index";
 import type {
-	AppConfig,
-	AppEnvVars,
-	ComputedEnvVars,
-	ComputedPublicUrls,
-	EnvValues,
 	EnvVarsBuilder,
 	ExecOptions,
 	HookContext,
 	ResolvedApp,
 	SecretsScopeConfig,
-	ServiceConfig,
 } from "../types";
-import type { DevEnvContext, StartSelection } from "./context";
+import type {
+	AnyApps,
+	AnyServices,
+	DevEnvContext,
+	StartSelection,
+} from "./context";
 
-export interface DevEnvVarsApi<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues = EnvValues,
-> {
-	buildEnvVars(production?: boolean): ComputedEnvVars<TServices, TApps, TEnv>;
-	buildAppEnvVars<TName extends Extract<keyof TApps, string>>(
-		appName: TName,
+export interface DevEnvVarsApi {
+	buildEnvVars(production?: boolean): Record<string, string>;
+	buildAppEnvVars(
+		appName: string,
 		production?: boolean,
-	): AppEnvVars<TServices, TApps, TEnv, TName>;
+	): Record<string, string>;
 	buildAppEnvVarsMap(
 		targetApps: Record<string, ResolvedApp>,
 		production?: boolean,
 	): Record<string, Record<string, string>>;
-	buildEnvFingerprint(
-		appName: Extract<keyof TApps, string>,
-		production?: boolean,
-	): string;
+	buildEnvFingerprint(appName: string, production?: boolean): string;
 	/** Without a selection, hooks see the prepared one (every name before preparation). */
 	getHookContext(
 		signal?: AbortSignal,
 		selection?: StartSelection,
-	): HookContext<TServices, TApps>;
+	): HookContext<AnyServices, AnyApps>;
 	/** `production` builds the env a production start gives its processes. */
 	exec(
 		cmd: string | readonly string[],
@@ -82,13 +73,7 @@ export interface DevEnvVarsApi<
 	): Promise<Record<string, string>>;
 }
 
-export function createEnvVarsApi<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues = EnvValues,
->(
-	ctx: DevEnvContext<TServices, TApps, TEnv>,
-): DevEnvVarsApi<TServices, TApps, TEnv> {
+export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 	const { config, services, apps, ports, urls, loopbackUrls, publicUrls } = ctx;
 
 	function extras(production = false): SharedEnvExtras {
@@ -100,26 +85,21 @@ export function createEnvVarsApi<
 		};
 	}
 
-	function buildEnvVars(
-		production = false,
-	): ComputedEnvVars<TServices, TApps, TEnv> {
-		// sharedEnv emits every computed name; TS cannot see that through the
-		// dynamic record it returns.
-		return stringifyEnvValues(
-			sharedEnv(ctx, extras(production)),
-		) as ComputedEnvVars<TServices, TApps, TEnv>;
+	function buildEnvVars(production = false): Record<string, string> {
+		return stringifyEnvValues(sharedEnv(ctx, extras(production)));
 	}
 
-	function buildAppEnvVars<TName extends Extract<keyof TApps, string>>(
-		appName: TName,
+	function buildAppEnvVars(
+		appName: string,
 		production = false,
-	): AppEnvVars<TServices, TApps, TEnv, TName> {
+	): Record<string, string> {
 		const sharedEnv: Record<string, string> = buildEnvVars(production);
 		const appConfig = apps[appName];
+		// A resolved app's builder takes `never`: it was written for its own config's keys.
 		const appEnvBuilder = appConfig?.envVars as
-			EnvVarsBuilder<TServices, TApps> | undefined;
+			EnvVarsBuilder<AnyServices, AnyApps> | undefined;
 
-		const appPort = toPortMap(ports)[appName];
+		const appPort = ports[appName];
 		const processEnv: Record<string, string> = {
 			...sharedEnv,
 			ASTRO_DEV_BACKGROUND: "1",
@@ -178,18 +158,12 @@ export function createEnvVarsApi<
 		);
 		// Above the app's own `envVars` too: an override is the checkout's last word.
 		applyEnvOverrides(processEnv, ctx.envOverrides, ctx.inputEnv.declared);
-
-		// The per-app keys come from `staticEnv`/`envVars`, which are opaque here
-		// because the builder is widened to run against unknown apps.
-		return processEnv as unknown as AppEnvVars<TServices, TApps, TEnv, TName>;
+		return processEnv;
 	}
 
-	function buildEnvFingerprint(
-		appName: Extract<keyof TApps, string>,
-		production = false,
-	): string {
+	function buildEnvFingerprint(appName: string, production = false): string {
 		return portableEnvFingerprint(buildAppEnvVars(appName, production), {
-			ports: Object.values(toPortMap(ports)),
+			ports: Object.values(ports),
 			names: [ctx.root, ctx.projectName, ctx.workspaceId],
 		});
 	}
@@ -199,7 +173,7 @@ export function createEnvVarsApi<
 		production = false,
 	): Record<string, Record<string, string>> {
 		return recordFromKeys(Object.keys(targetApps), (appName) =>
-			buildAppEnvVars(appName as Extract<keyof TApps, string>, production),
+			buildAppEnvVars(appName, production),
 		);
 	}
 
@@ -269,10 +243,7 @@ export function createEnvVarsApi<
 		const computed: Record<string, string> =
 			options?.app === undefined
 				? buildEnvVars(production)
-				: buildAppEnvVars(
-						options.app as Extract<keyof TApps, string>,
-						production,
-					);
+				: buildAppEnvVars(options.app, production);
 		// Beneath the computed env and anything passed explicitly, like an app's.
 		const secrets = await resolveSecrets(options?.secrets, {
 			app: options?.app,
@@ -290,25 +261,22 @@ export function createEnvVarsApi<
 	}
 
 	// Created once, then reused so hooks observe a stable identity.
-	let hookContext: HookContext<TServices, TApps> | null = null;
+	let hookContext: HookContext<AnyServices, AnyApps> | null = null;
 
 	const scopedContexts = new WeakMap<
 		AbortSignal,
-		HookContext<TServices, TApps>
+		HookContext<AnyServices, AnyApps>
 	>();
 
 	function getHookContext(
 		signal?: AbortSignal,
 		selection: StartSelection | undefined = ctx.selection,
-	): HookContext<TServices, TApps> {
+	): HookContext<AnyServices, AnyApps> {
 		if (selection) {
 			return {
 				...scopedHookContext(signal),
-				selectedApps: selection.appNames as Extract<keyof TApps, string>[],
-				selectedServices: selection.requiredServiceKeys as Extract<
-					keyof TServices,
-					string
-				>[],
+				selectedApps: [...selection.appNames],
+				selectedServices: [...selection.requiredServiceKeys],
 			};
 		}
 		return scopedHookContext(signal);
@@ -316,19 +284,16 @@ export function createEnvVarsApi<
 
 	function scopedHookContext(
 		signal?: AbortSignal,
-	): HookContext<TServices, TApps> {
+	): HookContext<AnyServices, AnyApps> {
 		if (!hookContext) {
 			hookContext = {
-				selectedApps: Object.keys(apps) as Extract<keyof TApps, string>[],
-				selectedServices: Object.keys(services) as Extract<
-					keyof TServices,
-					string
-				>[],
+				selectedApps: Object.keys(apps),
+				selectedServices: Object.keys(services),
 				projectName: ctx.projectName,
 				ports,
 				urls,
 				loopbackUrls,
-				publicUrls: publicUrls as ComputedPublicUrls<TServices, TApps>,
+				publicUrls,
 				root: ctx.root,
 				isCI: isCI(),
 				portOffset: ctx.portOffset,

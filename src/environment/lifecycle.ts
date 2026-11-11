@@ -20,14 +20,11 @@ import {
 } from "../prisma/migrations-applied";
 import { generatePrismaClient, prismaClientStale } from "../prisma/schema-hash";
 import type {
-	AppConfig,
 	DevServerPids,
-	EnvValues,
 	MigrationConfig,
 	ResolvedService,
 	SeedOutcome,
 	SeedRunOptions,
-	ServiceConfig,
 	ServicesStarted,
 	StartOptions,
 	StopOptions,
@@ -56,42 +53,28 @@ import {
 } from "./stacks";
 
 /** `start()`'s options, plus what only `buncargo dev` and the commands set. */
-export interface PrepareOptions<
-	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
-	TServices extends Record<string, ServiceConfig> = Record<
-		string,
-		ServiceConfig
-	>,
-> extends StartOptions<TApps, TServices> {
+export interface PrepareOptions extends StartOptions {
 	/** Print the environment banner once the run is claimed. Default: false. */
 	banner?: boolean;
 }
 
-export interface DevLifecycleApi<
-	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
-	TServices extends Record<string, ServiceConfig> = Record<
-		string,
-		ServiceConfig
-	>,
-> {
-	start(
-		options?: StartOptions<TApps, TServices>,
-	): Promise<DevServerPids<TApps> | null>;
+export interface DevLifecycleApi {
+	start(options?: StartOptions): Promise<DevServerPids | null>;
 	/**
 	 * Containers, dotenv, generated files, migrations, generation and the
 	 * seed for a selection, the run claimed before the first container.
 	 * What `start()` does before it spawns; `buncargo dev` spawns itself.
 	 */
-	prepare(options?: PrepareOptions<TApps, TServices>): Promise<Prepared>;
+	prepare(options?: PrepareOptions): Promise<Prepared>;
 	/**
 	 * The Infisical session `prepare()` with these options needs, checked
 	 * now: `buncargo dev` fires it before its checks and named hosts, and
 	 * `prepare()` then reuses the token.
 	 */
-	secretsSession(options: PrepareOptions<TApps, TServices>): Promise<void>;
+	secretsSession(options: PrepareOptions): Promise<void>;
 	stop(options?: StopOptions): Promise<void>;
 	withServices<T>(
-		services: readonly Extract<keyof TServices, string>[],
+		services: readonly string[],
 		options: WithServicesOptions,
 		command: (started: ServicesStarted) => Promise<T>,
 	): Promise<T>;
@@ -103,18 +86,14 @@ export interface DevLifecycleApi<
 	ensureWatchdog(): void;
 }
 
-export function createLifecycleApi<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues = EnvValues,
->(
-	ctx: DevEnvContext<TServices, TApps, TEnv>,
-	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
+export function createLifecycleApi(
+	ctx: DevEnvContext,
+	envVars: DevEnvVarsApi,
 	runClaim: DevRunClaimApi,
 	coordinator: LifecycleCoordinator,
 	serviceWatch: ServiceWatchApi,
 	appPipeline: AppPipeline,
-): DevLifecycleApi<TApps, TServices> {
+): DevLifecycleApi {
 	const { config, services, ports } = ctx;
 
 	/** What the latest preparation planned, for `runSeed` and the hooks. */
@@ -356,8 +335,8 @@ export function createLifecycleApi<
 	}
 
 	function start(
-		startOptions: StartOptions<TApps, TServices> = {},
-	): Promise<DevServerPids<TApps> | null> {
+		startOptions: StartOptions = {},
+	): Promise<DevServerPids | null> {
 		return coordinator.start(
 			async (signal) => {
 				const options = {
@@ -386,7 +365,7 @@ export function createLifecycleApi<
 						},
 					});
 					if (prepared.verbose) console.log(formatDone("Environment ready"));
-					return pids as DevServerPids<TApps>;
+					return pids;
 				} catch (error) {
 					containersStillRunning(prepared.hasServices);
 					throw error;
@@ -407,7 +386,7 @@ export function createLifecycleApi<
 	}
 
 	/** The selection and preparation plan a start with these options makes. */
-	function planFor(options: PrepareOptions<TApps, TServices>) {
+	function planFor(options: PrepareOptions) {
 		const startPlan = ctx.getStartPlan(options.onlyApps, options.onlyServices);
 		const selection = {
 			appNames: startPlan.appNames,
@@ -430,9 +409,7 @@ export function createLifecycleApi<
 		return { apps: startPlan.apps, selection, plan };
 	}
 
-	async function secretsSession(
-		options: PrepareOptions<TApps, TServices>,
-	): Promise<void> {
+	async function secretsSession(options: PrepareOptions): Promise<void> {
 		const { plan } = planFor(options);
 		if (plan.secrets)
 			await ensureSecretsSession(startSecretScopes(plan.secrets), {
@@ -440,9 +417,7 @@ export function createLifecycleApi<
 			});
 	}
 
-	function prepare(
-		options: PrepareOptions<TApps, TServices> = {},
-	): Promise<Prepared> {
+	function prepare(options: PrepareOptions = {}): Promise<Prepared> {
 		return coordinator.start(
 			(signal) =>
 				prepareEnvironment({
@@ -455,7 +430,7 @@ export function createLifecycleApi<
 	}
 
 	async function prepareEnvironment(
-		options: PrepareOptions<TApps, TServices>,
+		options: PrepareOptions,
 	): Promise<Prepared> {
 		const { signal, onPhase, prepare: mode = "all" } = options;
 		signal?.throwIfAborted();
@@ -724,7 +699,7 @@ export function createLifecycleApi<
 	}
 
 	async function withServices<T>(
-		names: readonly Extract<keyof TServices, string>[],
+		names: readonly string[],
 		options: WithServicesOptions,
 		command: (started: ServicesStarted) => Promise<T>,
 	): Promise<T> {
