@@ -126,14 +126,18 @@ describe("supabase()", () => {
 				"http://localhost:3100/**",
 			]),
 		);
-		expect(supabase().config?.(config)?.migrations?.[0]).toMatchObject({
+		expect(
+			supabase().config?.(config, { root })?.migrations?.[0],
+		).toMatchObject({
 			name: "supabase",
 			requiredServices: ["supabaseDb"],
 		});
 	});
 
 	it("has no service for a component `supabase start` is told to skip", () => {
-		const applied = supabase({ exclude: ["mailpit"] }).config?.(config);
+		const applied = supabase({ exclude: ["mailpit"] }).config?.(config, {
+			root,
+		});
 		expect(Object.keys(applied?.services ?? {}).sort()).toEqual([
 			"supabase",
 			"supabaseDb",
@@ -181,6 +185,29 @@ describe("supabase checks", () => {
 		const runtimeCheck = check("Supabase runs on Docker");
 		expect(await runtimeCheck.check(ctx("docker"))).toBe(true);
 		expect(await runtimeCheck.check(ctx("apple"))).toMatchObject({ ok: false });
+	});
+
+	it("passes once `supabase init` wrote the toml the config was loaded without", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-supabase-init-"));
+		try {
+			const integration = supabase();
+			integration.config?.(
+				{ projectPrefix: "myapp", services: {} },
+				{ root: dir },
+			);
+			const tomlCheck = integration.checks?.find(
+				(entry) => entry.name === "supabase/config.toml exists",
+			);
+			const ctx = { root: dir } as CheckContext;
+			expect(await tomlCheck?.check(ctx)).toMatchObject({ ok: false });
+
+			mkdirSync(join(dir, "supabase"));
+			writeFileSync(join(dir, "supabase", "config.toml"), "");
+
+			expect(await tomlCheck?.check(ctx)).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 

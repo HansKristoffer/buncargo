@@ -17,11 +17,6 @@ import {
 } from "../../command-spec";
 import { argumentsError, CliError } from "../../errors";
 import {
-	lockfileHash,
-	readInstallStamp,
-	writeInstallStamp,
-} from "../../install-stamp";
-import {
 	docPathsConfig,
 	findDocProblems,
 	formatDocProblem,
@@ -228,19 +223,6 @@ function stagedFiles(root: string): string[] {
 	return result.stdout.toString().split("\n").filter(Boolean);
 }
 
-/** `bun install` when `bun.lock` changed since the last one this ran. */
-async function ensureInstalled(
-	root: string,
-	run: (step: Step) => Promise<number>,
-) {
-	const before = lockfileHash(root);
-	if (before === undefined || readInstallStamp(root) === before) return;
-	const code = await run({ name: "bun install", command: ["bun", "install"] });
-	// Stamped only on success, or a failed install is never retried. The hash
-	// of what was installed: a plain install can rewrite bun.lock.
-	if (code === 0) writeInstallStamp(root, lockfileHash(root) ?? before);
-}
-
 export async function handleCheck(args: string[]): Promise<number> {
 	if (readBooleanFlag(args, FLAGS.help)) {
 		console.log(formatCommandHelp(CHECK_COMMAND_SPEC));
@@ -282,8 +264,6 @@ export async function handleCheck(args: string[]): Promise<number> {
 	}
 	const mode: CheckMode = all ? "all" : staged ? "staged" : "changed";
 	const steps = stepRunner(root, console.log);
-
-	await ensureInstalled(root, steps.run);
 
 	const files: string[] = typedSwitch(mode, {
 		all: () => [],

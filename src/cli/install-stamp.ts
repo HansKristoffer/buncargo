@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 /**
  * `node_modules/.buncargo-lock-hash`: the hash of the `bun.lock` that the last
- * `bun install` buncargo ran (the version guard's, `check`'s) installed.
+ * `bun install` buncargo ran (the version guard's) installed.
  *
  * Bun 1.4 writes nothing into `node_modules` on an install that changes
  * nothing, so its own files cannot say whether `node_modules` caught up with
