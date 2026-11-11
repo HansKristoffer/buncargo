@@ -121,7 +121,7 @@ recorded CLI is exactly where they once did), and a script's apps get the same r
 no config load, no Docker unless a service is the target.
 
 - Stopping one app must not end the run, which is why `isDeliberateExit` in
-  `process/process-owner.ts` treats a signalled exit (and `130`/`143`, what a shell wrapper reports
+  `process/app-lifecycle.ts` treats a signalled exit (and `130`/`143`, what a shell wrapper reports
   for SIGINT/SIGTERM) as a clean stop rather than a failure.
 - Exit 3 is "refused: leave it running" (the attached app, an app reused from another terminal, a
   run in someone's terminal), and `help agents` tells agents exactly that, so nothing else may
