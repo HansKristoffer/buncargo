@@ -4,7 +4,6 @@ import {
 	processIdentityMatcherAsync,
 	readProcessIdentitiesCached,
 } from "../process-identity";
-import { isRouteOwnerAlive } from "../registry-file";
 import {
 	type HostsRoute,
 	liveNamedHosts,
@@ -23,20 +22,15 @@ import {
  * decided.
  */
 export const identityRouteOwners: RouteOwners = async (routes) => {
-	const recorded = routes.flatMap((route) =>
-		route.pid === undefined || route.processIdentity === undefined
-			? []
-			: [{ pid: route.pid, processIdentity: route.processIdentity }],
+	const recorded = routes.flatMap(({ pid, processIdentity }) =>
+		processIdentity === undefined ? [] : [{ pid, processIdentity }],
 	);
 	const matches = await processIdentityMatcherAsync(recorded);
 	const judged = new Set(recorded.map((entry) => entry.pid));
-	return ({ pid, processIdentity }) => {
-		if (pid === undefined || processIdentity === undefined)
-			return isRouteOwnerAlive(pid);
-		return judged.has(pid)
+	return ({ pid, processIdentity }) =>
+		processIdentity !== undefined && judged.has(pid)
 			? matches(pid, processIdentity)
-			: isRouteOwnerAlive(pid);
-	};
+			: isProcessAlive(pid);
 };
 
 /**
@@ -49,7 +43,7 @@ function identityRouteOwnersSync(
 	routes: readonly HostsRoute[],
 ): RouteOwnerCheck {
 	const recordedLive = routes.flatMap((route) =>
-		route.pid !== undefined &&
+		route.kind === "app" &&
 		route.processIdentity !== undefined &&
 		isProcessAlive(route.pid)
 			? [route.pid]
@@ -57,8 +51,8 @@ function identityRouteOwnersSync(
 	);
 	const identities = readProcessIdentitiesCached(recordedLive);
 	return ({ pid, processIdentity }) => {
-		if (!isRouteOwnerAlive(pid)) return false;
-		if (pid === undefined || processIdentity === undefined) return true;
+		if (!isProcessAlive(pid)) return false;
+		if (processIdentity === undefined) return true;
 		const actual = identities.get(pid);
 		return actual === undefined || actual === processIdentity;
 	};

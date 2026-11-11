@@ -59,6 +59,7 @@ bunx buncargo send expoApp i      # Type into an app that has a terminal of its 
 bunx buncargo doctor
 bunx buncargo doctor --fix
 bunx buncargo hosts install
+bunx buncargo hosts install --force   # Also replace a newer daemon another project installed
 bunx buncargo hosts status
 bunx buncargo hosts sync
 bunx buncargo hosts prune
@@ -1069,13 +1070,13 @@ Both steps need your password: the CA goes into the system trust store, and only
 
 Certificates cover wildcards, not just the exact hostnames: a project serving `api.myapp.localhost` also gets `*.api.myapp.localhost` and `*.myapp.localhost`, so the *next* worktree of that project needs no new certificate. That matters because minting one makes the daemon rebind, which drops every proxied websocket on the machine - including HMR sockets belonging to projects that had nothing to do with the new worktree. The names each checkout wants are remembered in `~/.buncargo/cert-names.json` so a project stopping does not drop its coverage; an entry is retired once its checkout is gone from disk.
 
-The daemon picks up a new route as soon as the registry file changes rather than on its next poll, and hands over between listeners without closing the port, so starting a run in a fresh worktree does not race it.
+A run asks the daemon to reload before it checks that its hostnames are served, rather than waiting for its next poll, and the daemon hands over between listeners without closing the port, so starting a run in a fresh worktree does not race it.
 
-`buncargo hosts install` records what it installed in `~/.buncargo/hosts-service.json`. The daemon runs whichever buncargo started it, usually the one in a project's `node_modules`, so reinstalling dependencies there can leave the machine-wide service pointing at a path that no longer exists - and upgrading buncargo leaves it running the previous version's daemon bundle. Either way it keeps answering on `:443`, so `buncargo dev` prompts to update it (Enter updates, `s` skips this run) rather than waiting for you to notice; without a TTY it warns and continues on the old daemon. `buncargo hosts status` and `buncargo doctor` report the same thing, and `buncargo hosts install` or `doctor --fix` repairs it outright.
+`buncargo hosts install` records what it installed in `~/.buncargo/hosts-service.json`: the buncargo version, and the protocol its daemon speaks. One daemon serves every project on the machine, whichever buncargo each one pins. A project needs a daemon of at least its own protocol, and a newer one serves it too, so projects on different releases share it without asking to reinstall. `buncargo hosts install` never replaces a newer daemon with an older one; `--force` does. The daemon also runs whichever Bun started the install, so a Bun that moved or was removed leaves the service pointing at a path that no longer exists. When the daemon is too old or broken, `buncargo dev` prompts to update it (Enter updates, `s` skips this run) rather than waiting for you to notice; without a TTY it warns and continues on `localhost:port`. `buncargo hosts status` and `buncargo doctor` report the same thing, and `buncargo hosts install` or `doctor --fix` repairs it outright.
 
 The daemon logs to `/var/log/buncargo-hosts.log` (on Linux, also `journalctl -u buncargo-hosts.service`). A failure that persists is logged at most once a minute, with a count of what was suppressed, so a stale daemon retrying a certificate it cannot serve cannot fill the disk.
 
-`buncargo hosts daemon` runs that same proxy in the foreground instead of under launchd/systemd, which is how you watch its output while debugging. It re-reads `~/.buncargo/routes.json` every second, so apps starting and stopping need no restart, and it exits on its own once no routes have been registered for a while. `--service` is what the installed unit passes: it keeps the daemon alive through idle periods and is not meant to be typed by hand. Binding `:443` still needs root, so run it under `sudo` or set `BUNCARGO_HOSTS_PORT` to an unprivileged port.
+`buncargo hosts daemon` runs that same proxy in the foreground instead of under launchd/systemd, which is how you watch its output while debugging. It re-reads `~/.buncargo/routes.json` every second, so apps starting and stopping need no restart, and it exits on its own once no routes have been registered for a while. `--service` is what the installed unit passes: it keeps the daemon alive through idle periods and is not meant to be typed by hand. It binds `:443` and `:80`, which needs root, so run it under `sudo` with the service stopped.
 
 Failure degrades to `http://localhost:<port>` and never blocks the dev run. `buncargo env`, `status`, `open` and `getEnvVar` report a named URL only while a run of the checkout serves it, and `http://localhost:<port>` otherwise, so a `vite.config.ts` gets the URL the run is actually on. Named hosts stay off on Windows, in CI (`CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL`), when `BUNCARGO_HOSTS=0`, or with `--no-hosts`.
 
@@ -1520,7 +1521,6 @@ Next is not a dependency of buncargo, and the wrapper imports nothing from it.
 | `BUNCARGO_QUICK_TUNNEL_TIMEOUT_MS` | Wait for a `*.trycloudflare.com` URL (default `30000`; `0` disables) |
 | `BUNCARGO_CLOUDFLARED_PATH` | Absolute `cloudflared` binary; skips download |
 | `BUNCARGO_HOSTS` | `0` forces `http://localhost:port` even when `options.hosts` is on; `tailscale` serves each app's named URL through Tailscale Serve instead of the loopback daemon ([Named URLs over Tailscale](#named-urls-over-tailscale)) |
-| `BUNCARGO_HOSTS_PORT` | HTTPS port the loopback proxy daemon binds (default `443`; plain HTTP on `:80` only when the default is used) |
 | `BUNCARGO_MKCERT_PATH` | Absolute `mkcert` binary; skips PATH lookup and download |
 | `BUNCARGO_MKCERT_VERSION` | GitHub release tag for the bundled `mkcert` download (default `v1.4.4`). Another tag installs only when its GitHub release publishes the asset's sha256; otherwise point `BUNCARGO_MKCERT_PATH` at an mkcert you installed |
 | `BUNCARGO_SYNC_HOSTS` | `0` skips writing the `# buncargo-start` / `# buncargo-end` block in `/etc/hosts` |

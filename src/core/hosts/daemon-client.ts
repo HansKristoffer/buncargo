@@ -1,7 +1,8 @@
 import { promiseTimeout } from "hanzio";
 import { isTcpPortOpen } from "../network";
 import { RELOAD_STALL_MS } from "./daemon";
-import { readDaemonConfig, readDaemonPid } from "./daemon-config";
+import { readDaemonPid } from "./daemon-pid";
+import { HOSTS_HTTPS_PORT, MIN_HOSTS_PROTOCOL } from "./protocol";
 import {
 	LOOPBACK_HOSTNAMES,
 	loopbackAuthority,
@@ -21,18 +22,21 @@ import { describePortSquatter } from "./squatter";
  * executes.
  */
 
-/** What the running daemon reports it is serving, if it answers at all. */
+/**
+ * What the running daemon reports it is serving, if it answers at all.
+ *
+ * `port` is for tests, which bind a proxy of their own: the daemon only ever
+ * binds {@link HOSTS_HTTPS_PORT}.
+ */
 export async function readHostsDaemonHealth(
-	port?: number,
+	options: { port?: number; refresh?: boolean; timeoutMs?: number } = {},
 ): Promise<ProxyHealth | undefined> {
-	const config = readDaemonConfig();
-	return readProxyHealth(port ?? config.httpsPort, "127.0.0.1", {
-		tls: config.tls,
-	});
+	const { port = HOSTS_HTTPS_PORT, ...probe } = options;
+	return readProxyHealth(port, "127.0.0.1", probe);
 }
 
 export async function isHostsDaemonHealthy(port?: number): Promise<boolean> {
-	return (await readHostsDaemonHealth(port)) !== undefined;
+	return (await readHostsDaemonHealth({ port })) !== undefined;
 }
 
 /**
@@ -50,11 +54,10 @@ export async function isHostsDaemonWedged(): Promise<boolean> {
 }
 
 /**
- * A daemon that answers but predates the health fields every check here reads.
- * It is reported rather than served on trust: nothing it serves can be proven.
+ * A daemon that answers below this CLI's protocol. It is reported rather than
+ * served on trust: nothing it serves can be proven the way this CLI proves it.
  */
-export const OUTDATED_DAEMON_MESSAGE =
-	"the named-hosts daemon predates this buncargo and cannot report what it serves. Run `buncargo hosts install` to update it.";
+export const OUTDATED_DAEMON_MESSAGE = `the named-hosts daemon is older than this buncargo supports (protocol ${MIN_HOSTS_PROTOCOL}). Run \`buncargo hosts install\` to update it.`;
 
 /**
  * A loopback address the browser will dial that is answered by something other
@@ -67,18 +70,15 @@ export const OUTDATED_DAEMON_MESSAGE =
  * browser as ERR_SSL_PROTOCOL_ERROR while every CLI check passes.
  */
 export async function describeLoopbackHijack(
-	port?: number,
+	httpsPort = HOSTS_HTTPS_PORT,
 ): Promise<string | undefined> {
-	const config = readDaemonConfig();
-	const httpsPort = port ?? config.httpsPort;
 	// Both families at once: each probe is a connect and a TLS handshake, and
 	// every run that attaches named hosts waits for them.
 	const hijacked = await Promise.all(
 		LOOPBACK_HOSTNAMES.map(
 			async (hostname) =>
 				(await isTcpPortOpen(httpsPort, hostname, 500)) &&
-				(await readProxyHealth(httpsPort, hostname, { tls: config.tls })) ===
-					undefined,
+				(await readProxyHealth(httpsPort, hostname)) === undefined,
 		),
 	);
 	const hostname = LOOPBACK_HOSTNAMES.find((_, index) => hijacked[index]);
@@ -90,31 +90,37 @@ export async function describeLoopbackHijack(
 	return `something other than buncargo is answering on ${loopbackAuthority(hostname, httpsPort)}, which browsers try first for .localhost names. ${squatter ?? `Stop it (\`sudo lsof -nP -iTCP:${httpsPort} -sTCP:LISTEN\`) or set hosts: false.`}`;
 }
 
-/** How long the CLI waits for the daemon's one-second poll to pick a route up. */
+/** How long the CLI waits for the daemon to serve a route it registered. */
 export const ROUTE_PICKUP_TIMEOUT_MS = 3000;
 /**
- * Short: the daemon reloads on the registry write, so the first probe
- * usually arrives moments before the route does, and the run waits out
- * one interval.
+ * Between probes that did not settle it. Each probe already reloads, so a
+ * second one is for a probe a rebind cut off, or a mint still in progress.
  */
-const ROUTE_POLL_MS = 20;
+const ROUTE_RETRY_MS = 50;
+/**
+ * A refresh probe waits for a reload, which is a file read and at most a
+ * rebind: longer than a bare health answer, inside the pickup budget.
+ */
+const REFRESH_PROBE_TIMEOUT_MS = 1000;
 
 export type DaemonRouteCheck = { ok: true } | { ok: false; reason: string };
 
 /**
  * Wait until the daemon is actually serving `hostnames`.
  *
- * Registering a route only writes a file; the daemon picks it up on its own
- * poll, and a daemon whose poll has stopped keeps answering health checks with
- * a map that will never contain it. Without this the CLI advertises
- * `https://app.project.localhost` and the browser gets a 404 from our own
- * proxy — the failure this whole check exists to prevent.
+ * Registering a route only writes a file, and a daemon whose loop has stopped
+ * keeps answering health checks with a map that will never contain it.
+ * Without this the CLI advertises `https://app.project.localhost` and the
+ * browser gets a 404 from our own proxy, the failure this whole check exists
+ * to prevent. Each probe asks the daemon to reload first (`?refresh`), so a
+ * healthy daemon settles it in one round trip.
  *
  * A probe that does not answer is retried rather than reported. The daemon
  * rebinds its listener whenever the CLI remints the certificate, which is
- * exactly what the first run in a new worktree causes, so a single unanswered
- * probe is the normal shape of a healthy startup — treating it as fatal
- * downgraded that run to `localhost:port` for no reason.
+ * exactly what the first run in a new worktree causes, and that rebind cuts
+ * off the probe that asked for it: a single unanswered probe is the normal
+ * shape of a healthy startup, and treating it as fatal downgraded that run to
+ * `localhost:port` for no reason.
  */
 export async function waitForDaemonRoutes(
 	hostnames: string[],
@@ -127,7 +133,11 @@ export async function waitForDaemonRoutes(
 	let bindError: string | undefined;
 
 	for (;;) {
-		const health = await readHostsDaemonHealth(options.port);
+		const health = await readHostsDaemonHealth({
+			port: options.port,
+			refresh: true,
+			timeoutMs: REFRESH_PROBE_TIMEOUT_MS,
+		});
 		if (health !== undefined) {
 			everAnswered = true;
 			if (health.outdated) {
@@ -144,7 +154,7 @@ export async function waitForDaemonRoutes(
 
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) break;
-		await promiseTimeout(Math.min(ROUTE_POLL_MS, remaining));
+		await promiseTimeout(Math.min(ROUTE_RETRY_MS, remaining));
 	}
 
 	return {
@@ -153,7 +163,7 @@ export async function waitForDaemonRoutes(
 			missing,
 			everAnswered,
 			bindError,
-			port: readDaemonConfig().httpsPort,
+			port: options.port ?? HOSTS_HTTPS_PORT,
 		}),
 	};
 }
@@ -250,7 +260,7 @@ export async function waitForDaemonHealthy(
  */
 export async function ensureHostsDaemonRunning(
 	options: { timeoutMs?: number } = {},
-	probe: HostsDaemonProbe = hostsDaemonProbe(readDaemonConfig().httpsPort),
+	probe: HostsDaemonProbe = hostsDaemonProbe(HOSTS_HTTPS_PORT),
 ): Promise<{ ok: boolean; message?: string }> {
 	if (await probe.healthy()) {
 		return { ok: true };
@@ -277,9 +287,8 @@ export async function ensureHostsDaemonRunning(
 		return { ok: true };
 	}
 
-	const port = readDaemonConfig().httpsPort;
 	return {
 		ok: false,
-		message: `Named-hosts service is installed but did not answer on :${port}. Check ${hostsServiceLogHint()}, then run \`buncargo hosts install\`.`,
+		message: `Named-hosts service is installed but did not answer on :${HOSTS_HTTPS_PORT}. Check ${hostsServiceLogHint()}, then run \`buncargo hosts install\`.`,
 	};
 }

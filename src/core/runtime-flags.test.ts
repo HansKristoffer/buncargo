@@ -7,7 +7,6 @@ import {
 	cloudflaredVersion,
 	connectTokens,
 	exposeTunnelStaggerMs,
-	hostsDaemonPort,
 	hostsMode,
 	infisicalUniversalAuthFile,
 	isCI,
@@ -89,15 +88,6 @@ describe("hostsMode", () => {
 		expect(hostsMode({ BUNCARGO_HOSTS: "tailscale" })).toBe("tailscale");
 		expect(hostsMode({ BUNCARGO_HOSTS: " tailscale " })).toBe("tailscale");
 		expect(hostsMode({ BUNCARGO_HOSTS: "tailscale", CI: "1" })).toBe("off");
-	});
-});
-
-describe("hostsDaemonPort", () => {
-	it("defaults to 443 and falls back on garbage", () => {
-		expect(hostsDaemonPort({})).toBe(443);
-		expect(hostsDaemonPort({ BUNCARGO_HOSTS_PORT: "8443" })).toBe(8443);
-		expect(hostsDaemonPort({ BUNCARGO_HOSTS_PORT: "nope" })).toBe(443);
-		expect(hostsDaemonPort({ BUNCARGO_HOSTS_PORT: "0" })).toBe(443);
 	});
 });
 

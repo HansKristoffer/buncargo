@@ -9,8 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { getDaemonConfigPath, getRoutesPath } from "../../../core/hosts/paths";
-import { HEALTH_PATH } from "../../../core/hosts/proxy";
+import { getRoutesPath } from "../../../core/hosts/paths";
 import { CI_ENV_VARS } from "../../../core/runtime-flags";
 import {
 	dockerListLine,
@@ -20,43 +19,16 @@ import { appStatusLines, describePlannedOffset, runHealth } from "./status";
 
 const cli = resolve(import.meta.dir, "../../bin.ts");
 let dir: string;
-let served: string[] = [];
-let daemon: ReturnType<typeof Bun.serve>;
 
-/**
- * A hosts daemon answering health for whatever `served` lists, on a port of
- * its own: the CLI reads the port from the isolated HOME's daemon config.
- */
 beforeEach(() => {
 	dir = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-status-")));
-	daemon = Bun.serve({
-		hostname: "127.0.0.1",
-		port: 0,
-		fetch: (request) =>
-			new URL(request.url).pathname === HEALTH_PATH
-				? Response.json({
-						ok: true,
-						routes: served.length,
-						hostnames: served,
-						lastReloadAt: Date.now(),
-					})
-				: new Response("not found", { status: 404 }),
-	});
-	const home = join(dir, "home");
-	const configPath = getDaemonConfigPath(home);
-	mkdirSync(dirname(configPath), { recursive: true });
-	writeFileSync(
-		configPath,
-		JSON.stringify({ httpsPort: daemon.port, httpPort: 0, tls: false }),
-	);
+	mkdirSync(dirname(getRoutesPath(join(dir, "home"))), { recursive: true });
 	writeFileSync(
 		join(dir, "dev.config.ts"),
 		`export default { projectPrefix: "statusjson", services: {}, apps: { web: { port: 5173, devCommand: "true" } }, options: { hosts: true } };`,
 	);
 });
 afterEach(() => {
-	daemon.stop(true);
-	served = [];
 	rmSync(dir, { recursive: true, force: true });
 });
 
@@ -91,19 +63,15 @@ async function status(): Promise<StatusJson> {
 	return JSON.parse(stdout) as StatusJson;
 }
 
-it("reports named hosts as the daemon serves them, with their URLs", async () => {
+it("reports named hosts once a live run registered them, with their URLs", async () => {
 	const before = await status();
 	// `status --json | head -40` cut the runs off when they came last.
 	expect(Object.keys(before)[0]).toBe("runs");
 	expect(before.hosts?.active).toBe(false);
 	expect(before.urls.web).toMatch(/^http:\/\/localhost:\d+$/);
 
-	// Served by the daemon, but no run of this checkout registered them: a
-	// healthy daemon alone is not one serving this project.
 	const plan = before.hosts?.plan ?? [];
-	served = plan.map((entry) => entry.hostname);
-	expect(served.length).toBeGreaterThan(0);
-	expect((await status()).hosts?.active).toBe(false);
+	expect(plan.length).toBeGreaterThan(0);
 
 	// A live run (this process) registered them, as `buncargo dev` does.
 	const routesPath = getRoutesPath(join(dir, "home"));
@@ -125,7 +93,7 @@ it("reports named hosts as the daemon serves them, with their URLs", async () =>
 	const after = await status();
 	expect(after.hosts?.active).toBe(true);
 	expect(after.urls.web).toStartWith("https://");
-	expect(served.some((hostname) => after.urls.web?.includes(hostname))).toBe(
+	expect(plan.some((entry) => after.urls.web?.includes(entry.hostname))).toBe(
 		true,
 	);
 }, 30_000);

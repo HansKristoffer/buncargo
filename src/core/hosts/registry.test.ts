@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readCurrentProcessIdentity } from "../process-identity";
 import {
+	type AppHostsRoute,
 	classifyRouteClaim,
 	clearHostRoutes,
 	type HostsRoute,
@@ -170,7 +171,7 @@ describe("hosts registry", () => {
 	it("keeps the first run as owner when a second run registers the same route", async () => {
 		const { dir, path } = await tempRegistry();
 		try {
-			const route: HostsRoute = {
+			const route: AppHostsRoute = {
 				hostname: "api.serpier.localhost",
 				port: 3000,
 				kind: "app",
@@ -185,8 +186,7 @@ describe("hosts registry", () => {
 			});
 
 			const saved = await loadHostRoutes(path);
-			expect(saved).toHaveLength(1);
-			expect(saved[0]?.pid).toBe(process.pid);
+			expect(saved).toMatchObject([{ pid: process.pid }]);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
@@ -200,7 +200,7 @@ describe("hosts registry", () => {
 		try {
 			const first = process.pid;
 			const second = process.pid + 1;
-			const api: HostsRoute = {
+			const api: AppHostsRoute = {
 				hostname: "api.serpier.localhost",
 				port: 3000,
 				kind: "app",
@@ -208,7 +208,7 @@ describe("hosts registry", () => {
 				root: "/repo",
 				pid: first,
 			};
-			const web: HostsRoute = {
+			const web: AppHostsRoute = {
 				...api,
 				hostname: "web.serpier.localhost",
 				port: 3001,
@@ -222,11 +222,13 @@ describe("hosts registry", () => {
 				],
 				{ path, takeover: new Set(["api"]), owners: pidRouteOwners },
 			);
-			await removeHostRoutes((route) => route.pid === first, path);
+			await removeHostRoutes(
+				(route) => route.kind === "app" && route.pid === first,
+				path,
+			);
 
-			const saved = await loadHostRoutes(path);
-			expect(saved.map((route) => [route.name, route.pid])).toEqual([
-				["api", second],
+			expect(await loadHostRoutes(path)).toMatchObject([
+				{ name: "api", pid: second },
 			]);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
@@ -308,7 +310,7 @@ describe("hosts registry", () => {
 });
 
 describe("classifyRouteClaim", () => {
-	const base: HostsRoute = {
+	const base: AppHostsRoute = {
 		hostname: "api.serpier.localhost",
 		port: 3000,
 		kind: "app",
@@ -350,10 +352,11 @@ describe("classifyRouteClaim", () => {
 
 	it("keeps a static service route registered twice", () => {
 		const staticRoute: HostsRoute = {
-			...base,
+			hostname: "mailpit.serpier.localhost",
+			port: 8025,
 			kind: "service",
 			name: "mailpit",
-			pid: undefined,
+			root: "/repo",
 		};
 		expect(classifyRouteClaim(staticRoute, { ...staticRoute })).toBe("take");
 	});
@@ -446,7 +449,7 @@ describe("concurrent registration", () => {
 });
 
 describe("registry writers", () => {
-	const route = (overrides: Partial<HostsRoute> = {}): HostsRoute => ({
+	const route = (overrides: Partial<AppHostsRoute> = {}): AppHostsRoute => ({
 		hostname: "web.demo.localhost",
 		port: 3000,
 		kind: "app",
@@ -454,6 +457,13 @@ describe("registry writers", () => {
 		root: "/repo",
 		pid: process.pid,
 		...overrides,
+	});
+	const serviceRoute = (root = "/repo"): HostsRoute => ({
+		hostname: "mail.demo.localhost",
+		port: 8025,
+		kind: "service",
+		name: "mailpit",
+		root,
 	});
 
 	// Read leniently, a corrupt file came back as [] and the writer replaced
@@ -547,16 +557,16 @@ describe("registry writers", () => {
 			],
 			{ root: "/repo", pid: process.pid, processIdentity: "v2:abc" },
 		);
-		expect(app?.processIdentity).toBe("v2:abc");
+		expect(app).toMatchObject({ processIdentity: "v2:abc" });
 	});
 
 	// `dev --down` stops this checkout's containers. Another live run of the
 	// checkout still serves its apps, and removing every route 404'd them.
 	it("takes only the checkout's service routes down with dev --down", () => {
 		const removes = routesDownRemoves("/repo");
-		expect(removes(route({ kind: "service", pid: undefined }))).toBe(true);
+		expect(removes(serviceRoute())).toBe(true);
 		expect(removes(route())).toBe(false);
-		expect(removes(route({ kind: "service", root: "/other" }))).toBe(false);
+		expect(removes(serviceRoute("/other"))).toBe(false);
 	});
 });
 
@@ -569,7 +579,9 @@ describe("liveNamedHosts", () => {
 		targetPort: 3000,
 	};
 	const plan = [web];
-	const registered = (overrides: Partial<HostsRoute> = {}): HostsRoute => ({
+	const registered = (
+		overrides: Partial<AppHostsRoute> = {},
+	): AppHostsRoute => ({
 		hostname: "web.demo.localhost",
 		port: 3000,
 		kind: "app",
@@ -578,8 +590,8 @@ describe("liveNamedHosts", () => {
 		pid: 10,
 		...overrides,
 	});
-	const ownerAlive = (alive: number[]) => (route: HostsRoute) =>
-		route.pid === undefined || alive.includes(route.pid);
+	const ownerAlive = (alive: number[]) => (route: AppHostsRoute) =>
+		alive.includes(route.pid);
 	const live = (routes: HostsRoute[], alive = [10]) =>
 		liveNamedHosts({
 			root: "/repo",
@@ -622,17 +634,24 @@ describe("liveNamedHosts", () => {
 });
 
 describe("routesAfterWithdraw", () => {
-	const at = (overrides: Partial<HostsRoute>): HostsRoute => ({
+	const at = (overrides: Partial<AppHostsRoute>): AppHostsRoute => ({
 		hostname: "web.demo.localhost",
 		port: 3000,
 		kind: "app",
 		name: "web",
 		root: "/repo",
+		pid: process.pid,
 		...overrides,
 	});
-	const own = at({ pid: process.pid });
-	const service = at({ hostname: "mail.demo.localhost", kind: "service" });
-	const elsewhere = at({ root: "/other", pid: process.pid });
+	const own = at({});
+	const service: HostsRoute = {
+		hostname: "mail.demo.localhost",
+		port: 3000,
+		kind: "service",
+		name: "web",
+		root: "/repo",
+	};
+	const elsewhere = at({ root: "/other" });
 
 	// Left behind, a fallen-back run's routes read as live named URLs to
 	// `env` and `getEnvVar` while the run printed localhost:port.
