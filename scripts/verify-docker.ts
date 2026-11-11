@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDevEnvironment, defineDevConfig } from "../src";
+import { defineDevConfig } from "../src";
+import { createDevEnvironment } from "../src/api/index";
 import { observeStartupMetrics } from "../src/core/startup-metrics";
 
 async function verifyContainerReuse(): Promise<void> {

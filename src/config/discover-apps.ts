@@ -5,7 +5,11 @@ import { findMonorepoRoot } from "../core/ports";
 import { shellQuote } from "../core/shell-quote";
 import type { AppConfig } from "../types";
 
-/** Marks an app `discoverApps` produced, for `buncargo build --discovered`. */
+/**
+ * Marks an app `discoverApps` produced, for `buncargo build --discovered`.
+ * Registered for the same reason as the integrations' mark: the CLI reading
+ * it may be another install than the config's `buncargo`.
+ */
 const DISCOVERED_APP = Symbol.for("buncargo.discovered");
 
 export interface DiscoverAppsOptions {
