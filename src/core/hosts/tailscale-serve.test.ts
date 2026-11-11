@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { readCurrentProcessIdentity } from "../process-identity";
 import { useTempHome } from "../test-env.testing";
 import { getTailscaleServePath } from "./paths";
@@ -593,6 +594,28 @@ describe("releaseTailscaleServe and sweepTailscaleServe", () => {
 		expect(swept.removed).toEqual([]);
 		expect(swept.failures[0]).toContain("tailscale serve --https=23010 off");
 		expect(await recordedApps()).toEqual(["web", "api"]);
+	});
+});
+
+describe("loadTailscaleServeEntries", () => {
+	it("skips entries with a field missing or of the wrong type", async () => {
+		const valid = entry({ servedAt: "2026-10-17T00:00:01Z" });
+		const path = getTailscaleServePath();
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(
+			path,
+			JSON.stringify({
+				version: 1,
+				entries: [
+					{ ...valid, hostname: undefined },
+					{ ...valid, pid: String(SELF) },
+					{ ...valid, servedAt: 1 },
+					{ ...valid, processIdentity: null },
+					valid,
+				],
+			}),
+		);
+		expect(await loadTailscaleServeEntries()).toEqual([valid]);
 	});
 });
 

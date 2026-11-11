@@ -1,3 +1,5 @@
+import { isRecord, isString } from "hanzio";
+import { object, optional } from "./json-shape";
 import {
 	BAR_SOURCE_VERSION,
 	type BarRelease,
@@ -46,12 +48,26 @@ function getBarCheckPath(home?: string): string {
 	return stateFilePath(BAR_CHECK_FILENAME, home);
 }
 
+const isBarRelease = object({
+	tag: isString,
+	version: isString,
+	zipUrl: isString,
+	checksumUrl: optional(isString),
+});
+
 function isBarCheckCache(value: unknown): BarCheckCache | undefined {
-	if (typeof value !== "object" || value === null) return undefined;
-	const cache = value as Partial<BarCheckCache>;
-	if (cache.version !== CACHE_VERSION) return undefined;
-	if (typeof cache.checkedAt !== "string") return undefined;
-	return cache as BarCheckCache;
+	if (!isRecord(value)) return undefined;
+	if (value.version !== CACHE_VERSION) return undefined;
+	if (typeof value.checkedAt !== "string") return undefined;
+	// The two optional fields never rejected a cache; one that is malformed is left out.
+	return {
+		version: value.version,
+		checkedAt: value.checkedAt,
+		...(isBarRelease(value.latest) && { latest: value.latest }),
+		...(isString(value.hintedVersion) && {
+			hintedVersion: value.hintedVersion,
+		}),
+	};
 }
 
 export function readBarCheckCache(): BarCheckCache | undefined {

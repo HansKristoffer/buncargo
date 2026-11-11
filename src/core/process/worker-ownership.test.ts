@@ -1,12 +1,20 @@
 import { afterEach, expect, it } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineDevConfig } from "../../config";
 import { resolveApps } from "../../config/resolve";
 import { createDevEnvironment } from "../../environment";
+import { readCurrentProcessIdentity } from "../process-identity";
 import { useTempHome } from "../test-env.testing";
 import { AppSupervision } from "./app-supervision";
 import { startDevServers } from "./dev-servers";
@@ -333,4 +341,25 @@ it("keeps a claim whose identity cannot be read, and refuses its name", () => {
 		kind: "claim",
 		standing: [jobs, mail],
 	});
+});
+
+it("skips recorded workers whose pid or identity is malformed", async () => {
+	const root = fixture();
+	mkdirSync(join(root, ".buncargo"));
+	const identity = readCurrentProcessIdentity() ?? "";
+	const valid = { name: "mail", pid: process.pid, identity };
+	writeFileSync(
+		join(root, ".buncargo", "workers.json"),
+		JSON.stringify({
+			version: 1,
+			workers: [
+				{ name: "mail", pid: 1, identity },
+				{ name: "mail", pid: 4242.5, identity },
+				{ name: "mail", pid: String(process.pid), identity },
+				{ name: "mail", pid: process.pid, identity: 7 },
+				valid,
+			],
+		}),
+	);
+	expect(await findWorker(root, "mail")).toEqual(valid);
 });

@@ -12,8 +12,9 @@
  */
 
 import { connect } from "node:tls";
-import { getErrorMessage, promiseTimeout } from "hanzio";
+import { getErrorMessage, isNumber, isString, promiseTimeout } from "hanzio";
 import { withFileLock } from "../file-lock";
+import { type Guard, object, optional } from "../json-shape";
 import { isProcessAlive } from "../process/lifecycle";
 import { readProcessIdentitiesCached } from "../process-identity";
 import { defineListRegistry, readJsonDocumentSync } from "../registry-file";
@@ -106,21 +107,16 @@ export interface TailscaleServeEntry {
 	servedAt?: string;
 }
 
-function isServeEntry(value: unknown): value is TailscaleServeEntry {
-	if (typeof value !== "object" || value === null) return false;
-	const entry = value as Partial<TailscaleServeEntry>;
-	return (
-		typeof entry.root === "string" &&
-		typeof entry.app === "string" &&
-		typeof entry.pid === "number" &&
-		typeof entry.httpsPort === "number" &&
-		typeof entry.target === "string" &&
-		typeof entry.hostname === "string" &&
-		(entry.servedAt === undefined || typeof entry.servedAt === "string") &&
-		(entry.processIdentity === undefined ||
-			typeof entry.processIdentity === "string")
-	);
-}
+const isServeEntry: Guard<TailscaleServeEntry> = object({
+	root: isString,
+	app: isString,
+	pid: isNumber,
+	processIdentity: optional(isString),
+	httpsPort: isNumber,
+	target: isString,
+	hostname: isString,
+	servedAt: optional(isString),
+});
 
 /** The run an entry belongs to, as liveness judges it. */
 export type ServeOwner = Pick<TailscaleServeEntry, "pid" | "processIdentity">;

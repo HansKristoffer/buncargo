@@ -1,3 +1,4 @@
+import { isRecord } from "hanzio";
 import { checkoutPathError } from "./spec";
 import {
 	MAX_FILE_BYTES,
@@ -60,13 +61,13 @@ export async function exportBundle(
 
 /** A bundle's text, validated down to each file's hash. Throws naming the problem. */
 export function parseBundle(text: string): Bundle {
-	let value: Partial<Bundle>;
+	let value: unknown;
 	try {
 		value = JSON.parse(text);
 	} catch {
 		throw new Error("The input is not a checkout files bundle (not JSON).");
 	}
-	if (value?.kind !== BUNDLE_KIND)
+	if (!isRecord(value) || value.kind !== BUNDLE_KIND)
 		throw new Error(
 			"The input is not a checkout files bundle. Make one with `buncargo files export`.",
 		);
@@ -74,32 +75,39 @@ export function parseBundle(text: string): Bundle {
 		throw new Error(
 			`The bundle has version ${JSON.stringify(value.version)}, this buncargo reads ${BUNDLE_VERSION}. Update buncargo.`,
 		);
-	if (typeof value.repoKey !== "string" || !Array.isArray(value.files))
+	const { repoKey, files } = value;
+	if (typeof repoKey !== "string" || !Array.isArray(files))
 		throw new Error("The bundle has no repoKey or files.");
-	for (const file of value.files) {
-		const pathError =
-			typeof file?.path === "string"
-				? checkoutPathError(file.path)
-				: "is not a path";
-		if (pathError)
-			throw new Error(
-				`Bundle entry ${JSON.stringify(file?.path)} ${pathError}.`,
-			);
-		if (
-			typeof file.data !== "string" ||
-			typeof file.updatedAt !== "string" ||
-			typeof file.machine !== "boolean"
-		)
-			throw new Error(`Bundle entry ${file.path} is incomplete.`);
-		const data = Buffer.from(file.data, "base64");
-		if (data.length > MAX_FILE_BYTES)
-			throw new Error(`Bundle entry ${file.path} is larger than 1 MiB.`);
-		if (sha256(data) !== file.sha256)
-			throw new Error(
-				`Bundle entry ${file.path} does not match its sha256; the bundle is damaged.`,
-			);
-	}
-	return value as Bundle;
+	return {
+		kind: BUNDLE_KIND,
+		version: BUNDLE_VERSION,
+		repoKey,
+		files: files.map(parseBundleFile),
+	};
+}
+
+function parseBundleFile(entry: unknown): BundleFile {
+	const fields: Record<string, unknown> = isRecord(entry) ? entry : {};
+	const { path, data, updatedAt, machine, sha256: hash } = fields;
+	if (typeof path !== "string")
+		throw new Error(`Bundle entry ${JSON.stringify(path)} is not a path.`);
+	const pathError = checkoutPathError(path);
+	if (pathError)
+		throw new Error(`Bundle entry ${JSON.stringify(path)} ${pathError}.`);
+	if (
+		typeof data !== "string" ||
+		typeof updatedAt !== "string" ||
+		typeof machine !== "boolean"
+	)
+		throw new Error(`Bundle entry ${path} is incomplete.`);
+	const bytes = Buffer.from(data, "base64");
+	if (bytes.length > MAX_FILE_BYTES)
+		throw new Error(`Bundle entry ${path} is larger than 1 MiB.`);
+	if (typeof hash !== "string" || sha256(bytes) !== hash)
+		throw new Error(
+			`Bundle entry ${path} does not match its sha256; the bundle is damaged.`,
+		);
+	return { path, sha256: hash, updatedAt, machine, data };
 }
 
 /** Write a bundle's files into a store, keeping their `updatedAt`. */

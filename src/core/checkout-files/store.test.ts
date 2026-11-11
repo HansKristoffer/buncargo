@@ -188,6 +188,16 @@ describe("isLockStale", () => {
 
 	it("waits for a lock whose owner is still being written, until it is 30 s old", () => {
 		expect(isLockStale(undefined, now - 1000, now, "here", alive)).toBe(false);
+		// A dead owner, but its pid is not a number: judged by age alone.
+		expect(
+			isLockStale(
+				{ pid: "1", host: "here", createdAt: fresh },
+				now - 1000,
+				now,
+				"here",
+				dead,
+			),
+		).toBe(false);
 		expect(
 			isLockStale(undefined, now - LOCK_STALE_MS - 1, now, "here", alive),
 		).toBe(true);

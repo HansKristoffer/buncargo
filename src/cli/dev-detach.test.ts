@@ -11,14 +11,16 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { RunEntry } from "../core/run-registry";
 import { freePorts, useTempHome } from "../core/test-env.testing";
 import { standInForWatchdog } from "../core/watchdog.testing";
 import {
 	detachedArgv,
 	detachedLogPath,
+	detachedReportPath,
 	pruneDetachedFiles,
+	readDetachedReport,
 	runDetached,
 	settledRun,
 	unreportedApps,
@@ -537,3 +539,47 @@ export default ${JSON.stringify(config)};`,
 		rmSync(root, { recursive: true, force: true });
 	}
 }, 60_000);
+
+describe("readDetachedReport", () => {
+	const report = (document: unknown) => {
+		const root = mkdtempSync(join(tmpdir(), "buncargo-report-"));
+		try {
+			const path = detachedReportPath(root, 4242);
+			mkdirSync(dirname(path), { recursive: true });
+			writeFileSync(path, JSON.stringify(document));
+			return readDetachedReport(root, 4242);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	};
+	const lists = { setupHints: [], failures: [], hostsWarnings: [] };
+
+	it("refuses a report without one of its lists or with a non-boolean expectApps", () => {
+		expect(report({ setupHints: [], failures: [] })).toBeUndefined();
+		expect(report({ ...lists, hostsWarnings: "none" })).toBeUndefined();
+		expect(report({ ...lists, expectApps: "yes" })).toBeUndefined();
+		expect(report(null)).toBeUndefined();
+	});
+
+	it("keeps a report whose lists hold malformed entries, without them", () => {
+		const failure = {
+			cause: "api exited with code 1",
+			output: ["boom"],
+			hints: [],
+			next: ["buncargo logs api"],
+		};
+		expect(
+			report({
+				setupHints: ["run bun install", 3],
+				failures: [failure, { cause: "no output" }],
+				hostsWarnings: [null],
+				expectApps: false,
+			}),
+		).toEqual({
+			setupHints: ["run bun install"],
+			failures: [failure],
+			hostsWarnings: [],
+			expectApps: false,
+		});
+	});
+});
