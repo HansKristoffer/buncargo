@@ -3,7 +3,12 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppLogs } from "../../core/process/app-logs";
-import { buildRunEntry, publishRun, retireRuns } from "../../core/run-registry";
+import {
+	buildRunEntry,
+	loadRuns,
+	publishRun,
+	retireRuns,
+} from "../../core/run-registry";
 
 const cli = join(import.meta.dir, "..", "bin.ts");
 
@@ -145,7 +150,9 @@ it("reads the live run that runs the app, not the newest one", async () => {
 		expect(run().stdout.toString()).toContain("web of bbbbbbbb-web-run");
 		expect(run("--run=cccccccc").exitCode).toBe(1);
 	} finally {
-		await retireRuns(sessions);
+		await retireRuns(
+			(await loadRuns()).filter((run) => sessions.includes(run.sessionId)),
+		);
 		rmSync(root, { recursive: true, force: true });
 	}
 });
@@ -167,10 +174,14 @@ it("ends -f once its run has ended", async () => {
 			"api of dddddddd-follow",
 		);
 
-		await retireRuns([sessionId]);
+		await retireRuns(
+			(await loadRuns()).filter((run) => [sessionId].includes(run.sessionId)),
+		);
 		expect(await follow.exited).toBe(0);
 	} finally {
-		await retireRuns([sessionId]);
+		await retireRuns(
+			(await loadRuns()).filter((run) => [sessionId].includes(run.sessionId)),
+		);
 		rmSync(root, { recursive: true, force: true });
 	}
 });

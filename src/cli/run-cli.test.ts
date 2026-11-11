@@ -535,7 +535,11 @@ describe("runCli expose routing", () => {
 			});
 			expect(setPublicUrlsCalls.at(-1)).toEqual({});
 		} finally {
-			await retireRuns(["tunnel-owner"]);
+			await retireRuns(
+				(await loadRuns()).filter((run) =>
+					["tunnel-owner"].includes(run.sessionId),
+				),
+			);
 			server.closeAllConnections();
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 			await rm(root, { recursive: true, force: true });
@@ -620,7 +624,11 @@ it("does not offer to take over a run whose tunnels it inherited", async () => {
 		if (ci === undefined) delete process.env.CI;
 		else process.env.CI = ci;
 		prompt.mockRestore();
-		await retireRuns(["inherited-tunnel-owner"]);
+		await retireRuns(
+			(await loadRuns()).filter((run) =>
+				["inherited-tunnel-owner"].includes(run.sessionId),
+			),
+		);
 		server.closeAllConnections();
 		await new Promise<void>((resolve) => server.close(() => resolve()));
 		await rm(root, { recursive: true, force: true });
