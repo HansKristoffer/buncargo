@@ -316,6 +316,13 @@ export interface ContainerRuntimeAdapter {
 	 * runtime cannot answer: an empty list means it holds none.
 	 */
 	listVolumes(): Promise<BuncargoVolume[]>;
+	/**
+	 * Each volume's size on disk in bytes, for `doctor`. A volume missing from
+	 * the map could not be measured; Apple container measures none. Slow on
+	 * Docker (it walks every volume), so read it only when a size is shown.
+	 * Throws when the runtime cannot answer.
+	 */
+	volumeSizes(): Promise<ReadonlyMap<string, number>>;
 	/** Remove volumes by name. Returns what could not be removed, and why. */
 	removeVolumes(names: string[]): Promise<{ name: string; error: string }[]>;
 	/**

@@ -32,6 +32,7 @@ export function fakeRuntime(
 		exec: async () => false,
 		execArgv: async () => undefined,
 		listVolumes: async () => [],
+		volumeSizes: async () => new Map(),
 		removeVolumes: async () => [],
 		listComposeProjectResources: async () => ({
 			containers: [],

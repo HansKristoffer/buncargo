@@ -19,8 +19,8 @@ augmentation, so importing `buncargo/firebase` anywhere made `"firebase"` legal 
 adds no names.
 
 The config's own values win over an integration's: its `env` over the integration's `env` keys, an
-app it defines over one the integration adds, and an app's `envVars` over `appEnv`. Shopify put its
-`env` on top until 16.0.
+app it defines over one the integration adds, and an app's `staticEnv` and `envVars` over `appEnv`.
+Shopify's `env` and every `appEnv` over `staticEnv` were on top until 16.0.
 
 ## Shopify
 

@@ -163,49 +163,85 @@ export async function repairStaleService(
 	}
 }
 
-export async function runHostsInstall(
-	options: {
-		/**
-		 * Rewrite and reload the service even when one is already installed.
-		 *
-		 * Set by the explicit `buncargo hosts install` command. Without it a
-		 * service that is installed but broken — wrong code, wedged daemon —
-		 * looks fine to `isHostsServiceInstalled()`, so the command that is meant
-		 * to repair it would skip the only step that could.
-		 */
-		reinstallService?: boolean;
-		/** Install over a newer service too (`hosts install --force`). */
-		force?: boolean;
-	} = {},
+/** What `hosts install` asks of {@link installHosts}. */
+export interface HostsInstallOptions {
+	/**
+	 * Rewrite and reload the service even when one is already installed.
+	 *
+	 * Set by the explicit `buncargo hosts install` command. Without it a
+	 * service that is installed but broken (wrong code, a wedged daemon)
+	 * looks fine to `isHostsServiceInstalled()`, so the command that is meant
+	 * to repair it would skip the only step that could.
+	 */
+	reinstallService?: boolean;
+	/** Install over a newer service too (`hosts install --force`). */
+	force?: boolean;
+}
+
+/** The steps of `hosts install`, injected so the order can be tested without root. */
+export interface HostsInstallDeps {
+	clearDecline: () => void;
+	ensureMkcert: () => Promise<string>;
+	installTrust: (mkcertPath: string) => void;
+	mintCertificate: () => Promise<void>;
+	/** Installed, and not stale. */
+	serviceCurrent: () => boolean;
+	installService: (options: { force: boolean | undefined }) => {
+		kept?: string;
+	};
+	waitForDaemon: () => Promise<{ ok: boolean; message?: string }>;
+}
+
+/** Put named hosts on this machine; returns notes such as a newer service kept. */
+export async function installHosts(
+	deps: HostsInstallDeps,
+	options: HostsInstallOptions,
 ): Promise<string[]> {
-	clearHostsDecline();
-	const mkcertPath = await ensureMkcert();
+	deps.clearDecline();
+	const mkcertPath = await deps.ensureMkcert();
 	// Unconditionally: `hosts uninstall` removes the trust and keeps the CA
 	// files, so "the CA exists" skipped this on the reinstall that needed it.
 	// `mkcert -install` asks for nothing when the CA is already trusted.
-	installTrust(mkcertPath);
+	deps.installTrust(mkcertPath);
 	// Mint before the service starts. The daemon cannot bind :443 without a
 	// leaf, and it will not mint one itself.
-	await syncCertificateForRoutes(machineMkcert);
+	await deps.mintCertificate();
+
 	const notes: string[] = [];
-	if (
-		options.reinstallService ||
-		!isHostsServiceInstalled() ||
-		describeStaleHostsService()
-	) {
-		const { kept } = installHostsService({
-			...machineServiceInstall(),
-			force: options.force,
-		});
+	if (options.reinstallService || !deps.serviceCurrent()) {
+		const { kept } = deps.installService({ force: options.force });
 		if (kept) notes.push(kept);
 	}
-	const ready = await ensureHostsDaemonRunning(hostsDaemonProbe(), {
-		timeoutMs: SERVICE_START_TIMEOUT_MS,
-	});
+
+	const ready = await deps.waitForDaemon();
 	if (!ready.ok) {
 		throw new Error(ready.message ?? "Named-hosts daemon failed to start");
 	}
 	return notes;
+}
+
+export function runHostsInstall(
+	options: HostsInstallOptions = {},
+): Promise<string[]> {
+	return installHosts(
+		{
+			clearDecline: clearHostsDecline,
+			ensureMkcert,
+			installTrust,
+			mintCertificate: async () => {
+				await syncCertificateForRoutes(machineMkcert);
+			},
+			serviceCurrent: () =>
+				isHostsServiceInstalled() && !describeStaleHostsService(),
+			installService: ({ force }) =>
+				installHostsService({ ...machineServiceInstall(), force }),
+			waitForDaemon: () =>
+				ensureHostsDaemonRunning(hostsDaemonProbe(), {
+					timeoutMs: SERVICE_START_TIMEOUT_MS,
+				}),
+		},
+		options,
+	);
 }
 
 /** The steps of `hosts uninstall`, injected so the order can be tested without root. */

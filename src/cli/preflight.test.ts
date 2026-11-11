@@ -26,12 +26,12 @@ it("runs the config's then integrations' steps for the selected apps, and stops 
 			},
 		],
 	} as IntegrationConfig);
-	const env = { root: "/x", preflight: config.preflight } as AnyDevEnvironment;
+	const env = { root: "/x" } as AnyDevEnvironment;
 
-	await runPreflight(env, ["api"]);
+	await runPreflight(env, config.preflight, ["api"]);
 	expect(ran).toEqual(["own"]);
 
-	await expect(runPreflight(env, ["shop"])).rejects.toThrow(
+	await expect(runPreflight(env, config.preflight, ["shop"])).rejects.toThrow(
 		"Shop login is valid: session expired; run `shop login`",
 	);
 	expect(ran).toEqual(["own", "own", "shop:false"]);

@@ -263,16 +263,14 @@ describe("published run ownership", () => {
 	});
 
 	it("publishes the config's tasks for the menu bar's run button", async () => {
-		const run = await publishCurrentRun(
-			{
-				...source("session-tasks"),
-				tasks: {
-					"shop:seed": { description: "Seed the store" },
-					reindex: {},
-				},
+		const run = await publishCurrentRun(source("session-tasks"), {
+			apps: resolveApps({}),
+			serviceNames: ["db"],
+			tasks: {
+				"shop:seed": { description: "Seed the store" },
+				reindex: {},
 			},
-			{ apps: resolveApps({}), serviceNames: ["db"] },
-		);
+		});
 		expect(run?.tasks).toEqual([
 			{ name: "shop:seed", description: "Seed the store" },
 			{ name: "reindex" },

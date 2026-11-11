@@ -36,7 +36,6 @@ import { freePorts, useTempHome } from "../core/test-env.testing";
 import { createPhaseTimer } from "../core/timing";
 import { type FakeCloudflared, fakeCloudflared } from "../core/tunnel.testing";
 import { createDevEnvironment, type PrepareOptions } from "../environment";
-import type { DevEnvContext } from "../environment/context";
 import { registerInternals } from "../environment/internals";
 import { createAppPipeline } from "../environment/pipeline";
 import { createRunClaimApi } from "../environment/run-claim";
@@ -196,7 +195,6 @@ function createStubEnv(
 			options.setPublicUrls?.(urls as Record<string, string>);
 		},
 		clearPublicUrls: () => {},
-		ensureComposeFile: () => ".buncargo/docker-compose.generated.yml",
 		exec: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
 		waitForServer: async (url: string, timeout?: number) => {
 			await options.waitForServer?.(url, timeout);
@@ -247,7 +245,8 @@ function registerStubInternals(
 			selectedServiceKeys: [],
 			hasSelectedServices: false,
 			runtime: { name: "docker" },
-		} as unknown as DevEnvContext,
+			runtimeBinary: undefined,
+		},
 		() => env,
 	);
 	Object.assign(env, { sessionId: claim.sessionId });
@@ -303,6 +302,10 @@ function registerStubInternals(
 		reportTo: () => {},
 		renderGeneratedFiles: () => [],
 		recordCapture: async () => [],
+		setNamedHostsActive: () => {},
+		ensureComposeFile: () => ".buncargo/docker-compose.generated.yml",
+		composeModel: () => ({ services: {} }),
+		planPortOffset: () => ({ offset: 0, provenance: "hash" }),
 	});
 }
 

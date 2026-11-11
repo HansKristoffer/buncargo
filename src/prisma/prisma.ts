@@ -37,6 +37,7 @@ import { shellExitCode } from "../core/process/exec";
 import { getComposeServiceName } from "../planning";
 import type {
 	AppConfig,
+	ComposeDocument,
 	DevEnvironment,
 	EnvValues,
 	PrismaConfig,
@@ -131,6 +132,8 @@ export function createPrismaRunner<
 	 * again would cost a `compose up` and a readiness wait for nothing.
 	 */
 	readied: (service: Extract<keyof TServices, string>) => boolean,
+	/** The environment's compose file and model, which its database starts from. */
+	compose: { ensureComposeFile(): string; composeModel(): ComposeDocument },
 ): PrismaRunner {
 	const resolved = resolvePrismaConfig(config);
 	const { cwd, urlEnvVar, urlEnvVars } = resolved;
@@ -155,7 +158,7 @@ export function createPrismaRunner<
 	async function ensureDatabase(): Promise<void> {
 		if (readied(service)) return;
 		await allocate(service);
-		const composeFile = env.ensureComposeFile();
+		const composeFile = compose.ensureComposeFile();
 		const envVars = env.buildEnvVars();
 		const serviceConfig = env.services[service];
 		if (serviceConfig?.port === undefined) {
@@ -180,7 +183,7 @@ export function createPrismaRunner<
 			envVars,
 			services: { [service]: healthCheckedServiceConfig },
 			ports: { [service]: port },
-			model: env.composeModel(),
+			model: compose.composeModel(),
 			composeFile,
 			// Its progress would land in the stdout `buncargo prisma` keeps for Prisma.
 			verbose: false,

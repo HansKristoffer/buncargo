@@ -71,7 +71,6 @@ export interface RunSource {
 	readonly integrations?: readonly BuncargoIntegration[];
 	readonly workspaceId?: string;
 	details?(): Record<string, string>;
-	readonly tasks?: Readonly<Record<string, { readonly description?: string }>>;
 	readonly hosts: {
 		readonly active: boolean;
 		readonly tld: string;
@@ -295,6 +294,8 @@ export interface PublishRunInput {
 	 * has waited for every container, so by then they are up by construction.
 	 */
 	serviceStatus?: RunServiceStatus;
+	/** The config's tasks, which BuncargoBar offers to run. */
+	tasks?: Readonly<Record<string, { readonly description?: string }>>;
 }
 
 /**
@@ -362,9 +363,9 @@ async function writeRun(
 			input.serviceNames,
 		),
 		...runDetails(env),
-		...(env.tasks && Object.keys(env.tasks).length > 0
+		...(input.tasks && Object.keys(input.tasks).length > 0
 			? {
-					tasks: Object.entries(env.tasks).map(([name, task]) => ({
+					tasks: Object.entries(input.tasks).map(([name, task]) => ({
 						name,
 						...(task.description ? { description: task.description } : {}),
 					})),

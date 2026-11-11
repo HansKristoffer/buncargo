@@ -32,6 +32,7 @@ import {
 } from "../core/tunnel";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../core/watchdog-constants";
 import {
+	type EnvironmentInternals,
 	internalsOf,
 	type PreparedSeed,
 	type PrepareOptions,
@@ -76,6 +77,7 @@ import {
 import {
 	activateNamedHosts,
 	machineNamedHostsDeps,
+	type NamedHostsTarget,
 	reclaimAppRoute,
 	releaseNamedHosts,
 } from "./dev-hosts";
@@ -391,6 +393,18 @@ async function runDevCommand<
 	return interrupts.exitCode() ?? exitCode;
 }
 
+/** The environment's named hosts, with the switch its internals hold. */
+function namedHostsOf(
+	env: Pick<AnyDevEnvironment, "root" | "hosts" | "ports">,
+): NamedHostsTarget {
+	return {
+		root: env.root,
+		hosts: env.hosts,
+		ports: env.ports,
+		setNamedHostsActive: internalsOf(env).setNamedHostsActive,
+	};
+}
+
 async function teardown<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
@@ -401,7 +415,7 @@ async function teardown<
 ): Promise<void> {
 	await flushRunPatches(env);
 	try {
-		const hosts = releaseNamedHosts(env);
+		const hosts = releaseNamedHosts(namedHostsOf(env));
 		const results = await Promise.allSettled([
 			tunnels.stop(),
 			connect?.stop(),
@@ -567,7 +581,13 @@ async function runDevFlow<
 		onlyApps: selectedAppNames,
 	});
 	const appsForDev = plan.apps;
-	validateDevStart(env, args, appsForDev, plan.requiredServiceKeys);
+	validateDevStart(
+		env,
+		args,
+		appsForDev,
+		plan.requiredServiceKeys,
+		internalsOf(env).seed,
+	);
 	// What `dev --detach` waits for, which only this run knows: it never
 	// loads the config itself.
 	detached?.recordDetachedReport(env.root, (report) => ({
@@ -616,7 +636,9 @@ async function runDevFlow<
 	// checks: this runs on every start in every worktree.
 	if (!isOneShot(args.values)) {
 		const anyEnv = env as unknown as AnyDevEnvironment;
-		const checks = allChecks(anyEnv).filter((check) => check.fast !== false);
+		const checks = allChecks(anyEnv, pipeline.setupChecks).filter(
+			(check) => check.fast !== false,
+		);
 		const failed = (
 			await timer.measure("checks", () =>
 				runChecks(checks, { root: env.root, env: anyEnv }),
@@ -636,7 +658,7 @@ async function runDevFlow<
 		const errors = failed.filter((result) => !isWarning(result));
 		if (errors.length > 0) throw checkFailureError(errors);
 		await timer.measure("preflight", () =>
-			runPreflight(anyEnv, Object.keys(appsForDev)),
+			runPreflight(anyEnv, pipeline.preflight, Object.keys(appsForDev)),
 		);
 		signal.throwIfAborted();
 	}
@@ -670,7 +692,7 @@ async function runDevFlow<
 		? []
 		: await timer.measure("hosts", () =>
 				activateNamedHosts(
-					env,
+					namedHostsOf(env),
 					{ enabled: !args.values["no-hosts"], signal },
 					machineNamedHostsDeps,
 				),
@@ -748,7 +770,7 @@ async function runDevFlow<
 			skipContainers: !hasServices,
 		});
 		hostsWarnings = await activateNamedHosts(
-			env,
+			namedHostsOf(env),
 			{
 				enabled: !args.values["no-hosts"],
 				signal,
@@ -822,7 +844,12 @@ async function runDevFlow<
 	}
 
 	if (args.values.seed) {
-		return reportCliSeed(env, prepared.seed, plan.requiredServiceKeys);
+		return reportCliSeed(
+			env,
+			pipeline.seed,
+			prepared.seed,
+			plan.requiredServiceKeys,
+		);
 	}
 
 	if (args.values["up-only"]) {
@@ -1138,7 +1165,8 @@ export function selectProfileApps<TApps extends Record<string, AppConfig>>(
  * its services. Exits 1 on failure, like every other flow.
  */
 function reportCliSeed(
-	env: Pick<AnyDevEnvironment, "seed" | "services" | "apps">,
+	env: Pick<AnyDevEnvironment, "services" | "apps">,
+	seedConfig: EnvironmentInternals["seed"],
 	seed: PreparedSeed,
 	selectedServices: readonly string[],
 ): number {
@@ -1154,7 +1182,7 @@ function reportCliSeed(
 		},
 		"not-needed": () => {
 			throw (
-				seedSelectionError(env.seed, selectedServices, env) ??
+				seedSelectionError(seedConfig, selectedServices, env) ??
 				new CliError("The seed did not run for this selection.")
 			);
 		},

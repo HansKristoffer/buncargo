@@ -1,7 +1,7 @@
 import { getErrorMessage } from "hanzio";
 import { isInteractive } from "../core/prompt";
 import { isCI } from "../core/runtime-flags";
-import type { AnyDevEnvironment } from "../types";
+import type { AnyDevEnvironment, PreflightStep } from "../types";
 import { CliError } from "./errors";
 import * as log from "./log";
 
@@ -12,9 +12,10 @@ import * as log from "./log";
  */
 export async function runPreflight(
 	env: AnyDevEnvironment,
+	configured: readonly PreflightStep[] | undefined,
 	selectedApps: readonly string[],
 ): Promise<void> {
-	const steps = (env.preflight ?? []).filter(
+	const steps = (configured ?? []).filter(
 		(step) => !step.apps || step.apps.some((app) => selectedApps.includes(app)),
 	);
 	// A CI job can have a terminal, and still nobody to log in.

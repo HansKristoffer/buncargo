@@ -34,8 +34,20 @@ export function writeIfChanged(path: string, content: string): boolean {
 	return true;
 }
 
+/** What rendering the generated files reads of its environment. */
+export type GeneratedFilesContext = Pick<
+	DevEnvContext,
+	| "root"
+	| "projectName"
+	| "ports"
+	| "urls"
+	| "loopbackUrls"
+	| "publicUrls"
+	| "captured"
+> & { readonly config: Pick<DevEnvContext["config"], "generatedFiles"> };
+
 function generatedFileContext(
-	ctx: DevEnvContext,
+	ctx: GeneratedFilesContext,
 	envVars: DevEnvVarsApi,
 ): GeneratedFileContext {
 	return {
@@ -54,7 +66,7 @@ function generatedFileContext(
 
 /** Render every configured file; returns the paths (relative) that changed. */
 export function renderGeneratedFiles(
-	ctx: DevEnvContext,
+	ctx: GeneratedFilesContext,
 	envVars: DevEnvVarsApi,
 ): string[] {
 	const files = ctx.config.generatedFiles ?? [];

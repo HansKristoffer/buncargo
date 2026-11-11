@@ -18,6 +18,7 @@ export async function loadEnv(options: { containerRuntime?: string } = {}) {
 export async function loadLiveEnv() {
 	const { readLiveNamedUrls } = await import("../../core/checkout-view");
 	const { adoptLiveCaptures } = await import("../../core/run-publish");
+	const { internalsOf } = await import("../../environment");
 	const env = await loadEnv();
 	// Answered all the same (`portOffsetProvenance: "unallocated"`): these
 	// commands are how an agent finds its way out of a full range.
@@ -30,7 +31,7 @@ export async function loadLiveEnv() {
 				env.ports as Record<string, number>,
 			)
 		: undefined;
-	if (live) env.setNamedHostsActive(true, live);
+	if (live) internalsOf(env).setNamedHostsActive(true, live);
 	await adoptLiveCaptures(env);
 	return env;
 }

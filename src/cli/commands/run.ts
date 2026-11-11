@@ -1,5 +1,6 @@
 import { ensureSecretsSession } from "../../core/secrets/index";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
+import { internalsOf } from "../../environment";
 import { loadDevEnv } from "../../loader";
 import type { AnyDevEnvironment, TaskConfig } from "../../types";
 import { BASE_EXITS, defineCommand } from "../command-spec";
@@ -25,7 +26,7 @@ async function runNamedTask(
 	passthrough: readonly string[],
 ): Promise<number> {
 	const env = await loadDevEnv();
-	const tasks = env.tasks ?? {};
+	const tasks = internalsOf(env).tasks ?? {};
 
 	if (!name) {
 		if (Object.keys(tasks).length === 0) {

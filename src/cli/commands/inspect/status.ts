@@ -22,6 +22,7 @@ import {
 } from "../../../core/process";
 import { describeRemoval, readRemovals } from "../../../core/removal-log";
 import { type RunEntry, readLiveRuns } from "../../../core/run-registry";
+import { internalsOf } from "../../../environment";
 import type {
 	AnyDevEnvironment,
 	BuncargoContainer,
@@ -137,7 +138,7 @@ async function readStatus(): Promise<StatusJson> {
 			env.portOffsetProvenance === "hash"
 				? describePlannedOffset({
 						offset: env.portOffset,
-						planned: env.planPortOffset().offset,
+						planned: internalsOf(env).planPortOffset(ownerOf).offset,
 						ports,
 					})
 				: undefined;

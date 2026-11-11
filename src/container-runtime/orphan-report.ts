@@ -80,7 +80,7 @@ export function orphanVolumeReporter(deps: OrphanVolumeReportDeps) {
 					runs: await readRuns(),
 					checkouts: claimedCheckouts(claims()),
 				}),
-			);
+			).map((volume) => volume.name);
 			nextAt = startedAt + ORPHAN_VOLUME_REPORT_INTERVAL_MS;
 			const key = names.join("\n");
 			if (key === reported) return;

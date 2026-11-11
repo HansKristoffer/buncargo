@@ -139,7 +139,7 @@ describe("dependencies check", () => {
 				JSON.stringify({ devDependencies: { typescript: "5" } }),
 			);
 			const env = { root, services: {}, apps: {} } as AnyDevEnvironment;
-			const deps = allChecks(env).filter(
+			const deps = allChecks(env, undefined).filter(
 				(check) => check.name === "Dependencies are installed",
 			);
 			expect(deps).toHaveLength(1);
@@ -172,7 +172,7 @@ describe("loopback URLs check", () => {
 				WEB_URL: "http://localhost:5273/app",
 			}),
 		} as unknown as AnyDevEnvironment;
-		const checks = allChecks(env).filter(
+		const checks = allChecks(env, undefined).filter(
 			(check) => check.name === "Loopback URLs point at this checkout",
 		);
 		const results = await runChecks(checks, { root: env.root, env });

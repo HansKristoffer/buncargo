@@ -2,12 +2,12 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 import {
 	resolveBunSeedSpecifier,
 	runSeedCommand,
 	runSeedIfNeeded,
+	type SeedContext,
 } from "./seeding";
 import { TERMINAL_OUTPUT } from "./status-output";
 
@@ -31,15 +31,15 @@ function stubSeedContext(input: {
 	command: string;
 	check?: () => Promise<boolean>;
 }): {
-	ctx: DevEnvContext;
+	ctx: SeedContext;
 	envVars: DevEnvVarsApi;
 } {
-	const ctx = {
+	const ctx: SeedContext = {
 		root: input.root,
 		urls: {},
 		output: TERMINAL_OUTPUT,
 		config: { seed: { command: input.command, check: input.check } },
-	} as unknown as DevEnvContext;
+	};
 	const envVars = {
 		buildEnvVars: () => ({}),
 		resolveSecrets: async () => ({}),
@@ -51,7 +51,12 @@ function stubSeedContext(input: {
 
 describe("runSeedIfNeeded", () => {
 	it("reports a missing seed block instead of guessing a command", async () => {
-		const ctx = { config: {} } as unknown as DevEnvContext;
+		const ctx: SeedContext = {
+			root: "/",
+			urls: {},
+			output: TERMINAL_OUTPUT,
+			config: {},
+		};
 		const envVars = {} as unknown as DevEnvVarsApi;
 
 		expect(await runSeedIfNeeded(ctx, envVars)).toEqual({

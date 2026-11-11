@@ -81,10 +81,12 @@ export function planVolumePrune(input: PruneInput): VolumeReport[] {
 	});
 }
 
-export function orphanedVolumes(reports: readonly VolumeReport[]): string[] {
+export function orphanedVolumes(
+	reports: readonly VolumeReport[],
+): BuncargoVolume[] {
 	return reports
 		.filter((report) => report.verdict.kind === "orphaned")
-		.map((report) => report.volume.name);
+		.map((report) => report.volume);
 }
 
 /** The checkout each claim names, and whether it is confirmed deleted. */

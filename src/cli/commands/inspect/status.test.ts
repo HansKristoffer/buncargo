@@ -176,6 +176,70 @@ it("starts the plain status with one aligned line per app", () => {
 	]);
 });
 
+/**
+ * `status --json` in `dir` against `docker`, with an `lsof` on `PATH` that
+ * lists no listener and counts its calls.
+ */
+async function statusForks(
+	docker: ReturnType<typeof fakeDocker>,
+	extraEnv: Record<string, string>,
+) {
+	const bin = join(dir, "bin");
+	mkdirSync(bin);
+	const lsofCalls = join(dir, "lsof-calls");
+	writeFileSync(
+		join(bin, "lsof"),
+		`#!/bin/sh\necho "$*" >> '${lsofCalls}'\nexit 1\n`,
+		{ mode: 0o700 },
+	);
+	writeFileSync(
+		join(dir, "dev.config.ts"),
+		`export default {
+			projectPrefix: "forks",
+			docker: { runtime: "docker", binary: ${JSON.stringify(docker.binary)} },
+			services: {
+				postgres: { port: 15432, docker: { image: "postgres:16" } },
+				redis: { port: 16379, docker: { image: "redis:7" } },
+				mail: { port: 18025, docker: { image: "axllent/mailpit" } },
+			},
+			apps: {
+				web: { port: 15173, devCommand: "true" },
+				api: { port: 18080, devCommand: "true" },
+				admin: { port: 15174, devCommand: "true" },
+			},
+		};`,
+	);
+	const env: Record<string, string | undefined> = {
+		...process.env,
+		HOME: join(dir, "home"),
+		PATH: `${bin}:${process.env.PATH}`,
+		...extraEnv,
+	};
+	for (const name of CI_ENV_VARS) delete env[name];
+	const proc = Bun.spawn([process.execPath, cli, "status", "--json"], {
+		cwd: dir,
+		env,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, code] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	if (code !== 0) throw new Error(`status exited ${code}: ${stderr}`);
+	return {
+		result: JSON.parse(stdout) as {
+			ports: Record<string, { state: string; owner: string | null }>;
+			portOffsetProvenance: string;
+			runtime: { running: boolean };
+			checkSlots: { capacity: number; enabled: boolean; holders: unknown[] };
+		},
+		dockerCommands: docker.calls().map((args) => args[0]),
+		lsofCalls: readFileSync(lsofCalls, "utf8").trim().split("\n").length,
+	};
+}
+
 it("reads six ports with one lsof and one docker ps, and reports the check slots", async () => {
 	const docker = fakeDocker({
 		ps: {
@@ -188,57 +252,10 @@ it("reads six ports with one lsof and one docker ps, and reports the check slots
 		},
 	});
 	try {
-		// `lsof` that lists no listener and counts its calls.
-		const bin = join(dir, "bin");
-		mkdirSync(bin);
-		const lsofCalls = join(dir, "lsof-calls");
-		writeFileSync(
-			join(bin, "lsof"),
-			`#!/bin/sh\necho "$*" >> '${lsofCalls}'\nexit 1\n`,
-			{ mode: 0o700 },
-		);
-		writeFileSync(
-			join(dir, "dev.config.ts"),
-			`export default {
-				projectPrefix: "forks",
-				docker: { runtime: "docker", binary: ${JSON.stringify(docker.binary)} },
-				services: {
-					postgres: { port: 15432, docker: { image: "postgres:16" } },
-					redis: { port: 16379, docker: { image: "redis:7" } },
-					mail: { port: 18025, docker: { image: "axllent/mailpit" } },
-				},
-				apps: {
-					web: { port: 15173, devCommand: "true" },
-					api: { port: 18080, devCommand: "true" },
-					admin: { port: 15174, devCommand: "true" },
-				},
-			};`,
-		);
-		const env: Record<string, string | undefined> = {
-			...process.env,
-			HOME: join(dir, "home"),
-			PATH: `${bin}:${process.env.PATH}`,
-			// A pinned offset: the unpinned hash is checked with a probe of its own.
+		// A pinned offset, so the ports are the config's own.
+		const { result, dockerCommands, lsofCalls } = await statusForks(docker, {
 			BUNCARGO_PORT_OFFSET: "0",
-		};
-		for (const name of CI_ENV_VARS) delete env[name];
-		const proc = Bun.spawn([process.execPath, cli, "status", "--json"], {
-			cwd: dir,
-			env,
-			stdout: "pipe",
-			stderr: "pipe",
 		});
-		const [stdout, stderr, code] = await Promise.all([
-			new Response(proc.stdout).text(),
-			new Response(proc.stderr).text(),
-			proc.exited,
-		]);
-		if (code !== 0) throw new Error(`status exited ${code}: ${stderr}`);
-		const result = JSON.parse(stdout) as {
-			ports: Record<string, { state: string; owner: string | null }>;
-			runtime: { running: boolean };
-			checkSlots: { capacity: number; enabled: boolean; holders: unknown[] };
-		};
 
 		expect(Object.keys(result.ports)).toHaveLength(6);
 		expect(result.ports.postgres?.state).toBe("foreign");
@@ -248,8 +265,21 @@ it("reads six ports with one lsof and one docker ps, and reports the check slots
 			enabled: true,
 			holders: [],
 		});
-		expect(docker.calls().map((args) => args[0])).toEqual(["ps"]);
-		expect(readFileSync(lsofCalls, "utf8").trim().split("\n")).toHaveLength(1);
+		expect(dockerCommands).toEqual(["ps"]);
+		expect(lsofCalls).toBe(1);
+	} finally {
+		docker.remove();
+	}
+}, 30_000);
+
+it("plans an unclaimed hash block from the same reading, without a probe of its own", async () => {
+	const docker = fakeDocker({ ps: { stdout: "" } });
+	try {
+		const { result, dockerCommands, lsofCalls } = await statusForks(docker, {});
+
+		expect(result.portOffsetProvenance).toBe("hash");
+		expect(dockerCommands).toEqual(["ps"]);
+		expect(lsofCalls).toBe(1);
 	} finally {
 		docker.remove();
 	}
