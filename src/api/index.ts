@@ -18,6 +18,8 @@ export {
 	containerRuntimeForEnv,
 	ensureServicesRunning,
 	listBuncargoContainers,
+	type RuntimeCapabilities,
+	type RuntimeContainer,
 	resolveContainerRuntime,
 	stopBuncargoContainers,
 	waitForAllServices,
