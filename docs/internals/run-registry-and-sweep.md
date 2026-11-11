@@ -382,6 +382,11 @@ It is not shipped in the npm package and not built by `bun run build`; it releas
 - `menubar/fixtures/runs.v1.json` is the schema contract. `menubar/scripts/smoke-test.sh` runs the
   app's `--status` mode against it and `src/core/run-registry.fixture.test.ts` decodes the same
   file, so a field one side drops fails a test on both.
+- It decodes each run on its own and drops one it cannot read, and reads a status it does not know
+  as `starting`. The app and the CLI release on their own, so a field or status from a newer CLI
+  must cost one row at most; decoded as one array, a single such entry emptied the menu.
+  `menubar/fixtures/runs.v1.lossy.json` holds those entries, and `RunRegistryTests` and the
+  fixture test above both read it.
 - It decides liveness by the CLI's rule, not by the pid alone: `ProcessIdentity` reads the start
   time from `sysctl` and encodes it as `process-identity.ts` does (`v2:` and the SHA-256 of `ps`'s
   C-locale UTC `lstart`), so the two cannot drift without `RunRegistryTests` failing. With the pid

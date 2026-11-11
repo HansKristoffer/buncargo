@@ -154,31 +154,43 @@ async function verifyBinary(
 		throw new Error("Downloaded tool did not report the expected version");
 }
 
+/**
+ * A release asset whose digest GitHub publishes, for a version the user chose
+ * and buncargo has no pin for. No published digest means no install.
+ */
+export interface PublishedDigest {
+	repository: string;
+	version: string;
+	name: string;
+	/** The settings named when no digest is published: the version, and the binary path. */
+	settings: { version: string; path: string };
+}
+
 export interface ToolInstallOptions {
 	to: string;
 	url: string;
 	versionArgs: string[];
 	expectedVersion: RegExp;
 	archiveEntry?: string;
-	sha256?: string;
-	/** Optional release metadata; its digest is used when GitHub publishes one. */
-	githubAsset?: { repository: string; version: string; name: string };
+	/** The asset's sha256: pinned, or read from its release. Nothing unverified is executed. */
+	sha256: string | PublishedDigest;
 	fetch?: ToolFetch;
 	timeoutMs?: number;
 	signal?: AbortSignal;
 }
 
-async function githubDigest(
-	asset: NonNullable<ToolInstallOptions["githubAsset"]>,
+async function publishedDigest(
+	asset: PublishedDigest,
 	directory: string,
 	fetcher?: ToolFetch,
 	signal?: AbortSignal,
-): Promise<string | undefined> {
+): Promise<string> {
 	const tag =
 		asset.version === "latest"
 			? "latest"
 			: `tags/${encodeURIComponent(asset.version)}`;
 	const path = join(directory, "release.json");
+	let digest: unknown;
 	try {
 		await downloadToolAsset(
 			`https://api.github.com/repos/${asset.repository}/releases/${tag}`,
@@ -186,20 +198,21 @@ async function githubDigest(
 			{ fetch: fetcher, timeoutMs: 15_000, maxBytes: 4 * 1024 * 1024, signal },
 		);
 		const document = JSON.parse(await readFile(path, "utf8"));
-		const digest = Array.isArray(document.assets)
+		digest = Array.isArray(document.assets)
 			? document.assets.find(
 					(entry: { name?: unknown }) => entry.name === asset.name,
 				)?.digest
 			: undefined;
-		return typeof digest === "string" && /^sha256:[a-f0-9]{64}$/i.test(digest)
-			? digest.slice(7)
-			: undefined;
 	} catch {
 		signal?.throwIfAborted();
-		// Older releases have no digests, and public metadata is rate-limited.
-		// HTTPS + executable/version validation remain required in either case.
-		return undefined;
+		// A rate limit or an outage reads as no digest: the install fails closed below.
 	}
+	if (typeof digest === "string" && /^sha256:[a-f0-9]{64}$/i.test(digest))
+		return digest.slice(7);
+	const { settings } = asset;
+	throw new Error(
+		`${settings.version}=${asset.version} has no pinned sha256, and none for ${asset.name} could be read from its GitHub release, so buncargo will not download it. Unset ${settings.version} to use the pinned version, or set ${settings.path} to a binary you installed.`,
+	);
 }
 
 /** Stage, verify and atomically publish one version/platform's executable. */
@@ -221,15 +234,14 @@ export async function installTool(
 			try {
 				const asset = join(staging, "download");
 				const digest =
-					options.sha256 ??
-					(options.githubAsset
-						? await githubDigest(
-								options.githubAsset,
+					typeof options.sha256 === "string"
+						? options.sha256
+						: await publishedDigest(
+								options.sha256,
 								staging,
 								options.fetch,
 								options.signal,
-							)
-						: undefined);
+							);
 				await downloadToolAsset(options.url, asset, {
 					fetch: options.fetch,
 					sha256: digest,

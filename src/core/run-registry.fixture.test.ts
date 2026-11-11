@@ -18,14 +18,8 @@ import { getRunsPath, loadRuns, runLivenessAsync } from "./run-registry";
  * it. A field one side stops writing or starts requiring breaks a test on both,
  * rather than shipping an app that decodes nothing.
  */
-const FIXTURE = join(
-	import.meta.dir,
-	"..",
-	"..",
-	"menubar",
-	"fixtures",
-	"runs.v1.json",
-);
+const FIXTURES = join(import.meta.dir, "..", "..", "menubar", "fixtures");
+const FIXTURE = join(FIXTURES, "runs.v1.json");
 
 describe("runs.json v1 fixture", () => {
 	it("decodes with every field the app relies on", async () => {
@@ -133,6 +127,39 @@ describe("runs.json v1 fixture", () => {
 			expect(crashed?.processIdentity).toStartWith("v2:");
 			expect(crashed?.ownerLostAt).toBe("2026-09-03T08:20:00.000Z");
 			expect(crashed && alive(crashed)).toBe(false);
+		} finally {
+			if (realHome === undefined) delete process.env.HOME;
+			else process.env.HOME = realHome;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+/**
+ * `menubar/fixtures/runs.v1.lossy.json`, which the app's
+ * `RunRegistryTests.swift` decodes too: entries a reader cannot read are
+ * dropped one at a time, never the whole list.
+ */
+describe("runs.json v1 lossy fixture", () => {
+	it("drops the entries it cannot read and keeps the rest", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-fixture-"));
+		const realHome = process.env.HOME;
+		process.env.HOME = dir;
+		try {
+			mkdirSync(dirname(getRunsPath()), { recursive: true });
+			writeFileSync(
+				getRunsPath(),
+				readFileSync(join(FIXTURES, "runs.v1.lossy.json"), "utf8"),
+			);
+			const runs = await loadRuns({ strict: true });
+
+			// The app keeps `unknown-status-session` and shows its unknown
+			// statuses as starting; the CLI drops an entry with a status it does
+			// not know, as it drops one without `apps`.
+			expect(runs.map((run) => run.sessionId)).toEqual([
+				"first-valid-session",
+				"last-valid-session",
+			]);
 		} finally {
 			if (realHome === undefined) delete process.env.HOME;
 			else process.env.HOME = realHome;
