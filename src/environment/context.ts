@@ -184,6 +184,7 @@ export function createDevEnvContext<
 		containerRuntime?: string;
 		root?: string;
 		readOnly?: boolean;
+		data?: "volumes" | "tmpfs";
 	} = {},
 ): DevEnvContext<TServices, TApps, TEnv> {
 	const root = options.root ?? findMonorepoRoot();
@@ -315,6 +316,7 @@ export function createDevEnvContext<
 			config.docker,
 			{ projectName, root, worktree: worktreeSuffix },
 			runtime().name,
+			{ data: options.data },
 		);
 
 	let cachedPlan: { selection: string; plan: StartPlan } | undefined;

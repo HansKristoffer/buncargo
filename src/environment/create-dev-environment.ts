@@ -14,6 +14,7 @@ import type {
 	EnvValues,
 	PrismaRunner,
 	ServiceConfig,
+	SuffixedEnvironmentOptions,
 } from "../types";
 import { createCaptureRecorder, labelledCaptures } from "./captures";
 import { explainMissingContainers, withLossNotice } from "./container-loss";
@@ -56,7 +57,7 @@ export function createDevEnvironment<
 		containerRuntime?: string;
 		root?: string;
 		readOnly?: boolean;
-	} = {},
+	} & SuffixedEnvironmentOptions = {},
 ): DevEnvironment<TServices, TApps, TEnv> {
 	// Integrations transform the config before anything reads it; `withSuffix`
 	// re-applies them to the original, which is pure and gives the same result.
@@ -214,10 +215,11 @@ export function createDevEnvironment<
 		prisma: undefined,
 
 		// Advanced
-		withSuffix: (newSuffix) =>
+		withSuffix: (newSuffix, suffixed) =>
 			createDevEnvironment(config, {
 				...options,
 				suffix: newSuffix,
+				data: suffixed?.data,
 			}),
 	};
 

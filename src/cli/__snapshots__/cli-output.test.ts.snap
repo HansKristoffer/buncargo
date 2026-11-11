@@ -334,13 +334,16 @@ Options:
   --help                         Show this help message
   --migrate                      Run migrations (and Prisma generate) after services start
   --seed                         Run migrations, then the seed command
+  --schema=<migrate|push>        How the Prisma schema is applied: its migrations, or \`prisma db push\` (implies --migrate)
+  --slot                         Hold one of the machine's check slots from before the services start until teardown
   --services=<names>             Start only these services (default: every configured one)
   --runtime=<docker|apple|auto>  Container runtime backend (default: docker)
   --                             Command to run with the checkout environment
 
 Examples:
-  buncargo ci --migrate -- bun test  Services up, migrations applied, tests, teardown
-  buncargo ci --seed                 Check that migrations and the seed apply cleanly
+  buncargo ci --migrate -- bun test             Services up, migrations applied, tests, teardown
+  buncargo ci --seed                            Check that migrations and the seed apply cleanly
+  buncargo ci --schema=push --slot -- bun test  A unit shard: the schema pushed, not migrated, inside a check slot
 
 
 --- stderr
