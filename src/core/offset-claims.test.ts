@@ -160,4 +160,24 @@ describe("claimOffset", () => {
 		expect(() => claimAt(T0)).toThrow(errorType);
 		expect(readFileSync(getOffsetClaimsPath(), "utf-8")).toBe(bytes);
 	});
+
+	it("records a throwaway claim as one, and a later claim of the key that is not throwaway as not", () => {
+		// The sweep frees only marked claims: a dev claim of the same root
+		// must not inherit the mark of a CI run's.
+		const claim = (throwaway: boolean) =>
+			withOffsetClaimsLock(() =>
+				claimOffset({
+					root,
+					offset: 300,
+					ports: [5732],
+					projectName: "demo",
+					throwaway,
+				}),
+			);
+
+		claim(true);
+		expect(readAllOffsetClaims()[root]?.throwaway).toBe(true);
+		claim(false);
+		expect(readAllOffsetClaims()[root]).not.toHaveProperty("throwaway");
+	});
 });
