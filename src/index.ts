@@ -68,6 +68,8 @@ export type {
 	CheckGateConfig,
 	CheckOutcome,
 	CheckoutFile,
+	CheckTestAlsoConfig,
+	CheckTestDeferredConfig,
 	// CLI
 	CliOptions,
 	// Computed types
@@ -140,7 +142,10 @@ export type {
 	// Prisma
 	PrismaConfig,
 	PrismaMigrateCheckOptions,
+	PrismaNewMigrationOptions,
+	PrismaNewMigrationResult,
 	PrismaRunner,
+	PrismaRunOptions,
 	ProfileConfig,
 	PublicTunnelHandle,
 	SecretsScopeConfig,

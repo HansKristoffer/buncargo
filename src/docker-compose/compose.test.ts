@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildAppleRunPlan } from "../apple-container/run-plan";
 import type { ServiceConfig } from "../types";
 import {
 	buildComposeModel,
@@ -181,6 +182,77 @@ describe("buildComposeModel", () => {
 			POSTGRES_DB: "postgres",
 		});
 		expect(compose.volumes).toEqual({ postgres_data: {} });
+	});
+});
+
+describe("buildComposeModel with data on tmpfs", () => {
+	const services: Record<string, ServiceConfig> = {
+		postgres: { port: 5432 },
+		search: service.custom({
+			port: 7700,
+			docker: {
+				image: "getmeili/meilisearch:v1.10",
+				volumes: [
+					"search_data:/meili_data",
+					"./fixtures:/fixtures:ro",
+					"/scratch",
+					"shared_cache:/cache",
+				],
+			},
+		}),
+	};
+	const docker = {
+		volumes: { search_data: {}, shared_cache: { external: true } },
+	};
+
+	it("mounts the stack's own volumes in memory and declares none", () => {
+		const compose = buildComposeModel(services, docker, undefined, "docker", {
+			data: "tmpfs",
+		});
+
+		expect(compose.services.postgres?.volumes).toBeUndefined();
+		expect(compose.services.postgres?.tmpfs).toEqual([
+			"/var/lib/postgresql/data",
+		]);
+		expect(compose.services.search?.volumes).toEqual([
+			"./fixtures:/fixtures:ro",
+			"shared_cache:/cache",
+		]);
+		expect(compose.services.search?.tmpfs).toEqual(["/meili_data", "/scratch"]);
+		expect(compose.volumes).toEqual({ shared_cache: { external: true } });
+	});
+
+	it("runs on Apple container with --tmpfs and no volume", () => {
+		const model = buildComposeModel(
+			{ postgres: { port: 5432 } },
+			undefined,
+			undefined,
+			"apple",
+			{ data: "tmpfs" },
+		);
+		const [postgres] = buildAppleRunPlan({
+			projectName: "demo-ci-1a2b3c",
+			model,
+			root: "/repo",
+		}).services;
+
+		const args = postgres?.runArgs ?? [];
+		expect(args[args.indexOf("--tmpfs") + 1]).toBe("/var/lib/postgresql/data");
+		expect(args).not.toContain("--volume");
+		expect(postgres?.volumes).toEqual([]);
+	});
+
+	it("keeps named volumes by default", () => {
+		const compose = buildComposeModel(services, docker);
+		expect(compose.services.postgres?.volumes).toEqual([
+			"postgres_data:/var/lib/postgresql/data",
+		]);
+		expect(compose.services.postgres?.tmpfs).toBeUndefined();
+		expect(Object.keys(compose.volumes ?? {}).sort()).toEqual([
+			"postgres_data",
+			"search_data",
+			"shared_cache",
+		]);
 	});
 });
 

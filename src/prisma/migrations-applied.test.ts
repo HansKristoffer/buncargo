@@ -6,6 +6,7 @@ import { runMigrationsSequentially } from "../environment/migrations";
 import {
 	appliedMigrationCount,
 	type MigrationRow,
+	missingAppliedMigrations,
 	readMigrationRows,
 } from "./migrations-applied";
 
@@ -121,6 +122,38 @@ it("executes the migration query through Bun SQL and falls back on an absent tab
 		expect(await appliedMigrationCount(input, read)).toBeUndefined();
 	} finally {
 		db.close();
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+// A branch squashed the chain: the database finished migrations the checkout
+// no longer has, which only a reset gets past.
+it("names the migrations the database applied that the checkout no longer has", async () => {
+	const { root, dir, input } = await fixture();
+	try {
+		const rows: MigrationRow[] = [
+			applied,
+			{ ...applied, migration_name: "20250101_squashed_away" },
+			// Rolled back: nothing of it is in the database.
+			{
+				...applied,
+				migration_name: "20250202_undone",
+				rolled_back_at: new Date(),
+			},
+		];
+		expect(
+			await missingAppliedMigrations(input.url, dir, async () => rows),
+		).toEqual(["20250101_squashed_away"]);
+		expect(
+			await missingAppliedMigrations(input.url, dir, async () => [applied]),
+		).toEqual([]);
+		// Prisma decides when the database cannot say.
+		expect(
+			await missingAppliedMigrations(input.url, dir, async () => {
+				throw new Error('relation "_prisma_migrations" does not exist');
+			}),
+		).toBeUndefined();
+	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
 });

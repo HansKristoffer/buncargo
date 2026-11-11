@@ -437,6 +437,94 @@ describe("typecheck include and exclude", () => {
 	});
 });
 
+describe("typecheck scripts", () => {
+	/** A workspace with these scripts, each recording `<dir> <script>`. */
+	function writeScriptsWorkspace(
+		root: string,
+		relative: string,
+		scripts: string[],
+		eventFile: string,
+	): void {
+		const dir = join(root, relative);
+		mkdirSync(dir, { recursive: true });
+		const record = (script: string) =>
+			`bun -e 'require("node:fs").appendFileSync(${JSON.stringify(eventFile)}, "${relative} ${script}\\n")'`;
+		writeFileSync(
+			join(dir, "package.json"),
+			JSON.stringify({
+				name: relative.replaceAll("/", "-"),
+				scripts: Object.fromEntries(
+					scripts.map((script) => [script, record(script)]),
+				),
+			}),
+		);
+	}
+
+	it("runs each named script a workspace has as its own job", async () => {
+		const root = makeFixture();
+		const eventFile = join(root, "events");
+		writeScriptsWorkspace(
+			root,
+			"apps/web",
+			["typecheck", "typecheck:e2e", "build"],
+			eventFile,
+		);
+		writeScriptsWorkspace(root, "apps/api", ["typecheck:e2e"], eventFile);
+
+		const result = await runWorkspaceTypecheck({
+			root,
+			verbose: false,
+			includeRootConfig: false,
+			scripts: ["typecheck", "typecheck:e2e"],
+		});
+
+		expect(result.success).toBe(true);
+		expect(result.workspaceCount).toBe(2);
+		expect(result.results.map((entry) => entry.workspace).sort()).toEqual([
+			"apps/api#typecheck:e2e",
+			"apps/web",
+			"apps/web#typecheck:e2e",
+		]);
+		expect(readFileSync(eventFile, "utf8").trim().split("\n").sort()).toEqual([
+			"apps/api typecheck:e2e",
+			"apps/web typecheck",
+			"apps/web typecheck:e2e",
+		]);
+	});
+
+	it("keeps every script of a workspace --only or --changed selects", async () => {
+		const root = makeFixture();
+		const eventFile = join(root, "events");
+		const scripts = ["typecheck", "typecheck:node"];
+		writeScriptsWorkspace(root, "apps/web", scripts, eventFile);
+		writeScriptsWorkspace(root, "apps/api", scripts, eventFile);
+
+		const only = await runWorkspaceTypecheck({
+			root,
+			verbose: false,
+			includeRootConfig: false,
+			scripts,
+			only: ["web"],
+		});
+		const changed = await runWorkspaceTypecheck({
+			root,
+			verbose: false,
+			includeRootConfig: false,
+			scripts,
+			changedFiles: ["apps/api/index.ts"],
+		});
+
+		expect(only.results.map((entry) => entry.workspace).sort()).toEqual([
+			"apps/web",
+			"apps/web#typecheck:node",
+		]);
+		expect(changed.results.map((entry) => entry.workspace).sort()).toEqual([
+			"apps/api",
+			"apps/api#typecheck:node",
+		]);
+	});
+});
+
 describe("loadTypecheckConfig", () => {
 	it("reads the config's typecheck key without building an environment", async () => {
 		const root = makeFixture();
@@ -457,7 +545,7 @@ describe("loadTypecheckConfig", () => {
 			'export default { typecheck: { include: "scripts", workspaces: [] } };',
 		);
 		expect((await loadTypecheckConfig(root)).errors).toEqual([
-			"typecheck.workspaces is not an option (include, exclude, concurrency, groups)",
+			"typecheck.workspaces is not an option (include, exclude, concurrency, groups, scripts)",
 			"typecheck.include must be an array of paths or globs relative to the root",
 		]);
 	});

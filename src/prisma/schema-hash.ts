@@ -73,3 +73,13 @@ export async function generatePrismaClient(
 	if (exitCode === 0) recordGeneratedPrismaHash(root, join(root, cwd));
 	return exitCode;
 }
+
+/**
+ * Whether `prisma.generate` has to run: the `.prisma` files under `cwd`
+ * differ from the ones buncargo last generated from. A schema it cannot
+ * find runs generate.
+ */
+export function prismaClientStale(root: string, cwd: string): boolean {
+	const current = prismaSchemaHash(join(root, cwd));
+	return current === undefined || current !== readGeneratedPrismaHash(root);
+}

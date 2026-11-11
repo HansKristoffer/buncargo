@@ -225,6 +225,21 @@ const TOPICS: readonly Topic[] = [
   \`bunx buncargo prisma migrate diff --script > migration.sql\` is only SQL.
   \`migrate reset\` and \`db push --force-reset\`/\`--accept-data-loss\` drop data
   and exit 1 without \`--yes\`: do not pass it to fix a migration, ask first.
+- New migration: \`bunx buncargo prisma migration new <name>\`. It needs no
+  terminal, prints only the new folder's path on stdout, and exits 1 when the
+  schema has nothing new. Do not use \`migrate dev --create-only\` or pick a
+  timestamp by hand. Before you push, \`bunx buncargo prisma migration check\`
+  exits 1 when a migration's timestamp collides or sorts before the newest one
+  on the base branch; recreate it with \`migration new\`.
+- \`bunx buncargo prisma --db=scratch_<name> <args>\` runs Prisma against a
+  scratch database (create it with \`sql --create-scratch\`); destructive
+  commands need no \`--yes\` there.
+- A "points at <host>, not this checkout's database" warning names an
+  inherited variable Prisma may read instead: unset it before any write. With
+  one set, destructive commands exit 1 even with \`--yes\`.
+- Exit 4 from \`buncargo prisma\`: the database applied migrations this
+  checkout no longer has (a squashed chain). Only \`bunx buncargo dev --reset
+  --yes\` fixes it, and it drops the data: stop and ask the user.
 - Do not \`docker exec\` into a database by name or read credentials from the
   generated compose file: other worktrees run databases of their own.`,
 	},
@@ -295,7 +310,8 @@ const TOPICS: readonly Topic[] = [
   says it is waiting for a slot is not stuck; let it wait.
 - Run test suites as \`bunx buncargo slot -- <command>\` so they take a slot
   too. \`slot\` leaves the environment alone; \`exec --slot\` adds the
-  checkout's URLs and secrets.`,
+  checkout's URLs and secrets; \`ci --slot -- <command>\` runs it against a
+  throwaway stack of its own.`,
 	},
 	{
 		name: "files",

@@ -236,16 +236,22 @@ exports[`buncargo CLI output check --help 1`] = `
 Usage: buncargo check [docs] [--staged | --all] [--base=<ref>]
 
 Options:
-  --help        Show this help message
-  --staged      Staged files only: no writes, no tests (pre-commit)
-  --all         Every file, workspace and gate; no tests (lint)
-  --base=<ref>  Compare with the merge base of <ref> (default: origin's default branch)
-  docs          Only check Markdown links and documented commands, in every doc
+  --help          Show this help message
+  --staged        Staged files only: no writes, no tests (pre-commit)
+  --all           Every file, workspace and gate; no tests (lint)
+  --base=<ref>    Compare with the merge base of <ref> (default: origin's default branch)
+  --only=<steps>  Run only these steps (comma-separated names from --list)
+  --skip=<steps>  Leave these steps out (comma-separated names from --list)
+  --list          Print the steps this change would run, and run nothing
+  --json          With --list: one JSON document on stdout
+  docs            Only check Markdown links and documented commands, in every doc
 
 Examples:
-  buncargo check           Biome, typecheck, gates and nearby tests for this branch's changes
-  buncargo check --staged  The pre-commit hook: staged files, no writes
-  buncargo check --all     Every check but the tests, e.g. as \`bun run lint\`
+  buncargo check                      Biome, typecheck, gates and nearby tests for this branch's changes
+  buncargo check --staged             The pre-commit hook: staged files, no writes
+  buncargo check --all                Every check but the tests, e.g. as \`bun run lint\`
+  buncargo check --all --list --json  Every step's name and command, e.g. for a CI matrix
+  buncargo check --skip=typecheck     The rest, when the typecheck runs as its own CI job
 
 
 --- stderr
@@ -328,13 +334,16 @@ Options:
   --help                         Show this help message
   --migrate                      Run migrations (and Prisma generate) after services start
   --seed                         Run migrations, then the seed command
+  --schema=<migrate|push>        How the Prisma schema is applied: its migrations, or \`prisma db push\` (implies --migrate)
+  --slot                         Hold one of the machine's check slots from before the services start until teardown
   --services=<names>             Start only these services (default: every configured one)
   --runtime=<docker|apple|auto>  Container runtime backend (default: docker)
   --                             Command to run with the checkout environment
 
 Examples:
-  buncargo ci --migrate -- bun test  Services up, migrations applied, tests, teardown
-  buncargo ci --seed                 Check that migrations and the seed apply cleanly
+  buncargo ci --migrate -- bun test             Services up, migrations applied, tests, teardown
+  buncargo ci --seed                            Check that migrations and the seed apply cleanly
+  buncargo ci --schema=push --slot -- bun test  A unit shard: the schema pushed, not migrated, inside a check slot
 
 
 --- stderr
