@@ -6,7 +6,13 @@ export async function buildApps(
 	apps: Record<string, ResolvedApp>,
 	root: string,
 	envVarsByApp: Record<string, Record<string, string>>,
-	options: { verbose?: boolean; signal?: AbortSignal; timeoutMs?: number } = {},
+	options: {
+		verbose?: boolean;
+		signal?: AbortSignal;
+		timeoutMs?: number;
+		/** The config's `unsetEnv`. */
+		unsetEnv?: readonly string[];
+	} = {},
 ): Promise<void> {
 	const { verbose = true } = options;
 	for (const [name, config] of Object.entries(apps)) {
@@ -18,6 +24,7 @@ export async function buildApps(
 			verbose,
 			signal: options.signal,
 			timeoutMs: options.timeoutMs ?? 600000,
+			unsetEnv: options.unsetEnv,
 		});
 	}
 	if (verbose) console.log("✓ Build complete");

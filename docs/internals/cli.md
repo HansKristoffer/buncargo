@@ -128,14 +128,14 @@ pieces it orchestrates.
 ## Other commands
 
 - `commands/run.ts` is `exec` for `config.tasks` (which injects the app's secrets), with
-  `requiredServices` started through `start({ onlyServices })`. It claims with the CLI's idle
+  `requiredServices` started through `env.withServices`. It claims with the CLI's idle
   hold, not the library's keep-forever default. Extra argv goes through `withAppendedArgs`
   (`sh -c '<cmd> "$@"'`), so nothing is re-parsed. Tasks are published into the run entry for
   BuncargoBar's run button, which calls `buncargo run` *unscoped*: `--root`/`--run` name a run, and
   a task only needs the checkout (the working directory).
 - `commands/ci.ts` runs on `env.withSuffix("ci-<id>", { data: "tmpfs" })`, starts services with
-  `onlyServices`, forces the seed (a CI database is never warm), runs the command and always
-  `stop({ removeVolumes: true })`s. The suffix is not optional: on the shared project that teardown
+  `withServices` (`after: { stop: { removeVolumes: true } }`), forces the seed (a CI database is
+  never warm) and runs the command; `--schema=push` is the preparation's `schema: "push"`. The suffix is not optional: on the shared project that teardown
   deletes a developer's dev database. The id is per run because two runs on one `-ci` project took
   each other's stack down mid-test (lasauna), and tmpfs because a killed run's volume was nobody's to
   remove. A suffixed environment writes its own compose file and never persists `ports.json`, or it
@@ -190,7 +190,7 @@ pieces it orchestrates.
   `--create-scratch` always prefixes `scratch_`, so `--drop-scratch` cannot reach a database the
   project uses, and uses two `-c`s because `CREATE DATABASE` refuses the transaction one
   multi-statement `-c` becomes. It starts the database service when it is down, through the
-  `run` task path (allocate, claim, `start({ onlyServices, prepare: "containers" })`, release)
+  `run` task path (`withServices`: claim, start, release)
   with no idle hold, as `dev --up-only` leaves its containers: the command that uses the scratch
   database runs after `sql` exits, and a three-minute hold would stop it under a test suite.
   `exec --db` (`exec-database.ts`) checks the database exists with one Bun SQL query, and refuses

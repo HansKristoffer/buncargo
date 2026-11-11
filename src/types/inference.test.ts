@@ -234,6 +234,14 @@ describe("config inference guardrails", () => {
 		expect(options.onlyApps).toEqual(["mobile"]);
 	});
 
+	it("keys a start's pids by app, so a typo is no number", () => {
+		const pids: NonNullable<Awaited<ReturnType<Env["start"]>>> = { web: 1 };
+		const web: number | undefined = pids.web;
+		// @ts-expect-error - "typo" is not a configured app key
+		const typo = pids.typo;
+		expect([web, typo]).toEqual([1, undefined]);
+	});
+
 	it("rejects an unknown expose target name", () => {
 		const options = {
 			// @ts-expect-error - "mobile" is not an exposed service or app

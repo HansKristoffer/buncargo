@@ -2,8 +2,7 @@ import { assertValidConfig } from "../config";
 import { applyIntegrations } from "../config/integrations";
 import { resolveConfig } from "../config/resolve";
 import { labelledCaptures } from "../core/captured-values";
-import { setUnsetEnv } from "../core/child-env";
-import { waitForServer } from "../core/network";
+import { waitForDevServers, waitForServer } from "../core/network";
 import { findMonorepoRoot } from "../core/ports";
 import { type PrimaryAppInput, resolvePrimaryApp } from "../core/primary-app";
 import { stopProcess } from "../core/process";
@@ -24,8 +23,10 @@ import { explainMissingContainers, withLossNotice } from "./container-loss";
 import { createDevEnvContext } from "./context";
 import { createEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
+import { registerInternals } from "./internals";
 import { createLifecycleApi } from "./lifecycle";
 import { LifecycleCoordinator } from "./lifecycle-coordinator";
+import { createAppPipeline } from "./pipeline";
 import { createRunClaimApi } from "./run-claim";
 import { createServerHookRunner, createServersApi } from "./servers";
 import { createServiceWatch } from "./service-watch";
@@ -68,7 +69,6 @@ export function createDevEnvironment<
 	const root = options.root ?? findMonorepoRoot();
 	const applied = applyIntegrations(config, { root });
 	assertValidConfig(applied);
-	setUnsetEnv(applied.unsetEnv);
 	const resolved = resolveConfig(applied) as ResolvedDevConfig<
 		TServices,
 		TApps,
@@ -81,15 +81,41 @@ export function createDevEnvironment<
 	const runClaim = createRunClaimApi(ctx, () => env);
 	const coordinator = new LifecycleCoordinator();
 	const serviceWatch = createServiceWatch(ctx, runClaim.sessionId);
+	const recordCapture = createCaptureRecorder(ctx, envVars);
+	const appPipeline = createAppPipeline({
+		root: ctx.root,
+		ports: ctx.ports as Record<string, number>,
+		projectName: ctx.projectName,
+		unsetEnv: resolved.unsetEnv,
+		runtime: () => ctx.runtime,
+		appEnv: (name, production) =>
+			envVars.buildAppEnvVars(name as Extract<keyof TApps, string>, production),
+		runHook: createServerHookRunner(ctx, envVars),
+		waitForHealth: (apps, productionBuild, signal) =>
+			withLossNotice(missingContainers, () =>
+				waitForDevServers(apps, ctx.ports, {
+					verbose: false,
+					logReady: false,
+					productionBuild,
+					signal,
+				}),
+			),
+		recordCapture,
+		renderGeneratedFiles: () => renderGeneratedFiles(ctx, envVars),
+		runSeed: (options) => lifecycle.runSeed(options),
+		claim: runClaim,
+		ensureWatchdog: () => lifecycle.ensureWatchdog(),
+		ownedServerPids: ctx.ownedServerPids,
+	});
 	const lifecycle = createLifecycleApi(
 		ctx,
 		envVars,
 		runClaim,
 		coordinator,
 		serviceWatch,
+		appPipeline,
 	);
-	const recordCapture = createCaptureRecorder(ctx, envVars);
-	const servers = createServersApi(ctx, envVars, runClaim);
+	const servers = createServersApi(ctx, appPipeline);
 	const createdAt = Date.now();
 	const missingContainers = () =>
 		explainMissingContainers(ctx, runClaim.claimedAt ?? createdAt);
@@ -144,8 +170,6 @@ export function createDevEnvironment<
 		generatedFiles: resolved.generatedFiles,
 		checkoutFiles: resolved.options?.checkoutFiles,
 		captured: ctx.captured,
-		recordCapture,
-		renderGeneratedFiles: () => renderGeneratedFiles(ctx, envVars),
 		details: () =>
 			Object.assign(
 				labelledCaptures(resolved.apps ?? {}, ctx.captured),
@@ -164,7 +188,7 @@ export function createDevEnvironment<
 		// Container management
 		start: lifecycle.start,
 		stop: lifecycle.stop,
-		restart: lifecycle.restart,
+		withServices: lifecycle.withServices,
 		isRunning: lifecycle.isRunning,
 		explainMissingContainers: missingContainers,
 		runSeed: lifecycle.runSeed,
@@ -185,7 +209,6 @@ export function createDevEnvironment<
 					(pids) => Object.keys(pids).length > 0,
 				),
 			),
-		runServerHook: createServerHookRunner(ctx, envVars),
 		stopProcess,
 		waitForServers: (options = {}) =>
 			withLossNotice(missingContainers, () =>
@@ -216,7 +239,6 @@ export function createDevEnvironment<
 			serviceWatch.stop();
 			return runClaim.releaseRun();
 		},
-		reportServiceChanges: serviceWatch.report,
 		ensureWatchdog: runClaim.ensureWatchdog,
 
 		// Prisma (created below if configured)
@@ -231,6 +253,16 @@ export function createDevEnvironment<
 			}),
 	};
 
+	registerInternals(env, {
+		prepare: lifecycle.prepare,
+		secretsSession: lifecycle.secretsSession,
+		claimApps: appPipeline.claimApps,
+		spawn: appPipeline.spawn,
+		notify: serviceWatch.report,
+		renderGeneratedFiles: () => renderGeneratedFiles(ctx, envVars),
+		recordCapture,
+	});
+
 	if (resolved.prisma) {
 		(env as { prisma: PrismaRunner }).prisma = createPrismaRunner(
 			env,
@@ -242,6 +274,7 @@ export function createDevEnvironment<
 				ctx.selection
 					? Promise.resolve()
 					: ctx.prepareStartAsync(undefined, [service]),
+			lifecycle.readied,
 		);
 	}
 

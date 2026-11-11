@@ -355,7 +355,7 @@ predeploy: {
 
 Every run is a stack of its own: `<project>-ci-<id>`, with a new id each run, and on a self-hosted GitHub Actions runner (`RUNNER_ENVIRONMENT=self-hosted`) the runner's name after it, `<project>-ci-<id>-<runner>`. It has its own ports and compose file, so two runs in one checkout never share a container or a database, and running it on a laptop never touches the checkout's dev database. Services keep their data in memory (tmpfs) instead of volumes, so a run leaves no database behind however it ends. Bind mounts and `external` volumes stay as configured.
 
-`--schema=push` applies the Prisma schema with `prisma db push` instead of replaying the migrations, for a test shard that needs the tables and not their history. It implies `--migrate`, runs `prisma.generate` after the push when one is configured, and runs no `migrations` entries and no `beforeMigrations` or `afterContainersReady` hook. Keep `--migrate` in the job that checks the migrations apply.
+`--schema=push` applies the Prisma schema with `prisma db push` instead of replaying the migrations, for a test shard that needs the tables and not their history. It implies `--migrate`: the push takes the place of `migrate deploy`, and the other `migrations` entries, `prisma.generate` and the `beforeMigrations` and `afterContainersReady` hooks run as they do with `--migrate`. A failed push fails the run with exit 1. Keep `--migrate` in the job that checks the migrations apply.
 
 `--slot` takes one of the machine's check slots, as `buncargo slot` does, before the services start, and holds it until the stack is down, so agents running test suites in many worktrees wait their turn instead of each starting a database at once. Like every slot, it does nothing in CI.
 
@@ -516,7 +516,7 @@ validate selected apps, dependencies, attachment, and expose targets
 | `dev --up-only` | Containers and dotenv sync; no migrations, generation, seeds, or apps. The containers live as long as the checkout |
 | `dev --migrate` | Early containers, dotenv sync, bootstrap and migrations; no generation, seeds, late containers, or apps |
 | `dev --seed` | Selected containers and preparation, including bootstrap and forced seed; no apps |
-| `dev --down` / `--reset` | Stop; reset also removes volumes |
+| `dev --down` / `--reset` | Stop; reset also removes volumes. `--down` keeps services another live run of the checkout uses; `--reset` does not |
 
 A config with services and no apps starts every service. When nothing in the
 selection is an app buncargo spawns (no apps, or only `devCommand: false` ones),
@@ -1714,7 +1714,9 @@ Set `seed.beforeApps: false` to overlap the seed and app startup. `afterServers`
 
 ### `StartOptions` / `StopOptions`
 
-`start({ verbose, wait, startServers, productionBuild, skipSeed, skipEnvironmentLog, onlyApps, onlyServices, autoStartDocker, replaceStaleStacks, signal, prepare, onPhase })`
+`start({ verbose, wait, startServers, productionBuild, seed, schema, claim, onlyApps, onlyServices, autoStartDocker, replaceStaleStacks, watchdog, signal, prepare, onPhase })` resolves to the apps' process IDs by app name (`DevServerPids<TApps>`), or `null` when it spawned none.
+
+`seed` is `"auto"` (default: when `seed.check` says so, beside the apps with `seed.beforeApps: false`), `"force"` (before the apps, whatever `seed.check` says) or `"skip"`. `schema: "push"` runs `prisma db push` in place of `prisma migrate deploy`, for a throwaway database; the other `migrations` and the hooks run as usual. `claim: { idleTimeoutMs }` is the hold the run claims its containers with, as `claimRun()` sets it.
 
 `replaceStaleStacks` is `dev --replace-stale`: before the ports are allocated, it removes the containers and networks of stacks this checkout left under a project name it no longer uses and that hold this run's ports. That happens after `projectPrefix` changes: the old stack keeps running under the old name. Its volumes are kept. A stack with containers of another checkout, or one a live run still uses, is never touched. A checkout with two configs of different `projectPrefix` would see each other's stacks as stale; give each its own directory.
 
@@ -1722,7 +1724,15 @@ Set `seed.beforeApps: false` to overlap the seed and app startup. `afterServers`
 
 `productionBuild` runs each app's `buildCommand` and `prodCommand` and gives the containers, migrations, seed and apps `NODE_ENV=production`. It defaults to `true` in CI when `start()` runs the servers and `false` otherwise, so `start({ startServers: false })` prepares for the development processes `startServers()` and `exec()` run. `buncargo dev` is always development.
 
-`stop({ verbose, removeVolumes, signal })`
+`stop({ verbose, removeVolumes, force, signal })` stops this environment's apps, then its services. While another live run of the project in this checkout uses those services, they stay up for it and `stop()` only releases this environment's claim; `force: true` tears them down anyway.
+
+`withServices(names, options, command)` starts those services for a command and releases them however it ends: the run is claimed before the first container, with `options.claim`'s hold, and `command` gets `{ seed }` (a forced seed's outcome). `options` takes `signal`, `verbose`, `wait`, `watchdog`, `onPhase`, `prepare` (`"containers"`, the default, or `"all"` for migrations and the seed), `seed`, `schema`, `claim` and `after` (`"release"`, or `{ stop: { removeVolumes } }` to tear the services down instead). `buncargo run`, `sql`, `prisma` and `ci` start their services this way.
+
+```ts
+await env.withServices(["postgres"], { claim: { idleTimeoutMs: 60_000 } }, async () => {
+  await env.exec("bun test", { throwOnError: true });
+});
+```
 
 ### `CliOptions` (programmatic `runCli`)
 
@@ -1907,7 +1917,7 @@ await env.stop();
 
 Repeated `loadDevEnv({ cwd })` calls keep the same environment object by default. For separate runs in one process, use `fresh: true`: the config module stays cached while ports, URLs, captures, owned processes, and the session ID belong to the new environment. Keep the returned reference for each project; `getDevEnv()` still returns the most recently loaded environment. `reload: true` re-imports the config entry, while its imported dependencies remain cached. Sessions share this checkout's service stack and allocation; use `withSuffix()` when you need isolated container stacks.
 
-One environment rejects overlapping `start()`/`startServers()` calls and starts attempted during teardown; independent sessions may start concurrently. Calling `stop()` during startup cancels that startup and waits for its child cleanup before teardown. Concurrent `restart()` calls share one operation; a subsequent `stop()` cancels the restart. Stop requests run in order, so a later `stop({ removeVolumes: true })` retains its stronger teardown. `restart()` retains its services-only behavior. Await `stop()` before reusing the environment.
+One environment rejects overlapping `start()`/`startServers()` calls and starts attempted during teardown; independent sessions may start concurrently. Calling `stop()` during startup cancels that startup and waits for its child cleanup before teardown. Stop requests run in order, so a later `stop({ removeVolumes: true })` retains its stronger teardown. Await `stop()` before reusing the environment.
 
 Run `bun run test:stress-sessions` to exercise 200 sessions across four projects in one process. It checks live HTTP apps, workers, startup and ready-session cancellation, process and signal-listener cleanup, file descriptors, worker locks, registry claims, and bounded memory growth after warmup. `--sessions=1000 --concurrency=8` increases the workload; `--max-heap-growth-mib` and `--max-rss-growth-mib` set memory ceilings. The harness isolates its home directory and container binaries, and CI runs it on macOS and Linux.
 

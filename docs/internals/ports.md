@@ -52,8 +52,8 @@ per port.
   which reads the claim before the teardown, so a job that allocates during it keeps its block):
   self-hosted runners keep their directories between jobs, and their dev, `ci` and E2E claims
   held all 90 blocks of a machine running a few dozen runners, so every new allocation failed.
-  Not on `restart()`, which needs the block back, nor while another run of the same environment
-  is on record; a `start()` after the release claims again. A suffixed stack the sweep or
+  Not while another run of the same environment is on record (its `stop()` keeps the services
+  and releases instead); a `start()` after the release claims again. A suffixed stack the sweep or
   `buncargo stop` removes loses its claim the same way (`releaseSuffixedClaimsOf`), unless its
   checkout was deleted; `stop` releases nothing when it removed nothing (an app-only run) or
   another entry of the project still holds containers, whose stack the claim may be. Every release decided from an earlier read is compare-and-set

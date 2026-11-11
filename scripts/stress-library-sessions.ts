@@ -173,7 +173,10 @@ async function cycle(fixture: Fixture, index: number): Promise<void> {
 			if (index % 3 === 0) caller.abort(new Error("Cancel ready session"));
 			await env.stop({ verbose: false });
 			for (const pid of Object.values(pids))
-				assert(!isProcessAlive(pid), `Owned group ${pid} survived stop`);
+				assert(
+					pid === undefined || !isProcessAlive(pid),
+					`Owned group ${pid} survived stop`,
+				);
 		}
 		for (const pid of fixture.pids())
 			assert(!isProcessAlive(pid), `App ${pid} leaked across sessions`);

@@ -18,6 +18,7 @@ import { getRunsPath, loadRuns } from "../core/run-registry";
 import type { CaptureEvent, IntegrationConfig } from "../types";
 import { createDevEnvironment } from "./create-dev-environment";
 import { writeIfChanged } from "./generated-files";
+import { internalsOf } from "./internals";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -71,10 +72,12 @@ describe("writeIfChanged", () => {
 describe("recordCapture", () => {
 	it("renders placeholders first, then the captured value", async () => {
 		const { env, events, file } = fixture();
-		expect(env.renderGeneratedFiles()).toEqual(["src/app-url.generated.ts"]);
+		expect(internalsOf(env).renderGeneratedFiles()).toEqual([
+			"src/app-url.generated.ts",
+		]);
 		expect(readFileSync(file, "utf8")).toBe('export const URL = ""\n');
 
-		const changed = await env.recordCapture("shopify", {
+		const changed = await internalsOf(env).recordCapture("shopify", {
 			name: "appUrl",
 			value: "https://abc.trycloudflare.com",
 			as: "publicUrl",
@@ -102,7 +105,7 @@ describe("recordCapture", () => {
 
 	it("fires events without changing anything", async () => {
 		const { env, events } = fixture();
-		const changed = await env.recordCapture("shopify", {
+		const changed = await internalsOf(env).recordCapture("shopify", {
 			name: "ready",
 			value: "Ready, watching for changes in your app",
 			as: "event",
@@ -116,7 +119,7 @@ describe("recordCapture", () => {
 		const { env, file } = fixture();
 		process.env.BASE_URL = "https://prod.example";
 		try {
-			env.renderGeneratedFiles();
+			internalsOf(env).renderGeneratedFiles();
 			expect(readFileSync(file, "utf8")).toBe(
 				'export const URL = "https://prod.example"\n',
 			);
@@ -129,7 +132,7 @@ describe("recordCapture", () => {
 it("keeps other public URLs when a capture sets one", async () => {
 	const { env } = fixture();
 	env.setPublicUrls({ web: "https://web.trycloudflare.com" } as never);
-	await env.recordCapture("shopify", {
+	await internalsOf(env).recordCapture("shopify", {
 		name: "appUrl",
 		value: "https://abc.trycloudflare.com",
 		as: "publicUrl",
@@ -161,12 +164,12 @@ it("shows labelled captures in details and sets their env var", async () => {
 	});
 	expect(env.details()).toEqual({});
 
-	await env.recordCapture("shopify", {
+	await internalsOf(env).recordCapture("shopify", {
 		name: "appUrl",
 		value: "https://abc.trycloudflare.com",
 		as: "publicUrl",
 	});
-	await env.recordCapture("shopify", {
+	await internalsOf(env).recordCapture("shopify", {
 		name: "secret",
 		value: "whsec_1",
 		as: "value",
@@ -204,7 +207,7 @@ it("keeps a secret capture in the run's environment and out of the registry", as
 		{ name: "webhookSecret", value: "whsec_1", as: "value" },
 		{ name: "dashboard", value: "https://dash.example", as: "value" },
 	] as const) {
-		await env.recordCapture("stripeListen", captured);
+		await internalsOf(env).recordCapture("stripeListen", captured);
 		await recordRunCapture(env, "stripeListen", captured);
 	}
 	await flushRunPatches(env);

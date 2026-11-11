@@ -96,6 +96,8 @@ const TOPICS: readonly Topic[] = [
   A container runtime that refuses this user or does not answer may still
   run the containers, so \`stop\` exits 3 and \`dev --down\` exits 1 rather
   than reporting nothing to stop: once \`docker version\` answers, stop again.
+  \`dev --down\` and a script's \`stop()\` keep services another live run
+  of the checkout uses; \`stop --all\` stops that run first.
   \`bunx buncargo stop <app>\` stops one app and \`bunx buncargo restart <app>\`
   restarts one; \`restart <app> && wait --app=<app>\` waits for the new process.
   \`restart\` exits 3 when the run is a script's \`start()\`, which takes no

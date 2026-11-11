@@ -18,9 +18,13 @@ import {
 	patchRun,
 	type RunEntry,
 } from "../core/run-registry";
+import { libraryLeasePolicy } from "./app-leases";
 import type { DevEnvContext } from "./context";
 import { createDevEnvironment } from "./create-dev-environment";
 import { createRunClaimApi, resolveClaimHold } from "./run-claim";
+
+/** How a library start claims its apps: no reused ones, no services listed. */
+const appsOnly = { policy: libraryLeasePolicy, serviceNames: [] };
 
 const realHome = process.env.HOME;
 let home = "";
@@ -257,10 +261,10 @@ describe("a claim's lifecycle and its apps", () => {
 		// `abandonApps` knew only the last `claimApps`, so a failed start gave
 		// back the leases of the one that ran beside it.
 		const claim = appClaimApi(mkdtempSync(join(home, "overlap-")));
-		const first = await claim.claimApps({ a: worker("demo:a") });
-		await claim.claimApps({ b: worker("demo:b") });
+		const first = await claim.claimApps({ a: worker("demo:a") }, appsOnly);
+		await claim.claimApps({ b: worker("demo:b") }, appsOnly);
 
-		await claim.abandonApps(first);
+		await claim.abandonApps(first.apps);
 
 		const held = (await readLeases()).map((lease) => lease.key);
 		expect(held).toEqual(["demo:b"]);
@@ -277,7 +281,7 @@ describe("a claim's lifecycle and its apps", () => {
 			(await loadRuns())
 				.find((run) => run.sessionId === claim.sessionId)
 				?.apps.find((app) => app.name === name)?.status;
-		await claim.claimApps({ web: worker(), jobs: worker() });
+		await claim.claimApps({ web: worker(), jobs: worker() }, appsOnly);
 		const step = stepper(claim);
 		step("web", { type: "spawned", pid: 1_000_011, probation: false });
 		step("jobs", { type: "spawned", pid: 1_000_012, probation: false });
@@ -311,7 +315,10 @@ describe("a claim's lifecycle and its apps", () => {
 		await flushRunPatches(session);
 		expect(await status()).toBe("stopped");
 
-		await claim.claimApps({ jobs: worker() });
+		await claim.claimApps(
+			{ jobs: worker() },
+			{ ...appsOnly, serviceNames: ["postgres"] },
+		);
 		expect(await status()).toBe("stopped");
 
 		// A second `start()` under the same claim brings it up again.
@@ -331,7 +338,7 @@ describe("a claim's lifecycle and its apps", () => {
 		const row = async () =>
 			(await loadRuns()).find((run) => run.sessionId === claim.sessionId)
 				?.apps[0];
-		await claim.claimApps({ first: worker() });
+		await claim.claimApps({ first: worker() }, appsOnly);
 		const step = stepper(claim);
 		step("first", { type: "spawned", pid: 1_000_001, probation: false });
 		step("first", {
@@ -343,7 +350,7 @@ describe("a claim's lifecycle and its apps", () => {
 		expect((await row())?.status).toBe("failed");
 		step("first", { type: "spawned", pid: 1_000_002, probation: false });
 
-		await claim.claimApps({ second: worker() });
+		await claim.claimApps({ second: worker() }, appsOnly);
 		await flushRunPatches(session);
 
 		expect(await row()).toMatchObject({ pid: 1_000_002, status: "starting" });

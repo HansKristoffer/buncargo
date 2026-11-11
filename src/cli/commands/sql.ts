@@ -693,19 +693,13 @@ async function startOneService(
 
 	console.error(`Starting ${serviceName} for ${env.projectName}…`);
 	try {
-		await env.prepareStartAsync(undefined, [serviceName], signal);
-		await env.claimRun({ idleTimeoutMs: false, signal });
-		await env.start({
-			onlyServices: [serviceName],
-			startServers: false,
-			prepare: "containers",
-			skipEnvironmentLog: true,
+		await env.withServices(
+			[serviceName],
 			// stdout carries the URL alone.
-			verbose: false,
-			signal,
-		});
+			{ claim: { idleTimeoutMs: false }, verbose: false, signal },
+			async () => {},
+		);
 	} finally {
-		await env.releaseRun();
 		for (const name of signals) process.off(name, cancel);
 	}
 }

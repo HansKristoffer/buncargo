@@ -163,9 +163,10 @@ export type {
 	ServiceEnvValueSource,
 	ServiceEnvVarMap,
 	ServiceEnvVarNames,
+	// Start/Stop options
+	ServicesStarted,
 	SetupCheck,
 	SharedEnvVarNames,
-	// Start/Stop options
 	StartOptions,
 	StopOptions,
 	TaskConfig,
@@ -174,6 +175,7 @@ export type {
 	TypedAppDefinitions,
 	UrlBuilderContext,
 	UrlBuilderFn,
+	WithServicesOptions,
 	WorkerAppConfig,
 } from "./types/index";
 

@@ -3,25 +3,66 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveApps } from "../config/resolve";
+import type { ContainerRuntimeAdapter } from "../container-runtime";
 import type { AppConfig, ResolvedApp, ServiceConfig } from "../types";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
-import { startAppServers } from "./servers";
+import {
+	type AppPipelineDeps,
+	createAppPipeline,
+	type Prepared,
+} from "./pipeline";
+import { createServerHookRunner } from "./servers";
 
 const vars = {
 	getHookContext: (signal?: AbortSignal) => ({ signal }),
-	buildAppEnvVarsMap: () => ({}),
-	buildAppEnvVars: () => ({}),
 } as unknown as DevEnvVarsApi<
 	Record<string, ServiceConfig>,
 	Record<string, AppConfig>
 >;
 
-const claim = {
-	claimApps: async (apps: Record<string, ResolvedApp>) => apps,
-	appEvents: {},
-	abandonApps: async () => {},
-};
+/** A pipeline over a context that holds only what the test sets: its hooks and checkout. */
+function pipelineFor(
+	ctx: DevEnvContext<Record<string, ServiceConfig>, Record<string, AppConfig>>,
+	root = "/",
+) {
+	const deps: AppPipelineDeps = {
+		root,
+		ports: {},
+		projectName: "test-hooks",
+		unsetEnv: undefined,
+		runtime: () => ({}) as ContainerRuntimeAdapter,
+		appEnv: () => ({}),
+		runHook: createServerHookRunner(ctx, vars),
+		waitForHealth: async () => {},
+		recordCapture: async () => [],
+		renderGeneratedFiles: () => [],
+		runSeed: async () => ({ status: "not-configured" }),
+		claim: {
+			claimApps: async (apps: Record<string, ResolvedApp>) => ({
+				apps,
+				skipped: [],
+			}),
+			appEvents: {},
+			abandonApps: async () => {},
+		},
+		ensureWatchdog: () => {},
+		ownedServerPids: {},
+	};
+	return createAppPipeline(deps);
+}
+
+function prepared(apps: Record<string, ResolvedApp>): Prepared {
+	return {
+		selection: { appNames: Object.keys(apps), requiredServiceKeys: [] },
+		apps,
+		hasServices: false,
+		productionBuild: false,
+		verbose: false,
+		watchdog: false,
+		seed: { kind: "none" },
+	};
+}
 
 it("cancels an uncooperative beforeServers hook before spawning", async () => {
 	const controller = new AbortController();
@@ -40,14 +81,10 @@ it("cancels an uncooperative beforeServers hook before spawning", async () => {
 		Record<string, ServiceConfig>,
 		Record<string, AppConfig>
 	>;
+	const pipeline = pipelineFor(ctx);
+	const claimed = await pipeline.claimApps(prepared(resolveApps({})));
 	await expect(
-		startAppServers(ctx, vars, {
-			apps: resolveApps({}),
-			productionBuild: false,
-			verbose: false,
-			signal: controller.signal,
-			claim,
-		}),
+		pipeline.spawn(claimed, { signal: controller.signal }),
 	).rejects.toThrow("cancel before hook");
 	expect(seen?.aborted).toBe(true);
 });
@@ -63,9 +100,6 @@ it("cleans up spawned servers when the afterServers hook fails", async () => {
 		app: { port: 1, devCommand: "bun app.ts", healthEndpoint: false },
 	});
 	const ctx = {
-		root,
-		ports: {},
-		projectName: "test-hooks",
 		config: {
 			hooks: {
 				afterServers: async () => {
@@ -84,14 +118,9 @@ it("cleans up spawned servers when the afterServers hook fails", async () => {
 		Record<string, AppConfig>
 	>;
 	try {
-		await expect(
-			startAppServers(ctx, vars, {
-				apps,
-				productionBuild: false,
-				verbose: false,
-				claim,
-			}),
-		).rejects.toThrow("after hook failed");
+		const pipeline = pipelineFor(ctx, root);
+		const claimed = await pipeline.claimApps(prepared(apps));
+		await expect(pipeline.spawn(claimed)).rejects.toThrow("after hook failed");
 		const pid = Number(await Bun.file(marker).text());
 		expect(() => process.kill(pid, 0)).toThrow();
 	} finally {

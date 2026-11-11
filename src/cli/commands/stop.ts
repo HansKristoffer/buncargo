@@ -43,6 +43,9 @@ import {
 	readRunStops,
 	recentRunStops,
 } from "../../core/run-stops";
+// Not through `environment/index`: `stop` loads no config, and BuncargoBar's
+// buttons run it.
+import { runsKeepingServices } from "../../environment/run-keep";
 
 import * as log from "../log";
 import { parseStopArgs, printStopHelp } from "../stop-flags";
@@ -445,14 +448,10 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 		return STOP_EXIT.refused;
 	}
 	return withProjectLifecycleLock(run.projectName, run.root, async () => {
-		// A second session in this checkout keeps the containers. It claims them
-		// in this same registry before it starts them, so a run that is still
-		// coming up is already visible here — which is what a separate liveness
-		// record used to be needed for.
+		// A second session in this checkout keeps the containers, as it does
+		// for a library `stop()`.
 		const { live, held } = await findCheckoutRuns(run.root);
-		const others = live.filter(
-			(other) => other.pid !== run.pid && other.projectName === run.projectName,
-		);
+		const others = runsKeepingServices(live, run);
 		if (others.length > 0) {
 			log.done(
 				`Stopped ${run.projectName}; services retained for another active run`,
@@ -501,7 +500,7 @@ async function stopHeldProject(
 	return withProjectLifecycleLock(projectName, root, async () => {
 		// Read again under the lock: a run may have claimed these since.
 		const fresh = await findCheckoutRuns(root);
-		if (fresh.live.some((run) => run.projectName === projectName)) {
+		if (runsKeepingServices(fresh.live, { projectName }).length > 0) {
 			log.info(
 				`Kept ${projectName}'s containers: another run in ${root} uses them.`,
 			);

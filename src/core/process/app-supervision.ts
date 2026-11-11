@@ -1,6 +1,5 @@
 import type { EventEmitter } from "node:events";
 import { toError } from "hanzio";
-import type { DevServerPids } from "../../types";
 import { abortError, withSignal } from "../deadline";
 import {
 	type AppEvent,
@@ -81,7 +80,7 @@ export interface AppSupervisionOptions {
  */
 export class AppSupervision {
 	readonly controller = new AbortController();
-	readonly pids: DevServerPids = {};
+	readonly pids: Record<string, number> = {};
 	private apps = new Map<string, Entry>();
 	/** Every process it started, until its group is gone. */
 	private children = new Set<OwnedChild>();
@@ -568,7 +567,9 @@ export class AppSupervision {
 	}
 }
 
-export async function stopDevServers(pids: DevServerPids): Promise<void> {
+export async function stopDevServers(
+	pids: Readonly<Record<string, number>>,
+): Promise<void> {
 	const sessions = new Set(
 		Object.values(pids).flatMap((pid) => activeSessions.get(pid) ?? []),
 	);

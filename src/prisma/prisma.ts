@@ -125,6 +125,12 @@ export function createPrismaRunner<
 	 * preview, and may be another project's container's.
 	 */
 	allocate: (service: Extract<keyof TServices, string>) => Promise<void>,
+	/**
+	 * Whether a `withServices` command is running with this service just
+	 * started and waited for: `buncargo prisma` inside one. Starting it
+	 * again would cost a `compose up` and a readiness wait for nothing.
+	 */
+	readied: (service: Extract<keyof TServices, string>) => boolean,
 ): PrismaRunner {
 	const resolved = resolvePrismaConfig(config);
 	const { cwd, urlEnvVar, urlEnvVars } = resolved;
@@ -147,6 +153,7 @@ export function createPrismaRunner<
 	}
 
 	async function ensureDatabase(): Promise<void> {
+		if (readied(service)) return;
 		await allocate(service);
 		const composeFile = env.ensureComposeFile();
 		const envVars = env.buildEnvVars();

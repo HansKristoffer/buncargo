@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { anySignal, mapValues, typedSwitch } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
-import type { DevServerPids, ResolvedApp } from "../../types";
+import type { ResolvedApp } from "../../types";
 import { abortableSleep, abortError } from "../deadline";
 import { readEnvOverrides, warnShadowedSecrets } from "../env-overrides";
 import { waitForDevServers } from "../network";
@@ -57,6 +57,8 @@ export interface StartDevServersOptions {
 	onPhase?: (name: string, ms: number) => void;
 	/** Reports a supervised failure after a library start returned its pids. */
 	onFailure?: (error: unknown) => void;
+	/** The config's `unsetEnv`, kept from every app and prebuild. */
+	unsetEnv?: readonly string[];
 	skipContainers?: boolean;
 	signal?: AbortSignal;
 	shutdownGraceMs?: number;
@@ -291,7 +293,7 @@ export async function startDevServers(
 		| ((name: string) => Record<string, string>),
 	ports: Record<string, number>,
 	options: StartDevServersOptions = {},
-): Promise<DevServerPids> {
+): Promise<Record<string, number>> {
 	const {
 		verbose = true,
 		productionBuild = false,
@@ -308,8 +310,8 @@ export async function startDevServers(
 
 	const startable = startableApps(apps, productionBuild);
 	// Here rather than in the environment layer because this is the one function
-	// every spawner goes through: `startAppServers` and the CLI's own dev flow
-	// both land here, and a third caller cannot miss it. Lowest precedence — the
+	// every spawner goes through: the environment's `spawn()`, which `start()`
+	// and the CLI both use, lands here, and another caller cannot miss it. Lowest precedence — the
 	// app's computed env is layered on top, and `loadAppSecrets` drops keys the
 	// developer already exported.
 	const secrets = await loadStartSecrets(
@@ -486,6 +488,7 @@ export async function startDevServers(
 						signal: supervisor.signal,
 						output,
 						graceMs: options.shutdownGraceMs,
+						unsetEnv: options.unsetEnv,
 					}),
 				),
 			),
@@ -512,6 +515,7 @@ export async function startDevServers(
 					waitForExit,
 					output,
 					onText: watchForReady(name, config, onText),
+					unsetEnv: options.unsetEnv,
 				});
 			const spawnApp = (onProbation = false) =>
 				config.port === undefined

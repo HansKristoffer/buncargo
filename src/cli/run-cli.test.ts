@@ -12,8 +12,9 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { resolveApps, resolveServices } from "../config/resolve";
+import { containerRuntimeForEnv } from "../container-runtime";
 import { getRoutesPath } from "../core/hosts";
-import { acquireLease, releaseLeases } from "../core/leases";
+import { acquireLease, readLeases, releaseLeases } from "../core/leases";
 import { listRunLogDirs } from "../core/process/app-logs";
 import { isProcessAlive } from "../core/process/lifecycle";
 import {
@@ -25,12 +26,22 @@ import {
 } from "../core/run-registry";
 import { createPhaseTimer } from "../core/timing";
 import { resolveExposeTargets, stopPublicTunnels } from "../core/tunnel";
-import * as watchdog from "../core/watchdog";
+import { createDevEnvironment, type PrepareOptions } from "../environment";
+import type { DevEnvContext } from "../environment/context";
+import { registerInternals } from "../environment/internals";
+import { createAppPipeline } from "../environment/pipeline";
+import { createRunClaimApi } from "../environment/run-claim";
 import { SeedFailedError } from "../environment/seed-startup";
-import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
+import { planStart } from "../planning";
+import type {
+	AppConfig,
+	DevConfig,
+	DevEnvironment,
+	ServiceConfig,
+} from "../types";
 import { type DetachedReport, readDetachedReport } from "./dev-detach";
 import { requestRestart } from "./restart-requests";
-import { runCli } from "./run-cli";
+import { decideSpawn, runCli, withTakenOver } from "./run-cli";
 import * as takeover from "./takeover";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -83,13 +94,22 @@ async function withProcessExitTrap(fn: () => Promise<void>): Promise<number> {
 	}
 }
 
+/**
+ * Stands in for the environment's preparation; `notify` is where the run
+ * says what it reports before its output opens.
+ */
+type StubPrepare = (
+	options: PrepareOptions,
+	notify: (message: string, problem: boolean) => void,
+) => Promise<void>;
+
 function createStubEnv(
 	options: {
 		apps?: Record<string, AppConfig>;
 		services?: Record<string, ServiceConfig>;
 		ports?: Record<string, number>;
 		root?: string;
-		start?: (options?: unknown) => Promise<null>;
+		prepare?: StubPrepare;
 		waitForServer?: (url: string, timeout?: number) => Promise<void>;
 		waitForServers?: (options?: {
 			onlyApps?: string[];
@@ -116,7 +136,7 @@ function createStubEnv(
 			Object.entries(apps).map(([name, config]) => [name, config.port]),
 		);
 	const publicUrls: Record<string, string> = {};
-	return {
+	const env = {
 		services: resolveServices(services),
 		apps: resolveApps(apps),
 		ports: ports as DevEnvironment<
@@ -156,14 +176,8 @@ function createStubEnv(
 		portOffsetProvenance: "hash",
 		isWorktree: false,
 		localIp: "127.0.0.1",
-		start: async (startOptions?: unknown) => {
-			if (options.start) {
-				return options.start(startOptions);
-			}
-			return null;
-		},
+		start: async () => null,
 		stop: async () => {},
-		restart: async () => {},
 		isRunning: async () => true,
 		startServers: async () => ({}),
 		stopProcess: () => {},
@@ -192,15 +206,12 @@ function createStubEnv(
 		},
 		logInfo: () => {},
 		captured: {},
-		recordCapture: async () => [],
-		renderGeneratedFiles: () => [],
 		details: () => ({}),
 		getExpoApiUrl: () => "http://127.0.0.1:3000",
 		getFrontendPort: () => 5173,
 		sessionId: "test-session",
 		claimRun: async () => {},
 		releaseRun: async () => {},
-		reportServiceChanges: () => {},
 		ensureWatchdog: async () => {},
 		withSuffix: () =>
 			createStubEnv() as DevEnvironment<
@@ -210,10 +221,94 @@ function createStubEnv(
 		openPublicTunnels: async () => {
 			throw new Error("not used");
 		},
+		runSeed: async () => ({ status: "not-configured" }),
 	} as unknown as DevEnvironment<
 		Record<string, ServiceConfig>,
 		Record<string, AppConfig>
 	>;
+	registerStubInternals(env, options.prepare);
+	return env;
+}
+
+/**
+ * The phases the CLI drives: `prepare` stubbed, the apps through the real
+ * pipeline over the stub's members, its leases and rows under the stub's
+ * session.
+ */
+function registerStubInternals(
+	env: DevEnvironment<Record<string, ServiceConfig>, Record<string, AppConfig>>,
+	prepare: StubPrepare | undefined,
+): void {
+	let report: (message: string, problem: boolean) => void = () => {};
+	const claim = createRunClaimApi(
+		{
+			projectName: env.projectName,
+			root: env.root,
+			worktree: false,
+			config: { projectPrefix: env.projectPrefix, services: env.services },
+			services: env.services,
+			selectedServiceKeys: [],
+			hasSelectedServices: false,
+			runtime: { name: "docker" },
+		} as unknown as DevEnvContext<
+			Record<string, ServiceConfig>,
+			Record<string, AppConfig>
+		>,
+		() => env,
+	);
+	Object.assign(env, { sessionId: claim.sessionId });
+	const pipeline = createAppPipeline({
+		root: env.root,
+		ports: env.ports as Record<string, number>,
+		projectName: env.projectName,
+		unsetEnv: undefined,
+		runtime: () => containerRuntimeForEnv(env),
+		appEnv: (name) => env.buildAppEnvVars(name),
+		runHook: async () => {},
+		waitForHealth: (apps, _production, signal) =>
+			env.waitForServers({ onlyApps: Object.keys(apps), signal }),
+		recordCapture: async () => [],
+		renderGeneratedFiles: () => [],
+		runSeed: (seedOptions) => env.runSeed(seedOptions),
+		// Like the stub's `releaseRun`: a failed run's rows stay for the test
+		// to read once it has ended.
+		claim: { ...claim, abandonApps: async () => {} },
+		ensureWatchdog: () => {},
+		ownedServerPids: {},
+	});
+	registerInternals(env, {
+		...pipeline,
+		prepare: async (prepareOptions = {}) => {
+			await prepare?.(prepareOptions, (message, problem) =>
+				report(message, problem),
+			);
+			const plan = planStart(env.apps, env.services, {
+				onlyApps: prepareOptions.onlyApps,
+			});
+			return {
+				selection: {
+					appNames: plan.appNames,
+					requiredServiceKeys: plan.requiredServiceKeys,
+				},
+				apps: plan.apps,
+				hasServices: plan.requiredServiceKeys.length > 0,
+				productionBuild: false,
+				verbose: false,
+				watchdog: prepareOptions.watchdog !== false,
+				seed:
+					prepareOptions.seed === "force"
+						? { kind: "ran", outcome: await env.runSeed({ force: true }) }
+						: { kind: "none" },
+				onPhase: prepareOptions.onPhase,
+			};
+		},
+		secretsSession: async () => {},
+		notify: (next) => {
+			report = next;
+		},
+		renderGeneratedFiles: () => [],
+		recordCapture: async () => [],
+	});
 }
 
 /**
@@ -331,7 +426,7 @@ describe("runCli expose routing", () => {
 		expect(code).toBe(0);
 	});
 
-	it("passes direct --apps selection into env.start", async () => {
+	it("passes direct --apps selection into the preparation", async () => {
 		const startCalls: unknown[] = [];
 		const code = await withProcessExitTrap(() =>
 			runCli(
@@ -352,9 +447,8 @@ describe("runCli expose routing", () => {
 					services: {
 						postgres: { port: 5432 },
 					},
-					start: async (startOptions) => {
+					prepare: async (startOptions) => {
 						startCalls.push(startOptions);
-						return null;
 					},
 				}),
 				{
@@ -369,9 +463,8 @@ describe("runCli expose routing", () => {
 			{
 				startServers: false,
 				wait: true,
-				skipSeed: true,
+				seed: "skip",
 				prepare: "migrate",
-				skipEnvironmentLog: true,
 				onlyApps: ["expo"],
 				autoStartDocker: undefined,
 				// Development in CI too, like the dev servers it goes on to run.
@@ -380,12 +473,11 @@ describe("runCli expose routing", () => {
 		]);
 	});
 
-	it("prefetches the seed's secrets for --seed while the containers start", async () => {
+	it("forces the seed in preparation for --seed, so its secrets come with the containers'", async () => {
 		const startCalls: unknown[] = [];
 		const env = createStubEnv({
-			start: async (startOptions) => {
+			prepare: async (startOptions) => {
 				startCalls.push(startOptions);
-				return null;
 			},
 		});
 		(env as { runSeed: unknown }).runSeed = async () => ({
@@ -397,9 +489,7 @@ describe("runCli expose routing", () => {
 		);
 
 		expect(code).toBe(0);
-		expect(startCalls).toMatchObject([
-			{ skipSeed: true, prefetchSeed: true, prepare: "all" },
-		]);
+		expect(startCalls).toMatchObject([{ seed: "force", prepare: "all" }]);
 	});
 
 	it("rejects unknown app names from --apps", async () => {
@@ -729,43 +819,6 @@ describe("runCli phased tunnels and attach", () => {
 			await runCli(env, { args: [], watchdog: false });
 			expect(healthChecked.sort()).toEqual(["api", "expoApp"]);
 		} finally {
-			await rm(root, { recursive: true, force: true });
-		}
-	});
-
-	// The watchdog is what lists live runs to BuncargoBar on the tailnet, and
-	// `start()` only ensures it for a run with containers.
-	it("ensures the watchdog for an app-only run once its apps are up", async () => {
-		const root = await mkdtemp(join(tmpdir(), "buncargo-app-only-"));
-		const port = 44010 + Math.floor(Math.random() * 200);
-		const order: string[] = [];
-		const ensure = spyOn(watchdog, "ensureWatchdog").mockImplementation(
-			async () => {
-				order.push("watchdog");
-			},
-		);
-		const app = exitsOnceChecked(root);
-		const env = createStubEnv({
-			root,
-			apps: {
-				api: {
-					port,
-					devCommand: app.devCommand("api"),
-					requiredServices: [],
-				},
-			},
-			waitForServers: () => {
-				order.push("ready");
-				app.checked("api");
-			},
-		});
-
-		try {
-			await runCli(env, { args: [] });
-			expect(order).toEqual(["ready", "watchdog"]);
-			expect(ensure).toHaveBeenCalledWith({ verbose: false });
-		} finally {
-			ensure.mockRestore();
 			await rm(root, { recursive: true, force: true });
 		}
 	});
@@ -1456,44 +1509,12 @@ describe("how a run ends", () => {
 		}
 	});
 
-	it("says so when the watchdog does not start", async () => {
-		const ensure = spyOn(watchdog, "ensureWatchdog").mockImplementation(
-			async () => {
-				throw new Error("runner missing");
-			},
-		);
-		// Said in the run's output, which stream mode prints to stdout.
-		const warn = spyOn(process.stdout, "write").mockImplementation(() => true);
-		const env = createStubEnv({
-			services: {},
-			apps: {
-				api: {
-					port: 44410 + Math.floor(Math.random() * 100),
-					devCommand: "bun -e 'setTimeout(() => {}, 200)'",
-					healthEndpoint: false,
-					requiredServices: [],
-				},
-			},
-		});
-		try {
-			await runCli(env, { args: ["--no-hosts", "--no-tui"] });
-			const warned = warn.mock.calls.map((call) => String(call[0])).join("\n");
-			expect(warned).toContain(
-				"The watchdog did not start: Error: runner missing",
-			);
-		} finally {
-			warn.mockRestore();
-			ensure.mockRestore();
-		}
-	});
-
 	// `start()` warns where the run's service changes are said, and said it
 	// before the CLI wired that to the run's output: only the console had it.
 	it("keeps what start() reported before the run's output opened in its log", async () => {
 		const root = await realpath(
 			await mkdtemp(join(tmpdir(), "buncargo-early-")),
 		);
-		let report: (message: string, problem: boolean) => void = () => {};
 		const env = createStubEnv({
 			root,
 			services: {},
@@ -1505,14 +1526,8 @@ describe("how a run ends", () => {
 					requiredServices: [],
 				},
 			},
-			start: async () => {
-				report("The watchdog did not start (runner missing).", true);
-				return null;
-			},
-		});
-		Object.assign(env, {
-			reportServiceChanges: (next: typeof report) => {
-				report = next;
+			prepare: async (_options, notify) => {
+				notify("The watchdog did not start (runner missing).", true);
 			},
 		});
 		const warn = spyOn(console, "warn").mockImplementation(() => {});
@@ -1567,13 +1582,14 @@ describe("how a run ends", () => {
 	// boundary instead of claiming containers and starting them.
 	it("claims nothing once interrupted, and exits 130", async () => {
 		let claims = 0;
-		const env = createStubEnv();
+		const env = createStubEnv({
+			prepare: async () => {
+				claims++;
+			},
+		});
 		Object.assign(env, {
 			prepareStartAsync: async () => {
 				process.emit("SIGINT");
-			},
-			claimRun: async () => {
-				claims++;
 			},
 		});
 		const code = await withProcessExitTrap(() =>
@@ -1612,7 +1628,7 @@ describe("a failed detached run's report", () => {
 	it("names a failed seed and keeps its last lines", async () => {
 		const { code, report } = await failedRun({
 			services: {},
-			start: async () => {
+			prepare: async () => {
 				throw new SeedFailedError({
 					status: "failed",
 					result: { exitCode: 1, stdout: "", stderr: "" },
@@ -1656,5 +1672,165 @@ describe("a failed detached run's report", () => {
 		expect(failure?.step).toBe("api");
 		expect(failure?.output).toContain("MISSING_SECRETS: STRIPE_KEY");
 		expect(failure?.next).toEqual(["`buncargo logs api` has its whole output"]);
+	});
+});
+
+// `dev` used to rebuild the leases, the rows and the hooks a library start
+// had, and the two drifted: only the library gave a refused essential app's
+// leases back. One pipeline now; both entry points must leave the same
+// claim, leases, rows and hooks behind for the same config.
+it("claims, leases, publishes and hooks the same through runCli and start()", async () => {
+	const root = await realpath(
+		await mkdtemp(join(tmpdir(), "buncargo-parity-")),
+	);
+	writeFileSync(join(root, "package.json"), "{}");
+	const port = 45010 + Math.floor(Math.random() * 400);
+	const hooks: string[] = [];
+	type Snapshot = {
+		hooks: string[];
+		services: { name: string; stack?: string }[];
+		stacks: string[] | undefined;
+		apps: string[];
+		leases: string[];
+	};
+	const snapshots: Snapshot[] = [];
+	let afterSnapshot = () => {};
+	const snapshot = async () => {
+		const [run] = await findRunsByRoot(root);
+		snapshots.push({
+			hooks: [...hooks],
+			services: (run?.services ?? []).map(({ name, stack }) => ({
+				name,
+				stack,
+			})),
+			stacks: run?.stacks?.map((stack) => stack.name),
+			apps: (run?.apps ?? []).map((app) => app.name),
+			leases: (await readLeases())
+				.filter((lease) => lease.sessionId === run?.sessionId)
+				.map((lease) => lease.key),
+		});
+		hooks.length = 0;
+		afterSnapshot();
+	};
+	const config: DevConfig = {
+		projectPrefix: "parity",
+		services: { queue: { port: port + 1, external: { stack: "fake" } } },
+		apps: {
+			web: {
+				port,
+				devCommand: `${process.execPath} -e "Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response('ok') }); setInterval(() => {}, 1000)"`,
+				healthEndpoint: "/",
+				requiredServices: ["queue"],
+				exclusive: "parity:web",
+			},
+		},
+		integrations: [
+			{
+				name: "fake",
+				stacks: {
+					fake: {
+						up: async () => void hooks.push("stack up"),
+						down: () => ["true"],
+					},
+				},
+			},
+		],
+		hooks: {
+			beforeServers: async () => void hooks.push("beforeServers"),
+			afterServers: snapshot,
+		},
+		options: { hosts: false, verbose: false, worktreeIsolation: false },
+	};
+	const savedOffset = process.env.BUNCARGO_PORT_OFFSET;
+	process.env.BUNCARGO_PORT_OFFSET = "0";
+	const log = spyOn(console, "log").mockImplementation(() => {});
+	try {
+		const library = createDevEnvironment(config, { root });
+		await library.start({ watchdog: false });
+		await library.stop({ force: true, verbose: false });
+
+		const cli = createDevEnvironment(config, { root });
+		afterSnapshot = () => process.emit("SIGINT");
+		await withProcessExitTrap(() =>
+			runCli(cli, { args: ["--no-hosts", "--no-tui"], watchdog: false }),
+		);
+		await cli.stop({ force: true, verbose: false });
+
+		const [fromStart, fromCli] = snapshots;
+		expect(fromStart).toEqual({
+			hooks: ["stack up", "beforeServers"],
+			services: [{ name: "queue", stack: "fake" }],
+			stacks: ["fake"],
+			apps: ["web"],
+			leases: ["parity:web"],
+		});
+		expect(fromCli).toEqual(fromStart);
+	} finally {
+		log.mockRestore();
+		if (savedOffset === undefined) delete process.env.BUNCARGO_PORT_OFFSET;
+		else process.env.BUNCARGO_PORT_OFFSET = savedOffset;
+		await rm(root, { recursive: true, force: true });
+	}
+}, 20_000);
+
+describe("the spawn set", () => {
+	const apps = resolveApps({
+		api: { port: 3000, devCommand: "bun api" },
+		web: { port: 3001, devCommand: "bun web" },
+	});
+
+	it("moves taken-over apps from reused to started", () => {
+		const classified = {
+			startApps: { web: apps.web },
+			reusedApps: { api: apps.api },
+			startNames: ["web"],
+			reusedNames: ["api"],
+			inferredReuseNames: ["api"],
+			unhealthy: [
+				{
+					name: "api",
+					port: 3000,
+					url: "http://localhost:3000",
+					detached: true,
+				},
+			],
+		};
+
+		expect(
+			withTakenOver(classified, { names: ["api"], apps: { api: apps.api } }),
+		).toEqual({
+			startApps: { web: apps.web, api: apps.api },
+			reusedApps: {},
+			startNames: ["web", "api"],
+			reusedNames: [],
+			inferredReuseNames: [],
+			unhealthy: [],
+		});
+	});
+
+	it("spawns, holds, ends or refuses by what is left to run", () => {
+		const nothing = {
+			startNames: [],
+			reusedNames: [],
+			leaseSkips: 0,
+			servicesOnly: false,
+			pendingTunnels: false,
+			sharing: false,
+		};
+
+		expect(decideSpawn({ ...nothing, startNames: ["web"] })).toBe("spawn");
+		expect(decideSpawn({ ...nothing, reusedNames: ["web"] })).toBe(
+			"already-running",
+		);
+		expect(decideSpawn({ ...nothing, servicesOnly: true })).toBe("hold");
+		expect(
+			decideSpawn({ ...nothing, reusedNames: ["web"], sharing: true }),
+		).toBe("hold");
+		// Its only app's lease is held elsewhere: there is no run to have.
+		expect(decideSpawn({ ...nothing, leaseSkips: 1 })).toBe("refuse");
+		// Tunnels it opens are still a run.
+		expect(
+			decideSpawn({ ...nothing, leaseSkips: 1, pendingTunnels: true }),
+		).toBe("hold");
 	});
 });

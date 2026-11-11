@@ -9,7 +9,9 @@ import {
 	resolveServices,
 } from "../config/resolve";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
+import { waitForDevServers } from "../core/network";
 import { readRemovals } from "../core/removal-log";
+import { buildRunEntry, publishRun, retireRuns } from "../core/run-registry";
 import { CI_ENV_VARS } from "../core/runtime-flags";
 import { InfisicalLoginError } from "../core/secrets/errors";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
@@ -25,6 +27,8 @@ import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 import { createLifecycleApi } from "./lifecycle";
 import { LifecycleCoordinator } from "./lifecycle-coordinator";
+import { createAppPipeline } from "./pipeline";
+import { createServerHookRunner } from "./servers";
 import { createServiceWatch } from "./service-watch";
 
 // Starting and stopping take the project's lifecycle lock and record the
@@ -135,7 +139,10 @@ function fixture() {
 		ensureWatchdog: async () => {
 			events.push("watchdog");
 		},
-		claimApps: async (apps: Record<string, ResolvedApp>) => apps,
+		claimApps: async (apps: Record<string, ResolvedApp>) => ({
+			apps,
+			skipped: [],
+		}),
 		appEvents: {},
 		abandonApps: async () => {},
 		releaseApps: async () => {
@@ -143,20 +150,32 @@ function fixture() {
 		},
 	};
 	const serviceWatch = createServiceWatch(ctx, runClaim.sessionId);
-	return {
-		events,
+	const appPipeline = createAppPipeline({
+		root: ctx.root,
+		ports: {},
+		projectName: ctx.projectName,
+		unsetEnv: undefined,
+		runtime: () => runtime,
+		appEnv: (name, production) => envVars.buildAppEnvVars(name, production),
+		runHook: createServerHookRunner(ctx, envVars),
+		waitForHealth: (apps, productionBuild, signal) =>
+			waitForDevServers(apps, {}, { productionBuild, signal, verbose: false }),
+		recordCapture: async () => [],
+		renderGeneratedFiles: () => [],
+		runSeed: (options) => lifecycle.runSeed(options),
+		claim: runClaim,
+		ensureWatchdog: () => lifecycle.ensureWatchdog(),
+		ownedServerPids: ctx.ownedServerPids,
+	});
+	const lifecycle = createLifecycleApi(
 		ctx,
 		envVars,
 		runClaim,
+		new LifecycleCoordinator(),
 		serviceWatch,
-		lifecycle: createLifecycleApi(
-			ctx,
-			envVars,
-			runClaim,
-			new LifecycleCoordinator(),
-			serviceWatch,
-		),
-	};
+		appPipeline,
+	);
+	return { events, ctx, envVars, runClaim, serviceWatch, lifecycle };
 }
 
 describe("startup modes and hooks", () => {
@@ -302,6 +321,43 @@ describe("startup modes and hooks", () => {
 			},
 		]);
 	});
+	it("keeps the services another live run of the project uses, and tears them down with force", async () => {
+		const { ctx, events, lifecycle } = fixture();
+		ctx.runtime.down = async () => {
+			events.push("down");
+		};
+		// A second run in this checkout, claimed as every run claims before
+		// its first container: two `ci` runs once shared one project, and the
+		// first to finish removed the other's database mid-test.
+		const other = buildRunEntry({
+			sessionId: "other-run",
+			projectPrefix: "test",
+			projectName: ctx.projectName,
+			root: ctx.root,
+			isWorktree: false,
+		});
+		await publishRun(other);
+		try {
+			const start = () =>
+				lifecycle.start({
+					prepare: "containers",
+					startServers: false,
+					verbose: false,
+					wait: false,
+				});
+			await start();
+			await lifecycle.stop({ verbose: false });
+			// Released for the other run, its block and containers intact.
+			expect(events).not.toContain("down");
+			expect(events.at(-1)).toBe("release");
+
+			await start();
+			await lifecycle.stop({ verbose: false, force: true });
+			expect(events.slice(-3)).toEqual(["down", "retire", "release claim"]);
+		} finally {
+			await retireRuns([other]);
+		}
+	});
 	it("stops the apps, their leases, the containers and the entry when beforeStop throws, then rejects with its error", async () => {
 		const { ctx, events, lifecycle } = fixture();
 		ctx.runtime.down = async () => {
@@ -411,6 +467,70 @@ describe("startup modes and hooks", () => {
 			lifecycle.start({ signal: AbortSignal.abort(new Error("cancelled")) }),
 		).rejects.toThrow("cancelled");
 		expect(events).toEqual([]);
+	});
+});
+
+describe("withServices", () => {
+	it("claims and starts the services, runs the command, then releases them however it ends", async () => {
+		const { events, lifecycle } = fixture();
+		const order: string[] = [];
+		const result = await lifecycle.withServices(
+			["db"],
+			{ verbose: false, wait: false, watchdog: false },
+			async () => {
+				order.push(...events);
+				return 7;
+			},
+		);
+		expect(result).toBe(7);
+		expect(order.slice(0, 2)).toEqual(["claim", "artifact"]);
+		expect(events.at(-1)).toBe("release");
+
+		events.length = 0;
+		await expect(
+			lifecycle.withServices(["db"], { verbose: false, wait: false }, () =>
+				Promise.reject(new Error("tests failed")),
+			),
+		).rejects.toThrow("tests failed");
+		expect(events.at(-1)).toBe("release");
+	});
+
+	it("tears the services down instead with after: stop", async () => {
+		const { ctx, events, lifecycle } = fixture();
+		ctx.runtime.down = async () => {
+			events.push("down");
+		};
+		await lifecycle.withServices(
+			["db"],
+			{
+				verbose: false,
+				wait: false,
+				watchdog: false,
+				after: { stop: { removeVolumes: true } },
+			},
+			async () => {},
+		);
+		expect(events.slice(-3)).toEqual(["down", "retire", "release claim"]);
+	});
+
+	it("hands the command a forced seed's outcome, a failed one included, without asking seed.check", async () => {
+		const { envVars, events, lifecycle } = fixture();
+		envVars.resolveSecrets = async () => ({});
+		// The fixture's seed command does not exist: it fails, and `ci` turns
+		// that into its exit code rather than a thrown start.
+		const outcome = await lifecycle.withServices(
+			["db"],
+			{
+				prepare: "all",
+				seed: "force",
+				verbose: false,
+				wait: false,
+				watchdog: false,
+			},
+			async ({ seed }) => seed,
+		);
+		expect(outcome).toMatchObject({ status: "failed" });
+		expect(events).not.toContain("seed check");
 	});
 });
 

@@ -320,27 +320,21 @@ async function withClaimedDatabase(
 
 	console.error(`Starting ${service} for ${env.projectName}…`);
 	try {
-		await env.prepareStartAsync(undefined, [service], signal);
-		await env.claimRun({
-			defaultIdleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS,
-			signal,
-		});
-		await env.start({
-			onlyServices: [service],
-			startServers: false,
-			prepare: "containers",
-			skipEnvironmentLog: true,
+		return await env.withServices(
+			[service],
 			// stdout is Prisma's alone.
-			verbose: false,
-			signal,
-		});
-		return await use();
+			{
+				claim: { defaultIdleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS },
+				verbose: false,
+				signal,
+			},
+			use,
+		);
 	} catch (error) {
 		if (error instanceof CommandSignalError)
 			return shellExitCode(null, error.signal);
 		throw error;
 	} finally {
-		await env.releaseRun();
 		for (const name of signals) process.off(name, cancel);
 	}
 }

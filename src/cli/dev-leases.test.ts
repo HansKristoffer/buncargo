@@ -7,7 +7,10 @@ import type { SkippedLeaseApp } from "../core/app-leases";
 import { readLeases } from "../core/leases";
 import { publishCurrentRun, type RunSource } from "../core/run-publish";
 import { patchRun } from "../core/run-registry";
-import { acquireAppLeases, leaseSkipLines } from "./dev-leases";
+import { acquireStartLeases } from "../environment/app-leases";
+import type { ResolvedApp } from "../types";
+import { cliLeasePolicy, leaseSkipLines } from "./dev-leases";
+import type { TakeoverDecision } from "./dev-takeover";
 import { CliError } from "./errors";
 
 let root: string;
@@ -42,6 +45,26 @@ function source(sessionId: string): RunSource {
 		containerRuntime: "docker",
 		resolvePrimaryApp: () => "web",
 	};
+}
+
+/** The leases `buncargo dev` takes, answered the way its policy answers. */
+function acquireAppLeases(
+	owner: RunSource,
+	apps: Record<string, ResolvedApp>,
+	options: {
+		takeover: TakeoverDecision;
+		interactive?: boolean;
+		confirm?: (lines: string[]) => Promise<boolean>;
+	},
+) {
+	return acquireStartLeases(owner, apps, {
+		held: new Set(),
+		policy: cliLeasePolicy({
+			takeover: () => options.takeover,
+			interactive: options.interactive ?? false,
+			confirm: options.confirm,
+		}),
+	});
 }
 
 it.each(["starting", "identity-refused"])(

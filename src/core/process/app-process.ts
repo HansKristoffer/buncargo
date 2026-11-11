@@ -53,10 +53,11 @@ function appSpawnOptions(
 	config: ResolvedApp,
 	root: string,
 	envVars: Record<string, string>,
+	unsetEnv: readonly string[] | undefined,
 ) {
 	return {
 		cwd: config.cwd ? resolve(root, config.cwd) : root,
-		env: childProcessEnv({ ...process.env, ...envVars }),
+		env: childProcessEnv({ ...process.env, ...envVars }, unsetEnv),
 		detached: true,
 	};
 }
@@ -85,6 +86,8 @@ export function spawnManagedApp(
 		output: RunOutput;
 		/** Raw output, for `captures`. */
 		onText?: (text: string) => void;
+		/** The config's `unsetEnv`. */
+		unsetEnv?: readonly string[];
 	},
 ): AppChild {
 	const baseCommand = resolveStartCommand(config, options.productionBuild);
@@ -96,7 +99,7 @@ export function spawnManagedApp(
 		options.attached && options.extraArgs.length > 0
 			? `${baseCommand} ${options.extraArgs.map(shellQuote).join(" ")}`
 			: baseCommand;
-	const base = appSpawnOptions(config, root, envVars);
+	const base = appSpawnOptions(config, root, envVars, options.unsetEnv);
 	const { output } = options;
 
 	// The TUI: every app gets a terminal of its own, sized to its pane, and
@@ -191,13 +194,18 @@ export async function runPrebuild(
 	config: ResolvedApp,
 	root: string,
 	envVars: Record<string, string>,
-	options: { signal: AbortSignal; output: RunOutput; graceMs?: number },
+	options: {
+		signal: AbortSignal;
+		output: RunOutput;
+		graceMs?: number;
+		unsetEnv?: readonly string[];
+	},
 ): Promise<void> {
 	const command = config.prebuild;
 	if (!command) return;
 	options.signal.throwIfAborted();
 	const child = spawnAppCommand(command, {
-		...appSpawnOptions(config, root, envVars),
+		...appSpawnOptions(config, root, envVars, options.unsetEnv),
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	options.output.pipe(name, child.stdout);

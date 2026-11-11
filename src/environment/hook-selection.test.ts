@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DevConfig } from "../types";
 import { createDevEnvironment } from "./create-dev-environment";
+import { internalsOf } from "./internals";
 
 const saved = {
 	HOME: process.env.HOME,
@@ -73,6 +74,10 @@ it("tells onCapture the prepared selection", async () => {
 	);
 
 	env.prepareStart(["web"]);
-	await env.recordCapture?.("web", { name: "token", value: "x", as: "value" });
+	await internalsOf(env).recordCapture("web", {
+		name: "token",
+		value: "x",
+		as: "value",
+	});
 	expect(selected).toEqual(["web"]);
 });

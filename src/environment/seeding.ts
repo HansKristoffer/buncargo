@@ -44,6 +44,8 @@ export async function runSeedCommand(input: {
 	verbose?: boolean;
 	prefixOutput?: boolean;
 	onOutputLine?: (line: string) => void;
+	/** The config's `unsetEnv`. */
+	unsetEnv?: readonly string[];
 }): Promise<ExecResult> {
 	const specifier = resolveBunSeedSpecifier(input.command);
 	const forceExit = input.forceExit ?? Boolean(specifier);
@@ -64,6 +66,7 @@ export async function runSeedCommand(input: {
 				throwOnError: false,
 				signal: input.signal,
 				timeoutMs: 600_000,
+				unsetEnv: input.unsetEnv,
 			},
 		);
 	}
@@ -76,6 +79,7 @@ export async function runSeedCommand(input: {
 		throwOnError: false,
 		signal: input.signal,
 		timeoutMs: 600_000,
+		unsetEnv: input.unsetEnv,
 	});
 }
 
@@ -222,6 +226,7 @@ export async function runSeedIfNeeded<
 		prefixOutput: options.prefixOutput,
 		onOutputLine,
 		verbose,
+		unsetEnv: ctx.config.unsetEnv,
 	});
 
 	if (result.exitCode !== 0) {

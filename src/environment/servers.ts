@@ -1,10 +1,7 @@
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
-import { mapValues } from "hanzio";
 import { withDeadline } from "../core/deadline";
 import { waitForDevServers } from "../core/network";
-import { buildApps } from "../core/process/build";
-import { loadAppSecrets } from "../core/secrets/index";
 import {
 	resolveExposeTargets,
 	startPublicTunnels,
@@ -21,15 +18,11 @@ import type {
 	OpenPublicTunnelsOptions,
 	OpenPublicTunnelsResult,
 	ResolvedApp,
-	SeedOutcome,
 	ServiceConfig,
 } from "../types";
-import { createCaptureRecorder } from "./captures";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
-import { renderGeneratedFiles } from "./generated-files";
-import type { DevRunClaimApi } from "./run-claim";
-import { startServerSession } from "./server-session";
+import type { AppPipeline, Prepared } from "./pipeline";
 
 /** Validate all selected working directories before any startup mutation. */
 export function assertAppWorkingDirectories(
@@ -82,123 +75,6 @@ export function createServerHookRunner<
 	};
 }
 
-/**
- * Build (production only), spawn and health-wait a set of apps.
- *
- * Shared by `start()` and `startServers()` so both paths agree on build order,
- * spawn options and the readiness timeout.
- */
-export async function startAppServers<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues = EnvValues,
->(
-	ctx: DevEnvContext<TServices, TApps, TEnv>,
-	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
-	options: {
-		apps: Record<string, ResolvedApp>;
-		onPhase?: (name: string, ms: number) => void;
-		seed?: (signal: AbortSignal) => Promise<SeedOutcome>;
-		onSeedReady?: () => void;
-		productionBuild: boolean;
-		verbose: boolean;
-		signal?: AbortSignal;
-		/** This environment's run claim, for what the apps hold while they run. */
-		claim: Pick<DevRunClaimApi, "claimApps" | "appEvents" | "abandonApps">;
-	},
-): Promise<DevServerPids> {
-	const { productionBuild, claim } = options;
-	options.signal?.throwIfAborted();
-	assertAppWorkingDirectories(options.apps, ctx.root, productionBuild);
-
-	// Before anything is built or spawned, like `buncargo dev`.
-	const appsToStart = await claim.claimApps(options.apps, options.signal);
-	try {
-		return await spawnAppServers(ctx, envVars, appsToStart, options);
-	} catch (error) {
-		await claim.abandonApps(appsToStart);
-		throw error;
-	}
-}
-
-async function spawnAppServers<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues = EnvValues,
->(
-	ctx: DevEnvContext<TServices, TApps, TEnv>,
-	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
-	appsToStart: Record<string, ResolvedApp>,
-	options: Parameters<typeof startAppServers>[2],
-): Promise<DevServerPids> {
-	const { productionBuild, verbose } = options;
-	const pids = await startServerSession(
-		{
-			root: ctx.root,
-			onSeedReady: options.onSeedReady,
-			prepare: async (signal) => {
-				if (productionBuild) {
-					// The spawn path gets its secrets inside `startDevServers`; a production
-					// build is the other process that needs them, and it runs before that.
-					// Both share one fetch per scope through the module's cache.
-					const secrets = await loadAppSecrets(appsToStart, {
-						signal,
-						onWait: (ms) => options.onPhase?.("secrets", ms),
-					});
-					const buildEnv = mapValues(
-						envVars.buildAppEnvVarsMap(appsToStart, true),
-						(env, name) => ({ ...secrets[name], ...env }),
-					);
-					await buildApps(appsToStart, ctx.root, buildEnv, {
-						verbose,
-						signal,
-					});
-				}
-			},
-			ports: ctx.ports as Record<string, number>,
-			// Restarts rebuild env so captures and public URLs are current.
-			appEnv: (name) =>
-				envVars.buildAppEnvVars(
-					name as Extract<keyof TApps, string>,
-					productionBuild,
-				),
-			runHook: createServerHookRunner(ctx, envVars),
-			recordCapture: createCaptureRecorder(ctx, envVars),
-			afterWave: () => {
-				renderGeneratedFiles(ctx, envVars);
-			},
-			// One app at a time, quietly: the spawner reports readiness.
-			waitForHealth: (app, signal) =>
-				waitForDevServers(app, ctx.ports, {
-					verbose: false,
-					logReady: false,
-					productionBuild,
-					signal,
-				}),
-		},
-		appsToStart,
-		{
-			verbose,
-			productionBuild,
-			projectName: ctx.projectName,
-			runtime: ctx.hasSelectedServices ? ctx.runtime : undefined,
-			skipContainers: !ctx.hasSelectedServices,
-			signal: options.signal,
-			seed: options.seed,
-			deferPublicUrlApps: false,
-			onPhase: options.onPhase,
-			onAppPhase: (name, life, previous) => {
-				if (ctx.ownedServerPids && life.pid !== undefined)
-					ctx.ownedServerPids[name] = life.pid;
-				return options.claim.appEvents.onAppPhase?.(name, life, previous);
-			},
-		},
-	);
-
-	if (ctx.ownedServerPids) Object.assign(ctx.ownedServerPids, pids);
-	return pids;
-}
-
 export interface DevServersApi<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
@@ -208,7 +84,7 @@ export interface DevServersApi<
 		productionBuild?: boolean;
 		verbose?: boolean;
 		onlyApps?: Extract<keyof TApps, string>[];
-	}): Promise<DevServerPids>;
+	}): Promise<DevServerPids<TApps>>;
 	waitForServersReady(options?: {
 		timeout?: number;
 		productionBuild?: boolean;
@@ -230,8 +106,7 @@ export function createServersApi<
 	TEnv extends EnvValues = EnvValues,
 >(
 	ctx: DevEnvContext<TServices, TApps, TEnv>,
-	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
-	runClaim: DevRunClaimApi,
+	appPipeline: AppPipeline,
 ): DevServersApi<TServices, TApps> {
 	const { apps, services, ports, config } = ctx;
 
@@ -242,21 +117,31 @@ export function createServersApi<
 			verbose?: boolean;
 			onlyApps?: Extract<keyof TApps, string>[];
 		} = {},
-	): Promise<DevServerPids> {
+	): Promise<DevServerPids<TApps>> {
 		const { productionBuild = false, verbose = true, onlyApps } = options;
-		const appsToStart = resolveSelectedApps(apps, onlyApps).apps;
+		const selected = resolveSelectedApps(apps, onlyApps);
 
-		if (Object.keys(appsToStart).length === 0) {
+		if (Object.keys(selected.apps).length === 0) {
 			return {};
 		}
 
-		return startAppServers(ctx, envVars, {
-			apps: appsToStart,
+		// Whatever a start prepared, this spawns on its own: no seed beside it.
+		const prepared: Prepared = {
+			selection: {
+				appNames: Object.keys(selected.apps),
+				requiredServiceKeys: ctx.selectedServiceKeys,
+			},
+			apps: selected.apps,
+			hasServices: ctx.hasSelectedServices,
 			productionBuild,
 			verbose,
+			watchdog: false,
+			seed: { kind: "none" },
+		};
+		const claimed = await appPipeline.claimApps(prepared, {
 			signal: options.signal,
-			claim: runClaim,
 		});
+		return appPipeline.spawn(claimed, { signal: options.signal });
 	}
 
 	async function waitForServersReady(

@@ -1,5 +1,5 @@
 import type { IntegrationAppNames } from "./all-types";
-import type { AppConfig, CaptureConfig, SecretsScopeConfig } from "./app";
+import type { AppConfig, SecretsScopeConfig } from "./app";
 import type { PortOffsetProvenance } from "./cli";
 import type {
 	GeneratedFileConfig,
@@ -28,7 +28,12 @@ import type {
 } from "./config";
 import type { ExecOptions } from "./hooks";
 import type { BuncargoIntegration } from "./integrations";
-import type { StartOptions, StopOptions } from "./lifecycle";
+import type {
+	ServicesStarted,
+	StartOptions,
+	StopOptions,
+	WithServicesOptions,
+} from "./lifecycle";
 import type {
 	PrismaRunner,
 	SeedConfig,
@@ -47,11 +52,12 @@ import type {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Process IDs for running dev servers.
+ * Process IDs of the dev servers a start spawned, by app. An app it did not
+ * spawn (reused, left out, or with no `devCommand`) has none.
  */
-export interface DevServerPids {
-	[appName: string]: number;
-}
+export type DevServerPids<
+	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
+> = { [TName in Extract<keyof TApps, string>]?: number };
 
 /** Tunnel rows passed to `logInfo` for public URL lines (matches `PublicTunnel` without `close`) */
 export interface DevEnvironmentTunnelLog {
@@ -190,18 +196,6 @@ export interface DevEnvironment<
 	readonly generatedFiles?: readonly GeneratedFileConfig[];
 	/** Values apps printed (`captures`), by name. */
 	readonly captured: Readonly<Record<string, string>>;
-	/**
-	 * Record a value an app printed: update `captured` / `publicUrls`, fire
-	 * `onCapture` hooks and re-render generated files. Returns what changed
-	 * (`captured.<name>`, `publicUrls.<app>`). For callers that spawn apps
-	 * themselves; `buncargo dev` and `startServers` do it already.
-	 */
-	recordCapture(
-		app: string,
-		captured: { name: string; value: string; as: CaptureConfig["as"] },
-	): Promise<readonly string[]>;
-	/** Render every generated file; returns the paths whose content changed. */
-	renderGeneratedFiles(): string[];
 	/** Labelled values for humans: labelled captures, then every integration's `describe`. */
 	details(): Record<string, string>;
 	/** The config-level Infisical scope (`secrets`), when configured. */
@@ -233,11 +227,23 @@ export interface DevEnvironment<
 	/** Start the dev environment (containers + optional servers) */
 	start(
 		options?: StartOptions<TApps, TServices>,
-	): Promise<DevServerPids | null>;
-	/** Stop the dev environment */
+	): Promise<DevServerPids<TApps> | null>;
+	/**
+	 * Stop the dev environment: its apps, then its services. While another
+	 * live run of the project uses the services, they stay up for it and this
+	 * environment only releases its claim; `force` tears them down anyway.
+	 */
 	stop(options?: StopOptions): Promise<void>;
-	/** Restart containers only */
-	restart(): Promise<void>;
+	/**
+	 * Start these services for a command, run it, then release them to the
+	 * idle hold (or stop them, with `after: "stop"`), however it ends. The
+	 * run is claimed before the first container, with `options.claim`'s hold.
+	 */
+	withServices<T>(
+		services: readonly Extract<keyof TServices, string>[],
+		options: WithServicesOptions,
+		command: (started: ServicesStarted) => Promise<T>,
+	): Promise<T>;
 	/**
 	 * Whether the services are up: every Compose service's container running
 	 * (a `kind: "job"` one has done its work and exited), and every
@@ -253,15 +259,6 @@ export interface DevEnvironment<
 	 * call it when something has already failed.
 	 */
 	explainMissingContainers(): string | undefined;
-	/**
-	 * Where `start()` reports a selected service's container stopping, being
-	 * removed or turning unhealthy while the run lives, and recovering
-	 * (`problem` false). Default: stderr. The run never restarts it; the line
-	 * says who stopped it when buncargo recorded one.
-	 */
-	reportServiceChanges(
-		report: (message: string, problem: boolean) => void,
-	): void;
 	/**
 	 * Run `seed.command` through the same path `start()` uses.
 	 *
@@ -281,14 +278,9 @@ export interface DevEnvironment<
 		verbose?: boolean;
 		/** If set, start and wait for only these app names plus any transitive `requiredApps`. */
 		onlyApps?: Extract<keyof TApps, string>[];
-	}): Promise<DevServerPids>;
+	}): Promise<DevServerPids<TApps>>;
 	/** Stop a process by PID */
 	stopProcess(pid: number): void;
-	/** Run lifecycle hooks for callers that supervise servers themselves. */
-	runServerHook?(
-		phase: "before" | "after",
-		signal?: AbortSignal,
-	): Promise<void>;
 	/** Wait for servers to be ready */
 	waitForServers(options?: {
 		signal?: AbortSignal;
