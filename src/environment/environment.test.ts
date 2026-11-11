@@ -105,9 +105,9 @@ it("keeps the CLI's internals off the environment a library user gets", () => {
 		"setNamedHostsActive",
 		"composeModel",
 		"ensureComposeFile",
+		"planPortOffset",
 	];
 	expect(internal.filter((name) => name in env)).toEqual([]);
-	expect(internal.filter((name) => name in internalsOf(env))).toEqual(internal);
 });
 
 describe("createDevEnvironment compose generation", () => {

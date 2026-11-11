@@ -169,7 +169,7 @@ export interface HostsInstallOptions {
 	 * Rewrite and reload the service even when one is already installed.
 	 *
 	 * Set by the explicit `buncargo hosts install` command. Without it a
-	 * service that is installed but broken — wrong code, wedged daemon —
+	 * service that is installed but broken (wrong code, a wedged daemon)
 	 * looks fine to `isHostsServiceInstalled()`, so the command that is meant
 	 * to repair it would skip the only step that could.
 	 */

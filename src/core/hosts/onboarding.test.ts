@@ -264,8 +264,13 @@ describe("installHosts", () => {
 	it("leaves a current service alone unless asked to reinstall it", async () => {
 		const { steps, deps } = machine();
 		await installHosts(deps, {});
-		expect(steps).not.toContain("service force=undefined");
-		expect(steps.at(-1)).toBe("daemon");
+		expect(steps).toEqual([
+			"clear decline",
+			"mkcert",
+			"trust /bin/mkcert",
+			"certificate",
+			"daemon",
+		]);
 	});
 
 	it("returns why it kept a newer service, and fails when the daemon does not start", async () => {
