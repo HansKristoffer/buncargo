@@ -426,52 +426,56 @@ describe("runCli expose routing", () => {
 		expect(code).toBe(0);
 	});
 
-	it("passes direct --apps selection into the preparation", async () => {
-		const startCalls: unknown[] = [];
-		const code = await withProcessExitTrap(() =>
-			runCli(
-				createStubEnv({
-					apps: {
-						api: {
-							port: 3000,
-							devCommand: "bun run api",
-							requiredServices: ["postgres"],
+	// `buncargo dev api` started every app: the positional was never read.
+	it.each([[["--migrate", "--apps=expo"]], [["--migrate", "expo"]]])(
+		"passes the apps %p selects into the preparation",
+		async (args) => {
+			const startCalls: unknown[] = [];
+			const code = await withProcessExitTrap(() =>
+				runCli(
+					createStubEnv({
+						apps: {
+							api: {
+								port: 3000,
+								devCommand: "bun run api",
+								requiredServices: ["postgres"],
+							},
+							expo: {
+								port: 8081,
+								devCommand: "bun run expo",
+								requiredApps: ["api"],
+								requiredServices: ["postgres"],
+							},
 						},
-						expo: {
-							port: 8081,
-							devCommand: "bun run expo",
-							requiredApps: ["api"],
-							requiredServices: ["postgres"],
+						services: {
+							postgres: { port: 5432 },
 						},
+						prepare: async (startOptions) => {
+							startCalls.push(startOptions);
+						},
+					}),
+					{
+						args,
+						watchdog: false,
 					},
-					services: {
-						postgres: { port: 5432 },
-					},
-					prepare: async (startOptions) => {
-						startCalls.push(startOptions);
-					},
-				}),
-				{
-					args: ["--migrate", "--apps=expo"],
-					watchdog: false,
-				},
-			),
-		);
+				),
+			);
 
-		expect(code).toBe(0);
-		expect(startCalls).toMatchObject([
-			{
-				startServers: false,
-				wait: true,
-				seed: "skip",
-				prepare: "migrate",
-				onlyApps: ["expo"],
-				autoStartDocker: undefined,
-				// Development in CI too, like the dev servers it goes on to run.
-				productionBuild: false,
-			},
-		]);
-	});
+			expect(code).toBe(0);
+			expect(startCalls).toMatchObject([
+				{
+					startServers: false,
+					wait: true,
+					seed: "skip",
+					prepare: "migrate",
+					onlyApps: ["expo"],
+					autoStartDocker: undefined,
+					// Development in CI too, like the dev servers it goes on to run.
+					productionBuild: false,
+				},
+			]);
+		},
+	);
 
 	it("forces the seed in preparation for --seed, so its secrets come with the containers'", async () => {
 		const startCalls: unknown[] = [];

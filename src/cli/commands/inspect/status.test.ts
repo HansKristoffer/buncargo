@@ -16,6 +16,7 @@ import {
 	dockerListLine,
 	fakeDocker,
 } from "../../../docker/fake-docker.testing";
+import type { StatusJson } from "../../json-documents";
 import { appStatusLines, describePlannedOffset, runHealth } from "./status";
 
 const cli = resolve(import.meta.dir, "../../bin.ts");
@@ -60,14 +61,6 @@ afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
-interface StatusJson {
-	urls: Record<string, string>;
-	hosts: {
-		active: boolean;
-		plan: { hostname: string; targetPort: number }[];
-	} | null;
-}
-
 /** `buncargo status --json` without blocking the daemon this process serves. */
 async function status(): Promise<StatusJson> {
 	const env: Record<string, string | undefined> = {
@@ -93,8 +86,26 @@ async function status(): Promise<StatusJson> {
 
 it("reports named hosts as the daemon serves them, with their URLs", async () => {
 	const before = await status();
-	// `status --json | head -40` cut the runs off when they came last.
-	expect(Object.keys(before)[0]).toBe("runs");
+	// `status --json | head -40` cut the runs off when they came last. The
+	// rest is StatusJson: a key may be added, never dropped.
+	expect(Object.keys(before)).toEqual([
+		"runs",
+		"project",
+		"root",
+		"portOffset",
+		"portOffsetProvenance",
+		"composeFile",
+		"runtime",
+		"checkSlots",
+		"ports",
+		"urls",
+		"containers",
+		"hosts",
+		"tunnels",
+		"recentStops",
+		"envOverrides",
+		"strayLoopbackUrls",
+	]);
 	expect(before.hosts?.active).toBe(false);
 	expect(before.urls.web).toMatch(/^http:\/\/localhost:\d+$/);
 

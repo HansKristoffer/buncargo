@@ -67,8 +67,8 @@ import { describeSwept } from "../../../core/watchdog-loop";
 import { loadDevEnv } from "../../../loader";
 import type { AnyDevEnvironment } from "../../../types";
 import { describeCheckFailures, isWarning, runChecks } from "../../checks";
+import { BASE_EXITS, defineCommand } from "../../command-spec";
 import { allChecks } from "../../core-checks";
-import { hasFlag } from "../../flags";
 import * as log from "../../log";
 import {
 	type FileHolder,
@@ -567,7 +567,7 @@ function checkMenuBarApp(report: DoctorReport): void {
 	);
 }
 
-export async function handleDoctor(args: string[] = []): Promise<void> {
+async function doctor(fix: boolean): Promise<number> {
 	const report = new DoctorReport();
 
 	// The config is read first because it can point either runtime at a binary
@@ -590,7 +590,6 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 
 	// Only the runtime this project selected has to be up; another one being
 	// down is not a problem for it, and starting it would be wrong.
-	const fix = hasFlag(args, "--fix");
 	const selected = env
 		? containerRuntimeForEnv(env)
 		: getContainerRuntimeAdapter("docker");
@@ -624,7 +623,21 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 	checkOffsetClaims(report);
 
 	report.print();
-	if (report.issues.length > 0) {
-		process.exit(1);
-	}
+	return report.issues.length > 0 ? 1 : 0;
 }
+
+export const doctorCommand = defineCommand({
+	spec: {
+		name: "doctor",
+		summary: "Check Docker, port owners, lockfile, hosts, and orphans",
+		flags: {
+			fix: {
+				kind: "boolean",
+				description:
+					"Repair what it can: the named-hosts daemon, CA trust, stale routes, port owners",
+			},
+		},
+	},
+	exits: { ...BASE_EXITS, 1: "an issue was found" },
+	run: ({ values }) => doctor(values.fix),
+});

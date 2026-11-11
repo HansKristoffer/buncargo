@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { resolveApps } from "../config/resolve";
 import { RunOutput } from "../core/process/run-output";
 import * as prompt from "../core/prompt";
-import { openDevOutput } from "./dev-output";
+import { openDevOutput, restartReply } from "./dev-output";
 import { RunTui } from "./tui/run-tui";
 
 // An app's last screen reaches the feed only once `close()` has flushed it:
@@ -47,4 +47,32 @@ it("closes the output before the TUI lets go of it", async () => {
 		close.mockRestore();
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+// `buncargo restart` exited 0 whatever became of the request: a reused app
+// the run could not replace, or a replacement that failed, read as success.
+it("answers a restart request with what the supervisor made of it", async () => {
+	const output = new RunOutput({ terminals: "pipe" });
+	output.state("api", { state: "ready" });
+	const outcomes: (() => Promise<boolean>)[] = [
+		async () => true,
+		async () => false,
+		async () => {
+			throw new Error("port 3000 is taken");
+		},
+	];
+	output.controls = {
+		restart: () => (outcomes.shift() ?? (async () => true))(),
+	};
+	expect(await restartReply(output, "api")).toEqual({ status: "began" });
+	expect(await restartReply(output, "api")).toMatchObject({
+		status: "not-ours",
+	});
+	expect(await restartReply(output, "api")).toEqual({
+		status: "failed",
+		reason: "port 3000 is taken",
+	});
+	expect(await restartReply(output, "web")).toMatchObject({
+		status: "not-ours",
+	});
 });

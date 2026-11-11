@@ -14,10 +14,10 @@
 
 import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Command, defineCli, defineCommand } from "hanzio/cli";
 import { noteCheckoutCommand } from "../core/run-activity";
 import { findCheckoutRoot } from "../loader/find-config-file";
-import type { CliCommandName } from "./commands/registry";
+import { runCommand } from "./command-spec";
+import { loadCommand, resolveCommandAlias } from "./commands/registry";
 import { toCliError } from "./errors";
 import * as log from "./log";
 import { guardVersion } from "./version-guard";
@@ -31,161 +31,37 @@ function failWith(error: unknown): never {
 }
 
 /**
- * Each command parses its own arguments and prints its own help, so hanzio/cli
- * only dispatches: `raw` hands over everything after the command name. A
- * returned number becomes the exit code.
+ * Run `buncargo <args>`. buncargo reads only its first argument as the
+ * command: `--help x` is help and `--json runs` is an unknown command.
  */
-function command(handler: (args: string[]) => Promise<unknown>): Command {
-	return defineCommand({
-		raw: true,
-		run: async (_input, ctx) => {
-			const code = await handler([...ctx.argv]);
-			if (typeof code === "number") process.exitCode = code;
-		},
-	});
-}
+async function dispatch(args: readonly string[]): Promise<number> {
+	const [first = "help", ...rest] = args;
+	const name = HELP_ALIASES.has(first)
+		? "help"
+		: VERSION_ALIASES.has(first)
+			? "version"
+			: first;
+	const command = loadCommand(name);
+	if (command) return runCommand(await command, name === first ? rest : []);
 
-/** A name that is no command may be an integration's namespace (`buncargo shopify env`). */
-async function runUnknown(name: string, args: string[]): Promise<number> {
-	const alias = (await import("./commands/registry")).resolveCommandAlias(name);
+	const alias = resolveCommandAlias(first);
 	if (alias) {
 		log.hint(
-			`\`buncargo ${name}\` is \`buncargo ${alias}\`; use \`buncargo ${alias}\`.`,
+			`\`buncargo ${first}\` is \`buncargo ${alias}\`; use \`buncargo ${alias}\`.`,
 		);
-		return cli.run([alias, ...args]);
+		return dispatch([alias, ...rest]);
 	}
-	const code = await (
-		await import("./integration-commands")
-	).runIntegrationCommand(name, args);
+	// A name that is no command may be an integration's namespace (`buncargo shopify env`).
+	const code = first.startsWith("-")
+		? undefined
+		: await (
+				await import("./integration-commands")
+			).runIntegrationCommand(first, rest);
 	if (code !== undefined) return code;
-	log.fail(`Unknown command: ${name}`, [
+	log.fail(`Unknown command: ${first}`, [
 		'Run "bunx buncargo help" for available commands.',
 	]);
 }
-
-/** Exit now on failure: these codes mean something to a caller. */
-function exitOnFailure(code: number): void {
-	if (code !== 0) process.exit(code);
-}
-
-const COMMANDS = {
-	connect: command(async (args) =>
-		(await import("./commands/connect")).handleConnect(args),
-	),
-	exec: command(async (args) =>
-		(await import("./commands/exec")).handleExec(args),
-	),
-	slot: command(async (args) =>
-		(await import("./commands/slot")).handleSlot(args),
-	),
-	check: command(async (args) =>
-		(await import("./commands/check/index")).handleCheck(args),
-	),
-	predeploy: command(async (args) =>
-		(await import("./commands/predeploy")).handlePredeploy(args),
-	),
-	run: command(async (args) =>
-		(await import("./commands/run")).handleRun(args),
-	),
-	ci: command(async (args) => (await import("./commands/ci")).handleCi(args)),
-	wait: command(async (args) =>
-		(await import("./commands/wait")).handleWait(args),
-	),
-	url: command(async (args) =>
-		(await import("./commands/open")).handleUrl(args),
-	),
-	open: command(async (args) =>
-		(await import("./commands/open")).handleOpen(args),
-	),
-	generate: command(async (args) =>
-		(await import("./commands/generate")).handleGenerate(args),
-	),
-	build: command(async (args) =>
-		(await import("./commands/build")).handleBuild(args),
-	),
-	files: command(async (args) =>
-		(await import("./commands/files")).handleFiles(args),
-	),
-	secrets: command(async (args) =>
-		(await import("./commands/secrets")).handleSecrets(args),
-	),
-	setup: command(async (args) =>
-		(await import("./commands/setup")).handleSetup(args),
-	),
-	help: command(async (args) => {
-		if (args[0] === "agents") {
-			console.log((await import("./agents-guide")).agentsGuide(args[1]));
-		} else {
-			await (await import("./commands/help")).showHelp();
-		}
-		process.exit(0);
-	}),
-	version: command(async () => {
-		(await import("./commands/version")).showVersion();
-		process.exit(0);
-	}),
-	dev: command(async (args) =>
-		(await import("./commands/runtime")).handleDev(args),
-	),
-	typecheck: command(async (args) =>
-		(await import("./commands/runtime")).handleTypecheck(args),
-	),
-	prisma: command(async (args) =>
-		(await import("./commands/runtime")).handlePrisma(args),
-	),
-	env: command(async (args) =>
-		(await import("./commands/runtime")).handleEnv(args),
-	),
-	ls: command(async () => (await import("./commands/inspect")).handleLs()),
-	runs: command(async (args) =>
-		(await import("./commands/runs")).handleRuns(args),
-	),
-	// 2 is "no such target", 3 is "refused"; the menu bar app tells them apart.
-	stop: command(async (args) =>
-		exitOnFailure(await (await import("./commands/stop")).handleStop(args)),
-	),
-	// 3 is "the run takes no restart requests" (a library `start()`).
-	restart: command(async (args) => {
-		const { handleRestart, RESTART_TIMEOUTS } =
-			await import("./commands/restart");
-		return handleRestart(args, RESTART_TIMEOUTS);
-	}),
-	send: command(async (args) =>
-		(await import("./commands/send")).handleSend(args),
-	),
-	ports: command(async (args) =>
-		(await import("./commands/ports")).handlePorts(args),
-	),
-	sql: command(async (args) =>
-		(await import("./commands/sql")).handleSql(args),
-	),
-	logs: command(async (args) =>
-		(await import("./commands/logs")).handleLogs(args),
-	),
-	prune: command(async (args) =>
-		exitOnFailure(await (await import("./commands/prune")).handlePrune(args)),
-	),
-	status: command(async (args) =>
-		(await import("./commands/inspect")).handleStatus(args),
-	),
-	doctor: command(async (args) =>
-		(await import("./commands/inspect")).handleDoctor(args),
-	),
-	hosts: command(async (args) =>
-		(await import("./commands/hosts")).handleHosts(args),
-	),
-	bar: command(async (args) =>
-		(await import("./commands/bar")).handleBar(args),
-	),
-} satisfies Record<CliCommandName, Command>;
-
-const cli = defineCli({
-	name: "buncargo",
-	commands: COMMANDS,
-	defaultCommand: "help",
-	unknownCommand: (name) => command((args) => runUnknown(name, args)),
-	onError: failWith,
-});
 
 async function main(): Promise<void> {
 	// The file locks, process groups and port lookups are POSIX-only, so fail
@@ -202,31 +78,20 @@ async function main(): Promise<void> {
 	const args = process.argv.slice(2);
 	const first = args[0];
 
-	// buncargo reads only its first argument as the command: `--help x` is
-	// help and `--json runs` is an unknown command. hanzio would take leading
-	// flags as globals and look for a command after them.
-	if (first?.startsWith("-")) {
-		if (HELP_ALIASES.has(first)) {
-			await (await import("./commands/help")).showHelp();
-			process.exit(0);
-		}
-		if (VERSION_ALIASES.has(first)) {
-			(await import("./commands/version")).showVersion();
-			process.exit(0);
-		}
-		process.exitCode = await runUnknown(first, args.slice(1));
-		return;
-	}
-
 	// A command in a checkout is the checkout in use: a detached run's idle
 	// limit counts from it (`core/run-activity.ts`). One `utimes`, no fork.
 	const usesCheckout =
-		first !== undefined && first !== "help" && first !== "version";
+		first !== undefined &&
+		!first.startsWith("-") &&
+		first !== "help" &&
+		first !== "version";
 	const root = usesCheckout ? findCheckoutRoot(process.cwd()) : undefined;
 	if (root !== undefined) noteCheckoutCommand(root);
 
-	const code = await cli.run(args);
-	if (code !== 0) process.exitCode = code;
+	const code = await dispatch(args);
+	// Exit now on failure: the code means something to the caller, and a
+	// handle left open must not keep the process alive past it.
+	if (code !== 0) process.exit(code);
 }
 
 main().catch(failWith);

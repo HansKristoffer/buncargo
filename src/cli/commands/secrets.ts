@@ -9,16 +9,9 @@ import {
 } from "../../core/secrets/index";
 import { loadDevEnv } from "../../loader";
 import type { SecretsScopeConfig } from "../../types";
-import {
-	type CommandSpec,
-	type FlagSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readBooleanFlag,
-	readPositionals,
-	readStringFlag,
-} from "../command-spec";
-import { argumentsError, CliError } from "../errors";
+import { BASE_EXITS, defineCommand, defineGroup } from "../command-spec";
+import { CliError } from "../errors";
+import type { SecretsCheckJson } from "../json-documents";
 import * as log from "../log";
 import { configSecretScopes } from "../secrets-scopes";
 
@@ -29,33 +22,6 @@ import { configSecretScopes } from "../secrets-scopes";
  * there is deliberately no command that does: secret values, production
  * credentials among them, stay out of an agent's context.
  */
-
-const FLAGS = {
-	help: {
-		name: "--help",
-		kind: "boolean",
-		description: "Show this help message",
-	},
-	app: {
-		name: "--app",
-		kind: "string",
-		valueHint: "=<name>",
-		description: "This app's scope instead of the config-level one",
-		validate: (value: string) => (value ? undefined : "--app requires a name"),
-	},
-	env: {
-		name: "--env",
-		kind: "string",
-		valueHint: "=<slug>",
-		description: "This Infisical environment",
-		validate: (value: string) => (value ? undefined : "--env requires a slug"),
-	},
-	json: {
-		name: "--json",
-		kind: "boolean",
-		description: "check: one JSON document on stdout",
-	},
-} as const satisfies Record<string, FlagSpec>;
 
 /**
  * `secrets check`'s exit codes, one meaning each. 1 is any failure to run the
@@ -69,55 +35,10 @@ export const SECRETS_CHECK_EXIT = {
 	unreadable: 3,
 } as const;
 
-export const SECRETS_COMMAND_SPEC: CommandSpec = {
-	// One line per subcommand: the `ls` line predates `check` and stays as it was.
-	usage: [
-		"buncargo secrets ls [--app=<name>] [--env=<slug>]",
-		"       buncargo secrets check [--json]",
-	].join("\n"),
-	flags: Object.values(FLAGS),
-	notes: [
-		{
-			command: "ls",
-			description: "Key names and where each comes from, never values",
-		},
-		{
-			command: "check",
-			description:
-				"Whether every scope is readable; exit 2 needs a login, 3 another fix",
-		},
-	],
-};
-
-export async function handleSecrets(args: string[]): Promise<number> {
-	if (readBooleanFlag(args, FLAGS.help)) {
-		console.log(formatCommandHelp(SECRETS_COMMAND_SPEC));
-		return 0;
-	}
-	const errors: string[] = [];
-	const app = readStringFlag(args, FLAGS.app, errors);
-	const environment = readStringFlag(args, FLAGS.env, errors);
-	const json = readBooleanFlag(args, FLAGS.json);
-	const [command, ...extra] = readPositionals(SECRETS_COMMAND_SPEC, args);
-	errors.push(
-		...findUnknownFlags(SECRETS_COMMAND_SPEC, args).map(
-			(flag) => `Unknown flag: ${flag}`,
-		),
-		...extra.map((arg) => `Unexpected argument: ${arg}`),
-	);
-	if (command === "check" && (app !== undefined || environment !== undefined))
-		errors.push("--app and --env apply to secrets ls.");
-	if (command === "ls" && json) errors.push("--json applies to secrets check.");
-	if (command !== "ls" && command !== "check") {
-		errors.push(
-			command
-				? `Unknown secrets command: ${command}`
-				: "buncargo secrets needs a command: ls or check",
-		);
-	}
-	if (errors.length > 0) throw argumentsError(errors, "secrets");
-	if (command === "check") return checkSecrets(json);
-
+async function listSecrets(
+	app: string | undefined,
+	environment: string | undefined,
+): Promise<number> {
 	const env = await loadDevEnv({ readOnly: true });
 	if (app !== undefined && !env.apps[app]) {
 		const names = Object.keys(env.apps);
@@ -167,6 +88,55 @@ export async function handleSecrets(args: string[]): Promise<number> {
 	log.hint("Add them to the Infisical scope above, or export them.");
 	return 1;
 }
+
+const lsCommand = defineCommand({
+	spec: {
+		name: "secrets ls",
+		summary: "Key names and where each comes from, never values",
+		flags: {
+			app: {
+				kind: "string",
+				value: "<name>",
+				description: "This app's scope instead of the config-level one",
+			},
+			env: {
+				kind: "string",
+				value: "<slug>",
+				description: "This Infisical environment",
+			},
+		},
+	},
+	exits: { ...BASE_EXITS, 1: "a required secret is missing, or bad arguments" },
+	run: ({ values }) => listSecrets(values.app, values.env),
+});
+
+const checkCommand = defineCommand({
+	spec: {
+		name: "secrets check",
+		summary: "Whether every Infisical scope the config uses is readable",
+		flags: {
+			json: { kind: "boolean", description: "One JSON document on stdout" },
+		},
+	},
+	exits: {
+		[SECRETS_CHECK_EXIT.ok]: "every scope is readable",
+		1: "the command could not run (arguments, dev.config.ts)",
+		[SECRETS_CHECK_EXIT.login]:
+			"no usable session on a site: run the printed infisical login",
+		[SECRETS_CHECK_EXIT.unreadable]:
+			"signed in, but a scope could not be read (project, environment, access, network)",
+	},
+	json: "SecretsCheckJson (--json)",
+	run: ({ values }) => checkSecrets(values.json),
+});
+
+export const secretsCommand = defineGroup({
+	spec: {
+		name: "secrets",
+		summary: "List Infisical keys and where each comes from (never values)",
+	},
+	subcommands: { ls: lsCommand, check: checkCommand },
+});
 
 /** Where the value the app gets for `key` comes from, or `missing` when it gets none. */
 function secretSource(
@@ -251,7 +221,12 @@ async function checkSecrets(json: boolean): Promise<number> {
 		}));
 		log.line(
 			JSON.stringify(
-				{ ok: code === SECRETS_CHECK_EXIT.ok, exitCode: code, logins, scopes },
+				{
+					ok: code === SECRETS_CHECK_EXIT.ok,
+					exitCode: code,
+					logins,
+					scopes,
+				} satisfies SecretsCheckJson,
 				null,
 				2,
 			),

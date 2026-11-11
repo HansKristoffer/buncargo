@@ -1,7 +1,14 @@
 import { expect, it } from "bun:test";
 import { resolveApps, resolveServices } from "../config/resolve";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
-import { parseDevArgs } from "./dev-flags";
+import { type DevArgs, parseDevArgs } from "./dev-flags";
+
+function dev(argv: string[]): DevArgs {
+	const parsed = parseDevArgs(argv);
+	if (parsed.help) throw new Error("help");
+	return parsed;
+}
+
 import { CliError } from "./errors";
 import { assertConfiguredApps, validateDevStart } from "./validate-dev-start";
 
@@ -22,7 +29,7 @@ it("rejects missing app working directories before startup", () => {
 	expect(() =>
 		validateDevStart(
 			env,
-			parseDevArgs([]),
+			dev([]),
 			resolveApps({
 				web: {
 					port: 3000,
@@ -39,7 +46,7 @@ it("rejects an expose service excluded by the app selection", () => {
 	expect(() =>
 		validateDevStart(
 			env,
-			parseDevArgs(["--apps=web", "--expose=db"]),
+			dev(["--apps=web", "--expose=db"]),
 			resolveApps({ web: { port: 3000, devCommand: "bun dev", expose: true } }),
 			[],
 		),
@@ -50,7 +57,7 @@ it("requires the attached app to have a start command", () => {
 	expect(() =>
 		validateDevStart(
 			env,
-			parseDevArgs(["--attach=web"]),
+			dev(["--attach=web"]),
 			resolveApps({ web: { port: 3000, devCommand: false } }),
 			[],
 		),
@@ -74,7 +81,7 @@ it("says why an expose target is invalid", () => {
 	try {
 		validateDevStart(
 			env,
-			parseDevArgs(["--expose=wbe"]),
+			dev(["--expose=wbe"]),
 			resolveApps({ web: { port: 3000, devCommand: "bun dev", expose: true } }),
 			[],
 		);
@@ -101,7 +108,7 @@ it("refuses --seed when the selection leaves out the seed's services", () => {
 	try {
 		validateDevStart(
 			seeded,
-			parseDevArgs(["--seed", "--apps=web"]),
+			dev(["--seed", "--apps=web"]),
 			resolveApps({ web: { port: 3000, devCommand: "bun dev" } }),
 			[],
 		);
@@ -116,7 +123,7 @@ it("refuses --seed when the selection leaves out the seed's services", () => {
 		"Or select an app that requires it: --apps=api",
 	);
 	expect(() =>
-		validateDevStart(seeded, parseDevArgs(["--seed"]), seeded.apps, ["db"]),
+		validateDevStart(seeded, dev(["--seed"]), seeded.apps, ["db"]),
 	).not.toThrow();
 });
 
@@ -128,17 +135,12 @@ it("refuses --seed without requiredServices when no service is selected", () => 
 			seed: { command: "bun seed", ...seed },
 		}) as unknown as typeof env;
 	expect(() =>
-		validateDevStart(
-			withSeed({}),
-			parseDevArgs(["--seed", "--apps=web"]),
-			web,
-			[],
-		),
+		validateDevStart(withSeed({}), dev(["--seed", "--apps=web"]), web, []),
 	).toThrow("this selection starts none");
 	expect(() =>
 		validateDevStart(
 			withSeed({ requiredServices: [] }),
-			parseDevArgs(["--seed", "--apps=web"]),
+			dev(["--seed", "--apps=web"]),
 			web,
 			[],
 		),

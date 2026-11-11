@@ -8,15 +8,14 @@ import { changedFilesSince } from "../../../typecheck/changed";
 import { loadCheckConfig } from "../../../typecheck/config-settings";
 import type { CheckConfig } from "../../../types";
 import {
-	type CommandSpec,
-	type FlagSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readBooleanFlag,
-	readPositionals,
-	readStringFlag,
+	BASE_EXITS,
+	commaList,
+	defineCommand,
+	defineGroup,
+	type Parsed,
 } from "../../command-spec";
 import { argumentsError, CliError } from "../../errors";
+import type { CheckPlanJson } from "../../json-documents";
 import { bunInstallCommand, pinnedBunVersion } from "./bun-version";
 import {
 	docPathsConfig,
@@ -35,88 +34,6 @@ import {
 } from "./plan";
 import { formatVerdict, stepRerun, stepRunner, verdictFails } from "./runner";
 
-const FLAGS = {
-	help: {
-		name: "--help",
-		kind: "boolean",
-		description: "Show this help message",
-	},
-	staged: {
-		name: "--staged",
-		kind: "boolean",
-		description: "Staged files only: no writes, no tests (pre-commit)",
-	},
-	all: {
-		name: "--all",
-		kind: "boolean",
-		description: "Every file, workspace and gate; no tests (lint)",
-	},
-	base: {
-		name: "--base",
-		kind: "string",
-		valueHint: "=<ref>",
-		description:
-			"Compare with the merge base of <ref> (default: origin's default branch)",
-	},
-	only: {
-		name: "--only",
-		kind: "string",
-		valueHint: "=<steps>",
-		description: "Run only these steps (comma-separated names from --list)",
-	},
-	skip: {
-		name: "--skip",
-		kind: "string",
-		valueHint: "=<steps>",
-		description: "Leave these steps out (comma-separated names from --list)",
-	},
-	list: {
-		name: "--list",
-		kind: "boolean",
-		description: "Print the steps this change would run, and run nothing",
-	},
-	json: {
-		name: "--json",
-		kind: "boolean",
-		description: "With --list: one JSON document on stdout",
-	},
-} as const satisfies Record<string, FlagSpec>;
-
-export const CHECK_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo check [docs] [--staged | --all] [--base=<ref>]",
-	flags: Object.values(FLAGS),
-	notes: [
-		{
-			command: "docs",
-			description:
-				"Only check Markdown links and documented commands, in every doc",
-		},
-	],
-	examples: [
-		{
-			command: "buncargo check",
-			description:
-				"Biome, typecheck, gates and nearby tests for this branch's changes",
-		},
-		{
-			command: "buncargo check --staged",
-			description: "The pre-commit hook: staged files, no writes",
-		},
-		{
-			command: "buncargo check --all",
-			description: "Every check but the tests, e.g. as `bun run lint`",
-		},
-		{
-			command: "buncargo check --all --list --json",
-			description: "Every step's name and command, e.g. for a CI matrix",
-		},
-		{
-			command: "buncargo check --skip=typecheck",
-			description: "The rest, when the typecheck runs as its own CI job",
-		},
-	],
-};
-
 const BIOME_CONFIGS = ["biome.json", "biome.jsonc"];
 
 function stagedFiles(root: string): string[] {
@@ -129,20 +46,16 @@ function stagedFiles(root: string): string[] {
 	return result.stdout.toString().split("\n").filter(Boolean);
 }
 
-/** A comma-separated `--only`/`--skip` value, checked against the step names. */
-function readStepList(
-	args: string[],
-	flag: FlagSpec,
+/** A comma-separated `--only`/`--skip` value; names are checked against the plan later. */
+function stepList(
+	flag: string,
+	value: string | undefined,
 	errors: string[],
 ): string[] | undefined {
-	const value = readStringFlag(args, flag, errors);
-	if (!readBooleanFlag(args, flag)) return undefined;
-	const names = (value ?? "")
-		.split(",")
-		.map((name) => name.trim())
-		.filter(Boolean);
+	if (value === undefined) return undefined;
+	const names = commaList(value);
 	if (names.length === 0)
-		errors.push(`${flag.name} requires at least one step name.`);
+		errors.push(`--${flag} requires at least one step name.`);
 	return names;
 }
 
@@ -170,7 +83,11 @@ function printPlan(plan: CheckPlan, mode: CheckMode, json: boolean): void {
 	if (json) {
 		console.log(
 			JSON.stringify(
-				{ mode, steps, deferredTests: plan.deferred ?? null },
+				{
+					mode,
+					steps,
+					deferredTests: plan.deferred ?? null,
+				} satisfies CheckPlanJson,
 				null,
 				2,
 			),
@@ -194,52 +111,97 @@ function checkAllDocs(root: string, config: CheckConfig): number {
 	return problems.length > 0 ? 1 : 0;
 }
 
-export async function handleCheck(args: string[]): Promise<number> {
-	if (readBooleanFlag(args, FLAGS.help)) {
-		console.log(formatCommandHelp(CHECK_COMMAND_SPEC));
-		return 0;
-	}
-	const errors: string[] = [];
-	const base = readStringFlag(args, FLAGS.base, errors);
-	const staged = readBooleanFlag(args, FLAGS.staged);
-	const all = readBooleanFlag(args, FLAGS.all);
-	const list = readBooleanFlag(args, FLAGS.list);
-	const json = readBooleanFlag(args, FLAGS.json);
-	const only = readStepList(args, FLAGS.only, errors);
-	const skip = readStepList(args, FLAGS.skip, errors);
-	const positionals = readPositionals(CHECK_COMMAND_SPEC, args);
-	const docsOnly = positionals[0] === "docs";
-	errors.push(
-		...findUnknownFlags(CHECK_COMMAND_SPEC, args).map(
-			(flag) => `Unknown flag: ${flag}`,
-		),
-		...positionals
-			.slice(docsOnly ? 1 : 0)
-			.map((token) => `Unexpected argument: ${token}`),
-	);
-	if (staged && all) errors.push("--staged and --all cannot be combined.");
-	if (base !== undefined && (staged || all))
-		errors.push("--base only applies to the default changed-files mode.");
-	if (json && !list) errors.push("--json only applies to --list.");
-	const stepFlags = list || only !== undefined || skip !== undefined;
-	if (docsOnly && stepFlags)
-		errors.push(
-			"check docs runs one step: --list, --only and --skip do not apply.",
-		);
-	if (errors.length > 0) throw argumentsError(errors, "check");
+const CHECK_SPEC = {
+	name: "check",
+	usage: "check [docs] [options]",
+	summary:
+		"Biome, typecheck, gates and nearby tests for the change in front of you",
+	flags: {
+		staged: {
+			kind: "boolean",
+			description: "Staged files only: no writes, no tests (pre-commit)",
+		},
+		all: {
+			kind: "boolean",
+			description: "Every file, workspace and gate; no tests (lint)",
+		},
+		base: {
+			kind: "string",
+			value: "<ref>",
+			description:
+				"Compare with the merge base of <ref> (default: origin's default branch)",
+		},
+		only: {
+			kind: "string",
+			value: "<steps>",
+			description: "Run only these steps (comma-separated names from --list)",
+		},
+		skip: {
+			kind: "string",
+			value: "<steps>",
+			description: "Leave these steps out (comma-separated names from --list)",
+		},
+		list: {
+			kind: "boolean",
+			description: "Print the steps this change would run, and run nothing",
+		},
+		json: {
+			kind: "boolean",
+			description: "With --list: one JSON document on stdout",
+		},
+	},
+	examples: [
+		{
+			command: "buncargo check",
+			description:
+				"Biome, typecheck, gates and nearby tests for this branch's changes",
+		},
+		{
+			command: "buncargo check --staged",
+			description: "The pre-commit hook: staged files, no writes",
+		},
+		{
+			command: "buncargo check --all",
+			description: "Every check but the tests, e.g. as `bun run lint`",
+		},
+		{
+			command: "buncargo check --all --list --json",
+			description: "Every step's name and command, e.g. for a CI matrix",
+		},
+		{
+			command: "buncargo check --skip=typecheck",
+			description: "The rest, when the typecheck runs as its own CI job",
+		},
+	],
+} as const;
 
-	const root = findMonorepoRoot();
+async function loadConfig(root: string): Promise<CheckConfig> {
 	const settings = await loadCheckConfig(root);
 	if (settings.errors.length > 0)
 		throw new CliError(settings.errors[0] ?? "Invalid check config.", [
 			...settings.errors.slice(1),
 		]);
 	if (settings.warning) console.warn(settings.warning);
-	const config = settings.config ?? {};
+	return settings.config ?? {};
+}
+
+async function check({
+	values: { base, staged, all, list, json, ...values },
+}: Parsed<typeof CHECK_SPEC>): Promise<number> {
+	const errors: string[] = [];
+	const only = stepList("only", values.only, errors);
+	const skip = stepList("skip", values.skip, errors);
+	if (staged && all) errors.push("--staged and --all cannot be combined.");
+	if (base !== undefined && (staged || all))
+		errors.push("--base only applies to the default changed-files mode.");
+	if (json && !list) errors.push("--json only applies to --list.");
+	if (errors.length > 0) throw argumentsError(errors, "check");
+
+	const root = findMonorepoRoot();
+	const config = await loadConfig(root);
 	const stepErrors = unknownStepErrors(config, [only, skip]);
 	if (stepErrors.length > 0) throw argumentsError(stepErrors, "check");
 
-	if (docsOnly) return checkAllDocs(root, config);
 	const mode: CheckMode = all ? "all" : staged ? "staged" : "changed";
 
 	const changed: string[] = typedSwitch(mode, {
@@ -324,3 +286,34 @@ function inlineProblems(
 	console.log(`! ${problem}`);
 	return [];
 }
+
+const changeCommand = defineCommand({
+	spec: CHECK_SPEC,
+	exits: { ...BASE_EXITS, 1: "a step failed, or bad arguments" },
+	json: "CheckPlanJson (--list --json)",
+	run: (parsed) => check(parsed),
+});
+
+export const checkCommand = defineGroup({
+	spec: {
+		name: "check",
+		usage: CHECK_SPEC.usage,
+		summary: CHECK_SPEC.summary,
+	},
+	subcommands: {
+		docs: defineCommand({
+			spec: {
+				name: "check docs",
+				summary:
+					"Only check Markdown links and documented commands, in every doc",
+				flags: {},
+			},
+			exits: { ...BASE_EXITS, 1: "a doc has a problem" },
+			run: async () => {
+				const root = findMonorepoRoot();
+				return checkAllDocs(root, await loadConfig(root));
+			},
+		}),
+	},
+	fallback: changeCommand,
+});

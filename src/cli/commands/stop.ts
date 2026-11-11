@@ -47,9 +47,9 @@ import {
 // Not through `environment/index`: `stop` loads no config, and BuncargoBar's
 // buttons run it.
 import { runsKeepingServices } from "../../environment/run-keep";
-
+import { defineCommand, type Parsed } from "../command-spec";
+import { argumentsError } from "../errors";
 import * as log from "../log";
-import { parseStopArgs, printStopHelp } from "../stop-flags";
 
 /**
  * `buncargo stop` — stop one app, one service, or a whole run.
@@ -64,30 +64,97 @@ import { parseStopArgs, printStopHelp } from "../stop-flags";
  */
 
 /**
- * 0 stopped, or nothing was running · 1 a usage error · 2 a named app or
- * service matched nothing · 3 refused: leave it running.
+ * 0 stopped, or nothing was running · 1 it could not be stopped (a teardown
+ * failed, the runtime did not answer), or bad arguments · 2 a named app or
+ * service matched nothing · 3 refused: left running on purpose, needing a
+ * confirmation or `--force`, or because what it would signal could not be
+ * identified. BuncargoBar offers `--force` on 3 alone.
  */
-export const STOP_EXIT = { ok: 0, usage: 1, notFound: 2, refused: 3 } as const;
+export const STOP_EXIT = { ok: 0, failed: 1, notFound: 2, refused: 3 } as const;
 
-export async function handleStop(args: string[] = []): Promise<number> {
-	const parsed = parseStopArgs(args);
-	if (parsed.help) {
-		printStopHelp();
-		return STOP_EXIT.ok;
-	}
-	if (parsed.unknownFlags.length > 0) {
-		log.error(`Unknown flag(s): ${parsed.unknownFlags.join(", ")}`);
-		printStopHelp();
-		return STOP_EXIT.usage;
-	}
-	for (const problem of parsed.errors) {
-		log.error(problem);
-	}
-	if (parsed.errors.length > 0) return STOP_EXIT.usage;
+const STOP_SPEC = {
+	name: "stop",
+	summary: "Stop one app or service, or a whole run",
+	flags: {
+		root: {
+			kind: "string",
+			value: "<path>",
+			description: "Checkout whose run to act on (default: this one)",
+		},
+		run: {
+			kind: "string",
+			value: "<session>",
+			description:
+				"One run session from buncargo runs (default: matching checkout sessions)",
+		},
+		all: {
+			kind: "boolean",
+			description:
+				"Stop the whole run: dev servers and containers, and an ended run's idle containers",
+		},
+		force: {
+			kind: "boolean",
+			description: "Skip the confirmation for a risky target",
+		},
+	},
+	args: [
+		{
+			name: "<name>",
+			description: "App or service from `buncargo runs`",
+			variadic: true,
+		},
+	],
+	examples: [
+		{
+			command: "bunx buncargo stop",
+			description:
+				"Same as --all: stop this checkout's run (one in another terminal asks first)",
+		},
+		{ command: "bunx buncargo stop api", description: "Stop one dev server" },
+		{
+			command: "bunx buncargo stop postgres",
+			description: "Stop one service's container",
+		},
+		{
+			command: "bunx buncargo stop --all",
+			description: "Stop this checkout's whole run",
+		},
+	],
+} as const;
 
-	const root = parsed.root ?? findMonorepoRoot();
+export const stopCommand = defineCommand({
+	spec: STOP_SPEC,
+	exits: {
+		[STOP_EXIT.ok]: "stopped, or nothing was running",
+		[STOP_EXIT.failed]:
+			"could not stop it (a teardown failed, the runtime did not answer), or bad arguments",
+		[STOP_EXIT.notFound]: "a named app or service matched nothing",
+		[STOP_EXIT.refused]:
+			"refused: left running (needs a confirmation or --force, or its process could not be identified)",
+	},
+	run: (parsed) => stop(parsed),
+});
+
+async function stop({
+	values,
+	positionals: names,
+}: Parsed<typeof STOP_SPEC>): Promise<number> {
+	if (names.length > 0 && values.all)
+		throw argumentsError(
+			["--all stops everything; do not also name targets."],
+			"stop",
+		);
+	// Agents and project docs say `buncargo stop` meaning "stop my run":
+	// that is what a bare stop does. A run in another terminal still asks
+	// (or, without a terminal, refuses and names --force), as --all does.
+	const parsed = {
+		all: values.all || names.length === 0,
+		force: values.force,
+		names,
+	};
+	const root = values.root ?? findMonorepoRoot();
 	const selected = (run: RunEntry) =>
-		!parsed.run || run.sessionId === parsed.run;
+		!values.run || run.sessionId === values.run;
 	const checkout = await findCheckoutRuns(root);
 	const runs = checkout.live.filter(selected);
 	// A finished run's apps are gone, so only its services are targets.
@@ -297,7 +364,7 @@ async function stopReusedApp(
 	});
 	if (!released) {
 		log.error(`Could not free port ${app.port} for ${app.name}.`);
-		return STOP_EXIT.refused;
+		return STOP_EXIT.failed;
 	}
 	log.done(`Stopped ${app.name}`);
 	return STOP_EXIT.ok;
@@ -392,7 +459,7 @@ async function stopServiceUnlocked(
 		return STOP_EXIT.ok;
 	} catch (error) {
 		log.error(`Could not stop ${service.name}: ${getErrorMessage(error)}`);
-		return STOP_EXIT.refused;
+		return STOP_EXIT.failed;
 	}
 }
 
@@ -479,7 +546,7 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 		const ended =
 			held.find((other) => other.sessionId === run.sessionId) ?? run;
 		if (!(await tearDown(run.root, run.projectName, [ended, ...sharing])))
-			return STOP_EXIT.refused;
+			return STOP_EXIT.failed;
 		log.done(`Stopped ${run.projectName}`);
 		return STOP_EXIT.ok;
 	});
@@ -520,7 +587,7 @@ async function stopHeldProject(
 				(run.stacks?.length || run.services.some((s) => s.container)),
 		);
 		if (entries.length === 0) return STOP_EXIT.ok;
-		if (!(await tearDown(root, projectName, entries))) return STOP_EXIT.refused;
+		if (!(await tearDown(root, projectName, entries))) return STOP_EXIT.failed;
 		log.done(`Stopped ${projectName}'s containers, left by a finished run`);
 		return STOP_EXIT.ok;
 	});

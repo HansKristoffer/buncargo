@@ -25,8 +25,104 @@ import { StateFileUnreadableError } from "../../core/registry-file";
 import { readAllRuns, readLiveRuns } from "../../core/run-registry";
 import { describeSwept } from "../../core/watchdog-loop";
 import { loadDevEnv } from "../../loader";
+import { defineCommand } from "../command-spec";
 import * as log from "../log";
-import { parsePruneArgs, printPruneHelp } from "../prune-flags";
+
+/** `7d`, `12h`, `30m` in milliseconds, or undefined when it is none of them. */
+export function parseAge(value: string): number | undefined {
+	const match = /^(\d+)(m|h|d)$/.exec(value.trim());
+	if (!match) return undefined;
+	const unit = { m: 60_000, h: 3_600_000, d: 86_400_000 }[
+		match[2] as "m" | "h" | "d"
+	];
+	const ms = Number(match[1]) * unit;
+	return ms > 0 ? ms : undefined;
+}
+
+interface PruneRequest {
+	dryRun: boolean;
+	yes: boolean;
+	/** `--older-than` in milliseconds. */
+	olderThanMs?: number;
+}
+
+export const pruneCommand = defineCommand({
+	spec: {
+		name: "prune",
+		summary: "Remove volumes whose project is gone (destroys their data)",
+		flags: {
+			"dry-run": {
+				kind: "boolean",
+				description: "List what would be removed and stop",
+			},
+			yes: {
+				kind: "boolean",
+				description: "Skip the confirmation (for scripts)",
+			},
+			"older-than": {
+				kind: "string",
+				value: "<age>",
+				description:
+					"Only volumes of checkouts deleted at least this long ago, e.g. 7d, 12h, 30m",
+				validate: (value: string) =>
+					parseAge(value) === undefined
+						? `--older-than expects an age such as 7d, 12h or 30m, got "${value}".`
+						: undefined,
+			},
+			project: {
+				kind: "boolean",
+				description:
+					"Only this project's leftovers: every checkout's ci stack and every stack of a deleted worktree (containers, volumes, networks)",
+			},
+		},
+		notes: [
+			{
+				command: "",
+				description:
+					"Removes the volumes of checkouts whose directory was deleted, when no container, run or other checkout uses their project. Destroys their data.",
+			},
+		],
+		examples: [
+			{
+				command: "bunx buncargo prune --dry-run",
+				description: "List reclaimable volumes without touching them",
+			},
+			{
+				command: "bunx buncargo prune",
+				description: "Review the list, then confirm removal",
+			},
+			{
+				command: "bunx buncargo prune --older-than=7d --dry-run",
+				description: "Only checkouts deleted a week ago or longer",
+			},
+			{
+				command: "bunx buncargo prune --project --dry-run",
+				description:
+					"List this project's leftover ci and deleted-worktree stacks",
+			},
+		],
+	},
+	exits: {
+		0: "removed, listed (--dry-run), declined, or nothing to remove",
+		1: "a removal failed, offsets.json is unreadable, or bad arguments",
+	},
+	run: ({ values }) => {
+		const olderThan = values["older-than"];
+		const parsed: PruneRequest = {
+			dryRun: values["dry-run"],
+			yes: values.yes,
+			olderThanMs: olderThan === undefined ? undefined : parseAge(olderThan),
+		};
+		if (!values.project) return prune(parsed);
+		if (parsed.olderThanMs !== undefined) {
+			log.error(
+				"--older-than applies to deleted checkouts' volumes, not to --project.",
+			);
+			return 1;
+		}
+		return pruneProject(parsed);
+	},
+});
 
 /**
  * `buncargo prune`: reclaim the volumes of checkouts that were deleted.
@@ -36,31 +132,7 @@ import { parsePruneArgs, printPruneHelp } from "../prune-flags";
  * person has seen the list. `--dry-run` shows it and stops; `--yes` is for a
  * script that has already decided.
  */
-export async function handlePrune(args: string[] = []): Promise<number> {
-	const parsed = parsePruneArgs(args);
-	if (parsed.help) {
-		printPruneHelp();
-		return 0;
-	}
-	if (parsed.unknownFlags.length > 0) {
-		log.error(`Unknown flag(s): ${parsed.unknownFlags.join(", ")}`);
-		printPruneHelp();
-		return 1;
-	}
-	if (parsed.errors.length > 0) {
-		for (const error of parsed.errors) log.error(error);
-		return 1;
-	}
-	if (parsed.project) {
-		if (parsed.olderThanMs !== undefined) {
-			log.error(
-				"--older-than applies to deleted checkouts' volumes, not to --project.",
-			);
-			return 1;
-		}
-		return pruneProject(parsed);
-	}
-
+async function prune(parsed: PruneRequest): Promise<number> {
 	const runtimes = availableContainerRuntimes();
 	if (runtimes.length === 0) {
 		log.info("No container runtime is running. Nothing to prune.");

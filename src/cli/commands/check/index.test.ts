@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { CheckPlanJson } from "../../json-documents";
 
 /**
  * `buncargo check` from the real `bin.ts`, in a throwaway git repository
@@ -75,9 +76,13 @@ describe("check --list", () => {
 			const base = args.includes("--all") ? [] : ["--base=HEAD"];
 			const result = check(root, [...base, "--list", "--json", ...args]);
 			expect(result.exitCode).toBe(0);
-			const plan = JSON.parse(result.stdout) as {
-				steps: { name: string; command: string }[];
-			};
+			const plan = JSON.parse(result.stdout) as CheckPlanJson;
+			// CheckPlanJson: a key may be added, never dropped.
+			expect(Object.keys(plan).sort()).toEqual([
+				"deferredTests",
+				"mode",
+				"steps",
+			]);
 			return plan.steps.map((step) => step.name);
 		};
 

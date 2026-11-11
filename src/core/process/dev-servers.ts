@@ -420,7 +420,9 @@ export async function startDevServers(
 	// A replaced app is ready again the way it was the first time: checked
 	// on the side, so a failing restart never stalls the others.
 	const restartApp = async (name: string, reason?: string) => {
-		if (await supervisor.restart(name, reason)) checkOnTheSide(name, true);
+		const replaced = await supervisor.restart(name, reason);
+		if (replaced) checkOnTheSide(name, true);
+		return replaced;
 	};
 	output.controls = { restart: (name) => restartApp(name, "requested") };
 
@@ -430,7 +432,9 @@ export async function startDevServers(
 			output.capture(app, captured);
 			return onCapture?.(app, captured) ?? [];
 		},
-		restart: (name) => restartApp(name),
+		restart: async (name) => {
+			await restartApp(name);
+		},
 	});
 
 	/** Spared if it goes down now: `essential: false`, on probation, or parked. */

@@ -1,13 +1,8 @@
 import { constants } from "node:os";
 import { formatCheckSlotWait, withCheckSlot } from "../../core/check-slots";
 import { childProcessEnv } from "../../core/child-env";
-import {
-	type CommandSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readBooleanFlag,
-	readPositionals,
-} from "../command-spec";
+import { BASE_EXITS, defineCommand } from "../command-spec";
+import { argumentsError } from "../errors";
 
 /**
  * `buncargo slot -- <command>`: run a command inside one of the machine-wide
@@ -19,68 +14,14 @@ import {
  * need no checkout environment take their slot here.
  */
 
-const FLAGS = {
-	help: {
-		name: "--help",
-		kind: "boolean",
-		description: "Show this help message",
-	},
-} as const;
-
-export const SLOT_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo slot -- <command> [args...]",
-	flags: Object.values(FLAGS),
-	notes: [
-		{
-			command: "--",
-			description:
-				"Required separator; following arguments are passed unchanged",
-		},
-	],
-	examples: [
-		{
-			command: "bunx buncargo slot -- bun test",
-			description:
-				"Run a test suite once a slot is free, with the shell's own environment",
-		},
-	],
-};
-
-export function parseSlotArgs(args: string[]) {
-	// Only the prefix belongs to buncargo; child argv is never parsed.
-	const separator = args.indexOf("--");
-	const optionArgs = separator < 0 ? args : args.slice(0, separator);
-	const command = separator < 0 ? [] : args.slice(separator + 1);
-	const help = readBooleanFlag(optionArgs, FLAGS.help);
-
-	const errors = [
-		...findUnknownFlags(SLOT_COMMAND_SPEC, optionArgs).map(
-			(flag) => `Unknown flag: ${flag}`,
-		),
-		...readPositionals(SLOT_COMMAND_SPEC, optionArgs).map(
-			(token) => `Unexpected argument before --: ${token}`,
-		),
-	];
-	if (!help && command.length === 0) errors.push("Provide a command after --");
-
-	return { help, command, errors };
-}
-
-export async function handleSlot(args: string[]): Promise<number> {
-	const parsed = parseSlotArgs(args);
-	if (parsed.help) {
-		console.log(formatCommandHelp(SLOT_COMMAND_SPEC));
-		return 0;
-	}
-	if (parsed.errors.length > 0) throw new Error(parsed.errors.join("\n"));
-
+async function runInSlot(command: string[]): Promise<number> {
 	return withCheckSlot(
-		parsed.command.join(" ").slice(0, 60),
+		command.join(" ").slice(0, 60),
 		async () => {
 			// The shell's environment, plus BUNCARGO_CHECK_SLOT so a buncargo
 			// typecheck inside does not wait for a second slot, minus the
 			// connect tokens no project process gets.
-			const child = Bun.spawn(parsed.command, {
+			const child = Bun.spawn(command, {
 				stdio: ["inherit", "inherit", "inherit"],
 				env: childProcessEnv(),
 			});
@@ -103,3 +44,30 @@ export async function handleSlot(args: string[]): Promise<number> {
 		},
 	);
 }
+
+export const slotCommand = defineCommand({
+	spec: {
+		name: "slot",
+		usage: "slot -- <command> [args...]",
+		summary:
+			"Run a heavy command in a machine-wide check slot, environment untouched",
+		flags: {},
+		passthrough: "Required: the command; following arguments pass unchanged",
+		examples: [
+			{
+				command: "bunx buncargo slot -- bun test",
+				description:
+					"Run a test suite once a slot is free, with the shell's own environment",
+			},
+		],
+	},
+	exits: {
+		...BASE_EXITS,
+		1: "bad arguments; otherwise the command's own code (128 + N for a signal)",
+	},
+	run: ({ passthrough }) => {
+		if (passthrough.length === 0)
+			throw argumentsError(["Provide a command after --"], "slot");
+		return runInSlot([...passthrough]);
+	},
+});

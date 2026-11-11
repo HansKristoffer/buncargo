@@ -9,8 +9,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { handleStop, stopService } from "../cli/commands/stop";
-import { parseStopArgs } from "../cli/stop-flags";
+import { parseArgs, runCommand } from "../cli/command-spec";
+import { stopCommand, stopService } from "../cli/commands/stop";
+
+const handleStop = (args: string[]) => runCommand(stopCommand, args);
+
 import { resolveApps, resolveServices } from "../config/resolve";
 import * as identities from "./process-identity";
 import { readProcessIdentity } from "./process-identity";
@@ -262,8 +265,8 @@ describe("published run ownership", () => {
 	});
 	it("parses session selection without treating the id as a target", () => {
 		expect(
-			parseStopArgs(["web", "--root", root, "--run", "abc"]),
-		).toMatchObject({ names: ["web"], run: "abc", errors: [] });
+			parseArgs(stopCommand.spec, ["web", "--root", root, "--run", "abc"]),
+		).toMatchObject({ positionals: ["web"], values: { run: "abc" } });
 	});
 	it("refuses a mismatched recorded app pid identity before signalling", async () => {
 		const run = await publishCurrentRun(source("session-b"), {

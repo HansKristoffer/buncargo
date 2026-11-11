@@ -2,32 +2,11 @@ import { ensureSecretsSession } from "../../core/secrets/index";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
 import { loadDevEnv } from "../../loader";
 import type { AnyDevEnvironment, TaskConfig } from "../../types";
-import {
-	type CommandSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readPositionals,
-} from "../command-spec";
+import { BASE_EXITS, defineCommand } from "../command-spec";
 import { CliError } from "../errors";
-import { splitCliArgs } from "../flags";
 import * as log from "../log";
 import { commandSecretScopes } from "../secrets-scopes";
 import { runForwardingSignals, withAppendedArgs } from "./exec";
-
-export const RUN_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo run [<task>] [-- args...]",
-	flags: [
-		{ name: "--help", kind: "boolean", description: "Show this help message" },
-	],
-	notes: [
-		{ command: "<task>", description: "A key of tasks in dev.config.ts" },
-		{ command: "--", description: "Following arguments go to the command" },
-	],
-	examples: [
-		{ command: "buncargo run", description: "List the configured tasks" },
-		{ command: "buncargo run shop:seed", description: "Run one task" },
-	],
-};
 
 /** One row per task, for `buncargo run` and `buncargo help`. */
 export function formatTaskRows(
@@ -41,25 +20,10 @@ export function formatTaskRows(
 	);
 }
 
-export async function handleRun(args: string[]): Promise<number> {
-	const { flags, passthrough } = splitCliArgs(args);
-	if (flags.includes("--help")) {
-		console.log(formatCommandHelp(RUN_COMMAND_SPEC));
-		return 0;
-	}
-
-	const unknown = findUnknownFlags(RUN_COMMAND_SPEC, flags);
-	const positionals = readPositionals(RUN_COMMAND_SPEC, flags);
-	if (unknown.length > 0 || positionals.length > 1) {
-		throw new CliError(
-			unknown.length > 0
-				? `Unknown flag: ${unknown.join(", ")}`
-				: `Expected one task name, got: ${positionals.join(" ")}`,
-			['Pass arguments for the task after "--".'],
-		);
-	}
-
-	const [name] = positionals;
+async function runNamedTask(
+	name: string | undefined,
+	passthrough: readonly string[],
+): Promise<number> {
 	const env = await loadDevEnv({ readOnly: true });
 	const tasks = env.tasks ?? {};
 
@@ -128,3 +92,23 @@ async function runTask(
 		);
 	});
 }
+
+export const runTaskCommand = defineCommand({
+	spec: {
+		name: "run",
+		summary: "Run a task from dev.config.ts (lists them without a name)",
+		flags: {},
+		args: [{ name: "<task>", description: "A key of tasks in dev.config.ts" }],
+		passthrough: "Arguments appended to the task's command",
+		examples: [
+			{ command: "buncargo run", description: "List the configured tasks" },
+			{ command: "buncargo run shop:seed", description: "Run one task" },
+		],
+	},
+	exits: {
+		...BASE_EXITS,
+		1: "bad arguments or task; otherwise the task's own code",
+	},
+	run: ({ positionals: [name], passthrough }) =>
+		runNamedTask(name, passthrough),
+});

@@ -6,74 +6,8 @@ import { isSessionLogDir, listRunLogDirs } from "../../core/process/app-logs";
 import { createErrorFilter } from "../../core/process/run-output";
 import { findRunsByRoot, type RunEntry } from "../../core/run-registry";
 import { colorizeName } from "../../core/style";
-import {
-	type CommandSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readBooleanFlag,
-	readPositionals,
-	readStringFlag,
-	unknownFlagMessage,
-} from "../command-spec";
-import { argumentsError, CliError } from "../errors";
-
-const FLAGS = {
-	help: {
-		name: "--help",
-		kind: "boolean",
-		description: "Show this help message",
-	},
-	follow: {
-		name: "--follow",
-		kind: "boolean",
-		description: "Keep printing new lines (-f)",
-	},
-	since: {
-		name: "--since",
-		kind: "string",
-		valueHint: "=<5m>",
-		description: "Only lines newer than this (s, m, h)",
-		validate: (value: string) =>
-			parseDuration(value) === undefined
-				? `--since expects a duration like 30s, 5m or 2h, got "${value}".`
-				: undefined,
-	},
-	errors: {
-		name: "--errors",
-		kind: "boolean",
-		description: "Only lines that read as errors",
-	},
-	root: {
-		name: "--root",
-		kind: "string",
-		valueHint: "=<path>",
-		description: "Checkout whose logs to read (default: this one)",
-	},
-	run: {
-		name: "--run",
-		kind: "string",
-		valueHint: "=<sessionId>",
-		description:
-			"The run whose logs to read (default: the live run of <app>, else the newest)",
-	},
-} as const;
-
-export const LOGS_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo logs [<app>] [options]",
-	flags: Object.values(FLAGS),
-	examples: [
-		{ command: "buncargo logs", description: "Every app, interleaved" },
-		{
-			command: "buncargo logs shopify --errors",
-			description: "What went wrong in one app",
-		},
-		{ command: "buncargo logs api -f --since=5m", description: "Tail one app" },
-		{
-			command: "buncargo logs --run=<sessionId>",
-			description: "One run's apps, by the id `buncargo runs` prints",
-		},
-	],
-};
+import { BASE_EXITS, defineCommand } from "../command-spec";
+import { CliError } from "../errors";
 
 function parseDuration(value: string): number | undefined {
 	const match = /^(\d+)(s|m|h)$/.exec(value.trim());
@@ -106,25 +40,15 @@ function readLines(file: string, app: string, offset = 0): LogLine[] {
  * `buncargo logs`: app output from `.buncargo/logs`, for the current run or
  * the last one. What agents read, and what is left once the terminal scrolled.
  */
-export async function handleLogs(rawArgs: string[]): Promise<number> {
-	const args = rawArgs.map((arg) => (arg === "-f" ? FLAGS.follow.name : arg));
-	if (readBooleanFlag(args, FLAGS.help)) {
-		console.log(formatCommandHelp(LOGS_COMMAND_SPEC));
-		return 0;
-	}
-	const problems: string[] = [];
-	const since = readStringFlag(args, FLAGS.since, problems);
-	const sessionId = readStringFlag(args, FLAGS.run, problems);
-	const root = readStringFlag(args, FLAGS.root, problems) ?? findMonorepoRoot();
-	const [app, ...extra] = readPositionals(LOGS_COMMAND_SPEC, args);
-	problems.push(
-		...findUnknownFlags(LOGS_COMMAND_SPEC, args).map((flag) =>
-			unknownFlagMessage(LOGS_COMMAND_SPEC, flag),
-		),
-		...extra.map((arg) => `Unexpected argument: ${arg}`),
-	);
-	if (problems.length > 0) throw argumentsError(problems, "logs");
-
+async function readLogs(input: {
+	root: string;
+	app: string | undefined;
+	sessionId: string | undefined;
+	since: string | undefined;
+	errorsOnly: boolean;
+	follow: boolean;
+}): Promise<number> {
+	const { root, app, sessionId, since, errorsOnly } = input;
 	const runs = await findRunsByRoot(root).catch((): RunEntry[] => []);
 	const dir = pickRunLogDir(listRunLogDirs(root), runs, { app, sessionId });
 	if (!dir) {
@@ -143,7 +67,6 @@ export async function handleLogs(rawArgs: string[]): Promise<number> {
 		since === undefined
 			? undefined
 			: new Date(Date.now() - (parseDuration(since) ?? 0)).toISOString();
-	const errorsOnly = readBooleanFlag(args, FLAGS.errors);
 	// One filter per app: an error's structured block follows it in its own
 	// file, and the apps' lines are merged only after.
 	const errorFilters = new Map<string, (text: string) => boolean>();
@@ -179,7 +102,7 @@ export async function handleLogs(rawArgs: string[]): Promise<number> {
 		.sort((a, b) => a.time.localeCompare(b.time)))
 		print(line);
 
-	if (!readBooleanFlag(args, FLAGS.follow)) return 0;
+	if (!input.follow) return 0;
 	let checkedAt = Date.now();
 	for (;;) {
 		await promiseTimeout(FOLLOW_POLL_MS);
@@ -245,3 +168,69 @@ function readdirApps(dir: string): string[] {
 		.filter((name) => name.endsWith(".log"))
 		.map((name) => basename(name, ".log"));
 }
+
+export const logsCommand = defineCommand({
+	spec: {
+		name: "logs",
+		summary: "Read app output from the current or last run",
+		flags: {
+			follow: {
+				kind: "boolean",
+				short: "f",
+				description: "Keep printing new lines until the run ends",
+			},
+			since: {
+				kind: "string",
+				value: "<5m>",
+				description: "Only lines newer than this (s, m, h)",
+				validate: (value: string) =>
+					parseDuration(value) === undefined
+						? `--since expects a duration like 30s, 5m or 2h, got "${value}".`
+						: undefined,
+			},
+			errors: {
+				kind: "boolean",
+				description: "Only lines that read as errors",
+			},
+			root: {
+				kind: "string",
+				value: "<path>",
+				description: "Checkout whose logs to read (default: this one)",
+			},
+			run: {
+				kind: "string",
+				value: "<sessionId>",
+				description:
+					"The run whose logs to read (default: the live run of <app>, else the newest)",
+			},
+		},
+		args: [
+			{ name: "<app>", description: "One app's output (default: every app)" },
+		],
+		examples: [
+			{ command: "buncargo logs", description: "Every app, interleaved" },
+			{
+				command: "buncargo logs shopify --errors",
+				description: "What went wrong in one app",
+			},
+			{
+				command: "buncargo logs api -f --since=5m",
+				description: "Tail one app",
+			},
+			{
+				command: "buncargo logs --run=<sessionId>",
+				description: "One run's apps, by the id `buncargo runs` prints",
+			},
+		],
+	},
+	exits: BASE_EXITS,
+	run: ({ values, positionals: [app] }) =>
+		readLogs({
+			root: values.root ?? findMonorepoRoot(),
+			app,
+			sessionId: values.run,
+			since: values.since,
+			errorsOnly: values.errors,
+			follow: values.follow,
+		}),
+});

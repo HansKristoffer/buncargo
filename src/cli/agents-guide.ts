@@ -82,7 +82,10 @@ const TOPICS: readonly Topic[] = [
   seed or a step), shows its last 20 lines and the setup checks that warned,
   and says what to run next: \`dev --detach; echo $?\` shows it with the
   exit code. Do not run \`dev\` again to find the cause.
-- \`bunx buncargo dev --detach --apps=api\` starts only some apps (and the apps
+  \`dev --detach --json\` prints the same as one JSON document: \`outcome\`,
+  \`apps\` with their URLs, \`failures\`, and \`hostsWarnings\` when named
+  URLs fell back to \`localhost:port\`.
+- \`bunx buncargo dev --detach api\` starts only some apps (and the apps
   they require). \`--profile=<name>\` picks a configured set.
   \`bunx buncargo dev --up-only\` starts the services alone and returns once
   they are up (no \`--detach\`).
@@ -91,17 +94,19 @@ const TOPICS: readonly Topic[] = [
   out its idle hold. A run someone started
   in a terminal (not with \`--detach\`) asks first, and without a terminal needs
   \`--force\`: only stop that one when the user asked.
-  Exit 3 means something was left running; nothing running exits 0, and a
-  mistyped flag 1.
-  A container runtime that refuses this user or does not answer may still
-  run the containers, so \`stop\` exits 3 and \`dev --down\` exits 1 rather
-  than reporting nothing to stop: once \`docker version\` answers, stop again.
+  Exit 3 means it was left running on purpose; nothing running exits 0, and
+  a mistyped flag 1. Exit 1 also means it could not stop it: a container
+  runtime that refuses this user or does not answer may still run the
+  containers, so \`stop\` and \`dev --down\` exit 1 rather than reporting
+  nothing to stop. Once \`docker version\` answers, stop again.
   \`dev --down\` and a script's \`stop()\` keep services another live run
   of the checkout uses; \`stop --all\` stops that run first.
   \`bunx buncargo stop <app>\` stops one app and \`bunx buncargo restart <app>\`
   restarts one; \`restart <app> && wait --app=<app>\` waits for the new process.
-  \`restart\` exits 3 when the run is a script's \`start()\`, which takes no
-  restart requests: nothing was restarted.
+  \`restart\` returns once the run answers: 1 when the new process could not
+  start (it says why), 2 when no run started the app, 3 when the run refused
+  (a script's \`start()\` takes no requests, or the app runs in another
+  terminal): nothing was restarted.
 - Stopping can take as long as an app's \`stopGraceMs\`: up to a minute for
   an app that saves data as it exits, such as the Firebase emulators. Let it
   finish; killing it loses that data.
@@ -415,27 +420,41 @@ const TOPICS: readonly Topic[] = [
 	},
 ];
 
+/**
+ * The topic built from the command specs (`formatExitCodeTable`), which the
+ * caller passes in: this module loads no command.
+ */
+const EXITS_TOPIC = "exits";
+
 /** The core, naming its topics. */
 export const AGENTS_GUIDE = CORE.replace(
 	"TOPICS",
-	TOPICS.map((topic) => topic.name).join(", "),
+	[...TOPICS.map((topic) => topic.name), EXITS_TOPIC].join(", "),
 );
 
 export const AGENTS_GUIDE_TOPICS: readonly string[] = TOPICS.map(
 	(topic) => topic.name,
 );
 
-/** `help agents [topic]`: the core, one topic, or `all` of it. */
-export function agentsGuide(topic?: string): string {
+/**
+ * `help agents [topic]`: the core, one topic, or `all` of it. `exitCodes` is
+ * the `exits` topic, needed for it and for `all`.
+ */
+export function agentsGuide(topic?: string, exitCodes?: string): string {
 	if (topic === undefined) return AGENTS_GUIDE;
 	if (topic === "all")
-		return [AGENTS_GUIDE, ...TOPICS.map((entry) => entry.body)].join("\n\n");
+		return [
+			AGENTS_GUIDE,
+			...TOPICS.map((entry) => entry.body),
+			...(exitCodes ? [exitCodes] : []),
+		].join("\n\n");
+	if (topic === EXITS_TOPIC && exitCodes) return exitCodes;
 	const found = TOPICS.find(
 		(entry) => entry.name === topic || entry.aliases?.includes(topic),
 	);
 	if (!found)
 		throw new CliError(`No agents guide topic named "${topic}".`, [
-			`Topics: ${[...AGENTS_GUIDE_TOPICS, "all"].join(", ")}.`,
+			`Topics: ${[...AGENTS_GUIDE_TOPICS, EXITS_TOPIC, "all"].join(", ")}.`,
 		]);
 	return found.body;
 }

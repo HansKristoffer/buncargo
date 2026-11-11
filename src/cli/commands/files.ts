@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
-import { getErrorMessage, isOneOf, typedSwitch } from "hanzio";
+import { getErrorMessage } from "hanzio";
 import {
 	type CheckoutFileSpec,
 	checkoutFileErrors,
@@ -29,109 +29,20 @@ import { findMonorepoRoot } from "../../core/ports";
 import { askChoice, isInteractive } from "../../core/prompt";
 import { findConfigFile } from "../../loader";
 import {
-	type CommandSpec,
-	type FlagSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readBooleanFlag,
-	readPositionals,
-	readStringFlag,
+	BASE_EXITS,
+	commaList,
+	defineCommand,
+	defineGroup,
 } from "../command-spec";
 import { checkoutFileProblem } from "../core-checks";
 import { argumentsError, CliError } from "../errors";
+import type { FilesStatusJson } from "../json-documents";
 import * as log from "../log";
 
 /**
  * `buncargo files`: the checkout's copies of `options.checkoutFiles` and this
  * machine's file store. Prints paths, states and key names, never values.
  */
-
-const FLAGS = {
-	help: {
-		name: "--help",
-		kind: "boolean",
-		description: "Show this help message",
-	},
-	json: {
-		name: "--json",
-		kind: "boolean",
-		description: "status: machine-readable output",
-	},
-	force: {
-		name: "--force",
-		kind: "boolean",
-		description:
-			"pull: replace local edits, backed up to .buncargo/files-backup/",
-	},
-	checkout: {
-		name: "--checkout",
-		kind: "string",
-		valueHint: "=<KEY,...>",
-		description: "merge: keep this checkout's value of these conflicting keys",
-	},
-	store: {
-		name: "--store",
-		kind: "string",
-		valueHint: "=<KEY,...>",
-		description: "merge: take the file store's value of these conflicting keys",
-	},
-	includeMachine: {
-		name: "--include-machine",
-		kind: "boolean",
-		description: "export: include machine: true files",
-	},
-} as const satisfies Record<string, FlagSpec>;
-
-export const FILES_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo files <command> [path...]",
-	flags: Object.values(FLAGS),
-	notes: [
-		{ command: "status [--json]", description: "Each file's state" },
-		{
-			command: "save [path...]",
-			description: "Checkout → file store, so other checkouts get it",
-		},
-		{
-			command: "pull [path...] [--force]",
-			description:
-				"File store → checkout; never over local edits without --force",
-		},
-		{
-			command: "merge <path>",
-			description:
-				"Merge a dotenv file's local edits and the store's changes key by key",
-		},
-		{
-			command: "diff [path]",
-			description: "Keys added, removed and changed, never values",
-		},
-		{
-			command: "export [--include-machine]",
-			description: "The file store as a bundle on stdout",
-		},
-		{
-			command: "import [-|file]",
-			description: "Write a bundle into the file store",
-		},
-	],
-	examples: [
-		{
-			command:
-				"buncargo files export | ssh box 'cd app && bunx buncargo files import'",
-			description: "Copy them to another machine",
-		},
-	],
-};
-
-const SUBCOMMANDS = [
-	"status",
-	"save",
-	"pull",
-	"merge",
-	"diff",
-	"export",
-	"import",
-] as const;
 
 /** `options.checkoutFiles` from the config module, without building an environment. */
 async function loadCheckoutFiles(): Promise<{
@@ -169,63 +80,203 @@ const STATE_LABELS = {
 	missing: "missing",
 } as const;
 
-export async function handleFiles(args: string[]): Promise<number> {
-	if (readBooleanFlag(args, FLAGS.help)) {
-		console.log(formatCommandHelp(FILES_COMMAND_SPEC));
-		return 0;
-	}
-	const [command, ...paths] = readPositionals(FILES_COMMAND_SPEC, args);
-	const errors = findUnknownFlags(FILES_COMMAND_SPEC, args).map(
-		(flag) => `Unknown flag: ${flag}`,
-	);
-	if (!command || !isOneOf(SUBCOMMANDS, command))
-		errors.push(
-			command
-				? `Unknown files command: ${command}`
-				: `buncargo files needs a command: ${SUBCOMMANDS.join(" | ")}`,
-		);
-	if (
-		(command === "diff" || command === "import" || command === "merge") &&
-		paths.length > 1
-	)
-		errors.push(`Unexpected argument: ${paths[1]}`);
-	if (command === "merge" && paths.length === 0)
-		errors.push("buncargo files merge needs a path, e.g. .env.local");
-	const take = new Map<string, MergeSide>();
-	for (const side of ["checkout", "store"] as const)
-		for (const key of (readStringFlag(args, FLAGS[side], errors) ?? "")
-			.split(",")
-			.map((key) => key.trim())
-			.filter(Boolean)) {
-			if (take.has(key) && take.get(key) !== side)
-				errors.push(`${key} is in both --checkout and --store.`);
-			take.set(key, side);
-		}
-	if ((command === "status" || command === "export") && paths.length > 0)
-		errors.push(`Unexpected argument: ${paths[0]}`);
-	// An unknown command has already added an error; the check narrows it.
-	if (errors.length > 0 || !isOneOf(SUBCOMMANDS, command))
-		throw argumentsError(errors, "files");
-
+/** Run `use` on the checkout's files, any failure reported as a `CliError`. */
+async function withCheckoutFiles(
+	use: (root: string, specs: CheckoutFileSpec[]) => Promise<number> | number,
+): Promise<number> {
 	const { root, specs } = await loadCheckoutFiles();
-	const selected = paths.length > 0 && command !== "import" ? paths : undefined;
 	try {
-		return await typedSwitch(command, {
-			status: () => status(root, specs, readBooleanFlag(args, FLAGS.json)),
-			save: () => save(root, specs, selected),
-			pull: () =>
-				pull(root, specs, selected, readBooleanFlag(args, FLAGS.force)),
-			merge: () => merge(root, specs, paths[0] ?? "", take),
-			diff: () => diff(root, specs, selected),
-			export: () =>
-				exportFiles(root, specs, readBooleanFlag(args, FLAGS.includeMachine)),
-			import: () => importFiles(root, specs, paths[0]),
-		});
+		return await use(root, specs);
 	} catch (error) {
 		if (error instanceof CliError) throw error;
 		throw new CliError(getErrorMessage(error));
 	}
 }
+
+/** `--checkout` and `--store`: which side each conflicting key takes. */
+function mergeAnswers(
+	checkout: string | undefined,
+	store: string | undefined,
+): Map<string, MergeSide> {
+	const errors: string[] = [];
+	const take = new Map<string, MergeSide>();
+	for (const [side, keys] of [
+		["checkout", checkout],
+		["store", store],
+	] as const)
+		for (const key of commaList(keys ?? "")) {
+			if (take.has(key) && take.get(key) !== side)
+				errors.push(`${key} is in both --checkout and --store.`);
+			take.set(key, side);
+		}
+	if (errors.length > 0) throw argumentsError(errors, "files merge");
+	return take;
+}
+
+const PATHS_ARG = {
+	name: "<path>",
+	description: "Only these checkout files (default: every one)",
+	variadic: true,
+} as const;
+
+const statusCommand = defineCommand({
+	spec: {
+		name: "files status",
+		summary: "Each file's state",
+		flags: {
+			json: { kind: "boolean", description: "Machine-readable output" },
+		},
+	},
+	exits: BASE_EXITS,
+	json: "FilesStatusJson (--json)",
+	run: ({ values }) =>
+		withCheckoutFiles((root, specs) => status(root, specs, values.json)),
+});
+
+const saveCommand = defineCommand({
+	spec: {
+		name: "files save",
+		summary: "Checkout → file store, so other checkouts get it",
+		flags: {},
+		args: [PATHS_ARG],
+	},
+	exits: { ...BASE_EXITS, 1: "a file could not be saved, or bad arguments" },
+	run: ({ positionals }) =>
+		withCheckoutFiles((root, specs) =>
+			save(root, specs, positionals.length > 0 ? positionals : undefined),
+		),
+});
+
+const pullCommand = defineCommand({
+	spec: {
+		name: "files pull",
+		summary: "File store → checkout; never over local edits without --force",
+		flags: {
+			force: {
+				kind: "boolean",
+				description:
+					"Replace local edits, backed up to .buncargo/files-backup/",
+			},
+		},
+		args: [PATHS_ARG],
+	},
+	exits: {
+		...BASE_EXITS,
+		1: "a file does not match the store afterwards, or bad arguments",
+	},
+	run: ({ values, positionals }) =>
+		withCheckoutFiles((root, specs) =>
+			pull(
+				root,
+				specs,
+				positionals.length > 0 ? positionals : undefined,
+				values.force,
+			),
+		),
+});
+
+const mergeCommand = defineCommand({
+	spec: {
+		name: "files merge",
+		summary:
+			"Merge a dotenv file's local edits and the store's changes key by key",
+		flags: {
+			checkout: {
+				kind: "string",
+				value: "<KEY,...>",
+				description: "Keep this checkout's value of these conflicting keys",
+			},
+			store: {
+				kind: "string",
+				value: "<KEY,...>",
+				description: "Take the file store's value of these conflicting keys",
+			},
+		},
+		args: [
+			{
+				name: "<path>",
+				description: "The checkout file, e.g. .env.local",
+				required: true,
+			},
+		],
+	},
+	exits: { ...BASE_EXITS, 1: "keys still conflict (named), or bad arguments" },
+	run: ({ values, positionals: [path] }) => {
+		const take = mergeAnswers(values.checkout, values.store);
+		return withCheckoutFiles((root, specs) => merge(root, specs, path, take));
+	},
+});
+
+const diffCommand = defineCommand({
+	spec: {
+		name: "files diff",
+		summary: "Keys added, removed and changed, never values",
+		flags: {},
+		args: [
+			{ name: "<path>", description: "One checkout file (default: every one)" },
+		],
+	},
+	exits: BASE_EXITS,
+	run: ({ positionals: [path] }) =>
+		withCheckoutFiles((root, specs) =>
+			diff(root, specs, path === undefined ? undefined : [path]),
+		),
+});
+
+const exportCommand = defineCommand({
+	spec: {
+		name: "files export",
+		summary: "The file store as a bundle on stdout",
+		flags: {
+			"include-machine": {
+				kind: "boolean",
+				description: "Include machine: true files",
+			},
+		},
+		examples: [
+			{
+				command:
+					"buncargo files export | ssh box 'cd app && bunx buncargo files import'",
+				description: "Copy them to another machine",
+			},
+		],
+	},
+	exits: BASE_EXITS,
+	run: ({ values }) =>
+		withCheckoutFiles((root, specs) =>
+			exportFiles(root, specs, values["include-machine"]),
+		),
+});
+
+const importCommand = defineCommand({
+	spec: {
+		name: "files import",
+		summary: "Write a bundle into the file store",
+		flags: {},
+		args: [
+			{ name: "<file>", description: "The bundle (default: stdin, or -)" },
+		],
+	},
+	exits: BASE_EXITS,
+	run: ({ positionals: [file] }) =>
+		withCheckoutFiles((root, specs) => importFiles(root, specs, file)),
+});
+
+export const filesCommand = defineGroup({
+	spec: {
+		name: "files",
+		summary: "Gitignored files every checkout needs (.env.local), per machine",
+	},
+	subcommands: {
+		status: statusCommand,
+		save: saveCommand,
+		pull: pullCommand,
+		merge: mergeCommand,
+		diff: diffCommand,
+		export: exportCommand,
+		import: importCommand,
+	},
+});
 
 function status(
 	root: string,
@@ -244,7 +295,7 @@ function status(
 						state,
 						machine,
 					})),
-				},
+				} satisfies FilesStatusJson,
 				null,
 				2,
 			),
