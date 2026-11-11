@@ -1,4 +1,8 @@
 import { expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildRunEntry, publishRun, retireRuns } from "../core/run-registry";
 import {
 	type PublicTunnel,
 	resolveExposeTargets,
@@ -210,4 +214,79 @@ it("keeps the URLs apps printed when its tunnels open and close", async () => {
 
 	await coordinator.stop();
 	expect(publicUrls).toEqual({ mobile: "https://mobile.exp.direct" });
+});
+
+it("inherits a reused app's public URL from the live run serving it, on its port only", async () => {
+	const root = mkdtempSync(join(tmpdir(), "buncargo-tunnel-reuse-"));
+	const publicUrls: Record<string, string> = {};
+	const env = {
+		services: {},
+		apps: {
+			api: { port: 4100, expose: true },
+			web: { port: 4101, expose: true },
+		},
+		ports: { api: 4100, web: 4101 },
+		root,
+		publicUrls,
+		setPublicUrls: (next: Record<string, string>) => {
+			for (const key of Object.keys(publicUrls)) delete publicUrls[key];
+			Object.assign(publicUrls, next);
+		},
+		clearPublicUrls: () => {},
+		logInfo: () => {},
+	} as unknown as DevEnvironment<
+		Record<string, ServiceConfig>,
+		Record<string, AppConfig>
+	>;
+	const served = (name: string, port: number) => ({
+		name,
+		port,
+		url: `http://localhost:${port}`,
+		loopbackUrl: `http://localhost:${port}`,
+		publicUrl: `https://${name}.trycloudflare.com`,
+		status: "ready" as const,
+	});
+	// This process stands in for the run that opened the tunnels. Its `web`
+	// row is on a port this run would not use.
+	await publishRun({
+		...buildRunEntry({
+			sessionId: "tunnel-owner",
+			projectPrefix: "demo",
+			projectName: "demo",
+			root,
+			isWorktree: false,
+		}),
+		apps: [served("api", 4100), served("web", 4999)],
+	});
+	const opened: string[] = [];
+	const coordinator = createTunnelCoordinator(
+		env,
+		{
+			resolveExposeTargets,
+			stopPublicTunnels,
+			startPublicTunnels: async (targets) => {
+				opened.push(...targets.map((target) => target.name));
+				return [];
+			},
+		},
+		{ exposeRequested: true },
+	);
+
+	try {
+		await coordinator.planExpose({
+			exposeValue: undefined,
+			appsRequested: false,
+			selectedAppNames: new Set(["api", "web"]),
+			startAppNames: new Set(),
+			reusedAppNames: new Set(["api", "web"]),
+		});
+		await coordinator.openOwnedTunnels();
+
+		expect(coordinator.inheritsPublicUrls()).toBe(true);
+		expect(publicUrls).toEqual({ api: "https://api.trycloudflare.com" });
+		expect(opened).toEqual(["web"]);
+	} finally {
+		await retireRuns(["tunnel-owner"]);
+		rmSync(root, { recursive: true, force: true });
+	}
 });

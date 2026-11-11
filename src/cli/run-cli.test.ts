@@ -22,7 +22,6 @@ import { type DetachedReport, readDetachedReport } from "./dev-detach";
 import { requestRestart } from "./restart-requests";
 import { runCli } from "./run-cli";
 import * as takeover from "./takeover";
-import { upsertTunnelRegistryEntries } from "./tunnel-registry";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // runCli + expose (stub env, mocked tunnel)
@@ -474,17 +473,7 @@ describe("runCli expose routing", () => {
 		const startTargets: string[][] = [];
 
 		try {
-			await upsertTunnelRegistryEntries(root, [
-				{
-					kind: "app",
-					name: "api",
-					publicUrl: "https://api.example.com",
-					localUrl: `http://localhost:${apiPort}`,
-					port: apiPort,
-					pid: process.pid,
-					updatedAt: new Date().toISOString(),
-				},
-			]);
+			await publishTunnelOwner(root, "tunnel-owner", apiPort);
 
 			const env = endsOnceTunnelsOpen(
 				createStubEnv({
@@ -537,12 +526,43 @@ describe("runCli expose routing", () => {
 			});
 			expect(setPublicUrlsCalls.at(-1)).toEqual({});
 		} finally {
+			await retireRuns(["tunnel-owner"]);
 			server.closeAllConnections();
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 			await rm(root, { recursive: true, force: true });
 		}
 	});
 });
+
+/**
+ * The live run (this process) that serves `api` on `port` through a public
+ * tunnel, as `runs.json` records it.
+ */
+async function publishTunnelOwner(
+	root: string,
+	sessionId: string,
+	port: number,
+): Promise<void> {
+	await publishRun({
+		...buildRunEntry({
+			sessionId,
+			projectPrefix: "stub",
+			projectName: "stub-cli",
+			root,
+			isWorktree: false,
+		}),
+		apps: [
+			{
+				name: "api",
+				port,
+				url: `http://localhost:${port}`,
+				loopbackUrl: `http://localhost:${port}`,
+				publicUrl: "https://api.example.com",
+				status: "ready",
+			},
+		],
+	});
+}
 
 // Every exposed app reused, its public URL the other run's tunnel: a `y` used
 // to stop that run, tunnels and all, and leave this one advertising its URL.
@@ -556,17 +576,7 @@ it("does not offer to take over a run whose tunnels it inherited", async () => {
 	const tty = { stdin: process.stdin.isTTY, stdout: process.stdout.isTTY };
 	const ci = process.env.CI;
 	try {
-		await upsertTunnelRegistryEntries(root, [
-			{
-				kind: "app",
-				name: "api",
-				publicUrl: "https://api.example.com",
-				localUrl: `http://localhost:${apiPort}`,
-				port: apiPort,
-				pid: process.pid,
-				updatedAt: new Date().toISOString(),
-			},
-		]);
+		await publishTunnelOwner(root, "inherited-tunnel-owner", apiPort);
 		const env = createStubEnv({
 			root,
 			services: {},
@@ -601,6 +611,7 @@ it("does not offer to take over a run whose tunnels it inherited", async () => {
 		if (ci === undefined) delete process.env.CI;
 		else process.env.CI = ci;
 		prompt.mockRestore();
+		await retireRuns(["inherited-tunnel-owner"]);
 		server.closeAllConnections();
 		await new Promise<void>((resolve) => server.close(() => resolve()));
 		await rm(root, { recursive: true, force: true });
