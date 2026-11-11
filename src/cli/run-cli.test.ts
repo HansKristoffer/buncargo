@@ -300,6 +300,7 @@ function registerStubInternals(
 		notify: (next) => {
 			report = next;
 		},
+		reportTo: () => {},
 		renderGeneratedFiles: () => [],
 		recordCapture: async () => [],
 	});

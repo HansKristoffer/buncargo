@@ -67,6 +67,13 @@ The sweep and volume pruning live in `container-runtime/` too; see
   file from the checkout, never from the caller's working directory.
 - `inventory.ts` backs the machine-wide commands (`ls`, `doctor`, `dev --down --all`). Those have no
   project config in scope, so they ask every available runtime rather than one.
+- Assigned ports (`withSuffix(…, { ports: "assigned" })`, what `buncargo ci` asks for) render each
+  generated binding as `127.0.0.1::5432` and read the host port back from the listing
+  `ensureServicesRunning` already makes after `up` (Docker's `targetPorts`, parsed from
+  `{{.Ports}}`), before readiness probes it; the context then takes it into `ports`, `urls` and the
+  env, and keeps it over a later allocation. The claimed block is still allocated: apps need it.
+  Apple's `--publish` needs a host port, so `capabilities.assignedHostPorts` is false there and the
+  stack keeps its claimed ports.
 
 ## Readiness and reuse
 

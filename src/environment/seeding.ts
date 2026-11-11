@@ -95,7 +95,8 @@ function createCheckTableHelper(
 		stdout: string;
 		stderr: string;
 	}>,
-	defaultService = "postgres",
+	defaultService: string,
+	log: (line: string) => void,
 ): SeedCheckContext<AnyServices, AnyApps>["checkTable"] {
 	return async (tableName: string, service?: string): Promise<boolean> => {
 		const serviceName = service ?? defaultService;
@@ -114,7 +115,7 @@ function createCheckTableHelper(
 		const shouldSeed =
 			checkResult.exitCode !== 0 || count === "0" || count === "";
 		if (!shouldSeed) {
-			console.log(formatStep(`📊 Table "${tableName}" has ${count} rows`));
+			log(formatStep(`📊 Table "${tableName}" has ${count} rows`));
 		}
 		return shouldSeed;
 	};
@@ -158,6 +159,7 @@ export async function runSeedIfNeeded(
 					(cmd, execOptions) =>
 						envVars.exec(cmd, { ...execOptions, signal, timeoutMs: 600_000 }),
 					resolvePrismaConfig(ctx.config.prisma).service,
+					ctx.output.log,
 				);
 				return seedCheck(
 					createSeedCheckContext(
@@ -171,12 +173,14 @@ export async function runSeedIfNeeded(
 		);
 		if (!shouldSeed) {
 			if (verbose)
-				console.log(formatDone("Database already has data, skipping seeders"));
+				ctx.output.log(
+					formatDone("Database already has data, skipping seeders"),
+				);
 			return { status: "not-needed" };
 		}
 	}
 
-	if (verbose) console.log(formatStep("🌱 Running seeders..."));
+	if (verbose) ctx.output.log(formatStep("🌱 Running seeders..."));
 	const computed: Record<string, string> =
 		envVars.buildEnvVars(productionBuild);
 	const secrets = await envVars.resolveSecrets(seed.secrets, {
@@ -192,10 +196,13 @@ export async function runSeedIfNeeded(
 		if (tail.length > SEED_TAIL_LINES) tail.shift();
 	};
 	const toTerminal =
-		verbose && !options.prefixOutput && process.stdout.isTTY === true;
+		verbose &&
+		!options.prefixOutput &&
+		ctx.output.commandLine === undefined &&
+		process.stdout.isTTY === true;
 	const printLine =
 		verbose && !options.prefixOutput && !toTerminal
-			? (line: string) => console.log(line)
+			? (ctx.output.commandLine ?? ctx.output.log)
 			: undefined;
 	const sink = options.onOutputLine ?? printLine;
 	const onOutputLine =
@@ -230,6 +237,6 @@ export async function runSeedIfNeeded(
 		return { status: "failed", result, command: seed.command, tail };
 	}
 
-	if (verbose) console.log(formatDone("Seeding complete"));
+	if (verbose) ctx.output.log(formatDone("Seeding complete"));
 	return { status: "succeeded", result };
 }

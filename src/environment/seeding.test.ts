@@ -9,6 +9,7 @@ import {
 	runSeedCommand,
 	runSeedIfNeeded,
 } from "./seeding";
+import { TERMINAL_OUTPUT } from "./status-output";
 
 describe("resolveBunSeedSpecifier", () => {
 	it("extracts a Bun script path", () => {
@@ -36,6 +37,7 @@ function stubSeedContext(input: {
 	const ctx = {
 		root: input.root,
 		urls: {},
+		output: TERMINAL_OUTPUT,
 		config: { seed: { command: input.command, check: input.check } },
 	} as unknown as DevEnvContext;
 	const envVars = {

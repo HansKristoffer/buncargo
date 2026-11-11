@@ -41,6 +41,7 @@ describe("listDockerContainersAsync", () => {
 			status: "Up 3 minutes (healthy)",
 			healthy: true,
 			ports: [5532],
+			targetPorts: { 5532: 5432 },
 			portsText: "0.0.0.0:5532->5432/tcp, [::]:5532->5432/tcp",
 			labels: {
 				composeProject: "demo",

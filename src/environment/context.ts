@@ -45,6 +45,8 @@ import {
 import type { PublicTunnel } from "../core/tunnel";
 import { workspaceId } from "../core/workspace-identity";
 import {
+	type AssignedPortTarget,
+	assignedPortTargets,
 	buildComposeModel,
 	type ComposeDocument,
 	getGeneratedComposePath,
@@ -62,9 +64,13 @@ import type {
 	ResolvedService,
 	ServiceConfig,
 } from "../types";
-import type { EnvironmentLogSelection } from "../types/environment";
+import type {
+	EnvironmentLogSelection,
+	SuffixedEnvironmentOptions,
+} from "../types/environment";
 import { logEnvironmentInfo } from "./logging";
 import { allocateReclaiming } from "./port-reclaim";
+import { type StatusOutput, TERMINAL_OUTPUT } from "./status-output";
 
 /**
  * A config's services and apps with their keys unknown. The modules here read
@@ -147,6 +153,19 @@ export interface DevEnvContext {
 	/** The binary it was resolved to, for callers that rebuild the adapter. */
 	readonly runtimeBinary: string | undefined;
 	readonly hosts: HostsRuntime | null;
+	/**
+	 * The selected services' port keys that publish on runtime-assigned host
+	 * ports (`withSuffix(…, { ports: "assigned" })` on a runtime that can),
+	 * for `ensureServicesRunning` to read back.
+	 */
+	assignedPortTargets(
+		serviceKeys: readonly string[],
+	): Record<string, AssignedPortTarget>;
+	/**
+	 * Take the host ports read back after `up` into `ports`, `urls` and every
+	 * environment built from them, and keep them over later allocations.
+	 */
+	adoptAssignedPorts(hostPorts: Readonly<Record<string, number>>): void;
 	ensureComposeFile(): string;
 	/**
 	 * The same service model the compose file is rendered from.
@@ -160,6 +179,8 @@ export interface DevEnvContext {
 	setPublicUrls(urls: Readonly<Record<string, string | undefined>>): void;
 	clearPublicUrls(): void;
 	onSecretsWait?: (ms: number) => void;
+	/** Where the lifecycle reports its progress; see {@link StatusOutput}. */
+	output: StatusOutput;
 	logInfo(
 		label?: string,
 		tunnels?: PublicTunnel[],
@@ -190,8 +211,7 @@ export function createDevEnvContext(
 		suffix?: string;
 		containerRuntime?: string;
 		root?: string;
-		data?: "volumes" | "tmpfs";
-	} = {},
+	} & SuffixedEnvironmentOptions = {},
 ): DevEnvContext {
 	const root = options.root ?? findMonorepoRoot();
 	const suffix = options.suffix;
@@ -248,6 +268,8 @@ export function createDevEnvContext(
 		Object.assign(urls, namedUrls(plainUrls, hosts, servedHostnames));
 	}
 
+	// Host ports the runtime picked, which outlive a later allocation.
+	const assignedHostPorts: Record<string, number> = {};
 	let model: ComposeDocument | undefined;
 	const buildModel = () =>
 		buildComposeModel(
@@ -255,8 +277,34 @@ export function createDevEnvContext(
 			config.docker,
 			{ projectName, root, worktree: worktreeSuffix },
 			runtime().name,
-			{ data: options.data },
+			{
+				data: options.data,
+				// A runtime that cannot pick one keeps the claimed block.
+				ports:
+					options.ports === "assigned" &&
+					runtime().capabilities.assignedHostPorts
+						? "assigned"
+						: "claimed",
+			},
 		);
+
+	function composeModel(): ComposeDocument {
+		model ??= buildModel();
+		return model;
+	}
+
+	/** Point the URLs, and the named hosts' targets, at `portMap`. */
+	function refreshPorts() {
+		Object.assign(
+			plainUrls,
+			computeUrls(services, apps, portMap, localIp, urlHostOverride()),
+		);
+		Object.assign(loopbackUrls, computeLoopbackUrls(services, apps, portMap));
+		for (const host of hostsPlan) {
+			host.targetPort = portMap[host.name] ?? host.targetPort;
+		}
+		refreshUrls();
+	}
 
 	let cachedPlan: { selection: string; plan: StartPlan } | undefined;
 	function getStartPlan(
@@ -337,16 +385,8 @@ export function createDevEnvContext(
 		});
 
 		// Keep object identity: env callbacks may already hold these maps.
-		Object.assign(portMap, portPlan.ports);
-		Object.assign(
-			plainUrls,
-			computeUrls(services, apps, portMap, localIp, urlHostOverride()),
-		);
-		Object.assign(loopbackUrls, computeLoopbackUrls(services, apps, portMap));
-		for (const host of hostsPlan) {
-			host.targetPort = portMap[host.name] ?? host.targetPort;
-		}
-		refreshUrls();
+		Object.assign(portMap, portPlan.ports, assignedHostPorts);
+		refreshPorts();
 		// Published only with its block: an allocation that threw (the range
 		// is full) selected nothing that a caller could read as allocated.
 		hasSelectedServices = withServices;
@@ -489,6 +529,17 @@ export function createDevEnvContext(
 			return resolveContainerRuntimeBinary(runtimeSelection);
 		},
 		hosts,
+		output: TERMINAL_OUTPUT,
+
+		assignedPortTargets(serviceKeys) {
+			return assignedPortTargets(pick(services, serviceKeys), composeModel());
+		},
+
+		adoptAssignedPorts(hostPorts) {
+			Object.assign(assignedHostPorts, hostPorts);
+			Object.assign(portMap, hostPorts);
+			refreshPorts();
+		},
 
 		ensureComposeFile() {
 			model = buildModel();
@@ -502,10 +553,7 @@ export function createDevEnvContext(
 			);
 		},
 
-		composeModel() {
-			model ??= buildModel();
-			return model;
-		},
+		composeModel,
 
 		setNamedHostsActive(active, extras = {}) {
 			if (!hosts) {
