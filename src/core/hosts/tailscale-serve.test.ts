@@ -1,8 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { describe, expect, it } from "bun:test";
+import { existsSync } from "node:fs";
 import { readCurrentProcessIdentity } from "../process-identity";
+import { useTempHome } from "../test-env.testing";
 import { getTailscaleServePath } from "./paths";
 import type { ServeConfig, TailscaleCommandResult } from "./tailscale-cli";
 import {
@@ -30,17 +29,8 @@ const SELF = process.pid;
 const OTHER = 5151;
 const DEAD = 9191;
 
-// The serve state file lives in ~/.buncargo: never the developer's.
-const savedHome = process.env.HOME;
-let home = "";
-beforeEach(() => {
-	home = mkdtempSync(join(tmpdir(), "buncargo-tailscale-home-"));
-	process.env.HOME = home;
-});
-afterEach(() => {
-	process.env.HOME = savedHome;
-	rmSync(home, { recursive: true, force: true });
-});
+// The serve state file lives in ~/.buncargo: each test starts without one.
+useTempHome();
 
 const ok = (stdout = ""): TailscaleCommandResult => ({
 	exitCode: 0,

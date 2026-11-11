@@ -3,10 +3,10 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { offsetClaimsOf } from "../core/offset-claims";
-import { isolateHome } from "../core/test-env.testing";
+import { useTempHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "./create-dev-environment";
 
-isolateHome("buncargo-app-only-home-");
+useTempHome("all");
 
 const roots: string[] = [];
 afterEach(() => {

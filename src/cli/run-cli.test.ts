@@ -1,7 +1,6 @@
 import {
 	afterAll,
 	afterEach,
-	beforeAll,
 	beforeEach,
 	describe,
 	expect,
@@ -33,6 +32,7 @@ import {
 	publishRun,
 	retireRuns,
 } from "../core/run-registry";
+import { freePorts, useTempHome } from "../core/test-env.testing";
 import { createPhaseTimer } from "../core/timing";
 import { type FakeCloudflared, fakeCloudflared } from "../core/tunnel.testing";
 import { createDevEnvironment, type PrepareOptions } from "../environment";
@@ -57,25 +57,15 @@ import * as takeover from "./takeover";
 // runCli + expose (stub env, mocked tunnel)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// `runCli` publishes every run into `~/.buncargo/runs.json`. Point HOME at a
-// temp dir so tests never write the developer's real registry, and restore it
-// afterwards: the whole suite shares one process.
-let stateHome: string;
-const realHome = process.env.HOME;
+// `runCli` publishes every run into `~/.buncargo/runs.json`: each test gets
+// a registry of its own, so no test sees another's runs.
+useTempHome();
 // The stub's checkout when a test names none. A full run checks that each
 // app's cwd exists, so it must be a real directory, made fresh on every
 // machine: a fixed path only exists where some earlier run left it.
 const stubRoot = mkdtempSync(join(tmpdir(), "buncargo-cli-stub-"));
 
-beforeAll(() => {
-	stateHome = mkdtempSync(join(tmpdir(), "buncargo-cli-state-"));
-	process.env.HOME = stateHome;
-});
-
 afterAll(() => {
-	if (realHome === undefined) delete process.env.HOME;
-	else process.env.HOME = realHome;
-	rmSync(stateHome, { recursive: true, force: true });
 	rmSync(stubRoot, { recursive: true, force: true });
 });
 
@@ -514,7 +504,7 @@ describe("runCli expose routing", () => {
 	});
 
 	it("allows --expose to target apps included via requiredApps", async () => {
-		const port = 43810 + Math.floor(Math.random() * 100) * 2;
+		const [port, nextPort] = freePorts(2);
 		const env = endsOnceTunnelsOpen(
 			createStubEnv({
 				services: {
@@ -529,7 +519,7 @@ describe("runCli expose routing", () => {
 						requiredServices: ["postgres"],
 					},
 					expo: {
-						port: port + 1,
+						port: nextPort,
 						devCommand: "bun -e 'setInterval(() => {}, 1000)'",
 						healthEndpoint: false,
 						expose: true,
@@ -552,8 +542,7 @@ describe("runCli expose routing", () => {
 
 	it("reuses a busy exposed app and inherits its public URL", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-cli-"));
-		const apiPort = 43020;
-		const webPort = 43021;
+		const [apiPort, webPort] = freePorts(2);
 		const server = await listenServer(apiPort);
 		const setPublicUrlsCalls: Record<string, string>[] = [];
 
@@ -649,7 +638,7 @@ async function publishTunnelOwner(
 // to stop that run, tunnels and all, and leave this one advertising its URL.
 it("does not offer to take over a run whose tunnels it inherited", async () => {
 	const root = await mkdtemp(join(tmpdir(), "buncargo-inherit-takeover-"));
-	const apiPort = 43030 + Math.floor(Math.random() * 200);
+	const [apiPort] = freePorts(1);
 	const server = await listenServer(apiPort);
 	const prompt = spyOn(takeover, "promptTakeover").mockImplementation(
 		async () => false,
@@ -700,8 +689,7 @@ it("does not offer to take over a run whose tunnels it inherited", async () => {
 
 describe("runCli phased tunnels and attach", () => {
 	it("starts needsPublicUrls apps after tunnels and injects *_PUBLIC_URL", async () => {
-		const apiPort = 43210 + Math.floor(Math.random() * 200);
-		const expoPort = apiPort + 1;
+		const [apiPort, expoPort] = freePorts(2);
 		const env = createStubEnv({
 			apps: {
 				api: {
@@ -735,8 +723,7 @@ describe("runCli phased tunnels and attach", () => {
 	// get this right from one static config.
 	it("health-checks needsPublicUrls apps when --expose is absent", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-waves-"));
-		const apiPort = 43610 + Math.floor(Math.random() * 200);
-		const expoPort = apiPort + 1;
+		const [apiPort, expoPort] = freePorts(2);
 		const healthChecked: string[] = [];
 		const app = exitsOnceChecked(root);
 		const env = createStubEnv({
@@ -766,8 +753,7 @@ describe("runCli phased tunnels and attach", () => {
 	});
 
 	it("kills sibling apps when the attached app exits", async () => {
-		const apiPort = 43410 + Math.floor(Math.random() * 200);
-		const expoPort = apiPort + 1;
+		const [apiPort, expoPort] = freePorts(2);
 		const env = createStubEnv({
 			apps: {
 				api: {
@@ -791,6 +777,7 @@ describe("runCli phased tunnels and attach", () => {
 	});
 });
 
+// Stops a real server and spawns two apps: about 2 s on an idle machine.
 it("takes over a reused API while also starting a new web app", async () => {
 	const root = await mkdtemp(join(tmpdir(), "buncargo-mixed-takeover-"));
 	const child = spawn(
@@ -809,8 +796,7 @@ it("takes over a reused API while also starting a new web app", async () => {
 		const probe = Bun.serve({ port: 0, fetch: () => new Response("probe") });
 		const webPort = probe.port as number;
 		probe.stop(true);
-		const command = (name: string) =>
-			`bun -e 'await Bun.write("${name}-started", "yes")'`;
+		const command = (name: string) => `printf yes > ${name}-started`;
 		const env = createStubEnv({
 			root,
 			apps: {
@@ -842,7 +828,7 @@ it("takes over a reused API while also starting a new web app", async () => {
 		}
 		await rm(root, { recursive: true, force: true });
 	}
-});
+}, 15_000);
 
 describe("an app port held by a server failing its health check", () => {
 	async function replaceUnhealthyApi(
@@ -972,8 +958,7 @@ it("starts the rest of the run without an optional app whose lease another run h
 		const probe = Bun.serve({ port: 0, fetch: () => new Response("probe") });
 		const apiPort = probe.port as number;
 		probe.stop(true);
-		const command = (name: string) =>
-			`bun -e 'await Bun.write("${name}-started", "yes")'`;
+		const command = (name: string) => `printf yes > ${name}-started`;
 		const env = createStubEnv({
 			root,
 			apps: {
@@ -1071,7 +1056,7 @@ it("prints the --timing report for a run interrupted before its apps were ready"
 		services: {},
 		apps: {
 			api: {
-				port: 44910 + Math.floor(Math.random() * 100),
+				port: freePorts(1)[0],
 				devCommand: "bun -e 'setInterval(() => {}, 1000)'",
 				requiredServices: [],
 			},
@@ -1113,7 +1098,7 @@ it("marks a restarted app starting in the registry until it is ready again", asy
 	const root = await realpath(
 		await mkdtemp(join(tmpdir(), "buncargo-restart-row-")),
 	);
-	const port = 44810 + Math.floor(Math.random() * 100);
+	const [port] = freePorts(1);
 	let healthChecks = 0;
 	const env = createStubEnv({
 		root,
@@ -1251,7 +1236,7 @@ async function startLongRunningApp(
 		services: {},
 		apps: {
 			api: {
-				port: 45010 + Math.floor(Math.random() * 200),
+				port: freePorts(1)[0],
 				devCommand: "bun -e 'setInterval(() => {}, 1000)'",
 				healthEndpoint: false,
 				requiredServices: [],
@@ -1292,7 +1277,7 @@ async function startLongRunningApp(
 
 describe("how a run ends", () => {
 	it("tears down once when an app fails during start", async () => {
-		const port = 44610 + Math.floor(Math.random() * 200);
+		const [port] = freePorts(1);
 		let released = 0;
 		const env = createStubEnv({
 			services: {},
@@ -1374,7 +1359,7 @@ describe("how a run ends", () => {
 		const root = await realpath(
 			await mkdtemp(join(tmpdir(), "buncargo-second-signal-")),
 		);
-		const port = 44910 + Math.floor(Math.random() * 100);
+		const [port] = freePorts(1);
 		const env = createStubEnv({
 			root,
 			services: {},
@@ -1462,7 +1447,7 @@ describe("how a run ends", () => {
 			services: {},
 			apps: {
 				api: {
-					port: 44510 + Math.floor(Math.random() * 100),
+					port: freePorts(1)[0],
 					devCommand: "bun -e 'process.exit(0)'",
 					healthEndpoint: false,
 					requiredServices: [],
@@ -1594,7 +1579,7 @@ describe("a failed detached run's report", () => {
 	});
 
 	it("names the app that exited during start and shows what it printed", async () => {
-		const port = 44410 + Math.floor(Math.random() * 200);
+		const [port] = freePorts(1);
 		const { code, report } = await failedRun({
 			services: {},
 			apps: {
@@ -1626,7 +1611,7 @@ it("claims, leases, publishes and hooks the same through runCli and start()", as
 		await mkdtemp(join(tmpdir(), "buncargo-parity-")),
 	);
 	writeFileSync(join(root, "package.json"), "{}");
-	const port = 45010 + Math.floor(Math.random() * 400);
+	const [port, nextPort] = freePorts(2);
 	const hooks: string[] = [];
 	type Snapshot = {
 		hooks: string[];
@@ -1656,7 +1641,7 @@ it("claims, leases, publishes and hooks the same through runCli and start()", as
 	};
 	const config: DevConfig = {
 		projectPrefix: "parity",
-		services: { queue: { port: port + 1, external: { stack: "fake" } } },
+		services: { queue: { port: nextPort, external: { stack: "fake" } } },
 		apps: {
 			web: {
 				port,

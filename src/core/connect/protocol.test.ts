@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { readProcessIdentity } from "../process-identity";
-import { CHECKOUT_HOLD, LIVE, type RunEntry } from "../run-registry";
+import { runEntry } from "../run-registry.testing";
 import { CONNECT_ORIGIN } from "./origin";
 import { parseDirectory, parseRun } from "./protocol";
 import { runTargets } from "./targets";
@@ -30,7 +30,7 @@ test("Swift and CLI decode the same named directory and reject redirected target
 
 test("projecting a selected run omits workers/jobs and retains process identity", () => {
 	const identity = readProcessIdentity(process.pid);
-	const run: RunEntry = {
+	const run = runEntry({
 		sessionId: "fixture",
 		cli: { program: process.execPath },
 		pid: process.pid,
@@ -38,12 +38,6 @@ test("projecting a selected run omits workers/jobs and retains process identity"
 		root: "/tmp/fixture",
 		projectPrefix: "test",
 		projectName: "test",
-		worktree: null,
-		hosts: null,
-		startedAt: new Date().toISOString(),
-		updatedAt: new Date().toISOString(),
-		lifecycle: LIVE,
-		hold: CHECKOUT_HOLD,
 		apps: [
 			{
 				name: "api",
@@ -58,7 +52,7 @@ test("projecting a selected run omits workers/jobs and retains process identity"
 			{ name: "db", preset: "postgres", port: 5432, status: "ready" },
 			{ name: "job", kind: "job", port: 9999, status: "ready" },
 		],
-	};
+	});
 	const targets = runTargets(run);
 	expect(targets.map((t) => t.name)).toEqual(["api", "db"]);
 	expect(targets[0].processIdentity).toBe(identity);

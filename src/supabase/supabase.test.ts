@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { useTempHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "../environment";
 import type { AnyDevEnvironment, CheckContext, DevConfig } from "../types";
 import { supabaseChecks } from "./checks";
@@ -17,8 +18,8 @@ import { supabase } from "./index";
 import { supabaseKeys } from "./keys";
 import { readSupabaseProject } from "./project";
 
+useTempHome("all");
 const saved = {
-	HOME: process.env.HOME,
 	BUNCARGO_PORT_OFFSET: process.env.BUNCARGO_PORT_OFFSET,
 };
 const cwd = process.cwd();
@@ -51,7 +52,6 @@ site_url = "http://127.0.0.1:3000"
 additional_redirect_urls = ["myapp://callback"]
 `,
 	);
-	process.env.HOME = root;
 	process.env.BUNCARGO_PORT_OFFSET = "100";
 	process.chdir(root);
 });

@@ -15,6 +15,7 @@ import {
 	publishRun,
 } from "../../core/run-registry";
 import { getProjectStateDir } from "../../core/state-paths";
+import { useTempHome } from "../../core/test-env.testing";
 import {
 	type RestartReply,
 	requestRestart,
@@ -23,15 +24,11 @@ import {
 } from "../restart-requests";
 import { RESTART_EXIT, restartApps } from "./restart";
 
-let home: string;
+useTempHome();
 let root: string;
-let savedHome: string | undefined;
 
 beforeEach(async () => {
-	home = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-restart-home-")));
 	root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-restart-root-")));
-	savedHome = process.env.HOME;
-	process.env.HOME = home;
 	// This test process stands in for the `dev` run, so the entry is live.
 	await publishRun({
 		...buildRunEntry({
@@ -57,9 +54,6 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-	if (savedHome === undefined) delete process.env.HOME;
-	else process.env.HOME = savedHome;
-	rmSync(home, { recursive: true, force: true });
 	rmSync(root, { recursive: true, force: true });
 });
 

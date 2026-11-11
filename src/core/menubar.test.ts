@@ -1,15 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import {
 	cpSync,
 	existsSync,
 	mkdirSync,
-	mkdtempSync,
 	readdirSync,
-	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	type BarFolders,
@@ -24,6 +21,7 @@ import {
 	removeInstalledBars,
 	replaceBundle,
 } from "./menubar";
+import { useTempHome } from "./test-env.testing";
 
 /**
  * Reading a bundle's identity out of its own `Info.plist`.
@@ -32,12 +30,11 @@ import {
  * so a parse that quietly returns `undefined` would turn a required update into
  * silence. The plist shape here is copied from `menubar/scripts/package.sh`.
  */
-let home: string;
-const realHome = process.env.HOME;
+const home = useTempHome();
 
 /** The install folders, with `system` standing in for `/Applications`. */
 function folders(system: string): BarFolders {
-	return { system, user: join(home, "Applications") };
+	return { system, user: join(home(), "Applications") };
 }
 
 function writeBundle(
@@ -60,20 +57,9 @@ function writeBundle(
 	return path;
 }
 
-beforeEach(() => {
-	home = mkdtempSync(join(tmpdir(), "buncargo-bar-info-"));
-	process.env.HOME = home;
-});
-
-afterEach(() => {
-	if (realHome === undefined) delete process.env.HOME;
-	else process.env.HOME = realHome;
-	rmSync(home, { recursive: true, force: true });
-});
-
 describe("readBundleInfo", () => {
 	it("reads the version and the registry version a build stamped", () => {
-		const bundle = writeBundle(join(home, "BuncargoBar.app"), {
+		const bundle = writeBundle(join(home(), "BuncargoBar.app"), {
 			version: "0.4.0",
 			registryVersion: 2,
 		});
@@ -87,12 +73,12 @@ describe("readBundleInfo", () => {
 	// Every bundle released before the key existed decodes v1. Reading those as
 	// "unknown" would mean either nagging them forever or never updating them.
 	it("assumes v1 for a bundle built before the key existed", () => {
-		const bundle = writeBundle(join(home, "Old.app"), { version: "0.1.0" });
+		const bundle = writeBundle(join(home(), "Old.app"), { version: "0.1.0" });
 		expect(readBundleInfo(bundle).registryVersion).toBe(1);
 	});
 
 	it("survives a missing or unreadable plist", () => {
-		const bundle = join(home, "Broken.app");
+		const bundle = join(home(), "Broken.app");
 		mkdirSync(bundle, { recursive: true });
 		expect(readBundleInfo(bundle)).toEqual({
 			path: bundle,
@@ -103,11 +89,11 @@ describe("readBundleInfo", () => {
 
 describe("readInstalledBarInfo", () => {
 	it("follows the manifest to a bundle outside the standard locations", () => {
-		const bundle = writeBundle(join(home, "custom", "BuncargoBar.app"), {
+		const bundle = writeBundle(join(home(), "custom", "BuncargoBar.app"), {
 			version: "1.2.3",
 			registryVersion: 7,
 		});
-		mkdirSync(join(home, ".buncargo"), { recursive: true });
+		mkdirSync(join(home(), ".buncargo"), { recursive: true });
 		writeFileSync(
 			getBarManifestPath(),
 			JSON.stringify({
@@ -129,7 +115,7 @@ describe("readBarManifest", () => {
 	// The manifest is a file in the user's home: what it says is read, not
 	// trusted, and a field of the wrong shape is left out.
 	it("keeps only the fields that check out", () => {
-		mkdirSync(join(home, ".buncargo"), { recursive: true });
+		mkdirSync(join(home(), ".buncargo"), { recursive: true });
 		const manifest = {
 			version: 1,
 			path: "/Applications/BuncargoBar.app",
@@ -146,35 +132,39 @@ describe("readBarManifest", () => {
 
 describe("installDirectory", () => {
 	it("installs into the system directory when it is writable", () => {
-		expect(installDirectory(folders(home))).toBe(home);
+		expect(installDirectory(folders(home()))).toBe(home());
 	});
 
 	it.skipIf(process.getuid?.() === 0)(
 		"falls back to ~/Applications when the system directory is read-only",
 		() => {
-			const system = join(home, "system");
+			const system = join(home(), "system");
 			mkdirSync(system, { mode: 0o555 });
 			expect(installDirectory(folders(system))).toBe(
-				join(home, "Applications"),
+				join(home(), "Applications"),
 			);
 		},
 	);
 
 	it("updates a copy in place where its folder is writable", () => {
 		// Installed to ~/Applications earlier; /Applications became writable since.
-		const existing = writeBundle(join(home, "Applications", "BuncargoBar.app"));
-		expect(installDirectory(folders(home), existing)).toBe(
-			join(home, "Applications"),
+		const existing = writeBundle(
+			join(home(), "Applications", "BuncargoBar.app"),
+		);
+		expect(installDirectory(folders(home()), existing)).toBe(
+			join(home(), "Applications"),
 		);
 	});
 });
 
 describe("removeInstalledBars", () => {
 	it("removes every copy, including the second one an update left", () => {
-		const system = join(home, "system");
+		const system = join(home(), "system");
 		const systemCopy = writeBundle(join(system, "BuncargoBar.app"));
-		const userCopy = writeBundle(join(home, "Applications", "BuncargoBar.app"));
-		mkdirSync(join(home, ".buncargo"), { recursive: true });
+		const userCopy = writeBundle(
+			join(home(), "Applications", "BuncargoBar.app"),
+		);
+		mkdirSync(join(home(), ".buncargo"), { recursive: true });
 		writeFileSync(
 			getBarManifestPath(),
 			JSON.stringify({
@@ -206,10 +196,13 @@ describe("replaceBundle", () => {
 	it("keeps the installed app when the new one cannot be copied", () => {
 		// The installed copy was removed before the copy, so a failed one left
 		// no app at all.
-		const target = writeBundle(join(home, "Applications", "BuncargoBar.app"), {
-			version: "1.0.0",
-		});
-		const source = writeBundle(join(home, "incoming", "BuncargoBar.app"), {
+		const target = writeBundle(
+			join(home(), "Applications", "BuncargoBar.app"),
+			{
+				version: "1.0.0",
+			},
+		);
+		const source = writeBundle(join(home(), "incoming", "BuncargoBar.app"), {
 			version: "2.0.0",
 		});
 
@@ -217,7 +210,7 @@ describe("replaceBundle", () => {
 			"No space left on device",
 		);
 		expect(readBundleInfo(target).version).toBe("1.0.0");
-		expect(readdirSync(join(home, "Applications"))).toEqual([
+		expect(readdirSync(join(home(), "Applications"))).toEqual([
 			"BuncargoBar.app",
 		]);
 	});
@@ -225,10 +218,13 @@ describe("replaceBundle", () => {
 	it("puts the installed app back when the swap fails", () => {
 		// A copy that reports success with nothing staged: the swap's rename
 		// throws after the installed app was moved aside, which left no app.
-		const target = writeBundle(join(home, "Applications", "BuncargoBar.app"), {
-			version: "1.0.0",
-		});
-		const source = writeBundle(join(home, "incoming", "BuncargoBar.app"), {
+		const target = writeBundle(
+			join(home(), "Applications", "BuncargoBar.app"),
+			{
+				version: "1.0.0",
+			},
+		);
+		const source = writeBundle(join(home(), "incoming", "BuncargoBar.app"), {
 			version: "2.0.0",
 		});
 
@@ -236,23 +232,26 @@ describe("replaceBundle", () => {
 			"ENOENT",
 		);
 		expect(readBundleInfo(target).version).toBe("1.0.0");
-		expect(readdirSync(join(home, "Applications"))).toEqual([
+		expect(readdirSync(join(home(), "Applications"))).toEqual([
 			"BuncargoBar.app",
 		]);
 	});
 
 	it("swaps the new app in and leaves nothing beside it", () => {
-		const target = writeBundle(join(home, "Applications", "BuncargoBar.app"), {
-			version: "1.0.0",
-		});
-		const source = writeBundle(join(home, "incoming", "BuncargoBar.app"), {
+		const target = writeBundle(
+			join(home(), "Applications", "BuncargoBar.app"),
+			{
+				version: "1.0.0",
+			},
+		);
+		const source = writeBundle(join(home(), "incoming", "BuncargoBar.app"), {
 			version: "2.0.0",
 		});
 
 		replaceBundle(source, target, copy(false));
 
 		expect(readBundleInfo(target).version).toBe("2.0.0");
-		expect(readdirSync(join(home, "Applications"))).toEqual([
+		expect(readdirSync(join(home(), "Applications"))).toEqual([
 			"BuncargoBar.app",
 		]);
 	});
@@ -272,7 +271,7 @@ describe("downloadBarRelease", () => {
 
 	it("stops the download when the run's signal fires", async () => {
 		const run = new AbortController();
-		const to = join(home, "bar.zip");
+		const to = join(home(), "bar.zip");
 		let cancelled = false;
 		await expect(
 			downloadBarRelease(release, to, {
@@ -298,11 +297,11 @@ describe("downloadBarRelease", () => {
 			}),
 		).rejects.toThrow("the run ended");
 		expect(cancelled).toBe(true);
-		expect(readdirSync(home)).toEqual([]);
+		expect(readdirSync(home())).toEqual([]);
 	});
 
 	it("refuses a zip that does not match the published checksum", async () => {
-		const to = join(home, "bar.zip");
+		const to = join(home(), "bar.zip");
 		await expect(
 			downloadBarRelease(release, to, {
 				signal: new AbortController().signal,
@@ -312,6 +311,6 @@ describe("downloadBarRelease", () => {
 						: new Response("something else"),
 			}),
 		).rejects.toThrow("checksum did not match");
-		expect(readdirSync(home)).toEqual([]);
+		expect(readdirSync(home())).toEqual([]);
 	});
 });

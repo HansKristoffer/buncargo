@@ -25,9 +25,8 @@ test("a lost parent pipe terminates the userspace daemon even when it ignores SI
 	);
 	let pid: number | undefined;
 	try {
-		for (let i = 0; i < 100 && !existsSync(pidfile); i++) {
-			await Bun.sleep(20);
-		}
+		// Until the daemon is up; the test's timeout bounds the wait.
+		while (!existsSync(pidfile)) await Bun.sleep(20);
 		pid = Number(await readFile(pidfile, "utf8"));
 		expect(isProcessAlive(pid)).toBe(true);
 		guard.stdin.end();
@@ -58,16 +57,13 @@ test("killing the coordinator closes guarded frpc children without a cleanup dir
 	);
 	let pid: number | undefined;
 	try {
-		for (let i = 0; i < 100 && !existsSync(pidfile); i++) {
-			await Bun.sleep(20);
-		}
+		// Until the daemon is up; the test's timeout bounds the wait.
+		while (!existsSync(pidfile)) await Bun.sleep(20);
 		pid = Number(await readFile(pidfile, "utf8"));
 		expect(isProcessAlive(pid)).toBe(true);
 		parent.kill("SIGKILL");
 		await exited;
-		for (let i = 0; i < 150 && isProcessAlive(pid); i++) {
-			await Bun.sleep(20);
-		}
+		while (isProcessAlive(pid)) await Bun.sleep(20);
 		expect(isProcessAlive(pid)).toBe(false);
 		expect(existsSync(pidfile)).toBe(true);
 	} finally {

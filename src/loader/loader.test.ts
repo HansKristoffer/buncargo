@@ -14,6 +14,7 @@ import { defineDevConfig } from "../config";
 import { storeDir, writeStoreEntries } from "../core/checkout-files";
 import { offsetClaimsOf } from "../core/offset-claims";
 import { CI_ENV_VARS } from "../core/runtime-flags";
+import { useTempHome } from "../core/test-env.testing";
 import { service } from "../docker-compose/services";
 import { CONFIG_FILES, clearDevEnvCache, findConfigFile, loadDevEnv } from ".";
 
@@ -391,64 +392,68 @@ describe("loadDevEnv", () => {
 		expect(offsetClaimsOf(testDir)).toEqual({});
 	});
 
-	it("copies checkout files from the store before envFiles are read", async () => {
-		const home = join(testDir, "home");
-		const saved = new Map(
-			["HOME", ...CI_ENV_VARS].map((name) => [name, process.env[name]]),
-		);
-		for (const name of CI_ENV_VARS) delete process.env[name];
-		process.env.HOME = home;
-		try {
-			spawnSync("git", ["init", "-q"], { cwd: testDir });
-			spawnSync(
-				"git",
-				["remote", "add", "origin", "https://github.com/acme/loader.git"],
-				{ cwd: testDir },
-			);
-			writeFileSync(join(testDir, ".gitignore"), ".env.local\n");
-			writeStoreEntries(
-				storeDir("github.com/acme/loader"),
-				{ version: 1, files: {} },
-				[
-					{
-						path: ".env.local",
-						data: Buffer.from("TOKEN=abc\n"),
-						machine: false,
-					},
-				],
-			);
-			writeFileSync(
-				join(testDir, "dev.config.ts"),
-				`export default { projectPrefix: "files", services: {}, options: { envFiles: [".env.local"], checkoutFiles: [".env.local"] }, env: (_p, _u, ctx) => ({ TOKEN: ctx.env?.TOKEN }) };`,
-			);
+	describe("with a store under HOME", () => {
+		useTempHome();
 
-			await expect(
-				loadDevEnv({ cwd: testDir, syncCheckoutFiles: false }),
-			).rejects.toThrow("Cannot load environment input");
-			const env = await loadDevEnv({ cwd: testDir });
-			expect((env.buildEnvVars() as Record<string, string>).TOKEN).toBe("abc");
-
-			// In step with the store, a load forks no git at all.
-			const nodeSpawns = spyOn(childProcess, "spawnSync");
-			const bunSpawns = spyOn(Bun, "spawnSync");
+		it("copies checkout files from the store before envFiles are read", async () => {
+			const saved = new Map(
+				CI_ENV_VARS.map((name) => [name, process.env[name]]),
+			);
+			for (const name of CI_ENV_VARS) delete process.env[name];
 			try {
-				await loadDevEnv({ cwd: testDir, reload: true });
-				const gitCalls = [
-					...nodeSpawns.mock.calls.map(([command]) => command),
-					...bunSpawns.mock.calls.map(([command]) =>
-						Array.isArray(command) ? command[0] : command,
-					),
-				].filter((command) => command === "git");
-				expect(gitCalls).toEqual([]);
+				spawnSync("git", ["init", "-q"], { cwd: testDir });
+				spawnSync(
+					"git",
+					["remote", "add", "origin", "https://github.com/acme/loader.git"],
+					{ cwd: testDir },
+				);
+				writeFileSync(join(testDir, ".gitignore"), ".env.local\n");
+				writeStoreEntries(
+					storeDir("github.com/acme/loader"),
+					{ version: 1, files: {} },
+					[
+						{
+							path: ".env.local",
+							data: Buffer.from("TOKEN=abc\n"),
+							machine: false,
+						},
+					],
+				);
+				writeFileSync(
+					join(testDir, "dev.config.ts"),
+					`export default { projectPrefix: "files", services: {}, options: { envFiles: [".env.local"], checkoutFiles: [".env.local"] }, env: (_p, _u, ctx) => ({ TOKEN: ctx.env?.TOKEN }) };`,
+				);
+
+				await expect(
+					loadDevEnv({ cwd: testDir, syncCheckoutFiles: false }),
+				).rejects.toThrow("Cannot load environment input");
+				const env = await loadDevEnv({ cwd: testDir });
+				expect((env.buildEnvVars() as Record<string, string>).TOKEN).toBe(
+					"abc",
+				);
+
+				// In step with the store, a load forks no git at all.
+				const nodeSpawns = spyOn(childProcess, "spawnSync");
+				const bunSpawns = spyOn(Bun, "spawnSync");
+				try {
+					await loadDevEnv({ cwd: testDir, reload: true });
+					const gitCalls = [
+						...nodeSpawns.mock.calls.map(([command]) => command),
+						...bunSpawns.mock.calls.map(([command]) =>
+							Array.isArray(command) ? command[0] : command,
+						),
+					].filter((command) => command === "git");
+					expect(gitCalls).toEqual([]);
+				} finally {
+					nodeSpawns.mockRestore();
+					bunSpawns.mockRestore();
+				}
 			} finally {
-				nodeSpawns.mockRestore();
-				bunSpawns.mockRestore();
+				for (const [name, value] of saved) {
+					if (value === undefined) delete process.env[name];
+					else process.env[name] = value;
+				}
 			}
-		} finally {
-			for (const [name, value] of saved) {
-				if (value === undefined) delete process.env[name];
-				else process.env[name] = value;
-			}
-		}
+		});
 	});
 });

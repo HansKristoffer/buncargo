@@ -1,7 +1,4 @@
 import { describe, expect, it, spyOn } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { defineDevConfig } from "../config";
 import { applyIntegrations } from "../config/integrations";
 import { resolveApps, resolveServices } from "../config/resolve";
@@ -20,12 +17,15 @@ import { computeDevIdentity, findMonorepoRoot } from "./ports";
 import * as registryFile from "./registry-file";
 import { adoptLiveCaptures } from "./run-publish";
 import { buildRunEntry, publishRun } from "./run-registry";
-import { withoutCiEnv } from "./test-env.testing";
+import { useTempHome, withoutCiEnv } from "./test-env.testing";
 import { getEnvVar } from "./utils";
 
+// Each test reads and writes the registry and claims of a home of its own.
+useTempHome();
+
 /**
- * A run of this checkout serving named hosts, as the registry records it, in
- * a temporary HOME: what `getEnvVar` reads as the named URLs being live.
+ * A run of this checkout serving named hosts, as the registry records it:
+ * what `getEnvVar` reads as the named URLs being live.
  */
 async function withServingRun(
 	config: HostsTestConfig,
@@ -33,24 +33,16 @@ async function withServingRun(
 	/** Only these plan entries' routes, by name; all of them when absent. */
 	only?: string[],
 ): Promise<void> {
-	const savedHome = process.env.HOME;
-	const home = mkdtempSync(join(tmpdir(), "buncargo-getenv-hosts-"));
-	process.env.HOME = home;
-	try {
-		await upsertHostRoutes(
-			routesFromPlan(
-				planFor(config).filter(
-					(entry) => only === undefined || only.includes(entry.name),
-				),
-				{ root: findMonorepoRoot(), pid: process.pid },
+	await upsertHostRoutes(
+		routesFromPlan(
+			planFor(config).filter(
+				(entry) => only === undefined || only.includes(entry.name),
 			),
-			{ owners: pidRouteOwners },
-		);
-		withoutCiEnv(check);
-	} finally {
-		process.env.HOME = savedHome;
-		rmSync(home, { recursive: true, force: true });
-	}
+			{ root: findMonorepoRoot(), pid: process.pid },
+		),
+		{ owners: pidRouteOwners },
+	);
+	withoutCiEnv(check);
 }
 
 /** The plan a run of this checkout serves, from the ports `getEnvVar` reports. */
@@ -198,12 +190,7 @@ describe("getEnvVar", () => {
 	// The plan alone handed a vite.config an https URL while the run was on
 	// localhost:port, or with no run at all; `env` said localhost meanwhile.
 	it("keeps localhost URLs while no run of the checkout serves its named hosts", () => {
-		const saved = {
-			HOME: process.env.HOME,
-			BUNCARGO_HOSTS: process.env.BUNCARGO_HOSTS,
-		};
-		const home = mkdtempSync(join(tmpdir(), "buncargo-getenv-hosts-"));
-		process.env.HOME = home;
+		const previousHosts = process.env.BUNCARGO_HOSTS;
 		delete process.env.BUNCARGO_HOSTS;
 		try {
 			const config = defineDevConfig({
@@ -216,11 +203,8 @@ describe("getEnvVar", () => {
 				/^http:\/\/localhost:\d+$/,
 			);
 		} finally {
-			for (const [name, value] of Object.entries(saved)) {
-				if (value === undefined) delete process.env[name];
-				else process.env[name] = value;
-			}
-			rmSync(home, { recursive: true, force: true });
+			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
+			else process.env.BUNCARGO_HOSTS = previousHosts;
 		}
 	});
 
@@ -314,12 +298,9 @@ describe("getEnvVar", () => {
 
 	it("emits the Tailscale URL a live run of the checkout serves, and the plain one before", async () => {
 		const saved = {
-			HOME: process.env.HOME,
 			BUNCARGO_HOSTS: process.env.BUNCARGO_HOSTS,
 			BUNCARGO_URL_HOST: process.env.BUNCARGO_URL_HOST,
 		};
-		const home = mkdtempSync(join(tmpdir(), "buncargo-getenv-tailscale-"));
-		process.env.HOME = home;
 		process.env.BUNCARGO_HOSTS = "tailscale";
 		delete process.env.BUNCARGO_URL_HOST;
 		const config = defineDevConfig({
@@ -376,7 +357,6 @@ describe("getEnvVar", () => {
 				if (value === undefined) delete process.env[name];
 				else process.env[name] = value;
 			}
-			rmSync(home, { recursive: true, force: true });
 		}
 	});
 });
@@ -407,40 +387,32 @@ describe("getEnvVar against the run", () => {
 	// A config.env callback reading captures or the workspace id answered
 	// one thing inside an app's vite.config.ts and another in the run.
 	it("answers captured env and the workspace id as the run gives them", async () => {
-		const savedHome = process.env.HOME;
-		const home = mkdtempSync(join(tmpdir(), "buncargo-getenv-parity-"));
-		process.env.HOME = home;
-		try {
-			const root = findMonorepoRoot();
-			await publishRun({
-				...buildRunEntry({
-					sessionId: "parity",
-					projectPrefix: "parity",
-					projectName: "parity",
-					root,
-					isWorktree: false,
-				}),
-				captures: { tunnelUrl: "https://tunnel.example" },
-			});
-			const run = createDevEnvironment(config, { root });
-			await adoptLiveCaptures(run);
-			const vars: Record<string, string> = run.buildEnvVars();
-			// The capture's env name and BUNCARGO_WORKSPACE_ID are not in the
-			// config's typed names.
-			const read = (name: string): unknown => getEnvVar(config, name as never);
+		const root = findMonorepoRoot();
+		await publishRun({
+			...buildRunEntry({
+				sessionId: "parity",
+				projectPrefix: "parity",
+				projectName: "parity",
+				root,
+				isWorktree: false,
+			}),
+			captures: { tunnelUrl: "https://tunnel.example" },
+		});
+		const run = createDevEnvironment(config, { root });
+		await adoptLiveCaptures(run);
+		const vars: Record<string, string> = run.buildEnvVars();
+		// The capture's env name and BUNCARGO_WORKSPACE_ID are not in the
+		// config's typed names.
+		const read = (name: string): unknown => getEnvVar(config, name as never);
 
-			for (const name of [
-				"PUBLIC_TUNNEL_URL",
-				"TUNNEL_CALLBACK",
-				"WORKSPACE",
-				"BUNCARGO_WORKSPACE_ID",
-			])
-				expect(read(name)).toBe(vars[name]);
-			expect(read("TUNNEL_CALLBACK")).toBe("https://tunnel.example/callback");
-		} finally {
-			process.env.HOME = savedHome;
-			rmSync(home, { recursive: true, force: true });
-		}
+		for (const name of [
+			"PUBLIC_TUNNEL_URL",
+			"TUNNEL_CALLBACK",
+			"WORKSPACE",
+			"BUNCARGO_WORKSPACE_ID",
+		])
+			expect(read(name)).toBe(vars[name]);
+		expect(read("TUNNEL_CALLBACK")).toBe("https://tunnel.example/callback");
 	});
 
 	// A vite.config.ts asking for three names read offsets.json, env files and

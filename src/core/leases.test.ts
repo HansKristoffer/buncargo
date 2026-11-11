@@ -1,6 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { beforeEach, describe, expect, it } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	acquireLease,
@@ -9,20 +8,14 @@ import {
 	releaseLeases,
 	transferLease,
 } from "./leases";
+import { useTempHome } from "./test-env.testing";
 
-const savedHome = process.env.HOME;
-let dir: string;
+const home = useTempHome();
 /** Where the leases live, under this test's own `HOME`. */
 let path: string;
 beforeEach(() => {
-	dir = mkdtempSync(join(tmpdir(), "buncargo-leases-"));
-	process.env.HOME = dir;
-	path = join(dir, ".buncargo", "leases.json");
-	mkdirSync(join(dir, ".buncargo"));
-});
-afterEach(() => {
-	process.env.HOME = savedHome;
-	rmSync(dir, { recursive: true, force: true });
+	path = join(home(), ".buncargo", "leases.json");
+	mkdirSync(join(home(), ".buncargo"));
 });
 
 const request = (sessionId: string) => ({

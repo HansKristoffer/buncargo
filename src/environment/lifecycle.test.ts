@@ -23,7 +23,7 @@ import {
 	loadScopeSecrets,
 	resolveScope,
 } from "../core/secrets/index";
-import { isolateHome } from "../core/test-env.testing";
+import { useTempHome } from "../core/test-env.testing";
 import { planStart } from "../planning";
 import type { ResolvedApp } from "../types";
 import type { DevEnvContext } from "./context";
@@ -36,7 +36,7 @@ import { createServiceWatch } from "./service-watch";
 
 // Starting and stopping take the project's lifecycle lock and record the
 // removal under `~/.buncargo`: a home of the test's own, never the developer's.
-isolateHome("buncargo-lifecycle-");
+useTempHome("all");
 
 function fixture() {
 	const events: string[] = [];
@@ -722,96 +722,93 @@ it("onlyServices starts just those services, with no app selecting them", async 
 	expect(events).not.toContain("up:db");
 });
 
-it("starts selected scope fetches before container preparation and skips containers-only", async () => {
-	const fake = startFakeInfisical();
-	const home = process.env.HOME;
-	const binary = process.env.BUNCARGO_INFISICAL_PATH;
-	process.env.HOME = fake.home;
-	process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
-	clearScopeSecretsCache();
-	fake.projects.app = { secrets: { KEY: "app" } };
-	fake.projects.preparation = { secrets: { KEY: "preparation" } };
-	const { ctx, lifecycle } = fixture();
-	ctx.config.secrets = { projectId: "preparation", siteUrl: fake.siteUrl };
-	const web = ctx.apps.web;
-	if (!web) throw new Error("fixture needs web");
-	const appScope = { projectId: "app", siteUrl: fake.siteUrl };
-	web.secrets = appScope;
-	const runtimeStart = ctx.runtime.ensureRunning;
-	try {
-		await lifecycle.start({
-			prepare: "containers",
-			startServers: false,
-			wait: false,
-			verbose: false,
-			watchdog: false,
-		});
-		expect(fake.cliCalls()).toEqual([]);
-		ctx.runtime.ensureRunning = async () => {
-			const deadline = Date.now() + 5000;
-			while (fake.requests.length < 2 && Date.now() < deadline)
-				await Bun.sleep(10);
-			expect(fake.requests).toHaveLength(2);
-		};
-		await lifecycle.start({
-			startServers: false,
-			wait: false,
-			verbose: false,
-			watchdog: false,
-		});
-		await Promise.all(
-			[ctx.config.secrets, appScope].map((scope) => {
-				const resolved = resolveScope(scope, undefined);
-				return resolved && loadScopeSecrets(resolved);
-			}),
-		);
-		expect(fake.cliCalls()).toHaveLength(1);
-	} finally {
-		ctx.runtime.ensureRunning = runtimeStart;
-		clearScopeSecretsCache();
-		fake.stop();
-		if (home === undefined) delete process.env.HOME;
-		else process.env.HOME = home;
-		if (binary === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
-		else process.env.BUNCARGO_INFISICAL_PATH = binary;
-	}
-});
+describe("Infisical secrets at start", () => {
+	// Sessions and secrets are cached under HOME: each test starts with none.
+	useTempHome();
 
-it("stops on an expired Infisical session before the claim or any container", async () => {
-	const fake = startFakeInfisical({ cliLogin: "prompt" });
-	const home = process.env.HOME;
-	const binary = process.env.BUNCARGO_INFISICAL_PATH;
-	// A developer's machine: CI and an exported token only warn.
-	const ambient = [...CI_ENV_VARS, "INFISICAL_TOKEN"].map(
-		(name) => [name, process.env[name]] as const,
-	);
-	for (const [name] of ambient) delete process.env[name];
-	process.env.HOME = fake.home;
-	process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
-	clearScopeSecretsCache();
-	const { ctx, events, lifecycle } = fixture();
-	ctx.config.secrets = { projectId: "p1", siteUrl: fake.siteUrl };
-	try {
-		const failure = await lifecycle
-			.start({ startServers: false, verbose: false, watchdog: false })
-			.catch((error: unknown) => error);
-
-		expect(failure).toBeInstanceOf(InfisicalLoginError);
-		expect((failure as InfisicalLoginError).message).toContain(
-			`infisical login --domain=${fake.siteUrl}`,
-		);
-		expect(events).not.toContain("claim");
-		expect(events).not.toContain("runtime");
-	} finally {
-		for (const [name, value] of ambient)
-			if (value !== undefined) process.env[name] = value;
+	it("starts selected scope fetches before container preparation and skips containers-only", async () => {
+		const fake = startFakeInfisical();
+		const binary = process.env.BUNCARGO_INFISICAL_PATH;
+		process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
 		clearScopeSecretsCache();
-		fake.stop();
-		if (home === undefined) delete process.env.HOME;
-		else process.env.HOME = home;
-		if (binary === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
-		else process.env.BUNCARGO_INFISICAL_PATH = binary;
-	}
+		fake.projects.app = { secrets: { KEY: "app" } };
+		fake.projects.preparation = { secrets: { KEY: "preparation" } };
+		const { ctx, lifecycle } = fixture();
+		ctx.config.secrets = { projectId: "preparation", siteUrl: fake.siteUrl };
+		const web = ctx.apps.web;
+		if (!web) throw new Error("fixture needs web");
+		const appScope = { projectId: "app", siteUrl: fake.siteUrl };
+		web.secrets = appScope;
+		const runtimeStart = ctx.runtime.ensureRunning;
+		try {
+			await lifecycle.start({
+				prepare: "containers",
+				startServers: false,
+				wait: false,
+				verbose: false,
+				watchdog: false,
+			});
+			expect(fake.cliCalls()).toEqual([]);
+			ctx.runtime.ensureRunning = async () => {
+				const deadline = Date.now() + 5000;
+				while (fake.requests.length < 2 && Date.now() < deadline)
+					await Bun.sleep(10);
+				expect(fake.requests).toHaveLength(2);
+			};
+			await lifecycle.start({
+				startServers: false,
+				wait: false,
+				verbose: false,
+				watchdog: false,
+			});
+			await Promise.all(
+				[ctx.config.secrets, appScope].map((scope) => {
+					const resolved = resolveScope(scope, undefined);
+					return resolved && loadScopeSecrets(resolved);
+				}),
+			);
+			expect(fake.cliCalls()).toHaveLength(1);
+		} finally {
+			ctx.runtime.ensureRunning = runtimeStart;
+			clearScopeSecretsCache();
+			fake.stop();
+			if (binary === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
+			else process.env.BUNCARGO_INFISICAL_PATH = binary;
+		}
+	});
+
+	it("stops on an expired Infisical session before the claim or any container", async () => {
+		const fake = startFakeInfisical({ cliLogin: "prompt" });
+		const binary = process.env.BUNCARGO_INFISICAL_PATH;
+		// A developer's machine: CI and an exported token only warn.
+		const ambient = [...CI_ENV_VARS, "INFISICAL_TOKEN"].map(
+			(name) => [name, process.env[name]] as const,
+		);
+		for (const [name] of ambient) delete process.env[name];
+		process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
+		clearScopeSecretsCache();
+		const { ctx, events, lifecycle } = fixture();
+		ctx.config.secrets = { projectId: "p1", siteUrl: fake.siteUrl };
+		try {
+			const failure = await lifecycle
+				.start({ startServers: false, verbose: false, watchdog: false })
+				.catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(InfisicalLoginError);
+			expect((failure as InfisicalLoginError).message).toContain(
+				`infisical login --domain=${fake.siteUrl}`,
+			);
+			expect(events).not.toContain("claim");
+			expect(events).not.toContain("runtime");
+		} finally {
+			for (const [name, value] of ambient)
+				if (value !== undefined) process.env[name] = value;
+			clearScopeSecretsCache();
+			fake.stop();
+			if (binary === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
+			else process.env.BUNCARGO_INFISICAL_PATH = binary;
+		}
+	});
 });
 
 it("keeps preparation services serial when seed.beforeApps opts into overlap", async () => {

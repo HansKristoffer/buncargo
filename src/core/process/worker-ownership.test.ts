@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { defineDevConfig } from "../../config";
 import { resolveApps } from "../../config/resolve";
 import { createDevEnvironment } from "../../environment";
-import { isolateHome } from "../test-env.testing";
+import { useTempHome } from "../test-env.testing";
 import { AppSupervision } from "./app-supervision";
 import { startDevServers } from "./dev-servers";
 import type { AppChild } from "./pty-app";
@@ -18,7 +18,7 @@ import {
 	stopWorker,
 } from "./worker-ownership";
 
-isolateHome("buncargo-worker-home-");
+useTempHome("all");
 
 const roots: string[] = [];
 afterEach(async () => {

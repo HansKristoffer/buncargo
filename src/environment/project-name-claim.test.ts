@@ -4,20 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { offsetClaimsOf } from "../core/offset-claims";
 import { CI_PROJECT_SUFFIX } from "../core/ports";
+import { useTempHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "./create-dev-environment";
 
-// The claims live in ~/.buncargo: never the developer's. The selection below
-// has no services, so no container runtime is asked anything.
-const originalHome = process.env.HOME;
+// The claims live in ~/.buncargo: each test starts with none. The selection
+// below has no services, so no container runtime is asked anything.
+useTempHome();
 const originalOffset = process.env.BUNCARGO_PORT_OFFSET;
 let scratch: string;
 beforeEach(() => {
 	scratch = mkdtempSync(join(tmpdir(), "buncargo-project-name-"));
-	process.env.HOME = join(scratch, "home");
 	delete process.env.BUNCARGO_PORT_OFFSET;
 });
 afterEach(() => {
-	process.env.HOME = originalHome;
 	if (originalOffset === undefined) delete process.env.BUNCARGO_PORT_OFFSET;
 	else process.env.BUNCARGO_PORT_OFFSET = originalOffset;
 	rmSync(scratch, { recursive: true, force: true });

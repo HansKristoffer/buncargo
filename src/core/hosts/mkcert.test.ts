@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withFileLock } from "../file-lock";
+import { useTempHome } from "../test-env.testing";
 import {
 	certificateShortfall,
 	linuxTrustAnchorPath,
@@ -112,7 +113,7 @@ describe("verifyCertFailureTrust", () => {
 });
 
 describe("mintCert", () => {
-	const savedHome = process.env.HOME;
+	useTempHome();
 
 	it("kills an mkcert that never exits and releases the certificate lock", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "buncargo-mint-"));
@@ -124,7 +125,6 @@ describe("mintCert", () => {
 				`#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 600\n`,
 			);
 			chmodSync(mkcertPath, 0o755);
-			process.env.HOME = dir;
 			const certPath = getCertPath();
 
 			await expect(
@@ -139,7 +139,6 @@ describe("mintCert", () => {
 				await withFileLock(certPath, async () => "acquired", { timeoutMs: 0 }),
 			).toBe("acquired");
 		} finally {
-			process.env.HOME = savedHome;
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});

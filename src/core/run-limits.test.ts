@@ -17,7 +17,8 @@ import {
 	readConnectionActivity,
 	terminateRun,
 } from "./run-limits";
-import { CHECKOUT_HOLD, LIVE, type RunEntry, runPhase } from "./run-registry";
+import { type RunEntry, runPhase } from "./run-registry";
+import { runEntry } from "./run-registry.testing";
 import {
 	DELETED_CHECKOUT_SETTLE_MS,
 	DETACHED_IDLE_LIMIT_MS,
@@ -27,26 +28,16 @@ const START = Date.parse("2026-11-03T08:00:00.000Z");
 const HOUR = 60 * 60_000;
 
 function entry(extra: Partial<RunEntry> = {}): RunEntry {
-	return {
-		sessionId: "s1",
-		projectPrefix: "demo",
-		projectName: "demo",
-		root: "/repo",
-		worktree: null,
+	return runEntry({
 		pid: 4242,
 		processIdentity: "v2:4242",
 		startedAt: new Date(START).toISOString(),
 		updatedAt: new Date(START).toISOString(),
-		lifecycle: LIVE,
-		hold: CHECKOUT_HOLD,
 		detached: true,
 		idleLimitMs: DETACHED_IDLE_LIMIT_MS,
 		hosts: { active: true, tld: "localhost" },
-		cli: { program: "bun" },
-		apps: [],
-		services: [],
 		...extra,
-	};
+	});
 }
 
 const counted = (proxy: Record<string, number> = {}): RunActivity => ({

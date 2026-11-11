@@ -6,14 +6,7 @@ import {
 	it,
 	setSystemTime,
 } from "bun:test";
-import {
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	claimOffset,
@@ -29,22 +22,17 @@ import {
 	StateFileUnreadableError,
 	StateFileVersionError,
 } from "./registry-file";
+import { useTempHome } from "./test-env.testing";
 
-const realHome = process.env.HOME;
-let home: string;
+const home = useTempHome();
 let root: string;
 
 beforeEach(() => {
-	home = mkdtempSync(join(tmpdir(), "buncargo-offset-claims-"));
-	root = mkdtempSync(join(home, "checkout-"));
-	process.env.HOME = home;
+	root = mkdtempSync(join(home(), "checkout-"));
 });
 
 afterEach(() => {
 	setSystemTime();
-	if (realHome === undefined) delete process.env.HOME;
-	else process.env.HOME = realHome;
-	rmSync(home, { recursive: true, force: true });
 });
 
 const T0 = Date.parse("2026-01-01T00:00:00.000Z");
@@ -170,7 +158,7 @@ describe("readAllOffsetClaims", () => {
 	it("reads a claim without its ports or usedAt as no claim", () => {
 		// 16.0 dropped the reader for claims older buncargo wrote with their
 		// offset alone, and `.buncargo/ports.json` that filled their ports.
-		mkdirSync(join(home, ".buncargo"), { recursive: true });
+		mkdirSync(join(home(), ".buncargo"), { recursive: true });
 		const claim = { offset: 300, projectName: "demo", updatedAt: "x" };
 		writeFileSync(
 			getOffsetClaimsPath(),
@@ -186,7 +174,7 @@ describe("readAllOffsetClaims", () => {
 	});
 
 	it("keeps a claim whose optional field is malformed, without that field", () => {
-		mkdirSync(join(home, ".buncargo"), { recursive: true });
+		mkdirSync(join(home(), ".buncargo"), { recursive: true });
 		const required = {
 			offset: 300,
 			ports: [5732],
@@ -227,7 +215,7 @@ describe("claimOffset", () => {
 			StateFileVersionError,
 		],
 	])("leaves %s untouched and throws", (_, bytes, errorType) => {
-		mkdirSync(join(home, ".buncargo"), { recursive: true });
+		mkdirSync(join(home(), ".buncargo"), { recursive: true });
 		writeFileSync(getOffsetClaimsPath(), bytes);
 
 		expect(() => claimAt(T0)).toThrow(errorType);

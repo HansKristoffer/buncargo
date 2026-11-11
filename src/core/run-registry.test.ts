@@ -1,5 +1,4 @@
 import {
-	afterEach,
 	beforeEach,
 	describe,
 	expect,
@@ -9,15 +8,12 @@ import {
 } from "bun:test";
 import {
 	mkdirSync,
-	mkdtempSync,
 	readdirSync,
 	readFileSync,
-	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
 import * as fsPromises from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { readProcessIdentity } from "./process-identity";
 import {
@@ -42,26 +38,16 @@ import {
 	runLivenessAsync,
 	runPhase,
 } from "./run-registry";
+import { DEAD_PID, runEntry } from "./run-registry.testing";
+import { useTempHome } from "./test-env.testing";
 
-const realHome = process.env.HOME;
-let dir: string;
+useTempHome();
 let path: string;
 
 beforeEach(() => {
-	dir = mkdtempSync(join(tmpdir(), "buncargo-runs-"));
-	process.env.HOME = dir;
 	path = getRunsPath();
 	mkdirSync(dirname(path), { recursive: true });
 });
-
-afterEach(() => {
-	if (realHome === undefined) delete process.env.HOME;
-	else process.env.HOME = realHome;
-	rmSync(dir, { recursive: true, force: true });
-});
-
-/** A pid that is certainly not running. */
-const DEAD_PID = 2 ** 22;
 
 const DB = { name: "db", status: "ready" as const };
 const CONTAINER = {
@@ -74,21 +60,13 @@ function timed(ms: number, inherited = false): RunHold {
 	return { kind: "timed", ms, inherited };
 }
 
+/** A live run (this process) of lullu with one app starting. */
 function makeRun(overrides: Partial<RunEntry> = {}): RunEntry {
-	const now = new Date().toISOString();
-	return {
-		sessionId: "s1",
+	return runEntry({
 		projectPrefix: "lullu",
 		projectName: "lullu-lullu",
 		root: "/repos/lullu",
-		worktree: null,
 		pid: process.pid,
-		startedAt: now,
-		updatedAt: now,
-		lifecycle: LIVE,
-		hold: CHECKOUT_HOLD,
-		hosts: null,
-		cli: { program: "/bin/bun" },
 		apps: [
 			{
 				name: "api",
@@ -98,9 +76,8 @@ function makeRun(overrides: Partial<RunEntry> = {}): RunEntry {
 				status: "starting",
 			},
 		],
-		services: [],
 		...overrides,
-	};
+	});
 }
 
 async function sessions(): Promise<string[]> {

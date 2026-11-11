@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import {
 	chmodSync,
 	mkdirSync,
@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { withFileLock } from "../file-lock";
+import { useTempHome } from "../test-env.testing";
 import {
 	certificateFingerprint,
 	certificateServes,
@@ -23,6 +24,9 @@ import {
 	syncCertificateForRoutes,
 } from "./certificates";
 import { getCertPath, getKeyPath } from "./paths";
+
+// Each test mints into, and reads from, a home of its own.
+const home = useTempHome();
 
 function tempDir(): string {
 	return mkdtempSync(join(tmpdir(), "buncargo-certs-test-"));
@@ -64,21 +68,8 @@ function installed(mkcertPath: string): MkcertSource {
 }
 
 describe("syncCertificateForRoutes", () => {
-	const originalHome = process.env.HOME;
-	const dirs: string[] = [];
-
-	afterEach(() => {
-		process.env.HOME = originalHome;
-		for (const dir of dirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
 	function sandbox(): { home: string; mkcertPath: string } {
-		const home = tempDir();
-		dirs.push(home);
-		process.env.HOME = home;
-		return { home, mkcertPath: fakeMkcert(home) };
+		return { home: home(), mkcertPath: fakeMkcert(home()) };
 	}
 
 	// Another run minting at the same moment has mkcert writing the same two
@@ -168,21 +159,8 @@ describe("syncCertificateForRoutes", () => {
 });
 
 describe("syncCertificateForRoutes without an installed mkcert", () => {
-	const originalHome = process.env.HOME;
-	const dirs: string[] = [];
-
-	afterEach(() => {
-		process.env.HOME = originalHome;
-		for (const dir of dirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
 	function sandbox(): string {
-		const home = tempDir();
-		dirs.push(home);
-		process.env.HOME = home;
-		return fakeMkcert(home);
+		return fakeMkcert(home());
 	}
 
 	function counted(download: () => Promise<string>) {
@@ -235,23 +213,9 @@ describe("syncCertificateForRoutes without an installed mkcert", () => {
 });
 
 describe("readCertificatePair", () => {
-	const originalHome = process.env.HOME;
-	const dirs: string[] = [];
-
-	afterEach(() => {
-		process.env.HOME = originalHome;
-		for (const dir of dirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
 	// Landing a new pair is two renames. A reader that ignores the lock can
 	// fall between them and bind a certificate against the previous key.
 	it("waits for an in-flight mint instead of reading mid-rename", async () => {
-		const home = tempDir();
-		dirs.push(home);
-		process.env.HOME = home;
-
 		const certPath = getCertPath();
 		mkdirSync(dirname(certPath), { recursive: true });
 		writeFileSync(certPath, "cert");
@@ -445,43 +409,32 @@ describe("certificateFingerprint", () => {
 });
 
 describe("readCertificatePair", () => {
-	const originalHome = process.env.HOME;
-	afterEach(() => {
-		process.env.HOME = originalHome;
-	});
-
 	// The daemon reads while a CLI mints under the lock: that is a mint in
 	// progress to retry, not a failed reload.
 	it("reads as undefined while a mint holds the certificate lock", async () => {
-		const home = tempDir();
-		process.env.HOME = home;
-		try {
-			mkdirSync(dirname(getCertPath()), { recursive: true });
-			writeFileSync(getCertPath(), "cert");
-			writeFileSync(getKeyPath(), "key");
-			let release!: () => void;
-			let held!: () => void;
-			const locked = new Promise<void>((resolve) => {
-				held = resolve;
+		mkdirSync(dirname(getCertPath()), { recursive: true });
+		writeFileSync(getCertPath(), "cert");
+		writeFileSync(getKeyPath(), "key");
+		let release!: () => void;
+		let held!: () => void;
+		const locked = new Promise<void>((resolve) => {
+			held = resolve;
+		});
+		const holder = withFileLock(getCertPath(), async () => {
+			held();
+			await new Promise<void>((resolve) => {
+				release = resolve;
 			});
-			const holder = withFileLock(getCertPath(), async () => {
-				held();
-				await new Promise<void>((resolve) => {
-					release = resolve;
-				});
-			});
-			await locked;
+		});
+		await locked;
 
-			expect(await readCertificatePair()).toBeUndefined();
-			release();
-			await holder;
-			expect(await readCertificatePair()).toEqual({
-				cert: "cert",
-				key: "key",
-			});
-		} finally {
-			rmSync(home, { recursive: true, force: true });
-		}
+		expect(await readCertificatePair()).toBeUndefined();
+		release();
+		await holder;
+		expect(await readCertificatePair()).toEqual({
+			cert: "cert",
+			key: "key",
+		});
 	});
 });
 

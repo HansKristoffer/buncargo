@@ -18,24 +18,22 @@ import {
 import { FileLockTimeoutError } from "../core/file-lock";
 import { externalStackProjectName } from "../core/ports";
 import { loadRuns } from "../core/run-registry";
+import { useTempHome } from "../core/test-env.testing";
 import { buildComposeModel } from "../docker-compose";
 import { service } from "../docker-compose/services";
 import type { BuncargoIntegration, DevConfig } from "../types";
 import { createDevEnvironment } from "./create-dev-environment";
 
+useTempHome("all");
 const saved = {
-	HOME: process.env.HOME,
 	BUNCARGO_PORT_OFFSET: process.env.BUNCARGO_PORT_OFFSET,
 	DOCKER_HOST: process.env.DOCKER_HOST,
 };
-let home = "";
 let root = "";
 
 beforeAll(() => {
-	home = mkdtempSync(join(tmpdir(), "buncargo-stacks-home-"));
 	root = mkdtempSync(join(tmpdir(), "buncargo-stacks-"));
 	writeFileSync(join(root, "package.json"), "{}");
-	process.env.HOME = home;
 	// No probing, and no daemon to reach should anything try.
 	process.env.BUNCARGO_PORT_OFFSET = "100";
 	process.env.DOCKER_HOST = "unix:///nonexistent/docker.sock";
@@ -46,7 +44,6 @@ afterAll(() => {
 		if (value === undefined) delete process.env[key];
 		else process.env[key] = value;
 	}
-	rmSync(home, { recursive: true, force: true });
 	rmSync(root, { recursive: true, force: true });
 });
 

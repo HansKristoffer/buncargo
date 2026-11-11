@@ -11,11 +11,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isProcessAlive } from "../core/process/lifecycle";
 import { shellQuote } from "../core/shell-quote";
-import { isolateHome } from "../core/test-env.testing";
+import { freePorts, useTempHome } from "../core/test-env.testing";
 import { clearDevEnvCache, loadDevEnv } from "../loader";
 import { createDevEnvironment } from "./create-dev-environment";
 
-isolateHome("buncargo-sessions-home-");
+useTempHome("all");
 
 it("does not retain cancellation listeners across preparation-only starts", async () => {
 	const root = mkdtempSync(join(tmpdir(), "buncargo preparation listeners "));
@@ -43,9 +43,14 @@ it("does not retain cancellation listeners across preparation-only starts", asyn
 it("runs independent same-checkout sessions and stops only the session's own apps", async () => {
 	const root = mkdtempSync(join(tmpdir(), "buncargo sessions "));
 	writeFileSync(join(root, "package.json"), '{"name":"sessions"}');
+	// Ports the OS just handed out, as they are: a hashed block can land on a
+	// port another project on the machine holds.
+	const [one, two] = freePorts(2);
+	const savedOffset = process.env.BUNCARGO_PORT_OFFSET;
+	process.env.BUNCARGO_PORT_OFFSET = "0";
 	writeFileSync(
 		join(root, "dev.config.ts"),
-		`export default { projectPrefix: 'sessions', services: {}, apps: { one: { port: 3100, devCommand: ${JSON.stringify(`${process.execPath} -e 'Bun.serve({port:Number(process.env.PORT),fetch:()=>new Response("one")})'`)} }, two: { port: 3101, devCommand: ${JSON.stringify(`${process.execPath} -e 'Bun.serve({port:Number(process.env.PORT),fetch:()=>new Response("two")})'`)} } }, options: {verbose: false} };`,
+		`export default { projectPrefix: 'sessions', services: {}, apps: { one: { port: ${one}, devCommand: ${JSON.stringify(`${process.execPath} -e 'Bun.serve({port:Number(process.env.PORT),fetch:()=>new Response("one")})'`)} }, two: { port: ${two}, devCommand: ${JSON.stringify(`${process.execPath} -e 'Bun.serve({port:Number(process.env.PORT),fetch:()=>new Response("two")})'`)} } }, options: {verbose: false} };`,
 	);
 	const [first, second] = await Promise.all([
 		loadDevEnv({ cwd: root, fresh: true }),
@@ -74,6 +79,8 @@ it("runs independent same-checkout sessions and stops only the session's own app
 			second.stop({ verbose: false }),
 		]);
 		clearDevEnvCache();
+		if (savedOffset === undefined) delete process.env.BUNCARGO_PORT_OFFSET;
+		else process.env.BUNCARGO_PORT_OFFSET = savedOffset;
 		rmSync(root, { recursive: true, force: true });
 	}
 });

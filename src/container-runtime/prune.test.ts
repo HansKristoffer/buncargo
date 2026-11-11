@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { CHECKOUT_HOLD, LIVE, type RunEntry } from "../core/run-registry";
+import type { RunEntry } from "../core/run-registry";
+import { runEntry } from "../core/run-registry.testing";
 import type { BuncargoContainer, BuncargoVolume } from "../types";
 import { orphanedVolumes, planVolumePrune } from "./prune";
 
@@ -23,23 +24,12 @@ function container(project: string): BuncargoContainer {
 }
 
 function run(projectName: string, extra: Partial<RunEntry> = {}): RunEntry {
-	return {
+	return runEntry({
 		sessionId: projectName,
-		projectPrefix: "demo",
 		projectName,
-		root: "/repo",
-		worktree: null,
-		pid: 1,
-		startedAt: "2026-09-22T10:00:00.000Z",
-		updatedAt: "2026-09-22T10:00:00.000Z",
-		lifecycle: LIVE,
-		hold: CHECKOUT_HOLD,
-		hosts: null,
-		cli: { program: "bun" },
-		apps: [],
 		services: [{ name: "db", status: "ready" }],
 		...extra,
-	};
+	});
 }
 
 describe("planVolumePrune", () => {

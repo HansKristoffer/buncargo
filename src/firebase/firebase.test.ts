@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { useTempHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "../environment";
 import type {
 	AnyDevEnvironment,
@@ -25,8 +26,8 @@ import {
 import { emulatorTmpDir, firebase } from "./index";
 import { readFirebaseProject } from "./project";
 
+useTempHome("all");
 const saved = {
-	HOME: process.env.HOME,
 	BUNCARGO_PORT_OFFSET: process.env.BUNCARGO_PORT_OFFSET,
 };
 let root = "";
@@ -50,7 +51,6 @@ beforeAll(() => {
 	root = mkdtempSync(join(tmpdir(), "buncargo-firebase-"));
 	writeFileSync(join(root, "package.json"), "{}");
 	writeFileSync(join(root, "firebase.json"), FIREBASE_JSON);
-	process.env.HOME = root;
 	process.env.BUNCARGO_PORT_OFFSET = "100";
 });
 

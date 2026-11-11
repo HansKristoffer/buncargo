@@ -1,38 +1,27 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { beforeEach, expect, test } from "bun:test";
+import { realpathSync } from "node:fs";
 import { FileLockTimeoutError, withFileLock } from "../file-lock";
 import { writeJsonDocument } from "../registry-file";
 import { buildRunEntry, publishRun } from "../run-registry";
 import { stateFilePath } from "../state-paths";
+import { useTempHome } from "../test-env.testing";
 import { intentsPath } from "./coordinator-state";
 import { leaveWhenIdle } from "./daemon";
 
 const ORIGIN = "http://127.0.0.1:9";
-let home: string;
-let savedHome: string | undefined;
+const home = useTempHome();
 
 beforeEach(async () => {
-	home = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-connectd-")));
-	savedHome = process.env.HOME;
-	process.env.HOME = home;
 	// This test process stands in for the run that wants sharing, so it is live.
 	await publishRun(
 		buildRunEntry({
 			sessionId: "late",
 			projectPrefix: "demo",
 			projectName: "demo",
-			root: home,
+			root: realpathSync(home()),
 			isWorktree: false,
 		}),
 	);
-});
-
-afterEach(() => {
-	if (savedHome === undefined) delete process.env.HOME;
-	else process.env.HOME = savedHome;
-	rmSync(home, { recursive: true, force: true });
 });
 
 const writeIntent = (origin = ORIGIN) =>

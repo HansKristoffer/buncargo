@@ -3,11 +3,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveApps } from "../../config/resolve";
+import { isTcpPortOpen } from "../network";
+import { freePorts } from "../test-env.testing";
 import { startDevServers } from "./dev-servers";
 import {
 	checkPortDrift,
 	type DriftProbe,
 	driftedPorts,
+	systemDriftProbe,
 	watchPortDrift,
 } from "./port-drift";
 import { emptyListenerSnapshot } from "./port-snapshot";
@@ -73,22 +76,71 @@ describe("checkPortDrift", () => {
 	});
 });
 
+describe("systemDriftProbe", () => {
+	it("names an app listening off its port while another process holds it", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-drift-"));
+		const [assigned, drifted] = freePorts(2);
+		// What Astro does when it finds :8021 held by a system service: the app
+		// takes the next port, and something foreign holds its own.
+		const app = Bun.spawn(
+			[
+				process.execPath,
+				"-e",
+				`Bun.serve({ port: ${drifted}, fetch: () => new Response("ok") }); setInterval(() => {}, 60000)`,
+			],
+			{ stdout: "ignore", stderr: "ignore" },
+		);
+		const holder = Bun.listen({
+			hostname: "127.0.0.1",
+			port: assigned,
+			socket: { data() {} },
+		});
+		try {
+			const deadline = performance.now() + 10_000;
+			while (!(await isTcpPortOpen(drifted, "127.0.0.1", 200))) {
+				if (performance.now() > deadline) throw new Error("app never listened");
+				await Bun.sleep(20);
+			}
+			const drift = await checkPortDrift(
+				[{ name: "marketing", pid: app.pid, port: assigned }],
+				systemDriftProbe({ root, projectName: "demo" }),
+				new AbortController().signal,
+			);
+			expect(drift?.message).toContain(
+				`marketing listens on :${drifted}, not its assigned :${assigned}`,
+			);
+		} finally {
+			holder.stop(true);
+			app.kill("SIGKILL");
+			await app.exited;
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("startDevServers port drift", () => {
 	it("fails an app that drifted off its port instead of waiting out its health timeout", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-drift-"));
-		const assigned = 46100 + Math.floor(Math.random() * 300);
-		const drifted = assigned + 1;
-		let holder: { stop(force?: boolean): void } | undefined;
-		const started = performance.now();
+		const [assigned, drifted] = freePorts(2);
+		// The app answers on no port, so only the drift report can end its
+		// readiness check before the health timeout.
+		const probe: DriftProbe = {
+			listeners: async () => {
+				const snapshot = emptyListenerSnapshot();
+				snapshot.pidsByPort.set(drifted, [appPid ?? -1]);
+				return snapshot;
+			},
+			foreignHolder: async () => ({ kind: "unidentified" }),
+			processTree: (pid) => [pid],
+		};
+		let appPid: number | undefined;
 		try {
-			// The app takes the next port, then something foreign takes its own:
-			// what Astro does when it finds :8021 held by a system service.
 			const run = startDevServers(
 				resolveApps({
 					marketing: {
 						port: assigned,
-						healthTimeout: 30000,
-						devCommand: `bun -e 'Bun.serve({ port: ${drifted}, fetch: () => new Response("ok") }); setInterval(() => {}, 60000)'`,
+						healthTimeout: 60_000,
+						devCommand: "sleep 60",
 					},
 				}),
 				root,
@@ -97,24 +149,17 @@ describe("startDevServers port drift", () => {
 				{
 					verbose: false,
 					waitForExit: false,
-					// Once its port was found free and the app spawned.
-					onAppPhase: (_name, life, previous) => {
-						if (life.pid === undefined || previous.pid !== undefined) return;
-						holder = Bun.listen({
-							hostname: "127.0.0.1",
-							port: assigned,
-							socket: { data() {} },
-						});
+					portDrift: probe,
+					onAppPhase: (_name, life) => {
+						appPid ??= life.pid;
 					},
 				},
 			);
 			await expect(run).rejects.toThrow(
 				`marketing listens on :${drifted}, not its assigned :${assigned}`,
 			);
-			expect(performance.now() - started).toBeLessThan(10000);
 		} finally {
-			holder?.stop(true);
 			await rm(root, { recursive: true, force: true });
 		}
-	}, 20000);
+	});
 });

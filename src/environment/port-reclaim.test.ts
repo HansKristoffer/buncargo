@@ -13,29 +13,26 @@ import {
 	readPortPlan,
 } from "../core/port-allocation";
 import { buildRunEntry, publishRun } from "../core/run-registry";
+import { useTempHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "./create-dev-environment";
 import { allocateReclaiming } from "./port-reclaim";
 
 // Claims and runs live under the test's own HOME. No container runtime
 // answers here (the preload's stubs), so a checkout holds containers only
 // through a finished run on record.
-const saved = {
-	HOME: process.env.HOME,
-	OFFSET: process.env.BUNCARGO_PORT_OFFSET,
-};
+useTempHome();
+const savedOffset = process.env.BUNCARGO_PORT_OFFSET;
 let dir: string;
 let newRoot: string;
 beforeEach(() => {
 	dir = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-reclaim-")));
-	process.env.HOME = join(dir, "home");
 	delete process.env.BUNCARGO_PORT_OFFSET;
 	newRoot = join(dir, "new");
 	mkdirSync(newRoot);
 });
 afterEach(() => {
-	process.env.HOME = saved.HOME;
-	if (saved.OFFSET === undefined) delete process.env.BUNCARGO_PORT_OFFSET;
-	else process.env.BUNCARGO_PORT_OFFSET = saved.OFFSET;
+	if (savedOffset === undefined) delete process.env.BUNCARGO_PORT_OFFSET;
+	else process.env.BUNCARGO_PORT_OFFSET = savedOffset;
 	rmSync(dir, { recursive: true, force: true });
 });
 

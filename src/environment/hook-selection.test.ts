@@ -2,32 +2,25 @@ import { afterAll, beforeAll, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { useTempHome } from "../core/test-env.testing";
 import type { DevConfig } from "../types";
 import { createDevEnvironment } from "./create-dev-environment";
 import { internalsOf } from "./internals";
 
-const saved = {
-	HOME: process.env.HOME,
-	BUNCARGO_PORT_OFFSET: process.env.BUNCARGO_PORT_OFFSET,
-};
-let home = "";
+useTempHome("all");
+const savedOffset = process.env.BUNCARGO_PORT_OFFSET;
 let root = "";
 
 beforeAll(() => {
-	home = mkdtempSync(join(tmpdir(), "buncargo-hook-selection-home-"));
 	root = mkdtempSync(join(tmpdir(), "buncargo-hook-selection-"));
 	writeFileSync(join(root, "package.json"), "{}");
-	process.env.HOME = home;
 	// No probing: the apps never bind.
 	process.env.BUNCARGO_PORT_OFFSET = "100";
 });
 
 afterAll(() => {
-	for (const [key, value] of Object.entries(saved)) {
-		if (value === undefined) delete process.env[key];
-		else process.env[key] = value;
-	}
-	rmSync(home, { recursive: true, force: true });
+	if (savedOffset === undefined) delete process.env.BUNCARGO_PORT_OFFSET;
+	else process.env.BUNCARGO_PORT_OFFSET = savedOffset;
 	rmSync(root, { recursive: true, force: true });
 });
 

@@ -16,6 +16,7 @@ import {
 	upsertHostRoutes,
 } from "../core/hosts";
 import { pidRouteOwners } from "../core/hosts/registry";
+import { useTempHome } from "../core/test-env.testing";
 import { lookupOnPath } from "../core/tool-binary";
 import type {
 	AppConfig,
@@ -29,18 +30,13 @@ import {
 	reclaimAppRoute,
 } from "./dev-hosts";
 
-// The routes registry lives in ~/.buncargo: never the developer's.
-const savedHome = process.env.HOME;
-let home = "";
+// The routes registry lives in ~/.buncargo: each test starts with none.
+useTempHome();
 let root = "";
 beforeEach(() => {
-	home = mkdtempSync(join(tmpdir(), "buncargo-reclaim-home-"));
 	root = mkdtempSync(join(tmpdir(), "buncargo-reclaim-"));
-	process.env.HOME = home;
 });
 afterEach(() => {
-	process.env.HOME = savedHome;
-	rmSync(home, { recursive: true, force: true });
 	rmSync(root, { recursive: true, force: true });
 });
 

@@ -1,6 +1,9 @@
-import { expect, it } from "bun:test";
+import { afterEach, beforeEach, expect, it, jest } from "bun:test";
 import { spawn } from "node:child_process";
 import { DetachedApp } from "./detached-app";
+
+beforeEach(() => jest.useFakeTimers());
+afterEach(() => jest.useRealTimers());
 
 // Watching read the process identity every second: one `ps` fork per second
 // per adopted app on macOS. Liveness is `kill(pid, 0)`; the identity is only
@@ -17,18 +20,17 @@ it("watches an adopted server by its pid alone, and reports its exit", async () 
 	const pid = server.pid ?? 0;
 	// An identity no process has: reading it would call the server gone.
 	const app = new DetachedApp(pid, "not-this-process");
-	const exited = Promise.withResolvers<number | null>();
-	app.once("exit", (code: number | null) => exited.resolve(code));
+	const exits: (number | null)[] = [];
+	app.on("exit", (code: number | null) => exits.push(code));
 	try {
 		app.watch();
-		const stillWatched = await Promise.race([
-			exited.promise.then(() => false),
-			Bun.sleep(1500).then(() => true),
-		]);
-		expect(stillWatched).toBe(true);
+		jest.advanceTimersByTime(3000);
+		expect(exits).toEqual([]);
 
 		process.kill(pid, "SIGKILL");
-		expect(await exited.promise).toBe(0);
+		await new Promise<void>((resolve) => server.once("exit", () => resolve()));
+		jest.advanceTimersByTime(1000);
+		expect(exits).toEqual([0]);
 	} finally {
 		app.dispose();
 		try {
