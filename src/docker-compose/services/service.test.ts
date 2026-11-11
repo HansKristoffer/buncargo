@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { defineDevConfig, validateConfig } from "../../config";
 import { buildSharedEnvValues, stringifyEnvValues } from "../../core/env";
 import { computeUrls } from "../../core/ports";
 import { DOCKER_PRESET_NAMES } from "../../core/service-presets";
@@ -74,6 +75,67 @@ describe("preset Compose models", () => {
 		);
 		const command = String(model.services.search?.command);
 		expect(interpolate(command, {})).toContain("--api-key=k$y ");
+	});
+});
+
+describe("minio and job helpers", () => {
+	it("serves MinIO on its own port 9000 whatever host port the config picks", () => {
+		const { model, env } = render({ storage: service.minio({ port: 9100 }) });
+		const [binding] = model.services.storage?.ports ?? [];
+		expect(interpolate(String(binding), env)).toBe("9110:9000");
+		expect(env.MINIO_URL).toBe("http://localhost:9110");
+	});
+
+	it("hands MinIO the credentials it gives the apps, with $ escaped for Compose", () => {
+		const minio = service.minio({ user: "app", password: "pa$sword" });
+		expect(minio.staticEnv).toEqual({
+			MINIO_ROOT_USER: "app",
+			MINIO_ROOT_PASSWORD: "pa$sword",
+		});
+		const { model, env } = render({ minio });
+		const environment = model.services.minio?.environment as Record<
+			string,
+			string
+		>;
+		expect(interpolate(environment.MINIO_ROOT_PASSWORD ?? "", env)).toBe(
+			"pa$sword",
+		);
+	});
+
+	it("keeps MinIO's Compose healthcheck, which jobs wait on, unless it is turned off", () => {
+		expect(
+			render({ minio: service.minio() }).model.services.minio?.healthcheck,
+		).toBeDefined();
+		const off = render({ minio: service.minio({ healthCheck: false }) });
+		expect(off.model.services.minio?.healthcheck).toBeUndefined();
+	});
+
+	it("builds a job a config accepts and a warm start can prove unchanged", () => {
+		// A helper function returning a job is where hand-written ones needed
+		// `as const`: the literal widened to `kind: string`.
+		const mc = (args: string[]) =>
+			service.job({
+				docker: {
+					image:
+						"cgr.dev/chainguard/minio-client@sha256:799a60aa839c0d79b53f1dccdddc974d0fe94282cca712fbfbad3b196f88d0ee",
+					command: args,
+					depends_on: { minio: { condition: "service_healthy" } },
+				},
+			});
+		const config = defineDevConfig({
+			projectPrefix: "jobs",
+			services: { minio: service.minio(), bucket: mc(["mb", "local/app"]) },
+		});
+		const kind: "job" = config.services.bucket.kind;
+		expect(kind).toBe("job");
+		expect(validateConfig(config)).toEqual([]);
+
+		const { model, env } = render(config.services);
+		expect(model.services.bucket?.restart).toBe("no");
+		expect(canProveServiceInputs(model, "bucket", env)).toBe(true);
+
+		// @ts-expect-error - a job publishes no port
+		service.job({ port: 1, docker: { image: "busybox:1" } });
 	});
 });
 
