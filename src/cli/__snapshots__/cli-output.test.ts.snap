@@ -439,20 +439,26 @@ Options:
   --migrate                      Run migrations (and Prisma generate) after services start
   --seed                         Run migrations, then the seed command
   --schema=<migrate|push>        How the Prisma schema is applied: its migrations, or \`prisma db push\` (implies --migrate)
+  --migrate-check                Fail (exit 2) when the Prisma schema has changes no migration contains, checked against a shadow database in this stack
   --slot                         Hold one of the machine's check slots from before the services start until teardown
   --services=<names>             Start only these services (default: every configured one)
+  --apps=<names>                 Start these apps (and their requiredApps) after preparation and wait until they are healthy
+  --build                        With --apps: run their buildCommand, then their prodCommand instead of devCommand
   --runtime=<docker|apple|auto>  Container runtime backend (default: docker)
   --help, -h                     Show this help message
   --                             Command to run with the checkout environment
 
 Exit codes:
   0  success
-  1  preparation failed, or bad arguments; otherwise the command's own code
+  1  preparation failed, an app failed to build or become healthy, or bad arguments; otherwise the command's own code
+  2  --migrate-check: the schema has changes no migration contains (before any command runs)
 
 Examples:
-  buncargo ci --migrate -- bun test             Services up, migrations applied, tests, teardown
-  buncargo ci --seed                            Check that migrations and the seed apply cleanly
-  buncargo ci --schema=push --slot -- bun test  A unit shard: the schema pushed, not migrated, inside a check slot
+  buncargo ci --migrate -- bun test                                  Services up, migrations applied, tests, teardown
+  buncargo ci --seed                                                 Check that migrations and the seed apply cleanly
+  buncargo ci --schema=push --slot -- bun test                       A unit shard: the schema pushed, not migrated, inside a check slot
+  buncargo ci --migrate-check                                        Fail when the schema has changes no migration contains
+  buncargo ci --seed --apps=api,web --build -- bunx playwright test  E2E: services seeded, apps built, started and healthy, tests, teardown
 
 
 --- stderr
@@ -1283,6 +1289,7 @@ command that runs another passes its code on. Other codes, by command:
   prisma           4  the database applied migrations this branch lacks (a squashed chain)
   secrets check    2  no usable session on a site: run the printed infisical login
   secrets check    3  signed in, but a scope could not be read (project, environment, access, network)
+  ci               2  --migrate-check: the schema has changes no migration contains (before any command runs)
   stop             2  a named app or service matched nothing
   stop             3  refused: left running (needs a confirmation or --force, or its process could not be identified)
   restart          2  no run of this checkout started the app
