@@ -199,7 +199,7 @@ describe("runSql", () => {
 	}
 
 	interface Recorded {
-		loads: boolean[];
+		loads: number;
 		started: string[];
 		spawned: { argv: string[]; stdin?: string; stdout: string }[];
 		stdinReads: number;
@@ -219,7 +219,7 @@ describe("runSql", () => {
 		const root = fixture(options.services);
 		let running = !options.down;
 		const recorded: Recorded = {
-			loads: [],
+			loads: 0,
 			started: [],
 			spawned: [],
 			printed: [],
@@ -227,9 +227,9 @@ describe("runSql", () => {
 			warned: [],
 		};
 		const deps: SqlDeps = {
-			loadEnv: async (readOnly) => {
-				recorded.loads.push(readOnly);
-				return loadDevEnv({ cwd: root, readOnly: true });
+			loadEnv: async () => {
+				recorded.loads += 1;
+				return loadDevEnv({ cwd: root });
 			},
 			execArgv: async (_env, request) =>
 				running ? ["exec", request.serviceName, ...request.command] : undefined,
@@ -264,7 +264,7 @@ describe("runSql", () => {
 	}
 
 	async function port(root: string): Promise<number> {
-		const env = await loadDevEnv({ cwd: root, readOnly: true });
+		const env = await loadDevEnv({ cwd: root });
 		return (env.ports as Record<string, number>).postgres as number;
 	}
 
@@ -273,7 +273,7 @@ describe("runSql", () => {
 
 		expect(await runSql(["--create-scratch=perf"], deps)).toBe(0);
 
-		expect(recorded.loads).toEqual([true, false]);
+		expect(recorded.loads).toBe(1);
 		expect(recorded.started).toEqual(["postgres"]);
 		expect(recorded.spawned[0]?.argv.at(-1)).toBe(
 			"create database scratch_perf",

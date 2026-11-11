@@ -44,7 +44,7 @@ export async function findDetachedApp(
 		includeCwd: false,
 	});
 	const owner = snapshot.owner(port);
-	if (!owner?.pids.length) return;
+	if (owner?.kind !== "process") return;
 	const result = await execAsync(
 		["ps", "-o", "pid=,pgid=", "-p", owner.pids.join(",")],
 		process.cwd(),

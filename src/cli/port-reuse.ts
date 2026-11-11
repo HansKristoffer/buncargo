@@ -122,7 +122,7 @@ function conflictDescriber(
 	}
 	return (port) => {
 		const owner = snapshot.owner(port);
-		if (!owner?.container) return undefined;
+		if (owner?.kind !== "container") return undefined;
 		return classifyPortOccupant(owner, {
 			...context,
 			runtime: options.runtime?.name,

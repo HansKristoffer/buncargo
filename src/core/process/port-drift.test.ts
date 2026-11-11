@@ -31,8 +31,7 @@ describe("driftedPorts", () => {
 describe("checkPortDrift", () => {
 	const probe = (holder: boolean, tree: number[]): DriftProbe => ({
 		listeners: async () => listeners({ 8022: [101], 9229: [100] }),
-		foreignHolder: async () =>
-			holder ? { pids: [], unidentified: true } : null,
+		foreignHolder: async () => (holder ? { kind: "unidentified" } : null),
 		processTree: () => tree,
 	});
 

@@ -10,17 +10,13 @@ import {
 } from "../core/tunnel";
 import { assertOnlyAppNames, pickApps, resolveSelectedApps } from "../planning";
 import type {
-	AppConfig,
-	ComputedPublicUrls,
 	DevEnvironment,
 	DevServerPids,
-	EnvValues,
 	OpenPublicTunnelsOptions,
 	OpenPublicTunnelsResult,
 	ResolvedApp,
-	ServiceConfig,
 } from "../types";
-import type { DevEnvContext } from "./context";
+import type { AnyApps, AnyServices, DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 import type { AppPipeline, Prepared } from "./pipeline";
 
@@ -55,13 +51,9 @@ export function assertAppWorkingDirectories(
  * `beforeServers`/`afterServers` for `start()` and the CLI alike, told the
  * prepared selection and bounded like every other hook.
  */
-export function createServerHookRunner<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues = EnvValues,
->(
-	ctx: DevEnvContext<TServices, TApps, TEnv>,
-	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
+export function createServerHookRunner(
+	ctx: DevEnvContext,
+	envVars: DevEnvVarsApi,
 ): (phase: "before" | "after", signal?: AbortSignal) => Promise<void> {
 	return async (phase, signal) => {
 		const hook =
@@ -75,20 +67,17 @@ export function createServerHookRunner<
 	};
 }
 
-export interface DevServersApi<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-> {
+export interface DevServersApi {
 	startServersOnly(options?: {
 		signal?: AbortSignal;
 		productionBuild?: boolean;
 		verbose?: boolean;
-		onlyApps?: Extract<keyof TApps, string>[];
-	}): Promise<DevServerPids<TApps>>;
+		onlyApps?: string[];
+	}): Promise<DevServerPids>;
 	waitForServersReady(options?: {
 		timeout?: number;
 		productionBuild?: boolean;
-		onlyApps?: Extract<keyof TApps, string>[];
+		onlyApps?: string[];
 		expandRequired?: boolean;
 		logReady?: boolean;
 		verbose?: boolean;
@@ -96,18 +85,14 @@ export interface DevServersApi<
 		onAppReady?: (name: string) => void;
 	}): Promise<void>;
 	openPublicTunnels(
-		options?: OpenPublicTunnelsOptions<TServices, TApps>,
-	): Promise<OpenPublicTunnelsResult<TServices, TApps>>;
+		options?: OpenPublicTunnelsOptions,
+	): Promise<OpenPublicTunnelsResult<AnyServices, AnyApps>>;
 }
 
-export function createServersApi<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues = EnvValues,
->(
-	ctx: DevEnvContext<TServices, TApps, TEnv>,
+export function createServersApi(
+	ctx: DevEnvContext,
 	appPipeline: AppPipeline,
-): DevServersApi<TServices, TApps> {
+): DevServersApi {
 	const { apps, services, ports, config } = ctx;
 
 	async function startServersOnly(
@@ -115,9 +100,9 @@ export function createServersApi<
 			signal?: AbortSignal;
 			productionBuild?: boolean;
 			verbose?: boolean;
-			onlyApps?: Extract<keyof TApps, string>[];
+			onlyApps?: string[];
 		} = {},
-	): Promise<DevServerPids<TApps>> {
+	): Promise<DevServerPids> {
 		const { productionBuild = false, verbose = true, onlyApps } = options;
 		const selected = resolveSelectedApps(apps, onlyApps);
 
@@ -147,7 +132,7 @@ export function createServersApi<
 	async function waitForServersReady(
 		options: {
 			productionBuild?: boolean;
-			onlyApps?: Extract<keyof TApps, string>[];
+			onlyApps?: string[];
 			expandRequired?: boolean;
 			logReady?: boolean;
 			verbose?: boolean;
@@ -179,8 +164,8 @@ export function createServersApi<
 	}
 
 	async function openPublicTunnels(
-		options: OpenPublicTunnelsOptions<TServices, TApps> = {},
-	): Promise<OpenPublicTunnelsResult<TServices, TApps>> {
+		options: OpenPublicTunnelsOptions = {},
+	): Promise<OpenPublicTunnelsResult<AnyServices, AnyApps>> {
 		const { names, waitForHealthy } = options;
 		const exposeList = names?.length ? names.join(",") : undefined;
 
@@ -194,7 +179,7 @@ export function createServersApi<
 		}
 
 		const { targets, unknownNames, notEnabledNames } = resolveExposeTargets(
-			{ services, apps, ports } as DevEnvironment<TServices, TApps>,
+			{ services, apps, ports } as DevEnvironment<AnyServices, AnyApps>,
 			exposeList,
 		);
 
@@ -230,7 +215,7 @@ export function createServersApi<
 		}
 
 		return {
-			publicUrls: { ...opened } as ComputedPublicUrls<TServices, TApps>,
+			publicUrls: { ...opened },
 			tunnels,
 			close,
 		};

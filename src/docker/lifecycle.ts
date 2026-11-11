@@ -74,7 +74,9 @@ async function translateComposeFailure(
 			runtime: dockerRuntimeAdapter({ binary }),
 			ports: [port],
 		});
-		throw new Error(formatPortOwner(port, owners.owner(port) ?? { pids: [] }));
+		throw new Error(
+			formatPortOwner(port, owners.owner(port) ?? { kind: "unidentified" }),
+		);
 	}
 	throw new Error(
 		message || `docker compose exited with code ${result.exitCode}`,

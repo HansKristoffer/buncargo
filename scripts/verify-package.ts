@@ -87,7 +87,7 @@ export default defineDevConfig({
 	writeFileSync(
 		join(consumer, "integration-cli.ts"),
 		`import { loadDevEnv } from "buncargo/api";
-const env = await loadDevEnv({ readOnly: true });
+const env = await loadDevEnv();
 const app = env.apps.firebase;
 if (!app || !("devCommand" in app)) throw new Error("no firebase app");
 const { stdout } = await env.exec(app.devCommand, { app: "firebase" });
@@ -233,7 +233,7 @@ const config = defineDevConfig({
   apps: { web: { port: 3000, devCommand: false } },
 });
 
-const env = createDevEnvironment(config, { root: process.cwd(), readOnly: true });
+const env = createDevEnvironment(config, { root: process.cwd() });
 const web: number = env.ports.web;
 // @ts-expect-error - published declarations must preserve configured keys
 void env.ports.missing;
@@ -246,10 +246,7 @@ const mixed = defineDevConfig({
   },
   apps: { jobs: { kind: "worker", devCommand: "bun run jobs.ts" } },
 });
-const mixedEnv = createDevEnvironment(mixed, {
-  root: process.cwd(),
-  readOnly: true,
-});
+const mixedEnv = createDevEnvironment(mixed, { root: process.cwd() });
 
 // @ts-expect-error - workers have no port
 void mixedEnv.ports.jobs;

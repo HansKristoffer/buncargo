@@ -169,7 +169,7 @@ describe("Apple's project service states", () => {
 			listing(stubCli(LS_JSON)),
 			"gey-main",
 		);
-		expect(states.map((state) => [state.service, state.running])).toEqual([
+		expect(states.map((state) => [state.service, state.serving])).toEqual([
 			["postgres", true],
 			["redis", false],
 		]);

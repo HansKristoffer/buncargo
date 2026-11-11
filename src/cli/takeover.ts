@@ -100,7 +100,7 @@ export async function stopRunningApps(
 		const owner = await getPortOwnerAsync(port, options);
 		// Already gone: the other run exited between classification and here.
 		if (!owner) continue;
-		if (owner.container) {
+		if (owner.kind === "container") {
 			throw new Error(
 				`App "${name}" on port ${port} is served by container ${owner.container.name}, not by a dev server this run can take over.`,
 			);

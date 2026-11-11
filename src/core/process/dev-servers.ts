@@ -194,7 +194,7 @@ async function prepareAppPort(
 			if (holder) {
 				const held = formatPortOwner(port, holder, { runtime: runtime?.name });
 				const stopIt =
-					holder.pids.length > 0
+					holder.kind === "process"
 						? `Stop it with \`kill ${holder.pids.join(" ")}\``
 						: "Stop it";
 				const refusal = `${name} cannot start: ${held}, which did not stop when buncargo stopped the leftover process on it. ${stopIt}, then start again.`;

@@ -54,7 +54,7 @@ describe("databaseOverrides", () => {
 			join(root, "dev.config.ts"),
 			"export default {projectPrefix:'execdb',services:{postgres:{port:5432}},apps:{api:{port:3000,devCommand:false}},env:(_p,urls)=>({DATABASE_URL_DIRECT:urls.postgres,SHADOW_DATABASE_URL:urls.postgres+'_shadow'}),prisma:{}};",
 		);
-		const env = await loadDevEnv({ cwd: root, readOnly: true });
+		const env = await loadDevEnv({ cwd: root });
 		return { env, port: (env.ports as Record<string, number>).postgres };
 	}
 

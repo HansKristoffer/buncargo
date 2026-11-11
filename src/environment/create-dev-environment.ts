@@ -4,11 +4,12 @@ import { resolveConfig } from "../config/resolve";
 import { labelledCaptures } from "../core/captured-values";
 import { waitForDevServers, waitForServer } from "../core/network";
 import { findMonorepoRoot } from "../core/ports";
-import { type PrimaryAppInput, resolvePrimaryApp } from "../core/primary-app";
+import { resolvePrimaryApp } from "../core/primary-app";
 import { createPrismaRunner } from "../prisma";
 import type {
 	AppConfig,
-	ComputedPublicUrls,
+	AppEnvVars,
+	ComputedEnvVars,
 	DevConfig,
 	DevEnvironment,
 	EnvValues,
@@ -19,7 +20,7 @@ import type {
 } from "../types";
 import { createCaptureRecorder } from "./captures";
 import { explainMissingContainers, withLossNotice } from "./container-loss";
-import { createDevEnvContext } from "./context";
+import { type AnyApps, type AnyServices, createDevEnvContext } from "./context";
 import { createEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
 import { registerInternals } from "./internals";
@@ -29,6 +30,12 @@ import { createAppPipeline } from "./pipeline";
 import { createRunClaimApi } from "./run-claim";
 import { createServerHookRunner, createServersApi } from "./servers";
 import { createServiceWatch } from "./service-watch";
+
+type EnvironmentOptions = {
+	suffix?: string;
+	containerRuntime?: string;
+	root?: string;
+} & SuffixedEnvironmentOptions;
 
 /**
  * Create a dev environment from a configuration.
@@ -55,24 +62,27 @@ export function createDevEnvironment<
 	TEnv extends EnvValues = EnvValues,
 >(
 	config: DevConfig<TServices, TApps, TEnv>,
-	options: {
-		suffix?: string;
-		containerRuntime?: string;
-		root?: string;
-		readOnly?: boolean;
-	} & SuffixedEnvironmentOptions = {},
+	options: EnvironmentOptions = {},
 ): DevEnvironment<TServices, TApps, TEnv> {
+	// The typed view, applied once: everything below reads the config with
+	// its keys unknown, and builds the same object either way.
+	return createEnvironment(
+		config as DevConfig<AnyServices, AnyApps>,
+		options,
+	) as unknown as DevEnvironment<TServices, TApps, TEnv>;
+}
+
+function createEnvironment(
+	config: DevConfig<AnyServices, AnyApps>,
+	options: EnvironmentOptions,
+): DevEnvironment<AnyServices, AnyApps> {
 	// Integrations transform the config before anything reads it; `withSuffix`
 	// re-applies them to the original, which is pure and gives the same result.
 	// They read project files from the checkout, wherever this process runs.
 	const root = options.root ?? findMonorepoRoot();
 	const applied = applyIntegrations(config, { root });
 	assertValidConfig(applied);
-	const resolved = resolveConfig(applied) as ResolvedDevConfig<
-		TServices,
-		TApps,
-		TEnv
-	>;
+	const resolved: ResolvedDevConfig = resolveConfig(applied);
 
 	const ctx = createDevEnvContext(resolved, { ...options, root });
 	const envVars = createEnvVarsApi(ctx);
@@ -83,12 +93,11 @@ export function createDevEnvironment<
 	const recordCapture = createCaptureRecorder(ctx, envVars);
 	const appPipeline = createAppPipeline({
 		root: ctx.root,
-		ports: ctx.ports as Record<string, number>,
+		ports: ctx.ports,
 		projectName: ctx.projectName,
 		unsetEnv: resolved.unsetEnv,
 		runtime: () => ctx.runtime,
-		appEnv: (name, production) =>
-			envVars.buildAppEnvVars(name as Extract<keyof TApps, string>, production),
+		appEnv: (name, production) => envVars.buildAppEnvVars(name, production),
 		runHook: createServerHookRunner(ctx, envVars),
 		waitForHealth: (apps, productionBuild, signal) =>
 			withLossNotice(missingContainers, () =>
@@ -119,14 +128,14 @@ export function createDevEnvironment<
 	const missingContainers = () =>
 		explainMissingContainers(ctx, runClaim.claimedAt ?? createdAt);
 
-	const env: DevEnvironment<TServices, TApps, TEnv> = {
+	const env: DevEnvironment<AnyServices, AnyApps> = {
 		// Configuration access
 		projectName: ctx.projectName,
 		projectPrefix: resolved.projectPrefix,
 		ports: ctx.ports,
 		urls: ctx.urls,
 		loopbackUrls: ctx.loopbackUrls,
-		publicUrls: ctx.publicUrls as ComputedPublicUrls<TServices, TApps>,
+		publicUrls: ctx.publicUrls,
 		workspaceId: ctx.workspaceId,
 		services: ctx.services,
 		apps: ctx.apps,
@@ -172,11 +181,7 @@ export function createDevEnvironment<
 			Object.assign(
 				labelledCaptures(resolved.apps ?? {}, ctx.captured),
 				...(resolved.integrations ?? []).map((integration) =>
-					integration.describe?.(
-						envVars.getHookContext() as unknown as Parameters<
-							NonNullable<typeof integration.describe>
-						>[0],
-					),
+					integration.describe?.(envVars.getHookContext()),
 				),
 			),
 		tasks: resolved.tasks,
@@ -194,9 +199,9 @@ export function createDevEnvironment<
 		resolvePrimaryApp: (selected) =>
 			resolvePrimaryApp({
 				apps: ctx.apps,
-				options: resolved.options as PrimaryAppInput["options"],
+				options: resolved.options,
 				selected,
-			}) as Extract<keyof TApps, string> | undefined,
+			}),
 
 		// Server management
 		startServers: (options = {}) =>
@@ -213,8 +218,19 @@ export function createDevEnvironment<
 			),
 
 		// Utilities
-		buildEnvVars: envVars.buildEnvVars,
-		buildAppEnvVars: envVars.buildAppEnvVars,
+		// Every computed name is set, which the env's record type cannot say.
+		buildEnvVars: (production) =>
+			envVars.buildEnvVars(production) as ComputedEnvVars<AnyServices, AnyApps>,
+		buildAppEnvVars: <TName extends string>(
+			name: TName,
+			production?: boolean,
+		) =>
+			envVars.buildAppEnvVars(name, production) as AppEnvVars<
+				AnyServices,
+				AnyApps,
+				EnvValues,
+				TName
+			>,
 		buildEnvFingerprint: envVars.buildEnvFingerprint,
 		setPublicUrls: ctx.setPublicUrls,
 		clearPublicUrls: ctx.clearPublicUrls,
@@ -243,7 +259,7 @@ export function createDevEnvironment<
 
 		// Advanced
 		withSuffix: (newSuffix, suffixed) =>
-			createDevEnvironment(config, {
+			createEnvironment(config, {
 				...options,
 				suffix: newSuffix,
 				data: suffixed?.data,

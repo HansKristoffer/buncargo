@@ -13,7 +13,7 @@ async function build(
 	only: readonly string[] | undefined,
 	discoveredOnly: boolean,
 ): Promise<number> {
-	const env = await loadDevEnv({ readOnly: true });
+	const env = await loadDevEnv();
 	const unknown = (only ?? []).filter((name) => !env.apps[name]);
 	if (unknown.length > 0) {
 		throw new CliError(`Unknown app(s): ${unknown.join(", ")}`, [

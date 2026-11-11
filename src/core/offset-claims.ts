@@ -1,7 +1,8 @@
 import { readFileSync, realpathSync } from "node:fs";
-import { getErrorMessage, isRecord, safeJsonParse } from "hanzio";
+import { getErrorMessage, isRecord, isString, safeJsonParse } from "hanzio";
 import { checkoutDeleted } from "./checkout-presence";
 import { withFileLock, withFileLockSync } from "./file-lock";
+import { arrayOf, type Guard, object } from "./json-shape";
 import {
 	readJsonDocumentSync,
 	StateFileUnreadableError,
@@ -130,13 +131,10 @@ export function getOffsetClaimsPath(): string {
 }
 
 function validate(value: unknown): OffsetClaimsDocument | undefined {
-	if (typeof value !== "object" || value === null) return undefined;
-	const document = value as Partial<OffsetClaimsDocument>;
-	if (document.version !== VERSION) return undefined;
-	if (typeof document.claims !== "object" || document.claims === null)
+	if (!isRecord(value) || value.version !== VERSION || !isRecord(value.claims))
 		return undefined;
 	const claims = Object.fromEntries(
-		Object.entries(document.claims).flatMap(([key, claim]) => {
+		Object.entries(value.claims).flatMap(([key, claim]) => {
 			const valid = validateClaim(claim);
 			return valid ? [[key, valid]] : [];
 		}),
@@ -144,17 +142,38 @@ function validate(value: unknown): OffsetClaimsDocument | undefined {
 	return { version: VERSION, claims };
 }
 
+const isInteger: Guard<number> = (value): value is number =>
+	Number.isInteger(value);
+
+const isRequiredClaim = object({
+	offset: isInteger,
+	ports: arrayOf(isInteger),
+	projectName: isString,
+	updatedAt: isString,
+	usedAt: isString,
+});
+
+/**
+ * A claim from its checked fields. An optional field of the wrong type is
+ * dropped rather than the claim, which still names its checkout's block.
+ */
 function validateClaim(value: unknown): OffsetClaim | undefined {
 	if (!isRecord(value)) return undefined;
-	const claim = value as Partial<OffsetClaim>;
-	const valid =
-		Number.isInteger(claim.offset) &&
-		typeof claim.projectName === "string" &&
-		typeof claim.updatedAt === "string" &&
-		typeof claim.usedAt === "string" &&
-		Array.isArray(claim.ports) &&
-		claim.ports.every((port) => Number.isInteger(port));
-	return valid ? (claim as OffsetClaim) : undefined;
+	const fields: Record<string, unknown> = value;
+	if (!isRequiredClaim(value)) return undefined;
+	const { offset, ports, projectName, updatedAt, usedAt } = value;
+	const claim: OffsetClaim = { offset, ports, projectName, updatedAt, usedAt };
+	for (const key of [
+		"reclaimedAt",
+		"root",
+		"suffix",
+		"deletedSeenAt",
+	] as const) {
+		const field = fields[key];
+		if (isString(field)) claim[key] = field;
+	}
+	if (fields.throwaway === true) claim.throwaway = true;
+	return claim;
 }
 
 /**

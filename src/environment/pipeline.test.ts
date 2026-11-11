@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveApps } from "../config/resolve";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
-import type { AppConfig, ResolvedApp, ServiceConfig } from "../types";
+import type { ResolvedApp } from "../types";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 import {
@@ -16,16 +16,10 @@ import { createServerHookRunner } from "./servers";
 
 const vars = {
 	getHookContext: (signal?: AbortSignal) => ({ signal }),
-} as unknown as DevEnvVarsApi<
-	Record<string, ServiceConfig>,
-	Record<string, AppConfig>
->;
+} as unknown as DevEnvVarsApi;
 
 /** A pipeline over a context that holds only what the test sets: its hooks and checkout. */
-function pipelineFor(
-	ctx: DevEnvContext<Record<string, ServiceConfig>, Record<string, AppConfig>>,
-	root = "/",
-) {
+function pipelineFor(ctx: DevEnvContext, root = "/") {
 	const deps: AppPipelineDeps = {
 		root,
 		ports: {},
@@ -77,10 +71,7 @@ it("cancels an uncooperative beforeServers hook before spawning", async () => {
 				},
 			},
 		},
-	} as unknown as DevEnvContext<
-		Record<string, ServiceConfig>,
-		Record<string, AppConfig>
-	>;
+	} as unknown as DevEnvContext;
 	const pipeline = pipelineFor(ctx);
 	const claimed = await pipeline.claimApps(prepared(resolveApps({})));
 	await expect(
@@ -113,10 +104,7 @@ it("cleans up spawned servers when the afterServers hook fails", async () => {
 				},
 			},
 		},
-	} as unknown as DevEnvContext<
-		Record<string, ServiceConfig>,
-		Record<string, AppConfig>
-	>;
+	} as unknown as DevEnvContext;
 	try {
 		const pipeline = pipelineFor(ctx, root);
 		const claimed = await pipeline.claimApps(prepared(apps));

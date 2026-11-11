@@ -246,6 +246,7 @@ describe("allocatePortBlock", () => {
 		const root = mkdtempSync(join(tmpdir(), "buncargo-shift-"));
 		const hashed = computeBaseOffset({ projectPrefix: "geysier" });
 		const foreign: PortOwner = {
+			kind: "process",
 			pids: [99999],
 			command: "vite",
 			cwd: "/other/project",
@@ -275,9 +276,7 @@ describe("allocatePortBlock", () => {
 		const root = mkdtempSync(join(tmpdir(), "buncargo-own-"));
 		const hashed = computeBaseOffset({ projectPrefix: "geysier" });
 		const ours: PortOwner = {
-			pids: [4242],
-			command: "container",
-			cwd: "/",
+			kind: "container",
 			container: {
 				id: "abc",
 				name: "geysier-main-postgres",
@@ -307,9 +306,7 @@ describe("allocatePortBlock", () => {
 		const root = mkdtempSync(join(tmpdir(), "buncargo-cross-"));
 		const hashed = computeBaseOffset({ projectPrefix: "geysier" });
 		const otherRuntime: PortOwner = {
-			pids: [4242],
-			command: "com.docker.backend",
-			cwd: "/",
+			kind: "container",
 			container: {
 				id: "abc",
 				name: "geysier-main-postgres-1",
@@ -345,7 +342,12 @@ describe("allocatePortBlock", () => {
 		);
 		if (!projectPrefix) throw new Error("no prefix hashes high");
 		const hashed = computeBaseOffset({ projectPrefix });
-		const foreign: PortOwner = { pids: [99999], command: "vite", cwd: "/x" };
+		const foreign: PortOwner = {
+			kind: "process",
+			pids: [99999],
+			command: "vite",
+			cwd: "/x",
+		};
 		try {
 			const plan = allocate({
 				projectPrefix,
@@ -366,8 +368,7 @@ describe("allocatePortBlock", () => {
 		const root = mkdtempSync(join(tmpdir(), "buncargo-full-"));
 		const hashed = computeBaseOffset({ projectPrefix: "geysier" });
 		const otherRuntime: PortOwner = {
-			pids: [4242],
-			command: "com.docker.backend",
+			kind: "container",
 			container: {
 				id: "abc",
 				name: "geysier-main-postgres-1",
@@ -452,7 +453,12 @@ it("a partial start cannot relocate the unselected claimed infrastructure", () =
 				services: { postgres: { port: 5432 } },
 				apps: resolveApps({ marketing: { port: 3000, devCommand: false } }),
 				probeNames: ["marketing"],
-				getOwner: () => ({ pids: [99999], command: "foreign", cwd: "/other" }),
+				getOwner: () => ({
+					kind: "process",
+					pids: [99999],
+					command: "foreign",
+					cwd: "/other",
+				}),
 			}),
 		).toThrow("claimed allocation: port 3100 held by process 99999");
 		expect(readOffsetClaims()[root]?.offset).toBe(100);
@@ -898,8 +904,7 @@ describe("offset claims", () => {
 				root: first,
 				services: {},
 				apps: resolveApps({ web: { port: 5173, devCommand: "true" } }),
-				getOwner: (port) =>
-					port === 25373 ? { pids: [], unidentified: true } : null,
+				getOwner: (port) => (port === 25373 ? { kind: "unidentified" } : null),
 				companionPorts: (ports) =>
 					ports.web === undefined ? [] : [ports.web + 20_000],
 			});
@@ -970,7 +975,12 @@ describe("offset claims", () => {
 				apps,
 				getOwner: (port) =>
 					port === 9099 + b.offset
-						? { pids: [99999], command: "java", cwd: "/elsewhere" }
+						? {
+								kind: "process",
+								pids: [99999],
+								command: "java",
+								cwd: "/elsewhere",
+							}
 						: null,
 			});
 			expect(third.offset).not.toBe(b.offset);
