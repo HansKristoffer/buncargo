@@ -136,6 +136,7 @@ export type {
 	PortOffsetProvenance,
 	PredeployConfig,
 	PredeployContext,
+	PredeployFailure,
 	// Prisma
 	PrismaConfig,
 	PrismaMigrateCheckOptions,

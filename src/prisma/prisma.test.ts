@@ -2,7 +2,11 @@ import { afterEach, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { databaseHealthCheck, installedPrismaMajor } from "./prisma";
+import {
+	databaseHealthCheck,
+	destructivePrismaAction,
+	installedPrismaMajor,
+} from "./prisma";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -45,4 +49,18 @@ it("waits for the database by its preset, whatever the service is keyed", () => 
 	expect(
 		databaseHealthCheck("postgres", { port: 5432, healthCheck: false }),
 	).toBe(false);
+});
+
+it("names the Prisma commands that can lose data", () => {
+	expect(destructivePrismaAction(["migrate", "reset", "--force"])).toContain(
+		"migrate reset",
+	);
+	expect(
+		destructivePrismaAction(["db", "push", "--accept-data-loss"]),
+	).toContain("--accept-data-loss");
+	expect(destructivePrismaAction(["db", "push", "--force-reset"])).toContain(
+		"--force-reset",
+	);
+	for (const safe of [["db", "push"], ["migrate", "dev"], ["studio"]])
+		expect(destructivePrismaAction(safe)).toBeUndefined();
 });

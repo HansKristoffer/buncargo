@@ -118,7 +118,8 @@ export function installNeed(dir: string): InstallNeed | undefined {
  * The commands that run the project's own code, so stale dependencies give
  * them phantom errors. Everything else (`stop`, `status`, `logs`, BuncargoBar's
  * buttons) never reinstalls under a running run, and never fails on an
- * install it did not need.
+ * install it did not need. Not `predeploy`: a deploy image's install layer
+ * comes from a cache older than its `bun.lock`, and a deploy installs nothing.
  */
 const PROJECT_COMMANDS = new Set([
 	"dev",
@@ -131,7 +132,6 @@ const PROJECT_COMMANDS = new Set([
 	"typecheck",
 	"check",
 	"ci",
-	"predeploy",
 	"setup",
 ]);
 

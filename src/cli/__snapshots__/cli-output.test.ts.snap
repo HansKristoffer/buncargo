@@ -262,7 +262,7 @@ Options:
   --help  Show this help message
 
 Examples:
-  bunx buncargo predeploy  Migrate, then seed unless production (e.g. Railway's preDeployCommand)
+  bunx buncargo predeploy  Migrate, then seed a named environment outside production (e.g. Railway's preDeployCommand)
 
 
 --- stderr

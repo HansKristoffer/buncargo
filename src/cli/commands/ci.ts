@@ -199,6 +199,27 @@ export async function handleCi(args: string[]): Promise<number> {
 		throw argumentsError(parsed.errors, "ci");
 	}
 
+	return withStatusOnStderr(() => runCi(parsed));
+}
+
+/**
+ * Run `work` with `console.log` writing to stderr. A wrapper's stdout is the
+ * wrapped command's alone, and the environment it starts and stops reports
+ * its progress with `console.log`. The command itself writes to the
+ * inherited file descriptor, past this.
+ */
+async function withStatusOnStderr<T>(work: () => Promise<T>): Promise<T> {
+	const { log, info } = console;
+	console.log = console.info = (...data: unknown[]) => console.error(...data);
+	try {
+		return await work();
+	} finally {
+		console.log = log;
+		console.info = info;
+	}
+}
+
+async function runCi(parsed: ReturnType<typeof parseCiArgs>): Promise<number> {
 	// Its own `<project>-ci` stack: tearing down with volumes must never reach
 	// the checkout's dev database, which is exactly what it would do if a
 	// developer ran this locally against the shared project.

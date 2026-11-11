@@ -252,11 +252,18 @@ export interface PredeployContext {
 export interface PredeployConfig {
 	/**
 	 * Variables naming the deploy environment, first set wins.
-	 * Default: `["SECRETS_ENV", "NODE_ENV"]`; neither set means `dev`.
+	 * Default: `["SECRETS_ENV", "NODE_ENV"]`. With none set the environment is
+	 * `dev`, and it is not seeded: a deploy that names nothing is not known to
+	 * be a throwaway one.
 	 */
 	environmentVars?: readonly string[];
 	/** Environment names that are never seeded. Default: `["prod", "production"]`. */
 	production?: readonly string[];
+	/**
+	 * The only environment names that are seeded, e.g. `["staging", "preview"]`.
+	 * Default: every named environment outside `production`.
+	 */
+	seedIn?: readonly string[];
 	/**
 	 * What to seed outside production. A command, run from the root, replaces
 	 * the dev run's `seed.command` (a deploy's database is remote, so its seeder
@@ -275,6 +282,29 @@ export interface PredeployConfig {
 	afterMigrate?: (ctx: PredeployContext) => void | Promise<void>;
 	/** After seeding, or after migrations when nothing was seeded. */
 	afterSeed?: (ctx: PredeployContext) => void | Promise<void>;
+	/**
+	 * When a step fails, before `predeploy` exits nonzero: to alert someone,
+	 * or to record the failure. What it throws is printed and the deploy
+	 * still fails.
+	 */
+	onFailure?: (
+		ctx: PredeployContext,
+		failure: PredeployFailure,
+	) => void | Promise<void>;
+}
+
+/** What {@link PredeployConfig.onFailure} is told about the failed step. */
+export interface PredeployFailure {
+	step: "beforeMigrate" | "migrate" | "afterMigrate" | "seed" | "afterSeed";
+	/** The migration's `name`, when `step` is `migrate`. */
+	migration?: string;
+	/** The error `predeploy` prints. */
+	message: string;
+	/**
+	 * The migration Prisma recorded as failed (P3009, P3018). Every later
+	 * deploy stops at it until `prisma migrate resolve` runs.
+	 */
+	failedPrismaMigration?: string;
 }
 
 /** A named app selection for `buncargo dev --profile=<name>`. */

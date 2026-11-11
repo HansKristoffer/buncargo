@@ -81,6 +81,7 @@ bunx buncargo exec --app=api -- bun scripts/inspect-runtime.ts
 bunx buncargo exec --db=scratch_migcheck -- bun test   # Database URLs point at another database
 bunx buncargo prisma <args>
 bunx buncargo prisma migrate-check  # Fail when migrations and schema differ
+bunx buncargo prisma migrate reset --yes  # Destructive: needs --yes without a terminal
 bunx buncargo wait --app=api --hold   # Block until an app is healthy (and stay)
 bunx buncargo generate            # Render generatedFiles without starting anything
 bunx buncargo build --discovered  # Every discovered app's build, in order
@@ -107,7 +108,7 @@ bunx buncargo check               # Biome, typecheck, gates and nearby tests for
 bunx buncargo check --staged      # The pre-commit hook: staged files, no writes
 bunx buncargo check --all         # Every check but the tests (lint)
 bunx buncargo check docs          # Only Markdown links and documented commands
-bunx buncargo predeploy           # Before a deploy: migrate, seed unless production
+bunx buncargo predeploy           # Before a deploy: migrate, seed a named environment outside production
 bunx buncargo slot -- bun test      # A heavy command in a check slot
 bunx buncargo help
 bunx buncargo help agents         # The guide for AI agents working in a checkout
@@ -121,7 +122,7 @@ one line and hands over to the version in the project's `node_modules`, with the
 A checkout without `node_modules` (a fresh worktree) installs itself before any command, and one
 whose `bun.lock` changed since its last install (a branch switch) before a command that runs the
 project (`dev`, `run`, `exec`, `slot`, `prisma`, `build`, `generate`, `typecheck`, `check`, `ci`,
-`predeploy`, `setup`; never `stop`, `status`, `logs` or the menu bar's buttons): the CLI prints one
+`setup`; never `stop`, `status`, `logs`, `predeploy` or the menu bar's buttons): the CLI prints one
 line, runs `bun install --frozen-lockfile` (the project's postinstall scripts included, its
 output on stderr so `--json` stays clean), and then runs the command. When that install fails, it stops with the
 install's output and asks for `bun install`. A project without `bun.lock` whose `package.json`
@@ -303,16 +304,22 @@ check: {
 },
 ```
 
-`buncargo predeploy` is the one-off step a host runs before each deploy (Railway's `preDeployCommand`). It applies the migrations a dev run applies (`prisma migrate deploy` in `prisma.cwd`, then `migrations`), then seeds unless the environment is production: `predeploy.seed` when it is a command (run from the root), `seed.command` when it is unset, nothing when it is `false`. It reads the config module only, and runs everything with the deploy's own environment: no ports, containers or buncargo secrets. The environment is the first of `SECRETS_ENV` and `NODE_ENV` that is set (else `dev`); `prod` and `production` are never seeded. A migration refused with Postgres's "remaining connection slots are reserved" is retried every 15 s, up to 20 times: on a small instance the previous deploy's pool and a sibling service's pre-deploy can hold every slot for a few minutes.
+`buncargo predeploy` is the one-off step a host runs before each deploy (Railway's `preDeployCommand`). It applies the migrations a dev run applies (`prisma migrate deploy` in `prisma.cwd`, then `migrations`), then seeds: `predeploy.seed` when it is a command (run from the root), `seed.command` when it is unset, nothing when it is `false`. It reads the config module only, and runs everything with the deploy's own environment: no ports, containers or buncargo secrets. The environment is the first of `SECRETS_ENV` and `NODE_ENV` that is set. With neither set it is `dev` and is not seeded, and predeploy says so; `prod` and `production` are never seeded, and with `predeploy.seedIn` only the environments it lists are. It never installs dependencies first, even when `bun.lock` is newer than `node_modules`.
+
+When Prisma reports a migration it recorded as failed (P3009, or P3018 as it fails), predeploy names it and prints the command that unblocks later deploys, which otherwise all stop at the same migration: `bunx prisma migrate resolve --rolled-back <name>` once what it applied is undone, or `--applied <name>` if it was finished by hand. `predeploy.onFailure` runs when any step fails, before the deploy exits nonzero; it gets the context and `{ step, migration?, message, failedPrismaMigration? }`. A migration refused with Postgres's "remaining connection slots are reserved" is retried every 15 s, up to 20 times: on a small instance the previous deploy's pool and a sibling service's pre-deploy can hold every slot for a few minutes.
 
 ```typescript
 predeploy: {
 	environmentVars: ["APP_ENV"], // default: ["SECRETS_ENV", "NODE_ENV"]
 	production: ["live"], // default: ["prod", "production"]
 	seed: "bun run seed --allow-remote", // default: seed.command; false: never
+	seedIn: ["staging", "preview"], // default: every named environment outside production
 	retry: { attempts: 10, delayMs: 30_000 }, // or false
 	afterMigrate: async ({ production, exec }) => {
 		if (!production) await exec("bun scripts/backfill.ts", { cwd: "apps/api" });
+	},
+	onFailure: async (ctx, failure) => {
+		await ctx.exec(`bun scripts/alert.ts "${failure.step}: ${failure.message}"`);
 	},
 },
 ```
@@ -328,7 +335,7 @@ predeploy: {
 - run: bunx buncargo prisma migrate-check
 ```
 
-`buncargo ci [--migrate] [--seed] [--services=a,b] -- <command>` starts the configured services (all of them, or `--services`), applies migrations and the seed with the same config as local, runs the command with the checkout env (but no Infisical secrets: a CI job should not need Infisical access for its tests; migrations and the seed keep their scopes), and tears everything down, volumes included. It runs as its own `<project>-ci` stack, with its own ports and compose file, so running it on a laptop never touches the checkout's dev database. A PR workflow then needs no `services: postgres` block or hand-written `DATABASE_URL`, and "migrations apply" and "the seed works" are tested exactly as they run locally. Without a command it only prepares; the exit code is the command's, or the seed's when that fails. `seed.check` is skipped, because a CI database is never warm.
+`buncargo ci [--migrate] [--seed] [--services=a,b] -- <command>` starts the configured services (all of them, or `--services`), applies migrations and the seed with the same config as local, runs the command with the checkout env (but no Infisical secrets: a CI job should not need Infisical access for its tests; migrations and the seed keep their scopes), and tears everything down, volumes included. It runs as its own `<project>-ci` stack, with its own ports and compose file, so running it on a laptop never touches the checkout's dev database. A PR workflow then needs no `services: postgres` block or hand-written `DATABASE_URL`, and "migrations apply" and "the seed works" are tested exactly as they run locally. Without a command it only prepares; the exit code is the command's, or the seed's when that fails. Its own progress goes to stderr, so stdout is the command's. `seed.check` is skipped, because a CI database is never warm.
 
 A run killed before its teardown (`SIGKILL`, a crashed runner) leaves its volumes behind. The next `buncargo ci` in the same checkout removes them before it starts, but only from its own `<project>-ci` project, and only when no container of that project is up and no run on record names it. A run still going is never touched.
 
@@ -679,6 +686,13 @@ Containers-only mode skips all preparation hooks, migrations, generation and see
 `dev --migrate` runs bootstrap and migrations through the same lifecycle path.
 Direct `buncargo prisma <args>` is a Prisma passthrough with the database environment;
 it does not run development bootstrap hooks or the complete preparation/seed lifecycle.
+It starts only the database, claims it while Prisma runs (so `ls`, `stop` and the sweep
+see it) and releases it into the usual idle hold when Prisma exits. Its stdout is Prisma's
+alone, so `buncargo prisma migrate diff --script > migration.sql` writes only SQL; its own
+lines go to stderr. `unsetEnv` does not apply to the Prisma CLI, which reads those variables
+to guard destructive actions in an agent's shell. Without a terminal, `migrate reset`,
+`db push --force-reset` and `db push --accept-data-loss` refuse unless `--yes` is passed
+(CI is exempt).
 Startup failure and cancellation retain shared-container ownership rules instead
 of tearing down other runs' resources.
 
@@ -1507,8 +1521,8 @@ The configuration reference covers the main public options; `src/types/all-types
 | `generatedFiles` | `{ path, render(ctx), gitignore? }[]` | `[]` | Files rendered from ports, URLs and captures. See [captures](#captured-output-and-generated-files) |
 | `typecheck` | `{ include?, exclude?, concurrency?, groups? }` | `undefined` | Directories `buncargo typecheck` checks beyond discovery, workspaces it leaves out, and named groups. See [typecheck](#cli-reference) |
 | `check` | `{ gates?, testCommand?, testExclude?, docs?, format? }` | `undefined` | Gates and tests for `buncargo check`. See [check](#buncargo-check-and-buncargo-predeploy) |
-| `predeploy` | `{ environmentVars?, production?, seed?, retry?, beforeMigrate?, afterMigrate?, afterSeed? }` | `undefined` | Settings and hooks for `buncargo predeploy`. See [predeploy](#buncargo-check-and-buncargo-predeploy) |
-| `unsetEnv` | `string[]` | `[]` | Variables removed from every process buncargo starts (apps, tasks, `exec`, migrations, the seed, prisma), e.g. those tools use to detect an agent's shell. buncargo's own environment is unchanged |
+| `predeploy` | `{ environmentVars?, production?, seedIn?, seed?, retry?, beforeMigrate?, afterMigrate?, afterSeed?, onFailure? }` | `undefined` | Settings and hooks for `buncargo predeploy`. See [predeploy](#buncargo-check-and-buncargo-predeploy) |
+| `unsetEnv` | `string[]` | `[]` | Variables removed from every process buncargo starts (apps, tasks, `exec`, migrations, the seed), e.g. those tools use to detect an agent's shell; a tool run through `exec` loses its own agent detection. The Prisma CLI `buncargo prisma` runs keeps them. buncargo's own environment is unchanged |
 
 Use the top-level `env` overlay for shared values (rewritten `WEB_URL`, `VITE_*`), and `apps.<name>.envVars` for app-only values.
 
@@ -1790,6 +1804,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `port … is held by an unidentified process` | A process this user cannot list (often a macOS service) holds it | Run `dev` again: allocation moves to a free block |
 | `… listens on :8022, not its assigned :8021` | The app moved to the next port because its own was taken | Run `dev` again; set `strictPort` (Vite, Astro's `vite.server`) so it fails instead of moving |
 | `--reset removes …'s volumes … Refusing without a terminal` | `--reset` / `--down --all` from a script or agent | Pass `--yes` if that is really meant |
+| `prisma migrate reset drops the database … Refusing without a terminal` | `buncargo prisma migrate reset` or `db push --force-reset`/`--accept-data-loss` from a script or agent | Pass `--yes` if that is really meant |
 | `Dependencies are installed (no node_modules)` | Fresh worktree | `bun install`, or `buncargo setup --yes` |
 | `This project's buncargo (package.json) is not installed` | `bunx buncargo` found a different buncargo than the project lists, and the project's is not installed | `bun install` |
 | `bun install --frozen-lockfile failed in <dir>` | The checkout installed itself and `bun.lock` does not match `package.json`, or a postinstall script failed | Fix what the install printed, then `bun install` |

@@ -167,6 +167,10 @@ export function scratchUrl(
 
 /** Presets picked when no service is named: the SQL databases. */
 const DEFAULT_PRESETS: readonly DockerPresetName[] = ["postgres", "clickhouse"];
+const PRESET_LABELS: Partial<Record<DockerPresetName, string>> = {
+	postgres: "Postgres",
+	clickhouse: "ClickHouse",
+};
 
 /**
  * SQL for the client: one `-c` query, or a script on its stdin. A script's
@@ -358,10 +362,14 @@ export function psqlHasOwnInput(clientArgs: readonly string[]): boolean {
 	});
 }
 
-/** The named service, or the first SQL database in the config. */
+/**
+ * The named service, or the config's first service of one of `presets`:
+ * `--db` in a config that lists ClickHouse first means its Postgres.
+ */
 function pickService(
 	services: Record<string, ServiceConfig>,
 	name: string | undefined,
+	presets: readonly DockerPresetName[],
 ): { name: string; preset: DockerPresetName; service: ServiceConfig } {
 	const candidates = Object.entries(services).flatMap(([key, service]) => {
 		const preset = inferDockerPreset(key, service);
@@ -378,12 +386,16 @@ function pickService(
 		);
 	}
 	const found = candidates.find((candidate) =>
-		DEFAULT_PRESETS.includes(candidate.preset),
+		presets.includes(candidate.preset),
 	);
-	if (!found)
-		throw new CliError("This config has no Postgres or ClickHouse service.", [
+	if (!found) {
+		const wanted = presets
+			.map((preset) => PRESET_LABELS[preset] ?? preset)
+			.join(" or ");
+		throw new CliError(`This config has no ${wanted} service.`, [
 			"Name one: buncargo sql <service>",
 		]);
+	}
 	return found;
 }
 
@@ -579,8 +591,12 @@ export async function runSql(
 	if (db !== undefined) assertDatabaseName(db, "--db");
 
 	let env = await deps.loadEnv(true);
-	const target = pickService(env.services, request.service);
 	const postgresOnly = scratch !== undefined || db !== undefined || request.url;
+	const target = pickService(
+		env.services,
+		request.service,
+		postgresOnly ? ["postgres"] : DEFAULT_PRESETS,
+	);
 	if (postgresOnly && target.preset !== "postgres")
 		throw new CliError(
 			`Scratch databases, --db and --url are Postgres only, and ${target.name} is ${target.preset}.`,
