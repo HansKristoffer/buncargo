@@ -12,6 +12,16 @@ and `commands`. Expo lives entirely there: without `expo()` no app is Expo.
 `cli/integration-commands.ts` dispatches `buncargo <name> <cmd>`, preferring the configured
 instance (its options) and falling back to the built-ins, so `expo sim` works without a config.
 
+The names an integration adds reach a config's types through `BuncargoIntegration<TAdds>` and the
+`integrations` tuple `defineDevConfig` infers. Before 16.0 they came from a global interface
+augmentation, so importing `buncargo/firebase` anywhere made `"firebase"` legal in every config.
+`TAdds` lives in a type-only `"~adds"` property; an integration typed plain `BuncargoIntegration`
+adds no names.
+
+The config's own values win over an integration's: its `env` over the integration's `env` keys, an
+app it defines over one the integration adds, and an app's `envVars` over `appEnv`. Shopify put its
+`env` on top until 16.0.
+
 ## Shopify
 
 - The CLI app is `essential: false` with `p`/`g` actions and no `interactive`. A `preflight`

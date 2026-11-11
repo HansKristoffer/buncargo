@@ -271,7 +271,8 @@ export type DeclaredAppEnvVars<TApp> = "envVars" extends keyof TApp
 
 /**
  * `TApps` with every position that names a service or app key narrowed to this
- * config's own keys.
+ * config's own keys, plus the keys its integrations add (`TAddedServices`,
+ * `TAddedApps`).
  *
  * The `envVars` parameters are spelled out with `NoInfer` rather than reused
  * from {@link EnvVarsBuilder}: a builder that reads `ports.web` would otherwise
@@ -303,14 +304,18 @@ type NoUnknownAppKeys<T> = {
 export type TypedAppDefinitions<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TAddedServices extends string = never,
+	TAddedApps extends string = never,
 > = {
 	[K in keyof TApps]: [TApps[K]] extends [never]
 		? TApps[K]
 		: AppDefinitionBase<TApps[K]> &
 				NoUnknownAppKeys<TApps[K]> & {
-					requiredServices?: readonly Extract<keyof TServices, string>[];
-					requiredApps?: readonly Extract<keyof TApps, string>[];
-					startAfter?: readonly Extract<keyof TApps, string>[];
+					requiredServices?: readonly (
+						Extract<keyof TServices, string> | TAddedServices
+					)[];
+					requiredApps?: readonly (Extract<keyof TApps, string> | TAddedApps)[];
+					startAfter?: readonly (Extract<keyof TApps, string> | TAddedApps)[];
 					envVars?: (
 						ports: NoInfer<
 							ComputedPorts<TServices, TypedAppDefinitions<TServices, TApps>>

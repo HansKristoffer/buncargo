@@ -31,3 +31,43 @@ describe("service and app keys", () => {
 		);
 	});
 });
+
+describe("nested sections", () => {
+	it("names unknown keys and wrong types in captures, watch, secrets, tasks and profiles", () => {
+		const errors = validateConfig({
+			projectPrefix: "myapp",
+			services: {},
+			secrets: { projectId: "p", only: "API_KEY" },
+			apps: {
+				web: {
+					port: 3000,
+					devCommand: "bun run dev",
+					captures: {
+						token: {
+							pattern: /t: (\S+)/,
+							as: "value",
+							secret: "yes",
+							envv: "X",
+						},
+					},
+					watch: { paths: ["src"], debounce: 100 },
+					secrets: { exclude: [""] },
+				},
+			},
+			tasks: { gen: { command: "bun gen", requiredService: ["db"] } },
+			profiles: { full: { apps: ["web"], app: "web" } },
+		});
+
+		expect(errors).toEqual(
+			expect.arrayContaining([
+				"secrets.only must be an array of secret names",
+				"apps.web.captures.token.envv is not an option (pattern, as, label, env, secret)",
+				"apps.web.captures.token.secret must be a boolean",
+				"apps.web.watch.debounce is not an option (paths, ignore, debounceMs)",
+				"apps.web.secrets.exclude must be an array of secret names",
+				"tasks.gen.requiredService is not an option (command, description, app, cwd, requiredServices)",
+				"profiles.full.app is not an option (apps, description)",
+			]),
+		);
+	});
+});

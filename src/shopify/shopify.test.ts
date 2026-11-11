@@ -364,6 +364,27 @@ describe("shopify()", () => {
 			}),
 		).toEqual([]);
 	});
+
+	it("lets the config's own env win over the values it adds", () => {
+		const root = repo({ "shopify.app.toml": TOML });
+		const base: IntegrationConfig = {
+			projectPrefix: "shop",
+			services: {},
+			apps: { platform: { port: 5173, devCommand: "bun dev" } },
+			env: () => ({ SHOPIFY_API_KEY: "own-key", OWN: "kept" }),
+		};
+		const config = shopify({ frontend: "platform" }).config?.(base, {
+			root,
+		}) as IntegrationConfig;
+
+		const env = (config.env as () => Record<string, string>)();
+		expect(env).toEqual({
+			SHOPIFY_APP_CONFIG: "shopify.app.toml",
+			SHOPIFY_API_KEY: "own-key",
+			SHOPIFY_DEV_STORE: "dev.myshopify.com",
+			OWN: "kept",
+		});
+	});
 });
 
 describe("helpers", () => {
