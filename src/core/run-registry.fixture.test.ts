@@ -120,6 +120,10 @@ describe("runs.json v1 fixture", () => {
 			expect(released?.releasedAt).toBe("2026-09-03T09:30:00.000Z");
 			expect(released?.idleTimeoutMs).toBe(180_000);
 			expect(released?.services[0]?.container?.runtime).toBe("docker");
+			// What the sweep stops once the checkout's own CLI is gone.
+			expect(released?.stacks?.[0]?.composeProject).toBe(
+				"lullu-t3code-released",
+			);
 			expect(released && alive(released)).toBe(false);
 
 			// A crashed run whose pid now belongs to another process (the stand-in,

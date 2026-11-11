@@ -1207,7 +1207,7 @@ exports[`buncargo CLI output buncargo typecheck --nope 1`] = `
 `;
 
 exports[`buncargo CLI output buncargo stop --nope 1`] = `
-"exit 3
+"exit 1
 --- stdout
 
 Usage: buncargo stop [<name>...] [options]
@@ -1243,12 +1243,11 @@ exports[`buncargo CLI output buncargo stop nope 1`] = `
 `;
 
 exports[`buncargo CLI output buncargo stop 1`] = `
-"exit 2
+"exit 0
 --- stdout
+  Nothing running for this checkout (<cwd>).
 
 --- stderr
-  ❌ No active buncargo run for <cwd>.
-   Run \`buncargo runs\` to see what is active.
 "
 `;
 
