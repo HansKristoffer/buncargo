@@ -3,7 +3,14 @@
 `createDevEnvironment()` lives in `src/environment/`. `context.ts` resolves identity, ports and URLs
 once into a `DevEnvContext`; `env-vars.ts`, `lifecycle.ts`, `servers.ts` and `run-claim.ts` are
 built on it, and `create-dev-environment.ts` only composes them. Extract a complex concern into a
-focused module (logging, seeding) rather than growing the composition. What `start()` leaves to the
+focused module (logging, seeding) rather than growing the composition.
+
+`context.ts` starts from `resolveCheckoutView` and builds every environment with `sharedEnv`
+(`core/checkout-view.ts`), the same two `getEnvVar` answers from. `getEnvVar` was a second copy
+that drifted: no captures, no `BUNCARGO_WORKSPACE_ID`, no CA path. It memoises the view per config
+object, keyed by root and `process.env`; live state (named URLs, captures) is read on every call.
+The context never shares the memo: an environment built after an allocation must read the new
+block, not the view from before it. What `start()` leaves to the
 CLI, and why, is in [what only `buncargo dev` does](./overview.md#what-only-buncargo-dev-does).
 
 ## Seeding

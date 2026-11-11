@@ -5,14 +5,17 @@ import type { ContainerRuntimeName } from "../types";
 import { buncargoCli, type CliInvocation } from "./cli-entry";
 import { withFileLock } from "./file-lock";
 import { getWorktreeName } from "./ports";
+import { isProcessAlive } from "./process/lifecycle";
 import {
 	processIdentityMatcherAsync,
 	readCurrentProcessIdentity,
 	readCurrentProcessIdentityAsync,
+	readProcessIdentitiesCached,
 } from "./process-identity";
 import {
 	defineListRegistry,
 	type ListRegistryReadOptions,
+	readJsonDocumentSync,
 } from "./registry-file";
 import { chownToInvokingUser, stateFilePath } from "./state-paths";
 
@@ -393,6 +396,47 @@ export async function loadRuns(
 	options: ListRegistryReadOptions = {},
 ): Promise<RunEntry[]> {
 	return registry.read(getRunsPath(), options);
+}
+
+/**
+ * What `root`'s live runs captured, the newest run winning, read the way
+ * `getEnvVar` inside a user's config can: synchronously and leniently, an
+ * unreadable registry reading as no captures. Process identity is read once
+ * per process for the runs it has not seen.
+ */
+export function readLiveCapturesSync(root: string): Record<string, string> {
+	const runs = (
+		readJsonDocumentSync(getRunsPath(), (value) =>
+			isRecord(value) &&
+			value.version === REGISTRY_VERSION &&
+			Array.isArray(value.runs)
+				? value.runs.filter(isRunEntry)
+				: undefined,
+		) ?? []
+	).filter(
+		(run) =>
+			run.root === root &&
+			run.releasedAt === undefined &&
+			isProcessAlive(run.pid),
+	);
+	const identities = readProcessIdentitiesCached(
+		runs.flatMap((run) => (run.processIdentity ? [run.pid] : [])),
+	);
+	const sameProcess = (run: RunEntry) => {
+		const actual = identities.get(run.pid);
+		return (
+			run.processIdentity === undefined ||
+			actual === undefined ||
+			actual === run.processIdentity
+		);
+	};
+	return Object.assign(
+		{},
+		...runs
+			.filter(sameProcess)
+			.sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+			.map((run) => run.captures ?? {}),
+	);
 }
 
 /**

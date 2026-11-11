@@ -94,8 +94,10 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   rest and returns the conflicts, each naming the owner's checkout, and the run serves the other
   hostnames. One conflict used to drop the whole plan.
 - `liveNamedHosts` (`registry.ts`) is the one answer to which of a checkout's named URLs are live:
-  `getEnvVar`, `env`, `status`, `url` and `open` all ask it, and name nothing from the plan alone.
-  A route is live when it is registered for the checkout at the plan's port by an owner still
+  `getEnvVar`, `env`, `status`, `url` and `open` all ask it through `readLiveNamedUrls`
+  (`core/checkout-view.ts`), entry by entry, and name nothing from the plan alone. They do not
+  also ask the daemon: all or nothing, one unserved hostname or a daemon restart printed
+  localhost for every app while the run's apps held https URLs. A route is live when it is registered for the checkout at the plan's port by an owner still
   running. `getEnvVar` asks it from inside users' configs, synchronously, and judges owners by
   process identity (`readLiveNamedHostsSync`), reading each pid's identity once per process
   (`readProcessIdentitiesCached`): on macOS a read is a `ps`, and a config is loaded several times

@@ -1,15 +1,16 @@
-import { anySignal, isDefined, recordFromKeys } from "hanzio";
+import { anySignal, recordFromKeys } from "hanzio";
 import {
-	buildSharedEnvValues,
-	mergeSharedEnvWithOverlay,
-	stringifyEnvValues,
-} from "../core/env";
+	envOverlayContext,
+	type SharedEnvExtras,
+	sharedEnv,
+} from "../core/checkout-view";
+import { stringifyEnvValues } from "../core/env";
 import { portableEnvFingerprint } from "../core/env-fingerprint";
 import { applyEnvOverrides, warnShadowedSecrets } from "../core/env-overrides";
 import { unallocatedPortsMessage } from "../core/port-exhaustion";
 import { toPortMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
-import { hostsDaemonPort, isCI, urlHostOverride } from "../core/runtime-flags";
+import { hostsDaemonPort, isCI } from "../core/runtime-flags";
 import {
 	describeSecretsError,
 	loadScopeSecrets,
@@ -26,11 +27,9 @@ import type {
 	EnvVarsBuilder,
 	ExecOptions,
 	HookContext,
-	HostsRuntime,
 	SecretsScopeConfig,
 	ServiceConfig,
 } from "../types";
-import { capturedEnv } from "./captures";
 import type { DevEnvContext, StartSelection } from "./context";
 
 export interface DevEnvVarsApi<
@@ -82,19 +81,6 @@ export interface DevEnvVarsApi<
 	): Promise<Record<string, string>>;
 }
 
-/**
- * The hosts Vite must accept for named URLs: every `.<tld>` name behind the
- * loopback daemon, or the machine names Tailscale serves apps under.
- */
-function namedAllowedHosts(hosts: HostsRuntime | null): string[] {
-	if (!hosts?.active) return [];
-	if (hosts.mode === "loopback") return [`.${hosts.tld}`];
-	const names = Object.values(hosts.tailscaleUrls).map(
-		(url) => new URL(url).hostname,
-	);
-	return [...new Set(names)];
-}
-
 export function createEnvVarsApi<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
@@ -104,57 +90,23 @@ export function createEnvVarsApi<
 ): DevEnvVarsApi<TServices, TApps, TEnv> {
 	const { config, services, apps, ports, urls, loopbackUrls, publicUrls } = ctx;
 
-	function overlayContext() {
+	function extras(production = false): SharedEnvExtras {
 		return {
-			env: ctx.inputEnv.merged,
-			projectName: ctx.projectName,
-			workspaceId: ctx.workspaceId,
-			localIp: ctx.localIp,
-			portOffset: ctx.portOffset,
-			publicUrls: publicUrls as ComputedPublicUrls<TServices, TApps>,
-			loopbackUrls,
+			production,
+			publicUrls: ctx.publicUrls,
 			captured: ctx.captured,
+			hosts: ctx.hosts,
 		};
 	}
 
 	function buildEnvVars(
 		production = false,
 	): ComputedEnvVars<TServices, TApps, TEnv> {
-		const shared = buildSharedEnvValues({
-			projectName: ctx.projectName,
-			production,
-			services,
-			ports,
-			urls,
-			loopbackUrls,
-			publicUrls: publicUrls as ComputedPublicUrls<TServices, TApps>,
-		});
-		Object.assign(shared, capturedEnv(apps, ctx.captured));
-		shared.BUNCARGO_WORKSPACE_ID = ctx.workspaceId;
-		if (ctx.hosts?.active && ctx.hosts.caPath) {
-			shared.NODE_EXTRA_CA_CERTS = ctx.hosts.caPath;
-		}
-		// Vite answers 403 to a Host it does not know. Comma-separated: the
-		// buncargo Vite plugin splits the list.
-		const allowedHosts = [
-			...new Set([...namedAllowedHosts(ctx.hosts), urlHostOverride()]),
-		].filter(isDefined);
-		if (allowedHosts.length > 0) {
-			shared.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS = allowedHosts.join(",");
-		}
-		// buildSharedEnvValues emits every computed name; TS cannot see that
-		// through the dynamic record it returns.
-		const merged = stringifyEnvValues(
-			mergeSharedEnvWithOverlay(
-				{ ...ctx.inputEnv.declared, ...shared },
-				config.env,
-				ports,
-				urls,
-				overlayContext(),
-			),
-		);
-		applyEnvOverrides(merged, ctx.envOverrides, ctx.inputEnv.declared);
-		return merged as ComputedEnvVars<TServices, TApps, TEnv>;
+		// sharedEnv emits every computed name; TS cannot see that through the
+		// dynamic record it returns.
+		return stringifyEnvValues(
+			sharedEnv(ctx, extras(production)),
+		) as ComputedEnvVars<TServices, TApps, TEnv>;
 	}
 
 	function buildAppEnvVars<TName extends Extract<keyof TApps, string>>(
@@ -213,7 +165,13 @@ export function createEnvVarsApi<
 		Object.assign(
 			processEnv,
 			appEnvBuilder
-				? stringifyEnvValues(appEnvBuilder(ports, urls, overlayContext()))
+				? stringifyEnvValues(
+						appEnvBuilder(
+							ports,
+							urls,
+							envOverlayContext(ctx, extras(production)),
+						),
+					)
 				: {},
 		);
 		// Above the app's own `envVars` too: an override is the checkout's last word.

@@ -1,10 +1,11 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineDevConfig } from "../config";
 import { applyIntegrations } from "../config/integrations";
 import { service } from "../docker-compose/services";
+import { createDevEnvironment } from "../environment";
 import type { AppConfig, HostsOptionsLike, ServiceConfig } from "../types";
 import { planNamedHosts } from "./hosts/plan";
 import {
@@ -13,7 +14,11 @@ import {
 	upsertHostRoutes,
 } from "./hosts/registry";
 import { activateTailscaleServe } from "./hosts/tailscale-serve";
+import { getPortsLockfilePath } from "./port-allocation";
 import { computeDevIdentity, findMonorepoRoot } from "./ports";
+import * as registryFile from "./registry-file";
+import { adoptLiveCaptures } from "./run-publish";
+import { buildRunEntry, publishRun } from "./run-registry";
 import { withoutCiEnv } from "./test-env.testing";
 import { getEnvVar, sleep } from "./utils";
 
@@ -397,6 +402,87 @@ describe("getEnvVar", () => {
 				else process.env[name] = value;
 			}
 			rmSync(home, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("getEnvVar against the run", () => {
+	const config = defineDevConfig({
+		projectPrefix: "parity",
+		services: {},
+		apps: {
+			tunnel: {
+				port: 4040,
+				devCommand: "bun run tunnel",
+				captures: {
+					tunnelUrl: {
+						pattern: /url=(\S+)/,
+						as: "value",
+						env: "PUBLIC_TUNNEL_URL",
+					},
+				},
+			},
+		},
+		env: (_ports, _urls, ctx) => ({
+			TUNNEL_CALLBACK: `${ctx.captured?.tunnelUrl}/callback`,
+			WORKSPACE: ctx.workspaceId,
+		}),
+	});
+
+	// A config.env callback reading captures or the workspace id answered
+	// one thing inside an app's vite.config.ts and another in the run.
+	it("answers captured env and the workspace id as the run gives them", async () => {
+		const savedHome = process.env.HOME;
+		const home = mkdtempSync(join(tmpdir(), "buncargo-getenv-parity-"));
+		process.env.HOME = home;
+		try {
+			const root = findMonorepoRoot();
+			await publishRun({
+				...buildRunEntry({
+					sessionId: "parity",
+					projectPrefix: "parity",
+					projectName: "parity",
+					root,
+					isWorktree: false,
+				}),
+				captures: { tunnelUrl: "https://tunnel.example" },
+			});
+			const run = createDevEnvironment(config, { root });
+			await adoptLiveCaptures(run);
+			const vars: Record<string, string> = run.buildEnvVars();
+			// The capture's env name and BUNCARGO_WORKSPACE_ID are not in the
+			// config's typed names.
+			const read = (name: string): unknown => getEnvVar(config, name as never);
+
+			for (const name of [
+				"PUBLIC_TUNNEL_URL",
+				"TUNNEL_CALLBACK",
+				"WORKSPACE",
+				"BUNCARGO_WORKSPACE_ID",
+			])
+				expect(read(name)).toBe(vars[name]);
+			expect(read("TUNNEL_CALLBACK")).toBe("https://tunnel.example/callback");
+		} finally {
+			process.env.HOME = savedHome;
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
+
+	// A vite.config.ts asking for three names read the lockfile, offsets.json,
+	// env files and routes three times.
+	it("reads the port lockfile once for several names", () => {
+		const lockfile = getPortsLockfilePath(findMonorepoRoot());
+		const reads = spyOn(registryFile, "readJsonDocumentSync");
+		try {
+			getEnvVar(config, "TUNNEL_PORT");
+			getEnvVar(config, "TUNNEL_URL");
+			getEnvVar(config, "WORKSPACE");
+			const lockfileReads = reads.mock.calls.filter(
+				([path]) => path === lockfile,
+			);
+			expect(lockfileReads).toHaveLength(1);
+		} finally {
+			reads.mockRestore();
 		}
 	});
 });

@@ -97,7 +97,9 @@ pieces it orchestrates.
   dead and they are a minute old, keeping the newest ended run's log.
   The parent waits on the run registry entry whose `pid` is the
   child's until every app has settled; an empty `apps` list is the claim, not "done", unless the
-  selection has no app to spawn. A child that exits 0 had nothing to keep running (every app
+  selection has no app to spawn. Whether it has one is the child's to say, in its report
+  (`expectApps`): the parent never loads the config, which cost a second environment build on
+  every `dev --detach`. A config error reaches the parent as the child's exit. A child that exits 0 had nothing to keep running (every app
   reused) and is a success, as it is for attached `dev`; its exit is checked before the entry,
   which can outlive it. The run hands the parent its failures in
   `.buncargo/logs/detached-report-<pid>.json`, one per run for the same reason
