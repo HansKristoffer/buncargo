@@ -1,9 +1,8 @@
 import {
+	collectScopes,
 	fetchScopeSecrets,
 	type InfisicalScope,
-	resolveScope,
-	scopeKey,
-} from "../core/secrets/infisical";
+} from "../core/secrets/index";
 import type { AppConfig, MigrationConfig, SecretsScopeConfig } from "../types";
 
 export interface StartSecretsSelection {
@@ -18,17 +17,18 @@ export interface StartSecretsSelection {
 export function startSecretScopes(
 	input: StartSecretsSelection,
 ): InfisicalScope[] {
-	const scopes = new Map<string, InfisicalScope>();
-	const add = (scope: SecretsScopeConfig | false | undefined) => {
-		if (scope === false) return;
-		const resolved = resolveScope(scope, input.defaults);
-		if (resolved) scopes.set(scopeKey(resolved), resolved);
-	};
-	for (const app of Object.values(input.apps))
-		if (app.secrets) add(app.secrets);
-	if (input.includeSeed) add(input.seed);
-	for (const migration of input.migrations) add(migration.secrets);
-	return [...scopes.values()];
+	return collectScopes(
+		[
+			...Object.entries(input.apps).flatMap(([name, app]) =>
+				app.secrets ? [[name, app.secrets] as const] : [],
+			),
+			...(input.includeSeed ? [["seed", input.seed] as const] : []),
+			...input.migrations.map(
+				(migration) => [migration.name, migration.secrets] as const,
+			),
+		],
+		input.defaults,
+	).map(({ scope }) => scope);
 }
 
 /** Fire early; consumers own warnings and await the same cached promises. */

@@ -1,62 +1,29 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { safeJsonParse } from "hanzio";
 import { childProcessEnv } from "../core/child-env";
-import { isVersionInRange, parseVersion } from "../core/version";
+import { cliTool } from "../core/integration-cli";
 
 /**
  * The Shopify CLI as buncargo drives it: which binary, which version, and
  * whether it is logged in, all without starting anything interactive.
  */
 
-/** Versions the integration is tested against: 3.90 and newer 3.x, and 4.x. */
-const TESTED_SHOPIFY_CLI = { min: "3.90.0", below: "5.0.0" } as const;
-
-/** The project's own CLI first, so every checkout runs its pinned version. */
-export function resolveShopifyBin(root: string): string {
-	const local = join(root, "node_modules", ".bin", "shopify");
-	return existsSync(local) ? local : "shopify";
-}
-
-export function isTestedShopifyVersion(version: string): boolean {
-	return isVersionInRange(
-		version,
-		TESTED_SHOPIFY_CLI.min,
-		TESTED_SHOPIFY_CLI.below,
-	);
-}
-
 /**
- * The environment of every `shopify` run, a project tool like any other
- * child. Passed explicitly: Bun's default is the environment this process
- * started with, which misses whatever the config set since (a `dotenv`
- * import, a `SHOPIFY_*` token), and the PATH the binary is looked up on.
+ * The Shopify CLI, tested against 3.90 and newer 3.x, and 4.x; looked up in
+ * the project root. Every run's environment is a project tool's like any
+ * other child's (a `dotenv` import, a `SHOPIFY_*` token), without analytics.
  */
-export function shopifyEnv(): NodeJS.ProcessEnv {
-	return { ...childProcessEnv(), SHOPIFY_CLI_NO_ANALYTICS: "1" };
-}
+export const shopifyCli = cliTool({
+	name: "shopify",
+	versionArgs: ["version"],
+	tested: { min: "3.90.0", below: "5.0.0" },
+	env: () => ({ ...childProcessEnv(), SHOPIFY_CLI_NO_ANALYTICS: "1" }),
+});
 
-/** How long a run nobody is watching may take; one with the terminal has no limit. */
-const VERSION_TIMEOUT_MS = 10_000;
+/** How long `app info` may take when nobody is watching; with the terminal it has no limit. */
 const APP_INFO_TIMEOUT_MS = 15_000;
-
-/** `shopify version`, or undefined when the binary cannot run. */
-export function shopifyVersion(bin: string, cwd: string): string | undefined {
-	try {
-		const result = Bun.spawnSync([bin, "version"], {
-			cwd,
-			stdout: "pipe",
-			stderr: "ignore",
-			env: shopifyEnv(),
-			timeout: VERSION_TIMEOUT_MS,
-		});
-		if (result.exitCode !== 0) return undefined;
-		return parseVersion(result.stdout.toString());
-	} catch {
-		return undefined;
-	}
-}
 
 /** Where `@shopify/cli-kit` keeps its `conf` store, per platform. */
 export function shopifySessionFile(
@@ -190,13 +157,13 @@ export function shopifyAppInfo(
 ): { ok: boolean; timedOut?: boolean; info?: Record<string, unknown> } {
 	try {
 		const result = Bun.spawnSync(
-			[resolveShopifyBin(root), "app", "info", "--config", config, "--json"],
+			[shopifyCli.resolve([root]), "app", "info", "--config", config, "--json"],
 			{
 				cwd: root,
 				stdin: options.terminal ? "inherit" : "ignore",
 				stdout: "pipe",
 				stderr: options.terminal ? "inherit" : "pipe",
-				env: shopifyEnv(),
+				env: shopifyCli.env(),
 				// A network call: it can hang, and nobody may be there to notice.
 				timeout: options.terminal
 					? undefined
@@ -217,10 +184,10 @@ export function shopifyAppInfo(
 
 /** `shopify auth login`, with the terminal. Throws when it does not succeed. */
 export function shopifyLogin(root: string): void {
-	const result = Bun.spawnSync([resolveShopifyBin(root), "auth", "login"], {
+	const result = Bun.spawnSync([shopifyCli.resolve([root]), "auth", "login"], {
 		cwd: root,
 		stdio: ["inherit", "inherit", "inherit"],
-		env: shopifyEnv(),
+		env: shopifyCli.env(),
 	});
 	if (result.exitCode !== 0) throw new Error("`shopify auth login` failed");
 }

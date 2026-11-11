@@ -9,12 +9,10 @@ import {
 import {
 	isShopifyAppLinked,
 	isShopifySessionExpired,
-	isTestedShopifyVersion,
 	readShopifySession,
-	resolveShopifyBin,
 	shopifyAppInfo,
+	shopifyCli,
 	shopifyLogin,
-	shopifyVersion,
 } from "./cli";
 import { describeChange, linkShopifyApp } from "./link";
 import { patchWebDirectories, SHOPIFY_WEB_DIR } from "./web";
@@ -89,7 +87,7 @@ export function shopifyChecks(input: { config: string }): SetupCheck[] {
 			name: "Shopify CLI is installed",
 			fast: false,
 			check: ({ root }) =>
-				shopifyVersion(resolveShopifyBin(root), root) !== undefined ||
+				shopifyCli.installed([root]) ||
 				failed("`shopify` is not in node_modules/.bin or on PATH"),
 			fix: "bun add -d @shopify/cli",
 		},
@@ -98,11 +96,9 @@ export function shopifyChecks(input: { config: string }): SetupCheck[] {
 			fast: false,
 			severity: "warning",
 			check: ({ root }) => {
-				const version = shopifyVersion(resolveShopifyBin(root), root);
+				const version = shopifyCli.version(shopifyCli.resolve([root]), root);
 				return (
-					!version ||
-					isTestedShopifyVersion(version) ||
-					failed(`found ${version}`)
+					!version || shopifyCli.isTested(version) || failed(`found ${version}`)
 				);
 			},
 		},

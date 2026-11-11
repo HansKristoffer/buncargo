@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AppConfig, SecretsScopeConfig } from "../../types";
+import { sessionOrganization } from "./auth";
 import { InfisicalLoginError } from "./errors";
 import {
 	type FakeInfisical,
@@ -18,8 +19,7 @@ import {
 	loadScopeSecrets,
 	missingRequiredSecrets,
 	resolveScope,
-	sessionOrganization,
-} from "./infisical";
+} from "./index";
 
 let fake: (FakeInfisical & { cliPath: string; home: string }) | undefined;
 const saved = {
@@ -424,6 +424,106 @@ describe("loadScopeSecrets with a machine identity", () => {
 	});
 });
 
+describe("a machine identity across scopes", () => {
+	it("signs in once per site and lists each scope: N scopes, N+1 calls", async () => {
+		const infisical = start();
+		infisical.projects.p2 = { secrets: { B: "2" } };
+		infisical.projects.p3 = { secrets: { C: "3" } };
+		mkdirSync(join(infisical.home, ".infisical"), { recursive: true });
+		writeFileSync(
+			join(infisical.home, ".infisical", "universal-auth.json"),
+			JSON.stringify({
+				clientId: "id",
+				clientSecret: "right",
+				siteUrl: infisical.siteUrl,
+			}),
+		);
+
+		expect(
+			await loadAppSecrets(
+				{ a: app("p1"), b: app("p2"), c: app("p3") },
+				{ env: noIdentity() },
+			),
+		).toEqual({
+			a: { OPENAI_API_KEY: "sk-project" },
+			b: { B: "2" },
+			c: { C: "3" },
+		});
+		expect(infisical.cliCalls()).toEqual([]);
+		expect(infisical.requests.sort()).toEqual([
+			"GET /api/v4/secrets",
+			"GET /api/v4/secrets",
+			"GET /api/v4/secrets",
+			"POST /api/v1/auth/universal-auth/login",
+		]);
+	});
+});
+
+describe("what a scope injects", () => {
+	async function outputOf(work: () => Promise<unknown>) {
+		const lines: string[] = [];
+		const { log, warn } = console;
+		console.log = (message: unknown) => lines.push(`log ${message}`);
+		console.warn = (message: unknown) => lines.push(`warn ${message}`);
+		try {
+			return { result: await work(), lines };
+		} finally {
+			Object.assign(console, { log, warn });
+		}
+	}
+
+	it("keeps only the listed keys, drops excluded ones, and names what each scope injects", async () => {
+		const infisical = start();
+		infisical.projects.p1 = {
+			secrets: {
+				DATABASE_URL: "postgres://x",
+				RESEND_KEY: "re_1",
+				SENTRY: "s",
+			},
+		};
+		const apps = {
+			api: app("p1", { secrets: { exclude: ["RESEND_KEY"] } }),
+			worker: app("p1", { secrets: { only: ["SENTRY", "MISSING"] } }),
+		};
+
+		const first = await outputOf(() =>
+			loadAppSecrets(apps, { env: noIdentity() }),
+		);
+		const again = await outputOf(() =>
+			loadAppSecrets(apps, { env: noIdentity() }),
+		);
+
+		expect(first.result).toEqual({
+			api: { DATABASE_URL: "postgres://x", SENTRY: "s" },
+			worker: { SENTRY: "s" },
+		});
+		expect(first.lines.sort()).toEqual([
+			expect.stringMatching(
+				/^log .*Infisical p1 dev for api: DATABASE_URL, SENTRY$/,
+			),
+			expect.stringMatching(/^log .*Infisical p1 dev for worker: SENTRY$/),
+		]);
+		expect(first.lines.join("\n")).not.toContain("postgres://x");
+		expect(infisical.requests).toEqual(["GET /api/v4/secrets"]);
+		// One line per scope per run, though a start loads its secrets twice.
+		expect(again.lines).toEqual([]);
+	});
+
+	it("warns when the shell's SECRETS_ENV hands dev another environment", async () => {
+		start();
+		const env = { ...noIdentity(), SECRETS_ENV: "prod" };
+		const apps = applySecretDefaults({ api: app("p1") }, undefined, env);
+
+		const { lines } = await outputOf(() => loadAppSecrets(apps, { env }));
+
+		expect(lines).toEqual([
+			expect.stringMatching(
+				/^warn .*SECRETS_ENV=prod in this shell: api get Infisical p1 prod: OPENAI_API_KEY\. Unset SECRETS_ENV/,
+			),
+		]);
+	});
+});
+
 describe("missingRequiredSecrets", () => {
 	it("names what each app would start without", () => {
 		expect(
@@ -615,7 +715,7 @@ describe("a failure that no login fixes", () => {
 
 	for (const cli of [{ cliLogin: "hang" }, { cliFails: true }] as const) {
 		it(`warns and goes on when the CLI ${"cliLogin" in cli ? "times out" : "fails"} and the site is unreachable`, async () => {
-			start(cli);
+			const infisical = start(cli);
 			const siteUrl = unreachableSite();
 			const apps = { api: app("p1", { secrets: { siteUrl } }) };
 
@@ -630,6 +730,9 @@ describe("a failure that no login fixes", () => {
 			expect(warnings).toHaveLength(1);
 			expect(warnings[0]).toContain(`Infisical at ${siteUrl} is unreachable`);
 			expect(warnings[0]).not.toContain("infisical login");
+			// The session check found the site unreachable; the fetch does not
+			// wait out the CLI and the probe again.
+			expect(infisical.cliCalls()).toHaveLength(1);
 		});
 	}
 

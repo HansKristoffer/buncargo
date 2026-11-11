@@ -2,10 +2,7 @@ import { expect, it } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
-import {
-	clearScopeSecretsCache,
-	loadAppSecrets,
-} from "../core/secrets/infisical";
+import { clearScopeSecretsCache, loadAppSecrets } from "../core/secrets/index";
 import { prefetchSecrets } from "./prefetch-secrets";
 
 it("prefetches distinct app, seed and migration scopes that consumers share", async () => {

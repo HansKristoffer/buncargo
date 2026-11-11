@@ -24,10 +24,7 @@ import {
 	type StrayLoopbackUrl,
 } from "../core/loopback-env";
 import { canBindPort } from "../core/process";
-import {
-	describeSecretsError,
-	fetchScopeSecrets,
-} from "../core/secrets/infisical";
+import { describeSecretsError, fetchScopeSecrets } from "../core/secrets/index";
 import {
 	prismaSchemaHash,
 	readGeneratedPrismaHash,

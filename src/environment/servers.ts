@@ -5,7 +5,7 @@ import { withDeadline } from "../core/deadline";
 import { waitForDevServers } from "../core/network";
 import { buildApps } from "../core/process/build";
 import { isCI } from "../core/runtime-flags";
-import { loadAppSecrets } from "../core/secrets/infisical";
+import { loadAppSecrets } from "../core/secrets/index";
 import {
 	resolveExposeTargets,
 	startPublicTunnels,

@@ -1,9 +1,11 @@
 # Secrets
 
-`src/core/secrets/infisical.ts` fetches each Infisical scope once per process, the way
-`hanzio/secrets` does, with the same defaults (EU `siteUrl`). Hanzio's public loader only returns
-named keys, so it is ported here rather than depended on; sharing code needs hanzio to export an
-all-keys fetch.
+`src/core/secrets/` fetches each Infisical folder once per process, the way `hanzio/secrets`
+does, with the same defaults (EU `siteUrl`). Hanzio's public loader only returns named keys, so it
+is ported here rather than depended on; sharing code needs hanzio to export an all-keys fetch and
+take buncargo's machine-wide CLI lock. `scope.ts` is pure (resolution, `collectScopes`, the
+`only`/`exclude` filter), `auth.ts` signs in, `fetch.ts` lists and caches, `app-secrets.ts` hands
+values to apps and commands.
 
 **Never log a value, and never echo the CLI's output or a response body in an error.** A failure
 warns once and continues, except a missing session (below). There is deliberately no command that
@@ -15,8 +17,10 @@ context. `secrets ls` prints key names, `secrets check` key counts.
 - `shared-request.ts` caches successful requests and gives each caller its own cancellation and
   timeout wait; the final waiter cancels and drains the underlying work before rejecting. CLI
   authentication shares the same lifetime across different scopes.
-- The CLI session token is cached per site and binary alongside scope fetches, and cleared by
-  `clearScopeSecretsCache`; organization exchanges stay per scope. A failed `user get token` is
+- The CLI session token is cached per site and binary, and a universal-auth token per site and
+  identity, alongside scope fetches, and cleared by `clearScopeSecretsCache`: N scopes cost one
+  sign-in and N lists. Organization exchanges stay per scope. A scope's `only` and `exclude` are
+  applied after the cache, so scopes that differ only in them share one fetch. A failed `user get token` is
   not cached. A token Infisical answers 401 to (expired, or a logout elsewhere) is forgotten and
   the CLI asked once more, so a long run's later scopes do not fail on what its first one cached.
 - The Infisical CLI is only asked for `infisical user get token`, under a `withFileLock` on
@@ -37,7 +41,8 @@ context. `secrets ls` prints key names, `secrets check` key counts.
   `dev` refused to start with advice that could not help. So after the lock is released, those
   two probe `siteUrl` once without credentials (any HTTP answer counts): unreachable becomes a
   plain `SecretsError`, which warns and continues. Only a printed login prompt, an empty answer
-  or a reachable site stays a login error.
+  or a reachable site stays a login error. The site stays unreachable for 30 s, so the fetches
+  after `ensureSecretsSession` fail at once instead of waiting out the CLI and the probe again.
 - A 403 is never a login problem. In one project the scope lacked `organizationId`; the old
   `infisical login` advice was wrong, and every app's loader then went to the CLI at once. The
   error names the project and the token's organization and points at `secrets.organizationId`.
@@ -60,6 +65,13 @@ context. `secrets ls` prints key names, `secrets check` key counts.
   identity file) replaces the CLI for apps and commands alike, sharing the per-scope cache.
 
 ## Where they go
+
+- `loadAppSecrets` prints one line per scope per process naming the keys it injects (a start loads
+  them twice). A key added to the shared environment reaches every checkout on its next start; a
+  Resend key once made every local sign-up send real mail, and nothing showed it. When the
+  injected environment is not `dev` and matches the shell's `SECRETS_ENV`, the line is a warning.
+  The default environment cannot come from the config's computed `env` overlay: scopes are
+  resolved before the claim, and the overlay needs ports.
 
 - `process/dev-servers.ts` injects app scopes in `startDevServers`, the one function both spawn
   paths reach, and refuses to spawn when a `secrets.required` key is missing everywhere.
