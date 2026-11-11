@@ -27,11 +27,18 @@ afterEach(() => {
 		rmSync(path, { recursive: true, force: true });
 });
 const executable = "#!/bin/sh\necho 'fixture version 1.2.3'\n";
-const installOptions = (to: string, fetcher: ToolFetch) => ({
+const sha256 = (payload: string | Uint8Array) =>
+	createHash("sha256").update(payload).digest("hex");
+const installOptions = (
+	to: string,
+	fetcher: ToolFetch,
+	payload: string | Uint8Array = executable,
+) => ({
 	to,
 	url: "https://downloads.example/tool",
 	versionArgs: ["--version"],
 	expectedVersion: /fixture version 1\.2\.3/,
+	sha256: sha256(payload),
 	fetch: fetcher,
 });
 
@@ -215,8 +222,9 @@ describe("installTool", () => {
 		const archive = join(root, "payload.tgz");
 		execFileSync("tar", ["-czf", archive, "-C", root, "fixture"]);
 		const to = join(root, "installed ' $; fixture");
+		const payload = readFileSync(archive);
 		await installTool({
-			...installOptions(to, async () => new Response(readFileSync(archive))),
+			...installOptions(to, async () => new Response(payload), payload),
 			archiveEntry: "fixture",
 		});
 		expect(isInstalledTool(to)).toBe(true);
@@ -231,8 +239,9 @@ describe("installTool", () => {
 		const archive = join(root, "payload.tgz");
 		execFileSync("tar", ["-czf", archive, "-C", root, "bottle"]);
 		const to = join(root, "installed");
+		const payload = readFileSync(archive);
 		await installTool({
-			...installOptions(to, async () => new Response(readFileSync(archive))),
+			...installOptions(to, async () => new Response(payload), payload),
 			archiveEntry: "bottle/1.2.3/bin/fixture",
 		});
 		expect(isInstalledTool(to)).toBe(true);
@@ -249,30 +258,72 @@ describe("installTool", () => {
 			const to = join(directory(), "installed");
 			await expect(
 				installTool({
-					...installOptions(to, async () => new Response("unused archive")),
+					...installOptions(
+						to,
+						async () => new Response("unused archive"),
+						"unused archive",
+					),
 					archiveEntry,
 				}),
 			).rejects.toThrow("relative path without traversal");
 			expect(existsSync(to)).toBe(false);
 		}
 	});
-	it("verifies GitHub asset digests when release metadata provides one", async () => {
+	it("refuses a download whose digest does not match and never runs it", async () => {
+		const dir = directory();
+		const to = join(dir, "fixture");
+		const ran = join(dir, "ran");
+		const payload = `#!/bin/sh\ntouch '${ran}'\necho 'fixture version 1.2.3'\n`;
+		await expect(
+			installTool({
+				...installOptions(to, async () => new Response(payload)),
+				sha256: sha256("the release asset"),
+			}),
+		).rejects.toThrow("checksum did not match");
+		expect(existsSync(ran)).toBe(false);
+		expect(existsSync(to)).toBe(false);
+	});
+	const published = {
+		repository: "example/tool",
+		version: "v9",
+		name: "fixture",
+		settings: { version: "TOOL_VERSION", path: "TOOL_PATH" },
+	};
+	it("verifies a chosen version against the digest its release publishes", async () => {
 		const to = join(directory(), "fixture");
-		const digest = createHash("sha256").update(executable).digest("hex");
 		const fetcher: ToolFetch = async (url) =>
 			url.includes("api.github.com")
 				? Response.json({
-						assets: [{ name: "fixture", digest: `sha256:${digest}` }],
+						assets: [
+							{ name: "fixture", digest: `sha256:${sha256(executable)}` },
+						],
 					})
 				: new Response(executable);
-		await installTool({
-			...installOptions(to, fetcher),
-			githubAsset: {
-				repository: "example/tool",
-				version: "v1",
-				name: "fixture",
-			},
-		});
+		await installTool({ ...installOptions(to, fetcher), sha256: published });
 		expect(isInstalledTool(to)).toBe(true);
 	});
+	for (const [label, release] of [
+		[
+			"publishes no digest",
+			() => Response.json({ assets: [{ name: "fixture" }] }),
+		],
+		["is rate limited", () => new Response("limit", { status: 403 })],
+	] as const) {
+		it(`fails closed, naming the settings, when the chosen version's release ${label}`, async () => {
+			const to = join(directory(), "fixture");
+			let assetRequested = false;
+			const fetcher: ToolFetch = async (url) => {
+				if (url.includes("api.github.com")) return release();
+				assetRequested = true;
+				return new Response(executable);
+			};
+			await expect(
+				installTool({ ...installOptions(to, fetcher), sha256: published }),
+			).rejects.toThrow(
+				"TOOL_VERSION=v9 has no pinned sha256, and none for fixture could be read from its GitHub release, so buncargo will not download it. Unset TOOL_VERSION to use the pinned version, or set TOOL_PATH to a binary you installed.",
+			);
+			expect(assetRequested).toBe(false);
+			expect(existsSync(to)).toBe(false);
+		});
+	}
 });

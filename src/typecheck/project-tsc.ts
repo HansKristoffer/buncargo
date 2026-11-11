@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import fg from "fast-glob";
+import { globPaths } from "./glob";
 import { workspacePatterns } from "./workspaces";
 
 /**
@@ -20,17 +20,20 @@ export async function resolveProjectTsc(root: string): Promise<string> {
 		current = parent;
 	}
 
-	const workspaceCopies = await fg(
-		workspacePatterns(root).map(
-			(pattern) => `${pattern}/node_modules/typescript/bin/tsc`,
-		),
-		{
-			cwd: root,
-			absolute: true,
-			ignore: ["**/node_modules/**/node_modules/**"],
-		},
-	);
-	if (workspaceCopies[0]) return workspaceCopies[0];
+	// The first workspace, in path order, with a TypeScript of its own.
+	for (const workspace of globPaths(workspacePatterns(root), root, {
+		directories: true,
+	})) {
+		const candidate = join(
+			root,
+			workspace,
+			"node_modules",
+			"typescript",
+			"bin",
+			"tsc",
+		);
+		if (existsSync(candidate)) return candidate;
+	}
 
 	throw new Error(
 		"No project TypeScript compiler found. Install typescript in the root or a declared workspace.",

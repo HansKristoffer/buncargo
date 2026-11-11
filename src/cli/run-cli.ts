@@ -563,7 +563,7 @@ async function runDevFlow<
 	// middle of startup output.
 	if (!args.oneShot) {
 		signal.throwIfAborted();
-		await offerMenuBarApp();
+		await offerMenuBarApp(signal);
 	}
 	// Kept for the TUI, which covers the scrollback they were printed in.
 	const printedHostsWarnings: string[] = [];
@@ -826,7 +826,7 @@ async function runDevFlow<
 	// Deliberately not awaited, and only after the run is on disk: an app that
 	// cannot read this registry has something to read the moment it updates,
 	// and a GitHub round trip never sits between the user and their servers.
-	void checkMenuBarAppUpdate();
+	void checkMenuBarAppUpdate(signal);
 
 	logSelectedAppsSummary({
 		...classifiedApps,

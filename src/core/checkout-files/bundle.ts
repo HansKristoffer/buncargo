@@ -44,14 +44,14 @@ export async function exportBundle(
 			readStoreManifest(dir)?.files ?? {},
 		).sort()) {
 			if (entry.machine && !options.includeMachine) continue;
-			const data = readStoreData(dir, path, entry);
-			if (!data) continue;
+			const read = readStoreData(dir, path, entry);
+			if (read.kind !== "ok") continue;
 			files.push({
 				path,
 				sha256: entry.sha256,
 				updatedAt: entry.updatedAt,
 				machine: entry.machine,
-				data: data.toString("base64"),
+				data: read.data.toString("base64"),
 			});
 		}
 		return { kind: BUNDLE_KIND, version: BUNDLE_VERSION, repoKey, files };
