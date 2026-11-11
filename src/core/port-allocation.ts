@@ -190,7 +190,7 @@ function portOwnerName(key: string): string {
  */
 export function candidateAllocationPorts(
 	input: Pick<
-		Parameters<typeof resolvePortPlan>[0],
+		AllocatePortBlockInput,
 		| "projectPrefix"
 		| "worktreeName"
 		| "suffix"
