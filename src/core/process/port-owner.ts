@@ -1,6 +1,5 @@
 import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { platform } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { promiseTimeout, typedSwitch } from "hanzio";
 import { containerRuntimeDisplayName } from "../../container-runtime/names";
@@ -125,24 +124,6 @@ function parsePids(output: string): number[] {
 
 export function getListeningPids(port: number): number[] {
 	try {
-		const os = platform();
-		if (os === "win32") {
-			const output = execSync(`netstat -ano | findstr :${port}`, {
-				encoding: "utf-8",
-				stdio: ["pipe", "pipe", "pipe"],
-			});
-			const pids: number[] = [];
-			for (const line of output.trim().split("\n")) {
-				if (!line.includes("LISTENING")) continue;
-				const parts = line.trim().split(/\s+/);
-				const pid = Number.parseInt(parts[parts.length - 1], 10);
-				if (!Number.isNaN(pid) && pid > 0) {
-					pids.push(pid);
-				}
-			}
-			return Array.from(new Set(pids));
-		}
-
 		const output = execSync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`, {
 			encoding: "utf-8",
 			stdio: ["pipe", "pipe", "pipe"],
