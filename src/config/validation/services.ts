@@ -1,12 +1,11 @@
 import { getErrorMessage } from "hanzio";
 import {
 	DOCKER_PRESET_NAMES,
-	inferDockerPreset,
 	isDockerPresetName,
-	resolveServiceEnvVarSources,
 } from "../../core/service-presets";
 import { resolveServiceDependencies } from "../../planning";
-import type { AnyDevConfig, ServiceConfig } from "../../types";
+import type { AnyDevConfig, ResolvedService, ServiceConfig } from "../../types";
+import { resolveService } from "../resolve";
 import type { ValidationContext } from "./context";
 
 export function validateServices(
@@ -21,6 +20,18 @@ export function validateServices(
 			Object.keys(integration.stacks ?? {}),
 		),
 	);
+	const resolved = new Map<string, ResolvedService>();
+	for (const [name, service] of Object.entries(config.services ?? {})) {
+		// An unknown preset is reported below, and resolves to nothing.
+		const docker = service.docker;
+		if (docker?.kind === "preset" && !isDockerPresetName(docker.preset))
+			continue;
+		try {
+			resolved.set(name, resolveService(name, service));
+		} catch (error) {
+			errors.push(getErrorMessage(error));
+		}
+	}
 	for (const [name, service] of Object.entries(config.services ?? {})) {
 		claimName(name, `services.${name}`);
 		if (service.port !== undefined) {
@@ -86,11 +97,23 @@ export function validateServices(
 		const dockerConfig = service.docker;
 		if (service.external) {
 			validateExternalService(name, service, stacks, errors);
-		} else if (!dockerConfig && !inferDockerPreset(name)) {
+		} else if (!dockerConfig && !isDockerPresetName(name)) {
 			errors.push(
-				`Service "${name}" must define docker config (helper or raw) because it has no built-in preset.`,
+				`Service "${name}" needs docker: a preset (docker: service.postgres(), or a key named after one: ${DOCKER_PRESET_NAMES.join(", ")}) or a raw Compose definition.`,
 			);
 		}
+
+		// Credentials go into a preset's container and URL; a custom container
+		// reads neither, and its URL comes from `urlTemplate`.
+		const custom =
+			!service.external &&
+			dockerConfig !== undefined &&
+			dockerConfig.kind !== "preset";
+		for (const field of ["database", "user", "password"] as const)
+			if (custom && service[field] !== undefined)
+				errors.push(
+					`Service "${name}" sets ${field}, which only a preset reads. Use docker: service.<preset>({ ${field} }), or put it in the image's environment and urlTemplate.`,
+				);
 
 		if (
 			dockerConfig?.kind === "preset" &&
@@ -101,7 +124,7 @@ export function validateServices(
 			);
 		}
 
-		const serviceEnvSources = resolveServiceEnvVarSources(name, service);
+		const serviceEnvSources = resolved.get(name)?.env ?? {};
 		for (const [envName, source] of Object.entries(serviceEnvSources)) {
 			if (service.port === undefined && source !== "secondaryPort") {
 				errors.push(
@@ -127,7 +150,10 @@ export function validateServices(
 	}
 
 	try {
-		resolveServiceDependencies(config.services, Object.keys(config.services));
+		resolveServiceDependencies(
+			Object.fromEntries(resolved),
+			Object.keys(config.services),
+		);
 	} catch (error) {
 		errors.push(getErrorMessage(error));
 	}

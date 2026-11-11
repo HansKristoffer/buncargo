@@ -16,11 +16,11 @@ import { resolvePrismaConfig } from "../prisma/config";
 import { appliedMigrationCount } from "../prisma/migrations-applied";
 import { generatePrismaClient, prismaClientStale } from "../prisma/schema-hash";
 import type {
-	AnyDevConfig,
 	AppConfig,
 	DevServerPids,
 	EnvValues,
 	MigrationConfig,
+	ResolvedService,
 	SeedOutcome,
 	SeedRunOptions,
 	ServiceConfig,
@@ -220,7 +220,6 @@ export function createLifecycleApi<
 						const count = await appliedMigrationCount({
 							root: ctx.root,
 							prisma: config.prisma,
-							serviceKey,
 							service,
 							url,
 							signal,
@@ -375,7 +374,7 @@ export function createLifecycleApi<
 			assertAppWorkingDirectories(appsToStart, ctx.root, productionBuild);
 		}
 
-		const targetServices: Record<string, ServiceConfig> = Object.fromEntries(
+		const targetServices: Record<string, ResolvedService> = Object.fromEntries(
 			startPlan.requiredServiceKeys.map(
 				(serviceKey) => [serviceKey, services[serviceKey]] as const,
 			),
@@ -475,15 +474,12 @@ export function createLifecycleApi<
 			let artifactReady = false;
 
 			async function ensureSubset(
-				subset: Record<string, ServiceConfig>,
+				subset: Record<string, ResolvedService>,
 				noDeps = false,
 			) {
 				// Stacks start themselves, beside Compose rather than after it.
 				const compose = composeServicesOf(subset);
-				const stacks = stacksForServices(
-					config as AnyDevConfig,
-					Object.keys(subset),
-				);
+				const stacks = stacksForServices(config, Object.keys(subset));
 				if (Object.keys(compose).length === 0 && stacks.length === 0) {
 					return;
 				}
@@ -735,7 +731,7 @@ export function createLifecycleApi<
 
 		const hasCompose = Object.keys(composeServicesOf(services)).length > 0;
 		// Every stack, not just this run's selection: stop means the environment.
-		const stacks = configuredStacks(config as AnyDevConfig);
+		const stacks = configuredStacks(config);
 		let down = true;
 		if (hasCompose || stacks.length > 0) {
 			down = await step(() =>
@@ -810,7 +806,7 @@ export function createLifecycleApi<
 			return false;
 		}
 
-		const stacks = configuredStacks(config as AnyDevConfig);
+		const stacks = configuredStacks(config);
 		if (!stacks.every(({ name }) => stacksUp.has(name))) return false;
 		// A job's container has exited once it did its work.
 		const compose = Object.fromEntries(

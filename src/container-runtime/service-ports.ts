@@ -4,7 +4,7 @@ import {
 	createPortOwnerSnapshotAsync,
 	formatPortOwner,
 } from "../core/process";
-import type { PortContainerOwner, ServiceConfig } from "../types";
+import type { PortContainerOwner, ResolvedService } from "../types";
 import { availableContainerRuntimes } from "./resolve";
 import type { ContainerRuntimeAdapter } from "./types";
 
@@ -13,7 +13,7 @@ import type { ContainerRuntimeAdapter } from "./types";
  */
 export async function assertServicePortsClaimable(
 	runtime: ContainerRuntimeAdapter,
-	services: Record<string, ServiceConfig>,
+	services: Record<string, ResolvedService>,
 	ports: Record<string, number>,
 	context: {
 		root: string;

@@ -1,5 +1,6 @@
 import { assertValidConfig } from "../config";
 import { applyIntegrations } from "../config/integrations";
+import { resolveConfig } from "../config/resolve";
 import { labelledCaptures } from "../core/captured-values";
 import { setUnsetEnv } from "../core/child-env";
 import { waitForServer } from "../core/network";
@@ -14,6 +15,7 @@ import type {
 	DevEnvironment,
 	EnvValues,
 	PrismaRunner,
+	ResolvedDevConfig,
 	ServiceConfig,
 	SuffixedEnvironmentOptions,
 } from "../types";
@@ -64,9 +66,14 @@ export function createDevEnvironment<
 	// re-applies them to the original, which is pure and gives the same result.
 	// They read project files from the checkout, wherever this process runs.
 	const root = options.root ?? findMonorepoRoot();
-	const resolved = applyIntegrations(config, { root });
-	assertValidConfig(resolved);
-	setUnsetEnv(resolved.unsetEnv);
+	const applied = applyIntegrations(config, { root });
+	assertValidConfig(applied);
+	setUnsetEnv(applied.unsetEnv);
+	const resolved = resolveConfig(applied) as ResolvedDevConfig<
+		TServices,
+		TApps,
+		TEnv
+	>;
 
 	const ctx = createDevEnvContext(resolved, { ...options, root });
 	const envVars = createEnvVarsApi(ctx);
@@ -130,7 +137,7 @@ export function createDevEnvironment<
 					requiredServices: resolved.seed.requiredServices,
 				}
 			: undefined,
-		checks: resolved.checks,
+		setupChecks: resolved.setupChecks,
 		preflight: resolved.preflight,
 		secrets: resolved.secrets,
 		integrations: resolved.integrations,

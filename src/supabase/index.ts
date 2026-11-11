@@ -265,7 +265,7 @@ export function supabase(
 				throw new Error(`supabase(): "${siteApp}" is not a configured app`);
 			}
 			const serverApps = Object.entries(apps)
-				.filter(([, app]) => app.kind !== "worker")
+				.filter(([, app]) => app.port !== undefined)
 				.map(([name]) => name);
 
 			if (options.functions) {
@@ -430,7 +430,7 @@ export function supabase(
 			},
 		},
 
-		checks: supabaseChecks({
+		setupChecks: supabaseChecks({
 			// Read fresh: `setup` runs `supabase init` and then checks again.
 			project: (root) => readSupabaseProject(workdirOf(root)),
 			workdir: workdirOf,

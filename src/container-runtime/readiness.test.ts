@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { resolveService, resolveServices } from "../config/resolve";
 import { serviceHashEnv } from "../docker-compose/interpolate";
 import type { ServiceConfig } from "../types";
 import { parseContainerState } from "./container-state";
@@ -63,12 +64,16 @@ describe("waitForService failure reporting", () => {
 		});
 
 		const startedAt = Date.now();
-		const error = await waitForService("postgres", NEVER_READY, 5433, {
-			runtime,
-			projectName: "app-main",
-			maxAttempts: 200,
-			pollInterval: 5,
-		}).catch((thrown: Error) => thrown);
+		const error = await waitForService(
+			"postgres",
+			resolveService("postgres", { ...NEVER_READY, healthTimeout: 1000 }),
+			5433,
+			{
+				runtime,
+				projectName: "app-main",
+				pollInterval: 5,
+			},
+		).catch((thrown: Error) => thrown);
 
 		expect(error).toBeInstanceOf(Error);
 		expect((error as Error).message).toContain("postgres");
@@ -86,12 +91,16 @@ describe("waitForService failure reporting", () => {
 			logTail: "typesense: bad api key",
 		});
 
-		const error = await waitForService("search", NEVER_READY, 8108, {
-			runtime,
-			projectName: "app-main",
-			maxAttempts: 2000,
-			pollInterval: 1,
-		}).catch((thrown: Error) => thrown);
+		const error = await waitForService(
+			"search",
+			resolveService("search", { ...NEVER_READY, healthTimeout: 2000 }),
+			8108,
+			{
+				runtime,
+				projectName: "app-main",
+				pollInterval: 1,
+			},
+		).catch((thrown: Error) => thrown);
 
 		const message = (error as Error).message;
 		expect(message).toContain("keeps crashing");
@@ -110,9 +119,13 @@ describe("waitForService failure reporting", () => {
 
 		await waitForService(
 			"search",
-			{ port: 8108, healthCheck: async () => ready },
+			resolveService("search", {
+				port: 8108,
+				healthCheck: async () => ready,
+				healthTimeout: 2000,
+			}),
 			8108,
-			{ runtime, projectName: "app-main", maxAttempts: 2000, pollInterval: 1 },
+			{ runtime, projectName: "app-main", pollInterval: 1 },
 		);
 
 		expect(diagnoses).toBe(1);
@@ -135,9 +148,13 @@ describe("waitForService failure reporting", () => {
 
 		await waitForService(
 			"api",
-			{ port: 8080, healthCheck: async () => ready },
+			resolveService("api", {
+				port: 8080,
+				healthCheck: async () => ready,
+				healthTimeout: 2000,
+			}),
 			8080,
-			{ runtime, projectName: "app-main", maxAttempts: 2000, pollInterval: 1 },
+			{ runtime, projectName: "app-main", pollInterval: 1 },
 		);
 
 		expect(seen).toEqual([]);
@@ -148,12 +165,15 @@ describe("waitForService failure reporting", () => {
 
 		const error = await waitForService(
 			"postgres",
-			{ port: 5432, healthCheck: "tcp" },
+			resolveService("postgres", {
+				port: 5432,
+				healthCheck: "tcp",
+				healthTimeout: 15,
+			}),
 			5433,
 			{
 				runtime,
 				projectName: "app-main",
-				maxAttempts: 3,
 				pollInterval: 5,
 			},
 		).catch((thrown: Error) => thrown);
@@ -168,12 +188,16 @@ describe("waitForService failure reporting", () => {
 	it("still fails cleanly when the runtime cannot diagnose", async () => {
 		const runtime = stubRuntime(undefined);
 
-		const error = await waitForService("postgres", NEVER_READY, 5433, {
-			runtime,
-			projectName: "app-main",
-			maxAttempts: 3,
-			pollInterval: 5,
-		}).catch((thrown: Error) => thrown);
+		const error = await waitForService(
+			"postgres",
+			resolveService("postgres", { ...NEVER_READY, healthTimeout: 15 }),
+			5433,
+			{
+				runtime,
+				projectName: "app-main",
+				pollInterval: 5,
+			},
+		).catch((thrown: Error) => thrown);
 
 		expect((error as Error).message).toContain("No container was found");
 	});
@@ -184,12 +208,16 @@ describe("waitForService failure reporting", () => {
 			calls++;
 		});
 
-		await waitForService("postgres", NEVER_READY, 5433, {
-			runtime,
-			projectName: "app-main",
-			maxAttempts: 4,
-			pollInterval: 5,
-		}).catch(() => {});
+		await waitForService(
+			"postgres",
+			resolveService("postgres", { ...NEVER_READY, healthTimeout: 20 }),
+			5433,
+			{
+				runtime,
+				projectName: "app-main",
+				pollInterval: 5,
+			},
+		).catch(() => {});
 
 		// Four attempts is under the interval, so only the timeout path asks.
 		expect(calls).toBe(1);
@@ -224,7 +252,9 @@ describe("ensureServicesRunning reconcile", () => {
 				projectName: "demo",
 				projectPrefix: "demo",
 				envVars: { POSTGRES_PORT: "5532" },
-				services: { postgres: { port: 5432, healthCheck: false } },
+				services: resolveServices({
+					postgres: { port: 5432, healthCheck: false },
+				}),
 				ports: { postgres: 5532 },
 				model: {
 					name: "demo",
@@ -332,7 +362,9 @@ describe("ensureServicesRunning reconcile", () => {
 			projectName: "demo",
 			projectPrefix: "demo",
 			envVars: {},
-			services: { postgres: { port: 5432, healthCheck: false } },
+			services: resolveServices({
+				postgres: { port: 5432, healthCheck: false },
+			}),
 			ports: { postgres: 5532 },
 			model: { name: "demo", services: { postgres: { image: "postgres:16" } } },
 			verbose: false,
@@ -351,19 +383,31 @@ describe("ensureServicesRunning reconcile", () => {
 describe("runtimeAnsweredReadiness", () => {
 	it("accepts a healthy container for an in-container probe", () => {
 		expect(
-			runtimeAnsweredReadiness({ port: 5432, healthCheck: "pg_isready" }, true),
+			runtimeAnsweredReadiness(
+				resolveService("svc", { port: 5432, healthCheck: "pg_isready" }),
+				true,
+			),
 		).toBe(true);
 		expect(
-			runtimeAnsweredReadiness({ port: 6379, healthCheck: "redis-cli" }, true),
+			runtimeAnsweredReadiness(
+				resolveService("svc", { port: 6379, healthCheck: "redis-cli" }),
+				true,
+			),
 		).toBe(true);
 	});
 
 	it("still probes host-side checks, which prove the port is published", () => {
 		expect(
-			runtimeAnsweredReadiness({ port: 8025, healthCheck: "tcp" }, true),
+			runtimeAnsweredReadiness(
+				resolveService("svc", { port: 8025, healthCheck: "tcp" }),
+				true,
+			),
 		).toBe(false);
 		expect(
-			runtimeAnsweredReadiness({ port: 8123, healthCheck: "http" }, true),
+			runtimeAnsweredReadiness(
+				resolveService("svc", { port: 8123, healthCheck: "http" }),
+				true,
+			),
 		).toBe(false);
 	});
 
@@ -372,14 +416,17 @@ describe("runtimeAnsweredReadiness", () => {
 	it("still runs a custom health check", () => {
 		expect(
 			runtimeAnsweredReadiness(
-				{ port: 5432, healthCheck: async () => true },
+				resolveService("svc", { port: 5432, healthCheck: async () => true }),
 				true,
 			),
 		).toBe(false);
 	});
 
 	it("only a positive report counts", () => {
-		const config: ServiceConfig = { port: 5432, healthCheck: "pg_isready" };
+		const config = resolveService("svc", {
+			port: 5432,
+			healthCheck: "pg_isready",
+		});
 		expect(runtimeAnsweredReadiness(config, false)).toBe(false);
 		expect(runtimeAnsweredReadiness(config, undefined)).toBe(false);
 	});
@@ -388,24 +435,29 @@ describe("runtimeAnsweredReadiness", () => {
 describe("readinessPlan", () => {
 	it("waits on the container itself when there is no port to probe", () => {
 		expect(
-			readinessPlan({ kind: "job", rerun: "always" }, undefined).kind,
+			readinessPlan(
+				resolveService("svc", { kind: "job", rerun: "always" }),
+				undefined,
+			).kind,
 		).toBe("completion");
-		expect(readinessPlan({ healthCheck: "tcp" }, undefined).kind).toBe(
-			"process",
-		);
+		expect(
+			readinessPlan(resolveService("svc", { healthCheck: "tcp" }), undefined)
+				.kind,
+		).toBe("process");
 	});
 
 	it("skips the wait the runtime already answered, or nothing asks for", () => {
-		const pg: ServiceConfig = { port: 5432, healthCheck: "pg_isready" };
+		const pg = resolveService("svc", { port: 5432, healthCheck: "pg_isready" });
 		expect(readinessPlan(pg, 5432, true).kind).toBe("runtimeHealth");
 		expect(readinessPlan(pg, 5432)).toEqual({
 			kind: "probe",
 			probe: "pg_isready",
 			port: 5432,
 		});
-		expect(readinessPlan({ port: 80, healthCheck: false }, 80).kind).toBe(
-			"none",
-		);
+		expect(
+			readinessPlan(resolveService("svc", { port: 80, healthCheck: false }), 80)
+				.kind,
+		).toBe("none");
 	});
 });
 
@@ -460,7 +512,7 @@ describe("readiness logs", () => {
 			{ state: "created" },
 			{ state: "running" },
 		]);
-		await waitForService("worker", {}, undefined, {
+		await waitForService("worker", resolveService("worker", {}), undefined, {
 			runtime,
 			projectName: "demo",
 			pollInterval: 1,
@@ -476,7 +528,7 @@ describe("readiness logs", () => {
 		]);
 		const error = await waitForService(
 			"worker",
-			{ kind: "job", rerun: "always" },
+			resolveService("worker", { kind: "job", rerun: "always" }),
 			undefined,
 			{ runtime, projectName: "demo", pollInterval: 1 },
 		).catch((thrown: Error) => thrown);
@@ -493,14 +545,14 @@ describe("service readiness deadlines", () => {
 		await expect(
 			waitForService(
 				"db",
-				{
+				resolveService("db", {
 					port: 5432,
 					healthTimeout: 80,
 					healthCheck: async (_port, signal) => {
 						probeSignal = signal;
 						return new Promise<boolean>(() => {});
 					},
-				},
+				}),
 				5432,
 				{ runtime: stubRuntime(undefined), projectName: "test" },
 			),
@@ -514,14 +566,14 @@ describe("service readiness deadlines", () => {
 		await expect(
 			waitForService(
 				"db",
-				{
+				resolveService("db", {
 					port: 5432,
 					healthTimeout: 80,
 					healthCheck: async () => {
 						await new Promise((resolve) => setTimeout(resolve, 200));
 						return false;
 					},
-				},
+				}),
 				5432,
 				{
 					runtime: stubRuntime(undefined),
@@ -538,17 +590,17 @@ describe("runtime health overrides", () => {
 	it("runs the configured probe when raw Compose overrides container health", () => {
 		expect(
 			runtimeAnsweredReadiness(
-				{
+				resolveService("svc", {
 					port: 5432,
 					healthCheck: "pg_isready",
 					docker: { healthcheck: { test: ["CMD", "true"] } },
-				},
+				}),
 				true,
 			),
 		).toBe(false);
 		expect(
 			runtimeAnsweredReadiness(
-				{
+				resolveService("svc", {
 					port: 5432,
 					healthCheck: "pg_isready",
 					docker: {
@@ -556,7 +608,7 @@ describe("runtime health overrides", () => {
 						preset: "postgres",
 						service: { healthcheck: { test: ["CMD", "true"] } },
 					},
-				},
+				}),
 				true,
 			),
 		).toBe(false);

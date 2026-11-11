@@ -6,7 +6,7 @@ import {
 	startDevServers,
 } from "../core/process/dev-servers";
 import type { CapturedValue } from "../core/process/output-capture";
-import type { AppConfig, DevServerPids, SeedOutcome } from "../types";
+import type { DevServerPids, ResolvedApp, SeedOutcome } from "../types";
 import { assertSeedSucceeded } from "./seed-startup";
 
 /** Shared lifecycle; callers supply UI, registry and tunnel observers. */
@@ -18,7 +18,7 @@ export interface ServerSessionSource {
 	runHook(phase: "before" | "after", signal?: AbortSignal): Promise<void>;
 	/** Calls `onAppReady` as each app comes up, before the whole set is. */
 	waitForHealth(
-		apps: Record<string, AppConfig>,
+		apps: Record<string, ResolvedApp>,
 		signal?: AbortSignal,
 		onAppReady?: (name: string) => void,
 	): Promise<void>;
@@ -41,7 +41,7 @@ type ServerSessionOptions = Omit<StartDevServersOptions, "onCapture"> & {
 
 export async function startServerSession(
 	source: ServerSessionSource,
-	apps: Record<string, AppConfig>,
+	apps: Record<string, ResolvedApp>,
 	options: ServerSessionOptions,
 ): Promise<DevServerPids> {
 	options.signal?.throwIfAborted();

@@ -7,14 +7,12 @@ import { isInteractive } from "../../core/prompt";
 import {
 	type Credentials,
 	postgresCredentials,
-	serviceCredentials,
 } from "../../core/service-identity";
-import { inferDockerPreset } from "../../core/service-presets";
 import { loadDevEnv } from "../../loader";
 import type {
 	AnyDevEnvironment,
 	DockerPresetName,
-	ServiceConfig,
+	ResolvedService,
 } from "../../types";
 import {
 	type CommandSpec,
@@ -367,12 +365,12 @@ export function psqlHasOwnInput(clientArgs: readonly string[]): boolean {
  * `--db` in a config that lists ClickHouse first means its Postgres.
  */
 function pickService(
-	services: Record<string, ServiceConfig>,
+	services: Record<string, ResolvedService>,
 	name: string | undefined,
 	presets: readonly DockerPresetName[],
-): { name: string; preset: DockerPresetName; service: ServiceConfig } {
+): { name: string; preset: DockerPresetName; service: ResolvedService } {
 	const candidates = Object.entries(services).flatMap(([key, service]) => {
-		const preset = inferDockerPreset(key, service);
+		const { preset } = service;
 		return preset ? [{ name: key, preset, service }] : [];
 	});
 	if (name !== undefined) {
@@ -622,11 +620,12 @@ export async function runSql(
 			: { clientArgs: [] };
 	const invocation =
 		scratch === undefined
-			? sqlClientCommand(
-					target.preset,
-					serviceCredentials(target.preset, target.service),
-					{ input, json: request.json, database: db, clientArgs },
-				)
+			? sqlClientCommand(target.preset, target.service.credentials, {
+					input,
+					json: request.json,
+					database: db,
+					clientArgs,
+				})
 			: {
 					command: scratchCommand(
 						postgresCredentials(target.service),

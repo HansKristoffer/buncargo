@@ -8,7 +8,7 @@ import { explainServiceStop, readRemovals } from "../core/removal-log";
 import { patchRun } from "../core/run-registry";
 import { formatWarn } from "../core/style";
 import { getComposeServiceName } from "../planning";
-import type { ServiceConfig } from "../types";
+import type { ResolvedService } from "../types";
 
 /** Where a service change is said: `problem` is false for a recovery. */
 export type ServiceChangeReport = (message: string, problem: boolean) => void;
@@ -34,7 +34,7 @@ export interface ServiceWatchApi {
  */
 export function createServiceWatch(
 	ctx: {
-		readonly services: Record<string, ServiceConfig>;
+		readonly services: Record<string, ResolvedService>;
 		readonly projectName: string;
 		readonly root: string;
 		readonly runtime: Pick<
@@ -103,7 +103,8 @@ export function createServiceWatch(
 			for (const key of serviceKeys) {
 				const service = ctx.services[key];
 				// A job exits when it is done, and a stack's containers are its CLI's.
-				if (!service || service.kind === "job" || service.external) continue;
+				if (!service || service.kind === "job" || service.kind === "external")
+					continue;
 				watched.set(getComposeServiceName(ctx.services, key), key);
 			}
 			if (stopWatching || watched.size === 0) return;

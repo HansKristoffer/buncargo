@@ -14,7 +14,7 @@ import type { ServiceConfig } from "./service";
 /**
  * Configuration for an application (e.g., api, web).
  */
-interface AppOptions<TStatic extends EnvValues = EnvValues> {
+export interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	/** Eligible for a public tunnel with `dev --expose`. */
 	expose?: boolean;
 	/** Protocol for recipient sharing; apps default to HTTP, presets infer it, custom services default to TCP. */
@@ -219,6 +219,11 @@ export interface SecretsScopeConfig {
 	required?: readonly string[];
 }
 
+/** What reading an app's secrets scope needs: a resolved app or one as written. */
+export interface SecretsHolder {
+	secrets?: SecretsScopeConfig | false;
+}
+
 /** A long-running owned process. Readiness means spawned and still alive. */
 export type WorkerAppConfig<TStatic extends EnvValues = EnvValues> =
 	AppOptions<TStatic> & {
@@ -283,26 +288,39 @@ type AppDefinitionBase<T extends AppConfig> = T extends AppConfig
 	? Omit<T, "requiredServices" | "requiredApps" | "envVars">
 	: never;
 
+/** Every key an app definition may set. */
+type AppKey = keyof AppOptions | "kind" | "port";
+
+/**
+ * `never` for each key of `T` no app takes. `TApps` is inferred from the
+ * literal, so a misspelt key (`healthEndpont`) would otherwise become part of
+ * the app's type and pass silently.
+ */
+type NoUnknownAppKeys<T> = {
+	[P in Exclude<keyof T, AppKey>]: never;
+};
+
 export type TypedAppDefinitions<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 > = {
 	[K in keyof TApps]: [TApps[K]] extends [never]
 		? TApps[K]
-		: AppDefinitionBase<TApps[K]> & {
-				requiredServices?: readonly Extract<keyof TServices, string>[];
-				requiredApps?: readonly Extract<keyof TApps, string>[];
-				startAfter?: readonly Extract<keyof TApps, string>[];
-				envVars?: (
-					ports: NoInfer<
-						ComputedPorts<TServices, TypedAppDefinitions<TServices, TApps>>
-					>,
-					urls: NoInfer<
-						ComputedUrls<TServices, TypedAppDefinitions<TServices, TApps>>
-					>,
-					ctx: NoInfer<
-						EnvVarsContext<TServices, TypedAppDefinitions<TServices, TApps>>
-					>,
-				) => DeclaredAppEnvVars<TApps[K]>;
-			};
+		: AppDefinitionBase<TApps[K]> &
+				NoUnknownAppKeys<TApps[K]> & {
+					requiredServices?: readonly Extract<keyof TServices, string>[];
+					requiredApps?: readonly Extract<keyof TApps, string>[];
+					startAfter?: readonly Extract<keyof TApps, string>[];
+					envVars?: (
+						ports: NoInfer<
+							ComputedPorts<TServices, TypedAppDefinitions<TServices, TApps>>
+						>,
+						urls: NoInfer<
+							ComputedUrls<TServices, TypedAppDefinitions<TServices, TApps>>
+						>,
+						ctx: NoInfer<
+							EnvVarsContext<TServices, TypedAppDefinitions<TServices, TApps>>
+						>,
+					) => DeclaredAppEnvVars<TApps[K]>;
+				};
 };

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveApps } from "../../config/resolve";
 import { startDevServers } from "./dev-servers";
 import {
 	checkPortDrift,
@@ -84,13 +85,13 @@ describe("startDevServers port drift", () => {
 			// The app takes the next port, then something foreign takes its own:
 			// what Astro does when it finds :8021 held by a system service.
 			const run = startDevServers(
-				{
+				resolveApps({
 					marketing: {
 						port: assigned,
 						healthTimeout: 30000,
 						devCommand: `bun -e 'Bun.serve({ port: ${drifted}, fetch: () => new Response("ok") }); setInterval(() => {}, 60000)'`,
 					},
-				},
+				}),
 				root,
 				{},
 				{ marketing: assigned },

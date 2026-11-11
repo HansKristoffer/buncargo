@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateConfig } from "../config";
+import { resolveServices } from "../config/resolve";
 import {
 	projectLockPath,
 	withProjectLifecycleLock,
@@ -254,10 +255,12 @@ appendFileSync(log, held ? "down locked\\n" : "down free\\n");
 	});
 
 	it("leaves external services out of the Compose file", () => {
-		const model = buildComposeModel({
-			db: { port: 4101, external: { stack: "fake" } },
-			cache: service.redis(),
-		});
+		const model = buildComposeModel(
+			resolveServices({
+				db: { port: 4101, external: { stack: "fake" } },
+				cache: service.redis(),
+			}),
+		);
 		expect(Object.keys(model.services)).toEqual(["cache"]);
 	});
 

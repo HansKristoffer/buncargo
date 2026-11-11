@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveServices } from "../config/resolve";
 import { waitForAllServices } from "../container-runtime/readiness";
 import { dockerRuntimeAdapter } from "./adapter";
 
@@ -85,14 +86,14 @@ describe("Docker service probes", () => {
 	it("checks a cold service without Compose or an already-healthy runtime snapshot", async () => {
 		const { root, runtime, calls } = fixture();
 		await waitForAllServices(
-			{
+			resolveServices({
 				db: {
 					port: 5432,
 					serviceName: "postgres",
 					healthCheck: "pg_isready",
 					healthTimeout: 2000,
 				},
-			},
+			}),
 			{ db: 10232 },
 			{
 				runtime,

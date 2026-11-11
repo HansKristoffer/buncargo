@@ -1,12 +1,14 @@
-import type { AppConfig } from "../../types";
+/** What ordering reads off an app: a resolved one or one as written. */
+interface OrderedApp {
+	needsPublicUrls?: boolean;
+	startAfter?: readonly string[];
+}
 
-type Apps = Record<string, AppConfig>;
-
-interface SpawnOrder {
+interface SpawnOrder<TApp extends OrderedApp> {
 	/** Layers spawned, and health-checked, before public tunnels open. */
-	beforeTunnels: Apps[];
+	beforeTunnels: Record<string, TApp>[];
 	/** Layers spawned after tunnels have published their URLs. */
-	afterTunnels: Apps[];
+	afterTunnels: Record<string, TApp>[];
 }
 
 /**
@@ -20,7 +22,10 @@ interface SpawnOrder {
  *
  * Without `startAfter` a phase is one layer.
  */
-export function planSpawnOrder(apps: Apps, defer: boolean): SpawnOrder {
+export function planSpawnOrder<TApp extends OrderedApp>(
+	apps: Record<string, TApp>,
+	defer: boolean,
+): SpawnOrder<TApp> {
 	const late = new Set<string>(
 		defer
 			? Object.entries(apps)
@@ -40,7 +45,7 @@ export function planSpawnOrder(apps: Apps, defer: boolean): SpawnOrder {
 		}
 	}
 
-	const pick = (inLate: boolean): Apps =>
+	const pick = (inLate: boolean): Record<string, TApp> =>
 		Object.fromEntries(
 			Object.entries(apps).filter(([name]) => late.has(name) === inLate),
 		);
@@ -51,9 +56,11 @@ export function planSpawnOrder(apps: Apps, defer: boolean): SpawnOrder {
 }
 
 /** Kahn's algorithm over `startAfter`, restricted to the apps given. */
-function layers(apps: Apps): Apps[] {
+function layers<TApp extends OrderedApp>(
+	apps: Record<string, TApp>,
+): Record<string, TApp>[] {
 	const remaining = new Map(Object.entries(apps));
-	const result: Apps[] = [];
+	const result: Record<string, TApp>[] = [];
 
 	while (remaining.size > 0) {
 		const ready = [...remaining].filter(([, app]) =>

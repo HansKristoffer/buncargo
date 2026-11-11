@@ -2,6 +2,7 @@ import { expect, it } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveService } from "../config/resolve";
 import { runMigrationsSequentially } from "../environment/migrations";
 import {
 	appliedMigrationCount,
@@ -22,8 +23,7 @@ async function fixture() {
 		input: {
 			root,
 			prisma: { cwd: "db", migrations: "schema/migrations" },
-			serviceKey: "postgres",
-			service: { port: 5432 },
+			service: resolveService("postgres", { port: 5432 }),
 			url: "postgresql://postgres:postgres@127.0.0.1:5432/dev",
 		},
 	};
@@ -54,7 +54,11 @@ for (const scenario of [
 				);
 			}
 			if (scenario === "unreadable") await rm(dir, { recursive: true });
-			if (scenario === "custom-service") input.serviceKey = "custom";
+			if (scenario === "custom-service")
+				input.service = resolveService("custom", {
+					port: 5432,
+					docker: { image: "postgres:16" },
+				});
 			const read = async () => {
 				if (scenario === "fresh")
 					throw new Error('relation "_prisma_migrations" does not exist');

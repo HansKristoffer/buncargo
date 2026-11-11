@@ -9,7 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAppleRunPlan } from "../apple-container/run-plan";
-import type { ServiceConfig } from "../types";
+import { resolveServices } from "../config/resolve";
 import {
 	buildComposeModel,
 	composeToYaml,
@@ -20,7 +20,7 @@ import { service } from "./services";
 
 describe("buildComposeModel", () => {
 	it("builds built-in postgres/redis/clickhouse services", () => {
-		const services: Record<string, ServiceConfig> = {
+		const services = resolveServices({
 			postgres: {
 				port: 5432,
 				healthCheck: "pg_isready",
@@ -36,7 +36,7 @@ describe("buildComposeModel", () => {
 				healthCheck: "http",
 				database: "geysier",
 			},
-		};
+		});
 
 		const compose = buildComposeModel(services);
 
@@ -60,10 +60,15 @@ describe("buildComposeModel", () => {
 	});
 
 	it("probes PostgreSQL over TCP for default and explicit health checks", () => {
-		const compose = buildComposeModel({
-			postgres: { port: 5432 },
-			db: service.postgres({ user: "application", healthCheck: "pg_isready" }),
-		});
+		const compose = buildComposeModel(
+			resolveServices({
+				postgres: { port: 5432 },
+				db: service.postgres({
+					user: "application",
+					healthCheck: "pg_isready",
+				}),
+			}),
+		);
 		expect(compose.services.postgres?.healthcheck?.test).toEqual([
 			"CMD-SHELL",
 			"pg_isready -h 127.0.0.1 -U postgres",
@@ -75,11 +80,15 @@ describe("buildComposeModel", () => {
 	});
 
 	it("stamps identity labels when provided", () => {
-		const compose = buildComposeModel({ postgres: { port: 5432 } }, undefined, {
-			projectName: "gey-main",
-			root: "/repo",
-			worktree: "feature",
-		});
+		const compose = buildComposeModel(
+			resolveServices({ postgres: { port: 5432 } }),
+			undefined,
+			{
+				projectName: "gey-main",
+				root: "/repo",
+				worktree: "feature",
+			},
+		);
 		expect(compose.services.postgres?.labels).toEqual({
 			"buncargo.project": "gey-main",
 			"buncargo.root": "/repo",
@@ -92,7 +101,7 @@ describe("buildComposeModel", () => {
 	});
 
 	it("supports helper and raw custom service definitions", () => {
-		const services: Record<string, ServiceConfig> = {
+		const services = resolveServices({
 			postgres: service.postgres({
 				docker: {
 					image: "postgres:16-alpine",
@@ -116,7 +125,7 @@ describe("buildComposeModel", () => {
 					image: "nats:2-alpine",
 				},
 			}),
-		};
+		});
 
 		const compose = buildComposeModel(services);
 
@@ -130,10 +139,12 @@ describe("buildComposeModel", () => {
 	});
 
 	it("builds mailpit and typesense presets", () => {
-		const compose = buildComposeModel({
-			mailpit: service.mailpit(),
-			typesense: service.typesense({ apiKey: "xyz" }),
-		});
+		const compose = buildComposeModel(
+			resolveServices({
+				mailpit: service.mailpit(),
+				typesense: service.typesense({ apiKey: "xyz" }),
+			}),
+		);
 
 		expect(compose.services.mailpit?.image).toBe("axllent/mailpit:v1.33.1");
 		expect(compose.services.mailpit?.ports).toEqual([
@@ -152,41 +163,38 @@ describe("buildComposeModel", () => {
 	});
 
 	it("emits no container healthcheck for healthCheck: tcp", () => {
-		const compose = buildComposeModel({
-			postgres: service.postgres({ healthCheck: "tcp" }),
-			redis: service.redis({ healthCheck: "tcp" }),
-		});
+		const compose = buildComposeModel(
+			resolveServices({
+				postgres: service.postgres({ healthCheck: "tcp" }),
+				redis: service.redis({ healthCheck: "tcp" }),
+			}),
+		);
 
 		expect(compose.services.postgres?.healthcheck).toBeUndefined();
 		expect(compose.services.redis?.healthcheck).toBeUndefined();
 	});
 
-	it("normalizes raw built-in service as inferred preset override", () => {
-		const services: Record<string, ServiceConfig> = {
+	it("takes a raw definition under a preset's key as written", () => {
+		const services = resolveServices({
 			postgres: {
 				port: 5432,
 				docker: {
 					image: "postgres:16-alpine",
 				},
 			},
-		};
+		});
 
 		const compose = buildComposeModel(services);
-		expect(compose.services.postgres?.image).toBe("postgres:16-alpine");
-		expect(compose.services.postgres?.ports).toEqual([
-			"$" + "{POSTGRES_PORT:-5432}:5432",
-		]);
-		expect(compose.services.postgres?.environment).toEqual({
-			POSTGRES_USER: "postgres",
-			POSTGRES_PASSWORD: "postgres",
-			POSTGRES_DB: "postgres",
+		expect(compose.services.postgres).toEqual({
+			image: "postgres:16-alpine",
+			ports: ["$" + "{POSTGRES_PORT:-5432}:5432"],
 		});
-		expect(compose.volumes).toEqual({ postgres_data: {} });
+		expect(compose.volumes).toBeUndefined();
 	});
 });
 
 describe("buildComposeModel with data on tmpfs", () => {
-	const services: Record<string, ServiceConfig> = {
+	const services = resolveServices({
 		postgres: { port: 5432 },
 		search: service.custom({
 			port: 7700,
@@ -200,7 +208,7 @@ describe("buildComposeModel with data on tmpfs", () => {
 				],
 			},
 		}),
-	};
+	});
 	const docker = {
 		volumes: { search_data: {}, shared_cache: { external: true } },
 	};
@@ -224,7 +232,7 @@ describe("buildComposeModel with data on tmpfs", () => {
 
 	it("runs on Apple container with --tmpfs and no volume", () => {
 		const model = buildComposeModel(
-			{ postgres: { port: 5432 } },
+			resolveServices({ postgres: { port: 5432 } }),
 			undefined,
 			undefined,
 			"apple",
@@ -277,9 +285,9 @@ describe("writeGeneratedComposeFile", () => {
 		try {
 			const composeFile = writeGeneratedComposeFile(
 				root,
-				{
+				resolveServices({
 					postgres: { port: 5432 },
-				},
+				}),
 				{
 					generatedFile: ".buncargo/docker-compose.generated.yml",
 				},
@@ -305,9 +313,9 @@ describe("writeGeneratedComposeFile", () => {
 			expect(() =>
 				writeGeneratedComposeFile(
 					root,
-					{
+					resolveServices({
 						postgres: { port: 5432 },
-					},
+					}),
 					{
 						generatedFile: ".buncargo/docker-compose.generated.yml",
 						writeStrategy: "if-missing",

@@ -1,5 +1,3 @@
-import type { AppConfig } from "../types";
-
 /**
  * Ensures every name in `onlyApps` exists as a key in `apps`.
  */
@@ -18,12 +16,12 @@ export function assertOnlyAppNames(
  * Returns a subset of `apps` when `onlyApps` is set; otherwise the full map.
  * When `onlyApps` is `[]`, returns `{}`.
  */
-export function pickApps<TApps extends Record<string, AppConfig>>(
-	apps: TApps,
+export function pickApps<TApp>(
+	apps: Readonly<Record<string, TApp>>,
 	onlyApps: string[] | undefined,
-): Record<string, AppConfig> {
-	if (onlyApps === undefined) return apps;
-	const out: Record<string, AppConfig> = {};
+): Record<string, TApp> {
+	if (onlyApps === undefined) return apps as Record<string, TApp>;
+	const out: Record<string, TApp> = {};
 	for (const name of onlyApps) {
 		const config = apps[name];
 		if (config !== undefined) {

@@ -1,6 +1,9 @@
-import type { DockerPresetName, ServiceConfig } from "../types";
+import type {
+	DockerPresetName,
+	ResolvedService,
+	ServiceCredentials,
+} from "../types";
 import { isHttpService } from "./hosts/plan";
-import { inferDockerPreset } from "./service-presets";
 
 /**
  * What a service *is*, for every consumer that has to treat one specially.
@@ -28,22 +31,8 @@ export interface ServiceIdentity {
 /** Presets a GUI database client can open. */
 const DATABASE_PRESETS = new Set<DockerPresetName>(["postgres", "clickhouse"]);
 
-export interface Credentials {
-	user: string;
-	password: string;
-	database: string;
-}
-
-const POSTGRES_CREDENTIALS: Credentials = {
-	user: "postgres",
-	password: "postgres",
-	database: "postgres",
-};
-
-const PRESET_CREDENTIALS: Partial<Record<DockerPresetName, Credentials>> = {
-	postgres: POSTGRES_CREDENTIALS,
-	clickhouse: { user: "default", password: "clickhouse", database: "default" },
-};
+/** A preset's user, password and database. */
+export type Credentials = ServiceCredentials;
 
 /**
  * TablePlus connection URL.
@@ -73,61 +62,48 @@ export function tablePlusUrl(input: {
 	return url.toString();
 }
 
-/** The user, password and database a preset's container was created with. */
-export function serviceCredentials(
-	preset: DockerPresetName,
-	service: ServiceConfig | undefined,
-): Credentials | undefined {
-	const defaults = PRESET_CREDENTIALS[preset];
-	return defaults && withServiceOverrides(defaults, service);
-}
-
-/** A Postgres-preset service's credentials, which are always known. */
+/**
+ * A Postgres service's credentials. Every service whose preset is Postgres
+ * resolves them; a custom container a caller took for one gets the image's.
+ */
 export function postgresCredentials(
-	service: ServiceConfig | undefined,
+	service: ResolvedService | undefined,
 ): Credentials {
-	return withServiceOverrides(POSTGRES_CREDENTIALS, service);
-}
-
-function withServiceOverrides(
-	defaults: Credentials,
-	service: ServiceConfig | undefined,
-): Credentials {
-	const config = service as
-		{ database?: string; user?: string; password?: string } | undefined;
-	return {
-		user: config?.user ?? defaults.user,
-		password: config?.password ?? defaults.password,
-		database: config?.database ?? defaults.database,
-	};
+	return (
+		service?.credentials ?? {
+			user: "postgres",
+			password: "postgres",
+			database: "postgres",
+		}
+	);
 }
 
 export function describeService(input: {
 	name: string;
-	service: ServiceConfig | undefined;
+	service: ResolvedService | undefined;
 	port: number | undefined;
 	/** Disambiguates the saved connection when several projects run at once. */
 	projectName?: string;
 }): ServiceIdentity {
 	const { name, service, port, projectName } = input;
-	const preset = inferDockerPreset(name, service);
+	const preset = service?.preset;
 	const identity: ServiceIdentity = {
 		name,
 		preset,
-		http: service ? isHttpService(name, service) : false,
+		http: service ? isHttpService(service) : false,
 		database: preset !== undefined && DATABASE_PRESETS.has(preset),
 	};
 
-	if (!identity.database || preset === undefined || port === undefined) {
+	const credentials = service?.credentials;
+	if (!identity.database || !credentials || port === undefined) {
 		return identity;
 	}
 
-	const credentials = serviceCredentials(preset, service);
 	identity.tablePlusUrl = tablePlusUrl({
-		user: credentials?.user ?? "",
-		password: credentials?.password ?? "",
+		user: credentials.user,
+		password: credentials.password,
 		port,
-		database: credentials?.database ?? "",
+		database: credentials.database,
 		name: projectName ? `${projectName}-${name}` : name,
 		// ClickHouse speaks its own scheme to TablePlus; everything else here
 		// is Postgres-compatible.

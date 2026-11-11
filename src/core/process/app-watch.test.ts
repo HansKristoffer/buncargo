@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveApps } from "../../config/resolve";
 import { isIgnoredChange } from "./app-watch";
 import { startDevServers, stopDevServers } from "./dev-servers";
 import { RunOutput } from "./run-output";
@@ -33,14 +34,14 @@ describe("startDevServers watch", () => {
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				{
+				resolveApps({
 					api: {
 						kind: "worker",
 						cwd: "api",
 						watch: { paths: ["src", "dist"], ignore: ["dist/**"] },
 						devCommand: "bun -e 'setInterval(() => {}, 60000)'",
 					},
-				},
+				}),
 				root,
 				{},
 				{},

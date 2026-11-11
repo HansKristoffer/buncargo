@@ -7,7 +7,7 @@ import {
 } from "../core/app-leases";
 import { acquireLease, releaseLeases } from "../core/leases";
 import { formatWarn } from "../core/style";
-import type { AppConfig } from "../types";
+import type { ResolvedApp } from "../types";
 
 /**
  * The `exclusive` leases of the apps a library `start()` spawns: the ones
@@ -20,10 +20,10 @@ import type { AppConfig } from "../types";
  */
 export async function acquireStartLeases(
 	owner: LeaseOwner,
-	apps: Record<string, AppConfig>,
+	apps: Record<string, ResolvedApp>,
 	options: { held: ReadonlySet<string>; signal?: AbortSignal },
 ): Promise<{
-	apps: Record<string, AppConfig>;
+	apps: Record<string, ResolvedApp>;
 	/** Keys this call took that the session did not hold before. */
 	acquired: string[];
 	skipped: SkippedLeaseApp[];

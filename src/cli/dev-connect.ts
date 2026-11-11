@@ -11,7 +11,7 @@ import {
 	connectOrigin,
 	connectTokens,
 } from "../core/runtime-flags";
-import type { AppConfig, ServiceConfig } from "../types";
+import type { ResolvedApp, ResolvedService } from "../types";
 import * as log from "./log";
 
 /**
@@ -72,15 +72,13 @@ export function createDevConnect() {
 
 	return {
 		plan(
-			apps: Record<string, AppConfig>,
+			apps: Record<string, ResolvedApp>,
 			names: readonly string[],
-			services: Record<string, ServiceConfig>,
+			services: Record<string, ResolvedService>,
 		) {
 			count =
-				Object.values(apps).filter((a) => a.kind !== "worker").length +
-				names.filter(
-					(n) => services[n]?.kind !== "job" && services[n]?.port !== undefined,
-				).length;
+				Object.values(apps).filter((a) => a.port !== undefined).length +
+				names.filter((n) => services[n]?.port !== undefined).length;
 		},
 		get active() {
 			return count > 0;

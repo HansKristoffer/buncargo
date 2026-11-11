@@ -11,6 +11,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { resolveApps, resolveServices } from "../config/resolve";
 import { getRoutesPath } from "../core/hosts";
 import { acquireLease, releaseLeases } from "../core/leases";
 import { listRunLogDirs } from "../core/process/app-logs";
@@ -116,8 +117,8 @@ function createStubEnv(
 		);
 	const publicUrls: Record<string, string> = {};
 	return {
-		services,
-		apps,
+		services: resolveServices(services),
+		apps: resolveApps(apps),
 		ports: ports as DevEnvironment<
 			Record<string, ServiceConfig>,
 			Record<string, AppConfig>
@@ -728,32 +729,6 @@ describe("runCli phased tunnels and attach", () => {
 			await runCli(env, { args: [], watchdog: false });
 			expect(healthChecked.sort()).toEqual(["api", "expoApp"]);
 		} finally {
-			await rm(root, { recursive: true, force: true });
-		}
-	});
-
-	it("gives apps the library's readiness timeout, longer in CI", async () => {
-		const root = await mkdtemp(join(tmpdir(), "buncargo-ready-timeout-"));
-		const port = 43810 + Math.floor(Math.random() * 200);
-		const timeouts: unknown[] = [];
-		const app = exitsOnceChecked(root);
-		const env = createStubEnv({
-			root,
-			apps: { api: { port, devCommand: app.devCommand("api") } },
-			waitForServers: (waitOptions) => {
-				timeouts.push((waitOptions as { timeout?: number }).timeout);
-				app.checked("api");
-			},
-		});
-		const ci = process.env.CI;
-		process.env.CI = "true";
-
-		try {
-			await runCli(env, { args: [], watchdog: false });
-			expect(timeouts).toEqual([120_000]);
-		} finally {
-			if (ci === undefined) delete process.env.CI;
-			else process.env.CI = ci;
 			await rm(root, { recursive: true, force: true });
 		}
 	});

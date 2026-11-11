@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { defineDevConfig, validateConfig } from "../../config";
+import { resolveServices } from "../../config/resolve";
 import { buildSharedEnvValues, stringifyEnvValues } from "../../core/env";
 import { computeUrls } from "../../core/ports";
 import { DOCKER_PRESET_NAMES } from "../../core/service-presets";
@@ -15,14 +16,15 @@ import { service } from ".";
 const IDENTITY = { projectName: "app-main", root: "/repo", worktree: null };
 
 /** The model and the environment a run hands the backend for these services. */
-function render(services: Record<string, ServiceConfig>) {
+function render(declared: Record<string, ServiceConfig>) {
+	const services = resolveServices(declared);
 	const ports: Record<string, number> = {};
 	for (const [key, config] of Object.entries(services)) {
 		if (config.port !== undefined) ports[key] = config.port + 10;
 		if (config.secondaryPort !== undefined)
 			ports[`${key}Secondary`] = config.secondaryPort + 10;
 	}
-	const urls = computeUrls(services, undefined, ports, "127.0.0.1");
+	const urls = computeUrls(services, {}, ports, "127.0.0.1");
 	const env = stringifyEnvValues(
 		buildSharedEnvValues({
 			projectName: IDENTITY.projectName,

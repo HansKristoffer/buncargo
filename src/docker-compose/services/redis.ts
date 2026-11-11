@@ -24,6 +24,7 @@ export const redisDockerService = defineDockerService<
 	env: {
 		REDIS_URL: "url",
 	},
+	url: ({ host, port }) => `redis://${host}:${port}`,
 	build: ({ serviceKey, config }) => {
 		const defaultHealthcheck: DockerComposeHealthcheckRaw = {
 			test: ["CMD", "redis-cli", "ping"],

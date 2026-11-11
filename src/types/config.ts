@@ -330,7 +330,7 @@ export interface DevConfig<
 	/** Docker Compose generation options (optional) */
 	docker?: DockerComposeGenerationOptions;
 	/** Preconditions `buncargo dev` verifies before starting (optional) */
-	checks?: readonly SetupCheck[];
+	setupChecks?: readonly SetupCheck[];
 	/** Steps `buncargo dev` runs with the terminal before it starts (optional) */
 	preflight?: readonly PreflightStep[];
 	/** Files rendered from the run's ports, URLs and captures (optional) */

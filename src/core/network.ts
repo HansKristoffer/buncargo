@@ -1,7 +1,7 @@
 import net from "node:net";
 import { networkInterfaces } from "node:os";
 import { exponentialBackoff } from "hanzio";
-import type { AppConfig } from "../types";
+import type { ResolvedApp } from "../types";
 import { abortableSleep, remainingTime, withDeadline } from "./deadline";
 import { localIpOverride } from "./runtime-flags";
 import { recordStartupMetric } from "./startup-metrics";
@@ -115,10 +115,9 @@ export async function waitForServer(
  * Wait for all dev servers to be ready.
  */
 export async function waitForDevServers(
-	apps: Record<string, AppConfig>,
+	apps: Record<string, ResolvedApp>,
 	ports: Record<string, number>,
 	options: {
-		timeout?: number;
 		verbose?: boolean;
 		productionBuild?: boolean;
 		signal?: AbortSignal;
@@ -126,7 +125,7 @@ export async function waitForDevServers(
 		logReady?: boolean;
 	} = {},
 ): Promise<void> {
-	const { timeout = 60000, verbose = true } = options;
+	const { verbose = true } = options;
 	const controller = new AbortController();
 	const cancel = () => controller.abort(options.signal?.reason);
 	if (options.signal?.aborted) cancel();
@@ -142,28 +141,23 @@ export async function waitForDevServers(
 
 	const promises: Promise<void>[] = [];
 
-	for (const [name, config] of Object.entries(apps)) {
-		if (
-			config.kind === "worker" ||
-			config.healthEndpoint === false ||
-			// Ready by its output, which `startDevServers` waits for.
-			config.readyWhen !== undefined ||
-			(config.devCommand === false &&
-				!(options.productionBuild && config.prodCommand))
-		) {
-			continue;
-		}
-		const port = ports[name];
-		const healthPath = config.healthEndpoint ?? "/";
-		const url = `http://localhost:${port}${healthPath}`;
-		const appTimeout = config.healthTimeout ?? timeout;
+	for (const [name, app] of Object.entries(apps)) {
+		const { readiness } = app;
+		// Ready by its output, which `startDevServers` waits for, or by
+		// nothing; a port-only app is waited for only behind its `prodCommand`.
+		const waitsOnPort =
+			readiness.kind === "http" &&
+			(app.devCommand !== false ||
+				(options.productionBuild === true && app.prodCommand !== undefined));
+		if (!waitsOnPort || app.port === undefined) continue;
+		const url = `http://localhost:${ports[name]}${readiness.path}`;
 
 		promises.push(
 			waitForServer(url, {
-				timeout: appTimeout,
+				timeout: app.healthTimeout,
 				verbose,
 				signal: controller.signal,
-				strict: config.healthEndpoint !== undefined,
+				strict: readiness.declared,
 			}).then(() => {
 				options.onAppReady?.(name);
 			}),

@@ -31,6 +31,7 @@ export const mailpitDockerService = defineDockerService<
 		MAILPIT_URL: "url",
 		SMTP_PORT: "secondaryPort",
 	},
+	url: ({ host, port }) => `http://${host}:${port}`,
 	enhanceServiceConfig: (base, options): MailpitServiceConfig => ({
 		...base,
 		secondaryPort: options?.secondaryPort ?? 1025,

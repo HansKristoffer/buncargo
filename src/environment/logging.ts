@@ -8,7 +8,7 @@ import {
 	formatSection,
 	prefixWidth,
 } from "../core/style";
-import type { ServiceConfig } from "../types";
+import type { ResolvedService } from "../types";
 
 function tunnelFor(
 	tunnels:
@@ -128,7 +128,7 @@ export function formatEnvironmentBanner(
 			// is as much a database as one keyed `postgres`.
 			const identity = describeService({
 				name,
-				service: services[name] as ServiceConfig | undefined,
+				service: services[name] as ResolvedService | undefined,
 				port,
 				projectName,
 			});

@@ -277,7 +277,7 @@ export function firebase(
 				? selected.join(", ")
 				: undefined,
 
-		checks: firebaseChecks({
+		setupChecks: firebaseChecks({
 			project: projectOf,
 			workdir: workdirOf,
 			emulators: (root) =>

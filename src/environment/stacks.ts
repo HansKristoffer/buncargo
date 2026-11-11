@@ -1,4 +1,15 @@
-import type { AnyDevConfig, IntegrationStack, ServiceConfig } from "../types";
+import type {
+	BuncargoIntegration,
+	IntegrationStack,
+	ResolvedComposeService,
+	ResolvedService,
+} from "../types";
+
+/** What finding a config's stacks reads. */
+interface StackSource {
+	services: Readonly<Record<string, ResolvedService>>;
+	integrations?: readonly BuncargoIntegration[];
+}
 
 /**
  * Integration stacks (see `BuncargoIntegration.stacks`): services a CLI
@@ -12,14 +23,13 @@ export interface ResolvedStack {
 
 /** The stacks providing these services, each once, in declaration order. */
 export function stacksForServices(
-	config: AnyDevConfig,
+	config: StackSource,
 	serviceKeys: readonly string[],
 ): ResolvedStack[] {
 	const wanted = new Set(
 		serviceKeys.flatMap((key) => {
-			const stack = (config.services[key] as ServiceConfig | undefined)
-				?.external?.stack;
-			return stack ? [stack] : [];
+			const service = config.services[key];
+			return service?.kind === "external" ? [service.stack] : [];
 		}),
 	);
 	const stacks: ResolvedStack[] = [];
@@ -32,15 +42,18 @@ export function stacksForServices(
 }
 
 /** Every stack some service of this config is provided by. */
-export function configuredStacks(config: AnyDevConfig): ResolvedStack[] {
+export function configuredStacks(config: StackSource): ResolvedStack[] {
 	return stacksForServices(config, Object.keys(config.services));
 }
 
 /** Services the generated Compose file runs: everything not provided by a stack. */
-export function composeServicesOf<T extends Record<string, ServiceConfig>>(
-	services: T,
-): T {
+export function composeServicesOf(
+	services: Readonly<Record<string, ResolvedService>>,
+): Record<string, ResolvedComposeService> {
 	return Object.fromEntries(
-		Object.entries(services).filter(([, service]) => !service.external),
-	) as T;
+		Object.entries(services).filter(
+			(entry): entry is [string, ResolvedComposeService] =>
+				entry[1].kind !== "external",
+		),
+	);
 }

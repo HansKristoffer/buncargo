@@ -247,7 +247,7 @@ export default defineDevConfig({
 		api: { port: 4000, devCommand: "bun run dev", cwd: "apps/api", requiredServices: ["postgres"] },
 		forecastService: { port: 4100, devCommand: "bun run dev", cwd: "apps/forecast" },
 	},
-	checks: [
+	setupChecks: [
 		{
 			name: "GraphQL types",
 			check: () => exists("packages/shopify-admin-graphql/graphql/generated"),
@@ -270,7 +270,7 @@ export default defineDevConfig({
 });
 ```
 
-**Checks** are preconditions of the checkout. `buncargo dev` runs the fast ones before it starts anything and stops with each failing check's fix, instead of failing deep inside whichever app imports the missing file first. `buncargo setup` runs all of them: core checks (Bun matches `.bun-version`, the container runtime is up, `.buncargo/` and `gitignore: true` generated files are ignored, Infisical is readable, the Prisma client matches the schema), then the config's, then the integrations' (Shopify: CLI version, login, link, `web_directories`, tomls agreeing). It offers each fix in turn, runs them all with `--yes` or in CI, and checks again. It is idempotent. `buncargo doctor` lists them too. A check returns `true`, `false` or `{ ok, detail }`; `fix` is a command or a function; `fast: false` keeps an expensive check out of `dev`; `severity: "warning"` reports without failing. A check that throws counts as failed. `exists(path)` resolves against the monorepo root, whatever directory `dev` was started from.
+**Setup checks** (`setupChecks`) are preconditions of the checkout. `buncargo dev` runs the fast ones before it starts anything and stops with each failing check's fix, instead of failing deep inside whichever app imports the missing file first. `buncargo setup` runs all of them: core checks (Bun matches `.bun-version`, the container runtime is up, `.buncargo/` and `gitignore: true` generated files are ignored, Infisical is readable, the Prisma client matches the schema), then the config's, then the integrations' (Shopify: CLI version, login, link, `web_directories`, tomls agreeing). It offers each fix in turn, runs them all with `--yes` or in CI, and checks again. It is idempotent. `buncargo doctor` lists them too. A check returns `true`, `false` or `{ ok, detail }`; `fix` is a command or a function; `fast: false` keeps an expensive check out of `dev`; `severity: "warning"` reports without failing. A check that throws counts as failed. `exists(path)` resolves against the monorepo root, whatever directory `dev` was started from.
 
 **Tasks** are the one-off scripts a project accumulates. `buncargo run shop:seed` is `exec` with that app's env, secrets and working directory, after starting `requiredServices` (and their Compose dependencies) if they are down. Services a task starts are held on the same idle timer as a `dev` run's. Arguments after `--` are appended to the command without being re-parsed by the shell. `buncargo run` alone lists the tasks, `buncargo help` shows them too, and BuncargoBar puts a run button next to each one.
 
@@ -1061,7 +1061,7 @@ Opt-in HTTPS names on loopback. Buncargo still allocates ports and starts proces
 
 `options.primaryApp: "web"` collapses that app to `https://myapp.localhost` (or `https://fix-ui.myapp.localhost` in a worktree). The worktree label is the **directory name**, not the git branch.
 
-Enable with `options.hosts: true` (or `{ tld?, services? }`). Postgres, Redis, and other TCP services stay as connection strings on `localhost:<port>`. Default named HTTP services are Mailpit and Typesense.
+Enable with `options.hosts: true` (or `{ tld?, services? }`). Postgres, Redis, and other TCP services stay as connection strings on `localhost:<port>`. Default named HTTP services are Mailpit and Typesense. A service gets a name only when it serves pages: an HTTP preset (Mailpit, Typesense, MinIO), or a custom container with `exposeProtocol: "http"`. One whose URL carries credentials or comes from `urlTemplate` keeps it.
 
 The first `buncargo dev` in a repo with `hosts` on prompts for one-time machine setup (trust a local CA, bind `:443`). Enter accepts, `s` skips once, `n` persists a decline, which `doctor --fix` leaves alone and `buncargo hosts install` undoes. `buncargo hosts install` is the non-interactive path, and trusts the CA again even when its files are already there. Setup is per machine: later repos and worktrees reuse it.
 
@@ -1553,7 +1553,7 @@ The configuration reference covers the main public options; `src/types/all-types
 | `options` | `DevOptions` | `undefined` | Isolation, watchdog, helper app names |
 | `docker` | `DockerComposeGenerationOptions` | `undefined` | Generated compose path, volumes, Docker auto-start |
 | `secrets` | `SecretsScopeConfig` | `undefined` | Defaults for every app's `secrets` scope |
-| `checks` | `{ name, check: ({ root }) => boolean \| Promise<boolean>, fix? }[]` | `[]` | Preconditions `dev` verifies first. See [checks](#checks-tasks-and-profiles) |
+| `setupChecks` | `{ name, check: ({ root }) => boolean \| Promise<boolean>, fix? }[]` | `[]` | Preconditions `dev` verifies first. See [checks](#checks-tasks-and-profiles) |
 | `preflight` | `{ name, apps?, run(ctx) }[]` | `[]` | Steps `dev` runs with the terminal before starting. See [preflight](#preflight) |
 | `tasks` | `Record<string, { command, description?, app?, cwd?, requiredServices? }>` | `{}` | Scripts for `buncargo run <name>` |
 | `profiles` | `Record<string, { apps, description? }>` | `{}` | App selections for `dev --profile`; `default` is used by a bare `dev` |
@@ -1578,17 +1578,21 @@ Use the top-level `env` overlay for shared values (rewritten `WEB_URL`, `VITE_*`
 | `secondaryPort` | `number` | `undefined` | Extra host port (ClickHouse native). Exposed as `ports.<name>Secondary` |
 | `healthCheck` | `"pg_isready" \| "redis-cli" \| "http" \| "tcp" \| (port) => Promise<boolean> \| false` | preset default | `tcp` is a real TCP connect from the host and emits no container healthcheck. `false` disables |
 | `healthTimeout` | `number` | `30000` | Per-service health poll timeout (ms) |
-| `urlTemplate` | `(ctx: UrlBuilderContext) => string` | built-in when `database`/`user`/`password` set | Connection URL builder |
+| `urlTemplate` | `(ctx: UrlBuilderContext) => string` | the preset's URL, else `http://localhost:<port>` | Connection URL builder |
 | `serviceName` | `string` | the config key | Compose service name |
-| `database` | `string` | preset default | Enables built-in URL template |
-| `user` | `string` | `postgres` / `root` / `default` | Auth user for built-in URL |
-| `password` | `string` | `postgres` / `root` / `clickhouse` | Auth password for built-in URL |
+| `database` | `string` | preset default | Database the Postgres or ClickHouse preset creates and its URL names. Presets only |
+| `user` | `string` | `postgres` / `default` | The preset's user. Presets only |
+| `password` | `string` | `postgres` / `clickhouse` | The preset's password. Presets only |
 | `env` | `Record<string, "url" \| "port" \| "secondaryPort">` | preset aliases | Shared env outputs |
 | `staticEnv` | `Record<string, string>` | `{}` | Constant shared env (API keys, `SMTP_HOST`) |
-| `docker` | preset helper or raw Compose service | inferred for postgres/redis/clickhouse/mailpit/typesense/minio | Image, ports, healthcheck, volumes |
+| `docker` | preset helper or raw Compose service | the preset its key names, for a key `postgres`/`redis`/`clickhouse`/`mailpit`/`typesense`/`minio` | Image, ports, healthcheck, volumes. A raw definition is taken as written, under any key |
 | `external` | `{ stack, preset? }` | `undefined` | Provided by an integration's stack (the Supabase CLI) instead of the Compose file: allocated a port, URL and env, never written to Compose. `preset` says what it is (TablePlus link), without the preset's default env. Selecting one of a stack's services selects them all |
 
 `UrlBuilderContext`: `{ port, secondaryPort?, host, localIp }`. See [portless containers and finite jobs](#portless-containers-and-finite-jobs) for completion and rerun behavior.
+
+A service's preset is what it is. `db: service.postgres()` and a bare `postgres: { port: 5432 }` are the same service: the preset's image, probe, `DATABASE_URL` and `postgresql://` URL. A raw `docker` definition is a custom container whatever its key, with an `http://` URL unless it sets `urlTemplate`; to change a preset's image or Compose fields, pass them to the helper: `service.postgres({ docker: { image: "postgis/postgis:16" } })`.
+
+Validation rejects a key no section takes, so a misspelt `healthEndpont` fails instead of being ignored, and names the replacement for a renamed one.
 
 ### `AppConfig`
 

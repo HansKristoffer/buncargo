@@ -2,8 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveApps, resolveServices } from "../config/resolve";
 import { service } from "../docker-compose/services";
-import type { AppConfig, ServiceConfig } from "../types";
 import { applyHostPlanToUrls } from "./hosts/plan";
 import {
 	checkoutProjectNames,
@@ -25,8 +25,8 @@ describe("computeUrls", () => {
 			cache: service.redis(),
 		};
 		const urls = computeUrls(
-			services,
-			undefined,
+			resolveServices(services),
+			{},
 			{ db: 5433, cache: 6380 },
 			"",
 		);
@@ -40,8 +40,8 @@ describe("computeUrls", () => {
 
 	it("uses the app host for apps only", () => {
 		const result = computeUrls(
-			{ postgres: { port: 5432 } },
-			{ api: { port: 3000, devCommand: "bun run dev" } },
+			resolveServices({ postgres: { port: 5432 } }),
+			resolveApps({ api: { port: 3000, devCommand: "bun run dev" } }),
 			{ postgres: 5432, api: 3000 },
 			localIp,
 			"worker.ts.net",
@@ -51,12 +51,12 @@ describe("computeUrls", () => {
 	});
 
 	it("uses default URL builder for postgres", () => {
-		const services: Record<string, ServiceConfig> = {
+		const services = resolveServices({
 			postgres: { port: 5432 },
-		};
+		});
 		const ports = { postgres: 5432 };
 
-		const result = computeUrls(services, undefined, ports, localIp);
+		const result = computeUrls(services, {}, ports, localIp);
 
 		expect(result.postgres).toBe(
 			"postgresql://postgres:postgres@localhost:5432/postgres",
@@ -64,62 +64,40 @@ describe("computeUrls", () => {
 	});
 
 	it("uses default URL builder for redis", () => {
-		const services: Record<string, ServiceConfig> = {
+		const services = resolveServices({
 			redis: { port: 6379 },
-		};
+		});
 		const ports = { redis: 6379 };
 
-		const result = computeUrls(services, undefined, ports, localIp);
+		const result = computeUrls(services, {}, ports, localIp);
 
 		expect(result.redis).toBe("redis://localhost:6379");
 	});
 
 	it("uses default URL builder for clickhouse", () => {
-		const services: Record<string, ServiceConfig> = {
+		const services = resolveServices({
 			clickhouse: { port: 8123 },
-		};
+		});
 		const ports = { clickhouse: 8123 };
 
-		const result = computeUrls(services, undefined, ports, localIp);
+		const result = computeUrls(services, {}, ports, localIp);
 
 		expect(result.clickhouse).toBe(
 			"http://default:clickhouse@localhost:8123/default",
 		);
 	});
 
-	it("uses default URL builder for mysql", () => {
-		const services: Record<string, ServiceConfig> = {
-			mysql: { port: 3306 },
-		};
-		const ports = { mysql: 3306 };
-
-		const result = computeUrls(services, undefined, ports, localIp);
-
-		expect(result.mysql).toBe("mysql://root:root@localhost:3306/mysql");
-	});
-
-	it("uses default URL builder for mongodb", () => {
-		const services: Record<string, ServiceConfig> = {
-			mongodb: { port: 27017 },
-		};
-		const ports = { mongodb: 27017 };
-
-		const result = computeUrls(services, undefined, ports, localIp);
-
-		expect(result.mongodb).toBe("mongodb://localhost:27017");
-	});
-
 	it("uses custom urlTemplate when provided", () => {
-		const services: Record<string, ServiceConfig> = {
+		const services = resolveServices({
 			postgres: {
 				port: 5432,
 				urlTemplate: ({ port, host }) =>
 					`postgresql://custom:password@${host}:${port}/mydb`,
 			},
-		};
+		});
 		const ports = { postgres: 5432 };
 
-		const result = computeUrls(services, undefined, ports, localIp);
+		const result = computeUrls(services, {}, ports, localIp);
 
 		expect(result.postgres).toBe(
 			"postgresql://custom:password@localhost:5432/mydb",
@@ -127,53 +105,53 @@ describe("computeUrls", () => {
 	});
 
 	it("passes localIp to custom urlTemplate", () => {
-		const services: Record<string, ServiceConfig> = {
+		const services = resolveServices({
 			api: {
 				port: 3000,
 				urlTemplate: ({ port, localIp }) => `http://${localIp}:${port}`,
 			},
-		};
+		});
 		const ports = { api: 3000 };
 
-		const result = computeUrls(services, undefined, ports, localIp);
+		const result = computeUrls(services, {}, ports, localIp);
 
 		expect(result.api).toBe("http://192.168.1.100:3000");
 	});
 
 	it("passes secondaryPort to custom urlTemplate", () => {
-		const services: Record<string, ServiceConfig> = {
+		const services = resolveServices({
 			clickhouse: {
 				port: 8123,
 				secondaryPort: 9000,
 				urlTemplate: ({ port, secondaryPort }) =>
 					`http://localhost:${port}|native:${secondaryPort}`,
 			},
-		};
+		});
 		const ports = { clickhouse: 8123, clickhouseSecondary: 9000 };
 
-		const result = computeUrls(services, undefined, ports, localIp);
+		const result = computeUrls(services, {}, ports, localIp);
 
 		expect(result.clickhouse).toBe("http://localhost:8123|native:9000");
 	});
 
 	it("falls back to http URL for unknown services", () => {
-		const services: Record<string, ServiceConfig> = {
+		const services = resolveServices({
 			customservice: { port: 9999 },
-		};
+		});
 		const ports = { customservice: 9999 };
 
-		const result = computeUrls(services, undefined, ports, localIp);
+		const result = computeUrls(services, {}, ports, localIp);
 
 		expect(result.customservice).toBe("http://localhost:9999");
 	});
 
 	it("generates app URLs with http://localhost:port", () => {
-		const services: Record<string, ServiceConfig> = {
+		const services = resolveServices({
 			postgres: { port: 5432 },
-		};
-		const apps: Record<string, AppConfig> = {
+		});
+		const apps = resolveApps({
 			api: { port: 3000, devCommand: "bun run dev" },
-		};
+		});
 		const ports = { postgres: 5432, api: 3000 };
 
 		const result = computeUrls(services, apps, ports, localIp);
@@ -182,11 +160,11 @@ describe("computeUrls", () => {
 	});
 
 	it("generates appLocal URLs with local IP", () => {
-		const services: Record<string, ServiceConfig> = {};
-		const apps: Record<string, AppConfig> = {
+		const services = resolveServices({});
+		const apps = resolveApps({
 			api: { port: 3000, devCommand: "bun run dev" },
 			web: { port: 5173, devCommand: "bun run dev:web" },
-		};
+		});
 		const ports = { api: 3000, web: 5173 };
 
 		const result = computeUrls(services, apps, ports, localIp);
@@ -196,13 +174,13 @@ describe("computeUrls", () => {
 	});
 
 	it("leaves named-host rewriting to applyHostPlanToUrls", () => {
-		const services: Record<string, ServiceConfig> = {
+		const services = resolveServices({
 			postgres: { port: 5432 },
 			mailpit: { port: 8025 },
-		};
-		const apps: Record<string, AppConfig> = {
+		});
+		const apps = resolveApps({
 			api: { port: 3000, devCommand: "bun run dev" },
-		};
+		});
 		const ports = { postgres: 5432, mailpit: 8025, api: 3000 };
 
 		const result = computeUrls(services, apps, ports, localIp);
@@ -237,13 +215,13 @@ describe("computeUrls", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("computeLoopbackUrls", () => {
-	const services: Record<string, ServiceConfig> = {
+	const services = resolveServices({
 		postgres: { port: 5432 },
 		mailpit: { port: 8025 },
-	};
-	const apps: Record<string, AppConfig> = {
+	});
+	const apps = resolveApps({
 		api: { port: 3000, devCommand: "bun run dev" },
-	};
+	});
 	const ports = { postgres: 5432, mailpit: 8025, api: 3000 };
 
 	it("addresses every service and app through localhost", () => {

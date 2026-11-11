@@ -11,7 +11,7 @@ import type {
 	ComposeDocument,
 	ContainerRuntimeName,
 	DockerComposeGenerationOptions,
-	ServiceConfig,
+	ResolvedService,
 } from "../types";
 import { buildComposeModel, type ComposeIdentity } from "./model";
 import { composeToYaml } from "./yaml";
@@ -37,7 +37,7 @@ export function getGeneratedComposePath(
 
 export function writeGeneratedComposeFile(
 	root: string,
-	services: Record<string, ServiceConfig>,
+	services: Readonly<Record<string, ResolvedService>>,
 	docker?: DockerComposeGenerationOptions,
 	identity?: ComposeIdentity,
 	runtime?: ContainerRuntimeName,

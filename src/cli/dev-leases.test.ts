@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveApps } from "../config/resolve";
 import type { SkippedLeaseApp } from "../core/app-leases";
 import { readLeases } from "../core/leases";
 import { publishCurrentRun, type RunSource } from "../core/run-publish";
@@ -22,9 +23,9 @@ afterEach(() => {
 	rmSync(root, { recursive: true, force: true });
 });
 
-const apps = {
+const apps = resolveApps({
 	web: { port: 3000, devCommand: "bun dev", exclusive: "fixture:exclusive" },
-};
+});
 function source(sessionId: string): RunSource {
 	return {
 		sessionId,
@@ -100,14 +101,14 @@ it("moves the lease of an app this run already took over without asking", async 
 });
 
 describe("a lease held by another run", () => {
-	const optionalApps = {
+	const optionalApps = resolveApps({
 		shopify: {
 			kind: "worker" as const,
 			devCommand: "shopify app dev",
 			essential: false,
 			exclusive: "shopify-app:abc",
 		},
-	};
+	});
 
 	it("skips an essential: false app without a terminal, naming the holder", async () => {
 		await acquireAppLeases(source("owner"), optionalApps, {

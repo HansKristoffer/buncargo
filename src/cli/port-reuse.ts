@@ -8,8 +8,15 @@ import {
 } from "../core/process";
 import { findWorker } from "../core/process/worker-ownership";
 import { findRunsByRoot } from "../core/run-registry";
-import type { AppConfig } from "../types";
+import type { ResolvedApp } from "../types";
 import * as log from "./log";
+
+/**
+ * How long a server already holding its port gets to answer its health
+ * endpoint before it reads as unhealthy. It is up, so this is not its
+ * startup budget (`healthTimeout`): a healthy one answers at once.
+ */
+const REUSE_PROBE_MS = 3000;
 
 /**
  * CLI-level port reuse, the counterpart to `prepareAppPort` in
@@ -34,8 +41,8 @@ import * as log from "./log";
  * {@link inspectUnhealthyHolder}.
  */
 export interface ClassifiedCliApps {
-	startApps: Record<string, AppConfig>;
-	reusedApps: Record<string, AppConfig>;
+	startApps: Record<string, ResolvedApp>;
+	reusedApps: Record<string, ResolvedApp>;
 	startNames: string[];
 	reusedNames: string[];
 	inferredReuseNames: string[];
@@ -59,7 +66,7 @@ export type UnhealthyHolder = "stopped" | { detached: boolean } | undefined;
 
 interface AppDecision {
 	name: string;
-	config: AppConfig;
+	config: ResolvedApp;
 	reuse: boolean;
 	inferred: boolean;
 	unhealthy?: UnhealthyApp;
@@ -183,7 +190,7 @@ async function inspectUnhealthyHolder(
 }
 
 export async function classifyCliApps(
-	apps: Record<string, AppConfig>,
+	apps: Record<string, ResolvedApp>,
 	ports: Record<string, number>,
 	options: ClassifyCliAppsOptions = {},
 ): Promise<ClassifiedCliApps> {
@@ -208,8 +215,8 @@ export async function classifyCliApps(
 		options.inspectUnhealthyHolder ??
 		((name: string, port: number) =>
 			inspectUnhealthyHolder(name, port, apps[name]?.stopGraceMs, options));
-	const startApps: Record<string, AppConfig> = {};
-	const reusedApps: Record<string, AppConfig> = {};
+	const startApps: Record<string, ResolvedApp> = {};
+	const reusedApps: Record<string, ResolvedApp> = {};
 	const startNames: string[] = [];
 	const reusedNames: string[] = [];
 	const inferredReuseNames: string[] = [];
@@ -217,7 +224,7 @@ export async function classifyCliApps(
 
 	const decisions = await Promise.all(
 		Object.entries(apps).map(async ([name, config]): Promise<AppDecision> => {
-			if (config.kind === "worker" && options.context) {
+			if (config.port === undefined && options.context) {
 				const live = await findWorker(
 					options.context.root,
 					name,
@@ -237,15 +244,18 @@ export async function classifyCliApps(
 				);
 			}
 
-			if (config.healthEndpoint) {
+			const { readiness } = config;
+			// Only a declared endpoint is asked: the default `/` would take any
+			// answer, so the port being held is all a probe could learn.
+			if (readiness.kind === "http" && readiness.declared) {
 				if (!waitForServer) {
 					throw new Error(
 						`Cannot verify health for "${name}" without a waitForServer implementation.`,
 					);
 				}
-				const url = `http://localhost:${port}${config.healthEndpoint}`;
+				const url = `http://localhost:${port}${readiness.path}`;
 				try {
-					await waitForServer(url, config.healthTimeout ?? 3000);
+					await waitForServer(url, REUSE_PROBE_MS);
 				} catch {
 					const holder = await inspectHolder(name, port);
 					if (holder === "stopped") {
@@ -266,7 +276,8 @@ export async function classifyCliApps(
 					);
 				}
 			}
-			return { name, config, reuse: true, inferred: !config.healthEndpoint };
+			const probed = readiness.kind === "http" && readiness.declared;
+			return { name, config, reuse: true, inferred: !probed };
 		}),
 	);
 	for (const { name, config, reuse, inferred, unhealthy: sick } of decisions) {

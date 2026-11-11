@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { anySignal, mapValues, typedSwitch } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
-import type { AppConfig, DevServerPids } from "../../types";
+import type { DevServerPids, ResolvedApp } from "../../types";
 import { abortableSleep, abortError } from "../deadline";
 import { readEnvOverrides, warnShadowedSecrets } from "../env-overrides";
 import { waitForDevServers } from "../network";
@@ -97,7 +97,7 @@ export interface StartDevServersOptions {
 	 * app is ready when it resolves. Quiet: the run reports readiness itself.
 	 */
 	waitForHealth?: (
-		apps: Record<string, AppConfig>,
+		apps: Record<string, ResolvedApp>,
 		signal?: AbortSignal,
 		onAppReady?: (name: string) => void,
 	) => Promise<void>;
@@ -207,9 +207,9 @@ async function prepareAppPort(
 
 /** The apps that have a command to run in this mode. */
 export function startableApps(
-	apps: Record<string, AppConfig>,
+	apps: Record<string, ResolvedApp>,
 	productionBuild: boolean,
-): Record<string, AppConfig> {
+): Record<string, ResolvedApp> {
 	return Object.fromEntries(
 		Object.entries(apps).filter(
 			([, app]) => resolveStartCommand(app, productionBuild) !== undefined,
@@ -226,7 +226,7 @@ export function startableApps(
  * declaring a scope spawns nothing.
  */
 export async function loadStartSecrets(
-	apps: Record<string, AppConfig>,
+	apps: Record<string, ResolvedApp>,
 	appEnv: (name: string) => Record<string, string>,
 	options: { signal?: AbortSignal; onWait?: (ms: number) => void } = {},
 ): Promise<Record<string, Record<string, string>>> {
@@ -248,12 +248,14 @@ export async function loadStartSecrets(
 	return secrets;
 }
 
-/** How an app shows it is ready. */
-function readinessCheck(config: AppConfig): "output" | "health" | "none" {
-	if (config.readyWhen !== undefined) return "output";
-	if (config.kind === "worker" || config.healthEndpoint === false)
-		return "none";
-	return "health";
+/** How an app shows it is ready: alive is no check at all. */
+function readinessCheck(config: ResolvedApp): "output" | "health" | "none" {
+	return typedSwitch(config.readiness.kind, {
+		output: () => "output" as const,
+		http: () => "health" as const,
+		alive: () => "none" as const,
+		none: () => "none" as const,
+	});
 }
 
 /** The run's own interruption: a Ctrl-C (or SIGTERM, SIGHUP) to this process. */
@@ -282,7 +284,7 @@ function toAppFailure(name: string, error: unknown): AppFailure {
  * wave when tunnels are opening (see `deferPublicUrlApps`).
  */
 export async function startDevServers(
-	apps: Record<string, AppConfig>,
+	apps: Record<string, ResolvedApp>,
 	root: string,
 	envVarsByApp:
 		| Record<string, Record<string, string>>
@@ -352,11 +354,11 @@ export async function startDevServers(
 	const interrupts = interruptOnSignals();
 	const supervisor = new AppSupervision(
 		mapValues(startable, (config, name) => ({
-			optional: config.essential === false,
-			worker: config.kind === "worker",
+			optional: !config.essential,
+			worker: config.port === undefined,
 			checked: readinessCheck(config) !== "none",
 			attached: name === attachedName,
-			port: config.kind === "worker" ? undefined : ports[name],
+			port: config.port === undefined ? undefined : ports[name],
 			graceMs: config.stopGraceMs,
 			startAfter: config.startAfter,
 		})),
@@ -434,7 +436,7 @@ export async function startDevServers(
 		supervisor.life(name).standing !== "essential";
 
 	async function spawnWave(
-		wave: Record<string, AppConfig>,
+		wave: Record<string, ResolvedApp>,
 		probation: (name: string) => boolean,
 	): Promise<void> {
 		// Per wave, not per run: a later wave spawns after tunnels have opened
@@ -450,7 +452,7 @@ export async function startDevServers(
 				return port === undefined ? [] : [port];
 			}),
 		});
-		const toStart: [string, AppConfig][] = [];
+		const toStart: [string, ResolvedApp][] = [];
 		for (const [name, config] of Object.entries(wave)) {
 			const prepared = await prepareAppPort(
 				name,
@@ -512,7 +514,7 @@ export async function startDevServers(
 					onText: watchForReady(name, config, onText),
 				});
 			const spawnApp = (onProbation = false) =>
-				config.kind === "worker"
+				config.port === undefined
 					? spawnOwnedWorker(root, name, spawnOnce, supervisor.signal, {
 							allowEarlyExit: onProbation || spared(name),
 						})
@@ -531,14 +533,15 @@ export async function startDevServers(
 	const printedReady = new Map<string, Promise<void>>();
 	function watchForReady(
 		name: string,
-		config: AppConfig,
+		config: ResolvedApp,
 		onText: ((text: string) => void) | undefined,
 	): ((text: string) => void) | undefined {
-		if (!config.readyWhen) return onText;
+		const { readiness } = config;
+		if (readiness.kind !== "output") return onText;
 		const printed = Promise.withResolvers<void>();
 		printedReady.set(name, printed.promise);
 		const scanner = createOutputCaptureScanner({
-			ready: { pattern: config.readyWhen, as: "event" },
+			ready: { pattern: readiness.pattern, as: "event" },
 		});
 		let seen = false;
 		return (text) => {
@@ -552,15 +555,17 @@ export async function startDevServers(
 
 	async function waitForPrinted(
 		name: string,
-		config: AppConfig,
+		config: ResolvedApp,
 		signal: AbortSignal,
 	): Promise<void> {
 		const printed = printedReady.get(name);
 		if (!printed) return;
-		const timeoutMs = config.healthTimeout ?? 60_000;
+		const timeoutMs = config.healthTimeout;
 		const done = new AbortController();
 		const seconds = Math.round(timeoutMs / 1000);
-		const timedOut = `${name} did not print ${config.readyWhen} within ${seconds}s`;
+		const pattern =
+			config.readiness.kind === "output" ? config.readiness.pattern : "";
+		const timedOut = `${name} did not print ${pattern} within ${seconds}s`;
 		try {
 			await Promise.race([
 				printed,
@@ -623,7 +628,7 @@ export async function startDevServers(
 	}
 
 	function health(
-		app: Record<string, AppConfig>,
+		app: Record<string, ResolvedApp>,
 		signal: AbortSignal,
 	): Promise<void> {
 		if (waitForHealth) return waitForHealth(app, signal);
@@ -652,7 +657,7 @@ export async function startDevServers(
 				const config = startable[name];
 				const port = ports[name];
 				const listens =
-					config?.kind !== "worker" && config?.healthEndpoint !== false;
+					config?.port !== undefined && config.readiness.kind !== "none";
 				const checking = readiness.get(name)?.generation === generation;
 				if (!listens || !checking || phase !== "starting") return [];
 				if (pid === undefined || port === undefined) return [];
@@ -688,7 +693,7 @@ export async function startDevServers(
 			.finally(() => drift?.abort());
 	}
 
-	async function startWave(wave: Record<string, AppConfig>): Promise<void> {
+	async function startWave(wave: Record<string, ResolvedApp>): Promise<void> {
 		const names = Object.keys(wave);
 		if (names.length === 0) return;
 		const spareOthers = options.keepOthersOnFailure === true;

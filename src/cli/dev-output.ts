@@ -3,7 +3,7 @@ import { AppLogs } from "../core/process/app-logs";
 import { printStream, RunOutput } from "../core/process/run-output";
 import { isInteractive } from "../core/prompt";
 import { prefixWidth } from "../core/style";
-import type { AppConfig } from "../types";
+import type { ResolvedApp } from "../types";
 import * as log from "./log";
 import { watchRestartRequests, watchSendRequests } from "./restart-requests";
 import { RunTui, type TuiAction } from "./tui/run-tui";
@@ -27,7 +27,7 @@ export interface DevOutputSource {
  */
 export function openDevOutput(
 	env: DevOutputSource,
-	apps: Record<string, AppConfig>,
+	apps: Record<string, ResolvedApp>,
 	options: { tui: "auto" | "on" | "off" },
 ): {
 	output: RunOutput;
@@ -138,7 +138,7 @@ export function sendRefusal(
 	return undefined;
 }
 
-function appActions(apps: Record<string, AppConfig>): TuiAction[] {
+function appActions(apps: Record<string, ResolvedApp>): TuiAction[] {
 	return Object.entries(apps).flatMap(([app, config]) =>
 		(config.actions ?? []).map((action) => ({ app, ...action })),
 	);

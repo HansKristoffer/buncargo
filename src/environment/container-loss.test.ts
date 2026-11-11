@@ -1,4 +1,5 @@
 import { describe, expect, it, spyOn } from "bun:test";
+import { resolveServices } from "../config/resolve";
 import type { RemovalRecord } from "../core/removal-log";
 import type { BuncargoContainer } from "../types";
 import { explainMissingContainers, withLossNotice } from "./container-loss";
@@ -28,11 +29,11 @@ function target(list: () => Partial<BuncargoContainer>[]) {
 			name: "docker" as const,
 			list: list as () => BuncargoContainer[],
 		},
-		services: {
+		services: resolveServices({
 			db: { port: 5432 },
 			cache: { port: 6379, serviceName: "redis" },
 			unused: { port: 9000 },
-		},
+		}),
 		selectedServiceKeys: ["db", "cache"],
 	};
 }

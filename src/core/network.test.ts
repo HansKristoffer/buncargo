@@ -1,16 +1,16 @@
 import { describe, expect, it } from "bun:test";
-import type { AppConfig } from "../types";
+import { resolveApps } from "../config/resolve";
 import { waitForDevServers, waitForServer } from "./network";
 
 describe("waitForDevServers", () => {
 	it("skips apps with healthEndpoint: false", async () => {
-		const apps: Record<string, AppConfig> = {
+		const apps = resolveApps({
 			metro: {
 				port: 1,
 				devCommand: "bunx expo start",
 				healthEndpoint: false,
 			},
-		};
+		});
 		await expect(
 			waitForDevServers(apps, { metro: 1 }, { verbose: false }),
 		).resolves.toBeUndefined();
@@ -29,14 +29,14 @@ describe("readiness elapsed time and HTTP semantics", () => {
 			).resolves.toBeUndefined();
 			await expect(
 				waitForDevServers(
-					{
+					resolveApps({
 						web: {
 							port: Number(server.port),
 							devCommand: "bun dev",
 							healthEndpoint: "/health",
 							healthTimeout: 80,
 						},
-					},
+					}),
 					{ web: Number(server.port) },
 					{ verbose: false },
 				),
@@ -129,7 +129,7 @@ describe("readiness elapsed time and HTTP semantics", () => {
 		try {
 			await expect(
 				waitForDevServers(
-					{
+					resolveApps({
 						a: {
 							port: Number(server.port),
 							devCommand: "bun dev",
@@ -140,7 +140,7 @@ describe("readiness elapsed time and HTTP semantics", () => {
 							devCommand: "bun dev",
 							healthTimeout: 10000,
 						},
-					},
+					}),
 					{ a: Number(server.port), b: Number(server.port) },
 					{ verbose: false },
 				),

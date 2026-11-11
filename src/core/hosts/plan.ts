@@ -1,9 +1,4 @@
-import type {
-	AppConfig,
-	HostsOptionsLike,
-	NamedHost,
-	ServiceConfig,
-} from "../../types";
+import type { HostsOptionsLike, NamedHost, ResolvedService } from "../../types";
 
 export const RESERVED_HOST_LABELS = new Set([
 	"dev",
@@ -20,15 +15,6 @@ export const RESERVED_HOST_LABELS = new Set([
 ]);
 
 export const DEFAULT_HTTP_SERVICE_NAMES = new Set(["mailpit", "typesense"]);
-
-export const TCP_SERVICE_NAMES = new Set([
-	"postgres",
-	"postgresql",
-	"redis",
-	"clickhouse",
-	"mysql",
-	"mongodb",
-]);
 
 const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const MAX_HOSTNAME = 253;
@@ -111,22 +97,18 @@ export function resolveHostsOptions(
 	};
 }
 
-export function isHttpService(name: string, service: ServiceConfig): boolean {
-	if (service.urlTemplate) {
-		return false;
-	}
-	const docker = service.docker;
-	const key = (docker?.kind === "preset" ? docker.preset : name).toLowerCase();
-	return !TCP_SERVICE_NAMES.has(key);
+/** A page a browser can open, so it may get a named host. */
+export function isHttpService(service: ResolvedService): boolean {
+	return service.port !== undefined && service.browsable;
 }
 
 export function selectNamedServiceKeys(
-	services: Record<string, ServiceConfig>,
+	services: Readonly<Record<string, ResolvedService>>,
 	selection: readonly string[] | true,
 ): string[] {
 	if (selection === true) {
 		return Object.entries(services)
-			.filter(([name, service]) => isHttpService(name, service))
+			.filter(([, service]) => isHttpService(service))
 			.map(([name]) => name);
 	}
 	return selection.filter((name) => services[name] !== undefined);
@@ -145,8 +127,8 @@ export function joinHostname(labels: string[]): string {
 export function planNamedHosts(input: {
 	projectPrefix: string;
 	worktreeSuffix?: string | null;
-	apps?: Record<string, AppConfig>;
-	services: Record<string, ServiceConfig>;
+	apps: Readonly<Record<string, { port?: number }>>;
+	services: Readonly<Record<string, ResolvedService>>;
 	ports: Record<string, number>;
 	hosts: boolean | HostsOptionsLike;
 	primaryApp?: string;
@@ -161,36 +143,33 @@ export function planNamedHosts(input: {
 	const tldLabels = options.tld.split(".");
 	const plan: NamedHost[] = [];
 
-	if (input.apps) {
-		for (const name of Object.keys(input.apps)) {
-			const port = input.ports[name];
-			if (port === undefined) continue;
-			const appLabel =
-				options.primaryApp === name ? undefined : sanitizeDnsLabel(name);
-			const baseLabels = [
-				...(appLabel ? [appLabel] : []),
-				projectLabel,
-				...tldLabels,
-			];
-			plan.push({
-				kind: "app",
-				name,
-				hostname: joinHostname([
-					...(worktreeLabel ? [worktreeLabel] : []),
-					...baseLabels,
-				]),
-				baseHostname: joinHostname(baseLabels),
-				targetPort: port,
-			});
-		}
+	for (const name of Object.keys(input.apps)) {
+		const port = input.ports[name];
+		if (port === undefined) continue;
+		const appLabel =
+			options.primaryApp === name ? undefined : sanitizeDnsLabel(name);
+		const baseLabels = [
+			...(appLabel ? [appLabel] : []),
+			projectLabel,
+			...tldLabels,
+		];
+		plan.push({
+			kind: "app",
+			name,
+			hostname: joinHostname([
+				...(worktreeLabel ? [worktreeLabel] : []),
+				...baseLabels,
+			]),
+			baseHostname: joinHostname(baseLabels),
+			targetPort: port,
+		});
 	}
 
 	for (const name of selectNamedServiceKeys(input.services, options.services)) {
 		const port = input.ports[name];
 		if (port === undefined) continue;
-		if (!isHttpService(name, input.services[name] as ServiceConfig)) {
-			continue;
-		}
+		const service = input.services[name];
+		if (!service || !isHttpService(service)) continue;
 		const baseLabels = [sanitizeDnsLabel(name), projectLabel, ...tldLabels];
 		plan.push({
 			kind: "service",

@@ -4,12 +4,12 @@ import {
 	type InfisicalScope,
 	resolveScope,
 } from "../core/secrets/index";
-import type { AppConfig, SecretsScopeConfig } from "../types";
+import type { SecretsHolder, SecretsScopeConfig } from "../types";
 
 /** The part of an environment that names Infisical scopes. */
 interface SecretsConfig {
 	readonly secrets?: SecretsScopeConfig | false;
-	readonly apps: Readonly<Record<string, AppConfig>>;
+	readonly apps: Readonly<Record<string, SecretsHolder>>;
 }
 
 /**

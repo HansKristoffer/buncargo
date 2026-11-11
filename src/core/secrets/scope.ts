@@ -1,5 +1,5 @@
 import { mapValues, trimTrailingSlash } from "hanzio";
-import type { AppConfig, SecretsScopeConfig } from "../../types";
+import type { SecretsHolder, SecretsScopeConfig } from "../../types";
 import { secretsEnvironment } from "../runtime-flags";
 
 /**
@@ -80,7 +80,9 @@ export function resolveScope(
  * alongside instead would be one more argument for the next spawner to forget,
  * which is exactly how the CLI's own spawn path missed this in 9.2.0.
  */
-export function applySecretDefaults<TApps extends Record<string, AppConfig>>(
+export function applySecretDefaults<
+	TApps extends Record<string, { secrets?: SecretsScopeConfig | false }>,
+>(
 	apps: TApps,
 	defaults: SecretsScopeConfig | false | undefined,
 	env: NodeJS.ProcessEnv = process.env,
@@ -164,7 +166,7 @@ export function describeScope(scope: InfisicalScope): string {
  * the developer's environment and the computed env.
  */
 export function missingRequiredSecrets(
-	apps: Record<string, AppConfig>,
+	apps: Record<string, SecretsHolder>,
 	provided: (name: string) => Record<string, string | undefined>,
 ): Record<string, string[]> {
 	const missing: Record<string, string[]> = {};

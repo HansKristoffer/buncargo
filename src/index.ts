@@ -12,6 +12,8 @@ export {
 	discoverApps,
 	exists,
 	mergeConfigs,
+	resolveConfig,
+	resolveServices,
 	validateConfig,
 } from "./config/index";
 export type {
@@ -148,6 +150,8 @@ export type {
 	PrismaRunOptions,
 	ProfileConfig,
 	PublicTunnelHandle,
+	ResolvedApp,
+	ResolvedService,
 	SecretsScopeConfig,
 	SeedCheckContext,
 	SeedCheckHelpers,

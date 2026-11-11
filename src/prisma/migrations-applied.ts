@@ -1,7 +1,6 @@
 import { resolve } from "node:path";
 import { withDeadline, withSignal } from "../core/deadline";
-import { inferDockerPreset } from "../core/service-presets";
-import type { PrismaConfig, ServiceConfig } from "../types";
+import type { PrismaConfig, ResolvedService } from "../types";
 import { resolvePrismaConfig } from "./config";
 import { appliedButMissing, listMigrationFolders } from "./migration-chain";
 
@@ -44,19 +43,14 @@ export async function appliedMigrationCount(
 	input: {
 		root: string;
 		prisma: Pick<PrismaConfig, "cwd" | "migrations">;
-		serviceKey: string;
-		service: ServiceConfig;
+		service: ResolvedService;
 		url?: string;
 		signal?: AbortSignal;
 	},
 	readRows = readMigrationRows,
 ): Promise<number | undefined> {
 	input.signal?.throwIfAborted();
-	if (
-		inferDockerPreset(input.serviceKey, input.service) !== "postgres" ||
-		!input.url
-	)
-		return;
+	if (input.service.preset !== "postgres" || !input.url) return;
 	try {
 		const url = new URL(input.url);
 		if (

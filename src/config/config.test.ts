@@ -576,7 +576,7 @@ describe("validateConfig", () => {
 			const errors = validateConfig(config);
 
 			expect(errors).toContain(
-				'Service "nats" must define docker config (helper or raw) because it has no built-in preset.',
+				'Service "nats" needs docker: a preset (docker: service.postgres(), or a key named after one: postgres, redis, clickhouse, mailpit, typesense, minio) or a raw Compose definition.',
 			);
 		});
 
@@ -1236,7 +1236,7 @@ describe("checks, tasks and profiles", () => {
 		expect(
 			validateConfig({
 				...base,
-				checks: [{ name: "types", check: () => true, fix: "bun codegen" }],
+				setupChecks: [{ name: "types", check: () => true, fix: "bun codegen" }],
 				tasks: {
 					"shop:seed": {
 						command: "bun scripts/seed.ts",
@@ -1255,13 +1255,13 @@ describe("checks, tasks and profiles", () => {
 		expect(
 			validateConfig({
 				...base,
-				checks: [{ name: "", check: "yes" }],
+				setupChecks: [{ name: "", check: "yes" }],
 				tasks: { "bad name": { command: "" } },
 				profiles: { empty: { apps: [] } },
 			}),
 		).toEqual([
-			"checks.0.name must be a nonempty string",
-			"checks.0.check must be a function",
+			"setupChecks.0.name must be a nonempty string",
+			"setupChecks.0.check must be a function",
 			"tasks.bad name has an invalid name",
 			"tasks.bad name.command must be a nonempty string",
 			"profiles.empty.apps must be a nonempty array of app names",

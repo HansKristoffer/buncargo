@@ -68,7 +68,14 @@ Cross-cutting utilities in `src/core/` that most features touch.
 - `primary-app.ts` answers "which app is this project about" once, from `options.primaryApp`.
   `resolvePrimaryApp` infers from the dependency graph when nothing is configured;
   `configuredPrimaryApp` never infers and is what named hosts use.
-- `service-identity.ts` decides what a service *is* from its preset rather than its name. The
-  banner used `name.includes("postgres")`, so a service keyed `db` from `service.postgres()` got no
-  TablePlus link while the Compose side knew the preset all along. The banner, run registry and menu
-  bar app share one answer, and `tablePlusUrl` lives here.
+- `config/resolve.ts` resolves a validated config's services and apps once, into one variant per
+  kind with every default filled, and the environment holds only that. Readers used to apply
+  their own defaults and disagreed: `healthEndpoint` was `/` to the readiness wait and "no probe"
+  to port reuse, and an app's `healthTimeout` meant four different numbers. A service's preset is
+  its only identity: URLs were built from the key, so `db: service.postgres()` got
+  `http://localhost:5432` while the Compose side knew the preset all along. A bare preset key
+  resolves to its helper's output. `service-identity.ts` answers the banner, run registry and menu
+  bar from the resolved preset, and `tablePlusUrl` lives there.
+- Validation keeps one key table per section (`config/validation/key-tables.ts`), pinned to its
+  type with `satisfies`, so a field added to a type without its check fails to compile. The
+  tables drive the unknown-key errors and the renamed-field hints.

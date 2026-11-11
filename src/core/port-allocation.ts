@@ -1,12 +1,7 @@
 import { join } from "node:path";
 import { mapValues } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
-import type {
-	AppConfig,
-	ContainerRuntimeName,
-	PortOffsetProvenance,
-	ServiceConfig,
-} from "../types";
+import type { ContainerRuntimeName, PortOffsetProvenance } from "../types";
 import { simpleHash } from "./hash";
 import {
 	claimOffset,
@@ -126,6 +121,18 @@ function candidateOffsets(hashed: number, max: number): number[] {
 	);
 }
 
+/** The ports a service declares: a resolved one or one as written. */
+export interface PortedService {
+	port?: number;
+	secondaryPort?: number;
+}
+
+/** The ports an app declares: a resolved one or one as written. */
+export interface PortedApp {
+	port?: number;
+	extraPorts?: readonly number[];
+}
+
 /**
  * Build the full `name -> port` map for a config, with `offset` applied.
  *
@@ -135,8 +142,8 @@ function candidateOffsets(hashed: number, max: number): number[] {
  * always agree on key naming.
  */
 export function buildPortMap(
-	services: Record<string, ServiceConfig>,
-	apps: Record<string, AppConfig> | undefined,
+	services: Readonly<Record<string, PortedService>>,
+	apps: Readonly<Record<string, PortedApp>> | undefined,
 	offset = 0,
 ): Record<string, number> {
 	const ports: Record<string, number> = {};
@@ -160,7 +167,7 @@ export function buildPortMap(
  * port of the config's, so they never reach the env or the lockfile.
  */
 export function extraPortMap(
-	apps: Record<string, AppConfig> | undefined,
+	apps: Readonly<Record<string, PortedApp>> | undefined,
 	ports: Record<string, number>,
 	basePorts: Record<string, number>,
 ): Record<string, number> {
@@ -388,8 +395,8 @@ export interface PortPlanInput {
 	projectPrefix: string;
 	projectName: string;
 	root: string;
-	services: Record<string, ServiceConfig>;
-	apps?: Record<string, AppConfig>;
+	services: Readonly<Record<string, PortedService>>;
+	apps?: Readonly<Record<string, PortedApp>>;
 	suffix?: string;
 	worktreeName?: string | null;
 	worktreeIsolation?: boolean;
@@ -929,8 +936,8 @@ export type PinResult =
 export function pinOffset(input: {
 	root: string;
 	projectName: string;
-	services: Record<string, ServiceConfig>;
-	apps?: Record<string, AppConfig>;
+	services: Readonly<Record<string, PortedService>>;
+	apps?: Readonly<Record<string, PortedApp>>;
 	offset: number;
 	/** `options.worktreeIsolation`: without it, sharing the name is asked for. */
 	worktreeIsolation?: boolean;

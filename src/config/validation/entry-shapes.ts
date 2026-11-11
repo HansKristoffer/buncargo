@@ -1,5 +1,13 @@
 import { envName } from "../../core/ports";
-import { SECRETS_FIELDS, type ShapeChecks } from "./shape-checks";
+import {
+	APP_KEYS,
+	keysChecked,
+	RENAMED_KEYS,
+	SECRETS_KEYS,
+	SERVICE_KEYS,
+	unknownKeyErrors,
+} from "./key-tables";
+import type { ShapeChecks } from "./shape-checks";
 
 /**
  * Two keys that spell one env name would write each other's `<NAME>_PORT` and
@@ -53,35 +61,20 @@ export function validateEntryShapes(
 			)
 				errors.push(`${path} has an invalid name`);
 			if (!record(entry, path)) continue;
-			fields(
-				entry,
-				`${path}.`,
-				[
-					"expose",
-					"interactive",
-					"essential",
-					"needsPublicUrls",
-					"afterPreparation",
-				],
-				"boolean",
-			);
+			const table = kind === "apps" ? APP_KEYS : SERVICE_KEYS;
+			errors.push(...unknownKeyErrors(entry, path, table, RENAMED_KEYS[kind]));
+			for (const type of ["boolean", "string", "function"] as const)
+				fields(entry, `${path}.`, keysChecked(table, type), type);
+			for (const key of keysChecked(table, "duration"))
+				duration(entry[key], `${path}.${key}`);
 			check(
 				entry.exposeProtocol,
 				`${path}.exposeProtocol`,
 				entry.exposeProtocol === "http" || entry.exposeProtocol === "tcp",
 				'"http" or "tcp"',
 			);
-			duration(entry.healthTimeout, `${path}.healthTimeout`);
 			envValues(entry.staticEnv, `${path}.staticEnv`);
 			if (kind === "apps") {
-				fields(
-					entry,
-					`${path}.`,
-					["cwd", "prodCommand", "buildCommand"],
-					"string",
-				);
-				fields(entry, `${path}.`, ["envVars"], "function");
-				duration(entry.stopGraceMs, `${path}.stopGraceMs`);
 				check(
 					entry.devCommand,
 					`${path}.devCommand`,
@@ -100,7 +93,15 @@ export function validateEntryShapes(
 					entry.secrets !== false &&
 					record(entry.secrets, `${path}.secrets`)
 				) {
-					fields(entry.secrets, `${path}.secrets.`, SECRETS_FIELDS, "string");
+					errors.push(
+						...unknownKeyErrors(entry.secrets, `${path}.secrets`, SECRETS_KEYS),
+					);
+					fields(
+						entry.secrets,
+						`${path}.secrets.`,
+						keysChecked(SECRETS_KEYS, "string"),
+						"string",
+					);
 					check(
 						entry.secrets.required,
 						`${path}.secrets.required`,
@@ -108,7 +109,6 @@ export function validateEntryShapes(
 						"an array of nonempty strings",
 					);
 				}
-				fields(entry, `${path}.`, ["prebuild", "exclusive"], "string");
 				if (entry.watch !== undefined && record(entry.watch, `${path}.watch`)) {
 					check(
 						entry.watch.paths,
@@ -188,13 +188,6 @@ export function validateEntryShapes(
 						"an array of nonempty strings",
 					);
 			} else {
-				fields(
-					entry,
-					`${path}.`,
-					["serviceName", "database", "user", "password"],
-					"string",
-				);
-				fields(entry, `${path}.`, ["urlTemplate"], "function");
 				check(
 					entry.healthCheck,
 					`${path}.healthCheck`,

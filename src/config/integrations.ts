@@ -39,7 +39,7 @@ function composeHooks(
 
 /**
  * Apply a config's integrations: each `config()` transform in order, then the
- * hooks, checks and preflight steps they contribute. Runs before validation, so everything an
+ * hooks, setup checks and preflight steps they contribute. Runs before validation, so everything an
  * integration adds is validated like the rest. `root` is the checkout the
  * config belongs to; without it, the one around the working directory.
  */
@@ -67,9 +67,9 @@ export function applyIntegrations<T extends object>(
 	}
 
 	const hooks = composeHooks(resolved.hooks, integrations);
-	const checks = [
-		...(resolved.checks ?? []),
-		...integrations.flatMap((integration) => integration.checks ?? []),
+	const setupChecks = [
+		...(resolved.setupChecks ?? []),
+		...integrations.flatMap((integration) => integration.setupChecks ?? []),
 	];
 	const preflight = [
 		...(resolved.preflight ?? []),
@@ -80,7 +80,7 @@ export function applyIntegrations<T extends object>(
 			...resolved,
 			integrations,
 			...(hooks ? { hooks } : {}),
-			...(checks.length > 0 ? { checks } : {}),
+			...(setupChecks.length > 0 ? { setupChecks } : {}),
 			...(preflight.length > 0 ? { preflight } : {}),
 		},
 		{ [APPLIED]: true },

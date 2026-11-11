@@ -27,7 +27,7 @@ function fixture() {
 		`export default {projectPrefix:'run',services:{},apps:{api:{port:3000,devCommand:false,cwd:'packages/api',staticEnv:{APP_ONLY:'yes'}}},tasks:{
 			'shop:seed':{command:'printf "%s|%s|" "$APP_ONLY" "$PWD"; printf "%s,"',app:'api',description:'Seed the store'},
 			fail:{command:'exit 7'},
-		},checks:[{name:'marker',check:({root})=>require('node:fs').existsSync(root+'/marker'),fix:'touch marker'}]};`,
+		},setupChecks:[{name:'marker',check:({root})=>require('node:fs').existsSync(root+'/marker'),fix:'touch marker'}]};`,
 	);
 	return root;
 }

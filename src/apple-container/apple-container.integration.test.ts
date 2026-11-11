@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { resolveServices } from "../config/resolve";
 import { buildComposeModel } from "../docker-compose";
 import { appleContainerRuntimeAdapter } from "./adapter";
 import { createAppleContainerCli } from "./cli";
@@ -17,7 +18,7 @@ const ENABLED =
 
 const PROJECT = "buncargo-itest";
 const MODEL = buildComposeModel(
-	{ redis: { port: 6399, healthCheck: "tcp" } },
+	resolveServices({ redis: { port: 6399, healthCheck: "tcp" } }),
 	undefined,
 	{ projectName: PROJECT, root: process.cwd(), worktree: null },
 );
@@ -77,7 +78,9 @@ describe.skipIf(!ENABLED)("apple container runtime", () => {
 		await adapter.ensureRunning({ verbose: false });
 		const modelWith = (password: string) =>
 			buildComposeModel(
-				{ postgres: { port: 55433, password, healthCheck: "pg_isready" } },
+				resolveServices({
+					postgres: { port: 55433, password, healthCheck: "pg_isready" },
+				}),
 				undefined,
 				{ projectName: PROJECT, root: process.cwd(), worktree: null },
 				"apple",
@@ -131,7 +134,7 @@ describe.skipIf(!ENABLED)("apple container runtime", () => {
 		const adapter = appleContainerRuntimeAdapter();
 		await adapter.ensureRunning({ verbose: false });
 		const model = buildComposeModel(
-			{
+			resolveServices({
 				late: {
 					port: 59000,
 					docker: {
@@ -140,7 +143,7 @@ describe.skipIf(!ENABLED)("apple container runtime", () => {
 						command: ["sh", "-c", "sleep 3; exec nc -lk -p 9000"],
 					},
 				},
-			},
+			}),
 			undefined,
 			{ projectName: PROJECT, root: process.cwd(), worktree: null },
 			"apple",

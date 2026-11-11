@@ -27,6 +27,7 @@ import type {
 	EnvVarsBuilder,
 	ExecOptions,
 	HookContext,
+	ResolvedApp,
 	SecretsScopeConfig,
 	ServiceConfig,
 } from "../types";
@@ -43,7 +44,7 @@ export interface DevEnvVarsApi<
 		production?: boolean,
 	): AppEnvVars<TServices, TApps, TEnv, TName>;
 	buildAppEnvVarsMap(
-		targetApps: Record<string, AppConfig>,
+		targetApps: Record<string, ResolvedApp>,
 		production?: boolean,
 	): Record<string, Record<string, string>>;
 	buildEnvFingerprint(
@@ -124,7 +125,8 @@ export function createEnvVarsApi<
 			ASTRO_DEV_BACKGROUND: "1",
 			ASTRO_PREVIEW_BACKGROUND: "1",
 			...(appConfig?.staticEnv ? stringifyEnvValues(appConfig.staticEnv) : {}),
-			...(appConfig?.kind === "worker" ? {} : { HOST: "0.0.0.0" }),
+			// A worker listens on nothing.
+			...(appConfig && appConfig.port === undefined ? {} : { HOST: "0.0.0.0" }),
 			// So a framework plugin can configure itself without the consumer
 			// repeating which app it is. Nothing else tells the child process.
 			BUNCARGO_APP_NAME: appName,
@@ -193,7 +195,7 @@ export function createEnvVarsApi<
 	}
 
 	function buildAppEnvVarsMap(
-		targetApps: Record<string, AppConfig>,
+		targetApps: Record<string, ResolvedApp>,
 		production = false,
 	): Record<string, Record<string, string>> {
 		return recordFromKeys(Object.keys(targetApps), (appName) =>

@@ -12,6 +12,8 @@ of these anywhere else has written a second owner: flag it and name the first.
 | Concern | Owner |
 | --- | --- |
 | `BUNCARGO_*` and CI flags | `src/core/runtime-flags.ts` |
+| A service's or app's kind, preset and defaults | `resolveConfig` in `src/config/resolve.ts` |
+| The env-name stem of a service or app key | `envName` in `src/core/ports.ts` |
 | Where state files live | `src/core/state-paths.ts` |
 | A child process's environment | `src/core/child-env.ts` |
 | Asking the user | `src/core/prompt.ts` |

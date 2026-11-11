@@ -1,28 +1,24 @@
 import { must } from "hanzio";
-import type { AppConfig, DockerComposeNode, ServiceConfig } from "../types";
+import type { DockerComposeNode, ResolvedApp, ResolvedService } from "../types";
 import { assertOnlyAppNames, pickApps } from "./app-selection";
 
 export interface StartPlan {
 	appNames: string[];
-	apps: Record<string, AppConfig>;
+	apps: Record<string, ResolvedApp>;
 	requiredServiceKeys: string[];
 	composeServiceNames: string[];
 }
 
 export function getComposeServiceName(
-	services: Record<string, ServiceConfig>,
+	services: Readonly<Record<string, ResolvedService>>,
 	serviceKey: string,
 ): string {
-	const service = must(
-		services[serviceKey],
-		`Unknown service key "${serviceKey}"`,
-	);
-
-	return service.serviceName ?? serviceKey;
+	return must(services[serviceKey], `Unknown service key "${serviceKey}"`)
+		.serviceName;
 }
 
 export function resolveComposeServiceNames(
-	services: Record<string, ServiceConfig>,
+	services: Readonly<Record<string, ResolvedService>>,
 	serviceKeys: string[],
 ): string[] {
 	return serviceKeys.map((serviceKey) =>
@@ -31,7 +27,7 @@ export function resolveComposeServiceNames(
 }
 
 export function resolveSelectedApps(
-	apps: Record<string, AppConfig>,
+	apps: Readonly<Record<string, ResolvedApp>>,
 	onlyApps: string[] | undefined,
 ): Pick<StartPlan, "appNames" | "apps"> {
 	assertOnlyAppNames(Object.keys(apps), onlyApps);
@@ -103,8 +99,8 @@ export function resolveSelectedApps(
 }
 
 function resolveRequiredServiceKeys(
-	apps: Record<string, AppConfig>,
-	services: Record<string, ServiceConfig>,
+	apps: Readonly<Record<string, ResolvedApp>>,
+	services: Readonly<Record<string, ResolvedService>>,
 	appNames: string[],
 ): string[] {
 	const resolvedServiceKeys: string[] = [];
@@ -137,10 +133,10 @@ function resolveRequiredServiceKeys(
 /** Normalize Compose's short and long forms before walking dependency edges. */
 function readServiceDependencies(
 	serviceName: string,
-	service: ServiceConfig | undefined,
+	service: ResolvedService | undefined,
 ): [string, DockerComposeNode | undefined][] {
-	const docker = service?.docker;
-	const raw = docker?.kind === "preset" ? docker.service : docker;
+	const docker = service?.kind === "external" ? undefined : service?.docker;
+	const raw = docker?.kind === "preset" ? docker.override : docker?.service;
 	const dependencies = raw?.depends_on;
 
 	if (dependencies === undefined) {
@@ -193,9 +189,14 @@ function readServiceDependencies(
 	});
 }
 
+/** The integration stack that runs a service, if one does. */
+function stackOf(service: ResolvedService | undefined): string | undefined {
+	return service?.kind === "external" ? service.stack : undefined;
+}
+
 /** Expand and validate Compose dependencies without resolving a runtime or model. */
 export function resolveServiceDependencies(
-	services: Record<string, ServiceConfig>,
+	services: Readonly<Record<string, ResolvedService>>,
 	keys: string[],
 ): string[] {
 	const resolvedServiceKeys = [...keys];
@@ -204,7 +205,7 @@ export function resolveServiceDependencies(
 	// Compose dependencies are also selected resources, including aliases.
 	const byComposeName = new Map(
 		Object.entries(services).map(([key, service]) => [
-			service.serviceName ?? key,
+			service.serviceName,
 			key,
 		]),
 	);
@@ -272,10 +273,10 @@ export function resolveServiceDependencies(
 		// One CLI starts a stack's services together, so selecting one selects
 		// them all: its migrations and banner rows must not depend on which one
 		// an app happened to name.
-		const stack = services[key]?.external?.stack;
+		const stack = stackOf(services[key]);
 		if (stack) {
 			for (const [sibling, service] of Object.entries(services)) {
-				if (service.external?.stack !== stack || seenServiceKeys.has(sibling))
+				if (stackOf(service) !== stack || seenServiceKeys.has(sibling))
 					continue;
 				seenServiceKeys.add(sibling);
 				resolvedServiceKeys.push(sibling);
@@ -294,8 +295,8 @@ export function resolveServiceDependencies(
 }
 
 export function buildStartPlan(
-	apps: Record<string, AppConfig>,
-	services: Record<string, ServiceConfig>,
+	apps: Readonly<Record<string, ResolvedApp>>,
+	services: Readonly<Record<string, ResolvedService>>,
 	onlyApps: string[] | undefined,
 ): StartPlan {
 	const selection = resolveSelectedApps(apps, onlyApps);
@@ -322,7 +323,7 @@ export function buildStartPlan(
  * spawned that could name the services through `requiredServices`.
  */
 export function buildServicePlan(
-	services: Record<string, ServiceConfig>,
+	services: Readonly<Record<string, ResolvedService>>,
 	serviceKeys: readonly string[],
 ): StartPlan {
 	const unknown = serviceKeys.filter((key) => !services[key]);
@@ -346,8 +347,8 @@ export function buildServicePlan(
 
 /** The plan for a start: a services-only one when `onlyServices` is given. */
 export function planStart(
-	apps: Record<string, AppConfig>,
-	services: Record<string, ServiceConfig>,
+	apps: Readonly<Record<string, ResolvedApp>>,
+	services: Readonly<Record<string, ResolvedService>>,
 	selection: { onlyApps?: string[]; onlyServices?: readonly string[] },
 ): StartPlan {
 	return selection.onlyServices
@@ -360,9 +361,9 @@ export function planStart(
  * `startAfter`), as `a -> b -> a`, if any. Edges to unknown apps are skipped;
  * validation reports those on their own.
  */
-export function findCycle(
-	apps: Record<string, AppConfig>,
-	edges: (app: AppConfig) => readonly string[] | undefined,
+export function findCycle<TApp>(
+	apps: Readonly<Record<string, TApp>>,
+	edges: (app: TApp) => readonly string[] | undefined,
 ): string | undefined {
 	const state = new Map<string, "visiting" | "done">();
 	const stack: string[] = [];

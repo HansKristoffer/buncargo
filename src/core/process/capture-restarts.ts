@@ -1,5 +1,5 @@
 import { getErrorMessage } from "hanzio";
-import type { AppConfig } from "../../types";
+import type { ResolvedApp } from "../../types";
 import { withSignal } from "../deadline";
 import { formatWarn } from "../style";
 import {
@@ -9,7 +9,7 @@ import {
 
 /** Serializes captured changes and dependent restarts in their arrival order. */
 export function createCaptureRestarts(
-	apps: Record<string, AppConfig>,
+	apps: Record<string, ResolvedApp>,
 	options: {
 		signal: AbortSignal;
 		onCapture?: (
@@ -18,7 +18,7 @@ export function createCaptureRestarts(
 		) => readonly string[] | Promise<readonly string[]>;
 		restart(name: string): Promise<void>;
 	},
-): (name: string, config: AppConfig) => ((text: string) => void) | undefined {
+): (name: string, config: ResolvedApp) => ((text: string) => void) | undefined {
 	let queue = Promise.resolve();
 	return (name, config) => {
 		if (!config.captures || !Object.keys(config.captures).length)

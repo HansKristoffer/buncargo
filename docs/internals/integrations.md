@@ -7,7 +7,7 @@ User-facing guide: [integrations](../integrations.md).
 `config/integrations.ts` (`applyIntegrations`) in order before validation. It composes hooks (the
 config's first), appends checks, and is idempotent (a symbol marks an applied config).
 
-Core reaches integrations only through `appEnv`, `describeApp`, `bannerHint`, `describe`, `checks`
+Core reaches integrations only through `appEnv`, `describeApp`, `bannerHint`, `describe`, `setupChecks`
 and `commands`. Expo lives entirely there: without `expo()` no app is Expo.
 `cli/integration-commands.ts` dispatches `buncargo <name> <cmd>`, preferring the configured
 instance (its options) and falling back to the built-ins, so `expo sim` works without a config.

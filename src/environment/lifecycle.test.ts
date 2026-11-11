@@ -2,6 +2,12 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import {
+	resolveApp,
+	resolveApps,
+	resolveService,
+	resolveServices,
+} from "../config/resolve";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
 import { readRemovals } from "../core/removal-log";
 import { CI_ENV_VARS } from "../core/runtime-flags";
@@ -14,7 +20,7 @@ import {
 } from "../core/secrets/index";
 import { isolateHome } from "../core/test-env.testing";
 import { planStart } from "../planning";
-import type { AppConfig, ServiceConfig } from "../types";
+import type { AppConfig, ResolvedApp, ServiceConfig } from "../types";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 import { createLifecycleApi } from "./lifecycle";
@@ -27,15 +33,15 @@ isolateHome("buncargo-lifecycle-");
 
 function fixture() {
 	const events: string[] = [];
-	const services = { db: { port: 5432, healthCheck: false } };
-	const apps = {
+	const services = resolveServices({ db: { port: 5432, healthCheck: false } });
+	const apps = resolveApps({
 		web: {
 			port: 3000,
 			requiredServices: ["db"],
 			devCommand: "exit 0",
 			healthEndpoint: false,
 		},
-	};
+	});
 	const runtime = {
 		name: "docker",
 		displayName: "Docker",
@@ -129,7 +135,7 @@ function fixture() {
 		ensureWatchdog: async () => {
 			events.push("watchdog");
 		},
-		claimApps: async (apps: Record<string, AppConfig>) => apps,
+		claimApps: async (apps: Record<string, ResolvedApp>) => apps,
 		appEvents: {},
 		abandonApps: async () => {},
 		releaseApps: async () => {
@@ -259,11 +265,11 @@ describe("startup modes and hooks", () => {
 		// without containers is in the registry for its apps alone.
 		for (const watchdog of [true, false]) {
 			const { ctx, events, lifecycle } = fixture();
-			ctx.apps.site = {
+			ctx.apps.site = resolveApp({
 				port: 3001,
 				devCommand: "exit 0",
 				healthEndpoint: false,
-			};
+			});
 			await lifecycle.start({ onlyApps: ["site"], verbose: false, watchdog });
 			expect(events).toEqual(
 				watchdog ? ["before", "after", "watchdog"] : ["before", "after"],
@@ -371,7 +377,10 @@ describe("startup modes and hooks", () => {
 	it("reads as running with every service up, a finished job included", async () => {
 		// A job's container exits once it has run, which read as not running.
 		const { ctx, lifecycle } = fixture();
-		ctx.services.schema = { kind: "job", rerun: "always" };
+		ctx.services.schema = resolveService("schema", {
+			kind: "job",
+			rerun: "always",
+		});
 		ctx.runtime.projectServiceStates = async () => [
 			{ service: "db", state: "running", running: true },
 			{ service: "schema", state: "stopped", running: false },
@@ -474,12 +483,12 @@ describe("production or development, in CI", () => {
 
 it("rejects missing library app directories before starting containers", async () => {
 	const { ctx, events, lifecycle } = fixture();
-	ctx.apps.web = {
+	ctx.apps.web = resolveApp({
 		...ctx.apps.web,
 		kind: "server",
 		port: 3000,
 		cwd: "missing-buncargo-directory",
-	};
+	});
 	await expect(lifecycle.start({ verbose: false })).rejects.toThrow(
 		"apps.web.cwd",
 	);
@@ -528,12 +537,15 @@ it("containers-only does not invoke bootstrap", async () => {
 });
 it("starts services requiring preparation after migrations and seeds using one artifact", async () => {
 	const { ctx, events, lifecycle } = fixture();
-	ctx.services.sync = { port: 8080, afterPreparation: true };
-	ctx.apps.web = {
+	ctx.services.sync = resolveService("sync", {
+		port: 8080,
+		afterPreparation: true,
+	});
+	ctx.apps.web = resolveApp({
 		port: 3000,
 		devCommand: false,
 		requiredServices: ["db", "sync"],
-	};
+	});
 	ctx.runtime.up = async (request) => {
 		events.push(`up:${request.serviceNames.join(",")}:${!!request.noDeps}`);
 	};
@@ -568,7 +580,10 @@ it("cancels a pending bootstrap before migrations can start", async () => {
 
 it("onlyServices starts just those services, with no app selecting them", async () => {
 	const { ctx, events, lifecycle } = fixture();
-	ctx.services.cache = { port: 6379, healthCheck: false };
+	ctx.services.cache = resolveService("cache", {
+		port: 6379,
+		healthCheck: false,
+	});
 	// No app requires cache; a services-only start selects it anyway.
 	ctx.runtime.up = async (request) => {
 		events.push(`up:${request.serviceNames.join(",")}`);
@@ -681,12 +696,15 @@ it("keeps preparation services serial when seed.beforeApps opts into overlap", a
 	const seed = ctx.config.seed;
 	if (!seed) throw new Error("fixture needs seed");
 	seed.beforeApps = false;
-	ctx.services.sync = { port: 8080, afterPreparation: true };
-	ctx.apps.web = {
+	ctx.services.sync = resolveService("sync", {
+		port: 8080,
+		afterPreparation: true,
+	});
+	ctx.apps.web = resolveApp({
 		port: 3000,
 		devCommand: false,
 		requiredServices: ["db", "sync"],
-	};
+	});
 	ctx.runtime.up = async (request) => {
 		events.push(`up:${request.serviceNames.join(",")}`);
 	};

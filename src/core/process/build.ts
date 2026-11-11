@@ -1,9 +1,9 @@
-import type { AppConfig } from "../../types";
+import type { ResolvedApp } from "../../types";
 import { execAsync } from "./exec";
 
 /** Run each app's `buildCommand`, one at a time; cancellable. */
 export async function buildApps(
-	apps: Record<string, AppConfig>,
+	apps: Record<string, ResolvedApp>,
 	root: string,
 	envVarsByApp: Record<string, Record<string, string>>,
 	options: { verbose?: boolean; signal?: AbortSignal; timeoutMs?: number } = {},

@@ -321,5 +321,5 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 
 /** Core checks, then the config's own, then its integrations' (already appended there). */
 export function allChecks(env: AnyDevEnvironment): SetupCheck[] {
-	return [...coreChecks(env), ...(env.checks ?? [])];
+	return [...coreChecks(env), ...(env.setupChecks ?? [])];
 }

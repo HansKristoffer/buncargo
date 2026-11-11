@@ -13,6 +13,8 @@ import type {
 	HostsRuntime,
 	NamedHost,
 	NamedHostsActivation,
+	ResolvedApps,
+	ResolvedServices,
 	ServiceConfig,
 } from "../types";
 import { capturedEnv } from "./captured-values";
@@ -36,14 +38,14 @@ import {
 import { hostsMode, urlHostOverride } from "./runtime-flags";
 import { workspaceId } from "./workspace-identity";
 
-/** The parts of a config (integrations applied) a checkout view reads. */
+/** The parts of a resolved config (integrations applied) a checkout view reads. */
 export interface CheckoutConfig<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 > {
 	projectPrefix: string;
-	services: TServices;
-	apps?: TApps;
+	services: ResolvedServices<TServices>;
+	apps: ResolvedApps<TApps>;
 	env?: (...args: never[]) => EnvValues;
 	options?: {
 		envFiles?: readonly EnvInputFile[];
@@ -67,8 +69,8 @@ export interface CheckoutView<
 	readonly projectSuffix: string | undefined;
 	readonly worktree: boolean;
 	readonly worktreeSuffix: string | null;
-	readonly services: TServices;
-	readonly apps: TApps;
+	readonly services: ResolvedServices<TServices>;
+	readonly apps: ResolvedApps<TApps>;
 	readonly localIp: string;
 	readonly workspaceId: string;
 	readonly portPlan: PortPlan;
@@ -103,8 +105,7 @@ export function resolveCheckoutView<
 		root,
 		worktreeIsolation: config.options?.worktreeIsolation,
 	});
-	const services = config.services;
-	const apps = (config.apps ?? {}) as TApps;
+	const { services, apps } = config;
 	const portPlan = resolvePortPlan({
 		projectPrefix: config.projectPrefix,
 		projectName: identity.projectName,
@@ -243,8 +244,8 @@ export interface SharedEnvSource<
 	readonly workspaceId: string;
 	readonly localIp: string;
 	readonly portOffset: number;
-	readonly services: TServices;
-	readonly apps: TApps;
+	readonly services: ResolvedServices<TServices>;
+	readonly apps: ResolvedApps<TApps>;
 	readonly ports: ComputedPorts<TServices, TApps>;
 	readonly urls: ComputedUrls<TServices, TApps>;
 	readonly loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;

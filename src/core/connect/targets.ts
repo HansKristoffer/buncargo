@@ -12,7 +12,8 @@ export interface LocalTarget extends TargetInput {
 export function runTargets(run: RunEntry): LocalTarget[] {
 	return [
 		...run.apps.flatMap<LocalTarget>((a) => {
-			if (a.kind === "worker" || !validPort(a.port)) {
+			// A worker has no port to reach.
+			if (!validPort(a.port)) {
 				return [];
 			}
 			return [

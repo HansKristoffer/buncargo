@@ -1,16 +1,16 @@
 import { describe, expect, it } from "bun:test";
-import type { ServiceConfig } from "../types";
+import { resolveService } from "../config/resolve";
 import { describeService, tablePlusUrl } from "./service-identity";
 
 describe("describeService", () => {
 	it("recognises a preset service under any key", () => {
 		const identity = describeService({
 			name: "db",
-			service: {
+			service: resolveService("db", {
 				port: 5432,
 				docker: { kind: "preset", preset: "postgres" },
 				database: "lullu",
-			} as unknown as ServiceConfig,
+			}),
 			port: 7432,
 			projectName: "lullu-main",
 		});
@@ -24,7 +24,7 @@ describe("describeService", () => {
 	it("falls back to the key when there is no explicit preset", () => {
 		const identity = describeService({
 			name: "postgres",
-			service: { port: 5432 } as ServiceConfig,
+			service: resolveService("postgres", { port: 5432 }),
 			port: 7432,
 		});
 		expect(identity.preset).toBe("postgres");
@@ -34,7 +34,7 @@ describe("describeService", () => {
 	it("offers no database link for a custom service", () => {
 		const identity = describeService({
 			name: "rabbitmq",
-			service: { port: 5672 } as ServiceConfig,
+			service: resolveService("rabbitmq", { port: 5672 }),
 			port: 7672,
 		});
 		expect(identity.preset).toBeUndefined();
@@ -45,12 +45,12 @@ describe("describeService", () => {
 	it("uses the configured credentials", () => {
 		const identity = describeService({
 			name: "postgres",
-			service: {
+			service: resolveService("postgres", {
 				port: 5432,
 				user: "app",
 				password: "s3cret",
 				database: "shop",
-			} as unknown as ServiceConfig,
+			}),
 			port: 7432,
 		});
 		expect(identity.tablePlusUrl).toContain("app:s3cret@");
@@ -61,7 +61,7 @@ describe("describeService", () => {
 		expect(
 			describeService({
 				name: "mailpit",
-				service: { port: 8025 } as ServiceConfig,
+				service: resolveService("mailpit", { port: 8025 }),
 				port: 8025,
 			}).http,
 		).toBe(true);
@@ -70,7 +70,7 @@ describe("describeService", () => {
 	it("survives a port that was never allocated", () => {
 		const identity = describeService({
 			name: "postgres",
-			service: { port: 5432 } as ServiceConfig,
+			service: resolveService("postgres", { port: 5432 }),
 			port: undefined,
 		});
 		expect(identity.tablePlusUrl).toBeUndefined();

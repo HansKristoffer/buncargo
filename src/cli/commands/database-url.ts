@@ -1,6 +1,5 @@
 import type { Credentials } from "../../core/service-identity";
-import { inferDockerPreset } from "../../core/service-presets";
-import type { ServiceConfig } from "../../types";
+import type { ResolvedService } from "../../types";
 import { CliError } from "../errors";
 
 /**
@@ -32,11 +31,10 @@ export function databaseUrl(
 
 /** The first service built on the Postgres preset, for `exec --db`. */
 export function findPostgresService(
-	services: Record<string, ServiceConfig>,
-): { name: string; service: ServiceConfig } | undefined {
+	services: Record<string, ResolvedService>,
+): { name: string; service: ResolvedService } | undefined {
 	for (const [name, service] of Object.entries(services))
-		if (inferDockerPreset(name, service) === "postgres")
-			return { name, service };
+		if (service.preset === "postgres") return { name, service };
 	return undefined;
 }
 

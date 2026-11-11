@@ -1,5 +1,4 @@
 import { isRecord } from "hanzio";
-import { inferDockerPreset, isExternalService } from "../core/service-presets";
 import type {
 	ComposeDocument,
 	ComposeIdentity,
@@ -8,8 +7,8 @@ import type {
 	DockerComposeNode,
 	DockerComposeServiceRaw,
 	DockerComposeVolumeRaw,
-	DockerPresetName,
-	ServiceConfig,
+	ResolvedComposeService,
+	ResolvedService,
 	SuffixedEnvironmentOptions,
 } from "../types";
 import {
@@ -17,7 +16,7 @@ import {
 	SERVICE_HASH_LABEL,
 	serviceHashEnv,
 } from "./interpolate";
-import { buildPresetDockerService } from "./services";
+import { presetDefinition } from "./services";
 import { getDefaultPortBindings } from "./services/shared";
 
 export type { ComposeDocument, ComposeIdentity };
@@ -46,115 +45,34 @@ function deepMergeNode(
 	return merged;
 }
 
-function normalizeRawService(
-	name: string,
-	config: ServiceConfig,
-	service: DockerComposeServiceRaw,
-): DockerComposeServiceRaw {
-	const normalized = { ...service };
-	if (!normalized.ports || normalized.ports.length === 0) {
-		normalized.ports = getDefaultPortBindings(name, config);
-	}
-	if (config.kind === "job") normalized.restart = "no";
-	if (config.healthCheck === false || config.kind === "job") {
-		delete normalized.healthcheck;
-	}
-	return normalized;
-}
-
-type NormalizedServiceConfig =
-	| {
-			kind: "preset";
-			serviceName: string;
-			preset: DockerPresetName;
-			serviceOverride?: DockerComposeServiceRaw;
-	  }
-	| {
-			kind: "raw";
-			serviceName: string;
-			service: DockerComposeServiceRaw;
-	  };
-
-function normalizeServiceConfig(
-	name: string,
-	config: ServiceConfig,
-): NormalizedServiceConfig {
-	const serviceName = config.serviceName ?? name;
-	const rawDefinition = config.docker;
-
-	if (rawDefinition?.kind === "preset") {
-		return {
-			kind: "preset",
-			serviceName,
-			preset: rawDefinition.preset,
-			serviceOverride: rawDefinition.service,
-		};
-	}
-
-	if (rawDefinition) {
-		const inferredPreset = inferDockerPreset(name);
-		if (inferredPreset) {
-			return {
-				kind: "preset",
-				serviceName,
-				preset: inferredPreset,
-				serviceOverride: rawDefinition,
-			};
-		}
-		return {
-			kind: "raw",
-			serviceName,
-			service: normalizeRawService(name, config, rawDefinition),
-		};
-	}
-
-	const preset = inferDockerPreset(name);
-	if (!preset) {
-		throw new Error(
-			`Service "${name}" has no docker preset and no docker definition. Add service.docker using helper or raw mode.`,
-		);
-	}
-
-	return {
-		kind: "preset",
-		serviceName,
-		preset,
-	};
-}
-
 function resolveServiceDefinition(
 	name: string,
-	config: ServiceConfig,
+	config: ResolvedComposeService,
 	runtime?: ContainerRuntimeName,
 ): {
-	serviceName: string;
 	service: DockerComposeServiceRaw;
 	volume?: string;
 } {
-	const normalized = normalizeServiceConfig(name, config);
-	if (normalized.kind === "raw") {
-		return {
-			serviceName: normalized.serviceName,
-			service: normalized.service,
-		};
+	const { docker } = config;
+	if (docker.kind === "raw") {
+		const service = { ...docker.service };
+		if (!service.ports || service.ports.length === 0)
+			service.ports = getDefaultPortBindings(name, config);
+		return { service };
 	}
 
-	const { service, volume } = buildPresetDockerService(normalized.preset, {
+	const { service, volume } = presetDefinition(docker.preset).build({
 		serviceKey: name,
 		config,
 		runtime,
 	});
-	const mergedService = normalized.serviceOverride
+	const merged = docker.override
 		? (deepMergeNode(
 				service as DockerComposeNode,
-				normalized.serviceOverride as DockerComposeNode,
+				docker.override as DockerComposeNode,
 			) as DockerComposeServiceRaw)
 		: service;
-	return {
-		serviceName: normalized.serviceName,
-		service: mergedService,
-		volume,
-	};
+	return { service: merged, volume };
 }
 
 export interface ComposeModelOptions {
@@ -209,7 +127,7 @@ function withDataInMemory(
  * still say `"auto"` at this point.
  */
 export function buildComposeModel(
-	services: Record<string, ServiceConfig>,
+	services: Readonly<Record<string, ResolvedService>>,
 	docker?: DockerComposeGenerationOptions,
 	identity?: ComposeIdentity,
 	runtime?: ContainerRuntimeName,
@@ -227,9 +145,10 @@ export function buildComposeModel(
 
 	for (const [name, serviceConfig] of Object.entries(services)) {
 		// Its stack's own CLI creates it; buncargo only knows its port.
-		if (isExternalService(serviceConfig)) continue;
+		if (serviceConfig.kind === "external") continue;
 		const resolved = resolveServiceDefinition(name, serviceConfig, runtime);
-		const { serviceName, volume } = resolved;
+		const { serviceName } = serviceConfig;
+		const { volume } = resolved;
 		const service = inMemory
 			? withDataInMemory(resolved.service, external)
 			: resolved.service;

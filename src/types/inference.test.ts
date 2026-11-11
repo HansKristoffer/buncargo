@@ -12,6 +12,7 @@ import type {
 	EnvValues,
 	PrismaConfig,
 	ServiceConfig,
+	TypedAppDefinitions,
 } from ".";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -328,4 +329,26 @@ function _probeMergeAddingFirstEnvBuilder() {
 		Equal<keyof ReturnType<NonNullable<typeof raw.env>>, "FLAG">
 	>;
 	return { value, raw };
+}
+
+// A misspelt app key is inferred into `TApps`; the definitions `defineDevConfig`
+// checks against turn it into `never`, so no value can satisfy it.
+type _MisspeltAppKey = Expect<
+	Equal<
+		TypedAppDefinitions<
+			Record<string, never>,
+			{ api: { port: 3000; devCommand: "dev"; healthEndpont: "/health" } }
+		>["api"]["healthEndpont"],
+		never
+	>
+>;
+
+function _probeBarePresetKey() {
+	const config = defineDevConfig({
+		projectPrefix: "bare",
+		services: { postgres: { port: 5432 }, db: service.postgres() },
+	});
+	// A bare preset key derives its preset's env, like the helper does.
+	const bare: string | number | undefined = getEnvVar(config, "DATABASE_URL");
+	return bare;
 }

@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ServiceConfig } from "../types";
+import { resolveServices } from "../config/resolve";
 import {
 	buildEnvFileUpdates,
 	isReplaceableEnvValue,
@@ -148,9 +148,9 @@ describe("resolveEnvFileOptions", () => {
 });
 
 describe("buildEnvFileUpdates", () => {
-	const services: Record<string, ServiceConfig> = {
+	const services = resolveServices({
 		postgres: { port: 5432, database: "app" },
-	};
+	});
 
 	it("derives ports and loopback URLs, including service aliases", () => {
 		const updates = buildEnvFileUpdates({
@@ -235,7 +235,7 @@ describe("syncEnvFile", () => {
 
 	const base = {
 		projectName: "app-app",
-		services: {} as Record<string, ServiceConfig>,
+		services: resolveServices({}),
 		ports: { api: 4900 },
 		loopbackUrls: { api: "http://localhost:4900" },
 	};

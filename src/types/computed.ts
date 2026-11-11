@@ -133,16 +133,21 @@ type ExplicitServiceEnvVarNames<TService extends ServiceConfig> =
 		? ConcreteStringKeys<NonNullable<TService["env"]>>
 		: never;
 
-type ServiceEnvVarNamesFromKey<TKey extends string> =
-	TKey extends keyof BuiltInServiceEnvVarMap
-		? Extract<keyof BuiltInServiceEnvVarMap[TKey], string>
-		: never;
+/**
+ * The preset a service is, as `resolveService` reads it: the one its
+ * `docker: service.<preset>()` names, or, with no `docker`, the preset its key
+ * names (`postgres: { port }` is `service.postgres({ port })`).
+ */
+type ServicePreset<TKey extends string, TService> = TService extends {
+	docker: { kind: "preset"; preset: infer TPreset };
+}
+	? TPreset
+	: TService extends { docker: object } | { external: object }
+		? never
+		: TKey;
 
-type ServiceEnvVarNamesFromPreset<TService extends ServiceConfig> =
-	TService["docker"] extends {
-		kind: "preset";
-		preset: infer TPreset;
-	}
+type PresetEnvVarNames<TKey extends string, TService> =
+	ServicePreset<TKey, TService> extends infer TPreset
 		? TPreset extends keyof BuiltInServiceEnvVarMap
 			? Extract<keyof BuiltInServiceEnvVarMap[TPreset], string>
 			: never
@@ -155,8 +160,7 @@ export type ServiceEnvVarNames<
 		| ExplicitServiceEnvVarNames<TServices[K]>
 		| WithServicePort<
 				TServices[K],
-				| ServiceEnvVarNamesFromKey<Extract<K, string>>
-				| ServiceEnvVarNamesFromPreset<TServices[K]>
+				PresetEnvVarNames<Extract<K, string>, TServices[K]>
 		  >
 		| OverlayEnvVarNames<DeclaredStaticEnv<TServices[K]>>;
 }[keyof TServices];

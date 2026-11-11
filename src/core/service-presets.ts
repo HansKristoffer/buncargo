@@ -1,10 +1,5 @@
 import { isOneOf, typedKeys } from "hanzio";
-import type {
-	BuiltInServiceEnvVarMap,
-	DockerPresetName,
-	ServiceConfig,
-	ServiceEnvValueSource,
-} from "../types";
+import type { BuiltInServiceEnvVarMap, DockerPresetName } from "../types";
 
 /**
  * Canonical env var surface contributed by each built-in service preset.
@@ -54,50 +49,4 @@ export function defaultServiceProtocol(
 	return isOneOf(["clickhouse", "mailpit", "typesense", "minio"], preset)
 		? "http"
 		: "tcp";
-}
-
-/**
- * Resolve the built-in preset backing a service, either from an explicit
- * `service.<preset>()` helper definition or by the service key's name.
- */
-export function inferDockerPreset(
-	serviceKey: string,
-	service?: ServiceConfig,
-): DockerPresetName | undefined {
-	if (service?.external) return service.external.preset;
-	const dockerConfig = service?.docker;
-	if (dockerConfig?.kind === "preset") {
-		return isDockerPresetName(dockerConfig.preset)
-			? dockerConfig.preset
-			: undefined;
-	}
-
-	const normalized = serviceKey.toLowerCase();
-	return isDockerPresetName(normalized) ? normalized : undefined;
-}
-
-/**
- * Env vars a service contributes to the shared env surface: the preset defaults
- * plus any explicit `env` mappings declared on the service.
- */
-export function resolveServiceEnvVarSources(
-	serviceKey: string,
-	service: ServiceConfig,
-): Record<string, ServiceEnvValueSource> {
-	// An external service names what it is, but its integration decides its
-	// env: a second `DATABASE_URL` would collide with the project's own Postgres.
-	const preset = service.external
-		? undefined
-		: inferDockerPreset(serviceKey, service);
-	return {
-		...(preset && service.port !== undefined
-			? BUILT_IN_SERVICE_ENV_VARS[preset]
-			: {}),
-		...(service.env ?? {}),
-	};
-}
-
-/** Provided by an integration's stack rather than the generated Compose file. */
-export function isExternalService(service: ServiceConfig | undefined): boolean {
-	return service?.external !== undefined;
 }

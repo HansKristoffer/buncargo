@@ -1,8 +1,11 @@
-import type { AppConfig } from "../types";
+import type { CaptureConfig } from "../types";
+
+/** What captures read off an app: a resolved one or one as written. */
+type CapturingApp = { captures?: Readonly<Record<string, CaptureConfig>> };
 
 /** Every capture config that asked for `key`, with the value it captured. */
 function capturedWith(
-	apps: Readonly<Record<string, AppConfig>>,
+	apps: Readonly<Record<string, CapturingApp>>,
 	captured: Readonly<Record<string, string>>,
 	key: "label" | "env",
 ): [string, string][] {
@@ -18,7 +21,7 @@ function capturedWith(
 
 /** Captured values under their `label`; a `secret` one is never shown. */
 export function labelledCaptures(
-	apps: Readonly<Record<string, AppConfig>>,
+	apps: Readonly<Record<string, CapturingApp>>,
 	captured: Readonly<Record<string, string>>,
 ): Record<string, string> {
 	return Object.fromEntries(capturedWith(apps, captured, "label"));
@@ -26,7 +29,7 @@ export function labelledCaptures(
 
 /** Captured values under their `env` name. */
 export function capturedEnv(
-	apps: Readonly<Record<string, AppConfig>>,
+	apps: Readonly<Record<string, CapturingApp>>,
 	captured: Readonly<Record<string, string>>,
 ): Record<string, string> {
 	return Object.fromEntries(capturedWith(apps, captured, "env"));

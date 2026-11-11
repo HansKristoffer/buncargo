@@ -2,6 +2,8 @@ import { afterEach, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveService } from "../config/resolve";
+import type { ServiceConfig } from "../types";
 import {
 	databaseHealthCheck,
 	destructivePrismaAction,
@@ -38,17 +40,16 @@ it("is undefined when prisma is not installed", () => {
 });
 
 it("waits for the database by its preset, whatever the service is keyed", () => {
+	const wait = (key: string, service: ServiceConfig) =>
+		databaseHealthCheck(resolveService(key, service));
 	expect(
-		databaseHealthCheck("db", {
-			port: 5432,
-			docker: { kind: "preset", preset: "postgres" },
-		}),
+		wait("db", { port: 5432, docker: { kind: "preset", preset: "postgres" } }),
 	).toBe("pg_isready");
-	expect(databaseHealthCheck("postgres", { port: 5432 })).toBe("pg_isready");
-	expect(databaseHealthCheck("db", { port: 5432 })).toBe("tcp");
-	expect(
-		databaseHealthCheck("postgres", { port: 5432, healthCheck: false }),
-	).toBe(false);
+	expect(wait("postgres", { port: 5432 })).toBe("pg_isready");
+	expect(wait("db", { port: 5432, docker: { image: "postgres:16" } })).toBe(
+		"tcp",
+	);
+	expect(wait("postgres", { port: 5432, healthCheck: false })).toBe(false);
 });
 
 it("names the Prisma commands that can lose data", () => {

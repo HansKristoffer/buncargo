@@ -141,6 +141,6 @@ export function discoverApps(
 	return apps;
 }
 
-export function isDiscoveredApp(app: AppConfig | undefined): boolean {
+export function isDiscoveredApp(app: object | undefined): boolean {
 	return Boolean(app && (app as { [DISCOVERED_APP]?: true })[DISCOVERED_APP]);
 }

@@ -195,7 +195,7 @@ describe("supabase checks", () => {
 				{ projectPrefix: "myapp", services: {} },
 				{ root: dir },
 			);
-			const tomlCheck = integration.checks?.find(
+			const tomlCheck = integration.setupChecks?.find(
 				(entry) => entry.name === "supabase/config.toml exists",
 			);
 			const ctx = { root: dir } as CheckContext;
