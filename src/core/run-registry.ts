@@ -412,18 +412,12 @@ function olderRegistryOnDisk(): boolean {
  * per process for the runs it has not seen.
  */
 export function readLiveCapturesSync(root: string): Record<string, string> {
-	const runs = (
-		readJsonDocumentSync(getRunsPath(), (value) =>
-			isRecord(value) &&
-			value.version === REGISTRY_VERSION &&
-			Array.isArray(value.runs)
-				? value.runs.filter(isRunEntry)
-				: undefined,
-		) ?? []
-	).filter(
-		(run) =>
-			run.root === root && runPhase(run, isProcessAlive(run.pid)) === "live",
-	);
+	const runs = registry
+		.readSync(getRunsPath())
+		.filter(
+			(run) =>
+				run.root === root && runPhase(run, isProcessAlive(run.pid)) === "live",
+		);
 	const identities = readProcessIdentitiesCached(
 		runs.flatMap((run) => (run.processIdentity ? [run.pid] : [])),
 	);

@@ -1,7 +1,8 @@
+import { isPort } from "../json-shape";
 import { matchesProcessIdentity } from "../process-identity";
 import type { RunEntry } from "../run-registry";
 import { defaultServiceProtocol } from "../service-presets";
-import { type TargetInput, validPort } from "./protocol";
+import type { TargetInput } from "./protocol";
 
 export interface LocalTarget extends TargetInput {
 	pid?: number;
@@ -13,7 +14,7 @@ export function runTargets(run: RunEntry): LocalTarget[] {
 	return [
 		...run.apps.flatMap<LocalTarget>((a) => {
 			// A worker has no port to reach.
-			if (!validPort(a.port)) {
+			if (!isPort(a.port)) {
 				return [];
 			}
 			return [
@@ -33,7 +34,7 @@ export function runTargets(run: RunEntry): LocalTarget[] {
 			];
 		}),
 		...run.services.flatMap<LocalTarget>((s) => {
-			if (s.kind === "job" || !validPort(s.port)) {
+			if (s.kind === "job" || !isPort(s.port)) {
 				return [];
 			}
 			return [
