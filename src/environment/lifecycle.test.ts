@@ -38,7 +38,9 @@ import { TERMINAL_OUTPUT } from "./status-output";
 // removal under `~/.buncargo`: a home of the test's own, never the developer's.
 useTempHome("all");
 
-function fixture() {
+function fixture(
+	where: Partial<Pick<LifecycleContext, "root" | "loopbackUrls">> = {},
+) {
 	const events: string[] = [];
 	const services = resolveServices({ db: { port: 5432, healthCheck: false } });
 	const apps = resolveApps({
@@ -117,6 +119,7 @@ function fixture() {
 		output: TERMINAL_OUTPUT,
 		assignedPortTargets: () => ({}),
 		adoptAssignedPorts: () => {},
+		...where,
 	};
 
 	const envVars = {
@@ -865,7 +868,6 @@ it("keeps preparation services serial when seed.beforeApps opts into overlap", a
 // lost fails without saying why, and only a reset gets past it.
 it("names a squashed chain when the Prisma deploy fails", async () => {
 	const { Database } = await import("bun:sqlite");
-	const { ctx, envVars, lifecycle } = fixture();
 	const root = mkdtempSync(join(tmpdir(), "buncargo-squashed-"));
 	const migrations = join(root, "packages/prisma/prisma/migrations");
 	mkdirSync(join(migrations, "20250101000000_squashed"), { recursive: true });
@@ -879,8 +881,10 @@ it("names a squashed chain when the Prisma deploy fails", async () => {
 		"INSERT INTO _prisma_migrations VALUES ('20240101000000_init', '2025-01-01', NULL), ('20240201000000_users', '2025-01-01', NULL)",
 	);
 	db.close();
-	ctx.root = root;
-	ctx.loopbackUrls = { db: `sqlite://${file}` };
+	const { envVars, lifecycle } = fixture({
+		root,
+		loopbackUrls: { db: `sqlite://${file}` },
+	});
 	envVars.exec = async (command: string) => ({
 		exitCode: command.includes("migrate deploy") ? 1 : 0,
 		stdout: "",

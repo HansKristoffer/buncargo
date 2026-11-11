@@ -27,9 +27,21 @@ describe("parseBundle", () => {
 		["JSON of another kind", "null", "Make one with `buncargo files export`"],
 		["another version", { ...bundle, version: 2 }, "has version 2"],
 		["no files", { ...bundle, files: undefined }, "no repoKey or files"],
-		["an entry that is not an object", { ...bundle, files: [7] }, "is not a path"],
-		["an entry without data", { ...bundle, files: [{ ...file, data: undefined }] }, "is incomplete"],
-		["an entry whose hash is missing", { ...bundle, files: [{ ...file, sha256: undefined }] }, "does not match its sha256"],
+		[
+			"an entry that is not an object",
+			{ ...bundle, files: [7] },
+			"is not a path",
+		],
+		[
+			"an entry without data",
+			{ ...bundle, files: [{ ...file, data: undefined }] },
+			"is incomplete",
+		],
+		[
+			"an entry whose hash is missing",
+			{ ...bundle, files: [{ ...file, sha256: undefined }] },
+			"does not match its sha256",
+		],
 	])("refuses %s", (_, input, message) => {
 		const text = typeof input === "string" ? input : JSON.stringify(input);
 		expect(() => parseBundle(text)).toThrow(message);
