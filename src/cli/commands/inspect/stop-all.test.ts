@@ -2,10 +2,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-	ContainerDownRequest,
-	ContainerRuntimeAdapter,
-} from "../../../container-runtime/types";
+import {
+	fakeRuntime,
+	listedAs,
+} from "../../../container-runtime/fake-runtime.testing";
+import type { ContainerDownRequest } from "../../../container-runtime/types";
 import { claimOffset } from "../../../core/offset-claims";
 import { readRemovals } from "../../../core/removal-log";
 import { publishRun } from "../../../core/run-registry";
@@ -57,15 +58,14 @@ function stubRuntime(
 	containers: BuncargoContainer[],
 ) {
 	const downs: ContainerDownRequest[] = [];
-	const runtime = {
+	const runtime = fakeRuntime({
 		name,
 		displayName: name,
-		isAvailable: () => true,
-		list: () => containers,
+		containers: async () => containers.map(listedAs),
 		down: async (request: ContainerDownRequest) => {
 			downs.push(request);
 		},
-	} as unknown as ContainerRuntimeAdapter;
+	});
 	return { runtime, downs };
 }
 

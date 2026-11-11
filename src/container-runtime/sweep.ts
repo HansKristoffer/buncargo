@@ -62,6 +62,7 @@ import type {
 	ContainerRuntimeName,
 } from "../types";
 import { keepsUnownedStack, parseContainerState } from "./container-state";
+import { buncargoContainersOn } from "./containers";
 import {
 	type ContainerGroup,
 	groupBuncargoContainers,
@@ -331,7 +332,7 @@ export async function sweepOrphanedContainers(
 	const containers: BuncargoContainer[] = [];
 	for (const runtime of runtimes) {
 		try {
-			containers.push(...runtime.list());
+			containers.push(...(await buncargoContainersOn(runtime)));
 			answered.push(runtime.name);
 		} catch {
 			// Not up, or not installed: it has nothing for us this pass.
@@ -509,7 +510,7 @@ export async function runStackDowns(
 	for (const stack of run.stacks ?? []) {
 		const down = runnableDown(stack.down);
 		if (down) await execAsync(down, cwd, {}, { timeoutMs: 120_000 });
-		else stopStackByLabel(stack, runtimes);
+		else await stopStackByLabel(stack, runtimes);
 		await onDown(stack);
 	}
 }
@@ -528,28 +529,28 @@ function runnableDown(argv: readonly string[]): readonly string[] | undefined {
 
 /**
  * Stop a stack whose CLI cannot run, by the Compose project label its
- * containers carry. Stopped, not removed, so volumes and data stay. Docker
- * only: the integration CLIs run nothing on Apple's runtime.
+ * containers carry. Stopped, not removed, so volumes and data stay. On a
+ * runtime that records Compose projects: the integration CLIs run their
+ * stacks on Docker.
  */
-function stopStackByLabel(
+async function stopStackByLabel(
 	stack: RunStackEntry,
 	runtimes: readonly ContainerRuntimeAdapter[],
-): void {
-	const docker =
-		runtimes.find((runtime) => runtime.name === "docker") ??
+): Promise<void> {
+	const compose =
+		runtimes.find((runtime) => runtime.capabilities.composeProjectResources) ??
 		getContainerRuntimeAdapter("docker");
-	if (!stack.composeProject || !docker.listComposeProjectResources)
+	if (!stack.composeProject)
 		throw new Error(
 			`${stack.name}'s stop command \`${stack.down[0]}\` is gone, and nothing records its containers' project`,
 		);
-	const ids = docker
-		.listComposeProjectResources()
-		.containers.filter(
+	const ids = (await compose.listComposeProjectResources()).containers
+		.filter(
 			(container) =>
 				container.project === stack.composeProject && container.running,
 		)
 		.map((container) => container.id);
-	if (ids.length > 0) docker.stopByIds(ids);
+	await compose.stop(ids);
 }
 
 /**
@@ -741,7 +742,7 @@ export async function settleDeletedCheckouts(input: {
 	}[] = [];
 	try {
 		for (const runtime of runtimes) {
-			containers.push(...runtime.list());
+			containers.push(...(await buncargoContainersOn(runtime)));
 			listings.push({ runtime, volumes: await runtime.listVolumes() });
 		}
 	} catch {

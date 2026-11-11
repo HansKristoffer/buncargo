@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { HOSTS_PROTOCOL } from "./protocol";
 import {
 	closestHostname,
 	createProxyFetch,
@@ -11,7 +10,6 @@ import {
 	readProxyHealth,
 	startLocalProxy,
 } from "./proxy";
-import { ACCEPT_TEST_TLS, TEST_TLS } from "./test-tls.testing";
 
 /** Containers and CI images without IPv6 cannot exercise the ::1 fallback. */
 const ipv6LoopbackAvailable = (() => {
@@ -98,14 +96,12 @@ describe("proxy fetch", () => {
 				hostnames: [...routes.keys()],
 				lastReloadAt: Date.now(),
 			}),
-			tls: TEST_TLS,
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
 		servers.push(proxy);
 
-		const response = await fetch(`https://127.0.0.1:${proxy.httpsPort}/hello`, {
-			...ACCEPT_TEST_TLS,
+		const response = await fetch(`http://127.0.0.1:${proxy.httpsPort}/hello`, {
 			headers: { host: "api.serpier.localhost" },
 		});
 		expect(response.status).toBe(200);
@@ -114,7 +110,7 @@ describe("proxy fetch", () => {
 			host: string;
 			hops: string;
 		};
-		expect(body.proto).toBe("https");
+		expect(body.proto).toBe("http");
 		expect(body.host).toBe("api.serpier.localhost");
 		expect(body.hops).toBe("1");
 	});
@@ -130,14 +126,13 @@ describe("proxy fetch", () => {
 					hostnames: ["api.serpier.localhost"],
 					lastReloadAt: Date.now(),
 				}),
-				tls: TEST_TLS,
 				httpsPort: 0,
 			});
 			servers.push(proxy);
 			for (const hostname of ["127.0.0.1", "::1"]) {
-				expect(await readProxyHealth(proxy.httpsPort, hostname)).toMatchObject({
-					hostnames: ["api.serpier.localhost"],
-				});
+				expect(
+					await readProxyHealth(proxy.httpsPort, hostname, { tls: false }),
+				).toMatchObject({ hostnames: ["api.serpier.localhost"] });
 			}
 		},
 	);
@@ -158,15 +153,14 @@ describe("proxy fetch", () => {
 			const proxy = await startLocalProxy({
 				lookup: () => undefined,
 				routes: () => ({ hostnames: ["web.demo.localhost"], lastReloadAt: 1 }),
-				tls: TEST_TLS,
 				httpsPort,
 				httpPort: redirectHolder.port,
 				hostname: "127.0.0.1",
 			});
 			expect(proxy.redirectError).toContain(`:${redirectHolder.port}`);
-			expect(await readProxyHealth(httpsPort, "127.0.0.1")).toMatchObject({
-				hostnames: ["web.demo.localhost"],
-			});
+			expect(
+				await readProxyHealth(httpsPort, "127.0.0.1", { tls: false }),
+			).toMatchObject({ hostnames: ["web.demo.localhost"] });
 			proxy.stop();
 		}
 
@@ -200,6 +194,7 @@ describe("proxy fetch", () => {
 				hostnames: ["api.serpier.localhost"],
 				lastReloadAt: Date.now(),
 			}),
+			https: true,
 		});
 		const request = new Request("https://api.serpier.localhost/", {
 			headers: {
@@ -219,6 +214,7 @@ describe("proxy fetch", () => {
 				hostnames: ["api.serpier.localhost"],
 				lastReloadAt: Date.now(),
 			}),
+			https: true,
 		});
 		const request = new Request("https://tenant.api.serpier.localhost/", {
 			headers: { host: "tenant.api.serpier.localhost" },
@@ -228,13 +224,14 @@ describe("proxy fetch", () => {
 		expect(await response.text()).toContain("api.serpier.localhost");
 	});
 
-	it("reports its protocol, the served hostnames and the last refresh in the health body", async () => {
+	it("reports the served hostnames and the last refresh in the health body", async () => {
 		const fetchHandler = createProxyFetch({
 			lookup: () => undefined,
 			routes: () => ({
 				hostnames: ["api.serpier.localhost"],
 				lastReloadAt: 1000,
 			}),
+			https: true,
 		});
 		const response = await fetchHandler(
 			new Request(`https://127.0.0.1${HEALTH_PATH}`),
@@ -242,7 +239,6 @@ describe("proxy fetch", () => {
 		);
 		expect(await response.json()).toEqual({
 			ok: true,
-			protocol: HOSTS_PROTOCOL,
 			routes: 1,
 			hostnames: ["api.serpier.localhost"],
 			lastReloadAt: 1000,
@@ -254,6 +250,7 @@ describe("proxy fetch", () => {
 		const fetchHandler = createProxyFetch({
 			lookup: () => undefined,
 			routes: () => ({ hostnames: [], lastReloadAt: 0 }),
+			https: true,
 			staleAfterMs: 45_000,
 			onStale: (ageMs) => stalls.push(ageMs),
 			now: () => 60_000,
@@ -275,6 +272,7 @@ describe("proxy fetch", () => {
 		const fetchHandler = createProxyFetch({
 			lookup: () => undefined,
 			routes: () => ({ hostnames: [], lastReloadAt: 59_000 }),
+			https: true,
 			staleAfterMs: 45_000,
 			onStale: (ageMs) => stalls.push(ageMs),
 			now: () => 60_000,
@@ -318,14 +316,12 @@ describe("proxy fetch", () => {
 				hostnames: [...routes.keys()],
 				lastReloadAt: Date.now(),
 			}),
-			tls: TEST_TLS,
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
 		servers.push(proxy);
 
-		const socket = new WebSocket(`wss://127.0.0.1:${proxy.httpsPort}/ws`, {
-			...ACCEPT_TEST_TLS,
+		const socket = new WebSocket(`ws://127.0.0.1:${proxy.httpsPort}/ws`, {
 			headers: { host: "api.serpier.localhost" },
 		} as never);
 		const first = await new Promise<string>((resolve, reject) => {
@@ -381,14 +377,12 @@ describe("proxy fetch", () => {
 				hostnames: [...routes.keys()],
 				lastReloadAt: Date.now(),
 			}),
-			tls: TEST_TLS,
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
 		servers.push(proxy);
 
-		const socket = new WebSocket(`wss://127.0.0.1:${proxy.httpsPort}/`, {
-			...ACCEPT_TEST_TLS,
+		const socket = new WebSocket(`ws://127.0.0.1:${proxy.httpsPort}/`, {
 			headers: { host: "api.serpier.localhost" },
 			protocols: ["vite-hmr"],
 		} as never);
@@ -418,6 +412,7 @@ describe("proxy fetch", () => {
 				hostnames: ["api.serpier.localhost"],
 				lastReloadAt: Date.now(),
 			}),
+			https: true,
 		});
 		const request = new Request("https://api.serpier.localhost/", {
 			headers: { host: "api.serpier.localhost", upgrade: "websocket" },
@@ -452,22 +447,19 @@ describe("proxy fetch", () => {
 				hostnames: [...routes.keys()],
 				lastReloadAt: Date.now(),
 			}),
-			tls: TEST_TLS,
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
 		servers.push(proxy);
 
-		const url = `https://127.0.0.1:${proxy.httpsPort}/`;
+		const url = `http://127.0.0.1:${proxy.httpsPort}/`;
 		const decoded = await fetch(url, {
-			...ACCEPT_TEST_TLS,
 			headers: { host: "mailpit.serpier.localhost" },
 		});
 		expect(decoded.status).toBe(200);
 		expect(await decoded.text()).toBe(html);
 
 		const wire = await fetch(url, {
-			...ACCEPT_TEST_TLS,
 			headers: {
 				host: "mailpit.serpier.localhost",
 				"accept-encoding": "gzip",
@@ -500,14 +492,12 @@ describe("proxy fetch", () => {
 				hostnames: [...routes.keys()],
 				lastReloadAt: Date.now(),
 			}),
-			tls: TEST_TLS,
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
 		servers.push(proxy);
 
-		const response = await fetch(`https://127.0.0.1:${proxy.httpsPort}/`, {
-			...ACCEPT_TEST_TLS,
+		const response = await fetch(`http://127.0.0.1:${proxy.httpsPort}/`, {
 			headers: { host: "api.serpier.localhost", "keep-alive": "timeout=5" },
 		});
 		const body = (await response.json()) as {
@@ -538,14 +528,12 @@ describe("proxy fetch", () => {
 					hostnames: [...routes.keys()],
 					lastReloadAt: Date.now(),
 				}),
-				tls: TEST_TLS,
 				httpsPort: 0,
 				hostname: "127.0.0.1",
 			});
 			servers.push(proxy);
 
-			const response = await fetch(`https://127.0.0.1:${proxy.httpsPort}/`, {
-				...ACCEPT_TEST_TLS,
+			const response = await fetch(`http://127.0.0.1:${proxy.httpsPort}/`, {
 				headers: { host: "web.serpier.localhost" },
 			});
 			expect(response.status).toBe(200);
@@ -581,14 +569,12 @@ describe("proxy fetch", () => {
 					hostnames: [...routes.keys()],
 					lastReloadAt: Date.now(),
 				}),
-				tls: TEST_TLS,
 				httpsPort: 0,
 				hostname: "127.0.0.1",
 			});
 			servers.push(proxy);
 
-			const socket = new WebSocket(`wss://127.0.0.1:${proxy.httpsPort}/ws`, {
-				...ACCEPT_TEST_TLS,
+			const socket = new WebSocket(`ws://127.0.0.1:${proxy.httpsPort}/ws`, {
 				headers: { host: "web.serpier.localhost" },
 			} as never);
 			const first = await new Promise<string>((resolve, reject) => {
@@ -618,6 +604,7 @@ describe("proxy fetch", () => {
 				hostnames: ["web.serpier.localhost"],
 				lastReloadAt: Date.now(),
 			}),
+			https: true,
 		});
 		const request = new Request("https://web.serpier.localhost/", {
 			headers: { host: "web.serpier.localhost" },
@@ -662,13 +649,11 @@ describe("proxy fetch", () => {
 				hostnames: [...routes.keys()],
 				lastReloadAt: Date.now(),
 			}),
-			tls: TEST_TLS,
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
 
-		const client = new WebSocket(`wss://127.0.0.1:${proxy.httpsPort}/`, {
-			...ACCEPT_TEST_TLS,
+		const client = new WebSocket(`ws://127.0.0.1:${proxy.httpsPort}/`, {
 			headers: { host: "api.serpier.localhost" },
 		} as never);
 		await new Promise<void>((resolve, reject) => {
@@ -729,16 +714,17 @@ describe("readProxyHealth", () => {
 		expect(Date.now() - started).toBeLessThan(1_000);
 	});
 
-	it("detects a bound proxy over HTTPS", async () => {
+	it("detects a bound proxy over HTTP", async () => {
 		const proxy = await startLocalProxy({
 			lookup: () => undefined,
 			routes: () => ({ hostnames: [], lastReloadAt: Date.now() }),
-			tls: TEST_TLS,
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
 		servers.push(proxy);
-		expect(await readProxyHealth(proxy.httpsPort, "127.0.0.1")).toBeDefined();
+		expect(
+			await readProxyHealth(proxy.httpsPort, "127.0.0.1", { tls: false }),
+		).toBeDefined();
 	});
 
 	it("reads back what the proxy is serving", async () => {
@@ -748,105 +734,44 @@ describe("readProxyHealth", () => {
 				hostnames: ["api.serpier.localhost"],
 				lastReloadAt: 1234,
 			}),
-			tls: TEST_TLS,
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
 		servers.push(proxy);
-		expect(await readProxyHealth(proxy.httpsPort, "127.0.0.1")).toEqual({
-			protocol: HOSTS_PROTOCOL,
+		expect(
+			await readProxyHealth(proxy.httpsPort, "127.0.0.1", { tls: false }),
+		).toEqual({
 			routeCount: 1,
 			hostnames: ["api.serpier.localhost"],
 			lastReloadAt: 1234,
 		});
 	});
 
-	// What the CLI's route check asks: one round trip instead of polling for
-	// the daemon's next reload.
-	it("reloads before answering a refresh probe, and only then", async () => {
-		let hostnames: string[] = [];
-		let refreshes = 0;
-		const proxy = await startLocalProxy({
-			lookup: () => undefined,
-			routes: () => ({ hostnames, lastReloadAt: Date.now() }),
-			refresh: async () => {
-				refreshes += 1;
-				hostnames = ["web.demo.localhost"];
-			},
-			tls: TEST_TLS,
-			httpsPort: 0,
-			hostname: "127.0.0.1",
-		});
-		servers.push(proxy);
-
-		expect(await readProxyHealth(proxy.httpsPort)).toMatchObject({
-			hostnames: [],
-		});
-		expect(refreshes).toBe(0);
-		expect(
-			await readProxyHealth(proxy.httpsPort, "127.0.0.1", { refresh: true }),
-		).toMatchObject({ hostnames: ["web.demo.localhost"] });
-		expect(refreshes).toBe(1);
-	});
-
-	// The daemon every machine runs until `hosts install` replaces it.
-	it("reads a daemon from before the protocol as outdated", async () => {
+	it("reads a buncargo proxy without the health fields as outdated", async () => {
 		const outdated = Bun.serve({
 			hostname: "127.0.0.1",
 			port: 0,
-			tls: TEST_TLS,
 			fetch() {
-				return Response.json({
-					ok: true,
-					routes: 1,
-					hostnames: ["web.demo.localhost"],
-					lastReloadAt: Date.now(),
-				});
+				return Response.json({ ok: true, routes: 2 });
 			},
 		});
 		servers.push(outdated);
-		expect(await readProxyHealth(outdated.port ?? 0, "127.0.0.1")).toEqual({
-			outdated: true,
-		});
-	});
-
-	// Installed by a project on a later buncargo: it serves this one too.
-	it("reads a daemon of a newer protocol as current", async () => {
-		const newer = Bun.serve({
-			hostname: "127.0.0.1",
-			port: 0,
-			tls: TEST_TLS,
-			fetch() {
-				return Response.json({
-					ok: true,
-					protocol: HOSTS_PROTOCOL + 1,
-					routes: 1,
-					hostnames: ["web.demo.localhost"],
-					lastReloadAt: 1234,
-				});
-			},
-		});
-		servers.push(newer);
-		expect(await readProxyHealth(newer.port ?? 0, "127.0.0.1")).toEqual({
-			protocol: HOSTS_PROTOCOL + 1,
-			routeCount: 1,
-			hostnames: ["web.demo.localhost"],
-			lastReloadAt: 1234,
-		});
+		expect(
+			await readProxyHealth(outdated.port, "127.0.0.1", { tls: false }),
+		).toEqual({ outdated: true });
 	});
 
 	it("rejects a foreign server answering 200 on the health path", async () => {
 		const squatter = Bun.serve({
 			hostname: "127.0.0.1",
 			port: 0,
-			tls: TEST_TLS,
 			fetch() {
 				return new Response("OK");
 			},
 		});
 		servers.push(squatter);
 		expect(
-			await readProxyHealth(squatter.port ?? 0, "127.0.0.1"),
+			await readProxyHealth(squatter.port, "127.0.0.1", { tls: false }),
 		).toBeUndefined();
 	});
 
@@ -854,14 +779,13 @@ describe("readProxyHealth", () => {
 		const squatter = Bun.serve({
 			hostname: "127.0.0.1",
 			port: 0,
-			tls: TEST_TLS,
 			fetch() {
 				return Response.json({ ok: true });
 			},
 		});
 		servers.push(squatter);
 		expect(
-			await readProxyHealth(squatter.port ?? 0, "127.0.0.1"),
+			await readProxyHealth(squatter.port, "127.0.0.1", { tls: false }),
 		).toBeUndefined();
 	});
 });

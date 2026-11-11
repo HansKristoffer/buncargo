@@ -8,8 +8,8 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
 ## Daemon and client
 
 - `daemon.ts` is the server (what `hostsd.js` bundles); `daemon-client.ts` is the CLI side (health
-  readers, `waitForDaemonRoutes`, `ensureHostsDaemonRunning`) and `daemon-pid.ts` is the pidfile
-  both share. The direction is one-way: the daemon must never import the client,
+  readers, `waitForDaemonRoutes`, `ensureHostsDaemonRunning`) and `daemon-config.ts` is the
+  port/pidfile state both share. The direction is one-way: the daemon must never import the client,
   which reaches for the service manifest and the container runtimes to name a `:443` squatter.
   That split, plus the `sleep` leaf, keeps `dist/hostsd.js` small; `src/architecture.test.ts`
   enforces it.
@@ -36,31 +36,6 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   when another live pid is already answering, on the foreground path only; under `KeepAlive` an
   exit there would just be respawned.
 
-## Protocol
-
-- One daemon serves every project on the machine, and each project talks to it from the buncargo
-  it pins. `protocol.ts` holds the one number they agree on: `HOSTS_PROTOCOL` is what this
-  source's daemon reports in its health body and what `hosts install` records in the manifest,
-  `MIN_HOSTS_PROTOCOL` the oldest daemon this CLI works with. Stale means below the minimum, never
-  "different". Comparing versions and bundle hashes had two projects on two releases each call the
-  other's install stale: every interactive run asked for a password, and accepting downgraded the
-  daemon under the other project and dropped every proxied websocket on the machine.
-- Bump `HOSTS_PROTOCOL` when the daemon gains something the CLI will rely on, and raise
-  `MIN_HOSTS_PROTOCOL` to it in the same change only if the CLI cannot work without it. Fields
-  within a protocol are additive. A change to the daemon that no CLI depends on needs no bump; a
-  machine picks it up on its next `hosts install`.
-- `installHostsService` keeps an installed service that is newer (a higher protocol, or the same one
-  from a later release) and says so; `hosts install --force` replaces it.
-- The manifest format is read forward-compatibly: a later format keeps format 2's fields and reads
-  as format 2. Read as missing, it sent an older project to "repair" it, which downgraded the newer
-  one. A format 1 manifest (from before the protocol) reads as missing, which is how a machine
-  upgrading to 16 is told to run `hosts install` once; its daemon's health has no `protocol` and
-  reads as `outdated`.
-- The daemon binds `:443` and the `:80` redirect only, over TLS only. Tests bind `startLocalProxy`
-  on an ephemeral port with the checked-in pair (`test-tls.testing.ts`) and pass that port to the
-  client functions, so they exercise the production TLS path; there is no plain-HTTP proxy and no
-  port setting to drift.
-
 ## Service install
 
 - `service-files.ts` builds the launchd plist / systemd unit (pure); `privileged.ts` is the one
@@ -74,10 +49,12 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
 - Activation restarts the unit. `launchctl bootstrap` after `bootout` does on macOS; on Linux
   `enable --now` and `start` are no-ops on an active unit, which left a reinstall (and doctor's
   repair of a wedged daemon) running the old code under a manifest naming the new.
-- `hosts-service.json` records what the service was installed with: the program and bundle paths,
-  the buncargo version and the protocol. `describeStaleHostsService()` reports a vanished path (a
-  Bun that moved) or a protocol below the minimum, instead of silently degrading to
-  `localhost:port`.
+- `hosts-service.json` records what the service was installed with. The bundle path carries the
+  version it was built from, so `describeStaleHostsService()` catches both a vanished path and an
+  upgraded CLI still pointing at the previous bundle, instead of silently degrading to
+  `localhost:port`. It also records the bundle's content hash, because the path stops at the
+  version: a rebuild during development passes every path comparison while running code that no
+  longer matches the CLI. Either side being unknown means "cannot compare", never "stale".
 
 ## Certificates
 
@@ -179,13 +156,12 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
 - The certificate gap is reported on a route change, a remint, and at least hourly
   (`CERTIFICATE_RECHECK_MS`): expiry arrives with neither, and the daemon cannot renew. The next
   `buncargo dev` remints a leaf within 30 days of expiry.
-- A health request with `?refresh` reloads before it answers (`reloader.refresh()`: a reload that
-  starts after the request, since one already running may have read the registry before the CLI's
-  write). `waitForDaemonRoutes` asks it on every probe, so attaching is one round trip instead of
-  0-1000ms waiting for the poll. It replaced a filesystem watcher, its debounce and the loop's
-  wakeup. The 1s poll stays for what nobody asks about (routes whose owner died), and
-  `MAX_RELOAD_BACKOFF_MS` is 5s, because a reload is a file read and a longer ceiling delayed every
-  other project's routes over one project's problem.
+- `watchHostsState` reloads on a filesystem event instead of waiting for the next poll, which is
+  0-1000ms of pure waiting on every run in every worktree. It watches the *directories*, because
+  writes land through a temp file and a rename, so a file watch would hold an inode that never
+  comes back. The 1s poll stays as the backstop (it also prunes routes whose owner died, which no
+  event announces), and `MAX_RELOAD_BACKOFF_MS` is 5s, because a reload is a file read and a longer
+  ceiling delayed every other project's routes over one project's problem.
 
 ## Health
 
@@ -193,7 +169,8 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   `DAEMON_RESTART_GRACE_MS` (2s) before falling back. The daemon is briefly down after its own
   stall exit, during another project's reinstall, and at login, and a run cannot attach later:
   its apps' environments are fixed at spawn.
-- `readProxyHealth` probes over HTTPS and validates the health body, not just the status. `ensureHostsDaemonRunning` returns early when
+- `readProxyHealth` probes the one scheme `readDaemonConfig().tls` says the daemon serves and
+  validates the health body, not just the status. `ensureHostsDaemonRunning` returns early when
   health passes and never reaches the squatter check, so accepting any 200 on `:443` would hand the
   whole flow to whatever else is listening. Do **not** gate it on `routes > 0`: the daemon binds
   before any route exists, and a fresh machine would report itself down and fall through to the
@@ -205,18 +182,20 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   daemon could not read (corrupt, or written by a newer CLI) read as a stall, and recovery exited
   a daemon that a restart could not help. The proxy notices a stale map **from the
   request path** (a timer-based watchdog would die with the timers it watches), and the daemon
-  reloads in-band (`createStallHandler`). Only once no reload has finished for `STALLED_EXIT_MS`
-  (twice the stall window) does it `process.exit(1)` for `KeepAlive` to restart: an exit drops every
-  proxied websocket on the machine, and any reload that finishes resets the age, so a stall a
-  reload repaired never adds up to one. The exit is what gets past a reload that hangs, since
-  every caller joins the one in flight.
+  reloads in-band before falling back to `process.exit(1)` for `KeepAlive` to restart. Only
+  consecutive recoveries that left the map stale count toward that exit: an exit drops every
+  proxied websocket on the machine, so a stall that an in-band reload repaired must never add up
+  to one. A recovery whose reload has not settled after `STALL_RECOVERY_TIMEOUT_MS` counts as
+  failed: every caller joins the one in-flight reload, so a hung reload otherwise held recovery
+  forever and the exit was never reached.
 - On the CLI side `waitForDaemonRoutes` is what stands between the registry and the banner: a route
   is a file until the daemon picks it up, and advertising it earlier is how https URLs come to
   point at our own 404. It retries a probe that does not answer rather than failing on it (the
   rebind window above), and still distinguishes the two outcomes: a daemon that never answered
   needs a restart; one that answered without the hostname has a registry it is not picking up. A
-  daemon below `MIN_HOSTS_PROTOCOL` is reported as outdated, with `buncargo hosts install` as the
-  fix: the run falls back to `localhost:port` rather than advertising URLs nothing can confirm.
+  daemon whose health body lacks `hostnames` or `lastReloadAt` predates them and is reported as
+  outdated, with `buncargo hosts install` as the fix: the run falls back to `localhost:port`
+  rather than advertising URLs nothing can confirm.
 
 ## Proxy
 

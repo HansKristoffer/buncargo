@@ -11,6 +11,7 @@
 import { type OffsetClaim, readAllOffsetClaims } from "../core/offset-claims";
 import { type RunEntry, readAllRuns } from "../core/run-registry";
 import type { ContainerRuntimeName } from "../types";
+import { buncargoContainersOn } from "./containers";
 import { claimedCheckouts, orphanedVolumes, planVolumePrune } from "./prune";
 import { containerRuntimeCandidates } from "./resolve";
 import type { ContainerRuntimeAdapter } from "./types";
@@ -64,7 +65,11 @@ export function orphanVolumeReporter(deps: OrphanVolumeReportDeps) {
 		// A pass that fails tries again soon, not an hour later.
 		nextAt = startedAt + ORPHAN_VOLUME_REPORT_RETRY_MS;
 		try {
-			const containers = active.flatMap((runtime) => runtime.list());
+			const containers = (
+				await Promise.all(
+					active.map((runtime) => buncargoContainersOn(runtime)),
+				)
+			).flat();
 			const volumes = (
 				await Promise.all(active.map((runtime) => runtime.listVolumes()))
 			).flat();

@@ -13,6 +13,7 @@ import type {
 	ContainerRuntimeSelection,
 	DockerComposeGenerationOptions,
 } from "../types";
+import { isRuntimeUp } from "./containers";
 import {
 	CONTAINER_RUNTIME_SELECTIONS,
 	DEFAULT_CONTAINER_RUNTIME,
@@ -149,9 +150,7 @@ export function resolveContainerRuntime(
 export function availableContainerRuntimes(
 	options: ContainerRuntimeCandidateOptions = {},
 ): ContainerRuntimeAdapter[] {
-	return containerRuntimeCandidates(options).filter((adapter) =>
-		adapter.isAvailable(),
-	);
+	return containerRuntimeCandidates(options).filter(isRuntimeUp);
 }
 
 /**

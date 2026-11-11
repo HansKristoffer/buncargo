@@ -7,6 +7,11 @@ import { recordRemovals, removalActor } from "../core/removal-log";
 import { readLiveRuns } from "../core/run-registry";
 import { formatStep, formatWarn } from "../core/style";
 import type { BuncargoContainer, ContainerRuntimeName } from "../types";
+import {
+	buncargoContainersOn,
+	containerPortOwners,
+	isRuntimeUp,
+} from "./containers";
 import { withProjectLifecycleLock } from "./project-lock";
 import { containerRuntimeCandidates } from "./resolve";
 import type { ContainerRuntimeAdapter } from "./types";
@@ -119,9 +124,7 @@ export async function replaceStaleStacks(
 
 	const found = await Promise.all(
 		runtimes.map(async (runtime) => {
-			const owners = await runtime
-				.containerPortOwnersAsync(signal)
-				.catch(() => new Map<number, PortContainerOwner>());
+			const owners = await containerPortOwners(runtime, signal);
 			const stacks = findStaleStacks(owners, checkout, runtime.name, wanted);
 			return { runtime, stacks };
 		}),
@@ -134,9 +137,9 @@ export async function replaceStaleStacks(
 				const decision = decideStaleStack({
 					projectName: stack.projectName,
 					root: checkout.root,
-					containers: runtime
-						.list()
-						.filter((container) => container.project === stack.projectName),
+					containers: (await buncargoContainersOn(runtime, signal)).filter(
+						(container) => container.project === stack.projectName,
+					),
 					liveRuns: await readLiveRuns(),
 				});
 				if (!decision.remove) return decision;
@@ -208,7 +211,7 @@ export async function replaceStaleStacksOn(
 	wantedPorts: readonly number[],
 	options: { signal?: AbortSignal; verbose?: boolean } = {},
 ): Promise<ReplaceStaleStacksResult> {
-	if (!selected.isAvailable())
+	if (!isRuntimeUp(selected))
 		console.warn(
 			formatWarn(
 				`--replace-stale: ${selected.displayName} is not running, so no stale stack was looked for on it. If a port conflict names one once it is up, run again.`,

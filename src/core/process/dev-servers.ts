@@ -43,7 +43,7 @@ import {
 	classifyPortOccupant,
 	createPortOwnerSnapshotAsync,
 	formatPortOwner,
-	getPortOwner,
+	getPortOwnerAsync,
 	killPortOwner,
 	type PortOwnerSnapshot,
 } from "./port-owner";
@@ -191,7 +191,7 @@ async function prepareAppPort(
 			// `false` is also "it was gone before it could be stopped".
 			const holder = released
 				? null
-				: getPortOwner(port, { runtime, skipContainers });
+				: await getPortOwnerAsync(port, { runtime, skipContainers });
 			if (holder) {
 				const held = formatPortOwner(port, holder, { runtime: runtime?.name });
 				const stopIt =

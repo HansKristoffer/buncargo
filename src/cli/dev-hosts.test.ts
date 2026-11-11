@@ -89,11 +89,9 @@ describe("reclaimAppRoute", () => {
 
 		// While that run lives, the route stays its own.
 		await reclaimAppRoute({ root, hosts: hosts(true) }, "web");
-		expect(await loadHostRoutes()).toMatchObject([{ pid: other }]);
+		expect((await loadHostRoutes()).map((route) => route.pid)).toEqual([other]);
 
-		await removeHostRoutes(
-			(route) => route.kind === "app" && route.pid === other,
-		);
+		await removeHostRoutes((route) => route.pid === other);
 		await reclaimAppRoute({ root, hosts: hosts(true) }, "web");
 		expect(await loadHostRoutes()).toMatchObject([
 			{ hostname: "web.fixture.localhost", port: 3100, pid: process.pid },

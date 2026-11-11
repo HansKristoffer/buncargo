@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { diagnoseDockerService } from "./diagnose";
+import { diagnoseService } from "../container-runtime/containers";
+import { dockerRuntimeAdapter } from "./adapter";
 import { dockerListLine, fakeDocker } from "./fake-docker.testing";
 
 const fakes: ReturnType<typeof fakeDocker>[] = [];
@@ -7,8 +8,8 @@ afterEach(() => {
 	for (const fake of fakes.splice(0)) fake.remove();
 });
 
-describe("diagnoseDockerService", () => {
-	it("reports an exited job from the listing, without Compose", async () => {
+describe("diagnosing a Docker service", () => {
+	it("reports an exited job from the listing and its logs, without Compose", async () => {
 		const fake = fakeDocker({
 			ps: {
 				stdout: `${dockerListLine({
@@ -23,9 +24,9 @@ describe("diagnoseDockerService", () => {
 		});
 		fakes.push(fake);
 
-		const diagnosis = await diagnoseDockerService(
+		const diagnosis = await diagnoseService(
+			dockerRuntimeAdapter({ binary: fake.binary }),
 			{ root: fake.root, projectName: "demo", serviceName: "migrate" },
-			fake.binary,
 		);
 
 		expect(diagnosis).toEqual({
@@ -45,10 +46,11 @@ describe("diagnoseDockerService", () => {
 		});
 		fakes.push(fake);
 		expect(
-			await diagnoseDockerService(
-				{ root: fake.root, projectName: "demo", serviceName: "migrate" },
-				fake.binary,
-			),
+			await diagnoseService(dockerRuntimeAdapter({ binary: fake.binary }), {
+				root: fake.root,
+				projectName: "demo",
+				serviceName: "migrate",
+			}),
 		).toBeUndefined();
 	});
 });

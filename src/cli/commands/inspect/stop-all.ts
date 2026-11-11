@@ -40,7 +40,9 @@ export async function stopAllBuncargoEnvironments(
 		log.info("No container runtime is running. Nothing to stop.");
 		return;
 	}
-	const groups = groupBuncargoContainers(listBuncargoContainers(runtimes));
+	const groups = groupBuncargoContainers(
+		await listBuncargoContainers(runtimes),
+	);
 	if (groups.length === 0) {
 		log.info("No buncargo containers.");
 		return;

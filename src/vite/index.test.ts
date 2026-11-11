@@ -59,6 +59,7 @@ describe("buildBuncargoViteConfig", () => {
 			env: {
 				PORT: "4901",
 				BUNCARGO_APP_HOSTNAME: "project.localhost",
+				BUNCARGO_HOSTS_PORT: "8443",
 				__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: ".localhost",
 			},
 		}).config({}, { command: "build" });

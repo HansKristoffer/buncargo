@@ -2,6 +2,7 @@ import { typedSwitch } from "hanzio";
 import { withDeadline } from "../core/deadline";
 import { isTcpPortOpen } from "../core/network";
 import type { BuiltInHealthCheck, HealthCheckFn } from "../types";
+import { probeContainerPort } from "./containers";
 import type { ContainerRuntimeAdapter } from "./types";
 
 export interface HealthCheckContext {
@@ -16,8 +17,9 @@ export interface HealthCheckContext {
  * The two in-container probes go through the adapter rather than a compose
  * command string, so the same `pg_isready` / `redis-cli ping` contract holds on
  * either backend. `http` and `tcp` probe the published host port and are
- * runtime-independent by construction, except that `tcp` defers to the
- * runtime where a published port accepts before the service listens.
+ * runtime-independent by construction, except that `tcp` connects to the
+ * container's own address where a published port accepts before the service
+ * listens (`capabilities.hostPortProbe`).
  */
 export function createBuiltInHealthCheck(
 	type: BuiltInHealthCheck,
@@ -38,7 +40,7 @@ export function createBuiltInHealthCheck(
 			command,
 			root,
 		};
-		return runtime.execInService(request);
+		return runtime.exec(request);
 	}
 
 	return typedSwitch(type, {
@@ -72,14 +74,14 @@ export function createBuiltInHealthCheck(
 		},
 
 		tcp: () => async (port, signal) =>
-			runtime.probeServicePort
-				? runtime.probeServicePort({
+			runtime.capabilities.hostPortProbe
+				? isTcpPortOpen(port, "127.0.0.1", 1000, signal)
+				: probeContainerPort(runtime, {
 						signal,
 						timeoutMs: 1000,
 						projectName,
 						serviceName,
 						hostPort: port,
-					})
-				: isTcpPortOpen(port, "127.0.0.1", 1000, signal),
+					}),
 	});
 }

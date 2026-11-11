@@ -1,13 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
-import { assertDockerRunning, dockerProjectServiceStates } from "./status";
+import { projectServiceStates } from "../container-runtime/containers";
+import { dockerRuntimeAdapter } from "./adapter";
+import { assertDockerRunning } from "./status";
 
-describe("dockerProjectServiceStates", () => {
+describe("a Docker project's service states", () => {
 	it("throws when Docker cannot answer, rather than listing an empty project", async () => {
 		// The test preload's `docker` answers as one with no daemon does.
-		await expect(dockerProjectServiceStates("demo")).rejects.toThrow(
-			/Cannot connect to the Docker daemon/,
-		);
+		await expect(
+			projectServiceStates(dockerRuntimeAdapter(), "demo"),
+		).rejects.toThrow(/Cannot connect to the Docker daemon/);
 	});
 });
 

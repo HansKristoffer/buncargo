@@ -363,7 +363,7 @@ Examples:
 		script: string,
 		...params: string[]
 	): Promise<boolean> {
-		return containerRuntimeForEnv(env).execInService({
+		return containerRuntimeForEnv(env).exec({
 			projectName: env.projectName,
 			serviceName: getComposeServiceName(env.services, service),
 			root: env.root,

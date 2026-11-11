@@ -1,5 +1,5 @@
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
-import { getPortOwner, killPortOwner } from "../core/process";
+import { getPortOwnerAsync, killPortOwner } from "../core/process";
 import { stopWorker } from "../core/process/worker-ownership";
 import { askConfirm, isInteractive } from "../core/prompt";
 import { joinColoredNames } from "../core/style";
@@ -97,7 +97,7 @@ export async function stopRunningApps(
 		const port = ports[name];
 		if (port === undefined) continue;
 
-		const owner = getPortOwner(port, options);
+		const owner = await getPortOwnerAsync(port, options);
 		// Already gone: the other run exited between classification and here.
 		if (!owner) continue;
 		if (owner.container) {

@@ -17,13 +17,26 @@ describe("getComposeArgs", () => {
 		]);
 	});
 
-	it("omits optional args when not provided", () => {
-		expect(getComposeArgs()).toEqual(["compose"]);
+	it("names the project even without a compose file", () => {
+		expect(getComposeArgs({ projectName: "myapp-test" })).toEqual([
+			"compose",
+			"-p",
+			"myapp-test",
+		]);
 	});
 
 	it("keeps a path with spaces as one argument", () => {
 		expect(
-			getComposeArgs({ composeFile: "/My Projects/app/compose.yml" }),
-		).toEqual(["compose", "-f", "/My Projects/app/compose.yml"]);
+			getComposeArgs({
+				projectName: "app",
+				composeFile: "/My Projects/app/compose.yml",
+			}),
+		).toEqual(["compose", "-f", "/My Projects/app/compose.yml", "-p", "app"]);
+	});
+
+	it("will not build a command without a project", () => {
+		// @ts-expect-error: a compose command without -p acts on whatever
+		// project the working directory resolves to.
+		getComposeArgs({ composeFile: "compose.yml" });
 	});
 });

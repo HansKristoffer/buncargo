@@ -9,6 +9,11 @@ import { buildComposeModel } from "../docker-compose";
 import { buildStartPlan } from "../planning";
 import type { ServiceConfig } from "../types";
 import { ensureServicesRunning } from "./ensure-services";
+import {
+	fakeAppleRuntime,
+	fakeRuntime,
+	runtimeContainer,
+} from "./fake-runtime.testing";
 import { waitForService } from "./readiness";
 import type { ContainerRuntimeAdapter, ServiceDiagnosis } from "./types";
 
@@ -20,12 +25,25 @@ const declaredJob: ServiceConfig = {
 };
 const job = resolveService("init", declaredJob);
 
+/** The job's container moves through `states`, one per listing. */
 function runtime(states: ServiceDiagnosis[]): ContainerRuntimeAdapter {
-	return {
-		name: "docker",
-		displayName: "Docker",
-		diagnoseService: () => (states.length > 1 ? states.shift() : states[0]),
-	} as unknown as ContainerRuntimeAdapter;
+	let current: ServiceDiagnosis | undefined = states[0];
+	return fakeRuntime({
+		containers: async () => {
+			current = states.length > 1 ? states.shift() : states[0];
+			if (!current) return [];
+			return [
+				runtimeContainer({
+					state: current.state,
+					...(current.exitCode === undefined
+						? {}
+						: { exitCode: current.exitCode }),
+					labels: { project: "fixture", service: "init" },
+				}),
+			];
+		},
+		logs: async () => current?.logTail ?? "",
+	});
 }
 
 it("waits for successful completion, not merely a running job", async () => {
@@ -84,12 +102,11 @@ it("a still-running job times out and cancellation interrupts polling", async ()
 
 it("rejects unsupported Apple completion before invoking its daemon", async () => {
 	let mutated = false;
-	const adapter = {
-		name: "apple",
+	const adapter = fakeAppleRuntime({
 		ensureRunning: async () => {
 			mutated = true;
 		},
-	} as unknown as ContainerRuntimeAdapter;
+	});
 	await expect(
 		ensureServicesRunning({
 			runtime: adapter,
