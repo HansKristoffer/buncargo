@@ -390,6 +390,7 @@ export function createDevEnvContext<
 			// parallel suffixed runs (CI jobs on one machine) never share one.
 			persist: suffix === undefined,
 			claim: true,
+			throwaway: suffix !== undefined || isCI(),
 			// The bind probe here too: this is the allocation every dev run
 			// makes, and a snapshot only knows what `lsof` lets this user see.
 			getOwner: snapshot

@@ -24,8 +24,11 @@ import {
 	dropDeletedOffsetClaims,
 	markDeletedOffsetClaims,
 	type OffsetClaim,
+	offsetClaimLastUsed,
 	offsetClaimRoot,
+	RECLAIM_MIN_IDLE_MS,
 	readAllOffsetClaims,
+	releaseOffsetClaimsIfUnchanged,
 	releaseSuffixedClaimsOf,
 } from "../core/offset-claims";
 import { execAsync } from "../core/process/exec";
@@ -414,12 +417,80 @@ export async function sweepOrphanedContainers(
 		if (!(error instanceof FileLockTimeoutError)) throw error;
 	}
 
+	const finished = finishedRuns(runs, groups, answered, alive);
 	try {
-		await retireRuns(finishedRuns(runs, groups, answered, alive));
+		await releaseOffsetClaimsIfUnchanged(
+			abandonedThrowawayClaims({
+				claims: readAllOffsetClaims(),
+				runs,
+				finished,
+				stacks: result.remaining,
+				except: options.except,
+				runtimeAnswered: answered.length > 0,
+				now,
+			}),
+		);
+	} catch (error) {
+		// A busy claims file: these are still abandoned next pass.
+		if (!(error instanceof FileLockTimeoutError)) throw error;
+	}
+
+	try {
+		await retireRuns(finished);
 	} catch {
 		// A busy registry: these are still finished next pass.
 	}
 	return result;
+}
+
+/**
+ * The throwaway claims (a CI dev run's, a suffixed environment's) whose run
+ * left nothing behind: no live run, no container still listed, and every run
+ * of the environment on record retired by this pass. A run killed before its
+ * teardown released the claim would otherwise keep its block until the range
+ * filled: a CI runner's directory never goes, and an app-only run has no stack
+ * whose removal releases it.
+ *
+ * A claim used after its run started is a new job's, which allocates before it
+ * publishes its run. With no run on record nothing dates the claim, so one
+ * used within {@link RECLAIM_MIN_IDLE_MS} is taken for such a job's, and stays,
+ * as does every one while no runtime answers to say no container is left. A
+ * deleted checkout's claim is the sweep's record of its volumes
+ * ({@link settleDeletedCheckouts}).
+ */
+export function abandonedThrowawayClaims(input: {
+	claims: Record<string, OffsetClaim>;
+	runs: readonly RunEntry[];
+	finished: readonly RunEntry[];
+	stacks: readonly Pick<ContainerGroup, "projectName" | "root">[];
+	except?: { projectName: string; root: string };
+	runtimeAnswered: boolean;
+	now: number;
+}): Record<string, OffsetClaim> {
+	const { runs, finished, stacks, except, now } = input;
+	const abandoned = ([key, claim]: [string, OffsetClaim]) => {
+		if (claim.throwaway !== true) return false;
+		const root = offsetClaimRoot(key, claim);
+		const ofClaim = (stack: { projectName: string; root: string }) =>
+			stack.projectName === claim.projectName && stack.root === root;
+		if (
+			(except && ofClaim(except)) ||
+			stacks.some(ofClaim) ||
+			checkoutDeleted(root)
+		)
+			return false;
+		const envRuns = runs.filter(ofClaim).sort(newestLifecycleFirst);
+		const lastUsed = offsetClaimLastUsed(claim);
+		const [newest] = envRuns;
+		if (newest)
+			return (
+				envRuns.every((run) => finished.includes(run)) &&
+				lastUsed <= newest.startedAt
+			);
+		const idleFor = now - Date.parse(lastUsed);
+		return input.runtimeAnswered && idleFor >= RECLAIM_MIN_IDLE_MS;
+	};
+	return Object.fromEntries(Object.entries(input.claims).filter(abandoned));
 }
 
 /**
