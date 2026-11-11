@@ -7,6 +7,7 @@ import type {
 	ExecInServiceRequest,
 	ServiceDiagnosisRequest,
 } from "../container-runtime/types";
+import { listDockerContainersAsync } from "./containers";
 import { diagnoseDockerService } from "./diagnose";
 import { dockerInteractiveExecArgv, execInDockerService } from "./exec";
 import {
@@ -93,6 +94,10 @@ export function dockerRuntimeAdapter(
 
 		diagnoseService(request: ServiceDiagnosisRequest) {
 			return diagnoseDockerService(request, binary);
+		},
+
+		containers(signal?: AbortSignal) {
+			return listDockerContainersAsync(binary, { signal });
 		},
 
 		// No daemon probe: the only caller that lists without knowing the daemon

@@ -25,6 +25,7 @@ import { containerNameFor } from "./run-plan";
 import {
 	appleContainerPortOwners,
 	appleContainerPortOwnersAsync,
+	appleContainers,
 	appleProjectServiceStates,
 	diagnoseAppleService,
 	findAppleContainerOnPort,
@@ -118,6 +119,10 @@ export function appleContainerRuntimeAdapter(
 				request.signal?.throwIfAborted();
 				return false;
 			}
+		},
+
+		containers(signal?: AbortSignal) {
+			return appleContainers(cli, signal);
 		},
 
 		// No `system status` first: the listing fails when the system is down,

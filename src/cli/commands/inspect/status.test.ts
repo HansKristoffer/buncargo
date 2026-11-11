@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it } from "bun:test";
 import {
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	writeFileSync,
@@ -11,6 +12,10 @@ import { dirname, join, resolve } from "node:path";
 import { getDaemonConfigPath, getRoutesPath } from "../../../core/hosts/paths";
 import { HEALTH_PATH } from "../../../core/hosts/proxy";
 import { CI_ENV_VARS } from "../../../core/runtime-flags";
+import {
+	dockerListLine,
+	fakeDocker,
+} from "../../../docker/fake-docker.testing";
 import { appStatusLines, describePlannedOffset, runHealth } from "./status";
 
 const cli = resolve(import.meta.dir, "../../bin.ts");
@@ -191,3 +196,82 @@ it("starts the plain status with one aligned line per app", () => {
 		"apps: no live run (start one with `buncargo dev --detach`)",
 	]);
 });
+
+it("reads six ports with one lsof and one docker ps, and reports the check slots", async () => {
+	const docker = fakeDocker({
+		ps: {
+			stdout: `${dockerListLine({
+				id: "a1",
+				name: "forks-postgres-1",
+				ports: "127.0.0.1:15432->5432/tcp",
+				project: "other",
+			})}\n`,
+		},
+	});
+	try {
+		// `lsof` that lists no listener and counts its calls.
+		const bin = join(dir, "bin");
+		mkdirSync(bin);
+		const lsofCalls = join(dir, "lsof-calls");
+		writeFileSync(
+			join(bin, "lsof"),
+			`#!/bin/sh\necho "$*" >> '${lsofCalls}'\nexit 1\n`,
+			{ mode: 0o700 },
+		);
+		writeFileSync(
+			join(dir, "dev.config.ts"),
+			`export default {
+				projectPrefix: "forks",
+				docker: { runtime: "docker", binary: ${JSON.stringify(docker.binary)} },
+				services: {
+					postgres: { port: 15432, docker: { image: "postgres:16" } },
+					redis: { port: 16379, docker: { image: "redis:7" } },
+					mail: { port: 18025, docker: { image: "axllent/mailpit" } },
+				},
+				apps: {
+					web: { port: 15173, devCommand: "true" },
+					api: { port: 18080, devCommand: "true" },
+					admin: { port: 15174, devCommand: "true" },
+				},
+			};`,
+		);
+		const env: Record<string, string | undefined> = {
+			...process.env,
+			HOME: join(dir, "home"),
+			PATH: `${bin}:${process.env.PATH}`,
+			// A pinned offset: the unpinned hash is checked with a probe of its own.
+			BUNCARGO_PORT_OFFSET: "0",
+		};
+		for (const name of CI_ENV_VARS) delete env[name];
+		const proc = Bun.spawn([process.execPath, cli, "status", "--json"], {
+			cwd: dir,
+			env,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, code] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		if (code !== 0) throw new Error(`status exited ${code}: ${stderr}`);
+		const result = JSON.parse(stdout) as {
+			ports: Record<string, { state: string; owner: string | null }>;
+			runtime: { running: boolean };
+			checkSlots: { capacity: number; enabled: boolean; holders: unknown[] };
+		};
+
+		expect(Object.keys(result.ports)).toHaveLength(6);
+		expect(result.ports.postgres?.state).toBe("foreign");
+		expect(result.runtime.running).toBe(true);
+		expect(result.checkSlots).toMatchObject({
+			capacity: 3,
+			enabled: true,
+			holders: [],
+		});
+		expect(docker.calls().map((args) => args[0])).toEqual(["ps"]);
+		expect(readFileSync(lsofCalls, "utf8").trim().split("\n")).toHaveLength(1);
+	} finally {
+		docker.remove();
+	}
+}, 30_000);

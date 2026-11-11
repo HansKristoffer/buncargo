@@ -1,9 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import { serviceHashEnv } from "../docker-compose/interpolate";
 import type { ServiceConfig } from "../types";
+import { parseContainerState } from "./container-state";
 import { ensureServicesRunning } from "./ensure-services";
 import { createBuiltInHealthCheck } from "./health-checks";
-import { runtimeAnsweredReadiness, waitForService } from "./readiness";
+import {
+	readinessPlan,
+	runtimeAnsweredReadiness,
+	waitForService,
+} from "./readiness";
 import type {
 	ContainerRuntimeAdapter,
 	ContainerUpRequest,
@@ -377,6 +382,107 @@ describe("runtimeAnsweredReadiness", () => {
 		const config: ServiceConfig = { port: 5432, healthCheck: "pg_isready" };
 		expect(runtimeAnsweredReadiness(config, false)).toBe(false);
 		expect(runtimeAnsweredReadiness(config, undefined)).toBe(false);
+	});
+});
+
+describe("readinessPlan", () => {
+	it("waits on the container itself when there is no port to probe", () => {
+		expect(
+			readinessPlan({ kind: "job", rerun: "always" }, undefined).kind,
+		).toBe("completion");
+		expect(readinessPlan({ healthCheck: "tcp" }, undefined).kind).toBe(
+			"process",
+		);
+	});
+
+	it("skips the wait the runtime already answered, or nothing asks for", () => {
+		const pg: ServiceConfig = { port: 5432, healthCheck: "pg_isready" };
+		expect(readinessPlan(pg, 5432, true).kind).toBe("runtimeHealth");
+		expect(readinessPlan(pg, 5432)).toEqual({
+			kind: "probe",
+			probe: "pg_isready",
+			port: 5432,
+		});
+		expect(readinessPlan({ port: 80, healthCheck: false }, 80).kind).toBe(
+			"none",
+		);
+	});
+});
+
+/**
+ * A runtime with a listing whose service container moves through `states`,
+ * one per listing, and counts the diagnoses: the only call that reads logs.
+ */
+function listingRuntime(
+	states: { state: string; status?: string; exitCode?: number }[],
+) {
+	let diagnoses = 0;
+	let listings = 0;
+	const runtime: ContainerRuntimeAdapter = {
+		...stubRuntime(
+			{ state: "exited", exitCode: 3, logTail: "FATAL: boom" },
+			() => {
+				diagnoses++;
+			},
+		),
+		containers: async () => {
+			listings++;
+			const current = states.length > 1 ? states.shift() : states[0];
+			if (!current) return [];
+			return [
+				{
+					id: "a1",
+					name: "a1",
+					state: parseContainerState(current.state),
+					runtimeState: current.state,
+					status: current.status ?? current.state,
+					...(current.exitCode === undefined
+						? {}
+						: { exitCode: current.exitCode }),
+					ports: [],
+					portsText: "",
+					labels: { project: "demo", service: "worker" },
+				},
+			];
+		},
+	};
+	return {
+		runtime,
+		diagnoses: () => diagnoses,
+		listings: () => listings,
+	};
+}
+
+describe("readiness logs", () => {
+	it("reads a starting container from the listing without its logs", async () => {
+		const { runtime, diagnoses, listings } = listingRuntime([
+			{ state: "created" },
+			{ state: "created" },
+			{ state: "running" },
+		]);
+		await waitForService("worker", {}, undefined, {
+			runtime,
+			projectName: "demo",
+			pollInterval: 1,
+		});
+		expect(listings()).toBe(3);
+		expect(diagnoses()).toBe(0);
+	});
+
+	it("fetches the logs once, when the container fails", async () => {
+		const { runtime, diagnoses } = listingRuntime([
+			{ state: "running" },
+			{ state: "exited", exitCode: 3 },
+		]);
+		const error = await waitForService(
+			"worker",
+			{ kind: "job", rerun: "always" },
+			undefined,
+			{ runtime, projectName: "demo", pollInterval: 1 },
+		).catch((thrown: Error) => thrown);
+		expect((error as Error).message).toContain("exit code 3");
+		expect((error as Error).message).toContain("FATAL: boom");
+		expect(diagnoses()).toBe(1);
 	});
 });
 

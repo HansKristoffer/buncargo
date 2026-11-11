@@ -143,8 +143,11 @@ per port.
   it. A dev run asks that question in four places (the allocator, the service preflight,
   `classifyCliApps` and the spawner) and each answer used to cost an `lsof`, a container listing, a
   `ps` and a second `lsof`, so a small config forked about thirty times before the first server
-  started. The snapshot is created per phase and thrown away; anything that changes ownership on
-  purpose (`killPortOwner`, the takeover) takes a fresh reading. The spawner takes one **per
+  started. `status`, `doctor` and `ports pin` read one async snapshot for all their ports too: per
+  port, `status --json` used to fork six `lsof` and seven `docker ps`. The snapshot is created per
+  phase and thrown away; anything that changes ownership on purpose (`killPortOwner`, the
+  takeover) takes a fresh reading, and `getPortOwner` is that fresh reading for one port, built on
+  the same snapshot. The spawner takes one **per
   wave**, because wave 2 runs after wave-1 servers have bound their ports.
 - `withBindProbe` (`process/port-owner.ts`) wraps the allocator's owner lookup: a port the lookup
   reports free but that will not bind on `127.0.0.1`, `0.0.0.0` or `::` is held by something `lsof`

@@ -82,28 +82,35 @@ The sweep and volume pruning live in `container-runtime/` too; see
   states and the allocator count them) but not *serving* (reuse, readiness and the watch's "up"
   require `running`). A word neither runtime has shown us is `unknown`: live, never stopped, so
   Apple's `down` still stops it gracefully before `delete --force`.
-- `diagnoseService` is why a dead container fails in about two seconds instead of after the full
-  readiness timeout. `readiness.ts` calls it every eighth poll and asks `startupVerdict`: a stopped
-  container aborts, and so does one seen restarting on two diagnoses in a row, the crash loop a preset's
-  restart policy (typesense, mailpit) would otherwise keep up until the timeout. Matched
-  positively, so a state neither backend has shown us yet keeps polling rather than killing a
-  startup that would have worked. `logTail` is enrichment: a backend that cannot produce it
-  returns empty and the state alone still fails fast. Apple drops `restart`, so only Docker loops.
+- Readiness is a pure `readinessPlan` per service and one poll loop. A job or a portless service is
+  decided by its container's state, read from the runtime's listing every tick; a probed one reads
+  it every eighth tick, which is why a dead container fails in about two seconds instead of after
+  the full timeout. `startupVerdict` aborts on a stopped container, and a probed one seen
+  restarting on two readings in a row, the crash loop a preset's restart policy (typesense,
+  mailpit) would otherwise keep up until the timeout. Matched positively, so a state neither
+  backend has shown us yet keeps polling. The logs come from `diagnoseService`, once, when the
+  wait fails: fetching them with every reading was a `docker logs` four times a second. `logTail`
+  is enrichment: a backend that cannot produce it returns empty and the state alone still fails
+  fast. Apple drops `restart`, so only Docker loops.
 - `ensureServicesRunning` skips `up` only when each selected service is running with a matching
   service fingerprint and every relevant input can be proven unchanged. Old unlabeled containers
   reconcile once. Every adapter operation that talks to the daemon is async and cancellable; the
   sync methods that remain (`list`, `stopByIds`, the port lookups) back the snapshot readers.
-- `projectServiceStates(projectName)` reads state and the stack hash for the whole project in one
-  call. `areServicesRunning` asked separately per service, so a four-service stack paid four
-  `docker ps` listings before anything started. `containerPortOwners()` is the batch form of
-  `findContainerOnPort` for the same reason: a dev run asks about every service and app port, and
-  one listing answers all of them.
+- `containers(signal)` is each backend's one listing of every container, into `RuntimeContainer`
+  records (state, exit code, health, labels, numeric ports). Service states, port owners, the
+  inventory and a service's state are projections of it in `container-runtime/containers.ts`; the
+  adapter members that answer those questions (`projectServiceStates`, `containerPortOwners`,
+  `list`) are built on the same listing, so Docker has one `docker ps` format and one parser. A
+  warm start lists once inside the project lock and takes states and port owners from that reading;
+  only a listing that fails calls `ensureRunning`, since a listing that answers proves the daemon
+  is up. It used to be a `docker version` and two listings of the same containers. The member is
+  optional until the port is narrowed: an adapter without it answers through the others.
 
 ## Docker backend
 
 - Split by concern: `status.ts` (container and daemon checks), `lifecycle.ts` (up/down/start),
-  `compose-command.ts` (`docker compose` argument building), `inventory.ts` (`docker ps`
-  listing), `port-lookup.ts` (published-port owner). `adapter.ts` is a factory binding them to the
+  `compose-command.ts` (`docker compose` argument building), `containers.ts` (the one `docker ps`
+  listing and its parser), `inventory.ts`, `port-lookup.ts` and `diagnose.ts` (projections of it). `adapter.ts` is a factory binding them to the
   port, taking the same `{ binary }` as Apple's.
 - `binary.ts` is the one place the `docker` command name is spelled. Every command builder goes
   through it, so `docker.binary` reaches all of them rather than only the ones somebody

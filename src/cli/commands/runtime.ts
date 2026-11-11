@@ -499,7 +499,7 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 	}
 
 	// A machine-wide slot: typechecks from many checkouts at once exhaust memory.
-	const { withCheckSlot, formatCheckSlotHolder } =
+	const { withCheckSlot, formatCheckSlotWait } =
 		await import("../../core/check-slots");
 	const { runForwardingSignals } = await import("./exec");
 	const exitCode = await withCheckSlot(
@@ -536,10 +536,7 @@ export async function handleTypecheck(args: string[] = []): Promise<void> {
 				}
 			}),
 		{
-			onWait: (holders) =>
-				log.info(
-					`Waiting for a check slot: ${holders.map(formatCheckSlotHolder).join(", ")}`,
-				),
+			onWait: (wait) => log.info(formatCheckSlotWait(wait)),
 		},
 	);
 	process.exit(exitCode);

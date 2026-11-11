@@ -25,7 +25,10 @@ import {
 	idleClaims,
 	unallocatedPortsMessage,
 } from "../../core/port-exhaustion";
-import { getPortOwner, withBindProbe } from "../../core/process";
+import {
+	createPortOwnerSnapshotAsync,
+	withBindProbe,
+} from "../../core/process";
 import { askConfirm, isInteractive } from "../../core/prompt";
 import { findCheckoutRuns, findRunsByRoot } from "../../core/run-registry";
 import { hostsMode } from "../../core/runtime-flags";
@@ -225,6 +228,8 @@ export async function handlePorts(args: string[]): Promise<number> {
 
 	const offset = parsePinnedOffset(value);
 	const runtime = containerRuntimeForEnv(env);
+	// One reading for every port the new block could take.
+	const owners = await createPortOwnerSnapshotAsync({ runtime });
 	const result = pinOffset({
 		root: env.root,
 		projectName: env.projectName,
@@ -233,7 +238,7 @@ export async function handlePorts(args: string[]): Promise<number> {
 		offset,
 		worktreeIsolation: env.worktreeIsolation,
 		runtime: runtime.name,
-		getOwner: withBindProbe((port) => getPortOwner(port, { runtime })),
+		getOwner: withBindProbe((port) => owners.owner(port)),
 		companionPorts: tailscaleBlockPorts({
 			mode: hostsMode(),
 			hosts: env.hosts !== null,

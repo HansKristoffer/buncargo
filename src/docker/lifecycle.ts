@@ -1,14 +1,10 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { formatPortOwner, getPortOwner } from "../core/process";
+import { createPortOwnerSnapshotAsync, formatPortOwner } from "../core/process";
 import { formatDone, formatStep } from "../core/style";
 import { dockerRuntimeAdapter } from "./adapter";
-import {
-	DEFAULT_DOCKER_BINARY,
-	type DockerRunResult,
-	runDockerAsync,
-} from "./binary";
+import { type DockerRunResult, runDockerAsync } from "./binary";
 import { getComposeArgs } from "./compose-command";
 import {
 	type DockerDaemonState,
@@ -16,6 +12,7 @@ import {
 	dockerDaemonStateFrom,
 	dockerUnavailableError,
 } from "./preflight";
+import { removeDockerVolumes } from "./volumes";
 
 export interface StartContainersOptions {
 	noDeps?: boolean;
@@ -59,10 +56,10 @@ const COMPOSE_MISSING =
  * Only reachable with a captured stderr, which means the quiet path; a verbose
  * run streamed compose's own output to the terminal already.
  */
-function translateComposeFailure(
+async function translateComposeFailure(
 	result: DockerRunResult,
 	binary: string | undefined,
-): never {
+): Promise<never> {
 	const message = result.stderr.trim();
 	if (isComposeMissingMessage(message)) throw new Error(COMPOSE_MISSING);
 	const allocated =
@@ -73,10 +70,11 @@ function translateComposeFailure(
 		const port = Number.parseInt(portMatch[1], 10);
 		// Asked of the same `docker` that failed, so a pinned binary's container
 		// is found rather than one on whatever `docker` PATH names.
-		const owner = getPortOwner(port, {
+		const owners = await createPortOwnerSnapshotAsync({
 			runtime: dockerRuntimeAdapter({ binary }),
+			ports: [port],
 		});
-		throw new Error(formatPortOwner(port, owner ?? { pids: [] }));
+		throw new Error(formatPortOwner(port, owners.owner(port) ?? { pids: [] }));
 	}
 	throw new Error(
 		message || `docker compose exited with code ${result.exitCode}`,
@@ -118,7 +116,7 @@ export async function startContainers(
 			timeoutMs,
 		},
 	);
-	if (!result.ok) translateComposeFailure(result, binary);
+	if (!result.ok) await translateComposeFailure(result, binary);
 	if (verbose) console.log(formatDone("Containers started"));
 }
 
@@ -138,11 +136,10 @@ function daemonStateFromTeardown(result: DockerRunResult): DockerDaemonState {
 /**
  * Stop and remove Docker Compose containers.
  *
- * Compose finds them by the project label, so the compose file is only needed
- * to name the volumes `removeVolumes` deletes, and the checkout only to host
- * that file. A stack whose worktree was deleted must still come down, which is
- * why neither is required here; `removeVolumes` without the file still brings
- * the containers down, then fails, because the volumes stay.
+ * Compose finds them by the project label, so the compose file only names
+ * the volumes `removeVolumes` deletes, and the checkout only hosts that file. A stack whose worktree was deleted must still come down, which is
+ * why neither is required here; `removeVolumes` without the file finds the
+ * volumes by Compose's project label instead.
  */
 export async function stopContainers(
 	root: string,
@@ -204,19 +201,37 @@ export async function stopContainers(
 				console.log(formatStep("ℹ Docker is not running. Nothing to stop."));
 			return;
 		}
-		translateComposeFailure(result, binary);
+		await translateComposeFailure(result, binary);
 	}
 
 	// A reset that kept the database is not one: the next run reads stale data.
+	// Without the file, Compose's own project label names the volumes: an exact
+	// match, so another project's volumes are never among them.
 	if (removeVolumes && !file) {
-		const where = composePath
-			? `no compose file at ${composePath}`
-			: "no compose file was given";
-		const docker = binary ?? DEFAULT_DOCKER_BINARY;
-		const remove = `${docker} volume rm $(${docker} volume ls -q --filter label=com.docker.compose.project=${projectName})`;
-		throw new Error(
-			`Removed ${projectName}'s containers but kept its volumes: ${where} to name them. Remove them with \`${remove}\`, or start the environment once so it writes the file, then stop it again.`,
+		const listed = await runDockerAsync(
+			binary,
+			[
+				"volume",
+				"ls",
+				"-q",
+				"--filter",
+				`label=com.docker.compose.project=${projectName}`,
+			],
+			{ signal, timeoutMs: 30_000 },
 		);
+		if (!listed.ok)
+			throw new Error(
+				`Removed ${projectName}'s containers but could not list its volumes: ${listed.stderr.trim() || `docker volume ls exited ${listed.exitCode}`}`,
+			);
+		const names = listed.stdout
+			.split("\n")
+			.map((line) => line.trim())
+			.filter(Boolean);
+		const kept = await removeDockerVolumes(names, binary);
+		if (kept.length > 0)
+			throw new Error(
+				`Removed ${projectName}'s containers but kept these volumes: ${kept.map(({ name, error }) => `${name} (${error})`).join(", ")}`,
+			);
 	}
 	if (verbose) console.log(formatDone("Containers stopped"));
 }

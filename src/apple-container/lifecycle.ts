@@ -7,7 +7,11 @@ import type {
 	ContainerUpRequest,
 } from "../container-runtime/types";
 import { remainingTime } from "../core/deadline";
-import { formatPortOwner, getPortOwner, type PortOwner } from "../core/process";
+import {
+	createPortOwnerSnapshotAsync,
+	formatPortOwner,
+	type PortOwnerSnapshot,
+} from "../core/process";
 import { formatDone, formatStep, formatWarn } from "../core/style";
 import { SERVICE_HASH_LABEL } from "../docker-compose/interpolate";
 import { appleContainerRuntimeAdapter } from "./adapter";
@@ -36,7 +40,8 @@ type AppleRun = (
 	args: string[],
 	options?: { stream?: true },
 ) => Promise<AppleCliResult>;
-type PortOwnerLookup = (port: number) => PortOwner | null;
+/** Who holds each of these ports, read once when a start fails on one. */
+type PortOwnerLookup = (ports: number[]) => Promise<PortOwnerSnapshot>;
 
 /**
  * Starting and stopping a project's containers on Apple's runtime.
@@ -60,20 +65,21 @@ function failed(result: AppleCliResult, action: string): never {
  * Apple's message names no port (`bind(...): Address already in use (errno:
  * 48)`), so the candidates are the ports this container publishes.
  */
-function translatePortError(
+async function translatePortError(
 	result: AppleCliResult,
 	action: string,
 	publishedPorts: number[],
-	ownerOf: PortOwnerLookup,
-): never {
+	ownersOf: PortOwnerLookup,
+): Promise<never> {
 	const message = `${result.stderr}\n${result.stdout}`;
 	if (
 		/address already in use|port is already allocated|already bound/i.test(
 			message,
 		)
 	) {
+		const owners = await ownersOf(publishedPorts);
 		for (const port of publishedPorts) {
-			const owner = ownerOf(port);
+			const owner = owners.owner(port);
 			if (owner) throw new Error(formatPortOwner(port, owner));
 		}
 	}
@@ -134,7 +140,7 @@ async function startService(
 	plan: ContainerRunPlan,
 	existing: AppleContainerRecord | undefined,
 	verbose: boolean,
-	ownerOf: PortOwnerLookup,
+	ownersOf: PortOwnerLookup,
 ): Promise<void> {
 	if (existing) {
 		const state = recordState(existing);
@@ -181,11 +187,11 @@ async function startService(
 	if (!result.ok && isTransientRunFailure(result))
 		result = await run(plan.runArgs);
 	if (!result.ok) {
-		translatePortError(
+		await translatePortError(
 			result,
 			`start container ${plan.containerName}`,
 			plan.publishedPorts,
-			ownerOf,
+			ownersOf,
 		);
 	}
 }
@@ -193,7 +199,7 @@ async function startService(
 async function up(
 	run: AppleRun,
 	request: ContainerUpRequest,
-	ownerOf: PortOwnerLookup,
+	ownersOf: PortOwnerLookup,
 ): Promise<void> {
 	const { verbose = true } = request;
 	const plan = buildAppleRunPlan({
@@ -237,7 +243,7 @@ async function up(
 			service,
 			existing.get(service.containerName),
 			verbose,
-			ownerOf,
+			ownersOf,
 		);
 	}
 
@@ -384,12 +390,13 @@ export function appleUp(
 	// Asked of Apple itself: its port forwarder holds the socket, so the host
 	// lookup alone names the forwarder rather than the container behind it.
 	const runtime = appleContainerRuntimeAdapter({ cli });
-	const ownerOf = (port: number) => getPortOwner(port, { runtime });
+	const ownersOf = (ports: number[]) =>
+		createPortOwnerSnapshotAsync({ runtime, ports, signal: request.signal });
 	const run = appleRunner(cli, {
 		signal: request.signal,
 		timeoutMs: request.timeoutMs ?? 600000,
 	});
-	return up(run, request, ownerOf);
+	return up(run, request, ownersOf);
 }
 export function appleDown(
 	cli: AppleContainerCli,
