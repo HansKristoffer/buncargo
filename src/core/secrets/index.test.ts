@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AppConfig, SecretsScopeConfig } from "../../types";
+import { useTempHome } from "../test-env.testing";
 import { sessionOrganization } from "./auth";
 import { InfisicalLoginError } from "./errors";
 import {
@@ -22,22 +23,19 @@ import {
 } from "./index";
 
 let fake: (FakeInfisical & { cliPath: string; home: string }) | undefined;
-const saved = {
-	home: process.env.HOME,
-	path: process.env.BUNCARGO_INFISICAL_PATH,
-};
+const home = useTempHome();
+const savedPath = process.env.BUNCARGO_INFISICAL_PATH;
 
 function start(options: Parameters<typeof startFakeInfisical>[0] = {}) {
 	fake = startFakeInfisical(options);
-	process.env.HOME = fake.home;
 	process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
 	fake.projects.p1 = { secrets: { OPENAI_API_KEY: "sk-project", BLANK: "" } };
 	return fake;
 }
 
-/** No credentials, and the fake's home: the developer's identity file is never read. */
+/** No credentials, and the test's home: the developer's identity file is never read. */
 function noIdentity(): NodeJS.ProcessEnv {
-	return { HOME: fake?.home };
+	return { HOME: home() };
 }
 
 /** A resolved scope on the running fake, as the environment layer passes one. */
@@ -68,13 +66,8 @@ afterEach(() => {
 	fake?.stop();
 	fake = undefined;
 	clearScopeSecretsCache();
-	for (const [key, value] of [
-		["HOME", saved.home],
-		["BUNCARGO_INFISICAL_PATH", saved.path],
-	] as const) {
-		if (value === undefined) delete process.env[key];
-		else process.env[key] = value;
-	}
+	if (savedPath === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
+	else process.env.BUNCARGO_INFISICAL_PATH = savedPath;
 });
 
 describe("shared request cancellation", () => {
@@ -380,25 +373,25 @@ describe("loadScopeSecrets with a machine identity", () => {
 
 	it("reads the machine identity file in the given environment's home", async () => {
 		const infisical = start();
-		// Not process.env.HOME, which start() points at the fake.
-		const home = join(infisical.home, "elsewhere");
+		// Not process.env.HOME: the home the call is given.
+		const elsewhere = join(infisical.home, "elsewhere");
 		const write = (siteUrl: string) => {
-			mkdirSync(join(home, ".infisical"), { recursive: true });
+			mkdirSync(join(elsewhere, ".infisical"), { recursive: true });
 			writeFileSync(
-				join(home, ".infisical", "universal-auth.json"),
+				join(elsewhere, ".infisical", "universal-auth.json"),
 				JSON.stringify({ clientId: "id", clientSecret: "right", siteUrl }),
 			);
 		};
 		write(infisical.siteUrl);
 		expect(
-			await loadScopeSecrets(scopeOf("p1"), { env: { HOME: home } }),
+			await loadScopeSecrets(scopeOf("p1"), { env: { HOME: elsewhere } }),
 		).toEqual({ OPENAI_API_KEY: "sk-project" });
 		expect(infisical.cliCalls()).toEqual([]);
 
 		// Another instance's identity is never sent here: the CLI session is used.
 		clearScopeSecretsCache();
 		write("https://other.example.com");
-		await loadScopeSecrets(scopeOf("p1"), { env: { HOME: home } }).catch(
+		await loadScopeSecrets(scopeOf("p1"), { env: { HOME: elsewhere } }).catch(
 			() => {},
 		);
 		expect(infisical.cliCalls().length).toBeGreaterThan(0);
@@ -429,9 +422,9 @@ describe("a machine identity across scopes", () => {
 		const infisical = start();
 		infisical.projects.p2 = { secrets: { B: "2" } };
 		infisical.projects.p3 = { secrets: { C: "3" } };
-		mkdirSync(join(infisical.home, ".infisical"), { recursive: true });
+		mkdirSync(join(home(), ".infisical"), { recursive: true });
 		writeFileSync(
-			join(infisical.home, ".infisical", "universal-auth.json"),
+			join(home(), ".infisical", "universal-auth.json"),
 			JSON.stringify({
 				clientId: "id",
 				clientSecret: "right",

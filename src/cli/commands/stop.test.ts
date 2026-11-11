@@ -25,13 +25,13 @@ import { runStopGraceMs } from "../../core/process/terminate";
 import { readProcessIdentityAsync } from "../../core/process-identity";
 import { recordEvents, runStopRecord } from "../../core/removal-log";
 import {
-	CHECKOUT_HOLD,
-	LIVE,
 	loadRuns,
 	publishRun,
 	type RunEntry,
 	releaseRun,
 } from "../../core/run-registry";
+import { DEAD_PID, runEntry } from "../../core/run-registry.testing";
+import { useTempHome } from "../../core/test-env.testing";
 import { runCommand } from "../command-spec";
 import { stopCommand } from "./stop";
 
@@ -43,10 +43,10 @@ const handleStop = (args: string[]) => runCommand(stopCommand, args);
  * `BUNCARGO_CONTAINER_BINARY` points at the fake too: a runtime probe would
  * find it, which is how a test sees a probe that should not happen.
  */
+useTempHome();
 let root: string;
 let docker: string;
 const saved = {
-	HOME: process.env.HOME,
 	BUNCARGO_CONTAINER_BINARY: process.env.BUNCARGO_CONTAINER_BINARY,
 	BUNCARGO_CONTAINER_RUNTIME: process.env.BUNCARGO_CONTAINER_RUNTIME,
 };
@@ -57,7 +57,6 @@ beforeEach(() => {
 	writeFileSync(docker, `#!/bin/sh\necho "$*" >> "${root}/calls"\nexit 0\n`, {
 		mode: 0o755,
 	});
-	process.env.HOME = root;
 	process.env.BUNCARGO_CONTAINER_BINARY = docker;
 	process.env.BUNCARGO_CONTAINER_RUNTIME = "docker";
 });
@@ -90,24 +89,13 @@ const calls = () =>
 		: [];
 
 function entry(sessionId: string, extra: Partial<RunEntry> = {}): RunEntry {
-	const now = new Date().toISOString();
-	return {
+	return runEntry({
 		sessionId,
 		projectPrefix: "fixture",
 		projectName: "fixture",
 		root,
-		worktree: null,
-		pid: 2 ** 22 + 1,
-		startedAt: now,
-		updatedAt: now,
-		lifecycle: LIVE,
-		hold: CHECKOUT_HOLD,
-		hosts: null,
-		cli: { program: "bun" },
-		apps: [],
-		services: [],
 		...extra,
-	};
+	});
 }
 
 /** A run released into the idle hold: its owner has exited, its container waits. */
@@ -365,7 +353,7 @@ describe("buncargo stop after the watchdog stopped the run", () => {
 		const printed = await capture("log", () => handleStop(["--root", root]));
 		expect(printed.code).toBe(0);
 		expect(printed.text).toContain(
-			"buncargo's watchdog stopped fixture's detached run (pid 4194305)",
+			`buncargo's watchdog stopped fixture's detached run (pid ${DEAD_PID})`,
 		);
 		expect(printed.text).toContain("idle for 2h 0m");
 	});

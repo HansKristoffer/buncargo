@@ -1,18 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import {
-	existsSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { withFileLock } from "./file-lock";
 import { isProcessAlive } from "./process/lifecycle";
 import { readProcessIdentity } from "./process-identity";
-import { CHECKOUT_HOLD, LIVE, publishRun } from "./run-registry";
+import { publishRun } from "./run-registry";
+import { runEntry } from "./run-registry.testing";
+import { useTempHome } from "./test-env.testing";
 import { buncargoVersion } from "./version";
 import {
 	ensureWatchdog,
@@ -24,15 +19,14 @@ import {
 	resolveWatchdogRunnerPath,
 } from "./watchdog";
 
-const isolated = ["HOME", "DOCKER_HOST", "DOCKER_CONTEXT"] as const;
+// One home for the file: the watchdog a test starts is what later tests find.
+const home = useTempHome("all");
+const isolated = ["DOCKER_HOST", "DOCKER_CONTEXT"] as const;
 const saved = Object.fromEntries(
 	isolated.map((key) => [key, process.env[key]]),
 );
-let home = "";
 
 beforeAll(() => {
-	home = mkdtempSync(join(tmpdir(), "buncargo-watchdog-"));
-	process.env.HOME = home;
 	// The runner sweeps as soon as it starts, inherits this environment, and
 	// with an empty registry reads every stack it can list as unowned. It
 	// finds the failing `docker` the test preload puts first on PATH; an
@@ -49,7 +43,6 @@ afterAll(() => {
 		if (value === undefined) delete process.env[key];
 		else process.env[key] = value;
 	}
-	rmSync(home, { recursive: true, force: true });
 });
 
 /**
@@ -59,23 +52,15 @@ afterAll(() => {
  * wants to inspect the process has to own something first.
  */
 async function claimSomething(): Promise<void> {
-	await publishRun({
-		sessionId: `watchdog-test-${crypto.randomUUID()}`,
-		processIdentity: readProcessIdentity(process.pid),
-		projectPrefix: "demo",
-		projectName: "demo",
-		root: home,
-		worktree: null,
-		pid: process.pid,
-		startedAt: new Date().toISOString(),
-		updatedAt: new Date().toISOString(),
-		lifecycle: LIVE,
-		hold: CHECKOUT_HOLD,
-		hosts: null,
-		cli: { program: process.execPath },
-		apps: [],
-		services: [{ name: "db", status: "ready" }],
-	});
+	await publishRun(
+		runEntry({
+			sessionId: `watchdog-test-${crypto.randomUUID()}`,
+			processIdentity: readProcessIdentity(process.pid),
+			root: home(),
+			pid: process.pid,
+			services: [{ name: "db", status: "ready" }],
+		}),
+	);
 }
 
 /**
@@ -213,6 +198,9 @@ describe("ensureWatchdog", () => {
 });
 
 describe("the watchdog runner", () => {
+	// A watchdog an earlier test started still holds the shared home's lock.
+	useTempHome();
+
 	it("exits without sweeping once the process it may not outlive has ended", async () => {
 		// A watchdog a test run started outlived it and, from a temporary HOME,
 		// swept real stacks on the machine's daemon.
@@ -220,7 +208,7 @@ describe("the watchdog runner", () => {
 		await parent.exited;
 
 		const runner = Bun.spawn([process.execPath, resolveWatchdogRunnerPath()], {
-			cwd: home,
+			cwd: home(),
 			env: { ...process.env, BUNCARGO_WATCHDOG_PARENT: `${parent.pid}:` },
 			stdio: ["ignore", "pipe", "inherit"],
 		});
@@ -261,7 +249,7 @@ async function startStubRunner(
 	version: string | undefined,
 	options: { identity?: boolean; ignoresTerm?: boolean } = {},
 ) {
-	const script = join(home, "stub-runner.ts");
+	const script = join(home(), "stub-runner.ts");
 	writeFileSync(
 		script,
 		`import { writeFileSync } from "node:fs";
@@ -279,7 +267,7 @@ await withFileLock(lockFile, async () => {
 }, { timeoutMs: 0 });
 `,
 	);
-	const ready = join(home, `stub-ready-${crypto.randomUUID()}`);
+	const ready = join(home(), `stub-ready-${crypto.randomUUID()}`);
 	const stub = Bun.spawn(
 		[
 			process.execPath,
@@ -303,6 +291,10 @@ await withFileLock(lockFile, async () => {
 }
 
 describe("ensureWatchdog and an older watchdog", () => {
+	// Each with a state directory of its own: a stub still letting go of the
+	// runner lock is no later test's business.
+	useTempHome();
+
 	for (const version of ["12.4.0", undefined]) {
 		it(`replaces a watchdog of ${version ?? "no recorded version"} with this buncargo's`, async () => {
 			// An older runner sweeps every checkout on the machine with its own
@@ -320,6 +312,7 @@ describe("ensureWatchdog and an older watchdog", () => {
 				).toBe(buncargoVersion());
 			} finally {
 				stub.kill();
+				await stub.exited;
 				await stopWatchdog();
 			}
 		});

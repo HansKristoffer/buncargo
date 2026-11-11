@@ -106,11 +106,9 @@ it("deadline cancellation waits for command cleanup before rejecting", async () 
 			withDeadline(
 				(signal) =>
 					execAsync(
-						[
-							process.execPath,
-							"-e",
-							`process.on('SIGTERM', () => {}); await Bun.write(${JSON.stringify(marker)}, String(process.pid)); setInterval(() => {}, 1000);`,
-						],
+						// A shell, not Bun: it records its pid within the deadline even
+						// on a loaded machine. `exec` keeps the pid and the ignored TERM.
+						["sh", "-c", `trap '' TERM; echo $$ > '${marker}'; exec sleep 60`],
 						root,
 						{},
 						{ signal, killGraceMs: 100 },

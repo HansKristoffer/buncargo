@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { RunEntry } from "../../core/run-registry";
 import { CI_ENV_VARS } from "../../core/runtime-flags";
+import { standInForWatchdog } from "../../core/watchdog.testing";
 
 describe("buncargo prisma", () => {
 	const cli = [process.execPath, resolve(import.meta.dir, "../bin.ts")];
@@ -24,9 +25,11 @@ describe("buncargo prisma", () => {
 	/**
 	 * A checkout whose `docker` answers everything and whose Prisma CLI is a
 	 * script: it prints a migration to stdout, and records what it saw while
-	 * it ran (the variables, the run registry) for the test to read.
+	 * it ran (the variables, the run registry) for the test to read. This
+	 * process stands in for the watchdog, whose sweep would retire the released
+	 * run while the test reads it.
 	 */
-	function checkout(prismaConfig = "{}") {
+	async function checkout(prismaConfig = "{}") {
 		const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-prisma-")));
 		roots.push(root);
 		const bin = join(root, "packages/prisma/node_modules/.bin");
@@ -50,6 +53,7 @@ describe("buncargo prisma", () => {
 			`#!/bin/sh\nprintf '%s' "$CLAUDECODE" > "${root}/claudecode"\nprintf '%s' "$DATABASE_URL_DIRECT" > "${root}/direct-url"\ncp "$HOME/.buncargo/runs.json" "${root}/runs.during.json"\nprintf 'CREATE TABLE "user" ();\\n'\nexit "\${STUB_PRISMA_EXIT:-0}"\n`,
 			{ mode: 0o755 },
 		);
+		await standInForWatchdog(join(root, "home"));
 		return root;
 	}
 
@@ -86,7 +90,7 @@ describe("buncargo prisma", () => {
 		(JSON.parse(readFileSync(path, "utf-8")) as { runs: RunEntry[] }).runs;
 
 	it("claims the database while Prisma runs and releases it after", async () => {
-		const root = checkout();
+		const root = await checkout();
 
 		const result = await prisma(root, ["studio"]);
 
@@ -102,14 +106,18 @@ describe("buncargo prisma", () => {
 	});
 
 	it("leaves stdout to Prisma, byte for byte", async () => {
-		const result = await prisma(checkout(), ["migrate", "diff", "--script"]);
+		const result = await prisma(await checkout(), [
+			"migrate",
+			"diff",
+			"--script",
+		]);
 
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toBe('CREATE TABLE "user" ();\n');
 	});
 
 	it("keeps the variables Prisma's agent guard reads, despite unsetEnv", async () => {
-		const root = checkout();
+		const root = await checkout();
 
 		await prisma(root, ["migrate", "status"]);
 
@@ -117,7 +125,7 @@ describe("buncargo prisma", () => {
 	});
 
 	it("refuses migrate reset without a terminal unless --yes", async () => {
-		const root = checkout();
+		const root = await checkout();
 
 		const refused = await prisma(root, ["migrate", "reset"]);
 		expect(refused.exitCode).not.toBe(0);
@@ -131,7 +139,7 @@ describe("buncargo prisma", () => {
 
 	// A CI database is disposable, and its pipelines pass no --yes.
 	it("runs migrate reset in CI without --yes", async () => {
-		const root = checkout();
+		const root = await checkout();
 
 		const result = await prisma(root, ["migrate", "reset"], { CI: "true" });
 
@@ -140,7 +148,7 @@ describe("buncargo prisma", () => {
 	});
 
 	it("writes a migration without a terminal, after the newest one, and prints its path", async () => {
-		const root = checkout();
+		const root = await checkout();
 		// A folder from a clock ahead of this one: the new one still applies last.
 		const migrations = join(root, "packages/prisma/prisma/migrations");
 		mkdirSync(join(migrations, "20990101000000_init"), { recursive: true });
@@ -160,7 +168,7 @@ describe("buncargo prisma", () => {
 	});
 
 	it("writes nothing when the schema has no changes", async () => {
-		const root = checkout();
+		const root = await checkout();
 
 		const result = await prisma(root, ["migration", "new", "add_x"]);
 
@@ -171,22 +179,32 @@ describe("buncargo prisma", () => {
 		);
 	});
 
-	it("warns about an inherited URL to another server, without its credentials, and refuses a destructive command", async () => {
-		const root = checkout();
-		const direct = {
-			DATABASE_URL_DIRECT:
-				"postgresql://admin:hunter2@db.example.com:6543/prod",
-		};
+	const inheritedUrl = {
+		DATABASE_URL_DIRECT: "postgresql://admin:hunter2@db.example.com:6543/prod",
+	};
 
-		const warned = await prisma(root, ["migrate", "status"], direct);
+	it("warns about an inherited URL to another server, without its credentials", async () => {
+		const warned = await prisma(
+			await checkout(),
+			["migrate", "status"],
+			inheritedUrl,
+		);
+
 		expect(warned.exitCode).toBe(0);
 		expect(warned.stderr).toContain(
 			"DATABASE_URL_DIRECT points at db.example.com:6543",
 		);
 		expect(warned.stderr).not.toContain("hunter2");
+	});
 
-		rmSync(join(root, "runs.during.json"));
-		const refused = await prisma(root, ["migrate", "reset", "--yes"], direct);
+	it("refuses a destructive command while an inherited URL points at another server", async () => {
+		const root = await checkout();
+
+		const refused = await prisma(
+			root,
+			["migrate", "reset", "--yes"],
+			inheritedUrl,
+		);
 		expect(refused.exitCode).toBe(1);
 		expect(refused.stderr).toContain("Refusing while DATABASE_URL_DIRECT");
 		expect(refused.stderr).not.toContain("hunter2");
@@ -194,7 +212,9 @@ describe("buncargo prisma", () => {
 	});
 
 	it("points every prisma.urlEnvVar name at the checkout's database", async () => {
-		const root = checkout('{urlEnvVar:["DATABASE_URL","DATABASE_URL_DIRECT"]}');
+		const root = await checkout(
+			'{urlEnvVar:["DATABASE_URL","DATABASE_URL_DIRECT"]}',
+		);
 
 		const result = await prisma(root, ["migrate", "status"], {
 			DATABASE_URL_DIRECT:
@@ -228,8 +248,8 @@ describe("buncargo prisma", () => {
 			writeFileSync(join(dir, "migration.sql"), "");
 		}
 		/** main has two migrations; the branch adds `folder`. */
-		function branchAdding(folder: string) {
-			const root = checkout();
+		async function branchAdding(folder: string) {
+			const root = await checkout();
 			git(root, "init", "-q", "-b", "main");
 			migration(root, "20250101000000_init");
 			migration(root, "20250301000000_orders");
@@ -241,7 +261,7 @@ describe("buncargo prisma", () => {
 		}
 
 		it("fails on a migration sorting before the newest on the base branch", async () => {
-			const root = branchAdding("20250201000000_users");
+			const root = await branchAdding("20250201000000_users");
 
 			const result = await prisma(root, ["migration", "check"]);
 
@@ -252,7 +272,7 @@ describe("buncargo prisma", () => {
 		});
 
 		it("passes a migration after the newest on the base branch", async () => {
-			const root = branchAdding("20250401000000_users");
+			const root = await branchAdding("20250401000000_users");
 
 			const result = await prisma(root, ["migration", "check", "--base=main"]);
 

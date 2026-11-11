@@ -10,7 +10,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unreadableCheckout } from "../core/checkout-presence.testing";
-import { getRoutesPath } from "../core/hosts/paths";
 import {
 	loadHostRoutes,
 	pidRouteOwners,
@@ -27,7 +26,6 @@ import {
 import { readProcessIdentity } from "../core/process-identity";
 import { readRemovals } from "../core/removal-log";
 import {
-	CHECKOUT_HOLD,
 	holdToInherit,
 	LIVE,
 	loadRuns,
@@ -36,6 +34,8 @@ import {
 	type RunEntry,
 	releaseRun,
 } from "../core/run-registry";
+import { runEntry } from "../core/run-registry.testing";
+import { useTempHome } from "../core/test-env.testing";
 import { DELETED_CHECKOUT_SETTLE_MS } from "../core/watchdog-constants";
 import type { BuncargoContainer, BuncargoVolume } from "../types";
 import {
@@ -52,29 +52,18 @@ import {
 } from "./sweep";
 import type { ComposeProjectResources, ContainerDownRequest } from "./types";
 
-const realHome = process.env.HOME;
-let home = "";
+// Each test's runs, claims and routes start empty.
+const home = useTempHome();
 let checkout = "";
 const unreadable = unreadableCheckout();
 
 beforeAll(() => {
-	home = mkdtempSync(join(tmpdir(), "buncargo-sweep-"));
-	process.env.HOME = home;
 	checkout = mkdtempSync(join(tmpdir(), "buncargo-checkout-"));
 });
 
 afterAll(() => {
-	if (realHome === undefined) delete process.env.HOME;
-	else process.env.HOME = realHome;
-	rmSync(home, { recursive: true, force: true });
 	rmSync(checkout, { recursive: true, force: true });
 	unreadable?.cleanup();
-});
-
-afterEach(() => {
-	rmSync(join(home, ".buncargo", "runs.json"), { force: true });
-	rmSync(getOffsetClaimsPath(), { force: true });
-	rmSync(getRoutesPath(), { force: true });
 });
 
 /** Give `root` a port claim for `projectName`, as a run of this user's does. */
@@ -88,23 +77,14 @@ const AGES_AGO = new Date(NOW - 10_000_000).toISOString();
 
 /** A run entry, dead by default: `pid: 1` is never one of ours. */
 function entry(extra: Partial<RunEntry> = {}): RunEntry {
-	return {
-		sessionId: "s1",
-		projectPrefix: "demo",
-		projectName: "demo",
+	return runEntry({
 		root: checkout,
-		worktree: null,
 		pid: 1,
 		startedAt: AGES_AGO,
 		updatedAt: AGES_AGO,
-		lifecycle: LIVE,
-		hold: CHECKOUT_HOLD,
-		hosts: null,
-		cli: { program: "bun" },
-		apps: [],
-		services: [{ name: "db", status: "ready" }],
+		services: [DB],
 		...extra,
-	};
+	});
 }
 
 describe("decideSweep", () => {
@@ -1033,8 +1013,8 @@ describe("sweepOrphanedContainers", () => {
 	it("touches nothing when the registry cannot be read", async () => {
 		// With no registry every stack looks unowned; stopping is the only
 		// safe answer, and the watchdog retries on its next pass.
-		mkdirSync(join(home, ".buncargo"), { recursive: true });
-		writeFileSync(join(home, ".buncargo", "runs.json"), "{ not json");
+		mkdirSync(join(home(), ".buncargo"), { recursive: true });
+		writeFileSync(join(home(), ".buncargo", "runs.json"), "{ not json");
 		const { runtime, downs } = stubRuntime([
 			container("stopped", checkout, "exited"),
 		]);
@@ -1283,7 +1263,7 @@ describe("sweepOrphanedContainers and named hosts", () => {
 					port: 9108,
 					kind: "service",
 					name: "typesense",
-					root: home,
+					root: home(),
 				},
 			],
 			{ owners: pidRouteOwners },
@@ -1307,7 +1287,6 @@ describe("settleDeletedCheckouts", () => {
 		if (optIn === undefined)
 			delete process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS;
 		else process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS = optIn;
-		rmSync(getOffsetClaimsPath(), { force: true });
 	});
 
 	function setup(options: {

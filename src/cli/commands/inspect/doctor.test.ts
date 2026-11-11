@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { fakeRuntime } from "../../../container-runtime/fake-runtime.testing";
 import { claimOffset } from "../../../core/offset-claims";
 import { CI_ENV_VARS } from "../../../core/runtime-flags";
+import { useTempHome } from "../../../core/test-env.testing";
 import { prunableVolumesNote } from "./doctor";
 
 const cli = resolve(import.meta.dir, "../../bin.ts");
@@ -61,14 +62,10 @@ describe("buncargo doctor", () => {
 });
 
 describe("prunableVolumesNote", () => {
-	const savedHome = process.env.HOME;
-	afterEach(() => {
-		process.env.HOME = savedHome;
-	});
+	useTempHome();
 
 	it("counts the volumes `prune` would propose and names `prune --dry-run`", async () => {
 		// 215 of them built up on one machine while doctor said "No issues found".
-		process.env.HOME = join(dir, "home");
 		const claim = (root: string, projectName: string) =>
 			claimOffset({ root, offset: 100, ports: [5532], projectName });
 		claim(join(dir, "deleted-a"), "app-a");

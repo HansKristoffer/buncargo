@@ -10,6 +10,7 @@ import {
 } from "../../container-runtime/fake-runtime.testing";
 import { startFakeInfisical } from "../secrets/fake-infisical.testing";
 import { clearScopeSecretsCache } from "../secrets/index";
+import { freePorts, useTempHome } from "../test-env.testing";
 import type { AppLife } from "./app-lifecycle";
 import { startDevServers, stopDevServers } from "./dev-servers";
 import { signalProcessTree } from "./port-owner";
@@ -28,26 +29,10 @@ function newFailure(life: AppLife, previous: AppLife) {
 	return failure !== previous.end?.failure ? failure : undefined;
 }
 
-// Ports the OS hands out, held together so they differ. A random port in a
-// fixed range collided with another test's app still letting go of it.
-async function freePorts(count: number): Promise<number[]> {
-	const servers = Array.from({ length: count }, () =>
-		Bun.serve({ port: 0, fetch: () => new Response() }),
-	);
-	const ports = servers.map((server) => server.port ?? 0);
-	await Promise.all(servers.map((server) => server.stop(true)));
-	return ports;
-}
-
-async function freePort(): Promise<number> {
-	const [port] = await freePorts(1);
-	return port;
-}
-
 describe("startDevServers", () => {
 	it("skips healthEndpoint: false / devCommand: false and honors attach", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-process-"));
-		const [skipPort, silentPort, attachPort] = await freePorts(3);
+		const [skipPort, silentPort, attachPort] = freePorts(3);
 		const marker = join(root, "attached.txt");
 		let silentPid: number | undefined;
 
@@ -108,18 +93,19 @@ describe("startDevServers", () => {
  * the one both spawn paths share.
  */
 describe("startDevServers secret injection", () => {
+	// Secrets and sessions are cached under HOME.
+	useTempHome();
+
 	it("injects an app's Infisical secrets under its computed env", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-secrets-spawn-"));
-		const savedHome = process.env.HOME;
 		const savedPath = process.env.BUNCARGO_INFISICAL_PATH;
 		const infisical = startFakeInfisical();
 		infisical.projects.p1 = {
 			secrets: { OPENAI_API_KEY: "sk-project", PORT: "9999", BLANK: "" },
 		};
-		process.env.HOME = infisical.home;
 		process.env.BUNCARGO_INFISICAL_PATH = infisical.cliPath;
 		const marker = join(root, "env.json");
-		const port = await freePort();
+		const [port] = freePorts(1);
 		const secrets = { projectId: "p1", siteUrl: infisical.siteUrl };
 
 		try {
@@ -173,8 +159,6 @@ describe("startDevServers secret injection", () => {
 				),
 			).rejects.toThrow("api: STRIPE_KEY");
 		} finally {
-			if (savedHome === undefined) delete process.env.HOME;
-			else process.env.HOME = savedHome;
 			if (savedPath === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
 			else process.env.BUNCARGO_INFISICAL_PATH = savedPath;
 			clearScopeSecretsCache();
@@ -187,7 +171,7 @@ describe("startDevServers secret injection", () => {
 describe("startDevServers ordering, prebuild and captures", () => {
 	it("starts after health, prebuilds first, and restarts on a capture", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-order-"));
-		const apiPort = await freePort();
+		const [apiPort] = freePorts(1);
 		const log = join(root, "events.log");
 		const append = (line: string) =>
 			`bun -e ${JSON.stringify(`require("node:fs").appendFileSync(${JSON.stringify(log)}, ${JSON.stringify(`${line}\n`)})`)}`;
@@ -270,7 +254,7 @@ describe("startDevServers ordering, prebuild and captures", () => {
 describe("stopDevServers", () => {
 	it("returns after a library run's apps' last words are printed", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-last-words-"));
-		const port = await freePort();
+		const [port] = freePorts(1);
 		let printed = "";
 		const write = spyOn(process.stdout, "write").mockImplementation(
 			(chunk: string | Uint8Array) => {
@@ -315,7 +299,7 @@ describe("stopDevServers", () => {
 describe("detached app supervision", () => {
 	it("adopts a daemonized listener and stops it with the session", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-detached-"));
-		const port = await freePort();
+		const [port] = freePorts(1);
 		const marker = join(root, "child.pid");
 		await Bun.write(
 			join(root, "child.ts"),
@@ -549,7 +533,7 @@ describe("startDevServers non-essential readiness", () => {
 		const ready: string[] = [];
 		const flakyExited = Promise.withResolvers<void>();
 		const flakyChecked = Promise.withResolvers<void>();
-		const port = await freePort();
+		const [port] = freePorts(1);
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
@@ -744,20 +728,15 @@ describe("startDevServers restart", () => {
 
 	it("fails a run that spares its apps when its only app does not come back up after a restart", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-restart-silent-"));
-		const marker = join(root, "ran-once");
-		const port = await freePort();
-		// Serves the first time, is silent the second.
-		const serveOnce = `bun -e ${JSON.stringify(
-			`const f = ${JSON.stringify(marker)}; if (!(await Bun.file(f).exists())) { await Bun.write(f, "1"); Bun.serve({ port: ${port}, fetch: () => new Response("ok") }); } setInterval(() => {}, 60000);`,
-		)}`;
+		const [port] = freePorts(1);
+		// Ready the first time, never the second.
+		let checks = 0;
 		const output = new RunOutput({ terminals: "pipe" });
 		const failures: string[] = [];
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				resolveApps({
-					api: { port, healthTimeout: 300, devCommand: serveOnce },
-				}),
+				resolveApps({ api: { port, devCommand: silent } }),
 				root,
 				{},
 				{ api: port },
@@ -766,17 +745,23 @@ describe("startDevServers restart", () => {
 					waitForExit: false,
 					output,
 					keepOthersOnFailure: true,
+					portDrift: false,
+					waitForHealth: async () => {
+						checks++;
+						if (checks > 1) throw new Error("api did not respond");
+					},
 					onFailure: (error) => failures.push(toError(error).message),
 				},
 			);
 			await output.controls?.restart("api");
 			await eventually(() => failures.length > 0);
-			expect(failures[0]).toContain("did not respond");
+			expect(failures).toHaveLength(1);
+			expect(output.states.get("api")?.state).not.toBe("ready");
 		} finally {
 			await stopDevServers(pids);
 			await rm(root, { recursive: true, force: true });
 		}
-	}, 15_000);
+	});
 
 	it("leaves the row of an app as it was when the run has ended", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-restart-ended-"));
@@ -813,7 +798,7 @@ describe("startDevServers restart", () => {
 		const flaky = `bun -e ${JSON.stringify(
 			`const f = ${JSON.stringify(marker)}; if (!(await Bun.file(f).exists())) { await Bun.write(f, "1"); process.exit(1); } setInterval(() => {}, 60000);`,
 		)}`;
-		const port = await freePort();
+		const [port] = freePorts(1);
 		let spawns = 0;
 		let pids: Record<string, number> = {};
 		try {
@@ -864,7 +849,7 @@ describe("startDevServers keepOthersOnFailure", () => {
 
 	it("stops the app that never came up and keeps the healthy one", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-"));
-		const api = await freePort();
+		const [api] = freePorts(1);
 		const marketing = api + 1;
 		const output = new RunOutput({ terminals: "pty" });
 		output.screenSize = () => ({ cols: 80, rows: 10 });
@@ -913,7 +898,7 @@ describe("startDevServers keepOthersOnFailure", () => {
 		// The registry read the exit `failed` (it never came up) while the TUI
 		// row read it `stopped (exit 0)` until the wave settled.
 		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-exit0-"));
-		const [api, web] = await freePorts(2);
+		const [api, web] = freePorts(2);
 		const output = new RunOutput({ terminals: "pty" });
 		const rows: string[] = [];
 		const registry: string[] = [];
@@ -957,7 +942,7 @@ describe("startDevServers keepOthersOnFailure", () => {
 		// The sparing wait reported nothing until every app settled: `api`'s
 		// row said `starting` for all of `web`'s health timeout.
 		const root = await mkdtemp(join(tmpdir(), "buncargo-ready-each-"));
-		const [api, web] = await freePorts(2);
+		const [api, web] = freePorts(2);
 		const output = new RunOutput({ terminals: "pipe" });
 		const run = new AbortController();
 		const apiReady = Promise.withResolvers<string | undefined>();
@@ -1001,7 +986,7 @@ describe("startDevServers keepOthersOnFailure", () => {
 
 	it("still fails the run when nothing came up, or a later app waits on it", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-"));
-		const port = await freePort();
+		const [port] = freePorts(1);
 		try {
 			await expect(
 				startDevServers(
@@ -1038,7 +1023,7 @@ describe("startDevServers keepOthersOnFailure", () => {
 
 	it("parks an app that crashes at boot, and a restart that brings it up makes it essential again", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-crash-"));
-		const [api, web] = await freePorts(2);
+		const [api, web] = freePorts(2);
 		const marker = join(root, "ran-once");
 		// Crashes the first time, serves the second.
 		const crashOnce = `bun -e ${JSON.stringify(
@@ -1089,7 +1074,7 @@ describe("startDevServers keepOthersOnFailure", () => {
 
 	it("parks an essential worker that crashes at boot, like any app on probation", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-worker-"));
-		const [api] = await freePorts(1);
+		const [api] = freePorts(1);
 		const output = new RunOutput({ terminals: "pipe" });
 		const failed: string[] = [];
 		const runFailures: string[] = [];
@@ -1132,7 +1117,7 @@ describe("startDevServers apps that never come up", () => {
 
 	it("stops a non-essential app that never answers and says why", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-side-failed-"));
-		const port = await freePort();
+		const [port] = freePorts(1);
 		const output = new RunOutput({ terminals: "pipe" });
 		const failed: string[] = [];
 		let pids: Record<string, number> = {};
@@ -1178,7 +1163,7 @@ describe("startDevServers apps that never come up", () => {
 
 	it("brings a reused app's row up, and leaves it running when it fails its check", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-reused-"));
-		const [api, web, admin] = await freePorts(3);
+		const [api, web, admin] = freePorts(3);
 		// This project's containers serve web and admin; only web answers.
 		const container = Bun.serve({ port: web, fetch: () => new Response("ok") });
 		const runtime = fakeRuntime({
@@ -1247,18 +1232,24 @@ describe("startDevServers apps that never come up", () => {
 		const root = await realpath(
 			await mkdtemp(join(tmpdir(), "buncargo-port-held-")),
 		);
-		const port = await freePort();
+		const [port] = freePorts(1);
 		const leftoverPid = join(root, "leftover.pid");
-		const successorPid = join(root, "successor.pid");
+		const successorBound = join(root, "successor.bound");
 		// A leftover of this checkout that, asked to stop, hands its port to a
-		// successor no SIGKILL of the leftover reaches.
+		// successor no SIGKILL of the leftover reaches: one started apart from
+		// it, already booted, that binds the port when the leftover tells it.
 		await Bun.write(
 			join(root, "successor.ts"),
-			`Bun.serve({ port: ${port}, reusePort: true, fetch: () => new Response("successor") }); await Bun.write(${JSON.stringify(successorPid)}, String(process.pid)); setInterval(() => {}, 60000);`,
+			`process.on("SIGUSR1", async () => { Bun.serve({ port: ${port}, reusePort: true, fetch: () => new Response("successor") }); await Bun.write(${JSON.stringify(successorBound)}, ""); }); console.log("waiting"); setInterval(() => {}, 60000);`,
 		);
+		const successor = Bun.spawn([process.execPath, "successor.ts"], {
+			cwd: root,
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+		await successor.stdout.getReader().read();
 		await Bun.write(
 			join(root, "leftover.ts"),
-			`import { spawn } from "node:child_process"; Bun.serve({ port: ${port}, reusePort: true, fetch: () => new Response("leftover") }); process.on("SIGTERM", async () => { spawn(process.execPath, ["successor.ts"], { cwd: ${JSON.stringify(root)}, detached: true, stdio: "ignore" }).unref(); while (!(await Bun.file(${JSON.stringify(successorPid)}).exists())) await Bun.sleep(10); process.exit(0); }); await Bun.write(${JSON.stringify(leftoverPid)}, String(process.pid)); setInterval(() => {}, 60000);`,
+			`Bun.serve({ port: ${port}, reusePort: true, fetch: () => new Response("leftover") }); process.on("SIGTERM", async () => { process.kill(${successor.pid}, "SIGUSR1"); while (!(await Bun.file(${JSON.stringify(successorBound)}).exists())) await Bun.sleep(5); process.exit(0); }); await Bun.write(${JSON.stringify(leftoverPid)}, String(process.pid)); setInterval(() => {}, 60000);`,
 		);
 		const leftover = Bun.spawn([process.execPath, "leftover.ts"], {
 			cwd: root,
@@ -1290,15 +1281,12 @@ describe("startDevServers apps that never come up", () => {
 			);
 			expect(refusal).toContain("did not stop");
 			// The process that holds it now, and the command that stops it.
-			const successor = Number(await Bun.file(successorPid).text());
-			expect(refusal).toContain(`\`kill ${successor}\``);
+			expect(refusal).toContain(`\`kill ${successor.pid}\``);
 			expect(spawned).toEqual([]);
 		} finally {
 			leftover.kill("SIGKILL");
-			if (await Bun.file(successorPid).exists()) {
-				const successor = Number(await Bun.file(successorPid).text());
-				if (processExists(successor)) process.kill(successor, "SIGKILL");
-			}
+			successor.kill("SIGKILL");
+			await Promise.all([leftover.exited, successor.exited]);
 			await rm(root, { recursive: true, force: true });
 		}
 	}, 15_000);
@@ -1307,7 +1295,7 @@ describe("startDevServers apps that never come up", () => {
 describe("startDevServers readyWhen and interactive apps without a terminal", () => {
 	it("waits for the line the app prints, and fails when it never comes", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-ready-when-"));
-		const port = await freePort();
+		const [port] = freePorts(1);
 		let pids: Record<string, number> = {};
 		try {
 			// Nothing listens on the port: only the printed line can make it ready.

@@ -4,23 +4,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RunOutput } from "../../core/process/run-output";
 import { buildRunEntry, publishRun } from "../../core/run-registry";
+import { useTempHome } from "../../core/test-env.testing";
 import { runCommand } from "../command-spec";
 import { sendRefusal } from "../dev-output";
 import { watchSendRequests } from "../restart-requests";
 import { SEND_EXIT, sendCommand } from "./send";
 
-// The registry lives under HOME: the test's own, never the developer's.
+// The registry lives under HOME: each test's own.
+useTempHome();
 let dir: string;
-const realHome = process.env.HOME;
 
 beforeAll(() => {
 	dir = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-send-")));
-	process.env.HOME = join(dir, "home");
 });
 
 afterAll(() => {
-	if (realHome === undefined) delete process.env.HOME;
-	else process.env.HOME = realHome;
 	rmSync(dir, { recursive: true, force: true });
 });
 

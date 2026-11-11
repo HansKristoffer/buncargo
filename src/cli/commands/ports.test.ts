@@ -20,6 +20,7 @@ import {
 import { allocatePortBlock } from "../../core/port-allocation";
 import { buildRunEntry, publishRun } from "../../core/run-registry";
 import { CI_ENV_VARS } from "../../core/runtime-flags";
+import { useTempHome } from "../../core/test-env.testing";
 import { runCommand } from "../command-spec";
 import { parsePinnedOffset, portsCommand } from "./ports";
 
@@ -27,9 +28,9 @@ const handlePorts = (args: string[]) => runCommand(portsCommand, args);
 
 const CLI = resolve(import.meta.dir, "../bin.ts");
 
-// The claims and the run registry live under HOME: the test's own, never the
-// developer's. Releasing a claim asks no container runtime anything.
-const originalHome = process.env.HOME;
+// The claims and the run registry live under HOME: each test's own.
+// Releasing a claim asks no container runtime anything.
+useTempHome();
 const originalOffset = process.env.BUNCARGO_PORT_OFFSET;
 const stdinTTY = process.stdin.isTTY;
 let dir: string;
@@ -37,7 +38,6 @@ let stale: string;
 let other: string;
 beforeEach(() => {
 	dir = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-ports-release-")));
-	process.env.HOME = join(dir, "home");
 	delete process.env.BUNCARGO_PORT_OFFSET;
 	process.stdin.isTTY = false;
 	stale = join(dir, "old-worktree");
@@ -67,7 +67,6 @@ beforeEach(() => {
 	});
 });
 afterEach(() => {
-	process.env.HOME = originalHome;
 	if (originalOffset === undefined) delete process.env.BUNCARGO_PORT_OFFSET;
 	else process.env.BUNCARGO_PORT_OFFSET = originalOffset;
 	process.stdin.isTTY = stdinTTY;
@@ -189,7 +188,8 @@ it("releases only the claims idle for longer than the duration, of checkouts wit
 	expect(claimedNames()).toHaveLength(3);
 });
 
-it("answers status --json and ports in a checkout with no block while every block is claimed, and pins it", async () => {
+/** A checkout with no block while every block is claimed, and its CLI. */
+function unallocatedCheckout() {
 	fillPortRange(dir, [2, 30, 10]);
 	const checkout = join(dir, "fresh");
 	mkdirSync(checkout);
@@ -213,19 +213,31 @@ it("answers status --json and ports in a checkout with no block while every bloc
 		]);
 		return { stdout, stderr, code };
 	};
+	return { checkout, cli };
+}
 
-	const status = await cli("status", "--json");
+it("answers status --json and ports in a checkout with no block while every block is claimed", async () => {
+	const { checkout, cli } = unallocatedCheckout();
+
+	const [status, ports] = await Promise.all([
+		cli("status", "--json"),
+		cli("ports"),
+	]);
+
 	expect(status.code).toBe(0);
 	expect(JSON.parse(status.stdout).portOffsetProvenance).toBe("unallocated");
 	expect(status.stderr).toContain(`${checkout} has no port block yet`);
-
-	const ports = await cli("ports");
 	expect(ports.code).toBe(0);
 	expect(ports.stdout).toContain("fresh-fresh: offset");
 	expect(ports.stdout).toContain("(unallocated)");
 	expect(ports.stdout).toContain(`${join(dir, "holder-1")} (30d ago, idle)`);
+});
+
+it("pins a block for a checkout that has none while every block is claimed", async () => {
+	const { cli } = unallocatedCheckout();
 
 	const pin = await cli("ports", "pin", "9100");
+
 	expect(pin.code).toBe(0);
 	const pinned = await cli("status", "--json");
 	expect(JSON.parse(pinned.stdout)).toMatchObject({

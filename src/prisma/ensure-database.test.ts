@@ -8,22 +8,21 @@ import {
 	readOffsetClaims,
 } from "../core/offset-claims";
 import { PORT_OFFSET_STEP } from "../core/port-allocation";
+import { useTempHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "../environment/create-dev-environment";
 
 // `buncargo prisma` starts the database outside a run. A CI runner's checkout
 // took its hashed block while another OS user's project, with claims in a
 // `~/.buncargo` this one cannot see, published the same Postgres port.
 
-const originalHome = process.env.HOME;
+useTempHome();
 const originalOffset = process.env.BUNCARGO_PORT_OFFSET;
 let scratch: string;
 beforeEach(() => {
 	scratch = mkdtempSync(join(tmpdir(), "buncargo-prisma-ports-"));
-	process.env.HOME = join(scratch, "home");
 	delete process.env.BUNCARGO_PORT_OFFSET;
 });
 afterEach(() => {
-	process.env.HOME = originalHome;
 	if (originalOffset === undefined) delete process.env.BUNCARGO_PORT_OFFSET;
 	else process.env.BUNCARGO_PORT_OFFSET = originalOffset;
 	rmSync(scratch, { recursive: true, force: true });

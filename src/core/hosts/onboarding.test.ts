@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { claimFirstRunPrompt, resetFirstRunPrompt } from "../prompt";
+import { useTempHome } from "../test-env.testing";
 import {
 	doctorFixHosts,
 	hostsServiceFix,
@@ -175,25 +173,16 @@ describe("hostsServiceFix", () => {
 });
 
 describe("doctorFixHosts", () => {
-	const originalHome = process.env.HOME;
-	afterEach(() => {
-		process.env.HOME = originalHome;
-	});
+	useTempHome();
 
 	// It installed and trusted for a machine that had declined, and every run
 	// then ignored the result: the decline is checked before anything else.
 	it("leaves a machine that declined named hosts alone", async () => {
-		const home = mkdtempSync(join(tmpdir(), "buncargo-onboarding-test-"));
-		process.env.HOME = home;
-		try {
-			persistHostsDecline();
-			expect(await doctorFixHosts({ interactive: false })).toEqual({
-				fixed: [],
-				issues: [],
-			});
-		} finally {
-			rmSync(home, { recursive: true, force: true });
-		}
+		persistHostsDecline();
+		expect(await doctorFixHosts({ interactive: false })).toEqual({
+			fixed: [],
+			issues: [],
+		});
 	});
 });
 

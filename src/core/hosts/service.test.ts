@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { describe, expect, it } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { useTempHome } from "../test-env.testing";
 import { getServiceManifestPath } from "./paths";
 import type { PrivilegedRunner } from "./privileged";
 import { HOSTS_PROTOCOL, MIN_HOSTS_PROTOCOL } from "./protocol";
@@ -86,21 +86,8 @@ function commandNames(calls: RecordedCall[]): string[] {
 	return calls.map((call) => call.command);
 }
 
-/** Point `~/.buncargo` at a temp dir so tests never touch the real home. */
-let home: string;
-let previousHome: string | undefined;
-
-beforeEach(() => {
-	previousHome = process.env.HOME;
-	home = mkdtempSync(join(tmpdir(), "buncargo-service-test-"));
-	process.env.HOME = home;
-});
-
-afterEach(() => {
-	if (previousHome === undefined) delete process.env.HOME;
-	else process.env.HOME = previousHome;
-	rmSync(home, { recursive: true, force: true });
-});
+// Each test starts with no service manifest under `~/.buncargo`.
+useTempHome();
 
 const manifest: HostsServiceManifest = {
 	version: 2,

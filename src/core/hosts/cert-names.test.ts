@@ -16,6 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unreadableCheckout } from "../checkout-presence.testing";
+import { useTempHome } from "../test-env.testing";
 import {
 	type CertNameEntry,
 	getCertNamesPath,
@@ -23,8 +24,8 @@ import {
 	rememberCertNames,
 } from "./cert-names";
 
+useTempHome();
 let dir: string;
-const savedHome = process.env.HOME;
 
 /** A checkout on disk, which is what keeps its names remembered. */
 function checkout(name: string): string {
@@ -35,11 +36,9 @@ function checkout(name: string): string {
 
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "buncargo-cert-names-"));
-	process.env.HOME = join(dir, "home");
 });
 
 afterEach(() => {
-	process.env.HOME = savedHome;
 	rmSync(dir, { recursive: true, force: true });
 });
 

@@ -1,21 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { describe, expect, it } from "bun:test";
+import { useTempHome } from "../test-env.testing";
 import { readDaemonPid, releaseDaemonPid, writeDaemonPid } from "./daemon-pid";
 
-let home: string;
-const originalHome = process.env.HOME;
-
-beforeEach(() => {
-	home = mkdtempSync(join(tmpdir(), "buncargo-daemon-pid-test-"));
-	process.env.HOME = home;
-});
-
-afterEach(() => {
-	process.env.HOME = originalHome;
-	rmSync(home, { recursive: true, force: true });
-});
+useTempHome();
 
 describe("releaseDaemonPid", () => {
 	// An idle exit used to leave the pidfile behind, naming a dead pid.

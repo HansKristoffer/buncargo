@@ -19,6 +19,7 @@ import {
 import { CI_PROJECT_SUFFIX } from "../core/ports";
 import * as runRegistry from "../core/run-registry";
 import { CI_ENV_VARS } from "../core/runtime-flags";
+import { useTempHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "./create-dev-environment";
 
 // A CI runner's directory persists between jobs, and a claim lives as long as
@@ -27,8 +28,9 @@ import { createDevEnvironment } from "./create-dev-environment";
 // the record of whose project its volumes are; a developer's dev checkout
 // keeps its block while it is stopped.
 
+useTempHome();
 const saved = Object.fromEntries(
-	["HOME", "BUNCARGO_PORT_OFFSET", ...CI_ENV_VARS].map((name) => [
+	["BUNCARGO_PORT_OFFSET", ...CI_ENV_VARS].map((name) => [
 		name,
 		process.env[name],
 	]),
@@ -36,7 +38,6 @@ const saved = Object.fromEntries(
 let scratch: string;
 beforeEach(() => {
 	scratch = mkdtempSync(join(tmpdir(), "buncargo-throwaway-claims-"));
-	process.env.HOME = join(scratch, "home");
 	delete process.env.BUNCARGO_PORT_OFFSET;
 	for (const name of CI_ENV_VARS) delete process.env[name];
 });

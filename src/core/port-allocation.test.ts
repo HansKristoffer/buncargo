@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -37,19 +37,13 @@ import {
 } from "./port-allocation";
 import type { BlockedOffset } from "./port-exhaustion";
 import type { PortOwner } from "./process";
+import { useTempHome } from "./test-env.testing";
 
 const originalOffset = process.env.BUNCARGO_PORT_OFFSET;
-// Offset claims live in ~/.buncargo: never the developer's.
-const originalHome = process.env.HOME;
-let home: string;
-beforeEach(() => {
-	home = mkdtempSync(join(tmpdir(), "buncargo-claims-"));
-	process.env.HOME = home;
-});
+// Offset claims live in ~/.buncargo: each test starts with none.
+useTempHome();
 
 afterEach(() => {
-	process.env.HOME = originalHome;
-	rmSync(home, { recursive: true, force: true });
 	if (originalOffset === undefined) {
 		delete process.env.BUNCARGO_PORT_OFFSET;
 	} else {

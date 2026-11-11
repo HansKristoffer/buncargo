@@ -1,12 +1,8 @@
 import { afterEach, expect, it, spyOn } from "bun:test";
 import { rmSync } from "node:fs";
 import { readCurrentProcessIdentity } from "../../core/process-identity";
-import {
-	CHECKOUT_HOLD,
-	getRunsPath,
-	LIVE,
-	publishRun,
-} from "../../core/run-registry";
+import { getRunsPath, publishRun } from "../../core/run-registry";
+import { runEntry } from "../../core/run-registry.testing";
 import { DETACHED_IDLE_LIMIT_MS } from "../../core/watchdog-constants";
 import { runCommand } from "../command-spec";
 import { runsCommand } from "./runs";
@@ -16,25 +12,18 @@ afterEach(() => rmSync(getRunsPath(), { force: true }));
 
 it("prints the RunsJson document, saying when a detached run stops if nothing uses it", async () => {
 	const startedAt = new Date(Date.now() - 60_000).toISOString();
-	await publishRun({
-		sessionId: "detached",
-		projectPrefix: "demo",
-		projectName: "demo",
-		root: "/nowhere/demo",
-		worktree: null,
-		pid: process.pid,
-		processIdentity: readCurrentProcessIdentity(),
-		startedAt,
-		updatedAt: startedAt,
-		lifecycle: LIVE,
-		hold: CHECKOUT_HOLD,
-		detached: true,
-		idleLimitMs: DETACHED_IDLE_LIMIT_MS,
-		hosts: null,
-		cli: { program: "bun" },
-		apps: [],
-		services: [],
-	});
+	await publishRun(
+		runEntry({
+			sessionId: "detached",
+			root: "/nowhere/demo",
+			pid: process.pid,
+			processIdentity: readCurrentProcessIdentity(),
+			startedAt,
+			updatedAt: startedAt,
+			detached: true,
+			idleLimitMs: DETACHED_IDLE_LIMIT_MS,
+		}),
+	);
 	const printed: string[] = [];
 	const log = spyOn(console, "log").mockImplementation((line) => {
 		printed.push(String(line));

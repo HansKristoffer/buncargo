@@ -7,22 +7,19 @@ import type { SkippedLeaseApp } from "../core/app-leases";
 import { readLeases } from "../core/leases";
 import { publishCurrentRun, type RunSource } from "../core/run-publish";
 import { patchRun } from "../core/run-registry";
+import { useTempHome } from "../core/test-env.testing";
 import { acquireStartLeases } from "../environment/app-leases";
 import type { ResolvedApp } from "../types";
 import { cliLeasePolicy, leaseSkipLines } from "./dev-leases";
 import type { TakeoverDecision } from "./dev-takeover";
 import { CliError } from "./errors";
 
+useTempHome();
 let root: string;
-let savedHome: string | undefined;
 beforeEach(() => {
 	root = mkdtempSync(join(tmpdir(), "buncargo-dev-leases-"));
-	savedHome = process.env.HOME;
-	process.env.HOME = root;
 });
 afterEach(() => {
-	if (savedHome === undefined) delete process.env.HOME;
-	else process.env.HOME = savedHome;
 	rmSync(root, { recursive: true, force: true });
 });
 

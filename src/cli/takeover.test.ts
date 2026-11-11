@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
 import { resolveApp, resolveApps } from "../config/resolve";
 import { isPortInUse } from "../core/process";
+import { freePorts } from "../core/test-env.testing";
 import { stopRunningApps, takeoverCandidates } from "./takeover";
 
 describe("takeoverCandidates", () => {
@@ -37,7 +38,7 @@ describe("takeoverCandidates", () => {
 
 describe("stopRunningApps", () => {
 	it("frees a port held by another dev server", async () => {
-		const port = 39871;
+		const [port] = freePorts(1);
 		const child = spawn(
 			"bun",
 			["-e", `Bun.serve({ port: ${port}, fetch: () => new Response("hi") })`],
@@ -63,6 +64,7 @@ describe("stopRunningApps", () => {
 	});
 
 	it("reports nothing when the other run already exited", async () => {
-		expect(await stopRunningApps(["api"], { api: 39872 })).toEqual([]);
+		const [port] = freePorts(1);
+		expect(await stopRunningApps(["api"], { api: port })).toEqual([]);
 	});
 });

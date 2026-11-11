@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, it } from "bun:test";
+import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { resolveApp, resolveServices } from "../config/resolve";
 import { readLeases } from "../core/leases";
@@ -19,6 +18,7 @@ import {
 	type RunEntry,
 	type RunHold,
 } from "../core/run-registry";
+import { useTempHome } from "../core/test-env.testing";
 import { libraryLeasePolicy } from "./app-leases";
 import type { DevEnvContext } from "./context";
 import { createDevEnvironment } from "./create-dev-environment";
@@ -27,19 +27,7 @@ import { createRunClaimApi, resolveClaimHold } from "./run-claim";
 /** How a library start claims its apps: no reused ones, no services listed. */
 const appsOnly = { policy: libraryLeasePolicy, serviceNames: [] };
 
-const realHome = process.env.HOME;
-let home = "";
-
-beforeAll(() => {
-	home = mkdtempSync(join(tmpdir(), "buncargo-run-claim-"));
-	process.env.HOME = home;
-});
-
-afterAll(() => {
-	if (realHome === undefined) delete process.env.HOME;
-	else process.env.HOME = realHome;
-	rmSync(home, { recursive: true, force: true });
-});
+const home = useTempHome();
 
 /** Walk an app through its lifecycle as the spawner does, reporting each step. */
 function stepper(
@@ -104,7 +92,7 @@ describe("createRunClaimApi", () => {
 			{
 				config: { projectPrefix: "demo", services: {}, apps: {} },
 				projectName: "demo-claim",
-				root: home,
+				root: home(),
 				worktree: false,
 				services: { postgres: {} },
 				selectedServiceKeys: ["postgres"],
@@ -242,7 +230,7 @@ describe("a claim's lifecycle and its apps", () => {
 	it("has no claim time once released or retired", async () => {
 		// `explainMissingContainers` reads removals since the claim; a released
 		// claim's time is no claim's.
-		const claim = appClaimApi(mkdtempSync(join(home, "claimed-at-")));
+		const claim = appClaimApi(mkdtempSync(join(home(), "claimed-at-")));
 		expect(claim.claimedAt).toBeUndefined();
 		await claim.claimRun();
 		expect(claim.claimedAt).toBeNumber();
@@ -256,7 +244,7 @@ describe("a claim's lifecycle and its apps", () => {
 	it("gives back only what the failed start took, when starts overlap", async () => {
 		// `abandonApps` knew only the last `claimApps`, so a failed start gave
 		// back the leases of the one that ran beside it.
-		const claim = appClaimApi(mkdtempSync(join(home, "overlap-")));
+		const claim = appClaimApi(mkdtempSync(join(home(), "overlap-")));
 		const first = await claim.claimApps({ a: worker("demo:a") }, appsOnly);
 		await claim.claimApps({ b: worker("demo:b") }, appsOnly);
 
@@ -270,7 +258,7 @@ describe("a claim's lifecycle and its apps", () => {
 	it("records a restart and a parked app on the rows, as `dev` does", async () => {
 		// A library start left a restarted app `ready`, so `buncargo wait`
 		// answered from the process being replaced, and a parked one as it was.
-		const root = mkdtempSync(join(home, "restart-park-"));
+		const root = mkdtempSync(join(home(), "restart-park-"));
 		const claim = appClaimApi(root);
 		const session = { sessionId: claim.sessionId };
 		const status = async (name: string) =>
@@ -297,7 +285,7 @@ describe("a claim's lifecycle and its apps", () => {
 		// A library `claimApps` describes every service `ready`, and the run's
 		// readiness report is queued: either landing after the stop resurrected
 		// the service.
-		const root = mkdtempSync(join(home, "stopped-service-"));
+		const root = mkdtempSync(join(home(), "stopped-service-"));
 		const claim = appClaimApi(root, resolveServices({ postgres: {} }));
 		const session = { sessionId: claim.sessionId };
 		const status = async () =>
@@ -328,7 +316,7 @@ describe("a claim's lifecycle and its apps", () => {
 
 	it("leaves a restarted app starting when a later start lists another", async () => {
 		// The rows replay put the old `failed` back over the new process.
-		const root = mkdtempSync(join(home, "replay-"));
+		const root = mkdtempSync(join(home(), "replay-"));
 		const claim = appClaimApi(root);
 		const session = { sessionId: claim.sessionId };
 		const row = async () =>
@@ -374,7 +362,7 @@ describe("a library start's apps", () => {
 	it("lists an app-only run with its apps while they run, and withdraws it on stop", async () => {
 		// `ls`, `stop` and BuncargoBar read this entry; a library run without
 		// containers used to write none, so none of them saw its apps.
-		const root = mkdtempSync(join(home, "app-only-"));
+		const root = mkdtempSync(join(home(), "app-only-"));
 		const env = createDevEnvironment(
 			{
 				projectPrefix: "library-apps",
@@ -427,7 +415,7 @@ describe("a library start's apps", () => {
 	it("keeps an earlier app's row when a later start lists another", async () => {
 		// The second publish rewrites every row as `starting`; the first app
 		// would otherwise lose the pid `stop` needs to signal it.
-		const root = mkdtempSync(join(home, "two-starts-"));
+		const root = mkdtempSync(join(home(), "two-starts-"));
 		const app = {
 			kind: "worker" as const,
 			devCommand: `${process.execPath} -e 'setInterval(() => {}, 1000)'`,

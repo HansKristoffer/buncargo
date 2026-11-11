@@ -3,19 +3,16 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readLeases } from "../core/leases";
+import { useTempHome } from "../core/test-env.testing";
 import type { AppConfig } from "../types";
 import { createDevEnvironment } from "./create-dev-environment";
 
+useTempHome();
 let scratch: string;
-let savedHome: string | undefined;
 beforeEach(() => {
 	scratch = mkdtempSync(join(tmpdir(), "buncargo-start-leases-"));
-	savedHome = process.env.HOME;
-	process.env.HOME = join(scratch, "home");
 });
 afterEach(() => {
-	if (savedHome === undefined) delete process.env.HOME;
-	else process.env.HOME = savedHome;
 	rmSync(scratch, { recursive: true, force: true });
 });
 

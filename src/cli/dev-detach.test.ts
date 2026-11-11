@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { RunEntry } from "../core/run-registry";
+import { freePorts, useTempHome } from "../core/test-env.testing";
 import { standInForWatchdog } from "../core/watchdog.testing";
 import {
 	detachedArgv,
@@ -90,6 +91,8 @@ describe("settledRun", () => {
 });
 
 describe("runDetached", () => {
+	useTempHome();
+
 	/**
 	 * `runDetached` over a stand-in for the re-run `dev`: a script that prints
 	 * and exits. HOME and the systemd scope are the test's own, so it reads an
@@ -107,11 +110,7 @@ describe("runDetached", () => {
 	) {
 		const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-detach-")));
 		options.before?.(root);
-		const saved = {
-			HOME: process.env.HOME,
-			BUNCARGO_SYSTEMD_SCOPE: process.env.BUNCARGO_SYSTEMD_SCOPE,
-		};
-		process.env.HOME = join(root, "home");
+		const savedScope = process.env.BUNCARGO_SYSTEMD_SCOPE;
 		process.env.BUNCARGO_SYSTEMD_SCOPE = "0";
 		const printed: string[] = [];
 		const realLog = console.log;
@@ -137,10 +136,8 @@ describe("runDetached", () => {
 		} finally {
 			console.log = realLog;
 			console.error = realError;
-			for (const [name, value] of Object.entries(saved)) {
-				if (value === undefined) delete process.env[name];
-				else process.env[name] = value;
-			}
+			if (savedScope === undefined) delete process.env.BUNCARGO_SYSTEMD_SCOPE;
+			else process.env.BUNCARGO_SYSTEMD_SCOPE = savedScope;
 			rmSync(root, { recursive: true, force: true });
 		}
 	}
@@ -488,9 +485,7 @@ setTimeout(() => {}, 30_000);
 it("loads the config once, in the background run", async () => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-detach-")));
 	const loads = join(root, "loads");
-	const probe = Bun.serve({ port: 0, fetch: () => new Response("ok") });
-	const port = Number(probe.port);
-	probe.stop(true);
+	const [port] = freePorts(1);
 	writeFileSync(join(root, "package.json"), "{}");
 	writeFileSync(
 		join(root, "serve.ts"),

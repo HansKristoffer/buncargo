@@ -1,13 +1,11 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, it } from "bun:test";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	EVENT_LOG_LIMIT,
 	explainContainerLoss,
 	explainServiceStop,
 	findRemoval,
-	getEventLogFile,
 	invocationCommand,
 	type RemovalRecord,
 	type RunStopRecord,
@@ -17,9 +15,10 @@ import {
 	recordEvents,
 	runStopRecord,
 } from "./removal-log";
+import { useTempHome } from "./test-env.testing";
 
-// The test preload gives the run a temporary HOME, so this is not the real log.
-afterEach(() => rmSync(getEventLogFile(), { force: true }));
+// Each test logs under a HOME of its own.
+const home = useTempHome();
 
 const WATCHDOG = {
 	command: "buncargo watchdog",
@@ -105,17 +104,9 @@ describe("recordEvents", () => {
 	});
 
 	it("never throws when the log cannot be written", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "buncargo-events-"));
-		const realHome = process.env.HOME;
-		// A home that is a file: the log's directory cannot be made.
-		writeFileSync(join(dir, "home"), "");
-		process.env.HOME = join(dir, "home");
-		try {
-			await recordEvents([record()]);
-		} finally {
-			process.env.HOME = realHome;
-			rmSync(dir, { recursive: true, force: true });
-		}
+		// A state directory that is a file: the log's directory cannot be made.
+		writeFileSync(join(home(), ".buncargo"), "");
+		await recordEvents([record()]);
 	});
 });
 

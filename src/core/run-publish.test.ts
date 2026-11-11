@@ -29,18 +29,15 @@ import {
 } from "./run-publish";
 import { loadRuns, readLiveRuns, releaseRun } from "./run-registry";
 import { detachedRunEnv } from "./runtime-flags";
+import { useTempHome } from "./test-env.testing";
 import { DETACHED_IDLE_LIMIT_MS } from "./watchdog-constants";
 
+useTempHome();
 let root: string;
-let savedHome: string | undefined;
 beforeEach(() => {
 	root = mkdtempSync(join(tmpdir(), "buncargo-publish-"));
-	savedHome = process.env.HOME;
-	process.env.HOME = root;
 });
 afterEach(() => {
-	if (savedHome === undefined) delete process.env.HOME;
-	else process.env.HOME = savedHome;
 	rmSync(root, { recursive: true, force: true });
 });
 function source(sessionId = "session-a"): RunSource {

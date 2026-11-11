@@ -1,10 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { describe, expect, it } from "bun:test";
 import { resolveServices } from "../config/resolve";
 import { readRemovals } from "../core/removal-log";
 import { buildRunEntry, publishRun } from "../core/run-registry";
+import { useTempHome } from "../core/test-env.testing";
 import type { PortContainerOwner } from "../types";
 import { fakeRuntime, runtimeContainer } from "./fake-runtime.testing";
 import { assertServicePortsClaimable } from "./service-ports";
@@ -73,18 +71,8 @@ function stackRuntime(
 	return { runtime, downs };
 }
 
-let home: string;
-let savedHome: string | undefined;
-beforeEach(() => {
-	home = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-stale-home-")));
-	savedHome = process.env.HOME;
-	process.env.HOME = home;
-});
-afterEach(() => {
-	if (savedHome === undefined) delete process.env.HOME;
-	else process.env.HOME = savedHome;
-	rmSync(home, { recursive: true, force: true });
-});
+// Removals are logged and runs read under HOME: each test's own.
+useTempHome();
 
 describe("findStaleStacks", () => {
 	it("groups a stale stack's wanted ports and leaves current and foreign stacks out", () => {

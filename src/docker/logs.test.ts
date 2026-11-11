@@ -26,7 +26,14 @@ describe("diagnosing a Docker service", () => {
 
 		const diagnosis = await diagnoseService(
 			dockerRuntimeAdapter({ binary: fake.binary }),
-			{ root: fake.root, projectName: "demo", serviceName: "migrate" },
+			// What it reports, not how fast: a loaded machine's fake docker
+			// must not run out the default two seconds.
+			{
+				root: fake.root,
+				projectName: "demo",
+				serviceName: "migrate",
+				timeoutMs: 60_000,
+			},
 		);
 
 		expect(diagnosis).toEqual({

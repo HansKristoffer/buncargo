@@ -3,13 +3,15 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
 import { clearScopeSecretsCache, loadAppSecrets } from "../core/secrets/index";
+import { useTempHome } from "../core/test-env.testing";
 import { prefetchSecrets } from "./prefetch-secrets";
+
+// The CLI lock and the session cache live under HOME: each test its own.
+const home = useTempHome();
 
 it("prefetches distinct app, seed and migration scopes that consumers share", async () => {
 	const fake = startFakeInfisical({ holdRequests: true });
-	const home = process.env.HOME;
 	const binary = process.env.BUNCARGO_INFISICAL_PATH;
-	process.env.HOME = fake.home;
 	process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
 	clearScopeSecretsCache();
 	for (const project of ["app", "seed", "migration"])
@@ -62,8 +64,6 @@ it("prefetches distinct app, seed and migration scopes that consumers share", as
 	} finally {
 		clearScopeSecretsCache();
 		fake.stop();
-		if (home === undefined) delete process.env.HOME;
-		else process.env.HOME = home;
 		if (binary === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
 		else process.env.BUNCARGO_INFISICAL_PATH = binary;
 	}
@@ -71,20 +71,14 @@ it("prefetches distinct app, seed and migration scopes that consumers share", as
 
 it("aborts the CLI fetch and releases its machine lock", async () => {
 	const fake = startFakeInfisical();
-	const home = process.env.HOME;
 	const binary = process.env.BUNCARGO_INFISICAL_PATH;
-	process.env.HOME = fake.home;
 	process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
 	clearScopeSecretsCache();
 	const marker = join(fake.home, "started");
-	const hung = join(fake.home, "hung.ts");
-	writeFileSync(
-		hung,
-		`await Bun.write(${JSON.stringify(marker)}, String(process.pid)); setInterval(() => {}, 1000);`,
-	);
+	// Hangs once it has recorded its pid, well inside the CLI's own timeout.
 	writeFileSync(
 		fake.cliPath,
-		`#!/bin/sh\nexec '${process.execPath}' '${hung}'\n`,
+		`#!/bin/sh\necho $$ > '${marker}'\nexec sleep 60\n`,
 	);
 	const controller = new AbortController();
 	try {
@@ -101,7 +95,7 @@ it("aborts the CLI fetch and releases its machine lock", async () => {
 		controller.abort(new Error("cancelled"));
 		const results = await Promise.allSettled(pending);
 		expect(results[0]?.status).toBe("rejected");
-		expect(existsSync(join(fake.home, ".buncargo", "infisical-cli.lock"))).toBe(
+		expect(existsSync(join(home(), ".buncargo", "infisical-cli.lock"))).toBe(
 			false,
 		);
 		const pid = Number(await Bun.file(marker).text());
@@ -110,8 +104,6 @@ it("aborts the CLI fetch and releases its machine lock", async () => {
 		controller.abort();
 		clearScopeSecretsCache();
 		fake.stop();
-		if (home === undefined) delete process.env.HOME;
-		else process.env.HOME = home;
 		if (binary === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
 		else process.env.BUNCARGO_INFISICAL_PATH = binary;
 	}
@@ -120,11 +112,9 @@ it("aborts the CLI fetch and releases its machine lock", async () => {
 it("reports a failed prefetched scope only once when consumers retry", async () => {
 	// Signed in, but the project does not exist: a warning, not a stop.
 	const fake = startFakeInfisical();
-	const home = process.env.HOME;
 	const binary = process.env.BUNCARGO_INFISICAL_PATH;
 	const warn = console.warn;
 	const warnings: string[] = [];
-	process.env.HOME = fake.home;
 	process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
 	console.warn = (message) => warnings.push(String(message));
 	clearScopeSecretsCache();
@@ -147,8 +137,6 @@ it("reports a failed prefetched scope only once when consumers retry", async () 
 		console.warn = warn;
 		clearScopeSecretsCache();
 		fake.stop();
-		if (home === undefined) delete process.env.HOME;
-		else process.env.HOME = home;
 		if (binary === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
 		else process.env.BUNCARGO_INFISICAL_PATH = binary;
 	}
