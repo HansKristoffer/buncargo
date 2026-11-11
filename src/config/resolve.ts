@@ -22,6 +22,9 @@ import type {
 	UrlBuilderFn,
 } from "../types";
 
+/** Where a service's ports are published unless it sets `bind`: this machine only. */
+const SERVICE_BIND = "127.0.0.1";
+
 /** How long a container gets to become healthy unless it sets `healthTimeout`. */
 const SERVICE_HEALTH_TIMEOUT_MS = 30_000;
 
@@ -113,6 +116,7 @@ function resolveEndpoint(
 	return {
 		port,
 		secondaryPort: service.secondaryPort,
+		bind: service.bind ?? SERVICE_BIND,
 		expose: service.expose ?? false,
 		exposeProtocol,
 		browsable:

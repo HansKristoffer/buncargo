@@ -13,16 +13,10 @@ import {
 export const RELEASE_BASE =
 	"https://github.com/cloudflare/cloudflared/releases/";
 
-function cloudflaredFileName(version: string): string {
-	return process.platform === "win32"
-		? `cloudflared.${version}.exe`
-		: `cloudflared.${version}`;
-}
-
 /** Cache path for buncargo-managed cloudflared (avoid clashing with untun's node-untun). */
 export function cloudflaredBinPath(version = cloudflaredVersion()): string {
 	return toolCachePath(
-		`${cloudflaredFileName(version)}.${process.platform}-${process.arch}`,
+		`cloudflared.${version}.${process.platform}-${process.arch}`,
 	);
 }
 

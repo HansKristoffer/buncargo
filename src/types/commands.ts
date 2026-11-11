@@ -315,11 +315,11 @@ export interface PredeployConfig {
 	 */
 	seedIn?: readonly string[];
 	/**
-	 * What to seed outside production. A command, run from the root, replaces
-	 * the dev run's `seed.command` (a deploy's database is remote, so its seeder
-	 * may need other flags); `false` never seeds. Default: `seed.command`.
+	 * What to seed outside production: a command, run from the root (a
+	 * deploy's database is remote, so its seeder may need other flags), or
+	 * `true` for the dev run's `seed.command`. Default: nothing is seeded.
 	 */
-	seed?: false | string;
+	seed?: true | string;
 	/**
 	 * Retry a migration whose output contains `match`: a small Postgres
 	 * refuses connections while the previous deploy's pool still holds its

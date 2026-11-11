@@ -1358,7 +1358,7 @@ describe("checks, tasks and profiles", () => {
 					docs: { paths: { exempt: [{ file: "a.md" }] } },
 				},
 				predeploy: {
-					seed: true,
+					seed: false,
 					retry: { attempts: -1 },
 					afterSeed: "bun seed",
 				},
@@ -1371,7 +1371,7 @@ describe("checks, tasks and profiles", () => {
 			"check.docs.paths.exempt.0.reason must be a nonempty string",
 			"check.gates.0.name must be a nonempty string",
 			'check.gates.0.when: "/abs" must be relative to the root and stay inside it',
-			"predeploy.seed must be false or a nonempty command",
+			"predeploy.seed must be true or a nonempty command",
 			"predeploy.afterSeed must be a function",
 			"predeploy.retry.attempts must be a positive integer",
 		]);

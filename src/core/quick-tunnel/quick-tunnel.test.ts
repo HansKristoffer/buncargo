@@ -10,7 +10,6 @@
 import { describe, expect, it } from "bun:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { sleep } from "../utils";
 import { startQuickTunnel } from "./index";
 
 const execFileAsync = promisify(execFile);
@@ -43,7 +42,7 @@ async function curlPublicUrlWhenReady(publicUrl: string): Promise<string> {
 		} catch (e) {
 			lastError = e;
 		}
-		await sleep(delayMs);
+		await Bun.sleep(delayMs);
 	}
 	throw new Error(
 		`Tunnel URL not reachable after ${maxAttempts} attempts. Last error: ${String(lastError)}`,
@@ -100,7 +99,7 @@ describe("startQuickTunnel (real cloudflared)", () => {
 			try {
 				const ctx = await startLocalServerAndTunnel();
 				server = ctx.server;
-				await sleep(1500);
+				await Bun.sleep(1500);
 				const body = (await curlPublicUrlWhenReady(ctx.publicUrl)).trim();
 				expect(body).toBe("ok");
 				await ctx.tunnel.close();

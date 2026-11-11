@@ -525,9 +525,9 @@ export function validatePredeployShape(
 	check(
 		value.seed,
 		"predeploy.seed",
-		value.seed === false ||
+		value.seed === true ||
 			(typeof value.seed === "string" && value.seed.length > 0),
-		"false or a nonempty command",
+		"true or a nonempty command",
 	);
 	fields(value, "predeploy.", hooks, "function");
 	if (value.retry === undefined || value.retry === false) return;

@@ -93,6 +93,7 @@ export const SERVICE_KEYS = {
 	expose: "boolean",
 	exposeProtocol: "shape",
 	secondaryPort: "shape",
+	bind: "string",
 	healthCheck: "shape",
 	healthTimeout: "duration",
 	urlTemplate: "function",
