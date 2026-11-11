@@ -1064,7 +1064,6 @@ describe("sweepOrphanedContainers, for a deleted checkout's integration stack", 
 
 describe("sweepOrphanedContainers and named hosts", () => {
 	it("withdraws a checkout's service routes with the stack it takes down", async () => {
-		const updatedAt = new Date().toISOString();
 		await upsertHostRoutes(
 			[
 				{
@@ -1073,7 +1072,6 @@ describe("sweepOrphanedContainers and named hosts", () => {
 					kind: "service",
 					name: "typesense",
 					root: checkout,
-					updatedAt,
 				},
 				{
 					hostname: "typesense.other.localhost",
@@ -1081,7 +1079,6 @@ describe("sweepOrphanedContainers and named hosts", () => {
 					kind: "service",
 					name: "typesense",
 					root: home,
-					updatedAt,
 				},
 			],
 			{ owners: pidRouteOwners },

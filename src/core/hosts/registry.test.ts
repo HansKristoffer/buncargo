@@ -41,7 +41,6 @@ describe("hosts registry", () => {
 						name: "api",
 						root: "/repo",
 						pid: process.pid,
-						updatedAt: new Date().toISOString(),
 					},
 				],
 				{ path, owners: pidRouteOwners },
@@ -66,7 +65,6 @@ describe("hosts registry", () => {
 						name: "api",
 						root: "/old",
 						pid: 99999999,
-						updatedAt: new Date().toISOString(),
 					},
 				],
 				{ path, owners: pidRouteOwners },
@@ -80,7 +78,6 @@ describe("hosts registry", () => {
 						name: "api",
 						root: "/new",
 						pid: process.pid,
-						updatedAt: new Date().toISOString(),
 					},
 				],
 				{ path, owners: pidRouteOwners },
@@ -104,7 +101,6 @@ describe("hosts registry", () => {
 			name: hostname.split(".")[0] as string,
 			root,
 			pid: process.pid,
-			updatedAt: new Date().toISOString(),
 		});
 		try {
 			await upsertHostRoutes([at("api.serpier.localhost", "/a")], {
@@ -145,7 +141,6 @@ describe("hosts registry", () => {
 						name: "api",
 						root: "/repo",
 						pid: 99999999,
-						updatedAt: new Date().toISOString(),
 					},
 					{
 						hostname: "mailpit.serpier.localhost",
@@ -153,7 +148,6 @@ describe("hosts registry", () => {
 						kind: "service",
 						name: "mailpit",
 						root: "/repo",
-						updatedAt: new Date().toISOString(),
 					},
 				],
 				{ path, owners: pidRouteOwners },
@@ -183,7 +177,6 @@ describe("hosts registry", () => {
 				name: "api",
 				root: "/repo",
 				pid: process.pid,
-				updatedAt: new Date().toISOString(),
 			};
 			await upsertHostRoutes([route], { path, owners: pidRouteOwners });
 			await upsertHostRoutes([{ ...route, pid: process.pid + 1 }], {
@@ -214,7 +207,6 @@ describe("hosts registry", () => {
 				name: "api",
 				root: "/repo",
 				pid: first,
-				updatedAt: new Date().toISOString(),
 			};
 			const web: HostsRoute = {
 				...api,
@@ -254,7 +246,6 @@ describe("hosts registry", () => {
 						kind: "service",
 						name: "mailpit",
 						root: "/repo/worktrees/gone",
-						updatedAt: new Date().toISOString(),
 					},
 				],
 				{ path, owners: pidRouteOwners },
@@ -279,7 +270,6 @@ describe("hosts registry", () => {
 						kind: "service",
 						name: "mailpit",
 						root: dir,
-						updatedAt: new Date().toISOString(),
 					},
 				],
 				{ path, owners: pidRouteOwners },
@@ -302,7 +292,6 @@ describe("hosts registry", () => {
 						name: "api",
 						root: "/repo",
 						pid: process.pid,
-						updatedAt: new Date().toISOString(),
 					},
 				],
 				{ path, owners: pidRouteOwners },
@@ -326,7 +315,6 @@ describe("classifyRouteClaim", () => {
 		name: "api",
 		root: "/repo",
 		pid: 100,
-		updatedAt: "2026-01-01T00:00:00.000Z",
 	};
 
 	it("refuses a different project", () => {
@@ -385,7 +373,6 @@ describe("concurrent registration", () => {
 			name: "web",
 			root: `/repo${index}`,
 			pid: process.pid,
-			updatedAt: new Date().toISOString(),
 		};
 	}
 
@@ -424,7 +411,6 @@ describe("concurrent registration", () => {
 						kind: "service",
 						name: "mailpit",
 						root: process.env.ROUTES_ROOT,
-						updatedAt: new Date().toISOString(),
 					}],
 					{ path: process.env.ROUTES_PATH, owners: pidRouteOwners },
 				);
@@ -467,7 +453,6 @@ describe("registry writers", () => {
 		name: "web",
 		root: "/repo",
 		pid: process.pid,
-		updatedAt: new Date().toISOString(),
 		...overrides,
 	});
 
@@ -591,7 +576,6 @@ describe("liveNamedHosts", () => {
 		name: "web",
 		root: "/repo",
 		pid: 10,
-		updatedAt: new Date().toISOString(),
 		...overrides,
 	});
 	const ownerAlive = (alive: number[]) => (route: HostsRoute) =>
@@ -644,7 +628,6 @@ describe("routesAfterWithdraw", () => {
 		kind: "app",
 		name: "web",
 		root: "/repo",
-		updatedAt: new Date().toISOString(),
 		...overrides,
 	});
 	const own = at({ pid: process.pid });
