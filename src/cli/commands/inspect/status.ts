@@ -163,7 +163,7 @@ async function readStatus(): Promise<StatusJson> {
 			name: runtime.name,
 			running: "inventory" in listing || isRuntimeUp(runtime),
 		},
-		checkSlots: checkSlotStatus(),
+		checkSlots: checkSlotStatus(process.env),
 		ports,
 		urls: env.urls,
 		containers,

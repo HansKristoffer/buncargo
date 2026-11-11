@@ -30,7 +30,6 @@ import {
 	ensureHostsDaemonRunning,
 	type HostsDaemonProbe,
 	SERVICE_START_TIMEOUT_MS,
-	waitForDaemonHealthy,
 	waitForDaemonRoutes,
 } from "./daemon-client";
 import { writeDaemonConfig } from "./daemon-config";
@@ -1079,7 +1078,6 @@ describe("waitForDaemonRoutes", () => {
 
 		const check = waitForDaemonRoutes(["web.demo.localhost"], {
 			timeoutMs: 3000,
-			port,
 		});
 
 		await Bun.sleep(250);
@@ -1209,33 +1207,17 @@ describe("ensureHostsDaemonRunning", () => {
 	// one unanswered probe kept the run on localhost:port for its whole life.
 	it("attaches to a daemon that answers a second after the first probe", async () => {
 		const { probe } = restartingDaemon(1_000);
-		expect(await ensureHostsDaemonRunning({}, probe)).toEqual({ ok: true });
+		expect(await ensureHostsDaemonRunning(probe)).toEqual({ ok: true });
 	});
 
 	it("reports the service once the restart grace has passed", async () => {
 		const { clock, probe } = restartingDaemon(Number.POSITIVE_INFINITY);
-		const result = await ensureHostsDaemonRunning({}, probe);
+		const result = await ensureHostsDaemonRunning(probe);
 		expect(result).toMatchObject({
 			ok: false,
 			message: expect.stringContaining("did not answer"),
 		});
 		expect(clock.now).toBe(DAEMON_RESTART_GRACE_MS);
-	});
-});
-
-describe("waitForDaemonHealthy", () => {
-	it("fails a closed port without waiting the launchd budget", async () => {
-		const started = Date.now();
-		expect(await waitForDaemonHealthy(59_999, 0)).toBe(false);
-		expect(Date.now() - started).toBeLessThan(2_000);
-	});
-
-	it("returns as soon as the wait budget elapses", async () => {
-		const started = Date.now();
-		expect(await waitForDaemonHealthy(59_999, 400)).toBe(false);
-		const elapsed = Date.now() - started;
-		expect(elapsed).toBeGreaterThanOrEqual(200);
-		expect(elapsed).toBeLessThan(1_500);
 	});
 });
 

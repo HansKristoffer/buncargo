@@ -18,8 +18,8 @@ import {
 	describeCertificateGap,
 	describeCertificateShortfall,
 	hostnamesForCertificate,
+	type MkcertSource,
 	readCertificatePair,
-	resolveMkcertForMint,
 	syncCertificateForRoutes,
 } from "./certificates";
 import { getCertPath, getKeyPath } from "./paths";
@@ -55,6 +55,14 @@ printf 'gen:%s' "$hosts" > "$key"
 	return path;
 }
 
+/** An installed `mkcert`, which a mint never needs to download. */
+function installed(mkcertPath: string): MkcertSource {
+	return {
+		installed: () => mkcertPath,
+		download: () => Promise.reject(new Error("downloaded an installed mkcert")),
+	};
+}
+
 describe("syncCertificateForRoutes", () => {
 	const originalHome = process.env.HOME;
 	const dirs: string[] = [];
@@ -88,14 +96,15 @@ describe("syncCertificateForRoutes", () => {
 			release = resolve;
 		});
 		const syncing = syncCertificateForRoutes(
-			{ include: ["a.demo.localhost"] },
 			{
-				resolveMkcert: async () => {
+				installed: () => undefined,
+				download: async () => {
 					started();
 					await downloaded;
 					return mkcertPath;
 				},
 			},
+			{ include: ["a.demo.localhost"] },
 		);
 		await downloading;
 		try {
@@ -123,8 +132,7 @@ describe("syncCertificateForRoutes", () => {
 		});
 
 		await held;
-		await syncCertificateForRoutes({
-			mkcertPath,
+		await syncCertificateForRoutes(installed(mkcertPath), {
 			include: ["a.demo.localhost"],
 		});
 		expect(released).toBe(true);
@@ -134,8 +142,7 @@ describe("syncCertificateForRoutes", () => {
 	it("mints for the registry plus the hostnames this run is about to add", async () => {
 		const { mkcertPath } = sandbox();
 
-		await syncCertificateForRoutes({
-			mkcertPath,
+		await syncCertificateForRoutes(installed(mkcertPath), {
 			include: ["web.demo.localhost", "api.demo.localhost"],
 		});
 
@@ -146,13 +153,11 @@ describe("syncCertificateForRoutes", () => {
 
 	it("leaves the pair matching, never a new certificate with the old key", async () => {
 		const { mkcertPath } = sandbox();
-		await syncCertificateForRoutes({
-			mkcertPath,
+		await syncCertificateForRoutes(installed(mkcertPath), {
 			include: ["a.demo.localhost"],
 		});
 
-		await syncCertificateForRoutes({
-			mkcertPath,
+		await syncCertificateForRoutes(installed(mkcertPath), {
 			include: ["a.demo.localhost", "b.demo.localhost"],
 		});
 
@@ -162,7 +167,7 @@ describe("syncCertificateForRoutes", () => {
 	});
 });
 
-describe("resolveMkcertForMint", () => {
+describe("syncCertificateForRoutes without an installed mkcert", () => {
 	const originalHome = process.env.HOME;
 	const dirs: string[] = [];
 
@@ -173,64 +178,58 @@ describe("resolveMkcertForMint", () => {
 		}
 	});
 
-	function sandboxHome(): string {
+	function sandbox(): string {
 		const home = tempDir();
 		dirs.push(home);
 		process.env.HOME = home;
-		return home;
+		return fakeMkcert(home);
 	}
 
-	it("uses an installed mkcert without downloading anything", async () => {
-		sandboxHome();
-		let downloads = 0;
-		const path = await resolveMkcertForMint(getCertPath(), ["a.localhost"], {
-			resolve: () => "/usr/local/bin/mkcert",
-			download: async () => {
-				downloads += 1;
-				return "/downloaded";
+	function counted(download: () => Promise<string>) {
+		const source = {
+			downloads: 0,
+			installed: () => undefined,
+			download: () => {
+				source.downloads += 1;
+				return download();
 			},
-		});
-		expect(path).toBe("/usr/local/bin/mkcert");
-		expect(downloads).toBe(0);
-	});
+		};
+		return source;
+	}
 
 	// The cache lives in the user's home now, but a home can still be wiped.
 	// Dead-ending here is what downgraded a whole worktree to localhost:port.
-	it("downloads mkcert when a mint is due and none is installed", async () => {
-		sandboxHome();
-		const path = await resolveMkcertForMint(getCertPath(), ["a.localhost"], {
-			resolve: () => undefined,
-			download: async () => "/downloaded/mkcert",
-		});
-		expect(path).toBe("/downloaded/mkcert");
+	it("downloads mkcert when a mint is due", async () => {
+		const mkcertPath = sandbox();
+		const mkcert = counted(async () => mkcertPath);
+		await syncCertificateForRoutes(mkcert, { include: ["a.localhost"] });
+		expect(mkcert.downloads).toBe(1);
+		expect(readFileSync(getCertPath(), "utf-8")).toContain("a.localhost");
 	});
 
 	// Most runs need no mint at all: paying for a download there would put a
 	// network call on the path of every `buncargo dev`.
 	it("does not download when the certificate already covers everything", async () => {
-		sandboxHome();
-		let downloads = 0;
-		const path = await resolveMkcertForMint(getCertPath(), ["a.localhost"], {
-			resolve: () => undefined,
-			needsRenewal: () => false,
-			download: async () => {
-				downloads += 1;
-				return "/downloaded";
-			},
+		const mkcertPath = sandbox();
+		// A real leaf for localhost and *.demo.localhost, minted once with
+		// openssl; expiring Oct 18 2126.
+		mkdirSync(dirname(getCertPath()), { recursive: true });
+		writeFileSync(
+			getCertPath(),
+			readFileSync(join(import.meta.dir, "fixtures", "localhost-leaf.pem")),
+		);
+		const mkcert = counted(async () => mkcertPath);
+		await syncCertificateForRoutes(mkcert, {
+			include: ["web.demo.localhost"],
 		});
-		expect(path).toBeUndefined();
-		expect(downloads).toBe(0);
+		expect(mkcert.downloads).toBe(0);
 	});
 
 	it("keeps the install hint when the download itself fails", async () => {
-		sandboxHome();
+		sandbox();
+		const mkcert = counted(() => Promise.reject(new Error("offline")));
 		await expect(
-			resolveMkcertForMint(getCertPath(), ["a.localhost"], {
-				resolve: () => undefined,
-				download: async () => {
-					throw new Error("offline");
-				},
-			}),
+			syncCertificateForRoutes(mkcert, { include: ["a.localhost"] }),
 		).rejects.toThrow("buncargo hosts install");
 	});
 });

@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { isRecord } from "hanzio";
 import { installConnectBundle } from "./connect/bundle";
 import { withFileLock } from "./file-lock";
 import { exec } from "./process/exec";
@@ -74,17 +75,32 @@ export interface BarManifest {
 	installedAt: string;
 }
 
-export function getBarManifestPath(home?: string): string {
-	return stateFilePath(BAR_MANIFEST_FILENAME, home);
+export function getBarManifestPath(): string {
+	return stateFilePath(BAR_MANIFEST_FILENAME);
 }
 
+/** The manifest built from the fields that checked out, never the raw value. */
 function isBarManifest(value: unknown): BarManifest | undefined {
-	if (typeof value !== "object" || value === null) return undefined;
-	const manifest = value as Partial<BarManifest>;
-	if (manifest.version !== MANIFEST_VERSION) return undefined;
-	if (typeof manifest.path !== "string") return undefined;
-	if (typeof manifest.appVersion !== "string") return undefined;
-	return manifest as BarManifest;
+	if (!isRecord(value) || value.version !== MANIFEST_VERSION) return undefined;
+	const { path, appVersion, installedAt, cli } = value;
+	if (
+		typeof path !== "string" ||
+		typeof appVersion !== "string" ||
+		typeof installedAt !== "string"
+	) {
+		return undefined;
+	}
+	return {
+		version: MANIFEST_VERSION,
+		path,
+		appVersion,
+		installedAt,
+		...(isRecord(cli) &&
+		typeof cli.program === "string" &&
+		typeof cli.script === "string"
+			? { cli: { program: cli.program, script: cli.script } }
+			: {}),
+	};
 }
 
 export function readBarManifest(): BarManifest | undefined {
@@ -125,16 +141,21 @@ export async function rememberBarCli(): Promise<void> {
 	});
 }
 
-const SYSTEM_APPLICATIONS = "/Applications";
+/** The folders the app is installed in: the machine's, then the user's own. */
+export interface BarFolders {
+	system: string;
+	user: string;
+}
+
+export function machineBarFolders(): BarFolders {
+	return { system: "/Applications", user: join(homedir(), "Applications") };
+}
 
 /** Where the bundle can live, most preferred first. */
-function candidateBundlePaths(
-	home = homedir(),
-	system = SYSTEM_APPLICATIONS,
-): string[] {
+function candidateBundlePaths(folders: BarFolders): string[] {
 	return [
-		join(system, BAR_BUNDLE_NAME),
-		join(home, "Applications", BAR_BUNDLE_NAME),
+		join(folders.system, BAR_BUNDLE_NAME),
+		join(folders.user, BAR_BUNDLE_NAME),
 	];
 }
 
@@ -145,10 +166,12 @@ function candidateBundlePaths(
  * every `buncargo dev`, and the whole point of the command is to start fast.
  * No Spotlight query, no `mdfind`, no process listing.
  */
-export function findInstalledBar(home?: string): string | undefined {
+export function findInstalledBar(): string | undefined {
 	const manifest = readBarManifest();
 	if (manifest && existsSync(manifest.path)) return manifest.path;
-	return candidateBundlePaths(home).find((path) => existsSync(path));
+	return candidateBundlePaths(machineBarFolders()).find((path) =>
+		existsSync(path),
+	);
 }
 
 export interface InstalledBarInfo {
@@ -166,10 +189,8 @@ export interface InstalledBarInfo {
  * the `buncargo dev` path, the file is written by `package.sh` two lines from
  * the pattern below, and a process spawn costs more than reading it.
  */
-export function readInstalledBarInfo(
-	home?: string,
-): InstalledBarInfo | undefined {
-	const path = findInstalledBar(home);
+export function readInstalledBarInfo(): InstalledBarInfo | undefined {
+	const path = findInstalledBar();
 	return path ? readBundleInfo(path) : undefined;
 }
 
@@ -332,11 +353,10 @@ export async function downloadBarRelease(
  * not worth a sudo prompt.
  */
 export function installDirectory(
-	home = homedir(),
-	system = SYSTEM_APPLICATIONS,
+	folders: BarFolders,
 	existing?: string,
 ): string {
-	for (const directory of [existing && dirname(existing), system]) {
+	for (const directory of [existing && dirname(existing), folders.system]) {
 		if (!directory) continue;
 		try {
 			accessSync(directory, constants.W_OK);
@@ -345,7 +365,7 @@ export function installDirectory(
 			// Not ours to write: try the next.
 		}
 	}
-	return join(home, "Applications");
+	return folders.user;
 }
 
 export interface BarInstallResult {
@@ -440,7 +460,7 @@ async function applyRelease(
 		const wasRunning = await quitBar();
 
 		const target = join(
-			installDirectory(undefined, undefined, findInstalledBar()),
+			installDirectory(machineBarFolders(), findInstalledBar()),
 			BAR_BUNDLE_NAME,
 		);
 		try {
@@ -578,7 +598,7 @@ export async function quitBar(): Promise<boolean> {
 export async function uninstallBar(): Promise<boolean> {
 	return withFileLock(getBarManifestPath(), async () => {
 		await quitBar();
-		return removeInstalledBars();
+		return removeInstalledBars(machineBarFolders());
 	});
 }
 
@@ -587,12 +607,12 @@ export async function uninstallBar(): Promise<boolean> {
  * write over a copy in `/Applications` installs a second one in
  * `~/Applications`, so there can be two. Whether any was there.
  */
-export function removeInstalledBars(home?: string, system?: string): boolean {
+export function removeInstalledBars(folders: BarFolders): boolean {
 	const manifest = readBarManifest();
 	const copies = [
 		...new Set([
 			...(manifest ? [manifest.path] : []),
-			...candidateBundlePaths(home, system),
+			...candidateBundlePaths(folders),
 		]),
 	].filter((path) => existsSync(path));
 	for (const path of copies) rmSync(path, { recursive: true, force: true });

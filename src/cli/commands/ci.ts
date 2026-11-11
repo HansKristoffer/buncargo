@@ -3,7 +3,11 @@ import { rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { typedSwitch, typedSwitchGroup } from "hanzio";
 import { CONTAINER_RUNTIME_SELECTIONS } from "../../container-runtime";
-import { formatCheckSlotWait, withCheckSlot } from "../../core/check-slots";
+import {
+	formatCheckSlotWait,
+	processCheckSlot,
+	withCheckSlot,
+} from "../../core/check-slots";
 import { CI_PROJECT_SUFFIX } from "../../core/ports";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
 import { loadDevEnv } from "../../loader";
@@ -323,6 +327,7 @@ async function runCi(parsed: CiRequest): Promise<number> {
 
 	if (!parsed.slot) return run();
 	return withCheckSlot(["ci", ...parsed.command].join(" ").slice(0, 60), run, {
+		...processCheckSlot,
 		onWait: (wait) => console.error(formatCheckSlotWait(wait)),
 	});
 }

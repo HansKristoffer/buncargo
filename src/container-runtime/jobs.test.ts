@@ -14,7 +14,7 @@ import {
 	fakeRuntime,
 	runtimeContainer,
 } from "./fake-runtime.testing";
-import { waitForService } from "./readiness";
+import { pollServiceReadiness, waitForService } from "./readiness";
 import type { ContainerRuntimeAdapter, ServiceDiagnosis } from "./types";
 
 const declaredJob: ServiceConfig = {
@@ -51,7 +51,7 @@ it("waits for successful completion, not merely a running job", async () => {
 		{ state: "running", logTail: "" },
 		{ state: "exited", exitCode: 0, logTail: "initialized" },
 	];
-	await waitForService("init", job, undefined, {
+	await pollServiceReadiness("init", job, undefined, {
 		runtime: runtime(states),
 		projectName: "fixture",
 		pollInterval: 1,
@@ -64,7 +64,7 @@ it("waits for successful completion, not merely a running job", async () => {
 
 it("reads completion through the shared state words, not Docker's alone", async () => {
 	for (const state of ["Exited", "stopped"]) {
-		await waitForService("init", job, undefined, {
+		await pollServiceReadiness("init", job, undefined, {
 			runtime: runtime([{ state, exitCode: 0, logTail: "" }]),
 			projectName: "fixture",
 			pollInterval: 1,
@@ -85,7 +85,7 @@ it("fails with job exit details and log output", async () => {
 
 it("a still-running job times out and cancellation interrupts polling", async () => {
 	await expect(
-		waitForService("init", { ...job, healthTimeout: 10 }, undefined, {
+		pollServiceReadiness("init", { ...job, healthTimeout: 10 }, undefined, {
 			runtime: runtime([{ state: "running", logTail: "" }]),
 			projectName: "fixture",
 			pollInterval: 1,

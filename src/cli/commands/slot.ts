@@ -1,5 +1,9 @@
 import { constants } from "node:os";
-import { formatCheckSlotWait, withCheckSlot } from "../../core/check-slots";
+import {
+	formatCheckSlotWait,
+	processCheckSlot,
+	withCheckSlot,
+} from "../../core/check-slots";
 import { childProcessEnv } from "../../core/child-env";
 import { BASE_EXITS, defineCommand } from "../command-spec";
 import { argumentsError } from "../errors";
@@ -40,6 +44,7 @@ async function runInSlot(command: string[]): Promise<number> {
 			}
 		},
 		{
+			...processCheckSlot,
 			onWait: (wait) => console.error(formatCheckSlotWait(wait)),
 		},
 	);

@@ -33,7 +33,6 @@ export interface WaitForServiceOptions {
 	signal?: AbortSignal;
 	runtime: ContainerRuntimeAdapter;
 	projectName: string;
-	pollInterval?: number;
 	root?: string;
 }
 
@@ -298,11 +297,27 @@ export async function waitForService(
 	/** The runtime's own healthcheck verdict, when it reported one. */
 	runtimeHealthy?: boolean,
 ): Promise<void> {
+	await pollServiceReadiness(
+		serviceName,
+		config,
+		port,
+		{ ...options, pollInterval: POLL_INTERVAL },
+		runtimeHealthy,
+	);
+}
+
+/** {@link waitForService}, polling every `pollInterval` ms. */
+export async function pollServiceReadiness(
+	serviceName: string,
+	config: ResolvedService,
+	port: number | undefined,
+	options: WaitForServiceOptions & { pollInterval: number },
+	runtimeHealthy?: boolean,
+): Promise<void> {
 	const plan = readinessPlan(config, port, runtimeHealthy);
 	if (plan.kind === "none" || plan.kind === "runtimeHealth") return;
 
-	const pollInterval = options.pollInterval ?? POLL_INTERVAL;
-	const { runtime, projectName, root } = options;
+	const { runtime, projectName, root, pollInterval } = options;
 	const timeoutMs = config.healthTimeout;
 	const composeServiceName = config.serviceName;
 	const context: HealthPollContext = {

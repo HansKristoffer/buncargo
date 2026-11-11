@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { getErrorMessage, typedSwitch } from "hanzio";
 import { FileLockTimeoutError, withFileLock } from "../file-lock";
-import { readCertNames, rememberCertNames } from "./cert-names";
+import { rememberCertNames } from "./cert-names";
 import {
 	type CertificateShortfall,
 	certificateShortfall,
@@ -49,32 +49,32 @@ export interface CertificateFiles {
 }
 
 /**
- * The binary to mint with, downloading it when a mint is actually due.
- *
- * `deps` exists so the three branches can be tested without a network call.
+ * How long one mint may take. It runs under the certificate lock, which every
+ * other run's named hosts wait on, so a hung mkcert must not hold it.
+ */
+const MINT_TIMEOUT_MS = 30_000;
+
+/** Where a mint gets `mkcert`: the binary already installed, or a download. */
+export interface MkcertSource {
+	installed: () => string | undefined;
+	download: () => Promise<string>;
+}
+
+export const machineMkcert: MkcertSource = {
+	installed: resolvedMkcertPath,
+	download: ensureMkcert,
+};
+
+/**
+ * Download `mkcert` for a mint that is due.
  *
  * A cache that has been cleared must not cost a developer their named URLs.
  * The download is a user-owned file and the CA is already trusted, so this
- * asks for no password — only installing the service does. Returning
- * `undefined` when nothing needs minting keeps the no-op path free of a
- * network call: `mintCert` never looks at the binary in that case.
+ * asks for no password: only installing the service does.
  */
-export async function resolveMkcertForMint(
-	certPath: string,
-	wanted: string[],
-	deps: {
-		resolve?: () => string | undefined;
-		needsRenewal?: () => boolean;
-		download?: () => Promise<string>;
-	} = {},
-): Promise<string | undefined> {
-	const existing = (deps.resolve ?? resolvedMkcertPath)();
-	if (existing) return existing;
-	const needsRenewal =
-		deps.needsRenewal ?? (() => certNeedsRenewal(certPath, wanted));
-	if (!needsRenewal()) return undefined;
+async function downloadMkcert(mkcert: MkcertSource): Promise<string> {
 	try {
-		return await (deps.download ?? ensureMkcert)();
+		return await mkcert.download();
 	} catch (error) {
 		const message = getErrorMessage(error);
 		throw new Error(
@@ -92,14 +92,16 @@ export async function resolveMkcertForMint(
  * polls them. The renewal check runs inside the lock, so the run that waits
  * finds the winner's certificate already sufficient and mints nothing.
  *
- * Returns the cert paths, downloading `mkcert` first when a mint is due and
- * none is installed, or throwing with an actionable message when even that
- * fails. Callers on the `buncargo dev` path treat a failure as "fall back to
- * localhost:port", not as a fatal error.
+ * Returns the cert paths, downloading `mkcert` when a mint is due and none is
+ * installed, or throwing with an actionable message when even that fails.
+ * Most runs need no mint, and pay for no download: a mint that finds no binary
+ * releases the lock, downloads, and checks again. Callers on the `buncargo
+ * dev` path treat a failure as "fall back to localhost:port", not as a fatal
+ * error.
  */
 export async function syncCertificateForRoutes(
+	mkcert: MkcertSource,
 	options: {
-		mkcertPath?: string;
 		include?: string[];
 		/**
 		 * Repo root `include` belongs to. Given, the names are remembered for
@@ -107,19 +109,9 @@ export async function syncCertificateForRoutes(
 		 */
 		root?: string;
 	} = {},
-	deps: { resolveMkcert?: typeof resolveMkcertForMint } = {},
 ): Promise<CertificateFiles> {
-	const resolveMkcert = deps.resolveMkcert ?? resolveMkcertForMint;
 	const certPath = getCertPath();
-	// Resolving/downloading a tool can take minutes. Keep it outside the pair
-	// lock so the daemon can continue reading the last valid certificate.
-	const initialNames = hostnamesForCertificate([
-		...(await loadHostRoutes()).map((route) => route.hostname),
-		...(options.include ?? []),
-		...(await readCertNames()),
-	]);
-	let mkcertPath =
-		options.mkcertPath ?? (await resolveMkcert(certPath, initialNames));
+	let mkcertPath = mkcert.installed();
 	for (;;) {
 		const result = await withFileLock(certPath, async () => {
 			const routes = await loadHostRoutes();
@@ -139,16 +131,18 @@ export async function syncCertificateForRoutes(
 				]),
 			].sort();
 			const wanted = hostnamesForCertificate(hostnames);
-			// A concurrent run may have registered more names since the initial
-			// check. Release before downloading, then recompute this union again.
+			// Resolving/downloading a tool can take minutes. Release the lock
+			// so the daemon can go on reading the last valid certificate, then
+			// recompute the union, which a concurrent run may have widened.
 			if (!mkcertPath && certNeedsRenewal(certPath, wanted)) return undefined;
-			const minted = mintCert(wanted, { mkcertPath });
+			const minted = mintCert(wanted, {
+				mkcertPath,
+				timeoutMs: MINT_TIMEOUT_MS,
+			});
 			return { certPath: minted.certPath, keyPath: minted.keyPath };
 		});
 		if (result) return result;
-		mkcertPath = await resolveMkcert(certPath, initialNames, {
-			needsRenewal: () => true,
-		});
+		mkcertPath = await downloadMkcert(mkcert);
 	}
 }
 

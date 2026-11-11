@@ -780,7 +780,7 @@ export async function runHostsDaemon(
 	const reloader = createHostsReloader({
 		// Strict: an unreadable registry must reach the reloader as a failure,
 		// not as an empty list it would serve as "no routes".
-		pruneRoutes: () => pruneHostRoutes(undefined, { strict: true }),
+		pruneRoutes: () => pruneHostRoutes({ strict: true }),
 		certificateFingerprint,
 		describeCertificateGap,
 		readCertificatePair,

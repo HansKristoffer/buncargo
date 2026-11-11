@@ -1,4 +1,8 @@
-import { formatCheckSlotWait, withCheckSlot } from "../../core/check-slots";
+import {
+	formatCheckSlotWait,
+	processCheckSlot,
+	withCheckSlot,
+} from "../../core/check-slots";
 import { CommandSignalError, type ExecResult } from "../../core/process";
 import { loadDevEnv } from "../../loader";
 import { BASE_EXITS, defineCommand } from "../command-spec";
@@ -129,6 +133,7 @@ async function exec(parsed: {
 	if (!parsed.slot) return run();
 
 	return withCheckSlot(parsed.command.join(" ").slice(0, 60), run, {
+		...processCheckSlot,
 		onWait: (wait) => console.error(formatCheckSlotWait(wait)),
 	});
 }

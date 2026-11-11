@@ -118,7 +118,7 @@ export type DaemonRouteCheck = { ok: true } | { ok: false; reason: string };
  */
 export async function waitForDaemonRoutes(
 	hostnames: string[],
-	options: { timeoutMs?: number; port?: number } = {},
+	options: { timeoutMs?: number } = {},
 ): Promise<DaemonRouteCheck> {
 	if (hostnames.length === 0) return { ok: true };
 	const deadline = Date.now() + (options.timeoutMs ?? ROUTE_PICKUP_TIMEOUT_MS);
@@ -127,7 +127,7 @@ export async function waitForDaemonRoutes(
 	let bindError: string | undefined;
 
 	for (;;) {
-		const health = await readHostsDaemonHealth(options.port);
+		const health = await readHostsDaemonHealth();
 		if (health !== undefined) {
 			everAnswered = true;
 			if (health.outdated) {
@@ -137,7 +137,7 @@ export async function waitForDaemonRoutes(
 			const served = new Set(health.hostnames);
 			missing = hostnames.filter((hostname) => !served.has(hostname));
 			if (missing.length === 0) {
-				const hijack = await describeLoopbackHijack(options.port);
+				const hijack = await describeLoopbackHijack();
 				return hijack ? { ok: false, reason: hijack } : { ok: true };
 			}
 		}
@@ -203,7 +203,9 @@ export interface HostsDaemonProbe {
 	sleep: (ms: number) => Promise<void>;
 }
 
-function hostsDaemonProbe(port: number): HostsDaemonProbe {
+/** The machine behind {@link ensureHostsDaemonRunning}: the configured daemon. */
+export function hostsDaemonProbe(): HostsDaemonProbe {
+	const port = readDaemonConfig().httpsPort;
 	return {
 		healthy: () => isHostsDaemonHealthy(port),
 		serviceInstalled: isHostsServiceInstalled,
@@ -227,13 +229,6 @@ async function pollHealthy(
 	}
 }
 
-export async function waitForDaemonHealthy(
-	port: number,
-	timeoutMs: number,
-): Promise<boolean> {
-	return pollHealthy(hostsDaemonProbe(port), timeoutMs);
-}
-
 /**
  * Confirm the machine's `:443` proxy is up, or say what to do about it.
  *
@@ -249,8 +244,8 @@ export async function waitForDaemonHealthy(
  * restarts it within that.
  */
 export async function ensureHostsDaemonRunning(
+	probe: HostsDaemonProbe,
 	options: { timeoutMs?: number } = {},
-	probe: HostsDaemonProbe = hostsDaemonProbe(readDaemonConfig().httpsPort),
 ): Promise<{ ok: boolean; message?: string }> {
 	if (await probe.healthy()) {
 		return { ok: true };

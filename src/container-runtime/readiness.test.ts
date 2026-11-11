@@ -10,6 +10,7 @@ import {
 } from "./fake-runtime.testing";
 import { createBuiltInHealthCheck } from "./health-checks";
 import {
+	pollServiceReadiness,
 	readinessPlan,
 	runtimeAnsweredReadiness,
 	waitForService,
@@ -67,7 +68,7 @@ describe("waitForService failure reporting", () => {
 		});
 
 		const startedAt = Date.now();
-		const error = await waitForService(
+		const error = await pollServiceReadiness(
 			"postgres",
 			resolveService("postgres", { ...NEVER_READY, healthTimeout: 1000 }),
 			5433,
@@ -94,7 +95,7 @@ describe("waitForService failure reporting", () => {
 			logTail: "typesense: bad api key",
 		});
 
-		const error = await waitForService(
+		const error = await pollServiceReadiness(
 			"search",
 			resolveService("search", { ...NEVER_READY, healthTimeout: 2000 }),
 			8108,
@@ -126,7 +127,7 @@ describe("waitForService failure reporting", () => {
 			},
 		);
 
-		await waitForService(
+		await pollServiceReadiness(
 			"search",
 			resolveService("search", {
 				port: 8108,
@@ -156,7 +157,7 @@ describe("waitForService failure reporting", () => {
 			},
 		});
 
-		await waitForService(
+		await pollServiceReadiness(
 			"api",
 			resolveService("api", {
 				port: 8080,
@@ -173,7 +174,7 @@ describe("waitForService failure reporting", () => {
 	it("names the runtime, port and probe when it times out instead", async () => {
 		const runtime = stubRuntime("postgres", { state: "running", logTail: "" });
 
-		const error = await waitForService(
+		const error = await pollServiceReadiness(
 			"postgres",
 			resolveService("postgres", {
 				port: 5432,
@@ -198,7 +199,7 @@ describe("waitForService failure reporting", () => {
 	it("still fails cleanly when the runtime cannot diagnose", async () => {
 		const runtime = stubRuntime("postgres", undefined);
 
-		const error = await waitForService(
+		const error = await pollServiceReadiness(
 			"postgres",
 			resolveService("postgres", { ...NEVER_READY, healthTimeout: 15 }),
 			5433,
@@ -224,7 +225,7 @@ describe("waitForService failure reporting", () => {
 			},
 		);
 
-		await waitForService(
+		await pollServiceReadiness(
 			"postgres",
 			resolveService("postgres", { ...NEVER_READY, healthTimeout: 20 }),
 			5433,
@@ -528,11 +529,16 @@ describe("readiness logs", () => {
 			{ state: "created" },
 			{ state: "running" },
 		]);
-		await waitForService("worker", resolveService("worker", {}), undefined, {
-			runtime,
-			projectName: "demo",
-			pollInterval: 1,
-		});
+		await pollServiceReadiness(
+			"worker",
+			resolveService("worker", {}),
+			undefined,
+			{
+				runtime,
+				projectName: "demo",
+				pollInterval: 1,
+			},
+		);
 		expect(listings()).toBe(3);
 		expect(diagnoses()).toBe(0);
 	});
@@ -542,7 +548,7 @@ describe("readiness logs", () => {
 			{ state: "running" },
 			{ state: "exited", exitCode: 3 },
 		]);
-		const error = await waitForService(
+		const error = await pollServiceReadiness(
 			"worker",
 			resolveService("worker", { kind: "job", rerun: "always" }),
 			undefined,
@@ -580,7 +586,7 @@ describe("service readiness deadlines", () => {
 	it("includes time spent in slow probes in the total budget", async () => {
 		const start = performance.now();
 		await expect(
-			waitForService(
+			pollServiceReadiness(
 				"db",
 				resolveService("db", {
 					port: 5432,

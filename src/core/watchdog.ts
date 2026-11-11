@@ -9,13 +9,7 @@
  */
 
 import { spawn } from "node:child_process";
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	statSync,
-} from "node:fs";
+import { existsSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +18,6 @@ import { FileLockTimeoutError, withFileLock } from "./file-lock";
 import { inOwnUserScope } from "./process/user-scope";
 import {
 	checkProcessIdentityAsync,
-	matchesProcessIdentity,
 	matchesProcessIdentityAsync,
 } from "./process-identity";
 import { getStateDir, stateFilePath } from "./state-paths";
@@ -68,28 +61,6 @@ function capWatchdogLog(logFile: string): void {
  */
 export function getWatchdogLockFile(): string {
 	return `${getWatchdogPidFile()}.runner`;
-}
-
-export function getWatchdogPid(): number | null {
-	try {
-		const pidFile = getWatchdogPidFile();
-		if (!existsSync(pidFile)) return null;
-		const owner = JSON.parse(readFileSync(pidFile, "utf-8")) as {
-			pid?: unknown;
-			processIdentity?: unknown;
-		};
-		if (typeof owner.pid !== "number") return null;
-		return matchesProcessIdentity(
-			owner.pid,
-			typeof owner.processIdentity === "string"
-				? owner.processIdentity
-				: undefined,
-		)
-			? owner.pid
-			: null;
-	} catch {
-		return null;
-	}
 }
 
 /** The running watchdog as its pid file records it. */

@@ -65,18 +65,12 @@ function byNewestFirst(a: CertNameEntry, b: CertNameEntry): number {
 	return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
 }
 
-/**
- * Drop entries whose checkout is gone, and cap what is left.
- *
- * Exported for the test, and pure so the "is it still there" check can be
- * substituted.
- */
+/** Drop entries whose checkout is gone, and cap what is left. */
 export function pruneCertNameEntries(
 	entries: CertNameEntry[],
-	rootExists: (root: string) => boolean = (root) => !checkoutDeleted(root),
 ): CertNameEntry[] {
 	return entries
-		.filter((entry) => rootExists(entry.root))
+		.filter((entry) => !checkoutDeleted(entry.root))
 		.sort(byNewestFirst)
 		.slice(0, MAX_ROOTS);
 }
@@ -90,12 +84,10 @@ export function pruneCertNameEntries(
 export async function rememberCertNames(input: {
 	root?: string;
 	names: string[];
-	path?: string;
-	rootExists?: (root: string) => boolean;
 }): Promise<string[]> {
-	const path = input.path ?? getCertNamesPath();
+	const path = getCertNamesPath();
 	const stored = await registry.read(path);
-	const live = pruneCertNameEntries(stored, input.rootExists);
+	const live = pruneCertNameEntries(stored);
 
 	// An empty name list is never a recording: a caller that only wants the
 	// union must not be able to erase a project's coverage by omission.
@@ -120,12 +112,4 @@ export async function rememberCertNames(input: {
 	}
 
 	return [...new Set(next.flatMap((entry) => entry.names))].sort();
-}
-
-/** Every remembered name, without recording anything. */
-export async function readCertNames(
-	path = getCertNamesPath(),
-): Promise<string[]> {
-	const entries = pruneCertNameEntries(await registry.read(path));
-	return [...new Set(entries.flatMap((entry) => entry.names))].sort();
 }

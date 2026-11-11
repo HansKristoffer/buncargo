@@ -29,15 +29,13 @@ describe.skipIf(!runHostsIntegration)("hosts mkcert integration", () => {
 			const mkcert = await ensureMkcert();
 			expect(mkcert.length).toBeGreaterThan(0);
 
-			const certPath = join(caroot, "leaf.pem");
-			const keyPath = join(caroot, "leaf-key.pem");
 			const minted = mintCert(
 				["api.serpier.localhost", "web.serpier.localhost"],
-				{ mkcertPath: mkcert, certPath, keyPath },
+				{ mkcertPath: mkcert, timeoutMs: 30_000 },
 			);
 			expect(minted.minted).toBe(true);
 
-			const pem = await Bun.file(certPath).text();
+			const pem = await Bun.file(minted.certPath).text();
 			const cert = new X509Certificate(pem);
 			expect(cert.checkHost("api.serpier.localhost")).toBeTruthy();
 			expect(cert.checkHost("web.serpier.localhost")).toBeTruthy();
