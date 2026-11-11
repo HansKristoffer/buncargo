@@ -56,7 +56,7 @@ export function stripe(options: {
 | `preflight` | `dev`, with the terminal, before anything starts | Steps that may need the user, such as a login. `apps` limits a step to starts that select one of them; `ctx.interactive` is false in CI and without a terminal; a step that throws stops the start |
 | `commands` | `buncargo <name> <command>` | Operations on the running checkout. `ctx.loadEnv()` loads the config; skip it for commands that only read the run registry, as `expo sim` does |
 | `describe(ctx)` | `buncargo env`, `url` / `open`, the run registry, BuncargoBar | Labelled values that are not captures, such as a dev store link built from a config file. A captured value labels itself with `label` |
-| `appEnv(app)` | building one app's process env | Env for the integration's apps, beneath their own `envVars` (Expo's `RCT_METRO_PORT`) |
+| `appEnv(app)` | building one app's process env | Env for the integration's apps, beneath their own `staticEnv` and `envVars` (Expo's `RCT_METRO_PORT`) |
 | `describeApp(app)` | publishing the run | Fields on an app's registry entry (Expo's `expo`, which BuncargoBar's simulator button reads) |
 | `bannerHint(app)` | the startup banner | A dim hint after the app's row |
 | `stacks` | a start that selects one of its services; `stop`; the sweep | Containers another CLI runs. `up(ctx)` starts them idempotently beside `compose up`; `down(...)` returns the argv that stops them, which is recorded in the run registry so the sweep can run it after the idle hold without a config. Services name it with `external: { stack }`. The CLI must label its containers `com.docker.compose.project=<externalStackProjectName(projectName)>`, or their ports read as foreign |

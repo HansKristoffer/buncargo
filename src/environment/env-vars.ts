@@ -100,10 +100,29 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 			EnvVarsBuilder<AnyServices, AnyApps> | undefined;
 
 		const appPort = ports[appName];
+		// Integrations sit beneath everything the app's config sets itself,
+		// `staticEnv` and `envVars` alike: the user's values win.
+		const integrationEnv: Record<string, string> = {};
+		if (appConfig) {
+			for (const integration of config.integrations ?? []) {
+				Object.assign(
+					integrationEnv,
+					integration.appEnv?.({
+						name: appName,
+						config: appConfig,
+						port: appPort,
+						root: ctx.root,
+						workspaceId: ctx.workspaceId,
+					}),
+				);
+			}
+		}
+
 		const processEnv: Record<string, string> = {
 			...sharedEnv,
 			ASTRO_DEV_BACKGROUND: "1",
 			ASTRO_PREVIEW_BACKGROUND: "1",
+			...integrationEnv,
 			...(appConfig?.staticEnv ? stringifyEnvValues(appConfig.staticEnv) : {}),
 			// A worker listens on nothing.
 			...(appConfig && appConfig.port === undefined ? {} : { HOST: "0.0.0.0" }),
@@ -114,22 +133,6 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 
 		if (appPort !== undefined) {
 			processEnv.PORT = String(appPort);
-		}
-
-		// Integrations sit beneath the app's own `envVars`, which may override them.
-		if (appConfig) {
-			for (const integration of config.integrations ?? []) {
-				Object.assign(
-					processEnv,
-					integration.appEnv?.({
-						name: appName,
-						config: appConfig,
-						port: appPort,
-						root: ctx.root,
-						workspaceId: ctx.workspaceId,
-					}),
-				);
-			}
 		}
 
 		// The loopback daemon's; a Tailscale-served app has only its URL.
