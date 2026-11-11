@@ -32,7 +32,7 @@ import { DELETED_CHECKOUT_SETTLE_MS } from "./watchdog-constants";
 
 /** Where a detached run stands against its idle limit. */
 export type IdleState =
-	/** No limit: a run in a terminal, `--keep`, or an older buncargo's run. */
+	/** No limit: a run in a terminal, or one started with `--keep`. */
 	| { kind: "off" }
 	/** A limit that cannot be judged, so it is not enforced. */
 	| { kind: "unknown"; why: string }
