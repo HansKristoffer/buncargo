@@ -14,7 +14,7 @@ import { formatDone, formatStep, formatWarn } from "../core/style";
 import { resolveComposeServiceNames } from "../planning";
 import { resolvePrismaConfig } from "../prisma/config";
 import { appliedMigrationCount } from "../prisma/migrations-applied";
-import { generatePrismaClient } from "../prisma/schema-hash";
+import { generatePrismaClient, prismaClientStale } from "../prisma/schema-hash";
 import type {
 	AnyDevConfig,
 	AppConfig,
@@ -241,16 +241,21 @@ export function createLifecycleApi<
 		}
 
 		const generateCheck = config.prisma?.generateCheck;
+		const generateNeeded = async (cwd: string) => {
+			if (!generateCheck) return true;
+			if (generateCheck === "schema-hash")
+				return prismaClientStale(ctx.root, cwd);
+			return withDeadline(
+				async (hookSignal) => generateCheck(hookContext(hookSignal)),
+				600_000,
+				signal,
+			);
+		};
 		if (
 			generate &&
 			prismaSelected() &&
 			config.prisma?.generate &&
-			(!generateCheck ||
-				(await withDeadline(
-					async (hookSignal) => generateCheck(hookContext(hookSignal)),
-					600_000,
-					signal,
-				)))
+			(await generateNeeded(resolvePrismaConfig(config.prisma).cwd))
 		) {
 			if (verbose) {
 				console.log(formatStep("📦 Generating Prisma client..."));

@@ -82,6 +82,9 @@ bunx buncargo exec --db=scratch_migcheck -- bun test   # Database URLs point at 
 bunx buncargo prisma <args>
 bunx buncargo prisma migrate-check  # Fail when migrations and schema differ
 bunx buncargo prisma migrate reset --yes  # Destructive: needs --yes without a terminal
+bunx buncargo prisma migration new add_orders  # Write a migration and print its path, no terminal needed
+bunx buncargo prisma migration check  # Fail on migration timestamps out of order with the base branch
+bunx buncargo prisma --db=scratch_migcheck migrate deploy  # Against a scratch database
 bunx buncargo wait --app=api --hold   # Block until an app is healthy (and stay)
 bunx buncargo generate            # Render generatedFiles without starting anything
 bunx buncargo build --discovered  # Every discovered app's build, in order
@@ -342,6 +345,10 @@ A run killed before its teardown (`SIGKILL`, a crashed runner) leaves its volume
 The teardown runs however the run ends: the command failing, the services failing to start, or `SIGINT`/`SIGTERM`/`SIGHUP` at any point, including one that arrives while the stack is already coming down. An interrupted run exits `130`/`143`/`129`. Only a run killed outright (`SIGKILL`) leaves its stack: the sweep (the watchdog, `ls`, `doctor`) removes its containers once it has seen the run gone for 15 seconds, and `buncargo prune --project` its volume. `ci` starts no watchdog of its own: on a machine where no other run started one, the next `ls` or `doctor` sweeps.
 
 `buncargo prisma migrate-check` wraps `prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code` against a shadow database. The shadow database (`<database>_shadow`) is created inside the configured Postgres service, so no host `psql` is needed. Prisma 6 and older get it as `--shadow-database-url` (and `--to-schema-datamodel`, their name for the flag). Prisma 7 removed that flag and reads the shadow URL from `prisma.config.ts`, so point `datasource.shadowDatabaseUrl` at `env("SHADOW_DATABASE_URL")`, which buncargo sets. `--migrations=<dir>` and `--schema=<path>` override the paths (relative to `prisma.cwd`), and arguments after `--` go to `migrate diff`. Exit code 2 means the schema has changes no migration contains.
+
+`buncargo prisma migration new <name>` writes the migration `migrate dev --create-only` would, without a terminal: it diffs the migrations against `prisma.schema` on a database it creates in the Postgres service and drops afterwards, writes `<timestamp>_<name>/migration.sql` with a timestamp after every existing migration, and prints the folder's path, alone on stdout. When the schema has nothing new it writes nothing and exits 1; `--empty` writes an empty migration to fill in by hand. Prisma 7 reads the shadow database from `prisma.config.ts`, as for `migrate-check`.
+
+`buncargo prisma migration check` fails (exit 1) when two migrations share a timestamp, or when a migration the base branch lacks sorts before the newest migration on it: branches that each added a migration in parallel produce both, and a database already at the base's tip applies them out of order. The base is the remote's default branch (else `origin/main`, else `main`); `--base=<ref>` names another. It reads only git and the migration folders: nothing starts.
 
 The `actions/setup` composite action installs Bun from `.bun-version` (or `bun-version`), restores a cache keyed on `bun.lock` and the Bun version, and runs `bun install --frozen-lockfile`. The cache covers the Bun store and every workspace's `node_modules` (`apps/*`, `packages/*`, `extensions/*` by default; set `node-modules` to change it), because the isolated linker puts links in each workspace and a root-only cache never skips the install.
 
@@ -693,7 +700,20 @@ alone, so `buncargo prisma migrate diff --script > migration.sql` writes only SQ
 lines go to stderr. `unsetEnv` does not apply to the Prisma CLI, which reads those variables
 to guard destructive actions in an agent's shell. Without a terminal, `migrate reset`,
 `db push --force-reset` and `db push --accept-data-loss` refuse unless `--yes` is passed
-(CI is exempt).
+(CI and `--db=scratch_<name>` are exempt).
+Every name in `prisma.urlEnvVar` is set to the checkout's database URL. Before Prisma
+starts, any other inherited variable holding a Postgres URL on another host or port is
+named, with its host and port but never its credentials: a `prisma.config.ts` that reads it
+sends Prisma there. While one is set, a destructive command refuses, `--yes` or not; unset
+the variable or add it to `prisma.urlEnvVar`.
+`--db=<database>` runs Prisma against another database of the same Postgres (one
+`buncargo sql --create-scratch` made), pointing every variable that names the checkout's
+database at it, as `exec --db` does.
+Before `migrate deploy`, `migrate dev` and `migrate status`, buncargo compares the database's
+`_prisma_migrations` with the migration folders. When the database applied migrations the
+checkout no longer has (a squashed or rewritten chain), it names them and exits 4 without
+running Prisma: only recreating the database, `buncargo dev --reset --yes`, gets past it, and
+that drops the data.
 Startup failure and cancellation retain shared-container ownership rules instead
 of tearing down other runs' resources.
 
@@ -1624,10 +1644,11 @@ The automatic Prisma migration step checks migration folders containing `migrati
 | --- | --- | --- | --- |
 | `cwd` | `string` | `packages/prisma` | Schema directory |
 | `migrations` | `string` | `prisma/migrations` | Migration directory relative to `prisma.cwd`; also the default for `migrate-check` |
+| `schema` | `string` | `prisma/schema.prisma` | Schema file or folder relative to `prisma.cwd`, for `migrate-check` and `migration new` |
 | `service` | `string` | `postgres` | Service key for `DATABASE_URL` |
-| `urlEnvVar` | `string` | `DATABASE_URL` | Env var name |
+| `urlEnvVar` | `string \| string[]` | `DATABASE_URL` | Env var name. A list sets each name to the database URL (`["DATABASE_URL", "DATABASE_URL_DIRECT"]`); buncargo reads the URL from the first |
 | `generate` | `string` | skipped | Command after migrations (e.g. `bunx prisma generate --schema ./schema --sql`) |
-| `generateCheck` | `(ctx) => boolean \| Promise<boolean>` | always generate | Return `true` when generation is needed; your check must verify all inputs and outputs |
+| `generateCheck` | `"schema-hash" \| (ctx) => boolean \| Promise<boolean>` | always generate | `"schema-hash"` generates only when the `.prisma` files under `prisma.cwd` changed since buncargo last generated. A function returns `true` when generation is needed, and must verify all inputs and outputs itself |
 
 ### `MigrationConfig`
 
@@ -1806,6 +1827,8 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `… listens on :8022, not its assigned :8021` | The app moved to the next port because its own was taken | Run `dev` again; set `strictPort` (Vite, Astro's `vite.server`) so it fails instead of moving |
 | `--reset removes …'s volumes … Refusing without a terminal` | `--reset` / `--down --all` from a script or agent | Pass `--yes` if that is really meant |
 | `prisma migrate reset drops the database … Refusing without a terminal` | `buncargo prisma migrate reset` or `db push --force-reset`/`--accept-data-loss` from a script or agent | Pass `--yes` if that is really meant |
+| `… Refusing while DATABASE_URL_DIRECT points at another server` | A destructive Prisma command while an inherited variable holds a Postgres URL on another host or port | Unset the variable, or add it to `prisma.urlEnvVar` |
+| `… applied N migrations this checkout no longer has` (exit 4) | The database ran migrations a squash or rewrite removed from the chain | `buncargo dev --reset --yes` recreates the database and drops its data; ask first |
 | `Dependencies are installed (no node_modules)` | Fresh worktree | `bun install`, or `buncargo setup --yes` |
 | `This project's buncargo (package.json) is not installed` | `bunx buncargo` found a different buncargo than the project lists, and the project's is not installed | `bun install` |
 | `bun install --frozen-lockfile failed in <dir>` | The checkout installed itself and `bun.lock` does not match `package.json`, or a postinstall script failed | Fix what the install printed, then `bun install` |
