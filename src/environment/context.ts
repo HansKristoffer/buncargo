@@ -102,10 +102,13 @@ export interface DevEnvContext<
 		signal?: AbortSignal,
 	): Promise<void>;
 	/**
-	 * Drop this environment's offset claim if it is throwaway: suffixed, or
-	 * running in CI. A developer's dev checkout keeps its block while stopped.
+	 * Read this environment's offset claim before its teardown, if it is
+	 * throwaway: suffixed, or running in CI. A developer's dev checkout keeps
+	 * its block while stopped. The returned function drops the claim after
+	 * the teardown, unless another run of this environment used the block
+	 * since it was read.
 	 */
-	releaseThrowawayClaim(): Promise<void>;
+	captureThrowawayClaim(): () => Promise<void>;
 	readonly hasSelectedServices: boolean;
 	/** Service keys the current selection starts, for the run claim. */
 	readonly selectedServiceKeys: readonly string[];
@@ -442,25 +445,32 @@ export function createDevEnvContext<
 			});
 			return { offset, provenance };
 		},
-		async releaseThrowawayClaim() {
-			if (suffix === undefined && !isCI()) return;
+		captureThrowawayClaim() {
+			if (suffix === undefined && !isCI()) return async () => {};
 			const key = offsetClaimKey(root, suffix);
+			// Read before the teardown: another run of this environment that
+			// allocates during it rewrites the claim, and a read after would
+			// take that run's claim for this one's.
 			const read = readAllOffsetClaims()[key];
-
-			// Another run of this environment on record may still use the block,
-			// and one that starts after this check claims it again: released
-			// only if no run has used it since it was read.
-			const runs = await readAllRuns();
-			if (
-				runs.some((run) => run.projectName === projectName && run.root === root)
-			)
-				return;
-			if (read !== undefined)
-				await releaseOffsetClaimsIfUnchanged({ [key]: read });
-			// A later start() on this environment allocates and claims again, and
-			// nothing (Prisma's `allocate`) reads the released block as its own.
-			preparedSelection = undefined;
-			startSelection = undefined;
+			return async () => {
+				// Another run of this environment on record may still use the
+				// block, and one that starts after this check claims it again:
+				// released only if no run has used it since it was read.
+				const runs = await readAllRuns();
+				if (
+					runs.some(
+						(run) => run.projectName === projectName && run.root === root,
+					)
+				)
+					return;
+				if (read !== undefined)
+					await releaseOffsetClaimsIfUnchanged({ [key]: read });
+				// A later start() on this environment allocates and claims again,
+				// and nothing (Prisma's `allocate`) reads the released block as its
+				// own.
+				preparedSelection = undefined;
+				startSelection = undefined;
+			};
 		},
 		async prepareStartAsync(onlyApps, onlyServices, signal) {
 			signal?.throwIfAborted();
