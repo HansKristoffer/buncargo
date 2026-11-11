@@ -5,7 +5,15 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	mkdir,
+	readFile,
+	rename,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import { dirname } from "node:path";
 import { getErrorMessage, isRecord, safeJsonParse } from "hanzio";
 import { isProcessAlive } from "./process/lifecycle";
@@ -13,7 +21,7 @@ import { isProcessAlive } from "./process/lifecycle";
 /**
  * Reading and writing buncargo's persisted state files (`routes.json`,
  * `hosts-daemon.json`, `hosts-service.json`, `ports.json`,
- * `public-tunnels.json`).
+ * `public-tunnels.json`), and the text writer the dotenv rewrite shares.
  *
  * Every read goes through a validator, so a hand-edited or half-written file
  * degrades to "no state" instead of surfacing as a nonsense value later. Every
@@ -96,14 +104,38 @@ export async function writeJsonDocument(
 	document: unknown,
 	options: { afterWrite?: (path: string) => void; mode?: number } = {},
 ): Promise<void> {
+	await writeTextFile(path, serialize(document), {
+		afterWrite: options.afterWrite,
+		mode: options.mode ?? 0o600,
+	});
+}
+
+/** The file's permission bits, or undefined when it does not exist. */
+async function existingMode(path: string): Promise<number | undefined> {
+	try {
+		return (await stat(path)).mode & 0o777;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+/**
+ * Write `text` through a temp file and a rename. Without `mode` the file keeps
+ * the mode it has (a `0600` dotenv stays `0600`); a new one is `0600`.
+ */
+export async function writeTextFile(
+	path: string,
+	text: string,
+	options: { afterWrite?: (path: string) => void; mode?: number } = {},
+): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
+	const mode = options.mode ?? (await existingMode(path)) ?? 0o600;
 	const temp = tempPathFor(path);
 	try {
-		await writeFile(temp, serialize(document), {
-			encoding: "utf-8",
-			mode: options.mode ?? 0o600,
-			flag: "wx",
-		});
+		await writeFile(temp, text, { encoding: "utf-8", mode, flag: "wx" });
+		// The umask narrows the mode `writeFile` creates with.
+		await chmod(temp, mode);
 		await rename(temp, path);
 	} catch (error) {
 		await rm(temp, { force: true }).catch(() => {});
