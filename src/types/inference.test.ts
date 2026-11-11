@@ -140,8 +140,8 @@ function _probeGetEnvVar() {
 	>;
 
 	// `getEnvVar` answers what the run has: captures and the workspace id.
-	const token = getEnvVar(config, "API_TOKEN", { log: false });
-	const workspace = getEnvVar(config, "BUNCARGO_WORKSPACE_ID", { log: false });
+	const token = getEnvVar(config, "API_TOKEN");
+	const workspace = getEnvVar(config, "BUNCARGO_WORKSPACE_ID");
 
 	// @ts-expect-error - "NOPE" is not a name this config produces
 	return [vitePort, dbUrl, token, workspace, getEnvVar(config, "NOPE")];
