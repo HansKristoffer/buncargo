@@ -1,7 +1,7 @@
 {
   "name": "buncargo",
   "version": "15.1.0",
-  "description": "A Bun-powered development environment CLI for managing Docker Compose services, dev servers, and environment variables",
+  "description": "Bun-first dev environments for many checkouts at once: isolated ports, containers, databases and https://*.localhost hosts per worktree, with supervised dev servers",
   "type": "module",
   "module": "./dist/index.js",
   "main": "./dist/index.js",

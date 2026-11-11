@@ -74,6 +74,7 @@ bunx buncargo env set REDIS_URL=http://localhost:8779   # Override one for this 
 bunx buncargo env unset REDIS_URL
 bunx buncargo url                 # Every URL this run knows, by name: apps, services, captures
 bunx buncargo url postgres        # A service's URL; its connection URL when it has no HTTP one
+bunx buncargo url api --local     # The URL for a browser on this machine, whatever BUNCARGO_URL_HOST says
 bunx buncargo open                # The primary app; or `open <name>` from `url`
 bunx buncargo open shopify previewUrl  # An app's captured URL (what its action key opens)
 bunx buncargo exec -- bun scripts/maintenance.ts
@@ -595,9 +596,7 @@ database preparation:
 ```ts
 services: {
   postgres: service.postgres(),
-  importData: {
-    kind: "job",
-    rerun: "always",
+  importData: service.job({
     afterPreparation: true,
     healthTimeout: 60_000,
     docker: {
@@ -607,7 +606,7 @@ services: {
       command: ["psql", "-h", "postgres", "-U", "postgres", "-f", "/setup/import.sql"],
       depends_on: { postgres: { condition: "service_healthy" } },
     },
-  },
+  }),
 },
 apps: {
   api: {
@@ -618,6 +617,8 @@ apps: {
 },
 ```
 
+`service.job()` sets `kind: "job"` and `rerun: "always"`, and its type refuses a
+port, URL or health check, so a function that builds jobs needs no `as const`.
 `requiredServices` selects the job; Compose dependencies select PostgreSQL too.
 Compose references use `serviceName` when it differs from the config key.
 A container depending on a job uses `condition: "service_completed_successfully"`.
@@ -1468,7 +1469,7 @@ Next is not a dependency of buncargo, and the wrapper imports nothing from it.
 | Variable | Meaning |
 | --- | --- |
 | `BUNCARGO_PORT_OFFSET` | Hard port offset; skips probing |
-| `BUNCARGO_URL_HOST` | Host in app URLs (`<APP>_URL`, the banner, `url`, `open`, `status`), for a machine people reach from another one, such as `worker.<tailnet>.ts.net`. Service URLs, health checks and `<APP>_LOOPBACK_URL` stay on `localhost`. Vite apps then accept that host, and the Vite plugin listens on `0.0.0.0` |
+| `BUNCARGO_URL_HOST` | Host in app URLs (`<APP>_URL`, the banner, `url`, `open`, `status`), for a machine people reach from another one, such as `worker.<tailnet>.ts.net`. Service URLs, health checks and `<APP>_LOOPBACK_URL` stay on `localhost`. Vite apps then accept that host, and the Vite plugin listens on `0.0.0.0`. A browser gives a plain `http://` page on that host no secure context (no `crypto.randomUUID`, clipboard or service workers), so `url` warns, and `url <app> --local` prints the loopback URL for a browser on this machine |
 | `BUNCARGO_TAILNET_DIRECTORY` | `0`: do not list this machine's runs to BuncargoBar on the other machines of its tailnet (see [watchdog](#watchdog)), and keep its Vite apps on `127.0.0.1` |
 | `BUNCARGO_LOCAL_IP` | Address for the `<app>Local` URLs instead of the first network interface's |
 | `BUNCARGO_PRUNE_DELETED_CHECKOUTS` | `1`: the sweep also removes the volumes of a checkout whose directory is gone (see [watchdog](#watchdog)) |
@@ -1546,7 +1547,7 @@ Use the top-level `env` overlay for shared values (rewritten `WEB_URL`, `VITE_*`
 | `password` | `string` | `postgres` / `root` / `clickhouse` | Auth password for built-in URL |
 | `env` | `Record<string, "url" \| "port" \| "secondaryPort">` | preset aliases | Shared env outputs |
 | `staticEnv` | `Record<string, string>` | `{}` | Constant shared env (API keys, `SMTP_HOST`) |
-| `docker` | preset helper or raw Compose service | inferred for postgres/redis/clickhouse/mailpit/typesense | Image, ports, healthcheck, volumes |
+| `docker` | preset helper or raw Compose service | inferred for postgres/redis/clickhouse/mailpit/typesense/minio | Image, ports, healthcheck, volumes |
 | `external` | `{ stack, preset? }` | `undefined` | Provided by an integration's stack (the Supabase CLI) instead of the Compose file: allocated a port, URL and env, never written to Compose. `preset` says what it is (TablePlus link), without the preset's default env. Selecting one of a stack's services selects them all |
 
 `UrlBuilderContext`: `{ port, secondaryPort?, host, localIp }`. See [portless containers and finite jobs](#portless-containers-and-finite-jobs) for completion and rerun behavior.

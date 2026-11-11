@@ -82,6 +82,9 @@ export interface BuiltInServiceEnvVarMap {
 	typesense: {
 		TYPESENSE_URL: "url";
 	};
+	minio: {
+		MINIO_URL: "url";
+	};
 }
 
 /**

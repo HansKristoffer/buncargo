@@ -32,6 +32,9 @@ export const BUILT_IN_SERVICE_ENV_VARS = {
 	typesense: {
 		TYPESENSE_URL: "url",
 	},
+	minio: {
+		MINIO_URL: "url",
+	},
 } as const satisfies BuiltInServiceEnvVarMap;
 
 export const DOCKER_PRESET_NAMES: readonly DockerPresetName[] = typedKeys(
@@ -48,7 +51,7 @@ export function isDockerPresetName(value: unknown): value is DockerPresetName {
 export function defaultServiceProtocol(
 	preset: string | undefined,
 ): "http" | "tcp" {
-	return isOneOf(["clickhouse", "mailpit", "typesense"], preset)
+	return isOneOf(["clickhouse", "mailpit", "typesense", "minio"], preset)
 		? "http"
 		: "tcp";
 }

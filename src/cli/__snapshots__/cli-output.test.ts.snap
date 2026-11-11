@@ -383,15 +383,17 @@ exports[`buncargo CLI output url --help 1`] = `
 "exit 0
 --- stdout
 
-Usage: buncargo url [<name>]
+Usage: buncargo url [<name>] [--local]
 
 Options:
-  --help  Show this help message
+  --local  The URL for a browser on this machine: loopback instead of BUNCARGO_URL_HOST
+  --help   Show this help message
 
 Examples:
-  buncargo url           List every URL, by name
-  buncargo url api       Print one
-  buncargo url postgres  A service's URL, or its connection URL
+  buncargo url              List every URL, by name
+  buncargo url api          Print one
+  buncargo url api --local  The one your own browser opens
+  buncargo url postgres     A service's URL, or its connection URL
 
 
 --- stderr
@@ -989,7 +991,7 @@ Use:
   terminal is left running (exit 3): leave it.
 
 When something fails:
-- The cause and the next command are at the end of the output: \`| tail\`.
+- The cause and the next command end the output. Add \`; echo $?\`, not \`| tail\`.
 - "Could not allocate a free port block": \`dev\` takes back an idle block on
   its own, so this lists holders still in use. Tell the user (\`help agents ports\`).
   \`"unallocated"\` in \`status --json\` means the ports shown are not yours.
