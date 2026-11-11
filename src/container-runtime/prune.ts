@@ -19,7 +19,11 @@ import { checkoutDeleted } from "../core/checkout-presence";
 import { type OffsetClaim, offsetClaimRoot } from "../core/offset-claims";
 import type { RunEntry } from "../core/run-registry";
 import type { BuncargoContainer, BuncargoVolume } from "../types";
-import { type ClaimedCheckout, decideVolume } from "./volume-decision";
+import {
+	type ClaimedCheckout,
+	decideVolume,
+	type VolumeState,
+} from "./volume-decision";
 
 export type VolumeVerdict =
 	/** Kept: something refers to its project, or nothing shows its checkout is gone. */
@@ -40,6 +44,8 @@ export interface PruneInput {
 	runs: readonly RunEntry[];
 	/** The checkouts this user's port claims name ({@link claimedCheckouts}). */
 	checkouts: readonly ClaimedCheckout[];
+	/** Only volumes of checkouts deleted this long ago (`prune --older-than`). */
+	deletedFor?: VolumeState["deletedFor"];
 }
 
 /**
@@ -51,8 +57,13 @@ export function planVolumePrune(input: PruneInput): VolumeReport[] {
 		containerProjects: new Set(
 			input.containers.map((container) => container.project),
 		),
-		runProjects: new Set(input.runs.map((run) => run.projectName)),
+		runs: input.runs.map((run) => ({
+			projectName: run.projectName,
+			root: run.root,
+			deleted: checkoutDeleted(run.root),
+		})),
 		checkouts: input.checkouts,
+		deletedFor: input.deletedFor,
 	};
 	return input.volumes.map((volume): VolumeReport => {
 		const decision = decideVolume(volume, state);
@@ -86,6 +97,7 @@ export function claimedCheckouts(
 			projectName: claim.projectName,
 			root,
 			deleted: checkoutDeleted(root),
+			deletedSeenAt: claim.deletedSeenAt,
 		};
 	});
 }

@@ -108,6 +108,42 @@ describe("planVolumePrune", () => {
 		expect(orphanedVolumes(reports)).toEqual([]);
 	});
 
+	it("with deletedFor, proposes only volumes of checkouts first found deleted that long ago", () => {
+		// `prune --older-than` and the sweep's own wait before it removes.
+		const DAY = 86_400_000;
+		const now = Date.parse("2026-11-11T00:00:00.000Z");
+		const seen = (days: number) => new Date(now - days * DAY).toISOString();
+		const reports = planVolumePrune({
+			volumes: [
+				volume("old_data", "old"),
+				volume("recent_data", "recent"),
+				volume("unstamped_data", "unstamped"),
+			],
+			containers: [],
+			runs: [],
+			checkouts: [
+				{
+					projectName: "old",
+					root: "/old",
+					deleted: true,
+					deletedSeenAt: seen(8),
+				},
+				{
+					projectName: "recent",
+					root: "/recent",
+					deleted: true,
+					deletedSeenAt: seen(1),
+				},
+				{ projectName: "unstamped", root: "/unstamped", deleted: true },
+			],
+			deletedFor: { ms: 7 * DAY, now },
+		});
+		expect(orphanedVolumes(reports)).toEqual(["old_data"]);
+		expect(reports[1]?.verdict.reason).toBe(
+			"its checkout /recent was found deleted less than 7d ago",
+		);
+	});
+
 	it("never proposes a volume the runtime would not attribute", () => {
 		const reports = planVolumePrune({
 			volumes: [volume("apple-volume-with-dashes")],

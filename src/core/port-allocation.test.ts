@@ -13,14 +13,19 @@ import type { ContainerRuntimeAdapter } from "../container-runtime/types";
 import {
 	claimOffset,
 	describeOffsetClaimOverlap,
+	markOffsetClaimsReclaimed,
 	type OffsetClaim,
 	offsetClaimKey,
 	overlappingOffsetClaims,
+	readAllOffsetClaims,
+	readHeldOffsetClaims,
 	readOffsetClaims,
 	sharedProjectNameClaims,
 	withOffsetClaimsLock,
 } from "./offset-claims";
 import {
+	type AllocatePortBlockInput,
+	allocatePortBlock,
 	type BlockCandidate,
 	buildPortMap,
 	chooseBlock,
@@ -28,10 +33,7 @@ import {
 	maxPortOffset,
 	PORT_OFFSET_STEP,
 	pinOffset,
-	readOffsetClaimsWithPorts,
-	readPortsLockfile,
-	resolvePortPlan,
-	writePortsLockfile,
+	readPortPlan,
 } from "./port-allocation";
 import type { BlockedOffset } from "./port-exhaustion";
 import type { PortOwner } from "./process";
@@ -54,6 +56,34 @@ afterEach(() => {
 		process.env.BUNCARGO_PORT_OFFSET = originalOffset;
 	}
 });
+
+/** A claiming run's allocation, as `dev` makes it. */
+const allocate = (
+	input: Omit<AllocatePortBlockInput, "claim"> & { claim?: boolean },
+) => allocatePortBlock({ claim: true, ...input });
+
+/** The claim a run on the block at `offset` left behind. */
+function pinClaim(
+	root: string,
+	projectName: string,
+	offset: number,
+	ports: number[],
+): void {
+	withOffsetClaimsLock(() => claimOffset({ root, offset, ports, projectName }));
+}
+
+/** A claim that gave its block up: a full range reclaimed it, or its run was torn down. */
+async function releasedClaim(
+	root: string,
+	projectName: string,
+	offset: number,
+	ports: number[],
+): Promise<void> {
+	pinClaim(root, projectName, offset, ports);
+	const claim = readAllOffsetClaims()[root];
+	if (!claim) throw new Error("claimed");
+	await markOffsetClaimsReclaimed({ [root]: claim }, new Date().toISOString());
+}
 
 describe("buildPortMap", () => {
 	it("adds offset to all service ports", () => {
@@ -142,7 +172,7 @@ describe("computeBaseOffset", () => {
 	});
 });
 
-describe("resolvePortPlan", () => {
+describe("allocatePortBlock", () => {
 	const services = resolveServices({
 		postgres: { port: 5432 },
 	});
@@ -152,13 +182,13 @@ describe("resolvePortPlan", () => {
 
 	it("uses BUNCARGO_PORT_OFFSET as a hard override", () => {
 		process.env.BUNCARGO_PORT_OFFSET = "250";
-		const plan = resolvePortPlan({
+		const plan = allocate({
 			projectPrefix: "geysier",
 			projectName: "geysier-main",
 			root: "/tmp/override",
 			services,
 			apps,
-			persist: false,
+			claim: false,
 			getOwner: () => {
 				throw new Error("hard override must not probe");
 			},
@@ -168,23 +198,12 @@ describe("resolvePortPlan", () => {
 		expect(plan.ports.postgres).toBe(5682);
 	});
 
-	it("reuses a valid lockfile", () => {
+	it("reuses its own claim's block", () => {
 		delete process.env.BUNCARGO_PORT_OFFSET;
 		const root = mkdtempSync(join(tmpdir(), "buncargo-ports-"));
 		try {
-			writePortsLockfile(root, {
-				version: 1,
-				projectName: "geysier-main",
-				root,
-				offset: 300,
-				ports: buildPortMap(
-					{ postgres: { port: 5432 } },
-					resolveApps({ api: { port: 3000, devCommand: "bun run dev" } }),
-					300,
-				),
-				provenance: "hash",
-			});
-			const plan = resolvePortPlan({
+			pinClaim(root, "geysier-main", 300, [3300, 5732]);
+			const plan = allocate({
 				projectPrefix: "geysier",
 				projectName: "geysier-main",
 				root,
@@ -193,48 +212,29 @@ describe("resolvePortPlan", () => {
 				getOwner: () => null,
 			});
 			expect(plan.offset).toBe(300);
-			expect(plan.provenance).toBe("lockfile");
-			expect(readPortsLockfile(root)?.offset).toBe(300);
+			expect(plan.provenance).toBe("claim");
+			expect(readOffsetClaims()[root]?.offset).toBe(300);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	it("keeps the lockfile offset when conflict probing is off", () => {
+	it("reads the claim's block without probing it", () => {
 		// getEnvVar reads this to answer a vite.config.ts; shifting would hand
 		// it a port the running environment is not listening on.
 		delete process.env.BUNCARGO_PORT_OFFSET;
 		const root = mkdtempSync(join(tmpdir(), "buncargo-readonly-"));
-		const foreign: PortOwner = {
-			pids: [999],
-			command: "some-other-tool",
-			cwd: "/tmp/elsewhere",
-		};
 		try {
-			writePortsLockfile(root, {
-				version: 1,
-				projectName: "geysier-main",
-				root,
-				offset: 300,
-				ports: buildPortMap(
-					{ postgres: { port: 5432 } },
-					resolveApps({ api: { port: 3000, devCommand: "bun run dev" } }),
-					300,
-				),
-				provenance: "hash",
-			});
-			const plan = resolvePortPlan({
+			pinClaim(root, "geysier-main", 300, [3300, 5732]);
+			const plan = readPortPlan({
 				projectPrefix: "geysier",
 				projectName: "geysier-main",
 				root,
 				services,
 				apps,
-				persist: false,
-				probeConflicts: false,
-				getOwner: () => foreign,
 			});
 			expect(plan.offset).toBe(300);
-			expect(plan.provenance).toBe("lockfile");
+			expect(plan.provenance).toBe("claim");
 			expect(plan.ports.postgres).toBe(5732);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
@@ -251,7 +251,7 @@ describe("resolvePortPlan", () => {
 			cwd: "/other/project",
 		};
 		try {
-			const plan = resolvePortPlan({
+			const plan = allocate({
 				projectPrefix: "geysier",
 				projectName: "geysier-main",
 				root,
@@ -286,7 +286,7 @@ describe("resolvePortPlan", () => {
 			},
 		};
 		try {
-			const plan = resolvePortPlan({
+			const plan = allocate({
 				projectPrefix: "geysier",
 				projectName: "geysier-main",
 				root,
@@ -318,7 +318,7 @@ describe("resolvePortPlan", () => {
 			},
 		};
 		try {
-			const plan = resolvePortPlan({
+			const plan = allocate({
 				projectPrefix: "geysier",
 				projectName: "geysier-main",
 				root,
@@ -347,7 +347,7 @@ describe("resolvePortPlan", () => {
 		const hashed = computeBaseOffset({ projectPrefix });
 		const foreign: PortOwner = { pids: [99999], command: "vite", cwd: "/x" };
 		try {
-			const plan = resolvePortPlan({
+			const plan = allocate({
 				projectPrefix,
 				projectName: `${projectPrefix}-main`,
 				root,
@@ -378,7 +378,7 @@ describe("resolvePortPlan", () => {
 		try {
 			let message = "";
 			try {
-				resolvePortPlan({
+				allocate({
 					projectPrefix: "geysier",
 					projectName: "geysier-main",
 					root,
@@ -408,13 +408,13 @@ describe("resolvePortPlan", () => {
 it("rejects an explicit offset that overflows a service port before any probe", () => {
 	process.env.BUNCARGO_PORT_OFFSET = "1000";
 	expect(() =>
-		resolvePortPlan({
+		allocate({
 			projectPrefix: "overflow",
 			projectName: "overflow",
 			root: "/tmp/overflow",
 			services: { db: { port: 65000 } },
 			apps: resolveApps({}),
-			persist: false,
+			claim: false,
 			getOwner: () => {
 				throw new Error("unexpected probe");
 			},
@@ -422,49 +422,30 @@ it("rejects an explicit offset that overflows a service port before any probe", 
 	).toThrow("Effective port for db is 66000");
 });
 
-it("read-only commands keep persisted endpoints across configuration edits", () => {
+it("applies the claim's offset to the ports the config has now", () => {
 	delete process.env.BUNCARGO_PORT_OFFSET;
-	const root = mkdtempSync(join(tmpdir(), "buncargo-persisted-edit-"));
+	const root = mkdtempSync(join(tmpdir(), "buncargo-claim-edit-"));
 	try {
-		writePortsLockfile(root, {
-			version: 1,
-			projectName: "fixture",
-			root,
-			offset: 100,
-			ports: { postgres: 5532 },
-			provenance: "hash",
-		});
-		const plan = resolvePortPlan({
+		pinClaim(root, "fixture", 100, [5532]);
+		const plan = readPortPlan({
 			root,
 			projectPrefix: "fixture",
 			projectName: "fixture",
 			services: { postgres: { port: 6543 }, redis: { port: 6379 } },
-			persist: false,
-			probeConflicts: false,
-			getOwner: () => {
-				throw new Error("must not probe");
-			},
 		});
-		expect(plan.ports).toEqual({ postgres: 5532, redis: 6479 });
-		expect(readPortsLockfile(root)?.ports).toEqual({ postgres: 5532 });
+		expect(plan.ports).toEqual({ postgres: 6643, redis: 6479 });
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
-it("a partial start cannot relocate the unselected persisted infrastructure", () => {
+
+it("a partial start cannot relocate the unselected claimed infrastructure", () => {
 	delete process.env.BUNCARGO_PORT_OFFSET;
-	const root = mkdtempSync(join(tmpdir(), "buncargo-persisted-scope-"));
+	const root = mkdtempSync(join(tmpdir(), "buncargo-claim-scope-"));
 	try {
-		writePortsLockfile(root, {
-			version: 1,
-			projectName: "fixture",
-			root,
-			offset: 100,
-			ports: { postgres: 5532, marketing: 3100 },
-			provenance: "hash",
-		});
+		pinClaim(root, "fixture", 100, [3100, 5532]);
 		expect(() =>
-			resolvePortPlan({
+			allocate({
 				root,
 				projectPrefix: "fixture",
 				projectName: "fixture",
@@ -473,8 +454,8 @@ it("a partial start cannot relocate the unselected persisted infrastructure", ()
 				probeNames: ["marketing"],
 				getOwner: () => ({ pids: [99999], command: "foreign", cwd: "/other" }),
 			}),
-		).toThrow("persisted allocation: port 3100 held by process 99999");
-		expect(readPortsLockfile(root)?.ports.postgres).toBe(5532);
+		).toThrow("claimed allocation: port 3100 held by process 99999");
+		expect(readOffsetClaims()[root]?.offset).toBe(100);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -490,6 +471,7 @@ describe("chooseBlock", () => {
 		ports,
 		projectName: `holder-${offset}`,
 		updatedAt: "2026-01-01T00:00:00.000Z",
+		usedAt: "2026-01-01T00:00:00.000Z",
 	});
 
 	it.each<{
@@ -593,7 +575,7 @@ describe("chooseBlock", () => {
 
 describe("offset claims", () => {
 	const plan = (root: string, projectName = "lullu-a") =>
-		resolvePortPlan({
+		allocate({
 			projectPrefix: "lullu",
 			projectName,
 			root,
@@ -605,6 +587,7 @@ describe("offset claims", () => {
 		delete process.env.BUNCARGO_PORT_OFFSET;
 		const first = mkdtempSync(join(tmpdir(), "buncargo-claim-a-"));
 		const second = mkdtempSync(join(tmpdir(), "buncargo-claim-b-"));
+		const third = mkdtempSync(join(tmpdir(), "buncargo-claim-c-"));
 		try {
 			const a = plan(first);
 			// Nothing is running: only the claim keeps the second one off it.
@@ -618,11 +601,10 @@ describe("offset claims", () => {
 
 			// A deleted checkout gives its offset back.
 			rmSync(first, { recursive: true, force: true });
-			rmSync(join(second, ".buncargo"), { recursive: true, force: true });
-			expect(plan(second, "lullu-b").offset).toBe(a.offset);
+			expect(plan(third, "lullu-c").offset).toBe(a.offset);
 		} finally {
-			rmSync(first, { recursive: true, force: true });
-			rmSync(second, { recursive: true, force: true });
+			for (const root of [first, second, third])
+				rmSync(root, { recursive: true, force: true });
 		}
 	});
 
@@ -631,17 +613,17 @@ describe("offset claims", () => {
 		// Two CI runners whose project names differ but hash the same.
 		const first = mkdtempSync(join(tmpdir(), "buncargo-runner-1-"));
 		const second = mkdtempSync(join(tmpdir(), "buncargo-runner-2-"));
-		const suffixed = (root: string, read = false) =>
-			resolvePortPlan({
+		const suffixed = (root: string, read = false) => {
+			const input = {
 				projectPrefix: "lullu",
 				projectName: `lullu-${root === first ? "1" : "2"}-app-ci`,
 				root,
 				suffix: "ci",
 				services: { postgres: { port: 5432 } },
-				persist: false,
-				...(read ? { probeConflicts: false } : { claim: true }),
 				getOwner: () => null,
-			});
+			};
+			return read ? readPortPlan(input) : allocate(input);
+		};
 		try {
 			// Nothing is listening yet: the claim alone separates them.
 			const a = suffixed(first);
@@ -651,7 +633,6 @@ describe("offset claims", () => {
 			expect(suffixed(second).offset).toBe(b.offset);
 			expect(suffixed(first).offset).toBe(a.offset);
 			expect(suffixed(second, true).offset).toBe(b.offset);
-			expect(readPortsLockfile(second)).toBeNull();
 
 			const dev = plan(first);
 			expect(readOffsetClaims()).toMatchObject({
@@ -676,7 +657,6 @@ describe("offset claims", () => {
 				`${second} would run under Compose project lullu-playground, which ${first} already uses`,
 			);
 			// Refused before it wrote anything.
-			expect(readPortsLockfile(second)).toBeNull();
 			expect(Object.keys(readOffsetClaims())).toEqual([first]);
 
 			// The holder itself, and another name, still start.
@@ -698,14 +678,12 @@ describe("offset claims", () => {
 		const first = mkdtempSync(join(tmpdir(), "buncargo-runner-1-"));
 		const second = mkdtempSync(join(tmpdir(), "buncargo-runner-2-"));
 		const ci = (root: string) =>
-			resolvePortPlan({
+			allocate({
 				projectPrefix: "lullu",
 				projectName: "lullu-app-ci",
 				root,
 				suffix: "ci",
 				services: { postgres: { port: 5432 } },
-				persist: false,
-				claim: true,
 				getOwner: () => null,
 			});
 		try {
@@ -727,9 +705,9 @@ describe("offset claims", () => {
 		symlinkSync(first, link);
 		const shared = (
 			root: string,
-			options: Partial<Parameters<typeof resolvePortPlan>[0]> = {},
+			options: Partial<AllocatePortBlockInput> = {},
 		) =>
-			resolvePortPlan({
+			allocate({
 				projectPrefix: "lullu",
 				projectName: "lullu-shared",
 				root,
@@ -741,7 +719,12 @@ describe("offset claims", () => {
 			shared(first);
 			expect(() => shared(link)).not.toThrow();
 			expect(() =>
-				shared(second, { persist: false, probeConflicts: false }),
+				readPortPlan({
+					projectPrefix: "lullu",
+					projectName: "lullu-shared",
+					root: second,
+					services: { postgres: { port: 5432 } },
+				}),
 			).not.toThrow();
 			expect(() => shared(second, { worktreeIsolation: false })).not.toThrow();
 		} finally {
@@ -774,7 +757,7 @@ describe("offset claims", () => {
 		}
 	});
 
-	it("reports claims whose blocks overlap through different offsets, and a port-less claim by its lockfile", async () => {
+	it("reports claims whose blocks overlap through different offsets, and leaves out one that gave its block up", async () => {
 		const api = mkdtempSync(join(tmpdir(), "buncargo-overlap-api-"));
 		const admin = mkdtempSync(join(tmpdir(), "buncargo-overlap-admin-"));
 		const older = mkdtempSync(join(tmpdir(), "buncargo-overlap-older-"));
@@ -801,35 +784,15 @@ describe("offset claims", () => {
 					projectName: "lullu-apart",
 				});
 			});
-			// Claimed before claims recorded ports; its lockfile has them.
-			const claims = JSON.parse(
-				await Bun.file(join(home, ".buncargo/offsets.json")).text(),
-			);
-			claims.claims[older] = {
-				offset: 1200,
-				projectName: "lullu-older",
-				updatedAt: "2026-01-01T00:00:00.000Z",
-			};
-			await Bun.write(
-				join(home, ".buncargo/offsets.json"),
-				JSON.stringify(claims),
-			);
-			writePortsLockfile(older, {
-				version: 1,
-				projectName: "lullu-older",
-				root: older,
-				offset: 1200,
-				ports: { postgres: 6532 },
-				provenance: "hash",
-			});
+			// Its block went to others; it overlaps nobody.
+			await releasedClaim(older, "lullu-older", 1200, [6532]);
 
 			expect(
-				overlappingOffsetClaims(readOffsetClaimsWithPorts()).map(
+				overlappingOffsetClaims(readHeldOffsetClaims()).map(
 					describeOffsetClaimOverlap,
 				),
 			).toEqual([
 				`${api} (offset 1100) and ${admin} (offset 100) both claim port 4100`,
-				`${api} (offset 1100) and ${older} (offset 1200) both claim port 6532`,
 			]);
 		} finally {
 			for (const root of [api, admin, older, apart])
@@ -837,12 +800,19 @@ describe("offset claims", () => {
 		}
 	});
 
-	it("reports two claims on one offset even when neither recorded its ports", () => {
+	it("reports two claims on one offset even when they share no port", () => {
+		const at = (offset: number, projectName: string): OffsetClaim => ({
+			offset,
+			ports: [],
+			projectName,
+			updatedAt: "",
+			usedAt: "",
+		});
 		expect(
 			overlappingOffsetClaims({
-				"/a": { offset: 300, projectName: "a", updatedAt: "" },
-				"/b": { offset: 300, projectName: "b", updatedAt: "" },
-				"/c": { offset: 400, projectName: "c", updatedAt: "" },
+				"/a": at(300, "a"),
+				"/b": at(300, "b"),
+				"/c": at(400, "c"),
 			}).map(describeOffsetClaimOverlap),
 		).toEqual(["/a and /b both claim offset 300"]);
 	});
@@ -877,7 +847,7 @@ describe("offset claims", () => {
 		const first = mkdtempSync(join(tmpdir(), "buncargo-overlap-a-"));
 		const second = mkdtempSync(join(tmpdir(), "buncargo-overlap-b-"));
 		const blocks = (root: string, projectName: string) =>
-			resolvePortPlan({
+			allocate({
 				projectPrefix: "lullu",
 				projectName,
 				root,
@@ -888,14 +858,8 @@ describe("offset claims", () => {
 		const warn = console.warn;
 		console.warn = (message: string) => warnings.push(String(message));
 		try {
-			await Bun.write(
-				join(first, ".buncargo/ports.json"),
-				JSON.stringify({ offset: 200 }),
-			);
-			await Bun.write(
-				join(second, ".buncargo/ports.json"),
-				JSON.stringify({ offset: 100 }),
-			);
+			pinClaim(first, "lullu-a", 200, [3200, 3300]);
+			await releasedClaim(second, "lullu-b", 100, [3100, 3200]);
 			const a = blocks(first, "lullu-a");
 			const b = blocks(second, "lullu-b");
 			expect(a.offset).toBe(200);
@@ -924,17 +888,11 @@ describe("offset claims", () => {
 		const warn = console.warn;
 		console.warn = (message: string) => warnings.push(String(message));
 		try {
-			await Bun.write(
-				join(first, ".buncargo/ports.json"),
-				JSON.stringify({ offset: 200 }),
-			);
-			await Bun.write(
-				join(second, ".buncargo/ports.json"),
-				JSON.stringify({ offset: 100 }),
-			);
+			pinClaim(first, "lullu-a", 200, [5373]);
+			await releasedClaim(second, "lullu-b", 100, [25273]);
 			// Tailscale's listener on the first checkout's own HTTPS port fails
 			// the bind probe, exactly as a stranger would.
-			const a = resolvePortPlan({
+			const a = allocate({
 				projectPrefix: "lullu",
 				projectName: "lullu-a",
 				root: first,
@@ -949,7 +907,7 @@ describe("offset claims", () => {
 			expect(readOffsetClaims()[first]?.ports).toEqual([5373, 25373]);
 
 			// 25273 at offset 100 is the first checkout's HTTPS port.
-			const b = resolvePortPlan({
+			const b = allocate({
 				projectPrefix: "lullu",
 				projectName: "lullu-b",
 				root: second,
@@ -979,15 +937,9 @@ describe("offset claims", () => {
 			firebase: { port: 4000, extraPorts: [9099, 9199], devCommand: "true" },
 		});
 		try {
-			await Bun.write(
-				join(first, ".buncargo/ports.json"),
-				JSON.stringify({ offset: 100 }),
-			);
-			await Bun.write(
-				join(second, ".buncargo/ports.json"),
-				JSON.stringify({ offset: 0 }),
-			);
-			const a = resolvePortPlan({
+			pinClaim(first, "fb-a", 100, [4100]);
+			await releasedClaim(second, "fb-b", 0, [4000, 9099, 9199]);
+			const a = allocate({
 				projectPrefix: "fb",
 				projectName: "fb-a",
 				root: first,
@@ -999,7 +951,7 @@ describe("offset claims", () => {
 			expect(readOffsetClaims()[first]?.ports).toEqual([4100, 9199, 9299]);
 
 			// At offset 0 the second checkout's 9199 is the first one's auth port.
-			const b = resolvePortPlan({
+			const b = allocate({
 				projectPrefix: "fb",
 				projectName: "fb-b",
 				root: second,
@@ -1010,7 +962,7 @@ describe("offset claims", () => {
 			expect(b.offset).not.toBe(0);
 
 			// And a stranger on an extra port moves the block too.
-			const third = resolvePortPlan({
+			const third = allocate({
 				projectPrefix: "fb",
 				projectName: "fb-c",
 				root: second,
@@ -1029,106 +981,12 @@ describe("offset claims", () => {
 		}
 	});
 
-	it("keeps honouring a claim written without its ports by its offset", async () => {
-		delete process.env.BUNCARGO_PORT_OFFSET;
-		const older = mkdtempSync(join(tmpdir(), "buncargo-older-"));
-		const root = mkdtempSync(join(tmpdir(), "buncargo-newer-"));
-		try {
-			const hashed = computeBaseOffset({ projectPrefix: "lullu" });
-			await Bun.write(
-				join(home, ".buncargo/offsets.json"),
-				JSON.stringify({
-					version: 1,
-					claims: {
-						[older]: {
-							offset: hashed,
-							projectName: "lullu-old",
-							updatedAt: "2026-01-01T00:00:00.000Z",
-						},
-					},
-				}),
-			);
-			expect(plan(root).offset).toBe(hashed + PORT_OFFSET_STEP);
-			expect(readOffsetClaims()).toMatchObject({
-				[older]: { offset: hashed },
-				[root]: {
-					offset: hashed + PORT_OFFSET_STEP,
-					ports: [5432 + hashed + PORT_OFFSET_STEP],
-				},
-			});
-		} finally {
-			rmSync(older, { recursive: true, force: true });
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it("keeps an incumbent whose claim has no ports in the block its lockfile records", async () => {
-		delete process.env.BUNCARGO_PORT_OFFSET;
-		// b holds offset 1100 (4100, 5100) under a claim from before claims had
-		// ports; a's offset 100 would be 3100 and 4100.
-		const incumbent = mkdtempSync(join(tmpdir(), "buncargo-incumbent-"));
-		const newcomer = mkdtempSync(join(tmpdir(), "buncargo-newcomer-"));
-		const services = { api: { port: 3000 }, admin: { port: 4000 } };
-		const blocks = (root: string, projectName: string) =>
-			resolvePortPlan({
-				projectPrefix: "lullu",
-				projectName,
-				root,
-				services,
-				getOwner: () => null,
-			});
-		const warn = console.warn;
-		console.warn = () => {};
-		try {
-			writePortsLockfile(incumbent, {
-				version: 1,
-				projectName: "lullu-b",
-				root: incumbent,
-				offset: 1100,
-				ports: { api: 4100, admin: 5100 },
-				provenance: "hash",
-			});
-			await Bun.write(
-				join(home, ".buncargo/offsets.json"),
-				JSON.stringify({
-					version: 1,
-					claims: {
-						[incumbent]: {
-							offset: 1100,
-							projectName: "lullu-b",
-							updatedAt: "2026-01-01T00:00:00.000Z",
-						},
-					},
-				}),
-			);
-			await Bun.write(
-				join(newcomer, ".buncargo/ports.json"),
-				JSON.stringify({ offset: 100 }),
-			);
-
-			const a = blocks(newcomer, "lullu-a");
-			expect(Object.values(a.ports)).not.toContain(4100);
-			expect(blocks(incumbent, "lullu-b").offset).toBe(1100);
-		} finally {
-			console.warn = warn;
-			rmSync(incumbent, { recursive: true, force: true });
-			rmSync(newcomer, { recursive: true, force: true });
-		}
-	});
-
-	it("refuses a partial start whose persisted block another checkout now claims", async () => {
+	it("refuses a partial start whose claimed block another checkout's claim overlaps", async () => {
 		delete process.env.BUNCARGO_PORT_OFFSET;
 		const root = mkdtempSync(join(tmpdir(), "buncargo-partial-claim-"));
 		const other = mkdtempSync(join(tmpdir(), "buncargo-partial-other-"));
 		try {
-			writePortsLockfile(root, {
-				version: 1,
-				projectName: "lullu-a",
-				root,
-				offset: 100,
-				ports: { postgres: 5532, marketing: 3100 },
-				provenance: "hash",
-			});
+			pinClaim(root, "lullu-a", 100, [3100, 5532]);
 			withOffsetClaimsLock(() =>
 				claimOffset({
 					root: other,
@@ -1138,7 +996,7 @@ describe("offset claims", () => {
 				}),
 			);
 			expect(() =>
-				resolvePortPlan({
+				allocate({
 					root,
 					projectPrefix: "lullu",
 					projectName: "lullu-a",
@@ -1148,62 +1006,34 @@ describe("offset claims", () => {
 					getOwner: () => null,
 				}),
 			).toThrow(
-				`persisted allocation: port 3100 is in the block ${other} claims`,
+				`claimed allocation: port 3100 is in the block ${other} claims`,
 			);
-			expect(readPortsLockfile(root)?.offset).toBe(100);
+			expect(readOffsetClaims()[root]?.offset).toBe(100);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 			rmSync(other, { recursive: true, force: true });
 		}
 	});
 
-	it("pins a checkout with an offset-only lockfile and fills in the rest", async () => {
+	it("says why its claimed block is not used when another checkout took it", async () => {
 		delete process.env.BUNCARGO_PORT_OFFSET;
-		const root = mkdtempSync(join(tmpdir(), "buncargo-pin-"));
-		try {
-			await Bun.write(
-				join(root, ".buncargo/ports.json"),
-				JSON.stringify({ offset: 2500 }),
-			);
-			const pinned = plan(root);
-			expect(pinned).toMatchObject({
-				offset: 2500,
-				provenance: "lockfile",
-				ports: { postgres: 7932 },
-			});
-			expect(readPortsLockfile(root)).toMatchObject({
-				offset: 2500,
-				root,
-				ports: { postgres: 7932 },
-			});
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it("says why a lockfile is not used", () => {
-		delete process.env.BUNCARGO_PORT_OFFSET;
-		const root = mkdtempSync(join(tmpdir(), "buncargo-copied-"));
+		const root = mkdtempSync(join(tmpdir(), "buncargo-moved-"));
+		const other = mkdtempSync(join(tmpdir(), "buncargo-taker-"));
 		const warnings: string[] = [];
 		const warn = console.warn;
 		console.warn = (message: string) => warnings.push(String(message));
 		try {
-			writePortsLockfile(root, {
-				version: 1,
-				projectName: "lullu-a",
-				root: "/somewhere/else",
-				offset: 2500,
-				ports: {},
-				provenance: "lockfile",
-			});
+			await releasedClaim(root, "lullu-a", 2500, [7932]);
+			pinClaim(other, "lullu-b", 2500, [7932]);
 			const allocated = plan(root);
 			expect(allocated.offset).not.toBe(2500);
 			expect(warnings.join("\n")).toContain(
-				"not used: it was written for /somewhere/else",
+				`Offset 2500 not used: offset 2500 is claimed by ${other}`,
 			);
 		} finally {
 			console.warn = warn;
 			rmSync(root, { recursive: true, force: true });
+			rmSync(other, { recursive: true, force: true });
 		}
 	});
 });
@@ -1211,7 +1041,7 @@ describe("offset claims", () => {
 describe("pinOffset", () => {
 	const services = { postgres: { port: 5432 } };
 
-	it("writes the lockfile and claims the block", () => {
+	it("claims the block", () => {
 		const root = mkdtempSync(join(tmpdir(), "buncargo-pin-"));
 		try {
 			expect(
@@ -1223,7 +1053,6 @@ describe("pinOffset", () => {
 					getOwner: () => null,
 				}),
 			).toEqual({ pinned: { postgres: 7932 } });
-			expect(readPortsLockfile(root)).toMatchObject({ offset: 2500, root });
 			expect(readOffsetClaims()[root]).toMatchObject({
 				offset: 2500,
 				ports: [7932],
@@ -1260,7 +1089,7 @@ describe("pinOffset", () => {
 				`${root} would run under Compose project lullu-a, which ${other} already uses`,
 			);
 			expect(() =>
-				resolvePortPlan({
+				allocate({
 					projectPrefix: "lullu",
 					projectName: "lullu-a",
 					root,
@@ -1268,7 +1097,6 @@ describe("pinOffset", () => {
 					getOwner: () => null,
 				}),
 			).toThrow("refused" in result ? result.refused : "");
-			expect(readPortsLockfile(root)).toBeNull();
 			expect(Object.keys(readOffsetClaims())).toEqual([other]);
 
 			expect(pin(false)).toEqual({ pinned: { postgres: 7932 } });
@@ -1306,7 +1134,6 @@ describe("pinOffset", () => {
 				claimed: true,
 			});
 			expect(Object.keys(readOffsetClaims())).toEqual([other]);
-			expect(readPortsLockfile(root)).toBeNull();
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 			rmSync(other, { recursive: true, force: true });

@@ -6,10 +6,12 @@ per port.
 
 ## Allocation and claims
 
-- `src/core/port-allocation.ts` hashes a project offset, probes conflicts, and persists
-  `.buncargo/ports.json`. `allocatePortBlock` is a run's allocation (a dry run without `claim`),
-  `readPortPlan` the read, and the pure `chooseBlock` decides which candidate block is free;
-  `resolvePortPlan` picks between the first two. The read probes nothing: `getEnvVar`
+- `src/core/port-allocation.ts` hashes a project offset, probes conflicts, and claims the block.
+  `allocatePortBlock` is a run's allocation (a dry run without `claim`), `readPortPlan` the read,
+  and the pure `chooseBlock` decides which candidate block is free. The claim in
+  `~/.buncargo/offsets.json` is the only record of a checkout's block: 16.0 dropped
+  `.buncargo/ports.json`, which could disagree with the claim, and which suffixed environments
+  had never needed. The read probes nothing: `getEnvVar`
   answers a `vite.config.ts` with the ports the environment is *using*, and cannot resolve a
   runtime without importing the backends that import it back, so probing there would read this
   project's own service container as foreign and shift the block onto a port nothing is listening
@@ -28,36 +30,42 @@ per port.
   already allocated: probing again would move a live run's block under it and replace its
   selection. A run in another process is not an allocation of this environment: the prisma path
   probes, finds the run's database container is this project's and keeps the block, while a
-  lockfile block another project's container now holds is set aside as `dev` sets it aside. A CI
-  runner's checkout keeps its lockfile between jobs while other stacks come and go on the daemon.
+  claimed block another project's container now holds is set aside as `dev` sets it aside. A CI
+  runner's checkout keeps its claim between jobs while other stacks come and go on the daemon.
   An app-only allocation never probed the database's port against containers, so that case still
   meets a foreign one at the preflight.
 - `offset-claims.ts` is `~/.buncargo/offsets.json`, root → offset and the block's ports. Every
   probing allocation skips a block another existing checkout claims, by its offset or by any one of
   its ports, and every claiming one writes its own. Offsets alone missed collisions between
-  configs: api 3000 at offset 1100 and admin 4000 at offset 100 are both 4100. The ports are an
-  optional field, so the file keeps its version and an older buncargo still reads it. A claim
-  written without them takes its ports from its checkout's lockfile (when the offsets match) until
-  that checkout's next run rewrites it; holding the offset alone let a newcomer take an
-  overlapping block and moved the incumbent on its next run. `doctor` and `ports` report
-  overlapping claims by the same rule and the same lockfile reading. A suffixed
-  environment claims without persisting a lockfile, under `offsetClaimKey(root, suffix)` with
-  `root` and `suffix` stored in the claim (the key is never parsed), so it never replaces its
-  checkout's dev claim.
+  configs: api 3000 at offset 1100 and admin 4000 at offset 100 are both 4100. `ports` and
+  `usedAt` are required, and the file keeps version 1: every claim 15.x writes has both, and a
+  claim from before them is read as no claim (holding the offset alone let a newcomer take an
+  overlapping block). `doctor` and `ports` report overlapping claims by the same rule. A
+  suffixed environment claims under `offsetClaimKey(root, suffix)` with `root` and `suffix`
+  stored in the claim (the key is never parsed), so it never replaces its checkout's dev claim.
   It was unclaimed before, and parallel CI jobs on one machine all took the same block: their
   checkouts share a directory name and so a hash, and they probed before any had bound a port.
   A developer's dev claim lives as long as its directory, which is what tells "stopped" from
   "deleted", and keeps a stopped worktree's URLs. A throwaway environment's claim (suffixed, or
-  any in CI) is released when a full `stop()` has taken its stack down (`captureThrowawayClaim`,
-  which reads the claim before the teardown, so a job that allocates during it keeps its block):
+  any in CI) gives up its block when a full `stop()` has taken its stack down
+  (`captureThrowawayClaim`, which reads the claim before the teardown, so a job that allocates
+  during it keeps its block):
   self-hosted runners keep their directories between jobs, and their dev, `ci` and E2E claims
   held all 90 blocks of a machine running a few dozen runners, so every new allocation failed.
   Not while another run of the same environment is on record (its `stop()` keeps the services
-  and releases instead); a `start()` after the release claims again. A suffixed stack the sweep or
-  `buncargo stop` removes loses its claim the same way (`releaseSuffixedClaimsOf`), unless its
-  checkout was deleted; `stop` releases nothing when it removed nothing (an app-only run) or
-  another entry of the project still holds containers, whose stack the claim may be. Every release decided from an earlier read is compare-and-set
-  (`releaseOffsetClaimsIfUnchanged`, by the fields `markOffsetClaimsReclaimed` compares), and a
+  and releases instead); a `start()` after the release claims again, at the same offset while
+  it is free. A suffixed stack the sweep or `buncargo stop` removes gives up its block the same
+  way (`releaseSuffixedClaimsOf`); `stop` releases nothing when it removed nothing (an app-only
+  run) or another entry of the project still holds containers, whose stack the claim may be.
+  Giving up a block marks the claim (`markOffsetClaimsReclaimed`, the same mark a full range
+  sets) and keeps it: the claim is also the record of which checkout a project belongs to. An
+  E2E stack's claim used to be deleted when its run stopped, so once its checkout was deleted
+  nothing named its volumes and neither the settle rule nor `prune` could see them: 151 of 215
+  orphaned volumes on one machine were `-e2e` stacks'. The sweep retires a throwaway claim that
+  holds no block once nothing of its project is left, no container, no run and no volume
+  (`spentThrowawayClaims`): each `ci` run claims under a new suffix, and kept for good those
+  claims would fill the file. Every release decided from an earlier read is compare-and-set (by
+  the fields `markOffsetClaimsReclaimed` and `retireOffsetClaimsIfUnchanged` compare), and a
   stack's teardown releases only claims last used before its run started: a job allocates before
   it publishes its run, and the last job's stack coming down in that window took the new job's
   claim with it. A stack the sweep downs with no run on record has no start to compare with, so
@@ -65,22 +73,20 @@ per port.
   suffixed one, which has no stack whose removal releases it) records `throwaway: true` on its
   claim, and the sweep frees it once the run left nothing: no live run, no listed container, and
   its entries retired, by the same "used before its run started" rule, or the hour with no run on
-  record (`abandonedThrowawayClaims`). Releasing a CI dev
-  claim after a `dev --down` that kept volumes also drops the project-name refusal for them;
-  in CI the next job of that directory claims the name again.
+  record (`abandonedThrowawayClaims`).
   The hash spreads checkouts over 100 to 9000, and stays there: widening it would move every
-  checkout without a lockfile. The search for a free block climbs from the hash to
+  checkout without a claim. The search for a free block climbs from the hash to
   `maxPortOffset`, the highest offset that keeps the config's highest port below 32768 (Linux's
   ephemeral range, where outgoing connections take ports at random; macOS's starts higher),
   never below 9000, then wraps to 100: climbing from the hash alone gave a checkout that hashed
   high only the few blocks above it, and 90 blocks were full on a machine with 80 claims of
   which two were running. Allocation ignores a deleted
-  checkout's claim, and the sweep drops it (after its volumes, on the opt-in in
-  `run-registry-and-sweep.md`). A claiming allocation holds
+  checkout's claim, and the sweep drops it once its volumes are settled
+  (`run-registry-and-sweep.md`). A claiming allocation holds
   `offsets.json`'s lock from reading the claims to writing its own (`withFileLockSync`, because the
-  allocator is synchronous), or two checkouts starting together pick the same block. The lockfile is honoured by its
-  offset alone, applied to the config's current ports, so an added service or a hand-written
-  `{ "offset": n }` keeps the block, and a run that sets the lockfile aside says why.
+  allocator is synchronous), or two checkouts starting together pick the same block. The claim
+  is honoured by its offset alone, applied to the config's current ports, so an added service
+  keeps the block, and a developer's run that moves off its claimed offset says why.
 - A claim also records the checkout's Compose project name, and a claiming run refuses to start,
   under the same lock and before it writes anything, when another existing checkout's claim
   carries its name; `ports pin` refuses with the same check and message. Offsets only keep two
@@ -113,27 +119,25 @@ per port.
   prompt or `buncargo prisma`, which records none, sits in between. All of it is paid only on a
   full range. A block a process holds is probed then and never reclaimed, since freeing its
   claim would not free it.
-- A reclaimed claim is marked, not deleted. It holds no block (`claimsWithLockfilePorts`, and so
+- A reclaimed claim is marked, not deleted. It holds no block (`heldOffsetClaims`, and so
   allocation, `pin`, `ports` and `doctor`'s overlaps, skip it) but stays for everything else:
   the project-name refusal, `prune`'s existing checkouts, the orphan report and the sweep's
   `isKnownStack`. Deleting it made an idle checkout's database look like an orphan to `prune`,
   freed its project name for another checkout to run on its volume, and made its exited
   containers foreign to the sweep. The checkout's next claiming run rewrites the claim without
-  the mark, on a new block once its lockfile's block is another checkout's. Until then a read in
-  it sets the lockfile aside when its own claim holds no block and another claim covers the
-  lockfile's block; a live run always holds its claim, so a pre-lock overlap still reads as the
-  run serving it does. Marking compares each claim's offset, name, `updatedAt` and `usedAt`
+  the mark, on a new block once its old one is another checkout's. Until then a read in it
+  answers its old block while no claim that holds a block covers it; a live run always holds its
+  claim, so a pre-lock overlap still reads as the run serving it does. Marking compares each claim's offset, name, `updatedAt` and `usedAt`
   with what the scan read, under the claims lock, so a run that started in between keeps its
   block; that is why `claimOffset` rewrites `usedAt` on every claiming run (one file write, no
-  fork). Not the whole claim: a reader fills a port-less claim's ports from its lockfile, and
-  the oldest claims, the ones a full range reaches first, are port-less. The synchronous
+  fork). Not the whole claim: the sweep stamps `deletedSeenAt` on its own. The synchronous
   `prepareStart` does not reclaim: it has no liveness to read. `ports release --idle` marks the
   same idle claims by age on request; `ports release --root` still deletes, since freeing the
   name is its purpose. None touches a deleted checkout's claim, a container or a volume.
-- A read (`claim: false`) never throws on a full range: a checkout with no lockfile gets the
+- A read (`claim: false`) never throws on a full range: a checkout with no claim gets the
   hashed block with provenance `unallocated`. `status`, `env`, `url` and `ports` are what an agent
   reaches for in exactly that state, and every one of them failed with the allocation error, so
-  agents started their own databases and hand-wrote lockfiles. Those ports are another checkout's,
+  agents started their own databases and hand-wrote port files. Those ports are another checkout's,
   so `exec` (the environment's, which the CLI and tasks use) refuses on an unallocated plan.
 
 ## Who holds a port
@@ -172,7 +176,7 @@ per port.
   which fails the bind probe for the checkout's own entry.
 - An app's `extraPorts` (`extraPortMap`) are claimed *and* probed, keyed `<app>#<n>` so a
   selection that names the app probes them and one that does not leaves them alone. They are not in
-  the port map, so they never reach the env or the lockfile: the lockfile's offset brings them back.
+  the port map, so they never reach the env: the claim's offset brings them back.
 - A stack is **stale** when its `buncargo.root` label is this checkout and its project name does
   not start with `<projectPrefix>-<directory>` (`staleStackProject`). Renaming `projectPrefix`
   renames every stack of the checkout, and the old one kept publishing the ports the new name was

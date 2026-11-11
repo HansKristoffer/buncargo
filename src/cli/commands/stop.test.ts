@@ -15,6 +15,7 @@ import {
 } from "../../core/hosts/registry";
 import {
 	claimOffset,
+	offsetClaimHoldsBlock,
 	offsetClaimKey,
 	readAllOffsetClaims,
 	withOffsetClaimsLock,
@@ -196,7 +197,11 @@ describe("buncargo stop --all", () => {
 		expect(await handleStop(["--all", "--root", root])).toBe(0);
 		expect(calls()).toContain("compose -p fixture down");
 		expect(await loadRuns()).toEqual([]);
-		expect(readAllOffsetClaims()).toEqual({});
+		// The claim stays without its block, naming the project its volumes
+		// belong to.
+		const claim = readAllOffsetClaims()[offsetClaimKey(root, "e2e")];
+		expect(claim?.projectName).toBe("fixture");
+		expect(claim && offsetClaimHoldsBlock(claim)).toBe(false);
 	});
 
 	it("takes down a live run's containers and its project's released runs together", async () => {

@@ -14,7 +14,7 @@ Local development environments are fragile: hand-written compose files, scattere
 
 - **Single config file** - services, apps, ports, URLs, migrations, hooks
 - **Auto-generated Docker Compose** - stamped with `buncargo.*` labels
-- **Port allocation** - hash of `projectPrefix` + worktree, then probe and persist `.buncargo/ports.json`
+- **Port allocation** - hash of `projectPrefix` + worktree, then probe and claim the block in `~/.buncargo/offsets.json`
 - **Built-in presets** - Postgres, Redis, ClickHouse
 - **Dev server orchestration** - reuse healthy apps, kill own orphans, fail on foreign port owners
 - **Terminal UI** - the default in a terminal (`--no-tui` for prefixed lines): every app in its own terminal pane, full-screen apps (Shopify CLI, Expo) render natively, an Overview interleaves the rest

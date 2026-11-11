@@ -16,7 +16,7 @@ Cross-cutting utilities in `src/core/` that most features touch.
   the Infisical CLI) get `connectProcessEnv` from the same module: no connect tokens, but the full
   environment.
 - `state-paths.ts` owns both state directories: `~/.buncargo` (machine-wide: routes, runs,
-  certificates, downloaded tools) and `<root>/.buncargo` (per-checkout: port lockfile, tunnel
+  certificates, downloaded tools) and `<root>/.buncargo` (per-checkout: tunnel
   registry, typecheck artifacts), plus the `sudo`-aware home resolution and chown that make the
   first one correct when the root daemon writes it. Tests relocate it by pointing `HOME` elsewhere,
   deliberately *not* through a dedicated override: a second mechanism outranking `HOME` leaks
@@ -25,7 +25,7 @@ Cross-cutting utilities in `src/core/` that most features touch.
 ## Persisted files and locks
 
 - `registry-file.ts` reads and writes the persisted state files (`routes.json`,
-  `hosts-daemon.json`, `hosts-service.json`, `ports.json`) through typed
+  `hosts-daemon.json`, `hosts-service.json`, `offsets.json`) through typed
   validators. Writes go via temp file + rename: the hosts daemon re-reads `routes.json` every
   second, and a truncating write would let it read the file empty and conclude there is no state.
   A read is lenient by default and `strict` for a consumer that only reads: a missing file is "no

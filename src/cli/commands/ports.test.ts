@@ -17,7 +17,7 @@ import {
 	readAllOffsetClaims,
 	withOffsetClaimsLock,
 } from "../../core/offset-claims";
-import { resolvePortPlan } from "../../core/port-allocation";
+import { allocatePortBlock } from "../../core/port-allocation";
 import { buildRunEntry, publishRun } from "../../core/run-registry";
 import { CI_ENV_VARS } from "../../core/runtime-flags";
 import { handlePorts, parsePinnedOffset } from "./ports";
@@ -78,7 +78,8 @@ it("releases a stale claim that refuses another checkout, only once confirmed", 
 	const main = join(dir, "main");
 	mkdirSync(main);
 	const run = () =>
-		resolvePortPlan({
+		allocatePortBlock({
+			claim: true,
 			projectPrefix: "lullu",
 			projectName: "lullu-playground",
 			root: main,
@@ -234,6 +235,6 @@ it("answers status --json and ports in a checkout with no block while every bloc
 	const pinned = await cli("status", "--json");
 	expect(JSON.parse(pinned.stdout)).toMatchObject({
 		portOffset: 9100,
-		portOffsetProvenance: "lockfile",
+		portOffsetProvenance: "claim",
 	});
 });

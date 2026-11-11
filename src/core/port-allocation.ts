@@ -1,17 +1,16 @@
-import { join } from "node:path";
 import { mapValues } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
 import type { ContainerRuntimeName, PortOffsetProvenance } from "../types";
 import { simpleHash } from "./hash";
 import {
 	claimOffset,
+	heldOffsetClaims,
 	type OffsetClaim,
 	offsetClaimConflict,
 	offsetClaimConflicts,
 	offsetClaimHoldsBlock,
 	offsetClaimKey,
 	projectNameClaimant,
-	readAllOffsetClaims,
 	readOffsetClaims,
 	withOffsetClaimsLock,
 } from "./offset-claims";
@@ -25,9 +24,7 @@ import {
 	type PortOwner,
 	withBindProbe,
 } from "./process";
-import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
 import { portOffsetOverride } from "./runtime-flags";
-import { STATE_DIRNAME } from "./state-paths";
 import { formatWarn } from "./style";
 
 export const PORT_OFFSET_STEP = 100;
@@ -35,11 +32,9 @@ const PORT_OFFSET_MIN = 100;
 /**
  * The last offset the hash spreads checkouts over. Fixed: changing it would
  * move every checkout's hashed block, and the URLs of every one without a
- * lockfile. The search for a free block goes further ({@link maxPortOffset}).
+ * claim. The search for a free block goes further ({@link maxPortOffset}).
  */
 const HASHED_OFFSET_MAX = 9000;
-const PORTS_LOCKFILE = `${STATE_DIRNAME}/ports.json`;
-const LOCKFILE_VERSION = 1;
 const PORT_OFFSET_BUCKETS =
 	(HASHED_OFFSET_MAX - PORT_OFFSET_MIN) / PORT_OFFSET_STEP + 1;
 /**
@@ -62,19 +57,6 @@ export function maxPortOffset(ports: readonly number[]): number {
 		Math.floor((EPHEMERAL_PORT_FLOOR - 1 - highest) / PORT_OFFSET_STEP) *
 		PORT_OFFSET_STEP;
 	return Math.max(HASHED_OFFSET_MAX, fits);
-}
-
-/**
- * `.buncargo/ports.json`. Only `offset` is required: a hand-written
- * `{ "offset": 2500 }` pins the checkout, and the next run fills in the rest.
- */
-export interface PortLockfile {
-	version: number;
-	projectName?: string;
-	root?: string;
-	offset: number;
-	ports: Record<string, number>;
-	provenance: Exclude<PortOffsetProvenance, "env" | "unallocated">;
 }
 
 export interface PortPlan {
@@ -164,7 +146,7 @@ export function buildPortMap(
 /**
  * Each app's `extraPorts`, moved with the app's own port, keyed
  * `<app>#<index>`: they are claimed and probed with the block, but are no
- * port of the config's, so they never reach the env or the lockfile.
+ * port of the config's, so they never reach the env.
  */
 export function extraPortMap(
 	apps: Readonly<Record<string, PortedApp>> | undefined,
@@ -228,115 +210,6 @@ function shiftPorts(
 	offset: number,
 ): Record<string, number> {
 	return mapValues(basePorts, (port) => port + offset);
-}
-
-export function getPortsLockfilePath(root: string): string {
-	return join(root, PORTS_LOCKFILE);
-}
-
-function validatePortLockfile(value: unknown): PortLockfile | undefined {
-	if (typeof value !== "object" || value === null) return undefined;
-	const lockfile = value as Partial<PortLockfile>;
-	if (lockfile.version !== undefined && lockfile.version !== LOCKFILE_VERSION)
-		return undefined;
-	if (!Number.isInteger(lockfile.offset) || (lockfile.offset ?? -1) < 0)
-		return undefined;
-	for (const field of ["projectName", "root"] as const)
-		if (lockfile[field] !== undefined && typeof lockfile[field] !== "string")
-			return undefined;
-	const ports = lockfile.ports ?? {};
-	if (
-		typeof ports !== "object" ||
-		ports === null ||
-		Object.values(ports).some(
-			(port) => !Number.isInteger(port) || port < 1 || port > 65535,
-		)
-	)
-		return undefined;
-	const provenance = lockfile.provenance ?? "lockfile";
-	if (
-		provenance !== "hash" &&
-		provenance !== "lockfile" &&
-		provenance !== "shifted"
-	)
-		return undefined;
-	return {
-		...lockfile,
-		version: LOCKFILE_VERSION,
-		offset: lockfile.offset as number,
-		ports,
-		provenance,
-	};
-}
-
-/** Why a lockfile is not this checkout's, or undefined when it is. */
-export function foreignLockfile(
-	lockfile: PortLockfile,
-	input: { projectName: string; root: string },
-): string | undefined {
-	if (lockfile.root !== undefined && lockfile.root !== input.root)
-		return `it was written for ${lockfile.root}`;
-	if (
-		lockfile.projectName !== undefined &&
-		lockfile.projectName !== input.projectName
-	)
-		return `it was written for project ${lockfile.projectName}`;
-	return undefined;
-}
-
-export function readPortsLockfile(root: string): PortLockfile | null {
-	return (
-		readJsonDocumentSync(getPortsLockfilePath(root), validatePortLockfile) ??
-		null
-	);
-}
-
-export function writePortsLockfile(root: string, lockfile: PortLockfile): void {
-	writeJsonDocumentSync(getPortsLockfilePath(root), lockfile);
-}
-
-/**
- * The claims of existing checkouts as allocation weighs them: a port-less
- * claim holds the ports its checkout's lockfile records. What `doctor` and
- * `buncargo ports` report overlaps from.
- */
-export function readOffsetClaimsWithPorts(): Record<string, OffsetClaim> {
-	return claimsWithLockfilePorts(readOffsetClaims());
-}
-
-/**
- * The claims that hold a block, with a port-less claim's ports read from its
- * checkout's lockfile. A reclaimed claim holds none: it keeps its project
- * name, but its block is another checkout's to take.
- *
- * A claim written before claims carried their ports holds only its offset, so
- * a newcomer could take a block overlapping it and the incumbent moved on its
- * next run. Its lockfile still records the block it uses. One read per such
- * claim, and only until that checkout's next run rewrites its claim.
- */
-function claimsWithLockfilePorts(
-	claims: Record<string, OffsetClaim>,
-): Record<string, OffsetClaim> {
-	const holding = Object.fromEntries(
-		Object.entries(claims).filter(([, claim]) => offsetClaimHoldsBlock(claim)),
-	);
-	return mapValues(holding, (claim, key) => {
-		// A suffixed environment has no lockfile; its checkout's is dev's.
-		if (claim.ports || claim.suffix) return claim;
-		const lockfile = readPortsLockfile(key);
-		const ports = lockfile ? Object.values(lockfile.ports) : [];
-		if (
-			!lockfile ||
-			lockfile.offset !== claim.offset ||
-			foreignLockfile(lockfile, {
-				projectName: claim.projectName,
-				root: key,
-			}) ||
-			ports.length === 0
-		)
-			return claim;
-		return { ...claim, ports: ports.sort((a, b) => a - b) };
-	});
 }
 
 /**
@@ -413,12 +286,6 @@ export interface AllocatePortBlockInput extends PortPlanInput {
 	 */
 	claim: boolean;
 	/**
-	 * Write `.buncargo/ports.json`. Default: `claim`, for the dev environment
-	 * only. A suffixed environment claims without persisting: its claim is its
-	 * only record, and the next run of it takes the same block back.
-	 */
-	persist?: boolean;
-	/**
 	 * The claim should not outlive its run (a suffixed environment, any in
 	 * CI): recorded on it, so the sweep frees it once its run is gone, even
 	 * when the run was killed before its teardown released it.
@@ -437,26 +304,6 @@ export interface AllocatePortBlockInput extends PortPlanInput {
 	runtime?: ContainerRuntimeAdapter;
 	getOwner?: (port: number) => PortOwner | null;
 	probeNames?: readonly string[];
-}
-
-/**
- * The ports an environment uses (`readPortPlan`) or an allocation for a run
- * (`allocatePortBlock`). `probeConflicts: false` is the read; otherwise
- * `claim` defaults to `persist`, and `persist` to true.
- */
-export function resolvePortPlan(
-	input: Omit<AllocatePortBlockInput, "claim"> & {
-		claim?: boolean;
-		probeConflicts?: boolean;
-	},
-): PortPlan {
-	if (input.probeConflicts === false) return readPortPlan(input);
-	const persist = input.persist ?? true;
-	return allocatePortBlock({
-		...input,
-		persist,
-		claim: input.claim ?? persist,
-	});
 }
 
 /** One block an allocation may take: its offset, and every port it holds. */
@@ -569,21 +416,6 @@ function overridePlan(layout: PortLayout, offset: number): PortPlan {
 	return { offset, ports, provenance: "env" };
 }
 
-/** The checkout's lockfile, and why it is set aside when it is another's. */
-function readOwnLockfile(input: PortPlanInput): {
-	lockfile: PortLockfile | null;
-	own: PortLockfile | undefined;
-	foreign: string | undefined;
-} {
-	const lockfile = readPortsLockfile(input.root);
-	const foreign = lockfile ? foreignLockfile(lockfile, input) : undefined;
-	return {
-		lockfile,
-		own: lockfile && !foreign ? lockfile : undefined,
-		foreign,
-	};
-}
-
 /** The claims that hold a block, without the asker's own (`key`). */
 function otherClaims(
 	claims: Record<string, OffsetClaim>,
@@ -595,8 +427,26 @@ function otherClaims(
 }
 
 /**
- * The ports an environment uses, probing nothing and writing nothing: what
- * its last run persisted, its own claim, or the first block no claim holds.
+ * The environment's own claim, when its block is still its to use: one that
+ * holds its block always is, and one that gave it up is while no other claim
+ * took it since. A live run always holds its claim, so a block two claims
+ * share (a pre-lock race) still reads as the run serving it uses it.
+ */
+function ownClaimedOffset(
+	own: OffsetClaim | undefined,
+	layout: PortLayout,
+	others: Record<string, OffsetClaim>,
+): number | undefined {
+	if (!own) return undefined;
+	if (offsetClaimHoldsBlock(own)) return own.offset;
+	return offsetClaimConflict(others, layout.candidate(own.offset)) === undefined
+		? own.offset
+		: undefined;
+}
+
+/**
+ * The ports an environment uses, probing nothing and writing nothing: its own
+ * claim's block, or the first block no claim holds.
  *
  * A read wants the ports this environment *uses*. Probing there reallocates
  * around the environment's own running services and answers with a port
@@ -607,45 +457,12 @@ export function readPortPlan(input: PortPlanInput): PortPlan {
 	const envOffset = portOffsetOverride();
 	if (envOffset !== undefined) return overridePlan(layout, envOffset);
 
-	// The lockfile answers from one read of the claims file, unless a full
-	// range reclaimed this checkout's block for another one: the lockfile still
-	// names it, and the claim holds none. A live run always holds its claim, so
-	// a block two claims share (a pre-lock race) still reads as the lockfile
-	// says, as the run serving it does.
-	let read:
-		{ own?: OffsetClaim; others: Record<string, OffsetClaim> } | undefined;
-	const claims = () => {
-		if (!read) {
-			const holding = claimsWithLockfilePorts(readOffsetClaims());
-			read = {
-				own: holding[layout.claimKey],
-				others: otherClaims(holding, layout.claimKey),
-			};
-		}
-		return read;
-	};
-	const { own: lockfile } = readOwnLockfile(input);
-	if (lockfile) {
-		const ownClaim = readAllOffsetClaims()[layout.claimKey];
-		const reclaimed =
-			(ownClaim === undefined || !offsetClaimHoldsBlock(ownClaim)) &&
-			offsetClaimConflict(
-				claims().others,
-				layout.candidate(lockfile.offset),
-			) !== undefined;
-		if (!reclaimed) return lockfilePlan(layout, lockfile);
-	}
+	const existing = readOffsetClaims();
+	const others = otherClaims(heldOffsetClaims(existing), layout.claimKey);
+	const own = ownClaimedOffset(existing[layout.claimKey], layout, others);
+	if (own !== undefined) return claimPlan(layout, own);
 
-	// Its own claim keeps a suffixed environment's ports from one run to the
-	// next, as a lockfile does for dev.
-	const { own, others } = claims();
-	const free = () => undefined;
-	const ownChoice =
-		own && chooseBlock([layout.candidate(own.offset)], others, free);
-	const choice =
-		ownChoice && "offset" in ownChoice
-			? ownChoice
-			: chooseBlock(layout.search(), others, free);
+	const choice = chooseBlock(layout.search(), others, () => undefined);
 	// Every block is someone else's: answer where the hash puts it, and say
 	// it is not this checkout's. `status`, `env`, `url` and `ports` must work
 	// in exactly the state they are needed to get out of, and `ports pin`
@@ -663,29 +480,24 @@ export function readPortPlan(input: PortPlanInput): PortPlan {
 	};
 }
 
-/**
- * The lockfile's ports, and its offset for keys it does not have: a config
- * edit must not make a maintenance command switch away from the endpoints the
- * last startup published.
- */
-function lockfilePlan(layout: PortLayout, lockfile: PortLockfile): PortPlan {
-	const ports = mapValues(
-		layout.basePorts,
-		(base, name) => lockfile.ports[name] ?? base + lockfile.offset,
-	);
-	if (Object.values(layout.withExtras(ports)).some((port) => port > 65535))
+/** The claim's block, with the config's current ports. */
+function claimPlan(layout: PortLayout, offset: number): PortPlan {
+	if (
+		Object.values(layout.withExtras(layout.at(offset))).some(
+			(port) => port > 65535,
+		)
+	)
 		throw new Error(
-			"Persisted offset cannot accommodate this config; run dev to reconcile the allocation.",
+			`The claimed offset ${offset} cannot accommodate this config; run dev to move the checkout's block.`,
 		);
-	return { offset: lockfile.offset, ports, provenance: "lockfile" };
+	return { offset, ports: layout.at(offset), provenance: "claim" };
 }
 
 /**
- * The block a run takes: the lockfile's, a suffixed environment's own claim,
- * or the first free one from the hash. Probes for processes on the ports, and
- * with `claim` claims the block under the claims lock, which it holds from
- * reading the other claims to writing its own: two runs starting together
- * would otherwise pick the same.
+ * The block a run takes: its own claim's, or the first free one from the
+ * hash. Probes for processes on the ports, and with `claim` claims the block
+ * under the claims lock, which it holds from reading the other claims to
+ * writing its own: two runs starting together would otherwise pick the same.
  *
  * Throws {@link PortBlockExhaustedError} when a claiming run finds every
  * block taken; a dry run answers `unallocated` then, as a read does.
@@ -712,12 +524,11 @@ function allocateBlock(
 	getOwner: (port: number) => PortOwner | null,
 ): PortPlan {
 	const { projectName, root, suffix, claim, runtime } = input;
-	const persist = input.persist ?? (claim && suffix === undefined);
 	const runtimeName = runtime?.name;
 
 	// Claims of checkouts that still exist. A claiming run reads them before
 	// anything else, so a project name another checkout uses stops it before
-	// it writes a lockfile or a claim, under any offset.
+	// it writes a claim, under any offset.
 	const existingClaims = readOffsetClaims();
 	if (claim && (input.worktreeIsolation ?? true)) {
 		const refused = sharedProjectNameRefusal(existingClaims, {
@@ -732,7 +543,7 @@ function allocateBlock(
 
 	// Other claims are skipped whether or not their runs are running; only a
 	// claiming run writes its own.
-	const claims = claimsWithLockfilePorts(existingClaims);
+	const claims = heldOffsetClaims(existingClaims);
 	const others = otherClaims(claims, layout.claimKey);
 	const conflictAt = (offset: number) =>
 		findForeignConflict(
@@ -748,24 +559,7 @@ function allocateBlock(
 				})
 			: undefined;
 	};
-	const { lockfile, own: ownLockfile, foreign } = readOwnLockfile(input);
-	const settle = (
-		offset: number,
-		provenance: PortLockfile["provenance"],
-	): PortPlan => {
-		const ports = layout.at(offset);
-		if (persist) {
-			const next: PortLockfile = {
-				version: LOCKFILE_VERSION,
-				projectName,
-				root,
-				offset,
-				ports,
-				provenance,
-			};
-			if (JSON.stringify(next) !== JSON.stringify(lockfile))
-				writePortsLockfile(root, next);
-		}
+	const settle = (offset: number, provenance: PortOffsetProvenance) => {
 		if (claim)
 			claimOffset({
 				root,
@@ -775,34 +569,32 @@ function allocateBlock(
 				suffix,
 				throwaway: input.throwaway,
 			});
-		return { offset, ports, provenance };
+		return { offset, ports: layout.at(offset), provenance };
 	};
 
-	// The lockfile's offset, applied to whatever ports the config has now: an
-	// added service keeps the block, and `{ "offset": 2500 }` alone pins it.
-	let ignored = foreign;
-	if (ownLockfile) {
-		const choice = chooseBlock(
-			[layout.candidate(ownLockfile.offset)],
-			others,
-			busy,
-		);
-		if ("offset" in choice) return settle(choice.offset, "lockfile");
+	// The claim's offset, applied to whatever ports the config has now: an
+	// added service keeps the block. One that gave its block up takes it back
+	// when it is still free.
+	const own = existingClaims[layout.claimKey];
+	let ignored: string | undefined;
+	if (own) {
+		const choice = chooseBlock([layout.candidate(own.offset)], others, busy);
+		if ("offset" in choice) return settle(choice.offset, "claim");
 		const [blocked] = choice.blocked;
 		ignored = blocked?.problem;
 		// A partial start must not move the block: the containers and apps it
-		// did not select still publish the persisted ports.
+		// did not select still publish the claimed ports.
 		const partial =
 			input.probeNames &&
 			Object.keys(layout.basePorts).some(
 				(name) => !input.probeNames?.includes(name),
 			);
 		const overflows = Object.values(
-			layout.withExtras(layout.at(ownLockfile.offset)),
+			layout.withExtras(layout.at(own.offset)),
 		).some((port) => port > 65535);
-		if (blocked && partial && !overflows)
+		if (blocked && partial && !overflows && offsetClaimHoldsBlock(own))
 			throw new Error(
-				`Selected app ports conflict with the persisted allocation: ${blocked.problem}. ${
+				`Selected app ports conflict with the claimed allocation: ${blocked.problem}. ${
 					blocked.claimKeys.length > 0
 						? "Start the full environment to move this checkout's shared port block."
 						: "Stop that port's owner, or start the full environment to reconcile its shared port block."
@@ -810,27 +602,14 @@ function allocateBlock(
 			);
 	}
 
-	// A suffixed environment has no lockfile; its own claim keeps its ports
-	// from one run to the next, as a lockfile does for dev, and read-only
-	// callers find the ports its last run used.
-	const ownClaim = persist ? undefined : claims[layout.claimKey];
-	if (ownClaim) {
-		const choice = chooseBlock(
-			[layout.candidate(ownClaim.offset)],
-			others,
-			busy,
-		);
-		if ("offset" in choice)
-			return settle(choice.offset, layout.provenance(choice.offset));
-	}
-
 	const choice = chooseBlock(layout.search(), others, busy);
 	if ("offset" in choice) {
-		// Moving off a lockfile changes every URL of the checkout: say why.
-		if (persist && lockfile && ignored && lockfile.offset !== choice.offset)
+		// Moving off a developer's block changes every URL of the checkout:
+		// say why. A throwaway environment's ports are nobody's bookmark.
+		if (own && ignored && !own.throwaway && own.offset !== choice.offset)
 			console.warn(
 				formatWarn(
-					`.buncargo/ports.json (offset ${lockfile.offset}) not used: ${ignored}. Using offset ${choice.offset}.`,
+					`Offset ${own.offset} not used: ${ignored}. Using offset ${choice.offset}.`,
 				),
 			);
 		return settle(choice.offset, layout.provenance(choice.offset));
@@ -926,7 +705,7 @@ export type PinResult =
  *
  * Every port is probed first, outside the claims lock: binding each one takes
  * a while, and every other checkout's allocation waits on that lock. The claims
- * are read again under the lock before the lockfile and the claim are written,
+ * are read again under the lock before the claim is written,
  * so a checkout that claimed the block in the meantime keeps it.
  */
 export function pinOffset(input: {
@@ -939,7 +718,7 @@ export function pinOffset(input: {
 	worktreeIsolation?: boolean;
 	runtime?: ContainerRuntimeName;
 	getOwner: (port: number) => PortOwner | null;
-	/** As in {@link resolvePortPlan}: claimed, never probed. */
+	/** As in {@link PortPlanInput.companionPorts}: claimed, never probed. */
 	companionPorts?: (ports: Record<string, number>) => number[];
 }): PinResult {
 	const { root, projectName, offset, runtime } = input;
@@ -955,7 +734,7 @@ export function pinOffset(input: {
 		ports: [...Object.values(ports), ...Object.values(extras), ...companions],
 	};
 	// A claim under a name another checkout holds would only make the next
-	// run refuse, after the lockfile had moved.
+	// run refuse.
 	const claimedBy = (): PinResult | undefined => {
 		const claims = readOffsetClaims();
 		const shared =
@@ -963,11 +742,7 @@ export function pinOffset(input: {
 				? undefined
 				: sharedProjectNameRefusal(claims, { root, projectName });
 		if (shared) return { refused: shared, claimed: false };
-		const claimed = offsetClaimConflict(
-			claimsWithLockfilePorts(claims),
-			block,
-			root,
-		);
+		const claimed = offsetClaimConflict(heldOffsetClaims(claims), block, root);
 		return claimed
 			? { refused: `Offset ${offset} is not free: ${claimed}.`, claimed: true }
 			: undefined;
@@ -995,14 +770,6 @@ export function pinOffset(input: {
 	return withOffsetClaimsLock((): PinResult => {
 		const claimedMeanwhile = claimedBy();
 		if (claimedMeanwhile) return claimedMeanwhile;
-		writePortsLockfile(root, {
-			version: LOCKFILE_VERSION,
-			projectName,
-			root,
-			offset,
-			ports,
-			provenance: "lockfile",
-		});
 		claimOffset({ root, offset, ports: block.ports, projectName });
 		return { pinned: ports };
 	});

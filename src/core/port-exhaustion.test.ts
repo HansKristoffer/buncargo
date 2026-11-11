@@ -18,6 +18,7 @@ const daysAgo = (days: number) => new Date(now - days * DAY).toISOString();
 
 const claim = (offset: number, usedDaysAgo: number): OffsetClaim => ({
 	offset,
+	ports: [offset + 5432],
 	projectName: `app-${offset}`,
 	updatedAt: daysAgo(usedDaysAgo + 30),
 	usedAt: daysAgo(usedDaysAgo),
@@ -128,24 +129,17 @@ it("reads a checkout with a live run as running, one with a finished run or a ru
 	});
 });
 
-it("finds the idle claims not used for longer than a duration, an old claim by its updatedAt", () => {
-	const legacy: OffsetClaim = {
-		offset: 500,
-		projectName: "legacy",
-		updatedAt: daysAgo(20),
-	};
+it("finds the idle claims holding a block not used for longer than a duration", () => {
 	const reclaimed: OffsetClaim = { ...claim(700, 50), reclaimedAt: daysAgo(1) };
-	const all = { ...claims, "/w/legacy": legacy, "/w/reclaimed": reclaimed };
+	const all = { ...claims, "/w/reclaimed": reclaimed };
 	const states = {
 		"/w/recent": "idle",
 		"/w/oldest": "held",
 		"/w/older": "idle",
-		"/w/legacy": "idle",
 		"/w/reclaimed": "idle",
 	} as const;
 	expect(Object.keys(idleClaims(all, states, 7 * DAY, now))).toEqual([
 		"/w/older",
-		"/w/legacy",
 	]);
 });
 

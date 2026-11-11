@@ -370,13 +370,9 @@ console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'F
 					if (sinceCancel !== undefined && child.exitCode !== null)
 						cleanupMs = sinceCancel();
 					try {
-						const effectivePort =
-							scenario === "allocation" &&
-							existsSync(join(project, ".buncargo/ports.json"))
-								? JSON.parse(
-										readFileSync(join(project, ".buncargo/ports.json"), "utf8"),
-									).ports.web
-								: port;
+						const claimed =
+							scenario === "allocation" ? claimedOffset(root) : undefined;
+						const effectivePort = claimed === undefined ? port : 3000 + claimed;
 						const response = await fetch(
 							`http://127.0.0.1:${effectivePort}/ready`,
 							{
@@ -575,4 +571,14 @@ try {
 	);
 	for (const cleanup of cleanups) cleanup();
 	rmSync(root, { recursive: true, force: true });
+}
+
+/** The offset the run under `home` claimed, once it has: its block moved off the hash. */
+function claimedOffset(home: string): number | undefined {
+	const file = join(home, ".buncargo/offsets.json");
+	if (!existsSync(file)) return undefined;
+	const { claims } = JSON.parse(readFileSync(file, "utf8")) as {
+		claims: Record<string, { offset: number }>;
+	};
+	return Object.values(claims)[0]?.offset;
 }

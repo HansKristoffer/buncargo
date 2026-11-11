@@ -3,7 +3,6 @@ import {
 	type OffsetClaim,
 	offsetClaimHolder,
 	offsetClaimHoldsBlock,
-	offsetClaimLastUsed,
 	offsetClaimRoot,
 	RECLAIM_MIN_IDLE_MS,
 } from "./offset-claims";
@@ -157,7 +156,7 @@ export function idleClaims(
  * time counts as never used.
  */
 function lastUsedMs(key: string, claim: OffsetClaim): number {
-	const claimed = Date.parse(offsetClaimLastUsed(claim));
+	const claimed = Date.parse(claim.usedAt);
 	return Math.max(
 		Number.isNaN(claimed) ? 0 : claimed,
 		lastCheckoutCommandAt(offsetClaimRoot(key, claim)) ?? 0,

@@ -15,7 +15,7 @@ import {
 	upsertHostRoutes,
 } from "./hosts/registry";
 import { activateTailscaleServe } from "./hosts/tailscale-serve";
-import { getPortsLockfilePath } from "./port-allocation";
+import { getOffsetClaimsPath } from "./offset-claims";
 import { computeDevIdentity, findMonorepoRoot } from "./ports";
 import * as registryFile from "./registry-file";
 import { adoptLiveCaptures } from "./run-publish";
@@ -469,19 +469,17 @@ describe("getEnvVar against the run", () => {
 		}
 	});
 
-	// A vite.config.ts asking for three names read the lockfile, offsets.json,
-	// env files and routes three times.
-	it("reads the port lockfile once for several names", () => {
-		const lockfile = getPortsLockfilePath(findMonorepoRoot());
+	// A vite.config.ts asking for three names read offsets.json, env files and
+	// routes three times.
+	it("reads the port claims once for several names", () => {
+		const claims = getOffsetClaimsPath();
 		const reads = spyOn(registryFile, "readJsonDocumentSync");
 		try {
 			getEnvVar(config, "TUNNEL_PORT");
 			getEnvVar(config, "TUNNEL_URL");
 			getEnvVar(config, "WORKSPACE");
-			const lockfileReads = reads.mock.calls.filter(
-				([path]) => path === lockfile,
-			);
-			expect(lockfileReads).toHaveLength(1);
+			const claimReads = reads.mock.calls.filter(([path]) => path === claims);
+			expect(claimReads).toHaveLength(1);
 		} finally {
 			reads.mockRestore();
 		}

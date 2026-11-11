@@ -25,8 +25,8 @@ import type {
 // the build instead of quietly degrading every consumer's inference.
 //
 // The factory probes are never called. `createDevEnvironment` allocates and
-// persists `.buncargo/ports.json`, so instantiating one at import time would
-// make a type test rewrite a lockfile.
+// claims a port block in `~/.buncargo/offsets.json`, so instantiating one at
+// import time would make a type test write machine state.
 
 type Expect<T extends true> = T;
 type Equal<A, B> =

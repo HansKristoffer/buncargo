@@ -135,7 +135,7 @@ install's output and asks for `bun install`. A project without `bun.lock` whose 
 lists buncargo but has none installed stops and asks for `bun install` instead of running a
 version the project did not choose.
 
-`buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `lockfile` | `env` | `shifted`), including `vars`: the variables `exec`, tasks and the apps are given, without their Infisical secrets. `--get ports.api` prints one raw value for scripts, and a bare name (`--get DATABASE_URL`) reads from `vars`. `--export` prints `vars` as quoted `export` lines.
+`buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `claim` | `env` | `shifted` | `unallocated`), including `vars`: the variables `exec`, tasks and the apps are given, without their Infisical secrets. `--get ports.api` prints one raw value for scripts, and a bare name (`--get DATABASE_URL`) reads from `vars`. `--export` prints `vars` as quoted `export` lines.
 
 `buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached-<pid>.log` (`.buncargo/logs/detached.log` links to the newest run's) and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed; 2 when apps are still starting after 10 minutes (the run keeps going; `buncargo wait --app=<app>` waits on). The log of the last detached run that ended is kept until a later one has ended too. A failure ends the output with one block: what failed in one line (the app, the seed or the step), its last 20 lines of output, the setup checks that warned before the start, and what to run next (`buncargo logs <app>`), so `dev --detach | tail` shows the cause. Attached `dev` ends a failed start with the same block. Stop it with `buncargo stop`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
 
@@ -924,12 +924,11 @@ Non-worktree projects now get a stable nonzero offset from `projectPrefix`. Work
 ```
 BUNCARGO_PORT_OFFSET set?
   yes → use it, skip probing (provenance: env)
-  no  → .buncargo/ports.json of this checkout?
+  no  → this checkout's (or environment's) claim in ~/.buncargo/offsets.json?
           yes → its offset, applied to the config's current ports, if they
                 are free or ours and no other checkout claims the block
-                (provenance: lockfile)
-          no / not usable → a suffixed environment's own claim, if free
-                          else hash projectPrefix [+ worktree] [+ suffix]
+                (provenance: claim)
+          no / not usable → hash projectPrefix [+ worktree] [+ suffix]
                           skip blocks another checkout or environment claims
                           (its offset, or any one of its ports)
                           probe every service and app port
@@ -941,8 +940,7 @@ BUNCARGO_PORT_OFFSET set?
                           block of checkouts with no run and no containers, and
                           try again (dev and start(); a read answers
                           provenance: unallocated instead)
-          persist { version, projectName, root, offset, ports } (dev only)
-          and claim the offset and its ports in ~/.buncargo/offsets.json
+          claim the offset and its ports in ~/.buncargo/offsets.json
 ```
 
 Offsets are claimed machine-wide, by checkout, in `~/.buncargo/offsets.json`,
@@ -1015,12 +1013,12 @@ under the released name next uses the volumes left under it.
 
 `buncargo ports pin <offset>` moves a checkout to a block and keeps it there:
 it checks every port of the block (binding it, so hidden holders count) and
-the claims, then writes the lockfile and the claim. Like `dev`, it refuses while another
+the claims, then writes the claim. Like `dev`, it refuses while another
 checkout claims its Compose project name. Its containers move on the
-next start, since their ports are part of what decides reuse. A hand-written
-`{ "offset": 2500 }` in `.buncargo/ports.json` pins the same way, and the next
-run fills in the rest. When a run cannot use the lockfile (another checkout's,
-an offset someone else claims, a port taken), it says why before moving.
+next start, since their ports are part of what decides reuse. The claim is the
+only record of a checkout's block; there is no file in the checkout to edit.
+When a run cannot use its claimed block (an offset someone else claims, a port
+taken), it says why before moving.
 
 Every container the daemon runs counts, not only the checkouts in this user's
 `~/.buncargo`: a CI runner's user and a developer's sharing one Docker each keep
@@ -1796,17 +1794,20 @@ On a machine on a [Tailscale](https://tailscale.com) network, the watchdog also 
 
 A finished run keeps its registry entry until its containers are gone — that entry is what says they may still be reused, and for how long. `buncargo runs` and the menu bar filter it out; the sweep and `stop` see it, and `stop --all` removes its containers now. `dev --down`, `stop --all` and `stop()` remove the entry straight away, since they have just removed the containers.
 
-**Volumes are never removed automatically.** A container costs nothing to recreate; a volume is the database. `buncargo prune` lists the volumes of checkouts whose directory was deleted, when no container, no run and no other checkout uses their project, and removes them only after you confirm. A volume nothing on record ties to a deleted checkout stays, and so does an idle checkout's database. Before removing, it checks each volume again, so one a run or checkout took up since the listing is kept. A project's `ci` stacks and deleted worktrees are `buncargo prune --project`'s (below):
+**Volumes are never removed automatically.** A container costs nothing to recreate; a volume is the database. `buncargo prune` lists the volumes of checkouts whose directory was deleted, when no container, no run and no other checkout uses their project, and removes them only after you confirm. That includes the volumes of a deleted checkout's E2E and other suffixed stacks. A volume nothing on record ties to a deleted checkout stays, and so does an idle checkout's database. Before removing, it checks each volume again, so one a run or checkout took up since the listing is kept. `bunx buncargo doctor` says how many there are. A project's `ci` stacks and deleted worktrees are `buncargo prune --project`'s (below):
 
 ```bash
-bunx buncargo prune --dry-run   # List what would go
-bunx buncargo prune             # Review, then confirm
-bunx buncargo prune --yes       # For scripts that have already decided
+bunx buncargo prune --dry-run                  # List what would go
+bunx buncargo prune --older-than=7d --dry-run  # Only checkouts deleted a week ago or longer
+bunx buncargo prune                            # Review, then confirm
+bunx buncargo prune --yes                      # For scripts that have already decided
 ```
+
+`--older-than` counts from when buncargo first found the checkout gone (`m`, `h` or `d`).
 
 Volumes carry no buncargo labels on purpose: Compose compares a volume against the file and offers to *recreate* it when they differ, which hangs a non-interactive run and destroys the data. So prune cannot tell which checkout a volume came from, and says so rather than guessing — volumes it cannot attribute to a project are counted and left alone.
 
-A machine where worktrees come and go all day, such as a server agents work on, can opt in with `BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`: the sweep then also removes the volumes of a checkout whose directory was deleted, once a pass at least 10 minutes after the first still finds it gone. It works for checkouts whose containers are already gone, and leaves the volumes whenever another checkout or a run still uses the same project name. A checkout your user cannot read never counts as deleted.
+A machine where worktrees come and go all day, such as a server agents work on, can opt in with `BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`: the sweep then also removes the volumes of a checkout whose directory was deleted, once a pass at least 10 minutes after the first still finds it gone. It works for checkouts whose containers are already gone, and leaves the volumes whenever another checkout or a run still uses the same project name. A deleted checkout's E2E and other suffixed stacks go with it. A checkout your user cannot read never counts as deleted.
 
 The watchdog also reports the volumes `buncargo prune --dry-run` would propose, in `~/.buncargo/watchdog.log`. It checks at most once an hour and writes only when that set changes, and it never removes anything. Only the runtimes that answered that pass are judged, each against its own containers.
 
@@ -1894,7 +1895,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 
 `doctor` also reports the machine's open-file table and, once it is half full, the processes holding the most descriptors: near the limit every tool fails with ENFILE, usually because of a process in another checkout.
 
-`bunx buncargo doctor` checks the container runtime, named port owners, stale `ports.json`, orphaned labeled containers, the tunnel registry, and the named-hosts daemon and service install. If the runtime this project selected is down, doctor starts it the same way `dev` would - Docker Desktop, OrbStack, Colima, or `container system start` - and only reports it when that fails or when running in CI. `doctor --fix` restarts a dead daemon, re-trusts the CA, reinstalls a stale service, remints an expired cert, drops stale routes, and resyncs `/etc/hosts`. The fixes that need a password are skipped without a TTY.
+`bunx buncargo doctor` checks the container runtime, named port owners, overlapping port claims, orphaned labeled containers, the volumes `buncargo prune` would reclaim, the tunnel registry, and the named-hosts daemon and service install. If the runtime this project selected is down, doctor starts it the same way `dev` would - Docker Desktop, OrbStack, Colima, or `container system start` - and only reports it when that fails or when running in CI. `doctor --fix` restarts a dead daemon, re-trusts the CA, reinstalls a stale service, remints an expired cert, drops stale routes, and resyncs `/etc/hosts`. The fixes that need a password are skipped without a TTY.
 
 ## Programmatic API
 

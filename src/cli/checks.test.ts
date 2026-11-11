@@ -159,7 +159,7 @@ describe("dependencies check", () => {
 describe("loopback URLs check", () => {
 	// Joined with "; " the warning was kilobytes on one line, and it fired in a
 	// fresh worktree whose ports were never allocated.
-	async function loopbackWarning(provenance: "hash" | "lockfile") {
+	async function loopbackWarning(provenance: "hash" | "claim") {
 		const { allChecks } = await import("./core-checks");
 		const env = {
 			root: "/nonexistent-buncargo-checkout",
@@ -180,7 +180,7 @@ describe("loopback URLs check", () => {
 	}
 
 	it("lists each stray variable on a line of its own", async () => {
-		const [warning] = await loopbackWarning("lockfile");
+		const [warning] = await loopbackWarning("claim");
 		const lines = warning?.split("\n") ?? [];
 		expect(lines[0]).toBe("Loopback URLs point at this checkout:");
 		expect(lines.slice(1).map((line) => line.trim().split(" ")[0])).toEqual([

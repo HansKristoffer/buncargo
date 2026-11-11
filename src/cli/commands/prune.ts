@@ -3,6 +3,7 @@ import {
 	type ContainerRuntimeAdapter,
 	claimedCheckouts,
 	containerRuntimeForEnv,
+	formatSpan,
 	isRuntimeUp,
 	listBuncargoContainers,
 	type ProjectPrunePlan,
@@ -46,7 +47,19 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 		printPruneHelp();
 		return 1;
 	}
-	if (parsed.project) return pruneProject(parsed);
+	if (parsed.errors.length > 0) {
+		for (const error of parsed.errors) log.error(error);
+		return 1;
+	}
+	if (parsed.project) {
+		if (parsed.olderThanMs !== undefined) {
+			log.error(
+				"--older-than applies to deleted checkouts' volumes, not to --project.",
+			);
+			return 1;
+		}
+		return pruneProject(parsed);
+	}
 
 	const runtimes = availableContainerRuntimes();
 	if (runtimes.length === 0) {
@@ -54,15 +67,17 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 		return 0;
 	}
 
-	// Read before the sweep: without the opt-in it drops a deleted checkout's
-	// claim, and that claim is the only record of the project it used.
-	const before = readClaims();
-	if (!before) return 1;
+	// Unreadable claims would read as no checkout naming any volume.
+	if (!readClaims()) return 1;
 
 	// Sweeping first is what makes the volume answer meaningful: a project
 	// whose containers are removed here stops counting as in use, and its
 	// entry is retired in the same pass.
 	const swept = await sweepOrphanedContainers({ runtimes });
+	const deletedFor =
+		parsed.olderThanMs === undefined
+			? undefined
+			: { ms: parsed.olderThanMs, now: Date.now() };
 	for (const stack of swept.swept) log.info(describeSwept(stack));
 
 	const inventory = async (): Promise<VolumeReport[] | undefined> => {
@@ -75,8 +90,8 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 			volumes,
 			containers: await listBuncargoContainers(runtimes),
 			runs: await readAllRuns(),
-			// A claim read now wins: a checkout that is back counts as existing.
-			checkouts: claimedCheckouts({ ...before, ...claims }),
+			checkouts: claimedCheckouts(claims),
+			deletedFor,
 		});
 	};
 	const reports = await inventory();
@@ -89,6 +104,10 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 	);
 	if (proposed.length === 0) {
 		log.info("No volumes to reclaim.");
+		if (deletedFor)
+			log.hint(
+				`Only checkouts deleted at least ${formatSpan(deletedFor.ms)} ago count; without --older-than every deleted checkout does.`,
+			);
 		log.hint(
 			"Only a deleted checkout's volumes are proposed here. A project's ci and deleted-worktree stacks: `buncargo prune --project --dry-run` in one of its checkouts.",
 		);

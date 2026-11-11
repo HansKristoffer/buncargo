@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { offsetClaimsOf } from "../../core/offset-claims";
 import { execAsync } from "../../core/process";
 import { loadDevEnv } from "../../loader";
 
@@ -71,7 +72,7 @@ it("exec passes argv unchanged and uses app environment/cwd from a nested invoca
 	expect(output.source).toBe("file");
 	const env = await loadDevEnv({ cwd: root, readOnly: true });
 	expect(output.db).toBe(env.prisma?.getDatabaseUrl());
-	expect(existsSync(join(root, ".buncargo/ports.json"))).toBe(false);
+	expect(offsetClaimsOf(root)).toEqual({});
 	expect(existsSync(join(root, "injected"))).toBe(false);
 	const explicit = await execAsync(
 		[

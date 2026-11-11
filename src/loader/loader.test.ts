@@ -4,7 +4,6 @@ import { spawnSync } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
-	readFileSync,
 	realpathSync,
 	rmSync,
 	writeFileSync,
@@ -13,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineDevConfig } from "../config";
 import { storeDir, writeStoreEntries } from "../core/checkout-files";
+import { offsetClaimsOf } from "../core/offset-claims";
 import { CI_ENV_VARS } from "../core/runtime-flags";
 import { service } from "../docker-compose/services";
 import {
@@ -437,19 +437,14 @@ describe("loadDevEnv", () => {
 		).not.toBe(moved);
 	});
 
-	it("read-only resolution never creates or rewrites the port lockfile", async () => {
+	it("read-only resolution never claims a block", async () => {
 		delete process.env.BUNCARGO_PORT_OFFSET;
 		writeFileSync(
 			join(testDir, "dev.config.ts"),
 			`export default ${JSON.stringify(typedConfig)}`,
 		);
 		await loadDevEnv({ cwd: testDir, readOnly: true });
-		const lock = join(testDir, ".buncargo", "ports.json");
-		expect(existsSync(lock)).toBe(false);
-		mkdirSync(join(testDir, ".buncargo"));
-		writeFileSync(lock, '{"fixture":"preserve"}');
-		await loadDevEnv({ cwd: testDir, readOnly: true, reload: true });
-		expect(readFileSync(lock, "utf8")).toBe('{"fixture":"preserve"}');
+		expect(offsetClaimsOf(testDir)).toEqual({});
 	});
 
 	it("copies checkout files from the store before envFiles are read", async () => {

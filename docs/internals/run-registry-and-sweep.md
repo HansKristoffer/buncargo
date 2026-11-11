@@ -334,17 +334,20 @@ the containers from there; nothing here removes a container or a volume.
 recreate, a volume is the database. A volume needs positive evidence: `decideVolume`
 (`volume-decision.ts`, pure) proposes one only when a claim in `offsets.json` names its Compose
 project, every checkout claiming that project is confirmed deleted, and no container or entry names
-it. An idle checkout after `dev --down` has neither containers nor an entry, and its claim is the
+it. It is the one owner of that rule: `prune`, the orphan report, `doctor` and the sweep's settling
+of deleted checkouts all decide through it. An idle checkout after `dev --down` has neither containers nor an entry, and its claim is the
 only thing saying its volume is still its database; when an unreadable claims file read as empty
 and absence counted as orphaned, `prune --yes` offered every idle checkout's database. A suffixed
 claim (`ci`, E2E) of an existing checkout keeps its stack's volume too; those are `prune --project`'s.
 
-`cli/commands/prune.ts` reads the claims before it sweeps, because without the opt-in below the
-sweep drops a deleted checkout's claim, the only record of its project. So on a machine whose
-watchdog has already seen the deletion, plain `prune` has nothing to propose for it; `prune
---project` still finds the stacks through Git. After confirmation it decides each project again
-under the deleted checkout's lifecycle lock, from fresh volume, container, registry and claim
-inventories, and removes only what was listed.
+The claim is that record because it outlives the block: a claim that gave up its block (a full
+range reclaimed it, or its throwaway run was torn down) stays, and the sweep drops a deleted
+checkout's claim only once nothing of its project is left to propose, opt-in or not. Before, the
+sweep dropped it on its first pass and a throwaway run's teardown deleted its claim, so plain
+`prune` almost never had anything to propose. `prune --older-than=7d` proposes only checkouts
+first found deleted at least that long ago (`deletedSeenAt`, below). After confirmation it decides
+each project again under the deleted checkout's lifecycle lock, from fresh volume, container,
+registry and claim inventories, and removes only what was listed.
 
 Every read-modify-write of `offsets.json` reads it strictly: missing is empty, and a file that does
 not parse or carries another `version` throws `StateFileUnreadableError` and is left as it is.
@@ -361,18 +364,18 @@ One exception, opt-in per machine: with `BUNCARGO_PRUNE_DELETED_CHECKOUTS=1` the
 removes a deleted checkout's volumes (`settleDeletedCheckouts`), for servers where agents create
 and delete worktrees by the hundred. It works from the port claims in `offsets.json`, not from
 container stacks: a checkout's claim names its root and project, and by the time a worktree is
-deleted its containers are usually long gone, so a stack-driven rule would never see it. The sweep
-keeps a deleted checkout's claim until it has settled it, and without the opt-in only drops it.
-Volumes match by Compose project, and two checkouts can share one, so it removes them only when
-no existing checkout claims the project and no run on record for it still has its checkout; a
-container of the project still standing defers the decision to the next pass, and a runtime that
-does not answer defers everything. "Still has its checkout" includes one this user cannot read.
+deleted its containers are usually long gone, so a stack-driven rule would never see it. Its
+suffixed environments' claims (E2E, `ci`) settle with it. It removes what `decideVolume` proposes,
+so two checkouts sharing a project, a run on record of it, or a container of it still standing
+keep the volumes; the last two defer the decision to the next pass, and a runtime that does not
+answer defers everything. "Still has its checkout" includes one this user cannot read.
 
-The watchdog also reports, at most hourly and only when the set changes, the volumes `prune` would propose (`orphan-report.ts`), by the same `decideVolume`. It never removes them. Only runtimes that answered that pass are judged, each against its own containers. `buncargo ci` creates no volume to leave behind: its services keep their data on tmpfs.
+The watchdog also reports, at most hourly and only when the set changes, the volumes `prune` would propose (`orphan-report.ts`), by the same `decideVolume`, and `doctor` counts them and names `prune --dry-run`: on one machine 215 built up while it said "No issues found". It never removes them. Only runtimes that answered that pass are judged, each against its own containers. `buncargo ci` creates no volume to leave behind: its services keep their data on tmpfs.
 
 Volumes need more proof than containers. A deletion counts only when confirmed (`ENOENT`) on two
-passes at least `DELETED_CHECKOUT_SETTLE_MS` (10 minutes) apart: the first sighting is stamped on
-the claim as `deletedSeenAt` under the claims lock, and cleared if the checkout is back, so an
+passes at least `DELETED_CHECKOUT_SETTLE_MS` (10 minutes) apart (`VolumeState.deletedFor`): the
+first sighting is stamped on the claim as `deletedSeenAt` under the claims lock, and cleared if
+the checkout is back, so an
 unmounted disk or a worktree being recreated costs nothing. Containers still come down on the
 first confirmed sighting. The watchdog may exit in between; the next pass, whenever it runs,
 decides.

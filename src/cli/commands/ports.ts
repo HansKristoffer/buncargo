@@ -11,14 +11,11 @@ import {
 	offsetClaimRoot,
 	offsetClaimsOf,
 	overlappingOffsetClaims,
+	readHeldOffsetClaims,
 	readOffsetClaims,
-	releaseOffsetClaimsIfUnchanged,
+	retireOffsetClaimsIfUnchanged,
 } from "../../core/offset-claims";
-import {
-	PORT_OFFSET_STEP,
-	pinOffset,
-	readOffsetClaimsWithPorts,
-} from "../../core/port-allocation";
+import { PORT_OFFSET_STEP, pinOffset } from "../../core/port-allocation";
 import {
 	CLAIM_STATE_LABELS,
 	formatClaimAge,
@@ -184,7 +181,7 @@ export async function handlePorts(args: string[]): Promise<number> {
 	const env = await loadDevEnv({ readOnly: true });
 
 	if (subcommand === undefined) {
-		const claims = readOffsetClaimsWithPorts();
+		const claims = readHeldOffsetClaims();
 		const unallocated = env.portOffsetProvenance === "unallocated";
 		log.line(
 			`${env.projectName}: offset ${env.portOffset} (${env.portOffsetProvenance})`,
@@ -336,7 +333,7 @@ async function releaseClaims(root: string, yes: boolean): Promise<number> {
 
 	// Only what was listed and checked: a run that started since the check
 	// rewrote its claim, and keeps it.
-	const released = await releaseOffsetClaimsIfUnchanged(claims);
+	const released = await retireOffsetClaimsIfUnchanged(claims);
 	log.success(
 		`Released ${released.length} claim${released.length === 1 ? "" : "s"} of ${root}.`,
 	);

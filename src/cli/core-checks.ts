@@ -245,9 +245,9 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 		severity: "warning",
 		check: () => {
 			// A preview (hashed, shifted past a claim, or unallocated) is no
-			// block of this checkout's yet; a lockfile or BUNCARGO_PORT_OFFSET is.
+			// block of this checkout's yet; its claim or BUNCARGO_PORT_OFFSET is.
 			if (
-				env.portOffsetProvenance !== "lockfile" &&
+				env.portOffsetProvenance !== "claim" &&
 				env.portOffsetProvenance !== "env"
 			)
 				return true;
