@@ -599,6 +599,13 @@ async function runDevFlow<
 	// Claimed whether or not a watchdog is wanted: the claim is what says the
 	// containers are somebody's, and the registry has to say so either way.
 	signal.throwIfAborted();
+	// What `start()` says about the run before its output opens (the watchdog
+	// not starting): printed now, and kept for the run's log and the TUI.
+	const earlyReports: { message: string; problem: boolean }[] = [];
+	env.reportServiceChanges((message, problem) => {
+		earlyReports.push({ message, problem });
+		(problem ? log.warn : log.info)(message);
+	});
 	if (hasServices)
 		await env.claimRun({
 			idleTimeoutMs: resolveIdleTimeout(args),
@@ -892,6 +899,9 @@ async function runDevFlow<
 	const rows = appRowEvents(env);
 	// A service container stopping under the run: in the run's log, the TUI's
 	// Overview, and on the terminal in stream mode, where events are not printed.
+	// Events are not printed in stream mode, so the early ones are not repeated.
+	for (const { message, problem } of earlyReports)
+		view.output.event("buncargo", message, problem ? "error" : undefined);
 	env.reportServiceChanges((message, problem) => {
 		view.output.event("buncargo", message, problem ? "error" : undefined);
 		if (!view.tui) (problem ? log.warn : log.info)(message);

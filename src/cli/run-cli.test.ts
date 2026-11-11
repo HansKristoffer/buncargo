@@ -1,12 +1,19 @@
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { getRoutesPath } from "../core/hosts";
 import { acquireLease, releaseLeases } from "../core/leases";
+import { listRunLogDirs } from "../core/process/app-logs";
 import { isProcessAlive } from "../core/process/lifecycle";
 import {
 	buildRunEntry,
@@ -1462,6 +1469,47 @@ describe("how a run ends", () => {
 		} finally {
 			warn.mockRestore();
 			ensure.mockRestore();
+		}
+	});
+
+	// `start()` warns where the run's service changes are said, and said it
+	// before the CLI wired that to the run's output: only the console had it.
+	it("keeps what start() reported before the run's output opened in its log", async () => {
+		const root = await realpath(
+			await mkdtemp(join(tmpdir(), "buncargo-early-")),
+		);
+		let report: (message: string, problem: boolean) => void = () => {};
+		const env = createStubEnv({
+			root,
+			services: {},
+			apps: {
+				api: {
+					port: 44510 + Math.floor(Math.random() * 100),
+					devCommand: "bun -e 'process.exit(0)'",
+					healthEndpoint: false,
+					requiredServices: [],
+				},
+			},
+			start: async () => {
+				report("The watchdog did not start (runner missing).", true);
+				return null;
+			},
+		});
+		Object.assign(env, {
+			reportServiceChanges: (next: typeof report) => {
+				report = next;
+			},
+		});
+		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			await runCli(env, { args: ["--no-hosts", "--no-tui"], watchdog: false });
+			const [dir] = listRunLogDirs(root);
+			expect(
+				readFileSync(join(dir as string, "buncargo.log"), "utf8"),
+			).toContain("The watchdog did not start (runner missing).");
+		} finally {
+			warn.mockRestore();
+			await rm(root, { recursive: true, force: true });
 		}
 	});
 
