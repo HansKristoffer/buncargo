@@ -1,4 +1,5 @@
 import { resolveExposeTargets } from "../core/tunnel";
+import type { EnvironmentInternals } from "../environment";
 import { assertAppWorkingDirectories } from "../environment/servers";
 import type {
 	AppConfig,
@@ -23,13 +24,15 @@ export function validateDevStart<
 	args: DevArgs,
 	apps: Record<string, ResolvedApp>,
 	serviceNames: string[],
+	/** The config's `seed`, which `--seed` needs services for. */
+	seedConfig: EnvironmentInternals["seed"],
 ): void {
 	const { attach, seed } = args.values;
 	if (attach && typeof apps[attach]?.devCommand !== "string")
 		throw new CliError(`--attach=${attach} is not a startable selected app.`);
 	if (!isOneShot(args.values)) assertAppWorkingDirectories(apps, env.root);
 	if (seed) {
-		const error = seedSelectionError(env.seed, serviceNames, env);
+		const error = seedSelectionError(seedConfig, serviceNames, env);
 		if (error) throw error;
 	}
 	if (!exposeRequested(args.values)) return;

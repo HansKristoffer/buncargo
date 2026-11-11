@@ -374,6 +374,7 @@ describe("a library start's apps", () => {
 						exclusive: "library-apps:jobs",
 					},
 				},
+				tasks: { lint: { command: "true", description: "Lint" } },
 				options: { verbose: false },
 			},
 			{ root },
@@ -402,6 +403,8 @@ describe("a library start's apps", () => {
 					status: "ready",
 				},
 			]);
+			// BuncargoBar's run button reads them off the entry.
+			expect(run?.tasks).toEqual([{ name: "lint", description: "Lint" }]);
 		} finally {
 			await env.stop({ verbose: false });
 		}

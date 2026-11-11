@@ -319,7 +319,10 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 	return checks;
 }
 
-/** Core checks, then the config's own, then its integrations' (already appended there). */
-export function allChecks(env: AnyDevEnvironment): SetupCheck[] {
-	return [...coreChecks(env), ...(env.setupChecks ?? [])];
+/** Core checks, then the config's `setupChecks` (its integrations' already appended there). */
+export function allChecks(
+	env: AnyDevEnvironment,
+	configured: readonly SetupCheck[] | undefined,
+): SetupCheck[] {
+	return [...coreChecks(env), ...(configured ?? [])];
 }

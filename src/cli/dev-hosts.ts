@@ -20,14 +20,17 @@ import {
 	tailscaleServeDeps,
 } from "../core/hosts/tailscale-serve";
 import { readCurrentProcessIdentityAsync } from "../core/process-identity";
-import type {
-	AppConfig,
-	DevEnvironment,
-	HostsRuntime,
-	ServiceConfig,
-} from "../types";
+import type { HostsRuntime, NamedHostsActivation } from "../types";
 
 const HOSTS_FALLBACK = "Named URLs unavailable:";
+
+/** The environment whose named hosts a run switches: its plan, and the switch. */
+export interface NamedHostsTarget {
+	readonly root: string;
+	readonly hosts: HostsRuntime | null;
+	readonly ports: object;
+	setNamedHostsActive(active: boolean, extras?: NamedHostsActivation): void;
+}
 
 /** The machine edges of {@link activateNamedHosts}: the daemon, certificate and owners. */
 export interface NamedHostsDeps {
@@ -62,11 +65,8 @@ export const machineNamedHostsDeps: NamedHostsDeps = {
  * same checkout. Their routes change owner, so that run's exit cannot delete
  * them.
  */
-export async function activateNamedHosts<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
->(
-	env: DevEnvironment<TServices, TApps>,
+export async function activateNamedHosts(
+	env: NamedHostsTarget,
 	options: {
 		enabled: boolean;
 		signal?: AbortSignal;
@@ -185,14 +185,7 @@ export async function activateNamedHosts<
  * `Named URLs unavailable:` warning, which `dev --detach` repeats.
  */
 async function activateTailscaleHosts(
-	env: {
-		root: string;
-		ports: object;
-		setNamedHostsActive: DevEnvironment<
-			Record<string, ServiceConfig>,
-			Record<string, AppConfig>
-		>["setNamedHostsActive"];
-	},
+	env: NamedHostsTarget,
 	hosts: HostsRuntime,
 	options: { signal?: AbortSignal; takeover?: readonly string[] },
 ): Promise<string[]> {
@@ -298,10 +291,9 @@ async function reclaimTailscaleApp(
 /**
  * Drop the app routes this process owns and revert `env.urls` to localhost.
  */
-export async function releaseNamedHosts<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
->(env: DevEnvironment<TServices, TApps>): Promise<string[]> {
+export async function releaseNamedHosts(
+	env: NamedHostsTarget,
+): Promise<string[]> {
 	if (!env.hosts) return [];
 	if (env.hosts.mode === "tailscale") {
 		const warnings = await releaseTailscaleServe(

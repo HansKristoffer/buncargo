@@ -196,7 +196,6 @@ function createStubEnv(
 			options.setPublicUrls?.(urls as Record<string, string>);
 		},
 		clearPublicUrls: () => {},
-		ensureComposeFile: () => ".buncargo/docker-compose.generated.yml",
 		exec: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
 		waitForServer: async (url: string, timeout?: number) => {
 			await options.waitForServer?.(url, timeout);
@@ -302,6 +301,9 @@ function registerStubInternals(
 		},
 		renderGeneratedFiles: () => [],
 		recordCapture: async () => [],
+		setNamedHostsActive: () => {},
+		ensureComposeFile: () => ".buncargo/docker-compose.generated.yml",
+		composeModel: () => ({ services: {} }),
 	});
 }
 

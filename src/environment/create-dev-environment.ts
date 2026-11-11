@@ -159,19 +159,6 @@ function createEnvironment(
 			return ctx.runtimeBinary;
 		},
 		hosts: ctx.hosts,
-		setNamedHostsActive: (active, extras) => {
-			ctx.setNamedHostsActive(active, extras);
-		},
-		seed: resolved.seed
-			? {
-					command: resolved.seed.command,
-					cwd: resolved.seed.cwd,
-					beforeApps: resolved.seed.beforeApps,
-					requiredServices: resolved.seed.requiredServices,
-				}
-			: undefined,
-		setupChecks: resolved.setupChecks,
-		preflight: resolved.preflight,
 		secrets: resolved.secrets,
 		integrations: resolved.integrations,
 		generatedFiles: resolved.generatedFiles,
@@ -184,7 +171,6 @@ function createEnvironment(
 					integration.describe?.(envVars.getHookContext()),
 				),
 			),
-		tasks: resolved.tasks,
 		profiles: resolved.profiles,
 		onAppFailure: resolved.options?.onAppFailure,
 
@@ -234,8 +220,6 @@ function createEnvironment(
 		buildEnvFingerprint: envVars.buildEnvFingerprint,
 		setPublicUrls: ctx.setPublicUrls,
 		clearPublicUrls: ctx.clearPublicUrls,
-		ensureComposeFile: ctx.ensureComposeFile,
-		composeModel: ctx.composeModel,
 		exec: envVars.exec,
 		waitForServer: async (url, timeout) => {
 			await waitForServer(url, { timeout });
@@ -274,6 +258,20 @@ function createEnvironment(
 		notify: serviceWatch.report,
 		renderGeneratedFiles: () => renderGeneratedFiles(ctx, envVars),
 		recordCapture,
+		seed: resolved.seed
+			? {
+					command: resolved.seed.command,
+					cwd: resolved.seed.cwd,
+					beforeApps: resolved.seed.beforeApps,
+					requiredServices: resolved.seed.requiredServices,
+				}
+			: undefined,
+		setupChecks: resolved.setupChecks,
+		preflight: resolved.preflight,
+		tasks: resolved.tasks,
+		setNamedHostsActive: ctx.setNamedHostsActive,
+		ensureComposeFile: ctx.ensureComposeFile,
+		composeModel: ctx.composeModel,
 	});
 
 	if (resolved.prisma) {
@@ -288,6 +286,7 @@ function createEnvironment(
 					? Promise.resolve()
 					: ctx.prepareStartAsync(undefined, [service]),
 			lifecycle.readied,
+			ctx,
 		);
 	}
 

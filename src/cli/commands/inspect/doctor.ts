@@ -63,6 +63,7 @@ import {
 import { type HostsMode, hostsMode } from "../../../core/runtime-flags";
 import { invokingUserIdentity } from "../../../core/state-paths";
 import { describeSwept } from "../../../core/watchdog-loop";
+import { internalsOf } from "../../../environment";
 import { loadDevEnv } from "../../../loader";
 import type { AnyDevEnvironment, BuncargoVolume } from "../../../types";
 import { describeCheckFailures, isWarning, runChecks } from "../../checks";
@@ -84,7 +85,8 @@ async function checkSetupChecks(
 	env: DevEnv,
 ): Promise<void> {
 	const anyEnv = env as AnyDevEnvironment;
-	for (const result of await runChecks(allChecks(anyEnv), {
+	const checks = allChecks(anyEnv, internalsOf(anyEnv).setupChecks);
+	for (const result of await runChecks(checks, {
 		root: env.root,
 		env: anyEnv,
 	})) {

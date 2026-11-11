@@ -18,12 +18,7 @@ import {
 import { pidRouteOwners } from "../core/hosts/registry";
 import { useTempHome } from "../core/test-env.testing";
 import { lookupOnPath } from "../core/tool-binary";
-import type {
-	AppConfig,
-	DevEnvironment,
-	HostsRuntime,
-	ServiceConfig,
-} from "../types";
+import type { HostsRuntime } from "../types";
 import {
 	activateNamedHosts,
 	type NamedHostsDeps,
@@ -140,14 +135,14 @@ describe("activateNamedHosts", () => {
 		const env = {
 			root,
 			hosts: hosts(false),
+			ports: {},
 			setNamedHostsActive: (
 				active: boolean,
 				extras: { hostnames?: readonly string[] } = {},
-			) => switches.push({ active, hostnames: extras.hostnames }),
-		} as unknown as DevEnvironment<
-			Record<string, ServiceConfig>,
-			Record<string, AppConfig>
-		>;
+			) => {
+				switches.push({ active, hostnames: extras.hostnames });
+			},
+		};
 		return { env, switches };
 	}
 
@@ -266,12 +261,11 @@ describe("activateNamedHosts in tailscale mode", () => {
 			const env = {
 				root,
 				ports: { web: 3100, api: 3200 },
-				hosts: { ...hosts(false), mode: "tailscale" },
-				setNamedHostsActive: (active: boolean) => switches.push(active),
-			} as unknown as DevEnvironment<
-				Record<string, ServiceConfig>,
-				Record<string, AppConfig>
-			>;
+				hosts: { ...hosts(false), mode: "tailscale" as const },
+				setNamedHostsActive: (active: boolean) => {
+					switches.push(active);
+				},
+			};
 
 			const warnings = await activateNamedHosts(
 				env,

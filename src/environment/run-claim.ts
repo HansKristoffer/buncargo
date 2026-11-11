@@ -356,6 +356,7 @@ export function createRunClaimApi(
 				reusedNames: Object.keys(reused),
 				serviceNames: options.serviceNames,
 				attached: options.attached,
+				tasks: ctx.config.tasks,
 			});
 			return claimedApps;
 		},

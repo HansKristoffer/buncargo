@@ -2,6 +2,7 @@ import { getErrorMessage } from "hanzio";
 import { findMonorepoRoot } from "../../core/ports";
 import { askChoice, isInteractive } from "../../core/prompt";
 import { isCI } from "../../core/runtime-flags";
+import { internalsOf } from "../../environment";
 import { loadDevEnv } from "../../loader";
 import type { AnyDevEnvironment, CheckContext, SetupCheck } from "../../types";
 import { writeAgentsBlock } from "../agents-guide";
@@ -65,7 +66,7 @@ async function setup(values: {
 
 	const env = (await loadDevEnv()) as AnyDevEnvironment;
 	const ctx: CheckContext = { root: env.root, env };
-	const checks = allChecks(env);
+	const checks = allChecks(env, internalsOf(env).setupChecks);
 	const autoFix = values.yes || isCI();
 	const canAsk = !autoFix && isInteractive();
 

@@ -1,12 +1,6 @@
 import type { AppConfig, SecretsScopeConfig } from "./app";
 import type { PortOffsetProvenance } from "./cli";
-import type {
-	GeneratedFileConfig,
-	PreflightStep,
-	ProfileConfig,
-	SetupCheck,
-	TaskConfig,
-} from "./commands";
+import type { GeneratedFileConfig, ProfileConfig } from "./commands";
 import type {
 	AppEnvVars,
 	ComputedEnvVars,
@@ -23,7 +17,6 @@ import type {
 	DevConfigLike,
 	EnvValues,
 	HostsRuntime,
-	NamedHostsActivation,
 } from "./config";
 import type { ExecOptions } from "./hooks";
 import type { BuncargoIntegration } from "./integrations";
@@ -33,18 +26,9 @@ import type {
 	StopOptions,
 	WithServicesOptions,
 } from "./lifecycle";
-import type {
-	PrismaRunner,
-	SeedConfig,
-	SeedOutcome,
-	SeedRunOptions,
-} from "./preparation";
+import type { PrismaRunner, SeedOutcome, SeedRunOptions } from "./preparation";
 import type { ResolvedApps, ResolvedServices } from "./resolved";
-import type {
-	ComposeDocument,
-	ContainerRuntimeName,
-	ServiceConfig,
-} from "./service";
+import type { ContainerRuntimeName, ServiceConfig } from "./service";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Dev Environment Interface
@@ -173,15 +157,6 @@ export interface DevEnvironment<
 	readonly containerRuntimeBinary?: string;
 	/** Named-hosts plan and whether the loopback proxy is serving it */
 	readonly hosts: HostsRuntime | null;
-	/** Seed command from config, when present */
-	readonly seed?: Pick<
-		SeedConfig<TServices, TApps>,
-		"command" | "cwd" | "beforeApps" | "requiredServices"
-	>;
-	/** `setupChecks` from config and its integrations, run by `buncargo dev` before it starts anything */
-	readonly setupChecks?: readonly SetupCheck[];
-	/** `preflight` from config and its integrations, run by `buncargo dev` with the terminal */
-	readonly preflight?: readonly PreflightStep[];
 	/** The config's integrations, after they have been applied. */
 	readonly integrations?: readonly BuncargoIntegration[];
 	/** `options.checkoutFiles` from config */
@@ -196,13 +171,6 @@ export interface DevEnvironment<
 	readonly secrets?: SecretsScopeConfig | false;
 	/** `options.onAppFailure` from config, for `buncargo dev` */
 	readonly onAppFailure?: "keep-others" | "stop-run";
-	/** `tasks` from config, for `buncargo run` */
-	readonly tasks?: Readonly<
-		Record<
-			string,
-			TaskConfig<Extract<keyof TServices, string>, Extract<keyof TApps, string>>
-		>
-	>;
 	/** `profiles` from config, for `buncargo dev --profile`; may name integration apps. */
 	readonly profiles?: Readonly<Record<string, ProfileConfig>>;
 
@@ -324,12 +292,6 @@ export interface DevEnvironment<
 	setPublicUrls(urls: ComputedPublicUrls<TServices, TApps>): void;
 	/** Clear all public tunnel URLs */
 	clearPublicUrls(): void;
-	/** Switch `urls` between localhost:port and named HTTPS hostnames */
-	setNamedHostsActive(active: boolean, extras?: NamedHostsActivation): void;
-	/** Ensure generated docker compose file exists and return path used with -f */
-	ensureComposeFile(): string;
-	/** The service model the compose file is rendered from */
-	composeModel(): ComposeDocument;
 	/** Execute a command with environment variables set */
 	exec(
 		cmd: string | readonly string[],

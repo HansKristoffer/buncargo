@@ -38,6 +38,7 @@ it("rejects missing app working directories before startup", () => {
 				},
 			}),
 			["db"],
+			undefined,
 		),
 	).toThrow("apps.web.cwd");
 });
@@ -49,6 +50,7 @@ it("rejects an expose service excluded by the app selection", () => {
 			dev(["--apps=web", "--expose=db"]),
 			resolveApps({ web: { port: 3000, devCommand: "bun dev", expose: true } }),
 			[],
+			undefined,
 		),
 	).toThrow("outside the selected");
 });
@@ -60,6 +62,7 @@ it("requires the attached app to have a start command", () => {
 			dev(["--attach=web"]),
 			resolveApps({ web: { port: 3000, devCommand: false } }),
 			[],
+			undefined,
 		),
 	).toThrow("not a startable");
 });
@@ -84,6 +87,7 @@ it("says why an expose target is invalid", () => {
 			dev(["--expose=wbe"]),
 			resolveApps({ web: { port: 3000, devCommand: "bun dev", expose: true } }),
 			[],
+			undefined,
 		);
 	} catch (caught) {
 		error = caught;
@@ -102,8 +106,8 @@ it("refuses --seed when the selection leaves out the seed's services", () => {
 			web: { port: 3000, devCommand: "bun dev" },
 			api: { port: 3001, devCommand: "bun dev", requiredServices: ["db"] },
 		}),
-		seed: { command: "bun seed", requiredServices: ["db"] },
-	} as unknown as typeof env;
+	};
+	const seed = { command: "bun seed", requiredServices: ["db"] };
 	let error: unknown;
 	try {
 		validateDevStart(
@@ -111,6 +115,7 @@ it("refuses --seed when the selection leaves out the seed's services", () => {
 			dev(["--seed", "--apps=web"]),
 			resolveApps({ web: { port: 3000, devCommand: "bun dev" } }),
 			[],
+			seed,
 		);
 	} catch (caught) {
 		error = caught;
@@ -123,26 +128,20 @@ it("refuses --seed when the selection leaves out the seed's services", () => {
 		"Or select an app that requires it: --apps=api",
 	);
 	expect(() =>
-		validateDevStart(seeded, dev(["--seed"]), seeded.apps, ["db"]),
+		validateDevStart(seeded, dev(["--seed"]), seeded.apps, ["db"], seed),
 	).not.toThrow();
 });
 
 it("refuses --seed without requiredServices when no service is selected", () => {
 	const web = resolveApps({ web: { port: 3000, devCommand: "bun dev" } });
-	const withSeed = (seed: object) =>
-		({
-			...env,
-			seed: { command: "bun seed", ...seed },
-		}) as unknown as typeof env;
+	const seeding = dev(["--seed", "--apps=web"]);
 	expect(() =>
-		validateDevStart(withSeed({}), dev(["--seed", "--apps=web"]), web, []),
+		validateDevStart(env, seeding, web, [], { command: "bun seed" }),
 	).toThrow("this selection starts none");
 	expect(() =>
-		validateDevStart(
-			withSeed({ requiredServices: [] }),
-			dev(["--seed", "--apps=web"]),
-			web,
-			[],
-		),
+		validateDevStart(env, seeding, web, [], {
+			command: "bun seed",
+			requiredServices: [],
+		}),
 	).not.toThrow();
 });
