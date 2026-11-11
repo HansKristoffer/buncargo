@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { isGitIgnored } from "../../../core/gitignore";
 import type { CheckConfig, DocPathsCheckConfig } from "../../../types";
 
 /**
@@ -80,16 +81,6 @@ function repoPathExists(root: string, file: string, path: string): boolean {
 	);
 }
 
-/** Gitignored outputs (`.env`, `test-results/`) are absent from a fresh clone. */
-function isGitIgnored(root: string, path: string): boolean {
-	const result = Bun.spawnSync(["git", "check-ignore", "-q", path], {
-		cwd: root,
-		stdout: "ignore",
-		stderr: "ignore",
-	});
-	return result.exitCode === 0;
-}
-
 function isExempt(
 	config: DocPathsCheckConfig,
 	file: string,
@@ -125,6 +116,7 @@ function missingPaths(
 		if (!looksLikeRepoPath) continue;
 		if (repoPathExists(root, file, path) || isExempt(config, file, path))
 			continue;
+		// Gitignored outputs (`.env`, `test-results/`) are absent from a fresh clone.
 		if (isGitIgnored(root, written)) continue;
 
 		missing.push(path);

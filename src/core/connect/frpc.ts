@@ -5,11 +5,12 @@ import { join } from "node:path";
 import { rootCertificates } from "node:tls";
 import { connectProcessEnv } from "../child-env";
 import { abortableSleep } from "../deadline";
+import { isPort } from "../json-shape";
 import { startGuardedChild } from "../process/child-guard";
 import { installFrp } from "./binary";
 import { newCredential } from "./credentials";
 import { listenLoopback } from "./endpoint";
-import { type Relay, record, validPort } from "./protocol";
+import { type Relay, record } from "./protocol";
 
 export async function freePort() {
 	const server = createServer();
@@ -32,7 +33,7 @@ export async function startFrpc(
 	trustedCA = rootCertificates.join("\n"),
 ) {
 	if (
-		!validPort(config.relay.port) ||
+		!isPort(config.relay.port) ||
 		!/^[a-z0-9.-]+$/.test(config.relay.host) ||
 		!/^[a-z0-9.-]+$/.test(config.relay.serverName)
 	) {

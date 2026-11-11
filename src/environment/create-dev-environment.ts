@@ -42,7 +42,8 @@ type EnvironmentOptions = {
  *
  * @example
  * ```typescript
- * import { defineDevConfig, createDevEnvironment } from 'buncargo'
+ * import { defineDevConfig } from 'buncargo'
+ * import { createDevEnvironment } from 'buncargo/api'
  *
  * const config = defineDevConfig({
  *   projectPrefix: 'myapp',

@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { getErrorMessage, startTimer } from "hanzio";
 import { childProcessEnv } from "../../../core/child-env";
+import { shellQuote } from "../../../core/shell-quote";
 import type { CommandStep, DeferredTests, InlineStep, Step } from "./plan";
 
 const OUTPUT_TAIL_LINES = 80;
@@ -16,12 +17,6 @@ export interface StepFailure {
 
 /** Past this a rerun command shows its first arguments and a count. */
 const RERUN_MAX_CHARS = 160;
-
-function shellQuote(arg: string): string {
-	return /^[\w@%+=:,./-]+$/.test(arg)
-		? arg
-		: `'${arg.replaceAll("'", "'\\''")}'`;
-}
 
 /** The command to rerun one step, cut short when it lists many files. */
 export function rerunCommand(step: {

@@ -121,12 +121,12 @@ recorded CLI is exactly where they once did), and a script's apps get the same r
 no config load, no Docker unless a service is the target.
 
 - Stopping one app must not end the run, which is why `isDeliberateExit` in
-  `process/process-owner.ts` treats a signalled exit (and `130`/`143`, what a shell wrapper reports
+  `process/app-lifecycle.ts` treats a signalled exit (and `130`/`143`, what a shell wrapper reports
   for SIGINT/SIGTERM) as a clean stop rather than a failure.
 - Exit 3 is "refused: leave it running" (the attached app, an app reused from another terminal, a
   run in someone's terminal), and `help agents` tells agents exactly that, so nothing else may
   return it: an unknown flag is `1`, and so is a stop that failed (a teardown the runtime
-  refused, a port that would not free), where BuncargoBar's offer of `--force` would not help. `2` is a named target that matches nothing; a bare `stop` with
+  refused, a port that would not free), where `--force` would not help. `2` is a named target that matches nothing; a bare `stop` with
   nothing running exits 0. A run that ends between the read and the signal is not a refusal
   either: `stop` reads the entry again and, released or gone, takes down what it left.
 - Stopping the whole run, or what a finished run left, withdraws the checkout's service routes

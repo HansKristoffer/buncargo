@@ -69,7 +69,7 @@ describe("repairStaleService", () => {
 	// The update found a newer service another project installed and kept
 	// it: the run goes on, and says so.
 	it("carries what the reinstall kept as its note", async () => {
-		const kept = "Kept the named-hosts service from buncargo 17.0.0";
+		const kept = "Kept the named-hosts service from buncargo 16.1.0";
 		const result = await repairStaleService(REASON, {
 			prompt: async () => "update",
 			reinstall: async () => [kept],

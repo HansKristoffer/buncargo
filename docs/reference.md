@@ -194,7 +194,7 @@ typecheck: {
 },
 ```
 
-From code, `runWorkspaceTypecheck(options)` (exported from `buncargo`) runs the same checks and resolves to a `TypecheckResult`; it takes the flags above as `concurrency`, `only`, `changedFiles`, `include` and `exclude`. Pass `signal` (an `AbortSignal`) to cancel a run: the checks it started are terminated with their child processes, none is started after, and the promise rejects with the abort reason. `buncargo typecheck` does this on Ctrl-C or `SIGTERM` and exits 130 or 143.
+From code, `runWorkspaceTypecheck(options)` (exported from `buncargo/api`) runs the same checks and resolves to a `TypecheckResult`; it takes the flags above as `concurrency`, `only`, `changedFiles`, `include` and `exclude`. Pass `signal` (an `AbortSignal`) to cancel a run: the checks it started are terminated with their child processes, none is started after, and the promise rejects with the abort reason. `buncargo typecheck` does this on Ctrl-C or `SIGTERM` and exits 130 or 143.
 
 ## Execute with the checkout environment
 
@@ -1935,7 +1935,7 @@ const webEnv = env.buildAppEnvVars("web");
 await env.stop();
 ```
 
-`start()` prepares the selected services and spawns, supervises and health-checks the selected apps, but it is not `buncargo dev`, and leaves out what the CLI adds around a run. It takes the same [`exclusive` leases](#exclusive-leases) as `dev`, but cannot ask or take one over: a lease another run holds leaves an `essential: false` app out, with a warning, and makes `start()` throw for an essential one. It does not activate named hosts, so `env.urls` stay `http://localhost:<port>`. It runs neither the fast `checks` nor integration `preflight` steps such as the Shopify login, and it does not share apps and services with [remote recipients](#remote-services) (`BUNCARGO_CONNECT_TOKENS`). It records its apps and services in the run registry as `dev` does, so `buncargo ls`, `stop` and BuncargoBar show and stop them, and the entry goes when `stop()` stops the apps or the process exits; `restart`, `send` and `logs` reach only a `buncargo dev` run, because nothing in a script answers them and it writes no per-run logs. An app that never becomes ready fails the whole `start()` rather than being parked, and tunnels open only when you call `openPublicTunnels()`. Use `buncargo dev`, or `runCli` from a script, when you need any of these.
+`start()` prepares the selected services and spawns, supervises and health-checks the selected apps, but it is not `buncargo dev`, and leaves out what the CLI adds around a run. It takes the same [`exclusive` leases](#exclusive-leases) as `dev`, but cannot ask or take one over: a lease another run holds leaves an `essential: false` app out, with a warning, and makes `start()` throw for an essential one. It does not activate named hosts, so `env.urls` stay `http://localhost:<port>`. It runs neither the fast `setupChecks` nor integration `preflight` steps such as the Shopify login, and it does not share apps and services with [remote recipients](#remote-services) (`BUNCARGO_CONNECT_TOKENS`). It records its apps and services in the run registry as `dev` does, so `buncargo ls`, `stop` and BuncargoBar show and stop them, and the entry goes when `stop()` stops the apps or the process exits; `restart`, `send` and `logs` reach only a `buncargo dev` run, because nothing in a script answers them and it writes no per-run logs. An app that never becomes ready fails the whole `start()` rather than being parked, and tunnels open only when you call `openPublicTunnels()`. Use `buncargo dev`, or `runCli` from a script, when you need any of these.
 
 `env.buildEnvFingerprint("web")` is a digest of `buildAppEnvVars("web")` that is the same in every checkout and on every machine: it leaves out ports, IP addresses, the project name, the workspace id and the checkout root. Key a build cache on it to share one build between worktrees or CI runners. It is only correct when the build bakes in none of those values, so leave a URL with a port out of the build's env first.
 
@@ -1961,18 +1961,16 @@ try {
   ]);
 } finally {
   lifetime.abort();
-  // releaseRun leaves shared containers available to other sessions.
-  // stop() explicitly tears down the shared stack; use it for that intent.
-  await Promise.all([web.releaseRun(), api.releaseRun()]);
+  // Each stop() waits for its session's apps to exit. Services another live
+  // session still uses stay up for it, so the last stop() takes them down.
+  await Promise.all([web.stop(), api.stop()]);
 }
 ```
 
-`releaseRun()` releases container ownership; it does not stop supervised app processes. For a script that starts servers, retain its cancellation signal or stop its returned process IDs when the script's work finishes.
+`stop()` stops the session's apps and waits for them. `releaseRun()` instead releases the run's claim to the idle hold, keeping the checkout's containers warm for the next run, and stops no app process.
 
-A complete example that awaits app cleanup is in `example/library-sessions`: run `bun example/library-sessions/run.ts` from this repository.
+The example is in `example/library-sessions`: run `bun example/library-sessions/run.ts` from this repository.
 
-
-
-`createDevEnvironment(config)` constructs the same environment directly and infers from the supplied config. Construction reads persisted ports or computes a cold preview without runtime probes. Startup finalizes allocation and updates the ports/URLs objects in place; re-read them after startup instead of holding copied preview values.
+`createDevEnvironment(config)` constructs the same environment directly and infers from the supplied config. Construction reads the checkout's claimed port block, or computes a cold preview without runtime probes. Startup finalizes allocation and updates the ports/URLs objects in place; re-read them after startup instead of holding copied preview values.
 
 Use `env.exec(["bun", "scripts/maintenance.ts"], { app: "api" })` to run a command without starting the lifecycle.

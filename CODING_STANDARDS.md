@@ -12,6 +12,7 @@ of these anywhere else has written a second owner: flag it and name the first.
 | Concern | Owner |
 | --- | --- |
 | `BUNCARGO_*` and CI flags | `src/core/runtime-flags.ts` |
+| A command's argv: flags, values, positionals and their errors | `parseArgs` over the command's spec in `src/cli/command-spec.ts` |
 | A service's or app's kind, preset and defaults | `resolveConfig` in `src/config/resolve.ts` |
 | The env-name stem of a service or app key | `envName` in `src/core/ports.ts` |
 | Where state files live | `src/core/state-paths.ts` |
@@ -27,13 +28,16 @@ of these anywhere else has written a second owner: flag it and name the first.
 | A checkout's `buncargo env set` overrides | `src/core/env-overrides.ts` |
 | Exclusive leases as a run takes and explains them | `src/core/app-leases.ts` |
 | A run's entry and app rows in `runs.json` | `src/core/run-publish.ts` |
+| Reading `runs.json` | `loadRuns` in `src/core/run-registry.ts`; `readLiveCapturesSync` there is the one synchronous reader, for `getEnvVar` |
 | Whether a checkout's named URLs are live | `liveNamedHosts` in `src/core/hosts/registry.ts` |
 | A container's state (running, paused, …) and whether it is live or serving | `src/container-runtime/container-state.ts` |
 | What the sweep removes | `decideSweep` in `src/container-runtime/sweep.ts` |
 | Which detached runs the watchdog stops | `decideRunLimit` in `src/core/run-limits.ts` |
+| Which local ports have an established connection (the idle limit's evidence) | `readConnectionActivity` in `src/core/run-limits.ts` |
 | Runs the watchdog stopped, and why | `src/core/removal-log.ts` (`kind: "run-stopped"`) |
 | When a checkout was last used (commands, proxied requests) | `src/core/run-activity.ts`, `src/core/hosts/proxy-activity.ts` |
 | JSON state on disk | `src/core/registry-file.ts` (temp file and rename), `src/core/file-lock.ts` (`withFileLock` around a read-modify-write) |
+| The shape a JSON state file must have | a guard built from `src/core/json-shape.ts` and hanzio's `isString`, `isBoolean`, `isOneOf`, its type inferred with `Guarded` |
 
 A new shared concern gets one owner and a row here.
 

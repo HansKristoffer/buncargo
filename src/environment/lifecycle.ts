@@ -331,10 +331,6 @@ export function createLifecycleApi(
 		return runSeedIfNeeded(ctx, envVars, options, latest?.prepared.selection);
 	}
 
-	/**
-	 * Wired here rather than offered as a hook: `beforeServers` never fires on
-	 * the CLI path, which spawns its own apps.
-	 */
 	async function syncConfiguredEnvFile(verbose: boolean): Promise<void> {
 		const result = await syncEnvFile({
 			root: ctx.root,

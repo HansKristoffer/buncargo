@@ -231,8 +231,8 @@ describe("buncargo stop --all", () => {
 		}
 	});
 
-	// 3 means "left running on purpose", and BuncargoBar offers --force on
-	// it; a runtime that failed the teardown is no refusal to force past.
+	// 3 means "left running on purpose"; a runtime that failed the teardown
+	// is no refusal to force past.
 	it("exits 1 when the teardown fails, keeping the entry for another try", async () => {
 		writeFileSync(
 			docker,

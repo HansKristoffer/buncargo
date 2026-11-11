@@ -99,8 +99,7 @@ take a `stopped`/`failed` app back to `starting`. A restart that retires the old
 spawn its replacement fails the app (`kind: "restart"`): a retired process's exit is never
 reported, so nothing else would move the app's row and registry entry off `restarting`. It is
 parked when the run spares it, otherwise the end of the run, which would else wait on an app that
-is gone. The session keeps the app's last pid, so `stopDevServers` with the caller's pids still
-finds it. A row only says `starting` once a restart has begun, so a restart asked for after the run
+is gone. The session keeps the app's last pid, so `stop()` still finds it. A row only says `starting` once a restart has begun, so a restart asked for after the run
 ended changes nothing. A restart that retires a launcher while its exit is still looking for the
 server it detached waits for that lookup and stops the server, which would otherwise be adopted
 beside the replacement. An adopted server is watched with `kill(pid, 0)`; its identity is read only

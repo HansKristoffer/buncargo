@@ -6,6 +6,7 @@ import {
 } from "../container-runtime/types";
 import { abortableSleep, remainingTime } from "../core/deadline";
 import { execAsync } from "../core/process/exec";
+import { isProcessAlive } from "../core/process/lifecycle";
 import { askConfirm, isInteractive } from "../core/prompt";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWait } from "../core/style";
@@ -363,15 +364,6 @@ export function isDockerDesktopHung(uptimeMs: number): boolean {
 	return uptimeMs >= DESKTOP_COLD_START_MS;
 }
 
-function isAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 /**
  * End Docker Desktop's processes and start it again. Only the pids just
  * listed for this user, by pid; a quit request leaves the backend alive in
@@ -393,7 +385,7 @@ async function forceRestartDockerDesktop(
 	};
 	signalAll("SIGTERM");
 	const deadline = performance.now() + 10_000;
-	while (pids.some(isAlive) && remainingTime(deadline) > 0)
+	while (pids.some(isProcessAlive) && remainingTime(deadline) > 0)
 		await abortableSleep(250, signal);
 	signalAll("SIGKILL");
 	await abortableSleep(1000, signal);
