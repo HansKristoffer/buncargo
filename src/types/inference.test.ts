@@ -3,6 +3,9 @@ import { defineDevConfig, mergeConfigs } from "../config";
 import { getEnvVar } from "../core/utils";
 import { service } from "../docker-compose/services";
 import { createDevEnvironment } from "../environment";
+import { firebase } from "../firebase";
+import { shopify } from "../shopify";
+import { supabase } from "../supabase";
 import type {
 	AnyDevConfig,
 	AnyDevEnvironment,
@@ -51,7 +54,13 @@ const config = defineDevConfig({
 			staticEnv: { WEB_STATIC: "static" },
 			envVars: (ports) => ({ WEB_DERIVED: String(ports.web) }),
 		},
-		api: { port: 3001, devCommand: "bun run dev" },
+		api: {
+			port: 3001,
+			devCommand: "bun run dev",
+			captures: {
+				token: { pattern: /token: (\S+)/, as: "value", env: "API_TOKEN" },
+			},
+		},
 	},
 	env: (ports) => ({ VITE_PORT: ports.web }),
 });
@@ -114,6 +123,10 @@ type _ServiceStaticEnv = Expect<Equal<SharedEnv["SMTP_HOST"], string>>;
 type _HostOnlyOptional = Expect<
 	Equal<SharedEnv["NODE_EXTRA_CA_CERTS"], string | undefined>
 >;
+// A capture's `env` is set once the app prints the value.
+type _CaptureEnvOptional = Expect<
+	Equal<SharedEnv["API_TOKEN"], string | undefined>
+>;
 
 // `getEnvVar` is the surface that keeps the overlay's declared type, so a
 // `vite.config.ts` reading a port gets a `number` rather than a string.
@@ -126,8 +139,12 @@ function _probeGetEnvVar() {
 		Equal<typeof dbUrl, string | number | undefined>
 	>;
 
+	// `getEnvVar` answers what the run has: captures and the workspace id.
+	const token = getEnvVar(config, "API_TOKEN", { log: false });
+	const workspace = getEnvVar(config, "BUNCARGO_WORKSPACE_ID", { log: false });
+
 	// @ts-expect-error - "NOPE" is not a name this config produces
-	return [vitePort, dbUrl, getEnvVar(config, "NOPE")];
+	return [vitePort, dbUrl, token, workspace, getEnvVar(config, "NOPE")];
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -258,18 +275,15 @@ describe("config inference guardrails", () => {
 		const services = { postgres: service.postgres() };
 		const apps = { web: { port: 3000, devCommand: "bun run dev" } };
 
-		// No type parameter has a default, so supplying two of three cannot bind
+		// Only `TApps` has a default, so supplying two arguments cannot bind
 		// `typeof apps` to `TEnv` and erase the overlay keys. Passing explicit
 		// arguments at all is the mistake; this asserts it is a loud one.
-		const partial = defineDevConfig<
-			typeof services,
-			// @ts-expect-error - explicit type arguments suppress TEnv inference
-			typeof apps
-		>({
+		// @ts-expect-error - explicit type arguments suppress inference
+		const partial = defineDevConfig<typeof services, typeof apps>({
 			projectPrefix: "partial",
 			services,
 			apps,
-			env: (ports) => ({ VITE_PORT: ports.web }),
+			env: () => ({ VITE_PORT: 3000 }),
 		});
 
 		expect(partial.projectPrefix).toBe("partial");
@@ -359,4 +373,74 @@ function _probeBarePresetKey() {
 	// A bare preset key derives its preset's env, like the helper does.
 	const bare: string | number | undefined = getEnvVar(config, "DATABASE_URL");
 	return bare;
+}
+
+// Integration-added keys are typed through the config's own `integrations`
+// tuple: a name compiles only in a config that lists the integration adding it.
+function _probeIntegrationAddedKeys() {
+	const withSupabase = defineDevConfig({
+		projectPrefix: "supabase-keys",
+		services: {},
+		apps: {
+			web: {
+				port: 5173,
+				devCommand: "bun run dev",
+				requiredServices: ["supabase", "supabaseDb"],
+			},
+		},
+		tasks: { types: { command: "bun gen", requiredServices: ["supabaseDb"] } },
+		integrations: [supabase()],
+	});
+	const withoutSupabase = defineDevConfig({
+		projectPrefix: "supabase-keys",
+		services: {},
+		apps: {
+			web: {
+				port: 5173,
+				devCommand: "bun run dev",
+				// @ts-expect-error - no integration in this config adds "supabase"
+				requiredServices: ["supabase"],
+			},
+		},
+	});
+	const functionsOff = defineDevConfig({
+		projectPrefix: "supabase-functions",
+		services: {},
+		// @ts-expect-error - "supabaseFunctions" needs `functions: true`
+		profiles: { edge: { apps: ["supabaseFunctions"] } },
+		integrations: [supabase()],
+	});
+	const functionsOn = defineDevConfig({
+		projectPrefix: "supabase-functions",
+		services: {},
+		profiles: { edge: { apps: ["supabaseFunctions"] } },
+		integrations: [supabase({ functions: true })],
+	});
+	const firebaseAndShopify = defineDevConfig({
+		projectPrefix: "firebase-keys",
+		services: {},
+		apps: {
+			web: {
+				port: 3000,
+				devCommand: "next dev",
+				startAfter: ["firebase"],
+				requiredApps: ["shopify"],
+			},
+		},
+		profiles: { full: { apps: ["web", "firebase", "shopify"] } },
+		integrations: [firebase(), shopify()],
+	});
+	const misspelt = defineDevConfig({
+		projectPrefix: "misspelt",
+		services: {},
+		apps: {
+			// @ts-expect-error - a misspelt app option is never a valid key
+			api: { port: 3000, devCommand: "dev", healthEndpont: "/health" },
+		},
+	});
+	// An integration's names never become one of the config's own keys.
+	type _OwnAppsOnly = Expect<
+		Equal<keyof NonNullable<typeof firebaseAndShopify.apps>, "web">
+	>;
+	return [withSupabase, withoutSupabase, functionsOff, functionsOn, misspelt];
 }

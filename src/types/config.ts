@@ -1,4 +1,3 @@
-import type { IntegrationAppNames } from "./all-types";
 import type { AppConfig, SecretsScopeConfig, TypedAppDefinitions } from "./app";
 import type {
 	CheckConfig,
@@ -18,7 +17,7 @@ import type {
 } from "./computed";
 import type { DevEnvironment, DevEnvironmentFor } from "./environment";
 import type { DevHooks } from "./hooks";
-import type { BuncargoIntegration } from "./integrations";
+import type { BuncargoIntegration, IntegrationAdds } from "./integrations";
 import type { MigrationConfig, PrismaConfig, SeedConfig } from "./preparation";
 import type { DockerComposeGenerationOptions, ServiceConfig } from "./service";
 import type { ConcreteStringKeys } from "./type-utils";
@@ -337,9 +336,10 @@ export interface DevConfig<
 	generatedFiles?: readonly GeneratedFileConfig[];
 	/**
 	 * Integrations (`buncargo/shopify`, `buncargo/expo`, …), applied in order
-	 * before the config is validated (optional).
+	 * before the config is validated (optional). With `defineDevConfig`, the
+	 * apps and services they add can be named wherever the config's own can.
 	 */
-	integrations?: readonly BuncargoIntegration[];
+	integrations?: readonly BuncargoIntegration<IntegrationAdds>[];
 	/** Named scripts for `buncargo run <name>` (optional) */
 	tasks?: Record<
 		string,
@@ -355,12 +355,7 @@ export interface DevConfig<
 	 * Named app selections for `buncargo dev --profile=<name>` (optional).
 	 * A profile named `default` is what a bare `buncargo dev` runs.
 	 */
-	profiles?: Record<
-		string,
-		ProfileConfig<
-			Extract<keyof TApps, string> | Extract<keyof IntegrationAppNames, string>
-		>
-	>;
+	profiles?: Record<string, ProfileConfig<Extract<keyof TApps, string>>>;
 }
 
 /**

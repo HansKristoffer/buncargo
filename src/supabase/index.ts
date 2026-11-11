@@ -55,12 +55,6 @@ export {
 	type SupabaseProject,
 } from "./project";
 
-declare module "../types/all-types" {
-	interface IntegrationAppNames {
-		supabaseFunctions: true;
-	}
-}
-
 /** The service keys the integration adds; `supabase` is the API apps call. */
 export const SUPABASE_SERVICES = {
 	api: "supabase",
@@ -235,9 +229,17 @@ function typesUpToDate(output: string, stamp: string, inputs: string): boolean {
 	return contentHash(readFileSync(output, "utf8")) === recorded.written;
 }
 
-export function supabase(
-	options: SupabaseIntegrationOptions = {},
-): BuncargoIntegration {
+/** The keys of {@link SUPABASE_SERVICES}. */
+type SupabaseServiceKey =
+	(typeof SUPABASE_SERVICES)[keyof typeof SUPABASE_SERVICES];
+
+/** `functions: true` (or a `boolean` that may be) adds `supabaseFunctions`. */
+export function supabase<TFunctions extends boolean = false>(
+	options: SupabaseIntegrationOptions & { functions?: TFunctions } = {},
+): BuncargoIntegration<{
+	services: SupabaseServiceKey;
+	apps: true extends TFunctions ? "supabaseFunctions" : never;
+}> {
 	const workdirOption = options.workdir;
 	const workdirOf = (root: string) => resolve(root, workdirOption ?? ".");
 	// Set in `config()`, which runs before anything below is called.

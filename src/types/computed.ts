@@ -185,11 +185,33 @@ export type SharedEnvVarNames<
 	  >}_LOOPBACK_URL`
 	| `${EnvNameOf<Extract<ExposedKeys<TServices, TApps>, string>>}_PUBLIC_URL`;
 
+/** The `env` names apps' `captures` export, once a value is captured. */
+export type CaptureEnvVarNames<TApps> = {
+	[K in keyof TApps]: TApps[K] extends { captures?: infer TCaptures }
+		? {
+				[C in keyof TCaptures]: TCaptures[C] extends { env?: infer TName }
+					? string extends TName
+						? never
+						: Extract<TName, string>
+					: never;
+			}[keyof TCaptures]
+		: never;
+}[keyof TApps];
+
+/**
+ * Names in the shared environment only some of the time: under named hosts,
+ * once a capture has a value, or in a checkout with a workspace id.
+ */
+type OptionalEnvVarNames<TApps> =
+	HostOnlyEnvVarNames | CaptureEnvVarNames<TApps> | "BUNCARGO_WORKSPACE_ID";
+
 export type ConfigEnvVarNames<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends object,
 	TEnv = EnvValues,
 > =
+	| "BUNCARGO_WORKSPACE_ID"
+	| CaptureEnvVarNames<TApps>
 	| SharedEnvVarNames<
 			TServices,
 			[TApps] extends [Record<string, AppConfig>]
@@ -218,19 +240,22 @@ export type HostOnlyEnvVarNames =
 /**
  * A built shared environment.
  *
- * Every computed name is present, plus whatever `config.env` declared. Names
- * that only appear under named hosts are optional. There is deliberately no
- * open index signature: an unknown name is a typo, not a lookup.
+ * Every computed name is present, plus whatever `config.env` declared. The
+ * {@link OptionalEnvVarNames} are optional. There is deliberately no open
+ * index signature: an unknown name is a typo, not a lookup.
  */
 export type ComputedEnvVars<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 	TEnv = EnvValues,
 > = Record<
-	Exclude<ConfigEnvVarNames<TServices, TApps, TEnv>, HostOnlyEnvVarNames>,
+	Exclude<
+		ConfigEnvVarNames<TServices, TApps, TEnv>,
+		OptionalEnvVarNames<TApps>
+	>,
 	string
 > &
-	Partial<Record<HostOnlyEnvVarNames | "BUNCARGO_WORKSPACE_ID", string>>;
+	Partial<Record<OptionalEnvVarNames<TApps>, string>>;
 
 /**
  * Env names the spawner injects into an app process only while named hosts are

@@ -6,6 +6,7 @@ This folder contains example configurations for `buncargo`.
 - `minimal.dev.config.ts`: Smallest service-first setup with one built-in service and shared env outputs like `DATABASE_URL`.
 - `platform.dev.config.ts`: API + Vite + Expo (`interactive`, `needsPublicUrls`).
 - `custom-services.dev.config.ts`: Shows helper and raw custom Docker service definitions.
+- `supabase.dev.config.ts`, `firebase.dev.config.ts`: The readme's Supabase and Next.js + Firebase recipes; an app can name the services and apps an integration adds.
 - Public exposure via `expose: true` can be combined with `bunx buncargo dev --expose`.
 
 Recommended style:
