@@ -29,7 +29,11 @@ asks a view which one it is. Under `pty` every app spawns as a `PtyApp` (`pty-ap
 session leader so `kill(-pid)` still reaches the group, `exit` reported with Node's
 `(null, signal)` arguments) into an `AppScreen` (`app-screen.ts`: `@xterm/headless`) that survives
 restarts. An attached app with no TTY also runs as a `PtyApp`, which is what lets Expo start under
-an agent and `send` reach it.
+an agent and `send` reach it. In stream mode the attached app on a real terminal is a `PtyApp` too,
+passed through: its bytes go to our stdout unchanged, our stdin (raw while it runs) and size go to
+it, and its lines are fed `echoed`. It used to run under `script`, whose child leads a session of
+its own, so the stop ladder's `kill(-pid)` reached only `script`, and a server that ignored the
+hangup outlived `buncargo stop`.
 
 Bun up to 1.4.3 hangs for good on macOS inside `Bun.spawn({ terminal })`, past any test timeout,
 when the child prints and exits before the call returns (oven-sh/bun#45300). `PtyApp` makes its
