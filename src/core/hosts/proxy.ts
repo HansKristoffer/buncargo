@@ -18,8 +18,11 @@ export const HEALTH_PATH = "/_buncargo/health";
  * identical from a 404, which is how a stalled daemon went unnoticed for days.
  */
 export interface ProxyRoutesView {
-	/** Hostnames the bound listener answers for: routed, and its leaf covers them. */
-	hostnames: string[];
+	/**
+	 * Hostnames the bound listener answers for: routed, and its leaf covers them.
+	 * Read only by health and a 404, so a view may build it on read.
+	 */
+	readonly hostnames: string[];
 	/** Epoch ms of the last reload that finished, whether or not it loaded. */
 	lastReloadAt: number;
 	/**
@@ -136,13 +139,16 @@ export function createProxyFetch(input: {
 
 	return async (request, server) => {
 		const url = new URL(request.url);
+		// Every request reads the view for its age; only health and a 404 read
+		// its hostnames.
 		const view = routes();
 		const ageMs = reloadAgeMs(view);
 		if (url.pathname === HEALTH_PATH) {
+			const { hostnames } = view;
 			return Response.json({
 				ok: true,
-				routes: view.hostnames.length,
-				hostnames: view.hostnames,
+				routes: hostnames.length,
+				hostnames,
 				lastReloadAt: view.lastReloadAt,
 				...(view.bindError === undefined ? {} : { bindError: view.bindError }),
 			});

@@ -510,12 +510,14 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		if (route) deps.onRequest(route.root);
 		return route?.port;
 	};
+	// `hostnames` is a getter: every proxied request reads this view, and only
+	// health and a 404 read the list.
 	const routes = (): ProxyRoutesView => {
 		const now = deps.now();
 		return {
-			hostnames: [...routeMap.keys()].filter((hostname) =>
-				serves(hostname, now),
-			),
+			get hostnames() {
+				return [...routeMap.keys()].filter((hostname) => serves(hostname, now));
+			},
 			lastReloadAt,
 			...(bindError === undefined ? {} : { bindError }),
 		};

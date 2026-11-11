@@ -71,23 +71,33 @@ export async function describeLoopbackHijack(
 ): Promise<string | undefined> {
 	const config = readDaemonConfig();
 	const httpsPort = port ?? config.httpsPort;
-	for (const hostname of LOOPBACK_HOSTNAMES) {
-		if (!(await isTcpPortOpen(httpsPort, hostname, 500))) continue;
-		if (await readProxyHealth(httpsPort, hostname, { tls: config.tls })) {
-			continue;
-		}
-		const daemonPid = readDaemonPid();
-		const squatter = describePortSquatter(httpsPort, {
-			ignorePids: daemonPid === undefined ? [] : [daemonPid],
-		});
-		return `something other than buncargo is answering on ${loopbackAuthority(hostname, httpsPort)}, which browsers try first for .localhost names. ${squatter ?? `Stop it (\`sudo lsof -nP -iTCP:${httpsPort} -sTCP:LISTEN\`) or set hosts: false.`}`;
-	}
-	return undefined;
+	// Both families at once: each probe is a connect and a TLS handshake, and
+	// every run that attaches named hosts waits for them.
+	const hijacked = await Promise.all(
+		LOOPBACK_HOSTNAMES.map(
+			async (hostname) =>
+				(await isTcpPortOpen(httpsPort, hostname, 500)) &&
+				(await readProxyHealth(httpsPort, hostname, { tls: config.tls })) ===
+					undefined,
+		),
+	);
+	const hostname = LOOPBACK_HOSTNAMES.find((_, index) => hijacked[index]);
+	if (hostname === undefined) return undefined;
+	const daemonPid = readDaemonPid();
+	const squatter = describePortSquatter(httpsPort, {
+		ignorePids: daemonPid === undefined ? [] : [daemonPid],
+	});
+	return `something other than buncargo is answering on ${loopbackAuthority(hostname, httpsPort)}, which browsers try first for .localhost names. ${squatter ?? `Stop it (\`sudo lsof -nP -iTCP:${httpsPort} -sTCP:LISTEN\`) or set hosts: false.`}`;
 }
 
 /** How long the CLI waits for the daemon's one-second poll to pick a route up. */
 export const ROUTE_PICKUP_TIMEOUT_MS = 3000;
-const ROUTE_POLL_MS = 100;
+/**
+ * Short: the daemon reloads on the registry write, so the first probe
+ * usually arrives moments before the route does, and the run waits out
+ * one interval.
+ */
+const ROUTE_POLL_MS = 20;
 
 export type DaemonRouteCheck = { ok: true } | { ok: false; reason: string };
 

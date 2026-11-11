@@ -28,7 +28,6 @@ export interface HostsRoute {
 	 * held its hostname against the next run of that checkout.
 	 */
 	processIdentity?: string;
-	updatedAt: string;
 }
 
 /** Whether a route's owner is still the run that registered it. */
@@ -186,33 +185,21 @@ async function readForRewrite(path: string): Promise<HostsRoute[]> {
 	}
 }
 
-/**
- * The registry is shared by every concurrent `buncargo dev` on the machine, so
- * each read-modify-write below runs under `withFileLock`. Without it two runs
- * starting together both read the same snapshot and the second write drops the
- * first one's routes, leaving that project's named URL 404ing with no error.
- *
- * This is the unlocked core so `upsertHostRoutes` can reuse it inside a lock it
- * already holds.
- */
-async function prune(
-	path: string,
+/** The routes still attached to something real ({@link isRouteLive}). */
+async function liveRoutes(
+	routes: HostsRoute[],
 	options: PruneOptions = {},
 ): Promise<HostsRoute[]> {
-	const directoryExists = options.directoryExists ?? checkoutStillThere;
-	const routes = options.strict
-		? await readForRewrite(path)
-		: await registry.read(path);
 	const ownerAlive = await (options.owners ?? pidRouteOwners)(
 		routes.filter((route) => route.pid !== undefined),
 	);
-	const next = routes.filter((route) =>
-		isRouteLive(route, directoryExists, ownerAlive),
+	return routes.filter((route) =>
+		isRouteLive(
+			route,
+			options.directoryExists ?? checkoutStillThere,
+			ownerAlive,
+		),
 	);
-	if (next.length !== routes.length) {
-		await registry.write(path, next);
-	}
-	return next;
 }
 
 interface PruneOptions extends ListRegistryReadOptions {
@@ -221,11 +208,24 @@ interface PruneOptions extends ListRegistryReadOptions {
 	owners?: RouteOwners;
 }
 
+/**
+ * The registry is shared by every concurrent `buncargo dev` on the machine, so
+ * each read-modify-write here runs under `withFileLock`. Without it two runs
+ * starting together both read the same snapshot and the second write drops the
+ * first one's routes, leaving that project's named URL 404ing with no error.
+ */
 export async function pruneHostRoutes(
 	path = getRoutesPath(),
 	options: PruneOptions = {},
 ): Promise<HostsRoute[]> {
-	return withFileLock(path, () => prune(path, options));
+	return withFileLock(path, async () => {
+		const routes = options.strict
+			? await readForRewrite(path)
+			: await registry.read(path);
+		const next = await liveRoutes(routes, options);
+		if (next.length !== routes.length) await registry.write(path, next);
+		return next;
+	});
 }
 
 /**
@@ -278,6 +278,9 @@ export function classifyRouteClaim(
  * Register routes, and return the ones a live owner keeps
  * ({@link classifyRouteClaim}). Those are skipped, not fatal: one name another
  * checkout holds used to drop the whole plan to `localhost:port`.
+ *
+ * One read under the lock, and no write when nothing changed: an attach that
+ * registers what is already there leaves the file alone.
  */
 export async function upsertHostRoutes(
 	routesToSave: HostsRoute[],
@@ -297,7 +300,8 @@ export async function upsertHostRoutes(
 ): Promise<HostsRouteConflictError[]> {
 	const path = options.path ?? getRoutesPath();
 	return withFileLock(path, async () => {
-		const routes = await prune(path, { strict: true });
+		const stored = await readForRewrite(path);
+		const routes = await liveRoutes(stored);
 		const byHost = new Map(routes.map((route) => [route.hostname, route]));
 		const held = routesToSave.flatMap((route) => {
 			const existing = byHost.get(route.hostname);
@@ -329,7 +333,10 @@ export async function upsertHostRoutes(
 			byHost.set(route.hostname, route);
 		}
 
-		await registry.write(path, Array.from(byHost.values()));
+		const next = Array.from(byHost.values());
+		if (JSON.stringify(next) !== JSON.stringify(stored)) {
+			await registry.write(path, next);
+		}
 		return conflicts;
 	});
 }
@@ -412,7 +419,6 @@ export function routesFromPlan(
 		kinds?: Array<NamedHost["kind"]>;
 	},
 ): HostsRoute[] {
-	const now = new Date().toISOString();
 	return plan
 		.filter((entry) => !input.kinds || input.kinds.includes(entry.kind))
 		.map((entry) => ({
@@ -425,6 +431,5 @@ export function routesFromPlan(
 			...(input.pid !== undefined && input.processIdentity !== undefined
 				? { processIdentity: input.processIdentity }
 				: {}),
-			updatedAt: now,
 		}));
 }

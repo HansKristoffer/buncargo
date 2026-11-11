@@ -1,5 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import {
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -75,7 +82,6 @@ describe("reclaimAppRoute", () => {
 					name: "web",
 					root,
 					pid: other,
-					updatedAt: new Date().toISOString(),
 				},
 			],
 			{ owners: pidRouteOwners },
@@ -152,7 +158,6 @@ describe("activateNamedHosts", () => {
 					kind: "service",
 					name: "typesense",
 					root,
-					updatedAt: new Date().toISOString(),
 				},
 			],
 			{ owners: pidRouteOwners },
@@ -178,6 +183,34 @@ describe("activateNamedHosts", () => {
 		expect(await loadHostRoutes()).toEqual([]);
 	});
 
+	// Every run attaches on startup, mostly with the routes the last run left.
+	it("reads the registry once and leaves it unwritten when the routes are already there", async () => {
+		const { env, switches } = loopbackEnv();
+		env.hosts?.plan.push({
+			kind: "service",
+			name: "typesense",
+			hostname: "typesense.fixture.localhost",
+			baseHostname: "typesense.fixture.localhost",
+			targetPort: 8108,
+		});
+		await activateNamedHosts(env, { enabled: true }, readyMachine());
+		const written = statSync(getRoutesPath());
+		const readFile = spyOn(fsPromises, "readFile");
+		try {
+			await activateNamedHosts(env, { enabled: true }, readyMachine());
+
+			const reads = readFile.mock.calls.filter(
+				([path]) => path === getRoutesPath(),
+			);
+			expect(reads).toHaveLength(1);
+		} finally {
+			readFile.mockRestore();
+		}
+		const after = statSync(getRoutesPath());
+		expect([after.ino, after.mtimeMs]).toEqual([written.ino, written.mtimeMs]);
+		expect(switches.map((entry) => entry.active)).toEqual([true, true]);
+	});
+
 	it("serves the rest of the plan when another checkout holds one hostname", async () => {
 		const elsewhere = mkdtempSync(join(tmpdir(), "buncargo-other-checkout-"));
 		try {
@@ -190,7 +223,6 @@ describe("activateNamedHosts", () => {
 						name: "web",
 						root: elsewhere,
 						pid: process.ppid,
-						updatedAt: new Date().toISOString(),
 					},
 				],
 				{ owners: pidRouteOwners },
