@@ -132,7 +132,9 @@ How a run fits together, and the startup invariants: `docs/internals/overview.md
 
 - While iterating, run the tests you touched: `bun test <files>`.
 - Before finishing a substantive change, run all three: `bun run build`, `bun run lint:write`
-  (`bun check`, Biome lint, then `bun fmt`) and `bun test`. Leave the repo with all three passing.
+  (`bun check`, Biome lint, then `bun fmt`) and `bun run test`. Leave the repo with all three
+  passing. `bun run test` runs the files in parallel (about 15 s); plain `bun test` runs them one
+  after another, for a failure that only shows serially.
 - A branch of several commits: `bun scripts/check-commits.ts <base>` runs `bun run lint` on each
   commit on its own (`--test` adds `bun test`).
 - Before handing back a branch, or merging commits another agent made, review the diff with the

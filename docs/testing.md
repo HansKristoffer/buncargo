@@ -1,6 +1,7 @@
 # Testing
 
-`bun test` runs the hermetic suite. `bunfig.toml` preloads `scripts/test-runtime-isolation.ts`,
+`bun run test` runs the hermetic suite with its files in parallel (`bun test --parallel`, about
+15 s); plain `bun test` runs the same suite one file after another. `bunfig.toml` preloads `scripts/test-runtime-isolation.ts`,
 which keeps unit tests off the developer's machine: failing `docker` and `container` stubs first on
 `PATH`, `DOCKER_HOST` pointed at nothing, a temporary `HOME` for the run, and
 `BUNCARGO_WATCHDOG_PARENT`, so every watchdog a test starts ends with the run. Tests are co-located with their module as `*.test.ts`; test helpers
