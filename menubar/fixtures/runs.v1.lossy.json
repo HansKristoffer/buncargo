@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "runs": [
+    {
+      "sessionId": "first-valid-session",
+      "projectPrefix": "lullu",
+      "projectName": "lullu",
+      "root": "/tmp/buncargo-fixture/lullu",
+      "pid": 1,
+      "startedAt": "2026-09-03T10:00:00.000Z",
+      "updatedAt": "2026-09-03T10:00:05.000Z",
+      "cli": { "program": "/bin/echo" },
+      "apps": [
+        {
+          "name": "platform",
+          "port": 9273,
+          "url": "http://localhost:9273",
+          "loopbackUrl": "http://localhost:9273",
+          "status": "ready"
+        }
+      ],
+      "services": []
+    },
+    {
+      "sessionId": "unknown-status-session",
+      "projectPrefix": "lullu",
+      "projectName": "lullu-t3code-unknown",
+      "root": "/tmp/buncargo-fixture/lullu-unknown",
+      "worktree": "t3code-unknown",
+      "pid": 1,
+      "startedAt": "2026-09-03T10:01:00.000Z",
+      "updatedAt": "2026-09-03T10:01:05.000Z",
+      "cli": { "program": "/bin/echo" },
+      "apps": [
+        {
+          "name": "platform",
+          "port": 9274,
+          "url": "http://localhost:9274",
+          "loopbackUrl": "http://localhost:9274",
+          "status": "restarting"
+        }
+      ],
+      "services": [
+        {
+          "name": "postgres",
+          "port": 7433,
+          "url": "postgresql://localhost:7433/lullu",
+          "loopbackUrl": "postgresql://localhost:7433/lullu",
+          "status": "degraded"
+        }
+      ]
+    },
+    {
+      "sessionId": "no-apps-session",
+      "projectPrefix": "lullu",
+      "projectName": "lullu-t3code-no-apps",
+      "root": "/tmp/buncargo-fixture/lullu-no-apps",
+      "pid": 1,
+      "startedAt": "2026-09-03T10:02:00.000Z",
+      "updatedAt": "2026-09-03T10:02:05.000Z",
+      "cli": { "program": "/bin/echo" },
+      "services": []
+    },
+    {
+      "sessionId": "string-pid-session",
+      "projectPrefix": "lullu",
+      "projectName": "lullu-t3code-string-pid",
+      "root": "/tmp/buncargo-fixture/lullu-string-pid",
+      "pid": "1",
+      "startedAt": "2026-09-03T10:03:00.000Z",
+      "updatedAt": "2026-09-03T10:03:05.000Z",
+      "cli": { "program": "/bin/echo" },
+      "apps": [],
+      "services": []
+    },
+    42,
+    {
+      "sessionId": "last-valid-session",
+      "projectPrefix": "lullu",
+      "projectName": "lullu-t3code-last",
+      "root": "/tmp/buncargo-fixture/lullu-last",
+      "worktree": "t3code-last",
+      "pid": 1,
+      "startedAt": "2026-09-03T10:04:00.000Z",
+      "updatedAt": "2026-09-03T10:04:05.000Z",
+      "cli": { "program": "/bin/echo" },
+      "apps": [],
+      "services": [
+        {
+          "name": "postgres",
+          "port": 7434,
+          "url": "postgresql://localhost:7434/lullu",
+          "loopbackUrl": "postgresql://localhost:7434/lullu",
+          "status": "ready"
+        }
+      ]
+    }
+  ]
+}
