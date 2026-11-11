@@ -207,8 +207,12 @@ workspace in `typecheck --changed` (`isRootWideFile`).
 
 `commands/predeploy.ts` runs on a deploy host, not in a checkout: it never builds an environment,
 so no ports, containers or secrets, and the migrations and seed see only the host's variables.
-It reuses the dev run's migration list (`prisma`, then `migrations`) without `requiredServices`
-filtering, since a deploy has no local services to select. Unlike `typecheck`, a config that
+It reuses the dev run's migration list (`migrationsFor` in `src/prisma/migrations-for.ts`)
+without `requiredServices` filtering, since a deploy has no local services to select. It fails
+closed: an environment no variable names is not seeded, because the default seed is the dev
+run's, which in one project created a super admin with a known password on a deploy that set
+neither variable. It is not in the auto-install commands: a deploy image's install layer comes
+from a cache older than its `bun.lock`. Unlike `typecheck`, a config that
 fails to import is an error here: migrating with half a config is worse than failing the deploy.
 `typecheck/config-settings.ts` is the one loader for these config-only commands.
 

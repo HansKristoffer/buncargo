@@ -211,6 +211,11 @@ const TOPICS: readonly Topic[] = [
   whose URL names this checkout's database (\`DATABASE_URL\`, direct and pooled
   ones) at that database. Do not rewrite \`DATABASE_URL\` by hand. It exits 1
   when the database does not exist or nothing points at it.
+- \`bunx buncargo prisma <args>\` runs Prisma against this checkout's database,
+  starting it if needed; its stdout is Prisma's alone, so
+  \`bunx buncargo prisma migrate diff --script > migration.sql\` is only SQL.
+  \`migrate reset\` and \`db push --force-reset\`/\`--accept-data-loss\` drop data
+  and exit 1 without \`--yes\`: do not pass it to fix a migration, ask first.
 - Do not \`docker exec\` into a database by name or read credentials from the
   generated compose file: other worktrees run databases of their own.`,
 	},
@@ -364,7 +369,8 @@ const TOPICS: readonly Topic[] = [
   the containers start, so the database is not up yet there.
 - Tools that change behaviour in an agent's shell can be kept from seeing it with
   \`unsetEnv: ["VAR", …]\`, which removes those variables from every process
-  buncargo starts.`,
+  buncargo starts, except the Prisma CLI: Prisma reads them to guard its
+  destructive actions.`,
 	},
 ];
 

@@ -373,14 +373,15 @@ export function validatePredeployShape(
 ): void {
 	const { errors, record, check, strings, fields, duration } = checks;
 	if (value === undefined || !record(value, "predeploy")) return;
-	const hooks = ["beforeMigrate", "afterMigrate", "afterSeed"];
+	const hooks = ["beforeMigrate", "afterMigrate", "afterSeed", "onFailure"];
+	const names = ["environmentVars", "production", "seedIn"];
 	unknownKeys(
 		value,
 		"predeploy",
-		["environmentVars", "production", "seed", "retry", ...hooks],
+		[...names, "seed", "retry", ...hooks],
 		errors,
 	);
-	for (const key of ["environmentVars", "production"])
+	for (const key of names)
 		check(
 			value[key],
 			`predeploy.${key}`,

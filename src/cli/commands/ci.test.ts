@@ -171,7 +171,7 @@ describe("ci teardown", () => {
 				expect(result.exitCode).toBe(exitCode);
 				const calls = readFileSync(log, "utf-8");
 				expect(calls).toMatch(/compose .* down -v\ndown finished\n$/);
-				expect(result.stdout).toContain("Containers stopped");
+				expect(result.stderr).toContain("Containers stopped");
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}
@@ -307,4 +307,28 @@ describe("ciLeftoverVolumes", () => {
 			}),
 		).toEqual([]);
 	});
+});
+
+it("leaves stdout to the command, byte for byte", async () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-ci-")));
+	const docker = join(root, "docker");
+	writeFileSync(join(root, "package.json"), JSON.stringify({ workspaces: [] }));
+	writeFileSync(
+		join(root, "dev.config.ts"),
+		"export default {projectPrefix:'cistdout',services:{postgres:{port:5432}},apps:{}};",
+	);
+	writeFileSync(docker, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+	try {
+		const result = await execAsync(
+			[...cli, "ci", "--", "printf", "ok 1\\nok 2\\n"],
+			root,
+			{ HOME: join(root, "home"), BUNCARGO_CONTAINER_BINARY: docker },
+		);
+
+		expect(result.stdout).toBe("ok 1\nok 2\n");
+		expect(result.stderr).toContain("Containers stopped");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });

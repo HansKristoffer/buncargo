@@ -62,6 +62,8 @@ export interface PrismaRunner {
 	migrateCheck(options?: PrismaMigrateCheckOptions): Promise<number>;
 	/** `prisma.cwd`, relative to the root. */
 	readonly cwd: string;
+	/** `prisma.service`: the database's service key. */
+	readonly service: string;
 	/** `prisma.generate`, when configured. */
 	readonly generateCommand?: string;
 	/** Run `prisma.generate` (or `prisma generate`) and record the schema it saw. */

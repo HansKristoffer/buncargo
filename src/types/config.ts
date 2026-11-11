@@ -318,9 +318,13 @@ export interface DevConfig<
 	secrets?: SecretsScopeConfig | false;
 	/**
 	 * Variables removed from every process buncargo starts for the project:
-	 * apps, tasks, `exec`, migrations, the seed and prisma. For tools that
-	 * change behaviour when they detect an agent's shell, e.g.
+	 * apps, tasks, `exec`, migrations and the seed. For tools that change
+	 * behaviour when they detect an agent's shell, e.g.
 	 * `["CLAUDECODE", "CODEX_SANDBOX"]` (optional).
+	 *
+	 * A tool run through `exec` loses its own agent detection with them. The
+	 * Prisma CLI that `buncargo prisma` runs keeps them: they are what Prisma
+	 * reads before a destructive Migrate action.
 	 */
 	unsetEnv?: readonly string[];
 	/** Docker Compose generation options (optional) */

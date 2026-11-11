@@ -30,7 +30,7 @@ import {
 	containerRuntimeForEnv,
 	ensureServicesRunning,
 } from "../container-runtime";
-import { childProcessEnv } from "../core/child-env";
+import { agentAwareProcessEnv } from "../core/child-env";
 import { toPortMap } from "../core/ports";
 import { shellExitCode } from "../core/process/exec";
 import { inferDockerPreset } from "../core/service-presets";
@@ -82,6 +82,25 @@ export function databaseHealthCheck(
 	if (service.healthCheck !== undefined) return service.healthCheck;
 	const preset = inferDockerPreset(serviceKey, service);
 	return (preset && PRESET_HEALTH_CHECKS[preset]) ?? "tcp";
+}
+
+/**
+ * What `args` would destroy, when they ask Prisma for a destructive action:
+ * `migrate reset`, or `db push` with `--force-reset` or `--accept-data-loss`.
+ */
+export function destructivePrismaAction(
+	args: readonly string[],
+): string | undefined {
+	const follows = (first: string, second: string) =>
+		args.some((arg, index) => arg === first && args[index + 1] === second);
+	if (follows("migrate", "reset"))
+		return "prisma migrate reset drops the database and every row in it";
+	const dataLossFlag = args.find(
+		(arg) => arg === "--force-reset" || arg === "--accept-data-loss",
+	);
+	if (follows("db", "push") && dataLossFlag)
+		return `prisma db push ${dataLossFlag} can drop tables and the rows in them`;
+	return undefined;
 }
 
 /**
@@ -156,7 +175,8 @@ export function createPrismaRunner<
 			ports: { [service]: port },
 			model: env.composeModel(),
 			composeFile,
-			verbose: true,
+			// Its progress would land in the stdout `buncargo prisma` keeps for Prisma.
+			verbose: false,
 			wait: true,
 		});
 	}
@@ -168,7 +188,8 @@ export function createPrismaRunner<
 	): Promise<number> {
 		const envVars: Record<string, string> = env.buildEnvVars();
 		const workingDir = join(env.root, cwd);
-		const fullEnv = childProcessEnv({
+		// Not `unsetEnv`: Prisma's agent guard reads those variables.
+		const fullEnv = agentAwareProcessEnv({
 			...(await resolveSecrets(envVars)),
 			...process.env,
 			...envVars,
@@ -176,7 +197,8 @@ export function createPrismaRunner<
 			...extraEnv,
 		});
 
-		console.log(`🔄 Running: prisma ${args.join(" ")}\n`);
+		// stdout is Prisma's alone: `migrate diff --script > migration.sql`.
+		console.error(`🔄 Running: prisma ${args.join(" ")}\n`);
 
 		return new Promise((resolve) => {
 			const proc = spawn("bunx", ["--no-install", "prisma", ...args], {
@@ -215,7 +237,7 @@ Examples:
 		await allocate(service);
 		const port = toPortMap(env.ports)[service];
 
-		console.log(`
+		console.error(`
 🔧 Prisma CLI
    Project: ${env.projectName}
    Database: localhost:${port}
@@ -299,7 +321,7 @@ Examples:
 				'   Prisma 7 reads the shadow database from prisma.config.ts: set datasource.shadowDatabaseUrl to env("SHADOW_DATABASE_URL").',
 			);
 
-		if (code === 0) console.log("✅ Migrations match the schema.");
+		if (code === 0) console.error("✅ Migrations match the schema.");
 		if (code === 2)
 			console.error(
 				"❌ The schema has changes no migration contains. Create one with `bunx buncargo prisma migrate dev`.",
@@ -323,6 +345,7 @@ Examples:
 		ensureDatabase,
 		migrateCheck,
 		cwd,
+		service,
 		generateCommand: config.generate,
 		generate,
 	};

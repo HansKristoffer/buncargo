@@ -1,13 +1,17 @@
 import { join } from "node:path";
+import { getErrorMessage } from "hanzio";
+import { validateSupplementShapes } from "../../config/validation/config-shapes";
+import { createShapeChecks } from "../../config/validation/shape-checks";
 import { childProcessEnv } from "../../core/child-env";
 import { findMonorepoRoot } from "../../core/ports";
-import { resolvePrismaConfig } from "../../prisma/config";
+import { migrationsFor } from "../../prisma/migrations-for";
 import { loadPredeployConfig } from "../../typecheck/config-settings";
 import type {
+	AnyDevConfig,
 	MigrationConfig,
 	PredeployConfig,
 	PredeployContext,
-	PrismaConfig,
+	PredeployFailure,
 } from "../../types";
 import {
 	type CommandSpec,
@@ -33,7 +37,7 @@ export const PREDEPLOY_COMMAND_SPEC: CommandSpec = {
 		{
 			command: "bunx buncargo predeploy",
 			description:
-				"Migrate, then seed unless production (e.g. Railway's preDeployCommand)",
+				"Migrate, then seed a named environment outside production (e.g. Railway's preDeployCommand)",
 		},
 	],
 };
@@ -50,57 +54,106 @@ const DEFAULT_RETRY = {
 	delayMs: 15_000,
 };
 
+export interface PredeployEnvironment {
+	/** The deploy environment's name; `dev` when no variable names one. */
+	environment: string;
+	production: boolean;
+	/** Whether one of the `environmentVars` named it. */
+	named: boolean;
+}
+
 /** The deploy environment's name, from the first variable that is set. */
 export function predeployEnvironment(
 	config: PredeployConfig,
-	env: NodeJS.ProcessEnv = process.env,
-): { environment: string; production: boolean } {
-	const environment =
-		(config.environmentVars ?? DEFAULT_ENVIRONMENT_VARS)
-			.map((name) => env[name])
-			.find((value) => value !== undefined && value !== "") ?? "dev";
+	env: NodeJS.ProcessEnv,
+): PredeployEnvironment {
+	const named = (config.environmentVars ?? DEFAULT_ENVIRONMENT_VARS)
+		.map((name) => env[name])
+		.find((value) => value !== undefined && value !== "");
+	const environment = named ?? "dev";
 	return {
 		environment,
 		production: (config.production ?? DEFAULT_PRODUCTION).includes(environment),
+		named: named !== undefined,
 	};
 }
 
 /**
- * What predeploy seeds with outside production: `predeploy.seed` as a command
- * from the root, the dev run's `seed.command` when it is unset, nothing when it
- * is `false`.
+ * Whether and with what predeploy seeds. Never production, never an
+ * environment no variable named, only `seedIn` when it is set. The command is
+ * `predeploy.seed` from the root, else the dev run's `seed.command`; `false`
+ * never seeds.
  */
-export function predeploySeed(
+function planPredeploySeed(
 	config: PredeployConfig,
 	devSeed: { command?: string; cwd?: string } | undefined,
-): { command: string; cwd?: string } | undefined {
-	if (config.seed === false) return undefined;
-	if (config.seed !== undefined) return { command: config.seed };
-	if (!devSeed?.command) return undefined;
-	return { command: devSeed.command, cwd: devSeed.cwd };
+	deploy: PredeployEnvironment,
+):
+	| { kind: "seed"; command: string; cwd?: string }
+	| { kind: "skip"; reason: string } {
+	const { environment } = deploy;
+	if (deploy.production)
+		return { kind: "skip", reason: "production: not seeding." };
+	if (!deploy.named) {
+		const variables = (config.environmentVars ?? DEFAULT_ENVIRONMENT_VARS).join(
+			" or ",
+		);
+		return {
+			kind: "skip",
+			reason: `no ${variables} names the environment: not seeding. Set one to seed it.`,
+		};
+	}
+	const excluded =
+		config.seedIn !== undefined && !config.seedIn.includes(environment);
+	if (excluded)
+		return {
+			kind: "skip",
+			reason: `"${environment}" is not in predeploy.seedIn: not seeding.`,
+		};
+	const nothing = { kind: "skip", reason: "no seed to run." } as const;
+	if (config.seed === false) return nothing;
+	if (config.seed !== undefined) return { kind: "seed", command: config.seed };
+	if (!devSeed?.command) return nothing;
+	return { kind: "seed", command: devSeed.command, cwd: devSeed.cwd };
 }
 
 /**
- * The migrations a dev run applies, here against the deploy's own database:
- * `prisma migrate deploy` in `prisma.cwd`, then `migrations` in order.
- * `requiredServices` is ignored: a deploy has no local services to select.
+ * The migration Prisma recorded as failed, when `output` is Prisma's P3009
+ * (a failed migration blocks new ones) or P3018 (a migration failed to apply).
  */
-export function predeployMigrations(root: {
-	prisma?: PrismaConfig;
-	migrations?: readonly MigrationConfig[];
-}): MigrationConfig[] {
-	return [
-		...(root.prisma
-			? [
-					{
-						name: "prisma",
-						command: "bunx --no-install prisma migrate deploy",
-						cwd: resolvePrismaConfig(root.prisma).cwd,
-					},
-				]
-			: []),
-		...(root.migrations ?? []),
-	];
+function failedPrismaMigration(output: string): string | undefined {
+	if (!/\bP30(09|18)\b/.test(output)) return undefined;
+	const named =
+		/The `([^`]+)` migration started at/.exec(output) ??
+		/Migration name: (\S+)/.exec(output);
+	return named?.[1];
+}
+
+/** What predeploy reads from the root config, checked as it loads. */
+export interface PredeployInputs {
+	predeploy?: PredeployConfig;
+	prisma?: AnyDevConfig["prisma"];
+	migrations?: AnyDevConfig["migrations"];
+	seed?: { command?: string; cwd?: string };
+}
+
+/**
+ * The root config's keys predeploy reads, validated as `validateConfig`
+ * validates them.
+ */
+function readPredeployInputs(
+	rootConfig: Record<string, unknown>,
+): PredeployInputs {
+	const { predeploy, prisma, migrations, seed } = rootConfig;
+	const errors: string[] = [];
+	validateSupplementShapes(
+		{ prisma, migrations, seed },
+		createShapeChecks(errors),
+	);
+	if (errors.length > 0)
+		throw new CliError(errors[0] ?? "Invalid dev config.", errors.slice(1));
+	// Validated above; `predeploy` by the loader.
+	return { predeploy, prisma, migrations, seed } as PredeployInputs;
 }
 
 export interface PredeployIo {
@@ -152,20 +205,19 @@ const defaultIo: PredeployIo = {
 };
 
 /**
- * Migrate, seed outside production, and the config's hooks around both.
- * Throws a `CliError` naming the step that failed.
+ * Migrate, seed when {@link planPredeploySeed} says so, and the config's hooks
+ * around both. Throws a `CliError` naming the step that failed, after
+ * `onFailure`.
  */
 export async function runPredeploy(
 	root: string,
-	rootConfig: Record<string, unknown>,
+	inputs: PredeployInputs,
 	io: PredeployIo = defaultIo,
 ): Promise<void> {
-	const config = (rootConfig.predeploy ?? {}) as PredeployConfig;
-	const seed = predeploySeed(
-		config,
-		rootConfig.seed as { command?: string; cwd?: string } | undefined,
-	);
-	const { environment, production } = predeployEnvironment(config, io.env);
+	const config = inputs.predeploy ?? {};
+	const deploy = predeployEnvironment(config, io.env);
+	const { environment, production } = deploy;
+	const seed = planPredeploySeed(config, inputs.seed, deploy);
 	const exec = async (command: string, cwd = ".") => {
 		const result = await io.run(command, join(root, cwd));
 		if (result.exitCode === 0) return;
@@ -178,46 +230,107 @@ export async function runPredeploy(
 		production,
 		exec: (command, options) => exec(command, options?.cwd),
 	};
+	let step: Omit<PredeployFailure, "message"> = { step: "beforeMigrate" };
 
-	io.log(`environment "${environment}" (production: ${production})`);
-	await config.beforeMigrate?.(ctx);
+	try {
+		io.log(`environment "${environment}" (production: ${production})`);
+		await config.beforeMigrate?.(ctx);
 
+		for (const migration of migrationsFor(inputs)) {
+			step = { step: "migrate", migration: migration.name };
+			const failed = await migrate(migration, root, config, io);
+			if (failed) {
+				step = { ...step, failedPrismaMigration: failed.failedPrismaMigration };
+				throw failed.error;
+			}
+		}
+		step = { step: "afterMigrate" };
+		await config.afterMigrate?.(ctx);
+
+		step = { step: "seed" };
+		if (seed.kind === "skip") io.log(seed.reason);
+		else {
+			io.log(`seeding ${environment} (${seed.command})`);
+			await exec(seed.command, seed.cwd);
+		}
+		step = { step: "afterSeed" };
+		await config.afterSeed?.(ctx);
+		io.log("done.");
+	} catch (error) {
+		await reportFailure(
+			config,
+			ctx,
+			{ ...step, message: getErrorMessage(error) },
+			io,
+		);
+		throw error;
+	}
+}
+
+/** `onFailure`, whose own failure is printed and leaves the deploy's error to throw. */
+async function reportFailure(
+	config: PredeployConfig,
+	ctx: PredeployContext,
+	failure: PredeployFailure,
+	io: PredeployIo,
+): Promise<void> {
+	try {
+		await config.onFailure?.(ctx, failure);
+	} catch (error) {
+		io.log(`predeploy.onFailure threw: ${getErrorMessage(error)}`);
+	}
+}
+
+/**
+ * One migration, retried while the database has no free connection slots.
+ * Resolves to the failure, if it failed.
+ */
+async function migrate(
+	migration: MigrationConfig,
+	root: string,
+	config: PredeployConfig,
+	io: PredeployIo,
+): Promise<{ error: CliError; failedPrismaMigration?: string } | undefined> {
 	const retry =
 		config.retry === false ? undefined : { ...DEFAULT_RETRY, ...config.retry };
-	for (const migration of predeployMigrations(rootConfig)) {
-		io.log(`migrating: ${migration.name} (${migration.command})`);
-		for (let attempt = 1; ; attempt++) {
-			const result = await io.run(
-				migration.command,
-				join(root, migration.cwd ?? "."),
-			);
-			if (result.exitCode === 0) break;
-			const slotsExhausted =
-				retry !== undefined && result.output.includes(retry.match);
-			if (!retry || !slotsExhausted || attempt >= retry.attempts) {
-				const message = `predeploy: migration ${migration.name} exited ${result.exitCode}.`;
-				throw new CliError(message, [
-					slotsExhausted
-						? "The database stayed out of connection slots: raise predeploy.retry.attempts or lower the running services' pool sizes."
-						: "Its output is above; fix the migration and deploy again.",
-				]);
-			}
-			io.log(
-				`database refused the connection (attempt ${attempt}/${retry.attempts}), retrying in ${retry.delayMs / 1000}s`,
-			);
-			await io.sleep(retry.delayMs);
+	io.log(`migrating: ${migration.name} (${migration.command})`);
+	for (let attempt = 1; ; attempt++) {
+		const result = await io.run(
+			migration.command,
+			join(root, migration.cwd ?? "."),
+		);
+		if (result.exitCode === 0) return undefined;
+		const slotsExhausted =
+			retry !== undefined && result.output.includes(retry.match);
+		if (!retry || !slotsExhausted || attempt >= retry.attempts) {
+			const message = `predeploy: migration ${migration.name} exited ${result.exitCode}.`;
+			const failedPrisma = failedPrismaMigration(result.output);
+			const hints = slotsExhausted
+				? [
+						"The database stayed out of connection slots: raise predeploy.retry.attempts or lower the running services' pool sizes.",
+					]
+				: failedPrisma
+					? resolveHints(failedPrisma, migration.cwd)
+					: ["Its output is above; fix the migration and deploy again."];
+			return {
+				error: new CliError(message, hints),
+				failedPrismaMigration: failedPrisma,
+			};
 		}
+		io.log(
+			`database refused the connection (attempt ${attempt}/${retry.attempts}), retrying in ${retry.delayMs / 1000}s`,
+		);
+		await io.sleep(retry.delayMs);
 	}
-	await config.afterMigrate?.(ctx);
+}
 
-	if (production) io.log("production: not seeding.");
-	else if (!seed) io.log("no seed to run.");
-	else {
-		io.log(`seeding ${environment} (${seed.command})`);
-		await exec(seed.command, seed.cwd);
-	}
-	await config.afterSeed?.(ctx);
-	io.log("done.");
+/** How to unblock deploys after Prisma recorded `name` as failed. */
+function resolveHints(name: string, cwd = "."): string[] {
+	return [
+		`Prisma recorded migration ${name} as failed, and every later deploy stops here until it is resolved.`,
+		`Undo what it applied, then, against the deploy's database from ${cwd}: bunx prisma migrate resolve --rolled-back ${name}`,
+		`If you finished it by hand instead: bunx prisma migrate resolve --applied ${name}`,
+	];
 }
 
 /**
@@ -249,6 +362,6 @@ export async function handlePredeploy(args: string[]): Promise<number> {
 	// Unlike `typecheck`, a deploy must not migrate with half a config.
 	if (settings.warning || !settings.config)
 		throw new CliError(settings.warning ?? "No dev.config.ts found.");
-	await runPredeploy(root, settings.config);
+	await runPredeploy(root, readPredeployInputs(settings.config));
 	return 0;
 }

@@ -1,9 +1,14 @@
 import { getErrorMessage } from "hanzio";
 import { readEnvOverrides } from "../../core/env-overrides";
 import { unallocatedPortsMessage } from "../../core/port-exhaustion";
-import { hostsMode } from "../../core/runtime-flags";
+import { CommandSignalError, shellExitCode } from "../../core/process/exec";
+import { isInteractive } from "../../core/prompt";
+import { hostsMode, isCI } from "../../core/runtime-flags";
 import { createNoopPhaseTimer, createPhaseTimer } from "../../core/timing";
+import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
+import type { AnyDevEnvironment } from "../../types";
 import { exitOnDevArgErrors, parseDevArgs, printDevHelp } from "../dev-flags";
+import { CliError } from "../errors";
 import { getFlagValue, hasFlag, splitCliArgs } from "../flags";
 import * as log from "../log";
 import { parseTypecheckArgs, printTypecheckHelp } from "../typecheck-flags";
@@ -84,12 +89,21 @@ export async function handleDev(args: string[]): Promise<void> {
 	}
 }
 
-export async function handlePrisma(args: string[]): Promise<void> {
+export async function handlePrisma(rawArgs: string[]): Promise<void> {
+	// `--yes` is buncargo's, not Prisma's.
+	const yes = rawArgs.includes("--yes");
+	const args = rawArgs.filter((arg) => arg !== "--yes");
 	// Parsed before the config loads, so a typo is not answered with a config error.
 	const migrateCheck =
 		args[0] === "migrate-check"
 			? parseMigrateCheckArgs(args.slice(1))
 			: undefined;
+	const { destructivePrismaAction } = await import("../../prisma");
+	refuseDestructivePrisma(destructivePrismaAction(args), args, {
+		yes,
+		interactive: isInteractive(),
+		ci: isCI(),
+	});
 	const env = await loadEnv();
 
 	if (!env.prisma) {
@@ -102,11 +116,78 @@ export async function handlePrisma(args: string[]): Promise<void> {
 			"})",
 		]);
 	}
+	const { prisma } = env;
+	if (args.length === 0) process.exit(await prisma.run(args));
 
-	const exitCode = migrateCheck
-		? await env.prisma.migrateCheck(migrateCheck)
-		: await env.prisma.run(args);
+	const exitCode = await withClaimedDatabase(env, prisma.service, () =>
+		migrateCheck ? prisma.migrateCheck(migrateCheck) : prisma.run(args),
+	);
 	process.exit(exitCode);
+}
+
+/**
+ * Refuse a destructive Prisma action without a terminal unless `--yes`, as
+ * `dev --reset` does: an agent "fixing" a migration with `migrate reset` wipes
+ * the developer's database. CI is exempt; its databases are disposable.
+ */
+function refuseDestructivePrisma(
+	action: string | undefined,
+	args: readonly string[],
+	context: { yes: boolean; interactive: boolean; ci: boolean },
+): void {
+	const asked = context.yes || context.interactive || context.ci;
+	if (action === undefined || asked) return;
+	throw new CliError(`${action}. Refusing without a terminal.`, [
+		`Pass --yes if that is really what you want: buncargo prisma ${args.join(" ")} --yes`,
+	]);
+}
+
+/**
+ * Run `use` with the database claimed and started, as `buncargo run` does for
+ * a task's services: the claim comes before the container, so `ls`, `stop`
+ * and BuncargoBar see the run and the sweep leaves the database up while
+ * `prisma studio` uses it. Released on the way out, Ctrl-C included, into the
+ * hold a `dev` run gets.
+ */
+async function withClaimedDatabase(
+	env: AnyDevEnvironment,
+	service: string,
+	use: () => Promise<number>,
+): Promise<number> {
+	const controller = new AbortController();
+	const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+	// The terminal's Ctrl-C reaches Prisma itself; this process only has to
+	// live long enough to release.
+	const cancel = (signal: NodeJS.Signals) =>
+		controller.abort(new CommandSignalError(signal));
+	for (const name of signals) process.on(name, cancel);
+	const { signal } = controller;
+
+	console.error(`Starting ${service} for ${env.projectName}…`);
+	try {
+		await env.prepareStartAsync(undefined, [service], signal);
+		await env.claimRun({
+			defaultIdleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS,
+			signal,
+		});
+		await env.start({
+			onlyServices: [service],
+			startServers: false,
+			prepare: "containers",
+			skipEnvironmentLog: true,
+			// stdout is Prisma's alone.
+			verbose: false,
+			signal,
+		});
+		return await use();
+	} catch (error) {
+		if (error instanceof CommandSignalError)
+			return shellExitCode(null, error.signal);
+		throw error;
+	} finally {
+		await env.releaseRun();
+		for (const name of signals) process.off(name, cancel);
+	}
 }
 
 /** `migrate-check [--migrations=<dir>] [--schema=<path>] [-- <diff args>]` */
