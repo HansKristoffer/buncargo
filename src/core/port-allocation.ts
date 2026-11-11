@@ -449,7 +449,11 @@ export function resolvePortPlan(
 ): PortPlan {
 	if (input.probeConflicts === false) return readPortPlan(input);
 	const persist = input.persist ?? true;
-	return allocatePortBlock({ ...input, persist, claim: input.claim ?? persist });
+	return allocatePortBlock({
+		...input,
+		persist,
+		claim: input.claim ?? persist,
+	});
 }
 
 /** One block an allocation may take: its offset, and every port it holds. */
@@ -606,8 +610,7 @@ export function readPortPlan(input: PortPlanInput): PortPlan {
 	// a block two claims share (a pre-lock race) still reads as the lockfile
 	// says, as the run serving it does.
 	let read:
-		| { own?: OffsetClaim; others: Record<string, OffsetClaim> }
-		| undefined;
+		{ own?: OffsetClaim; others: Record<string, OffsetClaim> } | undefined;
 	const claims = () => {
 		if (!read) {
 			const holding = claimsWithLockfilePorts(readOffsetClaims());
@@ -844,7 +847,11 @@ function allocateBlock(
 		if (!block.unusable && conflictAt(block.offset)) block.unusable = true;
 	throw new PortBlockExhaustedError({
 		root,
-		range: { min: PORT_OFFSET_MIN, max: layout.maxOffset, hashed: layout.hashed },
+		range: {
+			min: PORT_OFFSET_MIN,
+			max: layout.maxOffset,
+			hashed: layout.hashed,
+		},
 		blocked: choice.blocked,
 		claims,
 		pinnable: pinnableOffsetAbove(layout.maxOffset, (offset) => {

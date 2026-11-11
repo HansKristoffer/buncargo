@@ -563,16 +563,19 @@ describe("chooseBlock", () => {
 				{ offset: 300, problem: "held at 300", claimKeys: [], unusable: true },
 			],
 		},
-	])("$name", ({ candidates, claims = {}, busy = [], chosen, blocked }) => {
-		const choice = chooseBlock(candidates, claims, (offset) =>
-			busy.includes(offset) ? `held at ${offset}` : undefined,
-		);
-		if (chosen !== undefined) expect(choice).toEqual({ offset: chosen });
-		else
-			expect(choice).toEqual({
-				blocked: blocked?.map((entry) => expect.objectContaining(entry)),
-			});
-	});
+	])(
+		"$name",
+		({ candidates, claims = {}, busy = [], chosen, blocked = [] }) => {
+			const choice = chooseBlock(candidates, claims, (offset) =>
+				busy.includes(offset) ? `held at ${offset}` : undefined,
+			);
+			if (chosen !== undefined) expect(choice).toEqual({ offset: chosen });
+			else
+				expect(choice).toEqual({
+					blocked: blocked.map((entry) => expect.objectContaining(entry)),
+				});
+		},
+	);
 
 	it("probes only a block no claim holds and whose ports all exist", () => {
 		const probed: number[] = [];

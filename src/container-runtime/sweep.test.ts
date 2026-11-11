@@ -487,7 +487,10 @@ describe("sweepOrphanedContainers", () => {
 		await sweepOrphanedContainers({ runtimes: [runtime] });
 		expect(Object.keys(readAllOffsetClaims())).toEqual([checkout]);
 
-		await sweepOrphanedContainers({ runtimes: [], now: Date.now() + 3_600_000 });
+		await sweepOrphanedContainers({
+			runtimes: [],
+			now: Date.now() + 3_600_000,
+		});
 		expect(Object.keys(readAllOffsetClaims())).toEqual([checkout]);
 
 		await sweepOrphanedContainers({
