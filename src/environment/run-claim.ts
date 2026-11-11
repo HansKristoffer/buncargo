@@ -22,12 +22,7 @@ import {
 	retireProjectRuns,
 } from "../core/run-registry";
 import { ensureWatchdog as ensureWatchdogFn } from "../core/watchdog";
-import type {
-	AppConfig,
-	ResolvedApp,
-	ResolvedService,
-	ServiceConfig,
-} from "../types";
+import type { ResolvedApp, ResolvedService } from "../types";
 import { acquireStartLeases, type LeasePolicy } from "./app-leases";
 import type { DevEnvContext } from "./context";
 import { stacksForServices } from "./stacks";
@@ -155,11 +150,8 @@ export function resolveClaimHold(
 	return hold === false ? undefined : hold;
 }
 
-export function createRunClaimApi<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
->(
-	ctx: DevEnvContext<TServices, TApps>,
+export function createRunClaimApi(
+	ctx: DevEnvContext,
 	/** The environment, which the app rows are built from. */
 	source: () => RunSource,
 ): DevRunClaimApi {

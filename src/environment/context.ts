@@ -23,11 +23,10 @@ import {
 	candidateAllocationPorts,
 } from "../core/port-allocation";
 import {
-	asComputedUrls,
 	computeLoopbackUrls,
 	computeUrls,
 	findMonorepoRoot,
-	toUrlMap,
+	type PortMap,
 	type UrlMap,
 } from "../core/ports";
 import {
@@ -54,22 +53,25 @@ import {
 import { planStart, type StartPlan } from "../planning";
 import type {
 	AppConfig,
-	ComputedLoopbackUrls,
-	ComputedPorts,
-	ComputedUrls,
 	DevEnvironmentTunnelLog,
-	EnvValues,
 	HostsRuntime,
 	NamedHostsActivation,
 	PortOffsetProvenance,
-	ResolvedApps,
+	ResolvedApp,
 	ResolvedDevConfig,
-	ResolvedServices,
+	ResolvedService,
 	ServiceConfig,
 } from "../types";
 import type { EnvironmentLogSelection } from "../types/environment";
 import { logEnvironmentInfo } from "./logging";
 import { allocateReclaiming } from "./port-reclaim";
+
+/**
+ * A config's services and apps with their keys unknown. The modules here read
+ * the config this way; `createDevEnvironment` applies the typed view once.
+ */
+export type AnyServices = Record<string, ServiceConfig>;
+export type AnyApps = Record<string, AppConfig>;
 
 /** The apps and services a run selected, `requiredApps` and dependencies expanded. */
 export interface StartSelection {
@@ -84,11 +86,7 @@ export interface StartSelection {
  * The sibling modules (`env-vars`, `lifecycle`, `servers`, `watchdog`) take this
  * as their only shared state, so `createDevEnvironment` stays a composer.
  */
-export interface DevEnvContext<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues = EnvValues,
-> {
+export interface DevEnvContext {
 	getStartPlan(
 		onlyApps?: string[],
 		onlyServices?: readonly string[],
@@ -123,21 +121,21 @@ export interface DevEnvContext<
 	readonly inputEnv: EnvInput;
 	/** `buncargo env set` values, applied on top of every computed environment. */
 	readonly envOverrides: Readonly<Record<string, string>>;
-	readonly config: ResolvedDevConfig<TServices, TApps, TEnv>;
+	readonly config: ResolvedDevConfig;
 	readonly root: string;
 	readonly projectName: string;
 	readonly projectSuffix: string | undefined;
 	readonly worktree: boolean;
 	readonly localIp: string;
-	readonly services: ResolvedServices<TServices>;
-	readonly apps: ResolvedApps<TApps>;
-	readonly ports: ComputedPorts<TServices, TApps>;
-	readonly urls: ComputedUrls<TServices, TApps>;
+	readonly services: Record<string, ResolvedService>;
+	readonly apps: Record<string, ResolvedApp>;
+	readonly ports: PortMap;
+	readonly urls: UrlMap;
 	/**
 	 * The `http://localhost:<port>` form, immune to the named-host rewrite that
 	 * `setNamedHostsActive` applies to `urls` in place.
 	 */
-	readonly loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
+	readonly loopbackUrls: UrlMap;
 	/** Mutated in place so consumers holding the object see tunnel updates. */
 	readonly publicUrls: UrlMap;
 	readonly workspaceId: string;
@@ -186,20 +184,15 @@ function suffixedComposeFile(
 	return `${stem}.${label}${extension}`;
 }
 
-export function createDevEnvContext<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues = EnvValues,
->(
-	config: ResolvedDevConfig<TServices, TApps, TEnv>,
+export function createDevEnvContext(
+	config: ResolvedDevConfig,
 	options: {
 		suffix?: string;
 		containerRuntime?: string;
 		root?: string;
-		readOnly?: boolean;
 		data?: "volumes" | "tmpfs";
 	} = {},
-): DevEnvContext<TServices, TApps, TEnv> {
+): DevEnvContext {
 	const root = options.root ?? findMonorepoRoot();
 	const suffix = options.suffix;
 	// The checkout view `getEnvVar` answers from, made this environment's own:
@@ -246,13 +239,13 @@ export function createDevEnvContext<
 	const { ports, plainUrls, loopbackUrls } = view;
 	const hostsPlan = view.hostPlan;
 	const hosts = namedHostsRuntime(config.options?.hosts, hostsPlan, undefined);
-	const urls = asComputedUrls<TServices, TApps>({ ...plainUrls });
+	const urls: UrlMap = { ...plainUrls };
 	const publicUrls: UrlMap = {};
 	// Loopback: the plan's hostnames being served, when only some are.
 	let servedHostnames: ReadonlySet<string> | undefined;
 
 	function refreshUrls() {
-		Object.assign(toUrlMap(urls), namedUrls(plainUrls, hosts, servedHostnames));
+		Object.assign(urls, namedUrls(plainUrls, hosts, servedHostnames));
 	}
 
 	let model: ComposeDocument | undefined;
@@ -577,7 +570,7 @@ export function createDevEnvContext<
 						)
 					: apps,
 				ports: portMap,
-				urls: toUrlMap(urls),
+				urls,
 				localIp,
 				portOffset: portPlan.offset,
 				tunnels: tunnelRows,

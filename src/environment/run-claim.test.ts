@@ -111,10 +111,7 @@ describe("createRunClaimApi", () => {
 				hasSelectedServices: true,
 				runtime: { name: "docker" },
 				runtimeBinary: "docker",
-			} as unknown as DevEnvContext<
-				Record<string, never>,
-				Record<string, never>
-			>,
+			} as unknown as DevEnvContext,
 			() => {
 				throw new Error("a services claim builds no app rows");
 			},
@@ -217,7 +214,7 @@ describe("a claim's lifecycle and its apps", () => {
 			hasSelectedServices: true,
 			runtime: { name: "docker" },
 			runtimeBinary: "docker",
-		} as unknown as DevEnvContext<Record<string, never>, Record<string, never>>;
+		} as unknown as DevEnvContext;
 		const source = (): RunSource => ({
 			sessionId: api.sessionId,
 			projectPrefix: "demo",

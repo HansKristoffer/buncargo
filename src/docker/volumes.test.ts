@@ -1,5 +1,23 @@
 import { describe, expect, it } from "bun:test";
-import { parseDockerVolumeLine } from "./volumes";
+import { fakeDocker } from "./fake-docker.testing";
+import { listDockerVolumes, parseDockerVolumeLine } from "./volumes";
+
+describe("listDockerVolumes", () => {
+	it("throws when Docker cannot list, rather than answering none", async () => {
+		// An empty answer read as "no volume left", which let the sweep retire
+		// the claim that names a deleted checkout's volumes.
+		const fake = fakeDocker({
+			volume: { stderr: "Cannot connect to the Docker daemon", exitCode: 1 },
+		});
+		try {
+			await expect(listDockerVolumes(fake.binary)).rejects.toThrow(
+				"Cannot connect to the Docker daemon",
+			);
+		} finally {
+			fake.remove();
+		}
+	});
+});
 
 describe("parseDockerVolumeLine", () => {
 	it("reads a named volume and its compose project", () => {

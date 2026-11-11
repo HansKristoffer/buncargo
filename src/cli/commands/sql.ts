@@ -463,7 +463,7 @@ function sqlRequest({
 
 /** What `buncargo sql` reaches outside itself. */
 export interface SqlDeps {
-	loadEnv(readOnly: boolean): Promise<AnyDevEnvironment>;
+	loadEnv(): Promise<AnyDevEnvironment>;
 	/** The argv into the service's container, or undefined when it is not running. */
 	execArgv(
 		env: AnyDevEnvironment,
@@ -576,7 +576,7 @@ async function sql(request: SqlRequest, deps: SqlDeps): Promise<number> {
 	const scratch = createScratch ?? dropScratch;
 	if (db !== undefined) assertDatabaseName(db, "--db");
 
-	let env = await deps.loadEnv(true);
+	const env = await deps.loadEnv();
 	const postgresOnly = scratch !== undefined || db !== undefined || request.url;
 	const target = pickService(
 		env.services,
@@ -637,7 +637,6 @@ async function sql(request: SqlRequest, deps: SqlDeps): Promise<number> {
 	// one service it lives in, as `dev --up-only` would, rather than send the
 	// caller off to start the whole stack.
 	if (!argv && createScratch !== undefined) {
-		env = await deps.loadEnv(false);
 		await deps.startService(env, target.name);
 		argv = await deps.execArgv(env, execRequest);
 	}
@@ -693,7 +692,7 @@ async function startOneService(
 }
 
 const PRODUCTION_SQL_DEPS: SqlDeps = {
-	loadEnv: (readOnly) => loadDevEnv({ readOnly }),
+	loadEnv: () => loadDevEnv(),
 	execArgv: (env, request) =>
 		containerRuntimeForEnv(env).execArgv({
 			projectName: env.projectName,

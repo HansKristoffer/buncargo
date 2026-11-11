@@ -113,7 +113,7 @@ export function systemDriftProbe(options: {
 			// this user. Connecting, never binding - a probe that bound the port
 			// could itself push a booting app off it.
 			return (await isTcpPortOpen(port, "127.0.0.1", 500, signal))
-				? { pids: [], unidentified: true }
+				? { kind: "unidentified" }
 				: null;
 		},
 		processTree: collectProcessTree,

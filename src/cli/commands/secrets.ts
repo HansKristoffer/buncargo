@@ -39,7 +39,7 @@ async function listSecrets(
 	app: string | undefined,
 	environment: string | undefined,
 ): Promise<number> {
-	const env = await loadDevEnv({ readOnly: true });
+	const env = await loadDevEnv();
 	if (app !== undefined && !env.apps[app]) {
 		const names = Object.keys(env.apps);
 		throw new CliError(
@@ -190,7 +190,7 @@ function describeFailure(
 
 /** `buncargo secrets check [--json]`. */
 async function checkSecrets(json: boolean): Promise<number> {
-	const env = await loadDevEnv({ readOnly: true });
+	const env = await loadDevEnv();
 	const checks = await Promise.all(
 		configSecretScopes(env).map(async (entry): Promise<ScopeCheck> => {
 			try {

@@ -551,7 +551,7 @@ describe("createDevEnvironment integrations", () => {
 						},
 					],
 				},
-				{ root, readOnly: true },
+				{ root },
 			);
 			expect(seen).toBe(root);
 		} finally {

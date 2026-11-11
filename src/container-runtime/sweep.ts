@@ -462,9 +462,15 @@ async function settleThrowawayClaims(input: {
 		spentThrowawayClaims({ ...input, claims, volumeProjects });
 	if (runtimes.length === 0 || Object.keys(spent(new Set())).length === 0)
 		return;
-	const volumes = (
-		await Promise.all(runtimes.map((runtime) => runtime.listVolumes()))
-	).flat();
+	let volumes: BuncargoVolume[];
+	try {
+		volumes = (
+			await Promise.all(runtimes.map((runtime) => runtime.listVolumes()))
+		).flat();
+	} catch {
+		// A runtime that cannot list its volumes may hold the project's.
+		return;
+	}
 	await retireOffsetClaimsIfUnchanged(
 		spent(new Set(volumes.flatMap((volume) => volume.project ?? []))),
 	);

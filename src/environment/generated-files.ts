@@ -9,12 +9,7 @@ import {
 import { dirname, resolve } from "node:path";
 import { getErrorMessage } from "hanzio";
 import { toPortMap, toUrlMap } from "../core/ports";
-import type {
-	AppConfig,
-	EnvValues,
-	GeneratedFileContext,
-	ServiceConfig,
-} from "../types";
+import type { GeneratedFileContext } from "../types";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 
@@ -39,13 +34,9 @@ export function writeIfChanged(path: string, content: string): boolean {
 	return true;
 }
 
-export function generatedFileContext<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues,
->(
-	ctx: DevEnvContext<TServices, TApps, TEnv>,
-	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
+export function generatedFileContext(
+	ctx: DevEnvContext,
+	envVars: DevEnvVarsApi,
 ): GeneratedFileContext {
 	return {
 		root: ctx.root,
@@ -62,13 +53,9 @@ export function generatedFileContext<
 }
 
 /** Render every configured file; returns the paths (relative) that changed. */
-export function renderGeneratedFiles<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues,
->(
-	ctx: DevEnvContext<TServices, TApps, TEnv>,
-	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
+export function renderGeneratedFiles(
+	ctx: DevEnvContext,
+	envVars: DevEnvVarsApi,
 ): string[] {
 	const files = ctx.config.generatedFiles ?? [];
 	if (files.length === 0) return [];

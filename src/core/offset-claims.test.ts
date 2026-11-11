@@ -184,6 +184,35 @@ describe("readAllOffsetClaims", () => {
 		);
 		expect(Object.keys(readAllOffsetClaims())).toEqual(["/new"]);
 	});
+
+	it("keeps a claim whose optional field is malformed, without that field", () => {
+		mkdirSync(join(home, ".buncargo"), { recursive: true });
+		const required = {
+			offset: 300,
+			ports: [5732],
+			projectName: "demo",
+			updatedAt: "x",
+			usedAt: "x",
+		};
+		writeFileSync(
+			getOffsetClaimsPath(),
+			JSON.stringify({
+				version: 1,
+				claims: {
+					"/repo#ci": {
+						...required,
+						root: "/repo",
+						suffix: "ci",
+						reclaimedAt: 12,
+						throwaway: "yes",
+					},
+				},
+			}),
+		);
+		expect(readAllOffsetClaims()).toEqual({
+			"/repo#ci": { ...required, root: "/repo", suffix: "ci" },
+		});
+	});
 });
 
 describe("claimOffset", () => {

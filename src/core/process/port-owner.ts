@@ -72,18 +72,22 @@ export interface PortOwnerLookupOptions extends SyncPortOwnerOptions {
 	fallbackRuntimes?: PortOwnerRuntime[];
 }
 
-export interface PortOwner {
-	pids: number[];
-	command?: string;
-	cwd?: string;
-	container?: PortContainerOwner;
-	/**
-	 * Nothing this user can list holds the port, yet it cannot be bound: a
-	 * root process `lsof` hides, often a macOS service (Screen Sharing on
-	 * :5900, AirPlay on :5000/:7000). Never one of ours, so always foreign.
-	 */
-	unidentified?: true;
-}
+/**
+ * Who holds a port. `unidentified`: nothing this user can list holds it, yet
+ * it cannot be bound: a root process `lsof` hides, often a macOS service
+ * (Screen Sharing on :5900, AirPlay on :5000/:7000). Never one of ours, so
+ * always foreign.
+ */
+export type PortOwner =
+	| {
+			kind: "process";
+			/** Never empty. */
+			pids: number[];
+			command?: string;
+			cwd?: string;
+	  }
+	| { kind: "container"; container: PortContainerOwner }
+	| { kind: "unidentified" };
 
 const BIND_PROBE_HOSTS = ["127.0.0.1", "0.0.0.0", "::"] as const;
 
@@ -119,7 +123,7 @@ export function withBindProbe(
 	canBind: (port: number) => boolean = canBindPort,
 ): (port: number) => PortOwner | null {
 	return (port) =>
-		lookup(port) ?? (canBind(port) ? null : { pids: [], unidentified: true });
+		lookup(port) ?? (canBind(port) ? null : { kind: "unidentified" });
 }
 
 function parsePids(output: string): number[] {
@@ -260,19 +264,14 @@ export function createPortOwnerSnapshot(
 	function owner(port: number): PortOwner | null {
 		const pids = listeners.pidsByPort.get(port) ?? [];
 		const container = containers.get(port);
-		if (pids.length === 0 && !container) return null;
+		if (container) return { kind: "container", container };
 		const primaryPid = pids[0];
+		if (primaryPid === undefined) return null;
 		return {
+			kind: "process",
 			pids,
-			command:
-				primaryPid !== undefined
-					? listeners.commandByPid.get(primaryPid)
-					: undefined,
-			cwd:
-				primaryPid !== undefined && !container && options.includeCwd !== false
-					? cwdFor(primaryPid)
-					: undefined,
-			container,
+			command: listeners.commandByPid.get(primaryPid),
+			cwd: options.includeCwd !== false ? cwdFor(primaryPid) : undefined,
 		};
 	}
 
@@ -484,7 +483,7 @@ export async function killPortOwnerFoundBy(
 	// The process holding a published port is the runtime's own (Docker
 	// Desktop's backend, the `container` forwarder): signalling it takes down
 	// every container on the machine, and still not this one.
-	if (owner.container) {
+	if (owner.kind === "container") {
 		const project = owner.container.composeProject;
 		throw new Error(
 			`Port ${port} is held by container ${owner.container.name}${
@@ -492,6 +491,8 @@ export async function killPortOwnerFoundBy(
 			}, which buncargo does not kill. Stop the run that owns it (\`buncargo stop --all\` in its checkout), or stop the container itself.`,
 		);
 	}
+	// Nothing this user can signal.
+	if (owner.kind === "unidentified") return false;
 
 	if (verbose) {
 		console.log(
@@ -554,7 +555,8 @@ export function classifyPortOccupant(
 	},
 ): PortOccupantAction {
 	if (!owner) return "free";
-	if (owner.container) {
+	if (owner.kind === "unidentified") return "fail";
+	if (owner.kind === "container") {
 		// A container of ours on the other backend still has to go: this run
 		// cannot start, exec into or tear it down through the runtime it chose.
 		const sameRuntime =
@@ -657,7 +659,7 @@ export function formatPortOwner(
 		checkout?: CheckoutStacks;
 	} = {},
 ): string {
-	if (owner.container) {
+	if (owner.kind === "container") {
 		const { container } = owner;
 		const project = container.composeProject
 			? ` (project ${container.composeProject})`
@@ -687,10 +689,10 @@ export function formatPortOwner(
 		}
 		return base;
 	}
-	if (owner.unidentified)
+	if (owner.kind === "unidentified")
 		return `port ${port} is held by an unidentified process (one this user cannot list, often a system service)`;
 	const command = owner.command ? ` (${owner.command})` : "";
 	const cwd = owner.cwd ? ` in ${owner.cwd}` : "";
-	const pid = owner.pids[0] ?? "unknown";
+	const pid = owner.pids[0];
 	return `port ${port} held by process ${pid}${command}${cwd}`;
 }

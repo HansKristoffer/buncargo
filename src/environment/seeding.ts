@@ -6,15 +6,17 @@ import { type ExecResult, execAsync } from "../core/process";
 import { formatDone, formatFail, formatStep, formatWarn } from "../core/style";
 import { resolvePrismaConfig } from "../prisma/config";
 import type {
-	AppConfig,
-	EnvValues,
 	HookContext,
 	SeedCheckContext,
 	SeedOutcome,
 	SeedRunOptions,
-	ServiceConfig,
 } from "../types";
-import type { DevEnvContext, StartSelection } from "./context";
+import type {
+	AnyApps,
+	AnyServices,
+	DevEnvContext,
+	StartSelection,
+} from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 
 const BUN_SCRIPT_COMMAND =
@@ -83,10 +85,7 @@ export async function runSeedCommand(input: {
 	});
 }
 
-export function createCheckTableHelper<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
->(
+export function createCheckTableHelper(
 	urls: UrlMap,
 	exec: (
 		cmd: string,
@@ -97,12 +96,9 @@ export function createCheckTableHelper<
 		stderr: string;
 	}>,
 	defaultService = "postgres",
-): SeedCheckContext<TServices, TApps>["checkTable"] {
-	return async (
-		tableName: string,
-		service?: keyof TServices,
-	): Promise<boolean> => {
-		const serviceName = (service ?? defaultService) as string;
+): SeedCheckContext<AnyServices, AnyApps>["checkTable"] {
+	return async (tableName: string, service?: string): Promise<boolean> => {
+		const serviceName = service ?? defaultService;
 		const serviceUrl = urls[serviceName];
 		if (!serviceUrl) {
 			console.warn(
@@ -124,13 +120,10 @@ export function createCheckTableHelper<
 	};
 }
 
-export function createSeedCheckContext<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
->(
-	baseContext: HookContext<TServices, TApps>,
-	checkTable: SeedCheckContext<TServices, TApps>["checkTable"],
-): SeedCheckContext<TServices, TApps> {
+export function createSeedCheckContext(
+	baseContext: HookContext<AnyServices, AnyApps>,
+	checkTable: SeedCheckContext<AnyServices, AnyApps>["checkTable"],
+): SeedCheckContext<AnyServices, AnyApps> {
 	return {
 		...baseContext,
 		checkTable,
@@ -144,13 +137,9 @@ export function createSeedCheckContext<
  * Returns the outcome instead of throwing or exiting so each caller decides
  * how a failed seed should affect it.
  */
-export async function runSeedIfNeeded<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues = EnvValues,
->(
-	ctx: DevEnvContext<TServices, TApps, TEnv>,
-	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
+export async function runSeedIfNeeded(
+	ctx: DevEnvContext,
+	envVars: DevEnvVarsApi,
 	options: SeedRunOptions = {},
 	selection?: StartSelection,
 ): Promise<SeedOutcome> {
@@ -164,7 +153,7 @@ export async function runSeedIfNeeded<
 	if (seedCheck && !force) {
 		const shouldSeed = await withDeadline(
 			async (signal) => {
-				const checkTable = createCheckTableHelper<TServices, TApps>(
+				const checkTable = createCheckTableHelper(
 					toUrlMap(ctx.urls),
 					(cmd, execOptions) =>
 						envVars.exec(cmd, { ...execOptions, signal, timeoutMs: 600_000 }),

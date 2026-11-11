@@ -24,7 +24,7 @@ async function runNamedTask(
 	name: string | undefined,
 	passthrough: readonly string[],
 ): Promise<number> {
-	const env = await loadDevEnv({ readOnly: true });
+	const env = await loadDevEnv();
 	const tasks = env.tasks ?? {};
 
 	if (!name) {

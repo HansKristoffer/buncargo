@@ -318,7 +318,7 @@ async function pruneProject(parsed: {
 	dryRun: boolean;
 	yes: boolean;
 }): Promise<number> {
-	const env = await loadDevEnv({ readOnly: true });
+	const env = await loadDevEnv();
 	const runtime = containerRuntimeForEnv(env);
 	if (!runtime.capabilities.composeProjectResources) {
 		log.error(

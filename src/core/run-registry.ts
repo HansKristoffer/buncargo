@@ -532,12 +532,15 @@ export async function buildRunEntryAsync(
  * `ps`, and every run on the machine writes under that one lock, so a fork
  * inside it queued four starting runs for a second. An entry that is new since
  * this read, or now names another process, reads as alive, like a process
- * whose identity cannot be read.
+ * whose identity cannot be read. Only the entries `relevant` keeps are read,
+ * and none forks nothing.
  */
 async function livenessBeforeLock(
 	path: string,
+	relevant: (run: RunEntry) => boolean,
 ): Promise<(run: RunEntry) => boolean> {
-	const checked = await registry.read(path);
+	const checked = (await registry.read(path)).filter(relevant);
+	if (checked.length === 0) return () => true;
 	const alive = await runLivenessAsync(checked);
 	const bySession = new Map(checked.map((run) => [run.sessionId, run]));
 	return (run) => {
@@ -888,13 +891,21 @@ export async function retireProjectRuns(target: {
 	sessionId: string;
 	downed: readonly Pick<ContainerRuntimeRef, "runtime" | "binary">[];
 }): Promise<void> {
-	const alive = await livenessBeforeLock(getRunsPath());
+	const ofProject = (entry: RunEntry) =>
+		entry.projectName === target.projectName && entry.root === target.root;
+	// Only a finished entry held on the downed runtimes is retired with it:
+	// liveness is read for those alone, and a teardown that downed nothing
+	// forks no `ps`.
+	const retirable = (entry: RunEntry) =>
+		ofProject(entry) &&
+		entry.sessionId !== target.sessionId &&
+		heldOnlyOn(entry, target.downed);
+	const alive = await livenessBeforeLock(getRunsPath(), retirable);
 	await updateRuns(getRunsPath(), (runs) => {
 		const retired = (entry: RunEntry) =>
-			entry.projectName === target.projectName &&
-			entry.root === target.root &&
+			ofProject(entry) &&
 			(entry.sessionId === target.sessionId ||
-				(!alive(entry) && heldOnlyOn(entry, target.downed)));
+				(retirable(entry) && !alive(entry)));
 		const next = runs.filter((entry) => !retired(entry));
 		return next.length === runs.length ? undefined : next;
 	});

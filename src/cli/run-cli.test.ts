@@ -248,10 +248,7 @@ function registerStubInternals(
 			selectedServiceKeys: [],
 			hasSelectedServices: false,
 			runtime: { name: "docker" },
-		} as unknown as DevEnvContext<
-			Record<string, ServiceConfig>,
-			Record<string, AppConfig>
-		>,
+		} as unknown as DevEnvContext,
 		() => env,
 	);
 	Object.assign(env, { sessionId: claim.sessionId });
