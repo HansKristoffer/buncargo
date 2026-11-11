@@ -1,4 +1,5 @@
-import { defineDevConfig } from "../../src/config";
+// In external projects, import from "buncargo".
+import { defineDevConfig } from "../../src";
 
 export default defineDevConfig({
 	projectPrefix: "library-sessions",
