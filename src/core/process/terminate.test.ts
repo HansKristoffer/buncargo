@@ -3,9 +3,9 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import * as identities from "../process-identity";
 import { readProcessIdentityAsync } from "../process-identity";
+import { AppSupervision } from "./app-supervision";
 import { DetachedApp } from "./detached-app";
 import { isProcessAlive } from "./lifecycle";
-import { ProcessOwner } from "./process-owner";
 import {
 	ownedProcessGone,
 	ProcessIdentityUnreadable,
@@ -210,7 +210,7 @@ describe.skipIf(process.platform === "win32")("an unreadable identity", () => {
 	});
 });
 
-describe.skipIf(process.platform === "win32")("ProcessOwner", () => {
+describe.skipIf(process.platform === "win32")("AppSupervision", () => {
 	it("forgets an exited app once its group empties, before the group id can be reused", async () => {
 		// The leader exits at once; the member it started holds the group, the
 		// way a server outlives `bun run dev`.
@@ -234,11 +234,25 @@ describe.skipIf(process.platform === "win32")("ProcessOwner", () => {
 		});
 		const { promise: reported, resolve: exitReported } =
 			Promise.withResolvers<void>();
-		const owner = new ProcessOwner({
-			shutdownGraceMs: 0,
-			onAppExit: () => exitReported(),
+		const owner = new AppSupervision(
+			{
+				web: {
+					optional: false,
+					worker: false,
+					checked: false,
+					attached: false,
+				},
+			},
+			{
+				shutdownGraceMs: 0,
+				onPhase: (_name, life) => {
+					if (life.phase === "down") exitReported();
+				},
+			},
+		);
+		await owner.register("web", app as unknown as ChildProcess, {
+			probation: false,
 		});
-		owner.register("web", app as unknown as ChildProcess, false);
 		let bystander = 0;
 		try {
 			await reported;

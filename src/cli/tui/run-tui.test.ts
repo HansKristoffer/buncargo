@@ -168,7 +168,7 @@ function fakeTerminal() {
 describe("RunTui", () => {
 	it("completes write callbacks of output it captures", async () => {
 		const terminal = fakeTerminal();
-		const output = new RunOutput();
+		const output = new RunOutput({ terminals: "pipe" });
 		const tui = new RunTui({
 			output,
 			apps: ["api"],
@@ -200,7 +200,7 @@ describe("RunTui", () => {
 		chmodSync(pager, 0o755);
 		process.env.PAGER = pager;
 		const tui = new RunTui({
-			output: new RunOutput(),
+			output: new RunOutput({ terminals: "pipe" }),
 			apps: ["api"],
 			urlFor: () => undefined,
 			logPath: () => join(dir, "api.log"),
@@ -247,7 +247,7 @@ describe("RunTui mouse", () => {
 
 	it("scrolls the Overview with the wheel, and End follows the output again", async () => {
 		const terminal = fakeTerminal();
-		const output = new RunOutput();
+		const output = new RunOutput({ terminals: "pipe" });
 		const tui = new RunTui({
 			output,
 			apps: ["api"],
@@ -282,7 +282,7 @@ describe("RunTui mouse", () => {
 	it("selects an app clicked in the sidebar", async () => {
 		const terminal = fakeTerminal();
 		const tui = new RunTui({
-			output: new RunOutput(),
+			output: new RunOutput({ terminals: "pipe" }),
 			apps: ["api", "web"],
 			urlFor: (app) => `http://${app}.test`,
 			quit: () => {},
@@ -303,7 +303,7 @@ describe("RunTui mouse", () => {
 
 	it("never types mouse reports into an app in interact mode", () => {
 		const forwarded: string[] = [];
-		const output = new RunOutput();
+		const output = new RunOutput({ terminals: "pipe" });
 		const screen = output.screen("api");
 		screen.input = (data: string) => void forwarded.push(data);
 		const terminal = fakeTerminal();
@@ -334,7 +334,7 @@ describe("RunTui interact mode", () => {
 	const setup = () => {
 		const forwarded: string[] = [];
 		let quits = 0;
-		const output = new RunOutput();
+		const output = new RunOutput({ terminals: "pipe" });
 		output.screen("api").input = (data: string) => void forwarded.push(data);
 		const terminal = fakeTerminal();
 		const tui = new RunTui({
@@ -411,7 +411,7 @@ describe("RunTui selection", () => {
 	it("copies a drag in the Overview as whole lines, and highlights it", async () => {
 		const copied: string[] = [];
 		const terminal = fakeTerminal();
-		const output = new RunOutput();
+		const output = new RunOutput({ terminals: "pipe" });
 		const tui = new RunTui({
 			output,
 			apps: ["api"],
@@ -452,7 +452,7 @@ describe("RunTui selection", () => {
 	it("copies from an app's own terminal", async () => {
 		const copied: string[] = [];
 		const terminal = fakeTerminal();
-		const output = new RunOutput();
+		const output = new RunOutput({ terminals: "pipe" });
 		const tui = new RunTui({
 			output,
 			apps: ["api"],
@@ -482,7 +482,7 @@ describe("RunTui selection", () => {
 	it("copies lines the app wrapped itself as one line each", async () => {
 		const copied: string[] = [];
 		const terminal = fakeTerminal();
-		const output = new RunOutput();
+		const output = new RunOutput({ terminals: "pipe" });
 		const tui = new RunTui({
 			output,
 			apps: ["api"],
@@ -529,7 +529,7 @@ describe("RunTui selection", () => {
 	it("keeps the lines of an app the terminal had to wrap", async () => {
 		const copied: string[] = [];
 		const terminal = fakeTerminal();
-		const output = new RunOutput();
+		const output = new RunOutput({ terminals: "pipe" });
 		const tui = new RunTui({
 			output,
 			apps: ["api"],
@@ -562,7 +562,7 @@ describe("RunTui selection", () => {
 	it("ends a selection where the button is released", async () => {
 		const copied: string[] = [];
 		const terminal = fakeTerminal();
-		const output = new RunOutput();
+		const output = new RunOutput({ terminals: "pipe" });
 		const tui = new RunTui({
 			output,
 			apps: ["api"],
@@ -599,7 +599,7 @@ describe("RunTui selection", () => {
 	it("copies the lines it selected after the Overview drops old ones", async () => {
 		const copied: string[] = [];
 		const terminal = fakeTerminal();
-		const output = new RunOutput();
+		const output = new RunOutput({ terminals: "pipe" });
 		const tui = new RunTui({
 			output,
 			apps: ["api"],
@@ -628,7 +628,7 @@ describe("RunTui selection", () => {
 	it("copies the rows it selected after the app's scrollback trims", async () => {
 		const copied: string[] = [];
 		const terminal = fakeTerminal();
-		const output = new RunOutput();
+		const output = new RunOutput({ terminals: "pipe" });
 		const tui = new RunTui({
 			output,
 			apps: ["api"],
@@ -673,7 +673,7 @@ describe("RunTui selection", () => {
 	it("treats a click without a drag as no selection", async () => {
 		const copied: string[] = [];
 		const terminal = fakeTerminal();
-		const output = new RunOutput();
+		const output = new RunOutput({ terminals: "pipe" });
 		const tui = new RunTui({
 			output,
 			apps: ["api"],
@@ -699,7 +699,7 @@ describe("RunTui selection", () => {
 	it("ends a selection begun in interact mode when a key is typed", async () => {
 		const copied: string[] = [];
 		const terminal = fakeTerminal();
-		const output = new RunOutput();
+		const output = new RunOutput({ terminals: "pipe" });
 		const screen = output.screen("api");
 		const tui = new RunTui({
 			output,
@@ -734,7 +734,7 @@ describe("RunTui state", () => {
 	const wheelUp = "\u001b[<64;40;10M";
 	const setup = (apps = ["api"]) => {
 		const terminal = fakeTerminal();
-		const output = new RunOutput();
+		const output = new RunOutput({ terminals: "pipe" });
 		const tui = new RunTui({
 			output,
 			apps,
@@ -771,9 +771,9 @@ describe("RunTui state", () => {
 	it("stops sizing app terminals to its pane once stopped", () => {
 		const { tui, output } = setup();
 		tui.start();
-		expect(output.terminalSize).toBeDefined();
+		expect(output.screenSize()).toEqual(tui.paneSize());
 		tui.stop();
-		expect(output.terminalSize).toBeUndefined();
+		expect(output.screenSize()).toEqual({ cols: 80, rows: 24 });
 	});
 
 	// `r` before the spawner has bound its controls restarts nothing.
@@ -880,7 +880,7 @@ describe("RunTui state", () => {
 		process.env.PAGER = pager;
 		const terminal = fakeTerminal();
 		const tui = new RunTui({
-			output: new RunOutput(),
+			output: new RunOutput({ terminals: "pipe" }),
 			apps: ["api"],
 			urlFor: () => undefined,
 			logPath: () => join(dir, "api.log"),
@@ -933,7 +933,7 @@ describe("RunTui state", () => {
 		process.env.PAGER = pager;
 		const terminal = fakeTerminal();
 		const tui = new RunTui({
-			output: new RunOutput(),
+			output: new RunOutput({ terminals: "pipe" }),
 			apps: ["api"],
 			urlFor: () => undefined,
 			logPath: () => join(dir, "api.log"),

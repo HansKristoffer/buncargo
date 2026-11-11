@@ -1,3 +1,4 @@
+export { type AppLife, type AppPhase, isDeliberateExit } from "./app-lifecycle";
 export { buildApps } from "./build";
 export {
 	type StartDevServersOptions,
@@ -36,4 +37,3 @@ export {
 	readListenerSnapshot,
 	readListenerSnapshotAsync,
 } from "./port-snapshot";
-export { isDeliberateExit } from "./process-owner";

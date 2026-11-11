@@ -90,7 +90,9 @@ function createStubEnv(
 		root?: string;
 		start?: (options?: unknown) => Promise<null>;
 		waitForServer?: (url: string, timeout?: number) => Promise<void>;
-		waitForServers?: (options?: { onlyApps?: string[] }) => void;
+		waitForServers?: (options?: {
+			onlyApps?: string[];
+		}) => void | Promise<void>;
 		setPublicUrls?: (urls: Record<string, string>) => void;
 	} = {},
 ): DevEnvironment<Record<string, ServiceConfig>, Record<string, AppConfig>> {
@@ -165,7 +167,7 @@ function createStubEnv(
 		startServers: async () => ({}),
 		stopProcess: () => {},
 		waitForServers: async (waitOptions?: { onlyApps?: string[] }) => {
-			options.waitForServers?.(waitOptions);
+			await options.waitForServers?.(waitOptions);
 		},
 		buildEnvVars: () => ({}),
 		buildAppEnvVars: () => {
@@ -250,6 +252,19 @@ async function listenServer(port: number): Promise<Server> {
 		});
 	});
 	return server;
+}
+
+/**
+ * Dev commands that run until their health check was asked for, then exit 0:
+ * the run ends once its apps were up.
+ */
+function exitsOnceChecked(root: string) {
+	const marker = (name: string) => join(root, `${name}.checked`);
+	return {
+		devCommand: (name: string) =>
+			`bun -e ${JSON.stringify(`setInterval(() => { if (require("node:fs").existsSync(${JSON.stringify(marker(name))})) process.exit(0); }, 20)`)}`,
+		checked: (name: string) => writeFileSync(marker(name), ""),
+	};
 }
 
 describe("runCli expose routing", () => {
@@ -689,30 +704,29 @@ describe("runCli phased tunnels and attach", () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-waves-"));
 		const apiPort = 43610 + Math.floor(Math.random() * 200);
 		const expoPort = apiPort + 1;
-		const healthChecked: string[][] = [];
+		const healthChecked: string[] = [];
+		const app = exitsOnceChecked(root);
 		const env = createStubEnv({
 			root,
 			apps: {
-				api: {
-					port: apiPort,
-					devCommand: "bun -e 'process.exit(0)'",
-					healthEndpoint: false,
-				},
+				api: { port: apiPort, devCommand: app.devCommand("api") },
 				expoApp: {
 					port: expoPort,
-					devCommand: "bun -e 'process.exit(0)'",
-					healthEndpoint: false,
+					devCommand: app.devCommand("expoApp"),
 					needsPublicUrls: true,
 				},
 			},
 			waitForServers: (waitOptions) => {
-				healthChecked.push([...(waitOptions?.onlyApps ?? [])].sort());
+				for (const name of waitOptions?.onlyApps ?? []) {
+					healthChecked.push(name);
+					app.checked(name);
+				}
 			},
 		});
 
 		try {
 			await runCli(env, { args: [], watchdog: false });
-			expect(healthChecked).toEqual([["api", "expoApp"]]);
+			expect(healthChecked.sort()).toEqual(["api", "expoApp"]);
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
@@ -722,17 +736,13 @@ describe("runCli phased tunnels and attach", () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-ready-timeout-"));
 		const port = 43810 + Math.floor(Math.random() * 200);
 		const timeouts: unknown[] = [];
+		const app = exitsOnceChecked(root);
 		const env = createStubEnv({
 			root,
-			apps: {
-				api: {
-					port,
-					devCommand: "bun -e 'process.exit(0)'",
-					healthEndpoint: false,
-				},
-			},
+			apps: { api: { port, devCommand: app.devCommand("api") } },
 			waitForServers: (waitOptions) => {
 				timeouts.push((waitOptions as { timeout?: number }).timeout);
+				app.checked("api");
 			},
 		});
 		const ci = process.env.CI;
@@ -759,18 +769,19 @@ describe("runCli phased tunnels and attach", () => {
 				order.push("watchdog");
 			},
 		);
+		const app = exitsOnceChecked(root);
 		const env = createStubEnv({
 			root,
 			apps: {
 				api: {
 					port,
-					devCommand: "bun -e 'process.exit(0)'",
-					healthEndpoint: false,
+					devCommand: app.devCommand("api"),
 					requiredServices: [],
 				},
 			},
 			waitForServers: () => {
 				order.push("ready");
+				app.checked("api");
 			},
 		});
 
@@ -901,6 +912,12 @@ describe("an app port held by a server failing its health check", () => {
 					probes++;
 					if (probes === 1) throw new Error("500");
 				},
+				// Started, then never answers.
+				waitForServers: async () => {
+					const started = Bun.file(join(root, "api-started"));
+					while (!(await started.exists())) await Bun.sleep(20);
+					throw new Error("api did not respond");
+				},
 			});
 			const stdinTTY = process.stdin.isTTY;
 			process.stdin.isTTY = false;
@@ -908,8 +925,8 @@ describe("an app port held by a server failing its health check", () => {
 			const realLog = console.log;
 			console.log = (...parts: unknown[]) => said.push(parts.join(" "));
 			try {
-				// The stub app exits before it answers, which ends the run: only
-				// that it was spawned matters here.
+				// The stub app never answers, which ends the run: only that it
+				// was spawned matters here.
 				await withProcessExitTrap(() =>
 					runCli(env, { args: ["--no-hosts"], watchdog: false }),
 				);
@@ -1086,7 +1103,6 @@ it("prints the --timing report for a run interrupted before its apps were ready"
 			api: {
 				port: 44910 + Math.floor(Math.random() * 100),
 				devCommand: "bun -e 'setInterval(() => {}, 1000)'",
-				healthEndpoint: false,
 				requiredServices: [],
 			},
 		},
@@ -1136,7 +1152,6 @@ it("marks a restarted app starting in the registry until it is ready again", asy
 			api: {
 				port,
 				devCommand: "bun -e 'setInterval(() => {}, 1000)'",
-				healthEndpoint: false,
 				requiredServices: [],
 			},
 		},
@@ -1226,7 +1241,7 @@ setInterval(() => {}, 60_000);
 		const deadline = performance.now() + 8_000;
 		while ((await status()) !== want) {
 			if (performance.now() > deadline)
-				throw new Error(`jobs never became ${want}`);
+				throw new Error(`jobs never became ${want}: ${await status()}`);
 			await Bun.sleep(20);
 		}
 	};
@@ -1472,7 +1487,8 @@ describe("how a run ends", () => {
 				throw new Error("runner missing");
 			},
 		);
-		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		// Said in the run's output, which stream mode prints to stdout.
+		const warn = spyOn(process.stdout, "write").mockImplementation(() => true);
 		const env = createStubEnv({
 			services: {},
 			apps: {

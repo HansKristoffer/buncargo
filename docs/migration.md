@@ -4,6 +4,7 @@ Each section lists what a consumer of `buncargo` has to change when crossing one
 
 ## 15.x → 16.0
 
+- **`startDevServers` (`buncargo/core/process`) reports apps through one `onAppPhase`.** `onAppSpawned`, `onAppReady`, `onAppRestarting`, `onAppExit`, `onAppFailed` and `onAppRestartFailed` are gone: `onAppPhase(name, life, previous)` receives the app's `AppLife` after every step (a new `life.pid` is a spawn, `life.phase` is `starting`, `ready`, `restarting`, `reused` or `down`, and `life.end` says how it ended). `waitForHealth` is now called for one app at a time and the app is ready when it resolves.
 - **Mailpit containers are recreated once.** `service.mailpit()` now pins `axllent/mailpit:v1.33.1` instead of the untagged image, so a warm start can skip `compose up`. The first run after the upgrade recreates each Mailpit container; its volume and stored mail are kept.
 - **A hyphenated service or app key gets underscored env names.** `my-db` now yields `MY_DB_PORT` and `MY_DB_URL` (was `MY-DB_PORT`, which Compose could not read). Code reading `process.env["MY-DB_PORT"]` reads `MY_DB_PORT`. Two keys with one such name (`my-db` and `my_db`) now fail validation.
 - **Apple `container` refuses interpolation it cannot translate.** A service value using `${VAR:+x}` or a default that holds another `${...}` now fails the start with the value named, instead of reaching the container as literal text. Rewrite the value, or use `docker.runtime: "docker"`.

@@ -150,40 +150,42 @@ it("refuses a missing required secret before preparing or running beforeServers"
 
 it("marks each app ready as its health check passes, not with its wave", async () => {
 	const silent = "bun -e 'setInterval(() => {}, 60000)'";
-	const output = new RunOutput();
+	const output = new RunOutput({ terminals: "pipe" });
 	const ready: string[] = [];
+	const fastReady = Promise.withResolvers<void>();
 	let midWave: Record<string, unknown> = {};
 	const pids = await startServerSession(
 		source({
-			waitForHealth: async (_apps, _signal, onAppReady) => {
-				onAppReady?.("fast");
-				midWave = {
-					fast: output.states.get("fast")?.state,
-					slow: output.states.get("slow")?.state,
-					ready: [...ready],
-				};
-				onAppReady?.("slow");
+			// `slow` answers only once `fast` is marked ready: a run that marks
+			// the wave ready together never finishes it.
+			waitForHealth: async (apps) => {
+				if ("slow" in apps) await fastReady.promise;
 			},
 		}),
 		{
-			fast: { kind: "worker", devCommand: silent },
-			slow: { kind: "worker", devCommand: silent },
+			fast: { port: 1, devCommand: silent },
+			slow: { port: 2, devCommand: silent },
 		},
 		{
 			verbose: false,
 			output,
 			portDrift: false,
-			onAppReady: (name) => ready.push(name),
+			onAppPhase: (name, life) => {
+				if (life.phase !== "ready") return;
+				ready.push(name);
+				if (name !== "fast") return;
+				midWave = {
+					fast: output.states.get("fast")?.state,
+					slow: output.states.get("slow")?.state,
+				};
+				fastReady.resolve();
+			},
 		},
 	);
 	try {
 		// The registry and the rows hear about `fast` while `slow` is still
 		// being waited for.
-		expect(midWave).toEqual({
-			fast: "ready",
-			slow: "starting",
-			ready: ["fast"],
-		});
+		expect(midWave).toEqual({ fast: "ready", slow: "starting" });
 		expect(ready).toEqual(["fast", "slow"]);
 	} finally {
 		await stopDevServers(pids);

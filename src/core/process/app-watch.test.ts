@@ -21,8 +21,8 @@ describe("startDevServers watch", () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-watch-"));
 		await mkdir(join(root, "api/src"), { recursive: true });
 		await mkdir(join(root, "api/dist"), { recursive: true });
-		const output = new RunOutput();
-		output.terminalSize = () => ({ cols: 80, rows: 10 });
+		const output = new RunOutput({ terminals: "pty" });
+		output.screenSize = () => ({ cols: 80, rows: 10 });
 		const restarts: string[] = [];
 		output.subscribe({
 			line: (line) => {

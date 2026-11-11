@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { defineDevConfig } from "../../config";
 import { createDevEnvironment } from "../../environment";
 import { isolateHome } from "../test-env.testing";
+import { AppSupervision } from "./app-supervision";
 import { startDevServers } from "./dev-servers";
-import { ProcessOwner } from "./process-owner";
 import type { AppChild } from "./pty-app";
 import {
 	decideWorkerClaim,
@@ -109,8 +109,8 @@ it("an unexpected zero exit fails supervision and reports the worker", async () 
 				verbose: false,
 				skipContainers: true,
 				waitForExit: true,
-				onAppExit: (name) => {
-					exits.push(name);
+				onAppPhase: (name, life) => {
+					if (life.phase === "down") exits.push(name);
 				},
 			},
 		),
@@ -130,7 +130,10 @@ it("cancels an owned worker while readiness is pending", async () => {
 			verbose: false,
 			skipContainers: true,
 			signal: controller.signal,
-			onAppSpawned: () => controller.abort(new Error("cancel worker")),
+			onAppPhase: (_name, life) => {
+				if (life.pid !== undefined)
+					controller.abort(new Error("cancel worker"));
+			},
 			waitForHealth: () => new Promise(() => {}),
 		},
 	);
@@ -190,18 +193,22 @@ it("hands a non-essential worker that died while being claimed to the supervisor
 	expect(await findWorker(root, "jobs")).toBeUndefined();
 
 	// The supervisor reports its exit although it never sees an `exit` event.
-	const exits: (number | null)[] = [];
-	const owner = new ProcessOwner({
-		isOptional: (name) => name === "jobs",
-		onAppExit: (_name, code) => exits.push(code),
-	});
+	const exits: (number | null | undefined)[] = [];
+	const session = new AppSupervision(
+		{ jobs: { optional: true, worker: true, checked: false, attached: false } },
+		{
+			onPhase: (_name, life) => {
+				if (life.phase === "down") exits.push(life.end?.exit?.code);
+			},
+		},
+	);
 	try {
-		owner.register("jobs", child, false, true);
+		await session.register("jobs", child, { probation: false });
 		await Bun.sleep(0);
 		expect(exits).toEqual([3]);
-		expect(owner.controller.signal.aborted).toBe(false);
+		expect(session.controller.signal.aborted).toBe(false);
 	} finally {
-		owner.dispose();
+		session.dispose();
 	}
 });
 

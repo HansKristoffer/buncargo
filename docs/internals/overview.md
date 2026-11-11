@@ -46,7 +46,7 @@ only on purpose.
 - Build and write one Compose artifact per start. Publish generated YAML atomically and keep its
   inode when unchanged. Never hash a different model from the file handed to Docker.
 - Startup plan validation precedes hosts and runtime mutations. `requiredApps` expands the
-  selection; it is not a per-app readiness barrier. Both waves are health-checked once; server
+  selection; it is not a per-app readiness barrier. Each app is health-checked once per process and marked ready as it passes; server
   hooks wrap actual spawning and readiness on the CLI and library paths.
 - `prisma.generateCheck` is opt-in: true means generate. Never automatically skip database
   migrations or seed checks from a configuration hash.
