@@ -131,10 +131,10 @@ export function parseCiArgs(args: string[]) {
  * resource found to remove", long after the command failed on a refused
  * connection.
  */
-function reportContainerLoss(
+async function reportContainerLoss(
 	env: Pick<AnyDevEnvironment, "explainMissingContainers">,
-): void {
-	const loss = env.explainMissingContainers();
+): Promise<void> {
+	const loss = await env.explainMissingContainers();
 	if (loss) log.warn(loss);
 }
 
@@ -256,7 +256,7 @@ async function runCi(parsed: ReturnType<typeof parseCiArgs>): Promise<number> {
 					async ({ seed }) => {
 						const failedSeed = seed && seedFailure(seed);
 						if (failedSeed) {
-							reportContainerLoss(env);
+							await reportContainerLoss(env);
 							return exited(failedSeed.exitCode || 1);
 						}
 
@@ -272,7 +272,7 @@ async function runCi(parsed: ReturnType<typeof parseCiArgs>): Promise<number> {
 							signal,
 						});
 						if (result.exitCode !== 0 && !signal.aborted)
-							reportContainerLoss(env);
+							await reportContainerLoss(env);
 						return result;
 					},
 				);

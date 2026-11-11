@@ -402,7 +402,7 @@ apps: {
 Set `runner: "npm"`, `"pnpm"`, or `"yarn"` to use that package manager for the dev, prebuild, and build scripts; Bun remains the default. Script names are passed literally.
 
 ```ts
-import { defineDevConfig, discoverApps, mergeConfigs } from "buncargo/config";
+import { defineDevConfig, discoverApps, mergeConfigs } from "buncargo";
 
 const shared = defineDevConfig({
   projectPrefix: "shared",
@@ -1034,7 +1034,7 @@ Offsets use a step of 100 so `5432` becomes `5532` / `5632` instead of overlappi
 `checkoutProjectNames()` returns the Compose project names a checkout's stacks run under, for tools that find or clean up its containers and volumes without loading the config. `ci` is the one stack older `buncargo ci` runs shared; each run now has its own (see [CI](#ci)):
 
 ```ts
-import { checkoutProjectNames } from "buncargo";
+import { checkoutProjectNames } from "buncargo/api";
 
 checkoutProjectNames({ projectPrefix: "gey", root: "/code/t3code-fc4fa622" });
 // { dev: "gey-t3code-fc4fa622", ci: "gey-t3code-fc4fa622-ci" }
@@ -1899,8 +1899,10 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 
 ## Programmatic API
 
+A config imports `buncargo`; code that drives an environment imports `buncargo/api`.
+
 ```typescript
-import { loadDevEnv } from "buncargo";
+import { loadDevEnv } from "buncargo/api";
 import type devConfig from "./dev.config";
 
 const env = await loadDevEnv<typeof devConfig>();
@@ -1923,7 +1925,7 @@ One environment rejects overlapping `start()`/`startServers()` calls and starts 
 Run `bun run test:stress-sessions` to exercise 200 sessions across four projects in one process. It checks live HTTP apps, workers, startup and ready-session cancellation, process and signal-listener cleanup, file descriptors, worker locks, registry claims, and bounded memory growth after warmup. `--sessions=1000 --concurrency=8` increases the workload; `--max-heap-growth-mib` and `--max-rss-growth-mib` set memory ceilings. The harness isolates its home directory and container binaries, and CI runs it on macOS and Linux.
 
 ```ts
-import { loadDevEnv } from "buncargo";
+import { loadDevEnv } from "buncargo/api";
 import type config from "./dev.config";
 
 const web = await loadDevEnv<typeof config>({ cwd: process.cwd(), fresh: true });

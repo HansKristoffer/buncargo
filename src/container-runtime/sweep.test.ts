@@ -36,6 +36,11 @@ import {
 } from "../core/run-registry";
 import { DELETED_CHECKOUT_SETTLE_MS } from "../core/watchdog-constants";
 import type { BuncargoContainer, BuncargoVolume } from "../types";
+import {
+	fakeAppleRuntime,
+	fakeRuntime,
+	listedAs,
+} from "./fake-runtime.testing";
 import { withProjectLifecycleLock } from "./project-lock";
 import {
 	decideSweep,
@@ -43,11 +48,7 @@ import {
 	settleDeletedCheckouts,
 	sweepOrphanedContainers,
 } from "./sweep";
-import type {
-	ComposeProjectResources,
-	ContainerDownRequest,
-	ContainerRuntimeAdapter,
-} from "./types";
+import type { ComposeProjectResources, ContainerDownRequest } from "./types";
 
 const realHome = process.env.HOME;
 let home = "";
@@ -260,16 +261,13 @@ function stubRuntime(
 	volumes: BuncargoVolume[] = [],
 ) {
 	const downs: ContainerDownRequest[] = [];
-	const runtime = {
-		name: "docker",
-		displayName: "Docker",
-		isAvailable: () => true,
-		list: () => containers,
+	const runtime = fakeRuntime({
+		containers: async () => containers.map(listedAs),
 		listVolumes: async () => volumes,
 		down: async (request: ContainerDownRequest) => {
 			downs.push(request);
 		},
-	} as unknown as ContainerRuntimeAdapter;
+	});
 	return { runtime, downs };
 }
 
@@ -1004,12 +1002,11 @@ describe("sweepOrphanedContainers", () => {
 		// Docker answers with nothing; Apple is down. An empty Docker listing
 		// says nothing about a stack Apple holds.
 		const docker = stubRuntime([]);
-		const apple = {
-			name: "apple",
-			list: () => {
+		const apple = fakeAppleRuntime({
+			containers: async () => {
 				throw new Error("container system is not running");
 			},
-		} as unknown as ContainerRuntimeAdapter;
+		});
 		const result = await sweepOrphanedContainers({
 			runtimes: [docker.runtime, apple],
 		});
@@ -1032,12 +1029,12 @@ describe("sweepOrphanedContainers", () => {
 		);
 		claim("abandoned", checkout);
 		const downs: string[] = [];
-		const runtime = {
-			name: "docker",
-			list: () => [
-				container("abandoned", checkout, "exited"),
-				container("reused", checkout, "running"),
-			],
+		const runtime = fakeRuntime({
+			containers: async () =>
+				[
+					container("abandoned", checkout, "exited"),
+					container("reused", checkout, "running"),
+				].map(listedAs),
 			down: async (request: ContainerDownRequest) => {
 				downs.push(request.projectName);
 				await publishRun(
@@ -1050,7 +1047,7 @@ describe("sweepOrphanedContainers", () => {
 					}),
 				);
 			},
-		} as unknown as ContainerRuntimeAdapter;
+		});
 		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
 		expect(downs).toEqual(["abandoned"]);
 		expect(result.remaining.map((group) => group.projectName)).toEqual([
@@ -1068,9 +1065,9 @@ describe("sweepOrphanedContainers, against a registry that changes under it", ()
 		);
 		await releaseRun("library");
 		claim("abandoned", checkout);
-		const runtime = {
-			name: "docker",
-			list: () => [container("abandoned", checkout, "exited")],
+		const runtime = fakeRuntime({
+			containers: async () =>
+				[container("abandoned", checkout, "exited")].map(listedAs),
 			down: async () => {
 				await publishRun(
 					entry({
@@ -1082,7 +1079,7 @@ describe("sweepOrphanedContainers, against a registry that changes under it", ()
 					}),
 				);
 			},
-		} as unknown as ContainerRuntimeAdapter;
+		});
 		await sweepOrphanedContainers({ runtimes: [runtime] });
 		expect((await loadRuns()).map((run) => run.sessionId)).toEqual(["library"]);
 	});
@@ -1133,15 +1130,16 @@ describe("sweepOrphanedContainers, for a deleted checkout's integration stack", 
 	/** Docker as far as the label fallback needs it, recording what it is asked. */
 	function dockerWithStack(resources: ComposeProjectResources) {
 		const asked = { stopped: [] as string[], volumes: [] as string[] };
-		const runtime = {
-			...stubRuntime([]).runtime,
-			listComposeProjectResources: () => resources,
-			stopByIds: (ids: string[]) => asked.stopped.push(...ids),
+		const runtime = fakeRuntime({
+			listComposeProjectResources: async () => resources,
+			stop: async (ids: string[]) => {
+				asked.stopped.push(...ids);
+			},
 			removeVolumes: async (names: string[]) => {
 				asked.volumes.push(...names);
 				return [];
 			},
-		} as unknown as ContainerRuntimeAdapter;
+		});
 		return { runtime, asked };
 	}
 
@@ -1255,9 +1253,8 @@ describe("settleDeletedCheckouts", () => {
 			claimOffset({ root, offset: 100, ports: [5532], projectName });
 
 		const removed: string[][] = [];
-		const runtime = {
-			name: "docker",
-			list: () => options.left ?? [],
+		const runtime = fakeRuntime({
+			containers: async () => (options.left ?? []).map(listedAs),
 			listVolumes: async () => [
 				{ name: "app-gone_db", project: "app-gone", runtime: "docker" },
 				{
@@ -1272,7 +1269,7 @@ describe("settleDeletedCheckouts", () => {
 				removed.push(names);
 				return [];
 			},
-		} as unknown as ContainerRuntimeAdapter;
+		});
 		const result: Pick<SweepResult, "swept" | "failed"> = {
 			swept: [],
 			failed: [],

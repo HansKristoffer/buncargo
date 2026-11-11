@@ -1,5 +1,6 @@
 import { getErrorMessage } from "hanzio";
 import {
+	buncargoContainersOn,
 	type ContainerRuntimeAdapter,
 	getContainerRuntimeAdapter,
 	stopBuncargoContainers,
@@ -346,15 +347,19 @@ async function stopServiceUnlocked(
 	];
 	const serviceName = service.container.service;
 	try {
-		const containers = runtimes
-			.flatMap((runtime) => runtime.list())
+		const containers = (
+			await Promise.all(
+				runtimes.map((runtime) => buncargoContainersOn(runtime)),
+			)
+		)
+			.flat()
 			.filter(
 				(container) =>
 					container.project === run.projectName &&
 					container.service === serviceName,
 			);
 		if (containers.length > 0) {
-			stopBuncargoContainers(containers, runtimes);
+			await stopBuncargoContainers(containers, runtimes);
 			// So the run that notices its service stopped can say who did it.
 			await recordRemovals([
 				{

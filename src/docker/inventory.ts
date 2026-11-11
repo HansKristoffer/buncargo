@@ -1,7 +1,7 @@
 import { buncargoContainersOf } from "../container-runtime/containers";
 import type { BuncargoContainer } from "../types";
-import { runDocker } from "./binary";
-import { listDockerContainers, parseDockerContainer } from "./containers";
+import { runDockerAsync } from "./binary";
+import { parseDockerContainer } from "./containers";
 
 /** One line of the Docker listing, or null for a container buncargo did not create. */
 export function parseDockerContainerLine(
@@ -13,19 +13,15 @@ export function parseDockerContainerLine(
 		: null;
 }
 
-/** Every container (running or not) labeled by buncargo on this machine. */
-export function listDockerBuncargoContainers(
-	binary?: string,
-): BuncargoContainer[] {
-	return buncargoContainersOf(listDockerContainers(binary), "docker");
-}
-
-export function stopDockerContainersByIds(
+export async function stopDockerContainersByIds(
 	ids: string[],
 	binary?: string,
-): void {
+): Promise<void> {
 	if (ids.length === 0) return;
-	const result = runDocker(binary, ["stop", ...ids], { inherit: true });
+	const result = await runDockerAsync(binary, ["stop", ...ids], {
+		inherit: true,
+		timeoutMs: 60_000,
+	});
 	if (!result.ok) {
 		throw new Error(
 			result.stderr.trim() || `docker stop failed for ${ids.join(", ")}`,

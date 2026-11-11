@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { ContainerRuntimeAdapter } from "../../../container-runtime";
+import { fakeRuntime } from "../../../container-runtime/fake-runtime.testing";
 import { claimOffset } from "../../../core/offset-claims";
 import { CI_ENV_VARS } from "../../../core/runtime-flags";
 import { prunableVolumesNote } from "./doctor";
@@ -74,16 +74,14 @@ describe("prunableVolumesNote", () => {
 		claim(join(dir, "deleted-a"), "app-a");
 		claim(join(dir, "deleted-b"), "app-b");
 		claim(dir, "app-here");
-		const runtime = {
-			name: "docker",
-			list: () => [],
+		const runtime = fakeRuntime({
 			listVolumes: async () =>
 				["app-a", "app-b", "app-here"].map((project) => ({
 					name: `${project}_db`,
 					project,
 					runtime: "docker" as const,
 				})),
-		} as unknown as ContainerRuntimeAdapter;
+		});
 
 		expect(await prunableVolumesNote([runtime])).toBe(
 			"warning: 2 volumes of deleted checkouts can be reclaimed. Review them with `buncargo prune --dry-run`; removing them destroys their data.",

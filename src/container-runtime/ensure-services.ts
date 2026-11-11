@@ -8,7 +8,11 @@ import {
 } from "../docker-compose/interpolate";
 import type { PortContainerOwner, ResolvedService } from "../types";
 import { assertServiceCapabilities } from "./capabilities";
-import { portOwnersOf, serviceStatesOf } from "./containers";
+import {
+	portOwnersOf,
+	projectServiceStates,
+	serviceStatesOf,
+} from "./containers";
 import { waitForAllServices } from "./readiness";
 import { assertServicePortsClaimable } from "./service-ports";
 import type { ContainerRuntimeAdapter, ServiceRuntimeState } from "./types";
@@ -20,7 +24,7 @@ async function readProjectServiceStates(
 	signal?: AbortSignal,
 ): Promise<ServiceRuntimeState[]> {
 	try {
-		return await runtime.projectServiceStates(projectName, signal);
+		return await projectServiceStates(runtime, projectName, signal);
 	} catch {
 		signal?.throwIfAborted();
 		return [];
@@ -49,27 +53,21 @@ async function readRuntime(
 	ensureRunning: () => Promise<void>,
 	signal?: AbortSignal,
 ): Promise<RuntimeReading> {
-	const list = async () => {
-		const containers = await runtime.containers?.(signal);
-		if (!containers) return undefined;
+	const list = async (): Promise<RuntimeReading> => {
+		const containers = await runtime.containers(signal);
 		return {
 			states: serviceStatesOf(containers, projectName),
 			portOwners: portOwnersOf(containers, runtime.name),
 		};
 	};
 	try {
-		const reading = await list();
-		if (reading) return reading;
+		return await list();
 	} catch {
 		signal?.throwIfAborted();
 	}
 	await ensureRunning();
 	try {
-		return (
-			(await list()) ?? {
-				states: await readProjectServiceStates(runtime, projectName, signal),
-			}
-		);
+		return await list();
 	} catch {
 		signal?.throwIfAborted();
 		return { states: [] };
@@ -173,7 +171,7 @@ export async function ensureServicesRunning(
 		return { started: false, composeServiceNames: [] };
 	}
 
-	assertServiceCapabilities(runtime.name, services);
+	assertServiceCapabilities(runtime, services);
 
 	const { states, portOwners } = await readRuntime(
 		runtime,
@@ -283,7 +281,6 @@ export async function ensureServicesRunning(
 				projectName,
 				verbose,
 				root,
-				composeFile,
 				healthyServices: new Set(
 					readyStates
 						.filter((state) => state.running && state.healthy === true)

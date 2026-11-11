@@ -1,7 +1,7 @@
 # CLI
 
-`src/cli/bin.ts` is the executable; `src/cli/index.ts` the module entry (`buncargo/cli`: `runCli` and
-`CliOptions`, nothing else). `run-cli.ts` is the dev flow; `flags.ts` (argv primitives),
+`src/cli/bin.ts` is the executable; `runCli` is published through `buncargo/api`. `run-cli.ts` is the
+dev flow; `flags.ts` (argv primitives),
 `dev-flags.ts` (the dev command's typed args and help), `dev-hosts.ts` and `dev-tunnels.ts` hold the
 pieces it orchestrates.
 

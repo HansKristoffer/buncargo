@@ -37,10 +37,7 @@ export function createServiceWatch(
 		readonly services: Record<string, ResolvedService>;
 		readonly projectName: string;
 		readonly root: string;
-		readonly runtime: Pick<
-			ContainerRuntimeAdapter,
-			"name" | "projectServiceStates"
-		>;
+		readonly runtime: Pick<ContainerRuntimeAdapter, "name" | "containers">;
 	},
 	sessionId: string,
 ): ServiceWatchApi {

@@ -1,12 +1,15 @@
 import { describe, expect, it } from "bun:test";
+import {
+	buncargoContainersOn,
+	containerPortOwners,
+	probeContainerPort,
+	projectServiceStates,
+} from "../container-runtime/containers";
 import type { AppleCliResult, AppleContainerCli } from "./cli";
 import {
-	appleProjectServiceStates,
-	findAppleContainerOnPort,
+	appleContainers,
 	formatPublishedPorts,
-	listAppleBuncargoContainers,
 	parseContainerRecords,
-	probeAppleServicePort,
 } from "./status";
 
 const LS_JSON = JSON.stringify([
@@ -61,6 +64,18 @@ function stubCli(stdout: string, ok = true): AppleContainerCli {
 		run: () => result,
 		runAsync: async () => result,
 	};
+}
+
+/** Apple's listing over `cli`, as the runtime-neutral readers take it. */
+function listing(cli: AppleContainerCli) {
+	return {
+		name: "apple" as const,
+		containers: (signal?: AbortSignal) => appleContainers(cli, signal),
+	};
+}
+
+async function ownerOf(cli: AppleContainerCli, port: number) {
+	return (await containerPortOwners(listing(cli))).get(port);
 }
 
 describe("parseContainerRecords", () => {
@@ -122,9 +137,9 @@ describe("formatPublishedPorts", () => {
 	});
 });
 
-describe("listAppleBuncargoContainers", () => {
-	it("keeps only buncargo-labeled containers", () => {
-		const containers = listAppleBuncargoContainers(stubCli(LS_JSON));
+describe("Apple's buncargo containers", () => {
+	it("keeps only buncargo-labeled containers", async () => {
+		const containers = await buncargoContainersOn(listing(stubCli(LS_JSON)));
 		expect(containers.map((item) => item.service)).toEqual([
 			"postgres",
 			"redis",
@@ -133,60 +148,63 @@ describe("listAppleBuncargoContainers", () => {
 		expect(containers[0]?.ports).toBe("0.0.0.0:5433->5432/tcp");
 	});
 
-	it("throws when the runtime cannot answer, rather than reporting no containers", () => {
+	it("throws when the runtime cannot answer, rather than reporting no containers", async () => {
 		// The sweep retires records only for runtimes that answered, so "down"
 		// must never look like "empty".
-		expect(() => listAppleBuncargoContainers(stubCli("", false))).toThrow();
+		await expect(
+			buncargoContainersOn(listing(stubCli("", false))),
+		).rejects.toThrow();
 	});
 
-	it("throws on output that is not JSON, rather than reporting no containers", () => {
-		expect(() =>
-			listAppleBuncargoContainers(stubCli("Error: XPC timeout")),
-		).toThrow(/not JSON/);
+	it("throws on output that is not JSON, rather than reporting no containers", async () => {
+		await expect(
+			buncargoContainersOn(listing(stubCli("Error: XPC timeout"))),
+		).rejects.toThrow(/not JSON/);
 	});
 });
 
-describe("appleProjectServiceStates", () => {
+describe("Apple's project service states", () => {
 	it("reports each labeled service's state for the project only", async () => {
-		const states = await appleProjectServiceStates(
-			stubCli(LS_JSON),
+		const states = await projectServiceStates(
+			listing(stubCli(LS_JSON)),
 			"gey-main",
 		);
 		expect(states.map((state) => [state.service, state.running])).toEqual([
 			["postgres", true],
 			["redis", false],
 		]);
-		expect(await appleProjectServiceStates(stubCli(LS_JSON), "other")).toEqual(
-			[],
-		);
+		expect(
+			await projectServiceStates(listing(stubCli(LS_JSON)), "other"),
+		).toEqual([]);
 	});
 
 	it("throws when the runtime cannot answer: an empty project is a removal the watch reports", async () => {
 		await expect(
-			appleProjectServiceStates(stubCli("", false), "gey-main"),
+			projectServiceStates(listing(stubCli("", false)), "gey-main"),
 		).rejects.toThrow();
 		await expect(
-			appleProjectServiceStates(stubCli("not json"), "gey-main"),
+			projectServiceStates(listing(stubCli("not json")), "gey-main"),
 		).rejects.toThrow(/not JSON/);
-		expect(await appleProjectServiceStates(stubCli("[]"), "gey-main")).toEqual(
-			[],
-		);
+		expect(
+			await projectServiceStates(listing(stubCli("[]")), "gey-main"),
+		).toEqual([]);
 	});
 });
 
-describe("findAppleContainerOnPort", () => {
-	it("finds a running container publishing the host port", () => {
-		expect(findAppleContainerOnPort(stubCli(LS_JSON), 5433)).toEqual({
+describe("Apple's port owners", () => {
+	it("finds a running container publishing the host port", async () => {
+		expect(await ownerOf(stubCli(LS_JSON), 5433)).toEqual({
 			id: "gey-main-postgres",
 			name: "gey-main-postgres",
 			composeProject: "gey-main",
 			root: "/repo",
+			runtime: "apple",
 		});
 	});
 
-	it("ignores the container port and unknown ports", () => {
-		expect(findAppleContainerOnPort(stubCli(LS_JSON), 5432)).toBeUndefined();
-		expect(findAppleContainerOnPort(stubCli(LS_JSON), 9999)).toBeUndefined();
+	it("ignores the container port and unknown ports", async () => {
+		expect(await ownerOf(stubCli(LS_JSON), 5432)).toBeUndefined();
+		expect(await ownerOf(stubCli(LS_JSON), 9999)).toBeUndefined();
 	});
 });
 
@@ -206,7 +224,10 @@ function liveRecord(options: {
 			},
 			configuration: {
 				id: "gey-main-api",
-				labels: { "buncargo.project": "gey-main" },
+				labels: {
+					"buncargo.project": "gey-main",
+					"buncargo.service": "api",
+				},
 				publishedPorts: options.ports,
 			},
 		},
@@ -229,24 +250,27 @@ describe("the 1.3 ls shape", () => {
 		]);
 	});
 
-	it("counts every port of a published range as owned", () => {
+	it("counts every port of a published range as owned", async () => {
 		const cli = stubCli(
 			liveRecord({
 				address: "192.168.64.5",
 				ports: [{ hostPort: 7000, containerPort: 7000, count: 3 }],
 			}),
 		);
-		expect(findAppleContainerOnPort(cli, 7002)?.id).toBe("gey-main-api");
-		expect(findAppleContainerOnPort(cli, 7003)).toBeUndefined();
+		expect((await ownerOf(cli, 7002))?.id).toBe("gey-main-api");
+		expect(await ownerOf(cli, 7003)).toBeUndefined();
 	});
 });
 
-describe("probeAppleServicePort", () => {
+describe("probing a port at Apple's container address", () => {
 	const request = {
 		projectName: "gey-main",
 		serviceName: "api",
 		hostPort: 18080,
+		timeoutMs: 1000,
 	};
+	const probe = (cli: AppleContainerCli) =>
+		probeContainerPort(listing(cli), request);
 
 	it("connects to the container port at the container's address", async () => {
 		// A local listener stands in for the service inside the container.
@@ -262,7 +286,7 @@ describe("probeAppleServicePort", () => {
 					ports: [{ hostPort: 18080, containerPort: server.port }],
 				}),
 			);
-			expect(await probeAppleServicePort(cli, request)).toBe(true);
+			expect(await probe(cli)).toBe(true);
 		} finally {
 			server.stop(true);
 		}
@@ -282,19 +306,16 @@ describe("probeAppleServicePort", () => {
 				ports: [{ hostPort: 18080, containerPort: port }],
 			}),
 		);
-		expect(await probeAppleServicePort(cli, request)).toBe(false);
+		expect(await probe(cli)).toBe(false);
 	});
 
 	it("is false for a stopped container or one with no address", async () => {
 		const ports = [{ hostPort: 18080, containerPort: 1 }];
 		expect(
-			await probeAppleServicePort(
+			await probe(
 				stubCli(liveRecord({ state: "stopped", address: "127.0.0.1", ports })),
-				request,
 			),
 		).toBe(false);
-		expect(
-			await probeAppleServicePort(stubCli(liveRecord({ ports })), request),
-		).toBe(false);
+		expect(await probe(stubCli(liveRecord({ ports })))).toBe(false);
 	});
 });

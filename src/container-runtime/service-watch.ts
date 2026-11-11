@@ -1,4 +1,5 @@
 import { timeoutSignal, typedSwitch, typedSwitchGroup } from "hanzio";
+import { projectServiceStates } from "./containers";
 import type { ContainerRuntimeAdapter, ServiceRuntimeState } from "./types";
 
 /**
@@ -6,7 +7,7 @@ import type { ContainerRuntimeAdapter, ServiceRuntimeState } from "./types";
  * said out loud instead of surfacing minutes later as an app's refused
  * connection while `status` reports every app ready.
  *
- * Polled through `projectServiceStates`, which both backends implement.
+ * Polled through the runtime's one container listing.
  * ponytail: one `docker ps` per run every interval; `docker events` would
  * cost nothing between changes, but Apple `container` has no event stream.
  */
@@ -138,7 +139,7 @@ export const SERVICE_WATCH_INTERVAL_MS = 10_000;
  * listing, cut off by its timeout, not a pile of them.
  */
 export function watchServiceContainers(input: {
-	runtime: Pick<ContainerRuntimeAdapter, "projectServiceStates">;
+	runtime: Pick<ContainerRuntimeAdapter, "containers">;
 	projectName: string;
 	/** Compose service names, read on every poll so services can join later. */
 	services: () => readonly string[];
@@ -157,7 +158,8 @@ export function watchServiceContainers(input: {
 			const signal = timeoutSignal(intervalMs, controller.signal);
 			let states: ServiceRuntimeState[] | undefined;
 			try {
-				states = await input.runtime.projectServiceStates(
+				states = await projectServiceStates(
+					input.runtime,
 					input.projectName,
 					signal,
 				);

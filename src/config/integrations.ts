@@ -13,7 +13,12 @@ type AnyHooks = DevHooks<
 	Record<string, AppConfig>
 >;
 
-/** Marks a config whose integrations have been applied, so applying is idempotent. */
+/**
+ * Marks a config whose integrations have been applied, so applying is
+ * idempotent. Registered rather than a plain symbol: a CLI from another
+ * install of the same version (a global one) runs a config whose `buncargo`
+ * is the checkout's, and that copy must still see the mark.
+ */
 const APPLIED = Symbol.for("buncargo.integrations.applied");
 
 /** Each hook runs the config's own first, then every integration's, in order. */

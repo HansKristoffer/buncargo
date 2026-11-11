@@ -254,12 +254,8 @@ function findForeignConflict(
  */
 function snapshotOwnerLookup(
 	basePorts: Record<string, number>,
-	runtime: ContainerRuntimeAdapter | undefined,
 ): (port: number) => PortOwner | null {
-	const snapshot = createPortOwnerSnapshot({
-		runtime,
-		ports: Object.values(basePorts),
-	});
+	const snapshot = createPortOwnerSnapshot({ ports: Object.values(basePorts) });
 	return (port) => snapshot.owner(port);
 }
 
@@ -517,7 +513,7 @@ export function allocatePortBlock(input: AllocatePortBlockInput): PortPlan {
 		portOffsetOverride() !== undefined
 			? () => null
 			: (input.getOwner ??
-				withBindProbe(snapshotOwnerLookup(layout.basePorts, input.runtime)));
+				withBindProbe(snapshotOwnerLookup(layout.basePorts)));
 	const allocate = () => allocateBlock(input, layout, getOwner);
 	return input.claim ? withOffsetClaimsLock(allocate) : allocate();
 }

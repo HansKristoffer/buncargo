@@ -1,6 +1,7 @@
 import type { OffsetClaim } from "../core/offset-claims";
 import { type ClaimState, claimStates } from "../core/port-exhaustion";
 import { readCheckoutRuns } from "../core/run-registry";
+import { buncargoContainersOn } from "./containers";
 import { isContainerUp } from "./inventory";
 import { containerRuntimesNotDown } from "./resolve";
 
@@ -19,9 +20,12 @@ export async function readClaimStates(
 	claims: Record<string, OffsetClaim>,
 ): Promise<Record<string, ClaimState>> {
 	const { live, held } = await readCheckoutRuns(() => true);
+	const listings = await Promise.all(
+		containerRuntimesNotDown().map((runtime) => buncargoContainersOn(runtime)),
+	);
 	const runningProjects = new Set(
-		containerRuntimesNotDown()
-			.flatMap((runtime) => runtime.list())
+		listings
+			.flat()
 			.filter(isContainerUp)
 			.map((container) => container.project),
 	);

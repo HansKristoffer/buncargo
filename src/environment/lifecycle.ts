@@ -2,6 +2,7 @@ import { join, relative } from "node:path";
 import { anySignal, startTimer } from "hanzio";
 import {
 	ensureServicesRunning,
+	projectServiceStates,
 	replaceStaleStacksOn,
 	withProjectLifecycleLock,
 } from "../container-runtime";
@@ -937,9 +938,10 @@ export function createLifecycleApi<
 		const names = resolveComposeServiceNames(services, Object.keys(compose));
 		if (names.length === 0) return stacks.length > 0;
 		// Throws when the runtime cannot answer, which is not running either.
-		const states = await ctx.runtime
-			.projectServiceStates(ctx.projectName)
-			.catch(() => []);
+		const states = await projectServiceStates(
+			ctx.runtime,
+			ctx.projectName,
+		).catch(() => []);
 		const running = new Set(
 			states.filter((state) => state.running).map((state) => state.service),
 		);

@@ -128,11 +128,23 @@ describe("architecture", () => {
 	});
 
 	it("keeps the sweep out of the watchdog module every run loads", () => {
-		// core/watchdog.ts is a published subpath and on every run's path to
-		// ensureWatchdog. Its loop needs only the sweep's types; a value import
+		// core/watchdog.ts is on every run's path to ensureWatchdog. Its loop needs only the sweep's types; a value import
 		// once tripled its graph.
 		const graph = importGraph("src/core/watchdog.ts");
 		expect(graph.has("src/container-runtime/sweep.ts")).toBe(false);
+	});
+
+	it("keeps the authoring entry free of what runs an environment", () => {
+		// Every config load imports `buncargo`; it once pulled in the whole
+		// library (about 360 modules). The environment, the loader and the
+		// CLI are `buncargo/api`.
+		const forbidden = [...importGraph("src/index.ts")].filter((file) =>
+			/^src\/(api|cli|environment|loader|container-runtime|docker|apple-container|typecheck|planning|config\/validation)\//.test(
+				file,
+			),
+		);
+
+		expect(forbidden).toEqual([]);
 	});
 
 	it("keeps the entry points loaded inside users' apps small", () => {

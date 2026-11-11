@@ -160,7 +160,7 @@ no config load, no Docker unless a service is the target.
   crashed. The sweep clears it when the owner reads as itself again, and so does the owner's own
   publish: one wrong reading used to stamp a live run for good, and `holdToInherit` counted it as
   finished.
-- `sweepOrphanedContainers` lists every runtime without probing first (a failed `list()` is the
+- `sweepOrphanedContainers` lists every runtime without probing first (a failed `containers()` is the
   probe, and records which runtimes *answered*), reads liveness once for the whole registry,
   decides each stack under its project's lifecycle lock (`project-lock.ts`; a busy lock is
   skipped, not failed), then retires entries whose containers are gone. Only when the runtime that
@@ -206,8 +206,7 @@ record" points at other users' logs and `docker events` instead of guessing.
 A run watches its own service containers (`container-runtime/service-watch.ts`, wired in
 `environment/service-watch.ts`): from the moment its services are up until `stop()` or
 `releaseRun()`, which end it before anything comes down, so the run's own teardown is never
-reported. It polls `projectServiceStates` every 10 s, the one state query both backends
-have. Both backends throw when the runtime does not answer, and a poll that throws changes
+reported. It polls the runtime's one listing (`containers()`) every 10 s. Both backends throw when the runtime does not answer, and a poll that throws changes
 nothing; so an answered empty listing means the project has no containers, and every watched
 service is reported removed. A state the runtime reports as `unknown` leaves what was last
 reported standing. A service that stops, disappears or turns unhealthy gets a line in the run's

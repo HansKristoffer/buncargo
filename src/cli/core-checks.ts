@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { typedSwitch, typedSwitchGroup } from "hanzio";
-import { containerRuntimeForEnv } from "../container-runtime";
+import { containerRuntimeForEnv, isRuntimeUp } from "../container-runtime";
 import {
 	type CheckoutFileStatus,
 	checkoutFileErrors,
@@ -158,7 +158,7 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 		checks.push({
 			name: "Container runtime is running",
 			fast: false,
-			check: () => containerRuntimeForEnv(env).isAvailable(),
+			check: () => isRuntimeUp(containerRuntimeForEnv(env)),
 			fix: () => containerRuntimeForEnv(env).ensureRunning(),
 			fixDescription: "start the container runtime",
 		});

@@ -2,8 +2,12 @@ import { describe, expect, it } from "bun:test";
 import { resolveService, resolveServices } from "../config/resolve";
 import { serviceHashEnv } from "../docker-compose/interpolate";
 import type { ServiceConfig } from "../types";
-import { parseContainerState } from "./container-state";
 import { ensureServicesRunning } from "./ensure-services";
+import {
+	fakeAppleRuntime,
+	fakeRuntime,
+	runtimeContainer,
+} from "./fake-runtime.testing";
 import { createBuiltInHealthCheck } from "./health-checks";
 import {
 	readinessPlan,
@@ -18,36 +22,35 @@ import type {
 } from "./types";
 
 /**
- * A runtime whose containers never become healthy, so every test here exercises
- * the failure path the diagnosis exists for.
+ * A runtime whose service container sits in one state and never becomes
+ * healthy, so every test here exercises the failure path the diagnosis exists
+ * for. `onList` sees each listing, `onLogs` each log fetch.
  */
 function stubRuntime(
+	service: string,
 	diagnosis: ServiceDiagnosis | undefined,
-	onDiagnose?: () => void,
+	hooks: { onList?: () => void; onLogs?: () => void } = {},
 ): ContainerRuntimeAdapter {
-	return {
-		name: "apple",
-		displayName: "Apple container",
-		isAvailable: () => true,
-		availability: () => ({ state: "up" }),
-		ensureRunning: async () => {},
-		up: async () => {},
-		down: async () => {},
-		execInService: async () => false,
-		interactiveExecArgv: async () => undefined,
-		diagnoseService: async () => {
-			onDiagnose?.();
-			return diagnosis;
+	return fakeAppleRuntime({
+		containers: async () => {
+			hooks.onList?.();
+			if (!diagnosis) return [];
+			return [serviceContainer(service, diagnosis.state, diagnosis.exitCode)];
 		},
-		list: () => [],
-		listVolumes: async () => [],
-		removeVolumes: async () => [],
-		stopByIds: () => {},
-		findContainerOnPort: () => undefined,
-		containerPortOwners: () => new Map(),
-		containerPortOwnersAsync: async () => new Map(),
-		projectServiceStates: async () => [],
-	};
+		logs: async () => {
+			hooks.onLogs?.();
+			return diagnosis?.logTail ?? "";
+		},
+	});
+}
+
+/** A service's container in the project these tests wait on. */
+function serviceContainer(service: string, state: string, exitCode?: number) {
+	return runtimeContainer({
+		state,
+		...(exitCode === undefined ? {} : { exitCode }),
+		labels: { project: "app-main", service },
+	});
 }
 
 const NEVER_READY: ServiceConfig = {
@@ -57,7 +60,7 @@ const NEVER_READY: ServiceConfig = {
 
 describe("waitForService failure reporting", () => {
 	it("aborts as soon as the container is reported gone", async () => {
-		const runtime = stubRuntime({
+		const runtime = stubRuntime("postgres", {
 			state: "exited",
 			exitCode: 1,
 			logTail: "initdb: error: directory is not empty",
@@ -85,7 +88,7 @@ describe("waitForService failure reporting", () => {
 	});
 
 	it("fails a crash-looping service before its timeout, saying it keeps crashing", async () => {
-		const runtime = stubRuntime({
+		const runtime = stubRuntime("search", {
 			state: "restarting",
 			exitCode: 1,
 			logTail: "typesense: bad api key",
@@ -110,12 +113,18 @@ describe("waitForService failure reporting", () => {
 	});
 
 	it("gives a service that restarted once the chance to come up", async () => {
-		let diagnoses = 0;
+		let listings = 0;
 		let ready = false;
-		const runtime = stubRuntime({ state: "restarting", logTail: "" }, () => {
-			diagnoses++;
-			ready = true;
-		});
+		const runtime = stubRuntime(
+			"search",
+			{ state: "restarting", logTail: "" },
+			{
+				onList: () => {
+					listings++;
+					ready = true;
+				},
+			},
+		);
 
 		await waitForService(
 			"search",
@@ -128,7 +137,7 @@ describe("waitForService failure reporting", () => {
 			{ runtime, projectName: "app-main", pollInterval: 1 },
 		);
 
-		expect(diagnoses).toBe(1);
+		expect(listings).toBe(1);
 	});
 
 	it("gives a service that restarted between runs the chance to come up", async () => {
@@ -136,15 +145,16 @@ describe("waitForService failure reporting", () => {
 		// back and runs a while, more than once, before it serves.
 		const seen = ["restarting", "running", "restarting", "running"];
 		let ready = false;
-		const runtime = stubRuntime(undefined);
-		runtime.diagnoseService = async () => {
-			const state = seen.shift();
-			if (state === undefined) {
-				ready = true;
-				return { state: "running", logTail: "" };
-			}
-			return { state, exitCode: 1, logTail: "" };
-		};
+		const runtime = fakeAppleRuntime({
+			containers: async () => {
+				const state = seen.shift();
+				if (state === undefined) {
+					ready = true;
+					return [serviceContainer("api", "running")];
+				}
+				return [serviceContainer("api", state, 1)];
+			},
+		});
 
 		await waitForService(
 			"api",
@@ -161,7 +171,7 @@ describe("waitForService failure reporting", () => {
 	});
 
 	it("names the runtime, port and probe when it times out instead", async () => {
-		const runtime = stubRuntime({ state: "running", logTail: "" });
+		const runtime = stubRuntime("postgres", { state: "running", logTail: "" });
 
 		const error = await waitForService(
 			"postgres",
@@ -186,7 +196,7 @@ describe("waitForService failure reporting", () => {
 	});
 
 	it("still fails cleanly when the runtime cannot diagnose", async () => {
-		const runtime = stubRuntime(undefined);
+		const runtime = stubRuntime("postgres", undefined);
 
 		const error = await waitForService(
 			"postgres",
@@ -204,9 +214,15 @@ describe("waitForService failure reporting", () => {
 
 	it("does not diagnose before giving the container a chance to appear", async () => {
 		let calls = 0;
-		const runtime = stubRuntime({ state: "exited", logTail: "" }, () => {
-			calls++;
-		});
+		const runtime = stubRuntime(
+			"postgres",
+			{ state: "exited", logTail: "" },
+			{
+				onLogs: () => {
+					calls++;
+				},
+			},
+		);
 
 		await waitForService(
 			"postgres",
@@ -236,14 +252,25 @@ describe("ensureServicesRunning reconcile", () => {
 	) {
 		const ups: ContainerUpRequest[] = [];
 		let seenHash = "";
-		const runtime: ContainerRuntimeAdapter = {
-			...stubRuntime(undefined),
+		const runtime = fakeAppleRuntime({
 			up: async (request) => {
 				ups.push(request);
 			},
-			projectServiceStates: async () =>
-				typeof states === "function" ? states(seenHash) : states,
-		};
+			containers: async () =>
+				(typeof states === "function" ? states(seenHash) : states).map(
+					(state) =>
+						runtimeContainer({
+							state: state.state,
+							labels: {
+								project: "demo",
+								service: state.service,
+								...(state.serviceHash
+									? { serviceHash: state.serviceHash }
+									: {}),
+							},
+						}),
+				),
+		});
 
 		async function run(): Promise<ContainerUpRequest[]> {
 			await ensureServicesRunning({
@@ -347,15 +374,14 @@ describe("ensureServicesRunning reconcile", () => {
 
 	it("reconciles when the runtime cannot say what is running", async () => {
 		const ups: ContainerUpRequest[] = [];
-		const runtime: ContainerRuntimeAdapter = {
-			...stubRuntime(undefined),
+		const runtime = fakeAppleRuntime({
 			up: async (request) => {
 				ups.push(request);
 			},
-			projectServiceStates: async () => {
+			containers: async () => {
 				throw new Error("daemon not answering");
 			},
-		};
+		});
 		await ensureServicesRunning({
 			runtime,
 			root: "/repo",
@@ -465,39 +491,29 @@ describe("readinessPlan", () => {
  * A runtime with a listing whose service container moves through `states`,
  * one per listing, and counts the diagnoses: the only call that reads logs.
  */
-function listingRuntime(
-	states: { state: string; status?: string; exitCode?: number }[],
-) {
+function listingRuntime(states: { state: string; exitCode?: number }[]) {
 	let diagnoses = 0;
 	let listings = 0;
-	const runtime: ContainerRuntimeAdapter = {
-		...stubRuntime(
-			{ state: "exited", exitCode: 3, logTail: "FATAL: boom" },
-			() => {
-				diagnoses++;
-			},
-		),
+	const runtime = fakeAppleRuntime({
+		logs: async () => {
+			diagnoses++;
+			return "FATAL: boom";
+		},
 		containers: async () => {
 			listings++;
 			const current = states.length > 1 ? states.shift() : states[0];
 			if (!current) return [];
 			return [
-				{
-					id: "a1",
-					name: "a1",
-					state: parseContainerState(current.state),
-					runtimeState: current.state,
-					status: current.status ?? current.state,
+				runtimeContainer({
+					state: current.state,
 					...(current.exitCode === undefined
 						? {}
 						: { exitCode: current.exitCode }),
-					ports: [],
-					portsText: "",
 					labels: { project: "demo", service: "worker" },
-				},
+				}),
 			];
 		},
-	};
+	});
 	return {
 		runtime,
 		diagnoses: () => diagnoses,
@@ -554,7 +570,7 @@ describe("service readiness deadlines", () => {
 					},
 				}),
 				5432,
-				{ runtime: stubRuntime(undefined), projectName: "test" },
+				{ runtime: stubRuntime("db", undefined), projectName: "test" },
 			),
 		).rejects.toThrow("did not become ready");
 		expect(performance.now() - start).toBeLessThan(400);
@@ -576,7 +592,7 @@ describe("service readiness deadlines", () => {
 				}),
 				5432,
 				{
-					runtime: stubRuntime(undefined),
+					runtime: stubRuntime("db", undefined),
 					projectName: "test",
 					pollInterval: 20,
 				},
@@ -616,43 +632,64 @@ describe("runtime health overrides", () => {
 });
 
 describe("the tcp health check", () => {
-	it("asks a runtime whose published ports cannot be trusted", async () => {
-		const asked: unknown[] = [];
-		const runtime: ContainerRuntimeAdapter = {
-			...stubRuntime(undefined),
-			probeServicePort: async (request) => {
-				asked.push({ service: request.serviceName, port: request.hostPort });
-				return false;
-			},
-		};
-		// Something does listen on the host port: the check must not settle
-		// for that when the runtime has its own answer.
-		const server = Bun.listen({
+	function listen() {
+		return Bun.listen({
 			hostname: "127.0.0.1",
 			port: 0,
 			socket: { data() {} },
 		});
+	}
+
+	/** A runtime that lists `api` at 127.0.0.1, its host port mapped to `target`. */
+	function addressedRuntime(hostPort: number, target: number) {
+		return fakeAppleRuntime({
+			containers: async () => [
+				runtimeContainer({
+					ports: [hostPort],
+					targetPorts: { [hostPort]: target },
+					address: "127.0.0.1",
+					labels: { project: "test", service: "api" },
+				}),
+			],
+		});
+	}
+
+	it("connects to the container's own address where published ports cannot be trusted", async () => {
+		// The host port accepts, as Apple's forwarder does, but nothing listens
+		// on the container port behind it.
+		const forwarder = listen();
+		const closed = listen();
+		const closedPort = closed.port;
+		closed.stop(true);
 		try {
 			const check = createBuiltInHealthCheck("tcp", "api", {
-				runtime,
+				runtime: addressedRuntime(forwarder.port, closedPort),
 				projectName: "test",
 			});
-			expect(await check(server.port)).toBe(false);
-			expect(asked).toEqual([{ service: "api", port: server.port }]);
+			expect(await check(forwarder.port)).toBe(false);
 		} finally {
-			server.stop(true);
+			forwarder.stop(true);
 		}
 	});
 
-	it("connects to the host port otherwise", async () => {
-		const server = Bun.listen({
-			hostname: "127.0.0.1",
-			port: 0,
-			socket: { data() {} },
-		});
+	it("passes once the service listens behind the published port", async () => {
+		const service = listen();
 		try {
 			const check = createBuiltInHealthCheck("tcp", "api", {
-				runtime: stubRuntime(undefined),
+				runtime: addressedRuntime(1, service.port),
+				projectName: "test",
+			});
+			expect(await check(1)).toBe(true);
+		} finally {
+			service.stop(true);
+		}
+	});
+
+	it("connects to the host port where the runtime trusts it", async () => {
+		const server = listen();
+		try {
+			const check = createBuiltInHealthCheck("tcp", "api", {
+				runtime: fakeRuntime(),
 				projectName: "test",
 			});
 			expect(await check(server.port)).toBe(true);

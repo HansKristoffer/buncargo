@@ -1,61 +1,32 @@
-// ═══════════════════════════════════════════════════════════════════════════
-// Main Exports
-// ═══════════════════════════════════════════════════════════════════════════
+// The authoring entry: what a `dev.config.ts` imports. Every config load pays
+// for this graph, so it holds the config helpers and types and nothing that
+// starts a process, allocates a port or reads a run. The environment, the
+// loader and the CLI are `buncargo/api` (`src/api/index.ts`).
 
-// CLI runner
-export { runCli } from "./cli/run-cli";
-// Config factory
+// Each from its own module: `config/index` also holds the resolver and the
+// validator, which the loader runs and a config never calls.
+export { exists } from "./config/checks";
+export { defineDevConfig } from "./config/define-config";
+export { type DiscoverAppsOptions, discoverApps } from "./config/discover-apps";
+export { mergeConfigs } from "./config/merge-configs";
+// For a `projectPrefix` of a config below the repository's top level.
+export { getWorktreeProjectSuffix } from "./core/ports";
 export {
-	assertValidConfig,
-	type DiscoverAppsOptions,
-	defineDevConfig,
-	discoverApps,
-	exists,
-	mergeConfigs,
-	resolveConfig,
-	resolveServices,
-	validateConfig,
-} from "./config/index";
-export type {
-	ClickhouseServiceOptions,
-	CustomServiceOptions,
-	MailpitServiceOptions,
-	PostgresServiceOptions,
-	PresetServiceCredentialOptions,
-	PresetServiceSecondaryPortOptions,
-	PresetServiceSharedOptions,
-	RedisServiceOptions,
-	TypesenseServiceOptions,
+	type ClickhouseServiceOptions,
+	type CustomServiceOptions,
+	type JobServiceOptions,
+	type MailpitServiceOptions,
+	type PostgresServiceOptions,
+	type PresetServiceCredentialOptions,
+	type PresetServiceSecondaryPortOptions,
+	type PresetServiceSharedOptions,
+	type RedisServiceOptions,
+	service,
+	type TypesenseServiceOptions,
 } from "./docker-compose/services";
-// Service helpers
-export { service } from "./docker-compose/services";
-// Environment factory
-export { createDevEnvironment } from "./environment/index";
-// Config loader (for programmatic access)
-export { clearDevEnvCache, getDevEnv, loadDevEnv } from "./loader/index";
-// Lint / Typecheck
-export {
-	runWorkspaceTypecheck,
-	type TypecheckResult,
-	type WorkspaceTypecheckOptions,
-	type WorkspaceTypecheckResult,
-} from "./typecheck/index";
-// Vite plugin. Also available as the `buncargo/vite` subpath, which is where a
-// vite.config.ts should import it from; it pulls in no Vite code either way.
-export {
-	type BuncargoViteConfig,
-	type BuncargoViteOptions,
-	type BuncargoVitePlugin,
-	buncargoVite,
-} from "./vite/index";
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Types
-// ═══════════════════════════════════════════════════════════════════════════
 
 export type {
 	AnyDevConfig,
-	AnyDevEnvironment,
 	AppConfig,
 	AppEnvVars,
 	AppHostOnlyEnvVarNames,
@@ -72,9 +43,6 @@ export type {
 	CheckoutFile,
 	CheckTestAlsoConfig,
 	CheckTestDeferredConfig,
-	// CLI
-	CliOptions,
-	// Computed types
 	ComputedEnvVars,
 	ComputedLoopbackUrls,
 	ComputedPorts,
@@ -83,17 +51,11 @@ export type {
 	ConfigEnvVarNames,
 	DeclaredAppEnvVars,
 	DeclaredStaticEnv,
-	// Main config
 	DevConfig,
 	DevConfigInput,
 	DevConfigLike,
-	// Environment interface
-	DevEnvironment,
-	DevEnvironmentFor,
-	DevEnvironmentTunnelLog,
 	DevHooks,
 	DevOptions,
-	DevServerPids,
 	DockerComposeGenerationOptions,
 	DockerComposeHealthcheckRaw,
 	DockerComposeNode,
@@ -130,110 +92,30 @@ export type {
 	IntegrationConfig,
 	IntegrationConfigContext,
 	IntegrationStack,
-	// Migrations & Seed
 	MigrationConfig,
 	NamedHost,
 	NamedHostsActivation,
-	OpenPublicTunnelsOptions,
-	OpenPublicTunnelsResult,
 	OverlayEnvVarNames,
-	PortOffsetProvenance,
 	PredeployConfig,
 	PredeployContext,
 	PredeployFailure,
-	// Prisma
 	PrismaConfig,
-	PrismaMigrateCheckOptions,
-	PrismaNewMigrationOptions,
-	PrismaNewMigrationResult,
-	PrismaRunner,
-	PrismaRunOptions,
 	ProfileConfig,
-	PublicTunnelHandle,
-	ResolvedApp,
-	ResolvedService,
 	SecretsScopeConfig,
 	SeedCheckContext,
 	SeedCheckHelpers,
 	SeedConfig,
-	SeedOutcome,
-	SeedRunOptions,
-	// Service & App configs
 	ServiceConfig,
 	ServiceEnvValueSource,
 	ServiceEnvVarMap,
 	ServiceEnvVarNames,
-	// Start/Stop options
-	ServicesStarted,
 	SetupCheck,
 	SharedEnvVarNames,
-	StartOptions,
-	StopOptions,
 	TaskConfig,
 	TypecheckConfig,
 	TypecheckGroupConfig,
 	TypedAppDefinitions,
 	UrlBuilderContext,
 	UrlBuilderFn,
-	WithServicesOptions,
 	WorkerAppConfig,
 } from "./types/index";
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Core Utilities (for advanced use cases)
-// ═══════════════════════════════════════════════════════════════════════════
-
-export {
-	availableContainerRuntimes,
-	CONTAINER_RUNTIME_SELECTIONS,
-	type ContainerRuntimeAdapter,
-	ContainerRuntimeUnavailableError,
-	containerRuntimeDisplayName,
-	containerRuntimeForEnv,
-	ensureServicesRunning,
-	listBuncargoContainers,
-	resolveContainerRuntime,
-	stopBuncargoContainers,
-	waitForAllServices,
-	waitForService,
-} from "./container-runtime/index";
-export { getLocalIp, waitForServer } from "./core/network";
-export {
-	type CheckoutProjectNames,
-	type CheckoutProjectNamesOptions,
-	checkoutProjectNames,
-	computeDevIdentity,
-	findMonorepoRoot,
-	getProjectName,
-	getWorktreeName,
-	getWorktreeProjectSuffix,
-	isWorktree,
-} from "./core/ports";
-export {
-	getProcessOnPort,
-	isPortInUse,
-	isProcessAlive,
-	killPortOwner,
-} from "./core/process";
-export { isCI } from "./core/runtime-flags";
-export {
-	type PublicExposeTarget,
-	type PublicTunnel,
-	resolveExposeTargets,
-	startPublicTunnels,
-	stopPublicTunnels,
-} from "./core/tunnel";
-export { getEnvVar, logApiUrl, logFrontendPort, sleep } from "./core/utils";
-export {
-	ensureWatchdog,
-	getWatchdogLogFile,
-	getWatchdogPidFile,
-} from "./core/watchdog";
-export { assertDockerRunning } from "./docker/index";
-export {
-	buildComposeModel,
-	composeToYaml,
-	DEFAULT_GENERATED_COMPOSE_FILE,
-	getGeneratedComposePath,
-	writeGeneratedComposeFile,
-} from "./docker-compose/index";

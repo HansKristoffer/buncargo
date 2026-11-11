@@ -5,6 +5,7 @@ import {
 	claimedCheckouts,
 	containerRuntimeForEnv,
 	getContainerRuntimeAdapter,
+	isRuntimeUp,
 	listBuncargoContainers,
 	orphanedVolumes,
 	planVolumePrune,
@@ -49,7 +50,7 @@ import {
 	classifyPortOccupant,
 	createPortOwnerSnapshotAsync,
 	formatPortOwner,
-	getPortOwner,
+	getPortOwnerAsync,
 	killPortOwnerFoundBy,
 	type PortOwnerLookupOptions,
 	withBindProbe,
@@ -213,8 +214,11 @@ async function checkPortOwnership(
 		}
 		// Only the process just judged: a port that changed hands since is
 		// somebody else's, and is left alone.
-		const sameHolder = (_port: number, options: PortOwnerLookupOptions) => {
-			const current = getPortOwner(port, options);
+		const sameHolder = async (
+			_port: number,
+			options: PortOwnerLookupOptions,
+		) => {
+			const current = await getPortOwnerAsync(port, options);
 			return current && current.pids.join() === owner.pids.join()
 				? current
 				: null;
@@ -252,7 +256,7 @@ async function checkOrphanedContainers(
 	env: DevEnv,
 	runtime: ContainerRuntimeAdapter,
 ): Promise<void> {
-	if (!runtime.isAvailable()) return;
+	if (!isRuntimeUp(runtime)) return;
 	try {
 		const result = await sweepOrphanedContainers({
 			runtimes: [runtime],
@@ -314,7 +318,7 @@ export async function prunableVolumesNote(
 	const count = orphanedVolumes(
 		planVolumePrune({
 			volumes,
-			containers: listBuncargoContainers([...runtimes]),
+			containers: await listBuncargoContainers([...runtimes]),
 			runs: await readAllRuns(),
 			checkouts: claimedCheckouts(readAllOffsetClaims()),
 		}),

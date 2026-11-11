@@ -1,5 +1,8 @@
 import { getErrorMessage, typedSwitch, typedSwitchGroup } from "hanzio";
-import { containerRuntimeForEnv } from "../../../container-runtime";
+import {
+	containerRuntimeForEnv,
+	isRuntimeUp,
+} from "../../../container-runtime";
 import {
 	buncargoContainersOf,
 	portOwnersOf,
@@ -144,7 +147,7 @@ async function readStatus() {
 		// not is asked again.
 		runtime: {
 			name: runtime.name,
-			running: "inventory" in listing || runtime.isAvailable(),
+			running: "inventory" in listing || isRuntimeUp(runtime),
 		},
 		checkSlots: checkSlotStatus(),
 		ports,
@@ -181,19 +184,17 @@ async function readStatus() {
 
 /**
  * The runtime's buncargo containers and the ports its containers hold, from
- * one listing, or why it could not say. A runtime without a listing answers
- * through its inventory, and the port snapshot asks it about ports itself.
+ * one listing, or why it could not say.
  */
 async function readContainerListing(runtime: ContainerRuntimeAdapter): Promise<
 	| {
 			inventory: BuncargoContainer[];
-			portOwners?: Map<number, PortContainerOwner>;
+			portOwners: Map<number, PortContainerOwner>;
 	  }
 	| { error: string }
 > {
 	try {
-		const listed = await runtime.containers?.();
-		if (!listed) return { inventory: runtime.list() };
+		const listed = await runtime.containers();
 		return {
 			inventory: buncargoContainersOf(listed, runtime.name),
 			portOwners: portOwnersOf(listed, runtime.name),

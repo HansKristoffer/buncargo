@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toError } from "hanzio";
 import { resolveApps } from "../../config/resolve";
-import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
+import {
+	fakeRuntime,
+	runtimeContainer,
+} from "../../container-runtime/fake-runtime.testing";
 import { startFakeInfisical } from "../secrets/fake-infisical.testing";
 import { clearScopeSecretsCache } from "../secrets/index";
 import type { AppLife } from "./app-lifecycle";
@@ -1178,14 +1181,22 @@ describe("startDevServers apps that never come up", () => {
 		const [api, web, admin] = await freePorts(3);
 		// This project's containers serve web and admin; only web answers.
 		const container = Bun.serve({ port: web, fetch: () => new Response("ok") });
-		const runtime = {
-			name: "docker",
-			containerPortOwnersAsync: async () =>
-				new Map([
-					[web, { id: "w", name: "proj-web-1", composeProject: "proj" }],
-					[admin, { id: "a", name: "proj-admin-1", composeProject: "proj" }],
-				]),
-		} as unknown as ContainerRuntimeAdapter;
+		const runtime = fakeRuntime({
+			containers: async () => [
+				runtimeContainer({
+					id: "w",
+					name: "proj-web-1",
+					ports: [web],
+					labels: { composeProject: "proj" },
+				}),
+				runtimeContainer({
+					id: "a",
+					name: "proj-admin-1",
+					ports: [admin],
+					labels: { composeProject: "proj" },
+				}),
+			],
+		});
 		const output = new RunOutput({ terminals: "pipe" });
 		const failed: string[] = [];
 		const ready: string[] = [];

@@ -27,16 +27,13 @@
     "bun": ">=1.4.4"
   },
   "files": [
-    "src/**/*.ts",
     "dist",
     "readme.md",
     "docs/reference.md",
     "docs/integrations.md",
     "docs/migration.md",
     "docs/frp.md",
-    "docs/runtime-maintenance.md",
-    "!src/**/*.test.ts",
-    "!src/**/*.testing.ts"
+    "docs/runtime-maintenance.md"
   ],
   "bin": {
     "buncargo": "./dist/cli/bin.js"
@@ -44,153 +41,53 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "bun": "./src/index.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
-    "./types": {
-      "types": "./dist/types/index.d.ts",
-      "bun": "./src/types/index.ts",
-      "import": "./dist/types/index.js",
-      "default": "./dist/types/index.js"
-    },
-    "./config": {
-      "types": "./dist/config/index.d.ts",
-      "bun": "./src/config/index.ts",
-      "import": "./dist/config/index.js",
-      "default": "./dist/config/index.js"
-    },
-    "./environment": {
-      "types": "./dist/environment/index.d.ts",
-      "bun": "./src/environment/index.ts",
-      "import": "./dist/environment/index.js",
-      "default": "./dist/environment/index.js"
-    },
-    "./core/ports": {
-      "types": "./dist/core/ports.d.ts",
-      "bun": "./src/core/ports.ts",
-      "import": "./dist/core/ports.js",
-      "default": "./dist/core/ports.js"
-    },
-    "./core/network": {
-      "types": "./dist/core/network.d.ts",
-      "bun": "./src/core/network.ts",
-      "import": "./dist/core/network.js",
-      "default": "./dist/core/network.js"
-    },
-    "./core/process": {
-      "types": "./dist/core/process/index.d.ts",
-      "bun": "./src/core/process/index.ts",
-      "import": "./dist/core/process/index.js",
-      "default": "./dist/core/process/index.js"
-    },
-    "./core/watchdog": {
-      "types": "./dist/core/watchdog.d.ts",
-      "bun": "./src/core/watchdog.ts",
-      "import": "./dist/core/watchdog.js",
-      "default": "./dist/core/watchdog.js"
-    },
-    "./core/tunnel": {
-      "types": "./dist/core/tunnel.d.ts",
-      "bun": "./src/core/tunnel.ts",
-      "import": "./dist/core/tunnel.js",
-      "default": "./dist/core/tunnel.js"
-    },
-    "./core/utils": {
-      "types": "./dist/core/utils.d.ts",
-      "bun": "./src/core/utils.ts",
-      "import": "./dist/core/utils.js",
-      "default": "./dist/core/utils.js"
-    },
-    "./cli": {
-      "types": "./dist/cli/index.d.ts",
-      "bun": "./src/cli/index.ts",
-      "import": "./dist/cli/index.js",
-      "default": "./dist/cli/index.js"
-    },
-    "./typecheck": {
-      "types": "./dist/typecheck/index.d.ts",
-      "bun": "./src/typecheck/index.ts",
-      "import": "./dist/typecheck/index.js",
-      "default": "./dist/typecheck/index.js"
-    },
-    "./loader": {
-      "types": "./dist/loader/index.d.ts",
-      "bun": "./src/loader/index.ts",
-      "import": "./dist/loader/index.js",
-      "default": "./dist/loader/index.js"
-    },
-    "./container-runtime": {
-      "types": "./dist/container-runtime/index.d.ts",
-      "bun": "./src/container-runtime/index.ts",
-      "import": "./dist/container-runtime/index.js",
-      "default": "./dist/container-runtime/index.js"
-    },
-    "./apple-container": {
-      "types": "./dist/apple-container/index.d.ts",
-      "bun": "./src/apple-container/index.ts",
-      "import": "./dist/apple-container/index.js",
-      "default": "./dist/apple-container/index.js"
-    },
-    "./docker": {
-      "types": "./dist/docker/index.d.ts",
-      "bun": "./src/docker/index.ts",
-      "import": "./dist/docker/index.js",
-      "default": "./dist/docker/index.js"
-    },
-    "./docker-compose": {
-      "types": "./dist/docker-compose/index.d.ts",
-      "bun": "./src/docker-compose/index.ts",
-      "import": "./dist/docker-compose/index.js",
-      "default": "./dist/docker-compose/index.js"
+    "./api": {
+      "types": "./dist/api/index.d.ts",
+      "import": "./dist/api/index.js",
+      "default": "./dist/api/index.js"
     },
     "./client": {
       "types": "./dist/client/index.d.ts",
       "react-native": "./dist/client/index.js",
       "browser": "./dist/client/index.js",
-      "bun": "./src/client/index.ts",
       "import": "./dist/client/index.js",
       "default": "./dist/client/index.js"
     },
     "./runtime": {
       "types": "./dist/runtime/index.d.ts",
-      "bun": "./src/runtime/index.ts",
       "import": "./dist/runtime/index.js",
       "default": "./dist/runtime/index.js"
     },
     "./vite": {
       "types": "./dist/vite/index.d.ts",
-      "bun": "./src/vite/index.ts",
       "import": "./dist/vite/index.js",
       "default": "./dist/vite/index.js"
     },
     "./next": {
       "types": "./dist/next/index.d.ts",
-      "bun": "./src/next/index.ts",
       "import": "./dist/next/index.js",
       "default": "./dist/next/index.js"
     },
     "./expo": {
       "types": "./dist/expo/index.d.ts",
-      "bun": "./src/expo/index.ts",
       "import": "./dist/expo/index.js",
       "default": "./dist/expo/index.js"
     },
     "./shopify": {
       "types": "./dist/shopify/index.d.ts",
-      "bun": "./src/shopify/index.ts",
       "import": "./dist/shopify/index.js",
       "default": "./dist/shopify/index.js"
     },
     "./supabase": {
       "types": "./dist/supabase/index.d.ts",
-      "bun": "./src/supabase/index.ts",
       "import": "./dist/supabase/index.js",
       "default": "./dist/supabase/index.js"
     },
     "./firebase": {
       "types": "./dist/firebase/index.d.ts",
-      "bun": "./src/firebase/index.ts",
       "import": "./dist/firebase/index.js",
       "default": "./dist/firebase/index.js"
     }
@@ -198,7 +95,7 @@
   "scripts": {
     "build": "rm -rf dist && bun run build:js && bun run build:daemon && bun scripts/fix-sourcemap-sources.ts dist && bun run build:types",
     "build:daemon": "bun build ./src/cli/hostsd.ts --outdir ./dist --target bun --sourcemap=linked && bun build ./src/cli/connectd.ts --outdir ./dist --target bun --sourcemap=linked",
-    "build:js": "bun build ./src/index.ts ./src/cli/bin.ts ./src/cli/index.ts ./src/config/index.ts ./src/environment/index.ts ./src/loader/index.ts ./src/typecheck/index.ts ./src/types/index.ts ./src/core/network.ts ./src/core/ports.ts ./src/core/process/index.ts ./src/core/tunnel.ts ./src/core/utils.ts ./src/core/watchdog.ts ./src/core/watchdog-runner.ts ./src/container-runtime/index.ts ./src/apple-container/index.ts ./src/docker/index.ts ./src/docker-compose/index.ts ./src/vite/index.ts ./src/next/index.ts ./src/expo/index.ts ./src/shopify/index.ts ./src/supabase/index.ts ./src/firebase/index.ts ./src/client/index.ts ./src/runtime/index.ts --outdir ./dist --root ./src --target node --packages external --splitting --sourcemap=linked",
+    "build:js": "bun build ./src/index.ts ./src/api/index.ts ./src/cli/bin.ts ./src/core/watchdog-runner.ts ./src/vite/index.ts ./src/next/index.ts ./src/expo/index.ts ./src/shopify/index.ts ./src/supabase/index.ts ./src/firebase/index.ts ./src/client/index.ts ./src/runtime/index.ts --outdir ./dist --root ./src --target node --packages external --splitting --sourcemap=linked",
     "build:types": "tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build",
     "fmt": "bun fmt --no-script '{src,scripts,example,server/connect}/**/*.{ts,tsx,js,jsx,mjs,cjs,json,jsonc}'",

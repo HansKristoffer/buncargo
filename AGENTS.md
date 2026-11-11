@@ -195,7 +195,9 @@ gitignored for them. A merged PR is the implementation record.
 
 All library source is under `src/`; tests sit beside the module they test.
 
-- `index.ts`: the public API. New public exports are added here on purpose.
+- `index.ts`: `buncargo`, what a `dev.config.ts` imports; every config load pays for its graph.
+  `api/`: `buncargo/api`, the environment, loader and CLI for code. New public exports are added
+  to one of the two on purpose.
 - `cli/`: the CLI. `bin.ts` is the executable, `run-cli.ts` the dev flow, `commands/` one module
   per command, `tui/` the TUI.
 - `config/`: `defineDevConfig`, validation and integration application. Definition, validation and

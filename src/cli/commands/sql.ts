@@ -707,7 +707,7 @@ async function startOneService(
 const PRODUCTION_SQL_DEPS: SqlDeps = {
 	loadEnv: (readOnly) => loadDevEnv({ readOnly }),
 	execArgv: (env, request) =>
-		containerRuntimeForEnv(env).interactiveExecArgv({
+		containerRuntimeForEnv(env).execArgv({
 			projectName: env.projectName,
 			root: env.root,
 			...request,

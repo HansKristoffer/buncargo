@@ -45,8 +45,8 @@ Cross-cutting utilities in `src/core/` that most features touch.
   `PATH` with `access` rather than shelling out to `command -v`. That is a builtin, so it looked
   free, but it is still a fork and an exec, reached for `docker`, `container` and `mkcert` before a
   run starts anything.
-- `utils.ts` re-exports hanzio's `promiseTimeout` as `sleep`, because `buncargo/core/utils` is a
-  published entry point. Internal code imports `promiseTimeout` from `hanzio` directly: `utils.ts`
+- `utils.ts` re-exports hanzio's `promiseTimeout` as `sleep`, because `buncargo/api` publishes it.
+  Internal code imports `promiseTimeout` from `hanzio` directly: `utils.ts`
   also holds `getEnvVar` and so imports the checkout view (port allocation, the host plan, the
   network helpers), and
   taking `sleep` from it once pulled that whole graph into the single file a root launchd job

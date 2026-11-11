@@ -1,12 +1,7 @@
 import { containerRuntimeDisplayName } from "../container-runtime/names";
 import type {
-	ContainerDownRequest,
 	ContainerRuntimeAdapter,
-	ContainerUpRequest,
 	EnsureRuntimeOptions,
-	ExecInServiceRequest,
-	ServiceDiagnosisRequest,
-	ServicePortProbeRequest,
 } from "../container-runtime/types";
 import type { AppleContainerCli } from "./cli";
 import {
@@ -19,19 +14,12 @@ import {
 	appleContainerAvailability,
 	ensureAppleContainerRunning,
 	isAppleContainerSupported,
-	isAppleContainerSystemRunning,
 } from "./preflight";
 import { containerNameFor } from "./run-plan";
 import {
-	appleContainerPortOwners,
-	appleContainerPortOwnersAsync,
+	appleContainerLogs,
 	appleContainers,
-	appleProjectServiceStates,
-	diagnoseAppleService,
-	findAppleContainerOnPort,
 	isAppleServiceRunning,
-	listAppleBuncargoContainers,
-	probeAppleServicePort,
 } from "./status";
 import { listAppleVolumes, removeAppleVolumes } from "./volumes";
 
@@ -42,6 +30,9 @@ export interface AppleContainerAdapterOptions {
 	cli?: AppleContainerCli;
 }
 
+const NO_COMPOSE_PROJECTS =
+	"Apple container records no Compose project on volumes and networks.";
+
 export function appleContainerRuntimeAdapter(
 	options: AppleContainerAdapterOptions = {},
 ): ContainerRuntimeAdapter {
@@ -51,9 +42,15 @@ export function appleContainerRuntimeAdapter(
 	return {
 		name: "apple",
 		displayName: containerRuntimeDisplayName("apple"),
-
-		isAvailable() {
-			return isAppleContainerSystemRunning(cli);
+		capabilities: {
+			// A running process is not proof of successful job completion. Until
+			// Apple supplies reliable exit codes, accepting a job would weaken its
+			// contract.
+			jobExitCodes: false,
+			// Its port forwarder accepts a connection on the published port
+			// whether or not anything listens inside, and holds it open.
+			hostPortProbe: false,
+			composeProjectResources: false,
 		},
 
 		availability() {
@@ -64,15 +61,33 @@ export function appleContainerRuntimeAdapter(
 			return ensureAppleContainerRunning(cli, ensureOptions);
 		},
 
-		up(request: ContainerUpRequest) {
+		// No `system status` first: the listing fails when the system is down,
+		// which answers the same question one process sooner.
+		containers(signal) {
+			if (!isAppleContainerSupported())
+				return Promise.reject(
+					new Error("Apple container is not supported on this machine"),
+				);
+			return appleContainers(cli, signal);
+		},
+
+		logs(request) {
+			return appleContainerLogs(cli, request);
+		},
+
+		up(request) {
 			return appleUp(cli, request);
 		},
 
-		down(request: ContainerDownRequest) {
+		down(request) {
 			return appleDown(cli, request);
 		},
 
-		async execInService(request: ExecInServiceRequest) {
+		stop(ids) {
+			return appleStopByIds(cli, ids);
+		},
+
+		async exec(request) {
 			return (
 				await runAppleAsync(
 					cli,
@@ -86,7 +101,7 @@ export function appleContainerRuntimeAdapter(
 			).ok;
 		},
 
-		async interactiveExecArgv(request) {
+		async execArgv(request) {
 			// Apple names the container itself, so the lookup only confirms it
 			// runs; otherwise the caller would print Apple's own "not found".
 			if (
@@ -108,60 +123,23 @@ export function appleContainerRuntimeAdapter(
 			];
 		},
 
-		diagnoseService(request: ServiceDiagnosisRequest) {
-			return diagnoseAppleService(cli, request);
-		},
-
-		async probeServicePort(request: ServicePortProbeRequest) {
-			try {
-				return await probeAppleServicePort(cli, request);
-			} catch {
-				request.signal?.throwIfAborted();
-				return false;
-			}
-		},
-
-		containers(signal?: AbortSignal) {
-			return appleContainers(cli, signal);
-		},
-
-		// No `system status` first: the listing fails when the system is down,
-		// which answers the same question one process sooner.
-		list() {
-			if (!isAppleContainerSupported())
-				throw new Error("Apple container is not supported on this machine");
-			return listAppleBuncargoContainers(cli);
-		},
-
-		// Same reasoning as `list`: a down system fails the listing, which
+		// Same reasoning as `containers`: a down system fails the listing, which
 		// already reads as no volumes.
 		listVolumes() {
 			if (!isAppleContainerSupported()) return Promise.resolve([]);
 			return listAppleVolumes(cli);
 		},
 
-		removeVolumes(names: string[]) {
+		removeVolumes(names) {
 			return removeAppleVolumes(cli, names);
 		},
 
-		stopByIds(ids: string[]) {
-			appleStopByIds(cli, ids);
+		listComposeProjectResources() {
+			return Promise.reject(new Error(NO_COMPOSE_PROJECTS));
 		},
 
-		findContainerOnPort(port: number) {
-			return findAppleContainerOnPort(cli, port);
-		},
-
-		containerPortOwners() {
-			return appleContainerPortOwners(cli);
-		},
-
-		containerPortOwnersAsync(signal?: AbortSignal) {
-			return appleContainerPortOwnersAsync(cli, signal);
-		},
-
-		projectServiceStates(projectName: string, signal?: AbortSignal) {
-			return appleProjectServiceStates(cli, projectName, signal);
+		removeComposeProjectResource() {
+			return Promise.reject(new Error(NO_COMPOSE_PROJECTS));
 		},
 	};
 }

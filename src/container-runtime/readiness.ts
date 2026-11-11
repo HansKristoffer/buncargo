@@ -22,7 +22,7 @@ import {
 	parseContainerState,
 	startupVerdict,
 } from "./container-state";
-import { serviceContainerOf } from "./containers";
+import { diagnoseService, serviceContainerOf } from "./containers";
 import { createBuiltInHealthCheck } from "./health-checks";
 import type { ContainerRuntimeAdapter, ServiceDiagnosis } from "./types";
 
@@ -35,7 +35,6 @@ export interface WaitForServiceOptions {
 	projectName: string;
 	pollInterval?: number;
 	root?: string;
-	composeFile?: string;
 }
 
 /**
@@ -88,7 +87,6 @@ interface HealthPollContext {
 	probe: string;
 	port?: number;
 	root?: string;
-	composeFile?: string;
 }
 
 /** What a poll saw of the container; `logTail` only once it was fetched. */
@@ -103,41 +101,31 @@ async function diagnose(
 	timeoutMs: number,
 	signal?: AbortSignal,
 ): Promise<ServiceDiagnosis | undefined> {
-	try {
-		const request = {
-			signal,
-			timeoutMs,
-			projectName: context.projectName,
-			serviceName: context.composeServiceName,
-			root: context.root,
-			composeFile: context.composeFile,
-		};
-		return await withDeadline(
-			(probeSignal) =>
-				context.runtime.diagnoseService({ ...request, signal: probeSignal }),
-			timeoutMs,
-			signal,
-		);
-	} catch {
-		return undefined;
-	}
+	return diagnoseService(context.runtime, {
+		signal,
+		timeoutMs,
+		projectName: context.projectName,
+		serviceName: context.composeServiceName,
+		root: context.root,
+	});
 }
 
 /**
  * The container's state from the runtime's listing, without its logs: what
- * every poll asks. A runtime without a listing answers with a diagnosis,
- * logs and all. Never throws.
+ * every poll asks. Never throws.
  */
 async function observe(
 	context: HealthPollContext,
 	timeoutMs: number,
 	signal?: AbortSignal,
 ): Promise<Observation | undefined> {
-	const list = context.runtime.containers?.bind(context.runtime);
-	if (!list) return diagnose(context, timeoutMs, signal);
 	try {
 		const container = serviceContainerOf(
-			await withDeadline((probeSignal) => list(probeSignal), timeoutMs, signal),
+			await withDeadline(
+				(probeSignal) => context.runtime.containers(probeSignal),
+				timeoutMs,
+				signal,
+			),
 			context.projectName,
 			context.composeServiceName,
 		);
@@ -314,7 +302,7 @@ export async function waitForService(
 	if (plan.kind === "none" || plan.kind === "runtimeHealth") return;
 
 	const pollInterval = options.pollInterval ?? POLL_INTERVAL;
-	const { runtime, projectName, root, composeFile } = options;
+	const { runtime, projectName, root } = options;
 	const timeoutMs = config.healthTimeout;
 	const composeServiceName = config.serviceName;
 	const context: HealthPollContext = {
@@ -326,7 +314,6 @@ export async function waitForService(
 		port:
 			plan.kind === "probe" || plan.kind === "custom" ? plan.port : undefined,
 		root,
-		composeFile,
 	};
 	const poll = { timeoutMs, pollInterval, signal: options.signal };
 
