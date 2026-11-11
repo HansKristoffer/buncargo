@@ -10,6 +10,7 @@ import {
 import {
 	awaitCoordinator,
 	coordinatorWentAway,
+	ensureCoordinatorWith,
 	requestCoordinator,
 } from "./launcher";
 
@@ -188,4 +189,40 @@ test("a coordinator that is gone twice fails with the second error", async () =>
 		requestCoordinator("/tcp", { id: "db" }, line.deps),
 	).rejects.toThrow("Unable to connect");
 	expect(line.ensured).toBe(2);
+});
+
+/** A `launch` that hands out `states` in turn, and counts the launches. */
+function launches(...states: CoordinatorState[]) {
+	let launched = 0;
+	return {
+		get launched() {
+			return launched;
+		},
+		launch: async () => ({
+			owner: states[Math.min(launched++, states.length - 1)],
+			adopted: true,
+		}),
+	};
+}
+
+test("a coordinator that went away before it reported is launched again", async () => {
+	const reporting = liveCoordinator(0);
+	await writeCoordinatorState(reporting);
+	const line = launches(
+		{ ...liveCoordinator(60_000), identity: "exited" },
+		reporting,
+	);
+
+	await ensureCoordinatorWith(line.launch);
+
+	expect(line.launched).toBe(2);
+});
+
+test("coordinators that keep going away end the ensure instead of looping", async () => {
+	const line = launches({ ...liveCoordinator(60_000), identity: "exited" });
+
+	await expect(ensureCoordinatorWith(line.launch)).rejects.toThrow(
+		"went away 3 times",
+	);
+	expect(line.launched).toBe(3);
 });

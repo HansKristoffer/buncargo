@@ -287,15 +287,18 @@ the containers from there; nothing here removes a container or a volume.
   watchdog only waits one more period.
 - The idle limit (`idleLimitMs`, two hours, written by the detached run unless `--keep` or
   Tailscale mode, whose traffic never reaches the proxy) counts from the latest of the run's start,
-  the last request through the proxy to its checkout, and the last buncargo command in it. An
+  the last request through the proxy to its checkout, the last buncargo command in it, and the
+  last watchdog pass that saw an established TCP connection on one of its app ports (an open tab's
+  HMR socket, a client on `localhost:port` the proxy never sees; one `/proc/net/tcp` read on Linux,
+  one `netstat` on macOS, only while a detached run has a limit). An
   entry without `idleLimitMs` (an older buncargo's run) is never stopped for idling.
 - Requests: the hosts daemon counts each route lookup (every request and WebSocket upgrade, not
   the health path) by the route's checkout in memory and merges them into
   `~/.buncargo/proxy-activity.json` at most once a minute (`hosts/proxy-activity.ts`), and
   rewrites it every five minutes as a heartbeat. A missing file, or one silent for three beats,
   means no daemon counts requests (an older one put back by `hosts install` from a checkout on an
-  older buncargo leaves the file frozen): a run with named hosts is then `unknown`, never
-  stopped, because "no requests on record" would be no evidence.
+  older buncargo leaves the file frozen). A run is `unknown`, never stopped, only when neither its
+  requests nor the connections can be read, because "nothing on record" would be no evidence.
 - Commands: `bin.ts` sets the mtime of `<root>/.buncargo/last-command` on every command except
   `help` and `version` (`run-activity.ts`), with the root found as a run records it
   (`findCheckoutRoot`: the config's repository root, not the working directory). One `utimes`, no

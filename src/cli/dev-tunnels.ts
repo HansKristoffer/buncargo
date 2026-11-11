@@ -1,5 +1,5 @@
 import { anySignal } from "hanzio";
-import { toPortMap } from "../core/ports";
+import { findRunsByRoot, type RunEntry } from "../core/run-registry";
 import {
 	type PublicExposeTarget,
 	type PublicTunnel,
@@ -18,12 +18,6 @@ import type {
 } from "../types";
 import { CliError } from "./errors";
 import * as log from "./log";
-import {
-	loadReusableTunnelApps,
-	removeTunnelRegistryEntries,
-	type TunnelRegistryEntry,
-	upsertTunnelRegistryEntries,
-} from "./tunnel-registry";
 
 /** Injectable so tests can drive the expose flow without cloudflared. */
 export interface TunnelApi {
@@ -56,7 +50,7 @@ export interface DevTunnelCoordinator<
 	hasPendingTargets(): boolean;
 	/** Whether a reused app's public URL is another run's tunnel. */
 	inheritsPublicUrls(): boolean;
-	/** Stop owned tunnels and drop their registry entries. */
+	/** Stop owned tunnels and withdraw the public URLs this run set. */
 	stop(): Promise<void>;
 	readonly env: DevEnvironment<TServices, TApps>;
 }
@@ -76,13 +70,12 @@ export function createTunnelCoordinator<
 	// The URLs this run's tunnels set: closing them removes only these, never
 	// a URL an app printed (`captures`) beside them.
 	let openedPublicUrls: Record<string, string> = {};
-	let ownedRegistryEntries: TunnelRegistryEntry[] = [];
 	const openingController = new AbortController();
 	let opening: Promise<void> | undefined;
 	let selection: EnvironmentLogSelection | undefined;
 
 	/**
-	 * Public URLs here come from `--expose` names and the tunnel registry, so
+	 * Public URLs here come from `--expose` names and the run registry, so
 	 * this module only ever knows them as strings. Converting once keeps
 	 * `setPublicUrls` typo-checked for programmatic callers.
 	 */
@@ -99,23 +92,22 @@ export function createTunnelCoordinator<
 
 	async function inheritReusedPublicUrls(appNames: string[]): Promise<void> {
 		if (appNames.length === 0) return;
-		const reused = await loadReusableTunnelApps(env.root, {
+		const reused = reusablePublicUrls(
+			await findRunsByRoot(env.root),
 			appNames,
-			ports: env.ports,
-		});
-		Object.assign(inheritedPublicUrls, reused.publicUrls);
-		combinedTunnelLogs.push(...reused.tunnels);
-		if (reused.tunnels.length > 0) {
-			log.info(
-				`ℹ Reusing public URL${reused.tunnels.length > 1 ? "s" : ""} for: ${reused.tunnels
-					.map((tunnel) => tunnel.name)
-					.join(", ")}`,
-			);
+			env.ports as Record<string, number>,
+		);
+		const names = reused.map((tunnel) => tunnel.name);
+		for (const tunnel of reused)
+			inheritedPublicUrls[tunnel.name] = tunnel.publicUrl;
+		combinedTunnelLogs.push(...reused);
+		if (reused.length > 0) {
+			const plural = reused.length > 1 ? "s" : "";
+			log.info(`ℹ Reusing public URL${plural} for: ${names.join(", ")}`);
 		}
-		if (reused.missingAppNames.length > 0) {
-			log.warn(
-				`No reusable public URL found for: ${reused.missingAppNames.join(", ")}`,
-			);
+		const missing = appNames.filter((name) => !names.includes(name));
+		if (missing.length > 0) {
+			log.warn(`No reusable public URL found for: ${missing.join(", ")}`);
 		}
 	}
 
@@ -247,21 +239,6 @@ export function createTunnelCoordinator<
 		);
 		addPublicUrls(openedPublicUrls);
 
-		ownedRegistryEntries = tunnels
-			.filter((tunnel) => tunnel.kind === "app")
-			.map((tunnel) => ({
-				kind: "app" as const,
-				name: tunnel.name,
-				publicUrl: tunnel.publicUrl,
-				localUrl: tunnel.localUrl,
-				port: toPortMap(env.ports)[tunnel.name] ?? 0,
-				pid: process.pid,
-				updatedAt: new Date().toISOString(),
-			}));
-		if (ownedRegistryEntries.length > 0) {
-			await upsertTunnelRegistryEntries(env.root, ownedRegistryEntries);
-		}
-
 		combinedTunnelLogs.push(...tunnels);
 		env.logInfo("Dev Environment", combinedTunnelLogs, selection);
 		pendingTargets = [];
@@ -281,21 +258,9 @@ export function createTunnelCoordinator<
 		);
 		openedPublicUrls = {};
 		const tunnelsToStop = tunnels;
-		const entriesToRemove = ownedRegistryEntries.map((entry) => ({
-			kind: entry.kind,
-			name: entry.name,
-			pid: entry.pid,
-		}));
 		tunnels = [];
-		ownedRegistryEntries = [];
-		try {
-			if (tunnelsToStop.length > 0) {
-				await tunnelApi.stopPublicTunnels(tunnelsToStop);
-			}
-		} finally {
-			if (entriesToRemove.length > 0) {
-				await removeTunnelRegistryEntries(env.root, entriesToRemove);
-			}
+		if (tunnelsToStop.length > 0) {
+			await tunnelApi.stopPublicTunnels(tunnelsToStop);
 		}
 	}
 
@@ -307,4 +272,35 @@ export function createTunnelCoordinator<
 		inheritsPublicUrls: () => Object.keys(inheritedPublicUrls).length > 0,
 		stop,
 	};
+}
+
+/**
+ * The public URLs live runs of this checkout publish for apps this run
+ * reuses. The run serving a reused app is the one whose tunnel reaches it,
+ * and its entry is live only while that process (by pid and identity) is,
+ * so a URL from a run that ended is never inherited. The port must match:
+ * the URL reaches the app on the port it was opened for.
+ */
+function reusablePublicUrls(
+	runs: readonly RunEntry[],
+	appNames: readonly string[],
+	ports: Record<string, number>,
+): DevEnvironmentTunnelLog[] {
+	const rows = runs.flatMap((run) => run.apps);
+	return appNames.flatMap((name) => {
+		const port = ports[name];
+		const publicUrl = rows.find(
+			(row) =>
+				row.name === name && row.port === port && row.publicUrl !== undefined,
+		)?.publicUrl;
+		if (publicUrl === undefined) return [];
+		return [
+			{
+				kind: "app" as const,
+				name,
+				localUrl: `http://localhost:${port}`,
+				publicUrl,
+			},
+		];
+	});
 }

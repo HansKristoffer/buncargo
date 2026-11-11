@@ -9,8 +9,11 @@ import { lastCheckoutCommandAt, noteCheckoutCommand } from "./run-activity";
 import {
 	createRunLimiter,
 	decideRunLimit,
+	establishedPortsFromNetstat,
+	establishedPortsFromProcNet,
 	idleState,
 	type RunActivity,
+	readConnectionActivity,
 	terminateRun,
 } from "./run-limits";
 import type { RunEntry } from "./run-registry";
@@ -47,6 +50,7 @@ function entry(extra: Partial<RunEntry> = {}): RunEntry {
 const counted = (proxy: Record<string, number> = {}): RunActivity => ({
 	commandAt: undefined,
 	proxy: new Map(Object.entries(proxy)),
+	connections: undefined,
 });
 
 /** The verdict for a live run whose checkout is there, at `now`. */
@@ -92,7 +96,11 @@ describe("the idle limit of a detached run", () => {
 
 	it("counts from the last buncargo command in its checkout", () => {
 		const run = entry();
-		const commanded = { commandAt: START + HOUR, proxy: new Map() };
+		const commanded = {
+			commandAt: START + HOUR,
+			proxy: new Map(),
+			connections: undefined,
+		};
 		expect(verdictAt(run, commanded, START + 2 * HOUR).kind).toBe("keep");
 		expect(verdictAt(run, commanded, START + 3 * HOUR).kind).toBe("stop");
 	});
@@ -105,17 +113,89 @@ describe("the idle limit of a detached run", () => {
 		);
 	});
 
-	it("does not judge a named-hosts run when no hosts daemon counts requests", () => {
+	it("does not judge a run when neither requests nor connections can be read", () => {
 		// An older daemon writes no activity file: no requests on record is
 		// then no evidence, and stopping would cut off someone's open tab.
-		const run = entry();
-		const uncounted = { commandAt: undefined, proxy: undefined };
-		expect(idleState(run, uncounted).kind).toBe("unknown");
-		expect(verdictAt(run, uncounted, START + 100 * HOUR).kind).toBe("keep");
-		// Without named hosts, there are no requests to miss.
-		expect(
-			verdictAt(entry({ hosts: null }), uncounted, START + 2 * HOUR).kind,
-		).toBe("stop");
+		const uncounted = {
+			commandAt: undefined,
+			proxy: undefined,
+			connections: undefined,
+		};
+		for (const run of [entry(), entry({ hosts: null })]) {
+			expect(idleState(run, uncounted).kind).toBe("unknown");
+			expect(verdictAt(run, uncounted, START + 100 * HOUR).kind).toBe("keep");
+		}
+	});
+
+	it("keeps a run without named hosts while something is connected to its app", () => {
+		// Named hosts off: the browser talks to localhost:5173, which no proxy
+		// counts. Its open HMR socket is the run being used.
+		const run = entry({
+			hosts: null,
+			apps: [{ name: "web", port: 5173, status: "ready" }],
+		});
+		const now = START + 3 * HOUR;
+		const connectedTo = (...ports: number[]): RunActivity => ({
+			commandAt: undefined,
+			proxy: undefined,
+			connections: { at: now, ports: new Set(ports) },
+		});
+
+		expect(verdictAt(run, connectedTo(5173), now).kind).toBe("keep");
+		expect(idleState(run, connectedTo(5173))).toMatchObject({
+			kind: "counting",
+			lastActivityAt: now,
+		});
+		// A connection to another checkout's port is not this run's.
+		expect(verdictAt(run, connectedTo(5174), now)).toMatchObject({
+			kind: "stop",
+			reason: "idle",
+		});
+	});
+});
+
+describe("established ports", () => {
+	it("reads the established local ports from /proc/net/tcp", () => {
+		const table = [
+			"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
+			"   0: 0100007F:1435 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 1 1",
+			"   1: 0100007F:1435 0100007F:C350 01 00000000:00000000 00:00000000 00000000  1000        0 2 1",
+			"   2: 0100007F:C350 0100007F:1435 01 00000000:00000000 00:00000000 00000000  1000        0 3 1",
+		].join("\n");
+		// 0x1435 is 5173, listening and connected; 0xC350 is the client's end.
+		expect(establishedPortsFromProcNet(table)).toEqual([5173, 50000]);
+	});
+
+	it("reads the established local ports from macOS netstat", () => {
+		const output = [
+			"Active Internet connections (including servers)",
+			"Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)",
+			"tcp4       0      0  127.0.0.1.5173         127.0.0.1.60185        ESTABLISHED",
+			"tcp6       0      0  ::1.3000               ::1.60190              ESTABLISHED",
+			"tcp4       0      0  *.5173                 *.*                    LISTEN",
+		].join("\n");
+		expect(establishedPortsFromNetstat(output)).toEqual([5173, 3000]);
+	});
+
+	it("sees a connection held open to a local server", async () => {
+		const server = Bun.listen({
+			hostname: "127.0.0.1",
+			port: 0,
+			socket: { data() {} },
+		});
+		const client = await Bun.connect({
+			hostname: "127.0.0.1",
+			port: server.port,
+			socket: { data() {} },
+		});
+		try {
+			const activity = await readConnectionActivity(START);
+			expect(activity?.at).toBe(START);
+			expect(activity?.ports.has(server.port)).toBe(true);
+		} finally {
+			client.end();
+			server.stop(true);
+		}
 	});
 });
 
@@ -176,6 +256,7 @@ describe("createRunLimiter", () => {
 			checkoutPresence: () => state.presence,
 			lastCommandAt: () => undefined,
 			readProxyActivity: (): ProxyActivity => new Map(),
+			readConnections: async () => undefined,
 			stopRun: async (run) => {
 				state.stopped.push(run.sessionId);
 				return true;

@@ -1,6 +1,10 @@
 import { readProxyActivity } from "../../core/hosts/proxy-activity";
 import { describeLeaseHolder, readLeases } from "../../core/leases";
-import { describeIdleState, readIdleState } from "../../core/run-limits";
+import {
+	describeIdleState,
+	readIdleState,
+	readRunConnections,
+} from "../../core/run-limits";
 import {
 	groupRunsByProject,
 	type RunEntry,
@@ -24,11 +28,12 @@ export async function handleRuns(args: string[] = []): Promise<void> {
 	const leases = await readLeases().catch(() => []);
 	const now = Date.now();
 	const proxy = readProxyActivity(now);
+	const connections = await readRunConnections(runs, now);
 
 	if (hasFlag(args, "--json")) {
 		// `idleStopsAt`: when a detached run stops if nothing uses it first.
 		const withLimits = runs.map((run) => {
-			const idle = readIdleState(run, proxy);
+			const idle = readIdleState(run, proxy, connections);
 			return idle.kind === "counting"
 				? { ...run, idleStopsAt: new Date(idle.stopsAt).toISOString() }
 				: run;
@@ -45,7 +50,10 @@ export async function handleRuns(args: string[] = []): Promise<void> {
 	for (const [project, entries] of groupRunsByProject(runs)) {
 		log.line(project);
 		for (const run of entries) {
-			printRun(run, describeIdleState(readIdleState(run, proxy), now));
+			printRun(
+				run,
+				describeIdleState(readIdleState(run, proxy, connections), now),
+			);
 		}
 		log.line();
 	}

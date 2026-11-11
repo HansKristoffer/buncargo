@@ -28,7 +28,11 @@ import {
 import { writeJsonDocumentSync } from "./registry-file";
 import { removalActor } from "./removal-log";
 import { lastCheckoutCommandAt } from "./run-activity";
-import { createRunLimiter, terminateRun } from "./run-limits";
+import {
+	createRunLimiter,
+	readConnectionActivity,
+	terminateRun,
+} from "./run-limits";
 import { readAllRuns, runLivenessAsync } from "./run-registry";
 import { recordRunStops } from "./run-stops";
 import { tailnetDirectoryEnabled, watchdogParent } from "./runtime-flags";
@@ -59,6 +63,7 @@ const stopRuns = createRunLimiter({
 	checkoutPresence,
 	lastCommandAt: lastCheckoutCommandAt,
 	readProxyActivity,
+	readConnections: readConnectionActivity,
 	stopRun: terminateRun,
 	recordStops: (records) => recordRunStops(records),
 	now: Date.now,
