@@ -165,3 +165,41 @@ it("keeps the block a run claimed while the stop checked for runs", async () => 
 
 	expect(readOffsetClaims()[key]?.offset).toBe(claimed.offset);
 });
+
+it("keeps the block another run of the environment claimed during the teardown", async () => {
+	const root = join(scratch, "runner-9", "app");
+	mkdirSync(root, { recursive: true });
+	const config = {
+		projectPrefix: "gey",
+		services: { postgres: { port: 5432 } },
+		docker: { runtime: "docker" as const, binary: fakeDocker() },
+		options: { verbose: false },
+	};
+	const next = createDevEnvironment(config, { root }).withSuffix(
+		CI_PROJECT_SUFFIX,
+	);
+	// The next job of this directory allocates while this one tears down,
+	// before it has published its run.
+	const ci = createDevEnvironment(
+		{
+			...config,
+			hooks: {
+				beforeStop: async () => {
+					setSystemTime(new Date(Date.now() + 60_000));
+					try {
+						await next.prepareStartAsync();
+					} finally {
+						setSystemTime();
+					}
+				},
+			},
+		},
+		{ root },
+	).withSuffix(CI_PROJECT_SUFFIX);
+	await ci.prepareStartAsync();
+	const key = offsetClaimKey(root, CI_PROJECT_SUFFIX);
+
+	await ci.stop({ verbose: false, removeVolumes: true });
+
+	expect(readOffsetClaims()[key]).toBeDefined();
+});

@@ -1,5 +1,4 @@
 import { execFile, execFileSync } from "node:child_process";
-import { platform } from "node:os";
 import { recordStartupMetric } from "../startup-metrics";
 
 /**
@@ -119,36 +118,8 @@ function runQuietly(command: string, args: string[]): string | undefined {
 	}
 }
 
-/**
- * Windows has no `lsof`; `netstat` reports the pid but not the command name.
- *
- * Named hosts and the container backends are POSIX-only anyway, so this exists
- * to keep port reuse working rather than to reach parity.
- */
-function parseWindowsListeners(output: string | undefined): ListenerSnapshot {
-	const snapshot = emptyListenerSnapshot();
-	if (!output) return snapshot;
-
-	for (const line of output.split("\n")) {
-		if (!line.includes("LISTENING")) continue;
-		const parts = line.trim().split(/\s+/);
-		const local = parts[1];
-		const pid = Number.parseInt(parts[parts.length - 1] ?? "", 10);
-		if (!local || !Number.isInteger(pid) || pid <= 0) continue;
-		const port = portFromLsofName(local);
-		if (port === undefined) continue;
-		const existing = snapshot.pidsByPort.get(port);
-		if (!existing) snapshot.pidsByPort.set(port, [pid]);
-		else if (!existing.includes(pid)) existing.push(pid);
-	}
-
-	return snapshot;
-}
-
 /** Every TCP listener on this machine, in one call. */
 export function readListenerSnapshot(): ListenerSnapshot {
-	if (platform() === "win32")
-		return parseWindowsListeners(runQuietly("netstat", ["-ano"]));
 	const output = runQuietly("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"]);
 	return output ? parseListenerSnapshot(output) : emptyListenerSnapshot();
 }
@@ -161,7 +132,7 @@ export function readListenerSnapshot(): ListenerSnapshot {
  * killed, from a stranger's process, which is not.
  */
 export function readProcessCwds(pids: number[]): Map<number, string> {
-	if (pids.length === 0 || platform() === "win32") return new Map();
+	if (pids.length === 0) return new Map();
 	const output = runQuietly("lsof", [
 		"-a",
 		"-p",
@@ -197,15 +168,13 @@ function runQuietlyAsync(
 export async function readListenerSnapshotAsync(
 	signal?: AbortSignal,
 ): Promise<ListenerSnapshot> {
-	return platform() === "win32"
-		? parseWindowsListeners(await runQuietlyAsync("netstat", ["-ano"], signal))
-		: parseListenerSnapshot(
-				await runQuietlyAsync(
-					"lsof",
-					["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"],
-					signal,
-				),
-			);
+	return parseListenerSnapshot(
+		await runQuietlyAsync(
+			"lsof",
+			["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"],
+			signal,
+		),
+	);
 }
 
 export async function readProcessCwdsAsync(
@@ -213,7 +182,7 @@ export async function readProcessCwdsAsync(
 	signal?: AbortSignal,
 ): Promise<Map<number, string>> {
 	signal?.throwIfAborted();
-	if (pids.length === 0 || platform() === "win32") return new Map();
+	if (pids.length === 0) return new Map();
 	return parseProcessCwds(
 		await runQuietlyAsync(
 			"lsof",
