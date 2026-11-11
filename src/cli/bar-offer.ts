@@ -39,7 +39,7 @@ import * as log from "./log";
  * installed, or was declined once — this costs one or two `existsSync` calls
  * and returns. `buncargo dev` runs constantly; nothing here may cost more.
  */
-export async function offerMenuBarApp(): Promise<void> {
+export async function offerMenuBarApp(signal: AbortSignal): Promise<void> {
 	if (!isBarSupported()) return;
 	if (isBarOfferDisabled()) return;
 	if (barDecline.has()) return;
@@ -75,7 +75,7 @@ export async function offerMenuBarApp(): Promise<void> {
 			// app and the dev run behind it is already starting.
 			try {
 				log.info(`Downloading ${BAR_APP_NAME}…`);
-				const result = await installBar();
+				const result = await installBar({ signal });
 				openBar(result.path);
 				log.done(`Installed ${BAR_APP_NAME} ${result.version}`);
 			} catch (error) {
@@ -99,7 +99,9 @@ export async function offerMenuBarApp(): Promise<void> {
  * Disabled by the same `BUNCARGO_BAR=0` and CI checks as the offer, because a
  * user who turned the app off should not have it downloading in the background.
  */
-export async function checkMenuBarAppUpdate(): Promise<void> {
+export async function checkMenuBarAppUpdate(
+	signal: AbortSignal,
+): Promise<void> {
 	if (!isBarSupported()) return;
 	if (isBarOfferDisabled()) return;
 
@@ -112,7 +114,7 @@ export async function checkMenuBarAppUpdate(): Promise<void> {
 
 		let latestVersion = cache?.latest?.version;
 		if (!isCacheFresh(cache, { required })) {
-			const release = await fetchLatestBarRelease();
+			const release = await fetchLatestBarRelease(signal);
 			latestVersion = release?.version;
 			writeBarCheckCache({
 				checkedAt: new Date().toISOString(),
@@ -127,7 +129,7 @@ export async function checkMenuBarAppUpdate(): Promise<void> {
 			latestVersion,
 			hintedVersion: cache?.hintedVersion,
 		});
-		await applyDecision(decision, installed.version);
+		await applyDecision(decision, installed.version, signal);
 	} catch {
 		// Nothing here is worth a word on a successful dev run.
 	}
@@ -136,6 +138,7 @@ export async function checkMenuBarAppUpdate(): Promise<void> {
 async function applyDecision(
 	decision: BarUpdateDecision,
 	installedVersion: string | undefined,
+	signal: AbortSignal,
 ): Promise<void> {
 	await typedSwitch(decision, "action", {
 		none: () => {},
@@ -162,6 +165,7 @@ async function applyDecision(
 			log.info(`${label} cannot read this buncargo's runs.json — updating…`);
 			try {
 				const result = await installBar({
+					signal,
 					minRegistryVersion: REGISTRY_VERSION,
 				});
 				log.done(`Updated ${BAR_APP_NAME} to ${result.version}`);
