@@ -9,7 +9,13 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	statSync,
+} from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +41,22 @@ export function getWatchdogPidFile(): string {
 
 export function getWatchdogLogFile(): string {
 	return stateFilePath("watchdog.log");
+}
+
+/** Past this a starting watchdog moves the log to `watchdog.log.1`. */
+const WATCHDOG_LOG_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Each watchdog appends, so the log still covers an incident after the next
+ * run started a new one. Truncating at every start lost it.
+ */
+function capWatchdogLog(logFile: string): void {
+	try {
+		if (statSync(logFile).size > WATCHDOG_LOG_MAX_BYTES)
+			renameSync(logFile, `${logFile}.1`);
+	} catch {
+		// No log yet: the runner creates it.
+	}
 }
 
 /**
@@ -248,7 +270,7 @@ export async function ensureWatchdog(
 		const logFile = getWatchdogLogFile();
 		const stateDir = getStateDir();
 		mkdirSync(stateDir, { recursive: true });
-		writeFileSync(logFile, "");
+		capWatchdogLog(logFile);
 
 		// Argv through JSON rather than a shell command line: no quoting rules
 		// to get wrong for a checkout path containing a space.

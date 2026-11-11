@@ -17,6 +17,7 @@ import { buncargoVersion } from "./version";
 import {
 	ensureWatchdog,
 	getWatchdogLockFile,
+	getWatchdogLogFile,
 	getWatchdogPid,
 	getWatchdogPidFile,
 	isOutdatedWatchdog,
@@ -153,6 +154,29 @@ describe("ensureWatchdog", () => {
 			// Reparented the moment the intermediate exited: to init/launchd, or
 			// to a subreaper such as a systemd user manager, never to us.
 			expect(ancestors).not.toContain(process.pid);
+		} finally {
+			await stopWatchdog();
+		}
+	});
+
+	// The log was truncated at every start, so it rarely still covered the
+	// incident it was read for.
+	it("keeps the log across watchdogs, moving one past its cap aside", async () => {
+		const logFile = getWatchdogLogFile();
+		try {
+			await claimSomething();
+			writeFileSync(logFile, "an earlier watchdog's line\n");
+			await ensureWatchdog({ verbose: false });
+			expect(readFileSync(logFile, "utf8")).toStartWith(
+				"an earlier watchdog's line\n",
+			);
+			await stopWatchdog();
+
+			const full = "x".repeat(1024 * 1024 + 1);
+			writeFileSync(logFile, full);
+			await ensureWatchdog({ verbose: false });
+			expect(readFileSync(`${logFile}.1`, "utf8")).toBe(full);
+			expect(readFileSync(logFile, "utf8")).not.toContain("xxxx");
 		} finally {
 			await stopWatchdog();
 		}

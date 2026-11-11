@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppLogs, listRunLogDirs } from "./app-logs";
@@ -55,18 +55,26 @@ describe("RunOutput", () => {
 		}
 	});
 
-	it("keeps only the last ten runs' logs", () => {
+	it("keeps only the last ten runs' logs, and every live run's", async () => {
 		const root = mkdtempSync(join(tmpdir(), "buncargo-run-logs-"));
 		try {
-			for (let index = 0; index < 12; index++)
+			const ended = Bun.spawn(["true"]);
+			await ended.exited;
+			const started = (index: number) =>
 				new AppLogs(
 					root,
 					`s${index}`,
 					new Date(Date.UTC(2026, 0, 1, 0, index)),
 				);
+			// s0 is this live process's; the others' runs have ended.
+			started(0);
+			for (let index = 1; index < 12; index++)
+				writeFileSync(join(started(index).dir, "owner.pid"), String(ended.pid));
+			started(12);
 			const dirs = listRunLogDirs(root);
-			expect(dirs).toHaveLength(10);
-			expect(dirs[0]).toEndWith("-s2");
+			expect(dirs).toHaveLength(11);
+			expect(dirs[0]).toEndWith("-s0");
+			expect(dirs[1]).toEndWith("-s3");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

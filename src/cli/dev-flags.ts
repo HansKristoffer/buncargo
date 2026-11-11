@@ -9,6 +9,7 @@ import {
 	positiveIntegerValidator,
 	readBooleanFlag,
 	readStringFlag,
+	unknownFlagMessage,
 } from "./command-spec";
 import { splitCliArgs } from "./flags";
 import * as log from "./log";
@@ -160,6 +161,15 @@ const FLAGS = {
 		description: "Print how long each startup phase took",
 	},
 } as const satisfies Record<string, FlagSpec>;
+
+/**
+ * The flags only the `dev --detach` in front reads: its background run gets
+ * the rest of the invocation, and `--keep` through `BUNCARGO_DETACHED`.
+ */
+export const DETACH_ONLY_FLAGS: readonly FlagSpec[] = [
+	FLAGS.detach,
+	FLAGS.keep,
+];
 
 export const DEV_COMMAND_SPEC: CommandSpec = {
 	usage: "buncargo dev [options]",
@@ -407,9 +417,9 @@ export function printDevHelp(): void {
 export function exitOnDevArgErrors(args: DevCliArgs): void {
 	const messages =
 		args.unknownFlags.length > 0
-			? [
-					`Unknown flag${args.unknownFlags.length > 1 ? "s" : ""}: ${args.unknownFlags.join(", ")}`,
-				]
+			? args.unknownFlags.map((flag) =>
+					unknownFlagMessage(DEV_COMMAND_SPEC, flag),
+				)
 			: args.errors;
 	if (messages.length === 0) return;
 
