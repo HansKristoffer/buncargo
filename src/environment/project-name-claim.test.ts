@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { offsetClaimsOf } from "../core/offset-claims";
 import { CI_PROJECT_SUFFIX } from "../core/ports";
 import { createDevEnvironment } from "./create-dev-environment";
 
@@ -58,5 +59,5 @@ it("refuses to start a second checkout under a project name another one claims, 
 	).rejects.toThrow(
 		`would run under Compose project lullu-app-ci, which ${first.root} (ci) already uses`,
 	);
-	expect(existsSync(join(second.root, ".buncargo", "ports.json"))).toBe(false);
+	expect(offsetClaimsOf(second.root)).toEqual({});
 });

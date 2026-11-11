@@ -18,10 +18,11 @@ import { join } from "node:path";
 import {
 	claimOffset,
 	getOffsetClaimsPath,
+	offsetClaimHoldsBlock,
 	offsetClaimKey,
 	readAllOffsetClaims,
-	releaseOffsetClaimsIfUnchanged,
 	releaseSuffixedClaimsOf,
+	retireOffsetClaimsIfUnchanged,
 	withOffsetClaimsLock,
 } from "./offset-claims";
 import {
@@ -63,7 +64,14 @@ function claimAt(at: number, suffix = "ci"): void {
 	);
 }
 
-describe("releaseOffsetClaimsIfUnchanged", () => {
+/** Whether the suffixed claim of `root` is on record, and holds its block. */
+function ciClaim(): "holds" | "released" | "gone" {
+	const claim = readAllOffsetClaims()[offsetClaimKey(root, "ci")];
+	if (!claim) return "gone";
+	return offsetClaimHoldsBlock(claim) ? "holds" : "released";
+}
+
+describe("retireOffsetClaimsIfUnchanged", () => {
 	it("keeps a claim a run used after it was read", async () => {
 		// `ports release --root` checks, then asks, then releases: a run that
 		// started in between rewrote the claim and needs its block.
@@ -71,7 +79,7 @@ describe("releaseOffsetClaimsIfUnchanged", () => {
 		const read = readAllOffsetClaims();
 		claimAt(T0 + 60_000);
 
-		expect(await releaseOffsetClaimsIfUnchanged(read)).toEqual([]);
+		expect(await retireOffsetClaimsIfUnchanged(read)).toEqual([]);
 		expect(Object.keys(readAllOffsetClaims())).toEqual([
 			offsetClaimKey(root, "ci"),
 		]);
@@ -80,7 +88,7 @@ describe("releaseOffsetClaimsIfUnchanged", () => {
 	it("drops a claim nothing touched since it was read", async () => {
 		claimAt(T0);
 		const read = readAllOffsetClaims();
-		expect(await releaseOffsetClaimsIfUnchanged(read)).toEqual([
+		expect(await retireOffsetClaimsIfUnchanged(read)).toEqual([
 			offsetClaimKey(root, "ci"),
 		]);
 		expect(readAllOffsetClaims()).toEqual({});
@@ -90,7 +98,10 @@ describe("releaseOffsetClaimsIfUnchanged", () => {
 describe("releaseSuffixedClaimsOf", () => {
 	const stack = () => ({ projectName: "demo-ci", root });
 
-	it("releases the claim the torn-down run used", async () => {
+	it("frees the block the torn-down run used, and keeps who owns the project", async () => {
+		// The stack's volumes outlive it. Dropping the claim left nothing
+		// naming their project, so once the checkout was deleted neither the
+		// sweep nor `prune` could tell they were its.
 		claimAt(T0);
 		const owner = { startedAt: new Date(T0 + 1_000).toISOString() };
 		await releaseSuffixedClaimsOf(
@@ -99,7 +110,24 @@ describe("releaseSuffixedClaimsOf", () => {
 			owner,
 			T0 + 1_000,
 		);
-		expect(readAllOffsetClaims()).toEqual({});
+		expect(ciClaim()).toBe("released");
+		expect(readAllOffsetClaims()[offsetClaimKey(root, "ci")]).toMatchObject({
+			projectName: "demo-ci",
+			root,
+			suffix: "ci",
+		});
+	});
+
+	it("gives the block back to the environment's next claiming run", async () => {
+		claimAt(T0);
+		await releaseSuffixedClaimsOf(
+			stack(),
+			readAllOffsetClaims(),
+			{ startedAt: new Date(T0 + 1_000).toISOString() },
+			T0 + 1_000,
+		);
+		claimAt(T0 + HOUR);
+		expect(ciClaim()).toBe("holds");
 	});
 
 	it("keeps a claim the next job of the directory wrote before it published its run", async () => {
@@ -110,9 +138,7 @@ describe("releaseSuffixedClaimsOf", () => {
 		claimAt(T0 + 60_000);
 		const read = readAllOffsetClaims();
 		await releaseSuffixedClaimsOf(stack(), read, owner, T0 + 60_000);
-		expect(Object.keys(readAllOffsetClaims())).toEqual([
-			offsetClaimKey(root, "ci"),
-		]);
+		expect(ciClaim()).toBe("holds");
 	});
 
 	it("keeps a claim rewritten after the teardown read the claims", async () => {
@@ -120,7 +146,7 @@ describe("releaseSuffixedClaimsOf", () => {
 		const read = readAllOffsetClaims();
 		claimAt(T0 + 60_000);
 		await releaseSuffixedClaimsOf(stack(), read, null, T0 + 3 * HOUR);
-		expect(Object.keys(readAllOffsetClaims())).toHaveLength(1);
+		expect(ciClaim()).toBe("holds");
 	});
 
 	it("keeps a recent claim of a stack with no run on record", async () => {
@@ -129,16 +155,34 @@ describe("releaseSuffixedClaimsOf", () => {
 		claimAt(T0);
 		const read = readAllOffsetClaims();
 		await releaseSuffixedClaimsOf(stack(), read, null, T0 + 60_000);
-		expect(Object.keys(readAllOffsetClaims())).toEqual([
-			offsetClaimKey(root, "ci"),
-		]);
+		expect(ciClaim()).toBe("holds");
 	});
 
-	it("releases an hour-old claim of a stack with no run on record", async () => {
+	it("frees the block of an hour-old claim of a stack with no run on record", async () => {
 		claimAt(T0);
 		const read = readAllOffsetClaims();
 		await releaseSuffixedClaimsOf(stack(), read, null, T0 + HOUR);
-		expect(readAllOffsetClaims()).toEqual({});
+		expect(ciClaim()).toBe("released");
+	});
+});
+
+describe("readAllOffsetClaims", () => {
+	it("reads a claim without its ports or usedAt as no claim", () => {
+		// 16.0 dropped the reader for claims older buncargo wrote with their
+		// offset alone, and `.buncargo/ports.json` that filled their ports.
+		mkdirSync(join(home, ".buncargo"), { recursive: true });
+		const claim = { offset: 300, projectName: "demo", updatedAt: "x" };
+		writeFileSync(
+			getOffsetClaimsPath(),
+			JSON.stringify({
+				version: 1,
+				claims: {
+					"/old": claim,
+					"/new": { ...claim, ports: [5732], usedAt: "x" },
+				},
+			}),
+		);
+		expect(Object.keys(readAllOffsetClaims())).toEqual(["/new"]);
 	});
 });
 

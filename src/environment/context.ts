@@ -14,13 +14,13 @@ import {
 import type { EnvInput } from "../core/env-input";
 import { tailscaleBlockPorts } from "../core/hosts/tailscale-serve";
 import {
+	markOffsetClaimsReclaimed,
 	offsetClaimKey,
 	readAllOffsetClaims,
-	releaseOffsetClaimsIfUnchanged,
 } from "../core/offset-claims";
 import {
+	allocatePortBlock,
 	candidateAllocationPorts,
-	resolvePortPlan,
 } from "../core/port-allocation";
 import {
 	asComputedUrls,
@@ -330,11 +330,10 @@ export function createDevEnvContext<
 			(withServices
 				? undefined
 				: createPortOwnerSnapshot({ containers: new Map() }));
-		portPlan = resolvePortPlan({
+		portPlan = allocatePortBlock({
 			...allocationInput(plan, selectedRuntime),
-			// Only dev has a lockfile; every environment claims its offset, so
-			// parallel suffixed runs (CI jobs on one machine) never share one.
-			persist: suffix === undefined,
+			// Every environment claims its offset, so parallel suffixed runs
+			// (CI jobs on one machine) never share one.
 			claim: true,
 			throwaway: throwaway(),
 			// The bind probe here too: this is the allocation every dev run
@@ -387,9 +386,8 @@ export function createDevEnvContext<
 			const selectedRuntime =
 				plan.requiredServiceKeys.length > 0 ? runtime() : undefined;
 			// Its own probe, bind-probed like a run's when no owner is given.
-			const { offset, provenance } = resolvePortPlan({
+			const { offset, provenance } = allocatePortBlock({
 				...allocationInput(plan, selectedRuntime),
-				persist: false,
 				claim: false,
 			});
 			return { offset, provenance };
@@ -412,8 +410,13 @@ export function createDevEnvContext<
 					)
 				)
 					return;
+				// The block goes; the claim stays, naming the project its
+				// volumes belong to.
 				if (read !== undefined)
-					await releaseOffsetClaimsIfUnchanged({ [key]: read });
+					await markOffsetClaimsReclaimed(
+						{ [key]: read },
+						new Date().toISOString(),
+					);
 				// A later start() on this environment allocates and claims again,
 				// and nothing (Prisma's `allocate`) reads the released block as its
 				// own.

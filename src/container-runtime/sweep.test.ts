@@ -19,6 +19,7 @@ import {
 import {
 	claimOffset,
 	getOffsetClaimsPath,
+	offsetClaimHoldsBlock,
 	offsetClaimKey,
 	readAllOffsetClaims,
 	readOffsetClaims,
@@ -34,7 +35,7 @@ import {
 	releaseRun,
 } from "../core/run-registry";
 import { DELETED_CHECKOUT_SETTLE_MS } from "../core/watchdog-constants";
-import type { BuncargoContainer } from "../types";
+import type { BuncargoContainer, BuncargoVolume } from "../types";
 import { withProjectLifecycleLock } from "./project-lock";
 import {
 	decideSweep,
@@ -254,18 +255,32 @@ function container(
 	};
 }
 
-function stubRuntime(containers: BuncargoContainer[]) {
+function stubRuntime(
+	containers: BuncargoContainer[],
+	volumes: BuncargoVolume[] = [],
+) {
 	const downs: ContainerDownRequest[] = [];
 	const runtime = {
 		name: "docker",
 		displayName: "Docker",
 		isAvailable: () => true,
 		list: () => containers,
+		listVolumes: async () => volumes,
 		down: async (request: ContainerDownRequest) => {
 			downs.push(request);
 		},
 	} as unknown as ContainerRuntimeAdapter;
 	return { runtime, downs };
+}
+
+/** Every claim on record, and whether it holds its block. */
+function claimStates(): Record<string, "holds" | "released"> {
+	return Object.fromEntries(
+		Object.entries(readAllOffsetClaims()).map(([key, claim]) => [
+			key,
+			offsetClaimHoldsBlock(claim) ? "holds" : "released",
+		]),
+	);
 }
 
 describe("sweepOrphanedContainers", () => {
@@ -344,7 +359,11 @@ describe("sweepOrphanedContainers", () => {
 			"demo-e2e",
 			"demo",
 		]);
-		expect(Object.keys(readAllOffsetClaims())).toEqual([checkout]);
+		// The e2e claim stays, naming the project its volumes belong to.
+		expect(claimStates()).toEqual({
+			[offsetClaimKey(checkout, "e2e")]: "released",
+			[checkout]: "holds",
+		});
 	});
 
 	it("keeps a recent claim of a stack with no run on record", async () => {
@@ -431,10 +450,11 @@ describe("sweepOrphanedContainers", () => {
 		await sweepOrphanedContainers({ runtimes: [runtime] });
 
 		// Its containers still up: the run is not over yet.
-		expect(Object.keys(readAllOffsetClaims()).sort()).toEqual([
-			checkout,
-			offsetClaimKey(checkout, "ci"),
-		]);
+		expect(claimStates()).toEqual({
+			[checkout]: "holds",
+			[offsetClaimKey(checkout, "ci")]: "holds",
+			[offsetClaimKey(checkout, "e2e")]: "released",
+		});
 		expect((await loadRuns()).map((run) => run.sessionId)).toEqual(["ci"]);
 	});
 
@@ -474,7 +494,7 @@ describe("sweepOrphanedContainers", () => {
 		expect(Object.keys(readAllOffsetClaims()).sort()).toEqual([checkout, live]);
 	});
 
-	it("frees a throwaway claim with no run on record only once it is an hour old", async () => {
+	it("frees a throwaway claim with no run on record only once it is an hour old, and retires it once nothing of it is left", async () => {
 		claimOffset({
 			root: checkout,
 			offset: 200,
@@ -483,21 +503,43 @@ describe("sweepOrphanedContainers", () => {
 			throwaway: true,
 		});
 		const { runtime } = stubRuntime([]);
+		const hourLater = Date.now() + 3_600_000;
 
 		await sweepOrphanedContainers({ runtimes: [runtime] });
-		expect(Object.keys(readAllOffsetClaims())).toEqual([checkout]);
+		expect(claimStates()).toEqual({ [checkout]: "holds" });
 
-		await sweepOrphanedContainers({
-			runtimes: [],
-			now: Date.now() + 3_600_000,
-		});
-		expect(Object.keys(readAllOffsetClaims())).toEqual([checkout]);
+		await sweepOrphanedContainers({ runtimes: [], now: hourLater });
+		expect(claimStates()).toEqual({ [checkout]: "holds" });
 
-		await sweepOrphanedContainers({
-			runtimes: [runtime],
-			now: Date.now() + 3_600_000,
-		});
+		await sweepOrphanedContainers({ runtimes: [runtime], now: hourLater });
+		expect(claimStates()).toEqual({ [checkout]: "released" });
+
+		// No container, run or volume of its project is left.
+		await sweepOrphanedContainers({ runtimes: [runtime], now: hourLater });
 		expect(readAllOffsetClaims()).toEqual({});
+	});
+
+	it("keeps a throwaway claim that gave its block up while a volume of its project is left", async () => {
+		// The claim is what says the volume is this checkout's once the
+		// checkout is deleted; retired, nothing would name it.
+		claimOffset({
+			root: checkout,
+			offset: 200,
+			ports: [],
+			projectName: "demo-e2e",
+			suffix: "e2e",
+			throwaway: true,
+		});
+		const volume = { name: "demo-e2e_db", project: "demo-e2e" } as const;
+		const { runtime } = stubRuntime([], [{ ...volume, runtime: "docker" }]);
+		const hourLater = Date.now() + 3_600_000;
+
+		await sweepOrphanedContainers({ runtimes: [runtime], now: hourLater });
+		await sweepOrphanedContainers({ runtimes: [runtime], now: hourLater });
+
+		expect(claimStates()).toEqual({
+			[offsetClaimKey(checkout, "e2e")]: "released",
+		});
 	});
 
 	it("reports a stack this user's state does not name, and leaves it alone", async () => {
@@ -1253,14 +1295,17 @@ describe("settleDeletedCheckouts", () => {
 	}
 	const claimedRoots = () => Object.keys(readAllOffsetClaims());
 
-	it("only drops the claims unless the machine opted in", async () => {
+	it("without the opt-in removes nothing, and keeps a claim only while its project has volumes", async () => {
+		// The claim is the record `prune` proposes those volumes by.
+		const empty = join(tmpdir(), "buncargo-never-existed-either");
 		const { removed, settle } = setup({
 			enabled: false,
-			claims: { [gone]: "app-gone" },
+			claims: { [gone]: "app-gone", [empty]: "no-volumes" },
 		});
 		await settle(NOW);
+		await settle(LATER);
 		expect(removed).toEqual([]);
-		expect(claimedRoots()).toEqual([]);
+		expect(claimedRoots()).toEqual([gone]);
 	});
 
 	it("removes a deleted checkout's project volumes once a later pass finds it still gone, then its claim", async () => {
@@ -1306,7 +1351,7 @@ describe("settleDeletedCheckouts", () => {
 		);
 	});
 
-	it("settles a deleted checkout's suffixed environments with it", async () => {
+	it("settles a deleted checkout's suffixed environments with it, including one whose run gave its block up", async () => {
 		const { removed, settle } = setup({
 			enabled: true,
 			claims: { [gone]: "app-gone", [checkout]: "other" },
@@ -1317,7 +1362,12 @@ describe("settleDeletedCheckouts", () => {
 			ports: [5632],
 			projectName: "app-gone-e2e",
 			suffix: "e2e",
+			throwaway: true,
 		});
+		// Its run was torn down before the checkout was deleted.
+		const document = JSON.parse(readFileSync(getOffsetClaimsPath(), "utf-8"));
+		document.claims[offsetClaimKey(gone, "e2e")].reclaimedAt = AGES_AGO;
+		writeFileSync(getOffsetClaimsPath(), JSON.stringify(document));
 		await settle(NOW);
 		await settle(LATER);
 		expect(removed.flat().sort()).toEqual(["app-gone-e2e_db", "app-gone_db"]);

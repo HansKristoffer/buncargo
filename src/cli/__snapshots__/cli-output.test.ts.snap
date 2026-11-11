@@ -579,16 +579,18 @@ exports[`buncargo CLI output prune --help 1`] = `
 Usage: buncargo prune [options]
 
 Options:
-  --help     Show this help message
-  --dry-run  List what would be removed and stop
-  --yes      Skip the confirmation (for scripts)
-  --project  Only this project's leftovers: every checkout's ci stack and every stack of a deleted worktree (containers, volumes, networks)
-             Removes the volumes of checkouts whose directory was deleted, when no container, run or other checkout uses their project. Destroys their data.
+  --help              Show this help message
+  --dry-run           List what would be removed and stop
+  --yes               Skip the confirmation (for scripts)
+  --older-than=<age>  Only volumes of checkouts deleted at least this long ago, e.g. 7d, 12h, 30m
+  --project           Only this project's leftovers: every checkout's ci stack and every stack of a deleted worktree (containers, volumes, networks)
+                      Removes the volumes of checkouts whose directory was deleted, when no container, run or other checkout uses their project. Destroys their data.
 
 Examples:
-  bunx buncargo prune --dry-run            List reclaimable volumes without touching them
-  bunx buncargo prune                      Review the list, then confirm removal
-  bunx buncargo prune --project --dry-run  List this project's leftover ci and deleted-worktree stacks
+  bunx buncargo prune --dry-run                  List reclaimable volumes without touching them
+  bunx buncargo prune                            Review the list, then confirm removal
+  bunx buncargo prune --older-than=7d --dry-run  Only checkouts deleted a week ago or longer
+  bunx buncargo prune --project --dry-run        List this project's leftover ci and deleted-worktree stacks
 
 
 --- stderr

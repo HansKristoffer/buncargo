@@ -26,7 +26,7 @@ import { applyHostPlanToUrls, planNamedHosts } from "./hosts/plan";
 import { readLiveNamedHostsSync } from "./hosts/route-owners";
 import { readServedTailscaleUrlsSync } from "./hosts/tailscale-serve";
 import { getLocalIp } from "./network";
-import { type PortPlan, resolvePortPlan } from "./port-allocation";
+import { type PortPlan, readPortPlan } from "./port-allocation";
 import {
 	asComputedLoopbackUrls,
 	asComputedPorts,
@@ -106,7 +106,7 @@ export function resolveCheckoutView<
 		worktreeIsolation: config.options?.worktreeIsolation,
 	});
 	const { services, apps } = config;
-	const portPlan = resolvePortPlan({
+	const portPlan = readPortPlan({
 		projectPrefix: config.projectPrefix,
 		projectName: identity.projectName,
 		root,
@@ -115,12 +115,6 @@ export function resolveCheckoutView<
 		suffix,
 		worktreeName: identity.worktreeSuffix,
 		worktreeIsolation: config.options?.worktreeIsolation,
-		persist: false,
-		// A read, not an allocation. Without the resolved backend the
-		// allocator asks Docker about every port, so this project's own
-		// containers look foreign and the answer is a shifted port nothing
-		// listens on.
-		probeConflicts: false,
 	});
 	const localIp = getLocalIp();
 	const envOverrides = readEnvOverrides(root);

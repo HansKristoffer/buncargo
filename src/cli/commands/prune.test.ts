@@ -52,7 +52,8 @@ case "$1 $2" in
   "ps -a") if [ -f "${base}/listing/listed" ] && [ -f "${base}/listing/containers.next" ]; then cat "${base}/listing/containers.next"; else touch "${base}/listing/listed"; cat "${base}/listing/containers"; fi ;;
   "rm "*) grep -qx "$2" "${base}/listing/refuse" 2>/dev/null && { echo "container is restarting" >&2; exit 1; } ;;
   "volume ls") [ -f "${base}/listing/fail" ] && { echo "daemon hung" >&2; exit 1; }
-    if [ -f "${base}/listing/volumes-listed" ] && [ -f "${base}/listing/offsets.next" ]; then cp "${base}/listing/offsets.next" "$HOME/.buncargo/offsets.json"; else touch "${base}/listing/volumes-listed"; fi
+    echo >> "${base}/listing/volume-listings"
+    if [ "$(wc -l < "${base}/listing/volume-listings")" -ge 3 ] && [ -f "${base}/listing/offsets.next" ]; then cp "${base}/listing/offsets.next" "$HOME/.buncargo/offsets.json"; fi
     cat "${base}/listing/volumes" ;;
   "network ls") cat "${base}/listing/networks" ;;
 esac
@@ -71,7 +72,10 @@ function listing(files: {
 	fail?: boolean;
 	/** What `ps` lists from its second call on: the state at removal. */
 	containersNext?: string[];
-	/** The `offsets.json` from the second `volume ls` on: the claims at removal. */
+	/**
+	 * The `offsets.json` from the third `volume ls` on (the sweep's settling
+	 * and the listing take the first two): the claims at removal.
+	 */
 	offsetsNext?: object;
 	refuse?: string[];
 }) {
@@ -208,8 +212,10 @@ describe("buncargo prune", () => {
 	const offsetsPath = () => join(home(), ".buncargo", "offsets.json");
 	const claim = (projectName: string, extra: object = {}) => ({
 		offset: 100,
+		ports: [5532],
 		projectName,
 		updatedAt: "2026-10-01T00:00:00.000Z",
+		usedAt: "2026-10-01T00:00:00.000Z",
 		...extra,
 	});
 	const claims = (entries: Record<string, object>) => ({
@@ -246,8 +252,8 @@ describe("buncargo prune", () => {
 				"unclaimed_postgres-data\tunclaimed",
 			],
 		});
-		// Without the opt-in the sweep that runs first drops `gone`'s claim,
-		// which is the only record of the project it used.
+		// The sweep that runs first keeps `gone`'s claim while its project has
+		// volumes: it is the only record of the project it used.
 		writeOffsets(
 			JSON.stringify(
 				claims({
@@ -271,6 +277,37 @@ describe("buncargo prune", () => {
 		])
 			expect(result.stdout).not.toContain(kept);
 		expect(removals()).toEqual([]);
+	});
+
+	it("proposes with --older-than only the volumes of checkouts deleted that long ago", async () => {
+		const daysAgo = (days: number) =>
+			new Date(Date.now() - days * 86_400_000).toISOString();
+		listing({
+			volumes: [
+				"pp-gone_postgres-data\tpp-gone",
+				"pp-recent_postgres-data\tpp-recent",
+			],
+		});
+		writeOffsets(
+			JSON.stringify(
+				claims({
+					[join(base, "gone")]: claim("pp-gone", { deletedSeenAt: daysAgo(8) }),
+					[join(base, "recent")]: claim("pp-recent", {
+						deletedSeenAt: daysAgo(1),
+					}),
+				}),
+			),
+		);
+
+		const result = await machinePrune("--older-than=7d", "--dry-run");
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("pp-gone_postgres-data  (pp-gone:");
+		expect(result.stdout).not.toContain("pp-recent_postgres-data");
+
+		const invalid = await machinePrune("--older-than=soon", "--dry-run");
+		expect(invalid.exitCode).toBe(1);
+		expect(invalid.stderr).toContain("--older-than expects an age");
 	});
 
 	it("proposes nothing when no claim names an idle checkout's volume", async () => {

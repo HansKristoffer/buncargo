@@ -160,7 +160,9 @@ const TOPICS: readonly Topic[] = [
   removes containers that nothing holds any more: a deleted checkout's, a run's
   whose hold ran out, a crashed run's. It never touches a live run's
   containers and never removes a volume, so a database survives every stop;
-  only \`dev --reset\` and \`buncargo prune\` delete data.
+  only \`dev --reset\` and \`buncargo prune\` delete data. The one exception
+  is a machine that set \`BUNCARGO_PRUNE_DELETED_CHECKOUTS=1\`: there it also
+  removes the volumes of a checkout deleted at least 10 minutes ago.
 - A warning that names who removed this checkout's containers (a watchdog,
   \`stop\`, \`dev --down\`) explains a refused database connection: the
   stack is gone, not broken. Start the run again; report the remover to the
@@ -251,13 +253,14 @@ const TOPICS: readonly Topic[] = [
 
 - Each checkout keeps its port block (\`bunx buncargo ports\` shows its offset
   and every claim on the machine). \`ci\` and E2E stacks, and every environment
-  in CI, give theirs back when torn down. Do not set \`BUNCARGO_PORT_OFFSET\` or
-  edit \`.buncargo/ports.json\`; to move a checkout,
+  in CI, give theirs back when torn down. The claim in
+  \`~/.buncargo/offsets.json\` is the only record. Do not set
+  \`BUNCARGO_PORT_OFFSET\` or edit that file; to move a checkout,
   \`bunx buncargo ports pin <offset>\`.
 - A checkout with no block of its own while every block is claimed reads as
   \`portOffsetProvenance: "unallocated"\` (\`status --json\`, \`env\`,
   \`ports\`): the ports shown belong to another checkout. Do not test against
-  them, start a database of your own or write \`.buncargo/ports.json\`. Run
+  them, start a database of your own or edit \`offsets.json\`. Run
   \`bunx buncargo dev --detach\`: when the range is full it takes back the
   block of the checkout used least recently that has no run and no
   containers, and says whose. That checkout keeps its containers, volumes and
@@ -389,10 +392,13 @@ const TOPICS: readonly Topic[] = [
   reload the page, and do not share one network between projects to avoid it.
 - \`bunx buncargo setup --yes\` runs the fix of every failing check (missing
   dependencies, generated files).
-- Docker out of disk, or hanging: \`bunx buncargo prune --project --dry-run\`
-  lists this project's leftover \`ci\` stacks and deleted worktrees' stacks.
-  Removing them deletes their data, so ask before running it without
-  \`--dry-run\`. It never touches an existing checkout's dev database.`,
+- Docker out of disk, or hanging: \`bunx buncargo prune --dry-run\` lists the
+  volumes of deleted checkouts on the machine (\`--older-than=7d\` for those
+  deleted a week ago or longer), and \`bunx buncargo prune --project --dry-run\`
+  this project's leftover \`ci\` stacks and deleted worktrees' stacks.
+  Removing them deletes their data: ask the user first before running either
+  without \`--dry-run\`. Neither touches an existing checkout's dev database.
+  \`doctor\` says how many such volumes there are.`,
 	},
 	{
 		name: "config",

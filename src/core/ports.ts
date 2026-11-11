@@ -49,7 +49,7 @@ export function toUrlMap<T extends Record<keyof T, string>>(urls: T): UrlMap {
 /**
  * Key a {@link PortMap} on a config's services and apps.
  *
- * `resolvePortPlan` allocates ports by iterating the config at runtime, so the
+ * The allocator builds ports by iterating the config at runtime, so the
  * keys it produces are only known to the type system through the config that
  * was passed in. This is the single place that correspondence is asserted.
  */
@@ -299,7 +299,10 @@ export interface CheckoutProjectNamesOptions {
 export interface CheckoutProjectNames {
 	/** `buncargo dev`, `dev.start()` and every command that reuses them. */
 	dev: string;
-	/** `buncargo ci`. */
+	/**
+	 * The stack `buncargo ci` ran under before each run got its own
+	 * (`<ci>-<id>[-<runner>]`, on tmpfs), which a checkout may still hold.
+	 */
 	ci: string;
 }
 

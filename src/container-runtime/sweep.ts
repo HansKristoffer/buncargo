@@ -23,13 +23,14 @@ import { loadHostRoutes, withdrawHostRoutes } from "../core/hosts/registry";
 import {
 	dropDeletedOffsetClaims,
 	markDeletedOffsetClaims,
+	markOffsetClaimsReclaimed,
 	type OffsetClaim,
-	offsetClaimLastUsed,
+	offsetClaimHoldsBlock,
 	offsetClaimRoot,
 	RECLAIM_MIN_IDLE_MS,
 	readAllOffsetClaims,
-	releaseOffsetClaimsIfUnchanged,
 	releaseSuffixedClaimsOf,
+	retireOffsetClaimsIfUnchanged,
 } from "../core/offset-claims";
 import { execAsync } from "../core/process/exec";
 import {
@@ -68,11 +69,13 @@ import {
 	manualDownCommand,
 } from "./inventory";
 import { withProjectLifecycleLock } from "./project-lock";
+import { claimedCheckouts } from "./prune";
 import {
 	containerRuntimeCandidates,
 	getContainerRuntimeAdapter,
 } from "./resolve";
 import type { ContainerRuntimeAdapter } from "./types";
+import { decideVolume, type VolumeState } from "./volume-decision";
 
 export interface SweepInput {
 	/**
@@ -419,17 +422,14 @@ export async function sweepOrphanedContainers(
 
 	const finished = finishedRuns(runs, groups, answered, alive);
 	try {
-		await releaseOffsetClaimsIfUnchanged(
-			abandonedThrowawayClaims({
-				claims: readAllOffsetClaims(),
-				runs,
-				finished,
-				stacks: result.remaining,
-				except: options.except,
-				runtimeAnswered: answered.length > 0,
-				now,
-			}),
-		);
+		await settleThrowawayClaims({
+			runtimes: runtimes.filter((runtime) => answered.includes(runtime.name)),
+			runs,
+			finished,
+			stacks: result.remaining,
+			except: options.except,
+			now,
+		});
 	} catch (error) {
 		// A busy claims file: these are still abandoned next pass.
 		if (!(error instanceof FileLockTimeoutError)) throw error;
@@ -444,12 +444,51 @@ export async function sweepOrphanedContainers(
 }
 
 /**
- * The throwaway claims (a CI dev run's, a suffixed environment's) whose run
- * left nothing behind: no live run, no container still listed, and every run
- * of the environment on record retired by this pass. A run killed before its
- * teardown released the claim would otherwise keep its block until the range
- * filled: a CI runner's directory never goes, and an app-only run has no stack
- * whose removal releases it.
+ * Free the blocks of throwaway runs that left nothing
+ * ({@link abandonedThrowawayClaims}), and retire the throwaway claims nothing
+ * of whose project is left ({@link spentThrowawayClaims}). A throwaway run
+ * claims under a new suffix every time (`ci-<id>`), so a claim kept for good
+ * would fill `offsets.json`.
+ */
+async function settleThrowawayClaims(input: {
+	runtimes: readonly ContainerRuntimeAdapter[];
+	runs: readonly RunEntry[];
+	finished: readonly RunEntry[];
+	stacks: readonly Pick<ContainerGroup, "projectName" | "root">[];
+	except?: { projectName: string; root: string };
+	now: number;
+}): Promise<void> {
+	const { runtimes, now } = input;
+	const claims = readAllOffsetClaims();
+	await markOffsetClaimsReclaimed(
+		abandonedThrowawayClaims({
+			...input,
+			claims,
+			runtimeAnswered: runtimes.length > 0,
+		}),
+		new Date(now).toISOString(),
+	);
+	// Volumes are listed only when a claim could be retired, and only from
+	// runtimes that answered: from one that is down, no volume means nothing.
+	const spent = (volumeProjects: ReadonlySet<string>) =>
+		spentThrowawayClaims({ ...input, claims, volumeProjects });
+	if (runtimes.length === 0 || Object.keys(spent(new Set())).length === 0)
+		return;
+	const volumes = (
+		await Promise.all(runtimes.map((runtime) => runtime.listVolumes()))
+	).flat();
+	await retireOffsetClaimsIfUnchanged(
+		spent(new Set(volumes.flatMap((volume) => volume.project ?? []))),
+	);
+}
+
+/**
+ * The throwaway claims (a CI dev run's, a suffixed environment's) that still
+ * hold a block their run left nothing behind on: no live run, no container
+ * still listed, and every run of the environment on record retired by this
+ * pass. A run killed before its teardown gave up the block would otherwise
+ * keep it until the range filled: a CI runner's directory never goes, and an
+ * app-only run has no stack whose removal releases it.
  *
  * A claim used after its run started is a new job's, which allocates before it
  * publishes its run. With no run on record nothing dates the claim, so one
@@ -469,7 +508,7 @@ export function abandonedThrowawayClaims(input: {
 }): Record<string, OffsetClaim> {
 	const { runs, finished, stacks, except, now } = input;
 	const abandoned = ([key, claim]: [string, OffsetClaim]) => {
-		if (claim.throwaway !== true) return false;
+		if (claim.throwaway !== true || !offsetClaimHoldsBlock(claim)) return false;
 		const root = offsetClaimRoot(key, claim);
 		const ofClaim = (stack: { projectName: string; root: string }) =>
 			stack.projectName === claim.projectName && stack.root === root;
@@ -480,7 +519,7 @@ export function abandonedThrowawayClaims(input: {
 		)
 			return false;
 		const envRuns = runs.filter(ofClaim).sort(newestLifecycleFirst);
-		const lastUsed = offsetClaimLastUsed(claim);
+		const lastUsed = claim.usedAt;
 		const [newest] = envRuns;
 		if (newest)
 			return (
@@ -491,6 +530,37 @@ export function abandonedThrowawayClaims(input: {
 		return input.runtimeAnswered && idleFor >= RECLAIM_MIN_IDLE_MS;
 	};
 	return Object.fromEntries(Object.entries(input.claims).filter(abandoned));
+}
+
+/**
+ * The throwaway claims of existing checkouts that gave up their block and
+ * name a project nothing is left of: no container listed, no run on record
+ * and no volume (`volumeProjects`). Until then the claim is the record that
+ * those volumes are this checkout's, which the sweep needs once the checkout
+ * is deleted ({@link settleDeletedCheckouts}).
+ */
+export function spentThrowawayClaims(input: {
+	claims: Record<string, OffsetClaim>;
+	runs: readonly Pick<RunEntry, "projectName" | "root">[];
+	stacks: readonly Pick<ContainerGroup, "projectName" | "root">[];
+	volumeProjects: ReadonlySet<string>;
+	except?: { projectName: string; root: string };
+}): Record<string, OffsetClaim> {
+	const { runs, stacks, volumeProjects, except } = input;
+	const spent = ([key, claim]: [string, OffsetClaim]) => {
+		if (claim.throwaway !== true || offsetClaimHoldsBlock(claim)) return false;
+		const root = offsetClaimRoot(key, claim);
+		const ofClaim = (stack: { projectName: string; root: string }) =>
+			stack.projectName === claim.projectName && stack.root === root;
+		return (
+			!(except && ofClaim(except)) &&
+			!stacks.some(ofClaim) &&
+			!runs.some(ofClaim) &&
+			!volumeProjects.has(claim.projectName) &&
+			!checkoutDeleted(root)
+		);
+	};
+	return Object.fromEntries(Object.entries(input.claims).filter(spent));
 }
 
 /**
@@ -660,25 +730,28 @@ async function sweepGroup(
 }
 
 /**
- * Settle the port claims of deleted checkouts: on the machine's opt-in
- * (`BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`) remove their volumes first, then drop
- * the claims.
+ * Settle the port claims of deleted checkouts: drop each once nothing of its
+ * project is left for `prune` to propose, and on the machine's opt-in
+ * (`BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`) remove the volumes {@link decideVolume}
+ * proposes first.
  *
  * Works from the claims rather than from container stacks, because by the
- * time a worktree is deleted its containers are usually long gone. A volume
- * names its Compose project, not its checkout, and two checkouts can share a
- * project name (a root below the repository's top level), so the project must
- * be nobody else's: no existing checkout claims it, no run on record for it
- * still has its checkout. A container of it still standing means its stack is
- * coming down; the next pass decides.
+ * time a worktree is deleted its containers are usually long gone. A
+ * checkout's suffixed environments (E2E, `buncargo ci`) have claims of their
+ * own, each naming its own project, and keep them after their run gave up its
+ * block, so their volumes settle the same way.
+ *
+ * Without the opt-in a claim whose project still has volumes stays: it is the
+ * only record that they were a deleted checkout's, and what lets `prune`
+ * propose them.
  *
  * A claim is also what makes its checkout's stack this user's to remove
  * ({@link isKnownStack}), so it stays while `stacks` (what is still listed)
  * holds one of its project and checkout: a stack whose removal failed, or
  * whose lock was busy, would otherwise be left to nobody.
  *
- * Volumes need more proof than containers: the checkout confirmed missing
- * (not merely unreadable) on two passes at least
+ * Volumes the sweep removes need more proof than containers: the checkout
+ * confirmed missing (not merely unreadable) on two passes at least
  * {@link DELETED_CHECKOUT_SETTLE_MS} apart, the first stamped on the claim. A
  * path that is briefly missing, an unmounted disk or a worktree being
  * recreated, must not cost a database.
@@ -695,8 +768,6 @@ export async function settleDeletedCheckouts(input: {
 	// With no runtime answering, nothing says whether its stack or its
 	// volumes are left.
 	if (runtimes.length === 0) return;
-	// A checkout's suffixed environments (E2E, `buncargo ci`) have claims of
-	// their own, each naming its own project.
 	const claims = Object.entries(readAllOffsetClaims()).map(([key, claim]) => ({
 		key,
 		root: offsetClaimRoot(key, claim),
@@ -716,22 +787,13 @@ export async function settleDeletedCheckouts(input: {
 			claim.deletedSeenAt !== undefined && checkoutPresence(root) === "present",
 	);
 	if (deleted.length === 0 && back.length === 0) return;
-
-	// Without the opt-in a deleted checkout's claim is dropped at once, so
-	// there is no first sighting to stamp.
-	const prune = pruneDeletedCheckoutVolumes();
-	const firstSightings = prune
-		? deleted.filter(({ claim }) => claim.deletedSeenAt === undefined)
-		: [];
 	await markDeletedOffsetClaims({
-		seen: firstSightings.map(({ key }) => key),
+		seen: deleted
+			.filter(({ claim }) => claim.deletedSeenAt === undefined)
+			.map(({ key }) => key),
 		back: back.map(({ key }) => key),
 		at: new Date(now).toISOString(),
 	});
-	if (!prune) {
-		await dropDeletedOffsetClaims(deleted.map(({ key }) => key));
-		return;
-	}
 	if (deleted.length === 0) return;
 
 	const containers: BuncargoContainer[] = [];
@@ -749,42 +811,52 @@ export async function settleDeletedCheckouts(input: {
 		return;
 	}
 
+	const prune = pruneDeletedCheckoutVolumes();
+	const state: VolumeState = {
+		containerProjects: new Set(
+			containers.map((container) => container.project),
+		),
+		runs: runs.map((run) => ({
+			projectName: run.projectName,
+			root: run.root,
+			deleted: checkoutDeleted(run.root),
+		})),
+		// Read again: the first sightings were stamped just now.
+		checkouts: claimedCheckouts(readAllOffsetClaims()),
+		...(prune
+			? { deletedFor: { ms: DELETED_CHECKOUT_SETTLE_MS, now } }
+			: undefined),
+	};
 	const settled: string[] = [];
 	for (const {
 		key,
 		root,
-		claim: { projectName, deletedSeenAt },
+		claim: { projectName },
 	} of deleted) {
-		const claimedElsewhere = claims.some(
-			(other) =>
-				other.claim.projectName === projectName && !checkoutDeleted(other.root),
-		);
-		const runElsewhere = runs.some(
-			(run) => run.projectName === projectName && !checkoutDeleted(run.root),
-		);
-		if (claimedElsewhere || runElsewhere) {
+		const decided = listings.map(({ runtime, volumes }) => ({
+			runtime,
+			volumes: volumes
+				.filter((volume) => volume.project === projectName)
+				.map((volume) => ({
+					name: volume.name,
+					decision: decideVolume(volume, state),
+				})),
+		}));
+		const all = decided.flatMap(({ volumes }) => volumes);
+		// A container, a run or a recent deletion: a later pass decides.
+		if (all.some(({ decision }) => !decision.propose && decision.wait))
+			continue;
+		if (!all.some(({ decision }) => decision.propose)) {
 			settled.push(key);
 			continue;
 		}
-
-		const stackStillUp = containers.some(
-			(container) => container.project === projectName,
-		);
-		if (stackStillUp) continue;
-
-		// Seen deleted only on this pass, too recently, or at a time that does
-		// not parse: a later pass decides.
-		const firstSeen =
-			deletedSeenAt === undefined ? Number.NaN : Date.parse(deletedSeenAt);
-		const goneLongEnough =
-			!Number.isNaN(firstSeen) && now - firstSeen >= DELETED_CHECKOUT_SETTLE_MS;
-		if (!goneLongEnough) continue;
+		if (!prune) continue;
 
 		let refusedAny = false;
-		for (const { runtime, volumes } of listings) {
+		for (const { runtime, volumes } of decided) {
 			const ours = volumes
-				.filter((volume) => volume.project === projectName)
-				.map((volume) => volume.name);
+				.filter(({ decision }) => decision.propose)
+				.map(({ name }) => name);
 			if (ours.length === 0) continue;
 
 			const refused = await runtime.removeVolumes(ours);

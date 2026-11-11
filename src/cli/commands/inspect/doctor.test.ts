@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import type { ContainerRuntimeAdapter } from "../../../container-runtime";
+import { claimOffset } from "../../../core/offset-claims";
 import { CI_ENV_VARS } from "../../../core/runtime-flags";
+import { prunableVolumesNote } from "./doctor";
 
 const cli = resolve(import.meta.dir, "../../bin.ts");
 let dir: string;
@@ -55,4 +58,35 @@ describe("buncargo doctor", () => {
 		expect(report).not.toContain("Named-hosts daemon is not running");
 		expect(report).not.toContain("Named-hosts CA is not trusted");
 	}, 30_000);
+});
+
+describe("prunableVolumesNote", () => {
+	const savedHome = process.env.HOME;
+	afterEach(() => {
+		process.env.HOME = savedHome;
+	});
+
+	it("counts the volumes `prune` would propose and names `prune --dry-run`", async () => {
+		// 215 of them built up on one machine while doctor said "No issues found".
+		process.env.HOME = join(dir, "home");
+		const claim = (root: string, projectName: string) =>
+			claimOffset({ root, offset: 100, ports: [5532], projectName });
+		claim(join(dir, "deleted-a"), "app-a");
+		claim(join(dir, "deleted-b"), "app-b");
+		claim(dir, "app-here");
+		const runtime = {
+			name: "docker",
+			list: () => [],
+			listVolumes: async () =>
+				["app-a", "app-b", "app-here"].map((project) => ({
+					name: `${project}_db`,
+					project,
+					runtime: "docker" as const,
+				})),
+		} as unknown as ContainerRuntimeAdapter;
+
+		expect(await prunableVolumesNote([runtime])).toBe(
+			"warning: 2 volumes of deleted checkouts can be reclaimed. Review them with `buncargo prune --dry-run`; removing them destroys their data.",
+		);
+	});
 });

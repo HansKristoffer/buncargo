@@ -2,6 +2,7 @@ import { afterEach, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { offsetClaimsOf } from "../core/offset-claims";
 import { isolateHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "./create-dev-environment";
 
@@ -72,5 +73,5 @@ it("rejects invalid selection before persisting allocation", async () => {
 	await expect(
 		env.start({ onlyApps: ["missing" as "marketing"] }),
 	).rejects.toThrow("Unknown app");
-	expect(existsSync(join(root, ".buncargo/ports.json"))).toBe(false);
+	expect(offsetClaimsOf(root)).toEqual({});
 });

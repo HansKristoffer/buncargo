@@ -138,8 +138,8 @@ pieces it orchestrates.
   never warm) and runs the command; `--schema=push` is the preparation's `schema: "push"`. The suffix is not optional: on the shared project that teardown
   deletes a developer's dev database. The id is per run because two runs on one `-ci` project took
   each other's stack down mid-test (lasauna), and tmpfs because a killed run's volume was nobody's to
-  remove. A suffixed environment writes its own compose file and never persists `ports.json`, or it
-  would overwrite the dev run's; `ci` deletes its file after the teardown. Ports are still a claimed
+  remove. A suffixed environment writes its own compose file, or it would overwrite the dev
+  run's; `ci` deletes its file after the teardown. Ports are still a claimed
   block: Docker-assigned ports (`127.0.0.1::5432`, read back from the listing) need the environment
   to adopt the ports after `up` and before readiness, which it cannot yet. `--profile` lives in `dev-flags.ts`; `selectProfileApps` in
   `run-cli.ts` turns it (or a `default` profile) into the same selection `--apps` makes.
@@ -150,7 +150,7 @@ pieces it orchestrates.
   agents read it through `| head -60` or a grep, and the 12 KB single page they cut that way
   never showed them the database and port-block recipes.
 - `commands/ports.ts` shows the offset claims and `pin`s one: it checks every port of the block
-  through `withBindProbe` and the claims before writing the lockfile and the claim. `release`
+  through `withBindProbe` and the claims before writing the claim. `release`
   drops another checkout's claims under the claims lock, refusing while that checkout has a live or
   held run.
 - `commands/send.ts` types into an app over the same request-file channel as `restart`

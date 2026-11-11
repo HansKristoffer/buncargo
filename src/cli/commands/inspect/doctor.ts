@@ -2,8 +2,12 @@ import { getErrorMessage, typedSwitch } from "hanzio";
 import {
 	availableContainerRuntimes,
 	type ContainerRuntimeAdapter,
+	claimedCheckouts,
 	containerRuntimeForEnv,
 	getContainerRuntimeAdapter,
+	listBuncargoContainers,
+	orphanedVolumes,
+	planVolumePrune,
 	sweepOrphanedContainers,
 } from "../../../container-runtime";
 import { inDiscardedCheckout } from "../../../core/checkout-presence";
@@ -36,14 +40,10 @@ import {
 import {
 	describeOffsetClaimOverlap,
 	overlappingOffsetClaims,
+	readAllOffsetClaims,
+	readHeldOffsetClaims,
 	sharedProjectNameClaims,
 } from "../../../core/offset-claims";
-import {
-	foreignLockfile,
-	getPortsLockfilePath,
-	readOffsetClaimsWithPorts,
-	readPortsLockfile,
-} from "../../../core/port-allocation";
 import { unallocatedPortsMessage } from "../../../core/port-exhaustion";
 import {
 	classifyPortOccupant,
@@ -233,22 +233,9 @@ async function checkPortOwnership(
 	}
 }
 
-function checkPortsLockfile(report: DoctorReport, env: DevEnv): void {
-	const lockfile = readPortsLockfile(env.root);
-	if (!lockfile) return;
-	const foreign = foreignLockfile(lockfile, env);
-	if (foreign) {
-		report.issue(
-			`Stale ${getPortsLockfilePath(env.root)}: ${foreign}. Delete it or run buncargo dev to rewrite it.`,
-		);
-		return;
-	}
-	report.note(`ports.json offset ${lockfile.offset} looks consistent`);
-}
-
-/** Two checkouts whose blocks overlap collide whenever both run (a lost race, a copied lockfile). */
+/** Two checkouts whose blocks overlap collide whenever both run (a lost race). */
 function checkOffsetClaims(report: DoctorReport): void {
-	const claims = readOffsetClaimsWithPorts();
+	const claims = readHeldOffsetClaims();
 	for (const overlap of overlappingOffsetClaims(claims))
 		report.issue(
 			`${describeOffsetClaimOverlap(overlap)}. Move one: \`buncargo ports pin <offset>\` in that checkout.`,
@@ -309,6 +296,42 @@ async function checkOrphanedContainers(
 		}
 	} catch (error) {
 		report.fromError(error);
+	}
+}
+
+/**
+ * What `doctor` says about the volumes `buncargo prune` would propose, or
+ * undefined when there are none. Never removes one: a volume is a database,
+ * and only a confirmed `prune` takes it.
+ */
+export async function prunableVolumesNote(
+	runtimes: readonly ContainerRuntimeAdapter[],
+): Promise<string | undefined> {
+	if (runtimes.length === 0) return undefined;
+	const volumes = (
+		await Promise.all(runtimes.map((runtime) => runtime.listVolumes()))
+	).flat();
+	const count = orphanedVolumes(
+		planVolumePrune({
+			volumes,
+			containers: listBuncargoContainers([...runtimes]),
+			runs: await readAllRuns(),
+			checkouts: claimedCheckouts(readAllOffsetClaims()),
+		}),
+	).length;
+	if (count === 0) return undefined;
+	return `warning: ${count} volume${count === 1 ? "" : "s"} of deleted checkouts can be reclaimed. Review them with \`buncargo prune --dry-run\`; removing them destroys their data.`;
+}
+
+async function checkPrunableVolumes(
+	report: DoctorReport,
+	runtimes: readonly ContainerRuntimeAdapter[],
+): Promise<void> {
+	try {
+		const note = await prunableVolumesNote(runtimes);
+		if (note) report.note(note);
+	} catch (error) {
+		report.issue(`Could not read volumes: ${getErrorMessage(error)}`);
 	}
 }
 
@@ -585,13 +608,13 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 		if (env.portOffsetProvenance === "unallocated")
 			report.note(`warning: ${unallocatedPortsMessage(env.root)}`);
 		else await checkPortOwnership(report, env, selected, fix);
-		checkPortsLockfile(report, env);
 		await checkOrphanedContainers(report, env, selected);
 		await checkNamedHosts(report, env, hostsFix);
 		await checkSetupChecks(report, env);
 	}
 
 	await checkRunRegistry(report, env?.root);
+	await checkPrunableVolumes(report, available);
 	checkMenuBarApp(report);
 	checkFileTable(report);
 	checkOffsetClaims(report);

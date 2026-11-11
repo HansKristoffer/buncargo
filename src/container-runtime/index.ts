@@ -89,6 +89,7 @@ export {
 export {
 	type ClaimedCheckout,
 	decideVolume,
+	formatSpan,
 	type VolumeDecision,
 	type VolumeState,
 } from "./volume-decision";
