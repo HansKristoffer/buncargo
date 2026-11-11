@@ -17,33 +17,12 @@ import { standInForWatchdog } from "../core/watchdog.testing";
 import {
 	detachedArgv,
 	detachedLogPath,
-	namedHostsFallbacks,
 	pruneDetachedFiles,
 	runDetached,
 	settledRun,
 	unreportedApps,
 } from "./dev-detach";
-
-describe("namedHostsFallbacks", () => {
-	// The parent prints only the app list, with localhost URLs, so the reason
-	// they are not named ones has to be lifted out of the run's own output.
-	it("finds the run's named-hosts warnings in its output", () => {
-		const output = [
-			"  ✓  Postgres ready",
-			"  \u001b[33m⚠\u001b[39m  Named URLs unavailable: the daemon on :443 stopped answering. Run `buncargo hosts install`.",
-			"  api  http://localhost:3000",
-		].join("\n");
-		expect(namedHostsFallbacks(output)).toEqual([
-			"Named URLs unavailable: the daemon on :443 stopped answering. Run `buncargo hosts install`.",
-		]);
-	});
-
-	it("finds nothing when named hosts came up", () => {
-		expect(namedHostsFallbacks("  api  https://api.app.localhost\n")).toEqual(
-			[],
-		);
-	});
-});
+import type { DetachedResultJson } from "./json-documents";
 
 describe("detachedArgv", () => {
 	it("re-runs the same invocation without --detach", () => {
@@ -148,6 +127,7 @@ describe("runDetached", () => {
 				code = await runDetached({
 					root,
 					keep: false,
+					json: false,
 					argv: ["bun", runScript],
 					timeoutMs: options.timeoutMs ?? 10_000,
 				});
@@ -313,6 +293,7 @@ describe("unreportedApps", () => {
 		expect(
 			unreportedApps(down, {
 				setupHints: [],
+				hostsWarnings: [],
 				failures: [{ cause: "", step: "web", output: [], hints: [], next: [] }],
 			}),
 		).toEqual(["api"]);
@@ -325,7 +306,10 @@ describe("unreportedApps", () => {
  * failure paths: their last lines are written past Bun's stderr buffer, which
  * no console patch in this process sees.
  */
-function detachInProcess(script: (root: string) => string) {
+function detachInProcess(
+	script: (root: string) => string,
+	options: { json?: boolean } = {},
+) {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-detach-")));
 	try {
 		const detach = join(import.meta.dir, "dev-detach.ts");
@@ -336,6 +320,7 @@ function detachInProcess(script: (root: string) => string) {
 process.exitCode = await runDetached({
 	root: ${JSON.stringify(root)},
 	keep: false,
+	json: ${options.json === true},
 	argv: ["bun", ${JSON.stringify(join(root, "run.ts"))}],
 	timeoutMs: 10_000,
 });
@@ -373,6 +358,53 @@ it("exits 1 with the run's output, and the exit last, when it left no report", (
 		"❌ The run exited with code 3 before its apps came up.",
 	);
 	expect(stderr.at(-1)).toStartWith("Full output: ");
+});
+
+// `dev --detach` had no JSON, and learned of a named-hosts fallback by
+// grepping its run's log for one sentence; the run now reports it.
+it("prints the DetachedResultJson document, with the run's named-hosts warnings", () => {
+	const detach = join(import.meta.dir, "dev-detach.ts");
+	const registry = join(import.meta.dir, "..", "core", "run-registry.ts");
+	const { code, stdout } = detachInProcess(
+		(root) => `import { recordDetachedReport } from ${JSON.stringify(detach)};
+import { buildRunEntry, publishRun } from ${JSON.stringify(registry)};
+const root = ${JSON.stringify(root)};
+recordDetachedReport(root, (report) => ({
+	...report,
+	expectApps: true,
+	hostsWarnings: ["Named URLs unavailable: the daemon is down."],
+}));
+await publishRun({
+	...buildRunEntry({ sessionId: "json", projectPrefix: "stub", projectName: "stub-json", root, isWorktree: false }),
+	apps: [{ name: "api", port: 3000, url: "", loopbackUrl: "", openUrl: "http://localhost:3000", status: "ready" }],
+});
+setTimeout(() => {}, 30_000);
+`,
+		{ json: true },
+	);
+	const document = JSON.parse(stdout) as DetachedResultJson;
+	// The stand-in run waits to be stopped.
+	process.kill(document.pid, "SIGTERM");
+	expect(code).toBe(0);
+	expect(Object.keys(document).sort()).toEqual([
+		"apps",
+		"exitCode",
+		"failures",
+		"hostsWarnings",
+		"idleLimitMs",
+		"log",
+		"outcome",
+		"pid",
+		"version",
+	]);
+	expect(document).toMatchObject({
+		version: 1,
+		outcome: "up",
+		exitCode: 0,
+		apps: [{ name: "api", status: "ready", url: "http://localhost:3000" }],
+		hostsWarnings: ["Named URLs unavailable: the daemon is down."],
+		failures: [],
+	});
 });
 
 // `dev --detach | tail` showed "exited with code 1" first, a kilobyte-long

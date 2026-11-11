@@ -2,188 +2,152 @@ import { CONTAINER_RUNTIME_SELECTIONS } from "../container-runtime";
 import { isTimingEnabled } from "../core/runtime-flags";
 import {
 	type CommandSpec,
+	commaList,
 	enumValidator,
-	type FlagSpec,
-	findUnknownFlags,
-	formatCommandHelp,
+	type Parsed,
+	type ParseResult,
+	parseArgs,
 	positiveIntegerValidator,
-	readBooleanFlag,
-	readStringFlag,
-	unknownFlagMessage,
 } from "./command-spec";
-import { splitCliArgs } from "./flags";
-import * as log from "./log";
+import { argumentsError } from "./errors";
 
-const FLAGS = {
-	help: {
-		name: "--help",
-		kind: "boolean",
-		description: "Show this help message",
+export const DEV_SPEC = {
+	name: "dev",
+	summary: "Start the development environment",
+	flags: {
+		down: { kind: "boolean", description: "Stop all containers" },
+		all: {
+			kind: "boolean",
+			description:
+				"With --down, stop every buncargo environment you started on this machine",
+		},
+		reset: {
+			kind: "boolean",
+			description: "Stop containers and remove volumes (fresh start)",
+		},
+		yes: {
+			kind: "boolean",
+			description:
+				"Confirm --reset or --down --all without a prompt (required without a terminal)",
+		},
+		migrate: { kind: "boolean", description: "Run migrations and exit" },
+		seed: {
+			kind: "boolean",
+			description: "Run migrations and seeders, then exit",
+		},
+		"up-only": {
+			kind: "boolean",
+			description:
+				"Start containers only, then exit (no migrations, seed, or dev servers)",
+		},
+		expose: {
+			kind: "optional",
+			value: "<targets>",
+			description: "Expose configured targets via public quick tunnels",
+		},
+		apps: {
+			kind: "string",
+			value: "<apps>",
+			description: "Run selected apps plus their requiredApps (as <app>...)",
+		},
+		profile: {
+			kind: "string",
+			value: "<name>",
+			description: "Run a profile's apps (default: the profile named default)",
+		},
+		attach: {
+			kind: "string",
+			value: "<app>",
+			description: "Give one app the TTY (overrides interactive: true)",
+		},
+		"no-watch": {
+			kind: "boolean",
+			description: "Do not restart apps when their watched files change",
+		},
+		detach: {
+			kind: "boolean",
+			description:
+				"Run in the background; return once the apps are up (logs: buncargo logs)",
+		},
+		keep: {
+			kind: "boolean",
+			description:
+				"With --detach: never stop for idling (default: stops after 2h with no request or buncargo command)",
+		},
+		json: {
+			kind: "boolean",
+			description:
+				"With --detach: print the outcome as one JSON document (DetachedResultJson)",
+		},
+		tui: {
+			kind: "boolean",
+			description:
+				"Terminal UI, the default in a terminal; warns when there is none",
+		},
+		"no-tui": {
+			kind: "boolean",
+			description:
+				"Prefixed lines instead of the terminal UI, even in a terminal",
+		},
+		"keep-containers": {
+			kind: "boolean",
+			description:
+				"Keep the containers after the run exits, as long as the checkout exists",
+		},
+		takeover: {
+			kind: "boolean",
+			description: "Stop apps already running elsewhere and run them here",
+		},
+		"replace-stale": {
+			kind: "boolean",
+			description:
+				"First remove this checkout's stacks under an old project name (keeps volumes)",
+		},
+		"watchdog-timeout": {
+			kind: "string",
+			value: "N",
+			description: "Idle backstop in minutes (default: 3)",
+			validate: positiveIntegerValidator("--watchdog-timeout"),
+		},
+		"no-docker-autostart": {
+			kind: "boolean",
+			description: "Do not try to start Docker if it is down",
+		},
+		"no-hosts": {
+			kind: "boolean",
+			description: "Use localhost:port instead of named .localhost URLs",
+		},
+		runtime: {
+			kind: "string",
+			value: "<docker|apple|auto>",
+			description: "Container runtime backend (default: docker)",
+			validate: enumValidator("--runtime", CONTAINER_RUNTIME_SELECTIONS),
+		},
+		"timing-json": {
+			kind: "boolean",
+			description: "Report startup through app readiness as JSON",
+		},
+		timing: {
+			kind: "boolean",
+			description: "Print how long each startup phase took",
+		},
 	},
-	down: { name: "--down", kind: "boolean", description: "Stop all containers" },
-	all: {
-		name: "--all",
-		kind: "boolean",
-		description:
-			"With --down, stop every buncargo environment you started on this machine",
-	},
-	reset: {
-		name: "--reset",
-		kind: "boolean",
-		description: "Stop containers and remove volumes (fresh start)",
-	},
-	yes: {
-		name: "--yes",
-		kind: "boolean",
-		description:
-			"Confirm --reset or --down --all without a prompt (required without a terminal)",
-	},
-	migrate: {
-		name: "--migrate",
-		kind: "boolean",
-		description: "Run migrations and exit",
-	},
-	seed: {
-		name: "--seed",
-		kind: "boolean",
-		description: "Run migrations and seeders, then exit",
-	},
-	upOnly: {
-		name: "--up-only",
-		kind: "boolean",
-		description:
-			"Start containers only, then exit (no migrations, seed, or dev servers)",
-	},
-	expose: {
-		name: "--expose",
-		kind: "string",
-		valueHint: "[=<targets>]",
-		description: "Expose configured targets via public quick tunnels",
-	},
-	apps: {
-		name: "--apps",
-		kind: "string",
-		valueHint: "=<apps>",
-		description: "Run selected apps plus their requiredApps",
-	},
-	profile: {
-		name: "--profile",
-		kind: "string",
-		valueHint: "=<name>",
-		description: "Run a profile's apps (default: the profile named default)",
-		validate: (value: string) =>
-			value ? undefined : "--profile requires a profile name",
-	},
-	attach: {
-		name: "--attach",
-		kind: "string",
-		valueHint: "=<app>",
-		description: "Give one app the TTY (overrides interactive: true)",
-	},
-	noWatch: {
-		name: "--no-watch",
-		kind: "boolean",
-		description: "Do not restart apps when their watched files change",
-	},
-	detach: {
-		name: "--detach",
-		kind: "boolean",
-		description:
-			"Run in the background; return once the apps are up (logs: buncargo logs)",
-	},
-	keep: {
-		name: "--keep",
-		kind: "boolean",
-		description:
-			"With --detach: never stop for idling (default: stops after 2h with no request or buncargo command)",
-	},
-	tui: {
-		name: "--tui",
-		kind: "boolean",
-		description:
-			"Terminal UI, the default in a terminal; warns when there is none",
-	},
-	noTui: {
-		name: "--no-tui",
-		kind: "boolean",
-		description:
-			"Prefixed lines instead of the terminal UI, even in a terminal",
-	},
-	keepContainers: {
-		name: "--keep-containers",
-		kind: "boolean",
-		description:
-			"Keep the containers after the run exits, as long as the checkout exists",
-	},
-	takeover: {
-		name: "--takeover",
-		kind: "boolean",
-		description: "Stop apps already running elsewhere and run them here",
-	},
-	replaceStale: {
-		name: "--replace-stale",
-		kind: "boolean",
-		description:
-			"First remove this checkout's stacks under an old project name (keeps volumes)",
-	},
-	watchdogTimeout: {
-		name: "--watchdog-timeout",
-		kind: "string",
-		valueHint: "=N",
-		description: "Idle backstop in minutes (default: 3)",
-		validate: positiveIntegerValidator("--watchdog-timeout"),
-	},
-	noDockerAutostart: {
-		name: "--no-docker-autostart",
-		kind: "boolean",
-		description: "Do not try to start Docker if it is down",
-	},
-	noHosts: {
-		name: "--no-hosts",
-		kind: "boolean",
-		description: "Use localhost:port instead of named .localhost URLs",
-	},
-	runtime: {
-		name: "--runtime",
-		kind: "string",
-		valueHint: "=<docker|apple|auto>",
-		description: "Container runtime backend (default: docker)",
-		validate: enumValidator("--runtime", CONTAINER_RUNTIME_SELECTIONS),
-	},
-	timingJson: {
-		name: "--timing-json",
-		kind: "boolean",
-		description: "Report startup through app readiness as JSON",
-	},
-	timing: {
-		name: "--timing",
-		kind: "boolean",
-		description: "Print how long each startup phase took",
-	},
-} as const satisfies Record<string, FlagSpec>;
-
-/**
- * The flags only the `dev --detach` in front reads: its background run gets
- * the rest of the invocation, and `--keep` through `BUNCARGO_DETACHED`.
- */
-export const DETACH_ONLY_FLAGS: readonly FlagSpec[] = [
-	FLAGS.detach,
-	FLAGS.keep,
-];
-
-export const DEV_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo dev [options]",
-	flags: Object.values(FLAGS),
-	notes: [
+	args: [
 		{
-			command: "--",
-			description: "Extra args appended to the attached app command",
+			name: "<app>",
+			description: "Run only these apps, plus their requiredApps",
+			variadic: true,
 		},
 	],
+	passthrough: "Extra args appended to the attached app command",
 	examples: [
 		{
 			command: "bun dev",
 			description: "Start selected apps and their services",
+		},
+		{
+			command: "bun dev api platform",
+			description: "Run only these apps",
 		},
 		{
 			command: "bun dev --seed",
@@ -195,12 +159,12 @@ export const DEV_COMMAND_SPEC: CommandSpec = {
 			description: "Stop containers and remove all data",
 		},
 		{
-			command: "bun dev --apps=api,platform",
-			description: "Run only selected apps",
-		},
-		{
 			command: "bun dev --profile=full",
 			description: "Run the apps of profiles.full",
+		},
+		{
+			command: "bun dev --detach --json",
+			description: "Start in the background; print the outcome as JSON",
 		},
 		{
 			command: "bun dev --expose",
@@ -211,7 +175,7 @@ export const DEV_COMMAND_SPEC: CommandSpec = {
 			description: "Expose specific targets",
 		},
 		{
-			command: "bun dev --apps=expoApp -- --clear",
+			command: "bun dev expoApp -- --clear",
 			description: "Pass args to the attached app",
 		},
 		{
@@ -227,210 +191,141 @@ export const DEV_COMMAND_SPEC: CommandSpec = {
 			description: "Move apps running in another terminal into this one",
 		},
 	],
-};
+} as const satisfies CommandSpec;
 
-export interface DevCliArgs {
-	/** Args after `--`, appended to the attached app command. */
-	passthrough: string[];
-	unknownFlags: string[];
-	/** Validation failures, reported before the flow starts. */
-	errors: string[];
-	help: boolean;
-	down: boolean;
-	all: boolean;
-	reset: boolean;
-	/** `--yes`: the destructive modes run without asking. */
-	yes: boolean;
-	migrate: boolean;
-	seed: boolean;
-	upOnly: boolean;
-	/** True for both `--expose` and `--expose=a,b`. */
-	exposeRequested: boolean;
-	exposeValue: string | undefined;
-	appsRequested: boolean;
-	appsValue: string | undefined;
-	/** `--profile`; undefined falls back to a profile named `default`. */
-	profile: string | undefined;
-	attach: string | undefined;
-	/**
-	 * The TUI whenever there is a terminal (`auto`); `on` is `--tui`, which
-	 * warns when there is none; `off` is `--no-tui`.
-	 */
-	tui: "auto" | "on" | "off";
-	/** `--detach`: the run goes to the background (`dev-detach.ts`). */
-	detach: boolean;
-	/** `--keep`: the detached run has no idle limit. */
-	keep: boolean;
-	/** `--no-watch`: apps' `watch` config is ignored for this run. */
-	watch: boolean;
-	keepContainers: boolean;
-	/** Skip the prompt and stop apps already running elsewhere. */
-	takeover: boolean;
-	/** `--replace-stale`: remove this checkout's stacks under an old project name first. */
-	replaceStale: boolean;
-	watchdogTimeoutMinutes: number | undefined;
-	dockerAutostart: boolean;
-	hosts: boolean;
-	/** `--runtime`, already validated; undefined falls through to env/config. */
-	runtime: string | undefined;
-	/** `--timing` or `BUNCARGO_TIMING`: print the startup breakdown. */
-	timing: boolean;
-	timingJson: boolean;
-	/** `--migrate`, `--seed` and `--up-only` exit before dev servers start. */
-	oneShot: boolean;
-	/**
-	 * Why each flag given that has no effect in this mode is ignored, to warn
-	 * with. `exposeRequested` and `takeover` read false for them.
-	 */
-	ignoredFlags: string[];
-}
+export type DevArgs = Parsed<typeof DEV_SPEC>;
+type DevValues = DevArgs["values"];
 
-function oneShotModeFlag(modes: {
-	migrate: boolean;
-	seed: boolean;
-	upOnly: boolean;
-}): string | undefined {
-	if (modes.migrate) return "--migrate";
-	if (modes.seed) return "--seed";
-	if (modes.upOnly) return "--up-only";
+/**
+ * The flags only the `dev --detach` in front reads: its background run gets
+ * the rest of the invocation, and `--keep` through `BUNCARGO_DETACHED`.
+ */
+export const DETACH_ONLY_FLAGS: readonly string[] = [
+	"--detach",
+	"--keep",
+	"--json",
+];
+
+/** `--migrate`, `--seed` or `--up-only`, which exit before dev servers start. */
+export function oneShotMode(values: DevValues): string | undefined {
+	if (values.migrate) return "--migrate";
+	if (values.seed) return "--seed";
+	if (values["up-only"]) return "--up-only";
 	return undefined;
 }
 
+export function isOneShot(values: DevValues): boolean {
+	return oneShotMode(values) !== undefined;
+}
+
 /**
- * Flags a one-shot mode ignores, with why. `--expose` would open a tunnel
+ * Whether this run opens tunnels: never in a one-shot mode, where `--expose`
+ * would print a URL that closes as the command exits.
+ */
+export function exposeRequested(values: DevValues): boolean {
+	return values.expose !== undefined && !isOneShot(values);
+}
+
+/** `--expose=<targets>`, or undefined for every `expose: true` target. */
+export function exposeTargets(values: DevValues): string | undefined {
+	return typeof values.expose === "string" ? values.expose : undefined;
+}
+
+export function tuiMode(values: DevValues): "auto" | "on" | "off" {
+	if (values["no-tui"]) return "off";
+	return values.tui ? "on" : "auto";
+}
+
+/** `--timing`, `--timing-json` or `BUNCARGO_TIMING`: print the startup breakdown. */
+export function timingRequested(values: DevValues): boolean {
+	// Either way in: the flag for a one-off look, the environment variable
+	// for a shell or an agent that wants it on every run.
+	return values.timing || values["timing-json"] || isTimingEnabled();
+}
+
+/**
+ * Flags a one-shot mode ignores, with why: `--expose` would open a tunnel
  * that closes as the command exits, printing a URL that is already dead;
  * `--takeover` has no app to move here.
  */
-function oneShotIgnoredFlags(
-	mode: string | undefined,
-	given: { expose: boolean; takeover: boolean },
-): string[] {
+export function ignoredFlagWarnings(values: DevValues): string[] {
+	const mode = oneShotMode(values);
 	if (mode === undefined) return [];
 	const ignored: string[] = [];
-	if (given.expose)
+	if (values.expose !== undefined)
 		ignored.push(
 			`--expose is ignored with ${mode}: its tunnels would close as the command exits. Share a running app with \`buncargo dev --detach --expose\`.`,
 		);
-	if (given.takeover)
+	if (values.takeover)
 		ignored.push(
 			`--takeover is ignored with ${mode}: it starts no app to take over.`,
 		);
 	return ignored;
 }
 
-export function parseDevArgs(rawArgs: string[]): DevCliArgs {
-	const { flags, passthrough } = splitCliArgs(rawArgs);
-	const errors: string[] = [];
-	const bool = (flag: FlagSpec) => readBooleanFlag(flags, flag);
-	const str = (flag: FlagSpec) => readStringFlag(flags, flag, errors);
+/** The apps named as arguments or with `--apps`, or undefined for none. */
+export function requestedApps(args: DevArgs): string[] | undefined {
+	if (args.positionals.length > 0) return [...args.positionals];
+	return args.values.apps === undefined
+		? undefined
+		: commaList(args.values.apps);
+}
 
-	const migrate = bool(FLAGS.migrate);
-	const seed = bool(FLAGS.seed);
-	const upOnly = bool(FLAGS.upOnly);
-	const watchdogTimeout = str(FLAGS.watchdogTimeout);
-	const modes = [migrate, seed, upOnly, bool(FLAGS.down), bool(FLAGS.reset)];
+/** Throw for combinations of flags that are each valid alone. */
+export function assertDevArgs(args: DevArgs): void {
+	const values = args.values;
+	const errors: string[] = [];
+	const modes = [
+		values.migrate,
+		values.seed,
+		values["up-only"],
+		values.down,
+		values.reset,
+	];
 	if (modes.filter(Boolean).length > 1)
 		errors.push(
 			"Choose only one of --migrate, --seed, --up-only, --down, or --reset.",
 		);
-	if (bool(FLAGS.all) && !bool(FLAGS.down))
-		errors.push("--all requires --down.");
-	if (bool(FLAGS.replaceStale) && (bool(FLAGS.down) || bool(FLAGS.reset)))
+	if (values.all && !values.down) errors.push("--all requires --down.");
+	if (values["replace-stale"] && (values.down || values.reset))
 		errors.push(
 			"--replace-stale clears the way for a start; it cannot be combined with --down or --reset.",
 		);
-	if (bool(FLAGS.tui) && bool(FLAGS.noTui))
+	if (values.tui && values["no-tui"])
 		errors.push("Choose either --tui or --no-tui, not both.");
-	if (bool(FLAGS.keep) && !bool(FLAGS.detach))
+	if (values.keep && !values.detach)
 		errors.push(
 			"--keep only applies to --detach: a run in a terminal never stops for idling.",
 		);
-	if (bool(FLAGS.apps) && bool(FLAGS.profile))
-		errors.push("Choose either --apps or --profile, not both.");
-	if (
-		bool(FLAGS.detach) &&
-		(modes.some(Boolean) || bool(FLAGS.tui) || bool(FLAGS.attach))
-	)
+	if (values.json && !values.detach)
+		errors.push(
+			"--json only applies to --detach; a run in a terminal prints its own output.",
+		);
+	const named = args.positionals.length > 0;
+	if (named && values.apps !== undefined)
+		errors.push("Name the apps as arguments or with --apps, not both.");
+	if ((named || values.apps !== undefined) && values.profile !== undefined)
+		errors.push("Choose either apps or --profile, not both.");
+	if (values.apps !== undefined && commaList(values.apps).length === 0)
+		errors.push("--apps requires at least one app name.");
+	if (values.detach && (modes.some(Boolean) || values.tui || values.attach))
 		errors.push(
 			"--detach runs the dev servers in the background; it cannot be combined with --tui, --attach or a one-shot mode.",
 		);
-	const oneShotMode = oneShotModeFlag({ migrate, seed, upOnly });
-	const ignoredFlags = oneShotIgnoredFlags(oneShotMode, {
-		expose: bool(FLAGS.expose),
-		takeover: bool(FLAGS.takeover),
-	});
-	const oneShot = oneShotMode !== undefined;
-
-	return {
-		passthrough,
-		unknownFlags: findUnknownFlags(DEV_COMMAND_SPEC, flags),
-		errors,
-		help: bool(FLAGS.help),
-		down: bool(FLAGS.down),
-		all: bool(FLAGS.all),
-		reset: bool(FLAGS.reset),
-		yes: bool(FLAGS.yes),
-		migrate,
-		seed,
-		upOnly,
-		exposeRequested: bool(FLAGS.expose) && !oneShot,
-		exposeValue: oneShot ? undefined : str(FLAGS.expose),
-		appsRequested: bool(FLAGS.apps),
-		appsValue: str(FLAGS.apps),
-		profile: str(FLAGS.profile),
-		attach: str(FLAGS.attach),
-		tui: bool(FLAGS.noTui) ? "off" : bool(FLAGS.tui) ? "on" : "auto",
-		detach: bool(FLAGS.detach),
-		keep: bool(FLAGS.keep),
-		watch: !bool(FLAGS.noWatch),
-		keepContainers: bool(FLAGS.keepContainers),
-		takeover: bool(FLAGS.takeover) && !oneShot,
-		replaceStale: bool(FLAGS.replaceStale),
-		watchdogTimeoutMinutes:
-			watchdogTimeout === undefined
-				? undefined
-				: Number.parseInt(watchdogTimeout, 10),
-		dockerAutostart: !bool(FLAGS.noDockerAutostart),
-		hosts: !bool(FLAGS.noHosts),
-		runtime: str(FLAGS.runtime),
-		// Either way in: the flag for a one-off look, the environment variable
-		// for a shell or an agent that wants it on every run.
-		timing: bool(FLAGS.timing) || bool(FLAGS.timingJson) || isTimingEnabled(),
-		timingJson: bool(FLAGS.timingJson),
-		oneShot,
-		ignoredFlags,
-	};
-}
-
-export function printDevHelp(): void {
-	console.log(formatCommandHelp(DEV_COMMAND_SPEC));
+	if (errors.length > 0) throw argumentsError(errors, "dev");
 }
 
 /**
- * Report an argv problem and exit, or return.
- *
- * Both entry points call this: `handleDev` before it loads a config, so a typo
- * is not answered with a config error, and `runCli`, which programmatic callers
- * reach directly with their own argv. Whichever runs first exits, so the two
- * cannot report the same problem differently.
+ * `dev`'s argv. Both entry points parse it: `devCommand` before it loads a
+ * config, so a typo is not answered with a config error, and `runCli`, which
+ * programmatic callers reach directly with their own argv.
  */
-export function exitOnDevArgErrors(args: DevCliArgs): void {
-	const messages =
-		args.unknownFlags.length > 0
-			? args.unknownFlags.map((flag) =>
-					unknownFlagMessage(DEV_COMMAND_SPEC, flag),
-				)
-			: args.errors;
-	if (messages.length === 0) return;
-
-	for (const message of messages) {
-		log.error(message);
-	}
-	if (args.unknownFlags.length > 0) {
-		log.line();
-		printDevHelp();
-	}
-	process.exit(1);
+export function parseDevArgs(
+	argv: readonly string[],
+): ParseResult<typeof DEV_SPEC> {
+	const parsed = parseArgs(DEV_SPEC, argv);
+	if (!parsed.help) assertDevArgs(parsed);
+	return parsed;
 }
 
 /**
@@ -443,10 +338,10 @@ export function exitOnDevArgErrors(args: DevCliArgs): void {
  * pipelines already pass these flags.
  */
 export function destructiveModeGate(
-	args: Pick<DevCliArgs, "reset" | "down" | "all" | "yes">,
+	values: Pick<DevValues, "reset" | "down" | "all" | "yes">,
 	context: { interactive: boolean; ci: boolean },
 ): "run" | "confirm" | "refuse" {
-	const destructive = args.reset || (args.down && args.all);
-	if (!destructive || args.yes || context.ci) return "run";
+	const destructive = values.reset || (values.down && values.all);
+	if (!destructive || values.yes || context.ci) return "run";
 	return context.interactive ? "confirm" : "refuse";
 }

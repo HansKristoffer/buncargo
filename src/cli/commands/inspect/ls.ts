@@ -22,6 +22,7 @@ import {
 	recentRunStops,
 } from "../../../core/run-stops";
 import { describeSwept } from "../../../core/watchdog-loop";
+import { BASE_EXITS, defineCommand } from "../../command-spec";
 import * as log from "../../log";
 
 /** "held, 2m left" for a finished run, or nothing while one is live. */
@@ -36,7 +37,7 @@ function describeHold(
 	return `held, ${Math.ceil(left / 60_000)}m left`;
 }
 
-export async function handleLs(): Promise<void> {
+async function ls(): Promise<void> {
 	// Tailscale Serve entries of runs that ended: one file read when there are none.
 	const serve = await sweepTailscaleServe(tailscaleServeDeps());
 	for (const line of serve.removed) log.info(line);
@@ -139,3 +140,16 @@ function logForeignStacks(): void {
 		"Stacks marked \"not this user's\" belong to another user's buncargo, or to buncargo state that was wiped, so the sweep leaves them alone. If one really is orphaned, remove it with the command shown; its volumes stay.",
 	);
 }
+
+export const lsCommand = defineCommand({
+	spec: {
+		name: "ls",
+		summary: "List every buncargo environment on this machine",
+		flags: {},
+	},
+	exits: BASE_EXITS,
+	run: async () => {
+		await ls();
+		return 0;
+	},
+});

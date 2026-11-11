@@ -13,34 +13,8 @@ import type {
 	PredeployContext,
 	PredeployFailure,
 } from "../../types";
-import {
-	type CommandSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readBooleanFlag,
-	readPositionals,
-} from "../command-spec";
-import { argumentsError, CliError } from "../errors";
-
-const FLAGS = {
-	help: {
-		name: "--help",
-		kind: "boolean",
-		description: "Show this help message",
-	},
-} as const;
-
-export const PREDEPLOY_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo predeploy",
-	flags: Object.values(FLAGS),
-	examples: [
-		{
-			command: "bunx buncargo predeploy",
-			description:
-				"Migrate, then seed a named environment outside production (e.g. Railway's preDeployCommand)",
-		},
-	],
-};
+import { BASE_EXITS, defineCommand } from "../command-spec";
+import { CliError } from "../errors";
 
 const DEFAULT_ENVIRONMENT_VARS = ["SECRETS_ENV", "NODE_ENV"];
 const DEFAULT_PRODUCTION = ["prod", "production"];
@@ -338,21 +312,24 @@ function resolveHints(name: string, cwd = "."): string[] {
  * module only and runs with the deploy's own environment: no ports, no
  * containers, no secrets of buncargo's.
  */
-export async function handlePredeploy(args: string[]): Promise<number> {
-	if (readBooleanFlag(args, FLAGS.help)) {
-		console.log(formatCommandHelp(PREDEPLOY_COMMAND_SPEC));
-		return 0;
-	}
-	const errors = [
-		...findUnknownFlags(PREDEPLOY_COMMAND_SPEC, args).map(
-			(flag) => `Unknown flag: ${flag}`,
-		),
-		...readPositionals(PREDEPLOY_COMMAND_SPEC, args).map(
-			(token) => `Unexpected argument: ${token}`,
-		),
-	];
-	if (errors.length > 0) throw argumentsError(errors, "predeploy");
+export const predeployCommand = defineCommand({
+	spec: {
+		name: "predeploy",
+		summary: "Before a deploy: migrate, then seed unless production",
+		flags: {},
+		examples: [
+			{
+				command: "bunx buncargo predeploy",
+				description:
+					"Migrate, then seed a named environment outside production (e.g. Railway's preDeployCommand)",
+			},
+		],
+	},
+	exits: BASE_EXITS,
+	run: () => predeploy(),
+});
 
+async function predeploy(): Promise<number> {
 	const root = findMonorepoRoot();
 	const settings = await loadPredeployConfig(root);
 	if (settings.errors.length > 0)

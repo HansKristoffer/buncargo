@@ -9,119 +9,25 @@ import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
 import { loadDevEnv } from "../../loader";
 import type { AnyDevEnvironment, ExecResult, SeedOutcome } from "../../types";
 import {
-	type CommandSpec,
+	BASE_EXITS,
+	commaList,
+	defineCommand,
 	enumValidator,
-	type FlagSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readBooleanFlag,
-	readPositionals,
-	readStringFlag,
 } from "../command-spec";
-import { argumentsError, CliError } from "../errors";
-import { splitCliArgs } from "../flags";
+import { CliError } from "../errors";
 import * as log from "../log";
 import { runForwardingSignals } from "./exec";
 
 const SCHEMA_MODES = ["migrate", "push"] as const;
 
-const FLAGS = {
-	help: {
-		name: "--help",
-		kind: "boolean",
-		description: "Show this help message",
-	},
-	migrate: {
-		name: "--migrate",
-		kind: "boolean",
-		description: "Run migrations (and Prisma generate) after services start",
-	},
-	seed: {
-		name: "--seed",
-		kind: "boolean",
-		description: "Run migrations, then the seed command",
-	},
-	schema: {
-		name: "--schema",
-		kind: "string",
-		valueHint: "=<migrate|push>",
-		description:
-			"How the Prisma schema is applied: its migrations, or `prisma db push` (implies --migrate)",
-		validate: enumValidator("--schema", SCHEMA_MODES),
-	},
-	slot: {
-		name: "--slot",
-		kind: "boolean",
-		description:
-			"Hold one of the machine's check slots from before the services start until teardown",
-	},
-	services: {
-		name: "--services",
-		kind: "string",
-		valueHint: "=<names>",
-		description: "Start only these services (default: every configured one)",
-		validate: (value: string) =>
-			value ? undefined : "--services requires service names",
-	},
-	runtime: {
-		name: "--runtime",
-		kind: "string",
-		valueHint: "=<docker|apple|auto>",
-		description: "Container runtime backend (default: docker)",
-		validate: enumValidator("--runtime", CONTAINER_RUNTIME_SELECTIONS),
-	},
-} as const satisfies Record<string, FlagSpec>;
-
-export const CI_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo ci [options] [-- <command> [args...]]",
-	flags: Object.values(FLAGS),
-	notes: [
-		{
-			command: "--",
-			description: "Command to run with the checkout environment",
-		},
-	],
-	examples: [
-		{
-			command: "buncargo ci --migrate -- bun test",
-			description: "Services up, migrations applied, tests, teardown",
-		},
-		{
-			command: "buncargo ci --seed",
-			description: "Check that migrations and the seed apply cleanly",
-		},
-		{
-			command: "buncargo ci --schema=push --slot -- bun test",
-			description:
-				"A unit shard: the schema pushed, not migrated, inside a check slot",
-		},
-	],
-};
-
-export function parseCiArgs(args: string[]) {
-	const { flags, passthrough } = splitCliArgs(args);
-	const errors: string[] = [];
-	const services = readStringFlag(flags, FLAGS.services, errors);
-	const schema = readStringFlag(flags, FLAGS.schema, errors);
-	for (const flag of findUnknownFlags(CI_COMMAND_SPEC, flags))
-		errors.push(`Unknown flag: ${flag}`);
-	for (const arg of readPositionals(CI_COMMAND_SPEC, flags))
-		errors.push(`Unexpected argument before --: ${arg}`);
-
-	return {
-		help: readBooleanFlag(flags, FLAGS.help),
-		migrate: readBooleanFlag(flags, FLAGS.migrate),
-		seed: readBooleanFlag(flags, FLAGS.seed),
-		schemaPush: schema === "push",
-		slot: readBooleanFlag(flags, FLAGS.slot),
-		services: services
-			?.split(",")
-			.map((name) => name.trim())
-			.filter(Boolean),
-		runtime: readStringFlag(flags, FLAGS.runtime, errors),
-		command: passthrough,
-		errors,
-	};
+interface CiRequest {
+	migrate: boolean;
+	seed: boolean;
+	schemaPush: boolean;
+	slot: boolean;
+	services: string[] | undefined;
+	runtime: string | undefined;
+	command: readonly string[];
 }
 
 /**
@@ -162,18 +68,82 @@ function ciSuffix(): string {
  * finishing must never take down another's. Returns the command's exit code,
  * or 0 when only services/migrations/seed were asked for.
  */
-export async function handleCi(args: string[]): Promise<number> {
-	const parsed = parseCiArgs(args);
-	if (parsed.help) {
-		console.log(formatCommandHelp(CI_COMMAND_SPEC));
-		return 0;
-	}
-	if (parsed.errors.length > 0) {
-		throw argumentsError(parsed.errors, "ci");
-	}
-
-	return withStatusOnStderr(() => runCi(parsed));
-}
+export const ciCommand = defineCommand({
+	spec: {
+		name: "ci",
+		summary: "Start services in CI, prepare them, run a command, tear down",
+		flags: {
+			migrate: {
+				kind: "boolean",
+				description:
+					"Run migrations (and Prisma generate) after services start",
+			},
+			seed: {
+				kind: "boolean",
+				description: "Run migrations, then the seed command",
+			},
+			schema: {
+				kind: "string",
+				value: "<migrate|push>",
+				description:
+					"How the Prisma schema is applied: its migrations, or `prisma db push` (implies --migrate)",
+				validate: enumValidator("--schema", SCHEMA_MODES),
+			},
+			slot: {
+				kind: "boolean",
+				description:
+					"Hold one of the machine's check slots from before the services start until teardown",
+			},
+			services: {
+				kind: "string",
+				value: "<names>",
+				description:
+					"Start only these services (default: every configured one)",
+			},
+			runtime: {
+				kind: "string",
+				value: "<docker|apple|auto>",
+				description: "Container runtime backend (default: docker)",
+				validate: enumValidator("--runtime", CONTAINER_RUNTIME_SELECTIONS),
+			},
+		},
+		passthrough: "Command to run with the checkout environment",
+		examples: [
+			{
+				command: "buncargo ci --migrate -- bun test",
+				description: "Services up, migrations applied, tests, teardown",
+			},
+			{
+				command: "buncargo ci --seed",
+				description: "Check that migrations and the seed apply cleanly",
+			},
+			{
+				command: "buncargo ci --schema=push --slot -- bun test",
+				description:
+					"A unit shard: the schema pushed, not migrated, inside a check slot",
+			},
+		],
+	},
+	exits: {
+		...BASE_EXITS,
+		1: "preparation failed, or bad arguments; otherwise the command's own code",
+	},
+	run: ({ values, passthrough }) =>
+		withStatusOnStderr(() =>
+			runCi({
+				migrate: values.migrate,
+				seed: values.seed,
+				schemaPush: values.schema === "push",
+				slot: values.slot,
+				services:
+					values.services === undefined
+						? undefined
+						: commaList(values.services),
+				runtime: values.runtime,
+				command: passthrough,
+			}),
+		),
+});
 
 /**
  * Run `work` with `console.log` writing to stderr. A wrapper's stdout is the
@@ -192,7 +162,7 @@ async function withStatusOnStderr<T>(work: () => Promise<T>): Promise<T> {
 	}
 }
 
-async function runCi(parsed: ReturnType<typeof parseCiArgs>): Promise<number> {
+async function runCi(parsed: CiRequest): Promise<number> {
 	// A stack of its own, under a name no other run has, with its data in
 	// memory: tearing it down never reaches the checkout's dev database or
 	// another `ci` run's services, and a run killed outright leaves no volume.

@@ -27,26 +27,36 @@ import type {
 	BuncargoContainer,
 	PortContainerOwner,
 } from "../../../types";
+import { BASE_EXITS, defineCommand } from "../../command-spec";
 import { strayLoopbackUrls } from "../../core-checks";
-import { hasFlag } from "../../flags";
+import type { StatusJson } from "../../json-documents";
 import * as log from "../../log";
-import { loadLiveEnv } from "../runtime";
+import { loadLiveEnv } from "../load-env";
 
 /**
  * `buncargo status` — this checkout's containers, ports, hosts, tunnels and
  * runs. `--json` is the same snapshot as one object, so a script or an agent
  * reads it instead of hunting ports out of logs and `docker ps`.
  */
-export async function handleStatus(args: string[] = []): Promise<void> {
-	const status = await readStatus();
-	if (hasFlag(args, "--json")) {
-		log.line(JSON.stringify(status, null, 2));
-		return;
-	}
-	printStatus(status);
-}
+export const statusCommand = defineCommand({
+	spec: {
+		name: "status",
+		summary: "Show this project's containers, ports, and tunnels",
+		flags: {
+			json: { kind: "boolean", description: "One JSON document on stdout" },
+		},
+	},
+	exits: BASE_EXITS,
+	json: "StatusJson (--json)",
+	run: async ({ values }) => {
+		const status = await readStatus();
+		if (values.json) log.line(JSON.stringify(status, null, 2));
+		else printStatus(status);
+		return 0;
+	},
+});
 
-async function readStatus() {
+async function readStatus(): Promise<StatusJson> {
 	// As `env` and `url` see it: named URLs once the daemon serves this
 	// checkout's run, rather than a read-only load that never activates them.
 	const env = await loadLiveEnv();
@@ -75,9 +85,13 @@ async function readStatus() {
 				{
 					port,
 					state: typedSwitch(action, {
-						free: () => "free",
-						fail: () => "foreign",
-						...typedSwitchGroup(action, ["reuse", "kill"], () => "ours"),
+						free: () => "free" as const,
+						fail: () => "foreign" as const,
+						...typedSwitchGroup(
+							action,
+							["reuse", "kill"],
+							() => "ours" as const,
+						),
 					}),
 					owner: owner ? formatPortOwner(port, owner) : null,
 				},
@@ -179,7 +193,7 @@ async function readStatus() {
 		strayLoopbackUrls: strayLoopbackUrls(env as AnyDevEnvironment).map(
 			(stray) => ({ ...stray, message: describeStrayLoopbackUrl(stray) }),
 		),
-	};
+	} satisfies StatusJson;
 }
 
 /**
@@ -254,7 +268,7 @@ export function appStatusLines(
 	];
 }
 
-function printStatus(status: Awaited<ReturnType<typeof readStatus>>): void {
+function printStatus(status: StatusJson): void {
 	for (const line of appStatusLines(status.runs)) log.line(line);
 	log.line();
 	log.line(`project: ${status.project}`);

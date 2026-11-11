@@ -3,30 +3,48 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	awaitRestartReply,
 	awaitSendReply,
+	type RestartReply,
 	requestRestart,
 	requestSend,
 	watchRestartRequests,
 	watchSendRequests,
 } from "./restart-requests";
 
-it("restarts each requested app once, including one asked for while draining", async () => {
+const began = (): Promise<RestartReply> => Promise.resolve({ status: "began" });
+
+it("restarts each requested app once, answering every request, including one asked for while draining", async () => {
 	const root = mkdtempSync(join(tmpdir(), "buncargo-restart-requests-"));
 	const restarted: string[] = [];
+	let drained: string | undefined;
 	const stop = watchRestartRequests(
 		root,
 		"s1",
 		(app) => {
 			restarted.push(app);
 			// Asked again while the previous batch is being handled.
-			if (app === "api") requestRestart(root, "s1", "shopify");
+			if (app === "api") drained = requestRestart(root, "s1", "shopify");
+			return app === "api"
+				? began()
+				: Promise.resolve({ status: "failed", reason: "port taken" });
 		},
 		() => true,
 	);
 	try {
-		requestRestart(root, "s1", "api");
-		requestRestart(root, "s1", "api");
-		for (let i = 0; i < 40 && restarted.length < 2; i++) await Bun.sleep(50);
+		const first = requestRestart(root, "s1", "api");
+		const second = requestRestart(root, "s1", "api");
+		expect(await awaitRestartReply(root, "s1", first, 5_000)).toEqual({
+			status: "began",
+		});
+		expect(await awaitRestartReply(root, "s1", second, 5_000)).toEqual({
+			status: "began",
+		});
+		if (drained === undefined) throw new Error("shopify was not requested");
+		expect(await awaitRestartReply(root, "s1", drained, 5_000)).toEqual({
+			status: "failed",
+			reason: "port taken",
+		});
 		expect(restarted).toEqual(["api", "shopify"]);
 	} finally {
 		stop();
@@ -44,7 +62,10 @@ it("keeps a restart request until the run can act on it", async () => {
 	const stop = watchRestartRequests(
 		root,
 		"s1",
-		(app) => restarted.push(app),
+		(app) => {
+			restarted.push(app);
+			return began();
+		},
 		() => {
 			polls++;
 			return ready;
@@ -76,7 +97,10 @@ it("delivers sent keys in order, every one of them, and apart from restarts", as
 	const stopRestarts = watchRestartRequests(
 		root,
 		"s1",
-		(app) => restarted.push(app),
+		(app) => {
+			restarted.push(app);
+			return began();
+		},
 		() => true,
 	);
 	try {

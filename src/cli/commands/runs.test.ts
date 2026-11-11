@@ -3,12 +3,13 @@ import { rmSync } from "node:fs";
 import { readCurrentProcessIdentity } from "../../core/process-identity";
 import { getRunsPath, publishRun } from "../../core/run-registry";
 import { DETACHED_IDLE_LIMIT_MS } from "../../core/watchdog-constants";
-import { handleRuns } from "./runs";
+import { runCommand } from "../command-spec";
+import { runsCommand } from "./runs";
 
 // The test preload gives the run a temporary HOME, so this is not the real registry.
 afterEach(() => rmSync(getRunsPath(), { force: true }));
 
-it("says in --json when a detached run stops if nothing uses it", async () => {
+it("prints the RunsJson document, saying when a detached run stops if nothing uses it", async () => {
 	const startedAt = new Date(Date.now() - 60_000).toISOString();
 	await publishRun({
 		sessionId: "detached",
@@ -32,11 +33,13 @@ it("says in --json when a detached run stops if nothing uses it", async () => {
 		printed.push(String(line));
 	});
 	try {
-		await handleRuns(["--json"]);
+		await runCommand(runsCommand, ["--json"]);
 	} finally {
 		log.mockRestore();
 	}
-	const { runs } = JSON.parse(printed.join("\n"));
+	const document = JSON.parse(printed.join("\n"));
+	expect(Object.keys(document).sort()).toEqual(["leases", "runs", "version"]);
+	const { runs } = document;
 	expect(runs[0].idleStopsAt).toBe(
 		new Date(Date.parse(startedAt) + DETACHED_IDLE_LIMIT_MS).toISOString(),
 	);

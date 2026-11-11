@@ -156,13 +156,13 @@ Add `integrations: [expo()]` (from `buncargo/expo`): every app whose `devCommand
 ```json
 {
 	"scripts": {
-		"dev:with-api": "bunx buncargo dev --apps=expoApp",
-		"dev:expose": "bunx buncargo dev --apps=expoApp,platform --expose"
+		"dev:with-api": "bunx buncargo dev expoApp",
+		"dev:expose": "bunx buncargo dev expoApp platform --expose"
 	}
 }
 ```
 
-`buncargo dev --apps=expoApp -- --clear` appends `--clear` to the attached Expo command.
+`buncargo dev expoApp -- --clear` appends `--clear` to the attached Expo command.
 
 ### Shopify app
 
@@ -284,6 +284,7 @@ Agents get the same isolated environment per worktree as people do, and a few co
 
 ```bash
 bunx buncargo dev --detach              # Background run; returns once the apps are up, stops after 2h idle
+bunx buncargo dev --detach --json       # The same, the outcome as one JSON document
 bunx buncargo wait --app=api            # Block until one app is healthy
 bunx buncargo env --get DATABASE_URL    # Any variable the apps get
 bunx buncargo sql -c "select 1" --json  # This checkout's database, nobody else's
@@ -296,7 +297,7 @@ bunx buncargo check                    # Biome, typecheck, gates and tests for t
 bunx buncargo stop                     # Stop this checkout's run
 ```
 
-`bunx buncargo setup --agents` adds a short block to the project's `AGENTS.md` with the rules agents most often miss, pointing at `bunx buncargo help agents` (a short guide; `help agents <topic>` for the rest). Without a terminal, `dev --reset` and `dev --down --all` refuse unless passed `--yes`.
+`bunx buncargo setup --agents` adds a short block to the project's `AGENTS.md` with the rules agents most often miss, pointing at `bunx buncargo help agents` (a short guide; `help agents <topic>` for the rest, and `help agents exits` for every command's exit codes). Without a terminal, `dev --reset` and `dev --down --all` refuse unless passed `--yes`.
 
 ## Documentation
 

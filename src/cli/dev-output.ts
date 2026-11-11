@@ -1,3 +1,4 @@
+import { getErrorMessage } from "hanzio";
 import { environmentOpenUrl } from "../core/app-url";
 import { AppLogs } from "../core/process/app-logs";
 import { printStream, RunOutput } from "../core/process/run-output";
@@ -5,7 +6,11 @@ import { isInteractive } from "../core/prompt";
 import { prefixWidth } from "../core/style";
 import type { ResolvedApp } from "../types";
 import * as log from "./log";
-import { watchRestartRequests, watchSendRequests } from "./restart-requests";
+import {
+	type RestartReply,
+	watchRestartRequests,
+	watchSendRequests,
+} from "./restart-requests";
 import { RunTui, type TuiAction } from "./tui/run-tui";
 
 /** What `runDevFlow` needs of the environment to show a run's output. */
@@ -90,9 +95,7 @@ export function openDevOutput(
 	const stopRestarts = watchRestartRequests(
 		env.root,
 		env.sessionId,
-		(app) => {
-			void output.controls?.restart(app).catch(() => {});
-		},
+		(app) => restartReply(output, app),
 		() => output.controls !== undefined,
 	);
 	// Keys for an app under a pseudo-terminal: one in the TUI, or an
@@ -123,6 +126,26 @@ export function openDevOutput(
 			stopWatching();
 		},
 	};
+}
+
+/** What came of `buncargo restart <app>`, for the command waiting on it. */
+export async function restartReply(
+	output: Pick<RunOutput, "controls" | "states">,
+	app: string,
+): Promise<RestartReply> {
+	if (!output.states.has(app) || !output.controls)
+		return { status: "not-ours", reason: `this run started no app "${app}"` };
+	try {
+		return (await output.controls.restart(app))
+			? { status: "began" }
+			: {
+					status: "not-ours",
+					reason:
+						"its process is not this run's (reused from another terminal), or the run is ending",
+				};
+	} catch (error) {
+		return { status: "failed", reason: getErrorMessage(error) };
+	}
 }
 
 /** Why `app` cannot take keys from `buncargo send`, or `undefined` when it can. */

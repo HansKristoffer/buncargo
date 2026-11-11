@@ -1,31 +1,31 @@
 import {
+	BASE_EXITS,
+	commandUsage,
+	defineCommand,
+	formatExitCodeTable,
+	type HelpRow,
+} from "../command-spec";
+import { CliError } from "../errors";
+import {
 	integrationCommandRows,
 	readAppliedConfig,
 } from "../integration-commands";
-import {
-	barSubcommandList,
-	CLI_COMMANDS,
-	COMMAND_HELP_EXTRAS,
-	hostsSubcommandList,
-} from "./registry";
+import { loadAllCommands } from "./registry";
 import { formatTaskRows } from "./run";
 
-/** Commands whose subcommands are worth naming in the one-line listing. */
-const SUBCOMMAND_LISTS: Record<string, () => string> = {
-	hosts: hostsSubcommandList,
-	bar: barSubcommandList,
-};
-
-function commandRows(): string[] {
-	const rows = [
-		...CLI_COMMANDS.map((entry) => ({
-			command: entry.usage,
-			description: SUBCOMMAND_LISTS[entry.name]
-				? `${entry.summary} (${SUBCOMMAND_LISTS[entry.name]?.()})`
-				: entry.summary,
-		})),
-		...COMMAND_HELP_EXTRAS,
-	];
+/** One row per command, from its own spec. */
+async function commandRows(): Promise<string[]> {
+	const rows: HelpRow[] = (await loadAllCommands()).map((command) =>
+		"subcommands" in command
+			? {
+					command: command.spec.usage ?? `${command.spec.name} <command>`,
+					description: `${command.spec.summary} (${Object.keys(command.subcommands).join(" | ")})`,
+				}
+			: {
+					command: commandUsage(command.spec).replace(/^buncargo /, ""),
+					description: command.spec.summary,
+				},
+	);
 	const width = Math.max(...rows.map((row) => row.command.length));
 	return rows.map((row) =>
 		`  ${row.command.padEnd(width)}  ${row.description ?? ""}`.trimEnd(),
@@ -49,7 +49,7 @@ async function configSections(): Promise<string> {
 }
 
 export async function showHelp(): Promise<void> {
-	const sections = await configSections();
+	const [rows, sections] = await Promise.all([commandRows(), configSections()]);
 	console.log(`
 buncargo - Development environment CLI
 
@@ -57,29 +57,20 @@ USAGE:
   bunx buncargo <command> [options]
 
 COMMANDS:
-${commandRows().join("\n")}
+${rows.join("\n")}
 
 EXAMPLES:
   bunx buncargo dev                     # Start everything
-  bunx buncargo dev --apps=api,platform # Start only selected apps
+  bunx buncargo dev api                 # Start only api, plus its requiredApps
+  bunx buncargo dev --detach            # Start in the background, return once up
   bunx buncargo dev --expose            # Public quick tunnel for expose:true targets
-  bunx buncargo dev --expose=api        # Public quick tunnel for selected target
-  bunx buncargo dev --help              # Show dev command options
   bunx buncargo dev --down              # Stop containers
-  bunx buncargo dev --down --all        # Stop every buncargo environment you started
-  bunx buncargo ls                      # List environments
-  bunx buncargo status                  # This project's ports and containers
+  bunx buncargo status --json           # This checkout's runs, ports and containers
   bunx buncargo doctor                  # Diagnose common local-dev problems
-  bunx buncargo hosts status            # Named-hosts daemon and routes
-  bunx buncargo hosts install           # One-time CA + :443 proxy (non-interactive)
-  bunx buncargo typecheck               # Run typecheck
-  bunx buncargo typecheck --only=platform # One workspace
-  bunx buncargo typecheck --help        # Typecheck options
-  bunx buncargo prisma studio           # Open Prisma Studio
-  bunx buncargo env                     # Get ports/urls as JSON
-  bunx buncargo env --get ports.api     # One raw value for scripts
+  bunx buncargo env --get DATABASE_URL  # One raw value for scripts
   bunx buncargo run db:seed             # Run a task from dev.config.ts
   bunx buncargo ci --migrate -- bun test # Services + migrations in CI
+  bunx buncargo help agents             # The guide for AI agents
 ${sections}
 CONFIG:
   Create a dev.config.ts with a default export:
@@ -92,6 +83,39 @@ CONFIG:
     apps: { ... }
   })
 
-Run "bunx buncargo dev --help" for dev command options.
+Run "bunx buncargo <command> --help" for a command's options and exit codes.
 `);
 }
+
+export const helpCommand = defineCommand({
+	spec: {
+		name: "help",
+		summary: "Show this help message, or the guide for AI agents",
+		flags: {},
+		args: [
+			{ name: "agents", description: "The guide for AI agents" },
+			{
+				name: "<topic>",
+				description: "One topic of it, or all; exits for the exit-code table",
+			},
+		],
+	},
+	exits: BASE_EXITS,
+	run: async ({ positionals: [guide, topic] }) => {
+		if (guide === undefined) {
+			await showHelp();
+			return 0;
+		}
+		if (guide !== "agents")
+			throw new CliError(`No help for "${guide}".`, [
+				`Run "bunx buncargo ${guide} --help" for a command's options.`,
+			]);
+		const { agentsGuide } = await import("../agents-guide");
+		const exitCodes =
+			topic === "exits" || topic === "all"
+				? formatExitCodeTable(await loadAllCommands())
+				: undefined;
+		console.log(agentsGuide(topic, exitCodes));
+		return 0;
+	},
+});

@@ -1,68 +1,18 @@
 import { isDiscoveredApp } from "../../config/discover-apps";
 import { loadDevEnv } from "../../loader";
-import {
-	type CommandSpec,
-	type FlagSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readBooleanFlag,
-	readStringFlag,
-} from "../command-spec";
-import { argumentsError, CliError } from "../errors";
+import { BASE_EXITS, commaList, defineCommand } from "../command-spec";
+import { CliError } from "../errors";
 import * as log from "../log";
-
-const FLAGS = {
-	help: {
-		name: "--help",
-		kind: "boolean",
-		description: "Show this help message",
-	},
-	discovered: {
-		name: "--discovered",
-		kind: "boolean",
-		description: "Only apps found by discoverApps()",
-	},
-	apps: {
-		name: "--apps",
-		kind: "string",
-		valueHint: "=<apps>",
-		description: "Only these apps",
-	},
-} as const satisfies Record<string, FlagSpec>;
-
-export const BUILD_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo build [--discovered] [--apps=<apps>]",
-	flags: Object.values(FLAGS),
-	examples: [
-		{
-			command: "buncargo build --discovered",
-			description: "Build every discovered extension, one at a time",
-		},
-	],
-};
 
 /**
  * Run apps' `buildCommand`s one at a time, each with its app's env, stopping
  * at the first failure. Sequential on purpose: builds are what CI and deploys
  * run, and interleaved output from parallel builds hides which one failed.
  */
-export async function handleBuild(args: string[]): Promise<number> {
-	if (readBooleanFlag(args, FLAGS.help)) {
-		console.log(formatCommandHelp(BUILD_COMMAND_SPEC));
-		return 0;
-	}
-	const errors: string[] = [];
-	const only = readStringFlag(args, FLAGS.apps, errors)
-		?.split(",")
-		.map((name) => name.trim())
-		.filter(Boolean);
-	errors.push(
-		...findUnknownFlags(BUILD_COMMAND_SPEC, args).map(
-			(flag) => `Unknown flag: ${flag}`,
-		),
-	);
-	if (errors.length > 0) throw argumentsError(errors, "build");
-
+async function build(
+	only: readonly string[] | undefined,
+	discoveredOnly: boolean,
+): Promise<number> {
 	const env = await loadDevEnv({ readOnly: true });
 	const unknown = (only ?? []).filter((name) => !env.apps[name]);
 	if (unknown.length > 0) {
@@ -71,7 +21,6 @@ export async function handleBuild(args: string[]): Promise<number> {
 		]);
 	}
 
-	const discoveredOnly = readBooleanFlag(args, FLAGS.discovered);
 	const selected = Object.entries(env.apps).flatMap(([name, app]) =>
 		app.buildCommand &&
 		(!only || only.includes(name)) &&
@@ -101,3 +50,45 @@ export async function handleBuild(args: string[]): Promise<number> {
 	);
 	return 0;
 }
+
+export const buildCommand = defineCommand({
+	spec: {
+		name: "build",
+		summary: "Run apps' buildCommand one at a time",
+		flags: {
+			discovered: {
+				kind: "boolean",
+				description: "Only apps found by discoverApps()",
+			},
+			apps: {
+				kind: "string",
+				value: "<apps>",
+				description: "Only these apps (as <app>...)",
+			},
+		},
+		args: [{ name: "<app>", description: "Only these apps", variadic: true }],
+		examples: [
+			{
+				command: "buncargo build --discovered",
+				description: "Build every discovered extension, one at a time",
+			},
+		],
+	},
+	exits: {
+		...BASE_EXITS,
+		1: "a build failed (its own code), or bad arguments",
+	},
+	run: ({ values, positionals }) => {
+		if (positionals.length > 0 && values.apps !== undefined)
+			throw new CliError(
+				"Name the apps as arguments or with --apps, not both.",
+			);
+		const only =
+			positionals.length > 0
+				? [...positionals]
+				: values.apps === undefined
+					? undefined
+					: commaList(values.apps);
+		return build(only, values.discovered);
+	},
+});

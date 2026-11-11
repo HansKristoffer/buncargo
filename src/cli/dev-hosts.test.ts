@@ -23,7 +23,6 @@ import type {
 	HostsRuntime,
 	ServiceConfig,
 } from "../types";
-import { namedHostsFallbacks } from "./dev-detach";
 import {
 	activateNamedHosts,
 	type NamedHostsDeps,
@@ -67,6 +66,13 @@ const hosts = (active: boolean): HostsRuntime => ({
 		},
 	],
 });
+
+/** The warnings that say named URLs fell back to `localhost:port`. */
+function namedHostsFallbacks(text: string): string[] {
+	return text
+		.split("\n")
+		.filter((line) => line.startsWith("Named URLs unavailable:"));
+}
 
 describe("reclaimAppRoute", () => {
 	// Run B took `web` over from this run, so the route moved to B; B exited

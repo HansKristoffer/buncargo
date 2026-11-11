@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { CI_ENV_VARS } from "../core/runtime-flags";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
 import { standInForWatchdog } from "../core/watchdog.testing";
+import type { SecretsCheckJson } from "./json-documents";
 
 /**
  * An expired Infisical session, end to end through the real CLI: the run stops
@@ -133,7 +134,14 @@ describe("an expired Infisical session", () => {
 		const result = await run("secrets", "check", "--json");
 
 		expect(result.exitCode).toBe(2);
-		const report = JSON.parse(result.stdout);
+		const report = JSON.parse(result.stdout) as SecretsCheckJson;
+		// SecretsCheckJson: a key may be added, never dropped.
+		expect(Object.keys(report).sort()).toEqual([
+			"exitCode",
+			"logins",
+			"ok",
+			"scopes",
+		]);
 		expect(report).toMatchObject({
 			ok: false,
 			exitCode: 2,

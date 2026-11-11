@@ -1,16 +1,10 @@
 import { environmentOpenUrl } from "../../core/app-url";
 import { openUrl } from "../../core/open-url";
 import { urlHostOverride } from "../../core/runtime-flags";
-import {
-	type CommandSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readBooleanFlag,
-	readPositionals,
-} from "../command-spec";
-import { argumentsError, CliError } from "../errors";
+import { BASE_EXITS, defineCommand } from "../command-spec";
+import { CliError } from "../errors";
 import * as log from "../log";
-import { loadLiveEnv } from "./runtime";
+import { loadLiveEnv } from "./load-env";
 
 /**
  * `buncargo url` / `buncargo open`: every URL this checkout's run knows, under
@@ -19,50 +13,6 @@ import { loadLiveEnv } from "./runtime";
  * BuncargoBar shows. `url` also prints a service's connection URL
  * (`postgres://…`); `open` takes only what a browser can open.
  */
-
-const HELP = {
-	name: "--help",
-	kind: "boolean",
-	description: "Show this help message",
-} as const;
-
-const LOCAL = {
-	name: "--local",
-	kind: "boolean",
-	description:
-		"The URL for a browser on this machine: loopback instead of BUNCARGO_URL_HOST",
-} as const;
-
-export const URL_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo url [<name>] [--local]",
-	flags: [LOCAL, HELP],
-	examples: [
-		{ command: "buncargo url", description: "List every URL, by name" },
-		{ command: "buncargo url api", description: "Print one" },
-		{
-			command: "buncargo url api --local",
-			description: "The one your own browser opens",
-		},
-		{
-			command: "buncargo url postgres",
-			description: "A service's URL, or its connection URL",
-		},
-	],
-};
-
-export const OPEN_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo open [<name>] [<capture>]",
-	flags: [HELP],
-	examples: [
-		{ command: "buncargo open", description: "Open the primary app" },
-		{ command: "buncargo open api", description: "What `o` opens in the TUI" },
-		{ command: "buncargo open previewUrl", description: "Open a captured URL" },
-		{
-			command: "buncargo open shopify previewUrl",
-			description: "An app's captured URL, as its declared action does",
-		},
-	],
-};
 
 export interface OpenSource {
 	apps: Readonly<Record<string, unknown>>;
@@ -161,21 +111,6 @@ export function findTarget(
 	)?.[1];
 }
 
-function parseNames(
-	spec: CommandSpec,
-	args: string[],
-	command: string,
-	max: number,
-) {
-	const names = readPositionals(spec, args);
-	const errors = [
-		...findUnknownFlags(spec, args).map((flag) => `Unknown flag: ${flag}`),
-		...names.slice(max).map((arg) => `Unexpected argument: ${arg}`),
-	];
-	if (errors.length > 0) throw argumentsError(errors, command);
-	return names;
-}
-
 export function resolveTarget(
 	env: Pick<OpenSource, "services">,
 	targets: Record<string, string>,
@@ -232,51 +167,97 @@ export function urlOutput(
 	};
 }
 
-export async function handleUrl(args: string[]): Promise<number> {
-	if (readBooleanFlag(args, HELP)) {
-		console.log(formatCommandHelp(URL_COMMAND_SPEC));
+export const urlCommand = defineCommand({
+	spec: {
+		name: "url",
+		summary: "Print an app's or a captured URL (lists them without a name)",
+		flags: {
+			local: {
+				kind: "boolean",
+				description:
+					"The URL for a browser on this machine: loopback instead of BUNCARGO_URL_HOST",
+			},
+		},
+		args: [{ name: "<name>", description: "A name `buncargo url` lists" }],
+		examples: [
+			{ command: "buncargo url", description: "List every URL, by name" },
+			{ command: "buncargo url api", description: "Print one" },
+			{
+				command: "buncargo url api --local",
+				description: "The one your own browser opens",
+			},
+			{
+				command: "buncargo url postgres",
+				description: "A service's URL, or its connection URL",
+			},
+		],
+	},
+	exits: BASE_EXITS,
+	run: async ({ values, positionals: [name] }) => {
+		const env = await loadLiveEnv();
+		const { lines, warning } = urlOutput(
+			env,
+			{ name, local: values.local },
+			urlHostOverride(),
+		);
+		for (const line of lines) log.line(line);
+		if (warning) log.warn(warning);
 		return 0;
-	}
-	const [name] = parseNames(URL_COMMAND_SPEC, args, "url", 1);
-	const local = readBooleanFlag(args, LOCAL);
-	const env = await loadLiveEnv();
+	},
+});
 
-	const { lines, warning } = urlOutput(env, { name, local }, urlHostOverride());
-	for (const line of lines) log.line(line);
-	if (warning) log.warn(warning);
-	return 0;
-}
+export const openCommand = defineCommand({
+	spec: {
+		name: "open",
+		summary: "Open the primary app, or any URL `url` lists",
+		flags: {},
+		args: [
+			{ name: "<name>", description: "A name `buncargo url` lists" },
+			{ name: "<capture>", description: "One of that app's captured URLs" },
+		],
+		examples: [
+			{ command: "buncargo open", description: "Open the primary app" },
+			{
+				command: "buncargo open api",
+				description: "What `o` opens in the TUI",
+			},
+			{
+				command: "buncargo open previewUrl",
+				description: "Open a captured URL",
+			},
+			{
+				command: "buncargo open shopify previewUrl",
+				description: "An app's captured URL, as its declared action does",
+			},
+		],
+	},
+	exits: { ...BASE_EXITS, 1: "no such URL, no browser here, or bad arguments" },
+	run: async ({ positionals: [name, capture] }) => {
+		const env = await loadLiveEnv();
+		if (name !== undefined && capture !== undefined) {
+			const url = (env.captured as Record<string, string | undefined>)[capture];
+			if (!(name in env.apps))
+				throw new CliError(`"${name}" is not an app of this config.`, [
+					`Configured apps: ${Object.keys(env.apps).join(", ") || "none"}`,
+				]);
+			if (!url)
+				throw new CliError(`${name} has not printed ${capture} yet.`, [
+					"Is `buncargo dev` running? `buncargo url` lists what is known.",
+				]);
+			return openOrFail(url);
+		}
+		const targets = openTargets(env, {
+			connectionUrls: false,
+			urlHostSet: urlHostOverride() !== undefined,
+		});
 
-export async function handleOpen(args: string[]): Promise<number> {
-	if (readBooleanFlag(args, HELP)) {
-		console.log(formatCommandHelp(OPEN_COMMAND_SPEC));
-		return 0;
-	}
-	const [name, capture] = parseNames(OPEN_COMMAND_SPEC, args, "open", 2);
-	const env = await loadLiveEnv();
-	if (name !== undefined && capture !== undefined) {
-		const url = (env.captured as Record<string, string | undefined>)[capture];
-		if (!(name in env.apps))
-			throw new CliError(`"${name}" is not an app of this config.`, [
-				`Configured apps: ${Object.keys(env.apps).join(", ") || "none"}`,
-			]);
-		if (!url)
-			throw new CliError(`${name} has not printed ${capture} yet.`, [
-				"Is `buncargo dev` running? `buncargo url` lists what is known.",
-			]);
-		return openOrFail(url);
-	}
-	const targets = openTargets(env, {
-		connectionUrls: false,
-		urlHostSet: urlHostOverride() !== undefined,
-	});
-
-	const target = name ?? env.resolvePrimaryApp();
-	if (target === undefined) {
-		throw new CliError("No apps to open: name a URL from `buncargo url`.");
-	}
-	return openOrFail(resolveTarget(env, targets, target, "open"));
-}
+		const target = name ?? env.resolvePrimaryApp();
+		if (target === undefined) {
+			throw new CliError("No apps to open: name a URL from `buncargo url`.");
+		}
+		return openOrFail(resolveTarget(env, targets, target, "open"));
+	},
+});
 
 /**
  * 0 when a browser opened. A machine with no opener (a headless server) must

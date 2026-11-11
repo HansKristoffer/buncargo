@@ -57,14 +57,21 @@ import {
 	isWarning,
 	runChecks,
 } from "./checks";
+import { formatCommandHelp } from "./command-spec";
+import { devCommand } from "./commands/dev";
 import { allChecks } from "./core-checks";
 import { createDevConnect, type DevConnect } from "./dev-connect";
 import {
-	type DevCliArgs,
+	type DevArgs,
 	destructiveModeGate,
-	exitOnDevArgErrors,
+	exposeRequested,
+	exposeTargets,
+	ignoredFlagWarnings,
+	isOneShot,
 	parseDevArgs,
-	printDevHelp,
+	requestedApps,
+	timingRequested,
+	tuiMode,
 } from "./dev-flags";
 import {
 	activateNamedHosts,
@@ -93,7 +100,6 @@ import { CliError } from "./errors";
 import * as log from "./log";
 import {
 	classifyCliApps,
-	parseRequiredCommaSeparatedFlag,
 	type UnhealthyApp,
 	unhealthyAppMessage,
 } from "./port-reuse";
@@ -168,14 +174,14 @@ function logSelectedAppsSummary(input: {
  * asks for, and what a one-shot mode like `--up-only` means by leaving them
  * up. `undefined` defers to `options.autoShutdown`.
  */
-function resolveIdleTimeout(args: DevCliArgs): number | false | undefined {
-	if (args.keepContainers) return false;
+function resolveIdleTimeout(args: DevArgs): number | false | undefined {
+	if (args.values["keep-containers"]) return false;
 	// Before the one-shot default: `--up-only --watchdog-timeout=5` is someone
 	// asking for a hold in as many words, and silently ignoring it would leave
 	// the containers up forever.
-	if (args.watchdogTimeoutMinutes !== undefined)
-		return args.watchdogTimeoutMinutes * 60_000;
-	if (args.oneShot) return false;
+	const minutes = args.values["watchdog-timeout"];
+	if (minutes !== undefined) return Number.parseInt(minutes, 10) * 60_000;
+	if (isOneShot(args.values)) return false;
 	return undefined;
 }
 
@@ -209,10 +215,33 @@ export async function runCli<
 		/** Test-only tunnel substitutes. */
 		cliTestTunnel?: TunnelApi;
 		timer?: PhaseTimer;
+		/** `args` already parsed, by `buncargo dev`. */
+		parsed?: DevArgs;
 	} = {},
 ): Promise<void> {
 	const code = await runDevCommand(env, options);
 	if (code !== undefined) process.exit(code);
+}
+
+/**
+ * `args` parsed, or 1 after printing why it does not parse: programmatic
+ * callers reach `runCli` with argv of their own.
+ */
+function devArgsOf(
+	options: CliOptions & { parsed?: DevArgs },
+): DevArgs | number {
+	if (options.parsed) return options.parsed;
+	try {
+		const parsed = parseDevArgs(options.args ?? process.argv.slice(2));
+		if (!parsed.help) return parsed;
+		console.log(formatCommandHelp(devCommand));
+		return 0;
+	} catch (error) {
+		if (!(error instanceof CliError)) throw error;
+		log.error(error.message);
+		for (const hint of error.hints) log.hint(hint);
+		return 1;
+	}
 }
 
 /**
@@ -225,35 +254,30 @@ async function runDevCommand<
 	TApps extends Record<string, AppConfig>,
 >(
 	env: DevEnvironment<TServices, TApps>,
-	options: CliOptions & { cliTestTunnel?: TunnelApi; timer?: PhaseTimer },
+	options: CliOptions & {
+		cliTestTunnel?: TunnelApi;
+		timer?: PhaseTimer;
+		parsed?: DevArgs;
+	},
 ): Promise<DevFlowExit> {
-	const {
-		args: rawArgs = process.argv.slice(2),
-		watchdog = true,
-		cliTestTunnel,
-	} = options;
-	const args = parseDevArgs(rawArgs);
+	const { watchdog = true, cliTestTunnel } = options;
+	const args = devArgsOf(options);
+	if (typeof args === "number") return args;
+	for (const warning of ignoredFlagWarnings(args.values)) log.warn(warning);
 
-	if (args.help) {
-		printDevHelp();
-		return 0;
-	}
-
-	exitOnDevArgErrors(args);
-	for (const warning of args.ignoredFlags) log.warn(warning);
-
-	if (args.detach && detachedRunMode() !== undefined) {
+	if (args.values.detach && detachedRunMode() !== undefined) {
 		// The background run re-detaching would start another, without end.
 		log.error(
 			"--detach reached a run that is already in the background; it was not started again.",
 		);
 		return 1;
 	}
-	if (args.detach) {
+	if (args.values.detach) {
 		const { DETACH_TIMEOUT_MS, runDetached } = await import("./dev-detach");
 		return runDetached({
 			root: env.root,
-			keep: args.keep,
+			keep: args.values.keep,
+			json: args.values.json,
 			argv: process.argv,
 			timeoutMs: DETACH_TIMEOUT_MS,
 		});
@@ -306,13 +330,16 @@ async function runDevCommand<
 			startPublicTunnels,
 			stopPublicTunnels,
 		},
-		{ exposeRequested: args.exposeRequested, signal: controller.signal },
+		{
+			exposeRequested: exposeRequested(args.values),
+			signal: controller.signal,
+		},
 	);
 
 	const timer =
 		options.timer ??
-		(args.timing
-			? createPhaseTimer({ json: args.timingJson })
+		(timingRequested(args.values)
+			? createPhaseTimer({ json: args.values["timing-json"] })
 			: createNoopPhaseTimer());
 
 	let connect: DevConnect | undefined;
@@ -320,7 +347,7 @@ async function runDevCommand<
 	let failure: RunFailure | undefined;
 	const failureContext: DevFailureContext = { setupHints: [] };
 	try {
-		if (!args.oneShot && !args.down && !args.reset)
+		if (!isOneShot(args.values) && !args.values.down && !args.values.reset)
 			connect = createDevConnect();
 		exitCode = await runDevFlow(env, args, tunnels, {
 			watchdog,
@@ -405,15 +432,15 @@ async function teardown<
 /** Ask, or refuse without a terminal, before `--reset` or `--down --all`. */
 async function confirmDestructiveMode(
 	env: { projectName: string },
-	args: DevCliArgs,
+	args: DevArgs,
 ): Promise<void> {
-	const gate = destructiveModeGate(args, {
+	const gate = destructiveModeGate(args.values, {
 		interactive: isInteractive(),
 		ci: isCI(),
 	});
 	if (gate === "run") return;
 
-	const what = args.reset
+	const what = args.values.reset
 		? `--reset removes ${env.projectName}'s volumes, including its database.`
 		: "--down --all stops every buncargo environment you started on this machine, including other checkouts' runs.";
 	await typedSwitch(gate, {
@@ -493,7 +520,7 @@ async function runDevFlow<
 	TApps extends Record<string, AppConfig>,
 >(
 	env: DevEnvironment<TServices, TApps>,
-	args: DevCliArgs,
+	args: DevArgs,
 	tunnels: DevTunnelCoordinator<TServices, TApps>,
 	options: {
 		watchdog: boolean;
@@ -514,13 +541,13 @@ async function runDevFlow<
 
 	await confirmDestructiveMode(env, args);
 
-	if (args.down && args.all) {
+	if (args.values.down && args.values.all) {
 		const { stopAllBuncargoEnvironments } = await import("./commands/inspect");
 		await stopAllBuncargoEnvironments();
 		return 0;
 	}
 
-	if (args.down || args.reset) {
+	if (args.values.down || args.values.reset) {
 		env.logInfo();
 		// The containers come first: a registry that cannot be rewritten must
 		// not leave them running, and its own message says how to fix it.
@@ -532,7 +559,11 @@ async function runDevFlow<
 		}
 		// `--reset` was confirmed for exactly this; `--down` keeps services
 		// another live run uses, and says so.
-		await env.stop({ removeVolumes: args.reset, force: args.reset, signal });
+		await env.stop({
+			removeVolumes: args.values.reset,
+			force: args.values.reset,
+			signal,
+		});
 		return 0;
 	}
 
@@ -558,12 +589,16 @@ async function runDevFlow<
 		signal,
 		wait: true,
 		// The seed overlaps the apps only in a run that spawns them.
-		startServers: !args.oneShot,
-		seed: args.seed ? "force" : args.oneShot ? "skip" : "auto",
-		prepare: args.upOnly ? "containers" : args.migrate ? "migrate" : "all",
+		startServers: !isOneShot(args.values),
+		seed: args.values.seed ? "force" : isOneShot(args.values) ? "skip" : "auto",
+		prepare: args.values["up-only"]
+			? "containers"
+			: args.values.migrate
+				? "migrate"
+				: "all",
 		onPhase: timer.record,
 		onlyApps: selectedAppNames,
-		autoStartDocker: args.dockerAutostart ? undefined : false,
+		autoStartDocker: !args.values["no-docker-autostart"] ? undefined : false,
 		// The dev servers below run their dev commands in CI too.
 		productionBuild: false,
 		// Only the CLI knows the hold its flags ask for. Claimed whether or
@@ -586,7 +621,7 @@ async function runDevFlow<
 	// Before anything is started: a missing generated file fails here with its
 	// fix, instead of deep inside whichever app imports it first. Only the fast
 	// checks: this runs on every start in every worktree.
-	if (!args.oneShot) {
+	if (!isOneShot(args.values)) {
 		const anyEnv = env as unknown as AnyDevEnvironment;
 		const checks = allChecks(anyEnv).filter((check) => check.fast !== false);
 		const failed = (
@@ -619,7 +654,7 @@ async function runDevFlow<
 	// move this checkout's block, or fail the service preflight.
 	// Removing a stack is not undone by a retry: the session first. Allocating
 	// below overlaps it, and only does what the next run would do again.
-	if (args.replaceStale) {
+	if (args.values["replace-stale"]) {
 		await timer.measure("secrets session", () => secretsSession);
 		await timer.measure("stale stacks", () =>
 			replaceStaleStacksOn(
@@ -638,15 +673,15 @@ async function runDevFlow<
 	// ── Containers ───────────────────────────────────────────────────────────
 	// Held rather than printed: a run that takes over another one activates a
 	// second time, and only that attempt describes the URLs the banner prints.
-	let hostsWarnings = args.oneShot
+	let hostsWarnings = isOneShot(args.values)
 		? []
 		: await timer.measure("hosts", () =>
-				activateNamedHosts(env, { enabled: args.hosts, signal }),
+				activateNamedHosts(env, { enabled: !args.values["no-hosts"], signal }),
 			);
 	// After named hosts, which owns the first-run prompt slot on a fresh
 	// machine, and before the containers, so a question cannot land in the
 	// middle of startup output.
-	if (!args.oneShot) {
+	if (!isOneShot(args.values)) {
 		signal.throwIfAborted();
 		await offerMenuBarApp(signal);
 	}
@@ -655,6 +690,14 @@ async function runDevFlow<
 	const flushHostsWarnings = (): void => {
 		for (const warning of hostsWarnings) log.warn(warning);
 		printedHostsWarnings.push(...hostsWarnings);
+		// `dev --detach` repeats them: the fallback to localhost:port is
+		// otherwise silent.
+		const reported = hostsWarnings;
+		if (reported.length > 0)
+			detached?.recordDetachedReport(env.root, (report) => ({
+				...report,
+				hostsWarnings: [...report.hostsWarnings, ...reported],
+			}));
 		hostsWarnings = [];
 	};
 	signal.throwIfAborted();
@@ -669,7 +712,7 @@ async function runDevFlow<
 	const prepared = await pipeline.prepare(prepareOptions);
 	const overlapSeed = prepared.seed.kind === "overlap";
 
-	let classifiedApps: ClassifiedApps = args.oneShot
+	let classifiedApps: ClassifiedApps = isOneShot(args.values)
 		? {
 				startApps: {},
 				reusedApps: {},
@@ -692,7 +735,9 @@ async function runDevFlow<
 			);
 
 	// Whatever is taken over below, by whichever rule: its lease follows.
-	let takeover = initialTakeover(args.takeover);
+	let takeover = initialTakeover(
+		args.values.takeover && !isOneShot(args.values),
+	);
 	async function takeOver(candidates: TakeoverCandidates) {
 		// Never begun once interrupted: it kills the other run's servers, and
 		// an interrupted run would not start them here.
@@ -706,7 +751,7 @@ async function runDevFlow<
 			skipContainers: !hasServices,
 		});
 		hostsWarnings = await activateNamedHosts(env, {
-			enabled: args.hosts,
+			enabled: !args.values["no-hosts"],
 			signal,
 			takeover: candidates.names,
 		});
@@ -734,7 +779,7 @@ async function runDevFlow<
 			env.ports,
 		);
 		const replaceable =
-			!args.oneShot && candidates.names.length === unhealthy.length;
+			!isOneShot(args.values) && candidates.names.length === unhealthy.length;
 		const accepted =
 			replaceable &&
 			(unhealthy.every((app) => app.detached) ||
@@ -751,10 +796,10 @@ async function runDevFlow<
 	}
 
 	// ── Expose planning ──────────────────────────────────────────────────────
-	// Never in a one-shot mode (`DevCliArgs.ignoredFlags`).
-	if (args.exposeRequested) {
+	// Never in a one-shot mode (`DevArgs.ignoredFlags`).
+	if (exposeRequested(args.values)) {
 		await tunnels.planExpose({
-			exposeValue: args.exposeValue,
+			exposeValue: exposeTargets(args.values),
 			appsRequested: selectedAppNames !== undefined,
 			selectedAppNames: new Set(Object.keys(appsForDev)),
 			selectedServiceNames: new Set(plan.requiredServiceKeys),
@@ -765,21 +810,21 @@ async function runDevFlow<
 
 	// The modes below exit before the takeover, so nothing is going to retry
 	// the activation for them and their warnings are already final.
-	if (args.oneShot) flushHostsWarnings();
+	if (isOneShot(args.values)) flushHostsWarnings();
 
 	// ── One-shot modes ───────────────────────────────────────────────────────
-	if (args.migrate) {
+	if (args.values.migrate) {
 		env.logInfo(undefined, undefined, plan);
 		log.line();
 		log.success("Migrations applied successfully");
 		return 0;
 	}
 
-	if (args.seed) {
+	if (args.values.seed) {
 		return reportCliSeed(env, prepared.seed, plan.requiredServiceKeys);
 	}
 
-	if (args.upOnly) {
+	if (args.values["up-only"]) {
 		env.logInfo(undefined, undefined, plan);
 		log.line();
 		log.success("Containers started. Environment ready.");
@@ -836,7 +881,7 @@ async function runDevFlow<
 	const claimed = await pipeline.claimApps(prepared, {
 		apps: classifiedApps.startApps,
 		reused: classifiedApps.reusedApps,
-		attached: args.attach,
+		attached: args.values.attach,
 		leasePolicy: cliLeasePolicy({ takeover: () => takeover }),
 		signal,
 	});
@@ -875,7 +920,7 @@ async function runDevFlow<
 		skippedNames: leaseSkips.map((skip) => skip.app),
 	});
 
-	if (!args.exposeRequested) {
+	if (!exposeRequested(args.values)) {
 		env.logInfo(undefined, undefined, {
 			appNames: Object.keys({
 				...classifiedApps.startApps,
@@ -900,7 +945,9 @@ async function runDevFlow<
 	const holds = next === "hold";
 	const appsElapsed = startTimer();
 	let firstSpawn = false;
-	const view = openDevOutput(env, classifiedApps.startApps, { tui: args.tui });
+	const view = openDevOutput(env, classifiedApps.startApps, {
+		tui: tuiMode(args.values),
+	});
 	failureContext.output = view.output;
 	// A service container stopping under the run: in the run's log, the TUI's
 	// Overview, and on the terminal in stream mode, where events are not printed.
@@ -960,8 +1007,8 @@ async function runDevFlow<
 				if (servicesOnly)
 					log.success("Services ready. Press Ctrl-C to end the run.");
 			},
-			attach: args.attach,
-			extraArgs: args.passthrough,
+			attach: args.values.attach,
+			extraArgs: [...args.passthrough],
 			output: view.output,
 			waitForExit: true,
 			onSignal: () => {
@@ -977,7 +1024,7 @@ async function runDevFlow<
 			// A developer's other apps should not go down with one that
 			// never came up; `ci` and library starts keep failing the run.
 			keepOthersOnFailure: env.onAppFailure !== "stop-run",
-			watch: args.watch,
+			watch: !args.values["no-watch"],
 			onAppPhase: async (name, life, previous) => {
 				const spawned = life.pid !== undefined && life.pid !== previous.pid;
 				if (spawned) {
@@ -1033,7 +1080,7 @@ async function runDevFlow<
 			},
 			// Nothing to wait for without --expose, so needsPublicUrls apps
 			// join wave 1 and get health-checked like everything else.
-			deferPublicUrlApps: args.exposeRequested,
+			deferPublicUrlApps: exposeRequested(args.values),
 		});
 		return undefined;
 	} finally {
@@ -1052,11 +1099,10 @@ function selectDevApps<TApps extends Record<string, AppConfig>>(
 		DevEnvironment<Record<string, ServiceConfig>, TApps>,
 		"apps" | "profiles"
 	>,
-	args: DevCliArgs,
+	args: DevArgs,
 ): Extract<keyof TApps, string>[] | undefined {
-	const profile = selectProfileApps(env, args.profile);
-	if (!args.appsRequested) return profile;
-	const names = parseRequiredCommaSeparatedFlag("--apps", args.appsValue);
+	const names = requestedApps(args);
+	if (names === undefined) return selectProfileApps(env, args.values.profile);
 	assertConfiguredApps(Object.keys(env.apps), names);
 	return names as Extract<keyof TApps, string>[];
 }

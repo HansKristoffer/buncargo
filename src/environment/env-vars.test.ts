@@ -29,9 +29,9 @@ afterEach(() => {
 		rmSync(root, { recursive: true, force: true });
 });
 
-it("prints the declared input in env --json, and none of the rest of the shell", async () => {
+it("prints the declared input in env, and none of the rest of the shell", async () => {
 	const root = checkout();
-	const child = Bun.spawn([process.execPath, BIN, "env", "--json"], {
+	const child = Bun.spawn([process.execPath, BIN, "env"], {
 		cwd: root,
 		env: { ...process.env, SOME_TOKEN: "exported", DECLARED: "from-shell" },
 		stdout: "pipe",

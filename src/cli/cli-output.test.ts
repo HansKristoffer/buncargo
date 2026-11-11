@@ -65,6 +65,12 @@ const HELP_COMMANDS = [
 	["ports"],
 	["sql"],
 	["prune"],
+	// Commands that had no spec: `doctor --help` ran the sweep.
+	["ls"],
+	["status"],
+	["runs"],
+	["doctor"],
+	["prisma"],
 ];
 
 describe("buncargo CLI output", () => {
@@ -81,6 +87,8 @@ describe("buncargo CLI output", () => {
 		["-h"],
 		["help"],
 		["help", "agents"],
+		// Built from every command's exit codes.
+		["help", "agents", "exits"],
 		["version"],
 		["--version"],
 		["-v"],
@@ -105,6 +113,10 @@ describe("buncargo CLI output", () => {
 		// A handler that returns its exit code.
 		["wait"],
 		["dev", "--nope"],
+		// It printed prose and exited 0.
+		["status", "--jsno"],
+		// It ran the default profile.
+		["dev", "--profile"],
 		["runs", "--json"],
 	]) {
 		it(`buncargo ${args.join(" ")}`.trimEnd(), () => {

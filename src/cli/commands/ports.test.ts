@@ -20,7 +20,10 @@ import {
 import { allocatePortBlock } from "../../core/port-allocation";
 import { buildRunEntry, publishRun } from "../../core/run-registry";
 import { CI_ENV_VARS } from "../../core/runtime-flags";
-import { handlePorts, parsePinnedOffset } from "./ports";
+import { runCommand } from "../command-spec";
+import { parsePinnedOffset, portsCommand } from "./ports";
+
+const handlePorts = (args: string[]) => runCommand(portsCommand, args);
 
 const CLI = resolve(import.meta.dir, "../bin.ts");
 
@@ -149,12 +152,8 @@ it("pins whole steps only, so a pinned block lines up with allocated ones", () =
 });
 
 it("takes the checkout only through --root, and --root only for release", async () => {
-	await expect(handlePorts(["release"])).rejects.toThrow(
-		"ports release needs either the checkout (--root <path>) or an idle time (--idle=7d).",
-	);
-	await expect(handlePorts(["--root", stale])).rejects.toThrow(
-		"--root, --idle and --yes are only for ports release.",
-	);
+	expect(await handlePorts(["release"])).toBe(1);
+	expect(await handlePorts(["--root", stale])).toBe(1);
 	expect(claimedNames()).toHaveLength(3);
 });
 
@@ -183,15 +182,11 @@ it("releases only the claims idle for longer than the duration, of checkouts wit
 		.map(([key]) => key);
 	expect(reclaimed).toEqual([roots[1]]);
 	for (const value of ["soon", "0"])
-		await expect(handlePorts(["release", `--idle=${value}`])).rejects.toThrow(
-			`got "${value}"`,
-		);
-	await expect(handlePorts(["release", "--idle=soon"])).rejects.toThrow(
-		'--idle takes a duration such as 7d, 12h or 30m (a bare number is days): got "soon".',
-	);
-	await expect(
-		handlePorts(["release", "--idle=7d", "--root", stale]),
-	).rejects.toThrow("ports release needs either the checkout");
+		expect(await handlePorts(["release", `--idle=${value}`, "--yes"])).toBe(1);
+	expect(
+		await handlePorts(["release", "--idle=7d", "--root", stale, "--yes"]),
+	).toBe(1);
+	expect(claimedNames()).toHaveLength(3);
 });
 
 it("answers status --json and ports in a checkout with no block while every block is claimed, and pins it", async () => {

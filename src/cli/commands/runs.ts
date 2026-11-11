@@ -10,7 +10,8 @@ import {
 	type RunEntry,
 	readLiveRuns,
 } from "../../core/run-registry";
-import { hasFlag } from "../flags";
+import { BASE_EXITS, defineCommand } from "../command-spec";
+import type { RunsJson } from "../json-documents";
 import * as log from "../log";
 
 /**
@@ -23,14 +24,14 @@ import * as log from "../log";
  * Unlike `ls` this needs no container runtime, so it answers instantly and
  * still works with `--no-docker-autostart` or a stopped Docker.
  */
-export async function handleRuns(args: string[] = []): Promise<void> {
+async function showRuns(json: boolean): Promise<void> {
 	const runs = await readLiveRuns();
 	const leases = await readLeases().catch(() => []);
 	const now = Date.now();
 	const proxy = readProxyActivity(now);
 	const connections = await readRunConnections(runs, now);
 
-	if (hasFlag(args, "--json")) {
+	if (json) {
 		// `idleStopsAt`: when a detached run stops if nothing uses it first.
 		const withLimits = runs.map((run) => {
 			const idle = readIdleState(run, proxy, connections);
@@ -38,7 +39,13 @@ export async function handleRuns(args: string[] = []): Promise<void> {
 				? { ...run, idleStopsAt: new Date(idle.stopsAt).toISOString() }
 				: run;
 		});
-		log.line(JSON.stringify({ version: 1, runs: withLimits, leases }, null, 2));
+		log.line(
+			JSON.stringify(
+				{ version: 1, runs: withLimits, leases } satisfies RunsJson,
+				null,
+				2,
+			),
+		);
 		return;
 	}
 
@@ -97,3 +104,22 @@ function printRun(run: RunEntry, idle: string | undefined): void {
 		);
 	}
 }
+
+export const runsCommand = defineCommand({
+	spec: {
+		name: "runs",
+		summary: "Show the dev runs active on this machine",
+		flags: {
+			json: {
+				kind: "boolean",
+				description: "Machine-readable view of every active run",
+			},
+		},
+	},
+	exits: BASE_EXITS,
+	json: "RunsJson (--json)",
+	run: async ({ values }) => {
+		await showRuns(values.json);
+		return 0;
+	},
+});

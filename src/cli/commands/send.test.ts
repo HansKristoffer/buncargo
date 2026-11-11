@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RunOutput } from "../../core/process/run-output";
 import { buildRunEntry, publishRun } from "../../core/run-registry";
+import { runCommand } from "../command-spec";
 import { sendRefusal } from "../dev-output";
 import { watchSendRequests } from "../restart-requests";
-import { handleSend, SEND_EXIT } from "./send";
+import { SEND_EXIT, sendCommand } from "./send";
 
 // The registry lives under HOME: the test's own, never the developer's.
 let dir: string;
@@ -54,7 +55,7 @@ it("exits by what became of the keys", async () => {
 		return refusal;
 	});
 	const send = (...args: string[]) =>
-		handleSend([...args, `--root=${root}`], { replyTimeoutMs: 5_000 });
+		runCommand(sendCommand, [...args, `--root=${root}`]);
 	try {
 		expect(await send("expo", "i")).toBe(SEND_EXIT.ok);
 		expect(typed).toEqual(["i"]);

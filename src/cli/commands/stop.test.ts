@@ -30,7 +30,10 @@ import {
 	releaseRun,
 } from "../../core/run-registry";
 import { recordRunStops, runStopRecord } from "../../core/run-stops";
-import { handleStop } from "./stop";
+import { runCommand } from "../command-spec";
+import { stopCommand } from "./stop";
+
+const handleStop = (args: string[]) => runCommand(stopCommand, args);
 
 /**
  * `HOME` is a temporary directory and the only runtime is a fake `docker`
@@ -236,6 +239,18 @@ describe("buncargo stop --all", () => {
 		}
 	});
 
+	// 3 means "left running on purpose", and BuncargoBar offers --force on
+	// it; a runtime that failed the teardown is no refusal to force past.
+	it("exits 1 when the teardown fails, keeping the entry for another try", async () => {
+		writeFileSync(
+			docker,
+			`#!/bin/sh\necho "$*" >> "${root}/calls"\ncase "$*" in *down*) exit 1 ;; esac\nexit 0\n`,
+		);
+		await publishRun(held("held"));
+		expect(await handleStop(["--all", "--root", root])).toBe(1);
+		expect((await loadRuns()).map((run) => run.sessionId)).toEqual(["held"]);
+	});
+
 	it("succeeds and says so when the checkout has no run at all", async () => {
 		const printed = await capture("log", () =>
 			handleStop(["--all", "--root", root]),
@@ -300,11 +315,7 @@ describe("buncargo stop --all", () => {
 
 describe("buncargo stop arguments", () => {
 	it("exits 1 on an unknown flag, which is not a refusal", async () => {
-		const printed = await capture("error", () =>
-			handleStop(["--frce", "--root", root]),
-		);
-		expect(printed.code).toBe(1);
-		expect(printed.text).toContain("--frce");
+		expect(await handleStop(["--frce", "--root", root])).toBe(1);
 	});
 });
 

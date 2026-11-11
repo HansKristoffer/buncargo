@@ -4,11 +4,12 @@
 
 ```bash
 bunx buncargo dev                 # Start containers + selected apps
-bunx buncargo dev --apps=api,web  # Named apps plus transitive requiredApps
+bunx buncargo dev api web         # Named apps plus transitive requiredApps (--apps=api,web too)
 bunx buncargo dev --profile=full  # The apps of profiles.full
 bunx buncargo dev --no-tui        # Prefixed lines instead of the terminal UI
 bunx buncargo dev --detach        # In the background; returns once the apps are up
 bunx buncargo dev --detach --keep # Same, without the 2-hour idle limit
+bunx buncargo dev --detach --json # Same, the outcome as one JSON document
 bunx buncargo dev --no-watch      # Ignore the apps' watch config for this run
 bunx buncargo dev --attach=expoApp
 bunx buncargo dev --expose
@@ -29,7 +30,7 @@ bunx buncargo dev --no-hosts
 bunx buncargo dev --runtime=apple  # Run services on Apple container
 bunx buncargo dev --timing         # Entry through app readiness, including preparation
 bunx buncargo dev --timing-json    # Same measurements and numeric counters as JSON
-bunx buncargo dev --apps=expoApp -- --clear
+bunx buncargo dev expoApp -- --clear
 bunx buncargo ls
 bunx buncargo runs                # What is running on this machine
 bunx buncargo runs --json         # Same, machine-readable
@@ -119,8 +120,18 @@ bunx buncargo slot -- bun test      # A heavy command in a check slot
 bunx buncargo help
 bunx buncargo help agents         # The guide for AI agents working in a checkout
 bunx buncargo help agents db      # One topic of it (`all` prints every topic)
+bunx buncargo help agents exits   # Every command's exit codes and JSON documents
 bunx buncargo version
 ```
+
+Every command takes only what its `--help` lists, and exits 1 naming anything else: an unknown flag, a
+value on a flag that takes none (`--detach=1`), a flag that needs a value given without one (`dev
+--profile`), a flag given twice, or an argument too many. A value that starts with `-` is written with
+`=` (`--command=-1`). A flag with an optional value takes it only after `=`: `dev --expose=api` exposes
+`api`, while `dev --expose api` exposes every `expose: true` target and starts only `api`. `-h` and
+`--help` print a command's options and exit codes on every command and subcommand (`files pull --help`),
+whatever else is on the line. `buncargo help agents exits` lists the exit codes beyond 0 and 1 for
+every command, and the JSON documents they print.
 
 Inside a project, the CLI runs the project's own buncargo. When `bunx buncargo` reaches a
 different version (a global install, because the checkout has no `node_modules/.bin`), it prints
@@ -137,7 +148,7 @@ version the project did not choose.
 
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `claim` | `env` | `shifted` | `unallocated`), including `vars`: the variables `exec`, tasks and the apps are given, without their Infisical secrets. `--get ports.api` prints one raw value for scripts, and a bare name (`--get DATABASE_URL`) reads from `vars`. `--export` prints `vars` as quoted `export` lines.
 
-`buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached-<pid>.log` (`.buncargo/logs/detached.log` links to the newest run's) and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed; 2 when apps are still starting after 10 minutes (the run keeps going; `buncargo wait --app=<app>` waits on). The log of the last detached run that ended is kept until a later one has ended too. A failure ends the output with one block: what failed in one line (the app, the seed or the step), its last 20 lines of output, the setup checks that warned before the start, and what to run next (`buncargo logs <app>`), so `dev --detach | tail` shows the cause. Attached `dev` ends a failed start with the same block. Stop it with `buncargo stop`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
+`buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached-<pid>.log` (`.buncargo/logs/detached.log` links to the newest run's) and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed; 2 when apps are still starting after 10 minutes (the run keeps going; `buncargo wait --app=<app>` waits on). The log of the last detached run that ended is kept until a later one has ended too. A failure ends the output with one block: what failed in one line (the app, the seed or the step), its last 20 lines of output, the setup checks that warned before the start, and what to run next (`buncargo logs <app>`), so `dev --detach | tail` shows the cause. Attached `dev` ends a failed start with the same block. Stop it with `buncargo stop`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script. `dev --detach --json` prints the outcome as one JSON document instead, with the same exit code: `{ version: 1, outcome: "up" | "finished" | "failed" | "timeout", exitCode, pid, log, apps: [{ name, status, url }], hostsWarnings, failures, idleLimitMs }`. `hostsWarnings` says why named URLs fell back to `localhost:port`, which the run reports itself; `failures` holds each failure block (`cause`, `step`, `output`, `hints`, `next`).
 
 A detached run stops by itself after 2 hours idle: no request through buncargo's named-hosts proxy to this checkout, no open connection to one of its apps' ports (a browser tab's HMR socket, a client on `localhost:port`), and no `buncargo` command run in it. `buncargo runs` and `ls` show the time left (`runs --json` gives it as `idleStopsAt`), and once the watchdog has stopped a run, `stop` and `ls` say so and why. While a `dev` in a terminal runs in the same checkout, the detached run is left alone, since that run may be serving from its apps. `dev --detach --keep` turns the limit off. Tailscale mode (`BUNCARGO_HOSTS=tailscale`) gives detached runs no limit. When neither the hosts daemon's request counts nor the machine's open connections can be read, the limit is not enforced; with named hosts on, `buncargo hosts install` updates a daemon too old to count requests. A detached run whose checkout has been deleted for 10 minutes is stopped too, `--keep` or not. A run in a terminal is never stopped either way.
 
@@ -1183,20 +1194,25 @@ attached app, because closing it tears the run down by design, and an app this
 run reused from another terminal, because that process is not ours. A process
 whose identity cannot be read (`ps` failed or timed out) is refused too, rather
 than reported stopped while it may still run. Exit codes are `0` stopped (or
-nothing running for this checkout), `1` a usage error such as an unknown flag,
-`2` no such app or service, `3` refused or not removed. A run that ends on its
+nothing running for this checkout), `1` it could not be stopped (a teardown
+failed, the runtime did not answer, a port could not be freed) or a usage error
+such as an unknown flag, `2` no such app or service, `3` refused: left running
+on purpose. A run that ends on its
 own just as `stop` reaches it counts as stopped, and its idle containers are
 taken down. Stopping a run also removes its checkout's service routes from the
 named hosts. A stopped Docker daemon or Apple system
 service has nothing to stop, but one that refuses this user or does not answer
-may still run the containers, so `stop` exits `3` and `dev --down` exits `1`
-rather than reporting nothing to stop.
+may still run the containers, so `stop` and `dev --down` exit `1` rather than
+reporting nothing to stop.
 
 `buncargo restart <app>` asks the `buncargo dev` run that started the app to
-replace it, and returns once that run has begun, so
-`buncargo restart api && buncargo wait --app=api` waits for the new process. A
-script's `start()` takes no restart requests: the command then restarts nothing
-and exits `3`; restart the app from that script instead.
+replace it, and returns once that run answers, so
+`buncargo restart api && buncargo wait --app=api` waits for the new process.
+Exit codes are `0` the app's process was replaced, `1` the replacement failed
+(the error says why) or the run did not answer in time, `2` no run of the
+checkout started the app, and `3` refused, with nothing restarted: a script's
+`start()` takes no restart requests (restart the app from that script instead),
+or the app runs in another terminal and was reused.
 
 An app gets its `stopGraceMs` (5 seconds unless set) to exit after SIGTERM
 before it is killed. Stopping a whole run waits 5 seconds plus the longest

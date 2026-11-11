@@ -1,9 +1,8 @@
 # CLI
 
 `src/cli/bin.ts` is the executable; `runCli` is published through `buncargo/api`. `run-cli.ts` is the
-dev flow; `flags.ts` (argv primitives),
-`dev-flags.ts` (the dev command's typed args and help), `dev-hosts.ts` and `dev-tunnels.ts` hold the
-pieces it orchestrates.
+dev flow; `dev-flags.ts` (the dev command's spec and the rules between its flags), `dev-hosts.ts`
+and `dev-tunnels.ts` hold the pieces it orchestrates.
 
 ## Commands, flags and errors
 
@@ -31,26 +30,32 @@ pieces it orchestrates.
   The guard never installs from source or after a hand-over. An install that replaces the
   package this process runs from re-executes it, since the rest of its modules load lazily.
 
-- `command-spec.ts` is the flag-spec primitive: one `CommandSpec` per command drives parsing,
-  unknown-flag detection, value validation and generated help, so those four cannot drift. Add a
-  flag to the spec, not to a parallel list. `readPositionals` finds subcommands and stray
-  arguments, skipping `--flag value` pairs, so no command re-walks argv itself.
-- `commands/registry.ts` is the single source for top-level command names (`CliCommandName`, used
-  by `bin.ts`'s command table and by `help.ts`) and for the `hosts` and `bar` subcommands. Every
-  dispatch over them is an exhaustive hanzio `typedSwitch`.
-- `bin.ts` dispatches through `hanzio/cli` (`defineCli`), and every command is `raw`: it gets its
-  arguments unparsed and keeps its own spec, help and exit codes. A command with a Zod `input`
-  would load `zod` on every run, which a raw-only CLI never does, and hanzio's generated help has
-  its own layout (a description section, a `-h, --help` row). hanzio's `defaultCommand` (`help`),
-  `unknownCommand` (an integration's namespace, else `Unknown command`) and `onError` (`log.fail`)
-  keep the root's output. One check stays in `bin.ts`: buncargo reads only the first argument as
-  the command, so `--help dev` is help and `--json runs` is an unknown command, where hanzio would
-  take leading flags as globals and keep looking. `cli-output.test.ts` pins every command's
-  `--help` and the root. A changed or removed line in its snapshot is a breaking change; an added
-  command or flag only adds lines.
+- Every command module exports one `defineCommand({ spec, exits, json?, run })` (`command-spec.ts`),
+  or a `defineGroup` of them for subcommands (`files`, `ports`, `hosts`, …). The spec is the only
+  description of what the command accepts: `parseArgs(spec, argv)` reads it (over `node:util`
+  `parseArgs` tokens), and the same spec renders `--help`, the root help row and, with `exits`,
+  the `help agents exits` table. Add a flag to the spec and read it from `parsed.values`, typed
+  by the spec; never look at argv again. Rules between flags (`--keep` needs `--detach`) live
+  beside the spec and throw `argumentsError`.
+- `parseArgs` is strict on purpose: an ignored flag was a silent wrong answer (`status --jsno`
+  printed prose and exited 0, `dev --profile` ran the default profile). A separated value that
+  starts with `-` is refused rather than read, so `--profile --apps=x` cannot name a profile
+  `--apps=x`. An optional value (`--expose[=x]`) is only ever inline, or `dev --expose api` would
+  be ambiguous now that `dev` takes app names. `forwardUnknown` is for `prisma` alone, whose
+  arguments are Prisma's.
+- `exits` lists every code a command returns. `1` is failure or bad arguments everywhere; the
+  others mean one thing per command, and `stop`, `send` and `restart` share theirs (2 no such
+  target, 3 refused) because BuncargoBar and agents branch on them.
+- `commands/registry.ts` lists the top-level commands as lazy loaders: `bin.ts` loads only the one
+  it runs, and only the root help and `help agents exits` load them all (about 70 ms). buncargo
+  reads only the first argument as the command, so `--help dev` is help and `--json runs` is an
+  unknown command. `cli-output.test.ts` pins every command's `--help` and the root. A changed or
+  removed line in its snapshot is a breaking change; an added command or flag only adds lines.
+- Each JSON document a command prints has a type in `json-documents.ts`, which the command builds
+  with `satisfies`, and a test that pins its keys: scripts and agents parse them.
 - Failures inside a command flow throw `CliError` (`errors.ts`) so the flow can release tunnels,
-  host routes and the terminal before exiting 1. Argv problems, which happen before anything
-  starts, exit through `log.fail`.
+  host routes and the terminal before exiting 1. Argv problems are an `ArgumentsError`, which
+  `runCommand` prints and turns into exit 1.
 - `log.ts` is the CLI status and error facade (`info`/`success`/`done`/`warn`/`error`/`hint`/`fail`);
   `src/environment/logging.ts` stays responsible for the rich environment banner.
 - `commands/` contains command-specific behavior; `commands/inspect/` holds `ls`, `status` and
@@ -159,12 +164,14 @@ pieces it orchestrates.
   request carries an id, and the run answers it in `send/<session>.replies/<id>`, typed or why
   not, so `send` can exit 3 rather than report keys that reached nothing.
 - `commands/restart.ts` never writes the app's row: only the run knows a restart began, and it
-  marks the row `starting` itself (`onAppRestarting`, on both entry points). A library `start()`
-  records pids but reads no requests, so a row the command marked stayed `starting` and
-  `restart && wait --app` hung. The command waits for the request file to be taken (`dev` reads
-  it from before its first app spawns, so a pid means a reader if there is one), then for the
-  row to move on, so the `wait` that follows sees the new process; a request nobody takes is
-  withdrawn and the command exits 3.
+  marks the row `starting` itself. A library `start()` records pids but reads no requests, so a
+  row the command marked stayed `starting` and `restart && wait --app` hung. Like `send`, each
+  request carries an id the run answers in `restart/<session>.replies/<id>`: `began` once the
+  supervisor replaced the process, `failed` with why, or `not-ours` for an app it did not spawn.
+  The command first waits for the request file to be taken (`dev` reads it from before its first
+  app spawns, so a pid means a reader if there is one); a request nobody takes is withdrawn and
+  the command exits 3. The answer waits out the app's `stopGraceMs`, since the old process
+  stops before the new one spawns.
 - `commands/inspect/file-table.ts` reads the machine's open-file table (`sysctl` /
   `/proc/sys/fs/file-nr`); `doctor` runs the full `lsof` for the top holders only past half full,
   because it takes seconds on a crowded machine.
@@ -234,7 +241,7 @@ fails to import is an error here: migrating with half a config is worse than fai
 
 `src/typecheck/typecheck.ts` runs a real process pool (`execAsync`); `scheduling.ts` is
 longest-first (cached durations, then descending file count) and holds the CPU/CI concurrency
-default. The CLI spec lives in `src/cli/typecheck-flags.ts` (`--concurrency`, `--only`).
+default. The CLI spec lives in `src/cli/commands/typecheck.ts` (`--concurrency`, `--only`).
 `config-settings.ts` reads only the config's `typecheck` key (`include`/`exclude`, validated by
 `validateTypecheckShape`) by importing the module, never building an environment; an `include`
 entry with nothing to check is a failed result, not a skip. `project-tsc.ts` finds the project's

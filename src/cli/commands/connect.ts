@@ -1,4 +1,3 @@
-import { isOneOf, typedSwitch } from "hanzio";
 import {
 	ensureReceiver,
 	request,
@@ -13,52 +12,11 @@ import {
 import { openUrl } from "../../core/open-url";
 import { connectOrigin } from "../../core/runtime-flags";
 import {
-	type CommandSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readBooleanFlag,
+	type AnyCommand,
+	BASE_EXITS,
+	defineCommand,
+	defineGroup,
 } from "../command-spec";
-import { argumentsError } from "../errors";
-
-const CONNECT_COMMANDS = [
-	"token",
-	"status",
-	"open",
-	"tcp",
-	"disconnect",
-	"revoke",
-] as const;
-
-const flags = {
-	help: {
-		name: "--help",
-		kind: "boolean",
-		description: "Show connection help",
-	},
-	json: { name: "--json", kind: "boolean", description: "Print JSON" },
-	rotate: {
-		name: "--rotate",
-		kind: "boolean",
-		description: "Replace the publish-only recipient token",
-	},
-} as const;
-
-export const CONNECT_COMMAND_SPEC: CommandSpec = {
-	usage:
-		"buncargo connect <token|status|open|tcp|disconnect|revoke> [target-id] [--json]",
-	flags: Object.values(flags),
-	notes: [
-		{
-			command: "BUNCARGO_CONNECT_TOKENS",
-			description:
-				"Comma-separated recipient tokens: dev automatically shares selected endpoints.",
-		},
-		{
-			command: "BUNCARGO_CONNECT_NAME",
-			description: "Optional remote environment group name in BuncargoBar.",
-		},
-	],
-};
 
 async function connectionStatus(): Promise<Directory> {
 	return parseDirectory(await requestCoordinator("/status"), connectOrigin());
@@ -75,66 +33,123 @@ function formatDirectory(directory: Directory): string {
 	return [directory.notice ?? "Connected", ...runs].join("\n");
 }
 
-export async function handleConnect(args: string[]) {
-	if (readBooleanFlag(args, flags.help)) {
-		console.log(formatCommandHelp(CONNECT_COMMAND_SPEC));
-		return;
-	}
-	const unknown = findUnknownFlags(CONNECT_COMMAND_SPEC, args);
-	if (unknown.length) {
-		throw argumentsError(
-			unknown.map((flag) => `Unknown flag: ${flag}`),
-			"connect",
-		);
-	}
-	const [command = "status", id, ...extra] = args.filter(
-		(a) => !a.startsWith("-"),
-	);
-	if (
-		extra.length ||
-		!isOneOf(CONNECT_COMMANDS, command) ||
-		(["token", "status"].includes(command) ? !!id : !id) ||
-		(readBooleanFlag(args, flags.rotate) && command !== "token")
-	) {
-		throw argumentsError([`Usage: ${CONNECT_COMMAND_SPEC.usage}`], "connect");
-	}
-	const json = readBooleanFlag(args, flags.json);
-	const result: unknown = await typedSwitch(command, {
-		token: async () => {
-			const receiver = await ensureReceiver(
-				readBooleanFlag(args, flags.rotate),
-			);
-			return json ? { token: receiver.token } : receiver.token;
-		},
-		status: async () => {
-			const directory = await connectionStatus();
-			return json ? directory : formatDirectory(directory);
-		},
-		tcp: () => requestCoordinator<TCPConnection>("/tcp", { id }),
-		disconnect: () => requestCoordinator("/disconnect", { id }),
-		revoke: async () => {
-			const receiver = await requireReceiver();
-			return request(
-				receiver.origin,
-				`/v1/receiver/grants/${encodeURIComponent(id)}`,
-				receiver.owner,
-				undefined,
-				"DELETE",
-			);
-		},
-		open: async () => {
-			const directory = await connectionStatus();
-			const target = directory.runs
-				.flatMap((run) => run.targets)
-				.find((target) => target.id === id && target.protocol === "http");
-			if (!target) {
-				throw new Error("App is unavailable");
-			}
-			if (!openUrl(target.url)) {
-				throw new Error(`Open ${target.url} in your browser`);
-			}
-			return { url: target.url };
-		},
-	});
+/** Strings as they are, anything else as one line of JSON. */
+function print(result: unknown): number {
 	console.log(typeof result === "string" ? result : JSON.stringify(result));
+	return 0;
 }
+
+const JSON_FLAG = {
+	json: { kind: "boolean", description: "Print JSON" },
+} as const;
+
+const TARGET_ARG = [
+	{
+		name: "<target-id>",
+		description: "A target id from connect status --json",
+		required: true,
+	},
+] as const;
+
+const statusCommand = defineCommand({
+	spec: {
+		name: "connect status",
+		summary: "The private services shared with this machine",
+		flags: JSON_FLAG,
+		notes: [
+			{
+				command: "BUNCARGO_CONNECT_TOKENS",
+				description:
+					"Comma-separated recipient tokens: dev automatically shares selected endpoints.",
+			},
+			{
+				command: "BUNCARGO_CONNECT_NAME",
+				description: "Optional remote environment group name in BuncargoBar.",
+			},
+		],
+	},
+	exits: BASE_EXITS,
+	json: "Directory (--json)",
+	run: async ({ values }) => {
+		const directory = await connectionStatus();
+		return print(values.json ? directory : formatDirectory(directory));
+	},
+});
+
+/** The commands that act on one target and print the coordinator's JSON answer. */
+function targetCommand(
+	name: string,
+	summary: string,
+	act: (id: string) => Promise<unknown>,
+): AnyCommand {
+	return defineCommand({
+		spec: { name: `connect ${name}`, summary, flags: {}, args: TARGET_ARG },
+		exits: BASE_EXITS,
+		run: async ({ positionals: [id] }) => print(await act(id)),
+	});
+}
+
+export const connectCommand = defineGroup({
+	spec: {
+		name: "connect",
+		summary: "Discover private services through frp",
+	},
+	subcommands: {
+		token: defineCommand({
+			spec: {
+				name: "connect token",
+				summary: "This machine's publish-only recipient token",
+				flags: {
+					...JSON_FLAG,
+					rotate: {
+						kind: "boolean",
+						description: "Replace the publish-only recipient token",
+					},
+				},
+			},
+			exits: BASE_EXITS,
+			run: async ({ values }) => {
+				const receiver = await ensureReceiver(values.rotate);
+				return print(values.json ? { token: receiver.token } : receiver.token);
+			},
+		}),
+		status: statusCommand,
+		open: targetCommand(
+			"open",
+			"Open an HTTP target in the browser",
+			async (id) => {
+				const directory = await connectionStatus();
+				const target = directory.runs
+					.flatMap((run) => run.targets)
+					.find((target) => target.id === id && target.protocol === "http");
+				if (!target) throw new Error("App is unavailable");
+				if (!openUrl(target.url))
+					throw new Error(`Open ${target.url} in your browser`);
+				return { url: target.url };
+			},
+		),
+		tcp: targetCommand(
+			"tcp",
+			"Connect to a TCP target; prints its local address as JSON",
+			(id) => requestCoordinator<TCPConnection>("/tcp", { id }),
+		),
+		disconnect: targetCommand("disconnect", "Close a TCP connection", (id) =>
+			requestCoordinator("/disconnect", { id }),
+		),
+		revoke: targetCommand(
+			"revoke",
+			"Stop sharing a target with this machine",
+			async (id) => {
+				const receiver = await requireReceiver();
+				return request(
+					receiver.origin,
+					`/v1/receiver/grants/${encodeURIComponent(id)}`,
+					receiver.owner,
+					undefined,
+					"DELETE",
+				);
+			},
+		),
+	},
+	fallback: statusCommand,
+});

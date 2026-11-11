@@ -184,8 +184,12 @@ export class RunOutput {
 	readonly terminals: AppTerminals;
 	/** The size a new app terminal gets. The TUI sizes them to its pane while it runs. */
 	screenSize: () => { cols: number; rows: number } = defaultScreenSize;
-	/** Bound by the spawner: what a view may ask of the run. */
-	controls?: { restart(name: string): Promise<void> };
+	/**
+	 * Bound by the spawner: what a view may ask of the run. `restart`
+	 * resolves to whether the app's process was replaced, and rejects when
+	 * the replacement failed.
+	 */
+	controls?: { restart(name: string): Promise<boolean> };
 	readonly screens = new Map<string, AppScreen>();
 	readonly states = new Map<string, AppStateDetail>();
 	/** Captured values per app, by capture name. */

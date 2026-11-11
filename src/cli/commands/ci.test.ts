@@ -14,43 +14,9 @@ import { join, resolve } from "node:path";
 import { execAsync } from "../../core/process";
 import { CI_ENV_VARS } from "../../core/runtime-flags";
 import { startFakeInfisical } from "../../core/secrets/fake-infisical.testing";
-import { parseCiArgs } from "./ci";
 import { withAppendedArgs } from "./exec";
 
 const cli = [process.execPath, resolve(import.meta.dir, "../bin.ts")];
-
-describe("parseCiArgs", () => {
-	it("splits options from the command at --", () => {
-		const parsed = parseCiArgs([
-			"--migrate",
-			"--services=postgres, redis",
-			"--",
-			"bun",
-			"test",
-			"--bail",
-		]);
-		expect(parsed.migrate).toBe(true);
-		expect(parsed.seed).toBe(false);
-		expect(parsed.services).toEqual(["postgres", "redis"]);
-		expect(parsed.command).toEqual(["bun", "test", "--bail"]);
-		expect(parsed.errors).toEqual([]);
-	});
-
-	it("allows no command, for a migrations/seed-only check", () => {
-		expect(parseCiArgs(["--seed"]).command).toEqual([]);
-	});
-
-	it("rejects a --schema it does not know", () => {
-		expect(parseCiArgs(["--schema=reset"]).errors).toHaveLength(1);
-	});
-
-	it("rejects unknown flags and stray arguments", () => {
-		expect(parseCiArgs(["--nope", "bun"]).errors).toEqual([
-			"Unknown flag: --nope",
-			"Unexpected argument before --: bun",
-		]);
-	});
-});
 
 describe("withAppendedArgs", () => {
 	it("keeps a bare command a shell string", () => {
