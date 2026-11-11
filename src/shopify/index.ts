@@ -301,7 +301,7 @@ export function shopify(
 			},
 		},
 
-		checks: shopifyChecks(state),
+		setupChecks: shopifyChecks(state),
 		commands: shopifyCommands(state),
 		preflight: [
 			{

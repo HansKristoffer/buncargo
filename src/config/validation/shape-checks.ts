@@ -65,11 +65,3 @@ export function createShapeChecks(errors: string[]) {
 	};
 }
 export type ShapeChecks = ReturnType<typeof createShapeChecks>;
-
-export const SECRETS_FIELDS = [
-	"projectId",
-	"organizationId",
-	"environment",
-	"siteUrl",
-	"path",
-];

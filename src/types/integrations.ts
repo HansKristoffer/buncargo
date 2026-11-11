@@ -3,6 +3,7 @@ import type { PreflightStep, SetupCheck } from "./commands";
 import type { DevConfig } from "./config";
 import type { AnyDevEnvironment } from "./environment";
 import type { DevHooks, HookContext } from "./hooks";
+import type { ResolvedApp } from "./resolved";
 import type { ServiceConfig } from "./service";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -36,7 +37,7 @@ export interface IntegrationConfigContext {
 /** One app, as handed to {@link BuncargoIntegration.appEnv} and `describeApp`. */
 export interface IntegrationAppContext {
 	name: string;
-	config: AppConfig;
+	config: ResolvedApp;
 	/** Its allocated port; absent for workers. */
 	port?: number;
 	root: string;
@@ -81,7 +82,7 @@ export interface BuncargoIntegration {
 	/** Run beside the config's own hooks, after them. */
 	hooks?: DevHooks<Record<string, ServiceConfig>, Record<string, AppConfig>>;
 	/** Shown by `buncargo doctor`, run by `buncargo setup`; fast ones by `dev`. */
-	checks?: readonly SetupCheck[];
+	setupChecks?: readonly SetupCheck[];
 	/** Run by `dev` with the terminal, before anything starts (a login). */
 	preflight?: readonly PreflightStep[];
 	/** `buncargo <name> <command>` */

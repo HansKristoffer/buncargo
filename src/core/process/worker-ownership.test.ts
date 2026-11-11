@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineDevConfig } from "../../config";
+import { resolveApps } from "../../config/resolve";
 import { createDevEnvironment } from "../../environment";
 import { isolateHome } from "../test-env.testing";
 import { AppSupervision } from "./app-supervision";
@@ -71,7 +72,7 @@ it("serializes simultaneous worker starts and supports explicit takeover", async
 	const root = fixture();
 	const run = () =>
 		startDevServers(
-			{ jobs: { kind: "worker", devCommand: command } },
+			resolveApps({ jobs: { kind: "worker", devCommand: command } }),
 			root,
 			{ jobs: {} },
 			{},
@@ -96,12 +97,12 @@ it("an unexpected zero exit fails supervision and reports the worker", async () 
 	const exits: string[] = [];
 	await expect(
 		startDevServers(
-			{
+			resolveApps({
 				jobs: {
 					kind: "worker",
 					devCommand: `${process.execPath} -e 'setTimeout(()=>process.exit(0),250)'`,
 				},
-			},
+			}),
 			root,
 			{ jobs: {} },
 			{},
@@ -122,7 +123,7 @@ it("cancels an owned worker while readiness is pending", async () => {
 	const root = fixture();
 	const controller = new AbortController();
 	const running = startDevServers(
-		{ jobs: { kind: "worker", devCommand: command } },
+		resolveApps({ jobs: { kind: "worker", devCommand: command } }),
 		root,
 		{ jobs: {} },
 		{},

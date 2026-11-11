@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toError } from "hanzio";
+import { resolveApps } from "../../config/resolve";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import { startFakeInfisical } from "../secrets/fake-infisical.testing";
 import { clearScopeSecretsCache } from "../secrets/index";
@@ -49,14 +50,14 @@ describe("startDevServers", () => {
 
 		try {
 			const pids = await startDevServers(
-				{
+				resolveApps({
 					skipped: { port: skipPort, devCommand: false },
 					silent: {
 						port: silentPort,
 						healthEndpoint: false,
 						devCommand: "bun -e 'setInterval(() => {}, 60000)'",
 					},
-				},
+				}),
 				root,
 				{},
 				{ skipped: skipPort, silent: silentPort },
@@ -68,13 +69,13 @@ describe("startDevServers", () => {
 			silentPid = pids.silent;
 
 			await startDevServers(
-				{
+				resolveApps({
 					app: {
 						port: attachPort,
 						healthEndpoint: false,
 						devCommand: `bun -e ${JSON.stringify(`await Bun.write(${JSON.stringify(marker)}, process.argv[1] ?? "")`)}`,
 					},
-				},
+				}),
 				root,
 				{},
 				{ app: attachPort },
@@ -120,7 +121,7 @@ describe("startDevServers secret injection", () => {
 
 		try {
 			await startDevServers(
-				{
+				resolveApps({
 					api: {
 						port,
 						healthEndpoint: false,
@@ -129,7 +130,7 @@ describe("startDevServers secret injection", () => {
 						)}`,
 						secrets,
 					},
-				},
+				}),
 				root,
 				{ api: { PORT: String(port) } },
 				{ api: port },
@@ -151,7 +152,7 @@ describe("startDevServers secret injection", () => {
 			// A required key nobody provides stops the run before anything spawns.
 			await expect(
 				startDevServers(
-					{
+					resolveApps({
 						api: {
 							port,
 							healthEndpoint: false,
@@ -161,7 +162,7 @@ describe("startDevServers secret injection", () => {
 								required: ["OPENAI_API_KEY", "STRIPE_KEY"],
 							},
 						},
-					},
+					}),
 					root,
 					{},
 					{ api: port },
@@ -192,7 +193,7 @@ describe("startDevServers ordering, prebuild and captures", () => {
 
 		try {
 			pids = await startDevServers(
-				{
+				resolveApps({
 					api: {
 						port: apiPort,
 						devCommand: `${append("api spawned")} && bun -e 'Bun.serve({ port: ${apiPort}, fetch: () => new Response("ok") }); setInterval(() => {}, 60000)'`,
@@ -218,7 +219,7 @@ describe("startDevServers ordering, prebuild and captures", () => {
 						restartOn: ["captured.url"],
 						devCommand: `${append("dependent spawned")} && sleep 60`,
 					},
-				},
+				}),
 				root,
 				{},
 				{ api: apiPort },
@@ -280,14 +281,14 @@ describe("stopDevServers", () => {
 			// goodbye has no newline, so only the screen's final flush emits it.
 			const script = `process.on("SIGTERM", () => { process.stdout.write("last words"); process.exit(0); }); console.log("started"); setInterval(() => {}, 60000);`;
 			pids = await startDevServers(
-				{
+				resolveApps({
 					app: {
 						port,
 						healthEndpoint: false,
 						interactive: true,
 						devCommand: `bun -e ${JSON.stringify(script)}`,
 					},
-				},
+				}),
 				root,
 				{},
 				{ app: port },
@@ -326,7 +327,7 @@ describe("detached app supervision", () => {
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				{ app: { port, devCommand: "bun parent.ts" } },
+				resolveApps({ app: { port, devCommand: "bun parent.ts" } }),
 				root,
 				{},
 				{ app: port },
@@ -363,7 +364,9 @@ describe("detached app supervision", () => {
 	it("reports a clean exit that leaves no listener", async () => {
 		const exits: (number | null)[] = [];
 		await startDevServers(
-			{ app: { port: 47001, devCommand: "exit 0", healthEndpoint: false } },
+			resolveApps({
+				app: { port: 47001, devCommand: "exit 0", healthEndpoint: false },
+			}),
 			process.cwd(),
 			{},
 			{ app: 47001 },
@@ -401,13 +404,13 @@ describe("startDevServers essential: false", () => {
 		};
 		try {
 			pids = await startDevServers(
-				{
+				resolveApps({
 					keeper: {
 						kind: "worker",
 						devCommand: "bun -e 'setInterval(() => {}, 60000)'",
 					},
 					flaky: { kind: "worker", essential: false, devCommand: flaky },
-				},
+				}),
 				root,
 				{},
 				{},
@@ -435,14 +438,14 @@ describe("startDevServers non-essential crash on start", () => {
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				{
+				resolveApps({
 					keeper: {
 						kind: "worker",
 						devCommand: "bun -e 'setInterval(() => {}, 60000)'",
 					},
 					// Gone before its birth identity can be read.
 					crash: { kind: "worker", essential: false, devCommand: "exit 3" },
-				},
+				}),
 				root,
 				{},
 				{},
@@ -493,13 +496,13 @@ describe("startDevServers non-essential crash under a terminal", () => {
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				{
+				resolveApps({
 					keeper: {
 						kind: "worker",
 						devCommand: "bun -e 'setInterval(() => {}, 60000)'",
 					},
 					crash: { kind: "worker", essential: false, devCommand: "exit 3" },
-				},
+				}),
 				root,
 				{},
 				{},
@@ -547,7 +550,7 @@ describe("startDevServers non-essential readiness", () => {
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				{
+				resolveApps({
 					keeper: {
 						kind: "worker",
 						devCommand: "bun -e 'setInterval(() => {}, 60000)'",
@@ -557,7 +560,7 @@ describe("startDevServers non-essential readiness", () => {
 						essential: false,
 						devCommand: `bun -e ${JSON.stringify(`setInterval(() => { if (require("node:fs").existsSync(${JSON.stringify(exitNow)})) process.exit(1); }, 10)`)}`,
 					},
-				},
+				}),
 				root,
 				{},
 				{ flaky: port },
@@ -620,14 +623,14 @@ describe("startDevServers prebuild", () => {
 		});
 		try {
 			const run = startDevServers(
-				{
+				resolveApps({
 					api: {
 						kind: "worker",
 						// Ignores SIGTERM: only the escalation stops it.
 						prebuild: `trap "" TERM; echo prebuild $$; exec sleep 30`,
 						devCommand: "bun -e 'setInterval(() => {}, 60000)'",
 					},
-				},
+				}),
 				root,
 				{},
 				{},
@@ -662,10 +665,10 @@ describe("startDevServers restart", () => {
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				{
+				resolveApps({
 					keeper: { kind: "worker", devCommand: silent },
 					api: { kind: "worker", cwd: "api", devCommand: silent },
-				},
+				}),
 				root,
 				{},
 				{},
@@ -710,10 +713,10 @@ describe("startDevServers restart", () => {
 		try {
 			const output = new RunOutput({ terminals: "pipe" });
 			pids = await startDevServers(
-				{
+				resolveApps({
 					keeper: { kind: "worker", devCommand: silent },
 					api: { kind: "worker", cwd: "api", devCommand: silent },
-				},
+				}),
 				root,
 				{},
 				{},
@@ -749,7 +752,9 @@ describe("startDevServers restart", () => {
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				{ api: { port, healthTimeout: 300, devCommand: serveOnce } },
+				resolveApps({
+					api: { port, healthTimeout: 300, devCommand: serveOnce },
+				}),
 				root,
 				{},
 				{ api: port },
@@ -776,7 +781,7 @@ describe("startDevServers restart", () => {
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				{ api: { kind: "worker", devCommand: silent } },
+				resolveApps({ api: { kind: "worker", devCommand: silent } }),
 				root,
 				{},
 				{},
@@ -810,7 +815,7 @@ describe("startDevServers restart", () => {
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				{
+				resolveApps({
 					keeper: { kind: "worker", devCommand: silent },
 					flaky: {
 						port,
@@ -818,7 +823,7 @@ describe("startDevServers restart", () => {
 						healthEndpoint: false,
 						devCommand: flaky,
 					},
-				},
+				}),
 				root,
 				{},
 				{ flaky: port },
@@ -864,14 +869,14 @@ describe("startDevServers keepOthersOnFailure", () => {
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				{
+				resolveApps({
 					api: { port: api, devCommand: serve(api) },
 					marketing: {
 						port: marketing,
 						healthTimeout: 500,
 						devCommand: silent,
 					},
-				},
+				}),
 				root,
 				{},
 				{ api, marketing },
@@ -917,10 +922,10 @@ describe("startDevServers keepOthersOnFailure", () => {
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				{
+				resolveApps({
 					api: { port: api, devCommand: serve(api) },
 					web: { port: web, devCommand: "exit 0" },
-				},
+				}),
 				root,
 				{},
 				{ api, web },
@@ -954,10 +959,10 @@ describe("startDevServers keepOthersOnFailure", () => {
 		const run = new AbortController();
 		const apiReady = Promise.withResolvers<string | undefined>();
 		const starting = startDevServers(
-			{
+			resolveApps({
 				api: { port: api, devCommand: silent },
 				web: { port: web, devCommand: silent },
-			},
+			}),
 			root,
 			{},
 			{ api, web },
@@ -997,7 +1002,9 @@ describe("startDevServers keepOthersOnFailure", () => {
 		try {
 			await expect(
 				startDevServers(
-					{ only: { port, healthTimeout: 300, devCommand: silent } },
+					resolveApps({
+						only: { port, healthTimeout: 300, devCommand: silent },
+					}),
 					root,
 					{},
 					{ only: port },
@@ -1007,14 +1014,14 @@ describe("startDevServers keepOthersOnFailure", () => {
 
 			await expect(
 				startDevServers(
-					{
+					resolveApps({
 						base: { port, healthTimeout: 300, devCommand: silent },
 						next: {
 							port: port + 1,
 							startAfter: ["base"],
 							devCommand: serve(port + 1),
 						},
-					},
+					}),
 					root,
 					{},
 					{ base: port, next: port + 1 },
@@ -1040,10 +1047,10 @@ describe("startDevServers keepOthersOnFailure", () => {
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				{
+				resolveApps({
 					api: { port: api, devCommand: serve(api) },
 					web: { port: web, devCommand: crashOnce },
-				},
+				}),
 				root,
 				{},
 				{ api, web },
@@ -1086,10 +1093,10 @@ describe("startDevServers keepOthersOnFailure", () => {
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				{
+				resolveApps({
 					api: { port: api, devCommand: serve(api) },
 					queue: { kind: "worker", devCommand: "exit 3" },
-				},
+				}),
 				root,
 				{},
 				{ api },
@@ -1128,7 +1135,7 @@ describe("startDevServers apps that never come up", () => {
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				{
+				resolveApps({
 					keeper: { kind: "worker", devCommand: silent },
 					side: {
 						port,
@@ -1136,7 +1143,7 @@ describe("startDevServers apps that never come up", () => {
 						healthTimeout: 300,
 						devCommand: silent,
 					},
-				},
+				}),
 				root,
 				{},
 				{ side: port },
@@ -1185,11 +1192,11 @@ describe("startDevServers apps that never come up", () => {
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
-				{
+				resolveApps({
 					api: { port: api, devCommand: serve(api) },
 					web: { port: web, devCommand: serve(web) },
 					admin: { port: admin, healthTimeout: 300, devCommand: serve(admin) },
-				},
+				}),
 				root,
 				{},
 				{ api, web, admin },
@@ -1252,7 +1259,9 @@ describe("startDevServers apps that never come up", () => {
 			while (!(await Bun.file(leftoverPid).exists()) && Date.now() < deadline)
 				await Bun.sleep(20);
 			const refusal = await startDevServers(
-				{ web: { port, stopGraceMs: 300, devCommand: serve(port) } },
+				resolveApps({
+					web: { port, stopGraceMs: 300, devCommand: serve(port) },
+				}),
 				root,
 				{},
 				{ web: port },
@@ -1293,13 +1302,13 @@ describe("startDevServers readyWhen and interactive apps without a terminal", ()
 			// Nothing listens on the port: only the printed line can make it ready.
 			const started = performance.now();
 			pids = await startDevServers(
-				{
+				resolveApps({
 					metro: {
 						port,
 						readyWhen: /Logs for your project/,
 						devCommand: `bun -e 'setTimeout(() => console.log("Logs for your project will appear below."), 300); setInterval(() => {}, 60000)'`,
 					},
-				},
+				}),
 				root,
 				{},
 				{ metro: port },
@@ -1311,14 +1320,14 @@ describe("startDevServers readyWhen and interactive apps without a terminal", ()
 
 			await expect(
 				startDevServers(
-					{
+					resolveApps({
 						metro: {
 							port,
 							readyWhen: /Logs for your project/,
 							healthTimeout: 400,
 							devCommand: "bun -e 'setInterval(() => {}, 60000)'",
 						},
-					},
+					}),
 					root,
 					{},
 					{ metro: port },
@@ -1343,13 +1352,13 @@ describe("startDevServers readyWhen and interactive apps without a terminal", ()
 		};
 		try {
 			pids = await startDevServers(
-				{
+				resolveApps({
 					expo: {
 						kind: "worker",
 						interactive: true,
 						devCommand: `bun -e 'console.log("tty", Boolean(process.stdin.isTTY)); process.stdin.setRawMode(true); process.stdin.on("data", (d) => console.log("key", String(d)))'`,
 					},
-				},
+				}),
 				root,
 				{},
 				{},

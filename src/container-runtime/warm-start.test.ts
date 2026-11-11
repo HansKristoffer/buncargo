@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { resolveServices } from "../config/resolve";
 import { dockerRuntimeAdapter } from "../docker/adapter";
 import { dockerListLine, fakeDocker } from "../docker/fake-docker.testing";
 import { serviceHashEnv } from "../docker-compose/interpolate";
-import type { ServiceConfig } from "../types";
 import { ensureServicesRunning } from "./ensure-services";
 
 const fakes: ReturnType<typeof fakeDocker>[] = [];
@@ -33,9 +33,9 @@ describe("ensureServicesRunning against Docker", () => {
 				root: docker.root,
 				projectName: "demo",
 				envVars: {},
-				services: {
-					postgres: { port, healthCheck: "pg_isready" } satisfies ServiceConfig,
-				},
+				services: resolveServices({
+					postgres: { port, healthCheck: "pg_isready" },
+				}),
 				ports: { postgres: port },
 				model: { services: { postgres: { image: "postgres:16" } } },
 				verbose: false,
@@ -81,7 +81,7 @@ describe("ensureServicesRunning against Docker", () => {
 				root: docker.root,
 				projectName: "demo",
 				envVars: {},
-				services: { postgres: { healthCheck: false } },
+				services: resolveServices({ postgres: { healthCheck: false } }),
 				ports: {},
 				model: { services: { postgres: { image: "postgres:16" } } },
 				verbose: false,

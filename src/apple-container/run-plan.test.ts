@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { homedir } from "node:os";
+import { resolveServices } from "../config/resolve";
 import { buildComposeModel } from "../docker-compose";
 import {
 	configHashFor,
@@ -30,7 +31,7 @@ const IDENTITY = {
 };
 
 function modelFor(services: Record<string, ServiceConfig>): ComposeDocument {
-	return buildComposeModel(services, undefined, IDENTITY);
+	return buildComposeModel(resolveServices(services), undefined, IDENTITY);
 }
 
 function planFor(

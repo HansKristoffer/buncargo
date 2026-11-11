@@ -9,6 +9,7 @@ import type {
 import type { DockerServicePreset } from "./define-docker-service";
 
 export type {
+	DockerServicePreset,
 	PresetServiceCredentialOptions,
 	PresetServiceSecondaryPortOptions,
 	PresetServiceSharedOptions,
@@ -107,9 +108,9 @@ export const service = {
 	},
 };
 
-export function buildPresetDockerService(
+/** A built-in preset's definition: its Compose service, defaults and URL. */
+export function presetDefinition(
 	preset: DockerPresetName,
-	input: Parameters<DockerServicePreset["build"]>[0],
-): ReturnType<DockerServicePreset["build"]> {
-	return PRESET_SERVICES[preset].build(input);
+): DockerServicePreset {
+	return PRESET_SERVICES[preset];
 }

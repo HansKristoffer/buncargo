@@ -1,6 +1,11 @@
 import { resolveExposeTargets } from "../core/tunnel";
 import { assertAppWorkingDirectories } from "../environment/servers";
-import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
+import type {
+	AppConfig,
+	DevEnvironment,
+	ResolvedApp,
+	ServiceConfig,
+} from "../types";
 import type { DevCliArgs } from "./dev-flags";
 import { CliError } from "./errors";
 
@@ -11,7 +16,7 @@ export function validateDevStart<
 >(
 	env: DevEnvironment<TServices, TApps>,
 	args: DevCliArgs,
-	apps: Record<string, AppConfig>,
+	apps: Record<string, ResolvedApp>,
 	serviceNames: string[],
 ): void {
 	if (args.attach && typeof apps[args.attach]?.devCommand !== "string")
@@ -88,7 +93,7 @@ export function seedSelectionError(
 	seed: { readonly requiredServices?: readonly string[] } | undefined,
 	selectedServices: readonly string[],
 	config: {
-		readonly apps: Record<string, AppConfig>;
+		readonly apps: Record<string, ResolvedApp>;
 		readonly services: Record<string, unknown>;
 	},
 ): CliError | undefined {

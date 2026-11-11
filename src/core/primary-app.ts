@@ -1,4 +1,5 @@
-import type { AppConfig } from "../types";
+/** What choosing the primary app reads: a resolved app or one as written. */
+type DependentApp = { requiredApps?: readonly string[] };
 
 /**
  * Which app is "the app" for this project: the menu bar's Open button, the
@@ -15,7 +16,7 @@ import type { AppConfig } from "../types";
  * full run.
  */
 export interface PrimaryAppInput {
-	apps: Record<string, AppConfig>;
+	apps: Readonly<Record<string, DependentApp>>;
 	options?: { primaryApp?: string };
 	/** App keys this run actually started. Defaults to every configured app. */
 	selected?: readonly string[];
@@ -42,7 +43,7 @@ export function configuredPrimaryApp(
  * that never appear on the right-hand side.
  */
 function dependencyRoots(
-	apps: Record<string, AppConfig>,
+	apps: Readonly<Record<string, DependentApp>>,
 	names: readonly string[],
 ): string[] {
 	const inSet = new Set(names);

@@ -12,4 +12,5 @@ export * from "./hooks";
 export * from "./integrations";
 export * from "./lifecycle";
 export * from "./preparation";
+export * from "./resolved";
 export * from "./service";

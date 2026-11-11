@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveApp, resolveServices } from "../config/resolve";
 import { readLeases } from "../core/leases";
 import {
 	type AppEvent,
@@ -17,7 +18,6 @@ import {
 	patchRun,
 	type RunEntry,
 } from "../core/run-registry";
-import type { AppConfig } from "../types";
 import type { DevEnvContext } from "./context";
 import { createDevEnvironment } from "./create-dev-environment";
 import { createRunClaimApi, resolveClaimHold } from "./run-claim";
@@ -232,11 +232,12 @@ describe("a claim's lifecycle and its apps", () => {
 		const api = createRunClaimApi(ctx, source);
 		return api;
 	}
-	const worker = (exclusive?: string): AppConfig => ({
-		kind: "worker",
-		devCommand: "true",
-		...(exclusive ? { exclusive } : {}),
-	});
+	const worker = (exclusive?: string) =>
+		resolveApp({
+			kind: "worker",
+			devCommand: "true",
+			...(exclusive ? { exclusive } : {}),
+		});
 
 	it("has no claim time once released or retired", async () => {
 		// `explainMissingContainers` reads removals since the claim; a released
@@ -297,7 +298,7 @@ describe("a claim's lifecycle and its apps", () => {
 		// readiness report is queued: either landing after the stop resurrected
 		// the service.
 		const root = mkdtempSync(join(home, "stopped-service-"));
-		const claim = appClaimApi(root, { postgres: {} });
+		const claim = appClaimApi(root, resolveServices({ postgres: {} }));
 		const session = { sessionId: claim.sessionId };
 		const status = async () =>
 			(await loadRuns()).find((run) => run.sessionId === claim.sessionId)

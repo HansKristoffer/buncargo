@@ -34,13 +34,10 @@ import {
 import { agentAwareProcessEnv } from "../core/child-env";
 import { toPortMap } from "../core/ports";
 import { shellExitCode } from "../core/process/exec";
-import { inferDockerPreset } from "../core/service-presets";
 import { getComposeServiceName } from "../planning";
 import type {
 	AppConfig,
-	BuiltInHealthCheck,
 	DevEnvironment,
-	DockerPresetName,
 	EnvValues,
 	PrismaConfig,
 	PrismaMigrateCheckOptions,
@@ -48,6 +45,7 @@ import type {
 	PrismaNewMigrationResult,
 	PrismaRunner,
 	PrismaRunOptions,
+	ResolvedService,
 	ServiceConfig,
 } from "../types";
 import { resolvePrismaConfig } from "./config";
@@ -74,25 +72,17 @@ export function installedPrismaMajor(dir: string): number | undefined {
 	}
 }
 
-const PRESET_HEALTH_CHECKS: Partial<
-	Record<DockerPresetName, BuiltInHealthCheck>
-> = {
-	postgres: "pg_isready",
-	redis: "redis-cli",
-	clickhouse: "http",
-};
-
 /**
- * How `ensureDatabase` waits for the database service: its own `healthCheck`,
- * else its preset's (whatever the service is keyed), else an open port.
+ * How `ensureDatabase` waits for the database service: its resolved
+ * `healthCheck` (a preset's own, whatever the service is keyed), and an open
+ * port for a custom container that declares none.
  */
 export function databaseHealthCheck(
-	serviceKey: string,
-	service: ServiceConfig,
-): ServiceConfig["healthCheck"] {
-	if (service.healthCheck !== undefined) return service.healthCheck;
-	const preset = inferDockerPreset(serviceKey, service);
-	return (preset && PRESET_HEALTH_CHECKS[preset]) ?? "tcp";
+	service: ResolvedService,
+): ResolvedService["healthCheck"] {
+	return service.healthCheck === false && service.preset === undefined
+		? "tcp"
+		: service.healthCheck;
 }
 
 /**
@@ -161,7 +151,7 @@ export function createPrismaRunner<
 		const composeFile = env.ensureComposeFile();
 		const envVars = env.buildEnvVars();
 		const serviceConfig = env.services[service];
-		if (!serviceConfig || serviceConfig.kind === "job") {
+		if (serviceConfig?.port === undefined) {
 			throw new Error(`Prisma service "${service}" is not configured`);
 		}
 
@@ -170,10 +160,9 @@ export function createPrismaRunner<
 			throw new Error(`Service ${service} not found in dev environment ports`);
 		}
 
-		const healthCheckedServiceConfig: ServiceConfig = {
+		const healthCheckedServiceConfig: ResolvedService = {
 			...serviceConfig,
-			healthCheck: databaseHealthCheck(service, serviceConfig),
-			serviceName: getComposeServiceName(env.services, service),
+			healthCheck: databaseHealthCheck(serviceConfig),
 		};
 
 		await ensureServicesRunning({

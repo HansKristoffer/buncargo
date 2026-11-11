@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { resolveService } from "../config/resolve";
 import { serviceHashEnv } from "../docker-compose/interpolate";
-import type { ComposeDocument, ServiceConfig } from "../types";
+import type { ComposeDocument } from "../types";
 import { ensureServicesRunning } from "./ensure-services";
 import type {
 	ContainerRuntimeAdapter,
@@ -45,7 +46,7 @@ function harness() {
 				services: Object.fromEntries(
 					selected.map((name) => [
 						name,
-						{ port: 5432, healthCheck: false } satisfies ServiceConfig,
+						resolveService(name, { port: 5432, healthCheck: false }),
 					]),
 				),
 				wait: false,

@@ -19,7 +19,12 @@ import {
 	retireProjectRuns,
 } from "../core/run-registry";
 import { ensureWatchdog as ensureWatchdogFn } from "../core/watchdog";
-import type { AnyDevConfig, AppConfig, ServiceConfig } from "../types";
+import type {
+	AppConfig,
+	ResolvedApp,
+	ResolvedService,
+	ServiceConfig,
+} from "../types";
 import { acquireStartLeases } from "./app-leases";
 import type { DevEnvContext } from "./context";
 import { stacksForServices } from "./stacks";
@@ -78,9 +83,9 @@ export interface DevRunClaimApi {
 	 * lease another run holds; an essential one throws instead.
 	 */
 	claimApps(
-		apps: Record<string, AppConfig>,
+		apps: Record<string, ResolvedApp>,
 		signal?: AbortSignal,
-	): Promise<Record<string, AppConfig>>;
+	): Promise<Record<string, ResolvedApp>>;
 	/** What the spawner reports, recorded on the claimed apps' rows. */
 	readonly appEvents: Pick<
 		StartDevServersOptions,
@@ -91,7 +96,7 @@ export interface DevRunClaimApi {
 	 * named by the apps that call returned. Concurrent starts each give back
 	 * their own.
 	 */
-	abandonApps(apps: Record<string, AppConfig>): Promise<void>;
+	abandonApps(apps: Record<string, ResolvedApp>): Promise<void>;
 	/**
 	 * After the apps have stopped: give back everything they held, and
 	 * withdraw an entry that only listed them.
@@ -152,11 +157,11 @@ export function createRunClaimApi<
 	// Leases this session holds.
 	const heldLeases = new Set<string>();
 	// The apps on this session's entry.
-	const listedApps: Record<string, AppConfig> = {};
+	const listedApps: Record<string, ResolvedApp> = {};
 	// What each `claimApps` call newly took, by the record it returned, so a
 	// failed start gives back its own and not a concurrent one's.
 	const newlyClaimed = new WeakMap<
-		Record<string, AppConfig>,
+		Record<string, ResolvedApp>,
 		{ leases: string[]; apps: string[] }
 	>();
 
@@ -183,15 +188,15 @@ export function createRunClaimApi<
 
 	function serviceEntries(): RunServiceEntry[] {
 		return ctx.selectedServiceKeys.map((name) => {
-			const service = ctx.services[name] as ServiceConfig | undefined;
+			const service = ctx.services[name] as ResolvedService | undefined;
 			const composeName = service?.serviceName ?? name;
 			return {
 				name,
-				kind: service?.kind,
+				kind: service?.kind === "job" ? ("job" as const) : undefined,
 				status: "starting" as const,
 				// A stack's own CLI names its containers; `stop` cannot reach one.
-				...(service?.external
-					? { stack: service.external.stack }
+				...(service?.kind === "external"
+					? { stack: service.stack }
 					: {
 							container: {
 								runtime: ctx.runtime.name,
@@ -205,20 +210,19 @@ export function createRunClaimApi<
 	}
 
 	function stackEntries(): RunStackEntry[] {
-		return stacksForServices(
-			ctx.config as AnyDevConfig,
-			ctx.selectedServiceKeys,
-		).map(({ name, stack }) => ({
-			name,
-			down: [
-				...stack.down({
-					projectName: ctx.projectName,
-					root: ctx.root,
-					removeVolumes: false,
-				}),
-			],
-			composeProject: externalStackProjectName(ctx.projectName),
-		}));
+		return stacksForServices(ctx.config, ctx.selectedServiceKeys).map(
+			({ name, stack }) => ({
+				name,
+				down: [
+					...stack.down({
+						projectName: ctx.projectName,
+						root: ctx.root,
+						removeVolumes: false,
+					}),
+				],
+				composeProject: externalStackProjectName(ctx.projectName),
+			}),
+		);
 	}
 
 	return {

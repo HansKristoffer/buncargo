@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleStop, stopService } from "../cli/commands/stop";
 import { parseStopArgs } from "../cli/stop-flags";
+import { resolveApps, resolveServices } from "../config/resolve";
 import * as identities from "./process-identity";
 import { readProcessIdentity } from "./process-identity";
 import {
@@ -51,14 +52,14 @@ function source(sessionId = "session-a"): RunSource {
 		loopbackUrls: {},
 		publicUrls: {},
 		hosts: null,
-		services: {
+		services: resolveServices({
 			db: {
 				port: 5432,
 				serviceName: "database",
 				docker: { image: "postgres" },
 			},
 			other: { port: 6379 },
-		},
+		}),
 		containerRuntime: "docker",
 		containerRuntimeBinary: join(root, "custom docker"),
 		resolvePrimaryApp: () => "web",
@@ -69,7 +70,7 @@ describe("published run ownership", () => {
 	it("publishes selected services with exact alias, runtime binary and process identity", async () => {
 		const env = source("session-a");
 		const run = await publishCurrentRun(env, {
-			apps: { web: { port: 3000, devCommand: "bun dev" } },
+			apps: resolveApps({ web: { port: 3000, devCommand: "bun dev" } }),
 			serviceNames: ["db"],
 		});
 		expect(run?.sessionId).toBe("session-a");
@@ -97,10 +98,10 @@ describe("published run ownership", () => {
 	it("batches spawn identities and ordered terminal updates without losing captures", async () => {
 		const env = source("batch");
 		await publishCurrentRun(env, {
-			apps: {
+			apps: resolveApps({
 				web: { port: 3000, devCommand: "bun dev" },
 				worker: { kind: "worker", devCommand: "bun worker" },
-			},
+			}),
 			serviceNames: [],
 		});
 		const writes = [
@@ -151,7 +152,7 @@ describe("published run ownership", () => {
 			},
 		};
 		const run = await publishCurrentRun(env, {
-			apps: { web: { port: 3000, devCommand: "bun dev" } },
+			apps: resolveApps({ web: { port: 3000, devCommand: "bun dev" } }),
 			serviceNames: ["db"],
 		});
 		expect(run?.apps[0]).toMatchObject({
@@ -167,7 +168,7 @@ describe("published run ownership", () => {
 	it("records an app's tunnel as what open opens once the tunnel exists", async () => {
 		const env = source("tunnel-urls");
 		await publishCurrentRun(env, {
-			apps: { web: { port: 3000, devCommand: "bun dev" } },
+			apps: resolveApps({ web: { port: 3000, devCommand: "bun dev" } }),
 			serviceNames: [],
 		});
 		const web = async () =>
@@ -188,7 +189,7 @@ describe("published run ownership", () => {
 		process.env.BUNCARGO_DETACHED = "1";
 		try {
 			const run = await publishCurrentRun(source("session-detached"), {
-				apps: {},
+				apps: resolveApps({}),
 				serviceNames: [],
 			});
 			expect(run?.detached).toBe(true);
@@ -197,7 +198,7 @@ describe("published run ownership", () => {
 			delete process.env.BUNCARGO_DETACHED;
 		}
 		const attached = await publishCurrentRun(source("session-terminal"), {
-			apps: {},
+			apps: resolveApps({}),
 			serviceNames: [],
 		});
 		expect(attached?.detached).toBeUndefined();
@@ -210,14 +211,14 @@ describe("published run ownership", () => {
 		try {
 			process.env.BUNCARGO_DETACHED = detachedRunEnv("idle-limit");
 			const limited = await publishCurrentRun(source("session-limited"), {
-				apps: {},
+				apps: resolveApps({}),
 				serviceNames: [],
 			});
 			expect(limited?.idleLimitMs).toBe(DETACHED_IDLE_LIMIT_MS);
 
 			process.env.BUNCARGO_DETACHED = detachedRunEnv("keep");
 			const kept = await publishCurrentRun(source("session-kept"), {
-				apps: {},
+				apps: resolveApps({}),
 				serviceNames: [],
 			});
 			expect(kept?.detached).toBe(true);
@@ -237,7 +238,7 @@ describe("published run ownership", () => {
 					reindex: {},
 				},
 			},
-			{ apps: {}, serviceNames: ["db"] },
+			{ apps: resolveApps({}), serviceNames: ["db"] },
 		);
 		expect(run?.tasks).toEqual([
 			{ name: "shop:seed", description: "Seed the store" },
@@ -248,7 +249,7 @@ describe("published run ownership", () => {
 
 	it("withdraws an app-only run outright, there being nothing to sweep", async () => {
 		await publishCurrentRun(source("session-apps"), {
-			apps: { web: { port: 3000, devCommand: "bun dev" } },
+			apps: resolveApps({ web: { port: 3000, devCommand: "bun dev" } }),
 			serviceNames: [],
 		});
 		await releaseRun("session-apps");
@@ -266,7 +267,7 @@ describe("published run ownership", () => {
 	});
 	it("refuses a mismatched recorded app pid identity before signalling", async () => {
 		const run = await publishCurrentRun(source("session-b"), {
-			apps: { web: { port: 3000, devCommand: "bun dev" } },
+			apps: resolveApps({ web: { port: 3000, devCommand: "bun dev" } }),
 			serviceNames: [],
 		});
 		if (!run) throw new Error("run not published");
@@ -292,7 +293,7 @@ describe("published run ownership", () => {
 		// every app it was asked to stop.
 		const env = source("session-d");
 		const run = await publishCurrentRun(env, {
-			apps: { web: { port: 3000, devCommand: "bun dev" } },
+			apps: resolveApps({ web: { port: 3000, devCommand: "bun dev" } }),
 			serviceNames: [],
 		});
 		if (!run) throw new Error("run not published");
@@ -317,7 +318,7 @@ describe("published run ownership", () => {
 	it("refuses, rather than reporting it stopped, an app whose identity cannot be read", async () => {
 		const env = source("session-e");
 		const run = await publishCurrentRun(env, {
-			apps: { web: { port: 3000, devCommand: "bun dev" } },
+			apps: resolveApps({ web: { port: 3000, devCommand: "bun dev" } }),
 			serviceNames: [],
 		});
 		if (!run) throw new Error("run not published");
@@ -355,7 +356,7 @@ describe("published run ownership", () => {
 		);
 		chmodSync(binary, 0o755);
 		const run = await publishCurrentRun(env, {
-			apps: {},
+			apps: resolveApps({}),
 			serviceNames: ["db"],
 		});
 		const service = run?.services[0];

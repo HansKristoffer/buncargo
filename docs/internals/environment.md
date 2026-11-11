@@ -1,8 +1,10 @@
 # Environment and preparation
 
-`createDevEnvironment()` lives in `src/environment/`. `context.ts` resolves identity, ports and URLs
-once into a `DevEnvContext`; `env-vars.ts`, `lifecycle.ts`, `servers.ts` and `run-claim.ts` are
-built on it, and `create-dev-environment.ts` only composes them. Extract a complex concern into a
+`createDevEnvironment()` lives in `src/environment/`. It applies integrations, validates and
+resolves the config (`resolveConfig`); `context.ts` then resolves identity, ports and URLs once
+into a `DevEnvContext`, which holds only the resolved services and apps. `env-vars.ts`,
+`lifecycle.ts`, `servers.ts` and `run-claim.ts` are built on it, and `create-dev-environment.ts`
+only composes them. Extract a complex concern into a
 focused module (logging, seeding) rather than growing the composition.
 
 `context.ts` starts from `resolveCheckoutView` and builds every environment with `sharedEnv`

@@ -3,10 +3,14 @@ import {
 	fetchScopeSecrets,
 	type InfisicalScope,
 } from "../core/secrets/index";
-import type { AppConfig, MigrationConfig, SecretsScopeConfig } from "../types";
+import type {
+	MigrationConfig,
+	SecretsHolder,
+	SecretsScopeConfig,
+} from "../types";
 
 export interface StartSecretsSelection {
-	apps: Record<string, AppConfig>;
+	apps: Record<string, SecretsHolder>;
 	defaults?: SecretsScopeConfig | false;
 	seed?: SecretsScopeConfig | false;
 	includeSeed: boolean;

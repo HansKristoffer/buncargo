@@ -13,7 +13,7 @@ import {
 } from "../core/leases";
 import { askConfirm, isInteractive } from "../core/prompt";
 import { readLiveRuns } from "../core/run-registry";
-import type { AppConfig } from "../types";
+import type { ResolvedApp } from "../types";
 import { STOP_EXIT, stopTarget } from "./commands/stop";
 import { type TakeoverDecision, takesOver } from "./dev-takeover";
 import { CliError } from "./errors";
@@ -66,7 +66,7 @@ export function leaseSkipLines(skip: SkippedLeaseApp): string[] {
  */
 export async function acquireAppLeases(
 	owner: LeaseOwner,
-	apps: Record<string, AppConfig>,
+	apps: Record<string, ResolvedApp>,
 	options: {
 		takeover: TakeoverDecision;
 		signal?: AbortSignal;

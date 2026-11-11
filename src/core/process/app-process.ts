@@ -5,7 +5,7 @@ import {
 } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import type { AppConfig } from "../../types";
+import type { ResolvedApp } from "../../types";
 import { childProcessEnv } from "../child-env";
 import { registerAbortCleanup } from "../deadline";
 import { shellQuote } from "../shell-quote";
@@ -50,7 +50,7 @@ export function spawnAppCommand(
 
 /** Where and with what env an app's commands run, in their own process group. */
 function appSpawnOptions(
-	config: AppConfig,
+	config: ResolvedApp,
 	root: string,
 	envVars: Record<string, string>,
 ) {
@@ -62,7 +62,7 @@ function appSpawnOptions(
 }
 
 export function resolveStartCommand(
-	config: AppConfig,
+	config: ResolvedApp,
 	productionBuild: boolean,
 ): string | undefined {
 	const command = productionBuild
@@ -74,7 +74,7 @@ export function resolveStartCommand(
 
 export function spawnManagedApp(
 	name: string,
-	config: AppConfig,
+	config: ResolvedApp,
 	root: string,
 	envVars: Record<string, string>,
 	options: {
@@ -188,7 +188,7 @@ export function ptyTeeArgv(command: string): [string, ...string[]] | null {
  */
 export async function runPrebuild(
 	name: string,
-	config: AppConfig,
+	config: ResolvedApp,
 	root: string,
 	envVars: Record<string, string>,
 	options: { signal: AbortSignal; output: RunOutput; graceMs?: number },

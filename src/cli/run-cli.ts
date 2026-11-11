@@ -41,7 +41,6 @@ import {
 	seedCanOverlap,
 } from "../environment/seed-startup";
 import { startServerSession } from "../environment/server-session";
-import { serverReadyTimeout } from "../environment/servers";
 import { planStart } from "../planning";
 import type {
 	AnyDevEnvironment,
@@ -965,7 +964,6 @@ async function runDevFlow<
 					env.waitForServers({
 						onlyApps: Object.keys(app) as Extract<keyof TApps, string>[],
 						expandRequired: false,
-						timeout: serverReadyTimeout(),
 						verbose: false,
 						logReady: false,
 						signal: healthSignal,

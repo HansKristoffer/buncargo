@@ -2,7 +2,8 @@ import { expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AppConfig, ServiceConfig } from "../types";
+import { resolveApps } from "../config/resolve";
+import type { AppConfig, ResolvedApp, ServiceConfig } from "../types";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 import { startAppServers } from "./servers";
@@ -17,7 +18,7 @@ const vars = {
 >;
 
 const claim = {
-	claimApps: async (apps: Record<string, AppConfig>) => apps,
+	claimApps: async (apps: Record<string, ResolvedApp>) => apps,
 	appEvents: {},
 	abandonApps: async () => {},
 };
@@ -41,7 +42,7 @@ it("cancels an uncooperative beforeServers hook before spawning", async () => {
 	>;
 	await expect(
 		startAppServers(ctx, vars, {
-			apps: {},
+			apps: resolveApps({}),
 			productionBuild: false,
 			verbose: false,
 			signal: controller.signal,
@@ -58,9 +59,9 @@ it("cleans up spawned servers when the afterServers hook fails", async () => {
 		join(root, "app.ts"),
 		`await Bun.write(${JSON.stringify(marker)}, String(process.pid)); setInterval(() => {}, 1000);`,
 	);
-	const apps = {
-		app: { port: 1, devCommand: "bun app.ts", healthEndpoint: false as const },
-	};
+	const apps = resolveApps({
+		app: { port: 1, devCommand: "bun app.ts", healthEndpoint: false },
+	});
 	const ctx = {
 		root,
 		ports: {},

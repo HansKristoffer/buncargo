@@ -6,6 +6,8 @@ import type {
 	EnvValues,
 	EnvVarsBuilder,
 	EnvVarsContext,
+	ResolvedService,
+	ResolvedServices,
 	ServiceConfig,
 	ServiceEnvValueSource,
 } from "../types";
@@ -16,7 +18,6 @@ import {
 	toUrlMap,
 	type UrlMap,
 } from "./ports";
-import { resolveServiceEnvVarSources } from "./service-presets";
 
 export type SharedEnvValues = EnvValues;
 
@@ -44,7 +45,7 @@ export function buildSharedEnvValues<
 >(input: {
 	projectName: string;
 	production?: boolean;
-	services: TServices;
+	services: ResolvedServices<TServices>;
 	ports: ComputedPorts<TServices, TApps>;
 	urls: ComputedUrls<TServices, TApps>;
 	/** Only iterated, so the widest read-only shape a caller can hold is enough. */
@@ -87,9 +88,10 @@ export function buildSharedEnvValues<
 		}
 	}
 
-	for (const [serviceKey, service] of Object.entries(services)) {
-		const envSources = resolveServiceEnvVarSources(serviceKey, service);
-		for (const [envName, source] of Object.entries(envSources)) {
+	for (const [serviceKey, service] of Object.entries<ResolvedService>(
+		services,
+	)) {
+		for (const [envName, source] of Object.entries(service.env)) {
 			const value = getServiceEnvValue(
 				serviceKey,
 				source,

@@ -53,6 +53,7 @@ export const minioDockerService = defineDockerService<
 	env: {
 		MINIO_URL: "url",
 	},
+	url: ({ host, port }) => `http://${host}:${port}`,
 	enhanceServiceConfig: (base, options): MinioServiceConfig => ({
 		...base,
 		staticEnv: {

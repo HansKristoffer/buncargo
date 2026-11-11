@@ -27,6 +27,9 @@ export const postgresDockerService = defineDockerService<
 	env: {
 		DATABASE_URL: "url",
 	},
+	credentials: { user: "postgres", password: "postgres", database: "postgres" },
+	url: ({ host, port, credentials }) =>
+		`postgresql://${credentials?.user}:${credentials?.password}@${host}:${port}/${credentials?.database}`,
 	enhanceServiceConfig: (base, options): PostgresServiceConfig => ({
 		...base,
 		database: options?.database,
@@ -34,9 +37,9 @@ export const postgresDockerService = defineDockerService<
 		password: options?.password,
 	}),
 	build: ({ serviceKey, config, runtime }) => {
-		const user = composeLiteral(config.user ?? "postgres");
-		const password = composeLiteral(config.password ?? "postgres");
-		const database = composeLiteral(config.database ?? "postgres");
+		const user = composeLiteral(config.credentials?.user ?? "postgres");
+		const password = composeLiteral(config.credentials?.password ?? "postgres");
+		const database = composeLiteral(config.credentials?.database ?? "postgres");
 		const defaultHealthcheck: DockerComposeHealthcheckRaw = {
 			test: ["CMD-SHELL", `pg_isready -h 127.0.0.1 -U ${user}`],
 			interval: "250ms",

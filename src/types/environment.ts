@@ -35,6 +35,7 @@ import type {
 	SeedOutcome,
 	SeedRunOptions,
 } from "./preparation";
+import type { ResolvedApps, ResolvedServices } from "./resolved";
 import type {
 	ComposeDocument,
 	ContainerRuntimeName,
@@ -130,10 +131,10 @@ export interface DevEnvironment<
 	readonly publicUrls: ComputedPublicUrls<TServices, TApps>;
 	/** Stable id of this checkout, which apps see as `BUNCARGO_WORKSPACE_ID`. */
 	readonly workspaceId: string;
-	/** Services configuration */
-	readonly services: TServices;
-	/** Apps configuration (for CLI to build commands) */
-	readonly apps: TApps;
+	/** The config's services, resolved: one kind each, every default filled. */
+	readonly services: ResolvedServices<TServices>;
+	/** The config's apps, resolved: one kind each, every default filled. */
+	readonly apps: ResolvedApps<TApps>;
 	/** Port offset applied (0 for main, > 0 for worktrees) */
 	readonly portOffset: number;
 	/** How the port offset was chosen */
@@ -177,8 +178,8 @@ export interface DevEnvironment<
 		SeedConfig<TServices, TApps>,
 		"command" | "cwd" | "beforeApps" | "requiredServices"
 	>;
-	/** `checks` from config and its integrations, run by `buncargo dev` before it starts anything */
-	readonly checks?: readonly SetupCheck[];
+	/** `setupChecks` from config and its integrations, run by `buncargo dev` before it starts anything */
+	readonly setupChecks?: readonly SetupCheck[];
 	/** `preflight` from config and its integrations, run by `buncargo dev` with the terminal */
 	readonly preflight?: readonly PreflightStep[];
 	/** The config's integrations, after they have been applied. */
@@ -291,7 +292,6 @@ export interface DevEnvironment<
 	/** Wait for servers to be ready */
 	waitForServers(options?: {
 		signal?: AbortSignal;
-		timeout?: number;
 		productionBuild?: boolean;
 		/** If set, wait only for these app names plus any transitive `requiredApps`. */
 		onlyApps?: Extract<keyof TApps, string>[];

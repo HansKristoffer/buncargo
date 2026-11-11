@@ -2,6 +2,7 @@ import { expect, it, spyOn } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveApps } from "../config/resolve";
 import { RunOutput } from "../core/process/run-output";
 import * as prompt from "../core/prompt";
 import { openDevOutput } from "./dev-output";
@@ -32,7 +33,7 @@ it("closes the output before the TUI lets go of it", async () => {
 				loopbackUrls: {},
 				publicUrls: {},
 			},
-			{ api: { port: 3000, devCommand: "bun run api" } },
+			resolveApps({ api: { port: 3000, devCommand: "bun run api" } }),
 			{ tui: "on" },
 		);
 		expect(view.output.terminals).toBe("pty");

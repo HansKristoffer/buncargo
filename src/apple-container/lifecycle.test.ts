@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { resolveServices } from "../config/resolve";
 import { buildComposeModel } from "../docker-compose";
 import { SERVICE_HASH_LABEL } from "../docker-compose/interpolate";
 import type { ComposeDocument, ServiceConfig } from "../types";
@@ -9,7 +10,7 @@ import { buildAppleRunPlan } from "./run-plan";
 const IDENTITY = { projectName: "gey-main", root: "/repo", worktree: null };
 
 function modelFor(services: Record<string, ServiceConfig>): ComposeDocument {
-	return buildComposeModel(services, undefined, IDENTITY);
+	return buildComposeModel(resolveServices(services), undefined, IDENTITY);
 }
 
 interface RecordingCli extends AppleContainerCli {

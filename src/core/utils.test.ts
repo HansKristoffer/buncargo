@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineDevConfig } from "../config";
 import { applyIntegrations } from "../config/integrations";
+import { resolveApps, resolveServices } from "../config/resolve";
 import { service } from "../docker-compose/services";
 import { createDevEnvironment } from "../environment";
 import type { AppConfig, HostsOptionsLike, ServiceConfig } from "../types";
@@ -108,8 +109,8 @@ function planFor(config: HostsTestConfig) {
 	return planNamedHosts({
 		projectPrefix: applied.projectPrefix,
 		worktreeSuffix: identity.worktreeSuffix,
-		apps,
-		services: applied.services,
+		apps: resolveApps(apps),
+		services: resolveServices(applied.services),
 		ports,
 		hosts: applied.options?.hosts ?? true,
 		primaryApp: applied.options?.primaryApp,

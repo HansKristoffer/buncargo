@@ -1,5 +1,10 @@
 import { expect, it } from "bun:test";
 import { validateConfig } from "../config";
+import {
+	resolveApps,
+	resolveService,
+	resolveServices,
+} from "../config/resolve";
 import { buildComposeModel } from "../docker-compose";
 import { buildStartPlan } from "../planning";
 import type { ServiceConfig } from "../types";
@@ -7,12 +12,13 @@ import { ensureServicesRunning } from "./ensure-services";
 import { waitForService } from "./readiness";
 import type { ContainerRuntimeAdapter, ServiceDiagnosis } from "./types";
 
-const job: ServiceConfig = {
+const declaredJob: ServiceConfig = {
 	kind: "job",
 	rerun: "always",
 	healthTimeout: 200,
 	docker: { image: "alpine:3.21.3", command: ["sh", "-c", "exit 0"] },
 };
+const job = resolveService("init", declaredJob);
 
 function runtime(states: ServiceDiagnosis[]): ContainerRuntimeAdapter {
 	return {
@@ -102,21 +108,23 @@ it("rejects unsupported Apple completion before invoking its daemon", async () =
 it("rejects phase inversions and malformed worker/job endpoints before startup", () => {
 	expect(() =>
 		buildStartPlan(
-			{ api: { port: 3000, devCommand: false, requiredServices: ["db"] } },
-			{
+			resolveApps({
+				api: { port: 3000, devCommand: false, requiredServices: ["db"] },
+			}),
+			resolveServices({
 				db: {
 					port: 5432,
 					docker: { image: "postgres:17", depends_on: ["sync"] },
 				},
 				sync: { port: 8080, afterPreparation: true },
-			},
+			}),
 			undefined,
 		),
 	).toThrow("afterPreparation");
 	for (const service of [
-		{ ...job, port: 3000 },
-		{ ...job, rerun: undefined },
-		{ ...job, docker: { image: "alpine", restart: "always" } },
+		{ ...declaredJob, port: 3000 },
+		{ ...declaredJob, rerun: undefined },
+		{ ...declaredJob, docker: { image: "alpine", restart: "always" } },
 	])
 		expect(
 			validateConfig({ projectPrefix: "invalid", services: { init: service } })

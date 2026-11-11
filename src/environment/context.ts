@@ -43,7 +43,6 @@ import {
 	portOffsetOverride,
 	urlHostOverride,
 } from "../core/runtime-flags";
-import { applySecretDefaults } from "../core/secrets/index";
 import type { PublicTunnel } from "../core/tunnel";
 import { workspaceId } from "../core/workspace-identity";
 import {
@@ -58,12 +57,14 @@ import type {
 	ComputedLoopbackUrls,
 	ComputedPorts,
 	ComputedUrls,
-	DevConfig,
 	DevEnvironmentTunnelLog,
 	EnvValues,
 	HostsRuntime,
 	NamedHostsActivation,
 	PortOffsetProvenance,
+	ResolvedApps,
+	ResolvedDevConfig,
+	ResolvedServices,
 	ServiceConfig,
 } from "../types";
 import type { EnvironmentLogSelection } from "../types/environment";
@@ -122,14 +123,14 @@ export interface DevEnvContext<
 	readonly inputEnv: EnvInput;
 	/** `buncargo env set` values, applied on top of every computed environment. */
 	readonly envOverrides: Readonly<Record<string, string>>;
-	readonly config: DevConfig<TServices, TApps, TEnv>;
+	readonly config: ResolvedDevConfig<TServices, TApps, TEnv>;
 	readonly root: string;
 	readonly projectName: string;
 	readonly projectSuffix: string | undefined;
 	readonly worktree: boolean;
 	readonly localIp: string;
-	readonly services: TServices;
-	readonly apps: TApps;
+	readonly services: ResolvedServices<TServices>;
+	readonly apps: ResolvedApps<TApps>;
 	readonly ports: ComputedPorts<TServices, TApps>;
 	readonly urls: ComputedUrls<TServices, TApps>;
 	/**
@@ -190,7 +191,7 @@ export function createDevEnvContext<
 	TApps extends Record<string, AppConfig>,
 	TEnv extends EnvValues = EnvValues,
 >(
-	config: DevConfig<TServices, TApps, TEnv>,
+	config: ResolvedDevConfig<TServices, TApps, TEnv>,
 	options: {
 		suffix?: string;
 		containerRuntime?: string;
@@ -206,12 +207,7 @@ export function createDevEnvContext<
 	const view = resolveCheckoutView(config, root, { suffix });
 	const { worktree, worktreeSuffix, projectSuffix, projectName, localIp } =
 		view;
-	const { inputEnv, envOverrides, services } = view;
-
-	// Resolved once, here, because this is the last place the config-level
-	// defaults and the apps are both in hand: every spawner downstream reads the
-	// scope off `app.secrets` alone.
-	const apps = applySecretDefaults(view.apps, config.secrets);
+	const { inputEnv, envOverrides, services, apps } = view;
 	// A suffixed environment (`withSuffix`, `buncargo ci`) is a second stack in
 	// the same checkout: it gets its own compose file and never persists its
 	// ports, or it would overwrite the ones the checkout's own `dev` run and

@@ -4,7 +4,6 @@ import { mapValues } from "hanzio";
 import { withDeadline } from "../core/deadline";
 import { waitForDevServers } from "../core/network";
 import { buildApps } from "../core/process/build";
-import { isCI } from "../core/runtime-flags";
 import { loadAppSecrets } from "../core/secrets/index";
 import {
 	resolveExposeTargets,
@@ -21,6 +20,7 @@ import type {
 	EnvValues,
 	OpenPublicTunnelsOptions,
 	OpenPublicTunnelsResult,
+	ResolvedApp,
 	SeedOutcome,
 	ServiceConfig,
 } from "../types";
@@ -33,7 +33,7 @@ import { startServerSession } from "./server-session";
 
 /** Validate all selected working directories before any startup mutation. */
 export function assertAppWorkingDirectories(
-	apps: Record<string, AppConfig>,
+	apps: Record<string, ResolvedApp>,
 	root: string,
 	production = false,
 ): void {
@@ -56,11 +56,6 @@ export function assertAppWorkingDirectories(
 				`apps.${name}.cwd is not an accessible directory: ${cwd}`,
 			);
 	}
-}
-
-/** How long a wave of apps gets to become healthy, for `start()` and the CLI. */
-export function serverReadyTimeout(): number {
-	return isCI() ? 120000 : 60000;
 }
 
 /**
@@ -101,7 +96,7 @@ export async function startAppServers<
 	ctx: DevEnvContext<TServices, TApps, TEnv>,
 	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
 	options: {
-		apps: Record<string, AppConfig>;
+		apps: Record<string, ResolvedApp>;
 		onPhase?: (name: string, ms: number) => void;
 		seed?: (signal: AbortSignal) => Promise<SeedOutcome>;
 		onSeedReady?: () => void;
@@ -133,7 +128,7 @@ async function spawnAppServers<
 >(
 	ctx: DevEnvContext<TServices, TApps, TEnv>,
 	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
-	appsToStart: Record<string, AppConfig>,
+	appsToStart: Record<string, ResolvedApp>,
 	options: Parameters<typeof startAppServers>[2],
 ): Promise<DevServerPids> {
 	const { productionBuild, verbose } = options;
@@ -175,7 +170,6 @@ async function spawnAppServers<
 			// One app at a time, quietly: the spawner reports readiness.
 			waitForHealth: (app, signal) =>
 				waitForDevServers(app, ctx.ports, {
-					timeout: serverReadyTimeout(),
 					verbose: false,
 					logReady: false,
 					productionBuild,
@@ -267,7 +261,6 @@ export function createServersApi<
 
 	async function waitForServersReady(
 		options: {
-			timeout?: number;
 			productionBuild?: boolean;
 			onlyApps?: Extract<keyof TApps, string>[];
 			expandRequired?: boolean;
@@ -278,7 +271,6 @@ export function createServersApi<
 		} = {},
 	): Promise<void> {
 		const {
-			timeout = 60000,
 			productionBuild = false,
 			onlyApps,
 			expandRequired = true,
@@ -293,7 +285,6 @@ export function createServersApi<
 					)
 				: resolveSelectedApps(apps, onlyApps).apps;
 		await waitForDevServers(appsToWait, ports, {
-			timeout,
 			productionBuild,
 			signal: options.signal,
 			logReady: options.logReady,
@@ -311,7 +302,6 @@ export function createServersApi<
 		if (waitForHealthy?.length) {
 			assertOnlyAppNames(Object.keys(apps), waitForHealthy);
 			await waitForDevServers(pickApps(apps, waitForHealthy), ports, {
-				timeout: serverReadyTimeout(),
 				verbose: config.options?.verbose ?? true,
 				productionBuild: false,
 				signal: options.signal,

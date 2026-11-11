@@ -8,7 +8,7 @@ import {
 } from "../core/removal-log";
 import { formatWarn } from "../core/style";
 import { resolveComposeServiceNames } from "../planning";
-import type { ServiceConfig } from "../types";
+import type { ResolvedService } from "../types";
 import { composeServicesOf } from "./stacks";
 
 interface TeardownTarget {
@@ -18,7 +18,7 @@ interface TeardownTarget {
 }
 
 interface LossTarget extends TeardownTarget {
-	services: Readonly<Record<string, ServiceConfig>>;
+	services: Readonly<Record<string, ResolvedService>>;
 	selectedServiceKeys: readonly string[];
 }
 
@@ -37,7 +37,7 @@ export function explainMissingContainers(
 ): string | undefined {
 	const selected = Object.fromEntries(
 		target.selectedServiceKeys.flatMap((key) => {
-			const service = target.services[key] as ServiceConfig | undefined;
+			const service = target.services[key];
 			return service ? [[key, service]] : [];
 		}),
 	);

@@ -1,5 +1,5 @@
 import { startTimer } from "hanzio";
-import type { AppConfig } from "../../types";
+import type { SecretsHolder } from "../../types";
 import { secretsEnvironment } from "../runtime-flags";
 import { stopsTheRun } from "./auth";
 import {
@@ -20,7 +20,7 @@ import { collectScopes, type InfisicalScope } from "./scope";
  * or expired session throws instead.
  */
 export async function loadAppSecrets(
-	apps: Record<string, AppConfig>,
+	apps: Record<string, SecretsHolder>,
 	options: {
 		signal?: AbortSignal;
 		env?: NodeJS.ProcessEnv;

@@ -157,7 +157,7 @@ describe("ci teardown", () => {
 			);
 			writeFileSync(
 				join(root, "dev.config.ts"),
-				"export default {projectPrefix:'citd',services:{postgres:{port:5432}},apps:{}};",
+				"export default {projectPrefix:'citd',services:{postgres:{port:5432,healthCheck:false}},apps:{}};",
 			);
 			const on = (step: "up" | "down") =>
 				`*" ${step}"*) ${fake[step as keyof typeof fake] ?? ":"}; echo "${step} finished" >> "${log}" ;;`;
@@ -194,7 +194,7 @@ it("says who removed the stack when the command fails without it", async () => {
 	writeFileSync(join(root, "package.json"), JSON.stringify({ workspaces: [] }));
 	writeFileSync(
 		join(root, "dev.config.ts"),
-		"export default {projectPrefix:'cigone',services:{postgres:{port:5432}},apps:{}};",
+		"export default {projectPrefix:'cigone',services:{postgres:{port:5432,healthCheck:false}},apps:{}};",
 	);
 	// Lists nothing: the containers are gone by the time anyone looks.
 	writeFileSync(docker, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -229,7 +229,7 @@ it("claims its stack with an idle hold, so the sweep removes it after a SIGKILL"
 	writeFileSync(join(root, "package.json"), JSON.stringify({ workspaces: [] }));
 	writeFileSync(
 		join(root, "dev.config.ts"),
-		"export default {projectPrefix:'cihold',services:{postgres:{port:5432}},apps:{},options:{autoShutdown:false}};",
+		"export default {projectPrefix:'cihold',services:{postgres:{port:5432,healthCheck:false}},apps:{},options:{autoShutdown:false}};",
 	);
 	writeFileSync(docker, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 
@@ -263,7 +263,7 @@ it("leaves stdout to the command, byte for byte", async () => {
 	writeFileSync(join(root, "package.json"), JSON.stringify({ workspaces: [] }));
 	writeFileSync(
 		join(root, "dev.config.ts"),
-		"export default {projectPrefix:'cistdout',services:{postgres:{port:5432}},apps:{}};",
+		"export default {projectPrefix:'cistdout',services:{postgres:{port:5432,healthCheck:false}},apps:{}};",
 	);
 	writeFileSync(docker, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 

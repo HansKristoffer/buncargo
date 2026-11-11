@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveServices } from "../config/resolve";
 import { readRemovals } from "../core/removal-log";
 import { buildRunEntry, publishRun } from "../core/run-registry";
 import type { PortContainerOwner } from "../types";
@@ -256,7 +257,7 @@ describe("assertServicePortsClaimable", () => {
 
 		const failure = assertServicePortsClaimable(
 			runtime,
-			{ redis: { port: 6379 } },
+			resolveServices({ redis: { port: 6379 } }),
 			{ redis: port },
 			{ ...checkout, projectName: "budget-app-t3-e144b332" },
 		);
@@ -271,7 +272,7 @@ describe("assertServicePortsClaimable", () => {
 
 		const failure = assertServicePortsClaimable(
 			runtime,
-			{ redis: { port: 6379 } },
+			resolveServices({ redis: { port: 6379 } }),
 			{ redis: port },
 			{ ...checkout, projectName: "budget-app-t3-e144b332" },
 		);

@@ -34,6 +34,7 @@ export const typesenseDockerService = defineDockerService<
 	env: {
 		TYPESENSE_URL: "url",
 	},
+	url: ({ host, port }) => `http://${host}:${port}`,
 	enhanceServiceConfig: (base, options): TypesenseServiceConfig => ({
 		...base,
 		staticEnv: {

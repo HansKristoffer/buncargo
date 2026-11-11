@@ -14,7 +14,7 @@ import {
 import type {
 	BuiltInHealthCheck,
 	HealthCheckFn,
-	ServiceConfig,
+	ResolvedService,
 } from "../types";
 import {
 	type ContainerObservation,
@@ -33,7 +33,6 @@ export interface WaitForServiceOptions {
 	signal?: AbortSignal;
 	runtime: ContainerRuntimeAdapter;
 	projectName: string;
-	maxAttempts?: number;
 	pollInterval?: number;
 	root?: string;
 	composeFile?: string;
@@ -64,7 +63,7 @@ export type ReadinessPlan =
 	| { kind: "custom"; check: HealthCheckFn; port: number };
 
 export function readinessPlan(
-	config: ServiceConfig,
+	config: ResolvedService,
 	port: number | undefined,
 	runtimeHealthy?: boolean,
 ): ReadinessPlan {
@@ -73,7 +72,7 @@ export function readinessPlan(
 	if (config.kind === "job") return { kind: "completion" };
 	if (port === undefined) return { kind: "process" };
 	const check = config.healthCheck;
-	if (check === false || check === undefined) return { kind: "none" };
+	if (check === false) return { kind: "none" };
 	return typeof check === "function"
 		? { kind: "custom", check, port }
 		: { kind: "probe", probe: check, port };
@@ -305,7 +304,7 @@ async function pollUntilReady(
  */
 export async function waitForService(
 	serviceName: string,
-	config: ServiceConfig,
+	config: ResolvedService,
 	port: number | undefined,
 	options: WaitForServiceOptions,
 	/** The runtime's own healthcheck verdict, when it reported one. */
@@ -316,12 +315,8 @@ export async function waitForService(
 
 	const pollInterval = options.pollInterval ?? POLL_INTERVAL;
 	const { runtime, projectName, root, composeFile } = options;
-	const timeoutMs =
-		config.healthTimeout ??
-		(options.maxAttempts !== undefined
-			? options.maxAttempts * pollInterval
-			: 30_000);
-	const composeServiceName = config.serviceName ?? serviceName;
+	const timeoutMs = config.healthTimeout;
+	const composeServiceName = config.serviceName;
 	const context: HealthPollContext = {
 		serviceName,
 		composeServiceName,
@@ -395,7 +390,7 @@ const IN_CONTAINER_PROBES = new Set(["pg_isready", "redis-cli"]);
  * healthcheck for it, which is not the same as unhealthy.
  */
 export function runtimeAnsweredReadiness(
-	config: ServiceConfig,
+	config: ResolvedService,
 	healthy: boolean | undefined,
 ): boolean {
 	if (healthy !== true) {
@@ -403,7 +398,11 @@ export function runtimeAnsweredReadiness(
 	}
 
 	const docker =
-		config.docker?.kind === "preset" ? config.docker.service : config.docker;
+		config.kind === "external"
+			? undefined
+			: config.docker.kind === "preset"
+				? config.docker.override
+				: config.docker.service;
 	// A caller can replace Compose's probe with a different health criterion.
 	if (docker?.healthcheck !== undefined) {
 		return false;
@@ -417,7 +416,7 @@ export function runtimeAnsweredReadiness(
 
 /** Wait concurrently, cancelling the remaining probes if any service fails. */
 export async function waitForAllServices(
-	services: Record<string, ServiceConfig>,
+	services: Record<string, ResolvedService>,
 	ports: Record<string, number>,
 	options: WaitForServiceOptions & {
 		verbose?: boolean;
@@ -451,7 +450,7 @@ export async function waitForAllServices(
 					config,
 					ports[name],
 					{ ...waitOptions, verbose },
-					healthyServices?.has(config.serviceName ?? name),
+					healthyServices?.has(config.serviceName),
 				);
 			}),
 		);

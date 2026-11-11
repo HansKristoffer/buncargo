@@ -17,7 +17,7 @@ import { isAbsolute, resolve } from "node:path";
 import { buildSharedEnvValues } from "../core/env";
 import type { PortMap, UrlMap } from "../core/ports";
 import { writeTextFile } from "../core/registry-file";
-import type { EnvFileOptions, ServiceConfig } from "../types";
+import type { EnvFileOptions, ResolvedService } from "../types";
 
 /** `.env` line: optional `export`, a key, `=`, then the value. */
 const ENV_LINE =
@@ -90,7 +90,7 @@ export function rewriteEnvValues(
  */
 export function buildEnvFileUpdates(input: {
 	projectName: string;
-	services: Record<string, ServiceConfig>;
+	services: Record<string, ResolvedService>;
 	ports: PortMap;
 	loopbackUrls: UrlMap;
 	values?: EnvFileOptions["values"];
@@ -155,7 +155,7 @@ export async function syncEnvFile(input: {
 	root: string;
 	envFile: boolean | EnvFileOptions | undefined;
 	projectName: string;
-	services: Record<string, ServiceConfig>;
+	services: Record<string, ResolvedService>;
 	ports: PortMap;
 	loopbackUrls: UrlMap;
 }): Promise<EnvFileSyncResult | undefined> {

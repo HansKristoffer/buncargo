@@ -8,8 +8,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveApps, resolveServices } from "../config/resolve";
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
-import type { AppConfig, ServiceConfig } from "../types";
 import {
 	claimOffset,
 	describeOffsetClaimOverlap,
@@ -57,10 +57,10 @@ afterEach(() => {
 
 describe("buildPortMap", () => {
 	it("adds offset to all service ports", () => {
-		const services: Record<string, ServiceConfig> = {
+		const services = resolveServices({
 			postgres: { port: 5432 },
 			redis: { port: 6379 },
-		};
+		});
 
 		const result = buildPortMap(services, undefined, 10);
 
@@ -69,13 +69,13 @@ describe("buildPortMap", () => {
 	});
 
 	it("adds offset to all app ports", () => {
-		const services: Record<string, ServiceConfig> = {
+		const services = resolveServices({
 			postgres: { port: 5432 },
-		};
-		const apps: Record<string, AppConfig> = {
+		});
+		const apps = resolveApps({
 			api: { port: 3000, devCommand: "bun run dev" },
 			web: { port: 5173, devCommand: "bun run dev:web" },
-		};
+		});
 
 		const result = buildPortMap(services, apps, 20);
 
@@ -84,9 +84,9 @@ describe("buildPortMap", () => {
 	});
 
 	it("derives a <name>Secondary entry for secondary ports", () => {
-		const services: Record<string, ServiceConfig> = {
+		const services = resolveServices({
 			clickhouse: { port: 8123, secondaryPort: 9000 },
-		};
+		});
 
 		const result = buildPortMap(services, undefined, 15);
 
@@ -99,9 +99,9 @@ describe("buildPortMap", () => {
 	});
 
 	it("defaults to base ports when no offset is given", () => {
-		const services: Record<string, ServiceConfig> = {
+		const services = resolveServices({
 			postgres: { port: 5432, secondaryPort: 5433 },
-		};
+		});
 
 		expect(buildPortMap(services, undefined)).toEqual({
 			postgres: 5432,
@@ -143,12 +143,12 @@ describe("computeBaseOffset", () => {
 });
 
 describe("resolvePortPlan", () => {
-	const services: Record<string, ServiceConfig> = {
+	const services = resolveServices({
 		postgres: { port: 5432 },
-	};
-	const apps: Record<string, AppConfig> = {
+	});
+	const apps = resolveApps({
 		api: { port: 3000, devCommand: "bun run dev" },
-	};
+	});
 
 	it("uses BUNCARGO_PORT_OFFSET as a hard override", () => {
 		process.env.BUNCARGO_PORT_OFFSET = "250";
@@ -179,7 +179,7 @@ describe("resolvePortPlan", () => {
 				offset: 300,
 				ports: buildPortMap(
 					{ postgres: { port: 5432 } },
-					{ api: { port: 3000, devCommand: "bun run dev" } },
+					resolveApps({ api: { port: 3000, devCommand: "bun run dev" } }),
 					300,
 				),
 				provenance: "hash",
@@ -218,7 +218,7 @@ describe("resolvePortPlan", () => {
 				offset: 300,
 				ports: buildPortMap(
 					{ postgres: { port: 5432 } },
-					{ api: { port: 3000, devCommand: "bun run dev" } },
+					resolveApps({ api: { port: 3000, devCommand: "bun run dev" } }),
 					300,
 				),
 				provenance: "hash",
@@ -413,7 +413,7 @@ it("rejects an explicit offset that overflows a service port before any probe", 
 			projectName: "overflow",
 			root: "/tmp/overflow",
 			services: { db: { port: 65000 } },
-			apps: {},
+			apps: resolveApps({}),
 			persist: false,
 			getOwner: () => {
 				throw new Error("unexpected probe");
@@ -469,7 +469,7 @@ it("a partial start cannot relocate the unselected persisted infrastructure", ()
 				projectPrefix: "fixture",
 				projectName: "fixture",
 				services: { postgres: { port: 5432 } },
-				apps: { marketing: { port: 3000, devCommand: false } },
+				apps: resolveApps({ marketing: { port: 3000, devCommand: false } }),
 				probeNames: ["marketing"],
 				getOwner: () => ({ pids: [99999], command: "foreign", cwd: "/other" }),
 			}),
@@ -939,7 +939,7 @@ describe("offset claims", () => {
 				projectName: "lullu-a",
 				root: first,
 				services: {},
-				apps: { web: { port: 5173, devCommand: "true" } },
+				apps: resolveApps({ web: { port: 5173, devCommand: "true" } }),
 				getOwner: (port) =>
 					port === 25373 ? { pids: [], unidentified: true } : null,
 				companionPorts: (ports) =>
@@ -975,9 +975,9 @@ describe("offset claims", () => {
 		console.warn = () => {};
 		// An emulator suite: the UI is the app's port, the emulators 100 apart,
 		// which is exactly the offset step.
-		const apps: Record<string, AppConfig> = {
+		const apps = resolveApps({
 			firebase: { port: 4000, extraPorts: [9099, 9199], devCommand: "true" },
-		};
+		});
 		try {
 			await Bun.write(
 				join(first, ".buncargo/ports.json"),
@@ -1143,7 +1143,7 @@ describe("offset claims", () => {
 					projectPrefix: "lullu",
 					projectName: "lullu-a",
 					services: { postgres: { port: 5432 } },
-					apps: { marketing: { port: 3000, devCommand: false } },
+					apps: resolveApps({ marketing: { port: 3000, devCommand: false } }),
 					probeNames: ["marketing"],
 					getOwner: () => null,
 				}),

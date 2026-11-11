@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveServices } from "../config/resolve";
 import type { ComposeDocument } from "../types";
 import { writeGeneratedComposeFile } from "./generated-file";
 import {
@@ -85,14 +86,20 @@ describe("resolved container artifact", () => {
 		const root = mkdtempSync(join(tmpdir(), "buncargo artifact "));
 		try {
 			const services = { postgres: { port: 5432 } };
-			const path = join(root, writeGeneratedComposeFile(root, services));
+			const path = join(
+				root,
+				writeGeneratedComposeFile(root, resolveServices(services)),
+			);
 			const before = statSync(path);
 			const content = readFileSync(path, "utf8");
-			writeGeneratedComposeFile(root, services);
+			writeGeneratedComposeFile(root, resolveServices(services));
 			expect(statSync(path).ino).toBe(before.ino);
 			expect(statSync(path).mtimeMs).toBe(before.mtimeMs);
 			expect(statSync(path).mode & 0o777).toBe(0o600);
-			writeGeneratedComposeFile(root, { postgres: { port: 6432 } });
+			writeGeneratedComposeFile(
+				root,
+				resolveServices({ postgres: { port: 6432 } }),
+			);
 			expect(readFileSync(path, "utf8")).not.toBe(content);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
@@ -104,7 +111,7 @@ describe("complete artifact proof", () => {
 	it("preserves list-form user labels when stamping runtime identity", async () => {
 		const { buildComposeModel } = await import("./model");
 		const model = buildComposeModel(
-			{
+			resolveServices({
 				custom: {
 					port: 8888,
 					docker: {
@@ -112,7 +119,7 @@ describe("complete artifact proof", () => {
 						labels: ["team=platform", "empty", "value=a=b"],
 					},
 				},
-			},
+			}),
 			undefined,
 			{ root: "/repo", projectName: "demo" },
 		);

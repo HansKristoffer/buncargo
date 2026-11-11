@@ -1,9 +1,10 @@
 import { typedSwitch, typedSwitchGroup } from "hanzio";
 import { envName } from "../../core/ports";
 import type {
+	BuiltInHealthCheck,
 	DockerComposeHealthcheckRaw,
 	DockerPresetName,
-	ServiceConfig,
+	HealthCheckFn,
 } from "../../types";
 
 const DEFAULT_HEALTHCHECK_SETTINGS = {
@@ -57,7 +58,7 @@ function resolveSecondaryInternalPort(
 
 export function getDefaultPortBindings(
 	serviceKey: string,
-	config: ServiceConfig,
+	config: { port?: number; secondaryPort?: number },
 	preset?: DockerPresetName,
 ): string[] {
 	if (config.port === undefined) return [];
@@ -83,14 +84,13 @@ export function getDefaultPortBindings(
 }
 
 export function resolveHealthcheck(
-	healthCheck: ServiceConfig["healthCheck"] | undefined,
+	healthCheck: BuiltInHealthCheck | HealthCheckFn | false,
 	fallback: DockerComposeHealthcheckRaw | undefined,
 	options: { internalPort: number; user?: string },
 ): DockerComposeHealthcheckRaw | undefined {
 	if (healthCheck === false) return undefined;
 	if (typeof healthCheck === "function") return fallback;
 	return typedSwitch(healthCheck, {
-		undefined: () => fallback,
 		// The image's bootstrap server accepts Unix sockets before TCP is ready.
 		pg_isready: () => ({
 			test: [

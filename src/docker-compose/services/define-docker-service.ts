@@ -4,12 +4,15 @@ import type {
 	DockerComposeServiceRaw,
 	DockerPresetName,
 	DockerPresetServiceDefinition,
+	ResolvedComposeService,
 	ServiceConfig,
+	ServiceCredentials,
+	UrlBuilderContext,
 } from "../../types";
 
 export interface DockerServiceFactoryInput {
 	serviceKey: string;
-	config: ServiceConfig;
+	config: ResolvedComposeService;
 	/**
 	 * The resolved backend that will run this service.
 	 *
@@ -67,12 +70,20 @@ export interface DockerServicePresetDefaults {
 	secondaryPort?: number;
 }
 
+/** What a preset's connection URL is built from. */
+export interface PresetUrlContext extends UrlBuilderContext {
+	/** Set for presets that declare {@link DefineDockerServiceInput.credentials}. */
+	credentials?: ServiceCredentials;
+}
+
 export interface DockerServicePreset<
 	TOptions extends PresetServiceSharedOptions = PresetServiceSharedOptions,
 	TServiceConfig extends ServiceConfig = ServiceConfig,
 > {
 	build: DockerServiceFactory;
 	toServiceConfig(options?: TOptions): TServiceConfig;
+	url(context: PresetUrlContext): string;
+	credentials?: ServiceCredentials;
 }
 
 interface DefineDockerServiceInput<
@@ -82,6 +93,13 @@ interface DefineDockerServiceInput<
 	preset: DockerPresetName;
 	defaults: DockerServicePresetDefaults;
 	env?: TServiceConfig["env"];
+	/** The connection URL `urls.<key>` and the derived `url` env vars carry. */
+	url(context: PresetUrlContext): string;
+	/**
+	 * The user, password and database the container is created with, unless
+	 * the service sets its own. Only for presets whose URL carries them.
+	 */
+	credentials?: ServiceCredentials;
 	build: DockerServiceFactory;
 	/** Add the fields only this preset understands (credentials, secondary port, ...). */
 	enhanceServiceConfig?: (
@@ -129,5 +147,10 @@ export function defineDockerService<
 		return base as TServiceConfig;
 	}
 
-	return { build: input.build, toServiceConfig };
+	return {
+		build: input.build,
+		toServiceConfig,
+		url: input.url,
+		credentials: input.credentials,
+	};
 }

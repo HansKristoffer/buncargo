@@ -1,9 +1,9 @@
-import type { ContainerRuntimeName, ServiceConfig } from "../types";
+import type { ContainerRuntimeName, ResolvedService } from "../types";
 
 /** Check before startup mutations, and again at the direct runtime API boundary. */
 export function assertServiceCapabilities(
 	runtime: ContainerRuntimeName,
-	services: Record<string, ServiceConfig>,
+	services: Readonly<Record<string, ResolvedService>>,
 ): void {
 	if (runtime !== "apple") {
 		return;

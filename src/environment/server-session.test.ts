@@ -1,4 +1,5 @@
 import { expect, it } from "bun:test";
+import { resolveApps } from "../config/resolve";
 import { abortableSleep } from "../core/deadline";
 import { stopDevServers } from "../core/process/dev-servers";
 import { RunOutput } from "../core/process/run-output";
@@ -32,7 +33,7 @@ it("joins seed readiness before keeping an empty tunnel session open", async () 
 				throw new Error("Empty sessions do not run server hooks");
 			},
 		}),
-		{},
+		resolveApps({}),
 		{
 			seed: async () => {
 				await Bun.sleep(10);
@@ -70,7 +71,7 @@ it("cancels and drains the seed when preparation fails", async () => {
 					throw new Error("build failed");
 				},
 			}),
-			{},
+			resolveApps({}),
 			{
 				seed: async (signal) => {
 					begin();
@@ -107,7 +108,7 @@ it("cancels preparation when the seed fails and never reports ready", async () =
 					}
 				},
 			}),
-			{},
+			resolveApps({}),
 			{
 				seed: async () => {
 					await began;
@@ -135,13 +136,13 @@ it("refuses a missing required secret before preparing or running beforeServers"
 					events.push(phase);
 				},
 			}),
-			{
+			resolveApps({
 				api: {
 					port: 1,
 					devCommand: "exit 0",
 					secrets: { required: ["BUNCARGO_TEST_REQUIRED_SECRET"] },
 				},
-			},
+			}),
 			{},
 		),
 	).rejects.toThrow("api: BUNCARGO_TEST_REQUIRED_SECRET");
@@ -162,10 +163,10 @@ it("marks each app ready as its health check passes, not with its wave", async (
 				if ("slow" in apps) await fastReady.promise;
 			},
 		}),
-		{
+		resolveApps({
 			fast: { port: 1, devCommand: silent },
 			slow: { port: 2, devCommand: silent },
-		},
+		}),
 		{
 			verbose: false,
 			output,

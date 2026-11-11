@@ -1,4 +1,5 @@
 import { applyIntegrations } from "../config/integrations";
+import { resolveConfig } from "../config/resolve";
 import type {
 	AppConfig,
 	ConfigEnvVarNames,
@@ -99,7 +100,7 @@ export function getEnvVar<
 	const root = findMonorepoRoot();
 	// `apps` is typed by the config's own definitions, which name app keys
 	// only: what each holds is an `AppConfig`, as validation ensures.
-	const { applied, view } = checkoutViewFor(config as AnyCheckoutConfig, root);
+	const { applied, view } = checkoutViewFor(config as AnyConfig, root);
 
 	// Live state is read on every call: a run that starts or ends between two
 	// loads of a config changes it.
@@ -121,10 +122,13 @@ export function getEnvVar<
 	return value as GetEnvVarValue<TEnv, TName>;
 }
 
-type AnyCheckoutConfig = CheckoutConfig<
-	Record<string, ServiceConfig>,
-	Record<string, AppConfig>
->;
+type AnyConfig = Omit<
+	CheckoutConfig<Record<string, ServiceConfig>, Record<string, AppConfig>>,
+	"services" | "apps"
+> & {
+	services: Record<string, ServiceConfig>;
+	apps?: Record<string, AppConfig>;
+};
 
 /**
  * The last view each config resolved to, with the environment and root it
@@ -133,10 +137,10 @@ type AnyCheckoutConfig = CheckoutConfig<
  * callbacks read `process.env`, so a changed environment resolves again.
  */
 const views = new WeakMap<
-	AnyCheckoutConfig,
+	AnyConfig,
 	{
 		key: string;
-		applied: AnyCheckoutConfig;
+		applied: AnyConfig;
 		view: CheckoutView<
 			Record<string, ServiceConfig>,
 			Record<string, AppConfig>
@@ -144,7 +148,7 @@ const views = new WeakMap<
 	}
 >();
 
-function checkoutViewFor(config: AnyCheckoutConfig, root: string) {
+function checkoutViewFor(config: AnyConfig, root: string) {
 	const environment = Object.entries(process.env).sort(([a], [b]) =>
 		a < b ? -1 : 1,
 	);
@@ -155,7 +159,7 @@ function checkoutViewFor(config: AnyCheckoutConfig, root: string) {
 	// What a run sees: integrations add apps, services, env and the primary
 	// app (Shopify's frontend) before anything is computed.
 	const applied = applyIntegrations(config, { root });
-	const view = resolveCheckoutView(applied, root);
+	const view = resolveCheckoutView(resolveConfig(applied), root);
 	// Read before this checkout's first run, with every block claimed: the
 	// value points at another checkout's block. Said, not thrown, as for `env`.
 	if (view.portPlan.provenance === "unallocated")

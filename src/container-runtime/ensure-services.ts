@@ -6,7 +6,7 @@ import {
 	serviceFingerprint,
 	serviceHashEnv,
 } from "../docker-compose/interpolate";
-import type { PortContainerOwner, ServiceConfig } from "../types";
+import type { PortContainerOwner, ResolvedService } from "../types";
 import { assertServiceCapabilities } from "./capabilities";
 import { portOwnersOf, serviceStatesOf } from "./containers";
 import { waitForAllServices } from "./readiness";
@@ -131,7 +131,7 @@ export interface EnsureServicesRunningRequest {
 	 */
 	projectPrefix?: string;
 	envVars: Record<string, string>;
-	services: Record<string, ServiceConfig>;
+	services: Record<string, ResolvedService>;
 	ports: Record<string, number>;
 	model: ComposeDocument;
 	composeFile?: string;
