@@ -2,7 +2,12 @@ import { expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildRunEntry, publishRun, retireRuns } from "../core/run-registry";
+import {
+	buildRunEntry,
+	loadRuns,
+	publishRun,
+	retireRuns,
+} from "../core/run-registry";
 import {
 	type PublicTunnel,
 	resolveExposeTargets,
@@ -286,7 +291,11 @@ it("inherits a reused app's public URL from the live run serving it, on its port
 		expect(publicUrls).toEqual({ api: "https://api.trycloudflare.com" });
 		expect(opened).toEqual(["web"]);
 	} finally {
-		await retireRuns(["tunnel-owner"]);
+		await retireRuns(
+			(await loadRuns()).filter((run) =>
+				["tunnel-owner"].includes(run.sessionId),
+			),
+		);
 		rmSync(root, { recursive: true, force: true });
 	}
 });

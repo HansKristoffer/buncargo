@@ -65,17 +65,44 @@ export function formatCommandHelp(spec: CommandSpec): string {
 	return `\n${sections.join("\n")}\n`;
 }
 
-/** Long flags in `args` that the spec does not declare. */
+function flagName(arg: string): string {
+	const equals = arg.indexOf("=");
+	return equals === -1 ? arg : arg.slice(0, equals);
+}
+
+/**
+ * Long flags in `args` that the spec does not declare, and boolean flags
+ * given a value (`--detach=1`): none takes one, and reading such a flag as
+ * set while it does not match the flag let `dev --detach=1` re-detach forever.
+ */
 export function findUnknownFlags(spec: CommandSpec, args: string[]): string[] {
-	const known = new Set(spec.flags.map((flag) => flag.name));
 	return args.filter((arg) => {
 		if (!arg.startsWith("--")) return false;
-		return !known.has(arg.includes("=") ? (arg.split("=")[0] ?? arg) : arg);
+		const flag = spec.flags.find((entry) => entry.name === flagName(arg));
+		if (!flag) return true;
+		return flag.kind === "boolean" && arg !== flag.name;
 	});
 }
 
+/** The error for one of {@link findUnknownFlags}' results. */
+export function unknownFlagMessage(spec: CommandSpec, arg: string): string {
+	const name = flagName(arg);
+	const takesNoValue = spec.flags.some(
+		(flag) => flag.name === name && flag.kind === "boolean",
+	);
+	return takesNoValue
+		? `${name} takes no value: pass ${name}, not ${arg}.`
+		: `Unknown flag: ${arg}`;
+}
+
+/**
+ * Whether the flag was given. A boolean flag counts only as written, a string
+ * flag also with its value (`--expose=api`).
+ */
 export function readBooleanFlag(args: string[], flag: FlagSpec): boolean {
-	return hasFlag(args, flag.name);
+	return flag.kind === "boolean"
+		? args.includes(flag.name)
+		: hasFlag(args, flag.name);
 }
 
 /**

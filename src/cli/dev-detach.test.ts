@@ -62,6 +62,15 @@ describe("detachedArgv", () => {
 			),
 		).toEqual(["/bin/bun", "/x/bin.js", "dev"]);
 	});
+
+	it("passes the attached app's args after -- through untouched", () => {
+		expect(
+			detachedArgv(
+				["bun", "/x/bin.js", "dev", "--detach", "--", "--detach"],
+				"/bin/bun",
+			),
+		).toEqual(["/bin/bun", "/x/bin.js", "dev", "--", "--detach"]);
+	});
 });
 
 describe("settledRun", () => {
@@ -259,7 +268,7 @@ describe("pruneDetachedFiles", () => {
 		}
 	});
 
-	it("keeps a live run's report however old, and drops the unsuffixed one", async () => {
+	it("keeps a live run's report however old", async () => {
 		const { root, logs } = logsDir();
 		try {
 			const now = Date.now();
@@ -268,10 +277,8 @@ describe("pruneDetachedFiles", () => {
 				`detached-report-${process.pid}.json`,
 				now - 3_600_000,
 			);
-			const legacy = file(logs, "detached-report.json", now - 3_600_000);
 			pruneDetachedFiles(root, now);
 			expect(existsSync(live)).toBe(true);
-			expect(existsSync(legacy)).toBe(false);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -287,12 +294,10 @@ describe("pruneDetachedFiles", () => {
 			const olderLog = file(logs, `detached-${older}.log`, now - 7_200_000);
 			const newerLog = file(logs, `detached-${newer}.log`, now - 3_600_000);
 			const live = file(logs, `detached-${process.pid}.log`, now - 9_000_000);
-			const legacy = file(logs, "detached.previous.log", now - 3_600_000);
 			pruneDetachedFiles(root, now);
 			expect(existsSync(olderLog)).toBe(false);
 			expect(existsSync(newerLog)).toBe(true);
 			expect(existsSync(live)).toBe(true);
-			expect(existsSync(legacy)).toBe(false);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

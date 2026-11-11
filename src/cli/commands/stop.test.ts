@@ -9,14 +9,25 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	loadHostRoutes,
+	pidRouteOwners,
+	upsertHostRoutes,
+} from "../../core/hosts/registry";
+import {
 	claimOffset,
 	offsetClaimKey,
 	readAllOffsetClaims,
 	withOffsetClaimsLock,
 } from "../../core/offset-claims";
+import * as terminate from "../../core/process/terminate";
 import { runStopGraceMs } from "../../core/process/terminate";
 import { readProcessIdentityAsync } from "../../core/process-identity";
-import { loadRuns, publishRun, type RunEntry } from "../../core/run-registry";
+import {
+	loadRuns,
+	publishRun,
+	type RunEntry,
+	releaseRun,
+} from "../../core/run-registry";
 import { recordRunStops, runStopRecord } from "../../core/run-stops";
 import { handleStop } from "./stop";
 
@@ -52,6 +63,20 @@ afterEach(() => {
 	}
 	rmSync(root, { recursive: true, force: true });
 });
+
+/** What `stop` printed to one console stream, and its exit code. */
+async function capture(stream: "log" | "error", run: () => Promise<number>) {
+	const lines: string[] = [];
+	const spy = spyOn(console, stream).mockImplementation((line) => {
+		lines.push(Bun.stripANSI(String(line)));
+	});
+	try {
+		const code = await run();
+		return { code, text: lines.join("\n") };
+	} finally {
+		spy.mockRestore();
+	}
+}
 
 const calls = () =>
 	existsSync(join(root, "calls"))
@@ -206,8 +231,78 @@ describe("buncargo stop --all", () => {
 		}
 	});
 
-	it("reports nothing to stop when the checkout has no run at all", async () => {
-		expect(await handleStop(["--all", "--root", root])).toBe(2);
+	it("succeeds and says so when the checkout has no run at all", async () => {
+		const printed = await capture("log", () =>
+			handleStop(["--all", "--root", root]),
+		);
+		expect(printed.code).toBe(0);
+		expect(printed.text).toContain("Nothing running for this checkout");
+	});
+
+	it("still names an app or service that matches no run", async () => {
+		expect(await handleStop(["api", "--root", root])).toBe(2);
+	});
+
+	it("treats a run that ended between the read and the signal as stopped, and takes down what it left", async () => {
+		const owner = await live("dev", { services: held("dev").services });
+		// The run exits on its own and releases into the hold just before the
+		// signal would reach it.
+		const signal = spyOn(terminate, "terminateProcessGroup").mockImplementation(
+			async () => {
+				owner.kill("SIGKILL");
+				await owner.exited;
+				await releaseRun("dev");
+				return false;
+			},
+		);
+		try {
+			expect(await handleStop(["--all", "--root", root])).toBe(0);
+			expect(calls()).toContain("compose -p fixture down");
+			expect(await loadRuns()).toEqual([]);
+		} finally {
+			signal.mockRestore();
+			owner.kill("SIGKILL");
+		}
+	});
+
+	it("removes the checkout's service routes, and no other checkout's", async () => {
+		const updatedAt = new Date().toISOString();
+		await upsertHostRoutes(
+			[
+				{
+					hostname: "typesense.fixture.localhost",
+					port: 8108,
+					kind: "service",
+					name: "typesense",
+					root,
+					updatedAt,
+				},
+				{
+					hostname: "typesense.other.localhost",
+					port: 9108,
+					kind: "service",
+					name: "typesense",
+					root: tmpdir(),
+					updatedAt,
+				},
+			],
+			{ owners: pidRouteOwners },
+		);
+		await publishRun(held("held"));
+		expect(await handleStop(["--all", "--root", root])).toBe(0);
+		expect((await loadHostRoutes()).map((route) => route.hostname)).toEqual([
+			"typesense.other.localhost",
+		]);
+	});
+});
+
+describe("buncargo stop arguments", () => {
+	it("exits 1 on an unknown flag, which is not a refusal", async () => {
+		const printed = await capture("error", () =>
+			handleStop(["--frce", "--root", root]),
+		);
+		expect(printed.code).toBe(1);
+		expect(printed.text).toContain("--frce");
 	});
 });
 
@@ -250,19 +345,12 @@ describe("buncargo stop after the watchdog stopped the run", () => {
 				detail: "idle for 2h 0m",
 			}),
 		]);
-		const printed: string[] = [];
-		const error = spyOn(console, "error").mockImplementation((line) => {
-			printed.push(Bun.stripANSI(String(line)));
-		});
-		try {
-			expect(await handleStop(["--root", root])).toBe(2);
-		} finally {
-			error.mockRestore();
-		}
-		expect(printed.join("\n")).toContain(
+		const printed = await capture("log", () => handleStop(["--root", root]));
+		expect(printed.code).toBe(0);
+		expect(printed.text).toContain(
 			"buncargo's watchdog stopped fixture's detached run (pid 4194305)",
 		);
-		expect(printed.join("\n")).toContain("idle for 2h 0m");
+		expect(printed.text).toContain("idle for 2h 0m");
 	});
 });
 

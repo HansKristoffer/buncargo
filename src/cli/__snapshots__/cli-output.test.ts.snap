@@ -490,16 +490,18 @@ exports[`buncargo CLI output logs --help 1`] = `
 Usage: buncargo logs [<app>] [options]
 
 Options:
-  --help         Show this help message
-  --follow       Keep printing new lines (-f)
-  --since=<5m>   Only lines newer than this (s, m, h)
-  --errors       Only lines that read as errors
-  --root=<path>  Checkout whose logs to read (default: this one)
+  --help             Show this help message
+  --follow           Keep printing new lines (-f)
+  --since=<5m>       Only lines newer than this (s, m, h)
+  --errors           Only lines that read as errors
+  --root=<path>      Checkout whose logs to read (default: this one)
+  --run=<sessionId>  The run whose logs to read (default: the live run of <app>, else the newest)
 
 Examples:
   buncargo logs                    Every app, interleaved
   buncargo logs shopify --errors   What went wrong in one app
   buncargo logs api -f --since=5m  Tail one app
+  buncargo logs --run=<sessionId>  One run's apps, by the id \`buncargo runs\` prints
 
 
 --- stderr
@@ -1207,7 +1209,7 @@ exports[`buncargo CLI output buncargo typecheck --nope 1`] = `
 `;
 
 exports[`buncargo CLI output buncargo stop --nope 1`] = `
-"exit 3
+"exit 1
 --- stdout
 
 Usage: buncargo stop [<name>...] [options]
@@ -1243,12 +1245,11 @@ exports[`buncargo CLI output buncargo stop nope 1`] = `
 `;
 
 exports[`buncargo CLI output buncargo stop 1`] = `
-"exit 2
+"exit 0
 --- stdout
+  Nothing running for this checkout (<cwd>).
 
 --- stderr
-  ❌ No active buncargo run for <cwd>.
-   Run \`buncargo runs\` to see what is active.
 "
 `;
 

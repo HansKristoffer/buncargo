@@ -98,8 +98,15 @@ no config load, no Docker unless a service is the target.
 - Stopping one app must not end the run, which is why `isDeliberateExit` in
   `process/process-owner.ts` treats a signalled exit (and `130`/`143`, what a shell wrapper reports
   for SIGINT/SIGTERM) as a clean stop rather than a failure.
-- The two refusals (the attached app, and an app reused from another terminal) carry exit code 3;
-  `2` is "no such target".
+- Exit 3 is "refused: leave it running" (the attached app, an app reused from another terminal, a
+  run in someone's terminal), and `help agents` tells agents exactly that, so nothing else may
+  return it: an unknown flag is `1`. `2` is a named target that matches nothing; a bare `stop` with
+  nothing running exits 0. A run that ends between the read and the signal is not a refusal
+  either: `stop` reads the entry again and, released or gone, takes down what it left.
+- Stopping the whole run, or what a finished run left, withdraws the checkout's service routes
+  (`withdrawStoppedRoutes` in `sweep.ts`), and so does the sweep's teardown. They carry no pid, so
+  nothing else retires them, and a later run that fell back to `localhost:port` still got the
+  named URLs from `getEnvVar`.
 - Services are `stop`ped, never `kill`ed, so a `restart:` policy cannot undo it; the exited
   container is removed by the sweep once the run has ended. Stopping the whole run `down`s its
   containers, because the run itself only releases them to the idle hold and "stop" from the menu
@@ -153,6 +160,11 @@ no config load, no Docker unless a service is the target.
   stack looks unowned. It returns what it listed, so `ls` and `doctor` do not list again.
 - A stack condemned from the sweep's snapshot is decided again from a fresh registry read under its
   lock, because a new run publishes its claim before it takes the lock to reuse those containers.
+- `retireRuns` and `clearRunStacks` take the entries as the pass read them and drop only those
+  whose `startedAt`, `releasedAt` and `ownerLostAt` are unchanged. A pass retires minutes after its
+  read, and by then a library session may have released and claimed again under the same id; by
+  session id alone its live entry went. Integration stacks are decided by the checkout's newest
+  entry (`runFor`), as containers are.
 - `ContainerDownRequest.model` is optional because containers are found by label. Only
   `removeVolumes` needs it, to name the volumes, which is why the sweep can tear a project down
   without loading its config. For the same reason the Docker backend passes `-f` only when the

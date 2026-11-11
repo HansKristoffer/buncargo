@@ -736,9 +736,11 @@ in the run registry as `openUrl`: a public tunnel URL when the app is exposed,
 else the named `https://` host while the hosts daemon serves it, else loopback.
 
 Both modes write each app's output, plain, to `.buncargo/logs/<run>/<app>.log`
-(the last ten runs, 5 MB per file), and a seed that runs beside the apps
+(the last ten runs, and any older run still going; 5 MB per file), and a seed that runs beside the apps
 (`seed.beforeApps: false`) to `seed.log`. `buncargo logs [app] [-f] [--since=5m]
-[--errors]` reads the current or last run. `--errors` keeps the lines that read as errors: a level
+[--errors] [--run=<sessionId>]` reads the live run that runs `app`, else the last run with a log
+for it; without an app, the last run. `--run` picks a run by the session id `buncargo runs` prints,
+and `-f` ends once that run has ended. `--errors` keeps the lines that read as errors: a level
 the logger wrote (`INFO:`, `[WARN]`, `level=info`) wins over words like "failed", and a structured
 block an error line opens (`[ERROR] job.completed {` … `}`) is kept whole.
 
@@ -1131,8 +1133,12 @@ are refused without `--force` (and prompt when there is a terminal): the
 attached app, because closing it tears the run down by design, and an app this
 run reused from another terminal, because that process is not ours. A process
 whose identity cannot be read (`ps` failed or timed out) is refused too, rather
-than reported stopped while it may still run. Exit codes are `0` stopped, `2` no
-such target, `3` refused or not removed. A stopped Docker daemon or Apple system
+than reported stopped while it may still run. Exit codes are `0` stopped (or
+nothing running for this checkout), `1` a usage error such as an unknown flag,
+`2` no such app or service, `3` refused or not removed. A run that ends on its
+own just as `stop` reaches it counts as stopped, and its idle containers are
+taken down. Stopping a run also removes its checkout's service routes from the
+named hosts. A stopped Docker daemon or Apple system
 service has nothing to stop, but one that refuses this user or does not answer
 may still run the containers, so `stop` exits `3` and `dev --down` exits `1`
 rather than reporting nothing to stop.
