@@ -41,7 +41,7 @@ function run(projectName: string, extra: Partial<RunEntry> = {}): RunEntry {
 }
 
 describe("planVolumePrune", () => {
-	it("proposes only volumes whose project nothing mentions", () => {
+	it("proposes only the volume of a deleted checkout that nothing else refers to", () => {
 		const reports = planVolumePrune({
 			volumes: [
 				volume("gone_data", "gone"),
@@ -51,7 +51,11 @@ describe("planVolumePrune", () => {
 			],
 			containers: [container("running")],
 			runs: [run("held", { releasedAt: "2026-09-22T10:00:00.000Z" })],
-			checkouts: [],
+			checkouts: [
+				{ projectName: "gone", root: "/gone", deleted: true },
+				{ projectName: "running", root: "/gone-too", deleted: true },
+				{ projectName: "held", root: "/gone-also", deleted: true },
+			],
 		});
 		expect(
 			reports.map((report) => [report.volume.name, report.verdict.kind]),
@@ -76,6 +80,30 @@ describe("planVolumePrune", () => {
 		expect(reports[0]?.verdict).toEqual({
 			kind: "in-use",
 			reason: "its checkout /repo still exists",
+		});
+	});
+
+	it("keeps a volume no claim names: absence of a claim is not evidence", () => {
+		// What an unreadable `offsets.json` looks like to the planner: no
+		// claims at all, and every idle checkout's database with nothing on it.
+		const reports = planVolumePrune({
+			volumes: [volume("myapp_postgres_data", "myapp")],
+			containers: [],
+			runs: [],
+			checkouts: [],
+		});
+		expect(orphanedVolumes(reports)).toEqual([]);
+	});
+
+	it("keeps a deleted checkout's volume while another checkout claims its project", () => {
+		const reports = planVolumePrune({
+			volumes: [volume("shared_data", "shared")],
+			containers: [],
+			runs: [],
+			checkouts: [
+				{ projectName: "shared", root: "/gone", deleted: true },
+				{ projectName: "shared", root: "/repo" },
+			],
 		});
 		expect(orphanedVolumes(reports)).toEqual([]);
 	});

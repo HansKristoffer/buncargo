@@ -6,17 +6,28 @@ import {
 	it,
 	setSystemTime,
 } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	claimOffset,
+	getOffsetClaimsPath,
 	offsetClaimKey,
 	readAllOffsetClaims,
 	releaseOffsetClaimsIfUnchanged,
 	releaseSuffixedClaimsOf,
 	withOffsetClaimsLock,
 } from "./offset-claims";
+import {
+	StateFileUnreadableError,
+	StateFileVersionError,
+} from "./registry-file";
 
 const realHome = process.env.HOME;
 let home: string;
@@ -128,5 +139,25 @@ describe("releaseSuffixedClaimsOf", () => {
 		const read = readAllOffsetClaims();
 		await releaseSuffixedClaimsOf(stack(), read, null, T0 + HOUR);
 		expect(readAllOffsetClaims()).toEqual({});
+	});
+});
+
+describe("claimOffset", () => {
+	// Several buncargo versions share the file. One that took a file it could
+	// not read for empty wrote back its own claim alone, and every other
+	// checkout lost its block and the record that keeps its volumes.
+	it.each([
+		["a corrupt file", "{ not json", StateFileUnreadableError],
+		[
+			"a newer version",
+			`${JSON.stringify({ version: 2, claims: { "/other": { offset: 100 } } })}\n`,
+			StateFileVersionError,
+		],
+	])("leaves %s untouched and throws", (_, bytes, errorType) => {
+		mkdirSync(join(home, ".buncargo"), { recursive: true });
+		writeFileSync(getOffsetClaimsPath(), bytes);
+
+		expect(() => claimAt(T0)).toThrow(errorType);
+		expect(readFileSync(getOffsetClaimsPath(), "utf-8")).toBe(bytes);
 	});
 });

@@ -4,20 +4,14 @@
  *
  * Report only. A volume is the database, so nothing here removes one: the
  * only removals are a confirmed `buncargo prune` and a machine's opt-in for
- * deleted checkouts (see AGENTS.md). Without this, a project whose checkout has
- * no port claim is invisible to the sweep, and its volumes build up until
- * someone runs `prune` by hand.
+ * deleted checkouts (see AGENTS.md). Without the opt-in, the volumes of a
+ * deleted checkout build up until someone runs `prune` by hand.
  */
 
-import { checkoutDeleted } from "../core/checkout-presence";
-import {
-	type OffsetClaim,
-	offsetClaimRoot,
-	readAllOffsetClaims,
-} from "../core/offset-claims";
+import { type OffsetClaim, readAllOffsetClaims } from "../core/offset-claims";
 import { type RunEntry, readAllRuns } from "../core/run-registry";
 import type { ContainerRuntimeName } from "../types";
-import { orphanedVolumes, planVolumePrune } from "./prune";
+import { claimedCheckouts, orphanedVolumes, planVolumePrune } from "./prune";
 import { containerRuntimeCandidates } from "./resolve";
 import type { ContainerRuntimeAdapter } from "./types";
 
@@ -74,20 +68,12 @@ export function orphanVolumeReporter(deps: OrphanVolumeReportDeps) {
 			const volumes = (
 				await Promise.all(active.map((runtime) => runtime.listVolumes()))
 			).flat();
-			// Suffixed claims (`ci`, E2E) do not count as checkouts, as `prune`
-			// has it: their stacks are leftovers once their run is gone.
-			const checkouts = Object.entries(claims()).flatMap(([key, claim]) => {
-				const root = offsetClaimRoot(key, claim);
-				return claim.suffix || checkoutDeleted(root)
-					? []
-					: [{ projectName: claim.projectName, root }];
-			});
 			const names = orphanedVolumes(
 				planVolumePrune({
 					volumes,
 					containers,
 					runs: await readRuns(),
-					checkouts,
+					checkouts: claimedCheckouts(claims()),
 				}),
 			);
 			nextAt = startedAt + ORPHAN_VOLUME_REPORT_INTERVAL_MS;
@@ -96,7 +82,7 @@ export function orphanVolumeReporter(deps: OrphanVolumeReportDeps) {
 			reported = key;
 			if (names.length === 0) return;
 			deps.log(
-				`${names.length} volume${names.length === 1 ? "" : "s"} belong${names.length === 1 ? "s" : ""} to projects with no container, no run and no checkout: ${names.join(", ")}. Review them with \`bunx buncargo prune --dry-run\`; nothing is removed automatically.`,
+				`${names.length} volume${names.length === 1 ? "" : "s"} belong${names.length === 1 ? "s" : ""} to deleted checkouts, with no container and no run: ${names.join(", ")}. Review them with \`bunx buncargo prune --dry-run\`; nothing is removed automatically.`,
 			);
 		} catch {
 			// A registry or runtime that cannot be read this pass is reported by

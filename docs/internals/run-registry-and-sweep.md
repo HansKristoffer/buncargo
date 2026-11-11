@@ -308,11 +308,25 @@ the containers from there; nothing here removes a container or a volume.
 ## Volumes
 
 `prune.ts` is the volume half, and it is deliberately not automatic: a container costs nothing to
-recreate, a volume is the database. `planVolumePrune` is pure and proposes only a volume whose
-Compose project has no containers, no entry *and* no existing checkout; `cli/commands/prune.ts`
-confirms before removing. The checkouts come from the dev port claims in `offsets.json`, because
-an idle checkout after `dev --down` has neither containers nor an entry, and its volume is still its
-database. Suffixed claims (`ci`, E2E) do not count: their stacks are leftovers once the run is gone.
+recreate, a volume is the database. A volume needs positive evidence: `decideVolume`
+(`volume-decision.ts`, pure) proposes one only when a claim in `offsets.json` names its Compose
+project, every checkout claiming that project is confirmed deleted, and no container or entry names
+it. An idle checkout after `dev --down` has neither containers nor an entry, and its claim is the
+only thing saying its volume is still its database; when an unreadable claims file read as empty
+and absence counted as orphaned, `prune --yes` offered every idle checkout's database. A suffixed
+claim (`ci`, E2E) of an existing checkout keeps its stack's volume too; those are `prune --project`'s.
+
+`cli/commands/prune.ts` reads the claims before it sweeps, because without the opt-in below the
+sweep drops a deleted checkout's claim, the only record of its project. So on a machine whose
+watchdog has already seen the deletion, plain `prune` has nothing to propose for it; `prune
+--project` still finds the stacks through Git. After confirmation it decides each project again
+under the deleted checkout's lifecycle lock, from fresh volume, container, registry and claim
+inventories, and removes only what was listed.
+
+Every read-modify-write of `offsets.json` reads it strictly: missing is empty, and a file that does
+not parse or carries another `version` throws `StateFileUnreadableError` and is left as it is.
+Several buncargo versions share the file, and a lenient write replaced every other checkout's
+claim with its own.
 
 Buncargo attaches **no labels to volumes**. Verified: Compose compares a volume against the file
 and prompts "exists but doesn't match configuration in compose file. Recreate (data will be
@@ -331,7 +345,7 @@ no existing checkout claims the project and no run on record for it still has it
 container of the project still standing defers the decision to the next pass, and a runtime that
 does not answer defers everything. "Still has its checkout" includes one this user cannot read.
 
-The watchdog also reports, at most hourly and only when the set changes, the volumes `prune` would propose (`orphan-report.ts`). It never removes them: a project with no port claim has no removal record, so the sweep never sees it, and a report is the only thing that can say so. Only runtimes that answered that pass are judged, each against its own containers. The one automatic volume removal that is not an opt-in is `buncargo ci`'s own leftovers (`ciLeftoverVolumes`): at its start it removes what a killed run left in its `-ci` project, only when no container or run names that project, as its teardown would have done.
+The watchdog also reports, at most hourly and only when the set changes, the volumes `prune` would propose (`orphan-report.ts`), by the same `decideVolume`. It never removes them. Only runtimes that answered that pass are judged, each against its own containers. The one automatic volume removal that is not an opt-in is `buncargo ci`'s own leftovers (`ciLeftoverVolumes`): at its start it removes what a killed run left in its `-ci` project, only when no container or run names that project, as its teardown would have done.
 
 Volumes need more proof than containers. A deletion counts only when confirmed (`ENOENT`) on two
 passes at least `DELETED_CHECKOUT_SETTLE_MS` (10 minutes) apart: the first sighting is stamped on
