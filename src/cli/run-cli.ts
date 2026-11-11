@@ -978,9 +978,10 @@ async function runDevFlow<
 				// again in case a takeover moved it away and its run ended. Done
 				// before the new process spawns: its config reads its URL from
 				// the registry as it loads (`getEnvVar`).
-				onAppRestarting: (name) => {
+				onAppRestarting: async (name) => {
 					rows.onAppRestarting(name);
-					return reclaimAppRoute(env, name);
+					const warning = await reclaimAppRoute(env, name);
+					if (warning) view.output.event(name, warning, "warn");
 				},
 				// A developer's other apps should not go down with one that
 				// never came up; `ci` and library starts keep failing the run.

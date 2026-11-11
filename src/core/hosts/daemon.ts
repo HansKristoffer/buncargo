@@ -43,6 +43,7 @@ import {
 	KEY_FILENAME,
 	ROUTES_FILENAME,
 } from "./paths";
+import { isDnsHostname } from "./plan";
 import {
 	type LocalProxy,
 	type ProxyRouteLookup,
@@ -78,7 +79,7 @@ export const CERTIFICATE_RECHECK_MS = 60 * 60_000;
 const MAX_RELOAD_BACKOFF_MS = 5_000;
 
 /**
- * How long without a successful refresh before the route map is presumed frozen.
+ * How long without a finished reload before the loop is presumed stopped.
  *
  * Comfortably above {@link MAX_RELOAD_BACKOFF_MS} so a daemon that is merely
  * backing off through a run of failures is not mistaken for a dead one.
@@ -490,6 +491,8 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	let idleSince: number | undefined;
 	let lastHostsFileFailure: string | undefined;
 	let lastCertificateGap: string | undefined;
+	let lastInvalidHostnames = "";
+	let lastRedirectError: string | undefined;
 	let lastGapCheckAt = Number.NEGATIVE_INFINITY;
 	// What the listener actually serves. Nothing until the first bind, and
 	// only advanced by a bind that succeeded: a route in the map that the
@@ -545,6 +548,29 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		);
 	}
 
+	/**
+	 * A hostname that is not a DNS name never reaches the map or `/etc/hosts`:
+	 * `routes.json` is user-writable and this process is root, so a newline in
+	 * one would be lines of the user's choosing in the hosts file. Logged once
+	 * per distinct set, since the file is read every second.
+	 */
+	function servableRoutes(
+		loaded: Awaited<ReturnType<HostsReloaderDeps["pruneRoutes"]>>,
+	): typeof loaded {
+		const servable = loaded.filter((route) => isDnsHostname(route.hostname));
+		const invalid = loaded
+			.filter((route) => !servable.includes(route))
+			.map((route) => JSON.stringify(route.hostname))
+			.join(", ");
+		if (invalid !== "" && invalid !== lastInvalidHostnames) {
+			deps.log(
+				`[buncargo hosts] ignoring routes whose hostname is not a DNS name: ${invalid}. Remove them from ${getRoutesPath()}.`,
+			);
+		}
+		lastInvalidHostnames = invalid;
+		return servable;
+	}
+
 	async function performReload(reason: HostsReloadReason): Promise<void> {
 		if (stopped) return;
 		reloadCount += 1;
@@ -552,13 +578,12 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		// Load before clearing, so a registry that could not be read leaves the
 		// previous map serving. An unreadable file is not a file with no routes,
 		// and clearing first would 404 every named URL on the machine.
-		const loaded = await deps.pruneRoutes();
+		const loaded = servableRoutes(await deps.pruneRoutes());
 		if (stopped) return;
 		routeMap.clear();
 		for (const route of loaded) {
 			routeMap.set(route.hostname, { port: route.port, root: route.root });
 		}
-		lastReloadAt = deps.now();
 		const hostnames = [...routeMap.keys()].sort();
 		const hostKey = hostnames.join(",");
 		if (hostnames.length === 0) {
@@ -650,6 +675,7 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		proxy = next;
 		previous?.stop();
 		lastCertKey = certKey;
+		reportRedirectError(next.redirectError);
 		const leafServes = deps.certificateServes(cert);
 		// The listener took it, so it serves something: list the route map
 		// rather than nothing, which would put every run on `localhost:port`.
@@ -664,10 +690,29 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		bindError = undefined;
 	}
 
+	/**
+	 * `:80` only redirects to https, so the listener serves without it. Said
+	 * once per cause: every remint binds again and meets the same holder.
+	 */
+	function reportRedirectError(error: string | undefined): void {
+		if (error === lastRedirectError) return;
+		lastRedirectError = error;
+		if (error === undefined) return;
+		deps.log(
+			`[buncargo hosts] serving https without the http:// redirect: ${error}`,
+		);
+	}
+
 	return {
 		reload: (reason = "manual") => {
 			// Timer, watcher, and in-request recovery share this operation.
+			// Every reload that finishes advances `lastReloadAt`, failed or not:
+			// it says the loop is running. Advanced on success alone, a
+			// registry the daemon could not read (corrupt, or written by a newer
+			// CLI) read as a stalled loop, and stall recovery exited a daemon
+			// that a restart could not help.
 			inFlight ??= performReload(reason).finally(() => {
+				lastReloadAt = deps.now();
 				inFlight = undefined;
 			});
 			return inFlight;

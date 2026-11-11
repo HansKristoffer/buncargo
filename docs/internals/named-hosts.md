@@ -27,6 +27,9 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
 - The daemon spawns nothing. `certificates.ts` mints the leaf in the CLI, where `mkcert` resolves
   the way it does interactively; the daemon polls `certificateFingerprint()`, rebinds when the CLI
   reminted underneath it, and reports `describeCertificateGap()` rather than shelling out as root.
+- The daemon drops a route whose hostname is not a DNS name (`isDnsHostname`) before it reaches
+  the map or `/etc/hosts`, and logs it once. `routes.json` is user-writable and the daemon is
+  root, so a newline in a hostname was lines of anyone's choosing in the hosts file.
 - `ensureHostsDaemonRunning` never starts a daemon itself. A user-level one could not bind `:443`
   beside the service, and now that the listener sets `SO_REUSEPORT` it would bind *successfully*
   and the two would answer from separate route maps at random. `runHostsDaemon` refuses to start
@@ -83,10 +86,13 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   over another one activates twice, and only the second attempt describes the URLs the banner
   prints. A failed attempt reverts `env.urls` to `localhost:port`, so a retry that fails never
   leaves the first attempt's named URLs beside its warning.
-- A run that falls back to `localhost:port` also withdraws what it registered
-  (`withdrawHostRoutes`): its own routes, and the checkout's service routes unless another live run
-  of the checkout holds routes there. Left registered, they read as live named URLs to everything
-  but the run itself.
+- Every way `activateNamedHosts` ends on `localhost:port`, including before it registers anything,
+  withdraws what the checkout has registered (`withdrawHostRoutes`): its own routes, and service
+  routes an earlier run left, unless another live run of the checkout holds routes there. Left
+  registered, they read as live named URLs to everything but the run itself.
+- A hostname a live owner elsewhere holds is skipped, not fatal: `upsertHostRoutes` registers the
+  rest and returns the conflicts, each naming the owner's checkout, and the run serves the other
+  hostnames. One conflict used to drop the whole plan.
 - `liveNamedHosts` (`registry.ts`) is the one answer to which of a checkout's named URLs are live:
   `getEnvVar`, `env`, `status`, `url` and `open` all ask it, and name nothing from the plan alone.
   A route is live when it is registered for the checkout at the plan's port by an owner still
@@ -157,6 +163,10 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
 
 ## Health
 
+- A run that finds an installed, current unit not answering polls health for
+  `DAEMON_RESTART_GRACE_MS` (2s) before falling back. The daemon is briefly down after its own
+  stall exit, during another project's reinstall, and at login, and a run cannot attach later:
+  its apps' environments are fixed at spawn.
 - `readProxyHealth` probes the one scheme `readDaemonConfig().tls` says the daemon serves and
   validates the health body, not just the status. `ensureHostsDaemonRunning` returns early when
   health passes and never reaches the squatter check, so accepting any 200 on `:443` would hand the
@@ -165,7 +175,10 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   squatter path.
 - The listener and the reload loop fail independently, so health alone proves nothing about
   routing: a loop that stops leaves `Bun.serve` answering 200 while every named URL 404s against a
-  frozen map. `lastReloadAt` travels in the health body, the proxy notices a stale map **from the
+  frozen map. `lastReloadAt` travels in the health body and advances on every reload that
+  finishes, failed or not: it says the loop runs. Advanced on success alone, a registry the
+  daemon could not read (corrupt, or written by a newer CLI) read as a stall, and recovery exited
+  a daemon that a restart could not help. The proxy notices a stale map **from the
   request path** (a timer-based watchdog would die with the timers it watches), and the daemon
   reloads in-band before falling back to `process.exit(1)` for `KeepAlive` to restart. Only
   consecutive recoveries that left the map stale count toward that exit: an exit drops every
@@ -190,6 +203,9 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   `ECONNRESET`. For the same reason `stop()` closes bridged upstreams before the forced server stop,
   and an upgrade Bun refuses gets a 400 rather than being forwarded over `fetch`, which cannot
   finish a handshake.
+- The `:80` redirect listener is optional. A busy `:80` used to fail the whole bind after the
+  `:443` listeners were up, leaking a reuse-port pair on every retry while health listed nothing;
+  now https serves without it and the daemon logs `redirectError` once per cause.
 - Both `Bun.serve` calls in `startLocalProxy` set `idleTimeout: 0`. A proxy has no say in how often
   its upstream speaks, and Bun's 10s default counts a quiet streamed response as idle, so it resets
   SSE, oRPC Event Iterators and idle HMR sockets mid-body; the browser reports that as

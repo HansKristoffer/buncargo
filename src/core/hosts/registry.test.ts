@@ -7,7 +7,6 @@ import {
 	classifyRouteClaim,
 	clearHostRoutes,
 	type HostsRoute,
-	HostsRouteConflictError,
 	liveNamedHosts,
 	loadHostRoutes,
 	pidRouteOwners,
@@ -94,40 +93,41 @@ describe("hosts registry", () => {
 		}
 	});
 
-	it("rejects a live owner from another checkout", async () => {
+	// One name another checkout holds used to throw, and the run dropped its
+	// whole plan to localhost:port; the message named a pid and nothing else.
+	it("registers the rest of the plan and names the checkout holding a hostname", async () => {
 		const { dir, path } = await tempRegistry();
+		const at = (hostname: string, root: string): HostsRoute => ({
+			hostname,
+			port: 3000,
+			kind: "app",
+			name: hostname.split(".")[0] as string,
+			root,
+			pid: process.pid,
+			updatedAt: new Date().toISOString(),
+		});
 		try {
-			await upsertHostRoutes(
-				[
-					{
-						hostname: "api.serpier.localhost",
-						port: 3000,
-						kind: "app",
-						name: "api",
-						root: "/a",
-						pid: process.pid,
-						updatedAt: new Date().toISOString(),
-					},
-				],
-				{ path, owners: pidRouteOwners },
+			await upsertHostRoutes([at("api.serpier.localhost", "/a")], {
+				path,
+				owners: pidRouteOwners,
+			});
+
+			const conflicts = await upsertHostRoutes(
+				[at("api.serpier.localhost", "/b"), at("web.serpier.localhost", "/b")],
+				// A takeover is within one checkout; it never crosses projects.
+				{ path, takeover: new Set(["api"]), owners: pidRouteOwners },
 			);
-			await expect(
-				upsertHostRoutes(
-					[
-						{
-							hostname: "api.serpier.localhost",
-							port: 3100,
-							kind: "app",
-							name: "api",
-							root: "/b",
-							pid: process.pid,
-							updatedAt: new Date().toISOString(),
-						},
-					],
-					// A takeover is within one checkout; it never crosses projects.
-					{ path, takeover: new Set(["api"]), owners: pidRouteOwners },
-				),
-			).rejects.toBeInstanceOf(HostsRouteConflictError);
+
+			expect(conflicts.map((conflict) => conflict.message)).toEqual([
+				`api.serpier.localhost is already registered by /a (pid ${process.pid}). Run \`buncargo stop\` in that checkout, or give one of the projects a different \`projectPrefix\`.`,
+			]);
+			const routes = await loadHostRoutes(path);
+			expect(
+				routes.map((route) => [route.hostname, route.root]).sort(),
+			).toEqual([
+				["api.serpier.localhost", "/a"],
+				["web.serpier.localhost", "/b"],
+			]);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
@@ -538,12 +538,12 @@ describe("registry writers", () => {
 				],
 				{ path, owners: pidRouteOwners },
 			);
-			await expect(
-				upsertHostRoutes([route({ pid: process.ppid })], {
-					path,
-					owners: identityRouteOwners,
-				}),
-			).rejects.toThrow(HostsRouteConflictError);
+			const conflicts = await upsertHostRoutes([route({ pid: process.ppid })], {
+				path,
+				owners: identityRouteOwners,
+			});
+			expect(conflicts).toMatchObject([{ ownerRoot: "/other" }]);
+			expect(await loadHostRoutes(path)).toMatchObject([{ root: "/other" }]);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
