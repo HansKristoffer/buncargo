@@ -21,7 +21,7 @@ function spawnBystander(): number {
 	return child.pid;
 }
 
-describe.skipIf(process.platform === "win32")("terminateOwnedProcess", () => {
+describe("terminateOwnedProcess", () => {
 	it.each([
 		[0, "ESRCH"],
 		[100, "ESRCH"],
@@ -139,7 +139,7 @@ describe.skipIf(process.platform === "win32")("terminateOwnedProcess", () => {
 	});
 });
 
-describe.skipIf(process.platform === "win32")("an unreadable identity", () => {
+describe("an unreadable identity", () => {
 	/** A process group whose leader ignores SIGTERM. */
 	async function spawnStubborn(): Promise<number> {
 		const child = spawn(
@@ -210,7 +210,7 @@ describe.skipIf(process.platform === "win32")("an unreadable identity", () => {
 	});
 });
 
-describe.skipIf(process.platform === "win32")("AppSupervision", () => {
+describe("AppSupervision", () => {
 	it("forgets an exited app once its group empties, before the group id can be reused", async () => {
 		// The leader exits at once; the member it started holds the group, the
 		// way a server outlives `bun run dev`.
@@ -276,7 +276,7 @@ describe.skipIf(process.platform === "win32")("AppSupervision", () => {
 	});
 });
 
-describe.skipIf(process.platform === "win32")("terminateProcessGroup", () => {
+describe("terminateProcessGroup", () => {
 	it("waits for the whole group, not only its leader", async () => {
 		// The leader dies on SIGTERM; the member it started ignores it, the
 		// way a dev server outlives the shell that spawned it.
