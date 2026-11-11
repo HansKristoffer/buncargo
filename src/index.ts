@@ -142,7 +142,10 @@ export type {
 	// Prisma
 	PrismaConfig,
 	PrismaMigrateCheckOptions,
+	PrismaNewMigrationOptions,
+	PrismaNewMigrationResult,
 	PrismaRunner,
+	PrismaRunOptions,
 	ProfileConfig,
 	PublicTunnelHandle,
 	SecretsScopeConfig,

@@ -385,10 +385,18 @@ type AnyDevOptions = Omit<DevOptions, "primaryApp" | "hosts"> & {
 	hosts?: boolean | HostsOptionsLike;
 };
 
-/** {@link PrismaConfig} with its service/env-name positions widened to `string`. */
-type AnyPrismaConfig = Omit<PrismaConfig, "service" | "urlEnvVar"> & {
+/**
+ * {@link PrismaConfig} with its service/env-name positions widened to
+ * `string`, and `generateCheck`'s context erased.
+ */
+type AnyPrismaConfig = Omit<
+	PrismaConfig,
+	"service" | "urlEnvVar" | "generateCheck"
+> & {
 	service?: string;
-	urlEnvVar?: string;
+	urlEnvVar?: string | readonly string[];
+	generateCheck?:
+		"schema-hash" | ((...args: never[]) => boolean | Promise<boolean>);
 };
 
 /** {@link DevHooks} with the hook names kept but their context erased. */

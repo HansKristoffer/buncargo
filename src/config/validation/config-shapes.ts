@@ -33,9 +33,21 @@ export function validateSupplementShapes(
 		fields(
 			value.prisma,
 			"prisma.",
-			["cwd", "migrations", "service", "urlEnvVar", "generate"],
+			["cwd", "migrations", "schema", "service", "generate"],
 			"string",
 		);
+	if (object(value.prisma)) {
+		const names = value.prisma.urlEnvVar;
+		check(
+			names,
+			"prisma.urlEnvVar",
+			typeof names === "string" ||
+				(Array.isArray(names) &&
+					names.length > 0 &&
+					names.every((name) => typeof name === "string")),
+			"a variable name or a non-empty list of them",
+		);
+	}
 	if (object(value.seed)) {
 		fields(value.seed, "seed.", ["command", "cwd"], "string");
 		fields(value.seed, "seed.", ["check"], "function");
@@ -45,8 +57,9 @@ export function validateSupplementShapes(
 		check(
 			value.prisma.generateCheck,
 			"prisma.generateCheck",
-			typeof value.prisma.generateCheck === "function",
-			"a function",
+			typeof value.prisma.generateCheck === "function" ||
+				value.prisma.generateCheck === "schema-hash",
+			'a function or "schema-hash"',
 		);
 	if (object(value.hooks))
 		for (const [key, hook] of Object.entries(value.hooks))
