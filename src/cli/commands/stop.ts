@@ -66,7 +66,7 @@ import * as log from "../log";
  * failed, the runtime did not answer), or bad arguments · 2 a named app or
  * service matched nothing · 3 refused: left running on purpose, needing a
  * confirmation or `--force`, or because what it would signal could not be
- * identified. BuncargoBar offers `--force` on 3 alone.
+ * identified. BuncargoBar always passes `--force` and shows a 3's reason.
  */
 export const STOP_EXIT = { ok: 0, failed: 1, notFound: 2, refused: 3 } as const;
 

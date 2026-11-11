@@ -1962,12 +1962,12 @@ try {
 } finally {
   lifetime.abort();
   // Each stop() waits for its session's apps to exit. Services another live
-  // session still uses stay up for it.
+  // session still uses stay up for it, so the last stop() takes them down.
   await Promise.all([web.stop(), api.stop()]);
 }
 ```
 
-`releaseRun()` only releases the run's claim on its containers, to the idle hold; it does not stop supervised app processes. `stop()` stops the apps first and waits for them.
+`stop()` stops the session's apps and waits for them. `releaseRun()` instead releases the run's claim to the idle hold, keeping the checkout's containers warm for the next run, and stops no app process.
 
 The example is in `example/library-sessions`: run `bun example/library-sessions/run.ts` from this repository.
 
